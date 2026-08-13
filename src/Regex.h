@@ -1,4 +1,5 @@
 #pragma once
+#include <algorithm>
 #include <functional>
 #include <type_traits>
 #include <map>
@@ -12,6 +13,54 @@
 #include <vector>
 
 namespace rakupp {
+
+// A sorted flat map exposing the std::map subset the matcher uses. The parse
+// tree's child/named maps are built, snapshot-copied, and torn down constantly
+// during a grammar parse, and std::map pays one heap node per key where one
+// contiguous buffer suffices — profiled at ~45% of a capturing parse in
+// allocator time, 28% in memo teardown alone. Iteration stays key-sorted,
+// exactly like std::map, because Match assembly walks these in key order.
+// Unlike std::map, mutation invalidates references/iterators to OTHER
+// entries — the matcher re-looks-up by key around its continuations, which
+// is why the swap is safe here; don't hold a reference across an insert.
+template <typename V>
+class FlatMap {
+    using Vec = std::vector<std::pair<std::string, V>>;
+    Vec v_;
+    static bool keyLess(const std::pair<std::string, V>& e, const std::string& k) { return e.first < k; }
+public:
+    using value_type = typename Vec::value_type;
+    using iterator = typename Vec::iterator;
+    using const_iterator = typename Vec::const_iterator;
+    iterator begin() { return v_.begin(); }
+    iterator end() { return v_.end(); }
+    const_iterator begin() const { return v_.begin(); }
+    const_iterator end() const { return v_.end(); }
+    bool empty() const { return v_.empty(); }
+    size_t size() const { return v_.size(); }
+    void clear() { v_.clear(); }
+    iterator find(const std::string& k) {
+        auto it = std::lower_bound(v_.begin(), v_.end(), k, keyLess);
+        return it != v_.end() && it->first == k ? it : v_.end();
+    }
+    const_iterator find(const std::string& k) const {
+        auto it = std::lower_bound(v_.begin(), v_.end(), k, keyLess);
+        return it != v_.end() && it->first == k ? it : v_.end();
+    }
+    size_t count(const std::string& k) const { return find(k) != v_.end() ? 1 : 0; }
+    V& operator[](const std::string& k) {
+        auto it = std::lower_bound(v_.begin(), v_.end(), k, keyLess);
+        if (it == v_.end() || it->first != k) it = v_.insert(it, {k, V{}});
+        return it->second;
+    }
+    size_t erase(const std::string& k) {
+        auto it = find(k);
+        if (it == v_.end()) return 0;
+        v_.erase(it);
+        return 1;
+    }
+    iterator erase(const_iterator it) { return v_.erase(it); }
+};
 
 // Non-owning callable reference for match continuations: two words, no heap, one
 // indirect call. Continuations only live for the duration of the match call chain
@@ -29,7 +78,7 @@ struct FnRef {
 // and `** { … }` quantifier bounds — all against the interpreter's live scope.
 struct ParseNode; // declared below — the hooks reference completed nodes
 struct GrammarHooks {
-    using NamedMap = std::map<std::string, std::pair<long, long>>; // named-capture byte spans, for $/ / $<x>
+    using NamedMap = FlatMap<std::pair<long, long>>; // named-capture byte spans, for $/ / $<x>
     using ParamMap = std::map<std::string, std::string>;           // current rule params, e.g. $indent
     // Action firing DURING the match, Rakudo-style: a completed subrule fires its
     // action method immediately — and a later backtrack/overall failure does NOT
@@ -66,13 +115,13 @@ struct GrammarHooks {
 // The child map is FROZEN behind a shared_ptr when the node is recorded, so
 // re-recording a memoized sub-match is a refcount bump, not a subtree copy.
 struct ParseNode;
-using ChildMap = std::map<std::string, std::vector<ParseNode>>;
+using ChildMap = FlatMap<std::vector<ParseNode>>;
 struct ParseNode {
     std::string name;
     std::string actualRule; // proto entry: the winning `name:sym<…>` candidate (else empty)
     long from = 0, to = 0;
     std::vector<std::pair<long, long>> caps;              // positional captures ($0,$1,…)
-    std::map<std::string, std::pair<long, long>> named;   // named-capture spans ($<x>)
+    GrammarHooks::NamedMap named;                         // named-capture spans ($<x>)
     std::shared_ptr<const ChildMap> kids;                 // frozen sub-trees (null = leaf); a vector collates repeated captures
     // capture keys under a repetition quantifier in THIS rule's pattern (<pair>* etc.):
     // list-valued regardless of occurrence count (Rakudo: even 0 or 1 gives an Array).
@@ -92,8 +141,8 @@ struct RxMatch {
     std::vector<std::pair<long, long>> caps;            // positional captures ($0,$1,..); {-1,-1} = unset
     std::map<int, std::vector<std::pair<long, long>>> capReps; // occurrences per list-valued positional capture
     std::set<int> listCaps;                             // which positional indices are list-valued ($n under */+/**)
-    std::map<std::string, std::pair<long, long>> named; // named captures ($<name>) byte ranges
-    std::map<std::string, std::vector<ParseNode>> children; // per-name occurrence list; repeated captures collate here
+    GrammarHooks::NamedMap named;                       // named captures ($<name>) byte ranges
+    ChildMap children;                                  // per-name occurrence list; repeated captures collate here
     std::shared_ptr<const std::set<std::string>> listNames; // subrule keys under a quantifier → always list-valued
     std::shared_ptr<const std::set<std::string>> hashNames; // `%<name>=…` keys → built as a Hash of matched strings
 };
@@ -273,8 +322,8 @@ public:
     struct MState {
         const std::string& s;
         std::vector<std::pair<long, long>> caps;
-        std::map<std::string, std::pair<long, long>> named;
-        std::map<std::string, std::vector<ParseNode>> children; // named subrule sub-trees (grammar path)
+        GrammarHooks::NamedMap named;
+        ChildMap children;                                 // named subrule sub-trees (grammar path)
         const SubResolver* resolver = nullptr;             // plain-regex subrule path (atomic)
         class GrammarMatcher* grammar = nullptr;           // grammar path (backtrackable)
         const std::set<std::string>* lexNames = nullptr;   // lexical `my regex NAME` overrides — shadow built-in subrules
@@ -363,7 +412,7 @@ public:
         long capFrom = -1, capTo = -1; // the rule body's `<( … )>` span (-1 = none): the
                                        // CAPTURE is trimmed to it, while matching continues at `end`
         std::vector<std::pair<long, long>> caps;
-        std::map<std::string, std::pair<long, long>> named;
+        GrammarHooks::NamedMap named;
         std::shared_ptr<const ChildMap> kids; // frozen once; replays share, never copy
         std::shared_ptr<const std::set<std::string>> listNames; // the rule's quantified capture keys
         std::shared_ptr<const std::set<int>> listCaps; // list-valued positional capture indices
@@ -371,7 +420,16 @@ public:
     };
     long candDeclEnd_ = -1; // set by matchSubMeta after a candidate match: its declarative-prefix end (for proto LTM)
     long candLitPrefix_ = 0; // set alongside candDeclEnd_: leading-literal length (LTM specificity)
-    void clearMemo() { memo_.clear(); }
+    void clearMemo() { reapMemo(); }
+    // Destroying the packrat memo walks every frozen subtree — measured at
+    // ~28% of a capturing grammar parse, all in destructor recursion and
+    // page-return madvise, none of it needed before the parse result can be
+    // used: the trees are refcounted and self-contained (the winning parse
+    // holds its own refs, and shared_ptr counts are atomic). reapMemo hands
+    // a large memo to a detached reaper thread so the frees happen off the
+    // parse's critical path; small memos (or a saturated reaper) destroy
+    // inline, which is exactly the old behavior.
+    ~GrammarMatcher() { reapMemo(); }
 
     // G1 highwater (GRAMMAR-PLAN): the furthest input position where a named
     // rule FRESHLY failed during this parse, and which rule — rule-grained
@@ -394,6 +452,7 @@ public:
     int ltmResolve(const std::string& name, const void*& regexOut, char& flagOut);
 
 private:
+    void reapMemo(); // defer a large memo's destruction to the background (see ~GrammarMatcher)
     std::unordered_map<uint64_t, MemoEntry> memo_;          // ratchet-token packrat cache (per parse), integer-keyed
     std::unordered_map<std::string, NameMeta> nameMeta_;    // per-name metadata cache (avoids repeated rules.find)
     std::map<std::string, std::unique_ptr<Regex>> cache_;   // name(+arg values) → compiled

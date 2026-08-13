@@ -25,6 +25,7 @@ bool rakupp::ltmModeOn() {
 #include <algorithm>
 #include <cctype>
 #include <set>
+#include <thread>
 
 // Full case folding for :i matching (CaseFolding.txt F-entries, the common
 // set): one codepoint may fold to SEVERAL — `ß` folds to "ss", so
@@ -3229,7 +3230,7 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
     // then run the caller's continuation `k`; on failure, roll the recording back.
     // `kids` is a frozen subtree — sharing it is O(1), which is what makes memo replays cheap.
     auto record = [&](long end, const std::vector<std::pair<long,long>>& caps,
-                      const std::map<std::string, std::pair<long,long>>& named,
+                      const GrammarHooks::NamedMap& named,
                       std::shared_ptr<const ChildMap> kids,
                       std::shared_ptr<const std::set<std::string>> listNames,
                       std::shared_ptr<const std::set<int>> listCaps = nullptr,
@@ -3388,6 +3389,28 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
     scope_.pop_back();
     if (!calleeMatched) noteFail(pos, name); // the rule itself never completed here
     return ok;
+}
+
+void GrammarMatcher::reapMemo() {
+    if (memo_.empty()) return;
+    // See the ~GrammarMatcher comment in Regex.h. Thresholds: a small memo's
+    // walk costs less than a thread spawn; the in-flight cap keeps a parse
+    // loop from outrunning the reaper (at the cap we destroy inline — the
+    // pre-reaper behavior, so degradation is graceful, never unbounded RAM).
+    // Destructor recursion depth on the reaper thread = parse-tree depth;
+    // the default pthread stack comfortably holds thousands of frames.
+    static std::atomic<int> inFlight{0};
+    if (memo_.size() < 512 || inFlight.load(std::memory_order_relaxed) >= 4) {
+        memo_.clear();
+        return;
+    }
+    auto box = std::make_unique<std::unordered_map<uint64_t, MemoEntry>>(std::move(memo_));
+    memo_.clear(); // moved-from state → guaranteed empty for the next parse
+    inFlight.fetch_add(1, std::memory_order_relaxed);
+    std::thread([b = std::move(box)]() mutable {
+        b.reset();
+        inFlight.fetch_sub(1, std::memory_order_relaxed);
+    }).detach();
 }
 
 bool GrammarMatcher::parse(const std::string& input, const std::string& top, bool subparse,

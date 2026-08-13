@@ -266,6 +266,62 @@ That is a batch of its own.
 1.64×), is ~1,550 sites, and IS source-compatible if the replacement exposes
 `std::map`'s API. On the measurements, phase 2 should come first.
 
+#### Batch 3 — grammar-parse result trees: FlatMap children + memo reaper (2026-08-13)
+
+Sibling of this campaign on the GRAMMAR path, driven by the
+`tools/bench/diagnose/grammar-split.raku` decomposition (51 KB JSON, LTM=0):
+a capturing grammar parse spent ~47% matching, **~28% in `~GrammarMatcher`
+destroying the packrat memo**, ~17% converting ParseNode→Match, ~8% in
+`setMatchVar` destroying the previous `$/`. Two changes:
+
+- **`FlatMap`** (Regex.h): the parse tree's child/named maps
+  (`ChildMap`, `GrammarHooks::NamedMap`, `MState.children/named`,
+  `MemoEntry.named`, `RxMatch.children/named`) moved from `std::map` to a
+  sorted flat vector exposing the same API subset. Iteration order is
+  unchanged (key-sorted). One signature edit in Regex.cpp; everything else
+  recompiled untouched. Profiling then showed teardown was NOT map-node
+  frees but the destructor WALK itself (alternating shared_ptr release →
+  `~ParseNode` recursion with 1-2-sample free leaves), so this alone did
+  not move the teardown share — kept for the allocation-count reduction on
+  the build/snapshot side and as the campaign's container direction.
+- **The memo reaper** (`GrammarMatcher::reapMemo`, Regex.cpp): the memo's
+  frozen subtrees are refcounted and self-contained (the winning parse
+  holds its own refs; shared_ptr counts are atomic), so a large memo
+  (≥512 entries) is moved into a box and destroyed on a detached thread —
+  off the parse's critical path. Small memos, or ≥4 reapers already in
+  flight, destroy inline: graceful degradation to the old behavior, never
+  unbounded RAM.
+
+Measured effect. Sample-profile shape (load-independent): main-thread
+share went 47/28/17/8 (match/teardown/convert/setMatchVar) →
+**76/~0/15.5/8** — the teardown walk runs on reaper threads now. Wall
+clock, quiet-machine interleaved A/B vs the same-day pre-batch binary
+(RAKUPP_LTM=0 so both parse identically), four alternating rounds:
+pre-batch 53.6-57.2 ms/parse, this build 50.3-52.8 — **−6%, the new
+build faster in every pair**. The gap between −6% and the removed 28%
+is the reaper's frees contending with the next parse's allocations in
+the same malloc zone (plus page fault-back after madvise) — the arena
+REUSE design (keep pages, skip madvise) is the follow-up that would
+close it. `setMatchVar`'s 8% was deliberately NOT deferred: interpreter
+`Value` destructors are not provably side-effect-free (handles), unlike
+ParseNode trees.
+
+Adjacent observation while measuring, no action needed: the default NFA
+ranker vs RAKUPP_LTM=0 on this bench is +18%/+12%/−4% at 100/400/1600
+records — both scale linearly and the sign FLIPS on large inputs (the
+NFA's per-alternation scan amortizes; the probe's double-descent grows),
+so the mid-size gap is workload balance, not a scaling bug.
+
+Gates: suite 442/442, LTM regression file 18/18 both engines, oracle grid
+11×3 Rakudo-identical, **perf-guard --check GREEN** on the quiet machine
+(worst kernel subcall +3.6%, rest ≤+0.1%), full Roast **196,950/217,940
+declared, 15 TIME** vs the same-day pre-batch run's 196,803/16 TIME —
+per-file diff shows only documented flappers (lines.t 6↔4,
+advent2012-day13 23↔22, three load-band TIME flips), zero new failures,
+S05 untouched. Remaining follow-up: one TSan stress leg over the reaper
+(it shares no mutable state — a boxed map + one atomic — but the suite
+should say so; the linux-tsan CI job will on next push).
+
 ### Phase 2 — MEASURED AND REVERTED, and what it found instead (2026-08-09)
 
 Phase 2 was written and it works: `RakuHash` — `unordered_map` storage with a
