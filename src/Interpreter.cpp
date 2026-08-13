@@ -1,3 +1,5 @@
+#include "CNumeric.h"
+#include "AsciiCtype.h"
 #include "Interpreter.h"
 #include <functional>
 #include <memory>
@@ -210,7 +212,7 @@ static bool isSpecialVar(const std::string& n) {
     if (c == '*' || c == '?' || c == '.' || c == '!' || c == '<' ||
         c == '=' || c == '~' || c == ':' || c == '^' || c == '/' || c == '_')
         return true;                        // twigils, $_, $/, $!, attribute/placeholder
-    if (std::isdigit((unsigned char)c)) return true; // $0, $1, ... match vars
+    if (ascii::isdigit((unsigned char)c)) return true; // $0, $1, ... match vars
     if (n.find("::") != std::string::npos) return true; // package-qualified $Foo::bar (may be undefined)
     if (n == "$a" || n == "$b") return true;          // implicit block/sort params
     if (n == "@_" || n == "%_") return true;
@@ -364,7 +366,7 @@ Value numifyStr(const std::string& in) {
         std::string t;
         for (size_t k = 0; k < s.size(); k++) {
             if (s[k] == '_' && k > 0 && k + 1 < s.size() &&
-                std::isalnum((unsigned char)s[k-1]) && std::isalnum((unsigned char)s[k+1])) continue;
+                ascii::isalnum((unsigned char)s[k-1]) && ascii::isalnum((unsigned char)s[k+1])) continue;
             t += s[k];
         }
         s = t;
@@ -450,7 +452,7 @@ Value numifyStr(const std::string& in) {
                     return Value::rat(BigInt::fromString(digits), std::move(den));
                 }
             }
-            return Value::number(std::stod(s));
+            return Value::number(cnum::stod(s));
         }
         // Complex: "a+bi" / "a-bi" / "bi" (i may be written "\i"). Split at the
         // sign that separates real and imaginary parts (not a leading sign or an
@@ -489,7 +491,7 @@ Value numifyStrFailure(const std::string& in) {
     std::string t = in;
     if (t.size() > 40) t = t.substr(0, 40) + "...";
     bool anyDigit = false;
-    for (unsigned char c : in) if (std::isdigit(c)) { anyDigit = true; break; }
+    for (unsigned char c : in) if (ascii::isdigit(c)) { anyDigit = true; break; }
     std::string msg = anyDigit
         ? "Cannot convert string to number: trailing characters after number in '" + t + "'"
         : "Cannot convert string to number: base-10 number must begin with valid digits or '.' in '" + t + "'";
@@ -569,11 +571,11 @@ static Value typedDefault(const std::string& type, char sigil) {
         // 'new' for invocant of type 'Any'" — Digest::MD5's first line).
         if (type.rfind("buf", 0) == 0 || type.rfind("blob", 0) == 0)
             return Value::typeObj(type);
-        if (std::isupper((unsigned char)type[0])) return Value::typeObj(type); // my Int $x -> (Int)
+        if (ascii::isupper((unsigned char)type[0])) return Value::typeObj(type); // my Int $x -> (Int)
     }
     // typed containers: `my Int @a` -> Array[Int], `my int @a` (native) too
     if ((sigil == '@' || sigil == '%') && !type.empty() &&
-        (std::isupper((unsigned char)type[0]) ||
+        (ascii::isupper((unsigned char)type[0]) ||
          type.rfind("int", 0) == 0 || type.rfind("uint", 0) == 0 ||
          type.rfind("num", 0) == 0 || type == "str" || type == "byte")) {
         Value v = defaultFor(sigil);
@@ -630,7 +632,7 @@ static void addIfPlaceholder(const std::string& name, std::set<std::string>& out
     if (name.size() > 2 && (name[1] == '^' || name[1] == ':')) out.insert(name); // $^a positional, $:n named
     else if (name == "@_") out.insert(name); // implicit slurpy — consumers filter
     else if (name.size() > 2 && name[1] == '!' &&
-             (std::isalpha((unsigned char)name[2]) || name[2] == '_'))
+             (ascii::isalpha((unsigned char)name[2]) || name[2] == '_'))
         out.insert(name); // $!attr — attribute references; placeholder consumers filter these
 }
 
@@ -665,9 +667,9 @@ static void collectPHExpr(const Expr* e, std::set<std::string>& out) {
         case NK::SubstLit: { auto* sl = static_cast<const SubstLit*>(e); // $^a lives in the raw pattern/repl text
             auto scan = [&](const std::string& str) {
                 for (size_t i = 0; i + 2 < str.size(); i++)
-                    if (str[i] == '$' && str[i + 1] == '^' && std::isalpha((unsigned char)str[i + 2])) {
+                    if (str[i] == '$' && str[i + 1] == '^' && ascii::isalpha((unsigned char)str[i + 2])) {
                         size_t j = i + 2; std::string nm = "$^";
-                        while (j < str.size() && (std::isalnum((unsigned char)str[j]) || str[j] == '_')) nm += str[j++];
+                        while (j < str.size() && (ascii::isalnum((unsigned char)str[j]) || str[j] == '_')) nm += str[j++];
                         out.insert(nm);
                     }
             };
@@ -675,9 +677,9 @@ static void collectPHExpr(const Expr* e, std::set<std::string>& out) {
         case NK::RegexLit: { // and in a plain regex literal, the same way
             const std::string& str = static_cast<const RegexLit*>(e)->pattern;
             for (size_t i = 0; i + 2 < str.size(); i++)
-                if (str[i] == '$' && str[i + 1] == '^' && std::isalpha((unsigned char)str[i + 2])) {
+                if (str[i] == '$' && str[i + 1] == '^' && ascii::isalpha((unsigned char)str[i + 2])) {
                     size_t j = i + 2; std::string nm = "$^";
-                    while (j < str.size() && (std::isalnum((unsigned char)str[j]) || str[j] == '_')) nm += str[j++];
+                    while (j < str.size() && (ascii::isalnum((unsigned char)str[j]) || str[j] == '_')) nm += str[j++];
                     out.insert(nm);
                 }
             break; }
@@ -1394,7 +1396,7 @@ size_t rtPosCount(const ValueList& a, size_t from) {
 // pragma, lib paths, real module loading into the runtime env.
 void Interpreter::rtUse(const std::string& module, const std::string& arg) {
     if (module == "Test") { usedTest_ = true; return; }
-    if (module.size() >= 2 && module[0] == 'v' && std::isdigit((unsigned char)module[1])) {
+    if (module.size() >= 2 && module[0] == 'v' && ascii::isdigit((unsigned char)module[1])) {
         if (module.find("6.c") != std::string::npos) langRev_ = 0;
         else if (module.find("6.d") != std::string::npos) langRev_ = 1;
         else langRev_ = 2;
@@ -1641,7 +1643,7 @@ std::vector<std::string> splitSearchPath(const std::string& spec) {
     for (size_t i = 0; i < spec.size(); i++) {
         char c = spec[i];
         bool driveLetter = c == ':' && cur.size() == 1 &&
-                           std::isalpha((unsigned char)cur[0]) &&
+                           ascii::isalpha((unsigned char)cur[0]) &&
                            i + 1 < spec.size() && (spec[i + 1] == '\\' || spec[i + 1] == '/');
         if ((c == ':' && !driveLetter) || c == ',') {
             if (!cur.empty()) out.push_back(cur);
@@ -2456,7 +2458,7 @@ static bool sinkPure(Expr* e, std::string& spell, std::string& kindw) {
             if (n.empty() || (n[0] != '$' && n[0] != '@' && n[0] != '%')) return false;
             if (n.size() == 1) { spell = "unnamed " + n + " variable"; kindw = ""; return true; }
             char tw = n[1]; // no twigilled/special vars: $*DYN may throw, $_ / $/ / $! are set by context
-            if (!(std::isalpha((unsigned char)tw) && (unsigned char)tw < 0x80) && tw != '-') return false;
+            if (!(ascii::isalpha((unsigned char)tw) && (unsigned char)tw < 0x80) && tw != '-') return false;
             spell = n; kindw = "";
             return true;
         }
@@ -2792,7 +2794,7 @@ int Interpreter::run(Program& prog) {
                             }
                         }
                         else if (ve0->name[0] == '$' && !ve0->declType.empty() &&
-                                 std::isupper((unsigned char)ve0->declType[0]))
+                                 ascii::isupper((unsigned char)ve0->declType[0]))
                             global_->x().varDefault[ve0->name] = Value::typeObj(ve0->declType);
                         // …and its `is dynamic`, which the skipped declaration would
                         // otherwise never record (a mainline `my $x is dynamic;` with
@@ -3563,7 +3565,7 @@ bool isPragmaName(const std::string& name) {  // shared with SlimScan.cpp (modul
         "absolute", "dispatch", "DEPRECATED",
     };
     if (pragmas.count(name)) return true;
-    return name.size() >= 2 && name[0] == 'v' && std::isdigit((unsigned char)name[1]);
+    return name.size() >= 2 && name[0] == 'v' && ascii::isdigit((unsigned char)name[1]);
 }
 
 // ---- module bundling for --exe / --aot ---------------------------------
@@ -5081,7 +5083,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             auto* u = static_cast<UseStmt*>(s);
             if (u->isNo && u->module == "strict") { noStrict_ = true; return Value::any(); }
             if (u->module == "Test") usedTest_ = true;
-            else if (u->module.size() >= 2 && u->module[0] == 'v' && std::isdigit((unsigned char)u->module[1])) {
+            else if (u->module.size() >= 2 && u->module[0] == 'v' && ascii::isdigit((unsigned char)u->module[1])) {
                 // language version pragma: use v6.c / v6.d / v6.e[.PREVIEW]
                 if (u->module.find("6.c") != std::string::npos) langRev_ = 0;
                 else if (u->module.find("6.d") != std::string::npos) langRev_ = 1;
@@ -8741,7 +8743,7 @@ static Value typedElemDefault(const Value& base) {
     if (base.ofType.empty()) return Value::nil();
     std::string first = base.ofType.substr(0, base.ofType.find(','));
     if (first.empty()) return Value::nil();
-    if (std::isupper((unsigned char)first[0])) return Value::typeObj(first);
+    if (ascii::isupper((unsigned char)first[0])) return Value::typeObj(first);
     // native element types are zero-initialized (my int @a — gaps read as 0)
     if (first == "num" || first == "num32" || first == "num64") return Value::number(0.0);
     if (first == "str") return Value::str("");
@@ -9677,14 +9679,14 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
             char b[32];
             if (v.t == VT::Str && v.hashKind.empty())
                 line += "\"" + esc(v.s.size() > 24 ? v.s.substr(0, 24) + "..." : v.s) + "\"";
-            else if (slots[i].fbFloat) { std::snprintf(b, sizeof b, "%g", slots[i].fbNum); line += b; }
+            else if (slots[i].fbFloat) { cnum::snprintf(b, sizeof b, "%g", slots[i].fbNum); line += b; }
             else if (slots[i].fbPtr)   { std::snprintf(b, sizeof b, "0x%llx", (unsigned long long)slots[i].fbInt); line += b; }
             else                       line += std::to_string(slots[i].fbInt);
         }
         line += ") -> ";
         char rb[32];
         if (rt.empty() || rt == "void" || rt == "Nil") line += "void";
-        else if (retFP)    { std::snprintf(rb, sizeof rb, "%g", rd); line += rb; }
+        else if (retFP)    { cnum::snprintf(rb, sizeof rb, "%g", rd); line += rb; }
         else if (rt == "Str") line += ri ? "\"" + esc(std::string((const char*)(intptr_t)ri).substr(0, 24)) + "\"" : "Str";
         // F.ok matters: without libffi both sides are null and everything would
         // print as an address.
@@ -9730,7 +9732,7 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
         return ncMakeLiveCArray(rt, (void*)(intptr_t)ri);
     // CStruct/CPointer return: box the pointer as an object of the return class so
     // it satisfies the type check and round-trips into later native calls.
-    if (!rt.empty() && (std::isupper((unsigned char)rt[0]) || rt.find("::") != std::string::npos)) {
+    if (!rt.empty() && (ascii::isupper((unsigned char)rt[0]) || rt.find("::") != std::string::npos)) {
         std::shared_ptr<ClassInfo> ci;
         auto it = classes_.find(rt);
         if (it != classes_.end()) ci = it->second;
@@ -10980,7 +10982,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                     init.pairVal = std::make_shared<Value>(dv);
                 else { init = dv; de->x().varDefault[ve->name] = dv; }
             }
-            else if (sigil == '$' && !ve->declType.empty() && (std::isupper((unsigned char)ve->declType[0]) || ve->declType == "atomicint"))
+            else if (sigil == '$' && !ve->declType.empty() && (ascii::isupper((unsigned char)ve->declType[0]) || ve->declType == "atomicint"))
                 de->x().varDefault[ve->name] = Value::typeObj(ve->declType); // `$x = Nil` resets to (Type)
             if (ve->declDynamic) de->x().varDynamic.insert(ve->name); // `is dynamic`
             return &de->define(ve->name, std::move(init));
@@ -11003,7 +11005,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                         for (auto& at : ci->attrs)
                             if (at.name == ve->name.substr(2)) {
                                 if (at.sigil == '$' && !at.type.empty() &&
-                                    std::isupper((unsigned char)at.type[0]))
+                                    ascii::isupper((unsigned char)at.type[0]))
                                     tctx_.lastLvalueAttrType = at.type;
                                 goto selfAttrTypeDone;
                             }
@@ -11334,7 +11336,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                 for (auto& at : ci->attrs)
                     if (at.name == mc->method) {
                         if (at.sigil == '$' && !at.type.empty() &&
-                            std::isupper((unsigned char)at.type[0]))
+                            ascii::isupper((unsigned char)at.type[0]))
                             tctx_.lastLvalueAttrType = at.type;
                         goto attrTypeDone;
                     }
@@ -12403,8 +12405,8 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             auto* tv = static_cast<VarExpr*>(a->target.get());
             auto* sv = static_cast<VarExpr*>(a->value.get());
             if (tv->name.size() > 1 && tv->name[0] == '$' && sv->name.size() > 1 && sv->name[0] == '$' &&
-                (std::isalpha((unsigned char)sv->name[1]) || sv->name[1] == '_') &&
-                (std::isalpha((unsigned char)tv->name[1]) || tv->name[1] == '_')) {
+                (ascii::isalpha((unsigned char)sv->name[1]) || sv->name[1] == '_') &&
+                (ascii::isalpha((unsigned char)tv->name[1]) || tv->name[1] == '_')) {
                 std::shared_ptr<Env> owner;
                 for (std::shared_ptr<Env> en = tctx_.cur; en; en = en->parent)
                     if (en->vars.count(sv->name)) { owner = en; break; }
@@ -12785,7 +12787,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         return sink ? Value::any() : *lv;
     }
     if (a->op.size() > 2 && a->op[0] == 'R' && a->op.back() == '=' &&
-        !std::isalnum((unsigned char)a->op[1])) {
+        !ascii::isalnum((unsigned char)a->op[1])) {
         // `A Rop= B` is `B op= A` — the R meta reverses roles including the target
         std::string base = a->op.substr(1, a->op.size() - 2);
         Value l = eval(a->target.get());
@@ -13623,14 +13625,14 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             size_t i = 0;
             while (i < s.size()) {
                 unsigned char c = s[i];
-                if (std::isdigit(c)) {
-                    size_t j = i; while (j < s.size() && std::isdigit((unsigned char)s[j])) j++;
+                if (ascii::isdigit(c)) {
+                    size_t j = i; while (j < s.size() && ascii::isdigit((unsigned char)s[j])) j++;
                     std::string d = s.substr(i, j - i);
                     size_t nz = d.find_first_not_of('0');
                     out.push_back({true, nz == std::string::npos ? "0" : d.substr(nz)});
                     i = j;
-                } else if (std::isalpha(c) || c >= 0x80) { // ASCII or Unicode letters (α, β, …) are alpha parts
-                    size_t j = i; while (j < s.size() && (std::isalpha((unsigned char)s[j]) || (unsigned char)s[j] >= 0x80)) j++;
+                } else if (ascii::isalpha(c) || c >= 0x80) { // ASCII or Unicode letters (α, β, …) are alpha parts
+                    size_t j = i; while (j < s.size() && (ascii::isalpha((unsigned char)s[j]) || (unsigned char)s[j] >= 0x80)) j++;
                     out.push_back({false, s.substr(i, j - i)});
                     i = j;
                 } else if (c == '*') { out.push_back({false, "*"}); i++; }
@@ -14502,7 +14504,7 @@ static std::string quoteMetaRx(const std::string& s) {
         // (regex CONJUNCTION), so an interpolated query string
         // (`/^POST\s$file/` with `?r=1&r=2`) became two branches that could
         // never match at one spot.
-        if ((unsigned char)c < 0x80 && !std::isalnum((unsigned char)c) && c != '_')
+        if ((unsigned char)c < 0x80 && !ascii::isalnum((unsigned char)c) && c != '_')
             out += '\\';
         out += c;
     }
@@ -14523,10 +14525,10 @@ std::string Interpreter::rxInterpArrays(const std::string& pat) {
         if (pat[i] == '\'') { inSq = !inSq; out += pat[i]; continue; }
         if (inSq) { out += pat[i]; continue; }
         if (pat[i] == '@' && i + 1 < pat.size() &&
-            (std::isalpha((unsigned char)pat[i + 1]) || pat[i + 1] == '_')) {
+            (ascii::isalpha((unsigned char)pat[i + 1]) || pat[i + 1] == '_')) {
             size_t j = i + 1;
-            while (j < pat.size() && (std::isalnum((unsigned char)pat[j]) || pat[j] == '_' ||
-                   (pat[j] == '-' && j + 1 < pat.size() && std::isalpha((unsigned char)pat[j + 1])))) j++;
+            while (j < pat.size() && (ascii::isalnum((unsigned char)pat[j]) || pat[j] == '_' ||
+                   (pat[j] == '-' && j + 1 < pat.size() && ascii::isalpha((unsigned char)pat[j + 1])))) j++;
             Value* v = tctx_.cur->find("@" + pat.substr(i + 1, j - i - 1));
             if (v && v->t == VT::Array && v->arr && !v->arr->empty()) {
                 // `<@arr>` compiles each element AS A REGEX; a bare `@arr` is an
@@ -14581,7 +14583,7 @@ static bool isP5Pattern(const std::string& pat) {
         size_t j = p + 1;
         if (j < pat.size() && pat[j] == '!') j++;
         size_t ns = j;
-        while (j < pat.size() && std::isalnum((unsigned char)pat[j])) j++;
+        while (j < pat.size() && ascii::isalnum((unsigned char)pat[j])) j++;
         if (j == ns) return false;
         std::string name = pat.substr(ns, j - ns);
         if (j < pat.size() && pat[j] == '(') {
@@ -14604,9 +14606,9 @@ std::string Interpreter::interpP5Pattern(const std::string& in) {
     std::string out;
     for (size_t i = 0; i < in.size(); i++) {
         if (in[i] == '\\' && i + 1 < in.size()) { out += in[i]; out += in[i + 1]; i++; continue; }
-        if (in[i] == '$' && i + 1 < in.size() && (std::isalpha((unsigned char)in[i + 1]) || in[i + 1] == '_')) {
+        if (in[i] == '$' && i + 1 < in.size() && (ascii::isalpha((unsigned char)in[i + 1]) || in[i + 1] == '_')) {
             size_t j = i + 1;
-            while (j < in.size() && (std::isalnum((unsigned char)in[j]) || in[j] == '_')) j++;
+            while (j < in.size() && (ascii::isalnum((unsigned char)in[j]) || in[j] == '_')) j++;
             if (Value* v = tctx_.cur->find("$" + in.substr(i + 1, j - i - 1))) {
                 out += v->t == VT::Regex ? "(?:" + std::string(isP5Pattern(v->s) ? v->s.substr(v->s.find(' ') + 1) : v->s) + ")"
                                          : v->toStr();
@@ -14694,15 +14696,15 @@ std::string Interpreter::interpRegexPattern(const std::string& in) {
             // under the bare name, so the twigil is skipped for the lookup.
             // IO::Glob builds its alternation regexes as `@alts.map({ rx/$base$^alt/ })`.
             size_t tw = (pat[i] == '$' && i + 2 < pat.size() && (pat[i + 1] == '^' || pat[i + 1] == ':') &&
-                         (std::isalpha((unsigned char)pat[i + 2]) || pat[i + 2] == '_')) ? 1 : 0;
+                         (ascii::isalpha((unsigned char)pat[i + 2]) || pat[i + 2] == '_')) ? 1 : 0;
             if (pat[i] == '$' && i + 1 + tw < pat.size() &&
-                (std::isalpha((unsigned char)pat[i + 1 + tw]) || pat[i + 1 + tw] == '_')) {
+                (ascii::isalpha((unsigned char)pat[i + 1 + tw]) || pat[i + 1 + tw] == '_')) {
                 size_t j = i + 1 + tw;
                 // kebab-case names too: `-`/`'` + letter continues the identifier
                 // (`/^ \\h* $comment-char /` — Text::Utils), as rxInterpArrays does
-                while (j < pat.size() && (std::isalnum((unsigned char)pat[j]) || pat[j] == '_' ||
+                while (j < pat.size() && (ascii::isalnum((unsigned char)pat[j]) || pat[j] == '_' ||
                        ((pat[j] == '-' || pat[j] == '\'') && j + 1 < pat.size() &&
-                        std::isalpha((unsigned char)pat[j + 1])))) j++;
+                        ascii::isalpha((unsigned char)pat[j + 1])))) j++;
                 Value* v = tctx_.cur->find("$" + pat.substr(i + 1 + tw, j - i - 1 - tw));
                 // POSITION decides the reading (issue #15): `<$p>` compiles the
                 // string AS A REGEX, a bare `$p` matches it LITERALLY. The
@@ -14747,14 +14749,14 @@ std::string Interpreter::spliceRegexVars(const std::string& pat) {
         if (c == '\'' && !braces) { inSq = !inSq; out += c; continue; }
         if (inSq || braces) { out += c; continue; }
         size_t tw = (c == '$' && i + 2 < pat.size() && (pat[i + 1] == '^' || pat[i + 1] == ':') &&
-                     (std::isalpha((unsigned char)pat[i + 2]) || pat[i + 2] == '_')) ? 1 : 0;
+                     (ascii::isalpha((unsigned char)pat[i + 2]) || pat[i + 2] == '_')) ? 1 : 0;
         if (c == '$' && i + 1 + tw < pat.size() &&
-            (std::isalpha((unsigned char)pat[i + 1 + tw]) || pat[i + 1 + tw] == '_')) {
+            (ascii::isalpha((unsigned char)pat[i + 1 + tw]) || pat[i + 1 + tw] == '_')) {
             size_t j = i + 1 + tw;
             // kebab-case names continue through `-`/`'` + letter (same rule as above)
-            while (j < pat.size() && (std::isalnum((unsigned char)pat[j]) || pat[j] == '_' ||
+            while (j < pat.size() && (ascii::isalnum((unsigned char)pat[j]) || pat[j] == '_' ||
                    ((pat[j] == '-' || pat[j] == '\'') && j + 1 < pat.size() &&
-                    std::isalpha((unsigned char)pat[j + 1])))) j++;
+                    ascii::isalpha((unsigned char)pat[j + 1])))) j++;
             // `<$p>` is the assertion form: it already compiles the value as a
             // regex at match time, so leave it alone.
             bool inAngle = !out.empty() && out.back() == '<' && j < pat.size() && pat[j] == '>';
@@ -14832,14 +14834,14 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
         }
         // ordinal form: `:` digits + two-letter suffix
         for (size_t i = 0; i + 3 < pat.size(); i++) {
-            if (pat[i] != ':' || !std::isdigit((unsigned char)pat[i + 1])) continue;
-            if (i > 0 && (std::isalnum((unsigned char)pat[i - 1]) || pat[i - 1] == ':')) continue;
+            if (pat[i] != ':' || !ascii::isdigit((unsigned char)pat[i + 1])) continue;
+            if (i > 0 && (ascii::isalnum((unsigned char)pat[i - 1]) || pat[i - 1] == ':')) continue;
             size_t d = i + 1;
-            while (d < pat.size() && std::isdigit((unsigned char)pat[d])) d++;
+            while (d < pat.size() && ascii::isdigit((unsigned char)pat[d])) d++;
             if (d + 2 > pat.size()) break;
             std::string suf = pat.substr(d, 2);
             if (suf != "st" && suf != "nd" && suf != "rd" && suf != "th") continue;
-            if (d + 2 < pat.size() && std::isalnum((unsigned char)pat[d + 2])) continue;
+            if (d + 2 < pat.size() && ascii::isalnum((unsigned char)pat[d + 2])) continue;
             long long n = std::strtoll(pat.c_str() + i + 1, nullptr, 10);
             if (n < 1)
                 throw RakuError{Value::typeObj("X::AdHoc"),
@@ -14884,7 +14886,7 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
     for (auto& kv : namedRegex_) lexNames.insert(kv.first);
     SubResolver resolver;
     resolver = [&](const std::string& name, const std::string& subj, long pos, RxMatch& out) -> bool {
-        if (name == "ws") { long p = pos; while (p < (long)subj.size() && std::isspace((unsigned char)subj[p])) p++; out.from = pos; out.to = p; out.matched = true; return true; }
+        if (name == "ws") { long p = pos; while (p < (long)subj.size() && ascii::isspace((unsigned char)subj[p])) p++; out.from = pos; out.to = p; out.matched = true; return true; }
         // `<Grammar::rule>` — a QUALIFIED rule reference inside a plain regex.
         // URI declares `subset Scheme of Str where /^ [ '' || <IETF::RFC_Grammar::URI::scheme> ] $/`,
         // and without this the name resolved to nothing, took the lenient
@@ -15366,8 +15368,8 @@ Value Interpreter::regexSubst(const std::string& subject, const std::string& pat
             }
             if (s[i] == '$' && i + 1 < s.size()) {
                 if (s[i + 1] == '/') { r += mv.toStr(); i++; continue; }
-                if (std::isdigit((unsigned char)s[i + 1])) {
-                    size_t j = i + 1; std::string num; while (j < s.size() && std::isdigit((unsigned char)s[j])) num += s[j++];
+                if (ascii::isdigit((unsigned char)s[i + 1])) {
+                    size_t j = i + 1; std::string num; while (j < s.size() && ascii::isdigit((unsigned char)s[j])) num += s[j++];
                     long idx = std::stol(num); if (mv.t == VT::Match && mv.arr && idx < (long)mv.arr->size()) r += (*mv.arr)[idx].toStr();
                     i = j - 1; continue;
                 }
@@ -15435,13 +15437,13 @@ static std::string smEncode(uint32_t cp) {
     return r;
 }
 static uint32_t smLower(uint32_t c) {
-    if (c < 128) return std::tolower((int)c);
+    if (c < 128) return ascii::tolower((int)c);
     if ((c >= 0xC0 && c <= 0xDE && c != 0xD7) ) return c + 0x20; // Latin-1 uppercase block
     if ((c & 1) == 0 && ((c >= 0x100 && c <= 0x17F) || (c >= 0x1E00 && c <= 0x1EFF))) return c + 1; // Latin Ext-A/Additional even=upper
     return c;
 }
 static uint32_t smUpper(uint32_t c) {
-    if (c < 128) return std::toupper((int)c);
+    if (c < 128) return ascii::toupper((int)c);
     if ((c >= 0xE0 && c <= 0xFE && c != 0xF7)) return c - 0x20;
     if ((c & 1) == 1 && ((c >= 0x100 && c <= 0x17F) || (c >= 0x1E00 && c <= 0x1EFF))) return c - 1;
     return c;
@@ -15494,10 +15496,10 @@ static std::string applySamecase(const std::string& orig, const std::string& rep
     for (size_t i = 0; i < r.size(); i++) {
         if (oi < orig.size()) {
             unsigned char oc = orig[oi++];
-            if (std::isalpha(oc)) { lastUpper = std::isupper(oc); haveLast = true; }
+            if (ascii::isalpha(oc)) { lastUpper = ascii::isupper(oc); haveLast = true; }
         }
-        if (haveLast && std::isalpha((unsigned char)r[i]))
-            r[i] = lastUpper ? std::toupper((unsigned char)r[i]) : std::tolower((unsigned char)r[i]);
+        if (haveLast && ascii::isalpha((unsigned char)r[i]))
+            r[i] = lastUpper ? ascii::toupper((unsigned char)r[i]) : ascii::tolower((unsigned char)r[i]);
     }
     return r;
 }
@@ -15528,8 +15530,8 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
     Value xVal, nthVal; long startPos = 0;
     auto setAdverb = [&](const std::string& k, const Value& pv) {
         // ordinal / count adverbs written as one token: :1st :2nd :3rd :5th, :2x
-        if (k.size() >= 2 && std::isdigit((unsigned char)k[0])) {
-            size_t d = 0; while (d < k.size() && std::isdigit((unsigned char)k[d])) d++;
+        if (k.size() >= 2 && ascii::isdigit((unsigned char)k[0])) {
+            size_t d = 0; while (d < k.size() && ascii::isdigit((unsigned char)k[d])) d++;
             std::string suf = k.substr(d);
             long num = std::stol(k.substr(0, d));
             if (suf == "st" || suf == "nd" || suf == "rd" || suf == "th") { haveNth = true; nthVal = Value::integer(num); return; }
@@ -15557,7 +15559,7 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
     { size_t i = 0;
       while (i < realPat.size() && realPat[i] == ':') {
           size_t j = i + 1; std::string name;
-          while (j < realPat.size() && std::isalnum((unsigned char)realPat[j])) name += realPat[j++];
+          while (j < realPat.size() && ascii::isalnum((unsigned char)realPat[j])) name += realPat[j++];
           if (name.empty()) break;
           Value argv = Value::boolean(true);
           if (j < realPat.size() && realPat[j] == '(') {
@@ -15593,11 +15595,11 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
             if (realPat[i] == '$' && i + 1 < realPat.size()) {
                 size_t j = i + 1;
                 if (realPat[j] == '^' && j + 1 < realPat.size()) j++; // $^a is visible as $a
-                if (j < realPat.size() && (std::isalpha((unsigned char)realPat[j]) || realPat[j] == '_')) {
+                if (j < realPat.size() && (ascii::isalpha((unsigned char)realPat[j]) || realPat[j] == '_')) {
                     std::string nm;
-                    while (j < realPat.size() && (std::isalnum((unsigned char)realPat[j]) || realPat[j] == '_' ||
+                    while (j < realPat.size() && (ascii::isalnum((unsigned char)realPat[j]) || realPat[j] == '_' ||
                            ((realPat[j] == '-' || realPat[j] == '\'') && j + 1 < realPat.size() &&
-                            std::isalpha((unsigned char)realPat[j + 1])))) nm += realPat[j++];
+                            ascii::isalpha((unsigned char)realPat[j + 1])))) nm += realPat[j++];
                     if (Value* v = tctx_.cur->find("$" + nm)) {
                         // P5 pattern: Perl interpolates a variable as regex SOURCE,
                         // not as quoted literal text — splice it raw
@@ -15644,9 +15646,9 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
     if (literal) {
         // plain string pattern: exact byte search (control chars, no regex metachars)
         std::string needle = realPat;
-        if (icase) for (auto& c : needle) c = std::tolower((unsigned char)c);
+        if (icase) for (auto& c : needle) c = ascii::tolower((unsigned char)c);
         std::string hay = subj;
-        if (icase) for (auto& c : hay) c = std::tolower((unsigned char)c);
+        if (icase) for (auto& c : hay) c = ascii::tolower((unsigned char)c);
         long pos = haveStart ? startPos : 0;
         while (needle.size() && pos <= (long)hay.size()) {
             size_t f = hay.find(needle, pos);
@@ -15772,9 +15774,9 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
         auto methodChain = [&](size_t start, size_t after) -> size_t {
             size_t j = after, last = after;
             while (j + 1 < s.size() && s[j] == '.' &&
-                   (std::isalpha((unsigned char)s[j + 1]) || s[j + 1] == '_')) {
+                   (ascii::isalpha((unsigned char)s[j + 1]) || s[j + 1] == '_')) {
                 size_t k = j + 1;
-                while (k < s.size() && (std::isalnum((unsigned char)s[k]) || s[k] == '_' || s[k] == '-')) k++;
+                while (k < s.size() && (ascii::isalnum((unsigned char)s[k]) || s[k] == '_' || s[k] == '-')) k++;
                 if (k >= s.size() || s[k] != '(') break;   // no parens: not a call
                 int depth = 0; size_t e = k;
                 for (; e < s.size(); e++) {
@@ -15804,8 +15806,8 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
                 }
                 continue;
             }
-            if (s[i] == '$' && i + 1 < s.size() && std::isdigit((unsigned char)s[i + 1])) {
-                size_t j = i + 1; std::string num; while (j < s.size() && std::isdigit((unsigned char)s[j])) num += s[j++];
+            if (s[i] == '$' && i + 1 < s.size() && ascii::isdigit((unsigned char)s[i + 1])) {
+                size_t j = i + 1; std::string num; while (j < s.size() && ascii::isdigit((unsigned char)s[j])) num += s[j++];
                 size_t chainEnd = methodChain(i, j);
                 if (chainEnd != i) {
                     try { r += evalString(s.substr(i, chainEnd - i)).toStr(); i = chainEnd - 1; continue; }
@@ -15820,18 +15822,18 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
                 if (j != std::string::npos) { std::string nm = s.substr(i + 2, j - i - 2);
                     if (mv.hash && mv.hash->count(nm)) r += (*mv.hash)[nm].toStr(); i = j; continue; }
             }
-            if (s[i] == '$' && i + 2 < s.size() && s[i + 1] == '^' && (std::isalpha((unsigned char)s[i + 2]) || s[i + 2] == '_')) {
-                size_t j = i + 2; std::string nm; while (j < s.size() && (std::isalnum((unsigned char)s[j]) || s[j] == '_')) nm += s[j++];
+            if (s[i] == '$' && i + 2 < s.size() && s[i + 1] == '^' && (ascii::isalpha((unsigned char)s[i + 2]) || s[i + 2] == '_')) {
+                size_t j = i + 2; std::string nm; while (j < s.size() && (ascii::isalnum((unsigned char)s[j]) || s[j] == '_')) nm += s[j++];
                 if (Value* v = tctx_.cur->find("$" + nm)) r += v->toStr(); // $^a placeholder (also visible as $a)
                 i = j - 1; continue;
             }
-            if (s[i] == '$' && i + 1 < s.size() && (std::isalpha((unsigned char)s[i + 1]) || s[i + 1] == '_')) {
-                size_t j = i + 1; std::string nm; while (j < s.size() && (std::isalnum((unsigned char)s[j]) || s[j] == '_')) nm += s[j++];
+            if (s[i] == '$' && i + 1 < s.size() && (ascii::isalpha((unsigned char)s[i + 1]) || s[i + 1] == '_')) {
+                size_t j = i + 1; std::string nm; while (j < s.size() && (ascii::isalnum((unsigned char)s[j]) || s[j] == '_')) nm += s[j++];
                 if (Value* v = tctx_.cur->find("$" + nm)) r += v->toStr();
                 i = j - 1; continue; // interpolate a scalar variable in the replacement
             }
-            if (s[i] == '@' && i + 1 < s.size() && (std::isalpha((unsigned char)s[i + 1]) || s[i + 1] == '_')) {
-                size_t j = i + 1; std::string nm; while (j < s.size() && (std::isalnum((unsigned char)s[j]) || s[j] == '_')) nm += s[j++];
+            if (s[i] == '@' && i + 1 < s.size() && (ascii::isalpha((unsigned char)s[i + 1]) || s[i + 1] == '_')) {
+                size_t j = i + 1; std::string nm; while (j < s.size() && (ascii::isalnum((unsigned char)s[j]) || s[j] == '_')) nm += s[j++];
                 // `@arr[expr]` — a non-empty subscript indexes one element (captures
                 // are already bound, so the subscript may use $0/$<name>).
                 if (j < s.size() && s[j] == '[') {
@@ -15902,12 +15904,12 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
             // (done first so grapheme positions line up for :samecase / :samemark)
             std::vector<std::string> ws;
             for (size_t i = 0; i < orig.size(); ) {
-                if (std::isspace((unsigned char)orig[i])) { std::string w; while (i < orig.size() && std::isspace((unsigned char)orig[i])) w += orig[i++]; ws.push_back(w); }
+                if (ascii::isspace((unsigned char)orig[i])) { std::string w; while (i < orig.size() && ascii::isspace((unsigned char)orig[i])) w += orig[i++]; ws.push_back(w); }
                 else i++;
             }
             std::string a; size_t wi = 0;
             for (size_t i = 0; i < r.size(); ) {
-                if (std::isspace((unsigned char)r[i])) { while (i < r.size() && std::isspace((unsigned char)r[i])) i++; a += wi < ws.size() ? ws[wi++] : std::string(" "); }
+                if (ascii::isspace((unsigned char)r[i])) { while (i < r.size() && ascii::isspace((unsigned char)r[i])) i++; a += wi < ws.size() ? ws[wi++] : std::string(" "); }
                 else a += r[i++];
             }
             r = a;
@@ -16019,7 +16021,7 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
         if (c == std::string::npos) {
             size_t p2 = nm.find(':');
             if (p2 != std::string::npos && p2 > 0 && p2 + 1 < nm.size() &&
-                (std::isalpha((unsigned char)nm[p2 + 1]) || nm[p2 + 1] == '_') &&
+                (ascii::isalpha((unsigned char)nm[p2 + 1]) || nm[p2 + 1] == '_') &&
                 nm.find('(', p2) == std::string::npos &&
                 nm.find('<', p2) == std::string::npos)
                 c = p2;
@@ -16552,7 +16554,7 @@ Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value
         return applyBinOp(op.substr(1, op.size() - 2), l, r);
     // reverse metaop (`a R- b` == `b - a`) — so `[R-]`/`[R~]` reduce works like the
     // standalone `R-` binary does (evalBinary strips it; applyBinOp must too).
-    if (op.size() > 1 && op[0] == 'R' && !std::isalnum((unsigned char)op[1]))
+    if (op.size() > 1 && op[0] == 'R' && !ascii::isalnum((unsigned char)op[1]))
         return applyBinOp(op.substr(1), r, l);
     // short-circuit ops applied to already-evaluated VALUES ([//] reduce, sort &[||]):
     // no thunking here, just the selection semantics
@@ -16706,7 +16708,7 @@ static inline bool plainLexVar(const Expr* e) {
     if (!e || e->kind != NK::VarExpr) return false;
     auto* ve = static_cast<const VarExpr*>(e);
     return !ve->declare && ve->name.size() > 1 &&
-           (std::isalpha((unsigned char)ve->name[1]) || ve->name[1] == '_');
+           (ascii::isalpha((unsigned char)ve->name[1]) || ve->name[1] == '_');
 }
 // A literal with no shared payload, so the Value built from it can be reused by
 // reference for the life of the program: no bigint, no Rat, no imaginary part.
@@ -16766,7 +16768,7 @@ Value Interpreter::evalBinary(Binary* b) {
             "&&", "and", "||", "or", "andthen", "orelse", "notandthen", "//", "^^", "xor", "&", "|", "^",
             "=:=", "!=:=", "ff", "fff", "ff^", "fff^", "^ff", "^fff", "^ff^", "^fff^",
             "Z", "X"}; // plain Z/X: chained forms are ONE n-ary list-infix
-        bool rmeta = op.size() > 1 && op[0] == 'R' && !std::isalnum((unsigned char)op[1]);
+        bool rmeta = op.size() > 1 && op[0] == 'R' && !ascii::isalnum((unsigned char)op[1]);
         b->simpleOp = (rmeta || special.count(op)) ? 0 : 1;
     }
     if (b->simpleOp == 1) {
@@ -17042,7 +17044,7 @@ Value Interpreter::evalBinary(Binary* b) {
         }
         return Value::boolean(op[0] == '!' ? !same : same);
     }
-    if (op.size() > 1 && op[0] == 'R' && !std::isalnum((unsigned char)op[1])) {
+    if (op.size() > 1 && op[0] == 'R' && !ascii::isalnum((unsigned char)op[1])) {
         // reverse metaoperator: `a R/ b` computes `b / a` — applyBinOp (not
         // applyArith) so the short-circuit family works too (`R//` in LibraryMake)
         Value l = eval(b->lhs.get()), r = eval(b->rhs.get());
@@ -18365,9 +18367,9 @@ ValueList Interpreter::evalArgs(const std::vector<ExprPtr>& exprs) {
             // call/list — or with a non-identifier key (`3 => 4`) — is positional.
             if (v.t == VT::Pair && a->kind == NK::Pair && !static_cast<PairExpr*>(a.get())->quotedKey) {
                 const std::string& k = static_cast<PairExpr*>(a.get())->key;
-                bool ident = !k.empty() && (std::isalpha((unsigned char)k[0]) || k[0] == '_');
+                bool ident = !k.empty() && (ascii::isalpha((unsigned char)k[0]) || k[0] == '_');
                 for (size_t ci = 1; ident && ci < k.size(); ci++)
-                    if (!std::isalnum((unsigned char)k[ci]) && k[ci] != '-' && k[ci] != '_' && k[ci] != '\'')
+                    if (!ascii::isalnum((unsigned char)k[ci]) && k[ci] != '-' && k[ci] != '_' && k[ci] != '\'')
                         ident = false;
                 if (ident) v.namedArg = true;
             }
@@ -19497,7 +19499,7 @@ Value Interpreter::evalIndex(Index* idx) {
         idx->base->kind == NK::VarExpr) {
         auto* ve = static_cast<VarExpr*>(idx->base.get());
         if (!ve->declare && ve->name.size() > 1 && ve->name[0] == '@' &&
-            (std::isalpha((unsigned char)ve->name[1]) || ve->name[1] == '_')) {
+            (ascii::isalpha((unsigned char)ve->name[1]) || ve->name[1] == '_')) {
             if (Value* bp = tctx_.cur->find(ve->name)) {
                 if (bp->t == VT::Array && bp->arr && !bp->ext && bp->ofType.empty() &&
                     !bp->pairVal && bp->hashKind.empty()) { // `is default` arrays take the slow path
@@ -20460,7 +20462,7 @@ Value Interpreter::eval(Expr* e) {
             // FOUND in scope returns immediately, skipping the special-name
             // string compares below. Misses and Proxies take the full path.
             if (!ve->declare && ve->name.size() > 1 &&
-                (std::isalpha((unsigned char)ve->name[1]) || ve->name[1] == '_')) {
+                (ascii::isalpha((unsigned char)ve->name[1]) || ve->name[1] == '_')) {
                 if (Value* p = tctx_.cur->find(ve->name)) {
                     if (!(p->t == VT::Hash && p->hashKind == "Proxy")) {
                         // P3 torn-copy contract: in parallel mode the copy-out
@@ -20600,7 +20602,7 @@ Value Interpreter::eval(Expr* e) {
                     return de->vars[ve->name];
                 }
                 if (!ve->declType.empty() || !de->vars.count(ve->name)) {
-                    if (sigil == '$' && !ve->declType.empty() && std::isupper((unsigned char)ve->declType[0]))
+                    if (sigil == '$' && !ve->declType.empty() && ascii::isupper((unsigned char)ve->declType[0]))
                         de->x().varDefault[ve->name] = Value::typeObj(ve->declType); // `$x = Nil` resets to (Type)
                     de->define(ve->name, typedDefault(ve->declType, sigil));
                 }
@@ -20731,9 +20733,9 @@ Value Interpreter::eval(Expr* e) {
                 }
             }
             // $0, $1, … are aliases for $/[N]; fall back to $/ when not directly bound
-            if (ve->name.size() >= 2 && ve->name[0] == '$' && std::isdigit((unsigned char)ve->name[1])) {
+            if (ve->name.size() >= 2 && ve->name[0] == '$' && ascii::isdigit((unsigned char)ve->name[1])) {
                 bool alldig = true;
-                for (size_t k = 1; k < ve->name.size(); k++) if (!std::isdigit((unsigned char)ve->name[k])) alldig = false;
+                for (size_t k = 1; k < ve->name.size(); k++) if (!ascii::isdigit((unsigned char)ve->name[k])) alldig = false;
                 if (alldig) if (Value* sl = tctx_.cur->find("$/"))
                     if (sl->arr) { long idx = std::stol(ve->name.substr(1)); if (idx < (long)sl->arr->size()) return (*sl->arr)[idx]; }
             }
@@ -20791,7 +20793,7 @@ Value Interpreter::eval(Expr* e) {
             if (Value* p = tctx_.cur->find(nm)) return *p;
             // an unknown lowercase name is no type — X::NoSuchSymbol (`"::a".EVAL`)
             // …except the native type names, which resolve like any type
-            if (!classes_.count(nm) && !nm.empty() && std::islower((unsigned char)nm[0]) &&
+            if (!classes_.count(nm) && !nm.empty() && ascii::islower((unsigned char)nm[0]) &&
                 !isNativeTypeName(nm))
                 throw RakuError{Value::typeObj("X::NoSuchSymbol"), "No such symbol '" + nm + "'"};
             NameTerm tmp(nm); tmp.line = e->line;
@@ -20981,7 +20983,7 @@ Value Interpreter::eval(Expr* e) {
                     }
                     if (!declared)
                         throw RakuError{Value::typeObj("X::Undeclared::Symbols"),
-                            (std::isupper((unsigned char)n[0]) ? "Undeclared name '" : "Undefined routine '")
+                            (ascii::isupper((unsigned char)n[0]) ? "Undeclared name '" : "Undefined routine '")
                                 + n + "'"};
                 }
                 return Value::typeObj(rn);
@@ -21366,7 +21368,7 @@ Value Interpreter::eval(Expr* e) {
             // the needed size; blob types stay immutable
             if (inv.t == VT::Type && !mc->meta && mc->method.rfind("write-", 0) == 0 &&
                 (inv.s.rfind("buf", 0) == 0 || inv.s.rfind("blob", 0) == 0 || inv.s.rfind("utf", 0) == 0) &&
-                inv.s.size() > 3 && std::isdigit((unsigned char)inv.s.back())) {
+                inv.s.size() > 3 && ascii::isdigit((unsigned char)inv.s.back())) {
                 if (inv.s.rfind("buf", 0) != 0)
                     throw RakuError{Value::typeObj("X::Buf::RO"), "Cannot write to an immutable Blob"};
                 ValueList wargs = evalArgs(mc->args);
@@ -21430,7 +21432,7 @@ Value Interpreter::eval(Expr* e) {
                 mc->inv->kind == NK::VarExpr) {
                 auto* ivar = static_cast<VarExpr*>(mc->inv.get());
                 if (ivar->name.size() > 1 && ivar->name[0] == '$' &&
-                    (std::isalpha((unsigned char)ivar->name[1]) || ivar->name[1] == '_' ||
+                    (ascii::isalpha((unsigned char)ivar->name[1]) || ivar->name[1] == '_' ||
                      ivar->name[1] == '*')) { // $*dynamic vars answer .VAR.dynamic
                     Value sc = Value::makeHash(); sc.hashKind = "Scalar";
                     (*sc.hash)["name"] = Value::str(ivar->name);

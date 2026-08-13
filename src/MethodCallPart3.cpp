@@ -1,3 +1,5 @@
+#include "CNumeric.h"
+#include "AsciiCtype.h"
 #include "MethodCallSegment.h"
 
 // Segment 3 of the method-dispatch chain, split out of methodCallInner.
@@ -1549,12 +1551,12 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         size_t pos = 0;
         for (size_t k = 0; k < tmpl.size(); k++) {
             char dir = tmpl[k];
-            if (std::isspace((unsigned char)dir)) continue;
+            if (ascii::isspace((unsigned char)dir)) continue;
             bool all = false; long long cnt = 1;
             if (k + 1 < tmpl.size() && tmpl[k + 1] == '*') { all = true; k++; }
-            else if (k + 1 < tmpl.size() && std::isdigit((unsigned char)tmpl[k + 1])) {
+            else if (k + 1 < tmpl.size() && ascii::isdigit((unsigned char)tmpl[k + 1])) {
                 size_t j = k + 1; std::string num;
-                while (j < tmpl.size() && std::isdigit((unsigned char)tmpl[j])) num += tmpl[j++];
+                while (j < tmpl.size() && ascii::isdigit((unsigned char)tmpl[j])) num += tmpl[j++];
                 cnt = std::stoll(num); k = j - 1;
             }
             auto left = [&] { return d.size() > pos ? (long long)(d.size() - pos) : 0LL; };
@@ -1614,7 +1616,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         std::string enc;
         for (auto& a : args) if (a.t != VT::Pair) { enc = a.toStr(); break; }
         std::string norm;
-        for (char ch : enc) if (std::isalnum((unsigned char)ch)) norm += (char)std::tolower((unsigned char)ch);
+        for (char ch : enc) if (ascii::isalnum((unsigned char)ch)) norm += (char)ascii::tolower((unsigned char)ch);
         bool latin1 = norm == "iso88591" || norm == "latin1" || norm == "windows1252";
         if (m == "encode") {
             // `:replacement` substitutes for every character the encoding cannot
@@ -2044,7 +2046,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 bool strNum = false;
                 if (av.t == VT::Str && !av.s.empty()) {
                     char* end = nullptr;
-                    std::strtod(av.s.c_str(), &end);
+                    cnum::strtod(av.s.c_str(), &end);
                     strNum = end && *end == 0;
                 }
                 if (av.t != VT::Str || strNum) { allStrNeedles = false; break; }

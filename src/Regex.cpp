@@ -1,3 +1,4 @@
+#include "AsciiCtype.h"
 #include "Regex.h"
 #include "LtmNfa.h"
 #include "Interpreter.h"   // RakuError: feature-stub throws must escape the ctor
@@ -73,7 +74,7 @@ Regex::Regex(const std::string& pattern, const std::string& flags) : pat_(patter
             size_t j = p + 1;
             if (j < pat_.size() && pat_[j] == '!') j++;
             size_t ns = j;
-            while (j < pat_.size() && std::isalnum((unsigned char)pat_[j])) j++;
+            while (j < pat_.size() && ascii::isalnum((unsigned char)pat_[j])) j++;
             if (j == ns) break;
             std::string name = pat_.substr(ns, j - ns);
             if (j < pat_.size() && pat_[j] == '(') { // :nth(3)-style argument
@@ -139,7 +140,7 @@ uint32_t Regex::p5Codepoint() {
 void Regex::p5SkipX() {
     if (!p5Ext_) return;
     for (;;) {
-        while (!eof() && std::isspace((unsigned char)peek())) pos_++;
+        while (!eof() && ascii::isspace((unsigned char)peek())) pos_++;
         if (peek() == '#') { while (!eof() && peek() != '\n') pos_++; continue; }
         break;
     }
@@ -196,9 +197,9 @@ Regex::NodePtr Regex::p5Quant(NodePtr atom) {
     else if (c == '{') {
         // {n} / {n,} / {n,m} — anything else is a literal `{`, left for the next atom
         size_t j = pos_ + 1; std::string lo, hi; bool comma = false;
-        while (j < pat_.size() && std::isdigit((unsigned char)pat_[j])) lo += pat_[j++];
+        while (j < pat_.size() && ascii::isdigit((unsigned char)pat_[j])) lo += pat_[j++];
         if (j < pat_.size() && pat_[j] == ',') { comma = true; j++; }
-        while (j < pat_.size() && std::isdigit((unsigned char)pat_[j])) hi += pat_[j++];
+        while (j < pat_.size() && ascii::isdigit((unsigned char)pat_[j])) hi += pat_[j++];
         if (j >= pat_.size() || pat_[j] != '}' || lo.empty()) return atom;
         pos_ = j + 1;
         mn = std::stol(lo);
@@ -239,8 +240,8 @@ Regex::NodePtr Regex::p5Atom() {
         // already-attempted) variable interpolation — a name char. `2(]*)?$\1`
         // anchors mid-pattern (re_tests 1327).
         size_t j = pos_ + 1;
-        if (p5Ext_) while (j < pat_.size() && std::isspace((unsigned char)pat_[j])) j++;
-        if (j >= pat_.size() || !(std::isalnum((unsigned char)pat_[j]) || pat_[j] == '_')) {
+        if (p5Ext_) while (j < pat_.size() && ascii::isspace((unsigned char)pat_[j])) j++;
+        if (j >= pat_.size() || !(ascii::isalnum((unsigned char)pat_[j]) || pat_[j] == '_')) {
             pos_++;
             auto n = std::make_unique<Node>(); n->k = K::AnchorEnd; n->multiline = p5Multi_;
             return n;
@@ -317,9 +318,9 @@ Regex::NodePtr Regex::p5Group() {
         pos_++;
         long condGroup = -1;
         NodePtr condPos, condNeg; // assertion conditions: the test, and its negation
-        if (std::isdigit((unsigned char)peek())) {
+        if (ascii::isdigit((unsigned char)peek())) {
             std::string num;
-            while (std::isdigit((unsigned char)peek())) num += pat_[pos_++];
+            while (ascii::isdigit((unsigned char)peek())) num += pat_[pos_++];
             if (peek() != ')') throw P5BadPattern{};
             pos_++;
             condGroup = std::stol(num);
@@ -520,12 +521,12 @@ Regex::NodePtr Regex::p5Escape() {
             uint32_t cp = 0;
             if (peek() == '{') {
                 pos_++;
-                while (!eof() && peek() != '}') { cp = cp * 16 + (std::isdigit((unsigned char)peek()) ? peek() - '0' : (std::tolower((unsigned char)peek()) - 'a' + 10)); pos_++; }
+                while (!eof() && peek() != '}') { cp = cp * 16 + (ascii::isdigit((unsigned char)peek()) ? peek() - '0' : (ascii::tolower((unsigned char)peek()) - 'a' + 10)); pos_++; }
                 if (eof()) throw P5BadPattern{};
                 pos_++;
             } else {
-                for (int i = 0; i < 2 && std::isxdigit((unsigned char)peek()); i++) {
-                    cp = cp * 16 + (std::isdigit((unsigned char)peek()) ? peek() - '0' : (std::tolower((unsigned char)peek()) - 'a' + 10));
+                for (int i = 0; i < 2 && ascii::isxdigit((unsigned char)peek()); i++) {
+                    cp = cp * 16 + (ascii::isdigit((unsigned char)peek()) ? peek() - '0' : (ascii::tolower((unsigned char)peek()) - 'a' + 10));
                     pos_++;
                 }
             }
@@ -534,7 +535,7 @@ Regex::NodePtr Regex::p5Escape() {
         case 'c': { // \cX control char
             if (eof()) throw P5BadPattern{};
             char x = pat_[pos_++];
-            return mkLit(std::string(1, (char)(std::toupper((unsigned char)x) ^ 64)));
+            return mkLit(std::string(1, (char)(ascii::toupper((unsigned char)x) ^ 64)));
         }
         default: break;
     }
@@ -545,7 +546,7 @@ Regex::NodePtr Regex::p5Escape() {
             return mkLit(v ? p5Utf8(v) : std::string(1, '\0'));
         }
         std::string num(1, e); // backref: \1 → the engine's in-flight $0
-        while (std::isdigit((unsigned char)peek())) num += pat_[pos_++];
+        while (ascii::isdigit((unsigned char)peek())) num += pat_[pos_++];
         auto vm = std::make_unique<Node>();
         vm->k = K::VarMatch; vm->icase = curIcase_;
         vm->lit = "$" + std::to_string(std::stol(num) - 1);
@@ -579,7 +580,7 @@ Regex::NodePtr Regex::p5Class() {
             case 's': cls->classFlags += 's'; return -1;
             case 'D': case 'W': case 'S': {
                 auto m = std::make_unique<Node>();
-                m->k = K::Class; m->icase = curIcase_; m->classFlags = std::string(1, (char)std::tolower((unsigned char)e));
+                m->k = K::Class; m->icase = curIcase_; m->classFlags = std::string(1, (char)ascii::tolower((unsigned char)e));
                 negMembers.push_back(std::move(m));
                 return -1;
             }
@@ -594,18 +595,18 @@ Regex::NodePtr Regex::p5Class() {
                 uint32_t cp = 0;
                 if (peek() == '{') {
                     pos_++;
-                    while (!eof() && peek() != '}') { cp = cp * 16 + (std::isdigit((unsigned char)peek()) ? peek() - '0' : (std::tolower((unsigned char)peek()) - 'a' + 10)); pos_++; }
+                    while (!eof() && peek() != '}') { cp = cp * 16 + (ascii::isdigit((unsigned char)peek()) ? peek() - '0' : (ascii::tolower((unsigned char)peek()) - 'a' + 10)); pos_++; }
                     if (eof()) throw P5BadPattern{};
                     pos_++;
                 } else {
-                    for (int i = 0; i < 2 && std::isxdigit((unsigned char)peek()); i++) {
-                        cp = cp * 16 + (std::isdigit((unsigned char)peek()) ? peek() - '0' : (std::tolower((unsigned char)peek()) - 'a' + 10));
+                    for (int i = 0; i < 2 && ascii::isxdigit((unsigned char)peek()); i++) {
+                        cp = cp * 16 + (ascii::isdigit((unsigned char)peek()) ? peek() - '0' : (ascii::tolower((unsigned char)peek()) - 'a' + 10));
                         pos_++;
                     }
                 }
                 return (int32_t)cp;
             }
-            case 'c': { if (eof()) throw P5BadPattern{}; char x = pat_[pos_++]; return (int32_t)(std::toupper((unsigned char)x) ^ 64); }
+            case 'c': { if (eof()) throw P5BadPattern{}; char x = pat_[pos_++]; return (int32_t)(ascii::toupper((unsigned char)x) ^ 64); }
             case '0': { uint32_t v = 0; int nd = 0; while (nd < 2 && peek() >= '0' && peek() <= '7') { v = v * 8 + (peek() - '0'); pos_++; nd++; } return (int32_t)v; }
             default: pos_--; return (int32_t)p5Codepoint();
         }
@@ -617,7 +618,7 @@ Regex::NodePtr Regex::p5Class() {
             size_t j = pos_ + 2; bool pneg = false;
             if (j < pat_.size() && pat_[j] == '^') { pneg = true; j++; }
             std::string nm;
-            while (j < pat_.size() && std::isalpha((unsigned char)pat_[j])) nm += pat_[j++];
+            while (j < pat_.size() && ascii::isalpha((unsigned char)pat_[j])) nm += pat_[j++];
             if (j + 1 < pat_.size() && pat_[j] == ':' && pat_[j + 1] == ']') {
                 pos_ = j + 2;
                 auto tgt = std::make_unique<Node>();
@@ -690,19 +691,19 @@ Regex::NodePtr Regex::p5Class() {
 
 void Regex::skipWs() {
     for (;;) {
-        while (!eof() && std::isspace((unsigned char)peek())) pos_++;
+        while (!eof() && ascii::isspace((unsigned char)peek())) pos_++;
         if (peek() == '#') { while (!eof() && peek() != '\n') pos_++; continue; }
         // inline adverb :i :s :ignorecase — with an optional value: :!i, :0i/:1i, :i(0)/:i(1)
-        if (peek() == ':' && (std::isalpha((unsigned char)peek(1)) || std::isdigit((unsigned char)peek(1)) ||
-                              (peek(1) == '!' && std::isalpha((unsigned char)peek(2))))) {
+        if (peek() == ':' && (ascii::isalpha((unsigned char)peek(1)) || ascii::isdigit((unsigned char)peek(1)) ||
+                              (peek(1) == '!' && ascii::isalpha((unsigned char)peek(2))))) {
             size_t save = pos_;
             pos_++;
             long num = -1; // -1 = no value given (plain :i means on)
-            while (std::isdigit((unsigned char)peek())) { num = (num < 0 ? 0 : num) * 10 + (peek() - '0'); pos_++; }
+            while (ascii::isdigit((unsigned char)peek())) { num = (num < 0 ? 0 : num) * 10 + (peek() - '0'); pos_++; }
             bool neg = peek() == '!';
             if (neg) pos_++;
             std::string adv;
-            while (std::isalnum((unsigned char)peek())) adv += pat_[pos_++];
+            while (ascii::isalnum((unsigned char)peek())) adv += pat_[pos_++];
             if (peek() == '(') { // :i(0) / :i(1) argument form
                 size_t p = pos_ + 1; std::string arg;
                 while (p < pat_.size() && pat_[p] != ')') arg += pat_[p++];
@@ -895,7 +896,7 @@ Regex::NodePtr Regex::parseQuant() {
             if (peek() == ':') pos_++;
             if (peek() == '?') { ngMod = true; pos_++; }
             else if (peek() == '!') pos_++;
-            else if (pos_ != msave && peek() != '{' && !std::isdigit((unsigned char)peek())) pos_ = msave; // lone ':' before something else
+            else if (pos_ != msave && peek() != '{' && !ascii::isdigit((unsigned char)peek())) pos_ = msave; // lone ':' before something else
             skipWs();
         }
         if (peek() == '{') { // `** { … }` — runtime bounds evaluated at match time
@@ -908,12 +909,12 @@ Regex::NodePtr Regex::parseQuant() {
             return rep;
         }
         long lo = 0; bool haveLo = false;
-        while (std::isdigit((unsigned char)peek())) { lo = lo * 10 + (pat_[pos_++] - '0'); haveLo = true; }
+        while (ascii::isdigit((unsigned char)peek())) { lo = lo * 10 + (pat_[pos_++] - '0'); haveLo = true; }
         mn = haveLo ? lo : 0;
         if (peek() == '.' && peek(1) == '.') {
             pos_ += 2;
             if (peek() == '*' || peek() == 'I') { pos_++; mx = -1; }
-            else { long hi = 0; while (std::isdigit((unsigned char)peek())) hi = hi * 10 + (pat_[pos_++] - '0'); mx = hi; }
+            else { long hi = 0; while (ascii::isdigit((unsigned char)peek())) hi = hi * 10 + (pat_[pos_++] - '0'); mx = hi; }
         } else {
             mx = mn;
         }
@@ -1117,12 +1118,12 @@ Regex::NodePtr Regex::parseAtom() {
         // here instead, where a leading `-` sets `negate` and the bracket subtracts.
         // A bare `<-space>` (no bracket to follow) keeps the old path.
         auto negFlagComposes = [&]() -> bool {
-            if (peek() != '-' || !(std::isalpha((unsigned char)peek(1)) || peek(1) == '_')) return false;
+            if (peek() != '-' || !(ascii::isalpha((unsigned char)peek(1)) || peek(1) == '_')) return false;
             size_t q = pos_ + 1;
             std::string nm;
-            while (q < pat_.size() && (std::isalnum((unsigned char)pat_[q]) || pat_[q] == '_' ||
+            while (q < pat_.size() && (ascii::isalnum((unsigned char)pat_[q]) || pat_[q] == '_' ||
                                        (pat_[q] == '-' && q + 1 < pat_.size() &&
-                                        (std::isalnum((unsigned char)pat_[q + 1]) || pat_[q + 1] == '_'))))
+                                        (ascii::isalnum((unsigned char)pat_[q + 1]) || pat_[q + 1] == '_'))))
                 nm += pat_[q++];
             if (ruleFlag(nm).empty()) return false;
             while (q < pat_.size() && (pat_[q] == ' ' || pat_[q] == '\t')) q++;
@@ -1146,7 +1147,7 @@ Regex::NodePtr Regex::parseAtom() {
             return q < pat_.size() && pat_[q] == '[';
         };
         if (peek() == '[' || signThenBracket() ||
-            (peek() == '+' && (std::isalpha((unsigned char)peek(1)) || peek(1) == '_' || peek(1) == '.' || peek(1) == ':')) ||
+            (peek() == '+' && (ascii::isalpha((unsigned char)peek(1)) || peek(1) == '_' || peek(1) == '.' || peek(1) == ':')) ||
             negFlagComposes()) {
             node->negate = false;
             bool first = true;
@@ -1194,8 +1195,8 @@ Regex::NodePtr Regex::parseAtom() {
                         if (pc == '-') {
                             char nx = peek(1);
                             bool prevIdent = !nm.empty() &&
-                                (std::isalnum((unsigned char)nm.back()) || nm.back() == '_');
-                            if (!prevIdent || !(std::isalnum((unsigned char)nx) || nx == '_')) break;
+                                (ascii::isalnum((unsigned char)nm.back()) || nm.back() == '_');
+                            if (!prevIdent || !(ascii::isalnum((unsigned char)nx) || nx == '_')) break;
                         }
                         nm += pat_[pos_++];
                     }
@@ -1263,7 +1264,7 @@ Regex::NodePtr Regex::parseAtom() {
             }
             return seq;
         }
-        else if (peek() == '-' && (std::isalpha((unsigned char)peek(1)) || peek(1) == '.' || peek(1) == '_')) {
+        else if (peek() == '-' && (ascii::isalpha((unsigned char)peek(1)) || peek(1) == '.' || peek(1) == '_')) {
             // <-name> — negated subrule char class: one char NOT matched by rule `name`.
             // Equivalent to `[ <!name> . ]`. COMPOSABLE with further set terms:
             // `<-restricted +name-sep>` (zef's identity grammar) is
@@ -1274,9 +1275,9 @@ Regex::NodePtr Regex::parseAtom() {
             if (peek() == '.') pos_++;
             auto readName = [&]() {
                 std::string nm;
-                while (!eof() && (std::isalnum((unsigned char)peek()) || peek() == '-' || peek() == '_' || peek() == ':' || peek() == '.')) {
+                while (!eof() && (ascii::isalnum((unsigned char)peek()) || peek() == '-' || peek() == '_' || peek() == ':' || peek() == '.')) {
                     // a '-' is part of a kebab-case name only between ident chars
-                    if (peek() == '-' && !(std::isalnum((unsigned char)peek(1)) || peek(1) == '_')) break;
+                    if (peek() == '-' && !(ascii::isalnum((unsigned char)peek(1)) || peek(1) == '_')) break;
                     nm += pat_[pos_++];
                 }
                 return nm;
@@ -1287,8 +1288,8 @@ Regex::NodePtr Regex::parseAtom() {
             if (peek() == '(') { int d = 1; pos_++; while (!eof() && d > 0) { char x = pat_[pos_++]; if (x == '(') d++; else if (x == ')') { d--; if (!d) break; } args += x; } }
             for (;;) {
                 while (!eof() && (peek() == ' ' || peek() == '\t')) pos_++;
-                if (peek() == '+' && (std::isalpha((unsigned char)peek(1)) || peek(1) == '_')) { pos_++; poss.push_back(readName()); }
-                else if (peek() == '-' && (std::isalpha((unsigned char)peek(1)) || peek(1) == '_')) { pos_++; negs.push_back(readName()); }
+                if (peek() == '+' && (ascii::isalpha((unsigned char)peek(1)) || peek(1) == '_')) { pos_++; poss.push_back(readName()); }
+                else if (peek() == '-' && (ascii::isalpha((unsigned char)peek(1)) || peek(1) == '_')) { pos_++; negs.push_back(readName()); }
                 else break;
             }
             if (peek() == '>') pos_++;
@@ -1343,7 +1344,7 @@ Regex::NodePtr Regex::parseAtom() {
             };
             if (kw("before", 6)) { pos_ += 6; skipWs(); lookKw = true; }
             else if (kw("after", 5)) { pos_ += 5; behind = true; skipWs(); lookKw = true; }
-            else if (std::isalpha((unsigned char)peek()) || peek() == '_' || peek() == '.') {
+            else if (ascii::isalpha((unsigned char)peek()) || peek() == '_' || peek() == '.') {
                 // <?name> / <!name(args)> — zero-width subrule assertion (not a pattern lookahead)
                 if (peek() == '.') pos_++;
                 std::string nm; while (!eof() && peek() != '>' && peek() != '(') nm += pat_[pos_++];
@@ -1508,7 +1509,7 @@ Regex::NodePtr Regex::parseAtom() {
                     else { lit += '\\'; lit += e; }
                 }
                 else if ((e == 'x' || e == 'o') &&
-                         (peek() == '[' || std::isalnum((unsigned char)peek()))) {
+                         (peek() == '[' || ascii::isalnum((unsigned char)peek()))) {
                     // "\x41" / "\x[263a]" / "\o[17]" inside a DOUBLE-quoted span
                     // decode exactly as they do in a qq string — HTTP::MediaType's
                     // grammar writes its SP/HTAB/DQUOTE rules as `"\x20"` literals
@@ -1538,23 +1539,40 @@ Regex::NodePtr Regex::parseAtom() {
                         }
                     } else {
                         std::string digits;
-                        auto isd = [&](char ch) { return base == 16 ? std::isxdigit((unsigned char)ch) != 0 : (ch >= '0' && ch <= '7'); };
+                        auto isd = [&](char ch) { return base == 16 ? ascii::isxdigit((unsigned char)ch) != 0 : (ch >= '0' && ch <= '7'); };
                         while (!eof() && isd(peek())) digits += pat_[pos_++];
                         emitCp(std::strtol(digits.c_str(), nullptr, base));
                     }
                 }
                 else switch (e) { case 'n': lit += '\n'; break; case 't': lit += '\t'; break;
                              case 'r': lit += '\r'; break; case '0': lit += '\0'; break; default: lit += e; }
+            } else if (q == '"' && peek() == '{') {
+                // "…{EXPR}…" inside a double-quoted regex literal evaluates at
+                // match time and matches the result's Str literally, exactly as
+                // a qq string interpolates — Test::Output writes
+                // /^ "warning!{$nl}" $/ and Rakudo matches it
+                pos_++;
+                std::string expr;
+                int depth = 1;
+                while (!eof()) {
+                    char p = pat_[pos_++];
+                    if (p == '{') depth++;
+                    else if (p == '}' && --depth == 0) break;
+                    expr += p;
+                }
+                flush();
+                auto vm = std::make_unique<Node>(); vm->k = K::VarMatch; vm->lit = expr;
+                seq->kids.push_back(std::move(vm));
             } else if (q == '"' && peek() == '$' &&
-                       (std::isalnum((unsigned char)peek(1)) || peek(1) == '_')) {
+                       (ascii::isalnum((unsigned char)peek(1)) || peek(1) == '_')) {
                 // "$0" / "$var" inside a double-quoted regex literal matches the
                 // value at match time (in-flight capture or scope variable)
                 pos_++;
                 std::string var = "$";
                 while (!eof()) {
                     char p = peek();
-                    if (std::isalnum((unsigned char)p) || p == '_') { var += p; pos_++; }
-                    else if (p == '-' && (std::isalnum((unsigned char)peek(1)) || peek(1) == '_')) { var += p; pos_++; }
+                    if (ascii::isalnum((unsigned char)p) || p == '_') { var += p; pos_++; }
+                    else if (p == '-' && (ascii::isalnum((unsigned char)peek(1)) || peek(1) == '_')) { var += p; pos_++; }
                     else break;
                 }
                 flush();
@@ -1584,7 +1602,7 @@ Regex::NodePtr Regex::parseAtom() {
         // and auto-numbering continues from N+1 (`(.)(.)$7=(.)(.)` → $0 $1 $7 $8).
         {
             int j = 1; std::string num;
-            while (std::isdigit((unsigned char)peek(j))) { num += peek(j); j++; }
+            while (ascii::isdigit((unsigned char)peek(j))) { num += peek(j); j++; }
             if (!num.empty() && peek(j) == '=' && peek(j + 1) == '(') {
                 int idx = std::atoi(num.c_str());
                 for (int t = 0; t < j + 2; t++) pos_++; // consume `$N=(`
@@ -1602,7 +1620,7 @@ Regex::NodePtr Regex::parseAtom() {
         // end anchor only when not an interpolation/backref. A following '$'
         // means the `$$` end-of-line anchor (its own second char isn't a var).
         char nx = peek(1);
-        if (nx == '\0' || nx == ')' || nx == ']' || nx == '|' || nx == '$' || std::isspace((unsigned char)nx)) {
+        if (nx == '\0' || nx == ')' || nx == ']' || nx == '|' || nx == '$' || ascii::isspace((unsigned char)nx)) {
             pos_++;
             auto n = std::make_unique<Node>(); n->k = K::AnchorEnd;
             if (peek() == '$') { pos_++; n->multiline = true; } // `$$` = end-of-line, `$` = end-of-string
@@ -1632,8 +1650,8 @@ Regex::NodePtr Regex::parseAtom() {
         std::string var = "$";
         while (!eof()) {
             char p = peek();
-            if (std::isalnum((unsigned char)p) || p == '_') { var += p; pos_++; }
-            else if (p == '-' && (std::isalnum((unsigned char)peek(1)) || peek(1) == '_')) { var += p; pos_++; }
+            if (ascii::isalnum((unsigned char)p) || p == '_') { var += p; pos_++; }
+            else if (p == '-' && (ascii::isalnum((unsigned char)peek(1)) || peek(1) == '_')) { var += p; pos_++; }
             else break;
         }
         auto vm = std::make_unique<Node>(); vm->k = K::VarMatch; vm->lit = var; return vm;
@@ -1643,7 +1661,7 @@ Regex::NodePtr Regex::parseAtom() {
         char e = peek(); pos_++;
         auto n = std::make_unique<Node>();
         if (e == 'd' || e == 'w' || e == 's') { n->k = K::Class; n->icase = curIcase_; n->classFlags = std::string(1, e); return n; }
-        if (e == 'D' || e == 'W' || e == 'S') { n->k = K::Class; n->icase = curIcase_; n->classFlags = std::string(1, (char)std::tolower(e)); n->negate = true; return n; }
+        if (e == 'D' || e == 'W' || e == 'S') { n->k = K::Class; n->icase = curIcase_; n->classFlags = std::string(1, (char)ascii::tolower(e)); n->negate = true; return n; }
         // \N — any char except a logical newline (\n, \r). \h/\v — horizontal/vertical
         // whitespace (and \H/\V their negations).
         if (e == 'N') { n->k = K::Class; n->icase = curIcase_; n->negate = true; n->ranges.push_back({'\n','\n'}); n->ranges.push_back({'\r','\r'}); return n; }
@@ -1660,8 +1678,8 @@ Regex::NodePtr Regex::parseAtom() {
             throw ObsoleteEscape{std::string("\\") + e};
         if (e == 'v' || e == 'V') { n->k = K::Class; n->icase = curIcase_; n->negate = (e=='V'); n->ranges.push_back({'\n','\n'}); n->ranges.push_back({'\r','\r'}); n->ranges.push_back({'\f','\f'}); n->ranges.push_back({'\v','\v'}); return n; }
         // \X[HH] / \O[OO] / \C[NAME] — match ONE codepoint that is NOT the given one(s).
-        if ((e == 'X' || e == 'O' || e == 'C') && (peek() == '[' || (e != 'C' && std::isalnum((unsigned char)peek())))) {
-            char le = (char)std::tolower((unsigned char)e);
+        if ((e == 'X' || e == 'O' || e == 'C') && (peek() == '[' || (e != 'C' && ascii::isalnum((unsigned char)peek())))) {
+            char le = (char)ascii::tolower((unsigned char)e);
             auto cpOf = [&](std::string t) -> int32_t {
                 size_t a = t.find_first_not_of(" \t"), b = t.find_last_not_of(" \t");
                 if (a == std::string::npos) return -1; t = t.substr(a, b - a + 1);
@@ -1674,11 +1692,11 @@ Regex::NodePtr Regex::parseAtom() {
             if (peek() == '[') {
                 pos_++; std::string body; while (!eof() && peek() != ']') body += pat_[pos_++]; if (peek() == ']') pos_++;
                 for (size_t s = 0; s <= body.size(); ) { size_t cm = body.find(',', s); addCp(body.substr(s, cm == std::string::npos ? std::string::npos : cm - s)); if (cm == std::string::npos) break; s = cm + 1; }
-            } else { std::string d; while (!eof() && std::isalnum((unsigned char)peek())) d += pat_[pos_++]; addCp(d); }
+            } else { std::string d; while (!eof() && ascii::isalnum((unsigned char)peek())) d += pat_[pos_++]; addCp(d); }
             return n;
         }
-        if ((e == 'x' || e == 'o' || e == 'c') && (peek() == '[' || (e != 'c' && std::isalnum((unsigned char)peek()))
-                                                                 || (e == 'c' && std::isdigit((unsigned char)peek())))) {
+        if ((e == 'x' || e == 'o' || e == 'c') && (peek() == '[' || (e != 'c' && ascii::isalnum((unsigned char)peek()))
+                                                                 || (e == 'c' && ascii::isdigit((unsigned char)peek())))) {
             // \xHH / \x[HH] / \o[OO] / \c[NAME] / \c[A, B] / \cDDD (decimal) — codepoint literal(s)
             auto encode = [](uint32_t cp) -> std::string { // minimal UTF-8 encoder
                 std::string o;
@@ -1700,8 +1718,8 @@ Regex::NodePtr Regex::parseAtom() {
             if (peek() == '[') {
                 pos_++; std::string body; while (!eof() && peek() != ']') body += pat_[pos_++]; if (peek() == ']') pos_++;
                 for (size_t s = 0; s <= body.size(); ) { size_t cm = body.find(',', s); addCp(body.substr(s, cm == std::string::npos ? std::string::npos : cm - s)); if (cm == std::string::npos) break; s = cm + 1; }
-            } else if (e == 'c') { std::string d; while (!eof() && std::isdigit((unsigned char)peek())) d += pat_[pos_++]; addCp(d); } // \c65 — decimal only
-            else { std::string d; while (!eof() && std::isalnum((unsigned char)peek())) d += pat_[pos_++]; addCp(d); }
+            } else if (e == 'c') { std::string d; while (!eof() && ascii::isdigit((unsigned char)peek())) d += pat_[pos_++]; addCp(d); } // \c65 — decimal only
+            else { std::string d; while (!eof() && ascii::isalnum((unsigned char)peek())) d += pat_[pos_++]; addCp(d); }
             if (seq->kids.empty()) { seq->k = K::Nop; return seq; }
             if (seq->kids.size() == 1) return std::move(seq->kids[0]);
             return seq;
@@ -1729,7 +1747,7 @@ Regex::NodePtr Regex::parseAtom() {
 // member: parse "<[ ... ]>" inner content (after the '[') into ranges/flags
 void Regex::parseClassBodyMember(Node* node) {
     while (!eof() && peek() != ']') {
-        if (std::isspace((unsigned char)peek())) { pos_++; continue; }
+        if (ascii::isspace((unsigned char)peek())) { pos_++; continue; }
         if (peek() == '\\') {
             pos_++; char e = peek(); pos_++;
             if (e == 'd' || e == 'w' || e == 's') node->classFlags += e;
@@ -1740,15 +1758,15 @@ void Regex::parseClassBodyMember(Node* node) {
                 // codepoint escapes in a class: \x[HH]/\xHH, \o[OO], \c[NAME,…]; uppercase
                 // (\X/\O/\C) negate the whole class. Codepoints go to cpRanges (any size).
                 bool neg = (e == 'X' || e == 'O' || e == 'C');
-                char le = (char)std::tolower((unsigned char)e);
+                char le = (char)ascii::tolower((unsigned char)e);
                 std::vector<std::string> toks;
                 if (peek() == '[') {
                     pos_++; std::string body; while (!eof() && peek() != ']') body += pat_[pos_++]; if (peek() == ']') pos_++;
                     for (size_t s = 0; s <= body.size(); ) { size_t cm = body.find(',', s); toks.push_back(body.substr(s, cm == std::string::npos ? std::string::npos : cm - s)); if (cm == std::string::npos) break; s = cm + 1; }
                 } else if (le != 'c') {
-                    std::string d; while (!eof() && std::isalnum((unsigned char)peek())) d += pat_[pos_++]; toks.push_back(d);
-                } else if (std::isdigit((unsigned char)peek())) { // \c32 — bare decimal codepoint
-                    std::string d; while (!eof() && std::isdigit((unsigned char)peek())) d += pat_[pos_++]; toks.push_back(d);
+                    std::string d; while (!eof() && ascii::isalnum((unsigned char)peek())) d += pat_[pos_++]; toks.push_back(d);
+                } else if (ascii::isdigit((unsigned char)peek())) { // \c32 — bare decimal codepoint
+                    std::string d; while (!eof() && ascii::isdigit((unsigned char)peek())) d += pat_[pos_++]; toks.push_back(d);
                 }
                 // an escaped RANGE endpoint: `\x21..\xFF` (Cro::HTTP header
                 // field-content) / `\c32..\c126` (JSON::Tiny) / `\x21..z` —
@@ -1758,20 +1776,20 @@ void Regex::parseClassBodyMember(Node* node) {
                     size_t la = toks[0].find_first_not_of(" \t"), lb = toks[0].find_last_not_of(" \t");
                     std::string lt = la == std::string::npos ? "" : toks[0].substr(la, lb - la + 1);
                     if (le != 'c') loCp = (int32_t)std::strtol(lt.c_str(), nullptr, le == 'x' ? 16 : 8);
-                    else if (!lt.empty() && std::isdigit((unsigned char)lt[0])) loCp = (int32_t)std::strtol(lt.c_str(), nullptr, 10);
+                    else if (!lt.empty() && ascii::isdigit((unsigned char)lt[0])) loCp = (int32_t)std::strtol(lt.c_str(), nullptr, 10);
                     else if (!lt.empty()) loCp = namedCp(lt); // `\c[LATIN…A]..\c[LATIN…Z]` — named endpoints range too
                 }
                 if (loCp >= 0 && peek() == '.' && peek(1) == '.') {
                     uint32_t lo = (uint32_t)loCp;
                     pos_ += 2;
-                    while (std::isspace((unsigned char)peek())) pos_++;
+                    while (ascii::isspace((unsigned char)peek())) pos_++;
                     int32_t hi = -1;
                     if (peek() == '\\') {
-                        pos_++; char e2 = (char)std::tolower((unsigned char)peek()); pos_++;
+                        pos_++; char e2 = (char)ascii::tolower((unsigned char)peek()); pos_++;
                         if (e2 == 'x' || e2 == 'o' || e2 == 'c') {
                             std::string d;
                             if (peek() == '[') { pos_++; while (!eof() && peek() != ']') d += pat_[pos_++]; if (peek() == ']') pos_++; }
-                            else while (!eof() && (e2 == 'c' ? std::isdigit((unsigned char)peek()) : std::isalnum((unsigned char)peek()))) d += pat_[pos_++];
+                            else while (!eof() && (e2 == 'c' ? ascii::isdigit((unsigned char)peek()) : ascii::isalnum((unsigned char)peek()))) d += pat_[pos_++];
                             hi = e2 == 'c' ? namedCp(d) : (int32_t)std::strtol(d.c_str(), nullptr, e2 == 'x' ? 16 : 8);
                         }
                     } else if (!eof()) hi = (int32_t)(unsigned char)pat_[pos_++];
@@ -1826,7 +1844,7 @@ void Regex::parseClassBodyMember(Node* node) {
         uint32_t lo = readCp();
         if (peek() == '.' && peek(1) == '.') {
             pos_ += 2;
-            while (std::isspace((unsigned char)peek())) pos_++;
+            while (ascii::isspace((unsigned char)peek())) pos_++;
             uint32_t hi = readCp();
             if (lo < 0x80 && hi < 0x80) node->ranges.push_back({(unsigned char)lo, (unsigned char)hi});
             else node->cpRanges.push_back({lo, hi}); // any endpoint ≥ 0x80 → codepoint range
@@ -1845,16 +1863,16 @@ void Regex::parseClassBodyMember(Node* node) {
 static long builtinRuleMatch(const std::string& nm, const std::string& s, long pos, long len) {
     if (nm == "ws") { // <!ww> \s* — zero-width only OFF a word-word boundary
         long p = pos;
-        while (p < len && std::isspace((unsigned char)s[p])) p++;
-        auto wordAt = [&](long i) { return i >= 0 && i < len && (std::isalnum((unsigned char)s[i]) || s[i] == '_'); };
+        while (p < len && ascii::isspace((unsigned char)s[p])) p++;
+        auto wordAt = [&](long i) { return i >= 0 && i < len && (ascii::isalnum((unsigned char)s[i]) || s[i] == '_'); };
         if (p == pos && wordAt(pos - 1) && wordAt(pos)) return -1; // between two word chars: needs real space
         return p;
     }
     if (nm == "ident") {
         if (pos >= len) return -1;
         unsigned char c0 = (unsigned char)s[pos];
-        if (!(std::isalpha(c0) || c0 == '_')) return -1;
-        long p = pos + 1; while (p < len && (std::isalnum((unsigned char)s[p]) || s[p] == '_')) p++;
+        if (!(ascii::isalpha(c0) || c0 == '_')) return -1;
+        long p = pos + 1; while (p < len && (ascii::isalnum((unsigned char)s[p]) || s[p] == '_')) p++;
         return p;
     }
     if (pos >= len) {
@@ -1864,18 +1882,18 @@ static long builtinRuleMatch(const std::string& nm, const std::string& s, long p
     }
     unsigned char c = (unsigned char)s[pos];
     bool ok;
-    if (nm == "alpha") ok = std::isalpha(c);
-    else if (nm == "digit") ok = std::isdigit(c);
-    else if (nm == "space") ok = std::isspace(c);
+    if (nm == "alpha") ok = ascii::isalpha(c);
+    else if (nm == "digit") ok = ascii::isdigit(c);
+    else if (nm == "space") ok = ascii::isspace(c);
     else if (nm == "blank") ok = (c == ' ' || c == '\t');
-    else if (nm == "alnum") ok = std::isalnum(c);
-    else if (nm == "upper") ok = std::isupper(c);
-    else if (nm == "lower") ok = std::islower(c);
-    else if (nm == "xdigit") ok = std::isxdigit(c);
-    else if (nm == "punct") ok = std::ispunct(c);
-    else if (nm == "cntrl") ok = std::iscntrl(c);
-    else if (nm == "graph") ok = std::isgraph(c);
-    else if (nm == "print") ok = std::isprint(c);
+    else if (nm == "alnum") ok = ascii::isalnum(c);
+    else if (nm == "upper") ok = ascii::isupper(c);
+    else if (nm == "lower") ok = ascii::islower(c);
+    else if (nm == "xdigit") ok = ascii::isxdigit(c);
+    else if (nm == "punct") ok = ascii::ispunct(c);
+    else if (nm == "cntrl") ok = ascii::iscntrl(c);
+    else if (nm == "graph") ok = ascii::isgraph(c);
+    else if (nm == "print") ok = ascii::isprint(c);
     else return -2;
     return ok ? pos + 1 : -1;
 }
@@ -1897,7 +1915,7 @@ static std::string ruleFlag(const std::string& nm) {
 static bool isWordChar(const std::string& s, long i) {
     if (i < 0 || i >= (long)s.size()) return false;
     unsigned char c = (unsigned char)s[i];
-    return std::isalnum(c) || c == '_' || c >= 0x80;
+    return ascii::isalnum(c) || c == '_' || c >= 0x80;
 }
 
 // Unicode whitespace codepoints beyond ASCII (for \s / \S on multibyte input).
@@ -1918,12 +1936,12 @@ bool Regex::classMatch(const Node* n, char ch) const {
     if (!n->bytesetReady.load(std::memory_order_acquire)) {
         auto flagHit = [](char f, unsigned char c) -> bool {
             switch (f) {
-                case 'd': return std::isdigit(c); case 'w': return std::isalnum(c) || c == '_';
-                case 's': return std::isspace(c); case 'a': return std::isalpha(c);
-                case 'u': return std::isupper(c); case 'l': return std::islower(c);
-                case 'x': return std::isxdigit(c); case 'p': return std::ispunct(c);
-                case 'k': return std::iscntrl(c); case 'g': return std::isgraph(c);
-                case 'r': return std::isprint(c); case 'b': return c == ' ' || c == '\t';
+                case 'd': return ascii::isdigit(c); case 'w': return ascii::isalnum(c) || c == '_';
+                case 's': return ascii::isspace(c); case 'a': return ascii::isalpha(c);
+                case 'u': return ascii::isupper(c); case 'l': return ascii::islower(c);
+                case 'x': return ascii::isxdigit(c); case 'p': return ascii::ispunct(c);
+                case 'k': return ascii::iscntrl(c); case 'g': return ascii::isgraph(c);
+                case 'r': return ascii::isprint(c); case 'b': return c == ' ' || c == '\t';
             }
             return false;
         };
@@ -1943,7 +1961,7 @@ bool Regex::classMatch(const Node* n, char ch) const {
         for (int v = 0; v < 256; v++) {
             unsigned char c = (unsigned char)v;
             bool in = test(c);
-            if (!in && n->icase) in = test((unsigned char)std::tolower(c)) || test((unsigned char)std::toupper(c));
+            if (!in && n->icase) in = test((unsigned char)ascii::tolower(c)) || test((unsigned char)ascii::toupper(c));
             // The class is (base, negated if `<-…>`) MINUS every `-member`: the
             // subtraction applies to the FINAL set, not to the base. Subtracting
             // first made `<-[\"]-space>` match a space — it is not in the base, so
@@ -2204,7 +2222,7 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                         uint32_t lb = baseCp(decode(n->lit, (long)i, lcl));
                         uint32_t sb = baseCp(decode(st.s, ip, scl));
                         if (lb != sb && !(n->icase && lb < 0x80 && sb < 0x80 &&
-                                          std::tolower((int)lb) == std::tolower((int)sb))) return false;
+                                          ascii::tolower((int)lb) == ascii::tolower((int)sb))) return false;
                         i += (size_t)lcl;
                         ip = (long)uniClusterEndUtf8(st.s, ip, len);
                     }
@@ -2264,7 +2282,7 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
             if (pos + m > len) return false;
             for (long j = 0; j < m; j++) {
                 char a = st.s[pos + j], b = n->lit[j];
-                if (a != b && !(n->icase && std::tolower((unsigned char)a) == std::tolower((unsigned char)b))) return false;
+                if (a != b && !(n->icase && ascii::tolower((unsigned char)a) == ascii::tolower((unsigned char)b))) return false;
             }
             // extend the leading literal run (LTM specificity) while still contiguous from startPos
             if (st.litPrefix < 0) st.litPrefix = st.startPos;
@@ -2434,7 +2452,7 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
             }
             // `$0`/`$1` backreference: the IN-FLIGHT capture of this same match
             // (`(.) $0*` matches a run of the captured character)
-            if (n->lit.size() > 1 && std::isdigit((unsigned char)n->lit[1])) {
+            if (n->lit.size() > 1 && ascii::isdigit((unsigned char)n->lit[1])) {
                 long ci = std::stol(n->lit.substr(1));
                 if (ci >= 0 && ci < (long)st.caps.size() && st.caps[ci].first >= 0) {
                     long cb = st.caps[ci].first, ce = st.caps[ci].second;
@@ -2443,7 +2461,7 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                     if (pos + clen > (long)st.s.size()) return false;
                     if (n->icase) { // (?i) backref (P5): ASCII case-blind comparison
                         for (long i = 0; i < clen; i++)
-                            if (std::tolower((unsigned char)st.s[pos + i]) != std::tolower((unsigned char)st.s[cb + i]))
+                            if (ascii::tolower((unsigned char)st.s[pos + i]) != ascii::tolower((unsigned char)st.s[cb + i]))
                                 return false;
                     }
                     else if (st.s.compare(pos, clen, st.s, cb, clen) != 0) return false;
@@ -2838,7 +2856,7 @@ static int32_t namedCp(const std::string& nm) {
         {"SP",0x20},{"SPACE",0x20},{"DEL",0x7F},{"NEL",0x85},{"NBSP",0xA0},
     };
     auto it = ab.find(nm); if (it != ab.end()) return it->second;
-    if (!nm.empty() && std::isdigit((unsigned char)nm[0])) return (int32_t)std::strtol(nm.c_str(), nullptr, 10);
+    if (!nm.empty() && ascii::isdigit((unsigned char)nm[0])) return (int32_t)std::strtol(nm.c_str(), nullptr, 10);
     return -1;
 }
 
@@ -2924,8 +2942,8 @@ std::string GrammarMatcher::interpParams(const std::string& pat, const std::map<
         if (c == '}') { if (brace > 0) brace--; out += c; continue; }
         if (c == '<') { angle++; out += c; continue; }
         if (c == '>') { if (angle > 0) angle--; out += c; continue; }
-        if (c == '$' && angle == 0 && brace == 0 && i + 1 < pat.size() && (std::isalpha((unsigned char)pat[i + 1]) || pat[i + 1] == '_')) {
-            size_t j = i + 1; while (j < pat.size() && (std::isalnum((unsigned char)pat[j]) || pat[j] == '_' || pat[j] == '-')) j++;
+        if (c == '$' && angle == 0 && brace == 0 && i + 1 < pat.size() && (ascii::isalpha((unsigned char)pat[i + 1]) || pat[i + 1] == '_')) {
+            size_t j = i + 1; while (j < pat.size() && (ascii::isalnum((unsigned char)pat[j]) || pat[j] == '_' || pat[j] == '-')) j++;
             auto it = sc.find("$" + pat.substr(i + 1, j - i - 1));
             if (it != sc.end()) { out += gmQuoteMeta(it->second); i = j - 1; continue; }
         }
@@ -3167,9 +3185,9 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
             if (pos >= (long)st.s.size()) { noteFail(pos, name); return false; }
             unsigned char c = (unsigned char)st.s[pos]; bool ok = false;
             for (char f : fl) switch (f) {
-                case 'd': ok |= (bool)std::isdigit(c); break; case 'a': ok |= (bool)std::isalpha(c); break;
-                case 's': ok |= (bool)std::isspace(c); break; case 'u': ok |= (bool)std::isupper(c); break;
-                case 'l': ok |= (bool)std::islower(c); break; case 'x': ok |= (bool)std::isxdigit(c); break;
+                case 'd': ok |= (bool)ascii::isdigit(c); break; case 'a': ok |= (bool)ascii::isalpha(c); break;
+                case 's': ok |= (bool)ascii::isspace(c); break; case 'u': ok |= (bool)ascii::isupper(c); break;
+                case 'l': ok |= (bool)ascii::islower(c); break; case 'x': ok |= (bool)ascii::isxdigit(c); break;
                 case 'b': ok |= (c == ' ' || c == '\t'); break; // <blank>: horizontal ws
             }
             if (!ok) { noteFail(pos, name); return false; }

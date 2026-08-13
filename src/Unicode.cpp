@@ -1,3 +1,4 @@
+#include "AsciiCtype.h"
 #include "Unicode.h"
 #include "ucd_seam.h" // the cuttable table groups, reached only via accessors
 #include <cstdint>
@@ -55,7 +56,7 @@ static std::string enumLookup(const uint32_t* r, size_t n3, const char* const* v
 }
 std::string uniEnumProp(const std::string& prop, uint32_t cp) {
     // normalize the property name (case/underscore-insensitive)
-    std::string p; for (char c : prop) if (std::isalnum((unsigned char)c)) p += (char)std::tolower((unsigned char)c);
+    std::string p; for (char c : prop) if (ascii::isalnum((unsigned char)c)) p += (char)ascii::tolower((unsigned char)c);
     #define TRY(N, dflt, ...) { static const char* ks[] = {__VA_ARGS__}; for (auto* k : ks) if (p == k) \
         return enumLookup(ucd::N##_RANGES, ucd::N##_RANGES_N, ucd::N##_VALUES, cp, dflt); }
     TRY(AGE, "Unassigned", "age")
@@ -142,7 +143,7 @@ static int uniBinProp(uint32_t cp, const std::string& norm) {
 // Strict binary-property test for uniprop(): 1/0 if `prop` is a known binary
 // property, -1 if it is not one (so the caller does NOT fall back to a lenient match).
 int uniBinaryProp(uint32_t cp, const std::string& prop) {
-    std::string norm; for (char c : prop) if (std::isalnum((unsigned char)c)) norm += (char)std::tolower((unsigned char)c);
+    std::string norm; for (char c : prop) if (ascii::isalnum((unsigned char)c)) norm += (char)ascii::tolower((unsigned char)c);
     return uniBinProp(cp, norm);
 }
 
@@ -187,7 +188,7 @@ std::string uniScript(uint32_t c) {
 // normalize a property name/value for loose matching (lowercase, drop separators)
 static std::string normProp(const std::string& s) {
     std::string n;
-    for (char ch : s) if (std::isalnum((unsigned char)ch)) n += (char)std::tolower((unsigned char)ch);
+    for (char ch : s) if (ascii::isalnum((unsigned char)ch)) n += (char)ascii::tolower((unsigned char)ch);
     return n;
 }
 
@@ -252,7 +253,7 @@ bool uniMatchesProp(uint32_t cp, const std::string& p) {
     // binary Unicode property (Math, Soft_Dotted, White_Space, Other_Math, …)
     {
         std::string norm;
-        for (char ch : p) if (std::isalnum((unsigned char)ch)) norm += (char)std::tolower((unsigned char)ch);
+        for (char ch : p) if (ascii::isalnum((unsigned char)ch)) norm += (char)ascii::tolower((unsigned char)ch);
         int b = uniBinProp(cp, norm);
         if (b >= 0) return b == 1;
     }
@@ -265,30 +266,30 @@ bool uniMatchesProp(uint32_t cp, const std::string& p) {
             size_t tn; const ucd::ScriptEnt* T = ucd::scriptsTable(&tn); // seam: hoisted once
             for (size_t i = 0; i < tn; i++) {
                 std::string n;
-                for (const char* q = T[i].name; *q; q++) if (std::isalnum((unsigned char)*q)) n += (char)std::tolower((unsigned char)*q);
+                for (const char* q = T[i].name; *q; q++) if (ascii::isalnum((unsigned char)*q)) n += (char)ascii::tolower((unsigned char)*q);
                 s.insert(n);
             }
             return s;
         }();
         std::string norm;
-        for (char ch : p) if (std::isalnum((unsigned char)ch)) norm += (char)std::tolower((unsigned char)ch);
+        for (char ch : p) if (ascii::isalnum((unsigned char)ch)) norm += (char)ascii::tolower((unsigned char)ch);
         if (scriptNames.count(norm)) {
             std::string sc = uniScript(cp), scn;
-            for (char ch : sc) if (std::isalnum((unsigned char)ch)) scn += (char)std::tolower((unsigned char)ch);
+            for (char ch : sc) if (ascii::isalnum((unsigned char)ch)) scn += (char)ascii::tolower((unsigned char)ch);
             return scn == norm;
         }
     }
     // block property `<:InArabic>` / `<:InLatin1Supplement>`: In-prefix + block name.
-    if (p.size() > 2 && p[0] == 'I' && p[1] == 'n' && std::isupper((unsigned char)p[2])) {
+    if (p.size() > 2 && p[0] == 'I' && p[1] == 'n' && ascii::isupper((unsigned char)p[2])) {
         std::string q;
-        for (char ch : p) if (std::isalnum((unsigned char)ch)) q += (char)std::tolower((unsigned char)ch);
+        for (char ch : p) if (ascii::isalnum((unsigned char)ch)) q += (char)ascii::tolower((unsigned char)ch);
         if (q.size() > 2 && q[0] == 'i' && q[1] == 'n') q = q.substr(2); // drop the In prefix
         // legacy block-name aliases renamed in later Unicode versions
         if (q == "cyrillicsupplementary") q = "cyrillicsupplement";
         if (q == "ascii") return cp <= 0x7F; // ASCII is a Blocks.txt alias for Basic Latin
         std::string b; // compare NORMALIZED (uniBlockName has spaces and caps)
         for (char ch : std::string(uniBlockName(cp)))
-            if (std::isalnum((unsigned char)ch)) b += (char)std::tolower((unsigned char)ch);
+            if (ascii::isalnum((unsigned char)ch)) b += (char)ascii::tolower((unsigned char)ch);
         return q == b;
     }
     return true; // unknown property (e.g. an unmodelled script): lenient match

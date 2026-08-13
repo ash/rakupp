@@ -1,3 +1,4 @@
+#include "CNumeric.h"
 #include "Ast.h"
 #include <ostream>
 #include <string>
@@ -35,7 +36,7 @@ struct Dumper {
             case NK::IntLit: { auto* n = static_cast<const IntLit*>(e);
                 line(ind, "IntLit " + (n->big.empty() ? std::to_string(n->v) : n->big)); return; }
             case NK::NumLit: { auto* n = static_cast<const NumLit*>(e);
-                line(ind, "NumLit " + std::to_string(n->v) + (n->imaginary ? "i" : "")); return; }
+                line(ind, "NumLit " + cnum::to_string(n->v) + (n->imaginary ? "i" : "")); return; }
             case NK::StrLit: line(ind, "StrLit \"" + trunc(static_cast<const StrLit*>(e)->v) + "\""); return;
             case NK::BoolLit: line(ind, std::string("BoolLit ") + (static_cast<const BoolLit*>(e)->v ? "True" : "False")); return;
             case NK::VarExpr: { auto* v = static_cast<const VarExpr*>(e);

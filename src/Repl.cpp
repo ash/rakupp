@@ -10,6 +10,7 @@
 // by a script run, and the file is not part of the runtime library, so `--exe`
 // output does not carry any of it.
 
+#include "AsciiCtype.h"
 #include "Repl.h"
 #include "Interpreter.h"
 #include "Runtime.h"
@@ -301,8 +302,8 @@ private:
 
     void killWordBack() {
         size_t p = pos_;
-        while (p > 0 && std::isspace((unsigned char)buf_[prevCp(buf_, p)])) p = prevCp(buf_, p);
-        while (p > 0 && !std::isspace((unsigned char)buf_[prevCp(buf_, p)])) p = prevCp(buf_, p);
+        while (p > 0 && ascii::isspace((unsigned char)buf_[prevCp(buf_, p)])) p = prevCp(buf_, p);
+        while (p > 0 && !ascii::isspace((unsigned char)buf_[prevCp(buf_, p)])) p = prevCp(buf_, p);
         buf_.erase(p, pos_ - p);
         pos_ = p;
         refresh();
@@ -433,7 +434,7 @@ private:
     void complete() {
         size_t start = pos_;
         auto wordChar = [](char ch) {
-            return std::isalnum((unsigned char)ch) || ch == '_' || ch == '-' || ch == ':';
+            return ascii::isalnum((unsigned char)ch) || ch == '_' || ch == '-' || ch == ':';
         };
         while (start > 0 && wordChar(buf_[start - 1])) start--;
         bool method = start > 0 && buf_[start - 1] == '.';
@@ -538,9 +539,9 @@ bool isMetaCommand(const std::string& line, std::string& cmd, std::string& rest)
     size_t i = line.find_first_not_of(" \t");
     if (i == std::string::npos || line[i] != '\\') return false;
     size_t j = i + 1;
-    if (j >= line.size() || !std::isalpha((unsigned char)line[j])) return false;
+    if (j >= line.size() || !ascii::isalpha((unsigned char)line[j])) return false;
     size_t k = j;
-    while (k < line.size() && std::isalpha((unsigned char)line[k])) k++;
+    while (k < line.size() && ascii::isalpha((unsigned char)line[k])) k++;
     cmd = line.substr(j, k - j);
     size_t r = line.find_first_not_of(" \t", k);
     rest = r == std::string::npos ? "" : line.substr(r);

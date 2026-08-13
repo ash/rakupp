@@ -1,3 +1,4 @@
+#include "CNumeric.h"
 #include "Profiler.h"
 #include <algorithm>
 #include <chrono>
@@ -124,10 +125,10 @@ void report() {
             for (char c : e->name) { if (c == '"' || c == '\\') nm += '\\'; nm += c; }
             std::string fl;
             for (char c : e->file) { if (c == '"' || c == '\\') fl += '\\'; fl += c; }
-            snprintf(buf, sizeof buf, "%.3f", e->inclNs / 1e6);
+            cnum::snprintf(buf, sizeof buf, "%.3f", e->inclNs / 1e6);
             *out << "  {\"name\": \"" << nm << "\", \"file\": \"" << fl
                  << "\", \"calls\": " << e->calls << ", \"incl_ms\": " << buf;
-            snprintf(buf, sizeof buf, "%.3f", e->exclNs / 1e6);
+            cnum::snprintf(buf, sizeof buf, "%.3f", e->exclNs / 1e6);
             *out << ", \"excl_ms\": " << buf << "}";
         }
         *out << "\n]\n";
@@ -136,7 +137,7 @@ void report() {
         *out << "Profile — wall time; builtins are attributed to their caller\n";
         *out << "  excl(ms)   incl(ms)      calls  routine\n";
         for (const Entry* e : rows) {
-            snprintf(buf, sizeof buf, "%10.3f %10.3f %10llu  ",
+            cnum::snprintf(buf, sizeof buf, "%10.3f %10.3f %10llu  ",
                      e->exclNs / 1e6, e->inclNs / 1e6, (unsigned long long)e->calls);
             *out << buf << e->name;
             if (!e->file.empty()) *out << " (" << e->file << ")";

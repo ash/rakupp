@@ -1,4 +1,5 @@
 #pragma once
+#include "AsciiCtype.h"
 #include "Token.h"
 #include <cctype>
 #include <cstdint>
@@ -19,8 +20,8 @@ namespace rakupp {
 // handed `"$x-1"` to the expression parser — which re-split it correctly and
 // interpolated the ARITHMETIC RESULT, so `my $x = 5; say "$x-1"` printed 4
 // where Rakudo prints 5-1. Six sites implemented this rule three different ways.
-inline bool rakuIdentStart(char c) { return std::isalpha((unsigned char)c) || c == '_'; }
-inline bool rakuIdentCont(char c)  { return std::isalnum((unsigned char)c) || c == '_'; }
+inline bool rakuIdentStart(char c) { return ascii::isalpha((unsigned char)c) || c == '_'; }
+inline bool rakuIdentCont(char c)  { return ascii::isalnum((unsigned char)c) || c == '_'; }
 inline bool rakuIdentJoins(char sep, char next) {
     return (sep == '-' || sep == '\'') && rakuIdentStart(next);
 }

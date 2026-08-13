@@ -3,6 +3,7 @@
 // anything it does not understand conservatively ENDS the prefix, which can
 // demote an alternative in the ranking but never break the final match —
 // the commit phase still runs the real engine.
+#include "AsciiCtype.h"
 #include "LtmNfa.h"
 #include "Regex.h"
 #include "Unicode.h"
@@ -40,13 +41,13 @@ int LtmNfa::addPred(Pred p) {
 // never built into predicates: the builder terminates the prefix on them.)
 static bool flagHit(char f, uint32_t c) {
     switch (f) {
-        case 'd': return c < 128 && std::isdigit((int)c);
-        case 'w': return c < 128 && (std::isalnum((int)c) || c == '_');
-        case 's': return c < 128 && std::isspace((int)c);
-        case 'a': return c < 128 && std::isalpha((int)c);
-        case 'u': return c < 128 && std::isupper((int)c);
-        case 'l': return c < 128 && std::islower((int)c);
-        case 'x': return c < 128 && std::isxdigit((int)c);
+        case 'd': return c < 128 && ascii::isdigit((int)c);
+        case 'w': return c < 128 && (ascii::isalnum((int)c) || c == '_');
+        case 's': return c < 128 && ascii::isspace((int)c);
+        case 'a': return c < 128 && ascii::isalpha((int)c);
+        case 'u': return c < 128 && ascii::isupper((int)c);
+        case 'l': return c < 128 && ascii::islower((int)c);
+        case 'x': return c < 128 && ascii::isxdigit((int)c);
         case 'b': return c == ' ' || c == '\t';
         case 'n': return c == '\n';
         default:  return false;
@@ -55,22 +56,22 @@ static bool flagHit(char f, uint32_t c) {
 bool LtmNfa::classMatch(const void* nodeV, uint32_t c) {
     auto* n = static_cast<const Regex::Node*>(nodeV);
     uint32_t probe = c;
-    if (n->icase && probe < 128) probe = (uint32_t)std::tolower((int)probe);
+    if (n->icase && probe < 128) probe = (uint32_t)ascii::tolower((int)probe);
     bool in = false;
     for (auto& r : n->ranges) {
         uint32_t lo = r.first, hi = r.second;
-        if (n->icase) { lo = lo < 128 ? (uint32_t)std::tolower((int)lo) : lo;
-                        hi = hi < 128 ? (uint32_t)std::tolower((int)hi) : hi; }
+        if (n->icase) { lo = lo < 128 ? (uint32_t)ascii::tolower((int)lo) : lo;
+                        hi = hi < 128 ? (uint32_t)ascii::tolower((int)hi) : hi; }
         if (probe >= lo && probe <= hi) { in = true; break; }
         if (n->icase && c >= r.first && c <= r.second) { in = true; break; }
     }
     if (!in) for (auto& r : n->cpRanges)
         if (c >= r.first && c <= r.second) { in = true; break; }
     if (!in) for (char f : n->classFlags) {
-        if (std::islower((unsigned char)f) ? flagHit(f, c) : !flagHit((char)std::tolower(f), c)) { in = true; break; }
+        if (ascii::islower((unsigned char)f) ? flagHit(f, c) : !flagHit((char)ascii::tolower(f), c)) { in = true; break; }
     }
     for (char f : n->negClassFlags)
-        if (flagHit((char)std::tolower(f), c)) { in = false; break; } // difference members subtract LAST
+        if (flagHit((char)ascii::tolower(f), c)) { in = false; break; } // difference members subtract LAST
     return n->negate ? !in : in;
 }
 bool LtmNfa::predMatch(const Pred& p, uint32_t c) {
@@ -78,7 +79,7 @@ bool LtmNfa::predMatch(const Pred& p, uint32_t c) {
         case 'L':
             if (c == p.lit) return true;
             if (p.icase && c < 128 && p.lit < 128)
-                return std::tolower((int)c) == std::tolower((int)p.lit);
+                return ascii::tolower((int)c) == ascii::tolower((int)p.lit);
             return false;
         case 'C': return classMatch(p.node, c);
         case 'M': { // :m literal — compare BASE codepoints (NFD first starter)
@@ -91,11 +92,11 @@ bool LtmNfa::predMatch(const Pred& p, uint32_t c) {
             uint32_t cb = base(c), lb = base(p.lit);
             if (cb == lb) return true;
             if (p.icase && cb < 128 && lb < 128)
-                return std::tolower((int)cb) == std::tolower((int)lb);
+                return ascii::tolower((int)cb) == ascii::tolower((int)lb);
             return false;
         }
         case 'k': return c >= 0x80 && uniCombiningClass(c) != 0; // trailing combining mark
-        case 'S': return c < 128 && std::isspace((int)c);
+        case 'S': return c < 128 && ascii::isspace((int)c);
         case 'F': return flagHit((char)p.lit, c);
         case 'A': default: return true; // `.` matches every codepoint in Raku
     }

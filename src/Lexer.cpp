@@ -1,3 +1,5 @@
+#include "CNumeric.h"
+#include "AsciiCtype.h"
 #include "Lexer.h"
 #include <cstdint>
 #include "Parser.h"   // ParseError
@@ -60,7 +62,7 @@ static const char* kFudgeTestFns[] = { // roast fudge's $IS list: statements sta
 static std::string fudgeLeadingWord(const std::string& line) {
     size_t p = 0; while (p < line.size() && (line[p] == ' ' || line[p] == '\t')) p++;
     size_t s = p;
-    while (p < line.size() && (std::isalnum((unsigned char)line[p]) || line[p] == '_' ||
+    while (p < line.size() && (ascii::isalnum((unsigned char)line[p]) || line[p] == '_' ||
                                line[p] == '-' || line[p] == '\'')) p++;
     return line.substr(s, p - s);
 }
@@ -148,8 +150,8 @@ static std::string applyRakudoFudge(const std::string& src) {
             if (!backend.empty() && backend != "moar") continue; // other backend: ignore
             while (q < line.size() && (line[q] == ' ' || line[q] == '\t')) q++;
             std::string count = "1";
-            if (q < line.size() && std::isdigit((unsigned char)line[q])) {
-                size_t c = q; while (q < line.size() && std::isdigit((unsigned char)line[q])) q++;
+            if (q < line.size() && ascii::isdigit((unsigned char)line[q])) {
+                size_t c = q; while (q < line.size() && ascii::isdigit((unsigned char)line[q])) q++;
                 count = line.substr(c, q - c);
                 while (q < line.size() && (line[q] == ' ' || line[q] == '\t')) q++;
             }
@@ -431,7 +433,7 @@ void Lexer::skipWhitespaceAndComments() {
                        (peek(off + 2) == '(' || peek(off + 2) == '[' || peek(off + 2) == '{');
             };
             // zero-width unspace before a postfix dot: `"xxxxxx"\.chars`
-            if (peek(1) == '.' && !std::isdigit((unsigned char)peek(2))) {
+            if (peek(1) == '.' && !ascii::isdigit((unsigned char)peek(2))) {
                 advance(); // backslash only; the '.' stays tight
                 atomDropEnd_ = pos_;
                 continue;
@@ -648,7 +650,7 @@ Token Lexer::lexNumber() {
     // Returns false if the current char is not a decimal digit.
     auto takeDigit = [&](std::string& out) -> bool {
         char c = peek();
-        if (std::isdigit((unsigned char)c)) { out += advance(); return true; }
+        if (ascii::isdigit((unsigned char)c)) { out += advance(); return true; }
         if ((unsigned char)c >= 0x80) {
             int v = ndDigitValue(codepointHere());
             if (v >= 0) { out += (char)('0' + v); for (int k = utf8Len((unsigned char)c); k > 0; k--) advance(); return true; }
@@ -658,7 +660,7 @@ Token Lexer::lexNumber() {
     if (peek() == '0' && (peek(1) == 'x' || peek(1) == 'o' || peek(1) == 'b' || peek(1) == 'd') &&
         // `0x` with no digit at all is not a radix literal: `:0x` is the pair
         // shorthand x => 0, and `0x` followed by punctuation lexes as 0 then x
-        (std::isalnum((unsigned char)peek(2)) || peek(2) == '_' || (unsigned char)peek(2) >= 0x80)) {
+        (ascii::isalnum((unsigned char)peek(2)) || peek(2) == '_' || (unsigned char)peek(2) >= 0x80)) {
         char base = peek(1);
         advance(); advance();
         std::string digits;
@@ -697,7 +699,7 @@ Token Lexer::lexNumber() {
     // and consecutive underscores (`100_`, `1__0`), matching Rakudo.
     auto isDigitNext = [&](int off) {
         unsigned char d = (unsigned char)peek(off);
-        return std::isdigit(d) || d >= 0x80; // ASCII digit, or a multibyte (possible Unicode Nd)
+        return ascii::isdigit(d) || d >= 0x80; // ASCII digit, or a multibyte (possible Unicode Nd)
     };
     // Underscores are KEPT in the spelling `num` (so `<1.2.1_01>` word-quotes and
     // .raku round-trip preserve them) and stripped only when computing the value.
@@ -705,7 +707,7 @@ Token Lexer::lexNumber() {
         if (peek() == '_') { if (!isDigitNext(1)) throw ParseError("Cannot use underscore between digits unless it is between two digits", line_); num += advance(); }
     }
     bool hasDot = false, hasExp = false;
-    if (peek() == '.' && std::isdigit((unsigned char)peek(1))) {
+    if (peek() == '.' && ascii::isdigit((unsigned char)peek(1))) {
         isFloat = true; hasDot = true;
         num += advance(); // .
         while (takeDigit(num) || peek() == '_') {
@@ -713,15 +715,15 @@ Token Lexer::lexNumber() {
         }
     }
     if ((peek() == 'e' || peek() == 'E') &&
-        (std::isdigit((unsigned char)peek(1)) ||
-         ((peek(1) == '+' || peek(1) == '-') && std::isdigit((unsigned char)peek(2))))) {
+        (ascii::isdigit((unsigned char)peek(1)) ||
+         ((peek(1) == '+' || peek(1) == '-') && ascii::isdigit((unsigned char)peek(2))))) {
         // an exponent needs DIGITS after the e — `:1e` is the colonpair `e => 1`,
         // not a malformed float
         isFloat = true; hasExp = true;
         num += advance();
         if (peek() == '+' || peek() == '-') num += advance();
-        while (std::isdigit((unsigned char)peek()) || peek() == '_') {
-            if (peek() == '_') { if (!std::isdigit((unsigned char)peek(1))) throw ParseError("Cannot use underscore between digits unless it is between two digits", line_); }
+        while (ascii::isdigit((unsigned char)peek()) || peek() == '_') {
+            if (peek() == '_') { if (!ascii::isdigit((unsigned char)peek(1))) throw ParseError("Cannot use underscore between digits unless it is between two digits", line_); }
             num += advance();
         }
     }
@@ -731,12 +733,12 @@ Token Lexer::lexNumber() {
     if (peek() == 'i' && !isIdentCont(peek(1))) {
         advance();
         Token t = make(Tok::NumLit, num + "i");
-        t.nval = std::strtod(bare.c_str(), nullptr);
+        t.nval = cnum::strtod(bare.c_str(), nullptr);
         return t;
     }
     if (isFloat) {
         Token t = make(Tok::NumLit, num);
-        t.nval = std::strtod(bare.c_str(), nullptr);
+        t.nval = cnum::strtod(bare.c_str(), nullptr);
         t.flag = (hasDot && !hasExp); // a decimal literal with no exponent is a Rat (3.14), not a Num
         return t;
     }
@@ -889,7 +891,7 @@ bool Lexer::tryQuoteForm(Token& out) {
     std::string w;
     // longest quote-form keyword is 4 chars ("qqww"): a longer alpha run can
     // never match, so stop early instead of building every identifier's prefix
-    while (p < src_.size() && std::isalpha((unsigned char)src_[p])) {
+    while (p < src_.size() && ascii::isalpha((unsigned char)src_[p])) {
         if (w.size() >= 5) return false;
         w += src_[p]; p++;
     }
@@ -913,14 +915,14 @@ bool Lexer::tryQuoteForm(Token& out) {
         size_t ws = p;
         while (ws < src_.size() && (src_[ws] == ' ' || src_[ws] == '\t')) ws++;
         if (ws > p && ws + 1 < src_.size() && src_[ws] == ':' &&
-            (std::isalpha((unsigned char)src_[ws + 1]) || src_[ws + 1] == '!')) p = ws;
+            (ascii::isalpha((unsigned char)src_[ws + 1]) || src_[ws + 1] == '!')) p = ws;
     };
     skipWsBeforeAdverb();
     while (p < src_.size() && src_[p] == ':') {
         size_t q = p + 1;
         std::string a;
         if (q < src_.size() && src_[q] == '!') a += src_[q++]; // negated adverb (:!s)
-        while (q < src_.size() && std::isalnum((unsigned char)src_[q])) a += src_[q++];
+        while (q < src_.size() && ascii::isalnum((unsigned char)src_[q])) a += src_[q++];
         if (a.empty() || a == "!") break;
         std::string arg; // parenthesized adverb argument: :x(2), :nth(3), :nth(1,3,5)
         if (q < src_.size() && src_[q] == '(') {
@@ -1060,7 +1062,7 @@ bool Lexer::tryQuoteForm(Token& out) {
             // conservative set above: without Rakudo's declared-symbol lookup
             // the lexer cannot tell `S%pat%` from `S % $x` (infix %).
             if ((isRegex || isSubst || isTrans) && !adverbs.empty() &&
-                (unsigned char)d < 0x80 && std::ispunct((unsigned char)d) &&
+                (unsigned char)d < 0x80 && ascii::ispunct((unsigned char)d) &&
                 d != ':' && d != '#') { close = d; bracket = false; break; }
             return false;
     }
@@ -1075,10 +1077,10 @@ bool Lexer::tryQuoteForm(Token& out) {
             if (src_[q] == d) depth++;
             else if (src_[q] == close) { depth--; if (depth == 0) { q++; break; } }
         }
-        while (q < src_.size() && std::isspace((unsigned char)src_[q])) q++;
+        while (q < src_.size() && ascii::isspace((unsigned char)src_[q])) q++;
         // any assignment operator: `=`, `+=`, `x=`, `~=`, `//=`, … (not `==`/`=~`/`=>`)
         size_t r = q; std::string op;
-        while (r < src_.size() && (std::isalnum((unsigned char)src_[r]) || strchr("+-*/~%.|&^", src_[r]))) op += src_[r++];
+        while (r < src_.size() && (ascii::isalnum((unsigned char)src_[r]) || strchr("+-*/~%.|&^", src_[r]))) op += src_[r++];
         if (r < src_.size() && src_[r] == '=' && (r + 1 >= src_.size() || (src_[r + 1] != '=' && src_[r + 1] != '~' && src_[r + 1] != '>')))
             { assignForm = true; assignOp = op; }
         else if (q >= src_.size() || src_[q] != d) return false;
@@ -1211,10 +1213,10 @@ bool Lexer::tryQuoteForm(Token& out) {
     if (isSubst || isTrans) {
         std::string repl;
         if (assignForm) { // s[pat] OP= repl : the RHS applied per match
-            while (!eof() && std::isspace((unsigned char)peek())) advance();
+            while (!eof() && ascii::isspace((unsigned char)peek())) advance();
             for (size_t k = 0; k < assignOp.size() && !eof(); k++) advance(); // skip the op prefix
             if (peek() == '=') advance();
-            while (!eof() && std::isspace((unsigned char)peek())) advance();
+            while (!eof() && ascii::isspace((unsigned char)peek())) advance();
             std::string rhs; bool wasStr = false; char rq = peek();
             if (rq == '"' || rq == '\'') {
                 wasStr = true;
@@ -1240,7 +1242,7 @@ bool Lexer::tryQuoteForm(Token& out) {
                     else if (ch == '[') brd++; else if (ch == ']') brd--;
                     rhs += advance();
                 }
-                while (!rhs.empty() && std::isspace((unsigned char)rhs.back())) rhs.pop_back();
+                while (!rhs.empty() && ascii::isspace((unsigned char)rhs.back())) rhs.pop_back();
             }
             if (assignOp.empty()) {
                 // plain `= "str"` keeps its raw content (which may be a `{…}` code
@@ -1252,7 +1254,7 @@ bool Lexer::tryQuoteForm(Token& out) {
                 repl = "{ $/ " + assignOp + " (" + operand + ") }";
             }
         } else if (bracket) { // s[..][..] / tr[..][..] : skip ws, expect a fresh bracket pair
-            while (!eof() && std::isspace((unsigned char)peek())) advance();
+            while (!eof() && ascii::isspace((unsigned char)peek())) advance();
             startLine = line_; // the replacement's own opener is what a runaway names
             if (peek() == d) { advance(); repl = readPart(false, !isTrans); }
         } else {
@@ -1328,8 +1330,8 @@ Token Lexer::lexIdentOrVar() {
     // stay untouched. Inside a `< … >` word list everything is words.
     if (sig == '$' && angleWords_ == 0) {
         char c1 = peek(1);
-        if (c1 == '^' && std::isupper((unsigned char)peek(2)) &&
-            !(std::isalnum((unsigned char)peek(3)) || peek(3) == '_'))
+        if (c1 == '^' && ascii::isupper((unsigned char)peek(2)) &&
+            !(ascii::isalnum((unsigned char)peek(3)) || peek(3) == '_'))
             throw ParseError("Unsupported use of $^" + std::string(1, peek(2)) +
                              " variable; in Raku please use a different construct",
                              line_, "X::Syntax::Perl5Var", {});
@@ -1389,8 +1391,8 @@ Token Lexer::lexIdentOrVar() {
             (isIdentStart(peek(1)) )) {
             name += advance();
         }
-        if (std::isdigit((unsigned char)peek())) {
-            while (std::isdigit((unsigned char)peek())) name += advance();
+        if (ascii::isdigit((unsigned char)peek())) {
+            while (ascii::isdigit((unsigned char)peek())) name += advance();
         } else if (isIdentStart(peek()) || unicodeLetterHere()) {
             consumeIdentChars(name);
             // allow embedded - or ' between identifier chars
@@ -1438,16 +1440,16 @@ Token Lexer::lexIdentOrVar() {
     }
     // version literal: v0.48  v6  v1.2.3+  v6.*  — parts are digits or '*'
     // separated by '.', optional trailing '+'; `.WHAT` etc. stays a method call
-    if (peek() == 'v' && std::isdigit((unsigned char)peek(1))) {
+    if (peek() == 'v' && ascii::isdigit((unsigned char)peek(1))) {
         std::string ver;
         advance(); // v (not stored)
         for (;;) {
-            while (std::isdigit((unsigned char)peek()) || peek() == '*' ||
-                   std::islower((unsigned char)peek())) ver += advance();
+            while (ascii::isdigit((unsigned char)peek()) || peek() == '*' ||
+                   ascii::islower((unsigned char)peek())) ver += advance();
             // a dotted part continues the version if it's digits/'*' or a LOWERCASE
             // alpha run (v6.c); `.WHAT` and friends stay method calls
-            if (peek() == '.' && (std::isdigit((unsigned char)peek(1)) || peek(1) == '*' ||
-                                  std::islower((unsigned char)peek(1))))
+            if (peek() == '.' && (ascii::isdigit((unsigned char)peek(1)) || peek(1) == '*' ||
+                                  ascii::islower((unsigned char)peek(1))))
                 ver += advance();
             else break;
         }
@@ -1495,7 +1497,7 @@ bool Lexer::tryRuleDecl(std::vector<Token>& out, bool spaced) {
          out.back().text == "submethod")) return false;
     size_t save = pos_;
     std::string kw;
-    while (!eof() && std::isalpha((unsigned char)peek())) kw += advance();
+    while (!eof() && ascii::isalpha((unsigned char)peek())) kw += advance();
     if (kw != "token" && kw != "rule" && kw != "regex") { pos_ = save; return false; }
     while (!eof() && (peek() == ' ' || peek() == '\t')) advance();
     // optional rule name (ident, may include - ' :sym<...>)
@@ -1697,13 +1699,13 @@ Token Lexer::lexOperator(bool termBefore) {
           "min", "max", "gcd", "lcm", "div", "mod", "x", "xx", "eq", "ne",
           "lt", "gt", "le", "ge", "leg", "cmp", "unicmp", "before", "after"};
       if (guill(0, ro) && (unsigned char)peek(2) < 0x80 &&
-          (std::isalpha((unsigned char)peek(2)) || peek(2) == '_')) {
+          (ascii::isalpha((unsigned char)peek(2)) || peek(2) == '_')) {
           size_t save = pos_;
           std::string open = ro ? ">>" : "<<";
           advance(); advance(); // opening guillemet
           std::string word; bool rc;
           while (!eof() && ((unsigned char)peek() < 0x80) &&
-                 (std::isalpha((unsigned char)peek()) || peek() == '_') && word.size() < 8)
+                 (ascii::isalpha((unsigned char)peek()) || peek() == '_') && word.size() < 8)
               word += advance();
           if (kWordInfix.count(word) && guill(0, rc)) {
               std::string close = rc ? ">>" : "<<";
@@ -1733,19 +1735,19 @@ Token Lexer::lexOperator(bool termBefore) {
       bool rMetaInner = false;
       { bool ro3;
         if (guill(0, ro3) && peek(2) == 'R' && (unsigned char)peek(3) < 0x80 &&
-            !std::isalnum((unsigned char)peek(3)) && peek(3) != '_' && peek(3) != ' ')
+            !ascii::isalnum((unsigned char)peek(3)) && peek(3) != '_' && peek(3) != ' ')
             rMetaInner = true;
       }
       if ((guill(0, ro) && (unsigned char)peek(2) < 0x80 &&
-          !std::isalnum((unsigned char)peek(2)) && peek(2) != '_' && peek(2) != ' ') ||
+          !ascii::isalnum((unsigned char)peek(2)) && peek(2) != '_' && peek(2) != ' ') ||
           (uniSymInner && guill(0, ro)) || (rMetaInner && guill(0, ro))) {
         size_t save = pos_;
         std::string open = ro ? ">>" : "<<";
         advance(); advance(); // opening guillemet
         std::string inner; bool rc;
         if (rMetaInner) inner += advance(); // the metaop's R, before the symbols
-        while (!eof() && !guill(0, rc) && !std::isspace((unsigned char)peek()) &&
-               !std::isalnum((unsigned char)peek()) && inner.size() < 4)
+        while (!eof() && !guill(0, rc) && !ascii::isspace((unsigned char)peek()) &&
+               !ascii::isalnum((unsigned char)peek()) && inner.size() < 4)
             inner += advance();
         if (!inner.empty() && guill(0, rc)) {
             std::string close = rc ? ">>" : "<<";
@@ -1781,7 +1783,7 @@ Token Lexer::lexOperator(bool termBefore) {
         // a MULTIBYTE inner counts (`>>÷>>`, `>><<`), so the byte-wise scan may
         // run past 4 ASCII chars — cap on codepoints, not bytes
         int innerCps = 0;
-        while (!eof() && peek() != '>' && peek() != '<' && !std::isspace((unsigned char)peek()) && innerCps < 4) {
+        while (!eof() && peek() != '>' && peek() != '<' && !ascii::isspace((unsigned char)peek()) && innerCps < 4) {
             unsigned char c0 = (unsigned char)peek();
             int len = c0 < 0x80 ? 1 : (c0 >> 5) == 0x6 ? 2 : (c0 >> 4) == 0xE ? 3 : 4;
             for (int k = 0; k < len && !eof(); k++) inner += advance();
@@ -1847,8 +1849,8 @@ Token Lexer::lexOperator(bool termBefore) {
             }
         };
         bool shifty = termBefore
-                    || (k > 2 && (std::isdigit((unsigned char)cN) || cN == '$' || cN == '(' || cN == '-' || cN == '*'
-                                  || ((std::isalpha((unsigned char)cN) || cN == '_') && !qwCloseAhead())))
+                    || (k > 2 && (ascii::isdigit((unsigned char)cN) || cN == '$' || cN == '(' || cN == '-' || cN == '*'
+                                  || ((ascii::isalpha((unsigned char)cN) || cN == '_') && !qwCloseAhead())))
                     || peek(2) == '='; // compound `+<=` is always a shift
         if (shifty) {
             std::string op; op += advance(); op += advance(); // + <
@@ -1895,7 +1897,7 @@ Token Lexer::lexOperator(bool termBefore) {
             for (size_t j = 0; j < wl; j++) if (peek(k + (int)j) != w[j]) { hit = false; break; }
             if (!hit) continue;
             char after = peek(k + (int)wl);
-            if (std::isalnum((unsigned char)after) || after == '_' || after == '-') continue; // ffoo
+            if (ascii::isalnum((unsigned char)after) || after == '_' || after == '-') continue; // ffoo
             advance();                                   // the leading ^
             while (peek() == ' ' || peek() == '\t') advance();
             std::string nm; for (size_t j = 0; j < wl; j++) nm += advance();
@@ -2117,7 +2119,7 @@ std::vector<Token> Lexer::tokenize() {
         if (isIdentStart(c) && tryRuleDecl(out, spaced)) continue;
         // leading-dot fraction `.5` / `.5i` — a method name can never start with a digit,
         // so `.<digit>` is always a fractional number (e.g. `say .5`, `$x + .5i`).
-        if (c == '.' && std::isdigit((unsigned char)peek(1))) {
+        if (c == '.' && ascii::isdigit((unsigned char)peek(1))) {
             t = lexNumber(); t.spaceBefore = spaced; out.push_back(t); continue;
         }
         // A Unicode digit/numeral is NOT a number when it directly follows a bare
@@ -2148,15 +2150,15 @@ std::vector<Token> Lexer::tokenize() {
             std::string op = "-";
             if (peek() == '=' && peek(1) != '=') { advance(); op += "="; } // −= compound assign
             t = make(Tok::Op, op);
-        } else if (inAngle && std::isdigit((unsigned char)c)) {
+        } else if (inAngle && ascii::isdigit((unsigned char)c)) {
             // inside `< … >` a digit-run is a WORD (`4_2`, `2_a`, `0o777`) — the
             // numeric/underscore validation of real literals must not fire; the
             // parser decides allomorph-ness from the final word text
             std::string w;
-            while (!eof() && (std::isalnum((unsigned char)peek()) || peek() == '_' || peek() == '.'))
+            while (!eof() && (ascii::isalnum((unsigned char)peek()) || peek() == '_' || peek() == '.'))
                 w += advance();
             t = make(Tok::Ident, w);
-        } else if (std::isdigit((unsigned char)c) ||
+        } else if (ascii::isdigit((unsigned char)c) ||
             (!afterBareSigil && (unsigned char)c >= 0x80 &&
              (ndDigitValue(codepointHere()) >= 0 || unicodeNumeralValue(codepointHere(), nvN, nvD)))) {
             t = lexNumber(); // ASCII digit, Unicode-Nd digit, or an Nl/No numeral

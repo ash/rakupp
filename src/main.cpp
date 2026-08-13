@@ -1,3 +1,4 @@
+#include "AsciiCtype.h"
 #include "Runtime.h"
 #include "Profiler.h"
 #include <cstdint>
@@ -108,7 +109,7 @@ static bool msvcStyle(const std::string& cxx) {
     std::string b = cxx;
     size_t sl = b.find_last_of("/\\");
     if (sl != std::string::npos) b = b.substr(sl + 1);
-    for (auto& ch : b) ch = (char)std::tolower((unsigned char)ch);
+    for (auto& ch : b) ch = (char)ascii::tolower((unsigned char)ch);
     if (b.size() > 4 && b.compare(b.size() - 4, 4, ".exe") == 0) b.resize(b.size() - 4);
     return b == "cl" || b == "clang-cl";
 }

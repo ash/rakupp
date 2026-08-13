@@ -1,3 +1,5 @@
+#include "CNumeric.h"
+#include "AsciiCtype.h"
 #include "Interpreter.h"
 #include "Lexer.h"
 #include "Parser.h"
@@ -671,8 +673,8 @@ static std::string rakuStrLit(const std::string& s) {
     return o + "\"";
 }
 static bool rakuIdentKey(const std::string& s) {
-    if (s.empty() || !(std::isalpha((unsigned char)s[0]) || s[0] == '_')) return false;
-    for (unsigned char c : s) if (!(std::isalnum(c) || c == '_' || c == '-')) return false;
+    if (s.empty() || !(ascii::isalpha((unsigned char)s[0]) || s[0] == '_')) return false;
+    for (unsigned char c : s) if (!(ascii::isalnum(c) || c == '_' || c == '-')) return false;
     return true;
 }
 std::string rakuRepr(const Value& v, int depth, std::set<const void*>& seen) {
@@ -980,8 +982,8 @@ bool substSelectKnowsAdverb(const std::string& k) {
         "c", "continue", "i", "ignorecase", "samecase", "ii", "s", "sigspace",
         "samespace", "ss", "samemark", "mm", "m", "ignoremark"};
     if (known.count(k)) return true;
-    if (k.size() >= 2 && std::isdigit((unsigned char)k[0])) { // :2nd / :3x
-        size_t d = 0; while (d < k.size() && std::isdigit((unsigned char)k[d])) d++;
+    if (k.size() >= 2 && ascii::isdigit((unsigned char)k[0])) { // :2nd / :3x
+        size_t d = 0; while (d < k.size() && ascii::isdigit((unsigned char)k[d])) d++;
         std::string suf = k.substr(d);
         return suf == "st" || suf == "nd" || suf == "rd" || suf == "th" || suf == "x";
     }
@@ -1464,7 +1466,7 @@ std::string doSprintf(const std::string& fmt, const ValueList& args, int langRev
         // explicit positional argument: %2$s (1-based index into the args)
         {
             size_t d = j;
-            while (d < fmt.size() && std::isdigit((unsigned char)fmt[d])) d++;
+            while (d < fmt.size() && ascii::isdigit((unsigned char)fmt[d])) d++;
             if (d > j && d < fmt.size() && fmt[d] == '$') {
                 ai = (size_t)std::atoll(fmt.substr(j, d - j).c_str()) - 1;
                 j = d + 1;
@@ -1478,13 +1480,13 @@ std::string doSprintf(const std::string& fmt, const ValueList& args, int langRev
         if (j < fmt.size() && fmt[j] == '*') { j++; long long w = nextArg().toInt();
             if (w < 0) { flags += '-'; w = -w; } if (w > SPRINTF_MAX) w = SPRINTF_MAX; width = (int)w; hasWidth = true; }
         else { long long w = 0;
-            while (j < fmt.size() && std::isdigit((unsigned char)fmt[j])) { w = w * 10 + (fmt[j]-'0'); if (w > SPRINTF_MAX) w = SPRINTF_MAX; hasWidth = true; j++; }
+            while (j < fmt.size() && ascii::isdigit((unsigned char)fmt[j])) { w = w * 10 + (fmt[j]-'0'); if (w > SPRINTF_MAX) w = SPRINTF_MAX; hasWidth = true; j++; }
             width = (int)w; }
         // precision (.digits or .* ; a negative `.*` means "no precision")
         int prec = -1;
         if (j < fmt.size() && fmt[j] == '.') { j++; prec = 0;
             if (j < fmt.size() && fmt[j] == '*') { j++; long long p = nextArg().toInt(); prec = p < 0 ? -1 : (int)std::min(p, SPRINTF_MAX); }
-            else { long long p = 0; while (j < fmt.size() && std::isdigit((unsigned char)fmt[j])) { p = p * 10 + (fmt[j]-'0'); if (p > SPRINTF_MAX) p = SPRINTF_MAX; j++; } prec = (int)p; }
+            else { long long p = 0; while (j < fmt.size() && ascii::isdigit((unsigned char)fmt[j])) { p = p * 10 + (fmt[j]-'0'); if (p > SPRINTF_MAX) p = SPRINTF_MAX; j++; } prec = (int)p; }
         }
         while (j < fmt.size() && std::strchr("lhqLVjzt", fmt[j])) j++; // length modifiers, ignored
         if (j >= fmt.size()) break;
@@ -1562,7 +1564,7 @@ std::string doSprintf(const std::string& fmt, const ValueList& args, int langRev
                         int p = (!signFlag && fv >= 0) ? prec + 1 : prec;
                         std::string spec = "%" + sf + "0" + std::to_string(width) + "." + std::to_string(p) + "f";
                         std::vector<char> buf(std::max(64, width + prec + 64));
-                        snprintf(buf.data(), buf.size(), spec.c_str(), fv);
+                        cnum::snprintf(buf.data(), buf.size(), spec.c_str(), fv);
                         out += buf.data(); break;
                     }
                 }
@@ -1571,7 +1573,7 @@ std::string doSprintf(const std::string& fmt, const ValueList& args, int langRev
                 if (prec >= 0) spec += "." + std::to_string(prec);
                 spec += conv;
                 std::vector<char> buf(std::max(64, width + prec + 64));
-                snprintf(buf.data(), buf.size(), spec.c_str(), fv);
+                cnum::snprintf(buf.data(), buf.size(), spec.c_str(), fv);
                 std::string fs = buf.data();
                 if (std::isnan(fv) || std::isinf(fv)) { // Raku spells them NaN / Inf / -Inf
                     for (const char* bad : {"nan", "NAN", "inf", "INF"}) {
@@ -1766,7 +1768,7 @@ Value Interpreter::bufBitOp(Value& buf, const std::string& m, ValueList& args) {
     bool isWrite = m.rfind("write-", 0) == 0;
     std::string kind = m.substr(isWrite ? 6 : 5); // num32 / num64 / uint64 / int32 / …
     int width = 0;
-    if (!kind.empty() && isdigit((unsigned char)kind.back()))
+    if (!kind.empty() && ascii::isdigit((unsigned char)kind.back()))
         { size_t d = kind.find_first_of("0123456789"); width = std::atoi(kind.c_str() + d); kind = kind.substr(0, d); }
     if ((kind != "num" && kind != "int" && kind != "uint") ||
         (width != 0 && width != 8 && width != 16 && width != 32 && width != 64 && width != 128) ||
@@ -2015,7 +2017,7 @@ Value makeBaggy(const ValueList& items, const std::string& kind, bool pairsAsEle
                     const char* p = w.s.c_str();
                     while (*p == ' ' || *p == '\t' || *p == '\n') p++;
                     char* end = nullptr;
-                    if (*p) std::strtod(p, &end);
+                    if (*p) cnum::strtod(p, &end);
                     while (end && (*end == ' ' || *end == '\t' || *end == '\n')) end++;
                     if (*p && (end == p || *end))
                         throw RakuError{Value::typeObj("X::Str::Numeric"),
@@ -2063,7 +2065,7 @@ static std::string renderDefault(const Param& p) {
         case NK::NameTerm: {
             const std::string& n = static_cast<const NameTerm*>(d)->name;
             // a bare type name folds; a called-by-name term does not
-            if (!n.empty() && (isupper((unsigned char)n[0]) || n == "Nil")) return n;
+            if (!n.empty() && (ascii::isupper((unsigned char)n[0]) || n == "Nil")) return n;
             return "Code.new";
         }
         default: return "Code.new";
@@ -2526,10 +2528,10 @@ static bool jsonParseValue(const std::string& s, size_t& i, Value& out, JsonCfg 
     if (s.compare(i, 4, "null") == 0)  { i += 4; out = Value::any();           return true; }
     // number: scan the same loose token JSON::Fast does, then type it exactly
     // like Str.Numeric does — that is what the real module calls on the token.
-    if (c != '-' && !std::isdigit((unsigned char)c)) return false; // JSON has no leading '+'
+    if (c != '-' && !ascii::isdigit((unsigned char)c)) return false; // JSON has no leading '+'
     size_t st = i;
     if (c == '-') i++;
-    while (i < s.size() && (std::isdigit((unsigned char)s[i]) || s[i] == '.' ||
+    while (i < s.size() && (ascii::isdigit((unsigned char)s[i]) || s[i] == '.' ||
                             s[i] == 'e' || s[i] == 'E' || s[i] == '+' || s[i] == '-')) i++;
     if (i == st) return false;
     out = numifyStr(s.substr(st, i - st));
@@ -2542,9 +2544,11 @@ static std::string jsonEncode(const Value& v) {
         case VT::Bool: return v.b ? "true" : "false";
         case VT::Int:  return v.big ? v.big->toString() : std::to_string(v.i);
         case VT::Num: case VT::Rat: {
-            std::ostringstream o;
-            o.precision(17); // round-trip doubles; default 6 digits silently truncated
-            o << v.toNum(); return o.str();
+            // round-trip doubles (default 6 digits silently truncated); cnum so a
+            // host's locale can never put a comma into JSON
+            char b[40];
+            cnum::snprintf(b, sizeof b, "%.17g", v.toNum());
+            return b;
         }
         case VT::Array: {
             std::string r = "[";
@@ -3105,7 +3109,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         }
         std::string ctor;
         if (inv.ofType.empty() || inv.ofType == "Any" || inv.ofType == "Mu") ctor = "Array";
-        else if (std::islower((unsigned char)inv.ofType[0])) ctor = "array[" + inv.ofType + "]";
+        else if (ascii::islower((unsigned char)inv.ofType[0])) ctor = "array[" + inv.ofType + "]";
         else ctor = "Array[" + inv.ofType + "]";
         std::string out = ctor + ".new(:shape(";
         for (size_t i = 0; i < inv.shape->size(); i++) { if (i) out += ", "; out += std::to_string((*inv.shape)[i]); }
@@ -3747,7 +3751,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 if (fmt[k] != '%') continue;
                 if (fmt[k + 1] == '%') { k++; continue; } // a literal percent
                 size_t j = k + 1;
-                while (j < fmt.size() && !std::isalpha((unsigned char)fmt[j])) j++;
+                while (j < fmt.size() && !ascii::isalpha((unsigned char)fmt[j])) j++;
                 if (j < fmt.size()) { out.arr->push_back(Value::str(std::string(1, fmt[j]))); k = j; }
             }
             return out;
@@ -4041,7 +4045,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     }
     if (inv.t == VT::Type && inv.s == "Encoding::Registry" && (m == "find" || m == "register")) {
         static std::map<std::string, Value> userEncodings; // fc name → registered Encoding
-        auto fc = [](std::string s) { for (auto& c : s) c = (char)std::tolower((unsigned char)c); return s; };
+        auto fc = [](std::string s) { for (auto& c : s) c = (char)ascii::tolower((unsigned char)c); return s; };
         if (m == "register") {
             // pull name + alternative-names off the given Encoding-doing object
             if (!args.empty()) {
@@ -4363,9 +4367,9 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             size_t i = 0;
             while (i < s.size()) {
                 unsigned char c = s[i];
-                if (std::isdigit(c)) { size_t j = i; while (j < s.size() && std::isdigit((unsigned char)s[j])) j++;
+                if (ascii::isdigit(c)) { size_t j = i; while (j < s.size() && ascii::isdigit((unsigned char)s[j])) j++;
                     out.arr->push_back(Value::integer(std::atoll(s.substr(i, j - i).c_str()))); i = j; }
-                else if (std::isalpha(c)) { size_t j = i; while (j < s.size() && std::isalpha((unsigned char)s[j])) j++;
+                else if (ascii::isalpha(c)) { size_t j = i; while (j < s.size() && ascii::isalpha((unsigned char)s[j])) j++;
                     out.arr->push_back(Value::str(s.substr(i, j - i))); i = j; }
                 else if (c == '*') { Value w; w.t = VT::Whatever; out.arr->push_back(w); i++; }
                 else i++;
@@ -8087,7 +8091,7 @@ void Interpreter::registerBuiltins() {
         std::string want = a[1].toStr();
         auto loose = [](const std::string& s) {
             std::string o;
-            for (char ch : s) if (std::isalnum((unsigned char)ch)) o += (char)std::tolower((unsigned char)ch);
+            for (char ch : s) if (ascii::isalnum((unsigned char)ch)) o += (char)ascii::tolower((unsigned char)ch);
             return o;
         };
         if (a.size() > 2) { // explicit property: unimatch($c, 'Hebrew', 'Block') etc.
@@ -8177,12 +8181,12 @@ void Interpreter::registerBuiltins() {
         auto putBE = [&](unsigned long long v, int w) { for (int k = w - 1; k >= 0; k--) out += (char)((v >> (8 * k)) & 0xFF); };
         for (size_t k = 0; k < tmpl.size(); k++) {
             char dir = tmpl[k];
-            if (std::isspace((unsigned char)dir)) continue;
+            if (ascii::isspace((unsigned char)dir)) continue;
             bool all = false; long long cnt = 1;
             if (k + 1 < tmpl.size() && tmpl[k + 1] == '*') { all = true; k++; }
-            else if (k + 1 < tmpl.size() && std::isdigit((unsigned char)tmpl[k + 1])) {
+            else if (k + 1 < tmpl.size() && ascii::isdigit((unsigned char)tmpl[k + 1])) {
                 size_t j = k + 1; std::string num;
-                while (j < tmpl.size() && std::isdigit((unsigned char)tmpl[j])) num += tmpl[j++];
+                while (j < tmpl.size() && ascii::isdigit((unsigned char)tmpl[j])) num += tmpl[j++];
                 cnt = std::stoll(num); k = j - 1;
             }
             if (dir == 'A' || dir == 'a' || dir == 'Z') {

@@ -19,5 +19,9 @@ grammar Log {
 }
 
 class LogActions {
-    method size($/) { make $/.Int }
+    # ($/,)».Int.sum == $/.Int — the » is deliberate: the Python driver runs
+    # under a UTF-8 locale (CPython coerces LC_CTYPE at startup), so this
+    # line fails loudly from Python if the tokenizer's character
+    # classification ever goes locale-dependent again (src/AsciiCtype.h).
+    method size($/) { make ($/,)».Int.sum }
 }

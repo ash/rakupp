@@ -1,3 +1,4 @@
+#include "AsciiCtype.h"
 #include "Lint.h"
 #include "Ast.h"
 #include <algorithm>
@@ -24,7 +25,7 @@ bool eligibleVarName(const std::string& n) {
     if (n.size() < 2 || !isSigil(n[0])) return false;
     if (n == "$_") return false;
     char t = n[1];
-    return std::isalpha((unsigned char)t) != 0 || t == '_';
+    return ascii::isalpha((unsigned char)t) != 0 || t == '_';
 }
 
 bool isNumericLiteralStr(const std::string& s) {
@@ -34,7 +35,7 @@ bool isNumericLiteralStr(const std::string& s) {
     bool dig = false, dot = false, exp = false;
     for (; i < s.size(); i++) {
         char c = s[i];
-        if (std::isdigit((unsigned char)c)) { dig = true; continue; }
+        if (ascii::isdigit((unsigned char)c)) { dig = true; continue; }
         if (c == '.' && !dot && !exp) { dot = true; continue; }
         if ((c == 'e' || c == 'E') && dig && !exp) { exp = true; dig = false; continue; }
         if ((c == '+' || c == '-') && (s[i - 1] == 'e' || s[i - 1] == 'E')) continue;
@@ -175,10 +176,10 @@ struct Linter {
             char c = pat[i];
             if (c != '$' && c != '@' && c != '%' && c != '&') continue;
             char n = pat[i + 1];
-            if (!(std::isalpha((unsigned char)n) || n == '_')) continue;
+            if (!(ascii::isalpha((unsigned char)n) || n == '_')) continue;
             size_t j = i + 1;
             while (j < pat.size() &&
-                   (std::isalnum((unsigned char)pat[j]) || pat[j] == '_' ||
+                   (ascii::isalnum((unsigned char)pat[j]) || pat[j] == '_' ||
                     pat[j] == '-' || pat[j] == '\''))
                 j++;
             markUse(pat.substr(i, j - i));
@@ -621,7 +622,7 @@ struct Linter {
             auto* c = static_cast<Call*>(m->inv.get());
             if (!c->callee && c->args.empty()) cls = c->name;
         }
-        if (cls.empty() || !std::isupper((unsigned char)cls[0])) return;
+        if (cls.empty() || !ascii::isupper((unsigned char)cls[0])) return;
         auto it = classes.find(cls);
         if (it == classes.end() || it->second->isRole) return;
         std::set<std::string> attrs;

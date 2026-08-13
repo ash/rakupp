@@ -1,3 +1,4 @@
+#include "AsciiCtype.h"
 #include "MethodCallSegment.h"
 
 // The TAIL of the method-dispatch chain.
@@ -1230,7 +1231,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             if (a.t == VT::Code) { ValueList one{Value::integer(sz)}; return callCallable(a, one).toInt(); }
             if (a.t == VT::Str) { // a non-numeric string count is an error (.skip("foo"))
                 const std::string& s = a.s; bool num = !s.empty();
-                for (char c : s) if (!std::isdigit((unsigned char)c) && c != '-' && c != '+' && c != '.' && c != ' ') { num = false; break; }
+                for (char c : s) if (!ascii::isdigit((unsigned char)c) && c != '-' && c != '+' && c != '.' && c != ' ') { num = false; break; }
                 if (!num) throw RakuError{Value::typeObj("X::Str::Numeric"), "Cannot convert string to number: '" + s + "'"};
             }
             return a.toInt();
@@ -2094,7 +2095,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 if (!inv.ofType.empty()) { bool sg; int b = Value::natWidthOfType(inv.ofType, sg);
                     if (b > 0) return Value::integer(0);
                     std::string f = inv.ofType.substr(0, inv.ofType.find(','));
-                    if (!f.empty() && std::isupper((unsigned char)f[0])) return Value::typeObj(f); }
+                    if (!f.empty() && ascii::isupper((unsigned char)f[0])) return Value::typeObj(f); }
                 return Value::any();
             };
             // push/unshift add each argument as one element; append/prepend flatten

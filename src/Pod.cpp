@@ -1,3 +1,5 @@
+#include "CNumeric.h"
+#include "AsciiCtype.h"
 #include "Pod.h"
 #include <cctype>
 #include <sstream>
@@ -13,15 +15,15 @@ static std::string ltrim(const std::string& s) {
 }
 static std::string strip(const std::string& s) {
     size_t a = 0, b = s.size();
-    while (a < b && std::isspace((unsigned char)s[a])) a++;
-    while (b > a && std::isspace((unsigned char)s[b - 1])) b--;
+    while (a < b && ascii::isspace((unsigned char)s[a])) a++;
+    while (b > a && ascii::isspace((unsigned char)s[b - 1])) b--;
     return s.substr(a, b - a);
 }
 // collapse runs of whitespace to single spaces, trimmed
 static std::string collapseWs(const std::string& s) {
     std::string out; bool sp = false;
     for (char c : s) {
-        if (std::isspace((unsigned char)c)) { sp = true; }
+        if (ascii::isspace((unsigned char)c)) { sp = true; }
         else { if (sp && !out.empty()) out += ' '; sp = false; out += c; }
     }
     return out;
@@ -71,7 +73,7 @@ static Value cfgScalar(std::string t) {
     {   // integer (with optional sign; big ones go to BigInt), else general number
         bool allDigits = !t.empty();
         for (size_t i = (t[0] == '+' || t[0] == '-') ? 1 : 0; i < t.size(); i++)
-            if (!std::isdigit((unsigned char)t[i])) { allDigits = false; break; }
+            if (!ascii::isdigit((unsigned char)t[i])) { allDigits = false; break; }
         if (t.size() == 1 && (t[0] == '+' || t[0] == '-')) allDigits = false;
         if (allDigits) {
             errno = 0;
@@ -81,7 +83,7 @@ static Value cfgScalar(std::string t) {
             return Value::bigint(BigInt::fromString(t[0] == '+' ? t.substr(1) : t));
         }
         char* end = nullptr;
-        double dv = std::strtod(t.c_str(), &end);
+        double dv = cnum::strtod(t.c_str(), &end);
         if (end && *end == '\0' && end != t.c_str()) return Value::number(dv);
     }
     return Value::str(t);
@@ -130,7 +132,7 @@ static Value cfgValue(char open, const std::string& body) {
     if (open == '<') { // whitespace-separated words; a single word is a plain Str
         std::vector<std::string> words; std::string w;
         for (char c : body) {
-            if (std::isspace((unsigned char)c)) { if (!w.empty()) { words.push_back(w); w.clear(); } }
+            if (ascii::isspace((unsigned char)c)) { if (!w.empty()) { words.push_back(w); w.clear(); } }
             else w += c;
         }
         if (!w.empty()) words.push_back(w);
@@ -174,9 +176,9 @@ static Value podParseConfig(const std::string& s) {
         if (neg) i++;
         // digit-prefix form `:034foo` = foo => 34
         std::string digits;
-        while (!neg && i < s.size() && std::isdigit((unsigned char)s[i])) digits += s[i++];
+        while (!neg && i < s.size() && ascii::isdigit((unsigned char)s[i])) digits += s[i++];
         std::string key;
-        while (i < s.size() && (std::isalnum((unsigned char)s[i]) || s[i] == '-' || s[i] == '_'))
+        while (i < s.size() && (ascii::isalnum((unsigned char)s[i]) || s[i] == '-' || s[i] == '_'))
             key += s[i++];
         if (key.empty()) continue;
         Value val = digits.empty() ? Value::boolean(!neg)
@@ -209,7 +211,7 @@ static Value podParseConfig(const std::string& s) {
 static bool cfgContLine(const std::string& ln, std::string& content) {
     size_t p = ln.find_first_not_of(" \t");
     if (p == std::string::npos || ln[p] != '=') return false;
-    if (p + 1 >= ln.size() || !std::isspace((unsigned char)ln[p + 1])) return false;
+    if (p + 1 >= ln.size() || !ascii::isspace((unsigned char)ln[p + 1])) return false;
     content = strip(ln.substr(p + 1));
     return !content.empty() && content[0] == ':';
 }
@@ -228,7 +230,7 @@ static bool matchDirective(const std::string& line, std::string& kw, std::string
     std::string t = ltrim(line);
     if (t.empty() || t[0] != '=') return false;
     size_t i = 1; std::string w;
-    while (i < t.size() && (std::isalnum((unsigned char)t[i]) || t[i] == '_')) w += t[i++];
+    while (i < t.size() && (ascii::isalnum((unsigned char)t[i]) || t[i] == '_')) w += t[i++];
     if (w.empty()) return false;
     kw = w;
     while (i < t.size() && (t[i] == ' ' || t[i] == '\t')) i++;
@@ -263,7 +265,7 @@ static bool splitLeveled(const std::string& kw, const std::string& base, int& le
     if (kw.compare(0, base.size(), base) != 0) return false;
     std::string tail = kw.substr(base.size());
     if (tail.empty()) { level = 1; return true; }
-    for (char c : tail) if (!std::isdigit((unsigned char)c)) return false;
+    for (char c : tail) if (!ascii::isdigit((unsigned char)c)) return false;
     level = std::stoi(tail);
     return true;
 }

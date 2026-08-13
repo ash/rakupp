@@ -1,3 +1,4 @@
+#include "AsciiCtype.h"
 #include "Highlight.h"
 #include <cctype>
 #include <set>
@@ -118,8 +119,8 @@ struct Scanner {
         return in.count(w) > 0;
     }
 
-    static bool identStart(char c) { return std::isalpha((unsigned char)c) || c == '_'; }
-    static bool identCont(char c) { return std::isalnum((unsigned char)c) || c == '_'; }
+    static bool identStart(char c) { return ascii::isalpha((unsigned char)c) || c == '_'; }
+    static bool identCont(char c) { return ascii::isalnum((unsigned char)c) || c == '_'; }
 
     // matching close for a bracket delimiter (else the same char)
     static char closeDelim(char o) {
@@ -150,8 +151,8 @@ struct Scanner {
                 i = j;
                 continue;
             }
-            if (std::isdigit((unsigned char)c) ||
-                (c == '.' && std::isdigit((unsigned char)at(i + 1)) && !lastWasValue)) { scanNumber(); continue; }
+            if (ascii::isdigit((unsigned char)c) ||
+                (c == '.' && ascii::isdigit((unsigned char)at(i + 1)) && !lastWasValue)) { scanNumber(); continue; }
             if (c == '$' || c == '@' || c == '%' || c == '&') { scanVariable(); continue; }
             if (identStart(c)) { scanIdent(); continue; }
             scanOperator();
@@ -230,8 +231,8 @@ struct Scanner {
     // content or spaces), so `<` stays an operator there.
     bool looksLikeAngleKey() const {
         size_t j = i + 1;
-        if (j >= s.size() || !(std::isalnum((unsigned char)s[j]) || s[j] == '_')) return false;
-        while (j < s.size() && (std::isalnum((unsigned char)s[j]) || s[j] == '_' || s[j] == '-' || s[j] == '\'')) j++;
+        if (j >= s.size() || !(ascii::isalnum((unsigned char)s[j]) || s[j] == '_')) return false;
+        while (j < s.size() && (ascii::isalnum((unsigned char)s[j]) || s[j] == '_' || s[j] == '-' || s[j] == '\'')) j++;
         return j < s.size() && s[j] == '>';
     }
 
@@ -294,18 +295,18 @@ struct Scanner {
         size_t j = i;
         const char* cls = "mi";
         if (s[j] == '0' && (at(j + 1) == 'x' || at(j + 1) == 'X')) {
-            cls = "mh"; j += 2; while (j < s.size() && (std::isxdigit((unsigned char)s[j]) || s[j] == '_')) j++;
+            cls = "mh"; j += 2; while (j < s.size() && (ascii::isxdigit((unsigned char)s[j]) || s[j] == '_')) j++;
         } else if (s[j] == '0' && (at(j + 1) == 'o' || at(j + 1) == 'b')) {
             cls = (at(j + 1) == 'b') ? "mb" : "mo"; j += 2; while (j < s.size() && (identCont(s[j]) || s[j] == '_')) j++;
         } else {
-            while (j < s.size() && (std::isdigit((unsigned char)s[j]) || s[j] == '_')) j++;
+            while (j < s.size() && (ascii::isdigit((unsigned char)s[j]) || s[j] == '_')) j++;
             // fractional part (but not a `..` range)
-            if (j < s.size() && s[j] == '.' && std::isdigit((unsigned char)at(j + 1))) {
-                cls = "mf"; j++; while (j < s.size() && (std::isdigit((unsigned char)s[j]) || s[j] == '_')) j++;
+            if (j < s.size() && s[j] == '.' && ascii::isdigit((unsigned char)at(j + 1))) {
+                cls = "mf"; j++; while (j < s.size() && (ascii::isdigit((unsigned char)s[j]) || s[j] == '_')) j++;
             }
             if (j < s.size() && (s[j] == 'e' || s[j] == 'E')) { // exponent
                 size_t k = j + 1; if (k < s.size() && (s[k] == '+' || s[k] == '-')) k++;
-                if (k < s.size() && std::isdigit((unsigned char)s[k])) { cls = "mf"; j = k; while (j < s.size() && std::isdigit((unsigned char)s[j])) j++; }
+                if (k < s.size() && ascii::isdigit((unsigned char)s[k])) { cls = "mf"; j = k; while (j < s.size() && ascii::isdigit((unsigned char)s[j])) j++; }
             }
         }
         emit(s.substr(i, j - i), cls, true);
@@ -324,8 +325,8 @@ struct Scanner {
             j++;
         }
         // special single-char vars: $/ $! $_ $0 $¢
-        if (j < s.size() && (s[j] == '/' || s[j] == '!' || std::isdigit((unsigned char)s[j]))) {
-            while (j < s.size() && std::isdigit((unsigned char)s[j])) j++;
+        if (j < s.size() && (s[j] == '/' || s[j] == '!' || ascii::isdigit((unsigned char)s[j]))) {
+            while (j < s.size() && ascii::isdigit((unsigned char)s[j])) j++;
             if (j == i + 1 && (s[j] == '/' || s[j] == '!')) j++;
             emit(s.substr(i, j - i), "nv", true); i = j; return;
         }

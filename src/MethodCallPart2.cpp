@@ -1,3 +1,5 @@
+#include "CNumeric.h"
+#include "AsciiCtype.h"
 #include "MethodCallSegment.h"
 #include <chrono> // DateTime.now subsecond stamp (portable — MSVC has no sys/time.h)
 
@@ -1086,7 +1088,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         haveNamedField = true;
                     }
                 } else if (a.t == VT::Str && a.s.find('-', 1) == std::string::npos &&
-                           !a.s.empty() && std::isdigit((unsigned char)a.s[0]) &&
+                           !a.s.empty() && ascii::isdigit((unsigned char)a.s[0]) &&
                            posN == 1) {
                     // the SINGLE string positional that is NOT ISO-shaped (no
                     // dashes): "2012/04" etc. — invalid temporal format
@@ -1106,7 +1108,13 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     if (tp != std::string::npos) {
                         std::string tstr = is.substr(tp + 1);
                         for (auto& c : tstr) if (c == ',') c = '.'; // comma decimal separator for seconds
-                        (void)sscanf(tstr.c_str(), "%lld:%lld:%lf", &h, &mi, &fs);
+                        (void)sscanf(tstr.c_str(), "%lld:%lld", &h, &mi);
+                        // seconds via cnum, not sscanf %lf: the host's LC_NUMERIC
+                        // must not decide whether ".43" parses
+                        if (size_t sc1 = tstr.find(':'); sc1 != std::string::npos) {
+                            if (size_t sc2 = tstr.find(':', sc1 + 1); sc2 != std::string::npos)
+                                fs = cnum::strtod(tstr.c_str() + sc2 + 1, nullptr);
+                        }
                         // fractional seconds are EXACT — `:00.43` is the Rat 43/100,
                         // not a double, so .day-fraction and friends stay rational
                         secV = (fs == (long long)fs) ? Value::integer((long long)fs) : Value::number(fs);
@@ -1116,7 +1124,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                             if (c2 != std::string::npos) {
                                 std::string st;
                                 for (size_t k = c2 + 1; k < tstr.size() &&
-                                     (std::isdigit((unsigned char)tstr[k]) || tstr[k] == '.'); k++) st += tstr[k];
+                                     (ascii::isdigit((unsigned char)tstr[k]) || tstr[k] == '.'); k++) st += tstr[k];
                                 size_t dot = st.find('.');
                                 if (dot != std::string::npos && dot + 1 < st.size()) {
                                     std::string digits = st.substr(0, dot) + st.substr(dot + 1);
@@ -2264,7 +2272,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                                 seed = Value::integer(0);
                             else if (at.type.rfind("num", 0) == 0) seed = Value::number(0);
                             else if (at.type == "str") seed = Value::str("");
-                            else if (std::isupper((unsigned char)at.type[0])) seed = Value::typeObj(at.type);
+                            else if (ascii::isupper((unsigned char)at.type[0])) seed = Value::typeObj(at.type);
                         }
                         bool userContainer = false;
                         if (!at.containerIs.empty() && at.sigil == '%') {
@@ -2914,8 +2922,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         double tol = toleranceDyn();
         if (std::fabs(inv.im) > tol * std::max(1.0, std::fabs(inv.n)))
             throw RakuError{Value::typeObj("X::Numeric::Real"),
-                            "Cannot convert " + std::to_string(inv.n) + (inv.im < 0 ? "" : "+") +
-                            std::to_string(inv.im) + "i to " + m + ": imaginary part not zero"};
+                            "Cannot convert " + cnum::to_string(inv.n) + (inv.im < 0 ? "" : "+") +
+                            cnum::to_string(inv.im) + "i to " + m + ": imaginary part not zero"};
         Value re = Value::number(inv.n);
         if (m == "Int") return Value::integer((long long)inv.n);
         if (m == "Rat" || m == "FatRat") return methodCall(re, m, {});

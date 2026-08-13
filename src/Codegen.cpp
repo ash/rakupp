@@ -1,3 +1,5 @@
+#include "CNumeric.h"
+#include "AsciiCtype.h"
 #include "Codegen.h"
 #include "AstSerial.h"
 #include <functional>
@@ -39,7 +41,7 @@ namespace {
 // program variables, and stay allowed.
 void requireEngineOnlyRegex(const std::string& pat, const char* what) {
     int cls = 0; bool esc = false;
-    auto identStart = [](char c) { return std::isalpha((unsigned char)c) || c == '_'; };
+    auto identStart = [](char c) { return ascii::isalpha((unsigned char)c) || c == '_'; };
     for (size_t i = 0; i < pat.size(); i++) {
         char c = pat[i];
         if (esc) { esc = false; continue; }
@@ -95,7 +97,7 @@ std::string cesc(const std::string& s) {
     bool afterHex = false; // a hex escape must not swallow a following hex-digit char
     for (unsigned char c : s) {
         bool hex = false;
-        if (afterHex && std::isxdigit(c)) o += "\" \""; // break the literal: "\x0d" "e"
+        if (afterHex && ascii::isxdigit(c)) o += "\" \""; // break the literal: "\x0d" "e"
         if (c == '\\' || c == '"') { o += '\\'; o += (char)c; }
         else if (c == '\n') o += "\\n";
         else if (c == '\t') o += "\\t";
@@ -118,7 +120,7 @@ std::string cesc(const std::string& s) {
 static std::string mangleBody(const std::string& s) {
     std::string o;
     for (unsigned char c : s) {
-        if (std::isalnum(c)) o += (char)c;
+        if (ascii::isalnum(c)) o += (char)c;
         else { char b[4]; std::snprintf(b, sizeof b, "_%02x", c); o += b; }
     }
     return o;
@@ -254,8 +256,8 @@ struct Codegen {
         return s;
     }
     static bool identKey(const std::string& k) {
-        if (k.empty() || !(std::isalpha((unsigned char)k[0]) || k[0] == '_')) return false;
-        for (unsigned char c : k) if (!(std::isalnum(c) || c == '-' || c == '_' || c == '\'')) return false;
+        if (k.empty() || !(ascii::isalpha((unsigned char)k[0]) || k[0] == '_')) return false;
+        for (unsigned char c : k) if (!(ascii::isalnum(c) || c == '-' || c == '_' || c == '\'')) return false;
         return true;
     }
     // An argument expression: a syntactic `k => v` / `:k(v)` with an identifier key
@@ -402,7 +404,7 @@ struct Codegen {
             if (v->declare) return false;
             const std::string& n = v->name;
             if (n.size() < 2 || !(n[0] == '$' || n[0] == '@' || n[0] == '%')) return false;
-            if (!(std::isalpha((unsigned char)n[1]) || n[1] == '_')) return false; // skip $*/$!//etc.
+            if (!(ascii::isalpha((unsigned char)n[1]) || n[1] == '_')) return false; // skip $*/$!//etc.
             return !local.count(n) && !topVars_.count(n); // captured enclosing local
         };
         switch (e->kind) {
@@ -480,7 +482,7 @@ struct Codegen {
             const std::string& n = v->name;
             if (n == "$_") return; // topics rebind per closure; keep the old error path
             if (n.size() < 2 || !(n[0] == '$' || n[0] == '@' || n[0] == '%')) return;
-            if (!(std::isalpha((unsigned char)n[1]) || n[1] == '_')) return;
+            if (!(ascii::isalpha((unsigned char)n[1]) || n[1] == '_')) return;
             if (!local.count(n) && !topVars_.count(n)) out.insert(n);
         };
         std::function<void(Expr*)> we = [&](Expr* e) {
@@ -765,8 +767,10 @@ struct Codegen {
             case NK::NumLit: {
                 auto* n = static_cast<NumLit*>(e);
                 if (n->imaginary) {
-                    std::ostringstream c; c.precision(17); c << "Value::complex(0, " << n->v << ")";
-                    return c.str();
+                    // cnum, not a stream: a host's locale must never put a comma
+                    // into GENERATED SOURCE (it would not compile)
+                    char nb[40]; cnum::snprintf(nb, sizeof nb, "%.17g", n->v);
+                    return "Value::complex(0, " + std::string(nb) + ")";
                 }
                 if (n->isRat) {
                     // function-local static: build the Rat once, share its immutable
@@ -778,8 +782,8 @@ struct Codegen {
                     s << "; return __r; }())";
                     return s.str();
                 }
-                std::ostringstream s; s.precision(17); s << "Value::number(" << n->v << ")";
-                return s.str();
+                char nb[40]; cnum::snprintf(nb, sizeof nb, "%.17g", n->v);
+                return "Value::number(" + std::string(nb) + ")";
             }
             case NK::StrLit:  return "Value::str(" + cesc(static_cast<StrLit*>(e)->v) + ")";
             case NK::BoolLit: return std::string("Value::boolean(") + (static_cast<BoolLit*>(e)->v ? "true" : "false") + ")";
@@ -831,7 +835,7 @@ struct Codegen {
                 if (v->name.size() > 1 && (v->name[1] == '?' || v->name[1] == '!'))
                     unsupported("special/dynamic variable '" + v->name + "'");
                 if (v->name.size() > 1 && v->name[0] == '$' &&
-                    std::all_of(v->name.begin() + 1, v->name.end(), [](unsigned char c) { return std::isdigit(c); })) {
+                    std::all_of(v->name.begin() + 1, v->name.end(), [](unsigned char c) { return ascii::isdigit(c); })) {
                     // $0/$1/… are positional captures of the current match ($/) —
                     // read through the live env (RT.regexMatch stores it there),
                     // except when $/ is a bound parameter (action methods)
@@ -1129,7 +1133,7 @@ struct Codegen {
                     std::string R = b->rhs->kind == NK::Whatever ? "Value::whatever()" : exArg(b->rhs.get());
                     return "RT.seqOp(" + L + ", " + R + ", " + (b->op == "...^" ? "true" : "false") + ")";
                 }
-                if (b->op.size() > 1 && b->op[0] == 'R' && !std::isalnum((unsigned char)b->op[1])) {
+                if (b->op.size() > 1 && b->op[0] == 'R' && !ascii::isalnum((unsigned char)b->op[1])) {
                     // reverse metaop `a R/ b` == `b / a`
                     std::string L = ex(b->lhs.get()), R = ex(b->rhs.get());
                     return "applyArith(" + cesc(b->op.substr(1)) + ", " + R + ", " + L + ")";
@@ -2063,7 +2067,7 @@ struct Codegen {
         if (n == "$_") return topics.empty() ? "" : topics.back();
         if (n.size() < 2 || n[0] != '$') return "";
         char c1 = n[1];
-        if (!(std::isalpha((unsigned char)c1) || c1 == '_')) return ""; // $!, $/, $0, $*X, $?X, $.x …
+        if (!(ascii::isalpha((unsigned char)c1) || c1 == '_')) return ""; // $!, $/, $0, $*X, $?X, $.x …
         return mangleVar(n);
     }
     // Compile e into the lane; returns a C++ `long long` rvalue ("" = lane fails).

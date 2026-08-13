@@ -26,6 +26,7 @@
 // missed use is a wrong cut. The switch below mirrors Ast.h's inventory;
 // when a node grows a child, this file is on the change-both list.
 
+#include "AsciiCtype.h"
 #include "SlimScan.h"
 #include "AstSerial.h"
 #include "Interpreter.h"
@@ -97,7 +98,7 @@ struct Scan {
         if (a && a->kind == NK::StrLit) {
             std::string p = static_cast<StrLit*>(a)->v;
             std::string norm;
-            for (char c : p) if (std::isalnum((unsigned char)c)) norm += (char)std::tolower((unsigned char)c);
+            for (char c : p) if (ascii::isalnum((unsigned char)c)) norm += (char)ascii::tolower((unsigned char)c);
             if (norm == "name" || norm == "na" || norm == "numericvalue" || norm == "nv")
                 { use(F_NAMES, fn + "('" + p + "')"); return; } // Name/Numeric_Value live in the names tables
             if (uniPropNeedsCutTables(p)) use(F_PROPS, fn + "('" + p + "')");
@@ -161,7 +162,7 @@ struct Scan {
                     size_t k = j + 1;
                     if (k < pat.size() && pat[k] == '!') k++;
                     size_t s = k;
-                    while (k < pat.size() && (std::isalnum((unsigned char)pat[k]) || pat[k] == '_')) k++;
+                    while (k < pat.size() && (ascii::isalnum((unsigned char)pat[k]) || pat[k] == '_')) k++;
                     std::string name = pat.substr(s, k - s);
                     if (k < pat.size() && pat[k] == '<') {          // value form: name<val>
                         size_t v = k + 1, vend = pat.find('>', v);
@@ -185,9 +186,9 @@ struct Scan {
                 continue;
             }
             if (c == ':' && i + 1 < pat.size() &&
-                (std::isalpha((unsigned char)pat[i+1]) || pat[i+1] == '_')) {
+                (ascii::isalpha((unsigned char)pat[i+1]) || pat[i+1] == '_')) {
                 size_t k = i + 1;
-                while (k < pat.size() && (std::isalnum((unsigned char)pat[k]) || pat[k] == '_')) k++;
+                while (k < pat.size() && (ascii::isalnum((unsigned char)pat[k]) || pat[k] == '_')) k++;
                 std::string adv = pat.substr(i + 1, k - i - 1);
                 if (adv == "my") use(F_EVAL, ":my in a regex"); // executes via evalString
                 if (k < pat.size() && pat[k] == '(')
@@ -215,12 +216,12 @@ struct Scan {
                 char n = repl[i + 1];
                 // $0 / $<name> are capture refs the engine resolves itself; a
                 // method chain on one (`$0.uc`) goes through evalString.
-                if (std::isalpha((unsigned char)n) || n == '_' || n == '*')
+                if (ascii::isalpha((unsigned char)n) || n == '_' || n == '*')
                     use(F_EVAL, "an s/// replacement interpolating a variable");
-                if (std::isdigit((unsigned char)n) || n == '<') {
+                if (ascii::isdigit((unsigned char)n) || n == '<') {
                     size_t k = i + 1;
                     if (n == '<') { k = repl.find('>', k); if (k == std::string::npos) continue; k++; }
-                    else while (k < repl.size() && std::isdigit((unsigned char)repl[k])) k++;
+                    else while (k < repl.size() && ascii::isdigit((unsigned char)repl[k])) k++;
                     if (k < repl.size() && repl[k] == '.')
                         use(F_EVAL, "an s/// replacement with a method chain");
                 }

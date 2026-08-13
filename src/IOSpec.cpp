@@ -4,6 +4,7 @@
 // the environment). They are built-in "type object" methods: `IO::Spec::Unix`
 // resolves to a VT::Type value, and methodCall routes IO::Spec::* invocants
 // here. Semantics mirror Rakudo's IO::Spec and are pinned by S32-io/io-spec-*.t.
+#include "AsciiCtype.h"
 #include "Interpreter.h"
 #include "Platform.h"
 #include <cstdlib>
@@ -99,8 +100,8 @@ struct WinVol { std::string vol; std::string rest; bool abs = false; };
 // otherwise keep the original text (splitpath/split report the volume as typed).
 WinVol winVolume(const std::string& p, bool normalize) {
     WinVol r;
-    if (p.size() >= 2 && std::isalpha((unsigned char)p[0]) && p[1] == ':') {
-        r.vol = normalize ? std::string(1, (char)std::toupper((unsigned char)p[0])) + ":" : p.substr(0, 2);
+    if (p.size() >= 2 && ascii::isalpha((unsigned char)p[0]) && p[1] == ':') {
+        r.vol = normalize ? std::string(1, (char)ascii::toupper((unsigned char)p[0])) + ":" : p.substr(0, 2);
         r.rest = p.substr(2);
         r.abs = !r.rest.empty() && wsep(r.rest[0]);
         return r;
@@ -200,7 +201,7 @@ static bool winSpecMethod(Interpreter& I, const std::string& m, ValueList& args,
     if (m == "is-absolute") {
         const std::string& p = P(0);
         bool r = (!p.empty() && wsep(p[0])) ||
-                 (p.size() >= 3 && std::isalpha((unsigned char)p[0]) && p[1] == ':' && wsep(p[2]));
+                 (p.size() >= 3 && ascii::isalpha((unsigned char)p[0]) && p[1] == ':' && wsep(p[2]));
         out = Value::boolean(r); return true;
     }
     if (m == "splitpath") {
@@ -343,7 +344,7 @@ bool ioSpecMethod(Interpreter& I, const std::string& cls, const std::string& m, 
         // drive "c:" (case kept) or UNC "//server/share" volume prefix
         auto cygVol = [](const std::string& p, std::string& vol, std::string& rest) {
             vol.clear(); rest = p;
-            if (p.size() >= 2 && std::isalpha((unsigned char)p[0]) && p[1] == ':') { vol = p.substr(0, 2); rest = p.substr(2); return; }
+            if (p.size() >= 2 && ascii::isalpha((unsigned char)p[0]) && p[1] == ':') { vol = p.substr(0, 2); rest = p.substr(2); return; }
             if (p.size() >= 3 && p[0] == '/' && p[1] == '/' && p[2] != '/') {
                 size_t i = 2; while (i < p.size() && p[i] != '/') i++;
                 size_t j = i; while (j < p.size() && p[j] == '/') j++;
@@ -403,7 +404,7 @@ bool ioSpecMethod(Interpreter& I, const std::string& cls, const std::string& m, 
             static const std::string kNoPath;
             const std::string& p = args.empty() ? kNoPath : args[0].s.str();
             out = Value::boolean(isAbs(p) ||
-                (p.size() >= 3 && std::isalpha((unsigned char)p[0]) && p[1] == ':' && p[2] == '/'));
+                (p.size() >= 3 && ascii::isalpha((unsigned char)p[0]) && p[1] == ':' && p[2] == '/'));
             return true;
         }
     }

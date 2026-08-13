@@ -1,3 +1,5 @@
+#include "CNumeric.h"
+#include "AsciiCtype.h"
 #include "Parser.h"
 #include "IntOps.h"
 #include <cstdint>
@@ -289,7 +291,7 @@ void Parser::scanOpsIn(const std::string& src, const std::string& srcPath) {
     auto asciiOnlyOp = [](const std::string& n) {
         if (n.empty()) return true;
         for (unsigned char c : n)
-            if (c > 127 || std::isalnum(c)) return false;
+            if (c > 127 || ascii::isalnum(c)) return false;
         return true;
     };
     for (const char* cat : {"infix", "prefix", "postfix", "circumfix", "postcircumfix"}) {
@@ -297,12 +299,12 @@ void Parser::scanOpsIn(const std::string& src, const std::string& srcPath) {
         for (size_t pos = src.find(needle); pos != std::string::npos;
              pos = src.find(needle, pos + 1)) {
             size_t b = pos;
-            while (b > 0 && std::isspace((unsigned char)src[b - 1])) b--;
+            while (b > 0 && ascii::isspace((unsigned char)src[b - 1])) b--;
             bool isDecl = false;
             for (const char* kw : {"sub", "multi", "proto", "only"}) {
                 size_t kl = std::strlen(kw);
                 if (b >= kl && src.compare(b - kl, kl, kw) == 0 &&
-                    (b == kl || !std::isalnum((unsigned char)src[b - kl - 1]))) { isDecl = true; break; }
+                    (b == kl || !ascii::isalnum((unsigned char)src[b - kl - 1]))) { isDecl = true; break; }
             }
             if (!isDecl) continue;
             size_t close = src.find('>', pos + needle.size());
@@ -335,16 +337,16 @@ void Parser::scanOpsIn(const std::string& src, const std::string& srcPath) {
     // importer ran (Text::Utils imports SPACE/EMPTY from Text::Utils::Vars).
     for (size_t pos = src.find("constant"); pos != std::string::npos;
          pos = src.find("constant", pos + 8)) {
-        if (pos && (std::isalnum((unsigned char)src[pos - 1]) || src[pos - 1] == '-' ||
+        if (pos && (ascii::isalnum((unsigned char)src[pos - 1]) || src[pos - 1] == '-' ||
                     src[pos - 1] == '_')) continue;                       // part of a longer word
         size_t i = pos + 8;
-        if (i >= src.size() || !std::isspace((unsigned char)src[i])) continue;
+        if (i >= src.size() || !ascii::isspace((unsigned char)src[i])) continue;
         while (i < src.size() && (src[i] == ' ' || src[i] == '\t')) i++;
-        if (i >= src.size() || !(std::isalpha((unsigned char)src[i]) || src[i] == '_')) continue;
+        if (i >= src.size() || !(ascii::isalpha((unsigned char)src[i]) || src[i] == '_')) continue;
         size_t b = i;
-        while (i < src.size() && (std::isalnum((unsigned char)src[i]) || src[i] == '_' ||
+        while (i < src.size() && (ascii::isalnum((unsigned char)src[i]) || src[i] == '_' ||
                                   (src[i] == '-' && i + 1 < src.size() &&
-                                   std::isalpha((unsigned char)src[i + 1])))) i++;
+                                   ascii::isalpha((unsigned char)src[i + 1])))) i++;
         std::string name = src.substr(b, i - b);
         // The initializer has to be on the same line, and between the name and
         // the `=` only traits may appear — anything else means we misread the
@@ -1793,9 +1795,9 @@ void Parser::skipTraits(bool onVarDecl, ExprPtr* defaultOut) {
                     auto be = std::make_unique<BlockExpr>();
                     be->body = std::move(blk->stmts);
                     lastWillBlock_ = std::move(be);
-                    lastWillPhaser_.assign(1, std::toupper((unsigned char)ph[0]));
+                    lastWillPhaser_.assign(1, ascii::toupper((unsigned char)ph[0]));
                     for (size_t k = 1; k < ph.size(); k++)
-                        lastWillPhaser_ += std::toupper((unsigned char)ph[k]);
+                        lastWillPhaser_ += ascii::toupper((unsigned char)ph[k]);
                 }
             }
             continue;
@@ -1823,7 +1825,7 @@ void Parser::skipTraits(bool onVarDecl, ExprPtr* defaultOut) {
             // so an ordinary uppercase trait (is DEPRECATED) still does nothing.
             bool wasContainer = wasIs && containers.count(cur().text);
             bool wasTypeName = wasIs && !cur().text.empty() &&
-                               std::isupper((unsigned char)cur().text[0]);
+                               ascii::isupper((unsigned char)cur().text[0]);
             if (wasContainer || wasTypeName) lastContainerIs_ = cur().text;
             if (wasIs && cur().text == "dynamic") lastIsDynamic_ = true; // my $x is dynamic
             if (wasIs && cur().text == "export") lastIsExport_ = true;   // our %x is export
@@ -2008,7 +2010,7 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
         {   // `my $0` — numeric names are reserved for captures; `my $!x`/`my $?X`
             // — those twigils cannot take a `my`-style scope
             const std::string& vn = cur().text;
-            if (vn.size() > 1 && std::isdigit((unsigned char)vn[1]))
+            if (vn.size() > 1 && ascii::isdigit((unsigned char)vn[1]))
                 throw ParseError("Cannot declare a numeric variable " + vn, cur().line,
                                  "X::Syntax::Variable::Numeric", {});
             if (vn.size() > 2 && (vn[1] == '!' || vn[1] == '?') &&
@@ -2404,10 +2406,10 @@ static ExprPtr angleWordNumeric(const std::string& w) {
     if (!w.empty() && w.back() == 'i') {
         const char* s = w.c_str();
         char* end = nullptr;
-        double re = std::strtod(s, &end);
+        double re = cnum::strtod(s, &end);
         if (end != s && end < s + w.size() - 1 && (*end == '+' || *end == '-')) {
             char* end2 = nullptr;
-            double im = std::strtod(end, &end2);
+            double im = cnum::strtod(end, &end2);
             if (end2 == s + w.size() - 1) {
                 auto nl = std::make_unique<NumLit>(re);
                 auto ni = std::make_unique<NumLit>(im); ni->imaginary = true;
@@ -2444,7 +2446,7 @@ static ExprPtr angleWordNumeric(const std::string& w) {
     size_t i = 0; bool neg = false;
     if (i < w.size() && (w[i] == '+' || w[i] == '-')) { neg = w[i] == '-'; i++; }
     size_t d0 = i;
-    while (i < w.size() && std::isdigit((unsigned char)w[i])) i++;
+    while (i < w.size() && ascii::isdigit((unsigned char)w[i])) i++;
     std::string intPart = w.substr(d0, i - d0);
     if (intPart.empty() && !(i < w.size() && w[i] == '.')) return nullptr; // allow <.5>
     auto toLL = [](const std::string& ds, long long& out) -> bool {
@@ -2470,26 +2472,26 @@ static ExprPtr angleWordNumeric(const std::string& w) {
     }
     if (!intPart.empty() && w[i] == '/') { // fraction  <1/3>
         size_t j = ++i;
-        while (i < w.size() && std::isdigit((unsigned char)w[i])) i++;
+        while (i < w.size() && ascii::isdigit((unsigned char)w[i])) i++;
         if (i == j || i != w.size()) return nullptr;
         std::string denPart = w.substr(j, i - j);
         return mkRat(intPart, denPart,
-                     (neg ? -1.0 : 1.0) * std::strtod(intPart.c_str(), nullptr) /
-                     std::max(1.0, std::strtod(denPart.c_str(), nullptr)));
+                     (neg ? -1.0 : 1.0) * cnum::strtod(intPart.c_str(), nullptr) /
+                     std::max(1.0, cnum::strtod(denPart.c_str(), nullptr)));
     }
     if (i < w.size() && w[i] == '.') { // decimal  <4.25> / <.5>
         size_t j = ++i;
-        while (i < w.size() && std::isdigit((unsigned char)w[i])) i++;
+        while (i < w.size() && ascii::isdigit((unsigned char)w[i])) i++;
         if (i == j) return nullptr;
         if (i == w.size()) {
             std::string frac = w.substr(j, i - j);
             return mkRat(intPart + frac, "1" + std::string(frac.size(), '0'),
-                         (neg ? -1.0 : 1.0) * std::strtod((intPart + "." + frac).c_str(), nullptr));
+                         (neg ? -1.0 : 1.0) * cnum::strtod((intPart + "." + frac).c_str(), nullptr));
         }
     }
     if (i < w.size() && (w[i] == 'e' || w[i] == 'E')) { // e-notation  <1e5> <4.5e-2>
         errno = 0; char* end = nullptr;
-        double v = std::strtod(w.c_str(), &end);
+        double v = cnum::strtod(w.c_str(), &end);
         if (end == w.c_str() + w.size() && errno != ERANGE)
             return std::make_unique<NumLit>(v);
     }
@@ -2700,9 +2702,9 @@ ExprPtr Parser::parsePrimary() {
                 };
                 bool ok = true;
                 for (size_t i = 2; i < bare.size() && ok; i++) {
-                    int d = std::isdigit((unsigned char)bare[i]) ? bare[i] - '0'
-                          : std::isalpha((unsigned char)bare[i])
-                              ? std::tolower((unsigned char)bare[i]) - 'a' + 10 : -1;
+                    int d = ascii::isdigit((unsigned char)bare[i]) ? bare[i] - '0'
+                          : ascii::isalpha((unsigned char)bare[i])
+                              ? ascii::tolower((unsigned char)bare[i]) - 'a' + 10 : -1;
                     if (d < 0 || d >= b) ok = false; else dec = mulAdd(dec, b, d);
                 }
                 if (ok) {
@@ -3124,12 +3126,12 @@ ExprPtr Parser::parsePrimary() {
             // (max/min/gcd/…), or the meta bases Z/X. A capitalized type name — `[Any]`,
             // `[Int]`, `[Foo]` — is NOT a reduce; it's a one-element array literal.
             bool identReduce = peek(1).kind == Tok::Ident && !peek(1).text.empty() &&
-                (peek(1).text == "Z" || peek(1).text == "X" || std::islower((unsigned char)peek(1).text[0]) ||
+                (peek(1).text == "Z" || peek(1).text == "X" || ascii::islower((unsigned char)peek(1).text[0]) ||
                  // Z/X/R fused with a word op lex as one ident: [Zand] [Xor] [Rmax]
                  ((peek(1).text[0] == 'Z' || peek(1).text[0] == 'X' || peek(1).text[0] == 'R') &&
                   peek(1).text.size() > 1 &&
                   std::all_of(peek(1).text.begin() + 1, peek(1).text.end(),
-                              [](unsigned char c){ return std::islower(c); })));
+                              [](unsigned char c){ return ascii::islower(c); })));
             if ((peek(1).kind == Tok::FatArrow || peek(1).kind == Tok::Comma) &&
                 peek(2).kind == Tok::RBracket) {
                 advance(); // [
@@ -3152,7 +3154,7 @@ ExprPtr Parser::parsePrimary() {
                 while (peek(j).text != "]" && !peek(j).spaceBefore &&
                        (peek(j).kind == Tok::Op ||
                         (peek(j).kind == Tok::Ident && !peek(j).text.empty() &&
-                         std::islower((unsigned char)peek(j).text[0]) &&
+                         ascii::islower((unsigned char)peek(j).text[0]) &&
                          j == 2 && peek(1).kind == Tok::Op && peek(1).text == "!"))) j++;
                 if (peek(j).kind == Tok::RBracket) {
                     advance(); // [
@@ -3216,9 +3218,9 @@ ExprPtr Parser::parsePrimary() {
             }
             if (peek(1).kind == Tok::Op && peek(1).text == "\\" &&
                 (peek(2).kind == Tok::Op || (peek(2).kind == Tok::Ident && !peek(2).text.empty() &&
-                    (std::isupper((unsigned char)peek(2).text[0]) ? // Z/X(+word) meta bases
+                    (ascii::isupper((unsigned char)peek(2).text[0]) ? // Z/X(+word) meta bases
                          (peek(2).text[0] == 'Z' || peek(2).text[0] == 'X' || peek(2).text[0] == 'R')
-                       : std::islower((unsigned char)peek(2).text[0])))) &&
+                       : ascii::islower((unsigned char)peek(2).text[0])))) &&
                 !peek(2).spaceBefore && peek(2).text != "]") {
                 // multi-token base ops too: [\X~] lexes as `\` `X` `~`, and the `!`
                 // negation metaop can be glued to a WORD infix ([\!eq]) — only there
@@ -3226,7 +3228,7 @@ ExprPtr Parser::parsePrimary() {
                 while (peek(j).text != "]" && !peek(j).spaceBefore &&
                        (peek(j).kind == Tok::Op ||
                         (peek(j).kind == Tok::Ident && !peek(j).text.empty() &&
-                         std::islower((unsigned char)peek(j).text[0]) &&
+                         ascii::islower((unsigned char)peek(j).text[0]) &&
                          j == 3 && peek(2).kind == Tok::Op && peek(2).text == "!"))) j++;
                 if (peek(j).kind == Tok::RBracket) {
                     advance(); // [
@@ -3943,7 +3945,7 @@ ExprPtr Parser::parsePrimary() {
             }
             // parameterized type: `Array[Int]`, `Hash[Int,Str]`, `Foo[Bar]` — a capitalized
             // runtime type parameterization with a variable: array[$T].new / Blob[$T]
-            if (!name.empty() && (std::isupper((unsigned char)name[0]) || name == "array") &&
+            if (!name.empty() && (ascii::isupper((unsigned char)name[0]) || name == "array") &&
                 isKind(Tok::LBracket) && !cur().spaceBefore &&
                 peek().kind == Tok::Var && peek(2).kind == Tok::RBracket) {
                 advance(); // [
@@ -3955,10 +3957,10 @@ ExprPtr Parser::parsePrimary() {
                 return ix;
             }
             // bareword tight against `[` whose first arg is a (capitalized) type name.
-            if (!name.empty() && (std::isupper((unsigned char)name[0]) || name == "array") &&
+            if (!name.empty() && (ascii::isupper((unsigned char)name[0]) || name == "array") &&
                 isKind(Tok::LBracket) && !cur().spaceBefore &&
                 peek().kind == Tok::Ident && !peek().text.empty() &&
-                (std::isupper((unsigned char)peek().text[0]) ||
+                (ascii::isupper((unsigned char)peek().text[0]) ||
                  [&]{ static const std::set<std::string> nat = {
                           "int","int8","int16","int32","int64","uint","uint8","uint16",
                           "uint32","uint64","byte","num","num32","num64","str"};
@@ -3975,7 +3977,7 @@ ExprPtr Parser::parsePrimary() {
                     }
                     if (isKind(Tok::Ident)) {
                         if (!params.empty() &&
-                            (std::isalnum((unsigned char)params.back()) || params.back() == ']'))
+                            (ascii::isalnum((unsigned char)params.back()) || params.back() == ']'))
                             params += ",";
                         params += advance().text;
                         // package-qualified segment: Foo::Bar
@@ -3994,7 +3996,7 @@ ExprPtr Parser::parsePrimary() {
             // type smiley on a type name: `Foo:D` / `Channel:U` / `Bar:_` — a
             // DEFINITENESS-constrained type, which the value carries so that
             // `.^name`, smartmatch and `.^base_type` all see it
-            if (!name.empty() && std::isupper((unsigned char)name[0]) &&
+            if (!name.empty() && ascii::isupper((unsigned char)name[0]) &&
                 isOp(":") && !cur().spaceBefore && peek().kind == Tok::Ident &&
                 (peek().text == "U" || peek().text == "D" || peek().text == "_")) {
                 advance(); std::string sm = advance().text; // : and the smiley letter
@@ -4046,14 +4048,14 @@ ExprPtr Parser::parsePrimary() {
             // bareword `WHAT` followed by an unrelated block.
             static const std::set<std::string> capsSubs = {
                 "WHAT", "WHO", "HOW", "VAR", "WHICH", "WHY", "DEFINITE"};
-            if (isKind(Tok::LBrace) && !name.empty() && std::isupper((unsigned char)name[0]) &&
+            if (isKind(Tok::LBrace) && !name.empty() && ascii::isupper((unsigned char)name[0]) &&
                 !capsSubs.count(name))
                 return std::make_unique<NameTerm>(name);
             // A capitalized bareword (a type) followed by whitespace then `.method` is
             // a postfix method call on the type — `Thing .new` is `Thing.new`, NOT a
             // listop call `Thing(.new)`. (Whitespace before a postfix `.` is allowed.)
             // Require an identifier after the dot so `.method` is meant, not `.=`/`.(`.
-            if (!name.empty() && std::isupper((unsigned char)name[0]) &&
+            if (!name.empty() && ascii::isupper((unsigned char)name[0]) &&
                 cur().kind == Tok::Op && cur().text == "." && cur().spaceBefore &&
                 peek().kind == Tok::Ident)
                 return std::make_unique<NameTerm>(name);
@@ -4206,9 +4208,9 @@ ExprPtr Parser::angleColonPair(const std::string& w) {
     if (w.size() < 2 || w[0] != ':') return nullptr;
     size_t i = 1; bool neg = false;
     if (w[i] == '!') { neg = true; i++; if (i >= w.size()) return nullptr; }
-    if (std::isdigit((unsigned char)w[i]) && !neg) { // :42name — value-first pair
-        size_t d = i; while (d < w.size() && std::isdigit((unsigned char)w[d])) d++;
-        if (d < w.size() && (std::isalpha((unsigned char)w[d]) || w[d] == '_')) {
+    if (ascii::isdigit((unsigned char)w[i]) && !neg) { // :42name — value-first pair
+        size_t d = i; while (d < w.size() && ascii::isdigit((unsigned char)w[d])) d++;
+        if (d < w.size() && (ascii::isalpha((unsigned char)w[d]) || w[d] == '_')) {
             std::string ds = w.substr(i, d - i);
             if (ds.size() > 18) return nullptr; // past long long: not a value-first pair
             auto pe = std::make_unique<PairExpr>();
@@ -4219,11 +4221,11 @@ ExprPtr Parser::angleColonPair(const std::string& w) {
         }
         return nullptr;
     }
-    if (!(std::isalpha((unsigned char)w[i]) || w[i] == '_')) return nullptr;
+    if (!(ascii::isalpha((unsigned char)w[i]) || w[i] == '_')) return nullptr;
     size_t j = i;
-    while (j < w.size() && (std::isalnum((unsigned char)w[j]) || w[j] == '_' ||
+    while (j < w.size() && (ascii::isalnum((unsigned char)w[j]) || w[j] == '_' ||
            ((w[j] == '-' || w[j] == '\'') && j + 1 < w.size() &&
-            std::isalpha((unsigned char)w[j + 1])))) j++;
+            ascii::isalpha((unsigned char)w[j + 1])))) j++;
     auto pe = std::make_unique<PairExpr>();
     pe->colonForm = true;
     pe->key = w.substr(i, j - i);
@@ -4440,7 +4442,7 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
                     }
                 } else {
                     std::string digits;
-                    auto isd = [&](char ch) { return base == 16 ? std::isxdigit((unsigned char)ch) : (ch >= '0' && ch <= '7'); };
+                    auto isd = [&](char ch) { return base == 16 ? ascii::isxdigit((unsigned char)ch) : (ch >= '0' && ch <= '7'); };
                     while (j < n && isd(raw[j])) digits += raw[j++];
                     emitCp(strtol(digits.c_str(), nullptr, base));
                 }
@@ -4475,7 +4477,7 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
                       }
                       tok = flat; }
                     if (!tok.empty()) {
-                        if (std::isdigit((unsigned char)tok[0])) emitCp(strtol(tok.c_str(), nullptr, 10));
+                        if (ascii::isdigit((unsigned char)tok[0])) emitCp(strtol(tok.c_str(), nullptr, 10));
                         else { int32_t cp = uniCharByName(tok); if (cp >= 0) emitCp(cp); }
                     }
                     if (comma == std::string::npos) break;
@@ -4504,7 +4506,7 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
                     // every unassigned alphabetic escape is reserved: `"\u"`.
                     // c/x/o pass through — their bracketed forms are handled
                     // above and the bare-digit forms (\c10, \x41) downstream.
-                    if (std::isalpha((unsigned char)e) &&
+                    if (ascii::isalpha((unsigned char)e) &&
                         e != 'c' && e != 'x' && e != 'o')
                         throw ParseError("Unrecognized backslash sequence: '\\" +
                                          std::string(1, e) + "'", cur().line,
@@ -4527,14 +4529,14 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
         }
         // `$/` (match) and `$!` (error) as standalone interpolated vars
         if (fS && c == '$' && (i + 1 < n) && (raw[i + 1] == '/' || raw[i + 1] == '!') &&
-            !(i + 2 < n && (std::isalnum((unsigned char)raw[i + 2]) || raw[i + 2] == '_'))) {
+            !(i + 2 < n && (ascii::isalnum((unsigned char)raw[i + 2]) || raw[i + 2] == '_'))) {
             flush();
             result->parts.push_back(std::make_unique<VarExpr>(std::string("$") + raw[i + 1]));
             i += 2;
             continue;
         }
         // numbered regex captures `$0` `$1` … and named captures `$<name>`
-        if (fS && c == '$' && (i + 1 < n) && (std::isdigit((unsigned char)raw[i + 1]) || raw[i + 1] == '<')) {
+        if (fS && c == '$' && (i + 1 < n) && (ascii::isdigit((unsigned char)raw[i + 1]) || raw[i + 1] == '<')) {
             size_t j = i + 1;
             std::string var("$");
             if (raw[j] == '<') {
@@ -4542,7 +4544,7 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
                 while (j < n && raw[j] != '>') var += raw[j++];
                 if (j < n) var += raw[j++]; // closing >
             } else {
-                while (j < n && std::isdigit((unsigned char)raw[j])) var += raw[j++];
+                while (j < n && ascii::isdigit((unsigned char)raw[j])) var += raw[j++];
             }
             // optional postfix subscript on the capture: $0[1] $<k>{...}
             for (;;) {
@@ -4562,7 +4564,7 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
         // `&name(args)` — a routine CALL interpolates (only with the parens):
         // Cro's route compiler builds "'&encode(@constraints[0])'" strings
         if (fF && c == '&' && i + 1 < n &&
-            (std::isalpha((unsigned char)raw[i + 1]) || raw[i + 1] == '_')) {
+            (ascii::isalpha((unsigned char)raw[i + 1]) || raw[i + 1] == '_')) {
             size_t j = i + 1;
             std::string fname;
             for (size_t l; j < n && identContAt(j, l); ) { fname.append(raw, j, l); j += l; }
@@ -4589,13 +4591,13 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
         // any other twigilled variable. (A bare `$:` is a compile error in Rakudo,
         // so requiring a name after the colon costs nothing.)
         bool colonPh = (i + 2 < n) && raw[i + 1] == ':' &&
-                       (std::isalpha((unsigned char)raw[i + 2]) || raw[i + 2] == '_');
+                       (ascii::isalpha((unsigned char)raw[i + 2]) || raw[i + 2] == '_');
         if (((c == '$' && fS) || (c == '@' && fA) || (c == '%' && fH)) &&
-            (i + 1 < n) && (std::isalpha((unsigned char)raw[i + 1]) || raw[i + 1] == '_' ||
+            (i + 1 < n) && (ascii::isalpha((unsigned char)raw[i + 1]) || raw[i + 1] == '_' ||
                             raw[i + 1] == '{' || raw[i + 1] == '*' || raw[i + 1] == '!' ||
                             raw[i + 1] == '.' || raw[i + 1] == '^' || colonPh ||
                             (raw[i + 1] == '?' && i + 2 < n &&
-                             (std::isalpha((unsigned char)raw[i + 2]) || raw[i + 2] == '_')) ||
+                             (ascii::isalpha((unsigned char)raw[i + 2]) || raw[i + 2] == '_')) ||
                             ((unsigned char)raw[i + 1] >= 0x80 &&
                              [&]{ size_t l; return identContAt(i + 1, l); }()))) {
             char sig = c;
@@ -4653,9 +4655,9 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
                     while (j < n && d > 0) { if (raw[j]==open) d++; else if (raw[j]==close) d--; var += raw[j++]; }
                     commit();
                 } else if (j + 1 < n && raw[j] == '.' &&
-                           (std::isalpha((unsigned char)raw[j+1]) || raw[j+1] == '_' ||
+                           (ascii::isalpha((unsigned char)raw[j+1]) || raw[j+1] == '_' ||
                             ((raw[j+1] == '^' || raw[j+1] == '?' || raw[j+1] == '&') && j + 2 < n &&
-                             (std::isalpha((unsigned char)raw[j+2]) || raw[j+2] == '_')))) {
+                             (ascii::isalpha((unsigned char)raw[j+2]) || raw[j+2] == '_')))) {
                     // bare .method — tentative; consume its name, commit only if parens follow.
                     // One META-SIGIL may sit between the dot and the name: `"$x.^name()"`
                     // is a meta-method call, `.?meth()` a maybe-call, `.&f()` a sub call.
@@ -5070,7 +5072,7 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
             }
         } else if (isKind(Tok::Var)) {
             // `sub f($0)` — numeric names can't be parameters either
-            if (cur().text.size() > 1 && std::isdigit((unsigned char)cur().text[1]))
+            if (cur().text.size() > 1 && ascii::isdigit((unsigned char)cur().text[1]))
                 throw ParseError("Cannot use a numeric variable as a parameter", cur().line,
                                  "X::Syntax::Variable::Numeric", {{"what", "parameter"}});
             // compile-time twigil vars ($?VERSION) can't be parameters —
@@ -5423,7 +5425,7 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
                     std::string ref = cur().text;
                     if (ref == "&" && peek().kind == Tok::Ident) ref = peek().text; // `&` `name`
                     else if (!ref.empty() && ref[0] == '&') ref = ref.substr(1);    // `&name` one token
-                    if (!ref.empty() && (std::isalpha((unsigned char)ref[0]) || ref[0] == '_'))
+                    if (!ref.empty() && (ascii::isalpha((unsigned char)ref[0]) || ref[0] == '_'))
                         s->nativeLibSub = ref;
                 }
                 else {
@@ -5682,12 +5684,12 @@ void Parser::checkVirtualCallInDefault(size_t defStart) {
         const Token& tk = toks_[i];
         if (tk.kind != Tok::Var || tk.text.size() <= 2) continue;
         if (tk.text[1] == '.' &&
-            (std::isalpha((unsigned char)tk.text[2]) || tk.text[2] == '_'))
+            (ascii::isalpha((unsigned char)tk.text[2]) || tk.text[2] == '_'))
             throw ParseError("Virtual call " + tk.text + " may not be used on "
                              "partially constructed object", tk.line,
                              "X::Syntax::VirtualCall", {{"call", tk.text}});
         if (tk.text[1] == '^' &&
-            (std::isalpha((unsigned char)tk.text[2]) || tk.text[2] == '_'))
+            (ascii::isalpha((unsigned char)tk.text[2]) || tk.text[2] == '_'))
             throw ParseError("Placeholder variable " + tk.text + " may not be "
                              "used here because the surrounding block does not "
                              "take a signature", tk.line,
@@ -5985,7 +5987,7 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
                         // plain Hash. Only a capitalised name, so `is rw` and the
                         // other lowercase traits are untouched.
                         const std::string& tn = cur().text;
-                        if (!tn.empty() && std::isupper((unsigned char)tn[0])) {
+                        if (!tn.empty() && ascii::isupper((unsigned char)tn[0])) {
                             a.containerIs = tn;
                             advance();
                             // QUALIFIED names keep their `::segment`s — the
@@ -6141,11 +6143,11 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
                             std::string v(1, sig[i]);
                             size_t j = i + 1;
                             if (j < sig.size() && sig[j] == '*') v += sig[j++]; // dynamic-var twigil
-                            for (; j < sig.size() && (std::isalnum((unsigned char)sig[j]) || sig[j] == '_' || sig[j] == '-'); j++) v += sig[j];
+                            for (; j < sig.size() && (ascii::isalnum((unsigned char)sig[j]) || sig[j] == '_' || sig[j] == '-'); j++) v += sig[j];
                             if (v.size() == 1 || (v.size() == 2 && v[1] == '*')) continue; // bare sigil
                             i = j - 1;
                             // an optional `= EXPR` default, up to a top-level ',' or ')'
-                            while (j < sig.size() && std::isspace((unsigned char)sig[j])) j++;
+                            while (j < sig.size() && ascii::isspace((unsigned char)sig[j])) j++;
                             if (j < sig.size() && sig[j] == '=' && (j + 1 >= sig.size() || sig[j + 1] != '=')) {
                                 j++;
                                 int depth = 0; char q = 0; std::string dflt;

@@ -1,3 +1,4 @@
+#include "CNumeric.h"
 #include "Value.h"
 #include "Interpreter.h" // RakuError (zero-denominator Rat Str-coercion throws)
 
@@ -69,7 +70,7 @@ std::string dateGist(const std::map<std::string, Value>& h, bool isDate) {
         auto sit = h.find("second");
         double sd = sit != h.end() ? sit->second.toNum() : 0.0;
         if (sd != (double)(long long)sd)
-            std::snprintf(buf, sizeof buf, "%s%04lld-%02lld-%02lldT%02lld:%02lld:%09.6f%s",
+            cnum::snprintf(buf, sizeof buf, "%s%04lld-%02lld-%02lldT%02lld:%02lld:%09.6f%s",
                           ys, f("year"), f("month"), f("day"), f("hour"), f("minute"), sd, suf);
         else
             std::snprintf(buf, sizeof buf, "%s%04lld-%02lld-%02lldT%02lld:%02lld:%02lld%s",
@@ -157,9 +158,9 @@ long long Value::toInt() const {
             // numify the whole thing, then truncate — like .Int on the numeric
             if (pos < s.size() && (s[pos] == '.' || s[pos] == 'e' || s[pos] == 'E' || s[pos] == '/')) {
                 try {
-                    double d = s[pos] == '/' ? (std::stod(s.substr(pos + 1)) == 0.0 ? 0.0
-                                                : (double)v / std::stod(s.substr(pos + 1)))
-                                             : std::stod(s);
+                    double d = s[pos] == '/' ? (cnum::stod(s.substr(pos + 1)) == 0.0 ? 0.0
+                                                : (double)v / cnum::stod(s.substr(pos + 1)))
+                                             : cnum::stod(s);
                     if (std::isnan(d)) return 0;
                     if (d >= 9223372036854775807.0) return 9223372036854775807LL;
                     if (d <= -9223372036854775808.0) return -9223372036854775807LL - 1;
@@ -203,7 +204,7 @@ static double strToNumOr0(const std::string& s) {
     const char* p = s.c_str();
     char* end = nullptr;
     errno = 0;
-    double d = std::strtod(p, &end);
+    double d = cnum::strtod(p, &end);
     if (end == p) return 0.0;   // nothing numeric at the front — stod would throw
     return d;
 }
@@ -238,7 +239,7 @@ double Value::toNum() const {
                     else if (scale < 0) den = den * BigInt(10).pow(-scale);
                     BigInt::divmod(num, den, q, r);
                     std::string lit = q.toString() + "e" + std::to_string(-scale);
-                    double d = std::strtod(lit.c_str(), nullptr);
+                    double d = cnum::strtod(lit.c_str(), nullptr);
                     return ratN->sign < 0 ? -d : d;
                 }
                 return ratN->toDouble() / ratD->toDouble();
@@ -264,17 +265,17 @@ static std::string numToStr(double n) {
     if (n == (long long)n && std::fabs(n) < 1e15) {
         return std::to_string((long long)n);
     }
-    // shortest decimal that round-trips to the same double (matches Rakudo's Num.Str)
+    // shortest decimal that round-trips to the same double (matches Rakudo's
+    // Num.Str). cnum, not ostringstream: a host's std::locale::global would
+    // put a comma in a stream, and a host's setlocale would break the
+    // round-trip check — both corrupt the output for embedders only.
+    char buf[40];
     for (int prec = 15; prec <= 17; prec++) {
-        std::ostringstream os;
-        os.precision(prec);
-        os << n;
-        if (std::strtod(os.str().c_str(), nullptr) == n) return os.str();
+        cnum::snprintf(buf, sizeof buf, "%.*g", prec, n);
+        if (cnum::strtod(buf, nullptr) == n) return buf;
     }
-    std::ostringstream os;
-    os.precision(17);
-    os << n;
-    return os.str();
+    cnum::snprintf(buf, sizeof buf, "%.17g", n);
+    return buf;
 }
 
 static std::string ratToStr(const BigInt& num, const BigInt& den) {
