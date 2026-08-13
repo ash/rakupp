@@ -268,10 +268,18 @@ sub rea-index() {
     @REA
 }
 
+# Names the ENGINE provides — never fetched, however a dist spells the dep.
+# (The REA archive even carries a `Rakudo` pseudo-dist that claims to provide
+# them, with no archive behind it — candidates() refuses it below.)
+my constant @CORE-NAMES = <Test NativeCall lib strict v6 v6.c v6.d v6.e perl6 Perl6
+                           experimental newline MONKEY MONKEY-TYPING nqp>;
+
 # Every index entry providing `name` (as dist name or module), constraints
 # applied, newest version first.
 sub candidates(@index, %want) {
     my @c = @index.grep(-> %e {
+        (%e<name> // '') ne 'Rakudo'    # the REA pseudo-dist: provides core, has no archive
+    }).grep(-> %e {
         # the extra parens are load-bearing: a subscript adverb binds to the
         # TOP operator of its expression, so without them `:exists` lands on
         # the `||` and Rakudo refuses to compile (rakupp is laxer — it binds
@@ -296,6 +304,7 @@ sub resolve(@index, @wants, %notes) {
     while @work {
         my %want = @work.shift;
         next if %want<from> eq 'native' | 'bin';
+        next if %want<name> eq any(@CORE-NAMES);   # the engine ships these
         my @c = candidates(@index, %want);
         # The archive keeps EXACT identities the live index has dropped —
         # consult it before loosening any pin (the zef-then-REA order zef
@@ -334,12 +343,16 @@ sub resolve(@index, @wants, %notes) {
         %planned{$identity} = True;
         %planned{$_} = True for (%e<provides> // {}).keys;
         %planned{%e<name>} = True;
-        for (%e<depends> // []).flat -> $dep {
-            if $dep ~~ Str {
-                @work.push(parse-identity($dep));
-            }
-            else {
-                %notes{~$dep} = 'a structured dependency this installer does not resolve yet';
+        # build-depends power the Build.rakumod hook, test-depends the suite —
+        # both run here, so both install (zef's default stance)
+        for <depends build-depends test-depends> -> $field {
+            for (%e{$field} // []).flat -> $dep {
+                if $dep ~~ Str {
+                    @work.push(parse-identity($dep));
+                }
+                else {
+                    %notes{~$dep} = 'a structured dependency this installer does not resolve yet';
+                }
             }
         }
         @plan.push(%e);
@@ -373,14 +386,40 @@ class InstallableDist {
     }
 }
 
-sub run-dist-tests(%e, $root) {
+# zef's build protocol: a Build.rakumod (or Build.pm6/Build.pm) at the dist
+# root with `method build($cwd)`, run BEFORE the tests — OpenSSL generates
+# its resources/libraries.json in it, which is why the file is in META
+# resources but in nobody's archive. The child sees the target store as
+# `-I inst#<prefix>`, so `use JSON::Fast` inside a hook resolves against the
+# build-depends this plan just installed.
+sub run-build-hook(%e, $root, Str $prefix --> Bool) {
+    my $hook = <Build.rakumod Build.pm6 Build.pm>.map({ $root.IO.add($_) }).first(*.e);
+    return True without $hook;
+    note "building %e<name>: {$hook.basename}";
+    my $p = run $*EXECUTABLE.absolute, '-I', "inst#$prefix", '-I', $root.IO.Str, '-e',
+                'use Build; my $r = Build.new.build($*CWD.Str); exit(($r === False) ?? 1 !! 0)',
+                :out, :err, :cwd($root);
+    my $out = $p.out.slurp(:close);
+    my $err = $p.err.slurp(:close);
+    if $p.exitcode != 0 {
+        note "BUILD FAILED: {$hook.basename}";
+        note $err.indent(2);
+        return False;
+    }
+    True
+}
+
+sub run-dist-tests(%e, $root, Str $prefix) {
     my @tests = $root.IO.add('t').d
         ?? $root.IO.add('t').dir.grep({ .extension eq 't' | 'rakutest' }).sort
         !! ();
     return True unless @tests;
     note "testing %e<name>: {@tests.elems} file{@tests.elems == 1 ?? '' !! 's'}";
     for @tests -> $t {
-        my $p = run $*EXECUTABLE.absolute, '-I', $root.IO.add('lib').Str, $t.Str,
+        # `-I inst#<prefix>`: the suite must see the dependencies this plan
+        # installed into the TARGET store, wherever --to pointed it
+        my $p = run $*EXECUTABLE.absolute, '-I', $root.IO.add('lib').Str,
+                    '-I', "inst#$prefix", $t.Str,
                     :out, :err, :cwd($root);
         if $p.exitcode != 0 {
             note "FAILED: {$t.basename}";
@@ -394,7 +433,7 @@ sub run-dist-tests(%e, $root) {
     True
 }
 
-sub install-one(%e, Str $prefix, Bool :$no-test, Bool :$force) {
+sub install-one(%e, Str $prefix, Bool :$no-test, Bool :$force, Bool :$test-only) {
     my $url = archive-url(%e);
     my $tmp = $*TMPDIR.add("rakupp-install-{$*PID}-{%e<name>.subst(/<-alnum>/, '-', :g)}");
     $tmp.mkdir;
@@ -429,8 +468,19 @@ sub install-one(%e, Str $prefix, Bool :$no-test, Bool :$force) {
 
     my %meta = json-decode($root.add('META6.json').slurp);
 
-    if !$no-test && !run-dist-tests(%e, $root) {
+    if !run-build-hook(%e, $root, $prefix) {
+        die "%e<name>: its build hook fails under rakupp — not installing";
+    }
+
+    if !$no-test && !run-dist-tests(%e, $root, $prefix) {
         die "%e<name>: its own test suite fails under rakupp — not installing (--no-test to override)";
+    }
+
+    # `rakupp test`: measurement, not installation — the suite verdict IS the
+    # product, and the store stays exactly as the plan's dependencies left it
+    if $test-only {
+        note "tested {%e<dist> // %e<name>} — suite green, not installed (--test)";
+        return True;
     }
 
     # bin/ scripts and declared resources ride through meta<files>
@@ -670,15 +720,20 @@ sub MAIN(
     Bool :$uninstall,          #= remove distributions (rakupp uninstall Foo)
     Bool :$reinstall,          #= uninstall then install fresh (rakupp reinstall Foo)
     Bool :$no-test,            #= skip the per-distribution test suites
+    Bool :$test-only,          #= build + run the named dists' suites; install only their deps (rakupp test)
     Bool :$force,              #= reinstall / uninstall despite refusals
     Bool :$refresh,            #= refetch the ecosystem index (else cached 24h)
     Str  :$to = %*ENV<HOME> ~ '/.raku',  #= the CURI store prefix to write
 ) {
     # `rakupp uninstall --list` is a mode mix, not a synonym for install
     # --list — refuse it rather than silently answering as a different command
-    if ($uninstall || $reinstall) && ($list || $check) {
-        note "rakupp {$uninstall ?? 'uninstall' !! 'reinstall'} --{$list ?? 'list' !! 'check'}: "
-           ~ "--list/--check belong to `rakupp install` — pick one";
+    if ($uninstall || $reinstall || $test-only) && ($list || $check) {
+        note "rakupp {$uninstall ?? 'uninstall' !! $reinstall ?? 'reinstall' !! 'test'} "
+           ~ "--{$list ?? 'list' !! 'check'}: --list/--check belong to `rakupp install` — pick one";
+        exit 2;
+    }
+    if $test-only && !@modules {
+        note "usage: rakupp test Module ...";
         exit 2;
     }
     if $list {
@@ -721,6 +776,7 @@ sub MAIN(
         note q:to/END/.trim;
             usage: rakupp install [options] Module ...
                    rakupp install --list | --check | --refresh
+                   rakupp test Module ...      run the dists' own suites; installs only their deps
                    rakupp uninstall [--force] Module ...
                    rakupp reinstall [--no-test] [--force] Module ...
             options:
@@ -759,8 +815,16 @@ sub MAIN(
         return;
     }
 
+    # under `rakupp test`, only the NAMED dists stay uninstalled — their
+    # dependencies really install, or the suites would have nothing to import
+    my %target;
+    if $test-only {
+        %target{parse-identity($_)<name>} = True for @modules;
+    }
     for @plan -> %e {
-        my $done = try install-one(%e, $to, :$no-test, :$force);
+        my $is-target = $test-only
+            && ?(%target{%e<name>} || (%e<provides> // {}).keys.first({ %target{$_} }));
+        my $done = try install-one(%e, $to, :$no-test, :$force, :test-only($is-target));
         unless $done {
             if $!.Str.contains('already installed') {
                 say "already installed: {%e<dist> // %e<name>} (use --force to reinstall)";

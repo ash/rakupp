@@ -1248,7 +1248,8 @@ int main(int argc, char** argv) {
     static std::vector<char*> installArgv;
     bool isUninstall = argc >= 2 && std::string(argv[1]) == "uninstall";
     bool isReinstall = argc >= 2 && std::string(argv[1]) == "reinstall";
-    if (argc >= 2 && (std::string(argv[1]) == "install" || isUninstall || isReinstall)) {
+    bool isTestCmd   = argc >= 2 && std::string(argv[1]) == "test";
+    if (argc >= 2 && (std::string(argv[1]) == "install" || isUninstall || isReinstall || isTestCmd)) {
         std::string exeDir = exePath.substr(0, exePath.find_last_of("/\\"));
         std::string script;
         for (const char* rel : {"/../libexec/rakupp/install.raku", "/../tools/install.raku"}) {
@@ -1264,6 +1265,7 @@ int main(int argc, char** argv) {
         installArgs.push_back(script);
         if (isUninstall) installArgs.push_back("--uninstall");
         if (isReinstall) installArgs.push_back("--reinstall");
+        if (isTestCmd)   installArgs.push_back("--test-only");
         for (int i = 2; i < argc; i++) installArgs.push_back(argv[i]);
         for (auto& s : installArgs) installArgv.push_back(const_cast<char*>(s.c_str()));
         argv = installArgv.data();
@@ -1631,6 +1633,8 @@ int main(int argc, char** argv) {
 "                               Resolves from the zef index, then the REA archive\n"
 "  rakupp uninstall MODULE ...  Remove distributions this installer put there\n"
 "  rakupp reinstall MODULE ...  Uninstall and install fresh, as one command\n"
+"  rakupp test MODULE ...       Build + run the dists' own suites against the\n"
+"                               store; installs their deps, never the dists\n"
 "  rakupp install --list        What is installed; --check: store integrity\n"
 "                               report; --refresh: refetch the cached index(es)\n"
 "\n"

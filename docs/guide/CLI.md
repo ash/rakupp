@@ -266,6 +266,8 @@ loadable by either engine.
 ```console
 rakupp install Foo::Bar          # newest satisfying, plus dependencies
 rakupp install Foo:ver<1.2.3>    # a specific version (installs are additive)
+rakupp test Foo                  # build + run Foo's own suite; installs its
+                                 # deps, never Foo — the measurement command
 rakupp uninstall Foo             # remove what THIS installer put there
 rakupp reinstall Foo             # uninstall + install fresh, one command
 rakupp install --list            # what is installed in the target store
@@ -273,6 +275,12 @@ rakupp install --check           # store integrity report; fixes nothing
 rakupp install --refresh         # refetch the cached ecosystem index(es)
 rakupp install --to=PATH Foo     # another store prefix (default ~/.raku)
 ```
+
+A distribution with a `Build.rakumod` (zef's build protocol — OpenSSL
+generates its `resources/libraries.json` in one) gets it run before its
+tests, with `build-depends` and `test-depends` installed like runtime deps.
+Test and build children see the target store as `-I inst#<prefix>`, so the
+suite imports exactly what the plan installed, wherever `--to` pointed.
 
 Resolution is zef-index-first with the community's REA archive
 (github.com/Raku/REA) as the fallback, the same order zef itself uses —

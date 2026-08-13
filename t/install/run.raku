@@ -43,7 +43,8 @@ sub sha1-of(Str $path) {
 # the same Gate::Shared with byte-identical content in every dist that asks),
 # so two dists share one content-addressed blob; :depends declares runtime deps.
 sub make-dist(Str $name, Str $modname, Str $version,
-              Bool :$failing-test, Bool :$shared, :@depends) {
+              Bool :$failing-test, Bool :$shared, :@depends, :@build-depends,
+              Bool :$build-hook) {
     my $safe = $name.subst('::', '-', :g);
     my $droot = $tmp.add("build-$safe-$version");
     my $libdir = $droot.add('lib').add($modname.split('::')[0]);
@@ -62,12 +63,31 @@ sub make-dist(Str $name, Str $modname, Str $version,
         $provides ~= ", \"Gate::Shared\": \"lib/Gate/Shared.rakumod\"";
     }
     my $deps = @depends.map({ "\"$_\"" }).join(", ");
+    my $bdeps = @build-depends.map({ "\"$_\"" }).join(", ");
     $droot.add('META6.json').spurt(qq:to/END/);
         \{ "name": "$name", "version": "$version", "auth": "test:gate",
-           "provides": \{ $provides \}, "depends": [$deps] \}
+           "provides": \{ $provides \}, "depends": [$deps],
+           "build-depends": [$bdeps] \}
         END
+    if $build-hook {
+        # the zef protocol: Build.rakumod at the root, method build($cwd).
+        # Importing the build-dep proves the hook child sees the target store;
+        # writing built.flag proves the hook ran BEFORE the tests read it.
+        # NB not .split(':')[0] — that bisects the '::' of Gate::Demo
+        my $use-bdep = @build-depends
+            ?? "use {@build-depends[0]};" !! '';
+        $droot.add('Build.rakumod').spurt(qq:to/END/);
+            $use-bdep
+            unit class Build;
+            method build(\$cwd) \{ \$cwd.IO.add('built.flag').spurt('ok'); True \}
+            END
+    }
     $droot.add('t').mkdir;
-    $droot.add('t/01-load.rakutest').spurt($failing-test
+    $droot.add('t/01-load.rakutest').spurt($build-hook
+        ?? ( @depends
+             ?? qq[use {@depends[0]}; print "1..1\\n"; print ('built.flag'.IO.e && which-version() eq '0.4.2') ?? "ok 1\\n" !! "not ok 1\\n";]
+             !! qq[print "1..1\\n"; print 'built.flag'.IO.e ?? "ok 1\\n" !! "not ok 1\\n";] )
+        !! $failing-test
         ?? qq[use $modname; print "1..1\\nnot ok 1\\n"; exit 1;]
         !! qq[use $modname; print "1..1\\n"; print which-version() eq '$version' ?? "ok 1\\n" !! "not ok 1\\n";]);
     my $tar = $tmp.add("$safe-$version.tar.gz").Str;
@@ -90,6 +110,12 @@ my ($arc5, $sha5)  = make-dist('Gate::Consumer', 'Gate::Consumer', '0.1.0',
 # migration) — resolution must fall back to the name, loudly
 my ($arc6, $sha6)  = make-dist('Gate::Pinned', 'Gate::Pinned', '0.1.0',
                                :depends(['Gate::Demo:ver<0.4.2>:auth<cpan:GONE>']));
+# the OpenSSL shape: a Build.rakumod that imports a BUILD-dependency and
+# generates a file the test suite then requires — plus a runtime dep the
+# suite imports through the target store
+my ($arc7, $sha7)  = make-dist('Gate::Built', 'Gate::Built', '1.0',
+                               :build-hook, :depends(['Gate::Demo']),
+                               :build-depends(['Gate::Demo']));
 
 $tmp.add('index.json').spurt(qq:to/END/);
     [ \{ "name": "Gate::Demo", "version": "0.4.2", "auth": "test:gate",
@@ -117,7 +143,12 @@ $tmp.add('index.json').spurt(qq:to/END/);
       \{ "name": "Gate::Pinned", "version": "0.1.0", "auth": "test:gate",
          "dist": "Gate::Pinned:ver<0.1.0>:auth<test:gate>",
          "provides": \{ "Gate::Pinned": "lib/Gate/Pinned.rakumod" \},
-         "depends": ["Gate::Demo:ver<0.4.2>:auth<cpan:GONE>"], "path": "$sha6.tar.gz" \} ]
+         "depends": ["Gate::Demo:ver<0.4.2>:auth<cpan:GONE>"], "path": "$sha6.tar.gz" \},
+      \{ "name": "Gate::Built", "version": "1.0", "auth": "test:gate",
+         "dist": "Gate::Built:ver<1.0>:auth<test:gate>",
+         "provides": \{ "Gate::Built": "lib/Gate/Built.rakumod" \},
+         "depends": ["Gate::Demo"], "build-depends": ["Gate::Demo"],
+         "path": "$sha7.tar.gz" \} ]
     END
 
 my $home = $tmp.add('home');
@@ -182,6 +213,27 @@ check %flaky<exit> != 0 && %flaky<err>.contains('test suite fails'),
       'M4: a failing test suite refuses the install';
 my %forced = installer('--no-test', 'Gate::Flaky');
 check %forced<exit> == 0, 'M4: --no-test overrides, loudly chosen';
+
+# ---- the build hook, and `rakupp test` --------------------------------------
+# Gate::Built is the OpenSSL shape: Build.rakumod imports a build-dep from
+# the target store and generates a file its own suite requires. Driven
+# through --test-only (what `rakupp test` dispatches to): deps install,
+# the target runs its hook + suite and stays OUT of the store.
+my %tst = installer('--test-only', 'Gate::Built');
+check %tst<exit> == 0
+      && %tst<err>.contains('building Gate::Built')
+      && %tst<err>.contains('suite green, not installed'),
+      'rakupp test: the build hook runs, the suite passes against the store';
+my %tst-list = installer('--list');
+check !%tst-list<out>.contains('Gate::Built'),
+      'rakupp test: the tested dist itself is NOT installed';
+my %built = installer('Gate::Built');
+check %built<exit> == 0 && %built<err>.contains('installed Gate::Built'),
+      '…and a real install of the same hooked dist works';
+my %built-gone = installer('--uninstall', 'Gate::Built');
+check %built-gone<exit> == 0, '…and uninstalls cleanly before the M6 choreography';
+my %tst-mix = installer('--test-only', '--list');
+check %tst-mix<exit> == 2, 'test --list is refused as a mode mix';
 
 # ---- reinstall: uninstall + install as one command -------------------------
 my %re1 = installer('--reinstall', 'Gate::Demo');

@@ -963,9 +963,23 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             for (long long k = 0; k < up; k++) {
                 // relative tops climb: ".".parent is "..", "..".parent "../.."
                 // (dirOf answers "." for both, which is the DIRNAME rule, not
-                // the parent rule — Test::META resolves its dist dir this way)
-                if (s == ".") s = "..";
-                else if (s == ".." || (s.size() > 2 && s.compare(s.size() - 3, 3, "/..") == 0)) s += "/..";
+                // the parent rule — Test::META resolves its dist dir this way).
+                // ONLY a pure ..-chain climbs by appending; any real path
+                // ending in "/.." chops like everything else ("a/..".parent
+                // is "a" under Rakudo). Appending there made File::Directory::
+                // Tree's mktree walk-up diverge forever on "x/bar/../baz":
+                // every appended step still contained the nonexistent "x",
+                // so .e never came true — the battery's one reliable hang.
+                bool pureDots = false;
+                if (s == "." ) { s = ".."; continue; }
+                if (!s.empty() && s[0] == '.') {
+                    pureDots = true;
+                    for (size_t i = 0; i < s.size(); i += 3)
+                        if (s.compare(i, 2, "..") != 0 ||
+                            (i + 2 < s.size() && s[i + 2] != '/')) { pureDots = false; break; }
+                    if (s.size() % 3 != 2) pureDots = false;   // "..", "../..", …
+                }
+                if (pureDots) s += "/..";
                 else s = dirOf(s);
             }
             return asIO(s);

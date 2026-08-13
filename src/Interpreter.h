@@ -830,6 +830,10 @@ public:
     std::shared_ptr<ClassInfo> howClsInfo_; // shared class of persistent .HOW metaobjects (see m == "HOW")
     std::unordered_map<std::string, std::string> classAliases_;
     const std::string& resolveClassAlias(const std::string& n) {
+        // NativeCall's legacy untyped-pointer name, still written by real
+        // dists (OpenSSL's suite) — one static alias, so every Pointer
+        // special-case downstream just works
+        if (n == "OpaquePointer") { static const std::string P = "Pointer"; return P; }
         if (classes_.count(n)) return n;
         auto it = classAliases_.find(n);
         if (it != classAliases_.end()) return it->second;
