@@ -2345,11 +2345,28 @@ Value Interpreter::ioEmit(const std::string& s, const char* dynVar, bool toErr) 
     // real FileHandle — `my $*OUT = open(...); say "x"` writes to the file, as
     // in Rakudo. (The FileHandle arm was missing: rebinding $*OUT silently
     // leaked say/print to stdout — found building -i in-place editing.)
-    if (h && (h->t == VT::Object || h->hashKind == "FileHandle")) {
-        ValueList pa{Value::str(s)};
+    // For an object, route by what the class DEFINES: its own print method,
+    // else its WRITE(Blob) sink (the IO::Handle protocol — Test::Output's
+    // capture classes override only WRITE). Routing print at an object that
+    // defines neither used to re-enter the global print through the
+    // native-parent delegation and recurse to a stack overflow.
+    if (h && h->t == VT::Object && h->obj && h->obj->cls) {
         // Outside the lock below on purpose: this re-enters the interpreter to
-        // run a user `print` method, which may itself print. Holding a
-        // non-recursive mutex across that would deadlock.
+        // run a user method, which may itself print. Holding a non-recursive
+        // mutex across that would deadlock.
+        if (h->obj->cls->findMethod("print")) {
+            ValueList pa{Value::str(s)};
+            return methodCall(*h, "print", pa);
+        }
+        if (Value* wm = h->obj->cls->findMethod("WRITE")) {
+            Value blob = Value::str(s);
+            blob.hashKind = "Blob";
+            return invokeMethod(*wm, *h, ValueList{blob}, nullptr);
+        }
+        // neither print nor WRITE: not a sink — fall through to the real stream
+    }
+    else if (h && h->hashKind == "FileHandle") {
+        ValueList pa{Value::str(s)};
         return methodCall(*h, "print", pa);
     }
     // ONE writer at a time. std::cout guarantees the BYTES of a single `<<` are
@@ -5264,6 +5281,44 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 Value lst = Value::array(); lst.isList = true; *lst.arr = std::move(items);
                 return methodCall(lst, m, args, rwArgs);
             }
+        }
+    }
+    // A user class deriving the BUILTIN IO::Handle (no ClassInfo behind it)
+    // still owes the handle protocol's small setup surface — Test::Output's
+    // capture classes call self.encoding('utf8') from their constructors.
+    // Attr-backed, added per real need, measured by the battery.
+    if (inv.t == VT::Object && inv.obj && inv.obj->cls) {
+        std::string nb;
+        for (ClassInfo* c = inv.obj->cls.get(); c && nb.empty(); c = c->parent.get())
+            nb = c->nativeParent;
+        if (nb == "IO::Handle") {
+            if (m == "encoding") {
+                if (!args.empty() && args[0].t != VT::Pair) {
+                    inv.obj->attrs["__io-encoding"] = args[0];
+                    return args[0];
+                }
+                auto it = inv.obj->attrs.find("__io-encoding");
+                return it != inv.obj->attrs.end() ? it->second : Value::str("utf8");
+            }
+            // The handle WRITE protocol: print/say/put on a derived handle
+            // encode and funnel into the class's own WRITE(Blob) — exactly
+            // how Rakudo's IO::Handle routes them, and how Test::Output's
+            // capture classes receive everything they capture.
+            if (m == "print" || m == "say" || m == "put") {
+                if (Value* wm = inv.obj->cls->findMethod("WRITE")) {
+                    std::string s;
+                    for (auto& a : args) {
+                        if (a.t == VT::Pair) continue;
+                        s += m == "say" ? methodCall(a, "gist", ValueList{}, nullptr).toStr()
+                                        : a.toStr();
+                    }
+                    if (m != "print") s += "\n";
+                    Value blob = Value::str(s);
+                    blob.hashKind = "Blob";
+                    return invokeMethod(*wm, inv, ValueList{blob}, nullptr);
+                }
+            }
+            if (m == "flush" || m == "close") return Value::boolean(true);
         }
     }
     if (std::getenv("RAKUPP_TRACE"))

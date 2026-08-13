@@ -2864,9 +2864,19 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     }
     // universal
     bool isFH = (inv.t == VT::Hash && inv.hashKind == "FileHandle");
-    if (m == "say" && !isFH) return ioEmit(gistOf(inv) + "\n", "$*OUT", false);
-    if (m == "print" && !isFH) return ioEmit(strOf(inv), "$*OUT", false);
-    if (m == "put") return ioEmit(strOf(inv) + "\n", "$*OUT", false);
+    // An object deriving the BUILTIN IO::Handle is a handle, not a Mu that
+    // prints itself: $cap.say("x") writes "x" through its WRITE sink, not
+    // the object's own gist. Fall through to the handle-protocol shim.
+    bool isUserHandle = false;
+    if (inv.t == VT::Object && inv.obj && inv.obj->cls) {
+        std::string nb;
+        for (ClassInfo* c = inv.obj->cls.get(); c && nb.empty(); c = c->parent.get())
+            nb = c->nativeParent;
+        isUserHandle = nb == "IO::Handle";
+    }
+    if (m == "say" && !isFH && !isUserHandle) return ioEmit(gistOf(inv) + "\n", "$*OUT", false);
+    if (m == "print" && !isFH && !isUserHandle) return ioEmit(strOf(inv), "$*OUT", false);
+    if (m == "put" && !isUserHandle) return ioEmit(strOf(inv) + "\n", "$*OUT", false);
     if (m == "note") return ioEmit(gistOf(inv) + "\n", "$*ERR", true);
     if (m == "Str" || (inv.t == VT::Type && m == "Stringy")) {
         // type objects stringify empty (with a warning in Rakudo) — but

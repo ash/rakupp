@@ -14624,6 +14624,7 @@ std::string Interpreter::interpRegexPattern(const std::string& in) {
     for (int pass = 0; pass < 8 && pat.find('$') != std::string::npos && tctx_.cur; pass++) {
         std::string out;
         bool inSq = false; // inside '…': a literal span — $vars do NOT interpolate there
+        bool inDq = false; // inside "…": a qq span — $vars AND {…} interpolate
         int braces = 0;    // inside `{…}` / `<?{…}>` / `**{…}`: CODE, not pattern — a
                            // `$var` there is the block's own variable and must reach the
                            // block verbatim, or `{ $c = $¢ }` arrives as `1 = $¢`.
@@ -14638,9 +14639,36 @@ std::string Interpreter::interpRegexPattern(const std::string& in) {
                 if (j < pat.size()) out += pat[j];
                 i = j; continue;
             }
+            // inside a DOUBLE-quoted span, `{…}` is qq-interpolation, not a
+            // code block: evaluate now and splice the Str (escaped for the
+            // quoted-literal parser) — /"warning!{$nl}"/ is Test::Output's
+            // spelling, and Rakudo matches it
+            if (pat[i] == '"' && !braces && !inSq) { inDq = !inDq; out += pat[i]; continue; }
+            if (inDq) {
+                if (pat[i] == '{') {
+                    int depth = 0;
+                    size_t j = i;
+                    for (; j < pat.size(); j++) {
+                        if (pat[j] == '{') depth++;
+                        else if (pat[j] == '}' && --depth == 0) { j++; break; }
+                    }
+                    if (depth == 0) {
+                        Value v = evalString(pat.substr(i + 1, j - i - 2));
+                        for (char c : v.toStr()) {
+                            if (c == '\\' || c == '"') out += '\\';
+                            out += c;
+                        }
+                        i = j - 1;
+                        continue;
+                    }
+                }
+                // $vars fall through to the interpolation below, everything
+                // else is literal text of the quoted span
+                if (pat[i] != '$') { out += pat[i]; continue; }
+            }
             if (pat[i] == '{') { braces++; out += pat[i]; continue; }
             if (pat[i] == '}') { if (braces) braces--; out += pat[i]; continue; }
-            if (pat[i] == '\'' && !braces) { inSq = !inSq; out += pat[i]; continue; }
+            if (pat[i] == '\'' && !braces && !inDq) { inSq = !inSq; out += pat[i]; continue; }
             if (inSq || braces) { out += pat[i]; continue; }
             // `$( … )` — an expression, matched as its Str. Only an IDENTIFIER
             // was interpolated here, so `$($x.bytes)` was left in the pattern
