@@ -1325,11 +1325,38 @@ Value rtSlipVal(const Value& v) {
 
 // A bareword term for native codegen — the interpreter's NameTerm tail: an
 // env-bound value, a zero-arg &routine call, a zero-arg builtin, else a type object.
+// The bareword VALUE constants — `pi`, `e`, `i`, `tau`, and the three that are
+// computed fresh on every read (`now`, `time`, `rand`). ONE definition, shared
+// by the interpreter's NameTerm eval and by rtNameTerm (the native-codegen
+// entry point). They used to be written out only in the interpreter, so a
+// COMPILED binary fell through to the "unknown bareword is a type object"
+// default: `now` became the type object `(now)` whose .Num is 0, and every
+// benchmark, timeout and timestamp in a compiled program silently read zero
+// (found benchmarking a grammar under --exe, 2026-08-13).
+bool nameTermConstant(const std::string& n, Value& out) {
+    if (n == "pi" || n == "\xcf\x80") { out = Value::number(M_PI); return true; }
+    if (n == "e")   { out = Value::number(M_E); return true; }
+    if (n == "i")   { out = Value::complex(0, 1); return true; } // imaginary unit
+    if (n == "tau" || n == "\xcf\x84") { out = Value::number(2 * M_PI); return true; }
+    if (n == "now") { // Instant: high-resolution seconds since the epoch
+        auto d = std::chrono::system_clock::now().time_since_epoch();
+        out = Value::number(std::chrono::duration<double>(d).count());
+        out.hashKind = "Instant";
+        identify(out);
+        return true;
+    }
+    if (n == "time") { out = Value::integer((long long)::time(nullptr)); return true; } // POSIX seconds (Int)
+    if (n == "rand") { out = Value::number(randDouble()); return true; }                // random Num in [0, 1)
+    return false;
+}
+
 Value Interpreter::rtNameTerm(const std::string& n) {
     if (tctx_.cur) {
         if (Value* p = tctx_.cur->find(n)) return *p;
         if (Value* f = tctx_.cur->find("&" + n)) return callCallable(*f, {});
     }
+    // after the env/&routine lookups, so a user's own `sub now {…}` still wins
+    { Value c; if (nameTermConstant(n, c)) return c; }
     auto it = builtins_.find(n);
     if (it != builtins_.end()) { ValueList none; return it->second(*this, none); }
     // builtin enum members (mirror the NameTerm eval): without the numeric
@@ -20825,18 +20852,7 @@ Value Interpreter::eval(Expr* e) {
                 Value ev = Value::enumVal(key, key == "NativeEndian" ? 0 : key == "LittleEndian" ? 1 : 2);
                 ev.enumType = "Endian"; return ev;
             }
-            if (n == "pi" || n == "π") return Value::number(M_PI);
-            if (n == "e") return Value::number(M_E);
-            if (n == "i") return Value::complex(0, 1); // imaginary unit
-            if (n == "tau" || n == "τ") return Value::number(2 * M_PI);
-            if (n == "now") { // Instant: high-resolution seconds since the epoch
-                auto d = std::chrono::system_clock::now().time_since_epoch();
-                Value v = Value::number(std::chrono::duration<double>(d).count());
-                v.hashKind = "Instant";
-                return identify(v);
-            }
-            if (n == "time") return Value::integer((long long)::time(nullptr)); // POSIX seconds (Int)
-            if (n == "rand") return Value::number(randDouble()); // random Num in [0, 1)
+            { Value c; if (nameTermConstant(n, c)) return c; } // pi/e/i/tau/now/time/rand
             static const std::set<std::string> types = {
                 "Int", "Str", "Num", "Bool", "Any", "Mu", "Cool", "Numeric", "Real",
                 "Array", "Hash", "List", "Rat", "Complex", "Nil", "Pair", "Range",

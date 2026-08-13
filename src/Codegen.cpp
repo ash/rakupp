@@ -2364,6 +2364,17 @@ struct Codegen {
             }
         }
         line(1, "  RT.classes_[" + cesc(cd->name) + "] = " + ci + "; }");
+        // The class BODY's `my` initialisers. The variables were hoisted to
+        // globals in the pre-pass; run their initialisers here, at registration
+        // time — the interpreter runs a class body when the declaration runs,
+        // which is likewise before the program body. atTopLevel_ makes the
+        // assign() path target the global rather than declaring a C++ local
+        // that would immediately go out of scope.
+        bool savedTop = atTopLevel_;
+        atTopLevel_ = true;
+        for (auto& bs : cd->body)
+            if (bs->kind == NK::ExprStmt) stmt(bs.get(), 1);
+        atTopLevel_ = savedTop;
     }
 
     // Emit the statements of a sub body (last ExprStmt becomes the return value).
@@ -2537,6 +2548,33 @@ std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcP
     std::vector<ClassDecl*> classes;
     std::map<std::string, std::vector<SubDecl*>> multiCands;
     std::vector<std::pair<std::string, long long>> enumConsts;
+    // Walk a statement's `my` declarations, handing each (name, declared type)
+    // to `fn`. Used for BOTH the top level and class bodies (see the ClassDecl
+    // branch below), so the two cannot drift.
+    using MyDeclFn = std::function<void(const std::string&, const std::string&)>;
+    auto forEachMyDecl = [](Stmt* st, const MyDeclFn& fn) {
+        auto one = [&](Expr* x) {
+            if (x->kind != NK::VarExpr || !static_cast<VarExpr*>(x)->declare) return;
+            const std::string& nm = static_cast<VarExpr*>(x)->name;
+            // sigilled vars need a name beyond the sigil; sigilless (constant \W) are fine at 1 char
+            bool sigilled = !nm.empty() && (nm[0] == '$' || nm[0] == '@' || nm[0] == '%' || nm[0] == '&');
+            if (nm.size() > 1 && nm[1] == '*') return; // dynamics live in the runtime env
+            if (sigilled ? nm.size() > 1 : !nm.empty()) fn(nm, static_cast<VarExpr*>(x)->declType);
+        };
+        if (!st || st->kind != NK::ExprStmt) return;
+        Expr* e = static_cast<ExprStmt*>(st)->e.get();
+        if (!e) return;
+        if (e->kind == NK::Assign) one(static_cast<Assign*>(e)->target.get());
+        else if (e->kind == NK::ListExpr)
+            for (auto& it : static_cast<ListExpr*>(e)->items) one(it.get());
+        else one(e);
+    };
+    MyDeclFn asTopVar = [&](const std::string& nm, const std::string& dt) {
+        g.topVars_.insert(nm);
+        if (!dt.empty()) g.topVarTypes_[nm] = dt;
+    };
+    // class-body `my` names, checked for collisions once the whole file is seen
+    std::map<std::string, std::pair<std::string, std::string>> classBodyVars; // name -> (class, declType)
     for (auto& s : prog.stmts) {
         if (s->kind == NK::SubDecl) {
             auto* d = static_cast<SubDecl*>(s.get());
@@ -2557,28 +2595,22 @@ std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcP
             if (cd->isRole || cd->isPackage) throw CodegenError{"a role/package"};
             g.classNames.insert(cd->name);
             classes.push_back(cd);
+            // A class-BODY `my` variable is lexically visible to that class's
+            // methods (`class C { my %h = …; method m { %h<a> } }`). Methods are
+            // emitted as free functions, so the variable has to live where they
+            // can see it — the same globals table top-level `my` uses. Without
+            // this the body statement was dropped entirely and the method
+            // referenced an undeclared identifier: a hard C++ compile error
+            // (found 2026-08-13 compiling a grammar's action class).
+            for (auto& bs : cd->body)
+                forEachMyDecl(bs.get(), [&](const std::string& nm, const std::string& dt) {
+                    auto it = classBodyVars.find(nm);
+                    if (it != classBodyVars.end() && it->second.first != cd->name)
+                        throw CodegenError{"the same class-body `my " + nm + "` in two classes"};
+                    classBodyVars[nm] = {cd->name, dt};
+                });
         } else if (s->kind == NK::ExprStmt) {
-            // top-level `my` declarations become C++ globals so subs can see them
-            Expr* e = static_cast<ExprStmt*>(s.get())->e.get();
-            auto collectDecl = [&](Expr* x) {
-                if (x->kind == NK::VarExpr && static_cast<VarExpr*>(x)->declare) {
-                    const std::string& nm = static_cast<VarExpr*>(x)->name;
-                    // sigilled vars need a name beyond the sigil; sigilless (constant \W) are fine at 1 char
-                    bool sigilled = !nm.empty() && (nm[0] == '$' || nm[0] == '@' || nm[0] == '%' || nm[0] == '&');
-                    if (nm.size() > 1 && nm[1] == '*') return; // dynamics live in the runtime env
-                    if (sigilled ? nm.size() > 1 : !nm.empty()) {
-                        g.topVars_.insert(nm);
-                        const std::string& dt = static_cast<VarExpr*>(x)->declType;
-                        if (!dt.empty()) g.topVarTypes_[nm] = dt;
-                    }
-                }
-            };
-            if (e) {
-                if (e->kind == NK::Assign) collectDecl(static_cast<Assign*>(e)->target.get());
-                else if (e->kind == NK::ListExpr)
-                    for (auto& it : static_cast<ListExpr*>(e)->items) collectDecl(it.get());
-                else collectDecl(e);
-            }
+            forEachMyDecl(s.get(), asTopVar); // top-level `my` → C++ global, so subs see it
         } else if (s->kind == NK::EnumDecl) {
             auto* ed = static_cast<EnumDecl*>(s.get());
             Expr* v = ed->values.get();
@@ -2593,6 +2625,21 @@ std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcP
                 g.enumKeys.insert(key);
             }
         }
+    }
+
+    // Class-body `my` variables share the globals table with the top level,
+    // and C++ scoping then does the right thing for anything a method declares
+    // or binds itself (a local or a parameter of the same name shadows it,
+    // which is also the Raku answer). What it CANNOT express is two live
+    // bindings of one name — a class-body `my $n` alongside a top-level
+    // `my $n` would collapse into a single global, and the top-level
+    // initialiser (which runs later) would silently win inside the method.
+    // Refuse that: CodegenError falls back to AOT bundling, which is slower
+    // but correct — never a wrong answer.
+    for (auto& kv : classBodyVars) {
+        if (g.topVars_.count(kv.first))
+            throw CodegenError{"a class-body `my " + kv.first + "` shadowing a top-level variable"};
+        asTopVar(kv.first, kv.second.second);
     }
 
     g.out << "// Generated by `rakupp --exe` — native transpilation of a Raku program.\n"

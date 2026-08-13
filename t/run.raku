@@ -363,6 +363,29 @@ for <examples tools/bench tools/optbench> -> $dir {
     diag("got: $got") if $got ne $want;
     try unlink $bin;
 }
+# Terms that a compiled binary once got WRONG WITHOUT SAYING SO: `now` and
+# `time` fell through to the "unknown bareword is a type object" default (so
+# `now.Num` was 0 — every timing in a compiled program read zero), and a
+# class-scoped `my` used from a method failed to compile at all. Unlike the
+# fixture above, this one runs under the interpreter too, so the test diffs
+# the two outputs against each other rather than trusting one of them.
+{
+    my $src = $ROOT.add('t/fixtures/native-terms.raku').Str;
+    my $bin = $*TMPDIR.add("rakupp-suite-terms-$*PID").Str;
+    my $interp = run($*EXECUTABLE, $src, :out).out.slurp(:close);
+    my $p = run($*EXECUTABLE, '--exe', $src, '-o', $bin, :out, :err);
+    $p.out.slurp(:close);
+    my $msg = $p.err.slurp(:close);
+    ok($p.exitcode == 0 && $msg.contains('(native)'), '--exe compiles a class-scoped `my` (it once failed to build)');
+    my $native = $p.exitcode == 0 ?? run($bin, :out).out.slurp(:close) !! '';
+    ok($native eq $interp && $interp.contains('classmy: alpha/2'),
+       'compiled and interpreted agree on class-scoped `my`, now, time and i');
+    diag("interp: $interp\nnative: $native") if $native ne $interp;
+    # the exact shape of the old bug: a type object stringifies, and .Num is 0
+    ok(!$native.contains('(now)') && !$native.contains('(time)') && $native.contains('advanced: True'),
+       '`now` advances and `time` resolves in a compiled binary');
+    try unlink $bin;
+}
 
 # ---- compile modes carry their modules ---------------------------------
 # All three compile modes must produce a SELF-SUFFICIENT binary: it has to run
