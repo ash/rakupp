@@ -215,11 +215,18 @@ sub MAIN(Str $mode = 'check', Str $file?, Int $reps = 3, Bool :$raw = False) {
     if $mode eq 'parse' {
         my @t;
         my $v;
-        for ^$reps {
+        # Progress goes to STDERR, per rep: a big document takes seconds per
+        # parse (18 MB ~ 16 s) and $reps defaults to 3, so a silent run looks
+        # hung for a minute. stdout keeps exactly one summary line, so
+        # diffing/compare flows are unaffected.
+        # NB: {$reps}, not $reps — `$reps{...}` interpolates as a HASH SUBSCRIPT
+        note "parsing $file ({$text.chars} chars) x {$reps}{$raw ?? ' raw' !! ''} …";
+        for ^$reps -> $i {
             my $t0 = now;
             my ($got, $ok) = jg-parse($text, :$raw);
             die "parse failed on $file" unless $ok;
             @t.push(((now - $t0) * 1000).Int);
+            note "  rep {$i + 1}/$reps: {@t[*-1]} ms";
             $v = $got;
         }
         say "$file\t{$text.chars} chars\t{@t.min} ms{$raw ?? ' (raw)' !! ''}  (runs: {@t.join(',')})";
