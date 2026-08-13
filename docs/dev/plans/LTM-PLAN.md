@@ -304,6 +304,43 @@ our engines (probe and NFA) rank `multi token` candidates as well — a
 pre-existing divergence in the default engine, deferred (recording
 multi-ness on `GrammarRuleMeta` is the entry ticket).
 
+**Post-flip fix 2026-08-13: `X* % sep` with a recursive element pruned
+its branch.** A textbook JSON grammar (`token value { <object> | <array>
+| … }`, lists as `<value>* % [ ',' ]`) returned Nil under the new
+default: the Rep-with-sep tail models `(sep body)*`, so when the
+element's expansion ends the prefix AT ITS ENTRY (a recursive subrule —
+`<value>` inside `value`'s own alternation), the accept landed BEHIND
+the separator, unreachable; rank() returned zero candidates and the
+ranked path prunes non-candidates. Fix (src/LtmNfa.cpp, Rep case): when
+`min == 0` and a separator exists, first build one sep-free body copy
+whose exit stays DANGLING — terminating constructs place their accept at
+the loop entry where ranking reaches it, while a fully declarative
+element leaves the copy accept-free and the branch still dies in
+ranking, which is exactly Rakudo's own behavior. Oracle grid (Rakudo
+2026.07, entry always through `value { <array> | … }`, inputs
+`[]`/`[1]`/`[1,2]`; after the fix rakupp is cell-for-cell identical):
+
+| element shape, list syntax                  | `[]` | `[1]` | `[1,2]` |
+|---------------------------------------------|------|-------|---------|
+| recursive `<value>* % ','` (bare OR wrapped, `%` or `%%`) | ok | ok | ok |
+| declarative `<number>* % ','` / `\d* % ','` (bare OR wrapped, `%` or `%%`) | ok | FAIL | FAIL |
+| `+ %` (min ≥ 1), recursive or declarative   | FAIL | ok  | ok      |
+| nested groups, no `%` (`[ X [ ',' X ]* ]?`) | ok   | ok    | ok      |
+
+The declarative-element row is a SHARED Rakudo quirk faithfully kept
+(the modeled sep-loop can't reach a first element, so any non-empty
+list dies in ranking; wrapping is irrelevant). `+ %` is correct on both
+engines because the min-unroll builds its first element sep-free — the
+same mechanism as the fix. Gates:
+regression file now 18 checks (t16-t18 pin the fix + the kept quirk)
+green on both engines, suite 442/442, longest-alternative.t holds 47
+(probe 45), proto-token-ltm.t 10/10, regex.t 41/55 identical under both
+rankers (pre-existing), perf clean (interleaved A/B pre/post-fix: fib
+and regex benches within noise; a same-day perf-guard FAIL was traced
+to a 15-hour orphaned Cro tcp.rakutest at 100% CPU plus a running
+battery sweep — the PRE-fix binary failed the gate identically, and
+the baseline predates the tree's WIP).
+
 1. **NFA builder + offline harness.** `LtmNfa` with unit tests; a dump tool
    (`--ltm-dump` or a debug env var) that prints, for a given regex and
    input, the ranked order under probe vs NFA. Run it over a corpus

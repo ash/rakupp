@@ -225,6 +225,19 @@ int LtmNfa::buildNode(const void* nv, int from, int branch, int litDepth, int de
                 cur = buildNode(body, cur, branch, states_[cur].litDepth, depth + 1);
                 if (cur < 0) return -1;
             }
+            // `X* % Y` (min 0): the FIRST element takes no leading separator,
+            // but the sep-included tail below models `(Y X)*` — so an accept
+            // that X's expansion places at its ENTRY (a recursive subrule, a
+            // {…}) would otherwise sit BEHIND the separator, unreachable, and
+            // the whole branch ranks as unmatchable (a JSON grammar's
+            // `<value>* % ','` reached through `|` pruned its only viable
+            // branch). Build one sep-free body copy whose exit stays DANGLING:
+            // terminating constructs put their accept at the loop entry where
+            // the ranking can reach it (oracle grid C1/C2/C10), while a fully
+            // declarative element leaves the copy accept-free and the branch
+            // still prunes — which is what Rakudo does too (grid C3-C6).
+            if (n->sep && n->min == 0 && mx != 0)
+                buildNode(body, cur, branch, states_[cur].litDepth, depth + 1);
             if (mx < 0) { // unbounded tail: one ε-looped copy (sep included)
                 int loopIn = cur;
                 int e;

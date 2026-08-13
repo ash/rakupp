@@ -113,6 +113,24 @@ check('a lexical rule (sigspace) expands into the prefix',
       ltm-run('t15.raku', q{my rule r { foo bar }; say ("foo  bar" ~~ / <r> | foob /).Str;}),
       "foo  bar\n");
 
-unlink $work.add($_) for <t1.raku t2.raku t3.raku t4.raku t5.raku t6.raku t7.raku t8.raku t9.raku t10.raku t11.raku t12.raku t13.raku t14.raku t15.raku>;
+# 9. `X* % Y` under `|`: the FIRST element takes no leading separator, so a
+#    recursive element's prefix ends (accept) at the loop ENTRY — the branch
+#    must stay a viable candidate (a JSON grammar's `<value>* % ','` was
+#    pruned outright: the sep-first loop hid the accept behind the comma).
+check('sep-quantifier with a recursive element is not pruned',
+      ltm-run('t16.raku', q{grammar G { token value { <array> | <number> }; token array { '[' [ <value>* % [ ',' ] ] ']' }; token number { \d+ } }; say G.parse('[1,2]', :rule<value>) ?? 'ok' !! 'nil';}),
+      "ok\n");
+#    ... while a fully DECLARATIVE element keeps Rakudo's own behavior: the
+#    modeled sep-loop cannot reach a first element, so a non-empty list dies
+#    in ranking and the branch is pruned (oracle-verified on 2026.07; if
+#    Rakudo ever fixes this, this expectation flips WITH it)
+check('sep-quantifier with a declarative element prunes like Rakudo',
+      ltm-run('t17.raku', q{grammar G { token value { <array> | <jx> }; token array { '[' <number>* % ',' ']' }; token number { \d+ }; token jx { 'x' } }; say G.parse('[1]', :rule<value>) ?? 'ok' !! 'nil';}),
+      "nil\n");
+check('sep-quantifier: empty list still matches',
+      ltm-run('t18.raku', q{grammar G { token value { <array> | <jx> }; token array { '[' <number>* % ',' ']' }; token number { \d+ }; token jx { 'x' } }; say G.parse('[]', :rule<value>) ?? 'ok' !! 'nil';}),
+      "ok\n");
+
+unlink $work.add($_) for <t1.raku t2.raku t3.raku t4.raku t5.raku t6.raku t7.raku t8.raku t9.raku t10.raku t11.raku t12.raku t13.raku t14.raku t15.raku t16.raku t17.raku t18.raku>;
 say $fails == 0 ?? 'PASS' !! 'FAIL';
 exit($fails ?? 1 !! 0);
