@@ -87,7 +87,7 @@ struct GrammarHooks {
     // node assembly so rules with no method cost nothing; onRule fires it.
     // Fired on FRESH completions only — a memo replay reuses the first firing.
     std::function<bool(const std::string&)> hasAction;
-    std::function<void(const ParseNode&)> onRule;
+    std::function<void(ParseNode)> onRule; // by value: fire sites move their freshly built node in
     std::function<bool(const std::string&, long, long, const NamedMap&, const ParamMap&)> assertPass; // <?{…}>
     std::function<void(const std::string&, long, long, const NamedMap&, const ParamMap&)> run;        // :my / {…}
     // Same as `run`, but carrying the POSITIONAL captures too so the block's `$/`

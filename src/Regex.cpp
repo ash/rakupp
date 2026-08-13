@@ -3326,7 +3326,7 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
             fp.to = me.capFrom >= 0 ? me.capTo : me.end;
             fp.caps = me.caps; fp.named = me.named; fp.kids = me.kids;
             fp.listNames = me.listNames; fp.listCaps = me.listCaps; fp.capReps = me.capReps;
-            st.hooks->onRule(fp);
+            st.hooks->onRule(std::move(fp));
         }
         if (!memoise) {
             if (!me.matched) return false;
@@ -3376,7 +3376,7 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
             fp.listNames = re->listNamesPtr(); fp.listCaps = re->listCapsPtr();
             if (!sub.capReps.empty())
                 fp.capReps = std::make_shared<const std::map<int, std::vector<std::pair<long,long>>>>(sub.capReps);
-            st.hooks->onRule(fp);
+            st.hooks->onRule(std::move(fp));
         }
         return finish(record(end, sub.caps, sub.named,
                              kidsCopy,

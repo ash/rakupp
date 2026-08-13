@@ -15871,17 +15871,31 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
     if (actions.t == VT::Object && actions.obj) actCls = actions.obj->cls.get();
     else if (actions.t == VT::Type) { auto it = classes_.find(actions.s); if (it != classes_.end()) actCls = it->second.get(); }
 
-    // run the actions method for `name` (if any) on a freshly built Match, setting .made
-    auto runAction = [&](const std::string& name, Value& mv) {
-        if (!haveActions || !actCls) return;
-        Value* method = actCls->findMethod(name);
-        if (!method) {
+    // Resolve the action method for a rule name ONCE per parse: build() asks
+    // for every node of the tree (twice, for actualRule + name), and the class
+    // chain walk plus the guillemet normalisation showed up in the grammar-json
+    // profile. The grammar and actions object are fixed for the parse, so a
+    // per-parse cache (negative entries included) is exact.
+    auto actMethodCache = std::make_shared<std::unordered_map<std::string, Value*>>();
+    auto resolveAction = [actCls, actMethodCache](const std::string& name) -> Value* {
+        auto hit = actMethodCache->find(name);
+        if (hit != actMethodCache->end()) return hit->second;
+        Value* method = actCls ? actCls->findMethod(name) : nullptr;
+        if (!method && actCls) {
             // A `:sym«baz»` candidate is acted on by `method X:sym<baz>` — normalise the
             // guillemet sym to the canonical angle form and retry.
             auto g = name.find(":sym\xC2\xAB");
             if (g != std::string::npos) { auto e = name.find("\xC2\xBB", g + 6);
                 if (e != std::string::npos) method = actCls->findMethod(name.substr(0, g) + ":sym<" + name.substr(g + 6, e - (g + 6)) + ">" + name.substr(e + 2)); }
         }
+        (*actMethodCache)[name] = method;
+        return method;
+    };
+
+    // run the actions method for `name` (if any) on a freshly built Match, setting .made
+    auto runAction = [&](const std::string& name, Value& mv) {
+        if (!haveActions || !actCls) return;
+        Value* method = resolveAction(name);
         if (!method) return;
         tctx_.makeTargets.push_back(&mv);
         try { invokeMethod(*method, actions, {mv}); }
@@ -16131,7 +16145,8 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
         // body actually contains the block: a parent and its only child share the
         // span (`token TOP { <number> {make …} }`), and the make is the parent's.
         auto mc = pendingMakeCode->find({pn.from, pn.to});
-        if (std::getenv("RAKUPP_DEBUG_MAKE"))
+        static const bool debugMake = std::getenv("RAKUPP_DEBUG_MAKE") != nullptr; // per NODE otherwise (profiled)
+        if (debugMake)
             fprintf(stderr, "[make] node=%s span=%ld..%ld queued=%s\n", pn.name.c_str(), pn.from, pn.to,
                     mc != pendingMakeCode->end() && !mc->second.empty() ? mc->second.front().c_str() : "(none)");
         size_t makePick = 0;
@@ -16214,19 +16229,14 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
     // Log completed subrules that HAVE an action method: on an overall failure
     // their actions replay in completion order (see completionLog above).
     if (haveActions && actCls) {
-        gm.hooks.hasAction = [actCls](const std::string& nm) -> bool {
-            if (actCls->findMethod(nm)) return true;
-            auto g2 = nm.find(":sym\xC2\xAB"); // :sym«…» → canonical :sym<…>
-            if (g2 != std::string::npos) { auto e2 = nm.find("\xC2\xBB", g2 + 6);
-                if (e2 != std::string::npos &&
-                    actCls->findMethod(nm.substr(0, g2) + ":sym<" + nm.substr(g2 + 6, e2 - (g2 + 6)) + ">" + nm.substr(e2 + 2)))
-                    return true; }
+        gm.hooks.hasAction = [resolveAction](const std::string& nm) -> bool {
+            if (resolveAction(nm)) return true; // cached; guillemet form included
             size_t c = nm.find(':'); // proto candidate falls back to the base name
-            if (c != std::string::npos && c > 0 && actCls->findMethod(nm.substr(0, c))) return true;
+            if (c != std::string::npos && c > 0 && resolveAction(nm.substr(0, c))) return true;
             return false;
         };
-        gm.hooks.onRule = [completionLog](const ParseNode& pn) {
-            completionLog->push_back(pn); // kids are frozen shared_ptrs — cheap
+        gm.hooks.onRule = [completionLog](ParseNode pn) {
+            completionLog->push_back(std::move(pn)); // moved end-to-end from the fire site
         };
     }
 
