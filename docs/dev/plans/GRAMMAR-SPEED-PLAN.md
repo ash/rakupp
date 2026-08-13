@@ -99,6 +99,24 @@ Match-object construction plus per-action interpreter dispatch.
    `--exe` (sub hoisting), where Rakudo switches at the declaration
    point. Also, class-body statements other than `my` declarations
    (nested classes, `use`, lexical regexes) are still dropped by `--exe`.
+5. **Rakupp::JSON's C extension parsed quadratically above ~1 MB — FIXED
+   2026-08-13** (in ~/raku-modules/Rakupp-JSON, not this repo). Found while
+   reconciling a user's fez.json timing against the built-in codec's: two
+   "native" backends, 46× apart on one file. `jstring` sized its decode
+   buffer to *the rest of the document*, and the callers malloc'd and freed
+   a fresh one **per string** — so a document with K strings did K
+   allocations of O(N) bytes, and the profile was `free_medium`/`madvise`,
+   not parsing. Now one buffer per parse on the parser state, grown
+   geometrically and bounded by the string actually being read (an object's
+   key is copied out before its value recurses, since that reuses the same
+   bytes). Per-doubling went ×1.9/×5.3/×9.1/×4.9 → a flat **×2, 65-70 MB/s
+   at every rung**; fez.json **3,316 → 68 ms (48×)**, now faster than the
+   built-in codec. Gates: module t/ green on both engines (35 + 122), the
+   9.6 MB and 18.4 MB documents round-trip byte-identical to the built-in
+   codec, and 7 targeted edge documents (buffer reuse across nesting,
+   300-byte keys, empty and escape-heavy strings, surrogate pairs) match.
+   The module's docs benchmarked ONE size, which is exactly what hid this;
+   its README now carries the size ladder.
 
 ## The four-way picture (api.json, 203 KB — who parses JSON fastest where)
 
