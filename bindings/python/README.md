@@ -28,6 +28,39 @@ everything = m.tree()                  # eager, opt-in: costs ~1.4x more than
                                        # the parse itself on the gate corpus
 ```
 
+## Try it in two minutes
+
+From the repo root — build the shared library once, then run the worked
+example ([../examples/shopping.py](../examples/shopping.py), which parses a
+shopping list with [../examples/shopping.raku](../examples/shopping.raku)):
+
+```bash
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DRAKUPP_BUILD_SHARED=ON
+cmake --build build -j
+```
+
+```bash
+RAKUPP_LIB=$PWD/build/librakupp.dylib python3 bindings/examples/shopping.py
+```
+
+Expected output (`.so` instead of `.dylib` on Linux):
+
+```
+3 items
+milk x 2
+bread x 1
+eggs x 12
+total, computed in Raku: 15
+as plain Python data: {'item': [{'name': 'milk', 'qty': '2'}, {'name': 'bread', 'qty': '1'}, {'name': 'eggs', 'qty': '12'}]}
+line 2 column 7 while trying <qty>
+```
+
+If you see this, the binding works. The example is short and commented — it
+shows compiling a grammar, lazy field access, `.made` (a value computed by
+Raku actions during the parse), `.tree()` (the whole match as dicts and
+lists), and a diagnosed parse failure. [../README.md](../README.md) has the
+same example in every other language.
+
 ## Installing and finding the library
 
 The package is pip-installable (`pip install -e bindings/python` from a

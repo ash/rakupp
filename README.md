@@ -227,6 +227,17 @@ any static page to make Raku snippets runnable — handy for docs, tutorials, or
 course. Build it with `rakujs/build.sh`; details in
 [rakujs/README.md](rakujs/README.md).
 
+## Use Raku grammars from Python, JavaScript, Go, Rust, C++
+
+`librakupp` embeds the interpreter behind a small C ABI, and
+**[bindings/](bindings/README.md)** wraps it for five host languages: write a
+grammar in a `.raku` file, parse from Python/JS/Go/Rust/C++, read the results
+as native values (with `.made` values computed by Raku actions during the
+parse). Each language has its own guide with a runnable example —
+[bindings/examples/](bindings/examples/README.md) is the same small program
+in all five. A standing gate byte-compares every binding's output against
+plain `rakupp`'s.
+
 ## Documentation
 
 ### Start here

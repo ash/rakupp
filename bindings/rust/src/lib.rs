@@ -295,6 +295,9 @@ impl Match {
     pub fn tree(&self) -> Result<Tree, Error> {
         Node { m: self, steps: vec![] }.tree()
     }
+    pub fn made(&self) -> Result<Tree, Error> {
+        Node { m: self, steps: vec![] }.made()
+    }
 }
 
 #[derive(Clone)]
