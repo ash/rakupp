@@ -517,11 +517,18 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             std::string tk = m == "unmarshal" ? "trait:unmarshalled-by" : "trait:marshalled-by";
             if (h.count(tk)) {
                 Value& by = h[tk];
-                // `is unmarshalled-by(-> $d {…})` calls the code with the JSON
-                // value; `is unmarshalled-by('method')` calls that method on the
-                // attribute's type with it (JSON::Unmarshal passes the type as
-                // the second argument).
+                // `is (un)marshalled-by(-> $d {…})` calls the code with the
+                // value. The METHOD-NAME spellings differ by direction:
+                // unmarshal calls it on the attribute's TYPE with the JSON
+                // datum ($type."$meth"($json)); marshal calls it ON THE VALUE
+                // with no arguments — `$value."$meth"()`, Nil when undefined
+                // (JSON::Marshal's CustomMarshallerMethod, 030-trait.t).
                 if (by.t == VT::Code) return callCallable(by, ValueList{args[0]});
+                if (m == "marshal") {
+                    Value d = methodCall(args[0], "defined", ValueList{});
+                    if (!d.truthy()) return Value::any();
+                    return methodCall(args[0], by.toStr(), ValueList{});
+                }
                 Value ty = args.size() > 1 ? args[1]
                          : h.count("type") ? h["type"] : Value::typeObj("Mu");
                 return methodCall(ty, by.toStr(), ValueList{args[0]});
@@ -531,6 +538,11 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if (m == "readonly") return h.count("readonly") ? h["readonly"] : Value::boolean(true);
         if (m == "rw") return Value::boolean(h.count("readonly") && !h["readonly"].truthy());
         if (m == "has_accessor") return h.count("has_accessor") ? h["has_accessor"] : Value::boolean(false);
+        // builders that predate the `built` key fall back to has_accessor —
+        // public means built, which is Rakudo's default too
+        if (m == "is_built")
+            return h.count("built") ? h["built"]
+                 : h.count("has_accessor") ? h["has_accessor"] : Value::boolean(false);
         if (m == "gist" || m == "Str") return h.count("name") ? h["name"] : Value::str("");
         if (m == "defined" || m == "Bool") return Value::boolean(true);
         // read/write the attribute's value on an instance through the meta-object —
@@ -2053,6 +2065,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         (*at.hash)["type"] = attrTypeValue(a);
                         (*at.hash)["readonly"] = Value::boolean(!a.rw);
                         (*at.hash)["has_accessor"] = Value::boolean(a.pub);
+                        // public attrs are always built; a private one only via
+                        // `is built` (what JSON::Marshal's is_built probe asks)
+                        (*at.hash)["built"] = Value::boolean(a.pub || a.built);
                         (*at.hash)["package"] = Value::typeObj(c->name);
                         for (auto& ut : a.userTraits) (*at.hash)["trait:" + ut.first] = ut.second;
                         out.arr->push_back(at);

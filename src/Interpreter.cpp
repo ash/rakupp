@@ -7556,9 +7556,13 @@ static bool typeMatchesArg(const Value& arg, const std::string& type) {
         if (tail == "CustomMarshallerMethod") return has("trait:marshalled-by") && (*arg.hash)["trait:marshalled-by"].t != VT::Code;
         if (tail == "SkippedAttribute")       return has("trait:json-skip");
         if (tail == "SkippedNullAttribute")   return has("trait:json-skip-null");
+        // JSON::Marshal's own spellings of the same two roles
+        if (tail == "JsonSkip")               return has("trait:json-skip");
+        if (tail == "SkipNull")               return has("trait:json-skip-null");
         if (tail == "OptedInAttribute")
             return has("trait:json") || has("trait:json-name") ||
-                   has("trait:unmarshalled-by") || has("trait:marshalled-by");
+                   has("trait:unmarshalled-by") || has("trait:marshalled-by") ||
+                   has("trait:json-skip-null");   // SkipNull does OptedInAttribute
         // META6's own attribute role: `is specification(Optional, v1)` applies
         // MetaAttribute::Specification (check-mandatory walks attributes by it)
         if (type.find("MetaAttribute") != std::string::npos)
@@ -7591,7 +7595,12 @@ static bool typeMatchesArg(const Value& arg, const std::string& type) {
         case VT::Num:  return type == "Num" || type == "Cool" || type == "Numeric" || type == "Real" || natNumTypes.count(type) > 0;
         case VT::Complex: return type == "Complex" || type == "Cool" || type == "Numeric";
         case VT::Rat:  return type == "Rat" || type == "Cool" || type == "Numeric" || type == "Real";
-        case VT::Bool: return type == "Bool";
+        case VT::Bool:
+            // Bool is Int is Cool (and an Enumeration): a Cool/Int candidate
+            // must accept True — JSON::Marshal's Cool multi lost to Mu:D here
+            // and a Bool serialized as an empty object
+            return type == "Bool" || type == "Int" || type == "Cool" ||
+                   type == "Numeric" || type == "Real" || type == "Enumeration";
         case VT::Str:
             // a byte buffer is NOT Stringy: Blob/Buf bind only buffer-typed
             // params (`multi sha1(Str)` vs `multi sha1(blob8)` — Digest's
