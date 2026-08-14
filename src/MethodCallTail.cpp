@@ -346,7 +346,8 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             // operations that need the end of the list can't complete on an infinite source
             if (m == "elems" || m == "end" || m == "pop" || m == "tail" || m == "reverse" ||
                 m == "sort" || m == "eager" || m == "List" || m == "Array" || m == "sum" ||
-                m == "min" || m == "max" || m == "join" || m == "Str" || m == "gist")
+                m == "min" || m == "max" || m == "join" || m == "Str" || m == "gist" ||
+                m == "reduce")
                 throw RakuError{Value::typeObj("X::Cannot::Lazy"), "Cannot " + m + " a lazy list onto an Array"};
             if (m == "shift") { materializeLazy(inv, 1); if (inv.arr->empty()) return Value::nil(); Value v = inv.arr->front(); inv.arr->erase(inv.arr->begin()); return v; }
         } else {
@@ -355,7 +356,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             // so .elems/.sort/.join see every element, not just the cached prefix.
             static const std::set<std::string> forceAll = {
                 "elems", "end", "pop", "tail", "reverse", "sort", "eager", "List", "Array",
-                "sum", "min", "max", "minmax", "join", "Str", "gist", "raku", "perl",
+                "sum", "min", "max", "minmax", "join", "Str", "gist", "raku", "perl", "reduce",
                 "Numeric", "Int", "all", "any", "one", "none", "unique", "squish",
                 "classify", "categorize", "Set", "Bag", "Mix", "SetHash", "BagHash",
                 "MixHash", "Hash", "hash", "antipairs", "pairs", "kv", "keys", "values",
@@ -366,6 +367,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             Value fn = args[0], src = inv;                 // src shares arr+ext with inv
             Value out = Value::array(); out.isList = true; // 1:1 map → cache index == source index
             auto st = std::make_shared<LazySeqState>();
+            st->infinite = infinite; // a view over an endless source is endless too
             Interpreter* self = this;
             st->appendNext = [self, src, fn](ValueList& cache) -> bool {
                 size_t si = cache.size();
@@ -384,12 +386,23 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             Value pred = args[0], src = inv;
             Value out = Value::array(); out.isList = true;
             auto st = std::make_shared<LazySeqState>();
+            // NOT marked infinite even over an endless source: a grep can still
+            // end — `(^Inf).grep({last if $_ > 5; True}).eager` is Roast's own
+            // (S32-list/grep.t) — so whether it drains is only known by trying.
             auto spos = std::make_shared<size_t>(0); // next unexamined source index
             Interpreter* self = this;
-            st->appendNext = [self, src, pred, spos](ValueList& cache) -> bool {
+            std::weak_ptr<LazySeqState> stw = st; // weak: st owns the closure
+            st->appendNext = [self, src, pred, spos, stw](ValueList& cache) -> bool {
                 for (long long tries = 0; tries < 1000000; tries++) { // bail on a never-matching predicate
                     self->materializeLazy(src, *spos + 1);
-                    if (*spos >= src.arr->size()) return false;
+                    if (*spos >= src.arr->size()) {
+                        // the source stopped growing: either it truly ran out, or it
+                        // is endless and hit materializeLazy's ceiling. In the second
+                        // case this view has no end either, and now knows it — a
+                        // reduce over it must refuse rather than fold what got pulled
+                        if (isEndlessLazy(src)) if (auto s = stw.lock()) s->infinite = true;
+                        return false;
+                    }
                     Value v = (*src.arr)[(*spos)++];
                     bool match;
                     if (pred.t == VT::Code) {
@@ -440,6 +453,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             Value src = inv;
             Value out = Value::array(); out.isList = true;
             auto st = std::make_shared<LazySeqState>();
+            st->infinite = infinite; // a view over an endless source is endless too
             Interpreter* self = this;
             st->appendNext = [self, src, n](ValueList& cache) -> bool {
                 size_t si = cache.size() + (size_t)n;
@@ -632,6 +646,39 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             {{"got", args[0]}, {"what", Value::str(what)}, {"range", inv}},
             what + " out of range. Is: " + args[0].gist() + ", should be in " + inv.gist());
     }
+    // An endless Range is summed by the limit of its arithmetic series, not by
+    // adding up elements there is no end of: `(1..Inf).sum` is Inf and
+    // `(-Inf..0).sum` is -Inf (both Rakudo's answers). `.reduce` asks the same
+    // question of an arbitrary operator, and endlessReduce answers only the
+    // ones that can be answered without the elements.
+    // A Range of integers sums by Gauss — count × (lo + hi) / 2 — instead of
+    // walking it. `(1..10**100).sum` (S03-operators/range-int.t) has no other
+    // answer: its endpoint does not fit a long long, so the range carries the
+    // same sentinel an endless one does and flatten() would hand back a prefix.
+    if (inv.t == VT::Range && m == "sum" && !inv.rNum && inv.ofType != "Str" &&
+        !isEndlessRange(inv)) {
+        const RangeEnds* re = rangeEnds(inv);
+        Value lo = re ? re->from : Value::integer(inv.rFrom);
+        Value hi = inv.big ? Value::bigint(*inv.big)          // an endpoint past long long
+                 : re     ? re->to
+                          : Value::integer(inv.rTo);
+        if (lo.t == VT::Int && hi.t == VT::Int) {
+            if (inv.rExFrom) lo = applyArith("+", lo, Value::integer(1));
+            if (inv.rExTo)   hi = applyArith("-", hi, Value::integer(1));
+            Value count = applyArith("+", applyArith("-", hi, lo), Value::integer(1));
+            if (applyArith("<", count, Value::integer(1)).truthy()) return Value::integer(0);
+            return applyArith("div", applyArith("*", count, applyArith("+", lo, hi)),
+                              Value::integer(2));
+        }
+    }
+    if (inv.t == VT::Range && isEndlessRange(inv)) {
+        if (m == "sum") return endlessRangeSum(inv);
+        if (m == "reduce" && !args.empty() && args[0].t == VT::Code) {
+            std::string n = args[0].code ? args[0].code->name : std::string(), op;
+            if (n.rfind("infix:<", 0) == 0 && n.back() == '>') op = n.substr(7, n.size() - 8);
+            Value r; endlessReduce(op, inv, r); return r; // throws when there is no answer
+        }
+    }
     if (inv.t == VT::Range && inv.rTo >= 9000000000000000000LL) {
         long long lo = inv.rFrom + (inv.rExFrom ? 1 : 0);
         if (m == "is-lazy" || m == "infinite") return Value::boolean(true);
@@ -650,8 +697,10 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             m == "map" || m == "grep" || m == "first" || m == "iterator" || m == "rotor" || m == "batch")
             return (m == "map" || m == "grep" || m == "first") ? methodCall(makeInfArray(lo), m, args, rwArgs) : makeInfArray(lo);
         if (m == "AT-POS" && !args.empty()) return Value::integer(lo + args[0].toInt()); // infRange[i]
-        if (m == "tail" || m == "pop" || m == "reverse" || m == "sort" || m == "sum" ||
-            m == "Array" || m == "eager" || m == "join" || m == "Str" || m == "gist")
+        // (`Str` and `gist` are NOT here: an endless range renders as its endpoint
+        // form — 1..* and 1..Inf — instead of dying, the same as Rakudo.)
+        if (m == "tail" || m == "pop" || m == "reverse" || m == "sort" ||
+            m == "Array" || m == "eager" || m == "join")
             throw RakuError{Value::typeObj("X::Cannot::Lazy"), "Cannot " + m + " an infinite range"};
     }
     // `.all`/`.any`/`.one`/`.none` on a single (non-container) value → a one-element

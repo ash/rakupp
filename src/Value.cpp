@@ -340,7 +340,24 @@ std::string Value::toStr() const {
         case VT::Pair: return s + "\t" + (pairVal ? pairVal->toStr() : "");
         case VT::Range: {
             // a finite Range stringifies to its elements (`put 1..5` → 1 2 3 4 5);
-            // an infinite one keeps the endpoint form
+            // an ENDLESS one has no end to lay out, so it keeps the endpoint form
+            // with the runaway side written `*` — `(1..Inf).Str` is "1..*" and
+            // `(-Inf..0).Str` is "*..0", the same as Rakudo. (The stored endpoint
+            // objects keep their own spelling on the finite side: 1.5..*.)
+            if ((rTo >= 9000000000000000000LL || rFrom <= -9000000000000000000LL ||
+                 (rNum && (std::isinf(n) || std::isinf(im)))) && ofType != "Str") {
+                const RangeEnds* re = rangeEnds(*this);
+                auto side = [&](bool high) {
+                    bool inf = rNum ? std::isinf(high ? im : n)
+                                    : (high ? rTo >= 9000000000000000000LL
+                                            : rFrom <= -9000000000000000000LL);
+                    if (inf) return std::string("*");
+                    if (re) return (high ? re->to : re->from).toStr();
+                    if (rNum) return Value::number(high ? im : n).toStr();
+                    return std::to_string(high ? rTo : rFrom);
+                };
+                return side(false) + (rExFrom ? "^" : "") + ".." + (rExTo ? "^" : "") + side(true);
+            }
             if (ofType == "Str") { // Str range: space-join the chars
                 long long lo = rFrom + (rExFrom ? 1 : 0), hi = rTo - (rExTo ? 1 : 0);
                 std::string out2;
@@ -355,15 +372,10 @@ std::string Value::toStr() const {
                 }
                 return out2;
             }
-            if (rTo < 9000000000000000000LL && rFrom > -9000000000000000000LL) {
-                long long lo = rFrom + (rExFrom ? 1 : 0), hi = rTo - (rExTo ? 1 : 0);
-                std::string out2;
-                for (long long k2 = lo; k2 <= hi; k2++) { if (k2 != lo) out2 += " "; out2 += std::to_string(k2); }
-                return out2;
-            }
-            std::ostringstream os;
-            os << rFrom << ".." << (rExTo ? "^" : "") << rTo;
-            return os.str();
+            long long lo = rFrom + (rExFrom ? 1 : 0), hi = rTo - (rExTo ? 1 : 0);
+            std::string out2;
+            for (long long k2 = lo; k2 <= hi; k2++) { if (k2 != lo) out2 += " "; out2 += std::to_string(k2); }
+            return out2;
         }
         case VT::Array: {
             ReprDepthGuard g; if (g.tooDeep()) return "...";
@@ -554,7 +566,9 @@ std::string Value::gist() const {
             // .raku. It is exactly the Int-zero case: `0.0..^5`, `0..^5e0` and
             // `0..^0.5` all keep the long form, so a non-Int endpoint on either
             // side (rNum, or a stored RangeEnds spelling) falls through below.
-            if (!rExFrom && rExTo && rFrom == 0 && !rNum && ofType != "Str" && !rangeEnds(*this)) {
+            // (an endless `^Inf` is NOT abbreviated: Rakudo gists it 0..^Inf)
+            if (!rExFrom && rExTo && rFrom == 0 && !rNum && ofType != "Str" && !rangeEnds(*this) &&
+                rTo < 9000000000000000000LL) {
                 std::ostringstream os; os << "^" << rTo;
                 return os.str();
             }
@@ -566,8 +580,12 @@ std::string Value::gist() const {
                 if (g_rakuRepr)
                     return g_rakuRepr(re->from) + exF + ".." + exT + g_rakuRepr(re->to);
             if (rNum) return Value::number(n).toStr() + exF + ".." + exT + Value::number(im).toStr();
+            // an endpoint that ran away is Inf, not the long long it is parked in:
+            // `(1..*).gist` is 1..Inf (Rakudo), not 1..9223372036854775807
             std::ostringstream os;
-            os << rFrom << exF << ".." << exT << rTo;
+            if (rFrom <= -9000000000000000000LL) os << "-Inf"; else os << rFrom;
+            os << exF << ".." << exT;
+            if (rTo >= 9000000000000000000LL) os << "Inf"; else os << rTo;
             return os.str();
         }
         case VT::Hash: {

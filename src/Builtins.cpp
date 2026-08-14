@@ -798,6 +798,10 @@ std::string rakuRepr(const Value& v, int depth, std::set<const void*>& seen) {
             if (v.ofType == "Str") // Str range: quoted endpoint form
                 return "\"" + cpToU8((uint32_t)v.rFrom) + "\"" + (v.rExFrom ? "^" : "") + ".." +
                        (v.rExTo ? "^" : "") + "\"" + cpToU8((uint32_t)v.rTo) + "\"";
+            // an endless endpoint is Inf, not the long long it is parked in, and
+            // `^Inf` keeps the long form (0..^Inf) — gist already spells both
+            if (v.rTo >= 9000000000000000000LL || v.rFrom <= -9000000000000000000LL)
+                return v.gist();
             // `0..^N` is `^N` here too — Rakudo shows the short form for .raku as
             // well as gist. Same Int-zero-only rule as Value::gist.
             if (!v.rExFrom && v.rExTo && v.rFrom == 0 && !v.rNum)
@@ -8376,9 +8380,25 @@ void Interpreter::registerBuiltins() {
         // delegate to the method (like min/max): the exact tower keeps big Ints
         // and Rats exact where the old double accumulator silently rounded
         ValueList items;
-        for (auto& v : a) for (auto& x : toList(v)) items.push_back(x);
+        // A Range answers for itself — toList would hand back the truncated
+        // prefix of an endless (`sum(1..Inf)` is Inf) or a huge one
+        // (`sum(1..10**100)` is its Gauss sum). Summing per operand and adding
+        // the parts is the same total.
+        Value ranges; bool sawRange = false;
+        for (auto& v : a) {
+            if (v.t == VT::Range || isEndlessLazy(v)) {
+                Value s = I.methodCall(v, "sum", ValueList{});
+                ranges = sawRange ? applyArith("+", ranges, s) : s;
+                sawRange = true;
+                continue;
+            }
+            for (auto& x : toList(v)) items.push_back(x);
+        }
         Value list = Value::array(items); list.isList = true;
-        ValueList none; return I.methodCall(list, "sum", none);
+        ValueList none;
+        Value rest = I.methodCall(list, "sum", none);
+        if (!sawRange) return rest;
+        return items.empty() ? ranges : applyArith("+", rest, ranges);
     };
     B["keys"] = [](Interpreter&, ValueList& a) -> Value {
         Value out = Value::array();

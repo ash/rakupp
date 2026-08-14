@@ -48,6 +48,7 @@ point; everything else lives here, in four places:
 - **[guide/COMPILERS.md](guide/COMPILERS.md)** — which compiler and architecture to use: arm64 vs. x86_64 on macOS, GCC vs. Clang, MSVC vs. MinGW on Windows — both for building Raku++ and for the compiler `--exe` invokes.
 - **[guide/CACHING.md](guide/CACHING.md)** — the precompiled parse: opt-in caching of parsed ASTs, with two switches (`--precomp-modules`, `--precomp-files`) because they are worth measurably different amounts. What is stored (the AST, not bytecode), where it lives, exactly what invalidates an entry, and how it compares with Rakudo's `.precomp` and Python's `__pycache__`.
 - **[guide/MEMORY.md](guide/MEMORY.md)** — memory demands and limits: reserved vs. resident, stack sizes and measured recursion depths per mode (interpreter / `--exe` / wasm), and the data-side guardrails.
+- **[guide/INF.md](guide/INF.md)** — what an endless list can still answer: why `[+] 1..Inf` is `Inf`, `[*] ^Inf` is `0` and `[~] 1..Inf` is an error, the one rule behind all three, and the two places a prefix is still walked.
 
 ---
 

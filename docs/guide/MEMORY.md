@@ -91,7 +91,12 @@ and whatever stack their creator gave them.
 - **BigInt** is arbitrary precision: memory grows with the number. There is
   no cap; `10 ** 10 ** 8` will happily eat what it needs.
 - **Infinite ranges** never materialize: `flatten()` on `1..Inf` yields a
-  bounded 10,000-element prefix; lazy iteration streams beyond that.
+  bounded 10,000-element prefix; lazy iteration streams beyond that. An
+  operation that would have to consume the whole thing does not answer from
+  that prefix — it either answers from the bounds (`[+] 1..Inf` and
+  `(1..Inf).sum` are `Inf`, `[*] ^Inf` is `0`) or throws `X::Cannot::Lazy`
+  (`[~] 1..Inf`, `[+]` over an endless lazy list). See
+  [INF.md](INF.md).
 - **Regex matching** carries an 8-million-step budget shared across start
   positions, so a pathological pattern degrades to a fast failure rather
   than unbounded time/memory.

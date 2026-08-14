@@ -275,6 +275,7 @@ plain `rakupp`'s.
 - **[PARSING.md](docs/internals/PARSING.md)** — the front end: from source text to AST — the lexer, the Pratt parser, and how user-defined operators (factorial `postfix:<!>`, custom precedence) are parsed in a single pass.
 - **[RUNTIME.md](docs/internals/RUNTIME.md)** — the runtime model: how statically-typed C++ runs dynamic Raku — the `Value` type, variables and containers, calls and dispatch, and lazy/infinite sequences.
 - **[MEMORY.md](docs/guide/MEMORY.md)** — memory demands and limits: reserved vs. resident, stack sizes and measured recursion depths per mode (interpreter / `--exe` / wasm), and the data-side guardrails.
+- **[INF.md](docs/guide/INF.md)** — what an endless list can still answer: `[+] 1..Inf` is `Inf`, `[*] ^Inf` is `0`, `[~] 1..Inf` is an error — the rule behind all three, and why folding a bounded prefix is never one of the options.
 - **[LINT.md](docs/guide/LINT.md)** — the `--lint` static analyzer: the rules it applies, warnings vs. notes, exit codes, and why it stays conservative on Raku's dynamic constructs.
 - **[OPTIMIZATION.md](docs/internals/OPTIMIZATION.md)** — the `--exe -O` optimizer: what it does and how fast it gets.
 - **[HTTPS.md](docs/guide/HTTPS.md)** — the story of getting one real HTTPS request working: the chain of general bugs from "OpenSSL won't load" to `HTTP/1.1 200 OK` over TLS, and the NativeCall surface it exercised (documented in [FFI.md](docs/guide/FFI.md)).

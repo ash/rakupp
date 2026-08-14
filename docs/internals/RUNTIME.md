@@ -1001,7 +1001,33 @@ st->appendNext = [self, src, fn](ValueList& cache) -> bool {
 ```
 
 `.grep` loops pulling source elements until its predicate matches; `.skip`
-builds a shifted view.
+builds a shifted view. Each view inherits the source's `infinite` flag — a map
+or grep over something endless is endless too.
+
+### Reducing something endless
+
+`Value::flatten()` caps an infinite Range at a 10,000-element prefix so an eager
+consumer degrades instead of hanging. A **reduce** must not answer from that
+prefix: `[+] 1..Inf` used to come out 50005000 — the sum of 1..10000 — with
+nothing to mark it as partial (issue #19). Every reduce entry point (the `[op]`
+unary, `prefix:<[op]>(…)`, `&prefix:<[op]>`, `rtReduce` for native codegen, and
+`.reduce`) therefore checks its operand with `endlessReduce`
+(`src/Interpreter.cpp`) *before* flattening:
+
+- `+` → the limit of the arithmetic series, which is what `.sum` answers:
+  `Inf`, `-Inf`, or `NaN` for `-Inf..Inf`;
+- `*` → `0` when the range walks over zero (which pins every partial product
+  from there on), otherwise an infinity signed by how many negative elements the
+  range has — finitely many, since it is bounded below;
+- `-` → `-Inf`: the tail it subtracts grows without bound;
+- `min` / `max` → the range's own bounds;
+- anything else — `~` has no limit in the string domain, a user operator has no
+  known one at all — and any endless **lazy** list (whose elements do not follow
+  from bounds) → `X::Cannot::Lazy`.
+
+Rakudo folds forever in all of these cases, so the answers above are a
+deliberate divergence — spinning is no better than the wrong number was. The
+reasoning, case by case, is in [../guide/INF.md](../guide/INF.md).
 
 ### `gather` / `take`
 

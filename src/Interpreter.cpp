@@ -8927,6 +8927,12 @@ Value Interpreter::captureBacktrace() {
 
 // Reduction metaop for native codegen: fold `op` over a flattened list.
 Value rtReduce(const std::string& op, const Value& list) {
+    if (!op.empty() && op[0] != '\\') { // an endless operand is answered whole
+        Value r;
+        if (endlessReduce(op, list, r)) return r;
+        if (list.t == VT::Array && list.arr)
+            for (auto& v : *list.arr) if (endlessReduce(op, v, r)) return r;
+    }
     ValueList items = list.flatten();
     if (items.empty()) {
         if (op == "+" || op == "-") return Value::integer(0);
@@ -17805,9 +17811,18 @@ Value Interpreter::evalUnary(Unary* u) {
         // Flatten like a slurpy arg list: @-vars/ranges/inner lists spread, but a
         // $-held container or an [..] literal stays ONE item ([===] $a, $a, [1,2]).
         ValueList items;
+        // An operand that never ends is answered from the operand itself, not
+        // from a folded prefix of it, and a merely lazy one is drained before it
+        // is folded (see endlessReduce). The scan form stays out of it:
+        // `[\+] 1..Inf` is a list of partial sums, not one answer.
+        bool scanForm = !op.empty() && op[0] == '\\';
+        Value endless; bool sawEndless = false;
         std::function<void(const Value&)> spread = [&](const Value& v) {
             // deep-spread plain lists, but an itemized element ([1,2,3] row of a
             // matrix) stays ONE item — so [Z] @matrix zips the rows
+            if (!scanForm && !sawEndless && endlessReduce(op, v, endless)) {
+                sawEndless = true; return; // answered without the elements
+            }
             if (v.t == VT::Range) { for (auto& x : v.flatten()) items.push_back(x); return; }
             if (v.t == VT::Array && v.arr && !v.itemized) { for (auto& x : *v.arr) spread(x); return; }
             items.push_back(v);
@@ -17845,6 +17860,7 @@ Value Interpreter::evalUnary(Unary* u) {
             else items.push_back(std::move(v));
         }
         else pushFlat(eval(u->operand.get()), false);
+        if (sawEndless) return endless;
         return applyReduce(op, items);
     }
     if (u->op == "siglit") { // :( … ) — a first-class Signature literal
@@ -19025,7 +19041,12 @@ Value Interpreter::evalCall(Call* c) {
     if (c->name.rfind("prefix:<[", 0) == 0 && c->name.size() > 11 &&
         c->name.compare(c->name.size() - 2, 2, "]>") == 0) {
         std::string op = c->name.substr(9, c->name.size() - 11); // the reduce base op
-        ValueList items; for (auto& a : args) for (auto& x : a.flatten()) items.push_back(x);
+        ValueList items;
+        for (auto& a : args) {
+            Value r; // an endless operand is answered whole, not folded
+            if (op[0] != '\\' && endlessReduce(op, a, r)) return r;
+            for (auto& x : a.flatten()) items.push_back(x);
+        }
         return applyReduce(op, items);
     }
     // coercion-type functions: Str(x), Int(x), Num(x), Bool(x), … and the no-arg
@@ -19140,6 +19161,121 @@ Value Interpreter::evalCall(Call* c) {
     }
     throw RakuError{Value::typeObj("X::Undeclared::Symbols"),
                     "Undefined routine '" + c->name + "'"};
+}
+
+// An infinite Range keeps the ±LLONG_MAX sentinel in its integer endpoints; a
+// fractional one (1.5..Inf) keeps a real infinity in its doubles.
+bool isEndlessRange(const Value& v) {
+    if (v.t != VT::Range) return false;
+    if (v.rNum) return std::isinf(v.n) || std::isinf(v.im);
+    bool loSent = v.rFrom <= -9000000000000000000LL, hiSent = v.rTo >= 9000000000000000000LL;
+    if (!loSent && !hiSent) return false;
+    // The sentinel also stands in for an endpoint too big for a long long, so
+    // the WRITTEN endpoint decides when it was kept: `1..10**100` is a finite
+    // (very long) range — it parks its BigInt bound in `big` — and `1..Inf` is
+    // not. A Rat/Num endpoint is kept in RangeEnds instead.
+    if (v.big) return false;
+    if (const RangeEnds* re = rangeEnds(v)) {
+        auto runaway = [](const Value& e) {
+            return e.t == VT::Whatever || (e.t == VT::Num && std::isinf(e.n));
+        };
+        return (hiSent && runaway(re->to)) || (loSent && runaway(re->from));
+    }
+    return true;
+}
+
+bool isEndlessLazy(const Value& v) {
+    return v.t == VT::Array && v.ext &&
+           std::static_pointer_cast<LazySeqState>(v.ext)->infinite;
+}
+
+static bool endlessLow(const Value& v)  { return v.rNum ? std::isinf(v.n) : v.rFrom <= -9000000000000000000LL; }
+static bool endlessHigh(const Value& v) { return v.rNum ? std::isinf(v.im) : v.rTo >= 9000000000000000000LL; }
+
+Value endlessRangeSum(const Value& v) {
+    bool lowInf = endlessLow(v), highInf = endlessHigh(v);
+    if (lowInf && highInf) return Value::number(NAN); // -Inf..Inf: Rakudo says NaN
+    return Value::number(highInf ? INFINITY : -INFINITY);
+}
+
+// `[-]` over an endless range: the first element minus a tail that grows
+// without bound, which is -Inf whichever side ran away (a low-endless range
+// starts AT -Inf and only gets smaller). Both sides is Inf - Inf: NaN.
+static Value endlessRangeDiff(const Value& v) {
+    if (endlessLow(v) && endlessHigh(v)) return Value::number(NAN);
+    return Value::number(-INFINITY);
+}
+
+// `[*]` over an endless range. Zero is absorbing: once an element is 0 every
+// partial product from there on is 0, so that IS the value. Otherwise the
+// magnitudes grow without bound and only the sign is left to settle — a range
+// bounded below has finitely many negative elements, so their count decides it.
+// A range running down to -Inf has no first element to start from: the partial
+// products flip sign forever without settling, which is NaN.
+static Value endlessRangeProduct(const Value& v) {
+    if (endlessLow(v)) return Value::number(NAN);
+    // the WRITTEN low endpoint, which is where the walk starts: `-2.5..Inf`
+    // keeps its -2.5 in RangeEnds while rFrom has already floored to -3
+    const RangeEnds* re = rangeEnds(v);
+    double lo = re && re->from.isNumeric() ? re->from.toNum()
+              : v.rNum                    ? v.n
+                                          : (double)v.rFrom;
+    if (v.rExFrom) lo += 1.0;
+    // stepping by 1 from `lo` lands on 0 only when lo is a non-positive integer:
+    // `-2.5..Inf` skips straight from -0.5 to 0.5
+    if (lo <= 0 && std::floor(lo) == lo) return Value::integer(0);
+    long long negatives = lo < 0 ? (long long)std::ceil(-lo) : 0;
+    return Value::number(negatives % 2 ? -INFINITY : INFINITY);
+}
+
+// The endpoint an endless Range is bounded by, as .min/.max report it: the
+// written endpoint object when there is one (1.5..Inf keeps its 1.5), and ±Inf
+// on the side that runs away.
+static Value endlessRangeEnd(const Value& v, bool high) {
+    if ((high ? endlessHigh(v) : endlessLow(v)))
+        return Value::number(high ? INFINITY : -INFINITY);
+    if (const RangeEnds* re = rangeEnds(v)) return high ? re->to : re->from;
+    if (v.rNum) return Value::number(high ? v.im : v.n);
+    return Value::integer(high ? v.rTo : v.rFrom);
+}
+
+// A reduce over an operand that never ends — an infinite Range (1..Inf / 1..*)
+// or an endless lazy list. Folding it element by element never returns (Rakudo
+// spins forever on `[+] 1..Inf`), and folding the finite prefix Value::flatten
+// hands back answers a DIFFERENT question: `[+] 1..Inf` came out 50005000, the
+// sum of the first ten thousand, with nothing to say it was not the total.
+// What CAN be answered is what the partial folds converge to, which the range's
+// bounds already decide: `+` is the series limit `.sum` gives, `*` is 0 or a
+// signed infinity, `-` runs away downward, and min/max settle on the bounds.
+// `~` and the rest have no limit to name in their own domain and say so, as
+// does every endless LAZY list — its elements do not follow from its bounds.
+// A merely lazy operand is drained and folded in full, and refused only when it
+// will not drain.
+bool endlessReduce(const std::string& op, const Value& v, Value& out) {
+    bool range = isEndlessRange(v);
+    if (range) {
+        if (op == "+") { out = endlessRangeSum(v); return true; }
+        if (op == "-") { out = endlessRangeDiff(v); return true; }
+        if (op == "*") { out = endlessRangeProduct(v); return true; }
+        if (op == "min" || op == "max") { out = endlessRangeEnd(v, op == "max"); return true; }
+        throw RakuError{Value::typeObj("X::Cannot::Lazy"), "Cannot reduce an infinite range"};
+    }
+    if (v.t != VT::Array || !v.ext || !v.arr) return false;         // not lazy: fold as usual
+    if (!isEndlessLazy(v)) {
+        // A merely LAZY list holds only the prefix something has already pulled
+        // — folding that is how `[+] (1..Inf).grep(* %% 2)` answered 0 — so drain
+        // it first. Whether a grep over an endless source ends is only knowable
+        // by trying (`.grep({last if …})` does end); one that will not drain has
+        // no honest answer, so it joins the endless ones below.
+        auto st = std::static_pointer_cast<LazySeqState>(v.ext);
+        const size_t CAP = 1000000; // materializeLazy's own ceiling
+        if (st->appendNext)
+            while (v.arr->size() < CAP && st->appendNext(*v.arr)) {}
+        // (a view that ran into an endless source's ceiling marks itself endless
+        // while draining, so ask again before deciding it drained)
+        if (v.arr->size() < CAP && !isEndlessLazy(v)) return false; // every element is present
+    }
+    throw RakuError{Value::typeObj("X::Cannot::Lazy"), "Cannot reduce a lazy list"};
 }
 
 // [op] reduce over an item list — shared by the [op] unary, prefix:<[op]>(…)
@@ -20717,7 +20853,12 @@ Value Interpreter::eval(Expr* e) {
                     std::string op = bare.substr(9, bare.size() - 11);
                     Value code; code.t = VT::Code; code.code = std::make_shared<Callable>(); code.code->name = bare;
                     code.code->builtin = [op](Interpreter& I, ValueList& a) -> Value {
-                        ValueList items; for (auto& v : a) for (auto& x : v.flatten()) items.push_back(x);
+                        ValueList items;
+                        for (auto& v : a) {
+                            Value r; // an endless operand is answered whole, not folded
+                            if (op[0] != '\\' && endlessReduce(op, v, r)) return r;
+                            for (auto& x : v.flatten()) items.push_back(x);
+                        }
                         return I.applyReduce(op, items);
                     };
                     return code;

@@ -1426,6 +1426,17 @@ Value  rtRangeVal(const Value& from, const Value& to, bool exFrom, bool exTo); /
 ValueList rtMainArgs(const std::vector<std::string>& argv, bool namedAnywhere = false); // argv -> MAIN args (--opt named, rest positional)
 Value& rtIndexRef(Value& base, const Value& key, bool isHash);
 Value  rtReduce(const std::string& op, const Value& list);  // [+] / [*] / … reduction metaop
+// Endless operands — an infinite Range (1..Inf / 1..*, which carries the
+// ±LLONG_MAX sentinel in its integer endpoints) or a lazy list with no end.
+bool isEndlessRange(const Value& v);
+bool isEndlessLazy(const Value& v);
+// The limit of an endless Range's arithmetic series, which is what `.sum`
+// answers: ±Inf, or NaN when the range runs from -Inf all the way to +Inf.
+Value endlessRangeSum(const Value& v);
+// A reduce over an endless operand: hands back the answer for the operators
+// that have one without the elements, and otherwise throws X::Cannot::Lazy.
+// Returns false when `v` is not endless at all (the caller folds as usual).
+bool endlessReduce(const std::string& op, const Value& v, Value& out);
 Value  rtNqpOp(NqpOpc op, ValueList& args);                 // eager `use nqp` leaf ops (interp + codegen)
 Value  rtAttrGet(const Value& self, const std::string& name);   // $!attr / $.attr read (codegen)
 Value& rtAttrRef(Value& self, const std::string& name);         // $!attr write (codegen)
