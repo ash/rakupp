@@ -974,6 +974,7 @@ Regex::NodePtr Regex::parseQuant() {
 }
 
 static std::string ruleFlag(const std::string& nm); // built-in rule → classMatch flags
+bool charClassMatch(char flag, uint32_t cp);        // the POSIX-named classes, over a codepoint
 
 Regex::NodePtr Regex::parseAtom() {
     skipWs();
@@ -1868,34 +1869,54 @@ static long builtinRuleMatch(const std::string& nm, const std::string& s, long p
         if (p == pos && wordAt(pos - 1) && wordAt(pos)) return -1; // between two word chars: needs real space
         return p;
     }
+    // One codepoint of `s` at `p`, and where it ends. ASCII stays one byte.
+    auto cpAt = [&](long p, long* end) -> uint32_t {
+        unsigned char c0 = (unsigned char)s[p];
+        if (c0 < 0x80) { *end = p + 1; return c0; }
+        if (c0 < 0xC0) { *end = p + 1; return c0; } // stray continuation byte: never a class member
+        int clen = (c0 >> 5) == 0x6 ? 2 : (c0 >> 4) == 0xe ? 3 : (c0 >> 3) == 0x1e ? 4 : 1;
+        uint32_t cp = (uint32_t)(c0 & (0xFF >> (clen + 1)));
+        for (int i = 1; i < clen && p + i < len; i++) cp = (cp << 6) | ((unsigned char)s[p + i] & 0x3F);
+        *end = (long)uniClusterEndUtf8(s, p, len); // NFG: consume the whole grapheme
+        return cp;
+    };
+    // `<ident>`: one alpha (which includes '_') then alnum — Unicode throughout,
+    // so `aö1_` is a single identifier the way Rakudo reads it.
     if (nm == "ident") {
         if (pos >= len) return -1;
-        unsigned char c0 = (unsigned char)s[pos];
-        if (!(ascii::isalpha(c0) || c0 == '_')) return -1;
-        long p = pos + 1; while (p < len && (ascii::isalnum((unsigned char)s[p]) || s[p] == '_')) p++;
+        long e = pos;
+        if (!charClassMatch('a', cpAt(pos, &e))) return -1;
+        long p = e;
+        while (p < len) {
+            long e2 = p;
+            uint32_t cp = cpAt(p, &e2);
+            if (!(charClassMatch('a', cp) || charClassMatch('d', cp))) break;
+            p = e2;
+        }
         return p;
     }
-    if (pos >= len) {
-        static const std::set<std::string> known = {"alpha","digit","space","blank","alnum","upper","lower",
-            "xdigit","punct","cntrl","graph","print"};
-        return known.count(nm) ? -1 : -2;
+    // The two zero-width word assertions. Without them `<wb>`/`<ww>` fell through
+    // to "unknown rule" and matched the empty string EVERYWHERE, which is silently
+    // wrong rather than loudly missing.
+    if (nm == "wb" || nm == "ww") {
+        auto word = [&](long i) { // i starts a codepoint
+            if (i < 0 || i >= len) return false;
+            long e = i;
+            return charClassMatch('w', cpAt(i, &e));
+        };
+        long prev = pos - 1; // step back over continuation bytes to the lead byte
+        while (prev > 0 && ((unsigned char)s[prev] & 0xC0) == 0x80) prev--;
+        bool before = pos > 0 && word(prev), after = word(pos);
+        if (nm == "ww") return (before && after) ? pos : -1;
+        return (before != after) ? pos : -1;
     }
-    unsigned char c = (unsigned char)s[pos];
-    bool ok;
-    if (nm == "alpha") ok = ascii::isalpha(c);
-    else if (nm == "digit") ok = ascii::isdigit(c);
-    else if (nm == "space") ok = ascii::isspace(c);
-    else if (nm == "blank") ok = (c == ' ' || c == '\t');
-    else if (nm == "alnum") ok = ascii::isalnum(c);
-    else if (nm == "upper") ok = ascii::isupper(c);
-    else if (nm == "lower") ok = ascii::islower(c);
-    else if (nm == "xdigit") ok = ascii::isxdigit(c);
-    else if (nm == "punct") ok = ascii::ispunct(c);
-    else if (nm == "cntrl") ok = ascii::iscntrl(c);
-    else if (nm == "graph") ok = ascii::isgraph(c);
-    else if (nm == "print") ok = ascii::isprint(c);
-    else return -2;
-    return ok ? pos + 1 : -1;
+    std::string flags = ruleFlag(nm);
+    if (flags.empty() || nm == "word" || nm == "ws") return -2;
+    if (pos >= len) return -1;
+    long end = pos;
+    uint32_t cp = cpAt(pos, &end);
+    for (char f : flags) if (charClassMatch(f, cp)) return end; // `alnum` is alpha ∪ digit
+    return -1;
 }
 
 // Built-in rule name → classMatch flag(s), for `<+alpha>` charset composition ("" = none).
@@ -1930,20 +1951,72 @@ static bool isUnicodeSpace(uint32_t cp) {
     }
 }
 
+// The POSIX-NAMED character classes — `<alpha>`, `<+digit>`, `\d` — ONE definition
+// over a CODEPOINT, shared by the three places that used to spell them out
+// separately: the rule form (`<alpha>`), the ASCII byteset a class node compiles
+// to, and the multibyte arm of a class match. They are Unicode, and they are NOT
+// <ctype.h>'s: Rakudo's `<alpha>` is :L plus '_', `<punct>` is :P alone (so '+',
+// '$' and '|' are OUT — they are symbols), `<graph>` is alnum ∪ punct, and
+// `<print>` is everything that is not :Cc. Derived character by character from
+// Rakudo; t/regression/builtin-char-class-rules.raku holds the table.
+//
+// They were byte tests, so any grammar reading non-ASCII text stopped at the
+// first accented letter: URI's RFC-3986 grammar routes every path character
+// through `<alpha>`, and `URI.new("http://test.de/ö")` threw "Could not parse".
+// The flag letters are ruleFlag()'s, below.
+static bool charClassCp(char flag, uint32_t cp) {
+    switch (flag) {
+        case 'a': return cp == '_' || uniMatchesProp(cp, "L");
+        case 'd': return uniMatchesProp(cp, "Nd");
+        // \w is <alnum>, which is <alpha> ∪ <digit> — :Nd only. `²` (No) and `Ⅰ`
+        // (Nl) are NOT word characters, though both are :N.
+        case 'w': return cp == '_' || uniMatchesProp(cp, "L") || uniMatchesProp(cp, "Nd");
+        case 's': return isUnicodeSpace(cp);
+        case 'u': return uniMatchesProp(cp, "Lu");
+        case 'l': return uniMatchesProp(cp, "Ll");
+        case 'p': return uniMatchesProp(cp, "P");
+        case 'k': return uniMatchesProp(cp, "Cc");
+        case 'b': return cp == '\t' || uniMatchesProp(cp, "Zs");
+        case 'x': return cp < 0x80 && ascii::isxdigit((unsigned char)cp);
+        case 'g': return charClassCp('w', cp) || uniMatchesProp(cp, "P"); // alnum ∪ punct
+        case 'r': return !uniMatchesProp(cp, "Cc");
+    }
+    return false;
+}
+
+// Same predicate, with ASCII answered from a table built once — uniMatchesProp
+// walks a name chain and a category lookup, and this runs per input position in
+// a grammar's inner loop.
+static const char CC_FLAGS[] = "adwsulpkbxgr";
+bool charClassMatch(char flag, uint32_t cp) {
+    if (cp < 128) {
+        static const struct AsciiCC {
+            uint16_t bits[128] = {};
+            signed char slot[256];
+            AsciiCC() {
+                for (int i = 0; i < 256; i++) slot[i] = -1;
+                for (int i = 0; CC_FLAGS[i]; i++) slot[(unsigned char)CC_FLAGS[i]] = (signed char)i;
+                for (uint32_t c = 0; c < 128; c++)
+                    for (int i = 0; CC_FLAGS[i]; i++)
+                        if (charClassCp(CC_FLAGS[i], c)) bits[c] |= (uint16_t)(1u << i);
+            }
+        } T;
+        signed char b = T.slot[(unsigned char)flag];
+        return b >= 0 && ((T.bits[cp] >> b) & 1);
+    }
+    return charClassCp(flag, cp);
+}
+
 bool Regex::classMatch(const Node* n, char ch) const {
     // The per-byte result (ranges + flags + icase + negate) is pure per node —
     // build a 256-bit table on first use, then every test is one bit probe.
     if (!n->bytesetReady.load(std::memory_order_acquire)) {
+        // BYTES, not codepoints: 0x80–0xFF here are UTF-8 lead/continuation bytes,
+        // never characters — a multibyte codepoint is decoded and tested whole in
+        // the K::Class arm below, so the table must leave those bits clear or a
+        // class would match half a character.
         auto flagHit = [](char f, unsigned char c) -> bool {
-            switch (f) {
-                case 'd': return ascii::isdigit(c); case 'w': return ascii::isalnum(c) || c == '_';
-                case 's': return ascii::isspace(c); case 'a': return ascii::isalpha(c);
-                case 'u': return ascii::isupper(c); case 'l': return ascii::islower(c);
-                case 'x': return ascii::isxdigit(c); case 'p': return ascii::ispunct(c);
-                case 'k': return ascii::iscntrl(c); case 'g': return ascii::isgraph(c);
-                case 'r': return ascii::isprint(c); case 'b': return c == ' ' || c == '\t';
-            }
-            return false;
+            return c < 0x80 && charClassMatch(f, c);
         };
         auto test = [&](unsigned char c) -> bool {
             bool pos = false;
@@ -1997,6 +2070,11 @@ bool Regex::rootIsSingleChar() const {
 
 long Regex::trySingleChar(const std::string& s, long pos) const {
     if (pos >= (long)s.size()) return -1;
+    // MULTIBYTE input: this path answers from a one-BYTE table, and a Unicode
+    // class member (`<+alnum>`) or a negated class spans the whole character —
+    // -2 tells the caller to run the real matcher instead. Deciding it here from
+    // the byte alone matched one third of an `ö` and left the grammar mid-character.
+    if ((unsigned char)s[pos] >= 0x80) return -2;
     const Node* n = root_.get();
     if (n->k == K::Any) return s[pos] == '\n' ? -1 : pos + 1;
     if (n->k == K::Lit) return s[pos] == n->lit[0] ? pos + 1 : -1;
@@ -2066,7 +2144,10 @@ std::pair<long, long> Regex::nodeWidth(const Node* n, MState& st) const {
         case K::Subrule:
             if (st.grammar) {
                 if (!n->metaCache) n->metaCache = &st.grammar->nameMeta(n->ruleName);
-                if (n->metaCache->singleChar || !n->metaCache->builtinClass.empty()) return {1, 1};
+                // one CHARACTER, whose UTF-8 encoding is 1..n bytes — this is only
+                // used to bound a lookbehind window, so an open upper bound is a
+                // wider scan, never a wrong answer
+                if (n->metaCache->singleChar || !n->metaCache->builtinClass.empty()) return {1, UNB};
             }
             return {0, UNB};
         case K::VarMatch: return {0, UNB};
@@ -2341,18 +2422,7 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                     int clen = (c0 >> 5) == 0x6 ? 2 : (c0 >> 4) == 0xe ? 3 : (c0 >> 3) == 0x1e ? 4 : 1;
                     uint32_t cp = (uint32_t)(c0 & (0xFF >> (clen + 1)));
                     for (int i = 1; i < clen && pos + i < (long)len; i++) cp = (cp << 6) | ((unsigned char)st.s[pos + i] & 0x3F);
-                    auto flagHitCp = [](char f, uint32_t c) -> bool {
-                        switch (f) {
-                            case 'd': return uniMatchesProp(c, "Nd");
-                            case 'w': return c == '_' || uniMatchesProp(c, "alnum");
-                            case 's': return isUnicodeSpace(c);
-                            case 'a': return uniMatchesProp(c, "alpha");
-                            case 'u': return uniMatchesProp(c, "Lu");
-                            case 'l': return uniMatchesProp(c, "Ll");
-                            case 'p': return uniMatchesProp(c, "P");
-                        }
-                        return false; // x/k/g/r/b: ASCII-only classes never match >0x7F
-                    };
+                    auto flagHitCp = [](char f, uint32_t c) -> bool { return charClassMatch(f, c); };
                     bool in = false;
                     for (auto& r : n->ranges)   if (cp >= r.first && cp <= r.second) { in = true; break; }
                     if (!in) for (auto& r : n->cpRanges) if (cp >= r.first && cp <= r.second) { in = true; break; }
@@ -3175,24 +3245,13 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
     }
     // built-in rules (<.alpha> …, <ident>) when the grammar doesn't redefine them
     if (!meta.rule) {
-        long pend = -1;
-        if (name == "ident") { // real multi-char identifier, not a one-char class
-            pend = builtinRuleMatch("ident", st.s, pos, (long)st.s.size());
-            if (pend < 0) { noteFail(pos, name); return false; }
-        } else {
-            const std::string& fl = meta.builtinClass;
-            if (fl.empty()) return false; // unknown subrule
-            if (pos >= (long)st.s.size()) { noteFail(pos, name); return false; }
-            unsigned char c = (unsigned char)st.s[pos]; bool ok = false;
-            for (char f : fl) switch (f) {
-                case 'd': ok |= (bool)ascii::isdigit(c); break; case 'a': ok |= (bool)ascii::isalpha(c); break;
-                case 's': ok |= (bool)ascii::isspace(c); break; case 'u': ok |= (bool)ascii::isupper(c); break;
-                case 'l': ok |= (bool)ascii::islower(c); break; case 'x': ok |= (bool)ascii::isxdigit(c); break;
-                case 'b': ok |= (c == ' ' || c == '\t'); break; // <blank>: horizontal ws
-            }
-            if (!ok) { noteFail(pos, name); return false; }
-            pend = pos + 1;
-        }
+        // The SAME matcher the plain-regex path uses. This was a second, byte-wise
+        // ASCII copy that also silently lacked punct/cntrl/graph/print — so a
+        // grammar's `<alpha>` stopped at the first accented letter while the very
+        // same `/<alpha>/` outside a grammar matched it.
+        long pend = builtinRuleMatch(name, st.s, pos, (long)st.s.size());
+        if (pend == -2) return false; // unknown subrule
+        if (pend < 0) { noteFail(pos, name); return false; }
         if (capKey.empty()) return k(pend);
         // A capturing built-in rule inside a GRAMMAR records $<name> too — the
         // plain-regex path already did, this one dropped it, so YAMLish's
@@ -3219,8 +3278,11 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
 
     // Inline single-character rules (space, break, …): a bare char test, no memo/record
     // machinery. These are the overwhelming majority of subrule calls.
-    if (meta.singleChar && args.empty()) {
-        long np = meta.singleChar->trySingleChar(st.s, pos);
+    // -3: not a single-char rule at all. -2: a multibyte character is sitting at
+    // `pos`, which only the real matcher can decide — fall through to it.
+    const long scNp = (meta.singleChar && args.empty()) ? meta.singleChar->trySingleChar(st.s, pos) : -3;
+    if (scNp != -3 && scNp != -2) {
+        long np = scNp;
         if (np < 0) { noteFail(pos, name); return false; }
         if (capKey.empty()) return k(np);
         // capturing <name>: record a leaf node spanning the one char, then continue
