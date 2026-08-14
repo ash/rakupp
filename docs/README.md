@@ -55,7 +55,7 @@ point; everything else lives here, in four places:
 ## book/ — the compiler book
 
 - **[book/Raku++-Internals.pdf](book/Raku++-Internals.pdf)** — *Raku++
-  Internals*, 315 pages in nine parts: the front end, the value model, the
+  Internals*, 317 pages in nine parts: the front end, the value model, the
   interpreter, the regex and grammar engine, Unicode, the four run modes and the
   native code generator, the boundaries (modules, the installer and the
   zef-shared store, `use nqp`, NativeCall, the extension ABI, concurrency), and

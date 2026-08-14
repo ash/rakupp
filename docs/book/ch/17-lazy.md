@@ -122,6 +122,112 @@ is a runaway safety net, not a semantic limit, and it means "infinite" is
 bounded in practice. A consumer that genuinely needs the millionth element of a
 generated sequence will get it; one that needs the ten-millionth will not.
 
+`Value::flatten()` has a tighter one for an endless `Range`: ten thousand
+elements. The next section is about what that ceiling cost, and what replaced
+it.
+
+### Answering without the elements
+
+A ceiling turns a non-terminating operation into a terminating one, which is
+what it is for. It also turns a question the implementation cannot answer into
+one it answers *wrongly*:
+
+```
+$ rakupp -e 'say [+] 1..Inf'      # before
+50005000
+```
+
+That is the sum of `1..10000` — the prefix, folded and handed back as the total,
+with nothing in the output to mark it partial. A reduce is written to consume
+its list element by element, and an endless list has no end to consume to, so
+the fold has no *value*. But its partial results usually have a **limit**, and
+that limit follows from the range's endpoints without touching a single element:
+
+| | | |
+|---|---|---|
+| `[+] 1..Inf` | `Inf` | the partial sums 1, 3, 6, 10, … are unbounded |
+| `[*] 1..Inf` | `Inf` | so are the partial products |
+| `[*] ^Inf` | `0` | zero is absorbing: every partial from there on is 0 |
+| `[*] -0.5..Inf` | `-Inf` | one negative element, and the walk misses zero |
+| `[-] 1..Inf` | `-Inf` | the tail it subtracts runs away |
+| `[min] 1..Inf` | `1` | the partial minima settle on the low bound at once |
+| `[max] 1..Inf` | `Inf` | the partial maxima chase the high one |
+| `[~] 1..Inf` | `X::Cannot::Lazy` | the strings grow without approaching a string |
+
+The rule the table follows: **answer with the limit of the partial folds when
+the bounds fix it; otherwise say it cannot be done; never fold a prefix and
+present it as the whole.** `~` has no limit to name in the string domain, and a
+user-supplied operator has no known one at all, so both refuse.
+
+The sign rule for `*` is the one case that needs care. A `Range` is bounded
+below, so it has finitely many negative elements, and their count settles the
+sign of an otherwise unbounded product — three of them in `-2.5..Inf`, hence
+`-Inf`. Zero overrides all of it, but only when the walk actually lands on zero:
+`-3..Inf` does, `-2.5..Inf` steps straight from `-0.5` to `0.5` and does not.
+
+The check lives in one function, `endlessReduce`, and every entry point calls it
+*before* flattening — the `[op]` metaoperator, `prefix:<[op]>(…)`, an
+`&prefix:<[op]>` reference, `.reduce`, and `rtReduce`, the one the native code
+generator emits, so a compiled binary agrees with the interpreter. `.sum` and
+the `sum` builtin answer from the bounds too, rather than from a truncated
+`toList`.
+
+An endless **lazy** list is a different matter: its elements do not follow from
+any bounds, so there is nothing to compute a limit from and every operator
+refuses. A *merely* lazy one — finite, but holding only the prefix something has
+pulled so far — must not be folded from its cache either, or `[+] @lazy` answers
+for whatever happened to be materialised. It is drained first, and refused only
+if it will not drain:
+
+```cpp
+// src/Interpreter.cpp — endlessReduce, the lazy arm
+auto st = std::static_pointer_cast<LazySeqState>(v.ext);
+const size_t CAP = 1000000;                       // materializeLazy's ceiling
+if (st->appendNext)
+    while (v.arr->size() < CAP && st->appendNext(*v.arr)) {}
+if (v.arr->size() < CAP && !isEndlessLazy(v)) return false;  // drained: fold it
+throw RakuError{Value::typeObj("X::Cannot::Lazy"), "Cannot reduce a lazy list"};
+```
+
+Whether it will drain cannot be decided when the view is built. A `.map` over an
+endless source is endless, always — it inherits the flag. A `.grep` over one may
+still end, because the predicate can stop it:
+
+```raku
+(^Inf).grep({ last if $_ > 5; True }).eager.join   # 012345
+```
+
+That is Roast's own test, so a grep view is *not* born endless. Instead it
+learns: if `appendNext` ever finds the source has stopped growing because the
+source is endless and hit its ceiling, the view marks itself endless from that
+point on, and the second `isEndlessLazy` check above — the one after the drain —
+sees it.
+
+### One sentinel, two meanings
+
+A `Range` keeps its endpoints in two `long long`s, and an endless one parks
+`±LLONG_MAX` in them. So does a range whose endpoint is merely too large for a
+`long long`, which made `1..10**100` indistinguishable from `1..Inf` and gave it
+the prefix treatment as well. The written endpoint settles it — a big-`Int`
+bound in `Value::big`, a real infinity or a `Whatever` in `RangeEnds` — and a
+range of integers is summed by Gauss rather than walked:
+
+```cpp
+Value count = applyArith("+", applyArith("-", hi, lo), Value::integer(1));
+return applyArith("div", applyArith("*", count, applyArith("+", lo, hi)),
+                  Value::integer(2));
+```
+
+`count × (lo + hi) / 2`, in the exact integer tower, so `(1..10**100).sum` is a
+200-digit answer and `(1..10).sum` is still `55`. Roast's
+`S03-operators/range-int.t` asserts both.
+
+Two paths still walk the prefix, deliberately. `[\+] 1..Inf`, the triangular
+form, produces a *list* rather than a fold, and stops at ten thousand partial
+sums instead of building a lazy sequence of them. And `.flat` over a list
+containing an endless range materialises the prefix without marking the result
+endless, so a reduce downstream of it never learns that anything ran away.
+
 ## `gather` and `take`, without coroutines
 
 `gather { … take … }` should suspend the block at each `take` and resume it when
