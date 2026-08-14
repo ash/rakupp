@@ -6840,6 +6840,7 @@ void Interpreter::registerBuiltins() {
         return Value::boolean(true);
     };
     B["dies-ok"] = [](Interpreter& I, ValueList& a) -> Value {
+        int callLine = I.testLine(); // the block runs first; report OUR line, not its
         bool died = false;
         if (!a.empty() && a[0].t == VT::Code) {
             // the block's value is SUNK, and sinking an unhandled Failure throws it —
@@ -6852,23 +6853,28 @@ void Interpreter::registerBuiltins() {
             catch (LastEx&) { died = true; }
             catch (RedoEx&) { died = true; }
         }
+        I.restoreTestLine(callLine);
         I.emitTest(died, a.size() > 1 ? a[1].toStr() : "");
         return Value::boolean(died);
     };
     B["lives-ok"] = [](Interpreter& I, ValueList& a) -> Value {
+        int callLine = I.testLine();
         bool lived = true;
         if (!a.empty() && a[0].t == VT::Code) {
             try { Value r = I.callCallable(a[0], {});
                   if (r.t == VT::Hash && r.hashKind == "Failure") lived = false; } // sunk Failure throws
             catch (RakuError&) { lived = false; }
         }
+        I.restoreTestLine(callLine);
         I.emitTest(lived, a.size() > 1 ? a[1].toStr() : "");
         return Value::boolean(lived);
     };
     B["use-ok"] = [](Interpreter& I, ValueList& a) -> Value {
+        int callLine = I.testLine();
         std::string mod = a.empty() ? "" : a[0].toStr();
         bool ok = true;
         try { I.loadModule(mod); } catch (...) { ok = false; }
+        I.restoreTestLine(callLine);
         I.emitTest(ok, a.size() > 1 ? a[1].toStr() : ("The module can be use-d ok: " + mod));
         return Value::boolean(ok);
     };

@@ -1123,6 +1123,12 @@ public:
     std::string podData_;             // rendered =pod content (printed at end in --doc mode)
     std::vector<Value> podDom_;       // $=pod structured DOM (Pod::Block values)
     bool docMode_ = false;            // --doc: run DOC phasers and print the rendered POD
+    // A test builtin that RUNS user code before reporting (lives-ok/dies-ok/
+    // throws-like/…) must name its own CALL SITE, not wherever the block ended up:
+    // running the block advances curLine_ into the callee. Save on entry, restore
+    // before emitTest.
+    int testLine() const { return curLine_; }
+    void restoreTestLine(int l) { curLine_ = l; }
     std::string srcFile_;             // source file path as invoked ($*PROGRAM-NAME)
     std::string srcFileAbs_;          // absolute source file path ($?FILE)
     std::string curDeclFile_;         // file whose top level is executing (module load switches it)
