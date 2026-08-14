@@ -560,7 +560,21 @@ struct ClassAttr {
     // a bare `is json-skip` → {"json-skip", True}). Surfaced on the Attribute
     // meta-object so JSON::Unmarshal's role checks and accessors see them.
     std::vector<std::pair<std::string, Value>> userTraits;
+    // The Attribute meta-object, built ONCE and shared. A user `trait_mod:<is>`
+    // runs against it at class-declaration time and its `$a does SomeRole` state
+    // lives in this object's map, so `.^attributes` must hand back the same
+    // object every time or the trait's work is invisible (META6's `is customary`).
+    // Empty until the class body declares an attribute carrying a user trait.
+    Value metaObj;
 };
+
+// The Attribute meta-object for one declared attribute, built once and cached on
+// the ClassAttr (MethodCallPart2.cpp) — user `is` traits mix roles into it.
+Value attributeMetaObject(ClassAttr& a, const std::string& ownerName);
+// Where `$attr does SomeRole` records the roles a trait mixed in. A \x01 prefix
+// keeps it out of the way of any real key: role attributes live in the same map
+// under their plain names, which is what makes `$a.where` work afterwards.
+inline constexpr const char* ATTR_ROLES_KEY = "\x01roles";
 
 struct ClassInfo {
     std::string name;
@@ -590,6 +604,12 @@ struct ClassInfo {
     // sigil → value). Injected into the scope of the class's methods/submethods so
     // the role body sees them (e.g. Cro::Policy::Timeout[%phase-defaults]).
     std::vector<std::pair<std::string, Value>> roleParamBindings;
+    // `state` inside a COMPOSED ROLE method belongs to the composition, not to the
+    // role: two classes doing the same role each get their own slot. The Callable
+    // is shared (it carries a once_flag and the native-call caches, so it must not
+    // be copied), so the per-class env lives here, keyed by it. Empty for all but
+    // the few role methods that declare `state`.
+    std::map<const Callable*, std::shared_ptr<Env>> roleStateEnvs;
 
     // Does this class do a role named `rn` — directly, transitively via a
     // composed role, or through a parent? (A role also "does" itself.)

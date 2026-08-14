@@ -4567,9 +4567,15 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         return n;
     }
     if (inv.t == VT::Type && inv.s == "Version" && m == "new") {
-        std::string s = args.empty() ? "" : args[0].toStr();
-        if (!s.empty() && (s[0] == 'v' || s[0] == 'V')) s = s.substr(1);
-        Value v = Value::str(s); v.hashKind = "Version"; return v;
+        // A leading `v` in the STRING is a literal PART, not syntax: Rakudo reads
+        // `Version.new("v0.0.1")` as parts ("v", 0, 0, 1) — which looks odd, and
+        // is exactly how a module detects the mistake. META6 warns 'prefix "v"
+        // seen in version string' off `.parts[0] eq "v"` and strips it; stripping
+        // it here instead meant that check never fired. (The `v0.0.1` LITERAL is a
+        // different path and still parses as 0.0.1.)
+        Value v = Value::str(args.empty() ? "" : args[0].toStr());
+        v.hashKind = "Version";
+        return v;
     }
     if ((inv.t == VT::Type && inv.s == "Duration" ||
          inv.t == VT::Num && inv.hashKind == "Duration") && m == "new") {

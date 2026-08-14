@@ -5684,6 +5684,14 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 }
                 return v.code->isStub;
             };
+            // A role method that declares `state` gets its OWN copy per composing
+            // class. `state` is per-closure, and each composition is a distinct
+            // closure — sharing the role's Callable made ONE class's memo answer
+            // for every other. META6's AutoAssoc caches its json-name→attribute
+            // map in `state %lookup`, so META6's table answered META6::Support's
+            // subscripts and `$obj<support><source>` came back empty. Only bodies
+            // that actually declare `state` are copied; everything else keeps
+            // sharing, which is what makes composition cheap.
             auto cloneDispatcher = [](const Value& v) {
                 Value nv = v;
                 auto fresh = std::make_shared<Callable>();
@@ -5720,6 +5728,36 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     }
                     else if (!kv.second.code->isStub) { provided[kv.first][""].insert(kv.second.code.get()); providerRoles[kv.first].insert(role->name); }
                 }
+            // `state` in a role method is per-COMPOSITION: two classes doing one
+            // role each get their own slot, as they do in Rakudo where each
+            // composition is a distinct closure. Sharing made one class's memo
+            // answer for every other — META6's AutoAssoc caches its json-name →
+            // attribute map in `state %lookup`, so META6's table answered
+            // META6::Support's subscripts and `$obj<support><source>` read empty.
+            // The Callable stays shared (it holds a once_flag and the native-call
+            // caches), so the slot hangs off the CLASS, keyed by that Callable;
+            // invokeMethod prefers it. Driven from `composedRoles`, which is the
+            // list that includes a role arriving as the PARENT — `class A does R`
+            // puts R there, not in cd->roles.
+            {
+                std::function<void(const Value&)> noteRoleState = [&](const Value& v) {
+                    if (v.t != VT::Code || !v.code) return;
+                    if (v.code->isMultiDispatcher) {
+                        for (auto& cand : v.code->candidates) noteRoleState(cand);
+                        return;
+                    }
+                    if (!v.code->body || ci->roleStateEnvs.count(v.code.get())) return;
+                    bool anyState = false;
+                    for (auto& st : *v.code->body)
+                        if (mayHaveStateDecl(st.get())) { anyState = true; break; }
+                    if (!anyState) return;
+                    auto e = std::make_shared<Env>();
+                    e->parent = v.code->closure ? v.code->closure : global_;
+                    ci->roleStateEnvs[v.code.get()] = e;
+                };
+                for (ClassInfo* role : composedRoles)
+                    for (auto& kv : role->methods) noteRoleState(kv.second);
+            }
             std::set<std::string> conflicted;
             // a conflict needs providers from TWO DIFFERENT roles: one role's own
             // multi candidates can collide on our sig key (invocant-only sigs like
@@ -6215,6 +6253,39 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                         if (ut.second)
                             try { tv = eval(ut.second.get()); } catch (...) {}
                         ca2.userTraits.emplace_back(ut.first, tv);
+                    }
+                }
+                // …and NOW dispatch them: `has $.x is customary` calls
+                // trait_mod:<is>($attr, :customary). The trait body mixes a role
+                // into the Attribute meta-object and sets its state (`$a does
+                // MetaAttribute::Customary; $a.where = 'unknown'`) — which is why
+                // that meta-object is built once and cached on the ClassAttr, and
+                // why this runs HERE rather than at registration: the payloads it
+                // passes are only evaluated by the loop above. The `trait:NAME`
+                // keys stay on the meta-object either way, so modules whose traits
+                // we answer directly (the JSON:: role surface) are unaffected, and
+                // a name with NO trait_mod candidate is simply not a user trait.
+                if (Value* tm = bodyEnv->find("&trait_mod:<is>")) {
+                    if (tm->t == VT::Code) {
+                        Value* prevPkg = bodyEnv->find("$*PACKAGE");
+                        Value savedPkg = prevPkg ? *prevPkg : Value::nil();
+                        bodyEnv->define("$*PACKAGE", Value::typeObj(clsName));
+                        for (auto& ca2 : ci->attrs) {
+                            if (ca2.userTraits.empty()) continue;
+                            Value am = attributeMetaObject(ca2, clsName);
+                            for (auto& ut : ca2.userTraits) {
+                                Value p = Value::pair(ut.first, ut.second);
+                                p.namedArg = true;
+                                ValueList ta; ta.push_back(am); ta.push_back(p);
+                                try { callCallable(*tm, ta); }
+                                catch (RakuError& te) {
+                                    // no candidate = not a user trait at all;
+                                    // anything else is the trait body's own error
+                                    if (te.message.rfind("Cannot resolve caller", 0) != 0) throw;
+                                }
+                            }
+                        }
+                        if (prevPkg) bodyEnv->define("$*PACKAGE", savedPkg);
                     }
                 }
                 tctx_.cur = saved;
@@ -7573,6 +7644,17 @@ static bool typeMatchesArg(const Value& arg, const std::string& type) {
         auto tail = type.rfind("::") == std::string::npos
                   ? type : type.substr(type.rfind("::") + 2);
         auto has = [&](const char* k) { return arg.hash->count(k) != 0; };
+        // Roles a user trait_mod actually mixed in (`$a does MetaAttribute::Customary`)
+        // — checked FIRST, so a module that spells its own traits wins over the
+        // name-matched fallbacks below.
+        auto rit = arg.hash->find(ATTR_ROLES_KEY);
+        if (rit != arg.hash->end() && rit->second.t == VT::Array && rit->second.arr)
+            for (auto& rn : *rit->second.arr) {
+                const std::string& r = rn.s;
+                if (r == type) return true;
+                auto rtail = r.rfind("::") == std::string::npos ? r : r.substr(r.rfind("::") + 2);
+                if (rtail == tail) return true;
+            }
         if (tail == "NamedAttribute") return has("trait:json-name");
         if (tail == "CustomUnmarshaller")     return has("trait:unmarshalled-by");
         if (tail == "CustomUnmarshallerCode") return has("trait:unmarshalled-by") && (*arg.hash)["trait:unmarshalled-by"].t == VT::Code;
@@ -10714,11 +10796,32 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
     // writes land in a foreign frame's stateEnv that the method's chain never
     // sees (Cro.compose's `++state $split` → "Variable '$split' is not
     // declared" when called from inside Cro::HTTP::Server.new).
-    std::call_once(c.stateInit, [&] {
-        c.stateEnv = std::make_shared<Env>();
-        c.stateEnv->parent = c.closure ? c.closure : global_;
-    });
-    env->parent = c.stateEnv;
+    // …and when the method came from a ROLE, that env belongs to the COMPOSITION:
+    // look it up on the invocant's class first, so two classes doing one role do
+    // not share a memo. The map is empty for all but the few role methods that
+    // declare `state`, so this costs one emptiness check.
+    std::shared_ptr<Env> stEnv;
+    {
+        ClassInfo* rk = nullptr;
+        if (self.t == VT::Object && self.obj) rk = self.obj->cls.get();
+        else if (self.t == VT::Type) {
+            auto it = classes_.find(self.s);
+            if (it != classes_.end()) rk = it->second.get();
+        }
+        for (ClassInfo* k = rk; k && !stEnv; k = k->parent.get()) {
+            if (k->roleStateEnvs.empty()) continue;
+            auto rs = k->roleStateEnvs.find(&c);
+            if (rs != k->roleStateEnvs.end()) stEnv = rs->second;
+        }
+    }
+    if (!stEnv) {
+        std::call_once(c.stateInit, [&] {
+            c.stateEnv = std::make_shared<Env>();
+            c.stateEnv->parent = c.closure ? c.closure : global_;
+        });
+        stEnv = c.stateEnv;
+    }
+    env->parent = stEnv;
     env->define("self", self);
     // Parameterized-role value params (role R[$x]/[%h]): a method/submethod of a
     // class that composed such a role must see the bound params in its body. Inject
@@ -10762,7 +10865,9 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
     // one spliced into env->parent above), not the caller's; RAII restores on
     // every exit path
     Env* savedStateEnv = tctx_.curStateEnv;
-    tctx_.curStateEnv = c.stateEnv.get();
+    tctx_.curStateEnv = stEnv.get(); // the SAME env spliced into env->parent above —
+                                     // declaring into one and reading through the other
+                                     // is "Variable '%lookup' is not declared"
     struct StateGuard { ExecContext& t; Env* s; ~StateGuard() { t.curStateEnv = s; } } stG{tctx_, savedStateEnv};
     // a method frame is a dynamic-scope boundary like a sub frame: push the
     // CALLER's env so `$*CRO-ROUTE-SET`-style dynamics set in a calling sub stay
@@ -11732,6 +11837,17 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         auto* mc = static_cast<MethodCall*>(a->target.get());
         if (mc->args.empty() && !mc->meta && !mc->hyper && mc->inv->kind == NK::VarExpr) {
             Value inv = eval(mc->inv.get());
+            // `$a.where = 'unknown'` on an ATTRIBUTE meta-object: the accessor
+            // belongs to a role a trait mixed in, and the role's state lives in
+            // the meta-object's shared map. Only names already present — a role
+            // attribute or a `trait:` payload — so a typo still reaches the
+            // normal "no such method" path rather than silently creating a key.
+            if (inv.t == VT::Hash && inv.hashKind == "Attribute" && inv.hash &&
+                inv.hash->count(mc->method)) {
+                Value rhs = eval(a->value.get());
+                (*inv.hash)[mc->method] = rhs;
+                return sink ? Value::any() : rhs;
+            }
             if (inv.t == VT::Object && inv.obj && inv.obj->cls &&
                 (inv.obj->cls->repr == "CStruct" || inv.obj->cls->repr == "CPPStruct" ||
                  inv.obj->cls->repr == "CUnion") &&
@@ -12161,12 +12277,17 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             auto* ix = static_cast<Index*>(a->target.get());
             if (ix->index && !ix->multiDim && ix->adverb.empty() &&
                 (ix->base->kind == NK::VarExpr || ix->base->kind == NK::SelfTerm ||
-                 ix->base->kind == NK::MethodCall)) {
+                 ix->base->kind == NK::MethodCall || ix->base->kind == NK::Index)) {
                 Value* bp = nullptr;
                 Value held;   // a method-call base is evaluated ONCE, and kept alive here
-                if (ix->base->kind == NK::MethodCall) {
+                if (ix->base->kind == NK::MethodCall || ix->base->kind == NK::Index) {
                     // `$u.query<foo> = True` — the accessor hands back the object
                     // itself, so mutating it through ASSIGN-KEY is what Rakudo does.
+                    // A NESTED subscript is the same story read one level deeper:
+                    // `$meta<support><source> = 'x'` reads the inner object through
+                    // the outer AT-KEY and assigns through ITS ASSIGN-KEY. Without
+                    // the Index base the whole statement was silently a no-op
+                    // (META6's 050-assoc.t).
                     try { held = eval(ix->base.get()); bp = &held; } catch (RakuError&) { bp = nullptr; }
                 }
                 else try { bp = lvalue(ix->base.get(), /*asInvocant=*/true); } catch (RakuError&) {}
@@ -17523,6 +17644,48 @@ Value Interpreter::mixinValue(Value base, const Value& rhs, bool copy) {
         }
     };
     collect(rhs);
+
+    // `$a does SomeRole` where $a is an ATTRIBUTE meta-object: mix in place. The
+    // meta-object is a Hash whose map is shared by every copy, so recording the
+    // role (and its attributes' defaults) in that map is visible to the holder of
+    // the ClassAttr — where boxing it into a fresh object, as the general path
+    // does, would leave the trait's work in a value nobody can reach. This is the
+    // shape every attribute trait_mod uses: `$a does MetaAttribute::Customary;
+    // $a.where = 'unknown'` (META6), and the JSON:: ecosystem's traits likewise.
+    if (!copy && base.t == VT::Hash && base.hashKind == "Attribute" && base.hash) {
+        Value& roles = (*base.hash)[ATTR_ROLES_KEY];
+        if (roles.t != VT::Array || !roles.arr) { roles = Value::array(); roles.isList = true; }
+        for (auto& rn : roleNames) roles.arr->push_back(Value::str(rn));
+        // Seed the role's attributes as plain keys, so the role's own accessors
+        // (`$a.where`, `$a.optionality`) read and write them. Composed roles count:
+        // META6 mixes in MetaAttribute::Specification, whose attributes are all
+        // inherited from the MetaAttribute it does — miss those and the trait's
+        // very next line, `$a.optionality = …`, has no slot to assign to.
+        std::set<ClassInfo*> seeded;
+        std::function<void(ClassInfo*)> seedRole = [&](ClassInfo* role) {
+            if (!role || !seeded.insert(role).second) return;
+            for (auto& a : role->attrs) {
+                if (base.hash->count(a.name)) continue;
+                Value dv = Value::any();
+                if (a.hasDefVal) dv = a.defVal;
+                else if (a.def) {
+                    auto saved = tctx_.cur;
+                    if (role->declEnv) tctx_.cur = role->declEnv;
+                    try { dv = eval(const_cast<Expr*>(a.def)); } catch (...) { dv = Value::any(); }
+                    tctx_.cur = saved;
+                }
+                (*base.hash)[a.name] = dv;
+            }
+            for (auto& sub : role->doneRoles) {
+                roles.arr->push_back(Value::str(sub));
+                auto sit = classes_.find(sub);
+                if (sit != classes_.end()) seedRole(sit->second.get());
+            }
+        };
+        for (ClassInfo* role : roleInfos) seedRole(role);
+        for (auto& p : pairs) (*base.hash)[p.s] = p.pairVal ? *p.pairVal : Value::any();
+        return base;
+    }
 
     std::shared_ptr<ObjectData> obj;
     if (base.t == VT::Object && base.obj) {

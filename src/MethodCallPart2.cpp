@@ -33,6 +33,27 @@ static Value attrTypeValue(const ClassAttr& a) {
     return Value::typeObj(a.type.empty() ? "Mu" : a.type);
 }
 
+// The Attribute meta-object for `a`, declared by `ownerName`. ONE builder — the
+// `.^attributes` and `.^attribute_table` copies had drifted apart (only one of
+// them set `built`). It is cached on the ClassAttr because a user `trait_mod:<is>`
+// mixes roles into it at declaration time and `.^attributes` must return the same
+// object, not a fresh one that has forgotten the trait ever ran.
+Value attributeMetaObject(ClassAttr& a, const std::string& ownerName) {
+    if (a.metaObj.t == VT::Hash && a.metaObj.hash) return a.metaObj;
+    Value at = Value::makeHash(); at.hashKind = "Attribute";
+    (*at.hash)["name"] = Value::str(std::string(1, a.sigil) + "!" + a.name);
+    (*at.hash)["type"] = attrTypeValue(a);
+    (*at.hash)["readonly"] = Value::boolean(!a.rw);
+    (*at.hash)["has_accessor"] = Value::boolean(a.pub);
+    // public attrs are always built; a private one only via `is built`
+    // (what JSON::Marshal's is_built probe asks)
+    (*at.hash)["built"] = Value::boolean(a.pub || a.built);
+    (*at.hash)["package"] = Value::typeObj(ownerName);
+    for (auto& ut : a.userTraits) (*at.hash)["trait:" + ut.first] = ut.second;
+    a.metaObj = at;
+    return at;
+}
+
 std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName& m, ValueList& args,
                                      const std::vector<ExprPtr>* rwArgs) {
     if (inv.t == VT::Hash && inv.hashKind == "Supply") {
@@ -577,6 +598,13 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 "No such method 'hash' for invocant of type 'Attribute'"};
         if (m == "container_descriptor" || m == "container") return inv; // enough for `.of`/rw queries
         if (m == "package" || m == "declaring_package") return h.count("package") ? h["package"] : Value::typeObj("Mu");
+        // An accessor of a role a trait mixed in (`$a does R` put R's attributes
+        // into this same map): `$a.where` after META6's `is customary`. Last,
+        // so it can never shadow a real Attribute method.
+        {
+            auto ai = h.find(m);
+            if (ai != h.end()) return ai->second;
+        }
     }
     if (inv.t == VT::Hash && inv.hashKind == "Failure") {
         Value ex = inv.hash->count("exception") ? (*inv.hash)["exception"] : Value::typeObj("Exception");
@@ -1911,17 +1939,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             if (m == "api")  return ci->api.empty() ? Value::any() : Value::str(ci->api);
             if (m == "attribute_table") { // Hash: '$!name' => Attribute
                 Value out = Value::makeHash();
-                for (auto& a : ci->attrs) {
-                    Value at = Value::makeHash(); at.hashKind = "Attribute";
-                    std::string an = std::string(1, a.sigil) + "!" + a.name;
-                    (*at.hash)["name"] = Value::str(an);
-                    (*at.hash)["type"] = attrTypeValue(a);
-                    (*at.hash)["readonly"] = Value::boolean(!a.rw);
-                    (*at.hash)["has_accessor"] = Value::boolean(a.pub);
-                    (*at.hash)["package"] = Value::typeObj(ci->name);
-                    for (auto& ut : a.userTraits) (*at.hash)["trait:" + ut.first] = ut.second;
-                    (*out.hash)[an] = at;
-                }
+                for (auto& a : ci->attrs)
+                    (*out.hash)[std::string(1, a.sigil) + "!" + a.name] =
+                        attributeMetaObject(a, ci->name);
                 return out;
             }
             if (m == "add_attribute" && !args.empty()) { // .^add_attribute(Attribute.new(...))
@@ -2067,19 +2087,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 std::set<ClassInfo*> visited;
                 std::function<void(ClassInfo*)> walk = [&](ClassInfo* c) {
                     if (!c || !visited.insert(c).second) return;
-                    for (auto& a : c->attrs) {
-                        Value at = Value::makeHash(); at.hashKind = "Attribute";
-                        (*at.hash)["name"] = Value::str(std::string(1, a.sigil) + "!" + a.name);
-                        (*at.hash)["type"] = attrTypeValue(a);
-                        (*at.hash)["readonly"] = Value::boolean(!a.rw);
-                        (*at.hash)["has_accessor"] = Value::boolean(a.pub);
-                        // public attrs are always built; a private one only via
-                        // `is built` (what JSON::Marshal's is_built probe asks)
-                        (*at.hash)["built"] = Value::boolean(a.pub || a.built);
-                        (*at.hash)["package"] = Value::typeObj(c->name);
-                        for (auto& ut : a.userTraits) (*at.hash)["trait:" + ut.first] = ut.second;
-                        out.arr->push_back(at);
-                    }
+                    for (auto& a : c->attrs) out.arr->push_back(attributeMetaObject(a, c->name));
                     if (local) return;
                     walk(c->parent.get());
                     for (auto& p : c->extraParents) walk(p.get());
