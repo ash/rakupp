@@ -43,4 +43,21 @@ role PB[$q] { method b { $q } }
 class CAB does PA[1] does PB[2] { }
 @fail.push('two-roles') unless CAB.new.a == 1 && CAB.new.b == 2;
 
+# the params must bind for a RUNTIME mixin too — `but`/`does` composes the same
+# role, so its methods need the same scope. `Array[T] but JSON::Class` then
+# `.to-json` is JSON::Class's own 050-array.t; before the fix the role's method
+# died "Variable '$opt-in' is not declared" the moment it was reached.
+role RD[Bool :$opt-in = False] { method flag { $opt-in } }
+my $but-type = (Array[Int] but RD);
+@fail.push("but-type ({$but-type.flag})") unless $but-type.flag === False;
+my $inst = [1, 2];
+$inst does RD;
+@fail.push("does-inst ({$inst.flag})") unless $inst.flag === False;
+
+# an explicitly parameterized pun keeps ITS binding, both punned directly and
+# mixed in — the pun's args win over the role's defaults
+@fail.push("pun ({RD[:opt-in].flag})") unless RD[:opt-in].flag === True;
+my $but-pun = (Array[Int] but RD[:opt-in]);
+@fail.push("but-pun ({$but-pun.flag})") unless $but-pun.flag === True;
+
 if @fail { note "FAILED: @fail[]"; say 'FAIL' } else { say 'PASS' }

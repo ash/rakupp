@@ -573,6 +573,10 @@ public:
                               std::shared_ptr<SupplyTapCtx> ctx); // Supply.interval inside a supply {} block
     // anonymous pun of a parameterized role with `[...]` args bound (P[%h].new / Q[Int].mk)
     Value makeRolePun(ClassInfo* role, const std::string& roleName, ValueList& argv);
+    // bind a composed role's `[...]` params into `dest`, so the role's method bodies
+    // see them; `argv` may be empty — a bare `does R`/`but R` still binds the DEFAULTS
+    void bindRoleParamsInto(ClassInfo* dest, ClassInfo* role, ValueList& argv,
+                            const std::shared_ptr<Env>& scope);
     // Live-Supply transform chain: run one emitted value through a tap's chain of
     // grep/map/head/… steps. Returns the values to forward; sets `complete` when the
     // chain has finished (head/first reached its limit) so `done` should fire.

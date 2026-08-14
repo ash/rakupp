@@ -4838,12 +4838,29 @@ Value Interpreter::makeRolePun(ClassInfo* role, const std::string& roleName, Val
     pun->name = roleName + "\x01pun" + std::to_string(++punSerial);
     pun->doneRoles.insert(roleName); // `~~ P` still answers True
     pun->roleParamBindings.clear();
+    bindRoleParamsInto(pun.get(), role, argv, role->declEnv);
+    classes_[pun->name] = pun;
+    return Value::typeObj(pun->name);
+}
+
+// Bind ONE composed role's `[...]` parameters into `dest->roleParamBindings` —
+// the vector invokeClosure walks up the invocant's MRO to put the params in scope
+// for the role's method bodies. `argv` may be empty: a bare `does R` / `but R`
+// must still bind the parameter DEFAULTS (License::SPDX's `does JSON::Class`
+// needs $opt-in = False, or every role method mentioning it dies "not declared").
+// Shared by all three composition routes: class body, runtime mixin, role pun.
+void Interpreter::bindRoleParamsInto(ClassInfo* dest, ClassInfo* role, ValueList& argv,
+                                     const std::shared_ptr<Env>& scope) {
+    if (!role->decl || role->decl->roleParams.empty()) return;
     auto tmp = std::make_shared<Env>();
-    tmp->parent = role->declEnv ? role->declEnv : global_;
+    tmp->parent = scope ? scope : global_;
     try { bindParams(role->decl->roleParams, argv, tmp, /*methodCtx=*/false); }
-    catch (...) {} // arity/type mismatch: leave unbound rather than die here
+    catch (...) {} // arity/type mismatch: leave unbound rather than abort composition
     size_t posIdx = 0;
     for (auto& p : role->decl->roleParams) {
+        // `role R[::T]`: a bare type-capture param binds the type NAME to the
+        // argument at its positional slot (Cro::ConnectionState[TestState]
+        // answers TestState for T in the role body)
         if (p.typeCapture && !p.type.empty() && !p.named) {
             size_t ai = 0, seen = 0; bool found = false;
             for (; ai < argv.size(); ai++)
@@ -4851,15 +4868,13 @@ Value Interpreter::makeRolePun(ClassInfo* role, const std::string& roleName, Val
             if (found) {
                 Value tv = argv[ai].t == VT::Type ? argv[ai]
                                                   : Value::typeObj(argv[ai].typeName());
-                pun->roleParamBindings.push_back({p.type, tv});
+                dest->roleParamBindings.push_back({p.type, tv});
             }
         }
         if (!p.named && !p.slurpy) posIdx++;
         if (!p.name.empty())
-            if (Value* v = tmp->find(p.name)) pun->roleParamBindings.push_back({p.name, *v});
+            if (Value* v = tmp->find(p.name)) dest->roleParamBindings.push_back({p.name, *v});
     }
-    classes_[pun->name] = pun;
-    return Value::typeObj(pun->name);
 }
 
 // Does this subtree contain a `state` declaration the enclosing loop's state
@@ -5839,29 +5854,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                         if (e->kind == NK::Pair) v.namedArg = true; // `does R[:opt]` → named arg
                         argv.push_back(std::move(v));
                     }
-                    auto tmp = std::make_shared<Env>();
-                    tmp->parent = ci->declEnv;
-                    try { bindParams(role->decl->roleParams, argv, tmp, /*methodCtx=*/false); }
-                    catch (...) {} // arity/type mismatch: leave unbound rather than abort composition
-                    size_t posIdx = 0;
-                    for (auto& p : role->decl->roleParams) {
-                        // `role R[::T]`: a bare type-capture param binds the type NAME
-                        // to the argument at its positional slot (Cro::ConnectionState[
-                        // TestState] answers TestState for T in the role body)
-                        if (p.typeCapture && !p.type.empty() && !p.named) {
-                            size_t ai = 0, seen = 0; bool found = false;
-                            for (; ai < argv.size(); ai++)
-                                if (!argv[ai].namedArg && seen++ == posIdx) { found = true; break; }
-                            if (found) {
-                                Value tv = argv[ai].t == VT::Type ? argv[ai]
-                                                                  : Value::typeObj(argv[ai].typeName());
-                                ci->roleParamBindings.push_back({p.type, tv});
-                            }
-                        }
-                        if (!p.named && !p.slurpy) posIdx++;
-                        if (!p.name.empty())
-                            if (Value* v = tmp->find(p.name)) ci->roleParamBindings.push_back({p.name, *v});
-                    }
+                    bindRoleParamsInto(ci.get(), role, argv, ci->declEnv);
                 }
             }
             {   // a class body takes no arguments — placeholders are compile errors
@@ -17562,6 +17555,13 @@ Value Interpreter::mixinValue(Value base, const Value& rhs, bool copy) {
     for (ClassInfo* role : roleInfos) {
         for (auto& kv : role->methods) nc->methods[kv.first] = kv.second;
         for (auto& sub : role->doneRoles) nc->doneRoles.insert(sub);
+        // A parameterized role mixed in at RUNTIME binds its params too, exactly as
+        // a class body's `does R` does — `Array[T] but JSON::Class` then `.to-json`
+        // must still see $opt-in (JSON::Class 050-array.t). A pun (`R[3]`) already
+        // carries its bindings, and they come first so they win over the defaults.
+        for (auto& b : role->roleParamBindings) nc->roleParamBindings.push_back(b);
+        ValueList noArgs;
+        bindRoleParamsInto(nc.get(), role, noArgs, role->declEnv);
         // compose attrs and initialize each to its default, evaluated in the role's
         // own declaration scope (so `role { has $.x = $val }` captures $val).
         for (auto& a : role->attrs) {
@@ -19795,10 +19795,22 @@ Value Interpreter::evalIndex(Index* idx) {
             !rit->second->decl->roleParams.empty()) {
             ClassInfo* role = rit->second.get();
             ValueList argv;
-            Value iv = eval(idx->index.get());
+            // A Pair WRITTEN in the `[...]` list is a NAMED argument — `R[:opt-in]`
+            // binds `Bool :$opt-in`, exactly as `does R[:opt-in]` does in a class
+            // body. Without the flag bindParams takes it positionally and the named
+            // param silently keeps its default.
+            Expr* ix = idx->index.get();
+            std::vector<Expr*> argExprs;
+            if (ix->kind == NK::ListExpr)
+                for (auto& e : static_cast<ListExpr*>(ix)->items) argExprs.push_back(e.get());
+            else argExprs.push_back(ix);
+            Value iv = eval(ix);
             if (iv.t == VT::Array && iv.isList && !iv.itemized)
                 for (auto& e : *iv.arr) argv.push_back(e);
             else argv.push_back(iv);
+            if (argExprs.size() == argv.size())
+                for (size_t i = 0; i < argv.size(); i++)
+                    if (argExprs[i]->kind == NK::Pair) argv[i].namedArg = true;
             return makeRolePun(role, base.s, argv);
         }
     }
