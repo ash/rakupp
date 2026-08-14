@@ -1693,13 +1693,18 @@ Interpreter::Interpreter() {
         for (auto& d : splitSearchPath(rl)) libPaths_.push_back(d);
     if (const char* ro = std::getenv("ROAST"))
         libPaths_.push_back(std::string(ro) + "/packages/Test-Helpers/lib");
-    // %*ENV — the process environment, as a Hash (found via the normal env chain)
+    // %*ENV — the process environment, as a Hash (found via the normal env chain).
+    // The values are ALLOMORPHS, as `val` makes them: a variable set to "0" is an
+    // IntStr and therefore FALSE, where a plain Str "0" is true in Raku (it is not
+    // Perl). Test::When's harness sets every flag it is not testing to 0 and the
+    // module asks `unless %*ENV<ALL_TESTING>` — read as Str, that turned the skip
+    // off and ran every test it was supposed to skip.
     {
         Value envh = Value::makeHash();
         for (char** ep = rakupp_environ(); ep && *ep; ++ep) {
             std::string kv = *ep; auto eq = kv.find('=');
             if (eq == std::string::npos) continue;
-            (*envh.hash)[kv.substr(0, eq)] = Value::str(kv.substr(eq + 1));
+            (*envh.hash)[kv.substr(0, eq)] = valAllomorph(Value::str(kv.substr(eq + 1)));
         }
         global_->define("%*ENV", envh);
     }
@@ -4476,7 +4481,7 @@ void Interpreter::runLastPhasers(const std::vector<StmtPtr>& stmts) {
     for (auto& s : stmts) if (s->kind == NK::Block) { auto* b = static_cast<Block*>(s.get());
         if (b->phaser == "LAST") { auto sc = std::make_shared<Env>(); sc->parent = tctx_.cur; execBlock(b, sc); } }
 }
-void Interpreter::runLeavePhasers(const std::vector<StmtPtr>& stmts, bool ok) {
+void Interpreter::runLeavePhasers(const std::vector<StmtPtr>& stmts, bool ok, size_t tempMark) {
     // reverse source order. KEEP runs only when the block is left SUCCESSFULLY,
     // UNDO only when it isn't; LEAVE always. (Firing both made zef log
     // "Updated <mirror>" and "Failed to update <mirror>" for the same fetch.)
@@ -4498,10 +4503,17 @@ void Interpreter::runLeavePhasers(const std::vector<StmtPtr>& stmts, bool ok) {
         tctx_.returning = savedRet; tctx_.returnV = std::move(savedRV); tctx_.loopCtl = savedLC;
         tctx_.givenCtl = savedGC; tctx_.givenV = std::move(savedGV);
     }
-    // `temp`-saved containers are restored on scope exit (reverse order), after LEAVE blocks.
-    if (tctx_.cur && tctx_.cur->ex && !tctx_.cur->ex->tempRestores.empty()) {
-        for (auto it = tctx_.cur->ex->tempRestores.rbegin(); it != tctx_.cur->ex->tempRestores.rend(); ++it) (*it)();
-        tctx_.cur->ex->tempRestores.clear();
+    // `temp`-saved containers are restored on scope exit (reverse order), after
+    // LEAVE blocks — but only the ones THIS block pushed. A statement-modifier
+    // loop runs its body in the CALLER's env (that is how `$_` aliases without an
+    // env per iteration), so draining the whole list undid the enclosing scope's
+    // `temp` after the first iteration: `temp %h; %h{$_} = 7 for <A B>` restored
+    // over A, then wrote B into the restored container, which then leaked past the
+    // scope the temp was supposed to bound.
+    if (tctx_.cur && tctx_.cur->ex && tctx_.cur->ex->tempRestores.size() > tempMark) {
+        auto& tr = tctx_.cur->ex->tempRestores;
+        for (size_t i = tr.size(); i-- > tempMark; ) tr[i]();
+        tr.resize(tempMark);
     }
 }
 
@@ -4513,6 +4525,10 @@ Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink) {
     // block env is still held by tctx_.cur (so the raw pointer is valid). Gated on
     // hasNestedSub → zero cost for the overwhelmingly common sub-free block.
     Env* blockEnv = tctx_.cur.get();
+    // What this env already owed before the block started: anything beyond this is
+    // ours to unwind on the way out, anything below it belongs to an outer scope
+    // that happens to share the env (a statement-modifier loop body does).
+    const size_t tempMark = blockEnv->ex ? blockEnv->ex->tempRestores.size() : 0;
     bool hasNestedSub = false;
     Value last = Value::any();
     // index of the last statement whose value becomes the block's value; earlier
@@ -4584,7 +4600,7 @@ Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink) {
                 catch (RakuError& e) {
                     int r = runCatch(e);
                     if (r == 1) continue;                // .resume → next statement
-                    runLeavePhasers(b->stmts, /*ok=*/false);
+                    runLeavePhasers(b->stmts, /*ok=*/false, tempMark);
                     if (tctx_.cur && tctx_.cur->ex && !tctx_.cur->ex->letRestores.empty()) {
                         for (auto it = tctx_.cur->ex->letRestores.rbegin(); it != tctx_.cur->ex->letRestores.rend(); ++it) (*it)();
                         tctx_.cur->ex->letRestores.clear();
@@ -4600,7 +4616,7 @@ Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink) {
             if (tctx_.returning || tctx_.loopCtl || tctx_.givenCtl) break; // cooperative return/next/last/when unwinds native blocks
         }
     } catch (RakuError& e) {
-        runLeavePhasers(b->stmts, /*ok=*/false);
+        runLeavePhasers(b->stmts, /*ok=*/false, tempMark);
         // `let`-saved containers restore only on this UNSUCCESSFUL exit
         if (tctx_.cur && tctx_.cur->ex && !tctx_.cur->ex->letRestores.empty()) {
             for (auto it = tctx_.cur->ex->letRestores.rbegin(); it != tctx_.cur->ex->letRestores.rend(); ++it) (*it)();
@@ -4610,7 +4626,7 @@ Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink) {
         tctx_.cur = saved;
         throw;
     } catch (...) {
-        runLeavePhasers(b->stmts, /*ok=*/false);
+        runLeavePhasers(b->stmts, /*ok=*/false, tempMark);
         if (tctx_.cur && tctx_.cur->ex && !tctx_.cur->ex->letRestores.empty()) {
             for (auto it = tctx_.cur->ex->letRestores.rbegin(); it != tctx_.cur->ex->letRestores.rend(); ++it) (*it)();
             tctx_.cur->ex->letRestores.clear();
@@ -4619,7 +4635,7 @@ Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink) {
         tctx_.cur = saved;
         throw;
     }
-    runLeavePhasers(b->stmts);
+    runLeavePhasers(b->stmts, /*ok=*/true, tempMark);
     if (hasNestedSub) breakSelfClosures(blockEnv);
     tctx_.cur = saved;
     return last;
