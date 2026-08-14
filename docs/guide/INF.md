@@ -1,10 +1,10 @@
 # Infinity: what an endless list can still answer
 
 `1..Inf` has no last element, so anything that would have to walk to the end of
-it has to do something other than walk. Rakudo's answer is usually to spin
-forever. Raku++ can't do that inside a test suite, so it used to walk a bounded
-prefix instead — and that produced the bug this page exists because of
-([#19](https://github.com/ash/rakupp/issues/19)):
+it has to do something other than walk. A fold like `[+]` is written to consume
+its list element by element, which for an endless one simply does not return.
+Raku++ walked a bounded prefix instead — and that produced the bug this page
+exists because of ([#19](https://github.com/ash/rakupp/issues/19)):
 
 ```
 $ rakupp -e 'say [+] 1..Inf'
@@ -29,23 +29,27 @@ runs 0, 0, 0, … — every partial is 0 the moment the walk crosses zero, so `0
 `[~] 1..Inf` runs `"1"`, `"12"`, `"123"`, … — the strings grow without ever
 approaching a string, so there is nothing to name and it throws.
 
+Where the table below says Rakudo does not terminate, the Raku++ answer is a
+deliberate divergence: nothing is being copied from another implementation,
+because an expression that does not return has no observable value to copy.
+
 ## What each operator answers
 
 | Expression | Before | Now | Rakudo |
 |---|---|---|---|
-| `[+] 1..Inf`, `[+] 1..*` | `50005000` | `Inf` | spins |
-| `[*] 1..Inf` | all of `10000!`, after ~40 s | `Inf` | spins |
-| `[*] ^Inf`, `[*] -3..Inf` | `0` | `0` | spins |
-| `[*] -0.5..Inf` | `0` | `-Inf` | spins |
-| `[-] 1..Inf` | `-50004998` | `-Inf` | spins |
-| `[min] 1..Inf` / `[max] 1..Inf` | `1` / `10000` | `1` / `Inf` | spins |
-| `[~] 1..Inf` | a 38,894-character string | `X::Cannot::Lazy` | spins |
-| `(1..Inf).reduce(&[+])` | `50005000` | `Inf` | spins |
+| `[+] 1..Inf`, `[+] 1..*` | `50005000` | `Inf` | does not terminate |
+| `[*] 1..Inf` | all of `10000!`, after ~40 s | `Inf` | does not terminate |
+| `[*] ^Inf`, `[*] -3..Inf` | `0` | `0` | does not terminate |
+| `[*] -0.5..Inf` | `0` | `-Inf` | does not terminate |
+| `[-] 1..Inf` | `-50004998` | `-Inf` | does not terminate |
+| `[min] 1..Inf` / `[max] 1..Inf` | `1` / `10000` | `1` / `Inf` | does not terminate |
+| `[~] 1..Inf` | a 38,894-character string | `X::Cannot::Lazy` | does not terminate |
+| `(1..Inf).reduce(&[+])` | `50005000` | `Inf` | does not terminate |
 | `(1..Inf).sum` / `sum(1..Inf)` | threw / `50005000` | `Inf` | `Inf` |
 | `(-Inf..0).sum` | `-92233720368547708085000` | `-Inf` | `-Inf` |
 | `(-Inf..Inf).sum` | threw | `NaN` | `NaN` |
 | `(1..10**100).sum` / `sum(…)` | threw / `50005000` | the exact Gauss sum | same |
-| `[+]` over an endless **lazy** list | `0` or a prefix sum | `X::Cannot::Lazy` | spins |
+| `[+]` over an endless **lazy** list | `0` or a prefix sum | `X::Cannot::Lazy` | does not terminate |
 | `(1..*).gist` / `.raku` | `1..9223372036854775807` | `1..Inf` | `1..Inf` |
 | `(1..*).Str` | `1..9223372036854775807` | `1..*` | `1..*` |
 | `(^Inf).gist` | `^9223372036854775807` | `0..^Inf` | `0..^Inf` |

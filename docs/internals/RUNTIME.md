@@ -1025,9 +1025,10 @@ unary, `prefix:<[op]>(…)`, `&prefix:<[op]>`, `rtReduce` for native codegen, an
   known one at all — and any endless **lazy** list (whose elements do not follow
   from bounds) → `X::Cannot::Lazy`.
 
-Rakudo folds forever in all of these cases, so the answers above are a
-deliberate divergence — spinning is no better than the wrong number was. The
-reasoning, case by case, is in [../guide/INF.md](../guide/INF.md).
+None of these expressions terminates under Rakudo, so the answers above are a
+deliberate divergence: an expression that does not return has no observable
+value to match. The reasoning, case by case, is in
+[../guide/INF.md](../guide/INF.md).
 
 ### `gather` / `take`
 

@@ -60,10 +60,10 @@ is-it((1..10).reduce(&[+]), 55, '(1..10).reduce(&[+])');
 is-it(~(1..5),      '1 2 3 4 5', '~(1..5) still expands to its elements');
 is-it((^5).gist,       '^5',  '(^5).gist keeps the short form');
 
-# --- rakupp-only: where Rakudo has no answer at all ----------------------
-# Reducing an endless operand makes Rakudo fold forever — `[+] 1..Inf` never
-# returns. Spinning is no better than the wrong number was, so rakupp answers
-# the operators that can be answered without the elements and refuses the rest.
+# --- rakupp-only: where there is no answer to compare against ------------
+# A reduce over an endless operand does not terminate under Rakudo — `[+] 1..Inf`
+# never returns — so there is no observable value to match. rakupp answers the
+# operators whose limit follows from the range's bounds and refuses the rest.
 # (These lines would hang the suite under Rakudo, hence the gate.)
 if $*RAKU.compiler.name eq 'Raku++' {
     is-it(([+] 1..Inf),  Inf, '[+] 1..Inf');
