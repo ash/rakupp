@@ -279,7 +279,7 @@ Value extLoadModule(const std::string& path, std::string& errOut,
 // unset. Three verbatim copies of the check inside one `if` block each returned
 // the bare type object, and all three hard-coded `infix:<%%>` in the one message
 // they did build.
-Value divideByZero(const Value& lhs, const char* opName);
+[[noreturn]] void divideByZero(const Value& lhs, const char* opName);
 
 // The PUBLIC attributes of a class, in the order the default renderer shows them:
 // the class's OWN first, then its parents' (Rakudo prints `Q.new(q => 2, p => 1)`

@@ -691,6 +691,14 @@ std::string rakuRepr(const Value& v, int depth, std::set<const void*>& seen) {
         std::string face = num.s; num.s.clear();
         return v.typeName() + ".new(" + rakuRepr(num, depth + 1, seen) + ", " + rakuStrLit(face) + ")";
     }
+    // An enum VALUE renders QUALIFIED — `Order::Less`, `Colour::Red` — because
+    // .raku must round-trip through EVAL and the bare key need not be in scope.
+    // Bool already spells itself out below; every other enum answered the bare
+    // key, which is what `3 cmp 5` .raku showing `Less` instead of `Order::Less`
+    // came from. Junctions tag themselves with enumName too (any/all/one/none)
+    // and are NOT enums — they carry no enumType, which is what tells them apart.
+    if (!v.enumName.empty() && !v.enumType.empty() && v.t != VT::Bool)
+        return v.enumType.str() + "::" + v.enumName.str();
     switch (v.t) {
         case VT::Nil:  return "Nil";
         case VT::Any:  return "Any";

@@ -131,13 +131,15 @@ void collectPubAttrs(ClassInfo* c, std::vector<const ClassAttr*>& out) {
     for (auto& p : c->extraParents) collectPubAttrs(p.get(), out);
 }
 
-Value divideByZero(const Value& lhs, const char* opName) {
-    Value ex = Value::typeObj("X::Numeric::DivideByZero");
-    Value f = Value::makeHash(); f.hashKind = "Failure";
-    (*f.hash)["exception"] = ex;
-    (*f.hash)["message"] = Value::str("Attempt to divide " + lhs.toStr() +
-                                      " by zero using infix:<" + opName + ">");
-    return f;
+// `div`, `mod` and `%` by zero THROW — they do not hand back a Failure to be
+// discovered later. This used to return one, so `try { 3 div 0 }` caught nothing
+// and the Failure surfaced as an uncatchable death wherever it was finally used.
+// (`/` by zero is different and stays lazy: `1/0` is the Rat <1/0>, which only
+// complains when something asks for its value.)
+[[noreturn]] void divideByZero(const Value& lhs, const char* opName) {
+    throw RakuError{Value::typeObj("X::Numeric::DivideByZero"),
+                    "Attempt to divide " + lhs.toStr() +
+                    " by zero using infix:<" + opName + ">"};
 }
 
 [[noreturn]] void throwImmutable(const Value& v) {
@@ -13998,7 +14000,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                 if (bn.isZero()) {
                     if (op == "%%") throw RakuError{Value::typeObj("X::Numeric::DivideByZero"),
                         "Attempt to divide " + l.toStr() + " by zero using infix:<%%>"};
-                    return divideByZero(l, op.c_str());
+                    divideByZero(l, op.c_str());
                 }
                 BigInt N = an * bd, D = ad * bn;
                 if (D.sign < 0) { N = -N; D = -D; }
@@ -14013,7 +14015,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                 if (b == 0) {
                     if (op == "%%") throw RakuError{Value::typeObj("X::Numeric::DivideByZero"),
                         "Attempt to divide " + l.toStr() + " by zero using infix:<%%>"};
-                    return divideByZero(l, op.c_str());
+                    divideByZero(l, op.c_str());
                 }
                 if (b == -1) return op == "%%" ? Value::boolean(true) : Value::integer(0); // a % -1 == 0 (avoids LLONG_MIN%-1 UB)
                 long long rem = a % b;
@@ -14025,7 +14027,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             if (b.isZero()) {
                 if (op == "%%") throw RakuError{Value::typeObj("X::Numeric::DivideByZero"),
                     "Attempt to divide " + l.toStr() + " by zero using infix:<%%>"};
-                return divideByZero(l, op.c_str());
+                divideByZero(l, op.c_str());
             }
             BigInt q, rem; BigInt::divmod(a, b, q, rem);
             // Raku `div` floors (rounds toward -∞); BigInt::divmod truncates toward
