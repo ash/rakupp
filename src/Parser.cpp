@@ -6250,6 +6250,17 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
              // unresolved, which the engine treats as a lenient zero-width match,
              // so every path validation failed with "Could not parse path".
              st->kind == NK::NamedRegexDecl ||
+             // a compile-time phaser in the body is how a class DECLARES ITSELF:
+             //     BEGIN { for <get head put post delete> -> $m {
+             //                 ::?CLASS.^add_method: $m, method (…) {…} } }
+             // is the whole public API of HTTP::Tinyish::Base. Dropped here, the
+             // class simply had no `get` — and nothing said so, because a body
+             // statement this loop does not recognise vanishes without a word.
+             // (END is deliberately still out: running it at declaration time
+             // would be worse than not running it.)
+             (st->kind == NK::Block && (static_cast<Block*>(st.get())->phaser == "BEGIN" ||
+                                        static_cast<Block*>(st.get())->phaser == "CHECK" ||
+                                        static_cast<Block*>(st.get())->phaser == "INIT")) ||
              st->kind == NK::UseStmt)) // `use X` inside a class body loads at declaration (URI does this after `unit class URI`)
             cd->body.push_back(std::move(st));
     }
