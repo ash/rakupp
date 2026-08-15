@@ -5057,6 +5057,8 @@ struct LoopStateFrame {
     ~LoopStateFrame() { if (on) { t.cur = savedCur; t.curStateEnv = savedState; } }
 };
 
+static void failureDetonate(const Value& v); // an unhandled Failure blows up when USED or SUNK
+
 Value Interpreter::exec(Stmt* s, bool sink) {
     if (s->line > 0) curLine_ = s->line; // track for test-failure diagnostics
     switch (s->kind) {
@@ -5078,6 +5080,11 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 r.t == VT::Object && r.obj && r.obj->cls &&
                 r.obj->cls->findMethod("sink"))
                 methodCall(r, "sink", ValueList{});
+            // Rakudo sink semantics: SINKING an unhandled Failure detonates it.
+            // A bare `$x div 0;` statement is where a soft-failing operation gets
+            // to be loud — nothing else looks at the value, so this is the last
+            // chance to notice. Without it the Failure evaporated silently.
+            if (sink && r.t == VT::Hash && r.hashKind == "Failure") failureDetonate(r);
             // Rakudo sink semantics: a Proc from a bare `run`/`shell` statement that
             // failed and is discarded (never stored or inspected) throws when sunk.
             if (e->kind == NK::Call && r.t == VT::Hash && r.hashKind == "Proc") {
@@ -13396,6 +13403,24 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             case '%': if (c1 == '\0' && b != 0) { if (b == -1) return Value::integer(0); long long m = a % b; if (m && ((m < 0) != (b < 0))) m += b; return Value::integer(m); } break;
         }
     }
+    // Using a Failure's VALUE detonates it: `(10 div 0) + 1` throws, and so do
+    // `*`, `~`, `==` and the coercions. Only the handled-ness queries stay quiet
+    // — `.defined`, `so`, `//` — and none of those come through here. We used to
+    // compute with the Failure as if it were a number, so a divide-by-zero could
+    // travel arbitrarily far from where it happened before anything noticed.
+    // After the Int/Int fast path, so ordinary arithmetic pays nothing.
+    // …but the ops that ASK ABOUT a value rather than use it stay quiet:
+    // `$f ~~ Failure` is how you test for one, and `//`/`||`/`orelse` are how you
+    // supply a default for it.
+    if (l.t == VT::Hash || r.t == VT::Hash) {
+        // The NEGATED identity forms count too: S10-packages/scope.t compares a
+        // missing symbol's Failure with `!===` and expects an answer, not a bang.
+        static const std::set<std::string> kQuiet = {
+            "~~", "!~~", "//", "||", "&&", "orelse", "andthen", "notandthen",
+            "===", "!===", "=:=", "!=:=", "eqv", "!eqv", "does", "but",
+        };
+        if (!kQuiet.count(op)) { failureDetonate(l); failureDetonate(r); }
+    }
     // Mixed float fast path: one side Num, the other any simple numeric — the
     // result is what the generic double path below computes anyway, dispatched
     // by first char instead of walking the whole op chain. (Zero-denominator
@@ -18179,8 +18204,14 @@ Value Interpreter::evalUnary(Unary* u) {
             if (r.t == VT::Hash && r.hashKind == "Failure" && r.hash) {
                 auto it = r.hash->find("exception");
                 tctx_.cur->define("$!", it != r.hash->end() ? it->second : Value::nil());
+                // …and the try CONSUMES it: Rakudo's `try { 1 div 0 }` is Nil with
+                // `$!` set, not the live Failure. Handing the Failure back left it
+                // armed, so the caller's own sink detonated it OUTSIDE the try —
+                // the one place that was supposed to have contained it.
+                (*r.hash)["handled"] = Value::boolean(true);
+                return Value::nil();
             }
-            else tctx_.cur->define("$!", Value::nil());
+            tctx_.cur->define("$!", Value::nil());
             return r;
         } catch (RakuError& e) {
             if (explicitCatch) throw; // the block's CATCH was the only handler

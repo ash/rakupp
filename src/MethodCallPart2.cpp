@@ -618,8 +618,11 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if (m == "self" || m == "Failure") return inv;
         if (m == "throw" || m == "sink") { if (ex.t == VT::Object) throw RakuError{ex, ex.toStr()}; throw RakuError{Value::typeObj("X::AdHoc"), ex.toStr()}; }
         // .message reads the diagnostic without detonating; .Str/.gist USE the
-        // value, so an UNHANDLED Failure throws there (Rakudo).
-        if (m == "Str" || m == "gist") {
+        // value, so an UNHANDLED Failure throws there (Rakudo). The NUMERIC
+        // coercions use it just as much — `.Int` on an unhandled Failure used to
+        // return the hash's element count, a 2 out of nowhere.
+        if (m == "Str" || m == "gist" || m == "Int" || m == "Num" || m == "Rat" ||
+            m == "Numeric" || m == "Real" || m == "FatRat" || m == "Complex") {
             auto h = inv.hash->find("handled");
             if (h == inv.hash->end() || !h->second.truthy()) {
                 auto mm = inv.hash->find("message");
