@@ -12001,6 +12001,17 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
     }
 
     char sigil = '$';
+    // `=$=` / `=@=` / `=%=` pick the assignment SEMANTICS explicitly, whatever the
+    // target's sigil says: `$x =@= 1,2,3` stores an Array, `$x =%= …` a Hash,
+    // `@a =$= (1,2,3)` one item. Since the container behaviour below is already
+    // selected by `sigil`, the operator simply overrides it — and nothing after
+    // here needs to know the difference from a plain `=`.
+    // With `=$=`/`=@=`/`=%=` the OPERATOR says how the VALUE is built, while the
+    // TARGET still says what the container is: `$x =@= 1,2,3` builds an Array and
+    // then itemizes it into the scalar ($[1,2,3]), and `@a =$= (1,2,3)` builds one
+    // item and stores it as the array's single element.
+    const bool containerAssign = a->containerSigil != 0;
+    char targetSigil = 0; // filled once the target is known; the itemise step wants IT
     if (a->target->kind == NK::MethodCall) {
         // Assigning through a public @./%. attribute ACCESSOR carries the attribute's
         // sigil: `$parent.nodes = @nodes` list-assigns the container's contents
@@ -12031,6 +12042,11 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             ve->name.rfind("$anon--state--", 0) != 0)
             return tctx_.curStateEnv->vars[ve->name];
     }
+
+    // The container is the TARGET's; the VALUE's shape is the operator's when it
+    // named one. Split them here, after the target has had its say.
+    targetSigil = sigil;
+    if (containerAssign) sigil = a->containerSigil;
 
     // Does this subscript select MANY elements? A syntactic list / angle-words /
     // Range / @-var / `^N`, or a call whose result turns out to be a list.
@@ -12926,7 +12942,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             // container — `my \b = @a` IS the array, and flat(b, …) flattens it
             // (Cro's CompositeConnector builds its component list that way).
             if (a->op == "=" && (rhs.t == VT::Array || rhs.t == VT::Hash) && !rhs.itemized &&
-                sigil == '$')
+                (targetSigil ? targetSigil : sigil) == '$')
                 rhs.itemized = true;
             ParStripe ws(*this, lv); // paired with the striped copy-out (torn-copy contract)
             *lv = rhs;

@@ -57,6 +57,10 @@ enum {
 
 static const std::unordered_set<std::string> kAssignOps = {
     "=", "+=", "-=", "*=", "/=", "~=", "%=", "**=", "//=", "||=", "&&=", "^^=", "x=", ":=",
+    // container-typed assignment: `=@=` assigns with ARRAY semantics whatever the
+    // target's sigil, `=%=` with Hash, `=$=` with item (Color::Names spells its
+    // exported constant `my constant \COLORS is export(:colors) =%= %( … )`)
+    "=$=", "=@=", "=%=",
     "div=", "mod=", "gcd=", "lcm=", "xx=", "min=", "max=",
     "\xE2\x9A\x9B=", "\xE2\x9A\x9B+=", "\xE2\x9A\x9B-=", // atomic assigns, lowered to atomic-* calls below
 };
@@ -990,6 +994,13 @@ ExprPtr Parser::parseExpr(int minbp) {
             }
             auto a = std::make_unique<Assign>();
             a->target = std::move(lhs); a->op = in.op; a->value = std::move(rhs);
+            // `=@=` and friends ARE plain assignment; only the container semantics
+            // differ, so record the sigil and let the op read as "=" from here on.
+            if (in.op.size() == 3 && in.op[0] == '=' && in.op[2] == '=' &&
+                (in.op[1] == '$' || in.op[1] == '@' || in.op[1] == '%')) {
+                a->containerSigil = in.op[1];
+                a->op = "=";
+            }
             lhs = std::move(a);
         } else if (in.isRange) {
             auto r = std::make_unique<RangeExpr>();
@@ -1857,6 +1868,10 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
         if (!nm.empty()) sigilless_.insert(nm);
         auto ve = std::make_unique<VarExpr>(nm);
         ve->declare = true; ve->declScope = scope;
+        // …traits included: `my constant \COLORS is export(:colors) = %( … )`
+        // (Color::Names). Left in the token stream, the trait made the `=` look
+        // like an assignment TO it — "Target is not assignable".
+        skipTraits(scope != "has", &ve->declDefault);
         return ve;
     }
     // `my sub {42}()` — an anonymous sub expression under `my` is just the sub
@@ -1915,6 +1930,11 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
         if (!nm.empty()) sigilless_.insert(nm);
         auto ve = std::make_unique<VarExpr>(nm);
         ve->declare = true; ve->declScope = scope; ve->declType = type;
+        // …and it can carry traits like any other declarator: Color::Names writes
+        // `my constant \COLORS is export(:colors) = %( … )`. Without this the
+        // trait stayed in the token stream and the `=` looked like an assignment
+        // to `is export(:colors)`, which is "Target is not assignable".
+        skipTraits(scope != "has", &ve->declDefault);
         return ve;
     }
     if (isKind(Tok::LParen)) {

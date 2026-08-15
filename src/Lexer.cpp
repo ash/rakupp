@@ -1811,6 +1811,11 @@ Token Lexer::lexOperator(bool termBefore) {
         "!!!", "???", "^...^", "^...", "...^", "...", "^..^", "..^", "^..", // ^... before ^.. (greedy)
         "!===", // negated value identity (before !== / ===)
         "!=:=", // negated container identity (before != / =:=) — JSON::Class
+        // container-typed assignment: `$x =@= LIST` assigns with ARRAY semantics
+        // whatever the target's sigil is, `=%=` with Hash, `=$=` with item. Before
+        // `=~=`/`==`/`=>` so the three-character form wins, and before `%=`, which
+        // would otherwise split `=%=` into `=` and a modulo-assign.
+        "=$=", "=@=", "=%=",
         "=~=", "≅", "===", "!==", "!%%", "**=", "//=", "||=", "&&=", "^^=", "<=>", "<<=", ">>=", "!~~",
         // bitwise/boolean (numeric +&/+|/+^, string ~&/~|/~^, boolean ?&/?|/?^) before single + ? ~.
         // NB: the shift forms +</+>/~</~> are deliberately omitted — `<`/`>` collide with

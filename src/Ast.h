@@ -225,6 +225,10 @@ struct Assign : Expr {
     ExprPtr target;
     std::string op; // "=", "+=", ":=" ...
     ExprPtr value;
+    // `=$=` / `=@=` / `=%=` — assignment with the container semantics named by the
+    // operator rather than by the target's sigil. The parser rewrites `op` to "="
+    // and records the sigil here, so every `op == "="` test downstream still holds.
+    char containerSigil = 0;
     Assign(): Expr(NK::Assign) {}
 };
 

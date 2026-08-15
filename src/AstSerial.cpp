@@ -236,7 +236,7 @@ template <class IO> void visit(IO& io, SymbolicRef& n) { ioExpr(io, n.nameExpr);
                                                          F(io, n.pkg); F(io, n.sigil); }
 template <class IO> void visit(IO& io, ArrayLit& n) { ioExprVec(io, n.items); F(io, n.isList); F(io, n.fromCommaList); }
 template <class IO> void visit(IO& io, HashLit& n)  { ioExprVec(io, n.items); }
-template <class IO> void visit(IO& io, Assign& n)   { ioExpr(io, n.target); F(io, n.op); ioExpr(io, n.value); }
+template <class IO> void visit(IO& io, Assign& n)   { ioExpr(io, n.target); F(io, n.op); ioExpr(io, n.value); F(io, n.containerSigil); }
 template <class IO> void visit(IO& io, Binary& n)   { F(io, n.op); ioExpr(io, n.lhs); ioExpr(io, n.rhs); }
 template <class IO> void visit(IO& io, Unary& n)    { F(io, n.op); F(io, n.postfix); ioExpr(io, n.operand); }
 template <class IO> void visit(IO& io, Call& n)     { F(io, n.name); ioExpr(io, n.callee); ioExprVec(io, n.args); }
