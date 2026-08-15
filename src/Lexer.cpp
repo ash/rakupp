@@ -1100,6 +1100,7 @@ bool Lexer::tryQuoteForm(Token& out) {
         char q = 0;
         int bd = 0; // { } embedded-code-block nesting
         int sd = 0; // [ ] nesting: a char class <-[/]> / group shields the delimiter
+        bool inClass = false; // …and inside a class the brackets are MEMBERS, not nesting
         while (!eof()) {
             char ch = peek();
             if (ch == '\\') { advance(); raw += '\\'; if (!eof()) raw += advance(); continue; }
@@ -1120,8 +1121,22 @@ bool Lexer::tryQuoteForm(Token& out) {
             if (quoteAware && sd == 0 && (ch == '\'' || ch == '"')) { q = ch; raw += advance(); continue; }
             if (blocks && ch == '{') { bd++; raw += advance(); continue; } // enter code block
             // Raku regex/subst pattern: `[ ... ]` groups & char classes (incl. <-[/]>) shield the delimiter
-            if (quoteAware && !p5 && ch == '[') { sd++; raw += advance(); continue; }
-            if (quoteAware && !p5 && ch == ']' && sd > 0) { sd--; raw += advance(); continue; }
+            // Inside a CHARACTER CLASS a `[` is a literal member, not a nested
+            // group: `<-[^$\\.*+?()[\]{}|]>` (ECMA262Regex's pattern-character)
+            // counted that `[` as an opener, so the class never closed and the
+            // scan swallowed the rest of the FILE — which is why the error landed
+            // 400 lines later at the last `}`. A class opens with `<[`, `<-[`,
+            // `<+[` or `+[`/`-[` inside a set expression, and cannot nest.
+            if (quoteAware && !p5 && ch == '[') {
+                if (inClass) { raw += advance(); continue; }   // a member
+                char prev = raw.empty() ? '\0' : raw.back();
+                if (prev == '<' || prev == '-' || prev == '+') inClass = true;
+                sd++; raw += advance(); continue;
+            }
+            if (quoteAware && !p5 && ch == ']' && sd > 0) {
+                sd--; if (inClass) inClass = false;
+                raw += advance(); continue;
+            }
             if (sd == 0 && bracket && ch == d) { depth++; raw += advance(); continue; }
             if (sd == 0 && ch == close) { depth--; if (depth == 0) { advance(); closed = true; break; } raw += advance(); continue; }
             raw += advance();
@@ -1546,6 +1561,7 @@ bool Lexer::tryRuleDecl(std::vector<Token>& out, bool spaced) {
     char q = 0;      // active quote char inside the regex
     int bd = 0;      // embedded { } code-block nesting
     int sd = 0;      // [ ] group / <[…]> char-class nesting (shields the delimiter)
+    bool inClass = false; // …and inside a class the brackets are MEMBERS, not nesting
     while (!eof()) {
         char ch = peek();
         if (ch == '\\') { body += advance(); if (!eof()) body += advance(); continue; }
@@ -1571,8 +1587,18 @@ bool Lexer::tryRuleDecl(std::vector<Token>& out, bool spaced) {
         // a MEMBER (<-["]> = "anything but a double quote"), not a string opener;
         // braces are inert inside [ ] either way, so nothing needs shielding there
         if ((ch == '\'' || ch == '"') && sd == 0) { q = ch; body += advance(); continue; }
-        if (ch == '[') { sd++; body += advance(); continue; }
-        if (ch == ']' && sd > 0) { sd--; body += advance(); continue; }
+        // Inside a CHARACTER CLASS a `[` is a literal member, not a nested group:
+        // `token pattern-character { <-[^$\\.*+?()[\]{}|]> }` (ECMA262Regex) left
+        // the class open forever, so the scan ate the rest of the file and the
+        // error surfaced 400 lines later at the final `}`. A class opens `<[`,
+        // `<-[` or `<+[` (also `+[`/`-[` in a set expression) and cannot nest.
+        if (ch == '[') {
+            if (inClass) { body += advance(); continue; }        // a member
+            char prev = body.empty() ? '\0' : body.back();
+            if (prev == '<' || prev == '-' || prev == '+') inClass = true;
+            sd++; body += advance(); continue;
+        }
+        if (ch == ']' && sd > 0) { sd--; if (inClass) inClass = false; body += advance(); continue; }
         // Braces are the delimiter / code blocks only outside a char class or
         // group ([ … ]), where <[{}]> and similar hold literal brace characters.
         if (sd == 0 && ch == '{') { bd++; body += advance(); continue; }
@@ -2246,7 +2272,16 @@ std::vector<Token> Lexer::tokenize() {
                     { raw += advance(); raw += advance(); continue; }
                 if (ch == '<') angle++;
                 else if (ch == '>' && angle > 0) angle--;
-                else if (ch == '[') brack++;
+                // Inside a CHARACTER CLASS a `[` is a literal member, not a nested
+                // group — `<-[^$\\.*+?()[\]{}|]>` (ECMA262Regex's
+                // pattern-character) left the class permanently open, so the scan
+                // ran past the closing `/` and swallowed the rest of the file.
+                // That is why its error surfaced 400 lines later at the last `}`.
+                // A class opens `<[`, `<-[`, `<+[` (or `+[`/`-[` in a set
+                // expression) and does not nest.
+                else if (ch == '[') {
+                    if (!(angle > 0 && brack > 0)) brack++;
+                }
                 else if (ch == ']' && brack > 0) brack--;
                 else if (ch == '/' && angle == 0 && brack == 0) break;
                 raw += advance();
