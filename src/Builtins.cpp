@@ -111,6 +111,11 @@ const std::vector<std::string>& typeAncestry(const std::string& t) {
         {"Grammar", {"Grammar","Match","Capture","Cool","Any","Mu"}},
         {"Match",   {"Match","Capture","Cool","Any","Mu"}},
         {"Capture", {"Capture","Any","Mu"}},
+        // IO::Socket is the ROLE a synchronous socket does — every wrapper
+        // declares its parameter as that (IO::Socket::SSL takes an IO::Socket).
+        // It is not an IO, and IO::Socket::Async does not do it either.
+        {"IO::Socket::INET", {"IO::Socket::INET","IO::Socket","Any","Mu"}},
+        {"IO::Socket",       {"IO::Socket","Any","Mu"}},
     };
     static const std::vector<std::string> fallback = {"Any","Mu"};
     auto it = A.find(t);
@@ -121,7 +126,8 @@ const std::vector<std::string>& typeAncestry(const std::string& t) {
 bool isBuiltinRole(const std::string& n) {
     static const std::set<std::string> roles = {
         "Real", "Numeric", "Stringy", "Dateish", "Rational", "Callable",
-        "Positional", "Associative", "Iterable", "Baggy", "Setty", "Mixy"};
+        "Positional", "Associative", "Iterable", "Baggy", "Setty", "Mixy",
+        "IO::Socket"};
     return roles.count(n) > 0;
 }
 std::string typeOfVal(const Value& v) { return v.t == VT::Type ? v.s : v.typeName(); }

@@ -2779,7 +2779,18 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         }
         if (m == "recv" || m == "read") {
             size_t want = 65536;
-            if (!args.empty() && args[0].isNumeric()) want = (size_t)args[0].toInt();
+            if (!args.empty() && args[0].isNumeric()) {
+                // `Inf` is a real argument here, not a mistake: it means "whatever
+                // has arrived". OpenSSL's bio-read calls `$.net-read.()`, whose
+                // closure defaults to `-> $n = Inf { $s.recv($n, :bin) }`, so the
+                // very first read of an SSL handshake asked for infinity — and
+                // sizing the buffer from it threw std::bad_alloc before the socket
+                // was touched. Anything absurd is capped for the same reason; recv
+                // is "up to" that many bytes, so a smaller buffer is still correct.
+                static const size_t kCap = 64u * 1024 * 1024;
+                double d = args[0].toNum();
+                if (std::isfinite(d) && d >= 0) want = (size_t)std::min<double>(d, (double)kCap);
+            }
             // `:bin` asks for BYTES, and `.read` is always binary — both must answer a
             // Buf, not a Str. Returning a Str made `Buf.new.append($chunk)` append
             // the string instead: it compiles, runs, and simply never matches, which

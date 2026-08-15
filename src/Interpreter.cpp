@@ -7646,6 +7646,8 @@ static bool typeNameConforms(const std::string& lnIn, const std::string& rn,
         {"IO::Special", {"IO::Special", "IO"}},
         {"Grammar", {"Grammar", "Match", "Capture", "Cool"}},
         {"Match",   {"Match", "Capture", "Cool"}},
+        // a synchronous socket does the IO::Socket role — but is not an IO
+        {"IO::Socket::INET", {"IO::Socket::INET", "IO::Socket"}},
     };
     auto td = typeDoes.find(ln);
     bool baseOk = (td != typeDoes.end() && td->second.count(rn));
@@ -7775,6 +7777,11 @@ static bool typeMatchesArg(const Value& arg, const std::string& type) {
         case VT::Array: return type == "Array" || type == "List" || type == "Positional" || type == "Iterable" || (arg.isList && arg.s == "Seq" && type == "Seq");
         case VT::Hash:
             if (arg.hashKind == "FileHandle" && (type == "IO::Handle" || type == "IO" || type == "Handle")) return true;
+            // A synchronous socket IS an IO::Socket — that is the type every
+            // wrapper declares its parameter as (IO::Socket::SSL.new(IO::Socket
+            // $s)). It is NOT an IO, and IO::Socket::Async is not an IO::Socket
+            // either; both of those are False on Rakudo too.
+            if (arg.hashKind == "Socket" && (type == "IO::Socket" || type == "IO::Socket::INET")) return true;
             return type == "Hash" || type == "Map" || type == "Associative" || (arg.hashKind == type);
         case VT::Pair: return type == "Pair";
         case VT::Code: return type == "Code" || type == "Callable" || type == "Routine" || type == "Block" || type == "Sub" ||
