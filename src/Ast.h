@@ -335,7 +335,7 @@ enum class NqpOpc : uint16_t {
     List, ListI, ListS, Elems, Atpos, AtposI, Bindpos, BindposI,
     Push, PushI, PushS, PopS, ShiftI, Splice,
     // hash ops
-    Hash, Bindkey,
+    Hash, Bindkey, Atkey, ExistsKey, DeleteKey, IsNull,
     // object/meta ops
     Create, Istype, Getattr, Bindattr, P6BindAttrInvRes, P6ScalarWithValue,
     Null, IsNanOrInf,

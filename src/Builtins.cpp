@@ -5064,6 +5064,25 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                             // frame; the test taps `quit => { when X::… }`)
                             if (rctx) reactStack_.pop_back();
                             (*t.hash)["closed"] = Value::boolean(true);
+                            // …but inside a REACT that rule is inverted: a die in a
+                            // whenever BODY kills the whole react and propagates,
+                            // and QUIT does NOT see it — QUIT is for the SOURCE's
+                            // own quit (issue #18). The interval path already did
+                            // this; a Supplier-fed whenever handed the body's death
+                            // to QUIT and carried on, so `react { whenever
+                            // $s.Supply { die } }` printed the QUIT message and
+                            // exited 0 where Rakudo dies.
+                            if (rctx) {
+                                std::lock_guard<std::mutex> lk(rctx->m);
+                                if (!rctx->quitFlag) {
+                                    rctx->quitFlag = true;
+                                    rctx->quitErr = e.payload.t == VT::Nil ? Value::str(e.message) : e.payload;
+                                }
+                                rctx->closed = true;
+                                if (rctx->liveSources > 0) rctx->liveSources--;
+                                rctx->cv.notify_all();
+                                break;
+                            }
                             if (t.hash->count("quit") && (*t.hash)["quit"].t == VT::Code) {
                                 ValueList one2{exceptionFor(e)};
                                 try { callCallable((*t.hash)["quit"], one2); } catch (...) {}
@@ -7286,10 +7305,21 @@ void Interpreter::registerBuiltins() {
         int outMode = -1, errMode = -1; // -1 unspecified (inherit/echo), 0 :!x (discard), 1 :x (capture)
         std::vector<std::string> envKV; bool haveEnv = false; std::string cwd;
         double timeoutSec = 0;
+        // `:out($fh)` / `:err($fh)` — not a flag but a SINK: Rakudo sends the
+        // child's stream to that handle. Read as a mere boolean it captured the
+        // output and dropped it on the floor, which is how HTTP::Tinyish::Curl
+        // (`run |@cmd, :out($out-fh)`, then slurp the file) fetched every page
+        // as an empty body while its headers arrived intact.
+        Value outSink, errSink;
+        auto asSink = [](const Value* pv) {
+            return pv && ((pv->t == VT::Hash && pv->hashKind == "FileHandle") || pv->t == VT::Object);
+        };
         for (auto& v : flattenArgs(a)) {
             if (v.t == VT::Pair) {
-                if (v.s == "out") { wantOut = v.pairVal ? v.pairVal->truthy() : true; outMode = wantOut ? 1 : 0; }
-                else if (v.s == "err") { wantErr = v.pairVal ? v.pairVal->truthy() : true; errMode = wantErr ? 1 : 0; }
+                if (v.s == "out") { wantOut = v.pairVal ? v.pairVal->truthy() : true; outMode = wantOut ? 1 : 0;
+                                    if (asSink(v.pairVal.get())) outSink = *v.pairVal; }
+                else if (v.s == "err") { wantErr = v.pairVal ? v.pairVal->truthy() : true; errMode = wantErr ? 1 : 0;
+                                    if (asSink(v.pairVal.get())) errSink = *v.pairVal; }
                 else if (v.s == "in") wantIn = v.pairVal ? v.pairVal->truthy() : true;
                 // :timeout(N) — a rakupp extension (Rakudo's run has no such
                 // adverb): SIGKILL the child's process group after N seconds.
@@ -7331,6 +7361,17 @@ void Interpreter::registerBuiltins() {
         long long childPid = 0;
         spawnCapture(argv, timeoutSec, out, code, timedout, &I, errMode != -1 ? &err : nullptr, cwd, &childPid,
                      haveEnv ? &envKV : nullptr);
+        // Deliver a redirected stream to its handle. The child has already
+        // finished, so this is a copy rather than a live redirection — the
+        // handle sees the whole stream at once, in order, which is what a
+        // caller that closes and reads the file afterwards wants.
+        auto drainTo = [&I](Value& sink, const std::string& text) {
+            if (sink.t == VT::Nil || text.empty()) return;
+            ValueList pa{Value::str(text)};
+            I.methodCall(sink, "print", pa);
+        };
+        drainTo(outSink, out);
+        drainTo(errSink, err);
         if (outMode == -1) std::cout << out; // not capturing: echo child stdout (approximates inherit)
         if (errMode == -1) { /* stderr already inherited by the child */ }
         (*p.hash)["exitcode"] = Value::integer(code);
@@ -10099,6 +10140,23 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
         case O::Bindkey:
             if (v[0].t == VT::Hash && v[0].hash) (*v[0].hash)[S(1)] = v[2];
             return v.size() > 2 ? v[2] : Value::nil();
+        case O::IsNull:
+            // VM-level null, which is NOT Raku's undefined: Rakudo answers 0 for
+            // both Nil and Any. Our nqp hash ops return Value::nil() for a missing
+            // key, so that is what stands in for it here — and a type object,
+            // being a real Raku value, is not null.
+            return Value::integer(!v.empty() && v[0].t == VT::Nil ? 1 : 0);
+        case O::Atkey: {
+            if (v.size() < 2 || v[0].t != VT::Hash || !v[0].hash) return Value::nil();
+            auto it = v[0].hash->find(S(1));
+            return it == v[0].hash->end() ? Value::nil() : it->second;
+        }
+        case O::ExistsKey:
+            return Value::integer(v.size() >= 2 && v[0].t == VT::Hash && v[0].hash &&
+                                  v[0].hash->count(S(1)) ? 1 : 0);
+        case O::DeleteKey:
+            if (v.size() >= 2 && v[0].t == VT::Hash && v[0].hash) v[0].hash->erase(S(1));
+            return v.empty() ? Value::nil() : v[0];
         case O::Create: {
             std::string tn = v[0].t == VT::Type ? v[0].s : v[0].typeName();
             // a `my class IterationMap is repr("VMHash")` declared INSIDE a module

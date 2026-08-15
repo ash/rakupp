@@ -8,6 +8,14 @@
 #      swallowed, leaving an interval ticker running forever) — and a QUIT
 #      phaser does NOT catch it (QUIT is for the source's own quit; the
 #      issue's Rakudo output confirms).
+# The die is TRIGGERED, not timed. Check 3 needs the three-element supply to
+# drain before the dying whenever runs, and racing that against
+# `Supply.interval(0.2)` is a race the test loses on a loaded machine — 7 of 32
+# parallel runs lost "Done with c" here, and that is what made this the one
+# flaky case in CI. Widening the interval only moves the odds (5 of 48 still
+# lost it at 2s), so the ordering is sequenced instead: the LAST phaser emits
+# the value the dying whenever waits for. A live interval ticker stays in the
+# react, since the issue was that a die left one running forever.
 # Runs under both engines: programs go through $*EXECUTABLE.
 
 my $work = $*TMPDIR.add("issue18-$*PID");
@@ -48,12 +56,14 @@ check('react body runs before the whenever drains, LAST sees $c',
 
 # 3: a die in a whenever body kills the react (no hang) and QUIT stays quiet
 my ($out2, $exit2) = run-prog('t2.raku', q:to/END/);
+    my $boom = Supplier.new;
     react {
         whenever <a b c>.Supply -> $c {
             say $c;
-            LAST { say "Done with $c" }
+            LAST { say "Done with $c"; $boom.emit(1) }
         }
-        whenever Supply.interval(0.2) {
+        whenever Supply.interval(0.2) { }   # a live ticker the die must not leave running
+        whenever $boom.Supply {
             die "something went wrong..";
             QUIT { default { say "oops: {.message}" }}
         }

@@ -216,8 +216,45 @@ Regex::NodePtr Regex::p5Quant(NodePtr atom) {
     return rep;
 }
 
+// A spliced sub-pattern (see Regex::spliceOf): compile the source with ITS OWN
+// front-end and graft the tree in. Pasting the text in instead would reread it
+// in the host's syntax — `rx:P5/[a-z]+/` interpolated into a Raku `s///` became
+// a group over `a`, `-`, `z` and quietly matched nothing (HTTP::Tinyish builds
+// its header-name token that way). Captures are renumbered onto the end of the
+// host's, so `$0` keeps meaning what the host wrote.
+Regex::NodePtr Regex::parseSplice() {
+    size_t span = spliceSpan(pat_, pos_);
+    bool p5 = pat_[pos_ + 1] == 'P';
+    size_t hdr = pat_.find('\x01', pos_ + 1) + 1;
+    std::string src = pat_.substr(hdr, pos_ + span - hdr);
+    pos_ += span;
+    Regex sub(src, p5 ? "5" : "");
+    if (!sub.ok() || !sub.root_) { auto n = std::make_unique<Node>(); n->k = K::Nop; return n; }
+    if (sub.ncaps_ > 0) {
+        int base = ncaps_;
+        std::function<void(Node*)> shift = [&](Node* n) {
+            if (n->capIndex >= 0) n->capIndex += base;
+            // a numeric backreference names a capture by index too
+            if (n->k == K::VarMatch && !n->lit.empty() &&
+                n->lit.find_first_not_of("0123456789") == std::string::npos)
+                n->lit = std::to_string(std::stoi(n->lit) + base);
+            for (auto& k : n->kids) shift(k.get());
+            if (n->sep) shift(n->sep.get());
+        };
+        shift(sub.root_.get());
+        for (int i : sub.listCaps_) listCaps_.insert(i + base);
+        ncaps_ += sub.ncaps_;
+    }
+    if (sub.listNames_) {
+        if (!listNames_) listNames_ = std::make_shared<std::set<std::string>>();
+        listNames_->insert(sub.listNames_->begin(), sub.listNames_->end());
+    }
+    return std::move(sub.root_);
+}
+
 Regex::NodePtr Regex::p5Atom() {
     char c = peek();
+    if (c == '\x01' && spliceSpan(pat_, pos_)) return parseSplice();
     if (c == '(') return p5Group();
     if (c == '[') return p5Class();
     if (c == '\\') return p5Escape();
@@ -771,7 +808,8 @@ Regex::NodePtr Regex::parseConj() {
 Regex::NodePtr Regex::parseSeq() {
     auto seq = std::make_unique<Node>();
     seq->k = K::Seq;
-    NodePtr goalClose; // `OPEN ~ CLOSE body…` — CLOSE is deferred to the end of the sequence
+    NodePtr goalClose;      // `OPEN ~ CLOSE body` — the goal, appended after the body
+    bool goalAfterNext = false; // …which is the ONE atom that follows it
     for (;;) {
         size_t before = pos_;
         skipWs();
@@ -789,8 +827,19 @@ Regex::NodePtr Regex::parseSeq() {
             }
             break;
         }
-        // goal operator: `A ~ B  C D` matches `A C D B` (nice bracket-matching sugar)
-        if (c == '~' && !seq->kids.empty()) { pos_++; skipWs(); goalClose = parseQuant(); continue; }
+        // goal operator: `A ~ B C` matches `A C B` — bracket-matching sugar whose
+        // BODY is the single atom after the goal, NOT the rest of the sequence.
+        // `'[' ~ ']' <-[\]\n]>+ <.eol>+` is Config::INI's header: the `]` closes
+        // right after the name, and the newline follows the bracket. Deferring
+        // the goal to the END of the sequence read it as `[ name \n ]` — the two
+        // engines came out exactly inverted, ours matching `[core\n]` and
+        // rejecting `[core]\n`.
+        if (c == '~' && !seq->kids.empty()) {
+            pos_++; skipWs();
+            goalClose = parseQuant();       // the goal itself
+            goalAfterNext = true;           // …to be appended after ONE more atom
+            continue;
+        }
         // sigspace (a `rule`): whitespace between atoms matches <.ws> — \s* that
         // may be zero-width only OFF a word-word boundary ('foobar' !~~ /:s foo bar/)
         if (sigspace_ && !seq->kids.empty() && hadSpace) {
@@ -799,8 +848,17 @@ Regex::NodePtr Regex::parseSeq() {
             seq->kids.push_back(std::move(ws));
         }
         seq->kids.push_back(parseQuant());
+        // The goal closes right after its body — the single atom that follows it,
+        // not the rest of the sequence. `'[' ~ ']' <-[\]\n]>+ <.eol>+` (Config::
+        // INI's header) is `[ name ] eol+`; closing at the end of the sequence
+        // read it as `[ name eol+ ]`, and the two engines came out exactly
+        // inverted — ours matching "[core\n]" and rejecting "[core]\n". Appending
+        // HERE rather than parsing the body inline keeps the loop's sigspace
+        // handling, which a `rule` needs around the body (JSON::Tiny::Grammar's
+        // `rule object { '{' ~ '}' <pairlist> }`).
+        if (goalAfterNext) { seq->kids.push_back(std::move(goalClose)); goalAfterNext = false; }
     }
-    if (goalClose) seq->kids.push_back(std::move(goalClose)); // append the deferred CLOSE
+    if (goalClose) seq->kids.push_back(std::move(goalClose)); // a goal with no body at all
         // Peephole: adjacent single-char literals with identical flags merge into
     // one Lit node. The fold-aware :i matcher must see a one-to-many case fold
     // (text ß vs pattern SS) inside ONE node — per-char nodes can never match
@@ -979,6 +1037,7 @@ bool charClassMatch(char flag, uint32_t cp);        // the POSIX-named classes, 
 Regex::NodePtr Regex::parseAtom() {
     skipWs();
     char c = peek();
+    if (c == '\x01' && spliceSpan(pat_, pos_)) return parseSplice(); // an interpolated regex VALUE
     if (c == ')' && peek(1) == '>') { // `)>` — match-capture end (pairs with `<(`)
         pos_ += 2;
         auto n = std::make_unique<Node>(); n->k = K::CapEnd; return n;
