@@ -5357,6 +5357,23 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
         throw ParseError("Cannot add tokens of category '" + s->name + "'",
                          cur().line, "X::Syntax::Extension::Category",
                          {{"category", s->name}});
+    // `sub term:<name>` DEFINES A TERM: `name` is then written bare, with no
+    // parens and no arguments. That is exactly a 0-ary sub called by name, so it
+    // becomes one — the category is syntax, not a distinct kind of routine.
+    // Without this the `:<name>` part was dropped and every such declaration was
+    // a routine called `term`, so a module defining more than one (XDG::
+    // BaseDirectory has seven) died "Redeclaration of routine 'term'".
+    if (s->name == "term" && isOp(":") && !peek().spaceBefore &&
+        peek().kind == Tok::Op && (peek().text == "<" || peek().text == "<<")) {
+        advance();                       // :
+        bool dbl = cur().text == "<<";
+        advance();                       // < or <<
+        std::vector<std::string> w = readAngleWords(dbl ? ">>" : ">");
+        if (!w.empty() && !w[0].empty()) {
+            s->name = w[0];
+            sigilless_.insert(w[0]);     // so it parses as a TERM, not a listop
+        }
+    }
     if (s->name == "trait_mod" && isOp(":")) {
         advance(); // :
         std::vector<std::string> w;

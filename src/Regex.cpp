@@ -808,7 +808,8 @@ Regex::NodePtr Regex::parseConj() {
 Regex::NodePtr Regex::parseSeq() {
     auto seq = std::make_unique<Node>();
     seq->k = K::Seq;
-    NodePtr goalClose; // `OPEN ~ CLOSE body…` — CLOSE is deferred to the end of the sequence
+    NodePtr goalClose;      // `OPEN ~ CLOSE body` — the goal, appended after the body
+    bool goalAfterNext = false; // …which is the ONE atom that follows it
     for (;;) {
         size_t before = pos_;
         skipWs();
@@ -826,8 +827,19 @@ Regex::NodePtr Regex::parseSeq() {
             }
             break;
         }
-        // goal operator: `A ~ B  C D` matches `A C D B` (nice bracket-matching sugar)
-        if (c == '~' && !seq->kids.empty()) { pos_++; skipWs(); goalClose = parseQuant(); continue; }
+        // goal operator: `A ~ B C` matches `A C B` — bracket-matching sugar whose
+        // BODY is the single atom after the goal, NOT the rest of the sequence.
+        // `'[' ~ ']' <-[\]\n]>+ <.eol>+` is Config::INI's header: the `]` closes
+        // right after the name, and the newline follows the bracket. Deferring
+        // the goal to the END of the sequence read it as `[ name \n ]` — the two
+        // engines came out exactly inverted, ours matching `[core\n]` and
+        // rejecting `[core]\n`.
+        if (c == '~' && !seq->kids.empty()) {
+            pos_++; skipWs();
+            goalClose = parseQuant();       // the goal itself
+            goalAfterNext = true;           // …to be appended after ONE more atom
+            continue;
+        }
         // sigspace (a `rule`): whitespace between atoms matches <.ws> — \s* that
         // may be zero-width only OFF a word-word boundary ('foobar' !~~ /:s foo bar/)
         if (sigspace_ && !seq->kids.empty() && hadSpace) {
@@ -836,8 +848,17 @@ Regex::NodePtr Regex::parseSeq() {
             seq->kids.push_back(std::move(ws));
         }
         seq->kids.push_back(parseQuant());
+        // The goal closes right after its body — the single atom that follows it,
+        // not the rest of the sequence. `'[' ~ ']' <-[\]\n]>+ <.eol>+` (Config::
+        // INI's header) is `[ name ] eol+`; closing at the end of the sequence
+        // read it as `[ name eol+ ]`, and the two engines came out exactly
+        // inverted — ours matching "[core\n]" and rejecting "[core]\n". Appending
+        // HERE rather than parsing the body inline keeps the loop's sigspace
+        // handling, which a `rule` needs around the body (JSON::Tiny::Grammar's
+        // `rule object { '{' ~ '}' <pairlist> }`).
+        if (goalAfterNext) { seq->kids.push_back(std::move(goalClose)); goalAfterNext = false; }
     }
-    if (goalClose) seq->kids.push_back(std::move(goalClose)); // append the deferred CLOSE
+    if (goalClose) seq->kids.push_back(std::move(goalClose)); // a goal with no body at all
         // Peephole: adjacent single-char literals with identical flags merge into
     // one Lit node. The fold-aware :i matcher must see a one-to-many case fold
     // (text ß vs pattern SS) inside ONE node — per-char nodes can never match
