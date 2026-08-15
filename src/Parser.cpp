@@ -7243,6 +7243,19 @@ bool Parser::nqpConstValue(const std::string& name, long long& out) {
         // Native 0 / Little 1 / Big 2), bits 2+ = size code (1<<(flag>>2) bytes).
         {"BINARY_SIZE_8_BIT", 0},  {"BINARY_SIZE_16_BIT", 4},
         {"BINARY_SIZE_32_BIT", 8}, {"BINARY_SIZE_64_BIT", 12},
+        // `nqp::stat`/`nqp::lstat` field selectors, as MoarVM numbers them.
+        // Path::Finder asks for the inode to detect directory loops.
+        {"STAT_EXISTS", 0}, {"STAT_FILESIZE", 1}, {"STAT_ISDIR", 2},
+        {"STAT_ISREG", 3}, {"STAT_ISDEV", 4}, {"STAT_CREATETIME", 5},
+        {"STAT_ACCESSTIME", 6}, {"STAT_MODIFYTIME", 7}, {"STAT_CHANGETIME", 8},
+        {"STAT_BACKUPTIME", 9}, {"STAT_UID", 10}, {"STAT_GID", 11},
+        {"STAT_ISLNK", 12},
+        // the PLATFORM_ selectors are NEGATIVE — read off Rakudo rather than
+        // guessed, which is how the first draft got 13/14 where it wanted -1/-2
+        {"STAT_PLATFORM_DEV", -1}, {"STAT_PLATFORM_INODE", -2},
+        {"STAT_PLATFORM_MODE", -3}, {"STAT_PLATFORM_NLINKS", -4},
+        {"STAT_PLATFORM_DEVTYPE", -5}, {"STAT_PLATFORM_BLOCKSIZE", -6},
+        {"STAT_PLATFORM_BLOCKS", -7},
     };
     auto it = k.find(name);
     if (it == k.end()) return false;
@@ -7300,6 +7313,12 @@ ExprPtr Parser::makeNqpOp(const std::string& op, std::vector<ExprPtr>& args) {
         {"push", NqpOpc::Push}, {"push_i", NqpOpc::PushI}, {"push_s", NqpOpc::PushS},
         {"pop_s", NqpOpc::PopS}, {"shift_i", NqpOpc::ShiftI}, {"splice", NqpOpc::Splice},
         {"hash", NqpOpc::Hash}, {"bindkey", NqpOpc::Bindkey},
+        // the read side of the same surface — HTML::Entity::Fast reads its table
+        // with nqp::atkey, and `unbox_s` is how Path::Finder gets at a Str's guts
+        {"atkey", NqpOpc::Atkey}, {"existskey", NqpOpc::ExistsKey},
+        {"deletekey", NqpOpc::DeleteKey},
+        {"unbox_s", NqpOpc::Decont}, {"unbox_i", NqpOpc::Decont},
+        {"unbox_n", NqpOpc::Decont}, {"decont_s", NqpOpc::Decont},
         {"create", NqpOpc::Create}, {"istype", NqpOpc::Istype},
         {"istype_nd", NqpOpc::Istype}, // no-decont variant: same for us
         {"getattr", NqpOpc::Getattr}, {"bindattr", NqpOpc::Bindattr},
@@ -7307,6 +7326,7 @@ ExprPtr Parser::makeNqpOp(const std::string& op, std::vector<ExprPtr>& args) {
         {"p6bindattrinvres", NqpOpc::P6BindAttrInvRes},
         {"p6scalarwithvalue", NqpOpc::P6ScalarWithValue},
         {"null", NqpOpc::Null}, {"isnanorinf", NqpOpc::IsNanOrInf},
+        {"isnull", NqpOpc::IsNull}, {"isnull_s", NqpOpc::IsNull},
         // the AttrX::Mooish surface
         {"hllize", NqpOpc::Decont}, {"box_s", NqpOpc::P6BoxS},
         {"what", NqpOpc::What}, {"islist", NqpOpc::IsList},

@@ -10139,6 +10139,23 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
         case O::Bindkey:
             if (v[0].t == VT::Hash && v[0].hash) (*v[0].hash)[S(1)] = v[2];
             return v.size() > 2 ? v[2] : Value::nil();
+        case O::IsNull:
+            // VM-level null, which is NOT Raku's undefined: Rakudo answers 0 for
+            // both Nil and Any. Our nqp hash ops return Value::nil() for a missing
+            // key, so that is what stands in for it here — and a type object,
+            // being a real Raku value, is not null.
+            return Value::integer(!v.empty() && v[0].t == VT::Nil ? 1 : 0);
+        case O::Atkey: {
+            if (v.size() < 2 || v[0].t != VT::Hash || !v[0].hash) return Value::nil();
+            auto it = v[0].hash->find(S(1));
+            return it == v[0].hash->end() ? Value::nil() : it->second;
+        }
+        case O::ExistsKey:
+            return Value::integer(v.size() >= 2 && v[0].t == VT::Hash && v[0].hash &&
+                                  v[0].hash->count(S(1)) ? 1 : 0);
+        case O::DeleteKey:
+            if (v.size() >= 2 && v[0].t == VT::Hash && v[0].hash) v[0].hash->erase(S(1));
+            return v.empty() ? Value::nil() : v[0];
         case O::Create: {
             std::string tn = v[0].t == VT::Type ? v[0].s : v[0].typeName();
             // a `my class IterationMap is repr("VMHash")` declared INSIDE a module
