@@ -365,9 +365,31 @@ public:
             listCapsFrozen_ = std::make_shared<const std::set<int>>(listCaps_);
         return listCapsFrozen_;
     }
+    // ---- spliced sub-pattern ----
+    // A regex VALUE interpolated into another regex (`s/^($token)…/`) cannot be
+    // pasted in as text when the two are in different flavours: `rx:P5/[a-z]/`
+    // read as Raku is a GROUP over `a`, `-`, `z`. So the splice carries its own
+    // syntax with it, as an opaque marker the interpolation passes copy through
+    // whole and the parser compiles with the right front-end:
+    //     \x01 KIND LENGTH \x01 SOURCE          KIND = 'P' (Perl 5) | 'R' (Raku)
+    // The length is what makes it opaque: the source may contain ANY character,
+    // including the `]` and `$` that a delimiter-scanning marker would trip on.
+    static std::string spliceOf(const std::string& src, bool p5) {
+        return std::string("\x01") + (p5 ? 'P' : 'R') + std::to_string(src.size()) + "\x01" + src;
+    }
+    // Total byte length of the marker starting at `i`, or 0 if there is none.
+    static size_t spliceSpan(const std::string& s, size_t i) {
+        if (i >= s.size() || s[i] != '\x01' || i + 2 >= s.size()) return 0;
+        if (s[i + 1] != 'P' && s[i + 1] != 'R') return 0;
+        size_t j = i + 2, n = 0;
+        while (j < s.size() && s[j] >= '0' && s[j] <= '9') n = n * 10 + (size_t)(s[j++] - '0');
+        if (j == i + 2 || j >= s.size() || s[j] != '\x01') return 0;
+        return (j + 1 + n <= s.size()) ? j + 1 + n - i : 0;
+    }
     // Fast path for a rule whose whole body is a single character matcher (e.g.
     // `token space { <[\ \t]> }`): returns true if this regex is exactly that.
     bool rootIsSingleChar() const;
+    NodePtr parseSplice(); // compile a \x01-marked sub-pattern with its own front-end
     // If rootIsSingleChar(), test it at `pos`: returns pos+1 on match, -1 on no match.
     long trySingleChar(const std::string& s, long pos) const;
 private:

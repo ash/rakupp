@@ -1101,9 +1101,10 @@ bool Lexer::tryQuoteForm(Token& out) {
         int bd = 0; // { } embedded-code-block nesting
         int sd = 0; // [ ] nesting: a char class <-[/]> / group shields the delimiter
         bool inClass = false; // …and inside a class the brackets are MEMBERS, not nesting
+        bool classOpen = false; // just opened a P5 class: a `]` here is a member
         while (!eof()) {
             char ch = peek();
-            if (ch == '\\') { advance(); raw += '\\'; if (!eof()) raw += advance(); continue; }
+            if (ch == '\\') { classOpen = false; advance(); raw += '\\'; if (!eof()) raw += advance(); continue; }
             // inside a { ... } code block (regex pattern OR subst replacement): it is
             // Raku, so track string quotes — a brace in a string ('}' / "}") is not a
             // block delimiter and must not miscount the nesting
@@ -1116,6 +1117,22 @@ bool Lexer::tryQuoteForm(Token& out) {
                 continue;
             }
             if (quoteAware && q) { if (ch == q) q = 0; raw += advance(); continue; }
+            // A Perl-5 pattern has no quote construct and no group form of `[ ]`:
+            // the brackets ARE the character class and everything in it — quotes
+            // included — is a member. HTTP::Tinyish's header token
+            //   rx:P5/[^][\x00-\x1f\x7f()<>@,;:\\"\/?={} \t]+/
+            // opened a string at that `"`, which then ran to the end of the file
+            // and was reported as an unterminated string 30 lines later. A `]`
+            // in first position (`[]…]`, `[^]…]`) is a member as well.
+            if (quoteAware && p5 && !isRepl) {
+                if (inClass) {
+                    if (ch == ']' && !classOpen) inClass = false; // …and only this ends it
+                    if (ch != '^') classOpen = false;             // first position survives only across `^`
+                    raw += advance(); continue;
+                }
+                if (ch == '[') { inClass = true; classOpen = true; raw += advance(); continue; }
+                if (ch == '\'' || ch == '"') { raw += advance(); continue; } // a literal character
+            }
             // quotes open only OUTSIDE [ ] — inside a char class a quote is a
             // MEMBER (<-["]> = anything but a double quote), not a string opener
             if (quoteAware && sd == 0 && (ch == '\'' || ch == '"')) { q = ch; raw += advance(); continue; }

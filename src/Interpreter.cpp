@@ -14736,6 +14736,7 @@ std::string Interpreter::rxInterpArrays(const std::string& pat) {
     std::string out;
     bool inSq = false; // inside '…': a literal span — no interpolation
     for (size_t i = 0; i < pat.size(); i++) {
+        if (size_t sp = Regex::spliceSpan(pat, i)) { out += pat.substr(i, sp); i += sp - 1; continue; }
         if (pat[i] == '\\' && i + 1 < pat.size()) { out += pat[i]; out += pat[i + 1]; i++; continue; }
         if (pat[i] == '\'') { inSq = !inSq; out += pat[i]; continue; }
         if (inSq) { out += pat[i]; continue; }
@@ -14813,6 +14814,21 @@ static bool isP5Pattern(const std::string& pat) {
     return false;
 }
 
+// How a regex VALUE goes into another regex's pattern. Same-flavour, its source
+// pastes in, grouped so an alternation inside stays contained. ACROSS flavours it
+// cannot: `[a-z]+` is a P5 character class and a Raku group over `a`, `-`, `z`,
+// so the foreigner goes in as a marked splice (Regex::spliceOf) that the parser
+// compiles with its own front-end. Both directions, one pair of functions —
+// three copies of this rule had already drifted apart.
+static std::string spliceRegexValue(const std::string& src) {   // …into a RAKU pattern
+    return isP5Pattern(src) ? Regex::spliceOf(src.substr(src.find(' ') + 1), true)
+                            : "[ " + src + " ]";
+}
+static std::string spliceRegexValueP5(const std::string& src) { // …into a PERL 5 one
+    return isP5Pattern(src) ? "(?:" + src.substr(src.find(' ') + 1) + ")"
+                            : Regex::spliceOf(src, false);
+}
+
 // :P5 interpolation — Perl semantics: `$var` splices its value as raw regex
 // SOURCE (`my $r = '\d+'; m:P5/$r/` compiles the \d+). No quotemeta, no code
 // braces, no single-quote spans; `\$`, `$` anchors and `$1` digits pass through.
@@ -14820,13 +14836,13 @@ std::string Interpreter::interpP5Pattern(const std::string& in) {
     if (in.find('$') == std::string::npos || !tctx_.cur) return in;
     std::string out;
     for (size_t i = 0; i < in.size(); i++) {
+        if (size_t sp = Regex::spliceSpan(in, i)) { out += in.substr(i, sp); i += sp - 1; continue; }
         if (in[i] == '\\' && i + 1 < in.size()) { out += in[i]; out += in[i + 1]; i++; continue; }
         if (in[i] == '$' && i + 1 < in.size() && (ascii::isalpha((unsigned char)in[i + 1]) || in[i + 1] == '_')) {
             size_t j = i + 1;
             while (j < in.size() && (ascii::isalnum((unsigned char)in[j]) || in[j] == '_')) j++;
             if (Value* v = tctx_.cur->find("$" + in.substr(i + 1, j - i - 1))) {
-                out += v->t == VT::Regex ? "(?:" + std::string(isP5Pattern(v->s) ? v->s.substr(v->s.find(' ') + 1) : v->s) + ")"
-                                         : v->toStr();
+                out += v->t == VT::Regex ? spliceRegexValueP5(v->s) : v->toStr();
                 i = j - 1;
                 continue;
             }
@@ -14846,6 +14862,9 @@ std::string Interpreter::interpRegexPattern(const std::string& in) {
                            // `$var` there is the block's own variable and must reach the
                            // block verbatim, or `{ $c = $¢ }` arrives as `1 = $¢`.
         for (size_t i = 0; i < pat.size(); i++) {
+            // an already-spliced sub-pattern is opaque: its source is another
+            // regex's text and must not be reread as this one's
+            if (size_t sp = Regex::spliceSpan(pat, i)) { out += pat.substr(i, sp); i += sp - 1; continue; }
             if (pat[i] == '\\' && i + 1 < pat.size()) { out += pat[i]; out += pat[i + 1]; i++; continue; }
             if (pat[i] == '<' && i + 1 < pat.size() && (pat[i + 1] == '[' || pat[i + 1] == '-')) {
                 // a character class: copy it through so a literal `{` inside cannot
@@ -14902,7 +14921,7 @@ std::string Interpreter::interpRegexPattern(const std::string& in) {
                 }
                 if (depth == 0) {
                     Value v = evalString(pat.substr(i, j - i));   // the whole `$( … )`
-                    out += v.t == VT::Regex ? "[ " + v.s + " ]" : quoteMetaRx(v.toStr());
+                    out += v.t == VT::Regex ? spliceRegexValue(v.s) : quoteMetaRx(v.toStr());
                     i = j - 1;
                     continue;
                 }
@@ -14937,7 +14956,7 @@ std::string Interpreter::interpRegexPattern(const std::string& in) {
                 // how IO::Glob assembles a glob out of per-term matchers. Only a
                 // Str value keeps the quote-it-literally reading.
                 if (v && v->t == VT::Regex) {
-                    out += "[ " + v->s + " ]";
+                    out += spliceRegexValue(v->s);
                     i = j - 1;
                     continue;
                 }
@@ -15806,6 +15825,7 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
         // interpolate scalar variables ($foo, $^a) into the regex as literal (quotemeta'd) text
         std::string ip;
         for (size_t i = 0; i < realPat.size(); i++) {
+            if (size_t sp = Regex::spliceSpan(realPat, i)) { ip += realPat.substr(i, sp); i += sp - 1; continue; }
             if (realPat[i] == '\\' && i + 1 < realPat.size()) { ip += realPat[i]; ip += realPat[i + 1]; i++; continue; }
             if (realPat[i] == '$' && i + 1 < realPat.size()) {
                 size_t j = i + 1;
@@ -15816,6 +15836,14 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
                            ((realPat[j] == '-' || realPat[j] == '\'') && j + 1 < realPat.size() &&
                             ascii::isalpha((unsigned char)realPat[j + 1])))) nm += realPat[j++];
                     if (Value* v = tctx_.cur->find("$" + nm)) {
+                        // A variable holding a REGEX is a sub-pattern, not text to
+                        // quote: `s/^($token) \: //` (HTTP::Tinyish) matched the
+                        // LITERAL "regex Regex" and so found no header name at all.
+                        // The match path already spliced it; only this copy did not.
+                        if (v->t == VT::Regex) {
+                            ip += p5 ? spliceRegexValueP5(v->s) : spliceRegexValue(v->s);
+                            i = j - 1; continue;
+                        }
                         // P5 pattern: Perl interpolates a variable as regex SOURCE,
                         // not as quoted literal text — splice it raw
                         if (p5) { ip += v->toStr(); i = j - 1; continue; }
