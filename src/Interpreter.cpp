@@ -11830,6 +11830,22 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
             if (Value* cur = tctx_.cur->find(ve->name)) cur->readonly = true;
         // `our $x = v` anywhere publishes the initialized value to the package
         // (GLOBAL) stash — `$OUR::x` / `$GLOBAL::x` find it from other scopes
+        // A `constant` in a package is reachable by its QUALIFIED name from
+        // outside — `Base64::Native::BASE64-LIB` is how that module's own suite
+        // asks for the library path, and `Compress::Zlib::Raw::Z_OK` the same.
+        // Constants are not `our`, but Rakudo installs them in the package's
+        // symbol table all the same, and we published nothing.
+        if (ve->declare && ve->declScope == "constant" && !tctx_.pkgPrefix.empty() &&
+            !ve->name.empty()) {
+            if (Value* p = tctx_.cur->find(ve->name)) {
+                std::string bare = ve->name;
+                std::string sigil;
+                if (bare[0] == '$' || bare[0] == '@' || bare[0] == '%' || bare[0] == '&')
+                    { sigil = bare.substr(0, 1); bare = bare.substr(1); }
+                noteSymbolMutation("constant publish");
+                global_->define(sigil + tctx_.pkgPrefix + bare, *p);
+            }
+        }
         if (ve->declare && ve->declScope == "our" && ve->name.size() > 1) {
             if (Value* p = tctx_.cur->find(ve->name)) {
                 std::string qual = ve->name.substr(0, 1) + tctx_.pkgPrefix + ve->name.substr(1);
