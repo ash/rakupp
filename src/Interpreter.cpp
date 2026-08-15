@@ -17570,6 +17570,13 @@ Value Interpreter::evalBinary(Binary* b) {
         Value r;
         try { r = eval(b->rhs.get()); } catch (...) { restoreTopic(); throw; }
         restoreTopic();
+        // A Proxy on either side is being READ: run its FETCH, or the match sees
+        // the container rather than the value it stands for — and every branch
+        // below keys on the VALUE's type. Tinky's `method state(…) is rw { Proxy
+        // .new(…) }` made `self ~~ $object.state` skip the ACCEPTS hook entirely,
+        // because a Proxy is a Hash and the hook wants an Object.
+        if (r.hashKind == "Proxy") r = deproxy(r);
+        if (lTopic.hashKind == "Proxy") lTopic = deproxy(lTopic);
         // `$path.IO ~~ :e` (and :d/:f/:r/:w/:x/:s/:z/:l) — a filetest adverb: call
         // the matching method on the path and compare to the adverb's boolean.
         auto fileTest = [&](const Value& pair) {
