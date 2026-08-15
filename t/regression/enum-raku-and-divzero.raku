@@ -34,18 +34,36 @@ enum Size ( small => 1, big => 2 );
 # a junction is not an enum and must not grow a `::`
 @fail.push("junction ({any(1,2).raku})") if any(1, 2).raku.contains('::');
 
-# ---- 2. integer division by zero throws ------------------------------------
+# ---- 2. division by zero: which operators SOFT-FAIL and which THROW ---------
+# Rakudo is not uniform, and Roast pins both shapes: `div` and `%` return a
+# Failure (S03-operators/div.t asserts `fails-like`), while `mod` and `%%` throw
+# on the spot. Making them all throw breaks div.t; making them all soft-fail
+# loses the two that really do throw.
 sub threw(&c) { my $ok = False; try { c(); CATCH { when X::Numeric::DivideByZero { $ok = True } } }; $ok }
 
-@fail.push('div throws')  unless threw { 3 div 0 };
+my $dv = 3 div 0;
+@fail.push("div soft-fails ({$dv.^name})") unless $dv ~~ Failure;
+@fail.push('div Failure type') unless $dv.exception ~~ X::Numeric::DivideByZero;
+my $pc = 3 % 0;
+@fail.push("% soft-fails ({$pc.^name})") unless $pc ~~ Failure;
+my $zz = 0 div 0;
+@fail.push("0 div 0 soft-fails ({$zz.^name})") unless $zz ~~ Failure;
+
 @fail.push('mod throws')  unless threw { 3 mod 0 };
-@fail.push('% throws')    unless threw { 3 % 0 };
 @fail.push('%% throws')   unless threw { 3 %% 0 };
-@fail.push('0 div 0')     unless threw { 0 div 0 };
-# it is catchable by `try`, which is the part that was broken: a Failure sailed
-# past the try and died somewhere else entirely
-my $caught = (try { 3 div 0 }) // 'no-value';
-@fail.push("try swallows ({$caught.gist})") unless $! ~~ X::Numeric::DivideByZero;
+
+# ---- 2b. Inf/NaN in the integer operators ----------------------------------
+# These take integers: a non-finite value has NO Int, and saturating it to
+# 2**63-1 (what a plain toInt does) made `0 gcd Inf` answer 9223372036854775807.
+sub threwCC(&c) { my $ok = False; try { c(); CATCH { when X::Numeric::CannotConvert { $ok = True } } }; $ok }
+@fail.push('gcd Inf') unless threwCC { 0 gcd Inf };
+@fail.push('gcd NaN') unless threwCC { 0 gcd NaN };
+@fail.push('lcm Inf') unless threwCC { 1 lcm Inf };
+# the DIVISOR decides first: a non-finite divisor has no Int and counts as zero,
+# which is why `1 div Inf` is a divide-by-zero exactly as `1 div (1/3)` is
+@fail.push("div Inf ({(1 div Inf).^name})") unless (1 div Inf) ~~ Failure;
+@fail.push("div 1/3 ({(1 div (1/3)).^name})") unless (1 div (1/3)) ~~ Failure;
+@fail.push("div 0e0 ({(1 div 0e0).^name})") unless (1 div 0e0) ~~ Failure;
 
 # `/` by zero is NOT this: it yields a Rat, and only complains when used
 my $r = 1 / 0;

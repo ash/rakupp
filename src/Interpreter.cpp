@@ -131,15 +131,30 @@ void collectPubAttrs(ClassInfo* c, std::vector<const ClassAttr*>& out) {
     for (auto& p : c->extraParents) collectPubAttrs(p.get(), out);
 }
 
-// `div`, `mod` and `%` by zero THROW — they do not hand back a Failure to be
-// discovered later. This used to return one, so `try { 3 div 0 }` caught nothing
-// and the Failure surfaced as an uncatchable death wherever it was finally used.
-// (`/` by zero is different and stays lazy: `1/0` is the Rat <1/0>, which only
-// complains when something asks for its value.)
-[[noreturn]] void divideByZero(const Value& lhs, const char* opName) {
+// Division by zero, and the two shapes it takes. Rakudo is not uniform here and
+// Roast pins both: `10 div 0` and `10 % 0` SOFT-FAIL — they return a Failure,
+// which throws only when something sinks or uses it (S03-operators/div.t's
+// `fails-like`) — while `mod` and `%%` throw on the spot. Making them all throw
+// looks tidier and breaks `fails-like`; making them all soft-fail loses the two
+// that really do throw.
+Value divideByZero(const Value& lhs, const char* opName) {
+    Value ex = Value::typeObj("X::Numeric::DivideByZero");
+    Value f = Value::makeHash(); f.hashKind = "Failure";
+    (*f.hash)["exception"] = ex;
+    (*f.hash)["message"] = Value::str("Attempt to divide " + lhs.toStr() +
+                                      " by zero using infix:<" + opName + ">");
+    return f;
+}
+[[noreturn]] void throwDivideByZero(const Value& lhs, const char* opName) {
     throw RakuError{Value::typeObj("X::Numeric::DivideByZero"),
                     "Attempt to divide " + lhs.toStr() +
                     " by zero using infix:<" + opName + ">"};
+}
+// Which of the two a given operator wants.
+static bool divZeroThrows(const std::string& op) { return op == "mod" || op == "%%"; }
+Value divZeroResult(const Value& lhs, const std::string& op) {
+    if (divZeroThrows(op)) throwDivideByZero(lhs, op.c_str());
+    return divideByZero(lhs, op.c_str());
 }
 
 [[noreturn]] void throwImmutable(const Value& v) {
@@ -13994,14 +14009,25 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             return mkRat(rn, rd);
         }
         if (op == "%" || op == "div" || op == "mod" || op == "%%") {
+            // These take INTEGERS, so both sides are coerced first, and the
+            // DIVISOR's coercion decides. A non-finite divisor has no Int and
+            // counts as zero here — Rakudo reports divide-by-zero for `1 div Inf`
+            // exactly as it does for `1 div (1/3)`, whose .Int is 0. Ours
+            // saturated Inf to 2**63-1 and answered 0.
+            if (r.t == VT::Num && !std::isfinite(r.n)) return divZeroResult(l, op);
+            // A non-finite DIVIDEND with a usable divisor cannot be converted.
+            // DELIBERATE DIVERGENCE: Rakudo leaks a MoarVM representation error
+            // here ("P6opaque: get_boxed_ref could not unbox … of type Failure",
+            // an X::AdHoc) along with an unhandled-Failure warning naming the real
+            // problem — "Cannot convert Inf to Int". We raise that instead of
+            // reproducing the leak; Rakudo is the oracle, not the arbiter.
+            if (l.t == VT::Num && !std::isfinite(l.n))
+                throw RakuError{Value::typeObj("X::Numeric::CannotConvert"),
+                                "Cannot convert " + l.toStr() + " to Int"};
             if (anyRat && (op == "%" || op == "%%")) {
                 // Rat modulo stays exact: a % b = a - b * floor(a/b)  (10.3 % 3 == 1.3)
                 BigInt an = getN(l), ad = getD(l), bn = getN(r), bd = getD(r);
-                if (bn.isZero()) {
-                    if (op == "%%") throw RakuError{Value::typeObj("X::Numeric::DivideByZero"),
-                        "Attempt to divide " + l.toStr() + " by zero using infix:<%%>"};
-                    divideByZero(l, op.c_str());
-                }
+                if (bn.isZero()) return divZeroResult(l, op);
                 BigInt N = an * bd, D = ad * bn;
                 if (D.sign < 0) { N = -N; D = -D; }
                 BigInt q, rm; BigInt::divmod(N, D, q, rm);
@@ -14012,11 +14038,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             }
             if (smallInt && op != "div") { // native fast path for small ints (div stays on BigInt for identical rounding)
                 long long a = l.toInt(), b = r.toInt();
-                if (b == 0) {
-                    if (op == "%%") throw RakuError{Value::typeObj("X::Numeric::DivideByZero"),
-                        "Attempt to divide " + l.toStr() + " by zero using infix:<%%>"};
-                    divideByZero(l, op.c_str());
-                }
+                if (b == 0) return divZeroResult(l, op);
                 if (b == -1) return op == "%%" ? Value::boolean(true) : Value::integer(0); // a % -1 == 0 (avoids LLONG_MIN%-1 UB)
                 long long rem = a % b;
                 if (op == "%%") return Value::boolean(rem == 0); // divisibility is sign-independent
@@ -14024,11 +14046,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                 return Value::integer(rem); // % / mod
             }
             BigInt a = l.toBig(), b = r.toBig();
-            if (b.isZero()) {
-                if (op == "%%") throw RakuError{Value::typeObj("X::Numeric::DivideByZero"),
-                    "Attempt to divide " + l.toStr() + " by zero using infix:<%%>"};
-                divideByZero(l, op.c_str());
-            }
+            if (b.isZero()) return divZeroResult(l, op);
             BigInt q, rem; BigInt::divmod(a, b, q, rem);
             // Raku `div` floors (rounds toward -∞); BigInt::divmod truncates toward
             // zero, so adjust when the remainder is nonzero and the signs differ.
@@ -14090,22 +14108,31 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     if (op == "%") {
         if (l.t == VT::Num || r.t == VT::Num) { // floating modulo: a - b * floor(a/b)
             double a = l.toNum(), b = r.toNum();
-            if (b == 0.0) return Value::number(std::numeric_limits<double>::quiet_NaN());
+            if (b == 0.0) return divZeroResult(l, op);
             return Value::number(a - b * std::floor(a / b));
         }
         long long b = r.toInt();
-        if (b == 0) return Value::integer(0);
+        if (b == 0) return divZeroResult(l, op);
         long long m = l.toInt() % b;
         if ((m != 0) && ((m < 0) != (b < 0))) m += b; // Raku modulo sign follows divisor
         return Value::integer(m);
     }
-    if (op == "div") {
+    // The INEXACT fallback for the integer operators — reached when an operand is
+    // a Num, which is the case the exact path above never sees. Same rule as
+    // there, and for the same reason: these take integers, a zero divisor throws,
+    // and a non-finite value has no Int at all. Returning 0 for both made
+    // `3 div Inf` and `3 div 0e0` answer a confident, wrong 0.
+    if (op == "div" || op == "mod") {
+        // The DIVISOR decides first — `Inf div 0` is a divide-by-zero, not a
+        // conversion failure, and `Inf div (1/3)` is too because (1/3).Int is 0.
+        // Only once the divisor is usable does the dividend's own coercion matter.
+        if ((r.t == VT::Num && !std::isfinite(r.n)) || r.toInt() == 0)
+            return divZeroResult(l, op);
+        if (l.t == VT::Num && !std::isfinite(l.n))
+            throw RakuError{Value::typeObj("X::Numeric::CannotConvert"),
+                            "Cannot convert " + l.toStr() + " to Int"};
         long long b = r.toInt();
-        return Value::integer(b == 0 ? 0 : l.toInt() / b);
-    }
-    if (op == "mod") {
-        long long b = r.toInt();
-        return Value::integer(b == 0 ? 0 : l.toInt() % b);
+        return Value::integer(op == "div" ? l.toInt() / b : l.toInt() % b);
     }
     if (op == "**") {
         double res = std::pow(l.toNum(), r.toNum());
@@ -14247,6 +14274,15 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             out += cpToUtf8((uint32_t)combine(k < ca.size() ? ca[k] : 0,
                                               k < cb.size() ? cb[k] : 0));
         return Value::str(out);
+    }
+    if (op == "gcd" || op == "lcm") {
+        // These take INTEGERS: a non-finite operand has no Int, and saturating it
+        // to 2**63-1 (which is what toInt() does) turned `0 gcd Inf` into a
+        // plausible-looking 9223372036854775807.
+        for (const Value* v : {&l, &r})
+            if (v->t == VT::Num && !std::isfinite(v->n))
+                throw RakuError{Value::typeObj("X::Numeric::CannotConvert"),
+                                "Cannot convert " + v->toStr() + " to Int"};
     }
     if (op == "gcd") {
         if (l.big || r.big) return Value::bigint(BigInt::gcd(l.toBig().abs(), r.toBig().abs()));
