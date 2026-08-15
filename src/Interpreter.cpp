@@ -17646,10 +17646,24 @@ Value Interpreter::evalBinary(Binary* b) {
                 if (ci->methods.count("ACCEPTS")) hasAccepts = true;
             if (hasAccepts) {
                 ValueList one{lTopic};
-                Value m = methodCall(const_cast<Value&>(r), "ACCEPTS", one);
-                if (op == "~~" && m.t == VT::Match) return m;
-                bool ok = boolify(m);
-                return Value::boolean(op == "~~" ? ok : !ok);
+                // A user's ACCEPTS is usually a MULTI constrained to the types it
+                // knows how to match. When the topic is none of them, Rakudo falls
+                // back to Mu.ACCEPTS — the ordinary type/identity check — rather
+                // than failing to dispatch. Tinky's State accepts only a State, and
+                // `$object ~~ $state` (an Object against it) has to answer False,
+                // not "No matching multi candidate for method ACCEPTS".
+                try {
+                    Value m = methodCall(const_cast<Value&>(r), "ACCEPTS", one);
+                    if (op == "~~" && m.t == VT::Match) return m;
+                    bool ok = boolify(m);
+                    return Value::boolean(op == "~~" ? ok : !ok);
+                }
+                catch (RakuError& e) {
+                    if (e.message.find("No matching multi candidate for method ACCEPTS") == std::string::npos &&
+                        e.message.rfind("Cannot resolve caller ACCEPTS", 0) != 0)
+                        throw;
+                    // fall through to the generic smartmatch below
+                }
             }
         }
         return applyArith(op, lTopic, r); // generic smartmatch on the already-evaluated operands
