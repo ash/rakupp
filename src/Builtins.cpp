@@ -6943,13 +6943,20 @@ void Interpreter::registerBuiltins() {
         // ONE default description for both exit paths — the fast path used to say
         // "isa Int" and the ancestry fallback said nothing at all
         std::string desc = a.size() > 2 ? a[2].toStr() : "The object is-a '" + want + "'";
-        // the real .isa knows allomorphs and user-class chains — consult it first
+        // the real .isa knows allomorphs and user-class chains — consult it first,
+        // then .does, because that is what Rakudo's isa-ok is: a ROLE is never
+        // something you `.isa`, so `isa-ok $obj, SomeRole` (and `isa-ok $buf,
+        // buf8`, buf8 being a curried role there) would fail on both engines
+        // otherwise. It stops short of full smartmatch — `isa-ok 5, 1..10` and
+        // `isa-ok "abc", /b/` fail on Rakudo, and .does keeps them failing.
         if (a.size() > 1) {
-            ValueList ia{a[1]};
-            Value r = I.methodCall(a[0], "isa", ia);
-            if (r.truthy()) {
-                I.emitTest(true, desc);
-                return Value::boolean(true);
+            for (const char* probe : {"isa", "does"}) {
+                ValueList ia{a[1]};
+                Value r = I.methodCall(a[0], probe, ia);
+                if (r.truthy()) {
+                    I.emitTest(true, desc);
+                    return Value::boolean(true);
+                }
             }
         }
         static const std::map<std::string, std::set<std::string>> isa = {

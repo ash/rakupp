@@ -20,7 +20,7 @@ namespace rakupp {
 
 // Bumped whenever the encoding or the AST changes shape. A cache entry carrying
 // a different version is ignored, never reinterpreted.
-inline constexpr uint32_t kAstSerialVersion = 8; // v8: ClassDecl.isMonitor (native monitor semantics)
+inline constexpr uint32_t kAstSerialVersion = 9; // v9: SubDecl.nativeSymExpr (computed `is symbol(…)`)
 
 struct AstSerialError { std::string msg; };
 

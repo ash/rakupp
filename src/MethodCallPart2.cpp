@@ -3569,6 +3569,15 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // `~~` uses (typeMatchesArg owns it, reached via typeOrSubsetMatches)
         if (inv.t == VT::Hash && inv.hashKind == "Attribute")
             return Value::boolean(typeOrSubsetMatches(inv, rn));
+        // A byte buffer does the buffer roles — Blob, buf8/blob8, Positional —
+        // and none of them is a CLASS it is an instance of, in either engine.
+        // `~~` already knew (typeMatchesArg owns that table); `.does` walked the
+        // class ancestry instead and answered False for all of them. That is
+        // what failed `isa-ok md5(Blob.new), buf8`: Test's isa-ok is
+        // `.isa || .does`, and .isa is False here on Rakudo too.
+        if (inv.t == VT::Str && (inv.hashKind == "Blob" || inv.hashKind == "Buf" ||
+                                 inv.hashKind == "utf8" || inv.hashKind == "CArray"))
+            return Value::boolean(typeOrSubsetMatches(inv, rn));
         bool res = inv.typeName() == rn;
         ClassInfo* ci = nullptr;
         if (inv.t == VT::Object && inv.obj) ci = inv.obj->cls.get();

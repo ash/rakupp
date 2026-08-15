@@ -5256,6 +5256,13 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                         if (c.code->nativeLib.empty())
                             c.code->nativeLibExpr = sd->nativeLibExpr.get();
                     }
+                    // `is symbol(EXPR)`: unlike the library above, a computed name is
+                    // resolved at FIRST CALL, never here. The helper that computes it
+                    // typically asks the library its version — and at declaration time
+                    // the library is not loadable yet, so the probe answers 0, which
+                    // OpenSSL::Stack's real_symbol caches in a `state` and hands back
+                    // the pre-1.1 spelling for every symbol from then on.
+                    if (sd->nativeSymExpr) c.code->nativeSymExpr = sd->nativeSymExpr.get();
                                     c.code->nativeSym = sd->nativeSym.empty() ? sname : sd->nativeSym; }
                 for (auto& p : *prms) {
                     // a default makes no sense on a slurpy or a required param
@@ -9553,6 +9560,24 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
             } catch (RakuError&) {}
         }
         if (!lib.empty()) handle = dlopenLib(lib); // name as-is, then platform-decorated forms
+        if (c.nativeSymExpr) {
+            // A computed `is symbol(…)` the declaration was too early to evaluate:
+            // now the library is loaded, so the version probe it asks can answer.
+            // Evaluate it in the sub's OWN scope, not the caller's — the helper
+            // that computes the name is typically a module-private `my sub`
+            // (OpenSSL::Stack's real_symbol, which spells `sk_num` as
+            // `OPENSSL_sk_num` from OpenSSL 1.1 on) and is invisible from
+            // wherever the call happens to be.
+            auto savedEnv = tctx_.cur;
+            if (c.closure) tctx_.cur = c.closure;
+            try {
+                Value r = eval(const_cast<Expr*>(c.nativeSymExpr));
+                if (r.t == VT::Code) { ValueList none; r = callCallable(r, none); }
+                if (isDefined(r) && !r.toStr().empty()) c.nativeSym = r.toStr();
+            } catch (RakuError&) {}
+            tctx_.cur = savedEnv;
+            c.nativeSymExpr = nullptr; // once, not per call
+        }
         sym = dlsym(handle, c.nativeSym.c_str());
         if (!sym) {
             // Some libraries expose a renamed symbol behind a compat macro the header
@@ -9661,11 +9686,33 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
             else       { rwI.push_back(v.toInt()); putPtr(s, &rwI.back()); rwbacks.push_back({i, &rwI.back(), nullptr, ""}); }
         }
         else if (v.t == VT::Str && v.hashKind == "CArray") { keep.push_back(v.s); putPtr(s, keep.back().data()); cabacks.push_back({i, keep.size() - 1}); }
-        else if (v.t == VT::Str && (v.hashKind == "Buf" || v.hashKind == "Blob")) {
-            // a Buf/blob8 is a mutable native buffer: pass its bytes and copy back
+        else if (v.t == VT::Str && (v.hashKind == "Buf" || v.hashKind == "Blob" || v.hashKind == "utf8")) {
+            // A Buf/blob8 is a mutable native buffer: pass its bytes and copy back
             // after the call (BIO_read/SSL_read/recv fill it in place).
-            keep.push_back(v.s); putPtr(s, keep.back().data());
-            if (v.hashKind == "Buf") cabacks.push_back({i, keep.size() - 1});
+            //
+            // An IMMUTABLE buffer instead passes the Blob's OWN storage, because
+            // its pointer has to outlive the CALL: some C APIs RETAIN it rather
+            // than reading it while we are inside. BIO_new_mem_buf is the
+            // canonical one — it deliberately does not copy — so a per-call
+            // temporary left the BIO pointing at freed memory, and by the time
+            // PEM_read_bio_RSAPrivateKey looked, it read garbage: OpenSSL
+            // answered `DECODER routines::unsupported`, RSAKey.new stored the
+            // resulting null (`defined(0)` is True, so the module's own guard
+            // waved it through) and the next call segfaulted in RSA_size.
+            // A promoted CowStr body is shared with every copy of the value and
+            // lives as long as the Raku object does, which is exactly the
+            // lifetime Rakudo gives the callee — and it costs no copy at all.
+            const StrBody* sb = (v.hashKind == "Buf") ? nullptr : v.s.body();
+            if (sb) putPtr(s, (void*)sb->text.data());
+            else {
+                // Short buffers are held inline, so there is no shared body to
+                // point at and the copy is all we have. A retained pointer to a
+                // buffer under CowStr's promotion threshold is the one case this
+                // still gets wrong; fixing it means giving blob-ish values a
+                // shared body at construction, in all 22 places that make one.
+                keep.push_back(v.s); putPtr(s, keep.back().data());
+                if (v.hashKind == "Buf") cabacks.push_back({i, keep.size() - 1});
+            }
         }
         else if (v.t == VT::Str || (v.t == VT::Hash && v.hashKind == "IO")) { keep.push_back(v.toStr()); putPtr(s, keep.back().c_str()); }
         else if (v.t == VT::Object && v.obj && v.obj->attrs.count("__native_ptr")) putPtr(s, (void*)(intptr_t)v.obj->attrs["__native_ptr"].toInt());
@@ -9862,6 +9909,12 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
             if (nm.size() > rt.size() + 2 && nm.compare(nm.size() - rt.size() - 2, rt.size() + 2, "::" + rt) == 0) { ci = kv.second; break; }
         }
         if (ci) {
+            // NULL is the TYPE OBJECT, not an instance holding address 0 — that is
+            // how C reports "no result", and how the caller is expected to test it.
+            // OpenSSL.use-client-ca-file is `unless my $s = SSL_load_client_CA_file(…)`
+            // and never raised on a missing file, because a boxed null is defined
+            // and true.
+            if (ri == 0) return Value::typeObj(ci->name);
             Value o; o.t = VT::Object; o.obj = std::make_shared<ObjectData>();
             o.obj->cls = ci; o.obj->attrs["__native_ptr"] = Value::integer(ri);
             return o;
