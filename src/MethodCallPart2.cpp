@@ -3486,7 +3486,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     if (((inv.t == VT::Type && inv.s == "Metamodel::ClassHOW") ||
          (inv.t == VT::Object && inv.obj && inv.obj->cls &&
           [&]{ for (ClassInfo* c = inv.obj->cls.get(); c; c = c->parent.get())
-                   if (c->name == "Metamodel::ClassHOW") return true; return false; }())) &&
+                   if (c->name == "Metamodel::ClassHOW") return true;
+               return false; }())) &&
         !args.empty() && args[0].t == VT::Type) {
         static const std::set<std::string> howOps = {
             "add_method", "add_attribute", "add_parent", "add_role", "add_fallback",
@@ -3588,7 +3589,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         }
         // a BUILT-IN value does the roles its ancestry lists (`Date.does(Dateish)`)
         if (!res && !ci)
-            for (auto& a : typeAncestry(typeOfVal(inv))) if (a == rn) { res = true; break; }
+            { const std::string ty = typeOfVal(inv);
+              for (auto& a : typeAncestry(ty)) if (a == rn) { res = true; break; } }
         // a Code value does the Callable/Code/Routine/Block roles
         if (!res && inv.t == VT::Code &&
             (rn == "Callable" || rn == "Code" || rn == "Routine" || rn == "Block" || rn == "Sub"))

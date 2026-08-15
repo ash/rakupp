@@ -58,12 +58,12 @@ struct ReprDepthGuard {
 
 std::string dateGist(const std::map<std::string, Value>& h, bool isDate) {
     auto f = [&](const char* k) { auto it = h.find(k); return it != h.end() ? it->second.toInt() : 0; };
-    char buf[48];
+    char buf[256];
     const char* ys = f("year") > 9999 ? "+" : ""; // ISO 8601: years past 9999 carry a leading +
     if (isDate) std::snprintf(buf, sizeof buf, "%s%04lld-%02lld-%02lld", ys, f("year"), f("month"), f("day"));
     else {
         long long tz = f("timezone");
-        char suf[12];
+        char suf[32];
         if (tz == 0) std::snprintf(suf, sizeof suf, "Z");
         else std::snprintf(suf, sizeof suf, "%c%02lld:%02lld", tz < 0 ? '-' : '+',
                            (tz < 0 ? -tz : tz) / 3600, ((tz < 0 ? -tz : tz) % 3600) / 60);
@@ -368,7 +368,7 @@ std::string Value::toStr() const {
                 std::string out2; bool first = true;
                 double lo = n + (rExFrom ? 1.0 : 0.0);
                 for (double x = lo; rExTo ? x < im - 1e-9 : x <= im + 1e-9; x += 1.0) {
-                    if (!first) out2 += " "; first = false; out2 += Value::number(x).toStr();
+                    if (!first) { out2 += " "; } first = false; out2 += Value::number(x).toStr();
                 }
                 return out2;
             }
@@ -421,7 +421,7 @@ std::string Value::toStr() const {
                 bool isSet = hashKind[0] == 'S';
                 std::string out; bool first = true;
                 if (hash) for (auto& kv : *hash) {
-                    if (!first) out += " "; first = false;
+                    if (!first) { out += " "; } first = false;
                     out += kv.second.pairKey ? kv.second.pairKey->toStr() : kv.first;
                     if (!isSet && !(kv.second.isNumeric() && kv.second.toNum() == 1.0))
                         out += "(" + kv.second.gist() + ")";
@@ -432,7 +432,7 @@ std::string Value::toStr() const {
             std::string out;
             if (hash) { bool first = true;
                 for (auto& kv : *hash) {
-                    if (!first) out += "\n"; first = false;
+                    if (!first) { out += "\n"; } first = false;
                     out += kv.first + "\t" + kv.second.toStr();
                 }
             }
@@ -657,7 +657,7 @@ std::string Value::gist() const {
                 ReprDepthGuard g; if (g.tooDeep()) return "{...}";
                 std::string body; bool first = true;
                 if (hash) for (auto& kv : *hash) {
-                    if (!first) body += ", "; first = false;
+                    if (!first) { body += ", "; } first = false;
                     body += kv.first + " => " + kv.second.gist();
                 }
                 if (hashKind == "Map") return "Map.new((" + body + "))";
@@ -667,10 +667,10 @@ std::string Value::gist() const {
                 hashKind == "Bag" || hashKind == "BagHash" ||
                 hashKind == "Mix" || hashKind == "MixHash") {
                 ReprDepthGuard g; if (g.tooDeep()) return hashKind + "(...)";
-                bool isSet = hashKind[0] == 'S', isMix = hashKind[0] == 'M';
+                bool isSet = hashKind[0] == 'S';
                 std::string body; bool first = true;
                 if (hash) for (auto& kv : *hash) {
-                    if (!first) body += " "; first = false;
+                    if (!first) { body += " "; } first = false;
                     // the ELEMENT, not its lookup key — the original value rides in
                     // the count's pairKey for anything that is not a plain Str
                     std::string el = kv.second.pairKey ? kv.second.pairKey->gist() : kv.first;

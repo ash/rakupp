@@ -663,9 +663,9 @@ static void collectPHExpr(const Expr* e, std::set<std::string>& out) {
         case NK::Assign: collectPHExpr(static_cast<const Assign*>(e)->target.get(), out);
                          collectPHExpr(static_cast<const Assign*>(e)->value.get(), out); break;
         case NK::Call: { auto* c = static_cast<const Call*>(e); collectPHExpr(c->callee.get(), out);
-                         for (auto& a : c->args) collectPHExpr(a.get(), out); break; }
+                         for (auto& a : c->args) { collectPHExpr(a.get(), out); } break; }
         case NK::MethodCall: { auto* m = static_cast<const MethodCall*>(e); collectPHExpr(m->inv.get(), out);
-                         for (auto& a : m->args) collectPHExpr(a.get(), out); break; }
+                         for (auto& a : m->args) { collectPHExpr(a.get(), out); } break; }
         case NK::Index: collectPHExpr(static_cast<const Index*>(e)->base.get(), out);
                         collectPHExpr(static_cast<const Index*>(e)->index.get(), out); break;
         case NK::Ternary: { auto* t = static_cast<const Ternary*>(e); collectPHExpr(t->cond.get(), out);
@@ -712,7 +712,7 @@ static void collectPHStmt(const Stmt* s, std::set<std::string>& out) {
         case NK::Block: for (auto& st : static_cast<const Block*>(s)->stmts) collectPHStmt(st.get(), out); break;
         case NK::IfStmt: { auto* i = static_cast<const IfStmt*>(s);
             for (auto& br : i->branches) { collectPHExpr(br.first.get(), out); collectPHStmt(br.second.get(), out); }
-            if (i->elseBlock) collectPHStmt(i->elseBlock.get(), out); break; }
+            if (i->elseBlock) { collectPHStmt(i->elseBlock.get(), out); } break; }
         case NK::WhileStmt: collectPHExpr(static_cast<const WhileStmt*>(s)->cond.get(), out);
                             collectPHStmt(static_cast<const WhileStmt*>(s)->body.get(), out); break;
         case NK::ForStmt: collectPHExpr(static_cast<const ForStmt*>(s)->list.get(), out);
@@ -1905,11 +1905,11 @@ void Interpreter::hoistExprDecls(const std::vector<StmtPtr>& stmts, Env* env, De
                 if (is->modifier) for (auto& br : is->branches) walkBlock(br.second.get());
                 break; }
             case NK::ForStmt: { auto* fs = static_cast<const ForStmt*>(st);
-                if (fs->modifier) walkBlock(fs->body.get()); break; }
+                if (fs->modifier) { walkBlock(fs->body.get()); } break; }
             case NK::GivenStmt: { auto* g = static_cast<const GivenStmt*>(st);
-                if (g->modifier) walkBlock(g->body.get()); break; }
+                if (g->modifier) { walkBlock(g->body.get()); } break; }
             case NK::WhileStmt: { auto* w = static_cast<const WhileStmt*>(st);
-                if (w->modifier) walkBlock(w->body.get()); break; }
+                if (w->modifier) { walkBlock(w->body.get()); } break; }
             default: break;
         }
     };
@@ -3968,7 +3968,7 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
         double tRun = traceLoad ? nowMs() : 0;
         struct TGuard {
             bool on; const std::string& nm; double pms, t0;
-            const std::function<double()>& now;
+            double (*now)();
             const char* how;   // "parse", "precomp" or "embedded"
             ~TGuard() { if (on) fprintf(stderr, "[Load] %s %s %.1f ms, run %.1f ms\n",
                                         nm.c_str(), how, pms, now() - t0); }
@@ -4723,7 +4723,7 @@ bool Interpreter::runLoopBody(Block* body, std::shared_ptr<Env> scope, const std
               if (tctx_.givenCtl) { // cooperative when-match in this loop's body: iteration done
                   tctx_.givenCtl = 0; suppressLoopFirst_ = savedSF; return true;
               }
-              if (collect) collect->push_back(v); try { runNextP(); } catch (LastEx&) { runLast(); suppressLoopFirst_ = savedSF; return false; } runLast(); suppressLoopFirst_ = savedSF; return true; }
+              if (collect) { collect->push_back(v); } try { runNextP(); } catch (LastEx&) { runLast(); suppressLoopFirst_ = savedSF; return false; } runLast(); suppressLoopFirst_ = savedSF; return true; }
         catch (LeaveEx&) { runLast(); suppressLoopFirst_ = savedSF; return true; } // leave: end this iteration, NO NEXT phasers
         catch (RedoEx& e) { if (!e.label.empty() && e.label != label) { suppressLoopFirst_ = savedSF; throw; } if (rebind) rebind(); continue; }
         catch (NextEx& e) { if (!e.label.empty() && e.label != label) { suppressLoopFirst_ = savedSF; throw; } try { runNextP(); } catch (LastEx&) { runLast(); suppressLoopFirst_ = savedSF; return false; } runLast(); suppressLoopFirst_ = savedSF; return true; }
@@ -12104,8 +12104,8 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 long long from = srArgs->size() > argOfs ? eval((*srArgs)[argOfs].get()).toInt() : 0;
                 long long len  = srArgs->size() > argOfs + 1 ? eval((*srArgs)[argOfs + 1].get()).toInt() : nch - from;
                 if (from < 0) from += nch;
-                if (from < 0) from = 0; if (from > nch) from = nch;
-                if (len < 0) len = 0; if (from + len > nch) len = nch - from;
+                if (from < 0) { from = 0; } if (from > nch) from = nch;
+                if (len < 0) { len = 0; } if (from + len > nch) len = nch - from;
                 Value rhs = eval(a->value.get());
                 size_t b0 = byteAt(from), b1 = byteAt(from + len);
                 bp->s = bp->s.substr(0, b0) + rhs.toStr() + bp->s.substr(b1);
@@ -12197,8 +12197,8 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 long long from = sbArgs->size() > argOfs ? eval((*sbArgs)[argOfs].get()).toInt() : 0;
                 long long len  = sbArgs->size() > argOfs + 1 ? eval((*sbArgs)[argOfs + 1].get()).toInt() : n - from;
                 if (from < 0) from += n;
-                if (from < 0) from = 0; if (from > n) from = n;
-                if (len < 0) len = 0; if (from + len > n) len = n - from;
+                if (from < 0) { from = 0; } if (from > n) from = n;
+                if (len < 0) { len = 0; } if (from + len > n) len = n - from;
                 Value rhs = eval(a->value.get());
                 std::string repl = rhs.t == VT::Str ? rhs.s : std::string();
                 if (rhs.t != VT::Str) for (auto& b : rhs.flatten()) repl += (char)(unsigned char)b.toInt();
@@ -12210,8 +12210,8 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 long long from = sbArgs->size() > argOfs ? eval((*sbArgs)[argOfs].get()).toInt() : 0;
                 long long len  = sbArgs->size() > argOfs + 1 ? eval((*sbArgs)[argOfs + 1].get()).toInt() : n - from;
                 if (from < 0) from += n;
-                if (from < 0) from = 0; if (from > n) from = n;
-                if (len < 0) len = 0; if (from + len > n) len = n - from;
+                if (from < 0) { from = 0; } if (from > n) from = n;
+                if (len < 0) { len = 0; } if (from + len > n) len = n - from;
                 Value rhs = eval(a->value.get());
                 ValueList repl = (rhs.t == VT::Array && rhs.arr) ? *rhs.arr : rhs.flatten();
                 bp->arr->erase(bp->arr->begin() + from, bp->arr->begin() + from + len);
@@ -12567,6 +12567,10 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 if (it->kind == NK::Unary && static_cast<Unary*>(it.get())->op == "|") {
                     Value v = eval(static_cast<Unary*>(it.get())->operand.get());
                     if ((v.t == VT::Array || v.t == VT::Range)) { for (auto& x : v.flatten()) b.arr->push_back(x); continue; }
+                    if (v.t == VT::Str && (v.hashKind == "Blob" || v.hashKind == "Buf")) {
+                        for (auto& x : v.blobList()) b.arr->push_back(x);
+                        continue;
+                    }
                 }
                 b.arr->push_back(eval(it.get()));
             }
@@ -13411,9 +13415,9 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             case '-': if (c1 == '\0' && !rakupp::sub_ovf(a, b, &z)) return Value::integer(z); break;
             case '*': if (c1 == '\0' && !rakupp::mul_ovf(a, b, &z)) return Value::integer(z); break;
             case '<': if (c1 == '\0') return Value::boolean(a < b);
-                      if (c1 == '=') return Value::boolean(a <= b); break;
+                      if (c1 == '=') { return Value::boolean(a <= b); } break;
             case '>': if (c1 == '\0') return Value::boolean(a > b);
-                      if (c1 == '=') return Value::boolean(a >= b); break;
+                      if (c1 == '=') { return Value::boolean(a >= b); } break;
             case '=': if (c1 == '=') return Value::boolean(a == b); break;
             case '!': if (c1 == '=') return Value::boolean(a != b); break;
             case '%': if (c1 == '\0' && b != 0) { if (b == -1) return Value::integer(0); long long m = a % b; if (m && ((m < 0) != (b < 0))) m += b; return Value::integer(m); } break;
@@ -13459,12 +13463,12 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                 case '+': if (c1 == '\0') return Value::number(a + b); break;
                 case '-': if (c1 == '\0') return Value::number(a - b); break;
                 case '*': if (c1 == '\0') return Value::number(a * b);
-                          if (c1 == '*') return Value::number(std::pow(a, b)); break;
+                          if (c1 == '*') { return Value::number(std::pow(a, b)); } break;
                 case '/': if (c1 == '\0') return Value::number(a / b); break;
                 case '<': if (c1 == '\0') return Value::boolean(a < b);
-                          if (c1 == '=') return Value::boolean(a <= b); break;
+                          if (c1 == '=') { return Value::boolean(a <= b); } break;
                 case '>': if (c1 == '\0') return Value::boolean(a > b);
-                          if (c1 == '=') return Value::boolean(a >= b); break;
+                          if (c1 == '=') { return Value::boolean(a >= b); } break;
                 case '=': if (c1 == '=') return Value::boolean(a == b); break;
                 case '!': if (c1 == '=') return Value::boolean(a != b); break;
             }
@@ -13485,9 +13489,9 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             case 'e': if (c1 == 'q') return Value::boolean(l.s == r.s); break;
             case 'n': if (c1 == 'e') return Value::boolean(l.s != r.s); break;
             case 'l': if (c1 == 't') return Value::boolean(l.s <  r.s);
-                      if (c1 == 'e') return Value::boolean(l.s <= r.s); break;
+                      if (c1 == 'e') { return Value::boolean(l.s <= r.s); } break;
             case 'g': if (c1 == 't') return Value::boolean(l.s >  r.s);
-                      if (c1 == 'e') return Value::boolean(l.s >= r.s); break;
+                      if (c1 == 'e') { return Value::boolean(l.s >= r.s); } break;
         }
     }
     // A `but`/`does` mixin over a non-object base delegates value ops to the boxed
@@ -15889,7 +15893,7 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
         for (size_t i = 0; i < scps.size();) {
             foldStart.push_back((long)folded.size()); origStart.push_back(ob);
             std::string gtext; { auto g = nextGrapheme(scps, i);
-                for (uint32_t cp : g) gtext += smEncode(cp); folded += baseOf(g); }
+                for (uint32_t cp : g) { gtext += smEncode(cp); } folded += baseOf(g); }
             ob += (long)gtext.size();
         }
         foldStart.push_back((long)folded.size()); origStart.push_back(ob);
@@ -15938,7 +15942,7 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
         for (auto& v : l) { long i = v.toInt();
             if (i <= prev) throw RakuError{Value::typeObj("X::AdHoc"), "Attempt to fetch matches out of order with :nth"};
             prev = i;
-            if (cnt >= xcap) break; if (i >= 1 && i <= total) { sel.insert(i); cnt++; } }
+            if (cnt >= xcap) { break; } if (i >= 1 && i <= total) { sel.insert(i); cnt++; } }
     } else if (haveX) {
         long lo, hi; bounds(xVal, lo, hi);
         long count = std::min(total, hi);
@@ -16035,7 +16039,7 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
             if (s[i] == '$' && i + 1 < s.size() && s[i + 1] == '<') {
                 size_t j = s.find('>', i + 2);
                 if (j != std::string::npos) { std::string nm = s.substr(i + 2, j - i - 2);
-                    if (mv.hash && mv.hash->count(nm)) r += (*mv.hash)[nm].toStr(); i = j; continue; }
+                    if (mv.hash && mv.hash->count(nm)) { r += (*mv.hash)[nm].toStr(); } i = j; continue; }
             }
             // `$/` — the whole match, and it takes a subscript like any variable.
             // HTTP::Tinyish's `s/…/$/[0]/` rebuilds the status line from capture 0
@@ -18606,6 +18610,13 @@ Value Interpreter::evalUnary(Unary* u) {
             return out;
         }
         if (v.t == VT::Range) { Value out = Value::array(v.flatten()); out.isList = true; out.s = "Slip"; return out; }
+        // `|blob32` is a Slip of its words (bytes for blob8), not a 1-element
+        // Slip of the buffer — `reduce {…}, buf8.new, |$state` in the Rosetta
+        // MD5 golf wrote one word (the element count) and produced a 4-byte digest.
+        if (v.t == VT::Str && (v.hashKind == "Blob" || v.hashKind == "Buf")) {
+            Value out = Value::array(v.blobList()); out.isList = true; out.s = "Slip";
+            return out;
+        }
         // a SCALAR slips too: `|1` is a one-element Slip, not a bare Int (Rakudo)
         if (v.t != VT::Hash && v.t != VT::Code) {
             Value out = Value::array({v}); out.isList = true; out.s = "Slip";
@@ -18657,6 +18668,11 @@ ValueList Interpreter::evalArgs(const std::vector<ExprPtr>& exprs) {
             // A pair inside a slipped LIST stays positional — that is Rakudo's
             // split, and it decides which multi candidate a call reaches.
             else if (v.t == VT::Pair) { Value pr = v; pr.namedArg = true; args.push_back(std::move(pr)); }
+            // `|blob` / `|buf` slips ELEMENTS (bytes, or words for blob32).
+            // Same witness as Unary `|` above: the MD5 golf's final reduce.
+            else if (v.t == VT::Str && (v.hashKind == "Blob" || v.hashKind == "Buf")) {
+                for (auto& x : v.blobList()) args.push_back(x);
+            }
             else args.push_back(v);
         } else {
             Value v = eval(a.get());
@@ -21446,9 +21462,13 @@ Value Interpreter::eval(Expr* e) {
                     // the reason Digest::SHA2 saw its 16-word block arrive as
                     // sixteen separate arguments.
                     if (v.t == VT::Array && v.arr) {
-                        for (auto& x : *v.arr) items.push_back(x); continue;
+                        for (auto& x : *v.arr) { items.push_back(x); } continue;
                     }
                     if (v.t == VT::Range) { for (auto& x : v.flatten()) items.push_back(x); continue; }
+                    if (v.t == VT::Str && (v.hashKind == "Blob" || v.hashKind == "Buf")) {
+                        for (auto& x : v.blobList()) items.push_back(x);
+                        continue;
+                    }
                     // |%hash (or a Hash-valued expr like `|$<authority>.ast`)
                     // slips its PAIRS — Cro builds `%parts = scheme => …, |$<hier-part>.ast`
                     if (v.t == VT::Hash && v.hash &&

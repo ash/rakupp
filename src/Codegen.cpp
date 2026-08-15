@@ -526,11 +526,11 @@ struct Codegen {
                 case NK::ReturnStmt: { auto* r = static_cast<ReturnStmt*>(s); if (r->value) we(r->value.get()); break; }
                 case NK::IfStmt: { auto* f = static_cast<IfStmt*>(s);
                     for (auto& br : f->branches) { we(br.first.get()); for (auto& x : br.second->stmts) ws(x.get()); }
-                    if (f->elseBlock) for (auto& x : f->elseBlock->stmts) ws(x.get()); break; }
+                    if (f->elseBlock) { for (auto& x : f->elseBlock->stmts) ws(x.get()); } break; }
                 case NK::WhileStmt: { auto* w = static_cast<WhileStmt*>(s); we(w->cond.get()); for (auto& x : w->body->stmts) ws(x.get()); break; }
                 case NK::ForStmt: { auto* f = static_cast<ForStmt*>(s); we(f->list.get());
                     for (auto& n : f->vars) local.insert(n);
-                    for (auto& x : f->body->stmts) ws(x.get()); break; }
+                    for (auto& x : f->body->stmts) { ws(x.get()); } break; }
                 case NK::GivenStmt: { auto* g = static_cast<GivenStmt*>(s); we(g->topic.get()); if (g->body) for (auto& x : g->body->stmts) ws(x.get()); break; }
                 case NK::WhenStmt: { auto* w = static_cast<WhenStmt*>(s); if (w->cond) we(w->cond.get()); if (w->body) for (auto& x : w->body->stmts) ws(x.get()); break; }
                 case NK::Block: for (auto& x : static_cast<Block*>(s)->stmts) ws(x.get()); break;
@@ -2591,7 +2591,7 @@ std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcP
                 if (optimize && !d->isNative && Codegen::simpleSig(d->params)) g.fastSubs[d->name] = (int)d->params.size();
                 { int pos = 0; std::vector<int> rw;
                   for (auto& p : d->params) { if (p.named || p.slurpy || p.invocant) continue;
-                      if (p.isRw) rw.push_back(pos); pos++; }
+                      if (p.isRw) { rw.push_back(pos); } pos++; }
                   if (!rw.empty()) g.rwSubs[d->name] = rw; }
             }
         } else if (s->kind == NK::ClassDecl) {

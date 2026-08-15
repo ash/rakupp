@@ -831,7 +831,7 @@ std::string rakuRepr(const Value& v, int depth, std::set<const void*>& seen) {
                 std::string o = "\\(";
                 bool first = true;
                 if (v.arr) for (auto& e : *v.arr) {
-                    if (!first) o += ", "; first = false;
+                    if (!first) { o += ", "; } first = false;
                     if (e.t == VT::Pair) o += ":" + e.s + "(" + rakuRepr(e.pairVal ? *e.pairVal : Value(), depth + 1, seen) + ")";
                     else o += rakuRepr(e, depth + 1, seen);
                 }
@@ -898,7 +898,7 @@ std::string rakuRepr(const Value& v, int depth, std::set<const void*>& seen) {
                 v.hashKind == "Mix" || v.hashKind == "MixHash") {
                 std::string o = "("; bool f = true;
                 for (auto& k : keys) {
-                    if (!f) o += ","; f = false;
+                    if (!f) { o += ","; } f = false;
                     o += elemRepr(k) + "=>" + rakuRepr(v.hash->at(k), depth + 1, seen);
                 }
                 if (v.hash) seen.erase(v.hash.get());
@@ -907,7 +907,7 @@ std::string rakuRepr(const Value& v, int depth, std::set<const void*>& seen) {
             if (v.hashKind == "Map") {
                 std::string o = "Map.new(("; bool f = true;
                 for (auto& k : keys) {
-                    if (!f) o += ","; f = false;
+                    if (!f) { o += ","; } f = false;
                     Value val = v.hash->at(k);
                     o += rakuIdentKey(k) ? ":" + k + "(" + rakuRepr(val, depth + 1, seen) + ")"
                                          : rakuStrLit(k) + " => " + rakuRepr(val, depth + 1, seen);
@@ -939,7 +939,7 @@ std::string rakuRepr(const Value& v, int depth, std::set<const void*>& seen) {
             }
             std::string o = "{"; bool first = true;
             for (auto& k : keys) {
-                if (!first) o += ", "; first = false;
+                if (!first) { o += ", "; } first = false;
                 Value val = v.hash->at(k);
                 // Every hash VALUE sits in a Scalar container, so an Array or Hash
                 // stored there is itemized whether or not the flag happens to be set
@@ -1705,9 +1705,9 @@ Value Interpreter::bufSplice(Value& buf, ValueList& args) {
     long long n = (long long)buf.s.size();
     long long from = args.size() > 0 && args[0].t != VT::Pair ? args[0].toInt() : 0;
     if (from < 0) from += n;
-    if (from < 0) from = 0; if (from > n) from = n;
+    if (from < 0) { from = 0; } if (from > n) from = n;
     long long len = args.size() > 1 && args[1].t != VT::Pair ? args[1].toInt() : n - from;
-    if (len < 0) len = 0; if (from + len > n) len = n - from;
+    if (len < 0) { len = 0; } if (from + len > n) len = n - from;
     std::string repl; // the replacement flattens: .splice(0, 3, <3 2 1>)
     for (size_t k = 2; k < args.size(); k++) {
         if (args[k].t == VT::Pair) continue;
@@ -2512,7 +2512,7 @@ static bool jsonParseValue(const std::string& s, size_t& i, Value& out, JsonCfg 
             jsonSkipWs(s, i, cfg);
             std::string key; if (!jsonParseString(s, i, key)) return false;
             jsonSkipWs(s, i, cfg);
-            if (i >= s.size() || s[i] != ':') return false; i++;
+            if (i >= s.size() || s[i] != ':') { return false; } i++;
             Value v; if (!jsonParseValue(s, i, v, cfg)) return false;
             (*out.hash)[key] = v;
             jsonSkipWs(s, i, cfg);
@@ -3133,7 +3133,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         Value c = inv; // deep-copy the nested storage so containers are independent
         std::function<Value(const Value&)> deep = [&](const Value& n) -> Value {
             if (n.t == VT::Array && n.arr) { Value a = n; a.arr = std::make_shared<ValueList>();
-                for (auto& e : *n.arr) a.arr->push_back(deep(e)); return a; }
+                for (auto& e : *n.arr) { a.arr->push_back(deep(e)); } return a; }
             return n;
         };
         c = deep(inv);
@@ -4585,8 +4585,8 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         v.hashKind = "Version";
         return v;
     }
-    if ((inv.t == VT::Type && inv.s == "Duration" ||
-         inv.t == VT::Num && inv.hashKind == "Duration") && m == "new") {
+    if (((inv.t == VT::Type && inv.s == "Duration") ||
+         (inv.t == VT::Num && inv.hashKind == "Duration")) && m == "new") {
         // Duration is a number of seconds, tagged so .WHAT/.^name answer Duration
         Value d = Value::number(args.empty() ? 0.0 : args[0].toNum());
         d.hashKind = "Duration";
@@ -9247,7 +9247,7 @@ void Interpreter::registerBuiltins() {
             return v;
         }
         Value out = Value::array(); out.isList = true; out.b = true;
-        for (auto& v : a) out.arr->push_back(v); return out;
+        for (auto& v : a) { out.arr->push_back(v); } return out;
     };
     B["eager"] = [](Interpreter&, ValueList& a) -> Value {
         if (a.size() == 1) return a[0];
@@ -9587,6 +9587,7 @@ static void nqpBufWrite(std::string& bytes, long long off, const Value& val,
 static Value nqpBufRead(const std::string& bytes, long long off,
                         int nbytes, int endian, char kind) {
     unsigned char raw[8] = {0};
+    if (nbytes > 8) nbytes = 8;
     for (int i = 0; i < nbytes; i++) {
         long long p = off + i;
         if (p < 0 || p >= (long long)bytes.size()) continue;

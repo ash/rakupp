@@ -1683,7 +1683,7 @@ Regex::NodePtr Regex::parseAtom() {
             char le = (char)ascii::tolower((unsigned char)e);
             auto cpOf = [&](std::string t) -> int32_t {
                 size_t a = t.find_first_not_of(" \t"), b = t.find_last_not_of(" \t");
-                if (a == std::string::npos) return -1; t = t.substr(a, b - a + 1);
+                if (a == std::string::npos) { return -1; } t = t.substr(a, b - a + 1);
                 if (le == 'x') return (int32_t)std::strtol(t.c_str(), nullptr, 16);
                 if (le == 'o') return (int32_t)std::strtol(t.c_str(), nullptr, 8);
                 return namedCp(t);
@@ -1709,7 +1709,7 @@ Regex::NodePtr Regex::parseAtom() {
             };
             auto cpOf = [&](std::string t) -> int32_t {
                 size_t a = t.find_first_not_of(" \t"), b = t.find_last_not_of(" \t");
-                if (a == std::string::npos) return -1; t = t.substr(a, b - a + 1);
+                if (a == std::string::npos) { return -1; } t = t.substr(a, b - a + 1);
                 if (e == 'x') return (int32_t)std::strtol(t.c_str(), nullptr, 16);
                 if (e == 'o') return (int32_t)std::strtol(t.c_str(), nullptr, 8);
                 return namedCp(t);
@@ -1921,12 +1921,12 @@ static long builtinRuleMatch(const std::string& nm, const std::string& s, long p
 
 // Built-in rule name → classMatch flag(s), for `<+alpha>` charset composition ("" = none).
 static std::string ruleFlag(const std::string& nm) {
-    if (nm == "alpha") return "a"; if (nm == "digit") return "d";
-    if (nm == "space") return "s"; if (nm == "blank") return "b";
-    if (nm == "alnum") return "ad"; if (nm == "upper") return "u";
-    if (nm == "lower") return "l"; if (nm == "xdigit") return "x";
-    if (nm == "word") return "w"; if (nm == "punct") return "p";
-    if (nm == "cntrl") return "k"; if (nm == "graph") return "g";
+    if (nm == "alpha") { return "a"; } if (nm == "digit") return "d";
+    if (nm == "space") { return "s"; } if (nm == "blank") return "b";
+    if (nm == "alnum") { return "ad"; } if (nm == "upper") return "u";
+    if (nm == "lower") { return "l"; } if (nm == "xdigit") return "x";
+    if (nm == "word") { return "w"; } if (nm == "punct") return "p";
+    if (nm == "cntrl") { return "k"; } if (nm == "graph") return "g";
     if (nm == "print") return "r";
     return "";
 }

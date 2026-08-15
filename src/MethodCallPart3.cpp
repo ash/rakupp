@@ -1536,8 +1536,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             else len = args.size() > 1 ? args[1].toInt() : n - from;
         }
         if (from < 0) from += n;
-        if (from < 0) from = 0; if (from > n) from = n;
-        if (len < 0) len = 0; if (from + len > n) len = n - from;
+        if (from < 0) { from = 0; } if (from > n) from = n;
+        if (len < 0) { len = 0; } if (from + len > n) len = n - from;
         Value b = Value::str(inv.s.substr((size_t)from, (size_t)len)); b.hashKind = inv.hashKind;
         if (b.hashKind == "Buf") identify(b); // a subbuf is a NEW Buf, not a view
         return b;
@@ -1799,7 +1799,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // is a Num you can compare, and `.univals` interleaves them with the reals
         auto univ = [](uint32_t cp) -> Value { long long num, den; if (!uniNumValue(cp, num, den)) return Value::number(std::nan("")); return den == 1 ? Value::integer(num) : Value::rat(BigInt(num), BigInt(den)); };
         if (m == "univals") { Value out = Value::array(); out.isList = true; for (uint32_t cp : utf8cp(inv.toStr())) out.arr->push_back(univ(cp)); return out; }
-        uint32_t cp; bool have = true;
+        uint32_t cp = 0; bool have = true;
         if (inv.t == VT::Int || inv.t == VT::Bool) cp = (uint32_t)inv.toInt();
         else { auto cps = utf8cp(inv.toStr()); if (cps.empty()) have = false; else cp = cps[0]; }
         if (m == "uniname") {

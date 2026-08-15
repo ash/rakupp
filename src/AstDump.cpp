@@ -70,11 +70,11 @@ struct Dumper {
             case NK::Call: { auto* c = static_cast<const Call*>(e);
                 line(ind, "Call " + (c->name.empty() ? "(callee)" : c->name));
                 if (c->callee) { line(ind + 1, "callee:"); expr(c->callee.get(), ind + 2); }
-                for (auto& a : c->args) expr(a.get(), ind + 1); return; }
+                for (auto& a : c->args) { expr(a.get(), ind + 1); } return; }
             case NK::MethodCall: { auto* m = static_cast<const MethodCall*>(e);
                 std::string f; if (m->maybe) f += " .?"; if (m->mutate) f += " .="; if (m->hyper) f += " >>."; if (m->meta) f += " .^";
                 line(ind, "MethodCall ." + m->method + f); line(ind + 1, "invocant:"); expr(m->inv.get(), ind + 2);
-                for (auto& a : m->args) expr(a.get(), ind + 1); return; }
+                for (auto& a : m->args) { expr(a.get(), ind + 1); } return; }
             case NK::Index: { auto* x = static_cast<const Index*>(e);
                 line(ind, std::string("Index ") + (x->isHash ? "{}" : "[]") + (x->adverb.empty() ? "" : " :" + x->adverb));
                 expr(x->base.get(), ind + 1); expr(x->index.get(), ind + 1); return; }
@@ -96,7 +96,7 @@ struct Dumper {
             case NK::VarDecl: { auto* d = static_cast<const VarDecl*>(s);
                 std::string names; for (auto& n : d->names) names += (names.empty() ? "" : ", ") + n;
                 line(ind, "VarDecl " + d->scope + " (" + names + ")" + (d->init ? " " + d->op : ""));
-                if (d->init) expr(d->init.get(), ind + 1); return; }
+                if (d->init) { expr(d->init.get(), ind + 1); } return; }
             case NK::SubDecl: { auto* d = static_cast<const SubDecl*>(s);
                 line(ind, std::string(d->isMulti ? "MultiSub " : d->isMethod ? "Method " : "Sub ") + (d->name.empty() ? "(anon)" : d->name));
                 params(d->params, ind + 1); body(d->body, ind + 1); return; }
@@ -126,7 +126,7 @@ struct Dumper {
                 line(ind + 1, "topic:"); expr(g->topic.get(), ind + 2); body(g->body->stmts, ind + 1); return; }
             case NK::WhenStmt: { auto* w = static_cast<const WhenStmt*>(s);
                 line(ind, w->isDefault ? "Default" : "When");
-                if (w->cond) expr(w->cond.get(), ind + 1); body(w->body->stmts, ind + 1); return; }
+                if (w->cond) { expr(w->cond.get(), ind + 1); } body(w->body->stmts, ind + 1); return; }
             case NK::Block: { auto* b = static_cast<const Block*>(s);
                 line(ind, b->isCatch ? "CATCH" : b->phaser.empty() ? "Block" : "Phaser " + b->phaser);
                 body(b->stmts, ind + 1); return; }

@@ -669,7 +669,7 @@ static bool findRuntime(const std::string& selfExe, std::string& lib, std::strin
                 // single-config layouts the pairs above assume
                 inc = c.second;
                 if (!fileExists(inc + "/Interpreter.h"))
-                    for (const std::string cand : {d + "/../../src", d + "/../include/rakupp",
+                    for (const std::string& cand : {d + "/../../src", d + "/../include/rakupp",
                                                    d + "/include/rakupp", d + "/../src"})
                         if (fileExists(cand + "/Interpreter.h")) { inc = cand; break; }
                 return true;

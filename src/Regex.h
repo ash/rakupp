@@ -327,7 +327,7 @@ public:
         const SubResolver* resolver = nullptr;             // plain-regex subrule path (atomic)
         class GrammarMatcher* grammar = nullptr;           // grammar path (backtrackable)
         const std::set<std::string>* lexNames = nullptr;   // lexical `my regex NAME` overrides — shadow built-in subrules
-        std::map<int, std::vector<std::pair<long, long>>> capReps; // list-valued positional capture occurrences
+        std::map<int, std::vector<std::pair<long, long>>> capReps{}; // list-valued positional capture occurrences
         long startPos = 0;                                 // where this frame's match began (for $/ in code assertions)
         long capFrom = -1;                                 // `<(` capture-start position (overall match .from), -1 = none
         long capTo = -1;                                   // `)>` capture-end position (overall match .to), -1 = none

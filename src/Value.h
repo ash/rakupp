@@ -347,6 +347,18 @@ struct Value {
     bool natFloat = false; // native float container (num32): truncates to float32 on assignment
 
     Value() : t(VT::Any) {}
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
+#endif
+    // GCC 16 -O3: empty vector<Value> copy is analyzed as reading `b` via a null data pointer.
+    Value(const Value&) = default;
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
+    Value(Value&&) noexcept = default;
+    Value& operator=(const Value&) = default;
+    Value& operator=(Value&&) noexcept = default;
 
     static Value nil() { Value v; v.t = VT::Nil; return v; }
     static Value any() { Value v; v.t = VT::Any; return v; }
