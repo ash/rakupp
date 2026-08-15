@@ -4550,9 +4550,36 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
         // `$/` (match) and `$!` (error) as standalone interpolated vars
         if (fS && c == '$' && (i + 1 < n) && (raw[i + 1] == '/' || raw[i + 1] == '!') &&
             !(i + 2 < n && (ascii::isalnum((unsigned char)raw[i + 2]) || raw[i + 2] == '_'))) {
+            // …and it takes a postfix like any other variable: `$/[0]`, `$/<k>`,
+            // `$/.Str`. Stopping at the sigil left the subscript as literal text,
+            // so HTTP::Tinyish's `s/…/$/[0]/` replaced the match with the seven
+            // characters `$/[0]`.
+            std::string var = std::string("$") + raw[i + 1];
+            size_t j = i + 2;
+            for (;;) {
+                if (j < n && (raw[j] == '[' || raw[j] == '{' || raw[j] == '<')) {
+                    char open = raw[j], close = open == '[' ? ']' : open == '{' ? '}' : '>';
+                    int d = 1; var += raw[j++];
+                    while (j < n && d > 0) { if (raw[j] == open) d++; else if (raw[j] == close) d--; var += raw[j++]; }
+                }
+                else if (j + 1 < n && raw[j] == '.' &&
+                         (ascii::isalpha((unsigned char)raw[j + 1]) || raw[j + 1] == '_')) {
+                    size_t k2 = j + 1;
+                    while (k2 < n && (isIdentCont(raw[k2]) || raw[k2] == '-')) k2++;
+                    if (k2 < n && raw[k2] == '(') { // a CALL interpolates; a bare `.foo` too
+                        int d = 1; size_t k3 = k2 + 1;
+                        while (k3 < n && d > 0) { if (raw[k3] == '(') d++; else if (raw[k3] == ')') d--; k3++; }
+                        k2 = k3;
+                    }
+                    var.append(raw, j, k2 - j);
+                    j = k2;
+                }
+                else break;
+            }
             flush();
-            result->parts.push_back(std::make_unique<VarExpr>(std::string("$") + raw[i + 1]));
-            i += 2;
+            if (var.size() == 2) result->parts.push_back(std::make_unique<VarExpr>(var));
+            else try { result->parts.push_back(parseEmbeddedExpr(var)); } catch (...) { lit += var; }
+            i = j;
             continue;
         }
         // numbered regex captures `$0` `$1` … and named captures `$<name>`

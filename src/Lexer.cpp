@@ -1138,6 +1138,11 @@ bool Lexer::tryQuoteForm(Token& out) {
                 raw += advance(); continue;
             }
             if (sd == 0 && bracket && ch == d) { depth++; raw += advance(); continue; }
+            // `$/` in a REPLACEMENT is the match variable, not the end of the
+            // replacement: HTTP::Tinyish writes `s/…/$/[0]/`, where reading the
+            // `/` of `$/` as the delimiter left `[0]/;` as stray code and the
+            // error surfaced far away as an unterminated string.
+            if (isRepl && ch == close && !raw.empty() && raw.back() == '$') { raw += advance(); continue; }
             if (sd == 0 && ch == close) { depth--; if (depth == 0) { advance(); closed = true; break; } raw += advance(); continue; }
             raw += advance();
         }
@@ -2244,10 +2249,22 @@ std::vector<Token> Lexer::tokenize() {
             int angle = 0, brack = 0; // <...> assertions/classes and [...] groups protect an inner /
             int brace = 0;            // {...} embedded code protects an inner / (e.g. `{ take $/.Str }`)
             int capture = 0;          // open `<(` match-capture markers
+            bool inClass = false;     // inside `<[…]>`, EVERY bracket is a member
             while (!eof()) {
                 char ch = peek();
                 if (ch == '\\') { raw += advance(); if (!eof()) raw += advance(); continue; }
                 if (quote) { if (ch == quote) quote = 0; raw += advance(); continue; }
+                // A CHARACTER CLASS holds characters, not structure: `<`, `>`, `{`,
+                // `}` and `[` inside one are members and must not move any counter.
+                // Pod::To::HTML writes `/<[ & < > " ' {   ]>/` — the lone `<` left
+                // the angle depth stuck open and the lone `{` opened a code block
+                // that never closed, so the closing `/` stayed shielded and the
+                // scan ate 300 lines. Only `]` ends the class.
+                if (inClass) {
+                    if (ch == ']') { inClass = false; brack--; }
+                    raw += advance();
+                    continue;
+                }
                 // '...'/"..." protect an inner '/'. Inside a CHARACTER CLASS they are
                 // literal characters instead — but a character class is `<[…]>`, so it
                 // is angle AND bracket depth together. Testing bracket depth alone also
@@ -2280,7 +2297,11 @@ std::vector<Token> Lexer::tokenize() {
                 // A class opens `<[`, `<-[`, `<+[` (or `+[`/`-[` in a set
                 // expression) and does not nest.
                 else if (ch == '[') {
-                    if (!(angle > 0 && brack > 0)) brack++;
+                    brack++;
+                    // `<[`, `<-[`, `<+[` (and `+[`/`-[` in a set expression) open a
+                    // CLASS; a bare `[` opens a group, which does nest.
+                    char prev = raw.empty() ? '\0' : raw.back();
+                    if (prev == '<' || prev == '-' || prev == '+') inClass = true;
                 }
                 else if (ch == ']' && brack > 0) brack--;
                 else if (ch == '/' && angle == 0 && brack == 0) break;

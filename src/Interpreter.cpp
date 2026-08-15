@@ -16037,6 +16037,28 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
                 if (j != std::string::npos) { std::string nm = s.substr(i + 2, j - i - 2);
                     if (mv.hash && mv.hash->count(nm)) r += (*mv.hash)[nm].toStr(); i = j; continue; }
             }
+            // `$/` — the whole match, and it takes a subscript like any variable.
+            // HTTP::Tinyish's `s/…/$/[0]/` rebuilds the status line from capture 0
+            // that way; without this the replacement was the literal text `$/[0]`.
+            if (s[i] == '$' && i + 1 < s.size() && s[i + 1] == '/') {
+                size_t j = i + 2;
+                if (j < s.size() && (s[j] == '[' || s[j] == '<')) {
+                    char open = s[j], close = open == '[' ? ']' : '>';
+                    int d = 0; size_t k = j;
+                    for (; k < s.size(); k++) { if (s[k] == open) d++; else if (s[k] == close && --d == 0) break; }
+                    if (k < s.size()) {
+                        std::string sub = s.substr(j + 1, k - j - 1);
+                        if (open == '[') {
+                            long idx = 0;
+                            try { idx = evalString(sub).toInt(); } catch (FeatureNotBuilt&) { throw; } catch (...) {}
+                            if (mv.arr && idx >= 0 && idx < (long)mv.arr->size()) r += (*mv.arr)[idx].toStr();
+                        }
+                        else if (mv.hash && mv.hash->count(sub)) r += (*mv.hash)[sub].toStr();
+                        i = k; continue;
+                    }
+                }
+                r += mv.toStr(); i = i + 1; continue;   // bare `$/`
+            }
             if (s[i] == '$' && i + 2 < s.size() && s[i + 1] == '^' && (ascii::isalpha((unsigned char)s[i + 2]) || s[i + 2] == '_')) {
                 size_t j = i + 2; std::string nm; while (j < s.size() && (ascii::isalnum((unsigned char)s[j]) || s[j] == '_')) nm += s[j++];
                 if (Value* v = tctx_.cur->find("$" + nm)) r += v->toStr(); // $^a placeholder (also visible as $a)
