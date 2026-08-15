@@ -5064,6 +5064,25 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                             // frame; the test taps `quit => { when X::… }`)
                             if (rctx) reactStack_.pop_back();
                             (*t.hash)["closed"] = Value::boolean(true);
+                            // …but inside a REACT that rule is inverted: a die in a
+                            // whenever BODY kills the whole react and propagates,
+                            // and QUIT does NOT see it — QUIT is for the SOURCE's
+                            // own quit (issue #18). The interval path already did
+                            // this; a Supplier-fed whenever handed the body's death
+                            // to QUIT and carried on, so `react { whenever
+                            // $s.Supply { die } }` printed the QUIT message and
+                            // exited 0 where Rakudo dies.
+                            if (rctx) {
+                                std::lock_guard<std::mutex> lk(rctx->m);
+                                if (!rctx->quitFlag) {
+                                    rctx->quitFlag = true;
+                                    rctx->quitErr = e.payload.t == VT::Nil ? Value::str(e.message) : e.payload;
+                                }
+                                rctx->closed = true;
+                                if (rctx->liveSources > 0) rctx->liveSources--;
+                                rctx->cv.notify_all();
+                                break;
+                            }
                             if (t.hash->count("quit") && (*t.hash)["quit"].t == VT::Code) {
                                 ValueList one2{exceptionFor(e)};
                                 try { callCallable((*t.hash)["quit"], one2); } catch (...) {}
