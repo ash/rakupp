@@ -4808,7 +4808,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         // .build / .build-date identify THIS binary, which .id and .release
         // cannot: every build between two releases reports the same version, so
         // a bug report, a Rakugrid oracle stamp and a benchmark row all pointed
-        // at "3.14.0" and nothing narrower. `git describe --always --dirty` gives
+        // at "3.14.0" and nothing narrower. `git describe` gives
         // both an ordering (commits since the tag) and an exact commit.
         // Compiler-only: the LANGUAGE has no build.
         if (isComp && m == "build") return Value::str(rakupp::buildId());

@@ -35,7 +35,7 @@ endif()
 add_compile_definitions(RAKUPP_VERSION="${PROJECT_VERSION}")
 
 # ---- build identity ---------------------------------------------------------
-# `git describe --always --dirty` + the build date, regenerated on every build
+# `git describe --always --dirty=-modified` + the build date, regenerated per build
 # (not at configure time — see cmake/BuildInfo.cmake for why) into a header that
 # only src/BuildInfo.cpp includes. copy_if_different keeps an unchanged build
 # from touching it, so this costs one recompiled file per commit and nothing at

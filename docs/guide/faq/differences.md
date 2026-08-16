@@ -97,12 +97,12 @@ builds of the same release are indistinguishable there. Raku++ adds the missing
 identity as its own pair of keys, which Rakudo has neither of:
 
 ```raku
-say $*RAKU.compiler.build;       # → v3.14.0-74-g9ff47ae   (git describe --always --dirty)
+say $*RAKU.compiler.build;       # → v3.14.0-74-g9ff47ae   (git describe)
 say $*RAKU.compiler.build-date;  # → 2026-08-16            (UTC, at build time)
 ```
 
 `.build` reads as *74 commits past the v3.14.0 tag, at commit 9ff47ae*, and
-gains a `-dirty` suffix when the tree had uncommitted changes; on a tagged
+gains a `-modified` suffix when the tree had uncommitted changes; on a tagged
 commit it is just the tag. Built from a source tarball, with no `.git` to ask,
 `.build` is `unknown` rather than a guess — `.build-date` is still stamped.
 Quote `.build` in bug reports: it is the only thing that pins the exact binary.

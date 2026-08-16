@@ -1,4 +1,4 @@
-# Build identity: `git describe --always --dirty` and the build date, written to
+# Build identity: `git describe` and the build date, written to
 # a generated header.
 #
 # Run as a SCRIPT (cmake -P) from a custom target, not at configure time, so the
@@ -16,7 +16,10 @@ set(RAKUPP_BUILD "unknown")
 find_package(Git QUIET)
 if(GIT_FOUND AND EXISTS "${SRC_DIR}/.git")
   execute_process(
-    COMMAND "${GIT_EXECUTABLE}" describe --always --dirty
+    # --dirty=-modified, not the default `-dirty`: this string is printed by
+    # --version and quoted in bug reports, so it should read as a plain fact
+    # about the tree rather than as a scolding.
+    COMMAND "${GIT_EXECUTABLE}" describe --always --dirty=-modified
     WORKING_DIRECTORY "${SRC_DIR}"
     OUTPUT_VARIABLE _desc
     OUTPUT_STRIP_TRAILING_WHITESPACE

@@ -6,8 +6,8 @@
 #pragma once
 
 namespace rakupp {
-// `git describe --always --dirty` at build time: "v3.14.0-74-g9ff47ae", or with
-// uncommitted changes "…-dirty", or "unknown" outside a git checkout.
+// `git describe` at build time: "v3.14.0-74-g9ff47ae", or with uncommitted
+// changes "…-modified", or "unknown" outside a git checkout.
 const char* buildId();
 // The build date, UTC, as "YYYY-MM-DD"; "unknown" if it was not stamped.
 const char* buildDate();
