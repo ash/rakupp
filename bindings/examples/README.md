@@ -21,7 +21,7 @@ Then, from the repo root (`.so` instead of `.dylib` on Linux):
 | JS (Bun) | [shopping.mjs](shopping.mjs) | `RAKUPP_LIB=$PWD/build/librakupp.dylib bun bindings/examples/shopping.mjs` |
 | Go | [../go/examples/shopping](../go/examples/shopping/main.go) | `cd bindings/go && CGO_LDFLAGS="-L$PWD/../../build -Wl,-rpath,$PWD/../../build" go run ./examples/shopping` |
 | Rust | [../rust/examples/shopping.rs](../rust/examples/shopping.rs) | `RAKUPP_LIB_DIR=$PWD/build cargo run --manifest-path bindings/rust/Cargo.toml --example shopping` |
-| C++ | [shopping.cpp](shopping.cpp) | `c++ -std=c++17 -Isrc bindings/examples/shopping.cpp build/librakupp.dylib -Wl,-rpath,$PWD/build -o shopping && ./shopping` |
+| C++ | [shopping.cpp](shopping.cpp) | `c++ -std=c++17 -Iinclude bindings/examples/shopping.cpp build/librakupp.dylib -Wl,-rpath,$PWD/build -o shopping && ./shopping` |
 
 Each language's guide (`bindings/<lang>/README.md`) walks through its
 version line by line and lists the failure modes; [../README.md](../README.md)

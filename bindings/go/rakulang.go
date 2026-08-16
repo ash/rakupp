@@ -27,10 +27,10 @@
 package rakulang
 
 /*
-#cgo CFLAGS: -I${SRCDIR}/../../src
+#cgo CFLAGS: -I${SRCDIR}/../../include
 #cgo LDFLAGS: -lrakupp
 #include <stdlib.h>
-#include "rakupp.h"
+#include <rakupp/rakupp.h>
 */
 import "C"
 

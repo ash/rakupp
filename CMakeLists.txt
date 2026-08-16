@@ -112,7 +112,13 @@ list(REMOVE_ITEM RAKUPP_SOURCES ${RAKUPP_UCD_NAMES_SOURCES} ${RAKUPP_UCD_COLL_SO
 add_library(rakupp_rt STATIC ${RAKUPP_SOURCES})
 # BuildInfo.cpp reads the stamped header, so the stamp has to run first.
 add_dependencies(rakupp_rt rakupp_build_info)
-target_include_directories(rakupp_rt PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+# Both spellings of the public headers resolve, because both exist after an
+# install: an embedder gets <rakupp/rakupp.h> off include/, while `--exe`
+# compiles generated code against the flat include/rakupp/ the install
+# collapses everything into, where "rakupp_ext.h" is a plain sibling.
+target_include_directories(rakupp_rt PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src"
+                                            "${CMAKE_CURRENT_SOURCE_DIR}/include"
+                                            "${CMAKE_CURRENT_SOURCE_DIR}/include/rakupp")
 target_link_libraries(rakupp_rt PUBLIC Threads::Threads)
 # On Windows, RK_API (rakupp_ext.h) expands to dllexport under RAKUPP_BUILDING,
 # so the rk_* extension ABI lands in the export table of whatever links this
@@ -134,7 +140,9 @@ endif()
 foreach(feat rakupp_ucd_names rakupp_ucd_coll rakupp_ucd_props rakupp_parse rakupp_stubs)
   string(TOUPPER "${feat}_SOURCES" FEAT_VAR)
   add_library(${feat} STATIC ${${FEAT_VAR}})
-  target_include_directories(${feat} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+  target_include_directories(${feat} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src"
+                                             "${CMAKE_CURRENT_SOURCE_DIR}/include"
+                                             "${CMAKE_CURRENT_SOURCE_DIR}/include/rakupp")
   if(WIN32)
     target_compile_definitions(${feat} PRIVATE _WIN32_WINNT=0x0602)
   endif()
@@ -167,7 +175,9 @@ if(RAKUPP_BUILD_SHARED OR RAKUPP_LINK_SHARED)
   # (SLIM-PLAN, "librakupp pins `eval`": rk_eval/rk_run ARE the parser).
   add_library(rakupp_shared SHARED ${RAKUPP_ALL_SOURCES})
   add_dependencies(rakupp_shared rakupp_build_info)   # same stamp as rakupp_rt
-  target_include_directories(rakupp_shared PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+  target_include_directories(rakupp_shared PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src"
+                                                  "${CMAKE_CURRENT_SOURCE_DIR}/include"
+                                                  "${CMAKE_CURRENT_SOURCE_DIR}/include/rakupp")
   target_link_libraries(rakupp_shared PUBLIC Threads::Threads)
   target_compile_definitions(rakupp_shared PRIVATE RAKUPP_BUILDING)
   set_target_properties(rakupp_shared PROPERTIES
@@ -222,9 +232,9 @@ endif()
 # exports exactly the rk_* glob, where -rdynamic would export every C++ symbol.
 if(UNIX AND NOT APPLE)
   target_link_options(rakupp PRIVATE
-    "-Wl,--dynamic-list=${CMAKE_CURRENT_SOURCE_DIR}/src/rakupp_ext.dynlist")
+    "-Wl,--dynamic-list=${CMAKE_CURRENT_SOURCE_DIR}/include/rakupp/rakupp_ext.dynlist")
   set_target_properties(rakupp PROPERTIES
-    LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/rakupp_ext.dynlist")
+    LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/include/rakupp/rakupp_ext.dynlist")
 endif()
 # On Windows the RK_API dllexports (via rakupp_rt) put rk_* in rakupp.exe's
 # export table; ENABLE_EXPORTS makes CMake treat the generated import library
@@ -241,6 +251,13 @@ endif()
 # in main.cpp looks for exactly this <prefix>/{bin,lib,include/rakupp} layout.
 install(TARGETS rakupp RUNTIME DESTINATION bin ARCHIVE DESTINATION lib)
 install(TARGETS rakupp_rt ARCHIVE DESTINATION lib)
+# Two source directories, ONE destination. The split is public vs internal (see
+# include/README.md), and it is a source-tree distinction only: `--exe` compiles
+# generated C++ against a single flat -I, so the installed tree stays flat and
+# an internal header may still say #include "rakupp_ext.h".
+install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/include/rakupp/"
+        DESTINATION include/rakupp
+        FILES_MATCHING PATTERN "*.h" PATTERN "*.hpp")
 install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/src/"
         DESTINATION include/rakupp
         FILES_MATCHING PATTERN "*.h" PATTERN "*.hpp")

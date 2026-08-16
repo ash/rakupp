@@ -122,7 +122,7 @@ length — 1 for a plain node, 0 for a missing one.
 ## Using it in your own project
 
 The package must see the checkout (its cgo header path points into
-`../../src`). In your project's `go.mod`:
+`../../include`). In your project's `go.mod`:
 
 ```
 require rakulang v0.0.0

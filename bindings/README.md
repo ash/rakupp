@@ -15,7 +15,7 @@ Per-language guides, each with a runnable example and troubleshooting:
 | JavaScript | [js/README.md](js/README.md) | `bun:ffi` (Bun only) | calling `close()` |
 | Go | [go/README.md](go/README.md) | cgo | calling `Close()` (use `defer`) |
 | Rust | [rust/README.md](rust/README.md) | extern + build.rs | nothing — `Drop` does it |
-| C++ | [../src/grammar.hpp](../src/grammar.hpp) + below | linked, header-only | nothing — RAII does it |
+| C++ | [../include/rakupp/grammar.hpp](../include/rakupp/grammar.hpp) + below | linked, header-only | nothing — RAII does it |
 
 ## One-time setup: build the shared library
 
@@ -80,7 +80,7 @@ cd bindings/go && CGO_LDFLAGS="-L$PWD/../../build -Wl,-rpath,$PWD/../../build" g
 RAKUPP_LIB_DIR=$PWD/build cargo run --manifest-path bindings/rust/Cargo.toml --example shopping
 ```
 ```bash
-c++ -std=c++17 -Isrc bindings/examples/shopping.cpp build/librakupp.dylib \
+c++ -std=c++17 -Iinclude bindings/examples/shopping.cpp build/librakupp.dylib \
     -Wl,-rpath,$PWD/build -o shopping && ./shopping
 ```
 
@@ -154,7 +154,7 @@ each guide lists the expected output and the common failure modes.
 ## C++ in brief
 
 C++ has no folder here because the binding is one header that ships with the
-engine: [src/grammar.hpp](../src/grammar.hpp) (installed as
+engine: [include/rakupp/grammar.hpp](../include/rakupp/grammar.hpp) (installed as
 `<rakupp/grammar.hpp>`). Unlike the other hosts it *links* against the
 library instead of dlopen'ing it — see the compile line in the tour, and
 [examples/shopping.cpp](examples/shopping.cpp) for the full program. Lifetime

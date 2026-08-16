@@ -113,6 +113,7 @@ em++ \
   -D_GNU_SOURCE \
   -DRAKUPP_VERSION="\"$VERSION\"" \
   -I"$SRC_DIR" \
+  -I"$ROOT_DIR/include" \
   -fexceptions \
   "${SOURCES[@]}" \
   -sSTACK_SIZE=16777216 \

@@ -6,7 +6,7 @@ value vocabulary, one header including the other — because a project that grew
 two ways to spell "a Raku value" would spend the rest of its life keeping them
 in agreement.
 
-- **The header:** [`src/rakupp.h`](../../src/rakupp.h), installed to
+- **The header:** [`include/rakupp/rakupp.h`](../../include/rakupp/rakupp.h), installed to
   `<prefix>/include/rakupp/rakupp.h`. It includes `rakupp_ext.h`, so everything
   in the [extension ABI](EXTENSIONS.md#the-abi) — `rk_int_get`, `rk_at_pos`,
   `rk_call`, `rk_root` — is available to a host too.

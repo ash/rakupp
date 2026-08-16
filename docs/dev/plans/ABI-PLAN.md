@@ -6,7 +6,7 @@
 
 ## The observation this plan exists for
 
-An extension ABI shipped on 2026-08-09 — [`src/rakupp_ext.h`](../../../src/rakupp_ext.h)
+An extension ABI shipped on 2026-08-09 — [`include/rakupp/rakupp_ext.h`](../../../include/rakupp/rakupp_ext.h)
 (157 lines), [`src/ExtApi.cpp`](../../../src/ExtApi.cpp) (216), a
 `rakupp-ext-load` builtin, and `JSON::Native` as its first user (2.7 ms on a
 278 KB document against ~440 ms for the same module's Raku fallback).
@@ -212,7 +212,7 @@ executable and the shared library.
 >   executable keeps its symbols out of `.dynsym`, so on Linux and the BSDs an
 >   extension's first `rk_*` call has always died with an undefined-symbol
 >   error — extensions only ever actually worked on macOS. Fixed surgically:
->   the executable links `-Wl,--dynamic-list=src/rakupp_ext.dynlist` (the
+>   the executable links `-Wl,--dynamic-list=include/rakupp/rakupp_ext.dynlist` (the
 >   `rk_*` glob, so a new entry point needs no edit) rather than `-rdynamic`,
 >   which would have exported every C++ symbol as accidental ABI. On Windows,
 >   `RK_API` plus `ENABLE_EXPORTS` now produce and install the import library
@@ -334,7 +334,7 @@ real embedder, available before any binding exists.
 > **Outcome (2026-08-10).** Landed, and the port did the job it was put in the
 > plan to do: it changed the header.
 >
-> [`src/rakupp.h`](../../../src/rakupp.h) + `EmbedApi.cpp`. `rk_new`/`rk_free`
+> [`include/rakupp/rakupp.h`](../../../include/rakupp/rakupp.h) + `EmbedApi.cpp`. `rk_new`/`rk_free`
 > with an `RkConfig` carrying the three host-hostile behaviours — the 1 GiB
 > stack thread, the process-wide `SIGPIPE`, the owned stdout — **all default
 > off**, and the struct carries its own `size` so it can grow without breaking a

@@ -1,7 +1,7 @@
 # ctypes over librakupp: the loader and the raw C declarations, nothing else.
 #
 # Kept separate from the Python-facing classes so this file mirrors
-# src/rakupp.h + src/rakupp_ext.h one-to-one and can be diffed against them
+# include/rakupp/rakupp.h + include/rakupp/rakupp_ext.h one-to-one and can be diffed against them
 # when the ABI grows.
 
 import ctypes

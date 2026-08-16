@@ -6437,7 +6437,7 @@ Value rtBAtanh(Interpreter& I, const Value& v) { return rtBMath1(I, v, "atanh", 
 void Interpreter::registerBuiltins() {
     auto& B = builtins_;
 
-    // Native extension loading (src/rakupp_ext.h). A BUILTIN rather than
+    // Native extension loading (include/rakupp/rakupp_ext.h). A BUILTIN rather than
     // something `use Rakupp::Ext` installs, because a module that wants a
     // compiled fast path with a portable fallback has to ask for it WITHOUT
     // writing anything Rakudo cannot compile:
