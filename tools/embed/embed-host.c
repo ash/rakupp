@@ -86,6 +86,25 @@ int main(void) {
     }
     check(rk_can(c, "twice") && !rk_can(c, "not-a-routine"), "rk_can answers from the host");
 
+    /* A C caller gets the SAME arity enforcement a Raku caller gets. Without
+     * it a wrong argument count is silently plausible rather than wrong:
+     * `twice()` bound $n to Any and returned 0, and every language binding in
+     * bindings/ inherited that. Both directions are rejected, and the failure
+     * arrives the normal way — NULL plus a context error to read and clear. */
+    {
+        RkValue two[2] = { rk_int(c, 1), rk_int(c, 2) };
+        check(rk_call(c, "twice", 0, 0) == 0 && rk_error(c) != 0,
+              "rk_call with too few arguments fails instead of binding Any");
+        rk_clear_error(c);
+        check(rk_call(c, "twice", two, 2) == 0 && rk_error(c) != 0,
+              "rk_call with too many arguments fails");
+        rk_clear_error(c);
+        /* …and the correct call still works, from the same context. */
+        RkValue arg = rk_int(c, 21);
+        RkValue r = rk_call(c, "twice", &arg, 1);
+        check(r && rk_int_get(c, r) == 42, "the session survives a rejected call");
+    }
+
     /* --- errors are status, never an exception through C ---------------- */
     check(rk_eval(rk, "die 'boom'", &v) == RK_ERROR &&
           rk_last_error(rk) && strstr(rk_last_error(rk), "boom"),

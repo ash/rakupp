@@ -192,6 +192,13 @@ RK_API RkValue rk_named(RkCtx c, const char* name);
  * undefined behaviour, so it is caught at this boundary and handed back as
  * status. That is the same reason rk_die exists rather than a throw.
  *
+ * The argument COUNT is checked, exactly as it is for a call written in Raku:
+ * too few or too many positionals fails with X::Signature::ArityMismatch
+ * rather than binding the missing ones to Any. The check applies to named
+ * plain subs, the only thing this entry point can reach by name; blocks and
+ * lambdas reached through rk_call_value, and multis, keep their own binding
+ * rules.
+ *
  * Named arguments are not expressible yet — positional only. */
 RK_API RkValue rk_call(RkCtx c, const char* name, const RkValue* argv, size_t argc);
 /* The same, for a Code value you were handed rather than a name — a callback

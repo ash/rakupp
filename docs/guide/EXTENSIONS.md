@@ -199,6 +199,14 @@ static RkValue render(RkCtx c) {
 argument, `&comparator` and its kind. Positional arguments only; named ones are
 not expressible yet.
 
+The argument **count** is checked, exactly as it is for a call written in
+Raku: passing too few or too many positionals fails with
+`X::Signature::ArityMismatch` instead of quietly binding the missing ones to
+`Any`. Without that, `render-fallback($v)` called with no argument returns a
+plausible wrong answer rather than an error. The check reaches named plain
+subs — the only thing `rk_call` can name; blocks and lambdas passed to
+`rk_call_value`, and multis, keep their own binding rules.
+
 ### Failing
 
 ```c

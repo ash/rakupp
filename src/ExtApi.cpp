@@ -197,7 +197,15 @@ RkValue extCall(ExtCtx* x, const Value& code, const RkValue* argv, size_t argc) 
         args.push_back(a ? *a : Value::any());
     }
     try {
-        return x->make(x->interp->callCallable(code, std::move(args)));
+        // arityCheck: a C caller gets the SAME arity enforcement a Raku caller
+        // gets. Without it a wrong argument count is silently plausible rather
+        // than wrong — sub area($w, $h) called with one argument binds $h to
+        // Any and returns 0, and every language binding inherits that. The
+        // check is the one in callCallableRaw, so it applies to named plain
+        // user subs only: blocks and lambdas handed to rk_call_value, methods,
+        // multis and builtins keep their lax binding exactly as before.
+        return x->make(x->interp->callCallable(code, std::move(args), nullptr,
+                                               /*ownFrame=*/false, /*arityCheck=*/true));
     }
     catch (RakuError& e) {
         x->hasPending = true;
