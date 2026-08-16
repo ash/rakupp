@@ -1081,6 +1081,12 @@ int valueCmp(const Value& a, const Value& b) {
         auto exact = [](const Value& v) { return v.t == VT::Int || v.t == VT::Rat || v.t == VT::Bool; };
         if (exact(a) && exact(b)) return applyArith("<=>", a, b).toInt();
         double x = a.toNum(), y = b.toNum(); // Num/Complex: inherently binary float
+        // NaN compares GREATER than every real (Rakudo's `NaN cmp 0` is More),
+        // so it sorts last and `NaN max 0` is NaN while `NaN min 0` is 0. Every
+        // C++ comparison against NaN is false, which made it compare Same to
+        // everything and win nothing.
+        bool xn = std::isnan(x), yn = std::isnan(y);
+        if (xn || yn) return xn && yn ? 0 : xn ? 1 : -1;
         return x < y ? -1 : x > y ? 1 : 0;
     }
     // Pairs compare by key first, then value (Rakudo's Pair cmp semantics).

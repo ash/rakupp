@@ -674,6 +674,17 @@ static std::string rakuStrLit(const std::string& s) {
         else if (c == '\r') o += "\\r";
         else if (c == '$' || c == '@' || c == '%' || c == '&' || c == '{') { o += '\\'; o += (char)c; } // would interpolate
         else if (c == '\0') o += "\\0";
+        else if (c == '\b') o += "\\b";
+        // any other C0 control (and DEL) has no literal spelling — it went out
+        // RAW, so `"\x[3]".raku` printed a string that looked empty and could
+        // not be read back. Rakudo's form is `\x[1B]`, hex digits upper-case.
+        else if (c < 0x20 || c == 0x7F) {
+            static const char* H = "0123456789ABCDEF";
+            o += "\\x[";
+            if (c >= 0x10) o += H[c >> 4];
+            o += H[c & 0xF];
+            o += ']';
+        }
         else o += (char)c;
     }
     return o + "\"";
@@ -869,13 +880,21 @@ std::string rakuRepr(const Value& v, int depth, std::set<const void*>& seen) {
                 seen.erase(v.arr.get());
             }
             o += v.isList ? ')' : ']';
+            // a Seq's .raku is the list form plus the coercion that rebuilds it:
+            // `(1, 2).Seq`. Only .raku carries it — .gist/.Str stay `(1 2)`.
+            // It goes on BEFORE the itemization marker: the `$( … )` has to
+            // enclose the coercion as well, or `$(().Seq)` reads back as the
+            // itemized empty list with a `.Seq` called on it.
+            bool seq = v.isList && v.s == "Seq";
+            if (seq) o += ".Seq";
             // an ITEMIZED container carries its `$` marker — `($t,)` for a
             // `$`-held list is `($(1, 2),)` — except as an ARRAY element, whose
             // slot itemizes anyway (`[$x,]` is `[[1, 2],]`)
-            if (v.itemized && !wasElem) o = "$" + o;
-            // a Seq's .raku is the list form plus the coercion that rebuilds it:
-            // `(1, 2).Seq`. Only .raku carries it — .gist/.Str stay `(1 2)`.
-            if (v.isList && v.s == "Seq") o += ".Seq";
+            if (v.itemized && !wasElem) {
+                if (seq) o = "$(" + o + ")";
+                else if (v.isList && v.arr && v.arr->empty()) o = "$( )"; // Rakudo's empty item
+                else o = "$" + o;
+            }
             return o;
         }
         case VT::Hash: {
@@ -7448,8 +7467,11 @@ void Interpreter::registerBuiltins() {
             // a lazy gather stops the block once it has produced enough elements
             size_t lim = I.tctx_.gatherLimits.empty() ? 0 : I.tctx_.gatherLimits.back();
             if (lim && coll.size() >= lim) throw StopGatherEx{};
+            return v;
         }
-        return v;
+        // outside a gather there is nowhere for the value to go, and silently
+        // handing it back made `take` look like a no-op instead of an error
+        throw RakuError{Value::typeObj("X::ControlFlow"), "take without gather"};
     };
     // `succeed EXPR` exits the enclosing `when`/`given`, making the given evaluate to EXPR;
     // `proceed` leaves the current `when` but keeps testing later ones.
@@ -7853,16 +7875,17 @@ void Interpreter::registerBuiltins() {
     B["roots"] = [](Interpreter& I, ValueList& a) -> Value {
         // roots($x, $n): the $n n-th complex roots of $x (principal first,
         // stepping by 2π/n). n < 1 or NaN input yields a single NaN.
-        Value out = Value::array(); out.isList = true;
+        Value out = Value::array(); out.isList = true; out.s = "Seq"; // Rakudo hands back a Seq
         double re, im;
         Value x = a.empty() ? Value::integer(0) : a[0];
         if (x.t == VT::Complex) { re = x.n; im = x.im; }
         else { re = x.toNum(); im = 0.0; }
         long long n = a.size() > 1 ? a[1].toInt() : 1;
-        if (n < 1 || std::isnan(re) || std::isnan(im)) {
-            out.arr->push_back(Value::complex(std::nan(""), std::nan("")));
-            return out;
-        }
+        // a degenerate root count (or a NaN operand) is a bare NaN, not a
+        // one-element list of one
+        if (n < 1 || std::isnan(re) || std::isnan(im)) return Value::number(std::nan(""));
+        // the ONE first root is handed back bare, not as a list of one
+        if (n == 1) return Value::complex(re, im);
         double mag = std::pow(std::hypot(re, im), 1.0 / (double)n);
         double ang = std::atan2(im, re) / (double)n;
         for (long long k = 0; k < n; k++) {
@@ -9082,8 +9105,8 @@ void Interpreter::registerBuiltins() {
             if (ctx->emitCb.t == VT::Code) { ValueList one{v}; I.callCallable(ctx->emitCb, one); }
             return Value::boolean(true);
         }
-        if (!I.tctx_.supplyStack.empty()) I.tctx_.supplyStack.back()->push_back(v);
-        return Value::boolean(true);
+        if (!I.tctx_.supplyStack.empty()) { I.tctx_.supplyStack.back()->push_back(v); return Value::boolean(true); }
+        throw RakuError{Value::typeObj("X::ControlFlow"), "emit without supply or react"};
     };
     // printf/sprintf take **@args — a list/array argument flattens into the values,
     // so `printf $fmt, $x, f()` where f returns (a, b) fills three directives.

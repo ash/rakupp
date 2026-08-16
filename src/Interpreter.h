@@ -650,6 +650,11 @@ public:
     std::optional<Value> methodCallTail(const Value& inv, const struct MName& m, ValueList& args,
                                         const std::vector<ExprPtr>* rwArgs);
     Value exceptionFor(const RakuError& e); // $!/$_ value for a caught error: always a DEFINED exception instance
+    // A Failure stores its exception as a bare TYPE plus a message; anything
+    // that hands the exception to user code (`$!`, `.exception`, `.throw`) must
+    // hand over a defined instance instead, or `if $!` is False and `.message`
+    // is "no such method".
+    Value failureException(const Value& failure);
     // Run the innermost CONTROL handler for a `warn` (CX::Warn). True = the
     // handler .resume'd, so the default stderr print is suppressed; false =
     // no handler, or it finished without resuming (default behaviour stands).

@@ -14419,8 +14419,12 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             return Value::bigint(BigInt(std::llabs(x / g)) * BigInt(std::llabs(y)));
         return Value::integer(std::llabs(res));
     }
-    if (op == "min") return valueCmp(l, r) <= 0 ? l : r;
-    if (op == "max") return valueCmp(l, r) >= 0 ? l : r;
+    // A TIE keeps the RIGHT operand: `0e0 max 0` is the Int 0 and `0 max 0e0`
+    // the Num, because Rakudo takes the left one only on a STRICT win. The two
+    // used to answer the left value, so the result's type depended on which side
+    // an equal value was written.
+    if (op == "min") return valueCmp(l, r) < 0 ? l : r;
+    if (op == "max") return valueCmp(l, r) > 0 ? l : r;
 
     // comparisons -> Bool
     if (op == "==") return Value::boolean(l.toNum() == r.toNum());
@@ -18365,8 +18369,7 @@ Value Interpreter::evalUnary(Unary* u) {
             // handed back an undefined value with `$!` cleared to Nil, so there was
             // no way to ask what went wrong.
             if (r.t == VT::Hash && r.hashKind == "Failure" && r.hash) {
-                auto it = r.hash->find("exception");
-                tctx_.cur->define("$!", it != r.hash->end() ? it->second : Value::nil());
+                tctx_.cur->define("$!", failureException(r));
                 // …and the try CONSUMES it: Rakudo's `try { 1 div 0 }` is Nil with
                 // `$!` set, not the live Failure. Handing the Failure back left it
                 // armed, so the caller's own sink detonated it OUTSIDE the try —
@@ -18872,6 +18875,22 @@ Value Interpreter::exceptionFor(const RakuError& e) {
     return Value::object(od);
 }
 
+// A Failure carries `exception` as a bare type object and the diagnostic in a
+// separate `message` slot. That pair is fine internally, but the moment the
+// exception reaches user code — `$!` after a `try`, `.exception`, `.throw` —
+// it has to be a DEFINED instance: an undefined type object boolifies False,
+// so `try { "a".Int }; if $! {…}` never entered its block, and `.message` on it
+// was a missing method rather than the diagnostic we had all along.
+Value Interpreter::failureException(const Value& failure) {
+    if (failure.t != VT::Hash || failure.hashKind != "Failure" || !failure.hash)
+        return Value::nil();
+    auto it = failure.hash->find("exception");
+    Value ex = it != failure.hash->end() ? it->second : Value::typeObj("X::AdHoc");
+    if (ex.t != VT::Type) return ex; // already an instance (`fail $obj`)
+    auto mm = failure.hash->find("message");
+    return exceptionFor(RakuError{ex, mm != failure.hash->end() ? mm->second.toStr() : ex.s.str()});
+}
+
 // An UNHANDLED Failure detonates the moment its value is actually used —
 // `say +"a"` throws, while `(+"a").defined` stays quiet. (`.handled`, set by
 // `try`/CATCH/`.so`, makes it inert.)
@@ -18948,6 +18967,16 @@ std::string Interpreter::gistOf(const Value& v) {
 }
 std::string Interpreter::strOf(const Value& v) {
     failureDetonate(v);
+    // A Code has no string form: Rakudo warns and yields "". Handing back
+    // "sub { ... }" put a placeholder into real output — `~$block` and
+    // `$block.join` both produced it — and never told anyone it was a mistake.
+    // (.gist and .raku still show the routine; only .Str is empty.)
+    if (v.t == VT::Code) {
+        std::string msg = std::string(v.code && v.code->isBlock ? "Block" : "Sub") +
+                          " object coerced to string (please use .gist or .raku to do that)";
+        if (quietDepth_ == 0 && !runControlWarn(msg)) std::cerr << msg << "\n";
+        return "";
+    }
     // Stringifying a container READS it, so a Proxy runs its FETCH. The subscript
     // path deliberately hands back the container (that is how a write reaches
     // STORE), which leaves value contexts like this one to do the read — without

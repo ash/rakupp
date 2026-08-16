@@ -96,6 +96,10 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             if (m == "acosech" || m == "acsch") return C(std::asinh(one / z));
             if (m == "acotanh" || m == "acoth") return C(std::atanh(one / z));
         }
+        if (m == "roots") { // the n-th roots of a Complex, same as roots($z, $n)
+            auto it = builtins_.find("roots");
+            if (it != builtins_.end()) { ValueList ra{inv, args.empty() ? Value::integer(1) : args[0]}; return it->second(*this, ra); }
+        }
         if (m == "polar") return Value::array({Value::number(std::abs(z)), Value::number(std::arg(z))});
         if (m == "arg") return Value::number(std::arg(z));
         if (m == "Complex") return inv;
@@ -128,6 +132,20 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             }
             if (inv.t == VT::Complex) return methodCall(inv, m, args); // re-enter the Complex path
         }
+    }
+    // Every method below numifies its invocant, and a Str that is not a number
+    // cannot be numified: `"a".floor` answered 0, `"a".chr` answered "\0" and
+    // `"a".is-prime` answered False, all off the same silent zero. (`.succ` and
+    // `.pred` are deliberately absent — on a Str they increment the STRING.)
+    if ((inv.t == VT::Str || inv.t == VT::Match) && !inv.isAllomorph() && inv.hashKind.empty()) {
+        // Only the ones that answered a WRONG VALUE. `.abs`, `.sqrt`, `.Rat`,
+        // `.FatRat` and the other coercions already hand back a Failure carrying
+        // the same X::Str::Numeric, and that soft form is the contract
+        // t/regression/cool-round-and-numeric-failures.raku pins down.
+        static const std::set<std::string> kNumifiesInv = {
+            "floor", "ceiling", "round", "truncate", "sign",
+            "exp", "log", "log10", "log2", "chr", "is-prime"};
+        if (kNumifiesInv.count(m.s)) numifyStrOrThrow(inv.toStr());
     }
     // numeric
     if (m == "abs") {
@@ -271,15 +289,113 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         return out;
     }
     // trigonometry as methods (radians): $x.sin, $x.asin, ... (Str is Cool -> numeric)
-    if (inv.isNumeric() || inv.t == VT::Str) {
-        double x = inv.toNum();
+    //
+    // EVERY Cool gets these, not just the numeric ones: a List/Array/Hash/Range
+    // numifies to its .elems first, exactly as Rakudo's Cool does. The guard
+    // used to be numeric-or-Str, which split the family in half — `.sin` and
+    // `.cos` fall through to unguarded handlers further down and so worked on a
+    // list, while `.tan`, `.atan2`, `.unpolar` and the whole reciprocal set were
+    // "no such method" on the very same value.
+    bool coolNumeric = inv.isNumeric() ||
+        (inv.t == VT::Str && inv.hashKind != "Buf" && inv.hashKind != "Blob") ||
+        inv.t == VT::Array || inv.t == VT::Range || inv.t == VT::Match ||
+        (inv.t == VT::Hash && (inv.hashKind.empty() || inv.hashKind == "Hash" || inv.hashKind == "Map"));
+    if (coolNumeric) {
+        // The rest of Cool's coercion surface. Each one goes through the value's
+        // own .Int/.Str first, so it inherits their failure modes: `"a".int` is
+        // the same X::Str::Numeric `"a".Int` is, not a silent 0.
+        if (m == "Order") { // Cool.Order — the sign of .Int as the Order enum
+            ValueList none; Value iv = methodCall(inv, "Int", none);
+            if (iv.t == VT::Hash && iv.hashKind == "Failure") return iv;
+            return Value::orderVal(iv.big ? iv.big->sign : (iv.toInt() < 0 ? -1 : iv.toInt() > 0 ? 1 : 0));
+        }
+        if (m == "Version") { ValueList one{Value::str(strOf(inv))}; return methodCall(Value::typeObj("Version"), "new", one); }
+        if (m == "EVAL") {
+            auto it = builtins_.find("EVAL");
+            if (it != builtins_.end()) { ValueList ea{Value::str(strOf(inv))}; return it->second(*this, ea); }
+        }
+        if (m == "conj" && !inv.isNumeric()) { // Cool.conj — the conjugate of .Numeric
+            ValueList none; Value nv = methodCall(inv, "Numeric", none);
+            if (nv.t == VT::Hash && nv.hashKind == "Failure") return nv;
+            return methodCall(nv, "conj", none);
+        }
+        // Native-width coercions: `.int8` is .Int wrapped into 8 bits two's
+        // complement (200.int8 is -56), `.uintN` the unsigned form, `.byte` uint8.
+        {
+            int bits = 0; bool sign = true;
+            if (m == "int" || m == "uint") { bits = 64; sign = (m == "int"); }
+            else if (m == "byte") { bits = 8; sign = false; }
+            else if (m.s.rfind("int", 0) == 0 || m.s.rfind("uint", 0) == 0) {
+                std::string w = m.s.substr(m.s[0] == 'u' ? 4 : 3);
+                if (w == "8" || w == "16" || w == "32" || w == "64")
+                    { bits = std::atoi(w.c_str()); sign = (m.s[0] != 'u'); }
+            }
+            if (bits) {
+                ValueList none; Value iv = methodCall(inv, "Int", none);
+                if (iv.t == VT::Hash && iv.hashKind == "Failure") return iv;
+                BigInt mod = BigInt(2).pow(bits), n = iv.big ? *iv.big : BigInt(iv.toInt()), q, r;
+                BigInt::divmod(n, mod, q, r);
+                if (r.sign < 0) r = r + mod;                       // divmod truncates toward zero
+                if (sign && (r - BigInt(2).pow(bits - 1)).sign >= 0) r = r - mod; // top bit set: negative
+                return r.fitsLL() ? Value::integer(r.toLL()) : Value::bigint(r);
+            }
+        }
+    }
+    // The trigonometric family proper, split from the coercions above because it
+    // numifies the invocant UP FRONT. That numification is strict — `"a".sin` is
+    // X::Str::Numeric in Rakudo, not sin(0) — so it must not run for a method
+    // that merely PASSES THROUGH on its way to a later arm, which is why the
+    // name is checked before the value is touched.
+    static const std::set<std::string> kNumMeth = {
+        "Complex", "cis", "roots", "unpolar",
+        "sin", "cos", "tan", "asin", "acos", "atan", "atan2",
+        "sinh", "cosh", "tanh", "asinh", "acosh", "atanh",
+        "sec", "cosec", "csc", "cotan", "cot", "asec", "acosec", "acsc",
+        "acotan", "acot", "sech", "cosech", "csch", "cotanh", "coth",
+        "asech", "acosech", "acsch", "acotanh", "acoth"};
+    if (coolNumeric && kNumMeth.count(m.s)) {
+        auto strict = [](const Value& v) -> double {
+            if ((v.t == VT::Str || v.t == VT::Match) && !v.isAllomorph() && v.hashKind.empty())
+                return numifyStrOrThrow(v.toStr()).toNum();
+            return v.toNum();
+        };
+        // `.roots($n)` binds a Cool, so a numeric-looking string is fine and
+        // `"a"` fails as X::Str::Numeric further down. `.unpolar($angle)` binds a
+        // REAL: no string binds to it at all, not even "2".
+        if (m == "roots" && !args.empty() &&
+            (args[0].t == VT::Type || args[0].t == VT::Any || args[0].t == VT::Nil))
+            throw RakuError{Value::typeObj("X::TypeCheck::Binding::Parameter"),
+                "Type check failed in binding to parameter '$n'; expected Cool but got " +
+                args[0].typeName() + " (" + args[0].gist() + ")"};
+        // …the check names what CANNOT be a Real rather than what can: a user
+        // class doing Real through .Bridge (Roast's Fixed2) is one, and demanding
+        // a built-in numeric rejected it.
+        if (m == "unpolar" && !args.empty() &&
+            (args[0].t == VT::Str || args[0].t == VT::Match || args[0].t == VT::Type ||
+             args[0].t == VT::Any || args[0].t == VT::Nil || args[0].t == VT::Code ||
+             args[0].t == VT::Complex || args[0].t == VT::Pair))
+            throw RakuError{Value::typeObj("X::TypeCheck::Binding::Parameter"),
+                "Type check failed in binding to parameter '$angle'; expected Real but got " +
+                args[0].typeName() + " (" + args[0].gist() + ")"};
+        // A Range numifies to its element count. Counted here rather than by
+        // asking .elems: this runs before the Range arms further down, so a
+        // methodCall("elems") would come straight back in and never return.
+        double x;
+        if (inv.t == VT::Range) {
+            long long lo = inv.rFrom + (inv.rExFrom ? 1 : 0), hi = inv.rTo - (inv.rExTo ? 1 : 0);
+            x = inv.rTo >= 9000000000000000000LL ? INFINITY : (double)std::max(0LL, hi - lo + 1);
+        }
+        else x = strict(inv);
+        // a Cool CONTAINER coerces to Complex through its element count too
+        if (m == "Complex" && !inv.isNumeric() && inv.t != VT::Str && inv.t != VT::Match)
+            return Value::complex(x, 0.0);
         if (m == "cis") return Value::complex(std::cos(x), std::sin(x)); // e^(ix)
         if (m == "roots") { // $x.roots($n) — same as roots($x, $n)
             auto it = builtins_.find("roots");
-            if (it != builtins_.end()) { ValueList ra{inv, a0()}; return it->second(*this, ra); }
+            if (it != builtins_.end()) { ValueList ra{inv, Value::number(strict(a0()))}; return it->second(*this, ra); }
         }
         if (m == "unpolar") { // $mag.unpolar($angle) — Complex from polar coordinates
-            double ang = args.empty() ? 0.0 : a0().toNum();
+            double ang = args.empty() ? 0.0 : strict(a0());
             return Value::complex(x * std::cos(ang), x * std::sin(ang));
         }
         if (m == "sin") return Value::number(std::sin(x));
@@ -288,7 +404,15 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         if (m == "asin") return Value::number(std::asin(x));
         if (m == "acos") return Value::number(std::acos(x));
         if (m == "atan") return Value::number(std::atan(x));
-        if (m == "atan2") return Value::number(std::atan2(x, args.empty() ? 1.0 : a0().toNum()));
+        if (m == "atan2") {
+            // atan2's second argument is a Cool; an undefined one matches no
+            // candidate rather than standing in for zero
+            if (!args.empty() && (a0().t == VT::Type || a0().t == VT::Any || a0().t == VT::Nil))
+                throw RakuError{Value::typeObj("X::Multi::NoMatch"),
+                                "Cannot resolve caller atan2(" + inv.typeName() + ": " +
+                                a0().typeName() + ":U); the second argument must be defined"};
+            return Value::number(std::atan2(x, args.empty() ? 1.0 : strict(a0())));
+        }
         if (m == "sinh") return Value::number(std::sinh(x));
         if (m == "cosh") return Value::number(std::cosh(x));
         if (m == "tanh") return Value::number(std::tanh(x));
@@ -1788,9 +1912,15 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     }
     // `.uniparse` as a METHOD — the invocant NAMES the character(s) to build
     // ('TWO HEARTS, BUTTERFLY'.uniparse), the mirror of `.uniname`
-    if (m == "uniparse" && (inv.t == VT::Str || inv.t == VT::Match)) {
+    // `.parse-names` is the same method under its older name, and both live on
+    // Cool — every Cool stringifies first, so `(3).uniparse` names no character
+    // and fails with X::Str::InvalidCharName rather than "no such method".
+    if ((m == "uniparse" || m == "parse-names") &&
+        (inv.t == VT::Str || inv.t == VT::Match || inv.isNumeric() ||
+         inv.t == VT::Array || inv.t == VT::Range ||
+         (inv.t == VT::Hash && (inv.hashKind.empty() || inv.hashKind == "Hash" || inv.hashKind == "Map")))) {
         auto it = builtins_.find("uniparse");
-        if (it != builtins_.end()) { ValueList ua{Value::str(inv.toStr())}; return it->second(*this, ua); }
+        if (it != builtins_.end()) { ValueList ua{Value::str(strOf(inv))}; return it->second(*this, ua); }
     }
     if (m == "unival" || m == "univals" || m == "uniname") {
         if (inv.t == VT::Type)
@@ -1830,6 +1960,13 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // name is False, never a lenient match).
         if (inv.t == VT::Type) // uniprop needs a Cool (Str/Int), not a type object
             throw RakuError{Value::typeObj("X::Multi::NoMatch"), "Cannot call " + m + " with a type object"};
+        // …and the PROPERTY is named by a string. Every other candidate in
+        // Rakudo's signature set takes a Stringy, so `"a".uniprop(0)` resolves
+        // to nothing rather than quietly asking for the property named "0".
+        if (!args.empty() && args[0].t != VT::Str && args[0].t != VT::Match)
+            throw RakuError{Value::typeObj("X::Multi::NoMatch"),
+                            "Cannot resolve caller " + m.s + "(" + inv.typeName() + ":D: " +
+                            args[0].typeName() + "); the property must be named by a string"};
         std::string prop = args.empty() ? "General_Category" : args[0].toStr();
         auto caseMapStr = [](uint32_t cp, int kind) -> Value { // full mapping as a Str
             std::string s; for (uint32_t c : uniCaseMap(cp, kind)) s += cpToUtf8(c); return Value::str(s);
@@ -1880,7 +2017,10 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     if (m == "tc") return Value::str(mapCase(inv.toStr(), 0, 1));
     if (m == "tclc") return Value::str(mapCase(inv.toStr(), 0, 2));
     if (m == "indent" && !args.empty()) { // add (negative: remove) indentation, AFTER existing leading whitespace
-        long long amt = args[0].toInt();
+        // the amount is a real number, not whatever toInt() makes of it:
+        // `.indent("a")` is X::Str::Numeric, not an indent of zero
+        long long amt = args[0].t == VT::Str && !args[0].isAllomorph() && args[0].hashKind.empty()
+                      ? numifyStrOrThrow(args[0].s).toInt() : args[0].toInt();
         auto isWs = [](uint32_t c) {
             return c == 0x09 || c == 0x0B || c == 0x0C || c == 0x0D || c == 0x20 || c == 0x85 || c == 0xA0 ||
                    c == 0x1680 || (c >= 0x2000 && c <= 0x200A) || c == 0x2028 || c == 0x2029 ||
@@ -1915,6 +2055,16 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         return Value::str(r);
     }
     if (m == "fc") return Value::str(mapCase(inv.toStr(), 3, 0));
+    // The same-* family all take a DEFINED Str pattern: `.samecase(Any)` has no
+    // candidate in Rakudo, and treating the type object as "" silently returned
+    // the invocant unchanged.
+    if (m == "samecase" || m == "samespace" || m == "samemark") {
+        if (args.empty() || args[0].t == VT::Type || args[0].t == VT::Any || args[0].t == VT::Nil)
+            throw RakuError{Value::typeObj("X::Multi::NoMatch"),
+                            "Cannot resolve caller " + m.s + "(" + inv.typeName() + ":D: " +
+                            (args.empty() ? std::string("") : args[0].typeName() + ":U") +
+                            "); the pattern must be a defined Str"};
+    }
     if (m == "samecase") { // copy the case pattern of the arg, position by position (last char repeats)
         auto src = utf8cp(inv.toStr());
         auto pat = utf8cp(args.empty() ? "" : args[0].toStr());
@@ -1925,6 +2075,29 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             if (mask && toLowerCp(mask) != mask) r += cpToUtf8(toUpperCp(c));      // mask is upper
             else if (mask && toUpperCp(mask) != mask) r += cpToUtf8(toLowerCp(c)); // mask is lower
             else r += cpToUtf8(c);                                                 // uncased: unchanged
+        }
+        return Value::str(r);
+    }
+    // `.samespace($pat)` — copy the pattern's WHITESPACE RUNS onto the
+    // invocant's, run by run in order. A run the pattern does not reach keeps
+    // whatever the invocant had, so "a b c".samespace("x  y") is "a  b c".
+    if (m == "samespace") {
+        std::string s = inv.toStr(), p = args.empty() ? std::string() : args[0].toStr();
+        auto isws = [](unsigned char c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v'; };
+        std::vector<std::string> pruns; // the pattern's whitespace runs, in order
+        for (size_t i = 0; i < p.size(); ) {
+            if (!isws((unsigned char)p[i])) { i++; continue; }
+            size_t j = i; while (j < p.size() && isws((unsigned char)p[j])) j++;
+            pruns.push_back(p.substr(i, j - i));
+            i = j;
+        }
+        std::string r; size_t k = 0;
+        for (size_t i = 0; i < s.size(); ) {
+            if (!isws((unsigned char)s[i])) { r += s[i]; i++; continue; }
+            size_t j = i; while (j < s.size() && isws((unsigned char)s[j])) j++;
+            r += k < pruns.size() ? pruns[k] : s.substr(i, j - i);
+            k++;
+            i = j;
         }
         return Value::str(r);
     }
@@ -1941,6 +2114,20 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     // stopped passing for the wrong reason.
     if (m == "ords") { Value out = Value::array(); out.isList = true; out.s = "Seq"; for (auto cp : uniNormalize(utf8cp(inv.toStr()), 1 /*NFC: .ords returns grapheme ordinals*/)) out.arr->push_back(Value::integer(cp)); return out; }
     if (m == "chomp") { // a logical newline: "\n", "\r\n" or a lone "\r"
+        // …or, given a needle, that exact suffix: `"a".chomp("a")` is "". The
+        // needle must be DEFINED — an undefined one binds to no candidate, and
+        // ignoring it chomped a newline that was never asked about.
+        if (!args.empty()) {
+            if (args[0].t == VT::Type || args[0].t == VT::Any || args[0].t == VT::Nil)
+                throw RakuError{Value::typeObj("X::Multi::NoMatch"),
+                                "Cannot resolve caller chomp(" + inv.typeName() + ":D: " +
+                                args[0].typeName() + ":U); the needle must be defined"};
+            std::string s = inv.toStr(), needle = strOf(args[0]);
+            if (!needle.empty() && s.size() >= needle.size() &&
+                s.compare(s.size() - needle.size(), needle.size(), needle) == 0)
+                s.resize(s.size() - needle.size());
+            return Value::str(s);
+        }
         std::string s = inv.toStr();
         if (!s.empty() && s.back() == '\n') s.pop_back();
         if (!s.empty() && s.back() == '\r') s.pop_back();

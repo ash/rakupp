@@ -868,7 +868,14 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             return out;
         }
         if (m == "reverse") { std::reverse(items.begin(), items.end()); return Value::list(items); }
-        if (m == "rotate") { long n = args.empty() ? 1 : args[0].toInt(); long sz = (long)items.size();
+        if (m == "rotate") {
+            // the rotation count binds an Int; an undefined one is a binding
+            // failure, not a rotation of zero
+            if (!args.empty() && (args[0].t == VT::Type || args[0].t == VT::Any || args[0].t == VT::Nil))
+                throw RakuError{Value::typeObj("X::TypeCheck::Binding::Parameter"),
+                    "Type check failed in binding to parameter '$n'; expected Int but got " +
+                    args[0].typeName() + " (" + args[0].gist() + ")"};
+            long n = args.empty() ? 1 : args[0].toInt(); long sz = (long)items.size();
             if (sz) { n = ((n % sz) + sz) % sz; std::rotate(items.begin(), items.begin() + n, items.end()); }
             return Value::list(items); }
         if (m == "permutations") {
@@ -915,6 +922,12 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             return out;
         }
         if (m == "join") {
+            // the separator is `Str(Cool)`: an undefined one cannot coerce, and
+            // stringifying it to "" hid the mistake
+            if (!args.empty() && (a0().t == VT::Type || a0().t == VT::Any || a0().t == VT::Nil))
+                throw RakuError{Value::typeObj("X::TypeCheck::Binding::Parameter"),
+                    "Type check failed in binding to parameter '$separator'; expected Str but got " +
+                    a0().typeName() + " (" + a0().gist() + ")"};
             // each element through ITS OWN .Str, so a user `method Str` is honoured
             const std::string sep = args.empty() ? "" : a0().toStr();
             std::string out;
@@ -2257,12 +2270,12 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
     }
     // $x.take — the method form of take
     if (m == "take") {
-        if (!tctx_.gatherStack.empty()) {
-            auto& coll = *tctx_.gatherStack.back();
-            coll.push_back(inv);
-            size_t lim = tctx_.gatherLimits.empty() ? 0 : tctx_.gatherLimits.back();
-            if (lim && coll.size() >= lim) throw StopGatherEx{};
-        }
+        if (tctx_.gatherStack.empty())
+            throw RakuError{Value::typeObj("X::ControlFlow"), "take without gather"};
+        auto& coll = *tctx_.gatherStack.back();
+        coll.push_back(inv);
+        size_t lim = tctx_.gatherLimits.empty() ? 0 : tctx_.gatherLimits.back();
+        if (lim && coll.size() >= lim) throw StopGatherEx{};
         return inv;
     }
     if (m == "pick" || m == "roll") {
@@ -2287,6 +2300,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         static const std::set<std::string> listCool = {
             "unique", "squish", "repeated", "permutations", "combinations",
             "classify", "categorize", "rotor", "batch",
+            "chrs", // `(65).chrs` is "A" — one codepoint is a one-element list
         };
         if (listCool.count(m)) {
             // toList keeps a plain scalar as one item but expands a Blob/Buf to
@@ -2334,6 +2348,60 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         auto it = builtins_.find(m);
         if (it != builtins_.end()) { ValueList a2{inv}; return it->second(*this, a2); }
     }
+    // Universal fallbacks from Mu/Any, reached only once nothing above claimed
+    // the name — so a real .join/.Capture/.bless still wins.
+    //
+    // `Any.join` treats the invocant as the ONE-element list it is: `3.join("-")`
+    // is "3", and the separator never gets a chance to appear.
+    if (m == "join" && inv.t != VT::Type) {
+        if (!args.empty() && (args[0].t == VT::Type || args[0].t == VT::Any || args[0].t == VT::Nil))
+            throw RakuError{Value::typeObj("X::TypeCheck::Binding::Parameter"),
+                "Type check failed in binding to parameter '$separator'; expected Str but got " +
+                args[0].typeName() + " (" + args[0].gist() + ")"};
+        return Value::str(strOf(inv));
+    }
+    // `Any.Capture` unpacks a value into its parts: an undefined one has none,
+    // a Complex is its :re/:im, a Blob its bytes, an object its public
+    // attributes. Only a plain scalar has nothing to unpack, and Rakudo says so
+    // rather than inventing an empty Capture.
+    if (m == "Capture") {
+        Value c = Value::array(); c.hashKind = "Capture"; c.itemized = true;
+        if (inv.t == VT::Any || inv.t == VT::Nil || inv.t == VT::Type) return c;
+        if (inv.t == VT::Complex) {
+            c.arr->push_back(Value::pair("im", Value::number(inv.im)));
+            c.arr->push_back(Value::pair("re", Value::number(inv.n)));
+            return c;
+        }
+        if (inv.t == VT::Str && (inv.hashKind == "Buf" || inv.hashKind == "Blob"))
+            { *c.arr = inv.blobList(); return c; }
+        if (inv.t == VT::Object && inv.obj) {
+            std::vector<std::string> names;
+            for (auto& kv : inv.obj->attrs) names.push_back(kv.first);
+            std::sort(names.begin(), names.end());
+            for (auto& n : names) c.arr->push_back(Value::pair(n, inv.obj->attrs[n]));
+            return c;
+        }
+        throw RakuError{Value::typeObj("X::Cannot::Capture"),
+                        "Cannot unpack or Capture `" + inv.gist() + "`."};
+    }
+    // `.Failure` wraps the value in an unthrown Failure carrying it as the
+    // payload of an X::AdHoc — `fail $x` spelled as a coercion. It lives on
+    // Cool, and only on Cool: Roast's currying helpers ask `$code.can('Failure')`
+    // to decide whether a Failure was mixed in, so answering for a Code made
+    // every priming test take the failure branch.
+    if (m == "Failure" &&
+        (inv.isNumeric() || inv.t == VT::Str || inv.t == VT::Match ||
+         inv.t == VT::Array || inv.t == VT::Range || inv.t == VT::Complex ||
+         (inv.t == VT::Hash && (inv.hashKind.empty() || inv.hashKind == "Hash" || inv.hashKind == "Map")))) {
+        Value f = Value::makeHash(); f.hashKind = "Failure";
+        (*f.hash)["exception"] = Value::typeObj("X::AdHoc");
+        (*f.hash)["message"] = Value::str(strOf(inv));
+        (*f.hash)["payload"] = inv;
+        return f;
+    }
+    // `Mu.bless` on a built-in value makes a fresh, default instance of its type
+    // — `3.bless` is 0, not "no such method".
+    if (m == "bless") return methodCall(Value::typeObj(inv.typeName()), "new", std::move(args), rwArgs);
     return std::nullopt;   // not handled here — fall through to the caller's tail
 }
 
