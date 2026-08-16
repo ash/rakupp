@@ -20295,8 +20295,20 @@ Value Interpreter::evalIndex(Index* idx) {
     }
     // subscripting an infinite range (…..Inf) — index its lazy @-array form so
     // nothing materialises the whole range.
-    if (base.t == VT::Range && base.rTo >= 9000000000000000000LL && !idx->isHash)
+    //
+    // …but remember it WAS an arithmetic endless range, because such a range can
+    // answer any single index by adding, with nothing materialised at all. The
+    // lazy path below tops out at materializeLazy's million-element cap and then
+    // reads off the end, so `(1..∞)[999999999999]` quietly said Nil — a wrong
+    // answer rather than a slow one. A Str or fractional range keeps the old
+    // route: its elements are not `low + i`.
+    bool endlessArith = false;
+    long long endlessLo = 0;
+    if (base.t == VT::Range && base.rTo >= 9000000000000000000LL && !idx->isHash) {
+        endlessArith = !base.rNum && base.ofType != "Str";
+        endlessLo = base.rFrom + (base.rExFrom ? 1 : 0);
         base = methodCall(base, "list", {});
+    }
 
     // A lazy list (infinite `… … *` / lazy `.map`): grow its prefix to cover the
     // requested index/slice before subscripting.
@@ -20307,7 +20319,14 @@ Value Interpreter::evalIndex(Index* idx) {
             (iv.t == VT::Whatever || (iv.t == VT::Code && iv.code && iv.code->isWhateverCode)))
             throw RakuError{Value::typeObj("X::Cannot::Lazy"), "Cannot use a Whatever index on an infinite list"};
         long long maxi = -1;
-        if (iv.t == VT::Int || iv.t == VT::Num || iv.t == VT::Bool) maxi = iv.toInt();
+        if (iv.t == VT::Int || iv.t == VT::Num || iv.t == VT::Bool) {
+            maxi = iv.toInt();
+            // One index into an arithmetic endless range is arithmetic too.
+            // (Guarded against the add itself overflowing, which would answer a
+            // negative element for an index near the top of the range.)
+            if (endlessArith && maxi >= 0 && endlessLo <= 9223372036854775807LL - maxi)
+                return Value::integer(endlessLo + maxi);
+        }
         else if (iv.t == VT::Range || iv.t == VT::Array) for (auto& e : iv.flatten()) if (e.t == VT::Int || e.t == VT::Num) maxi = std::max(maxi, e.toInt());
         if (maxi >= 0) materializeLazy(base, (size_t)maxi + 1);
     }
