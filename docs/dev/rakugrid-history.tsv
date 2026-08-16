@@ -1,0 +1,30 @@
+# Rakugrid measurements over time — the series behind raku.online/spec/dashboard.
+#
+# One row per measured point, appended, never rewritten. Produced by
+#   raku bin/rakugrid fire --engine=/path/to/rakupp
+# in the Rakugrid checkout (/Users/ash/rakugrid), whose last line reads
+#   "# N ran, N failed, N re-run individually after a dense-run failure, N parked"
+#
+# Columns, ONE tab between each (a "-" means not measured / not applicable):
+#   date  commit  ran  failed  parked  roast_pass  roast_files  note
+#
+# `ran` and `parked` move only when Rakugrid itself grows or a ruling is signed,
+# so a drop in `failed` between two rows with the SAME `ran` is engine progress
+# and nothing else. When `ran` changes, the rows either side are NOT comparable
+# — start a fresh comparison rather than drawing a line across the step.
+#
+# roast_pass/roast_files are the same-day Roast reading for that binary, and they
+# carry real noise: the timeout flap moves roast_pass by up to ~1,400 in a single
+# run (one file, 6.d/S32-str/sprintf-x.t, is 2,282 assertions on its own). Three
+# baseline samples of f4cd2c5 on one machine gave 197,684 / 197,664 / 197,704 —
+# treat anything inside a ~40-assertion band as unchanged, and gate on the
+# PER-FILE diff, not on this column.
+#
+date	commit	ran	failed	parked	roast_pass	roast_files	note
+2026-08-16	f4cd2c5	24144	9518	747	197684	596	baseline: the sweep starts here
+2026-08-16	-	24144	6874	747	-	-	batch 1+2: `$!` from a returned Failure; take/emit; Cool numerics; .raku itemisation
+2026-08-16	-	24144	6195	747	197683	594	batch 3: strict numification, Any.join/Mu.bless/Cool.chrs
+2026-08-16	-	24144	5490	747	197619	594	batch 4: argument shapes (uniprop, same-*, join, roots, unpolar)
+2026-08-16	-	24144	5166	747	196404	595	batch 5: chomp needle, Any.Capture, roots(1), Code.Str
+2026-08-16	-	24144	5011	747	195756	591	batch 6: min/max ties, NaN ordering, Cool.Failure — 3 Roast regressions, fixed in 7
+2026-08-16	f6bfa67	24144	4930	747	197687	594	batch 7: scalar-numeric strictness + the batch-6 repairs
