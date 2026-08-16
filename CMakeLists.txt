@@ -34,6 +34,35 @@ endif()
 # Single source of truth for the version — bump `project(... VERSION ...)` above.
 add_compile_definitions(RAKUPP_VERSION="${PROJECT_VERSION}")
 
+# ---- build identity ---------------------------------------------------------
+# `git describe --always --dirty` + the build date, regenerated on every build
+# (not at configure time — see cmake/BuildInfo.cmake for why) into a header that
+# only src/BuildInfo.cpp includes. copy_if_different keeps an unchanged build
+# from touching it, so this costs one recompiled file per commit and nothing at
+# all otherwise. Exposed to Raku as $*RAKU.compiler.build / .build-date.
+set(RAKUPP_BUILD_HEADER "${CMAKE_CURRENT_BINARY_DIR}/generated/rakupp_build.h")
+file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/generated")
+include_directories("${CMAKE_CURRENT_BINARY_DIR}/generated")
+# Stamp once at CONFIGURE time as well, so the header exists before anything is
+# compiled. Without it the first compile of BuildInfo.cpp sees no header, its
+# __has_include is false, and no dependency on the header is ever recorded — so
+# the file it later generates would never trigger a recompile and the binary
+# would report "unknown" forever.
+execute_process(COMMAND "${CMAKE_COMMAND}"
+                        -DSRC_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+                        -DOUT_FILE=${RAKUPP_BUILD_HEADER}
+                        -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/BuildInfo.cmake")
+add_custom_target(rakupp_build_info ALL
+  BYPRODUCTS "${RAKUPP_BUILD_HEADER}"
+  # No inner quotes: VERBATIM passes the argument through as written, so
+  # -DOUT_FILE="…" would make the quotes part of the path itself.
+  COMMAND "${CMAKE_COMMAND}"
+          -DSRC_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+          -DOUT_FILE=${RAKUPP_BUILD_HEADER}
+          -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/BuildInfo.cmake"
+  COMMENT "Stamping build identity (git describe + date)"
+  VERBATIM)
+
 find_package(Threads REQUIRED)
 
 file(GLOB_RECURSE RAKUPP_SOURCES CONFIGURE_DEPENDS
@@ -81,6 +110,8 @@ list(REMOVE_ITEM RAKUPP_SOURCES ${RAKUPP_UCD_NAMES_SOURCES} ${RAKUPP_UCD_COLL_SO
                                 ${RAKUPP_UCD_PROPS_SOURCES} ${RAKUPP_PARSE_SOURCES})
 
 add_library(rakupp_rt STATIC ${RAKUPP_SOURCES})
+# BuildInfo.cpp reads the stamped header, so the stamp has to run first.
+add_dependencies(rakupp_rt rakupp_build_info)
 target_include_directories(rakupp_rt PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(rakupp_rt PUBLIC Threads::Threads)
 # On Windows, RK_API (rakupp_ext.h) expands to dllexport under RAKUPP_BUILDING,
@@ -135,6 +166,7 @@ if(RAKUPP_BUILD_SHARED OR RAKUPP_LINK_SHARED)
   # interpreter never slims — in particular it always carries the parser
   # (SLIM-PLAN, "librakupp pins `eval`": rk_eval/rk_run ARE the parser).
   add_library(rakupp_shared SHARED ${RAKUPP_ALL_SOURCES})
+  add_dependencies(rakupp_shared rakupp_build_info)   # same stamp as rakupp_rt
   target_include_directories(rakupp_shared PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
   target_link_libraries(rakupp_shared PUBLIC Threads::Threads)
   target_compile_definitions(rakupp_shared PRIVATE RAKUPP_BUILDING)

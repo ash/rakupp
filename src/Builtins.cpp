@@ -17,6 +17,7 @@
 #include "Regex.h"
 #include "MethodName.h"
 #include "BuiltinsShared.h"
+#include "BuildInfo.h"
 #include <algorithm>
 #include <atomic>
 #include <ctime>
@@ -4804,6 +4805,14 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         if (m == "desc") return Value::str("Raku++ — a C++ Raku interpreter");
         if (m == "signature") { Value b = Value::str("Raku++"); b.hashKind = "Blob"; return b; } // non-empty Blob
         if (m == "id" || m == "release") return Value::str(RAKUPP_VERSION);
+        // .build / .build-date identify THIS binary, which .id and .release
+        // cannot: every build between two releases reports the same version, so
+        // a bug report, a Rakugrid oracle stamp and a benchmark row all pointed
+        // at "3.14.0" and nothing narrower. `git describe --always --dirty` gives
+        // both an ordering (commits since the tag) and an exact commit.
+        // Compiler-only: the LANGUAGE has no build.
+        if (isComp && m == "build") return Value::str(rakupp::buildId());
+        if (isComp && m == "build-date") return Value::str(rakupp::buildDate());
         if (m == "codename") return Value::str("Raku++");
         // Rakudo: `Raku (6.d)` for the language, `rakudo (2026.07)` for the
         // compiler — name plus the version THAT object reports, not the language
@@ -4822,6 +4831,8 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                        Value c = rakuIntrospection(true);
                        return methodCall(c, "raku", none).toStr(); }() + ", ")
                 + "id => " + q(RAKUPP_VERSION) + ", release => " + q(RAKUPP_VERSION)
+                + (isComp ? ", build => " + q(rakupp::buildId())
+                          + ", build-date => " + q(rakupp::buildDate()) : "")
                 + ", codename => " + q("Raku++")
                 + ", name => " + q(nm)
                 + ", auth => " + q(isComp ? "Andrew Shitov" : "The Raku Community")
