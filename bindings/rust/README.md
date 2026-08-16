@@ -1,135 +1,31 @@
-# rakulang — Raku grammars for Rust
+# rakulang — Raku from Rust
 
-This crate lets a Rust program parse text with a Raku grammar. The grammar
-stays a plain `.raku` file; the parsing happens in an embedded Raku++
-interpreter (`librakupp`); the crate only moves values across. You do not
-need to know Raku's internals, and this guide assumes no prior Rust beyond
-having it installed.
+A small crate over `librakupp`'s C ABI: hand-declared `extern "C"` bindings
+plus a `build.rs` that finds the library. Values cross through
+[`rakupp.h`](../../include/rakupp/rakupp.h), and the grammar logic lives in a
+Raku shim that ships inside the library itself.
 
-## What you need
+Rust is the host where lifetime costs nothing: a `Match` owns its rooted
+engine value and `Drop` releases it, and a `Node` borrows its `Match`, so a
+path cannot outlive the match it walks.
 
-- **Rust** — install via [rustup.rs](https://rustup.rs) if `cargo --version`
-  says command not found. The crate has zero dependencies, so no network is
-  needed to build it.
-- **The shared library** — from the repo root:
+## 1. What you need
+
+- **Rust.** Install via [rustup.rs](https://rustup.rs) if `cargo --version`
+  says nothing.
+- **`librakupp`.** From the repo root:
 
   ```bash
   cmake -B build -DCMAKE_BUILD_TYPE=Release -DRAKUPP_BUILD_SHARED=ON
   cmake --build build -j
   ```
 
-  This gives you `build/librakupp.dylib` (macOS) / `build/librakupp.so`
-  (Linux). Any build directory works; the commands below say `build`.
+  A build directory configured without `-DRAKUPP_BUILD_SHARED=ON` is
+  static-only and this crate cannot use it.
 
-## Run the example
+## 2. Install
 
-From the repo root:
-
-```bash
-RAKUPP_LIB_DIR=$PWD/build cargo run --manifest-path bindings/rust/Cargo.toml --example shopping
-```
-
-`RAKUPP_LIB_DIR` tells the build script where `librakupp` lives; it also
-embeds that path into the binary (rpath), so the program finds the library
-at run time with no further setup. Expected output:
-
-```
-3 items
-milk x 2
-bread x 1
-eggs x 12
-total, computed in Raku: 15
-as plain Rust data: Map({"item": List([Map({"name": Str("milk"), "qty": Str("2")}), ...])})
-line 2 column 7 while trying <qty>
-```
-
-If you see this, the binding works.
-
-## The example, explained
-
-The source is [examples/shopping.rs](examples/shopping.rs); the grammar it
-loads is [../examples/shopping.raku](../examples/shopping.raku). The whole
-API in one pass:
-
-```rust
-use rakulang::{Error, Grammar, Tree};
-
-// Compile the grammar file. "Shopping" is the grammar's name INSIDE the
-// file; "ShoppingActions" names an actions class in the same file (pass ""
-// for none). The ? bubbles errors up, Rust's idiom for exceptions.
-let g = Grammar::from_file("shopping.raku", "Shopping", "ShoppingActions")?;
-
-// Parse. Ok(None) means "valid call, but the text did not match" — hence
-// the ? (call errors) followed by .expect/match (no-match). "" means
-// "use the grammar's default rule, TOP"; pass e.g. "item" to parse a
-// fragment with just that rule.
-let m = g.parse("milk=2\nbread = 1  eggs=12\n", "")?.expect("no match");
-
-// Walk the match lazily. get("item") names a capture; at(i) indexes a
-// repeated one. Nothing crosses the engine boundary until a terminal call
-// like .str() / .int() / .len() — those cost one engine call each.
-let items = m.get("item");
-for i in 0..items.len()? {
-    let item = items.at(i);
-    println!("{} x {}", item.get("name").str()?, item.get("qty").int()?);
-}
-
-// What the Raku actions class computed, as native data. ShoppingActions'
-// TOP method did `make ...sum`, so this is Tree::Int(15).
-if let Tree::Int(total) = m.made()? {
-    println!("total: {}", total);
-}
-
-// Or convert everything below a node at once (~1.4x the parse's own cost).
-let all: Tree = m.tree()?;
-
-// A failed parse, diagnosed: parse_strict returns Error::Parse with the
-// line, column, and the deepest rule the engine was trying there.
-if let Err(Error::Parse { line, col, rule, .. }) = g.parse_strict("milk=2\nbread=x\n", "") {
-    println!("failed at {}:{} in <{}>", line, col, rule);
-}
-```
-
-## How data crosses
-
-Into Raku: the text you parse (and the grammar source). Out of Raku, two
-channels:
-
-- **Lazy leaf reads** — `.str()` → `String`, `.int()` → `i64`, `.num()` →
-  `f64`. Cheap and precise; use these when you want a few fields.
-- **`tree()` / `made()`** — everything at once, as the `Tree` enum:
-
-  ```rust
-  pub enum Tree {
-      Null, Bool(bool), Int(i64), Num(f64), Str(String),
-      List(Vec<Tree>),
-      Map(BTreeMap<String, Tree>),
-  }
-  ```
-
-  In a `tree()`, a node with no sub-captures becomes its matched text
-  (`Str("2")`, not `Int(2)`); named captures become map keys; repeated
-  captures become lists. `made()` carries whatever the actions class
-  `make`d — that is the general-purpose way to have Raku *compute* something
-  and hand the result to Rust as plain data.
-
-Probing: `.truthy()?` answers whether anything matched at a path (a missing
-capture read with `.str()` is an `Err`, not a panic). `.len()?` is the list
-length — 1 for a plain node, 0 for a missing one.
-
-## What Rust takes care of for you
-
-- **Freeing matches** — a `Match` owns a rooted engine value and unroots it
-  in `Drop`. No `close()` to remember; when the match goes out of scope the
-  engine value is released, and the borrow checker stops a `Node` path from
-  outliving its `Match`.
-- **Thread safety** — `Grammar` and `Match` are `!Send`, so the compiler
-  itself enforces the engine's contract: one interpreter per process, one
-  thread talking to it.
-
-## Using it in your own project
-
-`cargo new myparser`, then in `myparser/Cargo.toml`:
+In your `Cargo.toml`:
 
 ```toml
 [dependencies]
@@ -142,37 +38,156 @@ Build and run with `RAKUPP_LIB_DIR` pointing at your build directory:
 RAKUPP_LIB_DIR=/path/to/raku++/build cargo run
 ```
 
-The env variable matters at *build* time (linking + embedded rpath). Against
-a system-installed librakupp (e.g. `cmake --install`), you can omit it — the
-system linker paths are searched.
+`RAKUPP_LIB_DIR` tells `build.rs` where `librakupp` lives, and it also
+becomes the runtime search path. Against a system-installed `librakupp` (from
+`cmake --install`) you can omit it.
 
-## Testing it properly
+## 3. Two minutes
 
-The full gate — same grammar, same 2000-line corpus, this crate's output
-byte-compared against plain `rakupp`'s — runs from the repo root:
+Run both examples from the repo root:
 
 ```bash
-build/rakupp tools/grammar-smoke.raku
+RAKUPP_LIB_DIR=$PWD/build cargo run --manifest-path bindings/rust/Cargo.toml --example calc
+```
+```bash
+RAKUPP_LIB_DIR=$PWD/build cargo run --manifest-path bindings/rust/Cargo.toml --example shopping
 ```
 
-Look for `ok - Rust output is byte-identical to rakupp's`. The Rust leg
-skips (loudly) if cargo is missing or its architecture cannot load the
-library — see below.
+`calc` ([examples/calc.rs](examples/calc.rs)) prints:
+
+```
+2 + 2 = 4
+area(3, 4) = 12
+primes below 30: 2 3 5 7 11 13 17 19 23 29
+stats: count=8 sum=31 mean=3.88 max=9
+greet: Hello, Ada! You are 36.
+30! = 265252859812191058636308480000000
+died: division by zero
+```
+
+`shopping` ([examples/shopping.rs](examples/shopping.rs)) prints:
+
+```
+3 items
+milk x 2
+bread x 1
+eggs x 12
+total, computed in Raku: 15
+as plain Rust data: Map({"item": List([Map({"name": Str("milk"), "qty": Str("2")}), Map({"name": Str("bread"), "qty": Str("1")}), Map({"name": Str("eggs"), "qty": Str("12")})])})
+line 2 column 7 while trying <qty>
+```
+
+If you see both, the binding works.
+
+## 4. Running Raku
+
+```rust
+use rakulang::{call, eval, Tree};
+
+eval("my $x = 41")?;
+eval("$x + 1")?;                       // Tree::Int(42) — eval keeps state
+
+eval(&std::fs::read_to_string("calc.raku")?)?;   // loading subs is an eval
+
+call("area", &[3.into(), 4.into()])?;            // Tree::Int(12)
+call("stats", &[vec![Tree::Int(3), Tree::Int(1)].into()])?;
+
+rakulang::can("area");                 // true
+rakulang::version();                   // "3.14.0"
+```
+
+`eval` returns the last statement's value; `call` looks the routine up in the
+mainline scope, so anything an earlier `eval` declared is callable.
+
+`Tree` is **both** the argument type and the result type, which is what makes
+the two directions read alike. `From` is implemented for `i32`, `i64`, `f64`,
+`bool`, `&str`, `String`, `Vec<Tree>` and `BTreeMap<String, Tree>`, so call
+sites stay short: `&[3.into(), "two".into()]`.
+
+## 5. Parsing with grammars
+
+```rust
+use rakulang::Grammar;
+
+let g = Grammar::from_file("log.raku", "Log", "LogActions")?;
+
+if let Some(m) = g.parse(&text, "")? {
+    let lines = m.get("line");
+    for i in 0..lines.len()? {          // lazy: one engine call per leaf
+        println!("{}", lines.at(i).get("ip").str()?);
+    }
+    println!("{:?}", lines.at(0).get("size").made()?);   // computed by actions
+    let everything = m.tree()?;         // eager, opt-in (~1.4× the parse)
+}   // m drops here — the rooted engine value releases itself
+```
+
+`from_file(path, name, actions)` compiles and caches: identical source
+compiles once, and each *named* compile is isolated, so recompiling an edited
+grammar never rebinds an earlier `Grammar`'s body. `name` may be `""` only
+when the grammar declaration is the file's last statement.
+
+`parse` anchors to the whole input; the `?` handles call errors and the
+`Option` is the match. `""` means "the grammar's default rule, TOP" — pass
+e.g. `"item"` to parse a fragment with that rule. `parse_strict` diagnoses a
+non-match instead of returning `None`. `get` and `at` build a lazy path;
+nothing crosses the boundary until `str()?`, `int()?`, `num()?`, `truthy()?`,
+`len()?`, `tree()?` or `made()?`.
+
+## 6. Values
+
+Raku `Int` → `Tree::Int(i64)`, `Num`/`Rat` → `Tree::Num(f64)`, `Str` →
+`Tree::Str`, `List` → `Tree::List`, `Hash` → `Tree::Map` (a `BTreeMap`, so
+iteration is key-sorted and deterministic), `True`/`False` → `Tree::Bool`,
+`Any` → `Tree::Null`. The same rules run in reverse for arguments.
+
+An integer wider than 64 bits arrives as `Tree::Str` holding the digits. In a
+`tree()`, a match node with no sub-captures becomes its matched *text*, so
+`qty` is `Tree::Str("2")`; use `.int()?` on the node, or an actions class,
+for numbers.
+
+## 7. Errors
+
+`Error::Raku(String)` is a Raku `die` crossing the boundary.
+`Error::Parse { line, col, rule, pos }` is the diagnosed non-match:
+
+```rust
+if let Err(Error::Parse { line, col, rule, .. }) = g.parse_strict(&text, "") {
+    println!("line {} column {} while trying <{}>", line, col, rule);
+}
+```
+
+## 8. Lifetime and threading
+
+One interpreter per process, created on first use. `Grammar` and `Match` are
+deliberately `!Send` — one thread talks to the engine (Raku code inside it
+threads freely).
+
+Lifetime is the part Rust gets for free. A `Match` owns a rooted engine value
+and `Drop` unroots it; a `Node` borrows its `Match`, so the compiler rejects
+a path that would outlive the match it walks. Values from `eval` and `call`
+are plain owned `Tree`s and need nothing.
+
+## 9. Testing
+
+```bash
+build/rakupp tools/bindings-smoke.raku
+```
+
+Runs both examples in all five languages and checks the output against
+[../examples/expected/](../examples/expected). For the deep gate — this
+binding driving the same grammar and 2000-line corpus as the Raku reference
+driver, byte-compared — run `build/rakupp tools/grammar-smoke.raku`. Both run
+in CI on every push.
 
 ## When things go wrong
 
 - **`ld: library 'rakupp' not found` while building** — `RAKUPP_LIB_DIR` is
-  unset or points at a directory with no shared library. A plain build
-  directory is static-only: rebuild with `-DRAKUPP_BUILD_SHARED=ON`.
-- **`incompatible architecture` / `found architecture 'arm64'...`** — your
-  Rust toolchain and the library disagree (common on Apple Silicon with an
-  x86_64 rustup install; check `rustc -vV | grep host`). Either install the
-  arm64 toolchain, or build an x86_64 library to match:
+  unset or wrong, or that build directory is static-only: rebuild with
+  `-DRAKUPP_BUILD_SHARED=ON`.
+- **`incompatible architecture`** — your Rust toolchain and the library
+  disagree (`rustc -vV | grep host`). Either install the matching toolchain,
+  or build the library for Rust's architecture:
   `cmake -B build-x64 -DCMAKE_OSX_ARCHITECTURES=x86_64 -DRAKUPP_BUILD_SHARED=ON ...`
   and point `RAKUPP_LIB_DIR` there.
-- **`rk_new refused: an interpreter is already live`** — something else in
-  this process already embeds Raku++; the engine allows one interpreter per
-  process.
-- **`Error::Raku(...)`** — a die from the engine: broken grammar source, a
-  missing capture read as a value, an exception inside an actions method.
-  The message is the engine's own.
+- **`rk_new refused`** — something already created an interpreter in this
+  process. The crate keeps one; do not make another.

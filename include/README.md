@@ -8,12 +8,14 @@ business, and no binding, embedder or extension should include it.
 |---|---|---|
 | `rakupp.h` | C embedders — `rk_ctx`, `rk_eval`, `rk_call`, the value handles | [`src/EmbedApi.cpp`](../src/EmbedApi.cpp) |
 | `rakupp_ext.h` | native extension modules, the XS analogue ([EXTENSIONS.md](../docs/guide/EXTENSIONS.md)) | [`src/ExtApi.cpp`](../src/ExtApi.cpp) |
-| `grammar.hpp` | the C++ binding — header-only sugar over `rakupp.h` | nothing; the engine never includes it |
+| `raku.hpp` | the C++ binding — `eval`, `call`, `Tree`, header-only over `rakupp.h` | nothing; the engine never includes it |
+| `grammar.hpp` | the C++ binding's grammar half; includes `raku.hpp` | nothing; the engine never includes it |
 | `rakupp_ext.dynlist` | the ELF link that puts `rk_*` in the executable's `.dynsym` | — |
 
 The bindings in [`../bindings/`](../bindings) all sit on this: Python, JS, Go
 and Rust `dlopen` librakupp and call the `rakupp.h` ABI through their own FFI;
-C++ includes `<rakupp/grammar.hpp>` and links.
+C++ includes `<rakupp/raku.hpp>` (or `<rakupp/grammar.hpp>`, which includes
+it) and links. The C++ guide is [`../bindings/cpp/README.md`](../bindings/cpp/README.md).
 
 ## Why the split is source-tree only
 

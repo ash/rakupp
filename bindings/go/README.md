@@ -1,36 +1,67 @@
-# rakulang — Raku grammars for Go
+# rakulang — Raku from Go
 
-This package lets a Go program parse text with a Raku grammar. The grammar
-stays a plain `.raku` file; the parsing happens in an embedded Raku++
-interpreter (`librakupp`, reached through cgo); the package only moves
-values across. This guide assumes no prior Go beyond having it installed.
+A single-file cgo package over `librakupp`'s C ABI. cgo does the loading and
+the value marshalling; values cross through
+[`rakupp.h`](../../include/rakupp/rakupp.h), and the grammar logic lives in a
+Raku shim that ships inside the library itself.
 
-## What you need
+## 1. What you need
 
-- **Go** (1.17+) and a **C compiler** — cgo needs one; on macOS
-  `xcode-select --install` provides it, on Linux install gcc or clang.
-- **The shared library** — from the repo root:
+- **Go 1.18+ with cgo**, which needs a C compiler. On macOS
+  `xcode-select --install` provides one; on Linux install gcc or clang.
+- **`librakupp`.** From the repo root:
 
   ```bash
   cmake -B build -DCMAKE_BUILD_TYPE=Release -DRAKUPP_BUILD_SHARED=ON
   cmake --build build -j
   ```
 
-  This gives you `build/librakupp.dylib` (macOS) / `build/librakupp.so`
-  (Linux). Any build directory works; the commands below say `build`.
+  A build directory configured without `-DRAKUPP_BUILD_SHARED=ON` is
+  static-only and this package cannot use it.
 
-## Run the example
+## 2. Install
 
-From the repo root:
+Go links rather than searching at runtime, so the library path is a linker
+flag, not an environment variable. The package must see the checkout — its
+cgo header path points into `../../include`. In your project's `go.mod`:
 
-```bash
-cd bindings/go
-CGO_LDFLAGS="-L$PWD/../../build -Wl,-rpath,$PWD/../../build" go run ./examples/shopping
+```
+require rakulang v0.0.0
+replace rakulang => /path/to/raku++/bindings/go
 ```
 
-`CGO_LDFLAGS` does two jobs: `-L` lets the build find the library, and
-`-Wl,-rpath` bakes its directory into the binary so it is also found at run
-time. Expected output (possibly after some harmless linker warnings):
+Then build and run with `CGO_LDFLAGS` pointing at your build directory:
+
+```bash
+CGO_LDFLAGS="-L/path/to/raku++/build -Wl,-rpath,/path/to/raku++/build" go run .
+```
+
+Against a system-installed `librakupp` you can drop the flags.
+
+## 3. Two minutes
+
+Run both examples:
+
+```bash
+cd bindings/go && CGO_LDFLAGS="-L$PWD/../../build -Wl,-rpath,$PWD/../../build" go run ./examples/calc
+```
+```bash
+cd bindings/go && CGO_LDFLAGS="-L$PWD/../../build -Wl,-rpath,$PWD/../../build" go run ./examples/shopping
+```
+
+`calc` ([examples/calc/main.go](examples/calc/main.go)) prints:
+
+```
+2 + 2 = 4
+area(3, 4) = 12
+primes below 30: 2 3 5 7 11 13 17 19 23 29
+stats: count=8 sum=31 mean=3.88 max=9
+greet: Hello, Ada! You are 36.
+30! = 265252859812191058636308480000000
+died: division by zero
+```
+
+`shopping` ([examples/shopping/main.go](examples/shopping/main.go)) prints:
 
 ```
 3 items
@@ -42,127 +73,124 @@ as plain Go data: map[item:[map[name:milk qty:2] map[name:bread qty:1] map[name:
 line 2 column 7 while trying <qty>
 ```
 
-If you see this, the binding works.
+If you see both, the binding works.
 
-## The example, explained
-
-The source is [examples/shopping/main.go](examples/shopping/main.go); the
-grammar it loads is [../examples/shopping.raku](../examples/shopping.raku).
-The whole API in one pass:
+## 4. Running Raku
 
 ```go
 import "rakulang"
 
-// Compile the grammar file. "Shopping" is the grammar's name INSIDE the
-// file; "ShoppingActions" names an actions class in the same file (pass ""
-// for none).
-g, err := rakulang.FromFile("shopping.raku", "Shopping", "ShoppingActions")
+rakulang.Eval("my $x = 41")
+v, _ := rakulang.Eval("$x + 1")        // 42 — Eval keeps state, like the REPL
 
-// Parse. A non-match is the sentinel error rakulang.ErrNoMatch (check with
-// errors.Is); any other error is a real failure. The whole input must
-// match. To parse a fragment with one rule: g.Parse(text, "item").
-m, err := g.Parse("milk=2\nbread = 1  eggs=12\n")
-defer m.Close()   // a Match holds an engine value — freeing is YOUR job
+src, _ := os.ReadFile("calc.raku")
+rakulang.Eval(string(src))             // loading a file of subs is an Eval
 
-// Walk the match lazily. Get names a capture; At indexes a repeated one.
-// Nothing crosses the engine boundary until a terminal call like
-// Str/Int/Len — those cost one engine call each.
-items := m.Get("item")
-for i := 0; i < items.Len(); i++ {
-    item := items.At(i)
-    fmt.Println(item.Get("name").Str(), item.Get("qty").Int())
+area, _ := rakulang.Call("area", 3, 4)             // int64(12)
+s, _ := rakulang.Call("stats", []interface{}{3, 1, 4})
+greet, _ := rakulang.Call("greet", map[string]interface{}{"name": "Ada"})
+
+rakulang.Can("area")                   // true
+rakulang.Version()                     // "3.14.0"
+```
+
+`Eval` returns the last statement's value; `Call` looks the routine up in the
+mainline scope, so anything an earlier `Eval` declared is callable. Arguments
+convert automatically — `nil`, `bool`, `int`/`int32`/`int64`,
+`float32`/`float64`, `string`, `[]interface{}`, `map[string]interface{}`.
+Anything else returns a `*RakuError`.
+
+Both return `interface{}`; type-assert it to the shape you expect
+(`v.(int64)`, `v.([]interface{})`, `v.(map[string]interface{})`).
+
+## 5. Parsing with grammars
+
+```go
+g, err := rakulang.FromFile("log.raku", "Log", "LogActions")
+
+m, err := g.Parse(text)                // errors.Is(err, ErrNoMatch) if no match
+defer m.Close()                        // required — see §8
+
+lines := m.Get("line")
+for i := 0; i < lines.Len(); i++ {      // lazy: one engine call per leaf
+    line := lines.At(i)
+    fmt.Println(line.Get("ip").Str(), line.Get("status").Int())
 }
+fmt.Println(lines.At(0).Get("size").Made())   // computed by actions
 
-// What the Raku actions class computed, as native data. ShoppingActions'
-// TOP method did `make ...sum`, so this is int64(15).
-fmt.Println(m.Made())
+everything := m.Tree()                 // eager, opt-in (~1.4× the parse)
+```
 
-// Or convert everything below a node at once (~1.4x the parse's own cost):
-// nested map[string]interface{} / []interface{} / string values.
-all := m.Tree()
+`FromFile(path, name, actions)` compiles and caches: identical source
+compiles once, and each *named* compile is isolated, so recompiling an edited
+grammar never rebinds an earlier `Grammar`'s body. `name` may be empty only
+when the grammar declaration is the file's last statement.
 
-// A failed parse, diagnosed: ParseStrict returns *ParseError with the
-// line, column, and the deepest rule the engine was trying there.
-_, err = g.ParseStrict("milk=2\nbread=x\n")
+`Parse` anchors to the whole input; a non-match is the sentinel error
+`rakulang.ErrNoMatch` (check with `errors.Is`) and any other error is a real
+failure. `ParseStrict` diagnoses the non-match instead. Pass a rule name —
+`g.Parse(text, "item")` — to parse a fragment with one rule. `Get` and `At`
+build a lazy path; nothing crosses the boundary until `Str()`, `Int()`,
+`Num()`, `Truthy()`, `Len()`, `Tree()` or `Made()`.
+
+`SortedKeys` is provided for printing a `map[string]interface{}` in a
+deterministic order.
+
+## 6. Values
+
+Raku `Int` → `int64`, `Num`/`Rat` → `float64`, `Str` → `string`, `List` →
+`[]interface{}`, `Hash` → `map[string]interface{}`, `True`/`False` → `bool`,
+`Any` → `nil`. The same rules run in reverse for arguments.
+
+An integer wider than 64 bits arrives as a string of digits. In a `Tree()`, a
+match node with no sub-captures becomes its matched *text*, so `qty` is the
+string `"2"`; use `.Int()` on the node, or an actions class, for numbers.
+
+## 7. Errors
+
+`*RakuError` is a Raku `die` crossing the boundary. `*ParseError` is the
+diagnosed non-match, carrying `.Line`, `.Col`, `.Rule` and `.Pos`:
+
+```go
+_, err = g.ParseStrict(text)
 var pe *rakulang.ParseError
 if errors.As(err, &pe) {
-    fmt.Println(pe.Line, pe.Col, pe.Rule)
+    fmt.Printf("line %d column %d while trying <%s>\n", pe.Line, pe.Col, pe.Rule)
 }
 ```
 
-## How data crosses
+## 8. Lifetime and threading
 
-Into Raku: the text you parse (and the grammar source). Out of Raku, two
-channels:
+One interpreter per process, created on first use. **One goroutine at a
+time** may use Grammars and Matches — they are not safe to share across
+goroutines (Raku code inside the interpreter threads freely).
 
-- **Lazy leaf reads** — `.Str()` → `string`, `.Int()` → `int64`, `.Num()` →
-  `float64`. Cheap and precise; use these when you want a few fields.
-- **`Tree()` / `Made()`** — everything at once, as `interface{}` values:
-  `nil`, `bool`, `int64`, `float64`, `string`, `[]interface{}`,
-  `map[string]interface{}`. In a `Tree()`, a node with no sub-captures
-  becomes its matched text (`"2"`, not `2`); named captures become map keys;
-  repeated captures become slices. `Made()` carries whatever the actions
-  class `make`d — the general-purpose way to have Raku *compute* something
-  and hand the result to Go as plain data.
+**Call `Close()` on a Match when you are done with it**, usually with
+`defer`. It holds a rooted value inside the interpreter and Go's GC will not
+release that for you. Values from `Eval` and `Call` are already plain Go data
+and need nothing.
 
-Probing: `.Truthy()` answers whether anything matched at a path — reading a
-missing capture with `Str()`/`Int()` panics (deliberately, per Go's `Must*`
-idiom: it is a programmer error, so probe first). `.Len()` is the list
-length — 1 for a plain node, 0 for a missing one.
-
-## Rules to remember
-
-- **`defer m.Close()`** after every successful parse. There is deliberately
-  no finalizer — a Match holds a rooted engine value and freeing it is
-  explicit, like a file handle.
-- **One interpreter per process**, created on first use, and **one goroutine
-  at a time** may use Grammars and Matches — they are not safe to share
-  across goroutines. (Raku code inside the interpreter threads freely.)
-
-## Using it in your own project
-
-The package must see the checkout (its cgo header path points into
-`../../include`). In your project's `go.mod`:
-
-```
-require rakulang v0.0.0
-replace rakulang => /path/to/raku++/bindings/go
-```
-
-Then build/run with the same `CGO_LDFLAGS` as above, pointing at your build
-directory. Against a system-installed librakupp you can drop the flags.
-
-## Testing it properly
-
-The full gate — same grammar, same 2000-line corpus, this package's output
-byte-compared against plain `rakupp`'s — runs from the repo root:
+## 9. Testing
 
 ```bash
-build/rakupp tools/grammar-smoke.raku
+build/rakupp tools/bindings-smoke.raku
 ```
 
-Look for `ok - Go output is byte-identical to rakupp's`. The Go leg skips
-(loudly) if go is missing or its architecture cannot load the library — see
-below.
+Runs both examples in all five languages and checks the output against
+[../examples/expected/](../examples/expected). For the deep gate — this
+binding driving the same grammar and 2000-line corpus as the Raku reference
+driver, byte-compared — run `build/rakupp tools/grammar-smoke.raku`. Both run
+in CI on every push.
 
 ## When things go wrong
 
-- **`library 'rakupp' not found` at link time** — `CGO_LDFLAGS` unset or its
-  `-L` points at a directory with no shared library. A plain build directory
-  is static-only: rebuild with `-DRAKUPP_BUILD_SHARED=ON`.
-- **`dyld: Library not loaded` at run time** — the binary was linked without
-  the `-Wl,-rpath,...` part of `CGO_LDFLAGS`; add it (or set
-  `DYLD_LIBRARY_PATH`/`LD_LIBRARY_PATH`).
+- **`ld: library not found for -lrakupp`** — `CGO_LDFLAGS` does not point at
+  a directory holding the library, or that build directory is static-only:
+  rebuild with `-DRAKUPP_BUILD_SHARED=ON`.
 - **`incompatible architecture`** — your Go toolchain and the library
-  disagree (common on Apple Silicon with an x86_64 Go; check `go version` —
-  `darwin/amd64` on an M-series machine is the wrong one). Either install
-  arm64 Go, or build an x86_64 library to match:
+  disagree (`go env GOARCH`; `darwin/amd64` on an M-series machine is the
+  wrong one). Either install a matching Go, or build the library for Go's
+  architecture:
   `cmake -B build-x64 -DCMAKE_OSX_ARCHITECTURES=x86_64 -DRAKUPP_BUILD_SHARED=ON ...`
-- **`could not determine kind of name for C.rk_...`** — the package cannot
-  find `rakupp.h`; it expects to live inside the checkout (the `replace`
-  directive above keeps that true).
-- **panic while reading a value** — you read `Str()`/`Int()` on a capture
-  that did not match. Probe with `Truthy()` first.
-- **`rk_new refused: an interpreter is already live`** — something else in
-  this process already embeds Raku++; the engine allows one interpreter per
-  process.
+- **`rk_new refused`** — something already created an interpreter in this
+  process. The package keeps one; do not make another.

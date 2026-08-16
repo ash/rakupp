@@ -1,0 +1,7 @@
+3 items
+milk x 2
+bread x 1
+eggs x 12
+total, computed in Raku: 15
+as plain Go data: map[item:[map[name:milk qty:2] map[name:bread qty:1] map[name:eggs qty:12]]]
+line 2 column 7 while trying <qty>

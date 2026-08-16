@@ -210,8 +210,14 @@ class Interp:
         if self._rk:
             self._lib.rk_unroot(self._ctx, v)
 
+    def can(self, name):
+        """Is there a routine of this name in the mainline scope?"""
+        self._alive()
+        return self._lib.rk_can(self._ctx, name.encode("utf-8")) != 0
+
     @property
     def version(self):
+        """The engine's version string, e.g. "3.14.0"."""
         return self._lib.rk_version().decode()
 
 

@@ -155,16 +155,18 @@ created, and by more than one at once. Make those re-entrant.
 ## Bindings
 
 You may not need the C surface directly. [bindings/](../../bindings/README.md)
-holds five hosts built for the first real workload embedding was named for —
-**using Raku grammars from a host language**
-([GRAMMAR-PLAN](../dev/plans/GRAMMAR-PLAN.md)): Python (ctypes; ships as a
-platform wheel with librakupp bundled), C++ (`<rakupp/grammar.hpp>`,
-header-only, in the install layout), JS/TS (bun:ffi), Go (cgo), and Rust
-(zero-dependency crate). All five drive the same Raku shim, which lives
-INSIDE the library (`rk_grammar_shim`) so a binding can never skew against
-its engine, and all five are byte-compared against plain `rakupp` by
-`tools/grammar-smoke.raku` in CI. The other direction — your functions
-callable from Raku — is `rk_register`.
+holds five hosts over it — Python (ctypes; ships as a platform wheel with
+librakupp bundled), JS/TS (bun:ffi), Go (cgo), Rust (zero-dependency crate),
+and C++ (`<rakupp/raku.hpp>` and `<rakupp/grammar.hpp>`, header-only, in the
+install layout). Each gives you the same two things this header gives you,
+in its own idiom: **run Raku** (evaluate source, call routines with host
+values, read results back) and **parse with Raku grammars**
+([GRAMMAR-PLAN](../dev/plans/GRAMMAR-PLAN.md)) — the workload embedding was
+named for. All five drive the same Raku shim, which lives INSIDE the library
+(`rk_grammar_shim`) so a binding can never skew against its engine; all five
+are byte-compared against plain `rakupp` by `tools/grammar-smoke.raku`, and
+their worked examples are checked by `tools/bindings-smoke.raku`, both in CI.
+The other direction — your functions callable from Raku — is `rk_register`.
 
 ## See also
 

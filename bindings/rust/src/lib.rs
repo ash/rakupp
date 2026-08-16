@@ -69,6 +69,13 @@ extern "C" {
     fn rk_str(c: RkCtx, utf8: *const c_char, len: size_t) -> RkValue;
     fn rk_array(c: RkCtx) -> RkValue;
     fn rk_push(c: RkCtx, array: RkValue, v: RkValue);
+    fn rk_any(c: RkCtx) -> RkValue;
+    fn rk_bool(c: RkCtx, truthy: c_int) -> RkValue;
+    fn rk_num(c: RkCtx, v: c_double) -> RkValue;
+    fn rk_hash(c: RkCtx) -> RkValue;
+    fn rk_set(c: RkCtx, hash: RkValue, key: *const c_char, keylen: size_t, v: RkValue);
+    fn rk_can(c: RkCtx, name: *const c_char) -> c_int;
+    fn rk_version() -> *const c_char;
 }
 
 // ---- errors -----------------------------------------------------------------
@@ -99,11 +106,13 @@ impl std::error::Error for Error {}
 // ---- the session ------------------------------------------------------------
 
 struct Session {
+    rk: RkInterp,
     c: RkCtx,
 }
 // One interpreter per process; the pointers never move and the crate's types
-// are !Send, so handing the addresses through OnceLock is sound.
-struct SendPtr(RkCtx);
+// are !Send, so handing the addresses through OnceLock is sound. `rk` is kept
+// beside `c` because rk_eval takes the interpreter, not the context.
+struct SendPtr(RkInterp, RkCtx);
 unsafe impl Send for SendPtr {}
 unsafe impl Sync for SendPtr {}
 
@@ -121,10 +130,10 @@ fn session() -> Result<Session, Error> {
             let msg = if e.is_null() { "?".into() } else { CStr::from_ptr(e).to_string_lossy().into_owned() };
             return Err(format!("grammar shim failed to load: {}", msg));
         }
-        Ok(SendPtr(c))
+        Ok(SendPtr(rk, c))
     });
     match r {
-        Ok(p) => Ok(Session { c: p.0 }),
+        Ok(p) => Ok(Session { rk: p.0, c: p.1 }),
         Err(m) => Err(Error::Raku(m.clone())),
     }
 }
@@ -157,6 +166,35 @@ impl Session {
             let p = rk_str_get(self.c, v, &mut n);
             if p.is_null() || n == 0 { return String::new(); }
             String::from_utf8_lossy(std::slice::from_raw_parts(p as *const u8, n)).into_owned()
+        }
+    }
+
+    /// Rust -> engine. The result is UNROOTED: valid until the next eval or
+    /// call, which is long enough to pass it as an argument and no longer.
+    fn value_of(&self, t: &Tree) -> RkValue {
+        unsafe {
+            match t {
+                Tree::Null => rk_any(self.c),
+                Tree::Bool(b) => rk_bool(self.c, if *b { 1 } else { 0 }),
+                Tree::Int(i) => rk_int(self.c, *i),
+                Tree::Num(n) => rk_num(self.c, *n),
+                Tree::Str(s) => self.str(s),
+                Tree::List(items) => {
+                    let a = rk_array(self.c);
+                    for item in items {
+                        rk_push(self.c, a, self.value_of(item));
+                    }
+                    a
+                }
+                Tree::Map(m) => {
+                    let h = rk_hash(self.c);
+                    for (k, v) in m {
+                        rk_set(self.c, h, k.as_ptr() as *const c_char, k.len(),
+                               self.value_of(v));
+                    }
+                    h
+                }
+            }
         }
     }
 
@@ -201,6 +239,84 @@ pub enum Tree {
     Str(String),
     List(Vec<Tree>),
     Map(std::collections::BTreeMap<String, Tree>),
+}
+
+// ---- running Raku ----------------------------------------------------------
+// `Tree` is both the argument type and the result type, so what you send and
+// what you get back read alike. The From impls keep the call sites short:
+// `call("area", &[3.into(), 4.into()])`.
+
+impl From<i64> for Tree {
+    fn from(v: i64) -> Tree { Tree::Int(v) }
+}
+impl From<i32> for Tree {
+    fn from(v: i32) -> Tree { Tree::Int(v as i64) }
+}
+impl From<f64> for Tree {
+    fn from(v: f64) -> Tree { Tree::Num(v) }
+}
+impl From<bool> for Tree {
+    fn from(v: bool) -> Tree { Tree::Bool(v) }
+}
+impl From<&str> for Tree {
+    fn from(v: &str) -> Tree { Tree::Str(v.to_string()) }
+}
+impl From<String> for Tree {
+    fn from(v: String) -> Tree { Tree::Str(v) }
+}
+impl From<Vec<Tree>> for Tree {
+    fn from(v: Vec<Tree>) -> Tree { Tree::List(v) }
+}
+impl From<std::collections::BTreeMap<String, Tree>> for Tree {
+    fn from(v: std::collections::BTreeMap<String, Tree>) -> Tree { Tree::Map(v) }
+}
+
+/// Evaluate Raku source in the interpreter's mainline scope and return the
+/// last statement's value. State persists across calls, exactly as in the
+/// REPL: eval a `sub` here and [`call`] finds it afterwards.
+///
+/// ```no_run
+/// rakulang::eval("sub area($w, $h) { $w * $h }")?;
+/// # Ok::<(), rakulang::Error>(())
+/// ```
+pub fn eval(source: &str) -> Result<Tree, Error> {
+    let s = session()?;
+    let src = CString::new(source).map_err(|_| Error::Raku("source contains a NUL".into()))?;
+    unsafe {
+        let mut out: RkValue = std::ptr::null_mut();
+        if rk_eval(s.rk, src.as_ptr(), &mut out) != RK_OK {
+            let e = rk_last_error(s.rk);
+            let msg = if e.is_null() { "rk_eval failed".to_string() }
+                      else { CStr::from_ptr(e).to_string_lossy().into_owned() };
+            return Err(Error::Raku(msg));
+        }
+        Ok(s.tree_of(out))
+    }
+}
+
+/// Call a Raku routine by name with Rust arguments:
+/// `call("area", &[3.into(), 4.into()])`. The routine must be visible in the
+/// mainline scope — declared by an earlier [`eval`], or by a file you
+/// evaluated. A die inside it comes back as [`Error::Raku`].
+pub fn call(name: &str, args: &[Tree]) -> Result<Tree, Error> {
+    let s = session()?;
+    let argv: Vec<RkValue> = args.iter().map(|a| s.value_of(a)).collect();
+    Ok(s.tree_of(s.call(name, &argv)?))
+}
+
+/// Does the mainline scope have a routine of this name?
+pub fn can(name: &str) -> bool {
+    let Ok(s) = session() else { return false };
+    let Ok(cname) = CString::new(name) else { return false };
+    unsafe { rk_can(s.c, cname.as_ptr()) != 0 }
+}
+
+/// The engine's version string, e.g. `"3.14.0"`.
+pub fn version() -> String {
+    unsafe {
+        let v = rk_version();
+        if v.is_null() { String::new() } else { CStr::from_ptr(v).to_string_lossy().into_owned() }
+    }
 }
 
 // ---- grammars, matches, nodes ----------------------------------------------
