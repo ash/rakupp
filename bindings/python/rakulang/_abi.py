@@ -33,17 +33,25 @@ def _library_name():
     return "librakupp.so"
 
 
+def _explicit():
+    """Libraries the CALLER named. These are authoritative: if one is named
+    and does not load, that is an error, never a reason to quietly use some
+    other library — the wrong-architecture case otherwise looks like a
+    mysteriously stale build. They come before the bundled wheel copy so a
+    checkout can be tested against an installed wheel."""
+    env = os.environ.get("RAKUPP_LIB")
+    if env:
+        yield env, "RAKUPP_LIB"
+    home = os.environ.get("RAKUPP_HOME")
+    if home:
+        yield os.path.join(home, "lib", _library_name()), "RAKUPP_HOME"
+
+
 def _candidates():
     # a platform wheel bundles the library inside the package (tools/build-wheel.sh)
     bundled = os.path.join(os.path.dirname(__file__), "_lib", _library_name())
     if os.path.exists(bundled):
         yield bundled
-    env = os.environ.get("RAKUPP_LIB")
-    if env:
-        yield env
-    home = os.environ.get("RAKUPP_HOME")
-    if home:
-        yield os.path.join(home, "lib", _library_name())
     # The rakupp binary on PATH knows where it lives: an installed layout
     # (cmake --install, the release tarball, Homebrew) is bin/rakupp beside
     # lib/librakupp.*, and a build directory holds binary and library side
@@ -72,8 +80,25 @@ def load(path=None):
     RTLD_LOCAL library is invisible to that lookup (ABI-PLAN A3). macOS
     searches all images either way; the flag is harmless there.
     """
+    # An explicitly named library is authoritative — it loads or we stop.
+    # Falling through to the next candidate would silently run a DIFFERENT
+    # library than the one asked for, and the commonest cause is an
+    # architecture mismatch, where the symptom (an old library's behaviour)
+    # points nowhere near the cause.
+    for cand, how in ([(path, "the path passed to interpreter()")] if path
+                      else _explicit()):
+        try:
+            lib = ctypes.CDLL(cand, mode=ctypes.RTLD_GLOBAL)
+        except OSError as e:
+            raise OSError(
+                "%s names %s, which could not be loaded: %s\n"
+                "It is used as given — unset it to search for a library instead."
+                % (how, cand, e)
+            ) from None
+        return _declare(lib)
+
     tried = []
-    for cand in ([path] if path else _candidates()):
+    for cand in _candidates():
         try:
             lib = ctypes.CDLL(cand, mode=ctypes.RTLD_GLOBAL)
             break
@@ -94,6 +119,12 @@ def load(path=None):
                ("\nTried:\n  " + "\n  ".join(tried)) if tried else "")
         )
 
+    return _declare(lib)
+
+
+def _declare(lib):
+    """Attach the C signatures. Split out so the explicit and the discovered
+    load paths cannot drift apart."""
     p = ctypes.c_void_p  # RkInterp / RkCtx / RkValue are all opaque pointers
 
     def sig(name, restype, *argtypes):
