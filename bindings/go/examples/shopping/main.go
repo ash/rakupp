@@ -21,7 +21,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	m, err := g.Parse("milk=2\nbread=1\neggs=12\n") // ErrNoMatch if no match
+	m, err := g.Parse("milk=2\nbread = 1  eggs=12\n") // ErrNoMatch if no match
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

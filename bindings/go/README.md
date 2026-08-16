@@ -61,7 +61,7 @@ g, err := rakulang.FromFile("shopping.raku", "Shopping", "ShoppingActions")
 // Parse. A non-match is the sentinel error rakulang.ErrNoMatch (check with
 // errors.Is); any other error is a real failure. The whole input must
 // match. To parse a fragment with one rule: g.Parse(text, "item").
-m, err := g.Parse("milk=2\nbread=1\neggs=12\n")
+m, err := g.Parse("milk=2\nbread = 1  eggs=12\n")
 defer m.Close()   // a Match holds an engine value — freeing is YOUR job
 
 // Walk the match lazily. Get names a capture; At indexes a repeated one.

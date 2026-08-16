@@ -1,9 +1,10 @@
 # The shared example — one grammar, every language
 
-[shopping.raku](shopping.raku) parses a shopping list (`milk=2` per line)
-and its actions class sums the quantities inside the parse. The same program
-exists in every binding's language, prints the same thing, and is the
-fastest way to check a binding works on your machine.
+[shopping.raku](shopping.raku) parses a free-form shopping list of `milk=2`
+pairs — its rules are `rule`s, so the layout and the spacing around the `=`
+are up to you — and its actions class sums the quantities inside the parse.
+The same program exists in every binding's language, prints the same thing,
+and is the fastest way to check a binding works on your machine.
 
 Prerequisite (once, from the repo root):
 

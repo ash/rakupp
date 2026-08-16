@@ -63,7 +63,7 @@ let g = Grammar::from_file("shopping.raku", "Shopping", "ShoppingActions")?;
 // the ? (call errors) followed by .expect/match (no-match). "" means
 // "use the grammar's default rule, TOP"; pass e.g. "item" to parse a
 // fragment with just that rule.
-let m = g.parse("milk=2\nbread=1\neggs=12\n", "")?.expect("no match");
+let m = g.parse("milk=2\nbread = 1  eggs=12\n", "")?.expect("no match");
 
 // Walk the match lazily. get("item") names a capture; at(i) indexes a
 // repeated one. Nothing crosses the engine boundary until a terminal call

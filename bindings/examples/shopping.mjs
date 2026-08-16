@@ -11,7 +11,7 @@ const here = new URL(".", import.meta.url).pathname;
 const g = Grammar.fromFile(`${here}shopping.raku`,
                            { name: "Shopping", actions: "ShoppingActions" });
 
-const m = g.parse("milk=2\nbread=1\neggs=12\n");   // a Match, or null if no match
+const m = g.parse("milk=2\nbread = 1  eggs=12\n"); // a Match, or null if no match
 
 const items = m.get("item");
 console.log(items.length, "items");

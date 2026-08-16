@@ -34,12 +34,15 @@ is static-only and no binding can use it.
 
 [examples/](examples/) holds one small grammar, `shopping.raku`, and the same
 program written in every language. The grammar parses a shopping list and its
-actions class sums the quantities *inside the parse*:
+actions class sums the quantities *inside the parse*. TOP and item are `rule`s,
+so they are `:sigspace` — each space in the pattern matches `<.ws>`, and the
+list may run one item per line or several to a line, with or without spaces
+around the `=`:
 
 ```raku
 grammar Shopping {
-    token TOP  { <item>+ }
-    token item { <name> '=' <qty> "\n" }
+    rule  TOP  { <item>+ }
+    rule  item { <name> '=' <qty> }
     token name { \w+ }
     token qty  { \d+ }
 }

@@ -16,7 +16,7 @@ import rakulang
 g = rakulang.Grammar.from_file(os.path.join(HERE, "shopping.raku"),
                                name="Shopping", actions="ShoppingActions")
 
-m = g.parse("milk=2\nbread=1\neggs=12\n")     # a Match, or None if no match
+m = g.parse("milk=2\nbread = 1  eggs=12\n")   # a Match, or None if no match
 
 items = m["item"]
 print(len(items), "items")

@@ -13,7 +13,7 @@ fn main() -> Result<(), Error> {
     let g = Grammar::from_file(grammar, "Shopping", "ShoppingActions")?;
 
     // parse returns Ok(None) if the grammar does not match
-    let m = g.parse("milk=2\nbread=1\neggs=12\n", "")?.expect("the list matches");
+    let m = g.parse("milk=2\nbread = 1  eggs=12\n", "")?.expect("the list matches");
 
     let items = m.get("item");
     println!("{} items", items.len()?);

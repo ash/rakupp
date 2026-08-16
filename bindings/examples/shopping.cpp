@@ -20,7 +20,7 @@ int main() {
                                         "Shopping", "ShoppingActions");
 
     // parse returns std::nullopt if the grammar does not match
-    auto m = g.parse("milk=2\nbread=1\neggs=12\n");
+    auto m = g.parse("milk=2\nbread = 1  eggs=12\n");
     if (!m) {
         std::cerr << "no match\n";
         return 1;

@@ -63,7 +63,7 @@ const g = Grammar.fromFile("shopping.raku",
 // Parse. null means "the text did not match" (an engine failure throws
 // RakuError instead). The whole input must match. To parse a fragment with
 // one rule: g.parse(text, { rule: "item" }).
-const m = g.parse("milk=2\nbread=1\neggs=12\n");
+const m = g.parse("milk=2\nbread = 1  eggs=12\n");
 
 // Walk the match lazily. get() names a capture; at() indexes a repeated
 // one; a repeated capture is iterable. Nothing crosses the engine boundary
