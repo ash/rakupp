@@ -240,6 +240,16 @@ iteration order per process. Do not read a ±5 move as progress.
    v3.0.0 skipped this step entirely and nothing noticed: every gate passes on
    a binary that reports the wrong version, the tag was cut, and the release
    shipped announcing `2.0.0`. One command would have caught it.
+
+   Read the whole output, not just the first line. The `Build` line carries
+   `git describe --always --dirty`, so **it must not end in `-dirty`** — that
+   suffix means the binary was built from a tree with uncommitted changes, and
+   nobody can ever reconstruct what it actually contains. Commit or stash
+   first and rebuild. A released binary must name a commit that exists:
+
+   ```bash
+   ./build-arm64/rakupp --version | grep -q -- -dirty && echo 'REBUILD: built from a dirty tree'
+   ```
 2. Write the CHANGELOG entry — measured numbers, not projected, with the
    methodology link. Note anything deliberately left open.
 3. Refresh the figures in README, `docs/status/ROAST.md`, `docs/status/COUNTING.md`,

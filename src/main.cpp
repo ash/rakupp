@@ -1,4 +1,5 @@
 #include "AsciiCtype.h"
+#include "BuildInfo.h"
 #include "Runtime.h"
 #include "Profiler.h"
 #include <cstdint>
@@ -1680,13 +1681,23 @@ int main(int argc, char** argv) {
 "  RAKUPP_FFI_TRACE=1           Log every NativeCall crossing to stderr as it happens\n"
 "\n"
 "Run the spec-test harness (self-hosted, in Raku):\n"
-"  ROAST=/path/to/roast rakupp tools/run-roast.raku [PATH-SUBSTRING]\n";
+"  ROAST=/path/to/roast rakupp tools/run-roast.raku [PATH-SUBSTRING]\n"
+"\n"
+"Docs, a tour of the language, and a browser playground: https://raku.online\n";
             return 0;
         }
     }
+    // The first line keeps its shape: it is what a human greps for and what
+    // t/run.raku asserts. Everything a bug report needs follows it — which
+    // commit this binary came from, when, for what, and with which compiler.
     if (mode == Mode::Version) {
-            std::cout << "Raku++ (rakupp) " RAKUPP_VERSION
-                         " — a Raku interpreter and compiler in C++ (implements Raku 6.d, with 6.e features)\n";
+        std::cout << "Raku++ (rakupp) " RAKUPP_VERSION
+                     " — a Raku interpreter and compiler in C++\n"
+                     "Implements Raku 6.d, with 6.e features.\n"
+                  << "Build  " << rakupp::buildId() << " (" << rakupp::buildDate()
+                  << "), " << rakupp::platform() << ", " << rakupp::compilerId() << "\n"
+                  << "Home   https://raku.online — docs, a tour of the language, "
+                     "and a browser playground\n";
         return 0;
     }
     // Which FFI backend NativeCall will use. The first question to ask of a
