@@ -128,6 +128,12 @@ static InfixInfo classifyInfix(const Token& t) {
         const std::string& o = t.text;
         in.op = o;
         if (kAssignOps.count(o)) { in.valid = true; in.lbp = BP_ASSIGN; in.rightAssoc = true; in.isAssign = true; return in; }
+        // Bare `R=` — the reverse metaop on plain assignment, so `1 R= my $x`
+        // is `my $x = 1`. The general form below needs a base operator between
+        // the R and the `=`, which this does not have.
+        if (o == "R=") {
+            in.valid = true; in.lbp = BP_ASSIGN; in.rightAssoc = true; in.isAssign = true; return in;
+        }
         // reversed-metaop assignment `$x R~= $y` (= `$y ~= $x`, target on the right)
         if (o.size() > 2 && o[0] == 'R' && o.back() == '=' && kAssignOps.count(o.substr(1))) {
             in.valid = true; in.lbp = BP_ASSIGN; in.rightAssoc = true; in.isAssign = true; return in;

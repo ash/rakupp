@@ -13145,6 +13145,17 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         *lv = applyBinOp(base, *lv, r);
         return sink ? Value::any() : *lv;
     }
+    // `A R= B` is plain assignment with the roles swapped: `B = A`.
+    if (a->op == "R=") {
+        Value v = eval(a->target.get());
+        Value* lv = lvalue(a->value.get());
+        if (lv->readonly)
+            throw RakuError{Value::typeObj("X::Assignment::RO"),
+                            "Cannot assign to a readonly variable or a value"};
+        v.readonly = false;
+        *lv = std::move(v);
+        return sink ? Value::any() : *lv;
+    }
     if (a->op.size() > 2 && a->op[0] == 'R' && a->op.back() == '=' &&
         !ascii::isalnum((unsigned char)a->op[1])) {
         // `A Rop= B` is `B op= A` — the R meta reverses roles including the target
