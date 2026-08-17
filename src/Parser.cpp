@@ -5984,13 +5984,23 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
                 matchKind(Tok::RParen);
                 attrCoerce = true;
             }
-            if (attrType.empty() && isKind(Tok::LParen)) {
-                // parenthesized attribute list: `has ( $.this, $.that, );`
+            // A parenthesized attribute list, with or WITHOUT a leading type:
+            // `has ( $.this, $.that )` and `has UInt ($.width, $.height)`. The
+            // typed form used to fall through every branch and declare NOTHING —
+            // not one attribute, so the class had no accessors at all and the
+            // first mention of `$!height` was an undeclared-attribute error.
+            // (`has Int(Cool) $.n` is a coercion type, already consumed above:
+            // that `(` is glued to the type name, this one is separated by
+            // space and holds variables.)
+            if (isKind(Tok::LParen)) {
                 advance();
                 while (!isKind(Tok::RParen) && !isKind(Tok::End)) {
                     if (isKind(Tok::Var)) {
                         std::string vn = advance().text;
                         AttrDecl a;
+                        a.type = attrType;              // the shared type applies to each
+                        a.defConstraint = attrSmiley;   // …and so does its :D/:U smiley
+                        a.coerce = attrCoerce;
                         a.sigil = vn[0];
                         size_t idx = 1;
                         if (vn.size() > 1 && (vn[1] == '.' || vn[1] == '!')) { a.pub = (vn[1] == '.'); idx = 2; }

@@ -2238,8 +2238,17 @@ std::vector<Token> Lexer::tokenize() {
                                  line_, "X::Syntax::Perl5Var", {});
             // A bare `%` in TERM position, with nothing but space after it, is the
             // anonymous empty Hash (`% .classify-list: …`) rather than modulo.
+            // …and it need not be followed by a SPACE. In term position there is
+            // no left operand, so a `%` there cannot be modulo whatever comes
+            // next: `(% = %h)` parsed but `(%=%h)` did not, and neither did
+            // `(%){$k}` or `my $h = %;`. Anything that cannot continue a
+            // variable name ends the bare `%` term. (`7%3` is unaffected — after
+            // a term we are in operator position and never reach this.)
             bool anonHash = c == '%' && !inAngle && regexContext(out) &&
-                            (peek(1) == ' ' || peek(1) == '\t');
+                            (peek(1) == ' ' || peek(1) == '\t' || peek(1) == '=' ||
+                             peek(1) == ')' || peek(1) == ';' || peek(1) == ',' ||
+                             peek(1) == '}' || peek(1) == ']' || peek(1) == '\n' ||
+                             peek(1) == '\0');
             // …a NON-ASCII letter starts a name just as much as an ASCII one:
             // `my &δy` lexed `&` as the operator, so the declaration became an
             // assignment to nothing ("Target is not assignable"). `$δ`, `@δs`
