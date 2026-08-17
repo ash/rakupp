@@ -30,3 +30,4 @@ date	commit	ran	failed	parked	roast_pass	roast_files	note
 2026-08-16	f6bfa67	24144	4930	747	197687	594	batch 7: scalar-numeric strictness + the batch-6 repairs
 2026-08-17	-	41412	10153	990	-	-	SUITE GREW to 42,402 records (operator inventory matrix): not comparable to the rows above
 2026-08-17	-	41412	9015	990	197471	597	operator spellings: !== is negated ==, plus the unicode equality and negated-set forms
+2026-08-17	-	41412	8469	990	197471	598	empty Set/Bag/Mix .raku is the sub form; ~< and ~> are no-such-operator, not NYI

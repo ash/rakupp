@@ -914,6 +914,18 @@ std::string rakuRepr(const Value& v, int depth, std::set<const void*>& seen) {
                 const Value& cnt = v.hash->at(k);
                 return cnt.pairKey ? rakuRepr(*cnt.pairKey, depth + 1, seen) : rakuStrLit(k);
             };
+            // An EMPTY immutable one renders as its SUB form — `set()`, `bag()`,
+            // `mix()` — which is how Rakudo writes it and what round-trips. The
+            // constructor spelling is kept for the non-empty case, and for the
+            // mutable *Hash kinds, which stay `SetHash.new()` / `().BagHash`
+            // however empty they are.
+            if (keys.empty() &&
+                (v.hashKind == "Set" || v.hashKind == "Bag" || v.hashKind == "Mix")) {
+                if (v.hash) seen.erase(v.hash.get());
+                std::string n = v.hashKind.str();
+                for (auto& ch : n) ch = (char)ascii::tolower((unsigned char)ch);
+                return n + "()";
+            }
             if (v.hashKind == "Set" || v.hashKind == "SetHash") {
                 std::string o = v.hashKind + ".new("; bool f = true;
                 for (auto& k : keys) { if (!f) o += ","; f = false; o += elemRepr(k); }

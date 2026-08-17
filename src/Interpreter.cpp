@@ -14878,6 +14878,15 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         }
         return Value::boolean(op == "~~" ? res : !res);
     }
+    // `~<` and `~>` are RESERVED in Raku and defined by nobody — Rakudo parses
+    // them and then finds no candidate. "Not yet implemented" would be a promise
+    // we are not making, so say what is actually true: there is no such operator.
+    // (X::NYI stays for operators Raku DOES define and we have not written yet —
+    // conflating the two would hide real gaps behind a misleading message.)
+    if (op == "~<" || op == "~>")
+        throw RakuError{Value::typeObj("X::Multi::NoMatch"),
+                        "Cannot resolve caller infix:<" + op + ">(" + l.typeName() +
+                        ", " + r.typeName() + "); no such operator is defined"};
     throw RakuError{Value::typeObj("X::NYI"), "Unsupported operator '" + op + "'"};
 }
 
