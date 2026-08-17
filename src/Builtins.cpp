@@ -9142,7 +9142,14 @@ void Interpreter::registerBuiltins() {
             // each argument is one element (a parenthesized group stays whole —
             // Digest::RIPEMD maps a destructuring block over two tuples), except
             // a Slip, which always flattens in
-            if (a.size() == 2) { for (auto& v : toList(a[1])) emit(v); }
+            if (a.size() == 2) {
+                // toList on an infinite Seq is just the already-materialised
+                // seed, so `map &cis, (0, -tau/n ... *)` produced two
+                // twiddles. The method already maps lazily; reuse it.
+                if (a[1].t == VT::Array && a[1].ext)
+                    return I.methodCall(a[1], "map", {a[0]});
+                for (auto& v : toList(a[1])) emit(v);
+            }
             else for (size_t i = 1; i < a.size(); i++) {
                 if (a[i].t == VT::Array && a[i].isList && a[i].s == "Slip")
                     for (auto& v : *a[i].arr) emit(v);

@@ -8934,6 +8934,27 @@ Value rtIndexGet(const Value& base, const Value& key, bool isHash) {
     // a Range/list key is a slice: `@a[1..3]` / `@a[1,3]` / `%h<a b>`
     if (key.t == VT::Range || (key.t == VT::Array && key.arr)) {
         Value out = Value::array(); out.isList = true;
+        // A lazy/infinite Seq used as a positional subscript is consumed one
+        // index at a time and stops at the first hole — same rule as the
+        // interpreter's `@a[0, 2 ... *]` path. flatten() would only see the
+        // already-materialised seed (two elements) and a Cooley–Tukey fft
+        // would recurse on a list that never shrinks to 1.
+        long long n = -1;
+        if (!isHash) {
+            if (base.t == VT::Array && base.arr) n = (long long)base.arr->size();
+            else if (base.t == VT::Str && (base.hashKind == "Blob" || base.hashKind == "Buf"))
+                n = base.blobElems();
+        }
+        if (n >= 0 && key.t == VT::Array && key.ext && g_cbInterp) {
+            for (size_t ei = 0; ; ei++) {
+                g_cbInterp->materializeLazy(key, ei + 1);
+                if (!key.arr || ei >= key.arr->size()) break;
+                long long k = (*key.arr)[ei].toInt();
+                if (k < 0 || k >= n) break;
+                out.arr->push_back(rtIndexGet(base, (*key.arr)[ei], isHash));
+            }
+            return out;
+        }
         for (auto& k : key.flatten()) out.arr->push_back(rtIndexGet(base, k, isHash));
         return out;
     }
@@ -20638,9 +20659,25 @@ Value Interpreter::evalIndex(Index* idx) {
                 for (long long i = 0; i < (long long)base.arr->size(); i++)
                     sliceKeys.push_back(Value::integer(i));
         }
+        else if (slice && !idx->isHash && iv.t == VT::Array && iv.ext) {
+            // same lazy-Seq subscript as the unadverbed path: pull indices
+            // until the first hole so `@a[0, 2 ... *]:v` is not just two keys
+            long long asz = (base.t == VT::Array && base.arr) ? (long long)base.arr->size() : 0;
+            for (size_t ei = 0; ; ei++) {
+                if (!ensureLazyElem(*this, iv, ei)) break;
+                Value kv = (*iv.arr)[ei];
+                sliceKeys.push_back(kv);
+                Value kres = kv;
+                if (kres.t == VT::Code && kres.code && kres.code->isWhateverCode)
+                    kres = callCallable(kres, ValueList{Value::integer(asz)});
+                long long ai = (kres.t == VT::Whatever || std::isinf(kres.toNum()))
+                    ? asz - 1 : kres.toInt();
+                if (ai < 0 || ai >= asz) break;
+            }
+        }
         else if (slice) for (auto& k : iv.flatten()) sliceKeys.push_back(k);
         else sliceKeys.push_back(iv);
-        bool lazySlice = slice && iv.b && (iv.t == VT::Range || iv.t == VT::Array); // @a[lazy …]:adv
+        bool lazySlice = slice && (iv.b || (iv.t == VT::Array && iv.ext)); // @a[lazy …]:adv / `@a[0, 2 ... *]`
         struct Hit { Value keyV; Value val; bool exists; };
         std::vector<Hit> hits;
         for (auto& kv : sliceKeys) {
@@ -20852,9 +20889,22 @@ Value Interpreter::evalIndex(Index* idx) {
                 for (long long k = 0; k < n; k++) indices.push_back(k);
             } else if (iv.t == VT::Range || iv.t == VT::Array) {
                 isSlice = true;
-                lazyIdx = iv.b; // `lazy` marker set by the lazy() builtin
+                // `lazy LIST` sets `.b`; a Seq from `… *` (or a lazy .map) has
+                // `.ext`. Either is a lazy slice: stop at the first hole, and
+                // for a generator Seq pull past the already-materialised seed
+                // so `@a[0, 2 ... *]` is every even element, not just (0 2).
+                lazyIdx = iv.b || (iv.t == VT::Array && iv.ext);
                 junctionIdx = isJunction(iv); // a junction index autothreads (no defaulting)
-                for (auto& e : iv.flatten()) indices.push_back(resolveWhat(e)); // @a[*-1, *-2]
+                if (iv.t == VT::Array && iv.ext) {
+                    for (size_t ei = 0; ; ei++) {
+                        if (!ensureLazyElem(*this, iv, ei)) break;
+                        long long k = resolveWhat((*iv.arr)[ei]);
+                        if (k < 0 || k >= n) break; // first hole: do not include
+                        indices.push_back(k);
+                    }
+                } else {
+                    for (auto& e : iv.flatten()) indices.push_back(resolveWhat(e)); // @a[*-1, *-2]
+                }
             } else {
                 long long i = iv.toInt();
                 if (base.t == VT::Str) {
