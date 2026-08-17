@@ -34,3 +34,4 @@ date	commit	ran	failed	parked	roast_pass	roast_files	note
 2026-08-17	-	41412	8078	990	197471	595	≼/≽ removed-in-6.d diagnostic; bitwise ops reject a non-finite operand
 2026-08-17	-	41412	7950	990	197471	595	exact numification of Hash/type-object operands; `.` as infix is X::Obsolete
 2026-08-17	-	41412	7842	990	197471	598	Any.nl-out (documented); the rest of the "internals" cluster triaged against the docs
+2026-08-17	-	41412	7842	990	197471	600	constants immutable + ++/-- honour readonly — grid flat, Roast 600 (misc.t 11→15, advent2009-day09 full)

@@ -13109,6 +13109,13 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             *lv = rhs;
         }
         if (nb) wrapNative(*lv, nb, ns, nf);
+        // A `constant` is immutable once it holds its value — `constant C = 5;
+        // C = 6` silently succeeded and answered 6. Marked AFTER the initial
+        // store, since that store is the one write it is allowed.
+        if (a->target->kind == NK::VarExpr) {
+            auto* tv = static_cast<VarExpr*>(a->target.get());
+            if (tv->declare && tv->declScope == "constant") lv->readonly = true;
+        }
         return sink ? Value::any() : *lv;
     }
 
@@ -18701,6 +18708,13 @@ Value Interpreter::evalUnary(Unary* u) {
             return code;
         }
         Value* lv = lvalue(u->operand.get());
+        // `++`/`--` MUTATE, so a readonly container refuses them just as `=` does.
+        // They never went through the assignment guard — this path resolves the
+        // lvalue and writes it directly — so `sub f($x) { $x++ }` and
+        // `constant C = 5; C++` both quietly worked.
+        if (lv && lv->readonly)
+            throw RakuError{Value::typeObj("X::Assignment::RO"),
+                            "Cannot assign to a readonly variable or a value"};
         // a Proxy-bound alias (`$a := $x`) reads via FETCH and writes via STORE,
         // so ++/-- reach the underlying container instead of clobbering the Proxy
         if (lv->t == VT::Hash && lv->hashKind == "Proxy" && lv->hash) {
