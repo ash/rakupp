@@ -2113,6 +2113,10 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     // Array until `eqv` learned to tell the two apart, at which point the test
     // stopped passing for the wrong reason.
     if (m == "ords") { Value out = Value::array(); out.isList = true; out.s = "Seq"; for (auto cp : uniNormalize(utf8cp(inv.toStr()), 1 /*NFC: .ords returns grapheme ordinals*/)) out.arr->push_back(Value::integer(cp)); return out; }
+    // `Any.nl-out` — documented on Any as returning the string "\n" (the output
+    // line ending an IO::Handle would use). It is a plain constant there; the
+    // per-handle value lives on IO::Handle.
+    if (m == "nl-out") return Value::str("\n");
     if (m == "chomp") { // a logical newline: "\n", "\r\n" or a lone "\r"
         // …or, given a needle, that exact suffix: `"a".chomp("a")` is "". The
         // needle must be DEFINED — an undefined one binds to no candidate, and
