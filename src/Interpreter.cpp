@@ -13671,7 +13671,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     }
     // negated ops (`!%%`, `!eq`, `!before`, …): apply the base op, negate the Bool.
     // A curried base (`* !%% 3` -> WhateverCode) stays curried, negation wrapped in.
-    if (op.size() > 1 && op[0] == '!' && op != "!=" && op != "!==" && op != "!===" && op != "!~~" &&
+    if (op.size() > 1 && op[0] == '!' && op != "!=" && op != "!===" && op != "!~~" &&
         !isSetOpStr(op)) {
         Value base = applyArith(op.substr(1), l, r);
         if (base.t == VT::Code && base.code && base.code->isWhateverCode) {
@@ -14575,7 +14575,11 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     if (op == "before") return Value::boolean(valueCmp(l, r) < 0);
     if (op == "after") return Value::boolean(valueCmp(l, r) > 0);
     if (op == "eqv") return Value::boolean(valueEqv(l, r));
-    if (op == "===" || op == "!==" || op == "!===") {
+    // `!==` is NOT here: Raku defines it as the negation of `==` (numeric
+    // equality), not of `===`. Treating it as negated identity made
+    // `1 !== 1.0` True where Rakudo says False. It falls through to the
+    // generic negated-operator handler, which applies `==` and negates.
+    if (op == "===" || op == "!===") {
         bool same;
         // the two spellings of Any are one object — see isAnyTypeObject
         if (l.t != r.t && isAnyTypeObject(l) && isAnyTypeObject(r)) same = true;

@@ -262,6 +262,23 @@ uint32_t Lexer::codepointHere() const {
     return cp;
 }
 
+// Unicode operator spellings that stand for an ASCII operator exactly.
+// Returns nullptr for anything else, so the caller falls through to the
+// hand-written cases and the general identifier path.
+static const char* uniOpAlias(uint32_t cp) {
+    switch (cp) {
+        case 0x2261: return "===";   // ≡  value identity
+        case 0x2262: return "!===";  // ≢  …negated
+        case 0x2A75: return "==";    // ⩵  two consecutive equals
+        case 0x2A76: return "===";   // ⩶  three consecutive equals
+        case 0x2284: return "!(<)";  // ⊄  not a proper subset
+        case 0x2288: return "!(<=)"; // ⊈  not a subset
+        case 0x2285: return "!(>)";  // ⊅  not a proper superset
+        case 0x2289: return "!(>=)"; // ⊉  not a superset
+        default: return nullptr;
+    }
+}
+
 bool Lexer::unicodeLetterHere() const {
     unsigned char b = (unsigned char)peek();
     if (b < 0x80) return false;
@@ -2197,6 +2214,14 @@ std::vector<Token> Lexer::tokenize() {
         if ((unsigned char)c == 0xE2 && (unsigned char)peek(1) == 0x80 && (unsigned char)peek(2) == 0xA6) {
             advance(); advance(); advance();
             t = make(Tok::Op, "...");
+        // Unicode operator spellings that are exactly an ASCII operator. Table
+        // driven because there are a dozen of them and each hand-written byte
+        // comparison below is four lines. The negated set relations map onto the
+        // `!(op)` forms, which the generic negation handler already understands.
+        } else if ((unsigned char)c >= 0x80 && uniOpAlias(codepointHere())) {
+            const char* ascii = uniOpAlias(codepointHere());
+            for (int k = utf8Len((unsigned char)c); k > 0; k--) advance();
+            t = make(Tok::Op, ascii);
         // Unicode operator aliases → ASCII: ≤ ≥ ≠ (U+2264/5/0) and × ÷ (U+00D7/F7).
         } else if ((unsigned char)c == 0xE2 && (unsigned char)peek(1) == 0x89 &&
                    ((unsigned char)peek(2) == 0xA4 || (unsigned char)peek(2) == 0xA5 || (unsigned char)peek(2) == 0xA0)) {

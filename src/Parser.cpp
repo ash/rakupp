@@ -185,6 +185,12 @@ static InfixInfo classifyInfix(const Token& t) {
             in.valid = true; in.lbp = BP_ASSIGN; in.rightAssoc = true; in.isAssign = true; return in; // ∩= ∪= …
         }
         if (setCompare.count(o)) { in.valid = true; in.lbp = BP_COMPARE; return in; }
+        // …and their NEGATED spellings (⊄ ⊈ ⊅ ⊉, lexed to `!(<)` and friends),
+        // at the same precedence. The evaluator needs nothing: its generic
+        // negated-operator handler applies the base op and inverts the Bool.
+        if (o.size() > 1 && o[0] == '!' && setCompare.count(o.substr(1))) {
+            in.valid = true; in.lbp = BP_COMPARE; return in;
+        }
         if (o == "\xE2\x88\x98") { in.valid = true; in.lbp = BP_RANGE; return in; } // ∘ function composition
         return in;
     }
