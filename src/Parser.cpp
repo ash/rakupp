@@ -216,6 +216,26 @@ static InfixInfo classifyInfix(const Token& t) {
             for (char c : o) if (c != 'Z' && c != 'X') { allZX = false; break; }
             if (allZX) { in.valid = true; in.lbp = BP_ZIP; return in; }
         }
+        {   // Reverse metaop over a WORD-op base, which lexes as ONE identifier:
+            // `Rcmp` `Rleg` `Rmin` `Rdiv`. The symbolic forms (`R-`, `R~`) are
+            // handled in the operator branch, where R and the base arrive as
+            // separate tokens — a word base never splits, so `4 Rcmp 5` was a
+            // parse error. The reversed form sits at the BASE operator's
+            // precedence, which is what reversing the operands preserves.
+            static const std::map<std::string, int> kRBase = {
+                {"cmp", BP_COMPARE}, {"leg", BP_COMPARE}, {"eqv", BP_COMPARE},
+                {"eq", BP_COMPARE}, {"ne", BP_COMPARE}, {"lt", BP_COMPARE},
+                {"gt", BP_COMPARE}, {"le", BP_COMPARE}, {"ge", BP_COMPARE},
+                {"before", BP_COMPARE}, {"after", BP_COMPARE},
+                {"unicmp", BP_COMPARE}, {"coll", BP_COMPARE},
+                {"div", BP_MUL}, {"mod", BP_MUL}, {"gcd", BP_MUL}, {"lcm", BP_MUL},
+                {"min", BP_ADD}, {"max", BP_ADD}, {"x", BP_REPLICATE}, {"xx", BP_REPLICATE},
+            };
+            if (o.size() > 1 && o[0] == 'R') {
+                auto it = kRBase.find(o.substr(1));
+                if (it != kRBase.end()) { in.valid = true; in.lbp = it->second; return in; }
+            }
+        }
         {   // zip/cross metaop over a WORD-op base that lexed as one ident:
             // `Zcmp` `Xeq` `Zminmax` `XZcmp` — a Z/X run followed by a word infix.
             size_t i = 0;

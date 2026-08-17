@@ -13590,6 +13590,17 @@ static long long bitwiseInt(const Value& v) {
     return n.toInt();
 }
 
+// Is `op` the reverse metaop over a WORD base — `Rcmp`, `Rdiv`, `Rmin`? The
+// symbolic forms are recognised by the non-alphanumeric character after the R,
+// but a word base is alphanumeric and would make every identifier starting with
+// R (Range, Rat…) look like one, so the bases are listed rather than guessed.
+static bool reverseWordOp(const std::string& op) {
+    static const std::set<std::string> bases = {
+        "cmp", "leg", "eqv", "eq", "ne", "lt", "gt", "le", "ge", "before", "after",
+        "unicmp", "coll", "div", "mod", "gcd", "lcm", "min", "max", "x", "xx"};
+    return op.size() > 1 && op[0] == 'R' && bases.count(op.substr(1)) > 0;
+}
+
 Value applyArith(const std::string& op, const Value& l, const Value& r) {
     // Hot path: 1–2-char arithmetic/comparison ops on plain Int/Int — the
     // overwhelmingly common case — dispatched by a single char, skipping the
@@ -14042,7 +14053,13 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                     if (k + 1 == pb.size()) return Value::boolean(true); // trailing * takes the rest
                     continue;                                            // an inner * takes one part
                 }
-                if (k >= pa.size() || pa[k].second != pb[k].second) return Value::boolean(false);
+                // A part the LEFT side does not have reads as "0", so `v1 ~~ v1.0`
+                // and `v1.2 ~~ v1.2.0` match — a version is the same version
+                // however many trailing zeros its spelling carries. Treating the
+                // missing part as a mismatch made matching asymmetric: `v1.0 ~~ v1`
+                // was True while `v1 ~~ v1.0` was False.
+                const std::string ap = k < pa.size() ? pa[k].second : std::string("0");
+                if (ap != pb[k].second) return Value::boolean(false);
             }
             return Value::boolean(true);
         }
@@ -14917,6 +14934,12 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             // `$x ~~ Nil` — Nil.ACCEPTS is true only for Nil ITSELF; a defined but
             // empty hash/list/string does NOT match Nil (valueEq would say it does).
             res = (l.t == VT::Nil);
+        } else if (r.t == VT::Str && (l.t == VT::Type || l.t == VT::Any || l.t == VT::Nil)) {
+            // A TYPE OBJECT never matches a string. valueEq stringified it, and
+            // `Mu.Str` is "", so `Mu ~~ ""` came out True — an undefined thing
+            // equal to the empty string. Rakudo says False for every type object,
+            // whatever the string.
+            res = false;
         } else {
             res = valueEq(l, r);
         }
@@ -17084,7 +17107,7 @@ Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value
         return applyBinOp(op.substr(1, op.size() - 2), l, r);
     // reverse metaop (`a R- b` == `b - a`) — so `[R-]`/`[R~]` reduce works like the
     // standalone `R-` binary does (evalBinary strips it; applyBinOp must too).
-    if (op.size() > 1 && op[0] == 'R' && !ascii::isalnum((unsigned char)op[1]))
+    if (op.size() > 1 && op[0] == 'R' && (!ascii::isalnum((unsigned char)op[1]) || reverseWordOp(op)))
         return applyBinOp(op.substr(1), r, l);
     // short-circuit ops applied to already-evaluated VALUES ([//] reduce, sort &[||]):
     // no thunking here, just the selection semantics
@@ -17298,7 +17321,8 @@ Value Interpreter::evalBinary(Binary* b) {
             "&&", "and", "||", "or", "andthen", "orelse", "notandthen", "//", "^^", "xor", "&", "|", "^",
             "=:=", "!=:=", "ff", "fff", "ff^", "fff^", "^ff", "^fff", "^ff^", "^fff^",
             "Z", "X"}; // plain Z/X: chained forms are ONE n-ary list-infix
-        bool rmeta = op.size() > 1 && op[0] == 'R' && !ascii::isalnum((unsigned char)op[1]);
+        bool rmeta = op.size() > 1 && op[0] == 'R' &&
+                     (!ascii::isalnum((unsigned char)op[1]) || reverseWordOp(op));
         b->simpleOp = (rmeta || special.count(op)) ? 0 : 1;
     }
     if (b->simpleOp == 1) {
@@ -17591,7 +17615,7 @@ Value Interpreter::evalBinary(Binary* b) {
         }
         return Value::boolean(op[0] == '!' ? !same : same);
     }
-    if (op.size() > 1 && op[0] == 'R' && !ascii::isalnum((unsigned char)op[1])) {
+    if (op.size() > 1 && op[0] == 'R' && (!ascii::isalnum((unsigned char)op[1]) || reverseWordOp(op))) {
         // reverse metaoperator: `a R/ b` computes `b / a` — applyBinOp (not
         // applyArith) so the short-circuit family works too (`R//` in LibraryMake)
         Value l = eval(b->lhs.get()), r = eval(b->rhs.get());
