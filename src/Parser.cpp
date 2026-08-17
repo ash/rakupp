@@ -3722,14 +3722,33 @@ ExprPtr Parser::parsePrimary() {
                 call->args.push_back(std::move(be));
                 return call;
             }
+            // `hyper for … { }` / `race for …` / `eager for …` / `lazy for …`
+            // are statement prefixes too, exactly like `do for`. Without this
+            // `my @a = hyper for 1..4 { … }` parsed as `for 1..4 { my @a = hyper }`
+            // and died on an undefined routine `hyper` — which is how
+            // mandelbrot.raku got as far as printing its PGM header and stopped.
+            //
+            // ONLY directly before a loop keyword: `eager @a` and `lazy @a` are
+            // list operators that already work, and must keep parsing that way.
+            // (`sink` is deliberately not here: it DISCARDS, so folding it into
+            // `do` — which collects — would be a different statement.)
+            bool loopPrefix = (name == "hyper" || name == "race" || name == "eager" ||
+                               name == "lazy") &&
+                              peek().kind == Tok::Ident &&
+                              (peek().text == "for" || peek().text == "while" ||
+                               peek().text == "until" || peek().text == "loop" ||
+                               peek().text == "repeat");
             if (name == "do" || name == "try" || name == "gather" || name == "quietly" ||
-                name == "once" ||
+                name == "once" || loopPrefix ||
                 name == "BEGIN" || name == "ENTER") {
                 advance();
                 auto u = std::make_unique<Unary>();
                 // BEGIN/ENTER in value position evaluate their block/expr and yield it
                 // (a tree-walker has no separate compile phase, so `do` semantics suffice).
-                u->op = (name == "BEGIN" || name == "ENTER") ? "do" : name;
+                // hyper/race/eager/lazy collect the loop's values like `do` does.
+                // The values are what a program reads; the parallelism hyper/race
+                // additionally promise is not modelled here.
+                u->op = (name == "BEGIN" || name == "ENTER" || loopPrefix) ? "do" : name;
                 if (isKind(Tok::LBrace)) {
                     auto blk = parseBlock();
                     auto be = std::make_unique<BlockExpr>();

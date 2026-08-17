@@ -268,6 +268,17 @@ bool Lexer::unicodeLetterHere() const {
     return isLetterCP(codepointHere());
 }
 
+// The same test, `off` bytes ahead: `&δy` has to decide whether the byte after
+// the sigil starts a NAME or leaves `&` as an operator, and that byte is the
+// lead of a multi-byte sequence.
+bool Lexer::unicodeLetterAt(size_t off) const {
+    size_t save = pos_;
+    const_cast<Lexer*>(this)->pos_ = pos_ + off;
+    bool r = pos_ < src_.size() && (unsigned char)src_[pos_] >= 0x80 && isLetterCP(codepointHere());
+    const_cast<Lexer*>(this)->pos_ = save;
+    return r;
+}
+
 // Translate one superscript codepoint to its ASCII digit/sign, or 0 if not a superscript.
 static char superscriptChar(uint32_t cp) {
     switch (cp) {
@@ -2229,8 +2240,13 @@ std::vector<Token> Lexer::tokenize() {
             // anonymous empty Hash (`% .classify-list: …`) rather than modulo.
             bool anonHash = c == '%' && !inAngle && regexContext(out) &&
                             (peek(1) == ' ' || peek(1) == '\t');
+            // …a NON-ASCII letter starts a name just as much as an ASCII one:
+            // `my &δy` lexed `&` as the operator, so the declaration became an
+            // assignment to nothing ("Target is not assignable"). `$δ`, `@δs`
+            // and `sub δf` were always fine — only the sigils that double as
+            // operators reached this ASCII-only test.
             if (!anonHash && (c == '%' || c == '&') &&
-                !(isIdentStart(peek(1)) || peek(1) == '*' || peek(1) == '.' ||
+                !(isIdentStart(peek(1)) || unicodeLetterAt(1) || peek(1) == '*' || peek(1) == '.' ||
                   peek(1) == '!' || peek(1) == '^' ||
                   (peek(1) == ':' && peek(2) == ':') || // symbolic deref `%::($n)` / `&::($n)`
                   ((peek(1) == '?' || peek(1) == '=' || peek(1) == '~') && isIdentStart(peek(2))))) {

@@ -9171,6 +9171,12 @@ void Interpreter::registerBuiltins() {
         return I.methodCall(list, "snip", {a[0]});
     };
     B["map"] = [](Interpreter& I, ValueList& a) -> Value {
+        // A LAZY source is mapped through the METHOD, which stays lazy and pulls
+        // as its consumer asks. Building the result here instead walked only the
+        // prefix already materialised, so `map &cis, (0, -tau/$n ... *)` came back
+        // two elements long and the FFT's `Z*` twiddle silently ran short.
+        if (a.size() == 2 && a[0].t == VT::Code && a[1].t == VT::Array && a[1].ext)
+            return I.methodCall(a[1], "map", ValueList{a[0]});
         Value out = Value::array(); out.isList = true; out.s = "Seq";
         auto emit = [&](const Value& v) {
             Value r = I.callCallable(a[0], {v});
@@ -9193,6 +9199,9 @@ void Interpreter::registerBuiltins() {
         return out;
     };
     B["grep"] = [](Interpreter& I, ValueList& a) -> Value {
+        // …and the same for grep: the method form pulls lazily, this one did not
+        if (a.size() == 2 && a[1].t == VT::Array && a[1].ext)
+            return I.methodCall(a[1], "grep", ValueList{a[0]});
         Value out = Value::array(); out.isList = true; out.s = "Seq";
         if (a.empty()) return out;
         Value mt = a[0];

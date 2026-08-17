@@ -2427,7 +2427,10 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             return Value::str(out);
         }
         if (m == "comb") {
-            Regex re(pat); Value out = Value::array(); out.isList = true; out.s = "Seq"; long pos = 0; RxMatch mm;
+            Regex re(pat);
+            // a `<?{…}>` in the pattern must run, here as much as in `~~`
+            GrammarHooks ch = codeAssertHooks();
+            if (patHasCodeAssert(pat)) re.runHooks = &ch; Value out = Value::array(); out.isList = true; out.s = "Seq"; long pos = 0; RxMatch mm;
             while (re.ok() && pos <= (long)subj.size() && re.search(subj, pos, mm)) {
                 out.arr->push_back(Value::str(subj.substr(mm.from, mm.to - mm.from)));
                 pos = mm.to > mm.from ? mm.to : mm.to + 1;
@@ -2435,7 +2438,10 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             return out;
         }
         if (m == "split") {
-            Regex re(pat); Value out = Value::array(); out.isList = true; out.s = "Seq"; long pos = 0; RxMatch mm;
+            Regex re(pat);
+            // a `<?{…}>` in the pattern must run, here as much as in `~~`
+            GrammarHooks ch = codeAssertHooks();
+            if (patHasCodeAssert(pat)) re.runHooks = &ch; Value out = Value::array(); out.isList = true; out.s = "Seq"; long pos = 0; RxMatch mm;
             bool skipEmpty = false;
             // `:v`/`:k`/`:kv`/`:p` — the separator comes back between the pieces as
             // a Match, as its delimiter index (always 0 here: one delimiter), or both

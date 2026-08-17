@@ -638,6 +638,12 @@ public:
     }
     Value idxW(const Value& base, Value key, bool isHash); // index with a Whatever/WhateverCode key (@a[*-1], @a[*])
     void materializeLazy(const Value& v, size_t n); // grow a lazy list's prefix to >= n elements (capped)
+    void drainIfFiniteLazy(const Value& v);         // …all of it, when the list is lazy but finite
+    // A code assertion (`<?{…}>` / `<!{…}>`) only evaluates when the engine is
+    // handed a hook; with none it defaults to PASS. Every site that builds its
+    // own Regex needs this, or one pattern answers differently in each of them.
+    struct GrammarHooks codeAssertHooks();
+    static bool patHasCodeAssert(const std::string& pat);
     Value methodCall(const Value& inv, const std::string& method, ValueList args, const std::vector<ExprPtr>* rwArgs = nullptr);
     Value methodCallInner(const Value& inv, const std::string& method, ValueList args, const std::vector<ExprPtr>* rwArgs);
     // Ordered SEGMENTS of the same dispatch chain, split out of methodCallInner to

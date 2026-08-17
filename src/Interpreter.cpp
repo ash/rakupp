@@ -1094,9 +1094,18 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
         // an EXACT endpoint match, which may never come (Rakudo semantics),
         // so it must not materialise eagerly.
         if (infinite || (hasGen && !endCode)) {
+            // Does an element reach the endpoint? Two numbers compare by value;
+            // anything else by its string form. The test used to be toNum()-only,
+            // so a STRING endpoint compared 0 against 0 while `.isNumeric()`
+            // stayed false — it never matched, and `"a", { $_ ~ "x" } ... "axxx"`
+            // ran to the million-element runaway cap instead of stopping at four.
+            Value endValue = r;
+            auto atEnd = [](const Value& v, const Value& e) {
+                if (v.isNumeric() && e.isNumeric()) return v.toNum() == e.toNum();
+                return v.toStr() == e.toStr();
+            };
             // seed already at the endpoint: the sequence is just the seed
-            if (!infinite && !seed.empty() && seed.back().isNumeric() &&
-                seed.back().toNum() == endVal) {
+            if (!infinite && !seed.empty() && atEnd(seed.back(), endValue)) {
                 if (exclusive) out.arr->pop_back();
                 return out;
             }
@@ -1106,10 +1115,10 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
             st->infinite = !boundedGen; // a literal-endpoint gen seq CAN drain (stops on match)
             st->appendNext = [self, gen, hasGen, geometric, ratio, step, allInt, arity,
                               succSeed, succDesc, ratioV, exactRatio, stepV, exactStep,
-                              boundedGen, endVal, exclusive](ValueList& cache) -> bool {
+                              boundedGen, endVal, endValue, atEnd, exclusive](ValueList& cache) -> bool {
                 if (cache.empty() && !hasGen) return false;
-                if (boundedGen && !cache.empty() && cache.back().isNumeric() &&
-                    cache.back().toNum() == endVal) return false; // endpoint reached
+                if (boundedGen && !cache.empty() && atEnd(cache.back(), endValue))
+                    return false; // endpoint reached
                 if (boundedGen && cache.size() >= 1000000) return false; // runaway cap (endpoint never matched)
                 double lastV = cache.empty() ? 0 : cache.back().toNum();
                 Value next;
@@ -1120,7 +1129,7 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
                     // `last` inside the generator terminates the sequence
                     try { next = self->callCallable(gen, args); }
                     catch (const LastEx&) { return false; }
-                    if (boundedGen && exclusive && next.isNumeric() && next.toNum() == endVal)
+                    if (boundedGen && exclusive && atEnd(next, endValue))
                         return false; // ...^ drops the endpoint element
                 } else if (succSeed) { // 'a' ... * : step by succ/pred
                     const Value& lastE = cache.back();
@@ -6554,6 +6563,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             if (fs->modifier && fs->vars.empty() && !fs->destructure) {
                 Value lvRaw = eval(fs->list.get());
                 Value lv = iterationSourceOf(lvRaw);
+                drainIfFiniteLazy(lv);
                 // an object that supplied its own iterator is ITERATED, even
                 // through a `$` variable — being Iterable is what decides here,
                 // not the sigil
@@ -6656,6 +6666,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             }
             Value listvRaw = eval(fs->list.get());
             Value listv = iterationSourceOf(listvRaw);
+            drainIfFiniteLazy(listv);
             bool viaIterator = listvRaw.t == VT::Object && listv.t != VT::Object;
             // a user object doing the Iterator role iterates by the pull-one
             // protocol: drain it (until IterationEnd) and loop over the values
@@ -8497,6 +8508,23 @@ void Interpreter::materializeLazy(const Value& v, size_t n) {
     const size_t CAP = 1000000;
     while (v.arr->size() < n && v.arr->size() < CAP)
         if (!st->appendNext(*v.arr)) break;
+}
+
+// A FINITE lazy sequence has to be drained before anything walks it, or the
+// walker sees only whatever prefix happened to be materialised already. `for 1,
+// { $_ + 1 } ... 5` ran its body ONCE, on the seed: a closure generator produces
+// its elements on demand and the loop never asked. (`1, 2, 4 ... 16` looked fine
+// only because a non-closure generator is built eagerly, and `.elems`/`.List`
+// looked fine because they force — so one Seq answered 5 to one question and 1
+// to another.)
+//
+// An INFINITE one is left alone: draining it would not return. Walking that
+// incrementally means teaching each loop to pull as it goes, which is its own
+// change — `for 1, { $_ + 1 } ... * { last … }` is still short.
+void Interpreter::drainIfFiniteLazy(const Value& v) {
+    if (v.t == VT::Array && v.arr && v.ext &&
+        !std::static_pointer_cast<LazySeqState>(v.ext)->infinite)
+        materializeLazy(v, 1000000);
 }
 
 // what a MISSING (or deleted) element reads as: `is default(v)` beats the type default
@@ -15834,6 +15862,20 @@ Value Interpreter::substApply(Value* target, const std::string& pattern, const s
     return mres;                        // s/// returns the Match / List of matches
 }
 
+GrammarHooks Interpreter::codeAssertHooks() {
+    GrammarHooks h;
+    h.assertPass = [this](const std::string& code, long, long,
+                          const GrammarHooks::NamedMap&, const GrammarHooks::ParamMap&) -> bool {
+        try { return evalString(code).truthy(); }
+        catch (FeatureNotBuilt&) { throw; }   // a SLIM stub fired: loud, never a silent pass
+        catch (...) { return false; }
+    };
+    return h;
+}
+bool Interpreter::patHasCodeAssert(const std::string& pat) {
+    return pat.find("?{") != std::string::npos || pat.find("!{") != std::string::npos;
+}
+
 std::string Interpreter::substSelect(const std::string& subj, const std::string& pat,
                                      Value* replArg, ValueList& args, long& nsub, bool literal,
                                      const std::string* tmplRepl, Value* matchResult) {
@@ -15965,6 +16007,15 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
             long n = v.toInt(); return {n, n};
         };
     }
+    // …and a CODE ASSERTION must evaluate here too. The `~~` path wires this
+    // hook; the occurrence scan never did, so the engine's lenient default made
+    // every `<?{ … }>` pass: `"abc".subst(/<?{ False }>./, "X", :g)` replaced
+    // all three characters, and `.comb(/<?{ False }>./)` found three matches
+    // where both should find none. The same regex answered one way to `~~` and
+    // another to every repeated-match consumer built on this function.
+    bool needAssertHook = !literal && patHasCodeAssert(realPat);
+    if (needAssertHook) ssHooks.assertPass = codeAssertHooks().assertPass;
+    const bool wantSsHooks = needRangeHook || needAssertHook;
     std::vector<RxMatch> matches;
     if (literal) {
         // plain string pattern: exact byte search (control chars, no regex metachars)
@@ -16005,7 +16056,7 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
             for (size_t i = 0; i < pcps.size();) fpat += baseOf(nextGrapheme(pcps, i)); }
         std::string flags = std::string(icase ? "i" : "") + (sigspace ? "s" : "") + (p5 ? "5" : "");
         Regex re(fpat, flags);
-        if (needRangeHook) re.runHooks = &ssHooks;
+        if (wantSsHooks) re.runHooks = &ssHooks;
         if (!re.ok()) return subj;
         auto toOrig = [&](long fb) -> long {
             size_t idx = std::lower_bound(foldStart.begin(), foldStart.end(), fb) - foldStart.begin();
@@ -16020,7 +16071,7 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
     } else {
         std::string flags = std::string(icase ? "i" : "") + (sigspace ? "s" : "") + (p5 ? "5" : "");
         Regex re(realPat, flags);
-        if (needRangeHook) re.runHooks = &ssHooks;
+        if (wantSsHooks) re.runHooks = &ssHooks;
         if (!re.ok()) return subj;
         long pos = haveStart ? startPos : 0; RxMatch mm;
         while (pos >= 0 && pos <= (long)subj.size() && re.search(subj, pos, mm)) {
@@ -17305,10 +17356,27 @@ Value Interpreter::evalBinary(Binary* b) {
             if (inner.size() >= 2 && inner.back() == '=' && !eqTailCmp.count(inner) &&
                 l.t == VT::Array && l.arr) {
                 std::string base = inner.substr(0, inner.size() - 1);
-                ValueList b = r.flatten();
-                if (!b.empty())
+                ValueList rhs = r.flatten();
+                // A PARENTHESISED list of scalars — `($t, $y) »+=« (a, b)` — is a
+                // fresh List of copies, so mutating l.arr reaches nobody: the
+                // assignment silently did nothing and runge-kutta.raku sat at
+                // t=0 forever. Write through each element's own container
+                // instead. (`@a »+=« …` needs none of this: an Array's Value
+                // shares its storage with the caller's.)
+                if (!rhs.empty() && b->lhs && b->lhs->kind == NK::ListExpr) {
+                    auto& items = static_cast<ListExpr*>(b->lhs.get())->items;
+                    for (size_t i = 0; i < items.size(); i++) {
+                        Value* slot = nullptr;
+                        try { slot = lvalue(items[i].get()); } catch (RakuError&) {}
+                        if (!slot) continue;             // not assignable: leave it be
+                        *slot = applyBinOp(base, *slot, rhs[i % rhs.size()]);
+                        if (i < l.arr->size()) (*l.arr)[i] = *slot;
+                    }
+                    return l;
+                }
+                if (!rhs.empty())
                     for (size_t i = 0; i < l.arr->size(); i++)
-                        (*l.arr)[i] = applyBinOp(base, (*l.arr)[i], b[i % b.size()]);
+                        (*l.arr)[i] = applyBinOp(base, (*l.arr)[i], rhs[i % rhs.size()]);
                 return l;
             }
             bool strictL = op.compare(0, 2, ">>") == 0;
@@ -18734,6 +18802,12 @@ Value Interpreter::evalUnary(Unary* u) {
             return out;
         }
         if (v.t == VT::Range) { Value out = Value::array(v.flatten()); out.isList = true; out.s = "Slip"; return out; }
+        // …and so does a Blob/Buf, over its ELEMENTS: it is Positional, even
+        // though it is a VT::Str internally and would otherwise be taken for a
+        // scalar by the arm below.
+        if (v.t == VT::Str && (v.hashKind == "Blob" || v.hashKind == "Buf")) {
+            Value out = Value::array(v.blobList()); out.isList = true; out.s = "Slip"; return out;
+        }
         // a SCALAR slips too: `|1` is a one-element Slip, not a bare Int (Rakudo)
         if (v.t != VT::Hash && v.t != VT::Code) {
             Value out = Value::array({v}); out.isList = true; out.s = "Slip";
@@ -18770,6 +18844,14 @@ ValueList Interpreter::evalArgs(const std::vector<ExprPtr>& exprs) {
                 }
             }
             else if (v.t == VT::Range) { for (auto& x : v.flatten()) args.push_back(x); }
+            // A Blob/Buf is Positional over its ELEMENTS, so `|$blob` slips those
+            // — it is a VT::Str internally and fell to the scalar arm below,
+            // arriving as ONE argument. Digest::MD5's final
+            // `reduce {…}, buf8.new, |$state` then wrote a single word (the
+            // element count) and every digest came out 4 bytes instead of 16.
+            else if (v.t == VT::Str && (v.hashKind == "Blob" || v.hashKind == "Buf")) {
+                for (auto& x : v.blobList()) args.push_back(x);
+            }
             // `|%h` slips a HASH as named arguments — but only a real Hash or Map.
             // Plenty of ordinary objects are hash-BACKED here (DateTime, Instant,
             // Proxy, Set…), and slipping their internals as nameds meant the value
@@ -20873,7 +20955,23 @@ Value Interpreter::evalIndex(Index* idx) {
                 isSlice = true;
                 lazyIdx = iv.b; // `lazy` marker set by the lazy() builtin
                 junctionIdx = isJunction(iv); // a junction index autothreads (no defaulting)
-                for (auto& e : iv.flatten()) indices.push_back(resolveWhat(e)); // @a[*-1, *-2]
+                // A LAZY index sequence is pulled until it first leaves the array,
+                // which is where Rakudo stops it: `@a[0, 2 ... *]` is every second
+                // element, not the two seeds that happened to be materialised.
+                // (fft.raku halves its input that way; a 2-element list sliced
+                // back to 2 recursed until the depth guard fired.)
+                if (iv.t == VT::Array && iv.ext) {
+                    for (size_t k = 0; ; k++) {
+                        if (k >= iv.arr->size()) {
+                            materializeLazy(iv, k + 1);
+                            if (k >= iv.arr->size()) break;   // the source ran dry
+                        }
+                        long long i = resolveWhat((*iv.arr)[k]);
+                        if (i < 0 || i >= n) break;           // past the end: stop, as Rakudo does
+                        indices.push_back(i);
+                    }
+                }
+                else for (auto& e : iv.flatten()) indices.push_back(resolveWhat(e)); // @a[*-1, *-2]
             } else {
                 long long i = iv.toInt();
                 if (base.t == VT::Str) {
@@ -21622,6 +21720,11 @@ Value Interpreter::eval(Expr* e) {
                         for (auto& x : *v.arr) items.push_back(x); continue;
                     }
                     if (v.t == VT::Range) { for (auto& x : v.flatten()) items.push_back(x); continue; }
+                    // a Blob/Buf is Positional over its ELEMENTS — it is a VT::Str
+                    // internally, so without this it stayed one opaque element
+                    if (v.t == VT::Str && (v.hashKind == "Blob" || v.hashKind == "Buf")) {
+                        for (auto& x : v.blobList()) items.push_back(x); continue;
+                    }
                     // |%hash (or a Hash-valued expr like `|$<authority>.ast`)
                     // slips its PAIRS — Cro builds `%parts = scheme => …, |$<hier-part>.ast`
                     if (v.t == VT::Hash && v.hash &&
