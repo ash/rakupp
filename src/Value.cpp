@@ -386,6 +386,7 @@ std::string Value::toStr() const {
                 if (arr) for (auto& c : *arr) out += cpToU8((uint32_t)c.toInt());
                 return out;
             }
+            drainFiniteLazy();
             std::string out;
             if (arr) for (size_t k = 0; k < arr->size(); k++) {
                 if (k) out += " ";
@@ -519,6 +520,7 @@ std::string Value::gist() const {
                 }
                 return s + ":0x<" + body + ">";
             }
+            drainFiniteLazy();
             std::string out = isList ? "(" : "[";
             if (arr) for (size_t k = 0; k < arr->size(); k++) {
                 // Rakudo caps a list's gist at 100 elements and marks the rest
@@ -799,9 +801,19 @@ ValueList Value::blobList() const {
     return out;
 }
 
+void Value::drainFiniteLazy() const {
+    if (!ext || !arr) return;
+    auto st = std::static_pointer_cast<LazySeqState>(ext);
+    if (st->infinite || !st->appendNext) return;
+    const size_t CAP = 1000000;
+    while (arr->size() < CAP)
+        if (!st->appendNext(*arr)) break;
+}
+
 ValueList Value::flatten() const {
     ValueList out;
     if (t == VT::Array && arr) {
+        drainFiniteLazy();
         for (auto& v : *arr) {
             if (v.t == VT::Array || v.t == VT::Range) {
                 ValueList sub = v.flatten();

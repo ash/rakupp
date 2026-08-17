@@ -1334,7 +1334,10 @@ Value makeInfArray(long long start) {
 }
 
 ValueList toList(const Value& v) {
-    if (v.t == VT::Array && v.arr) return *v.arr;
+    if (v.t == VT::Array && v.arr) {
+        v.drainFiniteLazy();
+        return *v.arr;
+    }
     if (v.t == VT::Range) return v.flatten();
     // a Blob/Buf lists as its ELEMENTS (`$blob.rotor(3, :partial)` in Base64;
     // 32-bit words for blob32) — mirrors the `for`-iteration rule in the

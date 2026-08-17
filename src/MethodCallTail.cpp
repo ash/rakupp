@@ -356,11 +356,12 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             // so .elems/.sort/.join see every element, not just the cached prefix.
             static const std::set<std::string> forceAll = {
                 "elems", "end", "pop", "tail", "reverse", "sort", "eager", "List", "Array",
-                "sum", "min", "max", "minmax", "join", "Str", "gist", "raku", "perl", "reduce",
+                "list", "sum", "min", "max", "minmax", "join", "Str", "gist", "raku", "perl", "reduce",
                 "Numeric", "Int", "all", "any", "one", "none", "unique", "squish",
                 "classify", "categorize", "Set", "Bag", "Mix", "SetHash", "BagHash",
                 "MixHash", "Hash", "hash", "antipairs", "pairs", "kv", "keys", "values",
-                "rotate", "pick", "roll", "combinations", "permutations", "splice"};
+                "rotate", "pick", "roll", "combinations", "permutations", "splice",
+                "rotor", "batch"};
             if (forceAll.count(m)) materializeLazy(inv, 1000000);
         }
         if (m == "map" && !args.empty() && args[0].t == VT::Code && codeArity(args[0]) == 1) {

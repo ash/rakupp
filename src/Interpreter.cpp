@@ -1559,7 +1559,15 @@ static Value coerceArray(const Value& v) {
         if (v.itemized) { // an itemized Array is ONE element: `my @row = @m[0]` is [[...],]
             Value r = Value::array(); r.arr->push_back(v); return r;
         }
-        if (v.ext) return v; // a lazy seq stays lazy (shared machinery; consumers materialise)
+        if (v.ext) {
+            // an infinite lazy source stays lazy (1..*, `… *`); a FINITE
+            // generator sequence assigned to `@a` becomes a real Array, the
+            // way Rakudo drains `my @a = 1, { $_ + 1 } ... 5`
+            auto st = std::static_pointer_cast<LazySeqState>(v.ext);
+            if (st->infinite) return v;
+            v.drainFiniteLazy();
+            Value r = Value::array(*v.arr); r.isList = false; return r;
+        }
         // `@b = @a` / `@x is copy` copy the top-level buffer — a fresh Array that does
         // NOT alias the source (nested itemized arrays are containers, shared by value,
         // matching Rakudo). Mirrors rtArrayVal so the interpreter and native backends agree.
@@ -16929,7 +16937,7 @@ Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value
         // one-level elements: sublists stay whole ((1,0) X (a,b),(c,d) is 2x2, not 2x4);
         // a Blob/Buf spreads to its elements (`$H Z+ $M` in Digest::SHA1)
         auto oneLevel = [](const Value& v) -> ValueList {
-            if (v.t == VT::Array && v.arr) return *v.arr;
+            if (v.t == VT::Array && v.arr) { v.drainFiniteLazy(); return *v.arr; }
             if (v.t == VT::Range) return v.flatten();
             if (v.t == VT::Str && !v.itemized && (v.hashKind == "Blob" || v.hashKind == "Buf"))
                 return v.blobList();
@@ -16941,6 +16949,7 @@ Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value
         // lazy side out to the other's length. `@$key Z[+^] $i xx *` is how Digest's
         // HMAC builds its key pad, and it was yielding one byte.
         // Cross (X) against an infinite side has no finite answer; leave it alone.
+        // A FINITE generator seq (`cut(...)` in mandelbrot) must still drain.
         auto isLazy = [](const Value& v) { return v.t == VT::Array && v.ext; };
         if (op[0] == 'Z') {
             if (isLazy(l) && !isLazy(r)) materializeLazy(l, oneLevel(r).size());
@@ -17324,7 +17333,7 @@ Value Interpreter::evalBinary(Binary* b) {
         if (op.size() > 1 && (op[0] == 'Z' || op[0] == 'X')) {
             std::string sub = op.substr(1);
             auto oneLevel = [](const Value& v) -> ValueList {
-                if (v.t == VT::Array && v.arr) return *v.arr;
+                if (v.t == VT::Array && v.arr) { v.drainFiniteLazy(); return *v.arr; }
                 if (v.t == VT::Range) return v.flatten();
                 if (v.t == VT::Str && !v.itemized && (v.hashKind == "Blob" || v.hashKind == "Buf"))
                     return v.blobList(); // `$H Z+ $M` in Digest::SHA1
@@ -17334,6 +17343,7 @@ Value Interpreter::evalBinary(Binary* b) {
             // against one stopped after a single pair; Z ends at the shortest side,
             // so force the lazy side to the other's length. Cross against an infinite
             // side has no finite answer, so it is left alone.
+            // A FINITE generator seq still has to drain (mandelbrot's `cut() X* 1i`).
             auto isLazy = [](const Value& v) { return v.t == VT::Array && v.ext; };
             if (op[0] == 'Z') {
                 if (isLazy(l) && !isLazy(r)) materializeLazy(l, oneLevel(r).size());

@@ -461,6 +461,12 @@ struct Value {
     // expand a Range/Array into a flat list of values
     ValueList flatten() const;
 
+    // Pull every remaining element of a FINITE lazy Seq into `arr`. An
+    // infinite source (`… *`, `1..Inf`) is left alone — its consumers must
+    // ask for a bounded prefix. Shared by flatten/gist/toList/coerceArray so
+    // a generator sequence is not silently just its seed.
+    void drainFiniteLazy() const;
+
     // Typed Blob/Buf support: blob16/32/64 (and utf16/32) store little-endian
     // words in the byte string; ofType ("uint16"/"uint32"/…) carries the width.
     int blobElemSize() const {                 // bytes per element (1 for plain Blob)

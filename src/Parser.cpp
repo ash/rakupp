@@ -3723,12 +3723,19 @@ ExprPtr Parser::parsePrimary() {
             }
             if (name == "do" || name == "try" || name == "gather" || name == "quietly" ||
                 name == "once" ||
-                name == "BEGIN" || name == "ENTER") {
+                name == "BEGIN" || name == "ENTER" ||
+                name == "hyper" || name == "race" || name == "eager" ||
+                name == "lazy" || name == "sink") {
                 advance();
                 auto u = std::make_unique<Unary>();
                 // BEGIN/ENTER in value position evaluate their block/expr and yield it
                 // (a tree-walker has no separate compile phase, so `do` semantics suffice).
-                u->op = (name == "BEGIN" || name == "ENTER") ? "do" : name;
+                // hyper/race/eager/lazy/sink are statement prefixes over the same
+                // statement (`hyper for LIST { }`); they collect like `do` —
+                // hyper/race stay order-preserving here, they just have to PARSE.
+                u->op = (name == "BEGIN" || name == "ENTER" ||
+                         name == "hyper" || name == "race" || name == "eager" ||
+                         name == "lazy" || name == "sink") ? "do" : name;
                 if (isKind(Tok::LBrace)) {
                     auto blk = parseBlock();
                     auto be = std::make_unique<BlockExpr>();
