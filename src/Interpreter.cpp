@@ -14762,9 +14762,14 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                 res = applyArith(r.rExFrom ? ">" : ">=", l, Value::integer(r.rFrom)).truthy() &&
                       applyArith(r.rExTo ? "<" : "<=", l, Value::integer(r.rTo)).truthy();
             } else {
+                // The LOW endpoint's exclusivity was dropped here while the high
+                // one was honoured, so `4 ~~ 4^..6` was True. Everything built on
+                // smartmatch inherited it — `.grep(4^..6)` kept the 4 and
+                // `.first(4^..6)` answered 4 instead of 5 — even though the same
+                // Range's `.list` and `.excludes-min` were both right.
                 double v = l.toNum();
                 double lo = r.rFrom, hi = r.rTo;
-                res = v >= lo && (r.rExTo ? v < hi : v <= hi);
+                res = (r.rExFrom ? v > lo : v >= lo) && (r.rExTo ? v < hi : v <= hi);
             }
         } else if (r.t == VT::Type) {
             // a subset name on the RHS: base-chain + where-clause check

@@ -5173,6 +5173,21 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     }
     // Supply as a type object: constructors that build an eager, list-backed Supply.
     if (inv.t == VT::Type && inv.s == "Supply") {
+        // Supply's own INSTANCE methods need a Supply, not the type object.
+        // Without this they fell through to the generic list handlers and
+        // answered a Seq, so `dies-ok { Supply.reverse }` — the first assertion
+        // of five S17-supply files — did not die. Only the methods Supply
+        // actually defines: `Supply.sort` is Any.sort on a type object and must
+        // keep working, as it does in Rakudo.
+        static const std::set<std::string> kSupplyInstance = {
+            "reverse", "words", "lines", "rotor", "produce", "reduce", "batch",
+            "head", "tail", "skip", "squish", "unique", "elems", "min", "max",
+            "minmax", "sum", "collate", "repeated", "roll", "pick",
+        };
+        if (kSupplyInstance.count(m.s))
+            throw RakuError{Value::typeObj("X::Parameter::InvalidConcreteness"),
+                            "Invocant of method '" + m.s + "' must be an object instance of type "
+                            "'Supply', not a type object"};
         auto mkSupply = [&](ValueList vals) { Value s = Value::makeHash(); s.hashKind = "Supply"; Value v = Value::array(); *v.arr = std::move(vals); (*s.hash)["values"] = v; return s; };
         if (m == "from-list") {
             // +@values single-arg rule: ONE array arg (from-list(@source)) emits its
