@@ -704,7 +704,11 @@ public:
     Value invokeMethodChain(const std::string& name, ClassInfo* startCls, const Value& self,
                             ValueList args, const std::vector<ExprPtr>* rwArgs = nullptr);
     void copyOutRw(const std::vector<Param>* params, std::shared_ptr<Env>& env, const std::vector<ExprPtr>* rwArgs);
-    void setupRwLinks(const std::vector<Param>* params, std::shared_ptr<Env>& env, const std::vector<ExprPtr>* rwArgs);
+    // `soleCandidate` = this routine is not part of a multi, so an `is rw`
+    // parameter given a container-less argument is an error rather than a
+    // reason to try the next candidate.
+    void setupRwLinks(const std::vector<Param>* params, std::shared_ptr<Env>& env,
+                      const std::vector<ExprPtr>* rwArgs, bool soleCandidate = false);
     void setupRwSlots(const std::vector<Param>* params, std::shared_ptr<Env>& env, const std::vector<Value*>* slots);
     // shared hyper-operator core for every spelling (>>op<<, »op«, >>[&op]<<)
     Value hyperCore(Value& l, Value& r, bool strictL, bool strictR,

@@ -5399,6 +5399,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                         disp = dispVal.code.get();
                         tctx_.cur->define(key, dispVal);
                     }
+                    if (code.code) code.code->isMultiCandidate = true;
                     disp->candidates.push_back(code);
                     for (auto& c : altCands) disp->candidates.push_back(c);
                     return dispVal;
@@ -5479,11 +5480,13 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     if (md->isMulti) {
                         auto it = tbl.find(md->name);
                         if (it != tbl.end() && it->second.code && it->second.code->isMultiDispatcher) {
+                            if (code.code) code.code->isMultiCandidate = true;
                             it->second.code->candidates.push_back(code);
                             return;
                         }
                         Value disp; disp.t = VT::Code; disp.code = std::make_shared<Callable>();
                         disp.code->name = md->name; disp.code->isMultiDispatcher = true;
+                        if (code.code) code.code->isMultiCandidate = true;
                         disp.code->candidates.push_back(code);
                         tbl[md->name] = disp;
                         return;
@@ -10315,7 +10318,8 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     }
     if (c.params && !c.params->empty()) {
         bindParams(*c.params, args, env, c.isMethod, c.isBlock);
-        if (rwArgs) setupRwLinks(c.params, env, rwArgs); // rw/raw params write through
+        if (rwArgs) setupRwLinks(c.params, env, rwArgs,
+                                 !c.isMultiDispatcher && !c.isMultiCandidate); // rw/raw write-through
         if (rwSlots) setupRwSlots(c.params, env, rwSlots); // hyper element slots
     } else if (!c.placeholders.empty()) {
         // $:name placeholders bind from :name(…) pair args; only when they are
@@ -10674,7 +10678,7 @@ static bool argIsNeverContainer(const Expr* e) {
 // Record write-through links for rw/raw params at bind time (mirrors copyOutRw's
 // positional indexing). Called while tctx_.cur is still the CALLER's scope.
 void Interpreter::setupRwLinks(const std::vector<Param>* params, std::shared_ptr<Env>& env,
-                               const std::vector<ExprPtr>* rwArgs) {
+                               const std::vector<ExprPtr>* rwArgs, bool soleCandidate) {
     if (!params || !rwArgs) return;
     size_t pi = 0;
     for (auto& p : *params) {
@@ -10683,6 +10687,18 @@ void Interpreter::setupRwLinks(const std::vector<Param>* params, std::shared_ptr
         if (p.slurpy) break;
         if ((p.isRw || p.isRaw || p.sigil == '\\') && pi < rwArgs->size()) {
             Expr* ae = (*rwArgs)[pi].get();
+            // `is rw` REQUIRES a writable container. Only worth saying so when
+            // this routine is the only candidate: inside a multi the requirement
+            // has to take part in DISPATCH — `multi f($x is rw)` beside
+            // `multi f($x)` must send a literal to the second rather than throw —
+            // and scoreCandidate sees argument VALUES with no way to tell which
+            // had a container. Throwing for every routine broke exactly that
+            // (S06-traits/misc.t, native-is-rw.t), so the narrow case is taken
+            // and the general one left alone.
+            if (soleCandidate && p.isRw && argIsNeverContainer(ae))
+                throw RakuError{Value::typeObj("X::Parameter::RW"),
+                                "Parameter '" + p.name + "' expects a writable container "
+                                "(variable, element or attribute)"};
             // `is raw` and `\x` accept an argument with no container behind it,
             // but then they bind the VALUE — and a value cannot be assigned to.
             //
@@ -11028,7 +11044,8 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
     }
     if (c.params && !c.params->empty()) {
         bindParams(*c.params, args, env, /*methodCtx=*/true);
-        if (rwArgs) setupRwLinks(c.params, env, rwArgs); // rw/raw params write through
+        if (rwArgs) setupRwLinks(c.params, env, rwArgs,
+                                 !c.isMultiDispatcher && !c.isMultiCandidate); // rw/raw write-through
     }
     else if (!c.placeholders.empty()) {
         for (size_t k = 0; k < c.placeholders.size(); k++) {
