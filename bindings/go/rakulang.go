@@ -27,10 +27,10 @@
 package rakulang
 
 /*
-#cgo CFLAGS: -I${SRCDIR}/../../src
+#cgo CFLAGS: -I${SRCDIR}/../../include
 #cgo LDFLAGS: -lrakupp
 #include <stdlib.h>
-#include "rakupp.h"
+#include <rakupp/rakupp.h>
 */
 import "C"
 
@@ -161,6 +161,115 @@ func (s *session) toGo(v C.RkValue) interface{} {
 		return s.goStr(v)
 	}
 }
+
+// fromGo converts a Go value to an engine value: nil, bool, the integer and
+// float kinds, string, []interface{} and map[string]interface{}. The result
+// is UNROOTED — valid until the next Eval or Call, which is long enough to
+// pass it as an argument and no longer.
+func (s *session) fromGo(x interface{}) (C.RkValue, error) {
+	switch v := x.(type) {
+	case nil:
+		return C.rk_any(s.c), nil
+	case bool:
+		b := C.int(0)
+		if v {
+			b = 1
+		}
+		return C.rk_bool(s.c, b), nil
+	case int:
+		return C.rk_int(s.c, C.longlong(v)), nil
+	case int32:
+		return C.rk_int(s.c, C.longlong(v)), nil
+	case int64:
+		return C.rk_int(s.c, C.longlong(v)), nil
+	case float32:
+		return C.rk_num(s.c, C.double(v)), nil
+	case float64:
+		return C.rk_num(s.c, C.double(v)), nil
+	case string:
+		return s.str(v), nil
+	case []interface{}:
+		a := C.rk_array(s.c)
+		for _, item := range v {
+			e, err := s.fromGo(item)
+			if err != nil {
+				return nil, err
+			}
+			C.rk_push(s.c, a, e)
+		}
+		return a, nil
+	case map[string]interface{}:
+		h := C.rk_hash(s.c)
+		for _, k := range SortedKeys(v) {
+			e, err := s.fromGo(v[k])
+			if err != nil {
+				return nil, err
+			}
+			ck := C.CString(k)
+			C.rk_set(s.c, h, ck, C.size_t(len(k)), e)
+			C.free(unsafe.Pointer(ck))
+		}
+		return h, nil
+	}
+	return nil, &RakuError{fmt.Sprintf("cannot pass a %T to Raku", x)}
+}
+
+// Eval evaluates Raku source in the interpreter's mainline scope and returns
+// the last statement's value as a Go value. State persists across calls,
+// exactly as in the REPL: Eval a `sub` here and Call finds it afterwards.
+func Eval(source string) (interface{}, error) {
+	s, err := get()
+	if err != nil {
+		return nil, err
+	}
+	cs := C.CString(source)
+	defer C.free(unsafe.Pointer(cs))
+	var out C.RkValue
+	if C.rk_eval(s.rk, cs, &out) != C.RK_OK {
+		msg := "rk_eval failed"
+		if e := C.rk_last_error(s.rk); e != nil {
+			msg = C.GoString(e)
+		}
+		return nil, &RakuError{msg}
+	}
+	return s.toGo(out), nil
+}
+
+// Call invokes a Raku routine by name with Go arguments and returns a Go
+// value: rakulang.Call("area", 3, 4). The routine must be visible in the
+// mainline scope — declared by an earlier Eval, or by a file you evaluated.
+// A die inside it comes back as *RakuError.
+func Call(name string, args ...interface{}) (interface{}, error) {
+	s, err := get()
+	if err != nil {
+		return nil, err
+	}
+	argv := make([]C.RkValue, len(args))
+	for i, a := range args {
+		if argv[i], err = s.fromGo(a); err != nil {
+			return nil, err
+		}
+	}
+	r, err := s.call(name, argv)
+	if err != nil {
+		return nil, err
+	}
+	return s.toGo(r), nil
+}
+
+// Can reports whether the mainline scope has a routine of this name.
+func Can(name string) bool {
+	s, err := get()
+	if err != nil {
+		return false
+	}
+	cn := C.CString(name)
+	defer C.free(unsafe.Pointer(cn))
+	return C.rk_can(s.c, cn) != 0
+}
+
+// Version is the engine's version string, e.g. "3.14.0".
+func Version() string { return C.GoString(C.rk_version()) }
 
 // Grammar is a compiled Raku grammar. Identical source compiles once; named
 // compiles are isolated per compile, so recompiling an edited grammar never

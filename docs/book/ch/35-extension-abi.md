@@ -31,7 +31,7 @@ extension can. If you need to call `curl_easy_perform`, use NativeCall.
 opaque handle.
 
 ```c
-/* src/rakupp_ext.h */
+/* include/rakupp/rakupp_ext.h */
 typedef struct RkValueOpaque* RkValue;
 typedef struct RkCtxOpaque*   RkCtx;
 ```

@@ -17,6 +17,7 @@
 #include "Regex.h"
 #include "MethodName.h"
 #include "BuiltinsShared.h"
+#include "BuildInfo.h"
 #include <algorithm>
 #include <atomic>
 #include <ctime>
@@ -111,6 +112,11 @@ const std::vector<std::string>& typeAncestry(const std::string& t) {
         {"Grammar", {"Grammar","Match","Capture","Cool","Any","Mu"}},
         {"Match",   {"Match","Capture","Cool","Any","Mu"}},
         {"Capture", {"Capture","Any","Mu"}},
+        // IO::Socket is the ROLE a synchronous socket does — every wrapper
+        // declares its parameter as that (IO::Socket::SSL takes an IO::Socket).
+        // It is not an IO, and IO::Socket::Async does not do it either.
+        {"IO::Socket::INET", {"IO::Socket::INET","IO::Socket","Any","Mu"}},
+        {"IO::Socket",       {"IO::Socket","Any","Mu"}},
     };
     static const std::vector<std::string> fallback = {"Any","Mu"};
     auto it = A.find(t);
@@ -121,7 +127,8 @@ const std::vector<std::string>& typeAncestry(const std::string& t) {
 bool isBuiltinRole(const std::string& n) {
     static const std::set<std::string> roles = {
         "Real", "Numeric", "Stringy", "Dateish", "Rational", "Callable",
-        "Positional", "Associative", "Iterable", "Baggy", "Setty", "Mixy"};
+        "Positional", "Associative", "Iterable", "Baggy", "Setty", "Mixy",
+        "IO::Socket"};
     return roles.count(n) > 0;
 }
 std::string typeOfVal(const Value& v) { return v.t == VT::Type ? v.s : v.typeName(); }
@@ -668,6 +675,17 @@ static std::string rakuStrLit(const std::string& s) {
         else if (c == '\r') o += "\\r";
         else if (c == '$' || c == '@' || c == '%' || c == '&' || c == '{') { o += '\\'; o += (char)c; } // would interpolate
         else if (c == '\0') o += "\\0";
+        else if (c == '\b') o += "\\b";
+        // any other C0 control (and DEL) has no literal spelling — it went out
+        // RAW, so `"\x[3]".raku` printed a string that looked empty and could
+        // not be read back. Rakudo's form is `\x[1B]`, hex digits upper-case.
+        else if (c < 0x20 || c == 0x7F) {
+            static const char* H = "0123456789ABCDEF";
+            o += "\\x[";
+            if (c >= 0x10) o += H[c >> 4];
+            o += H[c & 0xF];
+            o += ']';
+        }
         else o += (char)c;
     }
     return o + "\"";
@@ -863,13 +881,21 @@ std::string rakuRepr(const Value& v, int depth, std::set<const void*>& seen) {
                 seen.erase(v.arr.get());
             }
             o += v.isList ? ')' : ']';
+            // a Seq's .raku is the list form plus the coercion that rebuilds it:
+            // `(1, 2).Seq`. Only .raku carries it — .gist/.Str stay `(1 2)`.
+            // It goes on BEFORE the itemization marker: the `$( … )` has to
+            // enclose the coercion as well, or `$(().Seq)` reads back as the
+            // itemized empty list with a `.Seq` called on it.
+            bool seq = v.isList && v.s == "Seq";
+            if (seq) o += ".Seq";
             // an ITEMIZED container carries its `$` marker — `($t,)` for a
             // `$`-held list is `($(1, 2),)` — except as an ARRAY element, whose
             // slot itemizes anyway (`[$x,]` is `[[1, 2],]`)
-            if (v.itemized && !wasElem) o = "$" + o;
-            // a Seq's .raku is the list form plus the coercion that rebuilds it:
-            // `(1, 2).Seq`. Only .raku carries it — .gist/.Str stay `(1 2)`.
-            if (v.isList && v.s == "Seq") o += ".Seq";
+            if (v.itemized && !wasElem) {
+                if (seq) o = "$(" + o + ")";
+                else if (v.isList && v.arr && v.arr->empty()) o = "$( )"; // Rakudo's empty item
+                else o = "$" + o;
+            }
             return o;
         }
         case VT::Hash: {
@@ -4785,6 +4811,14 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         if (m == "desc") return Value::str("Raku++ — a C++ Raku interpreter");
         if (m == "signature") { Value b = Value::str("Raku++"); b.hashKind = "Blob"; return b; } // non-empty Blob
         if (m == "id" || m == "release") return Value::str(RAKUPP_VERSION);
+        // .build / .build-date identify THIS binary, which .id and .release
+        // cannot: every build between two releases reports the same version, so
+        // a bug report, a Rakugrid oracle stamp and a benchmark row all pointed
+        // at "3.14.0" and nothing narrower. `git describe` gives
+        // both an ordering (commits since the tag) and an exact commit.
+        // Compiler-only: the LANGUAGE has no build.
+        if (isComp && m == "build") return Value::str(rakupp::buildId());
+        if (isComp && m == "build-date") return Value::str(rakupp::buildDate());
         if (m == "codename") return Value::str("Raku++");
         // Rakudo: `Raku (6.d)` for the language, `rakudo (2026.07)` for the
         // compiler — name plus the version THAT object reports, not the language
@@ -4803,6 +4837,8 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                        Value c = rakuIntrospection(true);
                        return methodCall(c, "raku", none).toStr(); }() + ", ")
                 + "id => " + q(RAKUPP_VERSION) + ", release => " + q(RAKUPP_VERSION)
+                + (isComp ? ", build => " + q(rakupp::buildId())
+                          + ", build-date => " + q(rakupp::buildDate()) : "")
                 + ", codename => " + q("Raku++")
                 + ", name => " + q(nm)
                 + ", auth => " + q(isComp ? "Andrew Shitov" : "The Raku Community")
@@ -6407,7 +6443,7 @@ Value rtBAtanh(Interpreter& I, const Value& v) { return rtBMath1(I, v, "atanh", 
 void Interpreter::registerBuiltins() {
     auto& B = builtins_;
 
-    // Native extension loading (src/rakupp_ext.h). A BUILTIN rather than
+    // Native extension loading (include/rakupp/rakupp_ext.h). A BUILTIN rather than
     // something `use Rakupp::Ext` installs, because a module that wants a
     // compiled fast path with a portable fallback has to ask for it WITHOUT
     // writing anything Rakudo cannot compile:
@@ -6949,13 +6985,20 @@ void Interpreter::registerBuiltins() {
         // ONE default description for both exit paths — the fast path used to say
         // "isa Int" and the ancestry fallback said nothing at all
         std::string desc = a.size() > 2 ? a[2].toStr() : "The object is-a '" + want + "'";
-        // the real .isa knows allomorphs and user-class chains — consult it first
+        // the real .isa knows allomorphs and user-class chains — consult it first,
+        // then .does, because that is what Rakudo's isa-ok is: a ROLE is never
+        // something you `.isa`, so `isa-ok $obj, SomeRole` (and `isa-ok $buf,
+        // buf8`, buf8 being a curried role there) would fail on both engines
+        // otherwise. It stops short of full smartmatch — `isa-ok 5, 1..10` and
+        // `isa-ok "abc", /b/` fail on Rakudo, and .does keeps them failing.
         if (a.size() > 1) {
-            ValueList ia{a[1]};
-            Value r = I.methodCall(a[0], "isa", ia);
-            if (r.truthy()) {
-                I.emitTest(true, desc);
-                return Value::boolean(true);
+            for (const char* probe : {"isa", "does"}) {
+                ValueList ia{a[1]};
+                Value r = I.methodCall(a[0], probe, ia);
+                if (r.truthy()) {
+                    I.emitTest(true, desc);
+                    return Value::boolean(true);
+                }
             }
         }
         static const std::map<std::string, std::set<std::string>> isa = {
@@ -7441,8 +7484,11 @@ void Interpreter::registerBuiltins() {
             // a lazy gather stops the block once it has produced enough elements
             size_t lim = I.tctx_.gatherLimits.empty() ? 0 : I.tctx_.gatherLimits.back();
             if (lim && coll.size() >= lim) throw StopGatherEx{};
+            return v;
         }
-        return v;
+        // outside a gather there is nowhere for the value to go, and silently
+        // handing it back made `take` look like a no-op instead of an error
+        throw RakuError{Value::typeObj("X::ControlFlow"), "take without gather"};
     };
     // `succeed EXPR` exits the enclosing `when`/`given`, making the given evaluate to EXPR;
     // `proceed` leaves the current `when` but keeps testing later ones.
@@ -7846,16 +7892,17 @@ void Interpreter::registerBuiltins() {
     B["roots"] = [](Interpreter& I, ValueList& a) -> Value {
         // roots($x, $n): the $n n-th complex roots of $x (principal first,
         // stepping by 2π/n). n < 1 or NaN input yields a single NaN.
-        Value out = Value::array(); out.isList = true;
+        Value out = Value::array(); out.isList = true; out.s = "Seq"; // Rakudo hands back a Seq
         double re, im;
         Value x = a.empty() ? Value::integer(0) : a[0];
         if (x.t == VT::Complex) { re = x.n; im = x.im; }
         else { re = x.toNum(); im = 0.0; }
         long long n = a.size() > 1 ? a[1].toInt() : 1;
-        if (n < 1 || std::isnan(re) || std::isnan(im)) {
-            out.arr->push_back(Value::complex(std::nan(""), std::nan("")));
-            return out;
-        }
+        // a degenerate root count (or a NaN operand) is a bare NaN, not a
+        // one-element list of one
+        if (n < 1 || std::isnan(re) || std::isnan(im)) return Value::number(std::nan(""));
+        // the ONE first root is handed back bare, not as a list of one
+        if (n == 1) return Value::complex(re, im);
         double mag = std::pow(std::hypot(re, im), 1.0 / (double)n);
         double ang = std::atan2(im, re) / (double)n;
         for (long long k = 0; k < n; k++) {
@@ -9075,8 +9122,8 @@ void Interpreter::registerBuiltins() {
             if (ctx->emitCb.t == VT::Code) { ValueList one{v}; I.callCallable(ctx->emitCb, one); }
             return Value::boolean(true);
         }
-        if (!I.tctx_.supplyStack.empty()) I.tctx_.supplyStack.back()->push_back(v);
-        return Value::boolean(true);
+        if (!I.tctx_.supplyStack.empty()) { I.tctx_.supplyStack.back()->push_back(v); return Value::boolean(true); }
+        throw RakuError{Value::typeObj("X::ControlFlow"), "emit without supply or react"};
     };
     // printf/sprintf take **@args — a list/array argument flattens into the values,
     // so `printf $fmt, $x, f()` where f returns (a, b) fills three directives.

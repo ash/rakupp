@@ -5286,6 +5286,13 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                         if (c.code->nativeLib.empty())
                             c.code->nativeLibExpr = sd->nativeLibExpr.get();
                     }
+                    // `is symbol(EXPR)`: unlike the library above, a computed name is
+                    // resolved at FIRST CALL, never here. The helper that computes it
+                    // typically asks the library its version — and at declaration time
+                    // the library is not loadable yet, so the probe answers 0, which
+                    // OpenSSL::Stack's real_symbol caches in a `state` and hands back
+                    // the pre-1.1 spelling for every symbol from then on.
+                    if (sd->nativeSymExpr) c.code->nativeSymExpr = sd->nativeSymExpr.get();
                                     c.code->nativeSym = sd->nativeSym.empty() ? sname : sd->nativeSym; }
                 for (auto& p : *prms) {
                     // a default makes no sense on a slurpy or a required param
@@ -7687,6 +7694,8 @@ static bool typeNameConforms(const std::string& lnIn, const std::string& rn,
         {"IO::Special", {"IO::Special", "IO"}},
         {"Grammar", {"Grammar", "Match", "Capture", "Cool"}},
         {"Match",   {"Match", "Capture", "Cool"}},
+        // a synchronous socket does the IO::Socket role — but is not an IO
+        {"IO::Socket::INET", {"IO::Socket::INET", "IO::Socket"}},
     };
     auto td = typeDoes.find(ln);
     bool baseOk = (td != typeDoes.end() && td->second.count(rn));
@@ -7816,6 +7825,11 @@ static bool typeMatchesArg(const Value& arg, const std::string& type) {
         case VT::Array: return type == "Array" || type == "List" || type == "Positional" || type == "Iterable" || (arg.isList && arg.s == "Seq" && type == "Seq");
         case VT::Hash:
             if (arg.hashKind == "FileHandle" && (type == "IO::Handle" || type == "IO" || type == "Handle")) return true;
+            // A synchronous socket IS an IO::Socket — that is the type every
+            // wrapper declares its parameter as (IO::Socket::SSL.new(IO::Socket
+            // $s)). It is NOT an IO, and IO::Socket::Async is not an IO::Socket
+            // either; both of those are False on Rakudo too.
+            if (arg.hashKind == "Socket" && (type == "IO::Socket" || type == "IO::Socket::INET")) return true;
             return type == "Hash" || type == "Map" || type == "Associative" || (arg.hashKind == type);
         case VT::Pair: return type == "Pair";
         case VT::Code: return type == "Code" || type == "Callable" || type == "Routine" || type == "Block" || type == "Sub" ||
@@ -9623,6 +9637,24 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
             } catch (RakuError&) {}
         }
         if (!lib.empty()) handle = dlopenLib(lib); // name as-is, then platform-decorated forms
+        if (c.nativeSymExpr) {
+            // A computed `is symbol(…)` the declaration was too early to evaluate:
+            // now the library is loaded, so the version probe it asks can answer.
+            // Evaluate it in the sub's OWN scope, not the caller's — the helper
+            // that computes the name is typically a module-private `my sub`
+            // (OpenSSL::Stack's real_symbol, which spells `sk_num` as
+            // `OPENSSL_sk_num` from OpenSSL 1.1 on) and is invisible from
+            // wherever the call happens to be.
+            auto savedEnv = tctx_.cur;
+            if (c.closure) tctx_.cur = c.closure;
+            try {
+                Value r = eval(const_cast<Expr*>(c.nativeSymExpr));
+                if (r.t == VT::Code) { ValueList none; r = callCallable(r, none); }
+                if (isDefined(r) && !r.toStr().empty()) c.nativeSym = r.toStr();
+            } catch (RakuError&) {}
+            tctx_.cur = savedEnv;
+            c.nativeSymExpr = nullptr; // once, not per call
+        }
         sym = dlsym(handle, c.nativeSym.c_str());
         if (!sym) {
             // Some libraries expose a renamed symbol behind a compat macro the header
@@ -9731,11 +9763,33 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
             else       { rwI.push_back(v.toInt()); putPtr(s, &rwI.back()); rwbacks.push_back({i, &rwI.back(), nullptr, ""}); }
         }
         else if (v.t == VT::Str && v.hashKind == "CArray") { keep.push_back(v.s); putPtr(s, keep.back().data()); cabacks.push_back({i, keep.size() - 1}); }
-        else if (v.t == VT::Str && (v.hashKind == "Buf" || v.hashKind == "Blob")) {
-            // a Buf/blob8 is a mutable native buffer: pass its bytes and copy back
+        else if (v.t == VT::Str && (v.hashKind == "Buf" || v.hashKind == "Blob" || v.hashKind == "utf8")) {
+            // A Buf/blob8 is a mutable native buffer: pass its bytes and copy back
             // after the call (BIO_read/SSL_read/recv fill it in place).
-            keep.push_back(v.s); putPtr(s, keep.back().data());
-            if (v.hashKind == "Buf") cabacks.push_back({i, keep.size() - 1});
+            //
+            // An IMMUTABLE buffer instead passes the Blob's OWN storage, because
+            // its pointer has to outlive the CALL: some C APIs RETAIN it rather
+            // than reading it while we are inside. BIO_new_mem_buf is the
+            // canonical one — it deliberately does not copy — so a per-call
+            // temporary left the BIO pointing at freed memory, and by the time
+            // PEM_read_bio_RSAPrivateKey looked, it read garbage: OpenSSL
+            // answered `DECODER routines::unsupported`, RSAKey.new stored the
+            // resulting null (`defined(0)` is True, so the module's own guard
+            // waved it through) and the next call segfaulted in RSA_size.
+            // A promoted CowStr body is shared with every copy of the value and
+            // lives as long as the Raku object does, which is exactly the
+            // lifetime Rakudo gives the callee — and it costs no copy at all.
+            const StrBody* sb = (v.hashKind == "Buf") ? nullptr : v.s.body();
+            if (sb) putPtr(s, (void*)sb->text.data());
+            else {
+                // Short buffers are held inline, so there is no shared body to
+                // point at and the copy is all we have. A retained pointer to a
+                // buffer under CowStr's promotion threshold is the one case this
+                // still gets wrong; fixing it means giving blob-ish values a
+                // shared body at construction, in all 22 places that make one.
+                keep.push_back(v.s); putPtr(s, keep.back().data());
+                if (v.hashKind == "Buf") cabacks.push_back({i, keep.size() - 1});
+            }
         }
         else if (v.t == VT::Str || (v.t == VT::Hash && v.hashKind == "IO")) { keep.push_back(v.toStr()); putPtr(s, keep.back().c_str()); }
         else if (v.t == VT::Object && v.obj && v.obj->attrs.count("__native_ptr")) putPtr(s, (void*)(intptr_t)v.obj->attrs["__native_ptr"].toInt());
@@ -9932,6 +9986,12 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
             if (nm.size() > rt.size() + 2 && nm.compare(nm.size() - rt.size() - 2, rt.size() + 2, "::" + rt) == 0) { ci = kv.second; break; }
         }
         if (ci) {
+            // NULL is the TYPE OBJECT, not an instance holding address 0 — that is
+            // how C reports "no result", and how the caller is expected to test it.
+            // OpenSSL.use-client-ca-file is `unless my $s = SSL_load_client_CA_file(…)`
+            // and never raised on a missing file, because a boxed null is defined
+            // and true.
+            if (ri == 0) return Value::typeObj(ci->name);
             Value o; o.t = VT::Object; o.obj = std::make_shared<ObjectData>();
             o.obj->cls = ci; o.obj->attrs["__native_ptr"] = Value::integer(ri);
             return o;
@@ -14433,8 +14493,12 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             return Value::bigint(BigInt(std::llabs(x / g)) * BigInt(std::llabs(y)));
         return Value::integer(std::llabs(res));
     }
-    if (op == "min") return valueCmp(l, r) <= 0 ? l : r;
-    if (op == "max") return valueCmp(l, r) >= 0 ? l : r;
+    // A TIE keeps the RIGHT operand: `0e0 max 0` is the Int 0 and `0 max 0e0`
+    // the Num, because Rakudo takes the left one only on a STRICT win. The two
+    // used to answer the left value, so the result's type depended on which side
+    // an equal value was written.
+    if (op == "min") return valueCmp(l, r) < 0 ? l : r;
+    if (op == "max") return valueCmp(l, r) > 0 ? l : r;
 
     // comparisons -> Bool
     if (op == "==") return Value::boolean(l.toNum() == r.toNum());
@@ -18420,8 +18484,7 @@ Value Interpreter::evalUnary(Unary* u) {
             // handed back an undefined value with `$!` cleared to Nil, so there was
             // no way to ask what went wrong.
             if (r.t == VT::Hash && r.hashKind == "Failure" && r.hash) {
-                auto it = r.hash->find("exception");
-                tctx_.cur->define("$!", it != r.hash->end() ? it->second : Value::nil());
+                tctx_.cur->define("$!", failureException(r));
                 // …and the try CONSUMES it: Rakudo's `try { 1 div 0 }` is Nil with
                 // `$!` set, not the live Failure. Handing the Failure back left it
                 // armed, so the caller's own sink detonated it OUTSIDE the try —
@@ -18939,6 +19002,22 @@ Value Interpreter::exceptionFor(const RakuError& e) {
     return Value::object(od);
 }
 
+// A Failure carries `exception` as a bare type object and the diagnostic in a
+// separate `message` slot. That pair is fine internally, but the moment the
+// exception reaches user code — `$!` after a `try`, `.exception`, `.throw` —
+// it has to be a DEFINED instance: an undefined type object boolifies False,
+// so `try { "a".Int }; if $! {…}` never entered its block, and `.message` on it
+// was a missing method rather than the diagnostic we had all along.
+Value Interpreter::failureException(const Value& failure) {
+    if (failure.t != VT::Hash || failure.hashKind != "Failure" || !failure.hash)
+        return Value::nil();
+    auto it = failure.hash->find("exception");
+    Value ex = it != failure.hash->end() ? it->second : Value::typeObj("X::AdHoc");
+    if (ex.t != VT::Type) return ex; // already an instance (`fail $obj`)
+    auto mm = failure.hash->find("message");
+    return exceptionFor(RakuError{ex, mm != failure.hash->end() ? mm->second.toStr() : ex.s.str()});
+}
+
 // An UNHANDLED Failure detonates the moment its value is actually used —
 // `say +"a"` throws, while `(+"a").defined` stays quiet. (`.handled`, set by
 // `try`/CATCH/`.so`, makes it inert.)
@@ -19015,6 +19094,16 @@ std::string Interpreter::gistOf(const Value& v) {
 }
 std::string Interpreter::strOf(const Value& v) {
     failureDetonate(v);
+    // A Code has no string form: Rakudo warns and yields "". Handing back
+    // "sub { ... }" put a placeholder into real output — `~$block` and
+    // `$block.join` both produced it — and never told anyone it was a mistake.
+    // (.gist and .raku still show the routine; only .Str is empty.)
+    if (v.t == VT::Code) {
+        std::string msg = std::string(v.code && v.code->isBlock ? "Block" : "Sub") +
+                          " object coerced to string (please use .gist or .raku to do that)";
+        if (quietDepth_ == 0 && !runControlWarn(msg)) std::cerr << msg << "\n";
+        return "";
+    }
     // Stringifying a container READS it, so a Proxy runs its FETCH. The subscript
     // path deliberately hands back the container (that is how a write reaches
     // STORE), which leaves value contexts like this one to do the read — without
@@ -20333,8 +20422,20 @@ Value Interpreter::evalIndex(Index* idx) {
     }
     // subscripting an infinite range (…..Inf) — index its lazy @-array form so
     // nothing materialises the whole range.
-    if (base.t == VT::Range && base.rTo >= 9000000000000000000LL && !idx->isHash)
+    //
+    // …but remember it WAS an arithmetic endless range, because such a range can
+    // answer any single index by adding, with nothing materialised at all. The
+    // lazy path below tops out at materializeLazy's million-element cap and then
+    // reads off the end, so `(1..∞)[999999999999]` quietly said Nil — a wrong
+    // answer rather than a slow one. A Str or fractional range keeps the old
+    // route: its elements are not `low + i`.
+    bool endlessArith = false;
+    long long endlessLo = 0;
+    if (base.t == VT::Range && base.rTo >= 9000000000000000000LL && !idx->isHash) {
+        endlessArith = !base.rNum && base.ofType != "Str";
+        endlessLo = base.rFrom + (base.rExFrom ? 1 : 0);
         base = methodCall(base, "list", {});
+    }
 
     // A lazy list (infinite `… … *` / lazy `.map`): grow its prefix to cover the
     // requested index/slice before subscripting.
@@ -20345,7 +20446,14 @@ Value Interpreter::evalIndex(Index* idx) {
             (iv.t == VT::Whatever || (iv.t == VT::Code && iv.code && iv.code->isWhateverCode)))
             throw RakuError{Value::typeObj("X::Cannot::Lazy"), "Cannot use a Whatever index on an infinite list"};
         long long maxi = -1;
-        if (iv.t == VT::Int || iv.t == VT::Num || iv.t == VT::Bool) maxi = iv.toInt();
+        if (iv.t == VT::Int || iv.t == VT::Num || iv.t == VT::Bool) {
+            maxi = iv.toInt();
+            // One index into an arithmetic endless range is arithmetic too.
+            // (Guarded against the add itself overflowing, which would answer a
+            // negative element for an index near the top of the range.)
+            if (endlessArith && maxi >= 0 && endlessLo <= 9223372036854775807LL - maxi)
+                return Value::integer(endlessLo + maxi);
+        }
         else if (iv.t == VT::Range || iv.t == VT::Array) for (auto& e : iv.flatten()) if (e.t == VT::Int || e.t == VT::Num) maxi = std::max(maxi, e.toInt());
         if (maxi >= 0) materializeLazy(base, (size_t)maxi + 1);
     }

@@ -608,7 +608,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     }
     if (inv.t == VT::Hash && inv.hashKind == "Failure") {
         Value ex = inv.hash->count("exception") ? (*inv.hash)["exception"] : Value::typeObj("Exception");
-        if (m == "exception") return ex;
+        if (m == "exception") return failureException(inv);
         if (m == "defined" || m == "Bool" || m == "so") {
             (*inv.hash)["handled"] = Value::boolean(true); // testing a Failure marks it handled
             return Value::boolean(false);
@@ -616,7 +616,14 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if (m == "not") { (*inv.hash)["handled"] = Value::boolean(true); return Value::boolean(true); }
         if (m == "handled") return inv.hash->count("handled") ? (*inv.hash)["handled"] : Value::boolean(false);
         if (m == "self" || m == "Failure") return inv;
-        if (m == "throw" || m == "sink") { if (ex.t == VT::Object) throw RakuError{ex, ex.toStr()}; throw RakuError{Value::typeObj("X::AdHoc"), ex.toStr()}; }
+        // .throw keeps the Failure's own exception TYPE and message — routing an
+        // unthrown X::Str::Numeric through X::AdHoc lost both.
+        if (m == "throw" || m == "sink") {
+            auto mm = inv.hash->find("message");
+            std::string msg = mm != inv.hash->end() ? mm->second.toStr() : ex.toStr();
+            if (ex.t == VT::Object) throw RakuError{ex, msg};
+            throw RakuError{ex.t == VT::Type ? ex : Value::typeObj("X::AdHoc"), msg};
+        }
         // .message reads the diagnostic without detonating; .Str/.gist USE the
         // value, so an UNHANDLED Failure throws there (Rakudo). The NUMERIC
         // coercions use it just as much — `.Int` on an unhandled Failure used to
@@ -2779,7 +2786,18 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         }
         if (m == "recv" || m == "read") {
             size_t want = 65536;
-            if (!args.empty() && args[0].isNumeric()) want = (size_t)args[0].toInt();
+            if (!args.empty() && args[0].isNumeric()) {
+                // `Inf` is a real argument here, not a mistake: it means "whatever
+                // has arrived". OpenSSL's bio-read calls `$.net-read.()`, whose
+                // closure defaults to `-> $n = Inf { $s.recv($n, :bin) }`, so the
+                // very first read of an SSL handshake asked for infinity — and
+                // sizing the buffer from it threw std::bad_alloc before the socket
+                // was touched. Anything absurd is capped for the same reason; recv
+                // is "up to" that many bytes, so a smaller buffer is still correct.
+                static const size_t kCap = 64u * 1024 * 1024;
+                double d = args[0].toNum();
+                if (std::isfinite(d) && d >= 0) want = (size_t)std::min<double>(d, (double)kCap);
+            }
             // `:bin` asks for BYTES, and `.read` is always binary — both must answer a
             // Buf, not a Str. Returning a Str made `Buf.new.append($chunk)` append
             // the string instead: it compiles, runs, and simply never matches, which
@@ -2986,6 +3004,14 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             if (nv.t == VT::Int) return nv;
             if (nv.t == VT::Rat || nv.t == VT::Num) return methodCall(nv, "Int", ValueList{});
         }
+        // A Range is a Cool, and a Cool container numifies to its ELEMENT COUNT:
+        // `(1..5).Int` is 5, not 0. Value::toInt has no way to count one (a Str
+        // range and an endless one both need the interpreter), so the coercion
+        // methods ask .elems.
+        if (inv.t == VT::Range) { ValueList none; return methodCall(inv, "elems", none); }
+        // …and an Int that outgrew long long stays exact: toInt() saturates, so
+        // `(2**64).Int` answered 9223372036854775807.
+        if (inv.t == VT::Int && inv.big) return Value::bigint(*inv.big);
         return Value::integer(inv.toInt());
     }
     if (m == "isNaN") {
@@ -2998,6 +3024,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             Value nv = numifyStrFailure(inv.toStr());
             if (nv.t == VT::Hash && nv.hashKind == "Failure") return nv;
         }
+        if (inv.t == VT::Range) { ValueList none; return Value::number(methodCall(inv, "elems", none).toNum()); }
         return Value::number(inv.toNum());
     }
     if (m == "Numeric" || m == "Real") {
@@ -3019,6 +3046,11 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             return inv;
         }
         if (inv.t == VT::Bool) return Value::integer(inv.b ? 1 : 0);
+        // a Cool CONTAINER numifies to its element count, and as an Int:
+        // `(1,2).Numeric` is 2, not 2e0.
+        if (inv.t == VT::Range || inv.t == VT::Array ||
+            (inv.t == VT::Hash && (inv.hashKind.empty() || inv.hashKind == "Hash" || inv.hashKind == "Map")))
+            { ValueList none; return methodCall(inv, "elems", none); }
         return Value::number(inv.toNum());
     }
     if (m == "Bool" || m == "so") {
@@ -3569,6 +3601,15 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // checks (`$attr.does(META6::MetaAttribute)`) — same trait-key mapping
         // `~~` uses (typeMatchesArg owns it, reached via typeOrSubsetMatches)
         if (inv.t == VT::Hash && inv.hashKind == "Attribute")
+            return Value::boolean(typeOrSubsetMatches(inv, rn));
+        // A byte buffer does the buffer roles — Blob, buf8/blob8, Positional —
+        // and none of them is a CLASS it is an instance of, in either engine.
+        // `~~` already knew (typeMatchesArg owns that table); `.does` walked the
+        // class ancestry instead and answered False for all of them. That is
+        // what failed `isa-ok md5(Blob.new), buf8`: Test's isa-ok is
+        // `.isa || .does`, and .isa is False here on Rakudo too.
+        if (inv.t == VT::Str && (inv.hashKind == "Blob" || inv.hashKind == "Buf" ||
+                                 inv.hashKind == "utf8" || inv.hashKind == "CArray"))
             return Value::boolean(typeOrSubsetMatches(inv, rn));
         bool res = inv.typeName() == rn;
         ClassInfo* ci = nullptr;

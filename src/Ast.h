@@ -471,6 +471,10 @@ struct SubDecl : Stmt {
                               // %?RESOURCES<libraries/…>), evaluated when the declaration
                               // executes (module scope = Rakudo's trait-application time)
     std::string nativeSym;    // `is symbol('name')` — "" ⇒ the sub's own name
+    ExprPtr nativeSymExpr;    // `is symbol(EXPR)` — a COMPUTED name, evaluated with the
+                              // declaration like nativeLibExpr above. OpenSSL::Stack picks
+                              // `sk_num` or `OPENSSL_sk_num` by asking the loaded library
+                              // its version, so the literal form cannot express it.
     SubDecl(): Stmt(NK::SubDecl) {}
 };
 

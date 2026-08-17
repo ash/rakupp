@@ -102,7 +102,8 @@ actionable:
 
 - the smallest program that shows it
 - what Raku++ printed, and what Rakudo printed
-- `rakupp --version`, and your OS
+- `rakupp --version` — it reports the commit, the date, the platform and
+  the compiler, so that one line covers the whole environment question
 - whether it happens interpreted, under `--exe`, or both
 
 ---

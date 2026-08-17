@@ -1,0 +1,7 @@
+2 + 2 = 4
+area(3, 4) = 12
+primes below 30: 2 3 5 7 11 13 17 19 23 29
+stats: count=8 sum=31 mean=3.88 max=9
+greet: Hello, Ada! You are 36.
+30! = 265252859812191058636308480000000
+died: division by zero

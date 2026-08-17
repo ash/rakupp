@@ -2,16 +2,16 @@
  * and move the results into C++. Unlike the other hosts, C++ LINKS against
  * librakupp instead of dlopen'ing it. From a checkout, on macOS:
  *
- *   c++ -std=c++17 -Isrc bindings/examples/shopping.cpp \
+ *   c++ -std=c++17 -Iinclude bindings/examples/shopping.cpp \
  *       build/librakupp.dylib -Wl,-rpath,$PWD/build -o shopping && ./shopping
  *
- * On Linux:  c++ -std=c++17 -Isrc bindings/examples/shopping.cpp \
+ * On Linux:  c++ -std=c++17 -Iinclude bindings/examples/shopping.cpp \
  *       -Lbuild -lrakupp -Wl,-rpath,$PWD/build -lpthread -o shopping
  *
- * Against an INSTALLED rakupp the include is <rakupp/grammar.hpp> and the
+ * Against an INSTALLED rakupp the include line below is unchanged and the
  * flags are just -lrakupp.
  */
-#include "grammar.hpp"
+#include <rakupp/grammar.hpp>
 
 #include <iostream>
 
@@ -20,7 +20,7 @@ int main() {
                                         "Shopping", "ShoppingActions");
 
     // parse returns std::nullopt if the grammar does not match
-    auto m = g.parse("milk=2\nbread=1\neggs=12\n");
+    auto m = g.parse("milk=2\nbread = 1  eggs=12\n");
     if (!m) {
         std::cerr << "no match\n";
         return 1;

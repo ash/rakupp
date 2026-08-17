@@ -32,6 +32,10 @@ compatibility.
   line*, so error line numbers do not shift.
 - `--doc` — after the run, render the program's POD to stdout.
 - `-v` / `-V` / `--version`, `-h` / `--help` — from any position.
+  `--version` reports the release, the Raku version implemented, and the
+  build's own identity: the `git describe` commit it came from, the build
+  date, the platform it targets and the compiler that made it. Quote it
+  whole in a bug report.
 
 ## The one-liner family
 

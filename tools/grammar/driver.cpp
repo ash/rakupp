@@ -8,7 +8,7 @@
  * (No library path argument: the driver is LINKED against librakupp — the
  * C++ story — where the ctypes/FFI hosts dlopen it.)
  */
-#include "grammar.hpp"
+#include <rakupp/grammar.hpp>
 
 #include <fstream>
 #include <iostream>

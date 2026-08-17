@@ -233,6 +233,15 @@ jobs:
         if: runner.os != 'Windows'
         run: build/rakupp tools/grammar-smoke.raku build
 
+      # The bindings gate: every example in bindings/examples/ run in every
+      # language the runner has, each output compared against the recorded
+      # expectation in bindings/examples/expected/. This is what keeps the
+      # outputs printed in the binding guides honest -- a guide that says
+      # "you should see this" is checked here, not trusted.
+      - name: Bindings example gate (POSIX)
+        if: runner.os != 'Windows'
+        run: build/rakupp tools/bindings-smoke.raku build
+
       # The SLIM negative suite (SLIM-PLAN P3+P4): --slim's grammar,
       # X::Feature::NotBuilt from every cut feature, the --exe-info manifest
       # round-trip, the size budgets, and the P4 scan's decisions (cut the

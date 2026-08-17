@@ -136,7 +136,7 @@ else {
         my @link = $*KERNEL.name eq 'darwin'
             ?? ($lib.Str, "-Wl,-rpath,{$BUILD}")
             !! ("-L{$BUILD}", '-lrakupp', "-Wl,-rpath,{$BUILD}", '-lpthread');
-        my $cc = run $cxx, '-std=c++17', "-I{$ROOT.add('src')}",
+        my $cc = run $cxx, '-std=c++17', "-I{$ROOT.add('include')}",
                      $ROOT.add('tools/grammar/driver.cpp').Str, |@link,
                      '-o', $exe.Str, :err;
         check $cc.exitcode == 0, "driver.cpp compiles against grammar.hpp",

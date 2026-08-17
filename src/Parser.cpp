@@ -5515,7 +5515,10 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
         }
         if (isIdent("symbol") && peek().kind == Tok::LParen) {
             advance(); advance(); // symbol (
-            if (isKind(Tok::StrLit) || isKind(Tok::StrInterp)) s->nativeSym = cur().text;
+            if ((isKind(Tok::StrLit) || isKind(Tok::StrInterp)) && peek().kind == Tok::RParen)
+                s->nativeSym = cur().text;
+            else
+                s->nativeSymExpr = parseExpression(); // computed — see nativeSymExpr in Ast.h
             int d = 1; while (d > 0 && !isKind(Tok::End)) { if (isKind(Tok::LParen)) d++; else if (isKind(Tok::RParen)) d--; advance(); }
             continue;
         }

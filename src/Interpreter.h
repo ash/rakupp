@@ -262,7 +262,7 @@ bool rtIsDefined(const Value& v);
 // scope (JsonNative.cpp). Under RAKUPP_NATIVE_JSON=1 the same natives are also
 // installed over `use JSON::Fast`, which is opt-in on purpose: silently
 // answering another module's name would fork its semantics behind its back.
-// Native extension modules (src/rakupp_ext.h): dlopen `path`, check its ABI
+// Native extension modules (include/rakupp/rakupp_ext.h): dlopen `path`, check its ABI
 // against RAKUPP_EXT_ABI, and hand back the subs it declares. On failure the
 // message lands in errOut and the return value is undefined. ExtApi.cpp.
 Value extLoadModule(const std::string& path, std::string& errOut,
@@ -650,6 +650,11 @@ public:
     std::optional<Value> methodCallTail(const Value& inv, const struct MName& m, ValueList& args,
                                         const std::vector<ExprPtr>* rwArgs);
     Value exceptionFor(const RakuError& e); // $!/$_ value for a caught error: always a DEFINED exception instance
+    // A Failure stores its exception as a bare TYPE plus a message; anything
+    // that hands the exception to user code (`$!`, `.exception`, `.throw`) must
+    // hand over a defined instance instead, or `if $!` is False and `.message`
+    // is "no such method".
+    Value failureException(const Value& failure);
     // Run the innermost CONTROL handler for a `warn` (CX::Warn). True = the
     // handler .resume'd, so the default stderr print is suppressed; false =
     // no handler, or it finished without resuming (default behaviour stands).

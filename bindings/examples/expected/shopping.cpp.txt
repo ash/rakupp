@@ -1,0 +1,7 @@
+3 items
+milk x 2
+bread x 1
+eggs x 12
+total, computed in Raku: 15
+items in the tree: 3
+bindings/examples/shopping.raku: no match — failed at line 2 column 7 while trying <qty>

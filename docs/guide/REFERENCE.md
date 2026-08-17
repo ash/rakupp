@@ -918,6 +918,13 @@ string, `.subparse` allows a partial match. Add an actions class with
 > `.id`; identify the engine with `.name` (`Raku++`) or `.backend` (`cpp`). See
 > [faq/differences.md](faq/differences.md).
 
+> `$*RAKU.compiler.build` and `.build-date` are **Raku++ extensions** (Rakudo
+> has neither) that identify the individual binary, which `.release`/`.id`
+> cannot — every build between two releases reports the same version.
+> `.build` is `git describe` at build time
+> (`v3.14.0-74-g9ff47ae`, `-modified` if the tree had uncommitted changes, `unknown` when
+> built from a tarball with no `.git`); `.build-date` is the UTC build date.
+
 ---
 
 ## 13. The type & number tower

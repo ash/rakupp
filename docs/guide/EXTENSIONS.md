@@ -14,7 +14,7 @@ should not require a new release of Raku++.
 - **Reference implementation:** `JSON::Native` in
   [github.com/ash/raku-modules](https://github.com/ash/raku-modules) — 5.7 ms on
   a 278 KB document where the same module's Raku fallback takes ~440 ms.
-- **The header:** [`src/rakupp_ext.h`](../../src/rakupp_ext.h), installed to
+- **The header:** [`include/rakupp/rakupp_ext.h`](../../include/rakupp/rakupp_ext.h), installed to
   `<prefix>/include/rakupp/rakupp_ext.h`.
 
 ## Extension or NativeCall?
@@ -87,10 +87,10 @@ cc -shared -fPIC -I"$INC" -Wl,-undefined,dynamic_lookup \
 ```
 
 From a git checkout there is no `<prefix>`; point at the source tree, which has
-the header at `src/rakupp_ext.h`:
+the header at `include/rakupp/rakupp_ext.h`:
 
 ```bash
-mkdir -p /tmp/inc/rakupp && cp /path/to/raku++/src/rakupp_ext.h /tmp/inc/rakupp/
+mkdir -p /tmp/inc/rakupp && cp /path/to/raku++/include/rakupp/rakupp_ext.h /tmp/inc/rakupp/
 cc -shared -fPIC -I/tmp/inc -Wl,-undefined,dynamic_lookup hello.c -o libhello.dylib
 ```
 
@@ -199,6 +199,14 @@ static RkValue render(RkCtx c) {
 argument, `&comparator` and its kind. Positional arguments only; named ones are
 not expressible yet.
 
+The argument **count** is checked, exactly as it is for a call written in
+Raku: passing too few or too many positionals fails with
+`X::Signature::ArityMismatch` instead of quietly binding the missing ones to
+`Any`. Without that, `render-fallback($v)` called with no argument returns a
+plausible wrong answer rather than an error. The check reaches named plain
+subs — the only thing `rk_call` can name; blocks and lambdas passed to
+`rk_call_value`, and multis, keep their own binding rules.
+
 ### Failing
 
 ```c
@@ -280,7 +288,7 @@ time, exactly as a Python C extension resolves `Py_*`. Undefined symbols at
 
 The host holds up its half of that bargain by carrying the `rk_*` surface in
 its dynamic symbol table — Mach-O executables export their globals by default,
-ELF ones need `-Wl,--dynamic-list=src/rakupp_ext.dynlist` (part of the build
+ELF ones need `-Wl,--dynamic-list=include/rakupp/rakupp_ext.dynlist` (part of the build
 since 2026-08-10), and on Windows the `RK_API` dllexports plus `ENABLE_EXPORTS`
 produce the import library above. A rakupp built before that date loads
 extensions only on macOS: on Linux the first `rk_*` call dies with an
@@ -294,9 +302,10 @@ extension's lookup to see it; see
 [ABI-PLAN.md](../dev/plans/ABI-PLAN.md).)
 
 Headers come from `cmake --install`, which lays out
-`<prefix>/{bin,lib,include/rakupp}`. From a git checkout, point at `src/`
-instead. `JSON::Native`'s `Build.rakumod` looks in both, and honours
-`RAKUPP_SRC` for the checkout case.
+`<prefix>/{bin,lib,include/rakupp}`. From a git checkout, point at `include/`
+instead — it has the same `rakupp/rakupp_ext.h` shape as an installed prefix.
+`JSON::Native`'s `Build.rakumod` looks in both, and honours `RAKUPP_SRC` for
+the checkout case.
 
 ## Writing a portable module
 
@@ -489,5 +498,5 @@ Worth knowing before you design around them.
 
 - [FFI.md](FFI.md) — NativeCall, for calling C libraries you did not write
 - [MODULES.md](MODULES.md) — module loading, zef, and the search path
-- [../../src/rakupp_ext.h](../../src/rakupp_ext.h) — the header, which is the
+- [../../include/rakupp/rakupp_ext.h](../../include/rakupp/rakupp_ext.h) — the header, which is the
   normative reference

@@ -43,10 +43,18 @@ function libraryName() {
   return "librakupp.so";
 }
 
-function* candidates(explicit) {
-  if (explicit) yield explicit;
-  if (process.env.RAKUPP_LIB) yield process.env.RAKUPP_LIB;
-  if (process.env.RAKUPP_HOME) yield `${process.env.RAKUPP_HOME}/lib/${libraryName()}`;
+// Libraries the CALLER named. These are authoritative: if one is named and
+// does not load, that is an error, never a reason to quietly use some other
+// library — the wrong-architecture case otherwise looks like a mysteriously
+// stale build, with the symptom nowhere near the cause.
+function* explicitLibs(explicit) {
+  if (explicit) yield [explicit, "the path passed to interpreter()"];
+  if (process.env.RAKUPP_LIB) yield [process.env.RAKUPP_LIB, "RAKUPP_LIB"];
+  if (process.env.RAKUPP_HOME)
+    yield [`${process.env.RAKUPP_HOME}/lib/${libraryName()}`, "RAKUPP_HOME"];
+}
+
+function* candidates() {
   const exe = Bun.which("rakupp");
   if (exe) {
     const real = require("fs").realpathSync(exe);
@@ -62,10 +70,20 @@ let session = null;
 class Session {
   constructor(libPath) {
     let lib = null, tried = [];
-    for (const cand of candidates(libPath)) {
-      try { lib = dlopen(cand, SYMBOLS); break; }
-      catch (e) { tried.push(`${cand}: ${e.message}`); }
+    for (const [cand, how] of explicitLibs(libPath)) {
+      try { lib = dlopen(cand, SYMBOLS); }
+      catch (e) {
+        throw new RakuError(
+          `${how} names ${cand}, which could not be loaded: ${e.message}\n` +
+          "It is used as given — unset it to search for a library instead.");
+      }
+      break;
     }
+    if (!lib)
+      for (const cand of candidates()) {
+        try { lib = dlopen(cand, SYMBOLS); break; }
+        catch (e) { tried.push(`${cand}: ${e.message}`); }
+      }
     if (!lib)
       throw new RakuError("librakupp not found. Set RAKUPP_LIB, or have rakupp on PATH.\nTried:\n  " + tried.join("\n  "));
     this.f = lib.symbols;
@@ -86,7 +104,9 @@ class Session {
     return this.f.rk_str(this.c, ptr(b), b.byteLength - 1);
   }
 
-  call(name, args) {
+  /* rk_call over raw engine values — the internal path the grammar side
+     uses. call() below is the public one, which converts. */
+  callRaw(name, args) {
     const argv = new BigUint64Array(args.length);
     for (let i = 0; i < args.length; i++) argv[i] = BigInt(args[i]);
     const r = this.f.rk_call(this.c, Buffer.from(name + "\0"), args.length ? ptr(argv) : null, args.length);
@@ -97,6 +117,57 @@ class Session {
       throw new RakuError(msg);
     }
     return r;
+  }
+
+  /* Evaluate Raku source in the mainline scope and return the last
+     statement's value as a JS value. State persists across calls, exactly
+     as in the REPL: eval a `sub` here and call() finds it afterwards. */
+  eval(source) {
+    const out = new BigUint64Array(1);
+    if (this.f.rk_eval(this.rk, Buffer.from(source + "\0"), ptr(out)) !== 0) {
+      const e = this.f.rk_last_error(this.rk);
+      throw new RakuError(e ? e.toString() : "rk_eval failed");
+    }
+    return this.toJs(Number(out[0]));
+  }
+
+  /* Call a Raku routine by name with JS arguments, returning a JS value:
+     interpreter().call("area", 3, 4). A die inside it throws RakuError. */
+  call(name, ...args) {
+    return this.toJs(this.callRaw(name, args.map(a => this.fromJs(a))));
+  }
+
+  /* Is there a routine of this name in the mainline scope? */
+  can(name) {
+    return this.f.rk_can(this.c, Buffer.from(name + "\0")) !== 0;
+  }
+
+  get version() { return this.f.rk_version().toString(); }
+
+  /* JS -> engine. The result is UNROOTED: valid until the next eval or
+     call, which is long enough to pass it as an argument and no longer. */
+  fromJs(x) {
+    if (x === null || x === undefined) return this.f.rk_any(this.c);
+    if (typeof x === "boolean") return this.f.rk_bool(this.c, x ? 1 : 0);
+    if (typeof x === "bigint")  return this.f.rk_int(this.c, x);
+    if (typeof x === "number")
+      return Number.isInteger(x) ? this.f.rk_int(this.c, BigInt(x))
+                                 : this.f.rk_num(this.c, x);
+    if (typeof x === "string")  return this.str(x);
+    if (Array.isArray(x)) {
+      const a = this.f.rk_array(this.c);
+      for (const item of x) this.f.rk_push(this.c, a, this.fromJs(item));
+      return a;
+    }
+    if (typeof x === "object") {
+      const h = this.f.rk_hash(this.c);
+      for (const [k, v] of Object.entries(x)) {
+        const kb = Buffer.from(k + "\0", "utf8");
+        this.f.rk_set(this.c, h, ptr(kb), kb.byteLength - 1, this.fromJs(v));
+      }
+      return h;
+    }
+    throw new RakuError(`cannot pass a ${typeof x} to Raku`);
   }
 
   readStr(v) {
@@ -160,6 +231,13 @@ const SYMBOLS = {
   rk_str:      { args: [P, P, u64], returns: P },
   rk_array:    { args: [P], returns: P },
   rk_push:     { args: [P, P, P], returns: FFIType.void },
+  rk_any:      { args: [P], returns: P },
+  rk_bool:     { args: [P, i32], returns: P },
+  rk_num:      { args: [P, f64], returns: P },
+  rk_hash:     { args: [P], returns: P },
+  rk_set:      { args: [P, P, P, u64, P], returns: FFIType.void },
+  rk_can:      { args: [P, cstring], returns: i32 },
+  rk_version:  { args: [], returns: cstring },
 };
 
 export function interpreter(libPath) {
@@ -179,7 +257,7 @@ class Node {
     const path = S.f.rk_array(S.c);
     for (const st of this.#steps)
       S.f.rk_push(S.c, path, typeof st === "number" ? S.f.rk_int(S.c, BigInt(st)) : S.str(String(st)));
-    return S.call("rk-match-walk", [this.#match.handle, path, S.str(op)]);
+    return S.callRaw("rk-match-walk", [this.#match.handle, path, S.str(op)]);
   }
 
   str()    { return session.readStr(this.#walk("str")); }
@@ -205,7 +283,7 @@ export class Grammar {
 
   static fromSource(source, { name = "", actions = "" } = {}) {
     const S = interpreter();
-    const id = S.call("rk-grammar-compile", [S.str(source), S.str(name), S.str(actions)]);
+    const id = S.callRaw("rk-grammar-compile", [S.str(source), S.str(name), S.str(actions)]);
     const g = new Grammar();
     g.#id = Number(S.f.rk_int_get(S.c, id));
     g.#label = name || "<anonymous>";
@@ -221,10 +299,10 @@ export class Grammar {
 
   parse(text, { rule = "", strict = false } = {}) {
     const S = interpreter();
-    const raw = S.call("rk-grammar-parse", [S.f.rk_int(S.c, BigInt(this.#id)), S.str(text), S.str(rule)]);
+    const raw = S.callRaw("rk-grammar-parse", [S.f.rk_int(S.c, BigInt(this.#id)), S.str(text), S.str(rule)]);
     if (S.f.rk_type(S.c, raw) === RK_ANY) {
       if (strict) {
-        const d = S.toJs(S.call("rk-grammar-diagnosis", [S.str(text)]));
+        const d = S.toJs(S.callRaw("rk-grammar-diagnosis", [S.str(text)]));
         if (d)
           throw new ParseError(
             `${this.#label}: no match — failed at line ${d.line} column ${d.col} while trying <${d.rule}>`, d);

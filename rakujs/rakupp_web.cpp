@@ -1,6 +1,6 @@
 // rakupp_web.cpp — Raku.js: WebAssembly entry point for Raku++.
 //
-// Written against the PUBLIC embedding API (src/rakupp.h) rather than against
+// Written against the PUBLIC embedding API (include/rakupp/rakupp.h) rather than against
 // the interpreter's insides. That is the point of the file: ABI-PLAN's A2 makes
 // the playground the first real consumer of rakupp.h, so anything the API
 // cannot express here is a hole in the API rather than a thing to work around
@@ -24,7 +24,7 @@
 // before it overflows, so this is safe.
 
 #include "Highlight.h"
-#include "rakupp.h"
+#include <rakupp/rakupp.h>
 
 #include <emscripten/emscripten.h>
 #include <cstdio>

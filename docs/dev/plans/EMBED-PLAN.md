@@ -95,7 +95,7 @@ types in the header, UTF-8 everywhere. Roughly fifteen functions:
   **superseded.** The native extension ABI shipped the day after this was
   written and already defines the vocabulary: `RkValue`, `RkType`, `rk_int` /
   `rk_str` / `rk_hash` / `rk_at_pos` and the rest, in
-  [`src/rakupp_ext.h`](../../../src/rakupp_ext.h). There will not be a second
+  [`include/rakupp/rakupp_ext.h`](../../../include/rakupp/rakupp_ext.h). There will not be a second
   value type for the same values — see [ABI-PLAN.md](ABI-PLAN.md), which is the
   layer beneath this plan. What embedding adds there is a **rooted** lifetime,
   since the extension arena is deliberately call-scoped.

@@ -283,7 +283,7 @@ template <class IO> void visit(IO& io, SubDecl& n)  {
     ioExprVec(io, n.immediateArgs); F(io, n.immediateCall);
     F(io, n.isExport); F(io, n.isOur); F(io, n.retType); F(io, n.pod);
     F(io, n.isNative); F(io, n.nativeLib); F(io, n.nativeLibSub);
-    ioExpr(io, n.nativeLibExpr); F(io, n.nativeSym);
+    ioExpr(io, n.nativeLibExpr); F(io, n.nativeSym); ioExpr(io, n.nativeSymExpr);
 }
 template <class IO> void visit(IO& io, ClassDecl& n) {
     F(io, n.name); F(io, n.parent); ioVec(io, n.extraParents); ioVec(io, n.roles);

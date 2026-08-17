@@ -432,7 +432,7 @@ impossible.
   > hands every binding the exact shim its engine was built with, so no host
   > ships a sidecar file and skew is impossible; src/GrammarShim.cpp is
   > generated from the canonical source and grammar-smoke fails when stale.
-  > The hosts: **C++** ([src/grammar.hpp](../../src/grammar.hpp), header-only,
+  > The hosts: **C++** ([include/rakupp/grammar.hpp](../../include/rakupp/grammar.hpp), header-only,
   > installed as `<rakupp/grammar.hpp>`; RAII unroot — the lifetime story is
   > free, as predicted); **JS** (bindings/js, bun:ffi, explicit `close()`);
   > **Go** (bindings/go, cgo, explicit `Close()`, no finalizer, !Send by

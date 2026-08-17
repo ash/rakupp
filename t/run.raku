@@ -727,7 +727,16 @@ section('the CLI surface (goldens for the v3 parser refactor)');
     ok(run-rakupp('-h')[0] eq $ho, '-h is --help');
     my ($vo, $vx) = run-rakupp('--version');
     ok($vx == 0 && $vo.starts-with('Raku++ (rakupp)'), '--version identifies itself');
+    # The build stamp is the point of the extra lines: a version that cannot
+    # say which commit it came from is a version a bug report cannot use. It
+    # says "unknown" rather than guessing outside a git checkout, so assert
+    # the LINE is there and let a stamped build assert the content.
+    ok($vo.contains('Build ') && $vo.contains('Home ') && $vo.contains('raku.online'),
+       '--version carries the build stamp and the project link');
+    ok($vo ~~ /^^ 'Build ' \s+ \S+ ' (' \d**4 '-' \d\d '-' \d\d '), ' \S+ ', '/,
+       '--version build line has commit, date, platform, compiler');
     ok(run-rakupp('-V')[0] eq $vo, '-V is --version');
+    ok(run-rakupp('-v')[0] eq $vo, '-v is --version');
     my ($fo, $fx) = run-rakupp('--ffi-info');
     ok($fx == 0 && $fo.chars > 0, '--ffi-info answers');
 

@@ -1,38 +1,70 @@
-# rakulang — Raku grammars for JavaScript (Bun)
+# rakulang — Raku from JavaScript (Bun)
 
-This package lets a JavaScript program parse text with a Raku grammar. The
-grammar stays a plain `.raku` file; the parsing happens in an embedded
-Raku++ interpreter (`librakupp`, reached through `bun:ffi`); the package
-only moves values across.
+A single-file ES module over `librakupp`'s C ABI. No build step and no
+native addon: the FFI layer is Bun's built-in `bun:ffi`, values cross through
+[`rakupp.h`](../../include/rakupp/rakupp.h), and the grammar logic lives in a
+Raku shim that ships inside the library itself.
 
-**Bun only.** The FFI layer is Bun's built-in `bun:ffi`, so plain Node.js
-cannot run this package. Install Bun from [bun.sh](https://bun.sh) —
-`curl -fsSL https://bun.sh/install | bash`.
+**Bun only.** `bun:ffi` is Bun's, so plain Node.js cannot run this package.
+Install Bun from [bun.sh](https://bun.sh) — `curl -fsSL https://bun.sh/install
+| bash`.
 
-## What you need
+## 1. What you need
 
-- **Bun** (1.0+) — check with `bun --version`.
-- **The shared library** — from the repo root:
+- **Bun.** Check with `bun --version`.
+- **`librakupp`.** From the repo root:
 
   ```bash
   cmake -B build -DCMAKE_BUILD_TYPE=Release -DRAKUPP_BUILD_SHARED=ON
   cmake --build build -j
   ```
 
-  This gives you `build/librakupp.dylib` (macOS) / `build/librakupp.so`
-  (Linux). Any build directory works; the commands below say `build`.
+  A build directory configured without `-DRAKUPP_BUILD_SHARED=ON` is
+  static-only and this package cannot use it.
 
-## Run the example
+## 2. Install
 
-From the repo root:
+In your own project:
 
+```json
+{ "dependencies": { "rakulang": "file:/path/to/raku++/bindings/js" } }
+```
+
+then `import { interpreter, Grammar } from "rakulang"`.
+
+With `rakupp` on PATH nothing needs configuring — the loader takes
+`librakupp` from beside it. To override, name one: an explicit path to
+`interpreter("/path/to/librakupp.dylib")`, or `RAKUPP_LIB` (the file), or
+`RAKUPP_HOME` (an install prefix with `lib/`). **A library you name is used
+as given.** If it cannot be loaded you get that error, not a quiet fall-back
+to whichever other library happens to be findable — the usual cause is an
+architecture mismatch, and falling back makes the symptom point nowhere near
+the cause. Unset the variable to search instead.
+
+## 3. Two minutes
+
+Run both examples from the repo root (`.so` for `.dylib` on Linux):
+
+```bash
+RAKUPP_LIB=$PWD/build/librakupp.dylib bun bindings/examples/calc.mjs
+```
 ```bash
 RAKUPP_LIB=$PWD/build/librakupp.dylib bun bindings/examples/shopping.mjs
 ```
 
-(`RAKUPP_LIB` names the library file. With `rakupp` on PATH from an
-installed layout you can omit it — the loader finds the library next to the
-binary.) Expected output:
+`calc` ([calc.mjs](../examples/calc.mjs)) prints:
+
+```
+2 + 2 = 4
+area(3, 4) = 12
+primes below 30: 2 3 5 7 11 13 17 19 23 29
+stats: count=8 sum=31 mean=3.88 max=9
+greet: Hello, Ada! You are 36.
+30! = 265252859812191058636308480000000
+died: division by zero
+```
+
+`shopping` ([shopping.mjs](../examples/shopping.mjs)) prints:
 
 ```
 3 items
@@ -44,119 +76,119 @@ as plain JS data: {"item":[{"name":"milk","qty":"2"},{"name":"bread","qty":"1"},
 line 2 column 7 while trying <qty>
 ```
 
-If you see this, the binding works.
+If you see both, the binding works.
 
-## The example, explained
-
-The source is [../examples/shopping.mjs](../examples/shopping.mjs); the
-grammar it loads is [../examples/shopping.raku](../examples/shopping.raku).
-The whole API in one pass:
+## 4. Running Raku
 
 ```js
-import { Grammar, ParseError } from "rakulang";   // or a path to rakulang.js
+import { interpreter } from "rakulang";
+import { readFileSync } from "fs";
 
-// Compile the grammar file. name is the grammar's name INSIDE the file;
-// actions names an actions class in the same file (omit for none).
-const g = Grammar.fromFile("shopping.raku",
-                           { name: "Shopping", actions: "ShoppingActions" });
+const raku = interpreter();            // the process's interpreter
 
-// Parse. null means "the text did not match" (an engine failure throws
-// RakuError instead). The whole input must match. To parse a fragment with
-// one rule: g.parse(text, { rule: "item" }).
-const m = g.parse("milk=2\nbread=1\neggs=12\n");
+raku.eval("my $x = 41");
+raku.eval("$x + 1");                   // 42 — eval keeps state, like the REPL
 
-// Walk the match lazily. get() names a capture; at() indexes a repeated
-// one; a repeated capture is iterable. Nothing crosses the engine boundary
-// until a terminal call like .str() / .int() / .length — one engine call
-// each.
-for (const item of m.get("item"))
-  console.log(item.get("name").str(), item.get("qty").int());
+raku.eval(readFileSync("calc.raku", "utf8"));   // loading subs is an eval
+raku.call("area", 3, 4);               // 12
+raku.call("stats", [3, 1, 4]);         // { count: 3, sum: 8, ... }
+raku.call("greet", { name: "Ada" });   // an object becomes a Raku hash
 
-// What the Raku actions class computed, as native data. ShoppingActions'
-// TOP method did `make ...sum`, so this is 15.
-console.log(m.made());
+raku.can("area");                      // true
+raku.version;                          // '3.14.0'
+```
 
-// Or convert everything below a node at once (~1.4x the parse's own cost):
-// plain objects, arrays, strings, numbers.
-const all = m.tree();
+`eval` returns the last statement's value; `call` looks the routine up in the
+mainline scope, so anything an earlier `eval` declared is callable. Arguments
+convert automatically — `null`/`undefined`, `boolean`, `number` (integral
+ones become Raku `Int`, the rest `Num`), `bigint`, `string`, `Array`, and
+plain objects. Anything else throws `RakuError`.
 
-// Done with the match? Free it. A Match holds a rooted engine value and
-// there is no reliable GC hook for that — closing is YOUR job.
-m.close();
+## 5. Parsing with grammars
 
-// A failed parse, diagnosed: strict throws ParseError with the line,
-// column, and the deepest rule the engine was trying there.
+```js
+import { Grammar } from "rakulang";
+
+const log = Grammar.fromFile("log.raku", { name: "Log", actions: "LogActions" });
+
+const m = log.parse(text);             // a handle, not data; null if no match
+for (const line of m.get("line"))      // lazy: one engine call per leaf
+  console.log(line.get("ip").str(), line.get("status").int());
+console.log(m.get("line").at(0).get("size").made());   // computed by actions
+
+const everything = m.tree();           // eager, opt-in (~1.4× the parse)
+m.close();                             // required — see §8
+```
+
+`fromFile(path, {name, actions})` compiles and caches: identical source
+compiles once, and each *named* compile is isolated, so recompiling an edited
+grammar never rebinds an earlier `Grammar`'s body. `name` may be omitted only
+when the grammar declaration is the file's last statement.
+
+`parse(text, {rule, strict})` anchors to the whole input and returns a match
+node or `null`; pass `rule` to parse a fragment with one rule. `get()` and
+`at()` build a lazy path — nothing crosses the boundary until `.str()`,
+`.int()`, `.num()`, `.truthy()`, `.length`, iteration, `.tree()` or
+`.made()`. A repeated capture is iterable.
+
+## 6. Values
+
+Raku `Int` → `number`, `Num`/`Rat` → `number`, `Str` → `string`, `List` →
+`Array`, `Hash` → `Object`, `True`/`False` → `boolean`, `Any` → `null`. The
+same rules run in reverse for arguments.
+
+An integer wider than 64 bits arrives as a string of digits — JS numbers
+would lose it silently, which is the reason. In a `tree()`, a match node with
+no sub-captures becomes its matched *text*, so `qty` is the string `"2"`; use
+`.int()` on the node, or an actions class, for numbers.
+
+## 7. Errors
+
+`RakuError` is a Raku `die` crossing the boundary. `ParseError` extends it
+for a diagnosed non-match, carrying `.line`, `.column`, `.rule` and `.pos`:
+
+```js
 try {
-  g.parse("milk=2\nbread=x\n", { strict: true });
+  g.parse(text, { strict: true });
 }
 catch (e) {
-  if (e instanceof ParseError) console.log(e.line, e.column, e.rule);
+  if (!(e instanceof ParseError)) throw e;
+  console.log(`line ${e.line} column ${e.column} while trying <${e.rule}>`);
 }
 ```
 
-## How data crosses
+## 8. Lifetime and threading
 
-Into Raku: the text you parse (and the grammar source). Out of Raku, two
-channels:
+One interpreter per process, created on first use; one JS thread talks to it
+at a time (Raku code inside it threads freely).
 
-- **Lazy leaf reads** — `.str()` → string, `.int()` / `.num()` → number.
-  Cheap and precise; use these when you want a few fields.
-- **`tree()` / `made()`** — everything at once, as plain JS values: `null`,
-  booleans, numbers, strings, arrays, objects. In a `tree()`, a node with no
-  sub-captures becomes its matched *text* (`"2"`, not `2`); named captures
-  become object keys; repeated captures become arrays. `made()` carries
-  whatever the actions class `make`d — the general-purpose way to have Raku
-  *compute* something and hand the result to JS as plain data.
+**Call `close()` on a Match when you are done with it.** A Match holds a
+rooted value inside the interpreter and there is no reliable GC hook to lean
+on, so JS carries the same obligation Go does. Values from `eval` and `call`
+are already plain JS data and need nothing.
 
-Probing: `.truthy()` answers whether anything matched at a path (reading a
-missing capture with `.str()` throws `RakuError`). `.length` is the list
-length — 1 for a plain node, 0 for a missing one.
-
-## Rules to remember
-
-- **Call `m.close()`** when you are done with a match — like Go and unlike
-  Python, nothing frees it for you.
-- **One interpreter per process**, created on first use; keep engine calls
-  on one thread (Raku code inside the interpreter threads freely).
-
-## Using it in your own project
+## 9. Testing
 
 ```bash
-bun init mine && cd mine
-bun add rakulang@file:/path/to/raku++/bindings/js
+build/rakupp tools/bindings-smoke.raku
 ```
 
-then `import { Grammar } from "rakulang"` and run with `RAKUPP_LIB` set (or
-`rakupp` on PATH, or `RAKUPP_HOME` pointing at an install prefix).
-
-## Testing it properly
-
-The full gate — same grammar, same 2000-line corpus, this package's output
-byte-compared against plain `rakupp`'s — runs from the repo root:
-
-```bash
-build/rakupp tools/grammar-smoke.raku
-```
-
-Look for `ok - JS output is byte-identical to rakupp's`. The JS leg skips
-(loudly) if bun is missing or its architecture cannot load the library — see
-below.
+Runs both examples in all five languages and checks the output against
+[../examples/expected/](../examples/expected). For the deep gate — this
+binding driving the same grammar and 2000-line corpus as the Raku reference
+driver, byte-compared — run `build/rakupp tools/grammar-smoke.raku`. Both run
+in CI on every push.
 
 ## When things go wrong
 
-- **`Cannot find module 'bun:ffi'`** — you ran it with Node. Use `bun`.
-- **`librakupp not found`** — the error lists every path it tried. Set
+- **`librakupp not found`** — the error lists every path tried. Set
   `RAKUPP_LIB` to the library file. If a `rakupp` binary was found but no
-  library, that build is static-only: rebuild with
+  library beside it, that build directory is static-only: rebuild with
   `-DRAKUPP_BUILD_SHARED=ON`.
 - **`incompatible architecture`** — your Bun and the library disagree
-  (common on Apple Silicon with an x86_64 Bun; check
-  `file $(which bun)`). Either install arm64 Bun, or build an x86_64
-  library to match:
+  (`file $(which bun)`). Either install a matching Bun, or build the library
+  for Bun's architecture:
   `cmake -B build-x64 -DCMAKE_OSX_ARCHITECTURES=x86_64 -DRAKUPP_BUILD_SHARED=ON ...`
-- **`rk_new refused: an interpreter is already live`** — something else in
-  this process already embeds Raku++; the engine allows one interpreter per
-  process.
-- **`RakuError` from a read** — usually a missing capture read as a value
-  (probe with `.truthy()` first), or a die inside an actions method; the
-  message is the engine's own.
+- **`Cannot find module "bun:ffi"`** — you ran it under Node. Use `bun`.
+- **`rk_new refused`** — something already created an interpreter in this
+  process. Use `interpreter()`, which returns the shared one.

@@ -257,6 +257,7 @@ struct Callable {
     std::string nativeLibSub;                        // `is native(&sub)` — sub called at runtime for the lib path
     const Expr* nativeLibExpr = nullptr;             // `is native(EXPR)` whose declaration-time eval failed —
                                                      // retried once at first call (AST outlives the interpreter)
+    const Expr* nativeSymExpr = nullptr;             // ditto for `is symbol(EXPR)` — a computed C symbol name
     void* nativeSymCache = nullptr;                   // resolved fn pointer — dlopen/dlsym once, not per call
                                                       // (5 dlopen candidates per call cost a flat ~67 µs)
     void* nativeCifCache = nullptr;                   // prepared libffi call interface, built once per signature.

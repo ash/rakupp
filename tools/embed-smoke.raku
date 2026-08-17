@@ -6,7 +6,7 @@
 #      back INTO Raku — rk_call, rk_call_value, rk_can, the error contract and
 #      rooted handles, driven from tools/embed/ext-callback.raku.
 #   3. If a shared librakupp exists in the build directory, its export table
-#      is exactly the extension ABI: every rk_* from src/rakupp_ext.h present,
+#      is exactly the extension ABI: every rk_* from include/rakupp/rakupp_ext.h present,
 #      and not one interpreter internal leaked. (A leaked internal symbol is a
 #      permanent ABI liability the moment a binding ships.)
 #
@@ -71,12 +71,9 @@ if $rt.e {
     my $cc   = %*ENV<CC> // 'cc';
     my $cxx  = %*ENV<CXX> // 'c++';
     # rakupp.h says `#include <rakupp/rakupp.h>`, so the include path has to be
-    # the directory CONTAINING a `rakupp/` — the same symlink the extension
-    # build below uses.
-    my $inc0 = $BUILD.add('ext-include');
-    $inc0.mkdir;
-    my $ln = $inc0.add('rakupp');
-    run 'ln', '-sfn', $ROOT.add('src').Str, $ln.Str, :err unless $ln.e;
+    # the directory CONTAINING a `rakupp/` — which is exactly what include/ is,
+    # in a checkout and after an install alike.
+    my $inc0 = $ROOT.add('include');
 
     my $obj  = $BUILD.add('embed-host.o');
     my $host = $BUILD.add('embed-host');
@@ -102,17 +99,13 @@ if $rt.e {
 
 # ---- 2. an extension that calls back into Raku ------------------------------
 
-# Headers live in src/ in a checkout, under include/rakupp after an install;
-# the extension says `#include <rakupp/rakupp_ext.h>`, so the include path has
-# to be the directory CONTAINING a `rakupp/` — hence the symlink.
-my $inc = $BUILD.add('ext-include');
-$inc.mkdir;
-my $link = $inc.add('rakupp');
-unless $link.e {
-    run 'ln', '-sfn', $ROOT.add('src').Str, $link.Str, :err;
-}
+# The extension says `#include <rakupp/rakupp_ext.h>`, so the include path has
+# to be the directory CONTAINING a `rakupp/`. The public headers live in
+# include/rakupp/ (see include/README.md), so the checkout already has the
+# installed shape and -Iinclude works in both.
+my $inc = $ROOT.add('include');
 
-if $link.e {
+if $inc.add('rakupp/rakupp_ext.h').e {
     $checked++;
     my $cc  = %*ENV<CC> // 'cc';
     my $ext = $BUILD.add($*KERNEL.name eq 'darwin' ?? 'libcallback-ext.dylib'
@@ -152,7 +145,7 @@ if $shared {
     # both of them, since rakupp.h (embedding) is exported the same way
     # rakupp_ext.h (extensions) is.
     my @want;
-    for 'src/rakupp_ext.h', 'src/rakupp.h' -> $hdr {
+    for 'include/rakupp/rakupp_ext.h', 'include/rakupp/rakupp.h' -> $hdr {
         for $ROOT.add($hdr).IO.lines -> $line {
             next unless $line.starts-with('RK_API');
             @want.push(~$0) if $line ~~ /('rk_' <[a..z_]>+) \s* '('/;

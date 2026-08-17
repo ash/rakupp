@@ -1,0 +1,7 @@
+3 items
+milk x 2
+bread x 1
+eggs x 12
+total, computed in Raku: 15
+as plain Rust data: Map({"item": List([Map({"name": Str("milk"), "qty": Str("2")}), Map({"name": Str("bread"), "qty": Str("1")}), Map({"name": Str("eggs"), "qty": Str("12")})])})
+line 2 column 7 while trying <qty>
