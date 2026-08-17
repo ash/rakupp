@@ -13567,6 +13567,21 @@ static Value strictNum(const Value& v) {
     return v;
 }
 static long long strictInt(const Value& v) { return strictNum(v).toInt(); }
+// The BITWISE operands go further: a non-finite one has no integer form at all.
+// `1 +& NaN` answered 1, because toInt() saturates NaN to 0 and Inf to the int64
+// maximum — a silent wrong number out of an operator with no meaning here.
+//
+// Only the bitwise ops. strictInt is shared with Range construction and the
+// repetition count, where Inf is entirely legitimate: `^Inf` and `.head(Inf)`
+// build infinite lists, and putting this check in strictInt itself broke them
+// (t/regression/endless-range-reduce.raku, S32-list/head.t and skip.t).
+static long long bitwiseInt(const Value& v) {
+    Value n = strictNum(v);
+    if (n.t == VT::Num && !std::isfinite(n.n))
+        throw RakuError{Value::typeObj("X::Numeric::CannotConvert"),
+                        "Cannot convert " + n.toStr() + " to Int"};
+    return n.toInt();
+}
 
 Value applyArith(const std::string& op, const Value& l, const Value& r) {
     // Hot path: 1–2-char arithmetic/comparison ops on plain Int/Int — the
@@ -14412,11 +14427,11 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                                     r.big ? *r.big : BigInt(r.toInt()), op[1]);
             return res.fitsLL() ? Value::integer(res.toLL()) : Value::bigint(res);
         }
-        long long a = strictInt(l), b = strictInt(r);
+        long long a = bitwiseInt(l), b = bitwiseInt(r);
         return Value::integer(op[1] == '&' ? (a & b) : op[1] == '|' ? (a | b) : (a ^ b));
     }
     if (op == "+<") { // escalate to BigInt when the result would overflow long long
-        strictNum(l); long long sh = strictInt(r);
+        bitwiseInt(l); long long sh = bitwiseInt(r);
         if (sh < 0) return Value::integer(0);
         if (!l.big && sh < 62 && std::llabs(l.toInt()) < (1LL << (62 - sh)))
             return Value::integer(l.toInt() << sh);
@@ -14425,7 +14440,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         return res.fitsLL() ? Value::integer(res.toLL()) : Value::bigint(res);
     }
     if (op == "+>") {
-        strictNum(l); long long sh = strictInt(r);
+        bitwiseInt(l); long long sh = bitwiseInt(r);
         if (sh < 0) return Value::integer(0);
         if (!l.big) return Value::integer(sh >= 63 ? (l.toInt() < 0 ? -1 : 0) : (l.toInt() >> sh));
         BigInt q, rem;
@@ -14877,6 +14892,16 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             res = valueEq(l, r);
         }
         return Value::boolean(op == "~~" ? res : !res);
+    }
+    // ≼ and ≽ were REMOVED in v6.d. Naming the replacement is the difference
+    // between a user fixing it in a second and hunting for what the character
+    // meant. Thrown here rather than at lex time because that is where Rakudo
+    // throws it — a lexer error is not catchable by the `try` around it.
+    if (op == "\xE2\x89\xBC" || op == "\xE2\x89\xBD") {
+        bool sub = op == "\xE2\x89\xBC";
+        throw RakuError{Value::typeObj("X::AdHoc"),
+                        std::string(sub ? "≼" : "≽") + " was removed in v6.d, please use " +
+                        (sub ? "⊆" : "⊇") + " operator instead"};
     }
     // `~<` and `~>` are RESERVED in Raku and defined by nobody — Rakudo parses
     // them and then finds no candidate. "Not yet implemented" would be a promise

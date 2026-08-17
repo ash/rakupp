@@ -179,6 +179,10 @@ static InfixInfo classifyInfix(const Token& t) {
             "(elem)", "∈", "(!elem)", "∉", "(cont)", "∋", "(!cont)", "∌",
             "(<=)", "⊆", "(<)", "⊂", "(>=)", "⊇", "(>)", "⊃",
             "(==)", "(!=)", "(<>)",
+            // removed in v6.d, but they still PARSE: the diagnostic that names
+            // their replacement is thrown when one is evaluated, which is where
+            // Rakudo throws it and therefore where a `try` can catch it.
+            "≼", "≽",
         };
         if (setCombine.count(o)) { in.valid = true; in.lbp = BP_ADD; return in; }
         if (o.size() > 1 && o.back() == '=' && setCombine.count(o.substr(0, o.size() - 1))) {
