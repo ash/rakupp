@@ -639,6 +639,10 @@ public:
     Value idxW(const Value& base, Value key, bool isHash); // index with a Whatever/WhateverCode key (@a[*-1], @a[*])
     void materializeLazy(const Value& v, size_t n); // grow a lazy list's prefix to >= n elements (capped)
     void drainIfFiniteLazy(const Value& v);         // …all of it, when the list is lazy but finite
+    // Store through an lvalue expression, refusing a readonly container. Used by
+    // the `.=` write-backs, which do not go through the assignment operator and
+    // so never met its guard.
+    void assignChecked(struct Expr* target, Value v);
     // A code assertion (`<?{…}>` / `<!{…}>`) only evaluates when the engine is
     // handed a hook; with none it defaults to PASS. Every site that builds its
     // own Regex needs this, or one pattern answers differently in each of them.

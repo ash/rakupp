@@ -8524,6 +8524,16 @@ void Interpreter::materializeLazy(const Value& v, size_t n) {
 // An INFINITE one is left alone: draining it would not return. Walking that
 // incrementally means teaching each loop to pull as it goes, which is its own
 // change — `for 1, { $_ + 1 } ... * { last … }` is still short.
+void Interpreter::assignChecked(Expr* target, Value v) {
+    if (Value* lv = lvalue(target)) {
+        if (lv->readonly)
+            throw RakuError{Value::typeObj("X::Assignment::RO"),
+                            "Cannot assign to a readonly variable or a value"};
+        v.readonly = false;                 // the flag marks the container, not the value
+        *lv = std::move(v);
+    }
+}
+
 void Interpreter::drainIfFiniteLazy(const Value& v) {
     if (v.t == VT::Array && v.arr && v.ext &&
         !std::static_pointer_cast<LazySeqState>(v.ext)->infinite)
@@ -10630,6 +10640,22 @@ void Interpreter::copyOutRw(const std::vector<Param>* params, std::shared_ptr<En
     }
 }
 
+// Can this ARGUMENT EXPRESSION supply a writable container? Deliberately a
+// syntactic test of the shapes that certainly cannot — a literal, an operator
+// result, a ternary, a comparison chain. Anything else is assumed to be a
+// container, so a binding that would have worked before still does: the cost of
+// a false "not a container" is rejecting valid code, which is far worse than
+// keeping a rare permissive case.
+static bool argIsNeverContainer(const Expr* e) {
+    if (!e) return false;
+    switch (e->kind) {
+        case NK::IntLit: case NK::NumLit: case NK::StrLit: case NK::BoolLit:
+        case NK::InterpStr: case NK::AllomorphLit: case NK::Binary: case NK::Ternary: case NK::ChainExpr: case NK::Range:
+            return true;
+        default: return false;
+    }
+}
+
 // Record write-through links for rw/raw params at bind time (mirrors copyOutRw's
 // positional indexing). Called while tctx_.cur is still the CALLER's scope.
 void Interpreter::setupRwLinks(const std::vector<Param>* params, std::shared_ptr<Env>& env,
@@ -10641,7 +10667,22 @@ void Interpreter::setupRwLinks(const std::vector<Param>* params, std::shared_ptr
         if (p.invocant) continue;  // an explicit `C:U:` invocant consumes no arg slot
         if (p.slurpy) break;
         if ((p.isRw || p.isRaw || p.sigil == '\\') && pi < rwArgs->size()) {
-            env->x().rwLinks[p.name] = { (*rwArgs)[pi].get(), tctx_.cur };
+            Expr* ae = (*rwArgs)[pi].get();
+            // `is raw` and `\x` accept an argument with no container behind it,
+            // but then they bind the VALUE — and a value cannot be assigned to.
+            //
+            // `is rw` is NOT checked here, though Rakudo rejects it at bind time
+            // with X::Parameter::RW. The requirement has to take part in multi
+            // DISPATCH — given `multi f($x is rw)` and `multi f($x)`, a literal
+            // argument must fall through to the second candidate rather than
+            // throw — and scoreCandidate sees only argument VALUES, with no way
+            // to tell which had a container. Throwing here instead made
+            // S06-traits/misc.t and native-is-rw.t abort mid-file.
+            if (!p.isRw && argIsNeverContainer(ae)) {
+                auto vi = env->vars.find(p.name);
+                if (vi != env->vars.end()) vi->second.readonly = true;
+            }
+            env->x().rwLinks[p.name] = { ae, tctx_.cur };
             auto it = env->vars.find(p.name);
             env->x().rwSynced[p.name] = it != env->vars.end() ? it->second : Value::any();
             anyRwLinks_ = true;
@@ -22006,7 +22047,7 @@ Value Interpreter::eval(Expr* e) {
                     // `.=` still mutates through an INDIRECT call: `$auth .= &url-decode`
                     // is `$auth = url-decode($auth)` (HTTP::Tiny decodes the userinfo
                     // this way), and the plain-method path below never sees it.
-                    if (mc->mutate) { if (Value* lv = lvalue(mc->inv.get())) *lv = cres; }
+                    if (mc->mutate) assignChecked(mc->inv.get(), cres);
                     return cres;
                 }
                 mc->method = mv.toStr(); // resolved here so write- routing below sees it
@@ -22307,7 +22348,7 @@ Value Interpreter::eval(Expr* e) {
                     Value res = methodCall(inv,
                         mc->bang ? "!" + mc->method : mc->meta ? "^" + mc->method : mc->method,
                         args, &mc->args);
-                    if (mc->mutate) { if (Value* lv = lvalue(mc->inv.get())) *lv = res; }
+                    if (mc->mutate) assignChecked(mc->inv.get(), res);
                     return res;
                 }
                 catch (RakuError& err) {
@@ -22333,7 +22374,7 @@ Value Interpreter::eval(Expr* e) {
             Value res = methodCall(inv,
                 mc->bang ? "!" + mc->method : mc->meta ? "^" + mc->method : mc->method,
                 args, &mc->args);
-            if (mc->mutate) { if (Value* lv = lvalue(mc->inv.get())) *lv = res; }
+            if (mc->mutate) assignChecked(mc->inv.get(), res);
             return res;
         }
         case NK::Ternary: {
