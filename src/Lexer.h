@@ -52,8 +52,8 @@ private:
     char advance();
     bool eof() const { return pos_ >= src_.size(); }
     bool match(char c);
-    uint32_t codepointHere() const;     // decode UTF-8 codepoint at pos_ (0 at eof)
-    bool unicodeLetterHere() const;     // is the codepoint at pos_ an identifier letter
+    uint32_t codepointHere(size_t off = 0) const; // decode UTF-8 at pos_+off (0 at eof)
+    bool unicodeLetterHere(size_t off = 0) const; // identifier letter at pos_+off
     void consumeIdentChars(std::string& name); // append ASCII-cont + Unicode-letter chars
     bool tryReadSuperscript(std::string& digits); // ⁰¹²³… run -> ASCII digits (for ** N)
 

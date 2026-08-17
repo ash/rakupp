@@ -17335,14 +17335,31 @@ Value Interpreter::evalBinary(Binary* b) {
             // elementwise and MUTATES the left array (Value.arr is shared
             // storage, so writing through it reaches the caller's container)
             static const std::set<std::string> eqTailCmp = {"==", "!=", "<=", ">=", "===", "=:="};
-            if (inner.size() >= 2 && inner.back() == '=' && !eqTailCmp.count(inner) &&
-                l.t == VT::Array && l.arr) {
+            if (inner.size() >= 2 && inner.back() == '=' && !eqTailCmp.count(inner)) {
                 std::string base = inner.substr(0, inner.size() - 1);
-                ValueList b = r.flatten();
-                if (!b.empty())
-                    for (size_t i = 0; i < l.arr->size(); i++)
-                        (*l.arr)[i] = applyBinOp(base, (*l.arr)[i], b[i % b.size()]);
-                return l;
+                // `($t, $y) »+=« (δt, dy)` — a parenthesized pair evaluates to a
+                // fresh List of copies, so mutating `l` would not reach $t/$y.
+                // Write through each item's lvalue instead (Rakudo does).
+                if (b->lhs && b->lhs->kind == NK::ListExpr) {
+                    auto* le = static_cast<ListExpr*>(b->lhs.get());
+                    ValueList rhs = r.flatten();
+                    Value out = Value::array(); out.isList = true;
+                    if (!rhs.empty()) {
+                        for (size_t i = 0; i < le->items.size(); i++) {
+                            Value* lv = lvalue(le->items[i].get());
+                            *lv = applyBinOp(base, *lv, rhs[i % rhs.size()]);
+                            out.arr->push_back(*lv);
+                        }
+                    }
+                    return out;
+                }
+                if (l.t == VT::Array && l.arr) {
+                    ValueList bb = r.flatten();
+                    if (!bb.empty())
+                        for (size_t i = 0; i < l.arr->size(); i++)
+                            (*l.arr)[i] = applyBinOp(base, (*l.arr)[i], bb[i % bb.size()]);
+                    return l;
+                }
             }
             bool strictL = op.compare(0, 2, ">>") == 0;
             bool strictR = op.compare(op.size() - 2, 2, "<<") == 0;

@@ -249,23 +249,24 @@ static bool isIdentMarkCP(uint32_t cp); // fwd
 static bool isIdentCont(char c);     // fwd
 static bool isIdentStart(char c);    // fwd
 
-uint32_t Lexer::codepointHere() const {
-    if (pos_ >= src_.size()) return 0;
-    unsigned char b0 = (unsigned char)src_[pos_];
+uint32_t Lexer::codepointHere(size_t off) const {
+    size_t p = pos_ + off;
+    if (p >= src_.size()) return 0;
+    unsigned char b0 = (unsigned char)src_[p];
     int n = utf8Len(b0);
     if (n == 1) return b0;
     uint32_t cp = b0 & (0xFF >> (n + 1));
     for (int i = 1; i < n; i++) {
-        if (pos_ + i >= src_.size()) return 0;
-        cp = (cp << 6) | ((unsigned char)src_[pos_ + i] & 0x3F);
+        if (p + i >= src_.size()) return 0;
+        cp = (cp << 6) | ((unsigned char)src_[p + i] & 0x3F);
     }
     return cp;
 }
 
-bool Lexer::unicodeLetterHere() const {
-    unsigned char b = (unsigned char)peek();
+bool Lexer::unicodeLetterHere(size_t off) const {
+    unsigned char b = (unsigned char)peek(off);
     if (b < 0x80) return false;
-    return isLetterCP(codepointHere());
+    return isLetterCP(codepointHere(off));
 }
 
 // Translate one superscript codepoint to its ASCII digit/sign, or 0 if not a superscript.
@@ -1425,7 +1426,7 @@ Token Lexer::lexIdentOrVar() {
         char tw = peek();
         if ((tw == '*' || tw == '.' || tw == '!' || tw == '^' || tw == '?' ||
              tw == ':' || tw == '=' || tw == '~') &&
-            (isIdentStart(peek(1)) )) {
+            (isIdentStart(peek(1)) || unicodeLetterHere(1))) {
             name += advance();
         }
         if (ascii::isdigit((unsigned char)peek())) {
@@ -2229,11 +2230,17 @@ std::vector<Token> Lexer::tokenize() {
             // anonymous empty Hash (`% .classify-list: …`) rather than modulo.
             bool anonHash = c == '%' && !inAngle && regexContext(out) &&
                             (peek(1) == ' ' || peek(1) == '\t');
+            // `%`/`&` are operators unless a name or twigil follows. A Unicode
+            // letter counts (`my &δy`, `my %цены`) — ASCII-only isIdentStart
+            // used to leave the sigil bare, so `δy = …` assigned a NameTerm
+            // and died "Target is not assignable".
             if (!anonHash && (c == '%' || c == '&') &&
-                !(isIdentStart(peek(1)) || peek(1) == '*' || peek(1) == '.' ||
+                !(isIdentStart(peek(1)) || unicodeLetterHere(1) ||
+                  peek(1) == '*' || peek(1) == '.' ||
                   peek(1) == '!' || peek(1) == '^' ||
                   (peek(1) == ':' && peek(2) == ':') || // symbolic deref `%::($n)` / `&::($n)`
-                  ((peek(1) == '?' || peek(1) == '=' || peek(1) == '~') && isIdentStart(peek(2))))) {
+                  ((peek(1) == '?' || peek(1) == '=' || peek(1) == '~') &&
+                   (isIdentStart(peek(2)) || unicodeLetterHere(2))))) {
                 t = lexOperator(prevIsClearTerm(out));
             } else if (isIdentStart(c) && !inAngle && !quoteBlockedHere(out, spaced) && tryQuoteForm(t)) {
                 // t set by tryQuoteForm
