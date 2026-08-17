@@ -1,6 +1,7 @@
 #include "CNumeric.h"
 #include "AsciiCtype.h"
 #include "Pod.h"
+#include "Interpreter.h"  // numifyStr — the literal numeric ladder
 #include <cctype>
 #include <sstream>
 #include <cstdlib>
@@ -82,9 +83,13 @@ static Value cfgScalar(std::string t) {
             if (errno != ERANGE) return Value::integer(iv);
             return Value::bigint(BigInt::fromString(t[0] == '+' ? t.substr(1) : t));
         }
-        char* end = nullptr;
-        double dv = cnum::strtod(t.c_str(), &end);
-        if (end && *end == '\0' && end != t.c_str()) return Value::number(dv);
+        // Through the same numeric ladder a LITERAL takes, so a Pod config value
+        // keeps the type its spelling asks for: `:k(2.3)` is a Rat and `:k(1e4)`
+        // a Num. strtod made everything a Num, which is what Rakudo does too —
+        // S26-documentation/09-configuration.t asserts Rat and Rakudo marks its
+        // own failure `todo '2.3 and -2.3 are Rats, not Nums'`.
+        Value n = numifyStr(t);
+        if (n.t == VT::Int || n.t == VT::Rat || n.t == VT::Num || n.t == VT::Complex) return n;
     }
     return Value::str(t);
 }
