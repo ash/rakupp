@@ -7676,7 +7676,22 @@ static bool typeNameConforms(const std::string& lnIn, const std::string& rn,
         auto tw = tower.find(ln);
         if (tw != tower.end()) for (auto& anc : tw->second) if (anc == rn) { baseOk = true; break; }
     }
-    if (baseOk && (rOfType.empty() || rOfType == lOfType)) return true;
+    // A DEFINEDNESS SMILEY on the left's parameter is a narrowing of it, so
+    // `Array[Str:D]` is still a `Positional[Str]` — the element type is Str
+    // either way, and the smiley only says which Strs. Comparing the parameter
+    // names literally made the constrained form conform to nothing but itself.
+    // The smiley arrives as a trailing parameter — `Array[Str:D]` records its
+    // parameter as "Str,D", not "Str:D" — so that is the form to strip.
+    auto bareParam = [](const std::string& t) {
+        for (const char* sm : {",D", ",U", ",_", ":D", ":U", ":_"}) {
+            size_t n = std::strlen(sm);
+            if (t.size() > n && t.compare(t.size() - n, n, sm) == 0)
+                return t.substr(0, t.size() - n);
+        }
+        return t;
+    };
+    if (baseOk && (rOfType.empty() || rOfType == lOfType ||
+                   bareParam(rOfType) == bareParam(lOfType))) return true;
     // a user type object matches its own ancestry: parent classes, composed
     // roles, and roles/parents anywhere up the chain — including a BUILT-IN
     // parent (`is Str`, or the implicit Grammar) and everything above it

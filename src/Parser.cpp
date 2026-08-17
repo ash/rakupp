@@ -6150,7 +6150,15 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
                             ExprPtr arg = isKind(Tok::RParen) ? nullptr : parseExpression();
                             while (!isKind(Tok::RParen) && !isKind(Tok::End)) advance();
                             if (isKind(Tok::RParen)) advance();
-                            if (!known) a.userTraits.emplace_back(utn, std::move(arg));
+                            // `is default(V)` on an attribute: the value it reads
+                            // when nothing was assigned. Its argument was parsed
+                            // and thrown away with every other known trait's, so
+                            // `has $.a is default(42)` read as (Any). An explicit
+                            // initialiser still wins — `is default(42) = 768` is
+                            // 768 — so this only fills an empty slot.
+                            if (known && utn == "default" && arg && !a.def)
+                                a.def = std::move(arg);
+                            else if (!known) a.userTraits.emplace_back(utn, std::move(arg));
                         }
                         else if (!known) a.userTraits.emplace_back(utn, nullptr);
                         continue;
