@@ -46,13 +46,13 @@ the cause. Unset the variable to search instead.
 Run both examples from the repo root (`.so` for `.dylib` on Linux):
 
 ```bash
-RAKUPP_LIB=$PWD/build/librakupp.dylib bun bindings/examples/calc.mjs
+RAKUPP_LIB=$PWD/build/librakupp.dylib bun bindings/js/examples/calc.mjs
 ```
 ```bash
-RAKUPP_LIB=$PWD/build/librakupp.dylib bun bindings/examples/shopping.mjs
+RAKUPP_LIB=$PWD/build/librakupp.dylib bun bindings/js/examples/shopping.mjs
 ```
 
-`calc` ([calc.mjs](../examples/calc.mjs)) prints:
+`calc` ([examples/calc.mjs](examples/calc.mjs)) prints:
 
 ```
 2 + 2 = 4
@@ -64,7 +64,7 @@ greet: Hello, Ada! You are 36.
 died: division by zero
 ```
 
-`shopping` ([shopping.mjs](../examples/shopping.mjs)) prints:
+`shopping` ([examples/shopping.mjs](examples/shopping.mjs)) prints:
 
 ```
 3 items

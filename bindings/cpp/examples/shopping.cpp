@@ -2,10 +2,10 @@
  * and move the results into C++. Unlike the other hosts, C++ LINKS against
  * librakupp instead of dlopen'ing it. From a checkout, on macOS:
  *
- *   c++ -std=c++17 -Iinclude bindings/examples/shopping.cpp \
+ *   c++ -std=c++17 -Iinclude bindings/cpp/examples/shopping.cpp \
  *       build/librakupp.dylib -Wl,-rpath,$PWD/build -o shopping && ./shopping
  *
- * On Linux:  c++ -std=c++17 -Iinclude bindings/examples/shopping.cpp \
+ * On Linux:  c++ -std=c++17 -Iinclude bindings/cpp/examples/shopping.cpp \
  *       -Lbuild -lrakupp -Wl,-rpath,$PWD/build -lpthread -o shopping
  *
  * Against an INSTALLED rakupp the include line below is unchanged and the

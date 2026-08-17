@@ -2,16 +2,16 @@
 # Evaluate source, call subs with Python values, read results back. Run from
 # a checkout:
 #
-#   RAKUPP_LIB=build/librakupp.dylib python3 bindings/examples/calc.py
+#   RAKUPP_LIB=build/librakupp.dylib python3 bindings/python/examples/calc.py
 #
 # (.so on Linux; with `pip install -e bindings/python` and rakupp on PATH,
-# plain `python3 bindings/examples/calc.py` works with no env at all.)
+# plain `python3 bindings/python/examples/calc.py` works with no env at all.)
 
 import os
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(HERE, "..", "python"))  # a checkout; pip install removes this
+sys.path.insert(0, os.path.join(HERE, ".."))            # a checkout; pip install removes this
 import rakulang
 
 raku = rakulang.interpreter()
@@ -20,7 +20,7 @@ raku = rakulang.interpreter()
 print("2 + 2 =", raku.eval("2 + 2"))
 
 # So loading a file of subs is just an eval — they stay callable below.
-with open(os.path.join(HERE, "calc.raku"), encoding="utf-8") as f:
+with open(os.path.join(HERE, "..", "..", "examples", "calc.raku"), encoding="utf-8") as f:
     raku.eval(f.read())
 
 # call passes Python values as arguments and returns Python values.

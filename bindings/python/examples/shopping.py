@@ -1,19 +1,19 @@
 # The Python guide's example: compile a grammar from a .raku file, parse
 # text, and move the results into Python. Run from a checkout:
 #
-#   RAKUPP_LIB=build/librakupp.dylib python3 bindings/examples/shopping.py
+#   RAKUPP_LIB=build/librakupp.dylib python3 bindings/python/examples/shopping.py
 #
 # (.so on Linux; with `pip install -e bindings/python` and rakupp on PATH,
-# plain `python3 bindings/examples/shopping.py` works with no env at all.)
+# plain `python3 bindings/python/examples/shopping.py` works with no env at all.)
 
 import os
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(HERE, "..", "python"))  # a checkout; pip install removes this
+sys.path.insert(0, os.path.join(HERE, ".."))            # a checkout; pip install removes this
 import rakulang
 
-g = rakulang.Grammar.from_file(os.path.join(HERE, "shopping.raku"),
+g = rakulang.Grammar.from_file(os.path.join(HERE, "..", "..", "examples", "shopping.raku"),
                                name="Shopping", actions="ShoppingActions")
 
 m = g.parse("milk=2\nbread = 1  eggs=12\n")   # a Match, or None if no match

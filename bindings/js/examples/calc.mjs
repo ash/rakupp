@@ -2,11 +2,11 @@
 // Evaluate source, call subs with JS values, read results back. Bun only
 // (bun:ffi). From a checkout:
 //
-//   RAKUPP_LIB=build/librakupp.dylib bun bindings/examples/calc.mjs
+//   RAKUPP_LIB=build/librakupp.dylib bun bindings/js/examples/calc.mjs
 //
 // (.so on Linux; with rakupp on PATH the env variable is not needed.)
 
-import { interpreter, RakuError } from "../js/rakulang.js";
+import { interpreter, RakuError } from "../rakulang.js";
 import { readFileSync } from "fs";
 
 const here = new URL(".", import.meta.url).pathname;
@@ -16,7 +16,7 @@ const raku = interpreter();
 console.log("2 + 2 =", raku.eval("2 + 2"));
 
 // So loading a file of subs is just an eval — they stay callable below.
-raku.eval(readFileSync(`${here}calc.raku`, "utf8"));
+raku.eval(readFileSync(`${here}../../examples/calc.raku`, "utf8"));
 
 // call passes JS values as arguments and returns JS values.
 console.log("area(3, 4) =", raku.call("area", 3, 4));

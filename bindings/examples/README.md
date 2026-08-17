@@ -1,9 +1,11 @@
-# The shared examples — two programs, five languages each
+# The shared examples — the Raku half
 
-Every binding ships the same two example programs. They are the fastest way
-to check a binding works on your machine, they are what
-`tools/bindings-smoke.raku` runs, and each language's guide walks through its
-version line by line.
+Every binding ships the same two example programs. This directory holds the
+part they *share*: the Raku each one runs, and the output each one must
+produce. The programs themselves live with their language, in
+`bindings/<lang>/examples/`, because that is where each toolchain expects to
+find them — `cargo run --example` and `go run ./examples/…` require it, and
+the other three follow the same shape so all five read alike.
 
 | example | shows | the Raku it runs |
 |---|---|---|
@@ -13,7 +15,17 @@ version line by line.
 Neither example needs the other. If you are new to the bindings, read `calc`
 first — it is the general story, and grammars are a specialisation of it.
 
-## Prerequisite
+## Where each language's program is
+
+| language | program | guide |
+|---|---|---|
+| Python | [../python/examples/](../python/examples/) | [../python/README.md](../python/README.md) |
+| JS (Bun) | [../js/examples/](../js/examples/) | [../js/README.md](../js/README.md) |
+| Go | [../go/examples/](../go/examples/) | [../go/README.md](../go/README.md) |
+| Rust | [../rust/examples/](../rust/examples/) | [../rust/README.md](../rust/README.md) |
+| C++ | [../cpp/examples/](../cpp/examples/) | [../cpp/README.md](../cpp/README.md) |
+
+## Running them
 
 Once, from the repo root:
 
@@ -22,18 +34,24 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release -DRAKUPP_BUILD_SHARED=ON
 cmake --build build -j
 ```
 
-## Running them
+Then, still from the repo root, with `<example>` being `calc` or `shopping`
+(`.so` instead of `.dylib` on Linux):
 
-From the repo root, with `<example>` being `calc` or `shopping` (`.so`
-instead of `.dylib` on Linux):
-
-| language | files | run |
-|---|---|---|
-| Python | [calc.py](calc.py), [shopping.py](shopping.py) | `RAKUPP_LIB=$PWD/build/librakupp.dylib python3 bindings/examples/<example>.py` |
-| JS (Bun) | [calc.mjs](calc.mjs), [shopping.mjs](shopping.mjs) | `RAKUPP_LIB=$PWD/build/librakupp.dylib bun bindings/examples/<example>.mjs` |
-| Go | [../go/examples/](../go/examples/) | `cd bindings/go && CGO_LDFLAGS="-L$PWD/../../build -Wl,-rpath,$PWD/../../build" go run ./examples/<example>` |
-| Rust | [../rust/examples/](../rust/examples/) | `RAKUPP_LIB_DIR=$PWD/build cargo run --manifest-path bindings/rust/Cargo.toml --example <example>` |
-| C++ | [calc.cpp](calc.cpp), [shopping.cpp](shopping.cpp) | `c++ -std=c++17 -Iinclude bindings/examples/<example>.cpp build/librakupp.dylib -Wl,-rpath,$PWD/build -o ex && ./ex` |
+```bash
+RAKUPP_LIB=$PWD/build/librakupp.dylib python3 bindings/python/examples/<example>.py
+```
+```bash
+RAKUPP_LIB=$PWD/build/librakupp.dylib bun bindings/js/examples/<example>.mjs
+```
+```bash
+cd bindings/go && CGO_LDFLAGS="-L$PWD/../../build -Wl,-rpath,$PWD/../../build" go run ./examples/<example>
+```
+```bash
+RAKUPP_LIB_DIR=$PWD/build cargo run --manifest-path bindings/rust/Cargo.toml --example <example>
+```
+```bash
+c++ -std=c++17 -Iinclude bindings/cpp/examples/<example>.cpp build/librakupp.dylib -Wl,-rpath,$PWD/build -o ex && ./ex
+```
 
 Or run all ten at once, and have the outputs checked for you:
 
@@ -61,20 +79,21 @@ deliberately is not — the line where each host dumps the whole match as its
 *own* native data (`dict` in Python, `Object` in JS, `map[string]interface{}`
 in Go, and so on).
 
-Every one of these outputs is recorded in [expected/](expected):
-`calc.txt` is shared by all five hosts, and `shopping.<host>.txt` pins each
-language's own. Those files are the expectation
-`tools/bindings-smoke.raku` checks; after an intended change, re-record with
+Every one of these outputs is recorded in [expected/](expected): `calc.txt`
+is shared by all five hosts, and `shopping.<host>.txt` pins each language's
+own. Those files are the expectation `tools/bindings-smoke.raku` checks;
+after an intended change, re-record with
 `build/rakupp tools/bindings-smoke.raku --record`.
 
 ## Adding an example
 
-The gate discovers examples from the `.raku` files in this directory, so
+The gate discovers examples from the `.raku` files in *this* directory, so
 nothing needs editing to add one:
 
-1. Write `<name>.raku`.
-2. Write `<name>.py`, `<name>.mjs`, `<name>.cpp` here, plus
-   `../go/examples/<name>/main.go` and `../rust/examples/<name>.rs`.
+1. Write `<name>.raku` here.
+2. Write the five programs, one per language, each in its own
+   `bindings/<lang>/examples/`: `<name>.py`, `<name>.mjs`, `<name>.cpp`,
+   `<name>/main.go` (Go wants a directory per `main`), and `<name>.rs`.
 3. Run `build/rakupp tools/bindings-smoke.raku --record`. If all five hosts
    agree it writes one `expected/<name>.txt`; if they differ it writes one
    file per host and says so.

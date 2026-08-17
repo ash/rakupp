@@ -80,12 +80,12 @@ sub have($tool) {   # go spells it `go version`; a crashing toolchain = absent
 my @hosts =
     %(  name => 'python', label => 'Python',
         run  => -> $ex { ['sh', '-c',
-            "cd {$ROOT} && RAKUPP_LIB={$lib} python3 bindings/examples/$ex.py"] },
+            "cd {$ROOT} && RAKUPP_LIB={$lib} python3 bindings/python/examples/$ex.py"] },
         here => have('python3') ),
 
     %(  name => 'js', label => 'JS',
         run  => -> $ex { ['sh', '-c',
-            "cd {$ROOT} && RAKUPP_LIB={$lib} bun bindings/examples/$ex.mjs"] },
+            "cd {$ROOT} && RAKUPP_LIB={$lib} bun bindings/js/examples/$ex.mjs"] },
         here => have('bun') ),
 
     %(  name => 'go', label => 'Go',
@@ -112,13 +112,14 @@ sub cpp-command($ex) {
     my $link = $*KERNEL.name eq 'darwin'
         ?? "{$lib} -Wl,-rpath,{$BUILD}"
         !! "-L{$BUILD} -lrakupp -Wl,-rpath,{$BUILD} -lpthread";
-    "cd {$ROOT} && $cxx -std=c++17 -Iinclude bindings/examples/$ex.cpp $link " ~
+    "cd {$ROOT} && $cxx -std=c++17 -Iinclude bindings/cpp/examples/$ex.cpp $link " ~
     "-o {$exe} && {$exe}; rc=\$?; rm -f {$exe}; exit \$rc"
 }
 
-# Every example is whatever bindings/examples/<name>.raku says it is, so a new
-# example needs no edit here — add the .raku, the five host programs, and
-# record the expectation.
+# An example IS its Raku: bindings/examples/<name>.raku names it, and each
+# language's own bindings/<lang>/examples/ holds the program that runs it. So
+# a new example needs no edit here — add the .raku, the five host programs,
+# and record the expectation.
 my @examples = $EX.dir(test => *.ends-with('.raku')).map(*.basename.subst(/'.raku'$/, '')).sort;
 say "examples: {@examples.join(', ')}";
 

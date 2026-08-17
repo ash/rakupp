@@ -3,10 +3,10 @@
  * other hosts, C++ LINKS against librakupp instead of dlopen'ing it. From a
  * checkout, on macOS:
  *
- *   c++ -std=c++17 -Iinclude bindings/examples/calc.cpp \
+ *   c++ -std=c++17 -Iinclude bindings/cpp/examples/calc.cpp \
  *       build/librakupp.dylib -Wl,-rpath,$PWD/build -o calc && ./calc
  *
- * On Linux:  c++ -std=c++17 -Iinclude bindings/examples/calc.cpp \
+ * On Linux:  c++ -std=c++17 -Iinclude bindings/cpp/examples/calc.cpp \
  *       -Lbuild -lrakupp -Wl,-rpath,$PWD/build -lpthread -o calc
  *
  * Against an INSTALLED rakupp the include line below is unchanged and the

@@ -1,14 +1,14 @@
 // The JS guide's example: compile a grammar from a .raku file, parse text,
 // and move the results into JavaScript. Bun only (bun:ffi). From a checkout:
 //
-//   RAKUPP_LIB=build/librakupp.dylib bun bindings/examples/shopping.mjs
+//   RAKUPP_LIB=build/librakupp.dylib bun bindings/js/examples/shopping.mjs
 //
 // (.so on Linux; with rakupp on PATH the env variable is not needed.)
 
-import { Grammar, ParseError } from "../js/rakulang.js";
+import { Grammar, ParseError } from "../rakulang.js";
 
 const here = new URL(".", import.meta.url).pathname;
-const g = Grammar.fromFile(`${here}shopping.raku`,
+const g = Grammar.fromFile(`${here}../../examples/shopping.raku`,
                            { name: "Shopping", actions: "ShoppingActions" });
 
 const m = g.parse("milk=2\nbread = 1  eggs=12\n"); // a Match, or null if no match

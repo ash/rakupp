@@ -45,13 +45,13 @@ public headers are separated from the engine's internal ones.
 Run both examples from the repo root:
 
 ```bash
-c++ -std=c++17 -Iinclude bindings/examples/calc.cpp build/librakupp.dylib -Wl,-rpath,$PWD/build -o calc && ./calc
+c++ -std=c++17 -Iinclude bindings/cpp/examples/calc.cpp build/librakupp.dylib -Wl,-rpath,$PWD/build -o calc && ./calc
 ```
 ```bash
-c++ -std=c++17 -Iinclude bindings/examples/shopping.cpp build/librakupp.dylib -Wl,-rpath,$PWD/build -o shopping && ./shopping
+c++ -std=c++17 -Iinclude bindings/cpp/examples/shopping.cpp build/librakupp.dylib -Wl,-rpath,$PWD/build -o shopping && ./shopping
 ```
 
-`calc` ([calc.cpp](../examples/calc.cpp)) prints:
+`calc` ([examples/calc.cpp](examples/calc.cpp)) prints:
 
 ```
 2 + 2 = 4
@@ -63,7 +63,7 @@ greet: Hello, Ada! You are 36.
 died: division by zero
 ```
 
-`shopping` ([shopping.cpp](../examples/shopping.cpp)) prints:
+`shopping` ([examples/shopping.cpp](examples/shopping.cpp)) prints:
 
 ```
 3 items

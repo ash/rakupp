@@ -56,13 +56,13 @@ preference.
 Run both examples from the repo root (`.so` for `.dylib` on Linux):
 
 ```bash
-RAKUPP_LIB=$PWD/build/librakupp.dylib python3 bindings/examples/calc.py
+RAKUPP_LIB=$PWD/build/librakupp.dylib python3 bindings/python/examples/calc.py
 ```
 ```bash
-RAKUPP_LIB=$PWD/build/librakupp.dylib python3 bindings/examples/shopping.py
+RAKUPP_LIB=$PWD/build/librakupp.dylib python3 bindings/python/examples/shopping.py
 ```
 
-`calc` ([calc.py](../examples/calc.py)) prints:
+`calc` ([examples/calc.py](examples/calc.py)) prints:
 
 ```
 2 + 2 = 4
@@ -74,7 +74,7 @@ greet: Hello, Ada! You are 36.
 died: division by zero
 ```
 
-`shopping` ([shopping.py](../examples/shopping.py)) prints:
+`shopping` ([examples/shopping.py](examples/shopping.py)) prints:
 
 ```
 3 items

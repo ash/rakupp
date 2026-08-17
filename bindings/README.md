@@ -39,23 +39,27 @@ can use it**; that is the single most common first failure.
 
 ## 2. Run the examples
 
-Two examples, each written in all five languages, in
-[examples/](examples/). They are the fastest way to confirm a binding works
-on your machine, and they are what the test gate runs.
+Two examples, each written in all five languages. They are the fastest way to
+confirm a binding works on your machine, and they are what the test gate runs.
 
-| example | what it shows | grammar file |
+| example | what it shows | the Raku it runs |
 |---|---|---|
 | **calc** | running Raku: eval source, call subs with host values, read results back, catch a die | [examples/calc.raku](examples/calc.raku) |
 | **shopping** | parsing: compile a grammar, walk a match lazily, read what Raku actions computed, diagnose a failure | [examples/shopping.raku](examples/shopping.raku) |
+
+Each example is in two halves. [examples/](examples/) holds what the five
+languages share — the `.raku` they run and the output they must produce —
+and each language's own program lives in `<lang>/examples/`, where its
+toolchain expects it.
 
 Run them from the repo root (`.so` for `.dylib` on Linux; `<example>` is
 `calc` or `shopping`):
 
 ```bash
-RAKUPP_LIB=$PWD/build/librakupp.dylib python3 bindings/examples/<example>.py
+RAKUPP_LIB=$PWD/build/librakupp.dylib python3 bindings/python/examples/<example>.py
 ```
 ```bash
-RAKUPP_LIB=$PWD/build/librakupp.dylib bun bindings/examples/<example>.mjs
+RAKUPP_LIB=$PWD/build/librakupp.dylib bun bindings/js/examples/<example>.mjs
 ```
 ```bash
 cd bindings/go && CGO_LDFLAGS="-L$PWD/../../build -Wl,-rpath,$PWD/../../build" go run ./examples/<example>
@@ -64,7 +68,7 @@ cd bindings/go && CGO_LDFLAGS="-L$PWD/../../build -Wl,-rpath,$PWD/../../build" g
 RAKUPP_LIB_DIR=$PWD/build cargo run --manifest-path bindings/rust/Cargo.toml --example <example>
 ```
 ```bash
-c++ -std=c++17 -Iinclude bindings/examples/<example>.cpp build/librakupp.dylib -Wl,-rpath,$PWD/build -o ex && ./ex
+c++ -std=c++17 -Iinclude bindings/cpp/examples/<example>.cpp build/librakupp.dylib -Wl,-rpath,$PWD/build -o ex && ./ex
 ```
 
 `calc` prints exactly the same seven lines in every language — that is the
@@ -220,21 +224,26 @@ For the C ABI underneath — and for embedding without a language binding —
 
 ## 9. Where the files are
 
+Every language directory has the same three things: a guide, the binding
+itself, and an `examples/` holding its half of both examples.
+
 ```
 bindings/
-  README.md            this file
-  examples/            the two examples, in all five languages
-    calc.raku          the Raku the calc example runs
-    calc.{py,mjs,cpp}  its Python / JS / C++ hosts
-    shopping.raku      the grammar the shopping example parses with
-    shopping.{py,mjs,cpp}
-    expected/          recorded outputs, checked by tools/bindings-smoke.raku
-  python/rakulang/     the Python package (__init__.py, _abi.py, grammar_shim.raku)
-  js/rakulang.js       the JS module
-  go/rakulang.go       the Go package; go/examples/{calc,shopping}/
-  rust/src/lib.rs      the Rust crate; rust/examples/{calc,shopping}.rs
-  cpp/README.md        the C++ guide — the header itself ships with the engine
+  README.md              this file
+  examples/              the SHARED half — language-neutral
+    calc.raku            the Raku the calc example runs
+    shopping.raku        the grammar the shopping example parses with
+    expected/            recorded outputs, checked by tools/bindings-smoke.raku
+  python/  README.md  rakulang/{__init__,_abi}.py, grammar_shim.raku   examples/{calc,shopping}.py
+  js/      README.md  rakulang.js                                      examples/{calc,shopping}.mjs
+  go/      README.md  rakulang.go                                      examples/{calc,shopping}/main.go
+  rust/    README.md  src/lib.rs, build.rs                             examples/{calc,shopping}.rs
+  cpp/     README.md  (no source — the headers ship with the engine)   examples/{calc,shopping}.cpp
 ```
+
+Go wants a directory per `main`, and Rust and Go both require `examples/` at
+exactly that path for `go run ./examples/…` and `cargo run --example`; the
+other three follow the same shape so all five read alike.
 
 The C++ binding has no source of its own here: it is two headers that install
 with the engine, [include/rakupp/raku.hpp](../include/rakupp/raku.hpp) and
