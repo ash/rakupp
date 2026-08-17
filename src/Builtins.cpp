@@ -2399,6 +2399,9 @@ Value Interpreter::ioEmit(const std::string& s, const char* dynVar, bool toErr) 
     {
         std::lock_guard<std::mutex> lk(rtOutMutex());
         (toErr ? std::cerr : std::cout) << s;
+        // a `\r` progress line (evolalgo, counters) never hits line-buffering;
+        // flush so a TTY shows each update instead of a silent hang then one frame
+        if (!toErr && s.find('\r') != std::string::npos) std::cout.flush();
     }
     return Value::boolean(true);
 }

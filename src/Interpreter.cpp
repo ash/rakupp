@@ -958,6 +958,28 @@ Value Interpreter::rtGather(Value blockClosure) {
     return arr;
 }
 
+// A generator sequence (`$seed, {…} ... $end`) stops when an element matches
+// the endpoint. Numeric endpoints keep the historic `==` test (the value must
+// itself be numeric); a string or object endpoint uses `eq` / smartmatch —
+// otherwise `"a", { $_ ~ "x" } ... "axx"` never terminated.
+static bool seqEndpointHit(const Value& v, const Value& endV, double endVal) {
+    if (endV.isNumeric())
+        return v.isNumeric() && v.toNum() == endVal;
+    if (v.t == VT::Str && endV.t == VT::Str)
+        return v.s == endV.s;
+    return applyArith("~~", v, endV).truthy();
+}
+
+// Read index i of a (possibly lazy) list, pulling more elements if needed.
+// A `for` that only walked the already-materialised prefix treated
+// `$seed, {…} ... $end` as just the seed.
+static bool ensureLazyElem(Interpreter& I, const Value& src, size_t i) {
+    if (!src.arr) return false;
+    if (i < src.arr->size()) return true;
+    if (src.ext) I.materializeLazy(src, i + 1);
+    return i < src.arr->size();
+}
+
 Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
     // The sequence operator, callable from both evalBinary and native codegen:
     // seed list [, generator closure] ... endpoint|*|Code.
@@ -1095,8 +1117,7 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
         // so it must not materialise eagerly.
         if (infinite || (hasGen && !endCode)) {
             // seed already at the endpoint: the sequence is just the seed
-            if (!infinite && !seed.empty() && seed.back().isNumeric() &&
-                seed.back().toNum() == endVal) {
+            if (!infinite && !seed.empty() && seqEndpointHit(seed.back(), r, endVal)) {
                 if (exclusive) out.arr->pop_back();
                 return out;
             }
@@ -1104,12 +1125,13 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
             Interpreter* self = this;
             bool boundedGen = !infinite;
             st->infinite = !boundedGen; // a literal-endpoint gen seq CAN drain (stops on match)
+            Value endV = r; // captured: a string/object endpoint must match by value, not toNum()
             st->appendNext = [self, gen, hasGen, geometric, ratio, step, allInt, arity,
                               succSeed, succDesc, ratioV, exactRatio, stepV, exactStep,
-                              boundedGen, endVal, exclusive](ValueList& cache) -> bool {
+                              boundedGen, endVal, endV, exclusive](ValueList& cache) -> bool {
                 if (cache.empty() && !hasGen) return false;
-                if (boundedGen && !cache.empty() && cache.back().isNumeric() &&
-                    cache.back().toNum() == endVal) return false; // endpoint reached
+                if (boundedGen && !cache.empty() && seqEndpointHit(cache.back(), endV, endVal))
+                    return false; // endpoint reached
                 if (boundedGen && cache.size() >= 1000000) return false; // runaway cap (endpoint never matched)
                 double lastV = cache.empty() ? 0 : cache.back().toNum();
                 Value next;
@@ -1120,7 +1142,7 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
                     // `last` inside the generator terminates the sequence
                     try { next = self->callCallable(gen, args); }
                     catch (const LastEx&) { return false; }
-                    if (boundedGen && exclusive && next.isNumeric() && next.toNum() == endVal)
+                    if (boundedGen && exclusive && seqEndpointHit(next, endV, endVal))
                         return false; // ...^ drops the endpoint element
                 } else if (succSeed) { // 'a' ... * : step by succ/pred
                     const Value& lastE = cache.back();
@@ -6625,6 +6647,16 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                         (fs->list->kind == NK::VarExpr && !static_cast<VarExpr*>(fs->list.get())->name.empty() &&
                          static_cast<VarExpr*>(fs->list.get())->name[0] == '$'));
                     if (oneItem) items.push_back(lv);
+                    else if (lv.t == VT::Array && lv.arr && lv.ext) {
+                        // a lazy Seq: pull one element at a time so a generator
+                        // sequence is not reduced to its already-materialised seed
+                        for (size_t i = 0; ensureLazyElem(*this, lv, i); i++) {
+                            env->vars["$_"] = (*lv.arr)[i];
+                            bool last = !ensureLazyElem(*this, lv, i + 1);
+                            if (!runLoopBody(fs->body.get(), env, fs->label, i == 0, last, col)) break;
+                        }
+                        items.clear(); // skip the snapshot loop below
+                    }
                     else if (lv.t == VT::Array && lv.arr) { ParStripe cs(*this, lv.arr.get()); items = *lv.arr; } // snapshot under the stripe (torn-copy contract)
                     else if (lv.t == VT::Range) items = lv.flatten();
                     // a non-itemized Blob/Buf iterates its ELEMENTS (see the block
@@ -6777,7 +6809,10 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                               static_cast<VarExpr*>(fs->list.get())->name[0] == '@';
                     if (!rw && (fs->vars.empty() || fs->rwVars))
                         if (auto d = derefArrayAlias(fs->list.get())) { arr = d; rw = true; }
-                    for (size_t i = 0; i < arr->size(); i++) {
+                    const bool lazy = (bool)listv.ext;
+                    for (size_t i = 0; ; i++) {
+                        if (lazy && !ensureLazyElem(*this, listv, i)) break;
+                        else if (!lazy && i >= arr->size()) break;
                         freshScope();
                         {   // striped element copy — see the rw modifier loop above
                             ParStripe es(*this, arr.get());
@@ -6787,7 +6822,9 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                         auto rb = [&] { // redo re-copies (aliases keep writes)
                             if (!rw) { ParStripe es2(*this, arr.get()); if (i < arr->size()) scope->define(var, (*arr)[i]); }
                         };
-                        bool cont = runLoopBody(fs->body.get(), scope, fs->label, i == 0, i + 1 == arr->size(), col, rb);
+                        bool last = lazy ? !ensureLazyElem(*this, listv, i + 1)
+                                         : (i + 1 == arr->size());
+                        bool cont = runLoopBody(fs->body.get(), scope, fs->label, i == 0, last, col, rb);
                         if (rw) {
                             auto it = scope->vars.find(var);
                             if (it != scope->vars.end()) { ParStripe es3(*this, arr.get()); if (i < arr->size()) (*arr)[i] = it->second; }
@@ -6808,7 +6845,10 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 items = listv.blobList(); // elements (bytes, or LE words for blob16/32/64)
             }
             else if (scalarItem) items.push_back(listv); // a $-scalar / itemized source is one item
-            else if (listv.t == VT::Array && listv.arr) { ParStripe cs(*this, listv.arr.get()); items = *listv.arr; } // one-level, snapshot under the stripe
+            else if (listv.t == VT::Array && listv.arr) {
+                if (listv.ext) materializeLazy(listv, 1000000); // drain a lazy Seq before snapshotting
+                ParStripe cs(*this, listv.arr.get()); items = *listv.arr;
+            } // one-level, snapshot under the stripe
             else if (listv.t == VT::Range) items = listv.flatten();
             else if (listv.t == VT::Hash && listv.hash &&
                      (listv.hashKind.empty() || listv.hashKind == "Map" ||
@@ -8484,6 +8524,7 @@ void Interpreter::materializeLazy(const Value& v, size_t n) {
     while (v.arr->size() < n && v.arr->size() < CAP)
         if (!st->appendNext(*v.arr)) break;
 }
+
 
 // what a MISSING (or deleted) element reads as: `is default(v)` beats the type default
 static Value arrayMissingDefault(const Value& base);
@@ -15844,9 +15885,16 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
     if (!literal) {
         // interpolate scalar variables ($foo, $^a) into the regex as literal (quotemeta'd) text
         std::string ip;
+        int braces = 0; // inside `{…}` / `<?{…}>`: CODE — a `$var` there is the
+                        // block's own variable. Quotemeta-ing it turned
+                        // `<?{ rand < $p }>` with $p=0.001 into `rand < 0\.001`,
+                        // a parse error the assertion hook treated as a fail.
         for (size_t i = 0; i < realPat.size(); i++) {
             if (size_t sp = Regex::spliceSpan(realPat, i)) { ip += realPat.substr(i, sp); i += sp - 1; continue; }
             if (realPat[i] == '\\' && i + 1 < realPat.size()) { ip += realPat[i]; ip += realPat[i + 1]; i++; continue; }
+            if (realPat[i] == '{') { braces++; ip += realPat[i]; continue; }
+            if (realPat[i] == '}') { if (braces) braces--; ip += realPat[i]; continue; }
+            if (braces) { ip += realPat[i]; continue; }
             if (realPat[i] == '$' && i + 1 < realPat.size()) {
                 size_t j = i + 1;
                 if (realPat[j] == '^' && j + 1 < realPat.size()) j++; // $^a is visible as $a
@@ -15905,6 +15953,21 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
             long n = v.toInt(); return {n, n};
         };
     }
+    // `<?{…}>` / `<!{…}>` in .subst must evaluate for real: without this hook
+    // the engine's lenient default made a positive `<?{ False }>` PASS, so
+    // `"AAAA".subst(/<?{ False }> ./, "B", :g)` replaced every character
+    // (evolalgo.raku's mutate uses `<?{ rand < $p }>` the same way).
+    bool needAssertHook = !literal && (realPat.find("?{") != std::string::npos ||
+                                       realPat.find("!{") != std::string::npos);
+    if (needAssertHook) {
+        ssHooks.assertPass = [this](const std::string& code, long, long,
+                                    const GrammarHooks::NamedMap&, const GrammarHooks::ParamMap&) -> bool {
+            try { return evalString(code).truthy(); }
+            catch (FeatureNotBuilt&) { throw; }
+            catch (...) { return false; }
+        };
+    }
+    const bool needHooks = needRangeHook || needAssertHook;
     std::vector<RxMatch> matches;
     if (literal) {
         // plain string pattern: exact byte search (control chars, no regex metachars)
@@ -15945,7 +16008,7 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
             for (size_t i = 0; i < pcps.size();) fpat += baseOf(nextGrapheme(pcps, i)); }
         std::string flags = std::string(icase ? "i" : "") + (sigspace ? "s" : "") + (p5 ? "5" : "");
         Regex re(fpat, flags);
-        if (needRangeHook) re.runHooks = &ssHooks;
+        if (needHooks) re.runHooks = &ssHooks;
         if (!re.ok()) return subj;
         auto toOrig = [&](long fb) -> long {
             size_t idx = std::lower_bound(foldStart.begin(), foldStart.end(), fb) - foldStart.begin();
@@ -15960,7 +16023,7 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
     } else {
         std::string flags = std::string(icase ? "i" : "") + (sigspace ? "s" : "") + (p5 ? "5" : "");
         Regex re(realPat, flags);
-        if (needRangeHook) re.runHooks = &ssHooks;
+        if (needHooks) re.runHooks = &ssHooks;
         if (!re.ok()) return subj;
         long pos = haveStart ? startPos : 0; RxMatch mm;
         while (pos >= 0 && pos <= (long)subj.size() && re.search(subj, pos, mm)) {
