@@ -7278,7 +7278,8 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                     // a native-int param truncates on bind (see the slow path)
                     { int spec = paramNatSpec(params[i]);
                       if (spec >> 1) wrapNative(v, spec >> 1, spec & 1); }
-                    v.readonly = !params[i].isRw;    // plain scalar param is readonly; `is rw` is not
+                    // `is raw` binds the caller's container and IS writable, same as `is rw`
+                    v.readonly = !params[i].isRw && !params[i].isRaw;
                     env->define(params[i].name, std::move(v));
                 } else {
                     env->define(params[i].name, typedDefault(params[i].type, '$'));
@@ -7522,7 +7523,9 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                      (!p.type.empty() || isMuTypeObject(v)))
                 typeCheckBind(p, v, blockParams); // a lone typed candidate REJECTS a mismatch (like Rakudo)
             // a plain scalar param (no `is rw`/`is copy`) is readonly — mutating it (s///) dies
-            if (p.sigil == '$' && !p.isRw && !p.isCopy && !p.invocant) v.readonly = true;
+            // …and `is raw` too: it hands over the container itself, so a write
+            // through it is the point of writing it that way.
+            if (p.sigil == '$' && !p.isRw && !p.isCopy && !p.isRaw && !p.invocant) v.readonly = true;
             env->define(p.name, v);
             // POSITIONAL attributive param `method set-body($!body)`: the bound
             // value writes through to the invocant's attribute (Cro's
@@ -12790,6 +12793,19 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         }
         tctx_.lastLvalueAttrType.clear();
         Value* lv = lvalue(a->target.get());
+        // A plain scalar parameter is READONLY in Raku — `is copy` is what makes
+        // it writable. Ours bound every parameter as if `is copy` were always
+        // on, so `sub f($s) { $s ~~ s/a/b/ }` worked here and died on Rakudo
+        // with "Cannot assign to a readonly variable". Accepting it silently is
+        // the worst direction for a divergence: it lets code be written against
+        // rakupp that no other implementation will run.
+        if (lv->readonly)
+            throw RakuError{Value::typeObj("X::Assignment::RO"),
+                            "Cannot assign to a readonly variable or a value"};
+        // …and the flag does NOT travel with the value. It marks the CONTAINER,
+        // so `my $y = $x` copies a readonly parameter's value into a perfectly
+        // writable slot of its own.
+        rhs.readonly = false;
         // A Proxy container routes `= x` through its STORE method (`:=` still rebinds).
         if (a->op == "=" && lv->t == VT::Hash && lv->hashKind == "Proxy" && lv->hash) {
             if (lv->hash->count("STORE")) { Value r = proxyStore(*lv, rhs); return sink ? Value::any() : r; }
@@ -13125,7 +13141,17 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         }
     }
     Value* lv = lvalue(a->target.get());
+    // A plain scalar parameter is READONLY in Raku — `is copy` is what makes
+    // it writable. Ours bound every parameter as if `is copy` were always
+    // on, so `sub f($s) { $s ~~ s/a/b/ }` worked here and died on Rakudo
+    // with "Cannot assign to a readonly variable". Accepting it silently is
+    // the worst direction for a divergence: it lets code be written against
+    // rakupp that no other implementation will run.
+    if (lv->readonly)
+        throw RakuError{Value::typeObj("X::Assignment::RO"),
+                        "Cannot assign to a readonly variable or a value"};
     Value rhs = eval(a->value.get());
+    rhs.readonly = false;                  // the flag marks the container, not the value
     // a Proxy-bound target (`$a := $x`) routes OP= through FETCH/STORE so the
     // update reaches the underlying container instead of clobbering the Proxy
     if (lv->t == VT::Hash && lv->hashKind == "Proxy" && lv->hash) {
@@ -17674,7 +17700,15 @@ Value Interpreter::evalBinary(Binary* b) {
             if (isTrSubst(sub->pattern)) { // tr/from/to/ — transliteration, returns a StrDistance
                 long long n; std::string before = l.toStr();
                 std::string out = translit(before, sub->pattern.substr(1), sub->repl, n);
-                if (Value* lv = lvalue(b->lhs.get())) *lv = Value::str(out);
+                // `s///` MUTATES its left side, so a readonly target is an error.
+                // This is the shape the report arrived as, and it slipped past the
+                // assignment guard because a substitution never goes through `=`.
+                if (Value* lv = lvalue(b->lhs.get())) {
+                    if (lv->readonly)
+                        throw RakuError{Value::typeObj("X::Assignment::RO"),
+                                        "Cannot assign to a readonly variable or a value"};
+                    *lv = Value::str(out);
+                }
                 Value sd = Value::makeHash(); sd.hashKind = "StrDistance";
                 (*sd.hash)["before"] = Value::str(before);
                 (*sd.hash)["after"] = Value::str(out);
@@ -17684,7 +17718,15 @@ Value Interpreter::evalBinary(Binary* b) {
             long nsub = 0; ValueList noArgs; Value mres;
             std::string out = substSelect(l.toStr(), sub->pattern, nullptr, noArgs, nsub, false, &sub->repl, &mres);
             if (sub->nonMut) return Value::str(out);        // S/// : return new string, leave lhs intact
-            if (Value* lv = lvalue(b->lhs.get())) *lv = Value::str(out);
+            // `s///` MUTATES its left side, so a readonly target is an error.
+            // This is the shape the report arrived as, and it slipped past the
+            // assignment guard because a substitution never goes through `=`.
+            if (Value* lv = lvalue(b->lhs.get())) {
+                if (lv->readonly)
+                    throw RakuError{Value::typeObj("X::Assignment::RO"),
+                                    "Cannot assign to a readonly variable or a value"};
+                *lv = Value::str(out);
+            }
             return mres;                                     // s/// returns the Match / List of matches
         }
         // `X ~~ Y` topicalizes: $_ is bound to X while Y is evaluated (so `$x ~~ .so` works)
@@ -21177,7 +21219,14 @@ Value Interpreter::eval(Expr* e) {
                         // Value (refcount corruption). Under the GIL this is
                         // one predicted branch.
                         ParStripe rs(*this, p);
-                        return *p;
+                        // The readonly flag marks the CONTAINER, not the value.
+                        // A value read OUT of a readonly parameter is an ordinary
+                        // value: `my $y = $x` and `my @a = $x, 2` build writable
+                        // slots of their own. (The `$_`/`$/` readonly tests read
+                        // their slot directly, so they still see the flag.)
+                        Value out = *p;
+                        out.readonly = false;
+                        return out;
                     }
                 }
             }
