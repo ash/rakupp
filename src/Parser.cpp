@@ -1563,6 +1563,15 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
             base = std::move(mc);
             continue;
         } else if (isOp(".")) {
+            // `a . b` — a dot with SPACE ON BOTH SIDES is Perl 5's string
+            // concatenation, and saying so beats whatever we make of it next
+            // ("Cannot invoke non-Callable value of type Int", from reading
+            // `. (0)` as a CALL-ME). Spacing is what decides: `$c.(1)` glued is
+            // a real CALL-ME, and `$obj .method` with space before only is an
+            // ordinary method call.
+            if (cur().spaceBefore && peek().spaceBefore)
+                throw ParseError("Unsupported use of . to concatenate strings. In Raku please use: ~",
+                                 cur().line, "X::Obsolete", {});
             advance();
             bool mutate = false;
             if (isOp("=")) { advance(); mutate = true; } // .= mutating method call

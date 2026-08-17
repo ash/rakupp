@@ -32,3 +32,4 @@ date	commit	ran	failed	parked	roast_pass	roast_files	note
 2026-08-17	-	41412	9015	990	197471	597	operator spellings: !== is negated ==, plus the unicode equality and negated-set forms
 2026-08-17	-	41412	8469	990	197471	598	empty Set/Bag/Mix .raku is the sub form; ~< and ~> are no-such-operator, not NYI
 2026-08-17	-	41412	8078	990	197471	595	≼/≽ removed-in-6.d diagnostic; bitwise ops reject a non-finite operand
+2026-08-17	-	41412	7950	990	197471	595	exact numification of Hash/type-object operands; `.` as infix is X::Obsolete

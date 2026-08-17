@@ -14086,7 +14086,9 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     // `1 / "2"` is Rat 0.5 (Rakudo), not Num. numifyStr already yields the right
     // exact type (Int/Rat) — or an undefined value for a non-numeric string, which
     // falls through to the existing (Num) path unchanged.
-    if ((l.t == VT::Str || r.t == VT::Str || l.t == VT::Array || r.t == VT::Array) && !isSetOpStr(op) &&
+    if ((l.t == VT::Str || r.t == VT::Str || l.t == VT::Array || r.t == VT::Array ||
+         l.t == VT::Hash || r.t == VT::Hash || l.t == VT::Any || r.t == VT::Any ||
+         l.t == VT::Type || r.t == VT::Type) && !isSetOpStr(op) &&
         (op == "+" || op == "-" || op == "*" || op == "/" || op == "**" ||
          op == "%" || op == "%%" || op == "div" || op == "mod" || op == "gcd" || op == "lcm" ||
          // NUMERIC comparisons coerce too (`"a" == "b"` dies); the string ops
@@ -14109,6 +14111,21 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                 if (isExact(t) || t.t == VT::Complex) { out = t; return true; }
             }
             else if (v.t == VT::Array && v.arr && v.enumName.empty()) { out = Value::integer((long long)v.arr->size()); return true; }
+            // …and so does a HASH, by its element count: `1 + {a=>1}` is Int 2.
+            // Only a plain Hash/Map — every other hash-backed kind (Set, Bag,
+            // DateTime, Proxy…) has its own numeric meaning or none at all.
+            else if (v.t == VT::Hash && v.hash &&
+                     (v.hashKind.empty() || v.hashKind == "Hash" || v.hashKind == "Map")) {
+                out = Value::integer((long long)v.hash->size()); return true;
+            }
+            // An UNDEFINED operand is Int 0, not 0e0. It reached the double path
+            // and made the whole expression a Num: `1 + Any` was 1e0.
+            // An UNDEFINED operand is Int 0, not 0e0 — including a TYPE OBJECT,
+            // which is what `Any` written literally actually is (VT::Type, not
+            // VT::Any), and which is how these reached the double path at all.
+            else if (v.t == VT::Any || v.t == VT::Nil || v.t == VT::Type) {
+                out = Value::integer(0); return true;
+            }
             return false;
         };
         Value ln = l, rn = r;
