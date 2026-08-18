@@ -5781,6 +5781,9 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             for (ClassInfo* role : composedRoles)
                 for (auto& kv : role->methods) {
                     if (kv.second.t != VT::Code || !kv.second.code) continue;
+                    // since 6.e a role's SUBMETHODS are not composed into the class
+                    // at all, so two roles carrying the same one do not conflict
+                    if (langRev_ >= 2 && kv.second.code->isSubmethod) continue;
                     if (kv.second.code->isMultiDispatcher) {
                         for (auto& c : kv.second.code->candidates)
                             if (c.code && !c.code->isStub) { provided[kv.first][sigKeyParams(c.code->params)].insert(c.code.get()); providerRoles[kv.first].insert(role->name); }
@@ -5857,6 +5860,10 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 if (it == classes_.end()) continue;
                 for (auto& kv : it->second->methods) {
                     bool newDisp = kv.second.t == VT::Code && kv.second.code && kv.second.code->isMultiDispatcher;
+                    // remember which composed names are SUBMETHODS: 6.e hides them
+                    // from ordinary dispatch while still running role BUILD/TWEAK
+                    if (kv.second.t == VT::Code && kv.second.code && kv.second.code->isSubmethod)
+                        ci->roleSubmethods.insert(kv.first);
                     auto ex = ci->methods.find(kv.first);
                     if (ex == ci->methods.end()) {
                         ci->methods[kv.first] = newDisp ? cloneDispatcher(kv.second) : kv.second;
@@ -6075,6 +6082,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 } else {
                     ci->methods[key] = code;
                 }
+                ci->roleSubmethods.erase(key); // the class declares it ITSELF now
             }
             // aggregate role requirements (composed roles already carry the ones
             // they inherited from roles they compose, so this is transitive) and
@@ -18310,6 +18318,15 @@ Value Interpreter::mixinValue(Value base, const Value& rhs, bool copy) {
     classes_[nc->name] = nc;
     obj->cls = nc;
     Value out; out.t = VT::Object; out.obj = obj;
+    // A role mixed in at RUNTIME runs its BUILD submethod NOW, on the object it
+    // was mixed into — construction already happened, so this is the only point
+    // at which a mixed-in role can initialise anything.
+    for (ClassInfo* role : roleInfos) {
+        auto bi = role->methods.find("BUILD");
+        if (bi == role->methods.end() || bi->second.t != VT::Code) continue;
+        ValueList none;
+        invokeMethod(bi->second, out, none);
+    }
     return out;
 }
 

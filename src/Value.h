@@ -598,7 +598,12 @@ struct ClassInfo {
     std::string pod; // `#|` declarator pod (.WHY)
     std::set<std::string> requiredMethods; // methods a composing class must implement (role stubs)
     std::map<std::string, std::vector<std::string>> requiredMultiSigs; // stubbed MULTI candidates: name -> positional-type sig keys that must each be implemented
-    std::set<std::string> doneRoles; // names of roles this class/role composes (for ~~ / .does)
+    std::set<std::string> doneRoles;
+    // Names composed in from a ROLE that are SUBMETHODS. They stay in `methods`
+    // so the construction protocol's explicit BUILD/TWEAK walks still find them
+    // (Rakudo runs a role's BUILD under 6.e too), but ordinary dispatch hides
+    // them from 6.e on. A name the class declares ITSELF is erased again.
+    std::set<std::string> roleSubmethods; // names of roles this class/role composes (for ~~ / .does)
     Value howObj; // persistent .HOW metaobject — `T.HOW does SomeRole` mixins must stick (Method::Also)
     std::shared_ptr<Env> declEnv; // scope the type was declared in (for evaluating attr defaults)
     ClassDecl* decl = nullptr; // the AST declaration (program-lifetime) — carries roleParams for parameterized roles
@@ -629,16 +634,21 @@ struct ClassInfo {
     // submethods. findMethod itself still inherits them, because the object
     // construction path deliberately walks the whole hierarchy calling each
     // class's BUILD and TWEAK, which are submethods and must keep being found.
-    Value* findMethodForCall(const std::string& m) {
+    // `roleSubs`: does a submethod composed from a ROLE stay visible on the
+    // consuming class? Yes up to 6.d — composition flattens the role into the
+    // class. Since 6.e submethods are NOT composed, and only a class-qualified
+    // `$obj.Role::name` call reaches them.
+    Value* findMethodForCall(const std::string& m, bool roleSubs = true) {
         auto it = methods.find(m);
-        if (it != methods.end()) return &it->second;
-        // A submethod reached through a ROLE is still the class's own — role
-        // composition flattens into the class. One reached through a real
-        // ancestor class is not inherited.
+        if (it != methods.end()) {
+            if (!roleSubs && roleSubmethods.count(m)) return nullptr; // 6.e: not composed
+            return &it->second;
+        }
+        // A submethod reached through a real ancestor CLASS is never inherited.
         auto inherited = [&](ClassInfo* c) -> Value* {
             if (!c) return nullptr;
-            Value* r = c->findMethodForCall(m);
-            if (r && r->code && r->code->isSubmethod && !c->isRole) return nullptr;
+            Value* r = c->findMethodForCall(m, roleSubs);
+            if (r && r->code && r->code->isSubmethod && (!c->isRole || !roleSubs)) return nullptr;
             return r;
         };
         if (Value* r = inherited(parent.get())) return r;
