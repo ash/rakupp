@@ -973,6 +973,21 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         bool createonly = false;
         for (auto& a : args)
             if (a.t == VT::Pair && a.s == "createonly") createonly = !a.pairVal || a.pairVal->truthy();
+        // Copying or MOVING a file onto itself is an error, not a no-op: `rename`
+        // succeeds on the same path and `copy` would truncate the source before
+        // reading it. `rename` is the exception — Rakudo lets that one through.
+        if (m != "rename") {
+            struct stat sf{}, st{};
+            if (::stat(from.c_str(), &sf) == 0 && ::stat(to.c_str(), &st) == 0 &&
+                sf.st_dev == st.st_dev && sf.st_ino == st.st_ino) {
+                Value f = Value::makeHash(); f.hashKind = "Failure";
+                (*f.hash)["exception"] = Value::typeObj(m == "move" ? "X::IO::Move" : "X::IO::Copy");
+                (*f.hash)["message"] = Value::str(
+                    "Failed to " + m + " '" + from + "' to '" + to +
+                    "': source and target are the same file");
+                return f;
+            }
+        }
         if (createonly && std::ifstream(to).good())
             throw RakuError{Value::typeObj("X::IO::Copy"),
                 "Failed to copy '" + from + "' to '" + to + "': target already exists"};

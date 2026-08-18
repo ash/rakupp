@@ -3291,6 +3291,16 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if (m == "Seq") o.s = "Seq";
         return o;
     }
+    // .deepmap/.duckmap/.nodemap on a non-Iterable map the one element it stands
+    // for — including a TYPE OBJECT, which is how `deepmap *.self, Array` reaches
+    // here (it must not be a "no such method").
+    if ((m == "deepmap" || m == "duckmap" || m == "nodemap") && !args.empty() &&
+        (inv.t == VT::Int || inv.t == VT::Num || inv.t == VT::Rat || inv.t == VT::Str ||
+         inv.t == VT::Bool || inv.t == VT::Complex || inv.t == VT::Pair ||
+         inv.t == VT::Type || inv.t == VT::Any || inv.t == VT::Nil)) {
+        Value o = Value::array(); o.isList = true; o.arr->push_back(inv);
+        return methodCall(o, m, args, rwArgs);
+    }
     if (m == "toggle" &&
         (inv.t == VT::Int || inv.t == VT::Num || inv.t == VT::Rat || inv.t == VT::Str ||
          inv.t == VT::Bool || inv.t == VT::Complex || inv.t == VT::Pair)) {

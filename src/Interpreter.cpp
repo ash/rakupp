@@ -19340,6 +19340,14 @@ std::string Interpreter::strOf(const Value& v) {
             return out;
         }
     }
+    // A TYPE OBJECT that declares .Str stringifies through it too — `~(class {
+    // method Str { 'foo' } })` is "foo", not the empty string. (Only a user Str:
+    // the built-in one warns and yields "", which is the existing behaviour.)
+    if (v.t == VT::Type) {
+        auto cit = classes_.find(v.s);
+        if (cit != classes_.end() && cit->second)
+            if (Value* m = cit->second->findMethod("Str")) { ValueList none; return invokeMethod(*m, v, none).toStr(); }
+    }
     if (v.t == VT::Object && v.obj && v.obj->cls) {
         for (const char* nm : {"Str", "gist", "Stringy"}) // ~$o uses .Stringy, print uses .Str
             if (Value* m = v.obj->cls->findMethod(nm)) { ValueList none; return invokeMethod(*m, v, none).toStr(); }
@@ -20689,8 +20697,9 @@ Value Interpreter::evalIndex(Index* idx) {
     // (all leaf values, descending nested hashes). An ADVERBED `{*}` falls
     // through to the full adverb machinery below (negation, :k($flag), :exists,
     // :delete); only the plain form and the hyperslice take this fast path.
-    if (idx->isHash && base.t == VT::Hash && base.hash && idx->index && idx->index->kind == NK::Whatever &&
-        (idx->adverb.empty() || static_cast<const WhateverExpr*>(idx->index.get())->hyper)) {
+    bool hashWhatever = idx->isHash && base.t == VT::Hash && base.hash &&
+                        idx->index && idx->index->kind == NK::Whatever;
+    auto hashWhateverSlice = [&](const std::string& adv) {
         bool hyper = static_cast<const WhateverExpr*>(idx->index.get())->hyper;
         std::vector<std::pair<std::string, Value>> leaves;
         std::function<void(const Value&)> walk = [&](const Value& h) {
@@ -20701,7 +20710,6 @@ Value Interpreter::evalIndex(Index* idx) {
             }
         };
         walk(base);
-        const std::string& adv = idx->adverb;
         Value o = Value::array(); o.isList = true;
         for (auto& lv : leaves) {
             if (adv == "k") o.arr->push_back(Value::str(lv.first));
@@ -20710,6 +20718,10 @@ Value Interpreter::evalIndex(Index* idx) {
             else o.arr->push_back(lv.second); // :v or no adverb → the leaf values
         }
         return o;
+    };
+    if (hashWhatever &&
+        (idx->adverb.empty() || static_cast<const WhateverExpr*>(idx->index.get())->hyper)) {
+        return hashWhateverSlice(idx->adverb);
     }
 
     // `@a[|| @dims]` / `%h{|| @keys}` — navigate nested dimensions from a runtime list
@@ -20789,6 +20801,11 @@ Value Interpreter::evalIndex(Index* idx) {
         }
         if (idx->multiDim && !(wantExists || wantDelete || kvF || pF || kF || vF))
             return multiDimRead(base); // all adverbs conditionally off → plain multidim read
+        // …and the same for `%h{*}:delete($off)`: with every adverb switched off
+        // by its argument, what is left is the plain whatever-slice, not a lookup
+        // of the Whatever itself
+        if (hashWhatever && !(wantExists || wantDelete || kvF || pF || kF || vF))
+            return hashWhateverSlice("");
         if (wantExists || wantDelete || kvF || pF || kF || vF) {
         // On a multidim subscript, `:!exists:delete` has no matching postcircumfix
         // candidate in Rakudo and dies; a plain/chained subscript accepts it

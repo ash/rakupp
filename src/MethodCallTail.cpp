@@ -1100,11 +1100,22 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             }
             Value mapper = args.empty() ? Value::nil() : args[0];
             Value h = Value::makeHash();
-            auto add = [&](const std::string& key, const Value& vIn) {
+            // A key that is itself a LIST is a multi-LEVEL path: the element lands
+            // in a hash of hashes, one level per key (`classify { [.&odd, .&big] }`
+            // is %h<odd><big>), not under the keys joined into one string.
+            auto add = [&](const std::vector<std::string>& path, const Value& vIn) {
                 // `:as` maps the STORED value; the key still comes from the classifier
                 Value v = asF ? callCallable(*asF, {vIn}) : vIn;
-                auto it = h.hash->find(key);
-                if (it == h.hash->end()) { Value a = Value::array(); a.arr->push_back(v); (*h.hash)[key] = a; }
+                Value* level = &h;
+                for (size_t d = 0; d + 1 < path.size(); d++) {
+                    auto it = level->hash->find(path[d]);
+                    if (it == level->hash->end() || it->second.t != VT::Hash || !it->second.hash)
+                        (*level->hash)[path[d]] = Value::makeHash();
+                    level = &(*level->hash)[path[d]];
+                }
+                const std::string& key = path.back();
+                auto it = level->hash->find(key);
+                if (it == level->hash->end()) { Value a = Value::array(); a.arr->push_back(v); (*level->hash)[key] = a; }
                 else { if (it->second.t != VT::Array) { Value a = Value::array(); a.arr->push_back(it->second); it->second = a; } it->second.arr->push_back(v); }
             };
             for (auto& v : items) {
@@ -1122,8 +1133,17 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 auto keyOf = [](const Value& kv) {
                     return rtIsDefined(kv) ? kv.toStr() : kv.gist();
                 };
-                if (m == "categorize" && k.t == VT::Array && k.arr) { for (auto& kk : *k.arr) add(keyOf(kk), v); }
-                else add(keyOf(k), v);
+                auto pathOf = [&](const Value& kv) {
+                    std::vector<std::string> p;
+                    if (kv.t == VT::Array && kv.arr && !kv.itemized && !kv.arr->empty())
+                        for (auto& e : *kv.arr) p.push_back(keyOf(e));
+                    else p.push_back(keyOf(kv));
+                    return p;
+                };
+                // categorize's classifier returns a LIST OF categories (each of
+                // which may be a multi-level path); classify's returns just one.
+                if (m == "categorize" && k.t == VT::Array && k.arr) { for (auto& kk : *k.arr) add(pathOf(kk), v); }
+                else add(pathOf(k), v);
             }
             if (into) { // :into(%h) — append into an existing hash and return it
                 if (into->t != VT::Hash || !into->hash) *into = Value::makeHash();
@@ -1905,6 +1925,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             return h;
         }
         if (m == "Map" && inv.t == VT::Hash) { // %h.Map — an immutable view (detached copy)
+            if (inv.hashKind == "Map") return inv; // a Map's .Map is the Map ITSELF, not a copy
             Value h = Value::makeHash();
             if (inv.hash) *h.hash = *inv.hash;
             h.hashKind = "Map";

@@ -6861,7 +6861,9 @@ void Interpreter::registerBuiltins() {
         return Value::boolean(c);
     };
     auto likeTest = [](Interpreter& I, ValueList& a, bool want) -> Value {
-        std::string got = a.empty() ? "" : a[0].toStr();
+        // `like` stringifies its subject: a non-Str (an Int, or an object with a
+        // .Str) is matched by what it stringifies TO, not by an empty string
+        std::string got = a.empty() ? "" : I.strOf(a[0]);
         bool m = false;
         if (a.size() > 1) {
             if (a[1].t == VT::Regex) m = I.regexMatch(got, a[1].s).truthy();
