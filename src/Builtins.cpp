@@ -1648,10 +1648,18 @@ std::string doSprintf(const std::string& fmt, const ValueList& args, int langRev
                 std::vector<char> buf(std::max(64, width + prec + 64));
                 cnum::snprintf(buf.data(), buf.size(), spec.c_str(), fv);
                 std::string fs = buf.data();
-                if (std::isnan(fv) || std::isinf(fv)) { // Raku spells them NaN / Inf / -Inf
+                if (std::isnan(fv) || std::isinf(fv)) {
+                    // Raku spells them NaN / Inf / -Inf. From 6.e %G — and only %G —
+                    // uppercases them: `sprintf('%G', -Inf)` is "-INF" there and
+                    // "-Inf" at 6.d. (C uppercases for %E and %F too; Raku does not,
+                    // and the two Roast copies of S32-str/sprintf.t pin one version
+                    // each: 6.d/…:234 wants "Inf", …/sprintf.t:241 wants "INF".)
+                    bool up = (conv == 'G' && langRev >= 2);
+                    const char* rep = std::isnan(fv) ? (up ? "NAN" : "NaN")
+                                                     : (up ? "INF" : "Inf");
                     for (const char* bad : {"nan", "NAN", "inf", "INF"}) {
                         size_t at = fs.find(bad);
-                        if (at != std::string::npos) fs.replace(at, 3, bad[0]=='n'||bad[0]=='N' ? "NaN" : "Inf");
+                        if (at != std::string::npos) { fs.replace(at, 3, rep); break; }
                     }
                 }
                 out += fs; break;

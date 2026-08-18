@@ -1425,6 +1425,7 @@ void Interpreter::rtUse(const std::string& module, const std::string& arg) {
     if (module.size() >= 2 && module[0] == 'v' && ascii::isdigit((unsigned char)module[1])) {
         if (module.find("6.c") != std::string::npos) langRev_ = 0;
         else if (module.find("6.d") != std::string::npos) langRev_ = 1;
+        else if (module.find('.') == std::string::npos) langRev_ = 1; // bare `v6` is the default revision
         else langRev_ = 2;
         return;
     }
@@ -4016,6 +4017,11 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
         // `our sub`s publish qualified (Foo::name); save/restore so it can't leak
         // into the importing program.
         auto savedModPrefix = tctx_.pkgPrefix; tctx_.pkgPrefix.clear();
+        // The language revision is per COMPILATION UNIT. A module opening with
+        // `use v6.e.PREVIEW;` (or any other pragma) must not leave the importer
+        // running at that revision — Test::Util's own `use v6;` was silently
+        // re-versioning every Roast file that loads it.
+        int savedLangRev = langRev_;
         auto publish = [&] {
             for (auto& kv : moduleEnv->vars) {
                 const std::string& k = kv.first;
@@ -4063,7 +4069,7 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
         catch (RakuError& e) {
             loadingModuleDepth_--; moduleDoImport_ = savedDoImport;
             publish();
-            tctx_.cur = saved; curPkgEnv_ = savedPkg; finishData_ = savedFinish; tctx_.pkgPrefix = savedModPrefix;
+            tctx_.cur = saved; curPkgEnv_ = savedPkg; finishData_ = savedFinish; tctx_.pkgPrefix = savedModPrefix; langRev_ = savedLangRev;
             // A module that THROWS while loading is fatal, for the same reason a
             // missing or unparseable one is: its remaining BEGIN blocks and exports
             // never happen, so what the importer gets is a half-built module that
@@ -4074,10 +4080,10 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
             // that nothing exploded.
             throw;
         }
-        catch (...) { loadingModuleDepth_--; moduleDoImport_ = savedDoImport; tctx_.cur = saved; curPkgEnv_ = savedPkg; finishData_ = savedFinish; tctx_.pkgPrefix = savedModPrefix; throw; }
+        catch (...) { loadingModuleDepth_--; moduleDoImport_ = savedDoImport; tctx_.cur = saved; curPkgEnv_ = savedPkg; finishData_ = savedFinish; tctx_.pkgPrefix = savedModPrefix; langRev_ = savedLangRev; throw; }
         loadingModuleDepth_--; moduleDoImport_ = savedDoImport;
         publish();
-        tctx_.cur = saved; curPkgEnv_ = savedPkg; finishData_ = savedFinish; tctx_.pkgPrefix = savedModPrefix;
+        tctx_.cur = saved; curPkgEnv_ = savedPkg; finishData_ = savedFinish; tctx_.pkgPrefix = savedModPrefix; langRev_ = savedLangRev;
         // `sub EXPORT(*@_)` protocol: call it with the use-statement's <...>
         // args; its returned Map ('&name' => &code, ...) defines the imports
         // in the USING scope.
@@ -5149,9 +5155,15 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             if (u->module == "Test") usedTest_ = true;
             else if (u->module.size() >= 2 && u->module[0] == 'v' && ascii::isdigit((unsigned char)u->module[1])) {
                 // language version pragma: use v6.c / v6.d / v6.e[.PREVIEW]
+                // A BARE `use v6;` asks for "some Raku 6", which means the
+                // current default revision — 6.d — not the newest one we know
+                // how to be. Reading it as 6.e silently changed semantics under
+                // the most common pragma in real code (`sqrt(-1)` answered
+                // 0+1i rather than NaN). Only an explicit 6.e (or later) opts in.
                 if (u->module.find("6.c") != std::string::npos) langRev_ = 0;
                 else if (u->module.find("6.d") != std::string::npos) langRev_ = 1;
-                else langRev_ = 2; // v6 / v6.e / future -> latest semantics
+                else if (u->module.find('.') == std::string::npos) langRev_ = 1; // bare `v6`
+                else langRev_ = 2; // v6.e and later -> latest semantics
             }
             else if (u->module == "lib") {
                 // `use lib` takes ONE path or a list of them (`use lib <lib t/lib>`);
