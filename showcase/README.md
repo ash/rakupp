@@ -18,6 +18,7 @@ together they answer "what can it actually build?"
 | [**kvstore/**](kvstore) | Protocols — a key-value store with its own text protocol | Redis-style TCP server you drive with `nc` |
 | [**modinfo/**](modinfo) | Ecosystem — 17 zef distributions doing the work | inspects Raku distributions: graph, validation, reports |
 | [**jsonreq/**](jsonreq) | Ecosystem — our own modules composing | curl+jq for JSON APIs: request, query, pretty-print |
+| [**sqlite/**](sqlite) | C libraries — NativeCall and a raw-mode terminal | database client: query, browse, dump; the real libsqlite3 does the work |
 
 All paths below are from the repository root, after building `rakupp` (see the
 top-level [README](../README.md)). Every program also compiles to a standalone
@@ -39,6 +40,9 @@ build/rakupp showcase/lisp/lisp.raku                 # no file → a REPL
 The reader is a Raku `grammar` plus an actions class — source text turns
 straight into Raku data structures, which is exactly the job a language
 implementation exists to do.
+
+See [`lisp/README.md`](lisp/README.md) for the full special-form and
+builtin list, and a walk-through of the reader.
 
 ## js — the industrial-language story
 
@@ -83,6 +87,9 @@ build/rakupp showcase/forth/forth.raku               # no file → a REPL
 5 square .      \ prints 25
 10 fact .       \ prints 3628800
 ```
+
+[`forth/README.md`](forth/README.md) lists every word it knows and explains
+how the control words compile to a node tree.
 
 ## perl — parsing the ancestor
 
@@ -160,6 +167,9 @@ The inline grammar uses ordered `||` alternation with a single-character
 catch-all, so a stray `*` degrades to literal text instead of failing the
 parse — the whole document always converts.
 
+[`markdown/README.md`](markdown/README.md) has the exact block and inline
+syntax it supports, and what it deliberately leaves out.
+
 ## json — the round-trip story
 
 A JSON parser *and* formatter: a grammar reads JSON into native Raku values, and
@@ -174,6 +184,9 @@ build/rakupp showcase/json/json.raku --query='.users[0].name' showcase/json/samp
 
 Full string escapes (`\n`, `\uXXXX`, …) decode and re-encode; object keys are
 emitted sorted, so the output is stable for diffs.
+
+[`json/README.md`](json/README.md) covers the escape handling and the query
+path syntax.
 
 ## pastebin — the deployable story
 
@@ -194,6 +207,9 @@ PORT=9000 build/rakupp --exe -o pastebin showcase/pastebin/pastebin.raku && ./pa
 | `GET /p/<id>` | view one paste (HTML) |
 | `GET /raw/<id>` | view one paste (text/plain) |
 
+[`pastebin/README.md`](pastebin/README.md) shows the request-parsing loop and
+how to drive it from the command line.
+
 ## rakus — the general-server story
 
 Where the pastebin is one app with a fixed route table, **rakus** is a reusable
@@ -209,6 +225,9 @@ build/rakupp showcase/rakus/rakus.raku 9000 ~/site  # choose the port and root
 
 Open <http://127.0.0.1:8080/> — the bundled `public/` folder has a styled page,
 an SVG logo, and a `files/` directory with no index so you can see the listing.
+
+[`rakus/README.md`](rakus/README.md) lists the status codes, the MIME table and
+the threading model.
 
 ## chat — the concurrency story
 
@@ -226,6 +245,9 @@ nc 127.0.0.1 6667                                   # first line you send is you
 
 Send `/who` to list who's online, `/quit` to leave. The first line each client
 sends becomes its nick; everything after is broadcast to the room.
+
+[`chat/README.md`](chat/README.md) has a transcript of a live session and the
+locking model that keeps the roster safe.
 
 ## kvstore — the protocol story
 
@@ -253,6 +275,9 @@ HELP                     -> the command list
 ```
 
 Commands: `SET GET DEL EXISTS INCR DECR APPEND KEYS DBSIZE FLUSHALL PING QUIT`.
+
+[`kvstore/README.md`](kvstore/README.md) documents each command's replies and
+the error cases.
 
 ## modinfo — the ecosystem story
 
@@ -317,6 +342,42 @@ serving a sample dataset on the loopback and runs twelve commands — queries
 with negative indexes, `null`, a 405, a 404, local files — under both engines:
 STDOUT and exit codes match byte-for-byte. See
 [`jsonreq/README.md`](jsonreq/README.md) for the option table.
+
+## sqlite — the C library story
+
+Every showcase above implements something. **sqlite** uses something: a SQLite
+client with no SQL engine of its own, where `libsqlite3` executes every query
+and `termios` drives the terminal, both reached through NativeCall. It is the
+answer to "can it talk to the C libraries a real program needs?"
+
+```sh
+build/rakupp showcase/sqlite/sqlite.raku demo.db ".read showcase/sqlite/seed.sql"
+build/rakupp showcase/sqlite/sqlite.raku demo.db "select * from albums"
+build/rakupp showcase/sqlite/sqlite.raku --format=json demo.db "select * from artists"
+build/rakupp showcase/sqlite/sqlite.raku demo.db - < script.sql   # a whole script
+build/rakupp showcase/sqlite/sqlite.raku demo.db                  # no SQL -> the browser
+RAKUPP=build/rakupp sh showcase/sqlite/compare.sh                 # both oracles
+```
+
+The binding covers the parts of `sqlite3.h` a client actually needs — the three
+C out-parameters (`sqlite3 **`, `sqlite3_stmt **`, `char **`), one Raku type per
+storage class fetched by class rather than by conversion, blobs through
+`nativecast`, and whole scripts through `sqlite3_exec`. The browser puts the tty
+into raw mode with `cfmakeraw` on an opaque byte buffer, so no `struct termios`
+layout is written down and the same code works on macOS and Linux.
+
+It is checked two ways. Its `csv` and `json` output is byte-identical to
+`sqlite3 -csv -header` and `sqlite3 -json` — SQLite's quoting table, its float
+format, raw blob bytes, and the empty-result-prints-nothing rule all
+reproduced — and the whole program is byte-identical under Rakudo and Raku++.
+
+Writing it turned up ten divergences from Rakudo, three of them silent
+(a `LEAVE` in a method firing at its declaration, `$*OUT.write(Buf)` writing
+nothing, a method named `throw` replacing the thrown exception), written up in
+[`docs/dev/findings/BUGS-SQLITE-SHOWCASE.md`](../docs/dev/findings/BUGS-SQLITE-SHOWCASE.md).
+
+[`sqlite/README.md`](sqlite/README.md) has the option table, the browser keys,
+and what each part of the binding exercises.
 
 ## In the browser — [`web/`](web)
 
