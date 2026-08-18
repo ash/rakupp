@@ -9308,15 +9308,18 @@ void Interpreter::registerBuiltins() {
     // router walks.
     B["flat"] = [](Interpreter&, ValueList& a) -> Value {
         Value out = Value::array(); out.isList = true;
-        std::function<void(const Value&)> deeper = [&](const Value& x) {
-            if (x.t == VT::Array && x.arr && x.isList && !x.itemized)
-                for (auto& e : *x.arr) deeper(e);
+        // Same rule as `.flat`: a nested LIST always spreads, a nested ARRAY
+        // container only when its parent was a list — array assignment itemises
+        // each element, so `flat [[1,2],[3]]` stays two elements.
+        std::function<void(const Value&, bool)> deeper = [&](const Value& x, bool ofArray) {
+            if (x.t == VT::Array && x.arr && !x.itemized && (x.isList || !ofArray))
+                for (auto& e : *x.arr) deeper(e, !x.isList);
             else if (x.t == VT::Range) for (auto& e : x.flatten()) out.arr->push_back(e);
             else out.arr->push_back(x);
         };
         for (auto& v : a) {
             if (v.itemized) { out.arr->push_back(v); continue; }
-            if (v.t == VT::Array && v.arr) { for (auto& e : *v.arr) deeper(e); continue; }
+            if (v.t == VT::Array && v.arr) { for (auto& e : *v.arr) deeper(e, !v.isList); continue; }
             if (v.t == VT::Range) { for (auto& e : v.flatten()) out.arr->push_back(e); continue; }
             // A HASH flattens to its Pairs — an EMPTY one therefore contributes
             // nothing. Pushing the hash itself made `flat %new, @new` (URI's

@@ -843,17 +843,25 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         if (m == "flat") {
             // deep-flatten NON-itemized sublists ((((0,1),2),3).flat is 0,1,2,3);
             // itemized Arrays ([..] / .item) stay whole elements
+            // An element of a LIST flattens if it is a non-itemized Iterable —
+            // `(6, @a).flat` and `(6, [7,8]).flat` both spread. An element of an
+            // ARRAY does not: array assignment itemises each element, so
+            // `[[1,2],[3]].flat` stays two elements. `$@a` / `.item` opt out
+            // either way.
             Value out = Value::array(); out.isList = true; out.s = "Seq";
-            std::function<void(const Value&)> go = [&](const Value& x) {
-                if (x.t == VT::Array && x.arr && x.isList && !x.itemized)
-                    for (auto& e : *x.arr) go(e);
-                else if (x.t == VT::Hash && x.hash && x.hashKind.empty())
+            std::function<void(const Value&, bool)> go = [&](const Value& x, bool ofArray) {
+                // a nested LIST always spreads; only a nested ARRAY container is
+                // held back by its parent being an Array
+                if (x.t == VT::Array && x.arr && !x.itemized && (x.isList || !ofArray))
+                    for (auto& e : *x.arr) go(e, !x.isList);
+                else if (!ofArray && x.t == VT::Hash && x.hash && x.hashKind.empty())
                     for (auto& kv : *x.hash) out.arr->push_back(Value::pair(kv.first, kv.second));
-                else if (x.t == VT::Range)
+                else if (!ofArray && x.t == VT::Range)
                     for (auto& e : x.flatten()) out.arr->push_back(e);
                 else out.arr->push_back(x);
             };
-            for (auto& x : items) go(x);
+            bool topOfArray = inv.t == VT::Array && !inv.isList;
+            for (auto& x : items) go(x, topOfArray);
             return out;
         }
         // `.eager` on a concrete Array is the identity — it keeps the same
@@ -1326,7 +1334,11 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             // :k → index; :v → value (the default); :kv → both; :p → index => value;
             // :end → search backwards for the LAST match
             char want = 0; bool wantEnd = false;
-            for (auto& a : args) if (a.t == VT::Pair && a.pairVal && a.pairVal->truthy()) {
+            for (auto& a : args) if (a.t == VT::Pair && a.pairVal) {
+                // :!v is an error — "not the value" has nothing to return
+                if (a.s == "v" && !a.pairVal->truthy())
+                    throw RakuError{Value::typeObj("X::Adverb"), "Specified a negated :v adverb"};
+                if (!a.pairVal->truthy()) continue;
                 if (a.s == "end") wantEnd = true;
                 else if (a.s == "k" || a.s == "v" || a.s == "p") want = a.s[0];
                 else if (a.s == "kv") want = 'm';

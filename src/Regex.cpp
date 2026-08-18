@@ -1683,7 +1683,11 @@ Regex::NodePtr Regex::parseAtom() {
         if (nx == '\0' || nx == ')' || nx == ']' || nx == '|' || nx == '$' || ascii::isspace((unsigned char)nx)) {
             pos_++;
             auto n = std::make_unique<Node>(); n->k = K::AnchorEnd;
-            if (peek() == '$') { pos_++; n->multiline = true; } // `$$` = end-of-line, `$` = end-of-string
+            // `$$` = end of any LINE. Raku's `$` is the ABSOLUTE end of the
+            // string — unlike Perl 5's, it does not also match before a final
+            // newline (`"abc\ndef\n" ~~ /def$/` is False).
+            if (peek() == '$') { pos_++; n->multiline = true; }
+            else n->absEnd = true;
             return n;
         }
         // `$( … )` — an arbitrary expression, matched as its Str. The identifier

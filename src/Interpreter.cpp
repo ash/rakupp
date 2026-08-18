@@ -6425,7 +6425,20 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 if (c) {
                     // postfix `STMT if COND`: run STMT in the ENCLOSING scope so a `my`
                     // in it declares there (its declaration was already hoisted).
-                    if (is->modifier) return execBlock(br.second.get(), tctx_.cur);
+                    if (is->modifier) {
+                        // `{ $a = $^x } if 100` CALLS the block with the condition
+                        // value. The parser flattens the braces away, so the
+                        // placeholder is sitting in this branch body — bind it in a
+                        // child scope (a block with a signature is not the bare
+                        // `my`-leaks-out form the enclosing scope is there for).
+                        auto ph = computePlaceholders(br.second->stmts);
+                        if (ph.size() == 1) {
+                            auto phs = std::make_shared<Env>(); phs->parent = tctx_.cur;
+                            phs->define(ph[0], cv);
+                            return execBlock(br.second.get(), phs);
+                        }
+                        return execBlock(br.second.get(), tctx_.cur);
+                    }
                     auto scope = std::make_shared<Env>(); scope->parent = tctx_.cur;
                     std::string bv = bi < is->branchVars.size() ? is->branchVars[bi]
                                      : (bi == 0 ? is->thenVar : "");
@@ -14970,10 +14983,17 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             res = (l.s == r.s);
         } else if ((r.t == VT::Int || r.t == VT::Num || r.t == VT::Rat) &&
                    (l.t == VT::Int || l.t == VT::Num || l.t == VT::Rat || l.t == VT::Str || l.t == VT::Bool)) {
-            res = applyArith("==", l, r).truthy(); // `$x ~~ 5` : numeric coercion ('05' ~~ 5 is True)
+            // A Str that does not numify simply does NOT match: `'x' ~~ 42e0` is
+            // False, not an X::Str::Numeric. (Rakudo's Numeric.ACCEPTS swallows
+            // the failed coercion.)
+            try { res = applyArith("==", l, r).truthy(); } // `$x ~~ 5` : numeric coercion ('05' ~~ 5 is True)
+            catch (RakuError&) { if (l.t != VT::Str) throw; res = false; }
             // NaN ~~ NaN is True even though NaN == NaN is False ('NaN' ~~ NaN coerces
             // the string to NaN); ACCEPTS special-cases NaN.
-            if (!res && r.t == VT::Num && std::isnan(r.n) && std::isnan(l.toNum())) res = true;
+            if (!res && r.t == VT::Num && std::isnan(r.n) && l.t != VT::Str && std::isnan(l.toNum())) res = true;
+            if (!res && r.t == VT::Num && std::isnan(r.n) && l.t == VT::Str) {
+                try { res = std::isnan(l.toNum()); } catch (RakuError&) { res = false; }
+            }
         } else if (r.t == VT::Nil) {
             // `$x ~~ Nil` — Nil.ACCEPTS is true only for Nil ITSELF; a defined but
             // empty hash/list/string does NOT match Nil (valueEq would say it does).
