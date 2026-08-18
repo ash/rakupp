@@ -6,10 +6,13 @@
 // which turns most of those comparisons into an integer compare. Lifted out of
 // Builtins.cpp when that dispatch chain was split across several translation
 // units — every part needs the same type.
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
-#include <string>
+#include <initializer_list>
 #include <ostream>
+#include <string>
+#include <vector>
 
 namespace rakupp {
 
@@ -55,6 +58,29 @@ struct MName {
     std::string substr(std::size_t p = 0, std::size_t n = std::string::npos) const { return s.substr(p, n); }
     int compare(std::size_t p, std::size_t n, const char* o) const { return s.compare(p, n, o); }
 };
+// A small set of SHORT method names (<= 8 characters), tested against the
+// packed first-eight-bytes form MName already carries. A name that fits in
+// eight bytes packs injectively — a name holds no NUL, so no two differ only
+// past their length — which turns membership into a binary search over sorted
+// integers instead of a std::set<std::string> tree walk with string compares
+// at each node. That walk is what made every Str and Array method call ~45 ns
+// slower once two such sets were consulted before the common handlers.
+struct MNameSet8 {
+    std::vector<std::uint64_t> keys;   // sorted packed names
+    MNameSet8(std::initializer_list<const char*> names) {
+        keys.reserve(names.size());
+        for (const char* p : names) {
+            std::size_t k = std::strlen(p);
+            if (k > 8) continue;       // cannot be a member: the test rejects it below
+            keys.push_back(MName::pack(p, k));
+        }
+        std::sort(keys.begin(), keys.end());
+    }
+    RAKUPP_ALWAYS_INLINE bool has(const MName& m) const {
+        return m.n <= 8 && std::binary_search(keys.begin(), keys.end(), m.pre);
+    }
+};
+
 inline std::string operator+(const char* a, const MName& b) { return a + b.s; }
 inline std::string operator+(const std::string& a, const MName& b) { return a + b.s; }
 inline std::string operator+(const MName& a, const char* b) { return a.s + b; }

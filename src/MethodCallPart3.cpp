@@ -142,10 +142,10 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // `.FatRat` and the other coercions already hand back a Failure carrying
         // the same X::Str::Numeric, and that soft form is the contract
         // t/regression/cool-round-and-numeric-failures.raku pins down.
-        static const std::set<std::string> kNumifiesInv = {
+        static const MNameSet8 kNumifiesInv = {
             "floor", "ceiling", "round", "truncate", "sign",
             "exp", "log", "log10", "log2", "chr", "is-prime"};
-        if (kNumifiesInv.count(m.s)) numifyStrOrThrow(inv.toStr());
+        if (kNumifiesInv.has(m)) numifyStrOrThrow(inv.toStr());
     }
     // numeric
     if (m == "abs") {
@@ -346,14 +346,14 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     // X::Str::Numeric in Rakudo, not sin(0) — so it must not run for a method
     // that merely PASSES THROUGH on its way to a later arm, which is why the
     // name is checked before the value is touched.
-    static const std::set<std::string> kNumMeth = {
+    static const MNameSet8 kNumMeth = {
         "Complex", "cis", "roots", "unpolar",
         "sin", "cos", "tan", "asin", "acos", "atan", "atan2",
         "sinh", "cosh", "tanh", "asinh", "acosh", "atanh",
         "sec", "cosec", "csc", "cotan", "cot", "asec", "acosec", "acsc",
         "acotan", "acot", "sech", "cosech", "csch", "cotanh", "coth",
         "asech", "acosech", "acsch", "acotanh", "acoth"};
-    if (coolNumeric && kNumMeth.count(m.s)) {
+    if (coolNumeric && kNumMeth.has(m)) {
         auto strict = [](const Value& v) -> double {
             if ((v.t == VT::Str || v.t == VT::Match) && !v.isAllomorph() && v.hashKind.empty())
                 return numifyStrOrThrow(v.toStr()).toNum();
