@@ -30,6 +30,7 @@ point; everything else lives here, in four places:
 
 ### Topics
 
+- **[guide/LANGUAGE-6E.md](guide/LANGUAGE-6E.md)** — Raku 6.e versus 6.d: the consolidated changelog that upstream has not written. What `use v6.e.PREVIEW` actually turns on — new syntax, subs and methods, the behaviour changes that bite (`sqrt` of a negative, `so (5..1)`, string ranges, `sprintf` flags, role submethods, `.pm` modules), the new compile-time errors — each with both outputs, plus where Raku++ matches and where it does not.
 - **[guide/UNICODE.md](guide/UNICODE.md)** — Unicode support: graphemes, normalization, UCA collation, character introspection.
 - **[guide/ASYNC.md](guide/ASYNC.md)** — concurrency & async: promises, supplies, channels, threads, and the two execution modes.
 - **[guide/PARALLEL-SPEEDUP.md](guide/PARALLEL-SPEEDUP.md)** — how to measure whether `start` actually made a program faster, with two runnable benchmarks and the numbers they produce.
