@@ -114,6 +114,13 @@ bool Value::truthy() const {
                 auto it = hash->find("status");
                 if (it != hash->end()) return it->second.toStr() != "Planned";
             }
+            // A NativeCall Pointer/CArray boolifies by its ADDRESS: NULL is
+            // false. Without this it fell through to "a hash with keys in it",
+            // so `if $ptr` passed a null pointer straight to C.
+            if ((hashKind == "Pointer" || hashKind == "CArray") && hash) {
+                auto it = hash->find("addr");
+                if (it != hash->end()) return it->second.toInt() != 0;
+            }
             return (hashKind == "Raku" || hashKind == "Compiler" ||
                     hashKind == "Mu" || hashKind == "Any") // object-like: always defined/true
                             || (hash && !hash->empty());
@@ -191,6 +198,12 @@ long long Value::toInt() const {
             if (hash && (hashKind.rfind("Bag", 0) == 0 || hashKind.rfind("Mix", 0) == 0)) {
                 double t = 0; for (auto& kv : *hash) t += kv.second.toNum();
                 return (long long)t;
+            }
+            // +$ptr is the ADDRESS. A Pointer holds { addr, of }, so the
+            // generic "size of the hash" below made every pointer numify to 2.
+            if ((hashKind == "Pointer" || hashKind == "CArray") && hash) {
+                auto it = hash->find("addr");
+                if (it != hash->end()) return it->second.toInt();
             }
             return hash ? (long long)hash->size() : 0;
         default: return 0;
@@ -402,6 +415,15 @@ std::string Value::toStr() const {
                 std::string tn = hash->count("type") ? hash->at("type").toStr() : "";
                 std::string nm = hash->count("name") ? hash->at("name").toStr() : "";
                 return (tn.empty() ? "" : tn + " ") + nm;
+            }
+            // "$ptr" is the pointer's own text, not the key\tvalue dump —
+            // interpolating one produced a two-line "addr\t140…\nof\t".
+            if ((hashKind == "Pointer" || hashKind == "CArray") && hash && hash->count("addr")) {
+                // the element type lives in the "of" ENTRY (as .gist reads it),
+                // not in the ofType field
+                std::string of = hash->count("of") ? hash->at("of").toStr() : "";
+                return hashKind + (of.empty() ? "" : "[" + of + "]") + "<" +
+                       std::to_string(hash->at("addr").toInt()) + ">";
             }
             if (hashKind == "Format" && hash && hash->count("fmt")) return hash->at("fmt").toStr();
             // An IO::Handle Strs as its PATH — `"foo".IO.open.Str` is "foo".

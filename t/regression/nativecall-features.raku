@@ -38,8 +38,13 @@ with $ne { @fail.push("cglobal ($ne)") unless $ne ~~ Int && $ne >= 0 }
 else     { note '# cglobal sys_nerr not present here (glibc dropped it) — skipping' }
 
 # 5. Pointer API
-@fail.push('pointer-null')    unless !Pointer.new.defined;
-@fail.push('pointer-addr')    unless Pointer.new(999).Int == 999;
+# An instantiated Pointer is DEFINED even when it holds NULL — emptiness is
+# .Bool's job, and +$ptr is the address. This file used to assert the opposite
+# (`!Pointer.new.defined`), which was rakupp's own inverted reading; Rakudo
+# reports defined=True, ?$p=False, +$p=0 for Pointer.new.
+@fail.push('pointer-null')    unless Pointer.new.defined && !Pointer.new;
+@fail.push('pointer-live')    unless ?Pointer.new(999);
+@fail.push('pointer-addr')    unless Pointer.new(999).Int == 999 && +Pointer.new(999) == 999;
 
 # 6. CArray element read — byte-backed
 my $c = CArray[uint8].new(65, 66, 67);

@@ -42,10 +42,8 @@ constant SQLITE_OPEN_CREATE    = 0x04;
 # ((sqlite3_destructor_type)-1), so it is literally the pointer -1.
 constant TRANSIENT = Pointer.new(-1);
 
-# Is this pointer NULL? Written the long way on purpose: Rakudo reports a
-# NULL pointer as .defined but false, Raku++ as undefined but true, so only
-# the pair of tests is portable across both. (See README, "what this found".)
-sub null-ptr(Mu $p --> Bool) { !$p.defined || !$p }
+# Is this pointer NULL? A Pointer boolifies by its address on both engines.
+sub null-ptr(Mu $p --> Bool) { !$p }
 
 sub sqlite3_libversion(--> Str)                                is native('sqlite3') { * }
 sub sqlite3_open_v2(Str, Pointer is rw, int32, Str --> int32)  is native('sqlite3') { * }
@@ -132,7 +130,7 @@ class Statement {
     method next-row() {
         my $rc = sqlite3_step($!h);
         return Nil if $rc == SQLITE_DONE;
-        $!db.fail-with('step', $rc) if $rc != SQLITE_ROW;
+        $!db.throw('step', $rc) if $rc != SQLITE_ROW;
         (^sqlite3_column_count($!h)).map({ self!value($_) }).eager.List;
     }
 
@@ -160,9 +158,7 @@ class DB {
     }
     submethod BUILD(Pointer :$h, Str :$!path) { $!h = $h }
 
-    # Not named `throw`: a method with that name collides with the core
-    # Exception.throw and the failure arrives at CATCH as this object.
-    method fail-with(Str $op, Int $rc) {
+    method throw(Str $op, Int $rc) {
         die X::SQLite.new(op => $op, code => sqlite3_extended_errcode($!h) || $rc,
                           detail => sqlite3_errmsg($!h));
     }
@@ -175,7 +171,7 @@ class DB {
         my Pointer $st .= new;
         my Pointer $tail .= new;
         my $rc = sqlite3_prepare_v2($!h, $sql, -1, $st, $tail);
-        self.fail-with('prepare', $rc) if $rc != SQLITE_OK;
+        self.throw('prepare', $rc) if $rc != SQLITE_OK;
         die X::SQLite.new(op => 'prepare', code => SQLITE_OK,
                           detail => 'statement is empty') if null-ptr($st);
 
@@ -194,26 +190,25 @@ class DB {
                 when Blob        { sqlite3_bind_blob($st, $n, CArray[uint8].new(.list), .bytes, TRANSIENT) }
                 default          { sqlite3_bind_text($st, $n, .Str, -1, TRANSIENT) }
             };
-            self.fail-with('bind', $rc) if $rc != SQLITE_OK;
+            self.throw('bind', $rc) if $rc != SQLITE_OK;
         }
         Statement.new(h => $st, db => self);
     }
 
-    # Run a statement to completion and collect everything it returned.
-    # The finalize is written out rather than left to a LEAVE phaser: a LEAVE
-    # inside a *method* fires at its declaration under Raku++ today, which
-    # freed the statement before the first row was read. See README.
+    # Run a statement to completion and collect everything it returned. The
+    # statement is finalized by a LEAVE, so it is released on the way out
+    # whether the rows are read or a step throws.
     method query(Str $sql, *@binds --> Result) {
-        my $st = self.prepare($sql, |@binds);
+        # The phaser is declared BEFORE the prepare that can throw, and guarded
+        # with `with`: a failed prepare leaves $st undefined, and a LEAVE that
+        # called .finish on it would replace the SQL error with a method-missing
+        # one (Rakudo runs a phaser whose declaration was never reached).
+        my $st;
+        LEAVE { .finish with $st }
+        $st = self.prepare($sql, |@binds);
         my @names = $st.names;
         my @rows;
-        my $failure;
-        {
-            while (my $row = $st.next-row).defined { @rows.push($row) }
-            CATCH { default { $failure = $_ } }
-        }
-        $st.finish;
-        $failure.rethrow if $failure;
+        while (my $row = $st.next-row).defined { @rows.push($row) }
         Result.new(names => @names, rows => @rows);
     }
 
@@ -369,26 +364,12 @@ sub json-scalar(Mu $v --> Str) {
 # `sqlite3 -json`, which is what showcase/sqlite/compare.sh checks. An empty
 # result set prints nothing at all in both — header included.
 
-# Raw bytes need a binary handle: $*OUT.write(Buf) writes nothing at all
-# under Raku++ today, so a blob would silently vanish from the output.
-my $byte-out;
-sub write-bytes(Blob $b) {
-    $byte-out //= (try open('/dev/stdout', :w, :bin));
-    if $byte-out.defined {
-        $*OUT.flush;              # two handles on one descriptor: keep order
-        $byte-out.write($b);
-        $byte-out.flush;
-    }
-    else {
-        print $b.decode('latin-1');    # no /dev/stdout: text mode, blobs approximate
-    }
-}
-
 sub emit-csv(Result $r) {
     return unless $r.rows;
-    write-bytes(csv-line($r.names));
-    write-bytes(csv-line($_)) for $r.rows;
-    .flush with $byte-out;
+    # .write, not .print: a blob column is bytes, and encoding them as text
+    # would rewrite every byte from 0x80 up.
+    $*OUT.write(csv-line($r.names));
+    $*OUT.write(csv-line($_)) for $r.rows;
 }
 
 sub emit-json(Result $r) {
@@ -432,24 +413,21 @@ sub emit-table(Result $r) {
         max @names[$i].chars, |@shown.map({ .[$i].chars });
     });
 
-    # Named hrule, not rule: a nested `my sub rule` is a name Raku++ swallows.
-    my sub hrule(Str $l, Str $m, Str $r) {
+    my sub rule(Str $l, Str $m, Str $r) {
         say $l ~ @w.map({ '─' x ($_ + 2) }).join($m) ~ $r;
     }
     my sub line(@cells) {
-        # The width is concatenated in, not interpolated: "%{$w}s" loses its
-        # '%' under Raku++ today.
         say '│ ' ~ (^@names).map(-> $i {
-            @right[$i] ?? @cells[$i].Str.fmt('%' ~ @w[$i] ~ 's')
-                       !! @cells[$i].Str.fmt('%-' ~ @w[$i] ~ 's')
+            @right[$i] ?? @cells[$i].Str.fmt("%{@w[$i]}s")
+                       !! @cells[$i].Str.fmt("%-{@w[$i]}s")
         }).join(' │ ') ~ ' │';
     }
 
-    hrule('┌', '┬', '┐');
+    rule('┌', '┬', '┐');
     line(@names);
-    hrule('├', '┼', '┤');
+    rule('├', '┼', '┤');
     line($_) for @shown;
-    hrule('└', '┴', '┘');
+    rule('└', '┴', '┘');
     say "({$r.elems} row{$r.elems == 1 ?? '' !! 's'})";
 }
 
@@ -593,19 +571,13 @@ sub fit(Str() $s, Int $w --> Str) {
                      !! $flat ~ ' ' x ($w - $flat.chars);
 }
 
-# One keystroke, with the arrow-key escape sequences folded into names.
-#
-# Input comes from read(2) rather than $*IN: on a terminal in raw mode
-# Raku++'s own $*IN.read / .getc / .readchars all return nothing at all
-# today, so every key would be lost. Going through the syscall is what the
-# rest of this file does with the terminal anyway.
-
-sub read2(int32, CArray[uint8], size_t --> ssize_t) is native is symbol('read') { * }
-
-my $key-byte = CArray[uint8].new(0);
+# One keystroke, with the arrow-key escape sequences folded into names. Keys
+# are read a BYTE at a time, because an arrow key arrives as a three-byte
+# escape sequence that has to be recognised before it can be decoded.
 
 sub next-byte(--> Int) {
-    read2(0, $key-byte, 1) == 1 ?? $key-byte[0].Int !! -1;
+    my $b = $*IN.read(1);
+    $b && $b.bytes ?? $b[0].Int !! -1;
 }
 
 # A typed character may be several bytes of UTF-8; gather the continuations.
@@ -785,8 +757,8 @@ sub browse(DB $db) {
 
         for ^($rows - 4) -> $i {
             at($i + 3, $listw + 4);
-            # .list is written out because whether a row lands as one nested
-            # element or as its values differs between the engines.
+            # An array element is a container, so the row arrives itemized:
+            # .list is how you ask for the values inside it.
             my @row = (@page-rows[$i] // ()).list;
             if @row {
                 my @cells = @row.map({ $_.defined ?? cell($_) !! 'NULL' });

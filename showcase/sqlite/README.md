@@ -83,8 +83,10 @@ restored by `LEAVE` blocks, so the terminal survives even an exception.
 
 ## What the binding actually exercises
 
-Thirty-four native declarations: twenty-eight `sqlite3_*` functions plus
-`tcgetattr`, `tcsetattr`, `cfmakeraw`, `ioctl`, `isatty` and `read`.
+Thirty-three native declarations: twenty-eight `sqlite3_*` functions plus
+`tcgetattr`, `tcsetattr`, `cfmakeraw`, `ioctl` and `isatty`. Keystrokes come
+from `$*IN` — reading the tty through `read(2)` was a workaround for an engine
+bug that is now fixed.
 
 - **Opaque handles.** `sqlite3 *` and `sqlite3_stmt *` are Raku `Pointer`s,
   never inspected — exactly as the header intends.

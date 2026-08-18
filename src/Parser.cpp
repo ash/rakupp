@@ -4709,7 +4709,11 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
                        (ascii::isalpha((unsigned char)raw[i + 2]) || raw[i + 2] == '_');
         if (((c == '$' && fS) || (c == '@' && fA) || (c == '%' && fH)) &&
             (i + 1 < n) && (ascii::isalpha((unsigned char)raw[i + 1]) || raw[i + 1] == '_' ||
-                            raw[i + 1] == '{' || raw[i + 1] == '*' || raw[i + 1] == '!' ||
+                            // `%{…}` is NOT a hash interpolation: Rakudo leaves the
+                            // '%' as text and interpolates the block, which is what
+                            // makes "%{$width}s" a printf format rather than "s".
+                            (raw[i + 1] == '{' && c != '%') ||
+                            raw[i + 1] == '*' || raw[i + 1] == '!' ||
                             raw[i + 1] == '.' || raw[i + 1] == '^' || colonPh ||
                             (raw[i + 1] == '?' && i + 2 < n &&
                              (ascii::isalpha((unsigned char)raw[i + 2]) || raw[i + 2] == '_')) ||
@@ -6817,7 +6821,13 @@ StmtPtr Parser::parseStatementImpl() {
             }
             return st;
         }
-        if (kw == "token" || kw == "rule" || kw == "regex") {
+        // `token`/`rule`/`regex` introduce a named regex only when a NAME or a
+        // body follows. `rule('a')` and `token + 1` are ordinary code calling a
+        // sub of that name — and were being swallowed as malformed declarations,
+        // silently, with the call never happening.
+        if ((kw == "token" || kw == "rule" || kw == "regex") &&
+            (peek().kind == Tok::Ident || peek().kind == Tok::Var ||
+             peek().kind == Tok::RegexLit || peek().kind == Tok::LBrace)) {
             std::string knd = advance().text;
             auto nr = std::make_unique<NamedRegexDecl>();
             nr->kind = knd;

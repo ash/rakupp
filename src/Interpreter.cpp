@@ -9989,7 +9989,11 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
     }
 
     if (rt.empty() || rt == "void" || rt == "Nil") return Value::nil();
-    if (rt == "Str") return Value::str(ri ? std::string((const char*)(intptr_t)ri) : "");
+    // A NULL char* is "no string", not the empty one: returning "" lost the
+    // difference between a C function saying nothing and saying nothing much
+    // (getenv of an unset name, sqlite3_column_text of a NULL column).
+    if (rt == "Str") return ri ? Value::str(std::string((const char*)(intptr_t)ri))
+                               : Value::typeObj("Str");
     if (retFP) return Value::number(rd);
     if (rt == "bool" || rt == "Bool") return Value::boolean(ri != 0);
     // Pointer / CArray return: box the raw pointer in a live-pointer value whose
@@ -11156,11 +11160,30 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
         for (auto& st : *c.body)
             if (st->kind == NK::Block && static_cast<Block*>(st.get())->isCatch)
                 catchBlk = static_cast<Block*>(st.get());
+    // ENTER/LEAVE/KEEP/UNDO in a method body are PHASERS, not statements. This
+    // loop ran them inline, so a LEAVE fired at its declaration point instead of
+    // on the way out — cleaning up before the body it guards had even run. The
+    // sub path (callCallable) has always done this; only methods missed it.
+    // Whether the body has any phaser at all is a property of the AST, so it is
+    // decided once per routine rather than rescanned on every call — a method is
+    // the hottest call shape there is (see catchScan above, same idiom).
+    if (c.phaserScan < 0) {
+        bool found = false;
+        if (c.body) for (auto& s : *c.body) if (isBlockPhaser(s.get())) { found = true; break; }
+        c.phaserScan = found ? 1 : 0;
+    }
+    const bool hasPhasers = c.phaserScan == 1;
+    if (hasPhasers && c.body) runEnterPhasers(*c.body);
+    bool phasersDone = false;
+    auto runLeaves = [&](bool ok) {
+        if (hasPhasers && c.body && !phasersDone) { phasersDone = true; runLeavePhasers(*c.body, ok); }
+    };
     try {
         if (c.body) {
             size_t nst = c.body->size();
             for (size_t i = 0; i < nst; i++) {
                 auto* s = (*c.body)[i].get();
+                if (isBlockPhaser(s)) continue;
                 // a CATCH block is a HANDLER, not a statement: the other runners
                 // skip it in normal flow and this one ran it inline, so it fired
                 // with no exception in hand ($_ was Any) and its value became the
@@ -11184,18 +11207,19 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
                 }
             }
         }
-    } catch (ReturnEx& r) { tctx_.cur = saved; copyOutRw(c.params, env, rwArgs);
+    } catch (ReturnEx& r) { runLeaves(true); tctx_.cur = saved; copyOutRw(c.params, env, rwArgs);
                             if (selfBack) if (Value* sp = env->find("self")) *selfBack = *sp;
                             return r.v; }
     catch (BreakGivenEx& b) {
         // a matched `when` in the method body: the routine is its topicalizer,
         // so it exits the method with the when-block's value (mirrors callCallable)
+        runLeaves(true);
         tctx_.cur = saved; copyOutRw(c.params, env, rwArgs);
         if (selfBack) if (Value* sp = env->find("self")) *selfBack = *sp;
         return b.hasVal ? b.v : last;
     }
     catch (RakuError& e) {
-        if (!catchBlk) { tctx_.cur = saved; throw; }
+        if (!catchBlk) { runLeaves(false); tctx_.cur = saved; throw; }
         tctx_.cur->define("$_", exceptionFor(e));
         tctx_.cur->define("$!", exceptionFor(e));
         bool matched = false;
@@ -11206,20 +11230,23 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
         catch (BreakGivenEx&) { matched = true; }   // a when/default matched
         catch (ResumeEx&)     { matched = true; }   // .resume: absorbed
         catch (ReturnEx& r) {                       // `return`/`fail` from the CATCH
+            runLeaves(true);
             tctx_.cur = saved; copyOutRw(c.params, env, rwArgs);
             if (selfBack) if (Value* sp = env->find("self")) *selfBack = *sp;
             return r.v;
         }
-        catch (...) { tctx_.cur = saved; throw; }   // die/rethrow from the CATCH
+        catch (...) { runLeaves(false); tctx_.cur = saved; throw; }   // die/rethrow from the CATCH
         // Only a matching when/default handles it; an unmatched CATCH rethrows.
-        if (!matched) { tctx_.cur = saved; throw; }
+        if (!matched) { runLeaves(false); tctx_.cur = saved; throw; }
+        runLeaves(true);
         tctx_.cur = saved;
         copyOutRw(c.params, env, rwArgs);
         if (selfBack) if (Value* sp = env->find("self")) *selfBack = *sp;
         if (tctx_.returning) { tctx_.returning = false; return std::move(tctx_.returnV); }
         return Value::nil();
     }
-    catch (...) { tctx_.cur = saved; throw; }
+    catch (...) { runLeaves(false); tctx_.cur = saved; throw; }
+    runLeaves(true);
     tctx_.cur = saved;
     copyOutRw(c.params, env, rwArgs);
     // `self = …` in a method on a VALUE type (an `augment`ed Hash/Array/Str) has to
@@ -18985,6 +19012,15 @@ Value Interpreter::evalUnary(Unary* u) {
             if (u->op == "-") t = -t;
             return allInt ? Value::integer((long long)t) : Value::number(t);
         }
+        // +$ptr is the ADDRESS, not an element count: a NativeCall Pointer is
+        // a { addr, of } hash, so counting its keys numified every pointer to 2.
+        if (v.t == VT::Hash && v.hash && (v.hashKind == "Pointer" || v.hashKind == "CArray")) {
+            auto it = v.hash->find("addr");
+            if (it != v.hash->end()) {
+                long long a = it->second.toInt();
+                return Value::integer(u->op == "-" ? -a : a);
+            }
+        }
         long long n;
         if (v.t == VT::Array) n = (long long)v.arr->size();
         else if (v.t == VT::Hash) n = (long long)v.hash->size();
@@ -20304,6 +20340,16 @@ Value Interpreter::postfixI(Value v) {
 // container is not Iterable. Abbreviations keys its result hash by an
 // array-valued `$w` from `%abbrevs.kv`, and every such lookup used to slice —
 // so the reads came back one-element lists and the pushes mutated a temporary.
+// Reading ONE element hands back what its container holds, and an array
+// element is a container — so a list living in one is itemized on the way out:
+// `my @row = @rows[0]` is one element, not the inner list spread over the
+// target (Rakudo: array elements are Scalars). A slice returns a fresh list of
+// elements and never comes through here, so it still flattens.
+static Value itemizeElem(const Value& v) {
+    if (v.t != VT::Array || v.itemized || v.ext) return v;
+    Value r = v; r.itemized = true; return r;
+}
+
 bool Interpreter::keySubscriptIsSlice(const Expr* ixExpr, const Value& iv) {
     if (!(iv.t == VT::Array || iv.t == VT::Range)) return false;
     if (iv.itemized) return false;
@@ -20372,7 +20418,7 @@ Value Interpreter::evalIndex(Index* idx) {
                 // containers that are not plain Arrays. Anything else, including
                 // out of range, falls through to the general path.
                 if (have && i >= 0 && i < (long long)bp->arr->size())
-                    return (*bp->arr)[i];
+                    return itemizeElem((*bp->arr)[i]);
             }
         }
     }
@@ -20716,7 +20762,7 @@ Value Interpreter::evalIndex(Index* idx) {
                 return Value::nil();
             }
             long long n = keyv.toInt();
-            if ((b.t == VT::Array || b.t == VT::Match) && b.arr) { if (n < 0) n += (long long)b.arr->size(); if (n >= 0 && n < (long long)b.arr->size()) return (*b.arr)[n]; }
+            if ((b.t == VT::Array || b.t == VT::Match) && b.arr) { if (n < 0) n += (long long)b.arr->size(); if (n >= 0 && n < (long long)b.arr->size()) return itemizeElem((*b.arr)[n]); }
             return Value::nil();
         };
         return code;

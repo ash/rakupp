@@ -234,6 +234,7 @@ struct Callable {
     DecidedOnce<int> arityMaxPos{0}, arityReqPos{0}; // …and its precomputed bounds (valid when arityShape == 1)
     DecidedOnce<bool> arityUnbounded{false};
     PublishedOnce<signed char> catchScan{-1};      // 1 = body holds an inline CATCH block
+    PublishedOnce<signed char> phaserScan{-1};     // 1 = body holds an ENTER/LEAVE/… phaser block
     DecidedOnce<Stmt*> catchBlkCache{nullptr};     // …which one (valid when catchScan == 1)
     std::string declFile;                          // source file the routine was declared in (backtrace .file)
     std::shared_ptr<Env> closure;

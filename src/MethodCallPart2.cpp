@@ -2442,8 +2442,13 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             if (m == "Str") return Value::str(""); // type objects stringify empty
         }
     }
-    // exception object .throw / .fail: raise it (message from its .message method)
-    if ((m == "throw" || m == "rethrow" || m == "fail") && inv.t == VT::Object && inv.obj) {
+    // exception object .throw / .fail: raise it (message from its .message method).
+    // A class that defines a method of that name WINS — otherwise `$obj.throw(…)`
+    // never reached the user's code and threw the invocant itself, so whatever
+    // the method meant to raise was lost and CATCH received the object. Same
+    // guard the `.backtrace` fallback below already uses.
+    if ((m == "throw" || m == "rethrow" || m == "fail") && inv.t == VT::Object && inv.obj &&
+        !(inv.obj->cls && inv.obj->cls->findMethod(m))) {
         // record the backtrace at THROW time on the object itself — the thrown
         // value is shared, so a caught `$exception.backtrace` reads it back
         // (Log::Async::Context throws a fresh Exception exactly for the walk)

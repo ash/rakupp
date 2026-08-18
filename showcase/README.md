@@ -371,9 +371,11 @@ It is checked two ways. Its `csv` and `json` output is byte-identical to
 format, raw blob bytes, and the empty-result-prints-nothing rule all
 reproduced — and the whole program is byte-identical under Rakudo and Raku++.
 
-Writing it turned up ten divergences from Rakudo, three of them silent
-(a `LEAVE` in a method firing at its declaration, `$*OUT.write(Buf)` writing
-nothing, a method named `throw` replacing the thrown exception), written up in
+Writing it turned up ten divergences from Rakudo, three of them silent (a
+`LEAVE` in a method firing at its declaration, `$*OUT.write(Buf)` writing
+nothing, a method named `throw` replacing the thrown exception). All ten are
+now fixed in the engine and the workarounds are gone; the reproducers and
+causes are in
 [`docs/dev/findings/BUGS-SQLITE-SHOWCASE.md`](../docs/dev/findings/BUGS-SQLITE-SHOWCASE.md).
 
 [`sqlite/README.md`](sqlite/README.md) has the option table, the browser keys,

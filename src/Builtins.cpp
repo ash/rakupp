@@ -4019,7 +4019,11 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         long long addr = inv.hash->count("addr") ? (*inv.hash)["addr"].toInt() : 0;
         std::string of = inv.hash->count("of") ? (*inv.hash)["of"].toStr() : "";
         if (m == "Int" || m == "Numeric") return Value::integer(addr);
-        if (m == "defined" || m == "Bool" || m == "so") return Value::boolean(addr != 0);
+        // An instantiated Pointer is DEFINED whatever it points at — `Pointer.new`
+        // is a real object holding NULL. Emptiness is .Bool's job, and the two
+        // were the same test here, which inverted both against Rakudo.
+        if (m == "defined") return Value::boolean(true);
+        if (m == "Bool" || m == "so") return Value::boolean(addr != 0);
         if (m == "gist" || m == "Str" || m == "raku") return Value::str("Pointer" + std::string(of.empty() ? "" : "[" + of + "]") + "<" + std::to_string(addr) + ">");
         if (m == "deref") return ncReadElem(addr, of, 0);
         if (m == "of") return Value::typeObj(of.empty() ? "Pointer" : of);
@@ -4030,7 +4034,8 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         std::string of = inv.hash->count("of") ? (*inv.hash)["of"].toStr() : "int64";
         if (m == "AT-POS" || m == "[]") return ncReadElem(addr, of, args.empty() ? 0 : args[0].toInt());
         if (m == "Numeric" || m == "Int") return Value::integer(addr);
-        if (m == "defined" || m == "Bool") return Value::boolean(addr != 0);
+        if (m == "defined") return Value::boolean(true);   // as for Pointer above
+        if (m == "Bool") return Value::boolean(addr != 0);
     }
     if (inv.t == VT::Type && (inv.s == "CArray" || inv.s.rfind("CArray[", 0) == 0)) {
         std::string et = inv.s.rfind("CArray[", 0) == 0 ? inv.s.substr(7, inv.s.size() - 8)

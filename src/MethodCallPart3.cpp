@@ -1433,6 +1433,13 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 else if ((a.t == VT::Array || a.t == VT::Range) && !(a.t == VT::Array && !a.arr))
                     for (auto& e : a.flatten()) bytes += (char)(unsigned char)(e.toInt() & 0xFF);
             }
+            auto wstd = inv.hash->find("std");
+            if (wstd != inv.hash->end()) { // $*OUT / $*ERR: straight to the stream,
+                std::lock_guard<std::mutex> lk(rtOutMutex()); // as .print does — a std
+                std::ostream& os = wstd->second.toStr() == "err" ? std::cerr : std::cout;
+                os.write(bytes.data(), (std::streamsize)bytes.size()); // handle has no path
+                return Value::boolean(true);                  // to flush a buffer to
+            }
             {   // same read-modify-write as .print above, same lock
                 std::lock_guard<std::mutex> lk(rtOutMutex());
                 Value& buf = (*inv.hash)["buffer"];
@@ -1442,6 +1449,20 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         }
         if (m == "read") { // binary read: up to N bytes from a byte cursor, as a Buf
             long long want = args.empty() ? 65536 : args[0].toInt();
+            // $*IN has no path to slurp: read the bytes as they arrive, so a
+            // terminal in raw mode delivers each keystroke instead of nothing.
+            if (inv.hash->find("std") != inv.hash->end() && (*inv.hash)["std"].toStr() == "in") {
+                std::string got;
+                if (want < 0) want = 0;
+                for (long long i = 0; i < want; i++) {
+                    int c = std::cin.get();
+                    if (c == EOF) break;
+                    got += (char)(unsigned char)c;
+                }
+                Value b = Value::str(got);
+                b.hashKind = "Buf"; identify(b);
+                return b;
+            }
             if (inv.hash->find("bytes") == inv.hash->end()) {
                 std::ifstream in((*inv.hash)["path"].toStr(), std::ios::binary);
                 std::ostringstream ss; ss << in.rdbuf();
@@ -1516,6 +1537,28 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         }
         // .getc / .readchars: load the file's codepoints once, track a cursor in "cpos".
         if (m == "getc" || m == "readchars") {
+            if (inv.hash->find("std") != inv.hash->end() && (*inv.hash)["std"].toStr() == "in") {
+                // Straight off the stream, one UTF-8 character at a time: the
+                // whole point on a terminal is that the next character has not
+                // been typed yet, so there is nothing to load up front.
+                long want = m == "getc" ? 1 : (args.empty() ? 65536 : args[0].toInt());
+                std::string out; long got = 0;
+                for (; got < want; got++) {
+                    int c = std::cin.get();
+                    if (c == EOF) break;
+                    std::string ch(1, (char)(unsigned char)c);
+                    unsigned char lead = (unsigned char)c;   // gather the continuations
+                    int extra = lead >= 0xf0 ? 3 : lead >= 0xe0 ? 2 : lead >= 0xc0 ? 1 : 0;
+                    for (int k = 0; k < extra; k++) {
+                        int cc = std::cin.get();
+                        if (cc == EOF) break;
+                        ch += (char)(unsigned char)cc;
+                    }
+                    out += ch;
+                }
+                if (m == "getc") return out.empty() ? Value::nil() : Value::str(out);
+                return Value::str(out);
+            }
             if (inv.hash->find("cps") == inv.hash->end()) {
                 std::string path = (*inv.hash)["path"].toStr();
                 struct stat st;

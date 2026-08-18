@@ -1519,6 +1519,12 @@ Token Lexer::lexIdentOrVar() {
             else break;
         }
         if (peek() == '+') ver += advance();
+        // `v1(...)` is a CALL of a routine named v1, not a version literal — a
+        // version is never invoked, and lexing it as one made `sub v1 {…}; v1()`
+        // die with "Cannot invoke non-Callable value of type Version".
+        if (peek() == '(' && ver.find('.') == std::string::npos &&
+            ver.find('*') == std::string::npos && ver.find('+') == std::string::npos)
+            return make(Tok::Ident, "v" + ver);
         return make(Tok::VersionLit, ver);
     }
     // bareword identifier (may start with a Unicode letter, e.g. π, αβγ)
