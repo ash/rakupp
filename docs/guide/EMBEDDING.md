@@ -147,10 +147,6 @@ created, and by more than one at once. Make those re-entrant.
   ([EMBED-PLAN](../dev/plans/EMBED-PLAN.md)'s E5).
 - **No sandbox.** An embedded Raku++ has the host's privileges. Pretending
   otherwise would be worse than saying so.
-- **No `rakupp_register` yet** — a C function installed as a Raku sub. You can
-  get the same effect today by loading an extension
-  ([EXTENSIONS.md](EXTENSIONS.md)), which is the same mechanism from the other
-  side.
 
 ## Bindings
 
