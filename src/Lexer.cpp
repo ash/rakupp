@@ -1939,6 +1939,15 @@ Token Lexer::lexOperator(bool termBefore) {
             return make(Tok::Op, op);
         }
     }
+    // `~&foo` in TERM position is the prefix `~` applied to the `&foo` code
+    // object (`~&infix:<+>`), not the stringwise-AND infix — that needs a left
+    // operand. Same for `+&` / `?&`. Emit only the prefix and let the `&` be
+    // lexed as a code sigil on the next pass.
+    if (!termBefore && (peek() == '~' || peek() == '+' || peek() == '?') &&
+        peek(1) == '&' && (ascii::isalpha((unsigned char)peek(2)) || peek(2) == '_')) {
+        std::string pfx(1, advance());
+        return make(Tok::Op, pfx);
+    }
     // try longest first (skip the textual placeholder)
     for (const char* op : ops) {
         std::string s(op);

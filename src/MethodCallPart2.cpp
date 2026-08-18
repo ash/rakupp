@@ -2127,7 +2127,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 // through the CHAIN, so a callwith/callsame inside the custom new
                 // has a dispatcher (AttrProxy.new's callwith → the builtin Proxy.new)
                 if (useCustom) return invokeMethodChain(m, ci.get(), inv, args, rwArgs);
-            } else if (ci->findMethod(m)) {
+            } else if (ci->findMethodForCall(m)) {
                 return invokeMethodChain(m, ci.get(), inv, args, rwArgs);
             }
             // accessing an attribute (public accessor) on a type object is illegal
@@ -2469,7 +2469,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     // user object: dispatch to class methods / public accessors first
     if (inv.t == VT::Object && inv.obj && inv.obj->cls) {
         auto ci = inv.obj->cls;
-        if (Value* um0 = ci->findMethod(m)) {
+        if (Value* um0 = ci->findMethodForCall(m)) {
             // a role's STUB method (`method body-serializer-selector() { ... }`)
             // is satisfied by the class's public attribute of the same name —
             // the accessor must win over executing the stub

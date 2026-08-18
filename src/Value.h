@@ -249,6 +249,7 @@ struct Callable {
     long long whateverArity = 0;                    // # of `*` a WhateverCode consumes (`* + *` => 2)
     bool isMethod = false;                          // when invoked via .() the 1st arg is the invocant
     bool isPrivateMethod = false;                   // `method !name` — only reachable via self!name
+    bool isSubmethod = false;                       // `submethod` — NOT inherited by subclasses
     bool isBlock = false;                            // a bare { } block (no `return`), not a Sub/Routine
     bool isRegexRoutine = false;                     // `my regex R {…}` / token / rule — .^name is Regex, not Sub
     std::string retType;                             // declared return type (`of`/`returns`/`-->`), "" = none
@@ -623,6 +624,27 @@ struct ClassInfo {
         return false;
     }
 
+    // Ordinary method dispatch: like findMethod, but a SUBMETHOD is visible only
+    // on the class that declares it — `class C is P {}` does not get P's
+    // submethods. findMethod itself still inherits them, because the object
+    // construction path deliberately walks the whole hierarchy calling each
+    // class's BUILD and TWEAK, which are submethods and must keep being found.
+    Value* findMethodForCall(const std::string& m) {
+        auto it = methods.find(m);
+        if (it != methods.end()) return &it->second;
+        // A submethod reached through a ROLE is still the class's own — role
+        // composition flattens into the class. One reached through a real
+        // ancestor class is not inherited.
+        auto inherited = [&](ClassInfo* c) -> Value* {
+            if (!c) return nullptr;
+            Value* r = c->findMethodForCall(m);
+            if (r && r->code && r->code->isSubmethod && !c->isRole) return nullptr;
+            return r;
+        };
+        if (Value* r = inherited(parent.get())) return r;
+        for (auto& p : extraParents) if (Value* r = inherited(p.get())) return r;
+        return nullptr;
+    }
     Value* findMethod(const std::string& m) { return findMethod(m, nullptr); }
     // `owner` (if given) receives the ClassInfo the method was found in — used to seed
     // the next method (that class's parent) for callsame/nextsame.

@@ -1348,6 +1348,9 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             };
             Value pred; bool havePred = false;
             for (auto& a : args) if (a.t != VT::Pair) { pred = a; havePred = true; break; }
+            if (havePred && pred.t == VT::Bool)
+                throw RakuError{Value::typeObj("X::Match::Bool"),
+                    "Cannot use Bool as Matcher with '.first'.  Did you mean to use $_ inside a block?"};
             auto match = [&](const Value& v) {
                 if (!havePred) return true;
                 return matcherAccepts(*this, v, pred);

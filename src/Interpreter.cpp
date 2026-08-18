@@ -6044,6 +6044,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 // separate methods in Raku; `self!name` vs `self.name`). Only self!name
                 // dispatch and .^private_methods look here.
                 code.code->isPrivateMethod = md->isPrivate;
+                code.code->isSubmethod = md->isSubmethod;
                 // a PURE `{*}` proto method is the group definition, not a candidate
                 // — same rule as the sub path. Without this the proto entered the
                 // candidate list with its `(|)` slurpy and WON whenever the real
@@ -19278,10 +19279,13 @@ std::string Interpreter::strOf(const Value& v) {
     // `$block.join` both produced it — and never told anyone it was a mistake.
     // (.gist and .raku still show the routine; only .Str is empty.)
     if (v.t == VT::Code) {
-        std::string msg = std::string(v.code && v.code->isBlock ? "Block" : "Sub") +
+        bool block = v.code && v.code->isBlock;
+        std::string msg = std::string(block ? "Block" : "Sub") +
                           " object coerced to string (please use .gist or .raku to do that)";
         if (quietDepth_ == 0 && !runControlWarn(msg)) std::cerr << msg << "\n";
-        return "";
+        // A NAMED routine still stringifies to its bare name (`~&infix:<+>` is
+        // "infix:<+>"); only a block or an anonymous routine yields "".
+        return block || !v.code ? "" : v.code->name;
     }
     // Stringifying a container READS it, so a Proxy runs its FETCH. The subscript
     // path deliberately hands back the container (that is how a write reaches
