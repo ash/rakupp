@@ -1508,26 +1508,49 @@ static std::string fmtBigDec(std::string digits, const std::string& flags, long 
 
 std::string doSprintf(const std::string& fmt, const ValueList& args, int langRev) {
     std::string out;
-    size_t ai = 0;
-    auto nextArg = [&]() -> Value { return ai < args.size() ? args[ai++] : Value::any(); };
+    size_t ai = 0;                 // the IMPLICIT cursor
+    long long valIdx = -1;         // this directive's explicit `%N$`, 1-based; -1 = none
+    auto argAt = [&](long long n1) -> Value {   // 1-based, out of range → Any
+        size_t k = (size_t)(n1 - 1);
+        return n1 >= 1 && k < args.size() ? args[k] : Value::any();
+    };
+    // An EXPLICIT index selects its argument and leaves the implicit cursor
+    // exactly where it was: `sprintf('%2$d %d %d', 1, 2, 3)` is "2 1 2", not
+    // "2 3 0" — the two implicit directives still read 1 then 2. (C and Perl 5
+    // both work this way; so does Rakudo outside 6.e.)
+    auto nextArg = [&]() -> Value {
+        if (valIdx >= 1) return argAt(valIdx);
+        return ai < args.size() ? args[ai++] : Value::any();
+    };
+    // A `*` width/precision takes its own argument: `%N$` if it carries one
+    // (`%2$*1$d`), otherwise the next implicit one — never the directive's.
+    auto starArg = [&](long long n1) -> Value {
+        if (n1 >= 1) return argAt(n1);
+        return ai < args.size() ? args[ai++] : Value::any();
+    };
+    // Parse an optional `digits $` at k, returning the 1-based index (or -1) and
+    // consuming it only when the `$` is really there — a bare width like `%2d`
+    // must be left alone.
+    auto takeIndex = [&](size_t& k) -> long long {
+        size_t d = k;
+        while (d < fmt.size() && ascii::isdigit((unsigned char)fmt[d])) d++;
+        if (d > k && d < fmt.size() && fmt[d] == '$') {
+            long long n = std::atoll(fmt.substr(k, d - k).c_str());
+            k = d + 1;
+            return n;
+        }
+        return -1;
+    };
     for (size_t i = 0; i < fmt.size(); i++) {
         if (fmt[i] != '%') { out += fmt[i]; continue; }
         size_t j = i + 1;
-        // explicit positional argument: %2$s (1-based index into the args)
-        {
-            size_t d = j;
-            while (d < fmt.size() && ascii::isdigit((unsigned char)fmt[d])) d++;
-            if (d > j && d < fmt.size() && fmt[d] == '$') {
-                ai = (size_t)std::atoll(fmt.substr(j, d - j).c_str()) - 1;
-                j = d + 1;
-            }
-        }
+        valIdx = takeIndex(j); // explicit positional argument: %2$s
         std::string flags;
         while (j < fmt.size() && std::strchr("-+ 0#", fmt[j])) flags += fmt[j++];
         // width (digits or `*` = from argument; negative `*` implies left-justify)
         const long long SPRINTF_MAX = 10'000'000; // guard against int overflow (UB) and multi-GB pads
         int width = 0; bool hasWidth = false;
-        if (j < fmt.size() && fmt[j] == '*') { j++; long long w = nextArg().toInt();
+        if (j < fmt.size() && fmt[j] == '*') { j++; long long w = starArg(takeIndex(j)).toInt();
             if (w < 0) { flags += '-'; w = -w; } if (w > SPRINTF_MAX) w = SPRINTF_MAX; width = (int)w; hasWidth = true; }
         else { long long w = 0;
             while (j < fmt.size() && ascii::isdigit((unsigned char)fmt[j])) { w = w * 10 + (fmt[j]-'0'); if (w > SPRINTF_MAX) w = SPRINTF_MAX; hasWidth = true; j++; }
@@ -1535,7 +1558,7 @@ std::string doSprintf(const std::string& fmt, const ValueList& args, int langRev
         // precision (.digits or .* ; a negative `.*` means "no precision")
         int prec = -1;
         if (j < fmt.size() && fmt[j] == '.') { j++; prec = 0;
-            if (j < fmt.size() && fmt[j] == '*') { j++; long long p = nextArg().toInt(); prec = p < 0 ? -1 : (int)std::min(p, SPRINTF_MAX); }
+            if (j < fmt.size() && fmt[j] == '*') { j++; long long p = starArg(takeIndex(j)).toInt(); prec = p < 0 ? -1 : (int)std::min(p, SPRINTF_MAX); }
             else { long long p = 0; while (j < fmt.size() && ascii::isdigit((unsigned char)fmt[j])) { p = p * 10 + (fmt[j]-'0'); if (p > SPRINTF_MAX) p = SPRINTF_MAX; j++; } prec = (int)p; }
         }
         while (j < fmt.size() && std::strchr("lhqLVjzt", fmt[j])) j++; // length modifiers, ignored
