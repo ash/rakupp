@@ -57,7 +57,11 @@ emit-enum('LB',    parse-ranges(p('LineBreak')));
 emit-enum('WB',    parse-ranges(p('WordBreakProperty')));
 emit-enum('SB',    parse-ranges(p('SentenceBreakProperty')));
 emit-enum('GCB',   parse-ranges(p('GraphemeBreakProperty')));
-emit-enum('EAW',   parse-ranges(p('EastAsianWidth')));
+# East_Asian_Width is reported by its FULL value names ('Narrow', not 'Na') —
+# uniprop is the only consumer, and Roast asks for the long form.
+my %eaw-long = A => 'Ambiguous', F => 'Fullwidth', H => 'Halfwidth',
+               N => 'Neutral',   Na => 'Narrow',   W => 'Wide';
+emit-enum('EAW', parse-ranges(p('EastAsianWidth')).map({ [$_[0], $_[1], %eaw-long{$_[2]} // $_[2]] }));
 emit-enum('HST',   parse-ranges(p('HangulSyllableType')));
 emit-enum('DT',    parse-ranges(p('DerivedDecompositionType')));
 emit-enum('NT',    parse-ranges(p('DerivedNumericType')));
@@ -65,6 +69,90 @@ emit-enum('JT',    parse-ranges(p('ArabicShaping'), :field(2)));
 # MoarVM reports Joining_Group in the legacy ArabicShaping spelling: UPPERCASE,
 # underscores as spaces (Syriac_Waw → "SYRIAC WAW").
 emit-enum('JG', parse-ranges(p('DerivedJoiningGroup')).map({ [$_[0], $_[1], $_[2].uc.subst('_', ' ', :g)] }));
+
+# The four normalization QUICK_CHECK properties share one file, keyed by the
+# property name in field 1 with the value in field 2. Their values are reported
+# by full name (Yes/No/Maybe), not the file's single letters; every codepoint
+# the file does not mention is 'Yes'.
+my %qc-long = Y => 'Yes', N => 'No', M => 'Maybe';
+sub qc-rows($prop) {
+    my @rows;
+    for p('DerivedNormalizationProps').IO.lines -> $line {
+        my $l = $line.split('#')[0].trim;
+        next unless $l;
+        my @f = $l.split(';').map(*.trim);
+        next unless @f >= 3 && @f[1] eq $prop;
+        my ($lo, $hi) = @f[0].contains('..') ?? @f[0].split('..') !! (@f[0], @f[0]);
+        @rows.push([:16($lo), :16($hi), %qc-long{@f[2]} // @f[2]]);
+    }
+    @rows.sort({ $^a[0] <=> $^b[0] });
+}
+emit-enum('NFCQC',  qc-rows('NFC_QC'));
+emit-enum('NFDQC',  qc-rows('NFD_QC'));
+emit-enum('NFKCQC', qc-rows('NFKC_QC'));
+emit-enum('NFKDQC', qc-rows('NFKD_QC'));
+
+# Unicode_1_Name — field 10 of UnicodeData.txt, non-empty for ~2k codepoints
+# (mostly controls, which have no Name at all and are known only by this one).
+my @u1;
+for p('UnicodeData').IO.lines -> $line {
+    my @f = $line.split(';');
+    next unless @f >= 11 && @f[10].trim;
+    @u1.push([:16(@f[0]), @f[10].trim]);
+}
+@u1 = @u1.sort({ $^a[0] <=> $^b[0] });
+@out.push: "extern const uint32_t U1NAME_CPS[] = \{";
+my $u1row = '  ';
+for @u1 -> $r { $u1row ~= "0x{$r[0].base(16)},"; if $u1row.chars > 110 { @out.push($u1row); $u1row = '  ' } }
+@out.push($u1row) if $u1row.trim;
+@out.push: "\};";
+@out.push: "extern const char* const U1NAME_STRS[] = \{";
+for @u1 -> $r { @out.push: '  "' ~ $r[1] ~ '",' }
+@out.push: "\};";
+@out.push: "extern const size_t U1NAME_N = {@u1.elems};";
+
+emit-enum('INPC', parse-ranges(p('IndicPositionalCategory')));
+emit-enum('INSC', parse-ranges(p('IndicSyllabicCategory')));
+
+# Jamo_Short_Name: CODE ; NAME — the short Hangul jamo names ("GG"), one per
+# codepoint, and empty for everything else. Kept as a (cp -> string) pair table.
+my @jamo;
+for p('Jamo').IO.lines -> $line {
+    my $l = $line.split('#')[0].trim;
+    next unless $l;
+    my @f = $l.split(';').map(*.trim);
+    next unless @f >= 2;
+    @jamo.push([:16(@f[0]), @f[1]]);
+}
+@jamo = @jamo.sort({ $^a[0] <=> $^b[0] });
+@out.push: "extern const uint32_t JAMOSN_CPS[] = \{";
+my $jrow = '  ';
+for @jamo -> $r { $jrow ~= "0x{$r[0].base(16)},"; if $jrow.chars > 110 { @out.push($jrow); $jrow = '  ' } }
+@out.push($jrow) if $jrow.trim;
+@out.push: "\};";
+@out.push: "extern const char* const JAMOSN_STRS[] = \{";
+for @jamo -> $r { @out.push: '  "' ~ $r[1] ~ '",' }
+@out.push: "\};";
+@out.push: "extern const size_t JAMOSN_N = {@jamo.elems};";
+
+# Bidi_Paired_Bracket: CODE ; PAIRED ; TYPE — the paired codepoint and whether
+# this one opens ('o') or closes ('c'). Everything else pairs with itself and
+# is type 'n'.
+my @brk;
+for p('BidiBrackets').IO.lines -> $line {
+    my $l = $line.split('#')[0].trim;
+    next unless $l;
+    my @f = $l.split(';').map(*.trim);
+    next unless @f >= 3;
+    @brk.push([:16(@f[0]), :16(@f[1]), @f[2]]);
+}
+@brk = @brk.sort({ $^a[0] <=> $^b[0] });
+@out.push: "extern const uint32_t BIDIBRACKET[] = \{";
+my $brow = '  ';
+for @brk -> $r { $brow ~= "0x{$r[0].base(16)},0x{$r[1].base(16)},{$r[2] eq 'o' ?? 1 !! 2},"; if $brow.chars > 110 { @out.push($brow); $brow = '  ' } }
+@out.push($brow) if $brow.trim;
+@out.push: "\};";
+@out.push: "extern const size_t BIDIBRACKET_N = {@brk.elems * 3};";
 
 # Bidi_Mirroring_Glyph: CODE ; MIRROR  →  (cp, mirror) pairs sorted by cp.
 my @mir;

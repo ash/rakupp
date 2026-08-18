@@ -1994,7 +1994,13 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             if (prop == "Block" || prop == "blk") return Value::str(uniBlockOf(cp));
             if (prop == "Bidi_Class" || prop == "bc") return Value::str(uniBidiClassOf(cp));
             if (prop == "Canonical_Combining_Class" || prop == "ccc")
-                return Value::integer(uniCombiningClass(cp));
+                return Value::str(uniCombiningClassName(cp)); // by ALIAS: 0 is "Not_Reordered"
+            if (prop == "Unicode_1_Name" || prop == "na1") return Value::str(uniUnicode1Name(cp));
+            if (prop == "Jamo_Short_Name" || prop == "JSN") return Value::str(uniJamoShortName(cp));
+            if (prop == "Bidi_Paired_Bracket" || prop == "bpb")
+                return Value::str(cpToUtf8(uniBidiPairedBracket(cp)));
+            if (prop == "Bidi_Paired_Bracket_Type" || prop == "bpt")
+                return Value::str(uniBidiPairedBracketType(cp));
             if (prop == "Numeric_Value" || prop == "nv") {
                 long long nu, de;
                 if (!uniNumValue(cp, nu, de)) return Value::number(std::nan(""));

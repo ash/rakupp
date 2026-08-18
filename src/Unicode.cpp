@@ -42,7 +42,12 @@ extern const uint32_t FOLDF[];  extern const size_t FOLDF_N;
                     extern const uint32_t N##_RANGES[]; extern const size_t N##_RANGES_N;
 ENUMPROP(AGE) ENUMPROP(LB) ENUMPROP(WB) ENUMPROP(SB) ENUMPROP(GCB) ENUMPROP(EAW)
 ENUMPROP(HST) ENUMPROP(DT) ENUMPROP(NT) ENUMPROP(JT) ENUMPROP(JG)
+ENUMPROP(NFCQC) ENUMPROP(NFDQC) ENUMPROP(NFKCQC) ENUMPROP(NFKDQC)
+ENUMPROP(INPC) ENUMPROP(INSC)
 #undef ENUMPROP
+extern const uint32_t U1NAME_CPS[]; extern const char* const U1NAME_STRS[]; extern const size_t U1NAME_N;
+extern const uint32_t JAMOSN_CPS[]; extern const char* const JAMOSN_STRS[]; extern const size_t JAMOSN_N;
+extern const uint32_t BIDIBRACKET[]; extern const size_t BIDIBRACKET_N;
 extern const uint32_t BIDIMIRROR[]; extern const size_t BIDIMIRROR_N;
 }
 
@@ -70,8 +75,80 @@ std::string uniEnumProp(const std::string& prop, uint32_t cp) {
     TRY(NT, "None", "numerictype", "nt")
     TRY(JT, "U", "joiningtype", "jt")
     TRY(JG, "No_Joining_Group", "joininggroup", "jg")
+    // the four normalization quick checks: every codepoint the UCD file does not
+    // list is "Yes", and the values are reported by full name
+    TRY(NFCQC,  "Yes", "nfcquickcheck",  "nfcqc")
+    TRY(NFDQC,  "Yes", "nfdquickcheck",  "nfdqc")
+    TRY(NFKCQC, "Yes", "nfkcquickcheck", "nfkcqc")
+    TRY(NFKDQC, "Yes", "nfkdquickcheck", "nfkdqc")
+    TRY(INPC, "NA",    "indicpositionalcategory", "inpc")
+    TRY(INSC, "Other", "indicsyllabiccategory",   "insc")
     #undef TRY
     return "";
+}
+
+// Jamo_Short_Name — the short Hangul jamo name ("GG"); "" for everything else.
+std::string uniJamoShortName(uint32_t cp) {
+    size_t lo = 0, hi = ucd::JAMOSN_N;
+    while (lo < hi) { size_t mid = (lo + hi) / 2; uint32_t k = ucd::JAMOSN_CPS[mid];
+        if (cp < k) hi = mid; else if (cp > k) lo = mid + 1; else return ucd::JAMOSN_STRS[mid]; }
+    return "";
+}
+
+// Bidi_Paired_Bracket / _Type. A codepoint that is not a paired bracket pairs
+// with ITSELF and is type "n" — that is the UCD's own default, not an absence.
+static const uint32_t* bracketRow(uint32_t cp) {
+    size_t lo = 0, hi = ucd::BIDIBRACKET_N / 3;
+    while (lo < hi) { size_t mid = (lo + hi) / 2; uint32_t k = ucd::BIDIBRACKET[mid * 3];
+        if (cp < k) hi = mid; else if (cp > k) lo = mid + 1; else return &ucd::BIDIBRACKET[mid * 3]; }
+    return nullptr;
+}
+uint32_t uniBidiPairedBracket(uint32_t cp) {
+    const uint32_t* r = bracketRow(cp);
+    return r ? r[1] : cp;
+}
+std::string uniBidiPairedBracketType(uint32_t cp) {
+    const uint32_t* r = bracketRow(cp);
+    return !r ? "n" : r[2] == 1 ? "o" : "c";
+}
+
+// Unicode_1_Name — the Unicode 1.0 name, kept for the codepoints (mostly
+// controls) that have no Name of their own. "" when there is none.
+std::string uniUnicode1Name(uint32_t cp) {
+    size_t lo = 0, hi = ucd::U1NAME_N;
+    while (lo < hi) { size_t mid = (lo + hi) / 2; uint32_t k = ucd::U1NAME_CPS[mid];
+        if (cp < k) hi = mid; else if (cp > k) lo = mid + 1; else return ucd::U1NAME_STRS[mid]; }
+    return "";
+}
+
+// Canonical_Combining_Class by NAME rather than number — the UCD's own value
+// aliases; classes with no alias answer their number as a string.
+std::string uniCombiningClassName(uint32_t cp) {
+    int c = uniCombiningClass(cp);
+    switch (c) {
+        case 0:   return "Not_Reordered";
+        case 1:   return "Overlay";
+        case 6:   return "Han_Reading";
+        case 7:   return "Nukta";
+        case 8:   return "Kana_Voicing";
+        case 9:   return "Virama";
+        case 200: return "Attached_Below_Left";
+        case 202: return "Attached_Below";
+        case 214: return "Attached_Above";
+        case 216: return "Attached_Above_Right";
+        case 218: return "Below_Left";
+        case 220: return "Below";
+        case 222: return "Below_Right";
+        case 224: return "Left";
+        case 226: return "Right";
+        case 228: return "Above_Left";
+        case 230: return "Above";
+        case 232: return "Above_Right";
+        case 233: return "Double_Below";
+        case 234: return "Double_Above";
+        case 240: return "Iota_Subscript";
+        default:  return std::to_string(c); // CCC10..CCC199 have no alias
+    }
 }
 int32_t uniBidiMirror(uint32_t cp) {
     size_t lo = 0, hi = ucd::BIDIMIRROR_N / 2;
@@ -144,6 +221,14 @@ static int uniBinProp(uint32_t cp, const std::string& norm) {
 // property, -1 if it is not one (so the caller does NOT fall back to a lenient match).
 int uniBinaryProp(uint32_t cp, const std::string& prop) {
     std::string norm; for (char c : prop) if (ascii::isalnum((unsigned char)c)) norm += (char)ascii::tolower((unsigned char)c);
+    // Emoji_All is not a UCD property but the UNION of the emoji-data ones —
+    // "is this codepoint emoji in any sense".
+    if (norm == "emojiall") {
+        for (const char* k : {"emoji", "emojipresentation", "emojimodifier",
+                              "emojimodifierbase", "emojicomponent", "extendedpictographic"})
+            if (uniBinProp(cp, k) == 1) return 1;
+        return 0;
+    }
     return uniBinProp(cp, norm);
 }
 

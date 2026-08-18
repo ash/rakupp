@@ -54,6 +54,11 @@ uint32_t uniSimpleTitle(uint32_t cp);
 std::vector<uint32_t> uniCaseMap(uint32_t cp, int kind);
 // enumerated property value name, or "" if `prop` is not a handled enum property.
 std::string uniEnumProp(const std::string& prop, uint32_t cp);
+std::string uniUnicode1Name(uint32_t cp);      // Unicode 1.0 name ("" when none)
+std::string uniCombiningClassName(uint32_t cp); // ccc by alias, e.g. "Not_Reordered"
+std::string uniJamoShortName(uint32_t cp);      // Hangul jamo short name ("" when none)
+uint32_t    uniBidiPairedBracket(uint32_t cp);  // paired bracket (the cp itself when none)
+std::string uniBidiPairedBracketType(uint32_t cp); // "o", "c" or "n"
 int32_t uniBidiMirror(uint32_t cp);  // Bidi_Mirroring_Glyph target codepoint, or -1
 int uniBinaryProp(uint32_t cp, const std::string& prop); // 1/0 for a known binary prop, -1 if unknown
 std::string uniBlockOf(uint32_t cp);                           // block name ("Basic Latin", …)
