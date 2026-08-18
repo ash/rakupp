@@ -3671,9 +3671,13 @@ ExprPtr Parser::parsePrimary() {
                 if (isIdent("sub") || isIdent("method") || isIdent("do") || isIdent("start")) retTerm = true;
                 if ((isIdent("role") || isIdent("class") || isIdent("grammar")) &&
                     (peek().kind == Tok::LBrace || (peek().kind == Tok::Op && peek().text == "::"))) retTerm = true;
+                // `return` is a LISTOP: its operand is the whole comma list, not
+                // just the first element. At BP_ASSIGN `(return (1,2), 9)` dropped
+                // the `9` and returned only `(1,2)`, while the statement-level
+                // `return (1,2), 9` (which parses a full expression) kept it.
                 if ((name == "return" || name == "return-rw") && retTerm &&
                     !isKind(Tok::RParen) && !isKind(Tok::Semicolon) && !isKind(Tok::RBrace))
-                    u->operand = parseExpr(BP_ASSIGN);
+                    u->operand = parseExpr(BP_COMMA);
                 return u;
             }
             if (name == "INIT" && peek().kind != Tok::LBrace &&
