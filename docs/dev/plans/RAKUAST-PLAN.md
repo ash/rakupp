@@ -2,8 +2,12 @@
 
 **Status: deferred, deliberately.** Nothing here is built. This records the
 design we settled on and the measurements behind it, so the next person to look
-at RakuAST does not have to re-derive them. Date of the numbers: 2026-07-31,
-against Rakudo 2026.07 and rakupp at v1.5.2+.
+at RakuAST does not have to re-derive them.
+
+Written 2026-07-31 (rakupp v1.5.2+); every measurement and probe below
+re-verified 2026-08-18 against **Rakudo 2026.07** — still the newest release —
+and **rakupp 3.14.0**. Nothing in the design changed; the drift in the numbers
+is noted where it happened. `grep -rn RakuAST src/` is still empty.
 
 ## What RakuAST is
 
@@ -24,15 +28,29 @@ no module could safely touch them. RakuAST replaces them with a documented,
 roast-tested hierarchy — about 150 names directly under `RakuAST::`, more with
 the nested namespaces, against ~40 node kinds in the whole of our `src/Ast.h`.
 
-Upstream status at time of writing: still opt-in (`RAKUDO_RAKUAST=1`), 6.d is
-still the default language version, and the bootstrapped build reaches 1228 of
-1345 spectest files. Converging, not arrived.
+Upstream status, re-checked 2026-08-18: **unchanged**. 2026.07 is still the
+latest release; RakuAST is still opt-in (`RAKUDO_RAKUAST=1`), and `$*RAKU.version`
+is still `v6.d` by default — both confirmed by probing the local Rakudo, not by
+reading release notes. The 2026.07 announcement records "a *lot* of work on
+performance optimizations, and feature parity with the legacy compiler for
+ecosystem modules", and the bootstrapped build reached 1228 of 1345 spectest
+files at the time of the grant report. Converging, not arrived — and it has not
+arrived in the year since either.
 
 ## Why it is worth doing at all — and why it is not urgent
 
 Against: on our declared-Roast metric this is worth close to nothing.
-`docs/internals/METAPROGRAMMING.md` already records that roast contains **one**
-incidental `RakuAST::` reference. No test-count argument exists for building it.
+`docs/internals/METAPROGRAMMING.md` records that roast contains **one**
+incidental `RakuAST::` reference, and that is still exactly true — one file,
+`S32-str/format.t:52`, asserting `Formatter.AST(...) ~~ RakuAST::Node`. No
+test-count argument exists for building it.
+
+The other thirteen roast mentions of the word are not tests of RakuAST at all;
+they are `#?rakudo todo` markers of the form *"fixed in RakuAST"* /
+*"passes correctly in RakuAST"* (S02-literals/pairs.t, S09-typed-arrays/hashes.t,
+S12-subset/type-subset.t, S26-documentation/, S32-hash/adverbs.t). Those record
+places where the *legacy* frontend is wrong and the new one is right — a signal
+about Rakudo's transition, not work for us.
 
 For: it is ecosystem compatibility. A module that uses RakuAST does not run
 here at all — it is not a degradation, it is a hard failure. That is the whole
@@ -60,10 +78,14 @@ sub fib($n) { $n < 2 ?? $n !! fib($n-1) + fib($n-2) }
 | representation | nodes |
 |---|---:|
 | rakupp (`--ast`) | 17 |
-| RakuAST (`.AST`, counted with `visit-children`) | 38 |
+| RakuAST (`.AST`, counted with `visit-children`) | 39 |
 
-2.2× overall, and the surplus sits exactly in the hot loop:
+2.3× overall (the 2026-07-31 count said 38; one node of walker difference, same
+conclusion), and the surplus sits exactly in the hot loop:
 
+- **6 × `RakuAST::ArgList`, 4 × `RakuAST::ApplyInfix`, 4 × `RakuAST::Infix`,
+  4 × `RakuAST::Var::Lexical`, 4 × `RakuAST::Name`, 3 × `RakuAST::IntLiteral`** —
+  the full 2026-08-18 histogram, largest first.
 - **4 × `RakuAST::Infix`** — every operator is a separate heap object. Our
   `Binary` holds `std::string op` inline plus the `simpleOp` dispatch cache
   (`src/Ast.h:124`), which exists *because* operator dispatch is hot enough to
@@ -74,8 +96,11 @@ sub fib($n) { $n < 2 ?? $n !! fib($n-1) + fib($n-2) }
   `ParameterTarget::Var`, `Type::Setting` around the signature.
 
 In the inner expression `fib($n-1) + fib($n-2)` we visit 9 nodes; the RakuAST
-shape is ~16. **~1.8× the node visits in the hottest loop**, each an extra
-pointer chase into a separately allocated object.
+subtree under the `+` is 19. **~2.1× the node visits in the hottest loop**, each
+an extra pointer chase into a separately allocated object. (Count it by finding
+the `ApplyInfix` whose `.infix.operator eq '+'` inside the full sub — `.AST` on
+the bare fragment throws *Undeclared routine: fib*, because `.AST` runs the
+usual compile-time checks.)
 
 Caveat, stated plainly: that is a structural node count, not a benchmark. We did
 not build a RakuAST-walking rakupp and time it. It predicts direction and rough
@@ -85,11 +110,17 @@ single dominant change — and run `perf-guard --check` on fib/asg/loopsum.
 
 ### Measured: where our time actually goes
 
-| | |
-|---|---:|
-| parse `showcase/perl/perl.raku` (1,635 lines) | 13.7 ms |
-| full run of it over `examples/quicksort.pl` | 34.7 ms |
-| `fib(29)`, one line of source | 755 ms |
+| | 2026-07-31 | 2026-08-18 |
+|---|---:|---:|
+| parse `showcase/perl/perl.raku` (1,635 lines) | 13.7 ms | 47 ms |
+| full run of it over `examples/quicksort.pl` | 34.7 ms | 121 ms |
+| `fib(29)`, one line of source | 755 ms | 1,457 ms |
+
+The second column is ~2–3× slower in absolute terms for a boring reason:
+`build/rakupp` is currently a **x86_64 binary running under Rosetta on an M3**
+(`file build/rakupp`), as is the Homebrew Rakudo it is compared against. Read
+the ratios, not the milliseconds — and note that a re-measurement here is only
+meaningful once the build dir is native again.
 
 Tree *construction* is a real share of short runs and startup — and matters more
 in the WASM playground, where startup is the whole experience. Tree *walking* is
@@ -141,8 +172,9 @@ node compiles it **in the current lexical scope**; if our `EVAL` compiled the
 text in a fresh empty scope instead, every one of those names would be
 undeclared and the bridge would only ever carry literals.
 
-It does not. These four run identically under rakupp and Rakudo — each answer is
-one that is only reachable if the fragment saw the enclosing scope:
+It does not. These four run identically under rakupp and Rakudo — re-run on both engines
+2026-08-18, `42 / 42 / 99 / 21` from each — and each answer is one that is only
+reachable if the fragment saw the enclosing scope:
 
 ```raku
 use MONKEY-SEE-NO-EVAL;
@@ -178,7 +210,8 @@ may hold live runtime objects — `RakuAST::Literal.from-value($obj)` — and th
 is exactly what compile-time transforms produce (the canonical constant-folder
 example ends in `RakuAST::Literal.new($_)` over a computed value).
 
-`DEPARSE` renders those through `.raku`. Measured on Rakudo:
+`DEPARSE` renders those through `.raku`. Measured on Rakudo, and reproduced
+unchanged on 2026-08-18:
 
 ```
 [1,2,3]   →  [1, 2, 3]                             # re-parses EQUAL but not IDENTICAL
@@ -204,6 +237,115 @@ $RAKUAST-LIT-7            # instead of  -> $x { #`(Block|…) ... }
 then EVAL the text in a scope where those names are bound to the real objects.
 Identity preserved, closures preserved, still no compiler. Text stays the
 bridge, with a value channel running alongside it.
+
+## Could the view be 1:1 with Rakudo's tree?
+
+Asked 2026-08-18 — and **answered, then deferred with the rest**: the user's
+call the same day was that RakuAST in any form is a detour from the main goal.
+Nothing below is scheduled work. It is here so that whoever picks this up starts
+from the measurements instead of the question.
+
+It was worth answering because if it can, the gate at the end of
+this document gets much stronger: instead of "our deparse re-parses to something
+equivalent", the property becomes **"for source S, our `S.AST` is
+node-for-node identical to Rakudo's `S.AST`"** — a direct diff against the
+reference implementation, measurable as a percentage, per corpus file.
+
+Short answer: **yes in principle, and the obstacles are enumerable rather than
+structural** — but only if the comparison is defined on the *tree*, and only if
+our parser starts recording a handful of surface facts it currently discards.
+
+### RakuAST is not a normalised tree — it records surface syntax
+
+This is the fact that decides the work. Thirteen pairs of *same meaning,
+different spelling*, compared by walking both trees:
+
+| pair | Rakudo | rakupp |
+|---|---|---|
+| `say(1)` / `say 1` | **different** (`Call::Name` vs `Call::Name::WithoutParentheses`) | same |
+| `say 1 unless $x` / `unless $x { say 1 }` | **different** (`StatementModifier::Unless` vs `Statement::Unless`) | same *dump*, but `IfStmt::modifier` holds it |
+| `.say for @a` / `$_.say for @a` | **different** (`Term::TopicCall`) | same |
+| `%h<k>` / `%h{'k'}` | **different** (`Postcircumfix::LiteralHashIndex` vs `::HashIndex`) | same |
+| `sub f($a) returns Int` / `sub f($a --> Int)` | **different** (`Trait::Returns` vs a `Type::Simple` in the signature) | same (`SubDecl::retType` merges `of` / `returns` / `-->`) |
+| `do { $x }` / `($x)` | different | different |
+| `while $x` / `until !$x` | different | different |
+| `for @a { }` / `for @a -> $_ { }` | different | different |
+| `$x .= Str` / `$x = $x.Str` | different | different |
+| `$x.Str` / `$x."Str"()` | different | different |
+| `@a[0]` / `@a.[0]` | same | same |
+| `q{a}` / `Q[a]` / `"a"` / `'a'` | **same** — all four are `QuotedString` + `StrLiteral` | different (`StrLit` vs `InterpStr`) |
+| `<a b>` / `qw{a b}` | same classes, different `processors` (`<words val>` vs `<words>`) | same |
+
+Two things follow. First, quoting flavour is one worry we do *not* have: Rakudo
+throws it away too. Second, extra precision on our side is free — we simply do
+not emit it — while missing precision is fatal to an exact match.
+
+### What we would have to start recording
+
+Checked against `src/Ast.h`, not against the `--ast` dump — the dump prints less
+than the nodes hold, and reading the dump alone overstates the gap. We already
+keep `IfStmt::isUnless` and `::modifier`, the same `modifier` flag on
+`WhileStmt` / `ForStmt` / `GivenStmt`, `Unary::postfix`, `ForStmt::vars`,
+`MethodCall::mutate` and `::methodExpr`. Genuinely absent today:
+
+1. **parens vs listop on `Call`** — no flag exists (`ListExpr::parenned` is a
+   different thing).
+2. **implicit topic on `MethodCall`** — `.say` synthesises a `VarExpr $_`
+   indistinguishable from a written `$_.say`.
+3. **angle vs brace subscript on `Index`** — `%h<k>` and `%h{'k'}` both reduce
+   to a `StrLit` index.
+4. **which spelling produced a return type** — `SubDecl::retType` is one string
+   for `of` / `returns` / `-->`.
+
+Each is a bool or a small enum set at parse time. None is on the hot path, none
+changes evaluation, and none costs a byte at run time beyond the node itself.
+That is the whole bill found so far; it is a bill for *parse-time bookkeeping*,
+which is exactly the cheap kind.
+
+### The oracle must be the tree, not the text
+
+Neither of the obvious comparison surfaces survives contact with real code:
+
+- **`.DEPARSE` has holes in Rakudo itself.** `showcase/perl/perl.raku` cannot be
+  deparsed at all: *"Deparsing RakuAST::Regex::Nested objects not yet
+  implemented"*. Bisected, the trigger is the regex goal-matching operator —
+  `/ a ~ b c /`. 23 of 24 sampled `examples/` and `showcase/` files deparse
+  fine; the regex-heavy one does not.
+- **`.raku` has the same hole** (*"No .raku method implemented for
+  RakuAST::Regex::Nested objects yet"*), which is a pity, because otherwise it
+  is an excellent oracle: a canonical, aligned constructor dump —
+  `RakuAST::VarDeclaration::Simple.new(sigil => "\$", …)` — that is exactly the
+  tree and nothing else.
+
+So the harness should walk `visit-children` and serialise class name **plus
+scalar attributes**. Attributes are not optional: `<a b>` and `qw{a b}` have
+identical class shapes and differ only in `processors`.
+
+### Two traps in building that harness
+
+- **`.AST` runs the compiler, not just the parser.** Undeclared variables throw
+  (*"Variable '$x' is not declared"*), so every corpus snippet must be
+  self-contained — and `BEGIN` blocks **execute** at `.AST` time. A probe of
+  `BEGIN { say 1 }` printed `1` while merely building the tree.
+- **Rakudo synthesises nodes with no source token**: `Blockoid`,
+  `StatementList`, `Type::Setting`, and an implicit `VarDeclaration::Simple` for
+  each `sub`. Exactness means reproducing those too.
+
+### How big the target actually is
+
+| corpus | nodes | distinct `RakuAST::` classes |
+|---|---:|---:|
+| `showcase/perl/perl.raku` (1,635 lines) | 22,046 | 107 |
+| 44 files from `examples/` + `showcase/` | 24,442 | 125 |
+
+39 classes cover 95% of all nodes; 26 of the 125 appear three times or fewer.
+So the vocabulary for *real* code is ~125 of the ~150 names, and the shape of
+the work is a steep head and a long thin tail — the head gets you a view that
+works, the tail is what 1:1 costs.
+
+The honest caveat: RakuAST is still under active parity work upstream, so a 1:1
+claim is pinned to a Rakudo version and needs re-checking each release. That
+argues for the diff being a *reported percentage per corpus*, not a boolean.
 
 ## Scope for a first cut
 
@@ -239,6 +381,11 @@ Three corpora already exist to point it at — `showcase/`, raku-corpus, and
 roast. That gate is what makes the feature trustworthy; without it, a deparser
 is a generator of plausible-looking wrong programs.
 
+A strictly stronger gate is available if the view is built for exactness: diff
+our tree against Rakudo's `.AST` node for node, and report the match rate per
+corpus file. See *Could the view be 1:1 with Rakudo's tree?* above for what that
+costs and why the diff has to be run on the tree rather than on `.DEPARSE`.
+
 ## Sources
 
 - <https://dev.to/lizmat/series/23109> — "RakuAST for Early Adopters", five
@@ -248,5 +395,8 @@ is a generator of plausible-looking wrong programs.
   report, with the bootstrap figures.
 - <https://docs.raku.org/type/RakuAST> — the type documentation, including the
   `.AST` / `.DEPARSE` caveats quoted above.
-- <https://rakudo.org/post/announce-rakudo-release-2026.06> — current status;
-  the optimizer stage and constant folding of pure infix operators.
+- <https://rakudo.org/post/announce-rakudo-release-2026.06> — the optimizer
+  stage and constant folding of pure infix operators.
+- <https://rakudo.org/post/announce-rakudo-release-2026.07> — the newest release
+  as of 2026-08-18: performance work and ecosystem-module parity for RakuAST,
+  still with no switch of the default frontend.

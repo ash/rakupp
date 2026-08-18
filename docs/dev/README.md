@@ -60,9 +60,13 @@ Earlier plans:
   related code.
 - **[plans/RAKUAST-PLAN.md](plans/RAKUAST-PLAN.md)** — how RakuAST would be added
   **without touching the hot path**: why it must be a view built on demand rather
-  than our internal tree (measured: 2.2× the nodes, ~1.8× the visits in the fib
+  than our internal tree (measured: 2.3× the nodes, ~2.1× the visits in the fib
   inner loop), why `.DEPARSE` + the existing parser replaces a RakuAST→AST
-  compiler, and the one case where that text bridge is lossy. Deferred, not built.
+  compiler, and the one case where that text bridge is lossy — plus what a
+  node-for-node 1:1 match with Rakudo's own `.AST` would cost, and why that diff
+  has to run on the tree (Rakudo's `.DEPARSE` and `.raku` both die on
+  `RakuAST::Regex::Nested`). Numbers re-verified 2026-08-18; deferred, not built,
+  and postponed again the same day.
 - **[plans/LIBFFI-PLAN.md](plans/LIBFFI-PLAN.md)** — moving NativeCall onto
   `libffi`: where NativeCall was, what libffi bought, and the measurements behind
   each decision (why `dlopen` rather than link or vendor, why one marshaller
