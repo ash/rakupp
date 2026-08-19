@@ -3372,6 +3372,18 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                             "Cannot resume without an active exception handler"};
         throw ResumeEx{};
     }
+    // 6.e `.Callable($name)`: the named method as a callable, or a Failure when
+    // there is none — a findable method reference, next to .can's list.
+    if (m == "Callable" && sixE() && !args.empty() && args[0].t == VT::Str) {
+        std::string want = args[0].toStr();
+        Value found = methodCall(inv, "can", ValueList{Value::str(want)});
+        if (found.t == VT::Array && found.arr && !found.arr->empty()) return (*found.arr)[0];
+        Value f = Value::makeHash(); f.hashKind = "Failure";
+        (*f.hash)["exception"] = Value::typeObj("X::Method::NotFound");
+        (*f.hash)["message"]   = Value::str("No such method '" + want + "' for invocant of type '" +
+                                            inv.typeName() + "'");
+        return f;
+    }
     // 6.e `.snitch`: run a tap (default: note the value) and return self — for
     // sticking a peek into a method chain. Universal, so handle it up front.
     if (m == "snitch" && sixE()) {
@@ -9252,6 +9264,20 @@ void Interpreter::registerBuiltins() {
     };
     // 6.e sub form: snip(PRED(s), *@list) — first arg is the predicate or a (p1,p2)
     // list of predicates; the rest is the list. Delegates to the .snip method.
+    // 6.e sub form: trans(PAIR…, TARGET) — the transliteration pairs come first
+    // and the thing to transliterate is the LAST positional, so it composes in a
+    // feed. A list target maps element-wise, as the method would.
+    B["trans"] = [](Interpreter& I, ValueList& a) -> Value {
+        if (a.size() < 2) return a.empty() ? Value::str("") : a.back();
+        ValueList pairs(a.begin(), a.end() - 1);
+        Value target = a.back();
+        if (target.t == VT::Array && target.arr) {
+            Value out = Value::array(); out.isList = true;   // a Seq-ish list, not the Array back
+            for (auto& el : *target.arr) out.arr->push_back(I.methodCall(el, "trans", pairs));
+            return out;
+        }
+        return I.methodCall(target, "trans", pairs);
+    };
     B["snip"] = [](Interpreter& I, ValueList& a) -> Value {
         if (a.empty()) return Value::array();
         Value list = Value::array(); list.isList = true;

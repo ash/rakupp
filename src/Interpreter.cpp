@@ -1361,7 +1361,7 @@ Value rtSlipVal(const Value& v) {
 // default: `now` became the type object `(now)` whose .Num is 0, and every
 // benchmark, timeout and timestamp in a compiled program silently read zero
 // (found benchmarking a grammar under --exe, 2026-08-13).
-bool nameTermConstant(const std::string& n, Value& out) {
+bool nameTermConstant(const std::string& n, Value& out, bool sixE) {
     if (n == "pi" || n == "\xcf\x80") { out = Value::number(M_PI); return true; }
     if (n == "e")   { out = Value::number(M_E); return true; }
     if (n == "i")   { out = Value::complex(0, 1); return true; } // imaginary unit
@@ -1374,6 +1374,13 @@ bool nameTermConstant(const std::string& n, Value& out) {
         return true;
     }
     if (n == "time") { out = Value::integer((long long)::time(nullptr)); return true; } // POSIX seconds (Int)
+    // 6.e `nano`: the same clock as `time`, in nanoseconds, as an Int. Gated
+    // like every other 6.e addition — a 6.d program has no such term.
+    if (n == "nano" && sixE) {
+        auto d = std::chrono::system_clock::now().time_since_epoch();
+        out = Value::integer(std::chrono::duration_cast<std::chrono::nanoseconds>(d).count());
+        return true;
+    }
     if (n == "rand") { out = Value::number(randDouble()); return true; }                // random Num in [0, 1)
     return false;
 }
@@ -1384,7 +1391,7 @@ Value Interpreter::rtNameTerm(const std::string& n) {
         if (Value* f = tctx_.cur->find("&" + n)) return callCallable(*f, {});
     }
     // after the env/&routine lookups, so a user's own `sub now {…}` still wins
-    { Value c; if (nameTermConstant(n, c)) return c; }
+    { Value c; if (nameTermConstant(n, c, sixE())) return c; }
     auto it = builtins_.find(n);
     if (it != builtins_.end() && builtinVisible(n)) { ValueList none; return it->second(*this, none); }
     // builtin enum members (mirror the NameTerm eval): without the numeric
@@ -22109,7 +22116,7 @@ Value Interpreter::eval(Expr* e) {
                 Value ev = Value::enumVal(key, key == "NativeEndian" ? 0 : key == "LittleEndian" ? 1 : 2);
                 ev.enumType = "Endian"; return ev;
             }
-            { Value c; if (nameTermConstant(n, c)) return c; } // pi/e/i/tau/now/time/rand
+            { Value c; if (nameTermConstant(n, c, sixE())) return c; } // pi/e/i/tau/now/time/rand
             static const std::set<std::string> types = {
                 "Int", "Str", "Num", "Bool", "Any", "Mu", "Cool", "Numeric", "Real",
                 "Array", "Hash", "List", "Rat", "Complex", "Nil", "Pair", "Range",

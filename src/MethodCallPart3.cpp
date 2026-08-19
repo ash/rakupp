@@ -1055,6 +1055,24 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         if (p.rfind(base + "/", 0) == 0) return Value::str(p.substr(base.size() + 1));
         return Value::str(p);
     }
+    // 6.e `.stem`: the basename with its extensions removed — all of them by
+    // default, or the last N. "foo.tar.gz".IO.stem is "foo" and .stem(1) is
+    // "foo.tar"; a basename with no dot is its own stem.
+    if (m == "stem" && sixE() && inv.hashKind == "IO") {
+        Value base = methodCall(inv, "basename", {});
+        std::string b = base.toStr();
+        std::vector<size_t> dots;
+        for (size_t i = 0; i < b.size(); i++) if (b[i] == '.') dots.push_back(i);
+        if (dots.empty()) return Value::str(b);
+        size_t cut;
+        if (args.empty() || args[0].t == VT::Whatever) cut = dots.front();
+        else {
+            long long want = args[0].toInt();
+            if (want <= 0) return Value::str(b);
+            cut = (size_t)want >= dots.size() ? dots.front() : dots[dots.size() - (size_t)want];
+        }
+        return Value::str(b.substr(0, cut));
+    }
     if (m == "basename" && !(inv.hashKind == "IO" && !inv.enumName.empty())) {
         // (a FLAVORED path answers through its own IO::Spec, further down)
         // trailing slashes don't count: "/a/b/".basename is "b" (Rakudo; zef's
@@ -2012,7 +2030,19 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             }
             std::string nm = have ? uniNameOf(cp) : "";
             if (!nm.empty()) return Value::str(nm);
-            if (!have || cp > 0x10FFFF) return Value::str("<unassigned>");
+            if (!have || cp > 0x10FFFF) {
+                // 6.e answers a Failure for a codepoint that has no name at all
+                // (out of Unicode's range, or nothing to read); before it the
+                // string "<unassigned>" stands in, which reads like a name.
+                if (sixE()) {
+                    Value f = Value::makeHash(); f.hashKind = "Failure";
+                    (*f.hash)["exception"] = Value::typeObj("X::AdHoc");
+                    (*f.hash)["message"]   = Value::str("Unassigned codepoint: 0x" +
+                                                        [&]{ char b[16]; snprintf(b, sizeof b, "%X", cp); return std::string(b); }());
+                    return f;
+                }
+                return Value::str("<unassigned>");
+            }
             const char* kind = ((cp & 0xFFFE) == 0xFFFE || (cp >= 0xFDD0 && cp <= 0xFDEF)) ? "noncharacter"
                              : gc == "Cs" ? "surrogate"
                              : gc == "Co" ? "private-use"
@@ -2608,6 +2638,12 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         for (uint32_t cp : uniNormalize(res, 1)) outs += cpToUtf8(cp); // NFC
         return Value::str(outs);
     }
+    // 6.e `.nomark`: the string with every mark stripped from its graphemes —
+    // "élan vitál" is "elan vital". markFold is the same fold `:ignoremark`
+    // compares with, which is exactly this operation.
+    if (m == "nomark" && sixE() &&
+        (inv.t == VT::Str || inv.t == VT::Int || inv.t == VT::Num || inv.t == VT::Rat))
+        return Value::str(markFold(inv.toStr()));
     if (m == "trans") { // $s.trans(@from => @to) / .trans('abc' => 'xyz') / .trans('a..c' => 'A..C')
         std::string s = inv.toStr();
         // a string arg is taken char-by-char, but `X..Y` denotes an inclusive codepoint range

@@ -31,7 +31,7 @@ double randDouble(); // uniform random in [0,1)
 // Bareword value constants (pi/e/i/tau/now/time/rand) — true when `n` is one,
 // with the freshly computed value in `out`. Shared by the interpreter's
 // NameTerm eval and the codegen's rtNameTerm so the two cannot drift.
-bool nameTermConstant(const std::string& n, Value& out);
+bool nameTermConstant(const std::string& n, Value& out, bool sixE = false); // sixE: `nano` exists
 bool isKnownTypeName(const std::string& n); // core type-name set (Int, Str, …)
 // The NATIVE lowercase type names (int, num, str, int64, …). Deliberately
 // separate from isKnownTypeName, which lists the boxed types.

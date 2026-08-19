@@ -164,4 +164,35 @@ check      $e, '(1 2 6 7 8 9 10) (4 5 6 7 8 9 10)',
 check $d, '([[1 2] [3 4]] (Any) [[1 2] [3 4]])', 'a slipped subscript is a plain slice before 6.e';
 check $e, '3',                                   '…and navigates the dimensions from 6.e on';
 
+# --- phase 4: routines 6.e adds that did not exist here at all -------------
+
+($d, $e) = both 'say nano ~~ Int';
+like-check $d, 'Undefined routine', 'the nano term does not exist before 6.e';
+check      $e, 'True',              '…and is an Int of nanoseconds from 6.e on';
+
+($d, $e) = both 'say trans("a" => "b", "c" => "d", "abc")';
+like-check $d, 'Undefined routine', 'the trans sub does not exist before 6.e';
+check      $e, 'bbd',               '…and takes its pairs first, the target last';
+
+($d, $e) = both 'my @w = "one","two"; say trans("o" => "0", @w)';
+check $e, '(0ne tw0)', 'a list target transliterates element-wise, as a list';
+
+# one line out, not two: both() keeps every line of output, so a two-say
+# snippet would compare against an embedded newline.
+($d, $e) = both 'say (42.Callable("Str") ~~ Method) ~ " " ~ 42.Callable("nope").^name';
+like-check $d, 'No such method', '.Callable does not exist before 6.e';
+check      $e, 'True Failure',    '…and finds a method, or fails, from 6.e on';
+
+($d, $e) = both 'say "élan vitál".nomark ~ " " ~ 42.nomark';
+like-check $d, 'No such method', '.nomark does not exist before 6.e';
+check      $e, 'elan vital 42',   '…and strips marks from 6.e on, Cool included';
+
+($d, $e) = both 'say "foo.tar.gz".IO.stem ~ " " ~ "foo.tar.gz".IO.stem(1) ~ " " ~ "noext".IO.stem';
+like-check $d, 'No such method',      'IO::Path.stem does not exist before 6.e';
+check      $e, 'foo foo.tar noext',   '…and drops all extensions, or the last N';
+
+($d, $e) = both 'my $u = try 0x110000.uniname; say $u.defined ?? $u !! "Failure"';
+check $d, '<unassigned>', 'uniname names an unnameable codepoint before 6.e';
+check $e, 'Failure',      '…and fails on it from 6.e on';
+
 if @fail { note "FAILED: @fail.join('; ')"; say 'FAIL' } else { say 'PASS' }
