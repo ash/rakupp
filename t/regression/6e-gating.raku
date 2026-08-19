@@ -60,6 +60,10 @@ check $e, '42 Any',       '…and the value itself from 6.e on';
 check $d, '3', 'an ARRAY multislice answers with the value under 6.d';
 check $e, '3', '…and under 6.e too — this one did not change';
 
+($d, $e) = both 'sub f(*@_) { my &c = { @_.elems }; say c() }; f(7,7)';
+check $d, '2', 'a block with no arguments sees the enclosing routine\'s @_ before 6.e';
+check $e, '0', '…and its own, empty, from 6.e on';
+
 ($d, $e) = both 'say unlink("/tmp/no-such-file-abc123").raku';
 check $d, '["/tmp/no-such-file-abc123"]', '6.d unlink answers with the paths it removed';
 check $e, 'Bool::True',                   '6.e unlink takes one path and answers one Bool';

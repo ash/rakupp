@@ -10430,7 +10430,11 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
             env->define("$_", args.empty() ? Value::any() : args[0]);
         // a bare block invoked with no args (a gather/do wrapper) leaves @_
         // unbound, so an inner for-body's @_ can synthesize from its own topic
-        if (!(c.isBlock && args.empty()))
+        // …until 6.e, where every block has an @_ of its OWN: an inner block
+        // called with no arguments sees an empty one, not the enclosing
+        // routine's. Leaving it unbound is precisely what makes the 6.d
+        // fall-through work, so the two rules are the one line.
+        if (sixE() || !(c.isBlock && args.empty()))
             env->define("@_", Value::array(slurpyArgs(args)));
     }
     auto saved = tctx_.cur;
