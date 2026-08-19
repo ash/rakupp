@@ -1693,7 +1693,11 @@ int main(int argc, char** argv) {
     if (mode == Mode::Version) {
         std::cout << "Raku++ (rakupp) " RAKUPP_VERSION
                      " — a Raku interpreter and compiler in C++\n"
-                     "Implements Raku 6.d, with 6.e features.\n"
+                     // 6.e is no longer "some features": it is implemented and
+                     // gated, so a program gets 6.d unless it asks for 6.e. The
+                     // exceptions are named on the support page rather than in a
+                     // banner line nobody can fit them into.
+                     "Implements Raku 6.d, and 6.e under `use v6.e.PREVIEW`.\n"
                   << "Build  " << rakupp::buildId() << " (" << rakupp::buildDate()
                   << "), " << rakupp::platform() << ", " << rakupp::compilerId() << "\n"
                   << "Home   https://raku.online — docs, a tour of the language, "

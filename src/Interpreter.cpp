@@ -2690,6 +2690,7 @@ int Interpreter::run(Program& prog) {
     // was too late for anything hoisted — every sub in the unit is created
     // before the mainline starts, and was being stamped 6.d.
     langRev_ = prog.langRev;
+    if (prog.langRev != 1) anyRevSwitch_ = true;
     unitStack_.push_back(&prog);
     struct UnitGuard { std::vector<const Program*>& s; ~UnitGuard() { s.pop_back(); } } unitG{unitStack_};
     { // mainline sink warnings, printed before execution (Rakudo compile-time style)
@@ -4060,6 +4061,7 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
         bool savedDoImport = moduleDoImport_; moduleDoImport_ = doImport;
         try {
             langRev_ = prog->langRev;   // the module's own revision, not the importer's
+            if (prog->langRev != 1) anyRevSwitch_ = true;
             hoistSubs(prog->stmts);
             for (auto& st : prog->stmts) {
                 if (st->kind == NK::SubDecl && !static_cast<SubDecl*>(st.get())->name.empty() &&
@@ -10137,8 +10139,8 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
         int& slot; int saved; bool active;
         ~RevGuard() { if (active) slot = saved; }
     } revG{langRev_, langRev_, false};
-    if (codeVal.t == VT::Code && codeVal.code && codeVal.code->langRev >= 0 &&
-        codeVal.code->langRev != langRev_) {
+    if (anyRevSwitch_ && codeVal.t == VT::Code && codeVal.code &&
+        codeVal.code->langRev >= 0 && codeVal.code->langRev != langRev_) {
         revG.active = true;
         langRev_ = codeVal.code->langRev;
     }
@@ -20598,10 +20600,10 @@ Value Interpreter::evalIndex(Index* idx) {
         // a `dimslip` marker that only the branch below knows how to read, and
         // evaluating it here as an ordinary prefix is what made the array form
         // die with "Unsupported prefix 'dimslip'" while the hash form worked.
-        const bool dimslipIdx = idx->index && idx->index->kind == NK::Unary &&
-                                static_cast<const Unary*>(idx->index.get())->op == "dimslip";
-        if (!dimslipIdx && !ve->declare && ve->name.size() > 1 && ve->name[0] == '@' &&
-            (ascii::isalpha((unsigned char)ve->name[1]) || ve->name[1] == '_')) {
+        if (!ve->declare && ve->name.size() > 1 && ve->name[0] == '@' &&
+            (ascii::isalpha((unsigned char)ve->name[1]) || ve->name[1] == '_') &&
+            !(idx->index && idx->index->kind == NK::Unary &&
+              static_cast<const Unary*>(idx->index.get())->op == "dimslip")) {
             if (Value* bp = tctx_.cur->find(ve->name)) {
                 if (bp->t == VT::Array && bp->arr && !bp->ext && bp->ofType.empty() &&
                     !bp->pairVal && bp->hashKind.empty()) { // `is default` arrays take the slow path

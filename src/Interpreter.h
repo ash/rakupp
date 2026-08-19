@@ -1133,6 +1133,11 @@ public:
     // 6.e-only routine, method and behaviour is gated on this, so a 6.d program
     // cannot tell which engine is running it. See docs/dev/plans/6E-PLAN.md.
     bool sixE() const { return langRev_ >= 2; }
+    // True once anything in the process has been compiled under a revision other
+    // than the default. Almost every program is one unit of 6.d, and then the
+    // per-call revision switch has nothing to do — this lets the call path skip
+    // it on a single bool instead of reaching into the callee.
+    bool anyRevSwitch_ = false;
     // Subs that 6.e adds to CORE. Under 6.d they must not exist at all — a
     // program that calls one gets "Undefined routine", as it does in Rakudo,
     // where these live in CORE.e and a 6.d unit never loads it.

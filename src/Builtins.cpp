@@ -9278,6 +9278,15 @@ void Interpreter::registerBuiltins() {
         }
         return I.methodCall(target, "trans", pairs);
     };
+    // 6.e sub form: snitch($value) notes it and hands it back; snitch(&tap, $value)
+    // runs the tap instead. The value is returned unchanged either way — the
+    // point of the routine is to see something without disturbing it.
+    B["snitch"] = [](Interpreter& I, ValueList& a) -> Value {
+        if (a.empty()) return Value::any();
+        if (a.size() >= 2 && a[0].t == VT::Code)
+            return I.methodCall(a[1], "snitch", ValueList{a[0]});
+        return I.methodCall(a[0], "snitch", ValueList{});
+    };
     B["snip"] = [](Interpreter& I, ValueList& a) -> Value {
         if (a.empty()) return Value::array();
         Value list = Value::array(); list.isList = true;
