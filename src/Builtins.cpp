@@ -1281,6 +1281,26 @@ uint32_t toUpperCp(uint32_t c) { return uniSimpleUpper(c); }
 // "ﬀ+◌̣".uc is F, ◌̣, F (the combiner stays with the first F). The whole result
 // is then NFC-normalised back to NFG.
 std::string mapCase(const std::string& s, int kind, int tcMode) {
+    // ASCII is a byte map, and the general path below is a poor way to do one:
+    // it decodes to codepoints, segments graphemes, allocates a case-mapping
+    // vector per character and re-normalises the result. None of that can change
+    // an ASCII answer — there are no multi-codepoint graphemes to segment, no
+    // Final_Sigma (Greek), no multi-codepoint expansions (ß, ﬁ) and nothing for
+    // NFC to compose. `.uc` on a short ASCII string was the single hottest thing
+    // in a dispatch-heavy profile, almost all of it allocation.
+    if (allAscii(s)) {
+        std::string r = s;
+        if (r.empty()) return r;
+        if (tcMode) {
+            r[0] = (char)ascii::toupper((unsigned char)r[0]);         // title == upper in ASCII
+            if (tcMode == 2)
+                for (size_t i = 1; i < r.size(); i++) r[i] = (char)ascii::tolower((unsigned char)r[i]);
+            return r;
+        }
+        if (kind == 0) for (char& c : r) c = (char)ascii::tolower((unsigned char)c);
+        else           for (char& c : r) c = (char)ascii::toupper((unsigned char)c);  // 1 = uc, 2 = tc
+        return r;
+    }
     auto cps = utf8cp(s);
     if (cps.empty()) return s;
     auto starts = uniGraphemeStarts(cps);

@@ -470,44 +470,67 @@ static int incbProp(uint32_t cp) {
     return 0;
 }
 
+// UAX #29 grapheme-cluster boundaries, in one place.
+//
+// The rule chain (GB3-GB999) and the state it carries — the regional-indicator
+// run, the emoji-ZWJ sequence flag, and the GB9c conjunct chain — used to be
+// written out twice: once over a codepoint vector for uniGraphemeStarts, once
+// over UTF-8 bytes for uniClusterEndUtf8. They agreed, which is the dangerous
+// kind of duplication: the next rule fix would have had to land in both, and
+// only one of them is exercised by the regex engine's grapheme stride.
+struct GbState {
+    int prev;          // gbProp of the previous codepoint
+    bool pictSeq;      // inside an emoji ZWJ sequence (GB11)
+    int riRun;         // consecutive regional indicators (GB12/13)
+    int incbState;     // 0 none, 1 Consonant seen, 2 Consonant+Linker (GB9c)
+    explicit GbState(uint32_t first)
+        : prev(gbProp(first)), pictSeq(prev == GB_ExtPict),
+          riRun(prev == GB_RI ? 1 : 0), incbState(incbProp(first) == 2 ? 1 : 0) {}
+};
+
+// Does a cluster boundary fall between the previous codepoint and `cur`?
+static inline bool gbBreakBefore(const GbState& st, int cur, int ip) {
+    if (st.prev == GB_CR && cur == GB_LF) return false;                                   // GB3
+    if (st.prev == GB_Control || st.prev == GB_CR || st.prev == GB_LF) return true;       // GB4
+    if (cur == GB_Control || cur == GB_CR || cur == GB_LF) return true;                   // GB5
+    if (st.prev == GB_L && (cur == GB_L || cur == GB_V || cur == GB_LV || cur == GB_LVT))
+        return false;                                                                     // GB6
+    if ((st.prev == GB_LV || st.prev == GB_V) && (cur == GB_V || cur == GB_T)) return false; // GB7
+    if ((st.prev == GB_LVT || st.prev == GB_T) && cur == GB_T) return false;              // GB8
+    if (cur == GB_Extend || cur == GB_ZWJ) return false;                                  // GB9
+    if (cur == GB_SpacingMark) return false;                                              // GB9a
+    if (st.prev == GB_Prepend) return false;                                              // GB9b
+    if (st.incbState == 2 && ip == 2) return false;                                       // GB9c
+    if (st.pictSeq && st.prev == GB_ZWJ && cur == GB_ExtPict) return false;               // GB11
+    if (st.prev == GB_RI && cur == GB_RI && (st.riRun % 2 == 1)) return false;            // GB12/13
+    return true;                                                                          // GB999
+}
+
+// Carry the state across one codepoint, given the decision just made for it.
+static inline void gbAdvance(GbState& st, int cur, int ip, bool brk) {
+    st.riRun = (cur == GB_RI) ? (brk ? 1 : st.riRun + 1) : 0;
+    if (cur == GB_ExtPict) st.pictSeq = true;
+    else if (!brk && st.pictSeq && (cur == GB_Extend || cur == GB_ZWJ)) st.pictSeq = true;
+    else st.pictSeq = false;
+    // conjunct chain: a Consonant anchors, Linker upgrades, InCB-Extend carries
+    if (brk) st.incbState = (ip == 2) ? 1 : 0;
+    else if (ip == 2) st.incbState = 1;
+    else if (st.incbState >= 1 && ip == 1) st.incbState = 2;
+    else if (!(st.incbState >= 1 && ip == 3)) st.incbState = 0;
+    st.prev = cur;
+}
+
 // Indices (into cps) where a new grapheme cluster starts; front() is always 0.
 std::vector<size_t> uniGraphemeStarts(const std::vector<uint32_t>& cps) {
     std::vector<size_t> starts;
     if (cps.empty()) return starts;
     starts.push_back(0);
-    int prev = gbProp(cps[0]);
-    bool pictSeq = (prev == GB_ExtPict);
-    int riRun = (prev == GB_RI) ? 1 : 0;
-    // GB9c conjunct state: 0=none, 1=InCB Consonant seen, 2=Consonant + Linker seen
-    int incbState = (incbProp(cps[0]) == 2) ? 1 : 0;
+    GbState st(cps[0]);
     for (size_t i = 1; i < cps.size(); i++) {
-        int cur = gbProp(cps[i]);
-        int ip = incbProp(cps[i]);
-        bool brk;
-        if (prev == GB_CR && cur == GB_LF) brk = false;                                  // GB3
-        else if (prev == GB_Control || prev == GB_CR || prev == GB_LF) brk = true;        // GB4
-        else if (cur == GB_Control || cur == GB_CR || cur == GB_LF) brk = true;           // GB5
-        else if (prev == GB_L && (cur == GB_L || cur == GB_V || cur == GB_LV || cur == GB_LVT)) brk = false; // GB6
-        else if ((prev == GB_LV || prev == GB_V) && (cur == GB_V || cur == GB_T)) brk = false;               // GB7
-        else if ((prev == GB_LVT || prev == GB_T) && cur == GB_T) brk = false;            // GB8
-        else if (cur == GB_Extend || cur == GB_ZWJ) brk = false;                          // GB9
-        else if (cur == GB_SpacingMark) brk = false;                                      // GB9a
-        else if (prev == GB_Prepend) brk = false;                                         // GB9b
-        else if (incbState == 2 && ip == 2) brk = false;                                  // GB9c (Indic conjuncts)
-        else if (pictSeq && prev == GB_ZWJ && cur == GB_ExtPict) brk = false;             // GB11
-        else if (prev == GB_RI && cur == GB_RI && (riRun % 2 == 1)) brk = false;          // GB12/13
-        else brk = true;                                                                  // GB999
+        int cur = gbProp(cps[i]), ip = incbProp(cps[i]);
+        bool brk = gbBreakBefore(st, cur, ip);
         if (brk) starts.push_back(i);
-        riRun = (cur == GB_RI) ? (brk ? 1 : riRun + 1) : 0;
-        if (cur == GB_ExtPict) pictSeq = true;
-        else if (!brk && pictSeq && (cur == GB_Extend || cur == GB_ZWJ)) pictSeq = true;
-        else pictSeq = false;
-        // conjunct chain: a Consonant anchors, Linker upgrades, InCB-Extend carries
-        if (brk) incbState = (ip == 2) ? 1 : 0;
-        else if (ip == 2) incbState = 1;
-        else if (incbState >= 1 && ip == 1) incbState = 2;
-        else if (!(incbState >= 1 && ip == 3)) incbState = 0;
-        prev = cur;
+        gbAdvance(st, cur, ip, brk);
     }
     return starts;
 }
@@ -526,37 +549,13 @@ size_t uniClusterEndUtf8(const std::string& s, size_t pos, size_t len) {
     };
     if (pos >= len) return pos;
     uint32_t cp; size_t p = pos + dec(pos, cp);
-    int prev = gbProp(cp);
-    bool pictSeq = (prev == GB_ExtPict);
-    int riRun = (prev == GB_RI) ? 1 : 0;
-    int incbState = (incbProp(cp) == 2) ? 1 : 0;
+    GbState st(cp);
     while (p < len) {
         uint32_t c2; size_t clen = dec(p, c2);
         int cur = gbProp(c2), ip = incbProp(c2);
-        bool brk;
-        if (prev == GB_CR && cur == GB_LF) brk = false;
-        else if (prev == GB_Control || prev == GB_CR || prev == GB_LF) brk = true;
-        else if (cur == GB_Control || cur == GB_CR || cur == GB_LF) brk = true;
-        else if (prev == GB_L && (cur == GB_L || cur == GB_V || cur == GB_LV || cur == GB_LVT)) brk = false;
-        else if ((prev == GB_LV || prev == GB_V) && (cur == GB_V || cur == GB_T)) brk = false;
-        else if ((prev == GB_LVT || prev == GB_T) && cur == GB_T) brk = false;
-        else if (cur == GB_Extend || cur == GB_ZWJ) brk = false;
-        else if (cur == GB_SpacingMark) brk = false;
-        else if (prev == GB_Prepend) brk = false;
-        else if (incbState == 2 && ip == 2) brk = false;
-        else if (pictSeq && prev == GB_ZWJ && cur == GB_ExtPict) brk = false;
-        else if (prev == GB_RI && cur == GB_RI && (riRun % 2 == 1)) brk = false;
-        else brk = true;
-        if (brk) break;
+        if (gbBreakBefore(st, cur, ip)) break;
         p += clen;
-        riRun = (cur == GB_RI) ? riRun + 1 : 0;
-        if (cur == GB_ExtPict) pictSeq = true;
-        else if (pictSeq && (cur == GB_Extend || cur == GB_ZWJ)) pictSeq = true;
-        else pictSeq = false;
-        if (ip == 2) incbState = 1;
-        else if (incbState >= 1 && ip == 1) incbState = 2;
-        else if (!(incbState >= 1 && ip == 3)) incbState = 0;
-        prev = cur;
+        gbAdvance(st, cur, ip, false);   // reached only when the cluster continues
     }
     return p;
 }

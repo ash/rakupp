@@ -1291,6 +1291,9 @@ private:
     Value evalCall(Call* c);
     Value evalTempLet(Call* c); // temp/let: snapshot BEFORE arg evaluation
     Value evalIndex(Index* idx);
+    // Concrete index tuples for a multi-dimensional subscript — shared by the
+    // read path (evalIndex) and the write path (evalAssignInner).
+    std::vector<ValueList> expandDimTuples(const Value& root, const ValueList& keys);
     // Does a `{…}` subscript name MANY keys? See the definition in Interpreter.cpp.
     static bool keySubscriptIsSlice(const Expr* ixExpr, const Value& iv);
     Value evalInterp(InterpStr* s);

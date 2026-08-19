@@ -12185,6 +12185,56 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
     return r;
 }
 
+// Expand a multi-dimensional subscript into concrete index tuples.
+//
+// `@a[1; *; 2..3]` names a set of paths, not one: every Whatever, list or range
+// dimension fans out against the container it is applied to, and a Callable
+// dimension (`*-1`) resolves against THAT level's size rather than the top. The
+// read path (evalIndex) and the write path (evalAssignInner) both need the same
+// set, and each used to carry its own copy of this recursion — identical but for
+// a comment, which is the shape a divergence starts from.
+std::vector<ValueList> Interpreter::expandDimTuples(const Value& root, const ValueList& keys) {
+    std::vector<ValueList> tuples;
+    std::function<void(const Value&, size_t, ValueList&)> expand =
+        [&](const Value& node, size_t d, ValueList& pref) {
+        if (d == keys.size()) { tuples.push_back(pref); return; }
+        auto emit1 = [&](Value kk) {
+            if (kk.t == VT::Code && kk.code)   // *-1 against this branch's size
+                kk = (node.t == VT::Array && node.arr)
+                   ? callCallable(kk, ValueList{Value::integer((long long)node.arr->size())})
+                   : callCallable(kk, ValueList{node});
+            Value child = Value::any();
+            if (node.t == VT::Array && node.arr) {
+                long long i = kk.toInt(), n = (long long)node.arr->size();
+                if (i < 0) { i += n; kk = Value::integer(i); }
+                if (i >= 0 && i < n) child = (*node.arr)[i];
+            } else if (node.t == VT::Hash && node.hash) {
+                auto it = node.hash->find(kk.toStr());
+                if (it != node.hash->end()) child = it->second;
+            }
+            pref.push_back(kk);
+            expand(child, d + 1, pref);
+            pref.pop_back();
+        };
+        const Value& k = keys[d];
+        if (k.t == VT::Whatever) {
+            if (node.t == VT::Array && node.arr)
+                for (long long i = 0; i < (long long)node.arr->size(); i++) emit1(Value::integer(i));
+            else if (node.t == VT::Hash && node.hash)
+                for (auto& kv2 : *node.hash) emit1(Value::str(kv2.first));
+            return;
+        }
+        if (k.t == VT::Array || k.t == VT::Range) {
+            for (auto& e2 : k.flatten()) emit1(e2);
+            return;
+        }
+        emit1(k);
+    };
+    ValueList pref;
+    expand(root, 0, pref);
+    return tuples;
+}
+
 Value Interpreter::evalAssignInner(Assign* a, bool sink) {
 
     // A `my` DYNAMIC declaration is visible WHILE its own initializer runs —
@@ -12744,44 +12794,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             }
             if (anyMulti) {
                 Value* root = lvalue(ix->base.get());
-                std::vector<ValueList> tuples;
-                std::function<void(const Value&, size_t, ValueList&)> expand =
-                    [&](const Value& node, size_t d, ValueList& pref) {
-                    if (d == keys.size()) { tuples.push_back(pref); return; }
-                    auto emit1 = [&](Value kk) {
-                        if (kk.t == VT::Code && kk.code)
-                            kk = (node.t == VT::Array && node.arr)
-                               ? callCallable(kk, ValueList{Value::integer((long long)node.arr->size())})
-                               : callCallable(kk, ValueList{node});
-                        Value child = Value::any();
-                        if (node.t == VT::Array && node.arr) {
-                            long long i = kk.toInt(), n = (long long)node.arr->size();
-                            if (i < 0) { i += n; kk = Value::integer(i); }
-                            if (i >= 0 && i < n) child = (*node.arr)[i];
-                        } else if (node.t == VT::Hash && node.hash) {
-                            auto it = node.hash->find(kk.toStr());
-                            if (it != node.hash->end()) child = it->second;
-                        }
-                        pref.push_back(kk);
-                        expand(child, d + 1, pref);
-                        pref.pop_back();
-                    };
-                    const Value& k = keys[d];
-                    if (k.t == VT::Whatever) {
-                        if (node.t == VT::Array && node.arr)
-                            for (long long i = 0; i < (long long)node.arr->size(); i++) emit1(Value::integer(i));
-                        else if (node.t == VT::Hash && node.hash)
-                            for (auto& kv2 : *node.hash) emit1(Value::str(kv2.first));
-                        return;
-                    }
-                    if (k.t == VT::Array || k.t == VT::Range) {
-                        for (auto& e2 : k.flatten()) emit1(e2);
-                        return;
-                    }
-                    emit1(k);
-                };
-                ValueList pref;
-                expand(*root, 0, pref);
+                std::vector<ValueList> tuples = expandDimTuples(*root, keys);
                 Value rhs = eval(a->value.get());
                 ValueList vs = (rhs.t == VT::Array || rhs.t == VT::Range) ? rhs.flatten() : ValueList{rhs};
                 size_t vi = 0;
@@ -21108,44 +21121,7 @@ Value Interpreter::evalIndex(Index* idx) {
                 // slice dims (Whatever / list / range per level) with adverbs:
                 // expand into concrete per-branch index tuples, then apply the
                 // adverb set per tuple, assembling one flat result list
-                std::vector<ValueList> tuples;
-                std::function<void(const Value&, size_t, ValueList&)> expand =
-                    [&](const Value& node, size_t d, ValueList& pref) {
-                    if (d == keys.size()) { tuples.push_back(pref); return; }
-                    auto emit1 = [&](Value kk) {
-                        if (kk.t == VT::Code && kk.code) // *-1 against this branch's size
-                            kk = (node.t == VT::Array && node.arr)
-                               ? callCallable(kk, ValueList{Value::integer((long long)node.arr->size())})
-                               : callCallable(kk, ValueList{node});
-                        Value child = Value::any();
-                        if (node.t == VT::Array && node.arr) {
-                            long long i = kk.toInt(), n = (long long)node.arr->size();
-                            if (i < 0) { i += n; kk = Value::integer(i); }
-                            if (i >= 0 && i < n) child = (*node.arr)[i];
-                        } else if (node.t == VT::Hash && node.hash) {
-                            auto it = node.hash->find(kk.toStr());
-                            if (it != node.hash->end()) child = it->second;
-                        }
-                        pref.push_back(kk);
-                        expand(child, d + 1, pref);
-                        pref.pop_back();
-                    };
-                    const Value& k = keys[d];
-                    if (k.t == VT::Whatever) {
-                        if (node.t == VT::Array && node.arr)
-                            for (long long i = 0; i < (long long)node.arr->size(); i++) emit1(Value::integer(i));
-                        else if (node.t == VT::Hash && node.hash)
-                            for (auto& kv2 : *node.hash) emit1(Value::str(kv2.first));
-                        return;
-                    }
-                    if (k.t == VT::Array || k.t == VT::Range) {
-                        for (auto& e2 : k.flatten()) emit1(e2);
-                        return;
-                    }
-                    emit1(k);
-                };
-                ValueList pref;
-                expand(base, 0, pref);
+                std::vector<ValueList> tuples = expandDimTuples(base, keys);
                 Value out = Value::array(); out.isList = true;
                 for (auto& tup : tuples) {
                     Value cur = base; bool navOk = true;
@@ -22765,11 +22741,18 @@ Value Interpreter::eval(Expr* e) {
             // unified can() over the builtin surface, so dispatch and convert
             // only the NotFound raised for THIS method on THIS invocant; a
             // NotFound thrown deeper inside a real method still propagates.
+            // The dispatched name is `mc->method` itself in the common case: only
+            // `!priv` and `.^meta` build one, and building it unconditionally cost
+            // a std::string copy on every method call in the program.
+            std::string prefixed;
+            if (mc->bang || mc->meta) prefixed = (mc->bang ? "!" : "^") + mc->method;
+            const std::string& mname = (mc->bang || mc->meta) ? prefixed : mc->method;
             if (mc->maybe) {
                 try {
-                    Value res = methodCall(inv,
-                        mc->bang ? "!" + mc->method : mc->meta ? "^" + mc->method : mc->method,
-                        args, &mc->args);
+                    // `args` is dead after this call — the catch below reads only
+                    // the exception and the invocant — so it moves rather than
+                    // copying the vector and every Value in it.
+                    Value res = methodCall(inv, mname, std::move(args), &mc->args);
                     if (mc->mutate) assignChecked(mc->inv.get(), res);
                     return res;
                 }
@@ -22793,9 +22776,7 @@ Value Interpreter::eval(Expr* e) {
                     throw;
                 }
             }
-            Value res = methodCall(inv,
-                mc->bang ? "!" + mc->method : mc->meta ? "^" + mc->method : mc->method,
-                args, &mc->args);
+            Value res = methodCall(inv, mname, std::move(args), &mc->args);
             if (mc->mutate) assignChecked(mc->inv.get(), res);
             return res;
         }
