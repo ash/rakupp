@@ -31,6 +31,10 @@ trips over.
 - **[differences.md](differences.md)** — where Raku++ and Rakudo differ, in both
   directions: what Raku++ does that Rakudo does not, where Rakudo is ahead, and
   the handful you will actually run into.
+- **[6e.md](6e.md)** — what the 6.e language revision adds to 6.d, and what
+  `use v6.e.PREVIEW` actually turns on: new syntax, subs and methods, the
+  behaviour changes that bite, the new compile-time errors — each with both
+  outputs, plus where Raku++ matches and where it does not.
 
 ## Adding one
 

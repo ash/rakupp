@@ -20,7 +20,7 @@ point; everything else lives here, in four places:
 - **[guide/HIGHLIGHTS.md](guide/HIGHLIGHTS.md)** — the key features, in bullets, on one page.
 - **[guide/OVERVIEW.md](guide/OVERVIEW.md)** — a one-page tour: what Raku++ is, its goals, capabilities, and how it compares to Rakudo.
 - **[guide/GUIDE.md](guide/GUIDE.md)** — the full overview: goals, status, the compile modes, running against Roast, architecture.
-- **[guide/faq/](guide/faq/)** — short answers to questions people actually ask, every snippet verified against both engines, with the Raku++/Rakudo differences called out.
+- **[guide/faq/](guide/faq/)** — short answers to questions people actually ask, every snippet verified against both engines, with the Raku++/Rakudo differences called out. Includes [guide/faq/6e.md](guide/faq/6e.md), the consolidated 6.e-versus-6.d changelog that upstream has not written.
 
 ### Looking things up
 
@@ -30,7 +30,6 @@ point; everything else lives here, in four places:
 
 ### Topics
 
-- **[guide/LANGUAGE-6E.md](guide/LANGUAGE-6E.md)** — Raku 6.e versus 6.d: the consolidated changelog that upstream has not written. What `use v6.e.PREVIEW` actually turns on — new syntax, subs and methods, the behaviour changes that bite (`sqrt` of a negative, `so (5..1)`, string ranges, `sprintf` flags, role submethods, `.pm` modules), the new compile-time errors — each with both outputs, plus where Raku++ matches and where it does not.
 - **[guide/UNICODE.md](guide/UNICODE.md)** — Unicode support: graphemes, normalization, UCA collation, character introspection.
 - **[guide/ASYNC.md](guide/ASYNC.md)** — concurrency & async: promises, supplies, channels, threads, and the two execution modes.
 - **[guide/PARALLEL-SPEEDUP.md](guide/PARALLEL-SPEEDUP.md)** — how to measure whether `start` actually made a program faster, with two runnable benchmarks and the numbers they produce.
