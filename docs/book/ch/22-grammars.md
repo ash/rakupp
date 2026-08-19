@@ -17,7 +17,7 @@ bool isGrammar = false;
 Inheritance works because `findRule` walks the parent chain exactly as
 `findMethod` does, so `grammar Mine is Base` overrides individual rules.
 
-The pattern text is stored **unparsed**, as the lexer captured it (Chapter 3).
+The pattern text is stored **unparsed**, as the lexer captured it (Chapter 4).
 Compilation happens lazily, per rule, on first use.
 
 ## The grammar matcher
@@ -58,7 +58,7 @@ needs invalidation logic.
 engine's cleverness lives. In order:
 
 1. **Resolve the name** — or rather, read the already-resolved metadata,
-   which the calling node cached (Chapter 20).
+   which the calling node cached (Chapter 21).
 2. **Check the memo**, if this rule is ratcheting.
 3. **Compile the rule body**, if this is its first use, and cache it.
 4. **Bind parameters**, if the call was `<r($x, 'lit')>`.
@@ -183,7 +183,7 @@ costs nothing. `onRule` fires the method with the completed node.
 Three properties of that design, all deliberate:
 
 - **A later backtrack does not unfire an action.** This matches Rakudo; the
-  reasoning is in Chapter 20.
+  reasoning is in Chapter 21.
 - **A memo replay reuses the first firing** rather than firing again, so
   packrat caching does not multiply side effects.
 - **`make` writes into a target on the execution context** —
@@ -255,7 +255,7 @@ function with a flag, so there is one implementation of the anchoring rules.
 
 ## Where grammars appear in this book again
 
-Grammars are the one construct the native code generator refuses (Chapter 25),
+Grammars are the one construct the native code generator refuses (Chapter 26),
 so a program containing one is compiled by bundling rather than transpiling.
 They are also the heaviest exercise in the test suite: the showcase interpreters
 for JavaScript, Perl 5, Python 3 and Lisp are grammar-driven, and each of them,

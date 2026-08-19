@@ -278,6 +278,7 @@ checks that every documented example still prints what the guides say, and
 ### Under the hood
 
 - **[ARCHITECTURE.md](docs/internals/ARCHITECTURE.md)** — how it's built, and what happens to a program in each run mode.
+- **[CLASSIFICATION.md](docs/internals/CLASSIFICATION.md)** — where Raku++ sits in the compiler taxonomy: why neither LL nor LR describes a parser whose operator table changes mid-parse, why the regex engine is classified separately, and what having no IR costs.
 - **[PARSING.md](docs/internals/PARSING.md)** — the front end: from source text to AST — the lexer, the Pratt parser, and how user-defined operators (factorial `postfix:<!>`, custom precedence) are parsed in a single pass.
 - **[RUNTIME.md](docs/internals/RUNTIME.md)** — the runtime model: how statically-typed C++ runs dynamic Raku — the `Value` type, variables and containers, calls and dispatch, and lazy/infinite sequences.
 - **[MEMORY.md](docs/guide/MEMORY.md)** — memory demands and limits: reserved vs. resident, stack sizes and measured recursion depths per mode (interpreter / `--exe` / wasm), and the data-side guardrails.

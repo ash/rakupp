@@ -27,12 +27,12 @@ order is the whole rule, and it has three consequences worth spelling out.
 for free.
 
 **A module's exported sub also shadows a builtin**, because the loader copies it
-into the global environment, which is the last link of the chain (Chapter 31).
+into the global environment, which is the last link of the chain (Chapter 32).
 
 **A compiled program must reproduce this order**, which it cannot do by resolving
 names against the builtin table at compile time. That is a real bug that
 happened — `--exe` printed the built-in `val`'s answer where the interpreter
-called a module's exported `val` — and Chapter 27 describes the fix.
+called a module's exported `val` — and Chapter 28 describes the fix.
 
 The argument *expressions* are passed alongside the values (`&c->args`) so that
 `is rw` write-back can re-resolve them.
@@ -144,7 +144,7 @@ methods are one dispatch function rather than per-type classes.
 
 The ladder is split across four files as ordered segments (Chapter 2), each
 returning `std::optional<Value>`. The name is wrapped in an `MName` at the top
-so the comparisons are integer compares (Chapter 9).
+so the comparisons are integer compares (Chapter 10).
 
 ### What runs before the ladder
 
@@ -174,7 +174,7 @@ The ancestry walk is what makes `augment class Cool { … }` reach an `Int` and 
 `Str`. The guard on `builtinExt_.empty()` is why a program that never augments
 anything pays one branch.
 
-This is also why two of the inline built-in fast paths in Chapter 27 are
+This is also why two of the inline built-in fast paths in Chapter 28 are
 `builtinExt_`-guarded: an inlined `abs` must stop inlining the moment a program
 augments `Int`.
 
@@ -212,7 +212,7 @@ size_t redispatchFloor = 0;   // frames below this are another routine's
 Without it, a `callsame` inside a routine could reach a re-dispatch context
 belonging to a *caller*, and dispatch into something unrelated.
 
-The stack is `static thread_local` for the reason given in Chapter 13: as a
+The stack is `static thread_local` for the reason given in Chapter 14: as a
 plain member it was written by every dispatching call on every thread.
 
 ## Private methods, qualified calls, indirect calls
@@ -256,7 +256,7 @@ which keeps the check on the call path free.
 
 ## Where the time goes
 
-After the two fixes in Chapters 9 and 10, a method call on a built-in costs
+After the two fixes in Chapters 10 and 11, a method call on a built-in costs
 roughly three times what Rakudo charges, down from about twenty. The profile of
 `for ^6000000 { "ab".uc }`:
 

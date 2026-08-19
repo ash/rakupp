@@ -207,7 +207,7 @@ block's `$/` can offer `$<x>` and `$0` — the assertion in
 `/ (\d+) <?{ $0 > 10 }> /` needs them, and they exist only inside the matcher.
 
 `saveState` and `restoreState` exist for one specific purpose: the longest-token
-ranker in Chapter 22 measures branch lengths by *probing*, and a probe must not
+ranker in Chapter 23 measures branch lengths by *probing*, and a probe must not
 leave the interpreter's `:my` variables and deferred `make`s behind. They
 snapshot and roll back that state around a measurement pass.
 
@@ -257,7 +257,7 @@ The result is a `RxMatch`: spans, capture arrays, named spans, the child
 captures are list-valued. The interpreter turns that into a Raku `Match` object,
 which is a `VT::Match` `Value` carrying the subject in `s`, the span in
 `rFrom`/`rTo`, positional captures in `arr` and named ones in `hash` — the
-canonical example of a `Value` with four fields live at once (Chapter 7).
+canonical example of a `Value` with four fields live at once (Chapter 8).
 
 ## Substitution
 

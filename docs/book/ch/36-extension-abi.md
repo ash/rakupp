@@ -486,6 +486,6 @@ Both were worth fixing and neither was the other. But the plan had been
 repeating a guess for as long as it existed, while the answer was written down
 in the thing it was guessing about.
 
-It is the same failure as the benchmark in Chapter 27 that measured a rename
+It is the same failure as the benchmark in Chapter 28 that measured a rename
 instead of the change a rename enables, and the same remedy: **before designing
 around a cause, check whether the code already says what the cause is.**

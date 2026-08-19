@@ -151,7 +151,7 @@ static Value bigint(const BigInt& b) {
 
 **A `FatRat` is a `Rat` with a flag.** Same storage, but the flag carries the
 type identity — contagious through arithmetic — and exempts the value from the
-denominator spill described in Chapter 10.
+denominator spill described in Chapter 11.
 
 **A native integer container is a `Value` with a width.** `my uint8 $b` sets
 `natBits = 8`, `natSigned = false`, and every assignment masks to that width.
@@ -273,10 +273,10 @@ The number moves. It was 392, then 376, then 344 in the course of ordinary
 optimisation work, and the representation plan intends roughly 204 next. Two of
 the reductions are already in this chapter: `hashKind`, `enumName` and
 `enumType` became interned 8-byte handles instead of 24-byte strings
-(Chapter 9), and the string payload became a copy-on-write type (Chapter 8).
+(Chapter 10), and the string payload became a copy-on-write type (Chapter 9).
 
 That instability is also the single most important input to the extension ABI
-in Chapter 35, which is why an extension module never sees this struct at all.
+in Chapter 36, which is why an extension module never sees this struct at all.
 
 ## Honest limitations
 

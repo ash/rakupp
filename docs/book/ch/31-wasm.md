@@ -1,6 +1,6 @@
 # Raku in the Browser
 
-The four modes in Chapter 24 all target a machine with a filesystem, threads
+The four modes in Chapter 25 all target a machine with a filesystem, threads
 and a dynamic loader. There is a fifth target that has none of those: the same
 runtime compiled to **WebAssembly**, which is Raku.js — the interpreter running
 in a browser tab, with no server.
@@ -27,7 +27,7 @@ as the CLI does. The exit code that comes back is the process exit code the CLI
 would have produced.
 
 The other two exports matter more than they look: `rakupp_highlight` is the
-tokenizer behind `rakupp --highlight` (Chapter 37), and it is what lets a
+tokenizer behind `rakupp --highlight` (Chapter 38), and it is what lets a
 browser editor paint Raku with the compiler's own knowledge rather than a
 JavaScript approximation. That thread is picked up at the end of this chapter.
 
@@ -85,7 +85,7 @@ the kind that only shows up when someone runs two programs in a row.
 ## The stack is chosen, not inherited
 
 Every native entry point runs the program on a thread with a very large stack
-(Chapter 12), because the tree walker's recursion depth is the Raku recursion
+(Chapter 13), because the tree walker's recursion depth is the Raku recursion
 budget. A single-threaded WebAssembly build cannot spawn that thread.
 
 So the web entry point deliberately calls `rakuppRun` rather than
@@ -100,7 +100,7 @@ around 200** — and the reason is the next section.
 ## Exceptions: `-fexceptions`, not `-fwasm-exceptions`
 
 This is the most interesting engineering decision in the WebAssembly build, and
-it connects directly to Chapter 14.
+it connects directly to Chapter 15.
 
 The interpreter leans on C++ exceptions for both errors **and control flow**:
 `last`, `next`, `redo`, `when`, `succeed`, `return` across a boundary. Native
@@ -120,7 +120,7 @@ obvious: `-Oz` beats `-O2` here on *both* axes — smaller **and** deeper, 206
 levels against 174 — because a smaller compiled body means fewer frames per Raku
 level.
 
-This is also the sharpest illustration of why Chapter 14's cooperative control
+This is also the sharpest illustration of why Chapter 15's cooperative control
 flow exists. On this host, a C++ throw is not merely slow; it is the thing that
 bounds how deep a Raku program may recurse. Every `return` and `last` the
 interpreter resolves with a flag instead of a throw is one that does not touch
@@ -438,7 +438,7 @@ inside the 400 ms debounce, so re-running everything is *also* the fast thing.
 Incremental machinery would add state to keep correct, in exchange for latency
 nobody can perceive.
 
-It is the same reasoning as Chapter 18's: count the opportunity before building
+It is the same reasoning as Chapter 19's: count the opportunity before building
 the clever version.
 
 ## Embedded editors: one script tag
@@ -508,9 +508,9 @@ Nothing is sent anywhere. The program runs in the visitor's browser.
 | | |
 |---|---|
 | **deep recursion** | around 200 Raku levels, then a `RangeError` the page reports as a recursion-limit message and recovers from |
-| **`start` / `Promise`** | needs real threads; a threaded build needs cross-origin isolation headers, awkward for static hosting (Chapter 36) |
+| **`start` / `Promise`** | needs real threads; a threaded build needs cross-origin isolation headers, awkward for static hosting (Chapter 37) |
 | **sockets** | not available in the browser sandbox |
-| **NativeCall** | takes its no-libffi fallback path by construction — there is no shared library to open (Chapter 34) |
+| **NativeCall** | takes its no-libffi fallback path by construction — there is no shared library to open (Chapter 35) |
 | **`--exe` and the code generator** | irrelevant: this ships the interpreter, not the transpiler |
 | **`exit`** | aborts the module instance; the worker rebuilds a fresh one |
 
@@ -522,7 +522,7 @@ a change to `src/`, and a large one.
 ## Size and memory
 
 A few megabytes of `.wasm`, roughly one to three compressed, **dominated by the
-Unicode tables** (Chapter 23). It downloads once and is cached, with a hash-based
+Unicode tables** (Chapter 24). It downloads once and is cached, with a hash-based
 cache tag so a release invalidates it exactly when the engine changes and not
 otherwise.
 

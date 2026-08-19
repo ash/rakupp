@@ -73,6 +73,21 @@
 }
 \makeatother
 
+% ---------------------------------------------------------------- contents
+% A section number in the contents sits in a fixed-width box, and book.cls
+% sizes that box for one digit either side of the point. This book has
+% thirty-nine chapters and several with more than nine sections, so entries
+% like `36.10` overrun the box and collide with the title. Widen it enough for
+% the worst case the book can produce (two digits, point, two digits).
+% The page-number column is sized for two digits; this book runs past 300, so
+% every three-digit entry overran the text block by 1.3pt. Widen the column and
+% the right margin that clears it by the same amount.
+\makeatletter
+\renewcommand*\l@section{\@dottedtocline{1}{1.5em}{3em}}
+\renewcommand{\@pnumwidth}{2.2em}
+\renewcommand{\@tocrmarg}{3.2em}
+\makeatother
+
 % Tables are set a size down and may break across pages.
 \AtBeginEnvironment{longtable}{\small}
 

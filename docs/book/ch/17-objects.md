@@ -34,7 +34,7 @@ struct ObjectData {
 
 Everything a class *is* lives in that first struct, including the grammar rules
 if it happens to be a grammar — which is how a grammar is just a class whose
-methods can be regexes (Chapter 21).
+methods can be regexes (Chapter 22).
 
 ## Registration and lookup
 
@@ -47,7 +47,7 @@ std::unordered_map<std::string, std::string> classAliases_;
 ```
 
 Flat, not per-compilation-unit. Two modules declaring the same unqualified class
-name collide — a real divergence from Rakudo, listed in Chapter 31.
+name collide — a real divergence from Rakudo, listed in Chapter 32.
 
 The alias map softens the consequences of flatness. Registering `URI::Path` also
 aliases its tail, `Path`, unless a real class already claims that name. And a
@@ -251,8 +251,8 @@ std::unordered_map<std::string,
 ```
 
 keyed by type name then method name, and searched along the native ancestry so
-augmenting `Cool` reaches `Int` and `Str`. Chapter 15 covers the dispatch side;
-Chapter 27 covers why two compiled fast paths have to check whether this map is
+augmenting `Cool` reaches `Int` and `Str`. Chapter 16 covers the dispatch side;
+Chapter 28 covers why two compiled fast paths have to check whether this map is
 empty.
 
 `.^add_method($name, $code)` writes into `ClassInfo::methods` directly, which is
@@ -278,10 +278,10 @@ for a package.
 
 ## Honest limitations
 
-- **Depth-first method resolution**, as in Chapter 15.
+- **Depth-first method resolution**, as in Chapter 16.
 - **Role conflicts are silent**, last writer wins.
 - **The class registry is flat**, so unqualified class names from different
   modules collide. The alias machinery reduces the pain but does not remove the
   cause.
 - **`ClassInfo::decl` is a raw `ClassDecl*`** into the AST, kept alive by the
-  same "the tree is immortal" rule as `Callable::body` (Chapter 6).
+  same "the tree is immortal" rule as `Callable::body` (Chapter 7).

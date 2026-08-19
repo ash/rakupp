@@ -17,7 +17,7 @@ Stated once, applied everywhere:
 - **state the conditions**: machine, architecture, compiler, date.
 
 The control is the part people skip and the part that carries the argument.
-Chapter 18's table has a row for a pure method-dispatch loop, containing nothing
+Chapter 19's table has a row for a pure method-dispatch loop, containing nothing
 node specialisation can touch:
 
 | kernel | base | specialised | delta |
@@ -99,7 +99,7 @@ Behaviour must match. Message wording need not, and chasing it produces churn
 that no test protects. Where a diagnostic *is* asserted, it is asserted by
 exception class and attributes rather than by text — which is why typed
 exceptions are built with attributes rather than formatted strings
-(Chapter 14).
+(Chapter 15).
 
 ## What has and has not paid
 
@@ -144,7 +144,7 @@ concluded that turning a builtin into a named C++ function was worth about 1
 nanosecond per call. That was true for an out-of-line function still taking a
 `ValueList` — and completely missed what a real named function unlocks: direct
 `Value` arguments, no allocation, and an inlinable body. The corrected
-measurement was 5.6 times on an `abs` loop (Chapter 27).
+measurement was 5.6 times on an `abs` loop (Chapter 28).
 
 **Restructuring the shared path while adding a fast one.** The first node
 specialisation made the *control* 5.7% slower, because binding an operand
@@ -174,7 +174,7 @@ pass the invocant and argument list by reference rather than by value, and shrin
 `Value` — and both are being approached carefully rather than quickly, because
 the first trades away an accidental safety property and the second is a
 representation change that the extension ABI was specifically designed to
-survive (Chapter 35).
+survive (Chapter 36).
 
 ## Honesty as a practice
 

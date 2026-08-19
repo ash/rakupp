@@ -165,7 +165,7 @@ The general path covers everything else:
 **Type constraints, `where` clauses and `:D`/`:U` smileys are not enforced for
 an ordinary, non-multi call.** Single dispatch is largely duck-typed at the bind
 boundary. Those checks live in `scoreCandidate`, which is multi dispatch's
-business (Chapter 15).
+business (Chapter 16).
 
 There is one exception, `typeCheckBind`, used when a lone candidate is being
 bound and a mismatch should raise `X::TypeCheck::Binding`. It caches its
@@ -231,7 +231,7 @@ if ((p.isRw || p.sigil == '\\') && pi < rwArgs->size())
 `setupRwLinks` additionally arranges for an assignment *inside* the callee to
 push through immediately, so the caller sees the change mid-call. The
 bookkeeping that keeps those two mechanisms from fighting is described in
-Chapter 11.
+Chapter 12.
 
 The whole thing is guarded by a sticky flag, `anyRwLinks_`, so a program that
 never uses `is rw` never runs the per-assignment hook at all.
@@ -271,6 +271,6 @@ the **floor**: about 46 nanoseconds for a *trivial* call, nearly all of it the
 `ValueList` — a heap-allocating `std::vector` built per call.
 
 Dispatch was a quarter of the overhead. The argument vector was the rest. That
-finding is what shaped the optimiser in Chapter 26: its first pass gives
+finding is what shaped the optimiser in Chapter 27: its first pass gives
 fixed-arity subs direct `Value` parameters and removes the vector entirely,
 which buys more than any lookup cache can.

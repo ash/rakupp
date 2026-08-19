@@ -55,7 +55,7 @@ point; everything else lives here, in four places:
 ## book/ — the compiler book
 
 - **[book/Raku++-Internals.pdf](book/Raku++-Internals.pdf)** — *Raku++
-  Internals*, 317 pages in nine parts: the front end, the value model, the
+  Internals*, 320 pages in nine parts: the front end, the value model, the
   interpreter, the regex and grammar engine, Unicode, the four run modes and the
   native code generator, the boundaries (modules, the installer and the
   zef-shared store, `use nqp`, NativeCall, the extension ABI, concurrency), and
@@ -71,6 +71,7 @@ point; everything else lives here, in four places:
 ## internals/ — how it works
 
 - **[internals/ARCHITECTURE.md](internals/ARCHITECTURE.md)** — how it's built, and what happens to a program in each run mode.
+- **[internals/CLASSIFICATION.md](internals/CLASSIFICATION.md)** — where Raku++ sits in the compiler taxonomy: recursive descent with a Pratt core over an operator table that changes mid-parse (so neither LL nor LR applies), a backtracking regex engine that borrows a Thompson NFA for one question only, and a back end with no IR at all — plus what each classification costs.
 - **[internals/PARSING.md](internals/PARSING.md)** — the front end: from source text to AST — the lexer, the Pratt parser, and how user-defined operators (and other in-program grammar tweaks) are handled in a single pass.
 - **[internals/RUNTIME.md](internals/RUNTIME.md)** — the runtime model: how statically-typed C++ runs dynamic Raku — what a `Value` is, how variables and containers relate, calls and dispatch, and lazy/infinite sequences.
 - **[internals/METAPROGRAMMING.md](internals/METAPROGRAMMING.md)** — language-mutation coverage: custom operators, precedence traits, phasers, MOP, macros/slangs.

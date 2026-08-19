@@ -9,7 +9,7 @@ the layout that makes a directory tree function as a protocol, and the
 installer that writes it.
 
 The order of construction matters here. Raku++ could **read** the store long
-before it could write it: Chapter 31 ends with `use` resolving zef-installed
+before it could write it: Chapter 32 ends with `use` resolving zef-installed
 modules straight out of Rakudo's install tree. Then the zef-compatibility work
 gave the engine a **writer** — enough of `CompUnit::Repository::Installation`
 that zef itself, running under rakupp, could install things. `rakupp install`
@@ -85,7 +85,7 @@ store's entries and compare. Line 5 of a 2021-era entry in a long-lived home
 store matches *no* current formula — the checksum recipe has changed across
 Rakudo versions, which is itself evidence that nothing load-bearing reads it.)
 
-One Raku++ divergence from Chapter 31 needs an update in this light: `use
+One Raku++ divergence from Chapter 32 needs an update in this light: `use
 Foo:ver<1.2+>` adverbs are discarded during lib-path search, but against the
 *installed* index the `:ver` constraint **is** honoured — it is checked against
 line 1 of each candidate entry. `:auth` and `:api` are still not consulted.
@@ -150,7 +150,7 @@ checkout). The reasons are worth spelling out, because "write the package tool
 in C++" is the default instinct and it is wrong here:
 
 - A compiled `--exe` binary and an embedded `librakupp` must not carry an
-  HTTP client, an ecosystem-index parser and a tar reader (Chapter 28 is an
+  HTTP client, an ecosystem-index parser and a tar reader (Chapter 29 is an
   entire chapter about removing things from the binary).
 - The installer changes at ecosystem speed, not engine speed.
 - It is dogfood: the project's own tooling running on the interpreter it
@@ -306,7 +306,7 @@ gated in CI or verified on a real store:
 
 | Claim | Evidence |
 |---|---|
-| rakupp reads zef-installed modules | Chapter 31's resolver; the whole module battery runs on zef-installed deps |
+| rakupp reads zef-installed modules | Chapter 32's resolver; the whole module battery runs on zef-installed deps |
 | Rakudo reads rakupp-installed modules | a 7-distribution graph (`License::SPDX` ← `JSON::Class` ← …) installed by `rakupp install` loads under Rakudo from the same store, resources included — `License::SPDX.new.licenses.elems` is 727 under both |
 | zef itself runs under rakupp | zef's install path drives the engine's `.install` — the same writer `rakupp install` uses |
 | the stores compose | one `~/.raku` holding zef-written and rakupp-written distributions side by side resolves under both engines; the two entry dialects differ only in lines no reader consults |
@@ -314,7 +314,7 @@ gated in CI or verified on a real store:
 
 And the honest boundary of the claim: **precompilation does not travel.**
 Rakudo's `precomp/` is keyed to its compiler build and rakupp neither writes
-nor invalidates it; rakupp's own AST cache (Chapter 29) lives outside the
+nor invalidates it; rakupp's own AST cache (Chapter 30) lives outside the
 store entirely, in `~/.cache/rakupp/precomp`, and is off by default. Each
 engine's cache is private state layered over shared truth — which the
 File::Temp story shows is exactly where the seams are: the store stayed

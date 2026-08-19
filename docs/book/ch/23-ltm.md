@@ -124,7 +124,7 @@ recycled by the allocator, and the map handed out an automaton built for a
 completely different pattern. The symptom, found by the phase-1 harness on a
 Roast alternation file, was empty or nonsense ranks.
 
-That is the exact opposite of the flip-flop state map in Chapter 17, which *is*
+That is the exact opposite of the flip-flop state map in Chapter 18, which *is*
 keyed on a node address and *is* correct — because AST nodes are never freed
 while regex nodes are. The rule to extract: **a pointer is only a valid key when
 its target's lifetime is at least the map's.**

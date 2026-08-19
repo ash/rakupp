@@ -140,7 +140,7 @@ carry a great deal of information that only matters at run time. None of it is
 *checked* during parsing; it is recorded as data for the binder and the
 dispatcher.
 
-**`parseSub`** reads the name (or an operator declaration, Chapter 5), the
+**`parseSub`** reads the name (or an operator declaration, Chapter 6), the
 signature, a trait loop, an optional return type from `-->` / `of` / `returns`,
 and the body. It also handles `multi` and `proto`, `method`/`submethod`,
 alternate signatures `(a) | (b)` sharing one body, and the immediate-call form
@@ -154,7 +154,7 @@ expression — and dispatched at run time to a user-defined
 own handler without the parser knowing anything about it.
 
 **`parseSignature`** builds a `std::vector<Param>`. One `Param` carries a
-remarkable number of flags, all of them from Chapter 6's struct: positional or
+remarkable number of flags, all of them from Chapter 7's struct: positional or
 named, optional or required, the slurpy kind (`*@` flattening, `**@`
 non-flattening, `+@` single-arg rule), a default expression, a type constraint,
 a `:D`/`:U` smiley, a `where` clause, a coercion type `Int(Str)`, `is rw` /
@@ -215,7 +215,7 @@ The one parse-time side effect in the entire front end is registering a
 user-declared operator, which is lexical bookkeeping rather than execution.
 `use Foo` participates in exactly that much: `scanModuleOps` finds the module's
 source and *text-scans* it for operator declarations, so the rest of the
-importing file parses. It does not lex or parse the module (Chapter 31).
+importing file parses. It does not lex or parse the module (Chapter 32).
 
 ## Errors
 

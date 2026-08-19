@@ -234,7 +234,7 @@ Every source the scan read is recorded in `opScanned_` as a (path, content)
 pair. That is not for the parse; it is for the cache. A file's parse is only
 valid while the modules it scanned still declare what they declared — an
 imported module that gains or loses an operator changes how *this* file parses,
-without this file changing at all. Chapter 29 uses that list as a cache key.
+without this file changing at all. Chapter 30 uses that list as a cache key.
 
 ## The line this draws
 

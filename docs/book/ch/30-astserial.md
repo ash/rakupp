@@ -37,7 +37,7 @@ StrLit::nfcDone
 ```
 
 Each has an "undecided" sentinel and is rebuilt lazily on first evaluation
-(Chapter 18), so a loaded tree behaves identically to a freshly parsed one — it
+(Chapter 19), so a loaded tree behaves identically to a freshly parsed one — it
 just has not warmed up yet. Storing them would be both larger and more fragile,
 since `litVal` is a pointer.
 
@@ -110,7 +110,7 @@ legitimately parse differently.
 
 **The operators of everything it `use`s are unchanged.** This is the deepest
 one. A module that gains or loses an operator declaration changes how *this*
-file parses, without this file changing at all (Chapter 5). So the parser records
+file parses, without this file changing at all (Chapter 6). So the parser records
 every source it scanned:
 
 ```cpp
@@ -168,7 +168,7 @@ apply here.
 
 ## The other consumer: embedded modules
 
-The same serialisation carries modules inside a compiled binary (Chapter 24):
+The same serialisation carries modules inside a compiled binary (Chapter 25):
 
 ```cpp
 // src/Interpreter.h

@@ -62,15 +62,16 @@ If you are here for one thing in particular:
 
 | You want | Start at |
 |---|---|
-| the overall map | Chapter 1, then Chapter 24 |
+| the overall map | Chapter 1, then Chapter 25 |
+| what kind of compiler this is | Chapter 3 |
 | how source becomes a tree | Part II |
-| what a runtime value *is* | Chapter 7 |
-| how a Raku call actually happens | Chapters 13 to 15 |
+| what a runtime value *is* | Chapter 8 |
+| how a Raku call actually happens | Chapters 14 to 16 |
 | regexes and grammars | Part V |
 | the native compiler | Part VII |
-| Raku in a browser | Chapter 30 |
-| installing modules, and the store zef shares | Chapter 32 |
-| calling C, or being called from it | Chapters 34 and 35 |
+| Raku in a browser | Chapter 31 |
+| installing modules, and the store zef shares | Chapter 33 |
+| calling C, or being called from it | Chapters 35 and 36 |
 
 ## Conventions {-}
 

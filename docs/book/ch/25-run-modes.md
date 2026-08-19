@@ -25,7 +25,7 @@ demo.raku ─► Lexer ─► Parser ─► Program (AST)
 
 `main` reads the source and calls `rakuppRunBigStack`, which lexes, parses, and
 hands the `Program` to `Interpreter::run`. Evaluation is the recursive
-`eval`/`exec` of Chapter 12: the `for` loop iterates and re-executes its body
+`eval`/`exec` of Chapter 13: the `for` loop iterates and re-executes its body
 block, `square($_)` looks the sub up in the environment chain and calls it,
 `$total += …` re-dispatches through `applyArith`.
 
@@ -178,7 +178,7 @@ the rest, always producing a correct binary. The user is told which happened.
 ## What every mode shares
 
 **One runtime.** Everything except the CLI is in `librakupp_rt.a` — plus four
-feature archives a compiled binary may leave out, which is Chapter 28. A feature
+feature archives a compiled binary may leave out, which is Chapter 29. A feature
 implemented once behaves identically in all four modes. `Value` is the shared
 currency, `callBuiltin`/`callCallable` the shared calling convention,
 `rtIndexRef`/`rtAttrRef`/`rtArrayVal` the shared container operations, and
@@ -191,7 +191,7 @@ budget matches across modes.
 **Modules are always interpreted.** `Codegen` emits a call to
 `Interpreter::rtUse`, a thin mirror of the interpreter's `use` handling, which
 calls the same `loadModule`. Only the *main program* is compiled; a compiled
-binary still loads and interprets its modules (Chapter 31) — though it can
+binary still loads and interprets its modules (Chapter 32) — though it can
 carry their serialised ASTs inside itself, which is the next section.
 
 ## Carrying modules inside a binary
@@ -220,7 +220,7 @@ which is also what has to happen for anything only a running program can name
 
 `--bundle` needs one extra thing, and it is a subtle one. It parses the main
 program at *run* time, and that parse has to scan each `use`d module for the
-operators it declares (Chapter 5) — otherwise a program using an imported
+operators it declares (Chapter 6) — otherwise a program using an imported
 operator stops parsing once the module tree is gone. So bundled binaries also
 carry the module **sources**:
 
@@ -239,4 +239,4 @@ The same runtime compiled to **WebAssembly** is Raku.js: the interpreter running
 in a browser tab, with the same `Value` semantics and no server. It is mode 1
 with a different host — but the host removes the filesystem, the threads and the
 dynamic loader, which changes enough to be worth its own chapter. That is
-Chapter 30, at the end of this part.
+Chapter 31, at the end of this part.

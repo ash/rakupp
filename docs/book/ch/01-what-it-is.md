@@ -65,7 +65,7 @@ optimizer before the C++ compiler sees anything. Anything it cannot transpile
 throws a `CodegenError`, which the driver catches and answers by bundling the
 whole program instead — so `--exe` never refuses a program.
 
-Chapter 24 works one small program through all four.
+Chapter 25 works one small program through all four.
 
 ## What the design is optimised for
 
@@ -73,7 +73,7 @@ Three decisions dominate everything else, and each gets a full chapter later.
 
 **One value type.** Every Raku value at runtime is the same C++ struct,
 `Value`, carrying a one-byte tag and a field for every kind of payload. Not a
-union, not a `std::variant`, not a class hierarchy — a *fat struct*. Chapter 7
+union, not a `std::variant`, not a class hierarchy — a *fat struct*. Chapter 8
 argues the case, which is stronger than it first looks, and prices the memory
 it costs.
 
@@ -87,7 +87,7 @@ with a very large stack.
 becomes a tagged block that the interpreter schedules after the parse;
 `constant` is not folded; `use` does not load anything during parsing. There is
 exactly one parse-time side effect — registering a user-declared operator in the
-parser's own tables — and Chapter 5 is about why that one is enough to support
+parser's own tables — and Chapter 6 is about why that one is enough to support
 custom operators with real precedence in a single forward pass, and why it is
 also the reason macros and slangs are not supported.
 
@@ -134,7 +134,7 @@ genuine bugs in Raku++; several fixes in later chapters were found that way.
 
 | Part | Covers |
 |---|---|
-| I | this chapter, and the layout of the source |
+| I | this chapter, the layout of the source, and where the design sits in the compiler taxonomy |
 | II | lexer, parser, user-defined operators, the AST |
 | III | `Value`, strings, interning, numbers, containers |
 | IV | the tree walk, calls, control flow, dispatch, objects, laziness |

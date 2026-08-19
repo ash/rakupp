@@ -8,7 +8,7 @@ recursive, both switch on the node's `NK` tag, and the C++ call stack *is* the
 Raku call stack.
 
 That decision buys a small implementation and costs throughput, and every
-optimisation in Chapters 18, 26 and 27 exists because of it.
+optimisation in Chapters 19, 27 and 28 exists because of it.
 
 ## The two entry points
 
@@ -23,7 +23,7 @@ Value execBlock(Block* b, std::shared_ptr<Env> scope, bool sink = false);
 body, a statement in the middle of a block — the flag says so, and an assignment
 can skip materialising its (possibly very large) result. It is a small thing
 that turns the naive `$s ~= …` in a loop from quadratic into linear, in
-combination with the in-place append described in Chapter 26.
+combination with the in-place append described in Chapter 27.
 
 `execBlock` runs a statement list in a given scope, handling the phaser
 schedule around it.
@@ -59,7 +59,7 @@ static thread_local ExecContext tctx_;
 ```
 
 It is `static thread_local`, so each real worker thread owns its own set. That
-is the foundation of the concurrency model in Chapter 36 — with per-thread
+is the foundation of the concurrency model in Chapter 37 — with per-thread
 registers, running Raku on a second thread does not need a register swap at
 every handover.
 
@@ -86,23 +86,23 @@ if (Value* p = tctx_.cur->find(ve->name))
 
 with the `Proxy` check placed so that the common case is one comparison. Names
 with a twigil — `$*dyn`, `$?FILE`, `$^a`, `$/` — never reach this path; each has
-its own lookup rule, and the fast paths in Chapter 18 exclude them by testing
+its own lookup rule, and the fast paths in Chapter 19 exclude them by testing
 the second character of the name.
 
 **`Binary`** dispatches through `applyArith`, but first consults two
 decided-once fields on the node: `simpleOp`, which records whether this operator
 needs special handling at all, and `fastShape`, which records the syntactic
-shape of the operands. Chapter 18 is entirely about those.
+shape of the operands. Chapter 19 is entirely about those.
 
 **`Index`** reads a container element, and has a matching `fastShape`.
 
-**`Call`** and **`MethodCall`** are Chapters 13 and 15.
+**`Call`** and **`MethodCall`** are Chapters 14 and 16.
 
 **`InterpStr`** evaluates each part and concatenates. The parts were already
 parsed into sub-expressions by the front end, so there is no string scanning
 here at all.
 
-**`NqpOp`** exists only under `use nqp` (Chapter 33).
+**`NqpOp`** exists only under `use nqp` (Chapter 34).
 
 ## Evaluating a statement
 
@@ -116,7 +116,7 @@ Before a statement list runs, two things are pre-registered.
 **`hoistSubs`** walks the list and defines every named `SubDecl` in the scope,
 so a sub is callable across its whole enclosing scope regardless of textual
 order. This is why subs need no forward declaration while *operators* do
-(Chapter 5): sub visibility is a runtime fact, operator visibility a parse-time
+(Chapter 6): sub visibility is a runtime fact, operator visibility a parse-time
 one.
 
 **`hoistExprDecls`** pre-declares `my` variables that are buried inside
@@ -165,7 +165,7 @@ void runNextPhasers(const std::vector<StmtPtr>& stmts,
 The program-level phasers — `BEGIN`, `CHECK`, `INIT`, `END` — are scheduled by
 `run()` rather than by a block: `BEGIN` in source order after the parse, `CHECK`
 reversed, `INIT` immediately before the mainline, `END` at process exit. This is
-where the "the parser runs nothing" decision from Chapter 4 becomes visible: a
+where the "the parser runs nothing" decision from Chapter 5 becomes visible: a
 `BEGIN` block runs *after* the whole file has been parsed, so it cannot
 influence how later source is read.
 
@@ -222,7 +222,7 @@ them can be expensive.
 The `sink` flag threads that knowledge down. Its most valuable use is
 assignment: in sink context, `evalAssign` does not need to produce the assigned
 value as a result, so `@big = @other` does not build a second copy to throw
-away. Combined with `rtCatAssign`'s in-place append (Chapter 26), this is what
+away. Combined with `rtCatAssign`'s in-place append (Chapter 27), this is what
 makes string building in a loop linear.
 
 ## Recursion, and the stack it needs
@@ -243,7 +243,7 @@ int rakuppMainOnBigStack(int (*body)(void*), void* ctx);
 
 and worker threads get the same treatment through `BigStackThread`, which
 reserves 256 MiB of *virtual* address space — committed only as used
-(Chapter 36). A compiled `--exe` binary calls `rakuppMainOnBigStack` for its own
+(Chapter 37). A compiled `--exe` binary calls `rakuppMainOnBigStack` for its own
 main body, so the recursion budget is the same in every mode.
 
 The interpreter also keeps a `callDepth` register and raises a clean Raku error
@@ -254,7 +254,7 @@ a segmentation fault.
 
 Re-dispatching every AST node on every execution is inherently slower than
 bytecode or a JIT. The profile of a method-heavy loop, after the fixes in
-Chapters 9 and 10, looks like this:
+Chapters 10 and 11, looks like this:
 
 | | share |
 |---|---:|
@@ -271,5 +271,5 @@ model.
 That is why the optimisation work in this book goes after allocation — the
 per-call `ValueList`, the per-operation `Value` box, the per-copy string — and
 not after the dispatch mechanism. The one place the dispatch mechanism itself
-was worth attacking is Chapter 18, and even there the win came from removing
+was worth attacking is Chapter 19, and even there the win came from removing
 copies rather than from removing branches.

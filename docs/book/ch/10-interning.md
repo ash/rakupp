@@ -94,7 +94,7 @@ means giving each its own guard *and* preserving the fall-through order between
 them — a large, risky rewrite for a single-digit percentage.
 
 The 42% now sitting in allocation and `Value` churn is the real remaining
-target, and it is a different problem (Chapter 15).
+target, and it is a different problem (Chapter 16).
 
 ## `IStr`: the storable counterpart
 

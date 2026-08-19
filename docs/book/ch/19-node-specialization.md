@@ -229,7 +229,7 @@ generator keeps variables in C++ locals, so there is no lookup and no copy, and
 it calls `applyArith` directly rather than going through `evalBinary`, so the
 temporal and hyper probes never existed there. With `-O` it goes one level
 deeper still, into a raw `int64` lane that never materialises a `Value` for the
-arithmetic at all (Chapter 26).
+arithmetic at all (Chapter 27).
 
 What this change really did was close part of the gap between the interpreter
 and what the code generator had been doing all along — which is why the win was

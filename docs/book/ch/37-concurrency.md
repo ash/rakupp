@@ -16,7 +16,7 @@ collectors — was originally interpreter members. It is now a struct:
 
 ```cpp
 // src/Interpreter.h
-struct ExecContext { /* Chapter 12 */ };
+struct ExecContext { /* Chapter 13 */ };
 static thread_local ExecContext tctx_;
 void saveCtx(ExecContext& c);
 void loadCtx(ExecContext& c);

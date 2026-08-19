@@ -4,37 +4,37 @@
 
 | If you are changing | Start in | Also read |
 |---|---|---|
-| tokenization, quoting, heredocs | `Lexer.cpp`, `Token.h` | Chapter 3 |
-| statement or expression syntax | `Parser.cpp`, `Ast.h` | Chapters 4 and 6 |
-| a user-declared operator | `Parser.cpp` `parseSub`, the `userInfix_` family | Chapter 5 |
-| what a value *is* | `Value.h` | Chapter 7 |
-| string performance | `Value.h` `CowStr`, `BuiltinsShared.h` | Chapters 8 and 23 |
-| the number tower | `BigInt.cpp`, `IntOps.h`, `Value::rat` | Chapter 10 |
-| scoping, assignment, binding | `Interpreter.cpp` `lvalue`, `evalAssign` | Chapter 11 |
-| calls and signatures | `Interpreter.cpp` `callCallableRaw`, `bindParams` | Chapter 13 |
-| `return`, `next`, `last`, `when` | the cooperative registers in `ExecContext` | Chapter 14 |
-| a built-in routine | `Builtins.cpp` `registerBuiltins` | Chapter 15 |
-| a built-in **method** | the four `methodCall` segments, **in order** | Chapters 2 and 15 |
-| classes, roles, mixins | `Interpreter.cpp` `ClassDecl` handling, `Value.h` | Chapter 16 |
-| laziness, `gather` | `LazySeqState`, `seqOp`, the gather stack | Chapter 17 |
-| interpreter speed | `evalBinary`, `evalIndex`, the decided-once fields | Chapter 18 |
-| regex syntax | `Regex.cpp` `parseAtom` | Chapter 19 |
-| regex matching | `Regex.cpp` `matchNode` | Chapter 20 |
-| grammars | `GrammarMatcher`, `Interpreter::grammarParse` | Chapter 21 |
-| alternation ranking | `LtmNfa.cpp` | Chapter 22 |
-| Unicode | `Unicode.cpp`, `tools/ucd/`, the generators | Chapter 23 |
-| the CLI and compile drivers | `main.cpp` | Chapter 24 |
-| the native compiler | `Codegen.cpp`, the `rt*` helpers in `Interpreter.h` | Chapters 25 to 27 |
-| what a binary keeps | `SlimScan.cpp`, `ucd_seam.h`, `src/stubs/` | Chapter 28 |
-| the parse cache | `AstSerial.cpp` | Chapter 29 |
-| the browser build | `rakujs/rakupp_web.cpp`, `rakujs/build.sh`, `raku.js` | Chapter 30 |
-| module loading | `Interpreter.cpp` `loadModule`, `Parser.cpp` `scanModuleOps` | Chapter 31 |
-| the installer and the store | `tools/install.raku`, `Builtins.cpp` `.install` | Chapter 32 |
-| `nqp::` ops | `Parser::makeNqpOp`, `Interpreter::evalNqpOp` | Chapter 33 |
-| NativeCall | `Ffi.cpp`, `Interpreter::callNative` | Chapter 34 |
-| the extension ABI | `rakupp_ext.h`, `ExtApi.cpp` | Chapter 35 |
-| threads, the GIL, supplies | `Interpreter.h`'s concurrency section | Chapter 36 |
-| lint, highlight, profile, REPL | `Lint.cpp`, `Highlight.cpp`, `Profiler.cpp`, `Repl.cpp` | Chapter 37 |
+| tokenization, quoting, heredocs | `Lexer.cpp`, `Token.h` | Chapter 4 |
+| statement or expression syntax | `Parser.cpp`, `Ast.h` | Chapters 5 and 7 |
+| a user-declared operator | `Parser.cpp` `parseSub`, the `userInfix_` family | Chapter 6 |
+| what a value *is* | `Value.h` | Chapter 8 |
+| string performance | `Value.h` `CowStr`, `BuiltinsShared.h` | Chapters 9 and 24 |
+| the number tower | `BigInt.cpp`, `IntOps.h`, `Value::rat` | Chapter 11 |
+| scoping, assignment, binding | `Interpreter.cpp` `lvalue`, `evalAssign` | Chapter 12 |
+| calls and signatures | `Interpreter.cpp` `callCallableRaw`, `bindParams` | Chapter 14 |
+| `return`, `next`, `last`, `when` | the cooperative registers in `ExecContext` | Chapter 15 |
+| a built-in routine | `Builtins.cpp` `registerBuiltins` | Chapter 16 |
+| a built-in **method** | the four `methodCall` segments, **in order** | Chapters 2 and 16 |
+| classes, roles, mixins | `Interpreter.cpp` `ClassDecl` handling, `Value.h` | Chapter 17 |
+| laziness, `gather` | `LazySeqState`, `seqOp`, the gather stack | Chapter 18 |
+| interpreter speed | `evalBinary`, `evalIndex`, the decided-once fields | Chapter 19 |
+| regex syntax | `Regex.cpp` `parseAtom` | Chapter 20 |
+| regex matching | `Regex.cpp` `matchNode` | Chapter 21 |
+| grammars | `GrammarMatcher`, `Interpreter::grammarParse` | Chapter 22 |
+| alternation ranking | `LtmNfa.cpp` | Chapter 23 |
+| Unicode | `Unicode.cpp`, `tools/ucd/`, the generators | Chapter 24 |
+| the CLI and compile drivers | `main.cpp` | Chapter 25 |
+| the native compiler | `Codegen.cpp`, the `rt*` helpers in `Interpreter.h` | Chapters 26 to 28 |
+| what a binary keeps | `SlimScan.cpp`, `ucd_seam.h`, `src/stubs/` | Chapter 29 |
+| the parse cache | `AstSerial.cpp` | Chapter 30 |
+| the browser build | `rakujs/rakupp_web.cpp`, `rakujs/build.sh`, `raku.js` | Chapter 31 |
+| module loading | `Interpreter.cpp` `loadModule`, `Parser.cpp` `scanModuleOps` | Chapter 32 |
+| the installer and the store | `tools/install.raku`, `Builtins.cpp` `.install` | Chapter 33 |
+| `nqp::` ops | `Parser::makeNqpOp`, `Interpreter::evalNqpOp` | Chapter 34 |
+| NativeCall | `Ffi.cpp`, `Interpreter::callNative` | Chapter 35 |
+| the extension ABI | `rakupp_ext.h`, `ExtApi.cpp` | Chapter 36 |
+| threads, the GIL, supplies | `Interpreter.h`'s concurrency section | Chapter 37 |
+| lint, highlight, profile, REPL | `Lint.cpp`, `Highlight.cpp`, `Profiler.cpp`, `Repl.cpp` | Chapter 38 |
 
 ## Rules that are easy to break by accident
 

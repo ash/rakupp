@@ -41,7 +41,7 @@ acting as a keyword. That is why Raku has no reserved-word list and why `my $if
 carrying only its spelling. The lexer knows nothing about precedence,
 associativity, or which operators exist beyond a fixed vocabulary of spellings.
 All of that is the parser's problem, which is precisely what makes
-user-declared operators possible (Chapter 5).
+user-declared operators possible (Chapter 6).
 
 ## `spaceBefore`: whitespace is significant
 
@@ -192,7 +192,7 @@ bool tryRuleDecl(std::vector<Token>& out, bool spaced);
 `Tok::RegexLit`. Regex syntax is a different sub-language — `<[a..z]>`, `**`,
 `%%`, `<?{ … }>` mean nothing to the Raku tokenizer — so keeping it out of the
 token stream avoids teaching the lexer two grammars. The regex engine re-lexes
-the captured text later, in Chapter 19.
+the captured text later, in Chapter 20.
 
 The same applies to a bare `/…/` literal and the `s///` family: the pattern
 text travels in `Token::text` and the replacement in `Token::text2`, both
@@ -236,4 +236,4 @@ meaningful once the scan has eaten the rest of the file.
 An `atEof` flag rides along on the resulting error. Only the REPL reads it, to
 tell "give me a continuation line" from "this is a syntax error" — which is how
 a half-typed string literal at an interactive prompt asks for more input instead
-of failing (Chapter 37).
+of failing (Chapter 38).

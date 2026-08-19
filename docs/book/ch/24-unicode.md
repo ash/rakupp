@@ -43,7 +43,7 @@ long long cowGraphemeCount(const CowStr& s);
 ```
 
 The `cow*` forms are the memoised ones. They read the flags cached on the
-promoted string body (Chapter 8), so the answer is computed once per string
+promoted string body (Chapter 9), so the answer is computed once per string
 rather than once per character examined.
 
 The condition is narrow and exact: **all bytes below 0x80, and no carriage
@@ -126,7 +126,7 @@ is a binary search plus a hash lookup at run time.
 mirroring, and the binary and enumerated properties. `uniMatchesProp` is what
 backs `<:Nd>` and `<:L>` inside a regex character class — which is why a regex
 class with a Unicode property in it is a `Class` node with a `uprop` string
-rather than a byteset (Chapter 19).
+rather than a byteset (Chapter 20).
 
 **Case mapping** has two tiers: simple 1:1 mappings from `UnicodeData`, and full
 1:N mappings from `SpecialCasing` and `CaseFolding`. The second is not optional:
@@ -170,7 +170,7 @@ the cluster.
 
 **In the longest-token automaton.** Its transition predicates reuse the regex
 `Class` node's data rather than reimplementing any of this — the single most
-important structural decision in Chapter 22, because two Unicode
+important structural decision in Chapter 23, because two Unicode
 implementations that disagreed would produce rankings that could not be
 debugged.
 

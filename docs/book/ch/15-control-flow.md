@@ -116,7 +116,7 @@ struct WorkerAbortEx {};             // unwind a background worker at shutdown
 `RakuError` is the user-visible one: every Raku exception is a `RakuError`
 carrying a payload `Value` — normally an exception object — and a message.
 `WorkerAbortEx` is deliberately *not* a `RakuError`, so a user's `CATCH` cannot
-accidentally swallow a shutdown (Chapter 36).
+accidentally swallow a shutdown (Chapter 37).
 
 ## `CATCH`, and where it lives
 

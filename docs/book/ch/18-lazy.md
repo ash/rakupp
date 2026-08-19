@@ -386,5 +386,5 @@ The `seq` counter is there because the result while the latch is on is the
 
 This is the one place in the interpreter where a map keyed on a node pointer is
 the right answer rather than a hazard. It works here because AST nodes are never
-freed. Chapter 22 describes a case where the same idea failed for exactly the
+freed. Chapter 23 describes a case where the same idea failed for exactly the
 opposite reason — freed addresses being recycled.

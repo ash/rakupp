@@ -156,7 +156,7 @@ contents. Delimited (`=begin`/`=end`), paragraph (`=for`) and abbreviated
 
 Note the representation: a Pod block is not a new `VT` or a C++ class. It is a
 tagged `Hash`, which is the same technique `Set`, `Proxy` and `DateTime` use
-(Chapter 7). The Raku program manipulating it sees an ordinary object.
+(Chapter 8). The Raku program manipulating it sees an ordinary object.
 
 Declarator documentation — `#|` above a declaration, `#=` beside or below it — is
 collected by the lexer keyed by line and attached by the parser, answering
@@ -179,7 +179,7 @@ It is also an **interface**, not just a debugging aid. `tools/ast-opportunity.ra
 reads its output and counts syntactic patterns across a corpus — which is the
 tool that measured, in two minutes, that constant folding had almost nothing to
 fold in real Raku and that operand shapes were 25 per thousand nodes
-(Chapter 18). A textual tree dump turned out to be a perfectly good static
+(Chapter 19). A textual tree dump turned out to be a perfectly good static
 analysis substrate.
 
 ## The tools that are not in the binary

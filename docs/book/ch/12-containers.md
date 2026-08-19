@@ -163,7 +163,7 @@ Binding chains dereference one extra level so `$z := $y := $x` works.
 
 This costs a call on every read of a bound variable, which is why the check is
 placed inside the *slow* half of the variable-read path and why the fast paths
-in Chapter 18 decline any value with a non-empty `hashKind`.
+in Chapter 19 decline any value with a non-empty `hashKind`.
 
 **Array binding is much cheaper**, because sharing a buffer is exactly what a
 `shared_ptr` copy already does:

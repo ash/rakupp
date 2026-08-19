@@ -24,7 +24,7 @@ public:
 
 ## The pattern text arrives unparsed
 
-The Raku lexer does not tokenize regex syntax (Chapter 3). A `/…/` literal, an
+The Raku lexer does not tokenize regex syntax (Chapter 4). A `/…/` literal, an
 `rx//`, an `s///` and a `token NAME { … }` body all travel through the token
 stream as raw text. The regex compiler re-lexes that text with its own scanner.
 
@@ -168,7 +168,7 @@ bool ratchet_ = false;
 ```
 
 The flag makes every `Rep` node possessive at compile time. It is also what
-makes the packrat memo in Chapter 21 sound: a rule that does not backtrack has
+makes the packrat memo in Chapter 22 sound: a rule that does not backtrack has
 exactly one match at a given position, so caching it is safe.
 
 ## Two whole-pattern optimisations
@@ -280,7 +280,7 @@ leftmost-first alternation. Roast holds it to an 11-file, 918-assertion corpus
 
 The implementation is a **second front-end, not a second engine**. Seven
 parser functions produce the same `Node` tree everything else in this chapter
-produces, and the matcher of Chapter 20 runs it unchanged:
+produces, and the matcher of Chapter 21 runs it unchanged:
 
 ```cpp
 // src/Regex.h

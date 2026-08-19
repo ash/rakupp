@@ -50,7 +50,7 @@ indirect calls through `&fib`, and method calls are untouched.
 
 The same idea covers **37 named builtins**, each of which has a real C++
 function (`rtBAbs`, `rtBUc`, `rtBSin`, …) rather than a `std::function` in a
-map. Chapter 27 tells that story, because the reason it works is not the one
+map. Chapter 28 tells that story, because the reason it works is not the one
 that was first assumed.
 
 ## Pass 2 — inline arithmetic
@@ -188,7 +188,7 @@ Sorting codepoints by the length of their Unicode name:
 
 The ratio grows with log *n*, which is the shape the change predicts.
 
-**Never numify a string by throwing**, which is Chapter 10's `stod` story and
+**Never numify a string by throwing**, which is Chapter 11's `stod` story and
 was found while profiling the comparator case above.
 
 ## Forwarding the C++ optimization level

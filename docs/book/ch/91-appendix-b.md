@@ -110,7 +110,7 @@ follow Rakudo's spelling because test harnesses set them.
 | Define | Effect |
 |---|---|
 | `RAKUPP_PTR_CENSUS` | count which combinations of `Value`'s eleven pointers are actually live together — the empirical input to shrinking the struct |
-| `_GLIBCXX_USE_CXX11_ABI` | relevant only because it is the ABI break copy-on-write strings caused (Chapter 8) |
+| `_GLIBCXX_USE_CXX11_ABI` | relevant only because it is the ABI break copy-on-write strings caused (Chapter 9) |
 
 The pointer census is a good example of the project's habit: before collapsing
 `Value`'s pointers into tag-dispatched slots, a special build **counts** which

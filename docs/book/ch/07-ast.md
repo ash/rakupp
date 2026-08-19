@@ -17,7 +17,7 @@ struct Program { std::vector<StmtPtr> stmts; };
 ## A class hierarchy here, a fat struct there
 
 The runtime's `Value` is a single struct with a tag and a field for every
-payload (Chapter 7). The AST is the opposite: a real C++ class hierarchy, one
+payload (Chapter 8). The AST is the opposite: a real C++ class hierarchy, one
 `struct` per node type, each with exactly the fields it needs. Both choices are
 right, for opposite reasons.
 
@@ -82,7 +82,7 @@ struct Param {
 ```
 
 None of that is validated at parse time. It is data for the binder
-(Chapter 13) and the multi-dispatcher (Chapter 15).
+(Chapter 14) and the multi-dispatcher (Chapter 16).
 
 **`SubDecl`** carries the routine: name, parameters, alternate signatures
 sharing one body, the body, non-built-in traits kept as unevaluated
@@ -130,7 +130,7 @@ this binary's left child a plain lexical and its right child a scalar literal?"
 is true before the program starts and stays true until it exits, because source
 code does not rewrite itself. Answering it costs several branches; answering it
 once per node instead of once per evaluation is the entire optimisation, and
-Chapter 18 measures what that is worth.
+Chapter 19 measures what that is worth.
 
 Two invariants keep them safe:
 
@@ -138,7 +138,7 @@ Two invariants keep them safe:
   a literal, which is a constant by definition.
 - **The sentinel means undecided**, so a fresh tree and a tree that has been
   running for an hour behave identically. That is what lets the serialiser skip
-  these fields entirely (Chapter 29).
+  these fields entirely (Chapter 30).
 
 The `DecidedOnce<T>` wrapper is a relaxed atomic, for the reason given in
 Chapter 2: under parallel execution several threads may compute the same
@@ -161,7 +161,7 @@ struct NqpOp : Expr {
 
 A program that never says `use nqp` builds no such node, so the interpreter's
 `NqpOp` arm is never reached and the implementation is dead code for that run.
-Chapter 33 is about why that zero-cost property is structural rather than an
+Chapter 34 is about why that zero-cost property is structural rather than an
 optimisation.
 
 **`AllomorphLit`** exists because a numeric word inside a `<…>` list is
@@ -195,7 +195,7 @@ std::vector<std::shared_ptr<Program>> keptPrograms_;   // EVAL'd ASTs
 ```
 
 and `loadModule` pushes each module's `Program` onto the same vector
-(Chapter 31). Nothing is ever released from it. That is a deliberate, bounded
+(Chapter 32). Nothing is ever released from it. That is a deliberate, bounded
 leak: the number of distinct compilation units a process loads is small, and
 the alternative — refcounting subtrees — would cost on every call.
 
@@ -211,7 +211,7 @@ node with the fields that matter for that kind. It is the first thing to reach
 for when a parse produces something unexpected, and it is also how
 `tools/ast-opportunity.raku` counts syntactic patterns across a corpus — the
 tool that decided, with numbers, that constant folding was not worth building
-and node specialisation was (Chapter 18).
+and node specialisation was (Chapter 19).
 
 ## The two emitters that must know every field
 

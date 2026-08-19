@@ -170,14 +170,14 @@ The atomic is not for synchronisation. It is there because a node is shared
 between threads, every writer computes the same idempotent answer, and a plain
 field would make that a data race that ThreadSanitizer correctly reports.
 Relaxed atomics make it defined at plain-load cost on the architectures that
-matter. Chapter 18 is entirely about what these fields hold and, more
+matter. Chapter 19 is entirely about what these fields hold and, more
 importantly, what they must never hold.
 
 **`rt*` functions are the compiled backend's vocabulary.** Anything named
 `rtAdd`, `rtIndexRef`, `rtAttrGet`, `rtCallB` is a runtime entry point that
 `Codegen` emits calls to. They are declared in `Interpreter.h` and are the
 contract between the transpiler and the runtime — which is why they are
-`inline` where the fast path matters. Chapters 25 to 27 are about them.
+`inline` where the fast path matters. Chapters 26 to 28 are about them.
 
 ## Building it
 
@@ -208,5 +208,5 @@ optimisation and `-mcpu=native` were both measured and both did nothing.
 | the showcase interpreters | JavaScript, Perl, Python and Lisp, written in Raku |
 
 The release checklist in `docs/dev/RELEASING.md` gates on all of them. Chapter
-37 is about why the performance gate is there and what happens when it is
+38 is about why the performance gate is there and what happens when it is
 skipped.

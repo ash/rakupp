@@ -52,7 +52,7 @@ ValueList rtMainArgs(const std::vector<std::string>& argv);
 
 Several of them exist *only* because the interpreter had the same logic inline
 and the two would otherwise have drifted. `rtArrayVal` is the compiled twin of
-`coerceArray`, with the same fresh-buffer rule (Chapter 11), and it was factored
+`coerceArray`, with the same fresh-buffer rule (Chapter 12), and it was factored
 out precisely so there is one definition of what `@a = expr` means.
 
 ## What is emitted
@@ -101,7 +101,7 @@ for (long long __i = __lo; __i <= __hi; __i++) {
 ```
 
 Note that compiled code catches the *exception* forms of `next` and `last`
-rather than reading the cooperative registers of Chapter 14. It can afford to:
+rather than reading the cooperative registers of Chapter 15. It can afford to:
 the cooperative path exists to avoid a throw in the tree-walker's hot loop, and
 a compiled loop's body is already native.
 
@@ -179,7 +179,7 @@ because transpiling them would mean duplicating an engine:
 - **the `...` sequence operator** — `RT.seqOp` and `RT.seqOpGroups`;
 - **hyper operators** — `rtHyperMethod` and the hyper core;
 - **`nqp::` ops** — `rtNqpOp`, the same function the interpreter calls
-  (Chapter 33).
+  (Chapter 34).
 
 Each of those is a place where "call the runtime" is not a compromise but the
 correct answer: there is one implementation, so there is one behaviour.
@@ -212,7 +212,7 @@ sub val() is export { 'from-module' }
 ```
 
 The interpreter's `evalCall` looks in the environment *before* the builtin table
-(Chapter 15), so the exported sub wins. Compiled code never did that lookup and
+(Chapter 16), so the exported sub wins. Compiled code never did that lookup and
 printed the built-in `val`'s answer instead — a silent divergence.
 
 So the generator is given the module graph's exported names, and for those it

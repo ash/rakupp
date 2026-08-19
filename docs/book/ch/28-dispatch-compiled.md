@@ -145,7 +145,7 @@ them, **so the interpreter and the generic compiled path get the win too**, and
 
 Note the `builtinExt_.empty()` guard: the inline fast path switches itself off
 the moment a program `augment`s a built-in type, so an augmented `.abs` still
-wins (Chapter 16).
+wins (Chapter 17).
 
 | Loop | cached pointer | named function | |
 |---|---:|---:|---|
@@ -190,7 +190,7 @@ Rakudo there is per-node tree-walk cost, which no operator fast path can remove.
   other ~165 builtins still take `ValueList&` by contract. A wholesale change —
   small-buffer or span arguments — is a runtime-wide refactor with interpreter
   implications.
-- **`methodCall`'s `if`-ladder.** After the `MName` fix (Chapter 9) name
+- **`methodCall`'s `if`-ladder.** After the `MName` fix (Chapter 10) name
   comparison is 8.5% of the profile. A dispatch table would be chasing that
   8.5%, and it is not a drop-in: the ladder is not a pure dispatch on the name.
 - **The remaining late-chain operators** — `x`, `xx`, `gcd`/`lcm`, bitwise,

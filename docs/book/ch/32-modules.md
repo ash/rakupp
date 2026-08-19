@@ -28,7 +28,7 @@ void scanModuleOps(const std::string& module);
 which finds the module's *source file* and **text-scans** it — no lexing, no
 parsing — for declarations of the five operator categories, registering those
 names in the parser's tables so the rest of the importing file parses
-(Chapter 5).
+(Chapter 6).
 
 That is the whole compile-time effect, because operators are the only thing
 about a module that changes how the importing file **parses**:
@@ -106,7 +106,7 @@ mirrors a real installation repository: SHA-1 the module name, read the short-na
 index entry, take its content id, and read the source by that id. So Raku++
 loads zef-installed modules directly out of Rakudo's own install tree. That
 store — its layout, the installer that writes it, and how the engines share
-it — is Chapter 32.
+it — is Chapter 33.
 
 ```sh
 RAKUPP_TRACE=1 rakupp myprogram.raku
@@ -158,7 +158,7 @@ stash object, no per-module symbol table to enumerate, no `Foo::EXPORT::DEFAULT`
 **Yes, and it is never walked as a unit again.** Each module gets its own lexer,
 parser and `Program`. That `Program` is executed once, top to bottom, and then
 survives only as *storage*: `Callable::params` and `Callable::body` are borrowed
-raw pointers into it (Chapter 6), which is why it is pushed onto
+raw pointers into it (Chapter 7), which is why it is pushed onto
 `keptPrograms_` and never released.
 
 Parsing is isolated in **one direction only**. The module is parsed with a fresh
@@ -168,7 +168,7 @@ the importer — through the text scan, not the parse.
 
 ### Is calling a module routine different?
 
-**No.** `evalCall` resolves every named call the same way (Chapter 15), and
+**No.** `evalCall` resolves every named call the same way (Chapter 16), and
 `Env::find` walks the parent chain. A local `my sub` is found nearby; a module
 sub is found in the global environment at the end of the chain. The only
 difference is a slightly longer walk to *find* it; the call itself is
@@ -218,7 +218,7 @@ module scope, so they still see its lexicals.
 Modules are **not** compiled into the binary. The generator emits a call to
 `Interpreter::rtUse`, a thin mirror of the interpreter's `use` handling, calling
 the same `loadModule`. A compiled binary still interprets its modules — though
-it can carry their serialised ASTs inside itself (Chapter 24), so it needs
+it can carry their serialised ASTs inside itself (Chapter 25), so it needs
 neither their sources nor a warm cache to start.
 
 ## Divergences from Rakudo
