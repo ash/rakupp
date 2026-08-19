@@ -1,7 +1,10 @@
 # Plan: the 6.e language revision — v3.5.0
 
-**Status: started 2026-08-19.** Phase 1 done, phase 2 all but two items;
-nothing released yet.
+**Status: phases 1-4 done, phase 5 (release) in progress, 2026-08-19.** Not
+tagged. The support matrix re-measured with the finished engine reads **50 of 51
+full, 0 divergent, 0 partial, 1 not implemented** — against 23/1/19/8 when this
+plan was written — with 46 of the 51 gated on the pragma rather than simply on.
+The one not implemented is RakuAST.
 
 Goal: `use v6.e.PREVIEW;` turns on the whole of 6.e and nothing else turns it
 on — a program without the pragma behaves exactly as 6.d, and a program with it
@@ -86,7 +89,8 @@ Three deliberately not gated, each for its own reason:
   arity checking is absent engine-wide — and gating it as one would hide a
   general gap. Its own item.
 
-**P3 — the 19 divergences.** In rough order of how badly they mislead:
+**P3 — the 19 divergences. DONE.** They were, in rough order of how badly they
+misled:
 `so (5..1)`, `:smartcase`, `.skip(list)`, shaped-hash `Mu` default,
 `MY::<$missing>` → `Failure`, `LEXICAL::` on a dynamic, `Grammar.parse` → `Failure`,
 `splice` with an itemized array, `subset.^ver`, `Date`/`Instant`
@@ -94,16 +98,25 @@ Three deliberately not gated, each for its own reason:
 `.pm` no longer a module extension, the unknown-regex-boundary error,
 `prefix://`, `next`/`last` with a value, `@a[||@i]`.
 
-**P4 — the 8 that are missing.** `nano`, `trans` as a sub, `Mu.Callable($name)`,
-`.nomark`, `IO::Path.stem`, `Int.uniname` on unassigned, the slipped multislice.
+**P4 — the missing routines. DONE.** `nano`, `trans` as a sub, `snitch` as a sub
+(which the gating list had been hiding without it ever existing),
+`Mu.Callable($name)`, `.nomark`, `IO::Path.stem`, `Int.uniname` on an unnameable
+codepoint. The slipped multislice landed in P3 with the other subscript work.
 **`RakuAST` stays out** — it is [its own campaign](RAKUAST-PLAN.md), deliberately
 postponed, and pretending otherwise would make this plan dishonest. The matrix
 will keep showing it red, with a note.
 
-**P5 — release.** Roast at or above the baseline band, `perf-guard --check`
-green (a release must not regress performance), `--version` stops saying
-"6.d, with 6.e features" and starts saying what is true, docs and the FAQ
-article updated, the matrix regenerated, tag v3.5.0.
+**P5 — release. IN PROGRESS.** Done: `--version` now says "Implements Raku 6.d,
+and 6.e under `use v6.e.PREVIEW`"; `perf-guard --check` green, and A/B against a
+same-arch build of the pre-campaign commit puts the cost of the whole campaign at
+about 1% uniform, at the noise floor (the per-call revision switch is behind a
+process-wide flag, so a pure-6.d program tests one bool); the matrix regenerated;
+the FAQ article's status section rewritten. Left: the reference docs, and the tag
+itself — **not tagged yet, deliberately**.
+
+Roast through the campaign stayed in band, 196.6k-197.3k of ~203k reported, with
+`S05-grammar/parse_and_parsefile-6e.t` 12/19 -> 18/20 and
+`S02-types/subset-6e.t` 39/60 -> 41/60 the two files that moved for a reason.
 
 ## A note on the Roast gate
 

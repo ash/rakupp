@@ -27,7 +27,7 @@ official specification test suite. The guiding motto:
 
 | | |
 |---|---|
-| **Language** | Raku, defaulting to 6.d (with 6.e features available) |
+| **Language** | Raku 6.d by default, 6.e under `use v6.e.PREVIEW` |
 | **Written in** | C++17, zero third-party dependencies |
 | **Size** | a hand-written front end + a `Value`-based runtime, all in `src/` |
 | **Runs as** | an interpreter **and** an ahead-of-time / native compiler — and in the browser via WebAssembly (**[Raku.js](../../rakujs)**) |

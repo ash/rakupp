@@ -10,8 +10,8 @@ Roast standing: measured per individual test, **~90% of all declared tests pass*
 
 ## Language versions (6.c / 6.d / 6.e)
 
-Raku++ **defaults to Raku 6.d**, matching Rakudo (6.e is still `PREVIEW`, opt-in). The
-version pragma selects a revision, and `$*RAKU.version` reflects it:
+Raku++ **defaults to Raku 6.d**, matching Rakudo. The version pragma selects a
+revision, and `$*RAKU.version` reflects it:
 
 ```raku
 say $*RAKU.version;                       # 6.d   (the default)
@@ -19,23 +19,29 @@ use v6.e.PREVIEW;  say $*RAKU.version;    # 6.e
 use v6.c;          say $*RAKU.version;    # 6.c
 ```
 
-In practice Raku++ is **largely version-agnostic**: the revision changes essentially
-one runtime behaviour — `sqrt` (and `.sqrt`) of a negative returns a `Complex` under
-6.e but `NaN` under 6.c/6.d. Everything else in the language behaves the same across
-revisions.
+**6.e is implemented and gated.** A program without the pragma gets 6.d
+behaviour, including for everything 6.e changed: `snip`, `snitch`, `nano`,
+`trans`, `.nomark`, `IO::Path.stem`, `Mu.Callable`, `Format` and `q:o` literals
+do not exist under 6.d; `sqrt`/`log` of a negative are `NaN` there and `Complex`
+under 6.e; `so (5..1)` is `True` there and `False` under 6.e; `%h{**}`, the list
+form of `.skip`, `:smartcase`, `comb(SIZE => GAP)`, per-block `@_`, prefix `//`,
+`next $v` / `last $v`, `.pm` modules, pseudo-package `Failure`s and a failing
+`Grammar.parse` all follow the same rule.
 
-**6.e-specific syntax that works today:** the **`Format` type** — `q:o/…/` and
-`q:format/…/` build a callable `sprintf` template (`my $f = q:o/%5s/; $f("foo")` →
-`"  foo"`). Raku++ accepts it in *any* version rather than gating it to
-`use v6.e.PREVIEW` — a deliberate leniency (`:o`/`:format` aren't valid adverbs in
-6.c/6.d anyway, so it never mis-parses older code). (Features like sub-signature
-destructuring and multiple inheritance also work but aren't 6.e-specific — they're
-part of the common language and are listed in their own sections.)
+**The revision belongs to the code, not the process.** A module compiled under
+`use v6.e.PREVIEW` keeps 6.e semantics when a 6.d program calls it, and a 6.d
+mainline does not acquire 6.e semantics by loading a 6.e module. (Rakudo differs
+on the second half: `use`-ing a 6.e module there loads `CORE.e` process-wide.)
 
-**6.e features not yet implemented:** `.are` / `.snip` / `.snitch`, multi-dimensional
-subscripts and hyperslices (`@a[$a;$b;$c]:delete`, `%h{**}`), pseudo-packages
-(`SETTING::`, `::<$x>`), parametric roles (`my role R[::T]`), role versioning
-(`role R:ver<…>`), and nested sigilless destructuring (`my (\a, (\b, \c))`).
+The full list — every change, run on both engines under both revisions — is
+[the 6.e FAQ article](faq/6e.md), and the live scoreboard is
+[raku.online/spec/6e](https://raku.online/spec/6e/): **50 of 51 tracked changes
+match Rakudo's 6.e**, 46 of them gated on the pragma.
+
+**Deliberately not done:** `RakuAST` (its own campaign); multi-character `.succ`
+string ranges, which are 6.e's behaviour under both revisions because 6.d's
+cross-product algorithm is not implemented; and the 6.d silent replacement of a
+same-named enclosing package, which Rakudo's own warning calls legacy.
 
 ## Lexical & Literals
 - Int (arbitrary precision / bignum), Num, Rat, **Complex** (`3+4i`); FatRat ~
