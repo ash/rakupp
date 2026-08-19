@@ -1,5 +1,11 @@
 # The Code Generator
 
+Compiling a dynamic language to C++ invites one particular mistake: writing a
+second implementation of the language inside the code generator, which then has
+to be kept in agreement with the first one for ever. Raku++ declines that
+trade, and declining it is why the generator is under three thousand lines
+against an interpreter of twenty-three thousand.
+
 `--exe` transpiles the AST into a self-contained C++ program. The interface is
 one function:
 

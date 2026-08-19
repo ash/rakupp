@@ -1,5 +1,11 @@
 # Grammars
 
+A grammar is the largest thing Raku's regex sub-language is asked to do: a
+whole parser, written declaratively, with a parse tree and a set of actions
+falling out of it. Four working language interpreters in this project's
+showcase — for JavaScript, Perl 5, Python 3 and Lisp — are built that way,
+so what follows is load-bearing rather than a demonstration feature.
+
 A Raku grammar is a class whose methods can be regexes. That is not a
 simplification for the book — it is how it is implemented. `grammar G { … }`
 produces a `ClassInfo` with `isGrammar` set, its rules in a string map beside

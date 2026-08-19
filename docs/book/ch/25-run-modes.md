@@ -2,6 +2,12 @@
 
 # Four Ways to Run a Program
 
+The same binary will run the same Raku source four different ways, and the
+choice is not academic: one mode is for editing and re-running, one for handing
+someone a program that needs no interpreter installed, one for cutting start-up
+time, one for throughput. They share the entire front end and diverge
+completely after it.
+
 One front end, four back ends. This chapter takes one small program through all
 four and shows exactly what each produces.
 

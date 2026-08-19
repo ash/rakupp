@@ -1,5 +1,10 @@
 # NativeCall and the libffi Backend
 
+Sooner or later a program needs something the language does not have: a system
+call, a compression library, a database client. Raku's answer is to let a
+program declare the C function's signature in Raku and then call it as if it
+were an ordinary sub.
+
 ```raku
 use NativeCall;
 sub strlen(Str --> size_t) is native {*}

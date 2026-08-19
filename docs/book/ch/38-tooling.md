@@ -2,6 +2,12 @@
 
 # Tooling Built on the AST
 
+An implementation is judged partly on things that are not the language:
+whether it can say a program is wrong before running it, colour it, time it, or
+let someone try one line at a time. Those usually arrive as separate projects
+that re-parse the language from the outside and drift away from it. Here they
+are all in the same binary, reading the same tree the interpreter reads.
+
 Once a program is a tree, several useful things become short. This chapter
 covers the five tools that are built on the front end rather than on the
 runtime, and one that is built on the call path.

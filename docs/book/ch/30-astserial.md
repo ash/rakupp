@@ -1,5 +1,10 @@
 # AST Serialization and the Precompiled Parse
 
+Parsing is not free, and a program that pulls in a dozen modules pays for all
+twelve on every run before it does any work of its own. Every implementation of
+every language eventually answers that with a precompilation format. This one
+has both an easier version of the problem and a harder one.
+
 Raku++ executes by walking a tree, so **the tree already is the compiled form**;
 there is nothing further to compile it into. That makes caching straightforward
 in one sense — store the tree — and delicate in another, because a stored tree

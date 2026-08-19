@@ -2,6 +2,10 @@
 
 # The Tree Walk
 
+Everything so far has been about turning text into a tree. This part is about
+what happens when something runs that tree, and the first thing worth saying
+about the runner is what it does not contain.
+
 There is no bytecode. `Interpreter::eval(Expr*)` returns a `Value`;
 `Interpreter::exec(Stmt*)` runs a statement and returns its value. Both are
 recursive, both switch on the node's `NK` tag, and the C++ call stack *is* the

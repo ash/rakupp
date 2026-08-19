@@ -1,5 +1,12 @@
 # The Object System
 
+Raku's object surface is one of the largest in the language: classes with
+inheritance, roles, runtime mixins, a meta-object protocol, `augment` and
+`supersede`, package stashes. A reader arriving from C++ or the JVM would
+expect a subsystem to match. There is not one — the whole of it is two
+structs and the operations that read them, and most of this chapter follows
+from how little those structs hold.
+
 A user class is a `ClassInfo`. An instance is an `ObjectData` that points at
 one. There is no per-object method table, no vtable, and no per-class code
 generation.

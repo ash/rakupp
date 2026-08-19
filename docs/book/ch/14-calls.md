@@ -1,5 +1,11 @@
 # Calls and Parameter Binding
 
+Calling something is the most frequent non-trivial act in a Raku program, and
+in a tree-walker it is also one of the most expensive: the floor for a trivial
+call is around forty-six nanoseconds, and only about a quarter of that is
+dispatch. Where the other three quarters go is what shaped the optimizer of
+Chapter 27, and it is easier to see once the mechanism is laid out.
+
 A call happens in three phases: build the argument list, activate the callee,
 bind the parameters. Each has a fast path, and each fast path exists because
 something measurable was in the way.

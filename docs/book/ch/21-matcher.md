@@ -1,5 +1,11 @@
 # The Backtracking Matcher
 
+Chapter 20 ended with a node tree and no way to run it. Running it is where
+regex engines usually acquire their bulk: backtracking state, capture
+bookkeeping, the machinery to undo a branch that failed halfway through. This
+one acquires almost none of it, because the backtracking is the C++ stack
+unwinding and everything else fits in a single frame struct.
+
 The matcher is continuation-passing. One function walks the node tree:
 
 ```cpp

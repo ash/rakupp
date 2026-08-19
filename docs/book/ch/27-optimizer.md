@@ -1,5 +1,11 @@
 # The `-O` Optimizer
 
+An optimizer for a language this dynamic has a narrower job than the name
+suggests. It is not looking for cleverness; it is looking for generality the
+program never asked for and is being charged for anyway. Chapter 14 measured a
+call and found the cost sitting in the boxed argument vector rather than in
+dispatch, and the three passes here follow from that one finding.
+
 `--exe` and its inspection twin `--cpp` accept `-O`. Everything under it is
 **semantics-preserving**: it changes how the compiled program computes, never
 what it computes. It is opt-in and off by default.
