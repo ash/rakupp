@@ -31,6 +31,10 @@ trips over.
 - **[differences.md](differences.md)** — where Raku++ and Rakudo differ, in both
   directions: what Raku++ does that Rakudo does not, where Rakudo is ahead, and
   the handful you will actually run into.
+- **[modules.md](modules.md)** — using modules that zef installed: where the
+  repository actually is for rakubrew, Homebrew and `--prefix` builds, the two
+  `-I` spellings, the ones Raku++ finds by itself, and why "Could not find Foo"
+  is usually a distribution name rather than a module name.
 - **[6e.md](6e.md)** — what the 6.e language revision adds to 6.d, and what
   `use v6.e.PREVIEW` actually turns on: new syntax, subs and methods, the
   behaviour changes that bite, the new compile-time errors — each with both

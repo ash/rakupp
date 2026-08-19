@@ -2941,15 +2941,26 @@ const std::vector<std::string>& rakuRepoPrefixes() {
     init = true;
     std::vector<std::string>& repos = cached;
     if (const char* home = getenv("HOME")) repos.push_back(std::string(home) + "/.raku");
-    // /usr/local/Cellar/rakudo/<ver>/share/perl6/{site,vendor}
-    static const char* cellars[] = {"/usr/local/Cellar/rakudo", "/opt/homebrew/Cellar/rakudo"};
-    for (auto* cellar : cellars) {
-        if (DIR* d = opendir(cellar)) {
+    // Every per-version Rakudo install we know how to find, each contributing its
+    // site and vendor stores:
+    //   /usr/local/Cellar/rakudo/<ver>/share/perl6/…      Homebrew (Intel)
+    //   /opt/homebrew/Cellar/rakudo/<ver>/share/perl6/…   Homebrew (arm64)
+    //   ~/.rakubrew/versions/<ver>/install/share/perl6/…  rakubrew (issue #21)
+    // rakubrew nests an extra `install/` level, which is why its stores are named
+    // separately rather than folded into the Cellar loop.
+    std::vector<std::pair<std::string, std::string>> roots = {
+        {"/usr/local/Cellar/rakudo", "/share/perl6/"},
+        {"/opt/homebrew/Cellar/rakudo", "/share/perl6/"},
+    };
+    if (const char* home = getenv("HOME"))
+        roots.push_back({std::string(home) + "/.rakubrew/versions", "/install/share/perl6/"});
+    for (auto& [root, tail] : roots) {
+        if (DIR* d = opendir(root.c_str())) {
             while (struct dirent* e = readdir(d)) {
                 std::string v = e->d_name;
                 if (v == "." || v == "..") continue;
-                repos.push_back(std::string(cellar) + "/" + v + "/share/perl6/site");
-                repos.push_back(std::string(cellar) + "/" + v + "/share/perl6/vendor");
+                repos.push_back(root + "/" + v + tail + "site");
+                repos.push_back(root + "/" + v + tail + "vendor");
             }
             closedir(d);
         }
