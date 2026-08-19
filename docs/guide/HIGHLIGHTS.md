@@ -47,6 +47,10 @@
   UCD/UCA 17.0 tables ([UNICODE.md](UNICODE.md)).
 - **Phasers & control** — `BEGIN` / `END` / `ENTER` / `LEAVE` / `FIRST` /
   `NEXT` / `LAST` / `CATCH` / `CONTROL`, labeled loops, `temp` / `let`.
+- **Language revisions** — 6.d by default and 6.e under `use v6.e.PREVIEW`,
+  gated rather than merely available: a program without the pragma gets 6.d
+  behaviour, and the revision belongs to the *code*, so a 6.e module keeps its
+  semantics inside a 6.d program without changing that program's own.
 - **System & FFI** — files and `IO::Path`, `run` / `shell` subprocesses,
   NativeCall C FFI (`is native`) marshalled by `libffi`, loaded at runtime so
   the binary stays dependency-free — `CArray`, `CStruct`, `CUnion`, variadics,

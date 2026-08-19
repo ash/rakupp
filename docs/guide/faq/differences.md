@@ -118,6 +118,39 @@ what the language does; the name answers who implements it. The era constant is
 `kOracleEra` in `src/Builtins.cpp`, and it moves when the conformance oracle
 moves — not when Raku++ is released.
 
+## The 6.e revision
+
+Both engines implement 6.e behind `use v6.e.PREVIEW`, and — for the ~50 changes
+tracked at [raku.online/spec/6e](https://raku.online/spec/6e/) — they now agree
+on what it does. Where they do not agree is on **who the revision belongs to**.
+
+In Raku++ it belongs to the code: a module compiled under the pragma keeps 6.e
+semantics when a 6.d program calls it, and a 6.d program is not changed by
+loading such a module. Rakudo loads `CORE.e` into the process instead, so this
+prints `0+2i` twice — including on the line *above* the `use`:
+
+```raku
+say (-4).sqrt;      # Rakudo: 0+2i    Raku++: NaN
+use SomeSixEModule; # a module written under `use v6.e.PREVIEW`
+say (-4).sqrt;      # Rakudo: 0+2i    Raku++: NaN
+```
+
+If you write 6.e modules for a 6.d program, do not rely on either shape: pass
+values, not semantics.
+
+Two smaller ones, both cases of us following the documented meaning where Rakudo
+does not:
+
+- `.indices($needle, :smartcase)` honours the adverb here.
+  `"hello Hello".indices("hello", :smartcase)` is `(0, 6)`; in Rakudo the
+  `:smartcase` candidate is never dispatched to and the answer is `(0,)`, while
+  `:i` on the same call gives both positions.
+- Three 6.e-adjacent things stay ours to fix, and are *not* revision-specific:
+  a block accepts extra positionals in any revision (`my &c = { 42 }; c(1,2,3)`
+  runs here and dies there), `Instant.from-posix(0)` is ten seconds off, and
+  `.subparse` on a failed match answers `Nil` where Rakudo answers with the
+  grammar object.
+
 ## Keeping yourself portable
 
 If a program must run on both, the reliable habits are:
