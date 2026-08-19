@@ -1856,7 +1856,18 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                             "No such method 'chars' for invocant of type '" +
                             a[0].typeName() + "'"};
                     std::string input = a.empty() ? "" : a[0].toStr();
-                    return grammarParse(ci.get(), input, sub, startRule, actions);
+                    Value r = grammarParse(ci.get(), input, sub, startRule, actions);
+                    // From 6.e a FAILED .parse is a Failure carrying
+                    // X::Syntax::Confused, not a bare Nil — 6.e gives grammars a
+                    // base class whose parse reports where it stopped. .subparse
+                    // keeps answering with what it managed to match.
+                    if (sixE() && !sub && (r.t == VT::Nil || r.t == VT::Any || r.t == VT::Type)) {
+                        Value f = Value::makeHash(); f.hashKind = "Failure";
+                        (*f.hash)["exception"] = Value::typeObj("X::Syntax::Confused");
+                        (*f.hash)["message"]   = Value::str("Confused");
+                        return f;
+                    }
+                    return r;
                 };
                 if (m == "parsefile") { // slurp the file, then parse its contents
                     std::string input = args.empty() ? "" : args[0].toStr();

@@ -4010,6 +4010,8 @@ ExprPtr Parser::parsePrimary() {
                 }
                 auto pv = std::make_unique<VarExpr>(sym);
                 pv->processScoped = (pseudoPkg == "PROCESS");
+                pv->viaPseudoPkg  = true;
+                pv->pseudoPkg     = pseudoPkg;
                 return pv;
             }
             // `Foo::<bar>` — a slot in a REAL package's symbol table, the same

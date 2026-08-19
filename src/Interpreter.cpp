@@ -21587,6 +21587,14 @@ Value Interpreter::eval(Expr* e) {
         case NK::VarExpr: {
             auto* ve = static_cast<VarExpr*>(e);
             char sigil = ve->name.empty() ? '$' : ve->name[0];
+            // From 6.e, LEXICAL:: means what it says. A `$*dyn` is not a lexical
+            // — it is found by walking the caller chain — so asking for one
+            // through LEXICAL:: is an error there, where before it quietly
+            // answered with the dynamic.
+            if (ve->viaPseudoPkg && ve->pseudoPkg == "LEXICAL" && sixE() &&
+                ve->name.size() > 1 && ve->name[1] == '*')
+                throw RakuError{Value::typeObj("X::Bind::Slice"),
+                    "Cannot access '" + ve->name + "' through LEXICAL, because it is not declared as lexical"};
             // Fast path: a plain lexical ($x/@a/%h/&f — second char is a letter
             // or underscore, so every twigilled/special name is excluded) that is
             // FOUND in scope returns immediately, skipping the special-name
@@ -21905,6 +21913,20 @@ Value Interpreter::eval(Expr* e) {
                     return eval(&tmp);
                 }
             }
+            // A pseudo-package lookup ANSWERS about a symbol; it does not demand
+            // one. Rakudo hands back Nil for a miss before 6.e and a Failure from
+            // 6.e on, so `MY::<$nope>` is a question you may ask. A bare `$nope`
+            // is still a compile error.
+            if (ve->viaPseudoPkg) {
+                if (!sixE()) return Value::any();
+                Value f = Value::makeHash(); f.hashKind = "Failure";
+                (*f.hash)["exception"] = Value::typeObj("X::NoSuchSymbol");
+                (*f.hash)["message"]   = Value::str("No such symbol '" + ve->name + "'");
+                return f;
+            }
+            // From 6.e, LEXICAL:: is about LEXICALS: a dynamic is not one, and
+            // asking for it through that package is an error rather than a
+            // fall-through to the caller chain.
             if (!isSpecialVar(ve->name) && !noStrict_)
                 throwTyped("X::Undeclared", {{"symbol", ve->name}},
                            "Variable '" + ve->name + "' is not declared");

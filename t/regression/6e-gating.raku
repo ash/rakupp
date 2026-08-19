@@ -119,4 +119,19 @@ check $e, '[1, [8, 9], 3]', '…and an itemized one goes in whole from 6.e on';
 check $d, '0',    'Date.DateTime drops :timezone before 6.e';
 check $e, '3600', '…and honours it from 6.e on';
 
+($d, $e) = both 'my $r = MY::<$nosuchvar>; say $r.^name ~ " " ~ $r.defined';
+check $d, 'Any False',     'a pseudo-package miss is Nil before 6.e (and never a throw)';
+check $e, 'Failure False', '…and a Failure from 6.e on';
+
+($d, $e) = both 'my $*dyn = 42; sub f { say LEXICAL::<$*dyn> }; f';
+check      $d, '42', 'LEXICAL:: hands back a dynamic before 6.e';
+like-check $e, 'Cannot access', '…and refuses it from 6.e on, a dynamic not being lexical';
+
+# .^name on the call, not on a variable: assigning Nil to a $ resets it to the
+# container default, so `my $r = G.parse(…)` reads Any in both engines and would
+# hide the difference this pins.
+($d, $e) = both 'grammar G { token TOP { \d+ } }; say G.parse("abc").^name';
+check $d, 'Nil',     'a failed parse is Nil before 6.e';
+check $e, 'Failure', '…and a Failure carrying X::Syntax::Confused from 6.e on';
+
 if @fail { note "FAILED: @fail.join('; ')"; say 'FAIL' } else { say 'PASS' }
