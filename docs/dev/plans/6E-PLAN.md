@@ -1,6 +1,7 @@
 # Plan: the 6.e language revision — v3.5.0
 
-**Status: started 2026-08-19.** Phase 1 in progress; nothing released yet.
+**Status: started 2026-08-19.** Phase 1 done, phase 2 all but two items;
+nothing released yet.
 
 Goal: `use v6.e.PREVIEW;` turns on the whole of 6.e and nothing else turns it
 on — a program without the pragma behaves exactly as 6.d, and a program with it
@@ -61,10 +62,29 @@ statement, so it can): `Parser::langRev_`, set when `use v6.X` is parsed, so
 records it. `Interpreter` reads the executing code's revision rather than a
 global. Roast gate, perf-guard: the call path gains a save/restore.
 
-**P2 — gate the 13 that are on by default.** Parse-time: `q:o`/`q:format`,
-`%h{**}`, `%h<a;b>`, `unit sub`, per-block `@_`, nested same-name packages.
-Runtime: `snip` (sub and method), `snitch`, `rotor` as a sub, `.fmt(Format)`,
-`.succ` string ranges, single-path `unlink`.
+**P2 — gate the 13 that are on by default.** Landed: `unit sub`, `snip` and
+`snitch` (sub and method), `rotor` as a sub, `q:o`/`q:format` and the `Format`
+type (which also gates `.fmt(Format)`, there being no other way to get one),
+single-path `unlink`, `%h{**}`, the one-value hash multislice, per-block `@_`.
+
+Three deliberately not gated, each for its own reason:
+
+* **`.succ` string ranges.** Gating means falling back to 6.d's answer, and
+  6.d's answer is `SEQUENCE`'s per-position cross product — `("az".."bc")` is 52
+  elements. This engine does not implement it; the succ chain it has *is* 6.e's
+  `Range.generic-string-sequence`, arrived at early. Blocked on the deferred
+  Str-range work, and it only bites on multi-character endpoints: `'a'..'z'`
+  goes through `CharFromTo` in both revisions and never differed.
+* **Nested same-name packages.** Under 6.d, `class A::B` inside `module A::B`
+  *silently replaces the module in the outer stash* — `A::B` becomes the class
+  and `A::B::A::B` stops resolving. Rakudo's own warning calls it "legacy
+  behavior specific to Raku 6.d and earlier". Writing that wart to be bug-compatible
+  in a pattern nobody should use is worth less than phase 3, so we keep the
+  nesting under both revisions and say so.
+* **Blocks accepting extra positionals.** `my &c = { 42 }; c(1,2,3)` runs here
+  and dies in Rakudo under *both* revisions. Not a 6.e matter at all — block
+  arity checking is absent engine-wide — and gating it as one would hide a
+  general gap. Its own item.
 
 **P3 — the 19 divergences.** In rough order of how badly they mislead:
 `so (5..1)`, `:smartcase`, `.skip(list)`, shaped-hash `Mu` default,
@@ -84,6 +104,15 @@ will keep showing it red, with a note.
 green (a release must not regress performance), `--version` stops saying
 "6.d, with 6.e features" and starts saying what is true, docs and the FAQ
 article updated, the matrix regenerated, tag v3.5.0.
+
+## A note on the Roast gate
+
+At `--workers=8` the harness drops whole files from its report nondeterministically
+— `ord_and_chr.t` (260 assertions) and `sprintf.t` (168) vanished from one run and
+came back in the next, while five S17 files did the opposite. That makes the
+headline number noisy to about ±400 assertions, which is wider than most batches
+in this campaign move it. Read a drop by diffing the per-file lines first: if the
+files that moved are S17 or simply absent, run them directly before believing it.
 
 ## Gates
 
