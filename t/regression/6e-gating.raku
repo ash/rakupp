@@ -153,4 +153,15 @@ like-check $e, 'Unrecognized regex boundary', '…and a compile error from 6.e o
 check $d, 'True', 'the real boundaries keep working (6.d)';
 check $e, 'True', 'the real boundaries keep working (6.e)';
 
+# .gist on each side: `~` stringifies a List without its parens, which would
+# compare equal for two different shapes.
+($d, $e) = both 'say (1..10).skip(2,3).List.gist ~ " " ~ (1..10).skip(3).List.gist';
+like-check $d, 'Cannot resolve caller', 'skip takes only one count before 6.e';
+check      $e, '(1 2 6 7 8 9 10) (4 5 6 7 8 9 10)',
+           '…and from 6.e alternates produce/skip, the single-count form unchanged';
+
+($d, $e) = both 'my @a = [[1,2],[3,4]],; my @i = 0,1,0; say @a[||@i]';
+check $d, '([[1 2] [3 4]] (Any) [[1 2] [3 4]])', 'a slipped subscript is a plain slice before 6.e';
+check $e, '3',                                   '…and navigates the dimensions from 6.e on';
+
 if @fail { note "FAILED: @fail.join('; ')"; say 'FAIL' } else { say 'PASS' }

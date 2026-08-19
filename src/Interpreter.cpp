@@ -20587,7 +20587,13 @@ Value Interpreter::evalIndex(Index* idx) {
     if (!idx->isHash && idx->adverb.empty() && idx->index &&
         idx->base->kind == NK::VarExpr) {
         auto* ve = static_cast<VarExpr*>(idx->base.get());
-        if (!ve->declare && ve->name.size() > 1 && ve->name[0] == '@' &&
+        // `@a[|| @dims]` is a navigation, not a subscript: its index expression is
+        // a `dimslip` marker that only the branch below knows how to read, and
+        // evaluating it here as an ordinary prefix is what made the array form
+        // die with "Unsupported prefix 'dimslip'" while the hash form worked.
+        const bool dimslipIdx = idx->index && idx->index->kind == NK::Unary &&
+                                static_cast<const Unary*>(idx->index.get())->op == "dimslip";
+        if (!dimslipIdx && !ve->declare && ve->name.size() > 1 && ve->name[0] == '@' &&
             (ascii::isalpha((unsigned char)ve->name[1]) || ve->name[1] == '_')) {
             if (Value* bp = tctx_.cur->find(ve->name)) {
                 if (bp->t == VT::Array && bp->arr && !bp->ext && bp->ofType.empty() &&
@@ -20913,6 +20919,18 @@ Value Interpreter::evalIndex(Index* idx) {
     if (idx->index && idx->index->kind == NK::Unary && static_cast<const Unary*>(idx->index.get())->op == "dimslip") {
         Value dims = eval(static_cast<const Unary*>(idx->index.get())->operand.get());
         ValueList path = (dims.t == VT::Array && dims.arr) ? *dims.arr : (dims.t == VT::Range ? dims.flatten() : ValueList{dims});
+        // Navigating dimensions is the 6.e reading. Before it, `||` in a
+        // subscript is an ordinary slip: the list becomes a SLICE, so `@a[||@i]`
+        // with @i = 0,1,0 is three lookups at the top level, not one descent.
+        if (!sixE()) {
+            Value out = Value::array(); out.isList = true;
+            for (auto& step : path) {
+                Value got = rtIndexGet(base, step, idx->isHash);
+                if (got.t == VT::Nil) got = Value::any();   // a slice reads a miss as Any
+                out.arr->push_back(got);
+            }
+            return out;
+        }
         Value cur = base;
         for (auto& step : path) cur = rtIndexGet(cur, step, cur.t == VT::Hash);
         return cur;

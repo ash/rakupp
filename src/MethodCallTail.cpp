@@ -1346,6 +1346,38 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             return o;
         }
         if (m == "skip") { // drop the first n elements (default 1)
+            // 6.e added a LIST form: the counts alternate produce, skip,
+            // produce, skip… so .skip(2,3) keeps the first two, drops the next
+            // three and then produces everything left. A single Int keeps the
+            // 6.c meaning — skip that many — because that candidate is the more
+            // specific one and did not move.
+            bool manyCounts  = args.size() > 1;
+            bool iterableArg = args.size() == 1 &&
+                               (args[0].t == VT::Array || args[0].t == VT::Range);
+            // Before 6.e there is no candidate taking two counts at all. A single
+            // ITERABLE argument is a different matter: it numifies to its length
+            // and skips that many, which is what 6.d does with `.skip((2,3))`, so
+            // that spelling keeps falling through to the plain path.
+            if (manyCounts && !sixE())
+                throw RakuError{Value::typeObj("X::Multi::NoMatch"),
+                    "Cannot resolve caller skip(" + inv.typeName() + ": Int, Int); "
+                    "the list form of skip arrived with 6.e"};
+            if (sixE() && (manyCounts || iterableArg)) {
+                ValueList counts;
+                if (args.size() == 1) counts = toList(args[0]);
+                else for (auto& a2 : args) counts.push_back(a2);
+                Value o = Value::array(); o.isList = true;
+                size_t at = 0;
+                bool producing = true;                 // the first count is a PRODUCE
+                for (auto& cv : counts) {
+                    long long n = std::max(0LL, cv.toInt());
+                    for (long long k = 0; k < n && at < items.size(); k++, at++)
+                        if (producing) o.arr->push_back(items[at]);
+                    producing = !producing;
+                }
+                for (; at < items.size(); at++) o.arr->push_back(items[at]); // the tail is produced
+                return o;
+            }
             long long n = args.empty() ? 1 : resolveCount(a0(), (long long)items.size());
             if (n < 0) n = 0;
             Value o = Value::array(); o.isList = true;
