@@ -54,6 +54,29 @@ Value attributeMetaObject(ClassAttr& a, const std::string& ownerName) {
     return at;
 }
 
+// `.can` on a built-in-backed method: every class news/blesses/gists, and a
+// grammar parses (IETF::RFC_Grammar gates on `$g.can('parse')`). The answer is a
+// stub callable that dispatches for real if someone actually invokes it.
+//
+// Both `.can` arms — the one on a class and the one on an instance — needed this
+// and each carried a copy, list of universal names included.
+static Value builtinCanStub(const std::string& mn, bool isGrammar) {
+    static const std::set<std::string> universal = {
+        "new", "bless", "gist", "Str", "raku", "perl", "so", "defined",
+        "can", "isa", "does", "WHAT", "WHICH", "WHERE", "clone"};
+    if (!universal.count(mn) && !(isGrammar && (mn == "parse" || mn == "subparse")))
+        return Value::nil();
+    Value stub; stub.t = VT::Code; stub.code = std::make_shared<Callable>();
+    stub.code->name = mn; stub.code->isMethod = true;
+    std::string mnc = mn;
+    stub.code->builtin = [mnc](Interpreter& I, ValueList& a) -> Value {
+        if (a.empty()) return Value::any();
+        ValueList rest(a.begin() + 1, a.end());
+        return I.methodCall(a[0], mnc, std::move(rest));
+    };
+    return stub;
+}
+
 std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName& m, ValueList& args,
                                      const std::vector<ExprPtr>* rwArgs) {
     if (inv.t == VT::Hash && inv.hashKind == "Supply") {
@@ -2015,20 +2038,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 // BUILT-IN methods answer .can too: every class news/blesses/gists,
                 // and a grammar parses (IETF::RFC_Grammar gates on `.can('parse')`)
                 if (out.arr->empty()) {
-                    static const std::set<std::string> universal = {
-                        "new", "bless", "gist", "Str", "raku", "perl", "so", "defined",
-                        "can", "isa", "does", "WHAT", "WHICH", "WHERE", "clone"};
-                    if (universal.count(mn) || (ci->isGrammar && (mn == "parse" || mn == "subparse"))) {
-                        Value stub; stub.t = VT::Code; stub.code = std::make_shared<Callable>();
-                        stub.code->name = mn; stub.code->isMethod = true;
-                        std::string mnc = mn;
-                        stub.code->builtin = [mnc](Interpreter& I, ValueList& a) -> Value {
-                            if (a.empty()) return Value::any();
-                            ValueList rest(a.begin() + 1, a.end());
-                            return I.methodCall(a[0], mnc, std::move(rest));
-                        };
-                        out.arr->push_back(stub);
-                    }
+                    Value stub = builtinCanStub(mn, ci->isGrammar);
+                    if (stub.t == VT::Code) out.arr->push_back(stub);
                 }
                 return out;
             }
@@ -3209,20 +3220,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // grammar parses (IETF::RFC_Grammar gates on `$g.can('parse')`). A stub
         // callable that dispatches for real if someone actually invokes it.
         if (ci && out.arr->empty()) {
-            static const std::set<std::string> universal = {
-                "new", "bless", "gist", "Str", "raku", "perl", "so", "defined",
-                "can", "isa", "does", "WHAT", "WHICH", "WHERE", "clone"};
-            if (universal.count(mn) || (ci->isGrammar && (mn == "parse" || mn == "subparse"))) {
-                Value stub; stub.t = VT::Code; stub.code = std::make_shared<Callable>();
-                stub.code->name = mn; stub.code->isMethod = true;
-                std::string mnc = mn;
-                stub.code->builtin = [mnc](Interpreter& I, ValueList& a) -> Value {
-                    if (a.empty()) return Value::any();
-                    ValueList rest(a.begin() + 1, a.end());
-                    return I.methodCall(a[0], mnc, std::move(rest));
-                };
-                out.arr->push_back(stub);
-            }
+            Value stub = builtinCanStub(mn, ci->isGrammar);
+            if (stub.t == VT::Code) out.arr->push_back(stub);
         }
         // a BUILTIN value (Match, IO::Path, …) answers .can by PROBING, the same
         // oracle .^lookup uses: dispatch the name on a sentinel and read the

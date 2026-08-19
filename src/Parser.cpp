@@ -4894,6 +4894,42 @@ std::unique_ptr<Block> Parser::parseBlock() {
     return blk;
 }
 
+// The tail of a sigilless capture parameter — `\p`, typed or not: an optional
+// paren sub-signature (`-> \p (:key($k) is raw, …)` destructures while p stays
+// bound to the whole, which is how JSON::Class's ClassHOW iterates its role
+// registry) and the `is`/`where` traits (`\key is raw` is how the same module
+// writes every DELETE-KEY/EXISTS-KEY signature). Both places that parse a
+// sigilless parameter — bare and typed — need exactly this, and each used to
+// carry its own copy.
+void Parser::parseSigillessTail(Param& p) {
+            // `-> \p (:key($k) is raw, :value(@v) is raw)` destructures the Pair
+            // while p stays bound to the whole (JSON::Class's ClassHOW iterates
+            // its role registry exactly this way)
+            if (isKind(Tok::LParen) && cur().spaceBefore) {
+                advance(); // '('
+                p.subSig = std::make_shared<std::vector<Param>>(parseSignature(Tok::RParen));
+                if (!matchKind(Tok::RParen)) error("expected ')' in sub-signature");
+            }
+            // traits on the sigilless param — `\key is raw` is how JSON::Class
+            // writes every DELETE-KEY/EXISTS-KEY signature; without this the `is`
+            // fell out of the parameter list ("expected ) (got 'is')")
+            while (isIdent("is") || isIdent("where")) {
+                std::string trait = advance().text;
+                if (trait == "where") { p.whereExpr = parseExpr(BP_ASSIGN + 1); continue; }
+                if (isIdent("rw") || isIdent("copy") || isIdent("raw")) {
+                    p.isRw   = cur().text == "rw";
+                    p.isCopy = cur().text == "copy";
+                    p.isRaw  = cur().text == "raw";
+                }
+                if (isIdent("required")) p.required = true;
+                if (isKind(Tok::Ident)) advance();
+                if (isKind(Tok::LParen)) {
+                    int d = 0;
+                    do { if (isKind(Tok::LParen)) d++; else if (isKind(Tok::RParen)) d--; advance(); } while (d > 0 && !isKind(Tok::End));
+                }
+            }
+}
+
 std::vector<Param> Parser::parseSignature(Tok closeTok) {
     std::vector<Param> params;
     std::vector<std::pair<size_t, int>> podClaims; // (param index, `#=` line) — resolved at close
@@ -5000,32 +5036,7 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
             p.sigil = '\\';
             if (!p.name.empty()) sigilless_.insert(p.name);
             // paren sub-signature, same as on a sigilled param below:
-            // `-> \p (:key($k) is raw, :value(@v) is raw)` destructures the Pair
-            // while p stays bound to the whole (JSON::Class's ClassHOW iterates
-            // its role registry exactly this way)
-            if (isKind(Tok::LParen) && cur().spaceBefore) {
-                advance(); // '('
-                p.subSig = std::make_shared<std::vector<Param>>(parseSignature(Tok::RParen));
-                if (!matchKind(Tok::RParen)) error("expected ')' in sub-signature");
-            }
-            // traits on the sigilless param — `\key is raw` is how JSON::Class
-            // writes every DELETE-KEY/EXISTS-KEY signature; without this the `is`
-            // fell out of the parameter list ("expected ) (got 'is')")
-            while (isIdent("is") || isIdent("where")) {
-                std::string trait = advance().text;
-                if (trait == "where") { p.whereExpr = parseExpr(BP_ASSIGN + 1); continue; }
-                if (isIdent("rw") || isIdent("copy") || isIdent("raw")) {
-                    p.isRw   = cur().text == "rw";
-                    p.isCopy = cur().text == "copy";
-                    p.isRaw  = cur().text == "raw";
-                }
-                if (isIdent("required")) p.required = true;
-                if (isKind(Tok::Ident)) advance();
-                if (isKind(Tok::LParen)) {
-                    int d = 0;
-                    do { if (isKind(Tok::LParen)) d++; else if (isKind(Tok::RParen)) d--; advance(); } while (d > 0 && !isKind(Tok::End));
-                }
-            }
+            parseSigillessTail(p);
             if (matchOp("=")) p.defaultVal = parseExpr(BP_ASSIGN);
             params.push_back(std::move(p));
             if (!matchKind(Tok::Comma)) break;
@@ -5217,32 +5228,7 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
             p.sigil = '\\';
             if (!p.name.empty()) sigilless_.insert(p.name);
             // paren sub-signature, same as on a sigilled param below:
-            // `-> \p (:key($k) is raw, :value(@v) is raw)` destructures the Pair
-            // while p stays bound to the whole (JSON::Class's ClassHOW iterates
-            // its role registry exactly this way)
-            if (isKind(Tok::LParen) && cur().spaceBefore) {
-                advance(); // '('
-                p.subSig = std::make_shared<std::vector<Param>>(parseSignature(Tok::RParen));
-                if (!matchKind(Tok::RParen)) error("expected ')' in sub-signature");
-            }
-            // traits on the sigilless param — `\key is raw` is how JSON::Class
-            // writes every DELETE-KEY/EXISTS-KEY signature; without this the `is`
-            // fell out of the parameter list ("expected ) (got 'is')")
-            while (isIdent("is") || isIdent("where")) {
-                std::string trait = advance().text;
-                if (trait == "where") { p.whereExpr = parseExpr(BP_ASSIGN + 1); continue; }
-                if (isIdent("rw") || isIdent("copy") || isIdent("raw")) {
-                    p.isRw   = cur().text == "rw";
-                    p.isCopy = cur().text == "copy";
-                    p.isRaw  = cur().text == "raw";
-                }
-                if (isIdent("required")) p.required = true;
-                if (isKind(Tok::Ident)) advance();
-                if (isKind(Tok::LParen)) {
-                    int d = 0;
-                    do { if (isKind(Tok::LParen)) d++; else if (isKind(Tok::RParen)) d--; advance(); } while (d > 0 && !isKind(Tok::End));
-                }
-            }
+            parseSigillessTail(p);
         } else if (isKind(Tok::Var)) {
             // `sub f($0)` — numeric names can't be parameters either
             if (cur().text.size() > 1 && ascii::isdigit((unsigned char)cur().text[1]))

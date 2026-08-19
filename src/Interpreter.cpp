@@ -18477,7 +18477,12 @@ Value Interpreter::mixinValue(Value base, const Value& rhs, bool copy) {
 // hyper prefix `-«(…)` / `--«%h`: apply the op per element, descending into
 // nested arrays and hash values (keys kept); ++/-- mutate the elements in
 // place through the shared containers and yield the new values (prefix).
-Value Interpreter::hyperUnary(const std::string& op, Value v) {
+// The container walk both hyper-unary forms do: descend nested arrays and
+// ranges (a range hyper-applies as a list), keep hash keys and quanthash
+// flavour, and hand each leaf to `leaf`. The two callers used to carry
+// identical copies of this recursion and differ only in the leaf — which is
+// the whole point of the operation, so it is the only part they still write.
+Value Interpreter::hyperWalk(Value& v, const std::function<Value(Value&)>& leaf) {
     std::function<Value(Value&)> deep = [&](Value& x) -> Value {
         if (x.t == VT::Array && x.arr) {
             Value out = Value::array(); out.isList = x.isList;
@@ -18494,6 +18499,13 @@ Value Interpreter::hyperUnary(const std::string& op, Value v) {
             for (auto& kv : *x.hash) (*out.hash)[kv.first] = deep(kv.second);
             return out;
         }
+        return leaf(x);
+    };
+    return deep(v);
+}
+
+Value Interpreter::hyperUnary(const std::string& op, Value v) {
+    return hyperWalk(v, [&](Value& x) -> Value {
         if (op == "++" || op == "--") {
             Value nv = applyBinOp(op == "++" ? "+" : "-", x, Value::integer(1));
             x = nv;
@@ -18509,41 +18521,24 @@ Value Interpreter::hyperUnary(const std::string& op, Value v) {
         if (op == "!") return Value::boolean(!boolify(x));
         if (op == "?") return Value::boolean(boolify(x));
         return Value::str(x.toStr()); // ~
-    };
-    return deep(v);
+    });
 }
 
 // hyper postfix `@a»++` / `%h»!` / `(2,3)»i`: descends nested arrays, keeps
 // hash keys; ++/-- mutate in place and yield the OLD values (postfix).
 Value Interpreter::hyperPostfixApply(const std::string& op, Value v) {
     Value* userPost = tctx_.cur->find("&postfix:<" + op + ">");
-    std::function<Value(Value&)> deep = [&](Value& x) -> Value {
-        if (x.t == VT::Array && x.arr) {
-            Value out = Value::array(); out.isList = x.isList;
-            for (auto& e : *x.arr) out.arr->push_back(deep(e));
-            return out;
-        }
-        if (x.t == VT::Range) {
-            Value out = Value::array(); out.isList = true;
-            for (auto& e : x.flatten()) out.arr->push_back(deep(e));
-            return out;
-        }
-        if (x.t == VT::Hash && x.hash) {
-            Value out = Value::makeHash(); out.hashKind = x.hashKind;
-            for (auto& kv : *x.hash) (*out.hash)[kv.first] = deep(kv.second);
-            return out;
-        }
+    return hyperWalk(v, [&](Value& x) -> Value {
         if (op == "++" || op == "--") {
             Value old = x;
             x = applyBinOp(op == "++" ? "+" : "-", x, Value::integer(1));
-            return old;
+            return old;                       // postfix yields the OLD value
         }
         if (userPost) return callCallable(*userPost, ValueList{x});
         if (op == "i") return postfixI(x);
         throw RakuError{Value::typeObj("X::AdHoc"),
                         "No postfix:<" + op + "> operator for hyper"};
-    };
-    return deep(v);
+    });
 }
 
 Value Interpreter::evalUnary(Unary* u) {
@@ -22094,7 +22089,6 @@ Value Interpreter::eval(Expr* e) {
                 Value ev = Value::enumVal(key, key == "NativeEndian" ? 0 : key == "LittleEndian" ? 1 : 2);
                 ev.enumType = "Endian"; return ev;
             }
-            { Value c; if (nameTermConstant(n, c, sixE())) return c; } // pi/e/i/tau/now/time/rand
             static const std::set<std::string> types = {
                 "Int", "Str", "Num", "Bool", "Any", "Mu", "Cool", "Numeric", "Real",
                 "Array", "Hash", "List", "Rat", "Complex", "Nil", "Pair", "Range",
@@ -22107,6 +22101,12 @@ Value Interpreter::eval(Expr* e) {
             if (types.count(n)) return Value::typeObj(n);
             if (Value* p = tctx_.cur->find(n)) return *p;
             if (Value* f = tctx_.cur->find("&" + n)) return callCallable(*f, {});
+            // AFTER the lexical lookups, as the codegen runtime's rtNameTerm has
+            // always done it: a sigilless parameter or constant named `i`, `e`,
+            // `pi`, `now`… is a name the program declared, and it must win over
+            // the built-in term of that spelling. Checking the constants first
+            // made `sub f(\i) { i }` return the imaginary unit.
+            { Value c; if (nameTermConstant(n, c, sixE())) return c; } // pi/e/i/tau/now/time/rand/nano
             auto it = builtins_.find(n);
             if (it != builtins_.end()) { ValueList none; return it->second(*this, none); }
             // package-relative short name: bare `Path` answers `URI::Path` when no

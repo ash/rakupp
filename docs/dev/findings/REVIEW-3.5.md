@@ -56,14 +56,40 @@ of paths; the recursion that fans Whatever/list/range dimensions out into
 concrete index tuples lived in both `evalIndex` (read) and `evalAssignInner`
 (write), identical but for one comment. Extracted to `expandDimTuples`.
 
+## Batch 3 — the rest of the clones, and the bug one of them was hiding
+
+**Two hyper walks.** `hyperUnary` and `hyperPostfixApply` each carried the same
+container recursion — descend arrays and ranges, keep hash keys and quanthash
+flavour — differing only in the leaf, which is the entire point of the
+operation. Now `hyperWalk(v, leaf)`.
+
+**Two `.can` stub builders.** The class arm and the instance arm each carried
+the universal-method list (`new bless gist Str raku perl so defined can isa does
+WHAT WHICH WHERE clone`) and the stub-callable construction. Now
+`builtinCanStub`.
+
+**Two sigilless-parameter parsers.** The bare (`\p`) and typed (`Int:D \p`)
+branches shared 26 identical lines — paren sub-signature, then the `is`/`where`
+trait loop. Now `parseSigillessTail`.
+
+**…and what that extraction surfaced.** `sub f(\i) { i }` returned the imaginary
+unit, and `\e`, `\pi`, `\tau`, `\now` behaved the same way. The interpreter's
+NameTerm path consulted the `pi`/`e`/`i`/`tau`/`now`/`time`/`rand` constants
+*before* looking in the lexical scope; the codegen runtime's `rtNameTerm` had
+always done it the other way round, with a comment saying why ("so a user's own
+`sub now {…}` still wins"). Two implementations of one rule, and the wrong one
+was in the interpreter. Order fixed to match; pinned by
+`t/regression/sigilless-name-shadows-term.raku`. This was pre-existing, and
+confirmed against a pre-review build before the fix.
+
 ## Gates
 
-| gate | before | after batch 1 | after batch 2 |
-|---|---|---|---|
-| Roast, all declared | 197,118 / 218,160 | 197,385 / 218,489 | **197,401 / 218,588** |
-| files fully passing | 627 | 627 | **627** |
-| `t/run.raku` | 471/471 | 471/471 | **471/471** |
-| perf-guard | green | green | green |
+| gate | before | batch 1 | batch 2 | batch 3 |
+|---|---|---|---|---|
+| Roast, all declared | 197,118 / 218,160 | 197,385 / 218,489 | 197,401 / 218,588 | **197,435 / 218,624** |
+| files fully passing | 627 | 627 | 627 | **628** |
+| `t/run.raku` | 471/471 | 471/471 | 471/471 | **472/472** |
+| perf-guard | green | green | green | green |
 
 ## Open, from the profile — not attempted here
 

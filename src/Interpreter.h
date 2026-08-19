@@ -718,6 +718,9 @@ public:
     Value hyperCore(Value& l, Value& r, bool strictL, bool strictR,
                     const std::function<Value(const Value&, const Value&, Value*, Value*)>& apply,
                     Value* lroot = nullptr, Value* rroot = nullptr, bool wantSlots = false);
+    // The shared container walk of the hyper-unary forms; the callers supply
+    // only the leaf operation.
+    Value hyperWalk(Value& v, const std::function<Value(Value&)>& leaf);
     Value hyperUnary(const std::string& op, Value v);       // -«(…), --«%h — deep prefix
     Value hyperPostfixApply(const std::string& op, Value v); // @a»++, %h»!, (2,3)»i — deep postfix
     void rwWriteThrough(Expr* target);

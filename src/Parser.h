@@ -244,6 +244,9 @@ private:
     StmtPtr parseIf(bool isUnless);
     StmtPtr parseWhile(bool isUntil);
     StmtPtr parseFor();
+    // The shared tail of a sigilless capture parameter (`\\p`): optional paren
+    // sub-signature, then is/where traits.
+    void parseSigillessTail(Param& p);
     std::vector<Param> parseSignature(Tok closeTok = Tok::RParen); // after '(' … ')' (or '[' … ']' for a sub-signature)
     std::vector<Param> parsePointyParams();   // -> $a, \b { ... }  (stops at '{')
 
