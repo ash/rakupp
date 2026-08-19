@@ -1595,7 +1595,13 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
             // `. (0)` as a CALL-ME). Spacing is what decides: `$c.(1)` glued is
             // a real CALL-ME, and `$obj .method` with space before only is an
             // ordinary method call.
-            if (cur().spaceBefore && peek().spaceBefore)
+            //
+            // What FOLLOWS the space decides too: Raku allows whitespace on both
+            // sides of a method-call dot, so `DB::Pg . new` and `$x . uc` are
+            // calls, and only a non-identifier right side (`$x . $y`, `1 . 2`,
+            // `$x . ($x)`) is the Perl 5 obsolescence. Erroring on the spelling
+            // alone rejected DB::Pg's suite at its `my $pg = DB::Pg . new`.
+            if (cur().spaceBefore && peek().spaceBefore && peek().kind != Tok::Ident)
                 throw ParseError("Unsupported use of . to concatenate strings. In Raku please use: ~",
                                  cur().line, "X::Obsolete", {});
             advance();
@@ -5701,6 +5707,14 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
     if (!hadBlock && s->body.empty() && !s->name.empty() && s->name != "MAIN" &&
         !unitDecl_ && !s->isMulti && (isKind(Tok::Semicolon) || isKind(Tok::End)))
         throw ParseError("Semicolon form of 'sub' without unit scope is illegal. You probably want 'unit sub'. (X::UnitScope::Invalid)", cur().line);
+    // `unit sub foo;` for anything but MAIN is 6.e syntax. Before 6.e only
+    // `unit sub MAIN;` was allowed, so accepting the rest under 6.d let a
+    // program compile here that Rakudo refuses — the revision has to say no.
+    if (!hadBlock && s->body.empty() && !s->name.empty() && s->name != "MAIN" &&
+        unitDecl_ && langRev_ < 2 && (isKind(Tok::Semicolon) || isKind(Tok::End)))
+        throw ParseError("A unit-scoped sub is only allowed for MAIN before 6.e; "
+                         "use the block form, or `use v6.e.PREVIEW`. (X::UnitScope::Invalid)",
+                         cur().line);
     // `sub f($n) {…}(1)` — declaration immediately invoked
     if (isKind(Tok::LParen) && !cur().spaceBefore) {
         advance();
@@ -6883,7 +6897,12 @@ StmtPtr Parser::parseStatementImpl() {
                 { std::string ver = advance().text; // VersionLit text is like "6.e" (no leading v)
                   // swallow any dotted tail the version lexer didn't take (.PREVIEW)
                   while (!isKind(Tok::Semicolon) && !isKind(Tok::End)) ver += advance().text;
-                  u->module = (ver.empty() || ver[0] != 'v') ? "v" + ver : ver; } // exec() reads langRev from this
+                  u->module = (ver.empty() || ver[0] != 'v') ? "v" + ver : ver; // exec() reads langRev from this
+                  // …and the parser reads it now, for syntax that is 6.e-only.
+                  if (u->module.find("6.c") != std::string::npos) langRev_ = 0;
+                  else if (u->module.find("6.d") != std::string::npos) langRev_ = 1;
+                  else if (u->module.find('.') == std::string::npos) langRev_ = 1; // bare `v6`
+                  else langRev_ = 2; }
                 matchKind(Tok::Semicolon);
                 return u; // a version pragma loads no module — exec() only reads langRev from u->module
             }

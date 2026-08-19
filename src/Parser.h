@@ -119,6 +119,13 @@ private:
                                   // its leading `#|` belongs to the routine, not to a parameter
     int anonStateN_ = 0;          // unique ids for bare-`$` anonymous state vars
     bool useNqp_ = false;         // saw `use nqp` — enables the nqp:: op subset
+    // Language revision of the unit being parsed: 0=6.c, 1=6.d (the default),
+    // 2=6.e. Set when `use v6.X` is parsed — which the language guarantees is
+    // the first statement — so syntax that only exists from 6.e can be gated
+    // here rather than parsed unconditionally and sorted out later. The
+    // interpreter has its own copy for runtime behaviour; this one exists
+    // because by the time that one is set, parsing is long over.
+    int langRev_ = 1;
     static bool nqpConstValue(const std::string& name, long long& out);
     ExprPtr makeNqpOp(const std::string& op, std::vector<ExprPtr>& args);
     std::map<std::string, std::string> userCircumfix_, userPostcircumfix_; // open-bracket -> close-bracket
