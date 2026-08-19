@@ -48,6 +48,18 @@ check      $e, '  foo',               'a Format literal works under 6.e';
 like-check $d, 'Undeclared name', 'the Format type is absent under 6.d';
 check      $e, '   hi',           'the Format type works under 6.e';
 
+($d, $e) = both 'my %h = A => { B => 1, C => 2 }, D => 3; say (%h{**}).raku ~ " " ~ (%h{**}:k).raku';
+check $d, 'Any ()',                    '%h{**} is a missing key before 6.e';
+check $e, '(1, 2, 3) ("B", "C", "D")', '%h{**} walks to the leaves under 6.e';
+
+($d, $e) = both 'my %h = A => { B => 42 }; say (%h{\'A\';\'B\'}).raku ~ " " ~ (%h{\'A\';\'Z\'}).raku';
+check $d, '(42,) (Any,)', 'a one-value hash multislice is a one-element list before 6.e';
+check $e, '42 Any',       '…and the value itself from 6.e on';
+
+($d, $e) = both 'my @a = [[1,2],[3,4]],; say (@a[0;1;0]).raku';
+check $d, '3', 'an ARRAY multislice answers with the value under 6.d';
+check $e, '3', '…and under 6.e too — this one did not change';
+
 ($d, $e) = both 'say unlink("/tmp/no-such-file-abc123").raku';
 check $d, '["/tmp/no-such-file-abc123"]', '6.d unlink answers with the paths it removed';
 check $e, 'Bool::True',                   '6.e unlink takes one path and answers one Bool';

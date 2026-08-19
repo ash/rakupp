@@ -20531,7 +20531,12 @@ Value Interpreter::evalIndex(Index* idx) {
                 }
             };
             walk(baseV, 0);
-            if (!anyMulti && out.arr->size() == 1) return (*out.arr)[0]; // @a[1;0] is a scalar
+            // A HASH multislice that picks exactly one value answers with a
+            // one-element list before 6.e — `%h{'A';'B'}` is `(42,)` there and
+            // `42` from 6.e on. An ARRAY multislice answers with the value under
+            // both revisions, so `@a[1;0]` is a scalar either way.
+            if (!anyMulti && out.arr->size() == 1 && (sixE() || !idx->isHash))
+                return (*out.arr)[0];
             return out;
         };
         if (idx->adverb.empty()) return multiDimRead(eval(idx->base.get()));
@@ -20852,6 +20857,15 @@ Value Interpreter::evalIndex(Index* idx) {
         }
         return o;
     };
+    // `%h{**}` is a 6.e hyperslice. Before 6.e it is a HyperWhatever used as a
+    // KEY, and no hash has one — so it answers exactly as a key that is not
+    // there does: Any, () under :k/:v/:kv/:p, False under :exists.
+    if (hashWhatever && static_cast<const WhateverExpr*>(idx->index.get())->hyper && !sixE()) {
+        if (idx->adverb == "exists") return Value::boolean(false);
+        if (idx->adverb.empty())     return Value::typeObj("Any");
+        Value none = Value::array(); none.isList = true;
+        return none;
+    }
     if (hashWhatever &&
         (idx->adverb.empty() || static_cast<const WhateverExpr*>(idx->index.get())->hyper)) {
         return hashWhateverSlice(idx->adverb);
