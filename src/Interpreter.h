@@ -292,8 +292,11 @@ void collectPubAttrs(ClassInfo* c, std::vector<const ClassAttr*>& out);
 
 struct ReturnEx { Value v; };
 struct ExitEx { int code = 0; };
-struct LastEx { std::string label; };
-struct NextEx { std::string label; };
+// From 6.e, `next $v` / `last $v` supply a value for the iteration they end:
+// `(1,2,3).map({ $_ == 2 ?? next(42) !! $_ })` is (1 42 3). hasVal separates
+// "supplied Nil" from "supplied nothing"; before 6.e nothing ever sets it.
+struct LastEx { std::string label; Value val; bool hasVal = false; };
+struct NextEx { std::string label; Value val; bool hasVal = false; };
 struct RedoEx { std::string label; };
 struct DoneEx {}; // `done` control flow: exits the enclosing whenever block / supply body / react body
 struct BreakGivenEx { Value v; bool hasVal = false; }; // `when`/`succeed` exits the enclosing given/loop, carrying its value

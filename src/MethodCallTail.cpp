@@ -1844,8 +1844,14 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                         loopPhaserCtl_ = (i == 0 ? 1 : 0) | (i + ar >= items.size() ? 2 : 0) | 4;
                     Value r;
                     try { r = callCallable(args[0], ca); }
-                    catch (LastEx&) { topicWriteback_ = nullptr; break; }   // `last` in the block ends the map
-                    catch (NextEx&) { topicWriteback_ = nullptr; continue; } // `next` skips the element
+                    // 6.e: `next $v` / `last $v` supply the value for the
+                    // iteration they end; a bare next/last still skips or stops.
+                    catch (LastEx& le) { topicWriteback_ = nullptr;
+                                         if (le.hasVal) out.arr->push_back(le.val);
+                                         break; }
+                    catch (NextEx& ne) { topicWriteback_ = nullptr;
+                                         if (ne.hasVal) out.arr->push_back(ne.val);
+                                         continue; }
                     // post-GLR: map keeps each block result as ONE element; only a
                     // Slip (or flatmap, which flattens one level by design) spreads.
                     if (m == "flatmap") {

@@ -3636,16 +3636,23 @@ static bool dirEntryCaseExact(const std::string& cand) {
 
 static bool findModuleSourceFor(const std::string& name,
                                 const std::vector<std::string>& searchPath,
-                                std::string& pathOut, std::string& srcOut) {
+                                std::string& pathOut, std::string& srcOut,
+                                bool sixE) {
     std::string rel = name;
     for (size_t p = rel.find("::"); p != std::string::npos; p = rel.find("::")) rel.replace(p, 2, "/");
-    static const char* exts[] = {".rakumod", ".pm6", ".raku", ".pm"};
+    // 6.e dropped `.pm`: CompUnit::Repository::FileSystem looks for .rakumod and
+    // .pm6 only, so a 6.e program cannot load a module written in a .pm file.
+    static const char* extsAll[] = {".rakumod", ".pm6", ".raku", ".pm"};
+    static const char* exts6e[]  = {".rakumod", ".pm6", ".raku"};
+    const char* const* exts = sixE ? exts6e : extsAll;
+    const size_t nExts = sixE ? 3 : 4;
     for (auto& entry : searchPath) {
         std::string storePre;
         if (repoSpecStore(entry, storePre)) continue; // an inst# store is not a directory
         const std::string base = repoSpecDir(entry);
         for (const std::string& dir : {base, base + "/lib"})
-            for (auto ext : exts) {
+            for (size_t xi = 0; xi < nExts; xi++) {
+                const char* ext = exts[xi];
                 std::string cand = dir + "/" + rel + ext;
                 std::ifstream in(cand);
                 if (!in) continue;
@@ -3683,8 +3690,8 @@ static bool findModuleSourceFor(const std::string& name,
 // to the file that `use`s it.
 bool rakuppFindModuleSource(const std::string& name,
                             const std::vector<std::string>& searchPath,
-                            std::string& pathOut, std::string& srcOut) {
-    return findModuleSourceFor(name, searchPath, pathOut, srcOut);
+                            std::string& pathOut, std::string& srcOut, bool sixE) {
+    return findModuleSourceFor(name, searchPath, pathOut, srcOut, sixE);
 }
 
 // Every module name a tree `use`s, at any depth — a `use` can sit inside a
@@ -3844,7 +3851,7 @@ std::vector<BundledModule> collectModuleGraph(const Program& prog,
         if (name.empty() || !seen.insert(name).second) continue;
         if (isPragmaName(name)) continue;                 // no file behind it
         std::string path, src;
-        if (!findModuleSourceFor(name, searchPath, path, src)) {
+        if (!findModuleSourceFor(name, searchPath, path, src, prog.langRev >= 2)) {
             // load from disk at run time — silently before MODULES-PLAN B1
             if (skipsOut) skipsOut->push_back({name, "not found on the module search path"});
             continue;
@@ -4183,7 +4190,12 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
     // distribution root rather than its `lib/` dir (e.g. Roast's `use lib
     // $*PROGRAM.parent(2).add("packages/Test-Helpers")`), so try `<base>/lib/` too —
     // this is the common case Rakudo resolves via META6.json.
-    static const char* exts[] = {".rakumod", ".pm6", ".raku", ".pm"};
+    // 6.e dropped `.pm`: CompUnit::Repository::FileSystem looks for .rakumod and
+    // .pm6 only, so a 6.e program cannot load a module written in a .pm file.
+    static const char* extsAll[] = {".rakumod", ".pm6", ".raku", ".pm"};
+    static const char* exts6e[]  = {".rakumod", ".pm6", ".raku"};
+    const char* const* exts = sixE() ? exts6e : extsAll;
+    const size_t nExts = sixE() ? 3 : 4;
     if (traceLoad) {
         std::cerr << "[LibPaths]"; for (auto& b : libPaths_) std::cerr << " [" << b << "]"; std::cerr << "\n";
     }
@@ -4192,7 +4204,8 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
         if (repoSpecStore(pathEntry, storePre)) continue; // an inst# store joins phase 2 below
         const std::string base = repoSpecDir(pathEntry);
         for (const std::string& dir : {base, base + "/lib"}) {
-            for (auto ext : exts) {
+            for (size_t xi = 0; xi < nExts; xi++) {
+                const char* ext = exts[xi];
                 std::ifstream in(dir + "/" + rel + ext);
                 if (!in) continue;
                 if (!dirEntryCaseExact(dir + "/" + rel + ext)) continue; // config.raku is not Config.raku
@@ -19696,6 +19709,17 @@ Value Interpreter::evalCall(Call* c) {
         }
     }
     if (c->callee) {
+        // `next($v)` / `last($v)` (6.e): the parse is a Call over `Unary next`,
+        // so evaluating the callee first would throw before the argument was
+        // ever looked at — which is exactly why the value used to vanish.
+        if (sixE() && c->callee->kind == NK::Unary) {
+            auto* cu = static_cast<const Unary*>(c->callee.get());
+            if ((cu->op == "next" || cu->op == "last") && !cu->operand && c->args.size() == 1) {
+                Value v = eval(c->args[0].get());
+                if (cu->op == "next") throw NextEx{"", v, true};
+                throw LastEx{"", v, true};
+            }
+        }
         Value f = eval(c->callee.get());
         // `.&(*.tc)` on a Whatever chain COMPOSES (curry continues) instead of
         // applying the callee to the code object

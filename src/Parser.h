@@ -36,9 +36,10 @@ const std::string* rakuppEmbeddedModuleSource(const std::string& name);
 // first, then the installed CompUnit repositories. Defined in Interpreter.cpp;
 // the parser needs it to scan a `use`d module for operators and for the
 // sigilless constants it exports.
+// sixE: from 6.e the `.pm` extension is no longer looked for.
 bool rakuppFindModuleSource(const std::string& name,
                             const std::vector<std::string>& searchPath,
-                            std::string& pathOut, std::string& srcOut);
+                            std::string& pathOut, std::string& srcOut, bool sixE);
 
 class Parser {
 public:
@@ -126,6 +127,11 @@ private:
     // interpreter has its own copy for runtime behaviour; this one exists
     // because by the time that one is set, parsing is long over.
     int langRev_ = 1;
+    // `<|w>` (word) and `<|c>` (codepoint) are the only regex boundaries. Any
+    // other name is a typo that 6.c/6.d compile to a silent no-op and 6.e
+    // refuses; checked on the pattern source because the regex engine is
+    // deliberately standalone and knows nothing about revisions.
+    void checkRegexBoundaries(const std::string& pattern, int line) const;
     static bool nqpConstValue(const std::string& name, long long& out);
     ExprPtr makeNqpOp(const std::string& op, std::vector<ExprPtr>& args);
     std::map<std::string, std::string> userCircumfix_, userPostcircumfix_; // open-bracket -> close-bracket

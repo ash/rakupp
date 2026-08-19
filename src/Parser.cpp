@@ -317,7 +317,7 @@ void Parser::scanModuleOps(const std::string& module) {
     // the normal case, not the exotic one. (`SPACE ~ $word` in an installed
     // Text::Utils parsed as a call to `SPACE`.)
     std::string src, srcPath;
-    if (!rakuppFindModuleSource(module, libPaths_, srcPath, src)) return;
+    if (!rakuppFindModuleSource(module, libPaths_, srcPath, src, langRev_ >= 2)) return;
     if (src.empty()) return;
     scanOpsIn(src, srcPath);
 }
@@ -421,6 +421,21 @@ static std::string hyperMarkersToUni(std::string s) {
                 (ts ? "\xC2\xAB" : "\xC2\xBB");
     }
     return s;
+}
+
+void Parser::checkRegexBoundaries(const std::string& pattern, int line) const {
+    if (langRev_ < 2) return;                       // a silent no-op before 6.e
+    for (size_t i = 0; i + 2 < pattern.size(); i++) {
+        if (pattern[i] != '<' || pattern[i + 1] != '|') continue;
+        if (i && pattern[i - 1] == '\\') continue;   // an escaped \< is a literal
+        size_t j = i + 2, k = j;
+        while (k < pattern.size() && (ascii::isalnum((unsigned char)pattern[k]) || pattern[k] == '-')) k++;
+        if (k >= pattern.size() || pattern[k] != '>' || k == j) continue;  // not `<|name>`
+        std::string nm = pattern.substr(j, k - j);
+        if (nm == "w" || nm == "c") continue;
+        throw ParseError("Unrecognized regex boundary '<|" + nm + ">'. The known boundaries are "
+                         "'<|w>' (word) and '<|c>' (codepoint)", line);
+    }
 }
 
 bool Parser::startsTermToken(const Token& t) const {
@@ -2897,6 +2912,7 @@ ExprPtr Parser::parsePrimary() {
                 while (i < full.size() && full[i] == ' ') i++;
             }
             checkNullRegex(full.substr(i), tk.line, !p5);
+            checkRegexBoundaries(tk.text, tk.line);
             auto e = std::make_unique<RegexLit>(tk.text);
             e->isRx = tk.flag;
             return e;
