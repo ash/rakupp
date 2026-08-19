@@ -34,7 +34,7 @@ ARM64 computes the wrapped product and then verifies it by division, which is
 slow and correct; the x64 path uses `_mul128` and checks that the high half is
 the low half's sign extension.
 
-This header is what makes the arithmetic fast paths in Chapters 26 and 27
+This header is what makes the arithmetic fast paths in Chapters 27 and 28
 possible: `rtAdd` can inline the native case precisely because the overflow test
 is one instruction on the compilers that matter.
 
@@ -214,8 +214,14 @@ Coercing a `Complex` back to a real checks the imaginary part against
 lexically.
 
 The language revision matters here: under `use v6.e.PREVIEW`, `sqrt(-1)` is a
-`Complex` rather than `NaN`. `Interpreter::langRev_` carries the revision and a
-handful of numeric operations branch on it.
+`Complex` rather than `NaN` — and so is `log(-1)`, and `log10`/`log2` of a
+negative, all of which come through one `rtLogReal` so the branch is written
+once. `Interpreter::langRev_` carries the revision *of the code currently
+running*: each compilation unit records the revision it was compiled under, every
+routine is stamped with its unit's, and the call path switches to the callee's
+for the duration of the call. That is what lets a module compiled under 6.e keep
+`Complex` results when a 6.d program calls into it, without the 6.d program's own
+`sqrt` changing meaning.
 
 ## Where the arithmetic actually happens
 
@@ -231,7 +237,7 @@ comparisons were originally *late* in that chain, and paid about 110 nanoseconds
 walking past mixin delegation, negated operators, set operations, junction
 autothreading, `Whatever` currying and the `Version` branch before reaching the
 actual work — which is why `~`, `eq` and friends got their own fast path at the
-top too (Chapter 27).
+top too (Chapter 28).
 
 ## A bug worth remembering: numifying by throwing
 
@@ -271,4 +277,4 @@ Roast was unchanged across the switch, which is the point: `strtod` and a caught
 The general lesson is not about `stod`. It is that a C++ exception used as a
 *value-returning* mechanism — rather than for an error that genuinely aborts
 something — is a performance bug waiting for a profiler. The same realisation
-drives the cooperative control flow in Chapter 14.
+drives the cooperative control flow in Chapter 15.

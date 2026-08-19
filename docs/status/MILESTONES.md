@@ -198,6 +198,25 @@ zef populates (see [MODULES.md](../guide/MODULES.md)); the goal is breadth and d
   every platform since the mac-only days — caught, in the end, by a Linux CI
   runner objecting to a darwin-only test gate.
 
+## v3.5 — the 6.e revision, gated (Aug 19, unreleased)
+
+- **Aug 19 — 6.e is implemented, and 6.d is 6.d again.** The revision became a
+  property of the *code* rather than of the process: each compilation unit
+  records what it was compiled under, every routine is stamped with its unit's
+  revision, and the call path switches to the callee's — so a module written for
+  6.e keeps its semantics when a 6.d program calls it, and a 6.d mainline is not
+  changed by loading one. (Rakudo differs: `use`-ing a 6.e module there loads
+  `CORE.e` process-wide, which its own 6.d mainline then sees.) On top of that,
+  the thirteen behaviours that had been simply *on* went behind the pragma, the
+  nineteen divergences were fixed, and the missing routines were written —
+  `nano`, `trans`, `snitch` as a sub, `.Callable`, `.nomark`, `IO::Path.stem`.
+  The scoreboard is measured, not asserted: [raku.online/spec/6e](https://raku.online/spec/6e/)
+  runs all 51 tracked changes four ways (both engines × both revisions) and reads
+  **50 full, 0 divergent, 1 not implemented** against 23/19/8 when the campaign
+  started, with 46 of them gated. RakuAST is the one left, deliberately. Cost:
+  about 1% on the interpreter hot path, at the noise floor, A/B'd against a
+  same-arch build of the pre-campaign commit.
+
 Beyond the interpreter, the same source feeds a small constellation —
 [raku.online](https://raku.online/) (playground),
 [raku.online/spec](https://raku.online/spec/),

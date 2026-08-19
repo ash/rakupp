@@ -494,10 +494,13 @@ It is strictly single-pass and produces an AST; that's all. In particular:
   around the mainline, `END` on exit).
 - **`constant`** is not folded at parse time; it becomes a declaring `VarExpr`
   bound by the interpreter.
-- **`use`/`no`** become `UseStmt` nodes; the parser does not act on pragmas
-  (module loading and `use v6.e` language-revision selection happen when the
-  interpreter executes the node — even `no strict` is handled at runtime, not by
-  toggling a parser mode).
+- **`use`/`no`** become `UseStmt` nodes, and the parser acts on exactly one of
+  them: `use v6.X`. The language revision has to be known while parsing, because
+  6.e adds *syntax* — prefix `//`, `q:o` literals, `unit sub foo;` — that must not
+  be recognised under 6.d, so `Parser::langRev_` is set when the version pragma is
+  parsed (the language guarantees it is the first statement) and the finished
+  `Program` carries it. Everything else about a pragma still happens at run time:
+  module loading, `no strict`, and the interpreter's own copy of the revision.
 - **Named subs are hoisted** — but by the *interpreter*, not the parser.
   `hoistSubs` pre-registers every named `SubDecl` in a scope before running its
   statements, so a sub is callable across its whole enclosing scope regardless of
