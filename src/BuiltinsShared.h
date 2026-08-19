@@ -58,6 +58,10 @@ uint32_t toLowerCp(uint32_t c);
 // means that spelling exactly. "Does it carry case" is "does folding change it",
 // which is the same question the fold already answers.
 bool strHasNoUpper(const std::string& s);
+// Unicode whitespace, the `\s` set: category Z plus the ASCII controls Raku
+// counts (tab, LF, VT, FF, CR) and NEL. `.words` and friends split on this —
+// `std::istream >>` only knows the C locale's ASCII notion of it.
+bool uniIsSpaceCp(uint32_t cp);
 std::string typeOfVal(const Value& v);
 // hashEntryKey: the real key of a hash entry — pairKey, object-hash key type,
 // or the plain Str. Defined in Builtins.cpp; see the comment there.

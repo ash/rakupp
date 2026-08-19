@@ -2920,16 +2920,35 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         return out;
     }
     if (m == "words") {
-        std::istringstream is(inv.toStr()); std::string w; Value out = Value::array();
+        Value out = Value::array();
         out.isList = true; out.s = "Seq";
         // an optional limit: at most N words (`*`/Inf means all of them)
         long long limit = -1;
         for (auto& a : args)
             if (a.t != VT::Pair && a.t != VT::Whatever &&
                 !(a.isNumeric() && std::isinf(a.toNum()))) { limit = a.toInt(); break; }
-        while (is >> w) {
+        // A direct scan, not `std::istringstream >>`. The stream form allocated a
+        // stream and a buffer per call and — the reason this is a fix, not just a
+        // speed-up — split on the C locale's idea of whitespace, which is ASCII
+        // only: `"a\c[NO-BREAK SPACE]b".words` was one word here and two in
+        // Rakudo. Raku splits on \s, which is Unicode's White_Space.
+        const std::string& str = inv.toStr();
+        size_t i = 0, n = str.size();
+        auto spaceAt = [&](size_t p, size_t& adv) {
+            unsigned char c = (unsigned char)str[p];
+            if (c < 0x80) { adv = 1; return c == ' ' || c == '\t' || c == '\n' ||
+                                            c == '\r' || c == 0x0B || c == 0x0C; }
+            adv = (size_t)((c >= 0xF0) ? 4 : (c >= 0xE0) ? 3 : (c >= 0xC0) ? 2 : 1);
+            return uniIsSpaceCp(cpAtByte(str, p));
+        };
+        while (i < n) {
+            size_t adv;
+            while (i < n && spaceAt(i, adv)) i += adv;      // skip separators
+            if (i >= n) break;
+            size_t start = i;
+            while (i < n && !spaceAt(i, adv)) i += adv;     // take the word
             if (limit >= 0 && (long long)out.arr->size() >= limit) break;
-            out.arr->push_back(Value::str(w));
+            out.arr->push_back(Value::str(str.substr(start, i - start)));
         }
         return out;
     }

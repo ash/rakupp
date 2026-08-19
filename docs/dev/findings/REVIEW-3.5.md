@@ -82,14 +82,43 @@ was in the interpreter. Order fixed to match; pinned by
 `t/regression/sigilless-name-shadows-term.raku`. This was pre-existing, and
 confirmed against a pre-review build before the fix.
 
+## Batch 4 — a second profile, on a different shape
+
+The first profile was dispatch-heavy. A string/regex workload names different
+things: the matcher itself (`matchNode`, 773 samples — inherent), then `Value`
+vector relocation (~500 between `emplace_back`, `__uninitialized_allocator_relocate`
+and `~Value`), and — startling in a hot path — `std::operator>>(istream&, string&)`
+at 84.
+
+**`.words` was a `std::istringstream`.** It allocated a stream and a buffer per
+call and split on the C locale's idea of whitespace, which is ASCII only:
+`"a\c[NO-BREAK SPACE]b".words` was one word here and two in Rakudo. Replaced
+with a direct scan over the bytes using a shared `uniIsSpaceCp` (category Z plus
+the ASCII controls and NEL — the same set the `<:space>` property assertion
+uses). ~3% on the mixed workload, and a correctness fix.
+
+**Matches copied, then copied again.** The `:nth`-list path built a
+`std::vector<Value>` and then copied every element into the result list; it
+hands the vector over now. The `:g` loop reserves, so a long match list stops
+relocating heavy `Value`s through the 1-2-4-8 doublings.
+
+**…and what that path turned out to be hiding.** `("abc" ~~ m:g/z/).elems` was
+**1** here and **0** in Rakudo. A multi-match form that matches nothing answers
+with an *empty List*; the smartmatch was collapsing every falsy match result to
+`Nil`, and `Nil.elems` is 1. Both are falsy, so only code that counts or
+iterates the result could tell — which is exactly what a `for` over `m:g`
+does. Fixed in both the smartmatch and `substSelect` (`s:g///` had it too),
+pinned by `t/regression/empty-global-match-is-a-list.raku`. Pre-existing,
+confirmed against a pre-review build.
+
 ## Gates
 
-| gate | before | batch 1 | batch 2 | batch 3 |
+| gate | before | batch 1 | batch 2 | batch 3 | batch 4 |
 |---|---|---|---|---|
-| Roast, all declared | 197,118 / 218,160 | 197,385 / 218,489 | 197,401 / 218,588 | **197,435 / 218,624** |
-| files fully passing | 627 | 627 | 627 | **628** |
-| `t/run.raku` | 471/471 | 471/471 | 471/471 | **472/472** |
-| perf-guard | green | green | green | green |
+| Roast, all declared | 197,118 / 218,160 | 197,385 / 218,489 | 197,401 / 218,588 | 197,435 / 218,624 | **197,430 / 218,614** |
+| files fully passing | 627 | 627 | 627 | 628 | **629** |
+| `t/run.raku` | 471/471 | 471/471 | 471/471 | 472/472 | **473/473** |
+| perf-guard | green | green | green | green | green |
 
 ## Open, from the profile — not attempted here
 

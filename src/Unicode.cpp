@@ -257,6 +257,15 @@ std::string uniGeneralCategory(uint32_t cp) {
     return "Cn"; // unassigned
 }
 
+// The `\s` set, in one place: category Z plus the ASCII controls Raku counts
+// and NEL. Same rule the <:space> property assertion applies above.
+bool uniIsSpaceCp(uint32_t cp) {
+    if (cp < 128) return cp == ' ' || cp == '\t' || cp == '\n' || cp == '\r' || cp == 0x0B || cp == 0x0C;
+    if (cp == 0x85) return true;                       // NEL
+    std::string cat = uniGeneralCategory(cp);
+    return !cat.empty() && cat[0] == 'Z';
+}
+
 // Real Script property, from the pinned 16.0 Scripts.txt range table.
 std::string uniScript(uint32_t c) {
     size_t n; const ucd::ScriptEnt* T = ucd::scriptsTable(&n); // seam: hoisted once

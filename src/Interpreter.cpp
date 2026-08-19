@@ -15930,7 +15930,7 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
         if (picked.empty()) { setMatchVar(Value::nil()); return Value::nil(); }
         if (nthList.size() == 1 && !global) { setMatchVar(picked[0]); return picked[0]; }
         Value list = Value::array(); list.isList = true;
-        for (auto& p : picked) list.arr->push_back(p);
+        *list.arr = std::move(picked);   // hand the vector over rather than copying every Match
         setMatchVar(list);
         return list;
     }
@@ -15943,6 +15943,10 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
     }
     if (global) { // m:g// — a List of every match
         Value list = Value::array(); list.isList = true;
+        // A Match is a heavy Value and the vector's early doublings relocate every
+        // one of them; a small reserve skips the 1-2-4-8 churn that showed up as
+        // __uninitialized_allocator_relocate in a regex-heavy profile.
+        list.arr->reserve(16);
         long pos = 0;
         while (re.ok() && pos <= (long)subject.size()) {
             RxMatch m;
@@ -16702,7 +16706,12 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
     // (`.Str` = matched text, `+` of the :g List = count.)
     bool nthScalar = haveNth && !(nthVal.t == VT::Array || nthVal.t == VT::Range);
     Value result;
-    if (selMatches.empty()) result = Value::nil();
+    // No match at all: a plain m// is Nil, but the MULTI-match adverbs answer with
+    // an EMPTY LIST — `("abc" ~~ m:g/z/).elems` is 0 in Rakudo, and it was 1 here
+    // because Nil was answering for every shape. Both are falsy, so only code that
+    // counts or iterates the result could tell — which `.elems` does.
+    if (selMatches.empty())
+        result = (global || haveNth || haveX) ? Value::list(ValueList{}) : Value::nil();
     else if (nthScalar && selMatches.size() == 1) result = selMatches.back();
     else if (global || haveNth || haveX) { result = Value::list(selMatches); } // multi-match adverbs → List
     else result = selMatches.back();
@@ -18038,8 +18047,12 @@ Value Interpreter::evalBinary(Binary* b) {
                 return out;
             }
             Value m = regexMatch(rxSubject(l), pat);
-            // `~~` yields the Match on success (Nil on failure); `!~~` yields a Bool
-            if (op == "~~") return m.truthy() ? m : Value::nil();
+            // `~~` yields the Match on success (Nil on failure); `!~~` yields a Bool.
+            // A MULTI-match form (:g, :ex, an :nth list) answers with a List, and an
+            // empty List is the right answer for "nothing matched" — collapsing it
+            // to Nil made `("abc" ~~ m:g/z/).elems` 1 instead of 0. Both are falsy,
+            // so only code that counts or iterates the result could see it.
+            if (op == "~~") return m.t == VT::Array ? m : (m.truthy() ? m : Value::nil());
             return Value::boolean(!m.truthy());
         }
         if (b->rhs->kind == NK::SubstLit) {
