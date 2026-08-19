@@ -443,6 +443,8 @@ bool Parser::startsTermToken(const Token& t) const {
                    t.text == "::" || // symbolic reference `::($name)` / `::Foo`
                    t.text == "\xE2\x88\x9E" || t.text == "\xC2\xAB" || t.text == "<<" || // ∞, «qw», <<qww>>
                    t.text == "$" || t.text == "@" || t.text == "%" || // contextualizers $( $[ @( %(
+                   (t.text == "//" && langRev_ >= 2) || // 6.e prefix `//$x` — "is it defined"
+
                    userPrefix_.count(t.text) || userCircumfix_.count(t.text); // user prefix / circumfix-open
         case Tok::Ident:
             // sub/method/do/start begin an expression (anonymous routine / do-block) even though block keywords;
@@ -534,6 +536,10 @@ bool Parser::startsListopArg(const Token& t) const {
                                        peek().kind == Tok::End)) ||
                    (t.text == "|" && t.spaceBefore) || // slip first arg `run |@cmd` (space before |) — NOT infix junction `Any|Blob`
                    t.text == "!!" || // prefix boolify `say !!$x` (`!!` never starts a bare term otherwise)
+                   // 6.e prefix `//`: `say //$x`. Infix `//` cannot appear here —
+                   // a listop argument position has no left operand — so the
+                   // spelling is unambiguous once the revision allows it.
+                   (t.text == "//" && langRev_ >= 2) ||
                    (t.text == "." && t.spaceBefore) || // leading `.method` => $_.method (only after a space: `say .uc`)
                    t.text == "::" || // symbolic reference `say ::($name)` / `say ::Foo`
                    t.text == "$" || // item contextualizer `ok $%*ENV` / `say $(1,2)` (bare `$` is never an infix)
@@ -1117,6 +1123,17 @@ ExprPtr Parser::parsePrefix(bool tight) {
             auto u = std::make_unique<Unary>();
             u->op = "?"; u->operand = parseExpr(BP_PREFIX);
             return u;
+        }
+        // 6.e prefix `//` — "is it defined", the term-position counterpart of
+        // infix `//`. Only reachable in term position (startsTermToken lets it
+        // through under 6.e), so `$a // $b` is untouched. Before 6.e the same
+        // spelling opens an empty regex, which Rakudo refuses.
+        if (o == "//" && langRev_ >= 2) {
+            advance();
+            auto mc = std::make_unique<MethodCall>();
+            mc->method = "defined";
+            mc->inv = parseExpr(BP_PREFIX);
+            return mc;
         }
         // contextualizer: $(...) @(...) %(...) $[...] ${...} $@foo etc.
         if (o == "$" || o == "@" || o == "%") {

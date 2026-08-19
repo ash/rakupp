@@ -175,6 +175,11 @@ struct VarExpr : Expr {
     std::string containerOf;     // `my %h is Bag[Int]` — the container's key-type parameter
     ExprPtr declShape;           // shaped array `my @a[3]` / `my @a[2;2]`: the dimension list
     bool namedBind = false;      // `my (:@a, :@b) := %h` — binds the RHS hash's value by bare name
+    // Written as a pseudo-package lookup (`MY::<$x>`, `LEXICAL::<$y>`): a MISS is
+    // an answer, not a compile error. Rakudo hands back Nil before 6.e and a
+    // Failure from 6.e on; a bare `$x` that is not declared stays fatal.
+    bool viaPseudoPkg = false;
+    std::string pseudoPkg;       // which one, for the rules that differ per package
     bool processScoped = false;  // written `PROCESS::<$x>` / `$PROCESS::x` — assignment
                                  // installs into the PROCESS scope, not the current one
     explicit VarExpr(std::string n): Expr(NK::VarExpr), name(std::move(n)) {}
@@ -675,6 +680,10 @@ struct Program {
     // rule.
     std::set<std::string> declaredTypeNames;
     bool typeNamesOpaque = true;
+    // Language revision this unit was written in (0=6.c, 1=6.d, 2=6.e), from
+    // its `use v6.X` pragma. A unit has exactly one — the pragma has to be the
+    // first statement — so it lives here rather than on every routine node.
+    int langRev = 1;
 };
 
 // Print a program's AST as an indented plain-text tree (for --dump-ast).
