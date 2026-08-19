@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <complex>
 #include <condition_variable>
 #include <deque>
 #include <functional>
@@ -756,7 +757,10 @@ public:
     }; // pre-declare `my` vars buried in expressions (ternary/nqp branches) — Raku block scoping
     void applySubTraits(SubDecl* sd); // run user `is` traits of a hoisted sub at its textual position
     // subset NAME of BASE where EXPR — refinement types for dispatch and ~~
-    struct SubsetInfo { std::string base; const Expr* where = nullptr; };
+    // langRev: the revision the subset was DECLARED under. Rakudo's SubsetHOW
+    // records it (that is what `Even.^ver` reports, "6.d" or "6.e"), and it is
+    // not decoration — the metamodel keys type-check behaviour off it.
+    struct SubsetInfo { std::string base; const Expr* where = nullptr; int langRev = 1; };
     std::unordered_map<std::string, SubsetInfo> subsets_;
     // per-site `ff`/`fff` flip-flop latch + how many elements since it fired
     // (the result while on is that count, not a Bool)
@@ -1394,15 +1398,28 @@ inline Value rtBSign(Interpreter& I, const Value& v) {
 inline Value rtBFloor(Interpreter&, const Value& v)   { return Value::integer((long long)std::floor(v.toNum())); }
 inline Value rtBCeiling(Interpreter&, const Value& v) { return Value::integer((long long)std::ceil(v.toNum())); }
 inline Value rtBRound(Interpreter&, const Value& v)   { return Value::integer((long long)std::llround(v.toNum())); }
-inline Value rtBLog10(Interpreter&, const Value& v)   { return Value::number(std::log10(v.toNum())); }
-inline Value rtBLog2(Interpreter&, const Value& v)    { return Value::number(std::log2(v.toNum())); }
+// log / log10 / log2 of a NEGATIVE real. Before 6.e the answer is NaN; from 6.e
+// on it is the complex logarithm, the same widening 6.e gave sqrt — ln|x| + iπ,
+// divided by ln(base) when there is one. Written once here because all three
+// entry points (method, sub, and the codegen runtime) come through it.
+inline Value rtLogReal(Interpreter& I, double x, double base) {
+    auto ln = [&](double v) { return base == 0.0 ? std::log(v) : std::log(v) / std::log(base); };
+    if (x < 0 && I.sixE()) {
+        std::complex<double> r = std::log(std::complex<double>(x, 0.0));
+        if (base != 0.0) r /= std::log(base);
+        return Value::complex(r.real(), r.imag());
+    }
+    return Value::number(ln(x));
+}
+inline Value rtBLog10(Interpreter& I, const Value& v) { return rtLogReal(I, v.toNum(), 10.0); }
+inline Value rtBLog2(Interpreter& I, const Value& v)  { return rtLogReal(I, v.toNum(), 2.0); }
 inline Value rtBExp(Interpreter& I, const Value& v) {
     if (v.t == VT::Complex || v.t == VT::Object) { ValueList none; return I.methodCall(v, "exp", none); }
     return Value::number(std::exp(v.toNum()));
 }
 inline Value rtBLog(Interpreter& I, const Value& v) {
     if (v.t == VT::Complex) { ValueList none; return I.methodCall(v, "log", none); }
-    return Value::number(std::log(v.toNum()));
+    return rtLogReal(I, v.toNum(), 0.0);
 }
 // Fast-path STRING comparisons: two PLAIN Strs (no Version/IO/Buf hashKind tag,
 // no enum identity) compare byte-wise — exactly what applyArith's tail does for

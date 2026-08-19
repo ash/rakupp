@@ -155,6 +155,17 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         return Value::number(std::fabs(inv.toNum()));
     }
     if (m == "sqrt") { double x = inv.toNum(); return (x < 0 && langRev_ >= 2) ? Value::complex(0, std::sqrt(-x)) : Value::number(std::sqrt(x)); }
+    // 6.e: `42.pick(3)` is short for `(^42).pick(3)`, and likewise .roll. Before
+    // it, Int has no pick/roll of its own and Any's one-item-list version answers
+    // — `6.pick(3)` is `(6)` there, not three numbers below six.
+    if (sixE() && inv.t == VT::Int && !inv.big && (m == "pick" || m == "roll")) {
+        Value upto = Value::range(0, inv.i, false, true); // ^$n
+        if (args.empty()) { ValueList one{Value::integer(1)}; 
+            Value got = methodCall(upto, m, one);
+            return (got.t == VT::Array && got.arr && got.arr->size() == 1) ? (*got.arr)[0] : got;
+        }
+        return methodCall(upto, m, args);
+    }
     if (m == "rand") return Value::number(inv.toNum() * randDouble()); // $n.rand — Num in [0, $n)
     if (m == "base" && !args.empty() && (inv.t == VT::Int || inv.t == VT::Bool)) { // Int -> string in base 2..36
         long long b = args[0].toInt(); if (b < 2) b = 2; if (b > 36) b = 36;
@@ -497,11 +508,11 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                                      std::log(std::complex<double>(args[0].n, args[0].im));
             return Value::complex(r.real(), r.imag());
         }
-        if (!args.empty()) return Value::number(std::log(inv.toNum()) / std::log(args[0].toNum()));
-        return Value::number(std::log(inv.toNum()));
+        if (!args.empty()) return rtLogReal(*this, inv.toNum(), args[0].toNum());
+        return rtLogReal(*this, inv.toNum(), 0.0);
     }
-    if (m == "log10") return Value::number(std::log10(inv.toNum()));
-    if (m == "log2")  return Value::number(std::log2(inv.toNum()));
+    if (m == "log10") return rtLogReal(*this, inv.toNum(), 10.0);
+    if (m == "log2")  return rtLogReal(*this, inv.toNum(), 2.0);
     if (m == "sin") return Value::number(std::sin(inv.toNum()));
     if (m == "cos") return Value::number(std::cos(inv.toNum()));
     if (m == "numerator") return inv.t == VT::Rat ? Value::bigint(*inv.ratN) : Value::integer(inv.toInt());

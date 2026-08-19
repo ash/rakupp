@@ -68,4 +68,23 @@ check $e, '0', '…and its own, empty, from 6.e on';
 check $d, '["/tmp/no-such-file-abc123"]', '6.d unlink answers with the paths it removed';
 check $e, 'Bool::True',                   '6.e unlink takes one path and answers one Bool';
 
+# --- phase 3: behaviours 6.e changed, which we used to answer one way ---
+
+# .Bool, not `so`: `so` is loose enough to swallow the whole concatenation.
+($d, $e) = both 'say (5..1).Bool ~ " " ~ ("b".."a").Bool ~ " " ~ (1..5).Bool';
+check $d, 'True True True',  'a Range is always true before 6.e';
+check $e, 'False False True', '…and true when it holds something from 6.e on';
+
+($d, $e) = both 'say (-1e0).log ~ " " ~ (-100e0).log10';
+check $d, 'NaN NaN',                                  'log of a negative is NaN before 6.e';
+check $e, '0+3.141592653589793i 2+1.3643763538418412i', '…and the complex logarithm from 6.e on';
+
+($d, $e) = both 'say 6.pick(3).elems';
+check $d, '1', 'Int.pick is Any.pick on a one-item list before 6.e';
+check $e, '3', '…and short for (^6).pick from 6.e on';
+
+($d, $e) = both 'subset Even of Int where * %% 2; say Even.^ver';
+check $d, '6.d', 'a subset reports the revision it was declared under (6.d)';
+check $e, '6.e', '…and 6.e when that is the one';
+
 if @fail { note "FAILED: @fail.join('; ')"; say 'FAIL' } else { say 'PASS' }

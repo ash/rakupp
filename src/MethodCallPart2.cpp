@@ -1798,6 +1798,18 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // else answers Rakudo's defaults for a type that declares none: "" for auth,
         // the language version for ver. zef's plugin loader reads all three.
         if (m == "ver" || m == "auth" || m == "api") {
+            // A subset answers with the language revision it was declared under
+            // — `subset Even of Int …; Even.^ver` is 6.d in a 6.d unit and 6.e
+            // in a 6.e one. Types that declare their own :ver fall through.
+            if (m == "ver") {
+                auto sit = subsets_.find(inv.s);
+                if (sit != subsets_.end())
+                    // A plain Str, as Rakudo's is: `E.^ver.^name` is Str there
+                    // and `E.^ver ~~ Version` is False. Tagging it Version would
+                    // print v6.d and answer that type check the other way.
+                    return Value::str(sit->second.langRev == 0 ? "6.c"
+                                    : sit->second.langRev == 1 ? "6.d" : "6.e");
+            }
             auto pit = pkgMeta_.find(inv.s);
             std::string v = pit == pkgMeta_.end() ? std::string()
                           : (m == "ver" ? pit->second.ver : m == "auth" ? pit->second.auth : pit->second.api);
@@ -3060,10 +3072,12 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     }
     if (m == "Bool" || m == "so") {
         if (inv.t == VT::Object) return Value::boolean(boolify(inv)); // honours user Bool / Real Bridge
+        if (inv.t == VT::Range) return Value::boolean(boolify(inv));  // 6.e: emptiness, not "has endpoints"
         return Value::boolean(inv.truthy());
     }
     if (m == "not") {
         if (inv.t == VT::Object) return Value::boolean(!boolify(inv));
+        if (inv.t == VT::Range) return Value::boolean(!boolify(inv));
         return Value::boolean(!inv.truthy());
     }
     if (m == "defined") return Value::boolean(defined(inv));

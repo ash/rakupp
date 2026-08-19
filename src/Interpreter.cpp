@@ -5146,6 +5146,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             auto* sd = static_cast<SubsetDecl*>(s);
             if (!sd->name.empty()) {
                 SubsetInfo info{sd->baseType, sd->where.get()};
+                info.langRev = langRev_;   // `Even.^ver` answers with this
                 subsets_[sd->name] = info;
                 // …and under the PACKAGE-QUALIFIED name, the way a class registers.
                 // Without it an importer writing `URI::Scheme` got a bare type
@@ -8442,6 +8443,14 @@ bool Interpreter::exprHasWhateverLit(const Expr* e) {
 }
 
 bool Interpreter::boolify(const Value& v) {
+    // From 6.e a Range is true when it CONTAINS something: `so (5..1)` is False,
+    // and so is `so ("b".."a")`. Before that a Range is simply always true —
+    // having endpoints was enough — which is why `if $range` never told you
+    // anything. Value::truthy() cannot make this call: it has no revision.
+    if (v.t == VT::Range && sixE()) {
+        Value elems = const_cast<Interpreter*>(this)->methodCall(v, "elems", {});
+        return elems.toInt() > 0;
+    }
     // a Regex in boolean context matches the current topic `$_`
     // (`?$rx` / `if $rx` == `$_ ~~ $rx`) — URI::Encode leans on this to test
     // each char against an unreserved-set pattern.
