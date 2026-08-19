@@ -2825,7 +2825,12 @@ ExprPtr Parser::parsePrimary() {
             bool fmt = cur().flag; bool qx = cur().text2 == "qx";
             auto e = std::make_unique<StrLit>(advance().text);
             if (qx) { auto c = std::make_unique<Call>(); c->name = "__qx__"; c->args.push_back(std::move(e)); return c; }
-            if (fmt) { auto c = std::make_unique<Call>(); c->name = "__format__"; c->args.push_back(std::move(e)); return c; }
+            if (fmt) {
+                // `q:o/…/` builds a Format, which 6.e introduced; before that the
+                // adverb is simply not a thing, and Rakudo says so at compile time.
+                if (langRev_ < 2) throw ParseError("Unrecognized adverb ':o' (a Format literal needs 6.e; `use v6.e.PREVIEW`)", cur().line);
+                auto c = std::make_unique<Call>(); c->name = "__format__"; c->args.push_back(std::move(e)); return c;
+            }
             return e;
         }
         case Tok::VersionLit: { // v1.2.3 — sugar for Version.new("1.2.3")
@@ -2839,7 +2844,12 @@ ExprPtr Parser::parsePrimary() {
             bool fmt = cur().flag; bool qx = cur().text2 == "qx";
             std::string raw = advance().text; auto e = parseInterpString(raw);
             if (qx) { auto c = std::make_unique<Call>(); c->name = "__qx__"; c->args.push_back(std::move(e)); return c; }
-            if (fmt) { auto c = std::make_unique<Call>(); c->name = "__format__"; c->args.push_back(std::move(e)); return c; }
+            if (fmt) {
+                // `q:o/…/` builds a Format, which 6.e introduced; before that the
+                // adverb is simply not a thing, and Rakudo says so at compile time.
+                if (langRev_ < 2) throw ParseError("Unrecognized adverb ':o' (a Format literal needs 6.e; `use v6.e.PREVIEW`)", cur().line);
+                auto c = std::make_unique<Call>(); c->name = "__format__"; c->args.push_back(std::move(e)); return c;
+            }
             return e;
         }
         case Tok::RegexLit: {

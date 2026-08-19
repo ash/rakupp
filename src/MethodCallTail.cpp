@@ -1189,7 +1189,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             }
             return out;
         }
-        if (m == "snip") { // 6.e: split into sublists — each predicate consumes the
+        if (m == "snip" && sixE()) { // 6.e: split into sublists — each predicate consumes the
             // leading run it matches; leftovers form the final sublist. The predicate
             // arg is one Callable/type-object, or a list of them.
             std::vector<Value> preds;

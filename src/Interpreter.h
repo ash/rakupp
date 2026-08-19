@@ -1122,6 +1122,19 @@ public:
     static thread_local ExecContext tctx_;
     std::shared_ptr<Env> global_;
     std::shared_ptr<Env> curPkgEnv_; // package scope `our` installs into (global_, or a module's env during load)
+    // True when the code being executed was written for 6.e or later. Every
+    // 6.e-only routine, method and behaviour is gated on this, so a 6.d program
+    // cannot tell which engine is running it. See docs/dev/plans/6E-PLAN.md.
+    bool sixE() const { return langRev_ >= 2; }
+    // Subs that 6.e adds to CORE. Under 6.d they must not exist at all — a
+    // program that calls one gets "Undefined routine", as it does in Rakudo,
+    // where these live in CORE.e and a 6.d unit never loads it.
+    static bool sixEOnlySub(const std::string& n) {
+        return n == "snip" || n == "snitch" || n == "rotor" || n == "trans" || n == "nano";
+    }
+    // Callable under 6.d, but only because the caller's own revision says so:
+    // resolves a builtin name unless this revision is not supposed to see it.
+    bool builtinVisible(const std::string& n) const { return sixE() || !sixEOnlySub(n); }
     int langRev_ = 1; // language revision: 0=6.c, 1=6.d (default, matches Rakudo), 2=6.e (via `use v6.e.PREVIEW`). Affects e.g. sqrt/roots of negatives -> Complex
     // Redispatch chain for callsame/callwith/nextsame/nextwith: each entry knows how to
     // invoke the NEXT candidate (e.g. a built-in shadowed by a user method) and the

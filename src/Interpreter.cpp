@@ -1386,7 +1386,7 @@ Value Interpreter::rtNameTerm(const std::string& n) {
     // after the env/&routine lookups, so a user's own `sub now {…}` still wins
     { Value c; if (nameTermConstant(n, c)) return c; }
     auto it = builtins_.find(n);
-    if (it != builtins_.end()) { ValueList none; return it->second(*this, none); }
+    if (it != builtins_.end() && builtinVisible(n)) { ValueList none; return it->second(*this, none); }
     // builtin enum members (mirror the NameTerm eval): without the numeric
     // payload a native `sort { $a < $b ?? Less !! More }` compares 0 vs 0
     if (n == "Order::Same" || n == "Same") return Value::orderVal(0);
@@ -8476,6 +8476,7 @@ Value Interpreter::callBuiltin(const std::string& name, ValueList args) {
             return callCallable(rit->second, std::move(args));
     }
     auto it = builtins_.find(name);
+    if (it != builtins_.end() && !builtinVisible(name)) it = builtins_.end(); // 6.e-only, and this is not 6.e
     if (it == builtins_.end()) {
         // not a builtin: a module-loaded (or otherwise env-bound) routine?
         Value* p = tctx_.cur ? tctx_.cur->find("&" + name) : nullptr;
@@ -17872,7 +17873,7 @@ Value Interpreter::evalBinary(Binary* b) {
                         return callCallable(rit->second, std::move(args));
                 }
                 auto it = builtins_.find(c->name);
-                if (it != builtins_.end()) return it->second(*this, args);
+                if (it != builtins_.end() && builtinVisible(c->name)) return it->second(*this, args);
             }
             if (c->callee) return callCallable(eval(c->callee.get()), std::move(args));
             throw RakuError{Value::typeObj("X::Undeclared::Symbols"), "Undefined routine '" + c->name + "'"};
@@ -19814,6 +19815,7 @@ Value Interpreter::evalCall(Call* c) {
             }
         }
         auto it = builtins_.find(c->name);
+        if (it != builtins_.end() && !builtinVisible(c->name)) it = builtins_.end(); // 6.e-only sub, and this is not 6.e
         if (it != builtins_.end()) {
             // a WRAPPED builtin goes the long way so its wrapper stack runs
             if (!builtinRefs_.empty()) {
@@ -22067,6 +22069,13 @@ Value Interpreter::eval(Expr* e) {
                     (*f.hash)["message"]   = Value::str("No such symbol '" + n + "'");
                     return f;
                 }
+                // Format and Formatter arrived with 6.e; before it, the names
+                // are simply undeclared, so a 6.d program must not be able to
+                // reach the type — with a Format literal gated in the parser,
+                // Format.new was the remaining way in.
+                if ((n == "Format" || n == "Formatter") && !sixE())
+                    throw RakuError{Value::typeObj("X::Undeclared::Symbols"),
+                                    "Undeclared name '" + n + "' (it arrived with 6.e)"};
                 if (!known) {
                     // Known PARSE gaps stay lenient: constructs the parser does
                     // not yet understand leak their keyword as a bare term, and

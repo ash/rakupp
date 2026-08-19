@@ -3370,7 +3370,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     }
     // 6.e `.snitch`: run a tap (default: note the value) and return self — for
     // sticking a peek into a method chain. Universal, so handle it up front.
-    if (m == "snitch") {
+    if (m == "snitch" && sixE()) {
         if (!args.empty() && args[0].t == VT::Code) callCallable(args[0], {inv});
         else std::cerr << gistOf(inv) << "\n";
         return inv;
@@ -7748,9 +7748,17 @@ void Interpreter::registerBuiltins() {
                 "': " + std::strerror(errno)};
         return Value::boolean(true);
     };
-    B["unlink"] = [](Interpreter&, ValueList& a) -> Value {
-        for (auto& f : a) ::unlink(f.toStr().c_str());
-        return Value::boolean(true);
+    // 6.d hands back the list of paths it removed; 6.e takes one path and hands
+    // back one Bool (its multi-path form still answers the old way, deprecated).
+    // A path that was already absent counts as removed in both — Rakudo says
+    // True for a file that does not exist, and the point of the call is the
+    // state afterwards, not who did it.
+    B["unlink"] = [](Interpreter& I, ValueList& a) -> Value {
+        auto gone = [](const std::string& p) { return ::unlink(p.c_str()) == 0 || errno == ENOENT; };
+        if (I.sixE() && a.size() == 1) return Value::boolean(gone(a[0].toStr()));
+        Value ok = Value::array();   // an Array, as Rakudo's `my @ok` is
+        for (auto& f : a) if (gone(f.toStr())) ok.arr->push_back(f);
+        return ok;
     };
     // sub forms of the IO::Path methods (Shell::Command calls them this way)
     B["copy"] = [](Interpreter& I, ValueList& a) -> Value {
