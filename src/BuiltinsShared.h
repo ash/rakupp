@@ -53,6 +53,11 @@ uint32_t cpAtByte(const std::string& s, size_t b); // decode ONE codepoint at by
 bool deepEq(const Value& a, const Value& b);
 bool matcherAccepts(Interpreter& I, const Value& v, const Value& mt);
 uint32_t toLowerCp(uint32_t c);
+// `:smartcase` (6.e) folds case only when the needle carries none of its own:
+// a needle spelled in lower case matches either case, one with a capital in it
+// means that spelling exactly. "Does it carry case" is "does folding change it",
+// which is the same question the fold already answers.
+bool strHasNoUpper(const std::string& s);
 std::string typeOfVal(const Value& v);
 // hashEntryKey: the real key of a hash entry — pairKey, object-hash key type,
 // or the plain Str. Defined in Builtins.cpp; see the comment there.

@@ -1265,6 +1265,10 @@ std::string cpToUtf8(uint32_t cp) {
 }
 // Simple (1:1) case mappings from the full UnicodeData tables.
 uint32_t toLowerCp(uint32_t c) { return uniSimpleLower(c); }
+bool strHasNoUpper(const std::string& s) {
+    for (auto c : utf8cp(s)) if (toLowerCp(c) != c) return false;
+    return true;
+}
 uint32_t toUpperCp(uint32_t c) { return uniSimpleUpper(c); }
 // Grapheme-level case change (NFG-aware), driven by the full Unicode case
 // tables. `kind`: 0=lc, 1=uc, 3=fc (fold). `tcMode`: 0 = map every grapheme

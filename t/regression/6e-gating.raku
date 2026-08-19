@@ -87,4 +87,24 @@ check $e, '3', '…and short for (^6).pick from 6.e on';
 check $d, '6.d', 'a subset reports the revision it was declared under (6.d)';
 check $e, '6.e', '…and 6.e when that is the one';
 
+($d, $e) = both 'say "Hello World".contains("world", :smartcase) ~ " " ~ "hello world".contains("World", :smartcase)';
+check $d, 'False False', ':smartcase is ignored before 6.e';
+check $e, 'True False',  '…and from 6.e folds case only for a needle that carries none';
+
+($d, $e) = both 'say "Hello World".index("world", :smartcase) ~ " " ~ "Hello".substr-eq("hell", 0, :smartcase)';
+check $d, ' False', ':smartcase reaches index and substr-eq too (6.d: no match)';
+check $e, '6 True', '…and finds them from 6.e on';
+
+($d, $e) = both 'say "abcdefg".comb(2 => 1, :partial)';
+like-check $d, 'Cannot resolve caller', 'comb with a Pair is not a call before 6.e';
+check      $e, '(ab de g)',             '…and is size => gap from 6.e on';
+
+# Deliberate divergence: Rakudo's own :smartcase candidate for .indices never
+# gets dispatched to — "hello Hello".indices("hello", :smartcase) is (0,) there,
+# while :i on the same call gives both positions. We do what the adverb means.
+my $ind = run($*EXECUTABLE, '-e',
+              'use v6.e.PREVIEW; say "Hello hello".indices("hello", :smartcase).raku',
+              :out).out.slurp(:close).chomp;
+check $ind, '(0, 6)', '.indices honours :smartcase (Rakudo drops it — their dispatch bug)';
+
 if @fail { note "FAILED: @fail.join('; ')"; say 'FAIL' } else { say 'PASS' }

@@ -83,6 +83,8 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         for (auto& a : args) if (a.t == VT::Pair) {
             if (a.s == "overlap") overlap = !a.pairVal || a.pairVal->truthy();
             else if (a.s == "i" || a.s == "ignorecase") icase = !a.pairVal || a.pairVal->truthy();
+            else if (a.s == "smartcase" && sixE() && !args.empty())
+                icase = (!a.pairVal || a.pairVal->truthy()) && strHasNoUpper(args[0].toStr()); // 6.e
             else if (a.s == "m" || a.s == "ignoremark") imark = !a.pairVal || a.pairVal->truthy();
         }
         // a second positional is the CHARACTER position to start looking from

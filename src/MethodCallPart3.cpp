@@ -2350,10 +2350,12 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // positions are in characters, not bytes; the optional 2nd arg is the
         // start (index) / rightmost-allowed start (rindex) position.
         // `:i`/`:ignorecase` case-folds both sides before comparing.
-        bool icase = false, imark = false;
+        bool icase = false, imark = false, smart = false;
         for (auto& av : args)
             if (av.t == VT::Pair) {
                 if (av.s == "i" || av.s == "ignorecase") icase = !av.pairVal || av.pairVal->truthy();
+                else if (av.s == "smartcase") smart = !av.pairVal || av.pairVal->truthy(); // 6.e
+
                 // `:ignoremark` compares base characters; the fold is
                 // grapheme-for-grapheme, so the answered position still indexes
                 // the ORIGINAL string
@@ -2374,6 +2376,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         if (!cowNdl) { ndlCopy = a0().toStr(); if (imark) ndlCopy = markFold(ndlCopy); }
         const std::string& hay = cowHay ? inv.s.str() : hayCopy;
         const std::string& ndl = cowNdl ? args[0].s.str() : ndlCopy;
+        if (smart && sixE()) icase = strHasNoUpper(ndl);
         // Plain needle in a plain haystack, no folding: positions are byte
         // positions and std::string::find is the whole algorithm. Worth taking
         // before the decode, since a scan over a long string calls this per
@@ -2683,11 +2686,13 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     }
     // `:i`/`:ignorecase` on the string predicates — fold both sides and compare
     if (m == "contains" || m == "starts-with" || m == "ends-with") {
-        bool icase = false, imark = false;
+        bool icase = false, imark = false, smart = false;
         for (auto& a2 : args)
             if (a2.t == VT::Pair) {
                 if (a2.s == "i" || a2.s == "ignorecase")
                     icase = !a2.pairVal || a2.pairVal->truthy();   // bare `:i` is true
+                else if (a2.s == "smartcase")
+                    smart = !a2.pairVal || a2.pairVal->truthy();   // 6.e: decided by the needle
                 else if (a2.s == "m" || a2.s == "ignoremark")
                     imark = !a2.pairVal || a2.pairVal->truthy();
             }
@@ -2697,6 +2702,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             return o;
         };
         std::string s = inv.toStr(), n = a0().toStr();
+        if (smart && sixE()) icase = strHasNoUpper(n);
         if (imark) { s = markFold(s); n = markFold(n); }
         if (icase) { s = fold(s); n = fold(n); }
         // `.contains($needle, $pos)` starts the search at CHARACTER $pos
@@ -2712,10 +2718,12 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     if (m == "substr-eq") { // does the substring starting at pos equal the needle?
         if (args.empty() || (args[0].t == VT::Type && args.size() < 2))
             throw RakuError{Value::typeObj("X::AdHoc"), "Cannot call substr-eq without a needle string"};
-        bool icase = false, imark = false;
+        bool icase = false, imark = false, smart = false;
         ValueList pargs;
         for (auto& a2 : args) {
-            if (a2.t == VT::Pair && (a2.s == "i" || a2.s == "ignorecase"))
+            if (a2.t == VT::Pair && a2.s == "smartcase")
+                smart = !a2.pairVal || a2.pairVal->truthy();          // 6.e
+            else if (a2.t == VT::Pair && (a2.s == "i" || a2.s == "ignorecase"))
                 icase = !a2.pairVal || a2.pairVal->truthy();
             else if (a2.t == VT::Pair && (a2.s == "m" || a2.s == "ignoremark"))
                 imark = !a2.pairVal || a2.pairVal->truthy();
@@ -2723,6 +2731,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         }
         if (pargs.empty()) // only adverbs given, no needle — a clean error, not an OOB read
             throw RakuError{Value::typeObj("X::AdHoc"), "Cannot call substr-eq without a needle string"};
+        if (smart && sixE()) icase = strHasNoUpper(pargs[0].toStr());
         std::string s = inv.toStr(), n = pargs[0].toStr();
         // `:ignoremark` compares base characters; the fold keeps one character
         // per grapheme, so the POSITION still indexes the original
@@ -2919,6 +2928,39 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     if (m == "comb") {
         Value out = Value::array();
         out.isList = true; out.s = "Seq";
+        // .comb(SIZE => GAP) — 6.e gave comb rotor's shape: chunks of SIZE
+        // graphemes, GAP of them skipped between chunks (so the stride is
+        // SIZE + GAP), with an optional limit and :partial. Before 6.e a Pair
+        // is not a needle at all and Rakudo refuses the call.
+        if (!args.empty() && args[0].t == VT::Pair) {
+            if (!sixE())
+                throw RakuError{Value::typeObj("X::Multi::NoMatch"),
+                    "Cannot resolve caller comb(" + inv.typeName() + ": Pair); "
+                    "the Pair form of comb arrived with 6.e"};
+            long long size = args[0].pairKey ? args[0].pairKey->toInt() : Value::str(args[0].s).toInt();
+            long long gap  = args[0].pairVal ? args[0].pairVal->toInt() : 0;
+            if (size < 1) size = 1;
+            long long stride = size + gap; if (stride < 1) stride = 1;
+            bool partial = false;
+            long long limit = -1;
+            for (size_t i = 1; i < args.size(); i++) {
+                if (args[i].t == VT::Pair && args[i].s == "partial")
+                    partial = !args[i].pairVal || args[i].pairVal->truthy();
+                else if (args[i].isNumeric() && args[i].t != VT::Whatever) limit = args[i].toInt();
+            }
+            auto cps = utf8cp(inv.toStr());
+            auto starts = uniGraphemeStarts(cps);
+            for (size_t gi = 0; gi < starts.size(); gi += (size_t)stride) {
+                if (limit >= 0 && (long long)out.arr->size() >= limit) break;
+                if (!partial && gi + (size_t)size > starts.size()) break; // a short tail is dropped
+                size_t endGi = std::min(gi + (size_t)size, starts.size());
+                size_t from = starts[gi], to = endGi < starts.size() ? starts[endGi] : cps.size();
+                std::string chunk;
+                for (size_t k = from; k < to; k++) chunk += cpToU8(cps[k]);
+                out.arr->push_back(Value::str(chunk));
+            }
+            return out;
+        }
         // .comb($needle): every non-overlapping occurrence of the literal substring
         // (a regex needle is handled earlier); .comb() with no arg: one entry per codepoint.
         if (!args.empty() && args[0].t != VT::Int && !args[0].toStr().empty()) {
