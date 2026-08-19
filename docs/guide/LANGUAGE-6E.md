@@ -452,8 +452,15 @@ grep -rn "language_revision" src/ | grep -w 3
 ## 12. Raku++ status
 
 Raku++ reports itself as implementing 6.d with 6.e features, and sets its
-internal revision from the same pragma. Of the items above, these were verified
-as **already matching 6.e**:
+internal revision from the same pragma.
+
+The list below is a snapshot. The same comparison, re-measured on every build
+and scored per feature, is the support matrix at
+**[raku.online/spec/6e](https://raku.online/spec/6e/)** — each entry there is one
+snippet run three times (Rakudo 6.d, Rakudo 6.e, Raku++ 6.e) with all three
+outputs shown, so a verdict can be checked rather than taken on trust.
+
+Of the items above, these were verified as **already matching 6.e**:
 
 `snip` (method and sub), `snitch`, `rotor` as a sub, `q:o`/`q:format`/`Format`
 (without needing a RakuAST frontend), the `.fmt(Format)` candidates, all four
@@ -476,7 +483,7 @@ And these are **gaps or divergences** as of this build:
 | `6.pick(3)` | 3 elements | 1 element |
 | `Str.comb(2 => 1)` | `(ab de)` | `()` |
 | `.skip(2,3)` | `(1 2 6 7 8 9 10)` | `(3 4 5 6 7 8 9 10)` |
-| `@a[||@i]` | `3` | `Unsupported prefix 'dimslip'` |
+| `@a[\|\|@i]` | `3` | `Unsupported prefix 'dimslip'` |
 | `so (5..1)` | `False` | `True` |
 | `(-1e0).log` | `0+3.14…i` | `NaN` |
 | shaped-hash default | `Mu` | `Any` |
