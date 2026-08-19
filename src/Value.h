@@ -237,6 +237,14 @@ struct Callable {
     PublishedOnce<signed char> phaserScan{-1};     // 1 = body holds an ENTER/LEAVE/… phaser block
     DecidedOnce<Stmt*> catchBlkCache{nullptr};     // …which one (valid when catchScan == 1)
     std::string declFile;                          // source file the routine was declared in (backtrace .file)
+    // Language revision this routine was DECLARED under (0=6.c, 1=6.d, 2=6.e),
+    // or -1 for callables the runtime makes up (WhateverCode, wrappers,
+    // builtins), which simply run under whatever their caller is. Declared
+    // routines carry it because the revision belongs to the code, not to the
+    // process: a 6.e module's sub must keep 6.e semantics when a 6.d program
+    // calls it, and a 6.d module must not acquire 6.e ones by being `use`d
+    // from a 6.e program.
+    int langRev = -1;
     std::shared_ptr<Env> closure;
     std::shared_ptr<Env> stateEnv;                 // persistent storage for `state` vars (across calls)
     std::once_flag stateInit;                      // stateEnv is created exactly once (thread-safe under parallel calls)

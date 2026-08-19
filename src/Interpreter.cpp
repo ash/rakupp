@@ -2678,6 +2678,11 @@ static void sinkWarnStmt(Stmt* s, bool nilHint, std::vector<std::string>& out) {
 int Interpreter::run(Program& prog) {
     int code = 0;
     bool crashed = false;
+    // The unit's revision is known from its text, so adopt it before a single
+    // statement runs. Waiting for the `use v6.e.PREVIEW` statement to execute
+    // was too late for anything hoisted — every sub in the unit is created
+    // before the mainline starts, and was being stamped 6.d.
+    langRev_ = prog.langRev;
     unitStack_.push_back(&prog);
     struct UnitGuard { std::vector<const Program*>& s; ~UnitGuard() { s.pop_back(); } } unitG{unitStack_};
     { // mainline sink warnings, printed before execution (Rakudo compile-time style)
@@ -4040,6 +4045,7 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
         loadingModuleDepth_++;
         bool savedDoImport = moduleDoImport_; moduleDoImport_ = doImport;
         try {
+            langRev_ = prog->langRev;   // the module's own revision, not the importer's
             hoistSubs(prog->stmts);
             for (auto& st : prog->stmts) {
                 if (st->kind == NK::SubDecl && !static_cast<SubDecl*>(st.get())->name.empty() &&
@@ -5235,6 +5241,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                             : tctx_.pkgPrefix.substr(0, tctx_.pkgPrefix.size() - 2); // strip trailing ::
                 c.code->params = prms;
                 c.code->body = &sd->body;
+                c.code->langRev = langRev_;
                 c.code->closure = tctx_.cur;
                 c.code->retType = sd->retType;
                 c.code->declFile = curDeclFile();
@@ -5481,6 +5488,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     code.code->retType = md->retType;
                     code.code->pod = md->pod;
                     code.code->body = &md->body;
+                    code.code->langRev = langRev_;
                     code.code->closure = tctx_.cur;
                     code.code->isMethod = true;
                     code.code->declFile = curDeclFile();
@@ -6032,6 +6040,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 code.code->params = &md->params;
                 code.code->retType = md->retType;
                 code.code->body = &md->body;
+                code.code->langRev = langRev_;
                 code.code->closure = bodyEnv;
                 code.code->isMethod = true; // invoked via .() binds the 1st arg as self
                 code.code->declFile = curDeclFile();
@@ -7096,6 +7105,7 @@ Value Interpreter::makeClosure(BlockExpr* be) {
     code.code = std::make_shared<Callable>();
     code.code->params = &be->params;
     code.code->body = &be->body;
+    code.code->langRev = langRev_;
     code.code->closure = tctx_.cur;
     code.code->isBlock = !be->isSub; // a bare { } / pointy block is a Block; `sub {…}` stays a Sub
     // `my $m = method ($inv: $p) {…}` — an anonymous METHOD takes its invocant as the
@@ -10087,6 +10097,21 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
         floorG.active = true;
         tctx_.redispatchFloor = redispatchStack_.size() - (ownFrame && !redispatchStack_.empty() ? 1 : 0);
     }
+    // The revision the callee was COMPILED under governs its body, not the one
+    // its caller happens to be running under. Without this, a sub in a 6.e
+    // module called from a 6.d mainline silently ran with 6.d semantics — the
+    // module case that makes gating the 6.e additions safe at all. Runtime-made
+    // callables (langRev < 0) keep the ambient revision, which is what they
+    // want: a WhateverCode built in 6.e code is 6.e code.
+    struct RevGuard {
+        int& slot; int saved; bool active;
+        ~RevGuard() { if (active) slot = saved; }
+    } revG{langRev_, langRev_, false};
+    if (codeVal.t == VT::Code && codeVal.code && codeVal.code->langRev >= 0 &&
+        codeVal.code->langRev != langRev_) {
+        revG.active = true;
+        langRev_ = codeVal.code->langRev;
+    }
     Value* topicWB = topicWriteback_; topicWriteback_ = nullptr; // one-shot, consumed here
     const std::vector<Value*>* rwSlots = pendingRwSlots_; pendingRwSlots_ = nullptr; // one-shot too
     bool noAT = noAutothread_; noAutothread_ = false; // one-shot too (Junction.THREAD)
@@ -10699,15 +10724,34 @@ void Interpreter::copyOutRw(const std::vector<Param>* params, std::shared_ptr<En
 
 // Can this ARGUMENT EXPRESSION supply a writable container? Deliberately a
 // syntactic test of the shapes that certainly cannot — a literal, an operator
-// result, a ternary, a comparison chain. Anything else is assumed to be a
-// container, so a binding that would have worked before still does: the cost of
-// a false "not a container" is rejecting valid code, which is far worse than
-// keeping a rare permissive case.
+// result, a comparison chain. Anything else is assumed to be a container, so a
+// binding that would have worked before still does: the cost of a false "not a
+// container" is rejecting valid code, which is far worse than keeping a rare
+// permissive case.
+//
+// A ternary and the short-circuit operators are NOT operator results in this
+// sense: they RETURN one of their operands, container and all, so
+// `f($c ?? $x !! $y)` and `f($x // $y)` bind an `is rw` parameter in Rakudo and
+// the callee's writes land in whichever side was picked (lvalue() resolves the
+// same branch again for the write-back). Calling a ternary uncontainered
+// rejected JSON::Fast's `nom-ws($text, $ord == -1 ?? $pos !! ++$pos)`, and with
+// it every distribution that reads JSON.
 static bool argIsNeverContainer(const Expr* e) {
     if (!e) return false;
     switch (e->kind) {
+        case NK::Ternary: {
+            auto* t = static_cast<const Ternary*>(e);
+            return argIsNeverContainer(t->then.get()) && argIsNeverContainer(t->els.get());
+        }
+        case NK::Binary: {
+            auto* b = static_cast<const Binary*>(e);
+            if (b->op == "||" || b->op == "&&" || b->op == "//" ||
+                b->op == "or" || b->op == "and")
+                return argIsNeverContainer(b->lhs.get()) && argIsNeverContainer(b->rhs.get());
+            return true;
+        }
         case NK::IntLit: case NK::NumLit: case NK::StrLit: case NK::BoolLit:
-        case NK::InterpStr: case NK::AllomorphLit: case NK::Binary: case NK::Ternary: case NK::ChainExpr: case NK::Range:
+        case NK::InterpStr: case NK::AllomorphLit: case NK::ChainExpr: case NK::Range:
             return true;
         default: return false;
     }
@@ -11723,6 +11767,18 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
     if (e->kind == NK::Ternary) {
         auto* t = static_cast<Ternary*>(e);
         return lvalue(boolify(eval(t->cond.get())) ? t->then.get() : t->els.get());
+    }
+    // a SHORT-CIRCUIT operator is an lvalue the same way — it returns one of its
+    // operands rather than a fresh value, so `($a // $b) = 5` writes whichever
+    // side answered, and an `is rw` argument spelled `$a || $b` writes back
+    // there. Which side that is has to be decided by evaluating the left again;
+    // the rw write-back is this path's only caller and its operands are the
+    // plain variables the callee was handed.
+    if (e->kind == NK::Binary) {
+        auto* b = static_cast<Binary*>(e);
+        if (b->op == "||" || b->op == "or")   return lvalue(boolify(eval(b->lhs.get())) ? b->lhs.get() : b->rhs.get());
+        if (b->op == "&&" || b->op == "and")  return lvalue(boolify(eval(b->lhs.get())) ? b->rhs.get() : b->lhs.get());
+        if (b->op == "//")                    return lvalue(isDefined(eval(b->lhs.get())) ? b->lhs.get() : b->rhs.get());
     }
     // `++$x` / `--$x` as a target is the container through the increment (the
     // increment itself ran when the expression was EVALUATED; re-running it here

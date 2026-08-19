@@ -7343,6 +7343,7 @@ Program Parser::parseProgram() {
     checkRedeclarations(prog.stmts);
     prog.declaredTypeNames = std::move(declTypeNames_);
     prog.typeNamesOpaque = declTypesOpaque_;
+    prog.langRev = langRev_;
     return prog;
 }
 
