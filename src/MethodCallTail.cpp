@@ -2255,7 +2255,14 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 Value removed = Value::array(); // the removed elements are an Array
                 for (long k = 0; k < count; k++) removed.arr->push_back((*inv.arr)[start + k]);
                 ValueList repl;
-                for (size_t k = 2; k < args.size(); k++) for (auto& x : toList(args[k])) repl.push_back(x);
+                for (size_t k = 2; k < args.size(); k++) {
+                    // From 6.e an ITEMIZED array argument goes in whole: the
+                    // point of writing `$[8, 9]` is to insert one element that
+                    // happens to be an array, and before 6.e there was no way to
+                    // say it — every replacement flattened.
+                    if (sixE() && args[k].t == VT::Array && args[k].itemized) { repl.push_back(args[k]); continue; }
+                    for (auto& x : toList(args[k])) repl.push_back(x);
+                }
                 inv.arr->erase(inv.arr->begin() + start, inv.arr->begin() + start + count);
                 inv.arr->insert(inv.arr->begin() + start, repl.begin(), repl.end());
                 return removed;

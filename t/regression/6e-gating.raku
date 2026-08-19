@@ -107,4 +107,16 @@ my $ind = run($*EXECUTABLE, '-e',
               :out).out.slurp(:close).chomp;
 check $ind, '(0, 6)', '.indices honours :smartcase (Rakudo drops it — their dispatch bug)';
 
+($d, $e) = both 'my %h{Str}; say %h<nope>.WHAT.^name ~ " " ~ %h.of.^name';
+check $d, 'Any Any', 'an object hash with no value type takes Any before 6.e';
+check $e, 'Mu Mu',   '…and Mu from 6.e on';
+
+($d, $e) = both 'my @a = 1,2,3; @a.splice(1,1,$[8,9]); say @a.raku';
+check $d, '[1, 8, 9, 3]',   'every splice replacement flattens before 6.e';
+check $e, '[1, [8, 9], 3]', '…and an itemized one goes in whole from 6.e on';
+
+($d, $e) = both 'say Date.new(2026,1,1).DateTime(:timezone(3600)).timezone';
+check $d, '0',    'Date.DateTime drops :timezone before 6.e';
+check $e, '3600', '…and honours it from 6.e on';
+
 if @fail { note "FAILED: @fail.join('; ')"; say 'FAIL' } else { say 'PASS' }

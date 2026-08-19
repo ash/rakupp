@@ -1274,8 +1274,22 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if (m == "weekday-of-month") return Value::integer((fld("day") - 1) / 7 + 1);
         if (m == "DateTime") { // Date → DateTime (midnight); DateTime → self
             if (inv.hashKind == "DateTime") return inv;
-            return methodCall(Value::typeObj("DateTime"), "new", ValueList{
-                Value::integer(fld("year")), Value::integer(fld("month")), Value::integer(fld("day"))});
+            ValueList mk{Value::integer(fld("year")), Value::integer(fld("month")),
+                         Value::integer(fld("day"))};
+            // 6.e added `:timezone`, and its DEFAULT is $*TZ rather than UTC —
+            // so a bare .DateTime moves too, not just one given an argument.
+            // The 6.c candidate takes nothing, so before 6.e the argument is
+            // silently dropped and the answer is always UTC.
+            if (sixE()) {
+                bool given = false;
+                for (auto& a2 : args)
+                    if (a2.t == VT::Pair && a2.s == "timezone" && a2.pairVal) {
+                        mk.push_back(Value::pair("timezone", *a2.pairVal));
+                        given = true;
+                    }
+                if (!given) mk.push_back(Value::pair("timezone", Value::integer(tzOffsetDyn())));
+            }
+            return methodCall(Value::typeObj("DateTime"), "new", mk);
         }
         if (m == "Instant") { // posix seconds tagged Instant (rakupp `now` is raw posix)
             auto sit = inv.hash->find("second");

@@ -4693,8 +4693,19 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         o.arr->push_back(Value::boolean(false));
         return o;
     }
-    if (m == "DateTime" && inv.hashKind == "Instant" && inv.isNumeric())
-        return methodCall(Value::typeObj("DateTime"), "new", ValueList{Value::number(inv.toNum())});
+    if (m == "DateTime" && inv.hashKind == "Instant" && inv.isNumeric()) {
+        ValueList mk{Value::number(inv.toNum())};
+        if (sixE()) { // 6.e: `.DateTime(:timezone = $*TZ)`, as on Date
+            bool given = false;
+            for (auto& a2 : args)
+                if (a2.t == VT::Pair && a2.s == "timezone" && a2.pairVal) {
+                    mk.push_back(Value::pair("timezone", *a2.pairVal));
+                    given = true;
+                }
+            if (!given) mk.push_back(Value::pair("timezone", Value::integer(tzOffsetDyn())));
+        }
+        return methodCall(Value::typeObj("DateTime"), "new", mk);
+    }
     // `Date.new-from-daycount($n)` — days since the Modified Julian Date epoch
     if (inv.t == VT::Type && inv.s == "Date" && m == "new-from-daycount" && !args.empty()) {
         // MJD day 0 is 1858-11-17, which is 40587 days before the civil epoch

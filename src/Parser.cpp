@@ -2121,7 +2121,10 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
         if (isIdent("of") && peek().kind == Tok::Ident) { advance(); ve->declType = advance().text; }
         // Hash[valueType,keyType] — an object hash with no explicit value type is
         // Hash[Any, KeyType], so a missing key answers Any (Rakudo)
-        if (!keyType.empty()) ve->declType = (ve->declType.empty() ? "Any" : ve->declType) + "," + keyType;
+        // An object hash with no declared VALUE type takes Mu from 6.e and Any
+        // before it — `my %h{Str}; %h<nope>.WHAT` is Mu there, Any here.
+        if (!keyType.empty())
+            ve->declType = (ve->declType.empty() ? (langRev_ >= 2 ? "Mu" : "Any") : ve->declType) + "," + keyType;
         lastContainerIs_.clear(); lastContainerOf_.clear(); lastIsDynamic_ = false; lastIsExport_ = false;
         lastWillPhaser_.clear(); lastWillBlock_.reset();
         skipTraits(scope != "has", &ve->declDefault);
@@ -2175,7 +2178,7 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
             std::string keyType = advance().text;
             if (isOp(":") && peek().kind == Tok::Ident) { advance(); advance(); } // :D/:U smiley
             matchKind(Tok::RBrace);
-            ve->declType = (ve->declType.empty() ? "Any" : ve->declType) + "," + keyType;
+            ve->declType = (ve->declType.empty() ? (langRev_ >= 2 ? "Mu" : "Any") : ve->declType) + "," + keyType;
         }
         lastIsDynamic_ = false;
         skipTraits(scope != "has", &ve->declDefault);
