@@ -108,12 +108,19 @@ fi
 #   the recursion cap because an OS thread can have a 1 GiB stack; raising it in the
 #   browser would need the interpreter on an explicit heap stack (a src change, out
 #   of scope). -Oz beats -O2 here: smaller AND deeper (206 vs 174) — verified.
+# The flat include/rakupp/ is on the path as well as include/ itself: the public
+# headers are written to resolve BOTH spellings, because both exist after an
+# install (an embedder gets <rakupp/rakupp.h>, while generated `--exe` code sees
+# a flat directory where "rakupp_ext.h" is a plain sibling). CMake has carried
+# both since the extension ABI landed; this script had only the outer one, so
+# EmbedApi.cpp stopped compiling here and nowhere else.
 em++ \
   -std=c++17 "$OPT" \
   -D_GNU_SOURCE \
   -DRAKUPP_VERSION="\"$VERSION\"" \
   -I"$SRC_DIR" \
   -I"$ROOT_DIR/include" \
+  -I"$ROOT_DIR/include/rakupp" \
   -fexceptions \
   "${SOURCES[@]}" \
   -sSTACK_SIZE=16777216 \
