@@ -81,8 +81,12 @@ files by 21 authors -- with the same rules and a smaller harness,
 | after batch 5 (`c3ba0e4`) | 210 | 36 | 85.4% | 198,220 |
 | after batch 6 (`a935890`) | 210 | 36 | 85.4% | 198,318 |
 | after batch 7 (`23829be`, now 371-387) | 217 | 36 | 85.8% | 198,401 |
+| after batch 8 (`3d93768`) | 218 | 35 | 86.2% | 198,404 |
+| after batch 9 (`c40e93b`) | 221 | 31 | 87.7% | 198,411 |
+| after batch 10 (`0039c70`) | 222 | 30 | 88.1% | 197,804 |
+| after batch 11 (`e3f7671`) | 223 | 29 | 88.5% | 198,180 |
 
-100 files are skipped because Rakudo cannot run them headlessly and 4 more
+100 files are skipped because Rakudo cannot run them headlessly and 4-5 more
 because they are not reproducible across two of its own runs.
 
 | batch | what changed |
@@ -94,6 +98,10 @@ because they are not reproducible across two of its own runs.
 | 5 | a class/grammar/role declared below is usable above (created on first use); a closing `}` at end of line ends the statement for a postfix continuation too |
 | 6 | `Any.Array`/`Any.Hash`; `.head`/`.tail` are assignable; a list on the right of `~~` rejects a non-Positional left side (`Any ~~ Empty` is False) |
 | 7 | `$` closes as the end anchor before `>` (`<?before $>`); a Match takes a slice (`$m[0,1]`) |
+| 8 | `:=` binds at LIST precedence whatever the sigil (`my $b := 1, 2`); a zip of two ENDLESS sides stays lazy (`2..* Z* 2..*` is the perfect squares) |
+| 9 | a `where` sees the earlier parameters during multi dispatch; `m:ov`/`m:overlap`; a code assertion's `$/` is the cursor (`<?{ $0 eq $2 }>`); a Range compares by its element count; `.rotor` spreads a Positional argument |
+| 10 | hyper SUBSCRIPT vs hyper CITATION (`@a>>[0]>>.Str` vs `>>[+]<<`); the hyper fat arrow `>>=><<` and its precedence; `m//` always matches, even in value/argument/invocant position (`my $m = m/b/` is a Match) |
+| 11 | `TR///`, the non-mutating transliteration, and a StrDistance from the bare `tr///` |
 
 Each batch is gated the same way as the first round: `t/run.raku` green, the
 full Roast run with no per-file regression (files that appear to move are
