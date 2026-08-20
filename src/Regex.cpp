@@ -1843,6 +1843,11 @@ void Regex::parseClassBodyMember(Node* node) {
                     else if (!lt.empty() && ascii::isdigit((unsigned char)lt[0])) loCp = (int32_t)std::strtol(lt.c_str(), nullptr, 10);
                     else if (!lt.empty()) loCp = namedCp(lt); // `\c[LATIN…A]..\c[LATIN…Z]` — named endpoints range too
                 }
+                if (loCp >= 0) { // …the same for an escaped endpoint (`\x41 .. \x5A`)
+                    size_t afterEsc = pos_;
+                    while (ascii::isspace((unsigned char)peek())) pos_++;
+                    if (!(peek() == '.' && peek(1) == '.')) pos_ = afterEsc;
+                }
                 if (loCp >= 0 && peek() == '.' && peek(1) == '.') {
                     uint32_t lo = (uint32_t)loCp;
                     pos_ += 2;
@@ -1906,6 +1911,12 @@ void Regex::parseClassBodyMember(Node* node) {
             return cp;
         };
         uint32_t lo = readCp();
+        // Whitespace inside a character class is insignificant, RANGES included:
+        // `<[ a .. z ]>` is `<[a..z]>`. Looking for the `..` without skipping it
+        // made the spaced-out spelling three literal members (a, ., z).
+        size_t afterLo = pos_;
+        while (ascii::isspace((unsigned char)peek())) pos_++;
+        if (!(peek() == '.' && peek(1) == '.')) pos_ = afterLo;
         if (peek() == '.' && peek(1) == '.') {
             pos_ += 2;
             while (ascii::isspace((unsigned char)peek())) pos_++;

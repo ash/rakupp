@@ -12013,6 +12013,15 @@ std::shared_ptr<std::map<std::string, Value>> Interpreter::valuesAliasSource(Exp
 std::shared_ptr<ValueList> Interpreter::derefArrayAlias(Expr* listExpr) {
     if (!listExpr || listExpr->kind != NK::Unary) return nullptr;
     auto* u = static_cast<Unary*>(listExpr);
+    // `for |@a { … }`: slipping an array in is still iterating THAT array, so
+    // the topic aliases its elements exactly as `for @a` does
+    if (u->op == "|" && u->operand && u->operand->kind == NK::VarExpr) {
+        auto* sv = static_cast<VarExpr*>(u->operand.get());
+        if (sv->name.size() > 1 && sv->name[0] == '@' && !sv->declare)
+            if (Value* av = tctx_.cur->find(sv->name))
+                if (av->t == VT::Array && av->arr && !av->isList) return av->arr;
+        return nullptr;
+    }
     if (u->op != "ctx@" || !u->operand || u->operand->kind != NK::VarExpr) return nullptr;
     auto* ve = static_cast<VarExpr*>(u->operand.get());
     if (ve->name.empty() || ve->name[0] != '$') return nullptr;
@@ -12060,13 +12069,34 @@ bool Interpreter::scalarListAlias(Expr* listExpr, std::vector<Value*>& slots) {
     if (!listExpr || listExpr->kind != NK::ListExpr) return false;
     auto* le = static_cast<ListExpr*>(listExpr);
     if (le->items.empty()) return false;
+    // Which members can be aliased: a plain `$x`, and an ARRAY spelled `@a` or
+    // slipped as `|@a` — whose ELEMENTS each get a slot, so the classic
+    // trim-everything loop (`for $name, $a, $b, |@rest { s/^\s+//; s/\s+$// }`)
+    // writes back through every one of them, not just the scalars.
+    auto arrayOf = [&](Expr* e) -> Value* {
+        Expr* inner = e;
+        if (inner && inner->kind == NK::Unary && static_cast<Unary*>(inner)->op == "|")
+            inner = static_cast<Unary*>(inner)->operand.get();
+        if (!inner || inner->kind != NK::VarExpr) return nullptr;
+        auto* ve = static_cast<VarExpr*>(inner);
+        if (ve->name.size() < 2 || ve->name[0] != '@' || ve->declare) return nullptr;
+        Value* v = tctx_.cur->find(ve->name);
+        return (v && v->t == VT::Array && v->arr) ? v : nullptr;
+    };
     for (auto& it : le->items) {
+        if (arrayOf(it.get())) continue;
         if (!it || it->kind != NK::VarExpr) return false;
         auto* ve = static_cast<VarExpr*>(it.get());
         if (ve->name.size() < 2 || ve->name[0] != '$' || ve->declare) return false;
         if (!tctx_.cur->find(ve->name)) return false;
     }
-    for (auto& it : le->items) slots.push_back(lvalue(it.get()));
+    for (auto& it : le->items) {
+        if (Value* av = arrayOf(it.get())) {
+            for (auto& el : *av->arr) slots.push_back(&el);
+            continue;
+        }
+        slots.push_back(lvalue(it.get()));
+    }
     return true;
 }
 
@@ -13542,7 +13572,7 @@ static bool isSetOpStr(const std::string& o) {
     static const std::set<std::string> ops = {
         "(|)", "∪", "(&)", "∩", "(-)", "∖", "(^)", "⊖", "(+)", "⊎", "(.)", "⊍",
         "(elem)", "∈", "(!elem)", "∉", "(cont)", "∋", "(!cont)", "∌",
-        "(<=)", "⊆", "(<)", "⊂", "(>=)", "⊇", "(>)", "⊃", "(==)", "(!=)", "(<>)",
+        "(<=)", "⊆", "(<)", "⊂", "(>=)", "⊇", "(>)", "⊃", "(==)", "≡", "(!=)", "≢", "(<>)",
     };
     return ops.count(o) > 0;
 }
@@ -13552,7 +13582,7 @@ static bool isSetOpStr(const std::string& o) {
 static bool isSetPredicateStr(const std::string& o) {
     static const std::set<std::string> ops = {
         "(elem)", "∈", "(!elem)", "∉", "(cont)", "∋", "(!cont)", "∌",
-        "(<=)", "⊆", "(<)", "⊂", "(>=)", "⊇", "(>)", "⊃", "(==)", "(!=)", "(<>)",
+        "(<=)", "⊆", "(<)", "⊂", "(>=)", "⊇", "(>)", "⊃", "(==)", "≡", "(!=)", "≢", "(<>)",
     };
     return ops.count(o) > 0;
 }
@@ -13719,13 +13749,14 @@ static Value setOp(const std::string& op, const Value& l, const Value& r) {
     auto a = setWeights(l, tier), b = setWeights(r, tier);
     auto at = [](std::map<std::string, double>& m, const std::string& k) { return m.count(k) ? m[k] : 0.0; };
     if (op == "(<=)" || op == "⊆" || op == "(<)" || op == "⊂" || op == "(>=)" || op == "⊇" ||
-        op == "(>)" || op == "⊃" || op == "(==)" || op == "(!=)" || op == "(<>)") {
+        op == "(>)" || op == "⊃" || op == "(==)" || op == "≡" ||
+        op == "(!=)" || op == "≢" || op == "(<>)") {
         bool aSubB = true, bSubA = true;
         for (auto& kv : a) if (kv.second > at(b, kv.first)) { aSubB = false; break; }
         for (auto& kv : b) if (kv.second > at(a, kv.first)) { bSubA = false; break; }
         bool eq = aSubB && bSubA;
-        if (op == "(==)") return Value::boolean(eq);
-        if (op == "(!=)" || op == "(<>)") return Value::boolean(!eq);
+        if (op == "(==)" || op == "≡") return Value::boolean(eq);
+        if (op == "(!=)" || op == "≢" || op == "(<>)") return Value::boolean(!eq);
         if (op == "(<=)" || op == "⊆") return Value::boolean(aSubB);
         if (op == "(>=)" || op == "⊇") return Value::boolean(bSubA);
         if (op == "(<)" || op == "⊂") return Value::boolean(aSubB && !eq);

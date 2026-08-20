@@ -267,8 +267,8 @@ uint32_t Lexer::codepointHere() const {
 // hand-written cases and the general identifier path.
 static const char* uniOpAlias(uint32_t cp) {
     switch (cp) {
-        case 0x2261: return "===";   // ≡  value identity
-        case 0x2262: return "!===";  // ≢  …negated
+        case 0x2261: return "(==)";  // ≡  set equality (NOT `===`: it compares the
+        case 0x2262: return "(!=)";  // ≢  operands as SETS, so (1,2) ≡ (2,1))
         case 0x2A75: return "==";    // ⩵  two consecutive equals
         case 0x2A76: return "===";   // ⩶  three consecutive equals
         case 0x2284: return "!(<)";  // ⊄  not a proper subset

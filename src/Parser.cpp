@@ -3518,8 +3518,12 @@ ExprPtr Parser::parsePrimary() {
                     // only THIS composer's own level: a nested block owns its topic,
                     // so `{ :out{ .contains: … } }` is still a Hash of one Block
                     if (depth > 1) continue;
+                    // `@_`/`%_` are implicit parameters exactly as `$_` is, so a
+                    // composer mentioning one is a block too: `.map: { @_[0] =>
+                    // @_[1] }` builds a Pair per element, and reading it as a Hash
+                    // literal made the whole map produce nothing.
                     if (tk.kind == Tok::Var &&
-                        (tk.text == "$_" ||
+                        (tk.text == "$_" || tk.text == "@_" || tk.text == "%_" ||
                          (tk.text.size() > 2 && tk.text[1] == '^'))) { isHash = false; break; }
                     // `.method` with no invocant before it — the previous token cannot
                     // end a term, so the dot's invocant is the topic
