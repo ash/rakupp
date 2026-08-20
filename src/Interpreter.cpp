@@ -1940,28 +1940,77 @@ void Interpreter::hoistExprDecls(const std::vector<StmtPtr>& stmts, Env* env, De
     if (cache) *cache = found ? 1 : 0;
 }
 
+// A class/grammar/role declaration is visible across its whole scope, like a
+// sub: `say f("x"); grammar G {…}; sub f($s) { G.parse($s) }` runs in Rakudo,
+// where the type is created at COMPILE time. Only a plain declaration hoists —
+// `augment` reopens something that must already exist, and a name computed at
+// run time (`class ::($n)`) is not knowable early.
+static bool hoistableTypeDecl(const Stmt* s) {
+    if (s->kind != NK::ClassDecl) return false;
+    auto* cd = static_cast<const ClassDecl*>(s);
+    return !cd->isAugment && !cd->nameExpr && !cd->name.empty();
+}
+
+// Create a type whose declaration is further down the file, the moment its name
+// is actually used. Answers false when there is no such pending declaration.
+bool Interpreter::materializePendingType(const std::string& name) {
+    auto it = pendingTypes_.find(name);
+    if (it == pendingTypes_.end()) return false;
+    ClassDecl* cd = it->second;
+    pendingTypes_.erase(it);
+    // its own parents and roles may be pending too (`class D does R` with both
+    // declared below the code that uses D) — build those first
+    if (!cd->parent.empty()) materializePendingType(cd->parent);
+    for (auto& p : cd->extraParents) materializePendingType(p);
+    for (auto& r : cd->roles) materializePendingType(r);
+    exec(cd);
+    hoistedTypes_[cd]++;      // …so reaching it in normal flow does not rebuild it
+    return classes_.count(name) > 0;
+}
+
 bool Interpreter::hoistSubs(const std::vector<StmtPtr>& stmts) {
     // Named subs are visible across their whole enclosing scope regardless of
     // textual position, so register them before executing the statements.
     // Fast path first: most bodies (every loop body, most blocks) have nothing
     // to hoist, and the thread_local flag save/restore is a TLV access on
     // macOS — don't touch it unless a hoistable declaration actually exists.
-    bool anyDecl = false;
+    bool anyDecl = false, anyType = false;
     for (auto& s : stmts) {
         if (s->kind == NK::SubDecl) {
             auto* sd = static_cast<SubDecl*>(s.get());
-            if (!sd->isMethod && !sd->name.empty()) { anyDecl = true; break; }
+            if (!sd->isMethod && !sd->name.empty()) { anyDecl = true; }
         }
+        else if (hoistableTypeDecl(s.get())) anyType = true;
     }
-    if (!anyDecl) return false;
+    if (!anyDecl && !anyType) return false;
+    if (!anyDecl) { // only pending types to record — no sub to run, no flag to flip
+        for (auto& s : stmts)
+            if (hoistableTypeDecl(s.get())) {
+                auto* cd = static_cast<ClassDecl*>(s.get());
+                if (!classes_.count(cd->name)) pendingTypes_[cd->name] = cd;
+            }
+        return false;
+    }
     bool any = false;
     bool saved = hoistingSubs_; hoistingSubs_ = true;
+    // subs first: creating a type RUNS its traits, and a `trait_mod:<is>`
+    // handler is an ordinary sub that has to be in scope by then
     for (auto& s : stmts) {
         if (s->kind == NK::SubDecl) {
             auto* sd = static_cast<SubDecl*>(s.get());
             if (!sd->isMethod && !sd->name.empty()) { exec(s.get()); any = true; }
         }
     }
+    // Types are recorded, not created: building one RUNS its traits and its body,
+    // and a trait handler may read a `my` variable declared above the class,
+    // which at scope entry has not been declared yet. So the declaration is kept
+    // aside and created on FIRST USE, which is late enough for that and early
+    // enough for `say f("x"); grammar G {…}; sub f($s) { G.parse($s) }`.
+    for (auto& s : stmts)
+        if (hoistableTypeDecl(s.get())) {
+            auto* cd = static_cast<ClassDecl*>(s.get());
+            if (!classes_.count(cd->name)) pendingTypes_[cd->name] = cd;
+        }
     hoistingSubs_ = saved;
     return any;
 }
@@ -5514,6 +5563,16 @@ Value Interpreter::exec(Stmt* s, bool sink) {
         }
         case NK::ClassDecl: {
             auto* cd = static_cast<ClassDecl*>(s);
+            // already created by the hoist pass at scope entry — re-running it
+            // would build a SECOND ClassInfo, and objects made in between would
+            // then belong to a type that is no longer the one the name resolves to
+            if (!hoistingSubs_) {
+                auto ht = hoistedTypes_.find(cd);
+                if (ht != hoistedTypes_.end()) {
+                    if (--ht->second <= 0) hoistedTypes_.erase(ht);
+                    return Value::any();
+                }
+            }
             if (cd->isAugment) {
                 // Reopen an existing type and add methods. Build each method into a
                 // Callable Value (same shape as the main registration path).
@@ -12116,8 +12175,7 @@ Value Interpreter::coerceToType(const Value& v, const std::string& type) {
     // coercion protocol only runs when it has to. Without this, `Mu:D(Int) $a`
     // (a way of saying "take anything, definite") died looking for a `.Mu`
     // method on an Int.
-    if (type == "Mu" || type == "Any" || (v.t == VT::Object && typeOrSubsetMatches(v, type)))
-        return v;
+    if (type == "Mu" || type == "Any" || typeOrSubsetMatches(v, type)) return v;
     try { return methodCall(v, type, ValueList{}); }
     catch (RakuError&) {}
     if (type == "IO::Path") return methodCall(v, "IO", ValueList{});

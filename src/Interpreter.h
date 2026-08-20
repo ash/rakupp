@@ -796,7 +796,13 @@ public:
     Value hyperMethodEach(const Value& inv, const std::string& m, ValueList& args);
     // thread_local like the call registers above: written per-block / per-
     // statement on every thread (the next TSan reports after the registers)
-    static thread_local bool hoistingSubs_; // true while hoistSubs is registering (defers trait application)
+    static thread_local bool hoistingSubs_;
+    // class/grammar/role declarations already created by a hoist pass, counted so
+    // a recursive re-entry of the same statement list stays balanced
+    std::unordered_map<const ClassDecl*, int> hoistedTypes_;
+    // class/grammar/role declarations seen ahead in a scope but not yet created
+    std::unordered_map<std::string, ClassDecl*> pendingTypes_;
+    bool materializePendingType(const std::string& name); // true while hoistSubs is registering (defers trait application)
     void breakSelfClosures(Env* env); // drop the closure back-edge of any non-escaped nested sub, so a frame with a self-closured sub can be freed
     void runProcPromise(Value& promise, double timeoutSec); // run a Proc::Async .start promise (with optional timeout)
     void runEnterPhasers(const std::vector<StmtPtr>& stmts); // ENTER/FIRST at block entry (source order)

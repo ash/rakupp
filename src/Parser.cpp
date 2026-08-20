@@ -1370,6 +1370,16 @@ std::vector<ExprPtr> Parser::parseCallArgs(ExprPtr* invocant) {
 ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
     bool hyperNext = false;
     for (;;) {
+        // A block-closing `}` at end of line ends the statement — for a POSTFIX
+        // continuation just as for an infix one. `@a .= sort: { .chars }` followed
+        // by a line starting `.sum given …` is two statements; reading the `.sum`
+        // as a method call on the sort's block was how one Weekly Challenge
+        // solution came to ask a Block for its sum. The `}` has to belong to the
+        // statement being parsed: when the NEXT statement starts right after it,
+        // nothing has been consumed yet and breaking here would spin forever.
+        if (pos_ > 0 && pos_ - 1 == lastBlockClose_ && lastBlockClose_ >= stmtStart_ &&
+            cur().line != toks_[pos_ - 1].line)
+            break;
         // when parsing the operand of a prefix op, a space-preceded `.method` binds
         // to the whole prefix expression, not the operand — stop here so the caller grabs it.
         if (stopAtSpaceDot && isOp(".") && cur().spaceBefore) break;
@@ -6801,7 +6811,10 @@ StmtPtr Parser::applyModifiers(StmtPtr s) {
 StmtPtr Parser::parseStatement() {
     while (matchKind(Tok::Semicolon)) {}
     int stmtLine = cur().line;
+    size_t savedStart = stmtStart_;
+    stmtStart_ = pos_; // where the end-of-line `}` rule starts counting
     StmtPtr st = parseStatementImpl();
+    stmtStart_ = savedStart;
     if (st && st->line == 0) st->line = stmtLine; // stamp the source line for diagnostics
     return st;
 }

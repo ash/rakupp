@@ -5531,6 +5531,11 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             if (m == "flush" || m == "close") return Value::boolean(true);
         }
     }
+    // The invocant may be a type whose `class`/`grammar` declaration is further
+    // down the file — those are compile-time in Rakudo, so `say f("x"); grammar
+    // G {…}` works there. Create it now and try once more.
+    if (inv.t == VT::Type && !inv.s.empty() && materializePendingType(inv.s))
+        return methodCall(inv, m, args);
     if (std::getenv("RAKUPP_TRACE"))
         std::cerr << "[NoMethod] ." << m << " on " << inv.typeName()
                   << " at " << (srcFile_.empty() ? "?" : srcFile_) << ":" << curLine_ << "\n";

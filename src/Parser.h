@@ -208,6 +208,7 @@ private:
     // A subscript's `}` does not count (`%h{'a'}\n + 3` really is a continuation),
     // which is why this records the position rather than testing the token kind.
     size_t lastBlockClose_ = (size_t)-1;
+    size_t stmtStart_ = 0; // first token of the statement being parsed (see lastBlockClose_)
     bool matchOp(const std::string& s);
     bool matchKind(Tok k);
     void expectKind(Tok k, const char* what);
