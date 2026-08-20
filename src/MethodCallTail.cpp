@@ -297,6 +297,15 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         }
     }
 
+    // A TYPE OBJECT (or an undefined value) is ONE element too, as `.List`
+    // already answered: `Any.Array` is [(Any)], not an error. Coercing an
+    // absent hash lookup with `.Array` is how one Weekly Challenge solution
+    // reads a graph's missing edges.
+    if (m == "Array" && (inv.t == VT::Type || inv.t == VT::Any)) {
+        Value one = Value::array(); one.arr->push_back(inv);
+        return one;
+    }
+    if (m == "Hash" && (inv.t == VT::Type || inv.t == VT::Any)) return Value::makeHash();
     // scalar .Array / .List — a 1-element container: "LLL".Array is ["LLL"]
     if ((m == "Array" || m == "List") &&
         (inv.t == VT::Int || inv.t == VT::Num || inv.t == VT::Rat || inv.t == VT::Bool ||

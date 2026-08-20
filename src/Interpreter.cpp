@@ -11787,6 +11787,17 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             try { base = lvalue(mc->inv.get()); } catch (RakuError&) {}
             if (base && base->t == VT::Pair && base->pairVal) return base->pairVal.get();
         }
+        // `.head` / `.tail` on an array hand back the ELEMENT'S container, so
+        // they are writable: `@stack.tail = …` is how a Weekly Challenge author
+        // replaces the top of a stack. (With an argument they answer a list, and
+        // a list is not a target.)
+        if ((mc->method == "head" || mc->method == "tail") && mc->args.empty() &&
+            !mc->meta && !mc->hyper) {
+            Value* base = nullptr;
+            try { base = lvalue(mc->inv.get()); } catch (RakuError&) {}
+            if (base && base->t == VT::Array && base->arr && !base->arr->empty() && !base->isList)
+                return mc->method == "head" ? &base->arr->front() : &base->arr->back();
+        }
         // container-access methods as l-values: `%h.AT-KEY("k") = v`,
         // `@a.AT-POS(i) = v`, and multidim `@a.AT-POS(i, j) = v`
         if ((mc->method == "AT-KEY" || mc->method == "AT-POS") && !mc->args.empty() && !mc->meta) {
@@ -15304,6 +15315,16 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             // `$x ~~ Nil` — Nil.ACCEPTS is true only for Nil ITSELF; a defined but
             // empty hash/list/string does NOT match Nil (valueEq would say it does).
             res = (l.t == VT::Nil);
+        } else if (r.t == VT::Array && (l.t == VT::Any || l.t == VT::Nil || l.t == VT::Type ||
+                                        l.t == VT::Int || l.t == VT::Num || l.t == VT::Rat ||
+                                        l.t == VT::Bool || l.t == VT::Complex ||
+                                        (l.t == VT::Str && !l.isAllomorph() &&
+                                         l.hashKind != "Blob" && l.hashKind != "Buf"))) {
+            // A LIST on the right compares element by element, and a
+            // non-Positional left side simply is not one: `Any ~~ Empty` and
+            // `"" ~~ ()` are False, where valueEq called both sides empty and
+            // said True. (`(1,2) ~~ (1,2)` still goes through valueEq below.)
+            res = false;
         } else if (r.t == VT::Str && (l.t == VT::Type || l.t == VT::Any || l.t == VT::Nil)) {
             // A TYPE OBJECT never matches a string. valueEq stringified it, and
             // `Mu.Str` is "", so `Mu ~~ ""` came out True — an undefined thing
