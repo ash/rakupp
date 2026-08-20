@@ -150,7 +150,7 @@ struct StrLit : Expr {
 // A numeric word in a `<…>` list is an allomorph: the numeric value of `num`,
 // tagged so it is ALSO the string `str` (`<42>` is IntStr, `<1/3>` RatStr, `<1e5>` NumStr).
 struct AllomorphLit : Expr { ExprPtr num; std::string str; AllomorphLit(): Expr(NK::AllomorphLit){} };
-struct RegexLit : Expr { std::string pattern; bool isRx = false; /* rx// : a Regex object, never an implicit match */ std::string declKind; /* "regex"/"token"/"rule" for an anonymous `regex {…}` term: a first-class Regex closing over its scope */ explicit RegexLit(std::string p): Expr(NK::RegexLit), pattern(std::move(p)){} };
+struct RegexLit : Expr { std::string pattern; bool isRx = false; /* rx// : a Regex object, never an implicit match */ bool isM = false; /* m// : ALWAYS an immediate match against $_, even in value context (a bare /…/ there is the Regex object) */ std::string declKind; /* "regex"/"token"/"rule" for an anonymous `regex {…}` term: a first-class Regex closing over its scope */ explicit RegexLit(std::string p): Expr(NK::RegexLit), pattern(std::move(p)){} };
 struct ChainExpr : Expr { std::vector<ExprPtr> operands; std::vector<std::string> ops; ChainExpr(): Expr(NK::ChainExpr){} };
 struct SubstLit : Expr { std::string pattern, repl; bool nonMut=false; SubstLit(std::string p, std::string r, bool nm=false): Expr(NK::SubstLit), pattern(std::move(p)), repl(std::move(r)), nonMut(nm){} };
 struct BoolLit : Expr { bool v; explicit BoolLit(bool b): Expr(NK::BoolLit), v(b){} };

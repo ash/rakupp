@@ -219,7 +219,7 @@ template <class IO> void visit(IO& io, StrLit& n)   { F(io, n.v); F(io, n.nfcDon
                                                       if (IO::reading) n.normalize(); }
 template <class IO> void visit(IO& io, BoolLit& n)  { F(io, n.v); }
 template <class IO> void visit(IO& io, AllomorphLit& n) { ioExpr(io, n.num); F(io, n.str); }
-template <class IO> void visit(IO& io, RegexLit& n) { F(io, n.pattern); F(io, n.isRx); F(io, n.declKind); }
+template <class IO> void visit(IO& io, RegexLit& n) { F(io, n.pattern); F(io, n.isRx); F(io, n.isM); F(io, n.declKind); }
 template <class IO> void visit(IO& io, SubstLit& n) { F(io, n.pattern); F(io, n.repl); F(io, n.nonMut); }
 template <class IO> void visit(IO& io, ChainExpr& n){ ioExprVec(io, n.operands); ioVec(io, n.ops); }
 template <class IO> void visit(IO& io, InterpStr& n){ ioExprVec(io, n.parts); }

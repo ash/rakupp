@@ -1389,6 +1389,9 @@ bool Lexer::tryQuoteForm(Token& out) {
         }
         out = make(Tok::RegexLit, adverbs + raw);
         out.flag = (w == "rx"); // rx// is a Regex object, never an implicit $_ match
+        // …and the explicit `m//` is the opposite: ALWAYS a match against $_, even
+        // where a bare `/…/` would be the Regex object (`my $m = m/b/` is a Match)
+        if (w == "m" || w == "mm") out.ival = 1;
         return true;
     }
     bool interp = (w == "qq");
@@ -1916,8 +1919,10 @@ Token Lexer::lexOperator(bool termBefore) {
             innerCps++;
         }
         aliasUniOp(inner); // ÷ → /, × → *, − → -, ≥ ≤ ≠ (same as the guillemet form)
-        // fat-arrow inner: `<<=>>>` is hyper << => >> (the inner scan can't cross '>')
-        if (inner == "=" && peek() == '>' && peek(1) == '>' && peek(2) == '>') {
+        // fat-arrow inner: the inner scan cannot cross '>', so a lone `=` followed
+        // by `>` and then a closing marker spells `=>` — `<<=>>>` and `>>=><<`
+        if (inner == "=" && peek() == '>' &&
+            ((peek(1) == '>' && peek(2) == '>') || (peek(1) == '<' && peek(2) == '<'))) {
             s += "=>"; advance(); s += advance(); s += advance();
             return make(Tok::Op, s);
         }
@@ -1925,7 +1930,15 @@ Token Lexer::lexOperator(bool termBefore) {
         // not a binary metaop — leave it for parsePostfix (else `>>.Str>>` would be
         // read as one infix token and the method chain would break). A `:` inner
         // is a colonpair WORD in a `<<:def>>` qww list, never an operator.
-        if (!inner.empty() && inner[0] != '.' && inner[0] != ':' &&
+        // …and an inner beginning `[` followed by an INDEX is a hyper SUBSCRIPT
+        // (`@a>>[0]>>.Str`), not the bracketed citation of an operator
+        // (`>>[+]<<`): reading it as one made `>>[0]>>` a binary metaop whose
+        // operator was `0`.
+        bool hyperIndex = inner.size() > 1 && inner[0] == '[' &&
+                          (ascii::isdigit((unsigned char)inner[1]) || inner[1] == '$' ||
+                           inner[1] == '@' || inner[1] == '*' || inner[1] == '^' ||
+                           inner[1] == '-');
+        if (!inner.empty() && inner[0] != '.' && inner[0] != ':' && !hyperIndex &&
             ((peek() == '>' && peek(1) == '>') || (peek() == '<' && peek(1) == '<'))) {
             s += inner; s += advance(); s += advance();
             return make(Tok::Op, s);

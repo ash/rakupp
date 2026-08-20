@@ -11993,7 +11993,8 @@ static Value regexClosingOver(std::string pat, const std::shared_ptr<Env>& sc) {
 // OBJECT, not an immediate match against $_ — so `:err(/pat/)` and `my $rx = /pat/`
 // store a Regex that can be smartmatched later.
 Value Interpreter::evalValueOf(Expr* e) {
-    if (e && e->kind == NK::RegexLit)
+    // …but an explicit `m//` matches even here: `my $m = m/b/` is the Match.
+    if (e && e->kind == NK::RegexLit && !static_cast<RegexLit*>(e)->isM)
         return regexClosingOver(spliceRegexVars(static_cast<RegexLit*>(e)->pattern), tctx_.cur);
     return eval(e);
 }
@@ -19521,8 +19522,9 @@ Value Interpreter::evalUnary(Unary* u) {
 ValueList Interpreter::evalArgs(const std::vector<ExprPtr>& exprs) {
     ValueList args;
     for (auto& a : exprs) {
-        if (a->kind == NK::RegexLit) {
+        if (a->kind == NK::RegexLit && !static_cast<RegexLit*>(a.get())->isM) {
             // a regex literal passed as an argument is a Regex object, not a match
+            // (an explicit `m//` still matches: `say (m/b/).Str`)
             args.push_back(Value::regex(static_cast<RegexLit*>(a.get())->pattern));
         } else if (a->kind == NK::Unary && static_cast<Unary*>(a.get())->op == "|") {
             Value v = eval(static_cast<Unary*>(a.get())->operand.get());
@@ -22728,8 +22730,11 @@ Value Interpreter::eval(Expr* e) {
                 throw RakuError{Value::typeObj("X::Method::NotFound"),
                     "Private method call to '" + mc->method + "' outside the defining class"};
             // `/re/.method` operates on the Regex object; only bare /…/ in term
-            // position matches $_ (so the invocant must not auto-match here)
-            Value inv = (mc->inv && mc->inv->kind == NK::RegexLit)
+            // position matches $_ (so the invocant must not auto-match here) —
+            // but an explicit `m//` DOES match, so `(m:g/b/).elems` counts the
+            // matches instead of asking a Regex for its elems
+            Value inv = (mc->inv && mc->inv->kind == NK::RegexLit &&
+                         !static_cast<RegexLit*>(mc->inv.get())->isM)
                 ? Value::regex(static_cast<RegexLit*>(mc->inv.get())->pattern)
                 : eval(mc->inv.get());
             if (mc->methodExpr) { // indirect ."$name"() / .$var (Callable or name)

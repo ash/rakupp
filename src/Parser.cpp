@@ -180,6 +180,10 @@ static InfixInfo classifyInfix(const Token& t) {
             (o.substr(o.size() - 2) == ">>" || o.substr(o.size() - 2) == "<<")) {
             Token inner = t;
             inner.text = o.substr(2, o.size() - 4);
+            // `>>=><<` — the fat arrow arrives here as TEXT, not as its own token
+            // kind, and would otherwise fall back to additive precedence and
+            // outrank the `..` on its left
+            if (inner.text == "=>") inner.kind = Tok::FatArrow;
             InfixInfo base = classifyInfix(inner);
             in.valid = true;
             in.lbp = base.valid ? base.lbp : BP_ADD;
@@ -881,7 +885,14 @@ ExprPtr Parser::parseExpr(int minbp) {
         if (!in.valid && cur().kind == Tok::Op &&
             (cur().text == ">>" || cur().text == "<<" ||
              cur().text == "\xC2\xBB" || cur().text == "\xC2\xAB") &&
-            peek().kind == Tok::LBracket && BP_ZIP >= minbp) {
+            peek().kind == Tok::LBracket &&
+            // …but only when the brackets cite an OPERATOR (`>>[+]<<`) or name a
+            // Callable (`>>[&infix:<+>]<<`). An INDEX in there is the hyper
+            // SUBSCRIPT `@a>>[0]`, which parsePostfix owns — reading it here made
+            // `@a>>[0]>>.Str` a hyper-with whose operator was the number 0.
+            (peek(2).kind == Tok::Op ||
+             (peek(2).kind == Tok::Var && !peek(2).text.empty() && peek(2).text[0] == '&')) &&
+            BP_ZIP >= minbp) {
             // the two markers carry the DWIM rules (»=strict left, «=dwimmy) —
             // normalize to ASCII and encode them in the call name.
             std::string m1 = (cur().text == "<<" || cur().text == "\xC2\xAB") ? "<<" : ">>";
@@ -1417,9 +1428,15 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
                 else if (peek(k).kind == Tok::RBracket) {
                     if (--d == 0) {
                         const Token& nx = peek(k + 1);
-                        return nx.kind == Tok::Op &&
-                               (nx.text == ">>" || nx.text == "<<" ||
-                                nx.text == "\xC2\xBB" || nx.text == "\xC2\xAB");
+                        bool marker = nx.kind == Tok::Op &&
+                                      (nx.text == ">>" || nx.text == "<<" ||
+                                       nx.text == "\xC2\xBB" || nx.text == "\xC2\xAB");
+                        if (!marker) return false;
+                        // …unless a `.` follows that marker: `@a>>[0]>>.Str` is a
+                        // hyper SUBSCRIPT followed by a hyper method call, not the
+                        // bracket-op infix form (whose right side is a term)
+                        const Token& after = peek(k + 2);
+                        return !(after.kind == Tok::Op && after.text == ".");
                     }
                 }
             }
@@ -2997,6 +3014,7 @@ ExprPtr Parser::parsePrimary() {
             checkRegexBoundaries(tk.text, tk.line);
             auto e = std::make_unique<RegexLit>(tk.text);
             e->isRx = tk.flag;
+            e->isM = (tk.ival == 1);
             return e;
         }
         case Tok::SubstLit: {
