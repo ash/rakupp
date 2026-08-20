@@ -21166,7 +21166,27 @@ Value Interpreter::evalIndex(Index* idx) {
             if (base.hash) { auto it = base.hash->find(key); if (it != base.hash->end()) return it->second; }
             return Value::nil();
         }
-        long long n = eval(idx->index.get()).toInt();
+        Value iv = eval(idx->index.get());
+        // A SLICE of a Match — `($str ~~ /(.+)(\d+)/)[0,1]`, the idiomatic way to
+        // read two captures at once — answers a list of those captures, as it
+        // does on an Array. Only the single-index form was handled, so the slice
+        // came back Nil and both captures were lost.
+        if (iv.t == VT::Array || iv.t == VT::Range || iv.t == VT::Whatever) {
+            ValueList want = iv.t == VT::Whatever ? ValueList{} : iv.flatten();
+            Value out = Value::array(); out.isList = true;
+            size_t have = base.arr ? base.arr->size() : 0;
+            if (iv.t == VT::Whatever) {
+                for (size_t k = 0; k < have; k++) out.arr->push_back((*base.arr)[k]);
+                return out;
+            }
+            for (auto& w : want) {
+                long long k = w.toInt();
+                if (k < 0) k += (long long)have;
+                out.arr->push_back(k >= 0 && k < (long long)have ? (*base.arr)[k] : Value::nil());
+            }
+            return out;
+        }
+        long long n = iv.toInt();
         if (base.arr && n >= 0 && n < (long long)base.arr->size()) return (*base.arr)[n];
         return Value::nil();
     }

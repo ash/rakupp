@@ -1680,7 +1680,11 @@ Regex::NodePtr Regex::parseAtom() {
         // end anchor only when not an interpolation/backref. A following '$'
         // means the `$$` end-of-line anchor (its own second char isn't a var).
         char nx = peek(1);
-        if (nx == '\0' || nx == ')' || nx == ']' || nx == '|' || nx == '$' || ascii::isspace((unsigned char)nx)) {
+        // `>` closes an assertion, so `<?before $>` is the END ANCHOR inside a
+        // lookahead — not a variable named `$>`. `}` closes an embedded block the
+        // same way.
+        if (nx == '\0' || nx == ')' || nx == ']' || nx == '|' || nx == '$' || nx == '>' ||
+            nx == '}' || ascii::isspace((unsigned char)nx)) {
             pos_++;
             auto n = std::make_unique<Node>(); n->k = K::AnchorEnd;
             // `$$` = end of any LINE. Raku's `$` is the ABSOLUTE end of the
