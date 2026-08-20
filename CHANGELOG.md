@@ -3,6 +3,23 @@
 Release notes for tagged releases. Numbers are measured, not projected;
 methodology for all Roast figures is in [docs/status/COUNTING.md](docs/status/COUNTING.md).
 
+## v3.5.1 (2026-08-20) — the Raku.js build finds its headers
+
+A build-script fix and nothing else: `v3.5.0..v3.5.1` is one file, and no
+engine source is in it. The interpreter is byte-for-byte the v3.5.0 engine
+plus its version string, so that release's measured figures stand unchanged.
+
+`rakujs/build.sh` compiled with `-Iinclude` but not `-Iinclude/rakupp`, and
+`src/ExtCtx.h` includes `"rakupp_ext.h"` — the flat spelling, which resolves
+after an install and which CMake has carried a path for since the extension
+ABI landed. So `EmbedApi.cpp` compiled everywhere except the WebAssembly
+pipeline, and nothing noticed until the v3.5.0 release run exercised that job
+and shipped without the Raku.js bundle.
+
+v3.5.0's tag is left where it is: it names the commit its binaries were built
+from, and moving a published tag is how a release ends up serving assets from
+two different commits.
+
 ## v3.5.0 (2026-08-20) — the 6.e language revision
 
 | | v3.14.0 | v3.5.0 |

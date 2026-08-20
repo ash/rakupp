@@ -10,7 +10,7 @@ via WebAssembly, no server required. It is not a fork of Rakudo and shares no co
 it targets the *language*, measured against [**Roast**](https://github.com/Raku/roast),
 the official Raku test suite.
 
-**Status:** current release **v3.5.0** (2026-08-20) — *the 6.e language
+**Status:** current release **v3.5.1** (2026-08-20) — *the 6.e language
 revision*: `use v6.e.PREVIEW;` turns on the whole of Raku 6.e, and nothing else
 turns it on. The revision travels with the **code**, not the process — each
 compilation unit records the revision it was compiled under — so a 6.e module
