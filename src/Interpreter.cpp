@@ -13615,7 +13615,12 @@ static std::map<std::string, double> setWeights(const Value& v, int tier) {
             // type objects ARE elements. They must key through baggyKeyStr like every
             // other element, or an operator result and a `set(…)` literal holding the
             // same type object end up with DIFFERENT keys and compare unequal.
-            else { std::string k = baggyKeyStr(x); setRep(k, x); m[k] += 1; }
+            // At SET tier a repeated element is still just one element:
+            // `(1,2,2,3) (-) (2,)` is Set(1 3), and `(1,1,2) (==) (1,2)` is
+            // True. Counting occurrences here made every duplicate-bearing
+            // list behave like a Bag in a plain set operation.
+            else { std::string k = baggyKeyStr(x); setRep(k, x);
+                   if (tier == 0) m[k] = 1; else m[k] += 1; }
         }
     } else if (v.t == VT::Pair) {
         double w = v.pairVal ? v.pairVal->toNum() : 0;
@@ -20309,6 +20314,14 @@ bool endlessReduce(const std::string& op, const Value& v, Value& out) {
 Value Interpreter::applyReduce(std::string op, ValueList& items) {
     bool scan = !op.empty() && op.front() == '\\'; // [\+] : running partial reductions
     if (scan) op = op.substr(1);
+    // The reverse metaop turns the whole REDUCTION around rather than each step:
+    // `[R-] 1,2,3` is 3-2-1 (0), not R-(R-(1,2),3) (2), and `[R,]` is how a list
+    // gets reversed in an index. Reversing the operands and folding with the
+    // base operator is exactly that. (Rakudo's `[\R,]` is the one exception: it
+    // reports the growing prefixes of the ORIGINAL list, each reversed.)
+    bool revMeta = op.size() > 1 && op[0] == 'R' &&
+                   (!ascii::isalnum((unsigned char)op[1]) || reverseWordOp(op));
+    if (revMeta) { op = op.substr(1); std::reverse(items.begin(), items.end()); }
     // comparison reduces CHAIN pairwise ([<] 1,2,3 == 1<2 && 2<3); a leading
     // `!` negates each pairwise test ([!=:=] $x,$y,$x == $x !=:= $y && $y !=:= $x)
     static const std::set<std::string> chainOps = {
@@ -20322,7 +20335,10 @@ Value Interpreter::applyReduce(std::string op, ValueList& items) {
         if (op == ",") { // [\,] : growing prefixes — ((1) (1 2) (1 2 3))
             for (size_t k = 0; k < items.size(); k++) {
                 Value pre = Value::array(); pre.isList = true;
-                pre.arr->assign(items.begin(), items.begin() + k + 1);
+                // `[\R,]`: items are already reversed, so the k-th REVERSED
+                // prefix of the original is the k-th suffix of what we hold
+                if (revMeta) pre.arr->assign(items.end() - k - 1, items.end());
+                else pre.arr->assign(items.begin(), items.begin() + k + 1);
                 out.arr->push_back(pre);
             }
             return out;

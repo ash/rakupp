@@ -314,7 +314,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         // ELEMENTS to pair up, yet it is still a single thing to iterate.
         static const std::set<std::string> emptyList = {
             "pairs", "antipairs", "kv", "keys", "values", "invert"};
-        if (emptyList.count(m)) { Value o = Value::array(); o.isList = true; o.s = "Seq"; return o; }
+        if (emptyList.count(m)) { Value o = Value::array(); o.isList = true; return o; }
         if (m == "reduce" || m == "produce") return Value::nil();
     }
     // list methods on a lone scalar treat it as a 1-element list: 42.grep(*>3), 'x'.map(...)
@@ -1266,9 +1266,19 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             return out;
         }
         if (m == "min" || m == "max") {
-            // Rakudo: the extremum of an empty list is ±Inf (min → Inf, max → -Inf)
-            if (items.empty()) return Value::number(m == "min" ? INFINITY : -INFINITY);
             bool wantMax = (m == "max");
+            // Rakudo: the extremum of an empty list is ±Inf (min → Inf, max → -Inf)
+            // — but with `:k`/`:v`/`:kv`/`:p` the answer is a LIST of the winning
+            // positions, and an empty list has none, so it stays empty. (An
+            // author summing `.Bag.max(:v)` over possibly-empty bags got -Inf.)
+            if (items.empty()) {
+                for (auto& a : args)
+                    if (a.t == VT::Pair && a.pairVal && a.pairVal->truthy() &&
+                        (a.s == "k" || a.s == "v" || a.s == "kv" || a.s == "p")) {
+                        Value o = Value::array(); o.isList = true; return o;
+                    }
+                return Value::number(m == "min" ? INFINITY : -INFINITY);
+            }
             // an optional &mapper: compare by mapper($_), returning the original
             // element. `:by(&code)` is the named spelling, for the sub form.
             // The block is the first CODE argument, not the first argument — an
@@ -1287,6 +1297,12 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                              (a.s == "k" || a.s == "v" || a.s == "kv" || a.s == "p"))
                         want = a.s == "kv" ? 'm' : a.s[0];
                 }
+            // An ASSOCIATIVE invocant answers those adverbs as a MAPPING, not as a
+            // numbered list: `%h.max(:v)` is the largest VALUE and `:k` its key,
+            // where a Positional's `:k` is the index. It maxes by value too, so
+            // `bag(1,1,2).max(:k)` is (1) — the element that occurs most — even
+            // though the bare `.max` still compares whole pairs.
+            const bool assocAdv = want && inv.t == VT::Hash;
             Value best, bestKey; bool started = false;
             std::vector<size_t> at;
             for (size_t i = 0; i < items.size(); i++) {
@@ -1294,16 +1310,28 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 // undefined elements (holes in a sparse array, type objects) don't compete
                 if (v.t == VT::Nil || v.t == VT::Any || v.t == VT::Type) continue;
                 Value key = v;
+                if (assocAdv && v.t == VT::Pair && v.pairVal) key = *v.pairVal;
                 if (mapper.t == VT::Code) { ValueList one{v}; key = callCallable(mapper, one); }
                 if (!started) { best = v; bestKey = key; started = true; at = {i}; continue; }
                 int c = valueCmp(key, bestKey); // strict compare keeps the FIRST on ties
                 if ((!wantMax && c < 0) || (wantMax && c > 0)) { best = v; bestKey = key; at = {i}; }
                 else if (c == 0) at.push_back(i);
             }
-            if (!started) return Value::number(m == "min" ? INFINITY : -INFINITY); // all undefined
+            if (!started) { // all undefined — same rule as the empty list above
+                if (want) { Value o = Value::array(); o.isList = true; return o; }
+                return Value::number(m == "min" ? INFINITY : -INFINITY);
+            }
             if (!want) return best;
-            Value o = Value::array(); o.isList = true; o.s = "Seq";
+            Value o = Value::array(); o.isList = true; // Rakudo answers a List here
             for (size_t i : at) {
+                if (assocAdv && items[i].t == VT::Pair) {
+                    const Value& pv = items[i];
+                    Value k = pv.pairKey ? *pv.pairKey : Value::str(pv.s);
+                    if (want == 'k' || want == 'm') o.arr->push_back(k);
+                    if (want == 'v' || want == 'm') o.arr->push_back(pv.pairVal ? *pv.pairVal : Value::any());
+                    if (want == 'p') o.arr->push_back(pv);
+                    continue;
+                }
                 if (want == 'k' || want == 'm') o.arr->push_back(Value::integer((long long)i));
                 if (want == 'v' || want == 'm') o.arr->push_back(items[i]);
                 if (want == 'p') {

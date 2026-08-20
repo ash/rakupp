@@ -3392,6 +3392,24 @@ ExprPtr Parser::parsePrimary() {
                     return u;
                 }
             }
+            // reverse-metaop reduce over the COMMA — `[R,]` reverses a list, and
+            // `[\R,]` gives the growing reversed prefixes. The comma arrives as
+            // its own token kind, so the general R branch below never saw it.
+            if (((peek(1).kind == Tok::Ident && peek(1).text == "R" &&
+                  peek(2).kind == Tok::Comma && peek(3).kind == Tok::RBracket)) ||
+                (peek(1).kind == Tok::Op && peek(1).text == "\\" &&
+                 peek(2).kind == Tok::Ident && peek(2).text == "R" &&
+                 peek(3).kind == Tok::Comma && peek(4).kind == Tok::RBracket)) {
+                bool tri = peek(1).kind == Tok::Op;
+                advance();               // [
+                if (tri) advance();      // '\'
+                advance(); advance();    // R ,
+                advance();               // ]
+                auto u = std::make_unique<Unary>();
+                u->op = tri ? "[\\R,]" : "[R,]";
+                u->operand = reduceOperand();
+                return u;
+            }
             // reverse-metaop reduce: [R-] [R~] [R/] — `R` tight against the base op
             if (peek(1).kind == Tok::Ident && peek(1).text == "R" &&
                 (peek(2).kind == Tok::Op || peek(2).kind == Tok::Ident) &&
