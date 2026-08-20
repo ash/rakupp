@@ -17547,6 +17547,39 @@ Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value
         // HMAC builds its key pad, and it was yielding one byte.
         // Cross (X) against an infinite side has no finite answer; leave it alone.
         auto isLazy = [](const Value& v) { return v.t == VT::Array && v.ext; };
+        // An ENDLESS side — an infinite Range (`2..*`) or an infinite lazy list.
+        // Zipping two of them has no finite answer to compute up front, and
+        // Rakudo's answer is itself lazy: `2..* Z* 2..*` is the perfect squares.
+        // Produce a lazy list that pulls one element from each side per step.
+        auto endlessInt = [&](const Value& v) {
+            if (v.t == VT::Range && !v.rNum && v.rTo >= 9000000000000000000LL) return true;
+            if (v.t == VT::Array && v.ext) {
+                auto st = std::static_pointer_cast<LazySeqState>(v.ext);
+                return st && st->infinite;
+            }
+            return false;
+        };
+        if (op[0] == 'Z' && endlessInt(l) && endlessInt(r)) {
+            // the i-th element of a side, materialising a lazy one as it goes
+            auto nth = [this](Value src, size_t i) -> Value {
+                if (src.t == VT::Range) return Value::integer(src.rFrom + (long long)i);
+                materializeLazy(src, i + 1);
+                return src.arr && i < src.arr->size() ? (*src.arr)[i] : Value::any();
+            };
+            Value out = Value::array(); out.isList = true; out.s = "Seq";
+            auto st = std::make_shared<LazySeqState>(); st->infinite = true;
+            auto idx = std::make_shared<size_t>(0);
+            Value lv = l, rv = r; std::string inner = sub;
+            st->appendNext = [this, nth, idx, lv, rv, inner](ValueList& cache) -> bool {
+                size_t i = (*idx)++;
+                Value x = nth(lv, i), y = nth(rv, i);
+                cache.push_back(inner == "," ? Value::list(ValueList{x, y})
+                                             : applyBinOp(inner, x, y));
+                return true;
+            };
+            out.ext = st;
+            return out;
+        }
         if (op[0] == 'Z') {
             if (isLazy(l) && !isLazy(r)) materializeLazy(l, oneLevel(r).size());
             else if (isLazy(r) && !isLazy(l)) materializeLazy(r, oneLevel(l).size());

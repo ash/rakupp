@@ -1057,7 +1057,12 @@ ExprPtr Parser::parseExpr(int minbp) {
                 !static_cast<VarExpr*>(lhs.get())->declare &&
                 (cur().kind == Tok::StrLit || cur().kind == Tok::StrInterp)) // rhs first token (op already consumed)
                 throw ParseError("Unsupported use of $/ variable; in Raku please use the filehandle's .nl-in attribute", cur().line);
-            if (lhs->kind == NK::ListExpr) listAssign = true;
+            // BINDING is a list operation whatever the target's sigil is:
+            // `my $b := 1, 2` binds the List (1, 2), where `my $b = 1, 2` is item
+            // assignment and warns about the 2. It is looser than the zip/cross
+            // infixes too, so `my $s := 2..* Z* 2..*` binds the whole zip.
+            if (in.op == ":=" || in.op == "::=") listAssign = true;
+            else if (lhs->kind == NK::ListExpr) listAssign = true;
             else if (lhs->kind == NK::VarExpr) {
                 const std::string& nm = static_cast<VarExpr*>(lhs.get())->name;
                 if (!nm.empty() && (nm[0] == '@' || nm[0] == '%')) listAssign = true;
@@ -4067,6 +4072,10 @@ ExprPtr Parser::parsePrimary() {
                         }
                         auto as = std::make_unique<Assign>();
                         as->op = advance().text;
+                        // binding is a LIST operation whatever the sigil (`my $b :=
+                        // 1, 2` binds the List), so it takes the comma list and the
+                        // zip/cross infixes exactly as an `@`/`%` declaration does
+                        if (as->op == ":=" || as->op == "::=") listTarget = true;
                         as->target = std::move(decl);
                         as->value = parseExpr(listTarget ? BP_ZIP : BP_ASSIGN); // list decls include Z/X
                         return as;
