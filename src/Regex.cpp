@@ -249,6 +249,18 @@ Regex::NodePtr Regex::parseSplice() {
         if (!listNames_) listNames_ = std::make_shared<std::set<std::string>>();
         listNames_->insert(sub.listNames_->begin(), sub.listNames_->end());
     }
+    // `<~~>` inside the spliced pattern recurses into THAT pattern, not into the
+    // host: `my $re = rx/ '(' <~~>* ')' /; "(())" ~~ /^$re$/` must not drag the
+    // host's anchors into the recursion.
+    {
+        const Node* target = sub.root_.get();
+        std::function<void(Node*)> scope = [&](Node* n) {
+            if (n->k == K::Subrule && n->ruleName == "~~" && !n->recTarget) n->recTarget = target;
+            for (auto& k : n->kids) scope(k.get());
+            if (n->sep) scope(n->sep.get());
+        };
+        scope(sub.root_.get());
+    }
     return std::move(sub.root_);
 }
 
@@ -2282,6 +2294,14 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                                             n->ruleCapture ? (n->ruleAlias.empty() ? n->ruleName : n->ruleAlias) : std::string(),
                                             st, pos, k,
                                             /*alsoBareName=*/n->ruleCapture && !n->ruleAlias.empty() && !n->aliasDotted);
+            }
+            // `<~~>` — recurse into the pattern this node was written in (the
+            // whole regex, or the sub-pattern it was spliced in from). This is
+            // how a balanced-bracket matcher is written without naming a rule.
+            if (n->ruleName == "~~") {
+                const Node* target = n->recTarget ? n->recTarget : root_.get();
+                if (!target || target == n) return false;   // nothing to recurse into
+                return matchNode(target, st, pos, k);
             }
             // <at(N)> — zero-width position assertion: current offset must equal N.
             if (n->ruleName == "at") {

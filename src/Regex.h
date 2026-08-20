@@ -221,6 +221,11 @@ private:
         std::string negClassFlags;       // `-rule` difference members: char must NOT match these
         std::string uprop;               // Unicode property for <:Nd>/<:L>/… (Class node, codepoint-aware)
         bool negate = false;
+        // `<~~>` — recurse into the pattern this node was WRITTEN in. Null means
+        // the whole regex being matched; a sub-pattern spliced in from a Regex
+        // value points at its own root, so `my $re = rx/ '(' <~~>* ')' /` recurses
+        // into `$re` and not into whatever host interpolated it.
+        const Node* recTarget = nullptr;
         bool icase = false;              // case-insensitive at THIS node (scoped inline :i)
         bool imark = false;              // Lit: :ignoremark — compare base codepoints, consume the whole grapheme
         bool multiline = false;          // AnchorStart/AnchorEnd: `^^`/`$$` (line) vs `^`/`$` (string)

@@ -13411,9 +13411,10 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             // UNDEFINED values are checked too: the matching type object (`= Int`)
             // is fine, but a supertype's — `= Any`, the classic un-checked
             // `prompt` result at EOF — fails like Rakudo. Nil takes the reset
-            // branch above; a Failure soaks into any container.
-            if (a->op == "=" && a->target->kind == NK::VarExpr &&
-                !(rhs.t == VT::Hash && rhs.hashKind == "Failure")) {
+            // branch above. A Failure reaches the guard just inside: it soaks
+            // into an UNTYPED container, but a typed one has to look at it, and
+            // looking at a Failure detonates it.
+            if (a->op == "=" && a->target->kind == NK::VarExpr) {
                 static const std::set<std::string> kChecked = {
                     "Int", "Num", "Rat", "Complex", "Str", "Bool",
                 };
@@ -15513,8 +15514,13 @@ static bool isP5Pattern(const std::string& pat) {
 // compiles with its own front-end. Both directions, one pair of functions —
 // three copies of this rule had already drifted apart.
 static std::string spliceRegexValue(const std::string& src) {   // …into a RAKU pattern
-    return isP5Pattern(src) ? Regex::spliceOf(src.substr(src.find(' ') + 1), true)
-                            : "[ " + src + " ]";
+    if (isP5Pattern(src)) return Regex::spliceOf(src.substr(src.find(' ') + 1), true);
+    // `<~~>` means "the pattern this is written in". Pasting the TEXT would make
+    // it mean the HOST's pattern, so a self-recursive regex goes in as a marked
+    // splice too — the parser compiles that with its own root and the recursion
+    // stays inside it (`my $re = rx/ '(' <~~>* ')' /; "(())" ~~ /^$re$/`).
+    if (src.find("<~~>") != std::string::npos) return Regex::spliceOf(src, false);
+    return "[ " + src + " ]";
 }
 static std::string spliceRegexValueP5(const std::string& src) { // …into a PERL 5 one
     return isP5Pattern(src) ? "(?:" + src.substr(src.find(' ') + 1) + ")"
@@ -15688,7 +15694,7 @@ std::string Interpreter::spliceRegexVars(const std::string& pat) {
             bool inAngle = !out.empty() && out.back() == '<' && j < pat.size() && pat[j] == '>';
             Value* v = tctx_.cur->find("$" + pat.substr(i + 1 + tw, j - i - 1 - tw)); // `$^x` binds as `$x`
             if (v && !inAngle) {
-                if (v->t == VT::Regex) { out += "[ " + v->s + " ]"; sawRegex = true; }
+                if (v->t == VT::Regex) { out += spliceRegexValue(v->s); sawRegex = true; }
                 else out += quoteMetaRx(v->toStr());
                 i = j - 1;
                 continue;
@@ -19047,7 +19053,14 @@ Value Interpreter::evalUnary(Unary* u) {
         if (u->op == "ctx@") {
             // `@<name>` (a single named capture in list context) is that match as a
             // 1-element list, not its positional sub-captures — so `@<x>».ast` works.
-            if (v.t == VT::Match) { Value a = Value::array(); a.arr->push_back(v); a.isList = true; return a; }
+            // Dereferencing a match VARIABLE is the other question: `@$/` is the
+            // POSITIONAL CAPTURES, which is how `~« @$/` reads $0 $1 $2 at once.
+            if (v.t == VT::Match) {
+                Value a = Value::array(); a.isList = true;
+                if (u->operand->kind == NK::VarExpr && v.arr) *a.arr = *v.arr;
+                else a.arr->push_back(v);
+                return a;
+            }
             if (v.t == VT::Any || v.t == VT::Nil) { Value a = Value::array(); a.isList = true; return a; } // @<undefined> = ()
             // one-level list context: an array yields its top-level elements (nested
             // itemized arrays stay intact); a Range flattens; a scalar becomes (x,).
@@ -19919,7 +19932,10 @@ Value Interpreter::evalTempLet(Call* c) {
 // type rejects a mismatched value; a declared atomicint coerces numerics to
 // Int (Rakudo: $x \u269b= 4.5 stores 4) and rejects the rest.
 void Interpreter::enforceTypedAssign(const std::string& nm, Value& rhs) {
-    if (rhs.t == VT::Hash && rhs.hashKind == "Failure") return; // soaks into any container
+    // (a Failure used to return here — "it soaks into any container". It does,
+    // but only into an UNTYPED one: the loop below detonates it when the target
+    // has a declared nominal type, which is where the type check must look at
+    // the value. An untyped target has no varDefault entry and falls through.)
     static const std::set<std::string> kChecked = {
         "Int", "Num", "Rat", "Complex", "Str", "Bool",
     };
