@@ -10,33 +10,43 @@ via WebAssembly, no server required. It is not a fork of Rakudo and shares no co
 it targets the *language*, measured against [**Roast**](https://github.com/Raku/roast),
 the official Raku test suite.
 
-**Status:** current release **v3.14.0** (2026-08-11) — *only what the program
-against*: Raku++ now ships `librakupp`, a C API for **embedding Raku in another
-program** ([EMBEDDING.md](docs/guide/EMBEDDING.md)) and an extension ABI that
-lets native code call back **into** Raku ([EXTENSIONS.md](docs/guide/EXTENSIONS.md)).
-Both directions share one value vocabulary, and the WebAssembly playground now
-runs on the same public API rather than a private shim.
+**Status:** current release **v3.5.0** (2026-08-20) — *the 6.e language
+revision*: `use v6.e.PREVIEW;` turns on the whole of Raku 6.e, and nothing else
+turns it on. The revision travels with the **code**, not the process — each
+compilation unit records the revision it was compiled under — so a 6.e module
+works inside a 6.d program and back again, and a 6.d program cannot tell which
+engine is running it. The support matrix runs 51 tracked changes four ways
+(both engines × both revisions) and reads **50 full, 0 divergent**; RakuAST is
+the one left, deliberately.
 
-It also fixes two crashes and a silent data loss that ordinary code could reach,
-because parallelism has been the default since v3.0.0: concurrent regex matching
-segfaulted about one run in four, and concurrent writes to an open handle lost
-lines. Extensions, meanwhile, had never actually worked on Linux or the BSDs —
-a plain ELF executable keeps its symbols out of `.dynsym`, so the fallback path
-ran and only the timings showed it.
+(The version follows v3.14.0 and is not a revert — it is named for the language
+revision it carries, and 4.0.0 is reserved for the modules and embedding
+milestone. Package managers sort 3.5.0 as the older of the two.)
 
-Two behaviour changes can affect existing code: `eqv` now distinguishes a `List`
-from an `Array` or `Seq` as Rakudo does, and an untyped *routine* parameter is
-`Any`-constrained (a block's stays `Mu`). See the
-[CHANGELOG](CHANGELOG.md#v3140-2026-08-11--only-what-the-program-needs).
+It also carries thirteen gated fix batches from the Weekly Challenge corpus
+(challenges 371-387: byte-identical output on 74.8% → 90.9% of the files Rakudo
+can run headlessly), the first sweep of the 100 newest ecosystem distributions,
+and a week-old regression that sweep's gate caught — `require ::($name)` had
+stopped loading anything at all, which broke every distribution that loads a
+driver, font or plugin by computed name.
 
-| | v3.14.0 | at v2.0.0 |
+Three behaviour changes can affect existing code. **The 6.e additions are now
+invisible under 6.d** — `snip`, `snitch`, `nano`, `trans`, sub-form `rotor`,
+`.nomark`, `IO::Path.stem`, `Format`/`Formatter` — as they are in Rakudo, so a
+program using them needs `use v6.e.PREVIEW;`. **The thirteen 6.e behaviours that
+used to be on by default are gated**, so a 6.d program now gets 6.d answers.
+And **an explicit `CATCH` in a `try` block replaces `try`'s implicit swallow**:
+an exception the handler itself rethrows propagates past the `try`. See the
+[CHANGELOG](CHANGELOG.md#v350-2026-08-20--the-6e-language-revision).
+
+| | v3.5.0 | at v2.0.0 |
 |---|---:|---:|
 | Roast, per individual test — of what the suite declares‡ | **198,628 of ~218,600 (90%)** | 197,090 of ~203,500 (97%) |
-| Roast, all-or-nothing — files fully passing, of 1,462 | **594 (41%)** | 594 |
-| Official documentation examples byte-identical on both engines | **948**† | 952 |
-| Ecosystem distributions passing their own `zef` install-time test suite | **48 / 59**\* | 50 / 59 |
-| Local regression suite | **433** | 312 |
-| `say "Hello"` compiled with `--exe --slim` | **4,856,936 B** | 9,830,680 B (no `--slim`) |
+| Roast, all-or-nothing — files fully passing, of 1,462 | **630 (43%)** | 594 |
+| Official documentation examples byte-identical on both engines | **949**† | 952 |
+| Ecosystem distributions passing their own `zef` install-time test suite | **49 / 59**\* | 50 / 59 |
+| Local regression suite | **491** | 312 |
+| `say "Hello"` compiled with `--exe --slim` | **5,246,376 B** | 9,830,680 B (no `--slim`) |
 
 The per-test figure counts the tests in files that abort before running (their
 `plan N` is read from source); on the all-or-nothing bar a file counts only if
