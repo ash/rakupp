@@ -228,6 +228,18 @@ static InfixInfo classifyInfix(const Token& t) {
         if (o == "does" || o == "but") { in.valid = true; in.lbp = BP_MUL; return in; }
         if (o == "o") { in.valid = true; in.lbp = BP_RANGE; return in; } // ASCII alias for ∘ (function composition)
         if (o == "Z" || o == "X") { in.valid = true; in.lbp = BP_ZIP; return in; } // zip / cross: list infix, looser than comma
+        {   // A zip/cross carrying a SYMBOLIC inner operator, arriving as one
+            // string: `[Z=>]`, `[X~]`. In ordinary infix position the two halves
+            // are separate tokens and are joined further down; the bracketed
+            // citation hands them over already joined. Only a symbolic inner op
+            // qualifies — a word would make `Xor` a cross-or.
+            if (o.size() > 1 && (o[0] == 'Z' || o[0] == 'X') &&
+                !ascii::isalnum((unsigned char)o[1])) {
+                Token inner = t; inner.text = o.substr(1);
+                inner.kind = inner.text == "=>" ? Tok::FatArrow : Tok::Op;
+                if (classifyInfix(inner).valid) { in.valid = true; in.lbp = BP_ZIP; return in; }
+            }
+        }
         {   // stacked zip/cross metaops: XZ / ZZ / XX (optionally with a tight op after)
             bool allZX = o.size() > 1;
             for (char c : o) if (c != 'Z' && c != 'X') { allZX = false; break; }
@@ -370,13 +382,18 @@ void Parser::scanOpsIn(const std::string& src, const std::string& srcPath) {
                 else regMap('C', userPostcircumfix_, name.substr(0, sp), name.substr(sp + 1));
                 continue;
             }
-            if (asciiOnlyOp(name)) continue;
             if (c1 == "infix") {
+                // An ASCII-only spelling is USUALLY a redeclaration of a built-in
+                // (`multi infix:<*>(Color, Real)`), and registering that as a user
+                // op would give it the default precedence and reshape every
+                // expression in the file. One that is NOT a built-in, though, is a
+                // genuinely new operator (`sub infix:<%%%>`) and has to be known.
                 Token t; t.text = name; t.kind = Tok::Op;
                 bool builtin = classifyInfix(t).valid;
                 if (!builtin) { t.kind = Tok::Ident; builtin = classifyInfix(t).valid; }
                 if (!builtin && !userInfix_.count(name)) regInfix(name, BP_ADD);
             }
+            else if (asciiOnlyOp(name)) continue;
             else if (c1 == "prefix") regSet('p', userPrefix_, name);
             else regSet('P', userPostfix_, name);
         }
@@ -706,10 +723,27 @@ ExprPtr Parser::parseExpr(int minbp) {
                 rPfx = "R"; advance();
             }
             bool made = false;
-            if (cur().kind == Tok::Op && cur().text != "=" && peek().kind == Tok::RBracket) {
-                InfixInfo base = classifyInfix(cur());
+            // The content is the operator's own spelling, which may be more than
+            // one token: `[max]` and `[eq]` are words, `[Z=>]`/`[X~]` are a word
+            // plus an operator. Gather up to four adjacent tokens and ask the
+            // infix classifier what they spell, exactly as the hyper metaop does.
+            std::string spell;
+            size_t k = pos_;
+            for (int n = 0; n < 4 && toks_[k].kind != Tok::RBracket && toks_[k].kind != Tok::End; n++) {
+                if (n && toks_[k].spaceBefore) { spell.clear(); break; }
+                if (toks_[k].kind == Tok::FatArrow) spell += "=>";      // `[Z=>]`
+                else if (toks_[k].kind == Tok::Op || toks_[k].kind == Tok::Ident) spell += toks_[k].text;
+                else { spell.clear(); break; }
+                k++;
+            }
+            if (toks_[k].kind != Tok::RBracket) spell.clear();
+            if (!spell.empty() && spell != "=" &&
+                (cur().kind == Tok::Op || cur().kind == Tok::Ident)) {
+                Token synth = cur(); synth.text = spell;
+                InfixInfo base = classifyInfix(synth);
                 if (base.valid) {
-                    std::string baseOp = advance().text;
+                    std::string baseOp = spell;
+                    while (pos_ < k) advance();
                     advance(); // ]
                     bool assignForm = isOp("=") && !cur().spaceBefore;
                     if (assignForm && BP_ASSIGN >= minbp) {
@@ -7066,6 +7100,30 @@ StmtPtr Parser::parseStatementImpl() {
             return applyModifiers(std::move(es));
         }
         if (kw == "sub") { advance(); return parseSub(false); }
+        // `only` is the third multiness declarator — it says this routine has
+        // exactly one candidate, which is what a plain `sub` already is here.
+        // Recognised only where a routine can actually follow, so a sub or
+        // variable NAMED `only` still parses as a call.
+        if (kw == "only" &&
+            (peek().text == "sub" || peek().text == "method" || peek().text == "submethod" ||
+             (peek(1).kind == Tok::Ident &&
+              (peek(2).kind == Tok::LParen || peek(2).kind == Tok::LBrace)))) {
+            advance();
+            bool isM = false;
+            if (isIdent("method") || isIdent("submethod")) { isM = true; advance(); }
+            else if (isIdent("sub")) advance();
+            auto st = parseSub(false, false, isM);
+            if (st && st->kind == NK::SubDecl) {
+                // `only sub {}` — a multiness declarator needs something to name
+                if (static_cast<SubDecl*>(st.get())->name.empty())
+                    throw ParseError("Cannot put only on anonymous routine", t.line,
+                                     "X::Anon::Multi",
+                                     {{"multiness", "only"},
+                                      {"routine-type", isM ? "method" : "sub"}});
+                static_cast<SubDecl*>(st.get())->isMethod = isM;
+            }
+            return st;
+        }
         if (kw == "multi" || kw == "proto") {
             advance();
             if (isIdent("sub")) advance();

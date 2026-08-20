@@ -39,6 +39,7 @@ private:
     std::string finishData_; // captured =finish data block
     std::string podData_;    // rendered content of =begin pod blocks
     size_t pos_ = 0;
+    std::vector<std::string> userOps_; // `sub infix:<…>` spellings declared in THIS file, longest first
     size_t atomDropEnd_ = (size_t)-1; // pos right after a dropped ⚛ marker (not whitespace)
     int angleWords_ = 0; // depth inside a bare `< … >` word list: quote/regex lexing is off (content is words)
     int angleLine_ = 0;  // line the OUTERMOST `<` of that word list opened on

@@ -1366,6 +1366,9 @@ bool nameTermConstant(const std::string& n, Value& out, bool sixE) {
     if (n == "e")   { out = Value::number(M_E); return true; }
     if (n == "i")   { out = Value::complex(0, 1); return true; } // imaginary unit
     if (n == "tau" || n == "\xcf\x84") { out = Value::number(2 * M_PI); return true; }
+    if (n == "\xE2\x88\x85") { // ∅ — the empty Set
+        out = Value::makeHash(); out.hashKind = "Set"; return true;
+    }
     if (n == "now") { // Instant: high-resolution seconds since the epoch
         auto d = std::chrono::system_clock::now().time_since_epoch();
         out = Value::number(std::chrono::duration<double>(d).count());
@@ -12109,6 +12112,12 @@ bool Interpreter::scalarListAlias(Expr* listExpr, std::vector<Value*>& slots) {
 // QUALIFIED name has no matching method on a built-in (Str has `.IO`, not
 // `.IO::Path`), which is what `IO::Path() :$filename` in XML's from-xml-file hits.
 Value Interpreter::coerceToType(const Value& v, const std::string& type) {
+    // A value that IS already the target type is not coerced at all — Rakudo's
+    // coercion protocol only runs when it has to. Without this, `Mu:D(Int) $a`
+    // (a way of saying "take anything, definite") died looking for a `.Mu`
+    // method on an Int.
+    if (type == "Mu" || type == "Any" || (v.t == VT::Object && typeOrSubsetMatches(v, type)))
+        return v;
     try { return methodCall(v, type, ValueList{}); }
     catch (RakuError&) {}
     if (type == "IO::Path") return methodCall(v, "IO", ValueList{});

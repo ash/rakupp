@@ -520,6 +520,21 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         }
         return Value::boolean(eq);
     }
+    // BagHash.remove(keys): takes ONE off each named key's count (removing the
+    // key when it reaches zero) and answers Nil. Note this is NOT `.delete`,
+    // which drops the key outright — Rakudo defines `remove` on BagHash alone,
+    // not on SetHash or MixHash.
+    if (inv.t == VT::Hash && inv.hash && m == "remove" && inv.hashKind == "BagHash") {
+        for (auto& a : args)
+            for (auto& k : (a.t == VT::Array || a.t == VT::Range) ? a.flatten() : ValueList{a}) {
+                auto it = inv.hash->find(baggyKeyStr(k));
+                if (it == inv.hash->end()) continue;
+                double w = it->second.toNum() - 1;
+                if (w > 0) it->second = Value::integer((long long)w);
+                else inv.hash->erase(it);
+            }
+        return Value::nil();
+    }
     // quanthash STORE: replace contents — (items) or the (keys, values) candidate
     if (inv.t == VT::Hash && m == "STORE" && !args.empty() &&
         (inv.hashKind == "Set" || inv.hashKind == "SetHash" ||

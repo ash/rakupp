@@ -6,6 +6,7 @@
 #include "Unicode.h"  // uniGeneralCategory / uniNumValue
 #include <cctype>
 #include <cstdlib>
+#include <algorithm>
 #include <cstring>
 #include <iostream>
 #include <set>
@@ -225,7 +226,38 @@ static std::string applyRakudoFudge(const std::string& src) {
     return out;
 }
 
-Lexer::Lexer(std::string src) : src_(applyRakudoFudge(std::move(src))) {}
+Lexer::Lexer(std::string src) : src_(applyRakudoFudge(std::move(src))) {
+    // A file may DECLARE its own symbolic operators (`sub infix:<%%%>`), and a
+    // spelling like that has to be one token or the built-in table swallows a
+    // prefix of it (`%%%` lexed as `%%` then `%`, so `5 %%% 2` divided by an
+    // empty hash). Collect the declarations up front and try them, longest
+    // first, ahead of the table. Only THIS file's declarations are visible here;
+    // an imported ASCII operator still needs its module's own parse.
+    for (const char* cat : {"infix:<", "prefix:<", "postfix:<"}) {
+        size_t cl = std::strlen(cat);
+        for (size_t p = src_.find(cat); p != std::string::npos; p = src_.find(cat, p + 1)) {
+            size_t b = p;
+            while (b > 0 && ascii::isspace((unsigned char)src_[b - 1])) b--;
+            bool decl = false;
+            for (const char* kw : {"sub", "multi", "proto", "only"}) {
+                size_t kl = std::strlen(kw);
+                if (b >= kl && src_.compare(b - kl, kl, kw) == 0 &&
+                    (b == kl || !ascii::isalnum((unsigned char)src_[b - kl - 1]))) { decl = true; break; }
+            }
+            if (!decl) continue;
+            size_t close = src_.find('>', p + cl);
+            if (close == std::string::npos) continue;
+            std::string name = src_.substr(p + cl, close - p - cl);
+            if (name.size() < 2) continue; // one character is always lexed whole
+            bool sym = true;
+            for (unsigned char c : name)
+                if (c > 127 || ascii::isalnum(c) || c == '_' || c == ' ') { sym = false; break; }
+            if (sym) userOps_.push_back(name);
+        }
+    }
+    std::sort(userOps_.begin(), userOps_.end(),
+              [](const std::string& a, const std::string& b) { return a.size() > b.size(); });
+}
 
 char Lexer::peek(size_t off) const {
     size_t p = pos_ + off;
@@ -1900,6 +1932,23 @@ Token Lexer::lexOperator(bool termBefore) {
         }
         pos_ = save; // not a hyper-binary; fall through to normal operator lexing
     }
+    // `^…` / `^…^` — the Unicode ellipsis carrying a LEADING exclusion marker.
+    // The ASCII spellings are in the table below; the `…` forms have to be
+    // matched here because the table is byte-literal and the caret comes first.
+    if (peek() == '^' && (unsigned char)peek(1) == 0xE2 &&
+        (unsigned char)peek(2) == 0x80 && (unsigned char)peek(3) == 0xA6) {
+        advance(); advance(); advance(); advance();
+        std::string e = "^...";
+        if (peek() == '^') { advance(); e += '^'; }
+        return make(Tok::Op, e);
+    }
+    // a spelling this file DECLARED (`sub infix:<%%%>`) wins over the table,
+    // longest first — otherwise the table's `%%` would take a bite out of it
+    for (const std::string& uo : userOps_)
+        if (src_.compare(pos_, uo.size(), uo) == 0) {
+            for (size_t k = 0; k < uo.size(); k++) advance();
+            return make(Tok::Op, uo);
+        }
     static const char* ops[] = {
         "==>", "<==", // feed operators (before == / <=)
         "!!!", "???", "^...^", "^...", "...^", "...", "^..^", "..^", "^..", // ^... before ^.. (greedy)
@@ -2240,11 +2289,23 @@ std::vector<Token> Lexer::tokenize() {
         // (checked before the Unicode-letter dispatch, which would otherwise eat it).
         if ((unsigned char)c == 0xE2 && (unsigned char)peek(1) == 0x80 && (unsigned char)peek(2) == 0xA6) {
             advance(); advance(); advance();
-            t = make(Tok::Op, "...");
+            // …and it carries the exclusion markers exactly as `...` does:
+            // `5^…0` is `5^...0`. A trailing `^` had been left for the term
+            // scanner, which read `1…^3` as `1 ... ^3` — a range endpoint.
+            std::string ell = "...";
+            if (peek() == '^') { advance(); ell += '^'; }
+            t = make(Tok::Op, ell);
         // Unicode operator spellings that are exactly an ASCII operator. Table
         // driven because there are a dozen of them and each hand-written byte
         // comparison below is four lines. The negated set relations map onto the
         // `!(op)` forms, which the generic negation handler already understands.
+        // ∅ (U+2205) is a TERM — the empty Set — not an operator: `$bag ~~ ∅`
+        // asks whether it is empty. Lexed as an identifier so the parser reads it
+        // in term position like `pi`.
+        } else if ((unsigned char)c == 0xE2 && (unsigned char)peek(1) == 0x88 &&
+                   (unsigned char)peek(2) == 0x85) {
+            advance(); advance(); advance();
+            t = make(Tok::Ident, "\xE2\x88\x85");
         } else if ((unsigned char)c >= 0x80 && uniOpAlias(codepointHere())) {
             const char* ascii = uniOpAlias(codepointHere());
             for (int k = utf8Len((unsigned char)c); k > 0; k--) advance();
