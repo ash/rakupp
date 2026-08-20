@@ -19,7 +19,11 @@ if(GIT_FOUND AND EXISTS "${SRC_DIR}/.git")
     # --dirty=-modified, not the default `-dirty`: this string is printed by
     # --version and quoted in bug reports, so it should read as a plain fact
     # about the tree rather than as a scolding.
-    COMMAND "${GIT_EXECUTABLE}" describe --always --dirty=-modified
+    # --tags, so a LIGHTWEIGHT tag counts: plain `git describe` reads annotated
+    # tags only, and v3.5.0 was pushed lightweight — every 3.5.x binary stamped
+    # itself `v3.14.0-175-g…`, naming a release two before its own. The commit
+    # was always right; the version it appeared to belong to was not.
+    COMMAND "${GIT_EXECUTABLE}" describe --tags --always --dirty=-modified
     WORKING_DIRECTORY "${SRC_DIR}"
     OUTPUT_VARIABLE _desc
     OUTPUT_STRIP_TRAILING_WHITESPACE
