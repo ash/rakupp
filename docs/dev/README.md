@@ -29,6 +29,13 @@ Next up:
   even that unnecessary, and — the centre of the plan — the six defences
   that make cutting something needed impossible or loud.
 
+- **[plans/FRESHNESS-PLAN.md](plans/FRESHNESS-PLAN.md)** — the **weekly
+  freshness sweep** (planned 2026-08-20): a recurring session over what the
+  ecosystem published since the last one — the new Weekly Challenge plus the
+  REA release delta — with the rolling window, the regression check the
+  incremental sweeps cannot make, the four session phases, and the four small
+  pieces of tooling it needs first.
+
 The three v3.0.0 pillar plans, smallest first:
 
 - **[plans/CLI-PLAN.md](plans/CLI-PLAN.md)** — a real command-line surface:
