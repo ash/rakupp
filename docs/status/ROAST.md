@@ -42,10 +42,10 @@ Full suite — **1,462 files**:
 
 | Files | Count | Share of suite |
 |---|---:|---:|
-| **Fully passing** | **594** | **41%** |
-| Partially passing | 721 | 49% |
-| No TAP output | 133 | 9% |
-| Timeouts | 14 | 1.0% |
+| **Fully passing** | **630** | **43%** |
+| Partially passing | 695 | 48% |
+| No TAP output | 124 | 8% |
+| Timeouts | 13 | 0.9% |
 
 (Two files — `S04-statements/try.t`, `S12-construction/destruction.t` — hang the
 harness with unkillable children and are measured separately; they count above as
