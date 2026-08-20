@@ -16,8 +16,10 @@ This plan sets up a **recurring session**: one sitting a week that pulls what
 appeared since the last one, measures both engines against it, and spends the
 rest of the session turning the largest cluster into one gated fix batch.
 
-The session is started by hand — there is no cron. What the plan buys is that
-starting it costs one sentence and the first hour is mechanical.
+The session is started by hand, on a **Monday** — the day the new challenge page
+opens and the previous one stops taking solutions. There is no cron. What the
+plan buys is that starting it costs one sentence and the first hour is
+mechanical.
 
 ---
 
@@ -25,17 +27,26 @@ starting it costs one sentence and the first hour is mechanical.
 
 ### A. Weekly Challenge — a rolling window
 
-A challenge is published each Monday and closes the following Sunday, so on any
-Monday the previous challenge's directory is essentially final. The weekly
-window is therefore small: **~20 new files**, of which the sweep's rules
-(Rakudo must run it headlessly and reproduce itself across two runs) typically
-count about half.
+A challenge's page stays open until the next one is published on Monday, so
+solutions for it keep arriving all week and are usually all merged by the time
+the new issue goes up. Usually — some authors are late, and their file lands in
+a directory we already swept. **The window therefore always reaches one to two
+challenges back**, not just to the one that closed.
+
+Sweeping on Monday means challenge N-1 is complete, and N-2 and N-3 are re-read
+for whatever arrived after we last looked. The weekly window is small either
+way: **~20 new files**, of which the sweep's rules (Rakudo must run it headlessly
+and reproduce itself across two runs) typically count about half.
 
 Twenty files a week is too thin to fill a session on its own, so the weekly PWC
 leg has three parts, in this order:
 
-1. **The new challenge** — the one that closed yesterday, plus late additions
-   to the two before it (authors backfill).
+1. **The new material** — every `.raku`/`.p6` file that appeared since the last
+   sweep. Not a directory range: the merge itself says exactly which files those
+   are, so a solution merged five weeks late is caught the same as a fresh one
+   (see below). The fixed one-to-two-challenge look-back stays as the backstop
+   for anything the file-level delta misses — a rewritten file, a rename, a
+   sweep skipped for a fortnight.
 2. **The open set** — the 36 mismatches still standing from challenges
    371–387. Re-run every week: this is what confirms last week's batch and
    catches a regression the Roast gate cannot see.
@@ -61,6 +72,19 @@ git -C ~/perlweeklychallenge-club remote add upstream \
 
 and then `git fetch upstream && git merge --ff-only upstream/master` each week.
 Fetching is read-only; nothing is ever pushed to the fork.
+
+The merge is also what identifies the new material. Record the commit each sweep
+ran at; next week the arrivals are exactly
+
+```
+git -C ~/perlweeklychallenge-club diff --name-only --diff-filter=AM \
+    <last-swept-commit> HEAD -- 'challenge-*'
+```
+
+filtered to `.raku`/`.p6`. That covers the late merges into old directories for
+free, which a challenge-number range does not. The commit id goes in the history
+TSV row beside the numbers, so the next sweep needs nothing but the ledger to
+know where it starts.
 
 ### B. Ecosystem releases — the delta since the last sweep
 
@@ -160,12 +184,14 @@ the session does not prompt for one.
 
 Four small pieces. All Raku, run by `rakupp` — the tools are also tests.
 
-1. **`tools/pwc-sweep.raku` gains state.** Today it sweeps a challenge range and
-   writes mismatches. It needs `--state=FILE` (last week's per-file verdicts),
-   so it can (a) re-run only the open set plus the new window plus a
-   `--sample=10%` slice of passes, and (b) print **regressions** — pass→mismatch
-   — as their own line rather than folding them into the tally. Same file also
-   becomes the input for the next week.
+1. **`tools/pwc-sweep.raku` gains state and a file list.** Today it sweeps a
+   challenge range and writes mismatches. It needs (a) `--files=LIST`, so the
+   git delta above can drive it instead of `--from`/`--to` — that is what makes
+   a late merge into an old directory cost nothing; (b) `--state=FILE`, last
+   week's per-file verdicts, so a run is the new material plus the open set plus
+   a `--sample=10%` slice of passes; and (c) **regressions** — pass→mismatch —
+   printed as their own line rather than folded into the tally. The state file
+   and the swept commit id are what the next week starts from.
 
 2. **`tools/eco-fresh.raku`** — new. Takes two REA index snapshots, emits the
    delta, vendors it into `dists/fresh/` under the existing safety rules
@@ -223,9 +249,6 @@ template, so one shape fixed corpus-wide moves hundreds of files).
 
 ## Decisions still open
 
-- **Day.** Monday gives the freshest closed challenge; Tuesday gives the
-  backfillers a day. Proposed: Monday, with the previous two challenges re-swept
-  to catch late arrivals.
 - **Whether the ecosystem leg should also track *removed*/yanked dists.** Cheap
   to detect from the index delta, unclear that it is worth a row.
 - **Pin refresh cadence.** The top-200 pins are three months stale by
