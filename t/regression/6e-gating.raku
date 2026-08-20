@@ -48,6 +48,13 @@ check      $e, '  foo',               'a Format literal works under 6.e';
 like-check $d, 'Undeclared name', 'the Format type is absent under 6.d';
 check      $e, '   hi',           'the Format type works under 6.e';
 
+# Rakudo's documentation spells this type `Formatter`, and its own examples use
+# that name; the method path already answered to it, but the NAME resolved to
+# nothing, so every documented example was a parse error here.
+($d, $e) = both 'say Formatter.new("%05d")(42)';
+like-check $d, 'Undeclared name', 'the Formatter spelling is absent under 6.d';
+check      $e, '00042',           'the Formatter spelling works under 6.e';
+
 ($d, $e) = both 'my %h = A => { B => 1, C => 2 }, D => 3; say (%h{**}).raku ~ " " ~ (%h{**}:k).raku';
 check $d, 'Any ()',                    '%h{**} is a missing key before 6.e';
 check $e, '(1, 2, 3) ("B", "C", "D")', '%h{**} walks to the leaves under 6.e';

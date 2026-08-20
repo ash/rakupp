@@ -4914,7 +4914,7 @@ bool isKnownTypeName(const std::string& n) {
         // real Raku entity rakupp serves by NAME (a stub type object, an enum
         // registered elsewhere, a methodCall-handled namespace, a sentinel) —
         // the old always-lenient fallback had been quietly covering them.
-        "Dateish", "Format", "IterationEnd", "Lock::Async", "Signal",
+        "Dateish", "Format", "Formatter", "IterationEnd", "Lock::Async", "Signal",
         "Systemic", "Endian", "Encoding", "ValueObjAt", "Telemetry", "RaceSeq",
         "Rational", "PositionalBindFailover", "Sequence", "Awaitable",
         "Scheduler", "ForeignCode", "NFC", "NFD", "NFKC", "NFKD",
