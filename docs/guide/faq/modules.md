@@ -1,30 +1,48 @@
 # FAQ — installing and finding modules
 
-Raku++ has no package manager of its own: it **reads the store zef writes**. So
-"install a module" means `zef install Foo` (under Rakudo, or under Raku++ — see
-below), and everything after that is about Raku++ finding it. This page is the
-questions people actually hit; [MODULES.md](../MODULES.md) is the tour, and
+Raku++ **reads the store zef writes**, so the modules you already installed with
+Rakudo's zef need nothing at all. "Install a module" means `zef install Foo`, or
+Raku++'s own `rakupp install Foo` — the two write the same store — and
+everything after that is about Raku++ finding it. This page is the questions
+people actually hit; [MODULES.md](../MODULES.md) is the tour, and
 [differences.md](differences.md) is where the two engines part company.
 
 ## How do I install a module for Raku++?
 
 ```sh
 zef install JSON::Fast          # the normal way, with Rakudo's zef
+rakupp install JSON::Fast       # or Raku++'s own installer, same store
 rakupp -e 'use JSON::Fast; say to-json({ a => 1 })'
 ```
 
 That is the whole workflow. There is no second install step, no Raku++-specific
 package format, and nothing to precompile: Raku++ reads the sources out of the
-same store and parses them itself.
+same store and parses them itself. Anything zef put in `~/.raku` before you ever
+met Raku++ is already usable — the two engines share the store, in both
+directions.
 
-If you have no Rakudo at all, zef runs under Raku++ too — `rakupp /path/to/zef
-install Foo` — with the caveats in [MODULES.md](../MODULES.md#current-status-and-limits).
+`rakupp install` resolves against the same ecosystem index zef uses, runs each
+distribution's own test suite before marking it installed, and writes the same
+`~/.raku`, so it is a drop-in for a machine with no Rakudo on it:
+
+```sh
+rakupp install Foo:ver<1.2.3>   # a specific version (installs are additive)
+rakupp install --dry-run Foo    # print the plan, write nothing
+rakupp install --list           # what is installed in the target store
+rakupp uninstall Foo            # remove what THIS installer put there
+```
+
+Each command prints its own full usage when you give it no arguments. If you
+want zef itself on such a machine, zef runs under Raku++ too — `rakupp
+/path/to/zef install Foo` — with the caveats in
+[MODULES.md](../MODULES.md#current-status-and-limits).
 
 ## Where does it look?
 
 At the standard zef locations, and you never have to configure them:
 
-- `~/.raku` — the per-user store, where a plain `zef install` puts things
+- `~/.raku` — the per-user store, where `rakupp install` and a plain
+  `zef install` both put things
 - every `~/.rakubrew/versions/*/install/share/perl6/{site,vendor}`
 - every Homebrew `Cellar/rakudo/*/share/perl6/{site,vendor}`
 - `lib`, `.` and `rakulib`, for the program's own files

@@ -2,10 +2,10 @@
 
 A *module* is a reusable chunk of Raku — a file that defines subs, classes, or
 roles that other programs pull in with `use`. Raku++ runs both the modules you
-write yourself and, crucially, **modules installed from the ecosystem by
-[zef](https://github.com/ugexe/zef)** (Raku's package manager). This page is the
-practical guide: how `use` works, where Raku++ looks for a module, and how to
-write your own.
+write yourself and, crucially, **modules installed from the ecosystem** — by
+[zef](https://github.com/ugexe/zef) (Raku's package manager) or by Raku++'s own
+`rakupp install`, which write the same store. This page is the practical guide:
+how `use` works, where Raku++ looks for a module, and how to write your own.
 
 If you just want to see it work:
 
@@ -16,15 +16,19 @@ say to-json({ name => 'Ada' }, :!pretty);   # {"name":"Ada"}
 
 ---
 
-## Using a module installed by zef
+## Using an installed module
 
-Raku++ does **not** ship its own package manager. Instead it reads the *same
-module store that zef already populates* for a Rakudo install. So the workflow is:
+Raku++ reads the *same module store that zef populates* for a Rakudo install,
+and `rakupp install` writes that store too — so a module installed either way is
+usable by either engine, and one installed before you ever met Raku++ needs
+nothing at all. The workflow is:
 
-1. Install the module the normal way, with zef (this needs Rakudo + zef):
+1. Install the module — the normal way with zef (this needs Rakudo + zef), or
+   with Raku++'s own installer:
 
    ```sh
    zef install JSON::Fast
+   rakupp install JSON::Fast      # the same store, no Rakudo needed
    ```
 
 2. Then just `use` it from Raku++ — no extra flags, no reinstall:
@@ -39,11 +43,16 @@ module store that zef already populates* for a Rakudo install. So the workflow i
    say $back<n> + 1;                  # 43
    ```
 
-Under the hood, Raku++ looks for installed modules in the standard locations zef
-writes to:
+`rakupp install` resolves against the same ecosystem index zef uses and runs a
+distribution's own test suite before marking it installed. Its full option list —
+version pins, `--dry-run`, `--list`, `uninstall`, `reinstall`, `test` — is in
+[CLI.md](CLI.md#installing-modules).
 
-- **`~/.raku`** — your per-user zef install (the usual place `zef install` puts
-  things).
+Under the hood, Raku++ looks for installed modules in the standard locations
+these installers write to:
+
+- **`~/.raku`** — your per-user store (the usual place `zef install` and
+  `rakupp install` put things).
 - **rakubrew's stores** — `~/.rakubrew/versions/<version>/install/share/perl6/site`
   and `…/vendor`, for every version rakubrew has installed. (Note the extra
   `install/` level, which the other layouts do not have.)
@@ -140,7 +149,7 @@ lowest:
 | `-I` on the command line | `rakupp -I lib app.raku` | Rakudo-compatible |
 | `RAKULIB` environment variable | `RAKULIB=libs,more rakupp app.raku` | paths separated by `,` or `:` — both accepted |
 | the current directory | `lib/`, `.`, `rakulib/` | the defaults, relative to where you run from |
-| installed zef/Rakudo modules | `~/.raku`, Homebrew Rakudo | the store described above |
+| installed modules | `~/.raku`, Homebrew Rakudo | the shared store described above |
 
 The name maps to a path in the obvious way — `use My::Shapes;` looks for
 `My/Shapes.rakumod` — and for each search directory Raku++ tries both the
