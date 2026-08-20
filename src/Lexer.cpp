@@ -2203,6 +2203,21 @@ std::vector<Token> Lexer::tokenize() {
         // inside a bare `< … >` word list the content is words: no quotes, no
         // regexes, no q-forms — those characters glue into words as-is
         const bool inAngle = angleWords_ > 0;
+        // …and a BACKSLASH escapes the next character there: `\<` and `\>` are the
+        // literal angles (they must not open or close the list) and `\\` is one
+        // backslash; anything else keeps both characters, as Rakudo does. Without
+        // this, `< \< >` counted an extra nesting level and ran off the file.
+        if (inAngle && c == '\\') {
+            advance();
+            std::string w;
+            char e = eof() ? '\0' : advance();
+            if (e == '<' || e == '>' || e == '\\') w += e;
+            else { w += '\\'; if (e) w += e; }
+            Token wt = make(Tok::Ident, w);
+            wt.spaceBefore = spaced;
+            out.push_back(wt);
+            continue;
+        }
         // corner-bracket literal quote ｢...｣ (U+FF62 .. U+FF63)
         if (!inAngle && (unsigned char)c == 0xEF && (unsigned char)peek(1) == 0xBD && (unsigned char)peek(2) == 0xA2) {
             const int startLine = line_;
@@ -2509,8 +2524,10 @@ std::vector<Token> Lexer::tokenize() {
                     angleWords_--;
             }
         }
-        else if (angleWords_ > 0 && (t.kind == Tok::LBrace || t.kind == Tok::RBrace))
-            angleWords_ = 0; // NB `;` is a legal WORD inside a list (`< $; $, >`), so only braces bail
+        // (braces used to bail out of word mode here, as a net for a stray `<`.
+        //  They are ordinary word characters — `< { } >` is two words — and the
+        //  net is no longer needed: an unclosed `<` reports its own runaway at
+        //  EOF, which is a better diagnostic than silently resuming.)
         t.spaceBefore = spaced;
         out.push_back(std::move(t)); // t is dead after this (heredoc bookkeeping reads `out`)
         if (!heredocMarker_.empty()) { // a q:to/MARKER/ was just lexed

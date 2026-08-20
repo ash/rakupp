@@ -17592,6 +17592,9 @@ Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value
     if (op == "xor" || op == "^^")
         return l.truthy() ? (r.truthy() ? Value::nil() : l) : r; // one true → it; none → last
     if (op == "=>") return Value::pair(l.toStr(), r); // `.key <<=>>> .value` — hyper over the pair op
+    // the COMMA as an applied operator — `@a >>,<< @b` pairs the two sides up,
+    // which is how one Weekly Challenge solution zips two word lists
+    if (op == ",") return Value::list(ValueList{l, r});
     // A FILETEST adverb as a matcher — `$path ~~ :f`, and `where :f` on a parameter,
     // which is checked through this entry point rather than evalBinary's.
     if ((op == "~~" || op == "!~~") && r.t == VT::Pair && !r.s.empty() &&
@@ -22488,6 +22491,10 @@ Value Interpreter::eval(Expr* e) {
                 bool known = classes_.count(rn) || subsets_.count(rn) ||
                              pkgMeta_.count(rn) || isKnownTypeName(rn) ||
                              isNativeTypeName(rn) || isPseudoPkg(rn);
+                // a class declared further down the file, used here as a VALUE
+                // (`G.parse($s, :actions(actions))`) — build it now, as a method
+                // call on it already does
+                if (!known && materializePendingType(rn)) known = true;
                 if (!known && nt->symbolicStrict) {
                     // …and the refusal is a Failure, not a throw: Rakudo's
                     // ::('NoSuch') hands back a broken Failure whose
