@@ -2,6 +2,9 @@
 #include "AsciiCtype.h"
 #include "MethodCallSegment.h"
 #include <chrono> // DateTime.now subsecond stamp (portable — MSVC has no sys/time.h)
+#if !defined(_WIN32)
+#include <unistd.h> // gethostname — $*KERNEL.hostname
+#endif
 
 // Segment 2 of the method-dispatch chain, split out of methodCallInner.
 //
@@ -701,6 +704,17 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             if (uname(&u) == 0) return Value::str(u.machine);
 #endif
             return Value::str("");
+        }
+        // Kernel.hostname — the host's name, and callable on the TYPE OBJECT:
+        // Sys::Hostname's whole body is `sub hostname() { Kernel.hostname }`.
+        // Without an arm of its own it fell to the lenient accessor below and
+        // answered the kernel's name ("darwin") for every machine.
+        if (m == "hostname") {
+#if !defined(_WIN32)
+            char buf[256];
+            if (gethostname(buf, sizeof(buf)) == 0) { buf[sizeof(buf) - 1] = 0; return Value::str(buf); }
+#endif
+            return Value::str("localhost");
         }
     }
     if (inv.t == VT::Hash && (inv.hashKind == "Distro" || inv.hashKind == "Kernel" || inv.hashKind == "VM")) {

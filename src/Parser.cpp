@@ -611,6 +611,12 @@ bool Parser::startsListopArg(const Token& t) const {
             // a keyword directly followed by `=>` is a bareword PAIR KEY, not the
             // keyword: `register('Anna', role => 'admin')`
             if (&t == &cur() && peek().kind == Tok::FatArrow) return true;
+            // `output-w with $w-first;` — after a parenless call, `with`/`without`
+            // is the STATEMENT MODIFIER, never an argument. They are deliberately
+            // absent from kBlockKeywords (as statements they start a term), so
+            // without this the call swallowed the modifier and died looking for a
+            // routine called `with`.
+            if (t.text == "with" || t.text == "without") return false;
             // sub/method/do/start begin an expression (anonymous routine / do-block); my/our/state/has/
             // constant begin a declaration expression that is a valid list-op argument (`ok my $x = 5, "d"`)
             return !kBlockKeywords.count(t.text) ||
@@ -2137,6 +2143,14 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
                 list->items.push_back(std::move(ve));
                 if (!matchKind(Tok::Comma)) break;
                 continue;
+            }
+            // named slurpy `my ($key, *@path) = $s.split('::')` — in a
+            // DECLARATION list the star marks what a trailing @ or % already
+            // does (it takes the rest of the values), so consume the marker and
+            // let the variable declare itself the ordinary way below.
+            if (isOp("*") && peek().kind == Tok::Var && peek().text.size() > 1 &&
+                (peek().text[0] == '@' || peek().text[0] == '%')) {
+                advance();
             }
             if (isOp("*") && peek().kind == Tok::Var &&
                 (peek().text == "@" || peek().text == "%")) {
@@ -5163,6 +5177,15 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
             if (!p.name.empty()) sigilless_.insert(p.name);
             // paren sub-signature, same as on a sigilled param below:
             parseSigillessTail(p);
+            // `method finalize(\SELF:)` — the bare colon marks a SIGILLESS
+            // invocant, the same marker a sigilled `$self:` carries. FINALIZER
+            // declares its whole API this way and the signature would not parse.
+            if (isOp(":")) {
+                advance();
+                p.invocant = true;
+                params.push_back(std::move(p));
+                continue;
+            }
             if (matchOp("=")) p.defaultVal = parseExpr(BP_ASSIGN);
             params.push_back(std::move(p));
             if (!matchKind(Tok::Comma)) break;
@@ -6565,7 +6588,20 @@ StmtPtr Parser::parseIf(bool isUnless) {
     auto skipBindTraits = [this] {
         while (isIdent("is") && peek(1).kind == Tok::Ident) { advance(); advance(); }
     };
-    if (matchOp("->")) { bool sl = matchOp("*"); if (isKind(Tok::Var)) s->thenVar = (sl ? "*" : "") + advance().text; skipBindTraits(); }
+    // `if try $type.^name -> str $name { … }` — a TYPED pointy parameter on a
+    // statement condition (Rakudo-Type-Introspection binds the name as a native
+    // `str`). Nothing constrains this binding, as with `is copy` above, but the
+    // type has to be consumed or the block never starts ("expected {").
+    auto skipBindType = [this] {
+        if (isKind(Tok::Ident) &&
+            (peek().kind == Tok::Var ||
+             (peek().kind == Tok::Op && peek().text == ":" &&
+              peek(2).kind == Tok::Ident && peek(3).kind == Tok::Var))) {
+            advance();                                            // the type name
+            if (isOp(":") && peek().kind == Tok::Ident) { advance(); advance(); } // :D/:U smiley
+        }
+    };
+    if (matchOp("->")) { bool sl = matchOp("*"); skipBindType(); if (isKind(Tok::Var)) s->thenVar = (sl ? "*" : "") + advance().text; skipBindTraits(); }
     auto blk = parseBlock();
     s->branches.emplace_back(std::move(cond), std::move(blk));
     s->branchVars.push_back(s->thenVar);
@@ -6579,7 +6615,7 @@ StmtPtr Parser::parseIf(bool isUnless) {
         ExprPtr c;
         { bool sv = stmtCond_; stmtCond_ = true; c = parseExpression(); stmtCond_ = sv; }
         std::string bv;
-        if (matchOp("->")) { bool sl = matchOp("*"); if (isKind(Tok::Var)) bv = (sl ? "*" : "") + advance().text; skipBindTraits(); } // elsif EXPR -> $x is copy / -> *@x
+        if (matchOp("->")) { bool sl = matchOp("*"); skipBindType(); if (isKind(Tok::Var)) bv = (sl ? "*" : "") + advance().text; skipBindTraits(); } // elsif EXPR -> $x is copy / -> *@x
         auto b = parseBlock();
         s->branches.emplace_back(std::move(c), std::move(b));
         s->branchVars.push_back(bv);
@@ -6604,7 +6640,7 @@ StmtPtr Parser::parseIf(bool isUnless) {
         if (isIdent("if")) // C-style `else if` — Raku spells it elsif
             throw ParseError("Please use 'elsif' instead of 'else if'",
                              cur().line, "X::Syntax::Malformed::Elsif", {});
-        if (matchOp("->")) { bool sl = matchOp("*"); if (isKind(Tok::Var)) s->elseVar = (sl ? "*" : "") + advance().text; skipBindTraits(); } // else -> $x is copy / -> *@x
+        if (matchOp("->")) { bool sl = matchOp("*"); skipBindType(); if (isKind(Tok::Var)) s->elseVar = (sl ? "*" : "") + advance().text; skipBindTraits(); } // else -> $x is copy / -> *@x
         s->elseBlock = parseBlock();
     }
     return s;
@@ -6777,7 +6813,7 @@ StmtPtr Parser::applyModifiers(StmtPtr s) {
             ws->modifier = true; // postfix form: a `my` in STMT leaks to the enclosing scope
             ws->cond = parseExpression();
             ws->body = wrapStmt(std::move(s));
-            return ws;
+            return applyModifiers(std::move(ws));
         }
         if (kw == "for") {
             advance();
@@ -6810,7 +6846,7 @@ StmtPtr Parser::applyModifiers(StmtPtr s) {
             g->modifier = true; // no implicit block: a `my` in STMT leaks out
             g->topic = parseExpression();
             g->body = wrapStmt(std::move(s));
-            return g;
+            return applyModifiers(std::move(g));
         }
         if (kw == "when") { // STMT when X  ==  if $_ ~~ X { STMT }
             advance();
@@ -6819,7 +6855,7 @@ StmtPtr Parser::applyModifiers(StmtPtr s) {
             auto is = std::make_unique<IfStmt>();
             is->modifier = true; // postfix form: a `my` in STMT leaks to the enclosing scope
             is->branches.emplace_back(std::move(bin), wrapStmt(std::move(s)));
-            return is;
+            return applyModifiers(std::move(is)); // chained: `X when A for B`
         }
         if (kw == "with" || kw == "without") {
             // STMT with X : bind $_ = X, run only if X is defined (without: if undefined)
@@ -6829,7 +6865,7 @@ StmtPtr Parser::applyModifiers(StmtPtr s) {
             g->defGuard = (kw == "with") ? 1 : 2;
             g->topic = parseExpression();
             g->body = wrapStmt(std::move(s));
-            return g;
+            return applyModifiers(std::move(g));
         }
     }
     return s;
