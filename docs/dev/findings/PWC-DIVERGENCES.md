@@ -85,6 +85,8 @@ files by 21 authors -- with the same rules and a smaller harness,
 | after batch 9 (`c40e93b`) | 221 | 31 | 87.7% | 198,411 |
 | after batch 10 (`0039c70`) | 222 | 30 | 88.1% | 197,804 |
 | after batch 11 (`e3f7671`) | 223 | 29 | 88.5% | 198,180 |
+| after batch 12 (`e06e599`) | 226 | 27 | 89.3% | 198,560 |
+| after batch 13 (`09e5fe6`) | 229 | 23 | 90.9% | 198,437 |
 
 100 files are skipped because Rakudo cannot run them headlessly and 4-5 more
 because they are not reproducible across two of its own runs.
@@ -102,6 +104,8 @@ because they are not reproducible across two of its own runs.
 | 9 | a `where` sees the earlier parameters during multi dispatch; `m:ov`/`m:overlap`; a code assertion's `$/` is the cursor (`<?{ $0 eq $2 }>`); a Range compares by its element count; `.rotor` spreads a Positional argument |
 | 10 | hyper SUBSCRIPT vs hyper CITATION (`@a>>[0]>>.Str` vs `>>[+]<<`); the hyper fat arrow `>>=><<` and its precedence; `m//` always matches, even in value/argument/invocant position (`my $m = m/b/` is a Match) |
 | 11 | `TR///`, the non-mutating transliteration, and a StrDistance from the bare `tr///` |
+| 12 | `<~~>` recurses for real, and scoped to the pattern it was written in (so a spliced Regex value recurses into itself); a TYPED container detonates a Failure instead of storing it; `@$/` is the positional captures |
+| 13 | `\<`/`\>`/`\\` escapes and braces inside a bare `< … >` word list; the comma as an applied operator (`>>,<<`); a class declared below, used as a VALUE, is created on first use |
 
 Each batch is gated the same way as the first round: `t/run.raku` green, the
 full Roast run with no per-file regression (files that appear to move are
