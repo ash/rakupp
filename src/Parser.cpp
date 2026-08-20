@@ -170,10 +170,21 @@ static InfixInfo classifyInfix(const Token& t) {
         if (o == "&&") { in.valid = true; in.lbp = BP_ANDAND; return in; }
         if (o == "||" || o == "//" || o == "^^") { in.valid = true; in.lbp = BP_OROR; return in; }
         if (o == "|" || o == "&" || o == "^") { in.valid = true; in.lbp = BP_ADD; return in; } // junctions any/all/one
-        // hyper binary metaop  >>OP>>  etc.
+        // hyper binary metaop  >>OP>>  etc. — it takes the PRECEDENCE (and
+        // associativity) of the operator inside it, exactly as Rakudo's metaop
+        // does. Giving them all additive precedence made
+        // `@d >>*<< @b >>**<< @e` group as `(@d >>*<< @b) >>**<< @e`, so a
+        // digits-times-base-to-the-power sum came out as (3136, 40, 1) where
+        // Rakudo says (448, 40, 5) — found in a Weekly Challenge solution.
         if (o.size() >= 5 && (o.substr(0, 2) == ">>" || o.substr(0, 2) == "<<") &&
             (o.substr(o.size() - 2) == ">>" || o.substr(o.size() - 2) == "<<")) {
-            in.valid = true; in.lbp = BP_ADD; return in;
+            Token inner = t;
+            inner.text = o.substr(2, o.size() - 4);
+            InfixInfo base = classifyInfix(inner);
+            in.valid = true;
+            in.lbp = base.valid ? base.lbp : BP_ADD;
+            in.rightAssoc = base.valid && base.rightAssoc && !base.isAssign;
+            return in;
         }
         // set/bag combining operators -> additive-ish precedence (produce Set/Bag)
         static const std::set<std::string> setCombine = {

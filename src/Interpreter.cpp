@@ -6781,6 +6781,19 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 (listv.itemized ||
                 (fs->list->kind == NK::VarExpr && !static_cast<VarExpr*>(fs->list.get())->name.empty()
                  && static_cast<VarExpr*>(fs->list.get())->name[0] == '$'));
+            // Each element of an ARRAY lives in its own scalar container, so
+            // iterating one hands the body an ITEMIZED value: over `my @t =
+            // (1,2),(3,4)`, Rakudo's `for @t { say $_.raku }` says `$(1, 2)`.
+            // A List's elements are bare — `for ((1,2),(3,4))` says `(1, 2)` —
+            // but a NAMED `$` loop variable is an ordinary scalar parameter and
+            // itemizes what it binds either way.
+            const bool arrayElemSrc = listv.t == VT::Array && !listv.isList;
+            auto asTopic = [&](Value v, const std::string& nm) {
+                if (v.t == VT::Array && !v.itemized && !nm.empty() && nm[0] == '$' &&
+                    (arrayElemSrc || nm != "$_"))
+                    v.itemized = true;
+                return v;
+            };
             // A Blob/Buf that is NOT held in a scalar container iterates its
             // ELEMENTS, like any other Positional: `.say for blob32.new(1,2)`
             // runs twice (Rakudo), while `for $blob` — itemized — runs once.
@@ -6880,15 +6893,19 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                         {   // striped element copy — see the rw modifier loop above
                             ParStripe es(*this, arr.get());
                             if (i >= arr->size()) break;
-                            scope->define(var, (*arr)[i]);
+                            scope->define(var, asTopic((*arr)[i], var));
                         }
                         auto rb = [&] { // redo re-copies (aliases keep writes)
-                            if (!rw) { ParStripe es2(*this, arr.get()); if (i < arr->size()) scope->define(var, (*arr)[i]); }
+                            if (!rw) { ParStripe es2(*this, arr.get()); if (i < arr->size()) scope->define(var, asTopic((*arr)[i], var)); }
                         };
                         bool cont = runLoopBody(fs->body.get(), scope, fs->label, i == 0, i + 1 == arr->size(), col, rb);
                         if (rw) {
                             auto it = scope->vars.find(var);
-                            if (it != scope->vars.end()) { ParStripe es3(*this, arr.get()); if (i < arr->size()) (*arr)[i] = it->second; }
+                            if (it != scope->vars.end()) { ParStripe es3(*this, arr.get());
+                                if (i < arr->size()) { (*arr)[i] = it->second;
+                                    // the topic was itemized on the way IN (the element is a
+                                    // container); don't stamp that flag onto the element itself
+                                    if ((*arr)[i].t == VT::Array && arrayElemSrc) (*arr)[i].itemized = false; } }
                         }
                         if (!cont) break;
                     }
@@ -6954,10 +6971,11 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 auto scope = std::make_shared<Env>(); scope->parent = tctx_.cur;
                 TopicAlias tback{scalarSlot, scope.get(), items[i]};
                 if (loopVars.empty()) {
-                    scope->define("$_", items[i]);
+                    scope->define("$_", asTopic(items[i], "$_"));
                 } else {
                     for (size_t k = 0; k < loopVars.size(); k++) {
-                        scope->define(loopVars[k], (i + k < items.size()) ? items[i + k] : Value::any());
+                        scope->define(loopVars[k], (i + k < items.size())
+                            ? asTopic(items[i + k], loopVars[k]) : Value::any());
                     }
                 }
                 if (!runLoopBody(fs->body.get(), scope, fs->label, i == 0, i + nvars >= items.size(), col)) break;
@@ -7361,6 +7379,8 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                       if (spec >> 1) wrapNative(v, spec >> 1, spec & 1); }
                     // `is raw` binds the caller's container and IS writable, same as `is rw`
                     v.readonly = !params[i].isRw && !params[i].isRaw;
+                    // and a `$` parameter ITEMIZES what it binds (see the slow path)
+                    if (v.t == VT::Array && !v.itemized && !params[i].isRaw) v.itemized = true;
                     env->define(params[i].name, std::move(v));
                 } else {
                     env->define(params[i].name, typedDefault(params[i].type, '$'));
@@ -7607,6 +7627,15 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
             // …and `is raw` too: it hands over the container itself, so a write
             // through it is the point of writing it that way.
             if (p.sigil == '$' && !p.isRw && !p.isCopy && !p.isRaw && !p.invocant) v.readonly = true;
+            // A `$` parameter ITEMIZES a list argument — it is a scalar container,
+            // and what it holds is one thing. `sub f($x) { $x.raku }; f((1,2))` is
+            // `$(1, 2)` in Rakudo, and `for @pairs -> $a, $b` binds each element
+            // the same way, which is how a Weekly Challenge author's test
+            // descriptions came out unparenthesised here. `is raw` hands over the
+            // container itself and so does NOT itemize.
+            if (p.sigil == '$' && !p.isRaw && !p.invocant && !p.slurpy &&
+                (v.t == VT::Array) && !v.itemized)
+                v.itemized = true;
             env->define(p.name, v);
             // POSITIONAL attributive param `method set-body($!body)`: the bound
             // value writes through to the invocant's attribute (Cro's
@@ -13285,6 +13314,18 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                     return false;
                 };
                 const std::string& nm = static_cast<VarExpr*>(a->target.get())->name;
+                    // A typed container detonates a Failure rather than storing it:
+                    // the type check has to look at the value. See the twin guard
+                    // in the declaration path.
+                    if (rhs.t == VT::Hash && rhs.hashKind == "Failure") {
+                        for (Env* en = tctx_.cur.get(); en; en = en->parent.get()) {
+                            auto dj = en->xr().varDefault.find(nm);
+                            if (dj == en->xr().varDefault.end()) continue;
+                            if (dj->second.t == VT::Type && kChecked.count(dj->second.s))
+                                failureDetonate(rhs);
+                            break;
+                        }
+                    }
                 for (Env* en = tctx_.cur.get(); en; en = en->parent.get()) {
                     auto di = en->xr().varDefault.find(nm);
                     if (di != en->xr().varDefault.end()) {
@@ -19668,6 +19709,13 @@ void Interpreter::enforceTypedAssign(const std::string& nm, Value& rhs) {
         if (di != en->xr().varDefault.end()) {
             if (di->second.t != VT::Type) break;
             const std::string& want = di->second.s;
+                // A TYPED container cannot hold a Failure quietly: checking the type
+                // means looking at the value, and looking at a Failure detonates it.
+                // (`my $x = "abc".Rat` keeps the Failure — no type to check — which
+                // is why only this path throws.) A Weekly Challenge solution turned
+                // on it: `try { $rat = $s.Rat }; if $! { …fallback… }` never took
+                // its fallback, and the stored Failure blew up somewhere else.
+                if (rhs.t == VT::Hash && rhs.hashKind == "Failure") failureDetonate(rhs);
             if (want == "atomicint") {
                 if (!(rhs.t == VT::Int || rhs.t == VT::Num ||
                       rhs.t == VT::Rat || rhs.t == VT::Bool))
