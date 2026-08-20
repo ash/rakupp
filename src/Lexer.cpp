@@ -935,6 +935,18 @@ bool Lexer::tryQuoteForm(Token& out) {
         w = "Q";
     }
     if (w != "q" && w != "qq" && w != "Q" && !isRegex && !isSubst && !isWords && !isTrans && !isExec) return false;
+    // A PAREN is never a quote delimiter: parens carry arguments, so `q(x)`,
+    // `qq(x)`, `Q(x)`, `qw(a b)`, `m(a)` and `rx(a)` are CALLS, which is why
+    // Rakudo answers `q("11000")` with "Undeclared routine q" and calls a
+    // declared one instead. We used to read them as quotes with `(` `)` for
+    // delimiters, so a program that declared `sub q` could never call it —
+    // every other bracket pair still delimits, and `s:s,foo,bar,` is untouched.
+    // …but only when the paren is ADJACENT. Whitespace turns it back into a
+    // delimiter, which roast states outright: `isa-ok(rx (o), Regex)` next to
+    // `throws-like 'rx(o)', X::Undeclared::Symbols, 'rx () requires whitespace
+    // if the delims are parens'` (S05-metasyntax/regex.t), and
+    // `ok ss (foo) = 'bar'` in S05-substitution/subst.t.
+    if (p < src_.size() && src_[p] == '(') return false;
     // adverbs between keyword and delimiter, e.g. m:i/.../ , s:g/.../.../ —
     // whitespace before/between adverbs is allowed (`q :w /a b/`); a quote form
     // only commits if a delimiter follows, so a stray `q :foo` still falls back

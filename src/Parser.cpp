@@ -1230,10 +1230,24 @@ ExprPtr Parser::parsePrefix(bool tight) {
 
 std::vector<ExprPtr> Parser::parseCallArgs(ExprPtr* invocant) {
     std::vector<ExprPtr> args;
+    const int openedAt = cur().line;   // for the run-off-the-end diagnostic below
     if (isKind(Tok::RParen)) { advance(); return args; }
     bool svCond = stmtCond_; stmtCond_ = false; // parens re-allow block listop args
     struct CondRestore { bool* f; bool v; ~CondRestore() { *f = v; } } cr{&stmtCond_, svCond};
-    ExprPtr e = parseExpression();
+    // An argument expression that runs off the end of the file is an unclosed
+    // bracket, whatever the token that finally confused the parser: report the
+    // opener, not the symptom. Rakudo words this "Unable to parse expression in
+    // argument list; couldn't find final ')'" — same diagnosis.
+    auto argOrUnterminated = [&](auto&& parse) -> ExprPtr {
+        try { return parse(); }
+        catch (ParseError&) {
+            if (isKind(Tok::End))
+                throw ParseError("Couldn't find final ')' (corresponding ( was at line " +
+                                 std::to_string(openedAt) + ")", cur().line);
+            throw;
+        }
+    };
+    ExprPtr e = argOrUnterminated([&] { return parseExpression(); });
     // indirect-invocant colon: `key($pair: args)` == `$pair.key(args)` — a single
     // first expression followed by a tight `:` (not `::`, not a chained adverb) is
     // the method invocant, handed back to the caller to build a MethodCall.
@@ -1296,6 +1310,14 @@ std::vector<ExprPtr> Parser::parseCallArgs(ExprPtr* invocant) {
             args.push_back(segArg(items));
         }
     }
+    // Running out of file inside an argument list is almost always an unclosed
+    // bracket several lines up, so say where it opened rather than describing the
+    // token we tripped over. (`Q(oops;` reaches here now that a paren is never a
+    // quote delimiter — the same mistake Rakudo reports as "couldn't find final
+    // ')'".)
+    if (isKind(Tok::End))
+        throw ParseError("Couldn't find final ')' (corresponding ( was at line " +
+                         std::to_string(openedAt) + ")", cur().line);
     expectKind(Tok::RParen, ")");
     return args;
 }
