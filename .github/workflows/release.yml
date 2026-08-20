@@ -429,10 +429,16 @@ jobs:
           done
           ls -lh rakujs-*.zip*
 
+      # A DIFFERENT name from the engine pair above. Both steps uploaded
+      # `rakujs-wasm` while upload-artifact was v4 either side, which merged
+      # them; v7 refuses (409 Conflict, "an artifact with this name already
+      # exists on the workflow run") and took the whole job down with the
+      # release zips already built. The engine pair keeps the stable name
+      # because the site-republish path downloads it by that name.
       - name: Upload build artifact
         uses: actions/upload-artifact@v7
         with:
-          name: rakujs-wasm
+          name: rakujs-release-zips
           path: rakujs-*.zip*
           if-no-files-found: error
 
