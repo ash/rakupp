@@ -30,7 +30,8 @@ sub MAIN(Int :$from = 371, Int :$to = 386,
          Str :$repo = %*ENV<HOME> ~ '/perlweeklychallenge-club',
          Str() :$rakupp = $*EXECUTABLE.absolute,
          Str :$rakudo = 'raku',
-         Str :$out = 'pwc-results.jsonl') {
+         Str :$out = 'pwc-results.jsonl',
+         Str :$tsv = '') {   # every file's verdict, for the battery repo's scans/
     my @files;
     for $from .. $to -> $n {
         my $dir = $repo.IO.add(sprintf('challenge-%03d', $n));
@@ -42,6 +43,8 @@ sub MAIN(Int :$from = 371, Int :$to = 386,
     note "sweeping {+@files} files from challenges $from..$to";
 
     my $fh = $out.IO.open(:w);
+    my $tfh = $tsv ?? $tsv.IO.open(:w) !! Nil;
+    $tfh andthen .say("verdict\tfile");
     my %tally;
     for @files.kv -> $i, $f {
         my ($r1, $e1) = run-capture($rakudo, $f);
@@ -62,9 +65,11 @@ sub MAIN(Int :$from = 371, Int :$to = 386,
             }
         }
         %tally{$verdict}++;
+        $tfh andthen .say("$verdict\t{$f.relative($repo)}");
         note "  [{$i + 1}/{+@files}] $verdict  {$f.relative($repo)}" if $verdict eq 'mismatch';
     }
     $fh.close;
+    $tfh andthen .close;
     say "";
     say "%tally{$_} $_" for %tally.keys.sort;
     my $counted = (%tally<match> // 0) + (%tally<mismatch> // 0);
