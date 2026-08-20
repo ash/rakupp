@@ -64,6 +64,42 @@ Raw data (original sweep):
 outputs truncated to 600 chars, first stderr line for rakupp failures);
 full signature table in [pwc/pwc-buckets.txt](pwc/pwc-buckets.txt).
 
+## Round two: challenges 371-387 (2026-08-20)
+
+The first round covered the corpus as it stood at challenge 370. This round
+takes the window that has appeared since -- challenges 371 to 387, 351 `.raku`
+files by 21 authors -- with the same rules and a smaller harness,
+[`tools/pwc-sweep.raku`](../../../tools/pwc-sweep.raku).
+
+| sweep | byte-identical | mismatch | of counted | Roast |
+|---|---:|---:|---:|---:|
+| start (371-386) | 184 | 62 | 74.8% | 196,265 |
+| after batch 1 (`fa5c2fb`) | 187 | 59 | 76.0% | 196,160 |
+| after batch 2 (`d75f13a`) | 204 | 42 | 82.9% | 197,122 |
+| after batch 3 (`f730e79`) | 208 | 38 | 84.6% | 198,450 |
+| after batch 4 (`f4d8518`) | 210 | 37 | 85.0% | 198,335 |
+| after batch 5 (`c3ba0e4`) | 210 | 36 | 85.4% | 198,220 |
+| after batch 6 (`a935890`) | 210 | 36 | 85.4% | 198,318 |
+| after batch 7 (`23829be`, now 371-387) | 217 | 36 | 85.8% | 198,401 |
+
+100 files are skipped because Rakudo cannot run them headlessly and 4 more
+because they are not reproducible across two of its own runs.
+
+| batch | what changed |
+|---|---|
+| 1 | a `$` parameter itemizes what it binds (and so does a loop variable; an Array's elements are containers, a List's are not); a hyper metaop keeps its inner operator's precedence |
+| 2 | a plain list is SETTY, so a repeat is one element in `(-)`/`(^)`/`(<=)`/`(==)`; `[R-]` turns the whole reduction, `[R,]`/`[\R,]` parse; `.min`/`.max` with `:k`/`:v`/`:kv`/`:p` read an Associative as a mapping, and answer an empty List for an empty collection |
+| 3 | whitespace around `..` inside a character class; `≡`/`≢` are set equality, including as `cmp-ok` strings; `@_`/`%_` make a `{…}` a block; `for` aliases the elements of `@a` and `|@a` |
+| 4 | the `only` declarator; `^…`/`…^` exclusion markers on the Unicode ellipsis; `∅`; bracketed infix citations of word and metaop spellings (`[max]`, `[Z=>]`); a file's own `sub infix:<%%%>` lexes whole; no coercion when the value already is the type; BagHash.remove |
+| 5 | a class/grammar/role declared below is usable above (created on first use); a closing `}` at end of line ends the statement for a postfix continuation too |
+| 6 | `Any.Array`/`Any.Hash`; `.head`/`.tail` are assignable; a list on the right of `~~` rejects a non-Positional left side (`Any ~~ Empty` is False) |
+| 7 | `$` closes as the end anchor before `>` (`<?before $>`); a Match takes a slice (`$m[0,1]`) |
+
+Each batch is gated the same way as the first round: `t/run.raku` green, the
+full Roast run with no per-file regression (files that appear to move are
+re-run alone -- the parallel harness times a handful out under load), and
+`perf-guard --check`.
+
 ## The numbers
 
 | outcome | original (2026-07-14) | current (after batch 15) |
