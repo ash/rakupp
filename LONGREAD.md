@@ -105,7 +105,7 @@ coverage figure: how much of the suite is *completely* conquered.
 
 **Per-test rate** — *of every individual test the suite declares, how many pass* —
 is the fair one for "correctness on what runs." This is the headline: **90%**,
-or roughly **196,400 of ~217,100** declared tests. One whole synopsis — S15,
+or roughly **198,600 of ~218,600** declared tests. One whole synopsis — S15,
 Unicode — is at **100%** of its assertions.
 
 The subtlety we documented in [docs/status/COUNTING.md](docs/status/COUNTING.md) is that the
