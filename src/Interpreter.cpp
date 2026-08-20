@@ -18336,6 +18336,10 @@ Value Interpreter::evalBinary(Binary* b) {
             if (isTrSubst(sub->pattern)) { // tr/from/to/ — transliteration, returns a StrDistance
                 long long n; std::string before = l.toStr();
                 std::string out = translit(before, sub->pattern.substr(1), sub->repl, n);
+                // `$x ~~ TR///` does NOT mutate: it transliterates $x and then
+                // smartmatches the result against it, so `1 ~~ TR/\#//` is True
+                // (nothing to delete) while `"ab" ~~ TR/ab/01/` is False.
+                if (sub->nonMut) return applyBinOp("~~", l, Value::str(out));
                 // `s///` MUTATES its left side, so a readonly target is an error.
                 // This is the shape the report arrived as, and it slipped past the
                 // assignment guard because a substitution never goes through `=`.
@@ -21916,11 +21920,20 @@ Value Interpreter::eval(Expr* e) {
             auto* sl = static_cast<SubstLit*>(e);
             Value topic; if (Value* p = tctx_.cur->find("$_")) topic = *p;
             if (isTrSubst(sl->pattern)) { // tr/// against $_
+                long long n; std::string out = translit(topic.toStr(), sl->pattern.substr(1), sl->repl, n);
+                if (sl->nonMut) return Value::str(out);  // TR/// : answer it, leave $_ alone
                 if (topic.readonly)
                     throw RakuError{Value::typeObj("X::Assignment::RO"), "Cannot modify a readonly value"};
-                long long n; std::string out = translit(topic.toStr(), sl->pattern.substr(1), sl->repl, n);
+                std::string before = topic.toStr();
                 if (Value* p = tctx_.cur->find("$_")) *p = Value::str(out);
-                return Value::integer(n);
+                // like the `$s ~~ tr///` form, the answer is a StrDistance — it
+                // stringifies to the RESULT and numifies to the count, where a
+                // bare count could only do the latter
+                Value sd = Value::makeHash(); sd.hashKind = "StrDistance";
+                (*sd.hash)["before"] = Value::str(before);
+                (*sd.hash)["after"] = Value::str(out);
+                (*sd.hash)["distance"] = Value::integer(n);
+                return sd;
             }
             long nsub = 0; ValueList noArgs; Value mres;
             bool topicUndef = topic.t == VT::Nil || topic.t == VT::Any || topic.t == VT::Type;

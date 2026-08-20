@@ -957,7 +957,10 @@ bool Lexer::tryQuoteForm(Token& out) {
     }
     bool isRegex = (w == "rx" || w == "m" || w == "ms" || w == "mm");
     bool isSubst = (w == "s" || w == "S" || w == "ss" || w == "SS");
-    bool isTrans = (w == "tr"); // transliteration tr/from/to/ (Raku dropped y///)
+    // transliteration tr/from/to/ (Raku dropped y///). `TR///` is the
+    // non-mutating form: it ANSWERS the transliterated string and leaves the
+    // target alone, exactly as `S///` does for substitution.
+    bool isTrans = (w == "tr" || w == "TR");
     bool isWords = (w == "qw" || w == "Qw" || w == "qqw" || w == "qww" || w == "qqww"); // word-list quotes
     bool isExec = (w == "qx" || w == "qqx"); // shell-execute quotes: qx/env/
     // Q-shorthands: Qs/Qa/Qh/Qc/Qb/Qq — `Q` with one feature adverb glued on
@@ -1372,7 +1375,7 @@ bool Lexer::tryQuoteForm(Token& out) {
         // tr/y: tag the pattern with a sentinel so the interpreter transliterates
         out = make(Tok::SubstLit, (isTrans ? std::string("\x01") : std::string()) + adverbs + raw);
         out.text2 = repl;
-        out.flag = (w == "S" || w == "SS"); // uppercase S/// : non-mutating, returns the new string
+        out.flag = (w == "S" || w == "SS" || w == "TR"); // uppercase: non-mutating, returns the new string
         return true;
     }
     if (isRegex) {
