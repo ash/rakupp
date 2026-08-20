@@ -1,7 +1,7 @@
 # Plan: the 6.e language revision — v3.5.0
 
-**Status: phases 1-4 done, phase 5 (release) in progress, 2026-08-19.** Not
-tagged. The support matrix re-measured with the finished engine reads **50 of 51
+**Status: DONE — shipped as v3.5.0 (2026-08-20), gates run, not yet tagged
+(the tag is the user's to cut).** The support matrix re-measured with the finished engine reads **50 of 51
 full, 0 divergent, 0 partial, 1 not implemented** — against 23/1/19/8 when this
 plan was written — with 46 of the 51 gated on the pragma rather than simply on.
 The one not implemented is RakuAST.

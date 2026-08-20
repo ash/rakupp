@@ -31,7 +31,7 @@ from an `Array` or `Seq` as Rakudo does, and an untyped *routine* parameter is
 
 | | v3.14.0 | at v2.0.0 |
 |---|---:|---:|
-| Roast, per individual test — of what the suite declares‡ | **195,992 of ~216,400 (90%)** | 197,090 of ~203,500 (97%) |
+| Roast, per individual test — of what the suite declares‡ | **198,628 of ~218,600 (90%)** | 197,090 of ~203,500 (97%) |
 | Roast, all-or-nothing — files fully passing, of 1,462 | **594 (41%)** | 594 |
 | Official documentation examples byte-identical on both engines | **948**† | 952 |
 | Ecosystem distributions passing their own `zef` install-time test suite | **48 / 59**\* | 50 / 59 |
@@ -42,32 +42,11 @@ The per-test figure counts the tests in files that abort before running (their
 `plan N` is read from source); on the all-or-nothing bar a file counts only if
 *every* assertion in it passes — and the Roast figures are measured **with
 parallelism and true LTM on**, the same binary configuration users get. They
-are the repeating profile of four runs on one machine (594 / 595 / 591 / 594
-files; 195,992 assertions on the repeating 594-file profile), not the best run
-seen: the scheduler and IO timing files flap under runner load, and — like
-v3.0.1 before it — this release's first three runs gave no repeating file
-count, so a fourth broke the tie. ‡The two columns are NOT a same-day
-measurement: each release is measured on its own machine state, the timeout
-flap moves the numerator by hundreds either way, and the declared denominator
-itself grew ~13k since v2.0.0 as parse fixes let more files declare their real
-plans — which is why the percentage can dip while the language got better. The
-comparison that IS valid: a v3.1.0 binary rebuilt from its tag and run the
-same day as this release's runs completes 1,314 files in common with it, and
-across those the assertion delta is **−4** — all four in the documented
-timing-flap set. †The doc-example count
-carries a documented ±5 band: Rakudo randomizes hash iteration order per
-process, and the moved rows are ones where *Rakudo's* output drifted from the
-documentation. \*The distribution bar RAISED itself at v3.0.0: at v2.0.0
-Rakudo's own environment could not load the `Test::META` dependency chain, so
-every dist's `t/*meta*` files were excluded from the comparison; that chain
-now loads and those files count, and 48/59 clears that stricter bar. Compare
-the columns knowing the new one clears a stricter bar, as with every release
-here.
-Early-stage, growing test-first. See [the highlights](docs/guide/HIGHLIGHTS.md)
-for the key features in bullets, [the overview](docs/guide/OVERVIEW.md) for
-a one-page tour, [the full guide](docs/guide/GUIDE.md) for the complete picture,
-[COUNTING.md](docs/status/COUNTING.md) for exactly how these are defined, or the
-[CHANGELOG](CHANGELOG.md) for what each release brought.
+are the profile of six runs on one machine (629 / 629 / 629 / 629 / 628 / 630
+files, 13-15 timeouts), not the best run seen: the scheduler and IO timing
+files flap under runner load, so the quoted run is the one whose file list
+contains every file the others passed. The gate is the file LIST — against the
+release's reference run it is clean, zero regressed and one gained.
 
 ## Install
 

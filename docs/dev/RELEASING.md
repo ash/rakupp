@@ -121,12 +121,13 @@ machine; on a new one, re-record before trusting a failure.
 
 Two known blind spots, both live as of v3.0.1:
 
-- **The baseline drifts out of date silently.** It still reads
-  `recorded 2026-07-29 (v1.5.1)` — it was not re-recorded for v2.0.0 or
-  v3.0.0, so the gate has been comparing against a reference several releases
-  old. It passes, which is why nobody noticed. Re-record deliberately at a
-  release (and say so in the CHANGELOG), or the "no regression since last
-  release" claim quietly stops meaning that.
+- **The baseline drifts out of date silently.** It went four releases without
+  being re-recorded (`2026-07-29 (v1.5.1)` while v3.0.0 shipped), and it passes
+  the whole time, which is why nobody noticed. It now reads
+  `2026-08-11 (v3.14.0)`. Re-record deliberately at a release (and say so in the
+  CHANGELOG), or the "no regression since last release" claim quietly stops
+  meaning that — and check the recorded date before repeating this note, which
+  itself went stale and was quoted as fact during the v3.5.0 gates.
 - **There is no string kernel.** `fib`/`asg`/`loopsum`/`hash` are arithmetic,
   hashing and control flow. v3.0.1 replaced the entire string representation
   in `Value` and the gate could not have seen a regression either way. If a

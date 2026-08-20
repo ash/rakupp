@@ -107,6 +107,28 @@ default measures **197,191 / 218,772 declared (90.1%)** — the highest
 total recorded on this codebase. Two ledgered post-flip exceptions
 (PARALLEL-PLAN.md): nonblocking-await.t and bug-coverage-stress.t.
 
+## v3.5.0 — the 6.e language revision (shipped 2026-08-20)
+
+Numbered below v3.14.0 deliberately: the release is named for the language
+revision it carries, and 4.0.0 is reserved for the modules and embedding
+milestone. Package managers order 3.5.0 as the older version — a known,
+accepted consequence.
+
+- **The number:** the 6.e support matrix, run four ways (both engines × both
+  revisions) — **50 of 51 full, 0 divergent, 0 partial**, against 23/1/19/8
+  when the plan was written. RakuAST is the one not implemented, deliberately;
+  it is [its own campaign](RAKUAST-PLAN.md).
+- **The plan:** [6E-PLAN.md](6E-PLAN.md), written before the code, off a
+  measured matrix rather than a feature list. Its three decisions — the
+  revision is a property of the CODE not the process, under 6.d do the 6.d
+  thing always, and the additions are gated too — are what made "a program's
+  meaning must not depend on the engine" affordable.
+- **What it shipped besides:** the Weekly Challenge round-two corpus from
+  74.8% to 90.9% byte-identical over thirteen gated batches, the first
+  ecosystem freshness sweep (the 100 newest distributions) and the parse
+  cluster it proved ours, and `require ::($name)` — broken for a week by the
+  v4 arc and found by the release's own battery gate.
+
 ## v3.14.0 — only what the program needs (planned 2026-08-09)
 
 A single-subject minor in the shape of v1.1.0, starting after v3.0.1 ships:

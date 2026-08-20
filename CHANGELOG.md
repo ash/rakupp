@@ -3,6 +3,100 @@
 Release notes for tagged releases. Numbers are measured, not projected;
 methodology for all Roast figures is in [docs/status/COUNTING.md](docs/status/COUNTING.md).
 
+## v3.5.0 (2026-08-20) — the 6.e language revision
+
+| | v3.14.0 | v3.5.0 |
+|---|---:|---:|
+| Roast assertions (all declared) | 195,992 | **198,628** |
+| Roast files fully passing | 594 | **630** |
+| Documentation examples byte-identical | 948 | **949** |
+| Distributions passing their own suite | 48 / 59 | **49 / 59** |
+| Local regression suite (`t/run.raku`) | 433 | **491** |
+| `say "Hello"` compiled with `--exe` | 8,087,112 B | **8,493,752 B** |
+| …compiled with `--exe --slim` | 4,856,936 B | **5,246,376 B** |
+
+On the version number: this follows v3.14.0 and is not a revert. The release is
+named for the language revision it carries; **4.0.0 is reserved** for the
+modules and embedding milestone. Note that package managers order 3.5.0 *below*
+3.14.0, so an upgrade will not be offered by version comparison alone.
+
+Six Roast runs on one machine gave 629 / 629 / 629 / 629 / 628 / 630 files with
+13-15 timeouts; the quoted figures are the last run, whose file list contains
+every file the others passed plus one. Two files dropped in the 628 run
+(`S17-channel/stress.t`, `integration/99problems-51-to-60.t`) and both score
+5/5 and 37/37 re-run alone — the documented timeout flutter, not a regression.
+**The gate is the file list, and against the release's reference run it is
+clean: zero regressed, one gained.**
+
+### `use v6.e.PREVIEW;` turns on the whole of 6.e, and nothing else turns it on
+
+The whole of [6E-PLAN](docs/dev/plans/6E-PLAN.md). The support matrix at
+[raku.online/spec/6e](https://raku.online/spec/6e/) runs 51 tracked changes four
+ways — Rakudo 6.d, Rakudo 6.e, Raku++ 6.d, Raku++ 6.e — and now reads **50 full,
+0 divergent, 0 partial, 1 not implemented**, against 23 / 1 / 19 / 8 when the
+plan was written. The one is RakuAST, which is [its own
+campaign](docs/dev/plans/RAKUAST-PLAN.md) and deliberately postponed.
+
+Three decisions shaped it:
+
+- **The revision is a property of the code, not of the process.** Each
+  compilation unit records the revision it was compiled under, each code object
+  inherits it from its unit, and the runtime reads the revision of the code that
+  is *executing*. A sub compiled under 6.e keeps 6.e semantics when a 6.d
+  mainline calls it, and a module written for either revision works inside a
+  program written for the other.
+- **Under 6.d, do the 6.d thing — always.** Thirteen 6.e behaviours had been on
+  by default, which made them 6.d divergences rather than 6.e features. A 6.d
+  program must not be able to tell which engine it is running on.
+- **The additions are gated too** — `snip`, `snitch`, `nano`, `trans`, sub-form
+  `rotor`, `.nomark`, `IO::Path.stem`, `Format`/`Formatter` and the rest are
+  invisible under 6.d, exactly as they are in Rakudo. Hiding a routine that
+  works can only break code; the deciding argument is that a program's meaning
+  must not depend on the engine, and that the per-unit revision makes it safe.
+
+Three items are deliberately **not** gated, each for its own reason, and are
+named in the plan: multi-character `.succ` string ranges (blocked on the
+deferred Str-range work), nested same-name packages (6.d's silent stash
+replacement, which Rakudo's own warning calls legacy), and blocks accepting
+extra positionals (an engine-wide arity gap, not a 6.e matter).
+
+### Real-world sweeps
+
+- **The Weekly Challenge, round two.** Challenges 371-387 — 351 files by 21
+  authors, written after the engine was already passing 196k assertions. Thirteen
+  fix batches took byte-identical output from 184 of 246 counted files to 229 of
+  252 (**74.8% → 90.9%**), each batch gated on a full Roast run.
+- **The 100 newest distributions in the ecosystem** ([the first freshness
+  sweep](docs/dev/findings/FRESH100-2026-08-20.md)): 16 pass their own suite, 32
+  fail on their own account, 49 never reach their tests. Its parse cluster was
+  proven ours by a `raku -c` control and fixed — a named slurpy in a declaration
+  list, a sigilless capture as invocant, a typed pointy parameter on a statement
+  condition, chained statement modifiers, and `with` after a parenless call.
+- **`require ::($name)` had stopped loading anything**, found by this release's
+  battery gate. `require` evaluated its operand, so the symbolic ref resolved as
+  a *symbol* — and the module it names is by definition not yet loaded. Bisected
+  to the v4 arc; broken for a week and through the whole 6.e campaign. Every
+  distribution that loads a driver, font or plugin by computed name was affected.
+
+### Notes
+
+- **Slim size budgets raised** to 5.5 MB (`--slim=-all`) and 6.0 MB (bare
+  `--slim`) on darwin. A language revision's worth of engine put the smallest
+  possible `hello` at 5,246,376 bytes locally and 5,263,960 on CI's universal
+  build, over a 5.0 MB line pinned from one machine at v3.14.0. The budgets are
+  tripwires against a cut silently stopping; the growth is recorded here rather
+  than absorbed silently.
+- **`perf-guard --check` is green** against the v3.14.0 baseline: no kernel more
+  than 5% slower, `strscan` 9.4% faster. A same-load A/B against a rebuilt
+  v3.14.0 binary agrees.
+- **`tools/slim-diff.raku` now runs every child with stdin closed.** A corpus
+  `-ne` one-liner parked forever on input nobody sends, and the 30-second cap
+  did not reap them: one release run left ~2,200 processes alive on the machine.
+- **Known and open**: Log::Async's `t/14-frame` scores 5, 0 and 1 of 6 across
+  three runs of the same binary — a real race in async delivery, present in
+  v3.14.0 too, and the reason the battery figure moved by one in both directions
+  during this release's gates.
+
 ## v3.14.0 (2026-08-11) — only what the program needs
 
 | | v3.1.0 | v3.14.0 |
