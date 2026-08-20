@@ -8327,6 +8327,13 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args) {
                 try { wv = coerceToType(wv, p->type); } catch (...) { return -1; }
             }
             auto env = std::make_shared<Env>(); env->parent = tctx_.cur;
+            // The EARLIER parameters are in scope in a `where`: `multi f($l, $n
+            // where * > $l)` compares the two arguments, and dispatch has to see
+            // the same thing the bind would. Only this candidate's own earlier
+            // positionals, bound to the arguments they would take.
+            for (size_t j = 0; j < i && j < pos.size(); j++)
+                if (!positional[j]->name.empty() && !positional[j]->subSig)
+                    env->define(positional[j]->name, pos[j]);
             if (!p->name.empty()) env->define(p->name, wv);
             env->define("$_", wv);
             auto saved = tctx_.cur; tctx_.cur = env;
@@ -14068,6 +14075,34 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                       if (c1 == 'e') return Value::boolean(l.s >= r.s); break;
         }
     }
+    // A Range in NUMERIC comparison is its ELEMENT COUNT — `Range.Numeric` is
+    // `.elems`, so `4 > 1..3` asks 4 > 3 and `(1..3) == 3` is True. rakupp
+    // compared the Range as a structure, so `2 > (1..4)` came out True. Only the
+    // strictly numeric operators: `~~` is membership and `eqv` is structural.
+    if ((l.t == VT::Range || r.t == VT::Range) &&
+        (op == "<" || op == "<=" || op == ">" || op == ">=" ||
+         op == "==" || op == "!=" || op == "<=>")) {
+        // counted arithmetically, so an endless range does not materialise
+        auto num = [](const Value& v) -> Value {
+            if (v.t != VT::Range) return v;
+            if (v.rNum) {
+                // a fractional range steps by 1 FROM ITS START (1.5..3.7 is
+                // 1.5, 2.5, 3.5 — three elements), so the count is not a
+                // ceil/floor of the endpoints
+                if (std::isinf(v.n) || std::isinf(v.im)) return Value::number(INFINITY);
+                double lo = v.n + (v.rExFrom ? 1 : 0), hi = v.im;
+                double c = std::floor(hi - lo) + 1;
+                if (v.rExTo && c > 0 && lo + (c - 1) == hi) c -= 1;
+                return Value::number(c < 0 ? 0 : c);
+            }
+            if (v.ofType == "Str") return Value::integer((long long)v.flatten().size());
+            if (v.rTo >= 9000000000000000000LL || v.rFrom <= -9000000000000000000LL)
+                return Value::number(INFINITY);
+            long long lo = v.rFrom + (v.rExFrom ? 1 : 0), hi = v.rTo - (v.rExTo ? 1 : 0);
+            return Value::integer(hi < lo ? 0 : hi - lo + 1);
+        };
+        return applyArith(op, num(l), num(r));
+    }
     // A `but`/`does` mixin over a non-object base delegates value ops to the boxed
     // value — but identity/smartmatch/type ops must still see the object itself.
     if (op != "~~" && op != "!~~" && op != "===" && op != "!==" && op != "!===" && op != "=:=" &&
@@ -15690,6 +15725,12 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
     bool exhaustive = false;
     for (const char* adv : {":exhaustive ", ":ex "}) // :ex / :exhaustive adverb
         { size_t gp = pat.find(adv); if (gp != std::string::npos) { exhaustive = true; pat.erase(gp, strlen(adv)); } }
+    // :ov / :overlap — like :g, but the next search starts ONE character past the
+    // last match's START rather than its end, so matches may overlap:
+    // `"aaaa" ~~ m:ov/aa/` finds three.
+    bool overlap = false;
+    for (const char* adv : {":overlap ", ":ov "})
+        { size_t gp = pat.find(adv); if (gp != std::string::npos) { overlap = true; global = true; pat.erase(gp, strlen(adv)); } }
     // counted adverbs — m:nth(N)/, m:nth(*)/, m:nth(2,3):global/, ordinals m:3rd/
     // (sloppy suffixes like :7st accepted, as in Rakudo)
     bool haveNth = false, nthStar = false; long long nthOfs = 0;
@@ -15928,6 +15969,40 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
     std::shared_ptr<Value> inlineMade; // `{ make … }` inside a plain regex
     GrammarHooks rmHooks;
     bool wantHooks = false;
+    // A code assertion sees the CURSOR as `$/`: `<?{ $/.chars == 2 }>` and
+    // `<?{ $0 eq $2 }>` ask about the match SO FAR. Evaluating the code with
+    // whatever `$/` the outer scope happened to hold made every such assertion
+    // read an unrelated (usually empty) match — `m:ov/ \d ** {2} <?{ $n %% $/ }>/`
+    // found nothing at all. Same cursor the `{…}` block hook builds.
+    auto assertCaps = [this, &build](const std::string& code, long from, long to,
+                                     const GrammarHooks::NamedMap& named,
+                                     const std::vector<std::pair<long, long>>& caps,
+                                     const GrammarHooks::ParamMap&) -> bool {
+        RxMatch cur; cur.matched = true; cur.from = from; cur.to = to;
+        cur.caps = caps; cur.named = named;
+        Value cursor = build(cur);
+        bool hadSlash = tctx_.cur->find("$/") != nullptr;
+        Value savedSlash = hadSlash ? *tctx_.cur->find("$/") : Value::nil();
+        std::vector<std::pair<std::string, Value>> savedCaps;
+        auto bindCap = [&](const std::string& nm, const Value& v) {
+            Value* old = tctx_.cur->find(nm);
+            savedCaps.push_back({nm, old ? *old : Value::nil()});
+            tctx_.cur->define(nm, v);
+        };
+        if (cursor.arr) for (size_t k = 0; k < cursor.arr->size(); k++)
+            bindCap("$" + std::to_string(k), (*cursor.arr)[k]);
+        if (cursor.hash) for (auto& kv : *cursor.hash) bindCap("$<" + kv.first + ">", kv.second);
+        setMatchVar(cursor);
+        bool ok = false, featThrow = false; FeatureNotBuilt fe;
+        try { ok = evalString(code).truthy(); }
+        catch (FeatureNotBuilt& e) { featThrow = true; fe = e; }
+        catch (...) { ok = false; }
+        for (auto it = savedCaps.rbegin(); it != savedCaps.rend(); ++it)
+            tctx_.cur->define(it->first, it->second);
+        if (Value* s2 = tctx_.cur->find("$/")) { if (hadSlash) *s2 = savedSlash; }
+        if (featThrow) throw fe;
+        return ok;
+    };
     // The hook gates scan the pattern TEXT — but a `my regex` body referenced as
     // a subrule carries its own `{…}`/`**{…}`, so the visible bodies scan too
     // (over-arming is harmless: with no Code nodes the hooks are never called).
@@ -15997,12 +16072,7 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
     // an inline /…/ that IS the definition scope; a stored bare pattern
     // matched elsewhere reads the matcher's lexicals, a known approximation.
     if (hookScan.find("?{") != std::string::npos || hookScan.find("!{") != std::string::npos) {
-        rmHooks.assertPass = [this](const std::string& code, long, long,
-                                    const GrammarHooks::NamedMap&, const GrammarHooks::ParamMap&) -> bool {
-            try { return evalString(code).truthy(); }
-            catch (FeatureNotBuilt&) { throw; }   // a SLIM stub fired: loud, never a silent fail
-            catch (...) { return false; }
-        };
+        rmHooks.assertPassCaps = assertCaps;
         wantHooks = true;
     }
     // `\w**{$n}` / `**{ 1..3 }` — a runtime-bounded quantifier in a plain `~~`
@@ -16045,12 +16115,7 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
                 catch (...) {}
             }
         };
-        rmHooks.assertPass = [this](const std::string& code, long, long,
-                                    const GrammarHooks::NamedMap&, const GrammarHooks::ParamMap&) -> bool {
-            try { return evalString(code).truthy(); }
-            catch (FeatureNotBuilt&) { throw; }
-            catch (...) { return false; }
-        };
+        rmHooks.assertPassCaps = assertCaps;
         if (!rmHooks.range) rmHooks.range = [this](const std::string& code, const GrammarHooks::NamedMap&,
                                                    const GrammarHooks::ParamMap&) -> std::pair<long, long> {
             Value v;
@@ -16127,7 +16192,8 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
             RxMatch m;
             if (!re.search(subject, pos, m, resolver, &lexNames)) break;
             list.arr->push_back(build(m));
-            pos = (m.to > m.from) ? m.to : m.to + 1; // advance past zero-width matches
+            if (overlap) pos = m.from + 1;           // :ov — overlapping matches
+            else pos = (m.to > m.from) ? m.to : m.to + 1; // advance past zero-width matches
         }
         setMatchVar(list);
         return list;

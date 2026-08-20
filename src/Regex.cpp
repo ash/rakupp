@@ -2576,7 +2576,10 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                 else if (st.hooks && st.hooks->run) st.hooks->run(n->lit, st.startPos, pos, st.named, params);
                 return k(pos);
             }
-            bool ok = (st.hooks && st.hooks->assertPass) ? st.hooks->assertPass(n->lit, st.startPos, pos, st.named, params) : true;
+            bool ok = (st.hooks && st.hooks->assertPassCaps)
+                          ? st.hooks->assertPassCaps(n->lit, st.startPos, pos, st.named, st.caps, params)
+                    : (st.hooks && st.hooks->assertPass)
+                          ? st.hooks->assertPass(n->lit, st.startPos, pos, st.named, params) : true;
             if (n->negate) ok = !ok;
             return ok ? k(pos) : false;
         }

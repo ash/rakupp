@@ -89,6 +89,11 @@ struct GrammarHooks {
     std::function<bool(const std::string&)> hasAction;
     std::function<void(ParseNode)> onRule; // by value: fire sites move their freshly built node in
     std::function<bool(const std::string&, long, long, const NamedMap&, const ParamMap&)> assertPass; // <?{…}>
+    // Same as `assertPass`, but carrying the POSITIONAL captures, so the
+    // assertion's `$/` is the CURSOR — the match so far, with `$0` and friends.
+    // Preferred over `assertPass` when set.
+    std::function<bool(const std::string&, long, long, const NamedMap&,
+                       const std::vector<std::pair<long, long>>&, const ParamMap&)> assertPassCaps;
     std::function<void(const std::string&, long, long, const NamedMap&, const ParamMap&)> run;        // :my / {…}
     // Same as `run`, but carrying the POSITIONAL captures too so the block's `$/`
     // can offer `$0`. Set by the plain-regex path; preferred over `run` when set.

@@ -1188,13 +1188,24 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 if (a.isNumeric() && a.toInt() <= 0)
                     throw RakuError{Value::typeObj("X::OutOfRange"),
                         "batch size is out of range. Is: " + std::to_string(a.toInt()) + ", should be in 1..^Inf"};
+
             // Several positionals CYCLE: rotor(2, 3) is windows of 2, 3, 2, 3, …
             // Each spec is a size, or `size => gap` where the next window starts
             // size+gap later (a negative gap overlaps).
             struct Spec { long long n, step; };
             std::vector<Spec> specs;
             bool partial = (m == "batch"); // batch always keeps a short final chunk; rotor drops it unless :partial
+            // `.rotor(*@cycle)` is SLURPY, so a Positional argument spreads:
+            // `.rotor(flat (3 xx $a), (2 xx $b))` hands over one list and means
+            // the sizes inside it. Ignoring that left no specs at all, and every
+            // element came back in a chunk of its own.
+            ValueList flatArgs;
             for (auto& a : args) {
+                if ((a.t == VT::Array || a.t == VT::Range) && !a.itemized)
+                    for (auto& x : a.flatten()) flatArgs.push_back(x);
+                else flatArgs.push_back(a);
+            }
+            for (auto& a : flatArgs) {
                 if (a.t == VT::Pair && a.s == "partial") { if (!a.pairVal || a.pairVal->truthy()) partial = true; }
                 else if (a.t == VT::Pair && a.pairVal) {
                     long long n = a.pairKey ? a.pairKey->toInt() : std::atoll(a.s.c_str());
