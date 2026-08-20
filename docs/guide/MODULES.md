@@ -44,8 +44,16 @@ writes to:
 
 - **`~/.raku`** — your per-user zef install (the usual place `zef install` puts
   things).
+- **rakubrew's stores** — `~/.rakubrew/versions/<version>/install/share/perl6/site`
+  and `…/vendor`, for every version rakubrew has installed. (Note the extra
+  `install/` level, which the other layouts do not have.)
 - **Homebrew Rakudo's store** — `…/Cellar/rakudo/<version>/share/perl6/site` and
   `…/vendor`, on both Intel (`/usr/local`) and Apple Silicon (`/opt/homebrew`).
+
+A store only appears in that chain when it exists, and a failed `use` prints the
+whole list it searched — so if the store you expect is not in the message, that
+is the thing to fix rather than the module. A store anywhere else is one `-I`
+away; see [the modules FAQ](faq/modules.md).
 
 You don't configure any of this; if a module is installed, `use` finds it. Many
 pure-Raku modules — `JSON::Fast`, `URI`, `Terminal::ANSIColor`, and more — load

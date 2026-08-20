@@ -1,111 +1,114 @@
-# FAQ — using modules that zef installed
+# FAQ — installing and finding modules
 
-Short answer: **point `-I` at the repository directory — the one that contains
-`sources/`, `dist/` and `short/` — not at any of those subdirectories**, and
-Raku++ will load what zef installed there.
+Raku++ has no package manager of its own: it **reads the store zef writes**. So
+"install a module" means `zef install Foo` (under Rakudo, or under Raku++ — see
+below), and everything after that is about Raku++ finding it. This page is the
+questions people actually hit; [MODULES.md](../MODULES.md) is the tour, and
+[differences.md](differences.md) is where the two engines part company.
 
-```bash
-rakupp -I /path/to/rakudo/share/perl6/site -e 'use File::Which; say which("ls")'
+## How do I install a module for Raku++?
+
+```sh
+zef install JSON::Fast          # the normal way, with Rakudo's zef
+rakupp -e 'use JSON::Fast; say to-json({ a => 1 })'
 ```
 
-Everything below is the detail behind that line, including where the directory
-is for each way of installing Rakudo.
+That is the whole workflow. There is no second install step, no Raku++-specific
+package format, and nothing to precompile: Raku++ reads the sources out of the
+same store and parses them itself.
 
-## Where the repository is
+If you have no Rakudo at all, zef runs under Raku++ too — `rakupp /path/to/zef
+install Foo` — with the caveats in [MODULES.md](../MODULES.md#current-status-and-limits).
 
-zef does not put modules where you can see them. It installs into a
-**CompUnit::Repository::Installation** — a content-addressed store — and the
-layout is the same wherever Rakudo came from:
+## Where does it look?
+
+At the standard zef locations, and you never have to configure them:
+
+- `~/.raku` — the per-user store, where a plain `zef install` puts things
+- every `~/.rakubrew/versions/*/install/share/perl6/{site,vendor}`
+- every Homebrew `Cellar/rakudo/*/share/perl6/{site,vendor}`
+- `lib`, `.` and `rakulib`, for the program's own files
+
+**The failure message is the list.** When a `use` fails, Raku++ prints every
+place it looked, in order:
 
 ```
-share/perl6/site/          ← this is the path to give -I
-    short/                 index: module name → the file that provides it
-    sources/               the module sources, named by SHA
-    dist/                  one JSON metadata file per distribution
-    resources/             data files, also named by SHA
-    precomp/               Rakudo's precompiled bytecode (Raku++ ignores it)
+$ rakupp -e 'use Nope'
+Could not find Nope in:
+    lib
+    .
+    rakulib
+    /Users/ada/.raku
+    /usr/local/Cellar/rakudo/2026.07/share/perl6/site
+    /usr/local/Cellar/rakudo/2026.07/share/perl6/vendor
 ```
 
-The SHA-named files under `sources/` are not meant to be named directly — the
-`short/` index is what turns `File::Which` into the right one. So a path like
-`…/site/sources` is one level too deep, and `…/site/sources/A1B2…` is a file, not
-a repository.
+If the store you expect is not in that list, that is the bug to chase — not the
+module. A store only appears when it exists, so an empty
+`~/.rakubrew/versions` contributes nothing.
 
-| how Rakudo was installed | the path to use |
-|---|---|
-| **rakubrew** | `~/.rakubrew/versions/<version>/install/share/perl6/site` |
-| Homebrew | `/usr/local/Cellar/rakudo/<version>/share/perl6/site` (or `/opt/homebrew/…`) |
-| `--prefix` build | `<prefix>/share/perl6/site` |
-| zef's `--/precompile-install` user repo | `~/.raku` |
+## My store is somewhere else
 
-Note the extra `install/` level in the rakubrew layout — that is the one that
-catches people out.
+Point `-I` at the **repository directory** — the one containing `short/`,
+`sources/` and `dist/` — not at any of those subdirectories:
 
-If you are not sure, ask Rakudo:
+```sh
+rakupp -I ~/.rakubrew/versions/moar-2026.07/install/share/perl6/site -e 'use Foo'
+rakupp -I inst#$HOME/rakudo-dev/share/perl6/site                     -e 'use Foo'
+```
 
-```bash
+Both spellings work, in `-I`, in `use lib` and in `RAKULIB`. Rakudo's `inst#`
+prefix says "installation store"; without it Raku++ probes the directory and
+recognises one anyway. `file#` names a plain directory of `.rakumod` files.
+
+Not sure where yours is? Ask Rakudo — every `inst#…` line is a store Raku++ can
+read:
+
+```sh
 raku -e '.say for $*REPO.repo-chain'
 ```
 
-Every `inst#…` line it prints is a store Raku++ can read.
+The layout differs by installer, and the easy one to miss is **rakubrew's extra
+`install/` level**: `~/.rakubrew/versions/<ver>/install/share/perl6/site`, where
+Homebrew has `Cellar/rakudo/<ver>/share/perl6/site`.
 
-## Two spellings, both accepted
+## The files in there are named like `A1B2C3…` — do I use those?
 
-Raku++ takes the same repository specs Rakudo does, in `-I`, in `use lib` and in
-`RAKULIB`:
+No. A zef store is content-addressed: `sources/` holds the module text under a
+SHA name, `dist/` one JSON file per distribution, and `short/` is the index that
+turns `JSON::Fast` into the right SHA. You always name the *repository root*;
+the index does the rest. (`precomp/` is Rakudo's bytecode — Raku++ ignores it,
+which is why a store precompiled by another Rakudo version is never a problem.)
 
-```bash
-rakupp -I inst#$HOME/.rakubrew/versions/moar-2026.07/install/share/perl6/site …
-rakupp -I $HOME/.rakubrew/versions/moar-2026.07/install/share/perl6/site …
-```
+## "Could not find Foo" and I am sure it is installed
 
-The `inst#` prefix is explicit ("this is an installation store, not a directory
-of `.rakumod` files"); without it Raku++ probes the directory and recognises the
-store anyway. `file#` names a plain source directory, which is what a bare path
-without a store in it means.
+Nine times in ten the name asked for is the **distribution**, not a **module**
+it provides. They are often the same and sometimes not:
 
-## You may not need `-I` at all
-
-Raku++ consults these repositories by itself, in this order, before anything you
-pass:
-
-- `~/.raku` — the user repository, where `zef install --to=home` puts things
-- every `~/.rakubrew/versions/*/install/share/perl6/{site,vendor}`
-- every Homebrew `Cellar/rakudo/*/share/perl6/{site,vendor}`
-
-So on a machine with rakubrew, `rakupp -e 'use JSON::Fast; …'` finds the module
-with no flags. `-I` is for repositories in other places — a `--prefix` build, a
-container image, a second checkout.
-
-## "Could not find Foo" when the module is definitely installed
-
-The usual cause is asking for a **distribution** name rather than a **module**
-name. They are often the same, and sometimes not:
-
-```bash
+```sh
 rakupp -e 'use Digest'          # Could not find Digest
 rakupp -e 'use Digest::SHA1'    # fine — the dist "Digest" provides this
 ```
 
-Rakudo fails on `use Digest` in exactly the same way, so if you are unsure, try
-the same line under `raku`: if it fails there too, the name is the problem, not
-the engine. To see what a distribution actually provides:
+Rakudo refuses `use Digest` in exactly the same way, so try the failing line
+under `raku`: if it fails there too, the name is the problem, not the engine.
 
-```bash
-raku -e 'say $*REPO.repo-chain.map(*.candidates("Digest::SHA1")).flat.head.meta<provides>.keys'
+## Can I use a module I am working on, uninstalled?
+
+Yes — that is the `lib` entry in the list above, so a checkout laid out the
+usual way needs nothing at all:
+
+```sh
+cd MyModule && rakupp -e 'use MyModule; …'      # lib/MyModule.rakumod
+rakupp -I../Other/lib -e 'use Other'            # somewhere else
 ```
 
-## What still does not work
+## It is found, but then it breaks
 
-Of the 35 distributions in one real zef store, 33 load under Raku++ unchanged.
-The ones that do not are not a repository problem — they are modules using
-language or runtime corners Raku++ has not finished (zef's own `Zef::Client`
-chain is the notable one). If a module fails **after** it is found — a parse
-error, a missing method — that is a bug worth reporting, with the module name:
-<https://github.com/ash/rakupp/issues>.
-
-Raku++ also ignores `precomp/`: it reads the sources and parses them itself, so
-a store precompiled by a different Rakudo version is not a problem, and no
-precompilation of your own is required. It is why the first `use` of a large
-module costs a parse rather than a load — see [caching](../CACHING.md) for the
-AST cache that softens that.
+That is worth reporting — a parse error or a missing method *after* the module
+is located is an engine gap, not a path problem. Of the 35 distributions in one
+real store, 33 load unchanged; what usually fails is compile-time
+metaprogramming, slangs, or NativeCall bindings Raku++ does not model, and
+`use Foo:ver<…>` adverbs are accepted but not honoured. The list of known edges
+is in [MODULES.md](../MODULES.md#current-status-and-limits); new ones belong at
+<https://github.com/ash/rakupp/issues> with the module name.
