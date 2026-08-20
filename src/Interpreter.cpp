@@ -8394,7 +8394,6 @@ struct DepthGuard {
     ~DepthGuard() { --d; }
 };
 
-static bool isJunction(const Value& v); // defined below
 
 // Does this expression contain a literal `*` (Whatever) term — walking only
 // through composable expression forms, never into variables or calls? This is
@@ -13738,7 +13737,7 @@ static Value setSymDiffN(const ValueList& operands) {
     return setWrap(res, tier);
 }
 
-static bool isJunction(const Value& v) {
+bool isJunction(const Value& v) {
     return v.t == VT::Array && (v.enumName == "any" || v.enumName == "all" || v.enumName == "one" || v.enumName == "none");
 }
 
@@ -22748,19 +22747,8 @@ Value Interpreter::eval(Expr* e) {
             // all($s.contains("a"), $s.contains("b")) — a junction that collapses later.
             // MATCHER positions are exempt: a junction to grep/first is a smartmatch
             // target (`@a.grep(any(@b))` filters, it does not autothread).
-            static const std::set<std::string> junctionMatcherMethods = {
-                "grep", "first", "classify", "categorize", "index-of", "split", "comb", "match", "subst"};
-            if (!mc->meta && !junctionMatcherMethods.count(mc->method))
-                for (size_t ai = 0; ai < args.size(); ai++) {
-                if (isJunction(args[ai])) {
-                    Value jr = Value::array(); jr.enumName = args[ai].enumName; jr.isList = true;
-                    for (auto& e : *args[ai].arr) {
-                        ValueList a2 = args; a2[ai] = e;
-                        jr.arr->push_back(methodCall(inv, mc->method, a2));
-                    }
-                    return jr;
-                }
-            }
+            // (the autothreading that used to be written out here now lives in
+            // methodCall(), so every caller gets it — see issue #22)
             // `.?meth` — Nil when the invocant has no such method. There is no
             // unified can() over the builtin surface, so dispatch and convert
             // only the NotFound raised for THIS method on THIS invocant; a

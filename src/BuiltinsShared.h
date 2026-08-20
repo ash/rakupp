@@ -62,6 +62,9 @@ bool strHasNoUpper(const std::string& s);
 // counts (tab, LF, VT, FF, CR) and NEL. `.words` and friends split on this —
 // `std::istream >>` only knows the C locale's ASCII notion of it.
 bool uniIsSpaceCp(uint32_t cp);
+// A Junction value: an Array tagged with its kind. Declared here because both the
+// interpreter and the method dispatcher have to ask.
+bool isJunction(const Value& v);
 std::string typeOfVal(const Value& v);
 // hashEntryKey: the real key of a hash entry — pairKey, object-hash key type,
 // or the plain Str. Defined in Builtins.cpp; see the comment there.

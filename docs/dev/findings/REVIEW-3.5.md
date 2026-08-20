@@ -135,3 +135,35 @@ confirmed against a pre-review build.
   Wants a measured design, not a patch.
 - `_platform_memcmp` at ~4%: arm guards comparing `hashKind`/`enumName` against
   string literals. Interning those is again representation work.
+
+## Issue #22 — a Junction argument stopped autothreading off the eval path
+
+`'00011', { .subst(/01/, '10', :g) } ... *.contains: none '01'` never
+terminated (reported by habere-et-dispertire). The endpoint is a curried
+`*.contains(none '01')`, and a WhateverCode calls `methodCall()` directly rather
+than going through the `MethodCall` eval arm — which is where junction
+autothreading of arguments was written. So the predicate answered a plain
+`False` where Rakudo answers `none(False)`, which is *true*, and the sequence
+ran to the million-element cap.
+
+The rule now lives in `methodCall()`, where every caller reaches it, and the
+eval-arm copy is gone. The exemption list (matcher positions — `grep`, `first`,
+`match`… — where a junction is a smartmatch target rather than a value to thread
+over) was moved across verbatim: this was a *relocation*, not a redefinition,
+and the four entries the first draft invented were removed before it landed.
+
+The common path pays only an `isJunction` scan of the arguments, which is a type
+tag and an enum-name check; the matcher-set lookup happens only once a junction
+is actually found.
+
+Roast: `S03-junctions/autothreading.t` 91/107 → **96/107**,
+`S03-junctions/misc.t` 137/155 → **143/155**. Pinned by
+`t/regression/junction-arg-autothreads-everywhere.raku`.
+
+## Found while testing #22, not fixed
+
+`q` as a routine name loses to the `q//` quote operator: with `my &q = …`
+declared, `q("11000")` is the *string* `"11000"` here and the call in Rakudo.
+Same family as the sigilless-name shadowing fixed in batch 3 — a declared name
+that a built-in spelling wins against — but in the lexer rather than the name
+resolver, so it needs its own look.

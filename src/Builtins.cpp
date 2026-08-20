@@ -2684,6 +2684,29 @@ static std::string jsonEncode(const Value& v) {
 // Rakudo — Hash, Array, List, Pair, Match alike. Marking them at the one dispatch
 // point keeps that uniform instead of tagging a dozen construction sites.
 Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList args, const std::vector<ExprPtr>* rwArgs) {
+    // A JUNCTION argument autothreads: `$s.contains(none "01")` is a junction of
+    // the per-eigenstate answers, which collapses later. This used to live only in
+    // the MethodCall eval arm, so every internal caller lost it — the one that
+    // reported it was a curried `*.contains(none "01")`, whose WhateverCode calls
+    // methodCall directly and got a plain (wrong) Bool, so a sequence using it as
+    // its endpoint never terminated (issue #22).
+    //
+    // MATCHER positions are exempt: a junction handed to grep/first/match is a
+    // smartmatch target, not a value to thread over.
+    for (size_t ai = 0; ai < args.size(); ai++) {
+        if (!isJunction(args[ai])) continue;            // the common path stops here
+        // Exactly the list the eval arm carried before this moved here — no
+        // additions: this rule's job is to run everywhere, not to change.
+        static const std::set<std::string> junctionMatcherMethods = {
+            "grep", "first", "classify", "categorize", "index-of", "split", "comb", "match", "subst"};
+        if (m.empty() || m[0] == '^' || junctionMatcherMethods.count(m)) break;
+        Value jr = Value::array(); jr.enumName = args[ai].enumName; jr.isList = true;
+        for (auto& e : *args[ai].arr) {
+            ValueList a2 = args; a2[ai] = e;
+            jr.arr->push_back(methodCall(inv, m, a2));
+        }
+        return jr;
+    }
     Value r = methodCallInner(inv, m, std::move(args), rwArgs);
     if (r.t == VT::Array && r.isList && r.s.empty() &&
         (m == "kv" || m == "keys" || m == "values" || m == "pairs" ||
