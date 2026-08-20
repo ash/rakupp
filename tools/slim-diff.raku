@@ -12,6 +12,10 @@
 # A mismatch is retried once with two fresh runs before it counts: a
 # timing-sensitive file that disagrees with ITSELF is noise, not a wrong cut.
 #
+# Every child runs with stdin CLOSED. A corpus program that reads stdin (the
+# `-ne` one-liners) otherwise parks forever waiting for input nobody sends, and
+# the cap below did not always reap them: one release run left ~2,200 of them
+# alive on the machine, quiet enough that only the process count showed it.
 # Every run is capped (30s) and killed BY PROCESS GROUP: some corpus files
 # spawn $*EXECUTABLE, which in a compiled binary is the binary itself — the
 # spawn re-runs the embedded program and recurses forever (measured: one such
@@ -57,7 +61,7 @@ sub run-bin($bin) {
     my $rc = $tmp.add("rc-$runseq");
     my $tf = $tmp.add("to-$runseq");
     my $cmd = "/usr/bin/perl -e 'setpgrp(0,0); exec \@ARGV or exit 127' -- '{$bin.Str}' "
-            ~ "> '{$o}' 2> '{$e}' & P=\$!; n=0; "
+            ~ "< /dev/null > '{$o}' 2> '{$e}' & P=\$!; n=0; "
             ~ "while kill -0 \$P 2>/dev/null && [ \$n -lt 300 ]; do sleep 0.1; n=\$((n+1)); done; "
             ~ "if kill -0 \$P 2>/dev/null; then kill -9 -\$P 2>/dev/null; kill -9 \$P 2>/dev/null; "
             ~ "echo 1 > '{$tf}'; fi; wait \$P; echo \$? > '{$rc}'";

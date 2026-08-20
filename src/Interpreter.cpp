@@ -19159,8 +19159,19 @@ Value Interpreter::evalUnary(Unary* u) {
         // runtime module load with a computed name: `require ::($name)`.
         // Yields the loaded module's type object; throws if nothing loadable was
         // found (so zef's `(try require ::($m)) ~~ Nil` probe sees Nil on failure).
-        Value mv = eval(u->operand.get());
-        std::string name = mv.t == VT::Type ? mv.s : mv.toStr();
+        // `require ::($name)` NAMES a module to load. Resolving that symbolic
+        // ref as a symbol first can only fail — the module is not loaded yet,
+        // which is the whole point — and since unknown capitalized names stopped
+        // stubbing themselves into existence, the resulting Failure arrived here
+        // STRINGIFIED, so the error read "Could not find No such symbol '…'".
+        // Take the name it spells instead.
+        std::string name;
+        if (u->operand->kind == NK::SymbolicRef)
+            name = symRefName(static_cast<SymbolicRef*>(u->operand.get()));
+        else {
+            Value mv = eval(u->operand.get());
+            name = mv.t == VT::Type ? mv.s : mv.toStr();
+        }
         if (name.empty())
             throw RakuError{Value::typeObj("X::CompUnit::UnsatisfiedDependency"),
                             "require: empty module name"};
