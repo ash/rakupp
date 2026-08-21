@@ -1,6 +1,6 @@
-# What perl 5 does that keeps its constant factors low
+# What Perl 5 does that keeps its constant factors low
 
-A study of the perl 5 sources (github.com/Perl/perl5, shallow clone at HEAD,
+A study of the Perl 5 sources (github.com/Perl/perl5, shallow clone at HEAD,
 2026-08-21) read against Raku++'s interpreter, looking for mechanisms worth
 adopting. The prompt: on the `hashfill` kernel the perl *interpreter* (82 ms)
 beats our *compiled binary* (113 ms) on wall clock, and our own interpreter by
@@ -9,7 +9,7 @@ spent thirty years shaving interpreter constants; most of what it does is
 directly legible in five files (`sv.h`, `hv.h`/`hv.c`, `pad.h`, `run.c`,
 `pp.h`/`pp_hot.c`).
 
-An honest frame first: perl's data model is *far* smaller than Raku's — no
+An honest frame first: Perl's data model is *far* smaller than Raku's — no
 containers, no laziness, no junctions, no type objects, no NFG — and a chunk
 of its speed is that simplicity, not technique. The items below are the parts
 that are technique, ranked by expected payoff for us.

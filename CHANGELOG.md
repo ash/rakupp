@@ -3,7 +3,7 @@
 Release notes for tagged releases. Numbers are measured, not projected;
 methodology for all Roast figures is in [docs/status/COUNTING.md](docs/status/COUNTING.md).
 
-## v3.6.0 (2026-08-21) — the perl 5 lessons
+## v3.6.0 (2026-08-21) — the Perl 5 lessons
 
 | | v3.5.0 | v3.6.0 |
 |---|---:|---:|
@@ -39,9 +39,9 @@ measured in one sitting reads: perl 81.8 ms, `--exe -O3` 82.1 ms (a
 statistical tie), `--exe -O` 84.0 ms, `--exe` 92.9 ms, interp 250.1 ms —
 [BENCHMARKS.md](docs/status/BENCHMARKS.md) "vs Perl 5" has the tables.
 
-### The perl 5 study, and its first applied item
+### The Perl 5 study, and its first applied item
 
-[PERL5-TECHNIQUES.md](docs/dev/findings/PERL5-TECHNIQUES.md) reads the perl 5
+[PERL5-TECHNIQUES.md](docs/dev/findings/PERL5-TECHNIQUES.md) reads the Perl 5
 sources against this interpreter's hot paths: eight techniques, each grounded
 in the file that implements it, ranked by expected payoff. The first landed in
 this release: **ValueHash** replaces the hash payload's
