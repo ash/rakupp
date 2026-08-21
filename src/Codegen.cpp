@@ -1201,10 +1201,21 @@ struct Codegen {
             case NK::InterpStr: {
                 auto* s = static_cast<InterpStr*>(e);
                 if (s->parts.empty()) return "Value::str(\"\")";
+                // A literal part contributes its C string directly — routing it
+                // through Value::str(…).toStr() built and destroyed a whole
+                // Value per part on every evaluation ("key$i" in a fill loop).
+                // A leading literal is wrapped in std::string so operator+ has
+                // a string operand whatever follows it.
                 std::string acc;
                 for (size_t i = 0; i < s->parts.size(); i++) {
+                    std::string piece;
+                    if (s->parts[i]->kind == NK::StrLit) {
+                        piece = cesc(static_cast<StrLit*>(s->parts[i].get())->v);
+                        if (i == 0) piece = "std::string(" + piece + ")";
+                    }
+                    else piece = "(" + ex(s->parts[i].get()) + ").toStr()";
                     if (i) acc += " + ";
-                    acc += "(" + ex(s->parts[i].get()) + ").toStr()";
+                    acc += piece;
                 }
                 return "Value::str(" + acc + ")";
             }

@@ -1637,6 +1637,25 @@ Value rtArrayVal(const Value& v) {
     return a;
 }
 
+// Rvalue overload: a freshly built plain List (a method-call result being
+// assigned into an array) whose buffer nothing else shares can hand that
+// buffer over instead of copying it element-wise — `@a = %h.values` on a
+// 2M-entry hash paid a second full materialization here. Anything with a
+// Slip to splice, a lazy tail, shape, or a shared buffer takes the copying
+// path, whose semantics stay authoritative.
+Value rtArrayVal(Value&& v) {
+    if (v.t == VT::Array && v.arr && v.isList && !v.ext && !v.itemized &&
+        !(v.shape && !v.shape->empty()) && v.arr.use_count() == 1) {
+        for (auto& it : *v.arr)
+            if (it.t == VT::Array && it.arr && it.s == "Slip")
+                return rtArrayVal(static_cast<const Value&>(v));
+        Value r = Value::array();
+        r.arr = std::move(v.arr);
+        return r;
+    }
+    return rtArrayVal(static_cast<const Value&>(v));
+}
+
 static Value coerceArray(const Value& v) {
     if (v.t == VT::Hash && v.hash && v.itemized) { Value a = Value::array(); a.arr->push_back(v); return a; }
     if (v.t == VT::Hash && v.hash) return hashToPairs(v);

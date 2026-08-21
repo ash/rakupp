@@ -1505,6 +1505,7 @@ ValueList pathPartsPairs(const Value& v); // IO::Path::Parts in declaration orde
 Value  rtTypedDefault(const char* type, char sigil); // `my Int @a` / `my %h{Int}`: the declared empty container
 long long nowMicros();              // steady_clock microseconds (the gather probe budget)
 Value  rtArrayVal(const Value& v);  // list-assignment semantics for `@a = expr` (splice Lists, keep itemized rows)
+Value  rtArrayVal(Value&& v);       // rvalue overload: steal a uniquely-owned Slip-free List's buffer instead of copying it
 Value  rtShapedArray(const ValueList& dims, const std::string& declType); // `my @a[3;2]`
 void   rtShapedStore(Value& lv, const Value& rhs, const std::string& keepType); // `@a[3;2] = …`
 void   rtSpreadArg(ValueList& as, const Value& v, bool argPos); // |x spread into an arg/list being built

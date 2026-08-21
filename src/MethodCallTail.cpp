@@ -793,7 +793,12 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         // inv.hash, and the per-call pair materialization made `%h.push` in an
         // accumulate loop quadratic (same disease the Array gate cured).
         bool hashPush = inv.t == VT::Hash && inv.hash && (m == "push" || m == "append");
-        if (!(inv.t == VT::Array && inv.arr && !inv.ext && throughHandle()) && !hashPush)
+        // The key/value walkers likewise read *inv.hash directly and never look
+        // at `items` — for them the snapshot materialized a Pair per entry only
+        // to be discarded, the dominant cost of `%h.values` on a large hash.
+        bool hashDirect = inv.t == VT::Hash && inv.hash &&
+            (m == "values" || m == "keys" || m == "kv" || m == "pairs" || m == "antipairs");
+        if (!(inv.t == VT::Array && inv.arr && !inv.ext && throughHandle()) && !hashPush && !hashDirect)
             items = toList(inv);
         // .collate — UCA-ordered sort (the coll infix already implements DUCET;
         // this just wires the method Rakudo exposes on lists)

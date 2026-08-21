@@ -80,6 +80,10 @@ there.)
   cost per run. On top of that each engine pays its *own* process startup —
   negligible for Raku++'s native binary, but Rakudo loads a full precompiled
   runtime, a fixed cost included in every row below. See "How to read this".
+- **Perl 5:** a bench may ship a `.pl` twin (`hashfill` does); the harness then
+  also times `perl` on it — same spawn-and-capture, same byte-identical-output
+  gate — and prints a `perl` column (`—` for rows without a twin). Override the
+  binary with `PERL=`.
 
 ## Results
 
@@ -141,6 +145,38 @@ resolved once at startup; the interpreter gained a matching char-dispatched
 Str/Str fast path at the top of `applyArith` (909.7 → 562.5 ms — the remaining
 gap to Rakudo is per-node tree-walk cost, not operator dispatch).
 [internals/DISPATCH.md](../internals/DISPATCH.md) has the measurements.
+
+### vs Perl 5: the `hashfill` kernel
+
+Perl 5 is the family yardstick for CLI-scale scripting, so one kernel ships as
+a twin pair — [`tools/bench/hashfill.raku`](../../tools/bench/hashfill.raku)
+and [`tools/bench/hashfill.pl`](../../tools/bench/hashfill.pl), the same
+program line for line: fill a 200k-key hash through interpolated string keys
+(`%h{"key$i"} = $i * 2`), sweep `%h.values` into an accumulator, then build a
+string with 50k `~=` appends.
+
+Measured 2026-08-21, all four engines in the same harness run (best of 6,
+startup-inclusive; `/usr/bin/perl` is v5.34):
+
+| engine | hashfill | vs perl |
+|---|---:|---:|
+| Perl 5 | 82.0 ms | — |
+| Raku++ `--exe` | 113.4 ms | 1.4× slower |
+| Raku++ interp | 268.1 ms | 3.3× slower |
+| Rakudo | 405.8 ms | 4.9× slower |
+
+The row exists because this workload was the measured weak spot: before the
+2026-08-21 change, the native binary spent twice perl's CPU time on it (0.15 s
+vs 0.07 s, timing the program directly). Three fixes closed that: `%h.values`
+(and `.keys`/`.kv`/`.pairs`/`.antipairs`) no longer snapshots the whole hash
+into a Pair list it then discards; assigning a freshly built list into an
+`@`-array steals the list's uniquely-owned buffer instead of copying it
+element-wise; and compiled string interpolation emits literal parts as C
+strings instead of constructing a `Value` per part per evaluation. After them
+the native binary's CPU time is at parity with perl (0.08 s vs 0.07 s); the
+remaining wall-clock gap is allocator page traffic from the larger per-value
+footprint, and it widens with scale (at 2M keys the native binary leads perl
+on CPU time, 0.88 s vs 1.12 s, but trails on wall clock).
 
 ### `-O` (the optimizer flag)
 
