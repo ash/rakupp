@@ -1266,7 +1266,29 @@ private:
     void emitTest(bool ok, const std::string& desc, const std::string& directive = "",
                   const std::string& extraDiag = "");
 
+public:
+    // DESTROY protocol. Timely destruction is not guaranteed in Raku — DESTROY
+    // runs when garbage collection notices the object is unreachable. Here the
+    // construction protocol parks every new instance whose class chain declares
+    // a DESTROY submethod in this registry; a sweep finds entries the registry
+    // alone still owns (use_count == 1 ⇔ the program dropped every reference)
+    // and runs their DESTROY chain, child class first. Sweeps run from
+    // `$*VM.request-garbage-collection` and at program end — the two moments
+    // Rakudo's own test suite relies on.
+    void maybeRegisterDestroy(const Value& self);
+    void runPendingDestroys();
+
 private:
+    std::vector<std::shared_ptr<ObjectData>> destroyReg_;
+    std::mutex destroyMu_;
+    bool inDestroySweep_ = false; // a DESTROY that itself requests GC must not recurse
+    // Allocation pressure: registration past this mark triggers a sweep, so a
+    // construct-and-drop loop cannot pile up millions of corpses for one giant
+    // end-of-program sweep (roles-6e.t spins C1.new for five seconds straight).
+    // After each sweep the mark doubles past the surviving live entries, which
+    // keeps the O(live) scan amortized-constant per registration.
+    size_t destroySweepAt_ = 1024;
+
     std::unordered_map<std::string, BuiltinFn> builtins_;
     std::vector<std::shared_ptr<Program>> keptPrograms_; // keep EVAL'd ASTs alive
     // The compilation unit currently EXECUTING its top level (mainline, a

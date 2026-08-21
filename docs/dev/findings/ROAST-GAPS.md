@@ -39,11 +39,15 @@ writing the `examples/` programs) live in [TRIAGE.md](TRIAGE.md).
    is the bottleneck. Closing it needs an amortized-O(1) `shift` (a front-offset
    or deque-backed array store) — a core-representation change deferred to keep
    the v1.1 Unicode work low-risk. It is the sole non-passing S15 file.
-3. **Two files wedge the harness itself** (their killed child becomes
-   uninterruptible): `S04-statements/try.t` (uncaught `ResumeEx` hangs during
-   teardown — the `.resume` control flow needs real support) and
-   `S12-construction/destruction.t` (`await start { loop }` waiting for GC
-   finalization that never comes). Run the suite with these moved aside.
+3. **Two files used to wedge the harness itself** (their killed child became
+   uninterruptible). Both are measured in-run now: `S04-statements/try.t`
+   scores as an ordinary partial (the uncaught-`ResumeEx` teardown hang no
+   longer wedges; `.resume` control flow still needs real support), and
+   `S12-construction/destruction.t` **fully passes** since the DESTROY
+   protocol landed (2026-08-21): instances of classes declaring DESTROY are
+   registered at construction and swept — child class first — when
+   `$*VM.request-garbage-collection` runs, at allocation pressure, and at
+   program end.
 
 ## B. Parser gaps — 334 no-TAP files stop at a parse error
 

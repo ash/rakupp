@@ -719,6 +719,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     }
     if (inv.t == VT::Hash && (inv.hashKind == "Distro" || inv.hashKind == "Kernel" || inv.hashKind == "VM")) {
         std::string name = inv.hash->count("name") ? (*inv.hash)["name"].toStr() : "";
+        // `$*VM.request-garbage-collection` — the one hook Raku offers to ask
+        // for finalization. Runs the pending-DESTROY sweep (see Interpreter.h).
+        if (m == "request-garbage-collection") { runPendingDestroys(); return Value::boolean(true); }
         if (m == "name" || m == "Str" || m == "gist" || m == "auth" || m == "desc") return Value::str(name);
         if (m == "is-win") return Value::boolean(false);
         if (m == "version") return Value::str("0");
@@ -2278,6 +2281,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     }
                     if (Value* build = ci->findMethod("BUILD")) invokeMethod(*build, self, args);
                     if (Value* tweak = ci->findMethod("TWEAK")) invokeMethod(*tweak, self, args);
+                    maybeRegisterDestroy(self);
                     return self;
                 }
                 // A class subclassing a native container (`class A is Array`): the
@@ -2295,6 +2299,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     Value self = Value::object(od);
                     if (Value* build = ci->findMethod("BUILD")) invokeMethod(*build, self, args);
                     if (Value* tweak = ci->findMethod("TWEAK")) invokeMethod(*tweak, self, args);
+                    maybeRegisterDestroy(self);
                     return self;
                 }
                 if (nb == "Array" || nb == "List" || nb == "Hash" || nb == "Map") {
@@ -2312,6 +2317,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     Value self = Value::object(od);
                     if (Value* build = ci->findMethod("BUILD")) invokeMethod(*build, self, args);
                     if (Value* tweak = ci->findMethod("TWEAK")) invokeMethod(*tweak, self, args); // post-BUILD hook
+                    maybeRegisterDestroy(self);
                     return self;
                 }
                 // A class subclassing a scalar built-in with its own `.new` (DateTime,
@@ -2344,6 +2350,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     Value self = Value::object(od);
                     if (Value* build = ci->findMethod("BUILD")) invokeMethod(*build, self, args);
                     if (Value* tweak = ci->findMethod("TWEAK")) invokeMethod(*tweak, self, args);
+                    maybeRegisterDestroy(self);
                     return self;
                 }
                 auto od = std::make_shared<ObjectData>();
@@ -2495,6 +2502,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 // BUILD here matches the common `self.bless(:attr(...))` usage.
                 if (Value* build = ci->findMethod("BUILD")) invokeMethod(*build, self, args);
                 if (Value* tweak = ci->findMethod("TWEAK")) invokeMethod(*tweak, self, args); // post-BUILD hook
+                maybeRegisterDestroy(self);
                 return self;
             }
             // `SubDateTime.now` / `.today` — a type-level method not on the user class

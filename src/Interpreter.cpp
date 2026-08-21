@@ -1637,6 +1637,75 @@ Value rtArrayVal(const Value& v) {
     return a;
 }
 
+// ---- DESTROY protocol ------------------------------------------------------
+// Registration end: the construction protocol calls this on every finished
+// instance. Only a class chain that actually declares DESTROY pays anything —
+// everything else returns before touching the registry.
+void Interpreter::maybeRegisterDestroy(const Value& self) {
+    if (self.t != VT::Object || !self.obj || !self.obj->cls) return;
+    bool has = false;
+    for (ClassInfo* c = self.obj->cls.get(); c && !has; c = c->parent.get()) {
+        if (c->methods.count("DESTROY")) has = true;
+        else for (auto& p : c->extraParents)
+            if (p && p->methods.count("DESTROY")) { has = true; break; }
+    }
+    if (!has) return;
+    bool pressure = false;
+    {
+        std::lock_guard<std::mutex> lk(destroyMu_);
+        destroyReg_.push_back(self.obj);
+        pressure = !inDestroySweep_ && destroyReg_.size() >= destroySweepAt_;
+    }
+    if (pressure) {
+        runPendingDestroys();
+        std::lock_guard<std::mutex> lk(destroyMu_);
+        destroySweepAt_ = std::max<size_t>(1024, destroyReg_.size() * 2);
+    }
+}
+
+// Sweep end: an entry the registry alone still owns (use_count == 1) is an
+// object the program can no longer reach, so its DESTROY chain runs — each
+// class's OWN declaration, child first, parents after: the reverse of BUILD,
+// per S12. A submethod found through the walk is exactly as inherited-proof
+// as BUILD's walk makes it. An exception out of a destructor is swallowed;
+// the object is already dead to the program. DESTROY runs at most once per
+// object: the entry leaves the registry before its destructor is called, and
+// resurrection does not re-register.
+void Interpreter::runPendingDestroys() {
+    std::vector<std::shared_ptr<ObjectData>> dead;
+    {
+        std::lock_guard<std::mutex> lk(destroyMu_);
+        if (inDestroySweep_) return; // a DESTROY that requests GC must not recurse
+        inDestroySweep_ = true;
+        for (auto it = destroyReg_.begin(); it != destroyReg_.end();) {
+            if (it->use_count() == 1) { dead.push_back(std::move(*it)); it = destroyReg_.erase(it); }
+            else ++it;
+        }
+    }
+    for (auto& od : dead) {
+        Value self = Value::object(od);
+        // the class chain child-first: the primary parent line, then any
+        // multiple-inheritance parents' lines, each class visited once
+        std::vector<ClassInfo*> chain, pending{od->cls.get()};
+        while (!pending.empty()) {
+            ClassInfo* c = pending.front(); pending.erase(pending.begin());
+            while (c) {
+                if (std::find(chain.begin(), chain.end(), c) == chain.end()) chain.push_back(c);
+                for (auto& p : c->extraParents) if (p) pending.push_back(p.get());
+                c = c->parent.get();
+            }
+        }
+        for (ClassInfo* c : chain) {
+            auto mi = c->methods.find("DESTROY");
+            if (mi == c->methods.end()) continue;
+            try { invokeMethod(mi->second, self, ValueList{}); }
+            catch (...) {}
+        }
+    }
+    std::lock_guard<std::mutex> lk(destroyMu_);
+    inDestroySweep_ = false;
+}
+
 // Rvalue overload: a freshly built plain List (a method-call result being
 // assigned into an array) whose buffer nothing else shares can hand that
 // buffer over instead of copying it element-wise — `@a = %h.values` on a
@@ -2915,6 +2984,10 @@ int Interpreter::run(Program& prog) {
     };
     // END phasers run in REVERSE source order, on any exit path.
     auto runEnds = [&]() {
+        // Dropped objects get their DESTROY before the ENDs, so an END block
+        // observes destructor effects; objects an END itself releases wait for
+        // a real process exit, like Rakudo's unguaranteed finalization.
+        try { runPendingDestroys(); } catch (...) {}
         // Deferred ENDs (modules, EVAL) first, newest registration first — then
         // the mainline's own, reverse source order. A later-loaded module's
         // cleanup precedes the mainline END that inspects its results.
