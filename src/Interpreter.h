@@ -706,7 +706,7 @@ public:
     // Run a Proxy's STORE for `$proxy = v`. See the definition in Interpreter.cpp.
     Value proxyStore(const Value& proxy, const Value& v);
     // The hash behind `for values %h` — see the definition in Interpreter.cpp.
-    std::shared_ptr<std::map<std::string, Value>> valuesAliasSource(Expr* listExpr);
+    std::shared_ptr<ValueMap> valuesAliasSource(Expr* listExpr);
     // The array behind `for @$x` — likewise; the topic aliases its elements.
     std::shared_ptr<ValueList> derefArrayAlias(Expr* listExpr);
     // The containers behind `for $a, $b, $c` — likewise.
@@ -887,7 +887,7 @@ public:
     // how `EXPORTHOW.WHO.<grammar> = SomeHOW` used to die "Target is not
     // assignable" (WHO built a fresh empty Hash each time). Reads re-sync the
     // package's qualified globals in, so `our`-scoped symbols show up too.
-    std::map<std::string, std::shared_ptr<std::map<std::string, Value>>> pkgStashes_;
+    std::map<std::string, std::shared_ptr<ValueMap>> pkgStashes_;
     std::shared_ptr<ClassInfo> howClsInfo_; // shared class of persistent .HOW metaobjects (see m == "HOW")
     std::unordered_map<std::string, std::string> classAliases_;
     const std::string& resolveClassAlias(const std::string& n) {
@@ -1137,9 +1137,9 @@ public:
     void runReactLoop(const std::shared_ptr<ReactCtx>& ctx); // block until live sources done
     void engageGil();                      // lazily lock the GIL on first async use
     void drainWorkers();
-    void registerWriteHandle(const std::shared_ptr<std::map<std::string, Value>>& h) { openWriteHandles_.push_back(h); }
+    void registerWriteHandle(const std::shared_ptr<ValueMap>& h) { openWriteHandles_.push_back(h); }
     void flushOpenWriteHandles();  // flush any unclosed write handle at program exit
-    std::vector<std::shared_ptr<std::map<std::string, Value>>> openWriteHandles_;
+    std::vector<std::shared_ptr<ValueMap>> openWriteHandles_;
 
     // Per-thread execution registers — current scope, dyn-var chain, gather/supply/
     // make collectors, call depth, package prefix. Held in a `static thread_local`

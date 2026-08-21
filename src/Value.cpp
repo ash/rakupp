@@ -57,7 +57,7 @@ struct ReprDepthGuard {
     bool tooDeep() const { return g_reprDepth > 512; }
 };
 
-std::string dateGist(const std::map<std::string, Value>& h, bool isDate) {
+std::string dateGist(const ValueMap& h, bool isDate) {
     auto f = [&](const char* k) { auto it = h.find(k); return it != h.end() ? it->second.toInt() : 0; };
     char buf[48];
     const char* ys = f("year") > 9999 ? "+" : ""; // ISO 8601: years past 9999 carry a leading +
@@ -443,21 +443,33 @@ std::string Value::toStr() const {
                 hashKind == "Mix" || hashKind == "MixHash") {
                 ReprDepthGuard g; if (g.tooDeep()) return "...";
                 bool isSet = hashKind[0] == 'S';
+                // sorted by key — the deterministic rendering the sorted
+                // payload used to give for free
+                std::vector<const std::pair<const std::string, Value>*> ents;
+                if (hash) { ents.reserve(hash->size()); for (auto& kv : *hash) ents.push_back(&kv); }
+                std::sort(ents.begin(), ents.end(),
+                          [](auto* a, auto* b) { return a->first < b->first; });
                 std::string out; bool first = true;
-                if (hash) for (auto& kv : *hash) {
+                for (auto* kvp : ents) {
                     if (!first) out += " "; first = false;
-                    out += kv.second.pairKey ? kv.second.pairKey->toStr() : kv.first;
-                    if (!isSet && !(kv.second.isNumeric() && kv.second.toNum() == 1.0))
-                        out += "(" + kv.second.gist() + ")";
+                    out += kvp->second.pairKey ? kvp->second.pairKey->toStr() : kvp->first;
+                    if (!isSet && !(kvp->second.isNumeric() && kvp->second.toNum() == 1.0))
+                        out += "(" + kvp->second.gist() + ")";
                 }
                 return out;
             }
             ReprDepthGuard g; if (g.tooDeep()) return "...";
             std::string out;
-            if (hash) { bool first = true;
-                for (auto& kv : *hash) {
+            if (hash) {
+                std::vector<const std::pair<const std::string, Value>*> ents;
+                ents.reserve(hash->size());
+                for (auto& kv : *hash) ents.push_back(&kv);
+                std::sort(ents.begin(), ents.end(),
+                          [](auto* a, auto* b) { return a->first < b->first; });
+                bool first = true;
+                for (auto* kvp : ents) {
                     if (!first) out += "\n"; first = false;
-                    out += kv.first + "\t" + kv.second.toStr();
+                    out += kvp->first + "\t" + kvp->second.toStr();
                 }
             }
             return out;
@@ -680,10 +692,16 @@ std::string Value::gist() const {
             }
             if (hashKind.empty() || hashKind == "Map" || hashKind == "Stash") {
                 ReprDepthGuard g; if (g.tooDeep()) return "{...}";
+                // Sorted by key — the payload iterates in insertion order, but
+                // Hash.gist prints sorted (Rakudo does the same sort here).
+                std::vector<const std::pair<const std::string, Value>*> ents;
+                if (hash) { ents.reserve(hash->size()); for (auto& kv : *hash) ents.push_back(&kv); }
+                std::sort(ents.begin(), ents.end(),
+                          [](auto* a, auto* b) { return a->first < b->first; });
                 std::string body; bool first = true;
-                if (hash) for (auto& kv : *hash) {
+                for (auto* kv : ents) {
                     if (!first) body += ", "; first = false;
-                    body += kv.first + " => " + kv.second.gist();
+                    body += kv->first + " => " + kv->second.gist();
                 }
                 if (hashKind == "Map") return "Map.new((" + body + "))";
                 return "{" + body + "}";
@@ -693,8 +711,15 @@ std::string Value::gist() const {
                 hashKind == "Mix" || hashKind == "MixHash") {
                 ReprDepthGuard g; if (g.tooDeep()) return hashKind + "(...)";
                 bool isSet = hashKind[0] == 'S', isMix = hashKind[0] == 'M';
+                // Sorted by lookup key — the rendering the sorted payload used
+                // to give for free, kept so quanthash gists stay deterministic.
+                std::vector<const std::pair<const std::string, Value>*> ents;
+                if (hash) { ents.reserve(hash->size()); for (auto& kv : *hash) ents.push_back(&kv); }
+                std::sort(ents.begin(), ents.end(),
+                          [](auto* a, auto* b) { return a->first < b->first; });
                 std::string body; bool first = true;
-                if (hash) for (auto& kv : *hash) {
+                for (auto* kvp : ents) {
+                    auto& kv = *kvp;
                     if (!first) body += " "; first = false;
                     // the ELEMENT, not its lookup key — the original value rides in
                     // the count's pairKey for anything that is not a plain Str

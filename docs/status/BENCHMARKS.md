@@ -156,14 +156,24 @@ program line for line: fill a 200k-key hash through interpolated string keys
 string with 50k `~=` appends.
 
 Measured 2026-08-21, all four engines in the same harness run (best of 6,
-startup-inclusive; `/usr/bin/perl` is v5.34):
+startup-inclusive; `/usr/bin/perl` is v5.34), after the `ValueHash` payload
+landed (see below):
 
 | engine | hashfill | vs perl |
 |---|---:|---:|
-| Perl 5 | 82.0 ms | — |
-| Raku++ `--exe` | 113.4 ms | 1.4× slower |
-| Raku++ interp | 268.1 ms | 3.3× slower |
-| Rakudo | 405.8 ms | 4.9× slower |
+| Perl 5 | 76.2 ms | — |
+| Raku++ `--exe` | 84.3 ms | 1.1× slower |
+| Raku++ interp | 234.1 ms | 3.1× slower |
+| Rakudo | 390.3 ms | 5.1× slower |
+
+The `--exe` row was 113.4 ms (1.4× perl) earlier the same day: replacing the
+hash payload's `std::map` with `ValueHash` — an insertion-ordered open hash
+with the key's hash stored, in the perl mold
+([PERL5-TECHNIQUES.md](../dev/findings/PERL5-TECHNIQUES.md)) — took it to
+1.1×, and timing the binaries directly (no spawn overhead) the native binary
+is at parity with perl (0.078 s vs 0.082 s wall, warm). The `hash` kernel
+moved the same way (native 20.5 → 13.1 ms, interp 49.4 → 42.1 ms); the
+non-hash kernels are unchanged within noise.
 
 The row exists because this workload was the measured weak spot: before the
 2026-08-21 change, the native binary spent twice perl's CPU time on it (0.15 s

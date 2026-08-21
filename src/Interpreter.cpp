@@ -9150,7 +9150,7 @@ Value rtIndexAdverb(Value& base, const Value& keyIn, bool isHash, const std::str
 // attribute must be `is rw`; anything else is not assignable.
 Value& Interpreter::accessorRef(Value& base, const std::string& name) {
     if (base.t == VT::Hash && base.hashKind == "FileHandle") {
-        if (!base.hash) base.hash = std::make_shared<std::map<std::string, Value>>();
+        if (!base.hash) base.hash = std::make_shared<ValueMap>();
         return (*base.hash)[name];
     }
     if (base.t == VT::Object && base.obj) {
@@ -12131,11 +12131,11 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
         // `$failure.handled = True` marks it inert — the one writable accessor
         // a Failure has
         if (base->t == VT::Hash && base->hashKind == "Failure" && mc->method == "handled") {
-            if (!base->hash) base->hash = std::make_shared<std::map<std::string, Value>>();
+            if (!base->hash) base->hash = std::make_shared<ValueMap>();
             return &(*base->hash)["handled"];
         }
         if (base->t == VT::Hash && (base->hashKind == "FileHandle" || base->hashKind == "Scheduler")) {
-            if (!base->hash) base->hash = std::make_shared<std::map<std::string, Value>>();
+            if (!base->hash) base->hash = std::make_shared<ValueMap>();
             return &(*base->hash)[mc->method];
         }
         if (base->t == VT::Object && base->obj) {
@@ -12330,7 +12330,7 @@ bool Interpreter::grepFilterKeeps(Expr* pred, const Value& v) {
     return matcherAccepts(*this, v, pv);
 }
 
-std::shared_ptr<std::map<std::string, Value>> Interpreter::valuesAliasSource(Expr* listExpr) {
+std::shared_ptr<ValueMap> Interpreter::valuesAliasSource(Expr* listExpr) {
     if (!listExpr) return nullptr;
     Expr* hashArg = nullptr;
     if (listExpr->kind == NK::Call) {
@@ -13407,7 +13407,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 // ordinary bind rather than letting "not assignable" escape.
                 Value* base = nullptr;
                 try { base = lvalue(ix->base.get()); } catch (RakuError&) { base = nullptr; }
-                std::shared_ptr<std::map<std::string, Value>> h;
+                std::shared_ptr<ValueMap> h;
                 if (base) {
                     Value* real = base;
                     // the base may itself be a bound slot: reach the container it holds
@@ -20194,7 +20194,7 @@ Value Interpreter::evalTempLet(Call* c) {
                                       : tctx_.cur->x().tempRestores;
     auto snap = [](Value v) { // detach container storage so later mutation misses the snapshot
         if (v.t == VT::Array && v.arr) v.arr = std::make_shared<ValueList>(*v.arr);
-        else if (v.t == VT::Hash && v.hash) v.hash = std::make_shared<std::map<std::string, Value>>(*v.hash);
+        else if (v.t == VT::Hash && v.hash) v.hash = std::make_shared<ValueMap>(*v.hash);
         return v;
     };
     // A VarExpr target restores THROUGH its owning Env by name — a raw

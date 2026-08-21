@@ -147,6 +147,63 @@ candidates. Cheap to do incrementally, modest but broad payoff.
 - The **op checker/peephole** infrastructure is worth revisiting only after
   item 3 exists.
 
+## Applied so far (worktree `perl5-techniques`, 2026-08-21)
+
+**Item 6 is implemented**: `src/ValueHash.h` replaces the payload's
+`std::map<std::string, Value>` with a compact insertion-ordered hash — stored
+key hashes, compare-hash-before-bytes, deque-backed append-only entries so
+`Value&` references stay stable across inserts (the contract rtIndexRef
+relies on), tombstone deletes, and a converting constructor so the deliberate
+sorted `std::map` locals keep their semantics. Rendering sites that used to
+get sorted output free from the tree (`Hash.gist`, quanthash gist, `.Str`)
+sort explicitly now — which is also what Rakudo does. Measured (same machine,
+same day, release builds):
+
+| kernel | std::map | ValueHash | |
+|---|---:|---:|---:|
+| hashfill, interp (user) | 0.26 s | 0.21 s | −19% |
+| hashfill, `--exe -O3` (wall, warm) | 0.103 s | **0.078 s** | −24% |
+| 500k lookups on a 100k-key hash, interp (user) | 0.41 s | 0.33 s | −20% |
+| bench `hash` kernel, interp (user) | 0.06 s | 0.04 s | −30% |
+
+perl runs hashfill in 0.082 s wall / 0.07 s user — the native binary is now
+marginally ahead of it on this kernel. Gates: local suite 499/499 including
+the golden outputs, full Roast unchanged (see the run in this worktree's
+history).
+
+The full benchmark sweep, A/B against the pre-swap release build: perf-guard's
+seven interpreter kernels all at or below the old build (fib 731.6→693.8 ms,
+asg 684.9→657.2, hash 48.8→44.2, the rest within noise); the five `-O`
+optbench kernels produce their documented speedup shapes and the one apparent
+outlier (fibcalls) compiles to a byte-equivalent-speed binary under both
+builds — doc-vintage drift, not the container; the parmap parallel kernel is
+flat (211→209 ms at 4 workers); a 300×-scaled grammar JSON parse (Match
+captures are hash-backed) is flat (0.26→0.25 s). The wins stay confined to
+hash-touching paths, with small broad gains where method/attr tables are hot.
+
+The ordering audit the item warned about came to exactly three files.
+`S09-hashes/objecthash.t` lost two assertions that only ever passed by
+coincidence: the typed-object-hash constraints they sit on are unimplemented,
+the hash's *content* is already wrong, and sorted iteration happened to put a
+conforming entry where the test looked. `S02-types/mix.t`/`mixhash.t` exposed
+a real latent bug — `.total` summed fractional weights in a `double`, so its
+rounding depended on iteration order; it now sums exactly through the numeric
+tower (Rat stays Rat, which is also Rakudo's answer), recovering both
+assertions honestly. S32's apparent −1 was run-to-run flap; a direct
+section diff is empty.
+
+Two observations from applying it:
+
+- **String COW already exists here**: `CowStr` in Value.h promotes ≥64-byte
+  strings to a shared immutable body with cached scan state — the "COW"
+  bullet below overstated the gap; what remains is only folding the short
+  inline case into a head/body Value split.
+- A `sample` of the object-construction kernel on the new build puts
+  malloc/free at ~9% — so item 8 (arena pooling) is no longer the cheap next
+  step it looked like; the top remaining costs are `Value` copy/destroy (item
+  1) and method-name string comparison in dispatch (the interning story,
+  docs/book/ch/10-interning.md). Both are the design-doc items.
+
 ## Suggested order
 
 | # | change | payoff | cost | depends on |

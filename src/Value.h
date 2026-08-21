@@ -204,7 +204,9 @@ inline uint32_t u8FirstCp(const std::string& s) {
 // .Str/.gist/.yyyy-mm-dd method arm renders the same thing — it was written out
 // twice, verbatim, including the year>9999 `+` prefix, the ±HH:MM suffix and the
 // fractional-second branch.
-std::string dateGist(const std::map<std::string, Value>& h, bool isDate);
+class ValueHash;              // the hash payload (ValueHash.h, included below
+using ValueMap = ValueHash;   // once Value is complete)
+std::string dateGist(const ValueMap& h, bool isDate);
 
 struct Env;
 class Interpreter;
@@ -325,7 +327,7 @@ struct Value {
     }
 #endif
     std::shared_ptr<ValueList> arr;
-    std::shared_ptr<std::map<std::string, Value>> hash;
+    std::shared_ptr<ValueMap> hash;
     std::shared_ptr<Callable> code;
     std::shared_ptr<Value> pairVal; // for Pair value
     std::shared_ptr<Value> pairKey; // for Pair key when it's non-scalar (e.g. an array key: [..] => [..])
@@ -409,7 +411,7 @@ struct Value {
         v.code->builtin = [fn](Interpreter&, ValueList& a) -> Value { return fn(a); };
         return v;
     }
-    static Value makeHash() { Value v; v.t = VT::Hash; v.hash = std::make_shared<std::map<std::string, Value>>(); return v; }
+    static Value makeHash(); // defined below ValueHash.h's include — the payload type must be complete
     static Value typeObj(std::string name) { Value v; v.t = VT::Type; v.s = std::move(name); return v; }
     static Value whatever() { Value v; v.t = VT::Whatever; return v; }
     static Value object(std::shared_ptr<ObjectData> o) { Value v; v.t = VT::Object; v.obj = std::move(o); return v; }
@@ -424,16 +426,11 @@ struct Value {
     static Value regex(std::string pat, std::string flags = "") {
         Value v; v.t = VT::Regex; v.s = std::move(pat); v.hashKind = std::move(flags); return v;
     }
-    static Value matchVal(std::string text, long from = 0, long to = 0) {
-        Value v; v.t = VT::Match; v.s = std::move(text); v.rFrom = from; v.rTo = to;
-        v.arr = std::make_shared<ValueList>();
-        v.hash = std::make_shared<std::map<std::string, Value>>();
-        return v;
-    }
+    static Value matchVal(std::string text, long from = 0, long to = 0); // defined below ValueHash.h's include
     // Writers use these so the containers stay valid even if matchVal is ever made lazy;
     // with eager allocation above they simply return the existing container.
     ValueList& arrRef() { if (!arr) arr = std::make_shared<ValueList>(); return *arr; }
-    std::map<std::string, Value>& hashRef() { if (!hash) hash = std::make_shared<std::map<std::string, Value>>(); return *hash; }
+    ValueMap& hashRef(); // defined below ValueHash.h's include
     static Value pair(std::string key, Value val) {
         Value v; v.t = VT::Pair; v.s = std::move(key);
         v.pairVal = std::make_shared<Value>(std::move(val)); return v;
@@ -490,6 +487,23 @@ struct Value {
         return 0;
     }
 };
+
+// The hash payload needs the complete Value; Value's own hash-touching
+// factories in turn need the complete payload, so the namespace closes for
+// the include (ValueHash.h opens it itself, plus standard headers) and
+// reopens for the definitions.
+} // namespace rakupp
+#include "ValueHash.h"
+namespace rakupp {
+
+inline Value Value::makeHash() { Value v; v.t = VT::Hash; v.hash = std::make_shared<ValueMap>(); return v; }
+inline Value Value::matchVal(std::string text, long from, long to) {
+    Value v; v.t = VT::Match; v.s = std::move(text); v.rFrom = from; v.rTo = to;
+    v.arr = std::make_shared<ValueList>();
+    v.hash = std::make_shared<ValueMap>();
+    return v;
+}
+inline ValueMap& Value::hashRef() { if (!hash) hash = std::make_shared<ValueMap>(); return *hash; }
 
 // Buf, Instant and Duration are REFERENCE types in Rakudo — two of them are the
 // same one only when they are the same object — but here they are plain tagged
@@ -630,7 +644,7 @@ struct ClassInfo {
     std::string nativeParent; // a built-in parent (`is Str`/`is Cool`/…) that has no user ClassInfo
     std::vector<std::shared_ptr<ClassInfo>> extraParents; // additional `is` parents (multiple inheritance)
     std::vector<ClassAttr> attrs;
-    std::map<std::string, Value> methods; // Code values (closures)
+    ValueMap methods; // Code values (closures)
     std::map<std::string, std::string> rules; // grammar token/rule/regex -> pattern
     std::vector<std::string> ruleOrder; // rule names in DECLARATION order (proto LTM tie-break)
     std::map<std::string, std::string> ruleKind; // name -> "token"/"rule"/"regex"
@@ -733,7 +747,7 @@ struct ClassInfo {
 
 struct ObjectData {
     std::shared_ptr<ClassInfo> cls;
-    std::map<std::string, Value> attrs;
+    ValueMap attrs;
     // For a `but`/`does` mixin over a non-object base (`5 but Role`, `{} does R`):
     // the original value is kept here and the object delegates coercions,
     // operators, and unfound methods to it.

@@ -3586,7 +3586,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     }
     if (m == "clone") { // non-object clone: shallow copy of containers, self for immutables
         if (inv.t == VT::Array) { Value nv = inv; nv.arr = std::make_shared<ValueList>(*inv.arr); return nv; }
-        if (inv.t == VT::Hash)  { Value nv = inv; nv.hash = std::make_shared<std::map<std::string, Value>>(*inv.hash); return nv; }
+        if (inv.t == VT::Hash)  { Value nv = inv; nv.hash = std::make_shared<ValueMap>(*inv.hash); return nv; }
         return inv; // Int/Num/Rat/Str/Bool/… are immutable — clone is the value itself
     }
     // `Metamodel::ClassHOW.new_type(:name, :ver, :auth)` — a class created at
@@ -3658,7 +3658,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     if (m == "WHO") { // package stash — the PERSISTENT one, see pkgStashes_
         std::string pkg = inv.t == VT::Type ? inv.s : inv.typeName();
         auto& stash = pkgStashes_[pkg];
-        if (!stash) stash = std::make_shared<std::map<std::string, Value>>();
+        if (!stash) stash = std::make_shared<ValueMap>();
         if (global_) { // `our`-scoped symbols live as qualified globals; show them
             std::string pre = pkg + "::";
             for (auto& kv : global_->vars)

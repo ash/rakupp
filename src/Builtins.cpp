@@ -3135,7 +3135,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 }
                 // dist/<id> — the meta index (list-installed reads it; buildResourceMap
                 // scans it for `resources/…` → the on-disk resource copy).
-                Value distMeta = metaV; distMeta.hash = std::make_shared<std::map<std::string, Value>>(meta);
+                Value distMeta = metaV; distMeta.hash = std::make_shared<ValueMap>(meta);
                 (*distMeta.hash)["files"] = filesOut;
                 if (provOut.hash && !provOut.hash->empty())
                     (*distMeta.hash)["provides"] = provOut;
@@ -6128,7 +6128,7 @@ Value Interpreter::spawnChannelWhenever(Value chan, Value blk, std::shared_ptr<R
             // react — the last isolation livelock of the P5 wall).
             Value v; bool got = false, fin = false;
             {   std::lock_guard<std::recursive_mutex> lk(Interpreter::atomicStripe(chan.hash.get()));
-                auto qi = chan.hash ? chan.hash->find("queue") : std::map<std::string, Value>::iterator{};
+                auto qi = chan.hash ? chan.hash->find("queue") : ValueMap::iterator{};
                 ValueList* q = chan.hash && qi != chan.hash->end() && qi->second.arr ? qi->second.arr.get() : nullptr;
                 if (!q) fin = true;
                 else if (!q->empty()) { v = q->front(); q->erase(q->begin()); got = true; }
@@ -10472,7 +10472,7 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
             if (v.empty()) return Value::nil();
             Value c = v[0];
             if (c.t == VT::Array && c.arr) { auto na = std::make_shared<ValueList>(*c.arr); c.arr = na; }
-            else if (c.t == VT::Hash && c.hash) { auto nh = std::make_shared<std::map<std::string, Value>>(*c.hash); c.hash = nh; }
+            else if (c.t == VT::Hash && c.hash) { auto nh = std::make_shared<ValueMap>(*c.hash); c.hash = nh; }
             else if (c.t == VT::Object && c.obj) { auto no = std::make_shared<ObjectData>(*c.obj); c.obj = no; }
             return c;
         }
