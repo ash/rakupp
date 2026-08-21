@@ -85,10 +85,10 @@ bool Value::truthy() const {
         case VT::Nil:
         case VT::Any:  return false;
         case VT::Bool: return b;
-        case VT::Int:  return big ? !big->isZero() : i != 0;
+        case VT::Int:  return big() ? !big()->isZero() : i != 0;
         case VT::Num:  return n != 0.0;
-        case VT::Complex: return n != 0.0 || im != 0.0;
-        case VT::Rat:  return ratN && !ratN->isZero();
+        case VT::Complex: return n != 0.0 || im() != 0.0;
+        case VT::Rat:  return ratN() && !ratN()->isZero();
         case VT::Str:  return !s.empty(); // Raku: any non-empty string is true (incl. "0")
         case VT::Array:
             // a Junction collapses by its kind — since comparisons autothread
@@ -140,7 +140,7 @@ bool Value::truthy() const {
 long long Value::toInt() const {
     switch (t) {
         case VT::Bool: return b ? 1 : 0;
-        case VT::Int:  return big ? big->toLL() : i;
+        case VT::Int:  return big() ? big()->toLL() : i;
         case VT::Num:
             // Casting ±Inf/NaN to integer is UB (x86 gives LLONG_MIN for +Inf!) —
             // saturate instead, so `0..Inf` becomes 0..LLONG_MAX and is recognised
@@ -149,7 +149,7 @@ long long Value::toInt() const {
             if (n >= 9223372036854775807.0) return 9223372036854775807LL;
             if (n <= -9223372036854775808.0) return -9223372036854775807LL - 1;
             return (long long)n;
-        case VT::Rat:  { if (!ratN || !ratD || ratD->isZero()) return 0; BigInt q, r; BigInt::divmod(*ratN, *ratD, q, r); return q.toLL(); }
+        case VT::Rat:  { if (!ratN() || !ratD() || ratD()->isZero()) return 0; BigInt q, r; BigInt::divmod(*ratN(), *ratD(), q, r); return q.toLL(); }
         case VT::Str:  {
             // a Blob/Buf numifies to its ELEMENT COUNT (Rakudo: `8 * $msg` is
             // bits, `blob32 $M where $M == 16` counts words), never by parsing
@@ -226,37 +226,37 @@ static double strToNumOr0(const std::string& s) {
 double Value::toNum() const {
     switch (t) {
         case VT::Bool: return b ? 1.0 : 0.0;
-        case VT::Int:  return big ? big->toDouble() : (double)i;
+        case VT::Int:  return big() ? big()->toDouble() : (double)i;
         case VT::Num:  return n;
         case VT::Rat:
-            if (ratN && ratD && ratD->isZero()) // zero-denominator Rat numifies to ±Inf / NaN
-                return ratN->isZero() ? std::numeric_limits<double>::quiet_NaN()
-                     : ratN->sign > 0 ? std::numeric_limits<double>::infinity()
+            if (ratN() && ratD() && ratD()->isZero()) // zero-denominator Rat numifies to ±Inf / NaN
+                return ratN()->isZero() ? std::numeric_limits<double>::quiet_NaN()
+                     : ratN()->sign > 0 ? std::numeric_limits<double>::infinity()
                                       : -std::numeric_limits<double>::infinity();
-            if (ratN && ratD) {
+            if (ratN() && ratD()) {
                 // both parts exactly representable → one division, one rounding
                 auto dblExact = [](const BigInt& b) {
                     return b.mag.size() <= 1 ||
                            (b.fitsLL() && std::llabs(b.toLL()) <= (1LL << 53));
                 };
-                if (!(dblExact(*ratN) && dblExact(*ratD))) {
+                if (!(dblExact(*ratN()) && dblExact(*ratD()))) {
                     // wide parts: separate BigInt→double conversions round TWICE
                     // and drift in the last bits (1e26-digit division printed
                     // …37 where Rakudo has …33). Long-divide to 19 significant
                     // decimal digits and let strtod do the single, correct
                     // rounding. Also covers FatRats too big for double (the
                     // old inf/inf special case).
-                    std::string sn = ratN->abs().toString(), sd = ratD->abs().toString();
+                    std::string sn = ratN()->abs().toString(), sd = ratD()->abs().toString();
                     long long scale = 19 - ((long long)sn.size() - (long long)sd.size());
-                    BigInt num = ratN->abs(), den = ratD->abs(), q, r;
+                    BigInt num = ratN()->abs(), den = ratD()->abs(), q, r;
                     if (scale > 0) num = num * BigInt(10).pow(scale);
                     else if (scale < 0) den = den * BigInt(10).pow(-scale);
                     BigInt::divmod(num, den, q, r);
                     std::string lit = q.toString() + "e" + std::to_string(-scale);
                     double d = cnum::strtod(lit.c_str(), nullptr);
-                    return ratN->sign < 0 ? -d : d;
+                    return ratN()->sign < 0 ? -d : d;
                 }
-                return ratN->toDouble() / ratD->toDouble();
+                return ratN()->toDouble() / ratD()->toDouble();
             }
             return 0.0;
         // `std::stod` THROWS on a non-numeric string, and numifying a string that
@@ -325,18 +325,18 @@ std::string Value::toStr() const {
         case VT::Nil:
         case VT::Any:  return "";
         case VT::Bool: return b ? "True" : "False";
-        case VT::Int:  return big ? big->toString() : std::to_string(i);
+        case VT::Int:  return big() ? big()->toString() : std::to_string(i);
         case VT::Num:  return numToStr(n);
         case VT::Complex: {
             std::string r = numToStr(n);
-            std::string i2 = numToStr(im);
-            return r + (im < 0 || i2[0] == '-' ? "" : "+") + i2 + "i";
+            std::string i2 = numToStr(im());
+            return r + (im() < 0 || i2[0] == '-' ? "" : "+") + i2 + "i";
         }
         case VT::Rat:
-            if (ratN && ratD && ratD->isZero()) // Rakudo dies on Str-coercing a zero-denominator Rat
+            if (ratN() && ratD() && ratD()->isZero()) // Rakudo dies on Str-coercing a zero-denominator Rat
                 throw RakuError{Value::typeObj("X::Numeric::DivideByZero"),
                                 "Attempt to divide by zero when coercing Rational to Str"};
-            return (ratN && ratD) ? ratToStr(*ratN, *ratD) : "0";
+            return (ratN() && ratD()) ? ratToStr(*ratN(), *ratD()) : "0";
         case VT::Str:  return s;
         // IterationEnd is a SENTINEL, not a type object — it stringifies bare.
         //
@@ -359,35 +359,35 @@ std::string Value::toStr() const {
             // with the runaway side written `*` — `(1..Inf).Str` is "1..*" and
             // `(-Inf..0).Str` is "*..0", the same as Rakudo. (The stored endpoint
             // objects keep their own spelling on the finite side: 1.5..*.)
-            if ((rTo >= 9000000000000000000LL || rFrom <= -9000000000000000000LL ||
-                 (rNum && (std::isinf(n) || std::isinf(im)))) && ofType != "Str") {
+            if ((rTo() >= 9000000000000000000LL || rFrom() <= -9000000000000000000LL ||
+                 (rNum() && (std::isinf(n) || std::isinf(im())))) && ofType() != "Str") {
                 const RangeEnds* re = rangeEnds(*this);
                 auto side = [&](bool high) {
-                    bool inf = rNum ? std::isinf(high ? im : n)
-                                    : (high ? rTo >= 9000000000000000000LL
-                                            : rFrom <= -9000000000000000000LL);
+                    bool inf = rNum() ? std::isinf(high ? im() : n)
+                                    : (high ? rTo() >= 9000000000000000000LL
+                                            : rFrom() <= -9000000000000000000LL);
                     if (inf) return std::string("*");
                     if (re) return (high ? re->to : re->from).toStr();
-                    if (rNum) return Value::number(high ? im : n).toStr();
-                    return std::to_string(high ? rTo : rFrom);
+                    if (rNum()) return Value::number(high ? im() : n).toStr();
+                    return std::to_string(high ? rTo() : rFrom());
                 };
-                return side(false) + (rExFrom ? "^" : "") + ".." + (rExTo ? "^" : "") + side(true);
+                return side(false) + (rExFrom() ? "^" : "") + ".." + (rExTo() ? "^" : "") + side(true);
             }
-            if (ofType == "Str") { // Str range: space-join the chars
-                long long lo = rFrom + (rExFrom ? 1 : 0), hi = rTo - (rExTo ? 1 : 0);
+            if (ofType() == "Str") { // Str range: space-join the chars
+                long long lo = rFrom() + (rExFrom() ? 1 : 0), hi = rTo() - (rExTo() ? 1 : 0);
                 std::string out2;
                 for (long long k2 = lo; k2 <= hi; k2++) { if (k2 != lo) out2 += " "; out2 += cpToU8((uint32_t)k2); }
                 return out2;
             }
-            if (rNum) { // fractional: space-join the stepped elements
+            if (rNum()) { // fractional: space-join the stepped elements
                 std::string out2; bool first = true;
-                double lo = n + (rExFrom ? 1.0 : 0.0);
-                for (double x = lo; rExTo ? x < im - 1e-9 : x <= im + 1e-9; x += 1.0) {
+                double lo = n + (rExFrom() ? 1.0 : 0.0);
+                for (double x = lo; rExTo() ? x < im() - 1e-9 : x <= im() + 1e-9; x += 1.0) {
                     if (!first) out2 += " "; first = false; out2 += Value::number(x).toStr();
                 }
                 return out2;
             }
-            long long lo = rFrom + (rExFrom ? 1 : 0), hi = rTo - (rExTo ? 1 : 0);
+            long long lo = rFrom() + (rExFrom() ? 1 : 0), hi = rTo() - (rExTo() ? 1 : 0);
             std::string out2;
             for (long long k2 = lo; k2 <= hi; k2++) { if (k2 != lo) out2 += " "; out2 += std::to_string(k2); }
             return out2;
@@ -452,7 +452,7 @@ std::string Value::toStr() const {
                 std::string out; bool first = true;
                 for (auto* kvp : ents) {
                     if (!first) out += " "; first = false;
-                    out += kvp->second.pairKey ? kvp->second.pairKey->toStr() : kvp->first;
+                    out += kvp->second.pairKey() ? kvp->second.pairKey()->toStr() : kvp->first;
                     if (!isSet && !(kvp->second.isNumeric() && kvp->second.toNum() == 1.0))
                         out += "(" + kvp->second.gist() + ")";
                 }
@@ -532,7 +532,7 @@ std::string Value::gist() const {
             if (s == "IterationEnd") return s;
             // IO::Spec::Unix gists by its SHORT name, `(Unix)` — Rakudo does
             if (s.rfind("IO::Spec::", 0) == 0) return "(" + s.substr(10) + ")";
-            return "(" + (ofType.empty() ? s : s + "[" + ofType + "]") + ")";
+            return "(" + (ofType().empty() ? s : s + "[" + ofType() + "]") + ")";
         // a Regex gists as the literal that makes it, `rx/a/` — not as its bare
         // pattern text (which is what .Str answers, and what the engine consumes)
         case VT::Regex: if (g_rakuRepr) return g_rakuRepr(*this); return s;
@@ -571,8 +571,8 @@ std::string Value::gist() const {
             // rendering (`(1 2) => 3`), and a Pair key is parenthesised so the two
             // arrows do not run together (`(red => 2) => apples`). Only the KEY —
             // Rakudo leaves a Pair VALUE bare.
-            std::string k = pairKey ? pairKey->gist() : s;
-            if (pairKey && pairKey->t == VT::Pair) k = "(" + k + ")";
+            std::string k = pairKey() ? pairKey()->gist() : s;
+            if (pairKey() && pairKey()->t == VT::Pair) k = "(" + k + ")";
             return k + " => " + (pairVal ? pairVal->gist() : "");
         }
         case VT::Str:
@@ -581,7 +581,7 @@ std::string Value::gist() const {
                 // an encoding names its own type (`utf8:0x<…>`); otherwise the
                 // kind plus its element-type parameter
                 std::string h = (!enumName.empty() ? enumName
-                                 : hashKind + (ofType.empty() ? "" : "[" + ofType + "]")) + ":0x<";
+                                 : hashKind + (ofType().empty() ? "" : "[" + ofType() + "]")) + ":0x<";
                 static const char* hx = "0123456789ABCDEF";
                 // one group per ELEMENT, big-endian — a blob32 shows 00000001,
                 // not the four little-endian bytes it is stored as
@@ -597,32 +597,32 @@ std::string Value::gist() const {
             }
             return s;
         case VT::Range: { // gist keeps the endpoint form (Str expands the elements)
-            const char* exF = rExFrom ? "^" : "";
-            const char* exT = rExTo ? "^" : "";
+            const char* exF = rExFrom() ? "^" : "";
+            const char* exT = rExTo() ? "^" : "";
             // `0..^N` renders as `^N` — Rakudo shows the short form for gist AND
             // .raku. It is exactly the Int-zero case: `0.0..^5`, `0..^5e0` and
             // `0..^0.5` all keep the long form, so a non-Int endpoint on either
             // side (rNum, or a stored RangeEnds spelling) falls through below.
             // (an endless `^Inf` is NOT abbreviated: Rakudo gists it 0..^Inf)
-            if (!rExFrom && rExTo && rFrom == 0 && !rNum && ofType != "Str" && !rangeEnds(*this) &&
-                rTo < 9000000000000000000LL) {
-                std::ostringstream os; os << "^" << rTo;
+            if (!rExFrom() && rExTo() && rFrom() == 0 && !rNum() && ofType() != "Str" && !rangeEnds(*this) &&
+                rTo() < 9000000000000000000LL) {
+                std::ostringstream os; os << "^" << rTo();
                 return os.str();
             }
-            if (ofType == "Str")
-                return "\"" + cpToU8((uint32_t)rFrom) + "\"" + exF + ".." + exT + "\"" + cpToU8((uint32_t)rTo) + "\"";
+            if (ofType() == "Str")
+                return "\"" + cpToU8((uint32_t)rFrom()) + "\"" + exF + ".." + exT + "\"" + cpToU8((uint32_t)rTo()) + "\"";
             // endpoints written as something other than plain Ints render as
             // themselves: `1/2 .. 1/3` is 0.5..<1/3>, not 0..0
             if (const RangeEnds* re = rangeEnds(*this))
                 if (g_rakuRepr)
                     return g_rakuRepr(re->from) + exF + ".." + exT + g_rakuRepr(re->to);
-            if (rNum) return Value::number(n).toStr() + exF + ".." + exT + Value::number(im).toStr();
+            if (rNum()) return Value::number(n).toStr() + exF + ".." + exT + Value::number(im()).toStr();
             // an endpoint that ran away is Inf, not the long long it is parked in:
             // `(1..*).gist` is 1..Inf (Rakudo), not 1..9223372036854775807
             std::ostringstream os;
-            if (rFrom <= -9000000000000000000LL) os << "-Inf"; else os << rFrom;
+            if (rFrom() <= -9000000000000000000LL) os << "-Inf"; else os << rFrom();
             os << exF << ".." << exT;
-            if (rTo >= 9000000000000000000LL) os << "Inf"; else os << rTo;
+            if (rTo() >= 9000000000000000000LL) os << "Inf"; else os << rTo();
             return os.str();
         }
         case VT::Hash: {
@@ -723,7 +723,7 @@ std::string Value::gist() const {
                     if (!first) body += " "; first = false;
                     // the ELEMENT, not its lookup key — the original value rides in
                     // the count's pairKey for anything that is not a plain Str
-                    std::string el = kv.second.pairKey ? kv.second.pairKey->gist() : kv.first;
+                    std::string el = kv.second.pairKey() ? kv.second.pairKey()->gist() : kv.first;
                     body += el;
                     // Bag AND Mix: elem(weight), a weight of 1 omitted
                     if (!isSet && !(kv.second.isNumeric() && kv.second.toNum() == 1.0))
@@ -755,7 +755,7 @@ std::string Value::gist() const {
                 if (m.arr) for (size_t k = 0; k < m.arr->size(); k++) add(std::to_string(k), (*m.arr)[k]);
                 if (m.hash) for (auto& kv : *m.hash) add(kv.first, kv.second);
                 std::stable_sort(caps.begin(), caps.end(),
-                                 [](auto& a, auto& b) { return a.second->rFrom < b.second->rFrom; });
+                                 [](auto& a, auto& b) { return a.second->rFrom() < b.second->rFrom(); });
                 std::string pad(d + 1, ' ');
                 for (auto& c : caps)
                     r += "\n" + pad + c.first + " => " +
@@ -806,10 +806,10 @@ std::string Value::typeName() const {
         case VT::Code:  return code && code->isWhateverCode ? "WhateverCode"
                              : code && code->isRegexRoutine ? "Regex"
                              : code && code->isMethod ? "Method" : code && code->isBlock ? "Block" : "Sub";
-        case VT::Rat:   return fatRat ? "FatRat" : "Rat";
+        case VT::Rat:   return fatRat() ? "FatRat" : "Rat";
         case VT::Range: return "Range";
         case VT::Pair:  return "Pair";
-        case VT::Type:  return ofType.empty() ? s : s + "[" + ofType + "]";
+        case VT::Type:  return ofType().empty() ? s : s + "[" + ofType() + "]";
         case VT::Whatever: return b ? "HyperWhatever" : "Whatever"; // `**` marks hyper via .b
         case VT::Object: return obj && obj->cls ? obj->cls->name : "Object";
         case VT::Regex: return "Regex";
@@ -831,7 +831,7 @@ Value Value::blobElemAt(long long idx) const {
     long long w = blobWordAt(idx);
     // only an 8-byte UNSIGNED element can overflow a long long; every narrower
     // width fits, and a signed one is meant to come back negative
-    if (blobElemSize() == 8 && w < 0 && ofType.rfind("uint", 0) == 0) {
+    if (blobElemSize() == 8 && w < 0 && ofType().rfind("uint", 0) == 0) {
         unsigned long long u = (unsigned long long)w;
         std::string dec; // u is at most 20 digits; build it without a BigInt divide
         while (u) { dec += (char)('0' + (int)(u % 10)); u /= 10; }
@@ -860,34 +860,34 @@ ValueList Value::flatten() const {
                 out.push_back(v);
             }
         }
-    } else if (t == VT::Range && rNum) {
+    } else if (t == VT::Range && rNum()) {
         // fractional range: step by 1 from `n`, stopping at `im` (exclusive bounds
         // drop an endpoint that lands exactly on it)
-        double lo = n + (rExFrom ? 1.0 : 0.0), hi = im;
+        double lo = n + (rExFrom() ? 1.0 : 0.0), hi = im();
         // a Rat endpoint yields Rats — stepping by 1 is numerator += denominator,
         // so `1.5 .. 3.5` is (1.5 2.5 3.5) as Rats and not Nums
         const RangeEnds* re = rangeEnds(*this);
-        if (re && re->from.t == VT::Rat && re->from.ratN && re->from.ratD &&
-            !re->from.ratD->isZero()) {
-            BigInt num = *re->from.ratN, den = *re->from.ratD;
-            if (rExFrom) num = num + den;
-            for (double x = lo; rExTo ? x < hi - 1e-9 : x <= hi + 1e-9; x += 1.0) {
+        if (re && re->from.t == VT::Rat && re->from.ratN() && re->from.ratD() &&
+            !re->from.ratD()->isZero()) {
+            BigInt num = *re->from.ratN(), den = *re->from.ratD();
+            if (rExFrom()) num = num + den;
+            for (double x = lo; rExTo() ? x < hi - 1e-9 : x <= hi + 1e-9; x += 1.0) {
                 out.push_back(Value::rat(num, den));
                 num = num + den;
             }
         }
-        else for (double x = lo; rExTo ? x < hi - 1e-9 : x <= hi + 1e-9; x += 1.0)
+        else for (double x = lo; rExTo() ? x < hi - 1e-9 : x <= hi + 1e-9; x += 1.0)
             out.push_back(Value::number(x));
-    } else if (t == VT::Range && ofType == "Str") {
-        long long lo = rFrom + (rExFrom ? 1 : 0);
-        long long hi = rTo - (rExTo ? 1 : 0);
+    } else if (t == VT::Range && ofType() == "Str") {
+        long long lo = rFrom() + (rExFrom() ? 1 : 0);
+        long long hi = rTo() - (rExTo() ? 1 : 0);
         for (long long k = lo; k <= hi; k++) out.push_back(Value::str(cpToU8((uint32_t)k)));
     } else if (t == VT::Range) {
-        long long lo = rFrom + (rExFrom ? 1 : 0);
-        long long hi = rTo - (rExTo ? 1 : 0);
+        long long lo = rFrom() + (rExFrom() ? 1 : 0);
+        long long hi = rTo() - (rExTo() ? 1 : 0);
         // an infinite range (1..* / 1..Inf) yields a bounded prefix instead of
         // hanging — eager consumers that reach it index/scan a finite prefix
-        if (rTo >= 9000000000000000000LL || rFrom <= -9000000000000000000LL) {
+        if (rTo() >= 9000000000000000000LL || rFrom() <= -9000000000000000000LL) {
             if (hi > lo + 9999 || hi < lo) hi = lo + 9999;
         }
         for (long long k = lo; k <= hi; k++) out.push_back(Value::integer(k));
@@ -1080,7 +1080,7 @@ bool valueEq(const Value& a, const Value& b) {
         // exact Int/Int first: as doubles, 2**53 == 2**53+1 (same lesson valueCmp
         // already carries for its big-Int cross-multiply arm)
         if (a.t == VT::Int && b.t == VT::Int) {
-            if (a.big || b.big) return BigInt::cmp(a.toBig(), b.toBig()) == 0;
+            if (a.big() || b.big()) return BigInt::cmp(a.toBig(), b.toBig()) == 0;
             return a.i == b.i;
         }
         return a.toNum() == b.toNum();
@@ -1118,8 +1118,8 @@ int valueCmp(const Value& a, const Value& b) {
     if (a.isNumeric() && b.isNumeric()) {
         // Fast, exact path for native ints (the common case — e.g. sorting 50k
         // integers): compare the int64 fields directly, no double, no allocation.
-        bool aInt = (a.t == VT::Int && !a.big) || a.t == VT::Bool;
-        bool bInt = (b.t == VT::Int && !b.big) || b.t == VT::Bool;
+        bool aInt = (a.t == VT::Int && !a.big()) || a.t == VT::Bool;
+        bool bInt = (b.t == VT::Int && !b.big()) || b.t == VT::Bool;
         if (aInt && bInt) {
             long long x = a.t == VT::Bool ? (a.b ? 1 : 0) : a.i;
             long long y = b.t == VT::Bool ? (b.b ? 1 : 0) : b.i;
@@ -1143,8 +1143,8 @@ int valueCmp(const Value& a, const Value& b) {
     // Compare the TYPED key (pairKey — an Int/Num/… preserved from `1 => 2`),
     // not the stringified `s`: otherwise `12 => …` sorts before `8 => …`.
     if (a.t == VT::Pair && b.t == VT::Pair) {
-        Value ak = a.pairKey ? *a.pairKey : Value::str(a.s);
-        Value bk = b.pairKey ? *b.pairKey : Value::str(b.s);
+        Value ak = a.pairKey() ? *a.pairKey() : Value::str(a.s);
+        Value bk = b.pairKey() ? *b.pairKey() : Value::str(b.s);
         int k = valueCmp(ak, bk);
         if (k != 0) return k;
         Value av = a.pairVal ? *a.pairVal : Value::any();

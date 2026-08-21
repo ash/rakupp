@@ -1989,10 +1989,10 @@ struct Codegen {
             std::string lo = gensym("__lo"), hi = gensym("__hi"), i = gensym("__i");
             line(ind + 1, "Value " + rv + " = rtRangeVal(" + ex(r->from.get()) + ", " + ex(r->to.get()) +
                           ", " + (r->exFrom ? "true" : "false") + ", " + (r->exTo ? "true" : "false") + ");");
-            line(ind + 1, "bool " + isInt + " = (" + rv + ".t == VT::Range && " + rv + ".ofType.empty());");
+            line(ind + 1, "bool " + isInt + " = (" + rv + ".t == VT::Range && " + rv + ".ofType().empty());");
             line(ind + 1, "Value " + lst + "; long long " + lo + ", " + hi + ";");
-            line(ind + 1, "if (" + isInt + ") { " + lo + " = " + rv + ".rFrom + (" + rv + ".rExFrom ? 1 : 0); "
-                                                 + hi + " = " + rv + ".rTo - (" + rv + ".rExTo ? 1 : 0); }");
+            line(ind + 1, "if (" + isInt + ") { " + lo + " = " + rv + ".rFrom() + (" + rv + ".rExFrom() ? 1 : 0); "
+                                                 + hi + " = " + rv + ".rTo() - (" + rv + ".rExTo() ? 1 : 0); }");
             line(ind + 1, "else { " + lst + " = rtArrayVal(" + rv + "); " + lo + " = 0; "
                                     + hi + " = (long long)" + lst + ".arr->size() - 1; }");
             line(ind + 1, "for (long long " + i + " = " + lo + "; " + i + " <= " + hi + "; " + i + "++) {");

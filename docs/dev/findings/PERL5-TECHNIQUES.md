@@ -147,7 +147,23 @@ candidates. Cheap to do incrementally, modest but broad payoff.
 - The **op checker/peephole** infrastructure is worth revisiting only after
   item 3 exists.
 
-## Applied so far (worktree `perl5-techniques`, 2026-08-21)
+## Applied so far
+
+**Item 1's incremental step is implemented (2026-08-22)**: the cold-block
+split from REPRESENTATION-PLAN batch 2 (revised) — `big`, `ratN`, `ratD`,
+`fatRat`, `shape`, `pairKey`, `ext`, `im`, the range fields and `ofType`
+moved behind one lazily-allocated copy-on-write `shared_ptr<ValueExt>`.
+`sizeof(Value)` 344 → **200**; a plain Int/Str/Array Value copies 5
+shared_ptr null-checks and a CowStr instead of 11 shared_ptrs, a std::string
+and ~148 bytes of cold scalars. Every bench kernel improved (sortnums −26%,
+arrayops −20%, hashfill −15%, the rest −3…−13%), JSON::Fast interpreted parse
+−8%, grammar capturing parse −15%, hashfill peak RSS −39%. Zero Roast diff.
+Numbers and gates in
+[REPRESENTATION-PLAN.md](../plans/REPRESENTATION-PLAN.md) batch 2. The full
+24-byte head/body split (and by-value BigInt inside the block) remains open,
+still coupled to the container/binding refactor.
+
+### Item 6 (worktree `perl5-techniques`, 2026-08-21)
 
 **Item 6 is implemented**: `src/ValueHash.h` replaces the payload's
 `std::map<std::string, Value>` with a compact insertion-ordered hash — stored

@@ -1332,7 +1332,7 @@ int main(int argc, char** argv) {
     bool optA = false;                    // -a: autosplit into @F (implies -n)
     bool optL = false;                    // -l: accepted no-op (lines() already
                                           // chomps and -p prints with .say)
-    bool optI = false;                    // -i[.ext]: edit the argument files in place
+    bool optI = false;                    // -i[.ext()]: edit the argument files in place
     std::string backupExt;                // -i.bak — glued only, as in perl
     std::string profileDest;              // --profile[-=FILE]: "-" = stderr table
     std::string fieldSep;                 // -F: separator (implies -a)
@@ -1482,7 +1482,7 @@ int main(int argc, char** argv) {
                         while (j < a.size() && a[j] >= '0' && a[j] <= '7') { v = v * 8 + (a[j] - '0'); j++; }
                         saw0 = v;
                     }
-                    else if (c == 'i') { // -i[.ext]: the REST of the token is the
+                    else if (c == 'i') { // -i[.ext()]: the REST of the token is the
                         // backup extension, exactly as in perl — which is also
                         // perl's famous -pie trap: the 'e' becomes the extension
                         optI = true; backupExt = a.substr(j + 1); j = a.size();

@@ -259,7 +259,7 @@ extern std::function<Value(const Value&)> g_deproxy;
 // NOT applied to =:=, which is container identity: `my $x; $x =:= Any` is
 // False on Rakudo too, and a container is not the object it holds.
 static inline bool isAnyTypeObject(const Value& v) {
-    return v.t == VT::Any || (v.t == VT::Type && v.s == "Any" && v.ofType.empty());
+    return v.t == VT::Any || (v.t == VT::Type && v.s == "Any" && v.ofType().empty());
 }
 
 static bool valueEqv(const Value& a, const Value& b) {
@@ -303,7 +303,7 @@ static bool valueEqv(const Value& a, const Value& b) {
         case VT::Pair:
             // typed keys compare structurally (an object key's rendering now
             // carries its identity, so `$o => 1 eqv Foo.new => 1` needs the key)
-            return (a.pairKey && b.pairKey ? valueEqv(*a.pairKey, *b.pairKey)
+            return (a.pairKey() && b.pairKey() ? valueEqv(*a.pairKey(), *b.pairKey())
                                            : a.s == b.s) &&
                    valueEqv(a.pairVal ? *a.pairVal : Value::any(), b.pairVal ? *b.pairVal : Value::any());
         // structural, like Rakudo's default eqv: same class + eqv attributes
@@ -315,11 +315,11 @@ static bool valueEqv(const Value& a, const Value& b) {
         // its parameterisation, so Array[Int] and Array[Str] are different types.
         case VT::Range:  return whichOf(a) == whichOf(b);
         case VT::Code:   return a.code == b.code;
-        case VT::Type:   return a.s == b.s && a.ofType == b.ofType;
+        case VT::Type:   return a.s == b.s && a.ofType() == b.ofType();
         case VT::Rat: // structural nude compare — .Str on a 0-denominator Rat throws
-            return a.fatRat == b.fatRat &&
-                   a.ratN && b.ratN && a.ratD && b.ratD &&
-                   BigInt::cmp(*a.ratN, *b.ratN) == 0 && BigInt::cmp(*a.ratD, *b.ratD) == 0;
+            return a.fatRat() == b.fatRat() &&
+                   a.ratN() && b.ratN() && a.ratD() && b.ratD() &&
+                   BigInt::cmp(*a.ratN(), *b.ratN()) == 0 && BigInt::cmp(*a.ratD(), *b.ratD()) == 0;
         default: return a.toStr() == b.toStr();
     }
 }
@@ -548,7 +548,7 @@ Value makeShapedContainer(const std::vector<long long>& dims, const std::string&
     else elemDef = Value::typeObj(declType);
     size_t idx = 0;
     std::function<Value(size_t)> mk = [&](size_t lvl) -> Value {
-        Value a = Value::array(); a.ofType = declType;
+        Value a = Value::array(); a.ofTypeM() = declType;
         long long n = lvl < dims.size() ? dims[lvl] : 0;
         for (long long i = 0; i < n; i++) {
             if (lvl + 1 < dims.size()) a.arr->push_back(mk(lvl + 1));
@@ -557,7 +557,7 @@ Value makeShapedContainer(const std::vector<long long>& dims, const std::string&
         return a;
     };
     Value v = mk(0);
-    v.shape = std::make_shared<std::vector<long long>>(dims);
+    v.shapeM() = std::make_shared<std::vector<long long>>(dims);
     return v;
 }
 // Evaluate the dimension list of a shaped-array declaration (`my @a[2;3]` → {2,3}).
@@ -597,7 +597,7 @@ static Value typedDefault(const std::string& type, char sigil) {
          type.rfind("int", 0) == 0 || type.rfind("uint", 0) == 0 ||
          type.rfind("num", 0) == 0 || type == "str" || type == "byte")) {
         Value v = defaultFor(sigil);
-        v.ofType = type;
+        v.ofTypeM() = type;
         return v;
     }
     return defaultFor(sigil);
@@ -622,7 +622,7 @@ static void wrapNative(Value& v, int bits, bool sign, bool isFloat = false) {
     // A value wider than a long long must keep its LOW bits here, not saturate —
     // that is what a native container means. toInt() saturates on purpose for its
     // own callers, so go to the magnitude directly when there is one.
-    unsigned long long u = (v.t == VT::Int && v.big) ? v.big->toU64Wrap()
+    unsigned long long u = (v.t == VT::Int && v.big()) ? v.big()->toU64Wrap()
                                                      : (unsigned long long)v.toInt();
     long long x;
     if (bits < 64) {
@@ -958,7 +958,7 @@ Value Interpreter::rtGather(Value blockClosure) {
         for (size_t i = out.size(); i < grown.size(); i++) out.push_back(grown[i]);
         return more;
     };
-    arr.ext = st;
+    arr.extM() = st;
     return arr;
 }
 
@@ -1170,7 +1170,7 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
                 cache.push_back(next);
                 return true;
             };
-            out.ext = st;
+            out.extM() = st;
             return out;
         }
         // Code endpoint: the first accepted element ends the sequence — check the
@@ -1298,7 +1298,7 @@ Value rtRangeVal(const Value& from, const Value& to, bool exFrom, bool exTo) {
     if (from.t == VT::Str && to.t == VT::Str) {
         if (u8CpLen(from.s) == 1 && u8CpLen(to.s) == 1) {
             Value rr = Value::range(u8FirstCp(from.s), u8FirstCp(to.s), exFrom, exTo);
-            rr.ofType = "Str";
+            rr.ofTypeM() = "Str";
             return rr;
         }
         return strRangeList(from.s, to.s, exFrom, exTo);
@@ -1318,14 +1318,14 @@ Value rtRangeVal(const Value& from, const Value& to, bool exFrom, bool exTo) {
             std::isfinite(from.toNum()) && std::isfinite(to.toNum())) {
             Value rr = Value::range((long long)std::floor(from.toNum()),
                                     (long long)std::floor(to.toNum()), exFrom, exTo);
-            rr.rNum = true; rr.n = from.toNum(); rr.im = to.toNum();
+            rr.rNumM() = true; rr.n = from.toNum(); rr.imM() = to.toNum();
             setRangeEnds(rr, from, to);
             return rr;
         }
     }
     {
         Value r = Value::range(from.toInt(), to.toInt(), exFrom, exTo);
-        if (to.t == VT::Int && to.big) r.big = to.big; // keep the big bound (pick/roll sample it)
+        if (to.t == VT::Int && to.big()) r.bigM() = to.big(); // keep the big bound (pick/roll sample it)
         setRangeEnds(r, from, to);
         return r;
     }
@@ -1548,7 +1548,7 @@ static Value hashToPairs(const Value& v) {
     bool setty = v.hashKind == "Set" || v.hashKind == "SetHash";
     for (auto& kv : *v.hash) {
         Value p = Value::pair(kv.first, setty ? Value::boolean(true) : kv.second);
-        p.pairKey = kv.second.pairKey; // Set/Bag/Mix: recover the element's original type
+        p.pairKeyM() = kv.second.pairKey(); // Set/Bag/Mix: recover the element's original type
         out.arr->push_back(std::move(p));
     }
     return out;
@@ -1568,7 +1568,7 @@ Value rtShapedArray(const ValueList& dims, const std::string& declType) {
 // same code: a shaped store is one of the places where two implementations
 // would be two behaviours.
 void rtShapedStore(Value& lv, const Value& rhs, const std::string& keepType) {
-    auto shp = lv.shape;
+    auto shp = lv.shape();
     if (!shp || shp->empty()) return;
     if (shp->size() == 1) { // 1-dim: flat row fill, reject overflow
         long long cap = (*shp)[0];
@@ -1584,7 +1584,7 @@ void rtShapedStore(Value& lv, const Value& rhs, const std::string& keepType) {
     // identical shape; a nested list may not have MORE than dims[d] elements at
     // any level (a flat list is rejected), but a shortfall is fine — missing
     // slots keep the element default.
-    if (rhs.shape && *rhs.shape != *shp)
+    if (rhs.shape() && *rhs.shape() != *shp)
         throw RakuError{Value::typeObj("X::Assignment::ArrayShapeMismatch"),
             "Cannot assign an array of a different shape"};
     Value built = makeShapedContainer(*shp, keepType); // all defaults
@@ -1610,7 +1610,7 @@ void rtShapedStore(Value& lv, const Value& rhs, const std::string& keepType) {
 // showed the block to be finite. An unbounded source stays lazy, as it does
 // under Rakudo, where an Array may be lazy too.
 static Value reifyIfFinite(const Value& v) {
-    auto st = std::static_pointer_cast<LazySeqState>(v.ext);
+    auto st = std::static_pointer_cast<LazySeqState>(v.ext());
     if (!st->gatherSeq) return v;
     forceLazy(v);
     if (!st->exhausted) return v;
@@ -1622,7 +1622,7 @@ Value rtArrayVal(const Value& v) {
     if (v.t == VT::Hash && v.hash && v.itemized) { Value a = Value::array(); a.arr->push_back(v); return a; }
     if (v.t == VT::Hash && v.hash) return hashToPairs(v);
     if (v.t == VT::Array && v.arr) {
-        if (v.ext) return reifyIfFinite(v); // a lazy seq stays lazy; a finite gather does not
+        if (v.ext()) return reifyIfFinite(v); // a lazy seq stays lazy; a finite gather does not
         // a shaped source contributes its LEAVES, as it does in coerceArray —
         // these two must agree, or a program means one thing interpreted and
         // another compiled
@@ -1713,8 +1713,8 @@ void Interpreter::runPendingDestroys() {
 // Slip to splice, a lazy tail, shape, or a shared buffer takes the copying
 // path, whose semantics stay authoritative.
 Value rtArrayVal(Value&& v) {
-    if (v.t == VT::Array && v.arr && v.isList && !v.ext && !v.itemized &&
-        !(v.shape && !v.shape->empty()) && v.arr.use_count() == 1) {
+    if (v.t == VT::Array && v.arr && v.isList && !v.ext() && !v.itemized &&
+        !(v.shape() && !v.shape()->empty()) && v.arr.use_count() == 1) {
         for (auto& it : *v.arr)
             if (it.t == VT::Array && it.arr && it.s == "Slip")
                 return rtArrayVal(static_cast<const Value&>(v));
@@ -1737,7 +1737,7 @@ static Value coerceArray(const Value& v) {
         if (v.itemized) { // an itemized Array is ONE element: `my @row = @m[0]` is [[...],]
             Value r = Value::array(); r.arr->push_back(v); return r;
         }
-        if (v.ext) return reifyIfFinite(v); // a lazy seq stays lazy; a finite gather does not
+        if (v.ext()) return reifyIfFinite(v); // a lazy seq stays lazy; a finite gather does not
         // A shaped array STORED into an unshaped one contributes its leaves:
         // `my @flat = @a[3;2]` is six elements, and so is a `@a is copy`
         // parameter. (Plain binding — `sub f(@a)` — does not come through here,
@@ -1749,13 +1749,13 @@ static Value coerceArray(const Value& v) {
         Value r = Value::array(*v.arr); r.isList = false; return r;
     }
     if (v.t == VT::Range) {
-        if (v.rTo >= 9000000000000000000LL) { // …..Inf : a lazy @-array, materialised on demand
-            long long start = v.rFrom + (v.rExFrom ? 1 : 0);
+        if (v.rTo() >= 9000000000000000000LL) { // …..Inf : a lazy @-array, materialised on demand
+            long long start = v.rFrom() + (v.rExFrom() ? 1 : 0);
             Value a = Value::array(); a.isList = false;
             auto st = std::make_shared<LazySeqState>(); st->infinite = true;
             auto next = std::make_shared<long long>(start);
             st->appendNext = [next](ValueList& cache) -> bool { cache.push_back(Value::integer((*next)++)); return true; };
-            a.ext = st;
+            a.extM() = st;
             return a;
         }
         return Value::array(v.flatten());
@@ -2416,7 +2416,7 @@ Value Interpreter::spawnPromise(Value code, Value threadVal) {
     auto ps = std::make_shared<PromiseState>();
     Value p = Value::makeHash(); p.hashKind = "Promise";
     (*p.hash)["status"] = Value::str("Planned");
-    p.ext = ps;
+    p.extM() = ps;
     Interpreter* self = this;
     if (parallelMode_) {
         // True-parallel worker: runs interpreter compute concurrently with the main
@@ -2513,7 +2513,7 @@ Value Interpreter::cueJob(Value code, double delaySecs, double everySecs, long l
     engageGil();
     auto cs = std::make_shared<CueState>();
     Value cancellation = Value::makeHash(); cancellation.hashKind = "Cancellation";
-    cancellation.ext = cs;
+    cancellation.extM() = cs;
     cuedLoads_++;
     liveWorkers_++;
     auto fin = std::make_shared<std::atomic<bool>>(false);
@@ -7096,9 +7096,9 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                         scope->vars.clear(); // reuse buckets, drop last iteration's bindings
                     }
                 };
-                if (listv.t == VT::Range && !listv.rNum && listv.ofType != "Str") {
-                    long long lo = listv.rFrom + (listv.rExFrom ? 1 : 0);
-                    long long hi = listv.rTo - (listv.rExTo ? 1 : 0);
+                if (listv.t == VT::Range && !listv.rNum() && listv.ofType() != "Str") {
+                    long long lo = listv.rFrom() + (listv.rExFrom() ? 1 : 0);
+                    long long hi = listv.rTo() - (listv.rExTo() ? 1 : 0);
                     for (long long k = lo; k <= hi; k++) {
                         freshScope();
                         scope->define(var, Value::integer(k));
@@ -7558,7 +7558,7 @@ int paramNatSpec(const Param& p) {
 // every bind: the first comparison is false for every ordinary value, so only
 // an actual type object ever reaches the string compare.
 static inline bool isMuTypeObject(const Value& v) {
-    return v.t == VT::Type && v.s == "Mu" && v.ofType.empty();
+    return v.t == VT::Type && v.s == "Mu" && v.ofType().empty();
 }
 
 void Interpreter::typeCheckBind(const Param& p, const Value& v, bool blockParam) {
@@ -7830,7 +7830,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                 Value bv = it->second;
                 if (p.sigil == '@') {
                     if (bv.t == VT::Array && bv.itemized) { Value u = bv; u.itemized = false; bv = coerceArray(u); }
-                    else if (bv.t == VT::Array && !p.isCopy && !bv.isList && !bv.ext) { /* bind: share */ }
+                    else if (bv.t == VT::Array && !p.isCopy && !bv.isList && !bv.ext()) { /* bind: share */ }
                     else bv = coerceArray(bv);
                 }
                 else if (p.sigil == '%') {
@@ -7873,7 +7873,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                        wrap the type in a one-element array (JSON::Unmarshal) */
                 }
                 else if (v.t == VT::Array && v.itemized) { Value u = v; u.itemized = false; v = coerceArray(u); }
-                else if (v.t == VT::Array && !p.isCopy && !v.isList && !v.ext) { /* bind: share the buffer */ }
+                else if (v.t == VT::Array && !p.isCopy && !v.isList && !v.ext()) { /* bind: share the buffer */ }
                 else v = coerceArray(v);
             }
             else if (p.sigil == '%') {
@@ -8153,7 +8153,7 @@ static bool typeMatchesArg(const Value& arg, const std::string& type) {
         // a negative one does not, and neither does a Rat (see the VT::Rat arm,
         // which deliberately omits it). It was missing here entirely, so any
         // `UInt $x` parameter rejected every Int it was handed: rakupp#11.
-        case VT::Int:  if (type == "UInt") return !(arg.big ? arg.big->sign < 0 : arg.i < 0);
+        case VT::Int:  if (type == "UInt") return !(arg.big() ? arg.big()->sign < 0 : arg.i < 0);
                        return type == "Int" || type == "Cool" || type == "Numeric" || type == "Real" || natIntTypes.count(type) > 0;
         case VT::Num:  return type == "Num" || type == "Cool" || type == "Numeric" || type == "Real" || natNumTypes.count(type) > 0;
         case VT::Complex: return type == "Complex" || type == "Cool" || type == "Numeric";
@@ -8229,7 +8229,7 @@ static bool typeMatchesArg(const Value& arg, const std::string& type) {
         // when one of the two names is not a type we know — an unregistered user
         // type must not be dispatched away on our ignorance.
         case VT::Type: {
-            if (typeNameConforms(arg.s, type, arg.ofType, std::string())) return true;
+            if (typeNameConforms(arg.s, type, arg.ofType(), std::string())) return true;
             std::string ln = arg.s;
             size_t br = ln.find('['); if (br != std::string::npos) ln = ln.substr(0, br);
             auto known = [](const std::string& n) {
@@ -8255,7 +8255,7 @@ bool Interpreter::subsetMatches(const std::string& name, const Value& v, int dep
     thread_local std::map<std::string, bool> typeSubsetCache;
     std::string cacheKey;
     if (v.t == VT::Type) {
-        cacheKey = name + "|" + v.s + "[" + v.ofType + "]";
+        cacheKey = name + "|" + v.s + "[" + v.ofType() + "]";
         auto ci = typeSubsetCache.find(cacheKey);
         if (ci != typeSubsetCache.end()) return ci->second;
     }
@@ -8474,7 +8474,7 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args) {
             // matching typed container (my Int @a) dispatches, as in Rakudo
             const Value& av = pos[i];
             if (p->sigil == '@' ? av.t != VT::Array : av.t != VT::Hash) return -1;
-            if (av.ofType != p->type) return -1;
+            if (av.ofType() != p->type) return -1;
             score += 10;
         }
         // A bare `@a` / `%h` parameter IS a type constraint: the sigil means
@@ -8921,8 +8921,8 @@ long long nowMicros() {
 }
 
 static void forceLazyImpl(const Value& v) {
-    if (!v.ext || !v.arr) return;
-    auto st = std::static_pointer_cast<LazySeqState>(v.ext);
+    if (!v.ext() || !v.arr) return;
+    auto st = std::static_pointer_cast<LazySeqState>(v.ext());
     if (st->infinite || !g_cbInterp) return;
     // A gather that outgrew its probe may be finite or unbounded, and the only
     // way to find out is to ask for more. Ask ONCE per sequence: an unbounded
@@ -8938,8 +8938,8 @@ static void forceLazyImpl(const Value& v) {
 }
 static const bool g_forceLazyInstalled = ((g_forceLazy = &forceLazyImpl), true);
 void Interpreter::materializeLazy(const Value& v, size_t n) {
-    if (!v.ext || !v.arr) return;
-    auto st = std::static_pointer_cast<LazySeqState>(v.ext);
+    if (!v.ext() || !v.arr) return;
+    auto st = std::static_pointer_cast<LazySeqState>(v.ext());
     if (!st->appendNext) return;
     const size_t CAP = 1000000;
     while (v.arr->size() < n && v.arr->size() < CAP)
@@ -8968,8 +8968,8 @@ void Interpreter::assignChecked(Expr* target, Value v) {
 }
 
 void Interpreter::drainIfFiniteLazy(const Value& v) {
-    if (v.t == VT::Array && v.arr && v.ext &&
-        !std::static_pointer_cast<LazySeqState>(v.ext)->infinite)
+    if (v.t == VT::Array && v.arr && v.ext() &&
+        !std::static_pointer_cast<LazySeqState>(v.ext())->infinite)
         materializeLazy(v, 1000000);
 }
 
@@ -8981,7 +8981,7 @@ Value Interpreter::idxW(const Value& base, Value key, bool isHash) {
     if (base.t == VT::Object && base.obj && base.obj->hasBoxed)
         return idxW(base.obj->boxed, std::move(key), isHash);
     // @a[*-1] / @a[*] against an infinite lazy array can't know the end
-    if (base.t == VT::Array && base.ext && std::static_pointer_cast<LazySeqState>(base.ext)->infinite
+    if (base.t == VT::Array && base.ext() && std::static_pointer_cast<LazySeqState>(base.ext())->infinite
         && (key.t == VT::Whatever || (key.t == VT::Code && key.code && key.code->isWhateverCode)))
         throw RakuError{Value::typeObj("X::Cannot::Lazy"), "Cannot use a Whatever index on an infinite list"};
     long long n = (base.t == VT::Array && base.arr) ? (long long)base.arr->size()
@@ -9343,8 +9343,8 @@ int Interpreter::runCompiledMain(Value (*fn)(ValueList&)) {
 // The default value for a missing element of a (possibly typed) container:
 // a typed container answers its element type object, else Nil.
 static Value typedElemDefault(const Value& base) {
-    if (base.ofType.empty()) return Value::nil();
-    std::string first = base.ofType.substr(0, base.ofType.find(','));
+    if (base.ofType().empty()) return Value::nil();
+    std::string first = base.ofType().substr(0, base.ofType().find(','));
     if (first.empty()) return Value::nil();
     if (ascii::isupper((unsigned char)first[0])) return Value::typeObj(first);
     // native element types are zero-initialized (my int @a — gaps read as 0)
@@ -9361,7 +9361,7 @@ static Value typedElemDefault(const Value& base) {
 static Value nilElemDefault(const Value& v, const Value& container) {
     if (v.t != VT::Nil) return v;
     if (container.pairVal) return *container.pairVal;
-    if (!container.ofType.empty()) return typedElemDefault(container);
+    if (!container.ofType().empty()) return typedElemDefault(container);
     return Value::any();
 }
 static Value arrayMissingDefault(const Value& base) {
@@ -9385,19 +9385,19 @@ Value rtIndexGet(const Value& base, const Value& key, bool isHash) {
         return typedElemDefault(base);
     }
     if (base.t == VT::Range) {
-        if (base.rTo >= 9000000000000000000LL) { // infinite range: index directly, don't materialise
+        if (base.rTo() >= 9000000000000000000LL) { // infinite range: index directly, don't materialise
             long long i = key.toInt(); if (i < 0) return Value::nil();
-            return Value::integer(base.rFrom + (base.rExFrom ? 1 : 0) + i);
+            return Value::integer(base.rFrom() + (base.rExFrom() ? 1 : 0) + i);
         }
         ValueList f = base.flatten();
         long long i = key.toInt(); if (i < 0) i += (long long)f.size();
         if (i >= 0 && i < (long long)f.size()) return f[i];
         return Value::nil();
     }
-    if (base.t == VT::Array && base.arr && base.ext) { // lazy seq: force elements up to i
+    if (base.t == VT::Array && base.arr && base.ext()) { // lazy seq: force elements up to i
         long long i = key.toInt();
         if (i >= 0) {
-            auto st = std::static_pointer_cast<LazySeqState>(base.ext);
+            auto st = std::static_pointer_cast<LazySeqState>(base.ext());
             const size_t CAP = 1000000;
             if (st->appendNext)
                 while ((long long)base.arr->size() <= i && base.arr->size() < CAP && st->appendNext(*base.arr)) {}
@@ -9422,7 +9422,7 @@ Value rtIndexGet(const Value& base, const Value& key, bool isHash) {
             const Value& v = (*base.arr)[i];
             // a deleted slot (undefined hole) in a typed/defaulted array reads as the default
             if (base.t == VT::Array && (v.t == VT::Nil || v.t == VT::Any) &&
-                (base.pairVal || !base.ofType.empty()))
+                (base.pairVal || !base.ofType().empty()))
                 return arrayMissingDefault(base);
             return v;
         }
@@ -9603,7 +9603,7 @@ Value& rtIndexRef(Value& base, const Value& key, bool isHash) {
     if (i < 0) i += n;
     if (i < 0) i = 0;
     if (i >= (long long)base.arr->size())
-        base.arr->resize(i + 1, base.ofType.empty() ? Value::any() : typedElemDefault(base));
+        base.arr->resize(i + 1, base.ofType().empty() ? Value::any() : typedElemDefault(base));
     return (*base.arr)[i];
 }
 
@@ -11805,7 +11805,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                 init = makeShapedContainer(evalShapeDims(ve->declShape.get()), ve->declType);
             if (!ve->containerIs.empty() && sigil == '%') { // my %h is Set — an empty Setty
                 init = makeBaggy({}, ve->containerIs);
-                init.ofType = ve->containerOf; // `is Bag[Int]` keys on Int
+                init.ofTypeM() = ve->containerOf; // `is Bag[Int]` keys on Int
             }
             if (ve->declDefault) { // `is default(v)`: initial AND reset value
                 Value dv = eval(ve->declDefault.get());
@@ -11932,7 +11932,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             auto* dims = static_cast<ListExpr*>(idx->index.get());
             Value* node = base;
             bool hashy = idx->isHash;
-            auto shape = base->shape; // fixed-dimension array bounds (if any)
+            auto shape = base->shape(); // fixed-dimension array bounds (if any)
             size_t d = 0;
             for (auto& de : dims->items) {
                 if (hashy || node->t == VT::Hash) {
@@ -11955,7 +11955,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                         std::to_string(d) + " (0.." + std::to_string((*shape)[d] - 1) + ")"};
                 if (i < 0) i = 0;
                 while ((long long)node->arr->size() <= i)
-                    node->arr->push_back(node->ofType.empty() ? Value::any() : typedElemDefault(*node));
+                    node->arr->push_back(node->ofType().empty() ? Value::any() : typedElemDefault(*node));
                 node = &(*node->arr)[i];
                 d++;
             }
@@ -12054,7 +12054,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             if (i < 0) i += (long long)base->arr->size();
             if (i < 0) i = 0;
             while ((long long)base->arr->size() <= i)
-                base->arr->push_back(base->ofType.empty() ? Value::any() : typedElemDefault(*base));
+                base->arr->push_back(base->ofType().empty() ? Value::any() : typedElemDefault(*base));
             return &(*base->arr)[i];
         }
     }
@@ -12259,7 +12259,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r);
 static Value regexClosingOver(std::string pat, const std::shared_ptr<Env>& sc) {
     Value v = Value::regex(std::move(pat));
     if (sc && (v.s.find('$') != std::string::npos || v.s.find('@') != std::string::npos))
-        v.ext = std::static_pointer_cast<void>(sc);
+        v.extM() = std::static_pointer_cast<void>(sc);
     return v;
 }
 
@@ -12967,8 +12967,8 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                         Value v = k2 < vs.size() ? vs[k2] : Value::integer(0);
                         size_t need = (size_t)(j + 1) * (size_t)w;
                         if (bp->s.size() < need) bp->s.resize(need, '\0');
-                        unsigned long long x2 = (v.t == VT::Int && v.big)
-                            ? v.big->toU64Wrap() : (unsigned long long)v.toInt();
+                        unsigned long long x2 = (v.t == VT::Int && v.big())
+                            ? v.big()->toU64Wrap() : (unsigned long long)v.toInt();
                         for (int b = 0; b < w; b++)
                             bp->s.mut()[(size_t)j * w + b] = (char)(unsigned char)((x2 >> (8 * b)) & 0xFF);
                     }
@@ -12984,8 +12984,8 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 // writing past the end grows with zeroed elements, as Rakudo does
                 size_t need = (size_t)(i + 1) * w;
                 if (bp->s.size() < need) bp->s.resize(need, '\0');
-                unsigned long long x = (rhs.t == VT::Int && rhs.big)
-                    ? rhs.big->toU64Wrap() : (unsigned long long)rhs.toInt();
+                unsigned long long x = (rhs.t == VT::Int && rhs.big())
+                    ? rhs.big()->toU64Wrap() : (unsigned long long)rhs.toInt();
                 for (int k = 0; k < w; k++)               // little-endian, truncating
                     bp->s.mut()[(size_t)i * w + k] = (char)(unsigned char)((x >> (8 * k)) & 0xFF);
                 rwWriteThrough(idx->base.get());
@@ -13296,7 +13296,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                                 Value v = i < vs.size() ? vs[i] : Value::integer(0);
                                 size_t need = (size_t)(j + 1) * (size_t)esz;
                                 if (bp->s.size() < need) bp->s.resize(need, '\0');
-                                unsigned long long w = v.big ? v.big->toU64Wrap()
+                                unsigned long long w = v.big() ? v.big()->toU64Wrap()
                                                              : (unsigned long long)v.toInt();
                                 for (int b = 0; b < esz; b++)
                                     bp->s.mut()[(size_t)j * esz + b] = (char)((w >> (8 * b)) & 0xFF);
@@ -13514,13 +13514,13 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         }
         int nb = lv->natBits; bool ns = lv->natSigned; bool nf = lv->natFloat; // native-int container: preserve width & wrap
         if (sigil == '@') {
-            std::string keepType = lv->ofType; // the container keeps its element type
+            std::string keepType = lv->ofType(); // the container keeps its element type
             // …and its ELEMENT DEFAULT: `my @a is default(9) = 1,2` still answers
             // 9 for an unassigned slot (assignment refills, it does not redeclare)
             auto keepDefault = lv->pairVal;
             // Shaped array assignment (`my @a[2;2] = …`) — the same routine the
             // native backend calls, so a shaped store means one thing in both.
-            if (a->op == "=" && lv->shape && !lv->shape->empty()) {
+            if (a->op == "=" && lv->shape() && !lv->shape()->empty()) {
                 rtShapedStore(*lv, rhs, keepType);
                 return rhs;
             }
@@ -13557,7 +13557,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             else {
                 Value nv = coerceArray(rhs);
                 if (nv.arr) { // each element enters a container: Nil resets
-                    Value proto; proto.ofType = keepType; proto.pairVal = keepDefault;
+                    Value proto; proto.ofTypeM() = keepType; proto.pairVal = keepDefault;
                     for (auto& el : *nv.arr) el = nilElemDefault(el, proto);
                 }
                 // `=` REFILLS the same container (Raku identity): anything bound
@@ -13576,7 +13576,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 }
                 *lv = nv;
             }
-            if (!keepType.empty() && lv->ofType.empty()) lv->ofType = keepType;
+            if (!keepType.empty() && lv->ofType().empty()) lv->ofTypeM() = keepType;
             if (keepDefault && !lv->pairVal) lv->pairVal = keepDefault;
         }
         else if (sigil == '%') {
@@ -13587,25 +13587,25 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             if (a->op == ":=" && rhs.t == VT::Hash && rhs.hash) { *lv = rhs; return sink ? Value::any() : *lv; }
             static const std::set<std::string> setty = {
                 "Set", "SetHash", "Bag", "BagHash", "Mix", "MixHash"};
-            std::string keepType = lv->ofType; // typed container: `my Int %h` keeps Int
+            std::string keepType = lv->ofType(); // typed container: `my Int %h` keeps Int
             auto keepDefault = lv->pairVal;    // …and its `is default(…)` element default
             if (lv->t == VT::Hash && setty.count(lv->hashKind)) { // my %h is Set = 1,2,3
                 // Set/Bag/Mix are immutable — only the initial (empty) fill assigns
                 if (lv->hash && !lv->hash->empty() &&
                     (lv->hashKind == "Set" || lv->hashKind == "Bag" || lv->hashKind == "Mix"))
                     throwImmutable(*lv);
-                std::string keyT = lv->ofType;
+                std::string keyT = lv->ofType();
                 Value nh = makeBaggy(rhs.flatten(), lv->hashKind);
                 if (!keyT.empty() && nh.hash) // parameterized: keys must match `is Bag[Int]`
                     for (auto& kv : *nh.hash) {
-                        Value orig = kv.second.pairKey ? *kv.second.pairKey : Value::str(kv.first);
+                        Value orig = kv.second.pairKey() ? *kv.second.pairKey() : Value::str(kv.first);
                         if (!typeOrSubsetMatches(orig, keyT))
                             throw RakuError{Value::typeObj("X::TypeCheck::Binding"),
                                 "Type check failed for " + lv->hashKind + " key; expected " +
                                 keyT + " but got " + orig.gist()};
                     }
                 *lv = nh;
-                lv->ofType = keyT;
+                lv->ofTypeM() = keyT;
             }
             else {
                 // `=` STORES (a Set's pairs land in a plain Hash); `:=` BINDS the
@@ -13617,7 +13617,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 }
                 *lv = nv;
             }
-            if (!keepType.empty() && lv->ofType.empty()) lv->ofType = keepType;
+            if (!keepType.empty() && lv->ofType().empty()) lv->ofTypeM() = keepType;
             if (keepDefault && !lv->pairVal) lv->pairVal = keepDefault;
         }
         else if (rhs.t == VT::Nil && a->op == "=" && a->target->kind == NK::Index) {
@@ -13627,7 +13627,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             auto* ix = static_cast<Index*>(a->target.get());
             Value* bp = ix->base->kind == NK::VarExpr ? lvalue(ix->base.get()) : nullptr;
             if (bp && bp->pairVal) *lv = *bp->pairVal;          // `is default(…)`
-            else if (bp && !bp->ofType.empty()) *lv = typedElemDefault(*bp);
+            else if (bp && !bp->ofType().empty()) *lv = typedElemDefault(*bp);
             else *lv = Value::any();
         }
         else if (rhs.t == VT::Nil && a->op == "=" && a->target->kind == NK::VarExpr) {
@@ -13814,7 +13814,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                     if (bp->s.size() < need) bp->s.resize(need, '\0');
                     Value cur = bp->blobElemAt(i);
                     Value nv = applyBinOp(binop, cur, rhsB);
-                    unsigned long long w = nv.big ? nv.big->toU64Wrap() : (unsigned long long)nv.toInt();
+                    unsigned long long w = nv.big() ? nv.big()->toU64Wrap() : (unsigned long long)nv.toInt();
                     for (int b = 0; b < esz; b++)
                         bp->s.mut()[(size_t)i * esz + b] = (char)((w >> (8 * b)) & 0xFF);
                     return sink ? Value::any() : bp->blobElemAt(i);
@@ -13890,7 +13890,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             lv->s += rhs.s;
             lv->hashKind = "Buf";
             identify(*lv); // `$b ~= …` is `$b = $b ~ …` — a NEW Buf in the variable
-            if (lv->ofType.empty()) lv->ofType = rhs.ofType;
+            if (lv->ofType().empty()) lv->ofTypeM() = rhs.ofType();
             return sink ? Value::any() : *lv;
         }
         bool asciiRhs = true;
@@ -13940,9 +13940,9 @@ static int settyTier(const Value& v) {
     return 0;
 }
 static bool lazySetOperand(const Value& v) {
-    if (v.t == VT::Range && v.rTo >= 9000000000000000000LL) return true;
-    if (v.t == VT::Array && v.ext)
-        return std::static_pointer_cast<LazySeqState>(v.ext)->infinite;
+    if (v.t == VT::Range && v.rTo() >= 9000000000000000000LL) return true;
+    if (v.t == VT::Array && v.ext())
+        return std::static_pointer_cast<LazySeqState>(v.ext())->infinite;
     return false;
 }
 // An unhandled Failure operand detonates when a set operator uses it.
@@ -13972,7 +13972,7 @@ static std::map<std::string, double> setWeights(const Value& v, int tier) {
             if (tier == 2 ? w == 0 : w <= 0) continue;
             // an operand that is ALREADY a quanthash carries its elements in the
             // counts' pairKey; forward them so the result can render them too
-            if (kv.second.pairKey) setRep(kv.first, *kv.second.pairKey);
+            if (kv.second.pairKey()) setRep(kv.first, *kv.second.pairKey());
             m[kv.first] += w;
         }
     } else if (v.t == VT::Array || v.t == VT::Range) {
@@ -14037,7 +14037,7 @@ static Value setWrap(const std::map<std::string, double>& res, int tier) {
             // a plain Str keys on its own content and needs no carried element
             const Value& e = rp->second;
             if (!(e.t == VT::Str && e.hashKind.empty() && e.enumName.empty() && !e.isAllomorph()))
-                cnt.pairKey = std::make_shared<Value>(e);
+                cnt.pairKeyM() = std::make_shared<Value>(e);
         }
         (*h.hash)[kv.first] = std::move(cnt);
     }
@@ -14057,16 +14057,16 @@ static Value setOp(const std::string& op, const Value& l, const Value& r) {
     // membership against a RANGE is an arithmetic bounds check — no
     // materialization, so 0..10**42 (and open-ended ranges) work
     auto rangeHas = [](const Value& rng, const Value& x) -> bool {
-        if (rng.ofType == "Str") { // Str range: string ordering between endpoints
+        if (rng.ofType() == "Str") { // Str range: string ordering between endpoints
             const std::string v = x.toStr();
-            const std::string lo = cpToU8((uint32_t)rng.rFrom), hi = cpToU8((uint32_t)rng.rTo);
-            return (rng.rExFrom ? v > lo : v >= lo) &&
-                   (rng.rExTo ? v < hi : v <= hi);
+            const std::string lo = cpToU8((uint32_t)rng.rFrom()), hi = cpToU8((uint32_t)rng.rTo());
+            return (rng.rExFrom() ? v > lo : v >= lo) &&
+                   (rng.rExTo() ? v < hi : v <= hi);
         }
         double v = x.toNum();
-        double lo = (double)rng.rFrom + (rng.rExFrom ? 1 : 0);
-        if (rng.rTo >= 9000000000000000000LL) return v >= lo; // huge/unbounded top
-        double hi = (double)rng.rTo - (rng.rExTo ? 1 : 0);
+        double lo = (double)rng.rFrom() + (rng.rExFrom() ? 1 : 0);
+        if (rng.rTo() >= 9000000000000000000LL) return v >= lo; // huge/unbounded top
+        double hi = (double)rng.rTo() - (rng.rExTo() ? 1 : 0);
         return v >= lo && v <= hi;
     };
     if (op == "(elem)" || op == "∈" || op == "(!elem)" || op == "∉") {
@@ -14247,7 +14247,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     // set-op / hyper-metaop / boxed-object string-compare machinery below. Any
     // case it doesn't return (overflow, div-by-zero, other ops) falls through to
     // the general path, so results are identical.
-    if (l.t == VT::Int && r.t == VT::Int && !l.big && !r.big && !op.empty() && op.size() <= 2) {
+    if (l.t == VT::Int && r.t == VT::Int && !l.big() && !r.big() && !op.empty() && op.size() <= 2) {
         long long a = l.i, b = r.i, z;
         char c0 = op[0], c1 = op.size() > 1 ? op[1] : '\0';
         switch (c0) {
@@ -14289,10 +14289,10 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         auto simpleNum = [](const Value& v, double& out) -> bool {
             switch (v.t) {
                 case VT::Num:  out = v.n; return true;
-                case VT::Int:  if (v.big) return false; out = (double)v.i; return true;
+                case VT::Int:  if (v.big()) return false; out = (double)v.i; return true;
                 case VT::Bool: out = v.b ? 1.0 : 0.0; return true;
-                case VT::Rat:  if (!v.ratN || !v.ratD || v.ratD->isZero()) return false;
-                               out = v.ratN->toDouble() / v.ratD->toDouble(); return true;
+                case VT::Rat:  if (!v.ratN() || !v.ratD() || v.ratD()->isZero()) return false;
+                               out = v.ratN()->toDouble() / v.ratD()->toDouble(); return true;
                 default: return false;
             }
         };
@@ -14344,20 +14344,20 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         // counted arithmetically, so an endless range does not materialise
         auto num = [](const Value& v) -> Value {
             if (v.t != VT::Range) return v;
-            if (v.rNum) {
+            if (v.rNum()) {
                 // a fractional range steps by 1 FROM ITS START (1.5..3.7 is
                 // 1.5, 2.5, 3.5 — three elements), so the count is not a
                 // ceil/floor of the endpoints
-                if (std::isinf(v.n) || std::isinf(v.im)) return Value::number(INFINITY);
-                double lo = v.n + (v.rExFrom ? 1 : 0), hi = v.im;
+                if (std::isinf(v.n) || std::isinf(v.im())) return Value::number(INFINITY);
+                double lo = v.n + (v.rExFrom() ? 1 : 0), hi = v.im();
                 double c = std::floor(hi - lo) + 1;
-                if (v.rExTo && c > 0 && lo + (c - 1) == hi) c -= 1;
+                if (v.rExTo() && c > 0 && lo + (c - 1) == hi) c -= 1;
                 return Value::number(c < 0 ? 0 : c);
             }
-            if (v.ofType == "Str") return Value::integer((long long)v.flatten().size());
-            if (v.rTo >= 9000000000000000000LL || v.rFrom <= -9000000000000000000LL)
+            if (v.ofType() == "Str") return Value::integer((long long)v.flatten().size());
+            if (v.rTo() >= 9000000000000000000LL || v.rFrom() <= -9000000000000000000LL)
                 return Value::number(INFINITY);
-            long long lo = v.rFrom + (v.rExFrom ? 1 : 0), hi = v.rTo - (v.rExTo ? 1 : 0);
+            long long lo = v.rFrom() + (v.rExFrom() ? 1 : 0), hi = v.rTo() - (v.rExTo() ? 1 : 0);
             return Value::integer(hi < lo ? 0 : hi - lo + 1);
         };
         return applyArith(op, num(l), num(r));
@@ -14498,7 +14498,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         // force the lazy side out to the other's length.
         // (applyArith is a free function, so it reaches the interpreter through the
         // same global the NativeCall trampolines use; it is set in the constructor.)
-        auto isLazy = [](const Value& v) { return v.t == VT::Array && v.ext; };
+        auto isLazy = [](const Value& v) { return v.t == VT::Array && v.ext(); };
         if (g_cbInterp) {
             if (isLazy(l) && !isLazy(r)) g_cbInterp->materializeLazy(l, listCtx(r).size());
             else if (isLazy(r) && !isLazy(l)) g_cbInterp->materializeLazy(r, listCtx(l).size());
@@ -14509,7 +14509,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             if (sub.empty()) { Value t = Value::array({a[i], b[i]}); t.isList = true; out.arr->push_back(t); }
             else if (sub == "=>") { // `1 Z=> 3` keeps the Int key, not "1"
                 Value pr = Value::pair(a[i].toStr(), b[i]);
-                if (a[i].t != VT::Str) pr.pairKey = std::make_shared<Value>(a[i]);
+                if (a[i].t != VT::Str) pr.pairKeyM() = std::make_shared<Value>(a[i]);
                 out.arr->push_back(pr);
             }
             else out.arr->push_back(applyArith(sub, a[i], b[i]));
@@ -14524,7 +14524,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             if (sub.empty()) { Value t = Value::array({x, y}); t.isList = true; out.arr->push_back(t); }
             else if (sub == "=>") { // `1 X=> <a b>` keeps the Int key (like Z=> above)
                 Value pr = Value::pair(x.toStr(), y);
-                if (x.t != VT::Str) pr.pairKey = std::make_shared<Value>(x);
+                if (x.t != VT::Str) pr.pairKeyM() = std::make_shared<Value>(x);
                 out.arr->push_back(pr);
             }
             else out.arr->push_back(applyArith(sub, x, y));
@@ -14611,39 +14611,39 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     // (1..5)+1 is 2..6. n + Range commutes.
     if (l.t == VT::Range && (r.t == VT::Int || r.t == VT::Bool) && (op == "+" || op == "-")) {
         long long d = op == "+" ? r.toInt() : -r.toInt();
-        Value out = Value::range(l.rFrom + d, l.rTo + d, l.rExFrom, l.rExTo);
+        Value out = Value::range(l.rFrom() + d, l.rTo() + d, l.rExFrom(), l.rExTo());
         return out;
     }
     // Range * n / Range / n scale both endpoints (n * Range commutes);
     // a non-integer result becomes a fractional range
-    if (l.t == VT::Range && !l.rNum && l.ofType.empty() &&
+    if (l.t == VT::Range && !l.rNum() && l.ofType().empty() &&
         (r.t == VT::Int || r.t == VT::Num || r.t == VT::Rat) &&
         (op == "*" || op == "/")) {
         double f = r.toNum();
         if (f != 0 || op == "*") {
-            double lo = l.rFrom * (op == "*" ? f : 1.0 / f);
-            double hi = l.rTo * (op == "*" ? f : 1.0 / f);
+            double lo = l.rFrom() * (op == "*" ? f : 1.0 / f);
+            double hi = l.rTo() * (op == "*" ? f : 1.0 / f);
             if (lo == (long long)lo && hi == (long long)hi && r.t == VT::Int)
-                return Value::range((long long)lo, (long long)hi, l.rExFrom, l.rExTo);
-            Value out = Value::range((long long)lo, (long long)hi, l.rExFrom, l.rExTo);
-            out.rNum = true; out.n = lo; out.im = hi;
+                return Value::range((long long)lo, (long long)hi, l.rExFrom(), l.rExTo());
+            Value out = Value::range((long long)lo, (long long)hi, l.rExFrom(), l.rExTo());
+            out.rNumM() = true; out.n = lo; out.imM() = hi;
             return out;
         }
     }
-    if (r.t == VT::Range && !r.rNum && r.ofType.empty() && l.t == VT::Int && op == "*") {
+    if (r.t == VT::Range && !r.rNum() && r.ofType().empty() && l.t == VT::Int && op == "*") {
         long long f = l.toInt();
-        return Value::range(r.rFrom * f, r.rTo * f, r.rExFrom, r.rExTo);
+        return Value::range(r.rFrom() * f, r.rTo() * f, r.rExFrom(), r.rExTo());
     }
     if (r.t == VT::Range && (l.t == VT::Int || l.t == VT::Bool) && op == "+") {
         long long d = l.toInt();
-        Value out = Value::range(r.rFrom + d, r.rTo + d, r.rExFrom, r.rExTo);
+        Value out = Value::range(r.rFrom() + d, r.rTo() + d, r.rExFrom(), r.rExTo());
         return out;
     }
 
     // ---- Complex arithmetic ----
     if (l.t == VT::Complex || r.t == VT::Complex) {
         auto toC = [](const Value& v) {
-            return v.t == VT::Complex ? std::complex<double>(v.n, v.im)
+            return v.t == VT::Complex ? std::complex<double>(v.n, v.im())
                                       : std::complex<double>(v.toNum(), 0.0);
         };
         std::complex<double> a = toC(l), b = toC(r);
@@ -14838,18 +14838,18 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     }
     if (isExact(l) && isExact(r)) {
         bool anyRat = (l.t == VT::Rat || r.t == VT::Rat);
-        bool smallInt = !anyRat && !l.big && !r.big;
+        bool smallInt = !anyRat && !l.big() && !r.big();
         // a FatRat operand keeps the result a FatRat (type identity is contagious)
-        bool fat = (l.t == VT::Rat && l.fatRat) || (r.t == VT::Rat && r.fatRat);
+        bool fat = (l.t == VT::Rat && l.fatRat()) || (r.t == VT::Rat && r.fatRat());
         auto mkRat = [&](BigInt n, BigInt d) {
-            Value v = Value::rat(std::move(n), std::move(d)); v.fatRat = fat;
+            Value v = Value::rat(std::move(n), std::move(d)); v.fatRatM() = fat;
             // Rat denominators are capped at uint64: arithmetic that would grow
             // one past that spills to Num (FatRat is arbitrary-precision, never spills).
-            if (!fat && v.ratD && !v.ratD->fitsU64()) return Value::number(v.toNum());
+            if (!fat && v.ratD() && !v.ratD()->fitsU64()) return Value::number(v.toNum());
             return v;
         };
-        auto getN = [](const Value& v) { return v.t == VT::Rat ? *v.ratN : v.toBig(); };
-        auto getD = [](const Value& v) { return v.t == VT::Rat ? *v.ratD : BigInt(1); };
+        auto getN = [](const Value& v) { return v.t == VT::Rat ? *v.ratN() : v.toBig(); };
+        auto getD = [](const Value& v) { return v.t == VT::Rat ? *v.ratD() : BigInt(1); };
         // Small-Rat fast path: when every component fits well under 2^62, do the
         // exact arithmetic in native __int128 (products stay in range) and reduce
         // with a native gcd — orders of magnitude cheaper than the BigInt path.
@@ -14857,10 +14857,10 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         auto smallParts = [](const Value& v, long long& n, long long& d) -> bool {
             const long long LIM = 1LL << 62;
             if (v.t == VT::Rat) {
-                if (!v.ratN->fitsLL() || !v.ratD->fitsLL()) return false;
-                n = v.ratN->toLL(); d = v.ratD->toLL();
+                if (!v.ratN()->fitsLL() || !v.ratD()->fitsLL()) return false;
+                n = v.ratN()->toLL(); d = v.ratD()->toLL();
             } else if (v.t == VT::Int) {
-                if (v.big) { if (!v.big->fitsLL()) return false; n = v.big->toLL(); }
+                if (v.big()) { if (!v.big()->fitsLL()) return false; n = v.big()->toLL(); }
                 else n = v.i;
                 d = 1;
             } else { n = v.b ? 1 : 0; d = 1; } // Bool
@@ -14901,8 +14901,8 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                 if (n >= (__int128)LLONG_MIN && n <= (__int128)LLONG_MAX && d <= (__int128)LLONG_MAX) {
                     // already reduced with d > 0 — build directly, no second gcd
                     Value v; v.t = VT::Rat;
-                    v.ratN = std::make_shared<BigInt>((long long)n);
-                    v.ratD = std::make_shared<BigInt>((long long)d);
+                    v.ratNM() = std::make_shared<BigInt>((long long)n);
+                    v.ratDM() = std::make_shared<BigInt>((long long)d);
                     return v;
                 }
                 // (reduced numerator wider than 64 bits: fall through to BigInt)
@@ -14928,7 +14928,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         if (op == "/") {
             BigInt n1 = getN(l), d1 = getD(l), n2 = getN(r), d2 = getD(r);
             if (n2.isZero()) { // 1/0 is a zero-denominator Rat: Num → ±Inf, Str throws
-                Value v = Value::ratZ(n1 * d2, BigInt(0)); v.fatRat = fat; return v;
+                Value v = Value::ratZ(n1 * d2, BigInt(0)); v.fatRatM() = fat; return v;
             }
             return mkRat(n1 * d2, d1 * n2);
         }
@@ -14938,15 +14938,15 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             // (A01-limits/overflow.t test 10 wants a Rat**10**8 to instead grind
             // exactly until a racing Promise exits the process — an implementation-
             // speed assertion we deliberately don't chase.)
-            bool baseTrivial = l.t == VT::Int && !l.big && (l.toInt() == 0 || l.toInt() == 1 || l.toInt() == -1);
-            bool hugeExp = (bool)r.big || std::llabs(r.toInt()) > 900000;
+            bool baseTrivial = l.t == VT::Int && !l.big() && (l.toInt() == 0 || l.toInt() == 1 || l.toInt() == -1);
+            bool hugeExp = (bool)r.big() || std::llabs(r.toInt()) > 900000;
             if (!baseTrivial && hugeExp) {
-                bool neg = !r.big && r.toInt() < 0;
+                bool neg = !r.big() && r.toInt() < 0;
                 throw RakuError{Value::typeObj(neg ? "X::Numeric::Underflow" : "X::Numeric::Overflow"),
                                 neg ? "Numeric underflow" : "Numeric overflow"};
             }
         }
-        if (op == "**" && (r.t == VT::Int || r.t == VT::Bool) && !r.big) {
+        if (op == "**" && (r.t == VT::Int || r.t == VT::Bool) && !r.big()) {
             long long e = r.toInt();
             BigInt bn = getN(l), bd = getD(l);
             if (e >= 0) { BigInt rn = bn.pow(e), rd = bd.pow(e); return anyRat ? mkRat(rn, rd) : Value::bigint(rn); }
@@ -15007,7 +15007,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         if (op == "==" || op == "!=" || op == "<" || op == "<=" || op == ">" || op == ">=" ||
             op == "<=>" || op == "cmp") { // (`leg` is STRINGWISE — it never lands here)
             // zero-denominator Rats compare as their Num (±Inf / NaN; NaN == NaN is False)
-            auto zeroDen = [](const Value& v) { return v.t == VT::Rat && v.ratD && v.ratD->isZero(); };
+            auto zeroDen = [](const Value& v) { return v.t == VT::Rat && v.ratD() && v.ratD()->isZero(); };
             if (zeroDen(l) || zeroDen(r))
                 return applyArith(op, Value::number(l.toNum()), Value::number(r.toNum()));
             int c;
@@ -15112,7 +15112,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         if (bloby(l) && bloby(r) && l.blobElemSize() == r.blobElemSize()) {
             Value out = Value::str(l.s + r.s);
             out.hashKind = "Buf";                       // Rakudo: utf8 ~ Blob is a Buf
-            out.ofType = l.ofType.empty() ? r.ofType : l.ofType;
+            out.ofTypeM() = l.ofType().empty() ? r.ofType() : l.ofType();
             return identify(out);
         }
         // an undefined operand stringifies to "" (Rakudo warns; `Any ~ $x` is $x)
@@ -15141,9 +15141,9 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     // numeric bitwise / shift
     if (op == "+&" || op == "+|" || op == "+^") {
         if (l.t == VT::Str || r.t == VT::Str) { strictNum(l); strictNum(r); } // reject a non-numeric string
-        if (l.big || r.big) {
-            BigInt res = bigBitwise(l.big ? *l.big : BigInt(l.toInt()),
-                                    r.big ? *r.big : BigInt(r.toInt()), op[1]);
+        if (l.big() || r.big()) {
+            BigInt res = bigBitwise(l.big() ? *l.big() : BigInt(l.toInt()),
+                                    r.big() ? *r.big() : BigInt(r.toInt()), op[1]);
             return res.fitsLL() ? Value::integer(res.toLL()) : Value::bigint(res);
         }
         long long a = bitwiseInt(l), b = bitwiseInt(r);
@@ -15152,19 +15152,19 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     if (op == "+<") { // escalate to BigInt when the result would overflow long long
         bitwiseInt(l); long long sh = bitwiseInt(r);
         if (sh < 0) return Value::integer(0);
-        if (!l.big && sh < 62 && std::llabs(l.toInt()) < (1LL << (62 - sh)))
+        if (!l.big() && sh < 62 && std::llabs(l.toInt()) < (1LL << (62 - sh)))
             return Value::integer(l.toInt() << sh);
-        BigInt lb = l.big ? *l.big : BigInt(l.toInt());
+        BigInt lb = l.big() ? *l.big() : BigInt(l.toInt());
         BigInt res = lb * BigInt(2).pow(sh);
         return res.fitsLL() ? Value::integer(res.toLL()) : Value::bigint(res);
     }
     if (op == "+>") {
         bitwiseInt(l); long long sh = bitwiseInt(r);
         if (sh < 0) return Value::integer(0);
-        if (!l.big) return Value::integer(sh >= 63 ? (l.toInt() < 0 ? -1 : 0) : (l.toInt() >> sh));
+        if (!l.big()) return Value::integer(sh >= 63 ? (l.toInt() < 0 ? -1 : 0) : (l.toInt() >> sh));
         BigInt q, rem;
-        BigInt::divmod(*l.big, BigInt(2).pow(sh), q, rem);
-        if (l.big->sign < 0 && !rem.isZero()) q = q - BigInt(1); // arithmetic shift = floor
+        BigInt::divmod(*l.big(), BigInt(2).pow(sh), q, rem);
+        if (l.big()->sign < 0 && !rem.isZero()) q = q - BigInt(1); // arithmetic shift = floor
         return q.fitsLL() ? Value::integer(q.toLL()) : Value::bigint(q);
     }
     // boolean bitwise (return Bool)
@@ -15204,7 +15204,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             Value v = Value::str(out);
             v.hashKind = l.hashKind;
             v.enumName = l.enumName;   // the Blob SUBTYPE lives here: utf8, utf16, Blob[uint8]
-            v.ofType   = l.ofType;
+            v.ofTypeM()   = l.ofType();
             return v;
         }
         // A Str combines CODEPOINTS, as Rakudo does — not the UTF-8 bytes. Going
@@ -15231,11 +15231,11 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                                 "Cannot convert " + v->toStr() + " to Int"};
     }
     if (op == "gcd") {
-        if (l.big || r.big) return Value::bigint(BigInt::gcd(l.toBig().abs(), r.toBig().abs()));
+        if (l.big() || r.big()) return Value::bigint(BigInt::gcd(l.toBig().abs(), r.toBig().abs()));
         long long x = std::llabs(l.toInt()), y = std::llabs(r.toInt()); while (y) { long long t = x % y; x = y; y = t; } return Value::integer(x);
     }
     if (op == "lcm") {
-        if (l.big || r.big) {
+        if (l.big() || r.big()) {
             BigInt a = l.toBig().abs(), b = r.toBig().abs();
             if (a.isZero() || b.isZero()) return Value::integer(0);
             BigInt g = BigInt::gcd(a, b), q, rem;
@@ -15319,7 +15319,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         if (l.t != r.t && isAnyTypeObject(l) && isAnyTypeObject(r)) same = true;
         else if (l.t != r.t) same = false;
         else if (l.t == VT::Object) same = (l.obj == r.obj);
-        else if (l.t == VT::Type) same = (l.s == r.s && l.ofType == r.ofType);
+        else if (l.t == VT::Type) same = (l.s == r.s && l.ofType() == r.ofType());
         else if (l.t == VT::Code) same = (l.code == r.code);
         // Lists/Arrays are reference identity — except a CAPTURE, which is the one
         // Array-shaped VALUE type: `\(1,2) === \(1,2)` is True. Its parts carry
@@ -15357,16 +15357,16 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         // token instead — see identityScalar/identify in Value.h.
         else if (identityScalar(l) || identityScalar(r)) same = (whichOf(l) == whichOf(r));
         else if (l.t == VT::Rat) // structural nude compare — .Str on a 0-denominator Rat throws
-            same = l.fatRat == r.fatRat &&
-                   l.ratN && r.ratN && l.ratD && r.ratD &&
-                   BigInt::cmp(*l.ratN, *r.ratN) == 0 && BigInt::cmp(*l.ratD, *r.ratD) == 0;
+            same = l.fatRat() == r.fatRat() &&
+                   l.ratN() && r.ratN() && l.ratD() && r.ratD() &&
+                   BigInt::cmp(*l.ratN(), *r.ratN()) == 0 && BigInt::cmp(*l.ratD(), *r.ratD()) == 0;
         // an ALLOMORPH is not identical to either half: `42 === <42>` is False even
         // though both are VT::Int and render "42". Its .WHICH carries both.
         else if (l.isAllomorph() || r.isAllomorph()) same = (whichOf(l) == whichOf(r));
         // a RANGE by its endpoint form, not by its elements (`1..^5 === 1..4`)
         else if (l.t == VT::Range) same = (whichOf(l) == whichOf(r));
         // a parameterised TYPE keeps its parameter: Array[Int] is not Array[Str]
-        else if (l.t == VT::Type) same = (l.s == r.s && l.ofType == r.ofType);
+        else if (l.t == VT::Type) same = (l.s == r.s && l.ofType() == r.ofType());
         else same = (l.toStr() == r.toStr()); // value types (Int/Str/Num/Rat/...)
         return Value::boolean(op == "===" ? same : !same); // !== and !=== both negate identity
     }
@@ -15377,7 +15377,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         // `@x.of =:= Any` guard always took the untyped branch and typed-array
         // attributes unmarshalled as plain Hashes.
         if (l.t == VT::Type && r.t == VT::Type)
-            return Value::boolean(l.s == r.s && l.ofType == r.ofType);
+            return Value::boolean(l.s == r.s && l.ofType() == r.ofType());
         return Value::boolean(l.t == r.t && valueEq(l, r));
     }
     if (op == "~~" || op == "!~~") {
@@ -15436,32 +15436,32 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         if (r.t == VT::Range) {
             if (l.t == VT::Range) {
                 // Range ~~ Range: containment — every element of l is in r
-                double llo = l.rNum ? l.n : (double)l.rFrom;
-                double lhi = l.rNum ? l.im : (double)l.rTo;
-                double rlo = r.rNum ? r.n : (double)r.rFrom;
-                double rhi = r.rNum ? r.im : (double)r.rTo;
-                bool loOK = r.rExFrom ? (llo > rlo || (l.rExFrom && llo >= rlo))
+                double llo = l.rNum() ? l.n : (double)l.rFrom();
+                double lhi = l.rNum() ? l.im() : (double)l.rTo();
+                double rlo = r.rNum() ? r.n : (double)r.rFrom();
+                double rhi = r.rNum() ? r.im() : (double)r.rTo();
+                bool loOK = r.rExFrom() ? (llo > rlo || (l.rExFrom() && llo >= rlo))
                                       : (llo >= rlo);
-                bool hiOK = r.rExTo ? (lhi < rhi || (l.rExTo && lhi <= rhi))
+                bool hiOK = r.rExTo() ? (lhi < rhi || (l.rExTo() && lhi <= rhi))
                                     : (lhi <= rhi);
                 res = loOK && hiOK;
             }
-            else if (r.ofType == "Str") {
+            else if (r.ofType() == "Str") {
                 // Str range: string ordering between the endpoints ("b" ~~ "a".."c")
                 const std::string v = l.toStr();
-                const std::string lo = cpToU8((uint32_t)r.rFrom), hi = cpToU8((uint32_t)r.rTo);
-                res = (r.rExFrom ? v > lo : v >= lo) &&
-                      (r.rExTo ? v < hi : v <= hi);
+                const std::string lo = cpToU8((uint32_t)r.rFrom()), hi = cpToU8((uint32_t)r.rTo());
+                res = (r.rExFrom() ? v > lo : v >= lo) &&
+                      (r.rExTo() ? v < hi : v <= hi);
             }
             else if (l.t == VT::Rat) { // exact endpoint compare: 4.99…(45 digits) ~~ 0..^5
                 // The endpoint OBJECTS where the range kept them: a fractional
                 // range's integer fields are floors, so comparing against those
                 // put 1.4 outside 1/2..3/2 — and this arm exists for exactness.
                 const RangeEnds* re = rangeEnds(r);
-                Value lo = re ? re->from : r.rNum ? Value::number(r.n)  : Value::integer(r.rFrom);
-                Value hi = re ? re->to   : r.rNum ? Value::number(r.im) : Value::integer(r.rTo);
-                res = applyArith(r.rExFrom ? ">" : ">=", l, lo).truthy() &&
-                      applyArith(r.rExTo ? "<" : "<=", l, hi).truthy();
+                Value lo = re ? re->from : r.rNum() ? Value::number(r.n)  : Value::integer(r.rFrom());
+                Value hi = re ? re->to   : r.rNum() ? Value::number(r.im()) : Value::integer(r.rTo());
+                res = applyArith(r.rExFrom() ? ">" : ">=", l, lo).truthy() &&
+                      applyArith(r.rExTo() ? "<" : "<=", l, hi).truthy();
             } else {
                 // The LOW endpoint's exclusivity was dropped here while the high
                 // one was honoured, so `4 ~~ 4^..6` was True. Everything built on
@@ -15472,8 +15472,8 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                 // floors, so `2.4 ~~ 0..^2.5` was False and every `.grep(1.5..2.5)`
                 // over measured data silently cut at the floor.
                 double v = l.toNum();
-                double lo = r.rNum ? r.n : (double)r.rFrom, hi = r.rNum ? r.im : (double)r.rTo;
-                res = (r.rExFrom ? v > lo : v >= lo) && (r.rExTo ? v < hi : v <= hi);
+                double lo = r.rNum() ? r.n : (double)r.rFrom(), hi = r.rNum() ? r.im() : (double)r.rTo();
+                res = (r.rExFrom() ? v > lo : v >= lo) && (r.rExTo() ? v < hi : v <= hi);
             }
         } else if (r.t == VT::Type) {
             // a subset name on the RHS: base-chain + where-clause check
@@ -15518,7 +15518,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             // `Date.new(…) ~~ Dateish` holds just as `Date ~~ Dateish` does)
             if (!res) {
                 std::string ln = l.t == VT::Type ? l.s : l.typeName();
-                res = typeNameConforms(ln, r.s, l.ofType, r.ofType);
+                res = typeNameConforms(ln, r.s, l.ofType(), r.ofType());
             }
             // role / container types (Positional, Associative, …) that a value does
             if (!res) {
@@ -15591,7 +15591,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             res = applyArith("==", l, r).truthy(); // numeric smartmatch incl. Complex (3 ~~ 3+0i)
             if (!res) { // NaN ~~ NaN is True (ACCEPTS special-cases NaN, unlike ==)
                 auto isnanV = [](const Value& v) {
-                    return v.t == VT::Complex ? (std::isnan(v.n) || std::isnan(v.im))
+                    return v.t == VT::Complex ? (std::isnan(v.n) || std::isnan(v.im()))
                                               : (v.t == VT::Num && std::isnan(v.n));
                 };
                 res = isnanV(l) && isnanV(r);
@@ -15602,8 +15602,8 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             // Range ~~ number: numeric smartmatch on the element count (+(2..4) == 3;
             // 1..Inf counts Inf, so `1..Inf ~~ 1/0` is True)
             double cnt;
-            if (l.rTo >= LLONG_MAX - 1 || l.rFrom <= LLONG_MIN + 1) cnt = INFINITY;
-            else { long long n = l.rTo - l.rFrom + 1 - (l.rExFrom ? 1 : 0) - (l.rExTo ? 1 : 0);
+            if (l.rTo() >= LLONG_MAX - 1 || l.rFrom() <= LLONG_MIN + 1) cnt = INFINITY;
+            else { long long n = l.rTo() - l.rFrom() + 1 - (l.rExFrom() ? 1 : 0) - (l.rExTo() ? 1 : 0);
                    cnt = n < 0 ? 0 : (double)n; }
             res = applyArith("==", Value::number(cnt), r).truthy();
         } else if (r.isAllomorph() && l.t == VT::Str && !l.isAllomorph() && l.hashKind.empty()) {
@@ -16012,12 +16012,12 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
     // wired mode: an anonymous `regex {…}` value — its code blocks and
     // assertions execute for real, in a per-match child of the scope the
     // regex closed over (`:my`/`$cap` persist across blocks within a match)
-    bool wired = rxVal && rxVal->t == VT::Regex && !rxVal->hashKind.empty() && rxVal->ext;
+    bool wired = rxVal && rxVal->t == VT::Regex && !rxVal->hashKind.empty() && rxVal->ext();
     std::shared_ptr<Env> savedCurWired;
     if (wired) {
         savedCurWired = tctx_.cur;
         auto matchEnv = std::make_shared<Env>();
-        matchEnv->parent = std::static_pointer_cast<Env>(rxVal->ext);
+        matchEnv->parent = std::static_pointer_cast<Env>(rxVal->ext());
         tctx_.cur = matchEnv;
     }
     struct WiredGuard {
@@ -16100,10 +16100,10 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
     // FIRST; anything still unresolved then falls back to the current scope (so
     // an in-flight `$0`, or a caller's variable, still works).
     bool p5pat = isP5Pattern(pat); // :P5 — Perl-5-syntax pattern: raw-source interpolation
-    if (!wired && rxVal && rxVal->t == VT::Regex && rxVal->ext &&
+    if (!wired && rxVal && rxVal->t == VT::Regex && rxVal->ext() &&
         pat.find('$') != std::string::npos) {
         auto savedOuter = tctx_.cur;
-        tctx_.cur = std::static_pointer_cast<Env>(rxVal->ext);
+        tctx_.cur = std::static_pointer_cast<Env>(rxVal->ext());
         pat = p5pat ? interpP5Pattern(pat) : interpRegexPattern(pat);
         tctx_.cur = savedOuter;
     }
@@ -16151,8 +16151,8 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
                     // them every mutated path had one empty segment.
                     std::function<void(const Value&, ParseNode&)> fill =
                         [&](const Value& mv, ParseNode& node) {
-                        node.from = pos + mv.rFrom;
-                        node.to   = pos + mv.rTo;
+                        node.from = pos + mv.rFrom();
+                        node.to   = pos + mv.rTo();
                         if (!mv.hash) return;
                         auto kids = std::make_shared<ChildMap>();
                         auto lists = std::make_shared<std::set<std::string>>();
@@ -16198,7 +16198,7 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
     auto origStr = std::make_shared<std::string>(subject);
     auto mk = [&](long from, long to) {
         Value mv = Value::matchVal(subject.substr(from, to - from), from, to);
-        mv.ext = origStr;
+        mv.extM() = origStr;
         return mv;
     };
     auto build = [&](const RxMatch& m) {
@@ -16394,8 +16394,8 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
                              code.find("..\xE2\x88\x9E") != std::string::npos;
             Value v = evalString(code);
             if (v.t == VT::Range) {
-                long lo = v.rFrom, hi = unbounded ? -1 : (v.rExTo ? v.rTo - 1 : v.rTo);
-                if (v.rTo >= (long long)1e15) hi = -1;
+                long lo = v.rFrom(), hi = unbounded ? -1 : (v.rExTo() ? v.rTo() - 1 : v.rTo());
+                if (v.rTo() >= (long long)1e15) hi = -1;
                 return {lo, hi};
             }
             long n = v.toInt(); return {n, n};
@@ -16431,7 +16431,7 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
             try { v = evalString(code); }
             catch (FeatureNotBuilt&) { throw; }
             catch (...) {}
-            if (v.t == VT::Range) return {(long)v.rFrom, (long)(v.rExTo ? v.rTo - 1 : v.rTo)};
+            if (v.t == VT::Range) return {(long)v.rFrom(), (long)(v.rExTo() ? v.rTo() - 1 : v.rTo())};
             long n = v.toInt(); return {n, n};
         };
         wantHooks = true;
@@ -16581,7 +16581,7 @@ Value Interpreter::regexSubst(const std::string& subject, const std::string& pat
     // Build a Match value (positional + named captures) for one raw match.
     auto build = [&](const RxMatch& mm) {
         Value v = Value::matchVal(subject.substr(mm.from, mm.to - mm.from), mm.from, mm.to);
-        v.ext = std::make_shared<std::string>(subject); // the original, for .prematch/.postmatch/.orig
+        v.extM() = std::make_shared<std::string>(subject); // the original, for .prematch/.postmatch/.orig
         for (auto& c : mm.caps) {
             if (c.first < 0) v.arrRef().push_back(Value::nil());
             else v.arrRef().push_back(Value::matchVal(subject.substr(c.first, c.second - c.first), c.first, c.second));
@@ -16928,8 +16928,8 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
                              code.find("..\xE2\x88\x9E") != std::string::npos;
             Value v = evalString(code);
             if (v.t == VT::Range) {
-                long lo = v.rFrom, hi = unbounded ? -1 : (v.rExTo ? v.rTo - 1 : v.rTo);
-                if (v.rTo >= (long long)1e15) hi = -1;
+                long lo = v.rFrom(), hi = unbounded ? -1 : (v.rExTo() ? v.rTo() - 1 : v.rTo());
+                if (v.rTo() >= (long long)1e15) hi = -1;
                 return {lo, hi};
             }
             long n = v.toInt(); return {n, n};
@@ -17014,7 +17014,7 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
     long total = (long)matches.size();
     // occurrence selection (1-based). :x count, :nth indices, :g all, else first.
     auto bounds = [&](const Value& v, long& lo, long& hi) {
-        if (v.t == VT::Range) { lo = v.rFrom + (v.rExFrom ? 1 : 0); hi = v.rTo - (v.rExTo ? 1 : 0); }
+        if (v.t == VT::Range) { lo = v.rFrom() + (v.rExFrom() ? 1 : 0); hi = v.rTo() - (v.rExTo() ? 1 : 0); }
         else if (v.t == VT::Whatever || std::isinf(v.toNum())) { lo = 1; hi = total; }
         else { lo = hi = v.toInt(); }
     };
@@ -17444,8 +17444,8 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
                          code.find("..\xE2\x88\x9E") != std::string::npos;
         Value v = runCode(code, 0, 0, nm, pm);
         if (v.t == VT::Range) {
-            long lo = v.rFrom, hi = unbounded ? -1 : (v.rExTo ? v.rTo - 1 : v.rTo);
-            if (v.rTo >= (long long)1e15) hi = -1;
+            long lo = v.rFrom(), hi = unbounded ? -1 : (v.rExTo() ? v.rTo() - 1 : v.rTo());
+            if (v.rTo() >= (long long)1e15) hi = -1;
             return {lo, hi};
         }
         long n = v.toInt(); return {n, n};
@@ -17823,9 +17823,9 @@ Value Interpreter::hyperCore(Value& l, Value& r, bool strictL, bool strictR,
     bool lIter = l.t == VT::Array || l.t == VT::Range;
     bool rIter = r.t == VT::Array || r.t == VT::Range;
     auto isInf = [](const Value& v) {
-        if (v.t == VT::Range && v.rTo >= 9000000000000000000LL) return true;
-        if (v.t == VT::Array && v.ext)
-            return std::static_pointer_cast<LazySeqState>(v.ext)->infinite;
+        if (v.t == VT::Range && v.rTo() >= 9000000000000000000LL) return true;
+        if (v.t == VT::Array && v.ext())
+            return std::static_pointer_cast<LazySeqState>(v.ext())->infinite;
         return false;
     };
     bool lInf = isInf(l), rInf = isInf(r);
@@ -17855,12 +17855,12 @@ Value Interpreter::hyperCore(Value& l, Value& r, bool strictL, bool strictR,
     // materialize the first n elements of an infinite side (cycle unit / count-up)
     auto fill = [&](const Value& v, ValueList& out) {
         if (v.t == VT::Range) {
-            long long lo = v.rFrom + (v.rExFrom ? 1 : 0);
+            long long lo = v.rFrom() + (v.rExFrom() ? 1 : 0);
             for (size_t i = out.size(); i < n; i++) out.push_back(Value::integer(lo + (long long)i));
         }
         else if (v.arr) {
             out = *v.arr;
-            auto st = std::static_pointer_cast<LazySeqState>(v.ext);
+            auto st = std::static_pointer_cast<LazySeqState>(v.ext());
             while (out.size() < n && st->appendNext(out)) {}
         }
     };
@@ -17933,15 +17933,15 @@ Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value
         // lazy side out to the other's length. `@$key Z[+^] $i xx *` is how Digest's
         // HMAC builds its key pad, and it was yielding one byte.
         // Cross (X) against an infinite side has no finite answer; leave it alone.
-        auto isLazy = [](const Value& v) { return v.t == VT::Array && v.ext; };
+        auto isLazy = [](const Value& v) { return v.t == VT::Array && v.ext(); };
         // An ENDLESS side — an infinite Range (`2..*`) or an infinite lazy list.
         // Zipping two of them has no finite answer to compute up front, and
         // Rakudo's answer is itself lazy: `2..* Z* 2..*` is the perfect squares.
         // Produce a lazy list that pulls one element from each side per step.
         auto endlessInt = [&](const Value& v) {
-            if (v.t == VT::Range && !v.rNum && v.rTo >= 9000000000000000000LL) return true;
-            if (v.t == VT::Array && v.ext) {
-                auto st = std::static_pointer_cast<LazySeqState>(v.ext);
+            if (v.t == VT::Range && !v.rNum() && v.rTo() >= 9000000000000000000LL) return true;
+            if (v.t == VT::Array && v.ext()) {
+                auto st = std::static_pointer_cast<LazySeqState>(v.ext());
                 return st && st->infinite;
             }
             return false;
@@ -17949,7 +17949,7 @@ Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value
         if (op[0] == 'Z' && endlessInt(l) && endlessInt(r)) {
             // the i-th element of a side, materialising a lazy one as it goes
             auto nth = [this](Value src, size_t i) -> Value {
-                if (src.t == VT::Range) return Value::integer(src.rFrom + (long long)i);
+                if (src.t == VT::Range) return Value::integer(src.rFrom() + (long long)i);
                 materializeLazy(src, i + 1);
                 return src.arr && i < src.arr->size() ? (*src.arr)[i] : Value::any();
             };
@@ -17964,7 +17964,7 @@ Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value
                                              : applyBinOp(inner, x, y));
                 return true;
             };
-            out.ext = st;
+            out.extM() = st;
             return out;
         }
         if (op[0] == 'Z') {
@@ -17977,7 +17977,7 @@ Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value
             // `1 Z=> 3` keeps the Int key — forcing .toStr() made it "1" => 3
             if (sub == "=>") {
                 Value p = Value::pair(x.toStr(), y);
-                if (x.t != VT::Str) p.pairKey = std::make_shared<Value>(x);
+                if (x.t != VT::Str) p.pairKeyM() = std::make_shared<Value>(x);
                 out.arr->push_back(p);
             }
             else if (sub == ",") { // Z, / X, — tuples
@@ -18377,7 +18377,7 @@ Value Interpreter::evalBinary(Binary* b) {
             // against one stopped after a single pair; Z ends at the shortest side,
             // so force the lazy side to the other's length. Cross against an infinite
             // side has no finite answer, so it is left alone.
-            auto isLazy = [](const Value& v) { return v.t == VT::Array && v.ext; };
+            auto isLazy = [](const Value& v) { return v.t == VT::Array && v.ext(); };
             if (op[0] == 'Z') {
                 if (isLazy(l) && !isLazy(r)) materializeLazy(l, oneLevel(r).size());
                 else if (isLazy(r) && !isLazy(l)) materializeLazy(r, oneLevel(l).size());
@@ -18391,7 +18391,7 @@ Value Interpreter::evalBinary(Binary* b) {
                 }
                 else if (sub == "=>") { // `1 Z=> 3` keeps the Int key, not "1"
                     Value pr = Value::pair(x.toStr(), y);
-                    if (x.t != VT::Str) pr.pairKey = std::make_shared<Value>(x);
+                    if (x.t != VT::Str) pr.pairKeyM() = std::make_shared<Value>(x);
                     out.arr->push_back(pr);
                 }
                 else out.arr->push_back(applyBinOp(sub, x, y));
@@ -18430,7 +18430,7 @@ Value Interpreter::evalBinary(Binary* b) {
             // so JSON::Unmarshal's `@x.of =:= Any` always took the untyped
             // branch and typed-array attributes unmarshalled as plain Hashes
             if (l.t == VT::Type && r.t == VT::Type)
-                same = (l.s == r.s && l.ofType == r.ofType);
+                same = (l.s == r.s && l.ofType() == r.ofType());
             else same = (l.t == r.t) && valueEq(l, r);
         }
         return Value::boolean(op[0] == '!' ? !same : same);
@@ -18501,7 +18501,7 @@ Value Interpreter::evalBinary(Binary* b) {
             auto st = std::make_shared<LazySeqState>(); st->infinite = true;
             Value unit = (*a.arr)[0];
             st->appendNext = [unit](ValueList& cache) -> bool { cache.push_back(unit); return true; };
-            a.ext = st;
+            a.extM() = st;
             return a;
         }
         long long n = strictInt(rv); // a non-numeric count is X::Str::Numeric, not 0
@@ -19409,8 +19409,8 @@ Value Interpreter::evalUnary(Unary* u) {
             if (v.t == VT::Array && v.arr) {
                 Value a = Value::array(*v.arr);
                 a.isList = v.isList;
-                a.ofType = v.ofType;
-                a.shape = v.shape;
+                a.ofTypeM() = v.ofType();
+                a.shapeM() = v.shape();
                 return a;
             }
             if (v.t == VT::Range) return Value::array(v.flatten());
@@ -19607,7 +19607,7 @@ Value Interpreter::evalUnary(Unary* u) {
             stp->exhausted = !more;
             return more;
         };
-        arr.ext = st;
+        arr.extM() = st;
         return arr;
     }
     if (u->op == "++" || u->op == "--") {
@@ -19736,8 +19736,8 @@ Value Interpreter::evalUnary(Unary* u) {
             }
             if (op == "?" || op == "so") return Value::boolean(b.truthy());
             if (op == "+^") { // bitwise NOT: -(x+1), exact at any width
-                if (b.big) {
-                    BigInt res = BigInt(0) - (*b.big + BigInt(1));
+                if (b.big()) {
+                    BigInt res = BigInt(0) - (*b.big() + BigInt(1));
                     return res.fitsLL() ? Value::integer(res.toLL()) : Value::bigint(res);
                 }
                 return Value::integer(~b.toInt());
@@ -19803,15 +19803,15 @@ Value Interpreter::evalUnary(Unary* u) {
         return Value::integer(u->op == "-" ? -n : n);
     }
     if (u->op == "-") {
-        if (v.t == VT::Complex) return Value::complex(-v.n, -v.im);
-        if (v.t == VT::Int && v.big) return Value::bigint(-(*v.big));
+        if (v.t == VT::Complex) return Value::complex(-v.n, -v.im());
+        if (v.t == VT::Int && v.big()) return Value::bigint(-(*v.big()));
         if (v.t == VT::Int || v.t == VT::Bool) return Value::integer(-v.toInt());
-        if (v.t == VT::Rat) { Value r = Value::rat(-(*v.ratN), *v.ratD); r.fatRat = v.fatRat; return r; }
+        if (v.t == VT::Rat) { Value r = Value::rat(-(*v.ratN()), *v.ratD()); r.fatRatM() = v.fatRat(); return r; }
         if (v.t == VT::Str || v.t == VT::Match) {
             Value n = v.t == VT::Str ? numifyStrFailure(v.s) : numifyStr(strOf(v));
             if (n.t == VT::Hash && n.hashKind == "Failure") return n; // -"a" is a quiet Failure too
-            if (n.t == VT::Int && !n.big) return Value::integer(-n.toInt());
-            return n.t==VT::Rat ? Value::rat(-(*n.ratN),*n.ratD) : Value::number(-n.toNum());
+            if (n.t == VT::Int && !n.big()) return Value::integer(-n.toInt());
+            return n.t==VT::Rat ? Value::rat(-(*n.ratN()),*n.ratD()) : Value::number(-n.toNum());
         }
         return Value::number(-v.toNum());
     }
@@ -19847,8 +19847,8 @@ Value Interpreter::evalUnary(Unary* u) {
     if (u->op == "+^") { // bitwise NOT: -(x+1), exact at any width (SHA-512's Ch
                           // reads +^ of a top-bit-set 64-bit word — ~strictInt
                           // saturated it to LLONG_MIN and the digest was garbage)
-        if (v.big) {
-            BigInt res = BigInt(0) - (*v.big + BigInt(1));
+        if (v.big()) {
+            BigInt res = BigInt(0) - (*v.big() + BigInt(1));
             return res.fitsLL() ? Value::integer(res.toLL()) : Value::bigint(res);
         }
         return Value::integer(~strictInt(v));
@@ -19876,7 +19876,7 @@ Value Interpreter::evalUnary(Unary* u) {
     }
     if (u->op == "^") {
         Value r = Value::range(0, strictInt(v), false, true);
-        if (v.t == VT::Int && v.big) r.big = v.big; // keep the big bound (pick/roll sample it)
+        if (v.t == VT::Int && v.big()) r.bigM() = v.big(); // keep the big bound (pick/roll sample it)
         return r;
     }
     if (u->op == "|") { // slip: spread handled in evalArgs; anywhere else the
@@ -20816,14 +20816,14 @@ Value Interpreter::evalCall(Call* c) {
 // fractional one (1.5..Inf) keeps a real infinity in its doubles.
 bool isEndlessRange(const Value& v) {
     if (v.t != VT::Range) return false;
-    if (v.rNum) return std::isinf(v.n) || std::isinf(v.im);
-    bool loSent = v.rFrom <= -9000000000000000000LL, hiSent = v.rTo >= 9000000000000000000LL;
+    if (v.rNum()) return std::isinf(v.n) || std::isinf(v.im());
+    bool loSent = v.rFrom() <= -9000000000000000000LL, hiSent = v.rTo() >= 9000000000000000000LL;
     if (!loSent && !hiSent) return false;
     // The sentinel also stands in for an endpoint too big for a long long, so
     // the WRITTEN endpoint decides when it was kept: `1..10**100` is a finite
     // (very long) range — it parks its BigInt bound in `big` — and `1..Inf` is
     // not. A Rat/Num endpoint is kept in RangeEnds instead.
-    if (v.big) return false;
+    if (v.big()) return false;
     if (const RangeEnds* re = rangeEnds(v)) {
         auto runaway = [](const Value& e) {
             return e.t == VT::Whatever || (e.t == VT::Num && std::isinf(e.n));
@@ -20834,12 +20834,12 @@ bool isEndlessRange(const Value& v) {
 }
 
 bool isEndlessLazy(const Value& v) {
-    return v.t == VT::Array && v.ext &&
-           std::static_pointer_cast<LazySeqState>(v.ext)->infinite;
+    return v.t == VT::Array && v.ext() &&
+           std::static_pointer_cast<LazySeqState>(v.ext())->infinite;
 }
 
-static bool endlessLow(const Value& v)  { return v.rNum ? std::isinf(v.n) : v.rFrom <= -9000000000000000000LL; }
-static bool endlessHigh(const Value& v) { return v.rNum ? std::isinf(v.im) : v.rTo >= 9000000000000000000LL; }
+static bool endlessLow(const Value& v)  { return v.rNum() ? std::isinf(v.n) : v.rFrom() <= -9000000000000000000LL; }
+static bool endlessHigh(const Value& v) { return v.rNum() ? std::isinf(v.im()) : v.rTo() >= 9000000000000000000LL; }
 
 Value endlessRangeSum(const Value& v) {
     bool lowInf = endlessLow(v), highInf = endlessHigh(v);
@@ -20867,9 +20867,9 @@ static Value endlessRangeProduct(const Value& v) {
     // keeps its -2.5 in RangeEnds while rFrom has already floored to -3
     const RangeEnds* re = rangeEnds(v);
     double lo = re && re->from.isNumeric() ? re->from.toNum()
-              : v.rNum                    ? v.n
-                                          : (double)v.rFrom;
-    if (v.rExFrom) lo += 1.0;
+              : v.rNum()                    ? v.n
+                                          : (double)v.rFrom();
+    if (v.rExFrom()) lo += 1.0;
     // stepping by 1 from `lo` lands on 0 only when lo is a non-positive integer:
     // `-2.5..Inf` skips straight from -0.5 to 0.5
     if (lo <= 0 && std::floor(lo) == lo) return Value::integer(0);
@@ -20884,8 +20884,8 @@ static Value endlessRangeEnd(const Value& v, bool high) {
     if ((high ? endlessHigh(v) : endlessLow(v)))
         return Value::number(high ? INFINITY : -INFINITY);
     if (const RangeEnds* re = rangeEnds(v)) return high ? re->to : re->from;
-    if (v.rNum) return Value::number(high ? v.im : v.n);
-    return Value::integer(high ? v.rTo : v.rFrom);
+    if (v.rNum()) return Value::number(high ? v.im() : v.n);
+    return Value::integer(high ? v.rTo() : v.rFrom());
 }
 
 // A reduce over an operand that never ends — an infinite Range (1..Inf / 1..*)
@@ -20909,14 +20909,14 @@ bool endlessReduce(const std::string& op, const Value& v, Value& out) {
         if (op == "min" || op == "max") { out = endlessRangeEnd(v, op == "max"); return true; }
         throw RakuError{Value::typeObj("X::Cannot::Lazy"), "Cannot reduce an infinite range"};
     }
-    if (v.t != VT::Array || !v.ext || !v.arr) return false;         // not lazy: fold as usual
+    if (v.t != VT::Array || !v.ext() || !v.arr) return false;         // not lazy: fold as usual
     if (!isEndlessLazy(v)) {
         // A merely LAZY list holds only the prefix something has already pulled
         // — folding that is how `[+] (1..Inf).grep(* %% 2)` answered 0 — so drain
         // it first. Whether a grep over an endless source ends is only knowable
         // by trying (`.grep({last if …})` does end); one that will not drain has
         // no honest answer, so it joins the endless ones below.
-        auto st = std::static_pointer_cast<LazySeqState>(v.ext);
+        auto st = std::static_pointer_cast<LazySeqState>(v.ext());
         const size_t CAP = 1000000; // materializeLazy's own ceiling
         if (st->appendNext)
             while (v.arr->size() < CAP && st->appendNext(*v.arr)) {}
@@ -21045,7 +21045,7 @@ Value Interpreter::applyReduce(std::string op, ValueList& items) {
         for (size_t k = items.size() - 1; k-- > 0; ) {
             if (op == "=>") { // `[=>] 1,2,3` keeps the Int keys (like Z=>)
                 Value p = Value::pair(items[k].toStr(), acc);
-                if (items[k].t != VT::Str) p.pairKey = std::make_shared<Value>(items[k]);
+                if (items[k].t != VT::Str) p.pairKeyM() = std::make_shared<Value>(items[k]);
                 acc = p;
             }
             else acc = applyBinOp(op, items[k], acc);
@@ -21137,7 +21137,7 @@ double Interpreter::toleranceDyn() {
 // postfix:<i> — multiply by the imaginary unit; honours .Numeric/.Bridge on
 // objects and type objects (`postfix:<i>(class :: does Numeric {…})`).
 Value Interpreter::postfixI(Value v) {
-    if (v.t == VT::Complex) return Value::complex(-v.im, v.n);
+    if (v.t == VT::Complex) return Value::complex(-v.im(), v.n);
     if (!v.isNumeric()) {
         ClassInfo* ci = nullptr;
         if (v.t == VT::Object && v.obj) ci = v.obj->cls.get();
@@ -21145,7 +21145,7 @@ Value Interpreter::postfixI(Value v) {
         if (ci)
             for (const char* nm : {"Numeric", "Bridge"})
                 if (Value* m = ci->findMethod(nm)) { ValueList none; v = invokeMethod(*m, v, none); break; }
-        if (v.t == VT::Complex) return Value::complex(-v.im, v.n);
+        if (v.t == VT::Complex) return Value::complex(-v.im(), v.n);
     }
     return Value::complex(0.0, v.toNum());
 }
@@ -21163,7 +21163,7 @@ Value Interpreter::postfixI(Value v) {
 // target (Rakudo: array elements are Scalars). A slice returns a fresh list of
 // elements and never comes through here, so it still flattens.
 static Value itemizeElem(const Value& v) {
-    if (v.t != VT::Array || v.itemized || v.ext) return v;
+    if (v.t != VT::Array || v.itemized || v.ext()) return v;
     Value r = v; r.itemized = true; return r;
 }
 
@@ -21222,7 +21222,7 @@ Value Interpreter::evalIndex(Index* idx) {
         if (Value* bp = tctx_.cur->find(static_cast<VarExpr*>(idx->base.get())->name)) {
             // a plain, fully materialised Array: no lazy/extended state, no
             // Failure or other kinded value, nothing with its own AT-POS
-            if (bp->t == VT::Array && bp->arr && !bp->ext && bp->hashKind.empty()) {
+            if (bp->t == VT::Array && bp->arr && !bp->ext() && bp->hashKind.empty()) {
                 long long i = idx->litIdx;
                 bool have = idx->fastShape == 2;
                 if (!have)
@@ -21318,11 +21318,11 @@ Value Interpreter::evalIndex(Index* idx) {
             !(idx->index && idx->index->kind == NK::Unary &&
               static_cast<const Unary*>(idx->index.get())->op == "dimslip")) {
             if (Value* bp = tctx_.cur->find(ve->name)) {
-                if (bp->t == VT::Array && bp->arr && !bp->ext && bp->ofType.empty() &&
+                if (bp->t == VT::Array && bp->arr && !bp->ext() && bp->ofType().empty() &&
                     !bp->pairVal && bp->hashKind.empty()) { // `is default` arrays take the slow path
                     auto arr = bp->arr; // keeps elements alive if the index expr mutates the var
                     Value iv = eval(idx->index.get());
-                    if (iv.t == VT::Int && !iv.big) {
+                    if (iv.t == VT::Int && !iv.big()) {
                         long long ix = iv.i;
                         if (ix < 0) { // negative is out of range (no Python wraparound) → Failure
                             long long sz = (long long)arr->size();
@@ -21500,7 +21500,7 @@ Value Interpreter::evalIndex(Index* idx) {
         Value p = eval(idx->index.get());
         if (p.t == VT::Type) {
             Value ty = Value::typeObj(base.s);
-            ty.ofType = base.ofType.empty() ? p.s : base.ofType + "," + p.s;
+            ty.ofTypeM() = base.ofType().empty() ? p.s : base.ofType() + "," + p.s;
             return ty;
         }
     }
@@ -21545,18 +21545,18 @@ Value Interpreter::evalIndex(Index* idx) {
     // route: its elements are not `low + i`.
     bool endlessArith = false;
     long long endlessLo = 0;
-    if (base.t == VT::Range && base.rTo >= 9000000000000000000LL && !idx->isHash) {
-        endlessArith = !base.rNum && base.ofType != "Str";
-        endlessLo = base.rFrom + (base.rExFrom ? 1 : 0);
+    if (base.t == VT::Range && base.rTo() >= 9000000000000000000LL && !idx->isHash) {
+        endlessArith = !base.rNum() && base.ofType() != "Str";
+        endlessLo = base.rFrom() + (base.rExFrom() ? 1 : 0);
         base = methodCall(base, "list", {});
     }
 
     // A lazy list (infinite `… … *` / lazy `.map`): grow its prefix to cover the
     // requested index/slice before subscripting.
-    if (base.t == VT::Array && base.ext && !idx->isHash) {
+    if (base.t == VT::Array && base.ext() && !idx->isHash) {
         Value iv = eval(idx->index.get());
         // an infinite lazy array has no end: `@a[*-1]` / `@a[*]` can't be indexed
-        if (std::static_pointer_cast<LazySeqState>(base.ext)->infinite &&
+        if (std::static_pointer_cast<LazySeqState>(base.ext())->infinite &&
             (iv.t == VT::Whatever || (iv.t == VT::Code && iv.code && iv.code->isWhateverCode)))
             throw RakuError{Value::typeObj("X::Cannot::Lazy"), "Cannot use a Whatever index on an infinite list"};
         long long maxi = -1;
@@ -21825,7 +21825,7 @@ Value Interpreter::evalIndex(Index* idx) {
                 Value keyTuple = Value::array(keys); keyTuple.isList = true;
                 auto tuplePair = [&](const Value& v2) {
                     Value p = Value::pair(keyTuple.toStr(), v2);
-                    p.pairKey = std::make_shared<Value>(keyTuple);
+                    p.pairKeyM() = std::make_shared<Value>(keyTuple);
                     return p;
                 };
                 auto emptyList = []() { Value e = Value::array(); e.isList = true; return e; };
@@ -21879,7 +21879,7 @@ Value Interpreter::evalIndex(Index* idx) {
                     Value keyTuple = Value::array(tup); keyTuple.isList = true;
                     auto tuplePair = [&](const Value& v2) {
                         Value p = Value::pair(keyTuple.toStr(), v2);
-                        p.pairKey = std::make_shared<Value>(keyTuple);
+                        p.pairKeyM() = std::make_shared<Value>(keyTuple);
                         return p;
                     };
                     if (wantExists) {
@@ -21977,7 +21977,7 @@ Value Interpreter::evalIndex(Index* idx) {
         // not the stringified key a plain Pair would carry.
         auto mkPair = [](const Value& kk, const Value& vv) {
             Value p = Value::pair(kk.toStr(), vv);
-            if (kk.t != VT::Str) p.pairKey = std::make_shared<Value>(kk);
+            if (kk.t != VT::Str) p.pairKeyM() = std::make_shared<Value>(kk);
             return p;
         };
         // a missing element's reported value is the container's typed default —
@@ -21985,7 +21985,7 @@ Value Interpreter::evalIndex(Index* idx) {
         // and stringifies like Rakudo's ("B", Any), not as a blank undefined
         auto missLeaf = [&]() -> Value {
             if (idx->isHash) {
-                if (base.t == VT::Hash && !base.ofType.empty()) return typedElemDefault(base);
+                if (base.t == VT::Hash && !base.ofType().empty()) return typedElemDefault(base);
                 return Value::typeObj("Any");
             }
             Value dv = arrayMissingDefault(base);
@@ -22064,7 +22064,7 @@ Value Interpreter::evalIndex(Index* idx) {
             if (base.t == VT::Hash && !base.hashKind.empty()) // Set/Bag/Mix typed default
                 return base.hashKind.find("Set") == 0 ? Value::boolean(false) : Value::integer(0);
             if (base.pairVal) return *base.pairVal;                // `%h is default(v)`
-            if (!base.ofType.empty()) return typedElemDefault(base); // Hash[Int] -> Int
+            if (!base.ofType().empty()) return typedElemDefault(base); // Hash[Int] -> Int
             return Value::any();
         };
         // hash slice: %h{'a','b'} / %h<a b> — multiple keys yield a list of values
@@ -22137,7 +22137,7 @@ Value Interpreter::evalIndex(Index* idx) {
                 // element, not the two seeds that happened to be materialised.
                 // (fft.raku halves its input that way; a 2-element list sliced
                 // back to 2 recursed until the depth guard fired.)
-                if (iv.t == VT::Array && iv.ext) {
+                if (iv.t == VT::Array && iv.ext()) {
                     for (size_t k = 0; ; k++) {
                         if (k >= iv.arr->size()) {
                             materializeLazy(iv, k + 1);
@@ -22180,12 +22180,12 @@ Value Interpreter::evalIndex(Index* idx) {
                 if (i >= 0 && i < n) {
                     // a hole (deleted slot) in a defaulted/typed array reads as the default
                     if (base.t == VT::Array && (src[i].t == VT::Nil || src[i].t == VT::Any) &&
-                        (base.pairVal || !base.ofType.empty()))
+                        (base.pairVal || !base.ofType().empty()))
                         return arrayMissingDefault(base);
                     return src[i];
                 }
                 if (base.pairVal) return *base.pairVal; // `is default(v)`
-                if (!base.ofType.empty()) return typedElemDefault(base);
+                if (!base.ofType().empty()) return typedElemDefault(base);
                 // A List/Seq/Range indexed out of range yields Nil (List.AT-POS);
                 // only a mutable Array yields the element type default (Any).
                 return (base.t == VT::Range || base.isList) ? Value::nil() : Value::any();
@@ -22208,7 +22208,7 @@ Value Interpreter::evalIndex(Index* idx) {
             // yields its typed default (Any / Str / `is default`), a List/Range Nil
             auto missElem = [&]() -> Value {
                 if (base.pairVal) return *base.pairVal;
-                if (!base.ofType.empty()) return typedElemDefault(base);
+                if (!base.ofType().empty()) return typedElemDefault(base);
                 return (base.t == VT::Range || base.isList) ? Value::nil() : Value::any();
             };
             for (long long k : indices) {
@@ -22276,14 +22276,14 @@ Value Interpreter::eval(Expr* e) {
                 if (const void* p = nl->ratCache.get()) {
                     auto* parts = static_cast<const RatLitParts*>(p);
                     Value v; v.t = VT::Rat;
-                    v.ratN = parts->n;
-                    v.ratD = parts->d;
+                    v.ratNM() = parts->n;
+                    v.ratDM() = parts->d;
                     return v;
                 }
                 Value first = nl->bigNum.empty()
                     ? Value::ratZ(BigInt(nl->ratNum), BigInt(nl->ratDen))         // 3.14 is a Rat
                     : Value::ratZ(BigInt::fromString(nl->bigNum), BigInt::fromString(nl->bigDen));
-                auto* mine = new RatLitParts{first.ratN, first.ratD};
+                auto* mine = new RatLitParts{first.ratN(), first.ratD()};
                 if (nl->ratCache.publish(mine) != mine) delete mine; // another thread won
                 return first;
             }
@@ -22307,7 +22307,7 @@ Value Interpreter::eval(Expr* e) {
             if (!rl->declKind.empty()) {
                 Value v = Value::regex(rl->pattern);
                 v.hashKind = rl->declKind;
-                v.ext = std::static_pointer_cast<void>(tctx_.cur);
+                v.extM() = std::static_pointer_cast<void>(tctx_.cur);
                 return v;
             }
             // rx// is always the Regex object; bare /…/ and m// match against $_
@@ -22779,7 +22779,7 @@ Value Interpreter::eval(Expr* e) {
                         return makeRolePun(rit->second.get(), n, argv);
                     }
                 }
-                Value ty = Value::typeObj(n); ty.ofType = nt->ofType;
+                Value ty = Value::typeObj(n); ty.ofTypeM() = nt->ofType;
                 ty.i = nt->defConstraint;
                 return ty;
             }
@@ -22962,7 +22962,7 @@ Value Interpreter::eval(Expr* e) {
                         (v.hashKind.empty() || v.hashKind == "Map")) {
                         for (auto& kv : *v.hash) {
                             Value p = Value::pair(kv.first, kv.second);
-                            p.pairKey = kv.second.pairKey;
+                            p.pairKeyM() = kv.second.pairKey();
                             items.push_back(std::move(p));
                         }
                         continue;
@@ -23018,7 +23018,7 @@ Value Interpreter::eval(Expr* e) {
                 // Spreading every Range item made that four hundred elements of
                 // the wrong type, and the check that rejected it was right to.
                 else if (v.t == VT::Range && l->items.size() == 1 &&
-                         !v.rExFrom && v.rTo - v.rFrom < 1000000) {
+                         !v.rExFrom() && v.rTo() - v.rFrom() < 1000000) {
                     for (auto& x : v.flatten()) a.arr->push_back(x);
                 }
                 else {
@@ -23227,8 +23227,8 @@ Value Interpreter::eval(Expr* e) {
                 // span guard keeps $<child>.make(x) off the parent's slot
                 if (!tctx_.makeTargets.empty()) {
                     Value* t = tctx_.makeTargets.back();
-                    if (t && t->t == VT::Match && t->rFrom == inv.rFrom &&
-                        t->rTo == inv.rTo && t->s == inv.s)
+                    if (t && t->t == VT::Match && t->rFrom() == inv.rFrom() &&
+                        t->rTo() == inv.rTo() && t->s == inv.s)
                         t->pairVal = std::make_shared<Value>(v);
                 }
                 return v;
@@ -23584,7 +23584,7 @@ Value Interpreter::eval(Expr* e) {
                     // (raku/gist, smartmatch, and flatten() render chars from it)
                     Value rr = Value::range(u8FirstCp(from.s), u8FirstCp(to.s),
                                             r->exFrom, r->exTo);
-                    rr.ofType = "Str"; // endpoint text derives from the codepoints
+                    rr.ofTypeM() = "Str"; // endpoint text derives from the codepoints
                     return rr;
                 }
                 return strRangeList(from.s, to.s, r->exFrom, r->exTo);
@@ -23608,14 +23608,14 @@ Value Interpreter::eval(Expr* e) {
                     std::isfinite(from.toNum()) && std::isfinite(to.toNum())) {
                     Value rr = Value::range((long long)std::floor(from.toNum()),
                                             (long long)std::floor(to.toNum()), r->exFrom, r->exTo);
-                    rr.rNum = true; rr.n = from.toNum(); rr.im = to.toNum();
+                    rr.rNumM() = true; rr.n = from.toNum(); rr.imM() = to.toNum();
                     setRangeEnds(rr, from, to); // a Rat endpoint stays a Rat
                     return rr;
                 }
             }
             {
                 Value rr = Value::range(from.toInt(), to.toInt(), r->exFrom, r->exTo);
-                if (to.t == VT::Int && to.big) rr.big = to.big; // keep the big bound (pick/roll sample it)
+                if (to.t == VT::Int && to.big()) rr.bigM() = to.big(); // keep the big bound (pick/roll sample it)
                 setRangeEnds(rr, from, to);
                 return rr;
             }
@@ -23630,7 +23630,7 @@ Value Interpreter::eval(Expr* e) {
                 if (kv.t == VT::Int || kv.t == VT::Num || kv.t == VT::Rat || kv.t == VT::Bool ||
                     kv.t == VT::Array || kv.t == VT::Hash || kv.t == VT::Object || kv.t == VT::Pair ||
                     kv.t == VT::Match || kv.t == VT::Code ||
-                    kv.t == VT::Range) pr.pairKey = std::make_shared<Value>(kv);
+                    kv.t == VT::Range) pr.pairKeyM() = std::make_shared<Value>(kv);
                 return pr;
             }
             return Value::pair(p->key, evalValueOf(p->value.get())); // `:err(/pat/)` → Regex value

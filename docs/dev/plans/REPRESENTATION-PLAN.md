@@ -266,6 +266,53 @@ That is a batch of its own.
 1.64×), is ~1,550 sites, and IS source-compatible if the replacement exposes
 `std::map`'s API. On the measurements, phase 2 should come first.
 
+**LANDED (2026-08-22), as the revised cold-block design.** `ValueExt` holds
+the census-licensed fields — `big`, `ratN`, `ratD`, `fatRat`, `shape`,
+`pairKey`, `ext`, `im`, the five range fields and `ofType` — behind one
+`shared_ptr<ValueExt> x_` that stays null on almost every Value.
+**`sizeof(Value)` 344 → 200** (`ValueExt` itself is 152, allocated only when
+one of its fields is set). The block is copy-on-write: a Value copy shares it
+(one shared_ptr where ~148 inline bytes used to copy), and every write goes
+through `xw()`, which clones a block another Value can still see —
+`use_count` is an atomic read, and the write-after-copy clone is the rare
+case by the census. Reads (`v.big()`) go through `xr()` and never allocate;
+writes are the `M`-suffixed accessors (`v.bigM() = …`). The one deviation
+from the sketch above: the BigInts stayed `shared_ptr` INSIDE the block
+rather than by-value — it keeps the 128 `if (v.big())` truthiness sites'
+semantics, and the one-allocation-Rat can still be taken later inside the
+block without touching call sites again.
+
+The conversion was compiler-driven, as batch 1's surface trick promised:
+every site was mechanically rewritten to the read accessor, then const-ness
+errors enumerated the ~156 write sites and "no call operator" errors
+enumerated the AST-node fields (`IntLit::big`, `NameTerm::ofType`) that
+share the names and had to stay fields. One genuinely silent surface
+existed — Codegen EMITS `.rFrom`/`.ofType` inside string literals for the
+`--exe` range-loop lowering, which no compiler pass of rakupp itself checks —
+caught by the t/ suite's native-binary goldens.
+
+Measured, same idle machine (Darwin 25.5), A/B against the same-day
+pre-change build, release binaries, best-of-6:
+
+| | pre | post | |
+|---|---:|---:|---:|
+| perf-guard, all 7 kernels | — | — | −6% … −13% |
+| bench `sortnums` | 65.3 ms | 48.5 ms | −26% |
+| bench `arrayops` | 123.6 ms | 98.9 ms | −20% |
+| bench `hashfill` | 241.6 ms | 204.3 ms | −15% |
+| bench `hash` | 43.0 ms | 37.6 ms | −13% |
+| bench `streq` | 626.7 ms | 546.9 ms | −13% |
+| remaining 5 kernels | — | — | −3% … −11% |
+| JSON::Fast `from-json` (347 KB, interpreted) | 700 ms | 643 ms | −8% |
+| grammar capturing parse (51 KB) | 66.7 ms/parse | 56.6 ms | −15% (nocap flat) |
+| `hashfill` peak RSS | 244.9 MB | 148.8 MB | −39% |
+
+Gates: t/run.raku 499/499 including every `--exe`/`--slim` golden; full Roast
+per-file PASS diff vs a same-day pristine-build baseline **empty in both
+directions** (634 files); parmap correct under GIL and `RAKUPP_PARALLEL=1`
+with no ThreadSanitizer reports through the new CoW accessors; the
+`-DRAKUPP_PTR_CENSUS` build still compiles (ptrMask reads through the block).
+
 #### Batch 3 — grammar-parse result trees: FlatMap children + memo reaper (2026-08-13)
 
 Sibling of this campaign on the GRAMMAR path, driven by the

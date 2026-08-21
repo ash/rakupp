@@ -25,12 +25,12 @@ namespace rakupp {
 static Value attrTypeValue(const ClassAttr& a) {
     if (a.sigil == '@') {
         Value v = Value::typeObj("Positional");
-        v.ofType = a.type;
+        v.ofTypeM() = a.type;
         return v;
     }
     if (a.sigil == '%') {
         Value v = Value::typeObj("Associative");
-        v.ofType = a.type;
+        v.ofTypeM() = a.type;
         return v;
     }
     return Value::typeObj(a.type.empty() ? "Mu" : a.type);
@@ -100,7 +100,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if (m == "Promise") {
             Value p = Value::makeHash(); p.hashKind = "Promise";
             auto ps = std::make_shared<PromiseState>();
-            p.ext = ps;
+            p.extM() = ps;
             (*p.hash)["status"] = Value::str("Planned");
             auto ph = p.hash;
             auto last = std::make_shared<Value>(Value::any());
@@ -172,8 +172,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 (*c.hash)["queue"] = Value::array();
                 (*c.hash)["closed"] = Value::boolean(false);
                 auto ps = std::make_shared<PromiseState>();
-                c.ext = ps;
-                Value cp = Value::makeHash(); cp.hashKind = "Promise"; cp.ext = ps;
+                c.extM() = ps;
+                Value cp = Value::makeHash(); cp.hashKind = "Promise"; cp.extM() = ps;
                 (*cp.hash)["status"] = Value::str("Planned");
                 (*c.hash)["closedPromise"] = cp;
                 auto ch = c.hash;
@@ -302,8 +302,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             Value c = Value::makeHash(); c.hashKind = "Channel";
             Value q = Value::array(); *q.arr = vals(); (*c.hash)["queue"] = q;
             (*c.hash)["closed"] = Value::boolean(true);
-            auto ps = std::make_shared<PromiseState>(); ps->done = true; ps->result = Value::boolean(true); c.ext = ps;
-            Value cp = Value::makeHash(); cp.hashKind = "Promise"; cp.ext = ps; (*cp.hash)["status"] = Value::str("Kept");
+            auto ps = std::make_shared<PromiseState>(); ps->done = true; ps->result = Value::boolean(true); c.extM() = ps;
+            Value cp = Value::makeHash(); cp.hashKind = "Promise"; cp.extM() = ps; (*cp.hash)["status"] = Value::str("Kept");
             (*c.hash)["closedPromise"] = cp;
             return c;
         }
@@ -538,8 +538,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // inner taps, CLOSE phasers, and I/O workers via the TapHandle.
         if (m == "close") {
             if (inv.hash) (*inv.hash)["closed"] = Value::boolean(true);
-            if (inv.ext && inv.hash && inv.hash->count("wired") && (*inv.hash)["wired"].truthy())
-                closeTapHandle(std::static_pointer_cast<TapHandle>(inv.ext));
+            if (inv.ext() && inv.hash && inv.hash->count("wired") && (*inv.hash)["wired"].truthy())
+                closeTapHandle(std::static_pointer_cast<TapHandle>(inv.ext()));
             return Value::boolean(true);
         }
         if (m == "emit" || m == "done" || m == "quit") return Value::boolean(true);
@@ -797,7 +797,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if (m == "close") return Value::boolean(true);
     }
     if (inv.t == VT::Hash && (inv.hashKind == "Promise" || inv.hashKind == "Vow")) {
-        auto ps = inv.ext ? std::static_pointer_cast<PromiseState>(inv.ext) : nullptr;
+        auto ps = inv.ext() ? std::static_pointer_cast<PromiseState>(inv.ext()) : nullptr;
         std::string kind = inv.hash->count("kind") ? (*inv.hash)["kind"].toStr() : "";
 
         // keep / break — settle a manual promise (or the vow that controls it).
@@ -845,7 +845,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // Fold the state of an anyof/allof combinator lazily from its children.
         auto childState = [&](Value& c, bool& done, bool& broken) {
             done = broken = false;
-            if (c.ext) { auto s = std::static_pointer_cast<PromiseState>(c.ext); done = s->done; broken = s->broken; }
+            if (c.ext()) { auto s = std::static_pointer_cast<PromiseState>(c.ext()); done = s->done; broken = s->broken; }
             else if (c.hash && c.hash->count("status")) { auto s = (*c.hash)["status"].toStr(); broken = (s == "Broken"); done = (s == "Kept" || s == "Broken"); }
         };
         auto comboStatus = [&]() -> std::string {
@@ -880,7 +880,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             Value cb = args.empty() ? Value::nil() : args[0];
             Value parent = inv; // shares hash/ext with the promise → `$res === $orig` holds
             auto childPs = std::make_shared<PromiseState>();
-            Value np = Value::makeHash(); np.hashKind = "Promise"; np.ext = childPs;
+            Value np = Value::makeHash(); np.hashKind = "Promise"; np.extM() = childPs;
             (*np.hash)["status"] = Value::str("Planned");
             Interpreter* self = this;
             std::function<void()> run = [self, cb, parent, childPs]() mutable {
@@ -983,11 +983,11 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         BigInt n = args.size() > 0 ? args[0].toBig() : BigInt(0);
         BigInt d = args.size() > 1 ? args[1].toBig() : BigInt(1);
         Value v = Value::ratZ(std::move(n), std::move(d));
-        if (inv.s == "FatRat") v.fatRat = true;
+        if (inv.s == "FatRat") v.fatRatM() = true;
         // Rat denominators are capped at uint64 (FatRat is arbitrary): a wider one
         // degrades to Num at construction too — Rat.new(10**400, 9**999).Str is "0"
         // (the value underflows a double), matching the arithmetic spill rule.
-        else if (v.ratD && !v.ratD->fitsU64()) return Value::number(v.toNum());
+        else if (v.ratD() && !v.ratD()->fitsU64()) return Value::number(v.toNum());
         return v;
     }
     if (inv.t == VT::Type && (inv.s == "IO::String" || inv.s == "Text::IO::String")) {
@@ -1006,7 +1006,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         }
     }
     if (inv.t == VT::Hash && (inv.hashKind == "Lock" || inv.hashKind == "Lock::Async")) {
-        auto st = inv.ext ? std::static_pointer_cast<LockState>(inv.ext) : nullptr;
+        auto st = inv.ext() ? std::static_pointer_cast<LockState>(inv.ext()) : nullptr;
         if (m == "protect" || m == "protect-or-queue-on-recursion") {
             if (args.empty() || args[0].t != VT::Code) return args.empty() ? Value::any() : args[0];
             if (st) { // real mutual exclusion, released even if the block throws
@@ -1024,7 +1024,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if (m == "condition") { Value v = Value::makeHash(); v.hashKind = "Lock"; return v; }
     }
     if (inv.t == VT::Hash && inv.hashKind == "Semaphore") {
-        auto st = inv.ext ? std::static_pointer_cast<SemaphoreState>(inv.ext) : nullptr;
+        auto st = inv.ext() ? std::static_pointer_cast<SemaphoreState>(inv.ext()) : nullptr;
         if (m == "acquire") {
             if (st) { std::unique_lock<std::mutex> lk(st->m); st->cv.wait(lk, [&]{ return st->count > 0; }); st->count--; }
             return Value::boolean(true);
@@ -1674,7 +1674,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         std::string text = (size_t)from <= orig.size()
                          ? orig.substr((size_t)from, (size_t)(pos - from)) : std::string();
         Value mv = Value::matchVal(text, (long)from, (long)pos);
-        mv.ext = std::make_shared<std::string>(orig);
+        mv.extM() = std::make_shared<std::string>(orig);
         if (list.t == VT::Array && list.arr) *mv.arr = *list.arr;
         if (hash.t == VT::Hash && hash.hash) *mv.hash = *hash.hash;
         return mv;
@@ -1709,7 +1709,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         }
     }
     if (inv.t == VT::Type && (inv.s == "List" || inv.s == "Array" || inv.s == "Seq" || inv.s == "array") && m == "new") {
-        if (inv.s == "array" && inv.ofType.empty()) // native arrays need a type parameter
+        if (inv.s == "array" && inv.ofType().empty()) // native arrays need a type parameter
             throw RakuError{Value::typeObj("X::MustBeParametric"),
                             "Must first parameterize the vector type, e.g.: array[int32]"};
         // Seq.new(iterator-object): a user object doing Iterator drains by pull-one
@@ -1725,7 +1725,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             }
             return v;
         }
-        Value v = Value::array(); v.isList = (inv.s == "List" || inv.s == "Seq"); v.ofType = inv.ofType;
+        Value v = Value::array(); v.isList = (inv.s == "List" || inv.s == "Seq"); v.ofTypeM() = inv.ofType();
         std::vector<long long> dims;
         ValueList seed;
         for (auto& a : args) {
@@ -1735,8 +1735,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             }
             for (auto& x : toList(a)) seed.push_back(x);
         }
-        if (!dims.empty()) { // shaped array — pre-sized, row-major, tagged with .shape
-            std::string et = v.ofType == "Any" || v.ofType == "Mu" ? "" : v.ofType;
+        if (!dims.empty()) { // shaped array — pre-sized, row-major, tagged with .shape()
+            std::string et = v.ofType() == "Any" || v.ofType() == "Mu" ? "" : v.ofType();
             Value s = makeShapedContainer(dims, et, seed.empty() ? nullptr : &seed);
             s.isList = v.isList;
             return s;
@@ -1747,7 +1747,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     if (inv.t == VT::Type && (inv.s == "Hash" || inv.s == "Map") && m == "Map")
         return Value::typeObj("Map"); // Hash.Map on the type object is the Map type
     if (inv.t == VT::Type && (inv.s == "Hash" || inv.s == "Map") && m == "new") {
-        Value v = Value::makeHash(); v.ofType = inv.ofType;
+        Value v = Value::makeHash(); v.ofTypeM() = inv.ofType();
         if (inv.s == "Map") v.hashKind = "Map"; // a Map is a distinct (immutable) type
         // The arguments FLATTEN before they are paired up, and they flatten all the
         // way down — `Hash.new((("a","1"),("b","2")))` is {a => 1, b => 2}, same as
@@ -2307,7 +2307,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     od->cls = ci; od->hasBoxed = true;
                     if (nb == "Hash" || nb == "Map") od->boxed = Value::makeHash();
                     else { od->boxed = Value::array(); od->boxed.isList = (nb == "List"); }
-                    od->boxed.ofType = inv.ofType; // A[Int] -> element type on the box
+                    od->boxed.ofTypeM() = inv.ofType(); // A[Int] -> element type on the box
                     for (auto& arg : args)
                         if (arg.t == VT::Pair) {
                             const ClassAttr* at = ci->findAttr(arg.s);
@@ -2942,12 +2942,12 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if (m == "close") { if (fd >= 0) ::close(fd); (*inv.hash)["fd"] = Value::integer(-1); return Value::boolean(true); }
     }
 
-    if (inv.t == VT::Range && (m == "pick" || m == "roll") && inv.big) {
+    if (inv.t == VT::Range && (m == "pick" || m == "roll") && inv.big()) {
         // a Range with a BIG upper endpoint (`^(2**100)`): uniform BigInt draws
         // in [rFrom, bound) by limb-wise rejection sampling
-        BigInt bound = *inv.big;
-        if (!inv.rExTo) bound = bound + BigInt(1);
-        BigInt span = bound - BigInt(inv.rFrom);
+        BigInt bound = *inv.big();
+        if (!inv.rExTo()) bound = bound + BigInt(1);
+        BigInt span = bound - BigInt(inv.rFrom());
         if (span.sign > 0) {
             auto draw = [&]() -> Value {
                 const auto& sm = span.mag;
@@ -2959,7 +2959,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     c.sign = 1; c.trim();
                     if (BigInt::cmpMag(c, span) < 0) break;
                 }
-                return Value::bigint(c + BigInt(inv.rFrom));
+                return Value::bigint(c + BigInt(inv.rFrom()));
             };
             if (args.empty()) return draw();
             bool all = args[0].t == VT::Whatever || (args[0].isNumeric() && std::isinf(args[0].toNum()));
@@ -2977,7 +2977,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         }
     }
     if (inv.t == VT::Range && (m == "pick" || m == "roll")) {
-        long long lo = inv.rFrom, hi = inv.rTo;
+        long long lo = inv.rFrom(), hi = inv.rTo();
         // integer spans sample directly — flattening ^2**40 (or ^2**20, 200 times) hangs
         if (hi >= lo && (unsigned long long)(hi - lo) >= 1024) {
             unsigned long long span = (unsigned long long)(hi - lo) + 1; // 0 == full 64-bit width
@@ -3054,10 +3054,10 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // Complex → Real conversions need |im| within $*TOLERANCE (default 1e-15),
         // so Num(exp i*π) works but a tightened tolerance throws (X::Numeric::Real)
         double tol = toleranceDyn();
-        if (std::fabs(inv.im) > tol * std::max(1.0, std::fabs(inv.n)))
+        if (std::fabs(inv.im()) > tol * std::max(1.0, std::fabs(inv.n)))
             throw RakuError{Value::typeObj("X::Numeric::Real"),
-                            "Cannot convert " + cnum::to_string(inv.n) + (inv.im < 0 ? "" : "+") +
-                            cnum::to_string(inv.im) + "i to " + m + ": imaginary part not zero"};
+                            "Cannot convert " + cnum::to_string(inv.n) + (inv.im() < 0 ? "" : "+") +
+                            cnum::to_string(inv.im()) + "i to " + m + ": imaginary part not zero"};
         Value re = Value::number(inv.n);
         if (m == "Int") return Value::integer((long long)inv.n);
         if (m == "Rat" || m == "FatRat") return methodCall(re, m, {});
@@ -3073,7 +3073,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             ValueList a2 = args;
             return methodCall(numifyStr(Value::number(x).toStr()), m, a2, nullptr).toNum();
         };
-        return Value::complex(f(inv.n), f(inv.im));
+        return Value::complex(f(inv.n), f(inv.im()));
     }
     if (m == "Int") {
         // ±Inf / NaN cannot convert to Int (X::Numeric::CannotConvert)
@@ -3082,7 +3082,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                             "Cannot convert " + inv.toStr() + " to Int"};
         // a zero-denominator Rat FAILS on Int coercion (a Failure, not a throw —
         // fails-like requires the returned unhandled Failure)
-        if (inv.t == VT::Rat && inv.ratD && inv.ratD->isZero()) {
+        if (inv.t == VT::Rat && inv.ratD() && inv.ratD()->isZero()) {
             Value f = Value::makeHash(); f.hashKind = "Failure";
             (*f.hash)["exception"] = Value::typeObj("X::Numeric::DivideByZero");
             return f;
@@ -3116,12 +3116,12 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if (inv.t == VT::Range) { ValueList none; return methodCall(inv, "elems", none); }
         // …and an Int that outgrew long long stays exact: toInt() saturates, so
         // `(2**64).Int` answered 9223372036854775807.
-        if (inv.t == VT::Int && inv.big) return Value::bigint(*inv.big);
+        if (inv.t == VT::Int && inv.big()) return Value::bigint(*inv.big());
         return Value::integer(inv.toInt());
     }
     if (m == "isNaN") {
         if (inv.t == VT::Num) return Value::boolean(std::isnan(inv.n));
-        if (inv.t == VT::Rat) return Value::boolean(inv.ratD && inv.ratD->isZero() && inv.ratN && inv.ratN->isZero()); // 0/0
+        if (inv.t == VT::Rat) return Value::boolean(inv.ratD() && inv.ratD()->isZero() && inv.ratN() && inv.ratN()->isZero()); // 0/0
         if (inv.t == VT::Int || inv.t == VT::Bool) return Value::boolean(false);
     }
     if (m == "Num") {
@@ -3443,8 +3443,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // offset unchanged. Falling back to `mv.s` — the MATCHED text — silently
         // clamped the offset to the match's own length, which turned a submatch's
         // `.from` into its length.
-        if (!mv.ext) return Value::integer((long long)byteOff);
-        const std::string& orig = *std::static_pointer_cast<std::string>(mv.ext);
+        if (!mv.ext()) return Value::integer((long long)byteOff);
+        const std::string& orig = *std::static_pointer_cast<std::string>(mv.ext());
         size_t b = std::min((size_t)byteOff, orig.size());
         for (size_t i = 0; i < b; i++)             // pure ASCII: byte == grapheme
             if ((unsigned char)orig[i] >= 0x80)
@@ -3455,19 +3455,19 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     // the last. `$/.list.from` is how a :g match reports where its matches start.
     if ((m == "from" || m == "to") && inv.t == VT::Array && inv.arr && !inv.arr->empty()) {
         const Value& end = m == "from" ? inv.arr->front() : inv.arr->back();
-        if (end.t == VT::Match) return graphemeOff(end, m == "from" ? end.rFrom : end.rTo);
+        if (end.t == VT::Match) return graphemeOff(end, m == "from" ? end.rFrom() : end.rTo());
     }
-    if (inv.t == VT::Match && (m == "from")) return graphemeOff(inv, inv.rFrom);
-    if (inv.t == VT::Match && (m == "to")) return graphemeOff(inv, inv.rTo);
+    if (inv.t == VT::Match && (m == "from")) return graphemeOff(inv, inv.rFrom());
+    if (inv.t == VT::Match && (m == "to")) return graphemeOff(inv, inv.rTo());
     // `.pos` is where the engine has got to — meaningful on a match IN PROGRESS
     // (inside a `{…}` block), where it is the end of what has matched so far.
-    if (inv.t == VT::Match && (m == "pos")) return graphemeOff(inv, inv.rTo);
+    if (inv.t == VT::Match && (m == "pos")) return graphemeOff(inv, inv.rTo());
     // `.target` is `.orig` under its Cursor-era name
     if (inv.t == VT::Match && (m == "orig" || m == "target" || m == "prematch" || m == "postmatch")) {
-        std::string orig = inv.ext ? *std::static_pointer_cast<std::string>(inv.ext) : inv.s;
+        std::string orig = inv.ext() ? *std::static_pointer_cast<std::string>(inv.ext()) : inv.s;
         if (m == "orig" || m == "target") return Value::str(orig);
-        if (m == "prematch") return Value::str(orig.substr(0, std::min((size_t)inv.rFrom, orig.size())));
-        return Value::str((size_t)inv.rTo <= orig.size() ? orig.substr(inv.rTo) : "");
+        if (m == "prematch") return Value::str(orig.substr(0, std::min((size_t)inv.rFrom(), orig.size())));
+        return Value::str((size_t)inv.rTo() <= orig.size() ? orig.substr(inv.rTo()) : "");
     }
     // Match.join joins the POSITIONAL CAPTURES (a Match is a Capture):
     // UUID.Str splits the hex run with /(....)(....).../ then .join("-")
@@ -3492,12 +3492,12 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         }
         std::stable_sort(entries.begin(), entries.end(),
                          [](const std::pair<Value, Value>& a, const std::pair<Value, Value>& b) {
-                             return a.second.rFrom < b.second.rFrom;
+                             return a.second.rFrom() < b.second.rFrom();
                          });
         Value o = Value::array(); o.isList = true;
         for (auto& e : entries) {
             Value p = Value::pair(e.first.t == VT::Str ? e.first.s : e.first.toStr(), e.second);
-            if (e.first.t != VT::Str) p.pairKey = std::make_shared<Value>(e.first);
+            if (e.first.t != VT::Str) p.pairKeyM() = std::make_shared<Value>(e.first);
             o.arr->push_back(std::move(p));
         }
         return o;
@@ -3509,7 +3509,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         Value o = Value::array(); o.isList = true;
         // Set/Bag/Mix keep the element's original type in the count's pairKey.
         auto typedKey = [](const std::pair<const std::string, Value>& kv) {
-            return kv.second.pairKey ? *kv.second.pairKey : Value::str(kv.first);
+            return kv.second.pairKey() ? *kv.second.pairKey() : Value::str(kv.first);
         };
         if (m == "keys") {
             if (inv.arr) for (size_t i = 0; i < inv.arr->size(); i++) o.arr->push_back(Value::integer((long long)i));
@@ -3524,7 +3524,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             }
             if (inv.hash) for (auto& kv : *inv.hash) {
                 if (m == "kv") { o.arr->push_back(typedKey(kv)); o.arr->push_back(kv.second); }
-                else { Value p = Value::pair(kv.first, kv.second); p.pairKey = kv.second.pairKey; o.arr->push_back(std::move(p)); }
+                else { Value p = Value::pair(kv.first, kv.second); p.pairKeyM() = kv.second.pairKey(); o.arr->push_back(std::move(p)); }
             }
         }
         return o;
@@ -3534,22 +3534,22 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     if (m == "of" && (inv.t == VT::Array || inv.t == VT::Hash)) {
         // a quanthash's ofType is its KEY parameter; .of is the fixed value type
         if (inv.t == VT::Hash) if (const char* vt = quantValueType(inv.hashKind)) return Value::typeObj(vt);
-        if (inv.ofType.empty()) return Value::typeObj("Mu");
-        std::string ot = inv.ofType; auto c = ot.find(','); if (c != std::string::npos) ot = ot.substr(0, c);
+        if (inv.ofType().empty()) return Value::typeObj("Mu");
+        std::string ot = inv.ofType(); auto c = ot.find(','); if (c != std::string::npos) ot = ot.substr(0, c);
         return Value::typeObj(ot);
     }
     if (m == "WHAT") {
         // typed container -> its parameterized type object (Array[Int] / Hash[Int,Str])
-        if ((inv.t == VT::Array || inv.t == VT::Hash) && !inv.ofType.empty()) {
+        if ((inv.t == VT::Array || inv.t == VT::Hash) && !inv.ofType().empty()) {
             Value ty = Value::typeObj(inv.t == VT::Array ? "Array" : "Hash");
-            ty.ofType = inv.ofType;
+            ty.ofTypeM() = inv.ofType();
             return ty;
         }
         if (inv.t == VT::Type) return inv; // a (parameterized) type object is its own .WHAT
         // native-container subclass instance parameterized as A[Int]
         if (inv.t == VT::Object && inv.obj && inv.obj->hasBoxed && inv.obj->cls &&
-            !inv.obj->boxed.ofType.empty()) {
-            Value ty = Value::typeObj(inv.obj->cls->name); ty.ofType = inv.obj->boxed.ofType; return ty;
+            !inv.obj->boxed.ofType().empty()) {
+            Value ty = Value::typeObj(inv.obj->cls->name); ty.ofTypeM() = inv.obj->boxed.ofType(); return ty;
         }
         return Value::typeObj(inv.typeName());
     }
@@ -3559,7 +3559,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         bool lazy = false;
         if (inv.t == VT::Array && inv.arr) { *items.arr = *inv.arr; lazy = inv.b; }
         else if (inv.t == VT::Range) { *items.arr = inv.flatten();
-            lazy = inv.b || inv.rTo >= 9000000000000000000LL; } // infinite / `lazy`-marked range
+            lazy = inv.b || inv.rTo() >= 9000000000000000000LL; } // infinite / `lazy`-marked range
         else if (inv.t == VT::Hash) { // plain hash and Set/Bag/Mix iterate their pairs
             ValueList none;
             Value ps = methodCall(inv, "pairs", none, nullptr);
@@ -3770,7 +3770,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     // a Capture is already one
     if (m == "Capture" && inv.t == VT::Array && inv.hashKind == "Capture") return inv;
     if (m == "Set" || m == "SetHash" || m == "Bag" || m == "BagHash" || m == "Mix" || m == "MixHash") {
-        if (inv.t == VT::Range && inv.rTo >= 9000000000000000000LL)
+        if (inv.t == VT::Range && inv.rTo() >= 9000000000000000000LL)
             throwTyped("X::Cannot::Lazy", {{"what", m}}, "Cannot " + m + " a lazy list");
         // the coercer flattens one level, but only through a bare LIST:
         // (@a, %h).Bag takes @a's elements and %h's pairs. A real Array's
@@ -3786,7 +3786,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                      (x.hashKind.empty() || x.hashKind == "Map" || quantValueType(x.hashKind))) {
                 for (auto& kv : *x.hash) {
                     Value p = Value::pair(kv.first, kv.second);
-                    p.pairKey = kv.second.pairKey;
+                    p.pairKeyM() = kv.second.pairKey();
                     items.push_back(p);
                 }
             }

@@ -25,7 +25,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
     auto a0 = [&]() -> Value { return args.empty() ? Value::any() : args[0]; };
     if (m == "fmt" && inv.t == VT::Pair)
         return Value::str(doSprintf(args.empty() ? "%s\t%s" : a0().toStr(),
-                                    {inv.pairKey ? *inv.pairKey : Value::str(inv.s),
+                                    {inv.pairKey() ? *inv.pairKey() : Value::str(inv.s),
                                      inv.pairVal ? *inv.pairVal : Value::any()}));
     if (m == "fmt" && inv.t != VT::Array && inv.t != VT::Range && inv.t != VT::Hash)
         return Value::str(doSprintf(args.empty() ? "%s" : a0().toStr(), {inv}));
@@ -118,8 +118,8 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
     // .lsb / .msb — least / most significant set bit of an Int (Nil for 0).
     if ((m == "lsb" || m == "msb") && (inv.t == VT::Int || inv.t == VT::Bool)) {
         // a BIG integer counts its bits by halving — 64 bits is not the limit
-        if (inv.big && !inv.big->fitsLL()) {
-            BigInt n = inv.big->abs(), two(2LL), q, r;
+        if (inv.big() && !inv.big()->fitsLL()) {
+            BigInt n = inv.big()->abs(), two(2LL), q, r;
             if (n.isZero()) return Value::nil();
             long long lsb = -1, bit = 0;
             while (!n.isZero()) {
@@ -146,8 +146,8 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
     }
     // numeric .narrow — smallest type that holds the value exactly
     if (m == "narrow" && inv.isNumeric()) {
-        if (inv.t == VT::Rat && inv.ratN && inv.ratD && inv.ratD->fitsLL() && inv.ratD->toLL() == 1)
-            return Value::bigint(*inv.ratN);
+        if (inv.t == VT::Rat && inv.ratN() && inv.ratD() && inv.ratD()->fitsLL() && inv.ratD()->toLL() == 1)
+            return Value::bigint(*inv.ratN());
         if (inv.t == VT::Num && !std::isinf(inv.n) && !std::isnan(inv.n) && inv.n == (long long)inv.n)
             return Value::integer((long long)inv.n);
         return inv;
@@ -174,12 +174,12 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         return out;
     }
     // Rat.base-repeating($radix) — (non-repeating part, repeating cycle)
-    if (m == "base-repeating" && inv.t == VT::Rat && inv.ratN && inv.ratD && !args.empty()) {
+    if (m == "base-repeating" && inv.t == VT::Rat && inv.ratN() && inv.ratD() && !args.empty()) {
         long long base = a0().toInt();
         if (base < 2 || base > 36) return Value::typeObj("Failure");
         auto digchr = [](int d) -> char { return d < 10 ? char('0' + d) : char('A' + d - 10); };
-        BigInt n = inv.ratN->abs(), d = inv.ratD->abs();
-        std::string sign = inv.ratN->sign < 0 ? "-" : "";
+        BigInt n = inv.ratN()->abs(), d = inv.ratD()->abs();
+        std::string sign = inv.ratN()->sign < 0 ? "-" : "";
         BigInt q, r; BigInt::divmod(n, d, q, r);
         std::string whole = sign + q.toString(); // NB: decimal digits of the WHOLE part are base-10 for base 10 only
         if (base != 10) { // re-render the whole part in the target base
@@ -244,9 +244,9 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
     // methodCallPart3, which runs before this file — no Array arm here.)
     if (inv.t == VT::Pair) {
         if (m == "Pair") return inv;   // .Pair on a Pair is itself
-        if (m == "key") return inv.pairKey ? *inv.pairKey : Value::str(inv.s); // object/array keys preserved
+        if (m == "key") return inv.pairKey() ? *inv.pairKey() : Value::str(inv.s); // object/array keys preserved
         if (m == "value") return inv.pairVal ? *inv.pairVal : Value::any();
-        if (m == "kv") { Value o = Value::array({inv.pairKey ? *inv.pairKey : Value::str(inv.s), inv.pairVal ? *inv.pairVal : Value::any()}); o.isList = true; return o; }
+        if (m == "kv") { Value o = Value::array({inv.pairKey() ? *inv.pairKey() : Value::str(inv.s), inv.pairVal ? *inv.pairVal : Value::any()}); o.isList = true; return o; }
         if (m == "antipair") return Value::pair((inv.pairVal ? inv.pairVal->toStr() : ""), Value::str(inv.s));
         // `.freeze` snapshots the value out of its container. rakupp's Pair already
         // copies rather than binding, so the pair is frozen the moment it is built —
@@ -263,7 +263,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         // not an index (that is what a Positional would answer).
         if (m == "keys" || m == "values" || m == "pairs") {
             Value o = Value::array(); o.isList = true;
-            o.arr->push_back(m == "keys"   ? (inv.pairKey ? *inv.pairKey : Value::str(inv.s))
+            o.arr->push_back(m == "keys"   ? (inv.pairKey() ? *inv.pairKey() : Value::str(inv.s))
                            : m == "values" ? (inv.pairVal ? *inv.pairVal : Value::any())
                                            : inv);
             return o;
@@ -280,7 +280,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 Value o2 = Value::array(); o2.isList = true;
                 for (auto& kv : *val.hash) {
                     Value p = Value::pair("", Value::str(inv.s));
-                    p.pairKey = std::make_shared<Value>(Value::pair(kv.first, kv.second));
+                    p.pairKeyM() = std::make_shared<Value>(Value::pair(kv.first, kv.second));
                     o2.arr->push_back(std::move(p));
                 }
                 return o2;
@@ -290,7 +290,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 Value p = Value::pair(v.toStr(), Value::str(inv.s));
                 // a Str key needs no separate key VALUE — carrying one makes the
                 // pair render as `"bar" => "foo"` instead of `:bar("foo")`
-                if (v.t != VT::Str) p.pairKey = std::make_shared<Value>(v);
+                if (v.t != VT::Str) p.pairKeyM() = std::make_shared<Value>(v);
                 o.arr->push_back(std::move(p));
             }
             return o;
@@ -350,8 +350,8 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
 
     // lazy list (infinite `… … *` or a lazy `.map` over one): keep `.map`/`.head`
     // lazy so consumers materialise only what they index.
-    if (inv.t == VT::Array && inv.ext) {
-        auto lst = std::static_pointer_cast<LazySeqState>(inv.ext);
+    if (inv.t == VT::Array && inv.ext()) {
+        auto lst = std::static_pointer_cast<LazySeqState>(inv.ext());
         bool infinite = lst->infinite;
         if (m == "is-lazy") {
             // A gather has not been run yet, so whether it is lazy is not known
@@ -396,7 +396,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 cache.push_back(self->callCallable(fn, one));
                 return true;
             };
-            out.ext = st;
+            out.extM() = st;
             return out;
         }
         if (m == "grep" && !args.empty()) {
@@ -436,7 +436,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 }
                 return false;
             };
-            out.ext = st;
+            out.extM() = st;
             return out;
         }
         if (m == "first" && !args.empty()) { // first match, scanning lazily (bounded)
@@ -481,7 +481,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 cache.push_back((*src.arr)[si]);
                 return true;
             };
-            out.ext = st;
+            out.extM() = st;
             return out;
         }
         if (m == "head" && (args.empty() || args[0].t != VT::Whatever)) {
@@ -506,7 +506,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         for (auto& a : args)
             for (auto& x : a.flatten()) {
                 std::string k = baggyKeyStr(x);
-                if (m == "set") { Value b = Value::boolean(true); b.pairKey = baggyKey(x); (*inv.hash)[k] = std::move(b); }
+                if (m == "set") { Value b = Value::boolean(true); b.pairKeyM() = baggyKey(x); (*inv.hash)[k] = std::move(b); }
                 else inv.hash->erase(k);
             }
         return Value::nil();
@@ -630,42 +630,42 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         return Value::boolean(true);
     }
     if (inv.t == VT::Range && m == "is-lazy")
-        return Value::boolean(inv.b || inv.rTo >= 9000000000000000000LL); // `lazy 1..3` marks .b
+        return Value::boolean(inv.b || inv.rTo() >= 9000000000000000000LL); // `lazy 1..3` marks .b
     // finite-Range scalar accessors: endpoints (min/max ignore exclusivity), the
     // exclusion flags, and the integer-inclusive int-bounds.
-    if (inv.t == VT::Range && inv.rTo < 9000000000000000000LL &&
-        inv.rFrom > -9000000000000000000LL) {
-        if (m == "excludes-min") return Value::boolean(inv.rExFrom);
-        if (m == "excludes-max") return Value::boolean(inv.rExTo);
+    if (inv.t == VT::Range && inv.rTo() < 9000000000000000000LL &&
+        inv.rFrom() > -9000000000000000000LL) {
+        if (m == "excludes-min") return Value::boolean(inv.rExFrom());
+        if (m == "excludes-max") return Value::boolean(inv.rExTo());
         if (m == "infinite")     return Value::boolean(false);
         // fractional ranges aren't integer-bounded, and neither is a Str range
-        if (m == "is-int")       return Value::boolean(!inv.rNum && inv.ofType != "Str");
+        if (m == "is-int")       return Value::boolean(!inv.rNum() && inv.ofType() != "Str");
         // .min/.max/.bounds answer the endpoint OBJECTS when the range kept them
         // (`(1/2 .. 1/3).min` is a Rat, not the Int it iterates from)
         const RangeEnds* re = rangeEnds(inv);
         if (m == "min" && re) return re->from;
         if (m == "max" && re) return re->to;
         if (m == "min")
-            return inv.ofType == "Str" ? Value::str(cpToU8((uint32_t)inv.rFrom))
-                 : inv.rNum ? Value::number(inv.n)
-                 : inv.rFrom <= -9000000000000000000LL ? Value::number(-INFINITY)
-                 : Value::integer(inv.rFrom);
+            return inv.ofType() == "Str" ? Value::str(cpToU8((uint32_t)inv.rFrom()))
+                 : inv.rNum() ? Value::number(inv.n)
+                 : inv.rFrom() <= -9000000000000000000LL ? Value::number(-INFINITY)
+                 : Value::integer(inv.rFrom());
         if (m == "max")
-            return inv.ofType == "Str" ? Value::str(cpToU8((uint32_t)inv.rTo))
-                 : inv.rNum ? Value::number(inv.im)
-                 : inv.rTo >= 9000000000000000000LL ? Value::number(INFINITY)
-                 : Value::integer(inv.rTo);
+            return inv.ofType() == "Str" ? Value::str(cpToU8((uint32_t)inv.rTo()))
+                 : inv.rNum() ? Value::number(inv.im())
+                 : inv.rTo() >= 9000000000000000000LL ? Value::number(INFINITY)
+                 : Value::integer(inv.rTo());
         if (m == "bounds") {
             Value o = re ? Value::array({re->from, re->to})
-                   : inv.ofType == "Str" ? Value::array({Value::str(cpToU8((uint32_t)inv.rFrom)),
-                                                         Value::str(cpToU8((uint32_t)inv.rTo))})
-                   : inv.rNum ? Value::array({Value::number(inv.n), Value::number(inv.im)})
-                              : Value::array({Value::integer(inv.rFrom), Value::integer(inv.rTo)});
+                   : inv.ofType() == "Str" ? Value::array({Value::str(cpToU8((uint32_t)inv.rFrom())),
+                                                         Value::str(cpToU8((uint32_t)inv.rTo()))})
+                   : inv.rNum() ? Value::array({Value::number(inv.n), Value::number(inv.im())})
+                              : Value::array({Value::integer(inv.rFrom()), Value::integer(inv.rTo())});
             o.isList = true; return o;
         }
         if (m == "int-bounds") {
-            Value o = Value::array({Value::integer(inv.rFrom + (inv.rExFrom ? 1 : 0)),
-                                    Value::integer(inv.rTo - (inv.rExTo ? 1 : 0))}); o.isList = true; return o;
+            Value o = Value::array({Value::integer(inv.rFrom() + (inv.rExFrom() ? 1 : 0)),
+                                    Value::integer(inv.rTo() - (inv.rExTo() ? 1 : 0))}); o.isList = true; return o;
         }
     }
     // an infinite range (…..Inf) must not materialise: only lazy views are defined
@@ -689,16 +689,16 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
     // walking it. `(1..10**100).sum` (S03-operators/range-int.t) has no other
     // answer: its endpoint does not fit a long long, so the range carries the
     // same sentinel an endless one does and flatten() would hand back a prefix.
-    if (inv.t == VT::Range && m == "sum" && !inv.rNum && inv.ofType != "Str" &&
+    if (inv.t == VT::Range && m == "sum" && !inv.rNum() && inv.ofType() != "Str" &&
         !isEndlessRange(inv)) {
         const RangeEnds* re = rangeEnds(inv);
-        Value lo = re ? re->from : Value::integer(inv.rFrom);
-        Value hi = inv.big ? Value::bigint(*inv.big)          // an endpoint past long long
+        Value lo = re ? re->from : Value::integer(inv.rFrom());
+        Value hi = inv.big() ? Value::bigint(*inv.big())          // an endpoint past long long
                  : re     ? re->to
-                          : Value::integer(inv.rTo);
+                          : Value::integer(inv.rTo());
         if (lo.t == VT::Int && hi.t == VT::Int) {
-            if (inv.rExFrom) lo = applyArith("+", lo, Value::integer(1));
-            if (inv.rExTo)   hi = applyArith("-", hi, Value::integer(1));
+            if (inv.rExFrom()) lo = applyArith("+", lo, Value::integer(1));
+            if (inv.rExTo())   hi = applyArith("-", hi, Value::integer(1));
             Value count = applyArith("+", applyArith("-", hi, lo), Value::integer(1));
             if (applyArith("<", count, Value::integer(1)).truthy()) return Value::integer(0);
             return applyArith("div", applyArith("*", count, applyArith("+", lo, hi)),
@@ -713,20 +713,20 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             Value r; endlessReduce(op, inv, r); return r; // throws when there is no answer
         }
     }
-    if (inv.t == VT::Range && inv.rTo >= 9000000000000000000LL) {
-        long long lo = inv.rFrom + (inv.rExFrom ? 1 : 0);
+    if (inv.t == VT::Range && inv.rTo() >= 9000000000000000000LL) {
+        long long lo = inv.rFrom() + (inv.rExFrom() ? 1 : 0);
         if (m == "is-lazy" || m == "infinite") return Value::boolean(true);
         if (m == "head" && args.empty()) return Value::integer(lo); // scalar first element
         if (m == "head") { long long n = std::max(0LL, args[0].toInt());
             Value o = Value::array(); o.isList = true; for (long long i = 0; i < n; i++) o.arr->push_back(Value::integer(lo + i)); return o; }
-        if (m == "skip") { long long n = args.empty() ? 1 : std::max(0LL, args[0].toInt()); return Value::range(lo + n, inv.rTo, false, inv.rExTo); }
+        if (m == "skip") { long long n = args.empty() ? 1 : std::max(0LL, args[0].toInt()); return Value::range(lo + n, inv.rTo(), false, inv.rExTo()); }
         if (m == "elems" || m == "Numeric" || m == "Int") return Value::number(INFINITY);
-        if (m == "min") return inv.rFrom <= -9000000000000000000LL
-            ? Value::number(-INFINITY) : Value::integer(inv.rFrom);
+        if (m == "min") return inv.rFrom() <= -9000000000000000000LL
+            ? Value::number(-INFINITY) : Value::integer(inv.rFrom());
         if (m == "max") return Value::number(INFINITY);                 // `1..*` .max is Inf, not an error
-        if (m == "excludes-min") return Value::boolean(inv.rExFrom);
-        if (m == "excludes-max") return Value::boolean(inv.rExTo);
-        if (m == "bounds") { Value o = Value::array({Value::integer(inv.rFrom), Value::number(INFINITY)}); o.isList = true; return o; }
+        if (m == "excludes-min") return Value::boolean(inv.rExFrom());
+        if (m == "excludes-max") return Value::boolean(inv.rExTo());
+        if (m == "bounds") { Value o = Value::array({Value::integer(inv.rFrom()), Value::number(INFINITY)}); o.isList = true; return o; }
         if (m == "list" || m == "List" || m == "Seq" || m == "cache" || m == "lazy" || m == "flat" ||
             m == "map" || m == "grep" || m == "first" || m == "iterator" || m == "rotor" || m == "batch")
             return (m == "map" || m == "grep" || m == "first") ? methodCall(makeInfArray(lo), m, args, rwArgs) : makeInfArray(lo);
@@ -798,7 +798,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         // to be discarded, the dominant cost of `%h.values` on a large hash.
         bool hashDirect = inv.t == VT::Hash && inv.hash &&
             (m == "values" || m == "keys" || m == "kv" || m == "pairs" || m == "antipairs");
-        if (!(inv.t == VT::Array && inv.arr && !inv.ext && throughHandle()) && !hashPush && !hashDirect)
+        if (!(inv.t == VT::Array && inv.arr && !inv.ext() && throughHandle()) && !hashPush && !hashDirect)
             items = toList(inv);
         // .collate — UCA-ordered sort (the coll infix already implements DUCET;
         // this just wires the method Rakudo exposes on lists)
@@ -876,7 +876,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                                     "Odd number of elements found for .pairup()"};
                 Value p = Value::pair(items[i].toStr(), items[i + 1]);
                 // a non-Str key keeps its own value (`1 => 2`, not `"1" => 2`)
-                if (items[i].t != VT::Str) p.pairKey = std::make_shared<Value>(items[i]);
+                if (items[i].t != VT::Str) p.pairKeyM() = std::make_shared<Value>(items[i]);
                 out.arr->push_back(std::move(p));
                 i++;
             }
@@ -926,7 +926,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         // `.eager` on a concrete Array is the identity — it keeps the same
         // container (and its element type: `my int @a` stays array[int]); only a
         // lazy Seq needs forcing (its elements are already materialised in `items`)
-        if (m == "eager" && inv.t == VT::Array && !inv.ext)
+        if (m == "eager" && inv.t == VT::Array && !inv.ext())
             return inv;
         if (m == "list" || m == "cache" || m == "eager" || m == "Seq" || m == "List" || m == "lazy") {
             Value out = Value::list(items);
@@ -962,7 +962,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             long long lo = 0, hi = (long long)items.size();
             if (!args.empty()) {
                 Value k = a0();
-                if (k.t == VT::Range) { lo = k.rFrom; hi = k.rExTo ? k.rTo - 1 : k.rTo; }
+                if (k.t == VT::Range) { lo = k.rFrom(); hi = k.rExTo() ? k.rTo() - 1 : k.rTo(); }
                 else { lo = hi = k.toInt(); }
             }
             if (hi > (long long)items.size()) hi = (long long)items.size();
@@ -1013,7 +1013,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 for (auto& kv : *inv.hash) {
                     if (!first) out += sep;
                     first = false;
-                    Value key = kv.second.pairKey ? *kv.second.pairKey : Value::str(kv.first);
+                    Value key = kv.second.pairKey() ? *kv.second.pairKey() : Value::str(kv.first);
                     out += doSprintf(fmt, {key, kv.second});
                 }
                 return Value::str(out);
@@ -1039,8 +1039,8 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         }
         if (m == "shape") { // a declared shape (my @a[2;3]) reports its dims; else (*,)
             Value o = Value::array(); o.isList = true;
-            if (inv.shape && !inv.shape->empty())
-                for (long long d : *inv.shape) o.arr->push_back(Value::integer(d));
+            if (inv.shape() && !inv.shape()->empty())
+                for (long long d : *inv.shape()) o.arr->push_back(Value::integer(d));
             else o.arr->push_back(Value::whatever());
             return o;
         }
@@ -1241,7 +1241,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             for (auto& a : flatArgs) {
                 if (a.t == VT::Pair && a.s == "partial") { if (!a.pairVal || a.pairVal->truthy()) partial = true; }
                 else if (a.t == VT::Pair && a.pairVal) {
-                    long long n = a.pairKey ? a.pairKey->toInt() : std::atoll(a.s.c_str());
+                    long long n = a.pairKey() ? a.pairKey()->toInt() : std::atoll(a.s.c_str());
                     if (n < 1) n = 1;
                     specs.push_back({n, n + a.pairVal->toInt()});
                 }
@@ -1302,8 +1302,8 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             // Range.minmax → the (min max) List; List.minmax → a min..max Range
             if (inv.t == VT::Range) {
                 Value out = Value::array(); out.isList = true;
-                out.arr->push_back(Value::integer(inv.rFrom + (inv.rExFrom ? 1 : 0)));
-                out.arr->push_back(Value::integer(inv.rTo - (inv.rExTo ? 1 : 0)));
+                out.arr->push_back(Value::integer(inv.rFrom() + (inv.rExFrom() ? 1 : 0)));
+                out.arr->push_back(Value::integer(inv.rTo() - (inv.rExTo() ? 1 : 0)));
                 return out;
             }
             // an optional &mapper (or `:by(&code)`) decides the ORDER; the
@@ -1394,7 +1394,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             for (size_t i : at) {
                 if (assocAdv && items[i].t == VT::Pair) {
                     const Value& pv = items[i];
-                    Value k = pv.pairKey ? *pv.pairKey : Value::str(pv.s);
+                    Value k = pv.pairKey() ? *pv.pairKey() : Value::str(pv.s);
                     if (want == 'k' || want == 'm') o.arr->push_back(k);
                     if (want == 'v' || want == 'm') o.arr->push_back(pv.pairVal ? *pv.pairVal : Value::any());
                     if (want == 'p') o.arr->push_back(pv);
@@ -1404,7 +1404,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 if (want == 'v' || want == 'm') o.arr->push_back(items[i]);
                 if (want == 'p') {
                     Value pr = Value::pair(std::to_string(i), items[i]);
-                    pr.pairKey = std::make_shared<Value>(Value::integer((long long)i));
+                    pr.pairKeyM() = std::make_shared<Value>(Value::integer((long long)i));
                     o.arr->push_back(std::move(pr));
                 }
             }
@@ -1497,7 +1497,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 if (want == 'k') return Value::integer((long long)i);
                 if (want == 'p') {
                     Value pr = Value::pair(std::to_string(i), items[i]);
-                    pr.pairKey = std::make_shared<Value>(Value::integer((long long)i));
+                    pr.pairKeyM() = std::make_shared<Value>(Value::integer((long long)i));
                     return pr;
                 }
                 if (want == 'm') {
@@ -1660,7 +1660,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                         if (!poolC.empty()) { cache.push_back(Value::str(poolC.back().first)); return true; }
                         return false;
                     };
-                    out.ext = st;
+                    out.extM() = st;
                     return out;
                 }
                 double totalUnits = 0; for (auto& pw : pool) totalUnits += setty.count(inv.hashKind) ? 1 : std::ceil(pw.second);
@@ -1701,7 +1701,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     cache.push_back(poolC[(size_t)(randDouble() * poolC.size())]);
                     return true;
                 };
-                out.ext = st;
+                out.extM() = st;
                 return out;
             }
             long long n = all ? (long long)pool0.size()
@@ -2021,7 +2021,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             auto emit = [&](size_t idx, const Value& v) {
                 if (adv == "k") out.arr->push_back(Value::integer((long long)idx));
                 else if (adv == "kv") { out.arr->push_back(Value::integer((long long)idx)); out.arr->push_back(v); }
-                else if (adv == "p") { Value pr = Value::pair(std::to_string(idx), v); pr.pairKey = std::make_shared<Value>(Value::integer((long long)idx)); out.arr->push_back(pr); }
+                else if (adv == "p") { Value pr = Value::pair(std::to_string(idx), v); pr.pairKeyM() = std::make_shared<Value>(Value::integer((long long)idx)); out.arr->push_back(pr); }
                 else out.arr->push_back(v);
             };
             size_t ar = mt.t == VT::Code ? codeArity(mt) : 1; // arity-N blocks test N at a time
@@ -2135,12 +2135,12 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             Value out = Value::array(); out.isList = true; out.s = "Seq";
             auto push1 = [&](const Value& v, const Value& k) {
                 Value p = Value::pair(v.toStr(), k);
-                if (v.t != VT::Str) p.pairKey = std::make_shared<Value>(v); // keep a numeric key numeric
+                if (v.t != VT::Str) p.pairKeyM() = std::make_shared<Value>(v); // keep a numeric key numeric
                 out.arr->push_back(std::move(p));
             };
             for (auto& e : items) if (e.t == VT::Pair) {
                 Value val = e.pairVal ? *e.pairVal : Value::any();
-                Value key = e.pairKey ? *e.pairKey : Value::str(e.s);
+                Value key = e.pairKey() ? *e.pairKey() : Value::str(e.s);
                 if (val.t == VT::Array && val.arr) for (auto& vv : *val.arr) push1(vv, key);
                 else push1(val, key);
             }
@@ -2150,7 +2150,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             Value out = Value::array(); out.isList = true; out.s = "Seq";
             auto push1 = [&](const Value& v, const Value& k) {
                 Value p = Value::pair(v.toStr(), k);
-                if (v.t != VT::Str) p.pairKey = std::make_shared<Value>(v); // a numeric value stays a numeric key
+                if (v.t != VT::Str) p.pairKeyM() = std::make_shared<Value>(v); // a numeric value stays a numeric key
                 out.arr->push_back(std::move(p));
             };
             for (auto& kv : *inv.hash) {
@@ -2174,7 +2174,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             for (auto& a2 : args) {
                 if (a2.t == VT::Pair && a2.s == "as" && a2.pairVal) { asF = *a2.pairVal; continue; }
                 if (!haveMapper) { mapper = a2; haveMapper = true; continue; }
-                if (a2.t == VT::Array && a2.ext)
+                if (a2.t == VT::Array && a2.ext())
                     throw RakuError{Value::typeObj("X::Cannot::Lazy"), "Cannot " + m + " a lazy list"};
                 if (a2.t == VT::Range || a2.t == VT::Array) { for (auto& x : a2.flatten()) vals.push_back(x); }
                 else vals.push_back(a2);
@@ -2250,7 +2250,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             Value out = Value::array(); out.isList = true; out.s = "Seq";
             for (auto& kv : *inv.hash) {
                 Value p = Value::pair(kv.second.toStr(), hashEntryKey(inv, kv.first, kv.second));
-                if (kv.second.t != VT::Str) p.pairKey = std::make_shared<Value>(kv.second); // numeric value -> numeric key
+                if (kv.second.t != VT::Str) p.pairKeyM() = std::make_shared<Value>(kv.second); // numeric value -> numeric key
                 out.arr->push_back(std::move(p));
             }
             return out;
@@ -2263,7 +2263,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     if (m == "kv") { out.arr->push_back(key); out.arr->push_back(kv.second); }
                     // (Hash antipairs answered by its own arm above)
                     else { Value p = Value::pair(kv.first, kv.second);
-                           if (key.t != VT::Str) p.pairKey = std::make_shared<Value>(std::move(key));
+                           if (key.t != VT::Str) p.pairKeyM() = std::make_shared<Value>(std::move(key));
                            out.arr->push_back(std::move(p)); }
                 }
             } else {
@@ -2271,12 +2271,12 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     if (m == "kv") { out.arr->push_back(Value::integer((long long)i)); out.arr->push_back(items[i]); }
                     else if (m == "antipairs") { // value => index
                         Value p = Value::pair(items[i].toStr(), Value::integer((long long)i));
-                        p.pairKey = std::make_shared<Value>(items[i]);
+                        p.pairKeyM() = std::make_shared<Value>(items[i]);
                         out.arr->push_back(p);
                     }
                     else {
                         Value p = Value::pair(std::to_string(i), items[i]);
-                        p.pairKey = std::make_shared<Value>(Value::integer((long long)i)); // Int keys
+                        p.pairKeyM() = std::make_shared<Value>(Value::integer((long long)i)); // Int keys
                         out.arr->push_back(p);
                     }
                 }
@@ -2288,8 +2288,8 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             // a native-typed array (`my str @a`, `my int @a`) rejects a value of the
             // wrong native kind — str takes Str, int/uint/byte take Int, num takes Real
             auto natCheck = [&](const Value& v) {
-                if (inv.ofType.empty()) return;
-                std::string bt = inv.ofType.substr(0, inv.ofType.find(','));
+                if (inv.ofType().empty()) return;
+                std::string bt = inv.ofType().substr(0, inv.ofType().find(','));
                 bool isNat = bt == "str" || bt == "byte" || bt.compare(0, 3, "int") == 0 ||
                              bt.compare(0, 4, "uint") == 0 || bt.compare(0, 3, "num") == 0;
                 if (!isNat) return; // boxed-type arrays keep their existing behaviour
@@ -2301,7 +2301,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             };
             // a shaped array (`my @a[2;2]`) has fixed dimensions — size-changing
             // operations are illegal
-            if (inv.shape && !inv.shape->empty()) {
+            if (inv.shape() && !inv.shape()->empty()) {
                 static const std::set<std::string> fixedIllegal = {
                     "push", "append", "pop", "unshift", "prepend", "shift",
                     "splice", "reverse", "rotate"};
@@ -2318,7 +2318,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             // a native-int element array (`uint32 @W`) wraps each stored value to
             // its bit width (SHA1's `@W.push: S(...)` relies on uint32 overflow)
             auto natMask = [&](Value v) -> Value {
-                bool sign; int bits = Value::natWidthOfType(inv.ofType, sign);
+                bool sign; int bits = Value::natWidthOfType(inv.ofType(), sign);
                 if (bits > 0 && bits < 64 && (v.t == VT::Int || v.t == VT::Bool)) {
                     unsigned long long u = (unsigned long long)v.toInt() & ((1ULL << bits) - 1);
                     long long x = (sign && (u & (1ULL << (bits - 1)))) ? (long long)u - (long long)(1ULL << bits) : (long long)u;
@@ -2330,9 +2330,9 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             auto elemDef = [&](const Value& v) -> Value {
                 if (v.t != VT::Nil) return v;
                 if (inv.pairVal) return *inv.pairVal;
-                if (!inv.ofType.empty()) { bool sg; int b = Value::natWidthOfType(inv.ofType, sg);
+                if (!inv.ofType().empty()) { bool sg; int b = Value::natWidthOfType(inv.ofType(), sg);
                     if (b > 0) return Value::integer(0);
-                    std::string f = inv.ofType.substr(0, inv.ofType.find(','));
+                    std::string f = inv.ofType().substr(0, inv.ofType().find(','));
                     if (!f.empty() && ascii::isupper((unsigned char)f[0])) return Value::typeObj(f); }
                 return Value::any();
             };
@@ -2373,7 +2373,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             }
             if (m == "splice") { // .splice($start?, $count?, *@replacement) → the removed elements
                 // a lazy array only holds a prefix — materialize enough to cover the window
-                if (inv.ext) {
+                if (inv.ext()) {
                     long s0 = args.size() > 0 ? args[0].toInt() : 0;
                     materializeLazy(inv, args.size() > 1 ? (size_t)(std::max(0L, s0) + args[1].toInt()) : 1000000);
                 }
@@ -2436,9 +2436,9 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             return Value::range(v, v, false, false);
         }
         if (m == "expmod" && args.size() >= 2) { // modular exponentiation (bigint-safe)
-            BigInt base = inv.big ? *inv.big : BigInt(inv.toInt());
-            BigInt e = args[0].big ? *args[0].big : BigInt(args[0].toInt());
-            BigInt mod = args[1].big ? *args[1].big : BigInt(args[1].toInt());
+            BigInt base = inv.big() ? *inv.big() : BigInt(inv.toInt());
+            BigInt e = args[0].big() ? *args[0].big() : BigInt(args[0].toInt());
+            BigInt mod = args[1].big() ? *args[1].big() : BigInt(args[1].toInt());
             if (mod.isZero()) return Value::integer(0);
             auto modOf = [&](const BigInt& x) { BigInt q, r; BigInt::divmod(x, mod, q, r); if (r.sign < 0) r = r + mod; return r; };
             BigInt result(1), b = modOf(base);
@@ -2553,7 +2553,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         Value c = Value::array(); c.hashKind = "Capture"; c.itemized = true;
         if (inv.t == VT::Any || inv.t == VT::Nil || inv.t == VT::Type) return c;
         if (inv.t == VT::Complex) {
-            c.arr->push_back(Value::pair("im", Value::number(inv.im)));
+            c.arr->push_back(Value::pair("im", Value::number(inv.im())));
             c.arr->push_back(Value::pair("re", Value::number(inv.n)));
             return c;
         }

@@ -1327,7 +1327,7 @@ public:
     Value initInstantVal() {
         Value v = Value::number(initInstant_);
         v.hashKind = "Instant";
-        v.ext = initInstantId_;
+        v.extM() = initInstantId_;
         return v;
     }
     Value defaultScheduler_; // the ONE $*SCHEDULER (copies share .hash, so attr writes persist)
@@ -1358,14 +1358,14 @@ Value applyArith(const std::string& op, const Value& l, const Value& r); // bina
 // -O fast-path binary ops for native codegen: inline the small-int (non-bignum)
 // case as native int64, else fall back to the general applyArith. Semantics are
 // identical — this only skips the string dispatch + boxing on the hot Int path.
-inline bool rtBothInt(const Value& l, const Value& r) { return l.t == VT::Int && r.t == VT::Int && !l.big && !r.big; }
+inline bool rtBothInt(const Value& l, const Value& r) { return l.t == VT::Int && r.t == VT::Int && !l.big() && !r.big(); }
 // -O int lanes (Codegen pass 3): may this box be read as / stored into a raw int64?
 // A store additionally requires no enum identity (writing .i under an enumName
 // would leave the stale name as the value's stringification).
-inline bool rtIntBox(const Value& v)  { return v.t == VT::Int && !v.big; }
+inline bool rtIntBox(const Value& v)  { return v.t == VT::Int && !v.big(); }
 // --exe `is rw` params: bind a reference into the (caller-visible) ValueList slot.
 inline Value& rtPosRef(ValueList& a, size_t i) { if (a.size() <= i) a.resize(i + 1); return a[i]; }
-inline bool rtIntSlot(const Value& v) { return v.t == VT::Int && !v.big && v.enumName.empty(); }
+inline bool rtIntSlot(const Value& v) { return v.t == VT::Int && !v.big() && v.enumName.empty(); }
 inline Value rtAdd(const Value& l, const Value& r) { long long z; if (rtBothInt(l, r) && !rakupp::add_ovf(l.i, r.i, &z)) return Value::integer(z); return applyArith("+", l, r); }
 inline Value rtSub(const Value& l, const Value& r) { long long z; if (rtBothInt(l, r) && !rakupp::sub_ovf(l.i, r.i, &z)) return Value::integer(z); return applyArith("-", l, r); }
 inline Value rtMul(const Value& l, const Value& r) { long long z; if (rtBothInt(l, r) && !rakupp::mul_ovf(l.i, r.i, &z)) return Value::integer(z); return applyArith("*", l, r); }
@@ -1407,7 +1407,7 @@ Value rtBAbsSlow(Interpreter& I, const Value& v);  // full abs (Builtins.cpp)
 Value rtBChr(Interpreter& I, const Value& v);      // chr: codepoint → Str (Builtins.cpp)
 Value rtBOrd(Interpreter& I, const Value& v);      // ord: Str → first codepoint (Builtins.cpp)
 inline Value rtBAbs(Interpreter& I, const Value& v) {
-    if (v.t == VT::Int && !v.big && I.builtinExt_.empty())
+    if (v.t == VT::Int && !v.big() && I.builtinExt_.empty())
         return Value::integer(v.i < 0 ? -v.i : v.i);   // plain-Int hot path, inlined at the call site
     return rtBAbsSlow(I, v);
 }
@@ -1443,7 +1443,7 @@ Value rtBAsinh(Interpreter& I, const Value& v);
 Value rtBAcosh(Interpreter& I, const Value& v);
 Value rtBAtanh(Interpreter& I, const Value& v);
 inline Value rtBSign(Interpreter& I, const Value& v) {
-    if (v.t == VT::Int && !v.big && I.builtinExt_.empty())
+    if (v.t == VT::Int && !v.big() && I.builtinExt_.empty())
         return Value::integer(v.i < 0 ? -1 : v.i > 0 ? 1 : 0);
     return rtBSignSlow(I, v);
 }

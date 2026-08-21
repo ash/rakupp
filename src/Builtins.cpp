@@ -617,8 +617,8 @@ Value complexSqrt(double re, double im) {
 // copies that into ofType; `.keyof` reads the same half.
 std::string objHashKeyType(const Value& h) {
     if (h.t != VT::Hash || !h.hashKind.empty()) return "";
-    size_t c = h.ofType.find(',');
-    return c == std::string::npos ? "" : h.ofType.substr(c + 1);
+    size_t c = h.ofType().find(',');
+    return c == std::string::npos ? "" : h.ofType().substr(c + 1);
 }
 
 // The REAL key of a hash entry, from whichever of the three sources has it.
@@ -635,7 +635,7 @@ std::string objHashKeyType(const Value& h) {
 // Str. That is the pre-existing gap — Hash keys being plain strings — narrowed to
 // where it actually bites rather than papered over with a guess.
 Value hashEntryKey(const Value& h, const std::string& k, const Value& stored) {
-    if (stored.pairKey) return *stored.pairKey;
+    if (stored.pairKey()) return *stored.pairKey();
     const std::string kt = objHashKeyType(h);
     if (kt.empty()) return Value::str(k);
     static const std::set<std::string> numericKey = {
@@ -729,7 +729,7 @@ std::string rakuRepr(const Value& v, int depth, std::set<const void*>& seen) {
             // literal of its raw bytes
             if (v.hashKind == "Buf" || v.hashKind == "Blob") {
                 std::string nm = !v.enumName.empty() ? v.enumName   // an encoding names its own type
-                               : v.hashKind + (v.ofType.empty() ? "" : "[" + v.ofType + "]");
+                               : v.hashKind + (v.ofType().empty() ? "" : "[" + v.ofType() + "]");
                 std::string o = nm + ".new("; bool f = true;
                 for (auto& e : v.blobList()) { if (!f) o += ","; f = false; o += std::to_string(e.toInt()); }
                 return o + ")";
@@ -738,9 +738,9 @@ std::string rakuRepr(const Value& v, int depth, std::set<const void*>& seen) {
             // (its .gist is the short `"foo/bar".IO` form)
             if (v.hashKind == "IO") {
                 char cbuf[4096];
-                std::string cwd = v.ofType.empty()                      // an explicit :CWD wins
+                std::string cwd = v.ofType().empty()                      // an explicit :CWD wins
                                 ? (getcwd(cbuf, sizeof cbuf) ? cbuf : ".")
-                                : v.ofType;
+                                : v.ofType();
                 // a FLAVORED path names its flavor in the class, so it needs no
                 // :SPEC; the plain one spells the spec out
                 if (!v.enumName.empty())
@@ -757,20 +757,20 @@ std::string rakuRepr(const Value& v, int depth, std::set<const void*>& seen) {
             return rakuStrLit(v.s);
         case VT::Int:  return v.toStr();
         case VT::Rat: {
-            std::string n = v.ratN ? v.ratN->toString() : "0";
-            std::string d = v.ratD ? v.ratD->toString() : "1";
-            if (v.fatRat) return "FatRat.new(" + n + ", " + d + ")"; // FatRat.raku is explicit
+            std::string n = v.ratN() ? v.ratN()->toString() : "0";
+            std::string d = v.ratD() ? v.ratD()->toString() : "1";
+            if (v.fatRat()) return "FatRat.new(" + n + ", " + d + ")"; // FatRat.raku is explicit
             // Terminating decimal (denominator 2^a·5^b) prints as a decimal literal
             // with a fraction part kept, so EVAL round-trips to Rat: 0.25, -7.0, 0.1.
             // Anything else (incl. zero-denominator, or a denominator wider than
             // uint64 — 0.9999999999999999999999.raku) is the <n/d> form.
-            if (v.ratD && !v.ratD->isZero() && v.ratD->fitsU64()) {
-                BigInt den = *v.ratD; int p2 = 0, p5 = 0; BigInt q, r;
+            if (v.ratD() && !v.ratD()->isZero() && v.ratD()->fitsU64()) {
+                BigInt den = *v.ratD(); int p2 = 0, p5 = 0; BigInt q, r;
                 while (true) { BigInt::divmod(den, BigInt(2), q, r); if (!r.isZero()) break; den = q; p2++; }
                 while (true) { BigInt::divmod(den, BigInt(5), q, r); if (!r.isZero()) break; den = q; p5++; }
                 if (den.fitsLL() && den.toLL() == 1) {
                     int k = std::max(p2, p5);
-                    BigInt scaled = *v.ratN;
+                    BigInt scaled = *v.ratN();
                     for (int t = 0; t < k - p2; t++) scaled = scaled * BigInt(2);
                     for (int t = 0; t < k - p5; t++) scaled = scaled * BigInt(5);
                     std::string digits = scaled.toString();
@@ -796,8 +796,8 @@ std::string rakuRepr(const Value& v, int depth, std::set<const void*>& seen) {
             // Rakudo's Match.raku is a constructor call, not the ｢…｣ gist: the
             // positional captures come back as :list and the named ones as :hash.
             std::string o = "Match.new(:orig(" +
-                (v.ext ? rakuStrLit(*std::static_pointer_cast<std::string>(v.ext)) : rakuStrLit(v.s)) +
-                "), :from(" + std::to_string(v.rFrom) + "), :pos(" + std::to_string(v.rTo) + ")";
+                (v.ext() ? rakuStrLit(*std::static_pointer_cast<std::string>(v.ext())) : rakuStrLit(v.s)) +
+                "), :from(" + std::to_string(v.rFrom()) + "), :pos(" + std::to_string(v.rTo()) + ")";
             if (v.arr && !v.arr->empty()) {
                 o += ", :list((";
                 for (size_t k = 0; k < v.arr->size(); k++) {
@@ -822,27 +822,27 @@ std::string rakuRepr(const Value& v, int depth, std::set<const void*>& seen) {
             return v.s.find('/') == std::string::npos ? "rx/" + v.s + "/" : "rx{" + v.s + "}";
         case VT::Complex: return "<" + v.gist() + ">";
         case VT::Range:
-            if (v.ofType == "Str") // Str range: quoted endpoint form
-                return "\"" + cpToU8((uint32_t)v.rFrom) + "\"" + (v.rExFrom ? "^" : "") + ".." +
-                       (v.rExTo ? "^" : "") + "\"" + cpToU8((uint32_t)v.rTo) + "\"";
+            if (v.ofType() == "Str") // Str range: quoted endpoint form
+                return "\"" + cpToU8((uint32_t)v.rFrom()) + "\"" + (v.rExFrom() ? "^" : "") + ".." +
+                       (v.rExTo() ? "^" : "") + "\"" + cpToU8((uint32_t)v.rTo()) + "\"";
             // an endless endpoint is Inf, not the long long it is parked in, and
             // `^Inf` keeps the long form (0..^Inf) — gist already spells both
-            if (v.rTo >= 9000000000000000000LL || v.rFrom <= -9000000000000000000LL)
+            if (v.rTo() >= 9000000000000000000LL || v.rFrom() <= -9000000000000000000LL)
                 return v.gist();
             // `0..^N` is `^N` here too — Rakudo shows the short form for .raku as
             // well as gist. Same Int-zero-only rule as Value::gist.
-            if (!v.rExFrom && v.rExTo && v.rFrom == 0 && !v.rNum)
-                return "^" + std::to_string(v.rTo);
+            if (!v.rExFrom() && v.rExTo() && v.rFrom() == 0 && !v.rNum())
+                return "^" + std::to_string(v.rTo());
             // A fractional range keeps its real endpoints in n/im and its integer
             // fields are their floors, so this printed `1.5..2.5` as `1..2`.
             // gist already spells the endpoints, including a Rat's.
-            if (v.rNum) return v.gist();
-            return std::to_string(v.rFrom) + (v.rExFrom ? "^" : "") + ".." + (v.rExTo ? "^" : "") + std::to_string(v.rTo);
+            if (v.rNum()) return v.gist();
+            return std::to_string(v.rFrom()) + (v.rExFrom() ? "^" : "") + ".." + (v.rExTo() ? "^" : "") + std::to_string(v.rTo());
         case VT::Pair: {
             Value val = v.pairVal ? *v.pairVal : Value::nil();
-            if (v.pairKey) { // non-string key (Int, nested Pair, …)
-                std::string krepr = rakuRepr(*v.pairKey, depth + 1, seen);
-                if (v.pairKey->t == VT::Pair) krepr = "(" + krepr + ")"; // parenthesize a pair-key
+            if (v.pairKey()) { // non-string key (Int, nested Pair, …)
+                std::string krepr = rakuRepr(*v.pairKey(), depth + 1, seen);
+                if (v.pairKey()->t == VT::Pair) krepr = "(" + krepr + ")"; // parenthesize a pair-key
                 return krepr + " => " + rakuRepr(val, depth + 1, seen);
             }
             return rakuIdentKey(v.s) ? ":" + v.s + "(" + rakuRepr(val, depth + 1, seen) + ")"
@@ -917,7 +917,7 @@ std::string rakuRepr(const Value& v, int depth, std::set<const void*>& seen) {
             // (baggyKey). `set(1,2).raku` is `Set.new(1,2)`, not `Set.new("1","2")`.
             auto elemRepr = [&](const std::string& k) {
                 const Value& cnt = v.hash->at(k);
-                return cnt.pairKey ? rakuRepr(*cnt.pairKey, depth + 1, seen) : rakuStrLit(k);
+                return cnt.pairKey() ? rakuRepr(*cnt.pairKey(), depth + 1, seen) : rakuStrLit(k);
             };
             // An EMPTY immutable one renders as its SUB form — `set()`, `bag()`,
             // `mix()` — which is how Rakudo writes it and what round-trips. The
@@ -964,7 +964,7 @@ std::string rakuRepr(const Value& v, int depth, std::set<const void*>& seen) {
             // entries are the same as below, except the key is its real value.
             const std::string okt = objHashKeyType(v);
             if (!okt.empty()) {
-                std::string vt = v.ofType.substr(0, v.ofType.find(','));
+                std::string vt = v.ofType().substr(0, v.ofType().find(','));
                 std::string o = "(my " + (vt.empty() ? "Any" : vt) + " %{" + okt + "}";
                 bool f = true;
                 for (auto& k : keys) {
@@ -1397,7 +1397,7 @@ Value makeInfArray(long long start) {
     auto st = std::make_shared<LazySeqState>(); st->infinite = true;
     auto next = std::make_shared<long long>(start);
     st->appendNext = [next](ValueList& cache) -> bool { cache.push_back(Value::integer((*next)++)); return true; };
-    a.ext = st;
+    a.extM() = st;
     return a;
 }
 
@@ -1417,10 +1417,10 @@ ValueList toList(const Value& v) {
         const bool objHash = !objHashKeyType(v).empty();
         for (auto& kv : *v.hash) {
             Value p = Value::pair(kv.first, kv.second);
-            if (kv.second.pairKey) p.pairKey = kv.second.pairKey;
+            if (kv.second.pairKey()) p.pairKeyM() = kv.second.pairKey();
             else if (objHash) {
                 Value rk = hashEntryKey(v, kv.first, kv.second);
-                if (rk.t != VT::Str) p.pairKey = std::make_shared<Value>(std::move(rk));
+                if (rk.t != VT::Str) p.pairKeyM() = std::make_shared<Value>(std::move(rk));
             }
             out.push_back(std::move(p));
         }
@@ -1600,9 +1600,9 @@ std::string doSprintf(const std::string& fmt, const ValueList& args, int langRev
                 // an arbitrary-precision Int (or a Rat/Num too big for long long)
                 // formats from its exact decimal digits, not a saturated toInt()
                 Value av = nextArg();
-                if (av.t == VT::Int && av.big) { out += fmtBigDec(av.big->toString(), flags, width, prec); break; }
-                if (av.t == VT::Rat && av.ratN && av.ratD && !av.ratD->isZero()) {
-                    BigInt q, r; BigInt::divmod(*av.ratN, *av.ratD, q, r);
+                if (av.t == VT::Int && av.big()) { out += fmtBigDec(av.big()->toString(), flags, width, prec); break; }
+                if (av.t == VT::Rat && av.ratN() && av.ratD() && !av.ratD()->isZero()) {
+                    BigInt q, r; BigInt::divmod(*av.ratN(), *av.ratD(), q, r);
                     if (q.toString().size() > 18) { out += fmtBigDec(q.toString(), flags, width, prec); break; }
                 }
                 out += fmtRadix(av.toInt(), 10, false, flags, width, prec, true); break;
@@ -1619,13 +1619,13 @@ std::string doSprintf(const std::string& fmt, const ValueList& args, int langRev
                     while ((p2 = flags2.find('+')) != std::string::npos) flags2.erase(p2, 1);
                 }
                 Value av = nextArg();
-                if (av.t == VT::Int && av.big) { // arbitrary-precision: exact digits
-                    out += fmtBigDec(bigRadixDigits(*av.big, radix, upper), flags2, width, prec);
+                if (av.t == VT::Int && av.big()) { // arbitrary-precision: exact digits
+                    out += fmtBigDec(bigRadixDigits(*av.big(), radix, upper), flags2, width, prec);
                     break;
                 }
-                if (av.t == VT::Rat && av.ratN && av.ratD && !av.ratD->isZero()) {
+                if (av.t == VT::Rat && av.ratN() && av.ratD() && !av.ratD()->isZero()) {
                     BigInt q, r;
-                    BigInt::divmod(*av.ratN, *av.ratD, q, r); // truncate toward zero
+                    BigInt::divmod(*av.ratN(), *av.ratD(), q, r); // truncate toward zero
                     if (q.toString().size() > 18) {
                         out += fmtBigDec(bigRadixDigits(q, radix, upper), flags2, width, prec);
                         break;
@@ -1774,15 +1774,15 @@ bool deepEq(const Value& a, const Value& b) {
     if (a.t == VT::Pair && b.t == VT::Pair) {
         // typed keys (an object key stringifies with its identity now, so the
         // rendering can't stand in for the key) compare structurally
-        bool keyOk = a.pairKey && b.pairKey ? deepEq(*a.pairKey, *b.pairKey)
+        bool keyOk = a.pairKey() && b.pairKey() ? deepEq(*a.pairKey(), *b.pairKey())
                                             : a.s == b.s;
         return keyOk && deepEq(a.pairVal ? *a.pairVal : Value::any(),
                                b.pairVal ? *b.pairVal : Value::any());
     }
     if (a.t == VT::Rat && b.t == VT::Rat) // structural (eqv): <0/0> eqv <0/0> is True; toNum would NaN-compare
-        return a.fatRat == b.fatRat &&
-               a.ratN && b.ratN && a.ratD && b.ratD &&
-               BigInt::cmp(*a.ratN, *b.ratN) == 0 && BigInt::cmp(*a.ratD, *b.ratD) == 0;
+        return a.fatRat() == b.fatRat() &&
+               a.ratN() && b.ratN() && a.ratD() && b.ratD() &&
+               BigInt::cmp(*a.ratN(), *b.ratN()) == 0 && BigInt::cmp(*a.ratD(), *b.ratD()) == 0;
     if (a.t == VT::Num && b.t == VT::Num && std::isnan(a.n) && std::isnan(b.n))
         return true; // structural: NaN eqv NaN (numeric == would say false)
     // two objects: structural, not stringified — object .Str carries identity
@@ -1860,7 +1860,7 @@ Value Interpreter::bufBitOp(Value& buf, const std::string& m, ValueList& args) {
             throw RakuError{Value::typeObj("X::OutOfRange"),
                 "bit range " + std::to_string(from) + "+" + std::to_string(bits) + " out of range"};
         Value val = args.size() > 2 ? args[2] : Value::integer(0);
-        BigInt v = val.big ? *val.big : BigInt(val.toInt());
+        BigInt v = val.big() ? *val.big() : BigInt(val.toInt());
         if (v.sign < 0) v = v + BigInt(2).pow(bits); // low `bits` bits of the 2's complement
         // grow to fit
         long long need = (from + bits + 7) / 8;
@@ -1911,7 +1911,7 @@ Value Interpreter::bufBitOp(Value& buf, const std::string& m, ValueList& args) {
     if (nb > 8) { // int128/uint128: BigInt byte-peeling (the raw[8] fast path below caps at 64 bits)
         if (isWrite) {
             if ((long long)bytes.size() < off + nb) bytes.resize(off + nb, '\0');
-            BigInt v = val.big ? *val.big : BigInt(val.toInt());
+            BigInt v = val.big() ? *val.big() : BigInt(val.toInt());
             if (v.sign < 0) v = v + BigInt(2).pow(nb * 8);
             for (int i = 0; i < nb; i++) { // peel LSB-first
                 BigInt q, r; BigInt::divmod(v, BigInt(256), q, r); v = q;
@@ -1941,8 +1941,8 @@ Value Interpreter::bufBitOp(Value& buf, const std::string& m, ValueList& args) {
             else { double d = val.toNum(); std::memcpy(raw, &d, 8); }
         } else {
             unsigned long long u;
-            if (val.big) { // low 64 bits (toInt would saturate past int64)
-                BigInt v = *val.big; if (v.sign < 0) v = v + BigInt(2).pow(64);
+            if (val.big()) { // low 64 bits (toInt would saturate past int64)
+                BigInt v = *val.big(); if (v.sign < 0) v = v + BigInt(2).pow(64);
                 BigInt q, lo; BigInt::divmod(v, BigInt(4294967296LL), q, lo);
                 BigInt q2, hi; BigInt::divmod(q, BigInt(4294967296LL), q2, hi);
                 u = ((unsigned long long)hi.toLL() << 32) | (unsigned long long)lo.toLL();
@@ -1991,7 +1991,7 @@ Value Interpreter::bufBitOp(Value& buf, const std::string& m, ValueList& args) {
 //   * a Bool by 1/0.
 std::string whichOf(const Value& v) {
     auto ratPart = [](const Value& r) {
-        if (r.ratN && r.ratD) return r.ratN->toString() + "/" + r.ratD->toString();
+        if (r.ratN() && r.ratD()) return r.ratN()->toString() + "/" + r.ratD()->toString();
         return r.toStr();
     };
     // a Buf/Instant/Duration is a reference type wearing a scalar's clothes: its
@@ -2000,9 +2000,9 @@ std::string whichOf(const Value& v) {
     // useless "Buf|" — the bytes are unprintable — for every buffer alive.
     // A token-less one (a construction site that predates the stamp) keeps the
     // old value rendering rather than claiming to be a different object.
-    if (identityScalar(v) && v.ext) {
+    if (identityScalar(v) && v.ext()) {
         char idb[24];
-        std::snprintf(idb, sizeof idb, "|%p", v.ext.get());
+        std::snprintf(idb, sizeof idb, "|%p", v.ext().get());
         return v.typeName() + idb;
     }
     if (v.isAllomorph()) {
@@ -2013,13 +2013,13 @@ std::string whichOf(const Value& v) {
                             : v.typeName() == "NumStr"     ? "Num"
                             : v.typeName() == "ComplexStr" ? "Complex" : "Num";
         std::string numId = numName == "Rat" ? ratPart(num) : num.toStr();
-        if (numName == "Complex") numId = Value::number(num.n).toStr() + "|" + Value::number(num.im).toStr();
+        if (numName == "Complex") numId = Value::number(num.n).toStr() + "|" + Value::number(num.im()).toStr();
         return v.typeName() + "|" + numName + "|" + numId + "|Str|" + v.s;
     }
     switch (v.t) {
         case VT::Bool:    return "Bool|" + std::string(v.b ? "1" : "0");
         case VT::Rat:     return "Rat|" + ratPart(v);
-        case VT::Complex: return "Complex|" + Value::number(v.n).toStr() + "|" + Value::number(v.im).toStr();
+        case VT::Complex: return "Complex|" + Value::number(v.n).toStr() + "|" + Value::number(v.im()).toStr();
         // An OBJECT is identified by its address, not by its contents — two
         // instances with equal attributes are different elements of a Set. This
         // lived only in the `.WHICH` arm, so `.WHICH` said they differed while
@@ -2102,15 +2102,15 @@ Value makeBaggy(const ValueList& items, const std::string& kind, bool pairsAsEle
     bool isMix = kind.find("Mix") == 0; // Mix weights keep their full numeric value (2.5 stays a Rat)
     auto add = [&](const std::string& k, long long cnt, const std::shared_ptr<Value>& tk) {
         auto it = h.hash->find(k);
-        auto keep = it != h.hash->end() && it->second.pairKey ? it->second.pairKey : tk;
+        auto keep = it != h.hash->end() && it->second.pairKey() ? it->second.pairKey() : tk;
         if (isSet) {
-            if (cnt > 0) { Value b = Value::boolean(true); b.pairKey = keep; (*h.hash)[k] = std::move(b); }
+            if (cnt > 0) { Value b = Value::boolean(true); b.pairKeyM() = keep; (*h.hash)[k] = std::move(b); }
             else h.hash->erase(k);
             return;
         }
         long long c = it != h.hash->end() ? it->second.toInt() : 0;
         c += cnt;
-        if (c != 0) { Value cv = Value::integer(c); cv.pairKey = keep; (*h.hash)[k] = std::move(cv); }
+        if (c != 0) { Value cv = Value::integer(c); cv.pairKeyM() = keep; (*h.hash)[k] = std::move(cv); }
         else h.hash->erase(k);
     };
     for (auto& v : items) {
@@ -2121,7 +2121,7 @@ Value makeBaggy(const ValueList& items, const std::string& kind, bool pairsAsEle
         if (v.t == VT::Pair) {
             Value w = v.pairVal ? *v.pairVal : Value::integer(0);
             if (!isSet) { // a Bag/Mix weight must coerce to a real number
-                if ((w.t == VT::Complex && w.im != 0.0) ||
+                if ((w.t == VT::Complex && w.im() != 0.0) ||
                     (w.t == VT::Num && !std::isfinite(w.n)))
                     throw RakuError{Value::typeObj("X::Numeric::CannotConvert"),
                         "Cannot convert " + w.gist() + " to " + (isMix ? "Real" : "Int")};
@@ -2138,20 +2138,20 @@ Value makeBaggy(const ValueList& items, const std::string& kind, bool pairsAsEle
             }
             if (isMix && w.t != VT::Int && w.isNumeric()) { // fractional weight
                 auto it = h.hash->find(v.s);
-                auto keep = it != h.hash->end() && it->second.pairKey ? it->second.pairKey : v.pairKey;
+                auto keep = it != h.hash->end() && it->second.pairKey() ? it->second.pairKey() : v.pairKey();
                 if (it != h.hash->end()) {
                     // through the EXACT tower, not a C double: the Rats 1/10 and 1/50
                     // summed as doubles gave 0.12000000000000001, and being a Num the
                     // result then printed at full Num precision too
                     Value sum = applyArith("+", it->second, w);
                     if (sum.toNum() == 0.0) h.hash->erase(v.s);
-                    else { sum.pairKey = keep; (*h.hash)[v.s] = std::move(sum); }
-                } else if (w.toNum() != 0.0) { w.pairKey = keep; (*h.hash)[v.s] = w; }
+                    else { sum.pairKeyM() = keep; (*h.hash)[v.s] = std::move(sum); }
+                } else if (w.toNum() != 0.0) { w.pairKeyM() = keep; (*h.hash)[v.s] = w; }
                 continue;
             }
             // Set membership is the value's TRUTHINESS (`:e<meow>` joins, `:0d`/`:f('')`
             // do not); Bag/Mix use the numeric weight. (typed key travels in pairKey)
-            add(v.s, isSet ? (w.truthy() ? 1 : 0) : w.toInt(), v.pairKey);
+            add(v.s, isSet ? (w.truthy() ? 1 : 0) : w.toInt(), v.pairKey());
         }
         else add(baggyKeyStr(v), 1, baggyKey(v));
     }
@@ -2654,7 +2654,7 @@ static std::string jsonEncode(const Value& v) {
     switch (v.t) {
         case VT::Nil: case VT::Any: case VT::Type: return "null";
         case VT::Bool: return v.b ? "true" : "false";
-        case VT::Int:  return v.big ? v.big->toString() : std::to_string(v.i);
+        case VT::Int:  return v.big() ? v.big()->toString() : std::to_string(v.i);
         case VT::Num: case VT::Rat: {
             // round-trip doubles (default 6 digits silently truncated); cnum so a
             // host's locale can never put a comma into JSON
@@ -3189,16 +3189,16 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                    "Cannot use a Buf as a string, but you called the Str method on it");
     // reverse/rotate are illegal only on a MULTI-dimensional fixed array; a 1-dim
     // shaped array reverses/rotates fine (returns a reordered list, no resize).
-    if (inv.t == VT::Array && inv.shape && inv.shape->size() >= 2 && (m == "reverse" || m == "rotate"))
+    if (inv.t == VT::Array && inv.shape() && inv.shape()->size() >= 2 && (m == "reverse" || m == "rotate"))
         throw RakuError{Value::typeObj("X::IllegalOnFixedDimensionArray"),
                         "Cannot " + m + " a fixed-dimension array"};
     // Multi-dim shaped array (`my @a[2;2]`) — keys/values/kv/pairs/antipairs/flat/
     // iterator walk the LEAVES, keyed by index tuples. (A 1-dim shaped array uses
     // the ordinary Array handlers: keys are plain indices, .flat is a Seq, etc.)
-    if (inv.t == VT::Array && inv.shape && inv.shape->size() >= 2 &&
+    if (inv.t == VT::Array && inv.shape() && inv.shape()->size() >= 2 &&
         (m == "keys" || m == "values" || m == "kv" || m == "pairs" ||
          m == "antipairs" || m == "flat" || m == "iterator")) {
-        size_t ndim = inv.shape->size();
+        size_t ndim = inv.shape()->size();
         std::vector<std::pair<Value, Value>> ents; // (index key, leaf value)
         std::vector<long long> idx;
         std::function<void(const Value&)> walk = [&](const Value& node) {
@@ -3228,14 +3228,14 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             if (m == "keys") o.arr->push_back(e.first);
             else if (m == "values" || m == "flat") o.arr->push_back(e.second);
             else if (m == "kv") { o.arr->push_back(e.first); o.arr->push_back(e.second); }
-            else if (m == "pairs") { Value p = Value::pair(e.first.toStr(), e.second); p.pairKey = std::make_shared<Value>(e.first); o.arr->push_back(std::move(p)); }
-            else { Value p = Value::pair(e.second.toStr(), e.first); p.pairKey = std::make_shared<Value>(e.second); o.arr->push_back(std::move(p)); } // antipairs
+            else if (m == "pairs") { Value p = Value::pair(e.first.toStr(), e.second); p.pairKeyM() = std::make_shared<Value>(e.first); o.arr->push_back(std::move(p)); }
+            else { Value p = Value::pair(e.second.toStr(), e.first); p.pairKeyM() = std::make_shared<Value>(e.second); o.arr->push_back(std::move(p)); } // antipairs
         }
         return o;
     }
     // A multi-dim shaped array renders its structure: rows on their own lines for
     // .gist, and a `Array.new(:shape(…), row, …)` constructor for .raku.
-    if (inv.t == VT::Array && inv.shape && inv.shape->size() >= 2 && inv.arr &&
+    if (inv.t == VT::Array && inv.shape() && inv.shape()->size() >= 2 && inv.arr &&
         (m == "gist" || m == "raku")) {
         if (m == "gist") {
             std::string out = "[";
@@ -3243,16 +3243,16 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             return Value::str(out + "]");
         }
         std::string ctor;
-        if (inv.ofType.empty() || inv.ofType == "Any" || inv.ofType == "Mu") ctor = "Array";
-        else if (ascii::islower((unsigned char)inv.ofType[0])) ctor = "array[" + inv.ofType + "]";
-        else ctor = "Array[" + inv.ofType + "]";
+        if (inv.ofType().empty() || inv.ofType() == "Any" || inv.ofType() == "Mu") ctor = "Array";
+        else if (ascii::islower((unsigned char)inv.ofType()[0])) ctor = "array[" + inv.ofType() + "]";
+        else ctor = "Array[" + inv.ofType() + "]";
         std::string out = ctor + ".new(:shape(";
-        for (size_t i = 0; i < inv.shape->size(); i++) { if (i) out += ", "; out += std::to_string((*inv.shape)[i]); }
+        for (size_t i = 0; i < inv.shape()->size(); i++) { if (i) out += ", "; out += std::to_string((*inv.shape())[i]); }
         out += ")";
         for (auto& row : *inv.arr) { ValueList none; out += ", " + methodCall(row, "raku", none).toStr(); }
         return Value::str(out + ")");
     }
-    if (inv.t == VT::Array && inv.shape && !inv.shape->empty() && inv.arr && m == "clone") {
+    if (inv.t == VT::Array && inv.shape() && !inv.shape()->empty() && inv.arr && m == "clone") {
         Value c = inv; // deep-copy the nested storage so containers are independent
         std::function<Value(const Value&)> deep = [&](const Value& n) -> Value {
             if (n.t == VT::Array && n.arr) { Value a = n; a.arr = std::make_shared<ValueList>();
@@ -3260,12 +3260,12 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             return n;
         };
         c = deep(inv);
-        c.shape = std::make_shared<std::vector<long long>>(*inv.shape);
+        c.shapeM() = std::make_shared<std::vector<long long>>(*inv.shape());
         return c;
     }
     // Most list operations on a multi-dim shaped array run over its LEAVES — flatten
     // the fixed structure to a plain list and delegate.
-    if (inv.t == VT::Array && inv.shape && inv.shape->size() >= 2 && inv.arr &&
+    if (inv.t == VT::Array && inv.shape() && inv.shape()->size() >= 2 && inv.arr &&
         (m == "join" || m == "map" || m == "grep" || m == "combinations" ||
          m == "permutations" || m == "rotor" || m == "pick" || m == "roll" ||
          m == "first" || m == "reduce" || m == "sum" || m == "min" || m == "max" ||
@@ -3493,7 +3493,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             // An OBJECT hash is a PARAMETERIZED Hash: `my Int %h{Str}` is a
             // Hash[Int,Str]. Only the name carries the parameters — typeName()
             // stays "Hash", because dispatch and error messages key on it.
-            if (!objHashKeyType(inv).empty()) return Value::str("Hash[" + inv.ofType + "]");
+            if (!objHashKeyType(inv).empty()) return Value::str("Hash[" + inv.ofType() + "]");
             // a DEFINITENESS-constrained type reports its smiley: `Any:D.^name`
             if (inv.t == VT::Type && inv.i)
                 return Value::str(inv.typeName() + (inv.i == 1 ? ":D" : ":U"));
@@ -3501,7 +3501,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         }
         // `.^base_type` — the same type without its definiteness constraint
         if (mm == "base_type" && inv.t == VT::Type) {
-            Value b = Value::typeObj(inv.s); b.ofType = inv.ofType; return b;
+            Value b = Value::typeObj(inv.s); b.ofTypeM() = inv.ofType(); return b;
         }
         // `.^array_type` — the ELEMENT type of a buffer, which is how
         // NativeHelpers::Blob decides what to allocate. A plain Blob/Buf is
@@ -3510,7 +3510,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         // utf8; a bare `blob8` type object has no such method there either.)
         if (mm == "array_type" && inv.t == VT::Str &&
             (inv.hashKind == "Buf" || inv.hashKind == "Blob"))
-            return Value::typeObj(inv.ofType.empty() ? "uint8" : inv.ofType);
+            return Value::typeObj(inv.ofType().empty() ? "uint8" : inv.ofType());
         // The utf* TYPE OBJECTS answer it as well — and only those. Measured:
         // Rakudo gives utf8/utf16/utf32 their element type and refuses blob8,
         // blob32, Buf and Blob, which are aliases rather than classes there.
@@ -3540,7 +3540,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             Value ty = Value::typeObj(inv.t == VT::Type ? inv.s : inv.typeName());
             for (auto& a : args) {
                 std::string pn = a.t == VT::Type ? a.s : a.typeName();
-                ty.ofType = ty.ofType.empty() ? pn : ty.ofType + "," + pn;
+                ty.ofTypeM() = ty.ofType().empty() ? pn : ty.ofType() + "," + pn;
             }
             return ty;
         }
@@ -3962,9 +3962,9 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 if (m == "keys")      o.arr->push_back(k);
                 else if (m == "values") o.arr->push_back(pos[i]);
                 else if (m == "pairs")  { Value p = Value::pair(std::to_string(i), pos[i]);
-                                          p.pairKey = std::make_shared<Value>(k); o.arr->push_back(p); }
+                                          p.pairKeyM() = std::make_shared<Value>(k); o.arr->push_back(p); }
                 else { Value p = Value::pair(pos[i].toStr(), k); // antipairs: value => key
-                       p.pairKey = std::make_shared<Value>(pos[i]); o.arr->push_back(p); }
+                       p.pairKeyM() = std::make_shared<Value>(pos[i]); o.arr->push_back(p); }
             }
             for (auto& kv : named) {
                 if (m == "keys")        o.arr->push_back(Value::str(kv.first));
@@ -3972,7 +3972,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 else if (m == "pairs")  { Value p = Value::pair(kv.first, kv.second);
                                           p.namedArg = true; o.arr->push_back(p); }
                 else { Value p = Value::pair(kv.second.toStr(), Value::str(kv.first));
-                       p.pairKey = std::make_shared<Value>(kv.second); o.arr->push_back(p); }
+                       p.pairKeyM() = std::make_shared<Value>(kv.second); o.arr->push_back(p); }
             }
             return o;
         }
@@ -4079,7 +4079,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     // NativeCall Pointer[T]: `Pointer.new($addr)` / `Pointer[int32].new(...)`.
     if (inv.t == VT::Type && (inv.s == "Pointer" || inv.s.rfind("Pointer[", 0) == 0) &&
         (m == "new" || m == "allocate")) {
-        std::string et = inv.s.rfind("Pointer[", 0) == 0 ? inv.s.substr(8, inv.s.size() - 9) : inv.ofType;
+        std::string et = inv.s.rfind("Pointer[", 0) == 0 ? inv.s.substr(8, inv.s.size() - 9) : inv.ofType();
         void* p = args.empty() ? nullptr : (void*)(intptr_t)ncRawAddr(args[0]);
         return ncMakePointer(et.empty() ? "Pointer" : "Pointer[" + et + "]", p);
     }
@@ -4107,7 +4107,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     }
     if (inv.t == VT::Type && (inv.s == "CArray" || inv.s.rfind("CArray[", 0) == 0)) {
         std::string et = inv.s.rfind("CArray[", 0) == 0 ? inv.s.substr(7, inv.s.size() - 8)
-                                                        : inv.ofType; // parameter lives in ofType
+                                                        : inv.ofType(); // parameter lives in ofType
         int esz = Interpreter::ncElemSize(et); // pointer element types are 8, not int32
         if (m == "new") {
             std::string bytes;
@@ -4320,7 +4320,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             int port = args.size() > 1 ? (int)args[1].toInt() : 0;
             int fd = ::socket(AF_INET, SOCK_STREAM, 0);
             auto ps = std::make_shared<PromiseState>();
-            Value p = Value::makeHash(); p.hashKind = "Promise"; p.ext = ps;
+            Value p = Value::makeHash(); p.hashKind = "Promise"; p.extM() = ps;
             if (fd < 0) {
                 ps->done = true; ps->broken = true; ps->causeMsg = "Cannot create socket";
                 (*p.hash)["status"] = Value::str("Broken");
@@ -4366,7 +4366,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             std::string data = args.empty() ? "" : args[0].toStr();
             if (m == "put" || m == "say") data += "\n";
             auto ps = std::make_shared<PromiseState>();
-            Value p = Value::makeHash(); p.hashKind = "Promise"; p.ext = ps;
+            Value p = Value::makeHash(); p.hashKind = "Promise"; p.extM() = ps;
             ssize_t off = 0; bool ok = fd >= 0;
             while (ok && off < (ssize_t)data.size()) {
                 // no gilPark: send on a local socket won't block meaningfully,
@@ -4415,9 +4415,9 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
          inv.s == "buf32" || inv.s == "blob32" || inv.s == "utf32" ||
          inv.s == "buf64" || inv.s == "blob64" ||
          inv.s.rfind("Blob[", 0) == 0 || inv.s.rfind("Buf[", 0) == 0 ||
-         ((inv.s == "Blob" || inv.s == "Buf") && !inv.ofType.empty()))) {
+         ((inv.s == "Blob" || inv.s == "Buf") && !inv.ofType().empty()))) {
         // the width comes from the name (blob32) or the parameter (Blob[uint32])
-        const std::string& wsrc = inv.ofType.empty() ? inv.s : inv.ofType;
+        const std::string& wsrc = inv.ofType().empty() ? inv.s : inv.ofType();
         int w = wsrc.find("16") != std::string::npos ? 2
               : wsrc.find("32") != std::string::npos ? 4
               : wsrc.find("64") != std::string::npos ? 8 : 1;
@@ -4428,8 +4428,8 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             else {
                 // low bits, not a saturated toInt(): a 64-bit word above 2^63-1 is
                 // ordinary in a blob64 (SHA-512's constants are full of them)
-                unsigned long long x = (v.t == VT::Int && v.big)
-                    ? v.big->toU64Wrap() : (unsigned long long)v.toInt();
+                unsigned long long x = (v.t == VT::Int && v.big())
+                    ? v.big()->toU64Wrap() : (unsigned long long)v.toInt();
                 for (int k = 0; k < w; k++) bytes += (char)(unsigned char)((x >> (8 * k)) & 0xFF);
             }
         };
@@ -4442,7 +4442,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         else for (auto& a : args) add(a);
         Value b = Value::str(bytes); // buf*/Buf[T] are the mutable spellings
         b.hashKind = (inv.s.rfind("buf", 0) == 0 || inv.s.rfind("Buf", 0) == 0) ? "Buf" : "Blob";
-        b.ofType = "uint" + std::to_string(w * 8); // blob8 IS Blob[uint8] — the [T] always shows
+        b.ofTypeM() = "uint" + std::to_string(w * 8); // blob8 IS Blob[uint8] — the [T] always shows
         if (b.hashKind == "Buf") identify(b);
         return b;
     }
@@ -4452,7 +4452,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         // pairs contribute key => WEIGHT (unlike .new, where a Pair is an element)
         ValueList items;
         for (auto& a : args) {
-            if (a.t == VT::Range && a.rTo >= 9000000000000000000LL)
+            if (a.t == VT::Range && a.rTo() >= 9000000000000000000LL)
                 throwTyped("X::Cannot::Lazy", {{"what", inv.s}},
                            "Cannot create a " + inv.s + " from a lazy list");
             if (a.t == VT::Array || a.t == VT::Range) for (auto& x : a.flatten()) items.push_back(x);
@@ -4474,7 +4474,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         for (auto& a : args) if (!a.namedArg) pos.push_back(a);
         ValueList items;
         for (auto& a : pos)
-            if (a.t == VT::Range && a.rTo >= 9000000000000000000LL)
+            if (a.t == VT::Range && a.rTo() >= 9000000000000000000LL)
                 throwTyped("X::Cannot::Lazy", {{"what", inv.s}},
                            "Cannot create a " + inv.s + " from a lazy list");
         // a quanthash arg is ONE element (Bag.new(set <a b c>) has 1 elem);
@@ -4485,15 +4485,15 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         }
         else for (auto& a : pos) items.push_back(a);
         Value out = makeBaggy(items, inv.s, /*pairsAsElements=*/true);
-        if (!inv.ofType.empty() && out.hash) { // Set[Str].new(...) enforces the key type
+        if (!inv.ofType().empty() && out.hash) { // Set[Str].new(...) enforces the key type
             for (auto& kv : *out.hash) {
-                Value orig = kv.second.pairKey ? *kv.second.pairKey : Value::str(kv.first);
-                if (!typeOrSubsetMatches(orig, inv.ofType))
+                Value orig = kv.second.pairKey() ? *kv.second.pairKey() : Value::str(kv.first);
+                if (!typeOrSubsetMatches(orig, inv.ofType()))
                     throw RakuError{Value::typeObj("X::TypeCheck::Binding"),
                         "Type check failed for " + inv.s + " key; expected " +
-                        inv.ofType + " but got " + orig.gist()};
+                        inv.ofType() + " but got " + orig.gist()};
             }
-            out.ofType = inv.ofType;
+            out.ofTypeM() = inv.ofType();
         }
         return out;
     }
@@ -4510,7 +4510,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             if (m == "Num") return Value::number((double)c);
             if (m == "Int" || m == "Numeric" || m == "chars") return Value::integer(c);
             Value v = Value::rat(BigInt(c), BigInt(1));
-            if (m == "FatRat") v.fatRat = true;
+            if (m == "FatRat") v.fatRatM() = true;
             return v;
         }
     }
@@ -4561,7 +4561,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         // an explicit `:CWD` is the directory this path is relative to; it rides
         // in ofType, which a path value has no other use for
         for (auto& a : args)
-            if (a.t == VT::Pair && a.s == "CWD" && a.pairVal) p.ofType = a.pairVal->toStr();
+            if (a.t == VT::Pair && a.s == "CWD" && a.pairVal) p.ofTypeM() = a.pairVal->toStr();
         return p;
     }
     // IO::Spec::Unix / ::Win32 — the per-OS path grammar an IO::Path routes
@@ -4635,7 +4635,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                         "Cannot specify :every in cue on the CurrentThreadScheduler"};
                 if (std::isinf(delay) && delay > 0) { // :in(Inf)/:at(Inf): never runs (-Inf runs NOW)
                     Value c = Value::makeHash(); c.hashKind = "Cancellation";
-                    c.ext = std::make_shared<CueState>();
+                    c.extM() = std::make_shared<CueState>();
                     return c;
                 }
                 long long target = times > 0 ? times : 1;
@@ -4648,7 +4648,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                     }
                 }
                 Value c = Value::makeHash(); c.hashKind = "Cancellation";
-                c.ext = std::make_shared<CueState>();
+                c.extM() = std::make_shared<CueState>();
                 return c;
             }
             if (delay < 0 || std::isnan(delay)) delay = 0; // past instants / -Inf run immediately
@@ -4662,7 +4662,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     if (inv.t == VT::Hash && inv.hashKind == "Cancellation" && m == "can")
         return Value::boolean(!args.empty() && (args[0].toStr() == "cancel" || args[0].toStr() == "cancelled"));
     if (inv.t == VT::Hash && inv.hashKind == "Cancellation") {
-        auto* cs = static_cast<CueState*>(inv.ext.get());
+        auto* cs = static_cast<CueState*>(inv.ext().get());
         if (m == "cancel")    { if (cs) cs->cancelled.store(true); return Value::boolean(true); }
         if (m == "cancelled") return Value::boolean(cs && cs->cancelled.load());
     }
@@ -4857,7 +4857,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         if (!pos.empty())      key = pos[0];
         if (pos.size() >= 2)   val = pos[1];
         Value p = Value::pair(key.toStr(), val);
-        if (key.t != VT::Str) p.pairKey = std::make_shared<Value>(key);
+        if (key.t != VT::Str) p.pairKeyM() = std::make_shared<Value>(key);
         return p;
     }
 
@@ -4870,7 +4870,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 v.hashKind = "Semaphore";
                 long n = args.empty() ? 1 : args[0].toInt();
                 (*v.hash)["count"] = Value::integer(n);
-                if (parallelMode_) { auto st = std::make_shared<SemaphoreState>(); st->count = n; v.ext = st; }
+                if (parallelMode_) { auto st = std::make_shared<SemaphoreState>(); st->count = n; v.extM() = st; }
             }
             else {
                 // Lock::Async keeps its own type identity (so a `Lock::Async $!l`
@@ -4888,7 +4888,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 // process — so the honest state is a no-op lock plus this note,
                 // until await-inside-a-lock releases the lock the way Rakudo's
                 // thread-pool await does.
-                if (parallelMode_) v.ext = std::make_shared<LockState>();
+                if (parallelMode_) v.extM() = std::make_shared<LockState>();
             }
             return v;
         }
@@ -4978,8 +4978,8 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             (*c.hash)["queue"] = Value::array();
             (*c.hash)["closed"] = Value::boolean(false);
             auto ps = std::make_shared<PromiseState>();          // the `.closed` Promise
-            c.ext = ps;
-            Value cp = Value::makeHash(); cp.hashKind = "Promise"; cp.ext = ps;
+            c.extM() = ps;
+            Value cp = Value::makeHash(); cp.hashKind = "Promise"; cp.extM() = ps;
             (*cp.hash)["status"] = Value::str("Planned");
             (*c.hash)["closedPromise"] = cp;
             return c;
@@ -5001,8 +5001,8 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         auto& q = *qp;
         auto isClosed = [&]() { return (*inv.hash)["closed"].b; };
         auto keepClosedIfDrained = [&]() {
-            if (isClosed() && q.empty() && inv.ext) {
-                auto ps = std::static_pointer_cast<PromiseState>(inv.ext);
+            if (isClosed() && q.empty() && inv.ext()) {
+                auto ps = std::static_pointer_cast<PromiseState>(inv.ext());
                 bool failed = inv.hash->count("failCause") > 0;
                 std::lock_guard<std::mutex> lk(ps->m);
                 if (!ps->done) {
@@ -5077,8 +5077,8 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             }
             (*inv.hash)["failCause"] = cause;
             // once drained, the .closed Promise breaks with the failure cause
-            if (q.empty() && inv.ext) {
-                auto ps = std::static_pointer_cast<PromiseState>(inv.ext);
+            if (q.empty() && inv.ext()) {
+                auto ps = std::static_pointer_cast<PromiseState>(inv.ext());
                 std::lock_guard<std::mutex> lk(ps->m);
                 if (!ps->done) { ps->broken = true; ps->cause = cause; ps->causeMsg = cause.toStr(); ps->done = true; }
                 ps->cv.notify_all();
@@ -5141,8 +5141,8 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             (*t.hash)["id"] = Value::integer(nextThreadId++);
             (*t.hash)["initial"] = Value::boolean(false);
             if (code.t == VT::Code) {
-                t.ext = std::static_pointer_cast<void>(
-                    std::static_pointer_cast<PromiseState>(spawnPromise(code, t).ext));
+                t.extM() = std::static_pointer_cast<void>(
+                    std::static_pointer_cast<PromiseState>(spawnPromise(code, t).ext()));
                 yieldToWorker();
             }
             return t;
@@ -5156,14 +5156,14 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     if (inv.t == VT::Hash && inv.hashKind == "Thread") {
         if (m == "is-initial-thread") return Value::boolean(inv.hash->count("initial") ? (*inv.hash)["initial"].b : (threadDepth_ == 0));
         if (m == "finish" || m == "join") {
-            if (inv.ext) awaitPromise(std::static_pointer_cast<PromiseState>(inv.ext));
+            if (inv.ext()) awaitPromise(std::static_pointer_cast<PromiseState>(inv.ext()));
             return inv;
         }
         if (m == "run" || m == "start") { // Thread.new(:code).run — start it now
-            if (inv.hash->count("code") && !inv.ext) {
+            if (inv.hash->count("code") && !inv.ext()) {
                 Value t = inv;
-                t.ext = std::static_pointer_cast<void>(
-                    std::static_pointer_cast<PromiseState>(spawnPromise((*inv.hash)["code"]).ext));
+                t.extM() = std::static_pointer_cast<void>(
+                    std::static_pointer_cast<PromiseState>(spawnPromise((*inv.hash)["code"]).ext()));
                 yieldToWorker();
                 return t;
             }
@@ -5211,7 +5211,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                     // push the tap's react ctx so `done` inside the whenever block
                     // closes the enclosing react (the block runs here, on whatever
                     // thread emitted — reactStack_ is thread-local, so it wasn't set)
-                    std::shared_ptr<ReactCtx> rctx = t.ext ? std::static_pointer_cast<ReactCtx>(t.ext) : nullptr;
+                    std::shared_ptr<ReactCtx> rctx = t.ext() ? std::static_pointer_cast<ReactCtx>(t.ext()) : nullptr;
                     for (auto& o : outs) {
                         ValueList one{o};
                         if (rctx) reactStack_.push_back(rctx);
@@ -5250,7 +5250,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                                 ValueList one2{exceptionFor(e)};
                                 try { callCallable((*t.hash)["quit"], one2); } catch (...) {}
                             }
-                            if (t.ext) { auto ctx2 = std::static_pointer_cast<ReactCtx>(t.ext); std::lock_guard<std::mutex> lk(ctx2->m); if (ctx2->liveSources > 0) ctx2->liveSources--; ctx2->cv.notify_all(); }
+                            if (t.ext()) { auto ctx2 = std::static_pointer_cast<ReactCtx>(t.ext()); std::lock_guard<std::mutex> lk(ctx2->m); if (ctx2->liveSources > 0) ctx2->liveSources--; ctx2->cv.notify_all(); }
                             break;
                         }
                         catch (...) { if (rctx) reactStack_.pop_back(); throw; }
@@ -5260,7 +5260,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 if (complete) { // head(n)/first done → fire the tap's done and release a react source
                     (*t.hash)["closed"] = Value::boolean(true);
                     if (t.hash->count("done") && (*t.hash)["done"].t == VT::Code) { ValueList none; callCallable((*t.hash)["done"], none); }
-                    if (t.ext) { auto ctx = std::static_pointer_cast<ReactCtx>(t.ext); std::lock_guard<std::mutex> lk(ctx->m); if (ctx->liveSources > 0) ctx->liveSources--; ctx->cv.notify_all(); }
+                    if (t.ext()) { auto ctx = std::static_pointer_cast<ReactCtx>(t.ext()); std::lock_guard<std::mutex> lk(ctx->m); if (ctx->liveSources > 0) ctx->liveSources--; ctx->cv.notify_all(); }
                 }
             }
             return Value::boolean(true); }
@@ -5273,7 +5273,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             if (inv.hash->count("taps")) for (auto& t : *(*inv.hash)["taps"].arr) {
                 if (t.t == VT::Hash && t.hash->count("closed") && (*t.hash)["closed"].truthy()) continue; // already done (head/first)
                 if (t.t == VT::Hash && t.hash->count("done") && (*t.hash)["done"].t == VT::Code) { ValueList none; callCallable((*t.hash)["done"], none); }
-                if (t.ext) { auto ctx = std::static_pointer_cast<ReactCtx>(t.ext); std::lock_guard<std::mutex> lk(ctx->m); if (ctx->liveSources > 0) ctx->liveSources--; ctx->cv.notify_all(); }
+                if (t.ext()) { auto ctx = std::static_pointer_cast<ReactCtx>(t.ext()); std::lock_guard<std::mutex> lk(ctx->m); if (ctx->liveSources > 0) ctx->liveSources--; ctx->cv.notify_all(); }
             }
             return Value::boolean(true); }
         if (m == "quit") {
@@ -5370,7 +5370,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         if (m == "new") {
             // A manual (vow-controlled) promise: starts Planned, later kept/broken.
             auto st = std::make_shared<PromiseState>();
-            p.ext = st;
+            p.extM() = st;
             (*p.hash)["status"] = Value::str("Planned");
             return p;
         }
@@ -5379,7 +5379,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             Value code; for (auto& x : args) if (x.t == VT::Code) code = x;
             if (code.t != VT::Code) {
                 auto st = std::make_shared<PromiseState>(); st->done = true; st->result = args.empty() ? Value::any() : args[0];
-                p.ext = st; (*p.hash)["result"] = st->result; (*p.hash)["status"] = Value::str("Kept");
+                p.extM() = st; (*p.hash)["result"] = st->result; (*p.hash)["status"] = Value::str("Kept");
                 return p;
             }
             Value pr = spawnPromise(code);
@@ -5392,7 +5392,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             st->done = true;
             if (m == "broken") { st->broken = true; st->cause = v; st->causeMsg = v.toStr(); }
             else st->result = v;
-            p.ext = st;
+            p.extM() = st;
             (*p.hash)["result"] = v;
             (*p.hash)["status"] = Value::str(m == "broken" ? "Broken" : "Kept");
             return p;
@@ -6089,7 +6089,7 @@ Value Interpreter::spawnIntervalWhenever(double interval, double delay, Value bl
         fin->store(true, std::memory_order_release);
     }), fin);
     Value t = Value::makeHash(); t.hashKind = "Tap";
-    if (handle) { t.ext = handle; (*t.hash)["wired"] = Value::boolean(true); } // .close stops the ticker
+    if (handle) { t.extM() = handle; (*t.hash)["wired"] = Value::boolean(true); } // .close stops the ticker
     return t;
 }
 
@@ -6183,7 +6183,7 @@ Value Interpreter::tapSignal(const std::vector<int>& sigs, Value emitCb, Value d
     // (Ctrl-C falls to the default handler) so `signal()` still type-checks and
     // programs that merely construct the Supply keep working.
     (void)sigs; (void)emitCb; (void)doneCb; (void)reactCtx;
-    Value t = Value::makeHash(); t.hashKind = "Tap"; t.ext = handle;
+    Value t = Value::makeHash(); t.hashKind = "Tap"; t.ext() = handle;
     (*t.hash)["wired"] = Value::boolean(true);
     return t;
 #else
@@ -6266,7 +6266,7 @@ Value Interpreter::tapSignal(const std::vector<int>& sigs, Value emitCb, Value d
         std::lock_guard<std::mutex> lk(reactCtx->m);
         reactCtx->extTaps.push_back(handle);
     }
-    Value t = Value::makeHash(); t.hashKind = "Tap"; t.ext = handle;
+    Value t = Value::makeHash(); t.hashKind = "Tap"; t.extM() = handle;
     (*t.hash)["wired"] = Value::boolean(true);
     return t;
 #endif // !_WIN32
@@ -6314,7 +6314,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
             ctx->blockDone = true;
         }
         catch (...) { tctx_.tapStack.pop_back(); closeTapHandle(handle); throw; }
-        Value t = Value::makeHash(); t.hashKind = "Tap"; t.ext = handle;
+        Value t = Value::makeHash(); t.hashKind = "Tap"; t.extM() = handle;
         (*t.hash)["wired"] = Value::boolean(true);
         return t;
     }
@@ -6418,7 +6418,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
             self->liveWorkers_--;
             fin->store(true, std::memory_order_release);
         }), fin);
-        Value t = Value::makeHash(); t.hashKind = "Tap"; t.ext = handle;
+        Value t = Value::makeHash(); t.hashKind = "Tap"; t.extM() = handle;
         (*t.hash)["wired"] = Value::boolean(true);
         return t;
     }
@@ -6465,7 +6465,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
             self->liveWorkers_--;
             fin->store(true, std::memory_order_release);
         }), fin);
-        Value t = Value::makeHash(); t.hashKind = "Tap"; t.ext = handle;
+        Value t = Value::makeHash(); t.hashKind = "Tap"; t.extM() = handle;
         (*t.hash)["wired"] = Value::boolean(true);
         return t;
     }
@@ -6523,10 +6523,10 @@ Value rtBAbsSlow(Interpreter& I, const Value& v) {
     return I.methodCall(v, "abs", none);   // full semantics: augment, objects, junctions, Rat/big/Num
 }
 Value rtBChr(Interpreter&, const Value& v) {
-    long long cp = v.big ? LLONG_MAX : v.toInt();
+    long long cp = v.big() ? LLONG_MAX : v.toInt();
     if (cp < 0 || cp > 0x10FFFF)
         throw RakuError{Value::typeObj("X::AdHoc"),
-            "chr codepoint " + (v.big ? v.big->toString() : std::to_string(cp)) + " is out of bounds"};
+            "chr codepoint " + (v.big() ? v.big()->toString() : std::to_string(cp)) + " is out of bounds"};
     return Value::str(cpToUtf8((uint32_t)cp));
 }
 Value rtBOrd(Interpreter&, const Value& v) {
@@ -6546,7 +6546,7 @@ Value rtBChars(Interpreter&, const Value& v) {
     return Value::integer(graphemeCount(v.toStr()));
 }
 Value rtBSqrt(Interpreter& I, const Value& v) {
-    if (v.t == VT::Complex) return complexSqrt(v.n, v.im);
+    if (v.t == VT::Complex) return complexSqrt(v.n, v.im());
     ValueList one{v};
     double x = numArg(I, one);   // same coercion the sub form uses (Object → .Bridge/.Numeric)
     if (x < 0 && I.langRev_ >= 2) return Value::complex(0, std::sqrt(-x));
@@ -7195,7 +7195,7 @@ void Interpreter::registerBuiltins() {
     B["is-approx"] = [](Interpreter& I, ValueList& a) -> Value {
         // Complex-aware: compare as points in the plane, |got - exp|
         auto re = [](const Value& v) { return v.t == VT::Complex ? v.n : v.toNum(); };
-        auto im = [](const Value& v) { return v.t == VT::Complex ? v.im : 0.0; };
+        auto im = [](const Value& v) { return v.t == VT::Complex ? v.im() : 0.0; };
         double gr = a.size() > 0 ? re(a[0]) : 0, gi = a.size() > 0 ? im(a[0]) : 0;
         double er = a.size() > 1 ? re(a[1]) : 0, ei = a.size() > 1 ? im(a[1]) : 0;
         double tol = 1e-5;
@@ -8051,7 +8051,7 @@ void Interpreter::registerBuiltins() {
         Value out = Value::array(); out.isList = true; out.s = "Seq"; // Rakudo hands back a Seq
         double re, im;
         Value x = a.empty() ? Value::integer(0) : a[0];
-        if (x.t == VT::Complex) { re = x.n; im = x.im; }
+        if (x.t == VT::Complex) { re = x.n; im = x.im(); }
         else { re = x.toNum(); im = 0.0; }
         long long n = a.size() > 1 ? a[1].toInt() : 1;
         // a degenerate root count (or a NaN operand) is a bare NaN, not a
@@ -8311,7 +8311,7 @@ void Interpreter::registerBuiltins() {
         if (a.empty()) return Value::integer(0);
         // count without materializing (toList deep-copies every element)
         const Value& v = a[0];
-        if (v.t == VT::Array && v.arr && !v.ext) return Value::integer((long long)v.arr->size());
+        if (v.t == VT::Array && v.arr && !v.ext()) return Value::integer((long long)v.arr->size());
         if (v.t == VT::Hash && v.hash && v.hashKind.empty()) return Value::integer((long long)v.hash->size());
         return Value::integer((long long)toList(v).size());
     };
@@ -8758,8 +8758,8 @@ void Interpreter::registerBuiltins() {
             // block the supply-block setup: an unkept Promise stays dormant (Cro's
             // ResponseParser has `whenever $cancellation` that is normally never
             // kept — awaiting it synchronously hung the whole response pipeline).
-            if (src.t == VT::Hash && src.hashKind == "Promise" && src.ext) {
-                auto ps = std::static_pointer_cast<PromiseState>(src.ext);
+            if (src.t == VT::Hash && src.hashKind == "Promise" && src.ext()) {
+                auto ps = std::static_pointer_cast<PromiseState>(src.ext());
                 std::vector<Value> lastP, quitP;
                 scanSupplyPhasers(blk, &lastP, &quitP, nullptr);
                 // a promise is a live source until it settles: hold the supply open
@@ -8836,9 +8836,9 @@ void Interpreter::registerBuiltins() {
                 });
             Value tapV = I.tapSupply(src, emitW, doneW, quitW);
             // closing the outer tap closes this inner one
-            if (ctx->tap && tapV.t == VT::Hash && tapV.ext &&
+            if (ctx->tap && tapV.t == VT::Hash && tapV.ext() &&
                 tapV.hash->count("wired") && (*tapV.hash)["wired"].truthy()) {
-                auto ih = std::static_pointer_cast<TapHandle>(tapV.ext);
+                auto ih = std::static_pointer_cast<TapHandle>(tapV.ext());
                 Interpreter* ip = &I;
                 std::lock_guard<std::mutex> lk(ctx->tap->m);
                 if (!ctx->tap->closed) ctx->tap->closers.push_back([ip, ih] { ip->closeTapHandle(ih); });
@@ -8952,7 +8952,7 @@ void Interpreter::registerBuiltins() {
                     std::shared_ptr<ReactCtx> rctx;
                     if (!I.reactStack_.empty()) {
                         rctx = I.reactStack_.back();
-                        tapRec.ext = rctx;
+                        tapRec.extM() = rctx;
                         { std::lock_guard<std::mutex> lk(rctx->m); rctx->liveSources++; }
                     }
                     if (!lastP.empty()) {
@@ -8997,8 +8997,8 @@ void Interpreter::registerBuiltins() {
                     // (eager worker ran first): close the tap now, so runReactLoop
                     // doesn't wait on a source that will never complete.
                     if (sup.t == VT::Hash && sup.hash->count("done_state") &&
-                        (*sup.hash)["done_state"].truthy() && tapRec.ext) {
-                        auto ctx = std::static_pointer_cast<ReactCtx>(tapRec.ext);
+                        (*sup.hash)["done_state"].truthy() && tapRec.ext()) {
+                        auto ctx = std::static_pointer_cast<ReactCtx>(tapRec.ext());
                         std::lock_guard<std::mutex> lk(ctx->m);
                         if (ctx->liveSources > 0) ctx->liveSources--;
                         ctx->cv.notify_all();
@@ -9131,8 +9131,8 @@ void Interpreter::registerBuiltins() {
             // whenever over a SETTLED Promise binds the block to its RESULT, not the
             // promise object. (An unkept one still fires immediately with the object —
             // the full async react registration is still an open item.)
-            if (s.t == VT::Hash && s.hashKind == "Promise" && s.ext) {
-                auto ps = std::static_pointer_cast<PromiseState>(s.ext);
+            if (s.t == VT::Hash && s.hashKind == "Promise" && s.ext()) {
+                auto ps = std::static_pointer_cast<PromiseState>(s.ext());
                 bool done, broken; Value cause; std::string causeMsg;
                 { std::lock_guard<std::mutex> lk(ps->m);
                   done = ps->done; broken = ps->broken; cause = ps->cause; causeMsg = ps->causeMsg; }
@@ -9360,7 +9360,7 @@ void Interpreter::registerBuiltins() {
         // as its consumer asks. Building the result here instead walked only the
         // prefix already materialised, so `map &cis, (0, -tau/$n ... *)` came back
         // two elements long and the FFT's `Z*` twiddle silently ran short.
-        if (a.size() == 2 && a[0].t == VT::Code && a[1].t == VT::Array && a[1].ext)
+        if (a.size() == 2 && a[0].t == VT::Code && a[1].t == VT::Array && a[1].ext())
             return I.methodCall(a[1], "map", ValueList{a[0]});
         Value out = Value::array(); out.isList = true; out.s = "Seq";
         auto emit = [&](const Value& v) {
@@ -9385,7 +9385,7 @@ void Interpreter::registerBuiltins() {
     };
     B["grep"] = [](Interpreter& I, ValueList& a) -> Value {
         // …and the same for grep: the method form pulls lazily, this one did not
-        if (a.size() == 2 && a[1].t == VT::Array && a[1].ext)
+        if (a.size() == 2 && a[1].t == VT::Array && a[1].ext())
             return I.methodCall(a[1], "grep", ValueList{a[0]});
         Value out = Value::array(); out.isList = true; out.s = "Seq";
         if (a.empty()) return out;
@@ -9440,7 +9440,7 @@ void Interpreter::registerBuiltins() {
         return Value::any();
     };
     B["pop"] = [](Interpreter& I, ValueList& a) -> Value {
-        if (!a.empty() && a[0].t == VT::Array && a[0].ext && std::static_pointer_cast<LazySeqState>(a[0].ext)->infinite)
+        if (!a.empty() && a[0].t == VT::Array && a[0].ext() && std::static_pointer_cast<LazySeqState>(a[0].ext())->infinite)
             throw RakuError{Value::typeObj("X::Cannot::Lazy"), "Cannot pop a lazy list"};
         if (!a.empty() && a[0].t == VT::Array && !a[0].arr->empty()) { Value v = a[0].arr->back(); a[0].arr->pop_back(); if (v.t == VT::Array) v.itemized = true; return v; }
         // empty: the METHOD's Failure, not a silent Any (see B["shift"])
@@ -9448,7 +9448,7 @@ void Interpreter::registerBuiltins() {
         return Value::any();
     };
     B["shift"] = [](Interpreter& I, ValueList& a) -> Value {
-        if (!a.empty() && a[0].t == VT::Array && a[0].ext && std::static_pointer_cast<LazySeqState>(a[0].ext)->infinite) I.materializeLazy(a[0], 1);
+        if (!a.empty() && a[0].t == VT::Array && a[0].ext() && std::static_pointer_cast<LazySeqState>(a[0].ext())->infinite) I.materializeLazy(a[0], 1);
         if (!a.empty() && a[0].t == VT::Array && !a[0].arr->empty()) { Value v = a[0].arr->front(); a[0].arr->erase(a[0].arr->begin()); if (v.t == VT::Array) v.itemized = true; return v; }
         // empty: hand off to the METHOD so the sub answers the same Failure
         // (X::Cannot::Empty) instead of a silent Any
@@ -9668,7 +9668,7 @@ void Interpreter::registerBuiltins() {
         Value code; for (auto& x : a) if (x.t == VT::Code) code = x;
         if (code.t != VT::Code) { // `start VALUE` — an already-kept promise of the value
             auto ps = std::make_shared<PromiseState>(); ps->done = true; ps->result = a.empty() ? Value::any() : a[0];
-            Value p = Value::makeHash(); p.hashKind = "Promise"; p.ext = ps;
+            Value p = Value::makeHash(); p.hashKind = "Promise"; p.extM() = ps;
             (*p.hash)["status"] = Value::str("Kept"); (*p.hash)["result"] = ps->result;
             return p;
         }
@@ -9696,7 +9696,7 @@ void Interpreter::registerBuiltins() {
     // ofType="uint8"} — rebuild the "Name[elem]" string the FFI helpers expect.
     auto ncTypeName = [](const Value& v) -> std::string {
         if (v.t != VT::Type) return v.toStr();
-        return (!v.ofType.empty() && v.s.find('[') == std::string::npos) ? v.s + "[" + v.ofType + "]" : v.s;
+        return (!v.ofType().empty() && v.s.find('[') == std::string::npos) ? v.s + "[" + v.ofType() + "]" : v.s;
     };
     B["cglobal"] = [ncTypeName](Interpreter& I, ValueList& a) -> Value {
         std::string lib  = a.size() > 0 ? (a[0].t == VT::Type ? a[0].s : a[0].toStr()) : "";
@@ -9733,8 +9733,8 @@ void Interpreter::registerBuiltins() {
             if (p.t != VT::Hash || p.hashKind != "Promise") return p;
             // PromiseState-backed promise (start / spawnPromise): block until it
             // settles, rethrowing the cause if it was broken.
-            if (p.ext) {
-                auto ps = std::static_pointer_cast<PromiseState>(p.ext);
+            if (p.ext()) {
+                auto ps = std::static_pointer_cast<PromiseState>(p.ext());
                 I.awaitPromise(ps);
                 if (ps->broken)
                     throw RakuError{ ps->cause, ps->causeMsg.empty() ? std::string("Promise broken") : ps->causeMsg };
@@ -9750,7 +9750,7 @@ void Interpreter::registerBuiltins() {
                         std::string k = q.hash->count("kind") ? (*q.hash)["kind"].toStr() : "";
                         if (k == "timer") timeout = (*q.hash)["seconds"].toNum();
                         else if (k == "proc") procP = &q;
-                        else if (q.ext) { pss.push_back(std::static_pointer_cast<PromiseState>(q.ext)); psvals.push_back(&q); }
+                        else if (q.ext()) { pss.push_back(std::static_pointer_cast<PromiseState>(q.ext())); psvals.push_back(&q); }
                     }
                 }
                 if (procP) I.runProcPromise(*procP, timeout);
@@ -9811,7 +9811,7 @@ void Interpreter::registerBuiltins() {
                 // a plain Hash contributes its pairs (a quanthash stays ONE element)
                 for (auto& kv : *a.hash) {
                     Value p = Value::pair(kv.first, kv.second);
-                    p.pairKey = kv.second.pairKey;
+                    p.pairKeyM() = kv.second.pairKey();
                     out.push_back(p);
                 }
             }
@@ -10523,9 +10523,9 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
         case O::Decode: // nqp::decode(buf, 'utf8') — bytes → Str (rakupp strings are UTF-8)
             return Value::str(v.empty() ? std::string() : v[0].s);
         case O::AddBigI: { // nqp::add_I(a, b, Int) — bignum-safe add
-            if (!v.empty() && (v[0].big || (v.size() > 1 && v[1].big))) {
-                BigInt a = v[0].big ? *v[0].big : BigInt(v[0].toInt());
-                BigInt b = (v.size() > 1) ? (v[1].big ? *v[1].big : BigInt(v[1].toInt())) : BigInt(0);
+            if (!v.empty() && (v[0].big() || (v.size() > 1 && v[1].big()))) {
+                BigInt a = v[0].big() ? *v[0].big() : BigInt(v[0].toInt());
+                BigInt b = (v.size() > 1) ? (v[1].big() ? *v[1].big() : BigInt(v[1].toInt())) : BigInt(0);
                 BigInt r = a + b;
                 return r.fitsLL() ? Value::integer(r.toLL()) : Value::bigint(r);
             }

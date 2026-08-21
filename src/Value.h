@@ -295,12 +295,52 @@ struct ObjectData;
 struct Env; // defined in Interpreter.h; ClassInfo keeps its declaration scope for defaults
 struct ClassDecl; // defined in Ast.h; ClassInfo keeps a program-lifetime view for roleParams
 
+// The COLD BLOCK — REPRESENTATION-PLAN phase 1, batch 2 (revised). The pointer
+// census (tools/ptr-census.md) says these fields are absent on the overwhelming
+// majority of live Values (25.6M of 30M destructions carried none of them), so
+// they live behind ONE lazily-allocated shared block instead of inline: a plain
+// Int/Str/Array Value stops carrying — and every copy stops constructing,
+// copying and destroying — a Rat, a Complex, a Range, a shaped-array header and
+// a type annotation it does not have. sizeof(Value) 344 → 208.
+//
+// The block is COPY-ON-WRITE: copying a Value shares it (one shared_ptr copy,
+// where these fields used to cost ~148 inline bytes), and every write goes
+// through xw(), which clones a shared block first. Reads never allocate.
+struct ValueExt {
+    double im = 0; // imaginary part for VT::Complex (real part is Value::n)
+    std::shared_ptr<BigInt> big;     // for VT::Int when value exceeds long long
+    std::shared_ptr<BigInt> ratN, ratD; // for VT::Rat (normalized, ratD > 0)
+    std::shared_ptr<Value> pairKey; // for Pair key when it's non-scalar (e.g. an array key: [..] => [..])
+    std::shared_ptr<void> ext;       // opaque runtime handle: Promise/Channel/Lock/Supplier state (concurrency)
+    // shaped array `my @a[2;3]`: fixed dimensions (row-major). Empty/null = unshaped.
+    std::shared_ptr<std::vector<long long>> shape;
+    // range
+    long long rFrom = 0, rTo = 0;
+    // NOT interned, unlike the tag fields that stayed inline, and it must stay
+    // that way until one site moves: `IO::Path`'s `:CWD` rides in `ofType`
+    // because a path value has no other use for it (Builtins.cpp), so this
+    // field can hold a runtime DIRECTORY NAME rather than a type name. The
+    // intern table is append-only by design, so a program walking many
+    // directories would add an entry per directory and never release it.
+    std::string ofType;   // parameter/element type: `Array[Int]` type object, or a typed `my Int @a`/`%h`
+                          // (comma-joined for multiple params, e.g. Hash[Int,Str] -> "Int,Str")
+    bool rExFrom = false, rExTo = false;
+    // A fractional numeric range (`1.1 .. 3.1`, `-1.5 ..^ 3`) keeps its real
+    // endpoints in the otherwise-unused `n`/`im` doubles; elements step by 1 from
+    // `n` while <= `im`. Integer ranges leave this false and use rFrom/rTo.
+    bool rNum = false;
+    bool fatRat = false; // VT::Rat tagged as FatRat (type identity; arithmetic stays FatRat)
+};
+// The read path for a Value with no block: namespace scope, so access carries
+// no function-local-static guard (that guard, run 256× per byteset build, was
+// most of a 28% regex regression — see BENCHMARKS.md).
+inline const ValueExt emptyValueExt{};
+
 struct Value {
     VT t = VT::Any;
     bool b = false;
     long long i = 0;
     double n = 0;
-    double im = 0; // imaginary part for VT::Complex (real part is n)
     CowStr s; // also holds type name for VT::Type, key for VT::Pair
     // "" normal Hash; else "Set"/"Bag"/"Mix"/"SetHash"/... — a secondary type
     // tag drawn from a closed vocabulary, so it is INTERNED (IStr.h): 8 bytes
@@ -314,51 +354,66 @@ struct Value {
     bool readonly = false; // a readonly-bound parameter ($x with no `is rw`/`is copy`) — s/// dies on it
     bool namedArg = false; // a VT::Pair passed as a NAMED arg (written syntactically as k=>v / :k(v) at the callsite). A value pair defaults positional.
 #ifdef RAKUPP_PTR_CENSUS
-    // Phase 1 batch 2 wants to collapse the eleven pointers below into a small
-    // number of tag-dispatched slots, which is only sound if the sets that can
-    // be live AT THE SAME TIME are what the type tags suggest. This build counts
-    // the combinations that actually occur instead of reasoning about them.
-    // Compiled out of every normal build; see tools/ptr-census.md.
+    // The census that sized the cold block; see tools/ptr-census.md. Compiled
+    // out of every normal build.
     ~Value();
     unsigned ptrMask() const {
         return (arr ? 1u : 0) | (hash ? 2u : 0) | (code ? 4u : 0) | (pairVal ? 8u : 0) |
-               (pairKey ? 16u : 0) | (obj ? 32u : 0) | (ext ? 64u : 0) | (big ? 128u : 0) |
-               (ratN ? 256u : 0) | (ratD ? 512u : 0) | (shape ? 1024u : 0);
+               (pairKey() ? 16u : 0) | (obj ? 32u : 0) | (ext() ? 64u : 0) | (big() ? 128u : 0) |
+               (ratN() ? 256u : 0) | (ratD() ? 512u : 0) | (shape() ? 1024u : 0);
     }
 #endif
     std::shared_ptr<ValueList> arr;
     std::shared_ptr<ValueMap> hash;
     std::shared_ptr<Callable> code;
     std::shared_ptr<Value> pairVal; // for Pair value
-    std::shared_ptr<Value> pairKey; // for Pair key when it's non-scalar (e.g. an array key: [..] => [..])
     std::shared_ptr<ObjectData> obj; // for VT::Object
-    std::shared_ptr<void> ext;       // opaque runtime handle: Promise/Channel/Lock/Supplier state (concurrency)
-    std::shared_ptr<BigInt> big;     // for VT::Int when value exceeds long long
-    std::shared_ptr<BigInt> ratN, ratD; // for VT::Rat (normalized, ratD > 0)
-    bool fatRat = false; // VT::Rat tagged as FatRat (type identity; arithmetic stays FatRat)
-    // shaped array `my @a[2;3]`: fixed dimensions (row-major). Empty/null = unshaped.
-    std::shared_ptr<std::vector<long long>> shape;
-    // range
-    long long rFrom = 0, rTo = 0;
-    bool rExFrom = false, rExTo = false;
-    // A fractional numeric range (`1.1 .. 3.1`, `-1.5 ..^ 3`) keeps its real
-    // endpoints in the otherwise-unused `n`/`im` doubles; elements step by 1 from
-    // `n` while <= `im`. Integer ranges leave this false and use rFrom/rTo.
-    bool rNum = false;
+    std::shared_ptr<ValueExt> x_;    // the cold block above; null on almost every Value
     IStr enumName; // non-empty for enum values: the KEY (e.g. Order: Less/Same/More)
     IStr enumType; // the enum's TYPE name (e.g. "Order", "Color") — set on values and the type-list
-    // NOT interned, unlike the three tags above, and it must stay that way
-    // until one site moves: `IO::Path`'s `:CWD` rides in `ofType` because a path
-    // value has no other use for it (Builtins.cpp:4242), so this field can hold
-    // a runtime DIRECTORY NAME rather than a type name. The intern table is
-    // append-only by design, so a program walking many directories would add an
-    // entry per directory and never release it. Everything else here is drawn
-    // from the program's own vocabulary of type names and is safe to intern.
-    std::string ofType;   // parameter/element type: `Array[Int]` type object, or a typed `my Int @a`/`%h`
-                          // (comma-joined for multiple params, e.g. Hash[Int,Str] -> "Int,Str")
     int natBits = 0;      // native int width (uint8/int16/…): 0 = not native; wraps on assignment
     bool natSigned = false;
     bool natFloat = false; // native float container (num32): truncates to float32 on assignment
+
+    // Cold-block access. Reads go through xr() and NEVER allocate; writes go
+    // through xw(), which materializes the block and — because copies share
+    // it — clones one that another Value can still see. use_count is an
+    // atomic read; the clone path runs only on write-after-copy, which the
+    // census says is rare.
+    const ValueExt& xr() const { return x_ ? *x_ : emptyValueExt; }
+    ValueExt& xw() {
+        if (!x_) x_ = std::make_shared<ValueExt>();
+        else if (x_.use_count() > 1) x_ = std::make_shared<ValueExt>(*x_);
+        return *x_;
+    }
+    double im() const { return xr().im; }
+    const std::shared_ptr<BigInt>& big() const { return xr().big; }
+    const std::shared_ptr<BigInt>& ratN() const { return xr().ratN; }
+    const std::shared_ptr<BigInt>& ratD() const { return xr().ratD; }
+    const std::shared_ptr<Value>& pairKey() const { return xr().pairKey; }
+    const std::shared_ptr<void>& ext() const { return xr().ext; }
+    const std::shared_ptr<std::vector<long long>>& shape() const { return xr().shape; }
+    long long rFrom() const { return xr().rFrom; }
+    long long rTo() const { return xr().rTo; }
+    const std::string& ofType() const { return xr().ofType; }
+    bool rExFrom() const { return xr().rExFrom; }
+    bool rExTo() const { return xr().rExTo; }
+    bool rNum() const { return xr().rNum; }
+    bool fatRat() const { return xr().fatRat; }
+    double& imM() { return xw().im; }
+    std::shared_ptr<BigInt>& bigM() { return xw().big; }
+    std::shared_ptr<BigInt>& ratNM() { return xw().ratN; }
+    std::shared_ptr<BigInt>& ratDM() { return xw().ratD; }
+    std::shared_ptr<Value>& pairKeyM() { return xw().pairKey; }
+    std::shared_ptr<void>& extM() { return xw().ext; }
+    std::shared_ptr<std::vector<long long>>& shapeM() { return xw().shape; }
+    long long& rFromM() { return xw().rFrom; }
+    long long& rToM() { return xw().rTo; }
+    std::string& ofTypeM() { return xw().ofType; }
+    bool& rExFromM() { return xw().rExFrom; }
+    bool& rExToM() { return xw().rExTo; }
+    bool& rNumM() { return xw().rNum; }
+    bool& fatRatM() { return xw().fatRat; }
 
     Value() : t(VT::Any) {}
 
@@ -369,7 +424,7 @@ struct Value {
     static Value bigint(const BigInt& b) {
         Value v; v.t = VT::Int;
         if (b.fitsLL()) v.i = b.toLL();
-        else v.big = std::make_shared<BigInt>(b);
+        else v.bigM() = std::make_shared<BigInt>(b);
         return v;
     }
     static Value rat(BigInt n, BigInt d) {
@@ -378,8 +433,9 @@ struct Value {
         if (d.sign < 0) { n = -n; d = -d; }
         BigInt g = BigInt::gcd(n, d);
         if (!g.isZero()) { BigInt q, r; BigInt::divmod(n, g, q, r); n = q; BigInt::divmod(d, g, q, r); d = q; }
-        v.ratN = std::make_shared<BigInt>(n);
-        v.ratD = std::make_shared<BigInt>(d);
+        ValueExt& x = v.xw();
+        x.ratN = std::make_shared<BigInt>(n);
+        x.ratD = std::make_shared<BigInt>(d);
         return v;
     }
     // Rat.new semantics: like rat() but a zero denominator is preserved
@@ -389,17 +445,18 @@ struct Value {
         Value v; v.t = VT::Rat;
         if (n.sign > 0) n = BigInt(1);
         else if (n.sign < 0) n = BigInt(-1);
-        v.ratN = std::make_shared<BigInt>(n);
-        v.ratD = std::make_shared<BigInt>(BigInt(0));
+        ValueExt& x = v.xw();
+        x.ratN = std::make_shared<BigInt>(n);
+        x.ratD = std::make_shared<BigInt>(BigInt(0));
         return v;
     }
     BigInt toBig() const {
-        if (t == VT::Int) return big ? *big : BigInt(i);
+        if (t == VT::Int) return big() ? *big() : BigInt(i);
         if (t == VT::Bool) return BigInt(b ? 1 : 0);
         return BigInt((long long)toInt());
     }
     static Value number(double x) { Value v; v.t = VT::Num; v.n = x; return v; }
-    static Value complex(double re, double imag) { Value v; v.t = VT::Complex; v.n = re; v.im = imag; return v; }
+    static Value complex(double re, double imag) { Value v; v.t = VT::Complex; v.n = re; v.imM() = imag; return v; }
     static Value str(std::string x) { Value v; v.t = VT::Str; v.s = std::move(x); return v; }
     static Value array() { Value v; v.t = VT::Array; v.arr = std::make_shared<ValueList>(); return v; }
     static Value array(ValueList items) { Value v; v.t = VT::Array; v.arr = std::make_shared<ValueList>(std::move(items)); return v; }
@@ -436,8 +493,10 @@ struct Value {
         v.pairVal = std::make_shared<Value>(std::move(val)); return v;
     }
     static Value range(long long from, long long to, bool exFrom, bool exTo) {
-        Value v; v.t = VT::Range; v.rFrom = from; v.rTo = to;
-        v.rExFrom = exFrom; v.rExTo = exTo; return v;
+        Value v; v.t = VT::Range;
+        ValueExt& x = v.xw();
+        x.rFrom = from; x.rTo = to; x.rExFrom = exFrom; x.rExTo = exTo;
+        return v;
     }
 
     bool isNumeric() const { return t == VT::Int || t == VT::Num || t == VT::Bool || t == VT::Rat; }
@@ -461,9 +520,10 @@ struct Value {
     // Typed Blob/Buf support: blob16/32/64 (and utf16/32) store little-endian
     // words in the byte string; ofType ("uint16"/"uint32"/…) carries the width.
     int blobElemSize() const {                 // bytes per element (1 for plain Blob)
-        if (ofType == "uint16" || ofType == "int16") return 2;
-        if (ofType == "uint32" || ofType == "int32") return 4;
-        if (ofType == "uint64" || ofType == "int64") return 8;
+        const std::string& ot = ofType();
+        if (ot == "uint16" || ot == "int16") return 2;
+        if (ot == "uint32" || ot == "int32") return 4;
+        if (ot == "uint64" || ot == "int64") return 8;
         return 1;
     }
     long long blobElems() const { int w = blobElemSize(); return (long long)(s.size() / w); }
@@ -498,7 +558,8 @@ namespace rakupp {
 
 inline Value Value::makeHash() { Value v; v.t = VT::Hash; v.hash = std::make_shared<ValueMap>(); return v; }
 inline Value Value::matchVal(std::string text, long from, long to) {
-    Value v; v.t = VT::Match; v.s = std::move(text); v.rFrom = from; v.rTo = to;
+    Value v; v.t = VT::Match; v.s = std::move(text);
+    ValueExt& x = v.xw(); x.rFrom = from; x.rTo = to;
     v.arr = std::make_shared<ValueList>();
     v.hash = std::make_shared<ValueMap>();
     return v;
@@ -522,7 +583,7 @@ inline bool identityScalar(const Value& v) {
     return (v.t == VT::Str && v.hashKind == "Buf") ||
            (v.t == VT::Num && (v.hashKind == "Instant" || v.hashKind == "Duration"));
 }
-inline Value& identify(Value& v) { v.ext = std::make_shared<char>(); return v; }
+inline Value& identify(Value& v) { v.extM() = std::make_shared<char>(); return v; }
 
 bool valueEq(const Value& a, const Value& b);   // numeric/str smart equality
 // structural eqv over two objects: same class, attrs pairwise-equal via `eq`
@@ -542,10 +603,10 @@ std::string strPred(const std::string& s, bool& ok);  // magic decrement (ok=fal
 // The walk descends exactly as many levels as there are dimensions, so a leaf
 // that is ITSELF an array is not flattened along with the structure.
 inline bool isMultiDimShaped(const Value& v) {
-    return v.t == VT::Array && v.arr && v.shape && v.shape->size() >= 2;
+    return v.t == VT::Array && v.arr && v.shape() && v.shape()->size() >= 2;
 }
 inline void shapedLeaves(const Value& v, ValueList& out) {
-    const size_t ndim = v.shape ? v.shape->size() : 0;
+    const size_t ndim = v.shape() ? v.shape()->size() : 0;
     struct Walk {
         static void go(const Value& n, size_t d, size_t ndim, ValueList& out) {
             if (d == ndim) { out.push_back(n); return; }
@@ -564,7 +625,7 @@ inline ValueList shapedLeaves(const Value& v) { ValueList out; shapedLeaves(v, o
 // otherwise-unused `ext`, so a plain `1..5` costs nothing extra.
 struct RangeEnds { Value from, to; };
 inline const RangeEnds* rangeEnds(const Value& v) {
-    return v.t == VT::Range && v.ext ? static_cast<const RangeEnds*>(v.ext.get()) : nullptr;
+    return v.t == VT::Range && v.ext() ? static_cast<const RangeEnds*>(v.ext().get()) : nullptr;
 }
 // Range endpoints render with `.raku` (`Bool::True..Bool::False`, `0.5..<1/3>`),
 // which lives in Builtins.cpp. A raw pointer is zero-initialized before any
@@ -580,10 +641,10 @@ extern RakuReprFn g_rakuRepr;
 using ForceLazyFn = void (*)(const Value&);
 extern ForceLazyFn g_forceLazy;
 inline void forceLazy(const Value& v) {
-    if (v.t == VT::Array && v.ext && g_forceLazy) g_forceLazy(v);
+    if (v.t == VT::Array && v.ext() && g_forceLazy) g_forceLazy(v);
 }
 inline void attachRangeEnds(Value& r, Value from, Value to) {
-    r.ext = std::make_shared<RangeEnds>(RangeEnds{std::move(from), std::move(to)});
+    r.extM() = std::make_shared<RangeEnds>(RangeEnds{std::move(from), std::move(to)});
 }
 // `..` keeps a Real or undefined endpoint as the object it is, but NUMIFIES a
 // Str ("2" becomes 2) or a list (its element count) — so those must not be

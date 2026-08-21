@@ -47,20 +47,20 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     }
     // Complex
     if (inv.t == VT::Complex) {
-        std::complex<double> z(inv.n, inv.im);
+        std::complex<double> z(inv.n, inv.im());
         if (m == "re" || m == "Real") return Value::number(inv.n);
-        if (m == "im") return Value::number(inv.im);
-        if (m == "reals") { Value o = Value::array({Value::number(inv.n), Value::number(inv.im)});
+        if (m == "im") return Value::number(inv.im());
+        if (m == "reals") { Value o = Value::array({Value::number(inv.n), Value::number(inv.im())});
                             o.isList = true; return o; } // a List, not an Array
         if (m == "abs" || m == "magnitude") return Value::number(std::abs(z));
-        if (m == "conj") return Value::complex(inv.n, -inv.im);
-        if (m == "sqrt") return complexSqrt(inv.n, inv.im);
+        if (m == "conj") return Value::complex(inv.n, -inv.im());
+        if (m == "sqrt") return complexSqrt(inv.n, inv.im());
         if (m == "exp") { auto r = std::exp(z); return Value::complex(r.real(), r.imag()); }
         if (m == "log") { // optional base argument: log(z) / log(base)
             auto r = std::log(z);
             if (!args.empty()) {
                 const Value& b = args[0];
-                r /= std::log(b.t == VT::Complex ? std::complex<double>(b.n, b.im)
+                r /= std::log(b.t == VT::Complex ? std::complex<double>(b.n, b.im())
                                                  : std::complex<double>(b.toNum(), 0.0));
             }
             return Value::complex(r.real(), r.imag());
@@ -103,13 +103,13 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         if (m == "polar") return Value::array({Value::number(std::abs(z)), Value::number(std::arg(z))});
         if (m == "arg") return Value::number(std::arg(z));
         if (m == "Complex") return inv;
-        if (m == "isNaN") return Value::boolean(std::isnan(inv.n) || std::isnan(inv.im));
+        if (m == "isNaN") return Value::boolean(std::isnan(inv.n) || std::isnan(inv.im()));
         if (m == "Str" || m == "gist" || m == "Stringy") return Value::str(inv.toStr());
         if (m == "raku") return Value::str("<" + inv.toStr() + ">");
-        if (m == "Num" || m == "Real" || m == "Int") { if (inv.im != 0) throw RakuError{Value::typeObj("X::Numeric::Real"), "Can not convert Complex with nonzero imaginary part"}; return m == "Int" ? Value::integer((long long)inv.n) : Value::number(inv.n); }
+        if (m == "Num" || m == "Real" || m == "Int") { if (inv.im() != 0) throw RakuError{Value::typeObj("X::Numeric::Real"), "Can not convert Complex with nonzero imaginary part"}; return m == "Int" ? Value::integer((long long)inv.n) : Value::number(inv.n); }
         // Complex.narrow is `self.im == 0 ?? self.re.narrow !! self` — it must RECURSE,
         // or (4.0+0i).narrow stops at the Num and never demotes to Int.
-        if (m == "narrow") return inv.im == 0 ? methodCall(Value::number(inv.n), "narrow", ValueList{}) : inv;
+        if (m == "narrow") return inv.im() == 0 ? methodCall(Value::number(inv.n), "narrow", ValueList{}) : inv;
     }
 
     // Cool-style numeric coercion: an object that defines .Numeric/.Bridge (but
@@ -149,16 +149,16 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     }
     // numeric
     if (m == "abs") {
-        if (inv.t == VT::Int && inv.big) return Value::bigint(inv.big->abs());
+        if (inv.t == VT::Int && inv.big()) return Value::bigint(inv.big()->abs());
         if (inv.t == VT::Int) return Value::integer(std::llabs(inv.toInt()));
-        if (inv.t == VT::Rat) { Value r = Value::rat(inv.ratN->abs(), *inv.ratD); r.fatRat = inv.fatRat; return r; }
+        if (inv.t == VT::Rat) { Value r = Value::rat(inv.ratN()->abs(), *inv.ratD()); r.fatRatM() = inv.fatRat(); return r; }
         return Value::number(std::fabs(inv.toNum()));
     }
     if (m == "sqrt") { double x = inv.toNum(); return (x < 0 && langRev_ >= 2) ? Value::complex(0, std::sqrt(-x)) : Value::number(std::sqrt(x)); }
     // 6.e: `42.pick(3)` is short for `(^42).pick(3)`, and likewise .roll. Before
     // it, Int has no pick/roll of its own and Any's one-item-list version answers
     // — `6.pick(3)` is `(6)` there, not three numbers below six.
-    if (sixE() && inv.t == VT::Int && !inv.big && (m == "pick" || m == "roll")) {
+    if (sixE() && inv.t == VT::Int && !inv.big() && (m == "pick" || m == "roll")) {
         Value upto = Value::range(0, inv.i, false, true); // ^$n
         if (args.empty()) { ValueList one{Value::integer(1)}; 
             Value got = methodCall(upto, m, one);
@@ -185,7 +185,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             return f;
         };
         static const char* kBadEnds = "X::Range::Rand::InvalidEndpoints";
-        if (inv.rTo >= 9000000000000000000LL || inv.rFrom <= -9000000000000000000LL)
+        if (inv.rTo() >= 9000000000000000000LL || inv.rFrom() <= -9000000000000000000LL)
             return softly(kBadEnds, "Impossible to get a random number from an infinite range");
         ValueList none;
         Value loV = methodCall(inv, "min", none), hiV = methodCall(inv, "max", none);
@@ -211,7 +211,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // randDouble() is [0, 1), so the top endpoint never comes up however it
         // is written; only an excluded BOTTOM one can, and it is redrawn.
         double v = lo + (hi - lo) * randDouble();
-        while (inv.rExFrom && v == lo) v = lo + (hi - lo) * randDouble();
+        while (inv.rExFrom() && v == lo) v = lo + (hi - lo) * randDouble();
         return Value::number(v);
     }
     if (m == "rand") return Value::number(inv.toNum() * randDouble()); // $n.rand — Num in [0, $n)
@@ -219,12 +219,12 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         long long b = args[0].toInt(); if (b < 2) b = 2; if (b > 36) b = 36;
         static const char* BD = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
         // a BIG integer digits out by repeated division — toInt() would truncate
-        if (inv.big && !inv.big->fitsLL()) {
-            BigInt n = inv.big->abs(), base((long long)b), q, r;
+        if (inv.big() && !inv.big()->fitsLL()) {
+            BigInt n = inv.big()->abs(), base((long long)b), q, r;
             std::string d;
             while (!n.isZero()) { BigInt::divmod(n, base, q, r); d = std::string(1, BD[r.fitsLL() ? r.toLL() : 0]) + d; n = q; }
             if (d.empty()) d = "0";
-            return Value::str(inv.big->sign < 0 ? "-" + d : d);
+            return Value::str(inv.big()->sign < 0 ? "-" + d : d);
         }
         long long n = inv.toInt();
         if (n == 0) return Value::str("0");
@@ -239,8 +239,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         Value out = Value::array(); out.isList = true;
         bool lazy = false; ValueList fin;
         for (auto& a : args) {
-            if (a.t == VT::Array && a.ext &&
-                std::static_pointer_cast<LazySeqState>(a.ext)->infinite) { lazy = true; break; }
+            if (a.t == VT::Array && a.ext() &&
+                std::static_pointer_cast<LazySeqState>(a.ext())->infinite) { lazy = true; break; }
             if (a.t == VT::Array && a.b) lazy = true; // `lazy 2, 3`
             for (auto& d : a.flatten()) fin.push_back(d);
         }
@@ -268,9 +268,9 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         ValueList fin;          // finite divisor prefix
         Value tail;             // an INFINITE tail (lazy array / endless Range)
         for (auto& a : args) {
-            if (a.t == VT::Array && a.ext &&
-                std::static_pointer_cast<LazySeqState>(a.ext)->infinite) { lazy = true; tail = a; break; }
-            if (a.t == VT::Range && a.rTo >= 9000000000000000000LL) { lazy = true; tail = a; break; }
+            if (a.t == VT::Array && a.ext() &&
+                std::static_pointer_cast<LazySeqState>(a.ext())->infinite) { lazy = true; tail = a; break; }
+            if (a.t == VT::Range && a.rTo() >= 9000000000000000000LL) { lazy = true; tail = a; break; }
             if (a.t == VT::Array && a.b) lazy = true; // `lazy 2, 3` — finite but lazy
             for (auto& d : a.flatten()) fin.push_back(d);
         }
@@ -281,8 +281,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             // out of the digest. (The lazy-divisor branch below still works in
             // long long; a bigint there wants the same treatment when something
             // needs it.)
-            if (inv.big) {
-                BigInt bn = *inv.big;
+            if (inv.big()) {
+                BigInt bn = *inv.big();
                 auto emit = [&](const BigInt& v) {
                     out.arr->push_back(v.fitsLL() ? Value::integer(v.toLL()) : Value::bigint(v));
                 };
@@ -307,8 +307,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         size_t fi = 0, ti = 0;
         ValueList tcache;
         std::shared_ptr<LazySeqState> st;
-        if (tail.t == VT::Array && tail.arr) { tcache = *tail.arr; st = std::static_pointer_cast<LazySeqState>(tail.ext); }
-        long long rnext = tail.t == VT::Range ? tail.rFrom + (tail.rExFrom ? 1 : 0) : 0;
+        if (tail.t == VT::Array && tail.arr) { tcache = *tail.arr; st = std::static_pointer_cast<LazySeqState>(tail.ext()); }
+        long long rnext = tail.t == VT::Range ? tail.rFrom() + (tail.rExFrom() ? 1 : 0) : 0;
         auto next = [&](long long& d) -> bool {
             if (fi < fin.size()) { d = fin[fi++].toInt(); return true; }
             if (tail.t == VT::Range) { d = rnext++; return true; }
@@ -322,8 +322,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // a bigint invocant divides in BigInt here too — `parse-base($hex,
         // 16).polymod(256 xx *)` is how Digest's tests spell an expected blob,
         // and the long-long path saturated it to 0x7FFF… bytes
-        if (inv.big) {
-            BigInt bn = *inv.big;
+        if (inv.big()) {
+            BigInt bn = *inv.big();
             while (!bn.isZero()) {
                 long long d;
                 if (!next(d) || d == 1) {
@@ -366,7 +366,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         if (m == "Order") { // Cool.Order — the sign of .Int as the Order enum
             ValueList none; Value iv = methodCall(inv, "Int", none);
             if (iv.t == VT::Hash && iv.hashKind == "Failure") return iv;
-            return Value::orderVal(iv.big ? iv.big->sign : (iv.toInt() < 0 ? -1 : iv.toInt() > 0 ? 1 : 0));
+            return Value::orderVal(iv.big() ? iv.big()->sign : (iv.toInt() < 0 ? -1 : iv.toInt() > 0 ? 1 : 0));
         }
         if (m == "Version") { ValueList one{Value::str(strOf(inv))}; return methodCall(Value::typeObj("Version"), "new", one); }
         if (m == "EVAL") {
@@ -392,7 +392,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             if (bits) {
                 ValueList none; Value iv = methodCall(inv, "Int", none);
                 if (iv.t == VT::Hash && iv.hashKind == "Failure") return iv;
-                BigInt mod = BigInt(2).pow(bits), n = iv.big ? *iv.big : BigInt(iv.toInt()), q, r;
+                BigInt mod = BigInt(2).pow(bits), n = iv.big() ? *iv.big() : BigInt(iv.toInt()), q, r;
                 BigInt::divmod(n, mod, q, r);
                 if (r.sign < 0) r = r + mod;                       // divmod truncates toward zero
                 if (sign && (r - BigInt(2).pow(bits - 1)).sign >= 0) r = r - mod; // top bit set: negative
@@ -441,8 +441,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // methodCall("elems") would come straight back in and never return.
         double x;
         if (inv.t == VT::Range) {
-            long long lo = inv.rFrom + (inv.rExFrom ? 1 : 0), hi = inv.rTo - (inv.rExTo ? 1 : 0);
-            x = inv.rTo >= 9000000000000000000LL ? INFINITY : (double)std::max(0LL, hi - lo + 1);
+            long long lo = inv.rFrom() + (inv.rExFrom() ? 1 : 0), hi = inv.rTo() - (inv.rExTo() ? 1 : 0);
+            x = inv.rTo() >= 9000000000000000000LL ? INFINITY : (double)std::max(0LL, hi - lo + 1);
         }
         else x = strict(inv);
         // a Cool CONTAINER coerces to Complex through its element count too
@@ -495,15 +495,15 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // Inf/NaN round to themselves (they stay Num) — only .Int coercion throws.
         if (inv.t == VT::Num && !std::isfinite(inv.n)) return inv;
         // zero-denominator Rats cannot round — they FAIL (X::Numeric::DivideByZero)
-        if (inv.t == VT::Rat && inv.ratD && inv.ratD->isZero()) {
+        if (inv.t == VT::Rat && inv.ratD() && inv.ratD()->isZero()) {
             Value f = Value::makeHash(); f.hashKind = "Failure";
             (*f.hash)["exception"] = Value::typeObj("X::Numeric::DivideByZero");
             return f;
         }
         // exact rounding for Rats/Ints (big-safe): floor = div, others derive from it
         if (m != "round" && (inv.t == VT::Rat || inv.t == VT::Int || inv.t == VT::Bool)) {
-            BigInt n = inv.t == VT::Rat ? *inv.ratN : inv.toBig();
-            BigInt d = inv.t == VT::Rat ? *inv.ratD : BigInt(1);
+            BigInt n = inv.t == VT::Rat ? *inv.ratN() : inv.toBig();
+            BigInt d = inv.t == VT::Rat ? *inv.ratD() : BigInt(1);
             BigInt q, r; BigInt::divmod(n, d, q, r);
             if (m == "floor"   && !r.isZero() && n.sign < 0) q = q - BigInt(1);
             if (m == "ceiling" && !r.isZero() && n.sign > 0) q = q + BigInt(1);
@@ -552,9 +552,9 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         if (inv.t == VT::Complex) { // 6.e: v / |v|; 6.c/6.d keep the historical throw
             if (langRev_ < 2)
                 throw RakuError{Value::typeObj("X::Numeric::Real"), "Complex is not in the Real domain, so it has no sign"};
-            double mag = std::hypot(inv.n, inv.im);
+            double mag = std::hypot(inv.n, inv.im());
             if (mag == 0) return Value::complex(0, 0);
-            return Value::complex(inv.n / mag, inv.im / mag);
+            return Value::complex(inv.n / mag, inv.im() / mag);
         }
         double n = inv.toNum();
         if (std::isnan(n)) return Value::number(NAN); // sign(NaN) is NaN
@@ -564,7 +564,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     if (m == "log") {
         if (!args.empty() && args[0].t == VT::Complex) { // real.log(complex base)
             std::complex<double> r = std::log(std::complex<double>(inv.toNum(), 0.0)) /
-                                     std::log(std::complex<double>(args[0].n, args[0].im));
+                                     std::log(std::complex<double>(args[0].n, args[0].im()));
             return Value::complex(r.real(), r.imag());
         }
         if (!args.empty()) return rtLogReal(*this, inv.toNum(), args[0].toNum());
@@ -574,11 +574,11 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     if (m == "log2")  return rtLogReal(*this, inv.toNum(), 2.0);
     if (m == "sin") return Value::number(std::sin(inv.toNum()));
     if (m == "cos") return Value::number(std::cos(inv.toNum()));
-    if (m == "numerator") return inv.t == VT::Rat ? Value::bigint(*inv.ratN) : Value::integer(inv.toInt());
-    if (m == "denominator") return inv.t == VT::Rat ? Value::bigint(*inv.ratD) : Value::integer(1);
+    if (m == "numerator") return inv.t == VT::Rat ? Value::bigint(*inv.ratN()) : Value::integer(inv.toInt());
+    if (m == "denominator") return inv.t == VT::Rat ? Value::bigint(*inv.ratD()) : Value::integer(1);
     if (m == "nude") { // a List (prints "(3 10)"), not an Array, like Rakudo
         Value o = inv.t == VT::Rat
-            ? Value::array({Value::bigint(*inv.ratN), Value::bigint(*inv.ratD)})
+            ? Value::array({Value::bigint(*inv.ratN()), Value::bigint(*inv.ratD())})
             : Value::array({Value::integer(inv.toInt()), Value::integer(1)});
         o.isList = true;
         return o;
@@ -674,12 +674,12 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // built-in ancestry. Works on any value via its type name.
         std::string want = args[0].t == VT::Type ? args[0].s : args[0].toStr();
         // a parameterized type object carries its parameter separately
-        if (args[0].t == VT::Type && !args[0].ofType.empty() &&
+        if (args[0].t == VT::Type && !args[0].ofType().empty() &&
             want.find('[') == std::string::npos)
-            want += "[" + args[0].ofType + "]";
+            want += "[" + args[0].ofType() + "]";
         std::string tn = inv.t == VT::Type ? inv.s : (inv.obj && inv.obj->cls ? inv.obj->cls->name : inv.typeName());
-        if (inv.t == VT::Type && !inv.ofType.empty() && tn.find('[') == std::string::npos)
-            tn += "[" + inv.ofType + "]";
+        if (inv.t == VT::Type && !inv.ofType().empty() && tn.find('[') == std::string::npos)
+            tn += "[" + inv.ofType() + "]";
         if (tn == want || want == "Any" || want == "Mu") return Value::boolean(true);
         // `CArray[int32]` IS a `CArray`: an unparameterized want matches the base
         // of a parameterized type. (The reverse does not hold — a bare CArray is
@@ -748,20 +748,20 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         return Value::typeObj(inv.code->pkg.empty() ? "GLOBAL" : inv.code->pkg);
     if (m == "of" && inv.t == VT::Type) { // array[int].of / Array[Str].of
         if (const char* vt = quantValueType(inv.s)) return Value::typeObj(vt); // Bag.of is UInt
-        return Value::typeObj(inv.ofType.empty() ? "Mu" : inv.ofType);
+        return Value::typeObj(inv.ofType().empty() ? "Mu" : inv.ofType());
     }
     if (m == "new" && inv.t == VT::Array) { // @a.new: fresh empty array of the same type
         Value out = Value::array();
-        out.ofType = inv.ofType;
+        out.ofTypeM() = inv.ofType();
         return out;
     }
     if (m == "keyof") { // key type of an Associative (unparameterized: Mu / Str(Any))
         if (inv.t == VT::Hash && !inv.hashKind.empty()) // quanthash: its key parameter (unparameterized: Mu)
-            return Value::typeObj(inv.ofType.empty() ? "Mu" : inv.ofType);
+            return Value::typeObj(inv.ofType().empty() ? "Mu" : inv.ofType());
         if (inv.t == VT::Type) {
             static const std::set<std::string> qh = {"Set", "SetHash", "Bag", "BagHash", "Mix", "MixHash"};
             if (qh.count(inv.s)) // Mix[Str].keyof is Str; unparameterized quanthashes key on Mu
-                return Value::typeObj(inv.ofType.empty() ? "Mu" : inv.ofType);
+                return Value::typeObj(inv.ofType().empty() ? "Mu" : inv.ofType());
             return Value::typeObj("Str(Any)"); // `Hash.keyof`
         }
         // An OBJECT hash keys on its declared key type. Parser.cpp records that as
@@ -769,8 +769,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // ofType — `.of` already reads the first half and `.keyof` never read the
         // second. A plain hash keys on the COERCION type Str(Any), not bare Str.
         if (inv.t == VT::Hash) {
-            size_t c = inv.ofType.find(',');
-            if (c != std::string::npos) return Value::typeObj(inv.ofType.substr(c + 1));
+            size_t c = inv.ofType().find(',');
+            if (c != std::string::npos) return Value::typeObj(inv.ofType().substr(c + 1));
         }
         return Value::typeObj("Str(Any)");
     }
@@ -816,7 +816,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 r = Value::rat(BigInt(neg ? -p1 : p1), BigInt(q1 ? q1 : 1));
             }
         }
-        r.fatRat = fat; // FatRat is the arbitrary-precision Rat, tagged for type identity
+        r.fatRatM() = fat; // FatRat is the arbitrary-precision Rat, tagged for type identity
         return r;
     }
     if (m == "succ") {
@@ -844,8 +844,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // beyond (found via (2**127-1).is-prime — trial division on a truncated
         // int64 said False for M127)
         static const long long kWit[] = {2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37};
-        if (inv.big) {
-            const BigInt& n = *inv.big;
+        if (inv.big()) {
+            const BigInt& n = *inv.big();
             BigInt one(1), two(2);
             if (n.sign <= 0 || BigInt::cmp(n, two) < 0) return Value::boolean(false);
             auto mod = [](const BigInt& a, const BigInt& b) { BigInt q, r; BigInt::divmod(a, b, q, r); return r; };
@@ -1264,8 +1264,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 if (a.t == VT::Pair && a.s == "parts" && a.pairVal) {
                     const Value& p = *a.pairVal;
                     if (p.t == VT::Range) {
-                        lo = p.rFrom + (p.rExFrom ? 1 : 0);
-                        hi = p.rTo >= 9000000000000000000LL ? avail : p.rTo - (p.rExTo ? 1 : 0);
+                        lo = p.rFrom() + (p.rExFrom() ? 1 : 0);
+                        hi = p.rTo() >= 9000000000000000000LL ? avail : p.rTo() - (p.rExTo() ? 1 : 0);
                     }
                     else lo = hi = p.toInt();
                 }
@@ -1365,7 +1365,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // the path's OS grammar and the directory it is resolved against
         if (m == "SPEC") return Value::typeObj("IO::Spec::" + (inv.enumName.empty() ? std::string("Unix") : inv.enumName.str()));
         if (m == "CWD") {
-            if (!inv.ofType.empty()) return Value::str(inv.ofType); // an explicit :CWD
+            if (!inv.ofType().empty()) return Value::str(inv.ofType()); // an explicit :CWD
             char buf[4096]; return Value::str(getcwd(buf, sizeof buf) ? buf : ".");
         }
         if (m == "is-relative") return Value::boolean(inv.toStr().empty() || inv.toStr()[0] != '/');
@@ -1790,8 +1790,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         long long n = (long long)inv.s.size(), from, len;
         Value a0v = args.empty() ? Value::integer(0) : args[0];
         if (a0v.t == VT::Code && a0v.code) a0v = callCallable(a0v, ValueList{Value::integer(n)});
-        if (a0v.t == VT::Range) { from = a0v.rFrom + (a0v.rExFrom ? 1 : 0);
-                                  len = (a0v.rTo - (a0v.rExTo ? 1 : 0)) - from + 1; }
+        if (a0v.t == VT::Range) { from = a0v.rFrom() + (a0v.rExFrom() ? 1 : 0);
+                                  len = (a0v.rTo() - (a0v.rExTo() ? 1 : 0)) - from + 1; }
         else {
             from = a0v.toInt();
             if (args.size() > 1 && args[1].t == VT::Code && args[1].code) {
@@ -1923,7 +1923,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                     else { uint32_t v = cp - 0x10000; word(0xD800 | (v >> 10), 2); word(0xDC00 | (v & 0x3FF), 2); }
                 }
                 b = Value::str(bytes);
-                b.ofType = u16 ? "uint16" : "uint32";
+                b.ofTypeM() = u16 ? "uint16" : "uint32";
                 b.hashKind = "Blob";
                 b.enumName = u16 ? "utf16" : "utf32";
                 return b;
@@ -1944,8 +1944,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // encoding (Rakudo ties the default to the blob type) — treating the
         // 16-bit words as UTF-8 bytes dies on any surrogate (encode.t #32).
         if (norm.empty()) {
-            if (inv.enumName == "utf16" || inv.ofType == "uint16" || inv.ofType == "int16") norm = "utf16";
-            else if (inv.enumName == "utf32" || inv.ofType == "uint32" || inv.ofType == "int32") norm = "utf32";
+            if (inv.enumName == "utf16" || inv.ofType() == "uint16" || inv.ofType() == "int16") norm = "utf16";
+            else if (inv.enumName == "utf32" || inv.ofType() == "uint32" || inv.ofType() == "int32") norm = "utf32";
         }
         if (latin1) { // each byte is a codepoint
             std::string out;
@@ -2355,8 +2355,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // a RANGE gives both ends at once: `substr("Long string", 3..6)`
         if (!args.empty() && args[0].t == VT::Range) {
             const Value& rg = args[0];
-            long long lo = rg.rFrom + (rg.rExFrom ? 1 : 0);
-            long long hi = rg.rTo - (rg.rExTo ? 1 : 0);
+            long long lo = rg.rFrom() + (rg.rExFrom() ? 1 : 0);
+            long long hi = rg.rTo() - (rg.rExTo() ? 1 : 0);
             if (lo < 0) lo += n;
             if (hi < 0) hi += n;
             if (lo < 0) lo = 0;
@@ -2646,7 +2646,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                     if (want == 'v' || want == 'm') out.arr->push_back(sepv);
                     if (want == 'p') {
                         Value pr = Value::pair("0", sepv);
-                        pr.pairKey = std::make_shared<Value>(idx);
+                        pr.pairKeyM() = std::make_shared<Value>(idx);
                         out.arr->push_back(std::move(pr));
                     }
                 }
@@ -2737,8 +2737,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             std::vector<std::string> froms, tos;
             // an Array side may hold Range ELEMENTS (['a'..'c']); flatten()
             // descends into them, and a bare Range side flattens to its chars
-            if (a.pairKey && (a.pairKey->t == VT::Array || a.pairKey->t == VT::Range))
-                for (auto& x : a.pairKey->flatten()) froms.push_back(x.toStr());
+            if (a.pairKey() && (a.pairKey()->t == VT::Array || a.pairKey()->t == VT::Range))
+                for (auto& x : a.pairKey()->flatten()) froms.push_back(x.toStr());
             else froms = expandTrans(a.s); // string key: char-by-char, with `..` ranges
             if (a.pairVal && (a.pairVal->t == VT::Array || a.pairVal->t == VT::Range))
                 for (auto& x : a.pairVal->flatten()) tos.push_back(x.toStr());
@@ -2858,10 +2858,10 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         return Value::integer(c[0]);
     }
     if (m == "chr") {
-        long long cp = inv.big ? LLONG_MAX : inv.toInt(); // BigInt is certainly out of bounds
+        long long cp = inv.big() ? LLONG_MAX : inv.toInt(); // BigInt is certainly out of bounds
         if (cp < 0 || cp > 0x10FFFF)
             throw RakuError{Value::typeObj("X::AdHoc"),
-                "chr codepoint " + (inv.big ? inv.big->toString() : std::to_string(cp)) + " is out of bounds"};
+                "chr codepoint " + (inv.big() ? inv.big()->toString() : std::to_string(cp)) + " is out of bounds"};
         return Value::str(cpToUtf8((uint32_t)cp));
     }
     if (m == "split") {
@@ -2969,7 +2969,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 if (want == 'v' || want == 'm' || !want) out.arr->push_back(sepv);
                 if (want == 'p') {
                     Value pr = Value::pair(std::to_string(seps[k].which), sepv);
-                    pr.pairKey = std::make_shared<Value>(idx);
+                    pr.pairKeyM() = std::make_shared<Value>(idx);
                     out.arr->push_back(std::move(pr));
                 }
             }
@@ -3051,7 +3051,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 throw RakuError{Value::typeObj("X::Multi::NoMatch"),
                     "Cannot resolve caller comb(" + inv.typeName() + ": Pair); "
                     "the Pair form of comb arrived with 6.e"};
-            long long size = args[0].pairKey ? args[0].pairKey->toInt() : Value::str(args[0].s).toInt();
+            long long size = args[0].pairKey() ? args[0].pairKey()->toInt() : Value::str(args[0].s).toInt();
             long long gap  = args[0].pairVal ? args[0].pairVal->toInt() : 0;
             if (size < 1) size = 1;
             long long stride = size + gap; if (stride < 1) stride = 1;
