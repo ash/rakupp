@@ -874,8 +874,25 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             // ARRAY does not: array assignment itemises each element, so
             // `[[1,2],[3]].flat` stays two elements. `$@a` / `.item` opt out
             // either way.
+            // `:hammer` (6.e) hammers the containers flat: itemisation stops
+            // mattering, so `[[1,2],[3]].flat(:hammer)` is (1,2,3) where plain
+            // .flat keeps the two itemised Arrays whole.
+            bool hammer = false;
+            for (auto& a : args)
+                if (a.t == VT::Pair && a.s == "hammer")
+                    hammer = !a.pairVal || a.pairVal->truthy();
             Value out = Value::array(); out.isList = true; out.s = "Seq";
             std::function<void(const Value&, bool)> go = [&](const Value& x, bool ofArray) {
+                if (hammer) {
+                    if (x.t == VT::Array && x.arr) { for (auto& e : *x.arr) go(e, false); return; }
+                    if (x.t == VT::Hash && x.hash && x.hashKind.empty()) {
+                        for (auto& kv : *x.hash) out.arr->push_back(Value::pair(kv.first, kv.second));
+                        return;
+                    }
+                    if (x.t == VT::Range) { for (auto& e : x.flatten()) out.arr->push_back(e); return; }
+                    out.arr->push_back(x);
+                    return;
+                }
                 // a nested LIST always spreads; only a nested ARRAY container is
                 // held back by its parent being an Array
                 if (x.t == VT::Array && x.arr && !x.itemized && (x.isList || !ofArray))

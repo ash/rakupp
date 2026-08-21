@@ -2057,25 +2057,33 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 }
                 return out;
             }
-            if (m == "methods") {
+            if (m == "methods" || m == "method_names") {
                 // `:local` → only this class's own methods; otherwise walk the user
                 // inheritance chain (parents + roles), stopping before Any/Mu.
-                bool local = false;
+                // .^method_names is the method TABLE's names, so it is local by
+                // definition — `class B is A` answers B's own methods only, and
+                // an inherited `foo` is not among them (Rakudo agrees).
+                bool names = (m == "method_names");
+                bool local = names;
                 for (auto& a : args) if (a.t == VT::Pair && a.s == "local")
                     local = a.pairVal ? a.pairVal->truthy() : true;
                 Value out = Value::array(); out.isList = true;
                 std::set<ClassInfo*> visited; // dedup by class (MRO), not by method name
+                std::set<std::string> seen;   // ...except inside one flattened table
                 std::function<void(ClassInfo*)> walk = [&](ClassInfo* c) {
                     if (!c || !visited.insert(c).second) return;
                     for (auto& kv : c->methods) {
                         // private (!p) methods stay out, as in Rakudo
                         if (!kv.first.empty() && kv.first[0] == '!') continue;
-                        out.arr->push_back(kv.second);
+                        if (local && !seen.insert(kv.first).second) continue;
+                        out.arr->push_back(names ? Value::str(kv.first) : kv.second);
                     }
                     // a PUBLIC attribute's auto-generated accessor is a method too
                     // (Rakudo lists it; Data::Dump renders `method public () …`)
                     for (auto& at : c->attrs) {
                         if (!at.pub || c->methods.count(at.name)) continue;
+                        if (local && !seen.insert(at.name).second) continue;
+                        if (names) { out.arr->push_back(Value::str(at.name)); continue; }
                         Value stub; stub.t = VT::Code; stub.code = std::make_shared<Callable>();
                         stub.code->name = at.name; stub.code->isMethod = true;
                         std::string an = at.name;
@@ -2087,7 +2095,15 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         };
                         out.arr->push_back(stub);
                     }
-                    if (local) return;
+                    if (local) {
+                        // a composed role's methods are FLATTENED into the class, so they
+                        // belong to its own table: `class C does R` answers `rm` to both
+                        // .^method_names and .^methods(:local), as Rakudo does. Class
+                        // parents stay out — those are inherited, not local.
+                        if (c->parent && c->parent->isRole) walk(c->parent.get());
+                        for (auto& p : c->extraParents) if (p && p->isRole) walk(p.get());
+                        return;
+                    }
                     walk(c->parent.get());
                     for (auto& p : c->extraParents) walk(p.get());
                 };
@@ -3162,7 +3178,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             }
             if ((m == "can" || m == "^can") && !args.empty()) {
                 static const std::set<std::string> howCan = {
-                    "attributes", "methods", "name", "archetypes", "add_method",
+                    "attributes", "methods", "method_names", "name", "archetypes", "add_method",
                     "add_attribute", "compose", "roles", "parents", "mro"};
                 return Value::boolean(howCan.count(args[0].toStr()) > 0);
             }
