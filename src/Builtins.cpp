@@ -1302,8 +1302,9 @@ std::string mapCase(const std::string& s, int kind, int tcMode) {
                 for (size_t i = 1; i < r.size(); i++) r[i] = (char)ascii::tolower((unsigned char)r[i]);
             return r;
         }
-        if (kind == 0) for (char& c : r) c = (char)ascii::tolower((unsigned char)c);
-        else           for (char& c : r) c = (char)ascii::toupper((unsigned char)c);  // 1 = uc, 2 = tc
+        if (kind == 0 || kind == 3)                                                   // 0 = lc; 3 = fc, which
+             for (char& c : r) c = (char)ascii::tolower((unsigned char)c);            // folds to lower in ASCII
+        else for (char& c : r) c = (char)ascii::toupper((unsigned char)c);            // 1 = uc, 2 = tc
         return r;
     }
     auto cps = utf8cp(s);
