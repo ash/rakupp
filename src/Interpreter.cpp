@@ -2143,6 +2143,11 @@ bool Interpreter::materializePendingType(const std::string& name) {
     if (it == pendingTypes_.end()) return false;
     ClassDecl* cd = it->second;
     pendingTypes_.erase(it);
+    // The class already exists: normal flow built it and the pending record is
+    // stale (the erase above retires it). Executing the declaration AGAIN would
+    // re-run the body's statements — nothing new can come of it, so report
+    // "nothing materialized" and let the caller's miss stand.
+    if (classes_.count(name)) return false;
     // its own parents and roles may be pending too (`class D does R` with both
     // declared below the code that uses D) — build those first
     if (!cd->parent.empty()) materializePendingType(cd->parent);
@@ -6236,6 +6241,11 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             bodyEnv->parent = tctx_.cur;
             ci->declEnv = bodyEnv; // capture the declaration scope (attr-default closures)
             ci->decl = cd;         // program-lifetime AST view (roleParams for parameterized roles)
+            // Normal flow reached the declaration: retire the forward-reference
+            // record hoistSubs parked. A stale entry made the method-not-found
+            // fallback re-EXECUTE this body — statements, is()-calls and all —
+            // on the first missed method call against the class.
+            pendingTypes_.erase(cd->name);
             // Parameterized-role value params: bind each composed role's `[...]`
             // params to this class's `does R[args]` arguments, so the role body
             // (methods/submethods) sees them (e.g. Cro::Policy::Timeout[%phase-defaults]).
