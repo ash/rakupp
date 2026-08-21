@@ -10566,7 +10566,40 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
         return out;
     };
 
-    auto env = std::make_shared<Env>();
+    // A per-thread pool of call frames. Every call needs an Env, and most calls
+    // — every block a map/grep/for runs, every helper sub in a parse loop —
+    // let it die at return: nothing captured it, so its only owner is the local
+    // shared_ptr below. Allocating a fresh Env (control block + hash buckets)
+    // per call was the single biggest constant in interpreted throughput:
+    // `use Data::Generators`, which parses 105k CSV rows through blocks at
+    // module load, spent a measurable third of its second in make_shared<Env>
+    // and the first-insert rehash. A frame whose use_count proves nobody kept
+    // it is reset and reused; one anything captured — a closure, an rwLink, a
+    // stateEnv chain — stays out of the pool for good.
+    struct FramePool {
+        std::vector<std::shared_ptr<Env>> free;
+        std::shared_ptr<Env> acquire() {
+            if (free.empty()) return std::make_shared<Env>();
+            auto e = std::move(free.back());
+            free.pop_back();
+            return e;
+        }
+        void release(std::shared_ptr<Env>&& e) {
+            if (!e || e.use_count() != 1 || free.size() >= 32) { e.reset(); return; }
+            e->vars.clear();          // keeps the bucket array — the next call's
+            e->parent.reset();        // "$_" insert does not rehash
+            e->routineFrame = false;
+            e->loopFrame = false;
+            e->ex.reset();
+            free.push_back(std::move(e));
+        }
+    };
+    static thread_local FramePool framePool_;
+    auto env = framePool_.acquire();
+    struct FrameReturn {
+        std::shared_ptr<Env>& env;
+        ~FrameReturn() { framePool_.release(std::move(env)); }
+    } frameReturn{env};
     // Break the leak cycle a nested named sub would form (see breakSelfClosures).
     // The guard fires only when hoistSubs (below) reported a nested sub, and
     // destructs before `env` does, on every exit path. `env` is a live local, so
@@ -13426,9 +13459,17 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                     for (auto& el : *nv.arr) el = nilElemDefault(el, proto);
                 }
                 // `=` REFILLS the same container (Raku identity): anything bound
-                // to @a — a `-> $x` capture, `:=` alias, closure — tracks the change
+                // to @a — a `-> $x` capture, `:=` alias, closure — tracks the change.
+                // When the coerced buffer has NO other owner (coerceArray built it
+                // fresh, which is every ordinary `@a = list`), its contents MOVE in
+                // O(1) instead of being copied a second time — `my @rows =
+                // $text.split("\n").map(…)` over 85k rows paid a full elementwise
+                // copy here for a buffer about to be thrown away. A shared buffer
+                // (a lazy RHS passes its own arr through) still copies: moving out
+                // of it would gut the list the RHS still holds.
                 if (lv->t == VT::Array && lv->arr && nv.arr && lv->arr != nv.arr) {
-                    *lv->arr = *nv.arr;
+                    if (nv.arr.use_count() == 1) *lv->arr = std::move(*nv.arr);
+                    else                         *lv->arr = *nv.arr;
                     nv.arr = lv->arr;
                 }
                 *lv = nv;
