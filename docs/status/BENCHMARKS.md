@@ -170,10 +170,20 @@ The `--exe` row was 113.4 ms (1.4× perl) earlier the same day: replacing the
 hash payload's `std::map` with `ValueHash` — an insertion-ordered open hash
 with the key's hash stored, in the perl mold
 ([PERL5-TECHNIQUES.md](../dev/findings/PERL5-TECHNIQUES.md)) — took it to
-1.1×, and timing the binaries directly (no spawn overhead) the native binary
-is at parity with perl (0.078 s vs 0.082 s wall, warm). The `hash` kernel
-moved the same way (native 20.5 → 13.1 ms, interp 49.4 → 42.1 ms); the
-non-hash kernels are unchanged within noise.
+1.1×. The `hash` kernel moved the same way (native 20.5 → 13.1 ms, interp
+49.4 → 42.1 ms); the non-hash kernels are unchanged within noise.
+
+The harness's `native` column compiles with plain `--exe`; the `-O` codegen
+passes close the rest of the gap. The full mode ladder, measured in one
+sitting (best of 5, spawn-inclusive, same machine state throughout):
+
+| mode | hashfill | vs perl |
+|---|---:|---:|
+| Perl 5 | 81.8 ms | — |
+| `--exe -O3` | 82.1 ms | 1.00× — a statistical tie |
+| `--exe -O` | 84.0 ms | 1.03× |
+| `--exe` | 92.9 ms | 1.14× |
+| interp | 250.1 ms | 3.1× |
 
 The row exists because this workload was the measured weak spot: before the
 2026-08-21 change, the native binary spent twice perl's CPU time on it (0.15 s
