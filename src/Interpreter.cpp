@@ -11183,6 +11183,16 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
                     if (parentNext) return parentNext(as);   // defer up the inheritance tree
                     return Value::nil();
                 }
+                // No same-class candidate fits. In Rakudo a multi method's
+                // candidate set spans the MRO, so a PARENT's candidates for the
+                // same name are still in play: `class Kid is Base` where only
+                // Base declares the `($size = 1)` positional form still answers
+                // a bare `.generate` (Statistics::Distributions leans on this).
+                {
+                    bool anyJunction = false;
+                    for (auto& a : as) if (isJunction(a)) { anyJunction = true; break; }
+                    if (parentNext && !anyJunction) return parentNext(as);
+                }
                 // no candidate takes the Junction itself — autothread over it
                 for (size_t ai = 0; ai < as.size(); ai++) {
                     if (!isJunction(as[ai])) continue;
@@ -19609,9 +19619,16 @@ ValueList Interpreter::evalArgs(const std::vector<ExprPtr>& exprs) {
             // call/list — or with a non-identifier key (`3 => 4`) — is positional.
             if (v.t == VT::Pair && a->kind == NK::Pair && !static_cast<PairExpr*>(a.get())->quotedKey) {
                 const std::string& k = static_cast<PairExpr*>(a.get())->key;
-                bool ident = !k.empty() && (ascii::isalpha((unsigned char)k[0]) || k[0] == '_');
+                // Raku identifiers are Unicode: `:μ(5)` is as much a named
+                // argument as `:mu(5)`. The lexer already vetted the token, so a
+                // non-ASCII byte here is part of a letter it accepted — treat the
+                // whole multibyte run as identifier material rather than
+                // rejecting it and passing the pair positionally.
+                bool ident = !k.empty() && (ascii::isalpha((unsigned char)k[0]) ||
+                                            k[0] == '_' || (unsigned char)k[0] >= 0x80);
                 for (size_t ci = 1; ident && ci < k.size(); ci++)
-                    if (!ascii::isalnum((unsigned char)k[ci]) && k[ci] != '-' && k[ci] != '_' && k[ci] != '\'')
+                    if (!ascii::isalnum((unsigned char)k[ci]) && k[ci] != '-' && k[ci] != '_' &&
+                        k[ci] != '\'' && (unsigned char)k[ci] < 0x80)
                         ident = false;
                 if (ident) v.namedArg = true;
             }

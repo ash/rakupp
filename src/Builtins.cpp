@@ -3594,7 +3594,8 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         // methods, and dying on Any took the whole dump down.
         // Date/DateTime fall through: they DO answer .^attributes (the
         // synthesized Rakudo-shaped list JSON::Unmarshal rebuilds from).
-        if ((mm == "methods" || mm == "attributes") &&
+        // .^method_names rides along with .^methods for the same reason.
+        if ((mm == "methods" || mm == "method_names" || mm == "attributes") &&
             !(tobj.t == VT::Type && classes_.count(resolveClassAlias(tobj.s))) &&
             !(mm == "attributes" && tobj.t == VT::Type &&
               (tobj.s == "DateTime" || tobj.s == "Date"))) {
