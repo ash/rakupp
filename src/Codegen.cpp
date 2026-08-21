@@ -154,6 +154,7 @@ struct Codegen {
     bool optimize_ = false;              // -O codegen pass enabled
     std::set<std::string> enumKeys;      // enum value names (bound as globals)
     std::set<std::string> classNames;    // user class/role names (resolve as type objects)
+    std::map<std::string, ClassDecl*> classDecls_; // name → declaration, for ancestry questions
     std::set<std::string> multiNames;    // names that are multi subs (dispatched at runtime)
     std::string self_;                   // C++ expr for `self` inside a method ("" outside)
     std::vector<std::string> topics;  // stack of C++ var names bound to $_
@@ -2305,6 +2306,53 @@ struct Codegen {
         }
     }
 
+    // Does an ancestor of `cd` declare a method named `m`? `unknown` is set when
+    // the ancestry leaves the set of classes this program declares — a built-in
+    // parent, or one that came from a module — because there we cannot prove it
+    // does not. `seen` breaks a declaration cycle.
+    bool ancestorDeclares(ClassDecl* cd, const std::string& m, bool& unknown,
+                          std::set<ClassDecl*>& seen) {
+        if (!seen.insert(cd).second) return false;
+        std::vector<std::string> ps;
+        if (!cd->parent.empty()) ps.push_back(cd->parent);
+        for (auto& p : cd->extraParents) ps.push_back(p);
+        for (auto& pn : ps) {
+            auto it = classDecls_.find(pn);
+            if (it == classDecls_.end()) { unknown = true; continue; }
+            // a submethod is NOT inherited, so it is never the candidate a child's
+            // failed dispatch would fall through to
+            for (auto& mp : it->second->methods)
+                if (mp->name == m && !mp->isSubmethod) return true;
+            if (ancestorDeclares(it->second, m, unknown, seen)) return true;
+        }
+        return false;
+    }
+
+    // The multi-method dispatcher emitted below guards on POSITIONAL arity and
+    // nominal type, nothing else. Whatever it cannot decide must go to the
+    // interpreter rather than be decided WRONGLY — the same call multiDef()
+    // already makes for multi subs. Three things it cannot decide:
+    //   · a `where` clause or a :D/:U smiley never enters the guard;
+    //   · a named parameter is invisible to it, so a candidate with a REQUIRED
+    //     named matches a call that passes none and binds it to Any — that is
+    //     how `K.new.g` returned "k" where the interpreter returns "k1";
+    //   · a candidate declared in an ANCESTOR is unreachable, and in Rakudo a
+    //     multi's candidate set spans the MRO (the interpreter defers up the
+    //     chain — the parentNext branch in Interpreter::invokeMethod).
+    const char* undecidableMulti(ClassDecl* cd, const std::string& mname,
+                                 const std::vector<SubDecl*>& cands) {
+        for (SubDecl* c : cands)
+            for (auto& pp : c->params) {
+                if (pp.whereExpr || pp.defConstraint) return "a where/:D constraint";
+                if (pp.named && !pp.slurpy)           return "a named parameter";
+            }
+        bool unknown = false;
+        std::set<ClassDecl*> seen;
+        if (ancestorDeclares(cd, mname, unknown, seen)) return "a candidate in a parent class";
+        if (unknown) return "a parent class this compilation cannot see";
+        return nullptr;
+    }
+
     void classRegister(ClassDecl* cd) {
         std::string ci = gensym("ci");
         line(1, "{ auto " + ci + " = std::make_shared<ClassInfo>(); " + ci + "->name = " + cesc(cd->name) + ";");
@@ -2327,6 +2375,9 @@ struct Codegen {
                 line(1, "  " + ci + "->methods[" + cesc(mp->name) + "] = Value::closure(" + methodFn(cd->name, mp->name) + ");");
             }
             for (auto& kv : multis) {
+                if (const char* why = undecidableMulti(cd, kv.first, kv.second))
+                    unsupported(std::string("a multi method with ") + why +
+                                " (" + cd->name + "." + kv.first + ")");
                 // dispatcher: try candidates in declaration order; arity floor from
                 // required params (excluding self), ceiling unless slurpy; typed/literal
                 // params guard with rtTypeMatch/eqv
@@ -2603,6 +2654,7 @@ std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcP
             auto* cd = static_cast<ClassDecl*>(s.get());
             if (cd->isRole || cd->isPackage) throw CodegenError{"a role/package"};
             g.classNames.insert(cd->name);
+            g.classDecls_[cd->name] = cd;
             classes.push_back(cd);
             // A class-BODY `my` variable is lexically visible to that class's
             // methods (`class C { my %h = …; method m { %h<a> } }`). Methods are
