@@ -1636,6 +1636,9 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 }
                 if (args.empty()) { long long k = draw(); return k < 0 ? Value::nil() : Value::str(pool[k].first); }
                 bool all = args[0].t == VT::Whatever ||
+                           // the NAME `Whatever` is the TYPE OBJECT, and Rakudo
+                           // treats .roll(Whatever) exactly as .roll(*)
+                           (args[0].t == VT::Type && args[0].s == "Whatever") ||
                            (args[0].t == VT::Str && (args[0].s == "*" || args[0].s == "Inf")) ||
                            (args[0].isNumeric() && std::isinf(args[0].toNum()));
                 if (all && m == "roll") { // roll(*): an INFINITE lazy stream of weighted draws
@@ -1680,6 +1683,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             const ValueList& pool0 = inv.enumType.empty() ? items : enumVals;
             if (pool0.empty()) return args.empty() ? Value::nil() : Value::array();
             bool all = !args.empty() && (args[0].t == VT::Whatever ||
+                       (args[0].t == VT::Type && args[0].s == "Whatever") || // .pick(Whatever) == .pick(*)
                        (args[0].t == VT::Str && (args[0].s == "*" || args[0].s == "Inf")) ||
                        (args[0].isNumeric() && std::isinf(args[0].toNum())));
             if (args.empty()) return pool0[(size_t)(randDouble() * pool0.size())]; // single element

@@ -1236,6 +1236,20 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             if (haveNamedField && !pos.empty()) // `DateTime.new(:2016year, 42)` — no mixing
                 throw RakuError{Value::typeObj("X::Temporal"),
                     "Cannot mix a named date component with a positional argument to " + inv.s + ".new"};
+            // DateTime.new($dt) / Date.new($dt) — a Dateish (or Instant) argument
+            // is the INSTANT it names, not a year. It fell through to the
+            // positional-fields arm below, where `.toInt()` made the whole
+            // DateTime a year and `DateTime.new($x + $min)` answered 0008-01-01.
+            // (Reached constantly here: this engine's DateTime + Num is a
+            // DateTime, where Rakudo's is an Instant, so a module adding a
+            // random offset to a bound hands .new exactly this.)
+            if (!isoStr && pos.size() == 1 && pos[0].t == VT::Hash &&
+                (pos[0].hashKind == "DateTime" || pos[0].hashKind == "Date" ||
+                 pos[0].hashKind == "Instant")) {
+                Value posix = methodCall(pos[0], pos[0].hashKind == "Instant" ? "Num" : "posix",
+                                         ValueList{Value::pair("real", Value::boolean(true))});
+                pos[0] = posix;
+            }
             if (!isoStr && inv.s == "DateTime" && pos.size() == 1 && pos[0].isNumeric()) {
                 // DateTime.new($posix) — seconds since the epoch (frac OK); a :timezone
                 // shifts the displayed civil time (posix itself stays the same instant)

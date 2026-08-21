@@ -7917,6 +7917,9 @@ static bool typeNameConforms(const std::string& lnIn, const std::string& rn,
         {"List",  {"List", "Positional", "Iterable", "Cool"}},
         {"Seq",   {"Seq", "List", "Positional", "Iterable", "Cool"}},
         {"Slip",  {"Slip", "List", "Positional", "Iterable", "Cool"}},
+        // a Range is Positional as well as Iterable: `("0".."9") ~~ Positional`
+        // is how a module asks "is this a set of things I can draw from"
+        {"Range", {"Range", "Positional", "Iterable", "Cool"}},
         {"Hash",  {"Hash", "Map", "Associative", "Cool"}},
         {"Map",   {"Map", "Associative", "Cool"}},
         {"Set",   {"Set", "Setty", "QuantHash", "Associative"}},
@@ -14304,11 +14307,21 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         // included — autothreads into a PRESERVED junction of results, which
         // only boolean context collapses: (5 == 3|5|7).gist is
         // 'any(False, True, False)' (S03-junctions/misc.t)
-        if ((op == "~~" || op == "!~~") && !jleft) {
+        if ((op == "~~" || op == "!~~") && !jleft && !isJunction(l)) {
             int t = 0, total = 0;
             for (auto& e : *j.arr) { total++; if (applyArith(op, l, e).truthy()) t++; }
             bool res = j.enumName == "any" ? t > 0 : j.enumName == "all" ? t == total : j.enumName == "one" ? t == 1 : t == 0;
             return Value::boolean(res);
+        }
+        // A junction TOPIC collapses too — see the evalBinary arm for why. It
+        // threads OUTSIDE a junction matcher, and a regex matcher keeps its
+        // junction of Matches.
+        if ((op == "~~" || op == "!~~") && isJunction(l) && r.t != VT::Regex) {
+            int t = 0, total = 0;
+            for (auto& e : *l.arr) { total++; if (applyArith("~~", e, r).truthy()) t++; }
+            bool res = l.enumName == "any" ? t > 0 : l.enumName == "all" ? t == total
+                     : l.enumName == "one" ? t == 1 : t == 0;
+            return Value::boolean(op == "~~" ? res : !res);
         }
         Value out = Value::array(); out.enumName = j.enumName;
         // A negated comparison flips the junction kind (De Morgan): `X != any(…)`
@@ -18539,6 +18552,31 @@ Value Interpreter::evalBinary(Binary* b) {
             bool ok = fileTest(r);
             return Value::boolean(op == "~~" ? ok : !ok);
         }
+        // A junction TOPIC threads first and COLLAPSES: smartmatch is
+        // `matcher.ACCEPTS(topic)`, and a junction topic autothreads through
+        // ACCEPTS to a Bool — `all(1, 2) ~~ Int` is True, not all(True, True),
+        // and `all(1, 2) ~~ any(1, 2)` is True because each eigenstate is asked
+        // separately. Threading the MATCHER first (below) answered both wrongly,
+        // and a module testing `@things.all ~~ (is-positional-of-strings($_))`
+        // got a junction where it needed a Bool.
+        //
+        // A REGEX matcher is the exception: there Rakudo hands back the junction
+        // of Match objects rather than a verdict.
+        if (isJunction(lTopic) && r.t != VT::Regex && b->lhs->kind != NK::RegexLit) {
+            int t = 0, total = 0;
+            for (auto& e : *lTopic.arr) {
+                total++;
+                // the same matcher rules the eigenstate loop below uses, with the
+                // roles the other way round: one matcher, many topics
+                bool m = r.t == VT::Code ? boolify(callCallable(r, ValueList{e}))
+                       : (r.t == VT::Pair && e.hashKind == "IO" && !r.s.empty()) ? fileTest(r)
+                       : applyArith("~~", e, r).truthy();
+                if (m) t++;
+            }
+            bool res = lTopic.enumName == "any" ? t > 0 : lTopic.enumName == "all" ? t == total
+                     : lTopic.enumName == "one" ? t == 1 : t == 0;
+            return Value::boolean(op == "~~" ? res : !res);
+        }
         if (isJunction(r)) {
             // autothread the smartmatch over the junction's eigenstates (each matched
             // with full ~~ semantics, so a junction of regexes / blocks works too)
@@ -21350,7 +21388,11 @@ Value Interpreter::evalIndex(Index* idx) {
             (iv.t == VT::Whatever || (iv.t == VT::Code && iv.code && iv.code->isWhateverCode)))
             throw RakuError{Value::typeObj("X::Cannot::Lazy"), "Cannot use a Whatever index on an infinite list"};
         long long maxi = -1;
-        if (iv.t == VT::Int || iv.t == VT::Num || iv.t == VT::Bool) {
+        // isNumeric, not a list of the types that came to mind: a RAT index was
+        // not on that list, so `$seq[($n + 2) / 2]` — an ordinary way to write
+        // half of something, and how Math::SpecialFunctions indexes its
+        // Bernoulli-number gather — materialised nothing and answered Nil.
+        if (iv.isNumeric()) {
             maxi = iv.toInt();
             // One index into an arithmetic endless range is arithmetic too.
             // (Guarded against the add itself overflowing, which would answer a
@@ -21358,7 +21400,8 @@ Value Interpreter::evalIndex(Index* idx) {
             if (endlessArith && maxi >= 0 && endlessLo <= 9223372036854775807LL - maxi)
                 return Value::integer(endlessLo + maxi);
         }
-        else if (iv.t == VT::Range || iv.t == VT::Array) for (auto& e : iv.flatten()) if (e.t == VT::Int || e.t == VT::Num) maxi = std::max(maxi, e.toInt());
+        else if (iv.t == VT::Range || iv.t == VT::Array)
+            for (auto& e : iv.flatten()) if (e.isNumeric()) maxi = std::max(maxi, e.toInt());
         if (maxi >= 0) materializeLazy(base, (size_t)maxi + 1);
     }
 
@@ -22796,7 +22839,14 @@ Value Interpreter::eval(Expr* e) {
                                  static_cast<VarExpr*>(it.get())->name[0] == '@') ||
                                 (v.t == VT::Array && v.isList && !l->fromCommaList)));
                 if (flatten && v.t == VT::Array) { for (auto& x : *v.arr) a.arr->push_back(x); }
-                else if (v.t == VT::Range && !v.rExFrom && v.rTo - v.rFrom < 1000000) { // finite Range flattens: [1..10]
+                // A finite Range spreads under the ONE-ARG rule and only there:
+                // `[1..10]` is ten elements, `[1..3, 5..6]` is two RANGES, and
+                // `[<a b>, "0".."9"]` is a list and a range — which is how a
+                // module writes "these are the character sets to draw from".
+                // Spreading every Range item made that four hundred elements of
+                // the wrong type, and the check that rejected it was right to.
+                else if (v.t == VT::Range && l->items.size() == 1 &&
+                         !v.rExFrom && v.rTo - v.rFrom < 1000000) {
                     for (auto& x : v.flatten()) a.arr->push_back(x);
                 }
                 else {
