@@ -292,6 +292,7 @@ static bool valueEqv(const Value& a, const Value& b) {
             // It also, correctly, ignores `itemized`: `[1,2] eqv $[1,2]` is True
             // on both engines, because itemisation is not a type difference.
             if (a.typeName() != b.typeName()) return false;
+            forceLazy(a); forceLazy(b);   // an unpulled gather has no elements yet
             if (!a.arr || !b.arr || a.arr->size() != b.arr->size()) return false;
             for (size_t i = 0; i < a.arr->size(); i++) if (!valueEqv((*a.arr)[i], (*b.arr)[i])) return false;
             return true;
@@ -933,11 +934,14 @@ Value Interpreter::rtGather(Value blockClosure) {
         auto collector = std::make_shared<ValueList>();
         tctx_.gatherStack.push_back(collector);
         tctx_.gatherLimits.push_back(limit);
+        tctx_.gatherDeadlines.push_back(0);
         bool hit = false;
         try { ValueList noargs; callCallable(blockClosure, noargs); }
         catch (StopGatherEx&) { hit = true; }
-        catch (...) { tctx_.gatherStack.pop_back(); tctx_.gatherLimits.pop_back(); throw; }
+        catch (...) { tctx_.gatherStack.pop_back(); tctx_.gatherLimits.pop_back();
+                      tctx_.gatherDeadlines.pop_back(); throw; }
         tctx_.gatherStack.pop_back(); tctx_.gatherLimits.pop_back();
+        tctx_.gatherDeadlines.pop_back();
         out = std::move(*collector);
         return hit;
     };
@@ -1550,12 +1554,75 @@ static Value hashToPairs(const Value& v) {
     return out;
 }
 
+// `my @a[3;2]` for native codegen: a container with the given dimensions, the
+// same one the interpreter's declaration arm builds.
+Value rtShapedArray(const ValueList& dims, const std::string& declType) {
+    std::vector<long long> d;
+    d.reserve(dims.size());
+    for (auto& v : dims) d.push_back(v.toInt());
+    return makeShapedContainer(d, declType);
+}
+
+// `@a[2;2] = …` — fill a SHAPED container from the right-hand side. Extracted
+// from the interpreter's assignment arm so the native backend can call the very
+// same code: a shaped store is one of the places where two implementations
+// would be two behaviours.
+void rtShapedStore(Value& lv, const Value& rhs, const std::string& keepType) {
+    auto shp = lv.shape;
+    if (!shp || shp->empty()) return;
+    if (shp->size() == 1) { // 1-dim: flat row fill, reject overflow
+        long long cap = (*shp)[0];
+        ValueList flat; for (auto& x : rhs.flatten()) flat.push_back(x);
+        if ((long long)flat.size() > cap)
+            throw RakuError{Value::typeObj("X::OutOfRange"),
+                "Cannot assign " + std::to_string(flat.size()) +
+                " elements to a shaped array of " + std::to_string(cap)};
+        lv = makeShapedContainer(*shp, keepType, &flat);
+        return;
+    }
+    // multi-dim: the RHS must MATCH the shape. A shaped source must have an
+    // identical shape; a nested list may not have MORE than dims[d] elements at
+    // any level (a flat list is rejected), but a shortfall is fine — missing
+    // slots keep the element default.
+    if (rhs.shape && *rhs.shape != *shp)
+        throw RakuError{Value::typeObj("X::Assignment::ArrayShapeMismatch"),
+            "Cannot assign an array of a different shape"};
+    Value built = makeShapedContainer(*shp, keepType); // all defaults
+    std::function<void(Value&, const Value&, size_t)> overlay =
+      [&](Value& dst, const Value& src, size_t d) {
+        if (d == shp->size()) { dst = src; return; } // leaf
+        if (!(src.t == VT::Array && src.arr))
+            throw RakuError{Value::typeObj("X::Assignment::ToShaped"),
+                "Assignment to a shaped array needs a matching nested structure"};
+        if ((long long)src.arr->size() > (*shp)[d])
+            throw RakuError{Value::typeObj("X::Assignment::ArrayShapeMismatch"),
+                "Too many elements for dimension " + std::to_string(d)};
+        for (size_t i = 0; i < src.arr->size(); i++)
+            overlay((*dst.arr)[i], (*src.arr)[i], d + 1);
+    };
+    overlay(built, rhs, 0);
+    lv = built;
+}
+
+// `my @a = gather { … }` must end up an ARRAY, not a Seq: `eqv [1, 2, 3]` is
+// type-aware and says so. A gather has not been run at this point, so whether it
+// is lazy is not known until it has been — pull once, and reify it here if that
+// showed the block to be finite. An unbounded source stays lazy, as it does
+// under Rakudo, where an Array may be lazy too.
+static Value reifyIfFinite(const Value& v) {
+    auto st = std::static_pointer_cast<LazySeqState>(v.ext);
+    if (!st->gatherSeq) return v;
+    forceLazy(v);
+    if (!st->exhausted) return v;
+    Value r = Value::array(*v.arr); r.isList = false; return r;
+}
+
 Value rtArrayVal(const Value& v) {
     // an ITEMIZED hash (`$%h`, `$(%h)`) is one element, not a spread of pairs
     if (v.t == VT::Hash && v.hash && v.itemized) { Value a = Value::array(); a.arr->push_back(v); return a; }
     if (v.t == VT::Hash && v.hash) return hashToPairs(v);
     if (v.t == VT::Array && v.arr) {
-        if (v.ext) return v; // a lazy seq stays lazy; indexing/consumers materialise on demand
+        if (v.ext) return reifyIfFinite(v); // a lazy seq stays lazy; a finite gather does not
         // a shaped source contributes its LEAVES, as it does in coerceArray —
         // these two must agree, or a program means one thing interpreted and
         // another compiled
@@ -1582,7 +1649,7 @@ static Value coerceArray(const Value& v) {
         if (v.itemized) { // an itemized Array is ONE element: `my @row = @m[0]` is [[...],]
             Value r = Value::array(); r.arr->push_back(v); return r;
         }
-        if (v.ext) return v; // a lazy seq stays lazy (shared machinery; consumers materialise)
+        if (v.ext) return reifyIfFinite(v); // a lazy seq stays lazy; a finite gather does not
         // A shaped array STORED into an unshaped one contributes its leaves:
         // `my @flat = @a[3;2]` is six elements, and so is a `@a is copy`
         // parameter. (Plain binding — `sub f(@a)` — does not come through here,
@@ -2091,6 +2158,7 @@ void Interpreter::saveCtx(ExecContext& c) {
     c.curStateEnv = tctx_.curStateEnv;
     c.gatherStack = std::move(tctx_.gatherStack);
     c.gatherLimits = std::move(tctx_.gatherLimits);
+    c.gatherDeadlines = std::move(tctx_.gatherDeadlines);
     c.supplyStack = std::move(tctx_.supplyStack);
     c.tapStack    = std::move(tctx_.tapStack);
     c.makeTargets = std::move(tctx_.makeTargets);
@@ -2109,6 +2177,7 @@ void Interpreter::loadCtx(ExecContext& c) {
     tctx_.curStateEnv  = c.curStateEnv;
     tctx_.gatherStack  = std::move(c.gatherStack);
     tctx_.gatherLimits = std::move(c.gatherLimits);
+    tctx_.gatherDeadlines = std::move(c.gatherDeadlines);
     tctx_.supplyStack  = std::move(c.supplyStack);
     tctx_.tapStack     = std::move(c.tapStack);
     tctx_.makeTargets  = std::move(c.makeTargets);
@@ -8737,6 +8806,32 @@ void Interpreter::syncEnvToProcess() {
 // the WhateverCode with the length), `@a[*]` (all elements as a list).
 // Grow a lazy list's materialised prefix to at least `n` elements (bounded, so a
 // runaway never truly loops). No-op for a normal (non-lazy) array.
+// The g_forceLazy hook (Value.h): fill a finite lazy sequence's buffer so a
+// renderer or a comparator sees its elements. An unbounded source is left
+// alone — there is no "all of it" to fill.
+// steady_clock microseconds — the gather probe's budget clock (see gatherDeadlines).
+long long nowMicros() {
+    return std::chrono::duration_cast<std::chrono::microseconds>(
+               std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+static void forceLazyImpl(const Value& v) {
+    if (!v.ext || !v.arr) return;
+    auto st = std::static_pointer_cast<LazySeqState>(v.ext);
+    if (st->infinite || !g_cbInterp) return;
+    // A gather that outgrew its probe may be finite or unbounded, and the only
+    // way to find out is to ask for more. Ask ONCE per sequence: an unbounded
+    // one would otherwise pay a whole re-run of its block every time a value
+    // that holds it is printed.
+    if (st->gatherSeq && !st->exhausted) {
+        if (st->forceProbed) return;
+        st->forceProbed = true;
+        g_cbInterp->materializeLazy(v, v.arr->size() + 1);  // one growth step
+        if (!st->exhausted) return;                         // unbounded: no "all of it"
+    }
+    g_cbInterp->materializeLazy(v, 1000000);
+}
+static const bool g_forceLazyInstalled = ((g_forceLazy = &forceLazyImpl), true);
 void Interpreter::materializeLazy(const Value& v, size_t n) {
     if (!v.ext || !v.arr) return;
     auto st = std::static_pointer_cast<LazySeqState>(v.ext);
@@ -13285,41 +13380,10 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             // …and its ELEMENT DEFAULT: `my @a is default(9) = 1,2` still answers
             // 9 for an unassigned slot (assignment refills, it does not redeclare)
             auto keepDefault = lv->pairVal;
-            // Shaped array assignment (`my @a[2;2] = …`).
+            // Shaped array assignment (`my @a[2;2] = …`) — the same routine the
+            // native backend calls, so a shaped store means one thing in both.
             if (a->op == "=" && lv->shape && !lv->shape->empty()) {
-                auto shp = lv->shape;
-                if (shp->size() == 1) { // 1-dim: flat row fill, reject overflow
-                    long long cap = (*shp)[0];
-                    ValueList flat; for (auto& x : rhs.flatten()) flat.push_back(x);
-                    if ((long long)flat.size() > cap)
-                        throw RakuError{Value::typeObj("X::OutOfRange"),
-                            "Cannot assign " + std::to_string(flat.size()) +
-                            " elements to a shaped array of " + std::to_string(cap)};
-                    *lv = makeShapedContainer(*shp, keepType, &flat);
-                    return rhs;
-                }
-                // multi-dim: the RHS must MATCH the shape. A shaped source must have
-                // an identical shape; a nested list may not have MORE than dims[d]
-                // elements at any level (a flat list is rejected), but a shortfall is
-                // fine — missing slots keep the element default.
-                if (rhs.shape && *rhs.shape != *shp)
-                    throw RakuError{Value::typeObj("X::Assignment::ArrayShapeMismatch"),
-                        "Cannot assign an array of a different shape"};
-                Value built = makeShapedContainer(*shp, keepType); // all defaults
-                std::function<void(Value&, const Value&, size_t)> overlay =
-                  [&](Value& dst, const Value& src, size_t d) {
-                    if (d == shp->size()) { dst = src; return; } // leaf
-                    if (!(src.t == VT::Array && src.arr))
-                        throw RakuError{Value::typeObj("X::Assignment::ToShaped"),
-                            "Assignment to a shaped array needs a matching nested structure"};
-                    if ((long long)src.arr->size() > (*shp)[d])
-                        throw RakuError{Value::typeObj("X::Assignment::ArrayShapeMismatch"),
-                            "Too many elements for dimension " + std::to_string(d)};
-                    for (size_t i = 0; i < src.arr->size(); i++)
-                        overlay((*dst.arr)[i], (*src.arr)[i], d + 1);
-                };
-                overlay(built, rhs, 0);
-                *lv = built;
+                rtShapedStore(*lv, rhs, keepType);
                 return rhs;
             }
             // `=` assignment flattens iterables into the array; `:=` BINDS — the
@@ -19278,39 +19342,59 @@ Value Interpreter::evalUnary(Unary* u) {
         // Run the gather block, collecting takes up to `limit` (0 = unlimited).
         // Returns true if the limit was hit (the block may have more to give — i.e.
         // it's infinite or larger than the limit).
-        auto runGather = [this, gu, blockClosure](size_t limit, ValueList& out) -> bool {
+        auto runGather = [this, gu, blockClosure](size_t limit, long long budgetUs,
+                                                  ValueList& out) -> bool {
             auto collector = std::make_shared<ValueList>();
             tctx_.gatherStack.push_back(collector);
             tctx_.gatherLimits.push_back(limit);
+            tctx_.gatherDeadlines.push_back(budgetUs ? nowMicros() + budgetUs : 0);
             bool hit = false;
+            auto pop = [this] { tctx_.gatherStack.pop_back(); tctx_.gatherLimits.pop_back();
+                                tctx_.gatherDeadlines.pop_back(); };
             try {
                 if (gu->operand->kind == NK::BlockExpr) callCallable(blockClosure, {});
                 else eval(gu->operand.get());
             } catch (StopGatherEx&) { hit = true; }
-              catch (...) { tctx_.gatherStack.pop_back(); tctx_.gatherLimits.pop_back(); throw; }
-            tctx_.gatherStack.pop_back(); tctx_.gatherLimits.pop_back();
+              catch (...) { pop(); throw; }
+            pop();
             out = std::move(*collector);
             return hit;
         };
         // A small first probe: an expensive generator (a prime sieve, say) must not
         // pay for thousands of takes when the consumer wants @g[^20]. Finite
         // whole-list consumers force the rest via materializeLazy (Builtins).
+        //
+        // The probe is bounded by TIME as well as by takes, because 64 takes is a
+        // count and what matters is the cost. Math::SpecialFunctions parks an
+        // infinite Bernoulli-number gather at module scope, where each take costs
+        // more than the one before it, so probing 64 of them made `use
+        // Math::SpecialFunctions` — and so every program that loads
+        // Statistics::Distributions with it — spend 3.4 seconds computing numbers
+        // that nothing would ever read. A probe that runs out of budget stops
+        // where it is and the gather becomes LAZY, which is not a new state: it
+        // is what every gather of more than 64 takes already is.
         const size_t INITIAL = 64;
+        const long long PROBE_US = 20000;   // 20ms — a generator this slow is not one to probe
         ValueList prefix;
-        // finite gather (terminates within the cap): eager, exactly as before
-        if (!runGather(INITIAL, prefix)) { // finite: eager, but a Seq (gists with parens)
+        // finite gather (terminates within the caps): eager, exactly as before
+        if (!runGather(INITIAL, PROBE_US, prefix)) { // finite: eager, but a Seq (gists with parens)
             Value a = Value::array(std::move(prefix)); a.isList = true; a.s = "Seq"; return a;
         }
-        // hit the cap → treat as lazy: keep the prefix and extend on demand by
+        // hit a cap → treat as lazy: keep the prefix and extend on demand by
         // re-running the block with a larger cap (re-run because there are no
         // coroutines; fine for the usual pure generator `gather { loop { take … } }`).
         // Growth DOUBLES so the O(n²) re-run cost stays amortised-linear in takes.
+        // Growing runs under NO time budget: the budget is a probe heuristic, and
+        // a consumer that has asked for elements is owed them.
         Value arr = Value::array(prefix); arr.isList = true; arr.s = "Seq";
         auto st = std::make_shared<LazySeqState>();
-        st->appendNext = [this, runGather](ValueList& out) -> bool {
+        st->gatherSeq = true;
+        LazySeqState* stp = st.get();
+        st->appendNext = [this, runGather, stp](ValueList& out) -> bool {
             ValueList grown;
-            bool more = runGather(out.size() + std::max<size_t>(64, out.size()), grown);
+            bool more = runGather(out.size() + std::max<size_t>(64, out.size()), 0, grown);
             for (size_t i = out.size(); i < grown.size(); i++) out.push_back(grown[i]);
+            stp->exhausted = !more;
             return more;
         };
         arr.ext = st;

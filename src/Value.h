@@ -557,6 +557,17 @@ inline const RangeEnds* rangeEnds(const Value& v) {
 // dynamic init, so installing it from another TU is order-safe.
 using RakuReprFn = std::string (*)(const Value&);
 extern RakuReprFn g_rakuRepr;
+// A lazy sequence that has not been pulled from yet — a `gather`, which is not
+// run until something asks — has an EMPTY element buffer, so anything reading
+// that buffer to RENDER or COMPARE the whole value has to fill it first or it
+// sees an empty list. Rendering and comparison live here, away from the
+// interpreter that knows how to fill it, so they reach it through this hook;
+// it is a no-op for a source that is genuinely unbounded.
+using ForceLazyFn = void (*)(const Value&);
+extern ForceLazyFn g_forceLazy;
+inline void forceLazy(const Value& v) {
+    if (v.t == VT::Array && v.ext && g_forceLazy) g_forceLazy(v);
+}
 inline void attachRangeEnds(Value& r, Value from, Value to) {
     r.ext = std::make_shared<RangeEnds>(RangeEnds{std::move(from), std::move(to)});
 }

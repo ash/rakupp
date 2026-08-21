@@ -696,6 +696,7 @@ static bool rakuIdentKey(const std::string& s) {
     return true;
 }
 std::string rakuRepr(const Value& v, int depth, std::set<const void*>& seen) {
+    forceLazy(v);   // an unpulled gather renders its ELEMENTS, not `().Seq`
     // `.raku` of a Proxy shows the VALUE it holds, not its FETCH/STORE pair —
     // URI::Query hands back lists of Proxy containers to keep them immutable.
     if (v.t == VT::Hash && v.hashKind == "Proxy" && v.hash && g_deproxy)
@@ -1726,6 +1727,7 @@ std::string doSprintf(const std::string& fmt, const ValueList& args, int langRev
 }
 
 bool deepEq(const Value& a, const Value& b) {
+    forceLazy(a); forceLazy(b);   // a lazy gather compares by its ELEMENTS
     // A Proxy is a container: compare what it HOLDS, at any depth. URI::Query
     // hands back lists of Proxy containers to keep them immutable, so
     // `is-deeply $q<foo>, $('1','3')` was comparing containers with strings.
@@ -7624,6 +7626,11 @@ void Interpreter::registerBuiltins() {
             // a lazy gather stops the block once it has produced enough elements
             size_t lim = I.tctx_.gatherLimits.empty() ? 0 : I.tctx_.gatherLimits.back();
             if (lim && coll.size() >= lim) throw StopGatherEx{};
+            // …and stops when the probe's TIME budget is spent, so a generator
+            // whose takes get steadily more expensive cannot make declaring it
+            // slow. At least one element first: a prefix of none is not a probe.
+            long long dl = I.tctx_.gatherDeadlines.empty() ? 0 : I.tctx_.gatherDeadlines.back();
+            if (dl && !coll.empty() && nowMicros() > dl) throw StopGatherEx{};
             return v;
         }
         // outside a gather there is nowhere for the value to go, and silently

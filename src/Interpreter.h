@@ -373,6 +373,12 @@ struct ExecContext {
     Env* curStateEnv = nullptr;
     std::vector<std::shared_ptr<ValueList>> gatherStack;
     std::vector<size_t> gatherLimits; // per-gather take cap (0 = unlimited); a take past it throws StopGatherEx
+    // …and a per-gather TIME budget for the first probe, as a steady_clock
+    // microsecond stamp (0 = none). 64 takes is a count, not a cost: a generator
+    // whose takes get steadily more expensive must not be able to make merely
+    // DECLARING it slow. A probe that runs out stops where it is, and the gather
+    // becomes lazy — which is what a gather of more than 64 takes already is.
+    std::vector<long long> gatherDeadlines;
     std::vector<ValueList*> supplyStack;
     std::vector<std::shared_ptr<SupplyTapCtx>> tapStack; // active on-demand supply activations
     std::vector<Value*> makeTargets;
@@ -440,6 +446,13 @@ struct CueState { std::atomic<bool> cancelled{false}; };
 struct LazySeqState {
     std::function<bool(ValueList&)> appendNext;
     bool infinite = false; // a truly unbounded source (…..Inf): elems/pop/tail/[*-1] must die
+    // A `gather` block, which is not run until something pulls from it. Its
+    // finiteness is therefore UNKNOWN until then, and `.is-lazy` — the one
+    // question that inspects a sequence without consuming it — forces that
+    // first pull so it can answer. `exhausted` records what the pull found.
+    bool gatherSeq = false;
+    bool exhausted = false;
+    bool forceProbed = false;   // forceLazy has already asked once whether it ends
 };
 
 // Shared state behind a real (thread-backed) Promise. Copies of the Promise
@@ -1490,7 +1503,10 @@ std::string firstBlockPlaceholder(const std::vector<StmtPtr>& body); // first $^
 void collectPHExprPublic(const Expr* e, std::set<std::string>& out); // expr-level placeholder walk
 ValueList pathPartsPairs(const Value& v); // IO::Path::Parts in declaration order
 Value  rtTypedDefault(const char* type, char sigil); // `my Int @a` / `my %h{Int}`: the declared empty container
+long long nowMicros();              // steady_clock microseconds (the gather probe budget)
 Value  rtArrayVal(const Value& v);  // list-assignment semantics for `@a = expr` (splice Lists, keep itemized rows)
+Value  rtShapedArray(const ValueList& dims, const std::string& declType); // `my @a[3;2]`
+void   rtShapedStore(Value& lv, const Value& rhs, const std::string& keepType); // `@a[3;2] = …`
 void   rtSpreadArg(ValueList& as, const Value& v, bool argPos); // |x spread into an arg/list being built
 Value  rtHyperMethod(Interpreter& I, const Value& inv, const std::string& m, ValueList args); // >>.method
 Value  rtSlipVal(const Value& v);   // |x as a list element (a List that splices, pre-spread deep)

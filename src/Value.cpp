@@ -44,6 +44,7 @@ static PtrCensusDump g_ptrCensusDump;
 namespace rakupp {
 
 RakuReprFn g_rakuRepr = nullptr; // installed by Builtins.cpp (see Value.h)
+ForceLazyFn g_forceLazy = nullptr; // installed by Interpreter.cpp (see Value.h)
 
 // Recursion depth backstop for gist()/toStr() over nested containers. A
 // self-referential array/hash (`@a[0] = @a`) would otherwise recurse until it
@@ -314,6 +315,7 @@ static std::string ratToStr(const BigInt& num, const BigInt& den) {
 }
 
 std::string Value::toStr() const {
+    forceLazy(*this);   // an unpulled gather stringifies as its ELEMENTS, not as ()
     // (a Blob/Buf uses enumName for its ENCODING, and a flavored IO::Path for its
     // OS grammar — neither is an enum key)
     if (!enumName.empty() && hashKind != "Blob" && hashKind != "Buf" && hashKind != "IO")
@@ -485,6 +487,7 @@ std::string Value::toStr() const {
 }
 
 std::string Value::gist() const {
+    forceLazy(*this);   // …and gists as them too: `say gather { take 1 }` is (1)
     if (isAllomorph()) return s; // IntStr `<0123>`.gist is "0123"
     // an IO::Path gists as the expression that makes one: `"foo/bar".IO`
     // (.Str stays the bare path)

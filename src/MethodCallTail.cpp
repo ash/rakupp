@@ -351,8 +351,16 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
     // lazy list (infinite `… … *` or a lazy `.map` over one): keep `.map`/`.head`
     // lazy so consumers materialise only what they index.
     if (inv.t == VT::Array && inv.ext) {
-        bool infinite = std::static_pointer_cast<LazySeqState>(inv.ext)->infinite;
-        if (m == "is-lazy") return Value::boolean(true);
+        auto lst = std::static_pointer_cast<LazySeqState>(inv.ext);
+        bool infinite = lst->infinite;
+        if (m == "is-lazy") {
+            // A gather has not been run yet, so whether it is lazy is not known
+            // until it has been. This is the only question that asks without
+            // consuming, so it does the first pull itself; a gather that turns
+            // out to be finite answers False, as it did when the probe was eager.
+            if (lst->gatherSeq) { materializeLazy(inv, 1); return Value::boolean(!lst->exhausted); }
+            return Value::boolean(true);
+        }
         if (infinite) {
             // operations that need the end of the list can't complete on an infinite source
             if (m == "elems" || m == "end" || m == "pop" || m == "tail" || m == "reverse" ||

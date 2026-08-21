@@ -129,6 +129,10 @@ static std::string mangleBody(const std::string& s) {
 // container; a typed one has to go through the interpreter's own typedDefault, or
 // `my Int @a` compiles to an Array of Mu and `my %h{Int}` loses its key type
 // entirely — the declared type was simply dropped here before.
+// `my @a[3;2]` — the dimension list, as a runtime ValueList. The dimensions are
+// EXPRESSIONS (`my @a[$n;2]` is legal), so they are emitted, not folded here.
+// Declared out of line because the emitter needs `ex()`; see shapedInit below.
+
 static std::string declInit(const std::string& type, char sigil) {
     if (type.empty())
         return sigil == '@' ? "Value::array()" : sigil == '%' ? "Value::makeHash()" : "Value::any()";
@@ -561,6 +565,38 @@ struct Codegen {
         for (auto& n : out) cellVars_.insert(n);
     }
     // Declaration text for a possibly-cell local; used by every decl site.
+    // `my @a[3;2]` — the initialiser for a SHAPED declaration, or "" when the
+    // declaration has no shape. The dimensions are expressions (`my @a[$n;2]` is
+    // legal), so they are emitted rather than folded. With a right-hand side,
+    // the store goes through rtShapedStore — the interpreter's own routine, so
+    // the shape checks and the element defaults are not a second implementation.
+    // The dimensions of `@a[$i; $j]`, as C++ initialisers. Refuses the forms the
+    // native path does not answer — a Whatever slices a dimension (`@a[1; *]`),
+    // which is a view, not an element — so they fall back to the bundled
+    // interpreter instead of being answered wrongly.
+    std::string multiDimArgs(Index* ix) {
+        if (!ix->index || ix->index->kind != NK::ListExpr)
+            unsupported("this multi-dimensional subscript");
+        auto* dims = static_cast<ListExpr*>(ix->index.get());
+        for (auto& d : dims->items)
+            if (hasWhatever(d.get())) unsupported("a Whatever in a multi-dimensional index");
+        return argList(dims->items);
+    }
+
+    std::string shapedInit(VarExpr* v, const std::string& rhs = "") {
+        if (!v->declShape || v->name.empty() || v->name[0] != '@') return "";
+        std::vector<Expr*> dims;
+        if (v->declShape->kind == NK::ListExpr)
+            for (auto& d : static_cast<ListExpr*>(v->declShape.get())->items) dims.push_back(d.get());
+        else dims.push_back(v->declShape.get());
+        std::string mk = "rtShapedArray(ValueList{";
+        for (size_t i = 0; i < dims.size(); i++) { if (i) mk += ", "; mk += ex(dims[i]); }
+        mk += "}, " + cesc(v->declType) + ")";
+        if (rhs.empty()) return mk;
+        return "([&]()->Value{ Value __sh = " + mk + "; rtShapedStore(__sh, " + rhs
+             + ", " + cesc(v->declType) + "); return __sh; }())";
+    }
+
     std::string declVar(const std::string& rakuName, const std::string& init) {
         std::string v = mangleVar(rakuName);
         if (cellVars_.count(rakuName)) {
@@ -904,6 +940,14 @@ struct Codegen {
                         return "rtSliceFrom(" + ex(ix->base.get()) + ", (" + ex(r->from.get()) + ").toInt(), "
                              + (r->exFrom ? "true" : "false") + ")"; // @a[$i .. *]
                 }
+                // `@a[$i; $j]` on a shaped array walks a level per index, which is
+                // AT-POS's job — the same one the interpreter calls, so a compiled
+                // multi-dim read cannot drift from an interpreted one. (Slicing a
+                // dimension, `@a[1; *]`, is refused in shapedDims below rather than
+                // answered wrongly.)
+                if (ix->multiDim)
+                    return "RT.methodCall(" + ex(ix->base.get()) + ", \"AT-POS\", ValueList{"
+                         + multiDimArgs(ix) + "})";
                 std::string fn = hasWhatever(ix->index.get()) ? "RT.idxW" : "rtIndexGet"; // @a[*-1] / @a[*]
                 return fn + "(" + ex(ix->base.get()) + ", " + ex(ix->index.get()) + ", "
                      + (ix->isHash ? "true" : "false") + ")";
@@ -1263,8 +1307,11 @@ struct Codegen {
                     auto* v = static_cast<VarExpr*>(a->target.get());
                     if (v->name.size() <= 1) // `my $ = expr` — anonymous: the value passes through
                         return "(" + coerceFor(a->target.get(), exArg(a->value.get())) + ")";
-                    if (hoisted.count(v->name)) // pre-declared by hoistExprDecls
+                    if (hoisted.count(v->name)) { // pre-declared by hoistExprDecls
+                        // …but a hoisted declaration was declared WITHOUT its shape
+                        if (v->declShape) unsupported("a shaped declaration in expression position");
                         return "(" + mangleVar(v->name) + " = " + coerceFor(a->target.get(), exArg(a->value.get())) + ")";
+                    }
                     unsupported("declaration used as a sub-expression");
                 }
                 return "(" + assign(a) + ")"; // assignment yields the assigned value
@@ -1511,10 +1558,20 @@ struct Codegen {
                 if (optimize_ && e->kind == NK::Unary && tryLaneIncDec(static_cast<Unary*>(e), ind)) return;
                 if (e->kind == NK::Assign) { line(ind, assign(static_cast<Assign*>(e)) + ";"); return; } // `my $x = ..` / `$x = ..`
                 if (e->kind == NK::VarExpr && static_cast<VarExpr*>(e)->declare) { // bare `my $x;` / `my @a;` / `my %h;`
-                    const std::string& nm = static_cast<VarExpr*>(e)->name;
-                    if (atTopLevel_ && topVars_.count(nm)) { line(ind, "; // " + nm + " is a global"); return; }
+                    auto* dv = static_cast<VarExpr*>(e);
+                    const std::string& nm = dv->name;
                     char sigil = nm.empty() ? '$' : nm[0];
-                    line(ind, declVar(nm, declInit(static_cast<VarExpr*>(e)->declType, sigil)) + ";");
+                    std::string sh = shapedInit(dv);            // `my @a[3;2];`
+                    if (atTopLevel_ && topVars_.count(nm)) {
+                        // A global is declared at file scope with a plain default and
+                        // initialised here, in program order. A SHAPED one has to be
+                        // built here too: its dimensions may be expressions, and the
+                        // file-scope initialiser has nowhere to evaluate them.
+                        if (!sh.empty()) line(ind, mangleVar(nm) + " = " + sh + ";");
+                        else             line(ind, "; // " + nm + " is a global");
+                        return;
+                    }
+                    line(ind, declVar(nm, sh.empty() ? declInit(dv->declType, sigil) : sh) + ";");
                     return;
                 }
                 // bare declaration list `my ($x, $y, $k);` — declare each, no value
@@ -1648,6 +1705,9 @@ struct Codegen {
         if (e->kind == NK::Index) {
             auto* ix = static_cast<Index*>(e);
             if (!ix->adverb.empty()) unsupported("index adverb on assignment");
+            // A multi-dim slot is not a plain reference into the top-level buffer;
+            // assign() routes `@a[i;j] = v` through ASSIGN-POS before reaching here.
+            if (ix->multiDim) unsupported("a multi-dimensional index in this position");
             // nested indices chain: @g[$r][$c] = v → rtIndexRef(rtIndexRef(v_g, r), c)
             // (rtIndexRef returns an autovivifying Value&, so the chain is natural)
             if (ix->base->kind != NK::VarExpr && ix->base->kind != NK::Index)
@@ -1676,6 +1736,10 @@ struct Codegen {
     std::string assign(Assign* a) {
         Expr* tgt = a->target.get();
         if (tgt->kind == NK::VarExpr && static_cast<VarExpr*>(tgt)->declare) { // `my $x = ..`
+            auto* dv = static_cast<VarExpr*>(tgt);
+            if (std::string sh = shapedInit(dv, exArg(a->value.get())); !sh.empty()) // `my @a[3;2] = …`
+                return atTopLevel_ && topVars_.count(dv->name) ? mangleVar(dv->name) + " = " + sh
+                                                               : declVar(dv->name, sh);
             const std::string& nm = static_cast<VarExpr*>(tgt)->name;
             if (nm.size() > 1 && nm[1] == '*') // `my $*X = ..`: dynamics live in the runtime env
                 return "RT.dynVarRef(" + cesc(nm) + ") = " + coerceFor(tgt, exArg(a->value.get()));
@@ -1719,8 +1783,33 @@ struct Codegen {
             unsupported("binding (:=) of a non-scalar");
         }
         std::string rhs = exArg(a->value.get());
+        // `@a[$i; $j] = v` — ASSIGN-POS descends the dimensions and writes the
+        // leaf, which is what the interpreter does with the same node.
+        if (a->op == "=" && tgt->kind == NK::Index && static_cast<Index*>(tgt)->multiDim) {
+            auto* ix = static_cast<Index*>(tgt);
+            return "RT.methodCall(" + lvalueExpr(ix->base.get()) + ", \"ASSIGN-POS\", ValueList{"
+                 + multiDimArgs(ix) + ", " + rhs + "})";
+        }
         if (a->op == "=") return lvalueExpr(tgt) + " = " + coerceFor(tgt, rhs);
         std::string binop = a->op.substr(0, a->op.size() - 1);  // strip '='
+        // `@a[$y; $x] += 1` — a multi-dim slot is not a reference into a buffer, so
+        // the read and the write are AT-POS and ASSIGN-POS around the operator.
+        // The indices are evaluated ONCE, into a list both calls use.
+        if (tgt->kind == NK::Index && static_cast<Index*>(tgt)->multiDim) {
+            auto* ix = static_cast<Index*>(tgt);
+            std::string fb = fastBin(binop);
+            std::string nv = binop == "||" ? "RT.boolify(__r) ? __r : (" + rhs + ")"
+                           : binop == "&&" ? "RT.boolify(__r) ? (" + rhs + ") : __r"
+                           : binop == "//" ? "!rtIsDefined(__r) ? (" + rhs + ") : __r"
+                           : binop == "~"  ? "applyArith(\"~\", __r, " + rhs + ")"
+                           : !fb.empty()   ? fb + "(__r, " + rhs + ")"
+                           : "applyArith(" + cesc(binop) + ", __r, " + rhs + ")";
+            return "([&]()->Value{ Value& __b = " + lvalueExpr(ix->base.get()) + ";"
+                   " ValueList __ix{" + multiDimArgs(ix) + "};"
+                   " Value __r = RT.methodCall(__b, \"AT-POS\", __ix); __r = " + nv + ";"
+                   " ValueList __as = __ix; __as.push_back(__r);"
+                   " RT.methodCall(__b, \"ASSIGN-POS\", __as); return __r; }())";
+        }
         // compound assignment to an index binds the slot once (avoids double side effects)
         if (tgt->kind == NK::Index) {
             std::string ref = lvalueExpr(tgt);
