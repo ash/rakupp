@@ -21,11 +21,12 @@ file-list diff is **clean**: the one file below the baseline in all three
 runs (`S32-list/map_function_return_values.t`) is timing-marginal and scores
 2/2 re-run alone — the documented timeout flutter, not a regression.
 
-### An outside benchmark became a kernel, and the kernel reached perl
+### An outside remark became a kernel, and the kernel reached perl
 
-perlancar measured a hash workload under `--exe` at "only twice slower than
-Perl 5". Profiling a reconstruction found the factor of two was three
-removable constants — `%h.values` materializing the whole hash as a Pair
+perlancar described native-compiled Raku++ as "only twice slower than
+Perl 5" — without saying what he ran. A hash-fill workload built here to
+probe the claim was indeed about twice perl's speed, and profiling it found
+the factor of two was three removable constants — `%h.values` materializing the whole hash as a Pair
 snapshot it then discarded (56% of the kernel), a second element-wise copy in
 array assignment, and a `Value` built and destroyed per literal interpolation
 part — and none of them the hashing itself. The workload now ships as
