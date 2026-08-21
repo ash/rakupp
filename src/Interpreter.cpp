@@ -1299,9 +1299,30 @@ Value rtRangeVal(const Value& from, const Value& to, bool exFrom, bool exTo) {
         }
         return strRangeList(from.s, to.s, exFrom, exTo);
     }
+    // A FRACTIONAL range keeps its real endpoints, exactly as the interpreter's
+    // own `..` does: `to.toInt()` alone made `0 ..^ 2.5` the integer range
+    // `0..^2`, so under --exe every fractional range was silently truncated at
+    // construction — `.min`, `.max`, `.rand`, `.raku` and `2.4 ~~ 0..^2.5` all
+    // answered for the wrong range. Endpoints are carried too, so a Rat stays a
+    // Rat. (Kept in step with the NK::RangeLit arm in eval.)
+    {
+        bool fFrac = (from.t == VT::Num || from.t == VT::Rat) &&
+                     from.toNum() != std::floor(from.toNum());
+        bool tFrac = (to.t == VT::Num || to.t == VT::Rat) &&
+                     to.toNum() != std::floor(to.toNum());
+        if ((fFrac || tFrac) && from.isNumeric() && to.isNumeric() &&
+            std::isfinite(from.toNum()) && std::isfinite(to.toNum())) {
+            Value rr = Value::range((long long)std::floor(from.toNum()),
+                                    (long long)std::floor(to.toNum()), exFrom, exTo);
+            rr.rNum = true; rr.n = from.toNum(); rr.im = to.toNum();
+            setRangeEnds(rr, from, to);
+            return rr;
+        }
+    }
     {
         Value r = Value::range(from.toInt(), to.toInt(), exFrom, exTo);
         if (to.t == VT::Int && to.big) r.big = to.big; // keep the big bound (pick/roll sample it)
+        setRangeEnds(r, from, to);
         return r;
     }
 }
@@ -1535,6 +1556,10 @@ Value rtArrayVal(const Value& v) {
     if (v.t == VT::Hash && v.hash) return hashToPairs(v);
     if (v.t == VT::Array && v.arr) {
         if (v.ext) return v; // a lazy seq stays lazy; indexing/consumers materialise on demand
+        // a shaped source contributes its LEAVES, as it does in coerceArray —
+        // these two must agree, or a program means one thing interpreted and
+        // another compiled
+        if (isMultiDimShaped(v)) return Value::array(shapedLeaves(v));
         if (v.isList) { Value r = listToArray(*v.arr); r.isList = false; return r; }
         Value r = Value::array(*v.arr); // fresh buffer: `@a = @b` must not alias @b
         return r;
@@ -1558,6 +1583,11 @@ static Value coerceArray(const Value& v) {
             Value r = Value::array(); r.arr->push_back(v); return r;
         }
         if (v.ext) return v; // a lazy seq stays lazy (shared machinery; consumers materialise)
+        // A shaped array STORED into an unshaped one contributes its leaves:
+        // `my @flat = @a[3;2]` is six elements, and so is a `@a is copy`
+        // parameter. (Plain binding — `sub f(@a)` — does not come through here,
+        // and keeps the shaped array itself, as it does under Rakudo.)
+        if (isMultiDimShaped(v)) { Value r = Value::array(shapedLeaves(v)); r.isList = false; return r; }
         // `@b = @a` / `@x is copy` copy the top-level buffer — a fresh Array that does
         // NOT alias the source (nested itemized arrays are containers, shared by value,
         // matching Rakudo). Mirrors rtArrayVal so the interpreter and native backends agree.
@@ -6784,7 +6814,8 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                         (fs->list->kind == NK::VarExpr && !static_cast<VarExpr*>(fs->list.get())->name.empty() &&
                          static_cast<VarExpr*>(fs->list.get())->name[0] == '$'));
                     if (oneItem) items.push_back(lv);
-                    else if (lv.t == VT::Array && lv.arr) { ParStripe cs(*this, lv.arr.get()); items = *lv.arr; } // snapshot under the stripe (torn-copy contract)
+                    else if (lv.t == VT::Array && lv.arr) { ParStripe cs(*this, lv.arr.get());
+                        items = isMultiDimShaped(lv) ? shapedLeaves(lv) : *lv.arr; } // snapshot under the stripe (torn-copy contract)
                     else if (lv.t == VT::Range) items = lv.flatten();
                     // a non-itemized Blob/Buf iterates its ELEMENTS (see the block
                     // form below; Digest::MD5's digest loop is this modifier shape)
@@ -12015,6 +12046,8 @@ Value Interpreter::evalValueOf(Expr* e) {
 // The iterator it hands back may be a user object driven by `pull-one`, or a
 // built-in one, whose remaining items are taken directly.
 Value Interpreter::iterationSourceOf(Value v) {
+    // `for @a[3;2]` walks the six leaves, not the three rows.
+    if (isMultiDimShaped(v)) { Value out = Value::array(shapedLeaves(v)); out.isList = true; return out; }
     if (v.t != VT::Object || !v.obj || !v.obj->cls) return v;
     if (v.obj->cls->findMethod("pull-one")) return v;      // already an Iterator
     Value* itm = v.obj->cls->findMethod("iterator");
@@ -12500,7 +12533,11 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         auto spread = [](const Value& r) -> ValueList {
             ValueList vals;
             if (r.t == VT::Array && r.arr) {
-                for (auto& it : *r.arr) {
+                // `my ($a, $b) = @m[3;2]` takes the leaves in row-major order,
+                // so $a is 1 and $b is 2 — not the first two ROWS.
+                ValueList shaped;
+                if (isMultiDimShaped(r)) shapedLeaves(r, shaped);
+                for (auto& it : (isMultiDimShaped(r) ? shaped : *r.arr)) {
                     if (it.t == VT::Range) { for (auto& e : it.flatten()) vals.push_back(e); }
                     else if (it.t == VT::Array && it.isList && it.arr) { for (auto& e : *it.arr) vals.push_back(e); }
                     else vals.push_back(it);
@@ -15197,16 +15234,25 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                       (r.rExTo ? v < hi : v <= hi);
             }
             else if (l.t == VT::Rat) { // exact endpoint compare: 4.99…(45 digits) ~~ 0..^5
-                res = applyArith(r.rExFrom ? ">" : ">=", l, Value::integer(r.rFrom)).truthy() &&
-                      applyArith(r.rExTo ? "<" : "<=", l, Value::integer(r.rTo)).truthy();
+                // The endpoint OBJECTS where the range kept them: a fractional
+                // range's integer fields are floors, so comparing against those
+                // put 1.4 outside 1/2..3/2 — and this arm exists for exactness.
+                const RangeEnds* re = rangeEnds(r);
+                Value lo = re ? re->from : r.rNum ? Value::number(r.n)  : Value::integer(r.rFrom);
+                Value hi = re ? re->to   : r.rNum ? Value::number(r.im) : Value::integer(r.rTo);
+                res = applyArith(r.rExFrom ? ">" : ">=", l, lo).truthy() &&
+                      applyArith(r.rExTo ? "<" : "<=", l, hi).truthy();
             } else {
                 // The LOW endpoint's exclusivity was dropped here while the high
                 // one was honoured, so `4 ~~ 4^..6` was True. Everything built on
                 // smartmatch inherited it — `.grep(4^..6)` kept the 4 and
                 // `.first(4^..6)` answered 4 instead of 5 — even though the same
                 // Range's `.list` and `.excludes-min` were both right.
+                // A fractional range's endpoints are n/im; rFrom/rTo are their
+                // floors, so `2.4 ~~ 0..^2.5` was False and every `.grep(1.5..2.5)`
+                // over measured data silently cut at the floor.
                 double v = l.toNum();
-                double lo = r.rFrom, hi = r.rTo;
+                double lo = r.rNum ? r.n : (double)r.rFrom, hi = r.rNum ? r.im : (double)r.rTo;
                 res = (r.rExFrom ? v > lo : v >= lo) && (r.rExTo ? v < hi : v <= hi);
             }
         } else if (r.t == VT::Type) {
@@ -17440,6 +17486,12 @@ static void tagTemporal(const std::string& op, const Value& l, const Value& r, V
 Value Interpreter::hyperCore(Value& l, Value& r, bool strictL, bool strictR,
         const std::function<Value(const Value&, const Value&, Value*, Value*)>& apply,
         Value* lroot, Value* rroot, bool wantSlots) {
+    // A shaped operand distributes over its LEAVES, and the result is the flat
+    // list of them: `@a[3;2] >>+>> 1` is (2, 3, 4, 5, 6, 7), not three rows.
+    // Done once here rather than in deepApply, which recurses on plain rows.
+    Value lflat, rflat;
+    if (isMultiDimShaped(l)) { lflat = Value::array(shapedLeaves(l)); lflat.isList = true; l = lflat; }
+    if (isMultiDimShaped(r)) { rflat = Value::array(shapedLeaves(r)); rflat.isList = true; r = rflat; }
     // element-level distribution: a Pair keeps its key and ops its value; a
     // nested array/hash element recurses with the same marker rules — so
     // ([1,2],[3,[4,5]]) »+« ([6,7],[8,[9,10]]) distributes deeply, and a hash
@@ -19536,7 +19588,8 @@ Value Interpreter::evalUnary(Unary* u) {
     if (u->op == "|") { // slip: spread handled in evalArgs; anywhere else the
         // value IS a Slip — mark it so list consumers (map, list literals) splice it.
         if (v.t == VT::Array && v.arr) {
-            Value out = Value::array(); *out.arr = *v.arr;
+            Value out = Value::array();
+            *out.arr = isMultiDimShaped(v) ? shapedLeaves(v) : *v.arr; // a shaped array slips its LEAVES
             out.isList = true; out.s = "Slip";
             return out;
         }

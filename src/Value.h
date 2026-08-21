@@ -518,6 +518,31 @@ int valueCmp(const Value& a, const Value& b);   // for <=> / cmp
 std::string strSucc(const std::string& s);             // Raku magic string increment
 std::string strPred(const std::string& s, bool& ok);  // magic decrement (ok=false on underflow)
 
+// A shaped array's ELEMENT SEQUENCE is its LEAVES, in row-major order. Rakudo
+// iterates `my @a[3;2]` as six values — `my @flat = @a` is six elements, and so
+// is `for @a` — even though `.elems` answers the FIRST DIMENSION, 3, and `.raku`
+// shows the rows. This engine handed out the rows everywhere the leaves were
+// wanted, so a caller storing `random-variate($dist, [3, 2])` in a plain `my @m`
+// got 3 elements here and 6 under Rakudo.
+//
+// The walk descends exactly as many levels as there are dimensions, so a leaf
+// that is ITSELF an array is not flattened along with the structure.
+inline bool isMultiDimShaped(const Value& v) {
+    return v.t == VT::Array && v.arr && v.shape && v.shape->size() >= 2;
+}
+inline void shapedLeaves(const Value& v, ValueList& out) {
+    const size_t ndim = v.shape ? v.shape->size() : 0;
+    struct Walk {
+        static void go(const Value& n, size_t d, size_t ndim, ValueList& out) {
+            if (d == ndim) { out.push_back(n); return; }
+            if (n.t == VT::Array && n.arr)
+                for (const auto& e : *n.arr) go(e, d + 1, ndim, out);
+        }
+    };
+    Walk::go(v, 0, ndim, out);
+}
+inline ValueList shapedLeaves(const Value& v) { ValueList out; shapedLeaves(v, out); return out; }
+
 // A Range remembers the endpoint OBJECTS it was written with, so `1/2 .. 1/3`
 // keeps its Rats and `True .. False` its Bools instead of collapsing to the
 // integers it iterates over. Iteration still walks rFrom/rTo (or n/im when

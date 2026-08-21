@@ -832,6 +832,10 @@ std::string rakuRepr(const Value& v, int depth, std::set<const void*>& seen) {
             // well as gist. Same Int-zero-only rule as Value::gist.
             if (!v.rExFrom && v.rExTo && v.rFrom == 0 && !v.rNum)
                 return "^" + std::to_string(v.rTo);
+            // A fractional range keeps its real endpoints in n/im and its integer
+            // fields are their floors, so this printed `1.5..2.5` as `1..2`.
+            // gist already spells the endpoints, including a Rat's.
+            if (v.rNum) return v.gist();
             return std::to_string(v.rFrom) + (v.rExFrom ? "^" : "") + ".." + (v.rExTo ? "^" : "") + std::to_string(v.rTo);
         case VT::Pair: {
             Value val = v.pairVal ? *v.pairVal : Value::nil();
@@ -3262,7 +3266,8 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         (m == "join" || m == "map" || m == "grep" || m == "combinations" ||
          m == "permutations" || m == "rotor" || m == "pick" || m == "roll" ||
          m == "first" || m == "reduce" || m == "sum" || m == "min" || m == "max" ||
-         m == "sort" || m == "reverse" || m == "List" || m == "Slip" || m == "Bag")) {
+         m == "sort" || m == "reverse" || m == "List" || m == "Seq" || m == "Slip" ||
+         m == "Bag")) {
         Value flat = Value::array(); flat.isList = true;
         std::function<void(const Value&)> collect = [&](const Value& n) {
             if (n.t == VT::Array && n.arr) for (auto& e : *n.arr) collect(e);
@@ -9464,6 +9469,8 @@ void Interpreter::registerBuiltins() {
         };
         for (auto& v : a) {
             if (v.itemized) { out.arr->push_back(v); continue; }
+            // a shaped array contributes its leaves: `flat @a[3;2]` is six values
+            if (isMultiDimShaped(v)) { for (auto& e : shapedLeaves(v)) out.arr->push_back(e); continue; }
             if (v.t == VT::Array && v.arr) { for (auto& e : *v.arr) deeper(e, !v.isList); continue; }
             if (v.t == VT::Range) { for (auto& e : v.flatten()) out.arr->push_back(e); continue; }
             // A HASH flattens to its Pairs — an EMPTY one therefore contributes

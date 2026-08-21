@@ -841,6 +841,9 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         // `@($v)` was already right, which is what made the two disagree.
         if (m == "Array") {
             if (inv.t != VT::Array) return Value::array(items);
+            // `.Array` on a shaped array is its LEAVES as a plain Array — the
+            // shape is what it drops (Rakudo: `[1, 2, 3, 4, 5, 6]`).
+            if (isMultiDimShaped(inv)) return Value::array(shapedLeaves(inv));
             Value r = inv; r.itemized = false; r.isList = false; return r;
         }
         if (m == "values") {
@@ -2322,6 +2325,8 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             // treated as the list of values (flattened one level); multiple args are each
             // added as-is (nested lists preserved, exactly like push).
             auto appendValues = [](ValueList& args) -> ValueList {
+                if (args.size() == 1 && isMultiDimShaped(args[0]))
+                    return shapedLeaves(args[0]);   // a shaped array appends its leaves
                 if (args.size() == 1 && args[0].t == VT::Array && args[0].arr)
                     return *args[0].arr;   // one-level: the sole list's own elements
                 return args;               // 2+ args: each as-is
