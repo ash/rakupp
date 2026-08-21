@@ -373,6 +373,12 @@ struct ExecContext {
     Env* curStateEnv = nullptr;
     std::vector<std::shared_ptr<ValueList>> gatherStack;
     std::vector<size_t> gatherLimits; // per-gather take cap (0 = unlimited); a take past it throws StopGatherEx
+    // …and a per-gather TIME budget for the first probe, as a steady_clock
+    // microsecond stamp (0 = none). 64 takes is a count, not a cost: a generator
+    // whose takes get steadily more expensive must not be able to make merely
+    // DECLARING it slow. A probe that runs out stops where it is, and the gather
+    // becomes lazy — which is what a gather of more than 64 takes already is.
+    std::vector<long long> gatherDeadlines;
     std::vector<ValueList*> supplyStack;
     std::vector<std::shared_ptr<SupplyTapCtx>> tapStack; // active on-demand supply activations
     std::vector<Value*> makeTargets;
@@ -440,6 +446,13 @@ struct CueState { std::atomic<bool> cancelled{false}; };
 struct LazySeqState {
     std::function<bool(ValueList&)> appendNext;
     bool infinite = false; // a truly unbounded source (…..Inf): elems/pop/tail/[*-1] must die
+    // A `gather` block, which is not run until something pulls from it. Its
+    // finiteness is therefore UNKNOWN until then, and `.is-lazy` — the one
+    // question that inspects a sequence without consuming it — forces that
+    // first pull so it can answer. `exhausted` records what the pull found.
+    bool gatherSeq = false;
+    bool exhausted = false;
+    bool forceProbed = false;   // forceLazy has already asked once whether it ends
 };
 
 // Shared state behind a real (thread-backed) Promise. Copies of the Promise
@@ -693,7 +706,7 @@ public:
     // Run a Proxy's STORE for `$proxy = v`. See the definition in Interpreter.cpp.
     Value proxyStore(const Value& proxy, const Value& v);
     // The hash behind `for values %h` — see the definition in Interpreter.cpp.
-    std::shared_ptr<std::map<std::string, Value>> valuesAliasSource(Expr* listExpr);
+    std::shared_ptr<ValueMap> valuesAliasSource(Expr* listExpr);
     // The array behind `for @$x` — likewise; the topic aliases its elements.
     std::shared_ptr<ValueList> derefArrayAlias(Expr* listExpr);
     // The containers behind `for $a, $b, $c` — likewise.
@@ -874,7 +887,7 @@ public:
     // how `EXPORTHOW.WHO.<grammar> = SomeHOW` used to die "Target is not
     // assignable" (WHO built a fresh empty Hash each time). Reads re-sync the
     // package's qualified globals in, so `our`-scoped symbols show up too.
-    std::map<std::string, std::shared_ptr<std::map<std::string, Value>>> pkgStashes_;
+    std::map<std::string, std::shared_ptr<ValueMap>> pkgStashes_;
     std::shared_ptr<ClassInfo> howClsInfo_; // shared class of persistent .HOW metaobjects (see m == "HOW")
     std::unordered_map<std::string, std::string> classAliases_;
     const std::string& resolveClassAlias(const std::string& n) {
@@ -1124,9 +1137,9 @@ public:
     void runReactLoop(const std::shared_ptr<ReactCtx>& ctx); // block until live sources done
     void engageGil();                      // lazily lock the GIL on first async use
     void drainWorkers();
-    void registerWriteHandle(const std::shared_ptr<std::map<std::string, Value>>& h) { openWriteHandles_.push_back(h); }
+    void registerWriteHandle(const std::shared_ptr<ValueMap>& h) { openWriteHandles_.push_back(h); }
     void flushOpenWriteHandles();  // flush any unclosed write handle at program exit
-    std::vector<std::shared_ptr<std::map<std::string, Value>>> openWriteHandles_;
+    std::vector<std::shared_ptr<ValueMap>> openWriteHandles_;
 
     // Per-thread execution registers — current scope, dyn-var chain, gather/supply/
     // make collectors, call depth, package prefix. Held in a `static thread_local`
@@ -1253,7 +1266,29 @@ private:
     void emitTest(bool ok, const std::string& desc, const std::string& directive = "",
                   const std::string& extraDiag = "");
 
+public:
+    // DESTROY protocol. Timely destruction is not guaranteed in Raku — DESTROY
+    // runs when garbage collection notices the object is unreachable. Here the
+    // construction protocol parks every new instance whose class chain declares
+    // a DESTROY submethod in this registry; a sweep finds entries the registry
+    // alone still owns (use_count == 1 ⇔ the program dropped every reference)
+    // and runs their DESTROY chain, child class first. Sweeps run from
+    // `$*VM.request-garbage-collection` and at program end — the two moments
+    // Rakudo's own test suite relies on.
+    void maybeRegisterDestroy(const Value& self);
+    void runPendingDestroys();
+
 private:
+    std::vector<std::shared_ptr<ObjectData>> destroyReg_;
+    std::mutex destroyMu_;
+    bool inDestroySweep_ = false; // a DESTROY that itself requests GC must not recurse
+    // Allocation pressure: registration past this mark triggers a sweep, so a
+    // construct-and-drop loop cannot pile up millions of corpses for one giant
+    // end-of-program sweep (roles-6e.t spins C1.new for five seconds straight).
+    // After each sweep the mark doubles past the surviving live entries, which
+    // keeps the O(live) scan amortized-constant per registration.
+    size_t destroySweepAt_ = 1024;
+
     std::unordered_map<std::string, BuiltinFn> builtins_;
     std::vector<std::shared_ptr<Program>> keptPrograms_; // keep EVAL'd ASTs alive
     // The compilation unit currently EXECUTING its top level (mainline, a
@@ -1490,7 +1525,11 @@ std::string firstBlockPlaceholder(const std::vector<StmtPtr>& body); // first $^
 void collectPHExprPublic(const Expr* e, std::set<std::string>& out); // expr-level placeholder walk
 ValueList pathPartsPairs(const Value& v); // IO::Path::Parts in declaration order
 Value  rtTypedDefault(const char* type, char sigil); // `my Int @a` / `my %h{Int}`: the declared empty container
+long long nowMicros();              // steady_clock microseconds (the gather probe budget)
 Value  rtArrayVal(const Value& v);  // list-assignment semantics for `@a = expr` (splice Lists, keep itemized rows)
+Value  rtArrayVal(Value&& v);       // rvalue overload: steal a uniquely-owned Slip-free List's buffer instead of copying it
+Value  rtShapedArray(const ValueList& dims, const std::string& declType); // `my @a[3;2]`
+void   rtShapedStore(Value& lv, const Value& rhs, const std::string& keepType); // `@a[3;2] = …`
 void   rtSpreadArg(ValueList& as, const Value& v, bool argPos); // |x spread into an arg/list being built
 Value  rtHyperMethod(Interpreter& I, const Value& inv, const std::string& m, ValueList args); // >>.method
 Value  rtSlipVal(const Value& v);   // |x as a list element (a List that splices, pre-spread deep)

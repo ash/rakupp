@@ -19,14 +19,14 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     if (inv.t == VT::Hash && !inv.hashKind.empty()) {
         bool isSet = inv.hashKind.find("Set") == 0;
         if (m == "default") return isSet ? Value::boolean(false) : Value::integer(0);
-        if (m == "total") { // Mix weights may be fractional — keep the numeric type
-            bool allInt = true; double t = 0;
-            for (auto& kv : *inv.hash) {
-                if (isSet) { t += 1; continue; }
-                t += kv.second.toNum();
-                if (kv.second.t != VT::Int && kv.second.t != VT::Bool) allInt = false;
-            }
-            return allInt ? Value::integer((long long)t) : Value::number(t);
+        if (m == "total") { // Mix weights may be fractional — sum EXACTLY through
+            // the numeric tower (Rat stays Rat). A double accumulator's rounding
+            // depended on iteration order: 0.3 + 0.5 + … printed 13.6 in one
+            // order and 13.599999999999998 in another. Rakudo is exact here.
+            if (isSet) return Value::integer((long long)inv.hash->size());
+            Value t = Value::integer(0);
+            for (auto& kv : *inv.hash) t = applyArith("+", t, kv.second);
+            return t;
         }
         if (m == "elems") return Value::integer((long long)inv.hash->size());
     }
@@ -165,6 +165,54 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             return (got.t == VT::Array && got.arr && got.arr->size() == 1) ? (*got.arr)[0] : got;
         }
         return methodCall(upto, m, args);
+    }
+    // `(5..6).rand` — a Num drawn uniformly from a numeric range. The generic
+    // arm below multiplies the invocant's toNum() by a random fraction, and a
+    // Range's toNum() is 0, so EVERY numeric range answered a constant 0.
+    // Statistics::Distributions generates its Uniform variates as
+    // `($min .. $max).rand`, so that module quietly produced a column of zeros
+    // here while its own suite — which checks counts and types — stayed green.
+    //
+    // Rakudo's four refusals come with it, and they are soft: `fail`, not
+    // `throw`, so roast can write `throws-like ("a".."z").rand, …` and have the
+    // argument survive being built. The sentinel endpoints are tested before
+    // .min/.max because an open-BOTTOM range answers LLONG_MIN.
+    if (m == "rand" && inv.t == VT::Range) {
+        auto softly = [](const char* type, const std::string& msg) {
+            Value f = Value::makeHash(); f.hashKind = "Failure";
+            (*f.hash)["exception"] = Value::typeObj(type);
+            (*f.hash)["message"]   = Value::str(msg);
+            return f;
+        };
+        static const char* kBadEnds = "X::Range::Rand::InvalidEndpoints";
+        if (inv.rTo >= 9000000000000000000LL || inv.rFrom <= -9000000000000000000LL)
+            return softly(kBadEnds, "Impossible to get a random number from an infinite range");
+        ValueList none;
+        Value loV = methodCall(inv, "min", none), hiV = methodCall(inv, "max", none);
+        if (!loV.isNumeric() || !hiV.isNumeric())
+            return softly("X::AdHoc",
+                          "Can only get a random value on Real values, did you mean .pick?");
+        double lo = loV.toNum(), hi = hiV.toNum();
+        if (std::isinf(lo) || std::isinf(hi))
+            return softly(kBadEnds, "Impossible to get a random number from an infinite range");
+        if (lo == hi)
+            return softly(kBadEnds,
+                "Impossible to generate random numbers for a range where endpoints are equal");
+        if (lo > hi) {
+            // Rakudo's message for a descending range carries its own hint, and
+            // the hint names the endpoints both ways round.
+            std::string a = loV.gist(), b = hiV.gist();
+            return softly(kBadEnds,
+                "Impossible to get a random number from range containing no values.\n"
+                "The sequence (...) operator supports descension between " + a + " and " + b + ",\n"
+                "but for a random number between " + a + " and " + b + ", (" + b + ".." + a + ").rand is\n"
+                "likely to be functionally equivalent to what was meant by (" + a + ".." + b + ").rand");
+        }
+        // randDouble() is [0, 1), so the top endpoint never comes up however it
+        // is written; only an excluded BOTTOM one can, and it is redrawn.
+        double v = lo + (hi - lo) * randDouble();
+        while (inv.rExFrom && v == lo) v = lo + (hi - lo) * randDouble();
+        return Value::number(v);
     }
     if (m == "rand") return Value::number(inv.toNum() * randDouble()); // $n.rand — Num in [0, $n)
     if (m == "base" && !args.empty() && (inv.t == VT::Int || inv.t == VT::Bool)) { // Int -> string in base 2..36
@@ -482,9 +530,20 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         }
         double scale = args.empty() ? 1.0 : scaleV.toNum();
         if (scale == 0) scale = 1.0;
-        double r = std::floor(x / scale + 0.5) * scale;
-        if (args.empty()) return Value::integer((long long)r); // .round with no arg is an Int
-        return Value::number(r);
+        double q = std::floor(x / scale + 0.5);
+        if (args.empty()) return Value::integer((long long)q); // .round with no arg is an Int
+        // Rakudo's last step is `.floor * $scale`, and the type of THAT multiply
+        // is the type of the answer: an Int or Rat scale makes it exact, and only
+        // a Num scale leaves it a Num. Doing the whole thing in doubles gave
+        // `178.14159e0.round(0.1)` as 178.10000000000002 where Rakudo says 178.1.
+        // The division and the floor stay in doubles, as they are under Rakudo
+        // too — a Num divided by a Rat is a Num there.
+        // (A zero scale is excluded because the double path substitutes 1 for it
+        // above, and multiplying by the real scale would answer 0 instead.)
+        if (scaleV.t != VT::Num && inv.t != VT::Complex && scaleV.toNum() != 0 &&
+            std::isfinite(q) && std::fabs(q) < 9.2e18)
+            return applyArith("*", Value::integer((long long)q), scaleV);
+        return Value::number(q * scale);
     }
     if (m == "truncate") return Value::integer((long long)inv.toNum());
     if (m == "sign") {

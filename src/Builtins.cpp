@@ -696,6 +696,7 @@ static bool rakuIdentKey(const std::string& s) {
     return true;
 }
 std::string rakuRepr(const Value& v, int depth, std::set<const void*>& seen) {
+    forceLazy(v);   // an unpulled gather renders its ELEMENTS, not `().Seq`
     // `.raku` of a Proxy shows the VALUE it holds, not its FETCH/STORE pair —
     // URI::Query hands back lists of Proxy containers to keep them immutable.
     if (v.t == VT::Hash && v.hashKind == "Proxy" && v.hash && g_deproxy)
@@ -832,6 +833,10 @@ std::string rakuRepr(const Value& v, int depth, std::set<const void*>& seen) {
             // well as gist. Same Int-zero-only rule as Value::gist.
             if (!v.rExFrom && v.rExTo && v.rFrom == 0 && !v.rNum)
                 return "^" + std::to_string(v.rTo);
+            // A fractional range keeps its real endpoints in n/im and its integer
+            // fields are their floors, so this printed `1.5..2.5` as `1..2`.
+            // gist already spells the endpoints, including a Rat's.
+            if (v.rNum) return v.gist();
             return std::to_string(v.rFrom) + (v.rExFrom ? "^" : "") + ".." + (v.rExTo ? "^" : "") + std::to_string(v.rTo);
         case VT::Pair: {
             Value val = v.pairVal ? *v.pairVal : Value::nil();
@@ -1297,8 +1302,9 @@ std::string mapCase(const std::string& s, int kind, int tcMode) {
                 for (size_t i = 1; i < r.size(); i++) r[i] = (char)ascii::tolower((unsigned char)r[i]);
             return r;
         }
-        if (kind == 0) for (char& c : r) c = (char)ascii::tolower((unsigned char)c);
-        else           for (char& c : r) c = (char)ascii::toupper((unsigned char)c);  // 1 = uc, 2 = tc
+        if (kind == 0 || kind == 3)                                                   // 0 = lc; 3 = fc, which
+             for (char& c : r) c = (char)ascii::tolower((unsigned char)c);            // folds to lower in ASCII
+        else for (char& c : r) c = (char)ascii::toupper((unsigned char)c);            // 1 = uc, 2 = tc
         return r;
     }
     auto cps = utf8cp(s);
@@ -1722,6 +1728,7 @@ std::string doSprintf(const std::string& fmt, const ValueList& args, int langRev
 }
 
 bool deepEq(const Value& a, const Value& b) {
+    forceLazy(a); forceLazy(b);   // a lazy gather compares by its ELEMENTS
     // A Proxy is a container: compare what it HOLDS, at any depth. URI::Query
     // hands back lists of Proxy containers to keep them immutable, so
     // `is-deeply $q<foo>, $('1','3')` was comparing containers with strings.
@@ -3129,7 +3136,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 }
                 // dist/<id> — the meta index (list-installed reads it; buildResourceMap
                 // scans it for `resources/…` → the on-disk resource copy).
-                Value distMeta = metaV; distMeta.hash = std::make_shared<std::map<std::string, Value>>(meta);
+                Value distMeta = metaV; distMeta.hash = std::make_shared<ValueMap>(meta);
                 (*distMeta.hash)["files"] = filesOut;
                 if (provOut.hash && !provOut.hash->empty())
                     (*distMeta.hash)["provides"] = provOut;
@@ -3262,7 +3269,8 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         (m == "join" || m == "map" || m == "grep" || m == "combinations" ||
          m == "permutations" || m == "rotor" || m == "pick" || m == "roll" ||
          m == "first" || m == "reduce" || m == "sum" || m == "min" || m == "max" ||
-         m == "sort" || m == "reverse" || m == "List" || m == "Slip" || m == "Bag")) {
+         m == "sort" || m == "reverse" || m == "List" || m == "Seq" || m == "Slip" ||
+         m == "Bag")) {
         Value flat = Value::array(); flat.isList = true;
         std::function<void(const Value&)> collect = [&](const Value& n) {
             if (n.t == VT::Array && n.arr) for (auto& e : *n.arr) collect(e);
@@ -3594,7 +3602,8 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         // methods, and dying on Any took the whole dump down.
         // Date/DateTime fall through: they DO answer .^attributes (the
         // synthesized Rakudo-shaped list JSON::Unmarshal rebuilds from).
-        if ((mm == "methods" || mm == "attributes") &&
+        // .^method_names rides along with .^methods for the same reason.
+        if ((mm == "methods" || mm == "method_names" || mm == "attributes") &&
             !(tobj.t == VT::Type && classes_.count(resolveClassAlias(tobj.s))) &&
             !(mm == "attributes" && tobj.t == VT::Type &&
               (tobj.s == "DateTime" || tobj.s == "Date"))) {
@@ -6120,7 +6129,7 @@ Value Interpreter::spawnChannelWhenever(Value chan, Value blk, std::shared_ptr<R
             // react — the last isolation livelock of the P5 wall).
             Value v; bool got = false, fin = false;
             {   std::lock_guard<std::recursive_mutex> lk(Interpreter::atomicStripe(chan.hash.get()));
-                auto qi = chan.hash ? chan.hash->find("queue") : std::map<std::string, Value>::iterator{};
+                auto qi = chan.hash ? chan.hash->find("queue") : ValueMap::iterator{};
                 ValueList* q = chan.hash && qi != chan.hash->end() && qi->second.arr ? qi->second.arr.get() : nullptr;
                 if (!q) fin = true;
                 else if (!q->empty()) { v = q->front(); q->erase(q->begin()); got = true; }
@@ -7618,6 +7627,11 @@ void Interpreter::registerBuiltins() {
             // a lazy gather stops the block once it has produced enough elements
             size_t lim = I.tctx_.gatherLimits.empty() ? 0 : I.tctx_.gatherLimits.back();
             if (lim && coll.size() >= lim) throw StopGatherEx{};
+            // …and stops when the probe's TIME budget is spent, so a generator
+            // whose takes get steadily more expensive cannot make declaring it
+            // slow. At least one element first: a prefix of none is not a probe.
+            long long dl = I.tctx_.gatherDeadlines.empty() ? 0 : I.tctx_.gatherDeadlines.back();
+            if (dl && !coll.empty() && nowMicros() > dl) throw StopGatherEx{};
             return v;
         }
         // outside a gather there is nowhere for the value to go, and silently
@@ -9463,6 +9477,8 @@ void Interpreter::registerBuiltins() {
         };
         for (auto& v : a) {
             if (v.itemized) { out.arr->push_back(v); continue; }
+            // a shaped array contributes its leaves: `flat @a[3;2]` is six values
+            if (isMultiDimShaped(v)) { for (auto& e : shapedLeaves(v)) out.arr->push_back(e); continue; }
             if (v.t == VT::Array && v.arr) { for (auto& e : *v.arr) deeper(e, !v.isList); continue; }
             if (v.t == VT::Range) { for (auto& e : v.flatten()) out.arr->push_back(e); continue; }
             // A HASH flattens to its Pairs — an EMPTY one therefore contributes
@@ -10457,7 +10473,7 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
             if (v.empty()) return Value::nil();
             Value c = v[0];
             if (c.t == VT::Array && c.arr) { auto na = std::make_shared<ValueList>(*c.arr); c.arr = na; }
-            else if (c.t == VT::Hash && c.hash) { auto nh = std::make_shared<std::map<std::string, Value>>(*c.hash); c.hash = nh; }
+            else if (c.t == VT::Hash && c.hash) { auto nh = std::make_shared<ValueMap>(*c.hash); c.hash = nh; }
             else if (c.t == VT::Object && c.obj) { auto no = std::make_shared<ObjectData>(*c.obj); c.obj = no; }
             return c;
         }

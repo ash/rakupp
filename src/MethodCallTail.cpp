@@ -351,8 +351,16 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
     // lazy list (infinite `… … *` or a lazy `.map` over one): keep `.map`/`.head`
     // lazy so consumers materialise only what they index.
     if (inv.t == VT::Array && inv.ext) {
-        bool infinite = std::static_pointer_cast<LazySeqState>(inv.ext)->infinite;
-        if (m == "is-lazy") return Value::boolean(true);
+        auto lst = std::static_pointer_cast<LazySeqState>(inv.ext);
+        bool infinite = lst->infinite;
+        if (m == "is-lazy") {
+            // A gather has not been run yet, so whether it is lazy is not known
+            // until it has been. This is the only question that asks without
+            // consuming, so it does the first pull itself; a gather that turns
+            // out to be finite answers False, as it did when the probe was eager.
+            if (lst->gatherSeq) { materializeLazy(inv, 1); return Value::boolean(!lst->exhausted); }
+            return Value::boolean(true);
+        }
         if (infinite) {
             // operations that need the end of the list can't complete on an infinite source
             if (m == "elems" || m == "end" || m == "pop" || m == "tail" || m == "reverse" ||
@@ -785,7 +793,12 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         // inv.hash, and the per-call pair materialization made `%h.push` in an
         // accumulate loop quadratic (same disease the Array gate cured).
         bool hashPush = inv.t == VT::Hash && inv.hash && (m == "push" || m == "append");
-        if (!(inv.t == VT::Array && inv.arr && !inv.ext && throughHandle()) && !hashPush)
+        // The key/value walkers likewise read *inv.hash directly and never look
+        // at `items` — for them the snapshot materialized a Pair per entry only
+        // to be discarded, the dominant cost of `%h.values` on a large hash.
+        bool hashDirect = inv.t == VT::Hash && inv.hash &&
+            (m == "values" || m == "keys" || m == "kv" || m == "pairs" || m == "antipairs");
+        if (!(inv.t == VT::Array && inv.arr && !inv.ext && throughHandle()) && !hashPush && !hashDirect)
             items = toList(inv);
         // .collate — UCA-ordered sort (the coll infix already implements DUCET;
         // this just wires the method Rakudo exposes on lists)
@@ -841,6 +854,9 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         // `@($v)` was already right, which is what made the two disagree.
         if (m == "Array") {
             if (inv.t != VT::Array) return Value::array(items);
+            // `.Array` on a shaped array is its LEAVES as a plain Array — the
+            // shape is what it drops (Rakudo: `[1, 2, 3, 4, 5, 6]`).
+            if (isMultiDimShaped(inv)) return Value::array(shapedLeaves(inv));
             Value r = inv; r.itemized = false; r.isList = false; return r;
         }
         if (m == "values") {
@@ -874,8 +890,25 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             // ARRAY does not: array assignment itemises each element, so
             // `[[1,2],[3]].flat` stays two elements. `$@a` / `.item` opt out
             // either way.
+            // `:hammer` (6.e) hammers the containers flat: itemisation stops
+            // mattering, so `[[1,2],[3]].flat(:hammer)` is (1,2,3) where plain
+            // .flat keeps the two itemised Arrays whole.
+            bool hammer = false;
+            for (auto& a : args)
+                if (a.t == VT::Pair && a.s == "hammer")
+                    hammer = !a.pairVal || a.pairVal->truthy();
             Value out = Value::array(); out.isList = true; out.s = "Seq";
             std::function<void(const Value&, bool)> go = [&](const Value& x, bool ofArray) {
+                if (hammer) {
+                    if (x.t == VT::Array && x.arr) { for (auto& e : *x.arr) go(e, false); return; }
+                    if (x.t == VT::Hash && x.hash && x.hashKind.empty()) {
+                        for (auto& kv : *x.hash) out.arr->push_back(Value::pair(kv.first, kv.second));
+                        return;
+                    }
+                    if (x.t == VT::Range) { for (auto& e : x.flatten()) out.arr->push_back(e); return; }
+                    out.arr->push_back(x);
+                    return;
+                }
                 // a nested LIST always spreads; only a nested ARRAY container is
                 // held back by its parent being an Array
                 if (x.t == VT::Array && x.arr && !x.itemized && (x.isList || !ofArray))
@@ -1608,6 +1641,9 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 }
                 if (args.empty()) { long long k = draw(); return k < 0 ? Value::nil() : Value::str(pool[k].first); }
                 bool all = args[0].t == VT::Whatever ||
+                           // the NAME `Whatever` is the TYPE OBJECT, and Rakudo
+                           // treats .roll(Whatever) exactly as .roll(*)
+                           (args[0].t == VT::Type && args[0].s == "Whatever") ||
                            (args[0].t == VT::Str && (args[0].s == "*" || args[0].s == "Inf")) ||
                            (args[0].isNumeric() && std::isinf(args[0].toNum()));
                 if (all && m == "roll") { // roll(*): an INFINITE lazy stream of weighted draws
@@ -1652,6 +1688,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             const ValueList& pool0 = inv.enumType.empty() ? items : enumVals;
             if (pool0.empty()) return args.empty() ? Value::nil() : Value::array();
             bool all = !args.empty() && (args[0].t == VT::Whatever ||
+                       (args[0].t == VT::Type && args[0].s == "Whatever") || // .pick(Whatever) == .pick(*)
                        (args[0].t == VT::Str && (args[0].s == "*" || args[0].s == "Inf")) ||
                        (args[0].isNumeric() && std::isinf(args[0].toNum())));
             if (args.empty()) return pool0[(size_t)(randDouble() * pool0.size())]; // single element
@@ -2305,6 +2342,8 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             // treated as the list of values (flattened one level); multiple args are each
             // added as-is (nested lists preserved, exactly like push).
             auto appendValues = [](ValueList& args) -> ValueList {
+                if (args.size() == 1 && isMultiDimShaped(args[0]))
+                    return shapedLeaves(args[0]);   // a shaped array appends its leaves
                 if (args.size() == 1 && args[0].t == VT::Array && args[0].arr)
                     return *args[0].arr;   // one-level: the sole list's own elements
                 return args;               // 2+ args: each as-is

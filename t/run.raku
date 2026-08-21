@@ -358,6 +358,11 @@ for <examples tools/bench tools/optbench> -> $dir {
         caught: No such method 'nosuchmethod' for invocant of type 'Int'
         pick: one two many
         sort: 1,2,5,9
+        shape: (3 2) elems: 3 at: 4
+        raku: Array.new(:shape(3, 2), [1, 12], [99, 4], [5, 6])
+        flat: 6 1,12,99,4,5,6
+        grid: Array.new(:shape(2, 3), [1, 2, 3], [4, 5, 6]) sum: 21
+        dyn: (2 2) 4
         END
     ok($got eq $want, "the native binary matches the interpreter on the parity probes");
     diag("got: $got") if $got ne $want;

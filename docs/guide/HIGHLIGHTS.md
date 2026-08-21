@@ -17,7 +17,7 @@
   or compiles it to a standalone native executable.
 - Measured against **[Roast](https://github.com/Raku/roast)**, the official
   Raku specification suite: **~90% of all declared tests pass**
-  (198,628 / 218,626); **~43% of files fully pass** (630 / 1,462).
+  (198,642 / 218,561); **~43% of files fully pass** (633 / 1,464).
   Definitions and caveats: [ROAST.md](../status/ROAST.md), [COUNTING.md](../status/COUNTING.md).
 
 ## Language

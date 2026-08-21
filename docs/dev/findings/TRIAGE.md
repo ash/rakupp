@@ -1,9 +1,12 @@
 # Triage — behavioural quirks to cover later
 
-Interpreter gaps found outside the Roast harness (see [ROAST-GAPS.md](ROAST-GAPS.md)
-for the Roast-derived classification). These surfaced while using rakupp to write
-real programs, so they aren't yet mapped to specific failing test files — but each
-is a real behavioural gap with a minimal repro. All verified on HEAD.
+Gaps found outside the Roast harness (see [ROAST-GAPS.md](ROAST-GAPS.md) for the
+Roast-derived classification). These surfaced while using rakupp to write real
+programs, so they aren't yet mapped to specific failing test files — but each is
+a real behavioural gap with a minimal repro. All verified on HEAD. Most are
+interpreter gaps; the dated TODO sections at the end record gaps in the native
+`--exe` compiler, where the fix that landed was a fallback and the rest is still
+to do.
 
 ## From writing the `examples/` programs (2026-07-11)
 
@@ -30,3 +33,66 @@ is a real behavioural gap with a minimal repro. All verified on HEAD.
 | 14 | `next` inside `.map({ next if …; $_ })` escapes to the **enclosing loop** — `for 1..3 { @r.push: (1..5).map({ next if $_ == 2; $_ }).elems }` leaves `@r` **empty** | `next` skips the map element; `@r` = `[4 4 4]` | `.grep` the elements away instead of `next` |
 | 15 | `return` inside `CATCH` yields **Nil**: `sub f { die "x"; CATCH { default { return 42 } } }; f()` → Nil | returns 42 (Rakudo) | set a result variable in CATCH, return after |
 | 16 | `1, 4, 9 ... 100` silently guesses a step from the last difference (21 elements, ends at 99) | Rakudo dies: "Unable to deduce arithmetic or geometric sequence" | give the generator explicitly: `1, 4, 9, { … } ... 100` |
+
+## TODO — native `--exe` cannot dispatch most multi methods (2026-08-20)
+
+Not a quirk with a workaround: a **compiler**-side gap, currently paid for with
+a fallback rather than solved. Recorded here so the remaining half is not lost.
+
+**What was wrong.** `Codegen::classRegister` emits a multi-method dispatcher
+whose guard sees positional arity and nominal type and nothing else, yet it
+decided every call anyway. Three things it cannot decide were being decided
+wrongly:
+
+- a REQUIRED named is invisible to the guard, so `multi method g(:$size!)`
+  matched a call passing none and bound `$size` to `Any`;
+- a `where` clause or a `:D`/`:U` smiley never enters the guard;
+- a candidate declared in an ANCESTOR is unreachable, though in Rakudo a multi's
+  candidate set spans the MRO (the interpreter defers up the chain — the
+  `parentNext` branch in `Interpreter::invokeMethod`).
+
+```raku
+class P { multi method g(UInt:D $s = 1) { self.g(:size($s)) }
+          multi method g(UInt:D :$size = 1) { !!! } }
+class K is P { multi method g(UInt:D :$size) { "k$size" } }
+say K.new.g;     # interpreter and Rakudo: k1 — compiled: k
+```
+
+**What landed.** Codegen now refuses such a group, so the program falls back to
+AOT bundling and both faces agree. This is the call `Codegen::multiDef` already
+made for multi SUBS (`"a multi candidate with a where/:D constraint"`); multi
+METHODS simply never had the equivalent bail, which is why the above compiled at
+all. Guarded by `t/regression/multi-method-compiled-dispatch.raku`.
+
+**What it costs** (measured over 1,822 files — `examples/`, `showcase/`,
+`t/regression/`, `tools/`, and the Roast checkout; 1,143 of them transpile
+natively today):
+
+| | files |
+|---|---:|
+| currently-native files that use a multi method at all | 23 |
+| …now falling back to AOT | 21 |
+| — because of a `where`/`:D` constraint | 5 |
+| — because a candidate is (or may be) in a parent class | 16 |
+
+The parent-class bails are dominated by `multi method new` on a class with a
+built-in parent (`class NotComplex is Cool`, the S32-trig files) — where the
+parent's `new` genuinely exists and genuinely must be reachable, so the bail is
+earning its keep rather than being paranoid.
+
+**Still open.** Native dispatch for these forms. Note the measurement rules out
+the obvious cheap answer: teaching the emitted guard about named parameters wins
+back **zero** files, because every currently-native file with a named-parameter
+multi method also carries a `where`/`:D` constraint and bails anyway. Reproducing
+`scoreCandidate` in generated C++ — smileys, `where` bodies, MRO deferral into
+built-in parents — is the whole interpreter dispatcher.
+
+The promising design is the one `MAIN` already uses: ship the **signatures** as
+metadata and keep the **bodies** compiled. `mainSigBlob` serializes MAIN's
+signatures (bodies detached, via the AstSerial module-cache serializer) into the
+binary, and `RT.runCompiledMain` feeds them through the same `mainProtocol` the
+interpreter uses. The same shape here — emit each candidate as a real `Callable`
+carrying its `Param` list, register the group as a multi dispatcher — would let
+the interpreter's own `scoreCandidate` and `parentNext` pick the candidate while
+every body stays native code. That wins back all 21 files without a second
+dispatcher to keep in sync with the first.

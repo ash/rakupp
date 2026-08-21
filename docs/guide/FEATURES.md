@@ -6,7 +6,7 @@ works today, grouped by theme. **~** marks partial support; gaps are noted per s
 
 See [REFERENCE.md](REFERENCE.md) for an exhaustive lookup sheet (every operator, subroutine, and method with a verified example), [COOKBOOK.md](COOKBOOK.md) for a cookbook of runnable snippets (each verified against `rakupp`), [examples/](../../examples) for complete example programs, and [showcase/](../../showcase) for mid-size showcase programs.
 
-Roast standing: measured per individual test, **~90% of all declared tests pass** (198,628 / ~218,626, counting tests in files that abort before running); on the stricter file bar, **630 / 1,462 fully pass (~43%)** (722 partial, 133 no-TAP, 13 timeout). See [COUNTING.md](../status/COUNTING.md) for how these are defined. (The declared denominator grows as parse fixes land: files that previously died before announcing a plan now declare their real, often larger, dynamic plans.)
+Roast standing: measured per individual test, **~90% of all declared tests pass** (198,642 / ~218,561, counting tests in files that abort before running); on the stricter file bar, **633 / 1,464 fully pass (~43%)** (692 partial, 123 no-TAP, 16 timeout). See [COUNTING.md](../status/COUNTING.md) for how these are defined. (The declared denominator grows as parse fixes land: files that previously died before announcing a plan now declare their real, often larger, dynamic plans.)
 
 ## Language versions (6.c / 6.d / 6.e)
 
@@ -93,7 +93,7 @@ same-named enclosing package, which Rakudo's own warning calls legacy.
 - `class`/`role`/`grammar`, attributes `has $.x`/`$!x` (+ defaults), accessors
 - `method`/`multi method`/`submethod`, `self`, single inheritance `is`, `does`
 - `BUILD`, default `.new`, `bless`, enums
-- Metamodel: `.^name .^methods .^mro .^parents .^roles .^add_method .^find_method .^parameterize` (`Set.^parameterize(Str)` is `Set[Str]`), `.WHAT .WHICH .HOW`
+- Metamodel: `.^name .^methods .^method_names .^mro .^parents .^roles .^add_method .^find_method .^parameterize` (`Set.^parameterize(Str)` is `Set[Str]`), `.WHAT .WHICH .HOW`
 - `augment`/`supersede` reopen a type — user classes **and** built-ins (`augment class Int {…}` reaches `3.method`); `does`/`but` runtime role mixins
 - Inheritance errors: `class A is A` (self), `class B is Undeclared` → compile-time throws
 - **Gaps:** `Metamodel::*` construction, submethod-not-inherited
@@ -123,7 +123,7 @@ same-named enclosing package, which Rakudo's own warning calls legacy.
 ## Data Types & Built-ins
 - Array, List/Seq, Hash, Map, Pair, Range, Set/Bag/Mix (+Hash variants), Junction, IO::Path, Proc, Promise
 - String: `chars codes uc lc tc fc wordcase samecase index rindex substr split comb subst trans words lines flip trim starts-with~ ends-with~ contains sprintf ords chrs ord chr` (`.trans` supports `a..z` ranges); `undefine($x)` resets a container
-- List: `map grep sort reverse join first reduce produce sum min max elems push pop shift unshift splice keys values kv pairs antipairs invert unique repeated squish classify categorize rotor batch permutations combinations rotate flat head tail skip pick roll tree`; `slip(…)` spreads into the enclosing list; `.grep` smartmatches Type/Regex/value; `.head`/`.tail`/`.skip` take `*`/`*-N`/`Inf`; `.min`/`.max` skip undefined elements; list methods on scalars (`5.map`, `42.grep`); `roundrobin`. `.classify`/`.categorize` accept a Callable, Hash, or Array mapper and an `:into(%h)` target; `.tree` builds a nested view (`.tree(N)` depth-limited, `.tree(&c1,&c2,…)` per-level closures)
+- List: `map grep sort reverse join first reduce produce sum min max elems push pop shift unshift splice keys values kv pairs antipairs invert unique repeated squish classify categorize rotor batch permutations combinations rotate flat head tail skip pick roll tree`; `slip(…)` spreads into the enclosing list; `.grep` smartmatches Type/Regex/value; `.head`/`.tail`/`.skip` take `*`/`*-N`/`Inf`; `.min`/`.max` skip undefined elements; list methods on scalars (`5.map`, `42.grep`); `roundrobin`. `.classify`/`.categorize` accept a Callable, Hash, or Array mapper and an `:into(%h)` target; `.tree` builds a nested view (`.tree(N)` depth-limited, `.tree(&c1,&c2,…)` per-level closures); `.flat(:hammer)` flattens through itemised containers too (`[[1,2],[3]].flat(:hammer)` is `(1,2,3)`)
 - **Shaped arrays**: `my @a[3]` / `my @a[2;2]` / `Array.new(:shape(2;2))` — fixed-dimension, `.shape`, row-major fill with structural validation (out-of-range or over-full assignment throws `X::OutOfRange`/`X::Assignment::*`), size-changing ops (`push`/`pop`/…) throw `X::IllegalOnFixedDimensionArray`, multi-dim `@a[i;j]` + `AT/EXISTS/ASSIGN-POS(i,j)`, leaf-walking `keys`/`values`/`kv`/`pairs`/`antipairs`/`iterator`/`flat` with index tuples
 - Negative list index is out of range (a Failure, no Python-style wraparound — `@a[*-1]` is the from-the-end form); an unhandled Failure propagates through further indexing (`@a[-1][0]`)
 - **Iterator protocol** (S07): `.iterator` on any collection with `pull-one`/`push-all`/`push-exactly`/`skip-at-least`/`count-only`/… and the `IterationEnd` sentinel; **lazy infinite sources** — `^Inf`/`1..Inf` with `.head`/`.skip`/`.grep`/`.first`/`.map` composing lazily (`(^Inf).grep(*.is-prime).head(5)`)

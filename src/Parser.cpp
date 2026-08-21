@@ -5070,6 +5070,18 @@ void Parser::parseSigillessTail(Param& p) {
             }
 }
 
+// `:a(:$!x)` binds the ATTRIBUTE $!x directly, and the second name it answers
+// to is the attribute's own — `x`. Every consumer derives that name as
+// p.name.substr(1), which here yields the twigil-carrying `!x` and matches
+// nothing, so record the bare name as an alias key instead (Statistics::
+// Distributions' `submethod BUILD(:a(:$!shape) = 1, …)` needs `:shape` to bind).
+static void aliasAttrName(Param& p) {
+    if (!p.aliasBoth || p.name.size() <= 2) return;
+    if (p.name[1] != '!' && p.name[1] != '.') return;
+    std::string bare = p.name.substr(2);
+    if (bare != p.namedKey) p.aliasKeys.push_back(bare);  // `:x(:$!x)` names one key, not two
+}
+
 std::vector<Param> Parser::parseSignature(Tok closeTok) {
     std::vector<Param> params;
     std::vector<std::pair<size_t, int>> podClaims; // (param index, `#=` line) — resolved at close
@@ -5219,6 +5231,7 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
             p.aliasBoth = matchOp(":"); // :name(:$var) answers BOTH names
             if (isKind(Tok::Var)) { p.name = cur().text; p.sigil = cur().text[0]; advance(); }
             else error("expected variable in named-parameter alias");
+            aliasAttrName(p);
             // `:in(:$in)` — the alias and the variable name collide
             if (p.aliasBoth && p.name.size() > 1 && p.namedKey == p.name.substr(1))
                 throw ParseError("Name " + p.namedKey + " used for more than one named parameter",
@@ -5361,6 +5374,7 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
                 p.aliasBoth = matchOp(":"); // :name(:$var) answers BOTH names
                 if (isKind(Tok::Var)) { p.name = cur().text; p.sigil = cur().text[0]; advance(); }
                 else error("expected variable in named-parameter alias");
+                aliasAttrName(p);
                 for (; aliasDepth > 0; aliasDepth--)
                     if (!matchKind(Tok::RParen)) error("expected ')' in named-parameter alias");
             }

@@ -588,6 +588,14 @@ static void ensureExeSuffix(std::string& outPath) {
     (void)outPath;
 }
 
+// An output path naming an existing directory (say `-o t` beside the t/ test
+// tree) can never take the binary; caught here it earns a plain message where
+// the linker would only say "Is a directory".
+static bool outIsDirectory(const std::string& outPath) {
+    struct stat st;
+    return stat(outPath.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
+}
+
 // Emit a C++ string literal for `s` (used for the embedded program name).
 static std::string cppstr(const std::string& s) {
     std::string out = "\"";
@@ -740,6 +748,7 @@ static int compileToExe(const std::string& src, const std::string& srcName, std:
                         const std::vector<std::string>& libPaths = {}) {
     if (outPath.empty()) outPath = defaultOut(srcName);
     ensureExeSuffix(outPath);
+    if (outIsDirectory(outPath)) { std::cerr << "Cannot write " << outPath << ": is a directory\n"; return 5; }
 
     // A bundled binary embeds its SOURCE and parses it at run time — cut the
     // parser and its first act would be X::Feature::NotBuilt. Native and AOT
@@ -878,6 +887,7 @@ static int compileNative(const std::string& src, const std::string& srcName, std
                          const std::vector<std::string>& libPaths = {}) {
     if (outPath.empty()) outPath = defaultOut(srcName);
     ensureExeSuffix(outPath);
+    if (outIsDirectory(outPath)) { std::cerr << "Cannot write " << outPath << ": is a directory\n"; return 5; }
 
     std::string cpp;
     try {
@@ -957,6 +967,7 @@ static int compileAotAst(const std::string& src, const std::string& srcName, std
                          const std::vector<std::string>& libPaths = {}) {
     if (outPath.empty()) outPath = defaultOut(srcName);
     ensureExeSuffix(outPath);
+    if (outIsDirectory(outPath)) { std::cerr << "Cannot write " << outPath << ": is a directory\n"; return 5; }
     // The scan is `--exe`-only until SLIM-PLAN P7 (an AOT binary interprets a
     // rebuilt AST; the same scan APPLIES in principle, it just is not wired).
     // Loud rather than quietly weaker; explicit ±feature still works here.
@@ -1179,6 +1190,7 @@ static int slimVerify(char modeCh, const std::string& src, const std::string& sr
                       const std::string& ccOpt, const std::vector<std::string>& libPaths) {
     if (outPath.empty()) outPath = defaultOut(srcName);
     ensureExeSuffix(outPath);
+    if (outIsDirectory(outPath)) { std::cerr << "Cannot write " << outPath << ": is a directory\n"; return 5; }
     auto build = [&](const std::string& out) -> int {
         if (modeCh == 'x') return compileNative(src, srcName, out, selfExe, optimize, ccOpt, libPaths);
         if (modeCh == 'a') return compileAotAst(src, srcName, out, selfExe, libPaths);

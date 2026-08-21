@@ -44,8 +44,8 @@ struct ExtCtx {
     // the sequential case (every serializer, every iteration) into O(1) per
     // step. Keyed by the hash actually being walked, so alternating between two
     // hashes degrades to the old behaviour instead of returning wrong keys.
-    const std::map<std::string, Value>* memoHash = nullptr;
-    std::map<std::string, Value>::const_iterator memoIt;
+    const ValueMap* memoHash = nullptr;
+    ValueMap::const_iterator memoIt;
     size_t memoIdx = 0;
 
     RkValue make(Value v) {
@@ -65,7 +65,7 @@ struct ExtCtx {
 
     // Positioned at `i` in `h`, reusing the remembered iterator when it is at
     // or before `i` in the same hash. Returns end() when `i` is out of range.
-    std::map<std::string, Value>::const_iterator at(const std::map<std::string, Value>* h,
+    ValueMap::const_iterator at(const ValueMap* h,
                                                     size_t i) {
         if (i >= h->size()) return h->end();
         if (memoHash == h && memoIdx <= i) {

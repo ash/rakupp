@@ -41,8 +41,8 @@ an exception the handler itself rethrows propagates past the `try`. See the
 
 | | v3.5.0 | at v2.0.0 |
 |---|---:|---:|
-| Roast, per individual test — of what the suite declares‡ | **198,628 of ~218,600 (90%)** | 197,090 of ~203,500 (97%) |
-| Roast, all-or-nothing — files fully passing, of 1,462 | **630 (43%)** | 594 |
+| Roast, per individual test — of what the suite declares‡ | **198,642 of ~218,600 (90%)** | 197,090 of ~203,500 (97%) |
+| Roast, all-or-nothing — files fully passing, of 1,464 | **633 (43%)** | 594 |
 | Official documentation examples byte-identical on both engines | **949**† | 952 |
 | Ecosystem distributions passing their own `zef` install-time test suite | **49 / 59**\* | 50 / 59 |
 | Local regression suite | **491** | 312 |

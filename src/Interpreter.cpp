@@ -292,6 +292,7 @@ static bool valueEqv(const Value& a, const Value& b) {
             // It also, correctly, ignores `itemized`: `[1,2] eqv $[1,2]` is True
             // on both engines, because itemisation is not a type difference.
             if (a.typeName() != b.typeName()) return false;
+            forceLazy(a); forceLazy(b);   // an unpulled gather has no elements yet
             if (!a.arr || !b.arr || a.arr->size() != b.arr->size()) return false;
             for (size_t i = 0; i < a.arr->size(); i++) if (!valueEqv((*a.arr)[i], (*b.arr)[i])) return false;
             return true;
@@ -933,11 +934,14 @@ Value Interpreter::rtGather(Value blockClosure) {
         auto collector = std::make_shared<ValueList>();
         tctx_.gatherStack.push_back(collector);
         tctx_.gatherLimits.push_back(limit);
+        tctx_.gatherDeadlines.push_back(0);
         bool hit = false;
         try { ValueList noargs; callCallable(blockClosure, noargs); }
         catch (StopGatherEx&) { hit = true; }
-        catch (...) { tctx_.gatherStack.pop_back(); tctx_.gatherLimits.pop_back(); throw; }
+        catch (...) { tctx_.gatherStack.pop_back(); tctx_.gatherLimits.pop_back();
+                      tctx_.gatherDeadlines.pop_back(); throw; }
         tctx_.gatherStack.pop_back(); tctx_.gatherLimits.pop_back();
+        tctx_.gatherDeadlines.pop_back();
         out = std::move(*collector);
         return hit;
     };
@@ -1299,9 +1303,30 @@ Value rtRangeVal(const Value& from, const Value& to, bool exFrom, bool exTo) {
         }
         return strRangeList(from.s, to.s, exFrom, exTo);
     }
+    // A FRACTIONAL range keeps its real endpoints, exactly as the interpreter's
+    // own `..` does: `to.toInt()` alone made `0 ..^ 2.5` the integer range
+    // `0..^2`, so under --exe every fractional range was silently truncated at
+    // construction — `.min`, `.max`, `.rand`, `.raku` and `2.4 ~~ 0..^2.5` all
+    // answered for the wrong range. Endpoints are carried too, so a Rat stays a
+    // Rat. (Kept in step with the NK::RangeLit arm in eval.)
+    {
+        bool fFrac = (from.t == VT::Num || from.t == VT::Rat) &&
+                     from.toNum() != std::floor(from.toNum());
+        bool tFrac = (to.t == VT::Num || to.t == VT::Rat) &&
+                     to.toNum() != std::floor(to.toNum());
+        if ((fFrac || tFrac) && from.isNumeric() && to.isNumeric() &&
+            std::isfinite(from.toNum()) && std::isfinite(to.toNum())) {
+            Value rr = Value::range((long long)std::floor(from.toNum()),
+                                    (long long)std::floor(to.toNum()), exFrom, exTo);
+            rr.rNum = true; rr.n = from.toNum(); rr.im = to.toNum();
+            setRangeEnds(rr, from, to);
+            return rr;
+        }
+    }
     {
         Value r = Value::range(from.toInt(), to.toInt(), exFrom, exTo);
         if (to.t == VT::Int && to.big) r.big = to.big; // keep the big bound (pick/roll sample it)
+        setRangeEnds(r, from, to);
         return r;
     }
 }
@@ -1529,12 +1554,79 @@ static Value hashToPairs(const Value& v) {
     return out;
 }
 
+// `my @a[3;2]` for native codegen: a container with the given dimensions, the
+// same one the interpreter's declaration arm builds.
+Value rtShapedArray(const ValueList& dims, const std::string& declType) {
+    std::vector<long long> d;
+    d.reserve(dims.size());
+    for (auto& v : dims) d.push_back(v.toInt());
+    return makeShapedContainer(d, declType);
+}
+
+// `@a[2;2] = …` — fill a SHAPED container from the right-hand side. Extracted
+// from the interpreter's assignment arm so the native backend can call the very
+// same code: a shaped store is one of the places where two implementations
+// would be two behaviours.
+void rtShapedStore(Value& lv, const Value& rhs, const std::string& keepType) {
+    auto shp = lv.shape;
+    if (!shp || shp->empty()) return;
+    if (shp->size() == 1) { // 1-dim: flat row fill, reject overflow
+        long long cap = (*shp)[0];
+        ValueList flat; for (auto& x : rhs.flatten()) flat.push_back(x);
+        if ((long long)flat.size() > cap)
+            throw RakuError{Value::typeObj("X::OutOfRange"),
+                "Cannot assign " + std::to_string(flat.size()) +
+                " elements to a shaped array of " + std::to_string(cap)};
+        lv = makeShapedContainer(*shp, keepType, &flat);
+        return;
+    }
+    // multi-dim: the RHS must MATCH the shape. A shaped source must have an
+    // identical shape; a nested list may not have MORE than dims[d] elements at
+    // any level (a flat list is rejected), but a shortfall is fine — missing
+    // slots keep the element default.
+    if (rhs.shape && *rhs.shape != *shp)
+        throw RakuError{Value::typeObj("X::Assignment::ArrayShapeMismatch"),
+            "Cannot assign an array of a different shape"};
+    Value built = makeShapedContainer(*shp, keepType); // all defaults
+    std::function<void(Value&, const Value&, size_t)> overlay =
+      [&](Value& dst, const Value& src, size_t d) {
+        if (d == shp->size()) { dst = src; return; } // leaf
+        if (!(src.t == VT::Array && src.arr))
+            throw RakuError{Value::typeObj("X::Assignment::ToShaped"),
+                "Assignment to a shaped array needs a matching nested structure"};
+        if ((long long)src.arr->size() > (*shp)[d])
+            throw RakuError{Value::typeObj("X::Assignment::ArrayShapeMismatch"),
+                "Too many elements for dimension " + std::to_string(d)};
+        for (size_t i = 0; i < src.arr->size(); i++)
+            overlay((*dst.arr)[i], (*src.arr)[i], d + 1);
+    };
+    overlay(built, rhs, 0);
+    lv = built;
+}
+
+// `my @a = gather { … }` must end up an ARRAY, not a Seq: `eqv [1, 2, 3]` is
+// type-aware and says so. A gather has not been run at this point, so whether it
+// is lazy is not known until it has been — pull once, and reify it here if that
+// showed the block to be finite. An unbounded source stays lazy, as it does
+// under Rakudo, where an Array may be lazy too.
+static Value reifyIfFinite(const Value& v) {
+    auto st = std::static_pointer_cast<LazySeqState>(v.ext);
+    if (!st->gatherSeq) return v;
+    forceLazy(v);
+    if (!st->exhausted) return v;
+    Value r = Value::array(*v.arr); r.isList = false; return r;
+}
+
 Value rtArrayVal(const Value& v) {
     // an ITEMIZED hash (`$%h`, `$(%h)`) is one element, not a spread of pairs
     if (v.t == VT::Hash && v.hash && v.itemized) { Value a = Value::array(); a.arr->push_back(v); return a; }
     if (v.t == VT::Hash && v.hash) return hashToPairs(v);
     if (v.t == VT::Array && v.arr) {
-        if (v.ext) return v; // a lazy seq stays lazy; indexing/consumers materialise on demand
+        if (v.ext) return reifyIfFinite(v); // a lazy seq stays lazy; a finite gather does not
+        // a shaped source contributes its LEAVES, as it does in coerceArray —
+        // these two must agree, or a program means one thing interpreted and
+        // another compiled
+        if (isMultiDimShaped(v)) return Value::array(shapedLeaves(v));
         if (v.isList) { Value r = listToArray(*v.arr); r.isList = false; return r; }
         Value r = Value::array(*v.arr); // fresh buffer: `@a = @b` must not alias @b
         return r;
@@ -1543,6 +1635,94 @@ Value rtArrayVal(const Value& v) {
     Value a = Value::array();
     if (v.t != VT::Nil) a.arr->push_back(v);
     return a;
+}
+
+// ---- DESTROY protocol ------------------------------------------------------
+// Registration end: the construction protocol calls this on every finished
+// instance. Only a class chain that actually declares DESTROY pays anything —
+// everything else returns before touching the registry.
+void Interpreter::maybeRegisterDestroy(const Value& self) {
+    if (self.t != VT::Object || !self.obj || !self.obj->cls) return;
+    bool has = false;
+    for (ClassInfo* c = self.obj->cls.get(); c && !has; c = c->parent.get()) {
+        if (c->methods.count("DESTROY")) has = true;
+        else for (auto& p : c->extraParents)
+            if (p && p->methods.count("DESTROY")) { has = true; break; }
+    }
+    if (!has) return;
+    bool pressure = false;
+    {
+        std::lock_guard<std::mutex> lk(destroyMu_);
+        destroyReg_.push_back(self.obj);
+        pressure = !inDestroySweep_ && destroyReg_.size() >= destroySweepAt_;
+    }
+    if (pressure) {
+        runPendingDestroys();
+        std::lock_guard<std::mutex> lk(destroyMu_);
+        destroySweepAt_ = std::max<size_t>(1024, destroyReg_.size() * 2);
+    }
+}
+
+// Sweep end: an entry the registry alone still owns (use_count == 1) is an
+// object the program can no longer reach, so its DESTROY chain runs — each
+// class's OWN declaration, child first, parents after: the reverse of BUILD,
+// per S12. A submethod found through the walk is exactly as inherited-proof
+// as BUILD's walk makes it. An exception out of a destructor is swallowed;
+// the object is already dead to the program. DESTROY runs at most once per
+// object: the entry leaves the registry before its destructor is called, and
+// resurrection does not re-register.
+void Interpreter::runPendingDestroys() {
+    std::vector<std::shared_ptr<ObjectData>> dead;
+    {
+        std::lock_guard<std::mutex> lk(destroyMu_);
+        if (inDestroySweep_) return; // a DESTROY that requests GC must not recurse
+        inDestroySweep_ = true;
+        for (auto it = destroyReg_.begin(); it != destroyReg_.end();) {
+            if (it->use_count() == 1) { dead.push_back(std::move(*it)); it = destroyReg_.erase(it); }
+            else ++it;
+        }
+    }
+    for (auto& od : dead) {
+        Value self = Value::object(od);
+        // the class chain child-first: the primary parent line, then any
+        // multiple-inheritance parents' lines, each class visited once
+        std::vector<ClassInfo*> chain, pending{od->cls.get()};
+        while (!pending.empty()) {
+            ClassInfo* c = pending.front(); pending.erase(pending.begin());
+            while (c) {
+                if (std::find(chain.begin(), chain.end(), c) == chain.end()) chain.push_back(c);
+                for (auto& p : c->extraParents) if (p) pending.push_back(p.get());
+                c = c->parent.get();
+            }
+        }
+        for (ClassInfo* c : chain) {
+            auto mi = c->methods.find("DESTROY");
+            if (mi == c->methods.end()) continue;
+            try { invokeMethod(mi->second, self, ValueList{}); }
+            catch (...) {}
+        }
+    }
+    std::lock_guard<std::mutex> lk(destroyMu_);
+    inDestroySweep_ = false;
+}
+
+// Rvalue overload: a freshly built plain List (a method-call result being
+// assigned into an array) whose buffer nothing else shares can hand that
+// buffer over instead of copying it element-wise — `@a = %h.values` on a
+// 2M-entry hash paid a second full materialization here. Anything with a
+// Slip to splice, a lazy tail, shape, or a shared buffer takes the copying
+// path, whose semantics stay authoritative.
+Value rtArrayVal(Value&& v) {
+    if (v.t == VT::Array && v.arr && v.isList && !v.ext && !v.itemized &&
+        !(v.shape && !v.shape->empty()) && v.arr.use_count() == 1) {
+        for (auto& it : *v.arr)
+            if (it.t == VT::Array && it.arr && it.s == "Slip")
+                return rtArrayVal(static_cast<const Value&>(v));
+        Value r = Value::array();
+        r.arr = std::move(v.arr);
+        return r;
+    }
+    return rtArrayVal(static_cast<const Value&>(v));
 }
 
 static Value coerceArray(const Value& v) {
@@ -1557,7 +1737,12 @@ static Value coerceArray(const Value& v) {
         if (v.itemized) { // an itemized Array is ONE element: `my @row = @m[0]` is [[...],]
             Value r = Value::array(); r.arr->push_back(v); return r;
         }
-        if (v.ext) return v; // a lazy seq stays lazy (shared machinery; consumers materialise)
+        if (v.ext) return reifyIfFinite(v); // a lazy seq stays lazy; a finite gather does not
+        // A shaped array STORED into an unshaped one contributes its leaves:
+        // `my @flat = @a[3;2]` is six elements, and so is a `@a is copy`
+        // parameter. (Plain binding — `sub f(@a)` — does not come through here,
+        // and keeps the shaped array itself, as it does under Rakudo.)
+        if (isMultiDimShaped(v)) { Value r = Value::array(shapedLeaves(v)); r.isList = false; return r; }
         // `@b = @a` / `@x is copy` copy the top-level buffer — a fresh Array that does
         // NOT alias the source (nested itemized arrays are containers, shared by value,
         // matching Rakudo). Mirrors rtArrayVal so the interpreter and native backends agree.
@@ -1958,6 +2143,11 @@ bool Interpreter::materializePendingType(const std::string& name) {
     if (it == pendingTypes_.end()) return false;
     ClassDecl* cd = it->second;
     pendingTypes_.erase(it);
+    // The class already exists: normal flow built it and the pending record is
+    // stale (the erase above retires it). Executing the declaration AGAIN would
+    // re-run the body's statements — nothing new can come of it, so report
+    // "nothing materialized" and let the caller's miss stand.
+    if (classes_.count(name)) return false;
     // its own parents and roles may be pending too (`class D does R` with both
     // declared below the code that uses D) — build those first
     if (!cd->parent.empty()) materializePendingType(cd->parent);
@@ -2061,6 +2251,7 @@ void Interpreter::saveCtx(ExecContext& c) {
     c.curStateEnv = tctx_.curStateEnv;
     c.gatherStack = std::move(tctx_.gatherStack);
     c.gatherLimits = std::move(tctx_.gatherLimits);
+    c.gatherDeadlines = std::move(tctx_.gatherDeadlines);
     c.supplyStack = std::move(tctx_.supplyStack);
     c.tapStack    = std::move(tctx_.tapStack);
     c.makeTargets = std::move(tctx_.makeTargets);
@@ -2079,6 +2270,7 @@ void Interpreter::loadCtx(ExecContext& c) {
     tctx_.curStateEnv  = c.curStateEnv;
     tctx_.gatherStack  = std::move(c.gatherStack);
     tctx_.gatherLimits = std::move(c.gatherLimits);
+    tctx_.gatherDeadlines = std::move(c.gatherDeadlines);
     tctx_.supplyStack  = std::move(c.supplyStack);
     tctx_.tapStack     = std::move(c.tapStack);
     tctx_.makeTargets  = std::move(c.makeTargets);
@@ -2797,6 +2989,10 @@ int Interpreter::run(Program& prog) {
     };
     // END phasers run in REVERSE source order, on any exit path.
     auto runEnds = [&]() {
+        // Dropped objects get their DESTROY before the ENDs, so an END block
+        // observes destructor effects; objects an END itself releases wait for
+        // a real process exit, like Rakudo's unguaranteed finalization.
+        try { runPendingDestroys(); } catch (...) {}
         // Deferred ENDs (modules, EVAL) first, newest registration first — then
         // the mainline's own, reverse source order. A later-loaded module's
         // cleanup precedes the mainline END that inspects its results.
@@ -6045,6 +6241,11 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             bodyEnv->parent = tctx_.cur;
             ci->declEnv = bodyEnv; // capture the declaration scope (attr-default closures)
             ci->decl = cd;         // program-lifetime AST view (roleParams for parameterized roles)
+            // Normal flow reached the declaration: retire the forward-reference
+            // record hoistSubs parked. A stale entry made the method-not-found
+            // fallback re-EXECUTE this body — statements, is()-calls and all —
+            // on the first missed method call against the class.
+            pendingTypes_.erase(cd->name);
             // Parameterized-role value params: bind each composed role's `[...]`
             // params to this class's `does R[args]` arguments, so the role body
             // (methods/submethods) sees them (e.g. Cro::Policy::Timeout[%phase-defaults]).
@@ -6784,7 +6985,8 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                         (fs->list->kind == NK::VarExpr && !static_cast<VarExpr*>(fs->list.get())->name.empty() &&
                          static_cast<VarExpr*>(fs->list.get())->name[0] == '$'));
                     if (oneItem) items.push_back(lv);
-                    else if (lv.t == VT::Array && lv.arr) { ParStripe cs(*this, lv.arr.get()); items = *lv.arr; } // snapshot under the stripe (torn-copy contract)
+                    else if (lv.t == VT::Array && lv.arr) { ParStripe cs(*this, lv.arr.get());
+                        items = isMultiDimShaped(lv) ? shapedLeaves(lv) : *lv.arr; } // snapshot under the stripe (torn-copy contract)
                     else if (lv.t == VT::Range) items = lv.flatten();
                     // a non-itemized Blob/Buf iterates its ELEMENTS (see the block
                     // form below; Digest::MD5's digest loop is this modifier shape)
@@ -7817,6 +8019,9 @@ static bool typeNameConforms(const std::string& lnIn, const std::string& rn,
         {"List",  {"List", "Positional", "Iterable", "Cool"}},
         {"Seq",   {"Seq", "List", "Positional", "Iterable", "Cool"}},
         {"Slip",  {"Slip", "List", "Positional", "Iterable", "Cool"}},
+        // a Range is Positional as well as Iterable: `("0".."9") ~~ Positional`
+        // is how a module asks "is this a set of things I can draw from"
+        {"Range", {"Range", "Positional", "Iterable", "Cool"}},
         {"Hash",  {"Hash", "Map", "Associative", "Cool"}},
         {"Map",   {"Map", "Associative", "Cool"}},
         {"Set",   {"Set", "Setty", "QuantHash", "Associative"}},
@@ -8706,6 +8911,32 @@ void Interpreter::syncEnvToProcess() {
 // the WhateverCode with the length), `@a[*]` (all elements as a list).
 // Grow a lazy list's materialised prefix to at least `n` elements (bounded, so a
 // runaway never truly loops). No-op for a normal (non-lazy) array.
+// The g_forceLazy hook (Value.h): fill a finite lazy sequence's buffer so a
+// renderer or a comparator sees its elements. An unbounded source is left
+// alone — there is no "all of it" to fill.
+// steady_clock microseconds — the gather probe's budget clock (see gatherDeadlines).
+long long nowMicros() {
+    return std::chrono::duration_cast<std::chrono::microseconds>(
+               std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+static void forceLazyImpl(const Value& v) {
+    if (!v.ext || !v.arr) return;
+    auto st = std::static_pointer_cast<LazySeqState>(v.ext);
+    if (st->infinite || !g_cbInterp) return;
+    // A gather that outgrew its probe may be finite or unbounded, and the only
+    // way to find out is to ask for more. Ask ONCE per sequence: an unbounded
+    // one would otherwise pay a whole re-run of its block every time a value
+    // that holds it is printed.
+    if (st->gatherSeq && !st->exhausted) {
+        if (st->forceProbed) return;
+        st->forceProbed = true;
+        g_cbInterp->materializeLazy(v, v.arr->size() + 1);  // one growth step
+        if (!st->exhausted) return;                         // unbounded: no "all of it"
+    }
+    g_cbInterp->materializeLazy(v, 1000000);
+}
+static const bool g_forceLazyInstalled = ((g_forceLazy = &forceLazyImpl), true);
 void Interpreter::materializeLazy(const Value& v, size_t n) {
     if (!v.ext || !v.arr) return;
     auto st = std::static_pointer_cast<LazySeqState>(v.ext);
@@ -8929,7 +9160,7 @@ Value rtIndexAdverb(Value& base, const Value& keyIn, bool isHash, const std::str
 // attribute must be `is rw`; anything else is not assignable.
 Value& Interpreter::accessorRef(Value& base, const std::string& name) {
     if (base.t == VT::Hash && base.hashKind == "FileHandle") {
-        if (!base.hash) base.hash = std::make_shared<std::map<std::string, Value>>();
+        if (!base.hash) base.hash = std::make_shared<ValueMap>();
         return (*base.hash)[name];
     }
     if (base.t == VT::Object && base.obj) {
@@ -10437,7 +10668,40 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
         return out;
     };
 
-    auto env = std::make_shared<Env>();
+    // A per-thread pool of call frames. Every call needs an Env, and most calls
+    // — every block a map/grep/for runs, every helper sub in a parse loop —
+    // let it die at return: nothing captured it, so its only owner is the local
+    // shared_ptr below. Allocating a fresh Env (control block + hash buckets)
+    // per call was the single biggest constant in interpreted throughput:
+    // `use Data::Generators`, which parses 105k CSV rows through blocks at
+    // module load, spent a measurable third of its second in make_shared<Env>
+    // and the first-insert rehash. A frame whose use_count proves nobody kept
+    // it is reset and reused; one anything captured — a closure, an rwLink, a
+    // stateEnv chain — stays out of the pool for good.
+    struct FramePool {
+        std::vector<std::shared_ptr<Env>> free;
+        std::shared_ptr<Env> acquire() {
+            if (free.empty()) return std::make_shared<Env>();
+            auto e = std::move(free.back());
+            free.pop_back();
+            return e;
+        }
+        void release(std::shared_ptr<Env>&& e) {
+            if (!e || e.use_count() != 1 || free.size() >= 32) { e.reset(); return; }
+            e->vars.clear();          // keeps the bucket array — the next call's
+            e->parent.reset();        // "$_" insert does not rehash
+            e->routineFrame = false;
+            e->loopFrame = false;
+            e->ex.reset();
+            free.push_back(std::move(e));
+        }
+    };
+    static thread_local FramePool framePool_;
+    auto env = framePool_.acquire();
+    struct FrameReturn {
+        std::shared_ptr<Env>& env;
+        ~FrameReturn() { framePool_.release(std::move(env)); }
+    } frameReturn{env};
     // Break the leak cycle a nested named sub would form (see breakSelfClosures).
     // The guard fires only when hoistSubs (below) reported a nested sub, and
     // destructs before `env` does, on every exit path. `env` is a live local, so
@@ -11183,6 +11447,16 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
                     if (parentNext) return parentNext(as);   // defer up the inheritance tree
                     return Value::nil();
                 }
+                // No same-class candidate fits. In Rakudo a multi method's
+                // candidate set spans the MRO, so a PARENT's candidates for the
+                // same name are still in play: `class Kid is Base` where only
+                // Base declares the `($size = 1)` positional form still answers
+                // a bare `.generate` (Statistics::Distributions leans on this).
+                {
+                    bool anyJunction = false;
+                    for (auto& a : as) if (isJunction(a)) { anyJunction = true; break; }
+                    if (parentNext && !anyJunction) return parentNext(as);
+                }
                 // no candidate takes the Junction itself — autothread over it
                 for (size_t ai = 0; ai < as.size(); ai++) {
                     if (!isJunction(as[ai])) continue;
@@ -11867,11 +12141,11 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
         // `$failure.handled = True` marks it inert — the one writable accessor
         // a Failure has
         if (base->t == VT::Hash && base->hashKind == "Failure" && mc->method == "handled") {
-            if (!base->hash) base->hash = std::make_shared<std::map<std::string, Value>>();
+            if (!base->hash) base->hash = std::make_shared<ValueMap>();
             return &(*base->hash)["handled"];
         }
         if (base->t == VT::Hash && (base->hashKind == "FileHandle" || base->hashKind == "Scheduler")) {
-            if (!base->hash) base->hash = std::make_shared<std::map<std::string, Value>>();
+            if (!base->hash) base->hash = std::make_shared<ValueMap>();
             return &(*base->hash)[mc->method];
         }
         if (base->t == VT::Object && base->obj) {
@@ -12005,6 +12279,8 @@ Value Interpreter::evalValueOf(Expr* e) {
 // The iterator it hands back may be a user object driven by `pull-one`, or a
 // built-in one, whose remaining items are taken directly.
 Value Interpreter::iterationSourceOf(Value v) {
+    // `for @a[3;2]` walks the six leaves, not the three rows.
+    if (isMultiDimShaped(v)) { Value out = Value::array(shapedLeaves(v)); out.isList = true; return out; }
     if (v.t != VT::Object || !v.obj || !v.obj->cls) return v;
     if (v.obj->cls->findMethod("pull-one")) return v;      // already an Iterator
     Value* itm = v.obj->cls->findMethod("iterator");
@@ -12064,7 +12340,7 @@ bool Interpreter::grepFilterKeeps(Expr* pred, const Value& v) {
     return matcherAccepts(*this, v, pv);
 }
 
-std::shared_ptr<std::map<std::string, Value>> Interpreter::valuesAliasSource(Expr* listExpr) {
+std::shared_ptr<ValueMap> Interpreter::valuesAliasSource(Expr* listExpr) {
     if (!listExpr) return nullptr;
     Expr* hashArg = nullptr;
     if (listExpr->kind == NK::Call) {
@@ -12490,7 +12766,11 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         auto spread = [](const Value& r) -> ValueList {
             ValueList vals;
             if (r.t == VT::Array && r.arr) {
-                for (auto& it : *r.arr) {
+                // `my ($a, $b) = @m[3;2]` takes the leaves in row-major order,
+                // so $a is 1 and $b is 2 — not the first two ROWS.
+                ValueList shaped;
+                if (isMultiDimShaped(r)) shapedLeaves(r, shaped);
+                for (auto& it : (isMultiDimShaped(r) ? shaped : *r.arr)) {
                     if (it.t == VT::Range) { for (auto& e : it.flatten()) vals.push_back(e); }
                     else if (it.t == VT::Array && it.isList && it.arr) { for (auto& e : *it.arr) vals.push_back(e); }
                     else vals.push_back(it);
@@ -13137,7 +13417,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 // ordinary bind rather than letting "not assignable" escape.
                 Value* base = nullptr;
                 try { base = lvalue(ix->base.get()); } catch (RakuError&) { base = nullptr; }
-                std::shared_ptr<std::map<std::string, Value>> h;
+                std::shared_ptr<ValueMap> h;
                 if (base) {
                     Value* real = base;
                     // the base may itself be a bound slot: reach the container it holds
@@ -13238,41 +13518,10 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             // …and its ELEMENT DEFAULT: `my @a is default(9) = 1,2` still answers
             // 9 for an unassigned slot (assignment refills, it does not redeclare)
             auto keepDefault = lv->pairVal;
-            // Shaped array assignment (`my @a[2;2] = …`).
+            // Shaped array assignment (`my @a[2;2] = …`) — the same routine the
+            // native backend calls, so a shaped store means one thing in both.
             if (a->op == "=" && lv->shape && !lv->shape->empty()) {
-                auto shp = lv->shape;
-                if (shp->size() == 1) { // 1-dim: flat row fill, reject overflow
-                    long long cap = (*shp)[0];
-                    ValueList flat; for (auto& x : rhs.flatten()) flat.push_back(x);
-                    if ((long long)flat.size() > cap)
-                        throw RakuError{Value::typeObj("X::OutOfRange"),
-                            "Cannot assign " + std::to_string(flat.size()) +
-                            " elements to a shaped array of " + std::to_string(cap)};
-                    *lv = makeShapedContainer(*shp, keepType, &flat);
-                    return rhs;
-                }
-                // multi-dim: the RHS must MATCH the shape. A shaped source must have
-                // an identical shape; a nested list may not have MORE than dims[d]
-                // elements at any level (a flat list is rejected), but a shortfall is
-                // fine — missing slots keep the element default.
-                if (rhs.shape && *rhs.shape != *shp)
-                    throw RakuError{Value::typeObj("X::Assignment::ArrayShapeMismatch"),
-                        "Cannot assign an array of a different shape"};
-                Value built = makeShapedContainer(*shp, keepType); // all defaults
-                std::function<void(Value&, const Value&, size_t)> overlay =
-                  [&](Value& dst, const Value& src, size_t d) {
-                    if (d == shp->size()) { dst = src; return; } // leaf
-                    if (!(src.t == VT::Array && src.arr))
-                        throw RakuError{Value::typeObj("X::Assignment::ToShaped"),
-                            "Assignment to a shaped array needs a matching nested structure"};
-                    if ((long long)src.arr->size() > (*shp)[d])
-                        throw RakuError{Value::typeObj("X::Assignment::ArrayShapeMismatch"),
-                            "Too many elements for dimension " + std::to_string(d)};
-                    for (size_t i = 0; i < src.arr->size(); i++)
-                        overlay((*dst.arr)[i], (*src.arr)[i], d + 1);
-                };
-                overlay(built, rhs, 0);
-                *lv = built;
+                rtShapedStore(*lv, rhs, keepType);
                 return rhs;
             }
             // `=` assignment flattens iterables into the array; `:=` BINDS — the
@@ -13312,9 +13561,17 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                     for (auto& el : *nv.arr) el = nilElemDefault(el, proto);
                 }
                 // `=` REFILLS the same container (Raku identity): anything bound
-                // to @a — a `-> $x` capture, `:=` alias, closure — tracks the change
+                // to @a — a `-> $x` capture, `:=` alias, closure — tracks the change.
+                // When the coerced buffer has NO other owner (coerceArray built it
+                // fresh, which is every ordinary `@a = list`), its contents MOVE in
+                // O(1) instead of being copied a second time — `my @rows =
+                // $text.split("\n").map(…)` over 85k rows paid a full elementwise
+                // copy here for a buffer about to be thrown away. A shared buffer
+                // (a lazy RHS passes its own arr through) still copies: moving out
+                // of it would gut the list the RHS still holds.
                 if (lv->t == VT::Array && lv->arr && nv.arr && lv->arr != nv.arr) {
-                    *lv->arr = *nv.arr;
+                    if (nv.arr.use_count() == 1) *lv->arr = std::move(*nv.arr);
+                    else                         *lv->arr = *nv.arr;
                     nv.arr = lv->arr;
                 }
                 *lv = nv;
@@ -14193,11 +14450,21 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         // included — autothreads into a PRESERVED junction of results, which
         // only boolean context collapses: (5 == 3|5|7).gist is
         // 'any(False, True, False)' (S03-junctions/misc.t)
-        if ((op == "~~" || op == "!~~") && !jleft) {
+        if ((op == "~~" || op == "!~~") && !jleft && !isJunction(l)) {
             int t = 0, total = 0;
             for (auto& e : *j.arr) { total++; if (applyArith(op, l, e).truthy()) t++; }
             bool res = j.enumName == "any" ? t > 0 : j.enumName == "all" ? t == total : j.enumName == "one" ? t == 1 : t == 0;
             return Value::boolean(res);
+        }
+        // A junction TOPIC collapses too — see the evalBinary arm for why. It
+        // threads OUTSIDE a junction matcher, and a regex matcher keeps its
+        // junction of Matches.
+        if ((op == "~~" || op == "!~~") && isJunction(l) && r.t != VT::Regex) {
+            int t = 0, total = 0;
+            for (auto& e : *l.arr) { total++; if (applyArith("~~", e, r).truthy()) t++; }
+            bool res = l.enumName == "any" ? t > 0 : l.enumName == "all" ? t == total
+                     : l.enumName == "one" ? t == 1 : t == 0;
+            return Value::boolean(op == "~~" ? res : !res);
         }
         Value out = Value::array(); out.enumName = j.enumName;
         // A negated comparison flips the junction kind (De Morgan): `X != any(…)`
@@ -15187,16 +15454,25 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                       (r.rExTo ? v < hi : v <= hi);
             }
             else if (l.t == VT::Rat) { // exact endpoint compare: 4.99…(45 digits) ~~ 0..^5
-                res = applyArith(r.rExFrom ? ">" : ">=", l, Value::integer(r.rFrom)).truthy() &&
-                      applyArith(r.rExTo ? "<" : "<=", l, Value::integer(r.rTo)).truthy();
+                // The endpoint OBJECTS where the range kept them: a fractional
+                // range's integer fields are floors, so comparing against those
+                // put 1.4 outside 1/2..3/2 — and this arm exists for exactness.
+                const RangeEnds* re = rangeEnds(r);
+                Value lo = re ? re->from : r.rNum ? Value::number(r.n)  : Value::integer(r.rFrom);
+                Value hi = re ? re->to   : r.rNum ? Value::number(r.im) : Value::integer(r.rTo);
+                res = applyArith(r.rExFrom ? ">" : ">=", l, lo).truthy() &&
+                      applyArith(r.rExTo ? "<" : "<=", l, hi).truthy();
             } else {
                 // The LOW endpoint's exclusivity was dropped here while the high
                 // one was honoured, so `4 ~~ 4^..6` was True. Everything built on
                 // smartmatch inherited it — `.grep(4^..6)` kept the 4 and
                 // `.first(4^..6)` answered 4 instead of 5 — even though the same
                 // Range's `.list` and `.excludes-min` were both right.
+                // A fractional range's endpoints are n/im; rFrom/rTo are their
+                // floors, so `2.4 ~~ 0..^2.5` was False and every `.grep(1.5..2.5)`
+                // over measured data silently cut at the floor.
                 double v = l.toNum();
-                double lo = r.rFrom, hi = r.rTo;
+                double lo = r.rNum ? r.n : (double)r.rFrom, hi = r.rNum ? r.im : (double)r.rTo;
                 res = (r.rExFrom ? v > lo : v >= lo) && (r.rExTo ? v < hi : v <= hi);
             }
         } else if (r.t == VT::Type) {
@@ -17430,6 +17706,12 @@ static void tagTemporal(const std::string& op, const Value& l, const Value& r, V
 Value Interpreter::hyperCore(Value& l, Value& r, bool strictL, bool strictR,
         const std::function<Value(const Value&, const Value&, Value*, Value*)>& apply,
         Value* lroot, Value* rroot, bool wantSlots) {
+    // A shaped operand distributes over its LEAVES, and the result is the flat
+    // list of them: `@a[3;2] >>+>> 1` is (2, 3, 4, 5, 6, 7), not three rows.
+    // Done once here rather than in deepApply, which recurses on plain rows.
+    Value lflat, rflat;
+    if (isMultiDimShaped(l)) { lflat = Value::array(shapedLeaves(l)); lflat.isList = true; l = lflat; }
+    if (isMultiDimShaped(r)) { rflat = Value::array(shapedLeaves(r)); rflat.isList = true; r = rflat; }
     // element-level distribution: a Pair keeps its key and ops its value; a
     // nested array/hash element recurses with the same marker rules — so
     // ([1,2],[3,[4,5]]) »+« ([6,7],[8,[9,10]]) distributes deeply, and a hash
@@ -18413,6 +18695,31 @@ Value Interpreter::evalBinary(Binary* b) {
             bool ok = fileTest(r);
             return Value::boolean(op == "~~" ? ok : !ok);
         }
+        // A junction TOPIC threads first and COLLAPSES: smartmatch is
+        // `matcher.ACCEPTS(topic)`, and a junction topic autothreads through
+        // ACCEPTS to a Bool — `all(1, 2) ~~ Int` is True, not all(True, True),
+        // and `all(1, 2) ~~ any(1, 2)` is True because each eigenstate is asked
+        // separately. Threading the MATCHER first (below) answered both wrongly,
+        // and a module testing `@things.all ~~ (is-positional-of-strings($_))`
+        // got a junction where it needed a Bool.
+        //
+        // A REGEX matcher is the exception: there Rakudo hands back the junction
+        // of Match objects rather than a verdict.
+        if (isJunction(lTopic) && r.t != VT::Regex && b->lhs->kind != NK::RegexLit) {
+            int t = 0, total = 0;
+            for (auto& e : *lTopic.arr) {
+                total++;
+                // the same matcher rules the eigenstate loop below uses, with the
+                // roles the other way round: one matcher, many topics
+                bool m = r.t == VT::Code ? boolify(callCallable(r, ValueList{e}))
+                       : (r.t == VT::Pair && e.hashKind == "IO" && !r.s.empty()) ? fileTest(r)
+                       : applyArith("~~", e, r).truthy();
+                if (m) t++;
+            }
+            bool res = lTopic.enumName == "any" ? t > 0 : lTopic.enumName == "all" ? t == total
+                     : lTopic.enumName == "one" ? t == 1 : t == 0;
+            return Value::boolean(op == "~~" ? res : !res);
+        }
         if (isJunction(r)) {
             // autothread the smartmatch over the junction's eigenstates (each matched
             // with full ~~ semantics, so a junction of regexes / blocks works too)
@@ -19216,39 +19523,59 @@ Value Interpreter::evalUnary(Unary* u) {
         // Run the gather block, collecting takes up to `limit` (0 = unlimited).
         // Returns true if the limit was hit (the block may have more to give — i.e.
         // it's infinite or larger than the limit).
-        auto runGather = [this, gu, blockClosure](size_t limit, ValueList& out) -> bool {
+        auto runGather = [this, gu, blockClosure](size_t limit, long long budgetUs,
+                                                  ValueList& out) -> bool {
             auto collector = std::make_shared<ValueList>();
             tctx_.gatherStack.push_back(collector);
             tctx_.gatherLimits.push_back(limit);
+            tctx_.gatherDeadlines.push_back(budgetUs ? nowMicros() + budgetUs : 0);
             bool hit = false;
+            auto pop = [this] { tctx_.gatherStack.pop_back(); tctx_.gatherLimits.pop_back();
+                                tctx_.gatherDeadlines.pop_back(); };
             try {
                 if (gu->operand->kind == NK::BlockExpr) callCallable(blockClosure, {});
                 else eval(gu->operand.get());
             } catch (StopGatherEx&) { hit = true; }
-              catch (...) { tctx_.gatherStack.pop_back(); tctx_.gatherLimits.pop_back(); throw; }
-            tctx_.gatherStack.pop_back(); tctx_.gatherLimits.pop_back();
+              catch (...) { pop(); throw; }
+            pop();
             out = std::move(*collector);
             return hit;
         };
         // A small first probe: an expensive generator (a prime sieve, say) must not
         // pay for thousands of takes when the consumer wants @g[^20]. Finite
         // whole-list consumers force the rest via materializeLazy (Builtins).
+        //
+        // The probe is bounded by TIME as well as by takes, because 64 takes is a
+        // count and what matters is the cost. Math::SpecialFunctions parks an
+        // infinite Bernoulli-number gather at module scope, where each take costs
+        // more than the one before it, so probing 64 of them made `use
+        // Math::SpecialFunctions` — and so every program that loads
+        // Statistics::Distributions with it — spend 3.4 seconds computing numbers
+        // that nothing would ever read. A probe that runs out of budget stops
+        // where it is and the gather becomes LAZY, which is not a new state: it
+        // is what every gather of more than 64 takes already is.
         const size_t INITIAL = 64;
+        const long long PROBE_US = 20000;   // 20ms — a generator this slow is not one to probe
         ValueList prefix;
-        // finite gather (terminates within the cap): eager, exactly as before
-        if (!runGather(INITIAL, prefix)) { // finite: eager, but a Seq (gists with parens)
+        // finite gather (terminates within the caps): eager, exactly as before
+        if (!runGather(INITIAL, PROBE_US, prefix)) { // finite: eager, but a Seq (gists with parens)
             Value a = Value::array(std::move(prefix)); a.isList = true; a.s = "Seq"; return a;
         }
-        // hit the cap → treat as lazy: keep the prefix and extend on demand by
+        // hit a cap → treat as lazy: keep the prefix and extend on demand by
         // re-running the block with a larger cap (re-run because there are no
         // coroutines; fine for the usual pure generator `gather { loop { take … } }`).
         // Growth DOUBLES so the O(n²) re-run cost stays amortised-linear in takes.
+        // Growing runs under NO time budget: the budget is a probe heuristic, and
+        // a consumer that has asked for elements is owed them.
         Value arr = Value::array(prefix); arr.isList = true; arr.s = "Seq";
         auto st = std::make_shared<LazySeqState>();
-        st->appendNext = [this, runGather](ValueList& out) -> bool {
+        st->gatherSeq = true;
+        LazySeqState* stp = st.get();
+        st->appendNext = [this, runGather, stp](ValueList& out) -> bool {
             ValueList grown;
-            bool more = runGather(out.size() + std::max<size_t>(64, out.size()), grown);
+            bool more = runGather(out.size() + std::max<size_t>(64, out.size()), 0, grown);
             for (size_t i = out.size(); i < grown.size(); i++) out.push_back(grown[i]);
+            stp->exhausted = !more;
             return more;
         };
         arr.ext = st;
@@ -19526,7 +19853,8 @@ Value Interpreter::evalUnary(Unary* u) {
     if (u->op == "|") { // slip: spread handled in evalArgs; anywhere else the
         // value IS a Slip — mark it so list consumers (map, list literals) splice it.
         if (v.t == VT::Array && v.arr) {
-            Value out = Value::array(); *out.arr = *v.arr;
+            Value out = Value::array();
+            *out.arr = isMultiDimShaped(v) ? shapedLeaves(v) : *v.arr; // a shaped array slips its LEAVES
             out.isList = true; out.s = "Slip";
             return out;
         }
@@ -19609,9 +19937,16 @@ ValueList Interpreter::evalArgs(const std::vector<ExprPtr>& exprs) {
             // call/list — or with a non-identifier key (`3 => 4`) — is positional.
             if (v.t == VT::Pair && a->kind == NK::Pair && !static_cast<PairExpr*>(a.get())->quotedKey) {
                 const std::string& k = static_cast<PairExpr*>(a.get())->key;
-                bool ident = !k.empty() && (ascii::isalpha((unsigned char)k[0]) || k[0] == '_');
+                // Raku identifiers are Unicode: `:μ(5)` is as much a named
+                // argument as `:mu(5)`. The lexer already vetted the token, so a
+                // non-ASCII byte here is part of a letter it accepted — treat the
+                // whole multibyte run as identifier material rather than
+                // rejecting it and passing the pair positionally.
+                bool ident = !k.empty() && (ascii::isalpha((unsigned char)k[0]) ||
+                                            k[0] == '_' || (unsigned char)k[0] >= 0x80);
                 for (size_t ci = 1; ident && ci < k.size(); ci++)
-                    if (!ascii::isalnum((unsigned char)k[ci]) && k[ci] != '-' && k[ci] != '_' && k[ci] != '\'')
+                    if (!ascii::isalnum((unsigned char)k[ci]) && k[ci] != '-' && k[ci] != '_' &&
+                        k[ci] != '\'' && (unsigned char)k[ci] < 0x80)
                         ident = false;
                 if (ident) v.namedArg = true;
             }
@@ -19869,7 +20204,7 @@ Value Interpreter::evalTempLet(Call* c) {
                                       : tctx_.cur->x().tempRestores;
     auto snap = [](Value v) { // detach container storage so later mutation misses the snapshot
         if (v.t == VT::Array && v.arr) v.arr = std::make_shared<ValueList>(*v.arr);
-        else if (v.t == VT::Hash && v.hash) v.hash = std::make_shared<std::map<std::string, Value>>(*v.hash);
+        else if (v.t == VT::Hash && v.hash) v.hash = std::make_shared<ValueMap>(*v.hash);
         return v;
     };
     // A VarExpr target restores THROUGH its owning Env by name — a raw
@@ -21196,7 +21531,11 @@ Value Interpreter::evalIndex(Index* idx) {
             (iv.t == VT::Whatever || (iv.t == VT::Code && iv.code && iv.code->isWhateverCode)))
             throw RakuError{Value::typeObj("X::Cannot::Lazy"), "Cannot use a Whatever index on an infinite list"};
         long long maxi = -1;
-        if (iv.t == VT::Int || iv.t == VT::Num || iv.t == VT::Bool) {
+        // isNumeric, not a list of the types that came to mind: a RAT index was
+        // not on that list, so `$seq[($n + 2) / 2]` — an ordinary way to write
+        // half of something, and how Math::SpecialFunctions indexes its
+        // Bernoulli-number gather — materialised nothing and answered Nil.
+        if (iv.isNumeric()) {
             maxi = iv.toInt();
             // One index into an arithmetic endless range is arithmetic too.
             // (Guarded against the add itself overflowing, which would answer a
@@ -21204,7 +21543,8 @@ Value Interpreter::evalIndex(Index* idx) {
             if (endlessArith && maxi >= 0 && endlessLo <= 9223372036854775807LL - maxi)
                 return Value::integer(endlessLo + maxi);
         }
-        else if (iv.t == VT::Range || iv.t == VT::Array) for (auto& e : iv.flatten()) if (e.t == VT::Int || e.t == VT::Num) maxi = std::max(maxi, e.toInt());
+        else if (iv.t == VT::Range || iv.t == VT::Array)
+            for (auto& e : iv.flatten()) if (e.isNumeric()) maxi = std::max(maxi, e.toInt());
         if (maxi >= 0) materializeLazy(base, (size_t)maxi + 1);
     }
 
@@ -22642,7 +22982,14 @@ Value Interpreter::eval(Expr* e) {
                                  static_cast<VarExpr*>(it.get())->name[0] == '@') ||
                                 (v.t == VT::Array && v.isList && !l->fromCommaList)));
                 if (flatten && v.t == VT::Array) { for (auto& x : *v.arr) a.arr->push_back(x); }
-                else if (v.t == VT::Range && !v.rExFrom && v.rTo - v.rFrom < 1000000) { // finite Range flattens: [1..10]
+                // A finite Range spreads under the ONE-ARG rule and only there:
+                // `[1..10]` is ten elements, `[1..3, 5..6]` is two RANGES, and
+                // `[<a b>, "0".."9"]` is a list and a range — which is how a
+                // module writes "these are the character sets to draw from".
+                // Spreading every Range item made that four hundred elements of
+                // the wrong type, and the check that rejected it was right to.
+                else if (v.t == VT::Range && l->items.size() == 1 &&
+                         !v.rExFrom && v.rTo - v.rFrom < 1000000) {
                     for (auto& x : v.flatten()) a.arr->push_back(x);
                 }
                 else {

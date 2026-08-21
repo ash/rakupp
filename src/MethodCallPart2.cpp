@@ -719,6 +719,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     }
     if (inv.t == VT::Hash && (inv.hashKind == "Distro" || inv.hashKind == "Kernel" || inv.hashKind == "VM")) {
         std::string name = inv.hash->count("name") ? (*inv.hash)["name"].toStr() : "";
+        // `$*VM.request-garbage-collection` — the one hook Raku offers to ask
+        // for finalization. Runs the pending-DESTROY sweep (see Interpreter.h).
+        if (m == "request-garbage-collection") { runPendingDestroys(); return Value::boolean(true); }
         if (m == "name" || m == "Str" || m == "gist" || m == "auth" || m == "desc") return Value::str(name);
         if (m == "is-win") return Value::boolean(false);
         if (m == "version") return Value::str("0");
@@ -1236,6 +1239,20 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             if (haveNamedField && !pos.empty()) // `DateTime.new(:2016year, 42)` — no mixing
                 throw RakuError{Value::typeObj("X::Temporal"),
                     "Cannot mix a named date component with a positional argument to " + inv.s + ".new"};
+            // DateTime.new($dt) / Date.new($dt) — a Dateish (or Instant) argument
+            // is the INSTANT it names, not a year. It fell through to the
+            // positional-fields arm below, where `.toInt()` made the whole
+            // DateTime a year and `DateTime.new($x + $min)` answered 0008-01-01.
+            // (Reached constantly here: this engine's DateTime + Num is a
+            // DateTime, where Rakudo's is an Instant, so a module adding a
+            // random offset to a bound hands .new exactly this.)
+            if (!isoStr && pos.size() == 1 && pos[0].t == VT::Hash &&
+                (pos[0].hashKind == "DateTime" || pos[0].hashKind == "Date" ||
+                 pos[0].hashKind == "Instant")) {
+                Value posix = methodCall(pos[0], pos[0].hashKind == "Instant" ? "Num" : "posix",
+                                         ValueList{Value::pair("real", Value::boolean(true))});
+                pos[0] = posix;
+            }
             if (!isoStr && inv.s == "DateTime" && pos.size() == 1 && pos[0].isNumeric()) {
                 // DateTime.new($posix) — seconds since the epoch (frac OK); a :timezone
                 // shifts the displayed civil time (posix itself stays the same instant)
@@ -2057,25 +2074,33 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 }
                 return out;
             }
-            if (m == "methods") {
+            if (m == "methods" || m == "method_names") {
                 // `:local` → only this class's own methods; otherwise walk the user
                 // inheritance chain (parents + roles), stopping before Any/Mu.
-                bool local = false;
+                // .^method_names is the method TABLE's names, so it is local by
+                // definition — `class B is A` answers B's own methods only, and
+                // an inherited `foo` is not among them (Rakudo agrees).
+                bool names = (m == "method_names");
+                bool local = names;
                 for (auto& a : args) if (a.t == VT::Pair && a.s == "local")
                     local = a.pairVal ? a.pairVal->truthy() : true;
                 Value out = Value::array(); out.isList = true;
                 std::set<ClassInfo*> visited; // dedup by class (MRO), not by method name
+                std::set<std::string> seen;   // ...except inside one flattened table
                 std::function<void(ClassInfo*)> walk = [&](ClassInfo* c) {
                     if (!c || !visited.insert(c).second) return;
                     for (auto& kv : c->methods) {
                         // private (!p) methods stay out, as in Rakudo
                         if (!kv.first.empty() && kv.first[0] == '!') continue;
-                        out.arr->push_back(kv.second);
+                        if (local && !seen.insert(kv.first).second) continue;
+                        out.arr->push_back(names ? Value::str(kv.first) : kv.second);
                     }
                     // a PUBLIC attribute's auto-generated accessor is a method too
                     // (Rakudo lists it; Data::Dump renders `method public () …`)
                     for (auto& at : c->attrs) {
                         if (!at.pub || c->methods.count(at.name)) continue;
+                        if (local && !seen.insert(at.name).second) continue;
+                        if (names) { out.arr->push_back(Value::str(at.name)); continue; }
                         Value stub; stub.t = VT::Code; stub.code = std::make_shared<Callable>();
                         stub.code->name = at.name; stub.code->isMethod = true;
                         std::string an = at.name;
@@ -2087,7 +2112,15 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         };
                         out.arr->push_back(stub);
                     }
-                    if (local) return;
+                    if (local) {
+                        // a composed role's methods are FLATTENED into the class, so they
+                        // belong to its own table: `class C does R` answers `rm` to both
+                        // .^method_names and .^methods(:local), as Rakudo does. Class
+                        // parents stay out — those are inherited, not local.
+                        if (c->parent && c->parent->isRole) walk(c->parent.get());
+                        for (auto& p : c->extraParents) if (p && p->isRole) walk(p.get());
+                        return;
+                    }
                     walk(c->parent.get());
                     for (auto& p : c->extraParents) walk(p.get());
                 };
@@ -2248,6 +2281,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     }
                     if (Value* build = ci->findMethod("BUILD")) invokeMethod(*build, self, args);
                     if (Value* tweak = ci->findMethod("TWEAK")) invokeMethod(*tweak, self, args);
+                    maybeRegisterDestroy(self);
                     return self;
                 }
                 // A class subclassing a native container (`class A is Array`): the
@@ -2265,6 +2299,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     Value self = Value::object(od);
                     if (Value* build = ci->findMethod("BUILD")) invokeMethod(*build, self, args);
                     if (Value* tweak = ci->findMethod("TWEAK")) invokeMethod(*tweak, self, args);
+                    maybeRegisterDestroy(self);
                     return self;
                 }
                 if (nb == "Array" || nb == "List" || nb == "Hash" || nb == "Map") {
@@ -2282,6 +2317,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     Value self = Value::object(od);
                     if (Value* build = ci->findMethod("BUILD")) invokeMethod(*build, self, args);
                     if (Value* tweak = ci->findMethod("TWEAK")) invokeMethod(*tweak, self, args); // post-BUILD hook
+                    maybeRegisterDestroy(self);
                     return self;
                 }
                 // A class subclassing a scalar built-in with its own `.new` (DateTime,
@@ -2314,6 +2350,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     Value self = Value::object(od);
                     if (Value* build = ci->findMethod("BUILD")) invokeMethod(*build, self, args);
                     if (Value* tweak = ci->findMethod("TWEAK")) invokeMethod(*tweak, self, args);
+                    maybeRegisterDestroy(self);
                     return self;
                 }
                 auto od = std::make_shared<ObjectData>();
@@ -2465,6 +2502,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 // BUILD here matches the common `self.bless(:attr(...))` usage.
                 if (Value* build = ci->findMethod("BUILD")) invokeMethod(*build, self, args);
                 if (Value* tweak = ci->findMethod("TWEAK")) invokeMethod(*tweak, self, args); // post-BUILD hook
+                maybeRegisterDestroy(self);
                 return self;
             }
             // `SubDateTime.now` / `.today` — a type-level method not on the user class
@@ -3162,7 +3200,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             }
             if ((m == "can" || m == "^can") && !args.empty()) {
                 static const std::set<std::string> howCan = {
-                    "attributes", "methods", "name", "archetypes", "add_method",
+                    "attributes", "methods", "method_names", "name", "archetypes", "add_method",
                     "add_attribute", "compose", "roles", "parents", "mro"};
                 return Value::boolean(howCan.count(args[0].toStr()) > 0);
             }
@@ -3548,7 +3586,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     }
     if (m == "clone") { // non-object clone: shallow copy of containers, self for immutables
         if (inv.t == VT::Array) { Value nv = inv; nv.arr = std::make_shared<ValueList>(*inv.arr); return nv; }
-        if (inv.t == VT::Hash)  { Value nv = inv; nv.hash = std::make_shared<std::map<std::string, Value>>(*inv.hash); return nv; }
+        if (inv.t == VT::Hash)  { Value nv = inv; nv.hash = std::make_shared<ValueMap>(*inv.hash); return nv; }
         return inv; // Int/Num/Rat/Str/Bool/… are immutable — clone is the value itself
     }
     // `Metamodel::ClassHOW.new_type(:name, :ver, :auth)` — a class created at
@@ -3620,7 +3658,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     if (m == "WHO") { // package stash — the PERSISTENT one, see pkgStashes_
         std::string pkg = inv.t == VT::Type ? inv.s : inv.typeName();
         auto& stash = pkgStashes_[pkg];
-        if (!stash) stash = std::make_shared<std::map<std::string, Value>>();
+        if (!stash) stash = std::make_shared<ValueMap>();
         if (global_) { // `our`-scoped symbols live as qualified globals; show them
             std::string pre = pkg + "::";
             for (auto& kv : global_->vars)

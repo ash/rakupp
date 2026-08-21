@@ -3,6 +3,114 @@
 Release notes for tagged releases. Numbers are measured, not projected;
 methodology for all Roast figures is in [docs/status/COUNTING.md](docs/status/COUNTING.md).
 
+## v3.6.0 (2026-08-21) — the Perl 5 lessons
+
+| | v3.5.0 | v3.6.0 |
+|---|---:|---:|
+| Roast assertions (all declared) | 198,628 | **198,642** |
+| Roast files fully passing | 630 / 1,462 | **633 / 1,464** |
+| Local regression suite (`t/run.raku`) | 491 | **499** |
+| `say "Hello"` compiled with `--exe` | 8,493,752 B | **8,511,112 B** |
+| …compiled with `--exe --slim` | 5,246,376 B | **5,247,200 B** |
+
+The release trio (`--workers=4`) gave 631 / 629 / 633 files with 16-19
+timeouts; the quoted run's fully-passing list contains every file the others
+passed. Against the last **published** per-file map (v3.14.0 — the v3.5.0
+release skipped the site republish, which this release makes up), the
+file-list diff is **clean**: the one file below the baseline in all three
+runs (`S32-list/map_function_return_values.t`) is timing-marginal and scores
+2/2 re-run alone — the documented timeout flutter, not a regression.
+
+### An outside remark became a kernel, and the kernel reached perl
+
+perlancar described native-compiled Raku++ as "only twice slower than
+Perl 5" — without saying what he ran. A hash-fill workload built here to
+probe the claim was indeed about twice perl's speed, and profiling it found
+the factor of two was three removable constants — `%h.values` materializing the whole hash as a Pair
+snapshot it then discarded (56% of the kernel), a second element-wise copy in
+array assignment, and a `Value` built and destroyed per literal interpolation
+part — and none of them the hashing itself. The workload now ships as
+`tools/bench/hashfill.{raku,pl}`, the same program line for line in both
+languages, and `run-bench.raku` grew a `perl` column behind the same
+byte-identical-output gate as the other engines.
+
+After the fixes and the `ValueHash` payload below, the full mode ladder
+measured in one sitting reads: perl 81.8 ms, `--exe -O3` 82.1 ms (a
+statistical tie), `--exe -O` 84.0 ms, `--exe` 92.9 ms, interp 250.1 ms —
+[BENCHMARKS.md](docs/status/BENCHMARKS.md) "vs Perl 5" has the tables.
+
+### The Perl 5 study, and its first applied item
+
+[PERL5-TECHNIQUES.md](docs/dev/findings/PERL5-TECHNIQUES.md) reads the Perl 5
+sources against this interpreter's hot paths: eight techniques, each grounded
+in the file that implements it, ranked by expected payoff. The first landed in
+this release: **ValueHash** replaces the hash payload's
+`std::map<std::string, Value>` (a red-black tree — O(log n) with a full
+string comparison per level) with a compact insertion-ordered hash storing
+each key's hash beside it, compare-hash-before-bytes, over dense entries with
+a power-of-two probe index. Reference stability across autovivifying inserts
+is kept by construction (deque-backed, append-only, erase marks); the sorted
+rendering `std::map` gave for free (`Hash.gist`, quanthash gist, `.Str`) sorts
+explicitly now, which is what Rakudo does. The `hash` kernel: native
+20.5 → 13.1 ms, interp 49.4 → 42.1 ms; non-hash kernels unchanged.
+
+The insertion-order audit came to three files and one real bug: `Mix.total`
+summed fractional weights in a `double`, so its rounding depended on
+iteration order — it now sums exactly through the numeric tower (Rat stays
+Rat, Rakudo's answer). Two `objecthash.t` assertions that only ever passed by
+the accident of sorted iteration (their typed-object-hash feature is
+unimplemented and the hash content already wrong) are honestly failing now.
+
+### DESTROY exists
+
+Roast's `destruction.t` spun forever waiting for DESTROY submethods that had
+never been implemented — the file used to "finish" only because its
+`await start { loop }` was not really spinning before the async layer landed.
+The protocol, in the Raku spirit that timely destruction is not guaranteed:
+construction parks instances of DESTROY-declaring classes in a registry
+(anything else pays two map lookups); a sweep runs the chain — each class's
+own submethod, child first, the reverse of BUILD — for entries the registry
+alone still owns, triggered by `$*VM.request-garbage-collection` (a real hook
+now), by allocation pressure, and at program end before the END phasers.
+`destruction.t`: timeout → 6/6. The 300k-construction kernel measures no cost.
+
+### Also in this release
+
+- `.fc` folds ASCII down again — the v3.5.x ASCII fast path sent fold-case
+  through `toupper`; `S32-str/fc.t` is back at 12/12.
+- A missed method call no longer re-executes the class body — hoistSubs'
+  forward-reference record was never retired after the declaration ran, so
+  the method-not-found fallback exec()'d the whole body again, statements and
+  all. `S12-methods/class-and-instance.t`, which had regressed in the v3.5.x
+  cycle (13 tests against a plan of 12), is back at [PASS] 12/12.
+- `--exe -o` naming a directory is refused up front rather than left to the
+  linker.
+- The values-path fixes above also serve the interpreter: `%h.values` /
+  `.keys` / `.kv` / `.pairs` / `.antipairs` skip the discarded snapshot
+  everywhere.
+
+### Performance accounting
+
+**The perf-guard baseline was re-recorded this release, and here is why.** The
+old baseline (2026-08-11, v3.14.0) was measured on the previous machine
+(Darwin 24.6); this release's gates ran on a different one (Darwin 25.5),
+where every kernel reads 10-48% over that stale baseline — including the
+v3.5.1 release binary itself, rebuilt from its tag and measured the same
+hour (fib 773.5 ms against the baseline's 656.4). Same-machine, same-hour
+A/B against that v3.5.1 binary shows **zero regressions**: fib 773.5 → 727.5,
+hash 50.0 → 43.5, strpass 200.4 → 190.2, subcall 339.6 → 330.2, the rest
+within noise. The baseline file now records this machine; the old `best`
+figures stand as the standing debt the guard reports.
+
+Left open, named: `roles-6e.t`'s
+role-ordered DESTROY/BUILD sequence. Two comparison rows are **omitted
+rather than stale-quoted**: the distribution battery (49/59 at v3.5.0) and
+the documentation-examples corpus (949 at v3.5.0) both live on the previous
+machine and were not re-run here. The in-repo docs differential
+(`tools/doc-examples-diff.raku`) did run: 208 MATCH, 9 DIFFER (version
+strings and Proc addresses — the documented expected set), 13 RAKUDO-FAILS,
+45 BOTH-FAIL.
+
 ## v3.5.1 (2026-08-20) — the Raku.js build finds its headers
 
 A build-script fix and nothing else: `v3.5.0..v3.5.1` is one file, and no

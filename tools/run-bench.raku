@@ -21,6 +21,7 @@ my $repo  = $tools.parent;                  # repo root
 my $bench = $tools.add('bench');            # benchmark programs live here
 my $RAKUPP = %*ENV<RAKUPP> // $repo.add('build/rakupp').Str;
 my $RAKUDO = %*ENV<RAKUDO> // 'raku';
+my $PERL   = %*ENV<PERL>   // 'perl';   # only used by benches that ship a .pl twin
 
 # A binary built for ANOTHER ARCHITECTURE runs under translation, which costs
 # a uniform 1.7-2x — perf-guard refuses that binary; this harness silently
@@ -57,6 +58,8 @@ my @benches =
     %( :name<sortnums>, :file("sortnums.raku"), :note('sort 50_000 integers') ),
     %( :name<regex>,    :file("regex.raku"),    :note('50_000 regex matches') ),
     %( :name<hash>,     :file("hash.raku"),     :note('100_000 hash increments') ),
+    %( :name<hashfill>, :file("hashfill.raku"), :perl("hashfill.pl"),
+       :note('200k-key hash fill + values sweep + 50k-append string build') ),
     %( :name<bigint>,   :file("bigint.raku"),   :note('factorial(5000) via BigInt multiply') ),
     %( :name<streq>,    :file("streq.raku"),    :note('1M string eq/lt comparisons') );
 
@@ -90,10 +93,11 @@ sub capture(@cmd --> Str) {
 }
 
 my $mismatch = False;
-printf "%-12s %10s %10s %10s   %s\n", 'benchmark', 'interp', 'native', 'rakudo', 'note';
+printf "%-12s %10s %10s %10s %10s   %s\n", 'benchmark', 'interp', 'native', 'rakudo', 'perl', 'note';
 for @benches -> %b {
     my $path = $bench.add(%b<file>).Str;
     my $nbin = "/tmp/rakupp-bench-$*PID-{%b<name>}"; # unique per run: macOS wedges re-execs of an overwritten exe path
+    my $ppath = %b<perl> ?? $bench.add(%b<perl>).Str !! Str;
 
     # Correctness gate: every engine must emit byte-identical stdout, else the
     # timings aren't a like-for-like comparison. Rakudo is the oracle; if it
@@ -102,21 +106,27 @@ for @benches -> %b {
     my $oi = capture([$RAKUPP, $path]);
     my $on = $built ?? capture([$nbin]) !! Str;
     my $or = capture([$RAKUDO, $path]);
+    my $op = $ppath.defined ?? capture([$PERL, $ppath]) !! Str;
     my $oracle = $or.defined ?? 'rakudo' !! 'interp';
     my $ref    = $or // $oi;
     my @bad;
     @bad.push('interp did not run')        unless $oi.defined;
     @bad.push('native did not run')        if $built && !$on.defined;
+    @bad.push('perl did not run')          if $ppath.defined && !$op.defined;
     @bad.push("interp ≠ $oracle")          if $oi.defined && $or.defined && $oi ne $or;
     @bad.push("native ≠ $oracle")          if $on.defined && $ref.defined && $on ne $ref;
+    @bad.push("perl ≠ $oracle")            if $op.defined && $ref.defined && $op ne $ref;
     my $flag = '';
     if @bad { $mismatch = True; $flag = "   ⚠ {@bad.join('; ')}"; }
 
     my $interp = sprintf '%.1fms', measure([$RAKUPP, $path]);
     my $native = $built     ?? sprintf('%.1fms', measure([$nbin]))    !! 'n/a';
     my $rakudo = $or.defined ?? sprintf('%.1fms', measure([$RAKUDO, $path])) !! 'n/a';
+    my $perl   = !$ppath.defined ?? '—'
+              !! $op.defined     ?? sprintf('%.1fms', measure([$PERL, $ppath]))
+              !! 'n/a';
 
-    printf "%-12s %10s %10s %10s   %s%s\n", %b<name>, $interp, $native, $rakudo, %b<note>, $flag;
+    printf "%-12s %10s %10s %10s %10s   %s%s\n", %b<name>, $interp, $native, $rakudo, $perl, %b<note>, $flag;
 }
 
 if $mismatch {
