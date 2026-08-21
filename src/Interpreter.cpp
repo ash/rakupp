@@ -15984,6 +15984,29 @@ std::string Interpreter::spliceRegexVars(const std::string& pat) {
     return sawRegex ? out : pat;
 }
 
+// COMPILED-PATTERN CACHE. A regex literal in a loop reaches the match/subst
+// paths once per iteration with the same final (post-interpolation) text, and
+// compiling — parse, tree build, first-use bytesets — dominated the whole match
+// for small patterns. The key is the text the Regex constructor actually sees,
+// so an interpolated pattern caches per distinct expansion, and a redefined
+// `my regex` body is a different key by construction. Per-thread, so no locking
+// and no cross-thread sharing of the nodes' lazy caches; entries are shared_ptr
+// so a nested match (a {…} block matching the same pattern) or a wholesale
+// eviction can never free an object still matching. The object is CONST: since
+// compile-time state is only (pattern, flags), per-call hooks must go through
+// the search/matchAt hooks parameter, never the runHooks member.
+static std::shared_ptr<const Regex> compileRegexCached(const std::string& pat, const std::string& flags) {
+    if (pat.size() > 4096) return std::make_shared<const Regex>(pat, flags); // don't hold giant one-offs
+    static thread_local std::unordered_map<std::string, std::shared_ptr<const Regex>> cache;
+    std::string key = pat + '\x01' + flags;
+    auto it = cache.find(key);
+    if (it != cache.end()) return it->second;
+    if (cache.size() >= 512) cache.clear(); // pathological churn: start over
+    auto re = std::make_shared<const Regex>(pat, flags);
+    cache.emplace(std::move(key), re);
+    return re;
+}
+
 Value Interpreter::regexMatch(const std::string& subject, const std::string& pattern,
                               const Value* rxVal) {
     // wired mode: an anonymous `regex {…}` value — its code blocks and
@@ -16089,7 +16112,10 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
     // flavor flags for anonymous declarators: token = ratchet, rule = ratchet+sigspace
     std::string reFlags = wired ? (rxVal->hashKind == "token" ? "r"
                                  : rxVal->hashKind == "rule" ? "sr" : "") : "";
-    Regex re(pat, reFlags);
+    std::shared_ptr<const Regex> reP = compileRegexCached(pat, reFlags);
+    const Regex& re = *reP;
+    // Hooks for THIS call — never stored on the shared object (see Regex::runHooks).
+    const GrammarHooks* useHooks = nullptr;
     if (!re.obsolete().empty())
         throw RakuError{Value::typeObj("X::Obsolete"),
             "Unsupported use of " + re.obsolete() + "; this Perl 5 metacharacter is gone in Raku"};
@@ -16162,9 +16188,9 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
         std::string flags = kind == "rule" ? "sr"       // rule:  sigspace + ratchet
                           : kind == "token" ? "r"        // token: ratchet (no backtracking)
                           : "";                          // regex: backtracking, no sigspace
-        Regex sub(it->second, flags);
-        sub.runHooks = re.runHooks; // a `my regex` body still runs its {…} blocks / <?{…}>
-        return sub.matchAt(subj, pos, out, resolver, &lexNames);
+        auto sub = compileRegexCached(it->second, flags);
+        // useHooks: a `my regex` body still runs its {…} blocks / <?{…}>
+        return sub->matchAt(subj, pos, out, resolver, &lexNames, useHooks);
     };
     // Every Match — the top one and each capture — reports the WHOLE subject as
     // its .orig; only from/pos say which part matched. Sharing one string keeps
@@ -16433,14 +16459,14 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
         };
         wantHooks = true;
     }
-    if (wantHooks) re.runHooks = &rmHooks;
+    if (wantHooks) useHooks = &rmHooks;
 
     if (haveNth) { // m:nth(...)/ — enumerate all matches, keep the selected ones
         std::vector<RxMatch> all;
         long pos = 0;
         while (re.ok() && pos <= (long)subject.size()) {
             RxMatch m;
-            if (!re.search(subject, pos, m, resolver, &lexNames)) break;
+            if (!re.search(subject, pos, m, resolver, &lexNames, useHooks)) break;
             all.push_back(m);
             pos = (m.to > m.from) ? m.to : m.to + 1;
         }
@@ -16460,7 +16486,7 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
     if (exhaustive) { // m:ex// — a List of every match at every position and length
         Value list = Value::array(); list.isList = true;
         if (re.ok())
-            for (auto& m : re.searchExhaustive(subject, resolver, &lexNames)) list.arr->push_back(build(m));
+            for (auto& m : re.searchExhaustive(subject, resolver, &lexNames, useHooks)) list.arr->push_back(build(m));
         setMatchVar(list);
         return list;
     }
@@ -16473,7 +16499,7 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
         long pos = 0;
         while (re.ok() && pos <= (long)subject.size()) {
             RxMatch m;
-            if (!re.search(subject, pos, m, resolver, &lexNames)) break;
+            if (!re.search(subject, pos, m, resolver, &lexNames, useHooks)) break;
             list.arr->push_back(build(m));
             if (overlap) pos = m.from + 1;           // :ov — overlapping matches
             else pos = (m.to > m.from) ? m.to : m.to + 1; // advance past zero-width matches
@@ -16483,7 +16509,7 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
     }
     RxMatch m;
     Value mv;
-    if (re.ok() && re.search(subject, 0, m, resolver, &lexNames)) mv = build(m);
+    if (re.ok() && re.search(subject, 0, m, resolver, &lexNames, useHooks)) mv = build(m);
     else mv = Value::nil();
     if (mv.t == VT::Match && inlineMade) mv.pairVal = inlineMade; // $/.ast
     setMatchVar(mv);
@@ -16546,7 +16572,8 @@ Value Interpreter::regexSubst(const std::string& subject, const std::string& pat
     // `s/ $W ** 2 /-/` matched EMPTY at position 0 (Text::Utils).
     if (isP5Pattern(pat)) pat = interpP5Pattern(pat);
     else { pat = interpRegexPattern(pat); pat = rxInterpArrays(pat); }
-    Regex re(pat);
+    std::shared_ptr<const Regex> reP = compileRegexCached(pat, "");
+    const Regex& re = *reP;
     out.clear(); changed = false;
     Value last = Value::nil();
     long pos = 0;
@@ -16956,26 +16983,28 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
         std::string fpat; { std::vector<uint32_t> pcps = smDecode(realPat);
             for (size_t i = 0; i < pcps.size();) fpat += baseOf(nextGrapheme(pcps, i)); }
         std::string flags = std::string(icase ? "i" : "") + (sigspace ? "s" : "") + (p5 ? "5" : "");
-        Regex re(fpat, flags);
-        if (wantSsHooks) re.runHooks = &ssHooks;
+        std::shared_ptr<const Regex> reP = compileRegexCached(fpat, flags);
+        const Regex& re = *reP;
+        const GrammarHooks* useHooks = wantSsHooks ? &ssHooks : nullptr;
         if (!re.ok()) return subj;
         auto toOrig = [&](long fb) -> long {
             size_t idx = std::lower_bound(foldStart.begin(), foldStart.end(), fb) - foldStart.begin();
             return origStart[std::min(idx, origStart.size() - 1)];
         };
         long pos = 0; RxMatch mm;
-        while (pos >= 0 && pos <= (long)folded.size() && re.search(folded, pos, mm)) {
+        while (pos >= 0 && pos <= (long)folded.size() && re.search(folded, pos, mm, nullptr, nullptr, useHooks)) {
             RxMatch om; om.matched = true; om.from = toOrig(mm.from); om.to = toOrig(mm.to);
             matches.push_back(om);
             pos = mm.to > mm.from ? mm.to : mm.to + 1;
         }
     } else {
         std::string flags = std::string(icase ? "i" : "") + (sigspace ? "s" : "") + (p5 ? "5" : "");
-        Regex re(realPat, flags);
-        if (wantSsHooks) re.runHooks = &ssHooks;
+        std::shared_ptr<const Regex> reP = compileRegexCached(realPat, flags);
+        const Regex& re = *reP;
+        const GrammarHooks* useHooks = wantSsHooks ? &ssHooks : nullptr;
         if (!re.ok()) return subj;
         long pos = haveStart ? startPos : 0; RxMatch mm;
-        while (pos >= 0 && pos <= (long)subj.size() && re.search(subj, pos, mm)) {
+        while (pos >= 0 && pos <= (long)subj.size() && re.search(subj, pos, mm, nullptr, nullptr, useHooks)) {
             matches.push_back(mm);
             pos = mm.to > mm.from ? mm.to : mm.to + 1;
         }

@@ -2078,19 +2078,23 @@ static bool charClassCp(char flag, uint32_t cp) {
 // walks a name chain and a category lookup, and this runs per input position in
 // a grammar's inner loop.
 static const char CC_FLAGS[] = "adwsulpkbxgr";
+namespace {
+struct AsciiCC {
+    uint16_t bits[128] = {};
+    signed char slot[256];
+    AsciiCC() {
+        for (int i = 0; i < 256; i++) slot[i] = -1;
+        for (int i = 0; CC_FLAGS[i]; i++) slot[(unsigned char)CC_FLAGS[i]] = (signed char)i;
+        for (uint32_t c = 0; c < 128; c++)
+            for (int i = 0; CC_FLAGS[i]; i++)
+                if (charClassCp(CC_FLAGS[i], c)) bits[c] |= (uint16_t)(1u << i);
+    }
+};
+const AsciiCC& asciiCC() { static const AsciiCC T; return T; }
+} // namespace
 bool charClassMatch(char flag, uint32_t cp) {
     if (cp < 128) {
-        static const struct AsciiCC {
-            uint16_t bits[128] = {};
-            signed char slot[256];
-            AsciiCC() {
-                for (int i = 0; i < 256; i++) slot[i] = -1;
-                for (int i = 0; CC_FLAGS[i]; i++) slot[(unsigned char)CC_FLAGS[i]] = (signed char)i;
-                for (uint32_t c = 0; c < 128; c++)
-                    for (int i = 0; CC_FLAGS[i]; i++)
-                        if (charClassCp(CC_FLAGS[i], c)) bits[c] |= (uint16_t)(1u << i);
-            }
-        } T;
+        const AsciiCC& T = asciiCC();
         signed char b = T.slot[(unsigned char)flag];
         return b >= 0 && ((T.bits[cp] >> b) & 1);
     }
@@ -2104,21 +2108,23 @@ bool Regex::classMatch(const Node* n, char ch) const {
         // BYTES, not codepoints: 0x80–0xFF here are UTF-8 lead/continuation bytes,
         // never characters — a multibyte codepoint is decoded and tested whole in
         // the K::Class arm below, so the table must leave those bits clear or a
-        // class would match half a character.
-        auto flagHit = [](char f, unsigned char c) -> bool {
-            return c < 0x80 && charClassMatch(f, c);
-        };
+        // class would match half a character. The flags are resolved to one mask
+        // up front — this build runs once per compiled node, but a regex literal
+        // in a loop is recompiled per iteration, so it is still a hot path.
+        const AsciiCC& T = asciiCC();
+        uint16_t posMask = 0, negMask = 0;
+        for (char f : n->classFlags)    { signed char b = T.slot[(unsigned char)f]; if (b >= 0) posMask |= (uint16_t)(1u << b); }
+        for (char f : n->negClassFlags) { signed char b = T.slot[(unsigned char)f]; if (b >= 0) negMask |= (uint16_t)(1u << b); }
         auto test = [&](unsigned char c) -> bool {
             bool pos = false;
             for (auto& r : n->ranges) if (c >= r.first && c <= r.second) { pos = true; break; }
             // ASCII-range codepoint entries (\c[LF], \x0A, …) participate too
             if (!pos) for (auto& r : n->cpRanges) if (c >= r.first && c <= r.second) { pos = true; break; }
-            if (!pos) for (char f : n->classFlags) if (flagHit(f, c)) { pos = true; break; }
+            if (!pos && c < 0x80 && (T.bits[c] & posMask)) pos = true;
             return pos;
         };
         auto subtracted = [&](unsigned char c) -> bool {
-            for (char f : n->negClassFlags) if (flagHit(f, c)) return true;
-            return false;
+            return c < 0x80 && (T.bits[c] & negMask);
         };
         for (int i = 0; i < 8; i++) n->byteset[i] = 0;
         for (int v = 0; v < 256; v++) {
@@ -2943,13 +2949,13 @@ bool Regex::search(const std::string& subject, long startPos, RxMatch& out) cons
 }
 
 bool Regex::search(const std::string& subject, long startPos, RxMatch& out, const SubResolver& r,
-                   const std::set<std::string>* lexNames) const {
+                   const std::set<std::string>* lexNames, const GrammarHooks* hooks) const {
     if (!ok_ || !root_) return false;
     long budget = 0; // shared across start positions: a whole search is bounded, not each attempt
     for (long start = startPos; start <= (long)subject.size(); start++) {
         MState st{subject, std::vector<std::pair<long, long>>(ncaps_, {-1, -1}), {}, {}, r ? &r : nullptr, nullptr};
         st.lexNames = lexNames;
-        st.hooks = runHooks; // standalone matches may still run {…} blocks
+        st.hooks = hooks ? hooks : runHooks; // standalone matches may still run {…} blocks
         st.startPos = start;  // where THIS attempt began — the `$/` a `{…}` block sees
         st.steps = budget;
         long endPos = -1;
@@ -2967,14 +2973,15 @@ bool Regex::search(const std::string& subject, long startPos, RxMatch& out, cons
 }
 
 std::vector<RxMatch> Regex::searchExhaustive(const std::string& subject, const SubResolver& r,
-                                             const std::set<std::string>* lexNames) const {
+                                             const std::set<std::string>* lexNames,
+                                             const GrammarHooks* hooks) const {
     std::vector<RxMatch> results;
     if (!ok_ || !root_) return results;
     long budget = 0;
     for (long start = 0; start <= (long)subject.size(); start++) {
         MState st{subject, std::vector<std::pair<long, long>>(ncaps_, {-1, -1}), {}, {}, r ? &r : nullptr, nullptr};
         st.lexNames = lexNames;
-        st.hooks = runHooks;
+        st.hooks = hooks ? hooks : runHooks;
         st.startPos = start;
         st.steps = budget;
         try {
@@ -2996,11 +3003,11 @@ std::vector<RxMatch> Regex::searchExhaustive(const std::string& subject, const S
 }
 
 bool Regex::matchAt(const std::string& subject, long pos, RxMatch& out, const SubResolver& r,
-                    const std::set<std::string>* lexNames) const {
+                    const std::set<std::string>* lexNames, const GrammarHooks* hooks) const {
     if (!ok_ || !root_) return false;
     MState st{subject, std::vector<std::pair<long, long>>(ncaps_, {-1, -1}), {}, {}, r ? &r : nullptr, nullptr};
     st.lexNames = lexNames;
-    st.hooks = runHooks; // a `my regex` subrule still runs its {…} blocks (same as search)
+    st.hooks = hooks ? hooks : runHooks; // a `my regex` subrule still runs its {…} blocks (same as search)
     st.startPos = pos;   // where this anchored attempt begins — the `$/` a block sees
     long endPos = -1;
     try {

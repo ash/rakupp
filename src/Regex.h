@@ -195,15 +195,22 @@ public:
     // Find the first match whose start is >= startPos (unanchored search).
     bool search(const std::string& subject, long startPos, RxMatch& out) const;
     bool search(const std::string& subject, long startPos, RxMatch& out, const SubResolver& r,
-                const std::set<std::string>* lexNames = nullptr) const;
+                const std::set<std::string>* lexNames = nullptr,
+                const GrammarHooks* hooks = nullptr) const;
     // Match anchored exactly at `pos` (used for grammar subrule calls).
     bool matchAt(const std::string& subject, long pos, RxMatch& out, const SubResolver& r,
-                 const std::set<std::string>* lexNames = nullptr) const;
+                 const std::set<std::string>* lexNames = nullptr,
+                 const GrammarHooks* hooks = nullptr) const;
     // `:exhaustive` — every match at every start position and every length.
     std::vector<RxMatch> searchExhaustive(const std::string& subject, const SubResolver& r,
-                 const std::set<std::string>* lexNames = nullptr) const;
+                 const std::set<std::string>* lexNames = nullptr,
+                 const GrammarHooks* hooks = nullptr) const;
     // Optional interpreter callbacks for standalone (non-grammar) matches — lets a
     // plain `/ … { make 1 } … /` execute its code blocks. Null = lenient no-op.
+    // A SHARED (cached) Regex must get its hooks through the per-call parameter
+    // above instead: this member is per-object state, and the interpreter's
+    // pattern cache hands one object to nested and repeated matches whose hook
+    // frames are on different stacks.
     const GrammarHooks* runHooks = nullptr;
 
 private:

@@ -116,14 +116,27 @@ Rakudo's VM leads on `fib` (tiny-body recursion, a JIT's best case) and on
 | fib      | 532.6 ms | 443.3 ms | Rakudo 1.2× |
 | streq    | 462.5 ms | 274.5 ms | Rakudo 1.7× |
 
-**`regex` regressed and is not a perf-guard kernel.** On this machine the
-interpreted row was 88.5 ms at v3.14.0 (2026-08-11) and is 113.4 ms here —
-+28%, reproducible to 0.0 ms across both harness passes, with
+**`regex` regressed at v3.6.0 — bisected and fixed after the tag.** On this
+machine the interpreted row was 88.5 ms at v3.14.0 (2026-08-11) and 113.4 ms
+at v3.6.0, +28%, with
 [`tools/bench/regex.raku`](../../tools/bench/regex.raku) unchanged since the
-initial commit. The native row moved the same way (70.8 → 79.8 ms). Every
+initial commit; the native row moved the same way (70.8 → 79.8 ms). Every
 kernel `tools/perf-baseline.raku` does gate got 24–36% *faster* over the same
 span, which is exactly why this slipped through: `regex` is not one of the
-seven gated kernels. Unbisected as of this writing.
+seven gated kernels. A build-at-commit bisect landed on `364c26b` ("the
+POSIX-named character classes are Unicode, not <ctype.h>"): a regex literal
+in a loop is recompiled per iteration, each compile lazily rebuilds its class
+node's 256-entry byteset, and that rebuild now called the per-codepoint class
+predicate (guarded static + slot lookup) 256× where inlined `<ctype.h>` used
+to answer. Two fixes landed: the byteset build folds each class flag to a
+precomputed 128-bit mask (one AND per byte), and the interpreter caches
+compiled `Regex` objects per (post-interpolation pattern, flags) per thread —
+match, substitution and `my regex` subrule bodies all stop re-parsing per
+iteration. Same-machine A/B (Darwin 25.5 box, not the machine of the tables
+above): the kernel went 120.4 → 89.7 ms with the mask fix alone and → 55.8 ms
+with the cache — v3.14.0 measured 108.0 there, so this is well past merely
+undoing the regression. The tables above keep their v3.6.0 sitting until the
+next full re-measure on the benchmarks machine.
 
 ### Native (`--exe`) vs Rakudo
 
