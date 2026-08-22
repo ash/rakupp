@@ -767,6 +767,32 @@ sub list-installed(Str $prefix) {
     }
 }
 
+# The identity key the store and the index agree on: name, version, auth,
+# api — api<0> and no api are the same thing to both, so they key the same.
+sub identity-key($name, $ver, $auth, $api) {
+    my $a = ~($api // '');
+    $a = '' if $a eq '0';
+    (~($name // ''), ~($ver // ''), ~($auth // ''), $a).join("\0")
+}
+
+# What the store ALREADY holds, read from dist/ in one pass. The engine
+# refuses an identity it has — but only at the END of install-one, after the
+# archive is fetched, the build hook has run and the dist's whole suite has
+# passed. Asking the store FIRST is what makes a repeated
+# `rakupp install Sparrow6` a listing instead of seventeen fetch-build-test
+# cycles that all end in "already installed".
+sub installed-identities(Str $prefix) {
+    my %have;
+    my $dist-dir = $prefix.IO.add('dist');
+    return %have unless $dist-dir.d;
+    for $dist-dir.dir.grep(*.f) -> $f {
+        my %m = try json-decode($f.slurp);
+        next unless %m;
+        %have{identity-key(%m<name>, %m<version> // %m<ver>, %m<auth>, %m<api>)} = True;
+    }
+    %have
+}
+
 sub MAIN(
     *@modules,                 #= modules or dists to install (Foo, Foo:ver<1.2+>)
     Bool :$dry-run,            #= resolve and print the plan; write nothing
@@ -857,9 +883,15 @@ sub MAIN(
         exit 1;
     }
 
+    # --force means "do it anyway", so it asks the store nothing. Under
+    # `rakupp reinstall` this runs AFTER the removal above — the dists it
+    # took out are gone from dist/ and install fresh.
+    my %have = $force ?? {} !! installed-identities($to);
+
     say "plan ({@plan.elems} distribution{@plan.elems == 1 ?? '' !! 's'}, dependencies first):";
     for @plan -> %e {
-        say "  {%e<dist> // %e<name>}   {archive-url(%e)}";
+        my $known = %have{identity-key(%e<name>, %e<version>, %e<auth>, %e<api>)};
+        say "  {%e<dist> // %e<name>}   {archive-url(%e)}{$known ?? '   (already installed)' !! ''}";
     }
     for %notes.sort -> $n {
         say "  skipped: {$n.key} — {$n.value}";
@@ -879,6 +911,13 @@ sub MAIN(
     for @plan -> %e {
         my $is-target = $test-only
             && ?(%target{%e<name>} || (%e<provides> // {}).keys.first({ %target{$_} }));
+        # Already in the store? install-one would fetch it, build it, run its
+        # suite and only THEN be refused by the engine — say so now instead.
+        # (`rakupp test` still tests the dists it was NAMED, installed or not.)
+        if !$is-target && %have{identity-key(%e<name>, %e<version>, %e<auth>, %e<api>)} {
+            say "already installed: {%e<dist> // %e<name>} (use --force to reinstall)";
+            next;
+        }
         my $done = try install-one(%e, $to, :$no-test, :$force, :test-only($is-target));
         unless $done {
             if $!.Str.contains('already installed') {

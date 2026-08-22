@@ -227,6 +227,13 @@ $file-use.err.slurp(:close);
 my %again = installer('Gate::Demo');
 check %again<exit> == 0 && %again<out>.contains('already installed'),
       'M5: an identical re-install is recognized, not repeated';
+# …and recognized from the STORE, before any work: no fetch, no build hook,
+# no suite. Without the dist/ pre-check every re-install paid the full
+# fetch-build-test cycle and learned nothing until the engine refused it.
+check !%again<err>.contains('fetching') && !%again<err>.contains('testing'),
+      'M5: …without fetching or testing the archive again';
+check %again<out>.contains('(already installed)'),
+      'M5: the plan marks what the store already holds';
 my %list = installer('--list');
 check %list<out>.contains('Gate::Demo:ver<0.4.2>'), 'install --list shows it';
 

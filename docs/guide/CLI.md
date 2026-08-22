@@ -293,6 +293,15 @@ resolve. A distribution's own test suite runs under rakupp before it is
 marked installed (`--no-test` skips; `--dry-run` prints the plan and writes
 nothing). Each command alone prints its full usage.
 
+Installs are additive, and a repeat is answered from the store: every plan
+entry the store already holds is marked `(already installed)` and skipped
+before anything is fetched, built or tested, so re-running an install you
+already did costs a plan, not a download. `--force` (or `reinstall`) is how
+you mean it anyway. One case still pays full price: a distribution whose
+index identity disagrees with its own `META6.json` — a different `:auth`,
+say — cannot be recognized until its archive is open, and the engine refuses
+it at the end.
+
 ## MAIN: how a program's own arguments parse
 
 A program with a `sub MAIN` gets Rakudo-compatible argument parsing —
