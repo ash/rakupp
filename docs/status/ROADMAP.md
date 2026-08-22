@@ -243,10 +243,12 @@ Performance-wise native `--exe` now beats Rakudo on every benchmark in the set,
 `fib` included (5.3× as of 2026-08-22 — see [BENCHMARKS.md](BENCHMARKS.md)) — a
 small-int fast path for `%`/`mod`/`%%` (they had gone through `BigInt::divmod`)
 closed the last collection/hash gaps, and shrinking `Value` to 128 bytes moved
-the recursion-heavy rows again. The *interpreter* has since taken `fib` too:
-lexical pads put slot-indexed variable access under the tree-walker, and it now
-leads Rakudo on nine of the ten kernels. `streq` is the last one behind, and
-only by 1.1×.
+the recursion-heavy rows again. The *interpreter* has since taken the last two
+as well: lexical pads put slot-indexed variable access under the tree-walker
+and carried `fib`, and the TARG plan's first slice — a plain `$padvar = EXPR`
+skipping the assignment ceremony — carried `streq`. Interpreted, Raku++ now
+leads Rakudo on all ten kernels, though `fib` (1.2×) and `streq` (1.1×) are
+level rather than led.
 
 ## How to make progress efficiently
 
