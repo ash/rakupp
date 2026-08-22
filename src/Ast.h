@@ -427,6 +427,12 @@ struct Param {
     //              answer must never stick.
     mutable DecidedOnce<int> natSpec{-1};
     mutable DecidedOnce<signed char> typeKnown{0};
+    //   acceptClass — TARG lever C: which core-type fast-accept applies to
+    //   `type` (0 none, 1 Int, 2 Str, 3 Num, 4 Bool, 5 native-int, 6 native-
+    //   num, 7 native-str). The class is a property of the NAME; whether a
+    //   user subset/class shadows the name is re-checked per call (two hash
+    //   counts), so a late `subset Int` still gets the full matcher.
+    mutable DecidedOnce<signed char> acceptClass{-1};
 };
 
 struct BlockExpr : Expr {

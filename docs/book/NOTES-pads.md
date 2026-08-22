@@ -15,6 +15,30 @@ Value — the constraint lives in `varDefault`, so the lane's eligibility had
 to be a per-slot bit computed from the DECLARATION at layout-build time,
 not anything inspectable at the store site.
 
+The four follow-up items (same day) each carry a book-shaped moral:
+
+- The `op=` arms show the cost of RE-DERIVING per evaluation: the full
+  compound path allocates a `substr` of the operator string and runs a
+  cascade of string compares on every single `+=` — the lane's verdict does
+  it once and stores an op class on the node.
+- The native-int lane's rule fell out of READING the full path's predicate:
+  only uppercase types register an assignment check, so "lowercase declared
+  type" is lane-eligible BY THE ENGINE'S OWN DEFINITION — parity by
+  construction beats parity by testing.
+- The binder's fast-accept has the pattern worth teaching: cache what is a
+  property of the NAME (its accept class), re-check per call what can
+  change under you (whether a user subset shadows the name — two hash
+  counts). Fast-accept only, never fast-reject, so every error message
+  stays byte-identical with the full matcher's. The falsifier from the
+  plan was then satisfiable mechanically: a `sample` with zero frames in
+  the type matchers.
+- Cond-to-bool: the first iteration deliberately takes the slow path so
+  chapter 19's shape verdict gets decided by the code that owns it; the
+  fast path only ever reads the verdict. Layers stay in their lanes.
+
+Combined batch effect: subcall −19.5% (predicted −15–25%), strpass −19.5%,
+strscan −12%, loopsum −8%; the `my int` while-shape −45% in isolation.
+
 
 Working notes collected while the pads batch lands — the material the
 Internals book needs when chapters 13 (the tree-walk), 14 (calls) and 19

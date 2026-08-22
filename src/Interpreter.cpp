@@ -2325,7 +2325,9 @@ std::shared_ptr<const PadLayout> Interpreter::resolvePads(const std::vector<Stmt
     for (auto& s : stmts) {
         std::vector<const VarExpr*> ds;
         declaredVars(s.get(), ds);
-        for (auto* v : ds) layout->add(v->name, /*simple=*/v->declType.empty());
+        for (auto* v : ds)
+            layout->add(v->name, /*simple=*/v->declType.empty() ||
+                (!ascii::isupper((unsigned char)v->declType[0]) && v->declType != "atomicint"));
         if (s->kind == NK::VarDecl) {
             auto* vd = static_cast<const VarDecl*>(s.get());
             if (vd->scope == "my")
@@ -7250,9 +7252,13 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             LoopStateFrame lsf{tctx_, !ws->modifier && ws->hasStateCache != 0};
             bool firstIter = true;
             std::shared_ptr<Env> scope; // reused across iterations unless captured
+            const bool bareCond = ws->params.empty() && ws->var.empty();
             for (;;) {
-                Value cv = eval(ws->cond.get());
-                bool c = boolify(cv);
+                Value cv;
+                bool c;
+                int fb = bareCond ? tryCondBool(ws->cond.get()) : -1; // TARG lever B
+                if (fb >= 0) c = fb != 0;
+                else { cv = eval(ws->cond.get()); c = boolify(cv); }
                 if (ws->isUntil) c = !c;
                 if (!c) break;
                 // postfix `STMT while COND`: no implicit block — run STMT in the
@@ -7850,10 +7856,15 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 if (ls->init) eval(ls->init.get());
                 bool firstIter = true;
                 std::shared_ptr<Env> scope; // reused across iterations unless captured
+                const bool flatB = flatLoopBody(ls->body.get());
                 for (;;) {
-                    if (ls->cond && !boolify(eval(ls->cond.get()))) break;
+                    if (ls->cond) {
+                        int fb = tryCondBool(ls->cond.get()); // TARG lever B
+                        if (fb == 0) break;
+                        if (fb < 0 && !boolify(eval(ls->cond.get()))) break;
+                    }
                     if (!scope || scope.use_count() > 1) { scope = std::make_shared<Env>(); scope->parent = tctx_.cur; }
-                    else scope->vars.clear(); // reuse buckets, drop last iteration's bindings
+                    else if (!flatB) scope->vars.clear(); // reuse buckets, drop last iteration's bindings
                     if (!runLoopBody(ls->body.get(), scope, ls->label, firstIter, true, col)) break;
                     firstIter = false;
                     if (ls->incr) eval(ls->incr.get());
@@ -8061,6 +8072,34 @@ void Interpreter::typeCheckBind(const Param& p, const Value& v, bool blockParam)
         if (!classes_.count(p.type) && !subsets_.count(p.type) &&
             !isKnownTypeName(p.type) && !isNativeTypeName(p.type)) return;
         p.typeKnown = 1;
+    }
+    // TARG lever C: fast-accept for the core concrete types. The class of the
+    // NAME is decided once; the shadow guard (a user subset or class stealing
+    // a core name, even mid-run) is two hash counts per call — still far
+    // cheaper than typeMatchesArg's string walk. Fast-ACCEPT only: anything
+    // not obviously matching falls through to the full matcher and its exact
+    // error messages.
+    {
+        signed char ac = p.acceptClass;
+        if (ac < 0) {
+            const std::string& t = p.type;
+            ac = t == "Int" ? 1 : t == "Str" ? 2 : t == "Num" ? 3 : t == "Bool" ? 4
+               : (t == "int" || t == "int8" || t == "int16" || t == "int32" || t == "int64" ||
+                  t == "uint" || t == "uint8" || t == "uint16" || t == "uint32" || t == "uint64" ||
+                  t == "byte") ? 5
+               : (t == "num" || t == "num32" || t == "num64") ? 6
+               : t == "str" ? 7 : 0;
+            p.acceptClass = ac;
+        }
+        if (ac > 0 && v.hashKind.empty() && v.enumType.empty() &&
+            !subsets_.count(p.type) && !classes_.count(p.type)) {
+            switch (ac) {
+                case 1: case 5: if (v.t == VT::Int) return; break;
+                case 2: case 7: if (v.t == VT::Str) return; break;
+                case 3: case 6: if (v.t == VT::Num) return; break;
+                case 4: if (v.t == VT::Bool) return; break;
+            }
+        }
     }
     if (typeOrSubsetMatches(v, p.type)) return;
     throw RakuError{Value::typeObj("X::TypeCheck::Binding"),
@@ -13088,44 +13127,115 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
     // BEFORE the RHS is evaluated, so the full path never re-runs a
     // side-effecting expression.
     {
+        // Verdict values: 0 none, 1 plain `=`, 2 `+=`, 3 `-=`, 4 `*=`, 5 `~=`
+        // (TARG-PLAN.md, the op= extension — whitelisted compounds whose full
+        // path ends in the same applyArith this lane calls).
         signed char sv = a->simpleSlot;
         if (sv != 0) {
             if (sv < 0) {
-                bool ok = a->op == "=" && a->target && a->target->kind == NK::VarExpr;
-                if (ok) {
+                signed char cls = 0;
+                if (a->target && a->target->kind == NK::VarExpr) {
                     auto* tv = static_cast<VarExpr*>(a->target.get());
-                    ok = !tv->declare && tv->padSlot >= 0 && !tv->name.empty() &&
-                         tv->name[0] == '$' && tv->declCoerce.empty();
+                    if (!tv->declare && tv->padSlot >= 0 && !tv->name.empty() &&
+                        tv->name[0] == '$' && tv->declCoerce.empty()) {
+                        if (a->op == "=") cls = 1;
+                        else if (a->op == "+=") cls = 2;
+                        else if (a->op == "-=") cls = 3;
+                        else if (a->op == "*=") cls = 4;
+                        else if (a->op == "~=") cls = 5;
+                    }
                 }
-                a->simpleSlot = ok ? 1 : 0;
-                sv = ok ? 1 : 0;
+                a->simpleSlot = cls;
+                sv = cls;
             }
-            if (sv == 1) {
+            if (sv >= 1) {
                 auto* tv = static_cast<VarExpr*>(a->target.get());
                 Value* slot = padPtr(tv);
                 if (slot) {
-                    // per-activation checks: an untyped slot (layout verdict),
-                    // plain in every dimension the ceremony exists for
+                    // per-activation checks: a lane-eligible slot (layout
+                    // verdict: untyped or native-typed — only uppercase types
+                    // are assignment-enforced), plain in every dimension the
+                    // ceremony exists for. Native width is allowed: the wrap
+                    // is applied below exactly as the full path does.
                     Env* pf = nullptr;
                     for (Env* e2 = tctx_.cur.get(); e2; e2 = e2->parent.get())
                         if (e2->layout) { pf = e2; break; }
                     if (pf->layout->simple[tv->padSlot] &&
-                        !slot->x_ && slot->natBits == 0 && !slot->readonly &&
-                        !(slot->t == VT::Hash && slot->hashKind == "Proxy")) {
-                        Value rv = evalValueOf(a->value.get());
-                        if (rv.t == VT::Nil) rv = Value::any(); // untyped, no default: Nil resets to Any
-                        else {
-                            rv.readonly = false;
-                            // a `$` container itemizes what it holds
-                            if ((rv.t == VT::Array || rv.t == VT::Hash) && !rv.itemized)
-                                rv.itemized = true;
+                        !slot->x_ && !slot->readonly && slot->hashKind.empty() &&
+                        slot->t != VT::Object) {
+                        int nb = slot->natBits; bool nsg = slot->natSigned, nfl = slot->natFloat;
+                        if (sv == 1) {
+                            Value rv = evalValueOf(a->value.get());
+                            if (rv.t == VT::Nil) rv = Value::any(); // untyped, no default: Nil resets to Any
+                            else {
+                                rv.readonly = false;
+                                // a `$` container itemizes what it holds
+                                if ((rv.t == VT::Array || rv.t == VT::Hash) && !rv.itemized)
+                                    rv.itemized = true;
+                            }
+                            {
+                                ParStripe ws(*this, slot); // torn-copy contract
+                                *slot = rv;
+                            }
+                            if (nb) wrapNative(*slot, nb, nsg, nfl);
+                            if (anyRwLinks_) rwWriteThrough(a->target.get());
+                            return sink ? Value::any() : *slot;
+                        }
+                        // compound: mirror the full path's tail for the
+                        // whitelisted ops — neutral autoviv, the in-place
+                        // ASCII `~=` append, applyArith for the rest
+                        Value rhs = eval(a->value.get());
+                        if (rhs.t != VT::Object) { // an Object rhs may carry an infix overload — full tail handles it
+                            rhs.readonly = false;
+                            static const char* kOps[] = {"", "", "+", "-", "*", "~"};
+                            const char* bop = kOps[(int)sv];
+                            if (slot->t == VT::Any || slot->t == VT::Nil || slot->t == VT::Type) {
+                                if (sv == 4) *slot = Value::integer(1);       // *= from 1
+                                else if (sv == 5) *slot = Value::str("");     // ~= from ''
+                                else *slot = Value::integer(0);               // +=/-= from 0
+                            }
+                            if (sv == 5 && slot->t == VT::Str && rhs.t == VT::Str &&
+                                rhs.hashKind.empty() && !rhs.itemized) {
+                                bool asciiRhs = true;
+                                for (unsigned char ch : rhs.s) if (ch >= 0x80) { asciiRhs = false; break; }
+                                ParStripe ws(*this, slot);
+                                if (asciiRhs) slot->s += rhs.s;
+                                else slot->s = nfcNormalize(slot->s + rhs.s);
+                            } else {
+                                Value nv = applyArith(bop, *slot, rhs);
+                                ParStripe ws(*this, slot);
+                                *slot = std::move(nv);
+                            }
+                            if (nb) wrapNative(*slot, nb, nsg, nfl);
+                            if (anyRwLinks_) rwWriteThrough(a->target.get());
+                            return sink ? Value::any() : *slot;
+                        }
+                        // rhs is an Object — a bail here would re-evaluate a
+                        // side-effecting rhs, so mirror the full tail inline:
+                        // overload first, then neutral autoviv, then the
+                        // Str-method-honouring `~`, then applyArith.
+                        std::string bop2(1, "  +-*~"[(int)sv]);
+                        bool overloaded = false;
+                        Value nv;
+                        if (Value* f = tctx_.cur->find("&infix:<" + bop2 + ">"))
+                            try { nv = callCallable(*f, ValueList{*slot, rhs}); overloaded = true; }
+                            catch (RakuError&) {}
+                        if (!overloaded) {
+                            if (slot->t == VT::Any || slot->t == VT::Nil || slot->t == VT::Type) {
+                                if (sv == 4) *slot = Value::integer(1);
+                                else if (sv == 5) *slot = Value::str("");
+                                else *slot = Value::integer(0);
+                            }
+                            nv = sv == 5 ? Value::str(strOf(*slot) + strOf(rhs))
+                                         : applyArith(bop2, *slot, rhs);
                         }
                         {
-                            ParStripe ws(*this, slot); // torn-copy contract
-                            *slot = rv;
+                            ParStripe ws(*this, slot);
+                            *slot = std::move(nv);
                         }
+                        if (nb) wrapNative(*slot, nb, nsg, nfl);
                         if (anyRwLinks_) rwWriteThrough(a->target.get());
-                        return sink ? Value::any() : rv;
+                        return sink ? Value::any() : *slot;
                     }
                 }
             }
@@ -18664,6 +18774,45 @@ static inline bool plainScalarLit(const Expr* e) {
         case NK::StrLit: case NK::BoolLit: return true;
         default: return false;
     }
+}
+
+// TARG lever B (TARG-PLAN.md): `while $n < LIT` and friends evaluated a full
+// Value per iteration just to boolify and destroy it. For the chapter-19
+// shapes over plain machine Ints the comparison answers directly. -1 = not
+// taken; the caller falls back to eval+boolify, and nothing here has side
+// effects, so the fallback never double-evaluates.
+int Interpreter::tryCondBool(Expr* e) {
+    if (!e || e->kind != NK::Binary) return -1;
+    auto* b = static_cast<Binary*>(e);
+    const std::string& op = b->op;
+    if (op.size() > 2 || op.empty()) return -1;
+    // the six Int comparisons only — everything else keeps the full path
+    bool isCmp = op == "<" || op == ">" || op == "<=" || op == ">=" ||
+                 op == "==" || op == "!=";
+    if (!isCmp) return -1;
+    if (b->fastShape < 0) return -1;  // let evalBinary decide the shape first
+    if (b->fastShape == 0) return -1;
+    auto intOf = [&](Expr* oe, bool lit, long long& out) -> bool {
+        if (lit) {
+            const Value* lv = static_cast<const Value*>(b->litVal.get());
+            if (!lv || lv->t != VT::Int || lv->big()) return false;
+            out = lv->i;
+            return true;
+        }
+        auto* ve = static_cast<VarExpr*>(oe);
+        Value* p = padPtr(ve);
+        if (!p) p = tctx_.cur->find(ve->name);
+        if (!p || p->t != VT::Int || !p->hashKind.empty() || p->big()) return false;
+        out = p->i;
+        return true;
+    };
+    long long l, r;
+    if (!intOf(b->lhs.get(), b->fastShape == 2, l)) return -1;
+    if (!intOf(b->rhs.get(), b->fastShape == 1, r)) return -1;
+    bool v = op == "<"  ? l < r  : op == ">"  ? l > r
+           : op == "<=" ? l <= r : op == ">=" ? l >= r
+           : op == "==" ? l == r : l != r;
+    return v ? 1 : 0;
 }
 
 Value Interpreter::evalBinary(Binary* b) {

@@ -108,10 +108,50 @@ Measured (interleaved best-of-2 vs the same-day pre-TARG build): asg
 compound — extending the lane to `op=` is follow-up), subcall flat as
 predicted (call-bound — lever C).
 
-**Remaining in this plan**: lever C (binder per-Param caches — subcall's
-whole residue), lever B proper (cond-to-bool for While/If — partially
-delivered through padPtr), the `op=` extension of lane A, and the native-int
-lane (`my int` targets bail today; the wrap is three lines).
+## Landed, part two (2026-08-22): the four remaining items
+
+All four shipped in one batch:
+
+- **`op=` extension** — the lane verdict became a small op class (`=`, `+=`,
+  `-=`, `*=`, `~=`); compounds mirror the full tail exactly: the neutral
+  autoviv (`*=` from 1, `~=` from '', `+=`/`-=` from 0), the in-place ASCII
+  `~=` append with the NFC fallback, applyArith for the rest, and the rare
+  Object-rhs case runs the infix-overload/strOf path INLINE (a bail there
+  would re-evaluate a side-effecting rhs). Short-circuit ops (`||=` family)
+  and everything off the whitelist keep the full path.
+- **Native-int lane** — the layout's `simple` bit now covers lowercase
+  (native) declared types, mirroring the full path's own predicate (only
+  uppercase types and atomicint register a varDefault check); the lane
+  captures the width flags before the store and applies `wrapNative` after,
+  exactly as the full path does. `my int8 $b = 100; $b += 100` wraps to −56
+  through the lane.
+- **Cond-to-bool (lever B)** — `tryCondBool` answers the six Int comparisons
+  for chapter-19 shapes as a C++ bool, wired into bare `while`/`until` and
+  C-style `loop` conditions (a cond that binds `-> $x` keeps the Value
+  path). First iteration decides the shape via the normal path; the rest
+  skip the Value round trip. The C-style loop also gained the flat-body
+  scope reuse the for-loops already had.
+- **Lever C (binder)** — `typeCheckBind` gets a per-Param accept-class
+  (decided once from the type NAME) with a per-call shadow guard: two hash
+  counts confirm no user subset/class has stolen the core name — even
+  mid-run — before the fast-accept fires, so a late `subset Int` still gets
+  the full matcher and its exact error message. Fast-ACCEPT only; every
+  rejection goes through the full path. paramNatSpec was already cached.
+
+Measured (interleaved best-of-2, loaded box, vs the same-day pre-batch
+build): **subcall −19.5%** — inside the predicted −15–25% band — with the
+falsifier passing: a post-change sample of subcall shows ZERO frames in
+typeMatchesArg/typeCheckBind. strpass **−19.5%**, strscan **−12%**,
+loopsum **−8%** (the op= lane), fib/asg/hash flat as expected (untyped
+1-param binder, already-laned, index-bound respectively). The targeted
+`my int` while-shape (two native assigns + cond) measured **−45%** in
+isolation.
+
+**Still open after this plan**: C2 (pad-direct param binding — one layout
+hash probe per param per call remains; measure whether it is worth a
+per-Param slot annotation), and the loop floor itself (runLoopBody's
+std::function argument, execBlock's statement dispatch) — which is item 3
+territory.
 
 ## Gates
 

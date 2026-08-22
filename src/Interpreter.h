@@ -845,6 +845,11 @@ public:
     bool anyRwLinks_ = false; // sticky: some frame created an rw link (guards the per-assignment hook)
     int scoreCandidate(const Value& cand, const ValueList& args); // -1 = no match, else specificity
     bool boolify(const Value& v); // boolean context: honours a custom .Bool method on objects
+    // TARG lever B: a condition of a chapter-19-specialized comparison shape
+    // over plain Ints answers as a C++ bool with no Value round trip.
+    // Returns -1 when the shape/operands do not qualify (caller does the
+    // ordinary eval+boolify), else 0/1.
+    int tryCondBool(Expr* e);
     void setMatchVar(Value v); // set $/ (updates an enclosing scope's $/ if present)
     bool hoistSubs(const std::vector<StmtPtr>& stmts); // pre-register sub decls (whole-scope visibility); returns true if any named sub was hoisted
     // `cache` is the owner's decided-once flag (Block::hoistNeed / Callable::
