@@ -1,4 +1,4 @@
-# Book notes: pads and TARG (raw material, not a chapter yet)
+# Book notes: pads and TARG (absorbed into Chapter 40 on 2026-08-22; kept as the raw record)
 
 ## TARG addendum (same day): the cost of a result
 

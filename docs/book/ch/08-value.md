@@ -270,10 +270,13 @@ the profile of a method-call-heavy loop puts 31% of the time in heap allocation
 and 11% in `Value` copy and destruction.
 
 The number moves. It was 392, then 376, then 344 in the course of ordinary
-optimisation work, and the representation plan intends roughly 204 next. Two of
-the reductions are already in this chapter: `hashKind`, `enumName` and
+optimisation work — and the representation plan then delivered its two
+census-guided batches, 344 → 208 → 128, the story Chapter 40 tells. Two of
+the earlier reductions are already in this chapter: `hashKind`, `enumName` and
 `enumType` became interned 8-byte handles instead of 24-byte strings
 (Chapter 10), and the string payload became a copy-on-write type (Chapter 9).
+The cold-block and payload-slot moves that took it the rest of the way are
+Chapter 40's.
 
 That instability is also the single most important input to the extension ABI
 in Chapter 36, which is why an extension module never sees this struct at all.

@@ -37,8 +37,9 @@ typedef struct RkCtxOpaque*   RkCtx;
 ```
 
 This is not fastidiousness. `sizeof(Value)` moved from 392 to 376 to 344 bytes in a
-single afternoon of ordinary optimisation work, and the representation plan
-intends roughly 204 next. An ABI that exposed the struct would have to freeze
+single afternoon of ordinary optimisation work, and the representation
+campaign later halved it twice more — 208, then 128 (Chapter 40). An ABI that
+exposed the struct would have to freeze
 the interpreter's internals forever, or silently miscompile every extension
 built against an older header — the failure mode where a module reads a `Str`
 out of a field that is now an `Int` and nothing crashes until much later.

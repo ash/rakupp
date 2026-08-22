@@ -129,7 +129,9 @@ The actionable items feed, in rough order:
 container/binding refactor (head/body endgame, reference/upvalue cells,
 intrusive refcounts, biased RC, immortal bits), the dispatch-cache program
 (ClassInfo serial → per-callsite guard-list caches → adaptive nodes),
-[PARALLEL-PLAN.md](../../plans/PARALLEL-PLAN.md) (PEP 703's mechanisms), and
+[PARALLEL-PLAN.md](../../plans/PARALLEL-PLAN.md) (whose harden-the-runtime
+approach was chosen here before the studies — PEP 703 turns out to suggest
+the same road, and its worked-out mechanisms now feed the plan), and
 two future design docs — the threaded execution loop (PERL5 item 3, spec
 material in the Lua doc) and lazy bodies (the V8 doc, sequenced with
 per-variable capture).
