@@ -18,7 +18,6 @@ together they answer "what can it actually build?"
 | [**kvstore/**](kvstore) | Protocols — a key-value store with its own text protocol | Redis-style TCP server you drive with `nc` |
 | [**modinfo/**](modinfo) | Ecosystem — 17 zef distributions doing the work | inspects Raku distributions: graph, validation, reports |
 | [**jsonreq/**](jsonreq) | Ecosystem — our own modules composing | curl+jq for JSON APIs: request, query, pretty-print |
-| [**sparrow/**](sparrow) | Ecosystem — a third-party framework, unmodified; and process startup | a Sparrow6 automation scenario driving Bash, Raku and Perl tasks |
 | [**sqlite/**](sqlite) | C libraries — NativeCall and a raw-mode terminal | database client: query, browse, dump; the real libsqlite3 does the work |
 
 All paths below are from the repository root, after building `rakupp` (see the

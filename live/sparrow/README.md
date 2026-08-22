@@ -36,14 +36,14 @@ build/rakupp tools/install.raku Sparrow6      # or: zef install Sparrow6
 Then just run it — no `RAKULIB`, no `-I`:
 
 ```sh
-cd showcase/sparrow && ../../build/rakupp scenario.raku
+cd live/sparrow && ../../build/rakupp scenario.raku
 ```
 
 `compare.sh` runs the scenario under both engines and diffs stdout, with
 Sparrow's wall-clock line prefixes normalised:
 
 ```sh
-RAKUPP=../../build/rakupp sh showcase/sparrow/compare.sh
+RAKUPP=../../build/rakupp sh live/sparrow/compare.sh
 ```
 
 (If you would rather run against an unpacked checkout than an installed dist,
@@ -91,7 +91,6 @@ would not have thought to write.
 
 ## Not in `t/run.raku`
 
-Deliberately, like [modinfo](../modinfo) and [jsonreq](../jsonreq): the suite
-runs on machines that do not have these seven distributions, and the scenario
-writes under `~/sparrow6` and spawns processes. `compare.sh` is the check, run
-by hand.
+Deliberately, as the [live/](..) entries all are: the suite runs on machines
+that do not have Sparrow6 installed, and the scenario writes under
+`~/sparrow6` and spawns processes. `compare.sh` is the check, run by hand.

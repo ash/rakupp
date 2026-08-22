@@ -262,6 +262,7 @@ checks that every documented example still prints what the guides say, and
 
 - **[examples/](examples)** — complete example programs (Mandelbrot, Game of Life, a JSON grammar, a quine, …); see [examples/README.md](examples/README.md). [examples/lint/](examples/lint) demos the `--lint` analyzer, one rule per file.
 - **[showcase/](showcase)** — mid-size showcase programs: a Scheme interpreter built on a Raku grammar, and a pastebin HTTP server on raw sockets; see [showcase/README.md](showcase/README.md).
+- **[live/](live)** — real software from the ecosystem, run unmodified: whole tools that people already use, driven by Raku++ exactly as their authors wrote them; see [live/README.md](live/README.md).
 - **[rakujs/](rakujs)** — **Raku.js**: the interpreter compiled to **WebAssembly** to run Raku in the browser with no server; includes a playground page with all the examples. Same interpreter as native, compiled with Emscripten; see [rakujs/README.md](rakujs/README.md).
 
 ### Under the hood
