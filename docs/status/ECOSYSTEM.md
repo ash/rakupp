@@ -13,6 +13,11 @@ to WebAssembly; the two sites embed that WebAssembly; the Homebrew tap and the
 GitHub Release distribute the native binary; the corpus is test input run against
 it. There is one implementation behind every surface.
 
+One piece points the other way. Every project below consumes the interpreter;
+**raku-eye measures it** — weekly, unattended — and hands back a ranked list of
+what to fix. Its design and rules live in
+[dev/plans/RAKU-EYE-PLAN.md](../dev/plans/RAKU-EYE-PLAN.md).
+
 | Project | What it is | Repository | Serves |
 |---|---|---|---|
 | **Raku++ (rakupp)** | The interpreter + native compiler in C++17. Source of truth for everything below. | [ash/rakupp](https://github.com/ash/rakupp) | native binary, `--exe` |
@@ -21,6 +26,7 @@ it. There is one implementation behind every surface.
 | **spec** (was `raku-spec`) | The behavioural spec: one page per feature, every example runnable live (via raku.online's engine). Its generator is written in Raku and run *by* rakupp. | [ash/raku.online `sites/spec`](https://github.com/ash/raku.online/tree/main/sites/spec) | [raku.online/spec](https://raku.online/spec/) |
 | **tour** (was `raku-tour`) | "A Tour of Raku": 18 interactive lessons, every example a live editor (raku.online's engine) with output verified against the interpreter. Same generator pattern as the spec. | [ash/raku.online `sites/tour`](https://github.com/ash/raku.online/tree/main/sites/tour) | [raku.online/tour](https://raku.online/tour/) |
 | **raku-corpus** | Real-world Raku programs used as a beyond-Roast differential test target. | [ash/raku-corpus](https://github.com/ash/raku-corpus) | — (test input) |
+| **raku-eye** | The standing watch: a weekly, unattended GitHub Actions run that measures `main` against fresh Weekly Challenge solutions, new ecosystem releases and the corpus, benchmarks it against the latest Rakudo release, and publishes the result. Measures only — it never edits the compiler, and there is no AI in it. | [ash/raku-eye](https://github.com/ash/raku-eye) | [eye.raku.online](https://eye.raku.online/) |
 | **Homebrew tap** | The `ash/rakupp` tap — `brew install rakupp`. Apple Silicon gets the prebuilt release binary; Linux/Intel build from the source tarball; `--HEAD` builds from `main`. | [ash/homebrew-rakupp](https://github.com/ash/homebrew-rakupp) | `brew install rakupp` |
 
 ## How they connect
@@ -34,6 +40,8 @@ graph TD
     SPEC["raku.online/spec<br/>feature spec, live examples"]
     TOUR["raku.online/tour<br/>interactive lessons"]
     CORPUS["raku-corpus<br/>real-world programs"]
+    EYE["raku-eye<br/>weekly measurement<br/>eye.raku.online"]
+    PWC["Weekly Challenge<br/>+ REA releases"]
     BREW["Homebrew tap<br/>ash/rakupp"]
     REL["GitHub Release<br/>binaries + wasm zip"]
 
@@ -47,6 +55,10 @@ graph TD
     SRC -->|tag → release.yml CI| REL
     NATIVE -->|rakupp build.raku<br/>--verify generator| TOUR
     REL -->|bump url + sha256| BREW
+    SRC -->|Monday: builds main,<br/>runs tools/ from main| EYE
+    CORPUS -->|golden battery| EYE
+    PWC -->|weekly delta| EYE
+    EYE -.->|ranked mismatch clusters<br/>+ regressions| SRC
 ```
 
 Two things are worth internalising because they drive the release runbook:
@@ -60,6 +72,14 @@ Two things are worth internalising because they drive the release runbook:
   `rakujs.{js,wasm}`. So **both sub-sites automatically inherit a new interpreter
   the moment raku.online is redeployed** — updating them is then only about the
   *content* (new feature pages / lessons), not the engine.
+- **raku-eye reads this repo's `main`, including its tools.** The Monday run
+  builds `main` and then drives `tools/pwc-sweep.raku`, `tools/run-bench.raku`
+  and `tools/eco-fresh/` *from that same checkout* — the tools are also tests.
+  So a driver that asks for a flag the pushed tool does not have is a red
+  Monday, not a silent skip: **push a tool change before the Eye needs it**
+  (the Eye's first run died exactly this way, on `exit 2` and a Usage block).
+  The flow is one-way — the Eye has no write access here and no fixing logic;
+  its output is a ranked list that a human fix session consumes.
 - **One origin, one deploy, no CI build.** The spec and the tour were once
   separate repos on `spec.raku.online` and `tour.raku.online`, each with its own
   Pages workflow that downloaded a release binary and built itself. Both repos
@@ -229,6 +249,19 @@ Optional but recommended: run the new binary over
 regressions that Roast's unit granularity misses. This is a test pass, not a
 deploy — nothing to publish, just a signal before (or right after) tagging.
 
+**raku-eye already does this every Monday**, so the question at release time is
+narrower: has the Eye run since the commits you are about to tag? Check
+[eye.raku.online](https://eye.raku.online/) — the corpus line should hold or
+climb and the regression box should be empty. If the release lands mid-week,
+either run the corpus leg by hand as above or trigger the Eye off-schedule:
+
+```sh
+gh workflow run weekly --repo ash/raku-eye
+```
+
+That is a measurement, not a publish decision: the Eye records the number that
+came out, so a bad week appears in the ledger either way.
+
 ---
 
 ## Quick reference
@@ -241,5 +274,7 @@ deploy — nothing to publish, just a signal before (or right after) tagging.
 | a feature's support level or a new feature | write/update its spec page and redeploy the spec (**C**) |
 | a tour lesson | `./build.sh tour` in the raku.online checkout, commit `www/`, push (**C**) |
 | stat numbers (Roast) | refresh the docs per the doc-sync checklist (**A.4**) |
+| a sweep tool (`tools/pwc-sweep.raku`, `tools/run-bench.raku`, `tools/eco-fresh/`) | push it to `main` before the next Monday — raku-eye runs the tools from `main`, so an unpushed change is a failed run (**D**) |
+| anything, and you want to know what it broke in the wild | read [eye.raku.online](https://eye.raku.online/) — the week's regressions and the ranked mismatch clusters are the fix-session worklist (**D**) |
 | the interpreter, at release time | re-run both benchmark harnesses and update BENCHMARKS.md — every release, not just when a kernel looks moved (**A.5**) |
 | cut a new version tag | bump the three pins in the Homebrew formula once CI has published the assets (**A.7**); rebuild the tour so its lessons re-verify on the new binary (**C**); republish the site data (**[RELEASING.md](../dev/RELEASING.md) step 5**) |
