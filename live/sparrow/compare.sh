@@ -1,6 +1,6 @@
 #!/bin/sh
 # Run the Sparrow6 scenario under Rakudo and under Raku++ and diff STDOUT.
-# This is the claim the showcase makes, made checkable.
+# This is the claim the entry makes, made checkable.
 #
 #   sh compare.sh                          # uses `rakupp` and `raku` from PATH
 #   RAKUPP=../../build/rakupp sh compare.sh # …or name a build tree explicitly
@@ -8,7 +8,7 @@
 # Sparrow6 is NOT installed by this script. Install it first, with either
 # installer — both write the same store:
 #
-#   build/rakupp tools/install.raku Sparrow6      # or: zef install Sparrow6
+#   rakupp install Sparrow6      # or: zef install Sparrow6
 #
 # Nothing else is needed; an installed dist resolves for both engines. (To run
 # against an unpacked checkout instead, export a comma-separated RAKULIB with
