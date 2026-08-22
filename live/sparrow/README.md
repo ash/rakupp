@@ -10,10 +10,34 @@ adjustment. What is here is only the four tasks and the scenario that drive it,
 which we wrote.
 
 It is also where **process startup** becomes measurable, because of how Sparrow
-is built. A scenario is Raku glue; every `task-run` spawns a *separate process*
-running that task in its own language. Four tasks, four spawns — and one of
-them is another Raku. That makes it a fair test of what an implementation
-charges to start, a cost a long-running program pays only once.
+is built. A scenario is Raku glue, and every `task-run` spawns *separate
+processes* to do the actual work. That makes it a fair test of what an
+implementation charges to start — a cost a long-running program pays only once,
+and this one pays per task.
+
+What gets spawned, watched by putting logging shims for `raku`, `perl` and
+`bash` on `PATH` — in order, for the four tasks above:
+
+```
+1.  bash  cmd.bash                            tasks/hello
+2.  raku  -I… -Mglue -Msparrow6lib task.raku  tasks/greet — started directly
+3.  bash  cmd.bash                            tasks/report
+4.  bash  cmd.bash                            tasks/perl-check — the wrapper…
+5.  perl  -I… -Msparrow6lib task.pl           …which starts perl
+6.  bash  cmd.bash                            tasks/perl-check, a second time
+7.  perl  -I… -Msparrow6lib task.pl
+```
+
+Each task runs in **its own** language: a Bash task does not start a Raku, and
+neither does a Perl one. Bash and Perl tasks are launched through a small
+generated `cmd.bash` wrapper — so those cost a shell process on top of whatever
+the task itself needs — while the Raku task is started directly, with no
+wrapper. Only that one task starts a `raku`, and that single spawn is most of
+the difference between the second and third rows of the table below.
+
+(Sparrow launches the Perl task twice for one line of output. That is Sparrow's
+own behaviour — verified identical under both engines — so it cancels out of
+the comparison rather than distorting it.)
 
 ```
 tasks/hello/task.bash        echo, in Bash
@@ -97,7 +121,9 @@ The middle row is not a curiosity, it is the thing to know before believing the
 bottom one. Sparrow6 builds its Raku task command with a **literal `raku`**
 (`Sparrow6::Task::Runner::Helpers::Raku`), so running the scenario under Raku++
 still starts a Rakudo for every Raku task — and that spawn is where the time
-is. `compare.sh` puts a `raku` shim on PATH to get the bottom row; a cleaner
+is. The corollary is worth stating: a scenario with **no** Raku tasks gains
+only the scenario's own startup from switching, because its Bash and Perl tasks
+cost exactly the same either way. `compare.sh` puts a `raku` shim on PATH to get the bottom row; a cleaner
 fix would be for Sparrow6 to honour something like `SP6_RAKU_BIN`.
 
 The gap is that wide for a reason specific to Sparrow's design. Its cache
