@@ -521,9 +521,15 @@ bool Parser::startsTermToken(const Token& t) const {
 bool Parser::startsListopArg(const Token& t) const {
     switch (t.kind) {
         case Tok::IntLit: case Tok::NumLit: case Tok::StrLit: case Tok::VersionLit: case Tok::StrInterp: case Tok::RegexLit: case Tok::SubstLit:
-        case Tok::QwList:
         case Tok::Var: case Tok::LParen:
             return true;
+        case Tok::QwList:
+            // `f <a b>` (spaced) passes the word list as arguments; TIGHT `f<a b>`
+            // subscripts the call's RESULT — `config<name>` is `config()<name>`,
+            // the same rule `foo[10]` follows just below. Rakudo applies it
+            // whatever the sub's signature says: `withargs<a>` reports
+            // "Calling withargs() will never work", i.e. a NO-argument call.
+            return t.spaceBefore;
         case Tok::LBracket:
             // `foo [1,2]` (spaced) is an array-literal argument; TIGHT `foo[10]`
             // indexes the call's RESULT (Rakudo semantics: (foo())[10])
@@ -550,7 +556,14 @@ bool Parser::startsListopArg(const Token& t) const {
             // route block) — but NOT in a statement condition, where `->` binds the
             // statement's own block (`for @a -> $x { }`)
             if (t.text == "->" || t.text == "<->") return !stmtCond_;
-            return t.text == "!" || t.text == "~" || t.text == "\\" || t.text == "<" ||
+            // A word list is an argument only when it is SPACED off the name:
+            // `is < foo bar >, exp` passes the list, while TIGHT `config<name>`
+            // subscripts the call's result — `config()<name>`, which is how
+            // Rakudo reads it whatever the sub's signature says (`withargs<a>`
+            // reports "Calling withargs() will never work", i.e. no arguments).
+            // parsePostfix owns the tight form, as it does for `foo[10]`.
+            if (t.text == "<") return t.spaceBefore;
+            return t.text == "!" || t.text == "~" || t.text == "\\" ||
                    t.text == ":" || t.text == "+" || t.text == "-" || t.text == "?" ||
                    t.text == "+^" || t.text == "~^" || t.text == "?^" || // prefix bitwise/bool NOT: `say +^$x`
                    t.text == "++" || t.text == "--" || // prefix incr/decr: `say 0, ++$x`
@@ -1645,6 +1658,28 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
             }
             expectKind(Tok::RBrace, "}");
             base = std::move(idx);
+        } else if (isKind(Tok::QwList) && !cur().spaceBefore && cur().text.find('\n') == std::string::npos) {
+            // `config<name>` — the lexer read the angles as a word list because a
+            // name puts it in term position; tight against the name it is the
+            // subscript `config()<name>`, not the argument `config("name")`.
+            std::vector<std::string> words;
+            { std::string cur_w;
+              for (char c : advance().text) {
+                  if (c == ' ' || c == '\t' || c == '\r') { if (!cur_w.empty()) words.push_back(cur_w); cur_w.clear(); }
+                  else cur_w += c;
+              }
+              if (!cur_w.empty()) words.push_back(cur_w); }
+            auto idx = std::make_unique<Index>();
+            idx->base = std::move(base);
+            idx->isHash = true;
+            if (words.size() == 1) idx->index = std::make_unique<StrLit>(words[0]);
+            else {
+                auto al = std::make_unique<ArrayLit>();
+                for (auto& w : words) al->items.push_back(std::make_unique<StrLit>(w));
+                idx->index = std::move(al);
+            }
+            base = std::move(idx);
+            continue;
         } else if (isOp("<") && !cur().spaceBefore) {
             // word-key hash subscript: %h<key>  (and $<name>/@<name>/%<name> capture sugar for $/<name>)
             // On a numeric literal (`1<2`) this can only be a mistyped comparison —

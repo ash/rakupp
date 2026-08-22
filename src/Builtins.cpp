@@ -552,7 +552,9 @@ void Interpreter::runProcPromise(Value& promise, double timeoutSec) {
     { auto c = promise.hash()->find("cwd"); if (c != promise.hash()->end()) cwd = c->second.toStr(); }
     // stderr is CAPTURED (not inherited): an async proc's noise must go to its
     // .stderr taps (or nowhere), never straight to the user's terminal.
-    spawnCapture(argv, timeoutSec, out, code, timedout, this, &err, cwd);
+    long long childPid = 0;
+    spawnCapture(argv, timeoutSec, out, code, timedout, this, &err, cwd, &childPid);
+    if (childPid) (*proc.hash())["pid"] = Value::integer(childPid);
     auto feed = [&](const char* key, const std::string& data) {
         auto taps = proc.hash()->find(key);
         if (taps == proc.hash()->end() || !taps->second.arr()) return;
@@ -5434,6 +5436,18 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             if (it != inv.hash()->end() && it->second.arr()) *out.arr() = *it->second.arrS();
             return out;
         }
+        // `.ready` is Rakudo's "the process has started" Promise, kept with the
+        // PID. This model runs the process when `.start` is realized, so a ready
+        // consulted BEFORE that has no PID to give and answers Nil — which is
+        // also what Rakudo before 2018.04 did, and what Sparrow6's
+        // `whenever $proc.ready` (an empty body) expects either way.
+        if (m == "ready") {
+            Value pr = Value::makeHash(); pr.hashKind = "Promise";
+            (*pr.hash())["kind"] = Value::str("proc-ready");
+            (*pr.hash())["proc"] = inv;
+            (*pr.hash())["status"] = Value::str("Planned");
+            return pr;
+        }
         if (m == "kill" || m == "close-stdin" || m == "print" || m == "say" || m == "write" || m == "put") return Value::boolean(true);
         // after runProcPromise stored the exit status on the proc:
         if (m == "exitcode") { auto it = inv.hash()->find("exitcode"); return it != inv.hash()->end() ? it->second : Value::integer(-1); }
@@ -9058,7 +9072,16 @@ void Interpreter::registerBuiltins() {
                         if (rctx) self->reactStack_.pop_back();
                         for (auto& p : lastP) { ValueList na; try { self->callCallable(p, na); } catch (...) {} }
                     };
-                    if (rctx) {
+                    // A Proc::Async stream registers EAGERLY. Tapping it only records
+                    // the callback — nothing is emitted until the process runs — and
+                    // the process runs inside the sibling `whenever $proc.start`,
+                    // which is part of the same react body. Deferring the
+                    // registration until after that body put it after the run, so
+                    // the output had already been fed to an empty tap list and the
+                    // block never fired.
+                    bool procStream = s.t == VT::Hash && s.hashKind == "Supply" && s.hash() &&
+                                      s.hash()->count("proc");
+                    if (rctx && !procStream) {
                         { std::lock_guard<std::mutex> lk(rctx->m); rctx->deferred.push_back(drain); }
                         Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
                     }
@@ -9079,6 +9102,19 @@ void Interpreter::registerBuiltins() {
                 double secs = s.hash()->count("seconds") ? (*s.hash())["seconds"].toNum() : 0;
                 std::shared_ptr<ReactCtx> ctx = I.reactStack_.empty() ? nullptr : I.reactStack_.back();
                 return I.spawnTimerWhenever(secs, blk, ctx);
+            }
+            // whenever $proc.ready { … } — fires once with the PID if the process
+            // has already run, and does NOT start it (that is `.start`'s job).
+            if (s.t == VT::Hash && s.hashKind == "Promise" &&
+                s.hash()->count("kind") && (*s.hash())["kind"].toStr() == "proc-ready") {
+                Value pidv = Value::nil();
+                if (s.hash()->count("proc") && (*s.hash())["proc"].hash()) {
+                    auto& ph = *(*s.hash())["proc"].hash();
+                    auto it = ph.find("pid"); if (it != ph.end()) pidv = it->second;
+                }
+                ValueList one{pidv};
+                try { I.callCallable(blk, one); } catch (NextEx&) {} catch (LastEx&) {} catch (DoneEx&) {}
+                Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
             }
             // whenever $proc.start { … } — a lazy Proc::Async promise: the process
             // runs when the promise is realized (await does the same); run it NOW,
@@ -9749,6 +9785,13 @@ void Interpreter::registerBuiltins() {
                 return p;
             }
             if (kind == "proc") { I.runProcPromise(p, 0); return p; }
+            if (kind == "proc-ready") {
+                if (p.hash()->count("proc") && (*p.hash())["proc"].hash()) {
+                    auto& ph = *(*p.hash())["proc"].hash();
+                    auto it = ph.find("pid"); if (it != ph.end()) return it->second;
+                }
+                return Value::nil();
+            }
             auto it = p.hash()->find("result"); return it != p.hash()->end() ? it->second : p; // plain/old-style
         };
         if (a.size() == 1 && a[0].t == VT::Array) {

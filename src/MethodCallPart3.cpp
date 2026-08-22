@@ -1341,7 +1341,12 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         if (m == "absolute" || m == "canonpath" || m == "cleanup") {
             std::string s = inv.toStr();
             if (m == "absolute" && !s.empty() && s[0] != '/') {
-                char buf[4096]; if (getcwd(buf, sizeof buf)) s = std::string(buf) + "/" + s;
+                // `.absolute($base)` resolves against $base rather than $*CWD
+                std::string base;
+                if (!args.empty()) base = args[0].toStr();
+                if (base.empty()) { char buf[4096]; if (getcwd(buf, sizeof buf)) base = buf; }
+                if (!base.empty() && base.back() == '/') base.pop_back();
+                s = base + "/" + s;
             }
             if (m == "canonpath" || m == "cleanup") {
                 // squeeze repeated separators and drop `.` segments — but NOT
@@ -1359,7 +1364,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 if (out.empty()) out = ".";
                 return m == "canonpath" ? Value::str(out) : asIO(out);
             }
-            return asIO(s);
+            return Value::str(s);   // .absolute is a Str, like .relative
         }
         if (m == "is-absolute") return Value::boolean(!inv.toStr().empty() && inv.toStr()[0] == '/');
         // the path's OS grammar and the directory it is resolved against
