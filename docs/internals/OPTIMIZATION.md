@@ -577,40 +577,37 @@ for reference):
 ./build/rakupp tools/run-optbench.raku
 ```
 
-Best of 5 runs each, on this machine (macOS/Darwin 24.6, Rakudo v2026.06,
-measured 2026-07-17 with all three passes):
+Best of 5 runs each and the minimum across three passes, on the benchmarks
+machine (macOS/Darwin 24.6, Apple M3, Rakudo v2026.07, measured 2026-08-22 at
+`v3.6.0-36-g9dfc982` with all three passes). The last three rows were added on
+2026-08-22 to measure where `-O` does **not** yet reach — one per lever named
+in "Limits and what's next" above — and are now in the same sitting as the
+rest, so every row here is comparable:
 
 | benchmark | `--exe` | `--exe -O` | `-O` speed-up | rakudo | showcases |
 |---|---:|---:|---:|---:|---|
-| sieve       | 1029.3 ms | **25.4 ms**  | **40.6×** | 994.5 ms  | primes <200k — `* <= %%` |
-| powmod      | 531.5 ms  | **50.6 ms**  | **10.5×** | 716.8 ms  | 1M `** 3` then `% 1000` |
-| intsum      | 283.1 ms  | **35.9 ms**  | **7.9×**  | 624.0 ms  | 5M `+= $_ * 2 - 1` |
-| fibcalls    | 701.3 ms  | **190.9 ms** | **3.7×**  | 1353.3 ms | fib(32) — calls + `< + -` |
-| stringbuild | 22.3 ms   | 21.9 ms      | 1.0×      | 204.7 ms  | 400k `~=` — already O(n) by default |
+| sieve       | 971.4 ms | **20.2 ms**  | **48.1×** | 1002.6 ms | primes <200k — `* <= %%` |
+| powmod      | 530.8 ms | **21.1 ms**  | **25.2×** | 728.6 ms  | 1M `** 3` then `% 1000` |
+| intsum      | 127.6 ms | **16.5 ms**  | **7.7×**  | 648.0 ms  | 5M `+= $_ * 2 - 1` |
+| fibcalls    | 349.1 ms | **62.2 ms**  | **5.6×**  | 1381.2 ms | fib(32) — calls + `< + -` |
+| arrayidx    | 90.0 ms  | 47.1 ms      | 1.9×      | 563.3 ms  | array-element lanes — **not built yet** |
+| nummath     | 120.5 ms | 92.2 ms      | 1.3×      | 430.7 ms  | `Num` lanes — **not built yet** |
+| methodcalls | 284.4 ms | 274.6 ms     | 1.0×      | 309.3 ms  | devirtualizing monomorphic calls — **not built yet** |
+| stringbuild | 5.7 ms   | 5.6 ms       | 1.0×      | 209.2 ms  | 400k `~=` — already O(n) by default |
 
-Three kernels were added on 2026-08-22 to measure where `-O` does **not** yet
-reach — one per lever named in "Limits and what's next" above. Their first
-sitting is on a different machine (M1/Darwin 25.5, Rakudo v2026.07) and so is
-tabled separately rather than merged into the rows above:
+What little the three "not built yet" rows gain comes from the parts of the
+loop that ARE laneable — the int counter and its comparison — not from the work
+the kernel is named for, which is exactly the point. `methodcalls` is the one
+to watch: at 1.0× from `-O` and only 1.1× ahead of Rakudo even compiled, it
+agrees with the `objects` row in [BENCHMARKS.md](../status/BENCHMARKS.md),
+where the interpreter is 1.8× *behind* Rakudo on the same machine. Two
+independently added kernels landing on the same conclusion is the reason to
+believe it: method dispatch is the hot path with the least done to it.
 
-| benchmark | `--exe` | `--exe -O` | `-O` speed-up | rakudo | lever it measures |
-|---|---:|---:|---:|---:|---|
-| arrayidx    | 101.1 ms | 58.1 ms  | 1.7× | 815.2 ms | array-element lanes |
-| nummath     | 150.1 ms | 109.3 ms | 1.4× | 579.5 ms | `Num` lanes |
-| methodcalls | 319.4 ms | 295.7 ms | 1.1× | 333.7 ms | devirtualizing monomorphic calls |
-
-What little each gains today comes from the parts of the loop that ARE
-laneable — the int counter and its comparison — not from the work the kernel is
-named for, which is exactly the point. `methodcalls` is the one to watch: at
-1.1× from `-O` and only 1.1× ahead of Rakudo even compiled, it agrees with the
-`objects` row in [BENCHMARKS.md](../status/BENCHMARKS.md), where the
-interpreter is 2.2× *behind* Rakudo. Two independently added kernels landing on
-the same conclusion is the reason to believe it: method dispatch is the hot
-path with the least done to it.
-
-The int lanes (pass 3) are what moved the first table: `sieve`'s whole inner loop —
-`while $d * $d <= $n`, `if $n %% $d`, `$d++` — now runs as raw `int64`, taking
-it from a tie with Rakudo at plain `--exe` (1029 vs 995 ms) to 39× ahead;
+The int lanes (pass 3) are what moved the top of the table: `sieve`'s whole
+inner loop — `while $d * $d <= $n`, `if $n %% $d`, `$d++` — now runs as raw
+`int64`, taking it from a tie with Rakudo at plain `--exe` (971 vs 1003 ms) to
+50× ahead;
 `intsum` went from a small edge (arithmetic already fast, boxing dominant) to
 7.9× once the four per-iteration `Value` constructions disappeared.
 `stringbuild` is flat because in-place `~=` is default in both builds. As

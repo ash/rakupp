@@ -18,10 +18,10 @@
     'tolerance-pct' => 5,     # a build may be this much slower before the gate fails
     'kernels' => {
         # kernel  => { baseline-ms, best-ms, best-version, best-date }
-        'fib'     => { 'baseline' => 656.4, 'best' => 656.4, 'best-version' => '3.14.0', 'best-date' => '2026-08-11' },
-        'asg'     => { 'baseline' => 447.1, 'best' => 447.1, 'best-version' => '3.14.0', 'best-date' => '2026-08-11' },
-        'loopsum' => { 'baseline' => 196.3, 'best' => 194.4, 'best-version' => '1.0.0', 'best-date' => '2026-07-22' },
-        'hash'    => { 'baseline' => 36.0, 'best' => 36.0, 'best-version' => '3.14.0', 'best-date' => '2026-08-11' },
+        'fib'     => { 'baseline' => 377.1, 'best' => 377.1, 'best-version' => 'unreleased', 'best-date' => '2026-08-22' },
+        'asg'     => { 'baseline' => 169.3, 'best' => 169.3, 'best-version' => 'unreleased', 'best-date' => '2026-08-22' },
+        'loopsum' => { 'baseline' => 98.0, 'best' => 98.0, 'best-version' => 'unreleased', 'best-date' => '2026-08-22' },
+        'hash'    => { 'baseline' => 17.8, 'best' => 17.8, 'best-version' => 'unreleased', 'best-date' => '2026-08-22' },
         # The three string/call kernels were added 2026-08-09 and have no release
         # history, so their FIRST baseline is the number measured the day they
         # landed rather than the last release's. That is deliberate: v3.0.1
@@ -32,9 +32,10 @@
         #   strscan  2883.0 -> 221.6   (.substr stopped copying and rescanning)
         #   strpass   184.3 -> 153.8
         #   subcall   375.3 -> 281.1   (binder fast path, cached signature facts)
-        'strscan' => { 'baseline' => 195.8, 'best' => 195.8, 'best-version' => '3.14.0', 'best-date' => '2026-08-11' },
-        'strpass' => { 'baseline' => 147.1, 'best' => 147.1, 'best-version' => '3.14.0', 'best-date' => '2026-08-11' },
-        'subcall' => { 'baseline' => 267.6, 'best' => 267.6, 'best-version' => '3.14.0', 'best-date' => '2026-08-11' },
+        'strscan' => { 'baseline' => 124.9, 'best' => 124.9, 'best-version' => 'unreleased', 'best-date' => '2026-08-22' },
+        'strpass' => { 'baseline' => 81.4, 'best' => 81.4, 'best-version' => 'unreleased', 'best-date' => '2026-08-22' },
+        'subcall' => { 'baseline' => 182.5, 'best' => 182.5, 'best-version' => 'unreleased', 'best-date' => '2026-08-22' },
+        'rats'    => { 'baseline' => 254.1, 'best' => 254.1, 'best-version' => 'unreleased', 'best-date' => '2026-08-22' },
         # `rats` was added to the guard on 2026-08-22, after the cold block
         # moved the Rat numerator/denominator pair out of the inline Value, and
         # it went in here WITHOUT a number: it was written on the M1/Darwin 25.5
@@ -54,9 +55,15 @@
     # Re-recorded 2026-08-11 for v3.14.0, at 594/1462 Roast files. The check
     # against the v3.1.0 baseline passed first (every kernel 1.9-3.0% FASTER
     # -- the SLIM campaign's interpreter-side changes cost nothing), so this
-    # re-record tightens the reference rather than absorbing a debt. `best`
-    # moves with it for six of the seven kernels; loopsum keeps its 1.0.0
-    # best (194.4): that debt is still open and stays visible rather than
-    # being quietly reset.
-    'recorded' => '2026-08-11 (v3.14.0)',
+    # re-record tightens the reference rather than absorbing a debt: on
+    # 2026-08-22 every kernel came down 32-62% (asg 447.1 -> 169.3, hash
+    # 36.0 -> 17.8) and not one moved up, so nothing was absorbed. `best`
+    # moves with all of them this time — loopsum's long-standing debt against
+    # its 1.0.0 best of 194.4 is CLOSED rather than reset, since 98.0 beats it
+    # outright. `rats` joins with its first recorded number.
+    #
+    # NOTE: `--record` does not stamp the 'recorded' field below, and `--check`
+    # prints it — so it must be edited by hand after every record, or the gate
+    # reports the wrong provenance for its own numbers.
+    'recorded' => '2026-08-22 (v3.6.0-36-g9dfc982)',
 }
