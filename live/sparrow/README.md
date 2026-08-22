@@ -121,9 +121,10 @@ The middle row is not a curiosity, it is the thing to know before believing the
 bottom one. Sparrow6 builds its Raku task command with a **literal `raku`**
 (`Sparrow6::Task::Runner::Helpers::Raku`), so running the scenario under Raku++
 still starts a Rakudo for every Raku task — and that spawn is where the time
-is. The corollary is worth stating: a scenario with **no** Raku tasks gains
-only the scenario's own startup from switching, because its Bash and Perl tasks
-cost exactly the same either way. `compare.sh` puts a `raku` shim on PATH to get the bottom row; a cleaner
+is. The corollary is worth stating: for a scenario with **no** Raku tasks the gain
+is confined to the scenario process itself — its startup, plus however fast the
+engine runs Sparrow's own orchestration — because the Bash and Perl tasks cost
+the same either way. `compare.sh` puts a `raku` shim on PATH to get the bottom row; a cleaner
 fix would be for Sparrow6 to honour something like `SP6_RAKU_BIN`.
 
 The gap is that wide for a reason specific to Sparrow's design. Its cache
