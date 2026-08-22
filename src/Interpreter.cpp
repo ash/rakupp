@@ -20272,7 +20272,7 @@ Value Interpreter::evalTempLet(Call* c) {
         Value base = eval(ix->base.get());
         Value key = eval(ix->index.get());
         if (base.t == VT::Array && base.arr() && !ix->isHash) {
-            auto arr = base.arr(); long long i = key.toInt();
+            auto arr = base.arrS(); long long i = key.toInt(); // shared: the restore runs at scope exit, `base` is long gone
             if (i < 0) i += (long long)arr->size();
             if (i >= 0 && i < (long long)arr->size()) {
                 Value snapshot = snap((*arr)[i]);
@@ -20283,7 +20283,7 @@ Value Interpreter::evalTempLet(Call* c) {
             }
         }
         else if (base.t == VT::Hash && base.hash()) {
-            auto h = base.hash(); std::string k = key.toStr();
+            auto h = base.hashS(); std::string k = key.toStr(); // shared: the restore runs at scope exit, `base` is long gone
             auto it = h->find(k);
             bool existed = it != h->end();
             Value snapshot = existed ? snap(it->second) : Value::any();

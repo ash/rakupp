@@ -6183,7 +6183,7 @@ Value Interpreter::tapSignal(const std::vector<int>& sigs, Value emitCb, Value d
     // (Ctrl-C falls to the default handler) so `signal()` still type-checks and
     // programs that merely construct the Supply keep working.
     (void)sigs; (void)emitCb; (void)doneCb; (void)reactCtx;
-    Value t = Value::makeHash(); t.hashKind = "Tap"; t.ext() = handle;
+    Value t = Value::makeHash(); t.hashKind = "Tap"; t.extM() = handle;
     (*t.hash())["wired"] = Value::boolean(true);
     return t;
 #else
@@ -8967,7 +8967,7 @@ void Interpreter::registerBuiltins() {
                         // handles it (like a CATCH), and with no QUIT phaser the
                         // exception is fatal to the whole react, as in Rakudo.
                         std::weak_ptr<ReactCtx> wctx = rctx;
-                        auto th = tapRec.hash();
+                        auto th = tapRec.hashS(); // shared: the quit lambda can fire after tapRec's last Value copy dies
                         Value quitW; quitW.t = VT::Code; quitW.setCode(std::make_shared<Callable>());
                         quitW.code()->builtin = [quitP, wctx, th](Interpreter& I2, ValueList& a) -> Value {
                             (*th)["closed"] = Value::boolean(true);

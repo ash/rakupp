@@ -175,7 +175,7 @@ sub rk-match-tree($m) {
     return Any unless $m.defined;
     return $m.map({ rk-match-tree($_) }).Array if $m ~~ Positional;
     return $m unless $m ~~ Match;
-    my %named = $m.hash();
+    my %named = $m.hash;
     my @pos   = $m.list;
     return ~$m if !%named.elems && !@pos.elems;
     my %out;

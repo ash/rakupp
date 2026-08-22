@@ -102,7 +102,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             auto ps = std::make_shared<PromiseState>();
             p.extM() = ps;
             (*p.hash())["status"] = Value::str("Planned");
-            auto ph = p.hash();
+            auto ph = p.hashS(); // shared: settle lives on the supplier, the Promise may die first
             auto last = std::make_shared<Value>(Value::any());
             auto settle = [ps, ph](bool broke, Value v) {
                 std::vector<std::function<void()>> fire;
@@ -283,7 +283,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             // both `.receive`/`.poll` (the queue) and `.Supply` (re-expose) see
             // the live stream. `.Channel` must forward emits, not snapshot.
             Value c = Value::makeHash(); c.hashKind = "Channel";
-            Value q = Value::array(); auto qarr = q.arr();
+            Value q = Value::array(); auto qarr = q.arrS(); // shared: the emit lambda outlives a temporary channel
             (*c.hash())["queue"] = q;
             (*c.hash())["closed"] = Value::boolean(false);
             (*c.hash())["supplier"] = (*inv.hash())["supplier"];
