@@ -35,6 +35,21 @@
         'strscan' => { 'baseline' => 195.8, 'best' => 195.8, 'best-version' => '3.14.0', 'best-date' => '2026-08-11' },
         'strpass' => { 'baseline' => 147.1, 'best' => 147.1, 'best-version' => '3.14.0', 'best-date' => '2026-08-11' },
         'subcall' => { 'baseline' => 267.6, 'best' => 267.6, 'best-version' => '3.14.0', 'best-date' => '2026-08-11' },
+        # `rats` was added to the guard on 2026-08-22, after the cold block
+        # moved the Rat numerator/denominator pair out of the inline Value, and
+        # it went in here WITHOUT a number: it was written on the M1/Darwin 25.5
+        # box, not the Darwin 24.6 machine this file is stamped with, and that
+        # box measures the Raku++ binary 1.3-1.5x slower. Its 256.9 ms would
+        # therefore have sat ~30% loose beside its neighbours and let a real
+        # regression through the very gate it was added to build -- the same
+        # mistake the strscan note above describes avoiding, in a new form.
+        # Two changes made the absence safe rather than broken: `--check`
+        # reports an unrecorded kernel as "not gated" instead of dividing by a
+        # missing baseline, and `--record` ADDS a missing kernel's line instead
+        # of failing verification, so the first re-record on the benchmarks
+        # machine picks it up with no hand-editing. If a 'rats' line is present
+        # above, that re-record has happened and 256.9 is only the M1 reference
+        # the number should have landed below.
     },
     # Re-recorded 2026-08-11 for v3.14.0, at 594/1462 Roast files. The check
     # against the v3.1.0 baseline passed first (every kernel 1.9-3.0% FASTER

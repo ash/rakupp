@@ -542,19 +542,27 @@ conditions; the remaining levers, in rough order of expected payoff:
 - **value-position lanes** — laneable int expressions inside larger
   expressions (call arguments, list elements) still box;
 - **`Num` lanes** — the same trick for `double` arithmetic (no overflow
-  checks needed, just tag guards);
+  checks needed, just tag guards) — measuring stick: `nummath`;
 - **array-element lanes** — `@a[$i]` reads/writes inside the lane (a bounds +
-  tag guard against the underlying vector);
+  tag guard against the underlying vector) — measuring stick: `arrayidx`;
 - **native int locals** — the big one for both memory and speed: prove a typed
   local (`my int $x`) never escapes into a `Value` context and never leaves
   `Int`, then emit a raw `long long` with **no box at all** — eliminating the
   376-byte storage and the per-iteration `Value` copies, not just the per-op
   construction. This is a genuine escape-analysis / type-flow pass, the natural
   successor to pass 3;
-- devirtualizing monomorphic method calls, constant-folding literal
-  arithmetic, and specializing `.map`/`.grep`/`.sort` on native element types.
+- devirtualizing monomorphic method calls (measuring stick: `methodcalls`),
+  constant-folding literal arithmetic, and specializing `.map`/`.grep`/`.sort`
+  on native element types.
 
 `-O` today is the three passes above.
+
+Three of those levers now have a kernel in the showcase suite that measures the
+gap rather than a win: `nummath`, `arrayidx` and `methodcalls` were added on
+2026-08-22 for exactly that. A showcase whose every row is a speed-up cannot
+tell you where the optimizer stops, and a lever with no kernel behind it is a
+claim about future work with no number attached. These three report ~1× today;
+when a lever lands, its row is the evidence.
 
 ## Showcase suite
 
@@ -580,7 +588,27 @@ measured 2026-07-17 with all three passes):
 | fibcalls    | 701.3 ms  | **190.9 ms** | **3.7×**  | 1353.3 ms | fib(32) — calls + `< + -` |
 | stringbuild | 22.3 ms   | 21.9 ms      | 1.0×      | 204.7 ms  | 400k `~=` — already O(n) by default |
 
-The int lanes (pass 3) are what moved this table: `sieve`'s whole inner loop —
+Three kernels were added on 2026-08-22 to measure where `-O` does **not** yet
+reach — one per lever named in "Limits and what's next" above. Their first
+sitting is on a different machine (M1/Darwin 25.5, Rakudo v2026.07) and so is
+tabled separately rather than merged into the rows above:
+
+| benchmark | `--exe` | `--exe -O` | `-O` speed-up | rakudo | lever it measures |
+|---|---:|---:|---:|---:|---|
+| arrayidx    | 101.1 ms | 58.1 ms  | 1.7× | 815.2 ms | array-element lanes |
+| nummath     | 150.1 ms | 109.3 ms | 1.4× | 579.5 ms | `Num` lanes |
+| methodcalls | 319.4 ms | 295.7 ms | 1.1× | 333.7 ms | devirtualizing monomorphic calls |
+
+What little each gains today comes from the parts of the loop that ARE
+laneable — the int counter and its comparison — not from the work the kernel is
+named for, which is exactly the point. `methodcalls` is the one to watch: at
+1.1× from `-O` and only 1.1× ahead of Rakudo even compiled, it agrees with the
+`objects` row in [BENCHMARKS.md](../status/BENCHMARKS.md), where the
+interpreter is 2.2× *behind* Rakudo. Two independently added kernels landing on
+the same conclusion is the reason to believe it: method dispatch is the hot
+path with the least done to it.
+
+The int lanes (pass 3) are what moved the first table: `sieve`'s whole inner loop —
 `while $d * $d <= $n`, `if $n %% $d`, `$d++` — now runs as raw `int64`, taking
 it from a tie with Rakudo at plain `--exe` (1029 vs 995 ms) to 39× ahead;
 `intsum` went from a small edge (arithmetic already fast, boxing dominant) to

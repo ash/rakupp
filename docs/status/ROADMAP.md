@@ -247,8 +247,13 @@ the recursion-heavy rows again. The *interpreter* has since taken the last two
 as well: lexical pads put slot-indexed variable access under the tree-walker
 and carried `fib`, and the TARG plan's first slice — a plain `$padvar = EXPR`
 skipping the assignment ceremony — carried `streq`. Interpreted, Raku++ now
-leads Rakudo on all ten kernels, though `fib` (1.2×) and `streq` (1.1×) are
-level rather than led.
+leads Rakudo on all ten of the kernels that table covers, though `fib` (1.2×)
+and `streq` (1.1×) are level rather than led. Six kernels were added on
+2026-08-22 to cover classes the set had never measured — `rats`, `objects`,
+`arraypush`, `sortby`, `textsplit` — and one is a clear loss: `objects`
+(200k `.new` plus 300k method calls) is 2.2× behind Rakudo interpreted, with
+`--exe` still behind Rakudo's interpreter. Method dispatch is now the
+measured weak spot; see BENCHMARKS.md.
 
 ## How to make progress efficiently
 

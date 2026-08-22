@@ -37,7 +37,13 @@ my @benches =
     %( :name<intsum>,      :note('5M int accumulation — inline + - *') ),
     %( :name<fibcalls>,    :note('fib(32) — direct-arity calls + inline < + -') ),
     %( :name<powmod>,      :note('1M `** 3` then `% 1000` — inline pow + mod') ),
-    %( :name<sieve>,       :note('primes < 200k by trial division — inline * <= %%') );
+    %( :name<sieve>,       :note('primes < 200k by trial division — inline * <= %%') ),
+    # The three below are here to show where `-O` does NOT reach yet: each is the
+    # measuring stick for one of the levers named in OPTIMIZATION.md's "Limits
+    # and what's next", so the table reports the gap rather than only the wins.
+    %( :name<nummath>,     :note('Mandelbrot escape count — Num math, no lane yet') ),
+    %( :name<arrayidx>,    :note('2M @a[$i] read-modify-write — no element lane yet') ),
+    %( :name<methodcalls>, :note('1M monomorphic method calls — not devirtualized yet') );
 
 # Best (minimum) wall-clock over the measured runs, in milliseconds.
 sub measure(@cmd --> Numeric) {

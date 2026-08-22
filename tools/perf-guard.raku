@@ -12,10 +12,14 @@
 #   strscan — per-character .substr over a long string
 #   strpass — a long string passed to a sub, 200k times
 #   subcall — a typed `is rw` signature called 200k times
+#   rats    — 200k short-lived Rats created, summed and read once each
 # (loopsum/hash were added after a ~8-22% interp regression on exactly these
 # shapes slipped past the old fib+asg-only guard over the 0.7.1->0.9.0 cycle.
 # strscan/strpass/subcall were added after v3.0.1 replaced the string
-# representation and the guard, being all-Int, could not see it either way.)
+# representation and the guard, being all-Int, could not see it either way.
+# rats was added after the cold block moved the Rat pair out of line: every
+# kernel above lives entirely in the inline part of a Value, so the one type
+# the change could plausibly have taxed was again invisible to the gate.)
 #
 # Usage — A/B two binaries:
 #     RAKUPP=/path/to/old rakupp tools/perf-guard.raku
@@ -96,11 +100,29 @@ my %kernels =
     subcall => 'use nqp; my str $s = "   x" x 200000;
                 sub nomws(str $t, int $p is rw --> Nil) { nqp::while(nqp::iseq_i(nqp::ordat($t,$p),32), ++$p) }
                 my int $n = 0; my int $p = 0;
-                while $n < 200000 { nomws($s, $p); $p = $p + 4; $n = $n + 1 }; say $p;';
+                while $n < 200000 { nomws($s, $p); $p = $p + 4; $n = $n + 1 }; say $p;',
+    # rats was added 2026-08-22, after the batch-two representation work moved
+    # the Rat numerator/denominator pair out of the inline Value and behind the
+    # lazily-allocated cold block (REPRESENTATION-PLAN.md). That trade pays for
+    # itself on values that get COPIED — 128 bytes instead of 344 — and charges
+    # one small allocation to values that are merely CREATED and read. A program
+    # that mass-creates short-lived Rats and reads each once is therefore the one
+    # named shape that could pay without collecting, and no kernel isolated it:
+    # fib/asg/loopsum/hash/streq are Int, strscan/strpass/subcall are string.
+    # This is not a synthetic shape either — every decimal literal in Raku is a
+    # Rat, so any money or unit-conversion loop is exactly this program.
+    # 0.01 * n keeps the denominator bounded (no bignum promotion, so the kernel
+    # measures Rat handling and not the BigInt path), while the gcd reduction
+    # still varies per iteration. The same loop with `1 *` instead of `0.01 *`
+    # runs in 60 ms against this kernel's ~440, so ~85% of what it times is
+    # Rat-specific: a regression in that path cannot hide in loop overhead.
+    rats    => 'my $t = 0; my $d = 0;
+                for 1 .. 200_000 { my $r = 0.01 * ($_ % 97); $t += $r; $d += $r.denominator }
+                say $t, " ", $d;';
 
 # The kernel list, in one place: the run loop and the gate loop must agree, and
 # they used to carry two hardcoded copies of it.
-my @KERNELS = <fib asg loopsum hash strscan strpass subcall>;
+my @KERNELS = <fib asg loopsum hash strscan strpass subcall rats>;
 
 
 # The 1-minute load average, and how many cores there are to carry it. A busy
@@ -158,6 +180,8 @@ if $record {
     # numbers with a regex and silently matched nothing, which is worse than not
     # having a record path at all; hence the verification at the end.)
     my @out;
+    my %seen;          # kernels that already had a line in the file
+    my $last-kernel = -1;   # where to splice a NEW kernel's line in
     for $BASEFILE.slurp.lines -> $line {
         my $matched = '';
         # plain string test, not a regex: interpolating $k into a pattern does not
@@ -165,6 +189,7 @@ if $record {
         # work on the interpreter it measures
         for %now.keys -> $k { $matched = $k if $line.trim.starts-with("'$k'") }
         if $matched {
+            %seen{$matched} = True;
             my $e    = %b<kernels>{$matched};
             my $base = %now{$matched};
             # a kernel that got FASTER than anything seen before moves `best` too
@@ -180,8 +205,26 @@ if $record {
             my $close = '}';
             @out.push: "        '$matched'$pad=> $open 'baseline' => $base, 'best' => $best, "
                      ~ "'best-version' => '$ver', 'best-date' => '$date' $close,";
+            $last-kernel = @out.end;
         }
         else { @out.push: $line }
+    }
+    # A kernel ADDED to @KERNELS since the file was last written has no line to
+    # rewrite. Before this, the loop above matched nothing for it, the
+    # verification at the end reported "record FAILED", and the only way to add
+    # a kernel was to hand-edit this file — which is how strscan/strpass/subcall
+    # got in. Write the missing lines instead, right after the last kernel line.
+    my @new = %now.keys.grep({ !%seen{$_} }).sort;
+    if @new && $last-kernel >= 0 {
+        my @lines;
+        for @new -> $k {
+            my $v    = %now{$k}.fmt('%.1f');
+            my $pad  = ' ' x (8 - $k.chars);
+            my $open = '{'; my $close = '}';
+            @lines.push: "        '$k'$pad=> $open 'baseline' => $v, 'best' => $v, "
+                       ~ "'best-version' => 'unreleased', 'best-date' => '{Date.today}' $close,";
+        }
+        @out.splice($last-kernel + 1, 0, |@lines);
     }
     $BASEFILE.spurt(@out.join("\n") ~ "\n");
     # verify the write actually took, rather than trusting the substitution
@@ -191,6 +234,7 @@ if $record {
     if @bad { note "record FAILED to update: @bad.join(', ')"; exit 1 }
     say "";
     say "recorded {%now.elems} kernels into {$BASEFILE.basename}";
+    say "added: @new.join(', ') (no previous baseline)" if @new;
     exit 0;
 }
 
@@ -202,15 +246,33 @@ if $check {
     say "gate: baseline {$BASEFILE.basename} (recorded %b<recorded>), tolerance {$tol}%";
     say "kernel        now   baseline    delta   vs best";
     say "-" x 52;
+    # A kernel with NO line in the baseline file is one that was added to
+    # @KERNELS and not yet recorded — most often because it was added on a
+    # machine other than the one the file is stamped with, so its number here
+    # would not be comparable with its neighbours. It is reported and skipped.
+    # (Before this it divided by a missing baseline, printed `+Inf%`, and took
+    # the whole gate down with it — a new kernel could not be added without
+    # hand-editing the baseline file first.)
+    my @ungated;
     for @KERNELS -> $k {
-        my $base = %b<kernels>{$k}<baseline>;
-        my $best = %b<kernels>{$k}<best>;
+        my $e = %b<kernels>{$k};
+        unless $e.defined && $e<baseline>.defined {
+            printf "%-10s %7.1f  %9s  %7s  %7s\n", $k, %now{$k}, '—', 'n/a', 'n/a';
+            @ungated.push($k);
+            next;
+        }
+        my $base = $e<baseline>;
+        my $best = $e<best>;
         my $d    = 100 * (%now{$k} - $base) / $base;
         my $vb   = 100 * (%now{$k} - $best) / $best;
         printf "%-10s %7.1f  %9.1f  %+6.1f%%  %+6.1f%%\n", $k, %now{$k}, $base, $d, $vb;
         @bad.push("$k {$d.round(0.1)}% slower than baseline") if $d > $tol;
     }
     say "";
+    if @ungated {
+        note "note: not gated (no recorded baseline): @ungated.join(', ') — "
+           ~ "run `perf-guard --record` on the machine {$BASEFILE.basename} names.";
+    }
     # A failing kernel is RE-MEASURED before the gate believes it. Absolute times
     # on a desktop move by tens of percent when a background daemon wakes up —
     # during one afternoon this gate reported four regressions of up to +50%,
@@ -220,7 +282,7 @@ if $check {
         note "perf-guard: {@bad.elems} kernel(s) over tolerance — re-measuring before believing it";
         my @still;
         for @KERNELS -> $k {
-            my $base = %b<kernels>{$k}<baseline>;
+            my $base = %b<kernels>{$k}<baseline> // next;
             next unless 100 * (%now{$k} - $base) / $base > $tol;
             my $again = measure(%kernels{$k});
             my $d = 100 * ($again - $base) / $base;
@@ -256,7 +318,8 @@ if $check {
     }
     say "perf-guard OK — no kernel is more than {$tol}% slower than the last release.";
     my @debt = <fib asg loopsum hash>.grep({
-        100 * (%now{$_} - %b<kernels>{$_}<best>) / %b<kernels>{$_}<best> > $tol });
+        %b<kernels>{$_}<best>.defined
+        && 100 * (%now{$_} - %b<kernels>{$_}<best>) / %b<kernels>{$_}<best> > $tol });
     note "note: still behind the best ever measured on: @debt.join(', ') "
        ~ "(see the `best` column — standing debt, not a new regression)" if @debt;
     exit 0;

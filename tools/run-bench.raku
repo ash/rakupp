@@ -74,13 +74,19 @@ my @benches =
     %( :name<fib>,      :file("fib.raku"),      :note('naïve recursive fib(29)') ),
     %( :name<strcat>,   :file("strcat.raku"),   :note('50_000 string concatenations') ),
     %( :name<arrayops>, :file("arrayops.raku"), :note('grep+map+sum over 200_000') ),
+    %( :name<arraypush>,:file("arraypush.raku"),:note('200k push, then indexed read and write') ),
     %( :name<sortnums>, :file("sortnums.raku"), :note('sort 50_000 integers') ),
+    %( :name<sortby>,   :file("sortby.raku"),   :note('sort 30_000 strings by a 1-ary key extractor') ),
     %( :name<regex>,    :file("regex.raku"),    :note('50_000 regex matches') ),
     %( :name<hash>,     :file("hash.raku"),     :note('100_000 hash increments') ),
     %( :name<hashfill>, :file("hashfill.raku"), :perl("hashfill.pl"),
        :note('200k-key hash fill + values sweep + 50k-append string build') ),
     %( :name<bigint>,   :file("bigint.raku"),   :note('factorial(5000) via BigInt multiply') ),
-    %( :name<streq>,    :file("streq.raku"),    :note('1M string eq/lt comparisons') );
+    %( :name<streq>,    :file("streq.raku"),    :note('1M string eq/lt comparisons') ),
+    %( :name<textsplit>,:file("textsplit.raku"),:perl("textsplit.pl"),
+       :note('20k lines split into fields, reordered, rejoined') ),
+    %( :name<rats>,     :file("rats.raku"),     :note('200k short-lived Rats summed and read') ),
+    %( :name<objects>,  :file("objects.raku"),  :note('200k .new + 300k method calls') );
 @benches = @benches.grep({ .<name> (elem) @only }) if @only;
 unless @benches {
     note "run-bench: --only matched no kernels";

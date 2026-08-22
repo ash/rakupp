@@ -101,6 +101,7 @@ The rest, in a line each:
 | `strscan` | per-character `.substr` over a 200 KB string, 200k calls — catches any op that re-scans or copies the invocant per call |
 | `strpass` | a 200 KB string passed to a sub 200k times — catches lost `CowStr` sharing (a memcpy per call when broken) |
 | `subcall` | a typed `is rw` signature called 200k times — catches per-call binder work that belongs on the AST |
+| `rats` | 200k short-lived `Rat`s created, summed and read once each — added by this chapter's own footnote, below |
 | `strcat` | build a string by repeated `~=` |
 | `streq` | a million `eq` comparisons in a hot condition |
 | `regex` | one simple pattern matched many times |
@@ -111,7 +112,10 @@ The rest, in a line each:
 The guard kernels were chosen adversarially — each stresses the path a batch
 is most likely to slow down — and `strscan`/`strpass`/`subcall` exist
 precisely because an earlier release changed the string representation and
-the then-current guard, all Int-and-Array work, could not see it.
+the then-current guard, all Int-and-Array work, could not see it. `rats` was
+added for the same reason one batch later, and by the same argument: batch two
+below moves the `Rat` pair out of the inline value, and every kernel listed
+above is Int, Array or string work.
 
 ## Batch one: the hash payload
 
@@ -230,8 +234,16 @@ which is the distribution you expect when a change targets the
 representation rather than a benchmark. The residual exposure is narrow and
 nameable: a program that mass-creates short-lived Rats or Ranges and reads
 each once pays the allocation without harvesting the copy savings. No
-current kernel isolates that shape — which is an argument for adding one to
-the guard, not for the old layout.
+kernel isolated that shape — which was an argument for adding one to the
+guard, not for the old layout, and the argument was taken. `rats` joined
+`perf-guard` and `tools/bench` on 2026-08-22: 200k `Rat`s created, added into
+an accumulator and read once each. It is not a synthetic shape — every decimal
+literal in Raku is a `Rat`, so any money or unit-conversion loop is this
+program — and the same loop with an Int multiplier instead of `0.01` runs in
+60 ms against its ~370, so what it times is Rat handling rather than loop
+overhead. This is the same move the string kernels made one batch earlier:
+when a representation change creates a class of value the guard cannot see,
+the answer is a kernel, permanently, not an argument.
 
 ## Batch three: pads, and the lever the falsifier exposed
 
