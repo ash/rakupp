@@ -46,6 +46,14 @@ never ported a structure or copied an algorithm from it. Raku++ is clean-room: a
 hand-written lexer, a recursive-descent parser with a Pratt expression core, and a
 tree-walking evaluator, all grown from nothing.
 
+(A dated update to that record: on 2026-08-22, with the engine past 90% of the
+declared Roast tests, we began reading other implementations at the design
+level — nine engines, Rakudo and MoarVM among them — with the ledger of what
+was read and what transferred in
+[docs/dev/findings/engines/](docs/dev/findings/engines/README.md). The rule
+since then is *read designs, never port code*; everything above remains true
+of the code itself, and Roast remains the only definition of correct.)
+
 That independence is only possible because Raku has an *executable
 specification*. The motto we kept returning to —
 

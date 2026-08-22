@@ -18,7 +18,9 @@ meta-circularity) that buying full generality forced. Raku++'s entire
 strategy is choosing which of those taxes to pay ahead of time in C++
 instead — so every MoarVM mechanism below reads as "the dynamic answer to a
 question we answer statically", and the interesting cases are where their
-answer says our static one is aimed at the wrong target.
+answer says our static one is aimed at the wrong target. (The compiler half
+of the reference — Rakudo proper, its optimizer and dispatchers — has its
+own doc: [RAKUDO-TECHNIQUES.md](RAKUDO-TECHNIQUES.md).)
 
 ## 1. Interned callsites: the argument-passing shape is static — treat it so
 

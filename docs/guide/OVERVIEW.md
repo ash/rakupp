@@ -121,6 +121,12 @@ profile: it starts in a few milliseconds, produces small self-contained native
 executables, and is compact enough to read and embed. The two projects share a
 north star — Roast, the spec suite that defines what "being Raku" means.
 
+Raku++ was built without reading Rakudo's code. Since 2026-08 the project
+does study Rakudo and MoarVM at the design level — the
+[engine studies](../dev/findings/engines/README.md) record what was read and
+what transferred — but it ports no code from either: every adopted idea is
+implemented independently here and gated on Roast.
+
 They make different trade-offs:
 
 | | Raku++ | Rakudo |

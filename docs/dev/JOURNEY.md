@@ -30,6 +30,13 @@ is a clean-room implementation: a hand-written lexer, a recursive-descent parser
 with a Pratt expression core, a tree-walking evaluator, and — later — a native
 code generator, all written from nothing.
 
+(That held for the whole journey this memoir describes. A dated postscript:
+on 2026-08-22, with the engine mature, the project started studying other
+implementations — Rakudo and MoarVM included — at the design level, recorded
+in [the engine studies](findings/engines/README.md). The stance since is
+*read designs, never port code*: no line of Rakudo has been ported, and
+correctness still means Roast, nothing else.)
+
 The reason this is even possible is that Raku's *specification is executable*. The
 motto we kept coming back to:
 
