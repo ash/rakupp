@@ -239,11 +239,13 @@ junctions, `do`/`try`/`gather`/`EVAL`, **phasers** (`BEGIN`/`INIT`/`ENTER`/
 bundling** for the rest (mainly grammars), so it never refuses a program.
 
 **Next:** grammars are best left bundled (they are the grammar engine).
-Performance-wise native `--exe` now beats Rakudo on every benchmark except
-`fib`, where it ties (see [BENCHMARKS.md](BENCHMARKS.md)) — a recent small-int
-fast path for `%`/`mod`/`%%` (they had gone through `BigInt::divmod`) closed the
-last collection/hash gaps. The remaining lever is `fib`-style deep recursion of a
-tiny body, exactly what an optimizing JIT specializes best.
+Performance-wise native `--exe` now beats Rakudo on every benchmark in the set,
+`fib` included (5.4× as of 2026-08-22 — see [BENCHMARKS.md](BENCHMARKS.md)) — a
+small-int fast path for `%`/`mod`/`%%` (they had gone through `BigInt::divmod`)
+closed the last collection/hash gaps, and shrinking `Value` to 128 bytes moved
+the recursion-heavy rows again. The remaining lever is `fib`-style deep
+recursion of a tiny body *interpreted*, where the tree-walker is now level with
+Rakudo rather than behind it — exactly what an optimizing JIT specializes best.
 
 ## How to make progress efficiently
 
