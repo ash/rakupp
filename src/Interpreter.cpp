@@ -2321,7 +2321,11 @@ std::shared_ptr<const PadLayout> Interpreter::resolvePads(const std::vector<Stmt
     auto layout = std::make_shared<PadLayout>();
     if (params)
         for (auto& p : *params)
-            if (slottable(p.name)) layout->add(p.name, /*simple=*/true);
+            if (slottable(p.name)) {
+                int ps = layout->add(p.name, /*simple=*/true);
+                p.padSlot = ps;                          // TARG C2: the binder
+                p.padOwner = (const void*)layout.get();  // writes slots directly
+            }
     for (auto& s : stmts) {
         std::vector<const VarExpr*> ds;
         declaredVars(s.get(), ds);
@@ -8155,9 +8159,29 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                     v.readonly = !params[i].isRw && !params[i].isRaw;
                     // and a `$` parameter ITEMIZES what it binds (see the slow path)
                     if (v.t == VT::Array && !v.itemized && !params[i].isRaw) v.itemized = true;
-                    env->define(params[i].name, std::move(v));
+                    // TARG C2: an annotated param writes its slot directly —
+                    // same publication order as define() (value, release-bit,
+                    // twin erase) — when the frame carries the layout the
+                    // annotation was made against.
+                    int ps = params[i].padSlot;
+                    Env* e = env.get();
+                    if (ps >= 0 && e->layout &&
+                        (const void*)e->layout.get() == params[i].padOwner) {
+                        e->pad[ps] = std::move(v);
+                        e->padLive.fetch_or((uint64_t)1 << ps, std::memory_order_release);
+                        if (!e->vars.empty()) e->vars.erase(params[i].name);
+                    }
+                    else e->define(params[i].name, std::move(v));
                 } else {
-                    env->define(params[i].name, typedDefault(params[i].type, '$'));
+                    int ps = params[i].padSlot;
+                    Env* e = env.get();
+                    if (ps >= 0 && e->layout &&
+                        (const void*)e->layout.get() == params[i].padOwner) {
+                        e->pad[ps] = typedDefault(params[i].type, '$');
+                        e->padLive.fetch_or((uint64_t)1 << ps, std::memory_order_release);
+                        if (!e->vars.empty()) e->vars.erase(params[i].name);
+                    }
+                    else e->define(params[i].name, typedDefault(params[i].type, '$'));
                 }
             }
             return;

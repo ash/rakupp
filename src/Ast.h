@@ -427,6 +427,14 @@ struct Param {
     //              answer must never stick.
     mutable DecidedOnce<int> natSpec{-1};
     mutable DecidedOnce<signed char> typeKnown{0};
+    //   padSlot/padOwner — TARG C2: this param's slot in its body's
+    //   PadLayout, annotated by resolvePads on first build (params sit at the
+    //   front of the layout). padOwner is the layout's address for the same
+    //   identity compare VarExpr uses — the binder writes the slot directly
+    //   only when the frame carries THAT layout; every other case (primed
+    //   copies, no layout) keeps the define() path.
+    mutable DecidedOnce<int> padSlot{-1};
+    mutable DecidedOnce<const void*> padOwner{nullptr};
     //   acceptClass — TARG lever C: which core-type fast-accept applies to
     //   `type` (0 none, 1 Int, 2 Str, 3 Num, 4 Bool, 5 native-int, 6 native-
     //   num, 7 native-str). The class is a property of the NAME; whether a

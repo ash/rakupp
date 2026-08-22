@@ -147,11 +147,17 @@ loopsum **−8%** (the op= lane), fib/asg/hash flat as expected (untyped
 `my int` while-shape (two native assigns + cond) measured **−45%** in
 isolation.
 
-**Still open after this plan**: C2 (pad-direct param binding — one layout
-hash probe per param per call remains; measure whether it is worth a
-per-Param slot annotation), and the loop floor itself (runLoopBody's
-std::function argument, execBlock's statement dispatch) — which is item 3
-territory.
+**C2 landed too (2026-08-23)**: resolvePads annotates each slottable Param
+with (padSlot, padOwner) — the same identity-compare pair VarExpr carries —
+and the binder's fast path writes the slot directly with define()'s exact
+publication order (value, release-bit, twin erase) whenever the frame
+carries the layout the annotation was made against; primed copies and
+layout-less frames keep the define() path. Interleaved A/B vs the
+pre-C2 build: fib and subcall both **−4.1%**, strpass flat. With that, the
+plan's whole list is done; what remains of the per-iteration floor
+(runLoopBody's std::function argument, execBlock's statement dispatch,
+eval's return-by-value protocol) is item 3 — the threaded loop — where
+the result-slot idea this plan set aside becomes the right shape.
 
 ## Gates
 

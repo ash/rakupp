@@ -38,6 +38,14 @@ The four follow-up items (same day) each carry a book-shaped moral:
 
 Combined batch effect: subcall −19.5% (predicted −15–25%), strpass −19.5%,
 strscan −12%, loopsum −8%; the `my int` while-shape −45% in isolation.
+C2 closed the plan the next morning: params carry the same
+(padSlot, padOwner) annotation VarExpr does, and the binder writes slots
+with define()'s exact publication order — fib and subcall each another
+−4%. The chapter's arc is complete: name lookup (pads) → scope churn
+(flat loops) → store ceremony (the lane) → call binding (accept-class +
+slot binding), each layer priced before it was built, and the leftover —
+the loop floor and eval's return-by-value protocol — is the threaded
+loop's opening argument.
 
 
 Working notes collected while the pads batch lands — the material the
