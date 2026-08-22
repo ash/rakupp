@@ -57,6 +57,66 @@ sub json-decode(Str $text) {
 }
 
 
+# META6 lets a dependency LIST be written three ways, and the ecosystem uses
+# all three. A plain identity string is the common case. 223 dists in the zef
+# index instead write the PHASE hash —
+#
+#     "depends": { "runtime": { "requires": [ "File::Directory::Tree:ver<0.2+>" ] } }
+#
+# — File::Temp 0.0.12 among them, which is rank 3 by dependents, so every dist
+# that needs it inherited the failure. And inside either shape one dependency
+# may itself be an object, { "name": "g++", "from": "bin" }, or an
+# alternation, { "any": [ "elinks:from<bin>", "lynx:from<bin>" ] }.
+#
+# Everything below flattens to the identity strings parse-identity() reads.
+# `recommends`/`suggests`/`conflicts` are dropped on purpose: zef does not
+# install them either. An alternation is NOT chosen between — picking one of
+# somebody's alternatives is a policy call an installer should not make
+# silently — except when every branch is a system binary or library, which
+# nothing here installs anyway, and then there is nothing to report.
+sub dep-identities($spec --> List) {
+    return () without $spec;
+    return ($spec,)                                       if $spec ~~ Str;
+    return $spec.map({ dep-identities($_) }).flat.List     if $spec ~~ Positional;
+    return () unless $spec ~~ Associative;
+
+    # { name => …, ver|version => …, auth => …, from => … } — one dependency
+    # written as an object rather than as an identity string.
+    if $spec<name>:exists {
+        my $id  = ~$spec<name>;
+        my $ver = ~($spec<ver> // $spec<version> // '');
+        $id ~= ":ver<$ver>"                if $ver ne '';
+        $id ~= ":auth<{$spec<auth>}>"      if ~($spec<auth> // '') ne '';
+        $id ~= ":from<{$spec<from>}>"      if ~($spec<from> // '') ne '';
+        return ($id,);
+    }
+    return ()                                             if $spec<any>:exists;
+
+    my @out;
+    @out.append(dep-identities($spec{$_})) for <runtime test build>;
+    @out.append(dep-identities($spec<requires>));
+    @out.List
+}
+
+# The half of a spec this installer will not act on: an alternation whose
+# branches are not all system binaries. Reported, never guessed at.
+sub dep-unresolved($spec --> List) {
+    return ()                                              if $spec ~~ Str;
+    return $spec.map({ dep-unresolved($_) }).flat.List      if $spec ~~ Positional;
+    return () unless $spec ~~ Associative;
+    return ()                                              if $spec<name>:exists;
+    if $spec<any>:exists {
+        my @alts = dep-identities($spec<any>);
+        my @raku = @alts.grep({ parse-identity(~$_)<from> ne 'bin' && parse-identity(~$_)<from> ne 'native' });
+        return () unless @raku;
+        return ('any(' ~ @alts.join(' ') ~ ')',);
+    }
+    my @out;
+    @out.append(dep-unresolved($spec{$_})) for <runtime test build>;
+    @out.append(dep-unresolved($spec<requires>));
+    @out.List
+}
+
 # A dep spelled :from<native> or :from<bin> is a system library or tool, not
 # a Raku distribution — reportable, not fetchable.
 sub parse-identity(Str $id) {
@@ -346,14 +406,9 @@ sub resolve(@index, @wants, %notes) {
         # build-depends power the Build.rakumod hook, test-depends the suite —
         # both run here, so both install (zef's default stance)
         for <depends build-depends test-depends> -> $field {
-            for (%e{$field} // []).flat -> $dep {
-                if $dep ~~ Str {
-                    @work.push(parse-identity($dep));
-                }
-                else {
-                    %notes{~$dep} = 'a structured dependency this installer does not resolve yet';
-                }
-            }
+            @work.push(parse-identity($_)) for dep-identities(%e{$field});
+            %notes{$_} = 'an alternation this installer does not choose between'
+                for dep-unresolved(%e{$field});
         }
         @plan.push(%e);
     }

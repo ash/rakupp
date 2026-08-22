@@ -116,6 +116,14 @@ my ($arc6, $sha6)  = make-dist('Gate::Pinned', 'Gate::Pinned', '0.1.0',
 my ($arc7, $sha7)  = make-dist('Gate::Built', 'Gate::Built', '1.0',
                                :build-hook, :depends(['Gate::Demo']),
                                :build-depends(['Gate::Demo']));
+# the File::Temp shape: META6 writes `depends` as the PHASE hash rather than
+# a list — 223 dists in the zef index do, File::Temp 0.0.12 among them — with
+# an object-form dependency and a bin-only alternation mixed in, both of which
+# resolve to nothing installable and must stay silent.
+my ($arc8, $sha8)  = make-dist('Gate::Phased', 'Gate::Phased', '0.1.0');
+# …and an alternation between two RAKU dists: nobody's alternative gets picked
+# for them, so it is reported instead of guessed at.
+my ($arc9, $sha9)  = make-dist('Gate::Choice', 'Gate::Choice', '0.1.0');
 
 $tmp.add('index.json').spurt(qq:to/END/);
     [ \{ "name": "Gate::Demo", "version": "0.4.2", "auth": "test:gate",
@@ -148,7 +156,22 @@ $tmp.add('index.json').spurt(qq:to/END/);
          "dist": "Gate::Built:ver<1.0>:auth<test:gate>",
          "provides": \{ "Gate::Built": "lib/Gate/Built.rakumod" \},
          "depends": ["Gate::Demo"], "build-depends": ["Gate::Demo"],
-         "path": "$sha7.tar.gz" \} ]
+         "path": "$sha7.tar.gz" \},
+      \{ "name": "Gate::Phased", "version": "0.1.0", "auth": "test:gate",
+         "dist": "Gate::Phased:ver<0.1.0>:auth<test:gate>",
+         "provides": \{ "Gate::Phased": "lib/Gate/Phased.rakumod" \},
+         "depends": \{ "runtime": \{ "requires": [
+                          "Gate::Demo",
+                          \{ "name": "curl", "from": "bin" \},
+                          \{ "any": ["elinks:from<bin>", "lynx:from<bin>"] \} ] \},
+                       "test": \{ "requires": [] \} \},
+         "path": "$sha8.tar.gz" \},
+      \{ "name": "Gate::Choice", "version": "0.1.0", "auth": "test:gate",
+         "dist": "Gate::Choice:ver<0.1.0>:auth<test:gate>",
+         "provides": \{ "Gate::Choice": "lib/Gate/Choice.rakumod" \},
+         "depends": \{ "runtime": \{ "requires": [
+                          \{ "any": ["Gate::ShareA", "Gate::ShareB"] \} ] \} \},
+         "path": "$sha9.tar.gz" \} ]
     END
 
 my $home = $tmp.add('home');
@@ -234,6 +257,28 @@ my %built-gone = installer('--uninstall', 'Gate::Built');
 check %built-gone<exit> == 0, '…and uninstalls cleanly before the M6 choreography';
 my %tst-mix = installer('--test-only', '--list');
 check %tst-mix<exit> == 2, 'test --list is refused as a mode mix';
+
+# ---- the phase-hash `depends` ----------------------------------------------
+my %ph-dry = installer('--dry-run', 'Gate::Phased');
+check %ph-dry<exit> == 0
+      && %ph-dry<out>.contains('2 distributions')
+      && %ph-dry<out>.index('Gate::Demo') < %ph-dry<out>.index('Gate::Phased'),
+      'phase-hash depends: runtime/requires resolves, dependency first';
+check !%ph-dry<out>.contains('does not resolve') && !%ph-dry<out>.contains('curl')
+      && !%ph-dry<err>.contains('alternation'),
+      '…and the :from<bin> object and bin-only alternation pass without a word';
+my %ph = installer('Gate::Phased');
+check %ph<exit> == 0 && %ph<err>.contains('installed Gate::Phased'),
+      '…and the dist installs through it';
+my $ph-use = run 'env', |%env.map({ "{.key}={.value}" }), $EXE,
+                 '-e', 'use Gate::Phased; print which-version()', :out, :err;
+check $ph-use.out.slurp(:close) eq '0.1.0', '…and the module loads from the store';
+installer('--uninstall', 'Gate::Phased');
+
+my %ch = installer('--dry-run', 'Gate::Choice');
+check %ch<exit> == 0 && %ch<out>.contains('1 distribution')
+      && %ch<out>.contains('alternation this installer does not choose between'),
+      'an alternation between Raku dists is reported, never guessed at';
 
 # ---- reinstall: uninstall + install as one command -------------------------
 my %re1 = installer('--reinstall', 'Gate::Demo');
