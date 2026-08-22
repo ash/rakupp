@@ -11183,7 +11183,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
             e->ex.reset();
             e->layout.reset();        // pads: next call re-attaches its own layout;
             e->pad.clear();           // clear() keeps the vector's capacity, the
-            e->padLive = 0;           // same trick the bucket array plays above
+            e->padLive.store(0, std::memory_order_relaxed); // same trick the bucket array plays above
             free.push_back(std::move(e));
         }
     };

@@ -280,11 +280,20 @@ struct Env {
     // frame captured by a closure can outlive the Callable it came from.
     std::shared_ptr<const PadLayout> layout;
     std::vector<Value> pad;
-    uint64_t padLive = 0;
+    // ATOMIC, because a frame can be SHARED under RAKUPP_PARALLEL (two start
+    // blocks closing over the mainline both reach global_'s layout) and the
+    // bit is a PUBLICATION: define() writes the slot's Value first, then
+    // release-stores the bit, and readers acquire it — a reader that sees the
+    // bit sees the Value. The Linux TSan CI leg caught the plain uint64_t
+    // (channel-pipeline/parallel): a |= RMW racing the liveness reads, with
+    // the bit set BEFORE the value write on top. Under the GIL the ordering
+    // is free; under parallel it is the contract.
+    std::atomic<uint64_t> padLive{0};
 
     Value* padFind(const std::string& name) {
         auto it = layout->byName.find(name);
-        if (it != layout->byName.end() && ((padLive >> it->second) & 1))
+        if (it != layout->byName.end() &&
+            ((padLive.load(std::memory_order_acquire) >> it->second) & 1))
             return &pad[it->second];
         return nullptr;
     }
@@ -316,9 +325,15 @@ struct Env {
         if (layout) {
             auto it = layout->byName.find(name);
             if (it != layout->byName.end()) {
-                padLive |= (uint64_t)1 << it->second;
+                // publication order: the Value lands BEFORE the bit that makes
+                // it findable, and the map twin is erased after — a concurrent
+                // reader sees the old map entry, or the published slot, never
+                // a half-made one.
+                Value& slotv = pad[it->second];
+                slotv = std::move(v);
+                padLive.fetch_or((uint64_t)1 << it->second, std::memory_order_release);
                 if (!vars.empty()) vars.erase(name);
-                return pad[it->second] = std::move(v);
+                return slotv;
             }
         }
         return vars[name] = std::move(v);
@@ -328,9 +343,11 @@ struct Env {
     template <typename F>
     void forEachVar(F&& f) {
         for (auto& kv : vars) f(kv.first, kv.second);
-        if (layout)
+        if (layout) {
+            uint64_t live = padLive.load(std::memory_order_acquire);
             for (size_t i = 0; i < pad.size(); i++)
-                if ((padLive >> i) & 1) f(layout->names[i], pad[i]);
+                if ((live >> i) & 1) f(layout->names[i], pad[i]);
+        }
     }
 };
 
@@ -856,7 +873,7 @@ public:
         for (Env* pf = tctx_.cur.get(); pf; pf = pf->parent.get()) {
             if (!pf->layout) continue;
             if ((const void*)pf->layout.get() == ve->padOwner &&
-                ((pf->padLive >> ps) & 1))
+                ((pf->padLive.load(std::memory_order_acquire) >> ps) & 1))
                 return &pf->pad[ps];
             break; // nearest layout frame decides — never skip past it
         }
