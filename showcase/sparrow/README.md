@@ -24,15 +24,18 @@ tasks/perl-check/task.pl     the same scenario driving Perl 5
 
 ## Running it
 
-Sparrow6 and its six dependencies (`JSON::Fast`, `Data::Dump`, `Hash::Merge`,
-`YAMLish`, `Terminal::ANSIColor`, `File::Directory::Tree`) are not shipped
-here. Either `zef install Sparrow6`, or point `RAKULIB` at the `lib`
-directories you have — Sparrow6 needs its `resources/` on the path too:
+Sparrow6 is not shipped here — install it, with either installer. Both write
+the same store, so one copy serves both engines, and its six dependencies
+(`JSON::Fast`, `Data::Dump`, `Hash::Merge`, `YAMLish`, `Terminal::ANSIColor`,
+`File::Directory::Tree`) come with it:
 
 ```sh
-D=$HOME/raku-module-battery/dists
-export RAKULIB="$D/Sparrow6-0.0.93/lib,$D/Sparrow6-0.0.93/resources,$D/JSON--Fast-0.19/lib,$D/Data--Dump-0.0.18/lib,$D/Hash--Merge-2.0.0/lib,$D/YAMLish-0.1.3/lib,$D/Terminal--ANSIColor-0.14/lib,$D/File--Directory--Tree-0.2/lib"
+build/rakupp tools/install.raku Sparrow6      # or: zef install Sparrow6
+```
 
+Then just run it — no `RAKULIB`, no `-I`:
+
+```sh
 cd showcase/sparrow && ../../build/rakupp scenario.raku
 ```
 
@@ -40,8 +43,12 @@ cd showcase/sparrow && ../../build/rakupp scenario.raku
 Sparrow's wall-clock line prefixes normalised:
 
 ```sh
-RAKUPP=../../build/rakupp SP6LIB="$RAKULIB" sh showcase/sparrow/compare.sh
+RAKUPP=../../build/rakupp sh showcase/sparrow/compare.sh
 ```
+
+(If you would rather run against an unpacked checkout than an installed dist,
+both engines honour a comma-separated `RAKULIB`; Sparrow6 needs its
+`resources/` directory on the path as well as its `lib/`.)
 
 ## What it costs to start, measured
 

@@ -4,9 +4,14 @@
 #
 #   RAKUPP=../../build/rakupp sh compare.sh
 #
-# Sparrow6 and its six dependencies are NOT installed by this script: point
-# SP6LIB at a comma-separated list of `lib` directories holding them (or
-# `zef install Sparrow6`, in which case SP6LIB can be left unset).
+# Sparrow6 is NOT installed by this script. Install it first, with either
+# installer — both write the same store:
+#
+#   build/rakupp tools/install.raku Sparrow6      # or: zef install Sparrow6
+#
+# Nothing else is needed; an installed dist resolves for both engines. (To run
+# against an unpacked checkout instead, export a comma-separated RAKULIB with
+# Sparrow6's `resources/` on it as well as its `lib/`.)
 #
 # Sparrow prefixes every task line with a wall-clock timestamp, so the two runs
 # are supposed to differ there; the timestamps are normalised before the diff.
@@ -19,10 +24,6 @@ RAKU="${RAKU:-raku}"
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 cd "$HERE"
-
-if [ -n "$SP6LIB" ]; then
-    RAKULIB="$SP6LIB"; export RAKULIB
-fi
 
 # Sparrow6 spawns Raku tasks with the literal `raku` from PATH, so a Raku++ run
 # that does not shim it still starts a Rakudo for every Raku task — most of the
