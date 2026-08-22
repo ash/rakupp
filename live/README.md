@@ -1,7 +1,15 @@
 # live — software that already existed
 
 Whole tools from the Raku ecosystem, run under Raku++ exactly as their authors
-wrote them. Nothing in here is ours. Nothing in here was adjusted to fit.
+wrote them.
+
+**The tools are other people's work, and they are not copied into this
+repository.** Each is a published distribution, installed from the ecosystem
+the way any user installs it, and left completely alone — not patched, not
+vendored, not adjusted to fit. What lives in the directories below is only what
+is needed to *drive* one: a scenario, a config, a small corpus, a `README.md`
+and a `compare.sh`. Those we wrote; the software under test we did not, and
+each entry credits and links to whoever did.
 
 That is the difference from [showcase/](../showcase), which holds mid-size
 programs written here to exercise one part of the language each. A program
@@ -15,10 +23,10 @@ does well. Software written by somebody else, for their own purposes, does not
 
 ## How an entry works
 
-Each directory holds whatever the tool needs to be driven — a scenario, a
-config, a small corpus — plus a `README.md` and a `compare.sh`. The tool itself
-is installed, not vendored: `rakupp install <dist>` or `zef install <dist>`,
-both writing the same store.
+The tool is installed, never checked in: `rakupp install <dist>` or
+`zef install <dist>`, both writing the same store. So an entry's directory is
+small on purpose — it is a harness, not a copy of anything, and updating the
+tool means reinstalling it rather than editing files here.
 
 `compare.sh` is the contract. It runs the same input under Rakudo and under
 Raku++ and diffs stdout, normalising only what is *supposed* to differ between
@@ -40,6 +48,6 @@ about Sparrow — an `IO::Path` method's return type, a missing `Proc::Async`
 method, a `react` that registered its taps too late, and a parse rule for
 `name<key>`. Each is pinned now by a case in `t/regression/`.
 
-So the bar for adding one is not "it looks impressive". It is: **real software,
-installed rather than copied here, run unmodified, with its output checked
-against Rakudo's.**
+So the bar for adding one is not "it looks impressive". It is: **somebody
+else's software, installed rather than copied here, run unmodified and
+credited, with its output checked against Rakudo's.**

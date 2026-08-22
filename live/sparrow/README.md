@@ -4,16 +4,16 @@
 (`zef:sp1983`) — an alternative to Ansible or Chef, in its author's words. This
 directory is a four-task scenario that runs under it.
 
-Nothing here is ours except the four tasks and the scenario. That is the point:
-**the framework is a third-party dist, running unmodified.** Every other
-showcase is a program we wrote; this one is a program somebody else wrote,
-which we merely run.
+**Sparrow6 itself is not in this directory.** It is melezhik's, published to
+the ecosystem, installed from there and left alone — no patch, no copy, no
+adjustment. What is here is only the four tasks and the scenario that drive it,
+which we wrote.
 
-It is also the showcase for **process startup**, because of how Sparrow is
-built. A scenario is Raku glue; every `task-run` spawns a *separate process*
+It is also where **process startup** becomes measurable, because of how Sparrow
+is built. A scenario is Raku glue; every `task-run` spawns a *separate process*
 running that task in its own language. Four tasks, four spawns — and one of
 them is another Raku. That makes it a fair test of what an implementation
-charges to start, which is a cost the other showcases never pay more than once.
+charges to start, a cost a long-running program pays only once.
 
 ```
 tasks/hello/task.bash        echo, in Bash
@@ -85,9 +85,9 @@ about Sparrow (`t/regression/sparrow6-blockers.raku` pins all four):
 - `config<name>` parsed as `config("name")` — Rakudo reads a tight `name<key>`
   as `name()<key>` — which is the API every Sparrow task and plugin uses
 
-That is the argument for keeping a third-party framework in the showcase set:
-four general divergences in an afternoon, found by code we did not write and
-would not have thought to write.
+That is the argument for [live/](..) existing at all: four general divergences
+in an afternoon, found by code we did not write and would not have thought to
+write.
 
 ## Not in `t/run.raku`
 
