@@ -11,8 +11,18 @@
 #   2. OPTIONS END AT THE FIRST POSITIONAL (the POSIX convention): after
 #      one, `--foo=x` is the literal string "--foo=x". A bare `--` is
 #      consumed and ends options — which is how a positional -5 is passed.
-#   3. SINGLE-DASH OPTIONS: -v, -n=3, -foo=bar are named args; the whole
-#      rest of the token is the name, `=` splits off the value.
+#      The `--` check runs FIRST each step, so a `--` DIRECTLY after the
+#      first positional is still consumed (`pos -- x` -> pos, x); one
+#      token later the boundary has drained the tail verbatim and a `--`
+#      in it stays a literal "--" (`pos y -- x` -> pos, y, "--", x).
+#      A --help is honoured only where it parses as an option: after a
+#      positional it is a literal argument and the failed dispatch stays
+#      exit 2 (usage on stderr), not the exit-0 stdout help.
+#   3. SINGLE-DASH AND COLON OPTIONS: -v, -n=3, -foo=bar, :v, :n=3 are
+#      named args; the whole rest of the token is the name, `=` splits
+#      off the value; --/k, -/k, :/k negate. Colon options pair like the
+#      dash forms. An empty option value is IntStr 0/"" (val("")), so
+#      `--n=` binds an Int named param with 0.
 #
 # Passes under both engines: every expectation IS Rakudo's output.
 
@@ -63,6 +73,12 @@ my $sp = script('sp.raku', q:to/END/);
 check('pairing works with a slurpy present', first-line($sp, '--foo', 'abc', 'xx'), 'foo=[abc] v=False rest=[xx]');
 check('a positional token ends options',     first-line($sp, 'xx', '--verbose'), 'foo=[U] v=False rest=[xx,--verbose]');
 check('a bare -- is consumed, all positional after', first-line($sp, '--', '--foo=a'), 'foo=[U] v=False rest=[--foo=a]');
+check('-- directly after the first positional is still consumed',
+      first-line($sp, 'xx', '--', '--foo=a'), 'foo=[U] v=False rest=[xx,--foo=a]');
+check('…also when options preceded the positional',
+      first-line($sp, '--foo=a', 'xx', '--', 'yy'), 'foo=[a] v=False rest=[xx,yy]');
+check('a -- deeper in the drained tail stays literal',
+      first-line($sp, 'xx', 'yy', '--', 'z'), 'foo=[U] v=False rest=[xx,yy,--,z]');
 
 my $o1 = script('o1.raku', q:to/END/);
     sub MAIN($pos?, Str :$foo) { say "pos=[{$pos//'U'}] foo=[{$foo//'U'}]" }
@@ -78,6 +94,11 @@ check('-v is a named option',               first-line($s2, '-v'), 'v=True n=0 f
 check('-n=3 binds through single dash',     first-line($s2, '-n=3'), 'v=False n=3 foo=d');
 check('--/v negates',                       first-line($s2, '--/v'), 'v=False n=0 foo=d');
 check('-foo val pairs through single dash', first-line($s2, '-foo', 'val'), 'v=False n=0 foo=val');
+check(':v is a named option too',           first-line($s2, ':v'), 'v=True n=0 foo=d');
+check(':n=3 binds through the colon form',  first-line($s2, ':n=3'), 'v=False n=3 foo=d');
+check(':/v negates',                        first-line($s2, ':/v'), 'v=False n=0 foo=d');
+check(':foo val pairs like the dash forms', first-line($s2, ':foo', 'val'), 'v=False n=0 foo=val');
+check('an empty --n= is IntStr zero, binds Int', first-line($d, '--n='), 'n=');
 
 my $neg = script('neg.raku', q:to/END/);
     sub MAIN($n) { say "n=$n" }
@@ -128,6 +149,10 @@ my $c = script('c.raku', q:to/END/);
     END
 check('pairing cannot conjure a missing required positional', first-line($c, '--foo', 'abc'), 'USAGE');
 check('the = form is also literal after the boundary', first-line($c, 'xx', '--foo=abc'), 'USAGE');
+check('--help before the boundary prints usage on stdout, exit 0',
+      first-line($a, '--help'), 'Usage:');
+check('--help after a positional is a literal, dispatch just fails',
+      first-line($c, 'xx', '--help'), 'USAGE');
 
 check('-xyz is one name, not a cluster',    first-line($s2, '-xyz'), 'USAGE');
 

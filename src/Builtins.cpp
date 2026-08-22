@@ -7319,11 +7319,12 @@ void Interpreter::registerBuiltins() {
     // main-refactored.t adjudicates the rules; see rakuppMainCapture below.
     B["RUN-MAIN-args-to-capture"] = [](Interpreter& I, ValueList& a) -> Value {
         // The DEFAULT ARGS-TO-CAPTURE: parse the live @*ARGS per the CLI rules
-        // main-refactored.t adjudicates: --name / --name=v / -n=v are named
-        // (repeats collect into an array; values are val()-allomorphed;
-        // `--` ends option parsing; --/name negates). In the DEFAULT mode an
-        // option after the first positional is a plain positional; with
-        // %*SUB-MAIN-OPTS<named-anywhere> options bind anywhere.
+        // main-refactored.t adjudicates. Rakudo drives the real command line
+        // and an explicit RUN-MAIN through the same default-args-to-capture,
+        // so this delegates to the same rtMainArgs as the interpreter's MAIN
+        // auto-invoke (--name / --name=v / -n=v / :n=v named, repeats collect,
+        // values AND positionals val()-allomorphed, `--` consumed with the
+        // rest positional, --/name negates, the named-anywhere opt).
         (void)a;
         auto dynFind = [&](const char* n) -> Value* {
             if (Value* p = I.tctx_.cur->find(n)) return p;
@@ -7341,44 +7342,7 @@ void Interpreter::registerBuiltins() {
                 auto it = smo->hash()->find("named-anywhere");
                 namedAnywhere = it != smo->hash()->end() && it->second.truthy();
             }
-        auto valify = [&](const std::string& s) -> Value {
-            auto it = I.builtins_.find("val");
-            if (it != I.builtins_.end()) { ValueList va{Value::str(s)}; return it->second(I, va); }
-            return Value::str(s);
-        };
-        ValueList pos;
-        std::vector<std::pair<std::string, ValueList>> named; // insertion order
-        bool noMoreNamed = false;
-        for (auto& s : argv) {
-            if (!noMoreNamed && s == "--") { noMoreNamed = true; continue; }
-            bool isOpt = !noMoreNamed && s.size() > 1 && s[0] == '-' &&
-                         !(s.size() == 2 && s[1] == '-');
-            if (isOpt) {
-                std::string body = s[1] == '-' ? s.substr(2) : s.substr(1);
-                bool neg = !body.empty() && body[0] == '/';
-                if (neg) body = body.substr(1);
-                auto eq = body.find('=');
-                std::string k = eq == std::string::npos ? body : body.substr(0, eq);
-                Value v = eq == std::string::npos ? Value::boolean(!neg)
-                                                  : valify(body.substr(eq + 1));
-                auto slot = std::find_if(named.begin(), named.end(),
-                                         [&](auto& kv) { return kv.first == k; });
-                if (slot == named.end()) named.push_back({k, {v}});
-                else slot->second.push_back(v);
-                continue;
-            }
-            pos.push_back(Value::str(s));
-            if (!namedAnywhere) noMoreNamed = true;
-        }
-        ValueList margs = std::move(pos);
-        for (auto& kv : named) {
-            Value v;
-            if (kv.second.size() == 1) v = kv.second[0];
-            else { v = Value::array(); *v.arr() = kv.second; }
-            Value p = Value::pair(kv.first, v);
-            p.namedArg = true;
-            margs.push_back(std::move(p));
-        }
+        ValueList margs = rtMainArgs(argv, namedAnywhere);
         Value cap = Value::array(); cap.hashKind = "Capture"; *cap.arr() = std::move(margs);
         return cap;
     };

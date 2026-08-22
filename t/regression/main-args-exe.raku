@@ -79,7 +79,10 @@ check('the long name still binds',          first-line($one, '--string', 'x'), '
 check('space-form pairing works compiled',  first-line($one, '--foo', 'abc', 'xx'), 'pos=xx foo=abc s=False');
 check('stray positionals fail dispatch',    first-line($one, '--', 'a', 'b'), 'USAGE');
 check('an option after a positional is literal, and fails', first-line($one, 'xx', '--foo=1'), 'USAGE');
+check('a -- directly after the first positional is consumed', first-line($one, 'xx', '--'), 'pos=xx foo=d s=False');
+check('a colon option binds compiled',      first-line($one, ':r', 'x'), 'pos=x foo=d s=True');
 check('--help prints usage to stdout, exit 0', help-out($one), 'HELP');
+check('--help after a positional is literal, exit 2', first-line($one, 'xx', '--help'), 'USAGE');
 
 my $na = compile('na', q:to/END/);
     my %*SUB-MAIN-OPTS = :named-anywhere;

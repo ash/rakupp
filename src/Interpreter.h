@@ -642,6 +642,7 @@ public:
     // the interpreter's auto-invoke and compiled binaries. -1 = matched (margs
     // filled); otherwise the exit code, usage already printed.
     int mainProtocol(Value& mainSub, ValueList& margs);
+    void refreshArgvFromLiveArgs(); // MAIN parses the LIVE @*ARGS, not the process argv
     // --exe: adopt the embedded signature-only AST and define a metadata-rich
     // &MAIN wrapping the compiled entry point; then dispatch through it.
     void registerCompiledMain(const unsigned char* blob, size_t len, Value (*fn)(ValueList&));

@@ -853,7 +853,9 @@ std::string Interpreter::mainUsage() {
 
 Value valAllomorph(const Value& v) {
     if (v.t != VT::Str) return v;
-    if (v.s.find_first_not_of(" \t\n\r\f\v") == std::string::npos) return v; // empty/blank stays Str
+    // whitespace-only input stays Str — but the EMPTY string is IntStr(0, "")
+    // under Rakudo (val(""), an empty --opt= value, an empty %*ENV entry)
+    if (!v.s.empty() && v.s.find_first_not_of(" \t\n\r\f\v") == std::string::npos) return v;
     Value n = numifyStr(v.s);
     switch (n.t) {
         case VT::Int:     n.hashKind = "IntStr";     break;
@@ -884,31 +886,44 @@ ValueList rtMainArgs(const std::vector<std::string>& argv, bool namedAnywhere) {
     // VALUE — which is what makes `UInt` reject `-2` instead of merely inspecting
     // the spelling. See issue #11.
     auto allomorph = [](const std::string& str) { return valAllomorph(Value::str(str)); };
-    // Rakudo's (and POSIX getopt's) conventions, all oracle-verified:
-    // options are recognized only BEFORE the first positional argument (after
-    // one, `--foo=x` is the literal string "--foo=x"); a bare `--` is consumed
-    // and ends option parsing (how a positional `-5` is passed); and
-    // single-dash spellings are options too (`-v`, `-n=3`, `-foo=bar` — the
-    // whole rest of the token is the name, `=` splits off the value).
-    // With %*SUB-MAIN-OPTS<named-anywhere> the first-positional boundary goes
-    // away — options bind wherever they appear — but `--` still ends them
-    // (oracle-verified: `-- pos --foo=x` keeps "--foo=x" a literal positional).
-    bool optionsDone = false;
-    for (auto& a : argv) {
-        if (!optionsDone) {
-            if (a == "--") { optionsDone = true; continue; }
-            if (a.size() > 1 && a[0] == '-' && a != "-") {
-                std::string rest = a[1] == '-' ? a.substr(2) : a.substr(1);
-                if (!rest.empty()) {
-                    if (rest[0] == '/') { addNamed(rest.substr(1), Value::boolean(false)); continue; }
-                    auto eq = rest.find('=');
-                    if (eq != std::string::npos) { addNamed(rest.substr(0, eq), allomorph(rest.substr(eq + 1))); continue; }
-                    addNamed(rest, Value::boolean(true));
-                    continue;
-                }
+    // Rakudo's conventions, oracle-verified case by case. The loop mirrors
+    // default-args-to-capture, whose CHECK ORDER is observable:
+    //   1. a bare `--`, met while the loop is still live, is consumed and the
+    //      whole rest is positional (`-- pos --foo=x` keeps "--foo=x" literal
+    //      — how a positional -5 is passed);
+    //   2. otherwise, once a positional has been taken (and named-anywhere is
+    //      off), the current token AND the whole rest are positional, verbatim
+    //      — `pos --foo=x` makes "--foo=x" a literal string, and a `--` deeper
+    //      in the tail stays a literal "--". Check 1 running FIRST is what
+    //      consumes a `--` directly after the first positional (`pos -- x`
+    //      -> pos, x) while `pos y -- x` keeps its "--";
+    //   3. option spellings: `--foo`, and single-dash/colon short forms
+    //      (`-v`, `-n=3`, `-foo=bar`, `:v`, `:n=3` — the whole rest of the
+    //      token is the name, `=` splits off the value; `--/k`, `-/k`, `:/k`
+    //      negate). A lone `-` or `:` is positional (for `:`, Rakudo 2026.07
+    //      dies with an internal shift error — kept a positional here).
+    // With %*SUB-MAIN-OPTS<named-anywhere> check 2 goes away — options bind
+    // wherever they appear — but the first `--` still ends them.
+    for (size_t i = 0; i < argv.size(); i++) {
+        const std::string& a = argv[i];
+        if (a == "--") { // check 1: consumed, everything after is positional
+            for (++i; i < argv.size(); i++) pos.push_back(allomorph(argv[i]));
+            break;
+        }
+        if (!namedAnywhere && !pos.empty()) { // check 2: this + rest, verbatim
+            for (; i < argv.size(); i++) pos.push_back(allomorph(argv[i]));
+            break;
+        }
+        if (a.size() > 1 && (a[0] == '-' || a[0] == ':')) {
+            std::string rest = a[0] == ':' ? a.substr(1)
+                             : a[1] == '-' ? a.substr(2) : a.substr(1);
+            if (!rest.empty()) {
+                if (rest[0] == '/') { addNamed(rest.substr(1), Value::boolean(false)); continue; }
+                auto eq = rest.find('=');
+                if (eq != std::string::npos) { addNamed(rest.substr(0, eq), allomorph(rest.substr(eq + 1))); continue; }
+                addNamed(rest, Value::boolean(true));
+                continue;
             }
-            if (!namedAnywhere)
-                optionsDone = true; // the first positional: everything from here is positional
         }
         pos.push_back(allomorph(a));
     }
@@ -9196,11 +9211,24 @@ bool Interpreter::mainNamedAnywhere() {
     return it != smo->hash()->end() && it->second.truthy();
 }
 
+// Rakudo's RUN-MAIN parses the LIVE @*ARGS, not the saved process argv — a
+// mainline `@*ARGS = <...>` (roast S06-other/main.t) or a pre-MAIN .shift
+// changes what MAIN sees; an untouched @*ARGS is identical to the argv it
+// was defined from, so this is a no-op for ordinary programs.
+void Interpreter::refreshArgvFromLiveArgs() {
+    Value* av = tctx_.cur ? tctx_.cur->find("@*ARGS") : nullptr;
+    if (!av && global_) av = global_->find("@*ARGS");
+    if (!av || av->t != VT::Array || !av->arr()) return;
+    argv_.clear();
+    for (auto& x : *av->arr()) argv_.push_back(x.toStr());
+}
+
 // The MAIN command-line protocol, shared by the interpreter's auto-invoke and
 // by compiled (--exe) binaries via runCompiledMain. Fills margs and returns -1
 // when a candidate accepts the argv; otherwise prints the usage text (a user
 // &USAGE hook wins; --help goes to stdout) and returns the process exit code.
 int Interpreter::mainProtocol(Value& mainSub, ValueList& margs) {
+    refreshArgvFromLiveArgs();
     // Space-separated option values, Rakudo's exact (oracle-verified)
     // rule: before the options-end boundary, `--foo abc` pairs into
     // :foo<abc> iff the candidate declares :$foo with the Str type —
@@ -9230,9 +9258,10 @@ int Interpreter::mainProtocol(Value& mainSub, ValueList& margs) {
             const std::string& a = argv_[i];
             if (!done && a == "--") { av.push_back(a); done = true; continue; }
             std::string k;
-            if (!done && a.size() > 1 && a[0] == '-' && a != "-" &&
+            if (!done && a.size() > 1 && (a[0] == '-' || a[0] == ':') && a != "--" &&
                 a.find('=') == std::string::npos) {
-                k = a[1] == '-' ? a.substr(2) : a.substr(1); // --foo / -f / -foo
+                k = a[0] == ':' ? a.substr(1)                // :foo pairs too
+                  : a[1] == '-' ? a.substr(2) : a.substr(1); // --foo / -f / -foo
                 if (!k.empty() && k[0] == '/') k.clear();    // --/k negation: not pairable
             }
             if (!k.empty() && keys.count(k) && i + 1 < argv_.size()) {
@@ -9240,7 +9269,7 @@ int Interpreter::mainProtocol(Value& mainSub, ValueList& margs) {
                 i++;
                 continue;
             }
-            if (!done && !namedAnywhere && !(a.size() > 1 && a[0] == '-' && a != "-"))
+            if (!done && !namedAnywhere && !(a.size() > 1 && (a[0] == '-' || a[0] == ':')))
                 done = true; // the first positional token (named-anywhere: no boundary)
             av.push_back(a);
         }
@@ -9266,9 +9295,12 @@ int Interpreter::mainProtocol(Value& mainSub, ValueList& margs) {
     if (mainMatches) return -1;
     // an explicit --help is a REQUEST for the usage text, not a
     // dispatch failure: Rakudo prints it to stdout and exits 0
-    // (a bare -h is NOT special — it stays the failure path)
-    bool wantHelp = false;
-    for (auto& a : argv_) if (a == "--help") { wantHelp = true; break; }
+    // (a bare -h is NOT special — it stays the failure path).
+    // Only a --help that PARSES as a named option counts: after a
+    // positional it is a literal argument and the dispatch failure
+    // stays one (oracle: `prog pos --help` exits 2, usage on stderr).
+    ValueList baseArgs = rtMainArgs(argv_, namedAnywhere);
+    bool wantHelp = rtNamed(baseArgs, "help").truthy();
     // a user-defined USAGE takes over (it prints to stdout, like Rakudo)
     Value* usage = tctx_.cur ? tctx_.cur->find("&USAGE") : nullptr;
     if (!usage && global_) usage = global_->find("&USAGE");
@@ -9328,6 +9360,7 @@ int Interpreter::runCompiledMain(Value (*fn)(ValueList&)) {
     Value* mainSub = global_ ? global_->find("&MAIN") : nullptr;
     if (!mainSub || mainSub->t != VT::Code || !mainSub->code() ||
         (!mainSub->code()->params && !mainSub->code()->isMultiDispatcher)) {
+        refreshArgvFromLiveArgs();
         ValueList margs = rtMainArgs(argv_, mainNamedAnywhere());
         fn(margs);
         return 0;
