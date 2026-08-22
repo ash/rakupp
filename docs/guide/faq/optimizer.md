@@ -1,4 +1,4 @@
-# FAQ — why `-O` is not the default
+# FAQ — why -O is not the default
 
 `--exe` compiles a program to C++ and links it against the runtime; adding
 `-O` turns on the optimising code generator, and on the right program it is
