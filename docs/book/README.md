@@ -5,7 +5,7 @@ AST, `Value`, the interpreter, the regex and grammar engine, Unicode, the four
 run modes, the native code generator and its optimizer, module loading,
 NativeCall, the extension ABI, and the concurrency runtime.
 
-**[Raku++-Internals.pdf](Raku++-Internals.pdf)** — 334 pages, 41 chapters in
+**[Raku++-Internals.pdf](Raku++-Internals.pdf)** — 335 pages, 41 chapters in
 ten parts, plus three appendices.
 
 ## Building it

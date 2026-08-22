@@ -159,11 +159,26 @@ against `perl`'s 82.
 Chapter 8 ends by admitting that `Value`'s size "is the thing to attack first
 if the design is ever revisited". The revisit began with a census, not a
 redesign: a build flag (`RAKUPP_PTR_CENSUS`) that made every `Value`
-destructor record which of its eleven pointer fields were actually set. Over
-a Roast-scale run, 25.6 million of 30 million destroyed values carried *none*
-of them.
+destructor record which of its eleven pointer fields were actually set. The
+corpus was chosen to be broad on purpose — the local test suite plus a
+feature-targeted Roast slice, some 30 million destructions — and pointedly
+*not* the benchmark kernels, which would have been a blinkered witness
+(`hashfill` barely creates the fields in question). The verdict:
 
-That number licensed the cold block: `im`, the `BigInt` slots, the Rat pair,
+| live pointer fields | destructions |
+|---|---:|
+| none | 25,583,692 |
+| `arr` | 4,268,636 |
+| `big` | 539,483 |
+| `ratN ratD` | 466,950 |
+| `obj` | 181,374 |
+| `code` | 67,662 |
+
+25.6 million of 30 million values carried none of the eleven pointers — and
+the half-million BigInts and Rat pairs are as much a part of the design as
+the zeros, because they are the values the change could have hurt.
+
+The top row licensed the cold block: `im`, the `BigInt` slots, the Rat pair,
 the shape vector, the range fields, `ofType` and friends — about 148 inline
 bytes — moved behind one lazily allocated, copy-on-write
 `shared_ptr<ValueExt>`. Reads go through an accessor that never allocates
@@ -200,6 +215,23 @@ lesson moved here.
 
 A plain Int copy, eleven pointer checks and a string construction in August's
 first week, is now two pointer checks and an inline `CowStr`.
+
+Who pays in the new layout, and how that was checked. A value that *uses* a
+cold field pays one small allocation when the block is first written and one
+pointer hop per read — while every **copy** of it drops from a 344-byte
+memcpy to a 128-byte one with fewer refcount touches. Copying is what the
+profile said dominates, so even the penalised types should net flat or
+ahead — and the suite contains the adversarial case to test that: `bigint`,
+whose every hot value keeps its payload behind the block, improved with the
+rest (the −3…−13% band) rather than regressing, and the grammar parse —
+Match values genuinely carry payloads — measured flat. The wins were also
+broadest *away* from `hashfill` (sortnums −26% against hashfill's −15%),
+which is the distribution you expect when a change targets the
+representation rather than a benchmark. The residual exposure is narrow and
+nameable: a program that mass-creates short-lived Rats or Ranges and reads
+each once pays the allocation without harvesting the copy savings. No
+current kernel isolates that shape — which is an argument for adding one to
+the guard, not for the old layout.
 
 ## Batch three: pads, and the lever the falsifier exposed
 
