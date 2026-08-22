@@ -28,6 +28,9 @@ trips over.
 - **[compiling.md](compiling.md)** — turning a program into a binary: `--exe`
   vs `--aot` vs `--bundle`, what `-O` buys, and why `--exe` needs a C++ compiler
   on the machine that runs it.
+- **[optimizer.md](optimizer.md)** — why `-O` is not the default: what a
+  default owes every program, the measured case where `-O` loses, and how a
+  pass graduates into the default when it stops being speculation.
 - **[performance.md](performance.md)** — "my program is slow": what compiling
   does and does not speed up, with measured numbers, and the things that are slow
   in any Raku.
