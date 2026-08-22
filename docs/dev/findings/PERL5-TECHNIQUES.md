@@ -163,6 +163,24 @@ Numbers and gates in
 24-byte head/body split (and by-value BigInt inside the block) remains open,
 still coupled to the container/binding refactor.
 
+**Item 1's second step is implemented (2026-08-22, batch 4)**: the five
+payload pointers (`arr`, `hash`, `code`, `pairVal`, `obj`) collapsed into ONE
+kind-tagged slot, with the Match family — the only licensed co-occurrence —
+behind a combined `MatchData{pos, named, made}` body. `sizeof(Value)` 200 →
+**128**; a plain Int/Str copy is down to 2 shared_ptr null-checks and a
+CowStr. Interleaved A/B on the same machine: perf-guard's seven kernels
+−7.5…−10%, sortnums −17%, arrayops −14%, hashfill −13% interpreted and
+**−20% compiled**, JSON::Fast interpreted parse −13%, hashfill peak RSS −32%,
+grammar parse −4% (the Match body's extra allocation does not bite). Roast
+per-file diff: jitter only. One census blind spot surfaced and moved to the
+cold block: `is default` containers carried their element default in
+`pairVal` alongside the payload — the census bounds what typical programs
+do, not what the language allows. Details in REPRESENTATION-PLAN batch 4.
+What remains of item 1 is the endgame: CowStr (40 bytes) and the i/n pair
+behind a perl-style body union, the ~64-byte head — genuinely coupled to the
+container/binding refactor now, since everything separable from it has been
+banked.
+
 ### Item 6 (worktree `perl5-techniques`, 2026-08-21)
 
 **Item 6 is implemented**: `src/ValueHash.h` replaces the payload's
@@ -222,15 +240,25 @@ Two observations from applying it:
 
 ## Suggested order
 
+Re-ranked 2026-08-22, after item 6 landed, item 1 banked its two separable
+steps (344 → 200 → 128), and the post-ValueHash profile demoted item 8
+(malloc/free ~9% of the object-construction kernel; the frame pool already
+took the big case). Done: **6** (ValueHash), **1a/1b** (cold block + payload
+slot). Remaining:
+
 | # | change | payoff | cost | depends on |
 |---|---|---|---|---|
-| 8 | pool `arr`/hash payload allocations | modest, broad | low | — |
-| 6 | hash table with stored hashes behind `hashRef()` | high on hash work | medium (ordering audit) | — |
 | 2 | pad-style lexical slots | high, interp-wide | medium | parser knows decls (yes) |
-| 4 | per-node result slots | medium | low once 2 exists | 2 |
-| 5 | cached string form on numerics | medium | low once 1 exists | 1 (cleanly) |
-| 1 | head/body Value split | largest | large | plan with container refactor |
-| 3 | threaded-op execution loop | large | large | design doc first |
+| 4 | per-node result slots | medium | low once 2 exists | do as 2's second half |
+| 5 | cached string form on numerics | medium | low-medium | unblocked: the inline CowStr is empty on an Int — IOK/POK almost literally; needs the write-on-read thread audit |
+| 1 | head/body endgame (CowStr + i/n into the body, ~64-byte head) | largest remaining | large | plan WITH the container/binding refactor |
+| 7 | args as pointers on one stack | medium | large | same refactor as 1 |
+| 3 | threaded-op execution loop | large | large | design doc first; sequence after 2/4, when dispatch is the top cost |
+| 8 | pool remaining payload allocations | small now | low | opportunistic only |
+
+(Method-name interning in dispatch — not a perl technique, but named by the
+same profile as a top-two remaining cost — slots between 4 and 1;
+docs/book/ch/10-interning.md carries the story.)
 
 Items 1–3 are the same lesson at three layers: **stop paying per-use for what
 can be paid per-compile** (slots, offsets, op order) **and stop carrying

@@ -369,6 +369,86 @@ S05 untouched. Remaining follow-up: one TSan stress leg over the reaper
 (it shares no mutable state — a boxed map + one atomic — but the suite
 should say so; the linux-tsan CI job will on next push).
 
+#### Batch 4 — one payload slot (landed 2026-08-22): the union batch 2 abandoned, done the way the census allows
+
+Batch 2's original design — collapse the payload pointers into tag-dispatched
+slots — died on the census: `arr`, `hash` and `pairVal` co-occur, because a
+Match legitimately carries positionals, nameds and `.made` at once. Batch 4 is
+that design resurrected with the two ideas the census pointed at:
+
+- **The Match family gets a combined body.** `MatchData { pos, named, made }`
+  (48 bytes, the fields still shared_ptrs INSIDE the body so aliasing a
+  capture list into a plain Array Value and per-copy pointer replacement both
+  keep their exact old semantics; replacement clones a shared body, the `xw()`
+  idiom). With Match served by one pointer, the five payload members are
+  mutually exclusive everywhere else the census sampled —
+- **so ONE slot carries them all**: `shared_ptr<void> p_` plus a one-byte
+  payload-kind tag `pk_`. The kind byte, not `VT`, says what the slot holds:
+  a handful of sites convert a Value in place (tag first, payload after), and
+  a self-describing slot keeps that legal. Readers return raw pointers
+  (`arr()`, `hash()`, `code()`, `obj()`, `pairVal()` — null when the slot
+  holds another kind, resolved into the body on a Match); `arrS()`-style
+  ownership readers hand out the shared_ptr for the aliasing sites; setters
+  replace the slot (or write inside a Match body). The buffer-steal
+  optimisation's `use_count()==1` probes became `payloadUnique()` — same
+  control block, same number.
+
+`sizeof(Value)` **200 → 128** (five shared_ptrs + scattered padding out, one
+shared_ptr + a kind byte in; the tag/flag bytes regrouped into one word). A
+plain Int/Str copy runs 2 shared_ptr null-checks and a CowStr where batch 2
+left it 6. The conversion was the batch-1/2 recipe at 5× the size: ~3,900
+member-access sites rewritten mechanically to the read accessor, the compiler
+then enumerating the ~190 ownership sites (assignment, `.reset()`, `.get()`,
+`use_count`, shared_ptr returns) one error class at a time. Codegen's emitted
+runtime uses the same accessors, so the `--exe` lane moved in the same sweep —
+including the one `e.code` inside an emitted string literal that had to move
+BACK (ExitEx's `code` is an int, not a payload; the t/ goldens gate exactly
+this seam).
+
+**What the census could not see, and the local suite caught in minutes:** a
+container declared `is default(v)` carried its ELEMENT DEFAULT in `pairVal`,
+alongside `arr`/`hash` — a live co-occurrence on any `my @a is default(9)`
+that the census runs never sampled (three t/regression files segfaulted; the
+suite exists for precisely this). The default is rare per-Value, which is the
+cold block's definition of home: it moved into `ValueExt` as `elemDefault`,
+its ~16 read/write sites rewritten. The lesson for the head/body endgame:
+**the census bounds what typical programs do, not what the language allows** —
+every payload merge needs the t/ suite's semantic corners, not just Roast
+bulk.
+
+Measured on the Darwin 25.5 box (NOT the benchmarks machine — the BENCHMARKS
+tables get their refresh there), interleaved A/B against the same-day
+pre-batch build, release binaries, best-of-6:
+
+| | pre | post | |
+|---|---:|---:|---:|
+| perf-guard, all 7 kernels | — | — | −7.5% … −10% |
+| bench `sortnums` | 48.9 ms | 40.4 ms | −17% |
+| bench `arrayops` | 102.0 ms | 87.5 ms | −14% |
+| bench `loopsum` | 300.3 ms | 259.9 ms | −13% |
+| bench `hashfill` | 208.2 ms | 181.4 ms | −13% |
+| bench `streq` | 553.8 ms | 495.7 ms | −11% |
+| bench `fib` | 650.4 ms | 586.3 ms | −10% |
+| remaining kernels (strcat, regex, bigint) | — | — | −3% … −6% |
+| JSON::Fast `from-json` (347 KB, interpreted) | 533 ms | 465 ms | −13% |
+| grammar capturing parse (100 KB, jg.raku) | 154 ms/parse | 148 ms | −4% |
+| `hashfill` peak RSS | 148.9 MB | 101.5 MB | −32% |
+| `hashfill --exe` (pre compiled by a pristine-HEAD worktree build) | 65.6 ms | 52.4 ms | **−20%** |
+
+The grammar row is the one that could have gone the other way — a Match now
+pays one extra allocation for its body — and did not: the three-pointer copy
+it saves on every Match copy covers it.
+
+Gates: `t/run.raku` 499/499 (twice; one scheduler-jitter flap between runs,
+gone on re-run); full Roast per-file diff vs the same-day pre-batch run is
+**jitter only** — every differing file re-run serially under BOTH binaries
+lands identically (cas.t TIMEs under both today, lines.t flaps 5-7/11 under
+both, two S03 files parse-error identically under both and only ever showed
+as TIME under harness load); `-DRAKUPP_PTR_CENSUS` still compiles through the
+slot; parmap correct and t/stress/parallel-map PASS under `RAKUPP_PARALLEL=1`,
+and the ThreadSanitizer build runs both with **zero reports** through the new
+slot accessors and the MatchData clone path.
+
 ### Phase 2 — MEASURED AND REVERTED, and what it found instead (2026-08-09)
 
 Phase 2 was written and it works: `RakuHash` — `unordered_map` storage with a

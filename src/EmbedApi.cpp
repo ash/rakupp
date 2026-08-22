@@ -216,10 +216,10 @@ int rk_register(RkInterp rk, const char* name, RkHostFn fn, void* userdata) {
     // extension sub, and both are ordinary Code values from Raku's side.
     Value code;
     code.t = VT::Code;
-    code.code = std::make_shared<Callable>();
-    code.code->name = name;
+    code.setCode(std::make_shared<Callable>());
+    code.code()->name = name;
     std::string nm = name;
-    code.code->builtin = [fn, userdata, nm](Interpreter& I, ValueList& a) -> Value {
+    code.code()->builtin = [fn, userdata, nm](Interpreter& I, ValueList& a) -> Value {
         ExtCtx ctx;
         ctx.args = &a;
         ctx.interp = &I;

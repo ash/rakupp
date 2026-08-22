@@ -39,15 +39,15 @@ static int indentOf(const std::string& s) {
 
 static Value mkPod(const std::string& cls) {
     Value v = Value::makeHash(); v.hashKind = "Pod";
-    (*v.hash)["podclass"] = Value::str(cls);
-    (*v.hash)["contents"] = Value::array();
+    (*v.hash())["podclass"] = Value::str(cls);
+    (*v.hash())["contents"] = Value::array();
     return v;
 }
 static Value mkPara(const std::string& text) {
     Value p = mkPod("Pod::Block::Para");
     Value pc = Value::array();
-    pc.arr->push_back(Value::str(collapseWs(text)));
-    (*p.hash)["contents"] = pc;
+    pc.arr()->push_back(Value::str(collapseWs(text)));
+    (*p.hash())["contents"] = pc;
     return p;
 }
 
@@ -143,7 +143,7 @@ static Value cfgValue(char open, const std::string& body) {
         if (!w.empty()) words.push_back(w);
         if (words.size() == 1) return Value::str(words[0]);
         Value lst = Value::array(); lst.isList = true;
-        for (auto& s : words) lst.arr->push_back(Value::str(s));
+        for (auto& s : words) lst.arr()->push_back(Value::str(s));
         return lst;
     }
     if (open == '{') { // hash: `k => v` pairs; a bare element is the KEY of the next element
@@ -153,10 +153,10 @@ static Value cfgValue(char open, const std::string& body) {
         for (auto& p : pieces) {
             size_t ar = cfgFindArrow(p);
             if (ar != std::string::npos) {
-                (*h.hash)[cfgKey(p.substr(0, ar))] = cfgScalar(p.substr(ar + 2));
+                (*h.hash())[cfgKey(p.substr(0, ar))] = cfgScalar(p.substr(ar + 2));
                 continue;
             }
-            if (havePending) { (*h.hash)[pendingKey] = cfgScalar(p); havePending = false; }
+            if (havePending) { (*h.hash())[pendingKey] = cfgScalar(p); havePending = false; }
             else { pendingKey = cfgKey(p); havePending = true; }
         }
         return h;
@@ -165,7 +165,7 @@ static Value cfgValue(char open, const std::string& body) {
     std::vector<std::string> pieces; cfgSplitTop(body, ',', pieces);
     if (pieces.size() == 1) return cfgScalar(pieces[0]);
     Value lst = Value::array(); lst.isList = true;
-    for (auto& p : pieces) lst.arr->push_back(cfgScalar(p));
+    for (auto& p : pieces) lst.arr()->push_back(cfgScalar(p));
     return lst;
 }
 
@@ -207,7 +207,7 @@ static Value podParseConfig(const std::string& s) {
             i = j;
             val = cfgValue(open, body);
         }
-        (*h.hash)[key] = val;
+        (*h.hash())[key] = val;
     }
     return h;
 }
@@ -313,9 +313,9 @@ static void parseSeq(const std::vector<std::string>& lines, size_t& i,
                 i++;
                 std::string cfg = cfgTextAfterName(rest, name, lines, i);
                 Value block = mkPod(cls);
-                if (cls == "Pod::Block::Named") (*block.hash)["name"] = Value::str(name);
-                if (lv) (*block.hash)["level"] = Value::integer(lv);
-                if (cfg.find(':') != std::string::npos) (*block.hash)["config"] = podParseConfig(cfg);
+                if (cls == "Pod::Block::Named") (*block.hash())["name"] = Value::str(name);
+                if (lv) (*block.hash())["level"] = Value::integer(lv);
+                if (cfg.find(':') != std::string::npos) (*block.hash())["config"] = podParseConfig(cfg);
                 ValueList inner;
                 if (cls == "Pod::Block::Code" || cls == "Pod::Block::Comment") { // verbatim contents
                     std::vector<std::string> code; std::string k2, r2;
@@ -324,15 +324,15 @@ static void parseSeq(const std::vector<std::string>& lines, size_t& i,
                     while (!code.empty() && strip(code.back()).empty()) code.pop_back();
                     std::string text; for (size_t k = 0; k < code.size(); k++) { if (k) text += "\n"; text += code[k]; }
                     if (cls == "Pod::Block::Comment" && !text.empty()) text += "\n"; // comments keep a trailing NL
-                    Value cc = Value::array(); if (!text.empty()) cc.arr->push_back(Value::str(text));
-                    (*block.hash)["contents"] = cc;
+                    Value cc = Value::array(); if (!text.empty()) cc.arr()->push_back(Value::str(text));
+                    (*block.hash())["contents"] = cc;
                     if (i < lines.size()) i++;
                     out.push_back(block);
                     continue;
                 }
                 parseSeq(lines, i, name, true, inner, blockMargin(lines, i));
-                Value ic = Value::array(); *ic.arr = std::move(inner);
-                (*block.hash)["contents"] = ic;
+                Value ic = Value::array(); *ic.arr() = std::move(inner);
+                (*block.hash())["contents"] = ic;
                 if (i < lines.size()) i++; // consume the =end line
                 out.push_back(block);
                 continue;
@@ -343,18 +343,18 @@ static void parseSeq(const std::vector<std::string>& lines, size_t& i,
                 i++;
                 std::string cfg = cfgTextAfterName(rest, name, lines, i);
                 Value block = mkPod(cls);
-                if (cls == "Pod::Block::Named") (*block.hash)["name"] = Value::str(name);
-                if (lv) (*block.hash)["level"] = Value::integer(lv);
-                if (cfg.find(':') != std::string::npos) (*block.hash)["config"] = podParseConfig(cfg);
+                if (cls == "Pod::Block::Named") (*block.hash())["name"] = Value::str(name);
+                if (lv) (*block.hash())["level"] = Value::integer(lv);
+                if (cfg.find(':') != std::string::npos) (*block.hash())["config"] = podParseConfig(cfg);
                 Value ic = Value::array();
                 if (cls == "Pod::Block::Comment" || cls == "Pod::Block::Code") {
                     std::string v = collectVerbatim(lines, i, cls == "Pod::Block::Comment");
-                    if (!v.empty()) ic.arr->push_back(Value::str(v));
+                    if (!v.empty()) ic.arr()->push_back(Value::str(v));
                 } else {
                     std::string para = collectPara(lines, i);
-                    if (!para.empty()) ic.arr->push_back(mkPara(para));
+                    if (!para.empty()) ic.arr()->push_back(mkPara(para));
                 }
-                (*block.hash)["contents"] = ic;
+                (*block.hash())["contents"] = ic;
                 out.push_back(block);
                 continue;
             }
@@ -364,9 +364,9 @@ static void parseSeq(const std::vector<std::string>& lines, size_t& i,
                 std::string cont = collectPara(lines, i);
                 if (!cont.empty()) text += (text.empty() ? "" : " ") + cont;
                 Value h = mkPod("Pod::Heading");
-                (*h.hash)["level"] = Value::integer(level);
-                Value ic = Value::array(); ic.arr->push_back(mkPara(text));
-                (*h.hash)["contents"] = ic;
+                (*h.hash())["level"] = Value::integer(level);
+                Value ic = Value::array(); ic.arr()->push_back(mkPara(text));
+                (*h.hash())["contents"] = ic;
                 out.push_back(h);
                 continue;
             }
@@ -375,9 +375,9 @@ static void parseSeq(const std::vector<std::string>& lines, size_t& i,
                 std::string cont = collectPara(lines, i);
                 if (!cont.empty()) text += (text.empty() ? "" : " ") + cont;
                 Value it = mkPod("Pod::Item");
-                (*it.hash)["level"] = Value::integer(level);
-                Value ic = Value::array(); ic.arr->push_back(mkPara(text));
-                (*it.hash)["contents"] = ic;
+                (*it.hash())["level"] = Value::integer(level);
+                Value ic = Value::array(); ic.arr()->push_back(mkPara(text));
+                (*it.hash())["contents"] = ic;
                 out.push_back(it);
                 continue;
             }
@@ -386,9 +386,9 @@ static void parseSeq(const std::vector<std::string>& lines, size_t& i,
                 i++;
                 std::string cfg = cfgTextAfterName(rest, type, lines, i);
                 Value node = mkPod("Pod::Config");
-                (*node.hash)["type"] = Value::str(type);
-                (*node.hash)["config"] = podParseConfig(cfg);
-                (*node.hash)["contents"] = Value::array();
+                (*node.hash())["type"] = Value::str(type);
+                (*node.hash())["config"] = podParseConfig(cfg);
+                (*node.hash())["contents"] = Value::array();
                 out.push_back(node);
                 continue;
             }
@@ -397,18 +397,18 @@ static void parseSeq(const std::vector<std::string>& lines, size_t& i,
                 std::string v = collectVerbatim(lines, i, true);
                 if (!rest.empty()) v = rest + (v.empty() ? std::string("\n") : "\n" + v);
                 Value cm = mkPod("Pod::Block::Comment");
-                Value cc = Value::array(); if (!v.empty()) cc.arr->push_back(Value::str(v));
-                (*cm.hash)["contents"] = cc;
+                Value cc = Value::array(); if (!v.empty()) cc.arr()->push_back(Value::str(v));
+                (*cm.hash())["contents"] = cc;
                 out.push_back(cm);
                 continue;
             }
             if (kw == "pod") { // =pod … =end pod delimiter-less start OR abbreviated; treat like a named block
                 std::string name = "pod"; i++;
                 Value block = mkPod("Pod::Block::Named");
-                (*block.hash)["name"] = Value::str(name);
+                (*block.hash())["name"] = Value::str(name);
                 ValueList inner; parseSeq(lines, i, name, true, inner, blockMargin(lines, i));
-                Value ic = Value::array(); *ic.arr = std::move(inner);
-                (*block.hash)["contents"] = ic;
+                Value ic = Value::array(); *ic.arr() = std::move(inner);
+                (*block.hash())["contents"] = ic;
                 if (i < lines.size()) i++;
                 out.push_back(block);
                 continue;
@@ -419,9 +419,9 @@ static void parseSeq(const std::vector<std::string>& lines, size_t& i,
             std::string cont = collectPara(lines, i);
             if (!cont.empty()) text += (text.empty() ? "" : " ") + cont;
             Value block = mkPod("Pod::Block::Named");
-            (*block.hash)["name"] = Value::str(name);
-            Value ic = Value::array(); if (!text.empty()) ic.arr->push_back(mkPara(text));
-            (*block.hash)["contents"] = ic;
+            (*block.hash())["name"] = Value::str(name);
+            Value ic = Value::array(); if (!text.empty()) ic.arr()->push_back(mkPara(text));
+            (*block.hash())["contents"] = ic;
             out.push_back(block);
             continue;
         }
@@ -447,8 +447,8 @@ static void parseSeq(const std::vector<std::string>& lines, size_t& i,
                     text += (int)l.size() > minInd ? l.substr(minInd) : "";
                 }
                 Value cb = mkPod("Pod::Block::Code");
-                Value cc = Value::array(); cc.arr->push_back(Value::str(text));
-                (*cb.hash)["contents"] = cc;
+                Value cc = Value::array(); cc.arr()->push_back(Value::str(text));
+                (*cb.hash())["contents"] = cc;
                 out.push_back(cb);
             } else {
                 std::string para = collectPara(lines, i);

@@ -93,41 +93,41 @@ bool Value::truthy() const {
         case VT::Array:
             // a Junction collapses by its kind — since comparisons autothread
             // into PRESERVED junctions, every truthiness site must collapse
-            if (arr && (enumName == "any" || enumName == "all" ||
+            if (arr() && (enumName == "any" || enumName == "all" ||
                         enumName == "one" || enumName == "none")) {
                 int t2 = 0, total = 0;
-                for (auto& e : *arr) { total++; if (e.truthy()) t2++; }
+                for (auto& e : *arr()) { total++; if (e.truthy()) t2++; }
                 return enumName == "any" ? t2 > 0 : enumName == "all" ? t2 == total
                      : enumName == "one" ? t2 == 1 : t2 == 0;
             }
-            return arr && !arr->empty();
+            return arr() && !arr()->empty();
         case VT::Hash:
             // A Proc / Proc::Async is true iff it exited successfully (exit code 0).
-            if ((hashKind == "Proc" || hashKind == "Proc::Async") && hash) {
-                auto it = hash->find("exitcode");
-                return it == hash->end() || it->second.toInt() == 0;
+            if ((hashKind == "Proc" || hashKind == "Proc::Async") && hash()) {
+                auto it = hash()->find("exitcode");
+                return it == hash()->end() || it->second.toInt() == 0;
             }
             if (hashKind == "Failure") return false; // a Failure boolifies False (soft failure)
             // A Promise boolifies True only once it is Kept/Broken (a Planned
             // promise is False) — IO::Socket::Async::SSL's handshake pump relies
             // on `elsif $!connected-promise` being false while still negotiating.
-            if (hashKind == "Promise" && hash) {
-                auto it = hash->find("status");
-                if (it != hash->end()) return it->second.toStr() != "Planned";
+            if (hashKind == "Promise" && hash()) {
+                auto it = hash()->find("status");
+                if (it != hash()->end()) return it->second.toStr() != "Planned";
             }
             // A NativeCall Pointer/CArray boolifies by its ADDRESS: NULL is
             // false. Without this it fell through to "a hash with keys in it",
             // so `if $ptr` passed a null pointer straight to C.
-            if ((hashKind == "Pointer" || hashKind == "CArray") && hash) {
-                auto it = hash->find("addr");
-                if (it != hash->end()) return it->second.toInt() != 0;
+            if ((hashKind == "Pointer" || hashKind == "CArray") && hash()) {
+                auto it = hash()->find("addr");
+                if (it != hash()->end()) return it->second.toInt() != 0;
             }
             return (hashKind == "Raku" || hashKind == "Compiler" ||
                     hashKind == "Mu" || hashKind == "Any") // object-like: always defined/true
-                            || (hash && !hash->empty());
+                            || (hash() && !hash()->empty());
         case VT::Range: return true;
         case VT::Code:  return true;
-        case VT::Pair:  return true; // a Pair object is always true (one-key-hash semantics)
+        case VT::Pair:  return true; // a Pair object is always true (one-key-hash() semantics)
         case VT::Type:  return false;
         case VT::Whatever: return true;
         case VT::Object: return true;
@@ -183,30 +183,30 @@ long long Value::toInt() const {
             long long v = std::strtoll(p0, &end, 10);
             return (end == p0 || errno == ERANGE) ? 0 : v;
         }
-        case VT::Array: return arr ? (long long)arr->size() : 0;
+        case VT::Array: return arr() ? (long long)arr()->size() : 0;
         case VT::Hash:
             // A tr/// StrDistance numifies to the substitution count.
-            if (hash && hashKind == "StrDistance") {
-                auto it = hash->find("distance");
-                if (it != hash->end()) return it->second.toInt();
+            if (hash() && hashKind == "StrDistance") {
+                auto it = hash()->find("distance");
+                if (it != hash()->end()) return it->second.toInt();
             }
             // A Proc / Proc::Async numifies to its exit status (+$proc), like Rakudo.
-            if (hash && (hashKind == "Proc" || hashKind == "Proc::Async")) {
-                auto it = hash->find("exitcode");
-                return it != hash->end() ? it->second.toInt() : 0;
+            if (hash() && (hashKind == "Proc" || hashKind == "Proc::Async")) {
+                auto it = hash()->find("exitcode");
+                return it != hash()->end() ? it->second.toInt() : 0;
             }
             // A Bag/Mix numifies to its .total (sum of counts), not its .elems.
-            if (hash && (hashKind.rfind("Bag", 0) == 0 || hashKind.rfind("Mix", 0) == 0)) {
-                double t = 0; for (auto& kv : *hash) t += kv.second.toNum();
+            if (hash() && (hashKind.rfind("Bag", 0) == 0 || hashKind.rfind("Mix", 0) == 0)) {
+                double t = 0; for (auto& kv : *hash()) t += kv.second.toNum();
                 return (long long)t;
             }
             // +$ptr is the ADDRESS. A Pointer holds { addr, of }, so the
             // generic "size of the hash" below made every pointer numify to 2.
-            if ((hashKind == "Pointer" || hashKind == "CArray") && hash) {
-                auto it = hash->find("addr");
-                if (it != hash->end()) return it->second.toInt();
+            if ((hashKind == "Pointer" || hashKind == "CArray") && hash()) {
+                auto it = hash()->find("addr");
+                if (it != hash()->end()) return it->second.toInt();
             }
-            return hash ? (long long)hash->size() : 0;
+            return hash() ? (long long)hash()->size() : 0;
         default: return 0;
     }
 }
@@ -352,7 +352,7 @@ std::string Value::toStr() const {
         // keys on the gist, which is exactly the "give makeBaggy its own key
         // function first" the old note asked for — so the blocker is gone.
         case VT::Type: return s == "IterationEnd" ? s.str() : std::string();
-        case VT::Pair: return s + "\t" + (pairVal ? pairVal->toStr() : "");
+        case VT::Pair: return s + "\t" + (pairVal() ? pairVal()->toStr() : "");
         case VT::Range: {
             // a finite Range stringifies to its elements (`put 1..5` → 1 2 3 4 5);
             // an ENDLESS one has no end to lay out, so it keeps the endpoint form
@@ -398,13 +398,13 @@ std::string Value::toStr() const {
             // the codepoint numbers — `"$u"` is Ḍ, not "68 803"
             if (s == "Uni" || s == "NFC" || s == "NFD" || s == "NFKC" || s == "NFKD") {
                 std::string out;
-                if (arr) for (auto& c : *arr) out += cpToU8((uint32_t)c.toInt());
+                if (arr()) for (auto& c : *arr()) out += cpToU8((uint32_t)c.toInt());
                 return out;
             }
             std::string out;
-            if (arr) for (size_t k = 0; k < arr->size(); k++) {
+            if (arr()) for (size_t k = 0; k < arr()->size(); k++) {
                 if (k) out += " ";
-                out += (*arr)[k].toStr();
+                out += (*arr())[k].toStr();
             }
             return out;
         }
@@ -413,28 +413,28 @@ std::string Value::toStr() const {
             if (hashKind == "Mu" || hashKind == "Any") return hashKind + ".new";
             // an Attribute Strs as its declaration ("Int $!private"), like its
             // gist — the key\tvalue dump below leaked into Data::Dump's output
-            if (hashKind == "Attribute" && hash) {
-                std::string tn = hash->count("type") ? hash->at("type").toStr() : "";
-                std::string nm = hash->count("name") ? hash->at("name").toStr() : "";
+            if (hashKind == "Attribute" && hash()) {
+                std::string tn = hash()->count("type") ? hash()->at("type").toStr() : "";
+                std::string nm = hash()->count("name") ? hash()->at("name").toStr() : "";
                 return (tn.empty() ? "" : tn + " ") + nm;
             }
             // "$ptr" is the pointer's own text, not the key\tvalue dump —
             // interpolating one produced a two-line "addr\t140…\nof\t".
-            if ((hashKind == "Pointer" || hashKind == "CArray") && hash && hash->count("addr")) {
+            if ((hashKind == "Pointer" || hashKind == "CArray") && hash() && hash()->count("addr")) {
                 // the element type lives in the "of" ENTRY (as .gist reads it),
                 // not in the ofType field
-                std::string of = hash->count("of") ? hash->at("of").toStr() : "";
+                std::string of = hash()->count("of") ? hash()->at("of").toStr() : "";
                 return hashKind + (of.empty() ? "" : "[" + of + "]") + "<" +
-                       std::to_string(hash->at("addr").toInt()) + ">";
+                       std::to_string(hash()->at("addr").toInt()) + ">";
             }
-            if (hashKind == "Format" && hash && hash->count("fmt")) return hash->at("fmt").toStr();
+            if (hashKind == "Format" && hash() && hash()->count("fmt")) return hash()->at("fmt").toStr();
             // An IO::Handle Strs as its PATH — `"foo".IO.open.Str` is "foo".
             // Without this it fell through to the key\tvalue dump below.
-            if (hashKind == "FileHandle" && hash && hash->count("path"))
-                return hash->at("path").toStr();
-            if (hashKind == "StrDistance" && hash && hash->count("after"))
-                return hash->at("after").toStr(); // "$dist" is the resulting string
-            if ((hashKind == "Date" || hashKind == "DateTime") && hash) return dateGist(*hash, hashKind == "Date");
+            if (hashKind == "FileHandle" && hash() && hash()->count("path"))
+                return hash()->at("path").toStr();
+            if (hashKind == "StrDistance" && hash() && hash()->count("after"))
+                return hash()->at("after").toStr(); // "$dist" is the resulting string
+            if ((hashKind == "Date" || hashKind == "DateTime") && hash()) return dateGist(*hash(), hashKind == "Date");
             // Setty/Baggy .Str is the elements space-joined — `elem(weight)`
             // for a non-1 Bag/Mix weight — NOT the generic key\tvalue dump
             // (`say ([(^)] @words).Str` prints "orange", not "orange\tTrue")
@@ -446,7 +446,7 @@ std::string Value::toStr() const {
                 // sorted by key — the deterministic rendering the sorted
                 // payload used to give for free
                 std::vector<const std::pair<const std::string, Value>*> ents;
-                if (hash) { ents.reserve(hash->size()); for (auto& kv : *hash) ents.push_back(&kv); }
+                if (hash()) { ents.reserve(hash()->size()); for (auto& kv : *hash()) ents.push_back(&kv); }
                 std::sort(ents.begin(), ents.end(),
                           [](auto* a, auto* b) { return a->first < b->first; });
                 std::string out; bool first = true;
@@ -460,10 +460,10 @@ std::string Value::toStr() const {
             }
             ReprDepthGuard g; if (g.tooDeep()) return "...";
             std::string out;
-            if (hash) {
+            if (hash()) {
                 std::vector<const std::pair<const std::string, Value>*> ents;
-                ents.reserve(hash->size());
-                for (auto& kv : *hash) ents.push_back(&kv);
+                ents.reserve(hash()->size());
+                for (auto& kv : *hash()) ents.push_back(&kv);
                 std::sort(ents.begin(), ents.end(),
                           [](auto* a, auto* b) { return a->first < b->first; });
                 bool first = true;
@@ -477,20 +477,20 @@ std::string Value::toStr() const {
         // a NAMED routine gists as its `&`-reference; an anonymous block keeps
         // the generic form (Rakudo prints an address there, which is not
         // reproducible and not worth reproducing)
-        case VT::Code: return code && !code->name.empty() &&
-                              code->name.rfind("anon", 0) != 0
-                            ? "&" + code->name : "sub { ... }";
+        case VT::Code: return code() && !code()->name.empty() &&
+                              code()->name.rfind("anon", 0) != 0
+                            ? "&" + code()->name : "sub { ... }";
         case VT::Whatever: return "*";
         case VT::Object:
-            if (obj && obj->hasBoxed) return obj->boxed.toStr(); // but/does mixin over a value
-            if (obj && obj->cls && obj->cls->name.rfind("X::", 0) == 0) { // exceptions stringify to their message
-                auto it = obj->attrs.find("message");
-                if (it != obj->attrs.end() && it->second.t == VT::Str) return it->second.s;
+            if (obj() && obj()->hasBoxed) return obj()->boxed.toStr(); // but/does mixin over a value
+            if (obj() && obj()->cls && obj()->cls->name.rfind("X::", 0) == 0) { // exceptions stringify to their message
+                auto it = obj()->attrs.find("message");
+                if (it != obj()->attrs.end() && it->second.t == VT::Str) return it->second.s;
             }
             // Rakudo's default Mu.Str is `Name<identity>` — DISTINCT per object.
             // `isnt $a, $a.clone` is a string compare and must see two objects.
-            return obj && obj->cls
-                ? obj->cls->name + "<" + std::to_string((uintptr_t)obj.get()) + ">"
+            return obj() && obj()->cls
+                ? obj()->cls->name + "<" + std::to_string((uintptr_t)obj()) + ">"
                 : "Object";
         case VT::Regex: return s;
         case VT::Match: return s;
@@ -512,13 +512,13 @@ std::string Value::gist() const {
     }
     if (!enumName.empty() && hashKind != "Blob" && hashKind != "Buf" && hashKind != "IO") {
         // a Junction gists with its eigenstates: any(1, 2, 3)
-        if (t == VT::Array && arr &&
+        if (t == VT::Array && arr() &&
             (enumName == "any" || enumName == "all" || enumName == "one" || enumName == "none")) {
             ReprDepthGuard g; if (g.tooDeep()) return enumName + "(...)";
             std::string out = enumName + "(";
-            for (size_t k = 0; k < arr->size(); k++) {
+            for (size_t k = 0; k < arr()->size(); k++) {
                 if (k) out += ", ";
-                out += (*arr)[k].gist();
+                out += (*arr())[k].gist();
             }
             return out + ")";
         }
@@ -549,20 +549,20 @@ std::string Value::gist() const {
             if (s == "Uni" || s == "NFC" || s == "NFD" || s == "NFKC" || s == "NFKD") {
                 char buf[16];
                 std::string body;
-                if (arr) for (size_t k = 0; k < arr->size(); k++) {
+                if (arr()) for (size_t k = 0; k < arr()->size(); k++) {
                     if (k) body += " ";
-                    std::snprintf(buf, sizeof buf, "%04x", (unsigned)(*arr)[k].toInt()); // lowercase, as Rakudo
+                    std::snprintf(buf, sizeof buf, "%04x", (unsigned)(*arr())[k].toInt()); // lowercase, as Rakudo
                     body += buf;
                 }
                 return s + ":0x<" + body + ">";
             }
             std::string out = isList ? "(" : "[";
-            if (arr) for (size_t k = 0; k < arr->size(); k++) {
+            if (arr()) for (size_t k = 0; k < arr()->size(); k++) {
                 // Rakudo caps a list's gist at 100 elements and marks the rest
                 // with an ellipsis (`.Str`/`.raku` stay complete)
                 if (k == 100) { out += " ..."; break; }
                 if (k) out += " ";
-                out += (*arr)[k].gist();
+                out += (*arr())[k].gist();
             }
             return out + (isList ? ")" : "]");
         }
@@ -573,7 +573,7 @@ std::string Value::gist() const {
             // Rakudo leaves a Pair VALUE bare.
             std::string k = pairKey() ? pairKey()->gist() : s;
             if (pairKey() && pairKey()->t == VT::Pair) k = "(" + k + ")";
-            return k + " => " + (pairVal ? pairVal->gist() : "");
+            return k + " => " + (pairVal() ? pairVal()->gist() : "");
         }
         case VT::Str:
             if (hashKind == "Version") return "v" + s; // v1.2.3.gist is "v1.2.3" (.Str is "1.2.3")
@@ -629,36 +629,36 @@ std::string Value::gist() const {
             // plain Hash: {a => 1, b => 2}; Map: Map.new((a => 1)); Set/Bag/Mix
             // families: Kind(elems). Everything else (Date, Failure, …) keeps
             // its toStr form via the default below.
-            if (hashKind == "Attribute" && hash) { // Str $!name
-                std::string tn = hash->count("type") ? hash->at("type").s.str() : std::string("Mu");
-                std::string nm = hash->count("name") ? hash->at("name").s.str() : std::string();
+            if (hashKind == "Attribute" && hash()) { // Str $!name
+                std::string tn = hash()->count("type") ? hash()->at("type").s.str() : std::string("Mu");
+                std::string nm = hash()->count("name") ? hash()->at("name").s.str() : std::string();
                 return (tn.empty() ? "Mu" : tn) + " " + nm;
             }
             // $*RAKU / $*RAKU.compiler. These carry no data of their own — every
             // accessor is computed in methodCallInner — so gist fell through to
             // toStr and `say $*RAKU` printed NOTHING. The constructor now leaves
             // the two fields the rendering needs, as FileHandle does below.
-            if ((hashKind == "Raku" || hashKind == "Compiler") && hash) {
-                auto n = hash->find("name"), v = hash->find("ver");
-                if (n != hash->end() && v != hash->end())
+            if ((hashKind == "Raku" || hashKind == "Compiler") && hash()) {
+                auto n = hash()->find("name"), v = hash()->find("ver");
+                if (n != hash()->end() && v != hash()->end())
                     return n->second.s + " (" + v->second.s + ")";
             }
-            if (hashKind == "Scalar" && hash) { // a .VAR container gists as its value
-                auto it = hash->find("value");
-                return it != hash->end() ? it->second.gist() : "(Any)";
+            if (hashKind == "Scalar" && hash()) { // a .VAR container gists as its value
+                auto it = hash()->find("value");
+                return it != hash()->end() ? it->second.gist() : "(Any)";
             }
             // Same story as Proc below: an IO::Handle had no rendering of its own,
             // so `say $fh` and `$fh.Str` dumped buffer/mode/path as a hash. Rakudo
             // gists it as IO::Handle<"path".IO>(opened) and Strs it as the PATH.
-            if (hashKind == "FileHandle" && hash) {
-                auto it = hash->find("path");
-                std::string path = it != hash->end() ? it->second.toStr() : "";
-                bool closed = hash->count("closed") && hash->at("closed").truthy();
+            if (hashKind == "FileHandle" && hash()) {
+                auto it = hash()->find("path");
+                std::string path = it != hash()->end() ? it->second.toStr() : "";
+                bool closed = hash()->count("closed") && hash()->at("closed").truthy();
                 std::string q = "\"";
                 for (char c : path) { if (c == '\\' || c == '"') q += '\\'; q += c; }
                 q += "\"";
                 // $*ARGFILES is an IO::ArgFiles, and renders as one
-                if (hash->count("argfiles"))
+                if (hash()->count("argfiles"))
                     return path.empty() ? "IO::ArgFiles(opened on $*IN)"
                                         : "IO::ArgFiles(opened on " + q + ".IO)";
                 return "IO::Handle<" + q + ".IO>(" + (closed ? "closed" : "opened") + ")";
@@ -667,19 +667,19 @@ std::string Value::gist() const {
             // through to the generic hash rendering printed every slot including
             // out-str — so `say shell("ls")` showed the listing TWICE: once echoed
             // as the child ran, once inside the Proc's own gist.
-            if ((hashKind == "Proc" || hashKind == "Proc::Async") && hash) {
+            if ((hashKind == "Proc" || hashKind == "Proc::Async") && hash()) {
                 auto fld = [&](const char* k) -> const Value* {
-                    auto it = hash->find(k); return it != hash->end() ? &it->second : nullptr;
+                    auto it = hash()->find(k); return it != hash()->end() ? &it->second : nullptr;
                 };
                 std::string cmd = "()";
                 if (const Value* av = fld("argv")) {
                     cmd = "(";
-                    if (av->arr) for (size_t k = 0; k < av->arr->size(); k++) {
+                    if (av->arr()) for (size_t k = 0; k < av->arr()->size(); k++) {
                         if (k) cmd += ", ";
                         // .raku-style, so a Str argument keeps its quotes the way
                         // Rakudo shows them: command => ("ls",)
-                        cmd += g_rakuRepr ? g_rakuRepr((*av->arr)[k]) : (*av->arr)[k].gist();
-                        if (av->arr->size() == 1) cmd += ",";   // a one-element list keeps its comma
+                        cmd += g_rakuRepr ? g_rakuRepr((*av->arr())[k]) : (*av->arr())[k].gist();
+                        if (av->arr()->size() == 1) cmd += ",";   // a one-element list keeps its comma
                     }
                     cmd += ")";
                 }
@@ -695,7 +695,7 @@ std::string Value::gist() const {
                 // Sorted by key — the payload iterates in insertion order, but
                 // Hash.gist prints sorted (Rakudo does the same sort here).
                 std::vector<const std::pair<const std::string, Value>*> ents;
-                if (hash) { ents.reserve(hash->size()); for (auto& kv : *hash) ents.push_back(&kv); }
+                if (hash()) { ents.reserve(hash()->size()); for (auto& kv : *hash()) ents.push_back(&kv); }
                 std::sort(ents.begin(), ents.end(),
                           [](auto* a, auto* b) { return a->first < b->first; });
                 std::string body; bool first = true;
@@ -714,7 +714,7 @@ std::string Value::gist() const {
                 // Sorted by lookup key — the rendering the sorted payload used
                 // to give for free, kept so quanthash gists stay deterministic.
                 std::vector<const std::pair<const std::string, Value>*> ents;
-                if (hash) { ents.reserve(hash->size()); for (auto& kv : *hash) ents.push_back(&kv); }
+                if (hash()) { ents.reserve(hash()->size()); for (auto& kv : *hash()) ents.push_back(&kv); }
                 std::sort(ents.begin(), ents.end(),
                           [](auto* a, auto* b) { return a->first < b->first; });
                 std::string body; bool first = true;
@@ -734,9 +734,9 @@ std::string Value::gist() const {
             // A Signature/Parameter carries its rendering in "str"; without this it
             // falls through to the generic Hash Str and dumps forty tab-separated
             // attribute lines.
-            if ((hashKind == "Signature" || hashKind == "Parameter") && hash) {
-                auto it = hash->find("str");
-                if (it != hash->end()) return it->second.s;
+            if ((hashKind == "Signature" || hashKind == "Parameter") && hash()) {
+                auto it = hash()->find("str");
+                if (it != hash()->end()) return it->second.s;
             }
             return toStr();
         }
@@ -749,11 +749,11 @@ std::string Value::gist() const {
                 std::string r = "\xEF\xBD\xA2" + m.s + "\xEF\xBD\xA3";
                 std::vector<std::pair<std::string, const Value*>> caps;
                 auto add = [&caps](const std::string& key, const Value& v) {
-                    if (v.t == VT::Array && v.arr) { for (auto& e : *v.arr) caps.push_back({key, &e}); }
+                    if (v.t == VT::Array && v.arr()) { for (auto& e : *v.arr()) caps.push_back({key, &e}); }
                     else caps.push_back({key, &v});
                 };
-                if (m.arr) for (size_t k = 0; k < m.arr->size(); k++) add(std::to_string(k), (*m.arr)[k]);
-                if (m.hash) for (auto& kv : *m.hash) add(kv.first, kv.second);
+                if (m.arr()) for (size_t k = 0; k < m.arr()->size(); k++) add(std::to_string(k), (*m.arr())[k]);
+                if (m.hash()) for (auto& kv : *m.hash()) add(kv.first, kv.second);
                 std::stable_sort(caps.begin(), caps.end(),
                                  [](auto& a, auto& b) { return a.second->rFrom() < b.second->rFrom(); });
                 std::string pad(d + 1, ' ');
@@ -765,7 +765,7 @@ std::string Value::gist() const {
             return mg(*this, 0);
         }
         case VT::Code:
-            if (code && code->isWhateverCode) return "WhateverCode.new"; // say (* > 2)
+            if (code() && code()->isWhateverCode) return "WhateverCode.new"; // say (* > 2)
             return toStr();
         default: return toStr();
     }
@@ -791,7 +791,7 @@ std::string Value::typeName() const {
             if (enumName == "any" || enumName == "all" || enumName == "one" || enumName == "none") return "Junction";
             if (hashKind == "Capture") return "Capture"; // \(…) literal
             return !isList ? "Array" : s == "Seq" ? "Seq" : s == "Slip" ? "Slip" : "List";
-        case VT::Hash:  if (hashKind == "Pod" && hash && hash->count("podclass")) return hash->at("podclass").s;
+        case VT::Hash:  if (hashKind == "Pod" && hash() && hash()->count("podclass")) return hash()->at("podclass").s;
                         // a connected async socket is an IO::Socket::Async (Rakudo's
                         // type); the internal "AsyncSocket" kind only drives dispatch.
                         if (hashKind == "AsyncSocket") return "IO::Socket::Async";
@@ -803,15 +803,15 @@ std::string Value::typeName() const {
                         // a listener — could not be written at all.
                         if (hashKind == "Socket") return "IO::Socket::INET";
                         return hashKind.empty() ? std::string("Hash") : hashKind.str(); // the TYPE name (gist is via toStr)
-        case VT::Code:  return code && code->isWhateverCode ? "WhateverCode"
-                             : code && code->isRegexRoutine ? "Regex"
-                             : code && code->isMethod ? "Method" : code && code->isBlock ? "Block" : "Sub";
+        case VT::Code:  return code() && code()->isWhateverCode ? "WhateverCode"
+                             : code() && code()->isRegexRoutine ? "Regex"
+                             : code() && code()->isMethod ? "Method" : code() && code()->isBlock ? "Block" : "Sub";
         case VT::Rat:   return fatRat() ? "FatRat" : "Rat";
         case VT::Range: return "Range";
         case VT::Pair:  return "Pair";
         case VT::Type:  return ofType().empty() ? s : s + "[" + ofType() + "]";
         case VT::Whatever: return b ? "HyperWhatever" : "Whatever"; // `**` marks hyper via .b
-        case VT::Object: return obj && obj->cls ? obj->cls->name : "Object";
+        case VT::Object: return obj() && obj()->cls ? obj()->cls->name : "Object";
         case VT::Regex: return "Regex";
         case VT::Match: return "Match";
     }
@@ -851,8 +851,8 @@ ValueList Value::blobList() const {
 
 ValueList Value::flatten() const {
     ValueList out;
-    if (t == VT::Array && arr) {
-        for (auto& v : *arr) {
+    if (t == VT::Array && arr()) {
+        for (auto& v : *arr()) {
             if (v.t == VT::Array || v.t == VT::Range) {
                 ValueList sub = v.flatten();
                 out.insert(out.end(), sub.begin(), sub.end());
@@ -1097,18 +1097,18 @@ bool valueEq(const Value& a, const Value& b) {
 static thread_local int g_objEqDepth = 0;
 bool objectStructEqv(const Value& a, const Value& b,
                      bool (*eq)(const Value&, const Value&)) {
-    if (a.obj == b.obj) return true;
-    if (!a.obj || !b.obj) return false;
-    if (a.obj->cls != b.obj->cls) return false; // a.WHAT =:= b.WHAT
+    if (a.obj() == b.obj()) return true;
+    if (!a.obj() || !b.obj()) return false;
+    if (a.obj()->cls != b.obj()->cls) return false; // a.WHAT =:= b.WHAT
     if (g_objEqDepth > 256) return false;
     ++g_objEqDepth;
     bool ok = true;
-    if (a.obj->hasBoxed != b.obj->hasBoxed) ok = false;
-    else if (a.obj->hasBoxed && !eq(a.obj->boxed, b.obj->boxed)) ok = false;
-    else if (a.obj->attrs.size() != b.obj->attrs.size()) ok = false;
-    else for (auto& kv : a.obj->attrs) {
-        auto it = b.obj->attrs.find(kv.first);
-        if (it == b.obj->attrs.end() || !eq(kv.second, it->second)) { ok = false; break; }
+    if (a.obj()->hasBoxed != b.obj()->hasBoxed) ok = false;
+    else if (a.obj()->hasBoxed && !eq(a.obj()->boxed, b.obj()->boxed)) ok = false;
+    else if (a.obj()->attrs.size() != b.obj()->attrs.size()) ok = false;
+    else for (auto& kv : a.obj()->attrs) {
+        auto it = b.obj()->attrs.find(kv.first);
+        if (it == b.obj()->attrs.end() || !eq(kv.second, it->second)) { ok = false; break; }
     }
     --g_objEqDepth;
     return ok;
@@ -1147,19 +1147,19 @@ int valueCmp(const Value& a, const Value& b) {
         Value bk = b.pairKey() ? *b.pairKey() : Value::str(b.s);
         int k = valueCmp(ak, bk);
         if (k != 0) return k;
-        Value av = a.pairVal ? *a.pairVal : Value::any();
-        Value bv = b.pairVal ? *b.pairVal : Value::any();
+        Value av = a.pairVal() ? *a.pairVal() : Value::any();
+        Value bv = b.pairVal() ? *b.pairVal() : Value::any();
         return valueCmp(av, bv);
     }
     // Lists compare elementwise, shorter-is-less on a tie — so a sort key of
     // `{ -.value, .key }` orders by the first element, then the second.
-    if (a.t == VT::Array && b.t == VT::Array && a.arr && b.arr && a.enumName.empty() && b.enumName.empty()) {
-        size_t n = std::min(a.arr->size(), b.arr->size());
+    if (a.t == VT::Array && b.t == VT::Array && a.arr() && b.arr() && a.enumName.empty() && b.enumName.empty()) {
+        size_t n = std::min(a.arr()->size(), b.arr()->size());
         for (size_t k = 0; k < n; k++) {
-            int c = valueCmp((*a.arr)[k], (*b.arr)[k]);
+            int c = valueCmp((*a.arr())[k], (*b.arr())[k]);
             if (c != 0) return c;
         }
-        return a.arr->size() < b.arr->size() ? -1 : a.arr->size() > b.arr->size() ? 1 : 0;
+        return a.arr()->size() < b.arr()->size() ? -1 : a.arr()->size() > b.arr()->size() ? 1 : 0;
     }
     std::string x = a.toStr(), y = b.toStr();
     return x < y ? -1 : x > y ? 1 : 0;

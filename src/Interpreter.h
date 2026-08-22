@@ -1330,7 +1330,7 @@ public:
         v.extM() = initInstantId_;
         return v;
     }
-    Value defaultScheduler_; // the ONE $*SCHEDULER (copies share .hash, so attr writes persist)
+    Value defaultScheduler_; // the ONE $*SCHEDULER (copies share .hash(), so attr writes persist)
 private:
     Value evalCall(Call* c);
     Value evalTempLet(Call* c); // temp/let: snapshot BEFORE arg evaluation

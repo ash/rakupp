@@ -484,12 +484,12 @@ void spawnWithInput(const std::vector<std::string>& argv, const std::string& inp
 ValueList Interpreter::applyTapChain(Value& tap, const Value& in, bool& complete) {
     complete = false;
     ValueList cur{in};
-    if (!(tap.t == VT::Hash && tap.hash->count("chain"))) return cur;
-    for (auto& step : *(*tap.hash)["chain"].arr) {
-        const std::string op = (*step.hash)["op"].toStr();
-        Value arg = step.hash->count("arg") ? (*step.hash)["arg"] : Value::nil();
-        Value& state = (*step.hash)["state"];
-        auto sInt = [&](const char* k) -> long long { auto it = state.hash->find(k); return it == state.hash->end() ? 0 : it->second.toInt(); };
+    if (!(tap.t == VT::Hash && tap.hash()->count("chain"))) return cur;
+    for (auto& step : *(*tap.hash())["chain"].arr()) {
+        const std::string op = (*step.hash())["op"].toStr();
+        Value arg = step.hash()->count("arg") ? (*step.hash())["arg"] : Value::nil();
+        Value& state = (*step.hash())["state"];
+        auto sInt = [&](const char* k) -> long long { auto it = state.hash()->find(k); return it == state.hash()->end() ? 0 : it->second.toInt(); };
         ValueList next;
         for (auto& v : cur) {
             if (op == "map") { next.push_back(arg.t == VT::Code ? callCallable(arg, ValueList{v}) : v); }
@@ -500,11 +500,11 @@ ValueList Interpreter::applyTapChain(Value& tap, const Value& in, bool& complete
                 else match = applyArith("~~", v, arg).truthy();
                 if (match) next.push_back(v);
             }
-            else if (op == "skip") { long long n = arg.toInt(); long long c = sInt("c"); if (c < n) (*state.hash)["c"] = Value::integer(c + 1); else next.push_back(v); }
+            else if (op == "skip") { long long n = arg.toInt(); long long c = sInt("c"); if (c < n) (*state.hash())["c"] = Value::integer(c + 1); else next.push_back(v); }
             else if (op == "head") {
                 double lim = arg.t == VT::Nil ? 1 : (arg.t == VT::Whatever ? std::numeric_limits<double>::infinity() : arg.toNum());
                 long long c = sInt("c");
-                if (c < lim) { next.push_back(v); (*state.hash)["c"] = Value::integer(c + 1); if (c + 1 >= lim) complete = true; }
+                if (c < lim) { next.push_back(v); (*state.hash())["c"] = Value::integer(c + 1); if (c + 1 >= lim) complete = true; }
                 else complete = true;
             }
             else if (op == "first") {
@@ -515,18 +515,18 @@ ValueList Interpreter::applyTapChain(Value& tap, const Value& in, bool& complete
                 if (match) { next.push_back(v); complete = true; }
             }
             else if (op == "unique" || op == "squish") {
-                Value asF = step.hash->count("as") ? (*step.hash)["as"] : Value::nil();
+                Value asF = step.hash()->count("as") ? (*step.hash())["as"] : Value::nil();
                 Value key = asF.t == VT::Code ? callCallable(asF, ValueList{v}) : v;
                 std::string ks = key.toStr();
                 if (op == "unique") {
                     // remember seen keys as hash entries in state
-                    if (!state.hash->count("seen")) (*state.hash)["seen"] = Value::makeHash();
-                    Value& seen = (*state.hash)["seen"];
-                    if (!seen.hash->count(ks)) { (*seen.hash)[ks] = Value::boolean(true); next.push_back(v); }
+                    if (!state.hash()->count("seen")) (*state.hash())["seen"] = Value::makeHash();
+                    Value& seen = (*state.hash())["seen"];
+                    if (!seen.hash()->count(ks)) { (*seen.hash())[ks] = Value::boolean(true); next.push_back(v); }
                 } else { // squish: drop only if equal to the immediately preceding key
-                    bool same = state.hash->count("has") && (*state.hash)["prev"].toStr() == ks;
+                    bool same = state.hash()->count("has") && (*state.hash())["prev"].toStr() == ks;
                     if (!same) next.push_back(v);
-                    (*state.hash)["prev"] = Value::str(ks); (*state.hash)["has"] = Value::boolean(true);
+                    (*state.hash())["prev"] = Value::str(ks); (*state.hash())["has"] = Value::boolean(true);
                 }
             }
             else next.push_back(v);
@@ -540,23 +540,23 @@ ValueList Interpreter::applyTapChain(Value& tap, const Value& in, bool& complete
 // Run a Proc::Async .start promise: spawn the process (with optional timeout), feed captured
 // stdout to the Supply taps, and mark the promise Kept (finished) or Broken (timed out).
 void Interpreter::runProcPromise(Value& promise, double timeoutSec) {
-    if (!promise.hash) return;
-    if (promise.hash->count("status") && (*promise.hash)["status"].toStr() != "Planned") return; // already run
-    auto pit = promise.hash->find("proc");
-    if (pit == promise.hash->end() || !pit->second.hash) { (*promise.hash)["status"] = Value::str("Kept"); return; }
+    if (!promise.hash()) return;
+    if (promise.hash()->count("status") && (*promise.hash())["status"].toStr() != "Planned") return; // already run
+    auto pit = promise.hash()->find("proc");
+    if (pit == promise.hash()->end() || !pit->second.hash()) { (*promise.hash())["status"] = Value::str("Kept"); return; }
     Value& proc = pit->second;
     std::vector<std::string> argv;
-    if (proc.hash->count("argv")) for (auto& x : *(*proc.hash)["argv"].arr) argv.push_back(x.toStr());
+    if (proc.hash()->count("argv")) for (auto& x : *(*proc.hash())["argv"].arr()) argv.push_back(x.toStr());
     std::string out, err; int code; bool timedout;
     std::string cwd;
-    { auto c = promise.hash->find("cwd"); if (c != promise.hash->end()) cwd = c->second.toStr(); }
+    { auto c = promise.hash()->find("cwd"); if (c != promise.hash()->end()) cwd = c->second.toStr(); }
     // stderr is CAPTURED (not inherited): an async proc's noise must go to its
     // .stderr taps (or nowhere), never straight to the user's terminal.
     spawnCapture(argv, timeoutSec, out, code, timedout, this, &err, cwd);
     auto feed = [&](const char* key, const std::string& data) {
-        auto taps = proc.hash->find(key);
-        if (taps == proc.hash->end() || !taps->second.arr) return;
-        for (auto& cb : *taps->second.arr) {
+        auto taps = proc.hash()->find(key);
+        if (taps == proc.hash()->end() || !taps->second.arr()) return;
+        for (auto& cb : *taps->second.arr()) {
             Value chunk = Value::str(data);
             chunk.hashKind = "Blob"; // stdout(:bin) taps get bytes (Buf.append needs a Blob)
             ValueList ca{chunk};
@@ -565,9 +565,9 @@ void Interpreter::runProcPromise(Value& promise, double timeoutSec) {
     };
     feed("taps", out);
     feed("taps-err", err);
-    (*proc.hash)["exitcode"] = Value::integer(code);
-    (*proc.hash)["timedout"] = Value::boolean(timedout);
-    (*promise.hash)["status"] = Value::str(timedout ? "Broken" : "Kept");
+    (*proc.hash())["exitcode"] = Value::integer(code);
+    (*proc.hash())["timedout"] = Value::boolean(timedout);
+    (*promise.hash())["status"] = Value::str(timedout ? "Broken" : "Kept");
 }
 
 // An attribute's SIGIL is a container type: `has @.a` holds an Array and
@@ -579,7 +579,7 @@ Value coerceToSigil(Value v, char sigil) {
         if (v.t == VT::Array) { v.isList = false; v.itemized = false; return v; }
         if (v.t == VT::Nil || v.t == VT::Any) return v;
         Value a = Value::array();
-        if (v.t == VT::Range) *a.arr = v.flatten(); else a.arr->push_back(v);
+        if (v.t == VT::Range) *a.arr() = v.flatten(); else a.arr()->push_back(v);
         return a;
     }
     if (sigil == '%') {
@@ -587,14 +587,14 @@ Value coerceToSigil(Value v, char sigil) {
         if (v.t == VT::Nil || v.t == VT::Any) return v;
         Value h = Value::makeHash();
         ValueList items;
-        if (v.t == VT::Array && v.arr) items = *v.arr;
+        if (v.t == VT::Array && v.arr()) items = *v.arr();
         // an object that says what it holds (`.list`/`.iterator`, declared or
         // delegated) spreads its pairs here rather than vanishing — a `%` attribute
         // initialised from such a wrapper is how zef hands its config around
         else if (!(v.t == VT::Object && g_objListItems && g_objListItems(v, items)))
             items = ValueList{v};
         for (auto& e : items)
-            if (e.t == VT::Pair) (*h.hash)[e.s] = e.pairVal ? *e.pairVal : Value::any();
+            if (e.t == VT::Pair) (*h.hash())[e.s] = e.pairVal() ? *e.pairVal() : Value::any();
         return h;
     }
     return v;
@@ -699,7 +699,7 @@ std::string rakuRepr(const Value& v, int depth, std::set<const void*>& seen) {
     forceLazy(v);   // an unpulled gather renders its ELEMENTS, not `().Seq`
     // `.raku` of a Proxy shows the VALUE it holds, not its FETCH/STORE pair —
     // URI::Query hands back lists of Proxy containers to keep them immutable.
-    if (v.t == VT::Hash && v.hashKind == "Proxy" && v.hash && g_deproxy)
+    if (v.t == VT::Hash && v.hashKind == "Proxy" && v.hash() && g_deproxy)
         return rakuRepr(g_deproxy(v), depth, seen);
     // Guard against self-referential / deeply-nested data (`$foo<b> = $foo`): recursing
     // blindly builds an unbounded string and exhausts memory. Detect a revisited
@@ -798,18 +798,18 @@ std::string rakuRepr(const Value& v, int depth, std::set<const void*>& seen) {
             std::string o = "Match.new(:orig(" +
                 (v.ext() ? rakuStrLit(*std::static_pointer_cast<std::string>(v.ext())) : rakuStrLit(v.s)) +
                 "), :from(" + std::to_string(v.rFrom()) + "), :pos(" + std::to_string(v.rTo()) + ")";
-            if (v.arr && !v.arr->empty()) {
+            if (v.arr() && !v.arr()->empty()) {
                 o += ", :list((";
-                for (size_t k = 0; k < v.arr->size(); k++) {
+                for (size_t k = 0; k < v.arr()->size(); k++) {
                     if (k) o += ", ";
-                    o += rakuRepr((*v.arr)[k], depth + 1, seen);
+                    o += rakuRepr((*v.arr())[k], depth + 1, seen);
                 }
-                o += (v.arr->size() == 1 ? ",))" : "))");
+                o += (v.arr()->size() == 1 ? ",))" : "))");
             }
-            if (v.hash && !v.hash->empty()) {
+            if (v.hash() && !v.hash()->empty()) {
                 o += ", :hash(Map.new((";
                 bool first = true;
-                for (auto& kv : *v.hash) {
+                for (auto& kv : *v.hash()) {
                     if (!first) o += ", ";
                     first = false;
                     o += ":" + kv.first + "(" + rakuRepr(kv.second, depth + 1, seen) + ")";
@@ -839,7 +839,7 @@ std::string rakuRepr(const Value& v, int depth, std::set<const void*>& seen) {
             if (v.rNum()) return v.gist();
             return std::to_string(v.rFrom()) + (v.rExFrom() ? "^" : "") + ".." + (v.rExTo() ? "^" : "") + std::to_string(v.rTo());
         case VT::Pair: {
-            Value val = v.pairVal ? *v.pairVal : Value::nil();
+            Value val = v.pairVal() ? *v.pairVal() : Value::nil();
             if (v.pairKey()) { // non-string key (Int, nested Pair, …)
                 std::string krepr = rakuRepr(*v.pairKey(), depth + 1, seen);
                 if (v.pairKey()->t == VT::Pair) krepr = "(" + krepr + ")"; // parenthesize a pair-key
@@ -849,41 +849,41 @@ std::string rakuRepr(const Value& v, int depth, std::set<const void*>& seen) {
                                      : rakuStrLit(v.s) + " => " + rakuRepr(val, depth + 1, seen);
         }
         case VT::Array: {
-            if (v.s == "Slip" && (!v.arr || v.arr->empty())) return "Empty";
+            if (v.s == "Slip" && (!v.arr() || v.arr()->empty())) return "Empty";
             if (v.hashKind == "Capture") { // \(…) literal round-trips as itself
                 std::string o = "\\(";
                 bool first = true;
-                if (v.arr) for (auto& e : *v.arr) {
+                if (v.arr()) for (auto& e : *v.arr()) {
                     if (!first) o += ", "; first = false;
-                    if (e.t == VT::Pair) o += ":" + e.s + "(" + rakuRepr(e.pairVal ? *e.pairVal : Value(), depth + 1, seen) + ")";
+                    if (e.t == VT::Pair) o += ":" + e.s + "(" + rakuRepr(e.pairVal() ? *e.pairVal() : Value(), depth + 1, seen) + ")";
                     else o += rakuRepr(e, depth + 1, seen);
                 }
                 return o + ")";
             }
             // Junctions render as their constructor form: none(1, 2, 3)
-            if (!v.enumName.empty() && v.arr &&
+            if (!v.enumName.empty() && v.arr() &&
                 (v.enumName == "any" || v.enumName == "all" || v.enumName == "one" || v.enumName == "none")) {
                 std::string o = v.enumName + "(";
                 bool first = true;
-                for (auto& e : *v.arr) { if (!first) o += ", "; first = false; o += rakuRepr(e, depth + 1, seen); }
+                for (auto& e : *v.arr()) { if (!first) o += ", "; first = false; o += rakuRepr(e, depth + 1, seen); }
                 return o + ")";
             }
-            if (v.arr && !seen.insert(v.arr.get()).second) return v.isList ? "(...)" : "[...]"; // cycle
+            if (v.arr() && !seen.insert(v.arr()).second) return v.isList ? "(...)" : "[...]"; // cycle
             std::string o(1, v.isList ? '(' : '[');
             bool wasElem = g_reprInArrayElem;
-            if (v.arr) {
+            if (v.arr()) {
                 bool first = true;
                 g_reprInArrayElem = !v.isList;
-                for (auto& e : *v.arr) { if (!first) o += ", "; first = false; o += rakuRepr(e, depth + 1, seen); }
+                for (auto& e : *v.arr()) { if (!first) o += ", "; first = false; o += rakuRepr(e, depth + 1, seen); }
                 g_reprInArrayElem = wasElem;
-                if (v.isList && v.arr->size() == 1) o += ",";
+                if (v.isList && v.arr()->size() == 1) o += ",";
                 // a 1-element ARRAY holding an iterable disambiguates with a
                 // trailing comma too: [1..5,] (else the raku form would flatten)
-                if (!v.isList && v.arr->size() == 1 &&
-                    ((*v.arr)[0].t == VT::Range || (*v.arr)[0].t == VT::Array ||
-                     (*v.arr)[0].t == VT::Hash))
+                if (!v.isList && v.arr()->size() == 1 &&
+                    ((*v.arr())[0].t == VT::Range || (*v.arr())[0].t == VT::Array ||
+                     (*v.arr())[0].t == VT::Hash))
                     o += ",";
-                seen.erase(v.arr.get());
+                seen.erase(v.arr());
             }
             o += v.isList ? ')' : ']';
             // a Seq's .raku is the list form plus the coercion that rebuilds it:
@@ -898,15 +898,15 @@ std::string rakuRepr(const Value& v, int depth, std::set<const void*>& seen) {
             // slot itemizes anyway (`[$x,]` is `[[1, 2],]`)
             if (v.itemized && !wasElem) {
                 if (seq) o = "$(" + o + ")";
-                else if (v.isList && v.arr && v.arr->empty()) o = "$( )"; // Rakudo's empty item
+                else if (v.isList && v.arr() && v.arr()->empty()) o = "$( )"; // Rakudo's empty item
                 else o = "$" + o;
             }
             return o;
         }
         case VT::Hash: {
-            if (v.hash && !seen.insert(v.hash.get()).second) return "{...}"; // cycle
+            if (v.hash() && !seen.insert(v.hash()).second) return "{...}"; // cycle
             std::vector<std::string> keys;
-            if (v.hash) for (auto& kv : *v.hash) keys.push_back(kv.first);
+            if (v.hash()) for (auto& kv : *v.hash()) keys.push_back(kv.first);
             std::sort(keys.begin(), keys.end());
             // A QuantHash renders as the expression that rebuilds it, not as a
             // Hash literal: the weighted kinds as a pair list coerced to the
@@ -916,7 +916,7 @@ std::string rakuRepr(const Value& v, int depth, std::set<const void*>& seen) {
             // lookup string, and the original value rides in the count's pairKey
             // (baggyKey). `set(1,2).raku` is `Set.new(1,2)`, not `Set.new("1","2")`.
             auto elemRepr = [&](const std::string& k) {
-                const Value& cnt = v.hash->at(k);
+                const Value& cnt = v.hash()->at(k);
                 return cnt.pairKey() ? rakuRepr(*cnt.pairKey(), depth + 1, seen) : rakuStrLit(k);
             };
             // An EMPTY immutable one renders as its SUB form — `set()`, `bag()`,
@@ -926,7 +926,7 @@ std::string rakuRepr(const Value& v, int depth, std::set<const void*>& seen) {
             // however empty they are.
             if (keys.empty() &&
                 (v.hashKind == "Set" || v.hashKind == "Bag" || v.hashKind == "Mix")) {
-                if (v.hash) seen.erase(v.hash.get());
+                if (v.hash()) seen.erase(v.hash());
                 std::string n = v.hashKind.str();
                 for (auto& ch : n) ch = (char)ascii::tolower((unsigned char)ch);
                 return n + "()";
@@ -934,7 +934,7 @@ std::string rakuRepr(const Value& v, int depth, std::set<const void*>& seen) {
             if (v.hashKind == "Set" || v.hashKind == "SetHash") {
                 std::string o = v.hashKind + ".new("; bool f = true;
                 for (auto& k : keys) { if (!f) o += ","; f = false; o += elemRepr(k); }
-                if (v.hash) seen.erase(v.hash.get());
+                if (v.hash()) seen.erase(v.hash());
                 return o + ")";
             }
             if (v.hashKind == "Bag" || v.hashKind == "BagHash" ||
@@ -942,20 +942,20 @@ std::string rakuRepr(const Value& v, int depth, std::set<const void*>& seen) {
                 std::string o = "("; bool f = true;
                 for (auto& k : keys) {
                     if (!f) o += ","; f = false;
-                    o += elemRepr(k) + "=>" + rakuRepr(v.hash->at(k), depth + 1, seen);
+                    o += elemRepr(k) + "=>" + rakuRepr(v.hash()->at(k), depth + 1, seen);
                 }
-                if (v.hash) seen.erase(v.hash.get());
+                if (v.hash()) seen.erase(v.hash());
                 return o + ")." + v.hashKind;
             }
             if (v.hashKind == "Map") {
                 std::string o = "Map.new(("; bool f = true;
                 for (auto& k : keys) {
                     if (!f) o += ","; f = false;
-                    Value val = v.hash->at(k);
+                    Value val = v.hash()->at(k);
                     o += rakuIdentKey(k) ? ":" + k + "(" + rakuRepr(val, depth + 1, seen) + ")"
                                          : rakuStrLit(k) + " => " + rakuRepr(val, depth + 1, seen);
                 }
-                if (v.hash) seen.erase(v.hash.get());
+                if (v.hash()) seen.erase(v.hash());
                 return o + "))";
             }
             // An OBJECT hash renders as the DECLARATION that rebuilds it —
@@ -969,21 +969,21 @@ std::string rakuRepr(const Value& v, int depth, std::set<const void*>& seen) {
                 bool f = true;
                 for (auto& k : keys) {
                     o += f ? " = " : ", "; f = false;
-                    Value val = v.hash->at(k);
+                    Value val = v.hash()->at(k);
                     if (val.t == VT::Array || val.t == VT::Hash) val.itemized = true;
                     std::string rv = rakuRepr(val, depth + 1, seen);
-                    Value rk = hashEntryKey(v, k, v.hash->at(k));
+                    Value rk = hashEntryKey(v, k, v.hash()->at(k));
                     o += (rk.t == VT::Str && rakuIdentKey(k))
                              ? ":" + k + "(" + rv + ")"
                              : rakuRepr(rk, depth + 1, seen) + " => " + rv;
                 }
-                if (v.hash) seen.erase(v.hash.get());
+                if (v.hash()) seen.erase(v.hash());
                 return o + ")";
             }
             std::string o = "{"; bool first = true;
             for (auto& k : keys) {
                 if (!first) o += ", "; first = false;
-                Value val = v.hash->at(k);
+                Value val = v.hash()->at(k);
                 // Every hash VALUE sits in a Scalar container, so an Array or Hash
                 // stored there is itemized whether or not the flag happens to be set
                 // — `%h<k> = [1,2]` set it, `my %h = k => [1,2]` never did, and
@@ -995,7 +995,7 @@ std::string rakuRepr(const Value& v, int depth, std::set<const void*>& seen) {
                 o += rakuIdentKey(k) ? ":" + k + "(" + rv + ")"
                                      : rakuStrLit(k) + " => " + rv;
             }
-            if (v.hash) seen.erase(v.hash.get());
+            if (v.hash()) seen.erase(v.hash());
             o += "}";
             // an itemized hash (one held in a `$`) shows the same `$` marker a
             // list does — except as an Array element, whose slot itemizes anyway
@@ -1003,18 +1003,18 @@ std::string rakuRepr(const Value& v, int depth, std::set<const void*>& seen) {
             return o;
         }
         case VT::Object: {
-            if (!v.obj || !v.obj->cls) return v.gist();
-            std::string r = v.obj->cls->name + ".new";
+            if (!v.obj() || !v.obj()->cls) return v.gist();
+            std::string r = v.obj()->cls->name + ".new";
             // INHERITED attributes count: iterating only cls->attrs dropped every
             // one, so `class Q is P` reprd as `Q.new(q => 2)` and would not survive
             // a round trip through EVAL.
             std::vector<const ClassAttr*> pub;
-            collectPubAttrs(v.obj->cls.get(), pub);
+            collectPubAttrs(v.obj()->cls.get(), pub);
             std::string inner;
             for (auto* at : pub) {
-                auto it = v.obj->attrs.find(at->name);
+                auto it = v.obj()->attrs.find(at->name);
                 // an UNSET typed attribute shows its declared type (`i => Int`)
-                Value av = it != v.obj->attrs.end() ? it->second
+                Value av = it != v.obj()->attrs.end() ? it->second
                          : (at->type.empty() ? Value::any() : Value::typeObj(at->type));
                 if (av.t == VT::Any && !at->type.empty()) av = Value::typeObj(at->type);
                 if (!inner.empty()) inner += ", ";
@@ -1050,13 +1050,13 @@ bool substSelectKnowsAdverb(const std::string& k) {
 // regex inside one still matches (`.grep(none /<[aeiou]>/)`).
 bool matcherAccepts(Interpreter& I, const Value& v, const Value& mt) {
     if (mt.t == VT::Regex) return I.regexMatch(v.toStr(), mt.s).truthy();
-    if (mt.t == VT::Array && mt.arr &&
+    if (mt.t == VT::Array && mt.arr() &&
         (mt.enumName == "any" || mt.enumName == "all" ||
          mt.enumName == "one" || mt.enumName == "none")) {
         size_t hits = 0;
-        for (auto& e : *mt.arr) if (matcherAccepts(I, v, e)) hits++;
+        for (auto& e : *mt.arr()) if (matcherAccepts(I, v, e)) hits++;
         if (mt.enumName == "any")  return hits > 0;
-        if (mt.enumName == "all")  return hits == mt.arr->size();
+        if (mt.enumName == "all")  return hits == mt.arr()->size();
         if (mt.enumName == "one")  return hits == 1;
         return hits == 0;                                     // none
     }
@@ -1064,8 +1064,8 @@ bool matcherAccepts(Interpreter& I, const Value& v, const Value& mt) {
     // A matcher OBJECT (one whose class defines ACCEPTS) is what `.grep`/`.first`
     // get handed when the pattern is a custom matcher — `.grep(glob("*.txt"))`.
     // applyArith knows nothing about ACCEPTS, so those greps came back empty.
-    if (mt.t == VT::Object && mt.obj && mt.obj->cls) {
-        for (ClassInfo* ci = mt.obj->cls.get(); ci; ci = ci->parent.get())
+    if (mt.t == VT::Object && mt.obj() && mt.obj()->cls) {
+        for (ClassInfo* ci = mt.obj()->cls.get(); ci; ci = ci->parent.get())
             if (ci->methods.count("ACCEPTS")) {
                 ValueList one{v};
                 return I.methodCall(const_cast<Value&>(mt), "ACCEPTS", one).truthy();
@@ -1077,13 +1077,13 @@ bool matcherAccepts(Interpreter& I, const Value& v, const Value& mt) {
 // The positional arity of a Code value — how many elements `.map`/`for` feed it
 // per iteration (`-> $k,$v {…}` → 2; `{ $^a … $^b }` → 2; `{ $_ }` / builtin → 1).
 size_t codeArity(const Value& code) {
-    if (code.t != VT::Code || !code.code) return 1;
-    if (code.code->params) {
+    if (code.t != VT::Code || !code.code()) return 1;
+    if (code.code()->params) {
         size_t n = 0;
-        for (auto& p : *code.code->params) if (!p.named && !p.slurpy) n++;
+        for (auto& p : *code.code()->params) if (!p.named && !p.slurpy) n++;
         if (n) return n;
     }
-    if (!code.code->placeholders.empty()) return code.code->placeholders.size();
+    if (!code.code()->placeholders.empty()) return code.code()->placeholders.size();
     return 1;
 }
 
@@ -1402,20 +1402,20 @@ Value makeInfArray(long long start) {
 }
 
 ValueList toList(const Value& v) {
-    if (v.t == VT::Array && v.arr) return *v.arr;
+    if (v.t == VT::Array && v.arr()) return *v.arr();
     if (v.t == VT::Range) return v.flatten();
     // a Blob/Buf lists as its ELEMENTS (`$blob.rotor(3, :partial)` in Base64;
     // 32-bit words for blob32) — mirrors the `for`-iteration rule in the
     // interpreter (itemized stays one item)
     if (v.t == VT::Str && !v.itemized && (v.hashKind == "Blob" || v.hashKind == "Buf"))
         return v.blobList();
-    if (v.t == VT::Hash && v.hash) {
+    if (v.t == VT::Hash && v.hash()) {
         ValueList out;
         // The object-hash test is hoisted: this is the hot path for every hash
         // iteration, and a plain hash must cost exactly what it did before —
         // one shared_ptr copy, not a Value built and thrown away per entry.
         const bool objHash = !objHashKeyType(v).empty();
-        for (auto& kv : *v.hash) {
+        for (auto& kv : *v.hash()) {
             Value p = Value::pair(kv.first, kv.second);
             if (kv.second.pairKey()) p.pairKeyM() = kv.second.pairKey();
             else if (objHash) {
@@ -1732,9 +1732,9 @@ bool deepEq(const Value& a, const Value& b) {
     // A Proxy is a container: compare what it HOLDS, at any depth. URI::Query
     // hands back lists of Proxy containers to keep them immutable, so
     // `is-deeply $q<foo>, $('1','3')` was comparing containers with strings.
-    if (a.t == VT::Hash && a.hashKind == "Proxy" && a.hash && g_deproxy)
+    if (a.t == VT::Hash && a.hashKind == "Proxy" && a.hash() && g_deproxy)
         return deepEq(g_deproxy(a), b);
-    if (b.t == VT::Hash && b.hashKind == "Proxy" && b.hash && g_deproxy)
+    if (b.t == VT::Hash && b.hashKind == "Proxy" && b.hash() && g_deproxy)
         return deepEq(a, g_deproxy(b));
     // the undefined value (VT::Any) and the `Any` type object are the same thing
     auto anyish = [](const Value& v) { return v.t == VT::Any || (v.t == VT::Type && v.s == "Any"); };
@@ -1742,32 +1742,32 @@ bool deepEq(const Value& a, const Value& b) {
     // a Junction on either side autothreads (is-deeply $x, 'a'|'b';
     // is-deeply any(1,2,3), none(4,5,6) collapses to True)
     auto junct = [](const Value& v) {
-        return v.t == VT::Array && v.arr &&
+        return v.t == VT::Array && v.arr() &&
                (v.enumName == "any" || v.enumName == "all" || v.enumName == "one" || v.enumName == "none");
     };
     if (junct(b)) {
         int t = 0;
-        for (auto& e : *b.arr) if (deepEq(a, e)) t++;
-        return b.enumName == "any" ? t > 0 : b.enumName == "all" ? t == (int)b.arr->size()
+        for (auto& e : *b.arr()) if (deepEq(a, e)) t++;
+        return b.enumName == "any" ? t > 0 : b.enumName == "all" ? t == (int)b.arr()->size()
              : b.enumName == "one" ? t == 1 : t == 0;
     }
     if (junct(a)) {
         int t = 0;
-        for (auto& e : *a.arr) if (deepEq(e, b)) t++;
-        return a.enumName == "any" ? t > 0 : a.enumName == "all" ? t == (int)a.arr->size()
+        for (auto& e : *a.arr()) if (deepEq(e, b)) t++;
+        return a.enumName == "any" ? t > 0 : a.enumName == "all" ? t == (int)a.arr()->size()
              : a.enumName == "one" ? t == 1 : t == 0;
     }
     if (a.t == VT::Array && b.t == VT::Array) {
-        if (a.arr->size() != b.arr->size()) return false;
-        for (size_t i = 0; i < a.arr->size(); i++)
-            if (!deepEq((*a.arr)[i], (*b.arr)[i])) return false;
+        if (a.arr()->size() != b.arr()->size()) return false;
+        for (size_t i = 0; i < a.arr()->size(); i++)
+            if (!deepEq((*a.arr())[i], (*b.arr())[i])) return false;
         return true;
     }
     if (a.t == VT::Hash && b.t == VT::Hash) {
-        if (a.hash->size() != b.hash->size()) return false;
-        for (auto& kv : *a.hash) {
-            auto it = b.hash->find(kv.first);
-            if (it == b.hash->end() || !deepEq(kv.second, it->second)) return false;
+        if (a.hash()->size() != b.hash()->size()) return false;
+        for (auto& kv : *a.hash()) {
+            auto it = b.hash()->find(kv.first);
+            if (it == b.hash()->end() || !deepEq(kv.second, it->second)) return false;
         }
         return true;
     }
@@ -1776,8 +1776,8 @@ bool deepEq(const Value& a, const Value& b) {
         // rendering can't stand in for the key) compare structurally
         bool keyOk = a.pairKey() && b.pairKey() ? deepEq(*a.pairKey(), *b.pairKey())
                                             : a.s == b.s;
-        return keyOk && deepEq(a.pairVal ? *a.pairVal : Value::any(),
-                               b.pairVal ? *b.pairVal : Value::any());
+        return keyOk && deepEq(a.pairVal() ? *a.pairVal() : Value::any(),
+                               b.pairVal() ? *b.pairVal() : Value::any());
     }
     if (a.t == VT::Rat && b.t == VT::Rat) // structural (eqv): <0/0> eqv <0/0> is True; toNum would NaN-compare
         return a.fatRat() == b.fatRat() &&
@@ -2025,9 +2025,9 @@ std::string whichOf(const Value& v) {
         // lived only in the `.WHICH` arm, so `.WHICH` said they differed while
         // baggyKeyStr (which keys on the RENDERING, `A<obj>` for every instance
         // of A) merged them: `set($x, $y).elems` was 1.
-        case VT::Object:  if (v.obj) {
+        case VT::Object:  if (v.obj()) {
                               char buf[24];
-                              std::snprintf(buf, sizeof buf, "|%p", (void*)v.obj.get());
+                              std::snprintf(buf, sizeof buf, "|%p", (void*)v.obj());
                               return v.typeName() + buf;
                           }
                           return v.typeName() + "|<null>";
@@ -2042,10 +2042,10 @@ std::string whichOf(const Value& v) {
         case VT::Array:   if (v.hashKind == "Capture") {
                               std::string pos;
                               std::vector<std::string> named; // named parts are unordered
-                              if (v.arr) for (auto& e : *v.arr) {
+                              if (v.arr()) for (auto& e : *v.arr()) {
                                   if (e.t == VT::Pair && e.namedArg)
                                       named.push_back(":" + e.s + "(" +
-                                                      (e.pairVal ? whichOf(*e.pairVal) : "") + ")");
+                                                      (e.pairVal() ? whichOf(*e.pairVal()) : "") + ")");
                                   else pos += "(" + whichOf(e) + ")";
                               }
                               std::sort(named.begin(), named.end());
@@ -2101,17 +2101,17 @@ Value makeBaggy(const ValueList& items, const std::string& kind, bool pairsAsEle
     bool isSet = kind.find("Set") == 0;
     bool isMix = kind.find("Mix") == 0; // Mix weights keep their full numeric value (2.5 stays a Rat)
     auto add = [&](const std::string& k, long long cnt, const std::shared_ptr<Value>& tk) {
-        auto it = h.hash->find(k);
-        auto keep = it != h.hash->end() && it->second.pairKey() ? it->second.pairKey() : tk;
+        auto it = h.hash()->find(k);
+        auto keep = it != h.hash()->end() && it->second.pairKey() ? it->second.pairKey() : tk;
         if (isSet) {
-            if (cnt > 0) { Value b = Value::boolean(true); b.pairKeyM() = keep; (*h.hash)[k] = std::move(b); }
-            else h.hash->erase(k);
+            if (cnt > 0) { Value b = Value::boolean(true); b.pairKeyM() = keep; (*h.hash())[k] = std::move(b); }
+            else h.hash()->erase(k);
             return;
         }
-        long long c = it != h.hash->end() ? it->second.toInt() : 0;
+        long long c = it != h.hash()->end() ? it->second.toInt() : 0;
         c += cnt;
-        if (c != 0) { Value cv = Value::integer(c); cv.pairKeyM() = keep; (*h.hash)[k] = std::move(cv); }
-        else h.hash->erase(k);
+        if (c != 0) { Value cv = Value::integer(c); cv.pairKeyM() = keep; (*h.hash())[k] = std::move(cv); }
+        else h.hash()->erase(k);
     };
     for (auto& v : items) {
         if (v.t == VT::Pair && pairsAsElements) {
@@ -2119,7 +2119,7 @@ Value makeBaggy(const ValueList& items, const std::string& kind, bool pairsAsEle
             continue;
         }
         if (v.t == VT::Pair) {
-            Value w = v.pairVal ? *v.pairVal : Value::integer(0);
+            Value w = v.pairVal() ? *v.pairVal() : Value::integer(0);
             if (!isSet) { // a Bag/Mix weight must coerce to a real number
                 if ((w.t == VT::Complex && w.im() != 0.0) ||
                     (w.t == VT::Num && !std::isfinite(w.n)))
@@ -2137,16 +2137,16 @@ Value makeBaggy(const ValueList& items, const std::string& kind, bool pairsAsEle
                 }
             }
             if (isMix && w.t != VT::Int && w.isNumeric()) { // fractional weight
-                auto it = h.hash->find(v.s);
-                auto keep = it != h.hash->end() && it->second.pairKey() ? it->second.pairKey() : v.pairKey();
-                if (it != h.hash->end()) {
+                auto it = h.hash()->find(v.s);
+                auto keep = it != h.hash()->end() && it->second.pairKey() ? it->second.pairKey() : v.pairKey();
+                if (it != h.hash()->end()) {
                     // through the EXACT tower, not a C double: the Rats 1/10 and 1/50
                     // summed as doubles gave 0.12000000000000001, and being a Num the
                     // result then printed at full Num precision too
                     Value sum = applyArith("+", it->second, w);
-                    if (sum.toNum() == 0.0) h.hash->erase(v.s);
-                    else { sum.pairKeyM() = keep; (*h.hash)[v.s] = std::move(sum); }
-                } else if (w.toNum() != 0.0) { w.pairKeyM() = keep; (*h.hash)[v.s] = w; }
+                    if (sum.toNum() == 0.0) h.hash()->erase(v.s);
+                    else { sum.pairKeyM() = keep; (*h.hash())[v.s] = std::move(sum); }
+                } else if (w.toNum() != 0.0) { w.pairKeyM() = keep; (*h.hash())[v.s] = w; }
                 continue;
             }
             // Set membership is the value's TRUTHINESS (`:e<meow>` joins, `:0d`/`:f('')`
@@ -2251,26 +2251,26 @@ Value makeSignature(const Callable* c) {
     if (ps.empty() && c && c->isBlock && !c->hadSig && !c->isSigLiteral &&
         c->placeholders.empty()) {
         Value s = Value::makeHash(); s.hashKind = "Signature";
-        (*s.hash)["str"] = Value::str("(;; $_? is raw = OUTER::<$_>)");
-        (*s.hash)["arity"] = Value::integer(0);
-        (*s.hash)["count"] = Value::integer(1);
+        (*s.hash())["str"] = Value::str("(;; $_? is raw = OUTER::<$_>)");
+        (*s.hash())["arity"] = Value::integer(0);
+        (*s.hash())["count"] = Value::integer(1);
         Value params = Value::array(); params.isList = true;
         Value pv = Value::makeHash(); pv.hashKind = "Parameter";
-        (*pv.hash)["str"] = Value::str("$_? is raw = OUTER::<$_>");
-        (*pv.hash)["name"] = Value::str("$_");
-        (*pv.hash)["usage-name"] = Value::str("_");
-        (*pv.hash)["type"] = Value::str("Any");
-        (*pv.hash)["type-obj"] = Value::typeObj("Any");
-        (*pv.hash)["optional"] = Value::boolean(true);
-        (*pv.hash)["slurpy"] = Value::boolean(false);
-        (*pv.hash)["named"] = Value::boolean(false);
-        (*pv.hash)["raw"] = Value::boolean(true);
-        (*pv.hash)["readonly"] = Value::boolean(false);
-        (*pv.hash)["rw"] = Value::boolean(false);
-        (*pv.hash)["suffix"] = Value::str("?");
-        (*pv.hash)["multi-invocant"] = Value::boolean(false);
-        params.arr->push_back(std::move(pv));
-        (*s.hash)["params"] = std::move(params);
+        (*pv.hash())["str"] = Value::str("$_? is raw = OUTER::<$_>");
+        (*pv.hash())["name"] = Value::str("$_");
+        (*pv.hash())["usage-name"] = Value::str("_");
+        (*pv.hash())["type"] = Value::str("Any");
+        (*pv.hash())["type-obj"] = Value::typeObj("Any");
+        (*pv.hash())["optional"] = Value::boolean(true);
+        (*pv.hash())["slurpy"] = Value::boolean(false);
+        (*pv.hash())["named"] = Value::boolean(false);
+        (*pv.hash())["raw"] = Value::boolean(true);
+        (*pv.hash())["readonly"] = Value::boolean(false);
+        (*pv.hash())["rw"] = Value::boolean(false);
+        (*pv.hash())["suffix"] = Value::str("?");
+        (*pv.hash())["multi-invocant"] = Value::boolean(false);
+        params.arr()->push_back(std::move(pv));
+        (*s.hash())["params"] = std::move(params);
         return s;
     }
     std::string sig = "(";
@@ -2290,74 +2290,74 @@ Value makeSignature(const Callable* c) {
     if (c && !c->retType.empty()) sig += " --> " + c->retType;
     sig += ")";
     Value s = Value::makeHash(); s.hashKind = "Signature";
-    (*s.hash)["str"] = Value::str(sig);
-    (*s.hash)["arity"] = Value::integer(arity);
-    (*s.hash)["count"] = slurpy ? Value::number(std::numeric_limits<double>::infinity()) : Value::integer(count);
+    (*s.hash())["str"] = Value::str(sig);
+    (*s.hash())["arity"] = Value::integer(arity);
+    (*s.hash())["count"] = slurpy ? Value::number(std::numeric_limits<double>::infinity()) : Value::integer(count);
     Value params = Value::array(); params.isList = true;
     for (const Param* pp : ps) {
         const Param& p = *pp;
         Value pv = Value::makeHash(); pv.hashKind = "Parameter";
         // how the parameter renders on its own — Value::gist reads this, so a
         // `say $sig.params[0]` shows `Int $one` rather than the attribute dump
-        (*pv.hash)["str"] = Value::str(renderParam(p));
+        (*pv.hash())["str"] = Value::str(renderParam(p));
         // an ANONYMOUS parameter has an empty .name, not its bare sigil
-        (*pv.hash)["name"] = Value::str(p.name.size() > 1 ? p.name : std::string());
+        (*pv.hash())["name"] = Value::str(p.name.size() > 1 ? p.name : std::string());
         // `.usage-name` is the name without its sigil AND its twigil, so the
         // dynamic `Str @*l` is usable as plain `l`
         {
             std::string un = p.name.size() > 1 ? p.name.substr(1) : std::string();
             if (!un.empty() && std::strchr("*?!.=~^:", un[0])) un = un.substr(1);
-            (*pv.hash)["usage-name"] = Value::str(un);
+            (*pv.hash())["usage-name"] = Value::str(un);
         }
         // the parameter's declarator doc (`#= …` / a leading `#|`) — .WHY
         // reads it; it already drives $*USAGE's option list
-        if (!p.pod.empty()) (*pv.hash)["why"] = Value::str(p.pod);
-        (*pv.hash)["type"] = Value::str(p.type);
+        if (!p.pod.empty()) (*pv.hash())["why"] = Value::str(p.pod);
+        (*pv.hash())["type"] = Value::str(p.type);
         // the TYPE OBJECT for `.type` (compared `=:= Str` etc. by Cro's router).
         // Unconstrained is Mu; a slurpy/@-sigil param is Positional, %-sigil
         // Associative, &-sigil Callable — the constraint its sigil implies.
         // An unconstrained parameter is Any on a ROUTINE and Mu on a bare
         // `:( … )` literal; the sigil implies its own constraint either way.
-        (*pv.hash)["type-obj"] = Value::typeObj(
+        (*pv.hash())["type-obj"] = Value::typeObj(
             !p.type.empty() ? p.type
             : p.sigil == '@' ? "Positional"
             : p.sigil == '%' ? "Associative"
             : p.sigil == '&' ? "Callable"
             : (c && c->isSigLiteral) ? "Mu" : "Any");
         // trait/shape flags the introspection API exposes one method each for
-        (*pv.hash)["raw"]  = Value::boolean(p.isRaw || (p.sigil == '\\' && !p.slurpy && !p.isCopy));
-        (*pv.hash)["copy"] = Value::boolean(p.isCopy);
-        (*pv.hash)["readonly"] = Value::boolean(!(p.isRw || p.isCopy || p.isRaw ||
+        (*pv.hash())["raw"]  = Value::boolean(p.isRaw || (p.sigil == '\\' && !p.slurpy && !p.isCopy));
+        (*pv.hash())["copy"] = Value::boolean(p.isCopy);
+        (*pv.hash())["readonly"] = Value::boolean(!(p.isRw || p.isCopy || p.isRaw ||
                                                   (p.sigil == '\\' && !p.slurpy)));
-        (*pv.hash)["rw"]   = Value::boolean(p.isRw);
-        (*pv.hash)["capture"] = Value::boolean(p.slurpy && p.slurpyKind == 0 &&
+        (*pv.hash())["rw"]   = Value::boolean(p.isRw);
+        (*pv.hash())["capture"] = Value::boolean(p.slurpy && p.slurpyKind == 0 &&
                                                (p.sigil == '|' || p.sigil == '\\'));
-        (*pv.hash)["invocant"] = Value::boolean(p.invocant);
-        (*pv.hash)["multi-invocant"] = Value::boolean(true); // only `;;` makes it False
+        (*pv.hash())["invocant"] = Value::boolean(p.invocant);
+        (*pv.hash())["multi-invocant"] = Value::boolean(true); // only `;;` makes it False
         // `.prefix`/`.suffix`/`.modifier` — how the parameter is SPELLED
-        (*pv.hash)["prefix"] = Value::str(
+        (*pv.hash())["prefix"] = Value::str(
             !p.slurpy ? "" : p.slurpyKind == 'n' ? "**" : p.slurpyKind == '1' ? "+"
             : (p.sigil == '|' || p.sigil == '\\') ? "|" : "*");
-        (*pv.hash)["suffix"] = Value::str(p.named ? (p.required ? "!" : "")
+        (*pv.hash())["suffix"] = Value::str(p.named ? (p.required ? "!" : "")
                                                   : (p.optional && !p.defaultVal ? "?" : ""));
-        (*pv.hash)["modifier"] = Value::str(p.defConstraint == 1 ? ":D"
+        (*pv.hash())["modifier"] = Value::str(p.defConstraint == 1 ? ":D"
                                           : p.defConstraint == 2 ? ":U" : "");
-        (*pv.hash)["named"] = Value::boolean(p.named);
+        (*pv.hash())["named"] = Value::boolean(p.named);
         // `.default` is a Callable producing the default — undefined when the
         // parameter has none
         if (p.defaultVal) {
             const Expr* de = p.defaultVal.get();
-            Value dc; dc.t = VT::Code; dc.code = std::make_shared<Callable>();
-            dc.code->builtin = [de](Interpreter& I, ValueList&) -> Value {
+            Value dc; dc.t = VT::Code; dc.setCode(std::make_shared<Callable>());
+            dc.code()->builtin = [de](Interpreter& I, ValueList&) -> Value {
                 return I.eval(const_cast<Expr*>(de));
             };
-            (*pv.hash)["default"] = dc;
+            (*pv.hash())["default"] = dc;
         }
         // with no default at all `.default` is the Code TYPE OBJECT — the
         // attribute's declared type — not a bare Any
-        else (*pv.hash)["default"] = Value::typeObj("Code");
-        (*pv.hash)["optional"] = Value::boolean(p.optional || p.defaultVal != nullptr);
-        (*pv.hash)["slurpy"] = Value::boolean(p.slurpy);
+        else (*pv.hash())["default"] = Value::typeObj("Code");
+        (*pv.hash())["optional"] = Value::boolean(p.optional || p.defaultVal != nullptr);
+        (*pv.hash())["slurpy"] = Value::boolean(p.slurpy);
         // `.constraints`: a literal parameter ('greet' in `get -> 'greet', $n {}`)
         // answers its literal value; otherwise Mu (matches Rakudo's use in Cro)
         {   // literal constraint value — static context, so decode the common
@@ -2370,22 +2370,22 @@ Value makeSignature(const Callable* c) {
                 else if (le->kind == NK::NumLit) cv = Value::number(static_cast<NumLit*>(le)->v);
                 else if (le->kind == NK::BoolLit) cv = Value::boolean(static_cast<BoolLit*>(le)->v);
             }
-            (*pv.hash)["constraints"] = std::move(cv);
+            (*pv.hash())["constraints"] = std::move(cv);
         }
         {   // `.named_names`: every name this named parameter answers to
             Value nn = Value::array(); nn.isList = true;
             if (p.named) {
-                if (!p.namedKey.empty()) nn.arr->push_back(Value::str(p.namedKey));
-                for (auto& ak : p.aliasKeys) nn.arr->push_back(Value::str(ak));
+                if (!p.namedKey.empty()) nn.arr()->push_back(Value::str(p.namedKey));
+                for (auto& ak : p.aliasKeys) nn.arr()->push_back(Value::str(ak));
                 if (p.namedKey.empty() || p.aliasBoth) {
                     std::string bare = p.name.size() > 2 && (p.name[1] == '!' || p.name[1] == '.')
                                      ? p.name.substr(2) : (p.name.size() > 1 ? p.name.substr(1) : p.name);
-                    nn.arr->push_back(Value::str(bare));
+                    nn.arr()->push_back(Value::str(bare));
                 }
             }
-            (*pv.hash)["named_names"] = nn;
+            (*pv.hash())["named_names"] = nn;
         }
-        params.arr->push_back(pv);
+        params.arr()->push_back(pv);
     }
     // A METHOD's reflected .params carries the implicit pieces Rakudo's do: the
     // invocant first (unless one was declared) and a trailing `*%_` slurpy
@@ -2401,36 +2401,36 @@ Value makeSignature(const Callable* c) {
         auto mkParam = [](const std::string& str, const std::string& name,
                           bool invocant, bool slurpy, bool named) {
             Value pv = Value::makeHash(); pv.hashKind = "Parameter";
-            (*pv.hash)["str"] = Value::str(str);
-            (*pv.hash)["name"] = Value::str(name);
-            (*pv.hash)["usage-name"] = Value::str(name.size() > 1 ? name.substr(1) : "");
-            (*pv.hash)["type"] = Value::str("Mu");
-            (*pv.hash)["type-obj"] = Value::typeObj("Mu");
-            (*pv.hash)["invocant"] = Value::boolean(invocant);
-            (*pv.hash)["multi-invocant"] = Value::boolean(true);
-            (*pv.hash)["named"] = Value::boolean(named);
-            (*pv.hash)["slurpy"] = Value::boolean(slurpy);
-            (*pv.hash)["optional"] = Value::boolean(named || slurpy);
-            (*pv.hash)["raw"] = Value::boolean(invocant);
-            (*pv.hash)["readonly"] = Value::boolean(true);
-            (*pv.hash)["rw"] = Value::boolean(false);
-            (*pv.hash)["copy"] = Value::boolean(false);
-            (*pv.hash)["capture"] = Value::boolean(false);
-            (*pv.hash)["prefix"] = Value::str(slurpy ? "*" : "");
-            (*pv.hash)["suffix"] = Value::str("");
-            (*pv.hash)["modifier"] = Value::str("");
-            (*pv.hash)["default"] = Value::typeObj("Code");
-            (*pv.hash)["constraints"] = Value::typeObj("Mu");
+            (*pv.hash())["str"] = Value::str(str);
+            (*pv.hash())["name"] = Value::str(name);
+            (*pv.hash())["usage-name"] = Value::str(name.size() > 1 ? name.substr(1) : "");
+            (*pv.hash())["type"] = Value::str("Mu");
+            (*pv.hash())["type-obj"] = Value::typeObj("Mu");
+            (*pv.hash())["invocant"] = Value::boolean(invocant);
+            (*pv.hash())["multi-invocant"] = Value::boolean(true);
+            (*pv.hash())["named"] = Value::boolean(named);
+            (*pv.hash())["slurpy"] = Value::boolean(slurpy);
+            (*pv.hash())["optional"] = Value::boolean(named || slurpy);
+            (*pv.hash())["raw"] = Value::boolean(invocant);
+            (*pv.hash())["readonly"] = Value::boolean(true);
+            (*pv.hash())["rw"] = Value::boolean(false);
+            (*pv.hash())["copy"] = Value::boolean(false);
+            (*pv.hash())["capture"] = Value::boolean(false);
+            (*pv.hash())["prefix"] = Value::str(slurpy ? "*" : "");
+            (*pv.hash())["suffix"] = Value::str("");
+            (*pv.hash())["modifier"] = Value::str("");
+            (*pv.hash())["default"] = Value::typeObj("Code");
+            (*pv.hash())["constraints"] = Value::typeObj("Mu");
             Value nn = Value::array(); nn.isList = true;
-            (*pv.hash)["named_names"] = nn;
+            (*pv.hash())["named_names"] = nn;
             return pv;
         };
         if (!haveInv)
-            params.arr->insert(params.arr->begin(), mkParam("Mu $", "$", true, false, false));
+            params.arr()->insert(params.arr()->begin(), mkParam("Mu $", "$", true, false, false));
         if (!haveNamedSlurpy)
-            params.arr->push_back(mkParam("*%_", "%_", false, true, true));
+            params.arr()->push_back(mkParam("*%_", "%_", false, true, true));
     }
-    (*s.hash)["params"] = params;
+    (*s.hash())["params"] = params;
     return s;
 }
 
@@ -2464,15 +2464,15 @@ Value Interpreter::ioEmit(const std::string& s, const char* dynVar, bool toErr) 
     // capture classes override only WRITE). Routing print at an object that
     // defines neither used to re-enter the global print through the
     // native-parent delegation and recurse to a stack overflow.
-    if (h && h->t == VT::Object && h->obj && h->obj->cls) {
+    if (h && h->t == VT::Object && h->obj() && h->obj()->cls) {
         // Outside the lock below on purpose: this re-enters the interpreter to
         // run a user method, which may itself print. Holding a non-recursive
         // mutex across that would deadlock.
-        if (h->obj->cls->findMethod("print")) {
+        if (h->obj()->cls->findMethod("print")) {
             ValueList pa{Value::str(s)};
             return methodCall(*h, "print", pa);
         }
-        if (Value* wm = h->obj->cls->findMethod("WRITE")) {
+        if (Value* wm = h->obj()->cls->findMethod("WRITE")) {
             Value blob = Value::str(s);
             blob.hashKind = "Blob";
             return invokeMethod(*wm, *h, ValueList{blob}, nullptr);
@@ -2614,7 +2614,7 @@ static bool jsonParseValue(const std::string& s, size_t& i, Value& out, JsonCfg 
             jsonSkipWs(s, i, cfg);
             if (i >= s.size() || s[i] != ':') return false; i++;
             Value v; if (!jsonParseValue(s, i, v, cfg)) return false;
-            (*out.hash)[key] = v;
+            (*out.hash())[key] = v;
             jsonSkipWs(s, i, cfg);
             if (i < s.size() && s[i] == ',') { i++; continue; }
             if (i < s.size() && s[i] == '}') { i++; return true; }
@@ -2628,7 +2628,7 @@ static bool jsonParseValue(const std::string& s, size_t& i, Value& out, JsonCfg 
         if (i < s.size() && s[i] == ']') { i++; return true; }
         for (;;) {
             Value v; if (!jsonParseValue(s, i, v, cfg)) return false;
-            out.arr->push_back(v);
+            out.arr()->push_back(v);
             jsonSkipWs(s, i, cfg);
             if (i < s.size() && s[i] == ',') { i++; continue; }
             if (i < s.size() && s[i] == ']') { i++; return true; }
@@ -2664,12 +2664,12 @@ static std::string jsonEncode(const Value& v) {
         }
         case VT::Array: {
             std::string r = "[";
-            if (v.arr) for (size_t k = 0; k < v.arr->size(); k++) { if (k) r += ","; r += jsonEncode((*v.arr)[k]); }
+            if (v.arr()) for (size_t k = 0; k < v.arr()->size(); k++) { if (k) r += ","; r += jsonEncode((*v.arr())[k]); }
             return r + "]";
         }
         case VT::Hash: {
             std::string r = "{"; bool first = true;
-            if (v.hash) for (auto& kv : *v.hash) { if (!first) r += ","; first = false; r += "\"" + kv.first + "\":" + jsonEncode(kv.second); }
+            if (v.hash()) for (auto& kv : *v.hash()) { if (!first) r += ","; first = false; r += "\"" + kv.first + "\":" + jsonEncode(kv.second); }
             return r + "}";
         }
         default: { // string (and anything stringy)
@@ -2708,9 +2708,9 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
             "grep", "first", "classify", "categorize", "index-of", "split", "comb", "match", "subst"};
         if (m.empty() || m[0] == '^' || junctionMatcherMethods.count(m)) break;
         Value jr = Value::array(); jr.enumName = args[ai].enumName; jr.isList = true;
-        for (auto& e : *args[ai].arr) {
+        for (auto& e : *args[ai].arr()) {
             ValueList a2 = args; a2[ai] = e;
-            jr.arr->push_back(methodCall(inv, m, a2));
+            jr.arr()->push_back(methodCall(inv, m, a2));
         }
         return jr;
     }
@@ -2776,9 +2776,9 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     // constructed via callwith in its own .new) dispatches that class's methods
     // — public and private — with the proxy itself as self, BEFORE the FETCH
     // rule (AttrX::Mooish drives its whole lazy machinery this way).
-    if (invIn.t == VT::Hash && invIn.hashKind == "Proxy" && invIn.hash) {
-        auto ki = invIn.hash->find("\x01cls");
-        if (ki != invIn.hash->end()) {
+    if (invIn.t == VT::Hash && invIn.hashKind == "Proxy" && invIn.hash()) {
+        auto ki = invIn.hash()->find("\x01cls");
+        if (ki != invIn.hash()->end()) {
             auto cit = classes_.find(ki->second.s);
             if (cit != classes_.end())
                 if (Value* um = cit->second->findMethod(mName))
@@ -2788,9 +2788,9 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     // A method called ON a Proxy is a READ of what it stands for: FETCH first.
     // (`$doc.root[0].name` — AT-POS hands back a Proxy, and every method after it
     // was landing on the container.) `.VAR` deliberately still sees the Proxy.
-    if (invIn.t == VT::Hash && invIn.hashKind == "Proxy" && invIn.hash &&
+    if (invIn.t == VT::Hash && invIn.hashKind == "Proxy" && invIn.hash() &&
         mName != "VAR" && mName != "FETCH" && mName != "STORE" && mName != "WHERE") {
-        if (invIn.hash->count("FETCH")) {
+        if (invIn.hash()->count("FETCH")) {
             Value fetched = deproxy(invIn);
             if (!(fetched.t == VT::Hash && fetched.hashKind == "Proxy"))
                 return methodCallInner(fetched, mName, std::move(args), rwArgs);
@@ -2807,23 +2807,23 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     // The lookup only runs for the literal name "perl", which is rare.
     static const std::string kRaku = "raku";
     const bool userPerl = mName.size() == 4 && mName == "perl" &&
-                          inv.t == VT::Object && inv.obj && inv.obj->cls &&
-                          inv.obj->cls->findMethod("perl");
+                          inv.t == VT::Object && inv.obj() && inv.obj()->cls &&
+                          inv.obj()->cls->findMethod("perl");
     // `.Stringy` is Mu's string coercion — `self.Str` — and was missing entirely,
     // so it died on every type including the enum values LWP::Simple builds its
     // request line from. Forwarded the same way `.perl` forwards to `.raku`, with
     // the same escape: a class that defines its own `method Stringy` keeps it.
     static const std::string kStr = "Str";
     const bool userStringy = mName == "Stringy" &&
-                             inv.t == VT::Object && inv.obj && inv.obj->cls &&
-                             inv.obj->cls->findMethod("Stringy");
+                             inv.t == VT::Object && inv.obj() && inv.obj()->cls &&
+                             inv.obj()->cls->findMethod("Stringy");
     const MName m{(mName == "perl" && !userPerl)      ? kRaku
                 : (mName == "Stringy" && !userStringy) ? kStr
                                                        : mName};
     auto a0 = [&]() -> Value { return args.empty() ? Value::any() : args[0]; };
     // read the environment ONCE, not on every method call — getenv walks environ
     static const bool kTrace = std::getenv("RAKUPP_TRACE") != nullptr;
-    if (kTrace) std::cerr << "[M] ." << m << " on type=" << (int)inv.t << " s=[" << inv.s << "]" << (inv.t==VT::Object && inv.obj && inv.obj->cls ? " ("+inv.obj->cls->name+")" : "") << "\n";
+    if (kTrace) std::cerr << "[M] ." << m << " on type=" << (int)inv.t << " s=[" << inv.s << "]" << (inv.t==VT::Object && inv.obj() && inv.obj()->cls ? " ("+inv.obj()->cls->name+")" : "") << "\n";
     // ---- CompUnit repository machinery (what zef drives to query/install dists) ----
     {
         auto homeDir = []() -> std::string { const char* h = getenv("HOME"); return h ? h : ""; };
@@ -2926,14 +2926,14 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         // A FileSystem repo is the non-installed sibling: it serves a source tree
         // directly. rakupp does not enumerate its dists either, so `.files` answers
         // the same empty list rather than being absent.
-        if (inv.t == VT::Object && inv.obj && inv.obj->cls &&
-            inv.obj->cls->name == "CompUnit::Repository::FileSystem" &&
+        if (inv.t == VT::Object && inv.obj() && inv.obj()->cls &&
+            inv.obj()->cls->name == "CompUnit::Repository::FileSystem" &&
             (m == "files" || m == "candidates" || m == "installed")) {
             Value e = Value::array(); e.isList = true; e.s = "Seq"; return e;
         }
-        if (inv.t == VT::Object && inv.obj && inv.obj->cls &&
-            inv.obj->cls->name == "CompUnit::Repository::Installation") {
-            auto& at = inv.obj->attrs;
+        if (inv.t == VT::Object && inv.obj() && inv.obj()->cls &&
+            inv.obj()->cls->name == "CompUnit::Repository::Installation") {
+            auto& at = inv.obj()->attrs;
             std::string prefix = at.count("prefix") ? at["prefix"].toStr() : "";
             std::string name = at.count("name") ? at["name"].toStr() : "";
             if (m == "prefix") { Value p = Value::str(prefix); p.hashKind = "IO"; return p; }
@@ -2953,7 +2953,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 std::string homeRepo = std::string(home ? home : "") + "/.raku";
                 for (const std::string& pre : rakuRepoPrefixes()) {
                     auto od = std::make_shared<ObjectData>();
-                    od->cls = inv.obj->cls;   // the Installation class, already in hand
+                    od->cls = inv.obj()->cls;   // the Installation class, already in hand
                     std::string nm = pre == homeRepo ? "home"
                                    : pre.size() > 5 && pre.compare(pre.size()-5,5,"/site") == 0 ? "site"
                                    : pre.size() > 7 && pre.compare(pre.size()-7,7,"/vendor") == 0 ? "vendor"
@@ -2961,7 +2961,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                     od->attrs["name"] = Value::str(nm);
                     Value p2 = Value::str(pre); p2.hashKind = "IO";
                     od->attrs["prefix"] = p2;
-                    e.arr->push_back(Value::object(od));
+                    e.arr()->push_back(Value::object(od));
                 }
                 // …and the `core` repository, which sits beside each `site`. It is
                 // REPORTED but never searched: rakupp answers the core types from
@@ -2974,13 +2974,13 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                     struct stat st;
                     if (stat(core.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) continue;
                     auto od = std::make_shared<ObjectData>();
-                    od->cls = inv.obj->cls;
+                    od->cls = inv.obj()->cls;
                     od->attrs["name"] = Value::str("core");
                     Value p3 = Value::str(core); p3.hashKind = "IO";
                     od->attrs["prefix"] = p3;
-                    e.arr->push_back(Value::object(od));
+                    e.arr()->push_back(Value::object(od));
                 }
-                if (e.arr->empty()) e.arr->push_back(inv);
+                if (e.arr()->empty()) e.arr()->push_back(inv);
                 return e;
             }
             if (m == "candidates") {
@@ -3005,10 +3005,10 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                         Value meta = jsonParseDoc(ss.str());
                         if (meta.t != VT::Hash) continue;
                         Value d = Value::makeHash(); d.hashKind = "Distribution";
-                        (*d.hash)["meta"] = meta;
+                        (*d.hash())["meta"] = meta;
                         Value p2 = Value::str(prefix); p2.hashKind = "IO";
-                        (*d.hash)["prefix"] = p2;
-                        e.arr->push_back(d);
+                        (*d.hash())["prefix"] = p2;
+                        e.arr()->push_back(d);
                     }
                     closedir(dd);
                 }
@@ -3030,16 +3030,16 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 std::string want;
                 if (!args.empty()) {
                     if (args[0].t == VT::Str) want = args[0].s;
-                    else if (args[0].t == VT::Hash && args[0].hash) {
-                        auto it = args[0].hash->find("short-name");
-                        if (it != args[0].hash->end()) want = it->second.toStr();
+                    else if (args[0].t == VT::Hash && args[0].hash()) {
+                        auto it = args[0].hash()->find("short-name");
+                        if (it != args[0].hash()->end()) want = it->second.toStr();
                     }
                 }
                 if (want.empty()) return Value::nil();
                 if (m == "need") loadModule(want);            // throws if it cannot load
                 Value cu = Value::makeHash(); cu.hashKind = "CompUnit";
-                (*cu.hash)["short-name"] = Value::str(want);
-                (*cu.hash)["repo"] = inv;
+                (*cu.hash())["short-name"] = Value::str(want);
+                (*cu.hash())["repo"] = inv;
                 return cu;
             }
             if (m == "install") {
@@ -3057,11 +3057,11 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 Value dist = args.empty() ? Value::any() : args[0];
                 bool force = false;
                 for (auto& a : args)
-                    if (a.t == VT::Pair && a.s == "force") force = a.pairVal && a.pairVal->truthy();
+                    if (a.t == VT::Pair && a.s == "force") force = a.pairVal() && a.pairVal()->truthy();
                 Value metaV = methodCall(dist, "meta", ValueList{});
-                if (metaV.t != VT::Hash || !metaV.hash)
+                if (metaV.t != VT::Hash || !metaV.hash())
                     throw RakuError{Value::typeObj("X::AdHoc"), "install: distribution has no meta"};
-                auto& meta = *metaV.hash;
+                auto& meta = *metaV.hash();
                 auto mstr = [&](const char* k) -> std::string {
                     auto it = meta.find(k); return it != meta.end() ? it->second.toStr() : "";
                 };
@@ -3084,8 +3084,8 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 };
                 // already installed? (a short entry for a provided module under this dist-id)
                 Value provV = meta.count("provides") ? meta["provides"] : Value::makeHash();
-                if (!force && provV.t == VT::Hash && provV.hash && !provV.hash->empty()) {
-                    std::string firstMod = provV.hash->begin()->first;
+                if (!force && provV.t == VT::Hash && provV.hash() && !provV.hash()->empty()) {
+                    std::string firstMod = provV.hash()->begin()->first;
                     std::string sentinel = prefix + "/short/" + sha1hex(firstMod) + "/" + distId;
                     if (std::ifstream(sentinel).good())
                         throw RakuError{Value::typeObj("X::AdHoc"),
@@ -3100,12 +3100,12 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 // there with "Type Str does not support associative indexing";
                 // loading never noticed, since resolution reads short/ entries.
                 Value provOut = Value::makeHash();
-                if (provV.t == VT::Hash && provV.hash)
-                    for (auto& kv : *provV.hash) {
+                if (provV.t == VT::Hash && provV.hash())
+                    for (auto& kv : *provV.hash()) {
                         std::string mod = kv.first, srcRel;
                         // provides value is either the source path, or {path => {file,…}}
-                        if (kv.second.t == VT::Hash && kv.second.hash && !kv.second.hash->empty())
-                            srcRel = kv.second.hash->begin()->first;
+                        if (kv.second.t == VT::Hash && kv.second.hash() && !kv.second.hash()->empty())
+                            srcRel = kv.second.hash()->begin()->first;
                         else srcRel = kv.second.toStr();
                         std::string content = slurp(distRoot + "/" + srcRel);
                         std::string srcSha = sha1hex(content);
@@ -3114,36 +3114,36 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                         mkdirp(sdir);
                         std::ofstream o(sdir + "/" + distId);
                         o << ver << "\n" << auth << "\n" << api << "\n" << srcSha << "\n" << distId << "\n";
-                        (*filesOut.hash)[srcRel] = Value::str(srcSha);
+                        (*filesOut.hash())[srcRel] = Value::str(srcSha);
                         Value leaf = Value::makeHash();
-                        (*leaf.hash)["file"] = Value::str(srcSha);
-                        (*leaf.hash)["time"] = Value::nil();
+                        (*leaf.hash())["file"] = Value::str(srcSha);
+                        (*leaf.hash())["time"] = Value::nil();
                         Value byPath = Value::makeHash();
-                        (*byPath.hash)[srcRel] = leaf;
-                        (*provOut.hash)[mod] = byPath;
+                        (*byPath.hash())[srcRel] = leaf;
+                        (*provOut.hash())[mod] = byPath;
                     }
                 // resources/ and bin/ — zef injects these into meta<files> (rel-path => src)
-                if (meta.count("files") && meta["files"].t == VT::Hash && meta["files"].hash) {
+                if (meta.count("files") && meta["files"].t == VT::Hash && meta["files"].hash()) {
                     mkdirp(prefix + "/resources"); mkdirp(prefix + "/bin");
-                    for (auto& kv : *meta["files"].hash) {
+                    for (auto& kv : *meta["files"].hash()) {
                         std::string rel = kv.first, src = kv.second.toStr();
                         std::string content = slurp(src.empty() ? distRoot + "/" + rel : src);
                         std::string sha = sha1hex(content);
                         std::string sub = rel.rfind("bin/", 0) == 0 ? "/bin/" : "/resources/";
                         { std::ofstream o(prefix + sub + sha, std::ios::binary); o << content; }
-                        (*filesOut.hash)[rel] = Value::str(sha);
+                        (*filesOut.hash())[rel] = Value::str(sha);
                     }
                 }
                 // dist/<id> — the meta index (list-installed reads it; buildResourceMap
                 // scans it for `resources/…` → the on-disk resource copy).
-                Value distMeta = metaV; distMeta.hash = std::make_shared<ValueMap>(meta);
-                (*distMeta.hash)["files"] = filesOut;
-                if (provOut.hash && !provOut.hash->empty())
-                    (*distMeta.hash)["provides"] = provOut;
+                Value distMeta = metaV; distMeta.setHash(std::make_shared<ValueMap>(meta));
+                (*distMeta.hash())["files"] = filesOut;
+                if (provOut.hash() && !provOut.hash()->empty())
+                    (*distMeta.hash())["provides"] = provOut;
                 // Rakudo's records carry `ver` beside META6's `version`; zef's
                 // list/upgrade logic reads the short spelling (ver<0> without it)
                 if (!meta.count("ver") && !ver.empty())
-                    (*distMeta.hash)["ver"] = Value::str(ver);
+                    (*distMeta.hash())["ver"] = Value::str(ver);
                 { std::ofstream o(prefix + "/dist/" + distId); o << jsonEncode(distMeta); }
                 // the dist-id, so the CALLER can record provenance ("what did
                 // rakupp install" is the question uninstall refuses without)
@@ -3153,18 +3153,18 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     }
     if (m == "WHY") {
         // declarator pod: `#| text` above a sub/method/class answers .WHY
-        if (inv.t == VT::Code && inv.code && !inv.code->pod.empty())
-            return Value::str(inv.code->pod);
+        if (inv.t == VT::Code && inv.code() && !inv.code()->pod.empty())
+            return Value::str(inv.code()->pod);
         // a Parameter's own doc, plumbed from Param.pod at reflection time
-        if (inv.t == VT::Hash && inv.hashKind == "Parameter" && inv.hash && inv.hash->count("why"))
-            return (*inv.hash)["why"];
+        if (inv.t == VT::Hash && inv.hashKind == "Parameter" && inv.hash() && inv.hash()->count("why"))
+            return (*inv.hash())["why"];
         if (inv.t == VT::Type) {
             auto it = classes_.find(inv.s);
             if (it != classes_.end() && !it->second->pod.empty())
                 return Value::str(it->second->pod);
         }
-        if (inv.t == VT::Object && inv.obj && inv.obj->cls && !inv.obj->cls->pod.empty())
-            return Value::str(inv.obj->cls->pod);
+        if (inv.t == VT::Object && inv.obj() && inv.obj()->cls && !inv.obj()->cls->pod.empty())
+            return Value::str(inv.obj()->cls->pod);
         return Value::nil();
     }
     // Any.hash is an empty Hash (Rakudo: `my $x; $x.hash` → {}) — zef reads
@@ -3176,10 +3176,10 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     }
     // `.Str` / `.gist` / `~` on a LIST goes through each element's own .Str, so a
     // list of objects with a user `method Str` renders as those strings (see strOf).
-    if (inv.t == VT::Array && inv.arr && inv.enumName.empty() &&
+    if (inv.t == VT::Array && inv.arr() && inv.enumName.empty() &&
         (m == "Str" || m == "Stringy")) {
         bool anyObj = false;
-        for (auto& e : *inv.arr) if (e.t == VT::Object) { anyObj = true; break; }
+        for (auto& e : *inv.arr()) if (e.t == VT::Object) { anyObj = true; break; }
         if (anyObj) return Value::str(strOf(inv));
     }
     // a binary buffer has no string semantics: .Str is an error (use .decode)
@@ -3206,40 +3206,40 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 Value key;
                 if (ndim == 1) key = Value::integer(idx[0]);
                 else { key = Value::array(); key.isList = true;
-                       for (auto ix : idx) key.arr->push_back(Value::integer(ix)); }
+                       for (auto ix : idx) key.arr()->push_back(Value::integer(ix)); }
                 ents.push_back({key, node});
                 return;
             }
-            if (node.t == VT::Array && node.arr)
-                for (size_t i = 0; i < node.arr->size(); i++) {
-                    idx.push_back((long long)i); walk((*node.arr)[i]); idx.pop_back();
+            if (node.t == VT::Array && node.arr())
+                for (size_t i = 0; i < node.arr()->size(); i++) {
+                    idx.push_back((long long)i); walk((*node.arr())[i]); idx.pop_back();
                 }
         };
         walk(inv);
         if (m == "iterator") {
             Value it = Value::makeHash(); it.hashKind = "Iterator";
             Value items = Value::array();
-            for (auto& e : ents) items.arr->push_back(e.second);
-            (*it.hash)["items"] = items; (*it.hash)["pos"] = Value::integer(0);
+            for (auto& e : ents) items.arr()->push_back(e.second);
+            (*it.hash())["items"] = items; (*it.hash())["pos"] = Value::integer(0);
             return it;
         }
         Value o = Value::array(); o.isList = true;
         for (auto& e : ents) {
-            if (m == "keys") o.arr->push_back(e.first);
-            else if (m == "values" || m == "flat") o.arr->push_back(e.second);
-            else if (m == "kv") { o.arr->push_back(e.first); o.arr->push_back(e.second); }
-            else if (m == "pairs") { Value p = Value::pair(e.first.toStr(), e.second); p.pairKeyM() = std::make_shared<Value>(e.first); o.arr->push_back(std::move(p)); }
-            else { Value p = Value::pair(e.second.toStr(), e.first); p.pairKeyM() = std::make_shared<Value>(e.second); o.arr->push_back(std::move(p)); } // antipairs
+            if (m == "keys") o.arr()->push_back(e.first);
+            else if (m == "values" || m == "flat") o.arr()->push_back(e.second);
+            else if (m == "kv") { o.arr()->push_back(e.first); o.arr()->push_back(e.second); }
+            else if (m == "pairs") { Value p = Value::pair(e.first.toStr(), e.second); p.pairKeyM() = std::make_shared<Value>(e.first); o.arr()->push_back(std::move(p)); }
+            else { Value p = Value::pair(e.second.toStr(), e.first); p.pairKeyM() = std::make_shared<Value>(e.second); o.arr()->push_back(std::move(p)); } // antipairs
         }
         return o;
     }
     // A multi-dim shaped array renders its structure: rows on their own lines for
     // .gist, and a `Array.new(:shape(…), row, …)` constructor for .raku.
-    if (inv.t == VT::Array && inv.shape() && inv.shape()->size() >= 2 && inv.arr &&
+    if (inv.t == VT::Array && inv.shape() && inv.shape()->size() >= 2 && inv.arr() &&
         (m == "gist" || m == "raku")) {
         if (m == "gist") {
             std::string out = "[";
-            for (size_t i = 0; i < inv.arr->size(); i++) { if (i) out += "\n "; out += gistOf((*inv.arr)[i]); }
+            for (size_t i = 0; i < inv.arr()->size(); i++) { if (i) out += "\n "; out += gistOf((*inv.arr())[i]); }
             return Value::str(out + "]");
         }
         std::string ctor;
@@ -3249,14 +3249,14 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         std::string out = ctor + ".new(:shape(";
         for (size_t i = 0; i < inv.shape()->size(); i++) { if (i) out += ", "; out += std::to_string((*inv.shape())[i]); }
         out += ")";
-        for (auto& row : *inv.arr) { ValueList none; out += ", " + methodCall(row, "raku", none).toStr(); }
+        for (auto& row : *inv.arr()) { ValueList none; out += ", " + methodCall(row, "raku", none).toStr(); }
         return Value::str(out + ")");
     }
-    if (inv.t == VT::Array && inv.shape() && !inv.shape()->empty() && inv.arr && m == "clone") {
+    if (inv.t == VT::Array && inv.shape() && !inv.shape()->empty() && inv.arr() && m == "clone") {
         Value c = inv; // deep-copy the nested storage so containers are independent
         std::function<Value(const Value&)> deep = [&](const Value& n) -> Value {
-            if (n.t == VT::Array && n.arr) { Value a = n; a.arr = std::make_shared<ValueList>();
-                for (auto& e : *n.arr) a.arr->push_back(deep(e)); return a; }
+            if (n.t == VT::Array && n.arr()) { Value a = n; a.setArr(std::make_shared<ValueList>());
+                for (auto& e : *n.arr()) a.arr()->push_back(deep(e)); return a; }
             return n;
         };
         c = deep(inv);
@@ -3265,7 +3265,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     }
     // Most list operations on a multi-dim shaped array run over its LEAVES — flatten
     // the fixed structure to a plain list and delegate.
-    if (inv.t == VT::Array && inv.shape() && inv.shape()->size() >= 2 && inv.arr &&
+    if (inv.t == VT::Array && inv.shape() && inv.shape()->size() >= 2 && inv.arr() &&
         (m == "join" || m == "map" || m == "grep" || m == "combinations" ||
          m == "permutations" || m == "rotor" || m == "pick" || m == "roll" ||
          m == "first" || m == "reduce" || m == "sum" || m == "min" || m == "max" ||
@@ -3273,23 +3273,23 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
          m == "Bag")) {
         Value flat = Value::array(); flat.isList = true;
         std::function<void(const Value&)> collect = [&](const Value& n) {
-            if (n.t == VT::Array && n.arr) for (auto& e : *n.arr) collect(e);
-            else flat.arr->push_back(n);
+            if (n.t == VT::Array && n.arr()) for (auto& e : *n.arr()) collect(e);
+            else flat.arr()->push_back(n);
         };
-        for (auto& e : *inv.arr) collect(e);
+        for (auto& e : *inv.arr()) collect(e);
         return methodCall(flat, m, args, rwArgs);
     }
     // Junction invocant: the Str-using routines operate on the WHOLE junction
     // (no autothreading — `$j.print` prints the junction's string form, calling
     // each eigenstate's .Str; `$j.printf` treats that form as the format).
     // enumName.empty() first: it rejects everything but junctions/enums in one load.
-    if (!inv.enumName.empty() && inv.t == VT::Array && inv.arr &&
+    if (!inv.enumName.empty() && inv.t == VT::Array && inv.arr() &&
         (inv.enumName == "any" || inv.enumName == "all" || inv.enumName == "one" || inv.enumName == "none") &&
         (m == "printf" || m == "sprintf")) { // format verbs use the joined eigenstates as the FORMAT
         std::string s;
-        for (size_t i = 0; i < inv.arr->size(); i++) {
+        for (size_t i = 0; i < inv.arr()->size(); i++) {
             if (i) s += " ";
-            s += methodCall((*inv.arr)[i], "Str", ValueList{}).toStr();
+            s += methodCall((*inv.arr())[i], "Str", ValueList{}).toStr();
         }
         if (m == "sprintf") return Value::str(doSprintf(s, args, langRev_));
         // `.printf` — through ioEmit for the output lock and a rebound $*OUT,
@@ -3300,7 +3300,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     // return a junction of the results (`($a & $b).finish`, `$j.defined`, …)
     // (a METAMODEL call `.^name`/`.^WHAT`/… answers for the Junction ITSELF and is
     //  excluded here — `(1 & 2).^name` is "Junction", not a junction of "Int")
-    if (!inv.enumName.empty() && inv.t == VT::Array && inv.arr && !(m.size() && m[0] == '^') &&
+    if (!inv.enumName.empty() && inv.t == VT::Array && inv.arr() && !(m.size() && m[0] == '^') &&
         (inv.enumName == "any" || inv.enumName == "all" || inv.enumName == "one" || inv.enumName == "none")) {
         static const std::set<std::string> junctionOwn = {
             "Bool", "so", "not", "gist", "raku", "perl", "WHAT", "WHO", "HOW",
@@ -3314,25 +3314,25 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         // `(any 0, "").defined` is True while `.Bool` is False.
         if (m == "defined") {
             Value j = Value::array(); j.enumName = inv.enumName;
-            j.arr = std::make_shared<ValueList>();
-            for (auto& el : *inv.arr) j.arr->push_back(Value::boolean(defined(el)));
+            j.setArr(std::make_shared<ValueList>());
+            for (auto& el : *inv.arr()) j.arr()->push_back(Value::boolean(defined(el)));
             return Value::boolean(j.truthy());
         }
         if (m == "THREAD" && !args.empty()) {
             // shallow map: the block sees each eigenstate whole (junctions included)
             Value out = Value::array(); out.enumName = inv.enumName;
-            out.arr = std::make_shared<ValueList>();
-            for (auto& el : *inv.arr) {
+            out.setArr(std::make_shared<ValueList>());
+            for (auto& el : *inv.arr()) {
                 ValueList one{el};
                 noAutothread_ = true;
-                out.arr->push_back(callCallable(args[0], one));
+                out.arr()->push_back(callCallable(args[0], one));
             }
             return out;
         }
         if (!junctionOwn.count(m)) {
             Value out = Value::array(); out.enumName = inv.enumName;
-            out.arr = std::make_shared<ValueList>();
-            for (auto& el : *inv.arr) out.arr->push_back(methodCall(el, m, args, rwArgs));
+            out.setArr(std::make_shared<ValueList>());
+            for (auto& el : *inv.arr()) out.arr()->push_back(methodCall(el, m, args, rwArgs));
             return out;
         }
     }
@@ -3345,12 +3345,12 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         // whose candidates all reject the args falls through to the built-in
         // method instead of dying — `augment class DateTime { multi method
         // new(Any:U) {…} }` must leave `DateTime.new($str)` working (JSON::Fast).
-        if (f->code && f->code->isMultiDispatcher) {
+        if (f->code() && f->code()->isMultiDispatcher) {
             bool anyFits = false;
             ValueList withInv; withInv.push_back(inv);
             for (auto& a : args) withInv.push_back(a);
-            for (auto& c : f->code->candidates) {
-                if (c.code && c.code->isProto) continue;
+            for (auto& c : f->code()->candidates) {
+                if (c.code() && c.code()->isProto) continue;
                 if (scoreCandidate(c, withInv) >= 0 || scoreCandidate(c, args) >= 0) { anyFits = true; break; }
             }
             if (!anyFits) goto builtinExtFallthrough;
@@ -3375,8 +3375,8 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     // scratch space), a growable list under the hood. Handled up front so its
     // `.elems`/`.List`/… win over the generic Hash methods (it is a hashKind Hash).
     if (inv.t == VT::Hash && inv.hashKind == "IterationBuffer") {
-        auto& items = *(*inv.hash)["items"].arr;
-        auto asList = [&]() { Value o = Value::array(); o.isList = true; *o.arr = items; return o; };
+        auto& items = *(*inv.hash())["items"].arr();
+        auto asList = [&]() { Value o = Value::array(); o.isList = true; *o.arr() = items; return o; };
         if (m == "elems" || m == "Numeric" || m == "Int") return Value::integer((long long)items.size());
         if (m == "AT-POS") { long i = a0().toInt(); return (i >= 0 && i < (long)items.size()) ? items[i] : Value::typeObj("Mu"); }
         if (m == "push")    { items.push_back(a0()); return a0(); }
@@ -3396,7 +3396,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         if (m == "append" || m == "prepend") {
             ValueList add;
             for (auto& a : args) {
-                if (a.t == VT::Hash && a.hashKind == "IterationBuffer") for (auto& x : *(*a.hash)["items"].arr) add.push_back(x);
+                if (a.t == VT::Hash && a.hashKind == "IterationBuffer") for (auto& x : *(*a.hash())["items"].arr()) add.push_back(x);
                 else for (auto& x : toList(a)) add.push_back(x);
             }
             if (m == "append") items.insert(items.end(), add.begin(), add.end());
@@ -3408,10 +3408,10 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     }
     // A class inheriting a built-in type answers that type's identity coercion with
     // itself: `class D is Str {}` → D.new.Str === the D object (Str.Str is identity).
-    if (inv.t == VT::Object && inv.obj && inv.obj->cls && !inv.obj->cls->findMethod(m)) {
+    if (inv.t == VT::Object && inv.obj() && inv.obj()->cls && !inv.obj()->cls->findMethod(m)) {
         static const std::set<std::string> idTypes = {"Str", "Int", "Num", "Rat", "Bool", "Real", "Numeric"};
         if (idTypes.count(m))
-            for (ClassInfo* ci = inv.obj->cls.get(); ci; ci = ci->parent.get())
+            for (ClassInfo* ci = inv.obj()->cls.get(); ci; ci = ci->parent.get())
                 if (ci->nativeParent == m) return inv;
     }
     // `.resume` inside a CATCH: unwind to the enclosing block, which continues
@@ -3428,10 +3428,10 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     if (m == "Callable" && sixE() && !args.empty() && args[0].t == VT::Str) {
         std::string want = args[0].toStr();
         Value found = methodCall(inv, "can", ValueList{Value::str(want)});
-        if (found.t == VT::Array && found.arr && !found.arr->empty()) return (*found.arr)[0];
+        if (found.t == VT::Array && found.arr() && !found.arr()->empty()) return (*found.arr())[0];
         Value f = Value::makeHash(); f.hashKind = "Failure";
-        (*f.hash)["exception"] = Value::typeObj("X::Method::NotFound");
-        (*f.hash)["message"]   = Value::str("No such method '" + want + "' for invocant of type '" +
+        (*f.hash())["exception"] = Value::typeObj("X::Method::NotFound");
+        (*f.hash())["message"]   = Value::str("No such method '" + want + "' for invocant of type '" +
                                             inv.typeName() + "'");
         return f;
     }
@@ -3445,7 +3445,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     // `.are`/`.snip` on a type object or lone scalar treat it as a 1-element list
     // (so `Int.are` → Int, `42.are` → Int).
     if ((m == "are" || m == "snip") && inv.t != VT::Array && inv.t != VT::Range && inv.t != VT::Hash) {
-        Value one = Value::array(); one.isList = true; one.arr->push_back(inv);
+        Value one = Value::array(); one.isList = true; one.arr()->push_back(inv);
         return methodCall(one, m, args, rwArgs);
     }
 
@@ -3472,18 +3472,18 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     // metamodel call .^method — .^name/.^WHAT answer the type; others dispatch by bare name
     // a Scalar container record (from `.VAR` on a $-variable): its own name/default,
     // .^name = Scalar via typeName; anything else answers from the held value.
-    if (inv.t == VT::Hash && inv.hashKind == "Scalar" && inv.hash &&
+    if (inv.t == VT::Hash && inv.hashKind == "Scalar" && inv.hash() &&
         m != "^name" && m != "WHAT" && m != "WHICH" && m != "raku") {
-        if (m == "name")    { auto it = inv.hash->find("name");    return it != inv.hash->end() ? it->second : Value::any(); }
+        if (m == "name")    { auto it = inv.hash()->find("name");    return it != inv.hash()->end() ? it->second : Value::any(); }
         if (m == "dynamic") { // a $*twigil variable is dynamic
-            auto it = inv.hash->find("name");
-            std::string n = it != inv.hash->end() ? it->second.toStr() : "";
+            auto it = inv.hash()->find("name");
+            std::string n = it != inv.hash()->end() ? it->second.toStr() : "";
             return Value::boolean(n.size() > 1 && n[1] == '*');
         }
-        if (m == "default") { auto it = inv.hash->find("default"); return it != inv.hash->end() ? it->second : Value::any(); }
-        if (m == "of")      { auto it = inv.hash->find("default"); return (it != inv.hash->end() && it->second.t == VT::Type) ? it->second : Value::typeObj("Mu"); }
-        auto vi = inv.hash->find("value");
-        if (vi != inv.hash->end()) return methodCall(vi->second, m, std::move(args), rwArgs);
+        if (m == "default") { auto it = inv.hash()->find("default"); return it != inv.hash()->end() ? it->second : Value::any(); }
+        if (m == "of")      { auto it = inv.hash()->find("default"); return (it != inv.hash()->end() && it->second.t == VT::Type) ? it->second : Value::typeObj("Mu"); }
+        auto vi = inv.hash()->find("value");
+        if (vi != inv.hash()->end()) return methodCall(vi->second, m, std::move(args), rwArgs);
     }
     if (!m.empty() && m[0] == '^') {
         std::string mm = m.substr(1);
@@ -3546,7 +3546,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         }
         // meta-methods (.^methods/.^attributes/.^parents/…) resolve against the
         // type (HOW), even when called on an instance.
-        Value tobj = (inv.t == VT::Object && inv.obj && inv.obj->cls) ? Value::typeObj(inv.obj->cls->name) : inv;
+        Value tobj = (inv.t == VT::Object && inv.obj() && inv.obj()->cls) ? Value::typeObj(inv.obj()->cls->name) : inv;
         if ((mm == "lookup" || mm == "find_method") &&
             !(tobj.t == VT::Type && classes_.count(tobj.s))) {
             // builtin-type invocant (`().^lookup('elems')`): a "method object" —
@@ -3581,15 +3581,15 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 catch (RakuError& e) {
                     const Value& p = e.payload;
                     notFound = (p.t == VT::Type && p.s == "X::Method::NotFound") ||
-                               (p.t == VT::Object && p.obj && p.obj->cls &&
-                                p.obj->cls->name == "X::Method::NotFound");
+                               (p.t == VT::Object && p.obj() && p.obj()->cls &&
+                                p.obj()->cls->name == "X::Method::NotFound");
                 }
                 catch (...) {}
                 if (notFound) return Value::typeObj("Mu");
             }
-            Value code; code.t = VT::Code; code.code = std::make_shared<Callable>();
-            code.code->name = mn; code.code->isMethod = true;
-            code.code->builtin = [mn](Interpreter& I, ValueList& a) -> Value {
+            Value code; code.t = VT::Code; code.setCode(std::make_shared<Callable>());
+            code.code()->name = mn; code.code()->isMethod = true;
+            code.code()->builtin = [mn](Interpreter& I, ValueList& a) -> Value {
                 if (a.empty()) return Value::any();
                 Value in2 = a[0]; ValueList rest(a.begin() + 1, a.end());
                 return I.methodCall(in2, mn, rest);
@@ -3616,16 +3616,16 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     // hashKind "Iterator", (*hash)["items"] = the values, (*hash)["pos"] = position.
     // Every copy of the Value shares the same hash map, so advancing `pos` through
     // one copy is visible through all of them (iterators are stateful objects).
-    if (inv.t == VT::Hash && inv.hashKind == "Iterator" && inv.hash) {
-        Value& itemsV = (*inv.hash)["items"];
-        Value& posV = (*inv.hash)["pos"];
+    if (inv.t == VT::Hash && inv.hashKind == "Iterator" && inv.hash()) {
+        Value& itemsV = (*inv.hash())["items"];
+        Value& posV = (*inv.hash())["pos"];
         ValueList& items = itemsV.arrRef();
         long long n = (long long)items.size();
         auto iterEnd = [] { return Value::typeObj("IterationEnd"); };
         auto pushInto = [&](const Value& tgt, long long count) -> long long {
             long long pushed = 0;
-            if (tgt.t == VT::Array && tgt.arr)
-                while (posV.i < n && pushed < count) { tgt.arr->push_back(items[posV.i++]); pushed++; }
+            if (tgt.t == VT::Array && tgt.arr())
+                while (posV.i < n && pushed < count) { tgt.arr()->push_back(items[posV.i++]); pushed++; }
             return pushed;
         };
         if (m == "pull-one") return posV.i < n ? items[posV.i++] : iterEnd();
@@ -3654,12 +3654,12 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         }
         if (m == "count-only") return Value::integer(n - posV.i); // remaining, no advance
         if (m == "bool-only") return Value::boolean(posV.i < n);
-        if (m == "is-lazy") { auto it = inv.hash->find("lazy"); return Value::boolean(it != inv.hash->end() && it->second.truthy()); }
+        if (m == "is-lazy") { auto it = inv.hash()->find("lazy"); return Value::boolean(it != inv.hash()->end() && it->second.truthy()); }
         // an iterator over a RANDOMISED or unordered source promises neither a
         // stable order nor an increasing one; the flag rides on the iterator
         if (m == "is-deterministic" || m == "is-monotonically-increasing") {
-            auto it = inv.hash->find("nondeterministic");
-            return Value::boolean(it == inv.hash->end() || !it->second.truthy());
+            auto it = inv.hash()->find("nondeterministic");
+            return Value::boolean(it == inv.hash()->end() || !it->second.truthy());
         }
         if (m == "can") { // introspection: which protocol methods this iterator supports
             static const std::set<std::string> ms = {
@@ -3669,7 +3669,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             };
             Value out = Value::array(); out.isList = true;
             std::string mn = args.empty() ? "" : args[0].toStr();
-            if (ms.count(mn)) out.arr->push_back(Value::str(mn));
+            if (ms.count(mn)) out.arr()->push_back(Value::str(mn));
             return out;
         }
         if (m == "iterator") return inv; // an Iterator is its own .iterator
@@ -3679,13 +3679,13 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     // Signature introspection value (from &routine.signature).
     if (inv.t == VT::Hash && inv.hashKind == "Signature") {
         if (m == "raku" || m == "gist" || m == "Str") {
-            std::string body = inv.hash->count("str") ? (*inv.hash)["str"].toStr() : "()";
+            std::string body = inv.hash()->count("str") ? (*inv.hash())["str"].toStr() : "()";
             // .raku is the signature literal; .gist/.Str are the bare parens
             return Value::str(m == "raku" ? ":" + body : body);
         }
-        if (m == "arity") return inv.hash->count("arity") ? (*inv.hash)["arity"] : Value::integer(0);
-        if (m == "count") return inv.hash->count("count") ? (*inv.hash)["count"] : Value::integer(0);
-        if (m == "params" || m == "parameters") { Value p = inv.hash->count("params") ? (*inv.hash)["params"] : Value::array(); p.isList = true; return p; }
+        if (m == "arity") return inv.hash()->count("arity") ? (*inv.hash())["arity"] : Value::integer(0);
+        if (m == "count") return inv.hash()->count("count") ? (*inv.hash())["count"] : Value::integer(0);
+        if (m == "params" || m == "parameters") { Value p = inv.hash()->count("params") ? (*inv.hash())["params"] : Value::array(); p.isList = true; return p; }
         if (m == "ACCEPTS") {
             if (args.empty()) return Value::boolean(false);
             // Signature ~~ Signature is a different question from Signature ~~
@@ -3694,15 +3694,15 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             // the right's. Arity/count windows answer most of it; a slurpy NAMED
             // does not widen the positional window, so `:(*%) ~~ :()` needs its own
             // test (both are [0,0] positionally, but only one takes nameds).
-            if (args[0].t == VT::Hash && args[0].hashKind == "Signature" && args[0].hash) {
+            if (args[0].t == VT::Hash && args[0].hashKind == "Signature" && args[0].hash()) {
                 const Value& lhs = args[0];
                 auto num = [](const Value& sg, const char* k) {
-                    auto it = sg.hash->find(k);
-                    return it == sg.hash->end() ? 0.0 : it->second.toNum();
+                    auto it = sg.hash()->find(k);
+                    return it == sg.hash()->end() ? 0.0 : it->second.toNum();
                 };
                 auto str = [](const Value& sg) {
-                    auto it = sg.hash->find("str");
-                    return it == sg.hash->end() ? std::string() : it->second.s;
+                    auto it = sg.hash()->find("str");
+                    return it == sg.hash()->end() ? std::string() : it->second.s;
                 };
                 if (!(num(lhs, "arity") >= num(inv, "arity") &&
                       num(lhs, "count") <= num(inv, "count"))) return Value::boolean(false);
@@ -3715,21 +3715,21 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             // constraints, positional types, required nameds (Cro's router check)
             const Value& cap = args[0];
             ValueList pos; std::map<std::string, Value> named;
-            if (cap.t == VT::Array && cap.arr)
-                for (auto& e : *cap.arr) {
-                    if (e.t == VT::Pair) named[e.s] = e.pairVal ? *e.pairVal : Value::any();
+            if (cap.t == VT::Array && cap.arr())
+                for (auto& e : *cap.arr()) {
+                    if (e.t == VT::Pair) named[e.s] = e.pairVal() ? *e.pairVal() : Value::any();
                     else pos.push_back(e);
                 }
-            long long arity = inv.hash->count("arity") ? (*inv.hash)["arity"].toInt() : 0;
-            double cnt = inv.hash->count("count") ? (*inv.hash)["count"].toNum() : 0;
+            long long arity = inv.hash()->count("arity") ? (*inv.hash())["arity"].toInt() : 0;
+            double cnt = inv.hash()->count("count") ? (*inv.hash())["count"].toNum() : 0;
             if ((long long)pos.size() < arity) return Value::boolean(false);
             if (std::isfinite(cnt) && (double)pos.size() > cnt) return Value::boolean(false);
             size_t pi2 = 0;
             bool ok = true;
-            if (inv.hash->count("params") && (*inv.hash)["params"].arr)
-                for (auto& pv : *(*inv.hash)["params"].arr) {
+            if (inv.hash()->count("params") && (*inv.hash())["params"].arr())
+                for (auto& pv : *(*inv.hash())["params"].arr()) {
                     if (pv.t != VT::Hash) continue;
-                    auto& ph = *pv.hash;
+                    auto& ph = *pv.hash();
                     bool isNamed = ph.count("named") && ph["named"].truthy();
                     bool isSlurpy = ph.count("slurpy") && ph["slurpy"].truthy();
                     if (isSlurpy) continue;
@@ -3737,8 +3737,8 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                         bool opt = ph.count("optional") && ph["optional"].truthy();
                         if (!opt) {
                             std::string key;
-                            if (ph.count("named_names") && ph["named_names"].arr && !ph["named_names"].arr->empty())
-                                key = (*ph["named_names"].arr)[0].toStr();
+                            if (ph.count("named_names") && ph["named_names"].arr() && !ph["named_names"].arr()->empty())
+                                key = (*ph["named_names"].arr())[0].toStr();
                             else if (ph.count("name") && ph["name"].s.size() > 1)
                                 key = ph["name"].s.substr(1);
                             if (!key.empty() && !named.count(key)) { ok = false; break; }
@@ -3772,7 +3772,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         return Value::boolean(false);
     if (m == "default" && (inv.t == VT::Array ||
                           (inv.t == VT::Hash && inv.hashKind != "Parameter"))) {
-        if (inv.pairVal) return *inv.pairVal;
+        if (inv.elemDefault()) return *inv.elemDefault();
         // a QuantHash has a TYPED default, not Any: False for the Set family,
         // 0 for the weighted ones. Only those — every other tagged Hash
         // (Parameter, Failure, …) has its own `.default`, or none.
@@ -3790,14 +3790,14 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
              m == "raw" || m == "copy" || m == "rw" || m == "capture" ||
              m == "invocant" || m == "multi-invocant" ||
              m == "prefix" || m == "suffix" || m == "modifier" ||
-             m == "default" || m == "readonly") && inv.hash->count(m))
-            return (*inv.hash)[m];
+             m == "default" || m == "readonly") && inv.hash()->count(m))
+            return (*inv.hash())[m];
         // `.type` answers the TYPE OBJECT (Cro's router compares `=:= Str`);
         // the plain string form stays under the "type" key for legacy callers
-        if (m == "type" && inv.hash->count("type-obj")) return (*inv.hash)["type-obj"];
-        if (m == "type" && inv.hash->count(m)) return (*inv.hash)[m];
-        if (m == "positional") return Value::boolean(!(*inv.hash)["named"].truthy() && !(*inv.hash)["slurpy"].truthy());
-        if (m == "sigil") { const std::string& n = (*inv.hash)["name"].s; return Value::str(n.empty() ? "$" : n.substr(0, 1)); }
+        if (m == "type" && inv.hash()->count("type-obj")) return (*inv.hash())["type-obj"];
+        if (m == "type" && inv.hash()->count(m)) return (*inv.hash())[m];
+        if (m == "positional") return Value::boolean(!(*inv.hash())["named"].truthy() && !(*inv.hash())["slurpy"].truthy());
+        if (m == "sigil") { const std::string& n = (*inv.hash())["name"].s; return Value::str(n.empty() ? "$" : n.substr(0, 1)); }
     }
     // a Capture's .list is its POSITIONAL args, .hash/.Map its NAMED (Pair) args
     // Capture.new(:list(...), :hash(...)) — build the \(…)-style capture value
@@ -3806,16 +3806,16 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     if (inv.t == VT::Type && inv.s == "IO::Path::Parts" && m == "new") {
         Value pp = Value::makeHash(); pp.hashKind = "IO::Path::Parts";
         auto pos = [&](size_t i) { return args.size() > i && args[i].t != VT::Pair ? args[i].toStr() : std::string(); };
-        (*pp.hash)["volume"] = Value::str(pos(0));
-        (*pp.hash)["dirname"] = Value::str(pos(1));
-        (*pp.hash)["basename"] = Value::str(pos(2));
-        for (auto& a : args) if (a.t == VT::Pair && a.pairVal &&
+        (*pp.hash())["volume"] = Value::str(pos(0));
+        (*pp.hash())["dirname"] = Value::str(pos(1));
+        (*pp.hash())["basename"] = Value::str(pos(2));
+        for (auto& a : args) if (a.t == VT::Pair && a.pairVal() &&
             (a.s == "volume" || a.s == "dirname" || a.s == "basename"))
-            (*pp.hash)[a.s] = Value::str(a.pairVal->toStr());
+            (*pp.hash())[a.s] = Value::str(a.pairVal()->toStr());
         return pp;
     }
     if (inv.t == VT::Hash && inv.hashKind == "IO::Path::Parts") {
-        if (m == "volume" || m == "dirname" || m == "basename") return (*inv.hash)[m];
+        if (m == "volume" || m == "dirname" || m == "basename") return (*inv.hash())[m];
         // It is Positional as well as Associative: `$parts[0]` is the volume PAIR
         // and `$parts[]` lists all three. The order is the declaration order —
         // volume, dirname, basename — not the map's sorted order, so this cannot
@@ -3824,7 +3824,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             static const char* kOrder[3] = {"volume", "dirname", "basename"};
             if (m == "elems" || m == "Numeric") return Value::integer(3);
             auto pairAt = [&](int i) {
-                return Value::pair(kOrder[i], (*inv.hash)[kOrder[i]]);
+                return Value::pair(kOrder[i], (*inv.hash())[kOrder[i]]);
             };
             if (m == "AT-POS") {
                 long long i = args.empty() ? 0 : args[0].toInt();
@@ -3832,14 +3832,14 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 return (i >= 0 && i < 3) ? pairAt((int)i) : Value::any();
             }
             Value out = Value::array(); out.isList = true;
-            for (int i = 0; i < 3; i++) out.arr->push_back(pairAt(i));
+            for (int i = 0; i < 3; i++) out.arr()->push_back(pairAt(i));
             return out;
         }
         if (m == "gist" || m == "raku" || m == "Str") {
             // the parts are STRING LITERALS, so a backslash in a Windows path has to
             // be escaped like any other Str.raku (`"\\a"`, not `"\a"`)
             auto q = [&](const char* k) {
-                std::string v = (*inv.hash)[k].toStr(), o = "\"";
+                std::string v = (*inv.hash())[k].toStr(), o = "\"";
                 for (char c : v) { if (c == '\\' || c == '"') o += '\\'; o += c; }
                 return o + "\"";
             };
@@ -3849,14 +3849,14 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     }
     if (inv.t == VT::Type && inv.s == "Attribute" && m == "new") {
         Value at = Value::makeHash(); at.hashKind = "Attribute";
-        (*at.hash)["name"] = Value::str(""); (*at.hash)["type"] = Value::typeObj("Mu");
-        (*at.hash)["readonly"] = Value::boolean(true); (*at.hash)["has_accessor"] = Value::boolean(false);
-        for (auto& a : args) if (a.t == VT::Pair && a.pairVal) {
-            if (a.s == "name") (*at.hash)["name"] = *a.pairVal;
-            else if (a.s == "type" || a.s == "of") (*at.hash)["type"] = *a.pairVal;
-            else if (a.s == "rw") (*at.hash)["readonly"] = Value::boolean(!a.pairVal->truthy());
-            else if (a.s == "has_accessor") (*at.hash)["has_accessor"] = *a.pairVal;
-            else if (a.s == "package") (*at.hash)["package"] = *a.pairVal;
+        (*at.hash())["name"] = Value::str(""); (*at.hash())["type"] = Value::typeObj("Mu");
+        (*at.hash())["readonly"] = Value::boolean(true); (*at.hash())["has_accessor"] = Value::boolean(false);
+        for (auto& a : args) if (a.t == VT::Pair && a.pairVal()) {
+            if (a.s == "name") (*at.hash())["name"] = *a.pairVal();
+            else if (a.s == "type" || a.s == "of") (*at.hash())["type"] = *a.pairVal();
+            else if (a.s == "rw") (*at.hash())["readonly"] = Value::boolean(!a.pairVal()->truthy());
+            else if (a.s == "has_accessor") (*at.hash())["has_accessor"] = *a.pairVal();
+            else if (a.s == "package") (*at.hash())["package"] = *a.pairVal();
         }
         return at;
     }
@@ -3864,7 +3864,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     if (inv.t == VT::Type && inv.s == "Junction" && m == "new") {
         Value j = Value::array(); j.isList = true;
         j.enumName = args.empty() ? "any" : args[0].toStr();
-        if (args.size() > 1) for (auto& e : args[1].flatten()) j.arr->push_back(e);
+        if (args.size() > 1) for (auto& e : args[1].flatten()) j.arr()->push_back(e);
         return j;
     }
     // Format.new("%s|%s") — a reusable sprintf: calling it formats its arguments
@@ -3874,53 +3874,53 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         long long ar = 0;
         for (size_t k = 0; k + 1 < fmt.size(); k++)
             if (fmt[k] == '%') { if (fmt[k + 1] == '%') k++; else ar++; }
-        Value code; code.t = VT::Code; code.code = std::make_shared<Callable>();
-        code.code->name = "Format";
-        code.code->builtin = [fmt](Interpreter& I, ValueList& a) -> Value {
+        Value code; code.t = VT::Code; code.setCode(std::make_shared<Callable>());
+        code.code()->name = "Format";
+        code.code()->builtin = [fmt](Interpreter& I, ValueList& a) -> Value {
             ValueList sa; sa.push_back(Value::str(fmt));
             for (auto& x : a) sa.push_back(x);
             return I.callBuiltin("sprintf", sa);
         };
         Value f = Value::makeHash(); f.hashKind = "Format";
-        (*f.hash)["fmt"] = Value::str(fmt);
-        (*f.hash)["arity"] = Value::integer(ar);
-        (*f.hash)["code"] = code;
+        (*f.hash())["fmt"] = Value::str(fmt);
+        (*f.hash())["arity"] = Value::integer(ar);
+        (*f.hash())["code"] = code;
         return f;
     }
     if (inv.t == VT::Hash && inv.hashKind == "Format") {
-        if (m == "Str" || m == "gist" || m == "raku") return (*inv.hash)["fmt"];
-        if (m == "arity" || m == "count") return (*inv.hash)["arity"];
+        if (m == "Str" || m == "gist" || m == "raku") return (*inv.hash())["fmt"];
+        if (m == "arity" || m == "count") return (*inv.hash())["arity"];
         // `.directives` names the conversion letter of each `%…` in order:
         // "%05d%3x:%s" is (d x s). Flags, width and precision are skipped —
         // the directive is the first ALPHABETIC character after the percent.
         if (m == "directives") {
-            const std::string fmt = (*inv.hash)["fmt"].toStr();
+            const std::string fmt = (*inv.hash())["fmt"].toStr();
             Value out = Value::array(); out.isList = true;
             for (size_t k = 0; k + 1 < fmt.size(); k++) {
                 if (fmt[k] != '%') continue;
                 if (fmt[k + 1] == '%') { k++; continue; } // a literal percent
                 size_t j = k + 1;
                 while (j < fmt.size() && !ascii::isalpha((unsigned char)fmt[j])) j++;
-                if (j < fmt.size()) { out.arr->push_back(Value::str(std::string(1, fmt[j]))); k = j; }
+                if (j < fmt.size()) { out.arr()->push_back(Value::str(std::string(1, fmt[j]))); k = j; }
             }
             return out;
         }
-        if (m == "CALL-ME" || m == "()") return methodCall((*inv.hash)["code"], "CALL-ME", args, rwArgs);
+        if (m == "CALL-ME" || m == "()") return methodCall((*inv.hash())["code"], "CALL-ME", args, rwArgs);
     }
     if (inv.t == VT::Type && inv.s == "Capture" && m == "new") {
         Value c = Value::array(); c.hashKind = "Capture"; c.itemized = true;
         for (auto& a : args) {
-            if (a.t != VT::Pair || !a.pairVal) continue;
+            if (a.t != VT::Pair || !a.pairVal()) continue;
             if (a.s == "list") {
-                const Value& lv = *a.pairVal;
-                if (lv.t == VT::Array && lv.arr) for (auto& e : *lv.arr) c.arr->push_back(e);
-                else if (lv.t == VT::Range) for (auto& e : lv.flatten()) c.arr->push_back(e);
-                else if (lv.t != VT::Nil && lv.t != VT::Any) c.arr->push_back(lv);
+                const Value& lv = *a.pairVal();
+                if (lv.t == VT::Array && lv.arr()) for (auto& e : *lv.arr()) c.arr()->push_back(e);
+                else if (lv.t == VT::Range) for (auto& e : lv.flatten()) c.arr()->push_back(e);
+                else if (lv.t != VT::Nil && lv.t != VT::Any) c.arr()->push_back(lv);
             }
             else if (a.s == "hash") {
-                const Value& hv = *a.pairVal;
-                if (hv.t == VT::Hash && hv.hash)
-                    for (auto& kv : *hv.hash) c.arr->push_back(Value::pair(kv.first, kv.second));
+                const Value& hv = *a.pairVal();
+                if (hv.t == VT::Hash && hv.hash())
+                    for (auto& kv : *hv.hash()) c.arr()->push_back(Value::pair(kv.first, kv.second));
             }
         }
         return c;
@@ -3934,11 +3934,11 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
          m == "keys" || m == "values" || m == "pairs" || m == "antipairs" || m == "kv" ||
          m == "Bool")) {
         ValueList pos; std::map<std::string, Value> named;
-        if (inv.arr) for (auto& e : *inv.arr) {
-            if (e.t == VT::Pair) named[e.s] = e.pairVal ? *e.pairVal : Value::any();
+        if (inv.arr()) for (auto& e : *inv.arr()) {
+            if (e.t == VT::Pair) named[e.s] = e.pairVal() ? *e.pairVal() : Value::any();
             else pos.push_back(e);
         }
-        if (m == "list") { Value o = Value::array(); o.isList = true; *o.arr = pos; return o; }
+        if (m == "list") { Value o = Value::array(); o.isList = true; *o.arr() = pos; return o; }
         // `.Numeric` (and so prefix `+`) is the POSITIONAL count, like .elems — the
         // named parts do not add to it
         if (m == "elems" || m == "Numeric") return Value::integer((long long)pos.size());
@@ -3949,48 +3949,48 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         if (m == "kv") {
             Value o = Value::array(); o.isList = true; o.s = "Seq";
             for (size_t i = 0; i < pos.size(); i++) {
-                o.arr->push_back(Value::integer((long long)i));
-                o.arr->push_back(pos[i]);
+                o.arr()->push_back(Value::integer((long long)i));
+                o.arr()->push_back(pos[i]);
             }
-            for (auto& kv : named) { o.arr->push_back(Value::str(kv.first)); o.arr->push_back(kv.second); }
+            for (auto& kv : named) { o.arr()->push_back(Value::str(kv.first)); o.arr()->push_back(kv.second); }
             return o;
         }
         if (m == "keys" || m == "values" || m == "pairs" || m == "antipairs") {
             Value o = Value::array(); o.isList = true; o.s = "Seq";
             for (size_t i = 0; i < pos.size(); i++) {
                 Value k = Value::integer((long long)i);
-                if (m == "keys")      o.arr->push_back(k);
-                else if (m == "values") o.arr->push_back(pos[i]);
+                if (m == "keys")      o.arr()->push_back(k);
+                else if (m == "values") o.arr()->push_back(pos[i]);
                 else if (m == "pairs")  { Value p = Value::pair(std::to_string(i), pos[i]);
-                                          p.pairKeyM() = std::make_shared<Value>(k); o.arr->push_back(p); }
+                                          p.pairKeyM() = std::make_shared<Value>(k); o.arr()->push_back(p); }
                 else { Value p = Value::pair(pos[i].toStr(), k); // antipairs: value => key
-                       p.pairKeyM() = std::make_shared<Value>(pos[i]); o.arr->push_back(p); }
+                       p.pairKeyM() = std::make_shared<Value>(pos[i]); o.arr()->push_back(p); }
             }
             for (auto& kv : named) {
-                if (m == "keys")        o.arr->push_back(Value::str(kv.first));
-                else if (m == "values") o.arr->push_back(kv.second);
+                if (m == "keys")        o.arr()->push_back(Value::str(kv.first));
+                else if (m == "values") o.arr()->push_back(kv.second);
                 else if (m == "pairs")  { Value p = Value::pair(kv.first, kv.second);
-                                          p.namedArg = true; o.arr->push_back(p); }
+                                          p.namedArg = true; o.arr()->push_back(p); }
                 else { Value p = Value::pair(kv.second.toStr(), Value::str(kv.first));
-                       p.pairKeyM() = std::make_shared<Value>(kv.second); o.arr->push_back(p); }
+                       p.pairKeyM() = std::make_shared<Value>(kv.second); o.arr()->push_back(p); }
             }
             return o;
         }
         Value o = Value::makeHash(); o.hashKind = "Map";
-        for (auto& kv : named) (*o.hash)[kv.first] = kv.second;
+        for (auto& kv : named) (*o.hash())[kv.first] = kv.second;
         return o;
     }
 
     // A `but`/`does` mixin over a non-object base: a composed role/class method wins,
     // object-identity/introspection methods stay on the object, and every other
     // method (coercions, arithmetic-ish, base-type methods) delegates to the box.
-    if (inv.t == VT::Object && inv.obj && inv.obj->hasBoxed && inv.obj->cls &&
-        !inv.obj->cls->findMethod(m) && !inv.obj->cls->findAttr(m)) {
+    if (inv.t == VT::Object && inv.obj() && inv.obj()->hasBoxed && inv.obj()->cls &&
+        !inv.obj()->cls->findMethod(m) && !inv.obj()->cls->findAttr(m)) {
         static const std::set<std::string> keepOnObj = {
             // `.can` must see the MIXIN's methods — forwarding it to the boxed
             // value hides them (`(Any but $failure).can('Failure')`)
             "does", "HOW", "WHAT", "WHICH", "defined", "DEFINITE", "isa", "WHERE", "can"};
-        if (!keepOnObj.count(m)) return methodCall(inv.obj->boxed, m, args, rwArgs);
+        if (!keepOnObj.count(m)) return methodCall(inv.obj()->boxed, m, args, rwArgs);
     }
 
     // Pair.new($key, $value) or Pair.new(:key(...), :value(...)) — same shape as `=>`.
@@ -4000,7 +4000,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         long family = -2; // -2 = unspecified
         for (auto& a : args) {
             if (a.t != VT::Pair) continue;
-            Value pv = a.pairVal ? *a.pairVal : Value::any();
+            Value pv = a.pairVal() ? *a.pairVal() : Value::any();
             if (a.s == "host") host = pv.toStr();
             else if (a.s == "port") port = pv.toInt();
             else if (a.s == "localhost") localhost = pv.toStr();
@@ -4039,11 +4039,11 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             bool p = gilPark(); int rc = ::connect(fd, (sockaddr*)&addr, sizeof(addr)); gilUnpark(p);
             if (rc < 0) { ::close(fd); return Value::nil(); }
         }
-        Value s = Value::makeHash(); s.hashKind = "Socket"; (*s.hash)["fd"] = Value::integer(fd);
+        Value s = Value::makeHash(); s.hashKind = "Socket"; (*s.hash())["fd"] = Value::integer(fd);
         // Keep the name as GIVEN: `.localhost` answers what was asked for, not
         // what it resolved to, which is what Rakudo reports.
-        if (listen) { if (!localhost.empty()) (*s.hash)["localhost"] = Value::str(localhost); }
-        else (*s.hash)["peerhost"] = Value::str(host);
+        if (listen) { if (!localhost.empty()) (*s.hash())["localhost"] = Value::str(localhost); }
+        else (*s.hash())["peerhost"] = Value::str(host);
         return s;
     }
     // CArray[T].new(vals…) — a packed native array (NativeCall). Stored as raw
@@ -4052,13 +4052,13 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     // native memory at the field's computed offset. (Writes go through the
     // assignment path.) Only for a repr('CStruct') class the accessor doesn't
     // otherwise define a real method for.
-    if (inv.t == VT::Object && inv.obj && inv.obj->cls &&
-        (inv.obj->cls->repr == "CStruct" || inv.obj->cls->repr == "CPPStruct" ||
-         inv.obj->cls->repr == "CUnion") &&
-        inv.obj->attrs.count("__native_ptr") && !inv.obj->cls->findMethod(m)) {
-        std::string type; long long off = Interpreter::ncFieldOffset(inv.obj->cls.get(), m, type);
+    if (inv.t == VT::Object && inv.obj() && inv.obj()->cls &&
+        (inv.obj()->cls->repr == "CStruct" || inv.obj()->cls->repr == "CPPStruct" ||
+         inv.obj()->cls->repr == "CUnion") &&
+        inv.obj()->attrs.count("__native_ptr") && !inv.obj()->cls->findMethod(m)) {
+        std::string type; long long off = Interpreter::ncFieldOffset(inv.obj()->cls.get(), m, type);
         if (off >= 0) {
-            long long base = inv.obj->attrs["__native_ptr"].toInt();
+            long long base = inv.obj()->attrs["__native_ptr"].toInt();
             long long fa = base + off;
             // scalar field: read directly; pointer/Str/class field: read the 8-byte
             // pointer and box it appropriately.
@@ -4069,8 +4069,8 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             auto cit = classes_.find(type);
             if (cit != classes_.end()) { // nested CStruct/CPointer field → box the pointer
                 long long p; std::memcpy(&p, (void*)(intptr_t)fa, 8);
-                Value o; o.t = VT::Object; o.obj = std::make_shared<ObjectData>();
-                o.obj->cls = cit->second; o.obj->attrs["__native_ptr"] = Value::integer(p);
+                Value o; o.t = VT::Object; o.setObj(std::make_shared<ObjectData>());
+                o.obj()->cls = cit->second; o.obj()->attrs["__native_ptr"] = Value::integer(p);
                 return o;
             }
             return Interpreter::ncReadElem(fa, type, 0);
@@ -4084,8 +4084,8 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         return ncMakePointer(et.empty() ? "Pointer" : "Pointer[" + et + "]", p);
     }
     if (inv.t == VT::Hash && inv.hashKind == "Pointer") {
-        long long addr = inv.hash->count("addr") ? (*inv.hash)["addr"].toInt() : 0;
-        std::string of = inv.hash->count("of") ? (*inv.hash)["of"].toStr() : "";
+        long long addr = inv.hash()->count("addr") ? (*inv.hash())["addr"].toInt() : 0;
+        std::string of = inv.hash()->count("of") ? (*inv.hash())["of"].toStr() : "";
         if (m == "Int" || m == "Numeric") return Value::integer(addr);
         // An instantiated Pointer is DEFINED whatever it points at — `Pointer.new`
         // is a real object holding NULL. Emptiness is .Bool's job, and the two
@@ -4097,9 +4097,9 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         if (m == "of") return Value::typeObj(of.empty() ? "Pointer" : of);
     }
     // live CArray[T] over native memory (returned by a native call): element read
-    if (inv.t == VT::Hash && inv.hashKind == "CArray" && inv.hash->count("addr")) {
-        long long addr = (*inv.hash)["addr"].toInt();
-        std::string of = inv.hash->count("of") ? (*inv.hash)["of"].toStr() : "int64";
+    if (inv.t == VT::Hash && inv.hashKind == "CArray" && inv.hash()->count("addr")) {
+        long long addr = (*inv.hash())["addr"].toInt();
+        std::string of = inv.hash()->count("of") ? (*inv.hash())["of"].toStr() : "int64";
         if (m == "AT-POS" || m == "[]") return ncReadElem(addr, of, args.empty() ? 0 : args[0].toInt());
         if (m == "Numeric" || m == "Int") return Value::integer(addr);
         if (m == "defined") return Value::boolean(true);   // as for Pointer above
@@ -4207,8 +4207,8 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 try { userEncodings[fc(methodCall(enc, "name", {}).toStr())] = enc; } catch (...) {}
                 try {
                     Value alts = methodCall(enc, "alternative-names", {});
-                    if (alts.t == VT::Array && alts.arr)
-                        for (auto& a : *alts.arr) userEncodings[fc(a.toStr())] = enc;
+                    if (alts.t == VT::Array && alts.arr())
+                        for (auto& a : *alts.arr()) userEncodings[fc(a.toStr())] = enc;
                 } catch (...) {}
             }
             return Value::nil();
@@ -4227,21 +4227,21 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             throwTyped("X::Encoding::Unknown", {{"name", name}},
                        "Unknown string encoding '" + name + "'");
         Value e = Value::makeHash(); e.hashKind = "Encoding";
-        (*e.hash)["name"] = Value::str(name);
+        (*e.hash())["name"] = Value::str(name);
         return e;
     }
     if (inv.t == VT::Hash && inv.hashKind == "Encoding") {
-        if (m == "name") return (*inv.hash)["name"];
+        if (m == "name") return (*inv.hash())["name"];
         if (m == "decoder") {
             Value d = Value::makeHash(); d.hashKind = "Decoder";
-            (*d.hash)["buffer"] = Value::str("");
-            Value seps = Value::array(); seps.arr->push_back(Value::str("\n"));
-            (*d.hash)["seps"] = seps;
+            (*d.hash())["buffer"] = Value::str("");
+            Value seps = Value::array(); seps.arr()->push_back(Value::str("\n"));
+            (*d.hash())["seps"] = seps;
             return d;
         }
         if (m == "encoder") { // stateless: our strings are already UTF-8 bytes
             Value e = Value::makeHash(); e.hashKind = "Encoder";
-            (*e.hash)["name"] = (*inv.hash)["name"];
+            (*e.hash())["name"] = (*inv.hash())["name"];
             return e;
         }
     }
@@ -4255,24 +4255,24 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         }
     }
     if (inv.t == VT::Hash && inv.hashKind == "Decoder") {
-        Value& buf = (*inv.hash)["buffer"];
+        Value& buf = (*inv.hash())["buffer"];
         if (m == "add-bytes") { if (!args.empty()) buf.s += args[0].s; return inv; }
         if (m == "set-line-separators") {
             Value seps = Value::array();
-            for (auto& a : flattenArgs(args)) seps.arr->push_back(Value::str(a.toStr()));
-            (*inv.hash)["seps"] = seps;
+            for (auto& a : flattenArgs(args)) seps.arr()->push_back(Value::str(a.toStr()));
+            (*inv.hash())["seps"] = seps;
             return inv;
         }
         if (m == "consume-line-chars") {
             bool chomp = false, eof = false;
             for (auto& a : args) if (a.t == VT::Pair) {
-                bool on = !a.pairVal || a.pairVal->truthy();
+                bool on = !a.pairVal() || a.pairVal()->truthy();
                 if (a.s == "chomp") chomp = on;
                 else if (a.s == "eof") eof = on;
             }
             size_t best = std::string::npos, bestLen = 0;
-            if (inv.hash->count("seps"))
-                for (auto& sep : *(*inv.hash)["seps"].arr) {
+            if (inv.hash()->count("seps"))
+                for (auto& sep : *(*inv.hash())["seps"].arr()) {
                     const std::string ss = sep.toStr();
                     if (ss.empty()) continue;
                     size_t pos = buf.s.find(ss);
@@ -4310,9 +4310,9 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     if (inv.t == VT::Type && inv.s == "IO::Socket::Async") {
         if (m == "listen") {
             Value s = Value::makeHash(); s.hashKind = "Supply";
-            (*s.hash)["kind"] = Value::str("async-listen");
-            (*s.hash)["host"] = args.size() > 0 ? Value::str(args[0].toStr()) : Value::str("localhost");
-            (*s.hash)["port"] = args.size() > 1 ? Value::integer(args[1].toInt()) : Value::integer(0);
+            (*s.hash())["kind"] = Value::str("async-listen");
+            (*s.hash())["host"] = args.size() > 0 ? Value::str(args[0].toStr()) : Value::str("localhost");
+            (*s.hash())["port"] = args.size() > 1 ? Value::integer(args[1].toInt()) : Value::integer(0);
             return s;
         }
         if (m == "connect") {
@@ -4323,7 +4323,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             Value p = Value::makeHash(); p.hashKind = "Promise"; p.extM() = ps;
             if (fd < 0) {
                 ps->done = true; ps->broken = true; ps->causeMsg = "Cannot create socket";
-                (*p.hash)["status"] = Value::str("Broken");
+                (*p.hash())["status"] = Value::str("Broken");
                 return p;
             }
             sockaddr_in addr{}; addr.sin_family = AF_INET; addr.sin_port = htons((uint16_t)port);
@@ -4339,12 +4339,12 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 ::close(fd);
                 ps->done = true; ps->broken = true;
                 ps->cause = Value::typeObj("X::IO"); ps->causeMsg = "Cannot connect to " + host + ":" + std::to_string(port);
-                (*p.hash)["status"] = Value::str("Broken");
+                (*p.hash())["status"] = Value::str("Broken");
                 return p;
             }
             ps->done = true; ps->result = makeAsyncSocket(fd);
-            (*p.hash)["status"] = Value::str("Kept");
-            (*p.hash)["result"] = ps->result;
+            (*p.hash())["status"] = Value::str("Kept");
+            (*p.hash())["result"] = ps->result;
             return p;
         }
     }
@@ -4352,14 +4352,14 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     // synchronous sends answered with a kept Promise (Cro awaits them via
     // `whenever $socket.write(…) {}`).
     if (inv.t == VT::Hash && inv.hashKind == "AsyncSocket") {
-        int fd = inv.hash->count("fd") ? (int)(*inv.hash)["fd"].toInt() : -1;
+        int fd = inv.hash()->count("fd") ? (int)(*inv.hash())["fd"].toInt() : -1;
         if (m == "Supply") {
             Value s = Value::makeHash(); s.hashKind = "Supply";
-            (*s.hash)["kind"] = Value::str("async-read");
-            (*s.hash)["socket"] = inv;
+            (*s.hash())["kind"] = Value::str("async-read");
+            (*s.hash())["socket"] = inv;
             bool bin = false;
-            for (auto& a : args) if (a.t == VT::Pair && a.s == "bin") bin = !a.pairVal || a.pairVal->truthy();
-            (*s.hash)["bin"] = Value::boolean(bin);
+            for (auto& a : args) if (a.t == VT::Pair && a.s == "bin") bin = !a.pairVal() || a.pairVal()->truthy();
+            (*s.hash())["bin"] = Value::boolean(bin);
             return s;
         }
         if (m == "write" || m == "print" || m == "put" || m == "say") {
@@ -4377,30 +4377,30 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 off += n;
             }
             ps->done = true;
-            if (ok) { ps->result = Value::integer((long long)data.size()); (*p.hash)["status"] = Value::str("Kept"); (*p.hash)["result"] = ps->result; }
-            else { ps->broken = true; ps->cause = Value::typeObj("X::IO"); ps->causeMsg = "Socket write failed"; (*p.hash)["status"] = Value::str("Broken"); }
+            if (ok) { ps->result = Value::integer((long long)data.size()); (*p.hash())["status"] = Value::str("Kept"); (*p.hash())["result"] = ps->result; }
+            else { ps->broken = true; ps->cause = Value::typeObj("X::IO"); ps->causeMsg = "Socket write failed"; (*p.hash())["status"] = Value::str("Broken"); }
             return p;
         }
         if (m == "close") { if (fd >= 0) { ::shutdown(fd, SHUT_WR); } return Value::boolean(true); }
         if (m == "native-descriptor") return Value::integer(fd);
         if (m == "socket-host" || m == "socket-port" || m == "peer-host" || m == "peer-port") {
-            auto it = inv.hash->find(m);
-            return it != inv.hash->end() ? it->second : Value::any();
+            auto it = inv.hash()->find(m);
+            return it != inv.hash()->end() ? it->second : Value::any();
         }
     }
     // CompUnit::DependencySpecification.new(:short-name<Foo>, …) — a module dependency
     // descriptor. Requires a Str short-name; the version/auth/api matchers default True.
     if (inv.t == VT::Type && inv.s == "CompUnit::DependencySpecification" && m == "new") {
         Value shortName; bool haveSN = false;
-        for (auto& a : args) if (a.t == VT::Pair && a.s == "short-name") { shortName = a.pairVal ? *a.pairVal : Value::any(); haveSN = true; }
+        for (auto& a : args) if (a.t == VT::Pair && a.s == "short-name") { shortName = a.pairVal() ? *a.pairVal() : Value::any(); haveSN = true; }
         if (!haveSN || shortName.t != VT::Str)
             throw RakuError{Value::typeObj("X::AdHoc"), "CompUnit::DependencySpecification requires a Str :short-name"};
         Value o = Value::makeHash(); o.hashKind = "DependencySpec";
-        (*o.hash)["short-name"] = shortName;
+        (*o.hash())["short-name"] = shortName;
         for (const char* k : {"version-matcher", "auth-matcher", "api-matcher"}) {
             Value v = Value::boolean(true);
-            for (auto& a : args) if (a.t == VT::Pair && a.s == k && a.pairVal) v = *a.pairVal;
-            (*o.hash)[k] = v;
+            for (auto& a : args) if (a.t == VT::Pair && a.s == k && a.pairVal()) v = *a.pairVal();
+            (*o.hash())[k] = v;
         }
         return o;
     }
@@ -4423,7 +4423,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
               : wsrc.find("64") != std::string::npos ? 8 : 1;
         std::string bytes;
         std::function<void(const Value&)> add = [&](const Value& v) {
-            if ((v.t == VT::Array || v.t == VT::Range) && !(v.t == VT::Array && !v.arr)) { for (auto& e : v.flatten()) add(e); }
+            if ((v.t == VT::Array || v.t == VT::Range) && !(v.t == VT::Array && !v.arr())) { for (auto& e : v.flatten()) add(e); }
             else if (v.t == VT::Str && (v.hashKind == "Blob" || v.hashKind == "Buf")) bytes += v.s; // copy an existing buffer's bytes
             else {
                 // low bits, not a saturated toInt(): a 64-bit word above 2^63-1 is
@@ -4485,8 +4485,8 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         }
         else for (auto& a : pos) items.push_back(a);
         Value out = makeBaggy(items, inv.s, /*pairsAsElements=*/true);
-        if (!inv.ofType().empty() && out.hash) { // Set[Str].new(...) enforces the key type
-            for (auto& kv : *out.hash) {
+        if (!inv.ofType().empty() && out.hash()) { // Set[Str].new(...) enforces the key type
+            for (auto& kv : *out.hash()) {
                 Value orig = kv.second.pairKey() ? *kv.second.pairKey() : Value::str(kv.first);
                 if (!typeOrSubsetMatches(orig, inv.ofType()))
                     throw RakuError{Value::typeObj("X::TypeCheck::Binding"),
@@ -4498,14 +4498,14 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         return out;
     }
     if (inv.t == VT::Hash && inv.hashKind == "StrDistance") {
-        auto fld = [&](const char* k) { auto it = inv.hash->find(k); return it != inv.hash->end() ? it->second : Value::str(""); };
+        auto fld = [&](const char* k) { auto it = inv.hash()->find(k); return it != inv.hash()->end() ? it->second : Value::str(""); };
         if (m == "before" || m == "after") return fld(m.c_str());
         if (m == "Str" || m == "gist") return fld("after"); // "$dist" interpolates the resulting string
         if (m == "Bool") return Value::boolean(fld("before").toStr() != fld("after").toStr());
         if (m == "Rat" || m == "FatRat" || m == "Numeric" || m == "Int" || m == "Num" || m == "chars") {
             // a tr/// result carries the substitution count; .new-built ones numify to .after.chars
-            auto di = inv.hash->find("distance");
-            long long c = di != inv.hash->end() ? di->second.toInt()
+            auto di = inv.hash()->find("distance");
+            long long c = di != inv.hash()->end() ? di->second.toInt()
                         : methodCall(fld("after"), "chars", ValueList{}).toInt();
             if (m == "Num") return Value::number((double)c);
             if (m == "Int" || m == "Numeric" || m == "chars") return Value::integer(c);
@@ -4522,10 +4522,10 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             while (i < s.size()) {
                 unsigned char c = s[i];
                 if (ascii::isdigit(c)) { size_t j = i; while (j < s.size() && ascii::isdigit((unsigned char)s[j])) j++;
-                    out.arr->push_back(Value::integer(std::atoll(s.substr(i, j - i).c_str()))); i = j; }
+                    out.arr()->push_back(Value::integer(std::atoll(s.substr(i, j - i).c_str()))); i = j; }
                 else if (ascii::isalpha(c)) { size_t j = i; while (j < s.size() && ascii::isalpha((unsigned char)s[j])) j++;
-                    out.arr->push_back(Value::str(s.substr(i, j - i))); i = j; }
-                else if (c == '*') { Value w; w.t = VT::Whatever; out.arr->push_back(w); i++; }
+                    out.arr()->push_back(Value::str(s.substr(i, j - i))); i = j; }
+                else if (c == '*') { Value w; w.t = VT::Whatever; out.arr()->push_back(w); i++; }
                 else i++;
             }
             return out;
@@ -4561,7 +4561,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         // an explicit `:CWD` is the directory this path is relative to; it rides
         // in ofType, which a path value has no other use for
         for (auto& a : args)
-            if (a.t == VT::Pair && a.s == "CWD" && a.pairVal) p.ofTypeM() = a.pairVal->toStr();
+            if (a.t == VT::Pair && a.s == "CWD" && a.pairVal()) p.ofTypeM() = a.pairVal()->toStr();
         return p;
     }
     // IO::Spec::Unix / ::Win32 — the per-OS path grammar an IO::Path routes
@@ -4590,8 +4590,8 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     }
     if (inv.t == VT::Type && inv.s == "CurrentThreadScheduler" && m == "new") {
         Value v = Value::makeHash(); v.hashKind = "Scheduler";
-        (*v.hash)["name"] = Value::str("CurrentThreadScheduler");
-        (*v.hash)["sync"] = Value::boolean(true);
+        (*v.hash())["name"] = Value::str("CurrentThreadScheduler");
+        (*v.hash())["sync"] = Value::boolean(true);
         return v;
     }
     if (inv.t == VT::Hash && inv.hashKind == "Scheduler") {
@@ -4601,33 +4601,33 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             bool sawIn = false, sawAt = false, sawTimes = false;
             Value stopF, catchF;
             for (auto& a : args) {
-                if (a.t != VT::Pair || !a.pairVal) continue;
+                if (a.t != VT::Pair || !a.pairVal()) continue;
                 if (a.s == "in") sawIn = true;
                 if (a.s == "at") sawAt = true;
                 if (a.s == "times") sawTimes = true;
                 if (a.s == "in" || a.s == "at") {
-                    double v = a.pairVal->toNum();
+                    double v = a.pairVal()->toNum();
                     if (std::isnan(v)) throw RakuError{Value::typeObj("X::Scheduler::CueInNaNSeconds"),
                         "Cannot pass NaN as a number of seconds to Scheduler.cue"};
                     delay = a.s == "in" ? v : std::max(0.0, v - (double)::time(nullptr));
                 }
                 else if (a.s == "every") {
-                    every = a.pairVal->toNum();
+                    every = a.pairVal()->toNum();
                     if (std::isnan(every)) throw RakuError{Value::typeObj("X::Scheduler::CueInNaNSeconds"),
                         "Cannot pass NaN as a number of seconds to Scheduler.cue"};
                     if (std::isinf(every)) every = 0; // ±Inf every: run once, immediately
                 }
-                else if (a.s == "times") times = a.pairVal->toInt();
-                else if (a.s == "stop") stopF = *a.pairVal;
-                else if (a.s == "catch") catchF = *a.pairVal;
+                else if (a.s == "times") times = a.pairVal()->toInt();
+                else if (a.s == "stop") stopF = *a.pairVal();
+                else if (a.s == "catch") catchF = *a.pairVal();
             }
-            if (catchF.t != VT::Code && inv.hash->count("uncaught_handler"))
-                catchF = (*inv.hash)["uncaught_handler"]; // scheduler-level handler
+            if (catchF.t != VT::Code && inv.hash()->count("uncaught_handler"))
+                catchF = (*inv.hash())["uncaught_handler"]; // scheduler-level handler
             if (sawIn && sawAt)
                 throw RakuError{Value::typeObj("X::Scheduler::Cue"), "Cannot specify both :at and :in"};
             if (every > 0 && sawTimes && stopF.t == VT::Code)
                 throw RakuError{Value::typeObj("X::Scheduler::Cue"), "Cannot specify :every, :times and :stop together"};
-            if (inv.hash->count("sync")) { // CurrentThreadScheduler: run inline, now
+            if (inv.hash()->count("sync")) { // CurrentThreadScheduler: run inline, now
                 bool sawEvery = false;
                 for (auto& a : args) if (a.t == VT::Pair && a.s == "every") sawEvery = true;
                 if (sawEvery) // no repetition on the inline scheduler, as in Rakudo
@@ -4671,17 +4671,17 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         Value v = Value::makeHash(); v.hashKind = "CatHandle";
         Value files = Value::array();
         for (auto& a : args) {
-            if (a.t == VT::Array && a.arr) for (auto& x : *a.arr) files.arr->push_back(x);
-            else if (a.t != VT::Pair) files.arr->push_back(a);
+            if (a.t == VT::Array && a.arr()) for (auto& x : *a.arr()) files.arr()->push_back(x);
+            else if (a.t != VT::Pair) files.arr()->push_back(a);
         }
-        (*v.hash)["files"] = files;
+        (*v.hash())["files"] = files;
         return v;
     }
     if (inv.t == VT::Hash && inv.hashKind == "CatHandle") {
         if (m == "slurp") {
             std::string out;
-            Value files = (*inv.hash)["files"];
-            if (files.arr) for (auto& f : *files.arr) {
+            Value files = (*inv.hash())["files"];
+            if (files.arr()) for (auto& f : *files.arr()) {
                 ValueList none;
                 Value p = Value::str(f.toStr()); p.hashKind = "IO"; // .slurp is IO::Path's
                 Value one = methodCall(p, "slurp", none);
@@ -4752,9 +4752,9 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     // rakupp's Instant is TAI (POSIX + 10), so the trip back subtracts them.
     if (m == "to-posix" && (inv.hashKind == "Instant" || inv.isNumeric())) {
         Value o = Value::array(); o.isList = true;
-        o.arr->push_back(applyArith("-", inv.hashKind == "Instant" ? inv : Value::number(inv.toNum()),
+        o.arr()->push_back(applyArith("-", inv.hashKind == "Instant" ? inv : Value::number(inv.toNum()),
                                     Value::integer(10)));
-        o.arr->push_back(Value::boolean(false));
+        o.arr()->push_back(Value::boolean(false));
         return o;
     }
     if (m == "DateTime" && inv.hashKind == "Instant" && inv.isNumeric()) {
@@ -4762,8 +4762,8 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         if (sixE()) { // 6.e: `.DateTime(:timezone = $*TZ)`, as on Date
             bool given = false;
             for (auto& a2 : args)
-                if (a2.t == VT::Pair && a2.s == "timezone" && a2.pairVal) {
-                    mk.push_back(Value::pair("timezone", *a2.pairVal));
+                if (a2.t == VT::Pair && a2.s == "timezone" && a2.pairVal()) {
+                    mk.push_back(Value::pair("timezone", *a2.pairVal()));
                     given = true;
                 }
             if (!given) mk.push_back(Value::pair("timezone", Value::integer(tzOffsetDyn())));
@@ -4776,9 +4776,9 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         long long y, mo, d;
         daysToCivil(args[0].toInt() - 40587, y, mo, d);
         Value v = Value::makeHash(); v.hashKind = "Date";
-        (*v.hash)["year"] = Value::integer(y);
-        (*v.hash)["month"] = Value::integer(mo);
-        (*v.hash)["day"] = Value::integer(d);
+        (*v.hash())["year"] = Value::integer(y);
+        (*v.hash())["month"] = Value::integer(mo);
+        (*v.hash())["day"] = Value::integer(d);
         return v;
     }
     if (inv.t == VT::Type && inv.s == "Instant" && m == "from-posix") {
@@ -4798,7 +4798,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     if (inv.t == VT::Type && inv.s == "StrDistance" && m == "new") {
         // StrDistance (the tr/// result value): numifies to .after.chars
         Value h = Value::makeHash(); h.hashKind = "StrDistance";
-        for (auto& a2 : args) if (a2.t == VT::Pair && a2.pairVal) (*h.hash)[a2.s] = *a2.pairVal;
+        for (auto& a2 : args) if (a2.t == VT::Pair && a2.pairVal()) (*h.hash())[a2.s] = *a2.pairVal();
         return h;
     }
     if (inv.t == VT::Type && (inv.s == "Buf" || inv.s == "Blob") && (m == "new" || m == "allocate")) {
@@ -4827,7 +4827,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         }
         std::string bytes;
         std::function<void(const Value&)> add = [&](const Value& v) {
-            if (v.t == VT::Array && v.arr) { for (auto& e : *v.arr) add(e); }
+            if (v.t == VT::Array && v.arr()) { for (auto& e : *v.arr()) add(e); }
             else if (v.t == VT::Range) { for (auto& e : v.flatten()) add(e); } // Buf.new(^10)
             // Buf.new($blob) — the copy candidate — takes the bytes; numifying the
             // Blob here would silently store its element COUNT as the one byte.
@@ -4850,8 +4850,8 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         Value key = Value::any(), val = Value::any();
         std::vector<Value> pos;
         for (auto& x : args) {
-            if (x.t == VT::Pair && x.s == "key")        key = x.pairVal ? *x.pairVal : Value::any();
-            else if (x.t == VT::Pair && x.s == "value") val = x.pairVal ? *x.pairVal : Value::any();
+            if (x.t == VT::Pair && x.s == "key")        key = x.pairVal() ? *x.pairVal() : Value::any();
+            else if (x.t == VT::Pair && x.s == "value") val = x.pairVal() ? *x.pairVal() : Value::any();
             else pos.push_back(x);
         }
         if (!pos.empty())      key = pos[0];
@@ -4869,7 +4869,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             if (inv.s == "Semaphore") {
                 v.hashKind = "Semaphore";
                 long n = args.empty() ? 1 : args[0].toInt();
-                (*v.hash)["count"] = Value::integer(n);
+                (*v.hash())["count"] = Value::integer(n);
                 if (parallelMode_) { auto st = std::make_shared<SemaphoreState>(); st->count = n; v.extM() = st; }
             }
             else {
@@ -4905,7 +4905,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         if (m == "backend") return Value::str("cpp"); // rakupp's engine is a C++ tree-walking interpreter, not MoarVM
         if (m == "KERNELnames" || m == "DISTROnames" || m == "VMnames") { // known-platform introspection lists
             Value out = Value::array(); out.isList = true;
-            out.arr->push_back(Value::str(m == "KERNELnames" ? platKernelName() : m == "DISTROnames" ? platDistroName() : "moar"));
+            out.arr()->push_back(Value::str(m == "KERNELnames" ? platKernelName() : m == "DISTROnames" ? platDistroName() : "moar"));
             return out;
         }
         if (m == "name") return Value::str(nm);
@@ -4970,18 +4970,18 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         }
     }
     if (inv.t == VT::Type && (inv.s == "ThreadPoolScheduler" || inv.s == "CurrentThreadScheduler")) {
-        if (m == "new") { Value s = Value::makeHash(); s.hashKind = "Scheduler"; (*s.hash)["name"] = Value::str(inv.s); return s; }
+        if (m == "new") { Value s = Value::makeHash(); s.hashKind = "Scheduler"; (*s.hash())["name"] = Value::str(inv.s); return s; }
     }
     if (inv.t == VT::Type && inv.s == "Channel") {
         if (m == "new") {
             Value c = Value::makeHash(); c.hashKind = "Channel";
-            (*c.hash)["queue"] = Value::array();
-            (*c.hash)["closed"] = Value::boolean(false);
+            (*c.hash())["queue"] = Value::array();
+            (*c.hash())["closed"] = Value::boolean(false);
             auto ps = std::make_shared<PromiseState>();          // the `.closed` Promise
             c.extM() = ps;
             Value cp = Value::makeHash(); cp.hashKind = "Promise"; cp.extM() = ps;
-            (*cp.hash)["status"] = Value::str("Planned");
-            (*c.hash)["closedPromise"] = cp;
+            (*cp.hash())["status"] = Value::str("Planned");
+            (*c.hash())["closedPromise"] = cp;
             return c;
         }
     }
@@ -4995,23 +4995,23 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         // the vector — hangs, lost items, and a spurious "Promise broken" were
         // all one bug. Blocking waits happen OUTSIDE the stripe, or no producer
         // could ever get in to send.
-        std::recursive_mutex& chm = atomicStripe(inv.hash.get());
+        std::recursive_mutex& chm = atomicStripe(inv.hash());
         std::shared_ptr<ValueList> qp;
-        { std::lock_guard<std::recursive_mutex> lk(chm); qp = (*inv.hash)["queue"].arr; }
+        { std::lock_guard<std::recursive_mutex> lk(chm); qp = (*inv.hash())["queue"].arrS(); }
         auto& q = *qp;
-        auto isClosed = [&]() { return (*inv.hash)["closed"].b; };
+        auto isClosed = [&]() { return (*inv.hash())["closed"].b; };
         auto keepClosedIfDrained = [&]() {
             if (isClosed() && q.empty() && inv.ext()) {
                 auto ps = std::static_pointer_cast<PromiseState>(inv.ext());
-                bool failed = inv.hash->count("failCause") > 0;
+                bool failed = inv.hash()->count("failCause") > 0;
                 std::lock_guard<std::mutex> lk(ps->m);
                 if (!ps->done) {
-                    if (failed) { ps->broken = true; ps->cause = (*inv.hash)["failCause"]; ps->causeMsg = (*inv.hash)["failCause"].toStr(); }
+                    if (failed) { ps->broken = true; ps->cause = (*inv.hash())["failCause"]; ps->causeMsg = (*inv.hash())["failCause"].toStr(); }
                     else ps->result = Value::boolean(true);
                     ps->done = true;
                 }
                 ps->cv.notify_all();
-                if (inv.hash->count("closedPromise")) (*(*inv.hash)["closedPromise"].hash)["status"] = Value::str(failed ? "Broken" : "Kept");
+                if (inv.hash()->count("closedPromise")) (*(*inv.hash())["closedPromise"].hash())["status"] = Value::str(failed ? "Broken" : "Kept");
             }
         };
         if (m == "send") {
@@ -5059,34 +5059,34 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             std::lock_guard<std::recursive_mutex> lk(chm);
             if (q.empty()) {
                 if (isClosed()) {
-                    if (inv.hash->count("failCause")) throw RakuError{(*inv.hash)["failCause"], "Channel failed"};
+                    if (inv.hash()->count("failCause")) throw RakuError{(*inv.hash())["failCause"], "Channel failed"};
                     throw RakuError{Value::typeObj("X::Channel::ReceiveOnClosed"), "Cannot receive a message on a closed channel"};
                 }
                 return Value::nil(); // nothing running that could ever send
             }
             Value v = q.front(); q.erase(q.begin()); keepClosedIfDrained(); return v;
         }
-        if (m == "close") { std::lock_guard<std::recursive_mutex> lk(chm); (*inv.hash)["closed"] = Value::boolean(true); keepClosedIfDrained(); return Value::boolean(true); }
+        if (m == "close") { std::lock_guard<std::recursive_mutex> lk(chm); (*inv.hash())["closed"] = Value::boolean(true); keepClosedIfDrained(); return Value::boolean(true); }
         if (m == "fail") {
             std::lock_guard<std::recursive_mutex> lk(chm);
-            (*inv.hash)["closed"] = Value::boolean(true);
+            (*inv.hash())["closed"] = Value::boolean(true);
             Value cause = args.empty() ? Value::str("Died") : args[0];
             if (cause.t != VT::Object) { // wrap a plain cause in X::AdHoc (like die/break)
                 auto xit = classes_.find("X::AdHoc");
-                if (xit != classes_.end()) { Value ex; ex.t = VT::Object; ex.obj = std::make_shared<ObjectData>(); ex.obj->cls = xit->second; ex.obj->attrs["message"] = Value::str(cause.toStr()); cause = ex; }
+                if (xit != classes_.end()) { Value ex; ex.t = VT::Object; ex.setObj(std::make_shared<ObjectData>()); ex.obj()->cls = xit->second; ex.obj()->attrs["message"] = Value::str(cause.toStr()); cause = ex; }
             }
-            (*inv.hash)["failCause"] = cause;
+            (*inv.hash())["failCause"] = cause;
             // once drained, the .closed Promise breaks with the failure cause
             if (q.empty() && inv.ext()) {
                 auto ps = std::static_pointer_cast<PromiseState>(inv.ext());
                 std::lock_guard<std::mutex> lk(ps->m);
                 if (!ps->done) { ps->broken = true; ps->cause = cause; ps->causeMsg = cause.toStr(); ps->done = true; }
                 ps->cv.notify_all();
-                if (inv.hash->count("closedPromise")) (*(*inv.hash)["closedPromise"].hash)["status"] = Value::str("Broken");
+                if (inv.hash()->count("closedPromise")) (*(*inv.hash())["closedPromise"].hash())["status"] = Value::str("Broken");
             }
             return Value::boolean(true);
         }
-        if (m == "closed") { std::lock_guard<std::recursive_mutex> lk(chm); return (*inv.hash)["closedPromise"]; }
+        if (m == "closed") { std::lock_guard<std::recursive_mutex> lk(chm); return (*inv.hash())["closedPromise"]; }
         // `.list`/`.Seq` CONSUME a closed channel: they yield the queued values
         // and drain it (so the .closed Promise then keeps). `.Supply` snapshots
         // without draining (a Supply is a re-tappable stream).
@@ -5101,7 +5101,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             for (;;) {
                 bool done = false;
                 {   std::lock_guard<std::recursive_mutex> lk(chm);
-                    for (auto& x : q) o.arr->push_back(x);
+                    for (auto& x : q) o.arr()->push_back(x);
                     q.clear();
                     done = isClosed();
                 }
@@ -5120,12 +5120,12 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             // emits (IO::Socket::Async::SSL's read path). A plain (from-list)
             // channel yields its queued snapshot as a list-backed Supply.
             std::lock_guard<std::recursive_mutex> lk(chm);
-            if (inv.hash->count("supplier")) {
+            if (inv.hash()->count("supplier")) {
                 Value s = Value::makeHash(); s.hashKind = "Supply";
-                (*s.hash)["supplier"] = (*inv.hash)["supplier"];
+                (*s.hash())["supplier"] = (*inv.hash())["supplier"];
                 return s;
             }
-            Value o = Value::array(); *o.arr = q; o.isList = true; return o;
+            Value o = Value::array(); *o.arr() = q; o.isList = true; return o;
         }
         if (m == "elems") { std::lock_guard<std::recursive_mutex> lk(chm); return Value::integer((long long)q.size()); }
     }
@@ -5136,10 +5136,10 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         if (m == "start" || m == "run") { // a REAL thread, via the promise machinery
             Value code; for (auto& x : args) if (x.t == VT::Code) code = x;
             Value t = Value::makeHash(); t.hashKind = "Thread";
-            for (auto& x : args) if (x.t == VT::Pair && x.s == "name" && x.pairVal) (*t.hash)["name"] = *x.pairVal;
+            for (auto& x : args) if (x.t == VT::Pair && x.s == "name" && x.pairVal()) (*t.hash())["name"] = *x.pairVal();
             static std::atomic<long long> nextThreadId{2}; // 1 = the initial thread
-            (*t.hash)["id"] = Value::integer(nextThreadId++);
-            (*t.hash)["initial"] = Value::boolean(false);
+            (*t.hash())["id"] = Value::integer(nextThreadId++);
+            (*t.hash())["initial"] = Value::boolean(false);
             if (code.t == VT::Code) {
                 t.extM() = std::static_pointer_cast<void>(
                     std::static_pointer_cast<PromiseState>(spawnPromise(code, t).ext()));
@@ -5149,65 +5149,65 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         }
         if (m == "new") {
             Value t = Value::makeHash(); t.hashKind = "Thread";
-            for (auto& x : args) { if (x.t == VT::Code) (*t.hash)["code"] = x; else if (x.t == VT::Pair && x.pairVal) (*t.hash)[x.s] = *x.pairVal; }
+            for (auto& x : args) { if (x.t == VT::Code) (*t.hash())["code"] = x; else if (x.t == VT::Pair && x.pairVal()) (*t.hash())[x.s] = *x.pairVal(); }
             return t;
         }
     }
     if (inv.t == VT::Hash && inv.hashKind == "Thread") {
-        if (m == "is-initial-thread") return Value::boolean(inv.hash->count("initial") ? (*inv.hash)["initial"].b : (threadDepth_ == 0));
+        if (m == "is-initial-thread") return Value::boolean(inv.hash()->count("initial") ? (*inv.hash())["initial"].b : (threadDepth_ == 0));
         if (m == "finish" || m == "join") {
             if (inv.ext()) awaitPromise(std::static_pointer_cast<PromiseState>(inv.ext()));
             return inv;
         }
         if (m == "run" || m == "start") { // Thread.new(:code).run — start it now
-            if (inv.hash->count("code") && !inv.ext()) {
+            if (inv.hash()->count("code") && !inv.ext()) {
                 Value t = inv;
                 t.extM() = std::static_pointer_cast<void>(
-                    std::static_pointer_cast<PromiseState>(spawnPromise((*inv.hash)["code"]).ext()));
+                    std::static_pointer_cast<PromiseState>(spawnPromise((*inv.hash())["code"]).ext()));
                 yieldToWorker();
                 return t;
             }
             return inv;
         }
-        if (m == "id") return inv.hash->count("id") ? (*inv.hash)["id"] : Value::integer(1);
-        if (m == "name") return inv.hash->count("name") ? (*inv.hash)["name"] : Value::str("<anon>");
+        if (m == "id") return inv.hash()->count("id") ? (*inv.hash())["id"] : Value::integer(1);
+        if (m == "name") return inv.hash()->count("name") ? (*inv.hash())["name"] : Value::str("<anon>");
         if (m == "Str" || m == "gist") { // Thread<ID>(NAME)
-            std::string id = inv.hash->count("id") ? (*inv.hash)["id"].toStr() : "1";
-            std::string nm = inv.hash->count("name") ? (*inv.hash)["name"].toStr() : "<anon>";
+            std::string id = inv.hash()->count("id") ? (*inv.hash())["id"].toStr() : "1";
+            std::string nm = inv.hash()->count("name") ? (*inv.hash())["name"].toStr() : "<anon>";
             return Value::str("Thread<" + id + ">(" + nm + ")");
         }
     }
     if (inv.t == VT::Type && (inv.s == "Supplier" || inv.s == "Supplier::Preserving")) {
         if (m == "new" || m == "preserving") {
-            Value s = Value::makeHash(); s.hashKind = "Supplier"; (*s.hash)["taps"] = Value::array();
+            Value s = Value::makeHash(); s.hashKind = "Supplier"; (*s.hash())["taps"] = Value::array();
             // Supplier::Preserving buffers every emit and replays the buffer to any
             // tap that connects later (Cro emits the request into $!in before the
             // async connect pipeline taps it).
             if (inv.s == "Supplier::Preserving" || m == "preserving") {
-                (*s.hash)["preserving"] = Value::boolean(true);
-                (*s.hash)["buffer"] = Value::array();
+                (*s.hash())["preserving"] = Value::boolean(true);
+                (*s.hash())["buffer"] = Value::array();
             }
             return s;
         }
     }
     // Supplier: a live push source. Its Supply shares the taps list; emit/done fan out to them.
     if (inv.t == VT::Hash && inv.hashKind == "Supplier") {
-        if (m == "Supply") { Value s = Value::makeHash(); s.hashKind = "Supply"; (*s.hash)["supplier"] = inv; return s; } // live (no "values")
+        if (m == "Supply") { Value s = Value::makeHash(); s.hashKind = "Supply"; (*s.hash())["supplier"] = inv; return s; } // live (no "values")
         if (m == "emit") { Value v = args.empty() ? Value::any() : args[0];
             // Rakudo's contract: a Supplier's emissions are SERIALIZED per tap.
             // Under the GIL that held by accident; in parallel mode concurrent
             // emits ran the tap blocks simultaneously and interleaved into the
             // taps vector — the stress suite measured 1,694 of 2,000 arrivals.
             // The supplier's stripe serializes emit/done/quit AND registration.
-            std::lock_guard<std::recursive_mutex> emitLk(supplierMutex(inv.hash.get()));
-            if (inv.hash->count("preserving") && (*inv.hash)["preserving"].truthy() && inv.hash->count("buffer"))
-                (*inv.hash)["buffer"].arr->push_back(v); // replayed to late taps
-            if (inv.hash->count("taps")) for (auto& t : *(*inv.hash)["taps"].arr) {
+            std::lock_guard<std::recursive_mutex> emitLk(supplierMutex(inv.hash()));
+            if (inv.hash()->count("preserving") && (*inv.hash())["preserving"].truthy() && inv.hash()->count("buffer"))
+                (*inv.hash())["buffer"].arr()->push_back(v); // replayed to late taps
+            if (inv.hash()->count("taps")) for (auto& t : *(*inv.hash())["taps"].arr()) {
                 if (t.t != VT::Hash) continue;
-                if (t.hash->count("closed") && (*t.hash)["closed"].truthy()) continue; // head/first already finished
+                if (t.hash()->count("closed") && (*t.hash())["closed"].truthy()) continue; // head/first already finished
                 bool complete = false;
                 ValueList outs = applyTapChain(t, v, complete);
-                if (t.hash->count("emit") && (*t.hash)["emit"].t == VT::Code) {
+                if (t.hash()->count("emit") && (*t.hash())["emit"].t == VT::Code) {
                     // push the tap's react ctx so `done` inside the whenever block
                     // closes the enclosing react (the block runs here, on whatever
                     // thread emitted — reactStack_ is thread-local, so it wasn't set)
@@ -5216,17 +5216,17 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                         ValueList one{o};
                         if (rctx) reactStack_.push_back(rctx);
                         // `next` in a whenever skips this value; `last` closes the tap
-                        try { callCallable((*t.hash)["emit"], one); if (rctx) reactStack_.pop_back(); }
+                        try { callCallable((*t.hash())["emit"], one); if (rctx) reactStack_.pop_back(); }
                         catch (NextEx&) { if (rctx) reactStack_.pop_back(); }
-                        catch (LastEx&) { if (rctx) reactStack_.pop_back(); (*t.hash)["closed"] = Value::boolean(true); complete = true; break; }
-                        catch (DoneEx&) { if (rctx) reactStack_.pop_back(); (*t.hash)["closed"] = Value::boolean(true); complete = true; break; }
+                        catch (LastEx&) { if (rctx) reactStack_.pop_back(); (*t.hash())["closed"] = Value::boolean(true); complete = true; break; }
+                        catch (DoneEx&) { if (rctx) reactStack_.pop_back(); (*t.hash())["closed"] = Value::boolean(true); complete = true; break; }
                         catch (RakuError& e) {
                             // an exception in the tap's block QUITS the tap — the
                             // quit handler gets the exception and the EMITTER is
                             // not unwound (Cro's frame parser dies per malformed
                             // frame; the test taps `quit => { when X::… }`)
                             if (rctx) reactStack_.pop_back();
-                            (*t.hash)["closed"] = Value::boolean(true);
+                            (*t.hash())["closed"] = Value::boolean(true);
                             // …but inside a REACT that rule is inverted: a die in a
                             // whenever BODY kills the whole react and propagates,
                             // and QUIT does NOT see it — QUIT is for the SOURCE's
@@ -5246,9 +5246,9 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                                 rctx->cv.notify_all();
                                 break;
                             }
-                            if (t.hash->count("quit") && (*t.hash)["quit"].t == VT::Code) {
+                            if (t.hash()->count("quit") && (*t.hash())["quit"].t == VT::Code) {
                                 ValueList one2{exceptionFor(e)};
-                                try { callCallable((*t.hash)["quit"], one2); } catch (...) {}
+                                try { callCallable((*t.hash())["quit"], one2); } catch (...) {}
                             }
                             if (t.ext()) { auto ctx2 = std::static_pointer_cast<ReactCtx>(t.ext()); std::lock_guard<std::mutex> lk(ctx2->m); if (ctx2->liveSources > 0) ctx2->liveSources--; ctx2->cv.notify_all(); }
                             break;
@@ -5258,31 +5258,31 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                     }
                 }
                 if (complete) { // head(n)/first done → fire the tap's done and release a react source
-                    (*t.hash)["closed"] = Value::boolean(true);
-                    if (t.hash->count("done") && (*t.hash)["done"].t == VT::Code) { ValueList none; callCallable((*t.hash)["done"], none); }
+                    (*t.hash())["closed"] = Value::boolean(true);
+                    if (t.hash()->count("done") && (*t.hash())["done"].t == VT::Code) { ValueList none; callCallable((*t.hash())["done"], none); }
                     if (t.ext()) { auto ctx = std::static_pointer_cast<ReactCtx>(t.ext()); std::lock_guard<std::mutex> lk(ctx->m); if (ctx->liveSources > 0) ctx->liveSources--; ctx->cv.notify_all(); }
                 }
             }
             return Value::boolean(true); }
         if (m == "done") {
-            std::lock_guard<std::recursive_mutex> doneLk(supplierMutex(inv.hash.get()));
+            std::lock_guard<std::recursive_mutex> doneLk(supplierMutex(inv.hash()));
             // Remember the done state so a tap that registers LATER (an eager
             // `start { $s.emit(…); $s.done }` that ran before the react tapped it)
             // is closed immediately instead of leaving its react source live forever.
-            (*inv.hash)["done_state"] = Value::boolean(true);
-            if (inv.hash->count("taps")) for (auto& t : *(*inv.hash)["taps"].arr) {
-                if (t.t == VT::Hash && t.hash->count("closed") && (*t.hash)["closed"].truthy()) continue; // already done (head/first)
-                if (t.t == VT::Hash && t.hash->count("done") && (*t.hash)["done"].t == VT::Code) { ValueList none; callCallable((*t.hash)["done"], none); }
+            (*inv.hash())["done_state"] = Value::boolean(true);
+            if (inv.hash()->count("taps")) for (auto& t : *(*inv.hash())["taps"].arr()) {
+                if (t.t == VT::Hash && t.hash()->count("closed") && (*t.hash())["closed"].truthy()) continue; // already done (head/first)
+                if (t.t == VT::Hash && t.hash()->count("done") && (*t.hash())["done"].t == VT::Code) { ValueList none; callCallable((*t.hash())["done"], none); }
                 if (t.ext()) { auto ctx = std::static_pointer_cast<ReactCtx>(t.ext()); std::lock_guard<std::mutex> lk(ctx->m); if (ctx->liveSources > 0) ctx->liveSources--; ctx->cv.notify_all(); }
             }
             return Value::boolean(true); }
         if (m == "quit") {
-            std::lock_guard<std::recursive_mutex> quitLk(supplierMutex(inv.hash.get()));
+            std::lock_guard<std::recursive_mutex> quitLk(supplierMutex(inv.hash()));
             // Recorded for the same reason as done_state: a Supply.wait on a
             // supplier that quits must return, not block forever.
-            (*inv.hash)["quit_state"] = Value::boolean(true);
+            (*inv.hash())["quit_state"] = Value::boolean(true);
             Value ex = args.empty() ? Value::any() : args[0];
-            if (inv.hash->count("taps")) for (auto& t : *(*inv.hash)["taps"].arr) { if (t.t == VT::Hash && t.hash->count("quit") && (*t.hash)["quit"].t == VT::Code) { ValueList one{ex}; callCallable((*t.hash)["quit"], one); } }
+            if (inv.hash()->count("taps")) for (auto& t : *(*inv.hash())["taps"].arr()) { if (t.t == VT::Hash && t.hash()->count("quit") && (*t.hash())["quit"].t == VT::Code) { ValueList one{ex}; callCallable((*t.hash())["quit"], one); } }
             return Value::boolean(true); }
         if (m == "Seq" || m == "list") { Value o = Value::array(); o.isList = true; return o; }
     }
@@ -5303,75 +5303,75 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             throw RakuError{Value::typeObj("X::Parameter::InvalidConcreteness"),
                             "Invocant of method '" + m.s + "' must be an object instance of type "
                             "'Supply', not a type object"};
-        auto mkSupply = [&](ValueList vals) { Value s = Value::makeHash(); s.hashKind = "Supply"; Value v = Value::array(); *v.arr = std::move(vals); (*s.hash)["values"] = v; return s; };
+        auto mkSupply = [&](ValueList vals) { Value s = Value::makeHash(); s.hashKind = "Supply"; Value v = Value::array(); *v.arr() = std::move(vals); (*s.hash())["values"] = v; return s; };
         if (m == "from-list") {
             // +@values single-arg rule: ONE array arg (from-list(@source)) emits its
             // elements; with several args each stays whole (from-list([1,2],[3,4,5])
             // is two list values). A Range always expands.
             ValueList out;
-            if (args.size() == 1 && args[0].t == VT::Array && args[0].arr && !args[0].itemized) {
-                for (auto& x : *args[0].arr) out.push_back(x);
+            if (args.size() == 1 && args[0].t == VT::Array && args[0].arr() && !args[0].itemized) {
+                for (auto& x : *args[0].arr()) out.push_back(x);
             } else for (auto& a : args) {
                 if (a.t == VT::Range) { for (auto& x : a.flatten()) out.push_back(x); }
-                else if (a.t == VT::Array && a.isList && a.arr) { for (auto& x : *a.arr) out.push_back(x); }
+                else if (a.t == VT::Array && a.isList && a.arr()) { for (auto& x : *a.arr()) out.push_back(x); }
                 else out.push_back(a);
             }
             return mkSupply(out);
         }
-        if (m == "list") { Value o = Value::array(); o.isList = true; o.arr->push_back(inv); return o; } // Supply type → (Supply,)
-        if (m == "merge") { ValueList all; for (auto& a : flattenArgs(args)) { if (a.t == VT::Hash && a.hashKind == "Supply" && a.hash->count("values")) for (auto& x : *(*a.hash)["values"].arr) all.push_back(x); } return mkSupply(all); }
+        if (m == "list") { Value o = Value::array(); o.isList = true; o.arr()->push_back(inv); return o; } // Supply type → (Supply,)
+        if (m == "merge") { ValueList all; for (auto& a : flattenArgs(args)) { if (a.t == VT::Hash && a.hashKind == "Supply" && a.hash()->count("values")) for (auto& x : *(*a.hash())["values"].arr()) all.push_back(x); } return mkSupply(all); }
         if (m == "zip") {
             // zip N list-backed supplies element-wise (stopping at the shortest); an
             // optional :with(&op) combines each row instead of emitting a tuple List.
             std::vector<Value> streams; Value withOp;
             for (auto& a : args) {
-                if (a.t == VT::Pair && (a.s == "with" || a.s == "as") && a.pairVal) { withOp = *a.pairVal; continue; }
-                if (!(a.t == VT::Hash && a.hashKind == "Supply" && a.hash->count("values")))
+                if (a.t == VT::Pair && (a.s == "with" || a.s == "as") && a.pairVal()) { withOp = *a.pairVal(); continue; }
+                if (!(a.t == VT::Hash && a.hashKind == "Supply" && a.hash()->count("values")))
                     throw RakuError{Value::typeObj("X::Supply::Combinator"), "zip requires Supply arguments"};
                 streams.push_back(a);
             }
             if (streams.size() == 1) return streams[0]; // zipping one supply is a === noop
             size_t n = SIZE_MAX;
-            for (auto& s : streams) n = std::min(n, (*s.hash)["values"].arr->size());
+            for (auto& s : streams) n = std::min(n, (*s.hash())["values"].arr()->size());
             if (streams.empty()) n = 0;
             ValueList out;
             for (size_t i = 0; i < n; i++) {
-                ValueList row; for (auto& s : streams) row.push_back((*(*s.hash)["values"].arr)[i]);
+                ValueList row; for (auto& s : streams) row.push_back((*(*s.hash())["values"].arr())[i]);
                 if (withOp.t == VT::Code) out.push_back(callCallable(withOp, row));
-                else { Value tup = Value::array(); tup.isList = true; *tup.arr = std::move(row); out.push_back(tup); }
+                else { Value tup = Value::array(); tup.isList = true; *tup.arr() = std::move(row); out.push_back(tup); }
             }
             return mkSupply(out);
         }
         if (m == "interval") { // real ticker: 0 after $delay (default: immediately), then one per $interval
             Value s = Value::makeHash(); s.hashKind = "Supply";
-            (*s.hash)["kind"] = Value::str("interval");
-            (*s.hash)["interval"] = args.empty() ? Value::number(1) : args[0];
+            (*s.hash())["kind"] = Value::str("interval");
+            (*s.hash())["interval"] = args.empty() ? Value::number(1) : args[0];
             double delay = 0;
             for (size_t i = 1; i < args.size(); i++)
                 if (args[i].t != VT::Pair) { delay = args[i].toNum(); break; }
-            (*s.hash)["delay"] = Value::number(delay);
+            (*s.hash())["delay"] = Value::number(delay);
             return s;
         }
         if (m == "empty") return mkSupply({});
     }
     if (inv.t == VT::Type && inv.s == "Promise") {
         Value p = Value::makeHash(); p.hashKind = "Promise";
-        if (m == "in" || m == "at") { (*p.hash)["kind"] = Value::str("timer"); (*p.hash)["seconds"] = args.empty() ? Value::number(0) : args[0]; (*p.hash)["status"] = Value::str("Planned"); return p; }
+        if (m == "in" || m == "at") { (*p.hash())["kind"] = Value::str("timer"); (*p.hash())["seconds"] = args.empty() ? Value::number(0) : args[0]; (*p.hash())["status"] = Value::str("Planned"); return p; }
         if (m == "anyof" || m == "allof") {
-            (*p.hash)["kind"] = Value::str(m); Value ps = Value::array();
+            (*p.hash())["kind"] = Value::str(m); Value ps = Value::array();
             for (auto& x : flattenArgs(args)) {
                 if (!(x.t == VT::Hash && x.hashKind == "Promise"))
                     throw RakuError{Value::typeObj("X::Promise::Combinator"),
                         "Can only create a Promise combinator out of defined Promises"};
-                ps.arr->push_back(x);
+                ps.arr()->push_back(x);
             }
-            (*p.hash)["promises"] = ps; (*p.hash)["status"] = Value::str("Planned"); return p;
+            (*p.hash())["promises"] = ps; (*p.hash())["status"] = Value::str("Planned"); return p;
         }
         if (m == "new") {
             // A manual (vow-controlled) promise: starts Planned, later kept/broken.
             auto st = std::make_shared<PromiseState>();
             p.extM() = st;
-            (*p.hash)["status"] = Value::str("Planned");
+            (*p.hash())["status"] = Value::str("Planned");
             return p;
         }
         if (m == "start") {
@@ -5379,7 +5379,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             Value code; for (auto& x : args) if (x.t == VT::Code) code = x;
             if (code.t != VT::Code) {
                 auto st = std::make_shared<PromiseState>(); st->done = true; st->result = args.empty() ? Value::any() : args[0];
-                p.extM() = st; (*p.hash)["result"] = st->result; (*p.hash)["status"] = Value::str("Kept");
+                p.extM() = st; (*p.hash())["result"] = st->result; (*p.hash())["status"] = Value::str("Kept");
                 return p;
             }
             Value pr = spawnPromise(code);
@@ -5393,8 +5393,8 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             if (m == "broken") { st->broken = true; st->cause = v; st->causeMsg = v.toStr(); }
             else st->result = v;
             p.extM() = st;
-            (*p.hash)["result"] = v;
-            (*p.hash)["status"] = Value::str(m == "broken" ? "Broken" : "Kept");
+            (*p.hash())["result"] = v;
+            (*p.hash())["status"] = Value::str(m == "broken" ? "Broken" : "Kept");
             return p;
         }
     }
@@ -5406,38 +5406,38 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 if (x.t == VT::Pair) continue; // :w / :enc etc.
                 // a Positional arg flattens into the command list (slurpy semantics):
                 // zef's zrun-async passes ONE list — `Proc::Async.new((|@_).grep(…))`
-                if (x.t == VT::Array && x.arr && !x.itemized)
-                    for (auto& e : *x.arr) argv.arr->push_back(e);
-                else argv.arr->push_back(x);
+                if (x.t == VT::Array && x.arr() && !x.itemized)
+                    for (auto& e : *x.arr()) argv.arr()->push_back(e);
+                else argv.arr()->push_back(x);
             }
-            (*p.hash)["argv"] = argv; (*p.hash)["taps"] = Value::array();
+            (*p.hash())["argv"] = argv; (*p.hash())["taps"] = Value::array();
             return p;
         }
     }
     if (inv.t == VT::Hash && inv.hashKind == "Proc::Async") {
-        if (m == "stdout" || m == "stderr" || m == "Supply") { Value s = Value::makeHash(); s.hashKind = "Supply"; (*s.hash)["proc"] = inv; (*s.hash)["stream"] = Value::str(m); return s; }
+        if (m == "stdout" || m == "stderr" || m == "Supply") { Value s = Value::makeHash(); s.hashKind = "Supply"; (*s.hash())["proc"] = inv; (*s.hash())["stream"] = Value::str(m); return s; }
         if (m == "start") {
             Value pr = Value::makeHash(); pr.hashKind = "Promise";
-            (*pr.hash)["kind"] = Value::str("proc"); (*pr.hash)["proc"] = inv;
-            (*pr.hash)["status"] = Value::str("Planned");
+            (*pr.hash())["kind"] = Value::str("proc"); (*pr.hash())["proc"] = inv;
+            (*pr.hash())["status"] = Value::str("Planned");
             // record :cwd so the (lazy) run happens in the right directory —
             // zef's tar extract runs `tar -zxvf <basename>` with :cwd(archive dir)
             for (auto& a : args)
-                if (a.t == VT::Pair && a.s == "cwd" && a.pairVal)
-                    (*pr.hash)["cwd"] = Value::str(a.pairVal->toStr());
+                if (a.t == VT::Pair && a.s == "cwd" && a.pairVal())
+                    (*pr.hash())["cwd"] = Value::str(a.pairVal()->toStr());
             return pr;
         }
         // `.command` is the argv the process was constructed with, as a List
         if (m == "command") {
-            auto it = inv.hash->find("argv");
+            auto it = inv.hash()->find("argv");
             Value out = Value::array(); out.isList = true;
-            if (it != inv.hash->end() && it->second.arr) *out.arr = *it->second.arr;
+            if (it != inv.hash()->end() && it->second.arr()) *out.arr() = *it->second.arrS();
             return out;
         }
         if (m == "kill" || m == "close-stdin" || m == "print" || m == "say" || m == "write" || m == "put") return Value::boolean(true);
         // after runProcPromise stored the exit status on the proc:
-        if (m == "exitcode") { auto it = inv.hash->find("exitcode"); return it != inv.hash->end() ? it->second : Value::integer(-1); }
-        if (m == "so" || m == "Bool") { auto it = inv.hash->find("exitcode"); return Value::boolean(it != inv.hash->end() && it->second.toInt() == 0); }
+        if (m == "exitcode") { auto it = inv.hash()->find("exitcode"); return it != inv.hash()->end() ? it->second : Value::integer(-1); }
+        if (m == "so" || m == "Bool") { auto it = inv.hash()->find("exitcode"); return Value::boolean(it != inv.hash()->end() && it->second.toInt() == 0); }
     }
     // Segment continues in MethodCallPart2.cpp — same ordered chain.
     if (auto r = methodCallPart2(inv, m, args, rwArgs)) return std::move(*r);
@@ -5452,7 +5452,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     // a real method, and skipped for FALLBACK itself to avoid a loop.
     if (m != "FALLBACK") {
         ClassInfo* fci = nullptr;
-        if (inv.t == VT::Object && inv.obj) fci = inv.obj->cls.get();
+        if (inv.t == VT::Object && inv.obj()) fci = inv.obj()->cls.get();
         else if (inv.t == VT::Type) { auto it = classes_.find(inv.s); if (it != classes_.end()) fci = it->second.get(); }
         if (fci)
             if (Value* fb = fci->findMethod("FALLBACK")) {
@@ -5468,7 +5468,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     // nothing — URI's suite asserts exactly that with
     // `nok 'foo' ~~ IETF::RFC_Grammar::URI.new().TOP-non-empty`.
     {
-        ClassInfo* gci = inv.t == VT::Object && inv.obj ? inv.obj->cls.get()
+        ClassInfo* gci = inv.t == VT::Object && inv.obj() ? inv.obj()->cls.get()
                        : inv.t == VT::Type ? (classes_.count(inv.s) ? classes_[inv.s].get() : nullptr)
                        : nullptr;
         for (ClassInfo* c = gci; c; c = c->parent.get())
@@ -5487,17 +5487,17 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     // IO::Glob `does Iterable`. Deliberately NOT the whole list surface — Rakudo
     // splits it, and `.list`/`.elems`/`.reverse`/`.join`/`.kv` on an Iterable
     // object mean the invocant AS ONE ITEM (checked against Rakudo, one by one).
-    if (inv.t == VT::Object && inv.obj && inv.obj->cls) {
+    if (inv.t == VT::Object && inv.obj() && inv.obj()->cls) {
         static const std::set<std::string> kIterableMethods = {
             "sort", "map", "grep", "first", "head", "tail", "unique", "squish",
             "Seq", "flat" };
         if (kIterableMethods.count(m)) {
-            bool iterable = inv.obj->cls->findMethod("iterator") != nullptr;
-            for (ClassInfo* c = inv.obj->cls.get(); c && !iterable; c = c->parent.get())
+            bool iterable = inv.obj()->cls->findMethod("iterator") != nullptr;
+            for (ClassInfo* c = inv.obj()->cls.get(); c && !iterable; c = c->parent.get())
                 if (c->doesRole("Iterable")) iterable = true;
             ValueList items;
             if (iterable && objListItems(inv, items)) {
-                Value lst = Value::array(); lst.isList = true; *lst.arr = std::move(items);
+                Value lst = Value::array(); lst.isList = true; *lst.arr() = std::move(items);
                 return methodCall(lst, m, args, rwArgs);
             }
         }
@@ -5506,25 +5506,25 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     // still owes the handle protocol's small setup surface — Test::Output's
     // capture classes call self.encoding('utf8') from their constructors.
     // Attr-backed, added per real need, measured by the battery.
-    if (inv.t == VT::Object && inv.obj && inv.obj->cls) {
+    if (inv.t == VT::Object && inv.obj() && inv.obj()->cls) {
         std::string nb;
-        for (ClassInfo* c = inv.obj->cls.get(); c && nb.empty(); c = c->parent.get())
+        for (ClassInfo* c = inv.obj()->cls.get(); c && nb.empty(); c = c->parent.get())
             nb = c->nativeParent;
         if (nb == "IO::Handle") {
             if (m == "encoding") {
                 if (!args.empty() && args[0].t != VT::Pair) {
-                    inv.obj->attrs["__io-encoding"] = args[0];
+                    inv.obj()->attrs["__io-encoding"] = args[0];
                     return args[0];
                 }
-                auto it = inv.obj->attrs.find("__io-encoding");
-                return it != inv.obj->attrs.end() ? it->second : Value::str("utf8");
+                auto it = inv.obj()->attrs.find("__io-encoding");
+                return it != inv.obj()->attrs.end() ? it->second : Value::str("utf8");
             }
             // The handle WRITE protocol: print/say/put on a derived handle
             // encode and funnel into the class's own WRITE(Blob) — exactly
             // how Rakudo's IO::Handle routes them, and how Test::Output's
             // capture classes receive everything they capture.
             if (m == "print" || m == "say" || m == "put") {
-                if (Value* wm = inv.obj->cls->findMethod("WRITE")) {
+                if (Value* wm = inv.obj()->cls->findMethod("WRITE")) {
                     std::string s;
                     for (auto& a : args) {
                         if (a.t == VT::Pair) continue;
@@ -5563,21 +5563,21 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
 // A phaser block inside a supply/whenever body, as a callable closing over the
 // body's definition scope (the phaser may run when the body never has).
 static Value supplyPhaserCode(const Block* b, std::shared_ptr<Env> closure) {
-    Value v; v.t = VT::Code; v.code = std::make_shared<Callable>();
-    v.code->body = &b->stmts; v.code->isBlock = true; v.code->closure = std::move(closure);
+    Value v; v.t = VT::Code; v.setCode(std::make_shared<Callable>());
+    v.code()->body = &b->stmts; v.code()->isBlock = true; v.code()->closure = std::move(closure);
     return v;
 }
 // Collect LAST/QUIT/CLOSE phasers from a block's top-level statements.
 static void scanSupplyPhasers(const Value& blk, std::vector<Value>* lastP,
                               std::vector<Value>* quitP, std::vector<Value>* closeP,
                               std::shared_ptr<Env> phaserEnv = nullptr) {
-    if (blk.t != VT::Code || !blk.code || !blk.code->body) return;
+    if (blk.t != VT::Code || !blk.code() || !blk.code()->body) return;
     // phaserEnv (issue #18): a LAST phaser reads the block's parameters as of
     // the LAST invocation (`LAST { say "Done with $c" }`). The block's
     // DEFINITION closure never holds $c — callers that drain through a
     // param-mirroring shim pass the shim's env here instead.
-    auto env = [&](const Value& b2) { return phaserEnv ? phaserEnv : b2.code->closure; };
-    for (auto& s : *blk.code->body) {
+    auto env = [&](const Value& b2) { return phaserEnv ? phaserEnv : b2.code()->closure; };
+    for (auto& s : *blk.code()->body) {
         if (s->kind != NK::Block) continue;
         auto* b = static_cast<Block*>(s.get());
         if (lastP  && b->phaser == "LAST")  lastP->push_back(supplyPhaserCode(b, env(blk)));
@@ -5590,8 +5590,8 @@ static void scanSupplyPhasers(const Value& blk, std::vector<Value>* lastP,
 // (possibly from an I/O worker thread holding the GIL).
 static Value ctxCallable(std::shared_ptr<SupplyTapCtx> ctx,
                          std::function<Value(Interpreter&, ValueList&)> fn) {
-    Value v; v.t = VT::Code; v.code = std::make_shared<Callable>();
-    v.code->builtin = [ctx, fn](Interpreter& I, ValueList& a) -> Value {
+    Value v; v.t = VT::Code; v.setCode(std::make_shared<Callable>());
+    v.code()->builtin = [ctx, fn](Interpreter& I, ValueList& a) -> Value {
         I.tctx_.tapStack.push_back(ctx);
         struct G { std::vector<std::shared_ptr<SupplyTapCtx>>& s; ~G() { s.pop_back(); } } g{I.tctx_.tapStack};
         return fn(I, a);
@@ -5625,7 +5625,7 @@ void Interpreter::closeTapHandle(const std::shared_ptr<TapHandle>& h) {
 Value Interpreter::drainSupplyBlock(const Value& s) {
     // Legacy eager semantics: run the block now, collecting emits; a die becomes
     // the supply's QUIT reason. Emits route to the collector via the tap stack.
-    Value blk = (s.t == VT::Hash && s.hash->count("block")) ? (*s.hash)["block"] : Value::nil();
+    Value blk = (s.t == VT::Hash && s.hash()->count("block")) ? (*s.hash())["block"] : Value::nil();
     ValueList vals; bool quit = false; Value quitReason; std::string quitMsg;
     auto ctx = std::make_shared<SupplyTapCtx>();
     ctx->collect = &vals;
@@ -5668,24 +5668,24 @@ Value Interpreter::drainSupplyBlock(const Value& s) {
         for (auto& cb : closers) if (cb.t == VT::Code) { try { ValueList na; callCallable(cb, na); } catch (...) {} }
     }
     Value out = Value::makeHash(); out.hashKind = "Supply";
-    Value v = Value::array(); *v.arr = std::move(vals); (*out.hash)["values"] = v;
-    if (quit) { (*out.hash)["quit-reason"] = quitReason; (*out.hash)["quit-message"] = Value::str(quitMsg); }
+    Value v = Value::array(); *v.arr() = std::move(vals); (*out.hash())["values"] = v;
+    if (quit) { (*out.hash())["quit-reason"] = quitReason; (*out.hash())["quit-message"] = Value::str(quitMsg); }
     return out;
 }
 
 // Build an IO::Socket::Async connection value around a connected fd.
 static Value makeAsyncSocket(int fd) {
     Value s = Value::makeHash(); s.hashKind = "AsyncSocket";
-    (*s.hash)["fd"] = Value::integer(fd);
+    (*s.hash())["fd"] = Value::integer(fd);
     sockaddr_in a{}; socklen_t alen = sizeof(a);
     if (::getsockname(fd, (sockaddr*)&a, &alen) == 0) {
-        (*s.hash)["socket-host"] = Value::str(inet_ntoa(a.sin_addr));
-        (*s.hash)["socket-port"] = Value::integer(ntohs(a.sin_port));
+        (*s.hash())["socket-host"] = Value::str(inet_ntoa(a.sin_addr));
+        (*s.hash())["socket-port"] = Value::integer(ntohs(a.sin_port));
     }
     alen = sizeof(a);
     if (::getpeername(fd, (sockaddr*)&a, &alen) == 0) {
-        (*s.hash)["peer-host"] = Value::str(inet_ntoa(a.sin_addr));
-        (*s.hash)["peer-port"] = Value::integer(ntohs(a.sin_port));
+        (*s.hash())["peer-host"] = Value::str(inet_ntoa(a.sin_addr));
+        (*s.hash())["peer-port"] = Value::integer(ntohs(a.sin_port));
     }
     return s;
 }
@@ -5873,21 +5873,21 @@ Value Interpreter::spawnSupplyTimer(double secs, Value blk, std::shared_ptr<Supp
 // must not be caught here (it kills the react — see spawnIntervalWhenever).
 Value Interpreter::wrapSupplyChain(const Value& supply, Value consumer) {
     if (consumer.t != VT::Code) return consumer;
-    if (!(supply.t == VT::Hash && supply.hash && supply.hash->count("chain"))) return consumer;
+    if (!(supply.t == VT::Hash && supply.hash() && supply.hash()->count("chain"))) return consumer;
     // this subscription's OWN copy of the chain, each step with fresh state
     // (head/skip/unique count per subscription, exactly as in tapSupply)
     auto rec = std::make_shared<Value>(Value::makeHash());
     Value chain = Value::array();
-    for (auto& step : *supply.hash->at("chain").arr) {
-        Value s2 = Value::makeHash(); *s2.hash = *step.hash;
-        (*s2.hash)["state"] = Value::makeHash();
-        chain.arr->push_back(s2);
+    for (auto& step : *supply.hash()->at("chain").arr()) {
+        Value s2 = Value::makeHash(); *s2.hash() = *step.hash();
+        (*s2.hash())["state"] = Value::makeHash();
+        chain.arr()->push_back(s2);
     }
-    (*rec->hash)["chain"] = chain;
+    (*rec->hash())["chain"] = chain;
     std::vector<Value> quitP;
     scanSupplyPhasers(consumer, nullptr, &quitP, nullptr);
-    Value w; w.t = VT::Code; w.code = std::make_shared<Callable>();
-    w.code->builtin = [rec, consumer, quitP](Interpreter& I, ValueList& a) -> Value {
+    Value w; w.t = VT::Code; w.setCode(std::make_shared<Callable>());
+    w.code()->builtin = [rec, consumer, quitP](Interpreter& I, ValueList& a) -> Value {
         Value in = a.empty() ? Value::any() : a[0];
         bool complete = false;
         ValueList outs;
@@ -6089,7 +6089,7 @@ Value Interpreter::spawnIntervalWhenever(double interval, double delay, Value bl
         fin->store(true, std::memory_order_release);
     }), fin);
     Value t = Value::makeHash(); t.hashKind = "Tap";
-    if (handle) { t.extM() = handle; (*t.hash)["wired"] = Value::boolean(true); } // .close stops the ticker
+    if (handle) { t.extM() = handle; (*t.hash())["wired"] = Value::boolean(true); } // .close stops the ticker
     return t;
 }
 
@@ -6128,14 +6128,14 @@ Value Interpreter::spawnChannelWhenever(Value chan, Value blk, std::shared_ptr<R
             // downstream of the whenever (S17-supply/syntax.t's two-channel
             // react — the last isolation livelock of the P5 wall).
             Value v; bool got = false, fin = false;
-            {   std::lock_guard<std::recursive_mutex> lk(Interpreter::atomicStripe(chan.hash.get()));
-                auto qi = chan.hash ? chan.hash->find("queue") : ValueMap::iterator{};
-                ValueList* q = chan.hash && qi != chan.hash->end() && qi->second.arr ? qi->second.arr.get() : nullptr;
+            {   std::lock_guard<std::recursive_mutex> lk(Interpreter::atomicStripe(chan.hash()));
+                auto qi = chan.hash() ? chan.hash()->find("queue") : ValueMap::iterator{};
+                ValueList* q = chan.hash() && qi != chan.hash()->end() && qi->second.arr() ? qi->second.arr() : nullptr;
                 if (!q) fin = true;
                 else if (!q->empty()) { v = q->front(); q->erase(q->begin()); got = true; }
                 else {
-                    auto ci = chan.hash->find("closed");
-                    fin = ci != chan.hash->end() && ci->second.truthy();
+                    auto ci = chan.hash()->find("closed");
+                    fin = ci != chan.hash()->end() && ci->second.truthy();
                 }
             }
             if (fin) break;
@@ -6184,7 +6184,7 @@ Value Interpreter::tapSignal(const std::vector<int>& sigs, Value emitCb, Value d
     // programs that merely construct the Supply keep working.
     (void)sigs; (void)emitCb; (void)doneCb; (void)reactCtx;
     Value t = Value::makeHash(); t.hashKind = "Tap"; t.ext() = handle;
-    (*t.hash)["wired"] = Value::boolean(true);
+    (*t.hash())["wired"] = Value::boolean(true);
     return t;
 #else
     auto rec = std::make_shared<SignalTapRec>();
@@ -6267,16 +6267,16 @@ Value Interpreter::tapSignal(const std::vector<int>& sigs, Value emitCb, Value d
         reactCtx->extTaps.push_back(handle);
     }
     Value t = Value::makeHash(); t.hashKind = "Tap"; t.extM() = handle;
-    (*t.hash)["wired"] = Value::boolean(true);
+    (*t.hash())["wired"] = Value::boolean(true);
     return t;
 #endif // !_WIN32
 }
 
 Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value quitCb) {
-    if (!(s.t == VT::Hash && s.hashKind == "Supply" && s.hash)) {
+    if (!(s.t == VT::Hash && s.hashKind == "Supply" && s.hash())) {
         Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
     }
-    auto& h = *s.hash;
+    auto& h = *s.hash();
     // a chain on a kind-based supply rides on the Supply itself (there is no tap
     // record to carry it), so apply it to the emit callback for every kind below
     if (h.count("chain") && !h.count("supplier") && !h.count("values"))
@@ -6315,30 +6315,30 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
         }
         catch (...) { tctx_.tapStack.pop_back(); closeTapHandle(handle); throw; }
         Value t = Value::makeHash(); t.hashKind = "Tap"; t.extM() = handle;
-        (*t.hash)["wired"] = Value::boolean(true);
+        (*t.hash())["wired"] = Value::boolean(true);
         return t;
     }
     // 2) live Supplier-backed supply: register a tap record; emit/done/quit fan out later
     if (h.count("supplier")) {
         Value tapRec = Value::makeHash();
-        (*tapRec.hash)["emit"] = emitCb; (*tapRec.hash)["done"] = doneCb; (*tapRec.hash)["quit"] = quitCb;
+        (*tapRec.hash())["emit"] = emitCb; (*tapRec.hash())["done"] = doneCb; (*tapRec.hash())["quit"] = quitCb;
         if (h.count("chain")) {
             Value chain = Value::array();
-            for (auto& step : *h.at("chain").arr) {
-                Value s2 = Value::makeHash(); *s2.hash = *step.hash;
-                (*s2.hash)["state"] = Value::makeHash();
-                chain.arr->push_back(s2);
+            for (auto& step : *h.at("chain").arr()) {
+                Value s2 = Value::makeHash(); *s2.hash() = *step.hash();
+                (*s2.hash())["state"] = Value::makeHash();
+                chain.arr()->push_back(s2);
             }
-            (*tapRec.hash)["chain"] = chain;
+            (*tapRec.hash())["chain"] = chain;
         }
         Value sup = h.at("supplier");
-        if (sup.t == VT::Hash && sup.hash->count("taps")) { std::lock_guard<std::recursive_mutex> regLk(supplierMutex(sup.hash.get())); (*sup.hash)["taps"].arr->push_back(tapRec); }
+        if (sup.t == VT::Hash && sup.hash()->count("taps")) { std::lock_guard<std::recursive_mutex> regLk(supplierMutex(sup.hash())); (*sup.hash())["taps"].arr()->push_back(tapRec); }
         // Supplier::Preserving: replay every buffered value to this fresh tap (through
         // its own transform chain), so a tap that connects after the emits still sees
         // them (Cro's request-into-$!in-before-connect pattern).
-        if (sup.t == VT::Hash && sup.hash->count("preserving") && (*sup.hash)["preserving"].truthy() &&
-            sup.hash->count("buffer") && emitCb.t == VT::Code) {
-            for (auto& bv : *(*sup.hash)["buffer"].arr) {
+        if (sup.t == VT::Hash && sup.hash()->count("preserving") && (*sup.hash())["preserving"].truthy() &&
+            sup.hash()->count("buffer") && emitCb.t == VT::Code) {
+            for (auto& bv : *(*sup.hash())["buffer"].arr()) {
                 bool complete = false;
                 ValueList outs = applyTapChain(tapRec, bv, complete);
                 for (auto& o : outs) { ValueList one{o}; try { callCallable(emitCb, one); } catch (NextEx&) {} catch (LastEx&) { complete = true; break; } catch (DoneEx&) { complete = true; break; } }
@@ -6346,7 +6346,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
             }
         }
         // already-done supplier: fire done immediately so wiring completes
-        if (sup.t == VT::Hash && sup.hash->count("done_state") && (*sup.hash)["done_state"].truthy() &&
+        if (sup.t == VT::Hash && sup.hash()->count("done_state") && (*sup.hash())["done_state"].truthy() &&
             doneCb.t == VT::Code) { ValueList na; try { callCallable(doneCb, na); } catch (...) {} }
         tapRec.hashKind = "Tap";
         return tapRec;
@@ -6357,8 +6357,8 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
     // block's own `done`/tapStack drives closure)
     if (h.count("kind") && h.at("kind").toStr() == "signal") {
         std::vector<int> sigs;
-        if (h.count("signals") && h.at("signals").arr)
-            for (auto& n : *h.at("signals").arr) sigs.push_back((int)n.toInt());
+        if (h.count("signals") && h.at("signals").arr())
+            for (auto& n : *h.at("signals").arr()) sigs.push_back((int)n.toInt());
         return tapSignal(sigs, emitCb, doneCb, nullptr);
     }
     // Supply.interval(N) tapped directly (.tap, or inside a supply {…} block):
@@ -6419,13 +6419,13 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
             fin->store(true, std::memory_order_release);
         }), fin);
         Value t = Value::makeHash(); t.hashKind = "Tap"; t.extM() = handle;
-        (*t.hash)["wired"] = Value::boolean(true);
+        (*t.hash())["wired"] = Value::boolean(true);
         return t;
     }
     // 4) async read: a worker recv()s and emits Blob chunks; EOF fires done.
     if (h.count("kind") && h.at("kind").toStr() == "async-read") {
         Value sock = h.at("socket");
-        int fd = (sock.t == VT::Hash && sock.hash->count("fd")) ? (int)(*sock.hash)["fd"].toInt() : -1;
+        int fd = (sock.t == VT::Hash && sock.hash()->count("fd")) ? (int)(*sock.hash())["fd"].toInt() : -1;
         engageGil();
         auto handle = std::make_shared<TapHandle>();
         handle->closers.push_back([fd] { if (fd >= 0) ::shutdown(fd, SHUT_RD); });
@@ -6466,12 +6466,12 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
             fin->store(true, std::memory_order_release);
         }), fin);
         Value t = Value::makeHash(); t.hashKind = "Tap"; t.extM() = handle;
-        (*t.hash)["wired"] = Value::boolean(true);
+        (*t.hash())["wired"] = Value::boolean(true);
         return t;
     }
     // 5) values-backed: eager push-through, then done (or quit)
     if (h.count("values")) {
-        if (emitCb.t == VT::Code) for (auto& v : *h.at("values").arr) {
+        if (emitCb.t == VT::Code) for (auto& v : *h.at("values").arr()) {
             ValueList one{v};
             try { callCallable(emitCb, one); }
             catch (NextEx&) {}
@@ -6492,7 +6492,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
 // Test helpers: pull a `:todo`/`:skip` directive and the description out of trailing args.
 static std::string testDirective(const ValueList& a) {
     for (auto& x : a) if (x.t == VT::Pair && (x.s == "todo" || x.s == "skip")) {
-        std::string why = x.pairVal ? x.pairVal->toStr() : "";
+        std::string why = x.pairVal() ? x.pairVal()->toStr() : "";
         std::string kind = x.s == "todo" ? "TODO" : "SKIP";
         return (why.empty() || why == "1" || why == "True") ? kind : kind + " " + why;
     }
@@ -6507,7 +6507,7 @@ static std::string testDesc(const ValueList& a, size_t from) {
 static double numArg(Interpreter& I, ValueList& a) {
     if (a.empty()) return 0;
     Value v = a[0];
-    if (v.t == VT::Object && v.obj) {
+    if (v.t == VT::Object && v.obj()) {
         for (const char* acc : {"Bridge", "Numeric"}) {
             try { ValueList none; Value nv = I.methodCall(v, acc, none);
                   if (nv.isNumeric()) { v = nv; break; } } catch (...) {}
@@ -6631,8 +6631,8 @@ void Interpreter::registerBuiltins() {
         auto& d = grammarParseDiag();
         if (!d.valid) return Value::any();
         Value h = Value::makeHash();
-        (*h.hash)["pos"] = Value::integer(d.pos);
-        (*h.hash)["rule"] = Value::str(d.rule);
+        (*h.hash())["pos"] = Value::integer(d.pos);
+        (*h.hash())["rule"] = Value::str(d.rule);
         return h;
     };
     B["rakupp-ext-load"] = [](Interpreter& I, ValueList& a) -> Value {
@@ -6660,9 +6660,9 @@ void Interpreter::registerBuiltins() {
         // (unlike `print`, whose per-eigenstate output simply runs together).
         for (size_t i = 0; i < a.size(); i++) {
             const Value& j = a[i];
-            if (j.t == VT::Array && j.arr &&
+            if (j.t == VT::Array && j.arr() &&
                 (j.enumName == "any" || j.enumName == "all" || j.enumName == "one" || j.enumName == "none")) {
-                for (auto& e : *j.arr) { ValueList a2 = a; a2[i] = e; I.callBuiltin("put", a2); }
+                for (auto& e : *j.arr()) { ValueList a2 = a; a2[i] = e; I.callBuiltin("put", a2); }
                 return Value::boolean(true);
             }
         }
@@ -6699,7 +6699,7 @@ void Interpreter::registerBuiltins() {
         if (a.empty()) { Value* be = I.tctx_.cur->find("$!"); if (be && be->t != VT::Nil && be->t != VT::Type) payload = *be; }
         std::string msg = payload.toStr();
         // exception objects: prefer a readable .message / .Str accessor
-        if (payload.t == VT::Object && payload.obj) {
+        if (payload.t == VT::Object && payload.obj()) {
             for (const char* acc : {"message", "Str"}) {
                 try { ValueList none; Value m = I.methodCall(payload, acc, none);
                       if (m.t == VT::Str && !m.s.empty()) { msg = m.s; break; } } catch (...) {}
@@ -6708,10 +6708,10 @@ void Interpreter::registerBuiltins() {
             // wrap a plain string/number into an X::AdHoc exception (so .message/.^name work in CATCH)
             auto it = I.classes_.find("X::AdHoc");
             if (it != I.classes_.end()) {
-                Value ex; ex.t = VT::Object; ex.obj = std::make_shared<ObjectData>();
-                ex.obj->cls = it->second;
-                ex.obj->attrs["message"] = Value::str(msg);
-                ex.obj->attrs["payload"] = a.empty() ? Value::str(msg) : a[0]; // .payload is what was thrown
+                Value ex; ex.t = VT::Object; ex.setObj(std::make_shared<ObjectData>());
+                ex.obj()->cls = it->second;
+                ex.obj()->attrs["message"] = Value::str(msg);
+                ex.obj()->attrs["payload"] = a.empty() ? Value::str(msg) : a[0]; // .payload is what was thrown
                 payload = ex;
             }
         }
@@ -6791,8 +6791,8 @@ void Interpreter::registerBuiltins() {
         } else if (!a.empty()) {
             auto it = I.classes_.find("X::AdHoc");
             if (it != I.classes_.end()) {
-                ex.t = VT::Object; ex.obj = std::make_shared<ObjectData>(); ex.obj->cls = it->second;
-                ex.obj->attrs["message"] = Value::str(a[0].toStr());
+                ex.t = VT::Object; ex.setObj(std::make_shared<ObjectData>()); ex.obj()->cls = it->second;
+                ex.obj()->attrs["message"] = Value::str(a[0].toStr());
             } else ex = Value::str(a[0].toStr());
         } else {
             Value* be = I.tctx_.cur->find("$!");
@@ -6803,9 +6803,9 @@ void Interpreter::registerBuiltins() {
         if (ex.t != VT::Object)
             ex = I.makeTypedEx("X::AdHoc", {}, ex.t == VT::Str ? ex.s.str() : std::string("Failed"));
         Value f = Value::makeHash(); f.hashKind = "Failure";
-        (*f.hash)["exception"] = ex;
-        (*f.hash)["message"] = ex.obj && ex.obj->attrs.count("message")
-                             ? ex.obj->attrs["message"] : Value::str("Failed");
+        (*f.hash())["exception"] = ex;
+        (*f.hash())["message"] = ex.obj() && ex.obj()->attrs.count("message")
+                             ? ex.obj()->attrs["message"] : Value::str("Failed");
         throw ReturnEx{f};
     };
     // val(Str) — a fully-numeric string becomes the matching allomorph
@@ -6863,12 +6863,12 @@ void Interpreter::registerBuiltins() {
             Value j = Value::array(); j.enumName = name;
             // one-arg rule: any(@a) spreads the single iterable one level;
             // any(x, y, …) keeps each argument as ONE eigenstate (lists whole)
-            if (a.size() == 1 && a[0].t == VT::Array && a[0].arr)
-                for (auto& x : *a[0].arr) j.arr->push_back(x);
+            if (a.size() == 1 && a[0].t == VT::Array && a[0].arr())
+                for (auto& x : *a[0].arr()) j.arr()->push_back(x);
             else if (a.size() == 1 && a[0].t == VT::Range)
-                for (auto& x : a[0].flatten()) j.arr->push_back(x);
+                for (auto& x : a[0].flatten()) j.arr()->push_back(x);
             else
-                for (auto& v : a) j.arr->push_back(v);
+                for (auto& v : a) j.arr()->push_back(v);
             return j;
         };
     }
@@ -6879,7 +6879,7 @@ void Interpreter::registerBuiltins() {
         // plan skip-all => "reason" : emit an empty SKIP plan and exit the test file
         bool skipAll = false; std::string reason;
         for (auto& x : a) {
-            if (x.t == VT::Pair && x.s == "skip-all") { skipAll = true; reason = x.pairVal ? x.pairVal->toStr() : ""; }
+            if (x.t == VT::Pair && x.s == "skip-all") { skipAll = true; reason = x.pairVal() ? x.pairVal()->toStr() : ""; }
             else if (x.t == VT::Str && x.s == "skip-all") skipAll = true;
         }
         if (skipAll) { I.planned_ = 0; std::cout << "1..0 # SKIP " << reason << "\n" << std::flush; throw ExitEx{0}; }
@@ -6914,12 +6914,12 @@ void Interpreter::registerBuiltins() {
             // sides stringify differently but are equal). Only an all-elements
             // match short-circuits; anything else falls through to the plain
             // string compare, so this can only ADD passes.
-            if (g.t == VT::Array && e.t == VT::Array && g.arr && e.arr &&
-                g.arr->size() == e.arr->size() && !g.arr->empty()) {
+            if (g.t == VT::Array && e.t == VT::Array && g.arr() && e.arr() &&
+                g.arr()->size() == e.arr()->size() && !g.arr()->empty()) {
                 bool all = true;
-                for (size_t i = 0; i < g.arr->size() && all; i++) {
-                    const Value& gi = (*g.arr)[i];
-                    const Value& ei = (*e.arr)[i];
+                for (size_t i = 0; i < g.arr()->size() && all; i++) {
+                    const Value& gi = (*g.arr())[i];
+                    const Value& ei = (*e.arr())[i];
                     if (!defined(gi) && !defined(ei)) continue;
                     if (gi.toStr() != ei.toStr()) all = false;
                 }
@@ -6930,19 +6930,19 @@ void Interpreter::registerBuiltins() {
             // comparison lives in is-approx / cmp-ok, not plain `is`.)
             return g.toStr() == e.toStr();
         };
-        if (exp.t == VT::Array && exp.arr &&
+        if (exp.t == VT::Array && exp.arr() &&
             (exp.enumName == "any" || exp.enumName == "all" || exp.enumName == "one" || exp.enumName == "none")) {
-            int t = 0, total = (int)exp.arr->size();
-            for (auto& br : *exp.arr) if (scalarEq(got, br)) t++;
+            int t = 0, total = (int)exp.arr()->size();
+            for (auto& br : *exp.arr()) if (scalarEq(got, br)) t++;
             return exp.enumName == "any" ? t > 0 : exp.enumName == "all" ? t == total
                  : exp.enumName == "one" ? t == 1 : t == 0;
         }
         // …and a junction GOT autothreads the same way: `is any(@names), 'a'`
         // collapses per the junction's kind (HTTP::UserAgent's header tests)
-        if (got.t == VT::Array && got.arr &&
+        if (got.t == VT::Array && got.arr() &&
             (got.enumName == "any" || got.enumName == "all" || got.enumName == "one" || got.enumName == "none")) {
-            int t = 0, total = (int)got.arr->size();
-            for (auto& br : *got.arr) if (scalarEq(br, exp)) t++;
+            int t = 0, total = (int)got.arr()->size();
+            for (auto& br : *got.arr()) if (scalarEq(br, exp)) t++;
             return got.enumName == "any" ? t > 0 : got.enumName == "all" ? t == total
                  : got.enumName == "one" ? t == 1 : t == 0;
         }
@@ -6955,11 +6955,11 @@ void Interpreter::registerBuiltins() {
     auto isStrify = [](Interpreter& I, Value& v) {
         // …a Proxy too: it is a container, and `is` compares the value it holds.
         auto proxyish = [](const Value& e) {
-            return e.t == VT::Hash && e.hashKind == "Proxy" && e.hash;
+            return e.t == VT::Hash && e.hashKind == "Proxy" && e.hash();
         };
         if (v.t == VT::Object || proxyish(v)) { v = Value::str(I.strOf(v)); return; }
-        if (v.t == VT::Array && v.arr && v.enumName.empty())
-            for (auto& e : *v.arr)
+        if (v.t == VT::Array && v.arr() && v.enumName.empty())
+            for (auto& e : *v.arr())
                 if (e.t == VT::Object || proxyish(e)) { v = Value::str(I.strOf(v)); return; }
     };
     B["is"] = [isEq, isStrify](Interpreter& I, ValueList& a) -> Value {
@@ -7206,7 +7206,7 @@ void Interpreter::registerBuiltins() {
         // arg is the (relative) tolerance, a Str is the description.
         for (size_t i = 2; i < a.size(); i++) {
             if (a[i].t == VT::Pair) {
-                std::string k = a[i].s; double val = a[i].pairVal ? a[i].pairVal->toNum() : 0;
+                std::string k = a[i].s; double val = a[i].pairVal() ? a[i].pairVal()->toNum() : 0;
                 if (k == "rel-tol") { haveRel = true; relTol = val; }
                 else if (k == "abs-tol") { haveAbs = true; absTol = val; }
             } else if (a[i].isNumeric() && !havePosTol) { tol = a[i].toNum(); havePosTol = true; }
@@ -7260,14 +7260,14 @@ void Interpreter::registerBuiltins() {
                 if (a[0].t == VT::Code) r = I.callCallable(a[0], {});
                 else if (a[0].t == VT::Str) r = I.evalString(a[0].s, /*mainlinePH=*/true);
                 if (r.t == VT::Hash && r.hashKind == "Failure" &&
-                    !(r.hash->count("handled") && (*r.hash)["handled"].truthy())) {
-                    Value ex = r.hash->count("exception") ? (*r.hash)["exception"] : Value::any();
+                    !(r.hash()->count("handled") && (*r.hash())["handled"].truthy())) {
+                    Value ex = r.hash()->count("exception") ? (*r.hash())["exception"] : Value::any();
                     failed = true;
                     if (a.size() > 1 && a[1].t == VT::Type && a[1].s != "Exception")
                         failed = applyArith("~~", ex, a[1]).truthy();
                     for (auto& mp : matchers) {
                         if (!failed) break;
-                        Value want = mp.pairVal ? *mp.pairVal : Value::boolean(true);
+                        Value want = mp.pairVal() ? *mp.pairVal() : Value::boolean(true);
                         if (want.t == VT::Bool)
                             throw RakuError{Value::typeObj("X::Match::Bool"),
                                 "Cannot use Bool as matcher for '" + mp.s + "'; did you mean to smartmatch the attribute?"};
@@ -7300,7 +7300,7 @@ void Interpreter::registerBuiltins() {
         Value code; bool haveCode = false;
         for (auto& v : a) {
             if (v.t == VT::Pair && v.s == "lang") {
-                std::string lang = v.pairVal ? v.pairVal->toStr() : "";
+                std::string lang = v.pairVal() ? v.pairVal()->toStr() : "";
                 if (lang != "Raku" && lang != "Perl6")
                     // the payload slot takes the exception TYPE, not a message —
                     // a Str payload only promotes to a real exception when it
@@ -7333,13 +7333,13 @@ void Interpreter::registerBuiltins() {
         };
         std::vector<std::string> argv;
         if (Value* av = dynFind("@*ARGS"))
-            if (av->t == VT::Array && av->arr)
-                for (auto& x : *av->arr) argv.push_back(x.toStr());
+            if (av->t == VT::Array && av->arr())
+                for (auto& x : *av->arr()) argv.push_back(x.toStr());
         bool namedAnywhere = false;
         if (Value* smo = dynFind("%*SUB-MAIN-OPTS"))
-            if (smo->t == VT::Hash && smo->hash) {
-                auto it = smo->hash->find("named-anywhere");
-                namedAnywhere = it != smo->hash->end() && it->second.truthy();
+            if (smo->t == VT::Hash && smo->hash()) {
+                auto it = smo->hash()->find("named-anywhere");
+                namedAnywhere = it != smo->hash()->end() && it->second.truthy();
             }
         auto valify = [&](const std::string& s) -> Value {
             auto it = I.builtins_.find("val");
@@ -7374,12 +7374,12 @@ void Interpreter::registerBuiltins() {
         for (auto& kv : named) {
             Value v;
             if (kv.second.size() == 1) v = kv.second[0];
-            else { v = Value::array(); *v.arr = kv.second; }
+            else { v = Value::array(); *v.arr() = kv.second; }
             Value p = Value::pair(kv.first, v);
             p.namedArg = true;
             margs.push_back(std::move(p));
         }
-        Value cap = Value::array(); cap.hashKind = "Capture"; *cap.arr = std::move(margs);
+        Value cap = Value::array(); cap.hashKind = "Capture"; *cap.arr() = std::move(margs);
         return cap;
     };
     // RUN-MAIN(&main, $mainline-result) — the 2018.10 command-line protocol:
@@ -7400,7 +7400,7 @@ void Interpreter::registerBuiltins() {
         // the raw @*ARGS as an Array, for the ARGS-TO-CAPTURE hook
         Value argsArr = Value::array();
         if (Value* av = lookup("@*ARGS"))
-            if (av->t == VT::Array && av->arr) *argsArr.arr = *av->arr;
+            if (av->t == VT::Array && av->arr()) *argsArr.arr() = *av->arr();
 
         // --- 1. args -> capture -------------------------------------------
         Value userA2C;
@@ -7416,28 +7416,28 @@ void Interpreter::registerBuiltins() {
                 I.tctx_.dynStack.push_back(scope.get());
                 struct R { Interpreter& I; std::shared_ptr<Env> s; ~R(){ I.tctx_.cur = s; I.tctx_.dynStack.pop_back(); } } r{I, saved};
                 Value cap = I.callCallable(userA2C, ValueList{mainSub, argsArr});
-                if (cap.t == VT::Array && cap.arr) {
-                    margs = *cap.arr;                       // a Capture IS the arg list…
+                if (cap.t == VT::Array && cap.arr()) {
+                    margs = *cap.arr();                       // a Capture IS the arg list…
                     for (auto& m : margs)                   // …its Pairs are NAMED args
                         if (m.t == VT::Pair) m.namedArg = true;
                 } else if (cap.t != VT::Any && cap.t != VT::Nil) margs.push_back(cap);
             } else {
                 Value cap = I.callBuiltin("RUN-MAIN-args-to-capture", ValueList{});
-                if (cap.t == VT::Array && cap.arr) margs = *cap.arr;
+                if (cap.t == VT::Array && cap.arr()) margs = *cap.arr();
             }
         }
         // did the user ask for help? (drives the exit code)
         bool wantsHelp = false;
         for (auto& m : margs) if (m.t == VT::Pair && m.s == "help" && m.namedArg &&
-                                  (!m.pairVal || m.pairVal->truthy())) wantsHelp = true;
+                                  (!m.pairVal() || m.pairVal()->truthy())) wantsHelp = true;
 
         // --- 2. dispatch --------------------------------------------------
         bool matches = true;
-        if (mainSub.code && mainSub.code->isMultiDispatcher) {
+        if (mainSub.code() && mainSub.code()->isMultiDispatcher) {
             matches = false;
-            for (auto& cand : mainSub.code->candidates)
+            for (auto& cand : mainSub.code()->candidates)
                 if (I.scoreCandidate(cand, margs) >= 0) { matches = true; break; }
-        } else if (mainSub.code && mainSub.code->params) {
+        } else if (mainSub.code() && mainSub.code()->params) {
             matches = I.scoreCandidate(mainSub, margs) >= 0;
         }
         if (matches) return I.callCallable(mainSub, margs);
@@ -7508,43 +7508,43 @@ void Interpreter::registerBuiltins() {
         };
         for (auto& v : flattenArgs(a)) {
             if (v.t == VT::Pair) {
-                if (v.s == "out") { wantOut = v.pairVal ? v.pairVal->truthy() : true; outMode = wantOut ? 1 : 0;
-                                    if (asSink(v.pairVal.get())) outSink = *v.pairVal; }
-                else if (v.s == "err") { wantErr = v.pairVal ? v.pairVal->truthy() : true; errMode = wantErr ? 1 : 0;
-                                    if (asSink(v.pairVal.get())) errSink = *v.pairVal; }
-                else if (v.s == "in") wantIn = v.pairVal ? v.pairVal->truthy() : true;
+                if (v.s == "out") { wantOut = v.pairVal() ? v.pairVal()->truthy() : true; outMode = wantOut ? 1 : 0;
+                                    if (asSink(v.pairVal())) outSink = *v.pairVal(); }
+                else if (v.s == "err") { wantErr = v.pairVal() ? v.pairVal()->truthy() : true; errMode = wantErr ? 1 : 0;
+                                    if (asSink(v.pairVal())) errSink = *v.pairVal(); }
+                else if (v.s == "in") wantIn = v.pairVal() ? v.pairVal()->truthy() : true;
                 // :timeout(N) — a rakupp extension (Rakudo's run has no such
                 // adverb): SIGKILL the child's process group after N seconds.
                 // Advertised in this builtin's comment since the initial
                 // commit, but never actually parsed — every caller silently
                 // ran unbounded, which the stress suite discovered when a
                 // livelocked child pinned the machine for 25 minutes.
-                else if (v.s == "timeout" && v.pairVal) timeoutSec = v.pairVal->toNum();
-                else if (v.s == "env" && v.pairVal && v.pairVal->t == VT::Hash && v.pairVal->hash) {
+                else if (v.s == "timeout" && v.pairVal()) timeoutSec = v.pairVal()->toNum();
+                else if (v.s == "env" && v.pairVal() && v.pairVal()->t == VT::Hash && v.pairVal()->hash()) {
                     // :env(%h) — the child's ENTIRE environment (Rakudo semantics).
                     // Silently ignored before: run(..., :env(%(%*ENV, RAKULIB =>
                     // ...))) inherited the parent env unchanged.
                     haveEnv = true;
-                    for (auto& kv : *v.pairVal->hash) envKV.push_back(kv.first + "=" + kv.second.toStr());
+                    for (auto& kv : *v.pairVal()->hash()) envKV.push_back(kv.first + "=" + kv.second.toStr());
                     std::sort(envKV.begin(), envKV.end()); // deterministic; Windows wants sorted blocks
                 }
-                else if (v.s == "cwd" && v.pairVal) cwd = v.pairVal->toStr(); // was silently ignored too
+                else if (v.s == "cwd" && v.pairVal()) cwd = v.pairVal()->toStr(); // was silently ignored too
             }
             else argv.push_back(v.toStr());
         }
-        Value av = Value::array(); av.isList = true; for (auto& s : argv) av.arr->push_back(Value::str(s));
+        Value av = Value::array(); av.isList = true; for (auto& s : argv) av.arr()->push_back(Value::str(s));
         Value p = Value::makeHash(); p.hashKind = "Proc"; // standard Proc object
-        (*p.hash)["argv"] = av; // for .command
+        (*p.hash())["argv"] = av; // for .command
         I.syncEnvToProcess(); // child inherits any %*ENV changes the program made
         if (wantIn) {
             // Defer spawning: the process runs when its stdin is written via
             // `.in.spurt(...)`, so we can feed input and capture output together.
-            (*p.hash)["deferred"] = Value::boolean(true);
-            if (haveEnv) { Value ev = Value::array(); for (auto& kv : envKV) ev.arr->push_back(Value::str(kv)); (*p.hash)["env-kv"] = ev; }
-            if (!cwd.empty()) (*p.hash)["cwd"] = Value::str(cwd);
-            (*p.hash)["out-str"] = Value::str("");
-            (*p.hash)["err-str"] = Value::str("");
-            (*p.hash)["exitcode"] = Value::integer(0);
+            (*p.hash())["deferred"] = Value::boolean(true);
+            if (haveEnv) { Value ev = Value::array(); for (auto& kv : envKV) ev.arr()->push_back(Value::str(kv)); (*p.hash())["env-kv"] = ev; }
+            if (!cwd.empty()) (*p.hash())["cwd"] = Value::str(cwd);
+            (*p.hash())["out-str"] = Value::str("");
+            (*p.hash())["err-str"] = Value::str("");
+            (*p.hash())["exitcode"] = Value::integer(0);
             return p;
         }
         std::string out, err; int code; bool timedout;
@@ -7566,11 +7566,11 @@ void Interpreter::registerBuiltins() {
         drainTo(errSink, err);
         if (outMode == -1) std::cout << out; // not capturing: echo child stdout (approximates inherit)
         if (errMode == -1) { /* stderr already inherited by the child */ }
-        (*p.hash)["exitcode"] = Value::integer(code);
-        (*p.hash)["out-str"] = Value::str(out);
-        (*p.hash)["err-str"] = Value::str(err);
-        (*p.hash)["timedout"] = Value::boolean(timedout); // the shape the comment above promises
-        if (childPid) (*p.hash)["pid"] = Value::integer(childPid);
+        (*p.hash())["exitcode"] = Value::integer(code);
+        (*p.hash())["out-str"] = Value::str(out);
+        (*p.hash())["err-str"] = Value::str(err);
+        (*p.hash())["timedout"] = Value::boolean(timedout); // the shape the comment above promises
+        if (childPid) (*p.hash())["pid"] = Value::integer(childPid);
         return p;
     };
     // shell(CMD, :out, :err) — run CMD through the system shell (`/bin/sh -c CMD`),
@@ -7580,8 +7580,8 @@ void Interpreter::registerBuiltins() {
         int outMode = -1, errMode = -1; // -1 unspecified, 0 :!x discard, 1 :x capture
         for (auto& v : flattenArgs(a)) {
             if (v.t == VT::Pair) {
-                if (v.s == "out") { wantOut = v.pairVal ? v.pairVal->truthy() : true; outMode = wantOut ? 1 : 0; }
-                else if (v.s == "err") { wantErr = v.pairVal ? v.pairVal->truthy() : true; errMode = wantErr ? 1 : 0; }
+                if (v.s == "out") { wantOut = v.pairVal() ? v.pairVal()->truthy() : true; outMode = wantOut ? 1 : 0; }
+                else if (v.s == "err") { wantErr = v.pairVal() ? v.pairVal()->truthy() : true; errMode = wantErr ? 1 : 0; }
             }
             else if (cmd.empty()) cmd = v.toStr();
         }
@@ -7600,12 +7600,12 @@ void Interpreter::registerBuiltins() {
         spawnCapture(argv, 0, out, code, timedout, &I, errMode != -1 ? &err : nullptr, "", &childPid);
         if (outMode == -1) std::cout << out;
         Value p = Value::makeHash(); p.hashKind = "Proc";
-        Value av = Value::array(); av.isList = true; av.arr->push_back(Value::str(cmd));
-        (*p.hash)["argv"] = av; // .command — shell reports the command string
-        (*p.hash)["exitcode"] = Value::integer(code);
-        (*p.hash)["out-str"] = Value::str(out);
-        (*p.hash)["err-str"] = Value::str(err);
-        if (childPid) (*p.hash)["pid"] = Value::integer(childPid);
+        Value av = Value::array(); av.isList = true; av.arr()->push_back(Value::str(cmd));
+        (*p.hash())["argv"] = av; // .command — shell reports the command string
+        (*p.hash())["exitcode"] = Value::integer(code);
+        (*p.hash())["out-str"] = Value::str(out);
+        (*p.hash())["err-str"] = Value::str(err);
+        if (childPid) (*p.hash())["pid"] = Value::integer(childPid);
         return p;
     };
     // full-barrier — a sequentially-consistent memory fence (the ⚛ family's
@@ -7616,7 +7616,7 @@ void Interpreter::registerBuiltins() {
     };
     B["make"] = [](Interpreter& I, ValueList& a) -> Value {
         Value v = a.empty() ? Value::any() : (a.size() == 1 ? a[0] : Value::array(a));
-        if (!I.tctx_.makeTargets.empty()) I.tctx_.makeTargets.back()->pairVal = std::make_shared<Value>(v);
+        if (!I.tctx_.makeTargets.empty()) I.tctx_.makeTargets.back()->setPairVal(std::make_shared<Value>(v));
         return v;
     };
     B["take"] = [](Interpreter& I, ValueList& a) -> Value {
@@ -7649,7 +7649,7 @@ void Interpreter::registerBuiltins() {
         std::string path = a.empty() ? "." : a[0].toStr();
         // a `:test` matcher filters basenames (dir("x", test => /\.raku$/))
         Value test; bool haveTest = false;
-        for (auto& x : a) if (x.t == VT::Pair && x.s == "test" && x.pairVal) { test = *x.pairVal; haveTest = true; }
+        for (auto& x : a) if (x.t == VT::Pair && x.s == "test" && x.pairVal()) { test = *x.pairVal(); haveTest = true; }
         std::string base = path;
         while (base.size() > 1 && base.back() == '/') base.pop_back();
         Value out = Value::array();
@@ -7662,7 +7662,7 @@ void Interpreter::registerBuiltins() {
                 // and any `.d`/`.IO` on the result, need real IO::Path objects.
                 // The root dir already ends in '/' — dir("/") is "/.file", not "//.file".
                 Value p = Value::str(base + (base.back() == '/' ? "" : "/") + n); p.hashKind = "IO";
-                out.arr->push_back(p);
+                out.arr()->push_back(p);
             }
             closedir(d);
         }
@@ -7693,8 +7693,8 @@ void Interpreter::registerBuiltins() {
         bool haveContent = false;
         for (size_t i = 1; i < a.size(); i++) {
             if (a[i].t == VT::Pair && a[i].namedArg) {
-                if (a[i].s == "append") append = a[i].pairVal && a[i].pairVal->truthy();
-                else if (a[i].s == "createonly" || a[i].s == "x") createonly = a[i].pairVal && a[i].pairVal->truthy();
+                if (a[i].s == "append") append = a[i].pairVal() && a[i].pairVal()->truthy();
+                else if (a[i].s == "createonly" || a[i].s == "x") createonly = a[i].pairVal() && a[i].pairVal()->truthy();
             }
             else if (!haveContent) { content = a[i].toStr(); haveContent = true; }
         }
@@ -7742,14 +7742,14 @@ void Interpreter::registerBuiltins() {
         }
         if (src) return I.methodCall(*src, "lines", named);
         Value argv = I.getArgs();
-        if (argv.arr && !argv.arr->empty()) {
-            for (auto& fn : *argv.arr) {
+        if (argv.arr() && !argv.arr()->empty()) {
+            for (auto& fn : *argv.arr()) {
                 std::ifstream in(fn.toStr());
-                while (std::getline(in, line)) { if (!line.empty() && line.back() == '\r') line.pop_back(); out.arr->push_back(Value::str(line)); }
+                while (std::getline(in, line)) { if (!line.empty() && line.back() == '\r') line.pop_back(); out.arr()->push_back(Value::str(line)); }
             }
             return out;
         }
-        while (std::getline(std::cin, line)) { if (!line.empty() && line.back() == '\r') line.pop_back(); out.arr->push_back(Value::str(line)); }
+        while (std::getline(std::cin, line)) { if (!line.empty() && line.back() == '\r') line.pop_back(); out.arr()->push_back(Value::str(line)); }
         return out;
     };
     B["get"] = [](Interpreter&, ValueList&) -> Value {
@@ -7769,7 +7769,7 @@ void Interpreter::registerBuiltins() {
         }
         else { std::ostringstream ss; ss << std::cin.rdbuf(); all = ss.str(); } // words() = $*IN.words
         std::istringstream ws(all);
-        while (ws >> w) out.arr->push_back(Value::str(w));
+        while (ws >> w) out.arr()->push_back(Value::str(w));
         return out;
     };
     B["open"] = [](Interpreter& I, ValueList& a) -> Value { // sub form: open($path, :r/:w/:a)
@@ -7787,7 +7787,7 @@ void Interpreter::registerBuiltins() {
         }
         // :nl-in(...) — custom input line separator(s); .lines/.get honour it
         Value nlIn;
-        for (auto& x : a) if (x.t == VT::Pair && x.s == "nl-in" && x.pairVal) nlIn = *x.pairVal;
+        for (auto& x : a) if (x.t == VT::Pair && x.s == "nl-in" && x.pairVal()) nlIn = *x.pairVal();
         if (excl) { // File::Temp opens `:rw, :exclusive` to claim a fresh name
             std::ifstream probe(path);
             if (probe) throw RakuError{Value::typeObj("X::IO::Exclusive"),
@@ -7800,13 +7800,13 @@ void Interpreter::registerBuiltins() {
                 "Failed to open file " + path + ": no such file or directory"};
         }
         Value h = Value::makeHash(); h.hashKind = "FileHandle";
-        (*h.hash)["path"] = Value::str(path);
-        (*h.hash)["mode"] = Value::str(mode);
-        (*h.hash)["buffer"] = Value::str("");
-        if (nlIn.t != VT::Any) (*h.hash)["nl-in"] = nlIn;
+        (*h.hash())["path"] = Value::str(path);
+        (*h.hash())["mode"] = Value::str(mode);
+        (*h.hash())["buffer"] = Value::str("");
+        if (nlIn.t != VT::Any) (*h.hash())["nl-in"] = nlIn;
         if (mode == "w") { std::ofstream create(path, std::ios::trunc); } // the file exists immediately
         if (mode == "rw") { std::ofstream create(path, std::ios::app); }  // exists immediately, kept intact
-        if (mode != "r") I.registerWriteHandle(h.hash); // flush at exit if not closed
+        if (mode != "r") I.registerWriteHandle(h.hashS()); // flush at exit if not closed
         return h;
     };
     // symlink($target, $name) / link($target, $name) — the sub forms Rakudo
@@ -7846,7 +7846,7 @@ void Interpreter::registerBuiltins() {
         auto gone = [](const std::string& p) { return ::unlink(p.c_str()) == 0 || errno == ENOENT; };
         if (I.sixE() && a.size() == 1) return Value::boolean(gone(a[0].toStr()));
         Value ok = Value::array();   // an Array, as Rakudo's `my @ok` is
-        for (auto& f : a) if (gone(f.toStr())) ok.arr->push_back(f);
+        for (auto& f : a) if (gone(f.toStr())) ok.arr()->push_back(f);
         return ok;
     };
     // sub forms of the IO::Path methods (Shell::Command calls them this way)
@@ -7881,7 +7881,7 @@ void Interpreter::registerBuiltins() {
                                         : (mode_t)a[0].toInt();
         for (size_t k = 1; k < a.size(); k++) {
             std::string p = a[k].toStr();
-            if (::chmod(p.c_str(), mode) == 0) out.arr->push_back(a[k]);
+            if (::chmod(p.c_str(), mode) == 0) out.arr()->push_back(a[k]);
         }
         return out;
     };
@@ -7899,9 +7899,9 @@ void Interpreter::registerBuiltins() {
             // `subtest "title" => {…}` — the Pair form runs its body like any
             // other (it was once left unrun; every such subtest passed VACUOUSLY,
             // which inflated whole dist suites — AttrX::Mooish's most of all)
-            else if (v.t == VT::Pair && v.pairVal) {
+            else if (v.t == VT::Pair && v.pairVal()) {
                 desc = v.s;
-                if (v.pairVal->t == VT::Code) code = *v.pairVal;
+                if (v.pairVal()->t == VT::Code) code = *v.pairVal();
             }
         }
         // A pending `todo` marks this whole subtest TODO: inner failures neither die nor count.
@@ -8026,7 +8026,7 @@ void Interpreter::registerBuiltins() {
             // 16-word block arrived as sixteen separate values, so `$block[$t]`
             // was undefined for every t but 0.
             if (a.size() == 2 && (a[1].t == VT::Array || a[1].t == VT::Range)) {
-                if (a[1].t == VT::Array && a[1].arr) for (auto& x : *a[1].arr) items.push_back(x);
+                if (a[1].t == VT::Array && a[1].arr()) for (auto& x : *a[1].arr()) items.push_back(x);
                 else items = a[1].flatten();
             }
             else for (size_t i = 1; i < a.size(); i++) items.push_back(a[i]);
@@ -8063,7 +8063,7 @@ void Interpreter::registerBuiltins() {
         double ang = std::atan2(im, re) / (double)n;
         for (long long k = 0; k < n; k++) {
             double th = ang + 2.0 * M_PI * (double)k / (double)n;
-            out.arr->push_back(Value::complex(mag * std::cos(th), mag * std::sin(th)));
+            out.arr()->push_back(Value::complex(mag * std::cos(th), mag * std::sin(th)));
         }
         return out;
     };
@@ -8204,7 +8204,7 @@ void Interpreter::registerBuiltins() {
                 "Cannot use null character (U+0000) as part of the path"};
         if (::chdir(a[0].toStr().c_str()) != 0) {
             Value f = Value::makeHash(); f.hashKind = "Failure";
-            (*f.hash)["message"] = Value::str("Failed to change the working directory to '" + a[0].toStr() + "'");
+            (*f.hash())["message"] = Value::str("Failed to change the working directory to '" + a[0].toStr() + "'");
             return f;
         }
         Value p = Value::str(a[0].toStr()); p.hashKind = "IO"; return p; // IO::Path of the new cwd
@@ -8259,8 +8259,8 @@ void Interpreter::registerBuiltins() {
         Value withF;
         std::vector<ValueList> rows;
         for (auto& v : a) {
-            if (v.t == VT::Pair && v.s == "with" && v.pairVal) { withF = *v.pairVal; continue; }
-            if (v.t == VT::Array && v.arr) rows.push_back(*v.arr);
+            if (v.t == VT::Pair && v.s == "with" && v.pairVal()) { withF = *v.pairVal(); continue; }
+            if (v.t == VT::Array && v.arr()) rows.push_back(*v.arr());
             else if (v.t == VT::Range) rows.push_back(v.flatten());
             else rows.push_back(ValueList{v});
         }
@@ -8275,11 +8275,11 @@ void Interpreter::registerBuiltins() {
                     for (size_t k = 0; k < rows.size(); k++) tup.push_back(rows[k][idx[k]]);
                     Value acc = tup[0];
                     for (size_t k = 1; k < tup.size(); k++) acc = I.callCallable(withF, ValueList{acc, tup[k]});
-                    out.arr->push_back(acc);
+                    out.arr()->push_back(acc);
                 } else {
                     Value t = Value::array(); t.isList = true;
-                    for (size_t k = 0; k < rows.size(); k++) t.arr->push_back(rows[k][idx[k]]);
-                    out.arr->push_back(t);
+                    for (size_t k = 0; k < rows.size(); k++) t.arr()->push_back(rows[k][idx[k]]);
+                    out.arr()->push_back(t);
                 }
                 size_t k = rows.size();
                 while (k > 0 && ++idx[k - 1] == rows[k - 1].size()) idx[--k] = 0;
@@ -8311,8 +8311,8 @@ void Interpreter::registerBuiltins() {
         if (a.empty()) return Value::integer(0);
         // count without materializing (toList deep-copies every element)
         const Value& v = a[0];
-        if (v.t == VT::Array && v.arr && !v.ext()) return Value::integer((long long)v.arr->size());
-        if (v.t == VT::Hash && v.hash && v.hashKind.empty()) return Value::integer((long long)v.hash->size());
+        if (v.t == VT::Array && v.arr() && !v.ext()) return Value::integer((long long)v.arr()->size());
+        if (v.t == VT::Hash && v.hash() && v.hashKind.empty()) return Value::integer((long long)v.hash()->size());
         return Value::integer((long long)toList(v).size());
     };
     B["defined"] = [](Interpreter&, ValueList& a) -> Value { return Value::boolean(!a.empty() && defined(a[0])); };
@@ -8395,11 +8395,11 @@ void Interpreter::registerBuiltins() {
     B["tc"] = [](Interpreter&, ValueList& a) -> Value { return Value::str(a.empty() ? "" : mapCase(a[0].toStr(), 0, 1)); };
     // `so *` / `not *` curry like operators do (Rakudo: (so *).^name is WhateverCode)
     auto boolCurry = [](bool negate, const Value& w) -> Value {
-        Value code; code.t = VT::Code; code.code = std::make_shared<Callable>();
-        code.code->isWhateverCode = true;
-        code.code->whateverArity = (w.t == VT::Code && w.code && w.code->whateverArity > 0) ? w.code->whateverArity : 1;
+        Value code; code.t = VT::Code; code.setCode(std::make_shared<Callable>());
+        code.code()->isWhateverCode = true;
+        code.code()->whateverArity = (w.t == VT::Code && w.code() && w.code()->whateverArity > 0) ? w.code()->whateverArity : 1;
         Value inner = w;
-        code.code->builtin = [negate, inner](Interpreter& I, ValueList& xs) -> Value {
+        code.code()->builtin = [negate, inner](Interpreter& I, ValueList& xs) -> Value {
             Value v = inner.t == VT::Whatever ? (xs.empty() ? Value::any() : xs[0])
                                               : I.callCallable(inner, xs);
             bool b = I.boolify(v);
@@ -8408,12 +8408,12 @@ void Interpreter::registerBuiltins() {
         return code;
     };
     B["so"] = [boolCurry](Interpreter& I, ValueList& a) -> Value {
-        if (a.size() == 1 && (a[0].t == VT::Whatever || (a[0].t == VT::Code && a[0].code && a[0].code->isWhateverCode)))
+        if (a.size() == 1 && (a[0].t == VT::Whatever || (a[0].t == VT::Code && a[0].code() && a[0].code()->isWhateverCode)))
             return boolCurry(false, a[0]);
         return Value::boolean(!a.empty() && I.boolify(a[0]));
     };
     B["not"] = [boolCurry](Interpreter& I, ValueList& a) -> Value {
-        if (a.size() == 1 && (a[0].t == VT::Whatever || (a[0].t == VT::Code && a[0].code && a[0].code->isWhateverCode)))
+        if (a.size() == 1 && (a[0].t == VT::Whatever || (a[0].t == VT::Code && a[0].code() && a[0].code()->isWhateverCode)))
             return boolCurry(true, a[0]);
         return Value::boolean(a.empty() || !I.boolify(a[0]));
     };
@@ -8504,7 +8504,7 @@ void Interpreter::registerBuiltins() {
         if (lvl < 0) lvl = 0;
         auto& fr = I.tctx_.callFrames;
         Value f = Value::makeHash(); f.hashKind = "CallFrame";
-        (*f.hash)["file"] = Value::str(I.srcFileAbs_.empty() ? I.srcFile_ : I.srcFileAbs_);
+        (*f.hash())["file"] = Value::str(I.srcFileAbs_.empty() ? I.srcFile_ : I.srcFileAbs_);
         // level 0 is where we are now (the current statement's line); each further
         // level steps out one activation, taking that call's own line with it
         size_t idx = fr.size();                 // frames_[idx-1] is the innermost
@@ -8516,8 +8516,8 @@ void Interpreter::registerBuiltins() {
             idx--;
         }
         if (idx > 0) code = fr[idx - 1].code;
-        (*f.hash)["line"] = Value::integer(line);
-        if (code) (*f.hash)["code"] = *code;
+        (*f.hash())["line"] = Value::integer(line);
+        if (code) (*f.hash())["code"] = *code;
         return f;
     };
     // `MY::<&foo>:exists` — is that symbol declared in the current scope chain?
@@ -8560,8 +8560,8 @@ void Interpreter::registerBuiltins() {
             bval = bval * BigInt(base) + BigInt(d);
         };
         for (size_t k = 1; k < a.size(); k++) {
-            if (a[k].t == VT::Array && a[k].arr)
-                for (auto& e : *a[k].arr) add(e.toInt());
+            if (a[k].t == VT::Array && a[k].arr())
+                for (auto& e : *a[k].arr()) add(e.toInt());
             else add(a[k].toInt());
         }
         return big ? Value::bigint(bval) : Value::integer(val);
@@ -8626,7 +8626,7 @@ void Interpreter::registerBuiltins() {
         ValueList named, pos;
         for (auto& v : a) {
             if (v.t == VT::Pair && v.namedArg) {
-                if (v.s == "by" && v.pairVal) { cmp = *v.pairVal; haveCmp = true; }
+                if (v.s == "by" && v.pairVal()) { cmp = *v.pairVal(); haveCmp = true; }
                 else named.push_back(v);
             }
             else pos.push_back(v);
@@ -8672,14 +8672,14 @@ void Interpreter::registerBuiltins() {
     };
     B["keys"] = [](Interpreter&, ValueList& a) -> Value {
         Value out = Value::array();
-        if (!a.empty() && a[0].t == VT::Hash) for (auto& kv : *a[0].hash) out.arr->push_back(Value::str(kv.first));
-        else if (!a.empty()) { ValueList l = toList(a[0]); for (size_t i = 0; i < l.size(); i++) out.arr->push_back(Value::integer((long long)i)); }
+        if (!a.empty() && a[0].t == VT::Hash) for (auto& kv : *a[0].hash()) out.arr()->push_back(Value::str(kv.first));
+        else if (!a.empty()) { ValueList l = toList(a[0]); for (size_t i = 0; i < l.size(); i++) out.arr()->push_back(Value::integer((long long)i)); }
         return out;
     };
     B["values"] = [](Interpreter&, ValueList& a) -> Value {
         Value out = Value::array();
-        if (!a.empty() && a[0].t == VT::Hash) for (auto& kv : *a[0].hash) out.arr->push_back(kv.second);
-        else if (!a.empty()) { ValueList l = toList(a[0]); for (auto& v : l) out.arr->push_back(v); }
+        if (!a.empty() && a[0].t == VT::Hash) for (auto& kv : *a[0].hash()) out.arr()->push_back(kv.second);
+        else if (!a.empty()) { ValueList l = toList(a[0]); for (auto& v : l) out.arr()->push_back(v); }
         return out;
     };
     // Synchronous react/whenever/supply: eager, deterministic model.
@@ -8740,17 +8740,17 @@ void Interpreter::registerBuiltins() {
             Value src = a[0], blk = a.back();
             // whenever Promise.in(N)/at(T) in a supply block: a real timer (was
             // firing immediately — Cro's connection/headers timeouts rely on it).
-            if (src.t == VT::Hash && src.hashKind == "Promise" && src.hash->count("kind") &&
-                (*src.hash)["kind"].toStr() == "timer") {
-                double secs = src.hash->count("seconds") ? (*src.hash)["seconds"].toNum() : 0;
+            if (src.t == VT::Hash && src.hashKind == "Promise" && src.hash()->count("kind") &&
+                (*src.hash())["kind"].toStr() == "timer") {
+                double secs = src.hash()->count("seconds") ? (*src.hash())["seconds"].toNum() : 0;
                 return I.spawnSupplyTimer(secs, blk, ctx);
             }
             // whenever Supply.interval(N) in a supply block: a repeating ticker
             // that keeps this activation open until done/close stops it.
-            if (src.t == VT::Hash && src.hashKind == "Supply" && src.hash->count("kind") &&
-                (*src.hash)["kind"].toStr() == "interval") {
-                double iv = src.hash->count("interval") ? (*src.hash)["interval"].toNum() : 1;
-                double dl = src.hash->count("delay") ? (*src.hash)["delay"].toNum() : 0;
+            if (src.t == VT::Hash && src.hashKind == "Supply" && src.hash()->count("kind") &&
+                (*src.hash())["kind"].toStr() == "interval") {
+                double iv = src.hash()->count("interval") ? (*src.hash())["interval"].toNum() : 1;
+                double dl = src.hash()->count("delay") ? (*src.hash())["delay"].toNum() : 0;
                 return I.spawnSupplyInterval(iv, dl, I.wrapSupplyChain(src, blk), ctx);
             }
             // whenever over a Promise: register an ASYNC one-shot — the block runs
@@ -8797,7 +8797,7 @@ void Interpreter::registerBuiltins() {
             // whenever over a plain (non-Supply, non-Promise) value: run once with it
             if (!(src.t == VT::Hash && src.hashKind == "Supply")) {
                 Value rv = src;
-                if (src.t == VT::Hash && src.hashKind == "Promise" && src.hash->count("result")) rv = (*src.hash)["result"];
+                if (src.t == VT::Hash && src.hashKind == "Promise" && src.hash()->count("result")) rv = (*src.hash())["result"];
                 ValueList one{rv};
                 try { I.callCallable(blk, one); } catch (NextEx&) {} catch (LastEx&) {} catch (DoneEx&) {}
                 Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
@@ -8837,7 +8837,7 @@ void Interpreter::registerBuiltins() {
             Value tapV = I.tapSupply(src, emitW, doneW, quitW);
             // closing the outer tap closes this inner one
             if (ctx->tap && tapV.t == VT::Hash && tapV.ext() &&
-                tapV.hash->count("wired") && (*tapV.hash)["wired"].truthy()) {
+                tapV.hash()->count("wired") && (*tapV.hash())["wired"].truthy()) {
                 auto ih = std::static_pointer_cast<TapHandle>(tapV.ext());
                 Interpreter* ip = &I;
                 std::lock_guard<std::mutex> lk(ctx->tap->m);
@@ -8857,18 +8857,18 @@ void Interpreter::registerBuiltins() {
             // whenever signal(SIGINT) { … } in a react: wire the OS-signal tap,
             // counting it as a live react source so the loop waits until `done`.
             if (s.t == VT::Hash && s.hashKind == "Supply" &&
-                s.hash->count("kind") && (*s.hash)["kind"].toStr() == "signal") {
+                s.hash()->count("kind") && (*s.hash())["kind"].toStr() == "signal") {
                 std::vector<int> sigs;
-                if (s.hash->count("signals") && (*s.hash)["signals"].arr)
-                    for (auto& n : *(*s.hash)["signals"].arr) sigs.push_back((int)n.toInt());
+                if (s.hash()->count("signals") && (*s.hash())["signals"].arr())
+                    for (auto& n : *(*s.hash())["signals"].arr()) sigs.push_back((int)n.toInt());
                 std::shared_ptr<ReactCtx> ctx;
                 if (!I.reactStack_.empty()) {
                     ctx = I.reactStack_.back();
                     std::lock_guard<std::mutex> lk(ctx->m); ctx->liveSources++;
                 }
-                Value emitW; emitW.t = VT::Code; emitW.code = std::make_shared<Callable>();
+                Value emitW; emitW.t = VT::Code; emitW.setCode(std::make_shared<Callable>());
                 Value blkCopy = blk;
-                emitW.code->builtin = [blkCopy](Interpreter& I2, ValueList& args) -> Value {
+                emitW.code()->builtin = [blkCopy](Interpreter& I2, ValueList& args) -> Value {
                     ValueList one = args;
                     try { return I2.callCallable(blkCopy, one); } catch (NextEx&) {} catch (LastEx&) {} catch (DoneEx&) {}
                     return Value::any();
@@ -8878,17 +8878,17 @@ void Interpreter::registerBuiltins() {
             // whenever Supply.interval(N) { … } in a react: a live ticker source —
             // the react waits on it (forever, unless `done`/`last` ends it).
             if (s.t == VT::Hash && s.hashKind == "Supply" &&
-                s.hash->count("kind") && (*s.hash)["kind"].toStr() == "interval") {
-                double iv = s.hash->count("interval") ? (*s.hash)["interval"].toNum() : 1;
-                double dl = s.hash->count("delay") ? (*s.hash)["delay"].toNum() : 0;
+                s.hash()->count("kind") && (*s.hash())["kind"].toStr() == "interval") {
+                double iv = s.hash()->count("interval") ? (*s.hash())["interval"].toNum() : 1;
+                double dl = s.hash()->count("delay") ? (*s.hash())["delay"].toNum() : 0;
                 std::shared_ptr<ReactCtx> ctx = I.reactStack_.empty() ? nullptr : I.reactStack_.back();
                 return I.spawnIntervalWhenever(iv, dl, I.wrapSupplyChain(s, blk), ctx, nullptr);
             }
             // whenever $socket.Supply { … } — an async-read/async-listen stream in a
             // react: count it as a live source so the block waits for data, and
             // decrement when the stream ends (connection close) so the react exits.
-            if (s.t == VT::Hash && s.hashKind == "Supply" && s.hash->count("kind")) {
-                std::string k = (*s.hash)["kind"].toStr();
+            if (s.t == VT::Hash && s.hashKind == "Supply" && s.hash()->count("kind")) {
+                std::string k = (*s.hash())["kind"].toStr();
                 if (k == "async-read" || k == "async-listen") {
                     std::shared_ptr<ReactCtx> ctx;
                     if (!I.reactStack_.empty()) {
@@ -8898,8 +8898,8 @@ void Interpreter::registerBuiltins() {
                     Value doneW;
                     if (ctx) {
                         std::weak_ptr<ReactCtx> wctx = ctx;
-                        doneW.t = VT::Code; doneW.code = std::make_shared<Callable>();
-                        doneW.code->builtin = [wctx](Interpreter&, ValueList&) -> Value {
+                        doneW.t = VT::Code; doneW.setCode(std::make_shared<Callable>());
+                        doneW.code()->builtin = [wctx](Interpreter&, ValueList&) -> Value {
                             if (auto c = wctx.lock()) { std::lock_guard<std::mutex> lk(c->m); if (c->liveSources > 0) c->liveSources--; c->cv.notify_all(); }
                             return Value::any();
                         };
@@ -8908,7 +8908,7 @@ void Interpreter::registerBuiltins() {
                 }
             }
             if (s.t == VT::Hash && s.hashKind == "Supply") {
-                if (s.hash->count("supplier")) {
+                if (s.hash()->count("supplier")) {
                     // live supply: register a tap; count it as a react source so the
                     // enclosing react blocks until this supplier signals done.
                     //
@@ -8920,14 +8920,14 @@ void Interpreter::registerBuiltins() {
                     // mirrors each call's parameter bindings, so `LAST { say $c }`
                     // sees the last value (same trick as the from-list path below).
                     auto phEnv = std::make_shared<Env>();
-                    phEnv->parent = blk.code ? blk.code->closure : nullptr;
+                    phEnv->parent = blk.code() ? blk.code()->closure : nullptr;
                     std::vector<Value> lastP, quitP;
                     scanSupplyPhasers(blk, &lastP, &quitP, nullptr, phEnv);
                     std::vector<std::string> pnames;
-                    if (blk.code && blk.code->params)
-                        for (auto& p : *blk.code->params) if (!p.name.empty()) pnames.push_back(p.name);
-                    Value blkInner = blk, shim; shim.t = VT::Code; shim.code = std::make_shared<Callable>();
-                    shim.code->builtin = [blkInner, phEnv, pnames](Interpreter& I2, ValueList& args) -> Value {
+                    if (blk.code() && blk.code()->params)
+                        for (auto& p : *blk.code()->params) if (!p.name.empty()) pnames.push_back(p.name);
+                    Value blkInner = blk, shim; shim.t = VT::Code; shim.setCode(std::make_shared<Callable>());
+                    shim.code()->builtin = [blkInner, phEnv, pnames](Interpreter& I2, ValueList& args) -> Value {
                         for (size_t i = 0; i < pnames.size(); i++)
                             phEnv->define(pnames[i], i < args.size() ? args[i] : Value::any());
                         if (!args.empty()) phEnv->define("$_", args[0]);
@@ -8935,19 +8935,19 @@ void Interpreter::registerBuiltins() {
                         return I2.callCallable(blkInner, one); // control exceptions reach the tap loop
                     };
                     Value tapRec = Value::makeHash();
-                    (*tapRec.hash)["emit"] = lastP.empty() ? blk : shim; // the shim costs a frame: only when a LAST needs it
+                    (*tapRec.hash())["emit"] = lastP.empty() ? blk : shim; // the shim costs a frame: only when a LAST needs it
                     // Carry the Supply's transform chain (head/grep/map/…) onto the tap,
                     // each step with its OWN fresh state — same as tapSupply's live branch.
                     // Without it `whenever $s.Supply.head(1)` never limits and, worse,
                     // never reports completion, so the enclosing react waits forever.
-                    if (s.hash->count("chain")) {
+                    if (s.hash()->count("chain")) {
                         Value chain = Value::array();
-                        for (auto& step : *(*s.hash)["chain"].arr) {
-                            Value s2 = Value::makeHash(); *s2.hash = *step.hash;
-                            (*s2.hash)["state"] = Value::makeHash();
-                            chain.arr->push_back(s2);
+                        for (auto& step : *(*s.hash())["chain"].arr()) {
+                            Value s2 = Value::makeHash(); *s2.hash() = *step.hash();
+                            (*s2.hash())["state"] = Value::makeHash();
+                            chain.arr()->push_back(s2);
                         }
-                        (*tapRec.hash)["chain"] = chain;
+                        (*tapRec.hash())["chain"] = chain;
                     }
                     std::shared_ptr<ReactCtx> rctx;
                     if (!I.reactStack_.empty()) {
@@ -8956,20 +8956,20 @@ void Interpreter::registerBuiltins() {
                         { std::lock_guard<std::mutex> lk(rctx->m); rctx->liveSources++; }
                     }
                     if (!lastP.empty()) {
-                        Value doneW; doneW.t = VT::Code; doneW.code = std::make_shared<Callable>();
-                        doneW.code->builtin = [lastP](Interpreter& I2, ValueList&) -> Value {
+                        Value doneW; doneW.t = VT::Code; doneW.setCode(std::make_shared<Callable>());
+                        doneW.code()->builtin = [lastP](Interpreter& I2, ValueList&) -> Value {
                             for (auto& p : lastP) { ValueList na; try { I2.callCallable(p, na); } catch (...) {} }
                             return Value::any();
                         };
-                        (*tapRec.hash)["done"] = doneW;
+                        (*tapRec.hash())["done"] = doneW;
                     }
                     {   // the supply quitting ends THIS subscription: a QUIT phaser
                         // handles it (like a CATCH), and with no QUIT phaser the
                         // exception is fatal to the whole react, as in Rakudo.
                         std::weak_ptr<ReactCtx> wctx = rctx;
-                        auto th = tapRec.hash;
-                        Value quitW; quitW.t = VT::Code; quitW.code = std::make_shared<Callable>();
-                        quitW.code->builtin = [quitP, wctx, th](Interpreter& I2, ValueList& a) -> Value {
+                        auto th = tapRec.hash();
+                        Value quitW; quitW.t = VT::Code; quitW.setCode(std::make_shared<Callable>());
+                        quitW.code()->builtin = [quitP, wctx, th](Interpreter& I2, ValueList& a) -> Value {
                             (*th)["closed"] = Value::boolean(true);
                             auto c = wctx.lock();
                             // run the phasers under the react ctx: `done` inside a
@@ -8989,15 +8989,15 @@ void Interpreter::registerBuiltins() {
                             }
                             return Value::any();
                         };
-                        (*tapRec.hash)["quit"] = quitW;
+                        (*tapRec.hash())["quit"] = quitW;
                     }
-                    Value sup = (*s.hash)["supplier"];
-                    if (sup.t == VT::Hash && sup.hash->count("taps")) { std::lock_guard<std::recursive_mutex> regLk(supplierMutex(sup.hash.get())); (*sup.hash)["taps"].arr->push_back(tapRec); }
+                    Value sup = (*s.hash())["supplier"];
+                    if (sup.t == VT::Hash && sup.hash()->count("taps")) { std::lock_guard<std::recursive_mutex> regLk(supplierMutex(sup.hash())); (*sup.hash())["taps"].arr()->push_back(tapRec); }
                     // The supplier already signalled done before this tap registered
                     // (eager worker ran first): close the tap now, so runReactLoop
                     // doesn't wait on a source that will never complete.
-                    if (sup.t == VT::Hash && sup.hash->count("done_state") &&
-                        (*sup.hash)["done_state"].truthy() && tapRec.ext()) {
+                    if (sup.t == VT::Hash && sup.hash()->count("done_state") &&
+                        (*sup.hash())["done_state"].truthy() && tapRec.ext()) {
                         auto ctx = std::static_pointer_cast<ReactCtx>(tapRec.ext());
                         std::lock_guard<std::mutex> lk(ctx->m);
                         if (ctx->liveSources > 0) ctx->liveSources--;
@@ -9005,7 +9005,7 @@ void Interpreter::registerBuiltins() {
                     }
                     Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
                 }
-                if (s.hash->count("block")) {
+                if (s.hash()->count("block")) {
                     // on-demand supply in a react: tap it with a quit hook that runs
                     // the whenever's QUIT phasers, and — with no QUIT phaser — fails
                     // the react, the quit being fatal (Cro::TCP's `whenever
@@ -9015,9 +9015,9 @@ void Interpreter::registerBuiltins() {
                     std::shared_ptr<ReactCtx> rctx = I.reactStack_.empty() ? nullptr : I.reactStack_.back();
                     std::vector<Value> lastP, quitP;
                     scanSupplyPhasers(blk, &lastP, &quitP, nullptr);
-                    Value emitW; emitW.t = VT::Code; emitW.code = std::make_shared<Callable>();
+                    Value emitW; emitW.t = VT::Code; emitW.setCode(std::make_shared<Callable>());
                     Value blkCopy = blk;
-                    emitW.code->builtin = [blkCopy](Interpreter& I2, ValueList& args) -> Value {
+                    emitW.code()->builtin = [blkCopy](Interpreter& I2, ValueList& args) -> Value {
                         ValueList one = args;
                         try { return I2.callCallable(blkCopy, one); } catch (NextEx&) {} catch (LastEx&) {} catch (DoneEx&) {}
                         return Value::any();
@@ -9038,8 +9038,8 @@ void Interpreter::registerBuiltins() {
                             c->cv.notify_all();
                         }
                     };
-                    Value quitW; quitW.t = VT::Code; quitW.code = std::make_shared<Callable>();
-                    quitW.code->builtin = [wctx, quitP, release](Interpreter& I2, ValueList& a) -> Value {
+                    Value quitW; quitW.t = VT::Code; quitW.setCode(std::make_shared<Callable>());
+                    quitW.code()->builtin = [wctx, quitP, release](Interpreter& I2, ValueList& a) -> Value {
                         auto c = wctx.lock();
                         if (c) I2.reactStack_.push_back(c); // `done` in a QUIT block finds its react
                         for (auto& p : quitP) { ValueList one = a; try { I2.callCallable(p, one); } catch (...) {} }
@@ -9052,8 +9052,8 @@ void Interpreter::registerBuiltins() {
                         release();
                         return Value::any();
                     };
-                    Value doneW; doneW.t = VT::Code; doneW.code = std::make_shared<Callable>();
-                    doneW.code->builtin = [lastP, release](Interpreter& I2, ValueList&) -> Value {
+                    Value doneW; doneW.t = VT::Code; doneW.setCode(std::make_shared<Callable>());
+                    doneW.code()->builtin = [lastP, release](Interpreter& I2, ValueList&) -> Value {
                         for (auto& p : lastP) { ValueList na; try { I2.callCallable(p, na); } catch (...) {} }
                         release();
                         return Value::any();
@@ -9069,15 +9069,15 @@ void Interpreter::registerBuiltins() {
                     // call's parameter bindings, so `LAST { "Done with $c" }`
                     // sees the LAST value of $c (Rakudo semantics)
                     auto phEnv = std::make_shared<Env>();
-                    phEnv->parent = blk.code ? blk.code->closure : nullptr;
+                    phEnv->parent = blk.code() ? blk.code()->closure : nullptr;
                     std::vector<Value> lastP, quitP;
                     scanSupplyPhasers(blk, &lastP, &quitP, nullptr, phEnv);
                     std::vector<std::string> pnames;
-                    if (blk.code && blk.code->params)
-                        for (auto& p : *blk.code->params) if (!p.name.empty()) pnames.push_back(p.name);
+                    if (blk.code() && blk.code()->params)
+                        for (auto& p : *blk.code()->params) if (!p.name.empty()) pnames.push_back(p.name);
                     Value blkInner = blk;
-                    Value shim; shim.t = VT::Code; shim.code = std::make_shared<Callable>();
-                    shim.code->builtin = [blkInner, phEnv, pnames](Interpreter& I2, ValueList& args) -> Value {
+                    Value shim; shim.t = VT::Code; shim.setCode(std::make_shared<Callable>());
+                    shim.code()->builtin = [blkInner, phEnv, pnames](Interpreter& I2, ValueList& args) -> Value {
                         for (size_t i = 0; i < pnames.size(); i++)
                             phEnv->define(pnames[i], i < args.size() ? args[i] : Value::any());
                         if (!args.empty()) phEnv->define("$_", args[0]);
@@ -9111,8 +9111,8 @@ void Interpreter::registerBuiltins() {
             // whenever Promise.in(N) { … } — a timer: fire once after the real delay
             // as a react source, so it doesn't defeat a timeout guard by firing at t=0.
             if (s.t == VT::Hash && s.hashKind == "Promise" &&
-                s.hash->count("kind") && (*s.hash)["kind"].toStr() == "timer") {
-                double secs = s.hash->count("seconds") ? (*s.hash)["seconds"].toNum() : 0;
+                s.hash()->count("kind") && (*s.hash())["kind"].toStr() == "timer") {
+                double secs = s.hash()->count("seconds") ? (*s.hash())["seconds"].toNum() : 0;
                 std::shared_ptr<ReactCtx> ctx = I.reactStack_.empty() ? nullptr : I.reactStack_.back();
                 return I.spawnTimerWhenever(secs, blk, ctx);
             }
@@ -9121,9 +9121,9 @@ void Interpreter::registerBuiltins() {
             // then fire the block once with the finished proc (its .so/.exitcode
             // reflect the exit status — zef's curl/wget fetch checks `$_.so`).
             if (s.t == VT::Hash && s.hashKind == "Promise" &&
-                s.hash->count("kind") && (*s.hash)["kind"].toStr() == "proc") {
+                s.hash()->count("kind") && (*s.hash())["kind"].toStr() == "proc") {
                 I.runProcPromise(s, 0);
-                Value procv = s.hash->count("proc") ? (*s.hash)["proc"] : s;
+                Value procv = s.hash()->count("proc") ? (*s.hash())["proc"] : s;
                 ValueList one{procv};
                 try { I.callCallable(blk, one); } catch (NextEx&) {} catch (LastEx&) {} catch (DoneEx&) {}
                 Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
@@ -9224,10 +9224,10 @@ void Interpreter::registerBuiltins() {
     // `react { whenever signal(SIGINT) { $server.stop; done } }`.
     B["signal"] = [](Interpreter&, ValueList& a) -> Value {
         Value s = Value::makeHash(); s.hashKind = "Supply";
-        (*s.hash)["kind"] = Value::str("signal");
+        (*s.hash())["kind"] = Value::str("signal");
         Value sigs = Value::array();
-        for (auto& v : a) { int n = signalNumberOf(v); if (n > 0) sigs.arr->push_back(Value::integer(n)); }
-        (*s.hash)["signals"] = sigs;
+        for (auto& v : a) { int n = signalNumberOf(v); if (n > 0) sigs.arr()->push_back(Value::integer(n)); }
+        (*s.hash())["signals"] = sigs;
         return s;
     };
     B["sleep-timer"] = [](Interpreter& I, ValueList& a) -> Value {
@@ -9261,7 +9261,7 @@ void Interpreter::registerBuiltins() {
         // (.list, for, await) drain it eagerly via drainSupplyBlock — the same
         // values the old eager model produced, just computed at consumption.
         Value s = Value::makeHash(); s.hashKind = "Supply";
-        (*s.hash)["block"] = (!a.empty() && a.back().t == VT::Code) ? a.back() : Value::nil();
+        (*s.hash())["block"] = (!a.empty() && a.back().t == VT::Code) ? a.back() : Value::nil();
         return s;
     };
     B["emit"] = [](Interpreter& I, ValueList& a) -> Value {
@@ -9286,7 +9286,7 @@ void Interpreter::registerBuiltins() {
     auto sprintfArgs = [](const ValueList& a) -> ValueList {
         ValueList rest;
         for (size_t i = 1; i < a.size(); i++) {
-            if (a[i].t == VT::Array && a[i].arr) for (auto& x : *a[i].arr) rest.push_back(x);
+            if (a[i].t == VT::Array && a[i].arr()) for (auto& x : *a[i].arr()) rest.push_back(x);
             else rest.push_back(a[i]);
         }
         return rest;
@@ -9300,7 +9300,7 @@ void Interpreter::registerBuiltins() {
     // stringifies to its format string. Built by the parser from a flagged literal.
     B["__format__"] = [](Interpreter&, ValueList& a) -> Value {
         Value f = Value::makeHash(); f.hashKind = "Format";
-        (*f.hash)["fmt"] = Value::str(a.empty() ? "" : a[0].toStr());
+        (*f.hash())["fmt"] = Value::str(a.empty() ? "" : a[0].toStr());
         return f;
     };
     B["printf"] = [sprintfArgs](Interpreter& I, ValueList& a) -> Value {
@@ -9308,10 +9308,10 @@ void Interpreter::registerBuiltins() {
         // `printf($fmt, $junction)` PRINTS ONCE PER EIGENSTATE, in order — Rakudo has
         // a dedicated printf(Str(Cool), Junction:D) candidate. (sprintf does not:
         // there the junction stays one value.)
-        if (a.size() == 2 && a[1].t == VT::Array && a[1].arr &&
+        if (a.size() == 2 && a[1].t == VT::Array && a[1].arr() &&
             (a[1].enumName == "any" || a[1].enumName == "all" ||
              a[1].enumName == "one" || a[1].enumName == "none")) {
-            for (auto& e : *a[1].arr) {
+            for (auto& e : *a[1].arr()) {
                 ValueList one{e};
                 I.ioEmit(doSprintf(a[0].toStr(), one, I.langRev_), "$*OUT", false);
             }
@@ -9333,9 +9333,9 @@ void Interpreter::registerBuiltins() {
         if (a.size() < 2) return a.empty() ? Value::str("") : a.back();
         ValueList pairs(a.begin(), a.end() - 1);
         Value target = a.back();
-        if (target.t == VT::Array && target.arr) {
+        if (target.t == VT::Array && target.arr()) {
             Value out = Value::array(); out.isList = true;   // a Seq-ish list, not the Array back
-            for (auto& el : *target.arr) out.arr->push_back(I.methodCall(el, "trans", pairs));
+            for (auto& el : *target.arr()) out.arr()->push_back(I.methodCall(el, "trans", pairs));
             return out;
         }
         return I.methodCall(target, "trans", pairs);
@@ -9352,7 +9352,7 @@ void Interpreter::registerBuiltins() {
     B["snip"] = [](Interpreter& I, ValueList& a) -> Value {
         if (a.empty()) return Value::array();
         Value list = Value::array(); list.isList = true;
-        for (size_t k = 1; k < a.size(); k++) for (auto& v : toList(a[k])) list.arr->push_back(v);
+        for (size_t k = 1; k < a.size(); k++) for (auto& v : toList(a[k])) list.arr()->push_back(v);
         return I.methodCall(list, "snip", {a[0]});
     };
     B["map"] = [](Interpreter& I, ValueList& a) -> Value {
@@ -9366,8 +9366,8 @@ void Interpreter::registerBuiltins() {
         auto emit = [&](const Value& v) {
             Value r = I.callCallable(a[0], {v});
             if (r.t == VT::Array && r.isList && r.s == "Slip")
-                for (auto& x : *r.arr) out.arr->push_back(x);
-            else out.arr->push_back(r);
+                for (auto& x : *r.arr()) out.arr()->push_back(x);
+            else out.arr()->push_back(r);
         };
         if (a.size() >= 2 && a[0].t == VT::Code) {
             // the single-arg rule: ONE list argument is iterated; with SEVERAL,
@@ -9377,7 +9377,7 @@ void Interpreter::registerBuiltins() {
             if (a.size() == 2) { for (auto& v : toList(a[1])) emit(v); }
             else for (size_t i = 1; i < a.size(); i++) {
                 if (a[i].t == VT::Array && a[i].isList && a[i].s == "Slip")
-                    for (auto& v : *a[i].arr) emit(v);
+                    for (auto& v : *a[i].arr()) emit(v);
                 else emit(a[i]);
             }
         }
@@ -9404,11 +9404,11 @@ void Interpreter::registerBuiltins() {
         // what `.Slip` is for) — `grep &p, (…).Slip, (…).Slip` merges both.
         bool singleList = (pos.size() == 1 && (pos[0].t == VT::Array || pos[0].t == VT::Range) && !pos[0].itemized);
         for (auto& x : pos) {
-            bool isSlip = (x.t == VT::Array && x.arr && x.s == "Slip");
+            bool isSlip = (x.t == VT::Array && x.arr() && x.s == "Slip");
             if (isSlip || (singleList && (x.t == VT::Array || x.t == VT::Range))) {
-                if (x.t == VT::Range) for (auto& e : x.flatten()) list.arr->push_back(e);
-                else for (auto& e : *x.arr) list.arr->push_back(e);
-            } else list.arr->push_back(x);
+                if (x.t == VT::Range) for (auto& e : x.flatten()) list.arr()->push_back(e);
+                else for (auto& e : *x.arr()) list.arr()->push_back(e);
+            } else list.arr()->push_back(x);
         }
         return I.methodCall(list, "grep", margs); // one implementation
     };
@@ -9427,29 +9427,29 @@ void Interpreter::registerBuiltins() {
         }
         bool singleList = (pos.size() == 1 && (pos[0].t == VT::Array || pos[0].t == VT::Range) && !pos[0].itemized);
         for (auto& x : pos) {
-            bool isSlip = (x.t == VT::Array && x.arr && x.s == "Slip");
+            bool isSlip = (x.t == VT::Array && x.arr() && x.s == "Slip");
             if (isSlip || (singleList && (x.t == VT::Array || x.t == VT::Range))) {
-                if (x.t == VT::Range) for (auto& e : x.flatten()) list.arr->push_back(e);
-                else for (auto& e : *x.arr) list.arr->push_back(e);
-            } else list.arr->push_back(x);
+                if (x.t == VT::Range) for (auto& e : x.flatten()) list.arr()->push_back(e);
+                else for (auto& e : *x.arr()) list.arr()->push_back(e);
+            } else list.arr()->push_back(x);
         }
         return I.methodCall(list, "first", margs); // one implementation
     };
     B["push"] = [](Interpreter&, ValueList& a) -> Value {
-        if (!a.empty() && a[0].t == VT::Array) { for (size_t i = 1; i < a.size(); i++) a[0].arr->push_back(a[i]); return a[0]; }
+        if (!a.empty() && a[0].t == VT::Array) { for (size_t i = 1; i < a.size(); i++) a[0].arr()->push_back(a[i]); return a[0]; }
         return Value::any();
     };
     B["pop"] = [](Interpreter& I, ValueList& a) -> Value {
         if (!a.empty() && a[0].t == VT::Array && a[0].ext() && std::static_pointer_cast<LazySeqState>(a[0].ext())->infinite)
             throw RakuError{Value::typeObj("X::Cannot::Lazy"), "Cannot pop a lazy list"};
-        if (!a.empty() && a[0].t == VT::Array && !a[0].arr->empty()) { Value v = a[0].arr->back(); a[0].arr->pop_back(); if (v.t == VT::Array) v.itemized = true; return v; }
+        if (!a.empty() && a[0].t == VT::Array && !a[0].arr()->empty()) { Value v = a[0].arr()->back(); a[0].arr()->pop_back(); if (v.t == VT::Array) v.itemized = true; return v; }
         // empty: the METHOD's Failure, not a silent Any (see B["shift"])
         if (!a.empty() && a[0].t == VT::Array) { ValueList none; return I.methodCall(a[0], "pop", none); }
         return Value::any();
     };
     B["shift"] = [](Interpreter& I, ValueList& a) -> Value {
         if (!a.empty() && a[0].t == VT::Array && a[0].ext() && std::static_pointer_cast<LazySeqState>(a[0].ext())->infinite) I.materializeLazy(a[0], 1);
-        if (!a.empty() && a[0].t == VT::Array && !a[0].arr->empty()) { Value v = a[0].arr->front(); a[0].arr->erase(a[0].arr->begin()); if (v.t == VT::Array) v.itemized = true; return v; }
+        if (!a.empty() && a[0].t == VT::Array && !a[0].arr()->empty()) { Value v = a[0].arr()->front(); a[0].arr()->erase(a[0].arr()->begin()); if (v.t == VT::Array) v.itemized = true; return v; }
         // empty: hand off to the METHOD so the sub answers the same Failure
         // (X::Cannot::Empty) instead of a silent Any
         if (!a.empty() && a[0].t == VT::Array) { ValueList none; return I.methodCall(a[0], "shift", none); }
@@ -9470,38 +9470,38 @@ void Interpreter::registerBuiltins() {
         // container only when its parent was a list — array assignment itemises
         // each element, so `flat [[1,2],[3]]` stays two elements.
         std::function<void(const Value&, bool)> deeper = [&](const Value& x, bool ofArray) {
-            if (x.t == VT::Array && x.arr && !x.itemized && (x.isList || !ofArray))
-                for (auto& e : *x.arr) deeper(e, !x.isList);
-            else if (x.t == VT::Range) for (auto& e : x.flatten()) out.arr->push_back(e);
-            else out.arr->push_back(x);
+            if (x.t == VT::Array && x.arr() && !x.itemized && (x.isList || !ofArray))
+                for (auto& e : *x.arr()) deeper(e, !x.isList);
+            else if (x.t == VT::Range) for (auto& e : x.flatten()) out.arr()->push_back(e);
+            else out.arr()->push_back(x);
         };
         for (auto& v : a) {
-            if (v.itemized) { out.arr->push_back(v); continue; }
+            if (v.itemized) { out.arr()->push_back(v); continue; }
             // a shaped array contributes its leaves: `flat @a[3;2]` is six values
-            if (isMultiDimShaped(v)) { for (auto& e : shapedLeaves(v)) out.arr->push_back(e); continue; }
-            if (v.t == VT::Array && v.arr) { for (auto& e : *v.arr) deeper(e, !v.isList); continue; }
-            if (v.t == VT::Range) { for (auto& e : v.flatten()) out.arr->push_back(e); continue; }
+            if (isMultiDimShaped(v)) { for (auto& e : shapedLeaves(v)) out.arr()->push_back(e); continue; }
+            if (v.t == VT::Array && v.arr()) { for (auto& e : *v.arr()) deeper(e, !v.isList); continue; }
+            if (v.t == VT::Range) { for (auto& e : v.flatten()) out.arr()->push_back(e); continue; }
             // A HASH flattens to its Pairs — an EMPTY one therefore contributes
             // nothing. Pushing the hash itself made `flat %new, @new` (URI's
             // `*@new, *%bad` query setter, with no named arguments) hand a Hash
             // to code expecting a Pair: "No such method 'value'".
-            if (v.t == VT::Hash && v.hash && v.hashKind.empty()) {
-                for (auto& kv : *v.hash) out.arr->push_back(Value::pair(kv.first, kv.second));
+            if (v.t == VT::Hash && v.hash() && v.hashKind.empty()) {
+                for (auto& kv : *v.hash()) out.arr()->push_back(Value::pair(kv.first, kv.second));
                 continue;
             }
-            out.arr->push_back(v);
+            out.arr()->push_back(v);
         }
         return out;
     };
     B["cache"] = [](Interpreter&, ValueList& a) -> Value { // cache(list) — like .cache, a no-op for our eager values
         if (a.size() == 1) { if (a[0].t == VT::Range) return Value::array(a[0].flatten()); return a[0]; }
         Value out = Value::array(); out.isList = true;
-        for (auto& v : a) out.arr->push_back(v);
+        for (auto& v : a) out.arr()->push_back(v);
         return out;
     };
     B["slip"] = [](Interpreter&, ValueList& a) -> Value { // slip(4,5) spreads into the enclosing list
         Value out = Value::array(); out.isList = true; out.s = "Slip";
-        for (auto& v : a) { ValueList l = v.flatten(); for (auto& x : l) out.arr->push_back(x); }
+        for (auto& v : a) { ValueList l = v.flatten(); for (auto& x : l) out.arr()->push_back(x); }
         return out;
     };
     // NB: no B["Slip"] — a bareword `Slip` must stay a type object (Slip.new);
@@ -9511,17 +9511,17 @@ void Interpreter::registerBuiltins() {
         std::vector<ValueList> lists;
         bool slip = false; // `:slip` flattens the rounds into one list
         for (auto& v : a) {
-            if (v.t == VT::Pair && v.namedArg) { if (v.s == "slip") slip = !v.pairVal || v.pairVal->truthy(); continue; }
+            if (v.t == VT::Pair && v.namedArg) { if (v.s == "slip") slip = !v.pairVal() || v.pairVal()->truthy(); continue; }
             ValueList l = (v.t == VT::Array || v.t == VT::Range) ? v.flatten() : ValueList{v};
             lists.push_back(l);
         }
         size_t maxLen = 0; for (auto& l : lists) maxLen = std::max(maxLen, l.size());
         Value out = Value::array(); out.isList = true;
         for (size_t i = 0; i < maxLen; i++) {
-            if (slip) { for (auto& l : lists) if (i < l.size()) out.arr->push_back(l[i]); continue; }
+            if (slip) { for (auto& l : lists) if (i < l.size()) out.arr()->push_back(l[i]); continue; }
             Value round = Value::array(); round.isList = true;
-            for (auto& l : lists) if (i < l.size()) round.arr->push_back(l[i]);
-            out.arr->push_back(round);
+            for (auto& l : lists) if (i < l.size()) round.arr()->push_back(l[i]);
+            out.arr()->push_back(round);
         }
         return out;
     };
@@ -9534,23 +9534,23 @@ void Interpreter::registerBuiltins() {
             return v;
         }
         Value out = Value::array(); out.isList = true; out.b = true;
-        for (auto& v : a) out.arr->push_back(v); return out;
+        for (auto& v : a) out.arr()->push_back(v); return out;
     };
     B["eager"] = [](Interpreter&, ValueList& a) -> Value {
         if (a.size() == 1) return a[0];
-        Value out = Value::array(); out.isList = true; for (auto& v : a) out.arr->push_back(v); return out;
+        Value out = Value::array(); out.isList = true; for (auto& v : a) out.arr()->push_back(v); return out;
     };
     B["hash"] = [](Interpreter&, ValueList& a) -> Value {
         Value h = Value::makeHash();
         ValueList items; // spread list args so hash(<a 1 b 2>) pairs up (and <1 2 3> dies)
         for (auto& v : a) {
-            if (v.t == VT::Array && v.arr) for (auto& x : *v.arr) items.push_back(x);
-            else if (v.t == VT::Hash && !v.hashKind.size()) { for (auto& kv : *v.hash) (*h.hash)[kv.first] = kv.second; }
+            if (v.t == VT::Array && v.arr()) for (auto& x : *v.arr()) items.push_back(x);
+            else if (v.t == VT::Hash && !v.hashKind.size()) { for (auto& kv : *v.hash()) (*h.hash())[kv.first] = kv.second; }
             else items.push_back(v);
         }
         for (size_t i = 0; i < items.size(); i++) {
-            if (items[i].t == VT::Pair) (*h.hash)[items[i].s] = items[i].pairVal ? *items[i].pairVal : Value::any();
-            else if (i + 1 < items.size()) { (*h.hash)[items[i].toStr()] = items[i + 1]; i++; }
+            if (items[i].t == VT::Pair) (*h.hash())[items[i].s] = items[i].pairVal() ? *items[i].pairVal() : Value::any();
+            else if (i + 1 < items.size()) { (*h.hash())[items[i].toStr()] = items[i + 1]; i++; }
             else throw RakuError{Value::typeObj("X::AdHoc"),
                 "Odd number of elements found where hash initializer expected: found " +
                 std::to_string(items.size()) + " elements, last element seen: " + items[i].toStr()};
@@ -9580,17 +9580,17 @@ void Interpreter::registerBuiltins() {
         ValueList items;
         Value with;
         for (auto& v : a) {
-            if (v.t == VT::Pair && v.namedArg && v.s == "with" && v.pairVal) { with = *v.pairVal; continue; }
+            if (v.t == VT::Pair && v.namedArg && v.s == "with" && v.pairVal()) { with = *v.pairVal(); continue; }
             items.push_back(v);
         }
         Value z = I.applyReduce("Z", items);
-        if (with.t == VT::Code && z.arr) { // zip(:with(&f)) folds each tuple with &f
+        if (with.t == VT::Code && z.arr()) { // zip(:with(&f)) folds each tuple with &f
             Value out = Value::array(); out.isList = true;
-            for (auto& t : *z.arr) {
-                ValueList parts = t.t == VT::Array && t.arr ? *t.arr : ValueList{t};
+            for (auto& t : *z.arr()) {
+                ValueList parts = t.t == VT::Array && t.arr() ? *t.arr() : ValueList{t};
                 Value acc = parts.empty() ? Value::any() : parts[0];
                 for (size_t k = 1; k < parts.size(); k++) acc = I.callCallable(with, {acc, parts[k]});
-                out.arr->push_back(acc);
+                out.arr()->push_back(acc);
             }
             return out;
         }
@@ -9600,7 +9600,7 @@ void Interpreter::registerBuiltins() {
         // `:into(%h)` classifies into an existing hash, APPENDING to its lists.
         Value* into = nullptr; ValueList pos, named;
         for (auto& x : a) {
-            if (x.t == VT::Pair && x.s == "into" && x.pairVal) into = x.pairVal.get();
+            if (x.t == VT::Pair && x.s == "into" && x.pairVal()) into = x.pairVal();
             else if (x.t == VT::Pair && x.namedArg) named.push_back(x); // `:as` and friends
             else pos.push_back(x);
         }
@@ -9611,12 +9611,12 @@ void Interpreter::registerBuiltins() {
         for (auto& nv : named) ma.push_back(nv);
         Value res = I.methodCall(list, "classify", ma);
         if (!into) return res;
-        if (into->t != VT::Hash || !into->hash) *into = Value::makeHash();
-        if (res.hash) for (auto& kv : *res.hash) { // append the grouped elements
-            auto it = into->hash->find(kv.first);
-            if (it == into->hash->end()) (*into->hash)[kv.first] = kv.second;
+        if (into->t != VT::Hash || !into->hash()) *into = Value::makeHash();
+        if (res.hash()) for (auto& kv : *res.hash()) { // append the grouped elements
+            auto it = into->hash()->find(kv.first);
+            if (it == into->hash()->end()) (*into->hash())[kv.first] = kv.second;
             else if (it->second.t == VT::Array && kv.second.t == VT::Array)
-                for (auto& e : *kv.second.arr) it->second.arr->push_back(e);
+                for (auto& e : *kv.second.arr()) it->second.arr()->push_back(e);
         }
         return *into;
     };
@@ -9647,7 +9647,7 @@ void Interpreter::registerBuiltins() {
         static long long ctr = 0; ctr++;
         std::string base = "/tmp/rakupp-tmp-" + std::to_string((long long)getpid()) + "-" + std::to_string(ctr);
         std::string content;
-        for (auto& x : a) if (x.t == VT::Pair && x.s == "content") content = x.pairVal ? x.pairVal->toStr() : "";
+        for (auto& x : a) if (x.t == VT::Pair && x.s == "content") content = x.pairVal() ? x.pairVal()->toStr() : "";
         { std::ofstream out(base); out << content; }
         Value p = Value::str(base); p.hashKind = "IO"; return p;
     };
@@ -9669,7 +9669,7 @@ void Interpreter::registerBuiltins() {
         if (code.t != VT::Code) { // `start VALUE` — an already-kept promise of the value
             auto ps = std::make_shared<PromiseState>(); ps->done = true; ps->result = a.empty() ? Value::any() : a[0];
             Value p = Value::makeHash(); p.hashKind = "Promise"; p.extM() = ps;
-            (*p.hash)["status"] = Value::str("Kept"); (*p.hash)["result"] = ps->result;
+            (*p.hash())["status"] = Value::str("Kept"); (*p.hash())["result"] = ps->result;
             return p;
         }
         Value p = I.spawnPromise(code);
@@ -9685,7 +9685,7 @@ void Interpreter::registerBuiltins() {
     B["nativesizeof"] = [](Interpreter& I, ValueList& a) -> Value {
         if (a.empty()) return Value::integer(8);
         ClassInfo* ci = nullptr;
-        if (a[0].t == VT::Object && a[0].obj) ci = a[0].obj->cls.get();
+        if (a[0].t == VT::Object && a[0].obj()) ci = a[0].obj()->cls.get();
         else if (a[0].t == VT::Type) { auto it = I.classes_.find(a[0].s); if (it != I.classes_.end()) ci = it->second.get(); }
         if (ci && (ci->repr == "CStruct" || ci->repr == "CPPStruct" || ci->repr == "CUnion"))
             return Value::integer(Interpreter::ncStructSize(ci));
@@ -9716,8 +9716,8 @@ void Interpreter::registerBuiltins() {
         // a CStruct/CPointer class: box the address as an object of that class
         auto it = I.classes_.find(t);
         if (it != I.classes_.end()) {
-            Value o; o.t = VT::Object; o.obj = std::make_shared<ObjectData>();
-            o.obj->cls = it->second; o.obj->attrs["__native_ptr"] = Value::integer(addr);
+            Value o; o.t = VT::Object; o.setObj(std::make_shared<ObjectData>());
+            o.obj()->cls = it->second; o.obj()->attrs["__native_ptr"] = Value::integer(addr);
             return o;
         }
         return Value::integer(addr);
@@ -9726,8 +9726,8 @@ void Interpreter::registerBuiltins() {
         // resolve a Promise, running any pending Proc::Async work (with the timeout from an anyof timer)
         std::function<Value(Value&)> resolve = [&](Value& p) -> Value {
             // `await` a Supply drains it and yields its LAST emitted value
-            if (p.t == VT::Hash && p.hashKind == "Supply" && p.hash->count("values")) {
-                auto& vals = *(*p.hash)["values"].arr;
+            if (p.t == VT::Hash && p.hashKind == "Supply" && p.hash()->count("values")) {
+                auto& vals = *(*p.hash())["values"].arr();
                 return vals.empty() ? Value::any() : vals.back();
             }
             if (p.t != VT::Hash || p.hashKind != "Promise") return p;
@@ -9740,15 +9740,15 @@ void Interpreter::registerBuiltins() {
                     throw RakuError{ ps->cause, ps->causeMsg.empty() ? std::string("Promise broken") : ps->causeMsg };
                 return ps->result;
             }
-            std::string kind = p.hash->count("kind") ? (*p.hash)["kind"].toStr() : "";
+            std::string kind = p.hash()->count("kind") ? (*p.hash())["kind"].toStr() : "";
             if (kind == "anyof" || kind == "allof") {
                 double timeout = 0; Value* procP = nullptr;
                 std::vector<std::shared_ptr<PromiseState>> pss; // start/spawn promises in the combinator
                 std::vector<Value*> psvals;
-                if (p.hash->count("promises")) for (auto& q : *(*p.hash)["promises"].arr) {
+                if (p.hash()->count("promises")) for (auto& q : *(*p.hash())["promises"].arr()) {
                     if (q.t == VT::Hash && q.hashKind == "Promise") {
-                        std::string k = q.hash->count("kind") ? (*q.hash)["kind"].toStr() : "";
-                        if (k == "timer") timeout = (*q.hash)["seconds"].toNum();
+                        std::string k = q.hash()->count("kind") ? (*q.hash())["kind"].toStr() : "";
+                        if (k == "timer") timeout = (*q.hash())["seconds"].toNum();
                         else if (k == "proc") procP = &q;
                         else if (q.ext()) { pss.push_back(std::static_pointer_cast<PromiseState>(q.ext())); psvals.push_back(&q); }
                     }
@@ -9775,26 +9775,26 @@ void Interpreter::registerBuiltins() {
                     // reflect settled members onto their hashes so `.so`/`.status` read true
                     for (size_t i = 0; i < pss.size(); i++) {
                         std::lock_guard<std::mutex> lk(pss[i]->m);
-                        if (pss[i]->done && psvals[i]->hash) {
-                            (*psvals[i]->hash)["status"] = Value::str(pss[i]->broken ? "Broken" : "Kept");
-                            if (!pss[i]->broken) (*psvals[i]->hash)["result"] = pss[i]->result;
+                        if (pss[i]->done && psvals[i]->hash()) {
+                            (*psvals[i]->hash())["status"] = Value::str(pss[i]->broken ? "Broken" : "Kept");
+                            if (!pss[i]->broken) (*psvals[i]->hash())["result"] = pss[i]->result;
                         }
                     }
                 }
-                (*p.hash)["status"] = Value::str("Kept");
+                (*p.hash())["status"] = Value::str("Kept");
                 return p;
             }
             if (kind == "proc") { I.runProcPromise(p, 0); return p; }
-            auto it = p.hash->find("result"); return it != p.hash->end() ? it->second : p; // plain/old-style
+            auto it = p.hash()->find("result"); return it != p.hash()->end() ? it->second : p; // plain/old-style
         };
         if (a.size() == 1 && a[0].t == VT::Array) {
             Value out = Value::array(); out.isList = true;
-            for (auto& x : *a[0].arr) out.arr->push_back(resolve(x));
+            for (auto& x : *a[0].arr()) out.arr()->push_back(resolve(x));
             return out;
         }
         if (a.size() == 1) return resolve(a[0]);
         Value out = Value::array(); out.isList = true;
-        for (auto& x : a) out.arr->push_back(resolve(x));
+        for (auto& x : a) out.arr()->push_back(resolve(x));
         return out;
     };
     // set()/bag()/mix() flatten iterable args, but an itemized `$[...]` stays one
@@ -9806,10 +9806,10 @@ void Interpreter::registerBuiltins() {
                 ValueList sub = a.flatten();
                 out.insert(out.end(), sub.begin(), sub.end());
             }
-            else if (a.t == VT::Hash && !a.itemized && a.hash &&
+            else if (a.t == VT::Hash && !a.itemized && a.hash() &&
                      (a.hashKind.empty() || a.hashKind == "Map")) {
                 // a plain Hash contributes its pairs (a quanthash stays ONE element)
-                for (auto& kv : *a.hash) {
+                for (auto& kv : *a.hash()) {
                     Value p = Value::pair(kv.first, kv.second);
                     p.pairKeyM() = kv.second.pairKey();
                     out.push_back(p);
@@ -9828,14 +9828,14 @@ void Interpreter::registerBuiltins() {
     B["list"] = [](Interpreter&, ValueList& a) -> Value {
         Value out = Value::array(); out.isList = true;
         if (a.size() == 1 && (a[0].t == VT::Array || a[0].t == VT::Range) && !a[0].itemized) {
-            for (auto& x : toList(a[0])) out.arr->push_back(x);
+            for (auto& x : toList(a[0])) out.arr()->push_back(x);
             return out;
         }
-        for (auto& v : a) out.arr->push_back(v);
+        for (auto& v : a) out.arr()->push_back(v);
         return out;
     };
     B["unshift"] = [](Interpreter&, ValueList& a) -> Value {
-        if (!a.empty() && a[0].t == VT::Array) { for (size_t i = a.size(); i > 1; i--) a[0].arr->insert(a[0].arr->begin(), a[i - 1]); return Value::integer((long long)a[0].arr->size()); }
+        if (!a.empty() && a[0].t == VT::Array) { for (size_t i = a.size(); i > 1; i--) a[0].arr()->insert(a[0].arr()->begin(), a[i - 1]); return Value::integer((long long)a[0].arr()->size()); }
         return Value::any();
     };
 }
@@ -9955,9 +9955,9 @@ Value Interpreter::evalNqpOp(NqpOp* n) {
                     if (lv) {
                         if (buf.t == VT::Array || lv->t == VT::Array) {
                             if (lv->t != VT::Array) *lv = Value::array();
-                            if (buf.t == VT::Array && buf.arr) lv->arr = buf.arr; // SHARE
+                            if (buf.t == VT::Array && buf.arr()) lv->setArr(buf.arrS()); // SHARE
                         } else if (buf.t == VT::Hash) {
-                            lv->t = VT::Hash; lv->hash = buf.hash;               // SHARE
+                            lv->t = VT::Hash; lv->setHash(buf.hashS());               // SHARE
                         }
                         return n->op == O::P6BindAttrInvRes ? *lv : buf;
                     }
@@ -9992,7 +9992,7 @@ Value Interpreter::evalNqpOp(NqpOp* n) {
                 if (nn < 0) nn = 0;
                 if (lv) {
                     if (lv->t == VT::Str) lv->s.resize(nn * lv->blobElemSize(), '\0');
-                    else if (lv->t == VT::Array && lv->arr) lv->arr->resize(nn, Value::number(0));
+                    else if (lv->t == VT::Array && lv->arr()) lv->arr()->resize(nn, Value::number(0));
                 }
                 return lv ? *lv : Value::nil();
             }
@@ -10004,9 +10004,9 @@ Value Interpreter::evalNqpOp(NqpOp* n) {
                 try { lv = lvalue(a[0].get()); } catch (RakuError&) {}
                 long long idx = eval(a[1].get()).toInt();
                 Value val = eval(a[2].get());
-                if (lv && lv->t == VT::Array && lv->arr && idx >= 0) {
-                    if ((long long)lv->arr->size() <= idx) lv->arr->resize(idx + 1, Value::number(0));
-                    (*lv->arr)[idx] = Value::number(val.toNum());
+                if (lv && lv->t == VT::Array && lv->arr() && idx >= 0) {
+                    if ((long long)lv->arr()->size() <= idx) lv->arr()->resize(idx + 1, Value::number(0));
+                    (*lv->arr())[idx] = Value::number(val.toNum());
                 }
                 return val;
             }
@@ -10210,9 +10210,9 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
         case O::Concat: return Value::str(nfcNormalize(S(0) + S(1)));
         case O::Join: {
             std::string sep = S(0), out;
-            if (v.size() > 1 && v[1].t == VT::Array && v[1].arr) {
+            if (v.size() > 1 && v[1].t == VT::Array && v[1].arr()) {
                 bool first = true;
-                for (auto& e : *v[1].arr) { if (!first) out += sep; out += e.toStr(); first = false; }
+                for (auto& e : *v[1].arr()) { if (!first) out += sep; out += e.toStr(); first = false; }
             }
             return Value::str(nfcNormalize(std::move(out))); // NFG: compose across the joins
         }
@@ -10257,8 +10257,8 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
         case O::Chr: return Value::str(cpToU8((uint32_t)I(0)));
         case O::StrFromCodes: {
             std::string out;
-            if (!v.empty() && v[0].t == VT::Array && v[0].arr)
-                for (auto& e : *v[0].arr) out += cpToU8((uint32_t)e.toInt());
+            if (!v.empty() && v[0].t == VT::Array && v[0].arr())
+                for (auto& e : *v[0].arr()) out += cpToU8((uint32_t)e.toInt());
             // Rakudo strings are NFG: building one from codes COMPOSES, whatever
             // normalization the codes were in (JSON::Fast round-trips through
             // NFD codes and back)
@@ -10276,10 +10276,10 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
             // text that could not change.
             if (mode >= 0 && !cowAllAscii(cs)) cps = uniNormalize(cps, mode);
             Value target = v.size() > 2 ? v[2] : Value::array();
-            if (target.t != VT::Array || !target.arr) target = Value::array();
-            target.arr->clear();
-            target.arr->reserve(cps.size());
-            for (auto cp : cps) target.arr->push_back(Value::integer((long long)cp));
+            if (target.t != VT::Array || !target.arr()) target = Value::array();
+            target.arr()->clear();
+            target.arr()->reserve(cps.size());
+            for (auto cp : cps) target.arr()->push_back(Value::integer((long long)cp));
             return target;
         }
         case O::FindNotCClass: {
@@ -10325,65 +10325,65 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
         }
         case O::List: case O::ListI: case O::ListS: {
             Value out = Value::array();
-            for (auto& x : v) out.arr->push_back(x);
+            for (auto& x : v) out.arr()->push_back(x);
             return out;
         }
         case O::Elems:
             if (v[0].t == VT::Str) return Value::integer(v[0].blobElems()); // Buf/Blob byte count
-            return Value::integer(v[0].t == VT::Array && v[0].arr ? (long long)v[0].arr->size()
-                                 : v[0].t == VT::Hash && v[0].hash ? (long long)v[0].hash->size() : 0);
+            return Value::integer(v[0].t == VT::Array && v[0].arr() ? (long long)v[0].arr()->size()
+                                 : v[0].t == VT::Hash && v[0].hash() ? (long long)v[0].hash()->size() : 0);
         case O::Atpos: case O::AtposI: {
             long long i = I(1);
-            if (v[0].t == VT::Array && v[0].arr && i >= 0 && i < (long long)v[0].arr->size())
-                return (*v[0].arr)[i];
+            if (v[0].t == VT::Array && v[0].arr() && i >= 0 && i < (long long)v[0].arr()->size())
+                return (*v[0].arr())[i];
             if (v[0].t == VT::Str && i >= 0 && i < v[0].blobElems())  // Buf/Blob byte
                 return v[0].blobElemAt(i);
             return op == O::AtposI ? Value::integer(0) : Value::nil();
         }
         case O::Bindpos: case O::BindposI: {
-            if (v[0].t == VT::Array && v[0].arr) {
+            if (v[0].t == VT::Array && v[0].arr()) {
                 long long i = I(1);
-                while ((long long)v[0].arr->size() <= i) v[0].arr->push_back(Value::nil());
-                (*v[0].arr)[i] = v[2];
+                while ((long long)v[0].arr()->size() <= i) v[0].arr()->push_back(Value::nil());
+                (*v[0].arr())[i] = v[2];
             }
             return v.size() > 2 ? v[2] : Value::nil();
         }
         case O::Push: case O::PushI: case O::PushS:
-            if (v[0].t == VT::Array && v[0].arr) v[0].arr->push_back(v[1]);
+            if (v[0].t == VT::Array && v[0].arr()) v[0].arr()->push_back(v[1]);
             return v[1];
         case O::PopS: {
-            if (v[0].t == VT::Array && v[0].arr && !v[0].arr->empty()) {
-                Value r = v[0].arr->back(); v[0].arr->pop_back(); return r;
+            if (v[0].t == VT::Array && v[0].arr() && !v[0].arr()->empty()) {
+                Value r = v[0].arr()->back(); v[0].arr()->pop_back(); return r;
             }
             return Value::nil();
         }
         case O::ShiftI: {
-            if (v[0].t == VT::Array && v[0].arr && !v[0].arr->empty()) {
-                Value r = v[0].arr->front(); v[0].arr->erase(v[0].arr->begin()); return r;
+            if (v[0].t == VT::Array && v[0].arr() && !v[0].arr()->empty()) {
+                Value r = v[0].arr()->front(); v[0].arr()->erase(v[0].arr()->begin()); return r;
             }
             return Value::integer(0);
         }
         case O::Splice: {
             // nqp::splice(target, source, offset, count) — replace in place
-            if (v[0].t == VT::Array && v[0].arr) {
+            if (v[0].t == VT::Array && v[0].arr()) {
                 long long off = I(2), cnt = I(3);
-                auto& t = *v[0].arr;
+                auto& t = *v[0].arr();
                 if (off < 0) off = 0;
                 if (off > (long long)t.size()) off = t.size();
                 if (cnt < 0 || off + cnt > (long long)t.size()) cnt = t.size() - off;
                 t.erase(t.begin() + off, t.begin() + off + cnt);
-                if (v[1].t == VT::Array && v[1].arr)
-                    t.insert(t.begin() + off, v[1].arr->begin(), v[1].arr->end());
+                if (v[1].t == VT::Array && v[1].arr())
+                    t.insert(t.begin() + off, v[1].arr()->begin(), v[1].arr()->end());
             }
             return v[0];
         }
         case O::Hash: {
             Value h = Value::makeHash();
-            for (size_t k = 0; k + 1 < v.size(); k += 2) (*h.hash)[v[k].toStr()] = v[k + 1];
+            for (size_t k = 0; k + 1 < v.size(); k += 2) (*h.hash())[v[k].toStr()] = v[k + 1];
             return h;
         }
         case O::Bindkey:
-            if (v[0].t == VT::Hash && v[0].hash) (*v[0].hash)[S(1)] = v[2];
+            if (v[0].t == VT::Hash && v[0].hash()) (*v[0].hash())[S(1)] = v[2];
             return v.size() > 2 ? v[2] : Value::nil();
         case O::IsNull:
             // VM-level null, which is NOT Raku's undefined: Rakudo answers 0 for
@@ -10392,15 +10392,15 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
             // being a real Raku value, is not null.
             return Value::integer(!v.empty() && v[0].t == VT::Nil ? 1 : 0);
         case O::Atkey: {
-            if (v.size() < 2 || v[0].t != VT::Hash || !v[0].hash) return Value::nil();
-            auto it = v[0].hash->find(S(1));
-            return it == v[0].hash->end() ? Value::nil() : it->second;
+            if (v.size() < 2 || v[0].t != VT::Hash || !v[0].hash()) return Value::nil();
+            auto it = v[0].hash()->find(S(1));
+            return it == v[0].hash()->end() ? Value::nil() : it->second;
         }
         case O::ExistsKey:
-            return Value::integer(v.size() >= 2 && v[0].t == VT::Hash && v[0].hash &&
-                                  v[0].hash->count(S(1)) ? 1 : 0);
+            return Value::integer(v.size() >= 2 && v[0].t == VT::Hash && v[0].hash() &&
+                                  v[0].hash()->count(S(1)) ? 1 : 0);
         case O::DeleteKey:
-            if (v.size() >= 2 && v[0].t == VT::Hash && v[0].hash) v[0].hash->erase(S(1));
+            if (v.size() >= 2 && v[0].t == VT::Hash && v[0].hash()) v[0].hash()->erase(S(1));
             return v.empty() ? Value::nil() : v[0];
         case O::Create: {
             std::string tn = v[0].t == VT::Type ? v[0].s : v[0].typeName();
@@ -10421,32 +10421,32 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
             const std::string& nm = S(2);
             // a stamped Proxy-subclass instance (AttrProxy) keeps its attrs as
             // prefixed keys on the proxy hash itself
-            if (v[0].t == VT::Hash && v[0].hashKind == "Proxy" && v[0].hash &&
-                v[0].hash->count("\x01cls")) {
-                auto it = v[0].hash->find("\x01" "a" + nm);
-                return it != v[0].hash->end() ? it->second : Value::nil();
+            if (v[0].t == VT::Hash && v[0].hashKind == "Proxy" && v[0].hash() &&
+                v[0].hash()->count("\x01cls")) {
+                auto it = v[0].hash()->find("\x01" "a" + nm);
+                return it != v[0].hash()->end() ? it->second : Value::nil();
             }
             // '$!reified' / '$!storage' name the container's own backing store
             if (v[0].t == VT::Array || v[0].t == VT::Hash) return v[0];
-            if (v[0].t == VT::Object && v[0].obj) {
+            if (v[0].t == VT::Object && v[0].obj()) {
                 std::string bare = nm.size() > 2 ? nm.substr(2) : nm;
-                auto it = v[0].obj->attrs.find(bare);
-                if (it != v[0].obj->attrs.end()) return it->second;
+                auto it = v[0].obj()->attrs.find(bare);
+                if (it != v[0].obj()->attrs.end()) return it->second;
             }
             return Value::nil();
         }
         case O::Bindattr: case O::P6BindAttrInvRes: {
             const std::string& nm = S(2);
-            if (v[0].t == VT::Hash && v[0].hashKind == "Proxy" && v[0].hash &&
-                v[0].hash->count("\x01cls")) { // stamped Proxy-subclass instance
-                (*v[0].hash)["\x01" "a" + nm] = v[3];
-            } else if ((v[0].t == VT::Array && v[3].t == VT::Array && v[0].arr && v[3].arr)) {
-                *v[0].arr = *v[3].arr;             // rebind the backing buffer
-            } else if (v[0].t == VT::Hash && v[3].t == VT::Hash && v[0].hash && v[3].hash) {
-                *v[0].hash = *v[3].hash;           // (hashKind stays the invocant's: a Map keeps being a Map)
-            } else if (v[0].t == VT::Object && v[0].obj) {
+            if (v[0].t == VT::Hash && v[0].hashKind == "Proxy" && v[0].hash() &&
+                v[0].hash()->count("\x01cls")) { // stamped Proxy-subclass instance
+                (*v[0].hash())["\x01" "a" + nm] = v[3];
+            } else if ((v[0].t == VT::Array && v[3].t == VT::Array && v[0].arr() && v[3].arr())) {
+                *v[0].arr() = *v[3].arr();             // rebind the backing buffer
+            } else if (v[0].t == VT::Hash && v[3].t == VT::Hash && v[0].hash() && v[3].hash()) {
+                *v[0].hash() = *v[3].hash();           // (hashKind stays the invocant's: a Map keeps being a Map)
+            } else if (v[0].t == VT::Object && v[0].obj()) {
                 std::string bare = nm.size() > 2 ? nm.substr(2) : nm;
-                v[0].obj->attrs[bare] = v[3];
+                v[0].obj()->attrs[bare] = v[3];
             }
             return op == O::P6BindAttrInvRes ? v[0] : v[3];
         }
@@ -10455,8 +10455,8 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
         case O::What: { // the type object of the value (like .WHAT, no method dispatch)
             if (v.empty()) return Value::typeObj("Mu");
             if (v[0].t == VT::Type) return v[0];
-            if (v[0].t == VT::Object && v[0].obj && v[0].obj->cls)
-                return Value::typeObj(v[0].obj->cls->name);
+            if (v[0].t == VT::Object && v[0].obj() && v[0].obj()->cls)
+                return Value::typeObj(v[0].obj()->cls->name);
             return Value::typeObj(v[0].typeName());
         }
         case O::IsList:
@@ -10472,14 +10472,14 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
         case O::CloneOp: { // shallow clone: fresh backing store, same elements
             if (v.empty()) return Value::nil();
             Value c = v[0];
-            if (c.t == VT::Array && c.arr) { auto na = std::make_shared<ValueList>(*c.arr); c.arr = na; }
-            else if (c.t == VT::Hash && c.hash) { auto nh = std::make_shared<ValueMap>(*c.hash); c.hash = nh; }
-            else if (c.t == VT::Object && c.obj) { auto no = std::make_shared<ObjectData>(*c.obj); c.obj = no; }
+            if (c.t == VT::Array && c.arr()) { auto na = std::make_shared<ValueList>(*c.arr()); c.setArr(na); }
+            else if (c.t == VT::Hash && c.hash()) { auto nh = std::make_shared<ValueMap>(*c.hash()); c.setHash(nh); }
+            else if (c.t == VT::Object && c.obj()) { auto no = std::make_shared<ObjectData>(*c.obj()); c.setObj(no); }
             return c;
         }
         case O::Shift: { // generic array shift (ShiftI is the int variant)
-            if (!v.empty() && v[0].t == VT::Array && v[0].arr && !v[0].arr->empty()) {
-                Value f = v[0].arr->front(); v[0].arr->erase(v[0].arr->begin()); return f;
+            if (!v.empty() && v[0].t == VT::Array && v[0].arr() && !v[0].arr()->empty()) {
+                Value f = v[0].arr()->front(); v[0].arr()->erase(v[0].arr()->begin()); return f;
             }
             return Value::nil();
         }
@@ -10496,10 +10496,10 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
         case O::IseqN: return Value::integer(v.size() > 1 && v[0].toNum() == v[1].toNum() ? 1 : 0);
         case O::IsneN: return Value::integer(v.size() > 1 && v[0].toNum() != v[1].toNum() ? 1 : 0);
         case O::AtposN: { // native-num element read
-            if (!v.empty() && v[0].t == VT::Array && v[0].arr) {
+            if (!v.empty() && v[0].t == VT::Array && v[0].arr()) {
                 long long idx = I(1);
-                if (idx >= 0 && idx < (long long)v[0].arr->size())
-                    return Value::number((*v[0].arr)[idx].toNum());
+                if (idx >= 0 && idx < (long long)v[0].arr()->size())
+                    return Value::number((*v[0].arr())[idx].toNum());
             }
             return Value::number(0);
         }

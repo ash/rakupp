@@ -288,7 +288,7 @@ struct Callable {
                                                       // survives with the primed value as its default)
 };
 
-enum class VT { Nil, Any, Bool, Int, Num, Str, Array, Hash, Code, Range, Pair, Type, Whatever, Object, Rat, Regex, Match, Complex };
+enum class VT : uint8_t { Nil, Any, Bool, Int, Num, Str, Array, Hash, Code, Range, Pair, Type, Whatever, Object, Rat, Regex, Match, Complex };
 
 struct ClassInfo;
 struct ObjectData;
@@ -311,6 +311,12 @@ struct ValueExt {
     std::shared_ptr<BigInt> big;     // for VT::Int when value exceeds long long
     std::shared_ptr<BigInt> ratN, ratD; // for VT::Rat (normalized, ratD > 0)
     std::shared_ptr<Value> pairKey; // for Pair key when it's non-scalar (e.g. an array key: [..] => [..])
+    // `is default(v)` on an @/% container: the ELEMENT default. It used to ride
+    // in pairVal, which the one-payload-slot design (batch 4) made impossible —
+    // a container with a default carries arr/hash AND the default at once, the
+    // one co-occurrence the batch-2 census never sampled. Rare, so it lives
+    // here rather than costing every Value a slot.
+    std::shared_ptr<Value> elemDefault;
     std::shared_ptr<void> ext;       // opaque runtime handle: Promise/Channel/Lock/Supplier state (concurrency)
     // shaped array `my @a[2;3]`: fixed dimensions (row-major). Empty/null = unshaped.
     std::shared_ptr<std::vector<long long>> shape;
@@ -336,9 +342,29 @@ struct ValueExt {
 // most of a 28% regex regression — see BENCHMARKS.md).
 inline const ValueExt emptyValueExt{};
 
+// REPRESENTATION-PLAN phase 1, batch 4: the five payload pointers (arr, hash,
+// code, pairVal, obj) collapse into ONE slot. The batch-2 census says they are
+// mutually exclusive on every live Value except the Match family, which
+// legitimately carries positionals, nameds and .made at once — so Match gets
+// this combined body behind the same slot, and the slot itself carries a KIND
+// byte rather than trusting the type tag (a handful of sites convert a Value
+// in place, tag first, payload after; a self-describing slot keeps that legal).
+//
+// The fields stay shared_ptrs INSIDE the body — not by-value — because the
+// interpreter aliases a Match's capture list into plain Array Values
+// (`$m.list`) and replaces one copy's pointer without touching another's.
+// Pointer-in-body keeps both behaviours exactly as they were when the three
+// were separate members.
+struct MatchData {
+    std::shared_ptr<ValueList> pos;  // positional captures ($0, $1, …)
+    std::shared_ptr<ValueMap> named; // named captures ($<x>)
+    std::shared_ptr<Value> made;     // .made / .ast (was parked in pairVal)
+};
+
+// What the payload slot holds. Distinct from VT on purpose — see MatchData.
+enum class PK : uint8_t { None, List, Hash, Code, PairV, Obj, Match };
+
 struct Value {
-    VT t = VT::Any;
-    bool b = false;
     long long i = 0;
     double n = 0;
     CowStr s; // also holds type name for VT::Type, key for VT::Pair
@@ -347,33 +373,113 @@ struct Value {
     // and a trivial copy, where a std::string was 24 bytes with a constructor
     // and a destructor run on every Value copy.
     IStr hashKind;
+    // The tag and every one-byte flag sit TOGETHER so they pack into two
+    // 8-byte words instead of scattering padding through the struct (t+b
+    // alone at the front of the old layout cost 8 bytes of pure padding).
+    VT t = VT::Any;
+    bool b = false;
     bool isList = false;  // VT::Array that is a List/Seq (gists with parens)
     bool itemized = false; // $[...] / $(...): a single scalar item that does NOT flatten in list context
     bool objKeyed = false; // hash declared with a key shape (`has %!h{Mu:U}`): type-object
                            // subscript keys stay distinct ("(Name)") instead of "" like a plain hash
     bool readonly = false; // a readonly-bound parameter ($x with no `is rw`/`is copy`) — s/// dies on it
     bool namedArg = false; // a VT::Pair passed as a NAMED arg (written syntactically as k=>v / :k(v) at the callsite). A value pair defaults positional.
+    bool natSigned = false;
+    bool natFloat = false; // native float container (num32): truncates to float32 on assignment
+    PK pk_ = PK::None;    // what the payload slot p_ holds (see MatchData above)
+    int natBits = 0;      // native int width (uint8/int16/…): 0 = not native; wraps on assignment
 #ifdef RAKUPP_PTR_CENSUS
     // The census that sized the cold block; see tools/ptr-census.md. Compiled
     // out of every normal build.
     ~Value();
     unsigned ptrMask() const {
-        return (arr ? 1u : 0) | (hash ? 2u : 0) | (code ? 4u : 0) | (pairVal ? 8u : 0) |
-               (pairKey() ? 16u : 0) | (obj ? 32u : 0) | (ext() ? 64u : 0) | (big() ? 128u : 0) |
+        return (arr() ? 1u : 0) | (hash() ? 2u : 0) | (code() ? 4u : 0) | (pairVal() ? 8u : 0) |
+               (pairKey() ? 16u : 0) | (obj() ? 32u : 0) | (ext() ? 64u : 0) | (big() ? 128u : 0) |
                (ratN() ? 256u : 0) | (ratD() ? 512u : 0) | (shape() ? 1024u : 0);
     }
 #endif
-    std::shared_ptr<ValueList> arr;
-    std::shared_ptr<ValueMap> hash;
-    std::shared_ptr<Callable> code;
-    std::shared_ptr<Value> pairVal; // for Pair value
-    std::shared_ptr<ObjectData> obj; // for VT::Object
+    std::shared_ptr<void> p_;        // THE payload slot; pk_ says what it holds
     std::shared_ptr<ValueExt> x_;    // the cold block above; null on almost every Value
     IStr enumName; // non-empty for enum values: the KEY (e.g. Order: Less/Same/More)
     IStr enumType; // the enum's TYPE name (e.g. "Order", "Color") — set on values and the type-list
-    int natBits = 0;      // native int width (uint8/int16/…): 0 = not native; wraps on assignment
-    bool natSigned = false;
-    bool natFloat = false; // native float container (num32): truncates to float32 on assignment
+
+    // Payload access. Readers return RAW pointers (null when the slot holds a
+    // different kind), so `if (v.arr())` and `v.arr()->size()` read exactly as
+    // the old members did. On a Match, arr()/hash()/pairVal() resolve into the
+    // combined body — positionals, nameds, .made — which is what the three
+    // members held on a Match before the slot existed.
+    MatchData* md() const { return pk_ == PK::Match ? static_cast<MatchData*>(p_.get()) : nullptr; }
+    ValueList* arr() const {
+        if (pk_ == PK::List) return static_cast<ValueList*>(p_.get());
+        if (pk_ == PK::Match) return static_cast<MatchData*>(p_.get())->pos.get();
+        return nullptr;
+    }
+    ValueMap* hash() const {
+        if (pk_ == PK::Hash) return static_cast<ValueMap*>(p_.get());
+        if (pk_ == PK::Match) return static_cast<MatchData*>(p_.get())->named.get();
+        return nullptr;
+    }
+    Callable* code() const { return pk_ == PK::Code ? static_cast<Callable*>(p_.get()) : nullptr; }
+    ObjectData* obj() const { return pk_ == PK::Obj ? static_cast<ObjectData*>(p_.get()) : nullptr; }
+    Value* pairVal() const {
+        if (pk_ == PK::PairV) return static_cast<Value*>(p_.get());
+        if (pk_ == PK::Match) return static_cast<MatchData*>(p_.get())->made.get();
+        return nullptr;
+    }
+    // Ownership readers — the shared_ptr itself, for sites that alias a payload
+    // into another Value. On a Match these hand out the body's own pointers, so
+    // sharing semantics are identical to the old separate members.
+    std::shared_ptr<ValueList> arrS() const {
+        if (pk_ == PK::List) return std::static_pointer_cast<ValueList>(p_);
+        if (pk_ == PK::Match) return static_cast<MatchData*>(p_.get())->pos;
+        return nullptr;
+    }
+    std::shared_ptr<ValueMap> hashS() const {
+        if (pk_ == PK::Hash) return std::static_pointer_cast<ValueMap>(p_);
+        if (pk_ == PK::Match) return static_cast<MatchData*>(p_.get())->named;
+        return nullptr;
+    }
+    std::shared_ptr<Callable> codeS() const {
+        return pk_ == PK::Code ? std::static_pointer_cast<Callable>(p_) : nullptr;
+    }
+    std::shared_ptr<ObjectData> objS() const {
+        return pk_ == PK::Obj ? std::static_pointer_cast<ObjectData>(p_) : nullptr;
+    }
+    std::shared_ptr<Value> pairValS() const {
+        if (pk_ == PK::PairV) return std::static_pointer_cast<Value>(p_);
+        if (pk_ == PK::Match) return static_cast<MatchData*>(p_.get())->made;
+        return nullptr;
+    }
+    // Writers. Setting a payload REPLACES whatever kind the slot held — which
+    // is what the in-place conversion sites (`lv->t = VT::Hash; lv->setHash(…)`)
+    // always meant, and the census licenses everywhere else. On a Match the
+    // write lands INSIDE the body (a Match keeps its other parts), through a
+    // clone when the body is shared — replacing one copy's pointer never
+    // touched another copy's before, and must not now.
+    MatchData& mdW() {
+        if (p_.use_count() > 1) p_ = std::make_shared<MatchData>(*static_cast<MatchData*>(p_.get()));
+        return *static_cast<MatchData*>(p_.get());
+    }
+    void setArr(std::shared_ptr<ValueList> x) {
+        if (pk_ == PK::Match) { mdW().pos = std::move(x); return; }
+        p_ = std::move(x); pk_ = p_ ? PK::List : PK::None;
+    }
+    void setHash(std::shared_ptr<ValueMap> x) {
+        if (pk_ == PK::Match) { mdW().named = std::move(x); return; }
+        p_ = std::move(x); pk_ = p_ ? PK::Hash : PK::None;
+    }
+    void setCode(std::shared_ptr<Callable> x) { p_ = std::move(x); pk_ = p_ ? PK::Code : PK::None; }
+    void setObj(std::shared_ptr<ObjectData> x) { p_ = std::move(x); pk_ = p_ ? PK::Obj : PK::None; }
+    void setPairVal(std::shared_ptr<Value> x) {
+        if (pk_ == PK::Match) { mdW().made = std::move(x); return; }
+        p_ = std::move(x); pk_ = p_ ? PK::PairV : PK::None;
+    }
+    void setMatch(std::shared_ptr<MatchData> x) { p_ = std::move(x); pk_ = p_ ? PK::Match : PK::None; }
+    void clearPayload() { p_.reset(); pk_ = PK::None; }
+    // The buffer-steal optimisation asks "am I the only owner?" — that is the
+    // SLOT's count (for a List they share one control block, so the number is
+    // the same one the old `arr.use_count()` gave).
+    bool payloadUnique() const { return p_.use_count() == 1; }
 
     // Cold-block access. Reads go through xr() and NEVER allocate; writes go
     // through xw(), which materializes the block and — because copies share
@@ -391,6 +497,7 @@ struct Value {
     const std::shared_ptr<BigInt>& ratN() const { return xr().ratN; }
     const std::shared_ptr<BigInt>& ratD() const { return xr().ratD; }
     const std::shared_ptr<Value>& pairKey() const { return xr().pairKey; }
+    const std::shared_ptr<Value>& elemDefault() const { return xr().elemDefault; }
     const std::shared_ptr<void>& ext() const { return xr().ext; }
     const std::shared_ptr<std::vector<long long>>& shape() const { return xr().shape; }
     long long rFrom() const { return xr().rFrom; }
@@ -405,6 +512,7 @@ struct Value {
     std::shared_ptr<BigInt>& ratNM() { return xw().ratN; }
     std::shared_ptr<BigInt>& ratDM() { return xw().ratD; }
     std::shared_ptr<Value>& pairKeyM() { return xw().pairKey; }
+    std::shared_ptr<Value>& elemDefaultM() { return xw().elemDefault; }
     std::shared_ptr<void>& extM() { return xw().ext; }
     std::shared_ptr<std::vector<long long>>& shapeM() { return xw().shape; }
     long long& rFromM() { return xw().rFrom; }
@@ -458,20 +566,22 @@ struct Value {
     static Value number(double x) { Value v; v.t = VT::Num; v.n = x; return v; }
     static Value complex(double re, double imag) { Value v; v.t = VT::Complex; v.n = re; v.imM() = imag; return v; }
     static Value str(std::string x) { Value v; v.t = VT::Str; v.s = std::move(x); return v; }
-    static Value array() { Value v; v.t = VT::Array; v.arr = std::make_shared<ValueList>(); return v; }
-    static Value array(ValueList items) { Value v; v.t = VT::Array; v.arr = std::make_shared<ValueList>(std::move(items)); return v; }
+    static Value array() { Value v; v.t = VT::Array; v.setArr(std::make_shared<ValueList>()); return v; }
+    static Value array(ValueList items) { Value v; v.t = VT::Array; v.setArr(std::make_shared<ValueList>(std::move(items))); return v; }
     // a List/Seq: same storage as Array but gists with (..) instead of [..]
     static Value list(ValueList items) { Value v = array(std::move(items)); v.isList = true; return v; }
     // Wrap a C++ callable as a Raku Code value (used by native codegen for closures / WhateverCode).
     static Value closure(std::function<Value(ValueList&)> fn) {
-        Value v; v.t = VT::Code; v.code = std::make_shared<Callable>();
-        v.code->builtin = [fn](Interpreter&, ValueList& a) -> Value { return fn(a); };
+        Value v; v.t = VT::Code;
+        auto c = std::make_shared<Callable>();
+        c->builtin = [fn](Interpreter&, ValueList& a) -> Value { return fn(a); };
+        v.setCode(std::move(c));
         return v;
     }
     static Value makeHash(); // defined below ValueHash.h's include — the payload type must be complete
     static Value typeObj(std::string name) { Value v; v.t = VT::Type; v.s = std::move(name); return v; }
     static Value whatever() { Value v; v.t = VT::Whatever; return v; }
-    static Value object(std::shared_ptr<ObjectData> o) { Value v; v.t = VT::Object; v.obj = std::move(o); return v; }
+    static Value object(std::shared_ptr<ObjectData> o) { Value v; v.t = VT::Object; v.setObj(std::move(o)); return v; }
     static Value enumVal(const std::string& name, long long val) { Value v; v.t = VT::Int; v.i = val; v.enumName = name; return v; }
     // Order::Less/Same/More — the result of cmp/<=>/leg/unicmp/coll. Tagged with
     // its enum TYPE so `.WHAT.^name` is `Order`, not `Int` (Rakudo parity).
@@ -486,11 +596,17 @@ struct Value {
     static Value matchVal(std::string text, long from = 0, long to = 0); // defined below ValueHash.h's include
     // Writers use these so the containers stay valid even if matchVal is ever made lazy;
     // with eager allocation above they simply return the existing container.
-    ValueList& arrRef() { if (!arr) arr = std::make_shared<ValueList>(); return *arr; }
+    ValueList& arrRef() {
+        if (ValueList* a = arr()) return *a;
+        auto sp = std::make_shared<ValueList>();
+        ValueList& r = *sp;
+        setArr(std::move(sp));
+        return r;
+    }
     ValueMap& hashRef(); // defined below ValueHash.h's include
     static Value pair(std::string key, Value val) {
         Value v; v.t = VT::Pair; v.s = std::move(key);
-        v.pairVal = std::make_shared<Value>(std::move(val)); return v;
+        v.setPairVal(std::make_shared<Value>(std::move(val))); return v;
     }
     static Value range(long long from, long long to, bool exFrom, bool exTo) {
         Value v; v.t = VT::Range;
@@ -556,15 +672,23 @@ struct Value {
 #include "ValueHash.h"
 namespace rakupp {
 
-inline Value Value::makeHash() { Value v; v.t = VT::Hash; v.hash = std::make_shared<ValueMap>(); return v; }
+inline Value Value::makeHash() { Value v; v.t = VT::Hash; v.setHash(std::make_shared<ValueMap>()); return v; }
 inline Value Value::matchVal(std::string text, long from, long to) {
     Value v; v.t = VT::Match; v.s = std::move(text);
     ValueExt& x = v.xw(); x.rFrom = from; x.rTo = to;
-    v.arr = std::make_shared<ValueList>();
-    v.hash = std::make_shared<ValueMap>();
+    auto m = std::make_shared<MatchData>();
+    m->pos = std::make_shared<ValueList>();
+    m->named = std::make_shared<ValueMap>();
+    v.setMatch(std::move(m));
     return v;
 }
-inline ValueMap& Value::hashRef() { if (!hash) hash = std::make_shared<ValueMap>(); return *hash; }
+inline ValueMap& Value::hashRef() {
+    if (ValueMap* h = hash()) return *h;
+    auto sp = std::make_shared<ValueMap>();
+    ValueMap& r = *sp;
+    setHash(std::move(sp));
+    return r;
+}
 
 // Buf, Instant and Duration are REFERENCE types in Rakudo — two of them are the
 // same one only when they are the same object — but here they are plain tagged
@@ -603,15 +727,15 @@ std::string strPred(const std::string& s, bool& ok);  // magic decrement (ok=fal
 // The walk descends exactly as many levels as there are dimensions, so a leaf
 // that is ITSELF an array is not flattened along with the structure.
 inline bool isMultiDimShaped(const Value& v) {
-    return v.t == VT::Array && v.arr && v.shape() && v.shape()->size() >= 2;
+    return v.t == VT::Array && v.arr() && v.shape() && v.shape()->size() >= 2;
 }
 inline void shapedLeaves(const Value& v, ValueList& out) {
     const size_t ndim = v.shape() ? v.shape()->size() : 0;
     struct Walk {
         static void go(const Value& n, size_t d, size_t ndim, ValueList& out) {
             if (d == ndim) { out.push_back(n); return; }
-            if (n.t == VT::Array && n.arr)
-                for (const auto& e : *n.arr) go(e, d + 1, ndim, out);
+            if (n.t == VT::Array && n.arr())
+                for (const auto& e : *n.arr()) go(e, d + 1, ndim, out);
         }
     };
     Walk::go(v, 0, ndim, out);
@@ -768,7 +892,7 @@ struct ClassInfo {
         auto inherited = [&](ClassInfo* c) -> Value* {
             if (!c) return nullptr;
             Value* r = c->findMethodForCall(m, roleSubs);
-            if (r && r->code && r->code->isSubmethod && (!c->isRole || !roleSubs)) return nullptr;
+            if (r && r->code() && r->code()->isSubmethod && (!c->isRole || !roleSubs)) return nullptr;
             return r;
         };
         if (Value* r = inherited(parent.get())) return r;

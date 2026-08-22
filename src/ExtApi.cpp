@@ -64,19 +64,19 @@ RkValue rk_str(RkCtx c, const char* s, size_t len) {
 RkValue rk_array(RkCtx c) { return C(c)->make(Value::array()); }
 void rk_push(RkCtx, RkValue a, RkValue v) {
     Value* av = V(a);
-    if (av && av->arr && v) av->arr->push_back(*V(v));
+    if (av && av->arr() && v) av->arr()->push_back(*V(v));
 }
 void rk_list(RkCtx, RkValue a) { if (Value* av = V(a)) av->isList = true; }
 
 RkValue rk_hash(RkCtx c) { return C(c)->make(Value::makeHash()); }
 void rk_set(RkCtx c, RkValue h, const char* k, size_t klen, RkValue v) {
     Value* hv = V(h);
-    if (!hv || !hv->hash || !v) return;
-    (*hv->hash)[std::string(k ? k : "", k ? klen : 0)] = *V(v);
+    if (!hv || !hv->hash() || !v) return;
+    (*hv->hash())[std::string(k ? k : "", k ? klen : 0)] = *V(v);
     // A new key ahead of the remembered position shifts every index after it,
     // so the memo has to go. Building a hash and then walking it is ordinary;
     // interleaving the two is not, and correctness beats the fast path here.
-    if (C(c)->memoHash == hv->hash.get()) C(c)->memoHash = nullptr;
+    if (C(c)->memoHash == hv->hash()) C(c)->memoHash = nullptr;
 }
 void rk_map(RkCtx, RkValue h) { if (Value* hv = V(h)) hv->hashKind = "Map"; }
 
@@ -107,14 +107,14 @@ const char* rk_str_get(RkCtx c, RkValue v, size_t* len) {
 size_t rk_elems(RkCtx, RkValue v) {
     Value* x = V(v);
     if (!x) return 0;
-    if (x->t == VT::Array) return x->arr ? x->arr->size() : 0;
-    if (x->t == VT::Hash)  return x->hash ? x->hash->size() : 0;
+    if (x->t == VT::Array) return x->arr() ? x->arr()->size() : 0;
+    if (x->t == VT::Hash)  return x->hash() ? x->hash()->size() : 0;
     return 0;
 }
 RkValue rk_at_pos(RkCtx c, RkValue a, size_t i) {
     Value* x = V(a);
-    if (!x || !x->arr || i >= x->arr->size()) return nullptr;
-    return reinterpret_cast<RkValue>(&(*x->arr)[i]);
+    if (!x || !x->arr() || i >= x->arr()->size()) return nullptr;
+    return reinterpret_cast<RkValue>(&(*x->arr())[i]);
 }
 // Index-based access keeps the C surface tiny — no cursor type, no iterator
 // lifetime for an extension to get wrong. The cost it used to carry, an
@@ -123,16 +123,16 @@ RkValue rk_at_pos(RkCtx c, RkValue a, size_t i) {
 // cost one ++ per element.
 const char* rk_key_at(RkCtx c, RkValue h, size_t i, size_t* klen) {
     Value* x = V(h);
-    if (!x || !x->hash) return nullptr;
-    auto it = C(c)->at(x->hash.get(), i);
-    if (it == x->hash->end()) return nullptr;
+    if (!x || !x->hash()) return nullptr;
+    auto it = C(c)->at(x->hash(), i);
+    if (it == x->hash()->end()) return nullptr;
     return borrow(C(c), it->first, klen);
 }
 RkValue rk_val_at(RkCtx c, RkValue h, size_t i) {
     Value* x = V(h);
-    if (!x || !x->hash) return nullptr;
-    auto it = C(c)->at(x->hash.get(), i);
-    if (it == x->hash->end()) return nullptr;
+    if (!x || !x->hash()) return nullptr;
+    auto it = C(c)->at(x->hash(), i);
+    if (it == x->hash()->end()) return nullptr;
     return reinterpret_cast<RkValue>(const_cast<Value*>(&it->second));
 }
 
@@ -158,7 +158,7 @@ RkValue rk_named(RkCtx c, const char* name) {
     if (!x->args || !name) return nullptr;
     for (auto& a : *x->args)
         if (a.t == VT::Pair && a.namedArg && a.s == name)
-            return a.pairVal ? reinterpret_cast<RkValue>(a.pairVal.get()) : nullptr;
+            return a.pairVal() ? reinterpret_cast<RkValue>(a.pairVal()) : nullptr;
     return nullptr;
 }
 
@@ -330,9 +330,9 @@ Value extLoadModule(const std::string& path, std::string& errOut,
         // needs to get back INTO Raku.
         Value code;
         code.t = VT::Code;
-        code.code = std::make_shared<Callable>();
-        code.code->name = nm;
-        code.code->builtin = [fn, nm](Interpreter& I, ValueList& a) -> Value {
+        code.setCode(std::make_shared<Callable>());
+        code.code()->name = nm;
+        code.code()->builtin = [fn, nm](Interpreter& I, ValueList& a) -> Value {
             ExtCtx ctx;
             ctx.args = &a;
             ctx.interp = &I;

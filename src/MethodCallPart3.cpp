@@ -23,12 +23,12 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             // the numeric tower (Rat stays Rat). A double accumulator's rounding
             // depended on iteration order: 0.3 + 0.5 + … printed 13.6 in one
             // order and 13.599999999999998 in another. Rakudo is exact here.
-            if (isSet) return Value::integer((long long)inv.hash->size());
+            if (isSet) return Value::integer((long long)inv.hash()->size());
             Value t = Value::integer(0);
-            for (auto& kv : *inv.hash) t = applyArith("+", t, kv.second);
+            for (auto& kv : *inv.hash()) t = applyArith("+", t, kv.second);
             return t;
         }
-        if (m == "elems") return Value::integer((long long)inv.hash->size());
+        if (m == "elems") return Value::integer((long long)inv.hash()->size());
     }
 
     // numeric -> Complex coercion
@@ -114,7 +114,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
 
     // Cool-style numeric coercion: an object that defines .Numeric/.Bridge (but
     // not the numeric method itself) acts as its numeric value here.
-    if (inv.t == VT::Object && inv.obj) {
+    if (inv.t == VT::Object && inv.obj()) {
         static const std::set<std::string> numMeths = {
             "abs","sqrt","sin","cos","tan","asin","acos","atan","atan2","sinh","cosh","tanh",
             "asinh","acosh","atanh","sec","cosec","csc","cotan","cot","asec","acosec","acsc",
@@ -162,7 +162,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         Value upto = Value::range(0, inv.i, false, true); // ^$n
         if (args.empty()) { ValueList one{Value::integer(1)}; 
             Value got = methodCall(upto, m, one);
-            return (got.t == VT::Array && got.arr && got.arr->size() == 1) ? (*got.arr)[0] : got;
+            return (got.t == VT::Array && got.arr() && got.arr()->size() == 1) ? (*got.arr())[0] : got;
         }
         return methodCall(upto, m, args);
     }
@@ -180,8 +180,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     if (m == "rand" && inv.t == VT::Range) {
         auto softly = [](const char* type, const std::string& msg) {
             Value f = Value::makeHash(); f.hashKind = "Failure";
-            (*f.hash)["exception"] = Value::typeObj(type);
-            (*f.hash)["message"]   = Value::str(msg);
+            (*f.hash())["exception"] = Value::typeObj(type);
+            (*f.hash())["message"]   = Value::str(msg);
             return f;
         };
         static const char* kBadEnds = "X::Range::Rand::InvalidEndpoints";
@@ -249,11 +249,11 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             bool have = i < fin.size();
             if (lazy) {
                 if (!v.truthy()) break;
-                if (!have || fin[i].toNum() == 1.0) { out.arr->push_back(v); break; }
+                if (!have || fin[i].toNum() == 1.0) { out.arr()->push_back(v); break; }
             }
-            else if (!have) { out.arr->push_back(v); break; }
+            else if (!have) { out.arr()->push_back(v); break; }
             Value mod = applyBinOp("%", v, fin[i]);
-            out.arr->push_back(mod);
+            out.arr()->push_back(mod);
             v = applyBinOp("/", applyBinOp("-", v, mod), fin[i]);
         }
         return out;
@@ -284,7 +284,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             if (inv.big()) {
                 BigInt bn = *inv.big();
                 auto emit = [&](const BigInt& v) {
-                    out.arr->push_back(v.fitsLL() ? Value::integer(v.toLL()) : Value::bigint(v));
+                    out.arr()->push_back(v.fitsLL() ? Value::integer(v.toLL()) : Value::bigint(v));
                 };
                 for (auto& d : fin) {
                     long long dv = d.toInt(); if (dv == 0) break;
@@ -298,16 +298,16 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             }
             for (auto& d : fin) {
                 long long dv = d.toInt(); if (dv == 0) break;
-                out.arr->push_back(Value::integer(n % dv));
+                out.arr()->push_back(Value::integer(n % dv));
                 n /= dv;
             }
-            out.arr->push_back(Value::integer(n)); // trailing remainder
+            out.arr()->push_back(Value::integer(n)); // trailing remainder
             return out;
         }
         size_t fi = 0, ti = 0;
         ValueList tcache;
         std::shared_ptr<LazySeqState> st;
-        if (tail.t == VT::Array && tail.arr) { tcache = *tail.arr; st = std::static_pointer_cast<LazySeqState>(tail.ext()); }
+        if (tail.t == VT::Array && tail.arr()) { tcache = *tail.arr(); st = std::static_pointer_cast<LazySeqState>(tail.ext()); }
         long long rnext = tail.t == VT::Range ? tail.rFrom() + (tail.rExFrom() ? 1 : 0) : 0;
         auto next = [&](long long& d) -> bool {
             if (fi < fin.size()) { d = fin[fi++].toInt(); return true; }
@@ -327,22 +327,22 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             while (!bn.isZero()) {
                 long long d;
                 if (!next(d) || d == 1) {
-                    out.arr->push_back(bn.fitsLL() ? Value::integer(bn.toLL()) : Value::bigint(bn));
+                    out.arr()->push_back(bn.fitsLL() ? Value::integer(bn.toLL()) : Value::bigint(bn));
                     break;
                 }
                 if (d == 0) break;
                 BigInt q, r;
                 BigInt::divmod(bn, BigInt(d), q, r);
-                out.arr->push_back(r.fitsLL() ? Value::integer(r.toLL()) : Value::bigint(r));
+                out.arr()->push_back(r.fitsLL() ? Value::integer(r.toLL()) : Value::bigint(r));
                 bn = q;
             }
             return out;
         }
         while (n != 0) {
             long long d;
-            if (!next(d) || d == 1) { out.arr->push_back(Value::integer(n)); break; }
+            if (!next(d) || d == 1) { out.arr()->push_back(Value::integer(n)); break; }
             if (d == 0) break;
-            out.arr->push_back(Value::integer(n % d));
+            out.arr()->push_back(Value::integer(n % d));
             n /= d;
         }
         return out;
@@ -497,7 +497,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // zero-denominator Rats cannot round — they FAIL (X::Numeric::DivideByZero)
         if (inv.t == VT::Rat && inv.ratD() && inv.ratD()->isZero()) {
             Value f = Value::makeHash(); f.hashKind = "Failure";
-            (*f.hash)["exception"] = Value::typeObj("X::Numeric::DivideByZero");
+            (*f.hash())["exception"] = Value::typeObj("X::Numeric::DivideByZero");
             return f;
         }
         // exact rounding for Rats/Ints (big-safe): floor = div, others derive from it
@@ -584,7 +584,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         return o;
     }
     if (m == "norm" && inv.t == VT::Rat) return inv; // Rats are always stored reduced
-    if (inv.t == VT::Array && inv.arr &&
+    if (inv.t == VT::Array && inv.arr() &&
         (m == "AT-POS" || m == "EXISTS-POS" || m == "ASSIGN-POS" || m == "DELETE-POS")) {
         // multi-dim access on a shaped array (`@a.AT-POS(i, j)`): walk each index
         // level. ASSIGN-POS takes a trailing value, so its last arg is the value.
@@ -599,54 +599,54 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             bool oob = false;
             for (size_t d = 0; d + 1 < nidx; d++) { // descend to the innermost array
                 long long ix = args[d].toInt();
-                if (!cur->arr || ix < 0 || ix >= (long long)cur->arr->size()) { oob = true; break; }
-                cur = &(*cur->arr)[ix];
+                if (!cur->arr() || ix < 0 || ix >= (long long)cur->arr()->size()) { oob = true; break; }
+                cur = &(*cur->arr())[ix];
             }
             long long last = args[nidx - 1].toInt();
-            bool in = !oob && cur->t == VT::Array && cur->arr && last >= 0 && last < (long long)cur->arr->size();
-            if (m == "EXISTS-POS") return Value::boolean(in && defined((*cur->arr)[last]));
+            bool in = !oob && cur->t == VT::Array && cur->arr() && last >= 0 && last < (long long)cur->arr()->size();
+            if (m == "EXISTS-POS") return Value::boolean(in && defined((*cur->arr())[last]));
             if (m == "AT-POS") {
                 if (!in) throw RakuError{Value::typeObj("X::OutOfRange"), "Index out of range"};
-                return (*cur->arr)[last];
+                return (*cur->arr())[last];
             }
             if (m == "ASSIGN-POS") {
                 Value v = args.back();
-                if (in) (*cur->arr)[last] = v;
+                if (in) (*cur->arr())[last] = v;
                 return v;
             }
-            Value old = in ? (*cur->arr)[last] : Value::any();
-            if (in) (*cur->arr)[last] = Value::any();
+            Value old = in ? (*cur->arr())[last] : Value::any();
+            if (in) (*cur->arr())[last] = Value::any();
             return old;
         }
         long long i = args.empty() ? 0 : args[0].toInt();
-        if (i < 0) i += (long long)inv.arr->size();
-        bool in = i >= 0 && i < (long long)inv.arr->size();
-        if (m == "EXISTS-POS") return Value::boolean(in && defined((*inv.arr)[i]));
-        if (m == "AT-POS") return in ? (*inv.arr)[i] : Value::any();
+        if (i < 0) i += (long long)inv.arr()->size();
+        bool in = i >= 0 && i < (long long)inv.arr()->size();
+        if (m == "EXISTS-POS") return Value::boolean(in && defined((*inv.arr())[i]));
+        if (m == "AT-POS") return in ? (*inv.arr())[i] : Value::any();
         if (m == "ASSIGN-POS") {
             Value v = args.size() > 1 ? args[1] : Value::any();
-            if (i >= 0) { while ((long long)inv.arr->size() <= i) inv.arr->push_back(Value::any());
-                          (*inv.arr)[i] = v; }
+            if (i >= 0) { while ((long long)inv.arr()->size() <= i) inv.arr()->push_back(Value::any());
+                          (*inv.arr())[i] = v; }
             return v;
         }
         // DELETE-POS
-        Value old = in ? (*inv.arr)[i] : Value::any();
-        if (in) (*inv.arr)[i] = Value::any();
+        Value old = in ? (*inv.arr())[i] : Value::any();
+        if (in) (*inv.arr())[i] = Value::any();
         return old;
     }
     if (m == "minpairs" || m == "maxpairs") {
         // pairs whose value is the min/max (per cmp); a scalar is its 0 => self pair
         Value out = Value::array(); out.isList = true;
         std::vector<std::pair<Value, Value>> kvs; // key, value
-        if (inv.t == VT::Array && inv.arr) {
-            for (size_t k = 0; k < inv.arr->size(); k++) kvs.push_back({Value::integer((long long)k), (*inv.arr)[k]});
-        } else if (inv.t == VT::Hash && inv.hash &&
+        if (inv.t == VT::Array && inv.arr()) {
+            for (size_t k = 0; k < inv.arr()->size(); k++) kvs.push_back({Value::integer((long long)k), (*inv.arr())[k]});
+        } else if (inv.t == VT::Hash && inv.hash() &&
                    (inv.hashKind.empty() || inv.hashKind.rfind("Set", 0) == 0 ||
                     inv.hashKind.rfind("Bag", 0) == 0 || inv.hashKind.rfind("Mix", 0) == 0)) {
             // a Setty/Baggy competes on its counts (elem => count pairs)
-            for (auto& kv : *inv.hash) kvs.push_back({Value::str(kv.first), kv.second});
+            for (auto& kv : *inv.hash()) kvs.push_back({Value::str(kv.first), kv.second});
         } else {
-            out.arr->push_back(Value::pair("0", inv));
+            out.arr()->push_back(Value::pair("0", inv));
             return out;
         }
         // holes in a sparse array (and undefined values generally) do not compete
@@ -665,7 +665,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         for (auto& kv : kvs)
             if (applyArith("cmp", kv.second, best).toInt() == 0) {
                 Value p = Value::pair(kv.first.toStr(), kv.second);
-                out.arr->push_back(p);
+                out.arr()->push_back(p);
             }
         return out;
     }
@@ -677,7 +677,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         if (args[0].t == VT::Type && !args[0].ofType().empty() &&
             want.find('[') == std::string::npos)
             want += "[" + args[0].ofType() + "]";
-        std::string tn = inv.t == VT::Type ? inv.s : (inv.obj && inv.obj->cls ? inv.obj->cls->name : inv.typeName());
+        std::string tn = inv.t == VT::Type ? inv.s : (inv.obj() && inv.obj()->cls ? inv.obj()->cls->name : inv.typeName());
         if (inv.t == VT::Type && !inv.ofType().empty() && tn.find('[') == std::string::npos)
             tn += "[" + inv.ofType() + "]";
         if (tn == want || want == "Any" || want == "Mu") return Value::boolean(true);
@@ -698,7 +698,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // `.isa` is strict CLASS inheritance — a role (Numeric, Real, …) is never
         // an `isa` ancestor (use `~~`/`.does` for role membership)
         if (isBuiltinRole(want)) return Value::boolean(false);
-        ClassInfo* c0 = inv.t == VT::Object && inv.obj ? inv.obj->cls.get() : nullptr;
+        ClassInfo* c0 = inv.t == VT::Object && inv.obj() ? inv.obj()->cls.get() : nullptr;
         if (!c0) { auto cit = classes_.find(tn); if (cit != classes_.end()) c0 = cit->second.get(); }
         for (ClassInfo* c = c0; c; c = c->parent.get()) {
             if (c->name == want || c->nativeParent == want) return Value::boolean(true);
@@ -712,11 +712,11 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     // list (empty when none would). Multi dispatch already answers exactly this
     // question through scoreCandidate; there was simply no method exposing it,
     // and HTTP::Tiny gates its cookie-jar check on `.cando`.
-    if (m == "cando" && inv.t == VT::Code && inv.code && !args.empty()) {
+    if (m == "cando" && inv.t == VT::Code && inv.code() && !args.empty()) {
         ValueList call;                      // the capture's parts, as a call would see them
         const Value& cap = args[0];
-        if (cap.t == VT::Array && cap.arr)
-            for (auto& x : *cap.arr) {
+        if (cap.t == VT::Array && cap.arr())
+            for (auto& x : *cap.arr()) {
                 Value e = x;
                 if (e.t == VT::Pair) e.namedArg = true;   // its NAMED parts
                 call.push_back(std::move(e));
@@ -726,7 +726,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // part of the parameter list — `$m.cando: \(Jar, 'GET', 'x')` asks whether
         // `method add($, $)` accepts the two that follow.
         auto forCand = [&](const Value& c) {
-            if (!(c.t == VT::Code && c.code && c.code->isMethod)) return call;
+            if (!(c.t == VT::Code && c.code() && c.code()->isMethod)) return call;
             ValueList rest;
             for (size_t i = 1; i < call.size(); i++) rest.push_back(call[i]);
             return rest;
@@ -734,18 +734,18 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         Value out = Value::array(); out.isList = true;
         // Candidates, whenever there are any — an explicit `proto g(|) {*}` is not
         // flagged as a dispatcher, and scoring ITS signature accepts anything.
-        if (!inv.code->candidates.empty()) {
-            for (auto& c : inv.code->candidates) {
-                if (c.t == VT::Code && c.code && c.code->isProto) continue; // the proto
+        if (!inv.code()->candidates.empty()) {
+            for (auto& c : inv.code()->candidates) {
+                if (c.t == VT::Code && c.code() && c.code()->isProto) continue; // the proto
                                         // defines the group; its `|` accepts anything
-                if (scoreCandidate(c, forCand(c)) >= 0) out.arr->push_back(c);
+                if (scoreCandidate(c, forCand(c)) >= 0) out.arr()->push_back(c);
             }
         }
-        else if (scoreCandidate(inv, forCand(inv)) >= 0) out.arr->push_back(inv);
+        else if (scoreCandidate(inv, forCand(inv)) >= 0) out.arr()->push_back(inv);
         return out;
     }
-    if (m == "package" && inv.t == VT::Code && inv.code)
-        return Value::typeObj(inv.code->pkg.empty() ? "GLOBAL" : inv.code->pkg);
+    if (m == "package" && inv.t == VT::Code && inv.code())
+        return Value::typeObj(inv.code()->pkg.empty() ? "GLOBAL" : inv.code()->pkg);
     if (m == "of" && inv.t == VT::Type) { // array[int].of / Array[Str].of
         if (const char* vt = quantValueType(inv.s)) return Value::typeObj(vt); // Bag.of is UInt
         return Value::typeObj(inv.ofType().empty() ? "Mu" : inv.ofType());
@@ -938,7 +938,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         std::ostringstream ss; ss << in.rdbuf();
         std::string text = ss.str();
         bool bin = false;
-        for (auto& a : args) if (a.t == VT::Pair && a.s == "bin" && a.pairVal && a.pairVal->truthy()) bin = true;
+        for (auto& a : args) if (a.t == VT::Pair && a.s == "bin" && a.pairVal() && a.pairVal()->truthy()) bin = true;
         // TEXT mode translates the line separator: an IO::Handle's default
         // :nl-in is ["\n", "\r\n"], so a CRLF file reads back with plain LF
         // (`"a\r\nb".IO.slurp.encode.bytes` is 4 in Rakudo, not 5). :bin is the
@@ -964,7 +964,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         bool haveContent = false;
         for (auto& a : args) {
             if (a.t == VT::Pair && a.namedArg) {
-                if (a.s == "append") append = a.pairVal && a.pairVal->truthy();
+                if (a.s == "append") append = a.pairVal() && a.pairVal()->truthy();
             }
             else if (!haveContent) { content = a.toStr(); haveContent = true; }
         }
@@ -999,8 +999,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         struct stat st;
         if (stat(inv.toStr().c_str(), &st) != 0) {
             Value f = Value::makeHash(); f.hashKind = "Failure";
-            (*f.hash)["exception"] = Value::typeObj("X::IO::DoesNotExist");
-            (*f.hash)["message"] = Value::str("Failed to stat '" + inv.toStr() + "': no such file or directory");
+            (*f.hash())["exception"] = Value::typeObj("X::IO::DoesNotExist");
+            (*f.hash())["message"] = Value::str("Failed to stat '" + inv.toStr() + "': no such file or directory");
             return f;
         }
         if (m == "z") return Value::boolean(st.st_size == 0);
@@ -1010,8 +1010,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         struct stat st;
         if (stat(inv.toStr().c_str(), &st) != 0) {
             Value f = Value::makeHash(); f.hashKind = "Failure";
-            (*f.hash)["exception"] = Value::typeObj("X::IO::DoesNotExist");
-            (*f.hash)["message"] = Value::str("Failed to stat '" + inv.toStr() + "': no such file or directory");
+            (*f.hash())["exception"] = Value::typeObj("X::IO::DoesNotExist");
+            (*f.hash())["message"] = Value::str("Failed to stat '" + inv.toStr() + "': no such file or directory");
             return f;
         }
         char buf[8]; snprintf(buf, sizeof buf, "0%03o", st.st_mode & 07777);
@@ -1042,7 +1042,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         std::string from = inv.toStr(), to = args[0].toStr();
         bool createonly = false;
         for (auto& a : args)
-            if (a.t == VT::Pair && a.s == "createonly") createonly = !a.pairVal || a.pairVal->truthy();
+            if (a.t == VT::Pair && a.s == "createonly") createonly = !a.pairVal() || a.pairVal()->truthy();
         // Copying or MOVING a file onto itself is an error, not a no-op: `rename`
         // succeeds on the same path and `copy` would truncate the source before
         // reading it. `rename` is the exception — Rakudo lets that one through.
@@ -1051,8 +1051,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             if (::stat(from.c_str(), &sf) == 0 && ::stat(to.c_str(), &st) == 0 &&
                 sf.st_dev == st.st_dev && sf.st_ino == st.st_ino) {
                 Value f = Value::makeHash(); f.hashKind = "Failure";
-                (*f.hash)["exception"] = Value::typeObj(m == "move" ? "X::IO::Move" : "X::IO::Copy");
-                (*f.hash)["message"] = Value::str(
+                (*f.hash())["exception"] = Value::typeObj(m == "move" ? "X::IO::Move" : "X::IO::Copy");
+                (*f.hash())["message"] = Value::str(
                     "Failed to " + m + " '" + from + "' to '" + to +
                     "': source and target are the same file");
                 return f;
@@ -1091,13 +1091,13 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     }
     if (m == "path") {
         if (inv.t == VT::Hash && inv.hashKind == "FileHandle") {
-            auto st = inv.hash->find("std"); // standard streams: an IO::Special
-            if (st != inv.hash->end()) {
+            auto st = inv.hash()->find("std"); // standard streams: an IO::Special
+            if (st != inv.hash()->end()) {
                 std::string nm = st->second.toStr() == "err" ? "<STDERR>" : st->second.toStr() == "in" ? "<STDIN>" : "<STDOUT>";
                 Value sp = Value::str(nm); sp.hashKind = "IO::Special"; return sp;
             }
-            auto pt = inv.hash->find("path");
-            if (pt != inv.hash->end()) return pt->second;
+            auto pt = inv.hash()->find("path");
+            if (pt != inv.hash()->end()) return pt->second;
         }
         return Value::str(inv.toStr());
     }
@@ -1159,10 +1159,10 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             if (m == "volume" || m == "dirname" || m == "basename" || m == "parts") {
                 ValueList sa{Value::str(inv.s)};
                 Value r;
-                if (ioSpecMethod(*this, spec, "split", sa, r) && r.t == VT::Hash && r.hash) {
+                if (ioSpecMethod(*this, spec, "split", sa, r) && r.t == VT::Hash && r.hash()) {
                     if (m == "parts") { r.hashKind = "IO::Path::Parts"; return r; }
-                    auto it = r.hash->find(m);
-                    if (it != r.hash->end()) return it->second;
+                    auto it = r.hash()->find(m);
+                    if (it != r.hash()->end()) return it->second;
                 }
             }
             if (m == "cleanup") {
@@ -1219,11 +1219,11 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         if (m == "parts") {
             std::string full = inv.toStr();
             Value pp = Value::makeHash(); pp.hashKind = "IO::Path::Parts";
-            (*pp.hash)["volume"]   = Value::str("");
-            (*pp.hash)["dirname"]  = Value::str(dirOf(full));
+            (*pp.hash())["volume"]   = Value::str("");
+            (*pp.hash())["dirname"]  = Value::str(dirOf(full));
             std::string b = full; while (b.size() > 1 && b.back() == '/') b.pop_back();
             auto bp = b.find_last_of('/');
-            (*pp.hash)["basename"] = Value::str(bp == std::string::npos ? b : b.substr(bp + 1));
+            (*pp.hash())["basename"] = Value::str(bp == std::string::npos ? b : b.substr(bp + 1));
             return pp;
         }
         if (m == "sibling") return asIO(dirOf(inv.toStr()) + "/" + (args.empty() ? "" : a0().toStr()));
@@ -1261,8 +1261,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             // count in the range the name actually has. Neither invents parts.
             long long lo = 1, hi = 1;
             for (auto& a : args)
-                if (a.t == VT::Pair && a.s == "parts" && a.pairVal) {
-                    const Value& p = *a.pairVal;
+                if (a.t == VT::Pair && a.s == "parts" && a.pairVal()) {
+                    const Value& p = *a.pairVal();
                     if (p.t == VT::Range) {
                         lo = p.rFrom() + (p.rExFrom() ? 1 : 0);
                         hi = p.rTo() >= 9000000000000000000LL ? avail : p.rTo() - (p.rExTo() ? 1 : 0);
@@ -1279,7 +1279,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             if (repl) {
                 std::string nw = repl->toStr(), joiner = nw.empty() ? "" : ".";
                 for (auto& a : args)
-                    if (a.t == VT::Pair && a.s == "joiner" && a.pairVal) joiner = a.pairVal->toStr();
+                    if (a.t == VT::Pair && a.s == "joiner" && a.pairVal()) joiner = a.pairVal()->toStr();
                 // no extension of the requested size exists → nothing is replaced
                 if (take < lo && lo > 0) return asIO(inv.toStr());
                 if (take < 0) take = 0;
@@ -1376,7 +1376,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             // silently returned everything.
             Value test; bool haveTest = false;
             for (auto& x : args)
-                if (x.t == VT::Pair && x.s == "test" && x.pairVal) { test = *x.pairVal; haveTest = true; }
+                if (x.t == VT::Pair && x.s == "test" && x.pairVal()) { test = *x.pairVal(); haveTest = true; }
 
             Value out = Value::array(); out.isList = true;
             std::string base = inv.toStr();
@@ -1391,7 +1391,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                     // a `.` directory contributes nothing to the entry's path —
                     // `'.'.IO.dir` yields `META6.json`, not `./META6.json`, the
                     // same rule `.child` follows
-                    out.arr->push_back(asIO(base == "." ? nm
+                    out.arr()->push_back(asIO(base == "." ? nm
                         : base + (base.empty() || base.back() == '/' ? "" : "/") + nm));
                 }
                 closedir(d);
@@ -1429,7 +1429,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     }
     if (m == "open") { // returns a buffered file handle
         Value h = Value::makeHash(); h.hashKind = "FileHandle";
-        (*h.hash)["path"] = Value::str(inv.toStr());
+        (*h.hash())["path"] = Value::str(inv.toStr());
         std::string mode = "r"; bool excl = false;
         for (auto& a : args) if (a.t == VT::Pair) {
             if (a.s == "w") mode = "w"; else if (a.s == "a") mode = "a"; else if (a.s == "r") mode = "r";
@@ -1448,31 +1448,31 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             if (!probe) throw RakuError{Value::typeObj("X::IO::DoesNotExist"),
                 "Failed to open file " + inv.toStr() + ": no such file or directory"};
         }
-        (*h.hash)["mode"] = Value::str(mode);
-        (*h.hash)["buffer"] = Value::str("");
+        (*h.hash())["mode"] = Value::str(mode);
+        (*h.hash())["buffer"] = Value::str("");
         if (mode == "w") { std::ofstream create(inv.toStr(), std::ios::trunc); } // the file exists immediately
         if (mode == "rw") { std::ofstream create(inv.toStr(), std::ios::app); }  // exists immediately, kept intact
-        if (mode != "r") registerWriteHandle(h.hash); // flush at exit if not closed
+        if (mode != "r") registerWriteHandle(h.hashS()); // flush at exit if not closed
         return h;
     }
     if (inv.t == VT::Hash && inv.hashKind == "FileHandle") {
         // IO::Handle accessors (with defaults); writable via lvalue()
-        if (m == "chomp")  { auto it = inv.hash->find("chomp");  return it != inv.hash->end() ? it->second : Value::boolean(true); }
+        if (m == "chomp")  { auto it = inv.hash()->find("chomp");  return it != inv.hash()->end() ? it->second : Value::boolean(true); }
         // .lock/.unlock (flock): rakupp handles are buffered (no live OS fd), so
         // there is nothing to flock; report success. Cross-PROCESS exclusion (zef's
         // lock-file-protect guards concurrent zef runs) is thus not provided — fine
         // for a single interpreter process, revisit if real fd-backed IO lands.
         if (m == "lock" || m == "unlock") return Value::boolean(true);
-        if (m == "encoding") { auto it = inv.hash->find("encoding"); return it != inv.hash->end() ? it->second : Value::str("utf8"); }
-        if (m == "nl-in")  { auto it = inv.hash->find("nl-in");  return it != inv.hash->end() ? it->second : Value::str("\n"); }
-        if (m == "nl-out") { auto it = inv.hash->find("nl-out"); return it != inv.hash->end() ? it->second : Value::str("\n"); }
+        if (m == "encoding") { auto it = inv.hash()->find("encoding"); return it != inv.hash()->end() ? it->second : Value::str("utf8"); }
+        if (m == "nl-in")  { auto it = inv.hash()->find("nl-in");  return it != inv.hash()->end() ? it->second : Value::str("\n"); }
+        if (m == "nl-out") { auto it = inv.hash()->find("nl-out"); return it != inv.hash()->end() ? it->second : Value::str("\n"); }
         if (m == "path" || m == "IO") {
-            auto st = inv.hash->find("std"); // standard streams: an IO::Special
-            if (st != inv.hash->end()) {
+            auto st = inv.hash()->find("std"); // standard streams: an IO::Special
+            if (st != inv.hash()->end()) {
                 std::string nm = st->second.toStr() == "err" ? "<STDERR>" : st->second.toStr() == "in" ? "<STDIN>" : "<STDOUT>";
                 Value sp = Value::str(nm); sp.hashKind = "IO::Special"; return sp;
             }
-            return (*inv.hash)["path"];
+            return (*inv.hash())["path"];
         }
         if (m == "say" || m == "print" || m == "put" || m == "printf") {
             std::string s;
@@ -1484,8 +1484,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 for (auto& a : args) s += (m == "say" ? a.gist() : a.toStr());
                 if (m != "print") s += "\n";
             }
-            auto stdit = inv.hash->find("std");
-            if (stdit != inv.hash->end()) { // $*OUT / $*ERR — write straight to the stream
+            auto stdit = inv.hash()->find("std");
+            if (stdit != inv.hash()->end()) { // $*OUT / $*ERR — write straight to the stream
                 std::lock_guard<std::mutex> lk(rtOutMutex());
                 (stdit->second.toStr() == "err" ? std::cerr : std::cout) << s;
                 return Value::boolean(true);
@@ -1497,14 +1497,14 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             // output lock it is one update at a time.
             {
                 std::lock_guard<std::mutex> lk(rtOutMutex());
-                Value& buf = (*inv.hash)["buffer"];
+                Value& buf = (*inv.hash())["buffer"];
                 buf = Value::str(buf.toStr() + s);
             }
             return Value::boolean(true);
         }
         if (m == "t") { // is the handle a terminal? files never; std handles ask isatty
-            auto stdit = inv.hash->find("std");
-            if (stdit == inv.hash->end()) return Value::boolean(false);
+            auto stdit = inv.hash()->find("std");
+            if (stdit == inv.hash()->end()) return Value::boolean(false);
             std::string which = stdit->second.toStr();
 #ifdef _WIN32
             int fd = which == "err" ? 2 : which == "in" ? 0 : 1;
@@ -1518,11 +1518,11 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             std::string bytes;
             for (auto& a : args) {
                 if (a.t == VT::Str) bytes += a.s; // Buf/Blob byte string (or a plain Str's bytes)
-                else if ((a.t == VT::Array || a.t == VT::Range) && !(a.t == VT::Array && !a.arr))
+                else if ((a.t == VT::Array || a.t == VT::Range) && !(a.t == VT::Array && !a.arr()))
                     for (auto& e : a.flatten()) bytes += (char)(unsigned char)(e.toInt() & 0xFF);
             }
-            auto wstd = inv.hash->find("std");
-            if (wstd != inv.hash->end()) { // $*OUT / $*ERR: straight to the stream,
+            auto wstd = inv.hash()->find("std");
+            if (wstd != inv.hash()->end()) { // $*OUT / $*ERR: straight to the stream,
                 std::lock_guard<std::mutex> lk(rtOutMutex()); // as .print does — a std
                 std::ostream& os = wstd->second.toStr() == "err" ? std::cerr : std::cout;
                 os.write(bytes.data(), (std::streamsize)bytes.size()); // handle has no path
@@ -1530,7 +1530,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             }
             {   // same read-modify-write as .print above, same lock
                 std::lock_guard<std::mutex> lk(rtOutMutex());
-                Value& buf = (*inv.hash)["buffer"];
+                Value& buf = (*inv.hash())["buffer"];
                 buf = Value::str(buf.toStr() + bytes);
             }
             return Value::boolean(true);
@@ -1539,7 +1539,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             long long want = args.empty() ? 65536 : args[0].toInt();
             // $*IN has no path to slurp: read the bytes as they arrive, so a
             // terminal in raw mode delivers each keystroke instead of nothing.
-            if (inv.hash->find("std") != inv.hash->end() && (*inv.hash)["std"].toStr() == "in") {
+            if (inv.hash()->find("std") != inv.hash()->end() && (*inv.hash())["std"].toStr() == "in") {
                 std::string got;
                 if (want < 0) want = 0;
                 for (long long i = 0; i < want; i++) {
@@ -1551,21 +1551,21 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 b.hashKind = "Buf"; identify(b);
                 return b;
             }
-            if (inv.hash->find("bytes") == inv.hash->end()) {
-                std::ifstream in((*inv.hash)["path"].toStr(), std::ios::binary);
+            if (inv.hash()->find("bytes") == inv.hash()->end()) {
+                std::ifstream in((*inv.hash())["path"].toStr(), std::ios::binary);
                 std::ostringstream ss; ss << in.rdbuf();
-                (*inv.hash)["bytes"] = Value::str(ss.str());
-                (*inv.hash)["bpos"] = Value::integer(0);
+                (*inv.hash())["bytes"] = Value::str(ss.str());
+                (*inv.hash())["bpos"] = Value::integer(0);
             }
-            const std::string& all = (*inv.hash)["bytes"].s;
-            long long pos = (*inv.hash)["bpos"].toInt();
+            const std::string& all = (*inv.hash())["bytes"].s;
+            long long pos = (*inv.hash())["bpos"].toInt();
             if (pos < 0) pos = 0;
             if (want < 0) want = 0;
             if (pos > (long long)all.size()) pos = all.size();
             long long take = std::min(want, (long long)all.size() - pos);
             Value b = Value::str(all.substr((size_t)pos, (size_t)take));
             b.hashKind = "Buf"; identify(b);
-            (*inv.hash)["bpos"] = Value::integer(pos + take);
+            (*inv.hash())["bpos"] = Value::integer(pos + take);
             return b;
         }
         // .flush — put what has been written on disk NOW, without closing. These
@@ -1574,58 +1574,58 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // it runs) saw nothing until it exited — and `.flush` itself did not
         // exist, so it died instead.
         if (m == "flush") {
-            auto st = inv.hash->find("std");
-            if (st != inv.hash->end()) {
+            auto st = inv.hash()->find("std");
+            if (st != inv.hash()->end()) {
                 if (st->second.toStr() == "err") std::cerr.flush(); else std::cout.flush();
                 return Value::boolean(true);
             }
-            std::string mode = (*inv.hash)["mode"].toStr();
-            const std::string& buf = (*inv.hash)["buffer"].s;
+            std::string mode = (*inv.hash())["mode"].toStr();
+            const std::string& buf = (*inv.hash())["buffer"].s;
             if (!buf.empty() && (mode == "w" || mode == "a" || mode == "rw" || mode == "update")) {
-                bool wrote = (*inv.hash)["wrote"].truthy();
-                std::ofstream out((*inv.hash)["path"].toStr(),
+                bool wrote = (*inv.hash())["wrote"].truthy();
+                std::ofstream out((*inv.hash())["path"].toStr(),
                                   std::ios::binary | ((mode == "a" || wrote) ? std::ios::app : std::ios::trunc));
                 if (out) out << buf;
                 // The buffer is now on disk: keep only what comes AFTER it, and
                 // remember to append from here on. Truncating again at close
                 // would delete exactly what the flush was for.
-                (*inv.hash)["buffer"] = Value::str("");
-                (*inv.hash)["wrote"]  = Value::boolean(true);
+                (*inv.hash())["buffer"] = Value::str("");
+                (*inv.hash())["wrote"]  = Value::boolean(true);
             }
             return Value::boolean(true);
         }
         if (m == "close") {
-            std::string mode = (*inv.hash)["mode"].toStr();
-            const std::string& buf = (*inv.hash)["buffer"].s;
-            bool wrote = (*inv.hash)["wrote"].truthy();   // a .flush already put some on disk
+            std::string mode = (*inv.hash())["mode"].toStr();
+            const std::string& buf = (*inv.hash())["buffer"].s;
+            bool wrote = (*inv.hash())["wrote"].truthy();   // a .flush already put some on disk
             // rw/update flush only when something was WRITTEN — an untouched
             // rw handle on an existing file must not wipe it with a trunc
             bool write = (mode == "w" || mode == "a" || ((mode == "rw" || mode == "update") && !buf.empty()));
             if (wrote && buf.empty()) write = false;      // everything is already there
             if (write) {
-                std::ofstream out((*inv.hash)["path"].toStr(),
+                std::ofstream out((*inv.hash())["path"].toStr(),
                                   std::ios::binary | ((mode == "a" || wrote) ? std::ios::app : std::ios::trunc));
                 if (out) out << buf;
             }
-            (*inv.hash)["flushed"] = Value::boolean(true); // exit-flush skips it now
+            (*inv.hash())["flushed"] = Value::boolean(true); // exit-flush skips it now
             return Value::boolean(true);
         }
         if (m == "spurt") { // IO::Handle.spurt($content) — write through the open handle
             Value c = args.empty() ? Value::str("") : args[0];
-            (*inv.hash)["buffer"] = Value::str((*inv.hash)["buffer"].toStr() + c.toStr());
+            (*inv.hash())["buffer"] = Value::str((*inv.hash())["buffer"].toStr() + c.toStr());
             return Value::boolean(true); // flushed to "path" on .close (zef's spurt-package-list)
         }
         if (m == "slurp") {
-            auto cap = inv.hash->find("captured"); // in-memory handle (e.g. Proc.out)
-            if (cap != inv.hash->end() && cap->second.truthy()) return (*inv.hash)["buffer"];
-            if (inv.hash->find("std") != inv.hash->end() && (*inv.hash)["std"].toStr() == "in") {
+            auto cap = inv.hash()->find("captured"); // in-memory handle (e.g. Proc.out)
+            if (cap != inv.hash()->end() && cap->second.truthy()) return (*inv.hash())["buffer"];
+            if (inv.hash()->find("std") != inv.hash()->end() && (*inv.hash())["std"].toStr() == "in") {
                 std::ostringstream ss; ss << std::cin.rdbuf(); return Value::str(ss.str()); // $*IN.slurp
             }
-            std::ifstream in((*inv.hash)["path"].toStr()); std::ostringstream ss; ss << in.rdbuf(); return Value::str(ss.str());
+            std::ifstream in((*inv.hash())["path"].toStr()); std::ostringstream ss; ss << in.rdbuf(); return Value::str(ss.str());
         }
         // .getc / .readchars: load the file's codepoints once, track a cursor in "cpos".
         if (m == "getc" || m == "readchars") {
-            if (inv.hash->find("std") != inv.hash->end() && (*inv.hash)["std"].toStr() == "in") {
+            if (inv.hash()->find("std") != inv.hash()->end() && (*inv.hash())["std"].toStr() == "in") {
                 // Straight off the stream, one UTF-8 character at a time: the
                 // whole point on a terminal is that the next character has not
                 // been typed yet, so there is nothing to load up front.
@@ -1647,120 +1647,120 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 if (m == "getc") return out.empty() ? Value::nil() : Value::str(out);
                 return Value::str(out);
             }
-            if (inv.hash->find("cps") == inv.hash->end()) {
-                std::string path = (*inv.hash)["path"].toStr();
+            if (inv.hash()->find("cps") == inv.hash()->end()) {
+                std::string path = (*inv.hash())["path"].toStr();
                 struct stat st;
                 if (::stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode))
                     throw RakuError{Value::typeObj("X::IO"), "Cannot read characters from a directory: " + path};
                 std::ifstream in(path); std::ostringstream ss; ss << in.rdbuf();
                 Value cps = Value::array();
-                for (auto cp : utf8cp(ss.str())) cps.arr->push_back(Value::str(cpToUtf8(cp)));
-                (*inv.hash)["cps"] = cps;
-                (*inv.hash)["cpos"] = Value::integer(0);
+                for (auto cp : utf8cp(ss.str())) cps.arr()->push_back(Value::str(cpToUtf8(cp)));
+                (*inv.hash())["cps"] = cps;
+                (*inv.hash())["cpos"] = Value::integer(0);
             }
-            long pos = (*inv.hash)["cpos"].toInt();
-            auto& cps = *(*inv.hash)["cps"].arr;
+            long pos = (*inv.hash())["cpos"].toInt();
+            auto& cps = *(*inv.hash())["cps"].arr();
             if (m == "readchars") { // read up to N chars (default 65536), "" at EOF
                 long want = args.empty() ? 65536 : args[0].toInt();
                 std::string out; long got = 0;
                 for (; got < want && pos < (long)cps.size(); got++, pos++) out += cps[pos].toStr();
-                (*inv.hash)["cpos"] = Value::integer(pos);
+                (*inv.hash())["cpos"] = Value::integer(pos);
                 return Value::str(out);
             }
             if (pos >= (long)cps.size()) return Value::nil(); // getc at EOF → Nil
-            (*inv.hash)["cpos"] = Value::integer(pos + 1);
+            (*inv.hash())["cpos"] = Value::integer(pos + 1);
             return cps[pos];
         }
         // reading: lazily load the file into lines, track a cursor in "pos"
-        bool isStdin = inv.hash->find("std") != inv.hash->end() && (*inv.hash)["std"].toStr() == "in";
+        bool isStdin = inv.hash()->find("std") != inv.hash()->end() && (*inv.hash())["std"].toStr() == "in";
         if (m == "get" || m == "getline" || m == "lines" || m == "eof" || m == "words" || m == "slurp-rest") {
-            if (inv.hash->find("lines") == inv.hash->end()) {
+            if (inv.hash()->find("lines") == inv.hash()->end()) {
                 // a custom line separator (`.nl-in = "+"`) splits on that instead of \n
                 std::string sep;
-                auto nit = inv.hash->find("nl-in");
-                if (nit != inv.hash->end()) {
+                auto nit = inv.hash()->find("nl-in");
+                if (nit != inv.hash()->end()) {
                     if (nit->second.t == VT::Str) sep = nit->second.s;
-                    else if (nit->second.t == VT::Array && nit->second.arr && !nit->second.arr->empty())
-                        sep = (*nit->second.arr)[0].toStr(); // Array nl-in: first separator
+                    else if (nit->second.t == VT::Array && nit->second.arr() && !nit->second.arr()->empty())
+                        sep = (*nit->second.arr())[0].toStr(); // Array nl-in: first separator
                 }
                 Value lines = Value::array();
                 if (!sep.empty() && sep != "\n") {
                     std::string content;
                     if (isStdin) { std::ostringstream ss; ss << std::cin.rdbuf(); content = ss.str(); }
-                    else { std::ifstream in((*inv.hash)["path"].toStr()); std::ostringstream ss; ss << in.rdbuf(); content = ss.str(); }
+                    else { std::ifstream in((*inv.hash())["path"].toStr()); std::ostringstream ss; ss << in.rdbuf(); content = ss.str(); }
                     size_t start = 0, p;
                     while ((p = content.find(sep, start)) != std::string::npos) {
-                        lines.arr->push_back(Value::str(content.substr(start, p - start)));
+                        lines.arr()->push_back(Value::str(content.substr(start, p - start)));
                         start = p + sep.size();
                     }
-                    if (start < content.size()) lines.arr->push_back(Value::str(content.substr(start)));
+                    if (start < content.size()) lines.arr()->push_back(Value::str(content.substr(start)));
                 } else {
                     std::string line;
                     // an IN-MEMORY handle ($*ARGFILES, Proc.out/.err) has its
                     // whole content in "buffer" — there is no file to reopen
-                    auto capIt = inv.hash->find("captured");
-                    if (capIt != inv.hash->end() && capIt->second.truthy()) {
-                        const std::string& content = (*inv.hash)["buffer"].s;
+                    auto capIt = inv.hash()->find("captured");
+                    if (capIt != inv.hash()->end() && capIt->second.truthy()) {
+                        const std::string& content = (*inv.hash())["buffer"].s;
                         size_t start = 0;
                         while (start <= content.size()) {
                             size_t nl = content.find('\n', start);
                             if (nl == std::string::npos) {
-                                if (start < content.size()) lines.arr->push_back(Value::str(content.substr(start)));
+                                if (start < content.size()) lines.arr()->push_back(Value::str(content.substr(start)));
                                 break;
                             }
                             std::string l = content.substr(start, nl - start);
                             if (!l.empty() && l.back() == '\r') l.pop_back();
-                            lines.arr->push_back(Value::str(l));
+                            lines.arr()->push_back(Value::str(l));
                             start = nl + 1;
                         }
                     }
                     else if (isStdin) { // $*IN — read standard input
                         while (std::getline(std::cin, line)) {
                             if (!line.empty() && line.back() == '\r') line.pop_back();
-                            lines.arr->push_back(Value::str(line));
+                            lines.arr()->push_back(Value::str(line));
                         }
                     } else {
-                        std::ifstream in((*inv.hash)["path"].toStr());
+                        std::ifstream in((*inv.hash())["path"].toStr());
                         while (std::getline(in, line)) {
                             if (!line.empty() && line.back() == '\r') line.pop_back();
-                            lines.arr->push_back(Value::str(line));
+                            lines.arr()->push_back(Value::str(line));
                         }
                     }
                 }
-                (*inv.hash)["lines"] = lines;
-                (*inv.hash)["pos"] = Value::integer(0);
+                (*inv.hash())["lines"] = lines;
+                (*inv.hash())["pos"] = Value::integer(0);
             }
             if (m == "words") { // remaining input split on whitespace
-                auto& ln = *(*inv.hash)["lines"].arr;
-                long long p = (*inv.hash)["pos"].toInt();
+                auto& ln = *(*inv.hash())["lines"].arr();
+                long long p = (*inv.hash())["pos"].toInt();
                 std::string all;
                 for (long long i = p; i < (long long)ln.size(); i++) { if (!all.empty()) all += "\n"; all += ln[i].toStr(); }
-                (*inv.hash)["pos"] = Value::integer((long long)ln.size());
+                (*inv.hash())["pos"] = Value::integer((long long)ln.size());
                 Value out = Value::array(); out.isList = true;
                 std::istringstream ws(all); std::string w;
-                while (ws >> w) out.arr->push_back(Value::str(w));
+                while (ws >> w) out.arr()->push_back(Value::str(w));
                 return out;
             }
             if (m == "slurp-rest") {
-                auto& ln = *(*inv.hash)["lines"].arr;
-                long long p = (*inv.hash)["pos"].toInt();
+                auto& ln = *(*inv.hash())["lines"].arr();
+                long long p = (*inv.hash())["pos"].toInt();
                 std::string all;
                 for (long long i = p; i < (long long)ln.size(); i++) { all += ln[i].toStr(); all += "\n"; }
-                (*inv.hash)["pos"] = Value::integer((long long)ln.size());
+                (*inv.hash())["pos"] = Value::integer((long long)ln.size());
                 return Value::str(all);
             }
-            auto& lines = *(*inv.hash)["lines"].arr;
-            long long pos = (*inv.hash)["pos"].toInt();
+            auto& lines = *(*inv.hash())["lines"].arr();
+            long long pos = (*inv.hash())["pos"].toInt();
             if (m == "eof") return Value::boolean(pos >= (long long)lines.size());
             if (m == "lines") {
                 Value out = Value::array(); out.isList = true;
-                for (long long i = pos; i < (long long)lines.size(); i++) out.arr->push_back(lines[i]);
-                (*inv.hash)["pos"] = Value::integer((long long)lines.size());
+                for (long long i = pos; i < (long long)lines.size(); i++) out.arr()->push_back(lines[i]);
+                (*inv.hash())["pos"] = Value::integer((long long)lines.size());
                 return out;
             }
             // get / getline: next line or Nil at EOF
             if (pos >= (long long)lines.size()) return Value::nil();
-            (*inv.hash)["pos"] = Value::integer(pos + 1);
+            (*inv.hash())["pos"] = Value::integer(pos + 1);
             return lines[pos];
         }
     }
@@ -1770,7 +1770,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         std::string line;
         while (std::getline(in, line)) { // strip \r\n too (Windows/HTTP text)
             if (!line.empty() && line.back() == '\r') line.pop_back();
-            out.arr->push_back(Value::str(line));
+            out.arr()->push_back(Value::str(line));
         }
         return out;
     }
@@ -1789,12 +1789,12 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // rvalue subbuf-rw reads like subbuf (the writable form is an assignment target)
         long long n = (long long)inv.s.size(), from, len;
         Value a0v = args.empty() ? Value::integer(0) : args[0];
-        if (a0v.t == VT::Code && a0v.code) a0v = callCallable(a0v, ValueList{Value::integer(n)});
+        if (a0v.t == VT::Code && a0v.code()) a0v = callCallable(a0v, ValueList{Value::integer(n)});
         if (a0v.t == VT::Range) { from = a0v.rFrom() + (a0v.rExFrom() ? 1 : 0);
                                   len = (a0v.rTo() - (a0v.rExTo() ? 1 : 0)) - from + 1; }
         else {
             from = a0v.toInt();
-            if (args.size() > 1 && args[1].t == VT::Code && args[1].code) {
+            if (args.size() > 1 && args[1].t == VT::Code && args[1].code()) {
                 // a Callable count is called with .elems and names the INCLUSIVE
                 // end index: subbuf(5, *-3) of 10 elems is bytes 5..7
                 Value ev = callCallable(args[1], ValueList{Value::integer(n)});
@@ -1840,11 +1840,11 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             if (dir == 'C' || dir == 'c') {
                 long long r = all ? left() : cnt;
                 for (long long i2 = 0; i2 < r && pos < d.size(); i2++)
-                    out.arr->push_back(Value::integer((unsigned char)d[pos++]));
+                    out.arr()->push_back(Value::integer((unsigned char)d[pos++]));
             } else if (dir == 'A' || dir == 'a' || dir == 'Z') {
                 long long r = all ? left() : cnt;
                 std::string t; for (long long i2 = 0; i2 < r && pos < d.size(); i2++) t += d[pos++];
-                out.arr->push_back(Value::str(t));
+                out.arr()->push_back(Value::str(t));
             } else if (dir == 'H') {
                 long long r = all ? left() * 2 : cnt;
                 std::string t; static const char* hx = "0123456789abcdef";
@@ -1852,7 +1852,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                     unsigned char c2 = (unsigned char)d[pos++];
                     t += hx[c2 >> 4]; if (i2 + 1 < r) t += hx[c2 & 0xF];
                 }
-                out.arr->push_back(Value::str(t));
+                out.arr()->push_back(Value::str(t));
             } else if (dir == 'x') {
                 pos += (size_t)(all ? left() : cnt);
             } else {
@@ -1860,12 +1860,12 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 bool bigEnd = (dir == 'n' || dir == 'N');
                 long long r = all ? left() / w : cnt;
                 for (long long i2 = 0; i2 < r && pos < d.size(); i2++)
-                    out.arr->push_back(Value::integer(bigEnd ? be(w) : le(w)));
+                    out.arr()->push_back(Value::integer(bigEnd ? be(w) : le(w)));
             }
         }
         // Rakudo hands back the VALUE when the template produced exactly one —
         // `.unpack("A3")` is a Str and `.unpack("C1")` an Int, not a 1-element list.
-        if (out.arr->size() == 1) return (*out.arr)[0];
+        if (out.arr()->size() == 1) return (*out.arr())[0];
         return out;
     }
     if (m == "bytes" && inv.t == VT::Str) return Value::integer((long long)inv.s.size());
@@ -1894,9 +1894,9 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             // unencodable character is an error in Rakudo — we keep the byte.
             bool haveRepl = false; std::string repl;
             for (auto& a : args)
-                if (a.t == VT::Pair && a.s == "replacement" && (!a.pairVal || a.pairVal->truthy())) {
+                if (a.t == VT::Pair && a.s == "replacement" && (!a.pairVal() || a.pairVal()->truthy())) {
                     haveRepl = true;
-                    repl = (a.pairVal && a.pairVal->t == VT::Str) ? a.pairVal->s.str() : std::string("?");
+                    repl = (a.pairVal() && a.pairVal()->t == VT::Str) ? a.pairVal()->s.str() : std::string("?");
                 }
             bool ascii = norm == "ascii" || norm == "usascii";
             Value b;
@@ -2039,7 +2039,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // this. The Uni type-object constructor a few hundred lines up already
         // tags correctly; only this Str-method path flattened them all to "Uni".
         Value out = Value::array(); out.s = m;
-        for (auto c : norm) out.arr->push_back(Value::integer((long long)c));
+        for (auto c : norm) out.arr()->push_back(Value::integer((long long)c));
         return out;
     }
     if (m == "unimatch") { // method form delegates to the sub
@@ -2052,7 +2052,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         Value out = Value::array(); out.isList = true; out.s = "Seq";
         for (uint32_t cp : utf8cp(inv.toStr())) {
             std::string nm = uniNameOf(cp);
-            out.arr->push_back(Value::str(nm.empty() ? "<unassigned>" : nm));
+            out.arr()->push_back(Value::str(nm.empty() ? "<unassigned>" : nm));
         }
         return out;
     }
@@ -2074,7 +2074,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // a character with no numeric value has unival NaN, not Nil — `'a'.unival`
         // is a Num you can compare, and `.univals` interleaves them with the reals
         auto univ = [](uint32_t cp) -> Value { long long num, den; if (!uniNumValue(cp, num, den)) return Value::number(std::nan("")); return den == 1 ? Value::integer(num) : Value::rat(BigInt(num), BigInt(den)); };
-        if (m == "univals") { Value out = Value::array(); out.isList = true; for (uint32_t cp : utf8cp(inv.toStr())) out.arr->push_back(univ(cp)); return out; }
+        if (m == "univals") { Value out = Value::array(); out.isList = true; for (uint32_t cp : utf8cp(inv.toStr())) out.arr()->push_back(univ(cp)); return out; }
         uint32_t cp; bool have = true;
         if (inv.t == VT::Int || inv.t == VT::Bool) cp = (uint32_t)inv.toInt();
         else { auto cps = utf8cp(inv.toStr()); if (cps.empty()) have = false; else cp = cps[0]; }
@@ -2095,8 +2095,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 // string "<unassigned>" stands in, which reads like a name.
                 if (sixE()) {
                     Value f = Value::makeHash(); f.hashKind = "Failure";
-                    (*f.hash)["exception"] = Value::typeObj("X::AdHoc");
-                    (*f.hash)["message"]   = Value::str("Unassigned codepoint: 0x" +
+                    (*f.hash())["exception"] = Value::typeObj("X::AdHoc");
+                    (*f.hash())["message"]   = Value::str("Unassigned codepoint: 0x" +
                                                         [&]{ char b[16]; snprintf(b, sizeof b, "%X", cp); return std::string(b); }());
                     return f;
                 }
@@ -2173,7 +2173,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         else cps = utf8cp(inv.toStr());
         if (m == "uniprop") return cps.empty() ? Value::str("") : one(cps[0]);
         Value out = Value::array(); out.isList = true; out.s = "Seq";
-        for (uint32_t cp : cps) out.arr->push_back(one(cp));
+        for (uint32_t cp : cps) out.arr()->push_back(one(cp));
         return out;
     }
     if (m == "uc") return Value::str(mapCase(inv.toStr(), 1, 0));
@@ -2276,7 +2276,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     // A Seq, not an Array — `Nil.ords` is `().Seq` (S02-types/nil.t). It said
     // Array until `eqv` learned to tell the two apart, at which point the test
     // stopped passing for the wrong reason.
-    if (m == "ords") { Value out = Value::array(); out.isList = true; out.s = "Seq"; for (auto cp : uniNormalize(utf8cp(inv.toStr()), 1 /*NFC: .ords returns grapheme ordinals*/)) out.arr->push_back(Value::integer(cp)); return out; }
+    if (m == "ords") { Value out = Value::array(); out.isList = true; out.s = "Seq"; for (auto cp : uniNormalize(utf8cp(inv.toStr()), 1 /*NFC: .ords returns grapheme ordinals*/)) out.arr()->push_back(Value::integer(cp)); return out; }
     // `Any.nl-out` — documented on Any as returning the string "\n" (the output
     // line ending an IO::Handle would use). It is a plain constant there; the
     // per-handle value lives on IO::Handle.
@@ -2442,13 +2442,13 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         bool icase = false, imark = false, smart = false;
         for (auto& av : args)
             if (av.t == VT::Pair) {
-                if (av.s == "i" || av.s == "ignorecase") icase = !av.pairVal || av.pairVal->truthy();
-                else if (av.s == "smartcase") smart = !av.pairVal || av.pairVal->truthy(); // 6.e
+                if (av.s == "i" || av.s == "ignorecase") icase = !av.pairVal() || av.pairVal()->truthy();
+                else if (av.s == "smartcase") smart = !av.pairVal() || av.pairVal()->truthy(); // 6.e
 
                 // `:ignoremark` compares base characters; the fold is
                 // grapheme-for-grapheme, so the answered position still indexes
                 // the ORIGINAL string
-                else if (av.s == "m" || av.s == "ignoremark") imark = !av.pairVal || av.pairVal->truthy();
+                else if (av.s == "m" || av.s == "ignoremark") imark = !av.pairVal() || av.pairVal()->truthy();
             }
         // Same pair of O(length)-per-call costs as `substr` above, on a method
         // a scanning loop calls per character: two whole-string copies and two
@@ -2494,7 +2494,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 // fails-like wants a RETURNED Failure whose typed exception
                 // carries the offending value in .got
                 Value f = Value::makeHash(); f.hashKind = "Failure";
-                (*f.hash)["exception"] = makeTypedEx("X::OutOfRange",
+                (*f.hash())["exception"] = makeTypedEx("X::OutOfRange",
                     {{"got", args[1]}, {"what", Value::str("start argument to " + m)},
                      {"range", Value::str("0.." + std::to_string(n))}},
                     "start argument to " + m + " out of range. Is: " + args[1].gist() +
@@ -2530,11 +2530,11 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     // An ARRAY needle is its elements joined by a space (`.match([1,2,3])`).
     if (m == "match" && inv.t == VT::Str && inv.hashKind.empty() && !args.empty() &&
         ((args[0].t == VT::Str && args[0].hashKind.empty()) ||
-         (args[0].t == VT::Array && args[0].arr))) {
+         (args[0].t == VT::Array && args[0].arr()))) {
         const std::string& subj = inv.s;
         std::string needle;
         if (args[0].t == VT::Array) {
-            for (auto& e : *args[0].arr) { if (!needle.empty()) needle += " "; needle += e.toStr(); }
+            for (auto& e : *args[0].arr()) { if (!needle.empty()) needle += " "; needle += e.toStr(); }
         } else needle = args[0].s;
         bool anyAdverb = false, allKnown = true;
         for (auto& a : args) if (a.t == VT::Pair && a.namedArg) {
@@ -2603,7 +2603,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             GrammarHooks ch = codeAssertHooks();
             if (patHasCodeAssert(pat)) re.runHooks = &ch; Value out = Value::array(); out.isList = true; out.s = "Seq"; long pos = 0; RxMatch mm;
             while (re.ok() && pos <= (long)subj.size() && re.search(subj, pos, mm)) {
-                out.arr->push_back(Value::str(subj.substr(mm.from, mm.to - mm.from)));
+                out.arr()->push_back(Value::str(subj.substr(mm.from, mm.to - mm.from)));
                 pos = mm.to > mm.from ? mm.to : mm.to + 1;
             }
             return out;
@@ -2618,12 +2618,12 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             // a Match, as its delimiter index (always 0 here: one delimiter), or both
             char want = 0;
             for (auto& la : args)
-                if (la.t == VT::Pair && (!la.pairVal || la.pairVal->truthy())) {
+                if (la.t == VT::Pair && (!la.pairVal() || la.pairVal()->truthy())) {
                     if (la.s == "skip-empty") skipEmpty = true;
                     else if (la.s == "v" || la.s == "k" || la.s == "p") want = la.s[0];
                     else if (la.s == "kv") want = 'm';
                 }
-            auto emit = [&](const std::string& piece) { if (!(skipEmpty && piece.empty())) out.arr->push_back(Value::str(piece)); };
+            auto emit = [&](const std::string& piece) { if (!(skipEmpty && piece.empty())) out.arr()->push_back(Value::str(piece)); };
             // optional limit (second positional): <=0 → empty, 1 → the whole string,
             // n → at most n pieces
             long long limit = -12345;
@@ -2635,19 +2635,19 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             if (haveLimit && limit <= 0) return out;
             if (haveLimit && limit == 1) { emit(subj); return out; }
             while (re.ok() && pos <= (long)subj.size() && re.search(subj, pos, mm)) {
-                if (haveLimit && (long long)out.arr->size() >= limit - 1) break;
+                if (haveLimit && (long long)out.arr()->size() >= limit - 1) break;
                 if (mm.to == mm.from && mm.from == pos) { if (pos >= (long)subj.size()) break; }
                 emit(subj.substr(pos, mm.from - pos));
                 if (want) {
                     Value sepv = Value::matchVal(subj.substr(mm.from, mm.to - mm.from),
                                                  (long)mm.from, (long)mm.to);
                     Value idx = Value::integer(0);
-                    if (want == 'k' || want == 'm') out.arr->push_back(idx);
-                    if (want == 'v' || want == 'm') out.arr->push_back(sepv);
+                    if (want == 'k' || want == 'm') out.arr()->push_back(idx);
+                    if (want == 'v' || want == 'm') out.arr()->push_back(sepv);
                     if (want == 'p') {
                         Value pr = Value::pair("0", sepv);
                         pr.pairKeyM() = std::make_shared<Value>(idx);
-                        out.arr->push_back(std::move(pr));
+                        out.arr()->push_back(std::move(pr));
                     }
                 }
                 pos = mm.to > mm.from ? mm.to : mm.to + 1;
@@ -2727,8 +2727,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         std::string compTo; // what :complement replaces an unnamed character with
         std::vector<std::pair<std::string, std::string>> maps;
         for (auto& a : args) {
-            if (a.t == VT::Pair && (!a.pairVal || a.pairVal->t == VT::Bool)) {
-                bool on = !a.pairVal || a.pairVal->truthy();
+            if (a.t == VT::Pair && (!a.pairVal() || a.pairVal()->t == VT::Bool)) {
+                bool on = !a.pairVal() || a.pairVal()->truthy();
                 if (a.s == "s" || a.s == "squash")          { squash = on; continue; }
                 if (a.s == "c" || a.s == "complement")      { complement = on; continue; }
                 if (a.s == "d" || a.s == "delete")          { del = on; continue; }
@@ -2740,9 +2740,9 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             if (a.pairKey() && (a.pairKey()->t == VT::Array || a.pairKey()->t == VT::Range))
                 for (auto& x : a.pairKey()->flatten()) froms.push_back(x.toStr());
             else froms = expandTrans(a.s); // string key: char-by-char, with `..` ranges
-            if (a.pairVal && (a.pairVal->t == VT::Array || a.pairVal->t == VT::Range))
-                for (auto& x : a.pairVal->flatten()) tos.push_back(x.toStr());
-            else if (a.pairVal) tos = expandTrans(a.pairVal->toStr());
+            if (a.pairVal() && (a.pairVal()->t == VT::Array || a.pairVal()->t == VT::Range))
+                for (auto& x : a.pairVal()->flatten()) tos.push_back(x.toStr());
+            else if (a.pairVal()) tos = expandTrans(a.pairVal()->toStr());
             // a SHORTER replacement side CYCLES: `.trans("abcd" => "xy")` is xyxy
             for (size_t i = 0; i < froms.size(); i++)
                 maps.push_back({froms[i], tos.empty() ? std::string() : tos[i % tos.size()]});
@@ -2785,11 +2785,11 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         for (auto& a2 : args)
             if (a2.t == VT::Pair) {
                 if (a2.s == "i" || a2.s == "ignorecase")
-                    icase = !a2.pairVal || a2.pairVal->truthy();   // bare `:i` is true
+                    icase = !a2.pairVal() || a2.pairVal()->truthy();   // bare `:i` is true
                 else if (a2.s == "smartcase")
-                    smart = !a2.pairVal || a2.pairVal->truthy();   // 6.e: decided by the needle
+                    smart = !a2.pairVal() || a2.pairVal()->truthy();   // 6.e: decided by the needle
                 else if (a2.s == "m" || a2.s == "ignoremark")
-                    imark = !a2.pairVal || a2.pairVal->truthy();
+                    imark = !a2.pairVal() || a2.pairVal()->truthy();
             }
         auto fold = [](const std::string& in) {
             auto cps = utf8cp(in); std::string o;
@@ -2817,11 +2817,11 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         ValueList pargs;
         for (auto& a2 : args) {
             if (a2.t == VT::Pair && a2.s == "smartcase")
-                smart = !a2.pairVal || a2.pairVal->truthy();          // 6.e
+                smart = !a2.pairVal() || a2.pairVal()->truthy();          // 6.e
             else if (a2.t == VT::Pair && (a2.s == "i" || a2.s == "ignorecase"))
-                icase = !a2.pairVal || a2.pairVal->truthy();
+                icase = !a2.pairVal() || a2.pairVal()->truthy();
             else if (a2.t == VT::Pair && (a2.s == "m" || a2.s == "ignoremark"))
-                imark = !a2.pairVal || a2.pairVal->truthy();
+                imark = !a2.pairVal() || a2.pairVal()->truthy();
             else if (a2.t != VT::Pair) pargs.push_back(a2);
         }
         if (pargs.empty()) // only adverbs given, no needle — a clean error, not an OOB read
@@ -2838,7 +2838,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                                          : pargs[1].toInt();
         if (pos < 0 || pos > len) { // out of range FAILS (fails-like X::OutOfRange)
             Value f = Value::makeHash(); f.hashKind = "Failure";
-            (*f.hash)["exception"] = Value::typeObj("X::OutOfRange");
+            (*f.hash())["exception"] = Value::typeObj("X::OutOfRange");
             return f;
         }
         // taken from `s`, which is the mark-folded text when :ignoremark is on
@@ -2876,13 +2876,13 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             if (d.t == VT::Regex) delims.push_back({true, interpRegexPattern(d.s)});
             else delims.push_back({false, d.toStr()});
         };
-        if (d0.t == VT::Array) { for (auto& e : *d0.arr) add(e); } else add(d0);
+        if (d0.t == VT::Array) { for (auto& e : *d0.arr()) add(e); } else add(d0);
         // `:v`/`:k`/`:kv`/`:p` interleave the SEPARATORS with the pieces — as the
         // matched text, the matching delimiter's INDEX in the delimiter list, both,
         // or index => text. A regex delimiter yields a Match, a literal one a Str.
         char want = 0;
         for (auto& a : args)
-            if (a.t == VT::Pair && (!a.pairVal || a.pairVal->truthy())) {
+            if (a.t == VT::Pair && (!a.pairVal() || a.pairVal()->truthy())) {
                 if (a.s == "v" || a.s == "k" || a.s == "p") want = a.s[0];
                 else if (a.s == "kv") want = 'm';
             }
@@ -2891,7 +2891,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         { bool first = true;
           for (auto& a : args) {
               if (a.t == VT::Pair) {
-                  if (a.pairVal && a.pairVal->truthy()) {
+                  if (a.pairVal() && a.pairVal()->truthy()) {
                       if (a.s == "v" || a.s == "kv" || a.s == "k" || a.s == "p") keepSep = true;
                       else if (a.s == "skip-empty") skipEmpty = true;
                       else if (a.s == "end") fromEnd = true; // limit applies from the END (2026.06)
@@ -2906,7 +2906,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         Value out = Value::array();
         out.isList = true; out.s = "Seq";
         if (haveLimit && limit <= 0) return out;
-        auto emit = [&](const std::string& piece) { if (!(skipEmpty && piece.empty())) out.arr->push_back(Value::str(piece)); };
+        auto emit = [&](const std::string& piece) { if (!(skipEmpty && piece.empty())) out.arr()->push_back(Value::str(piece)); };
         // empty single delimiter => split into characters, with the empty-string
         // edges Rakudo yields ('abc'.split('') is ("", "a", "b", "c", ""));
         // a limit keeps the first limit-1 pieces and the rest as the final piece
@@ -2917,15 +2917,15 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             emit("");
             size_t taken = 0;
             for (size_t ci = 0; ci < cps.size(); ci++) {
-                if (haveLimit && (long long)out.arr->size() == limit - 1) {
+                if (haveLimit && (long long)out.arr()->size() == limit - 1) {
                     std::string rest; for (size_t cj = ci; cj < cps.size(); cj++) rest += cpToUtf8(cps[cj]);
                     emit(rest); return out;
                 }
-                out.arr->push_back(Value::str(cpToUtf8(cps[ci])));
+                out.arr()->push_back(Value::str(cpToUtf8(cps[ci])));
                 taken = ci;
             }
             (void)taken;
-            if (!haveLimit || (long long)out.arr->size() < limit) emit("");
+            if (!haveLimit || (long long)out.arr()->size() < limit) emit("");
             return out;
         }
         // collect every separator match, then apply the limit by VALUE count
@@ -2965,12 +2965,12 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                            ? Value::matchVal(txt, (long)seps[k].at, (long)(seps[k].at + seps[k].len))
                            : Value::str(txt);
                 Value idx = Value::integer((long long)seps[k].which);
-                if (want == 'k' || want == 'm') out.arr->push_back(idx);
-                if (want == 'v' || want == 'm' || !want) out.arr->push_back(sepv);
+                if (want == 'k' || want == 'm') out.arr()->push_back(idx);
+                if (want == 'v' || want == 'm' || !want) out.arr()->push_back(sepv);
                 if (want == 'p') {
                     Value pr = Value::pair(std::to_string(seps[k].which), sepv);
                     pr.pairKeyM() = std::make_shared<Value>(idx);
-                    out.arr->push_back(std::move(pr));
+                    out.arr()->push_back(std::move(pr));
                 }
             }
             at = seps[k].at + seps[k].len;
@@ -3006,8 +3006,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             if (i >= n) break;
             size_t start = i;
             while (i < n && !spaceAt(i, adv)) i += adv;     // take the word
-            if (limit >= 0 && (long long)out.arr->size() >= limit) break;
-            out.arr->push_back(Value::str(str.substr(start, i - start)));
+            if (limit >= 0 && (long long)out.arr()->size() >= limit) break;
+            out.arr()->push_back(Value::str(str.substr(start, i - start)));
         }
         return out;
     }
@@ -3019,7 +3019,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         bool chomp = true, wantCount = false;
         for (auto& a : args)
             if (a.t == VT::Pair) {
-                bool on = !a.pairVal || a.pairVal->truthy();
+                bool on = !a.pairVal() || a.pairVal()->truthy();
                 if (a.s == "chomp") chomp = on;
                 else if (a.s == "count") wantCount = on;
             }
@@ -3030,13 +3030,13 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // `\r\n` (and a lone trailing `\r`) is a line terminator too — Raku's
         // .lines strips it, so an HTTP response's `$resp.lines[0]` has no \r
         while (std::getline(is, w)) {
-            if (limit >= 0 && (long long)out.arr->size() >= limit) break;
+            if (limit >= 0 && (long long)out.arr()->size() >= limit) break;
             std::string term;
             if (!w.empty() && w.back() == '\r') { w.pop_back(); term = "\r"; }
             if (!is.eof()) term += "\n"; // getline ate the newline unless this is the last line
-            out.arr->push_back(Value::str(chomp ? w : w + term));
+            out.arr()->push_back(Value::str(chomp ? w : w + term));
         }
-        if (wantCount) return Value::integer((long long)out.arr->size());
+        if (wantCount) return Value::integer((long long)out.arr()->size());
         return out;
     }
     if (m == "comb") {
@@ -3052,26 +3052,26 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                     "Cannot resolve caller comb(" + inv.typeName() + ": Pair); "
                     "the Pair form of comb arrived with 6.e"};
             long long size = args[0].pairKey() ? args[0].pairKey()->toInt() : Value::str(args[0].s).toInt();
-            long long gap  = args[0].pairVal ? args[0].pairVal->toInt() : 0;
+            long long gap  = args[0].pairVal() ? args[0].pairVal()->toInt() : 0;
             if (size < 1) size = 1;
             long long stride = size + gap; if (stride < 1) stride = 1;
             bool partial = false;
             long long limit = -1;
             for (size_t i = 1; i < args.size(); i++) {
                 if (args[i].t == VT::Pair && args[i].s == "partial")
-                    partial = !args[i].pairVal || args[i].pairVal->truthy();
+                    partial = !args[i].pairVal() || args[i].pairVal()->truthy();
                 else if (args[i].isNumeric() && args[i].t != VT::Whatever) limit = args[i].toInt();
             }
             auto cps = utf8cp(inv.toStr());
             auto starts = uniGraphemeStarts(cps);
             for (size_t gi = 0; gi < starts.size(); gi += (size_t)stride) {
-                if (limit >= 0 && (long long)out.arr->size() >= limit) break;
+                if (limit >= 0 && (long long)out.arr()->size() >= limit) break;
                 if (!partial && gi + (size_t)size > starts.size()) break; // a short tail is dropped
                 size_t endGi = std::min(gi + (size_t)size, starts.size());
                 size_t from = starts[gi], to = endGi < starts.size() ? starts[endGi] : cps.size();
                 std::string chunk;
                 for (size_t k = from; k < to; k++) chunk += cpToU8(cps[k]);
-                out.arr->push_back(Value::str(chunk));
+                out.arr()->push_back(Value::str(chunk));
             }
             return out;
         }
@@ -3082,7 +3082,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             // "abc".comb("") is ("a","b","c"))
             std::string subj = inv.toStr(), needle = args[0].toStr();
             for (size_t p = subj.find(needle); p != std::string::npos; p = subj.find(needle, p + needle.size()))
-                out.arr->push_back(Value::str(needle));
+                out.arr()->push_back(Value::str(needle));
             return out;
         }
         if (!args.empty() && args[0].t == VT::Int) {
@@ -3092,11 +3092,11 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             auto cps = utf8cp(inv.toStr());
             auto starts = uniGraphemeStarts(cps);
             for (size_t gi = 0; gi < starts.size(); gi += (size_t)chunk) {
-                if (limit >= 0 && (long long)out.arr->size() >= limit) break;
+                if (limit >= 0 && (long long)out.arr()->size() >= limit) break;
                 size_t endGi = std::min(gi + (size_t)chunk, starts.size());
                 size_t from = starts[gi], to = endGi < starts.size() ? starts[endGi] : cps.size();
                 std::string g; for (size_t k = from; k < to; k++) g += cpToUtf8(cps[k]);
-                out.arr->push_back(Value::str(g));
+                out.arr()->push_back(Value::str(g));
             }
             return out;
         }
@@ -3108,7 +3108,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 size_t from = starts[gi], to = gi + 1 < starts.size() ? starts[gi + 1] : cps.size();
                 std::string g;
                 for (size_t k = from; k < to; k++) g += cpToUtf8(cps[k]);
-                out.arr->push_back(Value::str(g));
+                out.arr()->push_back(Value::str(g));
             }
         }
         return out;

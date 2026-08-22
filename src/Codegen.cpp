@@ -243,8 +243,8 @@ struct Codegen {
         std::string mk = "Value::closure([=](ValueList& " + an + ")->Value{ return " + body + "; })";
         if (arity <= 1) return mk;
         // multi-`*` lambda: the sequence op / sort reads the arity off the Code value
-        return "([&]()->Value{ Value _c = " + mk + "; _c.code->isWhateverCode = true; "
-               "_c.code->whateverArity = " + std::to_string(arity) + "; return _c; }())";
+        return "([&]()->Value{ Value _c = " + mk + "; _c.code()->isWhateverCode = true; "
+               "_c.code()->whateverArity = " + std::to_string(arity) + "; return _c; }())";
     }
 
     static bool isSlip(Expr* e) { return e->kind == NK::Unary && static_cast<Unary*>(e)->op == "|" && !static_cast<Unary*>(e)->postfix; }
@@ -762,7 +762,7 @@ struct Codegen {
         if (nPos <= 1) return mk;
         std::string names;
         for (size_t k = 0; k < nPos; k++) names += std::string(k ? ", " : "") + "\"$^" + std::string(1, char('a' + k)) + "\"";
-        return "([&]()->Value{ Value _c = " + mk + "; _c.code->placeholders = {" + names + "}; return _c; }())";
+        return "([&]()->Value{ Value _c = " + mk + "; _c.code()->placeholders = {" + names + "}; return _c; }())";
     }
 
     bool stmtHasRedo(Stmt* s) {
@@ -1125,7 +1125,7 @@ struct Codegen {
                     // list repetition thunks its left side (re-evaluate per copy)
                     std::string L = ex(b->lhs.get()), R = ex(b->rhs.get());
                     return "([&]()->Value{ long long _n=(" + R + ").toInt(); Value _o=Value::array(); _o.isList=true; "
-                           "for(long long _i=0;_i<_n;_i++) _o.arr->push_back(" + L + "); return _o; }())";
+                           "for(long long _i=0;_i<_n;_i++) _o.arr()->push_back(" + L + "); return _o; }())";
                 }
                 if (b->op == "^..." || b->op == "^...^")
                     unsupported("a ^...-form sequence"); // no native arm: fall back rather than die in applyArith
@@ -1951,7 +1951,7 @@ struct Codegen {
             std::string lst = gensym("__lst"), el = gensym("__e");
             line(ind, "{");
             line(ind + 1, "Value " + lst + " = rtArrayVal(" + ex(f->list.get()) + ");");
-            line(ind + 1, "for (auto& " + el + " : *" + lst + ".arr) {");
+            line(ind + 1, "for (auto& " + el + " : *" + lst + ".arr()) {");
             for (size_t k = 0; k < names.size(); k++)
                 line(ind + 2, declVar(names[k], "rtIndexGet(" + el +
                               ", Value::integer(" + std::to_string(k) + "LL), false)") + ";");
@@ -1965,10 +1965,10 @@ struct Codegen {
             std::string lst = gensym("__lst"), i = gensym("__fi");
             line(ind, "{");
             line(ind + 1, "Value " + lst + " = rtArrayVal(" + ex(f->list.get()) + ");");
-            line(ind + 1, "for (size_t " + i + " = 0; " + i + " < " + lst + ".arr->size(); " + i + " += " + std::to_string(n) + ") {");
+            line(ind + 1, "for (size_t " + i + " = 0; " + i + " < " + lst + ".arr()->size(); " + i + " += " + std::to_string(n) + ") {");
             for (size_t k = 0; k < n; k++)
                 line(ind + 2, declVar(f->vars[k], "(" + i + "+" + std::to_string(k) + " < " + lst +
-                              ".arr->size() ? (*" + lst + ".arr)[" + i + "+" + std::to_string(k) + "] : Value::any())") + ";");
+                              ".arr()->size() ? (*" + lst + ".arr())[" + i + "+" + std::to_string(k) + "] : Value::any())") + ";");
             loopBody(f->body.get(), ind + 2, f->label);
             line(ind + 1, "}");
             line(ind, "}");
@@ -1994,9 +1994,9 @@ struct Codegen {
             line(ind + 1, "if (" + isInt + ") { " + lo + " = " + rv + ".rFrom() + (" + rv + ".rExFrom() ? 1 : 0); "
                                                  + hi + " = " + rv + ".rTo() - (" + rv + ".rExTo() ? 1 : 0); }");
             line(ind + 1, "else { " + lst + " = rtArrayVal(" + rv + "); " + lo + " = 0; "
-                                    + hi + " = (long long)" + lst + ".arr->size() - 1; }");
+                                    + hi + " = (long long)" + lst + ".arr()->size() - 1; }");
             line(ind + 1, "for (long long " + i + " = " + lo + "; " + i + " <= " + hi + "; " + i + "++) {");
-            std::string elem = isInt + " ? Value::integer(" + i + ") : (*" + lst + ".arr)[" + i + "]";
+            std::string elem = isInt + " ? Value::integer(" + i + ") : (*" + lst + ".arr())[" + i + "]";
             if (!f->vars.empty()) line(ind + 2, declVar(f->vars[0], elem) + ";");
             else line(ind + 2, "Value " + topic + " = " + elem + ";");
             topics.push_back(topic);
@@ -2006,7 +2006,7 @@ struct Codegen {
         } else {
             std::string lst = gensym("__lst"), el = gensym("__e");
             line(ind + 1, "Value " + lst + " = rtArrayVal(" + ex(f->list.get()) + ");");
-            line(ind + 1, "for (auto& " + el + " : *" + lst + ".arr) {");
+            line(ind + 1, "for (auto& " + el + " : *" + lst + ".arr()) {");
             if (!f->vars.empty()) line(ind + 2, declVar(f->vars[0], el) + ";");
             else line(ind + 2, "Value " + topic + " = " + el + ";");
             topics.push_back(topic);

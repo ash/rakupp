@@ -63,7 +63,7 @@ std::string canon(const std::string& path, bool parent, bool qnx = false) {
 // ONE level only (`catdir(['a','b'], 'c')` is "a b/c", checked against Rakudo).
 // Without this a list argument stringified to one space-joined segment.
 static void pushParts(const Value& a, std::vector<std::string>& out) {
-    if (a.t == VT::Array && a.arr) { for (auto& e : *a.arr) out.push_back(e.toStr()); return; }
+    if (a.t == VT::Array && a.arr()) { for (auto& e : *a.arr()) out.push_back(e.toStr()); return; }
     if (a.t == VT::Range) { for (auto& e : a.flatten()) out.push_back(e.toStr()); return; }
     out.push_back(a.toStr());
 }
@@ -173,7 +173,7 @@ static bool winSpecMethod(Interpreter& I, const std::string& m, ValueList& args,
     bool parentFlag = false, nofileFlag = false;
     for (auto& a : args) {
         if (a.t == VT::Pair) {
-            bool on = a.pairVal ? a.pairVal->truthy() : true;
+            bool on = a.pairVal() ? a.pairVal()->truthy() : true;
             if (a.s == "parent") parentFlag = on;
             else if (a.s == "nofile") nofileFlag = on;
         }
@@ -241,9 +241,9 @@ static bool winSpecMethod(Interpreter& I, const std::string& m, ValueList& args,
             else { base = rest.substr(s + 1); dir = rest.substr(0, s); if (dir.empty()) dir = "\\"; }
         }
         Value h = Value::makeHash(); h.hashKind = "IO::Path::Parts"; // .split answers an IO::Path::Parts
-        (*h.hash)["volume"] = Value::str(v.vol);
-        (*h.hash)["dirname"] = Value::str(dir);
-        (*h.hash)["basename"] = Value::str(base);
+        (*h.hash())["volume"] = Value::str(v.vol);
+        (*h.hash())["dirname"] = Value::str(dir);
+        (*h.hash())["basename"] = Value::str(base);
         out = h; return true;
     }
     if (m == "catpath" || m == "join") {
@@ -302,10 +302,10 @@ static bool winSpecMethod(Interpreter& I, const std::string& m, ValueList& args,
         // '"' stripped, empties dropped; the result always begins with curdir.
         std::string pv; bool have = false;
         Value* env = I.global_->find("%*ENV");
-        if (env && env->hash) {
-            auto it = env->hash->find("PATH");
-            if (it == env->hash->end()) it = env->hash->find("Path");
-            if (it != env->hash->end()) { pv = it->second.toStr(); have = true; }
+        if (env && env->hash()) {
+            auto it = env->hash()->find("PATH");
+            if (it == env->hash()->end()) it = env->hash()->find("Path");
+            if (it != env->hash()->end()) { pv = it->second.toStr(); have = true; }
         }
         ValueList res; res.push_back(Value::str("."));
         if (have && !pv.empty())
@@ -363,14 +363,14 @@ bool ioSpecMethod(Interpreter& I, const std::string& cls, const std::string& m, 
                 else { base = rest.substr(s + 1); std::string d = rest.substr(0, s); dir = d.empty() ? "/" : d; }
             }
             Value h = Value::makeHash(); h.hashKind = "IO::Path::Parts"; // .split answers an IO::Path::Parts
-            (*h.hash)["volume"] = Value::str(vol);
-            (*h.hash)["dirname"] = Value::str(dir);
-            (*h.hash)["basename"] = Value::str(base);
+            (*h.hash())["volume"] = Value::str(vol);
+            (*h.hash())["dirname"] = Value::str(dir);
+            (*h.hash())["basename"] = Value::str(base);
             out = h; return true;
         }
         if (m == "splitpath") {
             bool nofile = false;
-            for (auto& a : args) if (a.t == VT::Pair && a.s == "nofile") nofile = a.pairVal ? a.pairVal->truthy() : true;
+            for (auto& a : args) if (a.t == VT::Pair && a.s == "nofile") nofile = a.pairVal() ? a.pairVal()->truthy() : true;
             std::string vol, rest; cygVol(A(0), vol, rest);
             std::string dir, file;
             if (nofile) dir = rest;
@@ -417,7 +417,7 @@ bool ioSpecMethod(Interpreter& I, const std::string& cls, const std::string& m, 
 
     if (m == "canonpath") {
         bool parent = false;
-        for (auto& a : args) if (a.t == VT::Pair && a.s == "parent") parent = a.pairVal ? a.pairVal->truthy() : true;
+        for (auto& a : args) if (a.t == VT::Pair && a.s == "parent") parent = a.pairVal() ? a.pairVal()->truthy() : true;
         std::string p = args.empty() ? "" : args[0].toStr();
         if (!args.empty() && args[0].t == VT::Type) p = ""; // undefined (Any) -> ''
         out = Value::str(canon(p, parent, qnxish)); return true;
@@ -431,7 +431,7 @@ bool ioSpecMethod(Interpreter& I, const std::string& cls, const std::string& m, 
         // Cygwin branches, silently discarded here
         bool nofile = false;
         for (auto& a : args)
-            if (a.t == VT::Pair && a.s == "nofile") nofile = a.pairVal ? a.pairVal->truthy() : true;
+            if (a.t == VT::Pair && a.s == "nofile") nofile = a.pairVal() ? a.pairVal()->truthy() : true;
         std::string p = A(0);
         if (nofile) { out = Value::list({Value::str(""), Value::str(p), Value::str("")}); return true; }
         size_t s = p.rfind('/');
@@ -453,8 +453,8 @@ bool ioSpecMethod(Interpreter& I, const std::string& cls, const std::string& m, 
         // empty the no-separator arm below fires and hard-codes the curdir default
         if (p.empty()) {
             Value h = Value::makeHash(); h.hashKind = "IO::Path::Parts";
-            (*h.hash)["volume"] = Value::str(""); (*h.hash)["dirname"] = Value::str("");
-            (*h.hash)["basename"] = Value::str("");
+            (*h.hash())["volume"] = Value::str(""); (*h.hash())["dirname"] = Value::str("");
+            (*h.hash())["basename"] = Value::str("");
             out = h; return true;
         }
         while (p.size() > 1 && p.back() == '/') p.pop_back();
@@ -466,9 +466,9 @@ bool ioSpecMethod(Interpreter& I, const std::string& cls, const std::string& m, 
             else { base = p.substr(s + 1); std::string d = p.substr(0, s); dir = d.empty() ? "/" : d; }
         }
         Value h = Value::makeHash(); h.hashKind = "IO::Path::Parts"; // .split answers an IO::Path::Parts
-        (*h.hash)["volume"] = Value::str("");
-        (*h.hash)["dirname"] = Value::str(dir);
-        (*h.hash)["basename"] = Value::str(base);
+        (*h.hash())["volume"] = Value::str("");
+        (*h.hash())["dirname"] = Value::str(dir);
+        (*h.hash())["basename"] = Value::str(base);
         out = h; return true;
     }
     if (m == "catpath" || m == "join") {
@@ -504,7 +504,7 @@ bool ioSpecMethod(Interpreter& I, const std::string& cls, const std::string& m, 
     if (m == "path") {
         std::string pathenv; bool have = false;
         Value* env = I.global_->find("%*ENV");
-        if (env && env->hash) { auto it = env->hash->find("PATH"); if (it != env->hash->end()) { pathenv = it->second.toStr(); have = true; } }
+        if (env && env->hash()) { auto it = env->hash()->find("PATH"); if (it != env->hash()->end()) { pathenv = it->second.toStr(); have = true; } }
         // .path answers a SEQ, both exits — the Win32 branch already tags it and this
         // one never did, so `.raku` printed ("foo","bar") instead of ("foo","bar").Seq
         if (!have || pathenv.empty()) { Value v = Value::list({}); v.s = "Seq"; out = v; return true; }
