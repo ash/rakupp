@@ -125,7 +125,7 @@ The shelf could leave the impression that every fast mechanism here traces
 to someone else. The record says otherwise, and the series index states it
 plainly: several of the findings were implemented in this codebase before
 the corresponding engine was read. Copy-on-write strings with cached scan
-state predate the perl study that expected to teach them (Chapter 9's
+state predate the Perl 5 study that expected to teach them (Chapter 9's
 `CowStr`, out of the string-scanning work); in-place `~=` append predates
 the two engines whose rope designs it answers; the decide-once-at-first-
 execution habit predates the literature that names it; conditions-as-bool

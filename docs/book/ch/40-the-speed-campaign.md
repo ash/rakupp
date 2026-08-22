@@ -4,9 +4,9 @@
 
 On 2026-08-21 the fastest way to run the `hashfill` kernel built here was to
 compile it to a native binary — and that binary, at 113 ms of wall clock, still
-lost to the perl interpreter's 82 ms. Our own interpreter was 3.3× behind perl
+lost to the `perl` binary's 82 ms. Our own interpreter was 3.3× behind `perl`
 on the same program. Two days later the interpreter led Rakudo on all ten
-benchmark kernels, the native binary led perl 2.8× on the kernel that started
+benchmark kernels, the native binary led `perl` 2.8× on the kernel that started
 it, and `sizeof(Value)` had fallen from 344 bytes to 128. This chapter is the
 story of those two days: four batches of work, each one an application of the
 same two decisions, and each one measured under Chapter 39's rules before it
@@ -22,12 +22,40 @@ control kernel, the falsifier written into the plan, and Roast as the veto.
 
 The trigger was external: a remark that a Raku program ran "twice slower than
 Perl 5". The report named no program, so one was built to probe it —
-`hashfill`, a twin pair of files, Raku and Perl, identical line for line: fill
-a 200k-key hash through interpolated string keys, sweep the values, build a
-string with 50k appends. It is a kernel made of exactly what a scripting
-language is asked to do all day, and perl won it in every mode we had.
+`hashfill`, a twin pair of files, Raku and Perl, identical line for line. The
+Raku side (`tools/bench/hashfill.raku`):
 
-The response was not to guess. It was to read perl — five files of it, `sv.h`,
+```raku
+my %h;
+for 1 .. 200_000 -> $i {
+    %h{"key$i"} = $i * 2;
+}
+my $sum = 0;
+for %h.values -> $v { $sum += $v }
+my $s = '';
+for 1 .. 50_000 { $s ~= 'x' }
+say $sum, ' ', $s.chars;
+```
+
+And the Perl twin, the same work with byte-identical output:
+
+```perl
+my %h;
+for my $i (1 .. 200_000) {
+    $h{"key$i"} = $i * 2;
+}
+my $sum = 0;
+$sum += $_ for values %h;
+my $s = '';
+$s .= 'x' for 1 .. 50_000;
+print "$sum ", length($s), "\n";
+```
+
+It is a kernel made of exactly what a scripting language is asked to do all
+day — interpolated hash keys, a values sweep, a built-up string — and `perl`
+won it in every mode we had.
+
+The response was not to guess. It was to read the Perl 5 sources — five files: `sv.h`,
 `hv.h`, `pad.h`, `run.c`, `pp_hot.c` — and write down what thirty years of
 interpreter maintenance had settled on, as a ranked findings document —
 `docs/dev/findings/engines/PERL5-TECHNIQUES.md` in the repository.
@@ -47,6 +75,44 @@ The loop each batch ran:
    optimism.
 5. **Re-measure the public numbers** and update BENCHMARKS.md the same day.
 
+## The recurring kernels
+
+Two harnesses supply the names this chapter keeps using. `perf-guard`
+(Chapter 39's regression gate) times interpreter-only one-liners; the
+`tools/bench` set times full programs in every mode, against Rakudo and — for
+`hashfill` — against `perl`. Four of the guard kernels are short enough to
+show whole:
+
+```raku
+# fib
+sub fib($n) { $n < 2 ?? $n !! fib($n-1) + fib($n-2) }; say fib(29);
+# asg
+my $x = 0; for ^2_000_000 { $x = $x + 1 }; say $x;
+# loopsum
+my $t = 0; for 1 .. 1_000_000 { $t += $_ }; say $t;
+# hash
+my %c; for 1 .. 100_000 { %c{$_ % 1_000}++ }; say %c.elems;
+```
+
+The rest, in a line each:
+
+| kernel | what the program does |
+|---|---|
+| `strscan` | per-character `.substr` over a 200 KB string, 200k calls — catches any op that re-scans or copies the invocant per call |
+| `strpass` | a 200 KB string passed to a sub 200k times — catches lost `CowStr` sharing (a memcpy per call when broken) |
+| `subcall` | a typed `is rw` signature called 200k times — catches per-call binder work that belongs on the AST |
+| `strcat` | build a string by repeated `~=` |
+| `streq` | a million `eq` comparisons in a hot condition |
+| `regex` | one simple pattern matched many times |
+| `sortnums` | sort 50,000 pseudo-random integers |
+| `arrayops` | a `grep`/`map`/`sum` pipeline over a range |
+| `bigint` | factorial(5000) as a running product — machine words overflow almost immediately |
+
+The guard kernels were chosen adversarially — each stresses the path a batch
+is most likely to slow down — and `strscan`/`strpass`/`subcall` exist
+precisely because an earlier release changed the string representation and
+the then-current guard, all Int-and-Array work, could not see it.
+
 ## Batch one: the hash payload
 
 The hash payload behind every `%h` was `std::map<std::string, Value>` — a
@@ -65,7 +131,7 @@ relied on:
   payload and keeps it across further inserts. Entries therefore live in a
   deque — `push_back` never moves elements — and deletion only marks. A
   churning hash carries tombstones; that is the price of stable references,
-  and perl pays the same one with its lazy deletes.
+  and Perl pays the same one with its lazy deletes.
 - **Iteration shape.** The interpreter iterates `pair<const string, Value>`
   in insertion order, skipping the dead.
 
@@ -85,8 +151,8 @@ what the ordering audit was for.
 | 500k lookups, 100k-key hash | 0.41 s | 0.33 s | −20% |
 | bench `hash` kernel | 0.06 s | 0.04 s | −30% |
 
-The compiled binary crossed perl on `hashfill` with this batch — 78 ms
-against perl's 82.
+The compiled binary crossed `perl` on `hashfill` with this batch — 78 ms
+against `perl`'s 82.
 
 ## Batch two: the census and the cold block
 
@@ -181,7 +247,7 @@ assignment kernels from pads alone; the first A/B measured `asg` *flat*. A
 `sample` of the loop answered better than theory: the remaining samples were
 not in name lookup at all — they were in the per-iteration topic insert and
 the iteration-scope machinery. Pads had already removed the lookups; the
-kernel's cost was the scope itself, two million times. That is perl's other
+kernel's cost was the scope itself, two million times. That is Perl's other
 `foreach` lesson: the loop variable aliases one pad cell for the whole loop.
 The equivalent here: when a static scan proves the body cannot define
 anything into the iteration scope, the loop keeps one scope and overwrites
@@ -203,10 +269,20 @@ lever lands *on top of it*, and the next batch builds on the same frame.
 ## Batch four: the price of an assignment
 
 With lookups and scopes cheap, the while-shaped kernels named the next cost:
-the store. Six one-line programs priced an interpreter iteration's anatomy —
-a loop floor of 65 ns, +37 ns for a pad read, +108 ns for a constant store,
-+28 ns for the specialised add. The assignment *ceremony* cost four times
-the arithmetic inside it.
+the store. Six one-line loop bodies priced an interpreter iteration's
+anatomy, 2 million iterations each, best of three:
+
+| loop body | ns/iter | the increment buys |
+|---|---:|---|
+| `{ }` | 65 | the loop floor: body dispatch, safe point, topic |
+| `{ $x }` | 102 | +37 — one pad read, with the sink copy |
+| `{ $x = 1 }` | 173 | +108 — the assignment ceremony for a constant store |
+| `{ $x = $x + 1 }` | 201 | +28 — the specialised add itself |
+| `{ $x += 1 }` | 127 | the compound path — proof a leaner lane exists |
+| `{ $p = $p + 4; $n = $n + 1 }` (while) | 389 | condition eval plus two full assigns |
+
+The arithmetic costs 28 ns; the act of *storing* its result costs 108. The
+assignment ceremony cost four times the arithmetic inside it.
 
 Perl's answer is TARG: every op owns a preallocated result slot in the pad.
 Translated literally that is wrong for a value-returning tree-walk — but the
@@ -244,20 +320,47 @@ same slot annotations variables have, worth another −4% on fib and subcall.
 
 ## Where it landed
 
-The re-measured table on 2026-08-22, same machine as every earlier revision
-of BENCHMARKS.md:
+The re-measured standing on 2026-08-22, same machine as every earlier
+revision of BENCHMARKS.md. The interpreter against Rakudo, all ten kernels:
 
-- **Against Rakudo, the interpreter leads on all ten kernels.** `streq` was
-  the last holdout and crossed with the assignment lane (248.4 ms against
-  284.3); `fib` had crossed the same day. The new margins are thin — 1.1×
-  and 1.2× — and the file reads them as "level, our side", which is the
-  honest reading.
-- **Against perl, on the kernel that started the campaign:** the native
-  binary runs `hashfill` in 37.4 ms to perl's 104.0; the interpreter, 3.3×
-  behind two days earlier, is within 10%.
-- **The costs are stated with the wins.** Startup grew 0.3–0.6 ms — laying
-  out a pad is a fixed per-process cost — and long-lived churning hashes
-  carry tombstones. Both were prices worth paying; neither is hidden.
+| kernel | interp | Rakudo | faster |
+|---|---:|---:|---|
+| strcat | 9.7 ms | 181.1 ms | 18.7× |
+| hash | 18.2 ms | 223.0 ms | 12.3× |
+| bigint | 31.5 ms | 251.8 ms | 8.0× |
+| sortnums | 34.1 ms | 249.4 ms | 7.3× |
+| regex | 39.7 ms | 278.9 ms | 7.0× |
+| arrayops | 64.9 ms | 280.6 ms | 4.3× |
+| hashfill | 112.9 ms | 455.4 ms | 4.0× |
+| loopsum | 107.6 ms | 259.7 ms | 2.4× |
+| fib | 394.1 ms | 453.6 ms | 1.2× |
+| streq | 248.4 ms | 284.3 ms | 1.1× |
+
+`streq` was the last holdout and crossed with the assignment lane; `fib` had
+crossed the same day. Both had been Rakudo's for the whole life of the
+benchmarks file, both are tiny-body kernels where a JIT should be at its
+best, and both margins are thin — the file reads them as "level, our side",
+which is the honest reading. Compiling widens everything again: `--exe` puts
+`fib` 5.3× ahead and `streq` 13.9×.
+
+Against `perl`, on the kernel that started the campaign:
+
+| engine | hashfill |
+|---|---:|
+| Raku++ `--exe` | 37.4 ms |
+| Perl 5 | 104.0 ms |
+| Raku++ interp | 112.9 ms |
+| Rakudo | 455.4 ms |
+
+The interpreter, 3.3× behind `perl` two days earlier, is within 10% of it.
+(The absolute numbers differ from the batch-one day's — 78 against 82 —
+because this harness times all four engines in one run, startup included,
+best of six; the batch-one figures were warm wall-clock. Ratios, not
+milliseconds, are the comparable thing across the chapter.)
+
+And the costs are stated with the wins: startup grew 0.3–0.6 ms — laying
+out a pad is a fixed per-process cost — and long-lived churning hashes
+carry tombstones. Both were prices worth paying; neither is hidden.
 
 And the leftover list is part of the result. The loop floor and the
 per-node `eval` return protocol are untouched — they are the opening
