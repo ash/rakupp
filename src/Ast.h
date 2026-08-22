@@ -182,6 +182,14 @@ struct VarExpr : Expr {
     std::string pseudoPkg;       // which one, for the rules that differ per package
     bool processScoped = false;  // written `PROCESS::<$x>` / `$PROCESS::x` — assignment
                                  // installs into the PROCESS scope, not the current one
+    // Pad resolution (PADS-PLAN.md): filled once by resolvePads when this
+    // reference is dominated by an owner-level declaration. padOwner is the
+    // owning PadLayout's ADDRESS, used only for an identity compare against
+    // the current frame's layout — never dereferenced through this field, so
+    // DecidedOnce's relaxed ordering is enough: a reader seeing a stale pair
+    // fails the compare and takes the map path.
+    DecidedOnce<int> padSlot{-1};
+    DecidedOnce<const void*> padOwner{nullptr};
     explicit VarExpr(std::string n): Expr(NK::VarExpr), name(std::move(n)) {}
 };
 
@@ -546,6 +554,12 @@ struct Block : Stmt {
     // Interpreter::hoistExprDecls: a static property of this AST, so it is
     // decided once instead of re-walked on every entry to the block.
     DecidedOnce<signed char> hoistNeed{-1};
+    // Loop-body flatness (PADS-PLAN.md follow-up): 1 = nothing in this body
+    // can DEFINE a name into the iteration scope (no declares, no CATCH or
+    // phaser, no EVAL/use/sub decl in scope-sharing positions), so a reusing
+    // loop may overwrite the topic in place instead of clearing and
+    // re-inserting per iteration. Decided once; see Interpreter::flatLoopBody.
+    DecidedOnce<signed char> flatLoop{-1};
     bool isCatch = false;   // CATCH { } phaser
     std::string phaser;     // "BEGIN"/"CHECK"/"INIT"/"END"/... (empty = plain block)
     bool stmtForm = false;  // `PHASER statement;` (no braces): runs in the ENCLOSING

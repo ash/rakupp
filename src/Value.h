@@ -210,6 +210,7 @@ std::string dateGist(const ValueMap& h, bool isDate);
 
 struct Env;
 class Interpreter;
+struct PadLayout; // Interpreter.h — the pad slot table a Callable's frames use
 
 using ValueList = std::vector<Value>;
 using BuiltinFn = std::function<Value(Interpreter&, ValueList&)>;
@@ -235,6 +236,14 @@ struct Callable {
     PublishedOnce<signed char> arityShape{-1};     // 1 = the arity pre-check applies to this callable
     DecidedOnce<int> arityMaxPos{0}, arityReqPos{0}; // …and its precomputed bounds (valid when arityShape == 1)
     DecidedOnce<bool> arityUnbounded{false};
+    // Pad resolution (PADS-PLAN.md), decided at first call. padReady publishes
+    // padLayout (built under the interpreter's pad mutex; the flag is the
+    // acquire edge for threads that did not build it). The layout itself is
+    // cached per BODY on the interpreter — two Callables sharing one body
+    // (.assuming wrappers) must agree on slot numbers, because the slot
+    // annotations live on the shared AST nodes.
+    PublishedOnce<signed char> padReady{-1};       // 1 = padLayout set (may be null: owner has no pads)
+    std::shared_ptr<const PadLayout> padLayout;
     PublishedOnce<signed char> catchScan{-1};      // 1 = body holds an inline CATCH block
     PublishedOnce<signed char> phaserScan{-1};     // 1 = body holds an ENTER/LEAVE/… phaser block
     DecidedOnce<Stmt*> catchBlkCache{nullptr};     // …which one (valid when catchScan == 1)

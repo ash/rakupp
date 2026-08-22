@@ -223,6 +223,26 @@ struct EnvExtras {
     std::set<std::string> varDynamic;   // names declared `is dynamic` in this scope
 };
 
+// The pad slot table for one pad OWNER — the main program's mainline, or a
+// Callable body (PADS-PLAN.md). Built once per BODY (two Callables sharing a
+// body — .assuming wrappers — must agree on slot numbers, because the slot
+// annotations live on the shared AST nodes) and shared by every frame that
+// body ever runs in. Slot i of a frame's pad holds the variable names[i];
+// byName answers the slow-path lookups (EVAL, CALLER::, temp) that reach a
+// pad variable through Env::find rather than through an annotated site.
+struct PadLayout {
+    std::vector<std::string> names;
+    std::unordered_map<std::string, int> byName;
+    int add(const std::string& n) {
+        auto it = byName.find(n);
+        if (it != byName.end()) return it->second;
+        int s = (int)names.size();
+        names.push_back(n);
+        byName.emplace(n, s);
+        return s;
+    }
+};
+
 struct Env {
     std::unordered_map<std::string, Value> vars;
     std::shared_ptr<Env> parent;
@@ -241,15 +261,67 @@ struct Env {
         return ex ? *ex : kEmpty;
     }
 
-    Value* find(const std::string& name) {
+    // The pad (PADS-PLAN.md) — only on pad-owning frames: routine call frames
+    // and the mainline global. `pad` is sized once at frame setup and NEVER
+    // grows (lvalue() hands out Value* into it — the ValueHash stability
+    // contract). A slot answers lookups only after its declaration executed
+    // (the padLive bit), which keeps the outer variable visible before an
+    // inner `my` of the same name runs. The layout is owned (shared_ptr): a
+    // frame captured by a closure can outlive the Callable it came from.
+    std::shared_ptr<const PadLayout> layout;
+    std::vector<Value> pad;
+    uint64_t padLive = 0;
+
+    Value* padFind(const std::string& name) {
+        auto it = layout->byName.find(name);
+        if (it != layout->byName.end() && ((padLive >> it->second) & 1))
+            return &pad[it->second];
+        return nullptr;
+    }
+    // THIS scope only — map or live pad slot, no parent walk (the declare
+    // paths' "already exists in this scope" checks).
+    Value* local(const std::string& name) {
         auto it = vars.find(name);
         if (it != vars.end()) return &it->second;
-        if (parent) return parent->find(name);
+        return layout ? padFind(name) : nullptr;
+    }
+    Value* find(const std::string& name) {
+        // Map FIRST: a slotted name never lives in the map (define redirects
+        // and erases), so this order only costs the rare slow-path lookup of
+        // a pad variable a second hash — and spares every builtin/special
+        // lookup that walks THROUGH a layout frame from paying one.
+        for (Env* e = this; e; e = e->parent.get()) {
+            auto it = e->vars.find(name);
+            if (it != e->vars.end()) return &it->second;
+            if (e->layout)
+                if (Value* p = e->padFind(name)) return p;
+        }
         return nullptr;
     }
     // Returns the slot: a caller that needs the address of what it just defined
     // was hashing the name a second time to get it (`define(n, v); &vars[n]`).
-    Value& define(const std::string& name, Value v) { return vars[name] = std::move(v); }
+    // Layout names land in the pad; the map-twin erase covers a lenient-mode
+    // write that happened before the declaration executed.
+    Value& define(const std::string& name, Value v) {
+        if (layout) {
+            auto it = layout->byName.find(name);
+            if (it != layout->byName.end()) {
+                padLive |= (uint64_t)1 << it->second;
+                if (!vars.empty()) vars.erase(name);
+                return pad[it->second] = std::move(v);
+            }
+        }
+        return vars[name] = std::move(v);
+    }
+    // Iteration that sees BOTH stores — for the introspection walkers
+    // (breakSelfClosures, replNames, the __stash__ dump).
+    template <typename F>
+    void forEachVar(F&& f) {
+        for (auto& kv : vars) f(kv.first, kv.second);
+        if (layout)
+            for (size_t i = 0; i < pad.size(); i++)
+                if ((padLive >> i) & 1) f(layout->names[i], pad[i]);
+    }
 };
 
 // control-flow signals
@@ -751,6 +823,19 @@ public:
     // `cache` is the owner's decided-once flag (Block::hoistNeed / Callable::
     // hoistNeed): -1 undecided, 0 nothing to hoist, 1 something. See the definition.
     void hoistExprDecls(const std::vector<StmtPtr>& stmts, Env* env, DecidedOnce<signed char>* cache = nullptr);
+    // Pads (PADS-PLAN.md): build (or fetch) the layout for one owner body and
+    // annotate its dominated VarExprs with (slot, owner). Cached per BODY
+    // address; thread-safe (padMu_). `params` supplies the owner's parameter
+    // names (slots 0..k-1); null for the mainline. Returns null when the owner
+    // has no slot candidates (or too many for the 64-bit liveness mask).
+    std::shared_ptr<const PadLayout> resolvePads(const std::vector<StmtPtr>& stmts,
+                                                 const std::vector<Param>* params);
+    std::mutex padMu_;
+    std::unordered_map<const void*, std::shared_ptr<const PadLayout>> padLayouts_;
+    // May a reusing loop skip the per-iteration scope clear and overwrite the
+    // topic in place? Cached on the Block (flatLoop). See the scan in
+    // Interpreter.cpp for the exact rules.
+    bool flatLoopBody(Block* b);
     void enforceTypedAssign(const std::string& nm, Value& rhs); // typed-assign contract, shared by `=` and atomic-assign
     // The striped-lock pool shared by cas, the atomic-* family, and Channel:
     // real mutual exclusion in parallel (no-GIL) mode, negligible uncontended

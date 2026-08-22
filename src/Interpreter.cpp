@@ -2085,8 +2085,8 @@ void Interpreter::hoistExprDecls(const std::vector<StmtPtr>& stmts, Env* env, De
                 // is the dynamic `env->vars.count` below, which must stay per-call.
                 if (cond && v->declare && v->declScope == "my" && !v->name.empty()) {
                     found = true;
-                    if (!env->vars.count(v->name))
-                        env->vars[v->name] = typedDefault(v->declType, v->name[0]);
+                    if (!env->local(v->name))
+                        env->define(v->name, typedDefault(v->declType, v->name[0]));
                 }
                 if (v->declDefault) self(self, v->declDefault.get(), cond);
                 break;
@@ -2138,6 +2138,423 @@ void Interpreter::hoistExprDecls(const std::vector<StmtPtr>& stmts, Env* env, De
         else walkModStmt(walkModStmt, s.get());
     }
     if (cache) *cache = found ? 1 : 0;
+}
+
+// Loop-body flatness (the pads batch's second lever). The asg/loopsum profile
+// put the per-iteration cost not in variable LOOKUP (pads fixed that) but in
+// the iteration scope itself: a vars.clear() plus a topic re-emplace, two
+// million times. When nothing in the body can define a name into the
+// iteration scope, the loop may keep one scope and overwrite the topic Value
+// in place — perl's foreach aliasing its loop variable to one pad cell.
+//
+// The scan only needs the SCOPE-SHARING positions: the body's direct
+// statements, statements wrapped by modifier forms (`X if C` shares the
+// scope), and their expressions (which evaluate with tctx_.cur = scope).
+// Nested non-modifier statement bodies (if branches, inner loops, bare
+// blocks, given/when) all build child envs of their own — a declare there
+// never touches the iteration scope. Closures and gather capture the scope,
+// but capture is handled DYNAMICALLY (use_count forks the scope), so they
+// need no static exclusion here.
+static bool flatScanExpr(const Expr* e) {
+    if (!e) return true;
+    switch (e->kind) {
+        case NK::VarExpr: {
+            auto* v = static_cast<const VarExpr*>(e);
+            if (v->declare) return false;             // `(my $t = …)` mid-expression
+            return flatScanExpr(v->declDefault.get());
+        }
+        case NK::SymbolicRef: return false;           // `::('$x') = …` defines by name
+        case NK::Call: {
+            auto* c = static_cast<const Call*>(e);
+            if (c->name == "EVAL" || c->name == "EVALFILE") return false; // declares into the scope
+            if (!flatScanExpr(c->callee.get())) return false;
+            for (auto& x : c->args) if (!flatScanExpr(x.get())) return false;
+            return true;
+        }
+        case NK::MethodCall: {
+            auto* m = static_cast<const MethodCall*>(e);
+            if (m->method == "EVAL") return false;
+            if (!flatScanExpr(m->inv.get())) return false;
+            for (auto& x : m->args) if (!flatScanExpr(x.get())) return false;
+            return true;
+        }
+        case NK::Assign: { auto* a = static_cast<const Assign*>(e); return flatScanExpr(a->target.get()) && flatScanExpr(a->value.get()); }
+        case NK::Binary: { auto* b = static_cast<const Binary*>(e); return flatScanExpr(b->lhs.get()) && flatScanExpr(b->rhs.get()); }
+        case NK::Unary: return flatScanExpr(static_cast<const Unary*>(e)->operand.get());
+        case NK::Index: { auto* i = static_cast<const Index*>(e); return flatScanExpr(i->base.get()) && flatScanExpr(i->index.get()); }
+        case NK::Ternary: { auto* t = static_cast<const Ternary*>(e); return flatScanExpr(t->cond.get()) && flatScanExpr(t->then.get()) && flatScanExpr(t->els.get()); }
+        case NK::ListExpr: for (auto& x : static_cast<const ListExpr*>(e)->items) if (!flatScanExpr(x.get())) return false; return true;
+        case NK::ArrayLit: for (auto& x : static_cast<const ArrayLit*>(e)->items) if (!flatScanExpr(x.get())) return false; return true;
+        case NK::HashLit: for (auto& x : static_cast<const HashLit*>(e)->items) if (!flatScanExpr(x.get())) return false; return true;
+        case NK::InterpStr: for (auto& x : static_cast<const InterpStr*>(e)->parts) if (!flatScanExpr(x.get())) return false; return true;
+        case NK::NqpOp: for (auto& x : static_cast<const NqpOp*>(e)->args) if (!flatScanExpr(x.get())) return false; return true;
+        case NK::ChainExpr: for (auto& x : static_cast<const ChainExpr*>(e)->operands) if (!flatScanExpr(x.get())) return false; return true;
+        case NK::Range: { auto* r = static_cast<const RangeExpr*>(e); return flatScanExpr(r->from.get()) && flatScanExpr(r->to.get()); }
+        case NK::Pair: { auto* p = static_cast<const PairExpr*>(e); return flatScanExpr(p->keyExpr.get()) && flatScanExpr(p->value.get()); }
+        default: return true; // literals, closures (dynamic fork), regexes ($/ scopes to the routine frame)
+    }
+}
+static bool flatScanStmt(const Stmt* s) {
+    if (!s) return true;
+    switch (s->kind) {
+        case NK::ExprStmt: return flatScanExpr(static_cast<const ExprStmt*>(s)->e.get());
+        case NK::VarDecl: case NK::SubDecl: case NK::ClassDecl: case NK::EnumDecl:
+        case NK::SubsetDecl: case NK::NamedRegexDecl: case NK::UseStmt:
+            return false;                              // all define names in the scope
+        case NK::Block: {
+            auto* b = static_cast<const Block*>(s);
+            // CATCH/CONTROL bind $_/$! here; phasers register per entry; a
+            // plain nested block runs in a child env — nothing lands in ours.
+            return !b->isCatch && b->phaser.empty();
+        }
+        case NK::IfStmt: {
+            auto* is = static_cast<const IfStmt*>(s);
+            for (auto& br : is->branches) {
+                if (!flatScanExpr(br.first.get())) return false;
+                if (is->modifier && br.second)         // shares this scope
+                    for (auto& bs : br.second->stmts) if (!flatScanStmt(bs.get())) return false;
+            }
+            return true;
+        }
+        case NK::WhileStmt: {
+            auto* w = static_cast<const WhileStmt*>(s);
+            if (!flatScanExpr(w->cond.get())) return false;
+            if (w->modifier && w->body)
+                for (auto& bs : w->body->stmts) if (!flatScanStmt(bs.get())) return false;
+            return true;
+        }
+        case NK::ForStmt: {
+            auto* f = static_cast<const ForStmt*>(s);
+            if (!flatScanExpr(f->list.get())) return false;
+            if (f->modifier && f->body)
+                for (auto& bs : f->body->stmts) if (!flatScanStmt(bs.get())) return false;
+            return true;
+        }
+        case NK::GivenStmt: {
+            auto* g = static_cast<const GivenStmt*>(s);
+            if (!flatScanExpr(g->topic.get())) return false;
+            if (g->modifier && g->body)
+                for (auto& bs : g->body->stmts) if (!flatScanStmt(bs.get())) return false;
+            return true;
+        }
+        case NK::LoopStmt: {
+            auto* l = static_cast<const LoopStmt*>(s);
+            // C-style init runs in the LOOP STATEMENT's scope — a `my` there
+            // would land in ours when this loop is a direct body statement
+            return flatScanExpr(l->init.get()) && flatScanExpr(l->cond.get()) && flatScanExpr(l->incr.get());
+        }
+        case NK::WhenStmt: return flatScanExpr(static_cast<const WhenStmt*>(s)->cond.get());
+        case NK::RepeatStmt: return flatScanExpr(static_cast<const RepeatStmt*>(s)->cond.get());
+        case NK::ReturnStmt: return flatScanExpr(static_cast<const ReturnStmt*>(s)->value.get());
+        case NK::LastStmt: case NK::NextStmt: case NK::RedoStmt: case NK::EmptyStmt:
+            return true;
+        default: return false;                          // unknown statement: assume it defines
+    }
+}
+bool Interpreter::flatLoopBody(Block* b) {
+    if (!b) return false;
+    signed char f = b->flatLoop;
+    if (f >= 0) return f == 1;
+    bool flat = true;
+    for (auto& s : b->stmts) if (!flatScanStmt(s.get())) { flat = false; break; }
+    b->flatLoop = flat ? 1 : 0;
+    return flat;
+}
+
+// Pads (PADS-PLAN.md). Build the slot layout for one owner body — params plus
+// top-level plain `my` statements — and annotate the owner's DOMINATED
+// variable references with (slot, layout address). Everything here is
+// conservative by construction: a reference this pass cannot prove safe is
+// simply not annotated and keeps today's map lookup; a construct it does not
+// recognise is not descended into. The one rule that is load-bearing for
+// correctness rather than speed: never descend into anything whose execution
+// can be DEFERRED (closure bodies, gather/start/lazy operands) — a deferred
+// body can run inside a DIFFERENT activation of this same owner (a recursion
+// sibling), where the frame-identity compare would pass and the slot indexes
+// the wrong call's variable. Inline statement blocks cannot cross an
+// activation boundary, so they are safe to enter.
+std::shared_ptr<const PadLayout> Interpreter::resolvePads(const std::vector<StmtPtr>& stmts,
+                                                          const std::vector<Param>* params) {
+    std::lock_guard<std::mutex> lk(padMu_);
+    auto hit = padLayouts_.find(&stmts);
+    if (hit != padLayouts_.end()) return hit->second;
+    auto& cacheSlot = padLayouts_[&stmts]; // null until proven useful
+
+    auto slottable = [](const std::string& n) {
+        return n.size() > 1 && (n[0] == '$' || n[0] == '@' || n[0] == '%') &&
+               (ascii::isalpha((unsigned char)n[1]) || n[1] == '_');
+    };
+    // A declaration this pass may own: a plain lexical `my` with none of the
+    // machinery that keys per-scope side tables by name in OTHER structures
+    // (shapes, dynamics, coercion types, `is default`, Set/Bag containers).
+    auto slottableDecl = [&](const VarExpr* v) {
+        return v->declare && v->declScope == "my" && slottable(v->name) &&
+               !v->declDynamic && !v->declShape && !v->processScoped &&
+               !v->pkgSymbol && !v->viaPseudoPkg && !v->declDefault &&
+               v->containerIs.empty() && v->declCoerce.empty() && !v->namedBind;
+    };
+    // The two top-level statement shapes that declare owner-level lexicals:
+    // `my $x;` / `my $x = E;` / `my ($a, $b) = E;` (plain `=` only — `:=`
+    // binding aliases containers and stays on the map path).
+    auto declaredVars = [&](const Stmt* s, std::vector<const VarExpr*>& out) {
+        if (s->kind != NK::ExprStmt) return;
+        const Expr* e = static_cast<const ExprStmt*>(s)->e.get();
+        if (e && e->kind == NK::Assign) {
+            auto* a = static_cast<const Assign*>(e);
+            if (a->op != "=") return;
+            e = a->target.get();
+        }
+        if (!e) return;
+        if (e->kind == NK::VarExpr) {
+            auto* v = static_cast<const VarExpr*>(e);
+            if (slottableDecl(v)) out.push_back(v);
+        }
+        else if (e->kind == NK::ListExpr) {
+            for (auto& it : static_cast<const ListExpr*>(e)->items)
+                if (it && it->kind == NK::VarExpr) {
+                    auto* v = static_cast<const VarExpr*>(it.get());
+                    if (slottableDecl(v)) out.push_back(v);
+                }
+        }
+    };
+
+    auto layout = std::make_shared<PadLayout>();
+    if (params)
+        for (auto& p : *params)
+            if (slottable(p.name)) layout->add(p.name);
+    for (auto& s : stmts) {
+        std::vector<const VarExpr*> ds;
+        declaredVars(s.get(), ds);
+        for (auto* v : ds) layout->add(v->name);
+        if (s->kind == NK::VarDecl) {
+            auto* vd = static_cast<const VarDecl*>(s.get());
+            if (vd->scope == "my")
+                for (auto& n : vd->names) if (slottable(n)) layout->add(n);
+        }
+    }
+    if (layout->names.empty() || layout->names.size() > 64) return nullptr; // cacheSlot stays null
+
+    // ---- annotation: references dominated by their declaration ----
+    // `active` maps a name to its slot from the declaration point onward;
+    // entering an inline block snapshots the modification log so a shadowing
+    // inner declaration deactivates the name for that subtree only.
+    std::unordered_map<std::string, int> active;
+    std::vector<std::pair<std::string, int>> undo; // (name, previous slot or -1)
+    auto deactivate = [&](const std::string& n) {
+        auto it = active.find(n);
+        if (it == active.end()) return;
+        undo.emplace_back(n, it->second);
+        active.erase(it);
+    };
+    auto activate = [&](const std::string& n, int slot) {
+        auto it = active.find(n);
+        undo.emplace_back(n, it == active.end() ? -1 : it->second);
+        active[n] = slot;
+    };
+    auto popTo = [&](size_t mark) {
+        while (undo.size() > mark) {
+            auto& [n, old] = undo.back();
+            if (old < 0) active.erase(n);
+            else active[n] = old;
+            undo.pop_back();
+        }
+    };
+    if (params)
+        for (auto& p : *params) {
+            auto it = layout->byName.find(p.name);
+            if (it != layout->byName.end()) active[p.name] = it->second;
+        }
+
+    // Unary operators whose operand runs immediately, in this frame. Anything
+    // not listed (gather, start, lazy, supply, react, …) is not entered.
+    static const std::set<std::string> kNowUnary = {
+        "-", "+", "!", "?", "~", "not", "so", "++", "--", "^", "|",
+        "ctx$", "ctx@", "ctx%", "item", "?^", "+^", "~^"};
+
+    auto annE = [&](auto&& self, const Expr* e) -> void {
+        if (!e) return;
+        switch (e->kind) {
+            case NK::VarExpr: {
+                auto* v = const_cast<VarExpr*>(static_cast<const VarExpr*>(e));
+                if (!v->declare && !v->viaPseudoPkg && !v->pkgSymbol && !v->processScoped) {
+                    auto it = active.find(v->name);
+                    if (it != active.end()) {
+                        v->padSlot = it->second;
+                        v->padOwner = (const void*)layout.get();
+                    }
+                }
+                else if (v->declare) {
+                    // any inner declaration shadows the owner slot for the rest
+                    // of the current scope, whatever its declarator
+                    deactivate(v->name);
+                }
+                if (v->declDefault) self(self, v->declDefault.get());
+                break;
+            }
+            case NK::Assign: { auto* a = static_cast<const Assign*>(e); self(self, a->value.get()); self(self, a->target.get()); break; }
+            case NK::Binary: { auto* b = static_cast<const Binary*>(e); self(self, b->lhs.get()); self(self, b->rhs.get()); break; }
+            case NK::ChainExpr: for (auto& o : static_cast<const ChainExpr*>(e)->operands) self(self, o.get()); break;
+            case NK::Unary: { auto* u = static_cast<const Unary*>(e);
+                if (kNowUnary.count(u->op)) self(self, u->operand.get());
+                break; }
+            case NK::Call: { auto* c = static_cast<const Call*>(e); self(self, c->callee.get()); for (auto& x : c->args) self(self, x.get()); break; }
+            case NK::MethodCall: { auto* m = static_cast<const MethodCall*>(e); self(self, m->inv.get()); for (auto& x : m->args) self(self, x.get()); break; }
+            case NK::Index: { auto* i = static_cast<const Index*>(e); self(self, i->base.get()); self(self, i->index.get()); break; }
+            case NK::Ternary: { auto* t = static_cast<const Ternary*>(e); self(self, t->cond.get()); self(self, t->then.get()); self(self, t->els.get()); break; }
+            case NK::ListExpr: for (auto& x : static_cast<const ListExpr*>(e)->items) self(self, x.get()); break;
+            case NK::ArrayLit: for (auto& x : static_cast<const ArrayLit*>(e)->items) self(self, x.get()); break;
+            case NK::HashLit: for (auto& x : static_cast<const HashLit*>(e)->items) self(self, x.get()); break;
+            case NK::InterpStr: for (auto& x : static_cast<const InterpStr*>(e)->parts) self(self, x.get()); break;
+            case NK::NqpOp: for (auto& x : static_cast<const NqpOp*>(e)->args) self(self, x.get()); break;
+            case NK::Range: { auto* r = static_cast<const RangeExpr*>(e); self(self, r->from.get()); self(self, r->to.get()); break; }
+            case NK::Pair: { auto* p = static_cast<const PairExpr*>(e); self(self, p->keyExpr.get()); self(self, p->value.get()); break; }
+            default: break; // BlockExpr, RegexLit, SymbolicRef, … — never entered
+        }
+    };
+
+    auto annStmts = [&](auto&& self, const std::vector<StmtPtr>& ss, bool topLevel) -> void {
+        for (auto& sp : ss) {
+            Stmt* s = sp.get();
+            if (!s) continue;
+            switch (s->kind) {
+                case NK::ExprStmt: {
+                    std::vector<const VarExpr*> ds;
+                    if (topLevel) declaredVars(s, ds);
+                    // RHS first — `my $x = $x + 1` reads the OUTER $x
+                    annE(annE, static_cast<const ExprStmt*>(s)->e.get());
+                    for (auto* dv : ds) {
+                        auto it = layout->byName.find(dv->name);
+                        if (it == layout->byName.end()) continue;
+                        activate(dv->name, it->second);
+                        // the declaration site itself runs slot-direct
+                        auto* v = const_cast<VarExpr*>(dv);
+                        v->padSlot = it->second;
+                        v->padOwner = (const void*)layout.get();
+                    }
+                    break;
+                }
+                case NK::VarDecl: {
+                    auto* vd = static_cast<const VarDecl*>(s);
+                    annE(annE, vd->init.get());
+                    if (topLevel && vd->scope == "my")
+                        for (auto& n : vd->names) {
+                            auto it = layout->byName.find(n);
+                            if (it != layout->byName.end()) activate(n, it->second);
+                        }
+                    else
+                        for (auto& n : vd->names) deactivate(n);
+                    break;
+                }
+                case NK::Block: {
+                    auto* b = static_cast<Block*>(s);
+                    size_t mark = undo.size();
+                    self(self, b->stmts, false);
+                    popTo(mark);
+                    break;
+                }
+                case NK::IfStmt: {
+                    auto* is = static_cast<IfStmt*>(s);
+                    for (size_t i = 0; i < is->branches.size(); i++) {
+                        annE(annE, is->branches[i].first.get());
+                        if (!is->branches[i].second) continue;
+                        size_t mark = undo.size();
+                        deactivate(i == 0 ? is->thenVar
+                                          : (i < is->branchVars.size() ? is->branchVars[i] : std::string()));
+                        self(self, is->branches[i].second->stmts, false);
+                        popTo(mark);
+                    }
+                    if (is->elseBlock) {
+                        size_t mark = undo.size();
+                        deactivate(is->elseVar);
+                        self(self, is->elseBlock->stmts, false);
+                        popTo(mark);
+                    }
+                    break;
+                }
+                case NK::WhileStmt: {
+                    auto* w = static_cast<WhileStmt*>(s);
+                    annE(annE, w->cond.get());
+                    if (w->body) {
+                        size_t mark = undo.size();
+                        deactivate(w->var);
+                        for (auto& p : w->params) deactivate(p.name);
+                        self(self, w->body->stmts, false);
+                        popTo(mark);
+                    }
+                    break;
+                }
+                case NK::ForStmt: {
+                    auto* f = static_cast<ForStmt*>(s);
+                    annE(annE, f->list.get());
+                    if (f->body) {
+                        size_t mark = undo.size();
+                        for (auto& n : f->vars) deactivate(n);
+                        for (auto& p : f->params) deactivate(p.name);
+                        self(self, f->body->stmts, false);
+                        popTo(mark);
+                    }
+                    break;
+                }
+                case NK::LoopStmt: {
+                    auto* l = static_cast<LoopStmt*>(s);
+                    size_t mark = undo.size();
+                    // `loop (my $i = 0; …)` declares into the loop scope; the
+                    // declare VarExpr shadows via annE's deactivate
+                    annE(annE, l->init.get());
+                    annE(annE, l->cond.get());
+                    annE(annE, l->incr.get());
+                    if (l->body) self(self, l->body->stmts, false);
+                    popTo(mark);
+                    break;
+                }
+                case NK::GivenStmt: {
+                    auto* g = static_cast<GivenStmt*>(s);
+                    annE(annE, g->topic.get());
+                    if (g->body) {
+                        size_t mark = undo.size();
+                        deactivate(g->var);
+                        self(self, g->body->stmts, false);
+                        popTo(mark);
+                    }
+                    if (g->elseBody) {
+                        size_t mark = undo.size();
+                        deactivate(g->elseVar);
+                        self(self, g->elseBody->stmts, false);
+                        popTo(mark);
+                    }
+                    break;
+                }
+                case NK::WhenStmt: {
+                    auto* w = static_cast<WhenStmt*>(s);
+                    annE(annE, w->cond.get());
+                    if (w->body) {
+                        size_t mark = undo.size();
+                        self(self, w->body->stmts, false);
+                        popTo(mark);
+                    }
+                    break;
+                }
+                case NK::RepeatStmt: {
+                    auto* r = static_cast<RepeatStmt*>(s);
+                    if (r->body) {
+                        size_t mark = undo.size();
+                        self(self, r->body->stmts, false);
+                        popTo(mark);
+                    }
+                    annE(annE, r->cond.get());
+                    break;
+                }
+                case NK::ReturnStmt:
+                    annE(annE, static_cast<const ReturnStmt*>(s)->value.get());
+                    break;
+                default: break; // SubDecl, ClassDecl, Use, … — other owners or no refs
+            }
+        }
+    };
+    annStmts(annStmts, stmts, true);
+
+    cacheSlot = layout;
+    return layout;
 }
 
 // A class/grammar/role declaration is visible across its whole scope, like a
@@ -2248,14 +2665,14 @@ void Interpreter::breakSelfClosures(Env* env) {
     // taps fire later, from I/O workers) — a nested `my sub`'s closure must
     // survive, so the frame-death heuristic is suspended.
     if (noCycleBreak_ > 0) return;
-    for (auto& kv : env->vars) {
-        Value& v = kv.second;
+    // forEachVar: a nested `my &f = sub {…}` at owner level lives in the pad
+    env->forEachVar([&](const std::string&, Value& v) {
         if (v.t == VT::Code && v.code() && v.payloadUnique() &&
             v.code()->closure.get() == env) {
             v.code()->closure.reset();
             v.code()->stateEnv.reset();
         }
-    }
+    });
 }
 
 // Move the live execution registers into `c` (used when a thread parks) …
@@ -3038,13 +3455,26 @@ int Interpreter::run(Program& prog) {
     };
     try {
         hoistSubs(prog.stmts);
+        // Pads (PADS-PLAN.md): the mainline is a pad owner. Installed only on
+        // the FIRST program this interpreter runs (EVAL and module mainlines
+        // re-enter here; their annotations would point at a layout no frame
+        // carries, so they are skipped and stay on the map path). The layout
+        // goes in BEFORE the pre-declare loop below, so the top-level `my`s it
+        // defines land in the pad — pre-declared-and-live from the start,
+        // which is exactly the visibility the map gave them.
+        if (!global_->layout && &prog == unitStack_.front()) {
+            if (auto L = resolvePads(prog.stmts, nullptr)) {
+                global_->layout = L;
+                global_->pad.resize(L->names.size());
+            }
+        }
         // Pre-declare top-level lexicals so compile-time phasers (BEGIN/CHECK) can see them.
         bool hasInit;
         auto predeclare = [this](Expr* e) { // a declare-VarExpr, or a list declaration `my ($a, $b)`
             auto one = [this](Expr* x) {
                 if (x && x->kind == NK::VarExpr && static_cast<VarExpr*>(x)->declare) {
                     auto* ve = static_cast<VarExpr*>(x);
-                    if (!ve->name.empty() && !global_->vars.count(ve->name)) {
+                    if (!ve->name.empty() && !global_->find(ve->name)) {
                         if (ve->declShape && ve->name[0] == '@')
                             global_->define(ve->name, makeShapedContainer(evalShapeDims(ve->declShape.get()), ve->declType));
                         else
@@ -3061,7 +3491,7 @@ int Interpreter::run(Program& prog) {
             if (s->kind == NK::ExprStmt) { Expr* e = static_cast<ExprStmt*>(s)->e.get();
                 if (e && e->kind == NK::Assign) predeclare(static_cast<Assign*>(e)->target.get());
                 else predeclare(e); }
-            if (nm.empty() || global_->vars.count(nm)) continue;
+            if (nm.empty() || global_->find(nm)) continue;
             std::string dtype; // honor the declared type so `my num $n` pre-declares 0, not Any
             if (s->kind == NK::ExprStmt) { Expr* e = static_cast<ExprStmt*>(s)->e.get();
                 if (e && e->kind == NK::VarExpr) dtype = static_cast<VarExpr*>(e)->declType;
@@ -3082,7 +3512,7 @@ int Interpreter::run(Program& prog) {
                 !static_cast<SubDecl*>(s)->isMethod) { applySubTraits(static_cast<SubDecl*>(s)); continue; } // hoisted
             // a bare `my $x;` (no init) must not clobber a value a phaser already set
             std::string nm = topDecl(s, hasInit);
-            if (!nm.empty() && !hasInit && global_->vars.count(nm)) {
+            if (!nm.empty() && !hasInit && global_->local(nm)) {
                 // the skipped declaration still owns its container metadata:
                 // `my $port is default(8080);` initializes AND registers the default
                 if (s->kind == NK::ExprStmt) {
@@ -4715,8 +5145,8 @@ void Interpreter::replFinish() {
 
 std::vector<std::string> Interpreter::replNames() const {
     std::vector<std::string> out;
-    for (const Env* e = tctx_.cur.get(); e; e = e->parent.get())
-        for (auto& kv : e->vars) out.push_back(kv.first);
+    for (Env* e = tctx_.cur.get(); e; e = e->parent.get())
+        e->forEachVar([&](const std::string& n, Value&) { out.push_back(n); });
     for (auto& kv : classes_)  out.push_back(kv.first);
     for (auto& kv : subsets_)  out.push_back(kv.first);
     std::sort(out.begin(), out.end());
@@ -6829,7 +7259,10 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 // ENCLOSING scope so a `my` in it declares there (never cleared!)
                 if (ws->modifier) scope = tctx_.cur;
                 else if (!scope || scope.use_count() > 1) { scope = std::make_shared<Env>(); scope->parent = tctx_.cur; }
-                else scope->vars.clear(); // reuse buckets, drop last iteration's bindings
+                else if (!(ws->params.empty() && ws->var.empty() && flatLoopBody(ws->body.get())))
+                    scope->vars.clear(); // reuse buckets, drop last iteration's bindings
+                // (a flat, binder-less while body never puts anything in the
+                // scope — nothing to clear, per iteration, at all)
                 if (!ws->params.empty()) {
                     // `while EXPR -> (:key($k), :value($v))` — the condition's value
                     // is the single argument of the pointy signature, exactly as a
@@ -7114,10 +7547,24 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 if (listv.t == VT::Range && !listv.rNum() && listv.ofType() != "Str") {
                     long long lo = listv.rFrom() + (listv.rExFrom() ? 1 : 0);
                     long long hi = listv.rTo() - (listv.rExTo() ? 1 : 0);
-                    for (long long k = lo; k <= hi; k++) {
-                        freshScope();
-                        scope->define(var, Value::integer(k));
-                        auto rb = [&] { scope->define(var, Value::integer(k)); }; // redo re-copies
+                    // Flat body (see flatLoopBody): one scope, ONE topic map
+                    // node, overwritten in place — no clear and no re-emplace
+                    // per iteration. A closure capturing the scope bumps
+                    // use_count and forks it below, exactly as before.
+                    const bool flat = flatLoopBody(fs->body.get());
+                    long long k = lo;
+                    Value* topic = nullptr;
+                    std::function<void()> rb = [&] { // redo re-copies
+                        if (topic) *topic = Value::integer(k);
+                        else scope->define(var, Value::integer(k));
+                    };
+                    for (k = lo; k <= hi; k++) {
+                        if (flat && topic && scope.use_count() == 1) {
+                            *topic = Value::integer(k);
+                        } else {
+                            freshScope();
+                            topic = &scope->define(var, Value::integer(k));
+                        }
                         if (!runLoopBody(fs->body.get(), scope, fs->label, k == lo, k == hi, col, rb)) break;
                     }
                     return forResult();
@@ -7167,16 +7614,25 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                               static_cast<VarExpr*>(fs->list.get())->name[0] == '@';
                     if (!rw && (fs->vars.empty() || fs->rwVars))
                         if (auto d = derefArrayAlias(fs->list.get())) { arr = d; rw = true; }
-                    for (size_t i = 0; i < arr->size(); i++) {
-                        freshScope();
-                        {   // striped element copy — see the rw modifier loop above
+                    const bool flat = flatLoopBody(fs->body.get());
+                    Value* topic = nullptr;
+                    size_t i = 0;
+                    std::function<void()> rb = [&] { // redo re-copies (aliases keep writes)
+                        if (!rw) { ParStripe es2(*this, arr.get()); if (i < arr->size()) {
+                            if (topic) *topic = asTopic((*arr)[i], var);
+                            else scope->define(var, asTopic((*arr)[i], var)); } }
+                    };
+                    for (i = 0; i < arr->size(); i++) {
+                        if (flat && topic && scope.use_count() == 1) {
                             ParStripe es(*this, arr.get());
                             if (i >= arr->size()) break;
-                            scope->define(var, asTopic((*arr)[i], var));
+                            *topic = asTopic((*arr)[i], var);
+                        } else {
+                            freshScope();
+                            ParStripe es(*this, arr.get());
+                            if (i >= arr->size()) break;
+                            topic = &scope->define(var, asTopic((*arr)[i], var));
                         }
-                        auto rb = [&] { // redo re-copies (aliases keep writes)
-                            if (!rw) { ParStripe es2(*this, arr.get()); if (i < arr->size()) scope->define(var, asTopic((*arr)[i], var)); }
-                        };
                         bool cont = runLoopBody(fs->body.get(), scope, fs->label, i == 0, i + 1 == arr->size(), col, rb);
                         if (rw) {
                             auto it = scope->vars.find(var);
@@ -7286,7 +7742,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 // `{ $^x } without X` — a placeholder block receives the topic as its argument
                 if (g->body) {
                     auto ph = computePlaceholders(g->body->stmts);
-                    if (ph.size() == 1) env->vars[ph[0]] = topic;
+                    if (ph.size() == 1) env->define(ph[0], topic);
                 }
                 Value r = Value::any();
                 if (skip && !g->hasElse) { // `(42 without $def)` contributes NOTHING to a list
@@ -9195,8 +9651,7 @@ Value& Interpreter::accessorRef(Value& base, const std::string& name) {
 // binding if one is visible, else a fresh one in the global env.
 Value& Interpreter::dynVarRef(const std::string& name) {
     if (tctx_.cur) if (Value* p = tctx_.cur->find(name)) return *p;
-    global_->define(name, Value::any());
-    return global_->vars[name];
+    return global_->define(name, Value::any());
 }
 
 // %*SUB-MAIN-OPTS<named-anywhere> as seen from MAIN auto-invoke. The mainline's
@@ -10726,6 +11181,9 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
             e->routineFrame = false;
             e->loopFrame = false;
             e->ex.reset();
+            e->layout.reset();        // pads: next call re-attaches its own layout;
+            e->pad.clear();           // clear() keeps the vector's capacity, the
+            e->padLive = 0;           // same trick the bucket array plays above
             free.push_back(std::move(e));
         }
     };
@@ -10753,6 +11211,29 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
         c.stateEnv->parent = c.closure ? c.closure : global_;
     });
     env->parent = c.stateEnv;
+    // Pads (PADS-PLAN.md): every Callable body is a pad owner, resolved at its
+    // first call (padReady publishes; the layout itself is cached per BODY, so
+    // .assuming wrappers sharing a body agree on slots). The layout goes on
+    // BEFORE any define below — "self" and the params are the first slots to
+    // land in the pad. There is NO separate current-pad register: the fast
+    // paths derive the frame from tctx_.cur (nearest layout-carrying ancestor),
+    // so the many places that temporarily re-point tctx_.cur — the rw
+    // write-through evaluating the caller's arg in the caller's scope was the
+    // one that caught this — stay correct without knowing pads exist.
+    if (c.body) {
+        if (c.padReady != 1) {
+            {
+                auto L = resolvePads(*c.body, c.params);
+                std::lock_guard<std::mutex> lk(padMu_);
+                if (c.padReady != 1) c.padLayout = std::move(L);
+            }
+            c.padReady = 1;
+        }
+        if (c.padLayout) {
+            env->layout = c.padLayout;
+            env->pad.resize(c.padLayout->names.size());
+        }
+    }
     // a method invoked via .() takes its invocant as the first positional arg
     if (c.isMethod && !args.empty()) {
         env->define("self", args[0]);
@@ -11151,12 +11632,12 @@ void Interpreter::copyOutRw(const std::vector<Param>* params, std::shared_ptr<En
         // they copy back when mutated, same unchanged-guard as `is rw`
         if ((p.isRw || p.isRaw || p.sigil == '\\' ||
              env->xr().rwSynced.count(p.name)) && pi < rwArgs->size()) {
-            auto it = env->vars.find(p.name);
-            if (it != env->vars.end()) {
+            Value* pv = env->local(p.name);
+            if (pv) {
                 auto sy = env->xr().rwSynced.find(p.name);
-                bool unchanged = sy != env->xr().rwSynced.end() && valueEqv(it->second, sy->second);
+                bool unchanged = sy != env->xr().rwSynced.end() && valueEqv(*pv, sy->second);
                 if (!unchanged)
-                    try { if (Value* lv = lvalue(peelIncDec((*rwArgs)[pi].get()))) *lv = it->second; } catch (...) {}
+                    try { if (Value* lv = lvalue(peelIncDec((*rwArgs)[pi].get()))) *lv = *pv; } catch (...) {}
             }
         }
         pi++;
@@ -11233,12 +11714,11 @@ void Interpreter::setupRwLinks(const std::vector<Param>* params, std::shared_ptr
             // to tell which had a container. Throwing here instead made
             // S06-traits/misc.t and native-is-rw.t abort mid-file.
             if (!p.isRw && argIsNeverContainer(ae)) {
-                auto vi = env->vars.find(p.name);
-                if (vi != env->vars.end()) vi->second.readonly = true;
+                if (Value* vp = env->local(p.name)) vp->readonly = true;
             }
             env->x().rwLinks[p.name] = { ae, tctx_.cur };
-            auto it = env->vars.find(p.name);
-            env->x().rwSynced[p.name] = it != env->vars.end() ? it->second : Value::any();
+            Value* ip = env->local(p.name);
+            env->x().rwSynced[p.name] = ip ? *ip : Value::any();
             anyRwLinks_ = true;
         }
         // a plain param BOUND TO A BUF is mutable through the binding in Rakudo
@@ -11247,14 +11727,13 @@ void Interpreter::setupRwLinks(const std::vector<Param>* params, std::shared_ptr
         // write-through link. Cro's frame serializer appends into a `Buf $buf`
         // parameter and the caller emits the same buffer.
         else if (p.sigil == '$' && !p.isCopy && !p.named && pi < rwArgs->size()) {
-            auto it = env->vars.find(p.name);
+            Value* pv = env->local(p.name);
             // `hashKind` is empty on every ordinary value, and this runs for every
             // plain scalar parameter of every call — so test that before comparing
             // it against two literals (each of those is a strlen plus a memcmp).
-            if (it != env->vars.end() && it->second.t == VT::Str &&
-                !it->second.hashKind.empty() &&
-                (it->second.hashKind == "Buf" || it->second.hashKind == "Blob"))
-                env->x().rwSynced[p.name] = it->second;
+            if (pv && pv->t == VT::Str && !pv->hashKind.empty() &&
+                (pv->hashKind == "Buf" || pv->hashKind == "Blob"))
+                env->x().rwSynced[p.name] = *pv;
         }
         pi++;
     }
@@ -11274,8 +11753,8 @@ void Interpreter::setupRwSlots(const std::vector<Param>* params, std::shared_ptr
         if ((p.isRw || p.isRaw || p.sigil == '\\') && pi < slots->size()) {
             if (Value* s = (*slots)[pi]) {
                 env->x().rwDirect[p.name] = s;
-                auto it = env->vars.find(p.name);
-                env->x().rwSynced[p.name] = it != env->vars.end() ? it->second : Value::any();
+                Value* ip = env->local(p.name);
+                env->x().rwSynced[p.name] = ip ? *ip : Value::any();
             }
             else env->x().rwDead.insert(p.name);
             anyRwLinks_ = true;
@@ -11293,14 +11772,14 @@ void Interpreter::rwWriteThrough(Expr* target) {
     else if (target->kind == NK::NameTerm) name = static_cast<NameTerm*>(target)->name;
     else return;
     Env* e = tctx_.cur.get();
-    while (e && !e->vars.count(name)) e = e->parent.get();
+    while (e && !e->local(name)) e = e->parent.get();
     if (!e) return;
     if (e->ex && e->ex->rwDead.count(name))
         throw RakuError{Value::typeObj("X::Assignment::RO"),
                         "Cannot modify an immutable value"};
     auto dit = e->xr().rwDirect.find(name);
     if (dit != e->xr().rwDirect.end()) {
-        Value v = e->vars[name];
+        Value v = *e->local(name);
         *dit->second = v;
         e->x().rwSynced[name] = v;
         return;
@@ -11308,7 +11787,7 @@ void Interpreter::rwWriteThrough(Expr* target) {
     if (!e->ex || e->ex->rwLinks.empty()) return;
     auto it = e->ex->rwLinks.find(name);
     if (it == e->ex->rwLinks.end()) return;
-    Value v = e->vars[name];
+    Value v = *e->local(name);
     auto savedCur = tctx_.cur;
     tctx_.cur = it->second.second; // the caller's scope, where the arg expr lives
     try { if (Value* lv = lvalue(peelIncDec(it->second.first))) *lv = v; } catch (...) {}
@@ -11573,7 +12052,7 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
         }
         for (ClassInfo* k = rk; k; k = k->parent.get())
             for (auto& b : k->roleParamBindings)
-                if (!env->vars.count(b.first)) env->define(b.first, b.second);
+                if (!env->local(b.first)) env->define(b.first, b.second);
     }
     if (c.params && !c.params->empty()) {
         bindParams(*c.params, args, env, /*methodCtx=*/true);
@@ -11881,6 +12360,21 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
         if (ve->name.size() > 2 && (ve->name[1] == '^' || ve->name[1] == ':'))
             if (Value* ph = tctx_.cur->find(std::string(1, ve->name[0]) + ve->name.substr(2)))
                 return ph;
+        // Pads (PADS-PLAN.md): annotated write target — same owner-identity
+        // compare as the read path; a mismatch or a not-yet-live slot falls
+        // through to the name lookup.
+        {
+            int ps = ve->padSlot;
+            if (ps >= 0) {
+                for (Env* pf = tctx_.cur.get(); pf; pf = pf->parent.get()) {
+                    if (!pf->layout) continue;
+                    if ((const void*)pf->layout.get() == (const void*)ve->padOwner &&
+                        ((pf->padLive >> ps) & 1))
+                        return &pf->pad[ps];
+                    break; // nearest layout frame decides — never skip past it
+                }
+            }
+        }
         Value* p = tctx_.cur->find(ve->name);
         if (p) return p;
         // &?BLOCK / &?ROUTINE: not real slots — nothing assignable here
@@ -11908,8 +12402,9 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
         if (!isSpecialVar(ve->name) && !noStrict_)
             throw RakuError{Value::typeObj("X::Undeclared"),
                             "Variable '" + ve->name + "' is not declared"};
-        tctx_.cur->define(ve->name, defaultFor(sigil));
-        return &tctx_.cur->vars[ve->name];
+        // through define(), which routes a layout name into the pad — indexing
+        // vars[] directly here would give the same name two homes
+        return &tctx_.cur->define(ve->name, defaultFor(sigil));
     }
     if (e->kind == NK::SymbolicRef) {
         auto* sr = static_cast<SymbolicRef*>(e);
@@ -13399,31 +13894,30 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 (ascii::isalpha((unsigned char)tv->name[1]) || tv->name[1] == '_')) {
                 std::shared_ptr<Env> owner;
                 for (std::shared_ptr<Env> en = tctx_.cur; en; en = en->parent)
-                    if (en->vars.count(sv->name)) { owner = en; break; }
+                    if (en->local(sv->name)) { owner = en; break; }
                 if (owner) {
                     std::string src = sv->name;
                     Value proxy = Value::makeHash(); proxy.hashKind = "Proxy";
                     Value fetch; fetch.t = VT::Code; fetch.setCode(std::make_shared<Callable>());
                     fetch.code()->builtin = [owner, src](Interpreter& I, ValueList&) -> Value {
-                        auto it = owner->vars.find(src);
-                        if (it == owner->vars.end()) return Value::any();
+                        Value* op = owner->local(src);
+                        if (!op) return Value::any();
                         // a bound-to-bound chain: deref one more Proxy level
-                        if (it->second.t == VT::Hash && it->second.hashKind == "Proxy" && it->second.hash()) {
-                            auto f2 = it->second.hash()->find("FETCH");
-                            if (f2 != it->second.hash()->end()) { ValueList none; return I.callCallable(f2->second, none); }
+                        if (op->t == VT::Hash && op->hashKind == "Proxy" && op->hash()) {
+                            auto f2 = op->hash()->find("FETCH");
+                            if (f2 != op->hash()->end()) { ValueList none; return I.callCallable(f2->second, none); }
                         }
-                        return it->second;
+                        return *op;
                     };
                     Value store; store.t = VT::Code; store.setCode(std::make_shared<Callable>());
                     store.code()->builtin = [owner, src](Interpreter& I, ValueList& sa) -> Value {
                         Value nv = sa.empty() ? Value::any() : sa[0];
-                        auto it = owner->vars.find(src);
-                        if (it != owner->vars.end() && it->second.t == VT::Hash &&
-                            it->second.hashKind == "Proxy" && it->second.hash()) {
-                            auto s2 = it->second.hash()->find("STORE");
-                            if (s2 != it->second.hash()->end()) { ValueList one{nv}; return I.callCallable(s2->second, one); }
+                        Value* op = owner->local(src);
+                        if (op && op->t == VT::Hash && op->hashKind == "Proxy" && op->hash()) {
+                            auto s2 = op->hash()->find("STORE");
+                            if (s2 != op->hash()->end()) { ValueList one{nv}; return I.callCallable(s2->second, one); }
                         }
-                        owner->vars[src] = nv;
+                        if (op) *op = nv; else owner->define(src, nv);
                         return nv;
                     };
                     (*proxy.hash())["FETCH"] = fetch;
@@ -13691,7 +14185,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             else for (Env* en = tctx_.cur.get(); en; en = en->parent.get()) {
                 auto di = en->xr().varDefault.find(nm);
                 if (di != en->xr().varDefault.end()) { dv = di->second; break; }
-                if (en->vars.count(nm)) break; // owner scope reached, no declared default
+                if (en->local(nm)) break; // owner scope reached, no declared default
             }
             *lv = dv;
         }
@@ -13750,7 +14244,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                                                 : " " + rhs.gist())); // undef gist has its own parens
                         break;
                     }
-                    if (en->vars.count(nm)) break;
+                    if (en->local(nm)) break;
                 }
             }
             // a `$` container ITEMIZES what it holds: `my $t = (1,2)` is one
@@ -20276,11 +20770,15 @@ Value Interpreter::evalTempLet(Call* c) {
         if (tg->kind != NK::VarExpr) return false;
         std::string nm = static_cast<VarExpr*>(tg)->name;
         std::shared_ptr<Env> se = tctx_.cur;
-        while (se && !se->vars.count(nm)) se = se->parent;
+        while (se && !se->local(nm)) se = se->parent;
         if (!se) return false;
-        Value snapshot = snap(se->vars[nm]);
+        Value snapshot = snap(*se->local(nm));
         restores.push_back([se, nm, snapshot]() {
-            se->vars[nm] = snapshot;
+            // by name, not by pointer: a map slot moves on rehash. local()
+            // re-finds either home (the pad slot stays live — the captured
+            // shared_ptr keeps the frame, and its mask, alive).
+            if (Value* p = se->local(nm)) *p = snapshot;
+            else se->vars[nm] = snapshot;
         });
         return true;
     };
@@ -20394,7 +20892,7 @@ void Interpreter::enforceTypedAssign(const std::string& nm, Value& rhs) {
                     (isDefined(rhs) ? " (" + typeCheckRepr(rhs) + ")" : " " + rhs.gist()));
             break;
         }
-        if (en->vars.count(nm)) break;
+        if (en->local(nm)) break;
     }
 }
 
@@ -20490,8 +20988,9 @@ Value Interpreter::evalCall(Call* c) {
         if (c->name == "__stash__") {
             Value h = Value::makeHash(); h.hashKind = "Stash";
             for (Env* en = tctx_.cur.get(); en; en = en->parent.get())
-                for (auto& kv : en->vars)
-                    if (!h.hash()->count(kv.first)) (*h.hash())[kv.first] = kv.second;
+                en->forEachVar([&](const std::string& n, Value& v) {
+                    if (!h.hash()->count(n)) (*h.hash())[n] = v;
+                });
             return h;
         }
         // cas $x, {code} — atomic read-modify-write; cas($x, $expected, $new) —
@@ -22389,6 +22888,34 @@ Value Interpreter::eval(Expr* e) {
                 ve->name.size() > 1 && ve->name[1] == '*')
                 throw RakuError{Value::typeObj("X::Bind::Slice"),
                     "Cannot access '" + ve->name + "' through LEXICAL, because it is not declared as lexical"};
+            // Pads (PADS-PLAN.md): an annotated reference indexes the current
+            // pad frame directly — one load, no hashing, no chain walk — after
+            // re-proving the annotation belongs to THIS frame's layout (the
+            // owner-identity compare; a mismatch means this node is running
+            // under someone else's frame and takes the paths below).
+            if (!ve->declare) {
+                int ps = ve->padSlot;
+                if (ps >= 0) {
+                    // the pad frame is DERIVED: the nearest layout-carrying
+                    // ancestor of the CURRENT scope. If it is not this node's
+                    // owner (annotation ran for another activation shape, or
+                    // cur was re-pointed somewhere else entirely), fall through.
+                    for (Env* pf = tctx_.cur.get(); pf; pf = pf->parent.get()) {
+                        if (!pf->layout) continue;
+                        if ((const void*)pf->layout.get() == (const void*)ve->padOwner &&
+                            ((pf->padLive >> ps) & 1)) {
+                            Value* p = &pf->pad[ps];
+                            if (!(p->t == VT::Hash && p->hashKind == "Proxy")) {
+                                ParStripe rs(*this, p); // torn-copy contract, as below
+                                Value out = *p;
+                                out.readonly = false;
+                                return out;
+                            }
+                        }
+                        break; // nearest layout frame decides — never skip past it
+                    }
+                }
+            }
             // Fast path: a plain lexical ($x/@a/%h/&f — second char is a letter
             // or underscore, so every twigilled/special name is excluded) that is
             // FOUND in scope returns immediately, skipping the special-name
@@ -22529,24 +23056,23 @@ Value Interpreter::eval(Expr* e) {
                     if (sigil == '@' || sigil == '%') { // container stays empty; v is the ELEMENT default
                         Value c = sigil == '@' ? Value::array() : Value::makeHash();
                         c.elemDefaultM() = std::make_shared<Value>(dv);
-                        de->define(ve->name, c);
-                        return de->vars[ve->name];
+                        return de->define(ve->name, c); // define() routes a pad name into
+                                                        // its slot; vars[] would split it
                     }
                     de->x().varDefault[ve->name] = dv;
-                    de->define(ve->name, dv);
-                    return de->vars[ve->name];
+                    return de->define(ve->name, dv);
                 }
                 if (ve->declShape && sigil == '@') { // shaped array `my @a[2;3]`
-                    de->define(ve->name, makeShapedContainer(evalShapeDims(ve->declShape.get()), ve->declType));
-                    return de->vars[ve->name];
-                }
-                if (!ve->declType.empty() || !de->vars.count(ve->name)) {
-                    if (sigil == '$' && !ve->declType.empty() && ascii::isupper((unsigned char)ve->declType[0]))
-                        de->x().varDefault[ve->name] = Value::typeObj(ve->declType); // `$x = Nil` resets to (Type)
-                    de->define(ve->name, typedDefault(ve->declType, sigil));
+                    return de->define(ve->name, makeShapedContainer(evalShapeDims(ve->declShape.get()), ve->declType));
                 }
                 if (ve->declDynamic) de->x().varDynamic.insert(ve->name); // `is dynamic`
-                return de->vars[ve->name];
+                if (!ve->declType.empty() || !de->local(ve->name)) {
+                    if (sigil == '$' && !ve->declType.empty() && ascii::isupper((unsigned char)ve->declType[0]))
+                        de->x().varDefault[ve->name] = Value::typeObj(ve->declType); // `$x = Nil` resets to (Type)
+                    return de->define(ve->name, typedDefault(ve->declType, sigil));
+                }
+                Value* dp = de->local(ve->name);
+                return dp ? *dp : Value::any();
             }
             if (ve->name.size() > 2 && (ve->name[1] == '.' || ve->name[1] == '!')) {
                 Value* selfp = tctx_.cur->find("self");
@@ -23177,7 +23703,7 @@ Value Interpreter::eval(Expr* e) {
                     if (vn.size() > 1 && vn[1] == '*') return Value::boolean(true);
                     for (Env* en = tctx_.cur.get(); en; en = en->parent.get()) {
                         if (en->xr().varDynamic.count(vn)) return Value::boolean(true);
-                        if (en->vars.count(vn)) break; // the declaring scope answers
+                        if (en->local(vn)) break; // the declaring scope answers
                     }
                     return Value::boolean(false);
                 }
@@ -23429,7 +23955,7 @@ Value Interpreter::eval(Expr* e) {
                     for (Env* en = tctx_.cur.get(); en; en = en->parent.get()) {
                         auto di = en->xr().varDefault.find(ivar->name);
                         if (di != en->xr().varDefault.end()) { dv = di->second; break; }
-                        if (en->vars.count(ivar->name)) break;
+                        if (en->local(ivar->name)) break;
                     }
                     (*sc.hash())["default"] = dv;
                     (*sc.hash())["value"] = inv;

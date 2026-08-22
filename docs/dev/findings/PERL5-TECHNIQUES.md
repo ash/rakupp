@@ -238,22 +238,43 @@ Two observations from applying it:
   1) and method-name string comparison in dispatch (the interning story,
   docs/book/ch/10-interning.md). Both are the design-doc items.
 
+### Item 2 (2026-08-22): pads + the flat-loop lever
+
+**Item 2 is implemented** ([PADS-PLAN.md](../plans/PADS-PLAN.md), book notes
+in docs/book/NOTES-pads.md): per-owner `PadLayout`s (mainline + every
+Callable body, cached per BODY so `.assuming` wrappers agree on slots),
+`Env` gains a fixed-size pad + liveness mask, `find`/`define` route layout
+names transparently, and annotated references index the frame directly —
+the frame DERIVED as the nearest layout ancestor of `tctx_.cur`, after a
+tracked-register first design failed on recursive `is rw` (the rw
+write-through re-points the scope; ~109 sites do; deriving fixed all at
+once). The plan's own falsifier then fired — asg measured FLAT — and a
+profile moved the target: the cost was the per-iteration topic re-insert
+and scope machinery, not lookup. So the batch grew perl's OTHER foreach
+lesson: statically-flat loop bodies keep one scope and overwrite the topic
+in place (capture still forks dynamically). Measured together: asg −25%,
+loopsum −34%, hash −24%, hashfill interpreted −16%, strcat −24%, regex
+−10%, fib −5…−8%; JSON::Fast/grammar flat-to-−2.5%. Roast per-file diff
+jitter-only; TSan clean.
+
+Still on item 2's tail (fold into item 4's batch): inner-block `my` slots,
+binder direct-slot param writes, `&`-name slots for sub lookup.
+
 ## Suggested order
 
-Re-ranked 2026-08-22, after item 6 landed, item 1 banked its two separable
-steps (344 → 200 → 128), and the post-ValueHash profile demoted item 8
-(malloc/free ~9% of the object-construction kernel; the frame pool already
-took the big case). Done: **6** (ValueHash), **1a/1b** (cold block + payload
-slot). Remaining:
+Re-ranked 2026-08-22 (again, same day): item 2 landed with the flat-loop
+lever; the while-shaped kernels (strscan/strpass/subcall, all −2%) name the
+next cost plainly — per-op result construction and call overhead, which is
+items 4 and the dispatch/interning story. Done: **6**, **1a/1b**, **2**.
+Remaining:
 
 | # | change | payoff | cost | depends on |
 |---|---|---|---|---|
-| 2 | pad-style lexical slots | high, interp-wide | medium | parser knows decls (yes) |
-| 4 | per-node result slots | medium | low once 2 exists | do as 2's second half |
+| 4 | per-node result slots (TARG) | medium-high — the while-kernel residue | medium | pads exist now; put results in the owner pad |
 | 5 | cached string form on numerics | medium | low-medium | unblocked: the inline CowStr is empty on an Int — IOK/POK almost literally; needs the write-on-read thread audit |
 | 1 | head/body endgame (CowStr + i/n into the body, ~64-byte head) | largest remaining | large | plan WITH the container/binding refactor |
 | 7 | args as pointers on one stack | medium | large | same refactor as 1 |
-| 3 | threaded-op execution loop | large | large | design doc first; sequence after 2/4, when dispatch is the top cost |
+| 3 | threaded-op execution loop | large | large | design doc first; after 4, when dispatch is the top cost |
 | 8 | pool remaining payload allocations | small now | low | opportunistic only |
 
 (Method-name interning in dispatch — not a perl technique, but named by the
