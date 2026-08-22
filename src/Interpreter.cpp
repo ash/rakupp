@@ -2321,15 +2321,15 @@ std::shared_ptr<const PadLayout> Interpreter::resolvePads(const std::vector<Stmt
     auto layout = std::make_shared<PadLayout>();
     if (params)
         for (auto& p : *params)
-            if (slottable(p.name)) layout->add(p.name);
+            if (slottable(p.name)) layout->add(p.name, /*simple=*/true);
     for (auto& s : stmts) {
         std::vector<const VarExpr*> ds;
         declaredVars(s.get(), ds);
-        for (auto* v : ds) layout->add(v->name);
+        for (auto* v : ds) layout->add(v->name, /*simple=*/v->declType.empty());
         if (s->kind == NK::VarDecl) {
             auto* vd = static_cast<const VarDecl*>(s.get());
             if (vd->scope == "my")
-                for (auto& n : vd->names) if (slottable(n)) layout->add(n);
+                for (auto& n : vd->names) if (slottable(n)) layout->add(n, /*simple=*/true);
         }
     }
     if (layout->names.empty() || layout->names.size() > 64) return nullptr; // cacheSlot stays null
@@ -12363,18 +12363,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
         // Pads (PADS-PLAN.md): annotated write target — same owner-identity
         // compare as the read path; a mismatch or a not-yet-live slot falls
         // through to the name lookup.
-        {
-            int ps = ve->padSlot;
-            if (ps >= 0) {
-                for (Env* pf = tctx_.cur.get(); pf; pf = pf->parent.get()) {
-                    if (!pf->layout) continue;
-                    if ((const void*)pf->layout.get() == (const void*)ve->padOwner &&
-                        ((pf->padLive >> ps) & 1))
-                        return &pf->pad[ps];
-                    break; // nearest layout frame decides — never skip past it
-                }
-            }
-        }
+        if (Value* p = padPtr(ve)) return p;
         Value* p = tctx_.cur->find(ve->name);
         if (p) return p;
         // &?BLOCK / &?ROUTINE: not real slots — nothing assignable here
@@ -13088,6 +13077,60 @@ bool Interpreter::objListItems(const Value& v, ValueList& out) {
 }
 
 Value Interpreter::evalAssign(Assign* a, bool sink) {
+    // TARG lever A (TARG-PLAN.md): the simple-assign lane. A plain
+    // `$padvar = EXPR` pays ~108 ns of ceremony on the full path — the
+    // readonly-List find, the shape probes of evalAssignInner, the
+    // keepType/varDefault walks — all for machinery this shape provably
+    // does not have. The NODE verdict (decided once) proves the shape; the
+    // per-activation checks prove the SLOT is plain: untyped by the layout
+    // (typedness lives in varDefault, not on the Value), no cold block, no
+    // native width, not readonly, not a Proxy. Anything else falls through
+    // BEFORE the RHS is evaluated, so the full path never re-runs a
+    // side-effecting expression.
+    {
+        signed char sv = a->simpleSlot;
+        if (sv != 0) {
+            if (sv < 0) {
+                bool ok = a->op == "=" && a->target && a->target->kind == NK::VarExpr;
+                if (ok) {
+                    auto* tv = static_cast<VarExpr*>(a->target.get());
+                    ok = !tv->declare && tv->padSlot >= 0 && !tv->name.empty() &&
+                         tv->name[0] == '$' && tv->declCoerce.empty();
+                }
+                a->simpleSlot = ok ? 1 : 0;
+                sv = ok ? 1 : 0;
+            }
+            if (sv == 1) {
+                auto* tv = static_cast<VarExpr*>(a->target.get());
+                Value* slot = padPtr(tv);
+                if (slot) {
+                    // per-activation checks: an untyped slot (layout verdict),
+                    // plain in every dimension the ceremony exists for
+                    Env* pf = nullptr;
+                    for (Env* e2 = tctx_.cur.get(); e2; e2 = e2->parent.get())
+                        if (e2->layout) { pf = e2; break; }
+                    if (pf->layout->simple[tv->padSlot] &&
+                        !slot->x_ && slot->natBits == 0 && !slot->readonly &&
+                        !(slot->t == VT::Hash && slot->hashKind == "Proxy")) {
+                        Value rv = evalValueOf(a->value.get());
+                        if (rv.t == VT::Nil) rv = Value::any(); // untyped, no default: Nil resets to Any
+                        else {
+                            rv.readonly = false;
+                            // a `$` container itemizes what it holds
+                            if ((rv.t == VT::Array || rv.t == VT::Hash) && !rv.itemized)
+                                rv.itemized = true;
+                        }
+                        {
+                            ParStripe ws(*this, slot); // torn-copy contract
+                            *slot = rv;
+                        }
+                        if (anyRwLinks_) rwWriteThrough(a->target.get());
+                        return sink ? Value::any() : rv;
+                    }
+                }
+            }
+        }
+    }
     // `my @a is List` makes the container immutable — reassigning it throws (the
     // declaration's own initialiser, declare=true, still runs; only later `@a = …` dies)
     if (a->op == "=" && a->target->kind == NK::VarExpr) {
@@ -18701,7 +18744,9 @@ Value Interpreter::evalBinary(Binary* b) {
             // Re-checked on EVERY evaluation, so a variable that changes type
             // mid-loop simply stops taking this path.
             auto scal = [&](Expr* e) -> const Value* {
-                Value* p = tctx_.cur->find(static_cast<VarExpr*>(e)->name);
+                auto* ve = static_cast<VarExpr*>(e);
+                Value* p = padPtr(ve);          // annotated: the slot, no hashing
+                if (!p) p = tctx_.cur->find(ve->name);
                 return (p && p->hashKind.empty() &&
                         (p->t == VT::Int || p->t == VT::Num ||
                          p->t == VT::Str || p->t == VT::Bool)) ? p : nullptr;
@@ -21751,15 +21796,21 @@ Value Interpreter::evalIndex(Index* idx) {
         idx->fastShape = sh;
     }
     if (idx->fastShape > 0) {
-        if (Value* bp = tctx_.cur->find(static_cast<VarExpr*>(idx->base.get())->name)) {
+        auto* bve = static_cast<VarExpr*>(idx->base.get());
+        Value* bp = padPtr(bve);
+        if (!bp) bp = tctx_.cur->find(bve->name);
+        if (bp) {
             // a plain, fully materialised Array: no lazy/extended state, no
             // Failure or other kinded value, nothing with its own AT-POS
             if (bp->t == VT::Array && bp->arr() && !bp->ext() && bp->hashKind.empty()) {
                 long long i = idx->litIdx;
                 bool have = idx->fastShape == 2;
-                if (!have)
-                    if (Value* ip = tctx_.cur->find(static_cast<VarExpr*>(idx->index.get())->name))
-                        if (ip->t == VT::Int && ip->hashKind.empty()) { i = ip->i; have = true; }
+                if (!have) {
+                    auto* ive = static_cast<VarExpr*>(idx->index.get());
+                    Value* ip = padPtr(ive);
+                    if (!ip) ip = tctx_.cur->find(ive->name);
+                    if (ip && ip->t == VT::Int && ip->hashKind.empty()) { i = ip->i; have = true; }
+                }
                 // NON-NEGATIVE only. A negative subscript is not "from the end"
                 // here: `my $i = -1; @a[$i]` throws X::OutOfRange, as it must
                 // (Rakudo rejects the spelling outright and wants `*-1`), and
@@ -22894,25 +22945,14 @@ Value Interpreter::eval(Expr* e) {
             // owner-identity compare; a mismatch means this node is running
             // under someone else's frame and takes the paths below).
             if (!ve->declare) {
-                int ps = ve->padSlot;
-                if (ps >= 0) {
-                    // the pad frame is DERIVED: the nearest layout-carrying
-                    // ancestor of the CURRENT scope. If it is not this node's
-                    // owner (annotation ran for another activation shape, or
-                    // cur was re-pointed somewhere else entirely), fall through.
-                    for (Env* pf = tctx_.cur.get(); pf; pf = pf->parent.get()) {
-                        if (!pf->layout) continue;
-                        if ((const void*)pf->layout.get() == (const void*)ve->padOwner &&
-                            ((pf->padLive >> ps) & 1)) {
-                            Value* p = &pf->pad[ps];
-                            if (!(p->t == VT::Hash && p->hashKind == "Proxy")) {
-                                ParStripe rs(*this, p); // torn-copy contract, as below
-                                Value out = *p;
-                                out.readonly = false;
-                                return out;
-                            }
-                        }
-                        break; // nearest layout frame decides — never skip past it
+                // the pad frame is DERIVED: the nearest layout-carrying
+                // ancestor of the CURRENT scope (padPtr) — see PADS-PLAN.md.
+                if (Value* p = padPtr(ve)) {
+                    if (!(p->t == VT::Hash && p->hashKind == "Proxy")) {
+                        ParStripe rs(*this, p); // torn-copy contract, as below
+                        Value out = *p;
+                        out.readonly = false;
+                        return out;
                     }
                 }
             }

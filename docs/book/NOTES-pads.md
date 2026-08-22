@@ -1,4 +1,20 @@
-# Book notes: pads (raw material, not a chapter yet)
+# Book notes: pads and TARG (raw material, not a chapter yet)
+
+## TARG addendum (same day): the cost of a result
+
+The decomposition ladder that scoped the TARG batch belongs in the book —
+six one-line programs pricing an interpreter's per-iteration anatomy (loop
+floor 65 ns, a pad read +37, a constant STORE +108, the specialized add
+only +28). The punchline: the assignment CEREMONY cost four times the
+arithmetic, and perl's literal TARG (result slots) was the wrong translation
+for a value-returning tree-walk — the right one was a decided-once
+simple-assign lane plus feeding the chapter-19 shapes from the pad
+(`padPtr`). asg went −40% on top of the pads batch; the typedness lesson is
+chapter-worthy on its own: a typed `my Int $x` leaves NO mark on its slot
+Value — the constraint lives in `varDefault`, so the lane's eligibility had
+to be a per-slot bit computed from the DECLARATION at layout-build time,
+not anything inspectable at the store site.
+
 
 Working notes collected while the pads batch lands — the material the
 Internals book needs when chapters 13 (the tree-walk), 14 (calls) and 19

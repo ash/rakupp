@@ -238,6 +238,10 @@ struct Assign : Expr {
     ExprPtr target;
     std::string op; // "=", "+=", ":=" ...
     ExprPtr value;
+    // TARG lever A: 1 = this node is `$padvar = EXPR` with a plain scalar
+    // target (non-declare, no coercion) — eligible for the simple-assign
+    // lane, subject to the per-activation slot checks. Decided once.
+    DecidedOnce<signed char> simpleSlot{-1};
     // `=$=` / `=@=` / `=%=` — assignment with the container semantics named by the
     // operator rather than by the target's sigil. The parser rewrites `op` to "="
     // and records the sigil here, so every `op == "="` test downstream still holds.

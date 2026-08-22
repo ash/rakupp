@@ -232,12 +232,22 @@ struct EnvExtras {
 // pad variable through Env::find rather than through an annotated site.
 struct PadLayout {
     std::vector<std::string> names;
+    // TARG lever A (TARG-PLAN.md): 1 = this slot was declared UNTYPED and
+    // unconstrained (or is a param — assignment to a param is not
+    // type-enforced today), so the simple-assign lane may store into it
+    // without the typed-container ceremony. Parallel to `names`.
+    std::vector<uint8_t> simple;
     std::unordered_map<std::string, int> byName;
-    int add(const std::string& n) {
+    int add(const std::string& n, bool simpleSlot = false) {
         auto it = byName.find(n);
-        if (it != byName.end()) return it->second;
+        if (it != byName.end()) {
+            // a redeclaration in the same owner keeps the STRICTER verdict
+            if (!simpleSlot) simple[it->second] = 0;
+            return it->second;
+        }
         int s = (int)names.size();
         names.push_back(n);
+        simple.push_back(simpleSlot ? 1 : 0);
         byName.emplace(n, s);
         return s;
     }
@@ -836,6 +846,22 @@ public:
     // topic in place? Cached on the Block (flatLoop). See the scan in
     // Interpreter.cpp for the exact rules.
     bool flatLoopBody(Block* b);
+    // The pad pointer for an annotated reference, or null (not annotated, not
+    // live, or running under a frame chain the annotation does not belong to
+    // — the derive-and-compare rule from PADS-PLAN.md, shared by every fast
+    // path that wants a slot).
+    Value* padPtr(const VarExpr* ve) {
+        int ps = ve->padSlot;
+        if (ps < 0) return nullptr;
+        for (Env* pf = tctx_.cur.get(); pf; pf = pf->parent.get()) {
+            if (!pf->layout) continue;
+            if ((const void*)pf->layout.get() == ve->padOwner &&
+                ((pf->padLive >> ps) & 1))
+                return &pf->pad[ps];
+            break; // nearest layout frame decides — never skip past it
+        }
+        return nullptr;
+    }
     void enforceTypedAssign(const std::string& nm, Value& rhs); // typed-assign contract, shared by `=` and atomic-assign
     // The striped-lock pool shared by cas, the atomic-* family, and Channel:
     // real mutual exclusion in parallel (no-GIL) mode, negligible uncontended
