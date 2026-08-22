@@ -31,29 +31,31 @@ there.)
 
 ## The short version
 
-- **Startup:** ~2 ms on this machine (2.2 ms interpreting, 2.1 ms native) —
+- **Startup:** ~2–3 ms on this machine (2.8 ms interpreting, 2.4 ms native) —
   a tiny native binary with no VM to spin up. For one-liners, CLI glue, and
-  small programs it is instant.
+  small programs it is instant. (Both rows grew ~0.3–0.6 ms when lexical pads
+  landed on 2026-08-22: laying out a pad is a fixed per-process cost, paid once
+  and repaid many times over by every kernel that then runs.)
 - **Native (`--exe`) beats Rakudo on every benchmark here** — from 4.3× on
-  `arrayops` to 19.5× on `loopsum`, 32.3× on `hash`, and 69.1× on `strcat`.
+  `arrayops` to 18.6× on `loopsum`, 30.5× on `hash`, and 62.0× on `strcat`.
   Compiling removes interpreter overhead.
-- **`streq` is the one interpreter row Rakudo still leads** (1.3×). `fib`,
-  long the other one, is now a dead heat — 456.7 ms interpreted against
-  Rakudo's 459.2 ms, a 0.5% gap that is inside this harness's run-to-run
-  spread, so read it as level rather than as a win. Compiling settles both:
-  `--exe` puts `fib` 5.4× ahead and `streq` 13.9× ahead (string `eq`/`lt`
+- **`streq` is the one row Rakudo still leads, and only by 1.1×** interpreted.
+  `fib` — Rakudo's for the whole life of this file, level as of the `Value`
+  shrink — is now a Raku++ interpreter win at 1.1×. Compiling settles both:
+  `--exe` puts `fib` 5.3× ahead and `streq` 13.9× ahead (string `eq`/`lt`
   compile to inline byte-compares — see
   [internals/DISPATCH.md](../internals/DISPATCH.md) for the dispatch story).
-- The **interpreter** now beats or matches Rakudo on 9 of 10 — everything
-  except `streq` — including the `loopsum` loop kernel (1.5×) and `hashfill`,
-  the one kernel with a Perl 5 twin (see "vs Perl 5" below).
+- The **interpreter** now beats Rakudo on 9 of 10 — everything except `streq` —
+  including the `loopsum` loop kernel, which went from 1.5× to **2.5×** when
+  lexical pads landed, and `hashfill`, the one kernel with a Perl 5 twin (see
+  "vs Perl 5" below).
 - **String building (`~=`) appends in place** in every mode, so `strcat` is
-  O(n) rather than O(n²) — 13.5× ahead of Rakudo even interpreted.
+  O(n) rather than O(n²) — 18.7× ahead of Rakudo even interpreted.
 
 ## Methodology
 
 - **Machine:** macOS (Darwin 24.6, Apple Silicon M3), re-measured 2026-08-22 at
-  `v3.6.0-12-g363c4b6` — the SAME machine as every earlier revision of this
+  `v3.6.0-19-g4c0e80b` — the SAME machine as every earlier revision of this
   file, so the rows are comparable with the earlier 2026-08-22 and the
   2026-08-21 ones. (An earlier
   2026-08-21 revision carried a sitting taken on a Darwin 25.5 machine whose
@@ -61,10 +63,14 @@ there.)
   fast or faster there — not a machine-speed difference, so those rows were
   replaced rather than kept. See the re-snapshot log at the end.) This sitting
   is three full harness passes, minimum across all three; the three passes
-  agreed to within 1–2% on every cell. The reference engines are the check
-  that this sitting is comparable with the previous one: Rakudo lands within
-  ±1.6% of its 2026-08-22 row on all ten kernels and `perl` within 3%, so the
-  Raku++ movement below is the code, not the machine. The harness REFUSES
+  agreed to within 1–2% on every cell. The harness now **interleaves the
+  engines** — each measured round times every engine once, back to back — so a
+  load spike lands on all lanes instead of one column, and `--tsv=` writes the
+  median alongside the minimum plus the CPU and C++ toolchain the sitting ran
+  on. The reference engines are the check that this sitting is comparable with
+  the previous one: Rakudo lands within ±1.2% of its previous row on all ten
+  kernels and `perl` is 4.5% faster, so the Raku++ movement below is the code,
+  not the machine. The harness REFUSES
   a rakupp binary built for another architecture, the same guard perf-guard
   carries: a stale x86_64 `build/` beside a `build-arm64/` measures under
   Rosetta at a uniform 1.7–2× penalty, and exactly that nearly shipped in
@@ -105,25 +111,29 @@ better. Rows are ordered most-Raku++-favourable first.
 
 ### Interpreter vs Rakudo
 
-Even without compiling, the tree-walker wins on all of these except one:
-Rakudo's VM still leads on `streq` (string comparisons walk the interpreter's
-operator-dispatch chain). `fib` — tiny-body recursion, a JIT's best case, and
-Rakudo's for the whole life of this file — is level as of the 2026-08-22
-`Value` shrink: 456.7 against 459.2 ms is a 0.5% gap, smaller than the spread
-between this sitting's own passes, so it is a tie and not a win.
+Even without compiling, the tree-walker wins on all of these except one, and
+that one is now close: Rakudo's VM leads `streq` by 1.1× (string comparisons
+walk the interpreter's operator-dispatch chain). `fib` — tiny-body recursion, a
+JIT's best case, and Rakudo's for the whole life of this file — went level with
+the 2026-08-22 `Value` shrink and ahead, 1.1×, when lexical pads landed the
+same day. Variable access is what moved: with a `my` resolved to a frame slot
+instead of a hash lookup, `loopsum` halved (1.5× → 2.5× against Rakudo) and
+`hash` and `strcat` fell by a bit over a quarter each, while `arrayops`,
+`sortnums` and `bigint` — whose time is inside a runtime method, not in
+touching variables — did not move at all.
 
 | Benchmark | Raku++ (interp) | Rakudo | Faster |
 |---|---:|---:|---|
-| strcat   | 13.3 ms  | 179.6 ms | **Raku++ 13.5×** |
-| hash     | 25.2 ms  | 222.9 ms | **Raku++ 8.8×** |
-| bigint   | 31.2 ms  | 251.3 ms | **Raku++ 8.1×** |
-| sortnums | 33.6 ms  | 250.1 ms | **Raku++ 7.4×** |
-| regex    | 43.4 ms  | 277.5 ms | **Raku++ 6.4×** |
-| arrayops | 65.7 ms  | 278.6 ms | **Raku++ 4.2×** |
-| hashfill | 142.0 ms | 454.2 ms | **Raku++ 3.2×** |
-| loopsum  | 178.4 ms | 259.5 ms | **Raku++ 1.5×** |
-| fib      | 456.7 ms | 459.2 ms | level (0.5%) |
-| streq    | 369.5 ms | 283.9 ms | Rakudo 1.3× |
+| strcat   |   9.6 ms | 179.9 ms | **Raku++ 18.7×** |
+| hash     |  18.1 ms | 222.3 ms | **Raku++ 12.3×** |
+| bigint   |  31.6 ms | 250.5 ms | **Raku++ 7.9×** |
+| sortnums |  33.8 ms | 249.3 ms | **Raku++ 7.4×** |
+| regex    |  39.8 ms | 275.8 ms | **Raku++ 6.9×** |
+| arrayops |  65.4 ms | 276.2 ms | **Raku++ 4.2×** |
+| hashfill | 111.9 ms | 450.2 ms | **Raku++ 4.0×** |
+| loopsum  | 105.2 ms | 258.1 ms | **Raku++ 2.5×** |
+| fib      | 420.9 ms | 453.8 ms | **Raku++ 1.1×** |
+| streq    | 312.2 ms | 282.0 ms | Rakudo 1.1× |
 
 **`regex` regressed at v3.6.0 — bisected and fixed after the tag.** On this
 machine the interpreted row was 88.5 ms at v3.14.0 (2026-08-11) and 113.4 ms
@@ -159,29 +169,32 @@ speed-up over interpreting the same program.
 
 | Benchmark | Raku++ (`--exe`) | Rakudo | Faster | vs interp |
 |---|---:|---:|---|---:|
-| strcat   | 2.6 ms   | 179.6 ms | **Raku++ 69.1×** | 5.1× |
-| hash     | 6.9 ms   | 222.9 ms | **Raku++ 32.3×** | 3.7× |
-| loopsum  | 13.3 ms  | 259.5 ms | **Raku++ 19.5×** | 13.4× |
-| streq    | 20.4 ms  | 283.9 ms | **Raku++ 13.9×** | 18.1× |
-| sortnums | 18.5 ms  | 250.1 ms | **Raku++ 13.5×** | 1.8× |
-| hashfill | 38.1 ms  | 454.2 ms | **Raku++ 11.9×** | 3.7× |
-| regex    | 24.6 ms  | 277.5 ms | **Raku++ 11.3×** | 1.8× |
-| bigint   | 30.2 ms  | 251.3 ms | **Raku++ 8.3×**  | 1.0× |
-| fib      | 85.1 ms  | 459.2 ms | **Raku++ 5.4×**  | 5.4× |
-| arrayops | 64.8 ms  | 278.6 ms | **Raku++ 4.3×**  | 1.0× |
+| strcat   | 2.9 ms   | 179.9 ms | **Raku++ 62.0×** | 3.3× |
+| hash     | 7.3 ms   | 222.3 ms | **Raku++ 30.5×** | 2.5× |
+| loopsum  | 13.9 ms  | 258.1 ms | **Raku++ 18.6×** | 7.6× |
+| streq    | 20.3 ms  | 282.0 ms | **Raku++ 13.9×** | 15.4× |
+| sortnums | 18.9 ms  | 249.3 ms | **Raku++ 13.2×** | 1.8× |
+| hashfill | 37.2 ms  | 450.2 ms | **Raku++ 12.1×** | 3.0× |
+| regex    | 24.9 ms  | 275.8 ms | **Raku++ 11.1×** | 1.6× |
+| bigint   | 30.7 ms  | 250.5 ms | **Raku++ 8.2×**  | 1.0× |
+| fib      | 85.8 ms  | 453.8 ms | **Raku++ 5.3×**  | 4.9× |
+| arrayops | 64.0 ms  | 276.2 ms | **Raku++ 4.3×**  | 1.0× |
 
 **Reading the `vs interp` column:** compiling helps most where a tree-walker
-hurts — `streq` 18.1× (per-node walking around what is, after the fast path, a
-trivial byte-compare — see [internals/DISPATCH.md](../internals/DISPATCH.md)), `loopsum` 13.4×,
-`fib` 5.4× (both re-dispatch a tiny body a huge number of times). It's a near
-no-op (1.0–1.8×) for the workloads whose time is spent *inside* runtime
+hurts — `streq` 15.4× (per-node walking around what is, after the fast path, a
+trivial byte-compare — see [internals/DISPATCH.md](../internals/DISPATCH.md)), `loopsum` 7.6×,
+`fib` 4.9× (both re-dispatch a tiny body a huge number of times). Every one of
+those margins NARROWED when lexical pads landed — the compiler already kept
+variables in C++ locals, so the interpreter closing on slot-indexed access is
+the gap shrinking from the interpreter's side, not codegen slowing down.
+It's a near no-op (1.0–1.8×) for the workloads whose time is spent *inside* runtime
 methods — `arrayops`/`sortnums` (`.grep`/`.map`/`.sort`) and especially
 `bigint`, which lives almost entirely in `BigInt` multiply. There the driving
 loop is trivial, so removing interpreter overhead changes little.
 
 `fib` — a tiny function called 1.6M times, the case a JIT specializes best — used
 to be the one place Rakudo led even the default `--exe`; hot-pathing integer
-arithmetic in the runtime (`applyArith`) closed that gap and put native ~5.4×
+arithmetic in the runtime (`applyArith`) closed that gap and put native ~5.3×
 ahead. `streq` got the same treatment on 2026-07-17: string comparisons used to
 walk `applyArith`'s full dispatch chain (~118 ns per `eq`). Compiled code now
 emits inline plain-`Str` byte-compares and calls builtins through pointers
@@ -201,14 +214,19 @@ string with 50k `~=` appends.
 
 Measured 2026-08-22, all four engines in the same harness run (best of 6,
 startup-inclusive; the `perl` on this machine's PATH is v5.44.0), after the
-`ValueHash` payload and the `Value` shrink landed (see below):
+`ValueHash` payload, the `Value` shrink and lexical pads landed (see below):
 
 | engine | hashfill | vs perl |
 |---|---:|---:|
-| Raku++ `--exe` | 38.1 ms | **2.8× faster** |
-| Perl 5 | 106.8 ms | — |
-| Raku++ interp | 142.0 ms | 1.3× slower |
-| Rakudo | 454.2 ms | 4.3× slower |
+| Raku++ `--exe` | 37.2 ms | **2.7× faster** |
+| Perl 5 | 102.0 ms | — |
+| Raku++ interp | 111.9 ms | 1.1× slower |
+| Rakudo | 450.2 ms | 4.4× slower |
+
+The interpreted row is the one to watch: it was 1.6× slower than perl on
+2026-08-21 and is within 10% of it now, on a kernel built out of exactly the
+things a scripting language is asked to do — interpolated hash keys, a values
+sweep, and 50k string appends.
 
 Replacing the hash payload's `std::map` with `ValueHash` — an insertion-ordered
 open hash with the key's hash stored, in the perl mold
@@ -219,7 +237,7 @@ kernels are unchanged within noise.
 The harness's `native` column compiles with plain `--exe`; the `-O` codegen
 passes widen the margin further. The full mode ladder below is from the
 2026-08-21 sitting, taken before the `Value` shrink — its absolute rows are
-superseded by the table above (plain `--exe` is 38.1 ms now, not 51.5), so
+superseded by the table above (plain `--exe` is 37.2 ms now, not 51.5), so
 read it for the ordering between the modes, not for the milliseconds (best of
 5, spawn-inclusive, same machine state throughout, every mode byte-identical
 with perl before timing):
@@ -555,3 +573,52 @@ inside the spread the three passes themselves showed). `fib` interpreted
 crossed Rakudo in this sitting: 456.7 vs 459.2 ms, which the tables call level
 rather than a win. `tools/perf-guard.raku --check` is green against the
 v3.14.0 baseline with 8–30% of headroom on all seven gated kernels._
+
+_**2026-08-22 re-snapshot, third sitting of the day (`v3.6.0-19-g4c0e80b`)** —
+the tables above are this run: three harness passes on the benchmarks machine
+(Darwin 24.6, Apple M3, Apple clang 17.0.0), minimum across all three, engines
+interleaved within each round, all byte-identical before timing. The commit
+that matters is `d1e9082`, lexical pads: a `my` that a resolution pass can
+prove is dominated by its declaration is read and written by frame slot — one
+load, no hashing, no scope-chain walk — and a flat loop keeps one scope instead
+of building a fresh one per iteration. Against the sitting above:_
+
+| kernel | interp 08-22b → 08-22c | | `--exe` 08-22b → 08-22c | |
+|---|---:|---:|---:|---:|
+| loopsum  | 178.4 → 105.2 ms | **−41%** | 13.3 → 13.9 ms | +5% |
+| hash     |  25.2 → 18.1 ms | **−28%**  | 6.9 → 7.3 ms   | +6% |
+| strcat   |  13.3 → 9.6 ms  | **−28%**  | 2.6 → 2.9 ms   | +12% |
+| hashfill | 142.0 → 111.9 ms | **−21%** | 38.1 → 37.2 ms | −2% |
+| streq    | 369.5 → 312.2 ms | **−16%** | 20.4 → 20.3 ms | −1% |
+| regex    |  43.4 → 39.8 ms | −8%       | 24.6 → 24.9 ms | +1% |
+| fib      | 456.7 → 420.9 ms | −8%      | 85.1 → 85.8 ms | +1% |
+| bigint   |  31.2 → 31.6 ms | +1%       | 30.2 → 30.7 ms | +2% |
+| sortnums |  33.6 → 33.8 ms | +1%       | 18.5 → 18.9 ms | +2% |
+| arrayops |  65.7 → 65.4 ms | −0%       | 64.8 → 64.0 ms | −1% |
+
+_The shape is exactly what a variable-access change should draw, which is the
+best evidence that it is one. Everything that spends its time **touching
+variables** moves hard — `loopsum`, `hash`, `strcat`, `hashfill` — and
+everything whose time sits **inside one runtime method** does not move at all:
+`arrayops` (`.grep`/`.map`), `sortnums` (`.sort`) and `bigint` (`BigInt`
+multiply) are flat to within 2%. The `--exe` column is flat by construction:
+codegen already kept variables in C++ locals, so there was nothing there for
+pads to win._
+
+_The `+1` to `+12%` on the small `--exe` rows is **startup**, not codegen.
+Interpreted startup went 2.2 → 2.8 ms and native 2.1 → 2.4 ms — laying out a
+pad is a fixed per-process cost — and every native row here includes process
+startup, so the shortest ones (`strcat` at 2.9 ms, `hash` at 7.3 ms) show that
+0.3 ms as a percentage. It is a real cost and it is recorded rather than
+absorbed; on any kernel that runs longer than a few milliseconds it is repaid
+many times over._
+
+_Reference engines: Rakudo moved by at most 1.2% on any kernel and `perl` is
+4.5% **faster** here (106.8 → 102.0 ms), so the machine was, if anything,
+slightly better this sitting — which understates nothing but does mean the
+interpreter drops of 16–41% are not a fast-box artefact.
+`tools/perf-guard.raku --check` is green against the v3.14.0 baseline with
+17–51% of headroom: `hash` −50.8%, `loopsum` −46.5%, `fib` −35.4%, `asg`
+−34.2%. Two rows crossed in this sitting — interpreted `fib` is a Raku++ win
+at 1.1× rather than the tie it was that morning, and interpreted `hashfill` is
+within 10% of `perl`._

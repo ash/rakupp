@@ -240,12 +240,13 @@ bundling** for the rest (mainly grammars), so it never refuses a program.
 
 **Next:** grammars are best left bundled (they are the grammar engine).
 Performance-wise native `--exe` now beats Rakudo on every benchmark in the set,
-`fib` included (5.4× as of 2026-08-22 — see [BENCHMARKS.md](BENCHMARKS.md)) — a
+`fib` included (5.3× as of 2026-08-22 — see [BENCHMARKS.md](BENCHMARKS.md)) — a
 small-int fast path for `%`/`mod`/`%%` (they had gone through `BigInt::divmod`)
 closed the last collection/hash gaps, and shrinking `Value` to 128 bytes moved
-the recursion-heavy rows again. The remaining lever is `fib`-style deep
-recursion of a tiny body *interpreted*, where the tree-walker is now level with
-Rakudo rather than behind it — exactly what an optimizing JIT specializes best.
+the recursion-heavy rows again. The *interpreter* has since taken `fib` too:
+lexical pads put slot-indexed variable access under the tree-walker, and it now
+leads Rakudo on nine of the ten kernels. `streq` is the last one behind, and
+only by 1.1×.
 
 ## How to make progress efficiently
 
