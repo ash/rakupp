@@ -56,13 +56,42 @@ both engines honour a comma-separated `RAKULIB`; Sparrow6 needs its
 
 ## What it costs to start, measured
 
-Best of three warm runs, one machine, the four-task scenario above:
+```sh
+sh live/sparrow/bench.sh          # or: RUNS=5 sh live/sparrow/bench.sh
+```
 
-| | wall clock |
+`bench.sh` times the three configurations below and prints this table. It warms
+each one first, because Rakudo's *very first* run compiles Sparrow6's module
+graph and can take tens of seconds — a real cost, but a one-off, and not what
+this measures. Best of five, warm, on one machine:
+
+| configuration | wall clock |
 |---|---:|
-| Rakudo throughout | 1,549 ms |
-| Raku++ scenario, Raku tasks still spawning `raku` | 931 ms |
-| Raku++ all the way down | **117 ms** |
+| Rakudo throughout | 905 ms |
+| Raku++ scenario, Raku tasks still spawning `raku` | 689 ms |
+| Raku++ all the way down | **121 ms** |
+
+Absolute numbers are machine-specific and the Rakudo row is the load-sensitive
+one — run it yourself rather than trusting these. The ratio between the last
+two rows is what stays put.
+
+Each row is one command, if you would rather see them separately than trust a
+script:
+
+```sh
+cd live/sparrow
+
+# 1. Rakudo throughout
+time raku scenario.raku
+
+# 2. Raku++ runs the scenario — but Sparrow6 still spawns `raku` for Raku tasks
+time rakupp scenario.raku
+
+# 3. Raku++ all the way down: a `raku` on PATH that is really rakupp
+mkdir -p /tmp/shim && printf '#!/bin/sh\nexec %s "$@"\n' "$(command -v rakupp)" > /tmp/shim/raku
+chmod +x /tmp/shim/raku
+time PATH=/tmp/shim:$PATH rakupp scenario.raku
+```
 
 The middle row is not a curiosity, it is the thing to know before believing the
 bottom one. Sparrow6 builds its Raku task command with a **literal `raku`**

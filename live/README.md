@@ -7,9 +7,10 @@ wrote them.
 repository.** Each is a published distribution, installed from the ecosystem
 the way any user installs it, and left completely alone — not patched, not
 vendored, not adjusted to fit. What lives in the directories below is only what
-is needed to *drive* one: a scenario, a config, a small corpus, a `README.md`
-and a `compare.sh`. Those we wrote; the software under test we did not, and
-each entry credits and links to whoever did.
+is needed to *drive* one: a scenario, a config, a small corpus, a `README.md`,
+a `compare.sh`, and — where the entry measures something — a `bench.sh`. Those
+we wrote; the software under test we did not, and each entry credits and links
+to whoever did.
 
 That is the difference from [showcase/](../showcase), which holds mid-size
 programs written here to exercise one part of the language each. A program
@@ -33,6 +34,10 @@ tool means reinstalling it rather than editing files here.
 diffs stdout, normalising only what is *supposed* to differ between
 two runs (a timestamp, a PID). A green `MATCH` is the whole claim: same
 program, same output, no changes on either side.
+
+Where an entry reports numbers, a `bench.sh` beside it produces them, so every
+table in this directory is one command away from being checked rather than
+believed.
 
 None of these are wired into `t/run.raku`. They need distributions the suite
 cannot assume, and several have side effects outside the repository — files
