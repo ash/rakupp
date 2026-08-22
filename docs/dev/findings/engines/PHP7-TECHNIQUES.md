@@ -48,7 +48,7 @@ design has systematically, and it lands exactly on our named cost.
 MName (MethodName.h) made each name comparison cheap, but the *chain* still
 runs per call, and the object-construction profile puts dispatch in the top
 two remaining costs (the interning story,
-[../../book/ch/10-interning.md](../../book/ch/10-interning.md)).
+[../../book/ch/10-interning.md](../../../book/ch/10-interning.md)).
 
 **Lever:** a per-callsite cache on the method-call AST node — `{ClassInfo*
 seen, resolved target}` — checked before the chain, filled after it, exactly

@@ -41,7 +41,7 @@ statistical tie), `--exe -O` 84.0 ms, `--exe` 92.9 ms, interp 250.1 ms —
 
 ### The Perl 5 study, and its first applied item
 
-[PERL5-TECHNIQUES.md](docs/dev/findings/PERL5-TECHNIQUES.md) reads the Perl 5
+[PERL5-TECHNIQUES.md](docs/dev/findings/engines/PERL5-TECHNIQUES.md) reads the Perl 5
 sources against this interpreter's hot paths: eight techniques, each grounded
 in the file that implements it, ranked by expected payoff. The first landed in
 this release: **ValueHash** replaces the hash payload's

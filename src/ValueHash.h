@@ -1,6 +1,6 @@
 // ValueHash — the hash payload behind `Value.hash` (and the method/attr
 // tables): a compact, insertion-ordered hash map in the perl 5 mold
-// (docs/dev/findings/PERL5-TECHNIQUES.md, item 6).
+// (docs/dev/findings/engines/PERL5-TECHNIQUES.md, item 6).
 //
 // What it fixes: the payload used to be std::map<std::string, Value> — a
 // red-black tree, O(log n) per touch with a full string comparison at every

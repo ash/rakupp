@@ -241,7 +241,7 @@ sweep, and 50k string appends.
 
 Replacing the hash payload's `std::map` with `ValueHash` — an insertion-ordered
 open hash with the key's hash stored, in the perl mold
-([PERL5-TECHNIQUES.md](../dev/findings/PERL5-TECHNIQUES.md)) — is what put the
+([PERL5-TECHNIQUES.md](../dev/findings/engines/PERL5-TECHNIQUES.md)) — is what put the
 compiled row ahead of perl. The `hash` kernel moved the same way; the non-hash
 kernels are unchanged within noise.
 

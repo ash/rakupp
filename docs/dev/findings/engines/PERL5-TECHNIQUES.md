@@ -4,7 +4,7 @@ A study of the Perl 5 sources (github.com/Perl/perl5, shallow clone at HEAD,
 2026-08-21) read against Raku++'s interpreter, looking for mechanisms worth
 adopting. The prompt: on the `hashfill` kernel the perl *interpreter* (82 ms)
 beats our *compiled binary* (113 ms) on wall clock, and our own interpreter by
-3.3× — see [BENCHMARKS.md](../../status/BENCHMARKS.md) "vs Perl 5". Perl has
+3.3× — see [BENCHMARKS.md](../../../status/BENCHMARKS.md) "vs Perl 5". Perl has
 spent thirty years shaving interpreter constants; most of what it does is
 directly legible in five files (`sv.h`, `hv.h`/`hv.c`, `pad.h`, `run.c`,
 `pp.h`/`pp_hot.c`).
@@ -159,7 +159,7 @@ and ~148 bytes of cold scalars. Every bench kernel improved (sortnums −26%,
 arrayops −20%, hashfill −15%, the rest −3…−13%), JSON::Fast interpreted parse
 −8%, grammar capturing parse −15%, hashfill peak RSS −39%. Zero Roast diff.
 Numbers and gates in
-[REPRESENTATION-PLAN.md](../plans/REPRESENTATION-PLAN.md) batch 2. The full
+[REPRESENTATION-PLAN.md](../../plans/REPRESENTATION-PLAN.md) batch 2. The full
 24-byte head/body split (and by-value BigInt inside the block) remains open,
 still coupled to the container/binding refactor.
 
@@ -240,7 +240,7 @@ Two observations from applying it:
 
 ### Item 2 (2026-08-22): pads + the flat-loop lever
 
-**Item 2 is implemented** ([PADS-PLAN.md](../plans/PADS-PLAN.md), book notes
+**Item 2 is implemented** ([PADS-PLAN.md](../../plans/PADS-PLAN.md), book notes
 in docs/book/NOTES-pads.md): per-owner `PadLayout`s (mainline + every
 Callable body, cached per BODY so `.assuming` wrappers agree on slots),
 `Env` gains a fixed-size pad + liveness mask, `find`/`define` route layout
