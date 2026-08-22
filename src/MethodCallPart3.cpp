@@ -1615,10 +1615,39 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             (*inv.hash())["flushed"] = Value::boolean(true); // exit-flush skips it now
             return Value::boolean(true);
         }
-        if (m == "spurt") { // IO::Handle.spurt($content) — write through the open handle
-            Value c = args.empty() ? Value::str("") : args[0];
+        if (m == "spurt") { // IO::Handle.spurt($content, :close) — write through the open handle
+            Value c = Value::str("");
+            bool wantClose = false;              // `:close` writes NOW and shuts the handle
+            bool haveContent = false;
+            for (auto& a : args) {
+                if (a.t == VT::Pair && a.namedArg) {
+                    if (a.s == "close") wantClose = !a.pairVal() || a.pairVal()->truthy();
+                    continue;                    // …and it may be written AFTER the content
+                }
+                if (!haveContent) { c = a; haveContent = true; }
+            }
             (*inv.hash())["buffer"] = Value::str((*inv.hash())["buffer"].toStr() + c.toStr());
-            return Value::boolean(true); // flushed to "path" on .close (zef's spurt-package-list)
+            // Without :close the content sits in "buffer" and reaches the file on
+            // .close (zef's spurt-package-list). WITH it, the caller is done with
+            // the handle and expects the bytes on disk — File::Temp's own suite
+            // writes `$fh.spurt($text, :close)` and then slurps the path back.
+            if (wantClose) {
+                std::string mode = (*inv.hash())["mode"].toStr();
+                const std::string& buf = (*inv.hash())["buffer"].s;
+                bool wrote = (*inv.hash())["wrote"].truthy();
+                bool write = (mode == "w" || mode == "a" ||
+                              ((mode == "rw" || mode == "update") && !buf.empty()));
+                if (wrote && buf.empty()) write = false;
+                if (write) {
+                    std::ofstream out((*inv.hash())["path"].toStr(),
+                                      std::ios::binary | ((mode == "a" || wrote) ? std::ios::app : std::ios::trunc));
+                    if (out) out << buf;
+                }
+                (*inv.hash())["buffer"]  = Value::str("");
+                (*inv.hash())["wrote"]   = Value::boolean(true);
+                (*inv.hash())["flushed"] = Value::boolean(true);
+            }
+            return Value::boolean(true);
         }
         if (m == "slurp") {
             auto cap = inv.hash()->find("captured"); // in-memory handle (e.g. Proc.out)
