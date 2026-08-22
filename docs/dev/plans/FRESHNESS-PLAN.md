@@ -21,6 +21,13 @@ opens and the previous one stops taking solutions. There is no cron. What the
 plan buys is that starting it costs one sentence and the first hour is
 mechanical.
 
+> **Update (2026-08-22):** the no-cron stance is amended for the measurement
+> half only. [RAKU-EYE-PLAN.md](RAKU-EYE-PLAN.md) moves phases 0–2 (refresh,
+> sweep, triage clustering) into an unattended weekly GitHub Actions run in the
+> sibling public repo **raku-eye**, adds a rakupp-vs-Rakudo benchmark series,
+> and publishes a dashboard at eye.raku.online. Phase 3 — the gated fix batch —
+> stays a hand-started session, which now begins from the Eye's finished report.
+
 ---
 
 ## The two corpora
