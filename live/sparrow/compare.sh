@@ -2,7 +2,8 @@
 # Run the Sparrow6 scenario under Rakudo and under Raku++ and diff STDOUT.
 # This is the claim the showcase makes, made checkable.
 #
-#   RAKUPP=../../build/rakupp sh compare.sh
+#   sh compare.sh                          # uses `rakupp` and `raku` from PATH
+#   RAKUPP=../../build/rakupp sh compare.sh # …or name a build tree explicitly
 #
 # Sparrow6 is NOT installed by this script. Install it first, with either
 # installer — both write the same store:
@@ -16,10 +17,12 @@
 # Sparrow prefixes every task line with a wall-clock timestamp, so the two runs
 # are supposed to differ there; the timestamps are normalised before the diff.
 set -e
-# Absolutise the binary BEFORE cd-ing: the shim needs an absolute path, and a
-# RAKUPP given relative to wherever you invoked this from must still resolve.
-R="${RAKUPP:?set RAKUPP=<path to the rakupp binary>}"
-R=$(cd "$(dirname "$R")" && pwd)/$(basename "$R")
+# Resolve the binary BEFORE cd-ing: the shim below needs an absolute path, and
+# a RAKUPP given relative to wherever you invoked this from must still resolve.
+# `command -v` handles both spellings — a bare name found on PATH, or a path.
+R="${RAKUPP:-rakupp}"
+R=$(command -v "$R") || { echo "no rakupp: put it on PATH or set RAKUPP=<path>" >&2; exit 1; }
+case "$R" in /*) ;; *) R=$(cd "$(dirname "$R")" && pwd)/$(basename "$R") ;; esac
 RAKU="${RAKU:-raku}"
 
 HERE=$(cd "$(dirname "$0")" && pwd)

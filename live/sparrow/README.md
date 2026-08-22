@@ -25,26 +25,30 @@ tasks/perl-check/task.pl     the same scenario driving Perl 5
 ## Running it
 
 Sparrow6 is not shipped here — install it, with either installer. Both write
-the same store, so one copy serves both engines, and its six dependencies
-(`JSON::Fast`, `Data::Dump`, `Hash::Merge`, `YAMLish`, `Terminal::ANSIColor`,
-`File::Directory::Tree`) come with it:
+the same store, so one copy serves both engines. It declares six direct
+dependencies (`JSON::Fast`, `Data::Dump`, `Hash::Merge`, `YAMLish`,
+`Terminal::ANSIColor`, `File::Directory::Tree`) and resolves to a plan of 17
+distributions once theirs are counted; the installer handles all of it:
 
 ```sh
-build/rakupp tools/install.raku Sparrow6      # or: zef install Sparrow6
+rakupp install Sparrow6      # or: zef install Sparrow6
 ```
 
 Then just run it — no `RAKULIB`, no `-I`:
 
 ```sh
-cd live/sparrow && ../../build/rakupp scenario.raku
+cd live/sparrow && rakupp scenario.raku
 ```
 
 `compare.sh` runs the scenario under both engines and diffs stdout, with
 Sparrow's wall-clock line prefixes normalised:
 
 ```sh
-RAKUPP=../../build/rakupp sh live/sparrow/compare.sh
+sh live/sparrow/compare.sh
 ```
+
+Both take `rakupp` and `raku` from `PATH`. Running out of a build tree instead?
+Name it: `RAKUPP=./build/rakupp sh live/sparrow/compare.sh`.
 
 (If you would rather run against an unpacked checkout than an installed dist,
 both engines honour a comma-separated `RAKULIB`; Sparrow6 needs its
@@ -92,5 +96,6 @@ write.
 ## Not in `t/run.raku`
 
 Deliberately, as the [live/](..) entries all are: the suite runs on machines
-that do not have Sparrow6 installed, and the scenario writes under
-`~/sparrow6` and spawns processes. `compare.sh` is the check, run by hand.
+that do not have Sparrow6's seventeen distributions installed, and the scenario
+writes under `~/sparrow6` and spawns processes. `compare.sh` is the check, run
+by hand.

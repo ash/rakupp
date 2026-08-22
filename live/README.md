@@ -28,8 +28,9 @@ The tool is installed, never checked in: `rakupp install <dist>` or
 small on purpose — it is a harness, not a copy of anything, and updating the
 tool means reinstalling it rather than editing files here.
 
-`compare.sh` is the contract. It runs the same input under Rakudo and under
-Raku++ and diffs stdout, normalising only what is *supposed* to differ between
+`compare.sh` is the contract. It takes `rakupp` and `raku` from `PATH` (set
+`RAKUPP=` to name a build tree instead), runs the same input under both and
+diffs stdout, normalising only what is *supposed* to differ between
 two runs (a timestamp, a PID). A green `MATCH` is the whole claim: same
 program, same output, no changes on either side.
 
