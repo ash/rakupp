@@ -13,6 +13,17 @@
 # only spawns each engine as a fresh subprocess and times it, so the language it
 # is written in does not favour any contestant.
 #
+# The engines are interleaved: each measured round times every engine once,
+# back to back, so a load spike hits all lanes rather than one column. The
+# table prints the best (minimum) run, as it always has; the machine-readable
+# output carries the median as well, for consumers on noisy shared hardware.
+#
+# Options (also fine under Rakudo):
+#     --only=name,name     run just these kernels
+#     --tsv=PATH           write a machine-readable TSV: metadata header lines
+#                          (`# key=value`), then one row per kernel with min
+#                          and median per lane
+#
 # Override the binaries via environment:
 #     RAKUPP=/path/to/rakupp RAKUDO=raku ./build/rakupp tools/run-bench.raku
 
@@ -22,6 +33,14 @@ my $bench = $tools.add('bench');            # benchmark programs live here
 my $RAKUPP = %*ENV<RAKUPP> // $repo.add('build/rakupp').Str;
 my $RAKUDO = %*ENV<RAKUDO> // 'raku';
 my $PERL   = %*ENV<PERL>   // 'perl';   # only used by benches that ship a .pl twin
+
+my $tsv-path = '';
+my @only;
+for @*ARGS -> $a {
+    if $a.starts-with('--tsv=') { $tsv-path = $a.substr(6) }
+    elsif $a.starts-with('--only=') { @only = $a.substr(7).split(',')>>.trim }
+    else { note "run-bench: unknown argument $a"; exit 2 }
+}
 
 # A binary built for ANOTHER ARCHITECTURE runs under translation, which costs
 # a uniform 1.7-2x — perf-guard refuses that binary; this harness silently
@@ -47,7 +66,7 @@ unless $*DISTRO.is-win {
         exit 2;
     }
 }
-my $RUNS   = 7;   # 1 warm-up run (discarded) + 6 measured
+my $RUNS   = 7;   # 1 warm-up round (discarded) + 6 measured
 
 my @benches =
     %( :name<startup>,  :file("startup.raku"),  :note('hello world (startup-dominated)') ),
@@ -62,17 +81,10 @@ my @benches =
        :note('200k-key hash fill + values sweep + 50k-append string build') ),
     %( :name<bigint>,   :file("bigint.raku"),   :note('factorial(5000) via BigInt multiply') ),
     %( :name<streq>,    :file("streq.raku"),    :note('1M string eq/lt comparisons') );
-
-# Best (minimum) wall-clock over the measured runs, in milliseconds.
-sub measure(@cmd --> Numeric) {
-    my @times;
-    for ^$RUNS -> $i {
-        my $t0 = now;
-        run(|@cmd, :out).out.slurp(:close);   # drain stdout => waits for exit
-        my $ms = (now - $t0) * 1000;
-        @times.push($ms) if $i > 0;           # drop the warm-up run
-    }
-    @times.min;
+@benches = @benches.grep({ .<name> (elem) @only }) if @only;
+unless @benches {
+    note "run-bench: --only matched no kernels";
+    exit 2;
 }
 
 # Compile a program to a native binary via `--exe`; True on success.
@@ -90,6 +102,59 @@ sub capture(@cmd --> Str) {
     my $out = $p.out.slurp(:close);
     $p.err.slurp(:close);
     $p.exitcode == 0 ?? $out !! Str;
+}
+
+# First stdout line of a command, or '' — for the metadata header.
+sub first-line(@cmd --> Str) {
+    my $p = run(|@cmd, :out, :err);
+    my $out = $p.out.slurp(:close);
+    $p.err.slurp(:close);
+    $p.exitcode == 0 ?? ($out.lines[0] // '') !! ''
+}
+
+sub median(@ms --> Numeric) {
+    my @s = @ms.sort;
+    my $n = +@s;
+    $n %% 2 ?? (@s[$n div 2 - 1] + @s[$n div 2]) / 2 !! @s[$n div 2]
+}
+
+my $tfh = $tsv-path ?? $tsv-path.IO.open(:w) !! Nil;
+if $tfh {
+    # The metadata every ledger row needs: what ran, on what, compiled by what.
+    my $commit = do {
+        my $p = run('git', '-C', ~$repo, 'rev-parse', 'HEAD', :out, :err);
+        my $c = $p.out.slurp(:close).trim; $p.err.slurp(:close);
+        $p.exitcode == 0 ?? $c !! ''
+    };
+    my $rakudo-v = first-line([$RAKUDO, '--version']);
+    my $rakupp-v = first-line([$RAKUPP, '--version']);
+    my $cpu = do {
+        my $p = run('sysctl', '-n', 'machdep.cpu.brand_string', :out, :err);
+        my $c = $p.out.slurp(:close).trim; $p.err.slurp(:close);
+        if $p.exitcode != 0 || !$c {
+            $c = ('/proc/cpuinfo'.IO.e
+                  ?? ('/proc/cpuinfo'.IO.lines.first(*.starts-with('model name')) // '')
+                       .split(':')[1] // ''
+                  !! '').trim;
+        }
+        $c
+    };
+    # Mirror main.cpp's --exe compiler choice: $CXX, else clang++ on PATH, else c++.
+    my $cxx = '';
+    for (%*ENV<CXX> // Empty), 'clang++', 'c++' -> $cand {
+        my $line = first-line([$cand, '--version']);
+        if $line { $cxx = "$cand: $line"; last }
+    }
+    $tfh.say: "# date={Date.today}";
+    $tfh.say: "# rakupp_commit=$commit";
+    $tfh.say: "# rakupp_version=$rakupp-v";
+    $tfh.say: "# rakudo_version=$rakudo-v";
+    $tfh.say: "# cpu=$cpu";
+    $tfh.say: "# cxx=$cxx";
+    $tfh.say: ('kernel',
+               'interp_min_ms', 'interp_med_ms', 'native_min_ms', 'native_med_ms',
+               'rakudo_min_ms', 'rakudo_med_ms', 'perl_min_ms', 'perl_med_ms',
+               'flags').join("\t");
 }
 
 my $mismatch = False;
@@ -119,15 +184,40 @@ for @benches -> %b {
     my $flag = '';
     if @bad { $mismatch = True; $flag = "   ⚠ {@bad.join('; ')}"; }
 
-    my $interp = sprintf '%.1fms', measure([$RAKUPP, $path]);
-    my $native = $built     ?? sprintf('%.1fms', measure([$nbin]))    !! 'n/a';
-    my $rakudo = $or.defined ?? sprintf('%.1fms', measure([$RAKUDO, $path])) !! 'n/a';
-    my $perl   = !$ppath.defined ?? '—'
-              !! $op.defined     ?? sprintf('%.1fms', measure([$PERL, $ppath]))
-              !! 'n/a';
-
+    # One lane per engine that produced output; each measured round times every
+    # lane once, back to back, warm-up round discarded.
+    my @lanes;
+    @lanes.push: 'interp' => [$RAKUPP, $path]              if $oi.defined;
+    @lanes.push: 'native' => [$nbin]                       if $built && $on.defined;
+    @lanes.push: 'rakudo' => [$RAKUDO, $path]              if $or.defined;
+    @lanes.push: 'perl'   => [$PERL, $ppath]               if $ppath.defined && $op.defined;
+    my %times;
+    for ^$RUNS -> $i {
+        for @lanes -> $lane {
+            my @cmd = |$lane.value;
+            my $t0 = now;
+            run(|@cmd, :out).out.slurp(:close);   # drain stdout => waits for exit
+            %times{$lane.key}.push((now - $t0) * 1000) if $i > 0;
+        }
+    }
+    my sub cell(Str $k) { %times{$k} ?? sprintf('%.1fms', %times{$k}.min) !! 'n/a' }
+    my $interp = cell('interp');
+    my $native = cell('native');
+    my $rakudo = cell('rakudo');
+    my $perl   = $ppath.defined ?? cell('perl') !! '—';
     printf "%-12s %10s %10s %10s %10s   %s%s\n", %b<name>, $interp, $native, $rakudo, $perl, %b<note>, $flag;
+
+    if $tfh {
+        my sub pair(Str $k) {
+            %times{$k} ?? (sprintf('%.1f', %times{$k}.min), sprintf('%.1f', median(%times{$k})))
+                       !! ('', '')
+        }
+        $tfh.say: (%b<name>,
+                   |pair('interp'), |pair('native'), |pair('rakudo'), |pair('perl'),
+                   (@bad ?? @bad.join('; ') !! 'ok')).join("\t");
+    }
 }
+$tfh andthen .close;
 
 if $mismatch {
     note '';

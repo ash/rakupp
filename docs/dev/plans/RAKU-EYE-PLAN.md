@@ -64,12 +64,19 @@ repo is six years × dozens of languages and we need almost none of it.
 ### 2. Ecosystem releases
 
 The eco leg of FRESHNESS-PLAN: diff today's REA `META.json` against the stored
-snapshot, vendor the new and bumped dists (checksummed tarballs, symlink-free,
-path-checked — the battery rules), then the three legs cheapest-first: parse
-(`rakupp -c` every file), suite under rakupp, Rakudo control for what fails.
+snapshot, then `rakupp test` each new release (via `tools/eco-fresh/`), then a
+Rakudo control (`zef install`) for whatever fails on its own account.
 Standing policy holds: a dist that fails identically under Rakudo is
 upstream-broken — recorded, never worked on. The control runs fresh every
 week; it has been wrong before when looked up.
+
+Two v1 notes, learned in implementation. First, `rakupp test` resolves and
+fetches dependencies as part of the run, so this leg cannot execute
+network-unshared — see the amended sandbox rule below. Second, the standalone
+parse pre-pass (`rakupp -c` over vendored sources) waits for the
+vendored-source port; until then parse-shaped failures still surface, as
+`parse:` buckets in the error signatures rather than as their own ledger
+column.
 
 The pinned top-200 battery is out of scope here and stays in
 `raku-module-battery` (private, deliberate pins). The Eye only ever touches
@@ -200,6 +207,12 @@ Carried over from FRESHNESS-PLAN, plus what unattended adds:
   the execution legs run with the network unshared (`unshare -n` wrapper —
   the Linux replacement for the battery's `sandbox-exec` profile), per-child
   timeouts, process-group kill. The VM is disposable on top of all of it.
+  **Exception, recorded honestly:** the ecosystem leg runs online, because
+  `rakupp test` fetches dependencies mid-run. Its compensating controls: no
+  checkout persists credentials, no token exists in any measurement step's
+  environment (the push token appears only in the final commit step, after
+  all third-party code has finished), and the VM is discarded. PWC, corpus,
+  and benchmarks stay fully unshared.
 - **The Eye never edits the compiler.** It has no write access to rakupp and
   no fixing logic. Improvement flows one way: dashboard → fix session →
   rakupp commit → next Monday's numbers.
