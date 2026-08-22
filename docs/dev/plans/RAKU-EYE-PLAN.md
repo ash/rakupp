@@ -118,9 +118,12 @@ Methodology, because CI hardware is noisy and heterogeneous:
   interp/rakudo and native/rakudo per kernel. Ratios survive runner-to-runner
   CPU variation; absolute milliseconds from a shared VM do not, and are stored
   in the JSONL but never headlined.
-- **Every row records** the rakupp commit, the Rakudo version, and the runner
-  CPU model. The chart draws a vertical marker whenever the Rakudo version
-  changes, so a ratio jump is attributable to the correct side.
+- **Every row records** the rakupp commit, the Rakudo version, the runner
+  CPU model, and the C++ toolchain version (`g++ --version` of the runner
+  image — it compiles both the rakupp binary itself and every `--exe`
+  kernel, and it drifts as GitHub updates the image). The chart draws a
+  vertical marker whenever the Rakudo version or the toolchain changes, so a
+  ratio jump is attributable to the correct side.
 - **Rakudo policy:** the latest prebuilt release (linux-x86_64 archive from
   the rakudo/rakudo releases), cached by version. No compiling Rakudo, no
   tracking its main.
