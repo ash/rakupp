@@ -31,7 +31,7 @@ there.)
 
 ## The short version
 
-- **Startup:** ~2–3 ms on this machine (2.8 ms interpreting, 2.4 ms native) —
+- **Startup:** ~2–3 ms on this machine (2.9 ms interpreting, 2.4 ms native) —
   a tiny native binary with no VM to spin up. For one-liners, CLI glue, and
   small programs it is instant. (Both rows grew ~0.3–0.6 ms when lexical pads
   landed on 2026-08-22: laying out a pad is a fixed per-process cost, paid once
@@ -274,6 +274,33 @@ instead is O(n log n) — an 18.09 s → 0.68 s fix
 ([internals/OPTIMIZATION.md](../internals/OPTIMIZATION.md)) that until now had
 no kernel standing behind it, so a regression would have been invisible.
 
+### Startup
+
+The harness times sixteen programs in
+[`tools/bench/`](../../tools/bench), and one of them is not a workload at all:
+[`startup.raku`](../../tools/bench/startup.raku) is `say "Hello, World!"` and
+nothing else, so the row is process startup and almost nothing but. It has
+always been timed; it gets its own table here because it does not belong in
+the ratio-ordered tables above.
+
+| mode | startup | vs Rakudo |
+|---|---:|---:|
+| Raku++ native `--exe` | 2.4 ms | **65.8×** |
+| Raku++ interp | 2.9 ms | **54.5×** |
+| Rakudo | 158.0 ms | — |
+
+A native Raku++ binary has no VM to bring up and no precompiled runtime to
+load; Rakudo's 158 ms is a fixed cost paid by every row in every table on this
+page, its own included. For one-liners and CLI glue that difference is the
+whole story — but note it cuts the other way as a *measurement* caveat: on the
+shortest kernels here (`strcat` at 3 ms compiled) startup is most of what is
+being timed, which is why small percentage moves on those rows are usually
+startup and not codegen.
+
+Both Raku++ rows grew ~0.3–0.6 ms when lexical pads landed on 2026-08-22 —
+laying out a pad is a fixed per-process cost — and that is recorded in the
+2026-08-22 re-snapshot notes rather than smoothed away.
+
 ### vs Perl 5: the `hashfill` kernel
 
 Perl 5 is the family yardstick for CLI-scale scripting, so one kernel ships as
@@ -354,23 +381,35 @@ speculative codegen passes:
 both the interpreter and `--exe`.) Measured by
 [`tools/run-optbench.raku`](../../tools/run-optbench.raku) on five showcase kernels
 written to exercise the passes (each program is verified to produce identical
-output all three ways before timing). Best of 5 runs; Rakudo (v2026.06) shown
-for reference:
+output all four ways — interp, `--exe`, `--exe -O` and Rakudo as the oracle —
+before timing). Re-measured 2026-08-22 at `v3.6.0-19-gbbd1249`, three harness
+passes, best of 5 within each and the minimum across all three; Rakudo
+v2026.07 shown for reference:
 
 | Benchmark | `--exe` | `--exe -O` | `-O` vs `--exe` | Rakudo | showcases |
 |---|---:|---:|---:|---:|---|
-| sieve       | 1189.9 ms | **23.5 ms**  | **50.5×** | 991.9 ms  | primes < 200k by trial division — `* <= %%` all laned |
-| powmod      | 571.0 ms  | **53.2 ms**  | **10.7×** | 748.8 ms  | 1M `** 3` then `% 1000` — inline pow + mod lane |
-| intsum      | 298.7 ms  | **31.8 ms**  | **9.4×**  | 656.5 ms  | 5M int accumulation — `+=` lane, zero boxing |
-| fibcalls    | 670.6 ms  | **169.6 ms** | **4.0×**  | 1417.4 ms | fib(32) — direct-arity calls + int-lane condition |
-| stringbuild | 24.0 ms   | 25.6 ms      | 1.0×      | 219.5 ms  | 400k `~=` appends — in-place O(n) string build |
+| sieve       | 1004.3 ms | **20.1 ms** | **50.0×** | 993.5 ms  | primes < 200k by trial division — `* <= %%` all laned |
+| powmod      | 498.9 ms  | **20.8 ms** | **24.0×** | 697.0 ms  | 1M `** 3` then `% 1000` — inline pow + mod lane |
+| intsum      | 127.0 ms  | **16.1 ms** | **7.9×**  | 623.0 ms  | 5M int accumulation — `+=` lane, zero boxing |
+| fibcalls    | 347.5 ms  | **61.2 ms** | **5.7×**  | 1344.5 ms | fib(32) — direct-arity calls + int-lane condition |
+| stringbuild | 5.5 ms    | 5.4 ms      | 1.0×      | 202.3 ms  | 400k `~=` appends — in-place O(n) string build |
+
+_Against the previous sitting of this table (Rakudo v2026.06), plain `--exe`
+improved on every row and by a lot on three — `stringbuild` 24.0 → 5.5 ms,
+`intsum` 298.7 → 127.0, `fibcalls` 670.6 → 347.5 — which is the general
+compiled-path work of the last weeks arriving here. `-O` improved further on
+top, so the `-O` gain column moved both ways: `powmod` went 10.7× → 24.0× (its
+`-O` row more than halved) while `intsum` fell 9.4× → 7.9× and `fibcalls`
+4.0× → 5.7×. A gain column shrinking is not a regression when both of its
+columns got faster — read the milliseconds first._
 
 The lanes (pass 3) dominate this table: `sieve`'s inner loop — `while $d * $d
 <= $n`, `if $n %% $d`, `$d++` — runs as raw `int64`, taking it from a tie with
-Rakudo at plain `--exe` to 42× ahead, and `intsum` shed its four
-per-iteration `Value` constructions. On the main kernels above, `-O` puts fib
-at 27.3 ms (3.9× over `--exe`, 16.8× over Rakudo), loopsum at 7.1 ms, and streq
-at 14.5 ms (the `$c++`/`$c--` counters lane on top of the inline `eq`/`lt`).
+Rakudo at plain `--exe` (1004.3 against 993.5 ms) to **49×** ahead, and
+`intsum` shed its four per-iteration `Value` constructions. The figures for
+`-O` on the main kernels above — fib 27.3 ms, loopsum 7.1 ms, streq 14.5 ms
+(the `$c++`/`$c--` counters lane on top of the inline `eq`/`lt`) — are from an
+earlier sitting and have not been re-measured with this table.
 `stringbuild` gains nothing because in-place append is already the default
 everywhere. It's opt-in, off by default, and produces identical output
 (validated per-program before timing, plus every deterministic example against
