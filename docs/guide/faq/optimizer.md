@@ -20,11 +20,15 @@ replaces parts of that translation with **specialised lanes** — direct-arity
 calls, native integer arithmetic, unboxed loop counters — that are guesses
 about what your program does, guarded so they stay correct.
 
-The project draws one line through everything in this area: a change that
-fixes a *wart* ships as a default in every mode; a change that *speculates
-for speed* is a switch. In-place `~=` (linear string building) is a wart fix
-— default everywhere. The integer lanes are speculation — they live under
-`-O`.
+The project draws one line through everything in this area. A change that
+fixes *broken-feeling behaviour* — string building that took quadratic time
+where every other engine takes linear, say — is simply always on, in the
+interpreter and every binary mode alike: nobody should need to know a flag
+exists to escape a defect. A change that merely *bets on your program's
+shape* for speed — the integer lanes guess that your scalars stay small
+machine integers — is a switch, because a bet can lose. In-place `~=` is
+the first kind, on everywhere. The lanes are the second, and they live
+under `-O`.
 
 ## Because a default must never lose
 
@@ -78,7 +82,8 @@ optimisation ideas run in plain `--exe` today because they proved to be
 plumbing rather than speculation: comparisons in conditions use inline
 helpers, and builtin calls go through pointers cached once at startup.
 In-place `~=` ships in every mode, interpreter included, because quadratic
-string building was a correctness-shaped wart, not a speed feature. A lane
+string building was broken-feeling behaviour to fix, not a speed feature to
+offer. A lane
 that someday shows itself universally non-regressing crosses the same line.
 Until then, `-O` is where speculation lives — one flag away, never assumed.
 
