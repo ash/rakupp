@@ -16629,6 +16629,26 @@ std::string Interpreter::interpRegexPattern(const std::string& in) {
                     i = j;                          // skip the '>'
                     continue;
                 }
+                // `<alias=$var>` — the ALIASED assertion form: the value compiles
+                // as a regex and its match captures under `alias`. Rewritten to the
+                // equivalent named-capture group `$<alias>=[ … ]`. Without this the
+                // `$var` fell through to the literal reading and left
+                // `<alias=value>` — a call to an unknown subrule, which matched as
+                // a zero-width no-op, i.e. ALWAYS. Sparrow6's whole check engine
+                // sits on this spelling (`$data.comb(/<mymatch=$pattern>/,:match)`),
+                // so every `regexp:` check-file line passed against any output.
+                if (v && j < pat.size() && pat[j] == '>' && !out.empty() && out.back() == '=') {
+                    size_t b = out.size() - 1;      // the '='
+                    size_t e = b;                   // scan the alias identifier leftwards
+                    while (e > 0 && (ascii::isalnum((unsigned char)out[e - 1]) || out[e - 1] == '_' || out[e - 1] == '-')) e--;
+                    if (e > 0 && e < b && out[e - 1] == '<') {
+                        std::string alias = out.substr(e, b - e);
+                        out.erase(e - 1);           // drop `<alias=`
+                        out += "$<" + alias + ">=[ " + v->toStr() + " ]";
+                        i = j;                      // skip the '>'
+                        continue;
+                    }
+                }
                 // A variable holding a REGEX splices as a sub-pattern, not as
                 // literal text — `rx/$base$match/` composes two regexes, which is
                 // how IO::Glob assembles a glob out of per-term matchers. Only a

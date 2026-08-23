@@ -2632,6 +2632,31 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             return Value::str(out);
         }
         if (m == "comb") {
+            // `:match` — the elements are the MATCH OBJECTS, captures included
+            // (Sparrow6's check engine: `$data.comb(/<m=$p>/,:match)>>.<m>`).
+            // The plain path below answers strings, so a capture lookup on an
+            // element quietly gave Any. Same machinery as `.match(:g)`; the
+            // optional positional limit truncates the list.
+            bool wantMatch = false;
+            for (auto& la : args)
+                if (la.t == VT::Pair && la.namedArg && la.s == "match" &&
+                    (!la.pairVal() || la.pairVal()->truthy())) wantMatch = true;
+            if (wantMatch) {
+                long nsub = 0; Value mres;
+                std::string keep = subj;                 // replace each match with itself
+                ValueList sargs; sargs.push_back(args[rxIdx]);
+                Value g = Value::pair("g", Value::boolean(true)); g.namedArg = true;
+                sargs.push_back(g);
+                substSelect(subj, pat, nullptr, sargs, nsub, false, &keep, &mres);
+                long long limit = -1;
+                for (size_t i = 0; i < args.size(); i++)
+                    if ((int)i != rxIdx && args[i].t != VT::Pair && args[i].t != VT::Whatever)
+                        { limit = args[i].toInt(); break; }
+                if (limit >= 0 && mres.t == VT::Array && mres.arr() &&
+                    (long long)mres.arr()->size() > limit)
+                    mres.arr()->resize(limit);
+                return mres;
+            }
             Regex re(pat);
             // a `<?{…}>` in the pattern must run, here as much as in `~~`
             GrammarHooks ch = codeAssertHooks();
