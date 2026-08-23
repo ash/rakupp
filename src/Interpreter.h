@@ -358,13 +358,14 @@ struct Env {
 // claiming Failure was covered, so `fail` under `--exe` did not answer to `//`.
 bool rtIsDefined(const Value& v);
 
-// `use JSON::Native` — installs native `from-json`/`to-json` into the using
-// scope (JsonNative.cpp). Under RAKUPP_NATIVE_JSON=1 the same natives are also
-// installed over `use JSON::Fast`, which is opt-in on purpose: silently
-// answering another module's name would fork its semantics behind its back.
-// Native extension modules (include/rakupp/rakupp_ext.h): dlopen `path`, check its ABI
-// against RAKUPP_EXT_ABI, and hand back the subs it declares. On failure the
-// message lands in errOut and the return value is undefined. ExtApi.cpp.
+// Native extension modules (include/rakupp/rakupp_ext.h): dlopen `path`, check
+// its ABI against RAKUPP_EXT_ABI, and hand back the subs it declares. On
+// failure the message lands in errOut and the return value is undefined.
+// ExtApi.cpp. An extension loads as an ordinary distribution (JSON::Native is
+// the reference); the engine answers no module name itself, so a dist's tests
+// exercise the code it ships — docs/guide/EXTENSIONS.md. The JSON::Fast fast
+// path is separate machinery: wrapJsonFastExports (Builtins.cpp) wraps the
+// loaded module's own subs and falls back to them when a call is uncovered.
 Value extLoadModule(const std::string& path, std::string& errOut,
                     std::vector<std::pair<std::string, Value>>& subsOut);
 
