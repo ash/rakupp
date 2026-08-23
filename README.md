@@ -91,11 +91,9 @@ Flags are position-independent and cluster like perl's (`rakupp -pi.bak -e
 
 ## Modules
 
-Raku++ installs modules from the ecosystem with **its own installer** — no
-Rakudo needed — and it shares one store with [zef](https://github.com/ugexe/zef):
-`rakupp install` resolves against the same index and writes the same store zef
-populates, so a module installed by either tool is picked up by `use` under
-either engine:
+Raku++ installs modules from the ecosystem with **its own installer** —
+compatible with [zef](https://github.com/ugexe/zef), so a module installed by
+either tool is picked up by `use` under either engine:
 
 ```sh
 rakupp install JSON::Fast        # or: zef install JSON::Fast   (via Rakudo)
