@@ -21,9 +21,11 @@ release is written up in the [CHANGELOG](CHANGELOG.md).
 
 **Current focus:** the ecosystem sweep — all 2,524 distributions of the zef
 ecosystem run against rakupp, and the engine gets fixed until real modules
-install and pass their own test suites. (The 59 in the table below is the
-curated per-release battery; the sweep is the whole ecosystem, and what it
-finds drives what gets built next.)
+install and pass their own test suites. The first full sweep (August 2026)
+counts **624 of 2,524 passing**, with another 438 blocked by a failing
+dependency before their own tests could run; what the sweep finds drives what
+gets built next. (The 59 in the table below is a small curated battery gated
+on every release; the sweep is the whole ecosystem.)
 
 | | v3.6.0 | at v2.0.0 |
 |---|---:|---:|
@@ -138,6 +140,9 @@ embedded in any static page to make Raku snippets runnable — handy for docs,
 tutorials, or a course. Details in [rakujs/README.md](rakujs/README.md).
 
 ## Use Raku from Python, JavaScript, Go, Rust, C++, Wolfram Language
+
+*Work in progress: committed so it is not lost and re-gated on every push,
+but not announced yet — the official announcement will come when it settles.*
 
 `librakupp` embeds the interpreter behind a small C ABI, and
 **[bindings/](bindings/README.md)** wraps it for six host languages. Each
