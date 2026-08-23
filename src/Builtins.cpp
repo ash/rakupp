@@ -2689,6 +2689,246 @@ static std::string jsonEncode(const Value& v) {
     }
 }
 
+// ---- JSON::Fast, natively --------------------------------------------------
+// Sparrow6's check engine writes its whole context through JSON::Fast's
+// to-json — 10,000 captured lines meant ~700 ms of interpreted jsonify/
+// str-escape per task. The module itself stays exactly what the user
+// installed (the v3.0.1 unvendoring stands: no pinned source in the binary);
+// what changes is the CALL: loadModule wraps the loaded &to-json/&from-json,
+// and a call whose arguments this replica covers runs the native codec.
+// Anything it does not cover — an unknown adverb, a callable :sorted-keys, a
+// NaN/Inf Num (whose rendering hangs on the $*JSON_NAN_INF_SUPPORT dynamic),
+// a type outside the ladder (DateTime, Version, objects) or a non-ASCII
+// string (JSON::Fast escapes over NFD codepoints) — falls through to the
+// module's own sub, so behaviour is the module's in every uncovered case.
+struct JsonFastUnsupported {};
+
+static void jfEscape(const std::string& s, std::string& out) {
+    // JSON::Fast escapes the NFD codepoints of the string. ASCII needs no
+    // normalization; anything else is rare here and falls back (see above).
+    for (unsigned char c : s) if (c >= 0x80) throw JsonFastUnsupported{};
+    for (unsigned char c : s) {
+        if (c == '\n') out += "\\n";
+        else if (c == '\r') out += "\\r";
+        else if (c == '\t') out += "\\t";
+        else if (c == '"') out += "\\\"";
+        else if (c == '\\') out += "\\\\";
+        else if (c <= 31) { char b[8]; snprintf(b, sizeof b, "\\u%04x", c); out += b; }
+        else out += (char)c;
+    }
+}
+
+static void jfEncode(const Value& v, bool pretty, int spacing, bool sortedKeys,
+                     bool enumsAsValue, int level, std::string& out) {
+    // the ladder is jsonify's, in jsonify's order
+    if (!v.enumName.empty()) {           // enum value: its KEY, or with
+        if (!enumsAsValue) {             // :enums-as-value its underlying value
+            out += '"'; jfEscape(v.enumName, out); out += '"';
+            return;
+        }
+        Value plain = v; plain.enumName = "";
+        jfEncode(plain, pretty, spacing, sortedKeys, enumsAsValue, level, out);
+        return;
+    }
+    switch (v.t) {
+        case VT::Nil: case VT::Any: case VT::Type: out += "null"; return;
+        case VT::Bool: out += v.b ? "true" : "false"; return;
+        case VT::Int:
+            out += v.big() ? v.big()->toString() : std::to_string(v.i);
+            return;
+        case VT::Rat: {                  // Rat.Str, plus ".0" when integral
+            std::string r = v.toStr();
+            out += r;
+            if (r.find('.') == std::string::npos) out += ".0";
+            return;
+        }
+        case VT::Num: {                  // Num.Str, plus "e0" when it lacks one
+            double d = v.toNum();
+            if (std::isnan(d) || std::isinf(d)) throw JsonFastUnsupported{};
+            std::string r = v.toStr();
+            out += r;
+            if (r.find('e') == std::string::npos && r.find('E') == std::string::npos)
+                out += "e0";
+            return;
+        }
+        case VT::Str:
+            if (!v.hashKind.empty()) throw JsonFastUnsupported{}; // Buf/Blob die in JSON::Fast
+            out += '"'; jfEscape(v.s, out); out += '"';
+            return;
+        case VT::Pair: {                 // a Pair is Associative: one-entry object
+            if (v.pairKey()) throw JsonFastUnsupported{};         // non-Str key object
+            std::string open = "{", close = "}";
+            if (pretty) {
+                std::string ind((size_t)(spacing * (level + 1)), ' ');
+                std::string outd((size_t)(spacing * level), ' ');
+                out += "{\n" + ind + '"'; jfEscape(v.s, out); out += "\": ";
+                jfEncode(v.pairVal() ? *v.pairVal() : Value::any(), pretty, spacing, sortedKeys, enumsAsValue, level + 1, out);
+                out += "\n" + outd + "}";
+            } else {
+                out += "{\""; jfEscape(v.s, out); out += "\":";
+                jfEncode(v.pairVal() ? *v.pairVal() : Value::any(), pretty, spacing, sortedKeys, enumsAsValue, level, out);
+                out += "}";
+            }
+            return;
+        }
+        case VT::Range: {
+            Value a = Value::array(); *a.arr() = v.flatten();
+            jfEncode(a, pretty, spacing, sortedKeys, enumsAsValue, level, out);
+            return;
+        }
+        case VT::Array: {
+            if (!v.arr()) { out += pretty ? "[\n]" : "[]"; return; }
+            auto& xs = *v.arr();
+            if (pretty) {
+                // JSON::Fast's exact shape: "[\n<ind>… ,\n<ind>… \n<outd>]",
+                // and an EMPTY array renders as "[\n<outd>]"
+                std::string ind((size_t)(spacing * (level + 1)), ' ');
+                std::string outd((size_t)(spacing * level), ' ');
+                out += "[";
+                if (xs.empty()) { out += "\n" + outd + "]"; return; }
+                for (size_t i = 0; i < xs.size(); i++) {
+                    out += (i ? ",\n" + ind : "\n" + ind);
+                    jfEncode(xs[i], pretty, spacing, sortedKeys, enumsAsValue, level + 1, out);
+                }
+                out += "\n" + outd + "]";
+            } else {
+                out += "[";
+                for (size_t i = 0; i < xs.size(); i++) {
+                    if (i) out += ",";
+                    jfEncode(xs[i], pretty, spacing, sortedKeys, enumsAsValue, level, out);
+                }
+                out += "]";
+            }
+            return;
+        }
+        case VT::Hash: {
+            // allomorphs re-dispatch on their numeric half; DateTime, Version,
+            // Supply and every other kinded hash is outside the ladder
+            if (v.hashKind == "IntStr" || v.hashKind == "RatStr" || v.hashKind == "NumStr")
+                throw JsonFastUnsupported{}; // t is Hash only for exotic allomorph carriers
+            if (!v.hashKind.empty()) throw JsonFastUnsupported{};
+            if (!v.hash()) { out += pretty ? "{\n}" : "{}"; return; }
+            auto& h = *v.hash();
+            // hashes iterate in INSERTION order here; :sorted-keys sorts by
+            // key, exactly like the module's `.sort(*.key)`
+            std::vector<std::pair<const std::string*, const Value*>> kvs;
+            for (auto& kv : h) kvs.emplace_back(&kv.first, &kv.second);
+            if (sortedKeys)
+                std::sort(kvs.begin(), kvs.end(),
+                          [](auto& a, auto& b) { return *a.first < *b.first; });
+            if (pretty) {
+                std::string ind((size_t)(spacing * (level + 1)), ' ');
+                std::string outd((size_t)(spacing * level), ' ');
+                out += "{";
+                if (kvs.empty()) { out += "\n" + outd + "}"; return; }
+                bool first = true;
+                for (auto& kv : kvs) {
+                    out += (first ? "\n" + ind : ",\n" + ind); first = false;
+                    out += '"'; jfEscape(*kv.first, out); out += "\": ";
+                    jfEncode(*kv.second, pretty, spacing, sortedKeys, enumsAsValue, level + 1, out);
+                }
+                out += "\n" + outd + "}";
+            } else {
+                out += "{"; bool first = true;
+                for (auto& kv : kvs) {
+                    if (!first) out += ",";
+                    first = false;
+                    out += '"'; jfEscape(*kv.first, out); out += "\":";
+                    jfEncode(*kv.second, pretty, spacing, sortedKeys, enumsAsValue, level, out);
+                }
+                out += "}";
+            }
+            return;
+        }
+        default: throw JsonFastUnsupported{}; // objects, code, … — jsonify dies; the module decides
+    }
+}
+
+// The wrapped &to-json / &from-json: try native, fall back to the module's sub.
+Value jsonFastToJsonCall(Interpreter& I, ValueList& a, const Value& orig) {
+    const Value* obj = nullptr;
+    bool pretty = true; long long level = 0, spacing = 2; bool enumsAsValue = false;
+    bool sortedKeys = false;
+    for (auto& x : a) {
+        if (x.t == VT::Pair && x.namedArg) {
+            bool tv = x.pairVal() && x.pairVal()->truthy();
+            if (x.s == "pretty") pretty = tv;
+            else if (x.s == "level") level = x.pairVal() ? x.pairVal()->toInt() : 0;
+            else if (x.s == "spacing") spacing = x.pairVal() ? x.pairVal()->toInt() : 2;
+            else if (x.s == "enums-as-value") enumsAsValue = tv;
+            else if (x.s == "sorted-keys") {
+                // a CALLABLE comparator is the module's business
+                if (x.pairVal() && x.pairVal()->t == VT::Code) return I.callCallable(orig, a);
+                sortedKeys = tv;
+            }
+            else return I.callCallable(orig, a);   // an adverb this replica does not know
+        }
+        else if (!obj) obj = &x;
+        else return I.callCallable(orig, a);       // extra positional: let the module refuse it
+    }
+    if (!obj) return I.callCallable(orig, a);
+    try {
+        std::string out;
+        jfEncode(*obj, pretty, (int)spacing, sortedKeys, enumsAsValue, (int)level, out);
+        return Value::str(out);
+    } catch (JsonFastUnsupported&) {
+        return I.callCallable(orig, a);
+    }
+}
+
+Value jsonFastFromJsonCall(Interpreter& I, ValueList& a, const Value& orig) {
+    const Value* text = nullptr;
+    JsonCfg cfg;
+    for (auto& x : a) {
+        if (x.t == VT::Pair && x.namedArg) {
+            bool tv = x.pairVal() && x.pairVal()->truthy();
+            if (x.s == "immutable") cfg.immutable = tv;
+            else if (x.s == "allow-jsonc") cfg.jsonc = tv;
+            else return I.callCallable(orig, a);
+        }
+        else if (!text) text = &x;
+        else return I.callCallable(orig, a);
+    }
+    if (!text || !(text->t == VT::Str && text->hashKind.empty()))
+        return I.callCallable(orig, a);            // Str() coercion is the module's
+    size_t i = 0; Value out;
+    if (!jsonParseValue(text->s, i, out, cfg)) return I.callCallable(orig, a);
+    jsonSkipWs(text->s, i, cfg);
+    if (i != text->s.size()) return I.callCallable(orig, a); // its typed trailing-content error
+    return out;
+}
+
+// Called by loadModule right after JSON::Fast's tree has executed: wrap the
+// module's own subs so both the EXPORT protocol (which hands out
+// &JSON::Fast::to-json) and qualified calls resolve to the wrapped ones.
+void Interpreter::wrapJsonFastExports(Env& moduleEnv) {
+    auto wrap = [&](const char* name, Value (*fn)(Interpreter&, ValueList&, const Value&)) {
+        // The subs live inside `module JSON::Fast { ... }`, so by the time the
+        // tree has executed they exist as the QUALIFIED globals (and that
+        // qualified spelling is what the module's own EXPORT sub hands out);
+        // a bare moduleEnv entry is wrapped too when present.
+        std::string qual = std::string("&JSON::Fast::") + (name + 1);
+        Value* slot = nullptr;
+        auto it = moduleEnv.vars.find(name);
+        if (it != moduleEnv.vars.end() && it->second.t == VT::Code) slot = &it->second;
+        Value* gslot = global_ ? global_->find(qual) : nullptr;
+        if (!slot && !(gslot && gslot->t == VT::Code)) return;
+        Value orig = slot ? *slot : *gslot;
+        if (orig.code() && orig.code()->builtin) return;   // already wrapped
+        Value w; w.t = VT::Code; w.setCode(std::make_shared<Callable>());
+        w.code()->name = name + 1;                          // drop the '&'
+        w.code()->builtin = [orig, fn](Interpreter& I2, ValueList& args) -> Value {
+            return fn(I2, args, orig);
+        };
+        if (slot) *slot = w;
+        if (gslot && gslot->t == VT::Code) *gslot = w;
+        else if (global_) global_->define(qual, w);
+    };
+    wrap("&to-json", jsonFastToJsonCall);
+    wrap("&from-json", jsonFastFromJsonCall);
+}
+
+
 // `.kv`/`.keys`/`.values`/`.pairs`/`.antipairs` answer a Seq on EVERY container in
 // Rakudo — Hash, Array, List, Pair, Match alike. Marking them at the one dispatch
 // point keeps that uniform instead of tagging a dozen construction sites.

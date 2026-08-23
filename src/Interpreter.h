@@ -617,6 +617,9 @@ public:
 
     // calling
     Value callCallable(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs = nullptr, bool ownFrame = false, bool arityCheck = false);
+    // loadModule hook: wrap JSON::Fast's &to-json/&from-json with the native
+    // codec (fallback to the module's own subs for uncovered calls)
+    void wrapJsonFastExports(Env& moduleEnv);
     // A routine by its sigilled name ("&foo"), resolved from the scope that is
     // executing right now and then outward — what rk_call needs so an extension
     // reaches the module that loaded it (ExtApi.cpp). Null when there is none.

@@ -4817,6 +4817,12 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
         }
         catch (...) { loadingModuleDepth_--; moduleDoImport_ = savedDoImport; tctx_.cur = saved; curPkgEnv_ = savedPkg; finishData_ = savedFinish; tctx_.pkgPrefix = savedModPrefix; langRev_ = savedLangRev; throw; }
         loadingModuleDepth_--; moduleDoImport_ = savedDoImport;
+        // JSON::Fast's to-json/from-json get a native fast path (Builtins.cpp:
+        // wrapJsonFastExports) — wrapped in the MODULE env before publishing,
+        // so the qualified globals and the EXPORT protocol both hand out the
+        // wrapped subs. Only on a load that completed: a module that died
+        // publishes whatever it managed, and wrapping half a module helps nobody.
+        if (name == "JSON::Fast") wrapJsonFastExports(*moduleEnv);
         publish();
         tctx_.cur = saved; curPkgEnv_ = savedPkg; finishData_ = savedFinish; tctx_.pkgPrefix = savedModPrefix; langRev_ = savedLangRev;
         // `sub EXPORT(*@_)` protocol: call it with the use-statement's <...>
