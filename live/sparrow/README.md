@@ -2,11 +2,11 @@
 
 [Sparrow6](https://github.com/melezhik/Sparrow6) is a Raku automation framework
 (`zef:sp1983`) — an alternative to Ansible or Chef, in its author's words. This
-directory is a four-task scenario that runs under it.
+directory is a five-task scenario that runs under it.
 
 **Sparrow6 itself is not in this directory.** It is melezhik's, published to
 the ecosystem, installed from there and left alone — no patch, no copy, no
-adjustment. What is here is only the four tasks and the scenario that drive it,
+adjustment. What is here is only the five tasks and the scenario that drive it,
 which we wrote.
 
 It is also where **process startup** becomes measurable, because of how Sparrow
@@ -16,7 +16,7 @@ implementation charges to start — a cost a long-running program pays only once
 and this one pays per task.
 
 What gets spawned, watched by putting logging shims for `raku`, `perl` and
-`bash` on `PATH` — in order, for the four tasks above:
+`bash` on `PATH` — in order, for the five tasks above:
 
 ```
 1.  bash  cmd.bash                            tasks/hello
@@ -26,14 +26,15 @@ What gets spawned, watched by putting logging shims for `raku`, `perl` and
 5.  perl  -I… -Msparrow6lib task.pl           …which starts perl
 6.  bash  cmd.bash                            tasks/perl-check, a second time
 7.  perl  -I… -Msparrow6lib task.pl
+8.  raku  -I… -Mglue -Msparrow6lib task.raku  tasks/raku-ok — started directly
 ```
 
 Each task runs in **its own** language: a Bash task does not start a Raku, and
 neither does a Perl one. Bash and Perl tasks are launched through a small
 generated `cmd.bash` wrapper — so those cost a shell process on top of whatever
-the task itself needs — while the Raku task is started directly, with no
-wrapper. Only that one task starts a `raku`, and that single spawn is most of
-the difference between the second and third rows of the table below.
+the task itself needs — while the Raku tasks are started directly, with no
+wrapper. Two tasks start a `raku`, and those spawns are most of the difference
+between the second and third rows of the table below.
 
 (Sparrow launches the Perl task twice for one line of output. That is Sparrow's
 own behaviour — verified identical under both engines — so it cancels out of
@@ -44,7 +45,18 @@ tasks/hello/task.bash        echo, in Bash
 tasks/greet/task.raku        reads its parameters with Sparrow's config<name>
 tasks/report/task.bash       talks back to the scenario through stdout
 tasks/perl-check/task.pl     the same scenario driving Perl 5
+tasks/raku-ok/task.raku      its OUTPUT is verified by a task.check file
 ```
+
+`tasks/raku-ok` exercises the half of Sparrow the others do not: the **check
+engine**. A `task.check` file beside the task holds patterns its stdout must
+satisfy — here `regexp: ok` — and Sparrow verifies them after the run
+(`stdout match <ok> True`; a miss is `TASK CHECK FAIL`). That machinery is
+regex-heavy Raku (`$data.comb(/<mymatch=$pattern>/,:match)`), and adding this
+task found two engine faults the other four never touched: `<alias=$var>`
+interpolated as literal text and degraded to an always-matching no-op — so a
+failing check PASSED — and `.comb(:match)` answered strings, not Match
+objects. Both are pinned in `t/regression/regex-alias-interp-comb-match.raku`.
 
 ## Running it
 
@@ -91,9 +103,9 @@ this measures. Best of five, warm, on one machine:
 
 | configuration | wall clock |
 |---|---:|
-| Rakudo throughout | 905 ms |
-| Raku++ scenario, Raku tasks still spawning `raku` | 689 ms |
-| Raku++ all the way down | **121 ms** |
+| Rakudo throughout | 1560 ms |
+| Raku++ scenario, Raku tasks still spawning `raku` | 1332 ms |
+| Raku++ all the way down | **152 ms** |
 
 Absolute numbers are machine-specific and the Rakudo row is the load-sensitive
 one — run it yourself rather than trusting these. The ratio between the last

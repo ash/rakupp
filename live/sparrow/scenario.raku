@@ -7,3 +7,4 @@ task-run "tasks/hello";
 task-run "tasks/greet", %( name => 'Raku++' );
 task-run "tasks/report";
 task-run "tasks/perl-check";
+task-run "tasks/raku-ok";
