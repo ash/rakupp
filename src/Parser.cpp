@@ -6650,7 +6650,24 @@ StmtPtr Parser::parseIf(bool isUnless) {
             if (isOp(":") && peek().kind == Tok::Ident) { advance(); advance(); } // :D/:U smiley
         }
     };
-    if (matchOp("->")) { bool sl = matchOp("*"); skipBindType(); if (isKind(Tok::Var)) s->thenVar = (sl ? "*" : "") + advance().text; skipBindTraits(); }
+    // The binder after `->`: a $/@/% variable, or a SIGILLESS `\name`
+    // (`if self.elems -> \elems { }`, the Agnostic family's shape) — the name
+    // is registered so the block's bare `elems` reads as the binding.
+    auto arrowBindName = [&, this](std::string& into) {
+        bool sl = matchOp("*");
+        skipBindType();
+        if (matchOp("\\")) {
+            if (isKind(Tok::Ident) || isKind(Tok::Var)) {
+                into = advance().text;
+                sigilless_.insert(into);
+            }
+        }
+        else if (isKind(Tok::Var)) {
+            into = (sl ? "*" : "") + advance().text;
+        }
+        skipBindTraits();
+    };
+    if (matchOp("->")) arrowBindName(s->thenVar);
     auto blk = parseBlock();
     s->branches.emplace_back(std::move(cond), std::move(blk));
     s->branchVars.push_back(s->thenVar);
@@ -6664,7 +6681,7 @@ StmtPtr Parser::parseIf(bool isUnless) {
         ExprPtr c;
         { bool sv = stmtCond_; stmtCond_ = true; c = parseExpression(); stmtCond_ = sv; }
         std::string bv;
-        if (matchOp("->")) { bool sl = matchOp("*"); skipBindType(); if (isKind(Tok::Var)) bv = (sl ? "*" : "") + advance().text; skipBindTraits(); } // elsif EXPR -> $x is copy / -> *@x
+        if (matchOp("->")) arrowBindName(bv); // elsif EXPR -> $x is copy / -> *@x / -> \x
         auto b = parseBlock();
         s->branches.emplace_back(std::move(c), std::move(b));
         s->branchVars.push_back(bv);
@@ -6689,7 +6706,7 @@ StmtPtr Parser::parseIf(bool isUnless) {
         if (isIdent("if")) // C-style `else if` — Raku spells it elsif
             throw ParseError("Please use 'elsif' instead of 'else if'",
                              cur().line, "X::Syntax::Malformed::Elsif", {});
-        if (matchOp("->")) { bool sl = matchOp("*"); skipBindType(); if (isKind(Tok::Var)) s->elseVar = (sl ? "*" : "") + advance().text; skipBindTraits(); } // else -> $x is copy / -> *@x
+        if (matchOp("->")) arrowBindName(s->elseVar); // else -> $x is copy / -> *@x / -> \x
         s->elseBlock = parseBlock();
     }
     return s;
