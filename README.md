@@ -131,10 +131,10 @@ with no server. It powers an in-page [playground](rakujs/playground) and can be
 embedded in any static page to make Raku snippets runnable — handy for docs,
 tutorials, or a course. Details in [rakujs/README.md](rakujs/README.md).
 
-## Use Raku from Python, JavaScript, Go, Rust, C++
+## Use Raku from Python, JavaScript, Go, Rust, C++, Wolfram Language
 
 `librakupp` embeds the interpreter behind a small C ABI, and
-**[bindings/](bindings/README.md)** wraps it for five host languages. Each
+**[bindings/](bindings/README.md)** wraps it for six host languages. Each
 gives you the same two things in its own idiom: **run Raku** — evaluate
 source, call Raku routines with your own values, read results back as native
 types — and **parse with Raku grammars**, where the grammar stays a `.raku`

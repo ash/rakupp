@@ -8,7 +8,7 @@
 #
 #   expected/<example>.txt          one file: every host must print this,
 #                                   byte for byte. calc is like this — the
-#                                   whole point is that five languages agree.
+#                                   whole point is that six languages agree.
 #   expected/<example>.<host>.txt   per host: the example deliberately shows
 #                                   each language's own native data, so the
 #                                   outputs differ and each is pinned.
@@ -69,8 +69,12 @@ sub arch-skip($err) {
         || ($err.contains('symbol(s) not found for architecture') && $err.contains('_rk_'))
 }
 
-sub have($tool) {   # go spells it `go version`; a crashing toolchain = absent
-    my $p = try run $tool, ($tool eq 'go' ?? 'version' !! '--version'), :out, :err;
+sub have($tool) {   # go and wolframscript spell the flag their own way;
+                    # a crashing toolchain = absent
+    my $flag = $tool eq 'go'            ?? 'version'
+            !! $tool eq 'wolframscript' ?? '-version'
+            !! '--version';
+    my $p = try run $tool, $flag, :out, :err;
     so $p && $p.exitcode == 0
 }
 
@@ -103,6 +107,14 @@ my @hosts =
     %(  name => 'cpp', label => 'C++',
         run  => -> $ex { ['sh', '-c', cpp-command($ex)] },
         here => True ),
+
+    # wolframscript -version answers without a kernel, so `here` is true on an
+    # installed-but-unactivated Engine too — running an example then stops on
+    # the activation prompt, which is the right loud failure for that state.
+    %(  name => 'wolfram', label => 'Wolfram',
+        run  => -> $ex { ['sh', '-c',
+            "cd {$ROOT} && RAKUPP_LIB={$lib} wolframscript -file bindings/wolfram/examples/$ex.wls"] },
+        here => have('wolframscript') ),
 ;
 
 # C++ is the odd one: it compiles first, and links rather than dlopen'ing.

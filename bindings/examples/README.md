@@ -5,7 +5,7 @@ part they *share*: the Raku each one runs, and the output each one must
 produce. The programs themselves live with their language, in
 `bindings/<lang>/examples/`, because that is where each toolchain expects to
 find them — `cargo run --example` and `go run ./examples/…` require it, and
-the other three follow the same shape so all five read alike.
+the other four follow the same shape so all six read alike.
 
 | example | shows | the Raku it runs |
 |---|---|---|
@@ -24,6 +24,7 @@ first — it is the general story, and grammars are a specialisation of it.
 | Go | [../go/examples/](../go/examples/) | [../go/README.md](../go/README.md) |
 | Rust | [../rust/examples/](../rust/examples/) | [../rust/README.md](../rust/README.md) |
 | C++ | [../cpp/examples/](../cpp/examples/) | [../cpp/README.md](../cpp/README.md) |
+| Wolfram Language | [../wolfram/examples/](../wolfram/examples/) | [../wolfram/README.md](../wolfram/README.md) |
 
 ## Running them
 
@@ -52,8 +53,11 @@ RAKUPP_LIB_DIR=$PWD/build cargo run --manifest-path bindings/rust/Cargo.toml --e
 ```bash
 c++ -std=c++17 -Iinclude bindings/cpp/examples/<example>.cpp build/librakupp.dylib -Wl,-rpath,$PWD/build -o ex && ./ex
 ```
+```bash
+RAKUPP_LIB=$PWD/build/librakupp.dylib wolframscript -file bindings/wolfram/examples/<example>.wls
+```
 
-Or run all ten at once, and have the outputs checked for you:
+Or run all twelve at once, and have the outputs checked for you:
 
 ```bash
 build/rakupp tools/bindings-smoke.raku
@@ -61,7 +65,7 @@ build/rakupp tools/bindings-smoke.raku
 
 ## What they print
 
-`calc` prints the same seven lines in every language — five languages
+`calc` prints the same seven lines in every language — six languages
 agreeing byte for byte is the claim it exists to make:
 
 ```
@@ -80,7 +84,7 @@ deliberately is not — the line where each host dumps the whole match as its
 in Go, and so on).
 
 Every one of these outputs is recorded in [expected/](expected): `calc.txt`
-is shared by all five hosts, and `shopping.<host>.txt` pins each language's
+is shared by all six hosts, and `shopping.<host>.txt` pins each language's
 own. Those files are the expectation `tools/bindings-smoke.raku` checks;
 after an intended change, re-record with
 `build/rakupp tools/bindings-smoke.raku --record`.
@@ -91,11 +95,12 @@ The gate discovers examples from the `.raku` files in *this* directory, so
 nothing needs editing to add one:
 
 1. Write `<name>.raku` here.
-2. Write the five programs, one per language, each in its own
+2. Write the six programs, one per language, each in its own
    `bindings/<lang>/examples/`: `<name>.py`, `<name>.mjs`, `<name>.cpp`,
-   `<name>/main.go` (Go wants a directory per `main`), and `<name>.rs`.
-3. Run `build/rakupp tools/bindings-smoke.raku --record`. If all five hosts
+   `<name>/main.go` (Go wants a directory per `main`), `<name>.rs`, and
+   `<name>.wls`.
+3. Run `build/rakupp tools/bindings-smoke.raku --record`. If all six hosts
    agree it writes one `expected/<name>.txt`; if they differ it writes one
    file per host and says so.
 
-[../README.md](../README.md) compares all five languages side by side.
+[../README.md](../README.md) compares all six languages side by side.

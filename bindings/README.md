@@ -1,4 +1,4 @@
-# Raku from Python, JavaScript, Go, Rust, and C++
+# Raku from Python, JavaScript, Go, Rust, C++, and the Wolfram Language
 
 `librakupp` is the Raku++ interpreter as a shared library behind a small C
 ABI. Each binding here is a thin layer over it, so your program can do two
@@ -19,13 +19,14 @@ Nothing is re-implemented per language. The Raku is exactly what plain
 | Go | [go/README.md](go/README.md) | cgo | `rakulang` |
 | Rust | [rust/README.md](rust/README.md) | `extern` + `build.rs` | `rakulang` (crates.io) |
 | C++ | [cpp/README.md](cpp/README.md) | linked, header-only | `<rakupp/raku.hpp>` |
+| Wolfram Language | [wolfram/README.md](wolfram/README.md) | `ForeignFunctionLoad` (13.3+) | ``RakuLang` `` |
 
 Every guide has the same nine sections in the same order, so you can read one
 and skim the rest.
 
 ## 1. Build the library
 
-All five bindings load the same `librakupp`. From the repo root:
+All six bindings load the same `librakupp`. From the repo root:
 
 ```bash
 cmake -B build -DCMAKE_BUILD_TYPE=Release -DRAKUPP_BUILD_SHARED=ON
@@ -39,7 +40,7 @@ can use it**; that is the single most common first failure.
 
 ## 2. Run the examples
 
-Two examples, each written in all five languages. They are the fastest way to
+Two examples, each written in all six languages. They are the fastest way to
 confirm a binding works on your machine, and they are what the test gate runs.
 
 | example | what it shows | the Raku it runs |
@@ -47,7 +48,7 @@ confirm a binding works on your machine, and they are what the test gate runs.
 | **calc** | running Raku: eval source, call subs with host values, read results back, catch a die | [examples/calc.raku](examples/calc.raku) |
 | **shopping** | parsing: compile a grammar, walk a match lazily, read what Raku actions computed, diagnose a failure | [examples/shopping.raku](examples/shopping.raku) |
 
-Each example is in two halves. [examples/](examples/) holds what the five
+Each example is in two halves. [examples/](examples/) holds what the six
 languages share — the `.raku` they run and the output they must produce —
 and each language's own program lives in `<lang>/examples/`, where its
 toolchain expects it.
@@ -70,6 +71,9 @@ RAKUPP_LIB_DIR=$PWD/build cargo run --manifest-path bindings/rust/Cargo.toml --e
 ```bash
 c++ -std=c++17 -Iinclude bindings/cpp/examples/<example>.cpp build/librakupp.dylib -Wl,-rpath,$PWD/build -o ex && ./ex
 ```
+```bash
+RAKUPP_LIB=$PWD/build/librakupp.dylib wolframscript -file bindings/wolfram/examples/<example>.wls
+```
 
 `calc` prints exactly the same seven lines in every language — that is the
 point of it:
@@ -85,40 +89,40 @@ died: division by zero
 ```
 
 `shopping` deliberately differs in one line per language, where it prints the
-whole match as that language's own native data. All ten outputs are recorded
-in [examples/expected/](examples/expected).
+whole match as that language's own native data. All twelve outputs are
+recorded in [examples/expected/](examples/expected).
 
 ## 3. Running Raku — the API
 
 One interpreter, reached the way each language reaches a process-wide
 resource. Every binding spells the same two verbs:
 
-| | Python | JavaScript | Go | Rust | C++ |
-|---|---|---|---|---|---|
-| the interpreter | `rakulang.interpreter()` | `interpreter()` | (implicit) | (implicit) | (implicit) |
-| evaluate source | `.eval(src)` | `.eval(src)` | `rakulang.Eval(src)` | `rakulang::eval(src)` | `rakupp::eval(src)` |
-| call a routine | `.call("f", 1, 2)` | `.call("f", 1, 2)` | `rakulang.Call("f", 1, 2)` | `rakulang::call("f", &[1.into(), 2.into()])` | `rakupp::call("f", {1, 2})` |
-| is it there? | `.can("f")` | `.can("f")` | `rakulang.Can("f")` | `rakulang::can("f")` | `rakupp::can("f")` |
-| engine version | `.version` | `.version` | `rakulang.Version()` | `rakulang::version()` | `rakupp::version()` |
+| | Python | JavaScript | Go | Rust | C++ | Wolfram |
+|---|---|---|---|---|---|---|
+| the interpreter | `rakulang.interpreter()` | `interpreter()` | (implicit) | (implicit) | (implicit) | (implicit) |
+| evaluate source | `.eval(src)` | `.eval(src)` | `rakulang.Eval(src)` | `rakulang::eval(src)` | `rakupp::eval(src)` | `RakuEval[src]` |
+| call a routine | `.call("f", 1, 2)` | `.call("f", 1, 2)` | `rakulang.Call("f", 1, 2)` | `rakulang::call("f", &[1.into(), 2.into()])` | `rakupp::call("f", {1, 2})` | `RakuCall["f", 1, 2]` |
+| is it there? | `.can("f")` | `.can("f")` | `rakulang.Can("f")` | `rakulang::can("f")` | `rakupp::can("f")` | `RakuCan["f"]` |
+| engine version | `.version` | `.version` | `rakulang.Version()` | `rakulang::version()` | `rakupp::version()` | `RakuVersion[]` |
 
 **`eval` keeps state.** It runs in the interpreter's mainline scope and
 leaves it there, exactly as the REPL does — `eval("my $x = 41")` then
 `eval("$x + 1")` gives 42. That is why loading a file of subs is just an
-`eval` of its text, and `call` finds them afterwards. All five `calc`
+`eval` of its text, and `call` finds them afterwards. All six `calc`
 examples are built on that one fact.
 
 ## 4. Parsing with grammars — the API
 
-| | Python | JavaScript | Go | Rust | C++ |
-|---|---|---|---|---|---|
-| compile | `Grammar.from_file(p, name=, actions=)` | `Grammar.fromFile(p, {name, actions})` | `rakulang.FromFile(p, n, a)` | `Grammar::from_file(p, n, a)` | `Grammar::from_file(p, n, a)` |
-| parse | `.parse(text)` | `.parse(text)` | `.Parse(text)` | `.parse(text, "")` | `.parse(text)` |
-| no match is | `None` | `null` | `ErrNoMatch` | `Ok(None)` | `std::nullopt` |
-| diagnosed instead | `strict=True` | `{strict: true}` | `.ParseStrict` | `.parse_strict` | `.parse_or_throw` |
-| walk | `m["item"][0]["qty"]` | `m.get("item").at(0)` | `m.Get("item").At(0)` | `m.get("item").at(0)` | `m["item"][0]` |
-| leaf | `.str() .int() .num()` | `.str() .int() .num()` | `.Str() .Int() .Num()` | `.str()? .int()? .num()?` | `.str() .int_() .num()` |
-| what actions made | `.made` | `.made()` | `.Made()` | `.made()?` | `.made()` |
-| everything, eagerly | `.tree()` | `.tree()` | `.Tree()` | `.tree()?` | `.tree()` |
+| | Python | JavaScript | Go | Rust | C++ | Wolfram |
+|---|---|---|---|---|---|---|
+| compile | `Grammar.from_file(p, name=, actions=)` | `Grammar.fromFile(p, {name, actions})` | `rakulang.FromFile(p, n, a)` | `Grammar::from_file(p, n, a)` | `Grammar::from_file(p, n, a)` | `RakuGrammarFromFile[p, "Name" -> n, "Actions" -> a]` |
+| parse | `.parse(text)` | `.parse(text)` | `.Parse(text)` | `.parse(text, "")` | `.parse(text)` | `RakuParse[g, text]` |
+| no match is | `None` | `null` | `ErrNoMatch` | `Ok(None)` | `std::nullopt` | `None` |
+| diagnosed instead | `strict=True` | `{strict: true}` | `.ParseStrict` | `.parse_strict` | `.parse_or_throw` | `"Strict" -> True` |
+| walk | `m["item"][0]["qty"]` | `m.get("item").at(0)` | `m.Get("item").At(0)` | `m.get("item").at(0)` | `m["item"][0]` | `m["item"][1]["qty"]` (from 1) |
+| leaf | `.str() .int() .num()` | `.str() .int() .num()` | `.Str() .Int() .Num()` | `.str()? .int()? .num()?` | `.str() .int_() .num()` | `RakuStr RakuInt RakuNum` |
+| what actions made | `.made` | `.made()` | `.Made()` | `.made()?` | `.made()` | `RakuMade[m]` |
+| everything, eagerly | `.tree()` | `.tree()` | `.Tree()` | `.tree()?` | `.tree()` | `RakuTree[m]` |
 
 The grammar always stays a `.raku` file. `name` is the grammar's name inside
 it, and may be omitted only when the grammar declaration is the file's last
@@ -134,22 +138,23 @@ prefer the lazy walk when you want less than roughly half of a match.
 
 The same rules apply to arguments you send and results you get back.
 
-| Raku | Python | JavaScript | Go | Rust | C++ |
-|---|---|---|---|---|---|
-| `Int` | `int` | `number` | `int64` | `Tree::Int(i64)` | `Tree` / `int_()` |
-| `Num`, `Rat` | `float` | `number` | `float64` | `Tree::Num(f64)` | `Tree` / `num()` |
-| `Str` | `str` | `string` | `string` | `Tree::Str` | `Tree` / `str()` |
-| `List`, `Array` | `list` | `Array` | `[]interface{}` | `Tree::List` | `Tree` / `list()` |
-| `Hash` | `dict` | `Object` | `map[string]interface{}` | `Tree::Map` | `Tree` / `map()` |
-| `True` / `False` | `bool` | `boolean` | `bool` | `Tree::Bool` | `Tree` / `boolean()` |
-| `Any` | `None` | `null` | `nil` | `Tree::Null` | `Tree::is_null()` |
+| Raku | Python | JavaScript | Go | Rust | C++ | Wolfram |
+|---|---|---|---|---|---|---|
+| `Int` | `int` | `number` | `int64` | `Tree::Int(i64)` | `Tree` / `int_()` | `Integer` |
+| `Num`, `Rat` | `float` | `number` | `float64` | `Tree::Num(f64)` | `Tree` / `num()` | `Real` |
+| `Str` | `str` | `string` | `string` | `Tree::Str` | `Tree` / `str()` | `String` |
+| `List`, `Array` | `list` | `Array` | `[]interface{}` | `Tree::List` | `Tree` / `list()` | `List` |
+| `Hash` | `dict` | `Object` | `map[string]interface{}` | `Tree::Map` | `Tree` / `map()` | `Association` |
+| `True` / `False` | `bool` | `boolean` | `bool` | `Tree::Bool` | `Tree` / `boolean()` | `True` / `False` |
+| `Any` | `None` | `null` | `nil` | `Tree::Null` | `Tree::is_null()` | `Null` |
 
 Three things are worth knowing before they surprise you:
 
 - **A `Rat` arrives as a float.** `1/3` crosses as `0.333…`. When the exact
   text matters, format it on the Raku side — `calc.raku` does exactly that
-  for its `mean`, because a Rat printed by five languages is five different
-  strings.
+  for its `mean`, because a Rat printed by six languages is six different
+  strings. (The Wolfram binding *sends* a `Rational` exactly, as a Rat — the
+  one host with the type — but a Rat still arrives back as a `Real`.)
 - **An integer wider than 64 bits arrives as a string of digits.** That is
   the honest conversion; `30!` in the `calc` example is the demonstration.
 - **In a `tree()`, a match node with no sub-captures becomes its matched
@@ -162,11 +167,11 @@ A Raku `die` crosses as the host's own error type, carrying the message. A
 diagnosed non-match adds the position and the deepest rule the engine
 reached.
 
-| | Python | JavaScript | Go | Rust | C++ |
-|---|---|---|---|---|---|
-| a die | `RakuError` | `RakuError` | `*RakuError` | `Error::Raku` | `rakupp::RakuError` |
-| a diagnosed non-match | `ParseError` | `ParseError` | `*ParseError` | `Error::Parse` | `rakupp::ParseError` |
-| fields on it | `.line .column .rule .pos` | `.line .column .rule .pos` | `.Line .Col .Rule .Pos` | `{line, col, rule, pos}` | `.line .col .rule .pos` |
+| | Python | JavaScript | Go | Rust | C++ | Wolfram |
+|---|---|---|---|---|---|---|
+| a die | `RakuError` | `RakuError` | `*RakuError` | `Error::Raku` | `rakupp::RakuError` | `Failure["RakuError", …]` |
+| a diagnosed non-match | `ParseError` | `ParseError` | `*ParseError` | `Error::Parse` | `rakupp::ParseError` | `Failure["RakuParseError", …]` |
+| fields on it | `.line .column .rule .pos` | `.line .column .rule .pos` | `.Line .Col .Rule .Pos` | `{line, col, rule, pos}` | `.line .col .rule .pos` | `"Line" "Column" "Rule" "Position"` |
 
 Calling a routine with the **wrong number of arguments** is one of these
 errors, not a silent wrong answer: `call("area", 3)` against
@@ -191,6 +196,7 @@ answer is different:
 | Go | calling `Close()`, usually with `defer` |
 | Rust | nothing; `Drop` does it, and a `Node` borrows its `Match` |
 | C++ | nothing; the destructor does it |
+| Wolfram | calling `RakuClose[m]` — no GC hook to lean on |
 
 Values from `eval` and `call` need none of this — they are converted to
 native data before they reach you.
@@ -239,18 +245,19 @@ bindings/
   go/      README.md  rakulang.go                                      examples/{calc,shopping}/main.go
   rust/    README.md  src/lib.rs, build.rs                             examples/{calc,shopping}.rs
   cpp/     README.md  (no source — the headers ship with the engine)   examples/{calc,shopping}.cpp
+  wolfram/ README.md  RakuLang.wl                                      examples/{calc,shopping}.wls
 ```
 
 Go wants a directory per `main`, and Rust and Go both require `examples/` at
 exactly that path for `go run ./examples/…` and `cargo run --example`; the
-other three follow the same shape so all five read alike.
+other four follow the same shape so all six read alike.
 
 The C++ binding has no source of its own here: it is two headers that install
 with the engine, [include/rakupp/raku.hpp](../include/rakupp/raku.hpp) and
 [include/rakupp/grammar.hpp](../include/rakupp/grammar.hpp). See
 [include/README.md](../include/README.md) for the public/internal split.
 
-Underneath all five sits the C ABI itself,
+Underneath all six sits the C ABI itself,
 [include/rakupp/rakupp.h](../include/rakupp/rakupp.h) — documented in
 [docs/guide/EMBEDDING.md](../docs/guide/EMBEDDING.md) for hosts with no
 binding here.
@@ -278,18 +285,23 @@ skips rather than failing.
 **`rk_new refused: an interpreter is already live in this process`.** You
 created a second interpreter. There is one per process; use the shared one.
 
+**`wolframscript` stops at an activation prompt.** A fresh Wolfram Engine
+wants its one-time free-license activation: run `wolframscript` once
+interactively, sign in, then run the example again.
+
 **A grammar compiles but never matches.** The parse anchors to the *whole*
 input. Pass a rule name to parse a fragment with one rule instead.
 
 ## Design notes
 
-One design, five hosts
+One design, six hosts
 ([docs/dev/plans/GRAMMAR-PLAN.md](../docs/dev/plans/GRAMMAR-PLAN.md)): the
 grammar stays a `.raku` file, the Raku shim ships inside `librakupp`
 (`rk_grammar_shim`), and every binding is invocation, results and lifetime in
 its host's idiom. The package name is `rakulang` in every registry — the Raku
 community's disambiguated spelling, since `raku` is taken by unrelated
-packages. Python is the reference binding; its README carries the measured
+packages. (The Wolfram Language names contexts, not registry entries, so its
+package is the context ``RakuLang` ``.) Python is the reference binding; its README carries the measured
 overhead table. The Python platform wheel (librakupp bundled, works with no
 rakupp installed) is built by `tools/build-wheel.sh` on every release.
 Publishing to the registries is a separate, manual decision.
