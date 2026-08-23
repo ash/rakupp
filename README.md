@@ -1,7 +1,8 @@
 # Raku++
 
 A from-scratch implementation of the [Raku](https://raku.org) programming
-language in **C++17, with no third-party dependencies** — a hand-written lexer,
+language in **C++17, with no third-party dependencies** — a hand-written lexer
+(as opposed to "emitted by a parser generator"),
 parser, and tree-walking evaluator that runs real Raku (classes, roles, grammars,
 regexes, multi-dispatch, junctions, lazy sequences, a bignum tower,
 Unicode-correct strings, and concurrency), can also **compile** a program to a
