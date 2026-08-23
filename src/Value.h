@@ -262,6 +262,8 @@ struct Callable {
     BuiltinFn builtin;                             // set => builtin
     std::vector<std::string> placeholders;         // $^a auto-params (sorted)
     std::vector<Value> candidates;                 // multi-dispatch candidates
+    std::shared_ptr<Callable> dispatcherC;         // the proto a candidate belongs to (set where a
+                                                   // dispatch group is synthesized; .dispatcher reads it)
     bool isMultiDispatcher = false;
     bool isMultiCandidate = false;                  // declared `multi` — dispatch may pass it over
     bool isProto = false;                           // `proto` — a dispatch group header, not a candidate

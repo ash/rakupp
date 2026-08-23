@@ -2137,7 +2137,21 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
         if (looksType) {
             type = advance().text;
             if (isOp(":") && peek().kind == Tok::Ident) { advance(); advance(); } // :D / :U / :_ smiley
-            if (isKind(Tok::LBracket)) { int d = 0; do { if (isKind(Tok::LBracket)) d++; else if (isKind(Tok::RBracket)) d--; advance(); } while (d > 0 && !isKind(Tok::End)); }
+            if (isKind(Tok::LBracket)) {
+                // the [T] parameter group is part of the TYPE: `my CArray[uint8]
+                // $hash .= new` must build a uint8 array, and dropping the group
+                // left an element-typeless CArray whose every stride was 8 —
+                // Digest::SHA256::Native read its digest back as int64 garbage
+                int d = 0;
+                std::string ptxt;
+                do {
+                    if (isKind(Tok::LBracket)) d++;
+                    else if (isKind(Tok::RBracket)) d--;
+                    ptxt += cur().text;
+                    advance();
+                } while (d > 0 && !isKind(Tok::End));
+                type += ptxt;
+            }
             // `my Array of Int @box` — of-chained element type before the variable
             while (isIdent("of") && peek().kind == Tok::Ident) { advance(); type = advance().text; }
             // coercion type `Int(Str)`: assigned values are coerced to `type`
@@ -2204,10 +2218,16 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
                  (peek().kind == Tok::Op && peek().text == ":" && peek(2).kind == Tok::Ident &&
                   peek(3).kind == Tok::Var))) {
                 t2 = advance().text;
-                if (isKind(Tok::LBracket)) { // skip the [T] parameter group
+                if (isKind(Tok::LBracket)) { // the [T] parameter group rides with the type
                     int d = 0;
-                    do { if (isKind(Tok::LBracket)) d++; else if (isKind(Tok::RBracket)) d--; advance(); }
-                    while (d > 0 && !isKind(Tok::End));
+                    std::string ptxt;
+                    do {
+                        if (isKind(Tok::LBracket)) d++;
+                        else if (isKind(Tok::RBracket)) d--;
+                        ptxt += cur().text;
+                        advance();
+                    } while (d > 0 && !isKind(Tok::End));
+                    t2 += ptxt;
                 }
                 if (isOp(":") && peek().kind == Tok::Ident) { advance(); advance(); } // :D/:U smiley
             }
@@ -5371,7 +5391,12 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
                 bool coercion = !cur().spaceBefore &&
                                 ((peek().kind == Tok::Ident && peek(2).kind == Tok::RParen) ||
                                  peek().kind == Tok::RParen); // `Foo()` — coerce from Any
-                if (coercion) { p.coerce = true; advance(); if (isKind(Tok::Ident)) advance(); advance(); } // skip (Type)/(); bind coerces to p.type
+                if (coercion) {
+                    p.coerce = true;
+                    advance(); // (
+                    if (isKind(Tok::Ident)) p.coerceFrom = advance().text; // the from-type; "" for `Foo()`
+                    advance(); // )
+                }
                 else {
                     advance(); // (
                     p.subSig = std::make_shared<std::vector<Param>>(parseSignature(Tok::RParen));

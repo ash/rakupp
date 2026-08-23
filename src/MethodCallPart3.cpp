@@ -2764,7 +2764,10 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         return Value::str(markFold(inv.toStr()));
     if (m == "trans") { // $s.trans(@from => @to) / .trans('abc' => 'xyz') / .trans('a..c' => 'A..C')
         std::string s = inv.toStr();
-        // a string arg is taken char-by-char, but `X..Y` denotes an inclusive codepoint range
+        // a string arg is taken char-by-char, but `X..Y` denotes an inclusive
+        // codepoint range — and "\r\n" is ONE character (a single grapheme in
+        // Raku), which is what lets `"\n" => "\r\n"` mean "newline becomes
+        // CRLF" instead of "newline becomes CR"
         auto expandTrans = [](const std::string& str) -> std::vector<std::string> {
             std::vector<std::string> out;
             auto cps = utf8cp(str);
@@ -2774,6 +2777,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                     if (lo <= hi) for (uint32_t c = lo; c <= hi; c++) out.push_back(cpToUtf8(c));
                     else for (uint32_t c = lo; ; c--) { out.push_back(cpToUtf8(c)); if (c == hi) break; }
                     i += 4;
+                } else if (cps[i] == (uint32_t)'\r' && i + 1 < cps.size() && cps[i + 1] == (uint32_t)'\n') {
+                    out.push_back("\r\n"); i += 2;
                 } else { out.push_back(cpToUtf8(cps[i])); i++; }
             }
             return out;
@@ -2785,6 +2790,21 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         bool squash = false, complement = false, del = false;
         std::string compTo; // what :complement replaces an unnamed character with
         std::vector<std::pair<std::string, std::string>> maps;
+        // Collect the mapping pairs — from the arguments directly and from any
+        // argument ARRAY's elements (`.trans: ["\n" => "\r\n"]` is how
+        // LWP::Simple's test servers build their responses, and the array was
+        // skipped entirely). Rakudo has TWO shapes here, and the split is by
+        // HOW the pair arrived (read from its Str.trans, pinned by oracle):
+        //   - one Str=>Str pair passed DIRECTLY: char-by-char, the value's
+        //     chars CYCLE — "abcd"=>"xy" is x y x y;
+        //   - everything else (an array of pairs, several pairs, list sides):
+        //     every pair's keys and values are flattened into ONE flat
+        //     needle list and ONE flat pin list, a short value side padded
+        //     with its last element first ("abcd"=>"xy" is x y y y) — and a
+        //     LONG value side spills into the next pair's pins, which is
+        //     faithful to Rakudo even where it surprises.
+        std::vector<const Value*> mpairs;
+        bool anyArray = false;
         for (auto& a : args) {
             if (a.t == VT::Pair && (!a.pairVal() || a.pairVal()->t == VT::Bool)) {
                 bool on = !a.pairVal() || a.pairVal()->truthy();
@@ -2792,21 +2812,54 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 if (a.s == "c" || a.s == "complement")      { complement = on; continue; }
                 if (a.s == "d" || a.s == "delete")          { del = on; continue; }
             }
-            if (a.t != VT::Pair) continue;
-            std::vector<std::string> froms, tos;
+            if (a.t == VT::Pair) { mpairs.push_back(&a); continue; }
+            if (a.t == VT::Array && a.arr()) {
+                anyArray = true;
+                for (auto& el : *a.arr())
+                    if (el.t == VT::Pair) mpairs.push_back(&el);
+            }
+        }
+        auto sideList = [&](const Value* side, const std::string& strForm,
+                            std::vector<std::string>& out) -> bool {
             // an Array side may hold Range ELEMENTS (['a'..'c']); flatten()
             // descends into them, and a bare Range side flattens to its chars
-            if (a.pairKey() && (a.pairKey()->t == VT::Array || a.pairKey()->t == VT::Range))
-                for (auto& x : a.pairKey()->flatten()) froms.push_back(x.toStr());
-            else froms = expandTrans(a.s); // string key: char-by-char, with `..` ranges
-            if (a.pairVal() && (a.pairVal()->t == VT::Array || a.pairVal()->t == VT::Range))
-                for (auto& x : a.pairVal()->flatten()) tos.push_back(x.toStr());
-            else if (a.pairVal()) tos = expandTrans(a.pairVal()->toStr());
-            // a SHORTER replacement side CYCLES: `.trans("abcd" => "xy")` is xyxy
+            if (side && (side->t == VT::Array || side->t == VT::Range)) {
+                for (auto& x : side->flatten()) out.push_back(x.toStr());
+                return true;
+            }
+            out = expandTrans(strForm); // string: char-by-char, `..` ranges, CRLF one unit
+            return false;
+        };
+        bool lone = !anyArray && mpairs.size() == 1;
+        if (lone) {
+            std::vector<std::string> froms, tos;
+            bool listK = sideList(mpairs[0]->pairKey().get(), mpairs[0]->s.str(), froms);
+            bool listV = sideList(mpairs[0]->pairVal(),
+                                  mpairs[0]->pairVal() ? mpairs[0]->pairVal()->toStr() : "", tos);
+            (void)listK; (void)listV;
+            // the direct-pair shape: replacement CYCLES
             for (size_t i = 0; i < froms.size(); i++)
                 maps.push_back({froms[i], tos.empty() ? std::string() : tos[i % tos.size()]});
-            // remembered unconditionally: `:complement` may be given AFTER the mapping
-            if (!tos.empty()) compTo = tos.back(); // :c replaces with the LAST replacement
+            if (!tos.empty()) compTo = tos.back();
+        }
+        else {
+            std::vector<std::string> needles, pins;
+            for (const Value* pa : mpairs) {
+                std::vector<std::string> froms, tos;
+                sideList(pa->pairKey().get(), pa->s.str(), froms);
+                sideList(pa->pairVal(), pa->pairVal() ? pa->pairVal()->toStr() : "", tos);
+                // pad a SHORT value side with its last element (or nothing at
+                // all under :delete / for an empty side); a long one spills
+                if (tos.size() < froms.size()) {
+                    std::string pad = (del || tos.empty()) ? std::string() : tos.back();
+                    while (tos.size() < froms.size()) tos.push_back(pad);
+                }
+                needles.insert(needles.end(), froms.begin(), froms.end());
+                pins.insert(pins.end(), tos.begin(), tos.end());
+                if (!tos.empty()) compTo = tos.back();
+            }
+            for (size_t i = 0; i < needles.size(); i++)
+                maps.push_back({needles[i], i < pins.size() ? pins[i] : std::string()});
         }
         std::string out;
         const std::string* lastTo = nullptr; // for :squash — what the previous position emitted

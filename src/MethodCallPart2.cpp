@@ -2074,14 +2074,18 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 }
                 return out;
             }
-            if (m == "methods" || m == "method_names") {
+            if (m == "methods" || m == "method_names" || m == "method_table") {
                 // `:local` → only this class's own methods; otherwise walk the user
                 // inheritance chain (parents + roles), stopping before Any/Mu.
                 // .^method_names is the method TABLE's names, so it is local by
                 // definition — `class B is A` answers B's own methods only, and
                 // an inherited `foo` is not among them (Rakudo agrees).
+                // .^method_table is that same local table AS the Hash it is —
+                // name => Method (DBIish gates its API on `{$_}:exists` over it).
                 bool names = (m == "method_names");
-                bool local = names;
+                bool table = (m == "method_table");
+                bool local = names || table;
+                std::vector<std::string> tblNames;
                 for (auto& a : args) if (a.t == VT::Pair && a.s == "local")
                     local = a.pairVal() ? a.pairVal()->truthy() : true;
                 Value out = Value::array(); out.isList = true;
@@ -2094,6 +2098,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         if (!kv.first.empty() && kv.first[0] == '!') continue;
                         if (local && !seen.insert(kv.first).second) continue;
                         out.arr()->push_back(names ? Value::str(kv.first) : kv.second);
+                        if (table) tblNames.push_back(kv.first);
                     }
                     // a PUBLIC attribute's auto-generated accessor is a method too
                     // (Rakudo lists it; Data::Dump renders `method public () …`)
@@ -2111,6 +2116,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                             return I.methodCall(a[0], an, std::move(rest));
                         };
                         out.arr()->push_back(stub);
+                        if (table) tblNames.push_back(at.name);
                     }
                     if (local) {
                         // a composed role's methods are FLATTENED into the class, so they
@@ -2125,6 +2131,12 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     for (auto& p : c->extraParents) walk(p.get());
                 };
                 walk(ci.get());
+                if (table) {
+                    Value h = Value::makeHash();
+                    for (size_t i = 0; i < tblNames.size() && i < out.arr()->size(); i++)
+                        (*h.hash())[tblNames[i]] = (*out.arr())[i];
+                    return h;
+                }
                 return out;
             }
             if (m == "roles" || m == "role_typecheck_list") { // composed roles
@@ -2821,6 +2833,17 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             else out.arr()->push_back(inv);
             return out;
         }
+        // &candidate.dispatcher — the proto its dispatch group hangs off.
+        // Carried by synthesized groups (&trait_mod:<is>); a dispatcher
+        // answers itself, and a plain sub answers Mu, as in Rakudo.
+        if (m == "dispatcher") {
+            if (inv.code()->dispatcherC) {
+                Value d; d.t = VT::Code; d.setCode(inv.code()->dispatcherC);
+                return d;
+            }
+            if (inv.code()->isMultiDispatcher) return inv;
+            return Value::typeObj("Mu");
+        }
         // &routine.wrap(&wrapper): push a wrapper in front of the routine. Because
         // the Callable is shared (shared_ptr), every reference — including calls
         // through the routine's name — sees the wrap. Returns a handle for .unwrap.
@@ -2929,6 +2952,54 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             Value r = Value::str(std::string(buf.data(), got)); // got==0 => "" (peer closed)
             if (bin) { r.hashKind = "Buf"; identify(r); }
             return r;
+        }
+        // `.get` — one line, buffered: bytes are pulled as they arrive, and the
+        // carry-over between calls lives in the handle ("linebuf"). A socket's
+        // nl-in is ["\n", "\r\n"], so the terminator is '\n' with an optional
+        // '\r' before it, both consumed and neither returned; Nil at EOF with
+        // nothing buffered. LWP::Simple's local test servers read the request
+        // this way — `Nil while $client.get.chars` — and without a socket .get
+        // the call fell through to the FILE handle's reader and blocked both
+        // ends of the conversation. (A later .recv does not see linebuf: the
+        // suites read lines on one side of a socket and bytes on the other,
+        // never both on one side.)
+        if (m == "get" || m == "lines") {
+            Value& lbv = (*inv.hash())["linebuf"];
+            if (lbv.t != VT::Str) lbv = Value::str("");
+            auto getOne = [&](bool& eof) -> Value {
+                for (;;) {
+                    std::string& lb = lbv.s.mut();
+                    size_t nl = lb.find('\n');
+                    if (nl != std::string::npos) {
+                        std::string line = lb.substr(0, nl);
+                        lb.erase(0, nl + 1);
+                        if (!line.empty() && line.back() == '\r') line.pop_back();
+                        return Value::str(line);
+                    }
+                    char buf[8192];
+                    bool p = gilPark();
+                    ssize_t n = ::recv(fd, buf, sizeof buf, 0);
+                    gilUnpark(p);
+                    if (n <= 0) {
+                        eof = true;
+                        if (lb.empty()) return Value::nil();
+                        std::string line = std::move(lb);
+                        lb.clear();
+                        if (!line.empty() && line.back() == '\r') line.pop_back();
+                        return Value::str(line);
+                    }
+                    lb.append(buf, (size_t)n);
+                }
+            };
+            bool eof = false;
+            if (m == "get") return getOne(eof);
+            Value out = Value::array(); out.isList = true;
+            while (!eof) {
+                Value l = getOne(eof);
+                if (l.t == VT::Nil) break;
+                out.arr()->push_back(l);
+            }
+            return out;
         }
         if (m == "print" || m == "write" || m == "send" || m == "put") {
             std::string data = args.empty() ? "" : args[0].toStr(); // Blob is a byte-Str
@@ -3200,7 +3271,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             }
             if ((m == "can" || m == "^can") && !args.empty()) {
                 static const std::set<std::string> howCan = {
-                    "attributes", "methods", "method_names", "name", "archetypes", "add_method",
+                    "attributes", "methods", "method_names", "method_table", "name", "archetypes", "add_method",
                     "add_attribute", "compose", "roles", "parents", "mro"};
                 return Value::boolean(howCan.count(args[0].toStr()) > 0);
             }

@@ -8445,8 +8445,12 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
             // its .Type method — which FAILS where the method does (Int on <1/0>)
             if (p.coerce && !p.type.empty() && v.typeName() != p.type)
                 v = coerceToType(v, p.type);
-            else if (p.sigil == '$' && !p.invocant &&
-                     (!p.type.empty() || isMuTypeObject(v)))
+            // Sigilless `\x` type-checks exactly like `$x` — `f(Int \x)` must
+            // refuse a Str, and an untyped one is Any-constrained (refuses Mu).
+            // The OTHER '\\' params are the slurpies — `|c` and `+xs` — which
+            // bind anything, Mu included, so they stay outside the gate.
+            else if ((p.sigil == '$' || (p.sigil == '\\' && !p.slurpy)) &&
+                     !p.invocant && (!p.type.empty() || isMuTypeObject(v)))
                 typeCheckBind(p, v, blockParams); // a lone typed candidate REJECTS a mismatch (like Rakudo)
             // a plain scalar param (no `is rw`/`is copy`) is readonly — mutating it (s///) dies
             // …and `is raw` too: it hands over the container itself, so a write
@@ -8741,7 +8745,14 @@ static bool typeMatchesArg(const Value& arg, const std::string& type) {
             if (arg.hashKind == "IO") return type == "Cool";
             if (arg.hashKind == "Version" || arg.hashKind == "IO::Special") return false;
             return type == "Str" || type == "Cool" || type == "Stringy" || type == "str";
-        case VT::Array: return type == "Array" || type == "List" || type == "Positional" || type == "Iterable" || (arg.isList && arg.s == "Seq" && type == "Seq");
+        case VT::Array:
+            // The Uni family: NFC/NFD/NFKC/NFKD are Uni SUBCLASSES, so each
+            // form binds a `Uni` parameter as well as its own name (JSON::Fast
+            // hands nqp::strtocodes output to `Uni:D \codes`).
+            if ((type == "Uni" || type == arg.s) &&
+                (arg.s == "Uni" || arg.s == "NFC" || arg.s == "NFD" ||
+                 arg.s == "NFKC" || arg.s == "NFKD")) return true;
+            return type == "Array" || type == "List" || type == "Positional" || type == "Iterable" || (arg.isList && arg.s == "Seq" && type == "Seq");
         case VT::Hash:
             if (arg.hashKind == "FileHandle" && (type == "IO::Handle" || type == "IO" || type == "Handle")) return true;
             // A synchronous socket IS an IO::Socket — that is the type every
@@ -9073,7 +9084,18 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args) {
             if (p->type == "Any" && !junc &&
                 !(pos[i].t == VT::Type && pos[i].s == "Mu")) score++;
         }
-        if (!p->type.empty() && p->type != "Any" && p->type != "Mu" && !p->coerce) {
+        // A COERCION parameter ranks by its FROM type — `IO::Path(Str)` sits
+        // where a `Str` param would (so with its where satisfied it outranks
+        // the plain `Str $src` candidate: XML's open-xml), while `IO()`
+        // coerces from Any and sits where an untyped param would (so a %/@
+        // sigil candidate still beats it: the modinfo cluster's Reader).
+        if (p->coerce) {
+            if (!p->coerceFrom.empty() && p->coerceFrom != "Any" && p->coerceFrom != "Mu") {
+                score += 8;
+                if (p->coerceFrom == pos[i].typeName()) score += 2;
+            }
+        }
+        else if (!p->type.empty() && p->type != "Any" && p->type != "Mu") {
             score += 8;                                // a NOMINAL type outranks a bare @/% sigil
                                                        // constraint (blob8 $x beats @lanes for a
                                                        // Buf — Digest::SHA3 dispatches on exactly
@@ -11010,6 +11032,12 @@ Value Interpreter::cglobal(const std::string& lib, const std::string& sym, const
     if (type == "Pointer" || type.rfind("Pointer[", 0) == 0) {
         void* p = *(void**)addr; // the global holds a pointer
         return ncMakePointer(type, p);
+    }
+    if (type == "Str") {
+        // a `char *` global: the variable holds a pointer, the string lives
+        // behind it (gsl_version is read exactly this way)
+        const char* p = *(const char**)addr;
+        return p ? Value::str(std::string(p)) : Value::typeObj("Str");
     }
     return ncReadElem((long long)(intptr_t)addr, type, 0);
 }
@@ -23385,6 +23413,55 @@ Value Interpreter::eval(Expr* e) {
             // &prefix:<->) and named builtins (&say) → a Callable that applies them.
             if (ve->name.size() > 1 && ve->name[0] == '&') {
                 std::string bare = ve->name.substr(1);
+                // &trait_mod:<is> — the trait dispatcher as an INSPECTABLE
+                // Routine. The traits themselves are engine built-ins applied
+                // at declaration; what ecosystem code wants from this NAME is
+                // introspection: NativeLibs' EXPORT fishes the `is native`
+                // candidate out of .candidates by signature and re-exports
+                // its .dispatcher. So the candidates carry honest signatures
+                // and bodies that apply nothing (the engine already did).
+                // Static on purpose — the proto→candidate→dispatcher cycle
+                // lives for the process, like the real dispatch group would.
+                if (bare == "trait_mod:<is>") {
+                    static Value proto = [] {
+                        static std::deque<std::vector<Param>> sigStore;
+                        auto cand = [](const char* ptype, const char* pname, const char* named) {
+                            Value c; c.t = VT::Code; c.setCode(std::make_shared<Callable>());
+                            c.code()->name = "trait_mod:<is>";
+                            c.code()->isMultiCandidate = true;
+                            sigStore.emplace_back();
+                            auto& ps = sigStore.back();
+                            ps.emplace_back(); ps.back().name = pname; ps.back().type = ptype;
+                            ps.emplace_back(); ps.back().name = std::string("$") + named;
+                            ps.back().named = true; ps.back().required = true;
+                            c.code()->params = &ps;
+                            c.code()->builtin = [](Interpreter&, ValueList& a) -> Value {
+                                return a.empty() ? Value::any() : a[0];
+                            };
+                            return c;
+                        };
+                        Value p; p.t = VT::Code; p.setCode(std::make_shared<Callable>());
+                        p.code()->name = "trait_mod:<is>";
+                        p.code()->isMultiDispatcher = true; p.code()->isProto = true;
+                        p.code()->builtin = [](Interpreter&, ValueList& a) -> Value {
+                            return a.empty() ? Value::any() : a[0];
+                        };
+                        for (Value c : { cand("Routine",   "$r",     "native"),
+                                         cand("Routine",   "$r",     "export"),
+                                         cand("Mu",        "$type",  "export"),
+                                         cand("Routine",   "$r",     "rw"),
+                                         cand("Parameter", "$param", "rw"),
+                                         cand("Variable",  "$v",     "default"),
+                                         cand("Routine",   "$r",     "pure"),
+                                         cand("Routine",   "$r",     "DEPRECATED"),
+                                         cand("Attribute", "$attr",  "required") }) {
+                            c.code()->dispatcherC = p.codeS();
+                            p.code()->candidates.push_back(std::move(c));
+                        }
+                        return p;
+                    }();
+                    return proto;
+                }
                 if (bare.rfind("infix:<", 0) == 0 && bare.back() == '>') {
                     std::string op = bare.substr(7, bare.size() - 8);
                     if (op.size() > 2 && op.front() == '<' && op.back() == '>' && !angleShapedOp(op))
@@ -23726,6 +23803,11 @@ Value Interpreter::eval(Expr* e) {
                         "where", // trailing where-clause forms (S06 return.t)
                     };
                     if (parseGapWords.count(n)) return Value::typeObj(rn);
+                    // `use NativeCall` is a pragma here (the FFI is native to
+                    // the compiler), so nothing ever declares the PACKAGE —
+                    // but the name is still a term: NativeLibs re-exports it
+                    // ('NativeCall' => NativeCall) and suites probe it.
+                    if (n == "NativeCall") return Value::typeObj("NativeCall");
                     // The lenient stub exists for FORWARD REFERENCES: a name the
                     // unit declares further down. A name this unit never declares
                     // is refused — Rakudo refuses it at compile time, and the

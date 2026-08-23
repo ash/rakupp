@@ -2720,18 +2720,54 @@ static void jfEscape(const std::string& s, std::string& out) {
 
 static void jfEncode(const Value& v, bool pretty, int spacing, bool sortedKeys,
                      bool enumsAsValue, int level, std::string& out) {
+    // jsonify is one big `with obj` — anything undefined lands in its else and
+    // renders "null". rtIsDefined is the one rule for that, and it knows what
+    // the switch below cannot see: an enum TYPE object materializes as a
+    // tagged pair-ARRAY here, not as VT::Type (to-json(Squee) is null, not
+    // the member list). Mu is the exception the module itself makes: its
+    // to-json takes Any, so to-json(Mu) dies in the BINDER — fall back and
+    // let it (the fast-path regression file pins exactly that).
+    if (!rtIsDefined(v)) {
+        if (v.t == VT::Type && v.s == "Mu") throw JsonFastUnsupported{};
+        out += "null";
+        return;
+    }
     // the ladder is jsonify's, in jsonify's order
     if (!v.enumName.empty()) {           // enum value: its KEY, or with
         if (!enumsAsValue) {             // :enums-as-value its underlying value
             out += '"'; jfEscape(v.enumName, out); out += '"';
             return;
         }
-        Value plain = v; plain.enumName = "";
-        jfEncode(plain, pretty, spacing, sortedKeys, enumsAsValue, level, out);
-        return;
+        // :enums-as-value wants .value, and this Value carries only the
+        // ordinal — a string-valued enum (Blerp (One => "Eins")) would come
+        // out as its position. The module reads the real .value; let it.
+        throw JsonFastUnsupported{};
+    }
+    // an allomorph prints its NUMERIC half — jsonify re-dispatches IntStr /
+    // RatStr / NumStr through .Int/.Rat/.Num before formatting, so the Str
+    // face must not leak into the number: RatStr.new(0.0, '') is "0.0", not
+    // "" plus the ".0" suffix (the module's own roundtrip suite feeds exactly
+    // that). Any OTHER kinded numeric (Duration bridges to Num, say) is the
+    // module's business.
+    if ((v.t == VT::Int || v.t == VT::Rat || v.t == VT::Num) && !v.hashKind.empty()) {
+        if (v.hashKind == "IntStr" || v.hashKind == "RatStr" || v.hashKind == "NumStr") {
+            Value plain = v;
+            plain.hashKind.clear();
+            plain.s.clear();
+            jfEncode(plain, pretty, spacing, sortedKeys, enumsAsValue, level, out);
+            return;
+        }
+        throw JsonFastUnsupported{};
     }
     switch (v.t) {
-        case VT::Nil: case VT::Any: case VT::Type: out += "null"; return;
+        case VT::Nil: case VT::Any: out += "null"; return;
+        case VT::Type:
+            // jsonify's parameter is Any-constrained at EVERY level, so the one
+            // type object it does not render as null is Mu itself — that call
+            // dies in the module's own binder, and the module owns that error.
+            if (v.s == "Mu") throw JsonFastUnsupported{};
+            out += "null";
+            return;
         case VT::Bool: out += v.b ? "true" : "false"; return;
         case VT::Int:
             out += v.big() ? v.big()->toString() : std::to_string(v.i);
@@ -4418,6 +4454,22 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         const std::string& et = inv.enumName;
         int esz = Interpreter::ncElemSize(et);
         return Value::integer((long long)(inv.s.size() / esz));
+    }
+    // A locally-built CArray lists its ELEMENTS, decoded by its type — the
+    // logical size Rakudo tracks is our byte length over the element width.
+    // Digest::SHA256::Native pre-sizes one with `$hash[127] = 0`, lets the C
+    // side fill the bytes, and reads the digest back with `.list».chr`;
+    // falling through to the generic Str path answered ONE element (itself).
+    if (inv.t == VT::Str && inv.hashKind == "CArray" &&
+        (m == "list" || m == "values" || m == "List" || m == "Array" || m == "Seq")) {
+        std::string et = inv.enumName.empty() ? std::string("int64") : inv.enumName.str();
+        int w = Interpreter::ncElemSize(et);
+        long long n = w > 0 ? (long long)(inv.s.size() / (size_t)w) : 0;
+        Value out = Value::array(); out.isList = (m != "Array");
+        for (long long i = 0; i < n; i++)
+            out.arr()->push_back(Interpreter::ncReadElem((long long)(intptr_t)inv.s.data(), et, i));
+        if (m == "Seq") out.s = "Seq";
+        return out;
     }
     // Encoding::Registry / streaming decoder — the Rakudo encoding API that
     // Cro's HTTP parsers drive. The decoder is a stateful byte buffer with
@@ -9979,7 +10031,14 @@ void Interpreter::registerBuiltins() {
         return (!v.ofType().empty() && v.s.find('[') == std::string::npos) ? v.s + "[" + v.ofType() + "]" : v.s;
     };
     B["cglobal"] = [ncTypeName](Interpreter& I, ValueList& a) -> Value {
-        std::string lib  = a.size() > 0 ? (a[0].t == VT::Type ? a[0].s : a[0].toStr()) : "";
+        // the library may arrive as a PROVIDER sub — cglobal(&LIB, …) is the
+        // Math::Libgsl family's spelling — and its ANSWER is the library name,
+        // exactly as `is native(&LIB)` treats it
+        std::string lib;
+        if (a.size() > 0) {
+            if (a[0].t == VT::Code && a[0].code()) { ValueList none; lib = I.callCallable(a[0], none).toStr(); }
+            else lib = a[0].t == VT::Type ? a[0].s.str() : a[0].toStr();
+        }
         std::string sym  = a.size() > 1 ? a[1].toStr() : "";
         std::string type = a.size() > 2 ? ncTypeName(a[2]) : "Pointer";
         return I.cglobal(lib, sym, type);

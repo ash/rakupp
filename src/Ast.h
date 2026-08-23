@@ -403,6 +403,9 @@ struct Param {
     bool invocant = false; // declared before ':' in signature
     int defConstraint = 0; // type smiley: 0=none, 1=:D (defined), 2=:U (undefined)
     bool coerce = false;   // coercion type `Int(Str)` / `Int()`: the bound value is coerced to `type`
+    std::string coerceFrom; // the FROM type inside the parens ("" for `Foo()` = Any) — it is the
+                            // coercion param's NOMINAL rank in multi dispatch: `IO::Path(Str)` sits
+                            // where a Str param would, `IO()` where an untyped one would
     bool isRw = false;     // `is rw` — writes copy back to the caller's lvalue
     bool isCopy = false;   // `is copy` — a fresh mutable copy (vs a readonly plain param)
     bool isRaw = false;    // `is raw` — bound without a container (introspected by .raw)

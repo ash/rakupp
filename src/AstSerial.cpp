@@ -159,7 +159,7 @@ template <class IO> void ioParam(IO& io, Param& p) {
     F(io, p.namedKey); F(io, p.aliasBoth); ioVec(io, p.aliasKeys);
     F(io, p.pod); F(io, p.slurpyKind); F(io, p.named); F(io, p.slurpy);
     F(io, p.optional); F(io, p.required); F(io, p.invocant);
-    F(io, p.defConstraint); F(io, p.coerce);
+    F(io, p.defConstraint); F(io, p.coerce); F(io, p.coerceFrom);
     F(io, p.isRw); F(io, p.isCopy); F(io, p.isRaw);
     // subSig: optional nested signature
     if constexpr (IO::reading) {
