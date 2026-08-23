@@ -17,6 +17,11 @@ stdout/stderr/exit status built slim and built full.
 Measurements in this file: 2026-08-09, `build-arm64/rakupp` at v3.0.1,
 Apple clang 17.0.0, macOS 15 (Darwin 24.6.0), arm64.
 
+*Update 2026-08-23: uncuttable core growth since v3.0.1 (regex-engine
+correctness work, the JSON::Fast native codec) moved slim hello to
+5,794,456 bytes; the live gate in `t/slim/run.raku` is re-pinned at
+≤ 5.75 MB for `-all` (bare `--slim` stays ≤ 6.0 MB).*
+
 ---
 
 ## Where we are — measured

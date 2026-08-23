@@ -10,6 +10,8 @@
 # to JSON — a parenthesized Pair reads as a named arg, an enum term inside an
 # array literal misparses in an argument list.)
 
+#?requires JSON::Fast
+
 use Test;
 use JSON::Fast;
 plan 16;
