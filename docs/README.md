@@ -43,6 +43,7 @@ point; everything else lives here, in four places:
 
 ### Running and shipping programs
 
+- **[guide/INSTALL.md](guide/INSTALL.md)** — every way to install: Homebrew, the prebuilt release archives, building from source (including Windows/MSVC), the Guix channel, the Nix flake, and `RAKUPP_HOME` for a relocated binary.
 - **[guide/CLI.md](guide/CLI.md)** — the command line: position-independent flags, the perl one-liner family (`-n`/`-p`/`-a`/`-F`, `-i` in-place editing, `-0777`), `-M`, the `--profile` wall-time profiler, `--slim` (a `say "Hello"` binary goes 9.9 → 4.6 MB: dead-strip by default, a scan that proves features unused and cuts them, `list`/`why:`/`verify` introspection, and a typed `X::Feature::NotBuilt` where a cut is wrong), and a perl↔rakupp cookbook with the deliberate divergences listed.
 - **[guide/NATIVE.md](guide/NATIVE.md)** — the `--exe` native compiler: interpreter vs. compiled on the example programs (byte-identical output).
 - **[guide/COMPILERS.md](guide/COMPILERS.md)** — which compiler and architecture to use: arm64 vs. x86_64 on macOS, GCC vs. Clang, MSVC vs. MinGW on Windows — both for building Raku++ and for the compiler `--exe` invokes.
