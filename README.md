@@ -19,6 +19,12 @@ before it was *the 6.e language revision*: `use v6.e.PREVIEW;` turns on the
 whole of Raku 6.e, and its behaviour changes can affect existing code. Every
 release is written up in the [CHANGELOG](CHANGELOG.md).
 
+**Current focus:** the ecosystem sweep — all 2,524 distributions of the zef
+ecosystem run against rakupp, and the engine gets fixed until real modules
+install and pass their own test suites. (The 59 in the table below is the
+curated per-release battery; the sweep is the whole ecosystem, and what it
+finds drives what gets built next.)
+
 | | v3.6.0 | at v2.0.0 |
 |---|---:|---:|
 | Roast, per individual test — of what the suite declares‡ | **198,642 of ~218,600 (90%)** | 197,090 of ~203,500 (97%) |

@@ -1,5 +1,14 @@
 # Raku from Python, JavaScript, Go, Rust, C++, and the Wolfram Language
 
+> [!IMPORTANT]
+> ## Work in progress
+> This directory is committed so the work is not lost, and it is tested as
+> far as tests can carry it — the smoke gates below re-run everything the
+> guides claim, on every push. It is still a work in progress all the same:
+> the surface may move, and none of it is announced. The official
+> announcement will be made later, when it settles; until then, treat what
+> you find here as a preview.
+
 `librakupp` is the Raku++ interpreter as a shared library behind a small C
 ABI. Each binding here is a thin layer over it, so your program can do two
 things:
