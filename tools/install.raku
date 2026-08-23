@@ -441,18 +441,94 @@ class InstallableDist {
     }
 }
 
-# zef's build protocol: a Build.rakumod (or Build.pm6/Build.pm) at the dist
-# root with `method build($cwd)`, run BEFORE the tests — OpenSSL generates
-# its resources/libraries.json in it, which is why the file is in META
-# resources but in nobody's archive. The child sees the target store as
-# `-I inst#<prefix>`, so `use JSON::Fast` inside a hook resolves against the
-# build-depends this plan just installed.
+# zef's build protocols, run BEFORE the tests. One: META6 names a `builder`
+# CLASS — the whole META hash goes to its .new, and .build($cwd) compiles
+# whatever the dist ships in source form (Term::termios and the LibraryMake
+# family write their C helpers into resources/libraries this way; without
+# this leg the suite dies loading a dylib nobody built). Two: a Build.rakumod
+# (or Build.pm6/Build.pm) at the dist root with `method build($cwd)` —
+# OpenSSL generates its resources/libraries.json in it, which is why the
+# file is in META resources but in nobody's archive. Either child sees the
+# target store as `-I inst#<prefix>`, so the builder dist (a build-depends
+# this plan just installed) and any `use JSON::Fast` resolve.
+# The ecosystem's build recipes (MakeFromJSON, LibraryMake and their kin) read
+# their toolchain out of `$*VM.config`, behind a `$*VM.name eq 'moar'` gate —
+# no branch exists for anything else. For the DURATION OF A HOOK the child
+# answers in that dialect, with this platform's honest toolchain values;
+# nothing outside the hook sees it, and the engine's own identity is
+# untouched. Prepended to both hook children (builder class, Build.rakumod).
+sub vm-toolchain-shim(--> Str) {
+    q:to/SHIM/
+        my %tc = do {
+            my $dylib = $*KERNEL.name eq 'darwin';
+            obj      => '.o',
+            dll      => 'lib%s' ~ ($dylib ?? '.dylib' !! '.so'),
+            cc       => 'cc',
+            ccshared => '-fPIC',
+            ccout    => '-o ',
+            cflags   => '-O2 -fPIC',
+            ld       => 'cc',
+            ldshared => ($dylib ?? '-dynamiclib' !! '-shared'),
+            ldflags  => '',
+            ldlibs   => '',
+            ldout    => '-o ',
+            ldusr    => '-l%s',
+            make     => 'make',
+            exe      => '',
+        };
+        my $*VM = class :: {
+            has $.name = 'moar';
+            has %.config;
+            method platform-library-name($file, :$version) {
+                my $s = $file.Str;
+                my $slash = $s.rindex('/');
+                my ($d, $b) = $slash.defined
+                    ?? ($s.substr(0, $slash + 1), $s.substr($slash + 1))
+                    !! ('', $s);
+                $d ~ 'lib' ~ $b ~ ($*KERNEL.name eq 'darwin' ?? '.dylib' !! '.so')
+            }
+        }.new(:config(%tc));
+        SHIM
+}
+
 sub run-build-hook(%e, $root, Str $prefix --> Bool) {
+    my $meta-file = $root.IO.add('META6.json');
+    my %m = $meta-file.e ?? ((try json-decode($meta-file.slurp)) // {}) !! {};
+    if %m<builder> {
+        my $builder = ~%m<builder>;
+        # zef's shorthand: a bare name lives under Distribution::Builder::
+        $builder = "Distribution::Builder::$builder" unless $builder.contains('::');
+        # the name is spliced into a generated program: module-name matter only
+        unless $builder ~~ /^ <[A..Za..z0..9_:'-]>+ $/ {
+            note "BUILD FAILED: builder name '$builder' is not a module name";
+            return False;
+        }
+        note "building %e<name>: builder $builder";
+        my $prog = vm-toolchain-shim() ~ q:to/END/.subst('BUILDER', $builder, :g);
+            use BUILDER;
+            my $t = 'META6.json'.IO.slurp;
+            my %m = (try ::('Rakupp::Internals::JSON').from-json($t))
+                    // Rakudo::Internals::JSON.from-json($t);
+            my $r = ::('BUILDER').new(:meta(%m)).build($*CWD.Str);
+            exit(($r === False) ?? 1 !! 0);
+            END
+        my $p = run $*EXECUTABLE.absolute, '-I', "inst#$prefix", '-I', $root.IO.Str,
+                    '-e', $prog, :out, :err, :cwd($root);
+        $p.out.slurp(:close);
+        my $err = $p.err.slurp(:close);
+        if $p.exitcode != 0 {
+            note "BUILD FAILED: builder $builder";
+            note $err.indent(2);
+            return False;
+        }
+        return True;
+    }
     my $hook = <Build.rakumod Build.pm6 Build.pm>.map({ $root.IO.add($_) }).first(*.e);
     return True without $hook;
     note "building %e<name>: {$hook.basename}";
     my $p = run $*EXECUTABLE.absolute, '-I', "inst#$prefix", '-I', $root.IO.Str, '-e',
-                'use Build; my $r = Build.new.build($*CWD.Str); exit(($r === False) ?? 1 !! 0)',
+                vm-toolchain-shim()
+                  ~ 'use Build; my $r = Build.new.build($*CWD.Str); exit(($r === False) ?? 1 !! 0)',
                 :out, :err, :cwd($root);
     my $out = $p.out.slurp(:close);
     my $err = $p.err.slurp(:close);
