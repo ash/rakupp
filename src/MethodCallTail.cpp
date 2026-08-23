@@ -737,6 +737,23 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             m == "Array" || m == "eager" || m == "join")
             throw RakuError{Value::typeObj("X::Cannot::Lazy"), "Cannot " + m + " an infinite range"};
     }
+    // `.hyper` / `.race` — the parallel iteration wrappers, run SERIALLY: the
+    // stand-in is the same flat list a Seq would give (ordered, which race
+    // permits and hyper requires), so downstream .map/.grep/.sum proceed as
+    // usual; the :degree/:batch tuning nameds arrive as ignored extras.
+    // `.serial` unwraps a HyperSeq — on the plain-list stand-in it is the
+    // identity. (Ecosystem and JSON::Fast::Hyper want exactly this surface.)
+    if ((m == "hyper" || m == "race" || m == "serial") &&
+        (inv.t == VT::Array || inv.t == VT::Range || (inv.t == VT::Hash && inv.hash()))) {
+        if (inv.t == VT::Range) { Value r = inv; return methodCall(r, "list", {}, nullptr); }
+        if (inv.t == VT::Hash) {
+            Value o = Value::array(); o.isList = true;
+            for (auto& kv : *inv.hash()) o.arr()->push_back(Value::pair(kv.first, kv.second));
+            return o;
+        }
+        Value o = inv; o.isList = true; o.itemized = false;
+        return o;
+    }
     // `.all`/`.any`/`.one`/`.none` on a single (non-container) value → a one-element
     // junction (Rakudo: `5.all` === `all(5)`); containers are handled just below.
     if ((m == "all" || m == "any" || m == "none" || m == "one") &&
