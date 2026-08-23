@@ -530,13 +530,30 @@ void Lexer::skipWhitespaceAndComments() {
                 char open = peek(2), close = open == '(' ? ')' : open == '[' ? ']' : open == '{' ? '}' : '>';
                 const int startLine = line_;
                 advance(); advance(); advance(); // # ` open
+                // A REPEATED opener (`#`{{ … }}`) closes only on the closer
+                // repeated as many times, and nesting counts only the full
+                // n-char sequences — a lone `{` inside `#`{{ … }}` is literal
+                // text (Gnome::N comments out code this way), not a nest.
+                size_t rep = 1;
+                while (!eof() && peek() == open) { advance(); rep++; }
+                auto runAt = [&](char ch) {          // same-char run length here
+                    size_t k = 0;
+                    while (peek(k) == ch) k++;
+                    return k;
+                };
                 int d = 1;
                 while (!eof() && d > 0) {
-                    char ch = advance();
-                    if (ch == open) d++;
-                    else if (ch == close) d--;
+                    if (peek() == open && runAt(open) >= rep) {
+                        for (size_t k = 0; k < rep; k++) advance();
+                        d++;
+                    }
+                    else if (peek() == close && runAt(close) >= rep) {
+                        for (size_t k = 0; k < rep; k++) advance();
+                        d--;
+                    }
+                    else advance();
                 }
-                if (d > 0) runawayTerm(std::string(1, close), std::string(1, open), startLine);
+                if (d > 0) runawayTerm(std::string(rep, close), std::string(rep, open), startLine);
                 continue;
             }
             if (peek(1) == '|') { // leading declarator pod `#| text` — record by line
@@ -1689,10 +1706,13 @@ bool Lexer::tryRuleDecl(std::vector<Token>& out, bool spaced) {
             while (!eof() && ad > 0);
             continue;
         }
-        // quotes open only OUTSIDE [ ] — inside a char class a quote character is
-        // a MEMBER (<-["]> = "anything but a double quote"), not a string opener;
-        // braces are inert inside [ ] either way, so nothing needs shielding there
-        if ((ch == '\'' || ch == '"') && sd == 0) { q = ch; body += advance(); continue; }
+        // quotes open only outside a CHAR CLASS — there a quote character is
+        // a MEMBER (<-["]> = "anything but a double quote"), not a string
+        // opener. Inside a plain GROUP they quote as usual, and must: the `]`
+        // in `[ ']'+ ]` (Form's numeric fields) is a literal bracket, and
+        // reading it as the group's closer left a stray quote that ate the
+        // statements after the regex without a word of complaint.
+        if ((ch == '\'' || ch == '"') && !inClass) { q = ch; body += advance(); continue; }
         // Inside a CHARACTER CLASS a `[` is a literal member, not a nested group:
         // `token pattern-character { <-[^$\\.*+?()[\]{}|]> }` (ECMA262Regex) left
         // the class open forever, so the scan ate the rest of the file and the
@@ -1700,8 +1720,16 @@ bool Lexer::tryRuleDecl(std::vector<Token>& out, bool spaced) {
         // `<-[` or `<+[` (also `+[`/`-[` in a set expression) and cannot nest.
         if (ch == '[') {
             if (inClass) { body += advance(); continue; }        // a member
-            char prev = body.empty() ? '\0' : body.back();
-            if (prev == '<' || prev == '-' || prev == '+') inClass = true;
+            char prev  = body.empty() ? '\0' : body.back();
+            char prev2 = body.size() > 1 ? body[body.size() - 2] : '\0';
+            // A class opens as `<[`, `<-[`, `<+[`, the zero-width `<?[` / `<![`
+            // (Docker::File's `<?[[]>`), or a set-op continuation `]+[` / `]-[`.
+            // The char alone cannot decide: in `a?[b]` the `?` is a quantifier
+            // and the `[` a plain group.
+            if (prev == '<' ||
+                ((prev == '-' || prev == '+') && (prev2 == '<' || prev2 == ']')) ||
+                ((prev == '?' || prev == '!') && prev2 == '<'))
+                inClass = true;
             sd++; body += advance(); continue;
         }
         if (ch == ']' && sd > 0) { sd--; if (inClass) inClass = false; body += advance(); continue; }
@@ -2414,7 +2442,18 @@ std::vector<Token> Lexer::tokenize() {
         // and lexing that as set-containment broke the whole file (AttrX::Mooish).
         // The exception is a metaop letter — `Z(|)`, `X(&)`, `R(-)` are written
         // tight — so a preceding bare Z/X/R still opens an operator.
-        } else if (c == '(' && (spaced || setOpFollows(out)) && trySetOp(t)) { /* t set by trySetOp */ }
+        } else if (c == '(' && (spaced || setOpFollows(out)) && trySetOp(t)) {
+            // `!(elem)` — the negation metaop written tight on a parenthesized
+            // set operator is ONE negated infix (the `(!elem)` spelling the
+            // parser reads), not prefix-not on a term. Template6 writes
+            // `* !(elem) $raw-words`.
+            if (!spaced && !out.empty() && out.back().kind == Tok::Op && out.back().text == "!" &&
+                t.text.size() > 1 && t.text[1] != '!') {
+                t.text = "(!" + t.text.substr(1);
+                t.spaceBefore = out.back().spaceBefore;
+                out.pop_back();
+            }
+        }
         else if (c == '(') { advance(); t = make(Tok::LParen, "("); }
         else if (c == ')') { advance(); t = make(Tok::RParen, ")"); }
         else if (c == '{') { advance(); t = make(Tok::LBrace, "{"); }
