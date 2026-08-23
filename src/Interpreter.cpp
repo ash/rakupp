@@ -7437,11 +7437,15 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     }
                 } else {
                     ValueList items;
-                    // an itemized value ($(@a)) or a $-scalar source is ONE topic
+                    // an itemized value ($(@a)) or a $-scalar source is ONE topic.
+                    // $_ is exempt from the sigil rule: it BINDS what it topicalizes,
+                    // so its container-ness rides in on the value's own flag
+                    // (`given @a { … for $_ }` iterates, `given $x { … }` does not)
                     bool oneItem = !viaIterator &&
                         (lv.itemized ||
                         (fs->list->kind == NK::VarExpr && !static_cast<VarExpr*>(fs->list.get())->name.empty() &&
-                         static_cast<VarExpr*>(fs->list.get())->name[0] == '$'));
+                         static_cast<VarExpr*>(fs->list.get())->name[0] == '$' &&
+                         static_cast<VarExpr*>(fs->list.get())->name != "$_"));
                     if (oneItem) items.push_back(lv);
                     else if (lv.t == VT::Array && lv.arr()) { ParStripe cs(*this, lv.arr());
                         items = isMultiDimShaped(lv) ? shapedLeaves(lv) : *lv.arr(); } // snapshot under the stripe (torn-copy contract)
@@ -7498,11 +7502,14 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             }
             // A `$`-sigil scalar source (or an explicitly itemized value) is a single item:
             // `for $scalar { }` runs once even when the scalar holds an Array/Range, because a
-            // scalar container does not flatten in list context. `@a`, ranges, and lists still flatten.
+            // scalar container does not flatten in list context. `@a`, ranges, and lists still
+            // flatten. $_ is exempt from the sigil rule: it BINDS what it topicalizes, so its
+            // container-ness rides in on the value's own flag (`given @a { for $_ {} }` iterates).
             bool scalarItem = !viaIterator &&
                 (listv.itemized ||
                 (fs->list->kind == NK::VarExpr && !static_cast<VarExpr*>(fs->list.get())->name.empty()
-                 && static_cast<VarExpr*>(fs->list.get())->name[0] == '$'));
+                 && static_cast<VarExpr*>(fs->list.get())->name[0] == '$'
+                 && static_cast<VarExpr*>(fs->list.get())->name != "$_"));
             // Each element of an ARRAY lives in its own scalar container, so
             // iterating one hands the body an ITEMIZED value: over `my @t =
             // (1,2),(3,4)`, Rakudo's `for @t { say $_.raku }` says `$(1, 2)`.
@@ -7737,6 +7744,17 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                  g->topic->kind == NK::IntLit || g->topic->kind == NK::NumLit ||
                  g->topic->kind == NK::BoolLit))
                 topic.readonly = true;
+            // `given` BINDS $_, so the topic keeps its source's container-ness
+            // rather than taking one from $_'s sigil: `given @a { … for $_ }`
+            // iterates @a's elements, while `given $x { … for $_ }` is one
+            // topic — $x is a scalar container, and binding one itemizes. The
+            // flag is what the for-loop consults for $_ (`given $_` passes the
+            // current topic through unchanged, whatever its provenance).
+            if ((topic.t == VT::Array || topic.t == VT::Hash) && !topic.itemized &&
+                g->topic && g->topic->kind == NK::VarExpr) {
+                const std::string& tn = static_cast<const VarExpr*>(g->topic.get())->name;
+                if (!tn.empty() && tn[0] == '$' && tn != "$_") topic.itemized = true;
+            }
             // with/without definedness guard
             bool skip = (g->defGuard == 1 && !isDefined(topic)) || (g->defGuard == 2 && isDefined(topic));
             if (g->modifier) { // `EXPR with X`: no implicit block — a `my` in EXPR leaks out
