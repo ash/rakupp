@@ -127,12 +127,6 @@ engine runs Sparrow's own orchestration — because the Bash and Perl tasks cost
 the same either way. `compare.sh` puts a `raku` shim on PATH to get the bottom row; a cleaner
 fix would be for Sparrow6 to honour something like `SP6_RAKU_BIN`.
 
-The gap is that wide for a reason specific to Sparrow's design. Its cache
-directory is per-run (`$.sparrow-root ~ "/tmp/" ~ $*PID ~ …`), so the generated
-`glue.rakumod` and `sparrow6lib.rakumod` land somewhere fresh every time.
-Rakudo therefore has no precompilation to reuse and **recompiles both on every
-Raku task, on every run**. Raku++ has no precompilation cliff to fall off.
-
 ## What running it exposed
 
 Sparrow6 did not work here at all until four faults were fixed, none of them
