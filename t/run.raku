@@ -308,8 +308,15 @@ for dir($ROOT.add('t/regression')).grep(*.Str.ends-with('.raku')).sort -> $f {
     my $err = $p.err.slurp(:close);
     my $exit = $p.exitcode;
     my $last = $out.lines.tail // '';
-    ok($exit == 0 && $last eq 'PASS', "regression: {$f.basename}");
-    if $exit != 0 || $last ne 'PASS' {
+    # Green is either shape a case may take: the house pattern's final PASS
+    # line, or a `use Test` file — a plan (`1..N`, first line under `plan`,
+    # last under `done-testing`), every line ok, and Test's END exiting 0.
+    my $tap-green = $exit == 0
+        && $out.lines.first({ /^ '1..' \d+ $/ }).defined
+        && !$out.lines.grep(*.starts-with('not ok'));
+    my $green = $exit == 0 && ($last eq 'PASS' || $tap-green);
+    ok($green, "regression: {$f.basename}");
+    unless $green {
         diag("exit=$exit last-line='$last'");
         diag("stderr: $_") for $err.lines;
     }
