@@ -105,8 +105,8 @@ say to-json({ name => 'Ada' }, :!pretty);   # {"name":"Ada"}
 ```
 
 It also loads your own module files from `lib/` (and `-I` / `RAKULIB` / `use lib`
-paths), and a `use` that cannot be found or fails to compile is **fatal**, as
-in Rakudo. Full guide: **[MODULES.md](docs/guide/MODULES.md)**.
+paths), and a `use` that cannot be found or fails to compile is **fatal**.
+Full guide: **[MODULES.md](docs/guide/MODULES.md)**.
 
 ## Code to read and run
 
