@@ -54,9 +54,8 @@ Code). The author sets direction, makes the design calls, reviews what lands,
 and decides what ships; the assistant writes much of the C++ — and much of the
 documentation, this page included.
 
-Nor is this page the disclosure. Claude has been in the repository's public
-[contributor list](https://github.com/ash/rakupp/graphs/contributors) from the
-start, and the
+Nor is this page the disclosure. GitHub's contributor panel for the repository
+has counted Claude from the start, and the
 [launch announcement](https://andrewshitov.com/2026/07/13/raku-the-fastest-raku-compiler/)
 says it in prose: "we have great friends and helpers, AI."
 
