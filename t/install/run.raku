@@ -44,7 +44,7 @@ sub sha1-of(Str $path) {
 # so two dists share one content-addressed blob; :depends declares runtime deps.
 sub make-dist(Str $name, Str $modname, Str $version,
               Bool :$failing-test, Bool :$shared, :@depends, :@build-depends,
-              Bool :$build-hook) {
+              Bool :$build-hook, Bool :$bin) {
     my $safe = $name.subst('::', '-', :g);
     my $droot = $tmp.add("build-$safe-$version");
     my $libdir = $droot.add('lib').add($modname.split('::')[0]);
@@ -55,6 +55,11 @@ sub make-dist(Str $name, Str $modname, Str $version,
         sub which-version() is export \{ '$version' \}
         END
     my $provides = "\"$modname\": \"$file\"";
+    if $bin {
+        $droot.add('bin').mkdir;
+        $droot.add('bin/gate-hello').spurt(
+            "use $modname;\nprint 'gate-hello ' ~ which-version();\n");
+    }
     if $shared {
         $droot.add('lib/Gate').mkdir;
         # BYTE-IDENTICAL in every dist that carries it — one blob, shared
@@ -99,7 +104,7 @@ sub make-dist(Str $name, Str $modname, Str $version,
     ($named.Str, $sha)
 }
 
-my ($arc1, $sha1a) = make-dist('Gate::Demo', 'Gate::Demo', '0.4.2');
+my ($arc1, $sha1a) = make-dist('Gate::Demo', 'Gate::Demo', '0.4.2', :bin);
 my ($arc2, $sha2)  = make-dist('Gate::Flaky', 'Gate::Flaky', '0.1.0', :failing-test);
 my ($arc3, $sha3)  = make-dist('Gate::ShareA', 'Gate::ShareA', '0.1.0', :shared);
 my ($arc4, $sha4)  = make-dist('Gate::ShareB', 'Gate::ShareB', '0.1.0', :shared);
@@ -200,6 +205,21 @@ my $use = run 'env', "HOME={$home}", 'RAKULIB=', $EXE, '-e',
               'use Gate::Demo; print which-version()', :out, :err;
 check $use.out.slurp(:close) eq '0.4.2', 'M3: the installed module loads and runs';
 $use.err.slurp(:close);
+
+# ---- named bin wrappers: install writes them, they dispatch, uninstall
+#      removes them (the blob itself lives in resources/, Rakudo's layout) ----
+my $wrapper = $home.add('.raku/bin/gate-hello');
+check $wrapper.e, 'bin: install writes the named wrapper';
+check ?($wrapper.mode +& 0o100), 'bin: ...and it is executable';
+check $wrapper.slurp.contains('run-script'), 'bin: ...with the dispatch template';
+my $wrun = run 'env', |%env.map({ "{.key}={.value}" }), $EXE, $wrapper.Str, :out, :err;
+check $wrun.out.slurp(:close) eq 'gate-hello 0.4.2',
+      'bin: the wrapper runs the installed script by name';
+$wrun.err.slurp(:close);
+# the file's short/ index entry is what Rakudo's run-script resolves a bare
+# script name through — its presence is what makes the wrapper cross-engine
+check $home.add('.raku/short/72FBF518F4A9F9E67352C850F7087DEFA5D51413').d,
+      'bin: the script is indexed in short/ under sha1("bin/gate-hello")';
 
 # ---- repository SPECS: inst# reaches the store, file# is a plain dir --------
 # HOME points elsewhere, so the spec alone must find the module
@@ -354,6 +374,10 @@ my %un2 = installer('--uninstall', 'Gate::Demo');
 check %un2<exit> == 0, 'M6: …and goes once the dependent is gone';
 my %list2 = installer('--list');
 check !%list2<out>.contains('Gate::Demo'), 'M6: --list agrees it is gone';
+check !$home.add('.raku/bin/gate-hello').e,
+      'bin: uninstall removes the named wrapper';
+check !$home.add('.raku/short/72FBF518F4A9F9E67352C850F7087DEFA5D51413').e,
+      'bin: ...and the script rel-path index entry';
 my %chk3 = installer('--check');
 check %chk3<exit> == 0 && %chk3<out>.contains('0 broken'), 'M6: --check is clean after the chain';
 

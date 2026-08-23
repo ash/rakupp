@@ -1347,6 +1347,11 @@ public:
     // a stack because module loads nest (a module can `use` another).
     std::vector<Value> resourceStack_;
     std::vector<Value> distStack_; // $?DISTRIBUTION of the module being compiled
+    // run-script executes an installed script via a NESTED run(); the wrapper's
+    // own &MAIN is still in scope there, and auto-dispatching it again would
+    // recurse forever when the script defines no MAIN of its own. This holds
+    // the &MAIN visible at run-script entry; run() refuses to auto-invoke it.
+    const Value* inheritedMainBarrier_ = nullptr;
     // `module Zef:ver(…):auth(…):api(…)` — a PACKAGE has no ClassInfo, so its name
     // adverbs live here (name → ver/auth/api) for .^ver/.^auth/.^api to answer.
     struct PkgMeta { std::string ver, auth, api; };

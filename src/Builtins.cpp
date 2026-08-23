@@ -2878,7 +2878,10 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                         p = meta.find(':', p + tag.size());
                         auto q1 = meta.find('"', p), q2 = q1 == std::string::npos ? q1 : meta.find('"', q1 + 1);
                         if (p == std::string::npos || q2 == std::string::npos) continue;
-                        std::ifstream sf(repo + "/resources/" + meta.substr(q1 + 1, q2 - q1 - 1));
+                        std::string blobId = meta.substr(q1 + 1, q2 - q1 - 1);
+                        std::ifstream sf(repo + "/resources/" + blobId);
+                        // older rakupp installs put bin blobs in bin/<sha>
+                        if (!sf) sf.open(repo + "/bin/" + blobId);
                         if (!sf) continue;
                         auto vk = verKey(meta);
                         if (!distId.empty() && vk <= bestVer) continue;
@@ -2891,6 +2894,9 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                     distStack_.push_back(buildInstalledDistribution(repo, distId));
                     struct RG { std::vector<Value>& s; ~RG() { s.pop_back(); } } rg{resourceStack_};
                     struct DG { std::vector<Value>& s; ~DG() { s.pop_back(); } } dg{distStack_};
+                    // the caller (an installed bin wrapper) has a &MAIN of its
+                    // own in scope; the nested run() must not auto-invoke it
+                    inheritedMainBarrier_ = tctx_.cur ? tctx_.cur->find("&MAIN") : nullptr;
                     int code = 0;
                     try {
                         Lexer lx(content);
@@ -3131,9 +3137,43 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                         std::string rel = kv.first, src = kv.second.toStr();
                         std::string content = slurp(src.empty() ? distRoot + "/" + rel : src);
                         std::string sha = sha1hex(content);
-                        std::string sub = rel.rfind("bin/", 0) == 0 ? "/bin/" : "/resources/";
-                        { std::ofstream o(prefix + sub + sha, std::ios::binary); o << content; }
+                        // EVERY file blob lands in resources/ — bin/ scripts too.
+                        // That is Rakudo's layout (bin/ holds only the named
+                        // wrappers below), and it is what run-script reads. This
+                        // repo's first cut put bin blobs in bin/<sha>, which left
+                        // run-script blind to them.
+                        { std::ofstream o(prefix + "/resources/" + sha, std::ios::binary); o << content; }
                         (*filesOut.hash())[rel] = Value::str(sha);
+                        // ...and its short/ index entry: Rakudo's `.files("bin/x")`
+                        // — the lookup its run-script resolves a bare script name
+                        // through — reads short/<sha1(rel-path)>/<dist-id>, the
+                        // same 5-line format the provides entries use. Without it
+                        // a wrapper runs under rakupp but dies under Rakudo with
+                        // "No candidate found".
+                        {
+                            std::string fdir = prefix + "/short/" + sha1hex(rel);
+                            mkdirp(fdir);
+                            std::ofstream o(fdir + "/" + distId);
+                            o << ver << "\n" << auth << "\n" << api << "\n" << sha << "\n" << distId << "\n";
+                        }
+                        // bin/<name> also gets a NAMED, executable wrapper —
+                        // Rakudo's own template — so an installed command runs by
+                        // name under either engine once <prefix>/bin is on PATH.
+                        // (Rakudo adds -m/-j/-js backend variants; the bare name
+                        // is the one people run, and the only one written here.)
+                        if (rel.rfind("bin/", 0) == 0 && rel.find('/', 4) == std::string::npos && rel.size() > 4) {
+                            std::string script = rel.substr(4);
+                            std::string wpath = prefix + "/bin/" + script;
+                            { std::ofstream w(wpath, std::ios::binary);
+                              w << "#!/usr/bin/env raku\n"
+                                   "sub MAIN(:$name is copy, :$auth, :$ver, *@, *%) {\n"
+                                   "    CompUnit::RepositoryRegistry.run-script(\"" << script
+                                << "\", :dist-name<" << name << ">, :$name, :$auth, :$ver);\n"
+                                   "}\n"; }
+#ifndef _WIN32
+                            ::chmod(wpath.c_str(), 0755);
+#endif
+                        }
                     }
                 }
                 // dist/<id> — the meta index (list-installed reads it; buildResourceMap

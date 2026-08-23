@@ -3552,7 +3552,10 @@ int Interpreter::run(Program& prog) {
         }
         // auto-invoke MAIN with command-line arguments, if defined
         // (a mainline CONTROL, registered below, is already live here)
-        if (Value* mainSub = tctx_.cur->find("&MAIN")) {
+        Value* mainSub = tctx_.cur->find("&MAIN");
+        // never the run-script CALLER's MAIN — a wrapper's own dispatch would
+        // recurse into run-script forever (see inheritedMainBarrier_)
+        if (mainSub && mainSub != inheritedMainBarrier_) {
             ValueList margs;
             int rc = mainProtocol(*mainSub, margs);
             if (rc < 0) callCallable(*mainSub, margs);

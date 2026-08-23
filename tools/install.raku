@@ -602,8 +602,8 @@ sub store-check(Str $prefix) {
                     say "BROKEN: short/{$sdir.basename}/{$entry.basename} points at missing dist $dist-id";
                     $broken++;
                 }
-                if $src-sha && !$p.add('sources').add($src-sha).e {
-                    say "BROKEN: short/{$sdir.basename}/{$entry.basename} needs missing blob sources/$src-sha";
+                if $src-sha && !<sources resources bin>.first({ $p.add($_).add($src-sha).e }) {
+                    say "BROKEN: short/{$sdir.basename}/{$entry.basename} needs a missing blob ($src-sha in sources/, resources/ or bin/)";
                     $broken++;
                 }
                 %referenced{$src-sha} = True if $src-sha;
@@ -627,6 +627,12 @@ sub store-check(Str $prefix) {
         next unless $p.add($sub).d;
         for $p.add($sub).dir.grep(*.f) -> $b {
             next if %referenced{$b.basename};
+            # bin/ holds NAMED wrappers beside (legacy) blobs. A wrapper is not
+            # content-addressed: it is live while any dist carries bin/<name>,
+            # and BROKEN-adjacent only in the sense of wasted disk otherwise.
+            if $sub eq 'bin' && $b.basename !~~ / ^ <[0..9 a..f A..F]> ** 40 $ / {
+                next if %dists.values.first({ (.<files> // {}){"bin/" ~ $b.basename}:exists });
+            }
             $unref++;
         }
     }
@@ -727,9 +733,11 @@ sub do-uninstall(@names, Str $prefix, Bool :$force, Bool :$for-reinstall) {
                 %still{$_} = True for (%om<files> // {}).values.grep(* ne '');
             }
             # 1. index entries FIRST: a missing blob behind a live entry is a
-            #    broken `use`; an orphaned blob is only wasted disk
-            for @provided -> $mod {
-                my $e = $p.add('short').add(sha1-str($mod)).add($dist-id);
+            #    broken `use`; an orphaned blob is only wasted disk. Provided
+            #    modules AND files — bin/resources entries are indexed under
+            #    sha1 of their rel-path, which is what Rakudo's `.files` reads.
+            for |@provided, |(%meta<files> // {}).keys -> $key {
+                my $e = $p.add('short').add(sha1-str($key)).add($dist-id);
                 $e.unlink if $e.e;
                 my $sdir = $e.parent;
                 $sdir.rmdir if $sdir.d && !$sdir.dir;
@@ -740,6 +748,23 @@ sub do-uninstall(@names, Str $prefix, Bool :$force, Bool :$for-reinstall) {
                 for <sources resources bin> -> $sub {
                     my $b = $p.add($sub).add($sha);
                     $b.unlink if $b.e;
+                }
+            }
+            # 2b. named bin wrappers (bin/<script>, the engine writes one per
+            #     bin/ entry at install). Kept while ANY remaining dist still
+            #     carries a script of that name — wrappers dispatch by name,
+            #     not by dist, so the survivor keeps answering.
+            for (%meta<files> // {}).keys.grep(*.starts-with('bin/')) -> $rel {
+                my $script = $rel.substr(4);
+                next if $script eq '' || $script.contains('/');
+                my $still-provided = False;
+                for %dists.kv -> $oid, %om {
+                    next if $oid eq $dist-id;
+                    $still-provided = True if (%om<files> // {}){$rel}:exists;
+                }
+                unless $still-provided {
+                    my $w = $p.add('bin').add($script);
+                    $w.unlink if $w.e;
                 }
             }
             # 3. the dist record LAST: a crash mid-way leaves a record that
