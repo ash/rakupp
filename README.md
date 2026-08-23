@@ -104,6 +104,19 @@ It also loads your own module files from `lib/` (and `-I` / `RAKULIB` / `use lib
 paths), and a `use` that cannot be found or fails to compile is **fatal**, as
 in Rakudo. Full guide: **[MODULES.md](docs/guide/MODULES.md)**.
 
+## Code to read and run
+
+Three directories of runnable programs — as much for exploring Raku as for
+exploring Raku++:
+
+- **[examples/](examples)** — complete example programs: Mandelbrot, Game of
+  Life, a JSON parser on a Raku grammar, a quine, …
+- **[showcase/](showcase)** — mid-size programs: a Scheme interpreter built on
+  a Raku grammar, and a pastebin HTTP server on raw sockets.
+- **[live/](live)** — real software from the ecosystem, run unmodified: whole
+  tools people already use, driven by Raku++ exactly as their authors wrote
+  them.
+
 ## Run Raku in the browser — Raku.js
 
 ▶ **Try it live: [raku.online/play](https://raku.online/play)** · **Learn it interactively: [raku.online/tour](https://raku.online/tour/)**
@@ -147,9 +160,6 @@ the shape of it:
   [COUNTING.md](docs/status/COUNTING.md) methodology,
   [BENCHMARKS.md](docs/status/BENCHMARKS.md) vs Rakudo (and perl),
   [ROADMAP.md](docs/status/ROADMAP.md).
-- **Code to read and run:** [examples/](examples) (complete programs),
-  [showcase/](showcase) (a Scheme interpreter, a pastebin server),
-  [live/](live) (ecosystem software run unmodified).
 - **The story:** [MILESTONES.md](docs/status/MILESTONES.md) (the dated
   timeline), [JOURNEY.md](docs/dev/JOURNEY.md) (the method),
   [LONGREAD.md](LONGREAD.md) (the whole arc, long-form).
