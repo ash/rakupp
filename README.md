@@ -106,7 +106,7 @@ in Rakudo. Full guide: **[MODULES.md](docs/guide/MODULES.md)**.
 
 ## Run Raku in the browser — Raku.js
 
-▶ **Try it live: [raku.online](https://raku.online/)** · **Learn it interactively: [raku.online/tour](https://raku.online/tour/)**
+▶ **Try it live: [raku.online/play](https://raku.online/play)** · **Learn it interactively: [raku.online/tour](https://raku.online/tour/)**
 
 **[Raku.js](rakujs)** is the *same* interpreter compiled to **WebAssembly** with
 Emscripten — the exact semantics as native `rakupp`, running entirely client-side
