@@ -117,6 +117,14 @@ const std::vector<std::string>& typeAncestry(const std::string& t) {
         // It is not an IO, and IO::Socket::Async does not do it either.
         {"IO::Socket::INET", {"IO::Socket::INET","IO::Socket","Any","Mu"}},
         {"IO::Socket",       {"IO::Socket","Any","Mu"}},
+        // The Uni family: each normalisation form is a Uni SUBCLASS, and Uni
+        // does Positional/Iterable — `"x".NFD ~~ Uni` is True on Rakudo, and
+        // JSON::Fast binds `Uni:D \codes` to exactly such a value.
+        {"Uni",  {"Uni","Positional","Iterable","Any","Mu"}},
+        {"NFC",  {"NFC","Uni","Positional","Iterable","Any","Mu"}},
+        {"NFD",  {"NFD","Uni","Positional","Iterable","Any","Mu"}},
+        {"NFKC", {"NFKC","Uni","Positional","Iterable","Any","Mu"}},
+        {"NFKD", {"NFKD","Uni","Positional","Iterable","Any","Mu"}},
     };
     static const std::vector<std::string> fallback = {"Any","Mu"};
     auto it = A.find(t);
@@ -2698,23 +2706,44 @@ static std::string jsonEncode(const Value& v) {
 // and a call whose arguments this replica covers runs the native codec.
 // Anything it does not cover — an unknown adverb, a callable :sorted-keys, a
 // NaN/Inf Num (whose rendering hangs on the $*JSON_NAN_INF_SUPPORT dynamic),
-// a type outside the ladder (DateTime, Version, objects) or a non-ASCII
-// string (JSON::Fast escapes over NFD codepoints) — falls through to the
-// module's own sub, so behaviour is the module's in every uncovered case.
+// or a type outside the ladder (DateTime, Version, objects) — falls through to
+// the module's own sub, so behaviour is the module's in every uncovered case.
 struct JsonFastUnsupported {};
 
 static void jfEscape(const std::string& s, std::string& out) {
-    // JSON::Fast escapes the NFD codepoints of the string. ASCII needs no
-    // normalization; anything else is rare here and falls back (see above).
-    for (unsigned char c : s) if (c >= 0x80) throw JsonFastUnsupported{};
-    for (unsigned char c : s) {
-        if (c == '\n') out += "\\n";
-        else if (c == '\r') out += "\\r";
-        else if (c == '\t') out += "\\t";
-        else if (c == '"') out += "\\\"";
-        else if (c == '\\') out += "\\\\";
-        else if (c <= 31) { char b[8]; snprintf(b, sizeof b, "\\u%04x", c); out += b; }
-        else out += (char)c;
+    // Measured against the module (the unicode block in the regression file
+    // pins the bytes): \t \n \r, quote and backslash by name; other controls
+    // as lower-case \u%04x; BMP text RAW — the module walks NFD codepoints,
+    // but a Raku Str is NFG, so rebuilding those codepoints composes them
+    // straight back to the bytes held here; and an ASTRAL codepoint as an
+    // upper-case-hex surrogate PAIR — the one place the module and a raw
+    // byte copy genuinely disagree. Falling back on any byte >= 0x80, the
+    // old rule, sent Sparrow6-shaped writes to the interpreted module:
+    // ~327 ms instead of ~4 ms on the 278 KB diagnose corpus.
+    for (size_t i = 0; i < s.size();) {
+        unsigned char c = (unsigned char)s[i];
+        if (c < 0x80) {
+            if (c == '\n') out += "\\n";
+            else if (c == '\r') out += "\\r";
+            else if (c == '\t') out += "\\t";
+            else if (c == '"') out += "\\\"";
+            else if (c == '\\') out += "\\\\";
+            else if (c <= 31) { char b[8]; snprintf(b, sizeof b, "\\u%04x", c); out += b; }
+            else out += (char)c;
+            i++;
+            continue;
+        }
+        int len = (c & 0xE0) == 0xC0 ? 2 : (c & 0xF0) == 0xE0 ? 3
+                : (c & 0xF8) == 0xF0 ? 4 : 1;
+        if (len == 1 || i + (size_t)len > s.size()) { out += (char)c; i++; continue; } // not UTF-8: the byte, raw
+        if (len < 4) { out.append(s, i, (size_t)len); i += (size_t)len; continue; }    // BMP: raw
+        unsigned cp = (unsigned)(c & 0x07);
+        for (int k = 1; k < 4; k++) cp = (cp << 6) | (unsigned)((unsigned char)s[i + k] & 0x3F);
+        unsigned v = cp - 0x10000;
+        char b[16];
+        snprintf(b, sizeof b, "\\u%04X\\u%04X", 0xD800 + (v >> 10), 0xDC00 + (v & 0x3FF));
+        out += b;
+        i += 4;
     }
 }
 
@@ -10623,6 +10652,11 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
             if (mode >= 0 && !cowAllAscii(cs)) cps = uniNormalize(cps, mode);
             Value target = v.size() > 2 ? v[2] : Value::array();
             if (target.t != VT::Array || !target.arr()) target = Value::array();
+            // the answer IS a Uni in the requested form — keep a created
+            // target's own tag (nqp::create(NFD) above), name an untagged one
+            if (target.s.empty() && mode >= 0)
+                target.s = mode == 1 ? "NFC" : mode == 0 ? "NFD"
+                         : mode == 3 ? "NFKC" : "NFKD";
             target.arr()->clear();
             target.arr()->reserve(cps.size());
             for (auto cp : cps) target.arr()->push_back(Value::integer((long long)cp));
@@ -10757,7 +10791,12 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
             if (tn == "Map") { Value m = Value::makeHash(); m.hashKind = "Map"; return m; } // keeps Map identity through p6bindattrinvres
             if (tn == "Hash" || tn == "IterationMap") return Value::makeHash();
             if (tn == "List") { Value r = Value::array(); r.isList = true; return r; }
-            return Value::array(); // IterationBuffer / NFD / Uni / … — a plain buffer
+            // the Uni family keeps its NAME: `nqp::create(NFD)` must answer a
+            // value that binds `Uni:D \codes` (JSON::Fast's unjsonify-string)
+            if (tn == "Uni" || tn == "NFC" || tn == "NFD" || tn == "NFKC" || tn == "NFKD") {
+                Value r = Value::array(); r.s = tn; return r;
+            }
+            return Value::array(); // IterationBuffer / … — a plain buffer
         }
         case O::Istype: {
             std::string tn = v[1].t == VT::Type ? v[1].s : v[1].typeName();

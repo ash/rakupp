@@ -8604,6 +8604,14 @@ static bool typeNameConforms(const std::string& lnIn, const std::string& rn,
         {"Match",   {"Match", "Capture", "Cool"}},
         // a synchronous socket does the IO::Socket role — but is not an IO
         {"IO::Socket::INET", {"IO::Socket::INET", "IO::Socket"}},
+        // The Uni family: each normalisation form is a Uni SUBCLASS, and Uni
+        // does Positional/Iterable — `"x".NFD ~~ Uni` is True on Rakudo, and
+        // JSON::Fast binds `Uni:D \codes` to exactly such a value.
+        {"Uni",  {"Uni", "Positional", "Iterable"}},
+        {"NFC",  {"NFC", "Uni", "Positional", "Iterable"}},
+        {"NFD",  {"NFD", "Uni", "Positional", "Iterable"}},
+        {"NFKC", {"NFKC", "Uni", "Positional", "Iterable"}},
+        {"NFKD", {"NFKD", "Uni", "Positional", "Iterable"}},
     };
     auto td = typeDoes.find(ln);
     bool baseOk = (td != typeDoes.end() && td->second.count(rn));

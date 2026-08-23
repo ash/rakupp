@@ -14,7 +14,7 @@
 
 use Test;
 use JSON::Fast;
-plan 19;
+plan 24;
 
 is to-json({ b => 2, a => [1, "x", 2.5, True, Any] }, :sorted-keys),
    qq[\{\n  "a": [\n    1,\n    "x",\n    2.5,\n    true,\n    null\n  ],\n  "b": 2\n\}],
@@ -46,3 +46,16 @@ is-deeply from-json('{"a": [1, 2.5, "x", true, null], "b": 1e3}'),
 is to-json(Int, :!pretty), 'null', 'an Any-subtype type object is null';
 dies-ok { to-json(Mu) }, 'to-json(Mu) dies in the binder, not as null';
 dies-ok { to-json([Mu], :!pretty) }, 'a Mu element dies the same way';
+
+# Non-ASCII, measured against the module: BMP text passes through raw (the
+# module walks NFD codepoints, but a Str is NFG, so rebuilding them composes
+# straight back); an ASTRAL codepoint leaves as an upper-case-hex surrogate
+# pair; a control with hex letters stays lower-case. (The escape sequences
+# are assembled, not spelled, so no tool can normalize them away.)
+my $u = '\\' ~ 'u';
+is to-json("é日本語☃", :!pretty), Q["é日本語☃"], 'BMP text passes through raw';
+is to-json("e\x[301]", :!pretty), Q["é"], 'a combining sequence composes';
+is to-json("\x[1F600]", :!pretty), '"' ~ $u ~ 'D83D' ~ $u ~ 'DE00' ~ '"',
+   'an astral char is a surrogate pair, upper-case hex';
+is to-json("\x[1f]", :!pretty), '"' ~ $u ~ '001f' ~ '"', 'control hex stays lower-case';
+is to-json({"ключ" => "значение"}, :!pretty), Q[{"ключ":"значение"}], 'non-ASCII keys too';
