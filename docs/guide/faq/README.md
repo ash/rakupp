@@ -43,6 +43,10 @@ trips over.
   `use v6.e.PREVIEW` actually turns on: new syntax, subs and methods, the
   behaviour changes that bite, the new compile-time errors — each with both
   outputs, plus where Raku++ matches and where it does not.
+- **[hand-written.md](hand-written.md)** — "hand-written lexer and parser"
+  vs. written by a human: what the compiler term of art claims (no parser
+  generator — the sense GCC, Clang and Go use of themselves, with receipts),
+  and who wrote this code.
 
 ## Adding one
 
