@@ -223,6 +223,43 @@ The count has a **±5 flap band**: the `Set`/`Bag`/`Mix`/`Map` examples move in
 both directions between runs of identical code, because Rakudo randomizes hash
 iteration order per process. Do not read a ±5 move as progress.
 
+## Picking the number
+
+**Plain, monotonically increasing versions. No cute numbers.**
+
+`v3.14.0` was a pi joke, tagged 2026-08-11 between `v3.1.0` and `v3.5.0`. It
+cost more than it was worth, in three separate places, and every one of them
+was found after the fact:
+
+- **Homebrew** compares versions component by component as integers, so it
+  ranks `3.14.0` **above** `3.7.0`. The tap was bumped to 3.7.0 at that
+  release and it is correct for a fresh `brew install` — but anyone who
+  installed while the formula pinned 3.14.0 is never offered the upgrade,
+  because brew believes they already have something newer. There is no
+  formula-level fix: Homebrew has no epoch, and `revision` only breaks ties
+  within one version.
+- **The dashboard** sorted `git tag --list v*` as STRINGS, which put `v3.14.0`
+  between `v3.1.0` and `v3.5.0` — the right slot, by luck, since that is where
+  it belongs by date. A `v3.20.0` would have string-sorted *before* `v3.5.0`
+  and drawn the newest release three points from the end of every chart.
+  Fixed at v3.7.0 (`gen-dashboard.raku` now orders by the ref's commit
+  timestamp, with a numeric version tiebreak for two tags on one commit), but
+  the trap is generic: anything sorting version strings has it.
+- **Reading the repo.** `v3.14.0` looks like the newest v3 tag in every
+  listing that sorts lexically or numerically, and it is four releases old.
+
+So:
+
+1. **The next release is at least `3.20.0`** — it has to clear `3.14.0`
+   numerically before Homebrew will offer an upgrade to anyone sitting on that
+   build. `3.8.0` would be correct by every other measure and still leave
+   those users stranded.
+2. After that, increment normally. A minor bump per release, a patch for a
+   fix-only release.
+3. If you ever need to know whether one tag is older than another, read the
+   **tag date** against [CHANGELOG.md](../../CHANGELOG.md). Do not read the
+   number.
+
 ## Then
 
 1. Bump `project(RakuPP VERSION …)` in [CMakeLists.txt](../../CMakeLists.txt),
