@@ -170,11 +170,17 @@ static std::string winEnvBlock(const std::vector<std::string>& kvs) {
 // WAIT so sibling worker threads run — and spawn their own children — concurrently.
 // The fork itself happens with the GIL held, so forks serialise (safe in a
 // multithreaded process); only the poll/read/reap loop runs GIL-free.
+// `errOut` non-null captures the child's stderr; otherwise `errInherit` decides
+// between INHERITING our own stderr (Rakudo's default for an un-adverbed run —
+// the child's diagnostics reach the terminal or the CI log) and discarding it
+// (`:!err`). Both used to mean /dev/null, which is how a MAIN usage message
+// from a child rakupp vanished and left a failing raku-eye leg undiagnosable.
 static void spawnCapture(const std::vector<std::string>& argv, double timeoutSec,
                          std::string& out, int& exitCode, bool& timedout,
                          Interpreter* gil = nullptr, std::string* errOut = nullptr,
                          const std::string& cwd = "", long long* pidOut = nullptr,
-                         const std::vector<std::string>* envKV = nullptr) {
+                         const std::vector<std::string>* envKV = nullptr,
+                         bool errInherit = false) {
     out.clear(); exitCode = -1; timedout = false;
     if (errOut) errOut->clear();
     if (argv.empty()) return;
@@ -190,7 +196,7 @@ static void spawnCapture(const std::vector<std::string>& argv, double timeoutSec
         if (!CreatePipe(&errR, &errW, &sa, 0)) { CloseHandle(outR); CloseHandle(outW); return; }
         SetHandleInformation(errR, HANDLE_FLAG_INHERIT, 0);
     }
-    HANDLE nul = errOut ? INVALID_HANDLE_VALUE : CreateFileA("NUL", GENERIC_WRITE, FILE_SHARE_WRITE, &sa, OPEN_EXISTING, 0, nullptr);
+    HANDLE nul = (errOut || errInherit) ? INVALID_HANDLE_VALUE : CreateFileA("NUL", GENERIC_WRITE, FILE_SHARE_WRITE, &sa, OPEN_EXISTING, 0, nullptr);
     // Quote an argument only when it NEEDS it. Quoting unconditionally breaks a
     // command processor switch — cmd.exe does not recognise a quoted `"/c"` — and
     // `cmd.exe /c "…"` is exactly the shape shell() and the not-an-.exe fallback
@@ -221,7 +227,18 @@ static void spawnCapture(const std::vector<std::string>& argv, double timeoutSec
     else SetHandleInformation(inH, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
     si.hStdInput = inH;
     si.hStdOutput = outW;
-    si.hStdError = errOut ? errW : nul;
+    // STARTF_USESTDHANDLES needs an inheritable handle for stderr too; the same
+    // caveat as stdin above applies, so an unusable one falls back to NUL.
+    HANDLE errNul = INVALID_HANDLE_VALUE, errH = INVALID_HANDLE_VALUE;
+    if (!errOut && errInherit) {
+        errH = GetStdHandle(STD_ERROR_HANDLE);
+        if (errH == nullptr || errH == INVALID_HANDLE_VALUE) {
+            errNul = CreateFileA("NUL", GENERIC_WRITE, FILE_SHARE_WRITE, &sa, OPEN_EXISTING, 0, nullptr);
+            errH = errNul;
+        }
+        else SetHandleInformation(errH, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+    }
+    si.hStdError = errOut ? errW : (errInherit ? errH : nul);
     PROCESS_INFORMATION pi; ZeroMemory(&pi, sizeof(pi));
     std::vector<char> cmdbuf(cmd.begin(), cmd.end()); cmdbuf.push_back('\0');
     std::string envblk; if (envKV) envblk = winEnvBlock(*envKV);
@@ -241,6 +258,7 @@ static void spawnCapture(const std::vector<std::string>& argv, double timeoutSec
     }
     CloseHandle(outW); if (errW) CloseHandle(errW); if (nul != INVALID_HANDLE_VALUE) CloseHandle(nul);
     if (inNul != INVALID_HANDLE_VALUE) CloseHandle(inNul);
+    if (errNul != INVALID_HANDLE_VALUE) CloseHandle(errNul);
     if (!started) {
         // A silent -1 with no output is undiagnosable — say WHY, on the error
         // stream when one was asked for, otherwise on our own stderr.
@@ -309,7 +327,9 @@ static void spawnCapture(const std::vector<std::string>& argv, double timeoutSec
         setpgid(0, 0); // own process group, so a timeout can kill grandchildren too
         dup2(pipefd[1], STDOUT_FILENO);
         if (errOut) dup2(errfd[1], STDERR_FILENO);
-        else { int devnull = open("/dev/null", O_WRONLY); if (devnull >= 0) dup2(devnull, STDERR_FILENO); }
+        else if (!errInherit) { int devnull = open("/dev/null", O_WRONLY); if (devnull >= 0) dup2(devnull, STDERR_FILENO); }
+        // errInherit: STDERR_FILENO is left exactly as we got it — the child
+        // writes to the same place we do.
         close(pipefd[0]); close(pipefd[1]);
         if (errOut) { close(errfd[0]); close(errfd[1]); }
         if (!cwd.empty()) { if (::chdir(cwd.c_str()) != 0) _exit(126); }
@@ -7945,7 +7965,7 @@ void Interpreter::registerBuiltins() {
         // `zrun('git','--help', :!out, :!err)` stay silent); unspecified inherits.
         long long childPid = 0;
         spawnCapture(argv, timeoutSec, out, code, timedout, &I, errMode != -1 ? &err : nullptr, cwd, &childPid,
-                     haveEnv ? &envKV : nullptr);
+                     haveEnv ? &envKV : nullptr, errMode == -1);
         // Deliver a redirected stream to its handle. The child has already
         // finished, so this is a copy rather than a live redirection — the
         // handle sees the whole stream at once, in order, which is what a
@@ -7958,7 +7978,7 @@ void Interpreter::registerBuiltins() {
         drainTo(outSink, out);
         drainTo(errSink, err);
         if (outMode == -1) std::cout << out; // not capturing: echo child stdout (approximates inherit)
-        if (errMode == -1) { /* stderr already inherited by the child */ }
+        if (errMode == -1) { /* the child inherited our stderr and wrote straight to it */ }
         (*p.hash())["exitcode"] = Value::integer(code);
         (*p.hash())["out-str"] = Value::str(out);
         (*p.hash())["err-str"] = Value::str(err);
@@ -7990,7 +8010,8 @@ void Interpreter::registerBuiltins() {
         I.syncEnvToProcess(); // child inherits any %*ENV changes the program made
         std::string out, err; int code = 0; bool timedout = false;
         long long childPid = 0;
-        spawnCapture(argv, 0, out, code, timedout, &I, errMode != -1 ? &err : nullptr, "", &childPid);
+        spawnCapture(argv, 0, out, code, timedout, &I, errMode != -1 ? &err : nullptr, "", &childPid,
+                     nullptr, errMode == -1);
         if (outMode == -1) std::cout << out;
         Value p = Value::makeHash(); p.hashKind = "Proc";
         Value av = Value::array(); av.isList = true; av.arr()->push_back(Value::str(cmd));
