@@ -21,11 +21,12 @@ release is written up in the [CHANGELOG](CHANGELOG.md).
 
 **Current focus:** the ecosystem sweep — all 2,524 distributions of the zef
 ecosystem run against rakupp, and the engine gets fixed until real modules
-install and pass their own test suites. The first full sweep (August 2026)
-counts **624 of 2,524 passing**, with another 438 blocked by a failing
+install and pass their own test suites. As of the first sweep-and-fix round
+(August 2026) **637 of 2,524 pass**, with another 437 blocked by a failing
 dependency before their own tests could run; what the sweep finds drives what
-gets built next. (The 59 in the table below is a small curated battery gated
-on every release; the sweep is the whole ecosystem.)
+gets built next ([the findings](docs/dev/findings/ECOSWEEP-2026-08.md), with
+the green list and per-dist results). (The 59 in the table below is a small
+curated battery gated on every release; the sweep is the whole ecosystem.)
 
 | | v3.6.0 | at v2.0.0 |
 |---|---:|---:|
