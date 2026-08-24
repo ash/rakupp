@@ -4040,7 +4040,12 @@ ExprPtr Parser::parsePrimary() {
                 // hyper/race/eager/lazy collect the loop's values like `do` does.
                 // The values are what a program reads; the parallelism hyper/race
                 // additionally promise is not modelled here.
-                u->op = (name == "BEGIN" || name == "ENTER" || loopPrefix) ? "do" : name;
+                // BEGIN keeps its own op: it evaluates ONCE (per node, the
+                // tree-walker's compile-once) — Digest::SHA2 indexes
+                // `(BEGIN blob64.new: map { frac 3√$_, 64 }, @primes[^80])[$t]`
+                // inside its round loop, and do-semantics recomputed the whole
+                // 80-root table per round: 6,400 FatRat square roots per block.
+                u->op = (name == "ENTER" || loopPrefix) ? "do" : name;
                 if (isKind(Tok::LBrace)) {
                     auto blk = parseBlock();
                     auto be = std::make_unique<BlockExpr>();

@@ -924,6 +924,8 @@ public:
     long long anonMixinSeq_ = 0; // names the anonymous role a value mixin composes
     struct FlipFlop { bool on = false; long long seq = 0; };
     std::unordered_map<const void*, FlipFlop> ffState_;
+    std::unordered_map<const void*, Value> beginCache_;   // expression BEGIN: once per node
+    std::mutex beginCacheMu_;
     bool subsetMatches(const std::string& name, const Value& v, int depth = 0);
     bool typeOrSubsetMatches(const Value& v, const std::string& type); // typeMatchesArg + subsets
     Value evalNqpOp(NqpOp* n); // the `use nqp` compatibility subset (zero-cost when unused)

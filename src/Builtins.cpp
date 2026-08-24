@@ -4560,6 +4560,60 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             return Value::str(args.empty() ? "null" : jsonEncode(args[0]));
         }
     }
+    // Rakupp::Internals::Blob — the engine half of the rakulib
+    // NativeHelpers::Blob shadow. The ecosystem dist of that name reads
+    // MoarVM's REPR memory layout by design (it scans object headers for a
+    // sentinel), which no other engine can satisfy; what its DEPENDENTS
+    // actually need is a data pointer into a Blob/CArray and bytes back from
+    // a pointer, and those are engine primitives here.
+    if (inv.t == VT::Type && inv.s == "Rakupp::Internals::Blob") {
+        // Pointers handed to C must outlive the Value COPY they were taken
+        // from: a promoted CowStr's body is retained in a ring (sharing the
+        // caller's buffer, so C sees the same bytes), an inline small is
+        // copied into it. 256 live buffers is far beyond any driver's
+        // in-flight set; the ring exists so the process never leaks unboundedly.
+        static std::deque<std::shared_ptr<const StrBody>> retained;
+        static std::deque<std::string> smalls;
+        if (m == "addr") {
+            if (args.empty()) return Value::integer(0);
+            Value& b = args[0];
+            if (b.t == VT::Hash && b.hash() && b.hash()->count("addr"))
+                return ncMakePointer("Pointer", (void*)(intptr_t)(*b.hash())["addr"].toInt());
+            // a CStruct instance carries its native body's address already —
+            // the CStruct shadow's pointer-to reads it here
+            if (b.t == VT::Object && b.obj()) {
+                auto it = b.obj()->attrs.find("__native_ptr");
+                if (it != b.obj()->attrs.end())
+                    return ncMakePointer("Pointer", (void*)(intptr_t)it->second.toInt());
+            }
+            if (b.t != VT::Str) return Value::integer(0);
+            const void* p;
+            if (auto body = b.s.bodyPtr()) {
+                retained.push_back(body);
+                if (retained.size() > 256) retained.pop_front();
+                p = body->text.data();
+            }
+            else {
+                smalls.push_back(b.s.str());
+                if (smalls.size() > 256) smalls.pop_front();
+                p = smalls.back().data();
+            }
+            return ncMakePointer("Pointer", (void*)p);
+        }
+        if (m == "read") {   // read(addr-or-Pointer, bytes, kind) -> a kinded Blob
+            long long addr = args.size() > 0 ? Interpreter::ncRawAddr(args[0]) : 0;
+            long long n    = args.size() > 1 ? args[1].toInt() : 0;
+            std::string kind = args.size() > 2 ? args[2].toStr() : "Buf";
+            if (!addr || n < 0) throw RakuError{Value::typeObj("X::AdHoc"), "Blob.read: null pointer"};
+            Value r = Value::str(std::string((const char*)(intptr_t)addr, (size_t)n));
+            r.hashKind = kind == "utf8" ? "utf8" : kind;
+            identify(r);
+            return r;
+        }
+        if (m == "managed") { // a byte-backed CArray owns its storage; a live one borrows
+            return Value::boolean(!args.empty() && args[0].t == VT::Str);
+        }
+    }
     if (inv.t == VT::Type && inv.s == "Encoding::Registry" && (m == "find" || m == "register")) {
         static std::map<std::string, Value> userEncodings; // fc name → registered Encoding
         auto fc = [](std::string s) { for (auto& c : s) c = (char)ascii::tolower((unsigned char)c); return s; };

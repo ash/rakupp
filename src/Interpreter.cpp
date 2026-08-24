@@ -1930,6 +1930,35 @@ Interpreter::Interpreter() {
         for (auto& d : splitSearchPath(rl)) libPaths_.push_back(d);
     if (const char* ro = std::getenv("ROAST"))
         libPaths_.push_back(std::string(ro) + "/packages/Test-Helpers/lib");
+    // The BINARY-relative rakulib/ — the engine's shadow modules
+    // (NativeHelpers::Blob first among them). The cwd-relative "rakulib" entry
+    // only exists when a program runs from the checkout root; a dist suite
+    // runs from its own extract dir and must still find the shadows, exactly
+    // as `rakupp install` finds install.raku beside the binary.
+    {
+        char buf[4096];
+        std::string self;
+#if defined(_WIN32)
+        DWORD n = ::GetModuleFileNameA(nullptr, buf, sizeof buf);
+        if (n > 0 && n < sizeof buf) self = buf;
+#elif defined(__APPLE__)
+        uint32_t sz = sizeof buf;
+        if (_NSGetExecutablePath(buf, &sz) == 0) self = buf;
+#else
+        ssize_t n = ::readlink("/proc/self/exe", buf, sizeof buf - 1);
+        if (n > 0) { buf[n] = '\0'; self = buf; }
+#endif
+        auto slash = self.rfind('/');
+        if (slash != std::string::npos) {
+            std::string dir = self.substr(0, slash);
+            for (const char* rel : {"/../rakulib", "/../libexec/rakupp/rakulib"}) {
+                std::string cand = dir + rel;
+                struct ::stat st;
+                if (::stat(cand.c_str(), &st) == 0 && S_ISDIR(st.st_mode))
+                    libPaths_.push_back(cand);
+            }
+        }
+    }
     // %*ENV — the process environment, as a Hash (found via the normal env chain).
     // The values are ALLOMORPHS, as `val` makes them: a variable set to "0" is an
     // IntStr and therefore FALSE, where a plain Str "0" is true in Raku (it is not
@@ -3746,6 +3775,11 @@ Value Interpreter::buildDistribution(const std::string& distRoot) {
     std::ostringstream ss; ss << meta.rdbuf();
     Value m = jsonParseDoc(ss.str());
     if (m.t != VT::Hash) return Value::any();
+    // Rakudo's Distribution meta carries `ver` ALONGSIDE `version` (its meta
+    // normalization adds the alias) — DBDish stamps every driver with
+    // `:ver($?DISTRIBUTION.meta<ver>)` and reads .^ver back in its suite
+    if (m.hash() && !m.hash()->count("ver") && m.hash()->count("version"))
+        (*m.hash())["ver"] = (*m.hash())["version"];
     Value d = Value::makeHash(); d.hashKind = "Distribution";
     (*d.hash())["meta"] = m;
     Value pfx = Value::str(distRoot); pfx.hashKind = "IO";
@@ -3762,6 +3796,8 @@ Value Interpreter::buildInstalledDistribution(const std::string& repo, const std
     Value m = jsonParseDoc(ss.str());
     if (m.t != VT::Hash) return Value::any();
     Value d = Value::makeHash(); d.hashKind = "Distribution";
+    if (m.t == VT::Hash && m.hash() && !m.hash()->count("ver") && m.hash()->count("version"))
+        (*m.hash())["ver"] = (*m.hash())["version"];   // Rakudo's meta alias, as above
     (*d.hash())["meta"] = m;
     Value pfx = Value::str(repo); pfx.hashKind = "IO";
     (*d.hash())["prefix"] = pfx;
@@ -5608,9 +5644,12 @@ static std::vector<std::string> libCandidates(const std::string& l) {
     return cands;
 }
 
-// dlopen a library by its candidate spellings, or throw X::Libc naming the most
+// dlopen a library by its candidate spellings, or throw naming the most
 // useful failure (an arch mismatch beats a generic not-found). One implementation
 // for callNative and cglobal — their copies had already been edited separately.
+// The exception is X::AdHoc, as Rakudo's is: DBDish::Pg reads its client
+// version under `CATCH { when X::AdHoc { } }`, and a libpq-less machine must
+// answer "no version", not kill the file (our invented X::Libc sailed past it).
 static void* dlopenLib(const std::string& lib) {
     std::string dlerr;
     for (const std::string& cand : libCandidates(lib)) {
@@ -5620,7 +5659,7 @@ static void* dlopenLib(const std::string& lib) {
             if (dlerr.empty() || es.find("architecture") != std::string::npos) dlerr = es;
         }
     }
-    throw RakuError{Value::typeObj("X::Libc"),
+    throw RakuError{Value::typeObj("X::AdHoc"),
         "Cannot load native library '" + lib + "'" + (dlerr.empty() ? "" : ": " + dlerr)};
 }
 
@@ -6014,15 +6053,21 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     // the eval dies (forward reference), keep the AST for one
                     // retry at first call.
                     if (sd->nativeLibExpr && c.code()->nativeLib.empty() && c.code()->nativeLibSub.empty()) {
-                        try {
-                            Value r = eval(sd->nativeLibExpr.get());
-                            if (r.t == VT::Code) { ValueList none; r = callCallable(r, none); }
-                            if (isDefined(r)) c.code()->nativeLib = r.toStr();
-                        } catch (RakuError&) {}
-                        // No lib yet? Named subs are HOISTED, so this runs before
-                        // the module's `constant SHA1 = …` statement has executed —
-                        // keep the AST and retry at first call, whose env chain
-                        // includes the module scope (the constant is visible then).
+                        // …but NOT while hoisting: the module's own `constant
+                        // LIB = …` has not executed yet, so the only LIB this
+                        // eval can find is a bare global some OTHER module
+                        // published — DBDish::SQLite's natives were baked to
+                        // Pg's 'pq' exactly that way. Defer to first call,
+                        // which retries in the sub's own closure.
+                        if (!hoistingSubs_) {
+                            try {
+                                Value r = eval(sd->nativeLibExpr.get());
+                                if (r.t == VT::Code) { ValueList none; r = callCallable(r, none); }
+                                if (isDefined(r)) c.code()->nativeLib = r.toStr();
+                            } catch (RakuError&) {}
+                        }
+                        // No lib yet? Keep the AST and retry at first call, in
+                        // the closure (the constant is visible there by then).
                         if (c.code()->nativeLib.empty())
                             c.code()->nativeLibExpr = sd->nativeLibExpr.get();
                     }
@@ -6695,6 +6740,12 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             ci->isRole = cd->isRole;
             ci->repr = cd->repr;
             ci->ver = cd->ver; ci->auth = cd->auth; ci->api = cd->api;
+            // COMPUTED name adverbs on a class, evaluated at declaration —
+            // `unit class DBDish::Oracle:ver($?DISTRIBUTION.meta<ver>)…` is how
+            // every DBDish driver stamps itself, and its suite reads .^ver back
+            if (cd->verExpr)  { try { ci->ver  = eval(cd->verExpr.get()).toStr();  } catch (RakuError&) {} }
+            if (cd->authExpr) { try { ci->auth = eval(cd->authExpr.get()).toStr(); } catch (RakuError&) {} }
+            if (cd->apiExpr)  { try { ci->api  = eval(cd->apiExpr.get()).toStr();  } catch (RakuError&) {} }
             // the class/role BODY scope: body lexicals (`my $lex = ...`) live here,
             // and methods/attr-defaults close over it
             auto bodyEnv = std::make_shared<Env>();
@@ -10634,19 +10685,32 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
         // path or bare name). Resolved once here, like Rakudo.
         std::string lib = c.nativeLib;
         if (lib.empty() && !c.nativeLibSub.empty()) {
-            if (Value* f = tctx_.cur->find("&" + c.nativeLibSub)) {
+            // the provider sub lives in the DECLARING module — resolve it in
+            // the sub's own closure first; the caller's env only as a fallback
+            Value* f = nullptr;
+            if (c.closure) f = c.closure->find("&" + c.nativeLibSub);
+            if (!f) f = tctx_.cur->find("&" + c.nativeLibSub);
+            if (f) {
                 ValueList none; Value r = callCallable(*f, none);
                 lib = r.toStr();
             }
         }
         if (lib.empty() && c.nativeLibExpr) {
-            // declaration-time eval failed — retry in the caller's env (best
-            // effort: a module-private constant may not be visible here)
+            // Declaration-time eval failed or answered nothing — retry in the
+            // sub's OWN closure (its module's constants live there, and the
+            // caller's env can hold a SAME-NAMED constant from another module:
+            // DBDish::SQLite's natives dlopen'd Pg's `LIB` once both drivers
+            // were up). An expr that evaluates to an UNDEFINED value is not a
+            // failure: `constant LIB = … !! Str` on non-Windows MEANS "no
+            // library — bind from what the process already loaded".
+            auto savedEnv = tctx_.cur;
+            if (c.closure) tctx_.cur = c.closure;
             try {
                 Value r = eval(const_cast<Expr*>(c.nativeLibExpr));
                 if (r.t == VT::Code) { ValueList none; r = callCallable(r, none); }
                 if (isDefined(r)) lib = r.toStr();
             } catch (RakuError&) {}
+            tctx_.cur = savedEnv;
         }
         if (!lib.empty()) handle = dlopenLib(lib); // name as-is, then platform-decorated forms
         if (c.nativeSymExpr) {
@@ -12201,6 +12265,17 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
         }
         env->define("@_", Value::array(args));
     } else env->define("@_", Value::array(args));
+    // the implicit *%_ EVERY method carries, signature or none: a paramless
+    // `method new()` still collects its named args there — DBDish::SQLite's
+    // is exactly that shape, stashing attribute inits in %_ and blessing
+    // with |%_ (the binder fills %_ itself when real params bound)
+    if (!env->local("%_")) {
+        Value h = Value::makeHash();
+        for (auto& a : args)
+            if (a.t == VT::Pair && a.namedArg && a.pairVal())
+                (*h.hash())[a.s.str()] = *a.pairVal();
+        if (!h.hash()->empty()) env->define("%_", std::move(h));
+    }
     auto saved = tctx_.cur;
     tctx_.cur = env;
     // state declarations in this method's body must write to ITS stateEnv (the
@@ -14549,14 +14624,29 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         bool scDef = b == "//" || b == "orelse";                 // keep when defined
         bool scAt  = b == "andthen", scNat = b == "notandthen";  // definedness-based
         if (scOr || scAnd || scDef || scAt || scNat) {
+            // `%h{$k} //= RHS` must not leave a key behind when RHS THROWS:
+            // probing the current value through lvalue() vivifies the entry,
+            // and an exception then unwinds past the assignment — DBIish's
+            // %installed grew a phantom 'Bogus' driver from exactly that.
+            // For a SIMPLE subscript (variable base, variable/literal index —
+            // no side effects to double-run) read first, vivify only when the
+            // assignment really happens.
             Value* lv = nullptr;
-            try { lv = lvalue(a->target.get()); } catch (RakuError&) {}
+            bool deferLv = false;
+            if (a->target->kind == NK::Index) {
+                auto* ix = static_cast<Index*>(a->target.get());
+                deferLv = ix->index && !ix->multiDim && ix->base->kind == NK::VarExpr &&
+                          (ix->index->kind == NK::VarExpr || ix->index->kind == NK::StrLit ||
+                           ix->index->kind == NK::IntLit);
+            }
+            if (!deferLv) { try { lv = lvalue(a->target.get()); } catch (RakuError&) {} }
             Value cur = lv ? *lv : eval(a->target.get());
             bool keep = scOr ? cur.truthy() : scAnd ? !cur.truthy()
                       : scAt ? !isDefined(cur) : isDefined(cur);
             if (keep) return sink ? Value::any() : cur;
-            if (!lv) throw RakuError{Value::typeObj("X::Assignment::RO"), "Target is not assignable"};
             Value rhs = eval(a->value.get());
+            if (!lv) { try { lv = lvalue(a->target.get()); } catch (RakuError&) {} }
+            if (!lv) throw RakuError{Value::typeObj("X::Assignment::RO"), "Target is not assignable"};
             int nb = lv->natBits; bool ns = lv->natSigned; bool nf = lv->natFloat;
             { ParStripe ws(*this, lv); *lv = rhs; } // torn-copy contract
             if (nb) wrapNative(*lv, nb, ns, nf);
@@ -15007,6 +15097,72 @@ static bool reverseWordOp(const std::string& op) {
         "unicmp", "coll", "div", "mod", "gcd", "lcm", "min", "max", "x", "xx"};
     return op.size() > 1 && op[0] == 'R' && bases.count(op.substr(1)) > 0;
 }
+
+#if RAKUPP_HAS_INT128
+// The u64 lane. SHA-512-style code lives in [0, 2^64), and the top-bit half
+// of that range cannot sit in a signed int64 — every such word fell into a
+// base-1e9 BigInt, where a bit op is a radix conversion and `+<` is a
+// multiply by 2.pow($n): Digest's sha512 measured 545× behind Rakudo on the
+// same file. When both operands are u64-representable (a non-negative small
+// Int, or a non-negative BigInt that fits), the op runs in unsigned 64/128-bit
+// machine words and the result boxes back — a plain Int when it fits, a
+// BigInt only above 2^63.
+static bool valU128(const Value& v, unsigned __int128& out) {
+    if (v.t != VT::Int) return false;
+    if (!v.big()) {
+        if (v.i < 0) return false;
+        out = (unsigned __int128)(uint64_t)v.i;
+        return true;
+    }
+    const BigInt& b = *v.big();
+    // 2^128 ≈ 3.4e38: five 1e9-limbs (< 1e45) can overflow the accumulator,
+    // so the top limb is range-checked before it is folded in
+    if (b.sign < 0 || b.mag.size() > 5) return false;
+    // 2^128 ≈ 340.28e36: a top limb past 339 could overflow the accumulator,
+    // so the razor-thin band just under 2^128 takes the slow path instead
+    if (b.mag.size() == 5 && b.mag[4] > 339u) return false;
+    unsigned __int128 x = 0;
+    for (size_t k = b.mag.size(); k-- > 0; ) x = x * BigInt::BASE + b.mag[k];
+    out = x;
+    return true;
+}
+static Value boxU64(uint64_t v) {
+    if (v <= (uint64_t)INT64_MAX) return Value::integer((long long)v);
+    BigInt b; b.sign = 1;
+    while (v) { b.mag.push_back((uint32_t)(v % BigInt::BASE)); v /= BigInt::BASE; }
+    return Value::bigint(b);
+}
+static Value boxU128(unsigned __int128 v) {
+    if (v <= (unsigned __int128)UINT64_MAX) return boxU64((uint64_t)v);
+    BigInt b; b.sign = 1;
+    while (v) { b.mag.push_back((uint32_t)(v % BigInt::BASE)); v /= BigInt::BASE; }
+    return Value::bigint(b);
+}
+// The SIGNED window, for & | ^ only: SHA's Ch is `+^$x +& $z` — the prefix
+// NOT makes a NEGATIVE every round, and Raku's bitwise ops are defined on
+// the infinite two's complement. For values in (-2^127, 2^127) a native
+// __int128 IS that two's complement, sign extension included, so the op
+// runs on machine words and the result boxes by sign.
+static bool valI128(const Value& v, __int128& out) {
+    if (v.t != VT::Int) return false;
+    if (!v.big()) { out = (__int128)v.i; return true; }
+    const BigInt& b = *v.big();
+    if (b.mag.size() > 5) return false;
+    if (b.mag.size() == 5 && b.mag[4] > 169u) return false; // |x| < 170e36 < 2^127
+    unsigned __int128 x = 0;
+    for (size_t k = b.mag.size(); k-- > 0; ) x = x * BigInt::BASE + b.mag[k];
+    out = b.sign < 0 ? -(__int128)x : (__int128)x;
+    return true;
+}
+static Value boxI128(__int128 v) {
+    if (v >= 0) return boxU128((unsigned __int128)v);
+    unsigned __int128 m = (unsigned __int128)(-v);
+    BigInt b; b.sign = -1;
+    while (m) { b.mag.push_back((uint32_t)(m % BigInt::BASE)); m /= BigInt::BASE; }
+    Value r = Value::bigint(b);
+    return r.big() && r.big()->fitsLL() ? Value::integer(r.big()->toLL()) : r;
+}
+#endif // RAKUPP_HAS_INT128
 
 Value applyArith(const std::string& op, const Value& l, const Value& r) {
     // Hot path: 1–2-char arithmetic/comparison ops on plain Int/Int — the
@@ -15684,6 +15840,15 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                 if (op == "*" && !rakupp::mul_ovf(a, b, &res)) return Value::integer(res);
             }
             if (!anyRat) {
+#if RAKUPP_HAS_INT128
+                unsigned __int128 ua, ub;
+                if (valU128(l, ua) && valU128(r, ub)) {
+                    constexpr unsigned __int128 UMAX = ~(unsigned __int128)0;
+                    if (op == "+") { if (ua <= UMAX - ub) return boxU128(ua + ub); }
+                    else if (op == "*") { if (!ub || ua <= UMAX / ub) return boxU128(ua * ub); }
+                    else if (ua >= ub) return boxU128(ua - ub);   // "-", non-negative
+                }
+#endif
                 BigInt a = l.toBig(), b = r.toBig();
                 return Value::bigint(op == "+" ? a + b : op == "-" ? a - b : a * b);
             }
@@ -15909,6 +16074,11 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     if (op == "+&" || op == "+|" || op == "+^") {
         if (l.t == VT::Str || r.t == VT::Str) { strictNum(l); strictNum(r); } // reject a non-numeric string
         if (l.big() || r.big()) {
+#if RAKUPP_HAS_INT128
+            __int128 sa, sb;
+            if (valI128(l, sa) && valI128(r, sb))
+                return boxI128(op[1] == '&' ? (sa & sb) : op[1] == '|' ? (sa | sb) : (sa ^ sb));
+#endif
             BigInt res = bigBitwise(l.big() ? *l.big() : BigInt(l.toInt()),
                                     r.big() ? *r.big() : BigInt(r.toInt()), op[1]);
             return res.fitsLL() ? Value::integer(res.toLL()) : Value::bigint(res);
@@ -15921,6 +16091,15 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         if (sh < 0) return Value::integer(0);
         if (!l.big() && sh < 62 && std::llabs(l.toInt()) < (1LL << (62 - sh)))
             return Value::integer(l.toInt() << sh);
+#if RAKUPP_HAS_INT128
+        {   unsigned __int128 ua;
+            if (sh < 128 && valU128(l, ua)) {
+                uint64_t hi = (uint64_t)(ua >> 64), lo = (uint64_t)ua;
+                int bl = hi ? 128 - __builtin_clzll(hi) : (lo ? 64 - __builtin_clzll(lo) : 0);
+                if (bl + sh <= 127) return boxU128(ua << (int)sh);
+            }
+        }
+#endif
         BigInt lb = l.big() ? *l.big() : BigInt(l.toInt());
         BigInt res = lb * BigInt(2).pow(sh);
         return res.fitsLL() ? Value::integer(res.toLL()) : Value::bigint(res);
@@ -15929,6 +16108,11 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         bitwiseInt(l); long long sh = bitwiseInt(r);
         if (sh < 0) return Value::integer(0);
         if (!l.big()) return Value::integer(sh >= 63 ? (l.toInt() < 0 ? -1 : 0) : (l.toInt() >> sh));
+#if RAKUPP_HAS_INT128
+        {   unsigned __int128 ua;
+            if (valU128(l, ua)) return boxU128(sh >= 128 ? (unsigned __int128)0 : ua >> (int)sh);
+        }
+#endif
         BigInt q, rem;
         BigInt::divmod(*l.big(), BigInt(2).pow(sh), q, rem);
         if (l.big()->sign < 0 && !rem.isZero()) q = q - BigInt(1); // arithmetic shift = floor
@@ -20254,6 +20438,26 @@ Value Interpreter::evalUnary(Unary* u) {
         // $[...] / $(...) / $%h: the container becomes ONE non-flattening item
         if (v.t == VT::Array || v.t == VT::Hash) v.itemized = true;
         return v; // item context
+    }
+    if (u->op == "BEGIN") {
+        // once per NODE: the first evaluation stands in for compile time,
+        // every later one reads the cached value (see the parser note)
+        {
+            std::lock_guard<std::mutex> lk(beginCacheMu_);
+            auto it = beginCache_.find(u);
+            if (it != beginCache_.end()) return it->second;
+        }
+        Value v;
+        {
+            auto* inner = const_cast<Unary*>(u);
+            std::string saved = inner->op;
+            inner->op = "do";
+            struct OpG { Unary* n; std::string s; ~OpG() { n->op = s; } } og{inner, saved};
+            v = eval(inner);
+        }
+        std::lock_guard<std::mutex> lk(beginCacheMu_);
+        beginCache_.emplace(u, v);
+        return v;
     }
     if (u->op == "do") {
         if (u->operand->kind == NK::BlockExpr) {

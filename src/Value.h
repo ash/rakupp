@@ -96,6 +96,10 @@ public:
 
     const std::string& str() const { return p_ ? p_->text : s_; }
     operator const std::string&() const { return str(); }         // NOLINT(google-explicit-constructor)
+    // The shared body, when the string is promoted (null for inline smalls).
+    // NativeHelpers::Blob's pointer-to retains it so a pointer handed to C
+    // outlives the Value copy it was taken from.
+    std::shared_ptr<const StrBody> bodyPtr() const { return p_; }
 
     // Write access. Detaches from the shared body first, so a mutation never
     // reaches another Value holding the same text. The result stays inline
