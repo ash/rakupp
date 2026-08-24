@@ -13,6 +13,7 @@
 #include "Lint.h"
 #include "Ffi.h"
 #include "Highlight.h"
+#include "McpServer.h"
 #include "Repl.h"
 #include <cstdlib>
 #include <cstring>
@@ -1296,6 +1297,7 @@ int main(int argc, char** argv) {
         static const std::set<std::string> kLongNames = {
             "exe", "cpp", "emit-cpp", "bundle", "aot", "lint", "highlight",
             "ansi", "terminal", "ast", "dump-ast", "doc", "help", "version",
+            "mcp",
         };
         std::string bare = argv[1] + 1;
         if (kLongNames.count(bare)) {
@@ -1319,7 +1321,7 @@ int main(int argc, char** argv) {
     // `-o out --exe src` is as good as `--exe src -o out`.
     enum class Mode { Run, Help, Version, FfiInfo, Highlight, Ast, AstRoundtrip,
                       PrecompSetting, PrecompInfo, PrecompClean, Check, Lint,
-                      Cpp, Bundle, Aot, Exe };
+                      Cpp, Bundle, Aot, Exe, Mcp };
     Mode mode = Mode::Run;
     std::string modeTok;                  // the spelling that selected the mode (for messages)
     std::vector<std::string> libPaths;    // -I, both spellings, any position
@@ -1341,6 +1343,7 @@ int main(int argc, char** argv) {
     bool quiet = false;                   // --lint -q
     bool optimize = false;                // -O (compile modes and --cpp)
     bool sawHtml = false;                 // --html is only legal under --highlight
+    long mcpTimeout = -1;                 // --timeout=SECS, only legal under --mcp
 
     // Rakudo prints this banner for an unknown option and exits 0; we stay
     // bug-compatible (the exit code included — it is pinned by the suite).
@@ -1383,6 +1386,18 @@ int main(int argc, char** argv) {
             }
             // mode selectors
             if (a == "--highlight") { if (!setMode(Mode::Highlight, a)) return 4; continue; }
+            if (a == "--mcp") { if (!setMode(Mode::Mcp, a)) return 4; continue; }
+            if (a == "--timeout" || a.rfind("--timeout=", 0) == 0) {
+                std::string v = a.size() > 9 && a[9] == '=' ? a.substr(10)
+                              : i + 1 < argc ? std::string(argv[++i]) : std::string();
+                char* rest = nullptr;
+                mcpTimeout = std::strtol(v.c_str(), &rest, 10);
+                if (v.empty() || !rest || *rest || mcpTimeout < 0) {
+                    std::cerr << "--timeout wants a whole number of seconds (0 = no limit)\n";
+                    return 4;
+                }
+                continue;
+            }
             if (a == "--ansi" || a == "--terminal") {
                 // a bare --ansi implies --highlight (terminal output)
                 if (mode != Mode::Run && mode != Mode::Highlight) return illegalOpt(a);
@@ -1536,6 +1551,19 @@ int main(int argc, char** argv) {
     if (mode != Mode::Help && mode != Mode::Version && mode != Mode::FfiInfo) {
         if (sawHtml && mode != Mode::Highlight) return illegalOpt("--html");
         if (quiet && mode != Mode::Lint) return illegalOpt("-q");
+        if (mcpTimeout >= 0 && mode != Mode::Mcp) return illegalOpt("--timeout");
+        if (mode == Mode::Mcp) {
+            // The server IS the program; stdio is the protocol. A source file
+            // or -e here is a misunderstanding worth a sentence, not a guess.
+            if (haveSrc) {
+                std::cerr << "--mcp serves the interpreter over stdio and takes no program\n";
+                return 4;
+            }
+            if (!libPaths.empty()) {
+                std::cerr << "--mcp: the embedded session reads RAKULIB=dir1,dir2 — use that instead of -I\n";
+                return 4;
+            }
+        }
         if (!outPath.empty() && !isCompileMode(mode)) return illegalOpt("-o");
         if (optimize && !isCompileMode(mode) && mode != Mode::Cpp) return illegalOpt("-O");
         // --slim shapes the LINK of a compiled binary, so it means nothing to
@@ -1652,6 +1680,15 @@ int main(int argc, char** argv) {
 "  rakupp install --list        What is installed; --check: store integrity\n"
 "                               report; --refresh: refetch the cached index(es)\n"
 "\n"
+"Serve:\n"
+"  rakupp --mcp                 Serve the interpreter over the Model Context\n"
+"                               Protocol (JSON-RPC on stdio), so MCP clients —\n"
+"                               Claude Code and friends — get two tools: raku_eval\n"
+"                               (a persistent session) and raku_parse (grammars).\n"
+"                               --timeout=SECS answers a stuck call and exits, and\n"
+"                               the client restarts fresh (default 120; 0 = never);\n"
+"                               -M preloads modules into the session\n"
+"\n"
 "Inspection:\n"
 "  rakupp --lint SRC [-q]       Static-analyze without running: warn about unused\n"
 "                               variables, unreachable code, redeclarations, etc.\n"
@@ -1720,6 +1757,13 @@ int main(int argc, char** argv) {
     // native-call bug report, and how the test suite tells its two CI legs
     // apart, so it is worth a flag of its own.
     if (mode == Mode::FfiInfo) { std::cout << ffi::describe() << "\n"; return 0; }
+
+    if (mode == Mode::Mcp) {
+        rakupp::mcp::Options mo;
+        if (mcpTimeout >= 0) mo.timeoutSecs = (int)mcpTimeout;
+        mo.preload = preloadModules;
+        return rakupp::mcp::runServer(mo);
+    }
 
     // --highlight [--html|--ansi] [FILE | -e CODE | -]  : syntax-highlight Raku
     // and exit. Default format is html (the course consumer); `-`/no file reads

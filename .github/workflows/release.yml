@@ -243,6 +243,14 @@ jobs:
         if: runner.os != 'Windows'
         run: build/rakupp tools/bindings-smoke.raku build
 
+      # The MCP gate: `rakupp --mcp` driven exactly as an MCP client drives
+      # it -- the initialize handshake, both tools, session state across
+      # calls, the parse tree and failure diagnosis, and the watchdog's
+      # answer-then-exit contract for a call that cannot be interrupted.
+      - name: MCP server gate (POSIX)
+        if: runner.os != 'Windows'
+        run: build/rakupp tools/mcp-smoke.raku build
+
       # The SLIM negative suite (SLIM-PLAN P3+P4): --slim's grammar,
       # X::Feature::NotBuilt from every cut feature, the --exe-info manifest
       # round-trip, the size budgets, and the P4 scan's decisions (cut the

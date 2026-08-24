@@ -91,6 +91,7 @@ rakupp --exe app.raku -o app     # compile it
 | `--profile[=FILE]` | Routine-level wall-time profile after the run (`.json` for machine-readable) |
 | `--exe SRC -o OUT` | Native-compile to a standalone binary (also `--bundle`, `--aot`) |
 | `--highlight [SRC]` | Syntax-highlight Raku to HTML (`--html`) or terminal (`--ansi`) |
+| `--mcp` | Serve the interpreter over the Model Context Protocol for AI agent clients |
 | `--lint SRC` | Static-analyze without running: unused variables, unreachable code, etc. |
 | `-c` / `--ast SRC` | Syntax-check only / print the parsed AST |
 
@@ -154,6 +155,25 @@ file and `.made` values are computed by Raku actions during the parse. Every
 language has a guide and two runnable examples in
 [bindings/examples/](bindings/examples/README.md), kept honest by two smoke
 gates that re-run everything the guides claim.
+
+## Give an AI agent a Raku interpreter — MCP
+
+*Work in progress, on the same terms as the bindings above.*
+
+`rakupp --mcp` serves the interpreter over the
+[Model Context Protocol](https://modelcontextprotocol.io) — JSON-RPC on
+stdio — so MCP clients (Claude Code, Claude Desktop, and their kind) get two
+tools: **`raku_eval`**, one persistent session per conversation, with exact
+Rat and big-integer arithmetic; and **`raku_parse`**, grammars as
+deterministic text extraction, with line/column/rule diagnosis when a parse
+fails. Registering it with Claude Code is one line:
+
+```sh
+claude mcp add raku -- /path/to/rakupp --mcp
+```
+
+Guide: **[MCP.md](docs/guide/MCP.md)**. Gated by `tools/mcp-smoke.raku`,
+which drives the server exactly as a client does, on every push.
 
 ## Documentation
 
