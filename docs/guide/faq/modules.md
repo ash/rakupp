@@ -57,8 +57,8 @@ Could not find Nope in:
     .
     rakulib
     /Users/ada/.raku
-    /usr/local/Cellar/rakudo/2026.07/share/perl6/site
-    /usr/local/Cellar/rakudo/2026.07/share/perl6/vendor
+    /usr/local/Cellar/rakudo/2026.08/share/perl6/site
+    /usr/local/Cellar/rakudo/2026.08/share/perl6/vendor
 ```
 
 If the store you expect is not in that list, that is the bug to chase — not the
@@ -71,7 +71,7 @@ Point `-I` at the **repository directory** — the one containing `short/`,
 `sources/` and `dist/` — not at any of those subdirectories:
 
 ```sh
-rakupp -I ~/.rakubrew/versions/moar-2026.07/install/share/perl6/site -e 'use Foo'
+rakupp -I ~/.rakubrew/versions/moar-2026.08/install/share/perl6/site -e 'use Foo'
 rakupp -I inst#$HOME/rakudo-dev/share/perl6/site                     -e 'use Foo'
 ```
 

@@ -87,7 +87,7 @@ std::string nfcNormalize(std::string in);
 // One definition. It used to be spelled twice — kOracleEra in Builtins.cpp and
 // a bare "2026.07" literal in Interpreter.cpp's raku-object builder — which is
 // exactly the drift a future bump would have tripped over.
-inline constexpr const char* kOracleEra = "2026.07";
+inline constexpr const char* kOracleEra = "2026.08";
 
 // The one lock every runtime write to a stream or an open handle's buffer
 // takes. Coarse on purpose: output is not a bottleneck, and one lock is far

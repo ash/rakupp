@@ -912,7 +912,7 @@ string, `.subparse` allows a partial match. Add an actions class with
 > `$*DISTRO` instead.
 
 > `$*RAKU.compiler.version` reports the **Rakudo era Raku++ is verified
-> against** (`v2026.07`), not the Raku++ release — modules gate on
+> against** (`v2026.08`), not the Raku++ release — modules gate on
 > `$*RAKU.compiler.version < v2023.12` to mean "modern semantics", and answering
 > our own `v1.7.0` reads as a pre-2000 Rakudo. The release is on `.release` and
 > `.id`; identify the engine with `.name` (`Raku++`) or `.backend` (`cpp`). See

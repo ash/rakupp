@@ -5,7 +5,7 @@ design we settled on and the measurements behind it, so the next person to look
 at RakuAST does not have to re-derive them.
 
 Written 2026-07-31 (rakupp v1.5.2+); every measurement and probe below
-re-verified 2026-08-18 against **Rakudo 2026.07** — still the newest release —
+re-verified 2026-08-18 against **Rakudo 2026.07** — the newest release at the time —
 and **rakupp 3.14.0**. Nothing in the design changed; the drift in the numbers
 is noted where it happened. `grep -rn RakuAST src/` is still empty.
 

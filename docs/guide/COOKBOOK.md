@@ -271,8 +271,8 @@ say $p.out.slurp(:close).chomp;           # → hi          (capture subprocess 
 
 say $*RAKU.compiler.name;                 # → Raku++
 say $*RAKU.compiler.backend;              # → cpp
-say $*RAKU.compiler.release;              # → 1.7.0    (the Raku++ version)
-say $*RAKU.compiler.version;              # → v2026.07 (the Rakudo era tracked)
+say $*RAKU.compiler.release;              # → 3.6.0    (the Raku++ version)
+say $*RAKU.compiler.version;              # → v2026.08 (the Rakudo era tracked)
 ```
 
 Identify the engine with `.name`, not `.version`: `.version` deliberately reports

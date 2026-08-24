@@ -1,7 +1,7 @@
 # From drilling JSON::Class in the v2 battery — six independent fixes, each a
 # construct real modules use at load time:
 #
-#   * $*RAKU.compiler.version now answers the ORACLE ERA (v2026.07), not
+#   * $*RAKU.compiler.version now answers the ORACLE ERA (kOracleEra), not
 #     rakupp's own release: modules gate with `< v2023.12` to ask "modern
 #     semantics?", and v1.5.x read as pre-2000 Rakudo. .release keeps ours.
 #   * `-> \p (:key($k) is raw, …)` — sub-signature on a SIGILLESS param.

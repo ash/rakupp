@@ -81,14 +81,14 @@ on the list.
 varies. Neither is guaranteed by the language — sort if you depend on it.
 
 **`$*RAKU.compiler.version` reports a Rakudo era, not the Raku++ release.**
-It answers `v2026.07` — the Rakudo release Raku++ is verified byte-identical
+It answers `v2026.08` — the Rakudo release Raku++ is verified byte-identical
 against — while the rest of the object says who is actually running:
 
 ```raku
 say $*RAKU.compiler.name;       # → Raku++      (Rakudo says: rakudo)
-say $*RAKU.compiler.version;    # → v2026.07    (the era tracked, not our release)
-say $*RAKU.compiler.release;    # → 1.7.0       (Rakudo leaves this empty)
-say $*RAKU.compiler.id;         # → 1.7.0       (Rakudo: a commit SHA)
+say $*RAKU.compiler.version;    # → v2026.08    (the era tracked, not our release)
+say $*RAKU.compiler.release;    # → 3.6.0       (Rakudo leaves this empty)
+say $*RAKU.compiler.id;         # → 3.6.0       (Rakudo: a commit SHA)
 say $*RAKU.compiler.backend;    # → cpp         (Rakudo: moar)
 ```
 

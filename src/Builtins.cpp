@@ -5378,7 +5378,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         if (isComp && m == "build") return Value::str(rakupp::buildId());
         if (isComp && m == "build-date") return Value::str(rakupp::buildDate());
         if (m == "codename") return Value::str("Raku++");
-        // Rakudo: `Raku (6.d)` for the language, `rakudo (2026.07)` for the
+        // Rakudo: `Raku (6.d)` for the language, `rakudo (2026.08)` for the
         // compiler — name plus the version THAT object reports, not the language
         // revision in both. .Str is the bare name.
         if (m == "Str") return Value::str(nm);
