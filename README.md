@@ -11,40 +11,38 @@ WebAssembly, no server required. It is not a fork of Rakudo and shares no code
 with it; it targets the *language*, measured against
 [**Roast**](https://github.com/Raku/roast), the official Raku test suite.
 
-**Status:** current release **v3.6.0** (2026-08-21) — *the Perl 5 lessons*: a
-compact insertion-ordered hash payload and three allocation fixes found by
-benchmarking against perl (the hash-fill kernel now measures a statistical tie
-with Perl 5 under `--exe -O3`), plus first `DESTROY` support. The release
-before it was *the 6.e language revision*: `use v6.e.PREVIEW;` turns on the
-whole of Raku 6.e, and its behaviour changes can affect existing code. Every
-release is written up in the [CHANGELOG](CHANGELOG.md).
+**Status:** current release **v3.7.0** (2026-08-24) — *the whole ecosystem, and
+a new oracle*: every one of the 2,524 distributions in the zef ecosystem run
+against the engine and the failure clusters fixed, `rakupp install` as a
+first-class installer, a sixth binding host, and the oracle era moved to
+Rakudo **2026.08**. The release before it was *the Perl 5 lessons*: a compact
+insertion-ordered hash payload and three allocation fixes found by benchmarking
+against perl, plus first `DESTROY` support. Every release is written up in the
+[CHANGELOG](CHANGELOG.md).
 
 **Current focus:** the ecosystem sweep — all 2,524 distributions of the zef
 ecosystem run against rakupp, and the engine gets fixed until real modules
 install and pass their own test suites. As of the first sweep-and-fix round
-(August 2026) **637 of 2,524 pass**, with another 437 blocked by a failing
+(August 2026) **637 of 2,524 pass**, with another 421 blocked by a failing
 dependency before their own tests could run; what the sweep finds drives what
 gets built next ([the findings](docs/dev/findings/ECOSWEEP-2026-08.md), with
 the green list and per-dist results). (The 59 in the table below is a small
 curated battery gated on every release; the sweep is the whole ecosystem.)
 
-| | v3.6.0 | at v2.0.0 |
+| | v3.7.0 | at v2.0.0 |
 |---|---:|---:|
-| Roast, per individual test — of what the suite declares‡ | **198,642 of ~218,600 (90%)** | 197,090 of ~203,500 (97%) |
+| Roast, per individual test — of what the suite declares‡ | **198,679 of ~218,605 (90%)** | 197,090 of ~203,500 (97%) |
 | Roast, all-or-nothing — files fully passing, of 1,464 | **633 (43%)** | 594 |
-| Official documentation examples byte-identical on both engines | **949**† | 952 |
-| Ecosystem distributions passing their own `zef` install-time test suite | **49 / 59**† | 50 / 59 |
-| Local regression suite | **499** | 312 |
-| `say "Hello"` compiled with `--exe --slim` | **5,247,200 B** | 9,830,680 B (no `--slim`) |
+| Official documentation examples byte-identical on both engines | **950** | 952 |
+| Ecosystem distributions passing their own `zef` install-time test suite | **50 / 59** | 50 / 59 |
+| Local regression suite | **512** | 312 |
+| `say "Hello"` compiled with `--exe --slim` | **5,827,368 B** | 9,830,680 B (no `--slim`) |
 
 ‡ Counted against each file's declared `plan N`, so a file that aborts is
 charged for every test it failed to run; on the all-or-nothing bar a file
 counts only if *every* assertion in it passes. Both are measured with
 parallelism and true LTM on — the same binary configuration users get. How the
 runs are profiled and gated: [COUNTING.md](docs/status/COUNTING.md).
-
-† Measured at v3.5.0 — these two batteries were not re-run for v3.6.0; the
-[CHANGELOG](CHANGELOG.md) says why.
 
 ## Install
 

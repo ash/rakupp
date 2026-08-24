@@ -3,6 +3,157 @@
 Release notes for tagged releases. Numbers are measured, not projected;
 methodology for all Roast figures is in [docs/status/COUNTING.md](docs/status/COUNTING.md).
 
+## v3.7.0 (2026-08-24) — the whole ecosystem, and a new oracle
+
+| | v3.6.0 | v3.7.0 |
+|---|---:|---:|
+| Roast assertions (all declared) | 198,642 | **198,679** |
+| Roast files fully passing | 633 / 1,464 | **633 / 1,464** |
+| Local regression suite (`t/run.raku`) | 499 | **512** |
+| Module battery (own install-time suites) | 49 / 59 | **50 / 59** |
+| Documentation examples reproduced exactly | 949 | **950** |
+| `say "Hello"` compiled with `--exe` | 8,511,112 B | **9,091,256 B** |
+| …compiled with `--exe --slim` | 5,247,200 B | **5,827,368 B** |
+
+Measured against **Rakudo 2026.08**, which landed during this cycle and is now
+the oracle era the engine reports and the gates verify against.
+
+The Roast release run took five passes and the file count repeats at 633; the
+band was 633 / 631 / 633 / 633 / 633. Each pass drops exactly one file to the
+harness's 10-second timeout and it is a *different* file every time — the
+union of the five is **634**, and `comm -23` against the last published
+per-file map (v3.6.0) is **empty**: nothing regressed in any run. Every file
+that some pass dropped scores 100% when run alone, `S03-operators/scalar-assign.t`
+(4 assertions) three times over. The one genuine gain is
+`S32-list/map_function_return_values.t`, which every pass agrees on.
+
+Two roast files had been left renamed `.SKIP` in the checkout since before
+v3.6.0 — `S04-statements/try.t` and `S12-construction/destruction.t`, both of
+which [ROAST.md](docs/status/ROAST.md) already describes as measured in-run.
+They are restored, which is why the denominator is 1,464 rather than the 1,462
+a run would otherwise report.
+
+### The ecosystem sweep: 2,524 distributions, and what they taught the engine
+
+The headline work of this release is not in the tables above. Every
+distribution in the REA index — **2,524 dists, the latest release of each** —
+was put through `rakupp test`: its build hook, its dependency install, its own
+test suite. Then a fix campaign over the failure clusters, then a re-run of
+every non-passing dist on the fixed engine. **637 of 2,524 pass their own
+suites**, with 421 more blocked by a failing dependency before their own tests
+could run. The method, the per-dist results and the green list are in
+[ECOSWEEP-2026-08.md](docs/dev/findings/ECOSWEEP-2026-08.md).
+
+The conversion count is modest on purpose, and the findings say why: each fix
+tends to move its cluster **one rung**. A dist that failed to parse now runs
+its suite and fails a real assertion instead. "Pass" is the top rung, not the
+next one.
+
+What the sweep found, in batches: four lexer mis-scans (three of them
+swallows); `given`/`with` binding `$_` without a fresh container; a sigilless
+binder on a statement condition (`if EXPR -> \x { }`); `<alias=$var>` matching
+anything at all; `comb(:match)` answering strings; `.hyper`/`.race` running
+serially; `IO::Handle.spurt(:close)` writing nothing whatsoever.
+
+The DBIish ladder took `01-basic` green on all five shipped drivers, and cost
+six separate fixes — among them that `is native(LIB)` resolves LIB in the
+**declaring** module rather than the caller (two drivers with same-named
+constants had SQLite's natives dlopening Pg's `pq`), and that every method
+carries the implicit `*%_` whether its signature mentions it or not.
+
+The Digest pair went from **55 s to 0.16 s** on 1 KB of sha512 (Rakudo: 0.09)
+on two changes: a u64/u128 machine-word lane, because SHA-512's whole working
+set sits in [0, 2^64) and could not fit a signed int64, so every top-bit word
+had been falling into a base-1e9 BigInt where a bit op is a radix conversion;
+and expression `BEGIN` evaluating **once per node** instead of with
+do-semantics — Digest::SHA2 indexes a `BEGIN`-built 80-root table inside its
+round loop, which had meant 6,400 square roots per block, none needed twice.
+
+### `$*VM.config` was the string "moar"
+
+Found by the release's own module battery, and by nothing else. The
+`Distro`/`Kernel`/`VM` dispatch arm ends in a lenient accessor that answers the
+object's *name* for anything it does not recognise, so `$*VM.config` was the
+`Str` `"moar"` and `$*VM.config<obj>` was an associative subscript on it.
+
+That was invisible for as long as such a subscript gave a quiet `Any`:
+LibraryMake — the build helper a long tail of NativeCall dists shells out to —
+filled a Makefile template with undefined values and its suite still scored
+1/1, because its build subtest skipped itself. Once associative indexing on a
+defined scalar started dying as Rakudo's does (this cycle, see below), the same
+line took the whole suite down: **0/1 against Rakudo's 1/1**.
+
+`config` now has an arm of its own, returning a Hash that describes *this*
+engine's toolchain rather than copying MoarVM's — the compiler `--exe` would
+drive (with `CC`/`LD`/`CFLAGS`/`LDFLAGS`/`LDLIBS`/`MAKE` honoured from the
+environment), the platform's object, shared-library and executable spellings,
+and the `%s` templates the readers substitute into. LibraryMake now processes
+the Makefile, compiles the object, links the binary and runs it — further than
+it gets under Rakudo on this machine, where `build-tools-installed()` declines
+and the subtest skips. Nothing in Roast or `t/` reads `$*VM.config`; gate 6
+exists for exactly this shape of defect.
+
+### Also in this release
+
+- **Associative indexing on a defined scalar dies**, as it does under Rakudo:
+  `$str<key>` used to answer an empty `Any`. Silence is the wrong failure here,
+  because `<…>` after a variable is not always something the author typed — in
+  a `qq` template `"<div>$a$b</div>"` the parser reads `$b</div>` as
+  `$b<'/div'>`, so the quiet answer swallowed the closing tag and a generated
+  page went out with its markup truncated.
+- **`run`/`shell` inherit a child's stderr again.** There were only ever two
+  modes — a pipe when the caller asked to capture, `/dev/null` otherwise — so
+  `:!err` (discard) and no adverb at all (Rakudo *inherits*) collapsed into the
+  same silence, and every diagnostic a child wrote was lost.
+- **A sixth binding host: Wolfram Language.** `bindings/wolfram/RakuLang.wl` is
+  pure WL over `ForeignFunctionLoad`, no compiled glue; `calc` prints
+  byte-identical with the other five hosts.
+- **`rakupp install`** — the same index and the same store as zef, no Rakudo
+  needed; it asks the store before fetching, building and testing a dist again,
+  understands the phase-hash `depends` a fifth of the ecosystem writes, and
+  gives `bin/` scripts named wrappers that run under both engines.
+- **JSON::Fast's `to-json`/`from-json` run native when the call is covered**,
+  and the wrap writes non-ASCII natively — BMP text raw, astral codepoints as
+  upper-case surrogate pairs (327 ms → 6.1 ms on a 278 KB corpus).
+- **`live/`** — a home for software that already existed, opening with a
+  Sparrow6 scenario, and the startup axis it makes measurable.
+
+### Performance
+
+`perf-guard --check` is green with the worst kernel at **+2.8%** against a 5%
+tolerance, and four of the eight faster than the last release
+(`subcall` −2.7%, `strpass` −2.3%, `strscan` −1.6%, `asg` −1.4%). The baseline
+is re-recorded at this tag.
+
+The benchmark tables were re-measured in full on 2026-08-24, because the
+reference engine changed underneath them: **Rakudo v2026.07 → v2026.08**. Its
+column moved a few percent in both directions (`strcat` 179.9 → 166.3 ms
+against `loopsum` 261.7 → 276.4) and none of it is a trend. Raku++'s own lanes
+are flat, as they should be — the only engine change since the previous sitting
+is an accessor no kernel touches. The `-O` table was re-measured this round
+rather than carried forward.
+
+One caveat is now written down in [BENCHMARKS.md](docs/status/BENCHMARKS.md)
+that never had been: **the reference engine runs under Rosetta 2.** The only
+Rakudo on the benchmark machine is the Intel Homebrew build, an x86_64 binary
+translated on an arm64 host, so it pays the same 1.7–2× penalty that file
+already warns about for a mis-built Raku++ binary — and the harness's
+architecture guard inspects `$RAKUPP` only, so it cannot see it. Every earlier
+revision measured Rakudo the same way, so the series is self-consistent and the
+trends hold; the absolute multiples against Rakudo are an **upper bound**, not
+a like-for-like result. Correcting it means re-measuring the whole series
+against an arm64 Rakudo, and is deliberately left open rather than done
+silently mid-series.
+
+### Deliberately left open
+
+- `NativeHelpers::Blob` (1/4) and `AttrX::Mooish` (1/35) remain the battery's
+  two standing DIFFs.
+- `Log::Async` crossed to PASS this run, but t/14-frame is a real race in async
+  delivery and a coin toss either way — ours to fix, not fixed here.
+- `objects` is still the one benchmark kernel Rakudo leads (1.8×), and the only
+  one that measures `class`/`has`/method dispatch. Nothing is profiled yet.
+
 ## v3.6.0 (2026-08-21) — the Perl 5 lessons
 
 | | v3.5.0 | v3.6.0 |
