@@ -719,6 +719,73 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     }
     if (inv.t == VT::Hash && (inv.hashKind == "Distro" || inv.hashKind == "Kernel" || inv.hashKind == "VM")) {
         std::string name = inv.hash()->count("name") ? (*inv.hash())["name"].toStr() : "";
+        // $*VM.config — the VM's BUILD CONFIGURATION, as a Hash.
+        //
+        // Rakudo answers MoarVM's own build settings here; the ecosystem reads
+        // it to drive a C toolchain. LibraryMake — the build helper a long tail
+        // of NativeCall dists shells out to — opens with
+        // `%vars<O> = $*VM.config<obj>` and fills a Makefile template from a
+        // dozen more keys. Without an arm of its own that fell to the lenient
+        // accessor at the end of this block and answered the VM's NAME, so
+        // `$*VM.config<obj>` was a subscript on the Str "moar": it used to give
+        // a quiet Any (and LibraryMake built a Makefile of undefined values),
+        // and once associative indexing on a defined scalar started dying as
+        // Rakudo's does, it took the dist's whole suite with it.
+        //
+        // The values describe THIS engine's toolchain, not MoarVM's — the
+        // compiler `--exe` would drive, the platform's object/library/exe
+        // spellings, and the `%s` templates the readers substitute into. They
+        // are answers we can stand behind rather than a copy of Rakudo's.
+        if (m == "config" && inv.hashKind == "VM") {
+            auto envOr = [](const char* var, const char* dflt) -> std::string {
+                const char* e = std::getenv(var);
+                return e && *e ? std::string(e) : std::string(dflt);
+            };
+#if defined(_WIN32)
+            const bool msvc = true;
+            std::string cc = envOr("CC", "cl");
+            const char* objExt = ".obj"; const char* dllPat = "%s.dll";
+            const char* exeExt = ".exe"; const char* ldShared = "/DLL";
+            const char* makeProg = "nmake";
+#else
+            const bool msvc = false;
+            std::string cc = envOr("CC", "cc");
+            const char* objExt = ".o";
+            const char* exeExt = "";
+#if defined(__APPLE__)
+            const char* dllPat = "lib%s.dylib"; const char* ldShared = "-dynamiclib";
+#else
+            const char* dllPat = "lib%s.so";    const char* ldShared = "-shared";
+#endif
+            const char* makeProg = "make";
+#endif
+            Value c = Value::makeHash();
+            auto& ch = *c.hash();
+            ch["obj"]      = Value::str(objExt);
+            ch["dll"]      = Value::str(dllPat);
+            ch["exe"]      = Value::str(exeExt);
+            ch["cc"]       = Value::str(cc);
+            ch["ld"]       = Value::str(envOr("LD", cc.c_str()));
+            // A position-independent object is the default on Apple's clang and
+            // required everywhere else a shared library is linked from one.
+#if defined(__APPLE__) || defined(_WIN32)
+            ch["ccshared"] = Value::str("");
+#else
+            ch["ccshared"] = Value::str("-fPIC");
+#endif
+            ch["ccout"]    = Value::str(msvc ? "/Fo" : "-o ");
+            ch["ldout"]    = Value::str(msvc ? "/OUT:" : "-o ");
+            ch["cflags"]   = Value::str(envOr("CFLAGS",  msvc ? "/O2" : "-O2"));
+            ch["ldflags"]  = Value::str(envOr("LDFLAGS", ""));
+            ch["ldlibs"]   = Value::str(envOr("LDLIBS",  ""));
+            ch["ldshared"] = Value::str(ldShared);
+            // `%s` templates: the readers strip or substitute the marker —
+            // LibraryMake does `$ldusr ~~ s/\%s//` to recover the bare flag.
+            ch["ldusr"]    = Value::str(msvc ? "%s.lib" : "-l%s");
+            ch["make"]     = Value::str(envOr("MAKE", makeProg));
+            ch["osname"]   = Value::str(name);
+            return c;
+        }
         // `$*VM.request-garbage-collection` — the one hook Raku offers to ask
         // for finalization. Runs the pending-DESTROY sweep (see Interpreter.h).
         if (m == "request-garbage-collection") { runPendingDestroys(); return Value::boolean(true); }
