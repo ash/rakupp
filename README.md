@@ -163,8 +163,8 @@ gates that re-run everything the guides claim.
 `rakupp --mcp` serves the interpreter over the
 [Model Context Protocol](https://modelcontextprotocol.io) — JSON-RPC on
 stdio — so MCP clients (Claude Code, Claude Desktop, and their kind) get two
-tools: **`raku_eval`**, one persistent session per conversation, with exact
-Rat and big-integer arithmetic; and **`raku_parse`**, grammars as
+tools: **`raku`**, one persistent session per conversation, with exact
+Rat and big-integer arithmetic; and **`raku-parse`**, grammars as
 deterministic text extraction, with line/column/rule diagnosis when a parse
 fails. Registering it with Claude Code is one line:
 

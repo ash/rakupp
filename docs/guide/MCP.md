@@ -6,14 +6,14 @@ message per line, on the server's stdio. An MCP client — Claude Code, Claude
 Desktop, Cursor, and their kind — launches the process, discovers its tools,
 and calls them mid-conversation. This server offers two:
 
-- **`raku_eval`** — evaluate Raku in **one persistent session**. State
+- **`raku`** — evaluate Raku in **one persistent session**. State
   survives across calls exactly as in the REPL, because it *is* the REPL's
   evaluation path reached through the embedding ABI: the agent defines a sub
   in one call and uses it ten calls later. The arithmetic is the engine's —
   exact Rats (`0.1 + 0.2 == 0.3` is `True`) and integers that never
   overflow — which makes the tool useful to agents on tasks that have
   nothing to do with Raku: it is a calculator that does not round.
-- **`raku_parse`** — compile a grammar from source text and parse with it.
+- **`raku-parse`** — compile a grammar from source text and parse with it.
   A match comes back as a JSON tree; a failed parse comes back *diagnosed* —
   line, column, and the deepest rule the engine reached — which is exactly
   what an agent needs to fix its grammar and try again.
@@ -61,13 +61,15 @@ object per line:
 ```sh
 printf '%s\n' \
   '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"you","version":"0"}}}' \
-  '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"raku_eval","arguments":{"code":"(1..10).grep(*.is-prime).sum"}}}' \
+  '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"raku","arguments":{"code":"(1..10).grep(*.is-prime).sum"}}}' \
   | build/rakupp --mcp
 ```
 
-## raku_eval
+## raku
 
-One argument, `code`. The reply is what the code **printed**; when it
+One argument, `code`. The tool is named after the language — no `_eval`
+suffix — because that is how it is asked for ("run some raku") and because
+`raku(code)` is the CLI's `raku -e` wearing a protocol. The reply is what the code **printed**; when it
 printed nothing, the value of its last statement is shown instead, as
 `=> value` (the `.gist`, the REPL's convention). Anything the code wrote to
 stderr arrives under a `STDERR:` heading. A `die` crosses as a tool error
@@ -82,12 +84,16 @@ session resolves `use` from the same places the CLI does; point `RAKULIB` at
 extra directories rather than `-I`, which `--mcp` refuses (the flag belongs
 to program runs).
 
-Two honest caveats. `exit` in evaluated code ends the server process — the
-client will restart it, with a fresh session. And the interpreter's stdin is
-pinned to EOF (`rk_set_input`), so `get`/`lines`/`$*IN` see an empty input
-rather than eating protocol bytes; feed data through the code itself.
+Two honest caveats. `exit` in evaluated code does NOT end the server — an
+embedded evaluation refuses to end its host process — so it comes back as an
+error naming the code (`exit(7) in evaluated code — …`) and the session
+continues. And the interpreter's stdin is pinned to EOF (`rk_set_input`), so
+`get`/`lines`/`$*IN` see an empty input rather than eating protocol bytes;
+feed data through the code itself.
 
-## raku_parse
+## raku-parse
+
+Kebab-case, as the language itself spells identifiers.
 
 | argument | meaning |
 |---|---|
@@ -139,7 +145,7 @@ is worse.
 
 ## Security
 
-`raku_eval` executes arbitrary Raku **with your privileges** — file system,
+The `raku` tool executes arbitrary Raku **with your privileges** — file system,
 network, `run`. Registering this server grants an agent exactly the trust
 that giving it a shell does; on a machine where the agent already runs
 commands (Claude Code's default), that is no new exposure, but it is worth
@@ -168,8 +174,7 @@ The server lives in [src/McpServer.cpp](../../src/McpServer.cpp) behind the
 revision back. Frames are newline-delimited, so the protocol reads fd 0
 directly — `rk_set_input` redirects `std::cin` by design, and the server
 must not starve with it. It creates the interpreter lazily at the first tool
-call (`initialize` answers instantly), with `own_stack` deliberately **off**:
-as of this writing `own_stack=1` segfaults `rk_eval` on declaration
-statements, and the stack guard measures the real stack either way. The
-JSON layer is ~300 lines of this file rather than a dependency, for the same
-reason the engine has no other dependencies.
+call (`initialize` answers instantly), with `own_stack` on, so deep
+recursion in evaluated code meets the engine's own guard exactly as it does
+under the CLI. The JSON layer is ~300 lines of this file rather than a
+dependency, for the same reason the engine has no other dependencies.

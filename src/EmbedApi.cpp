@@ -26,6 +26,7 @@
 
 #include <atomic>
 #include <csignal>
+#include <thread>
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -111,6 +112,15 @@ int guarded(Interp* p, const std::function<void()>& body) {
     }
     catch (const ParseError& e)  { setError(p, e.what()); }
     catch (const RakuError& e)   { setError(p, e.message); }
+    // `exit` in EVALUATED code: a library must not end its host's process, so
+    // the unwind stops here and the host reads the intent from the message.
+    // rk_run is the entry point with program semantics, where exit is honored
+    // as an exit CODE rather than an error.
+    catch (const ExitEx& e) {
+        setError(p, "exit(" + std::to_string(e.code) +
+                    ") in evaluated code — an embedded evaluation cannot end the "
+                    "host process; rk_run is the entry point with exit semantics");
+    }
     catch (const std::exception& e) { setError(p, std::string("Internal error: ") + e.what()); }
     catch (...)                  { setError(p, "unknown error escaped the interpreter"); }
     return RK_ERROR;
@@ -119,13 +129,41 @@ int guarded(Interp* p, const std::function<void()>& body) {
 // Run `body`, optionally on the large-stack thread the CLI uses. rakuppRun's
 // own big-stack helper takes a whole program, so the config flag is honoured
 // here at evaluation granularity instead.
+//
+// The session's execution registers (current lexical scope first among them)
+// are THREAD-LOCAL, seeded on the thread that constructed the interpreter. A
+// fresh big-stack thread starts with empty registers — the first declaration
+// there had no scope to land in and died. So the session context rides along:
+// parked here, loaded on the worker, parked there, loaded back here — the
+// same saveCtx/loadCtx handoff the engine's own schedulers use at await.
+//
+// `body` must not throw: the worker is a bare pthread, and an exception
+// escaping its entry function is std::terminate, not a catchable error. The
+// callers put guarded() INSIDE body for exactly that reason.
 void runMaybeBigStack(Interp* p, const std::function<void()>& body) {
     if (!p->cfg.own_stack) { body(); return; }
+    ExecContext parked;
+    p->interp.saveCtx(parked);
     // rakuppMainOnBigStack takes a C callback, so the lambda rides across as
     // its void* context.
-    struct Ctx { const std::function<void()>* fn; };
-    Ctx c{&body};
-    rakuppMainOnBigStack([](void* v) -> int { (*((Ctx*)v)->fn)(); return 0; }, &c);
+    struct Ctx { Interp* p; const std::function<void()>* fn; ExecContext* parked; };
+    Ctx c{p, &body, &parked};
+    rakuppMainOnBigStack([](void* v) -> int {
+        auto* cc = (Ctx*)v;
+        cc->p->interp.loadCtx(*cc->parked);
+        // The worker IS the session's mainline while the body runs: `exit`
+        // distinguishes the mainline (unwinds as ExitEx, catchable) from a
+        // `start {}` worker (ends the process), by thread id.
+        auto prevMain = cc->p->interp.mainThread_;
+        cc->p->interp.mainThread_ = std::this_thread::get_id();
+        (*cc->fn)();
+        cc->p->interp.mainThread_ = prevMain;
+        cc->p->interp.saveCtx(*cc->parked);
+        return 0;
+    }, &c);
+    // The registers return to THIS thread, so between evaluations the session
+    // is visible right here — rk_call from the host still finds its scope.
+    p->interp.loadCtx(parked);
 }
 
 } // namespace
@@ -182,8 +220,12 @@ int rk_eval(RkInterp rk, const char* src, RkValue* out) {
     // extension rule that a handle dies with its call. rk_root is the way out.
     p->ctx.clear();
     Value result;
-    int rc = guarded(p, [&] {
-        runMaybeBigStack(p, [&] { result = p->interp.evalString(src ? src : ""); });
+    // guarded() runs INSIDE the big-stack hop, not around it: the catch must
+    // live on the thread that throws, or the exception terminates the process
+    // at the worker's entry function instead of becoming RK_ERROR.
+    int rc = RK_OK;
+    runMaybeBigStack(p, [&] {
+        rc = guarded(p, [&] { result = p->interp.evalString(src ? src : ""); });
     });
     if (p->cfg.own_stdout) { std::cout.flush(); std::cerr.flush(); }
     if (rc == RK_OK && out) *out = p->ctx.make(std::move(result));
@@ -245,8 +287,10 @@ int rk_run(RkInterp rk, const char* src, const char* file_name, int* exit_code) 
     // rakuppRunOn, not rakuppRun: the program runs in THIS interpreter, so a
     // host does not silently acquire a second one — whose construction would
     // take the process globals over from the session it already holds.
-    int status = guarded(p, [&] {
-        runMaybeBigStack(p, [&] {
+    // Same shape as rk_eval: the guard inside the hop, on the throwing thread.
+    int status = RK_OK;
+    runMaybeBigStack(p, [&] {
+        status = guarded(p, [&] {
             rc = rakuppRunOn(p->interp, src ? src : "", {},
                              file_name && *file_name ? file_name : "-e",
                              /*exePath*/ "", /*libPaths*/ {});

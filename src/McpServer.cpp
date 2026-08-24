@@ -5,12 +5,15 @@
 // 2.0, one message per line, over the server's stdio. This file serves the
 // engine to those clients as two tools:
 //
-//   raku_eval  — evaluate source in ONE persistent session. rk_eval keeps
+//   raku       — evaluate source in ONE persistent session. rk_eval keeps
 //                state, so the agent gets a REPL, not a one-shot: a sub
-//                defined in one call is callable in the next.
-//   raku_parse — compile a grammar from source text and parse with it, the
+//                defined in one call is callable in the next. Named after
+//                the language, kebab-free, because agents and people alike
+//                say "run some raku".
+//   raku-parse — compile a grammar from source text and parse with it, the
 //                match tree crossing back as JSON; a failed parse answers
-//                with the position and the deepest rule instead.
+//                with the position and the deepest rule instead. Kebab-case
+//                like the language's own identifiers.
 //
 // Everything engine-side goes through the public C ABI (rakupp.h) — the same
 // surface every language binding uses, deliberately: this server is another
@@ -487,7 +490,7 @@ private:
 // `initialize` answers instantly, then living for the server's lifetime.
 // ---------------------------------------------------------------------------
 
-// Loaded at session start: how raku_eval renders a value and how anything
+// Loaded at session start: how the raku tool renders a value and how anything
 // crosses as JSON. rk-mcp-jsonable maps exotic leaves through .gist so the
 // C++ walk below never needs to call back into Raku mid-walk (a call could
 // recycle the arena the walk is reading).
@@ -509,7 +512,7 @@ sub rk-mcp-jsonable($v) {
 }
 )RKMCP";
 
-// Loaded with the grammar shim at the first raku_parse: everything a matched
+// Loaded with the grammar shim at the first raku-parse: everything a matched
 // parse answers with, gathered in ONE crossing.
 const char* kParsePrelude = R"RKMCP(
 sub rk-mcp-match-payload($m, Int $want-made) {
@@ -534,9 +537,7 @@ public:
         if (!fatal_.empty()) return fatal_;
         RkConfig cfg{};
         cfg.size = sizeof cfg;
-        // own_stack stays OFF: the guard measures the real stack either way
-        // (rakupp.h's words), and as of this writing own_stack=1 segfaults
-        // rk_eval on any declaration statement — see the note in MCP.md.
+        cfg.own_stack = 1; // deep recursion meets the engine's guard, as the CLI's does
         rk_ = rk_new(&cfg);
         if (!rk_) return fatal_ = "rk_new refused: an interpreter is already live in this process";
         c_ = rk_ctx(rk_);
@@ -795,7 +796,7 @@ Json toolsList() {
         evalSchema.set("required", std::move(req));
     }
     Json evalTool = Json::object();
-    evalTool.set("name", Json::str("raku_eval"));
+    evalTool.set("name", Json::str("raku"));
     evalTool.set("description", Json::str(
         "Evaluate Raku source in a persistent session and return what it printed. "
         "State persists across calls exactly as in a REPL: a variable, sub, class "
@@ -835,7 +836,7 @@ Json toolsList() {
         parseSchema.set("required", std::move(req));
     }
     Json parseTool = Json::object();
-    parseTool.set("name", Json::str("raku_parse"));
+    parseTool.set("name", Json::str("raku-parse"));
     parseTool.set("description", Json::str(
         "Compile a Raku grammar from source and parse text with it. Answers JSON: "
         "{matched: true, tree: ...} — in the tree a node with no captures is its "
@@ -874,12 +875,13 @@ Json initializeResult(const Json* params) {
     r.set("capabilities", std::move(caps));
     r.set("serverInfo", std::move(info));
     r.set("instructions", Json::str(
-        "rakupp is a Raku interpreter. raku_eval runs Raku in a session whose "
-        "state persists across calls (define subs once, call them later); its "
-        "arithmetic is exact — rationals and arbitrary-size integers — so it is "
-        "also a calculator that does not round. raku_parse compiles a Raku "
-        "grammar and parses text into a JSON tree: deterministic structured "
-        "extraction, with line/column/rule diagnosis when the parse fails."));
+        "rakupp is a Raku interpreter. The raku tool runs Raku in a session "
+        "whose state persists across calls (define subs once, call them later); "
+        "its arithmetic is exact — rationals and arbitrary-size integers — so it "
+        "is also a calculator that does not round. The raku-parse tool compiles "
+        "a Raku grammar and parses text into a JSON tree: deterministic "
+        "structured extraction, with line/column/rule diagnosis when the parse "
+        "fails."));
     return r;
 }
 
@@ -926,10 +928,10 @@ int runServer(const Options& opt) {
                 into = v->s;
                 return true;
             };
-            if (tool == "raku_eval") {
+            if (tool == "raku") {
                 std::string code;
                 if (!need("code", code)) {
-                    writeLine(dumps(rpcError(*id, -32602, "raku_eval requires a string argument `code`")));
+                    writeLine(dumps(rpcError(*id, -32602, "raku requires a string argument `code`")));
                     continue;
                 }
                 dog.arm(*id);
@@ -937,10 +939,10 @@ int runServer(const Options& opt) {
                 dog.disarm();
                 writeLine(dumps(rpcResult(*id, std::move(result))));
             }
-            else if (tool == "raku_parse") {
+            else if (tool == "raku-parse") {
                 std::string grammar, text;
                 if (!need("grammar", grammar) || !need("text", text)) {
-                    writeLine(dumps(rpcError(*id, -32602, "raku_parse requires string arguments `grammar` and `text`")));
+                    writeLine(dumps(rpcError(*id, -32602, "raku-parse requires string arguments `grammar` and `text`")));
                     continue;
                 }
                 std::string name, actions, rule;
@@ -948,7 +950,7 @@ int runServer(const Options& opt) {
                 need("actions", actions);
                 need("rule", rule);
                 if (!actions.empty() && name.empty()) {
-                    writeLine(dumps(rpcError(*id, -32602, "raku_parse: `actions` needs `name` too (both ride the grammar source)")));
+                    writeLine(dumps(rpcError(*id, -32602, "raku-parse: `actions` needs `name` too (both ride the grammar source)")));
                     continue;
                 }
                 dog.arm(*id);
@@ -957,7 +959,7 @@ int runServer(const Options& opt) {
                 writeLine(dumps(rpcResult(*id, std::move(result))));
             }
             else {
-                writeLine(dumps(rpcError(*id, -32602, "unknown tool '" + tool + "' (this server has raku_eval and raku_parse)")));
+                writeLine(dumps(rpcError(*id, -32602, "unknown tool '" + tool + "' (this server has raku and raku-parse)")));
             }
         }
         else {

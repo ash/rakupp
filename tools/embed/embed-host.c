@@ -115,6 +115,11 @@ int main(void) {
     check(rk_eval(rk, "$x", &v) == RK_OK && rk_int_get(c, v) == 41,
           "the session survives an error");
     check(rk_last_error(rk) == 0, "rk_last_error clears on success");
+    /* `exit` is the sharpest case: a library must never end its host. It
+     * arrives as an error naming the code; rk_run is where exit is honored. */
+    check(rk_eval(rk, "exit 7", &v) == RK_ERROR &&
+          rk_last_error(rk) && strstr(rk_last_error(rk), "exit(7)"),
+          "exit in evaluated code is an error, not the host's death");
 
     /* --- rooted values outlive the evaluation that made them ------------ */
     {
@@ -166,11 +171,48 @@ int main(void) {
     check(rk_new(0) == 0, "a second interpreter is refused while one is live");
 
     rk_free(rk);
-    /* …and after freeing, a new one is fine. */
+    /* --- own_stack=1: the CLI's big-stack thread, per evaluation ---------
+     * The regression that earned this block: the session's execution
+     * registers are thread-local, and an evaluation on a fresh big-stack
+     * thread once found no scope to declare into — `my $x = 1` died while
+     * `2 + 2` passed. The context now rides across the hop (the engine's own
+     * saveCtx/loadCtx handoff), and a thrown Raku error is caught ON the
+     * worker instead of terminating the process at its entry function.
+     * Doubles as the after-free check: this is a NEW interpreter. */
     {
-        RkInterp again = rk_new(0);
-        check(again != 0, "a new interpreter can be created after the first is freed");
-        rk_free(again);
+        RkConfig cfg;
+        memset(&cfg, 0, sizeof cfg);
+        cfg.size = sizeof cfg;
+        cfg.own_stack = 1;
+        RkInterp big = rk_new(&cfg);
+        check(big != 0, "a new interpreter can be created after the first is freed");
+        if (big) {
+            RkCtx bc = rk_ctx(big);
+            RkValue bv;
+            check(rk_eval(big, "my $x = 1", 0) == RK_OK,
+                  "own_stack=1: a declaration evaluates on the big-stack thread");
+            check(rk_eval(big, "sub f($n) { $n <= 0 ?? 0 !! 1 + f($n - 1) }; $x + f(3)", &bv) == RK_OK &&
+                  rk_int_get(bc, bv) == 4,
+                  "own_stack=1: state and subs persist across the thread hops");
+            check(rk_eval(big, "die 'boom'", &bv) == RK_ERROR &&
+                  rk_last_error(big) && strstr(rk_last_error(big), "boom"),
+                  "own_stack=1: a die is an error on the worker, not a process abort");
+            {
+                RkValue arg = rk_int(bc, 21);
+                RkValue r = rk_call(bc, "f", &arg, 1);
+                check(r && rk_int_get(bc, r) == 21,
+                      "own_stack=1: rk_call from the host thread still sees the session");
+            }
+            /* rk_run has PROGRAM semantics: on the hop thread the mainline's
+             * `exit` must unwind into the exit code, not end this process. */
+            {
+                int code = -1;
+                check(rk_run(big, "my $n = 40; exit $n + 2", "t.raku", &code) == RK_OK &&
+                      code == 42,
+                      "own_stack=1: rk_run honors exit as an exit code");
+            }
+            rk_free(big);
+        }
     }
 
     if (failures) { printf("embed host: %d FAILED\n", failures); return 1; }

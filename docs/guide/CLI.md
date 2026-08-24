@@ -161,8 +161,8 @@ disabled hooks cost nothing measurable, so there is no separate
 ## Serving
 
 `--mcp` turns the process into a [Model Context Protocol](MCP.md) server on
-stdio, so AI agent clients get `raku_eval` (a persistent session) and
-`raku_parse` (grammars) as tools. `--timeout=SECS` bounds a stuck call
+stdio, so AI agent clients get `raku` (a persistent session) and
+`raku-parse` (grammars) as tools. `--timeout=SECS` bounds a stuck call
 (default 120, `0` = never), `-M` preloads modules into the session, and
 `RAKULIB` — not `-I` — adds module directories. The whole story is
 [MCP.md](MCP.md).
