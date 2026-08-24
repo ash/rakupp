@@ -172,6 +172,20 @@ fails. Registering it with Claude Code is one line:
 claude mcp add raku -- /path/to/rakupp --mcp
 ```
 
+— or, where there is no `claude` CLI (the desktop app alone is enough), a
+`.mcp.json` at the project root, read automatically when a session starts:
+
+```json
+{
+  "mcpServers": {
+    "raku": {
+      "command": "/absolute/path/to/rakupp",
+      "args": ["--mcp"]
+    }
+  }
+}
+```
+
 Guide: **[MCP.md](docs/guide/MCP.md)**. Gated by `tools/mcp-smoke.raku`,
 which drives the server exactly as a client does, on every push.
 
