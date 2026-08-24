@@ -137,6 +137,16 @@ void collectPubAttrs(ClassInfo* c, std::vector<const ClassAttr*>& out) {
 // `fails-like`) — while `mod` and `%%` throw on the spot. Making them all throw
 // looks tidier and breaks `fails-like`; making them all soft-fail loses the two
 // that really do throw.
+//
+// Under 6.e, `mod` crosses to the soft-fail side: core.e redoes the div/mod
+// candidates, and Rakudo 2026.08 answers a Failure for `1 mod 0` under the
+// pragma while still throwing under 6.d. (That Rakudo also soft-fails `%%`
+// under plain 6.d — roast's throws-like pins accept either shape, since a
+// sunk Failure throws too — but `%%` is left eager here until that 6.d-side
+// question is taken up on its own.) applyArith is a free function shared with
+// compiled code, so the live revision is read through the same
+// ctor-set-pointer pattern the NativeCall trampoline uses.
+static Interpreter* g_revInterp = nullptr;
 Value divideByZero(const Value& lhs, const char* opName) {
     Value ex = Value::typeObj("X::Numeric::DivideByZero");
     Value f = Value::makeHash(); f.hashKind = "Failure";
@@ -151,7 +161,10 @@ Value divideByZero(const Value& lhs, const char* opName) {
                     " by zero using infix:<" + opName + ">"};
 }
 // Which of the two a given operator wants.
-static bool divZeroThrows(const std::string& op) { return op == "mod" || op == "%%"; }
+static bool divZeroThrows(const std::string& op) {
+    if (op == "%%") return true;
+    return op == "mod" && !(g_revInterp && g_revInterp->sixE());
+}
 Value divZeroResult(const Value& lhs, const std::string& op) {
     if (divZeroThrows(op)) throwDivideByZero(lhs, op.c_str());
     return divideByZero(lhs, op.c_str());
@@ -1894,6 +1907,7 @@ std::vector<std::string> splitSearchPath(const std::string& spec) {
 
 Interpreter::Interpreter() {
     g_cbInterp = this; // NativeCall callback trampolines dispatch through here
+    g_revInterp = this; // divide-by-zero shape consults the live language revision
     g_matchClasses = &classes_;
     rtSetAliasView(&classAliases_, &classes_); // package-relative short names for the type matchers
     g_objListItems = [this](const Value& v, ValueList& out) { return objListItems(v, out); };
@@ -9650,7 +9664,7 @@ Value Interpreter::rakuIntrospection(bool compiler) {
     (*r.hash())["name"] = Value::str(compiler ? "Raku++" : "Raku");
     // The language object shows the language revision; the COMPILER shows its
     // own version, which is the Rakudo era we verify against (kOracleEra,
-    // Interpreter.h) — `rakudo (2026.07)` is the shape Rakudo uses.
+    // Interpreter.h) — `rakudo (2026.08)` is the shape Rakudo uses.
     (*r.hash())["ver"] = Value::str(compiler ? kOracleEra
                        : (langRev_ == 0 ? "6.c" : langRev_ == 1 ? "6.d" : "6.e"));
     return r;
@@ -10041,6 +10055,12 @@ Value rtIndexGet(const Value& base, const Value& key, bool isHash) {
             auto it = base.hash()->find(hashSubKey(key, &base));
             if (it != base.hash()->end()) return it->second;
         }
+        // same rule as the interpreter path above: a defined Str/Int/… is a
+        // type error rather than a silent Any
+        if (base.t == VT::Str || base.t == VT::Int || base.t == VT::Num ||
+            base.t == VT::Rat || base.t == VT::Bool || base.t == VT::Complex)
+            throw RakuError{Value::typeObj("X::AdHoc"),
+                            "Type " + base.typeName() + " does not support associative indexing."};
         return typedElemDefault(base);
     }
     if (base.t == VT::Range) {
@@ -23078,6 +23098,16 @@ Value Interpreter::evalIndex(Index* idx) {
     }
 
     if (idx->isHash) {
+        // A DEFINED non-Associative value cannot be subscripted associatively —
+        // Rakudo dies, and so must this. Answering Any instead is worse than a
+        // die: `"$a$b</div>"` in a template parses `$b</div>` as `$b<'/div'>`,
+        // and the quiet empty answer turned a broken template into a page that
+        // rendered with pieces silently missing. Type objects and undefined
+        // values keep Rakudo's quiet Any; an Array keeps its own message below.
+        if (base.t == VT::Str || base.t == VT::Int || base.t == VT::Num ||
+            base.t == VT::Rat || base.t == VT::Bool || base.t == VT::Complex)
+            throw RakuError{Value::typeObj("X::AdHoc"),
+                            "Type " + base.typeName() + " does not support associative indexing."};
         // Associative indexing on an array-backed value: a Capture (`\(1, :i)`) is
         // stored as an Array of positionals + Pairs, and `c<i>` finds the named part.
         // On a plain Array with no such named element it's a type error (`$aref<0>`).
@@ -23092,7 +23122,7 @@ Value Interpreter::evalIndex(Index* idx) {
                         if (el.s == key) return el.pairVal() ? *el.pairVal() : Value::any();
                     }
             if (capturish) return Value::any(); // Capture without that named part
-            throw RakuError{Value::typeObj("X::AdHoc"), "Type Array does not support associative indexing"};
+            throw RakuError{Value::typeObj("X::AdHoc"), "Type Array does not support associative indexing."};
         }
         Value iv = eval(idx->index.get());
         auto lookup1 = [&](const std::string& key) -> Value {
