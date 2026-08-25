@@ -21,6 +21,7 @@ README below.
 | [**modinfo/**](modinfo) | Ecosystem — 17 zef distributions doing the work | inspects Raku distributions: graph, validation, reports |
 | [**jsonreq/**](jsonreq) | Ecosystem — our own modules composing | curl+jq for JSON APIs: request, query, pretty-print |
 | [**sqlite/**](sqlite) | C libraries — NativeCall and a raw-mode terminal | database client: query, browse, dump; the real libsqlite3 does the work |
+| [**wings/**](wings) | GUI — Cocoa over NativeCall, `react`/`whenever` as the event loop | native macOS Counter app: a window, a clock title, a button you click |
 
 All paths below are from the repository root, after building `rakupp` (see the
 top-level [README](../README.md)). Every program also compiles to a standalone
@@ -382,6 +383,30 @@ causes are in
 
 [`sqlite/README.md`](sqlite/README.md) has the option table, the browser keys,
 and what each part of the binding exercises.
+
+## wings — the GUI story
+
+**sqlite** proves NativeCall can talk to a C library; **wings** points the same
+machinery at the Objective-C runtime and gets a real desktop app: NSWindow,
+NSTextField, NSButton, reached through `objc_msgSend` with no glue code. The
+framework on top is the `Wings` module from
+[raku-modules](https://github.com/ash/raku-modules), and its event loop is not
+a callback registry — it is `react`, with a button's clicks, a one-second clock
+and SIGINT as three `whenever` streams.
+
+```sh
+export RAKULIB=$HOME/raku-modules/Wings/lib
+RAKUPP_MAIN_THREAD=1 build/rakupp showcase/wings/counter.raku    # Raku++
+raku showcase/wings/counter.raku                                 # Rakudo, unchanged
+WINGS_AUTODRIVE=3 raku showcase/wings/counter.raku               # clicks itself, ~4 s
+```
+
+The main thread owns AppKit and reconciles widget state each pump turn; the
+program body runs on a worker so `react` can park; a click crosses from AppKit
+into a Raku closure through a runtime-minted Objective-C class. No NSRect ever
+crosses the FFI — only NSPoint/NSSize, two doubles, which both macOS ABIs pass
+like two `num64`s — so the identical module serves arm64 Raku++ and an x86-64
+Rosetta Rakudo. macOS only, by nature of the backend.
 
 ## In the browser — [`web/`](web)
 
