@@ -146,7 +146,9 @@ walk them. Two pre-passes run before parsing, since ASI is a token-stream
 transform, not a grammar-shaped problem (see [`ASI.md`](ASI.md)): comments are
 blanked out with newlines preserved, then `insert-asi` inserts real semicolons
 at statement-ending line breaks. A few rakupp-specific workarounds
-are marked with comments in the source: quantified captures are read through a
-list assignment before indexing, every `CATCH` carries a `default { .rethrow }`,
-and value keywords like `null` are classified in the ident action because
-proto-rule dispatch is longest-match.
+are marked with comments in the source: every `CATCH` carries a
+`default { .rethrow }`, and value keywords like `null` are classified in the
+ident action because proto-rule dispatch is longest-match. Captures reach the
+action methods through `mklist`, which normalises the three shapes a capture
+can have — a list of Matches when the rule quantified it, a bare Match when it
+matched once, `Nil` when it did not match at all.

@@ -111,6 +111,45 @@ section('showcase/forth (a stack machine)');
            $EXP.add('forth-demo.out').Str, "forth: demo.fth → golden output");
 }
 
+# ---- js showcase ------------------------------------------------------
+# The seven .js goldens were taken from `node`, the four .ts ones from the
+# interpreter itself (tsc's runtime semantics, checked by hand). Byte-for-byte
+# here is the thing that catches a silent AST-shape regression: js.raku reads
+# every capture through mklist, and when a capture changes shape the failure is
+# a wrong answer, not an error.
+section('showcase/js (a JavaScript/TypeScript interpreter)');
+{
+    my $js = $ROOT.add('showcase/js/js.raku').Str;
+    for <fizzbuzz fib closures quicksort wordcount gameoflife bits> -> $n {
+        golden([$js, $ROOT.add("showcase/js/examples/$n.js").Str],
+               $EXP.add("js/$n.js.out").Str, "js example: $n.js (golden: node)");
+    }
+    for <bank roman shapes calculator> -> $n {
+        golden([$js, $ROOT.add("showcase/js/examples/$n.ts").Str],
+               $EXP.add("js/$n.ts.out").Str, "js example: $n.ts (TypeScript erased)");
+    }
+}
+
+# ---- perl showcase ----------------------------------------------------
+section('showcase/perl (a Perl 5 interpreter)');
+{
+    my $perl = $ROOT.add('showcase/perl/perl.raku').Str;
+    for <fizzbuzz histogram quicksort regex sieve wordfreq> -> $n {
+        golden([$perl, $ROOT.add("showcase/perl/examples/$n.pl").Str],
+               $EXP.add("perl/$n.pl.out").Str, "perl example: $n.pl (golden: perl)");
+    }
+}
+
+# ---- python showcase --------------------------------------------------
+section('showcase/python (a Python 3 interpreter)');
+{
+    my $py = $ROOT.add('showcase/python/python.raku').Str;
+    for <fizzbuzz fib sieve wordcount classes> -> $n {
+        golden([$py, $ROOT.add("showcase/python/examples/$n.py").Str],
+               $EXP.add("python/$n.py.out").Str, "python example: $n.py (golden: python3)");
+    }
+}
+
 # ---- markdown showcase ------------------------------------------------
 section('showcase/markdown (grammar → HTML)');
 my $md = $ROOT.add('showcase/markdown/md2html.raku').Str;

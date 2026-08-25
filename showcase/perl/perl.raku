@@ -244,9 +244,17 @@ grammar PerlGrammar {
 }
 
 # ---------- AST helpers -------------------------------------------------
+# A capture is a list of Matches when the rule quantified it, a bare Match when
+# it matched exactly once, and Nil when it did not match at all. caplist turns
+# all three into a flat list of Matches.
+sub caplist($caps) {
+    return () unless $caps.defined;
+    $caps ~~ Positional ?? $caps.list !! ($caps,)
+}
+
 sub node-list($caps) {
     my @out;
-    for @($caps) -> $c { @out.push($c.made) }
+    for caplist($caps) -> $c { @out.push($c.made) }
     @out;
 }
 
@@ -466,8 +474,7 @@ class Actions {
 # fold helpers (top-level, per rakupp R7: class-body subs unseen by methods)
 sub node-strs($caps) {
     my @out;
-    return @out unless $caps;
-    for @($caps) -> $c { my $s = (~$c).trim; @out.push($s) if $s ne '' }
+    for caplist($caps) -> $c { my $s = (~$c).trim; @out.push($s) if $s ne '' }
     @out;
 }
 sub fold-bin($terms, $ops) {

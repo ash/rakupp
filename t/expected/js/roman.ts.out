@@ -1,0 +1,8 @@
+4 -> IV -> 4 (ok)
+9 -> IX -> 9 (ok)
+14 -> XIV -> 14 (ok)
+40 -> XL -> 40 (ok)
+90 -> XC -> 90 (ok)
+444 -> CDXLIV -> 444 (ok)
+1994 -> MCMXCIV -> 1994 (ok)
+2024 -> MMXXIV -> 2024 (ok)

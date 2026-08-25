@@ -335,8 +335,15 @@ grammar PyGrammar {
 # =========================================================================
 # ACTIONS  —  build a plain-hash AST
 # =========================================================================
-sub nlist($caps) { my @o; for @($caps) -> $c { @o.push($c.made) } @o }
-sub nstrs($caps) { my @o; return @o unless $caps; for @($caps) -> $c { my $s = (~$c).trim; @o.push($s) if $s ne '' } @o }
+# A capture is a list of Matches when the rule quantified it, a bare Match when
+# it matched exactly once, and Nil when it did not match at all. caplist turns
+# all three into a flat list of Matches.
+sub caplist($caps) {
+    return () unless $caps.defined;
+    $caps ~~ Positional ?? $caps.list !! ($caps,)
+}
+sub nlist($caps) { my @o; for caplist($caps) -> $c { @o.push($c.made) } @o }
+sub nstrs($caps) { my @o; for caplist($caps) -> $c { my $s = (~$c).trim; @o.push($s) if $s ne '' } @o }
 sub fold-l($terms, $ops) {
     my @t = nlist($terms); my @o = nstrs($ops);
     my $acc = @t[0];

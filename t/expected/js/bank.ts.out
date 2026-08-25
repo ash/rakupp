@@ -1,0 +1,3 @@
+Ada's account: { balance: 231, count: 4 }
+owner: Ada | kind names: Deposit Withdrawal
+caught: insufficient funds: have 231, want 1000000

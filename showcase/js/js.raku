@@ -574,12 +574,12 @@ grammar JSGrammar {
 }
 
 # ---------- AST construction --------------------------------------------
-# rakupp quirk: quantified captures must be pulled through a list assignment
-# (`my @x = $<x>;`) before indexing inside an action method.
+# A quantified capture is a list of Match objects; an unmatched one is Nil.
+# mklist normalises both to a flat list we can index.
 
 sub mklist($caps) {
-    my @l = $caps // ();
-    @l
+    return () unless $caps.defined;
+    $caps ~~ Positional ?? $caps.list !! ($caps,)
 }
 
 sub fold-bin($first, $ops, $rest) {

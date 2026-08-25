@@ -1,0 +1,10 @@
+packed: 16747520 hex: #ff8c00
+channels: {"r":255,"g":140,"b":0}
+10 -> dark
+90 -> mid
+200 -> bright
+255 -> bright
+#ff8c00
+(no secondary)
+(absent)
+encoded: 18,51 decoded: Hi

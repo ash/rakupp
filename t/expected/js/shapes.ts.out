@@ -1,0 +1,5 @@
+rectangle  area = 12.00  perimeter = 14.00
+square     area = 4.00  perimeter = 8.00
+circle     area = 78.54  perimeter = 31.42
+total area: 94.54
+biggest: circle

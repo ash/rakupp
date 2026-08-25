@@ -1,0 +1,9 @@
+volume 2x3x4: 24
+compose(inc, double)(10): 21
+counter: 11 12 13
+after reset: 10
+  (initializing with 21)
+first call: 42
+second call: 42
+squares: 16 16 25
+actual computations: 2
