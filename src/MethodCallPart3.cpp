@@ -1034,6 +1034,31 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     if (m == "rmdir") { // $path.IO.rmdir — remove the (empty) directory
         return Value::boolean(::rmdir(inv.toStr().c_str()) == 0);
     }
+    // `$target.IO.symlink($name)` / `.link($name)` — the METHOD forms: the
+    // invocant is the TARGET, the argument the new name. (The sub forms live
+    // in Builtins.cpp and take target-then-name; this arm mirrors them.) The
+    // symlink target is absolutized for the same reason the sub form's is: a
+    // relative target is read by the OS relative to the LINK's directory, not
+    // the cwd, so the raw invocant would dangle whenever the link lands
+    // elsewhere. A hard link resolves at call time and needs no such help.
+    // True on success; X::IO::Symlink / X::IO::Link with the OS's words
+    // otherwise. Guarded to real IO invocants: Str has no .link in Rakudo,
+    // and a name that generic must not fall into filesystem writes.
+    if ((m == "symlink" || m == "link") && inv.hashKind == "IO" && !args.empty()) {
+        std::string target = inv.toStr(), name = args[0].toStr();
+        bool symbolic = (m == "symlink");
+        if (symbolic && !target.empty() && target[0] != '/') {
+            char cbuf[4096];
+            if (getcwd(cbuf, sizeof cbuf)) target = std::string(cbuf) + "/" + target;
+        }
+        int rc = symbolic ? platform_symlink(target.c_str(), name.c_str())
+                          : platform_link(target.c_str(), name.c_str());
+        if (rc != 0)
+            throw RakuError{Value::typeObj(symbolic ? "X::IO::Symlink" : "X::IO::Link"),
+                std::string("Failed to create ") + (symbolic ? "symlink" : "link") +
+                " called '" + name + "' on target '" + target + "': " + std::strerror(errno)};
+        return Value::boolean(true);
+    }
     // `$path.IO.copy($to, :$createonly)` / `.rename($to)` / `.move($to)` — file
     // moves and copies (Shell::Command's cp/mv are thin wrappers over these).
     // rename() is one syscall but only within a filesystem; fall back to a copy +
