@@ -8,17 +8,25 @@ on a stale interpreter.
 
 ## The pieces
 
-Everything downstream ships the *same* interpreter. Raku.js is `../src` compiled
-to WebAssembly; the two sites embed that WebAssembly; the Homebrew tap and the
-GitHub Release distribute the native binary; the corpus is test input run against
-it. There is one implementation behind every surface.
+There is one implementation here, wrapped several ways. Raku.js is
+[`../src`](../../src) built with Emscripten so it runs in a browser; the GitHub
+Release and the Homebrew tap distribute that same source built natively; the
+sub-sites on raku.online host no engine of their own and embed the WebAssembly.
+Nothing below reimplements anything, which is why a release has a runbook at
+all: one interpreter changes, and every surface has to be handed the new one.
 
-Two pieces point the other way. Every project below consumes the interpreter;
-**raku-eye measures it** — weekly, unattended — and hands back a ranked list of
-what to fix (its design and rules live in
-[dev/plans/RAKU-EYE-PLAN.md](../dev/plans/RAKU-EYE-PLAN.md)), while
-**Rakugrid interrogates it**, asking a different question from Roast's: not
-whether this is Raku, but whether it survives contact with real programs.
+The pieces divide by which way they face. Most **consume** the interpreter —
+those are the ones a release has to redeploy. Three **measure** it, and those
+are where a fix session gets its worklist:
+
+- **raku-corpus** — real-world Raku programs, run differentially.
+- **Rakugrid** — a generated behavioural grid asking what Roast does not: not
+  whether this is Raku, but whether it survives contact with real programs.
+  Fired by hand, at release time (**[E](#e-fire-rakugrid-and-record-the-point)**).
+- **raku-eye** — the weekly unattended run that measures `main` against fresh
+  Weekly Challenge solutions, new ecosystem releases and the corpus, and
+  publishes a ranked list of what to fix. It does not run Rakugrid. Its design
+  and rules live in [dev/plans/RAKU-EYE-PLAN.md](../dev/plans/RAKU-EYE-PLAN.md).
 
 | Project | What it is | Repository | Serves |
 |---|---|---|---|
