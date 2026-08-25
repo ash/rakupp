@@ -212,6 +212,13 @@ static int onBigStack(const std::function<int()>& fn) {
     // this a TCP server dies the moment any client disconnects mid-write.
     signal(SIGPIPE, SIG_IGN);
 #endif
+    // RAKUPP_MAIN_THREAD=1: run the program inline on the calling (process
+    // main) thread instead of the spawned 1 GiB one. AppKit refuses to create
+    // NSWindows off the main thread, so Cocoa GUI programs need this; the
+    // recursion guard reads the real stack size via pthread_get_stacksize_np,
+    // so the smaller main stack only lowers the recursion cap, never overflows.
+    if (const char* mt = std::getenv("RAKUPP_MAIN_THREAD"))
+        if (*mt && std::string(mt) != "0") return fn();
     struct Ctx { const std::function<int()>* fn; int rc; } ctx{&fn, 0};
 #if defined(_WIN32)
     auto body = [](void* p) {
