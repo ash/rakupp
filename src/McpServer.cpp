@@ -430,11 +430,26 @@ Json toolText(const std::string& text, bool isError = false) {
 
 class Watchdog {
 public:
+    // Joined, not detached: the dog parks on cv_ between calls, and destroying
+    // a condition variable with a parked waiter is not the no-op macOS makes
+    // it — glibc's pthread_cond_destroy WAITS for the waiter to leave, and a
+    // waiter that re-parks forever means runServer's return blocked the whole
+    // process on Linux until the job timeout (the 2026-08-25 six-hour CI
+    // hangs). The timeout path never comes back here: _Exit ends the process
+    // with the thread still running, and no destructor runs at all.
+    ~Watchdog() {
+        if (!th_.joinable()) return;
+        {
+            std::lock_guard<std::mutex> lk(mx_);
+            quit_ = true;
+        }
+        cv_.notify_one();
+        th_.join();
+    }
     void start(int secs) {
         secs_ = secs;
         if (secs_ <= 0) return;
         th_ = std::thread([this] { run(); });
-        th_.detach(); // exits with the process; nothing to join on the way out
     }
     void arm(const Json& id) {
         if (secs_ <= 0) return;
@@ -454,6 +469,7 @@ private:
     void run() {
         std::unique_lock<std::mutex> lk(mx_);
         for (;;) {
+            if (quit_) return;
             if (!armed_) {
                 cv_.wait(lk);
                 continue;
@@ -483,6 +499,7 @@ private:
     std::string idJson_;
     std::chrono::steady_clock::time_point deadline_;
     bool armed_ = false;
+    bool quit_ = false;
 };
 
 // ---------------------------------------------------------------------------
