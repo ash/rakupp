@@ -279,6 +279,8 @@ loadable by either engine.
 ```console
 rakupp install Foo::Bar          # newest satisfying, plus dependencies
 rakupp install Foo:ver<1.2.3>    # a specific version (installs are additive)
+rakupp install .                 # this directory's dist; deps from the index
+rakupp install ./my-dist         # any path — an argument starting with . or /
 rakupp test Foo                  # build + run Foo's own suite; installs its
                                  # deps, never Foo — the measurement command
 rakupp uninstall Foo             # remove what THIS installer put there
@@ -322,6 +324,16 @@ you mean it anyway. One case still pays full price: a distribution whose
 index identity disagrees with its own `META6.json` — a different `:auth`,
 say — cannot be recognized until its archive is open, and the engine refuses
 it at the end.
+
+An argument that starts with `.` or `/` is a PATH — zef's own rule,
+adopted verbatim — naming a directory whose `META6.json` is the dist. It
+installs from disk: no fetch and no checksum (the directory is the source
+of truth), while the build hook and the test gate stand unchanged, and its
+dependencies still resolve from the ecosystem and install first.
+`rakupp install .` is the development loop; `rakupp test .` measures the
+suite without installing; `uninstall` and `reinstall` accept the same
+spelling and act on whatever dist the directory names. A path install
+whose dist has no ecosystem dependencies touches no network at all.
 
 Every run appends a step-by-step account of itself — engine build, OS,
 arguments, resolution, fetches, checksums, hook and suite verdicts, store

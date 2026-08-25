@@ -324,6 +324,51 @@ my $suite-has-raku = ?((%*ENV<PATH> // '').split(':').first({ $_ ne '' && .IO.ad
 check $suite-has-raku ?? !$home.add('.raku/bin/raku').e !! True,
       'raku-name: a machine that answers to raku keeps its raku';
 
+# ---- path installs: zef's rule — a `.`/`/` argument is a directory ----------
+# `rakupp install .` (or any path) installs the dist the directory holds:
+# no fetch, no checksum, build hook and test gate unchanged, dependencies
+# resolved from the index FIRST. The make-dist build directories from the
+# fixtures above are exactly such dists.
+my $home5 = $tmp.add('home5');
+$home5.mkdir;
+my %env5 = HOME => $home5.Str, RAKUPP_INSTALL_INDEX => $tmp.add('index.json').Str;
+sub installer5(*@args, :$cwd) {
+    my $p = $cwd
+        ?? run 'env', |%env5.map({ "{.key}={.value}" }), $EXE, 'install', |@args, :out, :err, :cwd($cwd)
+        !! run 'env', |%env5.map({ "{.key}={.value}" }), $EXE, 'install', |@args, :out, :err;
+    my $out = $p.out.slurp(:close);
+    my $err = $p.err.slurp(:close);
+    { exit => (try $p.exitcode) // 1, out => $out, err => $err }
+}
+my $built-dir = $tmp.add('build-Gate-Built-1.0');
+my %dot = installer5('.', :cwd($built-dir));
+# the printed path is getcwd-real (/private/var/… on macOS) while $tmp keeps
+# the symlinked spelling — match the invariant parts, not the prefix
+check %dot<exit> == 0 && %dot<err>.contains('installing Gate::Built')
+      && %dot<err>.contains('build-Gate-Built-1.0'),
+      'path: `install .` installs the cwd dist from its directory';
+check %dot<out>.contains('Gate::Demo'),
+      'path: ...with its ecosystem dependency planned from the index';
+my %plist = installer5('--list');
+check %plist<out>.contains('Gate::Built:ver<1.0>'), 'path: --list shows the dist';
+my %pagain = installer5($built-dir.Str);
+check %pagain<out>.contains('already installed'),
+      'path: a path install answers from the store like any other';
+my %pun = installer5('--uninstall', '.', :cwd($built-dir));
+check %pun<out>.contains('uninstalled Gate::Built'),
+      'path: `uninstall .` acts on the dist the directory names';
+# a dependency-free path install needs no index: no override, no network
+my $home6 = $tmp.add('home6');
+$home6.mkdir;
+my $demo-dir = $tmp.add('build-Gate-Demo-0.4.2');
+my $poff = run 'env', "HOME={$home6}", $EXE, 'install', $demo-dir.Str, :out, :err;
+my $poff-out = $poff.out.slurp(:close);
+my $poff-err = $poff.err.slurp(:close);
+check (try $poff.exitcode) == 0 && !$poff-err.contains('fetching ecosystem index'),
+      'path: a dependency-free path install runs offline — no index fetch';
+check $home6.add('.raku/bin/gate-hello').e,
+      'path: ...and writes the bin wrapper like any install';
+
 # ---- the build hook, and `rakupp test` --------------------------------------
 # Gate::Built is the OpenSSL shape: Build.rakumod imports a build-dep from
 # the target store and generates a file its own suite requires. Driven

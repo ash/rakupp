@@ -550,6 +550,35 @@ sub archive-url(%e) {
     %e<source-url> // (base-url() ~ '/' ~ (%e<path> // ''))
 }
 
+# A PATH identity — zef's rule, learned verbatim: an argument starting with
+# `.` or `/` names a directory holding a distribution (META6.json at its
+# root), never an ecosystem module. `rakupp install .` is the development
+# loop: THIS dist, its ecosystem dependencies first, no fetch and no
+# checksum for the dist itself (there is no archive to hash — the directory
+# is the source of truth, and the test gate still stands between it and the
+# store).
+sub is-path-arg(Str $arg) {
+    $arg.starts-with('.') || $arg.starts-with('/')
+}
+
+sub local-dist-entry(Str $arg) {
+    my $root = $arg.IO.absolute.IO.cleanup;   # `.` spells the cwd, not a path segment to keep
+    die "$arg: not a directory" unless $root.d;
+    die "$arg: no META6.json at {$root} — not a distribution root"
+        unless $root.add('META6.json').e;
+    my %m = (try json-decode($root.add('META6.json').slurp))
+        // die "$arg: META6.json does not parse";
+    die "$arg: META6.json carries no name" unless %m<name>;
+    my %e;
+    for <name version auth api provides depends build-depends test-depends> -> $k {
+        %e{$k} = %m{$k} if %m{$k}:exists;
+    }
+    %e<dist> = "%m<name>:ver<{%m<version> // ''}>:auth<{%m<auth> // ''}>";
+    %e<local-root> = $root.Str;
+    %e<source-url> = $root.Str;   # what the plan line prints
+    %e
+}
+
 # The engine's CompUnit install takes any object with .meta and .IO.
 class InstallableDist {
     has %.meta;
@@ -700,41 +729,54 @@ sub run-dist-tests(%e, $root, Str $prefix) {
 }
 
 sub install-one(%e, Str $prefix, Bool :$no-test, Bool :$force, Bool :$test-only) {
-    my $url = archive-url(%e);
-    my $tmp = $*TMPDIR.add("rakupp-install-{$*PID}-{%e<name>.subst(/<-alnum>/, '-', :g)}");
-    $tmp.mkdir;
-    LEAVE { run 'rm', '-rf', $tmp.Str }
-
-    my $tarball = $tmp.add('dist.tar.gz').Str;
-    note "fetching $url";
-    trace("dist {%e<dist> // %e<name>}: fetching $url");
-    fetch-file($url, $tarball);
-    trace("fetched: {$tarball.IO.s} bytes");
-
-    # The archive must hash to the SHA-1 its URL names (fez archives are
-    # content-addressed). Refuse anything else — this is the checksum gate
-    # the plan's M2 requires, and it holds for mirrors too. REA archive
-    # URLs carry no hash and fall to the TLS-only note below.
-    if $url ~~ / ( <[0..9 a..f]> ** 40 ) '.tar.gz' $ / {
-        my $want = ~$0;
-        my $got = sha1-file($tarball);
-        die "checksum mismatch for %e<name>: archive is $got, index says $want"
-            if $got ne $want;
-        trace("checksum: ok ($want)");
+    my $tmp;   # download scratch — set only when there is a download
+    LEAVE { run 'rm', '-rf', $tmp.Str if $tmp }   # never a user's directory
+    my $root;
+    if %e<local-root> {
+        # a path install: the directory IS the dist — nothing to fetch,
+        # nothing to hash, nothing to unpack, nothing of the user's to
+        # clean up. The build hook and the test gate still stand between
+        # it and the store, exactly as for a fetched archive.
+        $root = %e<local-root>.IO;
+        note "installing {%e<dist> // %e<name>} from {$root}";
+        trace("dist {%e<dist> // %e<name>}: local directory {$root} — no fetch, no checksum");
     }
     else {
-        note "note: index path carries no checksum for %e<name> — TLS is the only integrity here";
-        trace("checksum: none in the index path — TLS only");
+        my $url = archive-url(%e);
+        $tmp = $*TMPDIR.add("rakupp-install-{$*PID}-{%e<name>.subst(/<-alnum>/, '-', :g)}");
+        $tmp.mkdir;
+
+        my $tarball = $tmp.add('dist.tar.gz').Str;
+        note "fetching $url";
+        trace("dist {%e<dist> // %e<name>}: fetching $url");
+        fetch-file($url, $tarball);
+        trace("fetched: {$tarball.IO.s} bytes");
+
+        # The archive must hash to the SHA-1 its URL names (fez archives are
+        # content-addressed). Refuse anything else — this is the checksum gate
+        # the plan's M2 requires, and it holds for mirrors too. REA archive
+        # URLs carry no hash and fall to the TLS-only note below.
+        if $url ~~ / ( <[0..9 a..f]> ** 40 ) '.tar.gz' $ / {
+            my $want = ~$0;
+            my $got = sha1-file($tarball);
+            die "checksum mismatch for %e<name>: archive is $got, index says $want"
+                if $got ne $want;
+            trace("checksum: ok ($want)");
+        }
+        else {
+            note "note: index path carries no checksum for %e<name> — TLS is the only integrity here";
+            trace("checksum: none in the index path — TLS only");
+        }
+
+        my $p = run 'tar', '-xzf', $tarball, '-C', $tmp.Str, :err;
+        die "tar failed: {$p.err.slurp(:close)}" if $p.exitcode != 0;
+
+        # the dist root is wherever META6.json landed (top level, or one dir down)
+        $root = $tmp.add('META6.json').e
+            ?? $tmp
+            !! $tmp.dir.first({ .d && .add('META6.json').e })
+                // die "no META6.json in %e<name>'s archive";
     }
-
-    my $p = run 'tar', '-xzf', $tarball, '-C', $tmp.Str, :err;
-    die "tar failed: {$p.err.slurp(:close)}" if $p.exitcode != 0;
-
-    # the dist root is wherever META6.json landed (top level, or one dir down)
-    my $root = $tmp.add('META6.json').e
-        ?? $tmp
-        !! $tmp.dir.first({ .d && .add('META6.json').e })
-            // die "no META6.json in %e<name>'s archive";
 
     my %meta = json-decode($root.add('META6.json').slurp);
     trace("meta: {%meta<name> // '?'} ver<{%meta<version> // '?'}> auth<{%meta<auth> // ''}> (root {$root.basename})");
@@ -1118,12 +1160,19 @@ sub MAIN(
     if $check {
         exit store-check($to);
     }
+    # `rakupp uninstall .` / `reinstall .` — the store knows dists by NAME,
+    # so a path argument stands for whatever its directory's META6 names
+    my @removal-names = @modules.map(-> $a {
+        is-path-arg($a) && $a.IO.add('META6.json').e
+            ?? ((try json-decode($a.IO.add('META6.json').slurp))<name> // $a)
+            !! $a
+    });
     if $uninstall {
         unless @modules {
             note "usage: rakupp uninstall [--force] Module ...";
             exit 2;
         }
-        exit do-uninstall(@modules, $to, :force($force // False));
+        exit do-uninstall(@removal-names, $to, :force($force // False));
     }
     if $reinstall {
         unless @modules {
@@ -1131,7 +1180,7 @@ sub MAIN(
             exit 2;
         }
         # the uninstall half; the normal install flow below is the other half
-        my $rc = do-uninstall(@modules, $to, :force($force // False), :for-reinstall);
+        my $rc = do-uninstall(@removal-names, $to, :force($force // False), :for-reinstall);
         exit $rc if $rc != 0;
     }
     if $refresh && !@modules {
@@ -1149,11 +1198,12 @@ sub MAIN(
     }
     unless @modules {
         note q:to/END/.trim;
-            usage: rakupp install [options] Module ...
+            usage: rakupp install [options] Module|Path ...
+                   rakupp install .            this directory's dist (a Path starts with . or /)
                    rakupp install --list | --check | --refresh
-                   rakupp test Module ...      run the dists' own suites; installs only their deps
-                   rakupp uninstall [--force] Module ...
-                   rakupp reinstall [--no-test] [--force] Module ...
+                   rakupp test Module|Path ... run the dists' own suites; installs only their deps
+                   rakupp uninstall [--force] Module|Path ...
+                   rakupp reinstall [--no-test] [--force] Module|Path ...
             options:
               --dry-run        resolve and print the plan; write nothing
               --list           what is installed in the target store
@@ -1168,11 +1218,35 @@ sub MAIN(
     }
 
     $REA-REFRESH = $refresh // False;
-    my @index = load-index($refresh // False).list;
-    trace("index: {@index.elems} distributions");
+    # zef's path rule, learned verbatim: `.`- and `/`-prefixed arguments are
+    # directories to install from; everything else resolves in the ecosystem.
+    # A path dist contributes its DEPENDENCIES to the resolver — they install
+    # first, like any plan's — while the dist itself installs from its
+    # directory, never from the index's copy of the same name.
+    my @local-entries = @modules.grep({ is-path-arg($_) }).map({ local-dist-entry($_) });
+    my @names = @modules.grep({ !is-path-arg($_) });
     my %notes;
-    trace("resolve: {@modules.join(' ')}");
-    my @plan = resolve(@index, @modules, %notes);
+    my @wants = @names;
+    for @local-entries -> %e {
+        trace("local: {%e<dist>} from {%e<local-root>}");
+        for <depends build-depends test-depends> -> $field {
+            @wants.append(dep-identities(%e{$field}));
+            %notes{$_} = 'an alternation this installer does not choose between'
+                for dep-unresolved(%e{$field});
+        }
+    }
+    # a pure-path install with no ecosystem wants needs no index at all —
+    # `rakupp install .` on a dependency-free dist works offline
+    my @index = @wants ?? load-index($refresh // False).list !! ();
+    if @wants {
+        trace("index: {@index.elems} distributions");
+        trace("resolve: {@wants.join(' ')}");
+    }
+    my %local-names;
+    %local-names{.<name>} = True for @local-entries;
+    my @plan = (@wants ?? resolve(@index, @wants, %notes) !! ())
+        .grep(-> %e { !%local-names{%e<name>} });
+    @plan.append(@local-entries);
 
     if !@plan && %notes {
         note "cannot resolve: {%notes.map({ "{.key} ({.value})" }).join('; ')}";
@@ -1206,7 +1280,8 @@ sub MAIN(
     # dependencies really install, or the suites would have nothing to import
     my %target;
     if $test-only {
-        %target{parse-identity($_)<name>} = True for @modules;
+        %target{parse-identity($_)<name>} = True for @names;
+        %target{.<name>} = True for @local-entries;   # `rakupp test .` targets the dist the dir names
     }
     for @plan -> %e {
         my $is-target = $test-only
