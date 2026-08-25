@@ -55,7 +55,7 @@ graph TD
     CORPUS["raku-corpus<br/>real-world programs"]
     GRID["Rakugrid<br/>atoms + molecules<br/>oracle vs expect"]
     EYE["raku-eye<br/>weekly measurement<br/>eye.raku.online"]
-    PWC["Weekly Challenge<br/>+ REA releases"]
+    PWC(["Weekly Challenge<br/>+ REA releases"])
     BREW["Homebrew tap<br/>ash/rakupp"]
     REL["GitHub Release<br/>binaries + wasm zip"]
 
@@ -77,7 +77,17 @@ graph TD
     CORPUS -->|golden battery| EYE
     PWC -->|weekly delta| EYE
     EYE -.->|ranked mismatch clusters<br/>+ regressions| SRC
+
+    %% Everything above is ours except PWC, drawn unboxed: it is upstream
+    %% material we observe, not a thing we build or ship.
+    classDef external fill:none,stroke:none
+    class PWC external
 ```
+
+Every box is something we build and therefore something a release can leave
+stale. The one unboxed label is not: the **Weekly Challenge** solutions and the
+**REA** release index are other people's output, arriving on their own schedule.
+The Eye reads them; nothing here rebuilds or redeploys them.
 
 Two things are worth internalising because they drive the release runbook:
 
