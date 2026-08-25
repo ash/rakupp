@@ -25,6 +25,8 @@ what to fix. Its design and rules live in
 | **raku.online** | The public playground built on Raku.js — editor, output pane, share/open links, an embeddable widget (`raku.js`). | [ash/raku.online](https://github.com/ash/raku.online) | [raku.online](https://raku.online/) |
 | **spec** (was `raku-spec`) | The behavioural spec: one page per feature, every example runnable live (via raku.online's engine). Its generator is written in Raku and run *by* rakupp. | [ash/raku.online `sites/spec`](https://github.com/ash/raku.online/tree/main/sites/spec) | [raku.online/spec](https://raku.online/spec/) |
 | **tour** (was `raku-tour`) | "A Tour of Raku": 18 interactive lessons, every example a live editor (raku.online's engine) with output verified against the interpreter. Same generator pattern as the spec. | [ash/raku.online `sites/tour`](https://github.com/ash/raku.online/tree/main/sites/tour) | [raku.online/tour](https://raku.online/tour/) |
+| **drills** | Raku Drills: 150 graded practice questions, A1 to C2 — multiple choice, true/false, type-the-answer and fill-the-gap, the `fill` ones checked by running the finished program in the browser. Hand-maintained JS + a question bank, not generated. | [ash/raku.online `www/drills`](https://github.com/ash/raku.online/tree/main/www/drills) | [raku.online/drills](https://raku.online/drills/) |
+| **duo** | A bilingual reader for [The Complete Course of the Raku Programming Language](https://course.raku.org) — any two of eleven languages side by side, paragraph opposite paragraph, plus word lookup, vocabulary drills and read-aloud. Its generator is written in Raku and run *by* rakupp; it embeds no engine. | [ash/duo.raku.online](https://github.com/ash/duo.raku.online) | [duo.raku.online](https://duo.raku.online/) |
 | **raku-corpus** | Real-world Raku programs used as a beyond-Roast differential test target. | [ash/raku-corpus](https://github.com/ash/raku-corpus) | — (test input) |
 | **raku-eye** | The standing watch: a weekly, unattended GitHub Actions run that measures `main` against fresh Weekly Challenge solutions, new ecosystem releases and the corpus, benchmarks it against the latest Rakudo release, and publishes the result. Measures only — it never edits the compiler, and there is no AI in it. | [ash/raku-eye](https://github.com/ash/raku-eye) | [eye.raku.online](https://eye.raku.online/) |
 | **Homebrew tap** | The `ash/rakupp` tap — `brew install rakupp`. Apple Silicon gets the prebuilt release binary; Linux/Intel build from the source tarball; `--HEAD` builds from `main`. | [ash/homebrew-rakupp](https://github.com/ash/homebrew-rakupp) | `brew install rakupp` |
@@ -39,6 +41,8 @@ graph TD
     ONLINE["raku.online<br/>playground + raku.js widget"]
     SPEC["raku.online/spec<br/>feature spec, live examples"]
     TOUR["raku.online/tour<br/>interactive lessons"]
+    DRILLS["raku.online/drills<br/>150 practice questions"]
+    DUO["duo.raku.online<br/>bilingual course reader"]
     CORPUS["raku-corpus<br/>real-world programs"]
     EYE["raku-eye<br/>weekly measurement<br/>eye.raku.online"]
     PWC["Weekly Challenge<br/>+ REA releases"]
@@ -50,6 +54,8 @@ graph TD
     WASM -->|copied into www/| ONLINE
     ONLINE -->|raku.js engine<br/>embedded cross-origin| SPEC
     ONLINE -->|raku.js engine<br/>embedded cross-origin| TOUR
+    ONLINE -->|same-origin rakujs.js<br/>own worker| DRILLS
+    NATIVE -->|rakupp build.raku<br/>over the course sources| DUO
     NATIVE -->|rakupp build.raku<br/>--verify generator| SPEC
     NATIVE -->|differential run| CORPUS
     SRC -->|tag → release.yml CI| REL
@@ -67,11 +73,16 @@ Two things are worth internalising because they drive the release runbook:
   version out of [`../CMakeLists.txt`](../../CMakeLists.txt)
   (`project(RakuPP VERSION …)`) and bakes it into the WebAssembly build. Bump the
   version there *before* rebuilding wasm and every surface reports it correctly.
-- **Neither the spec nor the tour hosts an engine of its own.** Their runnable
-  examples load raku.online's `raku.js`, which `importScripts` the same
-  `rakujs.{js,wasm}`. So **both sub-sites automatically inherit a new interpreter
-  the moment raku.online is redeployed** — updating them is then only about the
-  *content* (new feature pages / lessons), not the engine.
+- **None of the sub-sites hosts an engine of its own.** The spec's and the
+  tour's runnable examples load raku.online's `raku.js`, and the drills run
+  their answers through their own worker importing the same origin's
+  `/rakujs.js` — all of it the one `rakujs.{js,wasm}`. So **every sub-site
+  automatically inherits a new interpreter the moment raku.online is
+  redeployed** — updating them is then only about the *content* (new feature
+  pages, lessons, questions), not the engine. `duo.raku.online` is the
+  exception in the other direction: it runs no Raku in the browser at all,
+  but rakupp builds it, so it is the interpreter's own generator that has to
+  keep working.
 - **raku-eye reads this repo's `main`, including its tools.** The Monday run
   builds `main` and then drives `tools/pwc-sweep.raku`, `tools/run-bench.raku`
   and `tools/eco-fresh/` *from that same checkout* — the tools are also tests.
@@ -242,6 +253,28 @@ the new interpreter. `./build.sh` with no argument does the whole site.
 
 (The in-browser engine updates with raku.online, same as the spec.)
 
+**The drills** are the tour's counterpart — the tour shows, the drills ask —
+and they are the one sub-site that is *not* generated: the question bank
+(`www/drills/data/drills.js`) and the page's own JS/CSS are edited in place
+under `www/drills/`. So there is no `--verify` pass to catch a question whose
+`expect` block the new release changed; a release that alters user-visible
+output means re-checking the `fill` questions by playing through the levels.
+The build still matters, though: `./build.sh` hashes the drills' own JS, CSS
+and data into a separate `?v=` tag (they change independently of the engine),
+so **editing the bank without re-running `./build.sh` leaves returning visitors
+on the cached old questions**. Commit `www/` and push, as ever.
+
+**duo.raku.online** is the odd one out and is released on its own clock: it
+ships no engine, runs no Raku in the browser, and reads its content from the
+[raku-course](https://github.com/ash/raku-course) checkout rather than from
+this repo. What ties it to a release is that **rakupp itself is its generator**
+— `./build.sh` in the `duo.raku.online` checkout runs `build.raku` under
+`RAKUPP`, and `./build.sh --check` reports every page whose translation has
+drifted out of block-for-block alignment. Rebuilding it after a release is
+therefore a test of the new binary on a real 1,530-page workload, not a deploy
+step; publish (commit `www/`, push — its own Pages workflow) only when the
+output actually changed.
+
 ### D. Differential-check against raku-corpus
 
 Optional but recommended: run the new binary over
@@ -273,6 +306,8 @@ came out, so a bad week appears in the ledger either way.
 | the playground UI (`rakujs/playground/`) | copy the changed file into `raku.online/www/` and redeploy (**B.3–4**) |
 | a feature's support level or a new feature | write/update its spec page and redeploy the spec (**C**) |
 | a tour lesson | `./build.sh tour` in the raku.online checkout, commit `www/`, push (**C**) |
+| a drills question | edit `www/drills/data/drills.js` in the raku.online checkout, re-run `./build.sh` so the drills' `?v=` tag moves, commit `www/`, push (**C**) |
+| the duo reader or the course sources behind it | `./build.sh` in the `duo.raku.online` checkout (rakupp is the generator), `./build.sh --check` for block alignment, commit `www/`, push (**C**) |
 | stat numbers (Roast) | refresh the docs per the doc-sync checklist (**A.4**) |
 | a sweep tool (`tools/pwc-sweep.raku`, `tools/run-bench.raku`, `tools/eco-fresh/`) | push it to `main` before the next Monday — raku-eye runs the tools from `main`, so an unpushed change is a failed run (**D**) |
 | anything, and you want to know what it broke in the wild | read [eye.raku.online](https://eye.raku.online/) — the week's regressions and the ranked mismatch clusters are the fix-session worklist (**D**) |
