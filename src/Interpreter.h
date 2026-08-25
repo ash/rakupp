@@ -580,6 +580,7 @@ struct ReactCtx {
     std::deque<ReactEvent> queue;
     int liveSources = 0;   // live taps not yet done
     bool closed = false;   // `done`/`last` called
+    bool aborted = false;  // drainWorkers wake-up: a parked WORKER react unwinds
     std::mutex m;
     std::condition_variable cv;
     // Externally-wired taps (e.g. OS-signal taps) whose teardown isn't driven by
@@ -1308,6 +1309,13 @@ public:
     // is pushed on the worker's reactStack_ so a `done` in the block closes it.
     Value tapSignal(const std::vector<int>& sigs, Value emitCb, Value doneCb,
                     std::shared_ptr<ReactCtx> reactCtx);
+    // Wake the signal dispatcher out of its blocking read() at shutdown (it
+    // cannot see workerAbort_); called by drainWorkers so exit is prompt.
+    void wakeSignalWorker();
+    // Flag-and-notify every parked react at shutdown (see runReactLoop).
+    void wakeParkedReacts();
+    std::mutex parkedReactsMut_;
+    std::vector<std::weak_ptr<ReactCtx>> parkedReacts_;
     // Legacy eager semantics: run an on-demand supply block now, collecting its
     // emits into a values-backed Supply (what `supply {…}` used to return).
     Value drainSupplyBlock(const Value& s);

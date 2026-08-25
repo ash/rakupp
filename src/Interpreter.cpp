@@ -2923,14 +2923,34 @@ void Interpreter::sleepYield(double secs) {
     // during the sleep) — allow it, still bounded.
     double cap = (liveWorkers_.load() > 0 || cuedLoads_.load() > 0) ? 35.0 : 1.0;
     if (secs > cap) secs = cap;
+    // A WORKER sleeps in slices against a fixed deadline, so it notices
+    // shutdown within ~50 ms — one long sleep_for made it hold drainWorkers'
+    // 2 s grace for the sleep's whole remainder (a GUI window's close button
+    // felt seconds slow). The mainline keeps the single uninterrupted sleep;
+    // the deadline keeps a sliced sleep's total duration exact.
+    auto sliceUntilAbort = [&](double s) -> bool {       // true: abort observed
+        if (!t_isWorker) { std::this_thread::sleep_for(std::chrono::duration<double>(s)); return false; }
+        auto end = std::chrono::steady_clock::now() + std::chrono::duration<double>(s);
+        for (;;) {
+            if (workerAbort_.load(std::memory_order_relaxed)) return true;
+            auto now = std::chrono::steady_clock::now();
+            if (now >= end) return false;
+            double left = std::chrono::duration<double>(end - now).count();
+            std::this_thread::sleep_for(std::chrono::duration<double>(left < 0.05 ? left : 0.05));
+        }
+    };
     // No GIL held (single-threaded) or parallel mode (no GIL at all): just sleep.
-    if (!gilHeld_ || parallelMode_) { std::this_thread::sleep_for(std::chrono::duration<double>(secs)); return; }
+    if (!gilHeld_ || parallelMode_) {
+        if (sliceUntilAbort(secs)) throw WorkerAbortEx{};
+        return;
+    }
     static thread_local ExecContext parked;
     saveCtx(parked);
     gilYieldNotify();
-    std::this_thread::sleep_for(std::chrono::duration<double>(secs));
-    gil_.lock();
+    bool aborted = sliceUntilAbort(secs);
+    gil_.lock();                 // restore invariants before unwinding
     loadCtx(parked);
+    if (aborted) throw WorkerAbortEx{};
 }
 
 // Release the GIL for a blocking syscall so other worker threads run concurrently.
@@ -3165,21 +3185,59 @@ void Interpreter::awaitPromise(const std::shared_ptr<PromiseState>& ps) {
 // return at once. Otherwise drop the GIL and wait for an emitter thread to
 // decrement liveSources / close the context.
 void Interpreter::runReactLoop(const std::shared_ptr<ReactCtx>& ctx) {
+    // Register for the drain-time wake-up: a react parked on sources that have
+    // no worker of their own (a Supplier-backed `whenever $button.clicks`) has
+    // nobody to hand its liveSources back at shutdown, so an unwoken wait held
+    // drainWorkers' whole 2 s grace — the pause between a GUI window's close
+    // button and the process exiting. drainWorkers sets ctx->aborted and
+    // notifies; a WORKER parked here then unwinds via WorkerAbortEx. Steady-
+    // state waiting stays the plain indefinite predicated wait (a 50 ms
+    // polling variant destabilized timing-marginal S17 files under the
+    // parallel roast harness).
+    {
+        std::lock_guard<std::mutex> g(parkedReactsMut_);
+        parkedReacts_.push_back(ctx);
+    }
+    auto pred = [&] { return ctx->liveSources <= 0 || ctx->closed ||
+                             (t_isWorker && ctx->aborted); };
+    auto sourcesDone = [&] { return ctx->liveSources <= 0 || ctx->closed; };
     std::unique_lock<std::mutex> lk(ctx->m);
     while (ctx->liveSources > 0 && !ctx->closed) {
         if (!gilHeld_) break; // no async emitter can exist → don't hang the loop
         if (parallelMode_) {  // no GIL: wait for an emitter thread to close/drain
-            ctx->cv.wait(lk, [&] { return ctx->liveSources <= 0 || ctx->closed; });
+            ctx->cv.wait(lk, pred);
+            if (t_isWorker && ctx->aborted && !sourcesDone()) throw WorkerAbortEx{};
             break;
         }
         static thread_local ExecContext parked;
         saveCtx(parked);
         gilYieldNotify();
-        ctx->cv.wait(lk, [&] { return ctx->liveSources <= 0 || ctx->closed; });
+        ctx->cv.wait(lk, pred);
+        bool aborted = t_isWorker && ctx->aborted && !sourcesDone();
         lk.unlock();       // drop ctx->m before reacquiring the GIL (avoids ABBA with emitters)
-        gil_.lock();
+        gil_.lock();       // restore invariants before unwinding
         loadCtx(parked);
+        if (aborted) throw WorkerAbortEx{};
         lk.lock();         // re-check the loop condition under ctx->m
+    }
+}
+
+// Wake every parked react so its worker can unwind promptly at shutdown:
+// sources without a worker of their own have nobody to release them.
+void Interpreter::wakeParkedReacts() {
+    std::vector<std::shared_ptr<ReactCtx>> live;
+    {
+        std::lock_guard<std::mutex> g(parkedReactsMut_);
+        auto& v = parkedReacts_;
+        v.erase(std::remove_if(v.begin(), v.end(), [&](std::weak_ptr<ReactCtx>& w) {
+            if (auto s = w.lock()) { live.push_back(std::move(s)); return false; }
+            return true;   // react long gone — prune the entry
+        }), v.end());
+    }
+    for (auto& c : live) {
+        std::lock_guard<std::mutex> lk(c->m);
+        c->aborted = true;
+        c->cv.notify_all();
     }
 }
 
@@ -3196,6 +3254,8 @@ void Interpreter::drainWorkers() {
         // semantics as the GIL branch below: ask workers to unwind, give the
         // stragglers a short grace, then abandon them so the program can exit.
         workerAbort_.store(true, std::memory_order_relaxed);
+        wakeSignalWorker();
+        wakeParkedReacts();
         auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
         while (liveWorkers_.load() > 0 && std::chrono::steady_clock::now() < deadline)
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
@@ -3215,6 +3275,8 @@ void Interpreter::drainWorkers() {
     // GIL and finishing. Workers blocked in a syscall (a server's accept/recv) can't
     // see this — they're handled by the grace-period abandon below.
     workerAbort_.store(true, std::memory_order_relaxed);
+    wakeSignalWorker();
+    wakeParkedReacts();
     gil_.unlock();                         // let workers run while we wait
     // Wait for outstanding workers to finish, but not forever: a fire-and-forget
     // `start {…}` that loops (a server's accept loop) is a daemon thread. Once the

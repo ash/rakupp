@@ -6582,6 +6582,16 @@ static void rakuppSignalHandler(int sig) {
 }
 #endif
 
+// drainWorkers' wake-up for the signal dispatcher: it blocks in read() on the
+// self-pipe where workerAbort_ is invisible, so without this it held the whole
+// 2 s shutdown grace (a GUI window's close button felt seconds slow). A 0 byte
+// — no real signal is 0 — tells it to unwind.
+void Interpreter::wakeSignalWorker() {
+#if !defined(_WIN32)
+    if (g_sigPipe[1] >= 0) { unsigned char z = 0; ssize_t r = ::write(g_sigPipe[1], &z, 1); (void)r; }
+#endif
+}
+
 // Signal number → its enum name ("SIGINT"), or "" if unknown.
 static std::string signalNameOfNumber(int sig);
 // Build the Signal enum value passed to a whenever block ($_ / $sig).
@@ -7077,6 +7087,7 @@ Value Interpreter::tapSignal(const std::vector<int>& sigs, Value emitCb, Value d
                 unsigned char c;
                 ssize_t n = ::read(g_sigPipe[0], &c, 1);        // GIL not held
                 if (n <= 0) break;
+                if (c == 0) break;                              // drainWorkers' quit byte
                 int sig = c;
                 std::vector<std::shared_ptr<SignalTapRec>> taps;
                 {
@@ -7103,6 +7114,26 @@ Value Interpreter::tapSignal(const std::vector<int>& sigs, Value emitCb, Value d
                     if (t->react) self->reactStack_.pop_back();
                 }
                 self->gilYieldNotify();
+            }
+            // Shutdown (quit byte or pipe EOF): hand every registered tap's
+            // react source back, or a react parked on `whenever signal(...)`
+            // outlives us into drainWorkers' 2 s grace — the pause between a
+            // GUI window's close button and the process actually exiting.
+            {
+                std::set<std::shared_ptr<SignalTapRec>> taps;   // dedup: one rec may serve several signals
+                {
+                    std::lock_guard<std::mutex> lk(g_sigTapMutex);
+                    for (auto& kv : g_sigTaps) taps.insert(kv.second);
+                    g_sigTaps.clear();
+                }
+                for (auto& t : taps) {
+                    if (t->handle) { std::lock_guard<std::mutex> lk(t->handle->m); t->handle->closed = true; }
+                    if (t->react) {
+                        std::lock_guard<std::mutex> lk(t->react->m);
+                        if (t->react->liveSources > 0) t->react->liveSources--;
+                        t->react->cv.notify_all();
+                    }
+                }
             }
             self->liveWorkers_--;
             fin->store(true, std::memory_order_release);
