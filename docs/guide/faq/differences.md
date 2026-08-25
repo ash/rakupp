@@ -67,6 +67,14 @@ gives the child your terminal so output appears as produced; Raku++ captures and
 echoes when it exits. With `:out` both behave identically. See
 [shell.md](shell.md).
 
+**`Proc::Async`: sunk failures, `.signal`, stdin.** Rakudo throws when a failed
+process's `Proc` result is sunk (`await $p.start;` as a bare statement) and
+reports a signal death as `exitcode 0` plus `.signal`; Raku++ keeps going —
+check `.so` — and reports `exitcode -1` with no `.signal`. Writing to the
+child's stdin (`:w`, `.print`, `.close-stdin`) is not implemented, and tapped
+output arrives when the promise is realized rather than live. See
+[background-processes.md](background-processes.md).
+
 **`Str.succ` on a trailing non-alphanumeric.** `'a!'.succ` is `'b!'` here and
 `'a!'` in Rakudo. Deliberate: Rakudo's own source comments describe a rule its
 code does not implement, it ships a leftward-scanning helper matching ours that

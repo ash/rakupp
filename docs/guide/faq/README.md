@@ -17,6 +17,10 @@ trips over.
 
 - **[shell.md](shell.md)** — running external commands: `run` vs `shell`,
   capturing output, feeding input, exit codes, and what a `Proc` shows you.
+- **[background-processes.md](background-processes.md)** — `Proc::Async`:
+  fire-and-forget processes that outlive the program (and where Raku's own
+  documentation stands on that), when `.start` spawns, taps, `bind-stdin`
+  pipelines, `.kill`, and reading the exit status.
 - **[containers.md](containers.md)** — "why does my list have one element?":
   itemisation, `$(…)` vs `[…]`, when you need `@(…)`, and passing a list to a
   routine.
