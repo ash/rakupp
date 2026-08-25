@@ -141,7 +141,13 @@ int guarded(Interp* p, const std::function<void()>& body) {
 // escaping its entry function is std::terminate, not a catchable error. The
 // callers put guarded() INSIDE body for exactly that reason.
 void runMaybeBigStack(Interp* p, const std::function<void()>& body) {
-    if (!p->cfg.own_stack) { body(); return; }
+    if (!p->cfg.own_stack) {
+        // Same GIL discipline as the hop below, on the caller's own thread.
+        bool outermost = p->interp.gilMainlineEnter();
+        body();
+        p->interp.gilMainlineLeave(outermost);
+        return;
+    }
     ExecContext parked;
     p->interp.saveCtx(parked);
     // rakuppMainOnBigStack takes a C callback, so the lambda rides across as
@@ -150,6 +156,13 @@ void runMaybeBigStack(Interp* p, const std::function<void()>& body) {
     Ctx c{p, &body, &parked};
     rakuppMainOnBigStack([](void* v) -> int {
         auto* cc = (Ctx*)v;
+        // GIL ownership cannot ride the hop the way the registers do — a
+        // mutex belongs to the thread that locked it, and this thread dies
+        // with the evaluation. So each entry takes the engaged GIL HERE and
+        // hands it back before the thread ends (gilMainlineEnter/Leave);
+        // waiting first also means a still-running `start` worker finishes
+        // its yield window before this evaluation touches interpreter state.
+        bool outermost = cc->p->interp.gilMainlineEnter();
         cc->p->interp.loadCtx(*cc->parked);
         // The worker IS the session's mainline while the body runs: `exit`
         // distinguishes the mainline (unwinds as ExitEx, catchable) from a
@@ -159,6 +172,7 @@ void runMaybeBigStack(Interp* p, const std::function<void()>& body) {
         (*cc->fn)();
         cc->p->interp.mainThread_ = prevMain;
         cc->p->interp.saveCtx(*cc->parked);
+        cc->p->interp.gilMainlineLeave(outermost);
         return 0;
     }, &c);
     // The registers return to THIS thread, so between evaluations the session

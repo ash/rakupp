@@ -2819,6 +2819,24 @@ void Interpreter::engageGil() {
     if (!parallelMode_) gil_.lock();  // parallel mode never holds the GIL for compute
 }
 
+// The embed surface's GIL handoff (declared beside gil_ in the header): the
+// outermost rk_* entry takes the engaged GIL on the thread that will actually
+// run, and releases it on the way out. Enter cannot remember whether it
+// locked — the body may be the one that first engages (engageGil locks on
+// this same thread mid-body) — so leave re-derives ownership from gilHeld_:
+// in both histories the current thread is the owner, and the unlock is the
+// same-thread unlock the mutex contract requires.
+bool Interpreter::gilMainlineEnter() {
+    if (embedGilDepth_++ > 0) return false;
+    if (gilHeld_ && !parallelMode_) gil_.lock();
+    return true;
+}
+void Interpreter::gilMainlineLeave(bool outermost) {
+    --embedGilDepth_;
+    if (!outermost) return;
+    if (gilHeld_ && !parallelMode_) gilYieldNotify(); // the documented handoff: unlock + wake yielders
+}
+
 // Tripwire wired into every structural writer of a shared symbol table. Once the
 // tables are frozen (concurrency engaged), a mutation means a worker thread could
 // be reading a table another thread is restructuring — the race lock-free reads

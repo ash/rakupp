@@ -131,6 +131,33 @@ my $hung = @wlines.first(*.contains(Q{"id":2,})) // '';
 check $hung.contains(Q{"isError":true}) && $hung.contains('ran longer than'),
     'the watchdog answers a stuck call before exiting', $hung;
 
+# ---- the GIL leg ------------------------------------------------------------
+# RAKUPP_GIL=1 selects the cooperative GIL (the parallel-bisection leg). Under
+# own_stack every eval runs on its own short-lived thread, and a mutex belongs
+# to the thread that locked it — so GIL ownership must ride the entry hop the
+# way the execution registers do. start/await in one call, more calls after,
+# is exactly the pattern that once left the lock with a dead thread.
+
+%*ENV<RAKUPP_GIL> = '1';
+my @gil =
+    Q<{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"raku","arguments":{"code":"my $p = start { 42 }; await $p"}}}>,
+    Q<{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"raku","arguments":{"code":"my $q = start { 7 }; await $q"}}}>,
+    Q<{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"raku","arguments":{"code":"2 + 2"}}}>,
+    ;
+my $g = run $rakupp.Str, '--mcp', '--timeout=60', :in, :out, :err;
+$g.in.print(@gil.join("\n") ~ "\n");
+$g.in.close;
+my @glines = $g.out.slurp(:close).lines;
+$g.err.slurp(:close);
+%*ENV<RAKUPP_GIL>:delete;
+check $g.exitcode == 0, 'GIL leg: the server exits 0 when its client closes stdin',
+    "exit code {$g.exitcode}";
+check (@glines.first(*.contains(Q{"id":1,})) // '').contains(Q{=> 42})
+        && (@glines.first(*.contains(Q{"id":2,})) // '').contains(Q{=> 7}),
+    'GIL leg: start/await answers across the eval hop';
+check (@glines.first(*.contains(Q{"id":3,})) // '').contains(Q{=> 4}),
+    'GIL leg: the session runs on after its workers';
+
 if $errors {
     say "mcp-smoke: $errors problem{$errors == 1 ?? '' !! 's'}";
     exit 1;

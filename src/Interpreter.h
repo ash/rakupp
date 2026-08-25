@@ -1108,6 +1108,20 @@ public:
     void loadCtx(ExecContext& c);
     std::mutex gil_;                       // global interpreter lock (held while running Raku)
     bool gilHeld_ = false;                 // is the GIL currently engaged (any thread spawned)?
+    // The embed surface's GIL discipline (rk_eval/rk_run/rk_call): a mutex
+    // belongs to the thread that locked it, and with cfg.own_stack every entry
+    // runs on a fresh short-lived worker — so ownership is scoped to the entry,
+    // never to the session. The outermost entry takes the engaged GIL on ITS
+    // thread and releases it on the way out, the same handoff discipline
+    // saveCtx/loadCtx applies to the execution registers. Between entries the
+    // GIL is free, so a pending worker progresses exactly as it would in a
+    // CLI yield window. Depth, not a flag: a native extension called mid-eval
+    // may re-enter through rk_call, and only the outermost entry owns. The
+    // counter is unsynchronised on purpose — the entries chain sequentially
+    // (the host joins each hop worker before the next entry starts).
+    bool gilMainlineEnter();               // outermost embed entry? (locks if engaged)
+    void gilMainlineLeave(bool outermost); // release re-checks gilHeld_: the body may have engaged
+    int embedGilDepth_ = 0;
     // GIL-removal step 3: opt-in true parallelism (RAKUPP_PARALLEL). When true, worker
     // threads run interpreter compute concurrently instead of serialising on the GIL —
     // safe now that registers/stacks are thread_local (steps 1/3a) and the symbol tables

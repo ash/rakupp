@@ -190,6 +190,18 @@ namespace {
 // re-raising; anything else is flattened to a message, because a std::bad_alloc
 // re-raised as itself would unwind straight past the interpreter's handlers.
 RkValue extCall(ExtCtx* x, const Value& code, const RkValue* argv, size_t argc) {
+    // The same entry-scoped GIL discipline as rk_eval's hop (see
+    // runMaybeBigStack): a host-initiated call between evaluations must not
+    // run interpreter code while an engaged worker holds the GIL — and when
+    // an extension re-enters mid-evaluation, the depth guard makes this a
+    // no-op because the evaluation's own entry already owns. RAII because
+    // every catch below returns.
+    struct GilGate {
+        Interpreter* i;
+        bool outermost;
+        explicit GilGate(Interpreter* in) : i(in), outermost(in->gilMainlineEnter()) {}
+        ~GilGate() { i->gilMainlineLeave(outermost); }
+    } gate{x->interp};
     ValueList args;
     args.reserve(argc);
     for (size_t i = 0; i < argc; i++) {
