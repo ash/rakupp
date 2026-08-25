@@ -47,6 +47,9 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <sys/wait.h>
+#else
+#include <fcntl.h>      // _O_RDONLY & friends (nqp::open)
+#include <io.h>         // _open/_read/_close
 #endif
 #include <condition_variable>
 #include <mutex>
@@ -10483,10 +10486,17 @@ Value Interpreter::evalNqpOp(NqpOp* n) {
             if (a.empty()) return Value::nil();
             Value pathv = eval(a[0].get());
             std::string mode = a.size() > 1 ? eval(a[1].get()).toStr() : "r";
+#ifdef _WIN32
+            int flags = mode.find('w') != std::string::npos ? (_O_WRONLY | _O_CREAT | _O_TRUNC | _O_BINARY)
+                      : mode.find('a') != std::string::npos ? (_O_WRONLY | _O_CREAT | _O_APPEND | _O_BINARY)
+                      : (_O_RDONLY | _O_BINARY);
+            int fd = ::_open(pathv.toStr().c_str(), flags, 0644);
+#else
             int flags = mode.find('w') != std::string::npos ? (O_WRONLY | O_CREAT | O_TRUNC)
                       : mode.find('a') != std::string::npos ? (O_WRONLY | O_CREAT | O_APPEND)
                       : O_RDONLY;
             int fd = ::open(pathv.toStr().c_str(), flags, 0644);
+#endif
             if (fd < 0)
                 throw RakuError{Value::typeObj("X::AdHoc"),
                     "Failed to open file " + pathv.toStr() + ": " + std::strerror(errno)};
@@ -10505,7 +10515,11 @@ Value Interpreter::evalNqpOp(NqpOp* n) {
             if (fd >= 0 && want > 0) {
                 long long off = 0; // short reads are legal; loop to n or EOF
                 while (off < want) {
+#ifdef _WIN32
+                    long long r = ::_read(fd, &bytes[(size_t)off], (unsigned)(want - off));
+#else
                     long long r = ::read(fd, &bytes[(size_t)off], (size_t)(want - off));
+#endif
                     if (r <= 0) break;
                     off += r;
                 }
@@ -10527,7 +10541,11 @@ Value Interpreter::evalNqpOp(NqpOp* n) {
             if (a.empty()) return Value::nil();
             Value fhv = eval(a[0].get());
             if (fhv.t == VT::Hash && fhv.hash() && fhv.hash()->count("fd"))
+#ifdef _WIN32
+                ::_close((int)(*fhv.hash())["fd"].toInt());
+#else
                 ::close((int)(*fhv.hash())["fd"].toInt());
+#endif
             return Value::nil();
         }
         // Buffer writes mutate argument 0 in place, so they need its lvalue.
