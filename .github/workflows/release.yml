@@ -26,6 +26,10 @@ jobs:
   build:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
+    # A healthy run takes ~10 minutes; the default limit is 6 HOURS, so one
+    # hung gate step held a runner all day (the MCP smoke did, 2026-08-25).
+    # Fail in minutes instead: a hang is a red build, not a stuck queue.
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -247,8 +251,12 @@ jobs:
       # it -- the initialize handshake, both tools, session state across
       # calls, the parse tree and failure diagnosis, and the watchdog's
       # answer-then-exit contract for a call that cannot be interrupted.
+      # Tight per-step limit on top of the job's: this gate drives a server
+      # over pipes, and a wedged server hangs the smoke itself (the parent
+      # blocks in slurp), which no in-process watchdog can answer.
       - name: MCP server gate (POSIX)
         if: runner.os != 'Windows'
+        timeout-minutes: 10
         run: build/rakupp tools/mcp-smoke.raku build
 
       # The SLIM negative suite (SLIM-PLAN P3+P4): --slim's grammar,
