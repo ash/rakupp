@@ -804,7 +804,11 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             // LibraryMake does `$ldusr ~~ s/\%s//` to recover the bare flag.
             ch["ldusr"]    = Value::str(msvc ? "%s.lib" : "-l%s");
             ch["make"]     = Value::str(envOr("MAKE", makeProg));
-            ch["osname"]   = Value::str(name);
+            // `osname` is the OPERATING SYSTEM, not the VM: Rakudo's
+            // `$*VM.config<osname>` is 'darwin'/'linux'/'mswin32', and modules
+            // dispatch on it (NativeLibs' cannon-name test does). Answering the
+            // VM's own name matched no branch anywhere.
+            ch["osname"]   = Value::str(platKernelName());
             return c;
         }
         // `$*VM.request-garbage-collection` — the one hook Raku offers to ask
@@ -828,20 +832,33 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // prepend `lib` to the basename and append the platform extension. Used
         // by OpenSSL::NativeLib et al. to build the `is native` library name.
         if (m == "platform-library-name" && !args.empty()) {
-            std::string p = args[0].toStr();
+            // `:version` names a SONAME version, and every DBDish driver probes
+            // with it (`try-versions('mysqlclient', $wks, 16..21)` walks
+            // libmysqlclient.16.dylib … .21.dylib). Ignoring it answered the bare
+            // name for every candidate, so the whole probe collapsed to one
+            // attempt and a versioned-only library was never found.
+            std::string p, ver;
+            for (auto& a : args) {
+                if (a.t == VT::Pair) {
+                    if (a.s == "version" && a.pairVal() && a.pairVal()->t != VT::Type)
+                        ver = a.pairVal()->toStr();
+                }
+                else if (p.empty()) p = a.toStr();
+            }
             size_t slash = p.find_last_of('/');
             std::string dir = slash == std::string::npos ? "" : p.substr(0, slash + 1);
             std::string base = slash == std::string::npos ? p : p.substr(slash + 1);
-#if defined(_WIN32)
-            const char* ext = ".dll"; const char* pre = "";
-#elif defined(__APPLE__)
-            const char* ext = ".dylib"; const char* pre = "lib";
-#else
-            const char* ext = ".so"; const char* pre = "lib";
-#endif
             // don't double-prefix if it already starts with lib
-            std::string libbase = base.compare(0, 3, "lib") == 0 ? base : pre + base;
-            Value r = Value::str(dir + libbase + ext); r.hashKind = "IO"; return r;
+#if defined(_WIN32)
+            std::string libbase = base + ".dll";   // Windows carries no SONAME version
+#elif defined(__APPLE__)
+            std::string libbase = (base.compare(0, 3, "lib") == 0 ? base : "lib" + base) +
+                                  (ver.empty() ? "" : "." + ver) + ".dylib";
+#else
+            std::string libbase = (base.compare(0, 3, "lib") == 0 ? base : "lib" + base) +
+                                  ".so" + (ver.empty() ? "" : "." + ver);
+#endif
+            Value r = Value::str(dir + libbase); r.hashKind = "IO"; return r;
         }
         return Value::str(name); // lenient: any other Distro/Kernel/VM accessor
     }
@@ -1211,10 +1228,21 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             // sys/time.h.
             long long us = std::chrono::duration_cast<std::chrono::microseconds>(
                 std::chrono::system_clock::now().time_since_epoch()).count();
-            time_t t = (time_t)(us / 1000000); struct tm* lt = localtime(&t);
+            // `:timezone(N)` asks for the reading in THAT offset, not the host's
+            // — `DateTime.now(timezone => 0)` is how a program says "give me UTC"
+            // (DBIish's Pg datetime test stores exactly that). Ignoring it made
+            // every such stamp local, so a round-trip through the DB never matched.
+            long long tzOff = tzOffsetDyn();
+            for (auto& a : args)
+                if (a.t == VT::Pair && a.s == "timezone" && a.pairVal())
+                    tzOff = a.pairVal()->toInt();
+            time_t t = (time_t)(us / 1000000);
+            struct tm tmbuf; struct tm* lt;
+            if (tzOff == tzOffsetDyn()) lt = localtime(&t);
+            else { time_t shifted = (time_t)(t + tzOff); lt = gmtime_r(&shifted, &tmbuf); }
             Value sec = inv.s == "Date" ? Value::integer(lt->tm_sec)
                       : Value::number((double)lt->tm_sec + (double)(us % 1000000) / 1e6);
-            return mk(lt->tm_year + 1900, lt->tm_mon + 1, lt->tm_mday, lt->tm_hour, lt->tm_min, sec, (long long)t, tzOffsetDyn());
+            return mk(lt->tm_year + 1900, lt->tm_mon + 1, lt->tm_mday, lt->tm_hour, lt->tm_min, sec, (long long)t, tzOff);
         }
         if (m == "new") {
             if (args.empty()) // `DateTime.new()` / `Date.new()` — must provide arguments
@@ -2594,16 +2622,28 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                                         {{"type", Value::typeObj(ci->name)}},
                                         "Default constructor for '" + ci->name +
                                         "' only takes named arguments");
-                // `is required` — construction must supply a value
-                for (auto cit = chain.rbegin(); cit != chain.rend(); ++cit)
-                    for (auto& at : (*cit)->attrs) {
-                        if (!at.required) continue;
-                        // `is required` means SUPPLIED AT CONSTRUCTION — a default
-                        // of its own does not excuse it
-                        bool gotArg = false;
-                        for (auto& arg : args)
-                            if (arg.t == VT::Pair && arg.s == at.name) { gotArg = true; break; }
-                        if (!gotArg)
+                // `is required` is checked BELOW, after BUILD — Rakudo raises it
+                // from BUILDALL, so a custom `submethod BUILD` that fills the
+                // attribute itself satisfies it (DBDish::Pg's DBError::Pg reads
+                // every one of its `is required` fields off the PGresult).
+                auto checkRequired = [&] {
+                    for (auto cit = chain.rbegin(); cit != chain.rend(); ++cit)
+                        for (auto& at : (*cit)->attrs) {
+                            if (!at.required) continue;
+                            // `is required` means SUPPLIED AT CONSTRUCTION — a default
+                            // of its own does not excuse it
+                            bool gotArg = false;
+                            for (auto& arg : args)
+                                if (arg.t == VT::Pair && arg.s == at.name) { gotArg = true; break; }
+                            if (gotArg) continue;
+                            // …or filled by a custom BUILD. A default of the
+                            // attribute's OWN does not excuse it (Rakudo: `has $.d
+                            // is required = 7` still demands the argument), so only
+                            // an attribute with no default can be satisfied this way.
+                            if (!at.def && !at.hasDefVal) {
+                                auto ait = od->attrs.find(at.name);
+                                if (ait != od->attrs.end() && defined(ait->second)) continue;
+                            }
                             throwTypedV("X::Attribute::Required",
                                         {{"name", Value::str("$!" + at.name)},
                                          {"why", Value::str(at.requiredWhy)}},
@@ -2612,7 +2652,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                                              ? std::string(", ")
                                              : " because " + at.requiredWhy + ",\n") +
                                         "but you did not provide a value for it.");
-                    }
+                        }
+                };
                 for (auto cit = chain.rbegin(); cit != chain.rend(); ++cit)
                     for (auto& at : (*cit)->attrs) {
                         if (!at.defConstraint) continue;
@@ -2647,6 +2688,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 // bless does not re-run BUILD-from-new args the same way, but running
                 // BUILD here matches the common `self.bless(:attr(...))` usage.
                 if (Value* build = ci->findMethod("BUILD")) sinkBuildResult(invokeMethod(*build, self, args));
+                checkRequired();   // after BUILD, as Rakudo's BUILDALL does
                 if (Value* tweak = ci->findMethod("TWEAK")) sinkBuildResult(invokeMethod(*tweak, self, args)); // post-BUILD hook
                 maybeRegisterDestroy(self);
                 return self;
@@ -3720,7 +3762,15 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             if (inv.arr()) for (size_t i = 0; i < inv.arr()->size(); i++) o.arr()->push_back(Value::integer((long long)i));
             if (inv.hash()) for (auto& kv : *inv.hash()) o.arr()->push_back(typedKey(kv));
         } else if (m == "values" || m == "list") {
-            if (inv.arr()) for (auto& e : *inv.arr()) o.arr()->push_back(e);
+            // `.values` SLIPS a list-valued positional capture, one level: `(\w)*`
+            // over "abc" answers ("a","b","c"), not one three-element list —
+            // Rakudo's Capture.values does the same, and DBDish::Pg walks exactly
+            // this to take a Postgres array literal apart. `.list` keeps the shape.
+            if (inv.arr()) for (auto& e : *inv.arr()) {
+                if (m == "values" && e.t == VT::Array && e.arr())   // a positional capture is a Match unless it is list-valued
+                    for (auto& x : *e.arr()) o.arr()->push_back(x);
+                else o.arr()->push_back(e);
+            }
             if ((m == "values") && inv.hash()) for (auto& kv : *inv.hash()) o.arr()->push_back(kv.second);
         } else { // pairs / kv
             if (inv.arr()) for (size_t i = 0; i < inv.arr()->size(); i++) {
@@ -3949,6 +3999,22 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                       : inv.t == VT::Hash && inv.hash()  ? (const void*)inv.hash()
                       : (const void*)&inv;
         return Value::integer((long long)(intptr_t)p);
+    }
+    // `.REPR` — the representation a type was declared with. NativeCall code
+    // gates on it (NativeHelpers::CStruct's `pointer-to(Mu:D $s where .REPR eq
+    // 'CStruct')`), so a missing method there is not "no such method" but a
+    // multi that never matches. A class with no `is repr(...)` is P6opaque, as
+    // in Rakudo; the non-object types answer for their own kind.
+    if (m == "REPR" && args.empty()) {
+        std::shared_ptr<ClassInfo> ci;
+        if (inv.t == VT::Object && inv.obj()) ci = inv.obj()->cls;
+        else if (inv.t == VT::Type) {
+            auto it = classes_.find(inv.s);
+            if (it == classes_.end()) it = classes_.find(resolveClassAlias(inv.s));
+            if (it != classes_.end()) ci = it->second;
+        }
+        if (ci && !ci->repr.empty()) return Value::str(ci->repr);
+        return Value::str("P6opaque");
     }
     if (m == "DUMP") return Value::str(inv.t == VT::Type ? inv.s : inv.gist()); // debug snapshot (loose form)
     if (m == "does") { // .does(Role/Type) — role/type membership introspection

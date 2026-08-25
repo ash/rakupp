@@ -101,6 +101,30 @@ public:
     // outlives the Value copy it was taken from.
     std::shared_ptr<const StrBody> bodyPtr() const { return p_; }
 
+    // Force the shared body even below kPromote. A Buf built by `allocate` (or
+    // `Buf.new`) is a NATIVE BUFFER: its address is handed to C, which writes
+    // through it, so the storage must be shared with every copy of the value and
+    // must outlive the call. Left inline, a short buffer could only give C a
+    // pointer to a temporary COPY — mysql_stmt_bind_result filled memory no one
+    // read, and the copy was recycled underneath the driver.
+    void promote() { if (!p_) { p_ = std::make_shared<const StrBody>(std::move(s_)); s_.clear(); } }
+
+    // Write access that KEEPS the shared body. A Buf is a reference-semantics
+    // container in Raku — `my $c = $b; $c[0] = 9` is visible through `$b` — and
+    // its storage may also be bound into C, which writes through the same
+    // address (mysql_stmt_bind_result fills a length array the Raku side then
+    // reads). `mut()` detaches, which forks both of those. Only the cheap
+    // scanning flags are invalidated: the byte-offset index tables are built by
+    // positional STRING ops, which no byte buffer runs.
+    char* mutInPlace() {
+        if (!p_) return s_.empty() ? nullptr : &s_[0];
+        StrBody* b = const_cast<StrBody*>(p_.get());
+        b->allAscii.store(-1, std::memory_order_relaxed);
+        b->crFree.store(-1, std::memory_order_relaxed);
+        b->nGraphemes.store(-1, std::memory_order_relaxed);
+        return b->text.empty() ? nullptr : &b->text[0];
+    }
+
     // Write access. Detaches from the shared body first, so a mutation never
     // reaches another Value holding the same text. The result stays inline
     // until it is next assigned — which is where promotion happens again.

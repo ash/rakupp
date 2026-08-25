@@ -4861,12 +4861,35 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
         // re-versioning every Roast file that loads it.
         int savedLangRev = langRev_;
         auto publish = [&] {
+            // The EXPORT packages themselves must NAME something, or
+            // `::('Mod::EXPORT::ALL')` finds no symbol to ask .WHO of.
+            if (!name.empty())
+                for (const char* which : {"::EXPORT", "::EXPORT::DEFAULT", "::EXPORT::ALL"})
+                    global_->define(name + which, Value::typeObj(name + which));
             for (auto& kv : moduleEnv->vars) {
                 const std::string& k = kv.first;
                 if (k == "&EXPORT") continue; // per-module export protocol sub — never republished
                 if (k.size() > 1 && k[0] == '&') {
                     std::string bare = k.substr(1);
                     if (!exported.count(bare) && builtins_.count(bare)) continue; // withhold shadower
+                    // The module's EXPORT stash, by name. A program that loads a
+                    // module at RUNTIME cannot `use` its exports into scope, so it
+                    // reaches for them through the stash Rakudo publishes:
+                    //   require ::('JSON::Tiny');
+                    //   &from-json = ::("JSON::Tiny::EXPORT::DEFAULT::&from-json");
+                    // (DBIish's mysql JSON test does exactly this.) Naming them as
+                    // globals is enough — a symbolic ref resolves through the same
+                    // lookup a variable does.
+                    if (exported.count(bare) && !name.empty()) {
+                        for (const char* which : {"::EXPORT::DEFAULT::", "::EXPORT::ALL::"}) {
+                            // `::("Mod::EXPORT::DEFAULT::&sub")` reads the sigil-first
+                            // spelling; `Mod::EXPORT::ALL.WHO<&sub>` reads the other
+                            // (WHO builds a package's stash from the qualified globals
+                            // under its prefix). NativeLibs' own suite uses both.
+                            global_->define("&" + name + which + bare, kv.second);
+                            global_->define(name + which + "&" + bare, kv.second);
+                        }
+                    }
                 }
                 global_->define(k, kv.second);
             }
@@ -5736,8 +5759,9 @@ static void* dlopenLib(const std::string& lib) {
             if (dlerr.empty() || es.find("architecture") != std::string::npos) dlerr = es;
         }
     }
+    // Rakudo's wording — see the note at the symbol-lookup failure: modules read it.
     throw RakuError{Value::typeObj("X::AdHoc"),
-        "Cannot load native library '" + lib + "'" + (dlerr.empty() ? "" : ": " + dlerr)};
+        "Cannot locate native library '" + lib + "'" + (dlerr.empty() ? "" : ": " + dlerr)};
 }
 
 // An anonymous PUN of a parameterized role with its `[...]` params bound to
@@ -6021,6 +6045,27 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             // compiler internals).
             if (u->ifCond && !eval(u->ifCond.get()).truthy()) return Value::any();
             if (u->isNo && u->module == "strict") { noStrict_ = true; return Value::any(); }
+            // `use NativeCall` is a pragma here — the FFI is native to the compiler,
+            // so no module file declares the PACKAGE or its EXPORT stash. Suites
+            // introspect both (NativeLibs' 01-basic walks
+            // `NativeCall::EXPORT::ALL::{…}` for every name it re-exports), so name
+            // them: the package as a type object, its symbols as qualified globals
+            // that .WHO reads back as the stash.
+            if (u->module == "NativeCall" && global_ && !global_->vars.count("NativeCall")) {
+                static const char* ncNames[] = {
+                    "&nativecast", "&nativesizeof", "&cglobal", "&explicitly-manage",
+                    "&refresh", "&guess_library_name", "&trait_mod:<is>",
+                    "Pointer", "CArray", "OpaquePointer", "NativeCall",
+                    "bool", "void", "long", "longlong", "ulong", "ulonglong", "size_t",
+                };
+                for (const char* pkg : {"NativeCall", "NativeCall::EXPORT",
+                                        "NativeCall::EXPORT::DEFAULT", "NativeCall::EXPORT::ALL"})
+                    global_->define(pkg, Value::typeObj(pkg));
+                for (const char* n : ncNames)
+                    for (const char* which : {"NativeCall::EXPORT::DEFAULT::",
+                                              "NativeCall::EXPORT::ALL::"})
+                        global_->define(std::string(which) + n, Value::typeObj(n));
+            }
             if (u->module == "Test") usedTest_ = true;
             else if (u->module.size() >= 2 && u->module[0] == 'v' && ascii::isdigit((unsigned char)u->module[1])) {
                 // language version pragma: use v6.c / v6.d / v6.e[.PREVIEW]
@@ -6982,6 +7027,35 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 // dispatch and .^private_methods look here.
                 code.code()->isPrivateMethod = md->isPrivate;
                 code.code()->isSubmethod = md->isSubmethod;
+                // `is native` on a METHOD (`method mysql_error(MYSQL:D: --> Str)
+                // is native(LIB) { * }`). NativeCall's method form passes the
+                // INVOCANT as the first C argument, so `$mysql.mysql_error` is
+                // `mysql_error(mysql)` and a type-object invocant (`MYSQL:U:`,
+                // as mysql_init takes) is the NULL that C expects. The flag was
+                // only ever set on the SUB path, so a native method fell through
+                // to its `{*}` body and answered Whatever — every DBDish::mysql
+                // and Oracle call, which declare their whole API this way.
+                if (md->isNative) {
+                    code.code()->isNative   = true;
+                    code.code()->nativeLib  = md->nativeLib;
+                    code.code()->nativeLibSub = md->nativeLibSub;
+                    // `is native(EXPR)`: the class body has already run its own
+                    // `constant LIB = …` by the time methods are built, so it
+                    // resolves here; keep the AST for the first-call retry when
+                    // it does not (a forward reference).
+                    if (md->nativeLibExpr && code.code()->nativeLib.empty() &&
+                        code.code()->nativeLibSub.empty()) {
+                        try {
+                            Value r = eval(md->nativeLibExpr.get());
+                            if (r.t == VT::Code) { ValueList none; r = callCallable(r, none); }
+                            if (isDefined(r)) code.code()->nativeLib = r.toStr();
+                        } catch (RakuError&) {}
+                        if (code.code()->nativeLib.empty())
+                            code.code()->nativeLibExpr = md->nativeLibExpr.get();
+                    }
+                    if (md->nativeSymExpr) code.code()->nativeSymExpr = md->nativeSymExpr.get();
+                    code.code()->nativeSym = md->nativeSym.empty() ? mdName : md->nativeSym;
+                }
                 // a PURE `{*}` proto method is the group definition, not a candidate
                 // — same rule as the sub path. Without this the proto entered the
                 // candidate list with its `(|)` slurpy and WON whenever the real
@@ -8039,6 +8113,12 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                                      mayHaveStateDecl(ls->incr.get()) || mayHaveStateDecl(ls->body.get())) ? 1 : 0;
             LoopStateFrame lsf{tctx_, ls->hasStateCache != 0}; // per-execution `state` reset, as in WhileStmt
             auto outer = std::make_shared<Env>(); outer->parent = tctx_.cur;
+            // `loop (my $i = 0; …)` declares $i in the ENCLOSING block, the same
+            // way a `while` condition's `my` does — it is still in scope after the
+            // loop, and a later `loop ($i = 0; …)` reuses it (DBIish's own mysql
+            // test does exactly that). The marker sends a plain `my` past this
+            // frame; the loop's own reads and writes still find it lexically.
+            outer->loopFrame = true;
             auto saved = tctx_.cur; tctx_.cur = outer;
             try {
                 if (ls->init) eval(ls->init.get());
@@ -8596,6 +8676,12 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
             }
             else if (p.sigil == '%') {
                 if (v.t == VT::Type && (v.s == "Associative" || v.s == "Hash" || v.s == "Map")) { /* raw, as above */ }
+                // An object that DOES Associative binds as itself — coercing it to
+                // a plain Hash threw away every method the type exists for
+                // (DBDish::Pg passes its TypeConverter through `%Converter`
+                // parameters and calls `.convert` on the far side).
+                else if (v.t == VT::Object && v.obj() && v.obj()->cls &&
+                         typeOrSubsetMatches(v, "Associative")) { /* raw */ }
                 else if (!(v.t == VT::Hash && v.hash() && !p.isCopy)) v = coerceHash(v);
             }
             // coercion type `Int() \x` / `Str(Cool) $s`: coerce the bound value via
@@ -8764,6 +8850,20 @@ static bool typeNameConforms(const std::string& lnIn, const std::string& rn,
         // The Uni family: each normalisation form is a Uni SUBCLASS, and Uni
         // does Positional/Iterable — `"x".NFD ~~ Uni` is True on Rakudo, and
         // JSON::Fast binds `Uni:D \codes` to exactly such a value.
+        // The byte-buffer family: a Buf DOES Blob, both are Positional + Stringy
+        // (utf8 is a Blob but not Cool). Without the Buf→Blob step `Buf ~~ Blob`
+        // was False, and DBDish::mysql then decided a BLOB column needed .decode.
+        {"Blob",  {"Blob", "Positional", "Stringy", "Cool"}},
+        {"Buf",   {"Buf", "Blob", "Positional", "Stringy", "Cool"}},
+        {"blob8", {"blob8", "Blob", "Positional", "Stringy", "Cool"}},
+        {"blob16",{"blob16", "Blob", "Positional", "Stringy", "Cool"}},
+        {"blob32",{"blob32", "Blob", "Positional", "Stringy", "Cool"}},
+        {"blob64",{"blob64", "Blob", "Positional", "Stringy", "Cool"}},
+        {"buf8",  {"buf8", "Buf", "Blob", "Positional", "Stringy", "Cool"}},
+        {"buf16", {"buf16", "Buf", "Blob", "Positional", "Stringy", "Cool"}},
+        {"buf32", {"buf32", "Buf", "Blob", "Positional", "Stringy", "Cool"}},
+        {"buf64", {"buf64", "Buf", "Blob", "Positional", "Stringy", "Cool"}},
+        {"utf8",  {"utf8", "Blob", "Positional", "Stringy"}},
         {"Uni",  {"Uni", "Positional", "Iterable"}},
         {"NFC",  {"NFC", "Uni", "Positional", "Iterable"}},
         {"NFD",  {"NFD", "Uni", "Positional", "Iterable"}},
@@ -8776,7 +8876,7 @@ static bool typeNameConforms(const std::string& lnIn, const std::string& rn,
         static const std::map<std::string, std::vector<std::string>> tower = {
             {"Int", {"Real", "Numeric", "Cool"}}, {"Num", {"Real", "Numeric", "Cool"}},
             {"Rat", {"Rational", "Real", "Numeric", "Cool"}},
-            {"FatRat", {"Rational", "Rat", "Real", "Numeric", "Cool"}},
+            {"FatRat", {"Rational", "Real", "Numeric", "Cool"}}, // NOT a Rat: both do Rational
             {"Complex", {"Numeric", "Cool"}},
             {"Str", {"Stringy", "Cool"}}, {"Bool", {"Cool"}},
         };
@@ -10612,15 +10712,51 @@ void Interpreter::ncWriteElem(long long addr, const std::string& ofType, long lo
 // capped at 8); non-scalar fields (Str/Pointer/CArray/CStruct) are pointer-sized.
 // A `repr('CUnion')` class lays every field at offset 0 and is as big as its
 // widest member — C's union, which is what NativeCall's CUnion means.
+// A CStruct field's type may be a CONSTANT ALIAS for a native one —
+// `constant my_bool = int8;` and `constant intptr = ptrsize == 8 ?? uint64 !!
+// uint32;`, both of which DBDish::mysql::Native uses for real fields.
+// ncScalarWidth only knows the native spellings, so an alias fell through to
+// the pointer-sized default: MYSQL_BIND measured 144 bytes instead of 112 and
+// every field past the first `my_bool` sat at the wrong offset, which is what
+// mysql_stmt_bind_result then handed the server. Only a LOWERCASE name is
+// looked up: native type names are lowercase and class/Pointer/Str names are
+// not, so a class-typed field still costs no lookup.
+// See the header: a CArray[Str] element is a char* into memory the array owns.
+// Writing the SOURCE Value's own buffer (what ncWriteElem does for a bare Str)
+// left every slot pointing at a temporary that died with the statement, so the
+// array read back as garbage — DBDish::Pg builds its whole PQexecPrepared
+// parameter array exactly this way.
+long long Interpreter::ncOwnStrElem(Value& arr, const Value& v) {
+    if (!isDefined(v)) return 0;   // an undefined Str is C's NULL
+    using Owned = std::vector<std::shared_ptr<std::string>>;
+    auto owned = std::static_pointer_cast<Owned>(arr.ext());
+    if (!owned) { owned = std::make_shared<Owned>(); arr.extM() = owned; }
+    owned->push_back(std::make_shared<std::string>(v.toStr()));
+    return (long long)(intptr_t)owned->back()->c_str();
+}
+
+std::string Interpreter::ncResolveTypeAlias(ClassInfo* ci, const std::string& t) {
+    if (t.empty() || !ascii::islower((unsigned char)t[0])) return t;
+    bool sgn, isF;
+    if (ncScalarWidth(t, sgn, isF)) return t;   // already a native name
+    // The DECLARING scope is where the alias lives, and its parent chain ends at
+    // the global one, so this finds a module constant and a program-level one alike.
+    Value* v = (ci && ci->declEnv) ? ci->declEnv->find(t) : nullptr;
+    // Accept the alias only when it names a native SCALAR — anything else keeps
+    // the pointer-sized default it had.
+    if (v && v->t == VT::Type && v->s != t && ncScalarWidth(v->s, sgn, isF)) return v->s;
+    return t;
+}
 long long Interpreter::ncFieldOffset(ClassInfo* ci, const std::string& field, std::string& type) {
     const bool uni = (ci->repr == "CUnion");
     long long off = 0;
     for (auto& a : ci->attrs) {
-        bool sgn, isF; int w = ncScalarWidth(a.type, sgn, isF); if (w == 0) w = 8;
+        std::string at = ncResolveTypeAlias(ci, a.type);
+        bool sgn, isF; int w = ncScalarWidth(at, sgn, isF); if (w == 0) w = 8;
         if (!uni) off = (off + w - 1) / w * w;
         std::string an = a.name; if (!an.empty() && (an[0]=='$'||an[0]=='@'||an[0]=='%')) an = an.substr(1);
         if (!an.empty() && (an[0]=='!'||an[0]=='.')) an = an.substr(1);
-        if (an == field) { type = a.type.empty() ? "int64" : a.type; return uni ? 0 : off; }
+        if (an == field) { type = at.empty() ? "int64" : at; return uni ? 0 : off; }
         if (!uni) off += w;
     }
     return -1;
@@ -10629,7 +10765,7 @@ long long Interpreter::ncStructSize(ClassInfo* ci) {
     const bool uni = (ci->repr == "CUnion");
     long long off = 0, maxA = 1;
     for (auto& a : ci->attrs) {
-        bool sgn, isF; int w = ncScalarWidth(a.type, sgn, isF); if (w == 0) w = 8;
+        bool sgn, isF; int w = ncScalarWidth(ncResolveTypeAlias(ci, a.type), sgn, isF); if (w == 0) w = 8;
         if (w > maxA) maxA = w;
         if (uni) { if (w > off) off = w; continue; }   // a union is as wide as its widest member
         off = (off + w - 1) / w * w; off += w;
@@ -10874,7 +11010,7 @@ static ffi::Type* ncFfiRetType(const std::string& rt) {
 // calling wrongly. `is rw` out-params are marshalled as `T*` with copy-back,
 // and CStruct/CPointer/CArray/Pointer returns are boxed as live handles.
 // Still unsupported on both paths: C structs passed or returned BY VALUE.
-Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<ExprPtr>* rwArgs) {
+Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<ExprPtr>* rwArgs, size_t rwArgOff) {
     // Resolve the symbol ONCE per Callable and cache the function pointer. This
     // used to run on every call, and the dlopen candidate loop is the expensive
     // part: each candidate that does NOT match (e.g. "sqlite3" before
@@ -10951,17 +11087,66 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
             auto it = aliases.find(c.nativeSym);
             if (it != aliases.end()) sym = dlsym(handle, it->second.c_str());
         }
-        if (!sym) throw RakuError{Value::typeObj("X::AdHoc"), "Cannot find native symbol '" + c.nativeSym + "'"};
+        // Rakudo's exact wording, deliberately: this text is a de-facto INTERFACE.
+        // DBIish pattern-matches `Cannot locate symbol '…' in native library '…'`
+        // (and the library form below) to turn a missing client library into
+        // X::DBIish::LibraryMissing, which is what makes its suite SKIP a driver
+        // whose library is absent instead of dying.
+        if (!sym) throw RakuError{Value::typeObj("X::AdHoc"),
+            "Cannot locate symbol '" + c.nativeSym + "' in native library '" + lib + "'"};
         c.nativeSymCache = sym;
     }
 
     const std::vector<Param>* prm = c.params;
+    // A NativeCall METHOD prepends its invocant to `args`. If the signature
+    // SPELLS the invocant (`method mysql_query(MYSQL:D: Str $sql)`) the two line
+    // up already; if it does not (`method PQescapeByteaConn(Buf, size_t, size_t
+    // is rw)`, which is how DBDish::Pg writes every one) each argument would be
+    // typed by the PREVIOUS parameter — the `is rw` out-param landed a slot
+    // early and libpq wrote the length through the buffer pointer. Shift the
+    // parameter view by one instead, and with it the rwArgs mapping.
+    size_t pOff = 0;   // how many leading args have no parameter of their own
+    if (rwArgOff == 1 && prm) {
+        if (!prm->empty() && (*prm)[0].invocant) rwArgOff = 0; // spelled: args and params already line up
+        else pOff = 1;                                         // unspelled: args[0] is the invocant
+    }
     std::vector<std::string> keep; keep.reserve(args.size()); // keep Str buffers alive across the call
     // is-rw out-params: backing slots (stable addresses via deque) + copy-back list
     std::deque<long>   rwI;
     std::deque<double> rwD;
-    struct RwBack { size_t arg; const long* i; const double* d; std::string ptrType; };
+    struct RwBack { size_t arg; const long* i; const double* d; std::string ptrType;
+                    std::shared_ptr<ClassInfo> cls; };
     std::vector<RwBack> rwbacks;
+
+    // A declared type name that stands for a NativeCall class (CStruct/CPointer/
+    // CUnion) → its ClassInfo. Used both for `is rw` out-params of a CPointer
+    // class and for boxing such a class as the return value; the two used to
+    // disagree, which is why it is one lambda.
+    auto ncClass = [&](const std::string& tn) -> std::shared_ptr<ClassInfo> {
+        if (tn.empty()) return nullptr;
+        if (!ascii::isupper((unsigned char)tn[0]) && tn.find("::") == std::string::npos) return nullptr;
+        auto it = classes_.find(tn);
+        if (it != classes_.end()) return it->second;
+        // The DECLARING module's own scope decides what a short name means —
+        // and it has to be asked BEFORE any suffix match, because two classes
+        // can end in the same name: `SQLite` inside DBDish::SQLite::Native is
+        // the CPointer handle, while `DBDish::SQLite` is the driver class, and
+        // sorting order handed the driver to sqlite3_open's out-param.
+        // It also resolves `--> PwStruct` where PwStruct is a CONSTANT aliasing
+        // the real class (P5getpwnam picks its per-kernel struct at load time).
+        Value* alias = c.closure ? c.closure->find(tn) : nullptr;
+        if (!alias && tctx_.cur) alias = tctx_.cur->find(tn);
+        if (alias && alias->t == VT::Type) {
+            auto it2 = classes_.find(alias->s);
+            if (it2 != classes_.end()) return it2->second;
+        }
+        for (auto& kv : classes_) { // a qualified name ending in ::tn
+            const std::string& nm = kv.first;
+            if (nm.size() > tn.size() + 2 && nm.compare(nm.size() - tn.size() - 2, tn.size() + 2, "::" + tn) == 0)
+                return kv.second;
+        }
+        return nullptr;
+    };
     struct CABack { size_t arg; size_t keep; }; // byte-backed CArray → copy bytes back
     std::vector<CABack> cabacks;
 
@@ -10991,7 +11176,7 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
     // Raku++ extension — but without it a variadic call is silently wrong on
     // every ABI that passes `...` arguments on the stack, Apple ARM64 included.
     int nfixed = -1;
-    if (prm) for (size_t i = 0; i < prm->size(); i++) if ((*prm)[i].slurpy) { nfixed = (int)i; break; }
+    if (prm) for (size_t i = 0; i < prm->size(); i++) if ((*prm)[i].slurpy) { nfixed = (int)(i + pOff); break; }
     const bool variadic = nfixed >= 0;
     if (variadic) needFfi = "a variadic native call";
 
@@ -11025,12 +11210,23 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
     for (size_t i = 0; i < args.size(); i++) {
         Value& v = args[i];
         NcSlot& s = slots[i];
-        const Param* p = (prm && i < prm->size()) ? &(*prm)[i] : nullptr;
+        const Param* p = (prm && i >= pOff && i - pOff < prm->size()) ? &(*prm)[i - pOff] : nullptr;
         std::string pt = p ? p->type : "";
         bool sgn, isFlt; int w = ncScalarWidth(pt, sgn, isFlt);
         bool fp = isFlt || (pt.empty() && (v.t == VT::Num || v.t == VT::Rat));
         bool rwPtr = p && p->isRw && (pt == "Pointer" || pt.rfind("Pointer[", 0) == 0);
-        if (rwPtr) {
+        // A CPointer-repr CLASS declared `is rw` is the same sqlite3** shape,
+        // only spelled with a name: `sqlite3_open(Str, SQLite $handle is rw)`,
+        // `sqlite3_prepare_v2(…, STMT $sth is rw, …)`, all of Oracle's OCI
+        // handle-getters. Without this it fell to the object branch below and
+        // passed the NULL the fresh handle holds, so sqlite3_open saw ppDb == 0
+        // and answered SQLITE_MISUSE — every DBDish::SQLite connection failed.
+        std::shared_ptr<ClassInfo> rwCls;
+        if (p && p->isRw && !rwPtr && !w) {
+            auto ci = ncClass(pt);
+            if (ci && ci->repr == "CPointer") rwCls = ci;
+        }
+        if (rwPtr || rwCls) {
             // `Pointer is rw` out-param (sqlite3_open's sqlite3** shape): the C
             // function wants a place to WRITE a pointer, so pass the address of a
             // slot holding the current value — not the value itself, which for a
@@ -11038,12 +11234,14 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
             // Copy-back rebuilds a live Pointer from what the callee stored.
             long cur = 0;
             if (v.t == VT::Hash && v.hash() && v.hash()->count("addr")) cur = (long)(*v.hash())["addr"].toInt();
+            else if (v.t == VT::Object && v.obj() && v.obj()->attrs.count("__native_ptr"))
+                cur = (long)v.obj()->attrs["__native_ptr"].toInt();
             rwI.push_back(cur); putPtr(s, &rwI.back());
-            rwbacks.push_back({i, &rwI.back(), nullptr, pt});
+            rwbacks.push_back({i, &rwI.back(), nullptr, rwCls ? std::string() : pt, rwCls});
         }
         else if (p && p->isRw && w) { // `is rw` scalar → pass a pointer to a backing slot
-            if (isFlt) { rwD.push_back(v.toNum()); putPtr(s, &rwD.back()); rwbacks.push_back({i, nullptr, &rwD.back(), ""}); }
-            else       { rwI.push_back(v.toInt()); putPtr(s, &rwI.back()); rwbacks.push_back({i, &rwI.back(), nullptr, ""}); }
+            if (isFlt) { rwD.push_back(v.toNum()); putPtr(s, &rwD.back()); rwbacks.push_back({i, nullptr, &rwD.back(), "", nullptr}); }
+            else       { rwI.push_back(v.toInt()); putPtr(s, &rwI.back()); rwbacks.push_back({i, &rwI.back(), nullptr, "", nullptr}); }
         }
         else if (v.t == VT::Str && v.hashKind == "CArray") { keep.push_back(v.s); putPtr(s, keep.back().data()); cabacks.push_back({i, keep.size() - 1}); }
         else if (v.t == VT::Str && (v.hashKind == "Buf" || v.hashKind == "Blob" || v.hashKind == "utf8")) {
@@ -11227,23 +11425,35 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
 
     // is-rw copy-back: write each out-param's slot to the caller's lvalue
     for (auto& rb : rwbacks) {
-        if (!rwArgs || rb.arg >= rwArgs->size()) continue;
-        Value nv = !rb.ptrType.empty() ? ncMakePointer(rb.ptrType, (void*)(intptr_t)*rb.i)
+        if (!rwArgs || rb.arg < rwArgOff || rb.arg - rwArgOff >= rwArgs->size()) continue;
+        Value nv;
+        if (rb.cls) {
+            // a CPointer class out-param: box what the callee stored as an
+            // object of that class, and NULL as the type object — the same
+            // shape a CPointer RETURN gets, so `with $handle` reads right.
+            if (*rb.i == 0) nv = Value::typeObj(rb.cls->name);
+            else {
+                nv.t = VT::Object; nv.setObj(std::make_shared<ObjectData>());
+                nv.obj()->cls = rb.cls;
+                nv.obj()->attrs["__native_ptr"] = Value::integer(*rb.i);
+            }
+        }
+        else nv = !rb.ptrType.empty() ? ncMakePointer(rb.ptrType, (void*)(intptr_t)*rb.i)
                  : rb.i                ? Value::integer(*rb.i)
                                        : Value::number(*rb.d);
         try {
-            if (Value* lv = lvalue((*rwArgs)[rb.arg].get())) {
+            if (Value* lv = lvalue((*rwArgs)[rb.arg - rwArgOff].get())) {
                 int nb = lv->natBits; bool ns = lv->natSigned;
                 *lv = nv;
-                if (nb && rb.ptrType.empty()) wrapNative(*lv, nb, ns);
+                if (nb && rb.ptrType.empty() && !rb.cls) wrapNative(*lv, nb, ns);
             }
         } catch (RakuError&) {}
     }
     // CArray copy-back: a native function may mutate the array in place (qsort,
     // fill buffers), so write the possibly-changed bytes back to the caller.
     for (auto& cb : cabacks) {
-        if (!rwArgs || cb.arg >= rwArgs->size()) continue;
-        try { if (Value* lv = lvalue((*rwArgs)[cb.arg].get()))
+        if (!rwArgs || cb.arg < rwArgOff || cb.arg - rwArgOff >= rwArgs->size()) continue;
+        try { if (Value* lv = lvalue((*rwArgs)[cb.arg - rwArgOff].get()))
                   if (lv->t == VT::Str && (lv->hashKind == "CArray" || lv->hashKind == "Buf")) lv->s = keep[cb.keep];
         } catch (RakuError&) {}
     }
@@ -11265,26 +11475,10 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
     // CStruct/CPointer return: box the pointer as an object of the return class so
     // it satisfies the type check and round-trips into later native calls.
     if (!rt.empty() && (ascii::isupper((unsigned char)rt[0]) || rt.find("::") != std::string::npos)) {
-        std::shared_ptr<ClassInfo> ci;
-        auto it = classes_.find(rt);
-        if (it != classes_.end()) ci = it->second;
-        else for (auto& kv : classes_) { // match a qualified name ending in ::rt
-            const std::string& nm = kv.first;
-            if (nm.size() > rt.size() + 2 && nm.compare(nm.size() - rt.size() - 2, rt.size() + 2, "::" + rt) == 0) { ci = kv.second; break; }
-        }
-        if (!ci) {
-            // `--> PwStruct` where PwStruct is a CONSTANT aliasing the real
-            // class (P5getpwnam picks its per-kernel struct at load time:
-            // `my constant PwStruct = $*KERNEL.name eq 'darwin' ?? … !! …`).
-            // Resolve the name in the DECLARING module's scope to the type it
-            // holds, then box as that class.
-            Value* alias = c.closure ? c.closure->find(rt) : nullptr;
-            if (!alias && tctx_.cur) alias = tctx_.cur->find(rt);
-            if (alias && alias->t == VT::Type) {
-                auto it2 = classes_.find(alias->s);
-                if (it2 != classes_.end()) ci = it2->second;
-            }
-        }
+        // ncClass also resolves `--> PwStruct` where PwStruct is a CONSTANT
+        // aliasing the real class (P5getpwnam picks its per-kernel struct at
+        // load time: `my constant PwStruct = $*KERNEL.name eq 'darwin' ?? … !! …`).
+        std::shared_ptr<ClassInfo> ci = ncClass(rt);
         if (ci) {
             // NULL is the TYPE OBJECT, not an instance holding address 0 — that is
             // how C reports "no result", and how the caller is expected to test it.
@@ -11320,7 +11514,8 @@ Value Interpreter::cglobal(const std::string& lib, const std::string& sym, const
     void* handle = RTLD_DEFAULT;
     if (!lib.empty()) handle = dlopenLib(lib);
     void* addr = dlsym(handle, sym.c_str());
-    if (!addr) throw RakuError{Value::typeObj("X::AdHoc"), "Cannot find native symbol '" + sym + "'"};
+    if (!addr) throw RakuError{Value::typeObj("X::AdHoc"),   // Rakudo's wording — modules match it
+        "Cannot locate symbol '" + sym + "' in native library '" + lib + "'"};
     if (type == "Pointer" || type.rfind("Pointer[", 0) == 0) {
         void* p = *(void**)addr; // the global holds a pointer
         return ncMakePointer(type, p);
@@ -12285,6 +12480,19 @@ Value Interpreter::invokeMethodChain(const std::string& name, ClassInfo* startCl
 Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueList args, const std::vector<ExprPtr>* rwArgs, bool ownFrame,
                                 Value* selfBack, bool skipWrappers) {
     if (codeVal.t != VT::Code || !codeVal.code()) return Value::any();
+    // A NativeCall method: the invocant is C's first argument, then the rest.
+    // (`$mysql.mysql_query($sql)` is `mysql_query(mysql, sql)`; a type-object
+    // invocant marshals as NULL, which is exactly what `mysql_init(MYSQL:U:)`
+    // is declared to take.) Its `{*}` body is a stub, so it must never run.
+    if (codeVal.code()->isNative) {
+        ValueList na; na.reserve(args.size() + 1);
+        na.push_back(self);
+        for (auto& a : args) na.push_back(a);
+        // rwArgs indexes the CALL's arguments, which start one slot later than
+        // the marshalled ones — rwArgOff=1 keeps an `is rw` out-param
+        // (Oracle's `OCIAttrGet(… ub4 $size is rw …)`) on the right lvalue.
+        return callNative(*codeVal.code(), na, rwArgs, /*rwArgOff=*/1);
+    }
     // `monitor` semantics, native: every method call on a monitor INSTANCE
     // holds the object's reentrant lock for its duration (OO::Monitors'
     // contract — its own HOW wrapping never engages here). The lock is
@@ -13015,6 +13223,28 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                 if (Value* out = tctx_.lvalueOut) return out;
                 return &atPosHold;
             }
+            // …or a DELEGATED AT-POS: `has @!cache handles <AT-POS elems>`
+            // (NativeHelpers::CStruct's LinearArray) gives the object the method
+            // without putting it in `methods`, so the findMethod probe above
+            // misses it and the element was never reached — `$arr[0].a = 42`
+            // died "Target is not assignable". Same rule as the AT-KEY arm.
+            if (base->t == VT::Object && base->obj() && base->obj()->cls) {
+                for (ClassInfo* c2 = base->obj()->cls.get(); c2; c2 = c2->parent.get())
+                    for (auto& at2 : c2->attrs)
+                        for (auto& h2 : at2.handles)
+                            if (h2 == "AT-POS" || h2 == "*") {
+                                Value& slot = base->obj()->attrs[at2.name];
+                                if (slot.t != VT::Array) slot = Value::array();
+                                Value kv2 = eval(idx->index.get());
+                                if (kv2.t == VT::Code && kv2.code() && kv2.code()->isWhateverCode)
+                                    kv2 = callCallable(kv2, ValueList{Value::integer((long long)slot.arr()->size())});
+                                long long j = kv2.toInt();
+                                if (j < 0) j += (long long)slot.arr()->size();
+                                if (j < 0) j = 0;
+                                while ((long long)slot.arr()->size() <= j) slot.arr()->push_back(Value::any());
+                                return &(*slot.arr())[j];
+                            }
+            }
             // a List ((1,3,5) held in a scalar) is immutable — element assignment dies
             if (base->t == VT::Array && base->isList && base->s != "Seq" && base->enumName.empty())
                 throw RakuError{Value::typeObj("X::Assignment::RO"),
@@ -13124,6 +13354,31 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             return &(*base->hash())[mc->method];
         }
         if (base->t == VT::Object && base->obj()) {
+            // `$obj.meth[i] = v` / `$obj.meth<k> = v` where `meth` is a plain
+            // METHOD and not an attribute accessor — DBDish's
+            // `method column-types { @!column-type }`, which its own test suite
+            // then writes through (`$sth.column-types[$_] = …`). We are reaching
+            // THROUGH the result, not overwriting it, so call the method and hold
+            // what it answers: an Array/Hash shares its body with the attribute
+            // it came from, exactly as Rakudo hands back the container. Without
+            // this the name fell to attrs[…] below and CREATED a new, empty
+            // attribute of that name — the write vanished and the method went on
+            // answering the old list.
+            if (asInvocant && base->obj()->cls && !mc->meta && !mc->hyper &&
+                !mc->methodExpr && !base->obj()->attrs.count(mc->method)) {
+                bool isAttr = false;
+                for (ClassInfo* ci = base->obj()->cls.get(); ci && !isAttr; ci = ci->parent.get())
+                    for (auto& at : ci->attrs)
+                        if (at.name == mc->method) { isAttr = true; break; }
+                if (!isAttr && base->obj()->cls->findMethod(mc->method)) {
+                    ValueList as;
+                    for (auto& a : mc->args) as.push_back(eval(a.get()));
+                    static thread_local Value methHold;
+                    methHold = methodCall(*base, mc->method, as);
+                    if (methHold.t == VT::Array || methHold.t == VT::Hash || methHold.t == VT::Object)
+                        return &methHold;
+                }
+            }
             // Assigning to `$obj.attr` is only allowed through a PUBLIC `is rw`
             // accessor. If the name matches any other attribute — a private
             // `$!x`, or a public read-only `$.x` — the value is read-only, so
@@ -13389,7 +13644,7 @@ Value* Interpreter::topicAliasSlot(Expr* topic, bool skip) {
         auto* ix = static_cast<Index*>(topic);
         if (!ix->base) return nullptr;
         Value* base = nullptr;
-        try { base = lvalue(ix->base.get()); } catch (...) { return nullptr; }
+        try { base = lvalue(ix->base.get(), /*asInvocant=*/true); } catch (...) { return nullptr; }
         if (!base) return nullptr;
         bool plain = (base->t == VT::Hash && base->hash() && base->hashKind.empty()) ||
                      (base->t == VT::Array && base->arr() && !base->isList);
@@ -13791,7 +14046,13 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
     // field's offset (there is no Value container to hand back as an lvalue).
     if (a->op == "=" && a->target->kind == NK::MethodCall) {
         auto* mc = static_cast<MethodCall*>(a->target.get());
-        if (mc->args.empty() && !mc->meta && !mc->hyper && mc->inv->kind == NK::VarExpr) {
+        // The invocant may be a SUBSCRIPT as well as a variable: LinearArray hands
+        // back its structs by index, and `$!binds[$col].buffer_length = …` is how
+        // DBDish::mysql fills every result buffer. Both forms only READ the
+        // invocant, so evaluating it here is safe if no branch below claims it.
+        if (mc->args.empty() && !mc->meta && !mc->hyper &&
+            (mc->inv->kind == NK::VarExpr || mc->inv->kind == NK::Index ||
+             mc->inv->kind == NK::SelfTerm)) {
             Value inv = eval(mc->inv.get());
             // `$a.where = 'unknown'` on an ATTRIBUTE meta-object: the accessor
             // belongs to a role a trait mixed in, and the role's state lives in
@@ -14071,8 +14332,9 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                         if (bp->s.size() < need) bp->s.resize(need, '\0');
                         unsigned long long x2 = (v.t == VT::Int && v.big())
                             ? v.big()->toU64Wrap() : (unsigned long long)v.toInt();
-                        for (int b = 0; b < w; b++)
-                            bp->s.mut()[(size_t)j * w + b] = (char)(unsigned char)((x2 >> (8 * b)) & 0xFF);
+                        if (char* mb = bp->s.mutInPlace())
+                            for (int b = 0; b < w; b++)
+                                mb[(size_t)j * w + b] = (char)(unsigned char)((x2 >> (8 * b)) & 0xFF);
                     }
                     rwWriteThrough(idx->base.get());
                     return sink ? Value::any() : eval(a->target.get());
@@ -14088,8 +14350,9 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 if (bp->s.size() < need) bp->s.resize(need, '\0');
                 unsigned long long x = (rhs.t == VT::Int && rhs.big())
                     ? rhs.big()->toU64Wrap() : (unsigned long long)rhs.toInt();
-                for (int k = 0; k < w; k++)               // little-endian, truncating
-                    bp->s.mut()[(size_t)i * w + k] = (char)(unsigned char)((x >> (8 * k)) & 0xFF);
+                if (char* mb = bp->s.mutInPlace())
+                    for (int k = 0; k < w; k++)           // little-endian, truncating
+                        mb[(size_t)i * w + k] = (char)(unsigned char)((x >> (8 * k)) & 0xFF);
                 rwWriteThrough(idx->base.get());
                 return sink ? Value::any() : bp->blobElemAt(i);
             }
@@ -14239,7 +14502,11 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                     if (i >= 0) {
                         size_t need = (size_t)(i + 1) * (size_t)esz;
                         if (bp->s.size() < need) bp->s.resize(need, '\0');
-                        ncWriteElem((long long)(intptr_t)bp->s.data(), et, i, v);
+                        if (et == "Str") { // the slot is a char* into memory the array owns
+                            long long p = ncOwnStrElem(*bp, v);
+                            std::memcpy(bp->s.mut().data() + (size_t)i * esz, &p, sizeof p);
+                        }
+                        else ncWriteElem((long long)(intptr_t)bp->s.data(), et, i, v);
                     }
                     return v;
                 }
@@ -14302,7 +14569,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             !sliceSubscript(static_cast<Index*>(a->target.get()))) {
             auto* ix = static_cast<Index*>(a->target.get());
             Value* bp = nullptr;
-            try { bp = lvalue(ix->base.get()); } catch (RakuError&) {}
+            try { bp = lvalue(ix->base.get(), /*asInvocant=*/true); } catch (RakuError&) {}
             if (bp && bp->t == VT::Hash && bp->hash() &&
                 (bp->hashKind == "SetHash" || bp->hashKind == "BagHash" || bp->hashKind == "MixHash")) {
                 std::string key = hashSubKey(eval(ix->index.get()), bp);
@@ -14330,7 +14597,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 keys.push_back(k);
             }
             if (anyMulti) {
-                Value* root = lvalue(ix->base.get());
+                Value* root = lvalue(ix->base.get(), /*asInvocant=*/true);
                 std::vector<ValueList> tuples = expandDimTuples(*root, keys);
                 Value rhs = eval(a->value.get());
                 ValueList vs = (rhs.t == VT::Array || rhs.t == VT::Range) ? rhs.flatten() : ValueList{rhs};
@@ -14381,7 +14648,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                     Value* bp;
                     Value callHold; // `foo()[$b,] = …` — the result shares arr/hash with the container
                     if (ix->base->kind == NK::Call) { callHold = eval(ix->base.get()); bp = &callHold; }
-                    else bp = lvalue(ix->base.get());
+                    else bp = lvalue(ix->base.get(), /*asInvocant=*/true);
                     if (bp) {
                         if (bp->t == VT::Any || bp->t == VT::Nil)
                             *bp = ix->isHash ? Value::makeHash() : Value::array();
@@ -14517,7 +14784,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 // subscripts a pseudo-package, not a container. Fall through to the
                 // ordinary bind rather than letting "not assignable" escape.
                 Value* base = nullptr;
-                try { base = lvalue(ix->base.get()); } catch (RakuError&) { base = nullptr; }
+                try { base = lvalue(ix->base.get(), /*asInvocant=*/true); } catch (RakuError&) { base = nullptr; }
                 std::shared_ptr<ValueMap> h;
                 if (base) {
                     Value* real = base;
@@ -14585,6 +14852,17 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         if (a->op == "=" && lv->t == VT::Hash && lv->hashKind == "Proxy" && lv->hash()) {
             if (lv->hash()->count("STORE")) { Value r = proxyStore(*lv, rhs); return sink ? Value::any() : r; }
         }
+        // …and so does a USER container type: `has %.Converter is
+        // DBDish::TypeConverter` makes the attribute an instance of that type,
+        // and `%!Converter = &conv` is its STORE, not a replacement. Overwriting
+        // the object with a plain Hash lost every method the container exists
+        // for — DBDish::mysql's Connection.BUILD does exactly this assignment,
+        // and `.convert-function` then answered "no such method" on a Hash.
+        if (a->op == "=" && lv->t == VT::Object && lv->obj() && lv->obj()->cls &&
+            lv->obj()->cls->findMethod("STORE")) {
+            Value r = methodCall(*lv, "STORE", ValueList{rhs});
+            return sink ? Value::any() : r;
+        }
         // `$obj.attr = v` enforces the attribute's DECLARED type (recorded by
         // the MethodCall lvalue arm): `has C $.x is rw` rejects 42 and Mu.
         // The rvalue-invocant fallback made this path reachable, so the check
@@ -14643,7 +14921,22 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             // URI::Path publishes an immutable segment list, and `is-deeply` against
             // `('x','y','z')` compares the type. Only a non-List Array is demoted,
             // which is what stops the bound items from being flattened together.
-            if (a->op == ":=" && rhs.t == VT::Array) { *lv = rhs; }
+            if (a->op == ":=" && rhs.t == VT::Array) {
+                *lv = rhs;
+                // …but the `@` sigil says "this name IS the list": binding an
+                // ITEMIZED array ($[…], which is what the slurpy one-arg rule
+                // hands each `**@params` element) must de-itemize, or `for @data`
+                // sees ONE element — the array itself. DBDish::Pg's pg-array-str
+                // then recursed on the same value until the stack ran out.
+                lv->itemized = false;
+            }
+            // `my @p := CArray[Str].new` BINDS the native array — coercing it to a
+            // plain Array threw away the C storage, and the `char**` a native call
+            // then received was an ordinary Raku list. (DBDish::Pg binds its
+            // parameter array exactly this way, and hands it to PQexecPrepared.)
+            else if (a->op == ":=" && rhs.t == VT::Str &&
+                     (rhs.hashKind == "CArray" || rhs.hashKind == "Buf" ||
+                      rhs.hashKind == "Blob"   || rhs.hashKind == "utf8")) { *lv = rhs; }
             // `my @a := SubclassOfArray.new` BINDS the object itself — coercing
             // it to a plain Array would throw away the class, and with it every
             // method the subclass adds (`.iterator` above all)
@@ -14697,6 +14990,14 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             // below copies (which is right for `=`), and that copy is why an
             // aliased hash silently diverged.
             if (a->op == ":=" && rhs.t == VT::Hash && rhs.hash()) { *lv = rhs; return sink ? Value::any() : *lv; }
+            // `my %h := $obj` where the object DOES Associative binds the object
+            // itself — coercing it to a plain Hash threw away every method the
+            // type exists for. DBDish's statement handles reach their converter
+            // exactly this way (`my %Converter := $!parent.Converter`), and the
+            // next line calls `.convert-function` on it.
+            if (a->op == ":=" && rhs.t == VT::Object && rhs.obj() && rhs.obj()->cls &&
+                typeOrSubsetMatches(rhs, "Associative"))
+                { *lv = rhs; return sink ? Value::any() : *lv; }
             static const std::set<std::string> setty = {
                 "Set", "SetHash", "Bag", "BagHash", "Mix", "MixHash"};
             std::string keepType = lv->ofType(); // typed container: `my Int %h` keeps Int
@@ -18748,6 +19049,14 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
     // so `$<child>.made` is available to a parent's action.
     std::function<Value(const ParseNode&)> build = [&](const ParseNode& pn) -> Value {
         Value mv = Value::matchVal(input.substr(pn.from, pn.to - pn.from), pn.from, pn.to);
+        // Names captured INSIDE a positional group belong to that group's Match,
+        // not to this one: `rule array { '{' ( <element> ','?)* '}' }` gives
+        // `$0[i]<element>`, and `$/<element>` does not exist (Rakudo scopes a
+        // capture to the group that encloses it). Publishing them here too put
+        // an extra key in `.hash`, so `.values` answered one entry per element
+        // PLUS a hoisted one — which is what DBDish::Pg walks to rebuild a
+        // Postgres array literal, and it read every array as a single element.
+        std::map<std::string, size_t> consumedByGroup;
         for (size_t ci = 0; ci < pn.caps.size(); ci++) {
             // a positional capture under a repetition quantifier is an ARRAY of
             // every occurrence (`(...)+` → @$0), as in Rakudo — Cro::Uri's pchars
@@ -18766,10 +19075,12 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
                                 if (!kv.first.empty() && kv.first[0] == '\x01') continue; // internal keys
                                 Value hits = Value::array(); hits.isList = true;
                                 for (auto& child : kv.second)
-                                    if (child.from >= o.first && child.to <= o.second)
+                                    if (child.from >= o.first && child.to <= o.second) {
+                                        consumedByGroup[kv.first]++;
                                         hits.arr()->push_back(child.name.empty()
                                             ? Value::matchVal(input.substr(child.from, child.to - child.from), child.from, child.to)
                                             : build(child));
+                                    }
                                 if (hits.arr()->size() == 1) om.hashRef()[kv.first] = (*hits.arr())[0];
                                 else if (!hits.arr()->empty()) om.hashRef()[kv.first] = hits;
                             }
@@ -18793,6 +19104,10 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
             return build(child);
         };
         if (pn.kids) for (auto& kv : *pn.kids) {
+            {   // wholly inside a positional group: it is the GROUP's capture, not ours
+                auto cg = consumedByGroup.find(kv.first);
+                if (cg != consumedByGroup.end() && cg->second >= kv.second.size()) continue;
+            }
             // a name captured more than once ($<num> ... $<num>) collates into a list —
             // and a name under a quantifier (<item>+) is a list even with one occurrence
             bool asList = kv.second.size() > 1
@@ -18806,7 +19121,8 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
         }
         // a quantified capture that matched zero times is an empty list, not absent
         if (pn.listNames) for (auto& nm : *pn.listNames)
-            if ((!pn.kids || !pn.kids->count(nm)) && !mv.hashRef().count(nm)) {
+            if ((!pn.kids || !pn.kids->count(nm)) && !mv.hashRef().count(nm) &&
+                !consumedByGroup.count(nm)) {
                 Value arr = Value::array(); arr.isList = true;
                 mv.hashRef()[nm] = arr;
             }
@@ -19560,6 +19876,23 @@ Value Interpreter::evalBinary(Binary* b) {
                     return mkDT(dtSec(r) + l.toNum(), r);
             }
         }
+        // A user `infix:<+>`/`<->` over a NATIVE handle (Pointer / CArray) wins over
+        // the Instant/Duration arm below: those are tagged Hashes here, not objects,
+        // so `multi infix:<+>(Pointer:D \p, Int $o)` — NativeHelpers::Pointer's
+        // pointer arithmetic — was never consulted and `+` added the offset to the
+        // raw address in BYTES.
+        if ((op == "+" || op == "-") &&
+            ((l.t == VT::Hash && (l.hashKind == "Pointer" || l.hashKind == "CArray")) ||
+             (r.t == VT::Hash && (r.hashKind == "Pointer" || r.hashKind == "CArray"))))
+            if (Value* f = tctx_.cur->find("&infix:<" + op + ">"))
+                // Only "no candidate took these operands" falls back to the
+                // built-in — an error the user's operator RAISED is its answer
+                // (arithmetic on a void pointer dies, and must keep dying).
+                try { return callCallable(*f, ValueList{l, r}); }
+                catch (RakuError& e) {
+                    std::string en = e.payload.t == VT::Type ? e.payload.s : e.payload.typeName();
+                    if (en != "X::Multi::NoMatch" && en != "X::Multi::Ambiguous") throw;
+                }
         if ((op == "+" || op == "-") &&
             (!l.hashKind.empty() || !r.hashKind.empty())) { // Instant/Duration algebra
             Value res = applyArith(op, l, r);
@@ -19798,12 +20131,24 @@ Value Interpreter::evalBinary(Binary* b) {
         // per copy (so `rand xx 3` / `(…roll…) xx $N` yield independent results).
         Value rv = eval(b->rhs.get());
         if (rv.t == VT::Whatever || (rv.t == VT::Num && std::isinf(rv.n))) {
-            // `EXPR xx *` — an endlessly repeating lazy list (one eval as the unit)
+            // `EXPR xx *` — an endlessly repeating lazy list. The left side is a
+            // THUNK on this path too, not one value repeated: `[] xx *` owes each
+            // element a FRESH array. Repeating one unit made every key of
+            // `my %rows = @!column-name Z=> [] xx *` share a single array, so
+            // DBDish's allrows(:hash-of-array) pushed every column into all of them.
             Value a = Value::array(); a.isList = true;
-            a.arr()->push_back(eval(b->lhs.get()));
             auto st = std::make_shared<LazySeqState>(); st->infinite = true;
-            Value unit = (*a.arr())[0];
-            st->appendNext = [unit](ValueList& cache) -> bool { cache.push_back(unit); return true; };
+            Expr* le = b->lhs.get();
+            auto env = tctx_.cur;   // the thunk keeps the scope it was written in
+            st->appendNext = [this, le, env](ValueList& cache) -> bool {
+                auto saved = tctx_.cur;
+                tctx_.cur = env;
+                try { cache.push_back(eval(le)); }
+                catch (...) { tctx_.cur = saved; throw; }
+                tctx_.cur = saved;
+                return true;
+            };
+            a.arr()->push_back(eval(b->lhs.get()));
             a.extM() = st;
             return a;
         }
@@ -20851,6 +21196,14 @@ Value Interpreter::evalUnary(Unary* u) {
         // which define a type of their own name.)
         if (classes_.count(name) || classes_.count(resolveClassAlias(name)))
             return Value::typeObj(name);
+        // A `unit module Foo;` is not a class: its name is published as a TYPE
+        // OBJECT in the module's scope (and from there to global), never into
+        // classes_. Rakudo's `require` answers the package either way, so a
+        // module-shaped compunit must count as loaded too — `require
+        // ::('JSON::Tiny')` reported "not in the module search path" for a
+        // module that had just loaded fine.
+        if (Value* t = tctx_.cur->find(name))
+            if (t->t == VT::Type) return *t;
         throw RakuError{Value::typeObj("X::CompUnit::UnsatisfiedDependency"),
                         "Could not find " + name + " in the module search path"};
     }
@@ -21031,7 +21384,7 @@ Value Interpreter::evalUnary(Unary* u) {
             auto* ix = static_cast<Index*>(u->operand.get());
             if (ix->isHash) {
                 Value* base = nullptr;
-                try { base = lvalue(ix->base.get()); } catch (RakuError&) {}
+                try { base = lvalue(ix->base.get(), /*asInvocant=*/true); } catch (RakuError&) {}
                 if (base && base->t == VT::Hash && base->hash() &&
                     (base->hashKind == "BagHash" || base->hashKind == "SetHash" ||
                      base->hashKind == "MixHash")) {
@@ -21297,7 +21650,9 @@ ValueList Interpreter::evalArgs(const std::vector<ExprPtr>& exprs) {
             // Only a syntactic pair (k=>v / :k(v), i.e. a NK::Pair expression) whose key
             // is a bare identifier is a NAMED argument; a Pair value from a variable/
             // call/list — or with a non-identifier key (`3 => 4`) — is positional.
-            if (v.t == VT::Pair && a->kind == NK::Pair && !static_cast<PairExpr*>(a.get())->quotedKey) {
+            if (v.t == VT::Pair && a->kind == NK::Pair &&
+                !static_cast<PairExpr*>(a.get())->quotedKey &&
+                !static_cast<PairExpr*>(a.get())->parenned) {
                 const std::string& k = static_cast<PairExpr*>(a.get())->key;
                 // Raku identifiers are Unicode: `:μ(5)` is as much a named
                 // argument as `:mu(5)`. The lexer already vetted the token, so a
@@ -22838,6 +23193,11 @@ Value Interpreter::evalIndex(Index* idx) {
     // type argument parses as a NameTerm instead and puns in that arm.
     if (base.t == VT::Type && !idx->isHash && idx->index) {
         auto rit = classes_.find(base.s);
+        // …under its QUALIFIED name too: a role IMPORTED from a module is
+        // registered as `RM::LA`, so the bare `LA[Int]` missed the lookup, took
+        // the plain parameterized-type path, and produced a type whose methods
+        // never saw `T` bound at all (NativeHelpers::CStruct's LinearArray[T]).
+        if (rit == classes_.end()) rit = classes_.find(resolveClassAlias(base.s));
         if (rit != classes_.end() && rit->second->isRole && rit->second->decl &&
             !rit->second->decl->roleParams.empty()) {
             ClassInfo* role = rit->second.get();
@@ -24248,6 +24608,7 @@ Value Interpreter::eval(Expr* e) {
                 // handles `does Q[Int]` separately; this is direct use)
                 {
                     auto rit = classes_.find(n);
+                    if (rit == classes_.end()) rit = classes_.find(resolveClassAlias(n));
                     if (rit != classes_.end() && rit->second->isRole && rit->second->decl &&
                         !rit->second->decl->roleParams.empty()) {
                         ValueList argv;
@@ -24494,10 +24855,18 @@ Value Interpreter::eval(Expr* e) {
                 // keeping the slip whole because the enclosing comma list
                 // suppressed flattening, so the array came out nested.
                 bool isSlip = v.t == VT::Array && v.s == "Slip";
+                // A bare `@`-variable spreads under the ONE-ARG RULE — and only
+                // there. `[@a]` is the elements of @a; `[@a, @b]` is TWO elements,
+                // each an Array, and `[1, @a]` keeps @a whole. Spreading it in
+                // every position flattened an array of arrays into one long list —
+                // DBDish::Pg builds a multi-dimensional Postgres array literal from
+                // exactly `[ @part1, @part2, @part3 ]`.
+                bool bareAtVar = it->kind == NK::VarExpr &&
+                                 !static_cast<VarExpr*>(it.get())->name.empty() &&
+                                 static_cast<VarExpr*>(it.get())->name[0] == '@';
                 bool flatten = oneArgSpread || isSlip ||
                                (!isHyper &&
-                               ((it->kind == NK::VarExpr && !static_cast<VarExpr*>(it.get())->name.empty() &&
-                                 static_cast<VarExpr*>(it.get())->name[0] == '@') ||
+                               ((bareAtVar && l->items.size() == 1) ||
                                 (v.t == VT::Array && v.isList && !l->fromCommaList)));
                 if (flatten && v.t == VT::Array) { for (auto& x : *v.arr()) a.arr()->push_back(x); }
                 // A finite Range spreads under the ONE-ARG rule and only there:
@@ -24651,7 +25020,13 @@ Value Interpreter::eval(Expr* e) {
                 : eval(mc->inv.get());
             if (mc->methodExpr) { // indirect ."$name"() / .$var (Callable or name)
                 Value mv = eval(mc->methodExpr.get());
-                if (mv.t == VT::Code) { // a method object / callable: invoke with the invocant
+                // A TYPE OBJECT is invocable too: Rakudo compiles `.$foo` to
+                // `$foo($invocant)`, so `$value.$ct` with `my $ct = Rat` is the
+                // COERCION Rat($value) — which is how DBDish::SQLite types every
+                // column it reads (`($ct === Any || $value ~~ $ct) ?? $value !! $value.$ct`).
+                // Falling through to the name path below stringified the type
+                // object to nothing and reported "No such method ''".
+                if (mv.t == VT::Code || mv.t == VT::Type) { // a method object / callable: invoke with the invocant
                     // `*.&sub` (or a WhateverCode invocant) curries into a WhateverCode
                     // instead of calling eagerly — otherwise `sub($_)` runs on the bare
                     // Whatever now (an identity sub then yields Whatever, not a closure).

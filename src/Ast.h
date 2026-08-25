@@ -377,6 +377,8 @@ struct PairExpr : Expr {
     std::string key;     // used when keyExpr is null (bareword / literal key)
     bool colonForm = false; // written as :key(value) — kept for diagnostics spelling
     bool quotedKey = false; // 'a' => 1 — quoted-key pairs are POSITIONAL args, never named
+    bool parenned = false;  // ( :k(v) ) / ( k => v ) — parens make the pair POSITIONAL too
+                            // (`%h.push((:$x))` pushes a Pair; `%h.push(:$x)` passes a named arg)
     ExprPtr keyExpr;     // dynamic key, e.g. $var => ... or (expr) => ...
     ExprPtr value;
     PairExpr(): Expr(NK::Pair) {}

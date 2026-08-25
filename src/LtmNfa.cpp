@@ -190,14 +190,17 @@ int LtmNfa::buildNode(const void* nv, int from, int branch, int litDepth, int de
             return n->kids.empty() ? from
                  : buildNode(n->kids[0].get(), from, branch, litDepth, depth + 1);
         case K::Alt: {
-            // `||`: only the FIRST branch contributes (S05) — but NOT for the
-            // parser-synthesized composed-class Alt (`<+a +b>`), which is a
-            // one-char UNION: modeling it as kid 0 under-matched the prefix and
-            // wrongly pruned the whole branch (longest-alternative.t test 41,
-            // the URI grammar's `<[\-+.] +uri_alpha +digit>*`).
-            if (n->firstMatch && !n->classCombo)
-                return n->kids.empty() ? from
-                     : buildNode(n->kids[0].get(), from, branch, litDepth, depth + 1);
+            // `||` is NOT declarative: it ENDS the prefix (S05). Following kid 0
+            // instead modelled a string the branch need not match, and the branch
+            // was then pruned outright — DBDish::Pg's array grammar spells its
+            // escapes `[<-[\\"]> || '\\"' || '\\\\']*`, so `"a\\"b"` matched
+            // <quoted-string> perfectly well while ranking dropped it and the
+            // whole parse failed. (The parser-synthesized composed-class Alt
+            // `<+a +b>` is a one-char UNION, not a `||`, and still unions:
+            // modeling it as kid 0 under-matched the prefix and wrongly pruned
+            // the branch — longest-alternative.t test 41, the URI grammar's
+            // `<[\-+.] +uri_alpha +digit>*`.)
+            if (n->firstMatch && !n->classCombo) return accept(from);
             int join = -1;
             for (auto& kid : n->kids) {
                 int e = buildNode(kid.get(), from, branch, litDepth, depth + 1);

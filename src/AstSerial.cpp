@@ -251,6 +251,7 @@ template <class IO> void visit(IO& io, Ternary& n)  { ioExpr(io, n.cond); ioExpr
 template <class IO> void visit(IO& io, NqpOp& n)    { F(io, n.op); ioExprVec(io, n.args); }
 template <class IO> void visit(IO& io, RangeExpr& n){ ioExpr(io, n.from); ioExpr(io, n.to); F(io, n.exFrom); F(io, n.exTo); }
 template <class IO> void visit(IO& io, PairExpr& n) { F(io, n.key); F(io, n.colonForm); F(io, n.quotedKey);
+                                                      F(io, n.parenned);   // ( :k(v) ) is POSITIONAL
                                                       ioExpr(io, n.keyExpr); ioExpr(io, n.value); }
 template <class IO> void visit(IO& io, BlockExpr& n){ ioParams(io, n.params); ioStmtVec(io, n.body);
                                                       F(io, n.isSub); F(io, n.isMethodTerm); F(io, n.isPointy);

@@ -1318,6 +1318,7 @@ bool Lexer::tryQuoteForm(Token& out) {
     if (adverbs.find(":to ") != std::string::npos || adverbs.find(":heredoc ") != std::string::npos) {
         heredocMarker_ = raw;
         heredocInterp_ = (w == "qq");
+        heredocEscapes_ = (w == "q");   // Q:to keeps every backslash; q:to unescapes
         // A heredoc may carry interpolation adverbs of its own: `qq:!c:to/CODE/`
         // interpolates variables but NOT `{…}` blocks — Test::Output's suite builds
         // Raku source that way, and running those blocks while merely BUILDING the
@@ -2571,6 +2572,7 @@ std::vector<Token> Lexer::tokenize() {
         out.push_back(std::move(t)); // t is dead after this (heredoc bookkeeping reads `out`)
         if (!heredocMarker_.empty()) { // a q:to/MARKER/ was just lexed
             pendingHeredocs_.emplace_back(heredocMarker_, out.size() - 1, heredocInterp_);
+            pendingHeredocEsc_.push_back(heredocEscapes_);
             pendingHeredocFeats_.push_back(heredocFeats_);
             heredocMarker_.clear();
         }
@@ -2616,6 +2618,23 @@ void Lexer::processHeredocs(std::vector<Token>& out) {
         }
         out[idx].text = body;
     }
+    // `q:to/…/` unescapes `\\` to one backslash. That is the whole set: a
+    // heredoc has no quote DELIMITER to escape, so Rakudo leaves `\'` alone here
+    // even though `q'…'` would take it. (`Q:to` unescapes nothing; `qq:to`
+    // interpolates and the parser handles it.)
+    for (size_t k = 0; k < pendingHeredocs_.size() && k < pendingHeredocEsc_.size(); k++) {
+        if (!pendingHeredocEsc_[k]) continue;
+        size_t idx3 = std::get<1>(pendingHeredocs_[k]);
+        const std::string& in = out[idx3].text;
+        std::string esc;
+        esc.reserve(in.size());
+        for (size_t i = 0; i < in.size(); i++) {
+            if (in[i] == '\\' && i + 1 < in.size() && in[i + 1] == '\\') { esc += in[++i]; continue; }
+            esc += in[i];
+        }
+        out[idx3].text = esc;
+    }
+    pendingHeredocEsc_.clear();
     for (size_t k = 0; k < pendingHeredocs_.size() && k < pendingHeredocFeats_.size(); k++) {
         if (pendingHeredocFeats_[k].empty()) continue;
         size_t idx2 = std::get<1>(pendingHeredocs_[k]);

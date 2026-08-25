@@ -3642,6 +3642,13 @@ bool GrammarMatcher::parse(const std::string& input, const std::string& top, boo
     out.caps = st.caps; out.named = st.named;
     out.kids = st.children.empty() ? nullptr : std::make_shared<const ChildMap>(std::move(st.children));
     out.listNames = re->listNamesPtr();
+    // …and the POSITIONAL list captures, which only the subrule path carried:
+    // a quantified group in the ENTRY rule (`token TOP { ( <normal> | <placeholder> )* }`)
+    // reported $0 as its LAST occurrence instead of the list of all of them, so
+    // DBDish::Pg's placeholder tokenizer rebuilt every query as the empty string.
+    out.listCaps = re->listCapsPtr();
+    if (!st.capReps.empty())
+        out.capReps = std::make_shared<const std::map<int, std::vector<std::pair<long, long>>>>(std::move(st.capReps));
     endOut = endPos;
     return true;
 }

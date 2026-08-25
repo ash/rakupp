@@ -112,7 +112,7 @@ the system OpenSSL and streams the decrypted response like any other socket.
 > binary can only load a library of its own arch. On macOS the common setup is an
 > **arm64** `rakupp` (Apple Silicon default) but an **x86_64** OpenSSL (Intel
 > Homebrew, at `/usr/local/opt/openssl@3`, which is what a stock Rakudo/zef
-> installs). That mismatch fails at load with *"Cannot load native library
+> installs). That mismatch fails at load with *"Cannot locate native library
 > '…/libssl.dylib' (… incompatible architecture …)"*, and then `.connect` reports
 > *"No such method"* because the module never loaded. Fix it by matching the two:
 > run an x86_64 `rakupp` against the x86_64 OpenSSL —

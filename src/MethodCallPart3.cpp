@@ -748,8 +748,26 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         return Value::typeObj(inv.code()->pkg.empty() ? "GLOBAL" : inv.code()->pkg);
     if (m == "of" && inv.t == VT::Type) { // array[int].of / Array[Str].of
         if (const char* vt = quantValueType(inv.s)) return Value::typeObj(vt); // Bag.of is UInt
+        // An unparameterized byte buffer's element is uint8, as in Rakudo —
+        // NativeHelpers::Blob asks `blob.of` to size the pointer it hands to C.
+        if (inv.ofType().empty()) {
+            if (inv.s == "Buf" || inv.s == "Blob" || inv.s == "utf8") return Value::typeObj("uint8");
+            if (inv.s == "Pointer") return Value::typeObj("void"); // `Pointer.of` is C's void
+
+            // the sized spellings carry their element in the NAME: blob32.of is uint32
+            if (inv.s.rfind("buf", 0) == 0 || inv.s.rfind("blob", 0) == 0) {
+                const std::string& n = inv.s;
+                size_t d = n.find_first_of("0123456789");
+                if (d != std::string::npos) return Value::typeObj("uint" + n.substr(d));
+            }
+        }
         return Value::typeObj(inv.ofType().empty() ? "Mu" : inv.ofType());
     }
+    // …and on a buffer INSTANCE: `Buf.new(1,2).of`. The element type rides on
+    // `ofType` for a parameterized buffer (blob32 → uint32), uint8 otherwise.
+    if (m == "of" && inv.t == VT::Str &&
+        (inv.hashKind == "Buf" || inv.hashKind == "Blob" || inv.hashKind == "utf8"))
+        return Value::typeObj(inv.ofType().empty() ? std::string("uint8") : inv.ofType());
     if (m == "new" && inv.t == VT::Array) { // @a.new: fresh empty array of the same type
         Value out = Value::array();
         out.ofTypeM() = inv.ofType();

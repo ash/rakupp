@@ -668,7 +668,10 @@ public:
     // layout under the interpreter's hot thread-locals. The context object
     // travels with the block, is already thread-correct, and is free.)
     Value callCallableRaw(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs, bool ownFrame = false, bool arityCheck = false); // no wrap layer
-    Value callNative(Callable& c, ValueList& args, const std::vector<ExprPtr>* rwArgs = nullptr); // `is native` C FFI
+    // rwArgOff: how many leading `args` entries have no matching `rwArgs` expression
+    // — 1 for a NativeCall METHOD, whose invocant is prepended as C's first argument.
+    Value callNative(Callable& c, ValueList& args, const std::vector<ExprPtr>* rwArgs = nullptr,
+                     size_t rwArgOff = 0); // `is native` C FFI
     // NativeCall pointer helpers: a live Pointer / CArray return holds a raw
     // address whose deref/element access reads native memory.
     Value ncMakePointer(const std::string& type, void* p);   // Pointer / Pointer[T]
@@ -677,6 +680,12 @@ public:
     static bool ncIsPointerElem(const std::string& ofType); // element is itself a pointer (Pointer/Str/CArray)
     static Value ncReadElem(long long addr, const std::string& ofType, long long index); // read one native element
     static void ncWriteElem(long long addr, const std::string& ofType, long long index, const Value& val);
+    // A CArray[Str] slot holds a char*, so the ARRAY has to own the string it
+    // points at. Answers the address of an owned copy, retained on the array
+    // Value's `ext` (shared by every copy of it, so it lives as long as the
+    // array does). 0 for an undefined value — C's NULL.
+    static long long ncOwnStrElem(Value& arr, const Value& v);
+    static std::string ncResolveTypeAlias(ClassInfo* ci, const std::string& t); // `constant my_bool = int8` → "int8"
     static long long ncFieldOffset(ClassInfo* ci, const std::string& field, std::string& type); // CStruct field byte offset
     static long long ncStructSize(ClassInfo* ci);   // CStruct total padded size
     static long long ncRawAddr(const Value& v); // extract a raw pointer from a native value (0 if none)

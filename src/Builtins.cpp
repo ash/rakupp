@@ -99,7 +99,10 @@ const std::vector<std::string>& typeAncestry(const std::string& t) {
         {"RatStr",  {"RatStr","Rat","Rational","Real","Numeric","Cool","Any","Mu"}},
         {"NumStr",  {"NumStr","Num","Real","Numeric","Cool","Any","Mu"}},
         {"Rat",     {"Rat","Rational","Real","Numeric","Cool","Any","Mu"}},
-        {"FatRat",  {"FatRat","Rat","Rational","Real","Numeric","Cool","Any","Mu"}},
+        // FatRat is NOT a Rat in Rakudo — both DO Rational, and its MRO is
+        // FatRat/Cool/Any/Mu. Claiming the inheritance made `when Rat` swallow a
+        // FatRat, so DBDish::mysql sent one as a double instead of a decimal.
+        {"FatRat",  {"FatRat","Rational","Real","Numeric","Cool","Any","Mu"}},
         {"Rational",{"Rational","Real","Numeric","Cool","Any","Mu"}},
         {"Num",     {"Num","Real","Numeric","Cool","Any","Mu"}},
         {"Complex", {"Complex","Numeric","Cool","Any","Mu"}},
@@ -123,6 +126,21 @@ const std::vector<std::string>& typeAncestry(const std::string& t) {
         // The Uni family: each normalisation form is a Uni SUBCLASS, and Uni
         // does Positional/Iterable — `"x".NFD ~~ Uni` is True on Rakudo, and
         // JSON::Fast binds `Uni:D \codes` to exactly such a value.
+        // The byte-buffer family: `Buf` DOES `Blob`, and both are Positional +
+        // Stringy. `utf8` is a Blob but not Cool. Missing, `Buf ~~ Blob` was
+        // False — which is how DBDish::mysql decided a BLOB column needed
+        // .decode and choked on the first byte over 0x7F.
+        {"Blob",  {"Blob","Positional","Stringy","Cool","Any","Mu"}},
+        {"Buf",   {"Buf","Blob","Positional","Stringy","Cool","Any","Mu"}},
+        {"blob8", {"blob8","Blob","Positional","Stringy","Cool","Any","Mu"}},
+        {"blob16",{"blob16","Blob","Positional","Stringy","Cool","Any","Mu"}},
+        {"blob32",{"blob32","Blob","Positional","Stringy","Cool","Any","Mu"}},
+        {"blob64",{"blob64","Blob","Positional","Stringy","Cool","Any","Mu"}},
+        {"buf8",  {"buf8","Buf","Blob","Positional","Stringy","Cool","Any","Mu"}},
+        {"buf16", {"buf16","Buf","Blob","Positional","Stringy","Cool","Any","Mu"}},
+        {"buf32", {"buf32","Buf","Blob","Positional","Stringy","Cool","Any","Mu"}},
+        {"buf64", {"buf64","Buf","Blob","Positional","Stringy","Cool","Any","Mu"}},
+        {"utf8",  {"utf8","Blob","Positional","Stringy","Any","Mu"}},
         {"Uni",  {"Uni","Positional","Iterable","Any","Mu"}},
         {"NFC",  {"NFC","Uni","Positional","Iterable","Any","Mu"}},
         {"NFD",  {"NFD","Uni","Positional","Iterable","Any","Mu"}},
@@ -2500,6 +2518,10 @@ Value makeSignature(const Callable* c) {
     sig += ")";
     Value s = Value::makeHash(); s.hashKind = "Signature";
     (*s.hash())["str"] = Value::str(sig);
+    // `.returns` / `.of` — the DECLARED return type. DBDish's TypeConverter keys
+    // its conversion table by it (`%!Conversions{$_.signature.returns} = $_`), so
+    // without this the whole table was built under one key.
+    if (c && !c->retType.empty()) (*s.hash())["returns"] = Value::typeObj(c->retType);
     (*s.hash())["arity"] = Value::integer(arity);
     (*s.hash())["count"] = slurpy ? Value::number(std::numeric_limits<double>::infinity()) : Value::integer(count);
     Value params = Value::array(); params.isList = true;
@@ -4249,6 +4271,10 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             // .raku is the signature literal; .gist/.Str are the bare parens
             return Value::str(m == "raku" ? ":" + body : body);
         }
+        if (m == "returns" || m == "of") {
+            auto it = inv.hash()->find("returns");
+            return it != inv.hash()->end() ? it->second : Value::typeObj("Mu");
+        }
         if (m == "arity") return inv.hash()->count("arity") ? (*inv.hash())["arity"] : Value::integer(0);
         if (m == "count") return inv.hash()->count("count") ? (*inv.hash())["count"] : Value::integer(0);
         if (m == "params" || m == "parameters") { Value p = inv.hash()->count("params") ? (*inv.hash())["params"] : Value::array(); p.isList = true; return p; }
@@ -4665,7 +4691,10 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         if (m == "Bool" || m == "so") return Value::boolean(addr != 0);
         if (m == "gist" || m == "Str" || m == "raku") return Value::str("Pointer" + std::string(of.empty() ? "" : "[" + of + "]") + "<" + std::to_string(addr) + ">");
         if (m == "deref") return ncReadElem(addr, of, 0);
-        if (m == "of") return Value::typeObj(of.empty() ? "Pointer" : of);
+        // an UNPARAMETERISED Pointer is C's `void *`, and that is what Rakudo's
+        // `Pointer.of` answers — NativeHelpers::Pointer refuses arithmetic on
+        // exactly this test, and "Pointer" made it look like an 8-byte element.
+        if (m == "of") return Value::typeObj(of.empty() ? "void" : of);
     }
     // live CArray[T] over native memory (returned by a native call): element read
     if (inv.t == VT::Hash && inv.hashKind == "CArray" && inv.hash()->count("addr")) {
@@ -4682,15 +4711,22 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         int esz = Interpreter::ncElemSize(et); // pointer element types are 8, not int32
         if (m == "new") {
             std::string bytes;
+            ValueList strArgs;   // CArray[Str]: the array owns the strings it points at
             for (auto& a : flattenArgs(args)) {
                 if (et == "num32") { float f = (float)a.toNum(); bytes.append((const char*)&f, 4); }
                 else if (et == "num64") { double d = a.toNum(); bytes.append((const char*)&d, 8); }
+                else if (et == "Str") { bytes.append((size_t)esz, '\0'); strArgs.push_back(a); }
                 else {
                     size_t at = bytes.size(); bytes.append((size_t)esz, '\0');
                     Interpreter::ncWriteElem((long long)(intptr_t)(bytes.data() + at), et, 0, a);
                 }
             }
             Value c = Value::str(bytes); c.hashKind = "CArray";
+            // the pointers can only be filled once `c` exists to own the strings
+            for (size_t k = 0; k < strArgs.size(); k++) {
+                long long p = Interpreter::ncOwnStrElem(c, strArgs[k]);
+                std::memcpy(c.s.mut().data() + k * (size_t)esz, &p, sizeof p);
+            }
             c.enumName = et; // remember the element type
             return c;
         }
@@ -5084,6 +5120,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         Value b = Value::str(bytes); // buf*/Buf[T] are the mutable spellings
         b.hashKind = (inv.s.rfind("buf", 0) == 0 || inv.s.rfind("Buf", 0) == 0) ? "Buf" : "Blob";
         b.ofTypeM() = "uint" + std::to_string(w * 8); // blob8 IS Blob[uint8] — the [T] always shows
+        b.s.promote();   // a native buffer needs stable, shared storage
         if (b.hashKind == "Buf") identify(b);
         return b;
     }
@@ -5466,6 +5503,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             std::string bytes;
             for (long long k = 0; k < an; k++) bytes += fill[(size_t)(k % (long long)fill.size())];
             Value b = Value::str(bytes); b.hashKind = inv.s == "Buf" ? "Buf" : "Blob";
+            b.s.promote();   // a native buffer needs stable, shared storage
             if (b.hashKind == "Buf") identify(b);
             return b;
         }
@@ -7908,8 +7946,26 @@ void Interpreter::registerBuiltins() {
     B["use-ok"] = [](Interpreter& I, ValueList& a) -> Value {
         int callLine = I.testLine();
         std::string mod = a.empty() ? "" : a[0].toStr();
+        // The argument is a `use` STATEMENT's module spec, adverbs and all:
+        // `use-ok 'NativeLibs:v<0.0.9>'` (NativeLibs' own suite). loadModule takes
+        // the bare name plus a version REQUIREMENT, so split them here — the whole
+        // string named no module at all and every such use-ok reported a failure.
+        std::string bare = mod, verReq;
+        for (size_t i = 0; i + 1 < mod.size(); i++) {
+            if (mod[i] != ':' || (i && mod[i - 1] == ':')) continue;
+            size_t lt = mod.find('<', i);
+            size_t gt = lt == std::string::npos ? std::string::npos : mod.find('>', lt);
+            if (lt == std::string::npos || gt == std::string::npos) break;
+            std::string adv = mod.substr(i + 1, lt - i - 1);
+            if (adv == "ver" || adv == "v") verReq = mod.substr(lt + 1, gt - lt - 1);
+            if (adv == "ver" || adv == "v" || adv == "auth" || adv == "api") {
+                if (bare.size() > i) bare = mod.substr(0, i);
+                i = gt;
+            }
+            else break;
+        }
         bool ok = true;
-        try { I.loadModule(mod); } catch (...) { ok = false; }
+        try { I.loadModule(bare, {}, /*doImport=*/true, /*quiet=*/false, verReq); } catch (...) { ok = false; }
         I.restoreTestLine(callLine);
         I.emitTest(ok, a.size() > 1 ? a[1].toStr() : ("The module can be use-d ok: " + mod));
         return Value::boolean(ok);
@@ -10545,7 +10601,17 @@ void Interpreter::registerBuiltins() {
         if (a.empty()) return Value::integer(8);
         ClassInfo* ci = nullptr;
         if (a[0].t == VT::Object && a[0].obj()) ci = a[0].obj()->cls.get();
-        else if (a[0].t == VT::Type) { auto it = I.classes_.find(a[0].s); if (it != I.classes_.end()) ci = it->second.get(); }
+        else if (a[0].t == VT::Type) {
+            // …under the QUALIFIED name too: a role's `[::T]` parameter carries the
+            // name as written at the parameterisation site, so `LinearArray[MYSQL_BIND]`
+            // asked about a bare "MYSQL_BIND" while the registry key is
+            // "DBDish::mysql::Native::MYSQL_BIND". Missing it answered the
+            // pointer-sized default 8 for a 112-byte struct, and LinearArray then
+            // calloc'd 16 bytes for an array C wrote 224 into.
+            auto it = I.classes_.find(a[0].s);
+            if (it == I.classes_.end()) it = I.classes_.find(I.resolveClassAlias(a[0].s));
+            if (it != I.classes_.end()) ci = it->second.get();
+        }
         if (ci && (ci->repr == "CStruct" || ci->repr == "CPPStruct" || ci->repr == "CUnion"))
             return Value::integer(Interpreter::ncStructSize(ci));
         std::string t = a[0].t == VT::Type ? a[0].s : a[0].toStr();
@@ -10581,6 +10647,12 @@ void Interpreter::registerBuiltins() {
         if (t == "Str") return Value::str(addr ? std::string((const char*)(intptr_t)addr) : "");
         // a CStruct/CPointer class: box the address as an object of that class
         auto it = I.classes_.find(t);
+        // …under its QUALIFIED name too. A role's `[::T]` parameter carries the
+        // name as WRITTEN at the parameterisation site, so `LinearArray[MYSQL_BIND]`
+        // hands the role a bare "MYSQL_BIND" while the registry key is
+        // "DBDish::mysql::Native::MYSQL_BIND" — and `nativecast(T, $p)` inside the
+        // role answered a bare Int instead of a struct handle.
+        if (it == I.classes_.end()) it = I.classes_.find(I.resolveClassAlias(t));
         if (it != I.classes_.end()) {
             Value o; o.t = VT::Object; o.setObj(std::make_shared<ObjectData>());
             o.obj()->cls = it->second; o.obj()->attrs["__native_ptr"] = Value::integer(addr);

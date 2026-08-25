@@ -16,10 +16,13 @@ use NativeCall;
 constant stdlib = Str;
 our $debug = False;
 
+# The element size is asked for INSIDE the methods, never bound to a role-body
+# lexical (`my int $sol = nativesizeof(T)`, which is what the ecosystem dist
+# writes). A role body runs ONCE, at declaration, before any `[T]` is bound —
+# Rakudo re-runs it per parameterisation, Raku++ does not — so a role-body
+# lexical derived from T is either the unbound name or a hard error here.
+# Inside a method T *is* bound, so this spelling works on both engines.
 role LinearArray[::T] does Positional is export {
-
-    my int $sol = nativesizeof(T);
-    my \ty = T;
 
     has Pointer $!storage;
     has @!cache handles <AT-POS elems>;
@@ -31,14 +34,14 @@ role LinearArray[::T] does Positional is export {
     submethod BUILD(:$!size!, :$!storage!, :$!managed) {
         @!cache = ();
         for ^$!size {
-            my Pointer $p .= new(+$!storage + $_ * $sol);
+            my Pointer $p .= new(+$!storage + $_ * nativesizeof(T));
             @!cache[$_] = nativecast(T, $p);
         }
         self
     }
 
     method new(::?CLASS:U: Int $size) {
-        with calloc($size, $sol) -> $storage {
+        with calloc($size, nativesizeof(T)) -> $storage {
             self.bless(:$size, :$storage, :managed)
         }
         else {
@@ -70,10 +73,10 @@ role LinearArray[::T] does Positional is export {
         }
     }
 
-    method nativesizeof() { $sol * $!size }
+    method nativesizeof() { nativesizeof(T) * $!size }
 
     multi method Pointer(::?CLASS:D: :$typed) {
-        $typed ?? nativecast(Pointer[ty], $!storage) !! $!storage
+        $typed ?? nativecast(Pointer[T], $!storage) !! $!storage
     }
 
     method base() { @!cache[0] }
@@ -82,7 +85,7 @@ role LinearArray[::T] does Positional is export {
     method typed-pointer() { @!cache[0] }
 
     method _Pointer(Int $idx) {
-        Pointer.new(+$!storage + $idx * $sol)
+        Pointer.new(+$!storage + $idx * nativesizeof(T))
     }
 
     multi method Pointer(::?CLASS:U: T:D $struct) {

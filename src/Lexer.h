@@ -85,6 +85,13 @@ private:
     std::vector<std::string> pendingHeredocFeats_; // one per pendingHeredocs_ entry
     std::string heredocMarker_;  // set by tryQuoteForm when a :to form is seen
     bool heredocInterp_ = false;
+    // `q:to/…/` processes the same backslash escapes `q[…]` does (`\\` → `\`,
+    // `\'` → `'`); `Q:to/…/` processes none, `qq:to/…/` processes all. Only the
+    // middle case needed a flag — the body used to come through untouched, so
+    // DBDish::Pg's test SQL kept a doubled backslash and Postgres stored one too
+    // many.
+    bool heredocEscapes_ = false;
+    std::vector<bool> pendingHeredocEsc_;   // per pending heredoc: does q:to unescape it?
     bool warnedLeadingZero_ = false; // emit the leading-0-isn't-octal warning once
     Token lexIdentOrVar();
     Token lexOperator(bool termBefore = false);

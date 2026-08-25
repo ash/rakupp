@@ -3429,15 +3429,32 @@ ExprPtr Parser::parsePrimary() {
             }
             expectKind(Tok::RParen, ")");
             if (e && e->kind == NK::ListExpr) static_cast<ListExpr*>(e.get())->parenned = true;
+            // A pair in parens is a positional Pair VALUE, not a named argument:
+            // `f((:$x))` passes one, `f(:$x)` names one. DBDish::Pg's connect
+            // adds its database name with `%params.push((:$dbname))`, and read as
+            // a named argument that push did nothing — every connection went to
+            // the server's default database instead.
+            if (e && e->kind == NK::Pair) static_cast<PairExpr*>(e.get())->parenned = true;
             return e;
         }
         case Tok::LBracket: {
             // reduction metaoperator: [+] [*] [~] [max] [<] [Z] [X] ...
-            // A named-operator reduce is either an infix symbol, a lowercase word op
-            // (max/min/gcd/…), or the meta bases Z/X. A capitalized type name — `[Any]`,
-            // `[Int]`, `[Foo]` — is NOT a reduce; it's a one-element array literal.
+            // A named-operator reduce names a WORD INFIX (max/min/gcd/…) or a meta
+            // base (Z/X, alone or fused). Any other lowercase identifier is a TERM:
+            // `[ v ]` over a sigilless `\v` is a one-element array, and reading it
+            // as a reduce over an operator named `v` made DBDish::Pg's
+            // `my @data := arr ~~ Array ?? arr !! [ arr ]` build an EMPTY array —
+            // so `pg-array-str` recursed on itself until the stack ran out.
+            // A capitalized type name — `[Any]`, `[Int]`, `[Foo]` — was never a reduce.
+            static const std::set<std::string> kReduceWordOps = {
+                "eq", "ne", "lt", "gt", "le", "ge", "cmp", "leg", "eqv", "before", "after",
+                "unicmp", "coll", "x", "xx", "and", "or", "andthen", "orelse", "notandthen",
+                "div", "mod", "gcd", "lcm", "min", "max", "but", "does", "o",
+            };
             bool identReduce = peek(1).kind == Tok::Ident && !peek(1).text.empty() &&
-                (peek(1).text == "Z" || peek(1).text == "X" || ascii::islower((unsigned char)peek(1).text[0]) ||
+                (peek(1).text == "Z" || peek(1).text == "X" ||
+                 kReduceWordOps.count(peek(1).text) ||
+                 userInfix_.count(peek(1).text) ||
                  // Z/X/R fused with a word op lex as one ident: [Zand] [Xor] [Rmax]
                  ((peek(1).text[0] == 'Z' || peek(1).text[0] == 'X' || peek(1).text[0] == 'R') &&
                   peek(1).text.size() > 1 &&
@@ -6570,7 +6587,12 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
                         if (isKind(Tok::LParen) && !cur().spaceBefore) { advance(); mc->args = parseCallArgs(); }
                         a.def = std::move(mc);
                     } else {
-                        a.def = parseExpr(BP_ASSIGN);
+                        // A `@`/`%` attribute's default is a LIST assignment, so
+                        // it takes the whole comma list exactly as `my @a = 1,2,3`
+                        // does (the infix path decides this from the sigil; this
+                        // one consumed the `=` itself and stopped at the first
+                        // comma, so `has @.things = 1,2,3` kept only the 1).
+                        a.def = parseExpr((a.sigil == '@' || a.sigil == '%') ? BP_ZIP : BP_ASSIGN);
                         checkVirtualCallInDefault(defStart);
                     }
                 }

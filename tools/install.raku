@@ -728,6 +728,29 @@ sub run-dist-tests(%e, $root, Str $prefix) {
     True
 }
 
+# Does rakupp already ship every module this dist provides? The shadows live in
+# `rakulib/` beside the binary (a checkout) or under `libexec/rakupp/` (an
+# installed prefix) — the same two places the interpreter looks.
+sub rakulib-dirs() {
+    state @d = do {
+        my $bin = $*EXECUTABLE.parent;
+        (($bin.add('../rakulib'), $bin.add('../libexec/rakupp/rakulib'),
+          $*CWD.add('rakulib')).grep(*.d).map(*.absolute)).unique;
+    }
+}
+sub shadowed-by-rakulib(%e --> Bool) {
+    # The DIST's own name is the question: NativeHelpers::Blob also provides
+    # `MoarVM::Guts::REPRs`, which reads MoarVM's object headers and exists for
+    # no other purpose — shadowing that would be a lie, and nothing that runs
+    # here can want it.
+    my $name = %e<name> // '';
+    return False unless $name;
+    my $rel = $name.split('::').join('/');
+    ?rakulib-dirs().first({
+        (.IO.add("$rel.rakumod").e || .IO.add("$rel.pm6").e || .IO.add("$rel.raku").e)
+    })
+}
+
 sub install-one(%e, Str $prefix, Bool :$no-test, Bool :$force, Bool :$test-only) {
     my $tmp;   # download scratch — set only when there is a download
     LEAVE { run 'rm', '-rf', $tmp.Str if $tmp }   # never a user's directory
@@ -1286,6 +1309,16 @@ sub MAIN(
     for @plan -> %e {
         my $is-target = $test-only
             && ?(%target{%e<name>} || (%e<provides> // {}).keys.first({ %target{$_} }));
+        # A dist rakupp SHADOWS (rakulib/) is already provided, by a module written
+        # for this engine. The ecosystem original reads MoarVM's own memory layout
+        # to do its job — NativeHelpers::Blob finds a Blob's bytes by scanning
+        # object headers — so it cannot run here (nor on JVM Rakudo), and its suite
+        # cannot pass. Installing it would only put a broken copy behind the shadow.
+        if !$is-target && shadowed-by-rakulib(%e) {
+            say "provided by rakupp: {%e<dist> // %e<name>} — using the bundled shadow";
+            trace("shadowed by rakulib: {%e<dist> // %e<name>} — skipped");
+            next;
+        }
         # Already in the store? install-one would fetch it, build it, run its
         # suite and only THEN be refused by the engine — say so now instead.
         # (`rakupp test` still tests the dists it was NAMED, installed or not.)

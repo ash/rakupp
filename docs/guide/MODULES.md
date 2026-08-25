@@ -199,11 +199,26 @@ keeps helper subs to itself.
 
 ## Bundled shims
 
-A few modules that lean on machinery Raku++ doesn't implement natively ship as
-small **shims** in the [`rakulib/`](../../rakulib) directory of the source tree
-(for example a minimal `DBIish` that drives the `mysql` CLI). Because `rakulib`
-is one of the default search directories, running from a Raku++ checkout picks
-these up automatically; elsewhere, add it with `-I /path/to/rakupp/rakulib`.
+A few modules that read **MoarVM's own memory layout** — not a Raku API, so no
+other implementation can satisfy them either — ship as small **shadows** in the
+[`rakulib/`](../../rakulib) directory of the source tree. Today that is
+`NativeHelpers::Blob`, `NativeHelpers::CStruct` and `NativeHelpers::Pointer`,
+whose ecosystem versions
+find a Blob's or a CStruct's data by scanning MoarVM object headers; the shadows
+keep the same surface and get the same pointers from the engine instead. Because
+`rakulib` comes before the installed module store on the search path, an
+installed copy of one of these names does not shadow the shadow. Running from a
+Raku++ checkout picks them up automatically; elsewhere, add the directory with
+`-I /path/to/rakupp/rakulib`.
+
+A dist whose own name is shadowed is skipped by `rakupp install`, with a note —
+its ecosystem original could not run here anyway, and installing it would only
+put a broken copy behind the shadow.
+
+Everything else is the real distribution: `DBIish` and its `DBDish::SQLite`,
+`DBDish::mysql` and `DBDish::Pg` drivers run unmodified, and their own test
+suites pass under Raku++ exactly as they do under Rakudo (820 assertions across
+28 files, no difference).
 
 ---
 
