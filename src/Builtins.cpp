@@ -168,38 +168,71 @@ static std::string winEnvBlock(const std::vector<std::string>& kvs) {
 }
 #endif
 
-// Spawn a child process, capture its stdout, with an optional wall-clock timeout.
-// `gil` (if non-null) is the interpreter: the GIL is released for the child-process
-// WAIT so sibling worker threads run — and spawn their own children — concurrently.
-// The fork itself happens with the GIL held, so forks serialise (safe in a
-// multithreaded process); only the poll/read/reap loop runs GIL-free.
-// `errOut` non-null captures the child's stderr; otherwise `errInherit` decides
-// between INHERITING our own stderr (Rakudo's default for an un-adverbed run —
-// the child's diagnostics reach the terminal or the CI log) and discarding it
-// (`:!err`). Both used to mean /dev/null, which is how a MAIN usage message
-// from a child rakupp vanished and left a failing raku-eye leg undiagnosable.
-static void spawnCapture(const std::vector<std::string>& argv, double timeoutSec,
-                         std::string& out, int& exitCode, bool& timedout,
-                         Interpreter* gil = nullptr, std::string* errOut = nullptr,
-                         const std::string& cwd = "", long long* pidOut = nullptr,
-                         const std::vector<std::string>* envKV = nullptr,
-                         bool errInherit = false) {
-    out.clear(); exitCode = -1; timedout = false;
-    if (errOut) errOut->clear();
-    if (argv.empty()) return;
+// ---- child processes: spawn now, collect later -----------------------------
+// spawnChildStart forks/execs immediately and hands back the pid plus the read
+// ends of whatever pipes were asked for; spawnChildFinish drains those pipes to
+// EOF (bounded by a wall-clock timeout) and reaps the child. run()/shell() use
+// the halves back-to-back (spawnCapture below). Proc::Async.start parks the
+// started child in g_spawned between the halves: Rakudo's `.start` means "the
+// process is running from this moment on", so a never-awaited child must exist,
+// run concurrently with us, and be left to the OS when we exit (issue #29) —
+// realizing the promise only drains and reaps.
+
+// How to wire the child's stdio. A capture pipe wins over an explicit fd (a
+// bind-stdin pipe end), which wins over inheriting our own stream. `errToNull`
+// keeps run()'s `:!err` meaning /dev/null rather than the terminal.
+struct SpawnStdio {
+    bool captureOut = false, captureErr = false;
+    bool errToNull = false; // when !captureErr: /dev/null instead of inheriting
+#if !defined(_WIN32)
+    int stdinFd = -1, stdoutFd = -1, stderrFd = -1; // bind-* pipe ends
+#endif
+};
+
+// A started-but-unreaped child.
+struct SpawnedChild {
+    long long pid = 0; // 0 = the spawn failed
 #if defined(_WIN32)
-    // Windows: CreateProcess with inherited pipes; poll the read ends via
-    // PeekNamedPipe (bounded by the wall-clock timeout). Compile-verified under
-    // mingw g++; behaviour mirrors the POSIX path below.
+    HANDLE hProcess = nullptr;
+    HANDLE outR = nullptr, errR = nullptr; // pipe read ends (nullptr: not captured)
+    std::string spawnErr;                  // CreateProcess failure text
+#else
+    int outFd = -1, errFd = -1;            // pipe read ends (-1: not captured)
+    bool reaped = false;                   // the zombie sweep already waitpid()ed it…
+    int rawStatus = 0;                     // …and this is the status it collected
+#endif
+};
+
+// Children Proc::Async.start has running, keyed by the token stored on the proc
+// hash. Mutex-guarded: realizations drain with the GIL parked, so one thread can
+// be spawning (or .kill-ing) while another reaps.
+static std::mutex g_spawnedM;
+static std::map<long long, SpawnedChild> g_spawned;
+static long long g_spawnedSeq = 0;
+
+static int signalNumberOf(const Value& v); // Proc::Async.kill's argument; tables are with signal() below
+
+// First half: spawn the child and return at once. The fork happens with the GIL
+// held, so forks serialise (safe in a multithreaded process).
+static SpawnedChild spawnChildStart(const std::vector<std::string>& argv, const std::string& cwd,
+                                    const std::vector<std::string>* envKV, const SpawnStdio& io) {
+    SpawnedChild sc;
+    if (argv.empty()) return sc;
+#if defined(_WIN32)
+    // Windows: CreateProcess with inherited pipes; the finish half polls the
+    // read ends via PeekNamedPipe. Compile-verified under mingw g++; behaviour
+    // mirrors the POSIX path below.
     SECURITY_ATTRIBUTES sa; sa.nLength = sizeof(sa); sa.lpSecurityDescriptor = nullptr; sa.bInheritHandle = TRUE;
     HANDLE outR = nullptr, outW = nullptr, errR = nullptr, errW = nullptr;
-    if (!CreatePipe(&outR, &outW, &sa, 0)) return;
-    SetHandleInformation(outR, HANDLE_FLAG_INHERIT, 0);
-    if (errOut) {
-        if (!CreatePipe(&errR, &errW, &sa, 0)) { CloseHandle(outR); CloseHandle(outW); return; }
+    if (io.captureOut) {
+        if (!CreatePipe(&outR, &outW, &sa, 0)) return sc;
+        SetHandleInformation(outR, HANDLE_FLAG_INHERIT, 0);
+    }
+    if (io.captureErr) {
+        if (!CreatePipe(&errR, &errW, &sa, 0)) { if (outR) { CloseHandle(outR); CloseHandle(outW); } return sc; }
         SetHandleInformation(errR, HANDLE_FLAG_INHERIT, 0);
     }
-    HANDLE nul = (errOut || errInherit) ? INVALID_HANDLE_VALUE : CreateFileA("NUL", GENERIC_WRITE, FILE_SHARE_WRITE, &sa, OPEN_EXISTING, 0, nullptr);
+    HANDLE nul = (!io.captureErr && io.errToNull) ? CreateFileA("NUL", GENERIC_WRITE, FILE_SHARE_WRITE, &sa, OPEN_EXISTING, 0, nullptr) : INVALID_HANDLE_VALUE;
     // Quote an argument only when it NEEDS it. Quoting unconditionally breaks a
     // command processor switch — cmd.exe does not recognise a quoted `"/c"` — and
     // `cmd.exe /c "…"` is exactly the shape shell() and the not-an-.exe fallback
@@ -229,11 +262,23 @@ static void spawnCapture(const std::vector<std::string>& argv, double timeoutSec
     }
     else SetHandleInformation(inH, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
     si.hStdInput = inH;
-    si.hStdOutput = outW;
+    // stdout: the capture pipe, or our own stdout (an un-tapped Proc::Async
+    // stream goes where ours goes, like Rakudo) — with the same NUL fallback
+    // as stdin, since STARTF_USESTDHANDLES needs all three handles usable.
+    HANDLE outNul = INVALID_HANDLE_VALUE, outH = INVALID_HANDLE_VALUE;
+    if (!io.captureOut) {
+        outH = GetStdHandle(STD_OUTPUT_HANDLE);
+        if (outH == nullptr || outH == INVALID_HANDLE_VALUE) {
+            outNul = CreateFileA("NUL", GENERIC_WRITE, FILE_SHARE_WRITE, &sa, OPEN_EXISTING, 0, nullptr);
+            outH = outNul;
+        }
+        else SetHandleInformation(outH, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+    }
+    si.hStdOutput = io.captureOut ? outW : outH;
     // STARTF_USESTDHANDLES needs an inheritable handle for stderr too; the same
     // caveat as stdin above applies, so an unusable one falls back to NUL.
     HANDLE errNul = INVALID_HANDLE_VALUE, errH = INVALID_HANDLE_VALUE;
-    if (!errOut && errInherit) {
+    if (!io.captureErr && !io.errToNull) {
         errH = GetStdHandle(STD_ERROR_HANDLE);
         if (errH == nullptr || errH == INVALID_HANDLE_VALUE) {
             errNul = CreateFileA("NUL", GENERIC_WRITE, FILE_SHARE_WRITE, &sa, OPEN_EXISTING, 0, nullptr);
@@ -241,7 +286,7 @@ static void spawnCapture(const std::vector<std::string>& argv, double timeoutSec
         }
         else SetHandleInformation(errH, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
     }
-    si.hStdError = errOut ? errW : (errInherit ? errH : nul);
+    si.hStdError = io.captureErr ? errW : (io.errToNull ? nul : errH);
     PROCESS_INFORMATION pi; ZeroMemory(&pi, sizeof(pi));
     std::vector<char> cmdbuf(cmd.begin(), cmd.end()); cmdbuf.push_back('\0');
     std::string envblk; if (envKV) envblk = winEnvBlock(*envKV);
@@ -259,52 +304,28 @@ static void spawnCapture(const std::vector<std::string>& argv, double timeoutSec
         started = CreateProcessA(nullptr, cmdbuf2.data(), nullptr, nullptr, TRUE, 0, envKV ? (LPVOID)envblk.data() : nullptr, cwd.empty() ? nullptr : cwd.c_str(), &si, &pi);
         if (!started) spawnErr = GetLastError();
     }
-    CloseHandle(outW); if (errW) CloseHandle(errW); if (nul != INVALID_HANDLE_VALUE) CloseHandle(nul);
+    if (outW) CloseHandle(outW); if (errW) CloseHandle(errW); if (nul != INVALID_HANDLE_VALUE) CloseHandle(nul);
     if (inNul != INVALID_HANDLE_VALUE) CloseHandle(inNul);
+    if (outNul != INVALID_HANDLE_VALUE) CloseHandle(outNul);
     if (errNul != INVALID_HANDLE_VALUE) CloseHandle(errNul);
     if (!started) {
-        // A silent -1 with no output is undiagnosable — say WHY, on the error
-        // stream when one was asked for, otherwise on our own stderr.
+        // A silent -1 with no output is undiagnosable — say WHY. The caller
+        // routes this to the error stream when one was asked for, otherwise
+        // to our own stderr.
         char msg[512] = {0};
         FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, nullptr,
                        spawnErr, 0, msg, sizeof msg - 1, nullptr);
         std::string text = "Could not spawn '" + argv[0] + "': " + msg;
         while (!text.empty() && (text.back() == '\n' || text.back() == '\r')) text.pop_back();
-        if (errOut) *errOut = text + "\n"; else std::cerr << text << "\n";
-        CloseHandle(outR); if (errR) CloseHandle(errR);
-        return;
+        sc.spawnErr = text;
+        if (outR) CloseHandle(outR); if (errR) CloseHandle(errR);
+        return sc;
     }
-    if (pidOut) *pidOut = (long long)pi.dwProcessId;
-    bool parked = gil ? gil->gilPark() : false;
-    auto start = std::chrono::steady_clock::now();
-    char buf[8192]; bool oEof = false, eEof = (errR == nullptr);
-    auto drain = [&](HANDLE h, std::string* dst, bool& eof) {
-        DWORD avail = 0;
-        if (!PeekNamedPipe(h, nullptr, 0, nullptr, &avail, nullptr)) { eof = true; return; }
-        while (avail > 0) {
-            DWORD want = avail > sizeof buf ? (DWORD)sizeof buf : avail, rd = 0;
-            if (!ReadFile(h, buf, want, &rd, nullptr) || rd == 0) { eof = true; return; }
-            dst->append(buf, rd);
-            if (!PeekNamedPipe(h, nullptr, 0, nullptr, &avail, nullptr)) { eof = true; return; }
-        }
-    };
-    while (!oEof || !eEof) {
-        if (!oEof) drain(outR, &out, oEof);
-        if (!eEof) drain(errR, errOut, eEof);
-        if (oEof && eEof) break;
-        bool exited = WaitForSingleObject(pi.hProcess, 0) == WAIT_OBJECT_0;
-        if (timeoutSec > 0) {
-            double el = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
-            if (el > timeoutSec) { TerminateProcess(pi.hProcess, 1); timedout = true; break; }
-        }
-        if (!exited) Sleep(2);
-    }
-    WaitForSingleObject(pi.hProcess, INFINITE);
-    DWORD ec = 0; if (!timedout && GetExitCodeProcess(pi.hProcess, &ec)) exitCode = (int)ec;
-    CloseHandle(outR); if (errR) CloseHandle(errR);
-    CloseHandle(pi.hProcess); CloseHandle(pi.hThread);
-    if (parked) gil->gilUnpark(true);
-    return;
+    sc.pid = (long long)pi.dwProcessId;
+    sc.hProcess = pi.hProcess;
+    CloseHandle(pi.hThread);
+    sc.outR = outR; sc.errR = errR;
+    return sc;
 #else
     // Build the argv vector BEFORE fork — malloc between fork and execvp is unsafe
     // in a multithreaded process (another thread can hold the allocator lock at
@@ -321,44 +342,113 @@ static void spawnCapture(const std::vector<std::string>& argv, double timeoutSec
         for (auto& kv : *envKV) cenv.push_back(const_cast<char*>(kv.c_str()));
         cenv.push_back(nullptr);
     }
-    int pipefd[2], errfd[2];
-    if (pipe(pipefd) != 0) return;
-    if (errOut && pipe(errfd) != 0) { close(pipefd[0]); close(pipefd[1]); return; }
+    int pipefd[2] = {-1, -1}, errfd[2] = {-1, -1};
+    if (io.captureOut && pipe(pipefd) != 0) return sc;
+    if (io.captureErr && pipe(errfd) != 0) { if (io.captureOut) { close(pipefd[0]); close(pipefd[1]); } return sc; }
     pid_t pid = fork();
-    if (pid < 0) { close(pipefd[0]); close(pipefd[1]); if (errOut) { close(errfd[0]); close(errfd[1]); } return; }
+    if (pid < 0) {
+        if (io.captureOut) { close(pipefd[0]); close(pipefd[1]); }
+        if (io.captureErr) { close(errfd[0]); close(errfd[1]); }
+        return sc;
+    }
     if (pid == 0) { // child — async-signal-safe only from here
         setpgid(0, 0); // own process group, so a timeout can kill grandchildren too
-        dup2(pipefd[1], STDOUT_FILENO);
-        if (errOut) dup2(errfd[1], STDERR_FILENO);
-        else if (!errInherit) { int devnull = open("/dev/null", O_WRONLY); if (devnull >= 0) dup2(devnull, STDERR_FILENO); }
-        // errInherit: STDERR_FILENO is left exactly as we got it — the child
-        // writes to the same place we do.
+        if (io.stdinFd >= 0) dup2(io.stdinFd, STDIN_FILENO);
+        if (io.captureOut) dup2(pipefd[1], STDOUT_FILENO);
+        else if (io.stdoutFd >= 0) dup2(io.stdoutFd, STDOUT_FILENO);
+        // neither: STDOUT_FILENO is left exactly as we got it (inherited)
+        if (io.captureErr) dup2(errfd[1], STDERR_FILENO);
+        else if (io.stderrFd >= 0) dup2(io.stderrFd, STDERR_FILENO);
+        else if (io.errToNull) { int devnull = open("/dev/null", O_WRONLY); if (devnull >= 0) dup2(devnull, STDERR_FILENO); }
         close(pipefd[0]); close(pipefd[1]);
-        if (errOut) { close(errfd[0]); close(errfd[1]); }
+        close(errfd[0]); close(errfd[1]);
+        // the bind-* fds carry FD_CLOEXEC: every copy but the dup2'd one (which
+        // shed the flag) vanishes at exec, so a bound reader's EOF arrives
+        // exactly when its writer exits
         if (!cwd.empty()) { if (::chdir(cwd.c_str()) != 0) _exit(126); }
         if (envKV) environ = cenv.data();
         execvp(cargv[0], cargv.data());
         _exit(127);
     }
-    if (pidOut) *pidOut = (long long)pid;
+    sc.pid = (long long)pid;
     // parent: don't let a concurrent spawn (another worker) inherit our read ends
     // across its execvp — that would keep the write end open and defer our EOF.
-    fcntl(pipefd[0], F_SETFD, FD_CLOEXEC);
-    if (errOut) fcntl(errfd[0], F_SETFD, FD_CLOEXEC);
-    close(pipefd[1]);
-    int fd = pipefd[0];
-    fcntl(fd, F_SETFL, O_NONBLOCK);
-    int efd = -1;
-    if (errOut) { close(errfd[1]); efd = errfd[0]; fcntl(efd, F_SETFL, O_NONBLOCK); }
+    if (io.captureOut) {
+        fcntl(pipefd[0], F_SETFD, FD_CLOEXEC);
+        close(pipefd[1]);
+        fcntl(pipefd[0], F_SETFL, O_NONBLOCK);
+        sc.outFd = pipefd[0];
+    }
+    if (io.captureErr) {
+        fcntl(errfd[0], F_SETFD, FD_CLOEXEC);
+        close(errfd[1]);
+        fcntl(errfd[0], F_SETFL, O_NONBLOCK);
+        sc.errFd = errfd[0];
+    }
+    return sc;
+#endif
+}
+
+// Second half: drain the capture pipes to EOF, then reap. EOF, not the child's
+// exit, is the only reliable "all output captured" signal: reaping with waitpid
+// does not guarantee the final buffered write has been drained, and grandchildren
+// may still hold the write end. `timeoutSec` bounds the whole wait; on expiry the
+// child and its process group are killed. `gil` (if non-null) is the interpreter:
+// the GIL is parked for the wait so sibling worker threads run — and spawn their
+// own children — concurrently.
+static void spawnChildFinish(SpawnedChild& sc, double timeoutSec,
+                             std::string& out, std::string* errOut,
+                             int& exitCode, bool& timedout, Interpreter* gil) {
+    exitCode = -1; timedout = false;
+    if (!sc.pid) return;
     bool parked = gil ? gil->gilPark() : false; // drop the GIL for the wait below
     auto start = std::chrono::steady_clock::now();
     char buf[8192];
-    // Read until the pipe(s) reach EOF — i.e. every write-end (the child AND any
-    // grandchildren it spawned) has closed. EOF, not the child's exit, is the only
-    // reliable "all output captured" signal: reaping the child with waitpid does not
-    // guarantee its final buffered write has been drained, so keying `done` off the
-    // exit races the last line away. The wall-clock timeout still bounds the wait.
-    bool oEof = false, eEof = (efd < 0);
+#if defined(_WIN32)
+    bool oEof = (sc.outR == nullptr), eEof = (sc.errR == nullptr);
+    auto drain = [&](HANDLE h, std::string* dst, bool& eof) {
+        DWORD avail = 0;
+        if (!PeekNamedPipe(h, nullptr, 0, nullptr, &avail, nullptr)) { eof = true; return; }
+        while (avail > 0) {
+            DWORD want = avail > sizeof buf ? (DWORD)sizeof buf : avail, rd = 0;
+            if (!ReadFile(h, buf, want, &rd, nullptr) || rd == 0) { eof = true; return; }
+            if (dst) dst->append(buf, rd);
+            if (!PeekNamedPipe(h, nullptr, 0, nullptr, &avail, nullptr)) { eof = true; return; }
+        }
+    };
+    while (!oEof || !eEof) {
+        if (!oEof) drain(sc.outR, &out, oEof);
+        if (!eEof) drain(sc.errR, errOut, eEof);
+        if (oEof && eEof) break;
+        bool exited = WaitForSingleObject(sc.hProcess, 0) == WAIT_OBJECT_0;
+        if (timeoutSec > 0) {
+            double el = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+            if (el > timeoutSec) { TerminateProcess(sc.hProcess, 1); timedout = true; break; }
+        }
+        if (!exited) Sleep(2);
+    }
+    if (!timedout) {
+        // the deadline binds even with no pipe left to key on (none was asked
+        // for, or the child closed its ends and lives on)
+        DWORD waitMs = INFINITE;
+        if (timeoutSec > 0) {
+            double rem = timeoutSec - std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+            waitMs = rem > 0 ? (DWORD)(rem * 1000) : 0;
+        }
+        if (WaitForSingleObject(sc.hProcess, waitMs) != WAIT_OBJECT_0 && timeoutSec > 0) {
+            TerminateProcess(sc.hProcess, 1); timedout = true;
+            WaitForSingleObject(sc.hProcess, INFINITE);
+        }
+    }
+    else WaitForSingleObject(sc.hProcess, INFINITE);
+    DWORD ec = 0; if (!timedout && GetExitCodeProcess(sc.hProcess, &ec)) exitCode = (int)ec;
+    if (sc.outR) CloseHandle(sc.outR);
+    if (sc.errR) CloseHandle(sc.errR);
+    CloseHandle(sc.hProcess);
+#else
+    pid_t pid = (pid_t)sc.pid;
+    int fd = sc.outFd, efd = sc.errFd;
+    bool oEof = (fd < 0), eEof = (efd < 0);
     while (!oEof || !eEof) {
         struct pollfd pfds[2]; int nf = 0;
         if (!oEof) { pfds[nf] = {fd, POLLIN, 0}; nf++; }
@@ -372,23 +462,79 @@ static void spawnCapture(const std::vector<std::string>& argv, double timeoutSec
         }
         if (!eEof) for (;;) {
             ssize_t n = read(efd, buf, sizeof buf);
-            if (n > 0) { errOut->append(buf, (size_t)n); continue; }
+            if (n > 0) { if (errOut) errOut->append(buf, (size_t)n); continue; }
             if (n == 0) eEof = true;
             break;
         }
         if (oEof && eEof) break;
         if (timeoutSec > 0) {
             double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
-            if (elapsed > timeoutSec) { kill(-pid, SIGKILL); kill(pid, SIGKILL); timedout = true; break; }
+            if (elapsed > timeoutSec) {
+                // a child the zombie sweep already reaped must NOT be signalled:
+                // the pid may have been recycled (only its grandchildren still
+                // hold the pipe, and those we leave be)
+                if (!sc.reaped) { kill(-pid, SIGKILL); kill(pid, SIGKILL); }
+                timedout = true; break;
+            }
         }
     }
     int status = 0;
-    while (waitpid(pid, &status, 0) == -1 && errno == EINTR) {} // reap; retry on EINTR
+    if (sc.reaped) status = sc.rawStatus; // the zombie sweep got there first
+    else if (timedout) { while (waitpid(pid, &status, 0) == -1 && errno == EINTR) {} }
+    else if (timeoutSec > 0) {
+        // the deadline binds even with no pipe left to key on (none was asked
+        // for, or the child closed its ends and lives on): poll for the exit
+        for (;;) {
+            pid_t r = waitpid(pid, &status, WNOHANG);
+            if (r != 0) break;
+            double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+            if (elapsed > timeoutSec) {
+                kill(-pid, SIGKILL); kill(pid, SIGKILL); timedout = true;
+                while (waitpid(pid, &status, 0) == -1 && errno == EINTR) {}
+                break;
+            }
+            poll(nullptr, 0, 10);
+        }
+    }
+    else { while (waitpid(pid, &status, 0) == -1 && errno == EINTR) {} } // reap; retry on EINTR
     if (!timedout) exitCode = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
-    close(fd);
+    if (fd >= 0) close(fd);
     if (efd >= 0) close(efd);
-    if (parked) gil->gilUnpark(true);    // reacquire the GIL before touching interpreter state
 #endif
+    if (parked) gil->gilUnpark(true);    // reacquire the GIL before touching interpreter state
+}
+
+// Spawn a child process, capture its stdout, with an optional wall-clock timeout —
+// the two halves back-to-back, which is what run()/shell()/qx need.
+// `errOut` non-null captures the child's stderr; otherwise `errInherit` decides
+// between INHERITING our own stderr (Rakudo's default for an un-adverbed run —
+// the child's diagnostics reach the terminal or the CI log) and discarding it
+// (`:!err`). Both used to mean /dev/null, which is how a MAIN usage message
+// from a child rakupp vanished and left a failing raku-eye leg undiagnosable.
+static void spawnCapture(const std::vector<std::string>& argv, double timeoutSec,
+                         std::string& out, int& exitCode, bool& timedout,
+                         Interpreter* gil = nullptr, std::string* errOut = nullptr,
+                         const std::string& cwd = "", long long* pidOut = nullptr,
+                         const std::vector<std::string>* envKV = nullptr,
+                         bool errInherit = false) {
+    out.clear(); exitCode = -1; timedout = false;
+    if (errOut) errOut->clear();
+    if (argv.empty()) return;
+    SpawnStdio io;
+    io.captureOut = true;
+    io.captureErr = errOut != nullptr;
+    io.errToNull = !errOut && !errInherit;
+    SpawnedChild sc = spawnChildStart(argv, cwd, envKV, io);
+    if (!sc.pid) {
+#if defined(_WIN32)
+        if (!sc.spawnErr.empty()) {
+            if (errOut) *errOut = sc.spawnErr + "\n"; else std::cerr << sc.spawnErr << "\n";
+        }
+#endif
+        return;
+    }
+    if (pidOut) *pidOut = sc.pid;
+    spawnChildFinish(sc, timeoutSec, out, errOut, exitCode, timedout, gil);
 }
 
 // Spawn a child, feed `input` to its stdin, and capture its stdout. Uses poll on
@@ -568,23 +714,37 @@ ValueList Interpreter::applyTapChain(Value& tap, const Value& in, bool& complete
     return cur;
 }
 
-// Run a Proc::Async .start promise: spawn the process (with optional timeout), feed captured
-// stdout to the Supply taps, and mark the promise Kept (finished) or Broken (timed out).
+// Realize a Proc::Async .start promise: the process has been RUNNING since
+// `.start` (spawnChildStart in the method handler); this drains its capture
+// pipes, feeds them to the Supply taps, reaps it, and marks the promise Kept
+// (finished) or Broken (timed out). The fallback path spawns here, lazily —
+// for a promise whose eager spawn never happened (empty argv, fork failure).
 void Interpreter::runProcPromise(Value& promise, double timeoutSec) {
     if (!promise.hash()) return;
     if (promise.hash()->count("status") && (*promise.hash())["status"].toStr() != "Planned") return; // already run
     auto pit = promise.hash()->find("proc");
     if (pit == promise.hash()->end() || !pit->second.hash()) { (*promise.hash())["status"] = Value::str("Kept"); return; }
     Value& proc = pit->second;
-    std::vector<std::string> argv;
-    if (proc.hash()->count("argv")) for (auto& x : *(*proc.hash())["argv"].arr()) argv.push_back(x.toStr());
-    std::string out, err; int code; bool timedout;
-    std::string cwd;
-    { auto c = promise.hash()->find("cwd"); if (c != promise.hash()->end()) cwd = c->second.toStr(); }
-    // stderr is CAPTURED (not inherited): an async proc's noise must go to its
-    // .stderr taps (or nowhere), never straight to the user's terminal.
+    std::string out, err; int code = -1; bool timedout = false;
     long long childPid = 0;
-    spawnCapture(argv, timeoutSec, out, code, timedout, this, &err, cwd, &childPid);
+    long long tok = 0;
+    { auto t = proc.hash()->find("spawn-token");
+      if (t != proc.hash()->end()) { tok = t->second.toInt(); proc.hash()->erase(t); } }
+    if (tok) {
+        SpawnedChild sc;
+        { std::lock_guard<std::mutex> lk(g_spawnedM);
+          auto it = g_spawned.find(tok);
+          if (it != g_spawned.end()) { sc = it->second; g_spawned.erase(it); } }
+        childPid = sc.pid;
+        spawnChildFinish(sc, timeoutSec, out, &err, code, timedout, this);
+    }
+    else {
+        std::vector<std::string> argv;
+        if (proc.hash()->count("argv")) for (auto& x : *(*proc.hash())["argv"].arr()) argv.push_back(x.toStr());
+        std::string cwd;
+        { auto c = promise.hash()->find("cwd"); if (c != promise.hash()->end()) cwd = c->second.toStr(); }
+        spawnCapture(argv, timeoutSec, out, code, timedout, this, &err, cwd, &childPid);
+    }
     if (childPid) (*proc.hash())["pid"] = Value::integer(childPid);
     auto feed = [&](const char* key, const std::string& data) {
         auto taps = proc.hash()->find(key);
@@ -5914,14 +6074,82 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     if (inv.t == VT::Hash && inv.hashKind == "Proc::Async") {
         if (m == "stdout" || m == "stderr" || m == "Supply") { Value s = Value::makeHash(); s.hashKind = "Supply"; (*s.hash())["proc"] = inv; (*s.hash())["stream"] = Value::str(m); return s; }
         if (m == "start") {
+            // Rakudo throws on a second .start; ours must too, or the realize
+            // fallback would spawn the command a second time.
+            if (inv.hash()->count("pid") || inv.hash()->count("spawn-token"))
+                throw RakuError{Value::typeObj("X::Proc::Async::AlreadyStarted"),
+                    "Process has already been started"};
             Value pr = Value::makeHash(); pr.hashKind = "Promise";
             (*pr.hash())["kind"] = Value::str("proc"); (*pr.hash())["proc"] = inv;
             (*pr.hash())["status"] = Value::str("Planned");
-            // record :cwd so the (lazy) run happens in the right directory —
-            // zef's tar extract runs `tar -zxvf <basename>` with :cwd(archive dir)
+            // record :cwd so the run happens in the right directory — zef's tar
+            // extract runs `tar -zxvf <basename>` with :cwd(archive dir)
+            std::string cwd;
             for (auto& a : args)
-                if (a.t == VT::Pair && a.s == "cwd" && a.pairVal())
-                    (*pr.hash())["cwd"] = Value::str(a.pairVal()->toStr());
+                if (a.t == VT::Pair && a.s == "cwd" && a.pairVal()) {
+                    cwd = a.pairVal()->toStr();
+                    (*pr.hash())["cwd"] = Value::str(cwd);
+                }
+            // The process spawns HERE — Rakudo's .start means "running from this
+            // moment", not "run when awaited" (#29: a fire-and-forget daemon must
+            // exist without an await, and outlive us). The promise stays Planned;
+            // realizing it (await / whenever / anyof) drains the pipes and reaps.
+            std::vector<std::string> argvv;
+            if (inv.hash()->count("argv") && (*inv.hash())["argv"].arr())
+                for (auto& x : *(*inv.hash())["argv"].arr()) argvv.push_back(x.toStr());
+            if (!argvv.empty()) {
+                auto takeFd = [&](const char* k) -> long long {
+                    auto f = inv.hash()->find(k); if (f == inv.hash()->end()) return -1;
+                    long long v = f->second.toInt(); inv.hash()->erase(f); return v;
+                };
+                auto tapped = [&](const char* k) {
+                    auto t = inv.hash()->find(k);
+                    return t != inv.hash()->end() && t->second.arr() && !t->second.arr()->empty();
+                };
+                SpawnStdio io;
+                bool outBound = false, errBound = false;
+#if !defined(_WIN32)
+                io.stdinFd  = (int)takeFd("bind-in-fd");
+                io.stdoutFd = (int)takeFd("bind-out-fd");
+                io.stderrFd = (int)takeFd("bind-err-fd");
+                outBound = io.stdoutFd >= 0; errBound = io.stderrFd >= 0;
+#else
+                takeFd("bind-in-fd"); takeFd("bind-out-fd"); takeFd("bind-err-fd");
+#endif
+                // a tapped stream is captured and fed to the taps at realize; an
+                // untapped, unbound one is INHERITED, like Rakudo (the old
+                // capture-and-discard was a relic of the lazy model)
+                io.captureOut = !outBound && tapped("taps");
+                io.captureErr = !errBound && tapped("taps-err");
+                SpawnedChild sc = spawnChildStart(argvv, cwd, nullptr, io);
+#if !defined(_WIN32)
+                // the child holds its dup2'd copies of the bind ends; ours must
+                // go now, or a bound reader would never see EOF
+                if (io.stdinFd  >= 0) close(io.stdinFd);
+                if (io.stdoutFd >= 0) close(io.stdoutFd);
+                if (io.stderrFd >= 0) close(io.stderrFd);
+#endif
+                if (sc.pid) {
+                    (*inv.hash())["pid"] = Value::integer(sc.pid);
+                    long long tok;
+                    { std::lock_guard<std::mutex> lk(g_spawnedM);
+#if !defined(_WIN32)
+                      // reap what earlier fire-and-forgets left behind: a long-
+                      // lived program (Sparky) may never await its children, and
+                      // zombies must not accumulate. The status is kept, so a
+                      // late await still sees the real exitcode.
+                      for (auto& kv : g_spawned) {
+                          if (kv.second.reaped) continue;
+                          int st = 0;
+                          if (waitpid((pid_t)kv.second.pid, &st, WNOHANG) == (pid_t)kv.second.pid) {
+                              kv.second.reaped = true; kv.second.rawStatus = st;
+                          }
+                      }
+#endif
+                      tok = ++g_spawnedSeq; g_spawned[tok] = sc; }
+                    (*inv.hash())["spawn-token"] = Value::integer(tok);
+                }
+            }
             return pr;
         }
         // `.command` is the argv the process was constructed with, as a List
@@ -5932,9 +6160,9 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             return out;
         }
         // `.ready` is Rakudo's "the process has started" Promise, kept with the
-        // PID. This model runs the process when `.start` is realized, so a ready
-        // consulted BEFORE that has no PID to give and answers Nil — which is
-        // also what Rakudo before 2018.04 did, and what Sparrow6's
+        // PID — real from `.start` on, now that the spawn is eager. One consulted
+        // BEFORE the start has no PID to give and answers Nil — which is also
+        // what Rakudo before 2018.04 did, and what Sparrow6's
         // `whenever $proc.ready` (an empty body) expects either way.
         if (m == "ready") {
             Value pr = Value::makeHash(); pr.hashKind = "Promise";
@@ -5943,7 +6171,68 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             (*pr.hash())["status"] = Value::str("Planned");
             return pr;
         }
-        if (m == "kill" || m == "close-stdin" || m == "print" || m == "say" || m == "write" || m == "put") return Value::boolean(true);
+        // $cat.bind-stdin($echo.stdout) — one process's stream wired straight
+        // into another's stdin, as a REAL pipe between the two children. Both
+        // spawn at .start and run concurrently, so a stream larger than the pipe
+        // buffer cannot deadlock. The pipe is made here, before either start;
+        // each end waits on its proc's hash for the spawn to dup2 it into place.
+        // Both ends carry FD_CLOEXEC, so the reader's EOF arrives exactly when
+        // the writer exits. First binding wins; after a start it's too late.
+        if (m == "bind-stdin") {
+#if !defined(_WIN32)
+            if (!args.empty() && args[0].t == VT::Hash && args[0].hashKind == "Supply" &&
+                args[0].hash() && args[0].hash()->count("proc") &&
+                !inv.hash()->count("pid") && !inv.hash()->count("bind-in-fd")) {
+                Value src = (*args[0].hash())["proc"];
+                std::string stream = args[0].hash()->count("stream") ? (*args[0].hash())["stream"].toStr() : "stdout";
+                if (src.hash() && !src.hash()->count("pid")) {
+                    int p[2];
+                    if (pipe(p) == 0) {
+                        fcntl(p[0], F_SETFD, FD_CLOEXEC); fcntl(p[1], F_SETFD, FD_CLOEXEC);
+                        (*inv.hash())["bind-in-fd"] = Value::integer(p[0]);
+                        (*src.hash())[stream == "stderr" ? "bind-err-fd" : "bind-out-fd"] = Value::integer(p[1]);
+                    }
+                }
+            }
+#endif
+            return Value::boolean(true);
+        }
+        // .kill sends a real signal (default SIGHUP, like Rakudo) — the process
+        // has existed since .start. Realizing the promise still drains and reaps,
+        // so an `await` after the kill returns. Skipped once the exitcode is in:
+        // that pid is dead and may have been recycled.
+        if (m == "kill") {
+            auto pidIt = inv.hash()->find("pid");
+            if (pidIt != inv.hash()->end() && !inv.hash()->count("exitcode")) {
+#if defined(_WIN32)
+                auto tokIt = inv.hash()->find("spawn-token");
+                if (tokIt != inv.hash()->end()) {
+                    std::lock_guard<std::mutex> lk(g_spawnedM);
+                    auto it2 = g_spawned.find(tokIt->second.toInt());
+                    if (it2 != g_spawned.end() && it2->second.hProcess)
+                        TerminateProcess(it2->second.hProcess, 1);
+                }
+#else
+                // if the zombie sweep already reaped it, the pid may have been
+                // recycled — signalling it would hit an innocent process
+                bool gone = false;
+                auto tokIt = inv.hash()->find("spawn-token");
+                if (tokIt != inv.hash()->end()) {
+                    std::lock_guard<std::mutex> lk(g_spawnedM);
+                    auto it2 = g_spawned.find(tokIt->second.toInt());
+                    gone = it2 != g_spawned.end() && it2->second.reaped;
+                }
+                if (!gone) {
+                    int sig = -1;
+                    for (auto& a : args) if (a.t != VT::Pair) { sig = signalNumberOf(a); break; }
+                    if (sig <= 0) sig = SIGHUP;
+                    ::kill((pid_t)pidIt->second.toInt(), sig);
+                }
+#endif
+            }
+            return Value::boolean(true);
+        }
+        if (m == "close-stdin" || m == "print" || m == "say" || m == "write" || m == "put") return Value::boolean(true);
         // after runProcPromise stored the exit status on the proc:
         if (m == "exitcode") { auto it = inv.hash()->find("exitcode"); return it != inv.hash()->end() ? it->second : Value::integer(-1); }
         if (m == "so" || m == "Bool") { auto it = inv.hash()->find("exitcode"); return Value::boolean(it != inv.hash()->end() && it->second.toInt() == 0); }
