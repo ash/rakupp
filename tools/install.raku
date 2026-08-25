@@ -228,7 +228,6 @@ sub cache-dir {
 # every write is a `try`, and a HOME where nothing can be written turns the
 # whole thing off rather than adding a failure mode of its own.
 my $TRACE-PATH = '';
-my $RAKU-PATH-TRACED = False;
 
 sub trace(Str $msg) {
     return unless $TRACE-PATH;
@@ -276,10 +275,58 @@ sub trace-pointer() {
 
 # The wrappers the engine writes carry a `raku` shebang (Rakudo's own
 # template, so they run under either engine) — whether that name resolves on
-# THIS machine is exactly the kind of fact a remote trace should carry.
+# THIS machine decides whether a freshly installed command runs at all.
 sub raku-on-path(--> Bool) {
     my $sep = $*KERNEL.name.starts-with('win') ?? ';' !! ':';
     ?((%*ENV<PATH> // '').split($sep).first({ $_ ne '' && .IO.add('raku').e }))
+}
+
+# The link target for a `raku` name this installer provides: the PATH-stable
+# spelling of the engine when there is one (…/bin/rakupp survives a Homebrew
+# upgrade; the versioned Cellar path $*EXECUTABLE resolves to does not),
+# else the running binary's real path.
+sub rakupp-target(--> Str) {
+    my $sep = $*KERNEL.name.starts-with('win') ?? ';' !! ':';
+    my $hit = (%*ENV<PATH> // '').split($sep).first({ $_ ne '' && .IO.add('rakupp').e });
+    $hit ?? $hit.IO.add('rakupp').Str !! $*EXECUTABLE.absolute.Str
+}
+
+# A machine where NOTHING answers to `raku` would run every wrapper into
+# "env: raku: No such file or directory" — the freshly installed command
+# dead on arrival. So the store's own bin/ — the one directory the user
+# already must put on PATH for named commands to work at all — gains a
+# `raku` symlink to this engine. Guarded three ways: only when no `raku`
+# resolves anywhere on PATH (a machine with Rakudo keeps its Rakudo), only
+# when the name is free in the store (a dangling leftover counts as free),
+# and said out loud when it happens. Uninstall leaves it alone: it is store
+# infrastructure, like the bin/ directory itself, not any dist's file —
+# the checker knows it by name.
+my $RAKU-NAME-DONE = False;
+sub ensure-raku-name(Str $prefix) {
+    return if $RAKU-NAME-DONE;
+    $RAKU-NAME-DONE = True;
+    return if $*KERNEL.name.starts-with('win');   # shebangs are a POSIX story
+    if raku-on-path() {
+        trace("env: `raku` resolves on PATH — wrapper shebangs will run");
+        return;
+    }
+    my $link = $prefix.IO.add('bin').add('raku');
+    if $link.e {
+        trace("env: {$link} already exists — leaving it");
+        return;
+    }
+    try $link.unlink;   # .e is false for a DANGLING symlink; clear it
+    my $target = rakupp-target();
+    # `ln`, not .symlink: the engine builtin does not exist yet, and this
+    # file stays runnable under Rakudo either way
+    my $p = try run 'ln', '-s', $target, $link.Str, :out, :err;
+    if $p && $p.exitcode == 0 && $link.e {
+        note "linked: {$link} -> $target (no `raku` was on PATH, and the bin wrappers' shebang needs one)";
+        trace("env: linked {$link} -> $target");
+    }
+    else {
+        trace("env: no `raku` on PATH and linking {$link} failed — wrappers run as `rakupp <wrapper>`");
+    }
 }
 
 sub sha1-str(Str $s) {
@@ -753,12 +800,7 @@ sub install-one(%e, Str $prefix, Bool :$no-test, Bool :$force, Bool :$test-only)
                 note "warning: %e<name>: bin wrapper {$w} {$w.e ?? 'is not executable' !! 'was not written'}";
             }
         }
-        if !$RAKU-PATH-TRACED && %files.keys.first(*.starts-with('bin/')) {
-            $RAKU-PATH-TRACED = True;
-            trace(raku-on-path()
-                ?? "env: `raku` resolves on PATH — wrapper shebangs will run"
-                !! "env: no `raku` on PATH — wrappers carry a raku shebang; run them as `rakupp <wrapper>`, or symlink raku -> rakupp");
-        }
+        ensure-raku-name($prefix) if %files.keys.first(*.starts-with('bin/'));
     }
     note "installed {%e<dist> // %e<name>}";
     trace("installed: {%e<dist> // %e<name>}");
@@ -832,6 +874,9 @@ sub store-check(Str $prefix) {
             # bin/ holds NAMED wrappers beside (legacy) blobs. A wrapper is not
             # content-addressed: it is live while any dist carries bin/<name>,
             # and BROKEN-adjacent only in the sense of wasted disk otherwise.
+            # The `raku` name is store infrastructure (ensure-raku-name wrote
+            # it for the wrappers' shebang), owned by no dist and never stale.
+            next if $sub eq 'bin' && $b.basename eq 'raku';
             if $sub eq 'bin' && $b.basename !~~ / ^ <[0..9 a..f A..F]> ** 40 $ / {
                 next if %dists.values.first({ (.<files> // {}){"bin/" ~ $b.basename}:exists });
             }

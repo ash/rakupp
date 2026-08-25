@@ -292,10 +292,14 @@ rakupp install --to=PATH Foo     # another store prefix (default ~/.raku)
 A distribution that ships commands in `bin/` gets a named, executable
 wrapper per script — `~/.raku/bin/s6` for Sparrow6's `s6` — the same
 dispatch stub Rakudo writes, so the command runs by name under either
-engine once the store's `bin/` is on `PATH`. `uninstall` removes the
-wrapper unless another installed dist still provides a script of that
-name. (Installs from before this existed have no wrappers; a `reinstall`
-of the dist writes them.)
+engine once the store's `bin/` is on `PATH`. The wrapper's shebang names
+`raku` — the language, not an engine — and on a machine where nothing
+answers to that name, the install links `~/.raku/bin/raku` to this engine
+and says so, so the one `PATH` entry above also resolves the shebangs; a
+machine with a Rakudo keeps its Rakudo, since the link is made only when
+the name resolves nowhere. `uninstall` removes the wrapper unless another
+installed dist still provides a script of that name. (Installs from before
+this existed have no wrappers; a `reinstall` of the dist writes them.)
 
 A distribution with a `Build.rakumod` (zef's build protocol — OpenSSL
 generates its `resources/libraries.json` in one) gets it run before its

@@ -279,6 +279,51 @@ check $tlog.contains('verify: wrapper') && $tlog.contains('gate-hello'),
 check $tlog.contains('test FAILED: '), 'trace: a failing suite names the failing file';
 check %flaky<err>.contains('trace: '), 'trace: a failure points at the log';
 
+# ---- the raku name: a machine with none gains one in the store's bin/ -------
+# The wrappers' shebang is `#!/usr/bin/env raku` — Rakudo's own template; the
+# store is shared, so the template is too. Where nothing answers to that
+# name, install links <store>/bin/raku to this engine, so the one PATH entry
+# the user already needs (the store's bin/) also resolves the shebangs. A
+# machine WITH a raku keeps it. Pinned on a synthetic PATH holding only the
+# tools the installer runs, so the checks hold whether or not THIS machine
+# has a Rakudo.
+my $tooldir = $tmp.add('tools-no-raku');
+$tooldir.mkdir;
+for <tar rm shasum sha1sum openssl ln env> -> $t {
+    my $w = run 'sh', '-c', "command -v $t", :out, :err;
+    my $path = $w.out.slurp(:close).trim;
+    $w.err.slurp(:close);
+    run 'ln', '-s', $path, $tooldir.add($t).Str if $path && !$tooldir.add($t).e;
+}
+my $home4 = $tmp.add('home4');
+$home4.mkdir;
+my %env4 = HOME => $home4.Str, RAKUPP_INSTALL_INDEX => $tmp.add('index.json').Str,
+           PATH => $tooldir.Str;
+sub installer4(*@args) {
+    my $p = run 'env', |%env4.map({ "{.key}={.value}" }), $EXE, 'install', |@args, :out, :err;
+    my $out = $p.out.slurp(:close);
+    my $err = $p.err.slurp(:close);
+    { exit => (try $p.exitcode) // 1, out => $out, err => $err }
+}
+my %noraku = installer4('Gate::Demo');
+my $rlink = $home4.add('.raku/bin/raku');
+check %noraku<exit> == 0 && $rlink.e, 'raku-name: a raku-less machine gains the link';
+check %noraku<err>.contains('linked: '), 'raku-name: ...said out loud';
+my $bare = run 'env', "HOME={$home4}", "PATH={$home4.add('.raku/bin')}:{$tooldir}",
+               'RAKULIB=', 'gate-hello', :out, :err;
+check $bare.out.slurp(:close) eq 'gate-hello 0.4.2',
+      'raku-name: the command runs by bare name through the link';
+$bare.err.slurp(:close);
+my %chk4 = installer4('--check');
+check %chk4<exit> == 0 && %chk4<out>.contains('0 unreferenced'),
+      'raku-name: --check counts the link as infrastructure, not waste';
+my %again4 = installer4('--force', 'Gate::Demo');
+check %again4<exit> == 0 && !%again4<err>.contains('linked: '),
+      'raku-name: an existing link is left alone, silently';
+my $suite-has-raku = ?((%*ENV<PATH> // '').split(':').first({ $_ ne '' && .IO.add('raku').e }));
+check $suite-has-raku ?? !$home.add('.raku/bin/raku').e !! True,
+      'raku-name: a machine that answers to raku keeps its raku';
+
 # ---- the build hook, and `rakupp test` --------------------------------------
 # Gate::Built is the OpenSSL shape: Build.rakumod imports a build-dep from
 # the target store and generates a file its own suite requires. Driven
