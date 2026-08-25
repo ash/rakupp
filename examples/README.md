@@ -12,6 +12,10 @@ connection, or any setup — run one with:
 (from the repository root, after building — see the top-level [README](../README.md)).
 Every output shown below is what the program actually prints.
 
+Every program here is also a page at
+[raku.online/examples](https://raku.online/examples/) — the same source in a
+live editor that runs in the browser, with its full captured output beneath.
+
 | File | What it shows | Feature focus |
 |------|---------------|---------------|
 | **Graphics & fractals** | | |

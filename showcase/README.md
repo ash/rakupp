@@ -1,7 +1,9 @@
 # Raku++ showcases
 
 Mid-size programs that each stress a different part of Raku++, chosen so that
-together they answer "what can it actually build?"
+together they answer "what can it actually build?" Each project is also a page
+at [raku.online/showcase](https://raku.online/showcase/), rendered from its
+README below.
 
 | Project | Axis it showcases | How you run it |
 |---|---|---|

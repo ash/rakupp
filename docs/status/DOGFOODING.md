@@ -32,8 +32,8 @@ over a web server that is itself a Raku program.
 
 | Tool | What it does | Run as |
 |---|---|---|
-| `sites/{tour,spec,faq,book,ecosystem}/build.raku` plus `sites/spec/rules.raku`, in the separate [ash/raku.online](https://github.com/ash/raku.online) repo | ~5,600 lines of Raku that turn the sources into the whole of raku.online: page shells, navigation, search indexes, syntax highlighting, the coverage meters. `./build.sh` drives them all. | `rakupp build.raku --clean` |
-| The same generators with `--verify --oracle=raku` | Runs every documented example through **both** engines and fails the build when they disagree, so no page can claim output the interpreter does not produce. | `rakupp build.raku --verify --oracle=raku` |
+| `sites/{tour,spec,grid,faq,book,ecosystem,examples,showcase}/build.raku` plus `sites/spec/rules.raku`, in the separate [ash/raku.online](https://github.com/ash/raku.online) repo | ~7,800 lines of Raku that turn the sources into the whole of raku.online: page shells, navigation, search indexes, syntax highlighting, the coverage meters, the example gallery, the showcase. `./build.sh` drives them all. | `rakupp build.raku --clean` |
+| The same generators with `--verify --oracle=raku` | Runs every documented example through **both** engines and fails the build when they disagree, so no page can claim output the interpreter does not produce. The example gallery's `--capture --oracle=raku` is the same discipline for whole programs: every `examples/*.raku` is executed and its output must match Rakudo's byte for byte. | `rakupp build.raku --verify --oracle=raku` |
 | [`showcase/rakus/rakus.raku`](../../showcase/rakus) | The static HTTP server the built site is previewed on before it is published — raw `IO::Socket::INET`, a thread per connection, correct `application/wasm` so the browser can stream-compile the engine. Published to the ecosystem as `App::Rakus`. | `rakupp showcase/rakus/rakus.raku 8973 www` |
 
 `rakus` is the *preview* server, not the production one: the generated `www/`

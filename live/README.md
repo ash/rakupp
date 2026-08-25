@@ -1,7 +1,8 @@
 # live — software that already existed
 
 Whole tools from the Raku ecosystem, run under Raku++ exactly as their authors
-wrote them.
+wrote them. These pages are also browsable at
+[raku.online/live](https://raku.online/live/).
 
 **The tools are other people's work, and they are not copied into this
 repository.** Each is a published distribution, installed from the ecosystem
