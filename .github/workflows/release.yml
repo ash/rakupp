@@ -402,6 +402,17 @@ jobs:
       - name: Build Raku.js (WebAssembly)
         run: rakujs/build.sh
 
+      # The wasm build is single-threaded, so anything the engine hands to a
+      # thread fails there and only there — the grammar memo reaper did, and
+      # every native gate stayed green while the playground aborted on every
+      # non-trivial parse. A second build (same flags, `node` added to
+      # -sENVIRONMENT so Node can load the glue) runs the showcase interpreters
+      # the playground ships. The shipped pair above stays browser-only.
+      - name: Smoke-test Raku.js under Node
+        run: |
+          RAKUJS_ENV=node,web,worker RAKUJS_OUT=/tmp/rakujs-node rakujs/build.sh
+          node --stack-size=6000 rakujs/smoke.cjs /tmp/rakujs-node
+
       # The built pair is what raku.online's playground ships (www/rakujs.js +
       # rakujs.wasm). Uploading it lets the site-republish step of a release
       # `gh run download -n rakujs-wasm` instead of installing emscripten and

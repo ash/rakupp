@@ -26,6 +26,7 @@ bool rakupp::ltmModeOn() {
 #include <algorithm>
 #include <cctype>
 #include <set>
+#include <system_error>
 #include <thread>
 
 // Full case folding for :i matching (CaseFolding.txt F-entries, the common
@@ -3592,13 +3593,31 @@ void GrammarMatcher::reapMemo() {
         memo_.clear();
         return;
     }
+    // A host without threads cannot defer anything. The single-threaded
+    // WebAssembly build is the one that matters: there std::thread's
+    // constructor throws std::system_error, nothing here used to catch it, and
+    // the escape reached std::terminate — the playground showed a bare
+    // `Aborted()` for every parse whose memo passed the threshold above, which
+    // is every non-trivial grammar. Clear inline instead: the same work on the
+    // same thread, just not deferred.
+#if defined(__EMSCRIPTEN__) && !defined(__EMSCRIPTEN_PTHREADS__)
+    memo_.clear();
+    return;
+#else
     auto box = std::make_unique<std::unordered_map<uint64_t, MemoEntry>>(std::move(memo_));
     memo_.clear(); // moved-from state → guaranteed empty for the next parse
     inFlight.fetch_add(1, std::memory_order_relaxed);
-    std::thread([b = std::move(box)]() mutable {
-        b.reset();
+    try {
+        std::thread([b = std::move(box)]() mutable {
+            b.reset();
+            inFlight.fetch_sub(1, std::memory_order_relaxed);
+        }).detach();
+    } catch (const std::system_error&) {
+        // The thread never started, so the lambda (and the memo it owned) is
+        // already gone with the failed construction; only the counter is ours.
         inFlight.fetch_sub(1, std::memory_order_relaxed);
-    }).detach();
+    }
+#endif
 }
 
 bool GrammarMatcher::parse(const std::string& input, const std::string& top, bool subparse,

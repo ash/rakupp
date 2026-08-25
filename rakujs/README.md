@@ -261,7 +261,17 @@ and a fresh worker + module instance is ready in tens of ms after the one-time
 - **`start` / `Promise` concurrency** relies on real threads; it isn't available
   in this single-threaded build (a threaded build needs cross-origin-isolation
   COOP/COEP headers, awkward for static hosting). Ordinary course examples don't
-  need it.
+  need it. The same goes for threads the engine takes on its own behalf: a
+  `std::thread` that cannot start throws, and an escape reaches `std::terminate`,
+  which the page sees as a bare `Aborted()`. The grammar memo reaper did exactly
+  that — every parse past its threshold, so every showcase interpreter, died in
+  the browser while every native gate stayed green. `rakujs/smoke.cjs` runs those
+  interpreters through a Node-loadable build so the next one is caught here:
+
+  ```sh
+  RAKUJS_ENV=node,web,worker RAKUJS_OUT=/tmp/rakujs-node rakujs/build.sh
+  node --stack-size=6000 rakujs/smoke.cjs /tmp/rakujs-node
+  ```
 - **Sockets** (the pastebin showcase) don't work in the browser sandbox.
 - **`--compile` / native codegen** is irrelevant here — this ships the
   interpreter (`EVAL`), not the C++ transpiler.
