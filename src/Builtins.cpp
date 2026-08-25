@@ -8151,15 +8151,42 @@ void Interpreter::registerBuiltins() {
     B["mkdir"] = [](Interpreter&, ValueList& a) -> Value {
         if (a.empty()) return Value::boolean(false);
         std::string path = a[0].toStr();
-        // mkdir -p: create parent dirs as needed
+        long long mode = 0777;   // mkdir($path, 0o700) — the sub's positional mode
+        for (size_t i = 1; i < a.size(); i++) {
+            if (a[i].t == VT::Pair && a[i].namedArg && a[i].s == "mode" && a[i].pairVal()) mode = a[i].pairVal()->toInt();
+            else if (a[i].t == VT::Int) mode = a[i].toInt();
+        }
+        // mkdir -p, but HONEST about the outcome — the mirror of the method
+        // arm in MethodCallPart3.cpp, which tells the story (issue #26): the
+        // old form swallowed every error and answered success. Success is the
+        // IO::Path (as Rakudo answers, not the Str this used to hand back);
+        // failure is the soft X::IO::Mkdir Failure that detonates when sunk.
         std::string acc;
+        int err = 0;
         for (size_t i = 0; i <= path.size(); i++) {
             if (i == path.size() || path[i] == '/') {
-                if (!acc.empty()) ::mkdir(acc.c_str(), 0777);
+                if (!acc.empty() && ::mkdir(acc.c_str(), (int)mode) != 0 && errno != EEXIST) {
+                    err = errno;
+                    break;
+                }
                 if (i < path.size()) acc += '/';
             } else acc += path[i];
         }
-        return Value::str(path);
+        struct stat st;
+        bool isDir = false;
+        if (::stat(path.c_str(), &st) == 0) isDir = S_ISDIR(st.st_mode);
+        else if (!err) err = errno;
+        if (!isDir) {
+            if (!err) err = EEXIST;   // the path exists, and is not a directory
+            char ob[24]; snprintf(ob, sizeof ob, "0o%llo", (unsigned long long)mode);
+            Value f = Value::makeHash(); f.hashKind = "Failure";
+            (*f.hash())["exception"] = Value::typeObj("X::IO::Mkdir");
+            (*f.hash())["message"] = Value::str(
+                "Failed to create directory '" + path + "' with mode '" + std::string(ob) +
+                "': Failed to mkdir: " + std::strerror(err));
+            return f;
+        }
+        Value p = Value::str(path); p.hashKind = "IO"; return p;
     };
     B["rmdir"] = [](Interpreter&, ValueList& a) -> Value {
         if (a.empty()) return Value::boolean(false);

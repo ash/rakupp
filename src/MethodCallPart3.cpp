@@ -1017,14 +1017,44 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         char buf[8]; snprintf(buf, sizeof buf, "0%03o", st.st_mode & 07777);
         return Value::str(buf);
     }
-    if (m == "mkdir") { // $path.IO.mkdir(:parent) — create the directory (and parents)
+    if (m == "mkdir") { // $path.IO.mkdir($mode) / (:$mode) — create the directory and parents
         std::string path = inv.toStr();
+        long long mode = 0777;
+        for (auto& a : args) {
+            if (a.t == VT::Pair && a.namedArg && a.s == "mode" && a.pairVal()) mode = a.pairVal()->toInt();
+            else if (a.t == VT::Int) mode = a.toInt();
+        }
+        // mkdir -p, but HONEST about the outcome — this arm used to swallow
+        // every error and answer success, so issue #26's repro sailed past a
+        // mkdir Rakudo dies on. Parents are created as needed; the answer is
+        // the IO::Path only if the directory EXISTS at the end. Anything else
+        // is Rakudo's soft Failure — X::IO::Mkdir, detonating when sunk or
+        // used — naming the requested path, the mode, and the OS's words. An
+        // already-existing directory is success; an existing FILE is not.
         std::string acc;
+        int err = 0;
         for (size_t i = 0; i <= path.size(); i++) {
             if (i == path.size() || path[i] == '/') {
-                if (!acc.empty()) ::mkdir(acc.c_str(), 0777);
+                if (!acc.empty() && ::mkdir(acc.c_str(), (int)mode) != 0 && errno != EEXIST) {
+                    err = errno;
+                    break;
+                }
                 if (i < path.size()) acc += '/';
             } else acc += path[i];
+        }
+        struct stat st;
+        bool isDir = false;
+        if (::stat(path.c_str(), &st) == 0) isDir = S_ISDIR(st.st_mode);
+        else if (!err) err = errno;
+        if (!isDir) {
+            if (!err) err = EEXIST;   // the path exists, and is not a directory
+            char ob[24]; snprintf(ob, sizeof ob, "0o%llo", (unsigned long long)mode);
+            Value f = Value::makeHash(); f.hashKind = "Failure";
+            (*f.hash())["exception"] = Value::typeObj("X::IO::Mkdir");
+            (*f.hash())["message"] = Value::str(
+                "Failed to create directory '" + path + "' with mode '" + std::string(ob) +
+                "': Failed to mkdir: " + std::strerror(err));
+            return f;
         }
         Value p = Value::str(path); p.hashKind = "IO"; return p;
     }
