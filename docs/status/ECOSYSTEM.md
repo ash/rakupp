@@ -13,10 +13,12 @@ to WebAssembly; the two sites embed that WebAssembly; the Homebrew tap and the
 GitHub Release distribute the native binary; the corpus is test input run against
 it. There is one implementation behind every surface.
 
-One piece points the other way. Every project below consumes the interpreter;
+Two pieces point the other way. Every project below consumes the interpreter;
 **raku-eye measures it** — weekly, unattended — and hands back a ranked list of
-what to fix. Its design and rules live in
-[dev/plans/RAKU-EYE-PLAN.md](../dev/plans/RAKU-EYE-PLAN.md).
+what to fix (its design and rules live in
+[dev/plans/RAKU-EYE-PLAN.md](../dev/plans/RAKU-EYE-PLAN.md)), while
+**Rakugrid interrogates it**, asking a different question from Roast's: not
+whether this is Raku, but whether it survives contact with real programs.
 
 | Project | What it is | Repository | Serves |
 |---|---|---|---|
@@ -26,8 +28,8 @@ what to fix. Its design and rules live in
 | **spec** (was `raku-spec`) | The behavioural spec: one page per feature, every example runnable live (via raku.online's engine). Its generator is written in Raku and run *by* rakupp. | [ash/raku.online `sites/spec`](https://github.com/ash/raku.online/tree/main/sites/spec) | [raku.online/spec](https://raku.online/spec/) |
 | **tour** (was `raku-tour`) | "A Tour of Raku": 18 interactive lessons, every example a live editor (raku.online's engine) with output verified against the interpreter. Same generator pattern as the spec. | [ash/raku.online `sites/tour`](https://github.com/ash/raku.online/tree/main/sites/tour) | [raku.online/tour](https://raku.online/tour/) |
 | **drills** | Raku Drills: 150 graded practice questions, A1 to C2 — multiple choice, true/false, type-the-answer and fill-the-gap, the `fill` ones checked by running the finished program in the browser. Hand-maintained JS + a question bank, not generated. | [ash/raku.online `www/drills`](https://github.com/ash/raku.online/tree/main/www/drills) | [raku.online/drills](https://raku.online/drills/) |
-| **duo** | A bilingual reader for [The Complete Course of the Raku Programming Language](https://course.raku.org) — any two of eleven languages side by side, paragraph opposite paragraph, plus word lookup, vocabulary drills and read-aloud. Its generator is written in Raku and run *by* rakupp; it embeds no engine. | [ash/duo.raku.online](https://github.com/ash/duo.raku.online) | [duo.raku.online](https://duo.raku.online/) |
 | **raku-corpus** | Real-world Raku programs used as a beyond-Roast differential test target. | [ash/raku-corpus](https://github.com/ash/raku-corpus) | — (test input) |
+| **Rakugrid** | An engine-neutral behavioural suite for the *language*, organised as a grid: atoms (one construct, one behaviour) and molecules (constructs in combination) over eight orthogonal facet axes, mostly machine-generated. Rakudo is the **oracle, not the arbiter** — every test stores what Rakudo did next to what we assert, and a divergence without a signed ruling fails the build. Runs under any implementation and tests any implementation; its generators run on rakupp. | [ash/rakugrid](https://github.com/ash/rakugrid) | — (test input + a divergence ledger) |
 | **raku-eye** | The standing watch: a weekly, unattended GitHub Actions run that measures `main` against fresh Weekly Challenge solutions, new ecosystem releases and the corpus, benchmarks it against the latest Rakudo release, and publishes the result. Measures only — it never edits the compiler, and there is no AI in it. | [ash/raku-eye](https://github.com/ash/raku-eye) | [eye.raku.online](https://eye.raku.online/) |
 | **Homebrew tap** | The `ash/rakupp` tap — `brew install rakupp`. Apple Silicon gets the prebuilt release binary; Linux/Intel build from the source tarball; `--HEAD` builds from `main`. | [ash/homebrew-rakupp](https://github.com/ash/homebrew-rakupp) | `brew install rakupp` |
 
@@ -42,8 +44,8 @@ graph TD
     SPEC["raku.online/spec<br/>feature spec, live examples"]
     TOUR["raku.online/tour<br/>interactive lessons"]
     DRILLS["raku.online/drills<br/>150 practice questions"]
-    DUO["duo.raku.online<br/>bilingual course reader"]
     CORPUS["raku-corpus<br/>real-world programs"]
+    GRID["Rakugrid<br/>atoms + molecules<br/>oracle vs expect"]
     EYE["raku-eye<br/>weekly measurement<br/>eye.raku.online"]
     PWC["Weekly Challenge<br/>+ REA releases"]
     BREW["Homebrew tap<br/>ash/rakupp"]
@@ -55,9 +57,11 @@ graph TD
     ONLINE -->|raku.js engine<br/>embedded cross-origin| SPEC
     ONLINE -->|raku.js engine<br/>embedded cross-origin| TOUR
     ONLINE -->|same-origin rakujs.js<br/>own worker| DRILLS
-    NATIVE -->|rakupp build.raku<br/>over the course sources| DUO
     NATIVE -->|rakupp build.raku<br/>--verify generator| SPEC
     NATIVE -->|differential run| CORPUS
+    NATIVE -->|gen/*.raku run BY rakupp| GRID
+    GRID -->|rakugrid fire --engine=| NATIVE
+    GRID -.->|divergence clusters<br/>+ unsigned rulings| SRC
     SRC -->|tag → release.yml CI| REL
     NATIVE -->|rakupp build.raku<br/>--verify generator| TOUR
     REL -->|bump url + sha256| BREW
@@ -79,10 +83,7 @@ Two things are worth internalising because they drive the release runbook:
   `/rakujs.js` — all of it the one `rakujs.{js,wasm}`. So **every sub-site
   automatically inherits a new interpreter the moment raku.online is
   redeployed** — updating them is then only about the *content* (new feature
-  pages, lessons, questions), not the engine. `duo.raku.online` is the
-  exception in the other direction: it runs no Raku in the browser at all,
-  but rakupp builds it, so it is the interpreter's own generator that has to
-  keep working.
+  pages, lessons, questions), not the engine.
 - **raku-eye reads this repo's `main`, including its tools.** The Monday run
   builds `main` and then drives `tools/pwc-sweep.raku`, `tools/run-bench.raku`
   and `tools/eco-fresh/` *from that same checkout* — the tools are also tests.
@@ -104,7 +105,8 @@ Two things are worth internalising because they drive the release runbook:
 ## Release runbook — what to rebuild after a new version
 
 Do these in order. Steps A–B are required for every release; C is required
-whenever the release adds or changes user-visible behaviour; D is a safety net.
+whenever the release adds or changes user-visible behaviour; D and E are the
+measurement pass — D is a safety net, E is the one that leaves a record.
 
 ### A. Cut the release (in this repo)
 
@@ -264,17 +266,6 @@ and data into a separate `?v=` tag (they change independently of the engine),
 so **editing the bank without re-running `./build.sh` leaves returning visitors
 on the cached old questions**. Commit `www/` and push, as ever.
 
-**duo.raku.online** is the odd one out and is released on its own clock: it
-ships no engine, runs no Raku in the browser, and reads its content from the
-[raku-course](https://github.com/ash/raku-course) checkout rather than from
-this repo. What ties it to a release is that **rakupp itself is its generator**
-— `./build.sh` in the `duo.raku.online` checkout runs `build.raku` under
-`RAKUPP`, and `./build.sh --check` reports every page whose translation has
-drifted out of block-for-block alignment. Rebuilding it after a release is
-therefore a test of the new binary on a real 1,530-page workload, not a deploy
-step; publish (commit `www/`, push — its own Pages workflow) only when the
-output actually changed.
-
 ### D. Differential-check against raku-corpus
 
 Optional but recommended: run the new binary over
@@ -295,6 +286,56 @@ gh workflow run weekly --repo ash/raku-eye
 That is a measurement, not a publish decision: the Eye records the number that
 came out, so a bad week appears in the ledger either way.
 
+### E. Fire Rakugrid and record the point
+
+[Rakugrid](https://github.com/ash/rakugrid) asks the question Roast does not:
+Roast tells you whether an implementation *is* Raku; Rakugrid tells you whether
+it survives contact with real programs. It exists because Raku++ passed the
+large majority of Roast's assertions and still could not run ordinary programs
+without hitting hundreds of bugs — every test in it records the bug, corpus
+program, module or documented rule it came from.
+
+Two facts about it drive how a release uses it:
+
+- **Rakudo is the oracle, not the arbiter.** Each test stores what Rakudo
+  actually did (`oracle:`) next to what we assert (`expect:`). Usually they
+  agree. Where they do not, the test carries a signed ruling with a rationale
+  and a date, and **a divergence without one fails the build** — so `rakugrid
+  check` is the gate, not `fire`'s pass count. Divergence from Rakudo is always
+  available here; it is never silent.
+- **The generators run on rakupp.** Every `.grid` file in the repository was
+  produced by the interpreter this repo builds, so regenerating is itself a
+  test of the new binary — on a workload that is nothing like Roast.
+
+From the Rakugrid checkout (`/Users/ash/rakugrid`):
+
+```sh
+rakupp bin/rakugrid stats                                   # atoms / tests / rulings
+rakupp bin/rakugrid fire --engine=/path/to/new/rakupp       # TAP; last line is the counts
+rakupp bin/rakugrid check                                   # no unsigned divergences
+rakupp bin/rakugrid diverge                                 # where the engines disagree, clustered
+```
+
+Then **append one row** to [dev/rakugrid-history.tsv](../dev/rakugrid-history.tsv)
+in this repo — `date, commit, ran, failed, parked, roast_pass, roast_files,
+note`, one tab between each, appended and never rewritten. Read its header
+before adding a point; the two traps it records are worth repeating:
+
+- `ran` and `parked` move only when Rakugrid itself grows or a ruling is
+  signed, so a drop in `failed` **between two rows with the same `ran`** is
+  engine progress and nothing else. When `ran` changes, the rows either side
+  are **not comparable** — start a fresh comparison rather than drawing a line
+  across the step.
+- the `roast_pass` column carries real timeout noise (up to ~1,400 assertions
+  in a single run, since one file is 2,282 assertions on its own). Treat
+  anything inside a ~40-assertion band as unchanged and gate on the **per-file**
+  diff, not on that column.
+
+The file's header calls itself the series behind a spec dashboard chart; that
+chart is **not wired yet** — nothing under `raku.online` reads the TSV today.
+Keep appending anyway: the series is the point, and the rows have to exist
+before anything can plot them.
+
 ---
 
 ## Quick reference
@@ -307,9 +348,10 @@ came out, so a bad week appears in the ledger either way.
 | a feature's support level or a new feature | write/update its spec page and redeploy the spec (**C**) |
 | a tour lesson | `./build.sh tour` in the raku.online checkout, commit `www/`, push (**C**) |
 | a drills question | edit `www/drills/data/drills.js` in the raku.online checkout, re-run `./build.sh` so the drills' `?v=` tag moves, commit `www/`, push (**C**) |
-| the duo reader or the course sources behind it | `./build.sh` in the `duo.raku.online` checkout (rakupp is the generator), `./build.sh --check` for block alignment, commit `www/`, push (**C**) |
 | stat numbers (Roast) | refresh the docs per the doc-sync checklist (**A.4**) |
 | a sweep tool (`tools/pwc-sweep.raku`, `tools/run-bench.raku`, `tools/eco-fresh/`) | push it to `main` before the next Monday — raku-eye runs the tools from `main`, so an unpushed change is a failed run (**D**) |
+| the interpreter, and you want the behavioural delta rather than a pass count | fire Rakugrid against the new binary, `rakugrid check` for unsigned divergences, append one row to [dev/rakugrid-history.tsv](../dev/rakugrid-history.tsv) (**E**) |
+| a Rakugrid atom, generator or ruling | regenerate with rakupp in the rakugrid checkout, commit there; the next `ran` step makes the history rows either side non-comparable (**E**) |
 | anything, and you want to know what it broke in the wild | read [eye.raku.online](https://eye.raku.online/) — the week's regressions and the ranked mismatch clusters are the fix-session worklist (**D**) |
 | the interpreter, at release time | re-run both benchmark harnesses and update BENCHMARKS.md — every release, not just when a kernel looks moved (**A.5**) |
 | cut a new version tag | bump the three pins in the Homebrew formula once CI has published the assets (**A.7**); rebuild the tour so its lessons re-verify on the new binary (**C**); republish the site data (**[RELEASING.md](../dev/RELEASING.md) step 5**) |
