@@ -5039,8 +5039,10 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         for (auto& a : args) if (a.t != VT::Pair) { path = a.toStr(); break; }
         rejectNulPath(path);
         Value p = Value::str(path); p.hashKind = "IO";
-        // an explicit `:CWD` is the directory this path is relative to; it rides
-        // in ofType, which a path value has no other use for
+        // the `:CWD` is the directory this path is relative to; it rides in
+        // ofType, which a path value has no other use for. Captured from the
+        // current $*CWD by default (Rakudo's model); an explicit :CWD wins.
+        p.ofTypeM() = cwdName();
         for (auto& a : args)
             if (a.t == VT::Pair && a.s == "CWD" && a.pairVal()) p.ofTypeM() = a.pairVal()->toStr();
         return p;
@@ -5066,6 +5068,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             std::string path = args[0].toStr();
             rejectNulPath(path);
             Value p = Value::str(path); p.hashKind = "IO"; p.enumName = fl;
+            p.ofTypeM() = cwdName();
             return p;
         }
     }
@@ -7087,6 +7090,26 @@ Value rtBAsinh(Interpreter& I, const Value& v) { return rtBMath1(I, v, "asinh", 
 Value rtBAcosh(Interpreter& I, const Value& v) { return rtBMath1(I, v, "acosh", (double(*)(double))std::acosh); }
 Value rtBAtanh(Interpreter& I, const Value& v) { return rtBMath1(I, v, "atanh", (double(*)(double))std::atanh); }
 
+// The logical working-directory name after entering `p` from `base`: purely
+// textual, matching Rakudo's $*CWD — symlinks stay as the program spelled them
+// (the real chdir has already validated the target), `.` and `..` collapse.
+static std::string logicalJoin(const std::string& base, const std::string& p) {
+    std::string full = (!p.empty() && p[0] == '/') ? p : base + "/" + p;
+    std::vector<std::string> keep;
+    std::string cur;
+    auto flush = [&] {
+        if (cur.empty() || cur == ".") { cur.clear(); return; }
+        if (cur == "..") { if (!keep.empty()) keep.pop_back(); }
+        else keep.push_back(cur);
+        cur.clear();
+    };
+    for (char c : full) { if (c == '/') flush(); else cur += c; }
+    flush();
+    std::string out;
+    for (auto& s : keep) out += "/" + s;
+    return out.empty() ? "/" : out;
+}
+
 void Interpreter::registerBuiltins() {
     auto& B = builtins_;
 
@@ -8133,6 +8156,7 @@ void Interpreter::registerBuiltins() {
         std::string base = path;
         while (base.size() > 1 && base.back() == '/') base.pop_back();
         Value out = Value::array();
+        const std::string cw = I.cwdName(); // every entry is an IO::Path based here
         if (DIR* d = opendir(path.c_str())) {
             while (struct dirent* e = readdir(d)) {
                 std::string n = e->d_name;
@@ -8142,13 +8166,14 @@ void Interpreter::registerBuiltins() {
                 // and any `.d`/`.IO` on the result, need real IO::Path objects.
                 // The root dir already ends in '/' — dir("/") is "/.file", not "//.file".
                 Value p = Value::str(base + (base.back() == '/' ? "" : "/") + n); p.hashKind = "IO";
+                p.ofTypeM() = cw;
                 out.arr()->push_back(p);
             }
             closedir(d);
         }
         return out;
     };
-    B["mkdir"] = [](Interpreter&, ValueList& a) -> Value {
+    B["mkdir"] = [](Interpreter& I, ValueList& a) -> Value {
         if (a.empty()) return Value::boolean(false);
         std::string path = a[0].toStr();
         long long mode = 0777;   // mkdir($path, 0o700) — the sub's positional mode
@@ -8186,7 +8211,9 @@ void Interpreter::registerBuiltins() {
                 "': Failed to mkdir: " + std::strerror(err));
             return f;
         }
-        Value p = Value::str(path); p.hashKind = "IO"; return p;
+        Value p = Value::str(path); p.hashKind = "IO";
+        p.ofTypeM() = I.cwdName();
+        return p;
     };
     B["rmdir"] = [](Interpreter&, ValueList& a) -> Value {
         if (a.empty()) return Value::boolean(false);
@@ -8703,18 +8730,26 @@ void Interpreter::registerBuiltins() {
         for (auto& nv : named) ma.push_back(nv);
         return I.methodCall(list, "minmax", ma);
     };
-    B["chdir"] = [](Interpreter&, ValueList& a) -> Value {
+    B["chdir"] = [](Interpreter& I, ValueList& a) -> Value {
         if (a.empty()) throw RakuError{Value::typeObj("X::TypeCheck::Argument"),
             "Cannot call chdir without an argument"};
         if (a[0].toStr().find('\0') != std::string::npos)
             throw RakuError{Value::typeObj("X::IO::Null"),
                 "Cannot use null character (U+0000) as part of the path"};
-        if (::chdir(a[0].toStr().c_str()) != 0) {
+        std::string old = I.cwdName(); // the base BEFORE the switch
+        std::string to = a[0].toStr();
+        // a relative IO::Path argument is relative to ITS OWN captured :CWD
+        if (a[0].hashKind == "IO" && !a[0].ofType().empty() && !to.empty() && to[0] != '/')
+            to = logicalJoin(a[0].ofType(), to);
+        if (::chdir(to.c_str()) != 0) {
             Value f = Value::makeHash(); f.hashKind = "Failure";
             (*f.hash())["message"] = Value::str("Failed to change the working directory to '" + a[0].toStr() + "'");
             return f;
         }
-        Value p = Value::str(a[0].toStr()); p.hashKind = "IO"; return p; // IO::Path of the new cwd
+        I.logicalCwd_ = logicalJoin(old, to);
+        // Rakudo's answer is the new cwd as an absolute IO::Path, based where you were
+        Value p = Value::str(I.logicalCwd_); p.hashKind = "IO"; p.ofTypeM() = old;
+        return p;
     };
     // indir($path, &code) — run the block with the process directory changed,
     // then put it back however the block exits
@@ -8750,15 +8785,21 @@ void Interpreter::registerBuiltins() {
     B["indir"] = [](Interpreter& I, ValueList& a) -> Value {
         if (a.size() < 2) return Value::any();
         std::string to = a[0].toStr();
+        // a relative IO::Path argument is relative to ITS OWN captured :CWD
+        if (a[0].hashKind == "IO" && !a[0].ofType().empty() && !to.empty() && to[0] != '/')
+            to = logicalJoin(a[0].ofType(), to);
         char buf[4096];
         std::string from = getcwd(buf, sizeof buf) ? buf : ".";
+        std::string base = I.cwdName(), oldLogical = I.logicalCwd_;
         if (::chdir(to.c_str()) != 0)
             throw RakuError{Value::typeObj("X::IO::Chdir"),
                             "Failed to change the working directory to '" + to + "'"};
+        I.logicalCwd_ = logicalJoin(base, to); // $*CWD keeps the caller's spelling
         Value r;
         try { ValueList none; r = I.callCallable(a[1], none); }
-        catch (...) { ::chdir(from.c_str()); throw; }   // restore on ANY exit
+        catch (...) { ::chdir(from.c_str()); I.logicalCwd_ = oldLogical; throw; }   // restore on ANY exit
         ::chdir(from.c_str());
+        I.logicalCwd_ = oldLogical;
         return r;
     };
     // (loop-control escaping a dies-ok/lives-ok block is a death — see those below)

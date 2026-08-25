@@ -925,7 +925,9 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                             "No such method 'IO' for invocant of type '" +
                             (inv.t == VT::Type ? inv.s : std::string("Any")) + "'"};
         if (inv.t == VT::Nil) return Value::nil();
-        rejectNulPath(inv.toStr()); Value p = Value::str(inv.toStr()); p.hashKind = "IO"; return p;
+        rejectNulPath(inv.toStr()); Value p = Value::str(inv.toStr()); p.hashKind = "IO";
+        p.ofTypeM() = cwdName(); // :CWD captured at creation — the base `.absolute` resolves against
+        return p;
     }
     // `.slurp` belongs to IO::Path (IO::Handle has its own, below) — a Str is NOT
     // a path in Rakudo, `"file".slurp` is "no such method". rakupp accepted any
@@ -1056,7 +1058,9 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 "': Failed to mkdir: " + std::strerror(err));
             return f;
         }
-        Value p = Value::str(path); p.hashKind = "IO"; return p;
+        Value p = Value::str(path); p.hashKind = "IO";
+        if (!inv.ofType().empty()) p.ofTypeM() = inv.ofType(); // keep the invocant's :CWD
+        return p;
     }
     if (m == "unlink") { // $path.IO.unlink — remove the file; True on success
         return Value::boolean(::unlink(inv.toStr().c_str()) == 0);
@@ -1163,7 +1167,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         std::string p = inv.toStr();
         std::string base;
         for (auto& a : args) if (a.t != VT::Pair) { base = a.toStr(); break; }
-        if (base.empty()) { char buf[4096]; base = getcwd(buf, sizeof buf) ? buf : "."; }
+        if (base.empty()) base = cwdName(); // default base is the CALL-time $*CWD (not the path's :CWD)
         while (base.size() > 1 && base.back() == '/') base.pop_back();
         if (p == base) return Value::str(".");
         if (p.rfind(base + "/", 0) == 0) return Value::str(p.substr(base.size() + 1));
@@ -1200,7 +1204,11 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     }
     // ---- more IO::Path methods (operate on the path string) ----
     {
-        auto asIO = [](std::string s) { Value v = Value::str(s); v.hashKind = "IO"; return v; };
+        auto asIO = [&](std::string s) { // a derived path keeps its parent's :CWD
+            Value v = Value::str(s); v.hashKind = "IO";
+            if (!inv.ofType().empty()) v.ofTypeM() = inv.ofType();
+            return v;
+        };
         auto dirOf = [](const std::string& s) -> std::string {
             std::string t = s; while (t.size() > 1 && t.back() == '/') t.pop_back();
             auto p = t.find_last_of('/');
@@ -1225,6 +1233,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 Value r;
                 if (ioSpecMethod(*this, spec, "canonpath", sa, r)) {
                     Value p = Value::str(r.toStr()); p.hashKind = "IO"; p.enumName = inv.enumName;
+                    if (!inv.ofType().empty()) p.ofTypeM() = inv.ofType();
                     return p;
                 }
             }
@@ -1372,7 +1381,9 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             // macOS, where $*TMPDIR is /var/… and the kernel reports /private/var/….
             std::string s = inv.toStr();
             if (!s.empty() && s[0] != '/') {
-                char buf[4096]; if (getcwd(buf, sizeof buf)) s = std::string(buf) + "/" + s;
+                std::string base = inv.ofType().empty() ? cwdName() : inv.ofType();
+                while (base.size() > 1 && base.back() == '/') base.pop_back();
+                s = (base == "/" ? "" : base) + "/" + s;
             }
             std::vector<std::string> segs;
             { std::string cur;
@@ -1396,12 +1407,15 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         if (m == "absolute" || m == "canonpath" || m == "cleanup") {
             std::string s = inv.toStr();
             if (m == "absolute" && !s.empty() && s[0] != '/') {
-                // `.absolute($base)` resolves against $base rather than $*CWD
+                // `.absolute($base)` resolves against $base; otherwise against
+                // the path's own :CWD — captured at creation, as Rakudo does —
+                // not whatever the process directory happens to be at call time
                 std::string base;
                 if (!args.empty()) base = args[0].toStr();
-                if (base.empty()) { char buf[4096]; if (getcwd(buf, sizeof buf)) base = buf; }
-                if (!base.empty() && base.back() == '/') base.pop_back();
-                s = base + "/" + s;
+                if (base.empty()) base = inv.ofType();
+                if (base.empty()) base = cwdName();
+                while (base.size() > 1 && base.back() == '/') base.pop_back();
+                s = (base == "/" ? "" : base) + "/" + s;
             }
             if (m == "canonpath" || m == "cleanup") {
                 // squeeze repeated separators and drop `.` segments — but NOT
@@ -1425,8 +1439,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // the path's OS grammar and the directory it is resolved against
         if (m == "SPEC") return Value::typeObj("IO::Spec::" + (inv.enumName.empty() ? std::string("Unix") : inv.enumName.str()));
         if (m == "CWD") {
-            if (!inv.ofType().empty()) return Value::str(inv.ofType()); // an explicit :CWD
-            char buf[4096]; return Value::str(getcwd(buf, sizeof buf) ? buf : ".");
+            if (!inv.ofType().empty()) return Value::str(inv.ofType()); // the captured :CWD
+            return Value::str(cwdName());
         }
         if (m == "is-relative") return Value::boolean(inv.toStr().empty() || inv.toStr()[0] != '/');
         if (m == "contents" || m == "dir") {
@@ -1485,7 +1499,9 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     }
     if (m == "chmod" && inv.hashKind == "IO") { // $path.IO.chmod(0o644)
         ::chmod(inv.toStr().c_str(), (mode_t)(args.empty() ? 0 : args[0].toInt()));
-        Value p = Value::str(inv.toStr()); p.hashKind = "IO"; return p;
+        Value p = Value::str(inv.toStr()); p.hashKind = "IO";
+        if (!inv.ofType().empty()) p.ofTypeM() = inv.ofType();
+        return p;
     }
     if (m == "open") { // returns a buffered file handle
         Value h = Value::makeHash(); h.hashKind = "FileHandle";

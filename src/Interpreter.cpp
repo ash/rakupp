@@ -9773,8 +9773,14 @@ Value Interpreter::rakuIntrospection(bool compiler) {
     return r;
 }
 
+std::string Interpreter::cwdName() {
+    if (Value* p = findDynamicLenient("$*CWD")) return p->toStr();
+    if (!logicalCwd_.empty()) return logicalCwd_;
+    char buf[4096]; return getcwd(buf, sizeof buf) ? buf : ".";
+}
+
 Value Interpreter::dynVar(const std::string& name) {
-    if (name == "$*CWD") { char buf[4096]; Value p = Value::str(getcwd(buf, sizeof buf) ? buf : "."); p.hashKind = "IO"; return p; }
+    if (name == "$*CWD") { Value p = Value::str(cwdName()); p.hashKind = "IO"; return p; }
     // IntStr allomorphs like Rakudo's: numeric face = uid/gid, string face =
     // the account/group name (falls back to the bare number when the id has
     // no passwd/group entry — containers do that).
@@ -23846,7 +23852,7 @@ Value Interpreter::eval(Expr* e) {
                 builtinDefault = false;
             if (builtinDefault) {
             if (ve->name == "$=pod" || ve->name == "@=pod") { Value a = Value::array(); *a.arr() = podDom_; return a; }
-            if (ve->name == "$*CWD") { char buf[4096]; Value p = Value::str(getcwd(buf, sizeof buf) ? buf : "."); p.hashKind = "IO"; return p; }
+            if (ve->name == "$*CWD") { Value p = Value::str(cwdName()); p.hashKind = "IO"; return p; }
             if (ve->name == "$*RAKU" || ve->name == "$*PERL" || ve->name == "$?RAKU" || ve->name == "$?PERL")
                 return rakuIntrospection(false);
             if (ve->name == "$*PROGRAM") { Value p = Value::str(srcFile_); p.hashKind = "IO"; return p; } // running script, as IO::Path

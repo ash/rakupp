@@ -750,6 +750,13 @@ public:
     // resolvable before the ordering fix became unreachable. Reads AND writes
     // go through this one resolver.
     static Value* findDynamicLenient(const std::string& name);
+    // The working directory as the program sees it: an active `my $*CWD`
+    // binding wins, then the logical name chdir/indir maintain (symlinks stay
+    // as spelled, `..` collapses textually — Rakudo's model), then the
+    // kernel's getcwd. IO::Path creation captures this into the path's :CWD
+    // (Value.ofType), which `.absolute` resolves against.
+    std::string cwdName();
+    std::string logicalCwd_; // chdir/indir's logical cwd; empty = getcwd rules
     bool attrWhereOk(const void* whereExpr, const Value& v); // `has $.x where {…}` constraint
     bool mainNamedAnywhere(); // %*SUB-MAIN-OPTS<named-anywhere> in force at MAIN dispatch (used by codegen)
     // The MAIN command-line protocol (pairing, scoring, usage/--help), shared by
