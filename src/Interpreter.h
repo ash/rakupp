@@ -535,6 +535,7 @@ struct ExecContext {
     // MethodCall lvalue arm so the assignment can enforce it (a role-typed
     // `has C $.x is rw` must reject 42/Mu; roast S14-roles/basic.t)
     std::string lastLvalueAttrType;
+    const void* lastLvalueAttrWhere = nullptr; // the attr's `where {…}` Expr, checked beside the type
 };
 
 // Backs a lazy list (an infinite `… … *` sequence, or `.map` over one). The Value
@@ -740,6 +741,16 @@ public:
     Value dynVar(const std::string& name);
     Value rakuIntrospection(bool compiler); // $*RAKU / $*RAKU.compiler // $* / $? magical variables (used by codegen)
     Value& dynVarRef(const std::string& name); // assignable dynamic-var slot (used by codegen)
+    // $*var resolution in PROPER dynamic order: the current frame's own
+    // declaration first (its env chain up to the enclosing routine activation,
+    // inclusive), then each caller frame innermost-out with the same bound.
+    // Static like tctx_ itself — everything they consult is thread-local.
+    static Value* findDynamicSlot(const std::string& name);
+    // …then the historical lenient fallbacks (full closure chains), so nothing
+    // resolvable before the ordering fix became unreachable. Reads AND writes
+    // go through this one resolver.
+    static Value* findDynamicLenient(const std::string& name);
+    bool attrWhereOk(const void* whereExpr, const Value& v); // `has $.x where {…}` constraint
     bool mainNamedAnywhere(); // %*SUB-MAIN-OPTS<named-anywhere> in force at MAIN dispatch (used by codegen)
     // The MAIN command-line protocol (pairing, scoring, usage/--help), shared by
     // the interpreter's auto-invoke and compiled binaries. -1 = matched (margs

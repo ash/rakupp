@@ -15,6 +15,27 @@
 // std::optional lets every arm keep its original `return X;` verbatim, so a
 // `return` inside a nested lambda still means what it always did. nullopt =
 // "not handled here".
+
+// A submethod's DISCARDED result is in SINK context: an unhandled FAILURE
+// returned from BUILD/TWEAK detonates, throwing its own exception. That is
+// how `submethod TWEAK { $!Etype = self.etype($!Etype) }` surfaces
+// EType(300)'s X::Enum::NoValue under Rakudo — the Failure sails through the
+// assignment and the return typecheck, and dies only here.
+static void sinkBuildResult(const rakupp::Value& r) {
+    using namespace rakupp;
+    if (r.t == VT::Hash && r.hashKind == "Failure") {
+        Value ex = Value::typeObj("X::AdHoc");
+        std::string msg = "Failed";
+        if (r.hash()) {
+            auto eit = r.hash()->find("exception");
+            if (eit != r.hash()->end()) ex = eit->second;
+            auto mit = r.hash()->find("message");
+            if (mit != r.hash()->end()) msg = mit->second.toStr();
+        }
+        throw RakuError{ex, msg};
+    }
+}
+
 namespace rakupp {
 
 // An attribute's .type carries the CONTAINER shape, as in Rakudo:
@@ -2358,8 +2379,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         std::string type; long long off = Interpreter::ncFieldOffset(ci.get(), arg.s, type);
                         if (off >= 0) Interpreter::ncWriteElem((long long)(intptr_t)mem + off, type, 0, *arg.pairVal());
                     }
-                    if (Value* build = ci->findMethod("BUILD")) invokeMethod(*build, self, args);
-                    if (Value* tweak = ci->findMethod("TWEAK")) invokeMethod(*tweak, self, args);
+                    if (Value* build = ci->findMethod("BUILD")) sinkBuildResult(invokeMethod(*build, self, args));
+                    if (Value* tweak = ci->findMethod("TWEAK")) sinkBuildResult(invokeMethod(*tweak, self, args));
                     maybeRegisterDestroy(self);
                     return self;
                 }
@@ -2376,8 +2397,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     od->cls = ci; od->hasBoxed = true;
                     od->boxed = methodCall(Value::typeObj(nb), "new", args);
                     Value self = Value::object(od);
-                    if (Value* build = ci->findMethod("BUILD")) invokeMethod(*build, self, args);
-                    if (Value* tweak = ci->findMethod("TWEAK")) invokeMethod(*tweak, self, args);
+                    if (Value* build = ci->findMethod("BUILD")) sinkBuildResult(invokeMethod(*build, self, args));
+                    if (Value* tweak = ci->findMethod("TWEAK")) sinkBuildResult(invokeMethod(*tweak, self, args));
                     maybeRegisterDestroy(self);
                     return self;
                 }
@@ -2394,8 +2415,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                                 od->attrs[arg.s] = arg.pairVal() ? *arg.pairVal() : Value::any();
                         }
                     Value self = Value::object(od);
-                    if (Value* build = ci->findMethod("BUILD")) invokeMethod(*build, self, args);
-                    if (Value* tweak = ci->findMethod("TWEAK")) invokeMethod(*tweak, self, args); // post-BUILD hook
+                    if (Value* build = ci->findMethod("BUILD")) sinkBuildResult(invokeMethod(*build, self, args));
+                    if (Value* tweak = ci->findMethod("TWEAK")) sinkBuildResult(invokeMethod(*tweak, self, args)); // post-BUILD hook
                     maybeRegisterDestroy(self);
                     return self;
                 }
@@ -2427,8 +2448,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     }
                     od->boxed = methodCall(Value::typeObj(nb), "new", builtinArgs);
                     Value self = Value::object(od);
-                    if (Value* build = ci->findMethod("BUILD")) invokeMethod(*build, self, args);
-                    if (Value* tweak = ci->findMethod("TWEAK")) invokeMethod(*tweak, self, args);
+                    if (Value* build = ci->findMethod("BUILD")) sinkBuildResult(invokeMethod(*build, self, args));
+                    if (Value* tweak = ci->findMethod("TWEAK")) sinkBuildResult(invokeMethod(*tweak, self, args));
                     maybeRegisterDestroy(self);
                     return self;
                 }
@@ -2444,6 +2465,27 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 } envRestore{*this, savedDenv};
                 std::vector<ClassInfo*> chain;
                 for (ClassInfo* c = ci.get(); c; c = c->parent.get()) chain.push_back(c);
+                // Named args bind DURING the walk, not after it — Rakudo's
+                // BUILDALL takes the caller's value for an attribute when one
+                // was passed and only otherwise runs the default, so a LATER
+                // default that reads an earlier attribute sees the constructed
+                // value (`has Code:D $.converter = get-converter($!type)` in
+                // Getopt::Long read the declared Str, never the Int passed).
+                std::map<std::string, const Value*> providedArgs;
+                for (auto& arg : args)
+                    if (arg.t == VT::Pair) {
+                        const ClassAttr* pat = ci->findAttr(arg.s);
+                        if (pat && (pat->pub || pat->built))
+                            providedArgs[arg.s] = arg.pairVal();
+                    }
+                // `has Digest $.digest` beside `has &!digest`: same bare name,
+                // different sigils. attrs is keyed by bare name, so the twins
+                // clobbered each other (Auth::SCRAM's callable ended up holding
+                // the enum). A non-$ twin stores under "&name"/"@name"/"%name";
+                // the read/write paths try that spelling first.
+                std::map<std::string, std::set<char>> nameSigils;
+                for (ClassInfo* c = ci.get(); c; c = c->parent.get())
+                    for (auto& at : c->attrs) nameSigils[at.name].insert(at.sigil);
                 for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
                     // each level's defaults close over ITS declaration scope
                     // (class-body constants/lexicals — `constant %Glyphs` in
@@ -2454,6 +2496,18 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     denv->define("self", selfEarly);
                     tctx_.cur = denv;
                     for (auto& at : (*it)->attrs) {
+                        // storage slot: bare name, unless a same-named twin of
+                        // another sigil exists — then the non-$ one keys by
+                        // "&name"/"@name"/"%name"
+                        std::string slot = at.name;
+                        if (at.sigil != '$' && nameSigils[at.name].size() > 1)
+                            slot = std::string(1, at.sigil) + at.name;
+                        auto pit = providedArgs.find(at.name);
+                        if (pit != providedArgs.end() && slot == at.name) {
+                            od->attrs[slot] = coerceToSigil(
+                                pit->second ? *pit->second : Value::any(), at.sigil);
+                            continue;
+                        }
                         // The value the slot holds when it has no explicit default.
                         // A native-typed scalar takes its zero (`has atomicint $.n`
                         // starts at 0); a named type takes its TYPE OBJECT (not Any),
@@ -2489,7 +2543,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         }
                         // Pre-seed the slot so a self-referential default (`.= new`,
                         // or one reading $!this-attr) sees the seed, not an unset Any.
-                        od->attrs[at.name] = seed;
+                        od->attrs[slot] = seed;
                         Value dv = at.hasDefVal ? at.defVal
                                  : at.def ? eval(const_cast<Expr*>(at.def))
                                           : seed;
@@ -2502,7 +2556,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         // the sigil would turn the object straight back into the
                         // plain Hash it was declared not to be.
                         if (!userContainer) dv = coerceToSigil(dv, at.sigil);
-                        od->attrs[at.name] = dv;
+                        od->attrs[slot] = dv;
                     }
                 }
                 tctx_.cur = savedDenv;
@@ -2576,11 +2630,24 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                                         (at.defConstraint == 1 ? ":D but got " : ":U but got ") +
                                         cur.typeName());
                     }
+                // `where {…}` attribute constraints hold at construction too:
+                // a DEFINED slot value (arg-provided or defaulted) must satisfy
+                // its attr's constraint (Date::Event's lat/lon bounds)
+                for (auto cit = chain.rbegin(); cit != chain.rend(); ++cit)
+                    for (auto& at : (*cit)->attrs) {
+                        if (!at.where) continue;
+                        auto wit = od->attrs.find(at.name);
+                        if (wit == od->attrs.end() || !defined(wit->second)) continue;
+                        if (!attrWhereOk(at.where, wit->second))
+                            throwTypedV("X::TypeCheck::Assignment", {{"got", wit->second}},
+                                "Type check failed on attribute '$!" + at.name +
+                                "'; the value does not satisfy its where constraint");
+                    }
                 Value self = Value::object(od);
                 // bless does not re-run BUILD-from-new args the same way, but running
                 // BUILD here matches the common `self.bless(:attr(...))` usage.
-                if (Value* build = ci->findMethod("BUILD")) invokeMethod(*build, self, args);
-                if (Value* tweak = ci->findMethod("TWEAK")) invokeMethod(*tweak, self, args); // post-BUILD hook
+                if (Value* build = ci->findMethod("BUILD")) sinkBuildResult(invokeMethod(*build, self, args));
+                if (Value* tweak = ci->findMethod("TWEAK")) sinkBuildResult(invokeMethod(*tweak, self, args)); // post-BUILD hook
                 maybeRegisterDestroy(self);
                 return self;
             }
@@ -3773,7 +3840,52 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             return methodCall(args[0], "^" + m, rest, rwArgs);
         }
     }
+    // `^enum_from_value` — the enum member with this .value (Rakudo's meta
+    // protocol; Getopt::Long converts "--order 0" through it). Works on the
+    // pair-list form and on a plain type NAME that resolves to one.
+    if (m == "^enum_from_value" || m == "enum_from_value") {
+        // the built-in comparison enum first
+        if (inv.t == VT::Type && inv.s == "Order" && !args.empty()) {
+            long long want = args[0].toInt();
+            return want >= -1 && want <= 1 ? Value::orderVal(want) : Value::any();
+        }
+        const Value* elist = nullptr;
+        Value resolved;
+        if (inv.t == VT::Array && !inv.enumType.empty() && inv.enumName.empty()) elist = &inv;
+        else if (inv.t == VT::Type) {
+            Value* ev = tctx_.cur ? tctx_.cur->find(inv.s) : nullptr;
+            if (!ev && global_) ev = global_->find(inv.s);
+            if (ev && ev->t == VT::Array && !ev->enumType.empty() && ev->enumName.empty())
+                { resolved = *ev; elist = &resolved; }
+        }
+        if (elist && elist->arr() && !args.empty()) {
+            long long want = args[0].toInt();
+            for (auto& e : *elist->arr())
+                if (e.t == VT::Pair && e.pairVal() && e.pairVal()->toInt() == want) {
+                    Value out = *e.pairVal();
+                    out.enumName = e.s; out.enumType = elist->enumType;
+                    return out;
+                }
+            return Value::any();
+        }
+    }
     if (m == "HOW") {
+        // an ENUM type object answers an EnumHOW, as Rakudo does — modules
+        // pick their enum handling by `$type.HOW ~~ Metamodel::EnumHOW`
+        // (Getopt::Long's enum-converter branch)
+        if (inv.t == VT::Array && !inv.enumType.empty() && inv.enumName.empty())
+            return Value::typeObj("Metamodel::EnumHOW");
+        // …including when the enum arrives as a plain TYPE NAME (a Parameter's
+        // `.type` is typeObj("Order")) — resolve the name to see what it is.
+        // Order/Endian/Bool are the built-in enums.
+        if (inv.t == VT::Type) {
+            if (inv.s == "Order" || inv.s == "Endian" || inv.s == "Bool")
+                return Value::typeObj("Metamodel::EnumHOW");
+            Value* ev = tctx_.cur ? tctx_.cur->find(inv.s) : nullptr;
+            if (!ev && global_) ev = global_->find(inv.s);
+            if (ev && ev->t == VT::Array && !ev->enumType.empty() && ev->enumName.empty())
+                return Value::typeObj("Metamodel::EnumHOW");
+        }
         // A USER class gets ONE persistent metaobject, so `T.HOW does SomeRole`
         // mixins stick (Method::Also's AliasableClassHOW). Its class is named
         // Metamodel::ClassHOW, keeping `~~ Metamodel::ClassHOW` True. Built-ins
@@ -3808,6 +3920,18 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if (pkg == "Bool") {
             (*stash)["True"]  = Value::boolean(true);
             (*stash)["False"] = Value::boolean(false);
+        }
+        else if (pkg == "Order") { // the built-in comparison enum
+            (*stash)["Less"] = Value::orderVal(-1);
+            (*stash)["Same"] = Value::orderVal(0);
+            (*stash)["More"] = Value::orderVal(1);
+        }
+        else if (pkg == "Endian") {
+            for (auto& [nm, v] : {std::pair<const char*, long long>{"NativeEndian", 0},
+                                  {"LittleEndian", 1}, {"BigEndian", 2}}) {
+                Value e = Value::enumVal(nm, v); e.enumType = "Endian";
+                (*stash)[nm] = e;
+            }
         }
         else if (Value* et = tctx_.cur->find(pkg)) {
             if (et->t == VT::Array && et->arr() && !et->enumType.empty() && et->enumName.empty())
@@ -3891,9 +4015,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     // `.^base_type` is the same type without it
     if (m == "name" || m == "^name") {
         // the metaclass reports Rakudo's full name; HOW.name($obj) names the OBJECT's type
-        if (inv.t == VT::Type && inv.s == "Metamodel::ClassHOW") {
+        if (inv.t == VT::Type && (inv.s == "Metamodel::ClassHOW" || inv.s == "Metamodel::EnumHOW")) {
             if (m == "name" && !args.empty()) return Value::str(args[0].typeName());
-            return Value::str("Perl6::Metamodel::ClassHOW");
+            return Value::str("Perl6::" + std::string(inv.s.str()));
         }
         // plain .name is NOT a universal method: a user-class instance with no
         // name method/attr dies X::Method::NotFound like Rakudo ($.name typo)

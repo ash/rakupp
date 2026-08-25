@@ -195,6 +195,7 @@ template <class IO> void ioAttr(IO& io, AttrDecl& a) {
         for (auto& ut : a.userTraits) { F(io, ut.first); ioExpr(io, ut.second); }
     }
     ioExpr(io, a.def);
+    ioExpr(io, a.whereExpr);
 }
 
 template <class IO> void ioRule(IO& io, GrammarRuleDecl& g) {
@@ -314,6 +315,7 @@ template <class IO> void visit(IO& io, ClassDecl& n) {
     }
     F(io, n.isPackage); ioStmtVec(io, n.body);
     F(io, n.isMonitor);
+    F(io, n.classRw);
 }
 template <class IO> void visit(IO& io, Block& n)    { ioStmtVec(io, n.stmts); F(io, n.isCatch);
                                                       F(io, n.phaser); F(io, n.stmtForm); }
@@ -342,8 +344,9 @@ template <class IO> void visit(IO& io, NextStmt& n) { F(io, n.target); }
 template <class IO> void visit(IO& io, RedoStmt& n) { F(io, n.target); }
 template <class IO> void visit(IO& io, UseStmt& n)  { F(io, n.module); F(io, n.arg); ioVec(io, n.importArgs);
                                                       ioExpr(io, n.argExpr); F(io, n.isNo); F(io, n.isNeed);
-                                                      F(io, n.verReq); } // dropping the :ver<…> constraint from the
+                                                      F(io, n.verReq);   // dropping the :ver<…> constraint from the
                                                                          // cache made run 2 load ANY version
+                                                      ioExpr(io, n.ifCond); } // :if(EXPR) — same lesson
 template <class IO> void visit(IO&, EmptyStmt&)     {}
 template <class IO> void visit(IO& io, SubsetDecl& n) { F(io, n.name); F(io, n.baseType); ioExpr(io, n.where); }
 template <class IO> void visit(IO& io, GivenStmt& n){ ioExpr(io, n.topic); F(io, n.var); F(io, n.modifier);

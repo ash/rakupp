@@ -130,3 +130,104 @@ the two w3.org files need TLS SNI through the ecosystem IO::Socket::SSL),
 Math::Libgsl::Constants (ldconfig-only library finder — fails under macOS
 Rakudo too), NativeHelpers::Blob (MoarVM-guts by design; its DEPENDENTS run
 via the shadow), PDF::Lite (blocked by Getopt::Long).
+
+## Sitting four (2026-08-25, post-v3.7.0): the cluster levers
+
+The rerun's cluster tables named the levers; this sitting pulled the five
+biggest. Each fix oracle-verified against Rakudo 2026.07/08; gates per batch:
+t/run 514/514, six roast slices (S02/S04/S05/S06/S12/S32) file-identical
+against a clean HEAD-baseline build, perf guard neutral. Regression files:
+`t/regression/dynamic-var-caller-chain.raku`,
+`t/regression/ecosweep-batch-five.raku` (the latter passes byte-for-byte
+under Rakudo too).
+
+**The `if` dist and its cluster (12 dists).** Three fixes in one story:
+`Raku.legacy` answers True on the type object (and dies on the instance, as
+Rakudo's `Raku:U:` constraint does); the `use Foo:if(EXPR)` adverb is honored
+NATIVELY (both of the dist's own implementations patch Rakudo compiler
+internals that don't exist here — its EXPORT failure warning is suppressed for
+exactly this module); and the real find — **dynamic variables resolved in the
+wrong order**. Reads walked the caller chain before the current frame, so a
+routine's own `my $*X` lost to its caller's; writes resolved through the
+lexical chain only, so a callee's `$*PACKAGE_LOADED++` (the `if` suite's
+fixture EXPORT) minted a throwaway local. One resolver now serves reads and
+writes: current frame first (frame-bounded at the routine activation), then
+each caller innermost-out, then the historical lenient fallbacks. Thirteen
+probe cases, all byte-identical with Rakudo.
+
+**The P5* native family (P5getpwnam, P5getgrnam, P5getnetbyname,
+P5getprotobyname, P5getservbyname, P5localtime — all green).** The angle
+spelling of NativeCall traits — `is repr<CStruct>`, `is symbol<getpwuid>`,
+`is native<lib>` — was unparsed (the repr case silently derailed the whole
+class body into a forward declaration). Behind it: `has CArray[Str]` dropped
+its `[Str]` (the field read back int64 pointers, and P5getgrnam's
+walk-until-undefined SIGBUSed past the NULL terminator — elements now deref to
+Str with NULL as the undefined Str), `--> PwStruct` where PwStruct is a
+CONSTANT aliasing a per-kernel class now boxes, and `$*USER`/`$*GROUP` exist
+as IntStr allomorphs.
+
+**Getopt::Long, 0/45 → 34/45.** The single biggest dep-blocker (55 dists
+name it). Ten general fixes fell out: `is CORE::Exception` resolves to the
+setting's type; package-relative MULTI-SEGMENT type names in multi params
+(`Argument::Boolean` inside `unit module Getopt::Long`) — every suffix of a
+class name now registers as an alias; `my/state %h{Any:U}` object hashes
+(smiley key shapes parse, pair-list init keys type objects distinctly, enum
+TYPES subscript as one key, not a slice); Capture `eqv`/`is-deeply` compares
+nameds as a map; attribute defaults see the CONSTRUCTED values of earlier
+attributes (named args bind during the BUILD walk, not after it); `Mu ~~ Any`
+is False; typed `@`/`%` params report `Positional[T]`/`Associative[T]` with
+`.of`; `named_names` orders innermost-first (`:fooo(:f(:@foo))` is
+`("foo","f","fooo")` — the option key was wrong before);
+`Parameter.constraints` is the `all(…)` junction; enums answer the meta
+protocol (`.HOW ~~ Metamodel::EnumHOW` for user enums AND builtin
+Order/Endian/Bool, `Order.WHO`, `^enum_from_value`). The last 11 tests hang on
+one feature: `does ROLE(arg)` mixins on Code/Parameter values plus
+`where ROLE` dispatch (`is getopt` traits) — the next metamodel sitting.
+
+**The Crypt::Random chain (Crypt::Random, UUID::V4, Date::Utils green; the
+chain unblocked Date::Event and Cro::APIToken one rung each).**
+`nqp::open`/`nqp::readfh`/`nqp::closefh` exist now (raw-fd trio;
+/dev/urandom short-reads loop to length) — this is also Cro::HTTP's named
+blocker. Behind it: `.sprintf(@array)` spreads the array into the directives
+(UUID::V4's `"%08x-…".sprintf(@unpacked)` formatted the element count
+before); a JUNCTION subscript key autothreads the whole subscript, adverbs
+included (`%response{all(<r s i>)}:exists` — Auth::SCRAM::Async, whose
+RFC 5802/7677 vectors now pass); same-bare-name attributes of different
+sigils (`has Digest $.digest` beside `has &!digest`) no longer clobber one
+slot; an unfilled optional SUBSET param outranks a plain-typed twin on
+zero-arg dispatch (Rakudo's rule — Date::Utils's `.etype` pair); named params
+typed by SUBSETS type-check subset-aware in dispatch; `enum … is export`
+inside a `unit class` exports its members; `isa-ok $v, UInt` accepts what the
+subset accepts; `class Foo is rw` parses (every public attr writable —
+Compress::Zstd); dlopen candidates include /opt/homebrew/lib.
+
+**Closed as not-ours:** the 11-dist Sparrowdo constellation is upstream
+bit-rot — their `depends: Sparrowdo` resolves to modern Sparrowdo (0.1.55),
+which dropped the `Sparrowdo::Core::DSL::*` API after 0.0.45; they fail under
+Rakudo/zef identically. POSIX::PWDENT's source carries its own quirks
+(`has Int $.gid:` with a stray colon).
+
+**The Date::Event finish (and what it taught).** Attribute `where`
+constraints are now enforced at construction and assignment (`has Numeric
+$.lat where { -90 <= $_ <= 90 }`); `enum … is export` inside a `unit class`
+exports its members; an enum called with an unknown value answers a FAILURE
+(Rakudo's X::Enum::NoValue), with member passthrough and the `but`-mixin
+probe (`day($x)` where `$x = 'Today' but day(Tue)`) checked first. The
+instructive part: making that Failure DIE where the dist expects took three
+wrong attempts before roast S06-advanced/return.t stated the law — **a
+Failure passes through any return typecheck untouched, and Nil satisfies
+every return constraint**; the real mechanism is that BUILD/TWEAK results
+are SUNK, and an unhandled Failure discarded by construction detonates
+there. `--> T` return constraints now hold for METHODS exactly as for subs,
+and a SUBSET return type rejects an undefined non-Nil value (`--> UInt`
+against a hash-miss Any dies, as Rakudo does). Six-slice A/B against a
+clean-HEAD build: all gains (S12-attributes/defaults 33→37/37,
+S06-advanced/return 94→96/109, S12-class/attributes-required 4/4→6/6,
+type-capture 4→7/10, +1 each in instance/attributes/subtypes/type).
+Date::Event's five files all pass — the twelfth confirmed conversion.
+
+**Still-open frontiers, sharpened:** Test::Async's `unit test-hub` custom
+declarator (EXPORTHOW) gates its four dependents; Parameterizable's
+`^parameterize` protocol gates BinaryHeap → Graph → LLM::Graph; the
+`does`-mixin-on-values feature gates Getopt::Long's tail and its 55
+dependents.

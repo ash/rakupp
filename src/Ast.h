@@ -358,6 +358,8 @@ enum class NqpOpc : uint16_t {
     Null, IsNanOrInf,
     // appended (AST-cache safe): the AttrX::Mooish surface
     What, IsList, IsCont, IsTrue, IsConcrete, CloneOp, Shift, LockOp, UnlockOp,
+    // appended: raw file handles (Crypt::Random reads /dev/urandom this way)
+    OpenFh, ReadFh, CloseFh,
 };
 struct NqpOp : Expr {
     NqpOpc op;
@@ -533,6 +535,7 @@ struct AttrDecl {
     // built-in traits above never appear here; these are what the JSON::Name /
     // JSON::Unmarshal trait_mods would store on the Attribute meta-object.
     std::vector<std::pair<std::string, ExprPtr>> userTraits;
+    ExprPtr whereExpr;  // `has Numeric $.lat where {…}` — checked on construction and assignment
     ExprPtr def;        // optional default
 };
 
@@ -551,6 +554,7 @@ struct ClassDecl : Stmt {
     bool isMonitor = false;        // `monitor Foo {…}` — a class whose methods lock per instance
     bool isAugment = false;        // augment class Foo { … } — merge methods into an existing type
     bool isMy = false;             // `my class`/`my grammar` — lexically scoped, redeclarable across EVALs
+    bool classRw = false;          // `class Foo is rw` — every public attribute is writable
     ExprPtr nameExpr;              // `class ::(EXPR) { … }` — the name, computed when the decl runs
     bool isStubDecl = false;
     std::string pod; // `#|` leading declarator pod (.WHY)       // body was a bare `...` — a forward declaration, redeclarable
@@ -647,6 +651,7 @@ struct RedoStmt : Stmt { std::string target; RedoStmt(): Stmt(NK::RedoStmt) {} }
 struct UseStmt : Stmt {
     std::string module;
     std::string verReq; // `use Foo:ver<0.0.14+>` — version constraint ('' = any)
+    ExprPtr ifCond; // `use Foo:if(EXPR)` — load only when EXPR is true (the ecosystem `if` dist's adverb)
     std::string arg; // first string argument, e.g. `use lib 'lib'`
     std::vector<std::string> importArgs; // `use Mod <tag !flag>` — passed to sub EXPORT
     ExprPtr argExpr; // computed argument, e.g. `use lib $?FILE.IO.parent`

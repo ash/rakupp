@@ -2312,10 +2312,18 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
             expectKind(Tok::RBracket, "]");
             ve->declShape = dims->items.size() == 1 ? std::move(dims->items[0]) : std::move(dims);
         }
-        // `%a{Str}` — hash key-type shape declaration
+        // `%a{Str}` — hash key-type shape declaration; the key type may carry a
+        // smiley: `state %converter-for-type{Any:U}` (Getopt::Long). Unconsumed,
+        // the `{Any:U}` became a SUBSCRIPT on the fresh variable and the whole
+        // initializer landed under one key.
         std::string keyType;
-        if (isKind(Tok::LBrace) && peek().kind == Tok::Ident && peek(2).kind == Tok::RBrace) {
-            advance(); keyType = advance().text; advance();
+        if (isKind(Tok::LBrace) && peek().kind == Tok::Ident &&
+            (peek(2).kind == Tok::RBrace ||
+             (peek(2).kind == Tok::Op && peek(2).text == ":" && peek(3).kind == Tok::Ident &&
+              peek(4).kind == Tok::RBrace))) {
+            advance(); keyType = advance().text;
+            if (isOp(":")) { advance(); advance(); } // :U / :D / :_ on the key type
+            advance(); // }
         }
         // `of Type` postfix trait sets the value/element type
         if (isIdent("of") && peek().kind == Tok::Ident) { advance(); ve->declType = advance().text; }
@@ -2812,7 +2820,24 @@ ExprPtr Parser::parsePrimary() {
     if (isOp("::") && peek().kind == Tok::Op && peek().text == "<" && !peek().spaceBefore) {
         advance(); advance(); // :: <
         std::vector<std::string> words = readAngleWords(">");
-        return std::make_unique<VarExpr>(words.empty() ? "$_" : words[0]);
+        std::string symName = words.empty() ? "$_" : words[0];
+        // `::<EXPORT>:exists` / `::<$x>:!exists` — a namespace EXISTENCE probe,
+        // not a lookup (Test::Async guards its EXPORT re-export machinery with
+        // exactly this; unparsed, the ':' died as "expected ) (got ':')")
+        if (isOp(":") && !cur().spaceBefore &&
+            ((peek().kind == Tok::Ident && peek().text == "exists") ||
+             (peek().kind == Tok::Op && peek().text == "!" &&
+              peek(2).kind == Tok::Ident && peek(2).text == "exists"))) {
+            advance(); // :
+            bool neg = isOp("!");
+            if (neg) advance();
+            advance(); // exists
+            auto u = std::make_unique<Unary>();
+            u->op = neg ? "sym!exists" : "symexists";
+            u->operand = std::make_unique<StrLit>(symName);
+            return u;
+        }
+        return std::make_unique<VarExpr>(symName);
     }
     // trailing path segments after a symbolic ref: `::($a)::name`, `::($a)::('$x')`
     auto parseSymSegs = [&](SymbolicRef* sr) {
@@ -5557,6 +5582,11 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
                 }
             }
         }
+        // …the invocant marker may also sit AFTER the traits:
+        // `(::?CLASS:U $_ is rw: **@values)` — BinaryHeap's writable
+        // class-invocant form. The check above runs before the trait loop, so
+        // this spelling used to die "expected ) (got ':')".
+        if (isOp(":")) { advance(); p.invocant = true; params.push_back(std::move(p)); continue; }
         if (matchOp("=")) p.defaultVal = parseExpr(BP_ASSIGN);
         // `is rw` cannot combine with a default value (X::Trait::Invalid):
         // an rw param must bind a writable container, a default is a fresh value
@@ -5846,6 +5876,19 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
                 int d = 1; while (d > 0 && !isKind(Tok::End)) { if (isKind(Tok::LParen)) d++; else if (isKind(Tok::RParen)) d--; advance(); }
                 continue;
             }
+            // the ANGLE spelling `is native<sqlite3>` — one word, the library
+            if (!peek().spaceBefore && peek().kind == Tok::QwList) {
+                advance();
+                std::string w = advance().text;
+                s->nativeLib = w.substr(0, w.find(' '));
+                continue;
+            }
+            if (!peek().spaceBefore && peek().kind == Tok::Op && peek().text == "<") {
+                advance(); advance();
+                auto ws = readAngleWords(">");
+                if (!ws.empty()) s->nativeLib = ws[0];
+                continue;
+            }
         }
         if (isIdent("symbol") && peek().kind == Tok::LParen) {
             advance(); advance(); // symbol (
@@ -5854,6 +5897,23 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
             else
                 s->nativeSymExpr = parseExpression(); // computed — see nativeSymExpr in Ast.h
             int d = 1; while (d > 0 && !isKind(Tok::End)) { if (isKind(Tok::LParen)) d++; else if (isKind(Tok::RParen)) d--; advance(); }
+            continue;
+        }
+        // the ANGLE spelling `is symbol<getpwuid>` (lizmat's P5* family uses it
+        // on every native sub; the dropped value made dlsym look up the RAKU
+        // name — `_getpwuid` — and fail)
+        if (isIdent("symbol") && !peek().spaceBefore &&
+            (peek().kind == Tok::QwList || (peek().kind == Tok::Op && peek().text == "<"))) {
+            advance(); // symbol
+            if (isKind(Tok::QwList)) {
+                std::string w = advance().text;
+                s->nativeSym = w.substr(0, w.find(' '));
+            }
+            else {
+                advance(); // <
+                auto ws = readAngleWords(">");
+                if (!ws.empty()) s->nativeSym = ws[0];
+            }
             continue;
         }
         // precedence/associativity traits on a custom infix: `is tighter(&infix:<+>)`,
@@ -6218,6 +6278,13 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
             }
             continue;
         }
+        // `class X is rw` — every public attribute is writable (Compress::Zstd
+        // declares its buffer structs this way). A trait, not a parent.
+        if (!isDoes && isIdent("rw")) {
+            advance();
+            cd->classRw = true;
+            continue;
+        }
         // `is repr("CStruct")` — a VM-representation trait, not a parent class.
         // Capture the name (drives NativeCall struct layout); most reprs our
         // values pick their own storage for and simply ignore.
@@ -6227,6 +6294,20 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
                 advance();
                 if (isKind(Tok::StrLit) || isKind(Tok::StrInterp) || isKind(Tok::Ident)) cd->repr = cur().text;
                 int d = 1; while (d > 0 && !isKind(Tok::End)) { if (isKind(Tok::LParen)) d++; else if (isKind(Tok::RParen)) d--; advance(); }
+            }
+            // the ANGLE spelling `is repr<CStruct>` (lizmat's P5* family uses
+            // it throughout). Unconsumed, the value derailed the whole class:
+            // the trait loop ended on it, the `{` was no longer where the body
+            // check looks, and the class fell into the forward-declaration
+            // path — with its body left behind to parse as a bare block.
+            else if (isKind(Tok::QwList) && !cur().spaceBefore) {
+                std::string w = advance().text;         // first word is the repr name
+                cd->repr = w.substr(0, w.find(' '));
+            }
+            else if (isOp("<") && !cur().spaceBefore) {
+                advance();
+                auto ws = readAngleWords(">");
+                if (!ws.empty()) cd->repr = ws[0];
             }
             continue;
         }
@@ -6301,7 +6382,22 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
                     advance(); std::string sm = advance().text;
                     if (sm == "D") attrSmiley = 1; else if (sm == "U") attrSmiley = 2;
                 }
-                if (isKind(Tok::LBracket)) { int d = 0; do { if (isKind(Tok::LBracket)) d++; else if (isKind(Tok::RBracket)) d--; advance(); } while (d > 0 && !isKind(Tok::End)); }
+                if (isKind(Tok::LBracket)) {
+                    // the [T] group is part of the TYPE, exactly as in `my`
+                    // declarations above: `has CArray[Str] $.gr_mem` must keep
+                    // its element type or the field reads back as int64
+                    // pointers (P5getgrnam walked those "always defined"
+                    // pointers past the NULL terminator and crashed)
+                    int d = 0;
+                    std::string ptxt;
+                    do {
+                        if (isKind(Tok::LBracket)) d++;
+                        else if (isKind(Tok::RBracket)) d--;
+                        ptxt += cur().text;
+                        advance();
+                    } while (d > 0 && !isKind(Tok::End));
+                    attrType += ptxt;
+                }
             }
             // coercion-type attribute: `has IO::Path() $.filename` / `has Int(Cool) $.n`.
             // The declared type is the coercion TARGET; an assigned value is coerced
@@ -6370,7 +6466,7 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
                 // traits before the default: is rw / is readonly / of Type / does Role / where EXPR / handles <...>
                 while (isIdent("is") || isIdent("of") || isIdent("does") || isIdent("where") || isIdent("handles")) {
                     std::string tr = advance().text;
-                    if (tr == "where") { parseExpr(BP_ASSIGN); continue; }
+                    if (tr == "where") { a.whereExpr = parseExpr(BP_ASSIGN); continue; }
                     if (tr == "handles") { // handles <m1 m2> / handles "m" / handles 'm'
                         if (isOp("<")) { // bare angle list lexes as Op '<' + words
                             advance();
@@ -7209,7 +7305,18 @@ StmtPtr Parser::parseStatementImpl() {
             // read and dropped, as the module-decl parser does.
             while (isOp(":") && !cur().spaceBefore && peek().kind == Tok::Ident) {
                 advance();                          // :
-                std::string adv = advance().text;   // ver / auth / api
+                std::string adv = advance().text;   // ver / auth / api / if
+                // `use Foo:if(EXPR)` — the ecosystem `if` dist's conditional
+                // load. The condition is a real EXPRESSION (typically probing
+                // $*RAKU.version or $*KERNEL), so it cannot ride the textual
+                // value capture below; exec() evaluates it and skips the load
+                // outright when it is false.
+                if (adv == "if" && isKind(Tok::LParen) && !cur().spaceBefore) {
+                    advance();
+                    u->ifCond = parseExpression();
+                    if (isKind(Tok::RParen)) advance();
+                    continue;
+                }
                 std::string val;
                 if (isKind(Tok::QwList) && !cur().spaceBefore) val = advance().text;
                 else if (isOp("<") && !cur().spaceBefore) {
@@ -7790,6 +7897,7 @@ ExprPtr Parser::makeNqpOp(const std::string& op, std::vector<ExprPtr>& args) {
         {"clone", NqpOpc::CloneOp}, {"clone_nd", NqpOpc::CloneOp},
         {"shift", NqpOpc::Shift},
         {"lock", NqpOpc::LockOp}, {"unlock", NqpOpc::UnlockOp},
+        {"open", NqpOpc::OpenFh}, {"readfh", NqpOpc::ReadFh}, {"closefh", NqpOpc::CloseFh},
     };
     auto it = k.find(op);
     if (it == k.end()) return nullptr;

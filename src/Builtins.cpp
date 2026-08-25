@@ -1789,6 +1789,22 @@ bool deepEq(const Value& a, const Value& b) {
     }
     if (a.t == VT::Array && b.t == VT::Array) {
         if (a.arr()->size() != b.arr()->size()) return false;
+        // A Capture's POSITIONALS are ordered but its NAMEDS are a map:
+        // \(1, :a, :b) is-deeply \(1, :b, :a). Getopt::Long's suite compares
+        // parse-order nameds against source-order literals.
+        if (a.hashKind == "Capture" && b.hashKind == "Capture") {
+            std::vector<const Value*> ap, bp;
+            std::map<std::string, const Value*> an, bn;
+            for (auto& e : *a.arr()) { if (e.t == VT::Pair) an[e.s] = &e; else ap.push_back(&e); }
+            for (auto& e : *b.arr()) { if (e.t == VT::Pair) bn[e.s] = &e; else bp.push_back(&e); }
+            if (ap.size() != bp.size() || an.size() != bn.size()) return false;
+            for (size_t i = 0; i < ap.size(); i++) if (!deepEq(*ap[i], *bp[i])) return false;
+            for (auto& kv : an) {
+                auto it = bn.find(kv.first);
+                if (it == bn.end() || !deepEq(*kv.second, *it->second)) return false;
+            }
+            return true;
+        }
         for (size_t i = 0; i < a.arr()->size(); i++)
             if (!deepEq((*a.arr())[i], (*b.arr())[i])) return false;
         return true;
@@ -2348,12 +2364,23 @@ Value makeSignature(const Callable* c) {
         // Associative, &-sigil Callable — the constraint its sigil implies.
         // An unconstrained parameter is Any on a ROUTINE and Mu on a bare
         // `:( … )` literal; the sigil implies its own constraint either way.
-        (*pv.hash())["type-obj"] = Value::typeObj(
-            !p.type.empty() ? p.type
-            : p.sigil == '@' ? "Positional"
-            : p.sigil == '%' ? "Associative"
-            : p.sigil == '&' ? "Callable"
-            : (c && c->isSigLiteral) ? "Mu" : "Any");
+        {
+            // a TYPED @/% parameter reports the PARAMETRIC container type, as
+            // Rakudo does: `Str :@foo` is Positional[Str] with .of = Str —
+            // Getopt::Long derives the option's element type from exactly that
+            Value tv;
+            if (!p.type.empty() && (p.sigil == '@' || p.sigil == '%') && !p.slurpy) {
+                tv = Value::typeObj(p.sigil == '@' ? "Positional" : "Associative");
+                tv.ofTypeM() = p.type; // renders as Positional[Str]; .of answers Str
+            }
+            else tv = Value::typeObj(
+                !p.type.empty() ? p.type
+                : p.sigil == '@' ? "Positional"
+                : p.sigil == '%' ? "Associative"
+                : p.sigil == '&' ? "Callable"
+                : (c && c->isSigLiteral) ? "Mu" : "Any");
+            (*pv.hash())["type-obj"] = std::move(tv);
+        }
         // trait/shape flags the introspection API exposes one method each for
         (*pv.hash())["raw"]  = Value::boolean(p.isRaw || (p.sigil == '\\' && !p.slurpy && !p.isCopy));
         (*pv.hash())["copy"] = Value::boolean(p.isCopy);
@@ -2390,28 +2417,37 @@ Value makeSignature(const Callable* c) {
         (*pv.hash())["slurpy"] = Value::boolean(p.slurpy);
         // `.constraints`: a literal parameter ('greet' in `get -> 'greet', $n {}`)
         // answers its literal value; otherwise Mu (matches Rakudo's use in Cro)
-        {   // literal constraint value — static context, so decode the common
-            // literal node kinds directly (StrLit/IntLit); anything else -> Mu
-            Value cv = Value::typeObj("Mu");
+        {   // `.constraints` is a JUNCTION, as in Rakudo: all() when the
+            // parameter is unconstrained (Getopt::Long stores it into a
+            // `has Junction:D $.constraints` attribute), all(<literal>) for a
+            // literal parameter — static context, so decode the common literal
+            // node kinds directly (StrLit/IntLit). A `where` clause is scored
+            // at dispatch here and is not yet carried as a Code eigenstate.
+            Value cj = Value::array(); cj.enumName = "all";
             if (p.litVal) {
                 Expr* le = p.litVal.get();
-                if (le->kind == NK::StrLit) cv = Value::str(static_cast<StrLit*>(le)->v);
-                else if (le->kind == NK::IntLit) cv = Value::integer(static_cast<IntLit*>(le)->v);
-                else if (le->kind == NK::NumLit) cv = Value::number(static_cast<NumLit*>(le)->v);
-                else if (le->kind == NK::BoolLit) cv = Value::boolean(static_cast<BoolLit*>(le)->v);
+                if (le->kind == NK::StrLit) cj.arr()->push_back(Value::str(static_cast<StrLit*>(le)->v));
+                else if (le->kind == NK::IntLit) cj.arr()->push_back(Value::integer(static_cast<IntLit*>(le)->v));
+                else if (le->kind == NK::NumLit) cj.arr()->push_back(Value::number(static_cast<NumLit*>(le)->v));
+                else if (le->kind == NK::BoolLit) cj.arr()->push_back(Value::boolean(static_cast<BoolLit*>(le)->v));
             }
-            (*pv.hash())["constraints"] = std::move(cv);
+            (*pv.hash())["constraints"] = std::move(cj);
         }
-        {   // `.named_names`: every name this named parameter answers to
+        {   // `.named_names`: every name this named parameter answers to —
+            // INNERMOST first, as Rakudo orders them: `:fooo(:f(:@foo))` is
+            // ("foo", "f", "fooo"). Getopt::Long keys the option on
+            // named_names[0], so the outermost-first order renamed --foo's
+            // capture entry to :fooo.
             Value nn = Value::array(); nn.isList = true;
             if (p.named) {
-                if (!p.namedKey.empty()) nn.arr()->push_back(Value::str(p.namedKey));
-                for (auto& ak : p.aliasKeys) nn.arr()->push_back(Value::str(ak));
                 if (p.namedKey.empty() || p.aliasBoth) {
                     std::string bare = p.name.size() > 2 && (p.name[1] == '!' || p.name[1] == '.')
                                      ? p.name.substr(2) : (p.name.size() > 1 ? p.name.substr(1) : p.name);
                     nn.arr()->push_back(Value::str(bare));
                 }
+                for (auto it2 = p.aliasKeys.rbegin(); it2 != p.aliasKeys.rend(); ++it2)
+                    nn.arr()->push_back(Value::str(*it2));
+                if (!p.namedKey.empty()) nn.arr()->push_back(Value::str(p.namedKey));
             }
             (*pv.hash())["named_names"] = nn;
         }
@@ -4114,11 +4150,16 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                     }
                     if (pi2 >= pos.size()) break; // optional tail
                     const Value& a2 = pos[pi2++];
-                    if (ph.count("constraints") && !(ph["constraints"].t == VT::Type && ph["constraints"].s == "Mu")) {
-                        const Value& cv = ph["constraints"];
-                        bool eq = (a2.isNumeric() && cv.isNumeric()) ? a2.toNum() == cv.toNum()
-                                                                     : a2.toStr() == cv.toStr();
-                        if (!eq) { ok = false; break; }
+                    if (ph.count("constraints")) {
+                        // constraints is now the all(…) junction — an empty one
+                        // constrains nothing; a literal eigenstate must match
+                        const Value& cjv = ph["constraints"];
+                        if (cjv.t == VT::Array && cjv.enumName == "all" && cjv.arr() && !cjv.arr()->empty()) {
+                            const Value& cv = (*cjv.arr())[0];
+                            bool eq = (a2.isNumeric() && cv.isNumeric()) ? a2.toNum() == cv.toNum()
+                                                                         : a2.toStr() == cv.toStr();
+                            if (!eq) { ok = false; break; }
+                        }
                     }
                     if (ph.count("type") && !ph["type"].s.empty() &&
                         !typeOrSubsetMatches(a2, ph["type"].s)) { ok = false; break; }
@@ -5330,10 +5371,23 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             return v;
         }
     }
+    // Raku.legacy — a CLASS method (type object only, as in Rakudo): does this
+    // runtime still speak the classic pre-RakuAST compiler dialect? Rakudo
+    // 2026.07 answers True, and so does rakupp — its use/EXPORT machinery is
+    // the classic protocol, not RakuAST. The ecosystem `if` dist gates on
+    // exactly this to pick which compiler guts to patch (neither of which
+    // exists here — rakupp honors `:if` natively instead, see UseStmt).
+    if (inv.t == VT::Type && inv.s == "Raku" && m == "legacy")
+        return Value::boolean(true);
     // IO::String / Text::IO::String: an in-memory read handle over a string.
     // $*RAKU / $?RAKU and their .compiler — the runtime/implementation introspection object
     if (inv.t == VT::Hash && (inv.hashKind == "Raku" || inv.hashKind == "Compiler")) {
         bool isComp = inv.hashKind == "Compiler";
+        // instance spelling mirrors Rakudo: .legacy is Raku:U:-constrained
+        if (m == "legacy" && !isComp)
+            throw RakuError{Value::typeObj("X::Parameter::InvalidConcreteness"),
+                "Invocant of method 'legacy' must be a type object of type 'Raku', "
+                "not an object instance of type 'Raku'.  Did you forget a 'multi'?"};
         std::string nm = isComp ? "Raku++" : "Raku";
         // Language revision the program is running under (6.c/6.d/6.e), from any
         // `use v6.*` pragma; the compiler object keeps its own version string.
@@ -7591,6 +7645,15 @@ void Interpreter::registerBuiltins() {
                     I.emitTest(true, desc);
                     return Value::boolean(true);
                 }
+            }
+            // a SUBSET target passes for a value the subset accepts
+            // (`isa-ok 5, UInt` — Date::Event walks its enum map this way);
+            // still short of smartmatch: the target must be a TYPE object
+            if (a[1].t == VT::Type &&
+                (a[1].s == "UInt" ? a[0].t == VT::Int && !(a[0].big() ? a[0].big()->sign < 0 : a[0].i < 0)
+                                  : I.subsetMatches(a[1].s, a[0]))) {
+                I.emitTest(true, desc);
+                return Value::boolean(true);
             }
         }
         static const std::map<std::string, std::set<std::string>> isa = {
@@ -10414,6 +10477,58 @@ Value Interpreter::evalNqpOp(NqpOp* n) {
                 }
             }
             break; // ordinary attr bind — fall through to the eager path
+        }
+        case O::OpenFh: { // nqp::open(path, mode) — a raw OS handle
+            // (Crypt::Random reads /dev/urandom through exactly this trio)
+            if (a.empty()) return Value::nil();
+            Value pathv = eval(a[0].get());
+            std::string mode = a.size() > 1 ? eval(a[1].get()).toStr() : "r";
+            int flags = mode.find('w') != std::string::npos ? (O_WRONLY | O_CREAT | O_TRUNC)
+                      : mode.find('a') != std::string::npos ? (O_WRONLY | O_CREAT | O_APPEND)
+                      : O_RDONLY;
+            int fd = ::open(pathv.toStr().c_str(), flags, 0644);
+            if (fd < 0)
+                throw RakuError{Value::typeObj("X::AdHoc"),
+                    "Failed to open file " + pathv.toStr() + ": " + std::strerror(errno)};
+            Value h = Value::makeHash(); h.hashKind = "NqpFh";
+            (*h.hash())["fd"] = Value::integer(fd);
+            return h;
+        }
+        case O::ReadFh: { // nqp::readfh(fh, buf, n) — append up to n bytes into buf
+            if (a.size() < 3) return Value::nil();
+            Value fhv = eval(a[0].get());
+            long long want = eval(a[2].get()).toInt();
+            int fd = fhv.t == VT::Hash && fhv.hash() && fhv.hash()->count("fd")
+                   ? (int)(*fhv.hash())["fd"].toInt() : -1;
+            std::string bytes(want > 0 ? (size_t)want : 0, '\0');
+            long long got = 0;
+            if (fd >= 0 && want > 0) {
+                long long off = 0; // short reads are legal; loop to n or EOF
+                while (off < want) {
+                    long long r = ::read(fd, &bytes[(size_t)off], (size_t)(want - off));
+                    if (r <= 0) break;
+                    off += r;
+                }
+                got = off;
+            }
+            bytes.resize((size_t)got);
+            Value* lv = nullptr;
+            try { lv = lvalue(a[1].get()); } catch (RakuError&) {}
+            if (lv) { // the buffer is FILLED in place (`my $bytes := Buf.new`)
+                if (lv->t != VT::Str) { lv->t = VT::Str; lv->s.clear(); }
+                if (lv->hashKind.empty() || lv->t != VT::Str) lv->hashKind = "Buf";
+                lv->s = lv->s.str() + bytes;
+                return *lv;
+            }
+            Value b = Value::str(std::move(bytes)); b.hashKind = "Buf";
+            return b;
+        }
+        case O::CloseFh: {
+            if (a.empty()) return Value::nil();
+            Value fhv = eval(a[0].get());
+            if (fhv.t == VT::Hash && fhv.hash() && fhv.hash()->count("fd"))
+                ::close((int)(*fhv.hash())["fd"].toInt());
+            return Value::nil();
         }
         // Buffer writes mutate argument 0 in place, so they need its lvalue.
         case O::WriteUInt: case O::WriteInt: case O::WriteNum: {

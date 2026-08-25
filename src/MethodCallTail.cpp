@@ -30,15 +30,30 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
     if (m == "fmt" && inv.t != VT::Array && inv.t != VT::Range && inv.t != VT::Hash)
         return Value::str(doSprintf(args.empty() ? "%s" : a0().toStr(), {inv}));
     // Cool.printf / Cool.sprintf: the invocant IS the format ("%s\n".printf($x))
+    // An ARRAY argument spreads into the directive list, exactly like the
+    // sprintf() builtin: `"%08x-%04x…".sprintf(@unpacked)` formats the
+    // elements, not the array-as-one-value (UUID::V4 builds its UUIDs so).
+    auto spreadFmtArgs = [&]() {
+        ValueList out;
+        for (auto& x : args) {
+            if (x.t == VT::Array && x.arr() && !x.itemized)
+                for (auto& e : *x.arr()) out.push_back(e);
+            else out.push_back(x);
+        }
+        return out;
+    };
     if (m == "printf" && (inv.t == VT::Str || inv.t == VT::Match)) {
         // ioEmit, not std::cout: it takes the output lock, and it honours a
         // rebound `$*OUT`. Writing the stream directly meant
         // `my $*OUT = open(…); "%s\n".printf(…)` went to the terminal while
         // `say` on the next line went to the file.
-        return ioEmit(doSprintf(inv.toStr(), args, langRev_), "$*OUT", false);
+        ValueList fa = spreadFmtArgs();
+        return ioEmit(doSprintf(inv.toStr(), fa, langRev_), "$*OUT", false);
     }
-    if (m == "sprintf" && (inv.t == VT::Str || inv.t == VT::Match))
-        return Value::str(doSprintf(inv.toStr(), args, langRev_));
+    if (m == "sprintf" && (inv.t == VT::Str || inv.t == VT::Match)) {
+        ValueList fa = spreadFmtArgs();
+        return Value::str(doSprintf(inv.toStr(), fa, langRev_));
+    }
     // Str.parse-base($radix) — "ff".parse-base(16) == 255; fractions give a Rat
     if (m == "parse-base" && (inv.t == VT::Str || inv.t == VT::Match) && !args.empty()) {
         std::string s = inv.toStr(); long long base = a0().toInt();
