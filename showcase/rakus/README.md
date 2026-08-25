@@ -7,7 +7,11 @@ answer to `python3 -m http.server`, on nothing but `IO::Socket::INET`.
 > The installable distribution lives in
 > [raku-modules/App-Rakus](https://github.com/ash/raku-modules/tree/main/App-Rakus)
 > as `App::Rakus`, where the routing is split into a library so it can be tested
-> without a socket. Edits here do not reach there, or the other way about. Where the
+> without a socket. It is published to the zef ecosystem
+> ([raku.land](https://raku.land/zef:ash/App::Rakus)), so `zef install App::Rakus`
+> puts a `rakus` command on `PATH` — one that serves the *current* directory by
+> default, where this copy serves its bundled `public/`.
+> Edits here do not reach there, or the other way about. Where the
 [pastebin](../pastebin) is a single-purpose app with a hand-wired route table,
 rakus is a reusable *server*: give it a folder and it figures out the rest.
 
