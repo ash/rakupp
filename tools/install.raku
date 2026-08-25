@@ -217,6 +217,71 @@ sub cache-dir {
     $d
 }
 
+# ---- the trace log ----------------------------------------------------------
+# Every actionable run appends a step-by-step account of itself — engine
+# build, OS, arguments, resolution, fetches, checksums, hook and suite
+# verdicts, store writes — to ~/.raku/rakupp-install/trace.log, so "install
+# did not work on my machine" can arrive as one attachable file instead of a
+# recollection of a terminal. A failure prints the file's path. Append-only
+# across runs (a later --list must not erase the failure before it); at
+# 512 KB the file rotates once, to trace.log.1. Tracing is a bystander:
+# every write is a `try`, and a HOME where nothing can be written turns the
+# whole thing off rather than adding a failure mode of its own.
+my $TRACE-PATH = '';
+my $RAKU-PATH-TRACED = False;
+
+sub trace(Str $msg) {
+    return unless $TRACE-PATH;
+    try $TRACE-PATH.IO.spurt("{DateTime.now.Str.substr(11, 8)} $msg\n", :append);
+}
+
+# Child output quoted into the trace is capped: a chatty suite must not turn
+# the log into the thing nobody attaches because it is 40 MB.
+sub clip(Str $s, Int $max = 8192) {
+    $s.chars <= $max
+        ?? $s
+        !! $s.substr(0, $max) ~ "\n[… clipped {$s.chars - $max} more chars]"
+}
+
+sub trace-start() {
+    try {
+        my $f = cache-dir.add('trace.log');
+        if $f.e && $f.s > 512 * 1024 {
+            my $old = cache-dir.add('trace.log.1');
+            $old.unlink if $old.e;
+            $f.rename($old.Str);
+        }
+        $TRACE-PATH = $f.Str;
+        $f.spurt("\n==== rakupp install trace | {DateTime.now.Str} ====\n", :append);
+        # the engine's own stamp — WHICH BUILD is the first question of every
+        # report, and it is not knowable from inside the language, so ask the
+        # binary the way a person would
+        my $stamp = 'unknown';
+        with try run $*EXECUTABLE.absolute, '--version', :out, :err {
+            my @l = .out.slurp(:close).lines;
+            .err.slurp(:close);
+            $stamp = (@l[0], @l[2]).grep({ .defined && .chars }).join(' | ') if .exitcode == 0;
+        }
+        trace("engine: $stamp");
+        trace("os: {$*KERNEL.name} / {(try $*DISTRO.Str) // '?'}");
+        trace("exe: {$*EXECUTABLE.absolute}");
+        trace("argv: " ~ (@*ARGS ?? @*ARGS.join(' ') !! '(none)'));
+    }
+}
+
+sub trace-pointer() {
+    note "trace: $TRACE-PATH — attach this file when reporting the problem"
+        if $TRACE-PATH;
+}
+
+# The wrappers the engine writes carry a `raku` shebang (Rakudo's own
+# template, so they run under either engine) — whether that name resolves on
+# THIS machine is exactly the kind of fact a remote trace should carry.
+sub raku-on-path(--> Bool) {
+    my $sep = $*KERNEL.name.starts-with('win') ?? ';' !! ':';
+    ?((%*ENV<PATH> // '').split($sep).first({ $_ ne '' && .IO.add('raku').e }))
+}
+
 sub sha1-str(Str $s) {
     my $t = $*TMPDIR.add("rakupp-install-sha-$*PID");
     $t.spurt($s);
@@ -280,14 +345,17 @@ sub load-index(Bool $refresh) {
     # REA snapshot slots in.
     my $override = %*ENV<RAKUPP_INSTALL_INDEX> // '';
     if $override ne '' && !$override.starts-with('http') {
+        trace("index: local file $override");
         return json-decode($override.IO.slurp);
     }
     my $url = $override ne '' ?? $override !! $INDEX-URL;
     my $cache = cache-dir.add('index.json');
     if !$refresh && $cache.e && (now.to-posix[0] - $cache.modified.to-posix[0]) < $CACHE-TTL {
+        trace("index: cache hit ({$cache}, age {((now.to-posix[0] - $cache.modified.to-posix[0]) / 60).Int} min)");
         return json-decode($cache.slurp);
     }
     note "fetching ecosystem index: $url";
+    trace("index: fetching $url");
     my $text = fetch-text($url);
     my $idx = json-decode($text);    # parse BEFORE caching: a bad fetch must not poison the cache
     $cache.spurt($text);
@@ -311,16 +379,19 @@ sub rea-index() {
         return @REA;
     }
     if $override ne '' && !$override.starts-with('http') {
+        trace("rea-index: local file $override");
         @REA = json-decode($override.IO.slurp).list;
         return @REA;
     }
     my $url = $override ne '' ?? $override !! $REA-INDEX-URL;
     my $cache = cache-dir.add('rea-meta.json');
     if !$REA-REFRESH && $cache.e && (now.to-posix[0] - $cache.modified.to-posix[0]) < $CACHE-TTL {
+        trace("rea-index: cache hit ({$cache})");
         @REA = json-decode($cache.slurp).list;
         return @REA;
     }
     note "fetching the REA archive index: $url";
+    trace("rea-index: fetching $url");
     my $text = fetch-text($url);
     my $idx = json-decode($text);    # parse BEFORE caching — same rule as the zef index
     $cache.spurt($text);
@@ -501,9 +572,11 @@ sub run-build-hook(%e, $root, Str $prefix --> Bool) {
         # the name is spliced into a generated program: module-name matter only
         unless $builder ~~ /^ <[A..Za..z0..9_:'-]>+ $/ {
             note "BUILD FAILED: builder name '$builder' is not a module name";
+            trace("BUILD FAILED: %e<name> — builder name '$builder' is not a module name");
             return False;
         }
         note "building %e<name>: builder $builder";
+        trace("build: %e<name> via builder $builder");
         my $prog = vm-toolchain-shim() ~ q:to/END/.subst('BUILDER', $builder, :g);
             use BUILDER;
             my $t = 'META6.json'.IO.slurp;
@@ -519,13 +592,19 @@ sub run-build-hook(%e, $root, Str $prefix --> Bool) {
         if $p.exitcode != 0 {
             note "BUILD FAILED: builder $builder";
             note $err.indent(2);
+            trace("BUILD FAILED: builder $builder (exit {$p.exitcode})\n" ~ clip($err).indent(4));
             return False;
         }
+        trace("build: builder ok");
         return True;
     }
     my $hook = <Build.rakumod Build.pm6 Build.pm>.map({ $root.IO.add($_) }).first(*.e);
-    return True without $hook;
+    without $hook {
+        trace("build: no hook");
+        return True;
+    }
     note "building %e<name>: {$hook.basename}";
+    trace("build: %e<name> via {$hook.basename}");
     my $p = run $*EXECUTABLE.absolute, '-I', "inst#$prefix", '-I', $root.IO.Str, '-e',
                 vm-toolchain-shim()
                   ~ 'use Build; my $r = Build.new.build($*CWD.Str); exit(($r === False) ?? 1 !! 0)',
@@ -535,8 +614,10 @@ sub run-build-hook(%e, $root, Str $prefix --> Bool) {
     if $p.exitcode != 0 {
         note "BUILD FAILED: {$hook.basename}";
         note $err.indent(2);
+        trace("BUILD FAILED: {$hook.basename} (exit {$p.exitcode})\n" ~ clip($err).indent(4));
         return False;
     }
+    trace("build: {$hook.basename} ok");
     True
 }
 
@@ -544,23 +625,30 @@ sub run-dist-tests(%e, $root, Str $prefix) {
     my @tests = $root.IO.add('t').d
         ?? $root.IO.add('t').dir.grep({ .extension eq 't' | 'rakutest' }).sort
         !! ();
-    return True unless @tests;
+    unless @tests {
+        trace("tests: none shipped");
+        return True;
+    }
     note "testing %e<name>: {@tests.elems} file{@tests.elems == 1 ?? '' !! 's'}";
+    trace("tests: {@tests.elems} file{@tests.elems == 1 ?? '' !! 's'}");
     for @tests -> $t {
         # `-I inst#<prefix>`: the suite must see the dependencies this plan
         # installed into the TARGET store, wherever --to pointed it
         my $p = run $*EXECUTABLE.absolute, '-I', $root.IO.add('lib').Str,
                     '-I', "inst#$prefix", $t.Str,
                     :out, :err, :cwd($root);
+        my $out = $p.out.slurp(:close);
+        my $err = $p.err.slurp(:close);
         if $p.exitcode != 0 {
             note "FAILED: {$t.basename}";
-            note $p.err.slurp(:close).indent(2);
-            $p.out.slurp(:close);
+            note $err.indent(2);
+            # the child's own words are the diagnosis a remote report needs
+            trace("test FAILED: {$t.basename} (exit {$p.exitcode})\n"
+                ~ clip(($err ~ ($out.trim ?? "--- stdout ---\n$out" !! '')).trim).indent(4));
             return False;
         }
-        $p.out.slurp(:close);
-        $p.err.slurp(:close);
     }
+    trace("tests: all green");
     True
 }
 
@@ -572,7 +660,9 @@ sub install-one(%e, Str $prefix, Bool :$no-test, Bool :$force, Bool :$test-only)
 
     my $tarball = $tmp.add('dist.tar.gz').Str;
     note "fetching $url";
+    trace("dist {%e<dist> // %e<name>}: fetching $url");
     fetch-file($url, $tarball);
+    trace("fetched: {$tarball.IO.s} bytes");
 
     # The archive must hash to the SHA-1 its URL names (fez archives are
     # content-addressed). Refuse anything else — this is the checksum gate
@@ -583,9 +673,11 @@ sub install-one(%e, Str $prefix, Bool :$no-test, Bool :$force, Bool :$test-only)
         my $got = sha1-file($tarball);
         die "checksum mismatch for %e<name>: archive is $got, index says $want"
             if $got ne $want;
+        trace("checksum: ok ($want)");
     }
     else {
         note "note: index path carries no checksum for %e<name> — TLS is the only integrity here";
+        trace("checksum: none in the index path — TLS only");
     }
 
     my $p = run 'tar', '-xzf', $tarball, '-C', $tmp.Str, :err;
@@ -598,6 +690,7 @@ sub install-one(%e, Str $prefix, Bool :$no-test, Bool :$force, Bool :$test-only)
             // die "no META6.json in %e<name>'s archive";
 
     my %meta = json-decode($root.add('META6.json').slurp);
+    trace("meta: {%meta<name> // '?'} ver<{%meta<version> // '?'}> auth<{%meta<auth> // ''}> (root {$root.basename})");
 
     if !run-build-hook(%e, $root, $prefix) {
         die "%e<name>: its build hook fails under rakupp — not installing";
@@ -611,6 +704,7 @@ sub install-one(%e, Str $prefix, Bool :$no-test, Bool :$force, Bool :$test-only)
     # product, and the store stays exactly as the plan's dependencies left it
     if $test-only {
         note "tested {%e<dist> // %e<name>} — suite green, not installed (--test)";
+        trace("tested: {%e<dist> // %e<name>} — suite green, not installed");
         return True;
     }
 
@@ -623,6 +717,7 @@ sub install-one(%e, Str $prefix, Bool :$no-test, Bool :$force, Bool :$test-only)
         %files{"bin/{.basename}"} = '' for $root.add('bin').dir.grep(*.f);
     }
     %meta<files> = %files if %files;
+    trace("files: " ~ (%files ?? %files.keys.sort.join(' ') !! 'none'));
 
     # repository-for-spec, not .new: it is the constructor that carries the
     # prefix through to the engine's writer (the same path zef used here).
@@ -635,7 +730,38 @@ sub install-one(%e, Str $prefix, Bool :$no-test, Bool :$force, Bool :$test-only)
         record-owned($prefix, ~$id) if $id ~~ Str;
         $id
     });
+    # Verify what the engine says it wrote, and say so in the trace. The
+    # engine's file writes are silent on failure (a read-only store, a full
+    # disk), and a wrapper that never hit the disk surfaces months later as
+    # "the command is not in ~/.raku/bin" — the least diagnosable words a
+    # report can open with. Catch it HERE, where the trace still knows
+    # everything.
+    if $dist-id ~~ Str {
+        trace("engine install: dist-id $dist-id");
+        my $rec = $prefix.IO.add('dist').add(~$dist-id);
+        unless $rec.e {
+            trace("VERIFY FAILED: dist record {$rec} missing");
+            die "%e<name>: the engine answered dist-id $dist-id but wrote no dist record — is $prefix writable?";
+        }
+        for %files.keys.grep({ .starts-with('bin/') && .chars > 4 && !.substr(4).contains('/') }).sort -> $rel {
+            my $w = $prefix.IO.add('bin').add($rel.substr(4));
+            if $w.e && ($w.x || $*KERNEL.name.starts-with('win')) {
+                trace("verify: wrapper {$w} ok");
+            }
+            else {
+                trace("VERIFY FAILED: wrapper {$w} {$w.e ?? 'is not executable' !! 'missing'}");
+                note "warning: %e<name>: bin wrapper {$w} {$w.e ?? 'is not executable' !! 'was not written'}";
+            }
+        }
+        if !$RAKU-PATH-TRACED && %files.keys.first(*.starts-with('bin/')) {
+            $RAKU-PATH-TRACED = True;
+            trace(raku-on-path()
+                ?? "env: `raku` resolves on PATH — wrapper shebangs will run"
+                !! "env: no `raku` on PATH — wrappers carry a raku shebang; run them as `rakupp <wrapper>`, or symlink raku -> rakupp");
+        }
+    }
     note "installed {%e<dist> // %e<name>}";
+    trace("installed: {%e<dist> // %e<name>}");
     True
 }
 
@@ -725,6 +851,7 @@ sub store-check(Str $prefix) {
 # restores what they depend on), and foreign PROVENANCE downgrades to a
 # warning — the replacement becomes rakupp-owned, and the warning says so.
 sub do-uninstall(@names, Str $prefix, Bool :$force, Bool :$for-reinstall) {
+    trace("uninstall: {@names.join(' ')} from $prefix" ~ ($for-reinstall ?? ' (for reinstall)' !! ''));
     my $p = $prefix.IO;
     unless $p.add('dist').d {
         if $for-reinstall {
@@ -732,6 +859,7 @@ sub do-uninstall(@names, Str $prefix, Bool :$force, Bool :$for-reinstall) {
             return 0;
         }
         note "nothing installed in $prefix";
+        trace("uninstall refused: nothing installed in $prefix");
         return 1;
     }
     my %dists;
@@ -754,11 +882,13 @@ sub do-uninstall(@names, Str $prefix, Bool :$force, Bool :$for-reinstall) {
                 next;
             }
             note "not installed: $want-str";
+            trace("uninstall refused: $want-str is not installed");
             return 1;
         }
         if @hits.elems > 1 {
             note "ambiguous: $want-str matches {@hits.elems} distributions — name a version:";
             note "  {.value<name>}:ver<{.value<version>}>:auth<{.value<auth> // ''}>" for @hits;
+            trace("uninstall refused: $want-str is ambiguous ({@hits.elems} matches)");
             return 1;
         }
         my $dist-id = @hits[0].key;
@@ -775,6 +905,7 @@ sub do-uninstall(@names, Str $prefix, Bool :$force, Bool :$for-reinstall) {
             }
             else {
                 note "$identity was not installed by `rakupp install` — refusing (--force to override)";
+                trace("uninstall refused: $identity is not rakupp-owned");
                 return 1;
             }
         }
@@ -796,6 +927,7 @@ sub do-uninstall(@names, Str $prefix, Bool :$force, Bool :$for-reinstall) {
             }
             else {
                 note "$identity is still depended on by {@dependents.unique.join(', ')} — refusing (--force to override)";
+                trace("uninstall refused: $identity has dependents ({@dependents.unique.join(', ')})");
                 return 1;
             }
         }
@@ -850,6 +982,7 @@ sub do-uninstall(@names, Str $prefix, Bool :$force, Bool :$for-reinstall) {
         });
         %dists{$dist-id}:delete;
         say "uninstalled $identity";
+        trace("uninstalled: $identity ($dist-id)");
     }
     0
 }
@@ -918,6 +1051,21 @@ sub MAIN(
         note "usage: rakupp test Module ...";
         exit 2;
     }
+    # Anything actionable from here on leaves its account in the trace log,
+    # and a fatal ANYWHERE below (a dead mirror, a store that will not lock,
+    # a JSON the codec refuses) still lands there and points the reporter at
+    # the file. `exit` is not an exception, so the usage and store-check
+    # verdicts above and below keep their codes.
+    CATCH {
+        default {
+            trace("FATAL: " ~ .Str);
+            note .Str;
+            trace-pointer();
+            exit 1;
+        }
+    }
+    trace-start();
+    trace("store: $to");
     if $list {
         list-installed($to);
         return;
@@ -976,13 +1124,19 @@ sub MAIN(
 
     $REA-REFRESH = $refresh // False;
     my @index = load-index($refresh // False).list;
+    trace("index: {@index.elems} distributions");
     my %notes;
+    trace("resolve: {@modules.join(' ')}");
     my @plan = resolve(@index, @modules, %notes);
 
     if !@plan && %notes {
         note "cannot resolve: {%notes.map({ "{.key} ({.value})" }).join('; ')}";
+        trace("cannot resolve: {%notes.map({ "{.key} ({.value})" }).join('; ')}");
+        trace-pointer();
         exit 1;
     }
+    trace("plan: {@plan.elems} — " ~ (@plan ?? @plan.map(-> %e { %e<dist> // %e<name> }).join(', ') !! '(empty)'));
+    trace("skipped: {.key} — {.value}") for %notes.sort;
 
     # --force means "do it anyway", so it asks the store nothing. Under
     # `rakupp reinstall` this runs AFTER the removal above — the dists it
@@ -1017,19 +1171,24 @@ sub MAIN(
         # (`rakupp test` still tests the dists it was NAMED, installed or not.)
         if !$is-target && %have{identity-key(%e<name>, %e<version>, %e<auth>, %e<api>)} {
             say "already installed: {%e<dist> // %e<name>} (use --force to reinstall)";
+            trace("already installed: {%e<dist> // %e<name>} — skipped");
             next;
         }
         my $done = try install-one(%e, $to, :$no-test, :$force, :test-only($is-target));
         unless $done {
             if $!.Str.contains('already installed') {
                 say "already installed: {%e<dist> // %e<name>} (use --force to reinstall)";
+                trace("already installed: {%e<dist> // %e<name>} — the engine refused");
                 next;
             }
+            trace("FAILED: {%e<dist> // %e<name>} — {$!.Str}");
             note $!.Str;
             note "reinstall: the previous installation was already removed — `rakupp install {%e<name>}` (or --no-test) to restore"
                 if $reinstall;
+            trace-pointer();
             exit 1;
         }
     }
     say "done: {@plan.elems} distribution{@plan.elems == 1 ?? '' !! 's'} processed into $to";
+    trace("done: {@plan.elems} distribution{@plan.elems == 1 ?? '' !! 's'} processed into $to");
 }

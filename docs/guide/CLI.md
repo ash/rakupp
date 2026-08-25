@@ -319,6 +319,14 @@ index identity disagrees with its own `META6.json` — a different `:auth`,
 say — cannot be recognized until its archive is open, and the engine refuses
 it at the end.
 
+Every run appends a step-by-step account of itself — engine build, OS,
+arguments, resolution, fetches, checksums, hook and suite verdicts, store
+writes down to each bin wrapper — to `~/.raku/rakupp-install/trace.log`
+(at 512 KB it rotates once, to `trace.log.1`). A failed run prints the
+file's path. When an install misbehaves on a machine you cannot see,
+that one attachable file answers which build, which OS and what happened,
+in order — ask for it before asking anything else.
+
 ## MAIN: how a program's own arguments parse
 
 A program with a `sub MAIN` gets Rakudo-compatible argument parsing —

@@ -264,6 +264,21 @@ check %flaky<exit> != 0 && %flaky<err>.contains('test suite fails'),
 my %forced = installer('--no-test', 'Gate::Flaky');
 check %forced<exit> == 0, 'M4: --no-test overrides, loudly chosen';
 
+# ---- the trace log: every run leaves an attachable account ------------------
+# The support loop this closes: "install did not work on my machine" arrives
+# with ~/.raku/rakupp-install/trace.log attached, which opens with the engine
+# build stamp and ends with what actually happened.
+my $trace = $home.add('.raku/rakupp-install/trace.log');
+check $trace.e, 'trace: the log exists';
+my $tlog = $trace.e ?? $trace.slurp !! '';
+check $tlog.contains('==== rakupp install trace'), 'trace: runs open with a header';
+check $tlog.contains('engine: '), 'trace: the engine build stamp is recorded';
+check $tlog.contains('engine install: dist-id '), 'trace: an install records its dist-id';
+check $tlog.contains('verify: wrapper') && $tlog.contains('gate-hello'),
+      'trace: the bin wrapper write is verified on disk';
+check $tlog.contains('test FAILED: '), 'trace: a failing suite names the failing file';
+check %flaky<err>.contains('trace: '), 'trace: a failure points at the log';
+
 # ---- the build hook, and `rakupp test` --------------------------------------
 # Gate::Built is the OpenSSL shape: Build.rakumod imports a build-dep from
 # the target store and generates a file its own suite requires. Driven
