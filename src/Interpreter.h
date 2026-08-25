@@ -1449,8 +1449,35 @@ private:
     std::vector<std::shared_ptr<Program>> keptPrograms_; // keep EVAL'd ASTs alive
     // The compilation unit currently EXECUTING its top level (mainline, a
     // module load, an EVAL/REPL line) — consulted by the bare-name fallback
-    // for Program::declaredTypeNames. Pushed/popped at unit boundaries only.
+    // for Program::declaredTypeNames. Pushed/popped at unit boundaries only —
+    // but unit boundaries happen on WORKER threads too: an S/// replacement
+    // with a {…} block re-parses through evalString per match, so thirty
+    // workers push and pop this one vector at once. The unguarded push_back
+    // was the third race behind concurrent-match-scoping.raku's intermittent
+    // SIGSEGV (two reallocate, the heap corrupts, an innocent destructor
+    // crashes later). Every touch now goes through the accessors below,
+    // locked the way keptPrograms_ is, one line up from where the race lived.
     std::vector<const Program*> unitStack_;
+    void unitPush(const Program* p) {
+        std::unique_lock<std::mutex> kl(sharedMut_, std::defer_lock);
+        if (parallelMode_) kl.lock();
+        unitStack_.push_back(p);
+    }
+    void unitPop() {
+        std::unique_lock<std::mutex> kl(sharedMut_, std::defer_lock);
+        if (parallelMode_) kl.lock();
+        unitStack_.pop_back();
+    }
+    const Program* unitCurrent() {   // innermost executing unit, or null
+        std::unique_lock<std::mutex> kl(sharedMut_, std::defer_lock);
+        if (parallelMode_) kl.lock();
+        return unitStack_.empty() ? nullptr : unitStack_.back();
+    }
+    bool unitIsOutermost(const Program* p) {   // is p the program mainline?
+        std::unique_lock<std::mutex> kl(sharedMut_, std::defer_lock);
+        if (parallelMode_) kl.lock();
+        return !unitStack_.empty() && unitStack_.front() == p;
+    }
     void registerBuiltins();
 
     // asInvocant: we only need this slot to reach INTO the value (an invocant or a

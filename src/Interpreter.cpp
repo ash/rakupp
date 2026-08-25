@@ -3466,8 +3466,8 @@ int Interpreter::run(Program& prog) {
     // before the mainline starts, and was being stamped 6.d.
     langRev_ = prog.langRev;
     if (prog.langRev != 1) anyRevSwitch_ = true;
-    unitStack_.push_back(&prog);
-    struct UnitGuard { std::vector<const Program*>& s; ~UnitGuard() { s.pop_back(); } } unitG{unitStack_};
+    unitPush(&prog);
+    struct UnitGuard { Interpreter& I; ~UnitGuard() { I.unitPop(); } } unitG{*this};
     { // mainline sink warnings, printed before execution (Rakudo compile-time style)
         bool noWorries = false;
         for (auto& s : prog.stmts)
@@ -3561,7 +3561,7 @@ int Interpreter::run(Program& prog) {
         // goes in BEFORE the pre-declare loop below, so the top-level `my`s it
         // defines land in the pad — pre-declared-and-live from the start,
         // which is exactly the visibility the map gave them.
-        if (!global_->layout && &prog == unitStack_.front()) {
+        if (!global_->layout && unitIsOutermost(&prog)) {
             if (auto L = resolvePads(prog.stmts, nullptr)) {
                 global_->layout = L;
                 global_->pad.resize(L->names.size());
@@ -4824,8 +4824,8 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
         { std::unique_lock<std::mutex> kl(sharedMut_, std::defer_lock); if (parallelMode_) kl.lock(); keptPrograms_.push_back(prog); }
         // this module is now the executing unit (bare-name forward references
         // resolve against ITS declarations while its top level runs)
-        unitStack_.push_back(prog.get());
-        struct UnitGuard { std::vector<const Program*>& s; ~UnitGuard() { s.pop_back(); } } unitG{unitStack_};
+        unitPush(prog.get());
+        struct UnitGuard { Interpreter& I; ~UnitGuard() { I.unitPop(); } } unitG{*this};
         auto saved = tctx_.cur;
         std::string savedFinish = finishData_;
         finishData_ = finish; // this module's $=finish data block
@@ -5201,8 +5201,8 @@ Value Interpreter::evalString(const std::string& src, bool mainlinePH, bool* inc
                        "Cannot use placeholder parameter " + ph + " in the mainline");
     { std::unique_lock<std::mutex> kl(sharedMut_, std::defer_lock); if (parallelMode_) kl.lock(); keptPrograms_.push_back(prog); } // keep AST alive for closures defined within
     // this EVAL/REPL line is its own unit for the bare-name fallback
-    unitStack_.push_back(prog.get());
-    struct UnitGuard { std::vector<const Program*>& s; ~UnitGuard() { s.pop_back(); } } unitG{unitStack_};
+    unitPush(prog.get());
+    struct UnitGuard { Interpreter& I; ~UnitGuard() { I.unitPop(); } } unitG{*this};
     Value last = Value::any();
     for (auto& s : prog->stmts) {
         // An END block in EVAL'd code runs at the END of the whole program (not here),
@@ -24396,7 +24396,7 @@ Value Interpreter::eval(Expr* e) {
                     // stub made `say dfdf` print "(dfdf)". A unit whose
                     // declarations the parser could not enumerate (a cached
                     // Program, a computed `class ::(EXPR)` name) stays lenient.
-                    const Program* unit = unitStack_.empty() ? nullptr : unitStack_.back();
+                    const Program* unit = unitCurrent();
                     bool declared = !unit || unit->typeNamesOpaque ||
                                     unit->declaredTypeNames.count(n) ||
                                     unit->declaredTypeNames.count(rn);
