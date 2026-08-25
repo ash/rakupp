@@ -64,6 +64,15 @@ sub ck($got, $want, $l) { unless $got eqv $want { note "FAIL: $l — {$got.raku}
     ck(now - $t0 < 30, True, '.kill ends the process (await returns early)');
 }
 
+# 4b. await hands back the finished proc, as Rakudo keeps the promise with a
+#     Proc — `.exitcode`/`.so` on the result must work.
+{
+    my $p = Proc::Async.new('sh', '-c', 'exit 7');
+    my $result = await $p.start;
+    ck($result.exitcode, 7, 'await returns the proc; .exitcode reads it');
+    ck($result.so, False, '.so on the await result is the success flag');
+}
+
 # 5. A second .start throws, as in Rakudo — the alternative is spawning twice.
 {
     my $p = Proc::Async.new('true');

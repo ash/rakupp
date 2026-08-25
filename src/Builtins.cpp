@@ -10650,7 +10650,16 @@ void Interpreter::registerBuiltins() {
                 (*p.hash())["status"] = Value::str("Kept");
                 return p;
             }
-            if (kind == "proc") { I.runProcPromise(p, 0); return p; }
+            if (kind == "proc") {
+                I.runProcPromise(p, 0);
+                // Rakudo keeps the .start promise with a Proc — hand back the
+                // finished proc (.exitcode/.so are the exit status), the same
+                // thing the whenever handler passes to its block. Returning the
+                // promise wrapper made `(await $p.start).exitcode` a method
+                // error here while Rakudo prints the code.
+                auto fin = p.hash()->find("proc");
+                return fin != p.hash()->end() ? fin->second : p;
+            }
             if (kind == "proc-ready") {
                 if (p.hash()->count("proc") && (*p.hash())["proc"].hash()) {
                     auto& ph = *(*p.hash())["proc"].hash();
