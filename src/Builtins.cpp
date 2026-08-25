@@ -908,6 +908,18 @@ static bool rakuIdentKey(const std::string& s) {
 }
 std::string rakuRepr(const Value& v, int depth, std::set<const void*>& seen) {
     forceLazy(v);   // an unpulled gather renders its ELEMENTS, not `().Seq`
+    // an ENDLESS sequence renders its cached prefix and MARKS the rest, Rakudo
+    // style — nested occurrences included. (The .raku method arm pre-materialises
+    // 100 elements for the top-level call; a nested one shows what is cached.)
+    if (v.t == VT::Array && v.arr() && v.ext() &&
+        std::static_pointer_cast<LazySeqState>(v.ext())->infinite) {
+        std::string out = "(";
+        for (size_t i = 0; i < v.arr()->size() && i < 100; i++) {
+            if (i) out += ", ";
+            out += rakuRepr((*v.arr())[i], depth + 1, seen);
+        }
+        return out + "...).lazy.Seq";
+    }
     // `.raku` of a Proxy shows the VALUE it holds, not its FETCH/STORE pair —
     // URI::Query hands back lists of Proxy containers to keep them immutable.
     if (v.t == VT::Hash && v.hashKind == "Proxy" && v.hash() && g_deproxy)
@@ -4209,6 +4221,23 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         Value& posV = (*inv.hash())["pos"];
         ValueList& items = itemsV.arrRef();
         long long n = (long long)items.size();
+        // A LAZY source: the items Value is the sequence itself (see the
+        // .iterator arm), sharing its materialised prefix and its LazySeqState —
+        // grow the prefix on demand instead of stopping at whatever happened to
+        // be cached when the iterator was made (issue #30: `(1 xx *).iterator`
+        // answered one element and then IterationEnd forever).
+        auto lazySrc = itemsV.t == VT::Array && itemsV.ext()
+                           ? std::static_pointer_cast<LazySeqState>(itemsV.ext())
+                           : std::shared_ptr<LazySeqState>();
+        auto ensure = [&](long long want) { // grow the cache to `want` elements while the source can
+            if (!lazySrc || !lazySrc->appendNext) return;
+            while (n < want && lazySrc->appendNext(items)) n = (long long)items.size();
+        };
+        auto drainFinite = [&] { // materialise ALL of a source that is known to end
+            if (!lazySrc || !lazySrc->appendNext || lazySrc->infinite) return;
+            while (lazySrc->appendNext(items)) {}
+            n = (long long)items.size();
+        };
         auto iterEnd = [] { return Value::typeObj("IterationEnd"); };
         auto pushInto = [&](const Value& tgt, long long count) -> long long {
             long long pushed = 0;
@@ -4216,32 +4245,39 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 while (posV.i < n && pushed < count) { tgt.arr()->push_back(items[posV.i++]); pushed++; }
             return pushed;
         };
-        if (m == "pull-one") return posV.i < n ? items[posV.i++] : iterEnd();
+        if (m == "pull-one") { ensure(posV.i + 1); return posV.i < n ? items[posV.i++] : iterEnd(); }
         if (m == "push-all" || m == "push-until-lazy" || m == "push-exactly" || m == "push-at-least") {
             if (m == "push-all" || m == "push-until-lazy") {
+                drainFinite(); // an endless source pushes only its materialised prefix
                 if (!args.empty()) pushInto(args[0], n);
+                // push-until-lazy stopping FOR laziness answers the iterator, not
+                // IterationEnd: there is more, just not now
+                if (m == "push-until-lazy" && lazySrc && lazySrc->infinite) return inv;
                 return iterEnd();
             }
             long long want = args.size() > 1 ? args[1].toInt() : 0;
+            ensure(posV.i + want);
             long long pushed = args.empty() ? 0 : pushInto(args[0], want);
             return pushed < want ? iterEnd() : Value::integer(pushed);
         }
-        if (m == "sink-all") { posV.i = n; return iterEnd(); }
+        if (m == "sink-all") { drainFinite(); posV.i = n; return iterEnd(); }
         // the skip methods answer an INT (1/0), not a Bool
-        if (m == "skip-one") { bool ok = posV.i < n; if (ok) posV.i++; return Value::integer(ok ? 1 : 0); }
+        if (m == "skip-one") { ensure(posV.i + 1); bool ok = posV.i < n; if (ok) posV.i++; return Value::integer(ok ? 1 : 0); }
         if (m == "skip-at-least") {
             long long want = args.empty() ? 0 : args[0].toInt();
+            ensure(posV.i + want);
             long long skipped = std::min(want, n - posV.i); if (skipped < 0) skipped = 0;
             posV.i += skipped;
             return Value::integer(skipped >= want ? 1 : 0);
         }
         if (m == "skip-at-least-pull-one") {
             long long want = args.empty() ? 0 : args[0].toInt();
+            ensure(posV.i + std::max(0LL, want) + 1);
             posV.i = std::min(n, posV.i + std::max(0LL, want));
             return posV.i < n ? items[posV.i++] : iterEnd();
         }
-        if (m == "count-only") return Value::integer(n - posV.i); // remaining, no advance
-        if (m == "bool-only") return Value::boolean(posV.i < n);
+        if (m == "count-only") { drainFinite(); return Value::integer(n - posV.i); } // remaining, no advance
+        if (m == "bool-only") { ensure(posV.i + 1); return Value::boolean(posV.i < n); }
         if (m == "is-lazy") { auto it = inv.hash()->find("lazy"); return Value::boolean(it != inv.hash()->end() && it->second.truthy()); }
         // an iterator over a RANDOMISED or unordered source promises neither a
         // stable order nor an increasing one; the flag rides on the iterator

@@ -1,6 +1,68 @@
 #include "AsciiCtype.h"
 #include "MethodCallSegment.h"
 
+namespace rakupp {
+
+// One element of a .flat: append x (or its spread) to out. Shared by the eager
+// arm and the lazy view over an endless source (issue #30 follow-up) — the
+// rules are .flat's own: a nested LIST always spreads, a nested ARRAY container
+// is held back by its parent being an Array, `.item` opts out, and `:hammer`
+// (6.e) flattens containers regardless.
+static void flatOneInto(const Value& x, bool ofArray, bool hammer, ValueList& out) {
+    if (hammer) {
+        if (x.t == VT::Array && x.arr()) { for (auto& e : *x.arr()) flatOneInto(e, false, true, out); return; }
+        if (x.t == VT::Hash && x.hash() && x.hashKind.empty()) {
+            for (auto& kv : *x.hash()) out.push_back(Value::pair(kv.first, kv.second));
+            return;
+        }
+        if (x.t == VT::Range) { for (auto& e : x.flatten()) out.push_back(e); return; }
+        out.push_back(x);
+        return;
+    }
+    if (x.t == VT::Array && x.arr() && !x.itemized && (x.isList || !ofArray))
+        for (auto& e : *x.arr()) flatOneInto(e, !x.isList, false, out);
+    else if (!ofArray && x.t == VT::Hash && x.hash() && x.hashKind.empty())
+        for (auto& kv : *x.hash()) out.push_back(Value::pair(kv.first, kv.second));
+    else if (!ofArray && x.t == VT::Range)
+        for (auto& e : x.flatten()) out.push_back(e);
+    else out.push_back(x);
+}
+
+// .rotor/.batch argument parsing, shared by the eager arm and the lazy view
+// over an endless source. Sizes CYCLE (rotor(2, 3) is windows of 2, 3, 2, …);
+// `size => gap` starts the next window size+gap later (negative overlaps);
+// batch implies :partial, rotor drops a short final window unless :partial.
+struct RotorSpec { long long n, step; };
+static void parseRotorSpecs(const ValueList& args, bool isBatch,
+                            std::vector<RotorSpec>& specs, bool& partial) {
+    for (auto& a : args)
+        if (a.isNumeric() && a.toInt() <= 0)
+            throw RakuError{Value::typeObj("X::OutOfRange"),
+                "batch size is out of range. Is: " + std::to_string(a.toInt()) + ", should be in 1..^Inf"};
+    partial = isBatch;
+    // `.rotor(*@cycle)` is SLURPY, so a Positional argument spreads:
+    // `.rotor(flat (3 xx $a), (2 xx $b))` hands over one list and means
+    // the sizes inside it.
+    ValueList flatArgs;
+    for (auto& a : args) {
+        if ((a.t == VT::Array || a.t == VT::Range) && !a.itemized)
+            for (auto& x : a.flatten()) flatArgs.push_back(x);
+        else flatArgs.push_back(a);
+    }
+    for (auto& a : flatArgs) {
+        if (a.t == VT::Pair && a.s == "partial") { if (!a.pairVal() || a.pairVal()->truthy()) partial = true; }
+        else if (a.t == VT::Pair && a.pairVal()) {
+            long long n = a.pairKey() ? a.pairKey()->toInt() : std::atoll(a.s.c_str());
+            if (n < 1) n = 1;
+            specs.push_back({n, n + a.pairVal()->toInt()});
+        }
+        else if (a.isNumeric()) { long long n = a.toInt(); if (n < 1) n = 1; specs.push_back({n, n}); }
+    }
+    if (specs.empty()) specs.push_back({1, 1});
+}
+
+} // namespace rakupp
+
 // The TAIL of the method-dispatch chain.
 //
 // methodCallInner was a single 9,138-line function — 61% of Builtins.cpp, and
@@ -377,10 +439,12 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             return Value::boolean(true);
         }
         if (infinite) {
-            // operations that need the end of the list can't complete on an infinite source
+            // operations that need the end of the list can't complete on an infinite
+            // source (.List/.Array/.gist stay ANSWERABLE — lazy views and "(...)"
+            // — in their own arms below, as in Rakudo)
             if (m == "elems" || m == "end" || m == "pop" || m == "tail" || m == "reverse" ||
-                m == "sort" || m == "eager" || m == "List" || m == "Array" || m == "sum" ||
-                m == "min" || m == "max" || m == "join" || m == "Str" || m == "gist" ||
+                m == "sort" || m == "eager" || m == "sum" ||
+                m == "min" || m == "max" || m == "join" || m == "Str" ||
                 m == "reduce")
                 throw RakuError{Value::typeObj("X::Cannot::Lazy"), "Cannot " + m + " a lazy list onto an Array"};
             if (m == "shift") { materializeLazy(inv, 1); if (inv.arr()->empty()) return Value::nil(); Value v = inv.arr()->front(); inv.arr()->erase(inv.arr()->begin()); return v; }
@@ -505,6 +569,114 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             Value out = Value::array(); out.isList = true;
             if (args.empty()) return inv.arr()->empty() ? Value::nil() : (*inv.arr())[0]; // scalar .head
             for (size_t i = 0; i < n && i < inv.arr()->size(); i++) out.arr()->push_back((*inv.arr())[i]);
+            return out;
+        }
+        // ---- ENDLESS-source views (issue #30 follow-up). Each stays LAZY, so
+        // `.kv`/`.pairs`/… over `1 xx *` stream instead of freezing at whatever
+        // prefix happened to be materialised. Finite lazies keep the
+        // force-then-eager path (the forceAll block above).
+        if (infinite && (m == "values" || m == "Seq" || m == "list" || m == "List" ||
+                         m == "lazy" || m == "cache")) {
+            Value out = inv; out.isList = true; // the same shared cache + state, list-shaped
+            return out;
+        }
+        if (infinite && m == "Array") { Value out = inv; out.isList = false; return out; } // a lazy Array (Rakudo)
+        // (.gist and .raku of an endless source are answered in segment 2, which
+        // runs before this one — see MethodCallPart2's gist/raku arms)
+        if (infinite && m == "keys") { // 0, 1, 2, … — as endless as the source
+            Value out = Value::array(); out.isList = true;
+            auto st = std::make_shared<LazySeqState>(); st->infinite = true;
+            st->appendNext = [](ValueList& cache) -> bool {
+                cache.push_back(Value::integer((long long)cache.size()));
+                return true;
+            };
+            out.extM() = st;
+            return out;
+        }
+        if (infinite && m == "kv") { // index, value, index, value, …
+            Value src = inv; Interpreter* self = this;
+            Value out = Value::array(); out.isList = true;
+            auto st = std::make_shared<LazySeqState>(); st->infinite = true;
+            st->appendNext = [self, src](ValueList& cache) -> bool {
+                size_t k = cache.size() / 2; // two cache entries per source element
+                self->materializeLazy(src, k + 1);
+                if (k >= src.arr()->size()) return false;
+                cache.push_back(Value::integer((long long)k));
+                cache.push_back((*src.arr())[k]);
+                return true;
+            };
+            out.extM() = st;
+            return out;
+        }
+        if (infinite && (m == "pairs" || m == "antipairs")) {
+            bool anti = m == "antipairs";
+            Value src = inv; Interpreter* self = this;
+            Value out = Value::array(); out.isList = true;
+            auto st = std::make_shared<LazySeqState>(); st->infinite = true;
+            st->appendNext = [self, src, anti](ValueList& cache) -> bool {
+                size_t k = cache.size();
+                self->materializeLazy(src, k + 1);
+                if (k >= src.arr()->size()) return false;
+                const Value& v = (*src.arr())[k];
+                Value p;
+                if (anti) { // value => index
+                    p = Value::pair(v.toStr(), Value::integer((long long)k));
+                    p.pairKeyM() = std::make_shared<Value>(v);
+                }
+                else { // index => value, with an Int key (mirrors the eager arm)
+                    p = Value::pair(std::to_string(k), v);
+                    p.pairKeyM() = std::make_shared<Value>(Value::integer((long long)k));
+                }
+                cache.push_back(std::move(p));
+                return true;
+            };
+            out.extM() = st;
+            return out;
+        }
+        if (infinite && m == "flat") {
+            bool hammer = false;
+            for (auto& a : args)
+                if (a.t == VT::Pair && a.s == "hammer")
+                    hammer = !a.pairVal() || a.pairVal()->truthy();
+            Value src = inv; Interpreter* self = this;
+            Value out = Value::array(); out.isList = true; out.s = "Seq";
+            auto st = std::make_shared<LazySeqState>(); st->infinite = true;
+            auto spos = std::make_shared<size_t>(0); // next source element to spread
+            st->appendNext = [self, src, hammer, spos](ValueList& cache) -> bool {
+                self->materializeLazy(src, *spos + 1);
+                if (*spos >= src.arr()->size()) return false;
+                // a Seq's element spreads by the LIST rule (ofArray = false); may
+                // add ZERO elements (an empty sublist) — callers simply re-pull
+                flatOneInto((*src.arr())[(*spos)++], false, hammer, cache);
+                return true;
+            };
+            out.extM() = st;
+            return out;
+        }
+        if (infinite && (m == "rotor" || m == "batch")) {
+            std::vector<RotorSpec> specs;
+            bool partial;
+            parseRotorSpecs(args, m == "batch", specs, partial);
+            Value src = inv; Interpreter* self = this;
+            Value out = Value::array(); out.isList = true;
+            auto st = std::make_shared<LazySeqState>(); st->infinite = true;
+            auto pos = std::make_shared<size_t>(0); // next source index
+            auto cyc = std::make_shared<size_t>(0); // spec cycle counter
+            st->appendNext = [self, src, specs, partial, pos, cyc](ValueList& cache) -> bool {
+                const RotorSpec& sp = specs[*cyc % specs.size()];
+                self->materializeLazy(src, *pos + (size_t)sp.n);
+                size_t have = src.arr()->size();
+                if (*pos >= have) return false;
+                if (*pos + (size_t)sp.n > have && !partial) return false;
+                Value chunk = Value::array(); chunk.isList = true;
+                for (size_t j = *pos; j < *pos + (size_t)sp.n && j < have; j++)
+                    chunk.arr()->push_back((*src.arr())[j]);
+                cache.push_back(std::move(chunk));
+                (*cyc)++;
+                *pos += (size_t)(sp.step < 1 ? 1 : sp.step);
+                return true;
+            };
+            out.extM() = st;
             return out;
         }
     }
@@ -930,29 +1102,8 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 if (a.t == VT::Pair && a.s == "hammer")
                     hammer = !a.pairVal() || a.pairVal()->truthy();
             Value out = Value::array(); out.isList = true; out.s = "Seq";
-            std::function<void(const Value&, bool)> go = [&](const Value& x, bool ofArray) {
-                if (hammer) {
-                    if (x.t == VT::Array && x.arr()) { for (auto& e : *x.arr()) go(e, false); return; }
-                    if (x.t == VT::Hash && x.hash() && x.hashKind.empty()) {
-                        for (auto& kv : *x.hash()) out.arr()->push_back(Value::pair(kv.first, kv.second));
-                        return;
-                    }
-                    if (x.t == VT::Range) { for (auto& e : x.flatten()) out.arr()->push_back(e); return; }
-                    out.arr()->push_back(x);
-                    return;
-                }
-                // a nested LIST always spreads; only a nested ARRAY container is
-                // held back by its parent being an Array
-                if (x.t == VT::Array && x.arr() && !x.itemized && (x.isList || !ofArray))
-                    for (auto& e : *x.arr()) go(e, !x.isList);
-                else if (!ofArray && x.t == VT::Hash && x.hash() && x.hashKind.empty())
-                    for (auto& kv : *x.hash()) out.arr()->push_back(Value::pair(kv.first, kv.second));
-                else if (!ofArray && x.t == VT::Range)
-                    for (auto& e : x.flatten()) out.arr()->push_back(e);
-                else out.arr()->push_back(x);
-            };
             bool topOfArray = inv.t == VT::Array && !inv.isList;
-            for (auto& x : items) go(x, topOfArray);
+            for (auto& x : items) flatOneInto(x, topOfArray, hammer, *out.arr());
             return out;
         }
         // `.eager` on a concrete Array is the identity — it keeps the same
@@ -1249,40 +1400,14 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             return h;
         }
         if (m == "rotor" || m == "batch") { // chunk into sublists of a fixed size
-            for (auto& a : args)
-                if (a.isNumeric() && a.toInt() <= 0)
-                    throw RakuError{Value::typeObj("X::OutOfRange"),
-                        "batch size is out of range. Is: " + std::to_string(a.toInt()) + ", should be in 1..^Inf"};
-
-            // Several positionals CYCLE: rotor(2, 3) is windows of 2, 3, 2, 3, …
-            // Each spec is a size, or `size => gap` where the next window starts
-            // size+gap later (a negative gap overlaps).
-            struct Spec { long long n, step; };
-            std::vector<Spec> specs;
-            bool partial = (m == "batch"); // batch always keeps a short final chunk; rotor drops it unless :partial
-            // `.rotor(*@cycle)` is SLURPY, so a Positional argument spreads:
-            // `.rotor(flat (3 xx $a), (2 xx $b))` hands over one list and means
-            // the sizes inside it. Ignoring that left no specs at all, and every
-            // element came back in a chunk of its own.
-            ValueList flatArgs;
-            for (auto& a : args) {
-                if ((a.t == VT::Array || a.t == VT::Range) && !a.itemized)
-                    for (auto& x : a.flatten()) flatArgs.push_back(x);
-                else flatArgs.push_back(a);
-            }
-            for (auto& a : flatArgs) {
-                if (a.t == VT::Pair && a.s == "partial") { if (!a.pairVal() || a.pairVal()->truthy()) partial = true; }
-                else if (a.t == VT::Pair && a.pairVal()) {
-                    long long n = a.pairKey() ? a.pairKey()->toInt() : std::atoll(a.s.c_str());
-                    if (n < 1) n = 1;
-                    specs.push_back({n, n + a.pairVal()->toInt()});
-                }
-                else if (a.isNumeric()) { long long n = a.toInt(); if (n < 1) n = 1; specs.push_back({n, n}); }
-            }
-            if (specs.empty()) specs.push_back({1, 1});
+            // sizes cycle, `size => gap`, :partial — parsing shared with the
+            // lazy endless-source arm (parseRotorSpecs above)
+            std::vector<RotorSpec> specs;
+            bool partial;
+            parseRotorSpecs(args, m == "batch", specs, partial);
             Value out = Value::array(); out.isList = true;
             for (size_t i = 0, k = 0; i < items.size(); k++) {
-                const Spec& sp = specs[k % specs.size()];
+                const RotorSpec& sp = specs[k % specs.size()];
                 if (i + (size_t)sp.n > items.size() && !partial) break;
                 Value chunk = Value::array(); chunk.isList = true;
                 for (size_t j = i; j < i + (size_t)sp.n && j < items.size(); j++) chunk.arr()->push_back(items[j]);

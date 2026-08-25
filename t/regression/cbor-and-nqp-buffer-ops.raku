@@ -18,7 +18,12 @@ my $v = -17;
 @fail.push('+^-arg')      unless two(32, +^$v) eq '32,16';
 @fail.push('+^-listop')   unless (32, +^$v).elems == 2;
 @fail.push('+^-say-ctx')  unless "{+^$v}" eq '16';
-@fail.push('~^-arg')      unless two(0, ~^0) ne '';   # just parses / runs
+# ~^ on a non-buffer is Rakudo's SOFT X::NYI Failure: it must parse as an
+# argument after a comma and bind — detonating only when the sub USES it
+# (the old `two(0, ~^0) ne ''` form asserted a usable value, which dies on
+# Rakudo too; the parse is what this line guards)
+@fail.push('~^-arg')      unless !defined(try two(0, ~^0)) && $!.message.contains('not yet implemented');
+@fail.push('~^-buf')      unless (~^buf8.new(1, 2)).list eqv (254, 253).list;
 
 # --- Bool is an Int (nqp::istype + ~~)
 @fail.push('Bool-istype-Int')     unless nqp::istype(True, Int);

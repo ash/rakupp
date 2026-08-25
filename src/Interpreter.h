@@ -616,6 +616,7 @@ public:
                      ValueList* collect = nullptr,
                      const std::function<void()>& rebind = nullptr); // handles redo/next/last + FIRST/LAST; false => last.
                                                     // collect!=null: append each iteration's value (value context)
+    void runLoopLast(Block* body, const std::shared_ptr<Env>& scope); // LAST {…} at loop end, in the final iteration's scope
 
     // calling
     Value callCallable(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs = nullptr, bool ownFrame = false, bool arityCheck = false);
@@ -1747,6 +1748,7 @@ void   rtSpreadArg(ValueList& as, const Value& v, bool argPos); // |x spread int
 Value  rtHyperMethod(Interpreter& I, const Value& inv, const std::string& m, ValueList args); // >>.method
 Value  rtSlipVal(const Value& v);   // |x as a list element (a List that splices, pre-spread deep)
 Value  rtSlipShallow(const Value& v); // |x in value position (one-level splice marker)
+void   rtXxAppend(ValueList& out, Value one); // one `xx` replication: a Slip contributes its elements
 Value  rtSpliceIfList(const Value& v); // [..] item: a List value splices one level
 Value  rtOneArgItem(const Value& v);   // [..] one-arg rule: single list-valued item spreads
 Value  rtHyperItem(const Value& v);    // [..] hyper item: stays one element, isList cleared

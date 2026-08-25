@@ -212,6 +212,10 @@ struct Codegen {
             // `say (1 ... * > 5).List` is a say of a Seq, not a say of a closure.
             case NK::Binary: { auto* b = static_cast<Binary*>(e);
                 if (b->op == "..." || b->op == "...^" || b->op == "^..." || b->op == "^...^") return false;
+                // `xx` never curries either: a RHS `*` means an endless repetition
+                // and a LHS `*` is repeated as a plain Whatever VALUE (`* xx 3` is
+                // (* * *)) — both handled at runtime, like the interpreter.
+                if (b->op == "xx") return false;
                 return hasWhatever(b->lhs.get()) || hasWhatever(b->rhs.get()); }
             case NK::Unary:  return hasWhatever(static_cast<Unary*>(e)->operand.get());
             case NK::Ternary: { auto* t = static_cast<Ternary*>(e); return hasWhatever(t->cond.get()) || hasWhatever(t->then.get()) || hasWhatever(t->els.get()); }
@@ -1122,10 +1126,19 @@ struct Codegen {
                          + (sub->nonMut ? "true" : "false") + ")";
                 }
                 if (b->op == "xx") {
-                    // list repetition thunks its left side (re-evaluate per copy)
+                    // `EXPR xx *` is an endless LAZY sequence whose thunk must
+                    // outlive this function's locals — no native arm; fall back
+                    // to bundling, where the interpreter's lazy path is correct.
+                    if (b->rhs->kind == NK::Whatever ||
+                        (b->rhs->kind == NK::NameTerm &&
+                         (static_cast<NameTerm*>(b->rhs.get())->name == "Inf" ||
+                          static_cast<NameTerm*>(b->rhs.get())->name == "\xe2\x88\x9e")))
+                        unsupported("an endless `xx *` repetition");
+                    // list repetition thunks its left side (re-evaluate per copy);
+                    // rtXxAppend splices a Slip's elements (`|(1,2) xx 2` is 4 elems)
                     std::string L = ex(b->lhs.get()), R = ex(b->rhs.get());
-                    return "([&]()->Value{ long long _n=(" + R + ").toInt(); Value _o=Value::array(); _o.isList=true; "
-                           "for(long long _i=0;_i<_n;_i++) _o.arr()->push_back(" + L + "); return _o; }())";
+                    return "([&]()->Value{ long long _n=(" + R + ").toInt(); Value _o=Value::array(); _o.isList=true; _o.s=\"Seq\"; "
+                           "for(long long _i=0;_i<_n;_i++) rtXxAppend(*_o.arr(), " + L + "); return _o; }())";
                 }
                 if (b->op == "^..." || b->op == "^...^")
                     unsupported("a ^...-form sequence"); // no native arm: fall back rather than die in applyArith

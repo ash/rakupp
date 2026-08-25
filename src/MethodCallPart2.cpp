@@ -3578,7 +3578,23 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     // An OBJECT's gist is the interpreter's — Class.new(attr => …), a user .gist
     // method, an exception's message. Value::gist() has no access to any of that
     // and falls back to `Class<obj>`, so `say $x` and `say $x.gist` disagreed.
-    if (m == "gist") return Value::str(inv.t == VT::Object ? gistOf(inv) : inv.gist());
+    // A LAZY list goes through gistOf too: an endless one must answer "(...)"
+    // (Rakudo), not pass its cached prefix off as the whole list.
+    if (m == "gist") return Value::str(inv.t == VT::Object ? gistOf(inv)
+        : inv.t == VT::Array && inv.arr() && inv.ext() ? gistOf(inv)
+        : inv.gist());
+    if (m == "raku" && inv.t == VT::Array && inv.arr() && inv.ext() &&
+        std::static_pointer_cast<LazySeqState>(inv.ext())->infinite) {
+        // .raku of an endless sequence: Rakudo shows the first 100 elements,
+        // then marks the rest (the string still must not claim to be complete)
+        materializeLazy(inv, 100);
+        std::string out = "(";
+        for (size_t i = 0; i < inv.arr()->size() && i < 100; i++) {
+            if (i) out += ", ";
+            out += rakuRepr((*inv.arr())[i]);
+        }
+        return Value::str(out + "...).lazy.Seq");
+    }
     if (m == "raku") return Value::str(rakuRepr(inv));
     if (m == "Slip") { // a Slip flattens into any list-building context (from-list, list literals)
         if (inv.t == VT::Array) { Value r = inv; r.isList = true; r.s = "Slip"; return r; }
@@ -3812,7 +3828,15 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         Value it = Value::makeHash(); it.hashKind = "Iterator";
         Value items = Value::array();
         bool lazy = false;
-        if (inv.t == VT::Array && inv.arr()) { *items.arr() = *inv.arr(); lazy = inv.b; }
+        if (inv.t == VT::Array && inv.arr() && inv.ext()) {
+            // a lazy sequence: keep the SOURCE value as the items (sharing its
+            // materialised prefix and its LazySeqState) so the protocol methods
+            // can extend it — copying the prefix froze `(1 xx *).iterator` after
+            // its first cached element (issue #30)
+            items = inv;
+            lazy = inv.b || std::static_pointer_cast<LazySeqState>(inv.ext())->infinite;
+        }
+        else if (inv.t == VT::Array && inv.arr()) { *items.arr() = *inv.arr(); lazy = inv.b; }
         else if (inv.t == VT::Range) { *items.arr() = inv.flatten();
             lazy = inv.b || inv.rTo() >= 9000000000000000000LL; } // infinite / `lazy`-marked range
         else if (inv.t == VT::Hash) { // plain hash and Set/Bag/Mix iterate their pairs

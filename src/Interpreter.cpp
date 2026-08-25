@@ -1433,6 +1433,17 @@ Value rtSlipVal(const Value& v) {
     return out;
 }
 
+// One replication for `xx`: a Slip contributes its ELEMENTS, everything else is
+// one element — `|(1,2) xx 2` is (1 2 1 2), not ((1 2) (1 2)) (issue #30).
+// Deliberately uniform: Rakudo's literal `Empty xx 3` keeps three Empty elements
+// only because its constant-folded LHS skips the thunk — the SAME Slip through a
+// variable, a call, or `Slip.new` splices there too. Roast asserts neither.
+void rtXxAppend(ValueList& out, Value one) {
+    if (one.t == VT::Array && one.arr() && one.isList && one.s == "Slip")
+        for (auto& e : *one.arr()) out.push_back(e);
+    else out.push_back(std::move(one));
+}
+
 // A bareword term for native codegen — the interpreter's NameTerm tail: an
 // env-bound value, a zero-arg &routine call, a zero-arg builtin, else a type object.
 // The bareword VALUE constants — `pi`, `e`, `i`, `tau`, and the three that are
@@ -5567,17 +5578,65 @@ Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink) {
     return last;
 }
 
+// LAST {…} once, when a loop ENDS — by exhausting its source, its condition
+// going false, or a `last` (wherever the `last` came from: the body, a nested
+// call, a NEXT or FIRST phaser). Runs in `scope`, the final iteration's scope,
+// so the loop variable holds its last value ("L at $_"). NOT run when the loop
+// unwinds some other way: a `return`, an exception, or a labeled `last` that
+// targets an OUTER loop (Rakudo skips the inner loop's LAST then too).
+// A `return` inside the phaser leaves the enclosing routine; with no routine it
+// is X::ControlFlow::Return — the same contract as the in-loop phaser runners.
+void Interpreter::runLoopLast(Block* body, const std::shared_ptr<Env>& scope) {
+    if (!body) return;
+    auto saved = tctx_.cur; tctx_.cur = scope;
+    try { runLastPhasers(body->stmts); }
+    catch (ReturnEx&) {
+        tctx_.cur = saved;
+        if (tctx_.curRoutineFrame != 0) throw; // the enclosing routine consumes it
+        throw RakuError{Value::typeObj("X::ControlFlow::Return"),
+                        "Attempt to return outside of any Routine"};
+    }
+    catch (...) { tctx_.cur = saved; throw; }
+    tctx_.cur = saved;
+    if (tctx_.returning && tctx_.curRoutineFrame == 0) {
+        tctx_.returning = false;
+        throw RakuError{Value::typeObj("X::ControlFlow::Return"),
+                        "Attempt to return outside of any Routine"};
+    }
+}
+
 bool Interpreter::runLoopBody(Block* body, std::shared_ptr<Env> scope, const std::string& label,
                              bool isFirst, bool isLast, ValueList* collect,
                              const std::function<void()>& rebind) {
     safePoint(); // once per iteration: lets a shutting-down worker unwind out of a tight loop
+    // Which loop phasers this body declares — decided ONCE on the AST node. The
+    // common phaser-less body then pays no per-iteration statement scan and no
+    // phaser branches at all (the scan alone was measurable on tight loops).
+    signed char ph = body->loopPhasers;
+    if (ph < 0) {
+        signed char mask = 0;
+        for (auto& s : body->stmts)
+            if (s->kind == NK::Block) {
+                auto* b = static_cast<Block*>(s.get());
+                if (b->phaser == "NEXT") mask |= 1;
+                else if (b->phaser == "LAST") mask |= 2;
+                else if (b->phaser == "FIRST") mask |= 4;
+            }
+        body->loopPhasers = mask;
+        ph = mask;
+    }
+    const bool hasNext = ph & 1, hasLast = ph & 2, hasFirst = ph & 4;
     // FIRST/LAST run in the loop-body scope so the loop variable ($_) is visible.
-    auto inScope = [&](void (Interpreter::*ph)(const std::vector<StmtPtr>&)) {
-        auto saved = tctx_.cur; tctx_.cur = scope; try { (this->*ph)(body->stmts); } catch (...) { tctx_.cur = saved; throw; } tctx_.cur = saved;
+    auto inScope = [&](void (Interpreter::*ph2)(const std::vector<StmtPtr>&)) {
+        auto saved = tctx_.cur; tctx_.cur = scope; try { (this->*ph2)(body->stmts); } catch (...) { tctx_.cur = saved; throw; } tctx_.cur = saved;
     };
-    if (isFirst) { // FIRST {…}: once, before the first iteration; `last` in it breaks the loop
+    if (isFirst && hasFirst) { // FIRST {…}: once, before the first iteration; `last` in it breaks the loop
         try { inScope(&Interpreter::runFirstPhasers); }
-        catch (LastEx& e) { if (!e.label.empty() && e.label != label) throw; return false; }
+        catch (LastEx& e) {
+            if (!e.label.empty() && e.label != label) throw;
+            if (hasLast) runLoopLast(body, scope); // the loop ends here, so its LAST runs (Rakudo)
+            return false;
+        }
     }
     bool savedSF = suppressLoopFirst_; suppressLoopFirst_ = true; // execBlock must not re-run FIRST
     // `return` inside a NEXT/LAST phaser WITH an enclosing routine returns from
@@ -5601,7 +5660,16 @@ bool Interpreter::runLoopBody(Block* body, std::shared_ptr<Env> scope, const std
         }
     };
     auto runNextP = [&]() { noReturn([&]{ runNextPhasers(body->stmts, scope); }); };
-    auto runLast = [&]() { if (isLast) noReturn([&]{ inScope(&Interpreter::runLastPhasers); }); }; // LAST {…}: once, after the last
+    // A NEXT phaser may itself `last` COOPERATIVELY (flag, no exception): the
+    // loop ends right after the phasers ran. True = end the loop (LAST included).
+    // Call sites gate on hasNext, so a phaser-less iteration skips all of it.
+    auto nextPhasersEndLoop = [&]() -> bool {
+        runNextP();
+        if (tctx_.loopCtl == 2) { tctx_.loopCtl = 0; tctx_.givenCtl = 0; return true; }
+        if (tctx_.loopCtl) tctx_.loopCtl = 0; // next/redo in a NEXT phaser: the iteration is over anyway
+        return false;
+    };
+    auto runLast = [&]() { if (isLast && hasLast) noReturn([&]{ inScope(&Interpreter::runLastPhasers); }); }; // LAST {…}: once, after the last
     // this loop is now the innermost native loop for cooperative next/last/redo
     uint64_t savedLoopFrame = tctx_.curLoopFrame;
     tctx_.curLoopFrame = tctx_.frameTop;
@@ -5626,18 +5694,63 @@ bool Interpreter::runLoopBody(Block* body, std::shared_ptr<Env> scope, const std
                   tctx_.givenCtl = 0;
                   int ctl = tctx_.loopCtl; tctx_.loopCtl = 0;
                   if (ctl == 3) { if (rebind) rebind(); continue; } // redo: rerun the body (fresh `is copy` params)
-                  if (ctl == 1) { try { runNextP(); } catch (LastEx&) { runLast(); suppressLoopFirst_ = savedSF; return false; } runLast(); suppressLoopFirst_ = savedSF; return true; }
-                  runLast(); suppressLoopFirst_ = savedSF; return false; // last
+                  if (ctl == 1) {
+                      // a `last` from a NEXT phaser — cooperative or thrown —
+                      // ends the loop: LAST runs (unconditionally — see
+                      // runLoopLast) unless the last is labeled for an OUTER
+                      // loop, which skips this one's LAST
+                      if (hasNext) {
+                          try { if (nextPhasersEndLoop()) { if (hasLast) runLoopLast(body, scope); suppressLoopFirst_ = savedSF; return false; } }
+                          catch (LastEx& e) {
+                              if (!e.label.empty() && e.label != label) { suppressLoopFirst_ = savedSF; throw; }
+                              if (hasLast) runLoopLast(body, scope);
+                              suppressLoopFirst_ = savedSF; return false;
+                          }
+                      }
+                      runLast(); suppressLoopFirst_ = savedSF; return true;
+                  }
+                  // `last`: the loop ends NOW, whatever iteration this is — its
+                  // LAST phasers run (the old positional gate skipped them
+                  // whenever the `last` fired before the final element)
+                  if (hasLast) runLoopLast(body, scope);
+                  suppressLoopFirst_ = savedSF; return false; // last
               }
               if (tctx_.givenCtl) { // cooperative when-match in this loop's body: iteration done
                   tctx_.givenCtl = 0; suppressLoopFirst_ = savedSF; return true;
               }
-              if (collect) collect->push_back(v); try { runNextP(); } catch (LastEx&) { runLast(); suppressLoopFirst_ = savedSF; return false; } runLast(); suppressLoopFirst_ = savedSF; return true; }
+              if (collect) collect->push_back(v);
+              if (hasNext) {
+                  try { if (nextPhasersEndLoop()) { if (hasLast) runLoopLast(body, scope); suppressLoopFirst_ = savedSF; return false; } }
+                  catch (LastEx& e) {
+                      if (!e.label.empty() && e.label != label) { suppressLoopFirst_ = savedSF; throw; }
+                      if (hasLast) runLoopLast(body, scope);
+                      suppressLoopFirst_ = savedSF; return false;
+                  }
+              }
+              runLast(); suppressLoopFirst_ = savedSF; return true; }
         catch (LeaveEx&) { runLast(); suppressLoopFirst_ = savedSF; return true; } // leave: end this iteration, NO NEXT phasers
         catch (RedoEx& e) { if (!e.label.empty() && e.label != label) { suppressLoopFirst_ = savedSF; throw; } if (rebind) rebind(); continue; }
-        catch (NextEx& e) { if (!e.label.empty() && e.label != label) { suppressLoopFirst_ = savedSF; throw; } try { runNextP(); } catch (LastEx&) { runLast(); suppressLoopFirst_ = savedSF; return false; } runLast(); suppressLoopFirst_ = savedSF; return true; }
+        catch (NextEx& e) {
+            if (!e.label.empty() && e.label != label) { suppressLoopFirst_ = savedSF; throw; }
+            if (hasNext) {
+                try { if (nextPhasersEndLoop()) { if (hasLast) runLoopLast(body, scope); suppressLoopFirst_ = savedSF; return false; } }
+                catch (LastEx& le) { // `last` from a NEXT phaser ends the loop: LAST runs
+                    if (!le.label.empty() && le.label != label) { suppressLoopFirst_ = savedSF; throw; }
+                    if (hasLast) runLoopLast(body, scope);
+                    suppressLoopFirst_ = savedSF; return false;
+                }
+            }
+            runLast(); suppressLoopFirst_ = savedSF; return true;
+        }
         catch (BreakGivenEx&) { suppressLoopFirst_ = savedSF; return true; }
-        catch (LastEx& e) { if (!e.label.empty() && e.label != label) { suppressLoopFirst_ = savedSF; throw; } runLast(); suppressLoopFirst_ = savedSF; return false; }
+        catch (LastEx& e) {
+            if (!e.label.empty() && e.label != label) { suppressLoopFirst_ = savedSF; throw; }
+            // `last` ends the loop here, so LAST phasers run — on WHATEVER
+            // iteration it happened (a label targeting an outer loop rethrows
+            // above instead: that outer loop's LAST runs, this one's is skipped)
+            if (hasLast) runLoopLast(body, scope);
+            suppressLoopFirst_ = savedSF; return false;
+        }
         catch (...) { suppressLoopFirst_ = savedSF; throw; }
     }
 }
@@ -7522,7 +7635,12 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 if (fb >= 0) c = fb != 0;
                 else { cv = eval(ws->cond.get()); c = boolify(cv); }
                 if (ws->isUntil) c = !c;
-                if (!c) break;
+                if (!c) { // normal exit: the iteration that just ran was the last —
+                          // its LAST phasers run now, in that iteration's scope
+                          // (`last`-driven exits run them inside runLoopBody instead)
+                    if (!firstIter && scope) runLoopLast(ws->body.get(), scope);
+                    break;
+                }
                 // postfix `STMT while COND`: no implicit block — run STMT in the
                 // ENCLOSING scope so a `my` in it declares there (never cleared!)
                 if (ws->modifier) scope = tctx_.cur;
@@ -7540,9 +7658,11 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     bindParams(ws->params, one, scope);
                 }
                 else if (!ws->var.empty()) scope->define(ws->var, cv); // while EXPR -> $x { }
-                // FIRST runs on the first iteration only; LAST would need lookahead, so it
-                // is approximated as always-last (a single flag can't know the true last).
-                if (!runLoopBody(ws->body.get(), scope, ws->label, firstIter, true, col)) break;
+                // FIRST runs on the first iteration only. LAST is NOT positional
+                // here (no lookahead through a condition): the normal-exit branch
+                // above runs it when the condition turns false, and runLoopBody
+                // runs it on a `last` — so no per-iteration flag at all.
+                if (!runLoopBody(ws->body.get(), scope, ws->label, firstIter, false, col)) break;
                 firstIter = false;
             }
             return ws->asExpr ? Value::list(std::move(collected)) : Value::any();
@@ -7704,9 +7824,19 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                         (fs->list->kind == NK::VarExpr && !static_cast<VarExpr*>(fs->list.get())->name.empty() &&
                          static_cast<VarExpr*>(fs->list.get())->name[0] == '$' &&
                          static_cast<VarExpr*>(fs->list.get())->name != "$_"));
+                    // an ENDLESS lazy source iterates LIVE, growing just-in-time —
+                    // a snapshot would freeze `.say for (1 xx *)` at the cached
+                    // prefix (issue #30); finite lazies were drained above
+                    std::shared_ptr<ValueList> liveArr;
+                    std::shared_ptr<LazySeqState> liveSt;
+                    if (!oneItem && lv.t == VT::Array && lv.arr() && lv.ext() && !isMultiDimShaped(lv)) {
+                        auto st = std::static_pointer_cast<LazySeqState>(lv.ext());
+                        if (st->appendNext && st->infinite) { liveSt = st; liveArr = lv.arrS(); }
+                    }
                     if (oneItem) items.push_back(lv);
-                    else if (lv.t == VT::Array && lv.arr()) { ParStripe cs(*this, lv.arr());
-                        items = isMultiDimShaped(lv) ? shapedLeaves(lv) : *lv.arr(); } // snapshot under the stripe (torn-copy contract)
+                    else if (lv.t == VT::Array && lv.arr()) {
+                        if (!liveArr) { ParStripe cs(*this, lv.arr());
+                            items = isMultiDimShaped(lv) ? shapedLeaves(lv) : *lv.arr(); } } // snapshot under the stripe (torn-copy contract)
                     else if (lv.t == VT::Range) items = lv.flatten();
                     // a non-itemized Blob/Buf iterates its ELEMENTS (see the block
                     // form below; Digest::MD5's digest loop is this modifier shape)
@@ -7720,9 +7850,17 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                         for (auto& kv : *lv.hash()) items.push_back(Value::pair(kv.first, kv.second));
                     }
                     else items.push_back(lv);
-                    for (size_t i = 0; i < items.size(); i++) {
-                        env->vars["$_"] = items[i];
-                        if (!runLoopBody(fs->body.get(), env, fs->label, i == 0, i + 1 == items.size(), col)) break;
+                    ValueList& itemsR = liveArr ? *liveArr : items;
+                    auto haveItem = [&](size_t want) -> bool { // grows a live source
+                        if (want < itemsR.size()) return true;
+                        if (!liveSt) return false;
+                        while (itemsR.size() <= want && liveSt->appendNext(itemsR)) {}
+                        return want < itemsR.size();
+                    };
+                    for (size_t i = 0; haveItem(i); i++) {
+                        env->vars["$_"] = itemsR[i];
+                        if (!runLoopBody(fs->body.get(), env, fs->label, i == 0,
+                                         !liveSt && i + 1 == itemsR.size(), col)) break;
                     }
                 }
                 if (hadTopic) env->vars["$_"] = savedTopic; else env->vars.erase("$_");
@@ -7889,6 +8027,25 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                               static_cast<VarExpr*>(fs->list.get())->name[0] == '@';
                     if (!rw && (fs->vars.empty() || fs->rwVars))
                         if (auto d = derefArrayAlias(fs->list.get())) { arr = d; rw = true; }
+                    // An ENDLESS lazy source (`1 xx *`, an infinite `...` seq, a
+                    // .map view over one — drainIfFiniteLazy above materialised
+                    // every finite one) grows JUST-IN-TIME: one more element when
+                    // the loop walks off the cached prefix, so `for (1 xx *) {
+                    // last if … }` loops instead of silently stopping at the
+                    // prefix (issue #30). Such a loop has no positional last
+                    // iteration, so isLast stays false throughout. After the
+                    // deref/rw rebind above, so the state always belongs to the
+                    // list the loop actually walks.
+                    auto lzst = listv.ext() && arr == listv.arrS()
+                                    ? std::static_pointer_cast<LazySeqState>(listv.ext())
+                                    : std::shared_ptr<LazySeqState>();
+                    const bool endless = lzst && lzst->appendNext && lzst->infinite;
+                    auto growTo = [&](size_t want) -> bool { // true = element `want` exists
+                        if (want < arr->size()) return true;
+                        if (!endless) return false;
+                        while (arr->size() <= want && lzst->appendNext(*arr)) {}
+                        return want < arr->size();
+                    };
                     const bool flat = flatLoopBody(fs->body.get());
                     Value* topic = nullptr;
                     size_t i = 0;
@@ -7897,7 +8054,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                             if (topic) *topic = asTopic((*arr)[i], var);
                             else scope->define(var, asTopic((*arr)[i], var)); } }
                     };
-                    for (i = 0; i < arr->size(); i++) {
+                    for (i = 0; growTo(i); i++) {
                         if (flat && topic && scope.use_count() == 1) {
                             ParStripe es(*this, arr.get());
                             if (i >= arr->size()) break;
@@ -7908,7 +8065,8 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                             if (i >= arr->size()) break;
                             topic = &scope->define(var, asTopic((*arr)[i], var));
                         }
-                        bool cont = runLoopBody(fs->body.get(), scope, fs->label, i == 0, i + 1 == arr->size(), col, rb);
+                        bool cont = runLoopBody(fs->body.get(), scope, fs->label, i == 0,
+                                                !endless && i + 1 == arr->size(), col, rb);
                         if (rw) {
                             auto it = scope->vars.find(var);
                             if (it != scope->vars.end()) { ParStripe es3(*this, arr.get());
@@ -7923,6 +8081,16 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 }
             }
             ValueList items;
+            // An ENDLESS lazy source iterates the LIVE list, growing it
+            // just-in-time per iteration — a snapshot would freeze the loop at
+            // whatever prefix happened to be cached (issue #30). Finite lazies
+            // were drained above and keep the snapshot path.
+            std::shared_ptr<ValueList> liveArr;
+            std::shared_ptr<LazySeqState> liveSt;
+            if (!scalarItem && listv.t == VT::Array && listv.arr() && listv.ext()) {
+                auto st = std::static_pointer_cast<LazySeqState>(listv.ext());
+                if (st->appendNext && st->infinite) { liveSt = st; liveArr = listv.arrS(); }
+            }
             // a Blob/Buf iterates its BYTES (as Int) — `for $data -> $b1,$b2?,$b3?`
             // is how MIME::Base64 & friends read the buffer. Only an explicitly
             // itemized `$(…)` blob stays one element. (rakupp lacks assign-time
@@ -7933,7 +8101,8 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 items = listv.blobList(); // elements (bytes, or LE words for blob16/32/64)
             }
             else if (scalarItem) items.push_back(listv); // a $-scalar / itemized source is one item
-            else if (listv.t == VT::Array && listv.arr()) { ParStripe cs(*this, listv.arr()); items = *listv.arr(); } // one-level, snapshot under the stripe
+            else if (listv.t == VT::Array && listv.arr()) {
+                if (!liveArr) { ParStripe cs(*this, listv.arr()); items = *listv.arr(); } } // one-level, snapshot under the stripe
             else if (listv.t == VT::Range) items = listv.flatten();
             else if (listv.t == VT::Hash && listv.hash() &&
                      (listv.hashKind.empty() || listv.hashKind == "Map" ||
@@ -7944,26 +8113,35 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 for (auto& kv : *listv.hash()) items.push_back(Value::pair(kv.first, kv.second));
             }
             else items.push_back(listv);
+            ValueList& itemsR = liveArr ? *liveArr : items; // the list the loops walk
+            auto haveItem = [&](size_t want) -> bool { // true = element `want` exists (grows a live source)
+                if (want < itemsR.size()) return true;
+                if (!liveSt) return false;
+                while (itemsR.size() <= want && liveSt->appendNext(itemsR)) {}
+                return want < itemsR.size();
+            };
             // `-> (:key($k), :value($v))` / nested sub-signatures: real signature
             // binding — each element is the single argument of the pointy signature.
             if (!fs->params.empty()) {
-                for (size_t i = 0; i < items.size(); i++) {
+                for (size_t i = 0; haveItem(i); i++) {
                     auto scope = std::make_shared<Env>(); scope->parent = tctx_.cur;
-                    ValueList one{items[i]};
+                    ValueList one{itemsR[i]};
                     one[0].namedArg = false; // a loop topic is a VALUE, never a named arg
                     bindParams(fs->params, one, scope);
-                    if (!runLoopBody(fs->body.get(), scope, fs->label, i == 0, i + 1 == items.size(), col)) break;
+                    if (!runLoopBody(fs->body.get(), scope, fs->label, i == 0,
+                                     !liveSt && i + 1 == itemsR.size(), col)) break;
                 }
                 return forResult();
             }
             // `-> ($a,$b,$c)`: each element is unpacked into the vars (one item/iteration).
             if (fs->destructure && !fs->vars.empty()) {
-                for (size_t i = 0; i < items.size(); i++) {
+                for (size_t i = 0; haveItem(i); i++) {
                     auto scope = std::make_shared<Env>(); scope->parent = tctx_.cur;
-                    ValueList row = items[i].t == VT::Array ? *items[i].arr() : items[i].flatten();
+                    ValueList row = itemsR[i].t == VT::Array ? *itemsR[i].arr() : itemsR[i].flatten();
                     for (size_t k = 0; k < fs->vars.size(); k++)
                         scope->define(fs->vars[k], k < row.size() ? row[k] : Value::any());
-                    if (!runLoopBody(fs->body.get(), scope, fs->label, i == 0, i + 1 == items.size(), col)) break;
+                    if (!runLoopBody(fs->body.get(), scope, fs->label, i == 0,
+                                     !liveSt && i + 1 == itemsR.size(), col)) break;
                 }
                 return forResult();
             }
@@ -7977,18 +8155,19 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             if (scalarItem && loopVars.empty() && items.size() == 1 &&
                 fs->list->kind == NK::VarExpr && !static_cast<VarExpr*>(fs->list.get())->declare)
                 try { scalarSlot = lvalue(fs->list.get()); } catch (...) { scalarSlot = nullptr; }
-            for (size_t i = 0; i < items.size(); i += nvars) {
+            for (size_t i = 0; haveItem(i); i += nvars) {
                 auto scope = std::make_shared<Env>(); scope->parent = tctx_.cur;
-                TopicAlias tback{scalarSlot, scope.get(), items[i]};
+                TopicAlias tback{scalarSlot, scope.get(), itemsR[i]};
                 if (loopVars.empty()) {
-                    scope->define("$_", asTopic(items[i], "$_"));
+                    scope->define("$_", asTopic(itemsR[i], "$_"));
                 } else {
                     for (size_t k = 0; k < loopVars.size(); k++) {
-                        scope->define(loopVars[k], (i + k < items.size())
-                            ? asTopic(items[i + k], loopVars[k]) : Value::any());
+                        scope->define(loopVars[k], haveItem(i + k)
+                            ? asTopic(itemsR[i + k], loopVars[k]) : Value::any());
                     }
                 }
-                if (!runLoopBody(fs->body.get(), scope, fs->label, i == 0, i + nvars >= items.size(), col)) break;
+                if (!runLoopBody(fs->body.get(), scope, fs->label, i == 0,
+                                 !liveSt && i + nvars >= itemsR.size(), col)) break;
             }
             return forResult();
         }
@@ -8146,12 +8325,16 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 for (;;) {
                     if (ls->cond) {
                         int fb = tryCondBool(ls->cond.get()); // TARG lever B
-                        if (fb == 0) break;
-                        if (fb < 0 && !boolify(eval(ls->cond.get()))) break;
+                        bool c = fb >= 0 ? fb != 0 : boolify(eval(ls->cond.get()));
+                        if (!c) { // normal exit: LAST runs once, in the final iteration's scope
+                            if (!firstIter && scope) runLoopLast(ls->body.get(), scope);
+                            break;
+                        }
                     }
                     if (!scope || scope.use_count() > 1) { scope = std::make_shared<Env>(); scope->parent = tctx_.cur; }
                     else if (!flatB) scope->vars.clear(); // reuse buckets, drop last iteration's bindings
-                    if (!runLoopBody(ls->body.get(), scope, ls->label, firstIter, true, col)) break;
+                    // LAST is not positional in a condition loop; see WhileStmt
+                    if (!runLoopBody(ls->body.get(), scope, ls->label, firstIter, false, col)) break;
                     firstIter = false;
                     if (ls->incr) eval(ls->incr.get());
                 }
@@ -8169,11 +8352,15 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             for (;;) {
                 if (!scope || scope.use_count() > 1) { scope = std::make_shared<Env>(); scope->parent = tctx_.cur; }
                 else scope->vars.clear(); // reuse buckets, drop last iteration's bindings
-                if (!runLoopBody(r->body.get(), scope, r->label, firstIter, true)) break;
+                // LAST is not positional in a condition loop; see WhileStmt
+                if (!runLoopBody(r->body.get(), scope, r->label, firstIter, false)) break;
                 firstIter = false;
                 bool c = r->cond ? boolify(eval(r->cond.get())) : false;
                 if (r->isUntil) c = !c;
-                if (!c) break;
+                if (!c) { // normal exit: the iteration that just ran was the last
+                    runLoopLast(r->body.get(), scope);
+                    break;
+                }
             }
             return Value::any();
         }
@@ -9814,6 +10001,10 @@ static void forceLazyImpl(const Value& v) {
     g_cbInterp->materializeLazy(v, 1000000);
 }
 static const bool g_forceLazyInstalled = ((g_forceLazy = &forceLazyImpl), true);
+static bool endlessLazyImpl(const Value& v) { // caller checked t == Array && ext
+    return std::static_pointer_cast<LazySeqState>(v.ext())->infinite;
+}
+static const bool g_endlessLazyInstalled = ((g_endlessLazy = &endlessLazyImpl), true);
 void Interpreter::materializeLazy(const Value& v, size_t n) {
     if (!v.ext() || !v.arr()) return;
     auto st = std::static_pointer_cast<LazySeqState>(v.ext());
@@ -16656,7 +16847,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     if (op == "xx") {
         Value a = Value::array();
         long long n = strictInt(r);
-        for (long long k = 0; k < n; k++) a.arr()->push_back(l);
+        for (long long k = 0; k < n; k++) rtXxAppend(*a.arr(), l);
         a.isList = true; // `1 xx 5` is a flattening list, so `[1 xx 5]` spreads to 5 elems
         a.s = "Seq";     // …and it is lazy: Rakudo reports Seq
         return a;
@@ -20161,18 +20352,18 @@ Value Interpreter::evalBinary(Binary* b) {
             st->appendNext = [this, le, env](ValueList& cache) -> bool {
                 auto saved = tctx_.cur;
                 tctx_.cur = env;
-                try { cache.push_back(eval(le)); }
+                try { rtXxAppend(cache, eval(le)); } // a Slip replicates its ELEMENTS
                 catch (...) { tctx_.cur = saved; throw; }
                 tctx_.cur = saved;
                 return true;
             };
-            a.arr()->push_back(eval(b->lhs.get()));
+            rtXxAppend(*a.arr(), eval(b->lhs.get()));
             a.extM() = st;
             return a;
         }
         long long n = strictInt(rv); // a non-numeric count is X::Str::Numeric, not 0
         Value a = Value::array(); a.isList = true; a.s = "Seq"; // `EXPR xx N` is a Seq (Rakudo)
-        for (long long k = 0; k < n; k++) a.arr()->push_back(eval(b->lhs.get()));
+        for (long long k = 0; k < n; k++) rtXxAppend(*a.arr(), eval(b->lhs.get()));
         return a;
     }
     if (op == "==>" || op == "<==") { // feed: source ==> f(args) ==> … ==> my @target
@@ -21575,8 +21766,17 @@ Value Interpreter::evalUnary(Unary* u) {
         // as a generated web page and aborted a build. There is no agreed
         // meaning for "the complement of a codepoint", so inventing one would
         // only be a new divergence.
-        throw RakuError{Value::typeObj("X::NYI"),
-                        "prefix:<~^> not yet implemented. Sorry."};
+        // The decline is SOFT, as Rakudo's is: a Failure that detonates when
+        // USED — `my $x = ~^0` is fine until $x is; a hard throw here made
+        // merely passing the result around fatal where Rakudo survives.
+        {
+            const std::string msg = "prefix:<~^> not yet implemented. Sorry.";
+            Value ex = makeTypedEx("X::NYI", {{"feature", Value::str("prefix:<~^>")}}, msg);
+            Value f = Value::makeHash(); f.hashKind = "Failure";
+            (*f.hash())["exception"] = ex;
+            (*f.hash())["message"] = Value::str(msg);
+            return f;
+        }
     }
     if (u->op == "^") {
         Value r = Value::range(0, strictInt(v), false, true);
@@ -21788,6 +21988,16 @@ static void failureDetonate(const Value& v) {
 }
 std::string Interpreter::gistOf(const Value& v) {
     failureDetonate(v);
+    // An ENDLESS lazy sequence gists as Rakudo's "(...)" — a lazy ARRAY shows
+    // its reified prefix and marks the rest. say/print must not pretend the
+    // cached prefix is the whole list.
+    if (v.t == VT::Array && v.arr() && v.ext() &&
+        std::static_pointer_cast<LazySeqState>(v.ext())->infinite) {
+        if (v.isList) return "(...)";
+        std::string out = "[";
+        for (auto& e : *v.arr()) { out += gistOf(e); out += ' '; }
+        return out + "...]";
+    }
     // Gisting a container READS it, so a Proxy runs FETCH — `say $q<baz>` must
     // show the value, not the Proxy's own FETCH/STORE pair. The subscript path
     // still hands back the container so a write can reach STORE.

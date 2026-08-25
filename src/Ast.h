@@ -587,6 +587,11 @@ struct Block : Stmt {
     // loop may overwrite the topic in place instead of clearing and
     // re-inserting per iteration. Decided once; see Interpreter::flatLoopBody.
     DecidedOnce<signed char> flatLoop{-1};
+    // Which loop phasers this body declares: bit 1 = NEXT, 2 = LAST, 4 = FIRST
+    // (-1 = not yet scanned). A static property of the AST, decided once so
+    // runLoopBody skips the per-iteration statement scan — and every phaser
+    // branch — for the common phaser-less body.
+    DecidedOnce<signed char> loopPhasers{-1};
     bool isCatch = false;   // CATCH { } phaser
     std::string phaser;     // "BEGIN"/"CHECK"/"INIT"/"END"/... (empty = plain block)
     bool stmtForm = false;  // `PHASER statement;` (no braces): runs in the ENCLOSING

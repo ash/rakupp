@@ -806,6 +806,14 @@ extern ForceLazyFn g_forceLazy;
 inline void forceLazy(const Value& v) {
     if (v.t == VT::Array && v.ext() && g_forceLazy) g_forceLazy(v);
 }
+// Is this an ENDLESS lazy sequence (a LazySeqState with infinite set)? Rendering
+// must not pass the cached prefix off as the whole list — Rakudo shows "(...)".
+// Same hook pattern as g_forceLazy: the struct lives with the interpreter.
+using EndlessLazyFn = bool (*)(const Value&);
+extern EndlessLazyFn g_endlessLazy;
+inline bool endlessLazy(const Value& v) {
+    return v.t == VT::Array && v.ext() && g_endlessLazy && g_endlessLazy(v);
+}
 inline void attachRangeEnds(Value& r, Value from, Value to) {
     r.extM() = std::make_shared<RangeEnds>(RangeEnds{std::move(from), std::move(to)});
 }

@@ -45,6 +45,7 @@ namespace rakupp {
 
 RakuReprFn g_rakuRepr = nullptr; // installed by Builtins.cpp (see Value.h)
 ForceLazyFn g_forceLazy = nullptr; // installed by Interpreter.cpp (see Value.h)
+EndlessLazyFn g_endlessLazy = nullptr; // installed by Interpreter.cpp (see Value.h)
 
 // Recursion depth backstop for gist()/toStr() over nested containers. A
 // self-referential array/hash (`@a[0] = @a`) would otherwise recurse until it
@@ -500,6 +501,16 @@ std::string Value::toStr() const {
 
 std::string Value::gist() const {
     forceLazy(*this);   // …and gists as them too: `say gather { take 1 }` is (1)
+    // an ENDLESS sequence must not pass its cached prefix off as the whole
+    // list: a Seq gists as Rakudo's "(...)", a lazy Array shows what is
+    // reified and marks the rest — nested elements included (this is the one
+    // renderer every container's gist recurses through)
+    if (endlessLazy(*this)) {
+        if (isList) return "(...)";
+        std::string out = "[";
+        for (auto& e : *arr()) { out += e.gist(); out += ' '; }
+        return out + "...]";
+    }
     if (isAllomorph()) return s; // IntStr `<0123>`.gist is "0123"
     // an IO::Path gists as the expression that makes one: `"foo/bar".IO`
     // (.Str stays the bare path)
