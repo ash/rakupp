@@ -18,6 +18,11 @@ written against an implementation tends to stay inside what that implementation
 does well. Software written by somebody else, for their own purposes, does not
 — and what it reaches for is not what we would have thought to test.
 
+A third angle is [docs/status/DOGFOODING.md](../docs/status/DOGFOODING.md):
+the tools that build, test and measure Raku++ — and the sites that serve the
+project's own ecosystem — are themselves Raku programs run by `rakupp`. Here
+we run somebody else's software; there we run our own, every day.
+
 | Project | What it is | What it exercises |
 |---|---|---|
 | [**sparrow/**](sparrow) | [Sparrow6](https://github.com/melezhik/Sparrow6), an automation framework (`zef:sp1983`) | a process per task, in Bash, Raku and Perl — so it measures what starting an interpreter costs |
