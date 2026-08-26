@@ -135,9 +135,21 @@ exploring Raku++:
 
 **[Raku.js](rakujs)** is the *same* interpreter compiled to **WebAssembly** with
 Emscripten — the exact semantics as native `rakupp`, running entirely client-side
-with no server. It powers an in-page [playground](rakujs/playground) and can be
-embedded in any static page to make Raku snippets runnable — handy for docs,
-tutorials, or a course. Details in [rakujs/README.md](rakujs/README.md).
+with no server. Putting a real, running Raku editor on any static page is one
+script tag:
+
+```html
+<script src="https://raku.online/raku.js"></script>
+
+<pre data-raku>say "Hello from an embedded editor!";</pre>
+```
+
+Handy for docs, tutorials, or a course — and nothing has to be loaded from
+raku.online: three files copied into a directory of your own site are a
+complete install. It also powers a standalone
+[playground](rakujs/PLAYGROUND.md), and answers to `rakupp_run()` if you would
+rather drive it from your own JavaScript. All three routes are in
+[rakujs/README.md](rakujs/README.md).
 
 ## Use Raku from Python, JavaScript, Go, Rust, C++, Wolfram Language
 

@@ -2,146 +2,93 @@
 
 ▶ **Try it live: [raku.online](https://raku.online/)**
 
-**Raku.js** builds the Raku++ interpreter to **WebAssembly** so Raku programs run
-entirely in the browser — no server, no round-trips. The intended use is
-embedding runnable Raku examples directly in web pages (e.g. a Raku course).
+**Raku.js** is the Raku++ interpreter compiled to **WebAssembly**. The name is
+branding, not mechanism: it is *not* a reimplementation of Raku in JavaScript.
+It is the exact same C++ interpreter from [`../src`](../src), built with
+Emscripten, so a program behaves in the browser as it does under the native
+`rakupp` and against the Roast suite. Nothing in `../src` is modified —
+everything in this directory is additive.
 
-The name is branding, not mechanism: Raku.js is **not** a from-scratch
-reimplementation of Raku in JavaScript. It is the exact same C++ interpreter from
-`../src`, compiled with Emscripten, so semantics are identical to the native
-`rakupp` and to what it validates against the Roast suite. (That interpreter is
-documented in [../docs/internals/RUNTIME.md](../docs/internals/RUNTIME.md) — the `Value` model and
-execution — and [../docs/internals/PARSING.md](../docs/internals/PARSING.md) — source to AST; the
-overall pipeline in [../docs/internals/ARCHITECTURE.md](../docs/internals/ARCHITECTURE.md).) Nothing
-in `../src` is modified — everything here is additive:
+Programs run **in the visitor's browser**: no server, no round-trip, nothing
+uploaded. A page that embeds it costs you static files and nothing to operate.
 
-| File | Purpose |
-|------|---------|
-| `rakupp_web.cpp` | Thin entry point exporting `rakupp_run(src, stdin)` — calls the interpreter's existing `rakupp::rakuppRun()`, with the optional `stdin` string fed to `get`/`lines`/`prompt`. |
-| `build.sh` | Compiles `../src/*.cpp` (minus `main.cpp`) + `rakupp_web.cpp` to `playground/rakujs.{js,wasm}`. Bootstraps Emscripten locally if absent. |
-| `gen-examples.raku` | Generates `playground/examples.js` from `../examples/*.raku` (the single source of truth) — run with `rakupp` itself. |
-| `playground/index.html` | A self-contained editor + output console with the example programs. |
-| `playground/worker.js` | Runs the WASM interpreter in a Web Worker so the UI stays responsive (spinner, live output, a working Stop button). |
+There are three ways to use it. Take the first one that fits.
 
-## Build
+## 1. Put runnable Raku on a page
 
-```sh
-rakujs/build.sh            # release (-Oz)
-rakujs/build.sh --debug    # -O0 + assertions
+One script tag, and any element you mark becomes a real editor with a Run
+button:
+
+```html
+<script src="https://raku.online/raku.js"></script>
+
+<pre data-raku>say "Hello from an embedded editor!";</pre>
 ```
 
-If the Emscripten toolchain (`em++`) isn't on your `PATH`, `build.sh` clones and
-installs it into `rakujs/emsdk/` (git-ignored, ~1 GB) on first run. To use an
-existing install instead, `source /path/to/emsdk/emsdk_env.sh` beforehand.
+That is the whole integration — no build step, no npm, no account, and it works
+on any host: a blog, a docs site, a slide deck. Ten editors on one page share a
+single interpreter (one download, one worker), each lives in its own Shadow DOM
+so nobody's CSS leaks either way, and `data-auto` on the script tag makes the
+`<pre><code class="language-raku">` blocks your Markdown *already* emits
+runnable without touching them.
 
-**Prebuilt, no Emscripten needed:** each tagged
-[release](https://github.com/ash/rakupp/releases) attaches `rakujs-<tag>.zip` —
-the built `rakujs.js` + `rakujs.wasm` plus the playground files, ready to drop
-into a site's `/playground/`. (The release CI builds this; see
-[`.github/workflows/release.yml`](../.github/workflows/release.yml).)
-
-## Try it
-
-```sh
-cd rakujs/playground
-python3 -m http.server 8000
-# open http://localhost:8000/
-```
-
-## Deploy
-
-The playground is five self-contained, same-directory files
-(`index.html` + `worker.js` + `rakujs.js` + `rakujs.wasm` + `examples.js`, ~4 MB),
-so it drops into any static site under a `/playground/` path. Build them
-(`build.sh`), then copy the `playground/` contents to your site:
-
-```sh
-rakujs/build.sh
-cp rakujs/playground/{index.html,worker.js,rakujs.js,rakujs.wasm,examples.js} \
-   /path/to/your-site/playground/
-```
-
-The live playground at [raku.online](https://raku.online/) is served this way
-(the built files are git-ignored here; they live in the site that serves them).
-Serve `.wasm` as `application/wasm` (most static hosts already do). All links are
-relative, so any `/playground/` path works.
-
-Edit code on the left, press **▶ Run** (or ⌘/Ctrl-Enter); stdout/stderr appear
-on the right. State resets each run (a fresh `Interpreter` per call). Output
-streams as it's produced, so ANSI redraw programs animate live — try `life`
-(Conway's Game of Life). Pressing **Run** while a program is already running
-**restarts** it with the current source (so edit-then-Run just works); **■ Stop**
-(or Escape) halts a long or runaway program by terminating the worker.
-
-## Shareable links
-
-The playground opens pre-filled from three kinds of URL — none of them store
-anything on the server, so there is no code database to spam:
-
-| URL form | Where the code lives |
+| | |
 |---|---|
-| `#code=<data>` | in the URL itself (deflate-compressed, base64url) |
-| `?gist=<id>[&file=<name>]` | a GitHub gist, fetched client-side |
-| `?gh=<owner>/<repo>/<branch>/<path>` | a file in a GitHub repo (raw) |
-| `?url=<encoded-url>` | any https URL whose host allows CORS fetches |
+| **[raku.online/embed/](https://raku.online/embed/)** | The guide — every option, in order |
+| **[raku.online/builder/](https://raku.online/builder/)** | Paste code, tick options, copy a ready snippet |
+| **[raku.online/demo/](https://raku.online/demo/)** | Every pattern side by side, all live |
+| [COURSE-PLAY-BUTTONS.md](COURSE-PLAY-BUTTONS.md) | A worked cross-repo integration: how course.raku.org did it |
 
-The **🔗 Share** button makes the `#code=` form from the current editor
-content, copies it to the clipboard, and shows it in a popover (a
-"Hello, world" link is ~80 characters; the fragment never reaches the server
-at all). The **📂 Open…** button is the reverse: paste a GitHub file URL, a
-gist URL, a raw URL — or a bare gist id / `owner/repo/branch/path` — and it
-loads the code and rewrites the address bar to the matching `?gist=`/`?gh=`
-form, so the address bar is then the persistent link. The GitHub forms are for
-persistent demo links: keep the program in a gist or a repo, and edits there
-show up at the same URL. `?gist=` picks the first `.raku`/`.rakumod` file
-unless `&file=` names one.
+The widget itself (`raku.js`) belongs to the
+[raku.online](https://github.com/ash/raku.online) repository. What *this*
+directory builds is the engine underneath it.
 
-Append `&run=1` (`&run` works too in the hash form) to run the code as soon as
-the interpreter loads:
+## 2. Serve it from your own site
 
+Nothing has to be loaded from raku.online. `raku.js` resolves everything
+relative to its own URL, so **three files in one directory** of your site are a
+complete, offline install:
+
+| File | What it is |
+|---|---|
+| `raku.js` | the editor widget — the file your `<script src>` points at (32 KB) |
+| `rakujs.js` | the Emscripten loader (110 KB) |
+| `rakujs.wasm` | the interpreter (7 MB, ≈2 MB gzipped; downloaded once, then cached) |
+
+```sh
+mkdir -p your-site/raku && cd your-site/raku
+curl -O https://raku.online/raku.js
+curl -O https://raku.online/rakujs.js
+curl -O https://raku.online/rakujs.wasm
 ```
-https://raku.online/?gh=ash/rakupp/main/examples/anagrams.raku&run=1
+
+…then `<script src="/raku/raku.js"></script>` instead of the raku.online URL.
+
+To pin the engine to a released interpreter instead, every
+[release](https://github.com/ash/rakupp/releases) attaches
+`rakujs-<tag>.zip` with that version's `rakujs.js` + `rakujs.wasm` (plus the
+standalone playground — see [PLAYGROUND.md](PLAYGROUND.md)):
+
+```sh
+gh release download -R ash/rakupp --pattern 'rakujs-v*.zip'
 ```
 
-GitHub fetches happen in the visitor's browser (both `api.github.com` and
-`raw.githubusercontent.com` send CORS headers), so the playground server stays
-fully static. Shared programs are capped at 200 KB. Compression uses the native
-`CompressionStream` API — available in all evergreen browsers since 2023.
+The widget `raku.js` is not in the zip; take it from the URL above.
 
-## Examples
+Your server needs to do two things: send `.wasm` as `application/wasm` (most
+static hosts already do — otherwise the browser cannot stream-compile), and
+serve over `http(s)` (a `file://` page cannot start a Web Worker). No CORS
+headers are needed for files on your own origin.
 
-The example dropdown is generated from [`../examples/`](../examples) (the same
-programs the CLI ships) by [`gen-examples.raku`](gen-examples.raku) — run with the
-native `rakupp` binary by `build.sh`, so Raku.js generates its own playground data
-with the interpreter it ships, and `examples/` stays the single source of truth.
-All 21 run in the browser and match native `rakupp` output exactly (verified),
-except `life`, which seeds a **random** board so it differs run to run.
+Full instructions, including what changes for the ↗ button:
+**[raku.online/embed/#host-it-yourself](https://raku.online/embed/#host-it-yourself)**.
 
-The three concurrency/IO examples — `parallel`, `sleep-sort` (threads),
-`echo-server` (sockets) — are **omitted**: they need real threads or sockets,
-which the single-threaded WASM build doesn't have, so running them would hang the
-page. Run those with native `rakupp`.
+## 3. Call the interpreter from your own JavaScript
 
-To regenerate after adding an example, re-run `build.sh` (or just
-`rakupp gen-examples.raku`). Deep-recursion examples are unaffected by the ~200
-recursion cap; all shipped examples stay well under it.
-
-The dropdown also includes **language showcases** — whole interpreters (Lisp,
-Forth, JS/TS, Perl, Python) from [`../showcase/`](../showcase), each running a
-sample program in the browser. A Python program interpreted by a Raku program
-interpreted by a C++ interpreter compiled to WebAssembly, in a fraction of a
-second — [**Interpreters all the way down**](STACKED-INTERPRETERS.md) explains
-how that stack works and why it's fast.
-
-## Embedding in your own page
-
-> **New to this? See [TUTORIAL.md](TUTORIAL.md)** — a short, worked guide to
-> writing real browser Raku programs: multi-line source, feeding them input
-> (there's no stdin/argv/files), reading results back, and a complete live
-> example. The snippet below is just the wiring.
-
-The build is `MODULARIZE`d under the global `RakuJS`. Capture the program's
-output through Emscripten's `print` / `printErr` and call the exported function:
+If you are building something of your own rather than embedding an editor — a
+docs site that runs snippets its own way, a REPL, a grader, a test harness —
+skip the widget and drive the module directly. It is `MODULARIZE`d under the
+global `RakuJS`, and there is one function:
 
 ```html
 <script src="rakujs.js"></script>
@@ -150,136 +97,62 @@ output through Emscripten's `print` / `printErr` and call the exported function:
     print:    line => append(line + "\n"),
     printErr: line => append(line + "\n"),
   }).then(mod => {
-    const rc = mod.ccall('rakupp_run', 'number', ['string'], ['say 42;']);
-    // rc is the Raku exit code; output already delivered via print/printErr
+    const rc = mod.ccall('rakupp_run', 'number', ['string', 'string'],
+                         ['say 42;', '']);   // (source, stdin) → exit code
   });
 </script>
 ```
 
-## How it works / design notes
+The whole program is that first string; the second is what `get` / `lines` /
+`prompt` read before hitting EOF. There are no files and no command-line
+arguments — the browser sandbox has neither. Output arrives through the
+`print` / `printErr` callbacks.
 
-- **Runs in a Web Worker** (`playground/worker.js`). `rakupp_run()` is a
-  *synchronous* call that runs a whole program to completion; on the main thread
-  that freezes the UI (no spinner, output only at the end). The worker keeps the
-  main thread free, so the page animates a spinner after 300 ms, streams output
-  live (ANSI cursor-home is treated as a redraw, so `life` animates frame by
-  frame), and can **Stop** a runaway program by terminating the worker. rendering
-  is coalesced on a timer, not `requestAnimationFrame` (which pauses in
-  background/hidden tabs and would drop output there).
-- **Entry point.** `rakupp_run()` calls `rakupp::rakuppRun()` (see
-  `../src/Runtime.h`), the same function the native CLI uses for a normal run.
-  It lexes, parses, builds an `Interpreter`, and runs — catching `ParseError` /
-  `RakuError` / `std::exception` and reporting them to stderr just like the CLI.
-- **No big-stack thread.** The native CLI runs on a 1 GiB pthread stack via
-  `rakuppRunBigStack()`. WASM is single-threaded, so we call `rakuppRun()`
-  directly. See the recursion note under limitations.
-- **Exceptions: `-fexceptions`, not `-fwasm-exceptions`.** The interpreter leans
-  on C++ exceptions for both errors AND control flow (`last`/`next`/`redo`,
-  `when`/`succeed`). Native Wasm-EH would give deeper recursion, but with
-  emscripten 6.0.3 its personality fails to match the interpreter's by-value
-  control-exception catches (`catch (LastEx&)` …), so `last`/`next`/`given`/`when`
-  escape to `std::terminate` and trap (`RuntimeError: unreachable`) — verified.
-  `-fexceptions` handles them correctly, at the cost of recursion depth (below).
-- **Output** goes to `std::cout`/`std::cerr`, which Emscripten routes to the
-  `print`/`printErr` callbacks. No interpreter changes needed.
+| Export | |
+|---|---|
+| `rakupp_run(source, stdin)` | runs a program to completion, returns its exit code |
+| `rakupp_version()` | the interpreter's version string |
+| `rakupp_highlight(source)` | the source as highlighted HTML, from `rakupp`'s own tokenizer |
 
-## Performance vs native (and Node vs Bun vs browser)
+`rakupp_run` is **synchronous** and runs a whole program, so call it from a Web
+Worker unless you know every program is short — on the main thread it freezes
+the page for the duration.
 
-> **Status: experimental.** Measuring the WebAssembly build is new and the
-> methodology is still settling — the host runtimes differ in wasm tiering,
-> stack limits, and timer behaviour (an in-browser figure exists only as a
-> dated upper bound; see the † note). Treat these numbers as a first
-> sounding, not a settled benchmark like the native tables in
-> [../docs/status/BENCHMARKS.md](../docs/status/BENCHMARKS.md).
+**[TUTORIAL.md](TUTORIAL.md) is the guide to this**: multi-line sources,
+feeding input, getting results back into your page, and a complete working
+example. Start there rather than from the snippet above.
 
-Measured 2026-07-22 on the same kernels, machine, and day as the native tables
-in [../docs/status/BENCHMARKS.md](../docs/status/BENCHMARKS.md), both hosts running the same
-Raku++ 1.0.0 wasm (`-Oz`, `-fexceptions`). Same policy everywhere: 7 runs,
-first discarded, minimum of the remaining 6; one module instance reused across
-runs (each run still gets a fresh `Interpreter`). Node and Bun run a
-`-sENVIRONMENT=node` build via [`bench-runtime.cjs`](bench-runtime.cjs).
+## Build it
 
-| Benchmark | native interp | Node 20.11 (V8) | Bun 1.3.14 (JSC) |
-|---|---:|---:|---:|
-| bigint   | 31.8 ms  | 41.7 ms    | 79.2 ms    |
-| strcat   | 13.1 ms  | 68.4 ms    | 142.2 ms   |
-| hash     | 38.4 ms  | 244.5 ms   | 466.1 ms   |
-| sortnums | 70.7 ms  | 272.6 ms   | 595.5 ms   |
-| regex    | 86.3 ms  | 360.9 ms   | 744.8 ms   |
-| arrayops | 114.9 ms | 524.0 ms   | 1,173.5 ms |
-| loopsum  | 195.9 ms | 1,254.4 ms | 1,046.9 ms |
-| fib      | 818.4 ms | 5,546.1 ms | 8,890.6 ms |
-| *module init* | *(2.0 ms process)* | *20 ms* | *77 ms* |
+```sh
+rakujs/build.sh            # release (-Oz) → playground/rakujs.{js,wasm}
+rakujs/build.sh --debug    # -O0 + assertions
+```
 
-**The wasm tax is 1.3–6.8× on a clean host** (the Node column): bigint 1.3×,
-regex 4.2×, up to loopsum 6.4× and fib 6.8×. The penalty tracks **how
-call-dense the workload is**, not how heavy it is: under `-fexceptions` (see
-the design note above) every C++ call that might throw is routed through JS
-`invoke_*` trampolines, so call-saturated `fib` pays the most while `bigint` —
-whose time lives inside exception-free `BigInt` multiply loops that compile to
-plain wasm — runs near-native. Native Wasm-EH would shrink the trampoline
-cost, but is blocked today by the emscripten personality bug described above.
-Even so, wasm `bigint` under either host here outruns *native* Rakudo (258.9 ms
-on the same machine).
+If `em++` isn't on your `PATH`, `build.sh` installs Emscripten into
+`rakujs/emsdk/` (git-ignored, ~1 GB) on first run; `source
+/path/to/emsdk/emsdk_env.sh` first to use an existing install. If a native
+`rakupp` is around, the build also regenerates the playground's example list
+with it. Flags, environment variables and the smoke test are in
+[INTERNALS.md](INTERNALS.md#build).
 
-**Node vs Bun:** Node wins 7 of the 8 kernels, now by ~1.6–2.2× (the gap
-widened from ~1.3–1.5× at the 0.7.0 measurement as the engine grew) — V8's
-optimizing wasm tier copes better with this trampoline-dense profile — while
-Bun still takes `loopsum` (1,047 vs 1,254 ms) and starts a module ~4× slower
-(77 vs 20 ms). One practical asymmetry: **Bun's JavaScriptCore runs `fib(29)`
-on its default stack; Node's default JS stack overflows on it** (C++ recursion
-consumes the host JS stack under `-fexceptions`) and needs
-`node --stack-size=6000`. (We use Bun as the ecosystem's script runner — e.g.
-the spec site's verify harness — where wasm *execution* speed is irrelevant;
-for timing-sensitive wasm work, prefer Node.)
+## The rest of the documentation
 
-† An earlier (2026-07-16, 0.7.0 wasm) measurement in the embedded
-automation-driven browser pane sat a uniform ~3× above that day's Node column
-(e.g. hash 797 ms, fib 20.4 s) — consistent with wasm staying on V8's baseline
-tier in that context. Treat that as an upper bound; a regular browser tab
-should land much nearer the Node column.
+| Page | What's in it |
+|---|---|
+| **[PLAYGROUND.md](PLAYGROUND.md)** | The standalone playground that ships in the release zip — running it, deploying it, its shareable links, its examples |
+| **[TUTORIAL.md](TUTORIAL.md)** | Writing real browser Raku programs against `rakupp_run` |
+| **[INTERNALS.md](INTERNALS.md)** | How the WebAssembly build works, what it costs (measured), and where it stops — recursion, threads, sockets |
+| **[STACKED-INTERPRETERS.md](STACKED-INTERPRETERS.md)** | Python interpreted by Raku interpreted by C++ compiled to wasm, in a fraction of a second — and why it's fast |
+| **[COURSE-PLAY-BUTTONS.md](COURSE-PLAY-BUTTONS.md)** | The course.raku.org integration, end to end |
 
-Perspective for playground use: these are deliberately heavy kernels — every
-shipped example still runs in browser-comfortable time even at the pane's
-upper-bound numbers (hello-world ~50 ms, the full 75×30 Mandelbrot ~3.6 s),
-and a fresh worker + module instance is ready in tens of ms after the one-time
-4.3 MB `.wasm` download (cached thereafter).
+## What's in this directory
 
-## Known limitations (single-threaded browser build)
-
-- **Deep recursion (a few hundred Raku levels, ~200) hits a hard browser limit.**
-  Under `-fexceptions`, C++ recursion is routed through JS exception trampolines
-  and so consumes the *JS engine* stack, which a page cannot grow (unlike the
-  native build's 1 GiB thread stack). The tree-walker nests many calls per Raku
-  level, so recursion caps around ~200 levels — beyond that the browser raises a
-  `RangeError`, which the playground catches, reports as a recursion-limit message,
-  and recovers from. This is a browser constraint, not a Raku one: the same program
-  runs natively ([docs/guide/MEMORY.md](../docs/guide/MEMORY.md) compares the measured
-  recursion budgets of all three modes). Raising it would require rewriting the interpreter onto an explicit
-  heap stack (a `src/` change, out of scope here). `-sSTACK_SIZE` does **not**
-  help — verified. Iterative/loop-based examples are unaffected.
-- **`start` / `Promise` concurrency** relies on real threads; it isn't available
-  in this single-threaded build (a threaded build needs cross-origin-isolation
-  COOP/COEP headers, awkward for static hosting). Ordinary course examples don't
-  need it. The same goes for threads the engine takes on its own behalf: a
-  `std::thread` that cannot start throws, and an escape reaches `std::terminate`,
-  which the page sees as a bare `Aborted()`. The grammar memo reaper did exactly
-  that — every parse past its threshold, so every showcase interpreter, died in
-  the browser while every native gate stayed green. `rakujs/smoke.cjs` runs those
-  interpreters through a Node-loadable build so the next one is caught here:
-
-  ```sh
-  RAKUJS_ENV=node,web,worker RAKUJS_OUT=/tmp/rakujs-node rakujs/build.sh
-  node --stack-size=6000 rakujs/smoke.cjs /tmp/rakujs-node
-  ```
-- **Sockets** (the pastebin showcase) don't work in the browser sandbox.
-- **`--compile` / native codegen** is irrelevant here — this ships the
-  interpreter (`EVAL`), not the C++ transpiler.
-- **`exit`** in user code aborts the worker's module instance; the worker rebuilds
-  a fresh one for the next run (no page reload needed).
-- **Binary size**: a few MB of `.wasm` (≈1–3 MB gzipped), dominated by the
-  Unicode tables. It downloads once and is cached. Runtime memory per instance is
-  kept small (16 MiB stack / 32 MiB initial, growing on demand) so recreating the
-  worker on Stop/restart doesn't pile up memory. If the module ever fails to
-  instantiate (memory pressure after very heavy use), the page auto-retries a
-  couple of times and only then asks for a reload — it doesn't silently hang.
+| File | Purpose |
+|------|---------|
+| `rakupp_web.cpp` | The entry point — exports `rakupp_run` / `rakupp_version` / `rakupp_highlight` over the interpreter's existing `rakupp::rakuppRun()`. |
+| `build.sh` | Compiles `../src/*.cpp` (minus `main.cpp`) + `rakupp_web.cpp` to `playground/rakujs.{js,wasm}`. Bootstraps Emscripten if absent. |
+| `gen-examples.raku` | Generates `playground/examples.js` from `../examples/*.raku` — run with `rakupp` itself, so Raku.js generates its own data with the interpreter it ships. |
+| `playground/` | The self-contained playground page (`index.html` + `worker.js`) and the built engine. |
+| `smoke.cjs` | Runs the showcase interpreters through a Node-loadable build, so a browser-only crash is caught in CI. |
+| `bench-runtime.cjs`, `bench.js` | The Node/Bun benchmark harness behind the numbers in [INTERNALS.md](INTERNALS.md#performance-vs-native-and-node-vs-bun-vs-browser). |

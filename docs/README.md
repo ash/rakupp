@@ -86,7 +86,7 @@ point; everything else lives here, in four places:
 
 ### In the browser
 
-- **[../rakujs/README.md](../rakujs/README.md)** — **Raku.js**: the same runtime compiled to **WebAssembly** to run Raku in the browser (build, deploy, performance).
+- **[../rakujs/README.md](../rakujs/README.md)** — **Raku.js**: the same runtime compiled to **WebAssembly** to run Raku in the browser — embedding it in a page, hosting it yourself, calling it from JavaScript. Its companions: [PLAYGROUND.md](../rakujs/PLAYGROUND.md) (the standalone playground), [TUTORIAL.md](../rakujs/TUTORIAL.md) (writing browser Raku programs) and [INTERNALS.md](../rakujs/INTERNALS.md) (build, design notes, performance, limits).
 - **[../rakujs/TUTORIAL.md](../rakujs/TUTORIAL.md)** — writing real browser Raku programs on the WebAssembly build (feeding input, reading output, workers).
 - **[../rakujs/STACKED-INTERPRETERS.md](../rakujs/STACKED-INTERPRETERS.md)** — the showcase interpreters running *inside* Raku.js, in the browser.
 - **[../rakujs/COURSE-PLAY-BUTTONS.md](../rakujs/COURSE-PLAY-BUTTONS.md)** — how course.raku.org turns its solution code into runnable, editable Raku.js editors.

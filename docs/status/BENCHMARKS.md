@@ -24,7 +24,7 @@ tracks.
 (A fourth environment — **[Raku.js](../../rakujs)**, the interpreter compiled to
 WebAssembly — is measured against `interp` on these same kernels under Node,
 Bun, and the browser in
-[rakujs/README.md](../../rakujs/README.md#performance-vs-native-and-node-vs-bun-vs-browser):
+[rakujs/INTERNALS.md](../../rakujs/INTERNALS.md#performance-vs-native-and-node-vs-bun-vs-browser):
 1.3–6.8× slower than native on a clean host, dominated by the `-fexceptions`
 call trampolines. That comparison is still experimental — see the status note
 there.)

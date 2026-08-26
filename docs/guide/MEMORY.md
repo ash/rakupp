@@ -110,7 +110,7 @@ and whatever stack their creator gave them.
 | `rakupp` binary (interpreter + compiler) | 7.4 MB |
 | `librakupp_rt.a` (runtime archive `--exe` links) | 11 MB |
 | a typical `--exe` output binary | ~7 MB (static runtime included) |
-| wasm bundle (raku.online) | see rakujs/README.md |
+| wasm bundle (raku.online) | see rakujs/INTERNALS.md |
 
 `--exe` binaries are self-contained: the size is almost entirely the linked
 runtime, so it stays flat as the program grows.

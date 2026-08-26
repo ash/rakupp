@@ -121,7 +121,8 @@ say @totals;   # my @numbers = 2,4,6,8; my @totals = @numbers.map({ $sum += $_ }
 
 ## See also
 
-- `rakujs/README.md` — the low-level `RakuJS()` API and how the WASM build works.
+- `rakujs/README.md` — the three ways to use Raku.js, including the low-level
+  `RakuJS()` API; `rakujs/INTERNALS.md` — how the WASM build works.
 - `rakujs/TUTORIAL.md` — writing real browser Raku programs (input/output, no fs).
 - raku.online `README.md` — the `raku.js` widget: `data-raku`, `data-auto`,
   `data-selector`, share links, and the embed builder.
