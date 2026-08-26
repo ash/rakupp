@@ -298,6 +298,14 @@ struct Callable {
     bool isProtoBody = false;                       // …and its body is more than a bare `{*}`: the proto
                                                     // RUNS around the dispatch, and the `{*}` inside it is
                                                     // where the candidates are chosen
+    // Roles mixed into this routine IN PLACE (`$method does R($v)`, the shape every
+    // method trait_mod uses), with the values that presets gave their attributes.
+    // The Callable is shared with the class's method table, so recording them here
+    // is what makes the mixin visible to a later `^lookup` — boxing the routine
+    // into a fresh object, as the general mixin path does, would leave the trait's
+    // work somewhere nobody can reach.
+    std::vector<std::string> mixinRoles;
+    std::map<std::string, Value> mixinAttrs;
     bool isWhateverCode = false;                    // produced by * currying (composes further)
     long long whateverArity = 0;                    // # of `*` a WhateverCode consumes (`* + *` => 2)
     bool isMethod = false;                          // when invoked via .() the 1st arg is the invocant

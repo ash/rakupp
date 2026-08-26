@@ -1834,7 +1834,15 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
                 // while `.content: 'text/plain', $body` still splits on comma.
                 {
                     ExprPtr argExpr = parseExpr(BP_ZIP - 1);
-                    if (argExpr && argExpr->kind == NK::ListExpr) {
+                    // …but a PARENTHESISED list is one argument, not an argument
+                    // list: `@q.push: ($item, $depth, $base, $result)` pushes ONE
+                    // four-element list, the way `@q.push(($item, …))` does.
+                    // Splatting it made Path::Finder's work queue four times too
+                    // long and handed the next iteration an Int where it wanted an
+                    // IO::Path. Two groups (`push: (1,2), (3,4)`) already worked —
+                    // the outer comma is the argument separator there.
+                    if (argExpr && argExpr->kind == NK::ListExpr &&
+                        !static_cast<ListExpr*>(argExpr.get())->parenned) {
                         for (auto& it : static_cast<ListExpr*>(argExpr.get())->items)
                             mc->args.push_back(std::move(it));
                     } else if (argExpr) {
@@ -2042,7 +2050,15 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
                 // while `.content: 'text/plain', $body` still splits on comma.
                 {
                     ExprPtr argExpr = parseExpr(BP_ZIP - 1);
-                    if (argExpr && argExpr->kind == NK::ListExpr) {
+                    // …but a PARENTHESISED list is one argument, not an argument
+                    // list: `@q.push: ($item, $depth, $base, $result)` pushes ONE
+                    // four-element list, the way `@q.push(($item, …))` does.
+                    // Splatting it made Path::Finder's work queue four times too
+                    // long and handed the next iteration an Int where it wanted an
+                    // IO::Path. Two groups (`push: (1,2), (3,4)`) already worked —
+                    // the outer comma is the argument separator there.
+                    if (argExpr && argExpr->kind == NK::ListExpr &&
+                        !static_cast<ListExpr*>(argExpr.get())->parenned) {
                         for (auto& it : static_cast<ListExpr*>(argExpr.get())->items)
                             mc->args.push_back(std::move(it));
                     } else if (argExpr) {
@@ -4306,8 +4322,11 @@ ExprPtr Parser::parsePrimary() {
                 }
             }
             advance(); // consume the name
-            // operator-name call: infix:<+>(1,2) / postfix:<i>($x) — canonical op name
-            if ((name == "infix" || name == "prefix" || name == "postfix") &&
+            // operator-name call: infix:<+>(1,2) / postfix:<i>($x) — canonical op name.
+            // `trait_mod` is spelled the same way and is CALLED that way too: a user
+            // `trait_mod:<is>` commonly opens by delegating to `trait_mod:<of>($r, T)`.
+            // Without it the `:<of>` read as an adverb and the call fell apart.
+            if ((name == "infix" || name == "prefix" || name == "postfix" || name == "trait_mod") &&
                 isOp(":") && !cur().spaceBefore &&
                 peek().kind == Tok::Op && peek().text == "<" &&
                 peek(2).kind == Tok::Op && peek(2).text.size() > 1 &&
@@ -4321,21 +4340,21 @@ ExprPtr Parser::parsePrimary() {
                 name += ":<" + hyperMarkersToUni(advance().text) + ">";
                 advance(); // >
             }
-            else if ((name == "infix" || name == "prefix" || name == "postfix") &&
+            else if ((name == "infix" || name == "prefix" || name == "postfix" || name == "trait_mod") &&
                 isOp(":") && !cur().spaceBefore &&
                 peek().kind == Tok::Op && peek().text == "<" && !peek().spaceBefore) {
                 advance(); advance(); // : <
                 auto w = readAngleWords(">");
                 name += ":<" + (w.empty() ? std::string() : w[0]) + ">";
             }
-            else if ((name == "infix" || name == "prefix" || name == "postfix") &&
+            else if ((name == "infix" || name == "prefix" || name == "postfix" || name == "trait_mod") &&
                      isOp(":") && !cur().spaceBefore && peek().kind == Tok::QwList &&
                      !peek().spaceBefore) {
                 // the lexer took `<»+«>` as a word list — its text is the op name
                 advance(); // :
                 name += ":<" + advance().text + ">";
             }
-            else if ((name == "infix" || name == "prefix" || name == "postfix") &&
+            else if ((name == "infix" || name == "prefix" || name == "postfix" || name == "trait_mod") &&
                      isOp(":") && !cur().spaceBefore &&
                      peek().kind == Tok::Op && peek().text.size() > 1 &&
                      peek().text[0] == '<' && peek().text.compare(0, 2, "<<") != 0 &&

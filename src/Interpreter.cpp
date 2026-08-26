@@ -6688,6 +6688,10 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                         }
                         Value disp; disp.t = VT::Code; disp.setCode(std::make_shared<Callable>());
                         disp.code()->name = md->name; disp.code()->isMultiDispatcher = true;
+                        // the group of a METHOD is itself a Method: `^lookup` hands
+                        // this back, and code that dispatches on it (a
+                        // `trait_mod:<is>(Method $m, …)` handler) will not bind a Sub
+                        disp.code()->isMethod = true;
                         if (code.code()) code.code()->isMultiCandidate = true;
                         disp.code()->candidates.push_back(code);
                         tbl[md->name] = disp;
@@ -7228,7 +7232,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             for (auto& md : cd->methods) ownParams.insert(&md->params);
             // methods carrying user `is` traits: dispatched to trait_mod:<is> AFTER the
             // class registers (the handler may call $*PACKAGE.^add_method / .HOW)
-            std::vector<std::pair<SubDecl*, Value>> methodTraitQueue;
+            std::vector<std::tuple<SubDecl*, Value, std::string>> methodTraitQueue; // decl, routine, table key
             for (auto& md : cd->methods) {
                 // `method ::('indirect')` / `method ::('with space')` — the
                 // name is an expression, computed as the class is built. The
@@ -7316,7 +7320,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     static_cast<ExprStmt*>(md->body[0].get())->e->kind == NK::Whatever;
                 code.code()->isProtoBody = md->isProto && !code.code()->isProto;
                 const std::string key = md->isPrivate ? "!" + mdName : mdName;
-                if (!md->traits.empty()) methodTraitQueue.push_back({md.get(), code});
+                if (!md->traits.empty()) methodTraitQueue.push_back({md.get(), code, key});
                 if (md->isMulti) {
                     auto it = ci->methods.find(key);
                     if (it != ci->methods.end() && it->second.code() && it->second.code()->isMultiDispatcher) {
@@ -7331,6 +7335,10 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     } else {
                         Value disp; disp.t = VT::Code; disp.setCode(std::make_shared<Callable>());
                         disp.code()->name = md->name; disp.code()->isMultiDispatcher = true;
+                        // the group of a METHOD is itself a Method: `^lookup` hands
+                        // this back, and code that dispatches on it (a
+                        // `trait_mod:<is>(Method $m, …)` handler) will not bind a Sub
+                        disp.code()->isMethod = true;
                         disp.code()->candidates.push_back(code);
                         ci->methods[key] = disp;
                     }
@@ -7514,27 +7522,76 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                         "Class '" + cd->name + "' cannot inherit from '" + tn +
                         "' because it is unknown"};
             }
+            // Class-body subs are hoisted into the body scope NOW, before the
+            // method traits below run: a `trait_mod:<is>` handler is an ordinary
+            // sub, and `unit class Path::Finder` keeps its
+            // `multi sub trait_mod:<is>(Method, Precedence:D :$constraint!)` beside
+            // the methods that carry `is constraint(…)`. Looking it up in the
+            // ENCLOSING scope found nothing, so every matcher method went untagged
+            // and the module refused its own keys. Hoisted exactly once — running
+            // it twice would append each `multi` candidate a second time.
+            {
+                auto savedCur = tctx_.cur;
+                std::string savedPfx = tctx_.pkgPrefix;
+                tctx_.pkgPrefix = clsName + "::";
+                tctx_.cur = bodyEnv;
+                hoistSubs(cd->body);
+                // …and the body's ENUMs, which hoistSubs does not record: a trait
+                // handler declared beside them is typed by them
+                // (`(Method $m, Precedence:D :$constraint!)`), and an unresolvable
+                // parameter type means the candidate never matches — the trait then
+                // looked like "not this handler's trait" and was silently dropped.
+                // Re-running the declaration when the body executes is harmless.
+                for (auto& st : cd->body)
+                    if (st->kind == NK::EnumDecl) try { exec(st.get()); } catch (...) {}
+                tctx_.cur = savedCur;
+                tctx_.pkgPrefix = savedPfx;
+            }
             // METHOD-level user `is` traits: `method m() is also<mag> {…}` calls
             // trait_mod:<is>($m, :also<mag>) with $*PACKAGE bound to the class under
             // declaration (Method::Also registers aliases keyed by $*PACKAGE.^name).
             if (!methodTraitQueue.empty()) {
-                if (Value* tm = tctx_.cur->find("&trait_mod:<is>")) {
+                auto savedCur = tctx_.cur;
+                std::string savedPfx = tctx_.pkgPrefix;
+                tctx_.cur = bodyEnv;                 // the handler may live in the body
+                tctx_.pkgPrefix = clsName + "::";    // …and so may the types it names,
+                                                     // which must register under the
+                                                     // class's package, not bare
+                if (Value* tm = bodyEnv->find("&trait_mod:<is>")) {
                     if (tm->t == VT::Code) {
-                        Value* prevPkg = tctx_.cur->find("$*PACKAGE");
+                        Value* prevPkg = bodyEnv->find("$*PACKAGE");
                         Value savedPkg = prevPkg ? *prevPkg : Value::nil();
-                        tctx_.cur->define("$*PACKAGE", Value::typeObj(clsName));
-                        for (auto& mq : methodTraitQueue)
-                            for (auto& st : mq.first->traits) {
+                        bodyEnv->define("$*PACKAGE", Value::typeObj(clsName));
+                        for (auto& mq : methodTraitQueue) {
+                            SubDecl* md = std::get<0>(mq);
+                            // A trait on a `proto` belongs to the DISPATCHER — that is
+                            // what `^lookup` hands back, and what a `$method ~~ Role`
+                            // check will be asking. On a plain or `multi` method it
+                            // belongs to the routine itself. Path::Finder declares
+                            // half its matchers as `proto method path(…) is
+                            // constraint(Depth) { * }`, and mixing into the candidate
+                            // left the name the module looks up untagged.
+                            Value target = std::get<1>(mq);
+                            if (md->isProto) {
+                                auto mit = ci->methods.find(std::get<2>(mq));
+                                if (mit != ci->methods.end() && mit->second.code() &&
+                                    mit->second.code()->isMultiDispatcher)
+                                    target = mit->second;
+                            }
+                            for (auto& st : md->traits) {
                                 Value arg = st.arg ? eval(st.arg.get()) : Value::boolean(true);
                                 Value p = Value::pair(st.name, arg); p.namedArg = true;
-                                ValueList ta; ta.push_back(mq.second); ta.push_back(p);
+                                ValueList ta; ta.push_back(target); ta.push_back(p);
                                 try { callCallable(*tm, ta); }
                                 catch (RakuError&) {} // no matching candidate: not this handler's trait
                             }
-                        if (prevPkg) tctx_.cur->define("$*PACKAGE", savedPkg);
-                        else tctx_.cur->vars.erase("$*PACKAGE");
+                        }
+                        if (prevPkg) bodyEnv->define("$*PACKAGE", savedPkg);
+                        else bodyEnv->vars.erase("$*PACKAGE");
                     }
                 }
+                tctx_.cur = savedCur;
+                tctx_.pkgPrefix = savedPfx;
             }
             // a qualified name also answers to its TAIL where no real class claims
             // it: `use URI::Path` inside `unit class URI` lets bare `Path` resolve
@@ -7562,7 +7619,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 std::string savedPrefix = tctx_.pkgPrefix;
                 tctx_.pkgPrefix = clsName + "::";
                 tctx_.cur = bodyEnv;
-                hoistSubs(cd->body); // class-body subs visible to earlier body statements too
+                // (the body's subs were hoisted above, before the method traits)
                 try { for (auto& st : cd->body) exec(st.get()); }
                 catch (...) { tctx_.cur = saved; tctx_.pkgPrefix = savedPrefix; throw; }
                 // `sub … is export` in a CLASS body still exports: in a `unit class`
@@ -9297,6 +9354,20 @@ static bool typeNameConforms(const std::string& lnIn, const std::string& rn,
 
 static bool typeMatchesArg(const Value& arg, const std::string& type) {
     if (type.empty() || type == "Any" || type == "Mu") return true;
+    // a role mixed into a ROUTINE in place (see mixinValue): `$method ~~ Constraint`.
+    // Matched by the name's TAIL as well as in full, exactly as the attribute case
+    // below: the mixin records whatever name the trait_mod had in scope (the module
+    // spells it `Constraint`) while the caller may ask fully qualified
+    // (`Path::Finder::Constraint`).
+    if (arg.t == VT::Code && arg.code() && !arg.code()->mixinRoles.empty()) {
+        auto tail = type.rfind("::") == std::string::npos
+                  ? type : type.substr(type.rfind("::") + 2);
+        for (auto& rn : arg.code()->mixinRoles) {
+            if (rn == type) return true;
+            auto rtail = rn.rfind("::") == std::string::npos ? rn : rn.substr(rn.rfind("::") + 2);
+            if (rtail == tail) return true;
+        }
+    }
     // an Attribute meta-object matching the JSON ecosystem's attribute ROLES:
     // rakupp stores the traits on the attribute (trait:* keys) instead of
     // mixing the roles in, so answer the role checks from those keys. Matched
@@ -17457,6 +17528,10 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             // trait-key → role mapping
             if (!res && l.t == VT::Hash && l.hashKind == "Attribute")
                 res = typeMatchesArg(l, r.s);
+            // …and a ROUTINE answering for a role a trait_mod mixed into it in
+            // place (`$method does Constraint($p)` — Path::Finder's `is constraint`)
+            if (!res && l.t == VT::Code && l.code() && !l.code()->mixinRoles.empty())
+                res = typeMatchesArg(l, r.s);
             // TYPE ~~ TYPE: consult the type ancestry (Array ~~ Positional,
             // array[int] ~~ Positional[int], Mix ~~ Associative, …)
             // (an INSTANCE consults the same table under its own type name, so
@@ -20509,6 +20584,54 @@ Value Interpreter::evalBinary(Binary* b) {
     }
     if (op == "does" || op == "but") {
         Value base = eval(b->lhs.get());
+        // `$obj does R($v)` — a role with exactly ONE attribute is "instantiated"
+        // with a positional that presets it (Rakudo refuses the form for any other
+        // arity, and for a role with no attributes at all). Evaluating `R($v)`
+        // normally reaches the default constructor, which takes named arguments
+        // only, so the whole form died — and with it every `is constraint(…)`
+        // trait, which is how Path::Finder tags its matcher methods.
+        Value preset; std::string presetAttr;
+        if (b->rhs->kind == NK::Call) {
+            auto* rc = static_cast<Call*>(b->rhs.get());
+            // resolve the role name the way every other site does: as written, then
+            // under the enclosing package (a role declared inside `unit class
+            // Path::Finder` registers as Path::Finder::Constraint while its own
+            // body spells it `Constraint`), then through the alias table
+            std::string rn = rc->name;
+            auto resolve = [&] {
+                rn = rc->name;
+                auto it = classes_.find(rn);
+                if (it == classes_.end() && !tctx_.pkgPrefix.empty() &&
+                    classes_.count(tctx_.pkgPrefix + rn)) { rn = tctx_.pkgPrefix + rn; it = classes_.find(rn); }
+                if (it == classes_.end()) {
+                    std::string al = resolveClassAlias(rc->name);
+                    if (classes_.count(al)) { rn = al; it = classes_.find(rn); }
+                }
+                return it;
+            };
+            auto ci = resolve();
+            // …and a role declared further down (or later in this class's body, which
+            // has not run yet) is created on demand — then resolved AGAIN, because
+            // creating it registers it under the enclosing package, not the bare name
+            // (its own answer is by the BARE name, which is not what it just
+            // registered when a package prefix is in force — re-resolve either way)
+            if (ci == classes_.end()) { materializePendingType(rc->name); ci = resolve(); }
+            if (ci != classes_.end() && ci->second && ci->second->isRole &&
+                rc->args.size() == 1 && ci->second->attrs.size() == 1 &&
+                rc->args[0]->kind != NK::Pair) {
+                presetAttr = ci->second->attrs[0].name;
+                preset = eval(rc->args[0].get());
+                Value res = mixinValue(std::move(base), Value::typeObj(rn), op == "but");
+                if (res.t == VT::Object && res.obj()) res.obj()->attrs[presetAttr] = preset;
+                else if (res.t == VT::Code && res.code()) res.code()->mixinAttrs[presetAttr] = preset;
+                if (op == "does" && res.t == VT::Object && res.obj() && res.obj()->hasBoxed) {
+                    NK k = b->lhs->kind;
+                    if (k == NK::VarExpr || k == NK::Index || k == NK::MethodCall)
+                        try { if (Value* lv = lvalue(b->lhs.get())) *lv = res; } catch (...) {}
+                }
+                return res;
+            }
+        }
         Value rhs = eval(b->rhs.get());
         // `does` composes a ROLE; only `but` takes a plain value (`1 but "one"`).
         // Rakudo says as much rather than quietly mixing nothing in.
@@ -21056,6 +21179,27 @@ Value Interpreter::mixinValue(Value base, const Value& rhs, bool copy) {
     };
     collect(rhs);
 
+    // `$method does SomeRole` where $method is a ROUTINE: mix in place, for exactly
+    // the reason the attribute path below does. A method trait_mod is handed the
+    // Method object and mixes a marker role into it (`$method does Constraint($p)`,
+    // Path::Finder tagging every matcher method with its precedence); Rakudo's
+    // `does` mutates that object, so the class's method table — which shares the
+    // Callable — sees it. Boxing into a fresh object left `^lookup('file') ~~
+    // Constraint` False and the module refused its own keys.
+    if (!copy && base.t == VT::Code && base.code() && !roleNames.empty()) {
+        auto c = base.code();
+        for (auto& rn : roleNames)
+            if (std::find(c->mixinRoles.begin(), c->mixinRoles.end(), rn) == c->mixinRoles.end())
+                c->mixinRoles.push_back(rn);
+        for (auto& p : pairs)
+            if (p.pairVal()) c->mixinAttrs[p.s] = *p.pairVal();
+        // a role's own attributes exist even unset, so its accessors answer
+        for (ClassInfo* role : roleInfos)
+            if (role)
+                for (auto& a : role->attrs)
+                    c->mixinAttrs.emplace(a.name, Value::any());
+        return base;
+    }
     // `$a does SomeRole` where $a is an ATTRIBUTE meta-object: mix in place. The
     // meta-object is a Hash whose map is shared by every copy, so recording the
     // role (and its attributes' defaults) in that map is visible to the holder of

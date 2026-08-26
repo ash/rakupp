@@ -1,6 +1,7 @@
 #include "CNumeric.h"
 #include "AsciiCtype.h"
 #include "MethodCallSegment.h"
+#include "BuiltinsShared.h"
 
 // Segment 3 of the method-dispatch chain, split out of methodCallInner.
 //
@@ -2457,9 +2458,14 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 s.resize(s.size() - needle.size());
             return Value::str(s);
         }
+        // no needle: ONE trailing logical newline, the same set `.lines` breaks on
         std::string s = inv.toStr();
-        if (!s.empty() && s.back() == '\n') s.pop_back();
-        if (!s.empty() && s.back() == '\r') s.pop_back();
+        for (size_t pos = 0; pos < s.size(); ) {
+            auto [at, len] = nextLogicalNewline(s, pos);
+            if (at == std::string::npos) break;
+            if (at + len == s.size()) { s.resize(at); break; }
+            pos = at + len;
+        }
         return Value::str(s);
     }
     if (m == "trim") { std::string s = inv.toStr(); size_t a = s.find_first_not_of(" \t\n\r"); size_t b = s.find_last_not_of(" \t\n\r"); return Value::str(a == std::string::npos ? "" : s.substr(a, b - a + 1)); }
@@ -3251,7 +3257,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         return out;
     }
     if (m == "lines") {
-        std::istringstream is(inv.toStr()); std::string w; Value out = Value::array();
+        const std::string src = inv.toStr();
+        Value out = Value::array();
         out.isList = true; out.s = "Seq";
         // `:!chomp` keeps each terminator; `:count` answers HOW MANY lines there
         // are; a positional limit stops after that many
@@ -3266,14 +3273,20 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         for (auto& a : args)
             if (a.t != VT::Pair && a.t != VT::Whatever &&
                 !(a.isNumeric() && std::isinf(a.toNum()))) { limit = a.toInt(); break; }
-        // `\r\n` (and a lone trailing `\r`) is a line terminator too — Raku's
-        // .lines strips it, so an HTTP response's `$resp.lines[0]` has no \r
-        while (std::getline(is, w)) {
+        // A Str breaks on the whole logical-newline set — LF, CR, CRLF, FF, VT,
+        // NEL, LS, PS. Splitting on "\n" alone (with a trailing "\r" trimmed) left
+        // a lone CR, an old Mac line ending, inside the line: `"a\rb".lines` was
+        // one line where Rakudo has two. A FILE's `.lines` is deliberately NOT this
+        // set — its nl-in is ["\n", "\r\n"] — and goes through the handle path.
+        for (size_t pos = 0; pos < src.size(); ) {
             if (limit >= 0 && (long long)out.arr()->size() >= limit) break;
-            std::string term;
-            if (!w.empty() && w.back() == '\r') { w.pop_back(); term = "\r"; }
-            if (!is.eof()) term += "\n"; // getline ate the newline unless this is the last line
-            out.arr()->push_back(Value::str(chomp ? w : w + term));
+            auto [at, len] = nextLogicalNewline(src, pos);
+            if (at == std::string::npos) {                 // the last line, unterminated
+                out.arr()->push_back(Value::str(src.substr(pos)));
+                break;
+            }
+            out.arr()->push_back(Value::str(src.substr(pos, at - pos + (chomp ? 0 : len))));
+            pos = at + len;
         }
         if (wantCount) return Value::integer((long long)out.arr()->size());
         return out;

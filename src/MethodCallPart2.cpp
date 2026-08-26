@@ -235,7 +235,20 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         bool listy = inv.hash()->count("values");
         auto vals = [&]() -> ValueList { return listy ? *(*inv.hash())["values"].arr() : ValueList{}; };
         auto mkSupply = [&](ValueList v) { Value s = Value::makeHash(); s.hashKind = "Supply"; Value a = Value::array(); *a.arr() = std::move(v); (*s.hash())["values"] = a; return s; };
-        if (m == "live") return Value::boolean(inv.hash()->count("supplier") > 0);
+        if (m == "live") {
+            // A live Supply emits whether or not anything taps it — and only `map`
+            // and `grep` carry that through. Every other combinator is a `supply {}`
+            // block in Rakudo, which is on-demand, so `$s.Supply.lines.live` is
+            // False where `$s.Supply.map(…).live` is True (S17-supply/lines.t).
+            bool live = inv.hash()->count("supplier") > 0;
+            if (live && inv.hash()->count("chain"))
+                for (auto& step : *(*inv.hash())["chain"].arrS()) {
+                    if (!step.hash()) continue;
+                    const std::string sop = (*step.hash())["op"].toStr();
+                    if (sop != "map" && sop != "grep") { live = false; break; }
+                }
+            return Value::boolean(live);
+        }
         if (m == "Supply") return inv;
         if (m == "on-close") { // callback fires when the tapping supply/react block ends
             // inside a REAL supply activation the callback belongs to that
@@ -2908,6 +2921,12 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
 
     // Code introspection / currying
     if (inv.t == VT::Code && inv.code()) {
+        // an accessor of a role mixed into this routine in place (see mixinValue):
+        // `$method.precedence` after `$method does Constraint($p)`
+        if (!inv.code()->mixinAttrs.empty() && args.empty()) {
+            auto ma = inv.code()->mixinAttrs.find(m.s);
+            if (ma != inv.code()->mixinAttrs.end()) return ma->second;
+        }
         if (m == "assuming") { // partial application: &f.assuming(a,b)(c) == f(a,b,c)
             Value orig = inv; ValueList pre = args;
             Value code; code.t = VT::Code; code.setCode(std::make_shared<Callable>());

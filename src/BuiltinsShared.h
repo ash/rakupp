@@ -15,6 +15,17 @@
 
 namespace rakupp {
 
+// The next LOGICAL NEWLINE in a UTF-8 string at or after `from`, as (offset,
+// length), or (npos, 0) when there is none. Raku's `.lines` breaks on the whole
+// Unicode set — LF, CR, CRLF, FF, VT, NEL, LS, PS — not just "\n" and "\r\n";
+// a FILE's `.lines` does not (its nl-in is ["\n", "\r\n"]), so this is for the
+// Str/Supply side only.
+std::pair<size_t, size_t> nextLogicalNewline(const std::string& s, size_t from);
+// How many trailing bytes of `s` might still grow into a newline if more text
+// arrives: a lone "\r" (could become "\r\n"), or a truncated NEL/LS/PS lead.
+// A stream splitter must hold these back; 0 when the tail is unambiguous.
+size_t danglingNewlinePrefix(const std::string& s);
+
 std::shared_ptr<Value> baggyKey(const Value& v);
 size_t charToByte(const std::string& s, long long chars);
 size_t codeArity(const Value& code);

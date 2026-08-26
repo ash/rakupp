@@ -676,6 +676,30 @@ void spawnWithInput(const std::vector<std::string>& argv, const std::string& inp
 // Run one emitted value through a live-Supply tap's transform chain (grep/map/head/…).
 // Threads the value(s) through each step in order; per-step mutable state lives in the
 // step's "state" hash. Sets `complete` when a head/first step reaches its limit.
+std::pair<size_t, size_t> nextLogicalNewline(const std::string& s, size_t from) {
+    for (size_t i = from; i < s.size(); i++) {
+        const unsigned char c = (unsigned char)s[i];
+        if (c == 0x0D) // CR, and CRLF is ONE terminator
+            return {i, (i + 1 < s.size() && s[i + 1] == 0x0A) ? 2u : 1u};
+        if (c == 0x0A || c == 0x0B || c == 0x0C) return {i, 1};  // LF, VT, FF
+        if (c == 0xC2 && i + 1 < s.size() && (unsigned char)s[i + 1] == 0x85)
+            return {i, 2};                                        // NEL  U+0085
+        if (c == 0xE2 && i + 2 < s.size() && (unsigned char)s[i + 1] == 0x80 &&
+            ((unsigned char)s[i + 2] == 0xA8 || (unsigned char)s[i + 2] == 0xA9))
+            return {i, 3};                                        // LS/PS U+2028-9
+    }
+    return {std::string::npos, 0};
+}
+size_t danglingNewlinePrefix(const std::string& s) {
+    if (s.empty()) return 0;
+    const unsigned char last = (unsigned char)s.back();
+    if (last == 0x0D) return 1;                      // "\r" may yet become "\r\n"
+    if (last == 0xC2) return 1;                      // NEL lead byte
+    if (last == 0xE2) return 1;                      // LS/PS lead byte
+    if (s.size() >= 2 && (unsigned char)s[s.size() - 2] == 0xE2 && last == 0x80) return 2;
+    return 0;
+}
+
 ValueList Interpreter::applyTapChain(Value& tap, const Value& in, bool& complete, bool flush) {
     complete = false;
     ValueList cur;
@@ -735,8 +759,17 @@ ValueList Interpreter::applyTapChain(Value& tap, const Value& in, bool& complete
                 buf += v.toStr();
                 size_t start = 0;
                 if (op == "lines") {
-                    for (size_t nl; (nl = buf.find('\n', start)) != std::string::npos; start = nl + 1)
-                        next.push_back(Value::str(buf.substr(start, nl - start + (chomp ? 0 : 1))));
+                    // the same logical-newline set a Str breaks on — and a tail that
+                    // could still GROW into one (a lone "\r" before an unseen "\n",
+                    // a truncated NEL/LS/PS) is held for the next message rather than
+                    // terminating a line early
+                    const size_t safe = buf.size() - danglingNewlinePrefix(buf);
+                    for (;;) {
+                        auto [at, len] = nextLogicalNewline(buf, start);
+                        if (at == std::string::npos || at + len > safe) break;
+                        next.push_back(Value::str(buf.substr(start, at - start + (chomp ? 0 : len))));
+                        start = at + len;
+                    }
                 }
                 else { // words: a piece ends at whitespace, so a trailing partial word waits
                     size_t i = start;
@@ -754,10 +787,23 @@ ValueList Interpreter::applyTapChain(Value& tap, const Value& in, bool& complete
             }
             else next.push_back(v);
         }
-        // draining: whatever a splitter still holds is the last piece
+        // Draining: nothing can grow any more, so what was held back as ambiguous
+        // is now decided. A tail like "b\r" is a TERMINATED line (the "\r" can no
+        // longer become "\r\n"), not a line whose text ends in a carriage return.
         if (flush && (op == "lines" || op == "words")) {
+            bool chomp = !step.hash()->count("chomp") || (*step.hash())["chomp"].truthy();
             std::string buf = state.hash()->count("buf") ? (*state.hash())["buf"].toStr() : std::string();
-            if (!buf.empty()) next.push_back(Value::str(buf));
+            if (op == "lines") {
+                size_t start = 0;
+                for (;;) {
+                    auto [at, len] = nextLogicalNewline(buf, start);
+                    if (at == std::string::npos) break;
+                    next.push_back(Value::str(buf.substr(start, at - start + (chomp ? 0 : len))));
+                    start = at + len;
+                }
+                if (start < buf.size()) next.push_back(Value::str(buf.substr(start)));
+            }
+            else if (!buf.empty()) next.push_back(Value::str(buf)); // words: the last word
             (*state.hash())["buf"] = Value::str("");
         }
         cur = std::move(next);
@@ -7614,6 +7660,16 @@ void Interpreter::registerBuiltins() {
         return ok;
     };
 
+    // `trait_mod:<of>($routine, Type)` — the return-type trait, spelled as a CALL.
+    // rakupp does not constrain a routine by its return type, so the engine has
+    // nothing to record; what matters is that the call SUCCEEDS. A user
+    // `trait_mod:<is>` that delegates to it first (Path::Finder's `is constraint`
+    // opens with `trait_mod:<of>($method, Path::Finder:D)`) otherwise died on the
+    // very first line, and the trait dispatcher — which reads a throw as "not this
+    // handler's trait" — dropped the whole trait silently.
+    B["trait_mod:<of>"] = [](Interpreter&, ValueList& a) -> Value {
+        return a.empty() ? Value::any() : a[0];
+    };
     B["say"] = [](Interpreter& I, ValueList& a) -> Value {
         if (a.size() == 1) return rtBSay(I, a[0]);
         std::string out;
