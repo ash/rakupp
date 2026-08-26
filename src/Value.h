@@ -295,6 +295,9 @@ struct Callable {
     bool isMultiDispatcher = false;
     bool isMultiCandidate = false;                  // declared `multi` — dispatch may pass it over
     bool isProto = false;                           // `proto` — a dispatch group header, not a candidate
+    bool isProtoBody = false;                       // …and its body is more than a bare `{*}`: the proto
+                                                    // RUNS around the dispatch, and the `{*}` inside it is
+                                                    // where the candidates are chosen
     bool isWhateverCode = false;                    // produced by * currying (composes further)
     long long whateverArity = 0;                    // # of `*` a WhateverCode consumes (`* + *` => 2)
     bool isMethod = false;                          // when invoked via .() the 1st arg is the invocant
@@ -847,6 +850,9 @@ struct ClassAttr {
     Value defVal;              // native codegen: precomputed default value
     bool hasDefVal = false;    // use defVal instead of `def`
     std::vector<std::string> handles; // `has $.b handles <m1 m2>` — methods delegated to this attr
+    std::vector<std::string> handlesTo; // parallel to `handles`: the name called ON the attr
+                                        // when the delegation RENAMES (`handles(:terminal<t>)`);
+                                        // "" (or a missing entry) = the same name
     int defConstraint = 0; // type smiley on the attr type: 0=none, 1=:D (defined), 2=:U (undefined)
     bool objKeyed = false; // `has %!h{Mu:U}` — object-keyed hash (type-object keys stay distinct)
     const void* declId = nullptr;     // identity of the declaring AttrDecl (diamond-composition dedup)
@@ -889,6 +895,10 @@ struct ClassInfo {
     std::string ver, auth, api; // :ver<>/:auth<>/:api<> — answered by .^ver/.^auth/.^api
     std::string pod; // `#|` declarator pod (.WHY)
     std::set<std::string> requiredMethods; // methods a composing class must implement (role stubs)
+    std::set<std::string> delegatedNames;  // names an attribute `handles` delegates that the class
+                                           // does NOT declare itself: the delegation is a method ON
+                                           // THE CLASS, so it outranks anything composed from a role
+                                           // (a stub, or a role's default implementation)
     std::map<std::string, std::vector<std::string>> requiredMultiSigs; // stubbed MULTI candidates: name -> positional-type sig keys that must each be implemented
     std::set<std::string> doneRoles;
     // Names composed in from a ROLE that are SUBMETHODS. They stay in `methods`

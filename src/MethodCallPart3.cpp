@@ -1193,16 +1193,41 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     }
     if (m == "relative") {
         // IO::Path.relative($base = $*CWD) — the path expressed relative to $base.
-        // Prefix case only (zef's extractor lists files under the extraction dir);
-        // unrelated paths come back unchanged rather than computed via `..`.
+        // PURELY LEXICAL, as Rakudo's abs2rel is: walk out of $base with `..` for
+        // every component the two do not share, then down into the path. Returning
+        // an unrelated path UNCHANGED (which is what this did) breaks the
+        // `$base.add($path.relative($base))` round-trip that callers rely on — and
+        // on macOS `/var` is a symlink to `/private/var`, so a $*CWD under $TMPDIR
+        // is routinely "unrelated" to a path spelled the other way. TAP's
+        // SourceHandler round-trips exactly like that (issue #34).
         std::string p = inv.toStr();
         std::string base;
         for (auto& a : args) if (a.t != VT::Pair) { base = a.toStr(); break; }
         if (base.empty()) base = cwdName(); // default base is the CALL-time $*CWD (not the path's :CWD)
-        while (base.size() > 1 && base.back() == '/') base.pop_back();
-        if (p == base) return Value::str(".");
-        if (p.rfind(base + "/", 0) == 0) return Value::str(p.substr(base.size() + 1));
-        return Value::str(p);
+        auto split = [](const std::string& s) {
+            std::vector<std::string> out;
+            size_t i = 0;
+            while (i < s.size()) {
+                size_t j = s.find('/', i);
+                if (j == std::string::npos) j = s.size();
+                std::string seg = s.substr(i, j - i);
+                if (!seg.empty() && seg != ".") out.push_back(seg);
+                i = j + 1;
+            }
+            return out;
+        };
+        // a relative operand is resolved against the call-time $*CWD first, so the
+        // two are always compared as absolute paths
+        std::string cwd = cwdName();
+        if (!p.empty() && p[0] != '/') p = cwd + "/" + p;
+        if (base.empty() || base[0] != '/') base = cwd + "/" + base;
+        std::vector<std::string> pp = split(p), bb = split(base);
+        size_t common = 0;
+        while (common < pp.size() && common < bb.size() && pp[common] == bb[common]) common++;
+        std::string rel;
+        for (size_t i = common; i < bb.size(); i++) rel += rel.empty() ? ".." : "/..";
+        for (size_t i = common; i < pp.size(); i++) { if (!rel.empty()) rel += "/"; rel += pp[i]; }
+        return Value::str(rel.empty() ? "." : rel);
     }
     // 6.e `.stem`: the basename with its extensions removed — all of them by
     // default, or the last N. "foo.tar.gz".IO.stem is "foo" and .stem(1) is

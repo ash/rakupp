@@ -414,6 +414,8 @@ struct Scan {
             case NK::EnumDecl: walkE(static_cast<EnumDecl*>(s)->values.get()); break;
             case NK::IfStmt: {
                 auto* i = static_cast<IfStmt*>(s);
+                for (auto& bp : i->branchParams) walkParams(bp);
+                walkParams(i->elseParams);
                 for (auto& br : i->branches) { walkE(br.first.get()); walkBlock(br.second.get()); }
                 walkBlock(i->elseBlock.get());
                 break;
@@ -448,7 +450,8 @@ struct Scan {
             }
             case NK::GivenStmt: {
                 auto* g = static_cast<GivenStmt*>(s);
-                walkE(g->topic.get()); walkBlock(g->body.get()); walkBlock(g->elseBody.get());
+                walkE(g->topic.get()); walkParams(g->params); walkParams(g->elseParams);
+                walkBlock(g->body.get()); walkBlock(g->elseBody.get());
                 break;
             }
             case NK::WhenStmt: {

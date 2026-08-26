@@ -184,7 +184,7 @@ template <class IO> void ioParams(IO& io, std::vector<Param>& ps) {
 template <class IO> void ioAttr(IO& io, AttrDecl& a) {
     F(io, a.name); F(io, a.sigil); F(io, a.containerIs); F(io, a.pub); F(io, a.rw);
     F(io, a.required); F(io, a.built); F(io, a.requiredWhy); F(io, a.type);
-    F(io, a.coerce); ioVec(io, a.handles); F(io, a.defConstraint);
+    F(io, a.coerce); ioVec(io, a.handles); ioVec(io, a.handlesTo); F(io, a.defConstraint);
     F(io, a.objKeyed);
     if constexpr (IO::reading) {
         size_t n = io.count();
@@ -332,6 +332,14 @@ template <class IO> void visit(IO& io, IfStmt& n)   {
     }
     ioVec(io, n.branchVars); F(io, n.elseVar); ioBlock(io, n.elseBlock);
     F(io, n.isUnless); F(io, n.modifier);
+    if constexpr (IO::reading) {
+        size_t k = io.count(); n.branchParams.clear(); n.branchParams.resize(k);
+        for (auto& bp : n.branchParams) ioParams(io, bp);
+    } else {
+        io.uvar(n.branchParams.size());
+        for (auto& bp : n.branchParams) ioParams(io, bp);
+    }
+    ioParams(io, n.elseParams);
 }
 template <class IO> void visit(IO& io, WhileStmt& n){ ioExpr(io, n.cond); ioBlock(io, n.body); F(io, n.isUntil);
                                                       F(io, n.var); F(io, n.asExpr); F(io, n.modifier);
@@ -352,7 +360,8 @@ template <class IO> void visit(IO&, EmptyStmt&)     {}
 template <class IO> void visit(IO& io, SubsetDecl& n) { F(io, n.name); F(io, n.baseType); ioExpr(io, n.where); }
 template <class IO> void visit(IO& io, GivenStmt& n){ ioExpr(io, n.topic); F(io, n.var); F(io, n.modifier);
                                                       ioBlock(io, n.body); F(io, n.defGuard); F(io, n.hasElse);
-                                                      ioBlock(io, n.elseBody); F(io, n.elseVar); }
+                                                      ioBlock(io, n.elseBody); F(io, n.elseVar);
+                                                      ioParams(io, n.params); ioParams(io, n.elseParams); }
 template <class IO> void visit(IO& io, WhenStmt& n) { ioExpr(io, n.cond); F(io, n.isDefault); ioBlock(io, n.body); }
 template <class IO> void visit(IO& io, LoopStmt& n) { ioExpr(io, n.init); ioExpr(io, n.cond); ioExpr(io, n.incr);
                                                       ioBlock(io, n.body); F(io, n.asExpr); }

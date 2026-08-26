@@ -1505,12 +1505,48 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
         };
         if ((isOp(">>") || isOp("»")) && !bracketOpHyper() &&
             (peek().kind == Tok::LBracket ||
+             // »<key> / »{EXPR} — a hyper HASH subscript. The hyper INFIX forms
+             // (`@a »<« @b`) are lexed as ONE operator token (`>><<<`), so a bare
+             // marker followed by a tight `<`/`{` can only be the subscript.
+             ((peek().kind == Tok::LBrace ||
+               (peek().kind == Tok::Op && peek().text == "<")) && !peek().spaceBefore) ||
              (peek().kind == Tok::Op && (peek().text == "**" || peek().text == "++" || peek().text == "--")) ||
              ((peek().kind == Tok::Op || peek().kind == Tok::Ident) &&
               (userPostfix_.count(peek().text) || peek().text == "i")) || // built-in postfix:<i>
              (peek().kind == Tok::Op && peek().text == "." &&
               peek(2).kind == Tok::Op && userPostfix_.count(peek(2).text)))) { // ».OP dotted form: symbolic only (».foo is a METHOD call)
             advance(); // the hyper marker
+            // »<key> / »{EXPR}: subscript every element — `@working»<done>` is how
+            // TAP collects the promise out of each in-flight job (issue #34)
+            if (isKind(Tok::LBrace) || isOp("<")) {
+                auto hm = std::make_unique<MethodCall>();
+                hm->inv = std::move(base);
+                hm->method = "map";
+                auto hblk = std::make_unique<BlockExpr>();
+                auto hes = std::make_unique<ExprStmt>();
+                auto hix = std::make_unique<Index>();
+                hix->base = std::make_unique<VarExpr>("$_");
+                hix->isHash = true;
+                if (matchKind(Tok::LBrace)) {
+                    hix->index = parseExpression();
+                    expectKind(Tok::RBrace, "}");
+                }
+                else {
+                    advance(); // '<'
+                    std::vector<std::string> words = readAngleWords(">");
+                    if (words.size() == 1) hix->index = std::make_unique<StrLit>(words[0]);
+                    else {
+                        auto al = std::make_unique<ArrayLit>();
+                        for (auto& w : words) al->items.push_back(std::make_unique<StrLit>(w));
+                        hix->index = std::move(al);
+                    }
+                }
+                hes->e = std::move(hix);
+                hblk->body.push_back(std::move(hes));
+                hm->args.push_back(std::move(hblk));
+                base = std::move(hm);
+                continue;
+            }
             // »++ / »-- / »OP (user postfix, postfix:<i>): a runtime hyper —
             // descends nested arrays, keeps hash keys, ++/-- mutate in place
             if (cur().text == "++" || cur().text == "--" ||
@@ -6551,17 +6587,65 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
                     std::string tr = advance().text;
                     if (tr == "where") { a.whereExpr = parseExpr(BP_ASSIGN); continue; }
                     if (tr == "handles") { // handles <m1 m2> / handles "m" / handles 'm'
-                        if (isOp("<")) { // bare angle list lexes as Op '<' + words
+                        // …and the RENAMING forms, `handles(:local<remote>, …)` /
+                        // `handles(local => 'remote')`: the class exposes the KEY and
+                        // calls the VALUE on the attribute. TAP's Output::Handle is
+                        // `has IO::Handle $.handle handles(:print<print>, :terminal<t>)`
+                        // — `.terminal` is IO::Handle's `.t` (issue #34).
+                        auto add = [&a](const std::string& local, const std::string& remote) {
+                            a.handles.push_back(local);
+                            a.handlesTo.push_back(local == remote ? "" : remote);
+                        };
+                        auto angleWord = [&, this](std::string& into) {
+                            if (isOp("<")) { advance();
+                                auto w = readAngleWords(">"); if (!w.empty()) into = w[0]; return true; }
+                            if (isKind(Tok::StrLit) || isKind(Tok::StrInterp) || isKind(Tok::Ident)) {
+                                into = advance().text; return true; }
+                            if (isKind(Tok::QwList)) {
+                                std::istringstream ws(advance().text);
+                                std::string w; if (ws >> w) into = w; return true; }
+                            return false;
+                        };
+                        // one delegation item; false = a form we don't model
+                        auto item = [&, this]() -> bool {
+                            if (isOp(":") && peek().kind == Tok::Ident) { // :local<remote> / :local('remote')
+                                advance();
+                                std::string local = advance().text, remote = local;
+                                if (isKind(Tok::LParen)) { advance(); angleWord(remote); matchKind(Tok::RParen); }
+                                else angleWord(remote);
+                                add(local, remote);
+                                return true;
+                            }
+                            if ((isKind(Tok::Ident) || isKind(Tok::StrLit) || isKind(Tok::StrInterp)) &&
+                                peek().kind == Tok::FatArrow) {                    // local => 'remote'
+                                std::string local = advance().text, remote = local;
+                                advance();                                          // =>
+                                angleWord(remote);
+                                add(local, remote);
+                                return true;
+                            }
+                            if (isOp("<")) { advance();
+                                for (auto& w : readAngleWords(">")) add(w, w); return true; }
+                            if (isKind(Tok::QwList)) {
+                                std::istringstream ws(advance().text);
+                                for (std::string w; ws >> w; ) add(w, w);
+                                return true;
+                            }
+                            if (isKind(Tok::StrLit) || isKind(Tok::StrInterp) || isKind(Tok::Ident)) {
+                                std::string n = advance().text; add(n, n); return true;
+                            }
+                            if (isOp("*")) { advance(); add("*", "*"); return true; } // any unknown method
+                            return false;
+                        };
+                        if (isKind(Tok::LParen)) {
                             advance();
-                            for (auto& w : readAngleWords(">")) a.handles.push_back(w);
+                            while (!isKind(Tok::RParen) && !isKind(Tok::End)) {
+                                if (matchKind(Tok::Comma)) continue;
+                                if (!item()) advance(); // a form we don't model (regex, Whatever): skip it
+                            }
+                            matchKind(Tok::RParen);
                         }
-                        else if (isKind(Tok::QwList)) {
-                            std::istringstream ws(advance().text);
-                            for (std::string w; ws >> w; ) a.handles.push_back(w);
-                        }
-                        else if (isKind(Tok::StrLit) || isKind(Tok::StrInterp) || isKind(Tok::Ident))
-                            a.handles.push_back(advance().text);
-                        else if (isOp("*")) { advance(); a.handles.push_back("*"); } // delegate any unknown method
+                        else item();
                         continue;
                     }
                     if (tr == "is" && isIdent("rw")) a.rw = true;
@@ -6845,46 +6929,27 @@ StmtPtr Parser::parseIf(bool isUnless) {
     s->isUnless = isUnless;
     ExprPtr cond;
     { bool sv = stmtCond_; stmtCond_ = true; cond = parseExpression(); stmtCond_ = sv; }
-    // `if EXPR -> $x is copy { }` — traits on the binding are consumed and
-    // ignored: our binding var is a plain writable copy already, which is
-    // exactly what `is copy` asks for (HTTP::UserAgent's content-length elsif)
-    auto skipBindTraits = [this] {
-        while (isIdent("is") && peek(1).kind == Tok::Ident) { advance(); advance(); }
+    // The binder after `->` is the FULL pointy-signature grammar, the same one a
+    // block's signature uses — a $/@/% variable, a SIGILLESS `\name`
+    // (`if self.elems -> \elems { }`, the Agnostic family's shape), a type or an
+    // `is copy` trait (both consumed and ignored: the binding is a plain writable
+    // copy already), and DESTRUCTURING: `if $r.errors -> @ ($head, *@tail) { }`,
+    // the shape TAP unpacks a result's parse errors with (issue #34). Only a
+    // sub-signature needs real binding; a lone name keeps the string fast path.
+    auto arrowBind = [this](std::string& into, std::vector<Param>& intoParams) {
+        std::vector<Param> ps = parsePointyParams();
+        bool anySub = false;
+        for (auto& p : ps) anySub = anySub || (bool)p.subSig;
+        if (anySub) intoParams = std::move(ps);
+        else if (!ps.empty() && !ps[0].name.empty())
+            into = (ps[0].slurpy ? "*" : "") + ps[0].name;
     };
-    // `if try $type.^name -> str $name { … }` — a TYPED pointy parameter on a
-    // statement condition (Rakudo-Type-Introspection binds the name as a native
-    // `str`). Nothing constrains this binding, as with `is copy` above, but the
-    // type has to be consumed or the block never starts ("expected {").
-    auto skipBindType = [this] {
-        if (isKind(Tok::Ident) &&
-            (peek().kind == Tok::Var ||
-             (peek().kind == Tok::Op && peek().text == ":" &&
-              peek(2).kind == Tok::Ident && peek(3).kind == Tok::Var))) {
-            advance();                                            // the type name
-            if (isOp(":") && peek().kind == Tok::Ident) { advance(); advance(); } // :D/:U smiley
-        }
-    };
-    // The binder after `->`: a $/@/% variable, or a SIGILLESS `\name`
-    // (`if self.elems -> \elems { }`, the Agnostic family's shape) — the name
-    // is registered so the block's bare `elems` reads as the binding.
-    auto arrowBindName = [&, this](std::string& into) {
-        bool sl = matchOp("*");
-        skipBindType();
-        if (matchOp("\\")) {
-            if (isKind(Tok::Ident) || isKind(Tok::Var)) {
-                into = advance().text;
-                sigilless_.insert(into);
-            }
-        }
-        else if (isKind(Tok::Var)) {
-            into = (sl ? "*" : "") + advance().text;
-        }
-        skipBindTraits();
-    };
-    if (matchOp("->")) arrowBindName(s->thenVar);
+    std::vector<Param> thenParams;
+    if (matchOp("->")) arrowBind(s->thenVar, thenParams);
     auto blk = parseBlock();
     s->branches.emplace_back(std::move(cond), std::move(blk));
     s->branchVars.push_back(s->thenVar);
+    s->branchParams.push_back(std::move(thenParams));
     if (isUnless && (isIdent("else") || isIdent("elsif") ||
                      isIdent("orwith") || isIdent("orwithout")))
         throw ParseError("\"unless\" does not take \"" + cur().text +
@@ -6895,10 +6960,12 @@ StmtPtr Parser::parseIf(bool isUnless) {
         ExprPtr c;
         { bool sv = stmtCond_; stmtCond_ = true; c = parseExpression(); stmtCond_ = sv; }
         std::string bv;
-        if (matchOp("->")) arrowBindName(bv); // elsif EXPR -> $x is copy / -> *@x / -> \x
+        std::vector<Param> bps;
+        if (matchOp("->")) arrowBind(bv, bps); // elsif EXPR -> $x is copy / -> *@x / -> \x / -> ($a,$b)
         auto b = parseBlock();
         s->branches.emplace_back(std::move(c), std::move(b));
         s->branchVars.push_back(bv);
+        s->branchParams.push_back(std::move(bps));
     }
     // `if A {…} orwith $x {…}` — with/without join the if-chain from EITHER end.
     // The `with A {…} orwith B {…}` direction was chained (parseStatement's
@@ -6920,7 +6987,7 @@ StmtPtr Parser::parseIf(bool isUnless) {
         if (isIdent("if")) // C-style `else if` — Raku spells it elsif
             throw ParseError("Please use 'elsif' instead of 'else if'",
                              cur().line, "X::Syntax::Malformed::Elsif", {});
-        if (matchOp("->")) arrowBindName(s->elseVar); // else -> $x is copy / -> *@x / -> \x
+        if (matchOp("->")) arrowBind(s->elseVar, s->elseParams); // else -> $x is copy / -> *@x / -> \x / -> ($a,$b)
         s->elseBlock = parseBlock();
     }
     return s;
@@ -6931,25 +6998,15 @@ StmtPtr Parser::parseWhile(bool isUntil) {
     s->isUntil = isUntil;
     { bool sv = stmtCond_; stmtCond_ = true; s->cond = parseExpression(); stmtCond_ = sv; }
     if (matchOp("->")) {
-        // a DESTRUCTURING signature: `while $c.receive -> (:key($i), :value($r))`.
-        // Only a single name was accepted, so a Cro test that unpacks each value
-        // this way failed to parse at all.
-        if (isKind(Tok::LParen)) {
-            advance();
-            Param outer;
-            outer.name = "$__while-topic";
-            outer.subSig = std::make_shared<std::vector<Param>>(parseSignature(Tok::RParen));
-            if (!matchKind(Tok::RParen)) error("expected ')' in while loop signature");
-            s->params.push_back(std::move(outer));
-        }
-        else if (isKind(Tok::Var)) s->var = advance().text;
-        // sigilless loop variable: `while self.row -> \r { … }`. Only the sigilled
-        // form was accepted, so the `\` was left for parseBlock and the whole
-        // module failed to parse — DBIish's StatementHandle is written this way.
-        else if (matchOp("\\") && (isKind(Tok::Ident) || isKind(Tok::Var))) {
-            s->var = advance().text;
-            if (!s->var.empty()) sigilless_.insert(s->var);
-        }
+        // The binder is the full pointy-signature grammar, as on a block: a plain
+        // name, a sigilless `\r` (DBIish's StatementHandle is written that way), or
+        // a DESTRUCTURING signature — `while $c.receive -> (:key($i), :value($r))`,
+        // `-> @ ($head, *@tail)`. Only a sub-signature needs real binding.
+        std::vector<Param> ps = parsePointyParams();
+        bool anySub = false;
+        for (auto& p : ps) anySub = anySub || (bool)p.subSig;
+        if (anySub) s->params = std::move(ps);
+        else if (!ps.empty() && !ps[0].name.empty()) s->var = ps[0].name;
     }
     s->body = parseBlock();
     return s;
@@ -7554,10 +7611,13 @@ StmtPtr Parser::parseStatementImpl() {
             auto g = std::make_unique<GivenStmt>();
             g->defGuard = isWith ? 1 : isWithout ? 2 : 0;
             { bool sv = stmtCond_; stmtCond_ = true; g->topic = parseExpression(); stmtCond_ = sv; }
-            if (isOp("->") || isOp("<->")) { // `given X -> $y is copy { }`
+            if (isOp("->") || isOp("<->")) { // `given X -> $y is copy { }` / `-> ($a, $b)`
                 advance();
                 auto ps = parsePointyParams();
-                if (!ps.empty() && !ps[0].name.empty()) g->var = ps[0].name; // "$_" too: marks an explicit binder
+                bool anySub = false;
+                for (auto& p : ps) anySub = anySub || (bool)p.subSig;
+                if (anySub) g->params = std::move(ps); // destructuring binder — bindParams
+                else if (!ps.empty() && !ps[0].name.empty()) g->var = ps[0].name; // "$_" too: marks an explicit binder
             }
             g->body = parseBlock();
             // orwith/orwithout chain:  with A {} orwith B {}  ==  with A {} else { with B {} }
@@ -7584,7 +7644,10 @@ StmtPtr Parser::parseStatementImpl() {
                 if (isOp("->") || isOp("<->")) { // `else -> $pos { }` binds the topic
                     advance();
                     auto ps = parsePointyParams();
-                    if (!ps.empty() && !ps[0].name.empty()) g->elseVar = ps[0].name;
+                    bool anySub = false;
+                    for (auto& p : ps) anySub = anySub || (bool)p.subSig;
+                    if (anySub) g->elseParams = std::move(ps);
+                    else if (!ps.empty() && !ps[0].name.empty()) g->elseVar = ps[0].name;
                 }
                 g->elseBody = parseBlock();
             }

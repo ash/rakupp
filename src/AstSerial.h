@@ -20,7 +20,7 @@ namespace rakupp {
 
 // Bumped whenever the encoding or the AST changes shape. A cache entry carrying
 // a different version is ignored, never reinterpreted.
-inline constexpr uint32_t kAstSerialVersion = 12; // v12: PairExpr.parenned (`( :k(v) )` is a positional Pair)
+inline constexpr uint32_t kAstSerialVersion = 13; // v13: IfStmt/GivenStmt destructuring `->` binders + AttrInfo.handlesTo
 
 struct AstSerialError { std::string msg; };
 

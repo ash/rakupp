@@ -1936,6 +1936,41 @@ thread_local bool Interpreter::hoistingSubs_ = false;
 thread_local bool Interpreter::suppressLoopFirst_ = false;
 // Per-thread call-stack state (step 3a — see header).
 thread_local std::vector<Interpreter::RedispatchCtx> Interpreter::redispatchStack_;
+thread_local std::vector<Interpreter::ProtoCtx> Interpreter::protoStack_;
+
+// A `proto` whose body is more than a bare `{*}` runs AROUND the dispatch: it does its
+// own work, and the `{*}` statement inside it hands the ORIGINAL arguments to the best
+// candidate (S06). It is never a candidate itself — with no candidates to redispatch
+// to it is simply the routine, and a `{*}` in it then reports the same no-match Rakudo
+// would.
+const Value* Interpreter::protoBodyOf(const Callable& c) {
+    for (auto& cand : c.candidates)
+        if (cand.code() && cand.code()->isProtoBody) return &cand;
+    return nullptr;
+}
+// The `{*}` inside a proto body: hand the proto's own arguments to the best candidate.
+// The frame is popped for the duration so the candidate cannot re-enter it.
+Value Interpreter::protoRedispatch() {
+    ProtoCtx ctx = protoStack_.back();
+    protoStack_.pop_back();
+    struct Push { std::vector<ProtoCtx>& s; ProtoCtx c;
+                  ~Push() { s.push_back(std::move(c)); } } push{protoStack_, ctx};
+    return ctx.dispatch(ctx.args);
+}
+Value Interpreter::callProtoBody(const Value& proto, const std::function<Value(ValueList)>& dispatch,
+                                 ValueList args, const std::vector<ExprPtr>* rwArgs) {
+    protoStack_.push_back(ProtoCtx{dispatch, args});
+    struct Pop { std::vector<ProtoCtx>& s; ~Pop() { s.pop_back(); } } pop{protoStack_};
+    return callCallable(proto, std::move(args), rwArgs, /*ownFrame=*/true);
+}
+Value Interpreter::callProtoBodyMethod(const Value& proto, const Value& self,
+                                       const std::function<Value(ValueList)>& dispatch,
+                                       ValueList args, const std::vector<ExprPtr>* rwArgs) {
+    protoStack_.push_back(ProtoCtx{dispatch, args});
+    struct Pop { std::vector<ProtoCtx>& s; ~Pop() { s.pop_back(); } } pop{protoStack_};
+    return invokeMethod(proto, self, std::move(args), rwArgs, /*ownFrame=*/true);
+}
+
 thread_local std::vector<std::shared_ptr<ReactCtx>> Interpreter::reactStack_;
 thread_local int Interpreter::threadDepth_ = 0;
 
@@ -2577,12 +2612,15 @@ std::shared_ptr<const PadLayout> Interpreter::resolvePads(const std::vector<Stmt
                         size_t mark = undo.size();
                         deactivate(i == 0 ? is->thenVar
                                           : (i < is->branchVars.size() ? is->branchVars[i] : std::string()));
+                        if (i < is->branchParams.size())
+                            for (auto& p : is->branchParams[i]) deactivate(p.name);
                         self(self, is->branches[i].second->stmts, false);
                         popTo(mark);
                     }
                     if (is->elseBlock) {
                         size_t mark = undo.size();
                         deactivate(is->elseVar);
+                        for (auto& p : is->elseParams) deactivate(p.name);
                         self(self, is->elseBlock->stmts, false);
                         popTo(mark);
                     }
@@ -2630,12 +2668,14 @@ std::shared_ptr<const PadLayout> Interpreter::resolvePads(const std::vector<Stmt
                     if (g->body) {
                         size_t mark = undo.size();
                         deactivate(g->var);
+                        for (auto& p : g->params) deactivate(p.name);
                         self(self, g->body->stmts, false);
                         popTo(mark);
                     }
                     if (g->elseBody) {
                         size_t mark = undo.size();
                         deactivate(g->elseVar);
+                        for (auto& p : g->elseParams) deactivate(p.name);
                         self(self, g->elseBody->stmts, false);
                         popTo(mark);
                     }
@@ -6319,6 +6359,14 @@ Value Interpreter::exec(Stmt* s, bool sink) {
         }
         case NK::Block: {
             auto* b = static_cast<Block*>(s);
+            // `{*}` inside a `proto` body: THE dispatch point. It hands the proto's
+            // own arguments to the best candidate (S06). Outside a proto it is just a
+            // block evaluating to `*`, which is what it stays.
+            if (!protoStack_.empty() && b->phaser.empty() && !b->isCatch &&
+                b->stmts.size() == 1 && b->stmts[0]->kind == NK::ExprStmt &&
+                static_cast<ExprStmt*>(b->stmts[0].get())->e &&
+                static_cast<ExprStmt*>(b->stmts[0].get())->e->kind == NK::Whatever)
+                return protoRedispatch();
             // a statement-level `{}` with no statements is Rakudo's empty-hash
             // composer, not a block (EVAL('{}') is {}, not Any)
             if (b->stmts.empty() && b->phaser.empty() && !b->isCatch)
@@ -6371,6 +6419,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     sd->body[0]->kind == NK::ExprStmt &&
                     static_cast<ExprStmt*>(sd->body[0].get())->e &&
                     static_cast<ExprStmt*>(sd->body[0].get())->e->kind == NK::Whatever;
+                c.code()->isProtoBody = sd->isProto && !c.code()->isProto;
                 if (sd->isNative) { c.code()->isNative = true; c.code()->nativeLib = sd->nativeLib;
                                     c.code()->nativeLibSub = sd->nativeLibSub;
                     // `is native(EXPR)` — evaluate NOW, in the declaring module's
@@ -7164,6 +7213,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 if (cd->classRw && a.pub) ca.rw = true;
                 ca.containerIs = a.containerIs;
                 ca.handles = a.handles;
+                ca.handlesTo = a.handlesTo;
                 ca.built = a.built;
                 ca.defConstraint = a.defConstraint;
                 ca.objKeyed = a.objKeyed;
@@ -7264,6 +7314,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     md->body[0]->kind == NK::ExprStmt &&
                     static_cast<ExprStmt*>(md->body[0].get())->e &&
                     static_cast<ExprStmt*>(md->body[0].get())->e->kind == NK::Whatever;
+                code.code()->isProtoBody = md->isProto && !code.code()->isProto;
                 const std::string key = md->isPrivate ? "!" + mdName : mdName;
                 if (!md->traits.empty()) methodTraitQueue.push_back({md.get(), code});
                 if (md->isMulti) {
@@ -7385,6 +7436,24 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     }
                     if (drop) mit = ci->methods.erase(mit); else ++mit;
                 }
+                // An attribute `handles` delegation is a method ON THE CLASS in Rakudo, so
+                // it outranks everything a composed ROLE brought in under the same name —
+                // both a `...` stub and a role's own default body. TAP's Output::Handle
+                // (`has IO::Handle $.handle handles(:print<print>, :terminal<t>)`) hands the
+                // whole Output role to its handle, `.terminal` included (issue #34).
+                // `handles *` is excluded: it is a fallback for names nothing else answers.
+                std::function<void(ClassInfo*)> noteDelegations = [&](ClassInfo* c) {
+                    if (!c) return;
+                    for (auto& a : c->attrs)
+                        for (auto& h : a.handles)
+                            if (h != "*" && !classOwn.count(h)) {
+                                ci->delegatedNames.insert(h);
+                                ci->methods.erase(h); // nothing composed may shadow it
+                            }
+                    noteDelegations(c->parent.get());
+                    for (auto& p : c->extraParents) noteDelegations(p.get());
+                };
+                noteDelegations(ci.get());
             }
             noteSymbolMutation("class/role/grammar declaration");
             // The registry is name-keyed, so a second declaration of a live name
@@ -7659,7 +7728,17 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     auto scope = std::make_shared<Env>(); scope->parent = tctx_.cur;
                     std::string bv = bi < is->branchVars.size() ? is->branchVars[bi]
                                      : (bi == 0 ? is->thenVar : "");
-                    if (!bv.empty() && bv[0] == '*') { // slurpy binder: one-element list
+                    const std::vector<Param>* bps =
+                        bi < is->branchParams.size() && !is->branchParams[bi].empty()
+                        ? &is->branchParams[bi] : nullptr;
+                    if (bps) { // `if EXPR -> ($a,$b)` / `-> @ ($head, *@tail)`: the
+                               // condition value is the signature's single argument,
+                               // exactly as a `while` topic is
+                        ValueList one{cv};
+                        one[0].namedArg = false;
+                        bindParams(*bps, one, scope);
+                    }
+                    else if (!bv.empty() && bv[0] == '*') { // slurpy binder: one-element list
                         Value l = Value::array({cv}); l.isList = false;
                         scope->define(bv.substr(1), l);
                     }
@@ -7674,7 +7753,12 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             }
             if (is->elseBlock) {
                 auto scope = std::make_shared<Env>(); scope->parent = tctx_.cur;
-                if (!is->elseVar.empty() && !is->branches.empty()) { // else -> $x gets the last cond value
+                if (!is->elseParams.empty() && !is->branches.empty()) { // else -> ($a,$b)
+                    ValueList one{lastCond};
+                    one[0].namedArg = false;
+                    bindParams(is->elseParams, one, scope);
+                }
+                else if (!is->elseVar.empty() && !is->branches.empty()) { // else -> $x gets the last cond value
                     if (is->elseVar[0] == '*') { Value l = Value::array({lastCond}); scope->define(is->elseVar.substr(1), l); }
                     else scope->define(is->elseVar, lastCond);
                 }
@@ -8307,7 +8391,13 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             Value* topicSlot = topicAliasSlot(g->topic.get(), skip);
             TopicAlias tback{topicSlot, scope.get(), topic};   // however the block exits
             scope->define("$_", topic);
-            if (!g->var.empty()) scope->define(g->var, topic);
+            if (!g->params.empty()) { // `with X -> ($a, $b)`: the topic is the
+                                      // signature's single argument
+                ValueList one{topic};
+                one[0].namedArg = false;
+                bindParams(g->params, one, scope);
+            }
+            else if (!g->var.empty()) scope->define(g->var, topic);
             // `do with (EXPR) { $^a … }` — a placeholder block receives the topic as
             // its argument (mirrors the statement-modifier form above; Base64 pads via
             // `do with (3 - ($c.key+1) % 3) { $^a == 3 ?? 0 !! $^a }`)
@@ -8320,7 +8410,12 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             // the value of the block's last statement.
             if (skip) {
                 if (g->hasElse) {
-                    if (!g->elseVar.empty()) scope->define(g->elseVar, topic); // else -> $pos { }
+                    if (!g->elseParams.empty()) {
+                        ValueList one{topic};
+                        one[0].namedArg = false;
+                        bindParams(g->elseParams, one, scope);
+                    }
+                    else if (!g->elseVar.empty()) scope->define(g->elseVar, topic); // else -> $pos { }
                     try { return execBlock(g->elseBody.get(), scope); }
                     catch (BreakGivenEx& e) { return e.hasVal ? e.v : Value::any(); }
                 }
@@ -8908,11 +9003,19 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                 else if (p.sigil == '%') {
                     if (!(bv.t == VT::Hash && bv.hash() && !p.isCopy)) bv = coerceHash(bv);
                 }
+                // coercion type on a NAMED param (`IO:D() :$cwd`) — the positional
+                // arm has always done this; without it `:cwd("/tmp")` stayed a Str
+                // and every downstream `IO:D()` candidate refused it (TAP's
+                // SourceHandler chain recursed instead of dispatching)
+                if (p.coerce && !p.type.empty() && bv.typeName() != p.type)
+                    bv = coerceToType(bv, p.type);
                 if (!p.name.empty() || !p.subSig) env->define(p.name, bv);
                 attrWrite(bv);
             }
             else if (p.defaultVal) {
                 Value dv = evalDefault(p.defaultVal.get());
+                if (p.coerce && !p.type.empty() && dv.typeName() != p.type)
+                    dv = coerceToType(dv, p.type); // `IO:D() :$cwd = $*CWD` coerces the DEFAULT too
                 env->define(p.name, dv);
                 attrWrite(dv); // `:$!x = 42` with no arg still initializes the attr
             }
@@ -9715,7 +9818,11 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args) {
             // SUBSET-aware, like the positional arm: `DoW :$cal-first-dow`
             // where DoW is `subset of Int where …` must accept a plain Int
             // that satisfies it (Date::Utils).
-            if (p.sigil == '$' && !p.type.empty() && !typeOrSubsetMatches(sval, p.type)) return -1;
+            // …unless it is a COERCION type (`IO:D() :$cwd`), which accepts any
+            // convertible argument — the conversion happens at binding, exactly as
+            // on the positional arm
+            if (p.sigil == '$' && !p.type.empty() && !p.coerce &&
+                !typeOrSubsetMatches(sval, p.type)) return -1;
             // a `&`-sigil named is implicitly Callable, whether or not it also
             // spells a type — `(:&content)` must NOT bind `content => "text"`.
             // HTTP::Tiny chains Str → Blob → Callable content multis, and the
@@ -11960,7 +12067,8 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
         std::function<Value(ValueList)> dispatch = [this, &c, &codeVal, rwArgs, visited, &dispatch](ValueList as) -> Value {
             const Value* best = nullptr; int bestScore = -1;
             for (auto& cand : c.candidates) {
-                if (cand.code() && cand.code()->isProto) continue; // the proto defines the group; it is not a candidate
+                if (cand.code() && (cand.code()->isProto || cand.code()->isProtoBody))
+                    continue; // the proto defines the group; it is not a candidate
                 bool seen = false; for (auto* v : *visited) if (v == &cand) { seen = true; break; }
                 if (seen) continue;
                 int s = scoreCandidate(cand, as);
@@ -12006,6 +12114,12 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
             redispatchStack_.pop_back();
             return r;
         };
+        // A `proto` with a real body wraps the whole dispatch: it runs first, and the
+        // `{*}` inside it is where the candidates are chosen (S06). Only when there is
+        // something to redispatch TO — a bodied proto that is the group's only member
+        // is just a sub.
+        if (const Value* pb = protoBodyOf(c))
+            return callProtoBody(*pb, dispatch, std::move(args), rwArgs);
         return dispatch(args);
     }
     // `&infix:<=>` / `&infix:<+=>` / `&infix:<~=>` … as a first-class Callable: an
@@ -12853,13 +12967,18 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
         // when our same-class candidates are exhausted, nextsame/callsame defers up
         // the inheritance tree instead of returning Nil.
         std::function<Value(ValueList)> parentNext;
-        if (!redispatchStack_.empty() && redispatchStack_.back().fromChain && !redispatchStack_.back().lastcall)
+        size_t parentFrame = (size_t)-1;
+        if (!redispatchStack_.empty() && redispatchStack_.back().fromChain &&
+            !redispatchStack_.back().lastcall && !redispatchStack_.back().chainDeferred) {
             parentNext = redispatchStack_.back().next;
+            parentFrame = redispatchStack_.size() - 1;
+        }
         std::function<Value(ValueList)> dispatch =
-            [this, &c, dispatcherVal, selfCopy, rwArgs, visited, parentNext, &dispatch](ValueList as) -> Value {
+            [this, &c, dispatcherVal, selfCopy, rwArgs, visited, parentNext, parentFrame, &dispatch](ValueList as) -> Value {
             const Value* best = nullptr; int bestScore = -1;
             for (auto& cand : c.candidates) {
-                if (cand.code() && cand.code()->isProto) continue; // the proto defines the group; it is not a candidate
+                if (cand.code() && (cand.code()->isProto || cand.code()->isProtoBody))
+                    continue; // the proto defines the group; it is not a candidate
                 bool seen = false; for (auto* v : *visited) if (v == &cand) { seen = true; break; }
                 if (seen) continue;
                 int s = scoreCandidate(cand, as);
@@ -12891,7 +13010,18 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
                 {
                     bool anyJunction = false;
                     for (auto& a : as) if (isJunction(a)) { anyJunction = true; break; }
-                    if (parentNext && !anyJunction) return parentNext(as);
+                    if (parentNext && !anyJunction) {
+                        // Mark the frame while we walk up it. `class F does R` composes
+                        // R's candidates into F, so F's group and R's group overlap: the
+                        // ancestor's dispatcher would find this very frame still on the
+                        // stack and defer straight back down, forever. Rakudo reports
+                        // X::Multi::NoMatch here, and now so do we.
+                        bool* mark = parentFrame < redispatchStack_.size()
+                                     ? &redispatchStack_[parentFrame].chainDeferred : nullptr;
+                        if (mark) *mark = true;
+                        struct Unmark { bool* m; ~Unmark() { if (m) *m = false; } } un{mark};
+                        return parentNext(as);
+                    }
                 }
                 // no candidate takes the Junction itself — autothread over it
                 for (size_t ai = 0; ai < as.size(); ai++) {
@@ -12920,6 +13050,8 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
             redispatchStack_.pop_back();
             return r;
         };
+        if (const Value* pb = protoBodyOf(c))
+            return callProtoBodyMethod(*pb, selfCopy, dispatch, std::move(args), rwArgs);
         return dispatch(std::move(args));
     }
     if (c.builtin) { // native-codegen method: receives self as the first argument
@@ -25816,7 +25948,18 @@ Value Interpreter::eval(Expr* e) {
             }
             return Value::pair(p->key, evalValueOf(p->value.get())); // `:err(/pat/)` → Regex value
         }
-        case NK::BlockExpr: return makeClosure(static_cast<BlockExpr*>(e));
+        case NK::BlockExpr: {
+            auto* be = static_cast<BlockExpr*>(e);
+            // `{*}` in EXPRESSION position inside a proto body (`my $r = {*}`) is the
+            // same dispatch point as the statement form — without this it closed over
+            // as an ordinary block and the proto returned a Callable
+            if (!protoStack_.empty() && be->params.empty() && !be->isSub &&
+                be->body.size() == 1 && be->body[0]->kind == NK::ExprStmt &&
+                static_cast<ExprStmt*>(be->body[0].get())->e &&
+                static_cast<ExprStmt*>(be->body[0].get())->e->kind == NK::Whatever)
+                return protoRedispatch();
+            return makeClosure(be);
+        }
         case NK::Whatever: { Value w = Value::whatever(); if (static_cast<const WhateverExpr*>(e)->hyper) w.b = true; return w; } // `**` marked via .b
         default:
             return Value::any();

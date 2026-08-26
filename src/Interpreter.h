@@ -721,7 +721,9 @@ public:
     // Live-Supply transform chain: run one emitted value through a tap's chain of
     // grep/map/head/… steps. Returns the values to forward; sets `complete` when the
     // chain has finished (head/first reached its limit) so `done` should fire.
-    ValueList applyTapChain(Value& tap, const Value& in, bool& complete);
+    // `flush` drains the chain's stream-splitting buffers (`.lines`/`.words` hold a
+    // partial piece between messages) with no new input — run it when the source is done
+    ValueList applyTapChain(Value& tap, const Value& in, bool& complete, bool flush = false);
     // Same chain, but for a KIND-based live supply (interval/signal/async-read):
     // those have no tap record to hang the chain on, so it rides on the Supply
     // value and this wraps the consumer block with it. See the definition.
@@ -1372,13 +1374,29 @@ public:
     // current routine's args (for the *same variants).
     // next: the next-less-specific candidate (callsame/nextsame/callwith/nextwith).
     // restart: re-dispatch the SAME routine from scratch with new args (samewith).
-    struct RedispatchCtx { std::function<Value(ValueList)> next; std::function<Value(ValueList)> restart; ValueList sameArgs; bool lastcall = false; bool fromChain = false; };
+    struct RedispatchCtx { std::function<Value(ValueList)> next; std::function<Value(ValueList)> restart;
+                           ValueList sameArgs; bool lastcall = false; bool fromChain = false;
+                           // set while a no-match deferral is walking UP this frame, so the
+                           // ancestor's dispatcher cannot pick the same frame and bounce back
+                           bool chainDeferred = false; };
     // These three are per-thread call-stack state (a worker builds its own redispatch
     // chain / react stack / thread-depth). Left as plain members in step 1 because they
     // weren't in the swapped ExecContext set; made `static thread_local` here (step 3a)
     // so true parallel execution can't corrupt them. Same access syntax (`X_`), so no
     // call-site changes. Cross-thread emit uses the mutex-guarded ReactCtx, not reactStack_.
     static thread_local std::vector<RedispatchCtx> redispatchStack_;
+    // A `proto` with a real body runs AROUND the dispatch; the `{*}` inside it is
+    // where the candidates are finally chosen. One frame per active proto body.
+    struct ProtoCtx { std::function<Value(ValueList)> dispatch; ValueList args; };
+    // the group's bodied proto, when it has real candidates to dispatch to (else null)
+    const Value* protoBodyOf(const Callable& c);
+    Value protoRedispatch(); // the `{*}` dispatch point inside a proto body
+    Value callProtoBody(const Value& proto, const std::function<Value(ValueList)>& dispatch,
+                        ValueList args, const std::vector<ExprPtr>* rwArgs);
+    Value callProtoBodyMethod(const Value& proto, const Value& self,
+                              const std::function<Value(ValueList)>& dispatch,
+                              ValueList args, const std::vector<ExprPtr>* rwArgs);
+    static thread_local std::vector<ProtoCtx> protoStack_;
     std::map<std::string, std::string> namedRegex_, namedRegexKind_; // lexical `my regex NAME {…}` -> pattern/kind
     std::vector<std::string> argv_;
     std::shared_ptr<Program> mainSigProg_; // --exe: owns the Params &MAIN's metadata borrows (registerCompiledMain)

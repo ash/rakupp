@@ -1858,6 +1858,9 @@ struct Codegen {
     }
 
     void ifStmt(IfStmt* f, int ind) {
+        for (auto& bp : f->branchParams)
+            if (!bp.empty()) unsupported("if EXPR -> ($a, $b) destructuring binder");
+        if (!f->elseParams.empty()) unsupported("else -> ($a, $b) destructuring binder");
         if (!f->thenVar.empty()) { // if EXPR -> $x { … } — bind the condition value; only a single branch
             if (f->branches.size() != 1) unsupported("if EXPR -> $x with elsif");
             std::string v = mangleVar(f->thenVar);
@@ -2055,6 +2058,8 @@ struct Codegen {
         if (f->elseBlock) { line(ind, "else {"); blockValue(f->elseBlock.get(), ind + 1, dst); line(ind, "}"); }
     }
     void givenValue(GivenStmt* g, int ind, const std::string& dst) {
+        if (!g->params.empty() || !g->elseParams.empty())
+            unsupported("given/with EXPR -> ($a, $b) destructuring binder");
         if (g->defGuard != 0) { // with / without in value position
             std::string topic = gensym("v__w");
             line(ind, "{");
@@ -2095,6 +2100,8 @@ struct Codegen {
     }
 
     void givenStmt(GivenStmt* g, int ind) {
+        if (!g->params.empty() || !g->elseParams.empty())
+            unsupported("given/with EXPR -> ($a, $b) destructuring binder");
         if (g->defGuard != 0) {
             // with / without EXPR { body } [else { elseBody }]: run guarded on (un)definedness
             std::string topic = gensym("v__w");

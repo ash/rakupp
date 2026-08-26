@@ -528,6 +528,11 @@ struct AttrDecl {
     std::string type;   // declared type name (`has Int $.x`), "" = none (Mu)
     bool coerce = false; // coercion-type attribute: `has IO::Path() $.filename`
     std::vector<std::string> handles; // `handles <m1 m2>` — delegate these methods to the attr
+    std::vector<std::string> handlesTo; // parallel to `handles`: the name to call ON the
+                                        // attribute when the delegation RENAMES
+                                        // (`handles(:terminal<t>)` exposes .terminal, calls
+                                        // .t); "" = same name. May be shorter than `handles`
+                                        // — treat a missing entry as "".
     int defConstraint = 0; // type smiley: 0=none, 1=:D (defined), 2=:U (undefined)
     bool objKeyed = false; // `has %!h{Mu:U}` — an object-keyed hash: TYPE-OBJECT
                            // subscript keys stay distinct ("(Name)") instead of
@@ -610,7 +615,12 @@ struct IfStmt : Stmt {
     std::string thenVar; // `if EXPR -> $x { }` / `with EXPR -> $x { }` binds the value
     std::vector<std::pair<ExprPtr, std::unique_ptr<Block>>> branches; // if/elsif
     std::vector<std::string> branchVars; // `elsif EXPR -> $x { }` per-branch binders ("" = none)
+    std::vector<std::vector<Param>> branchParams; // per-branch DESTRUCTURING binder —
+                                   // `if $r.errors -> @ ($head, *@tail) {…}` — bound
+                                   // through bindParams like `for`/`while` do (empty
+                                   // = the plain-name binder in branchVars)
     std::string elseVar; // `else -> $x { }` binds the last (falsy) condition value
+    std::vector<Param> elseParams; // `else -> ($a, $b) { }` — same, for the else branch
     std::unique_ptr<Block> elseBlock; // may be null
     bool isUnless = false;
     bool modifier = false; // `STMT if COND` postfix form — a `my` in STMT declares in the ENCLOSING scope
@@ -682,6 +692,9 @@ struct WhateverExpr : Expr { bool hyper = false; WhateverExpr(): Expr(NK::Whatev
 struct GivenStmt : Stmt {
     ExprPtr topic;
     std::string var; // `given X -> $y { }`: also bind $y to the topic
+    std::vector<Param> params;     // `with X -> ($a, $b) { }` — a destructuring binder
+                                   // for the topic, bound through bindParams
+    std::vector<Param> elseParams; // …and the same for `else -> ($a, $b) { }`
     bool modifier = false; // `EXPR with X` — no implicit block (a `my` in EXPR leaks out)
     std::unique_ptr<Block> body;
     int defGuard = 0; // 0=given (always), 1=with (run if defined), 2=without (run if undefined)

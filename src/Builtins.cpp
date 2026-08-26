@@ -676,9 +676,10 @@ void spawnWithInput(const std::vector<std::string>& argv, const std::string& inp
 // Run one emitted value through a live-Supply tap's transform chain (grep/map/head/…).
 // Threads the value(s) through each step in order; per-step mutable state lives in the
 // step's "state" hash. Sets `complete` when a head/first step reaches its limit.
-ValueList Interpreter::applyTapChain(Value& tap, const Value& in, bool& complete) {
+ValueList Interpreter::applyTapChain(Value& tap, const Value& in, bool& complete, bool flush) {
     complete = false;
-    ValueList cur{in};
+    ValueList cur;
+    if (!flush) cur.push_back(in);
     if (!(tap.t == VT::Hash && tap.hash()->count("chain"))) return cur;
     for (auto& step : *(*tap.hash())["chain"].arr()) {
         const std::string op = (*step.hash())["op"].toStr();
@@ -724,7 +725,40 @@ ValueList Interpreter::applyTapChain(Value& tap, const Value& in, bool& complete
                     (*state.hash())["prev"] = Value::str(ks); (*state.hash())["has"] = Value::boolean(true);
                 }
             }
+            else if (op == "lines" || op == "words") {
+                // A stream SPLITTER: the message boundaries are not the piece
+                // boundaries, so the unfinished tail is held in state and joined to
+                // the next message. `.lines(:!chomp)` keeps the newline on each line
+                // (TAP feeds its parser that way — issue #34).
+                bool chomp = !step.hash()->count("chomp") || (*step.hash())["chomp"].truthy();
+                std::string buf = state.hash()->count("buf") ? (*state.hash())["buf"].toStr() : std::string();
+                buf += v.toStr();
+                size_t start = 0;
+                if (op == "lines") {
+                    for (size_t nl; (nl = buf.find('\n', start)) != std::string::npos; start = nl + 1)
+                        next.push_back(Value::str(buf.substr(start, nl - start + (chomp ? 0 : 1))));
+                }
+                else { // words: a piece ends at whitespace, so a trailing partial word waits
+                    size_t i = start;
+                    for (;;) {
+                        while (i < buf.size() && ascii::isspace((unsigned char)buf[i])) i++;
+                        size_t b = i;
+                        while (i < buf.size() && !ascii::isspace((unsigned char)buf[i])) i++;
+                        if (b == i) break;                       // nothing but whitespace left
+                        if (i == buf.size()) { i = b; break; }   // may still grow: hold it
+                        next.push_back(Value::str(buf.substr(b, i - b)));
+                    }
+                    start = i;
+                }
+                (*state.hash())["buf"] = Value::str(buf.substr(start));
+            }
             else next.push_back(v);
+        }
+        // draining: whatever a splitter still holds is the last piece
+        if (flush && (op == "lines" || op == "words")) {
+            std::string buf = state.hash()->count("buf") ? (*state.hash())["buf"].toStr() : std::string();
+            if (!buf.empty()) next.push_back(Value::str(buf));
+            (*state.hash())["buf"] = Value::str("");
         }
         cur = std::move(next);
         if (complete) break;
@@ -6003,6 +6037,18 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             (*inv.hash())["done_state"] = Value::boolean(true);
             if (inv.hash()->count("taps")) for (auto& t : *(*inv.hash())["taps"].arr()) {
                 if (t.t == VT::Hash && t.hash()->count("closed") && (*t.hash())["closed"].truthy()) continue; // already done (head/first)
+                // a `.lines`/`.words` chain may still hold an unterminated last piece:
+                // the stream ending is what completes it, so deliver it before `done`
+                if (t.t == VT::Hash && t.hash()->count("chain") &&
+                    t.hash()->count("emit") && (*t.hash())["emit"].t == VT::Code) {
+                    bool complete = false;
+                    ValueList tail = applyTapChain(t, Value::any(), complete, /*flush=*/true);
+                    for (auto& o : tail) {
+                        ValueList one{o};
+                        try { callCallable((*t.hash())["emit"], one); }
+                        catch (NextEx&) {} catch (LastEx&) { break; } catch (DoneEx&) { break; }
+                    }
+                }
                 if (t.t == VT::Hash && t.hash()->count("done") && (*t.hash())["done"].t == VT::Code) { ValueList none; callCallable((*t.hash())["done"], none); }
                 if (t.ext()) { auto ctx = std::static_pointer_cast<ReactCtx>(t.ext()); std::lock_guard<std::mutex> lk(ctx->m); if (ctx->liveSources > 0) ctx->liveSources--; ctx->cv.notify_all(); }
             }
@@ -10758,6 +10804,21 @@ void Interpreter::registerBuiltins() {
     B["await"] = [](Interpreter& I, ValueList& a) -> Value {
         // resolve a Promise, running any pending Proc::Async work (with the timeout from an anyof timer)
         std::function<Value(Value&)> resolve = [&](Value& p) -> Value {
+            // A user class that `does Awaitable` (TAP::Parser is one) supplies the
+            // thing to wait on: Rakudo asks it for `get-await-handle`, and such a
+            // class almost always delegates that to a Promise attribute. Resolve
+            // through that Promise — without this `await $parser` handed back the
+            // PARSER (issue #34).
+            if (p.t == VT::Object && p.obj() && p.obj()->cls &&
+                I.typeOrSubsetMatches(p, "Awaitable")) {
+                for (const char* acc : {"promise", "Promise"}) {
+                    Value inner;
+                    try { inner = I.methodCall(p, acc, {}); } catch (RakuError&) { continue; }
+                    if (inner.t == VT::Hash && inner.hashKind == "Promise") return resolve(inner);
+                }
+                try { return I.methodCall(p, "result", {}); } catch (RakuError&) {}
+                return p;
+            }
             // `await` a Supply drains it and yields its LAST emitted value
             if (p.t == VT::Hash && p.hashKind == "Supply" && p.hash()->count("values")) {
                 auto& vals = *(*p.hash())["values"].arr();

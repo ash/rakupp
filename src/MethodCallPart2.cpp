@@ -475,7 +475,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // value when the resulting Supply is tapped (see applyTapChain + emit fan-out).
         if (!listy && inv.hash()->count("supplier") &&
             (m == "map" || m == "grep" || m == "head" || m == "skip" ||
-             m == "first" || m == "unique" || m == "squish")) {
+             m == "first" || m == "unique" || m == "squish" ||
+             m == "lines" || m == "words")) {
             Value s = Value::makeHash(); s.hashKind = "Supply";
             (*s.hash())["supplier"] = (*inv.hash())["supplier"];
             Value chain = Value::array();
@@ -483,7 +484,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             Value step = Value::makeHash();
             (*step.hash())["op"] = Value::str(m);
             for (auto& a : args) if (a.t != VT::Pair) { (*step.hash())["arg"] = a; break; }
-            for (auto& a : args) if (a.t == VT::Pair && a.pairVal() && (a.s == "as" || a.s == "with")) (*step.hash())[a.s] = *a.pairVal();
+            for (auto& a : args) if (a.t == VT::Pair && a.pairVal() && (a.s == "as" || a.s == "with" || a.s == "chomp")) (*step.hash())[a.s] = *a.pairVal();
             (*step.hash())["state"] = Value::makeHash();
             chain.arr()->push_back(step);
             (*s.hash())["chain"] = chain;
@@ -497,7 +498,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // spec hash itself as the topic.
         if (!listy && !inv.hash()->count("supplier") && inv.hash()->count("kind") &&
             (m == "map" || m == "grep" || m == "head" || m == "skip" ||
-             m == "first" || m == "unique" || m == "squish")) {
+             m == "first" || m == "unique" || m == "squish" ||
+             m == "lines" || m == "words")) {
             Value s = Value::makeHash(); s.hashKind = "Supply";
             *s.hash() = *inv.hash();
             Value chain = Value::array();
@@ -505,7 +507,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             Value step = Value::makeHash();
             (*step.hash())["op"] = Value::str(m);
             for (auto& a : args) if (a.t != VT::Pair) { (*step.hash())["arg"] = a; break; }
-            for (auto& a : args) if (a.t == VT::Pair && a.pairVal() && (a.s == "as" || a.s == "with")) (*step.hash())[a.s] = *a.pairVal();
+            for (auto& a : args) if (a.t == VT::Pair && a.pairVal() && (a.s == "as" || a.s == "with" || a.s == "chomp")) (*step.hash())[a.s] = *a.pairVal();
             (*step.hash())["state"] = Value::makeHash();
             chain.arr()->push_back(step);
             (*s.hash())["chain"] = chain;
@@ -2791,7 +2793,11 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     // user object: dispatch to class methods / public accessors first
     if (inv.t == VT::Object && inv.obj() && inv.obj()->cls) {
         auto ci = inv.obj()->cls;
-        if (Value* um0 = ci->findMethodForCall(m, langRev_ < 2)) {
+        // a name the class delegates with `handles` (and does not declare itself) is
+        // answered by the delegation, never by a method a composed role supplied
+        Value* um0 = (!ci->delegatedNames.empty() && ci->delegatedNames.count(m))
+                     ? nullptr : ci->findMethodForCall(m, langRev_ < 2);
+        if (um0) {
             // a role's STUB method (`method body-serializer-selector() { ... }`)
             // is satisfied by the class's public attribute of the same name —
             // the accessor must win over executing the stub
@@ -2852,13 +2858,17 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // <… iterator list …> }` — iterating as a single opaque object.
         for (ClassInfo* c = ci.get(); c; c = c->parent.get())
             for (auto& a : c->attrs)
-                for (auto& hn : a.handles)
-                    if (hn == m) {
+                for (size_t hi = 0; hi < a.handles.size(); hi++)
+                    if (a.handles[hi] == m) {
                         auto ait = inv.obj()->attrs.find(a.name);
                         Value target = ait != inv.obj()->attrs.end() ? ait->second : Value::any();
                         if ((target.t == VT::Any || target.t == VT::Nil) && !a.type.empty())
                             target = Value::typeObj(a.type); // an unset typed attr delegates to its type object
-                        return methodCall(target, m, std::move(args), rwArgs);
+                        // a RENAMING delegation calls a DIFFERENT name on the attribute:
+                        // `handles(:terminal<t>)` exposes .terminal, asks the handle for .t
+                        const std::string& to = hi < a.handlesTo.size() && !a.handlesTo[hi].empty()
+                                                ? a.handlesTo[hi] : m;
+                        return methodCall(target, to, std::move(args), rwArgs);
                     }
         // Real-role bridge: numeric coercions/methods the class doesn't define
         // dispatch through .Bridge BEFORE the generic Cool handlers (else `.Int`

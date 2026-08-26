@@ -357,11 +357,16 @@ struct Checker {
                     scopes.push_back({});
                     declare(f->thenVar);                                   // `if E -> $x { }`
                     if (i < f->branchVars.size()) declare(f->branchVars[i]);
+                    if (i < f->branchParams.size()) {                      // `if E -> ($a,$b) { }`
+                        params(f->branchParams[i]);
+                        paramExprs(f->branchParams[i]);
+                    }
                     walkBlock(f->branches[i].second.get());
                     scopes.pop_back();
                 }
                 scopes.push_back({});
                 declare(f->elseVar);
+                params(f->elseParams); paramExprs(f->elseParams);
                 walkBlock(f->elseBlock.get());
                 scopes.pop_back();
                 return;
@@ -411,10 +416,12 @@ struct Checker {
                 walkExpr(g->topic.get());
                 scopes.push_back({});
                 declare(g->var);
+                params(g->params); paramExprs(g->params);
                 walkBlock(g->body.get());
                 scopes.pop_back();
                 scopes.push_back({});
                 declare(g->elseVar);
+                params(g->elseParams); paramExprs(g->elseParams);
                 walkBlock(g->elseBody.get());
                 scopes.pop_back();
                 return;
