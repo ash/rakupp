@@ -1,4 +1,4 @@
-use Wings;   # windows with wings — she's a butterfly, after all
+use GUI::Wings;   # windows with wings — she's a butterfly, after all
 
 app 'Counter', {
     my $n = 0;

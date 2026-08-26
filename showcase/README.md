@@ -389,13 +389,13 @@ and what each part of the binding exercises.
 **sqlite** proves NativeCall can talk to a C library; **wings** points the same
 machinery at the Objective-C runtime and gets a real desktop app: NSWindow,
 NSTextField, NSButton, reached through `objc_msgSend` with no glue code. The
-framework on top is the `Wings` module from
+framework on top is the `GUI::Wings` module from
 [raku-modules](https://github.com/ash/raku-modules), and its event loop is not
 a callback registry — it is `react`, with a button's clicks, a one-second clock
 and SIGINT as three `whenever` streams.
 
 ```sh
-export RAKULIB=$HOME/raku-modules/Wings/lib
+export RAKULIB=$HOME/raku-modules/GUI-Wings/lib
 RAKUPP_MAIN_THREAD=1 build/rakupp showcase/wings/counter.raku    # Raku++
 raku showcase/wings/counter.raku                                 # Rakudo, unchanged
 WINGS_AUTODRIVE=3 raku showcase/wings/counter.raku               # clicks itself, ~4 s

@@ -5,15 +5,15 @@ clock and Ctrl+C are three `whenever` blocks inside one `react`. The GUI is real
 Cocoa — NSWindow, NSTextField, NSButton — reached through `objc_msgSend` over
 NativeCall, with no C glue and no bindings distribution.
 
-The framework is the **Wings** module from
+The framework is the **GUI::Wings** module from
 [github.com/ash/raku-modules](https://github.com/ash/raku-modules):
 
 ```sh
-export RAKULIB=$HOME/raku-modules/Wings/lib
+export RAKULIB=$HOME/raku-modules/GUI-Wings/lib
 ```
 
 ```raku
-use Wings;
+use GUI::Wings;
 
 app 'Counter', {
     my $n = 0;
@@ -34,6 +34,7 @@ app 'Counter', {
 
 ```sh
 RAKUPP_MAIN_THREAD=1 build/rakupp showcase/wings/counter.raku    # Raku++
+RAKUPP_MAIN_THREAD=1 build/rakupp ~/raku-modules/GUI-Wings/examples/calculator.raku   # the calculator
 raku showcase/wings/counter.raku                                 # Rakudo, unchanged
 ```
 
