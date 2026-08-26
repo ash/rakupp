@@ -83,7 +83,7 @@ rakupp --exe app.raku -o app     # compile it
 
 | Option | Meaning |
 |---|---|
-| `FILE` / `-e 'CODE'` / *(stdin)* | Run a program from a file, a one-liner, or standard input |
+| `FILE` / `-e 'CODE'` / `-` *(stdin)* | Run a program from a file, a one-liner, or standard input (`rakupp - ARGS…` gives a stdin program its `@*ARGS`) |
 | `-I <path>` / `-M <module>` | Add a module search directory / load a module first (both repeatable) |
 | `-n` / `-p` / `-a` / `-F<sep>` / `-i[.ext]` | The perl one-liner family: line loop, autoprint, autosplit, in-place edit (clusters: `-lane`, `-pi.bak`) |
 | `--profile[=FILE]` | Routine-level wall-time profile after the run (`.json` for machine-readable) |

@@ -1688,6 +1688,8 @@ int main(int argc, char** argv) {
 "  rakupp -e 'CODE' [ARGS...]   Run a one-liner\n"
 "  rakupp                       Start an interactive session (REPL)\n"
 "  rakupp < FILE, ... | rakupp  Read a whole program from standard input\n"
+"  rakupp - [ARGS...]           Same, explicitly — the spelling that lets a\n"
+"                               stdin program take arguments (they land in @*ARGS)\n"
 "\n"
 "Options:\n"
 "  -I <path>                    Add a directory to the module search path\n"
