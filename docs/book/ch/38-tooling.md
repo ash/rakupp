@@ -414,8 +414,10 @@ the session continues. And the interpreter's standard input is pinned to EOF
 with `rk_set_input`, so `get`/`lines`/`$*IN` read nothing instead of eating the
 protocol's own bytes off fd 0 — the server reads that descriptor itself.
 
-The JSON layer is about 300 lines of `McpServer.cpp` rather than a dependency,
-for the reason the rest of the engine has none.
+The JSON layer is about 300 lines of hand-written C++ rather than a dependency,
+for the reason the rest of the engine has none. It lives in `src/JsonLite.h`,
+shared with the Jupyter kernel below — two protocols, one little value type,
+still no library.
 
 `tools/mcp-smoke.raku` drives a real server over stdio exactly as a client does
 and pins the handshake, both tools, session persistence, the surviving `die`,
@@ -428,6 +430,74 @@ no sandbox, and registering the server grants an agent the trust that handing it
 a shell does. Saying so is the whole of the mitigation here; a sandboxed variant
 is separate work, and the WebAssembly build of Chapter 31 is the natural cage
 for it.
+
+## `--jupyter`: the same session, in a notebook
+
+```cpp
+// src/JupyterKernel.h
+namespace rakupp::jupyter {
+struct Options {
+    std::string connectionFile;         // Jupyter's {connection_file}
+    std::vector<std::string> preload;   // -M modules, as `use <module>;`
+};
+int runKernel(const Options& opt);
+int installKernelspec(const InstallOptions& opt);   // --jupyter-install
+}
+```
+
+A notebook is a REPL with an editable scrollback, so this is the third face of
+the same thing: `rakupp --jupyter FILE` serves the session to a Jupyter
+frontend, and the rule from `--mcp` holds unchanged — nothing in
+`JupyterKernel.cpp` includes `Interpreter.h`. A cell arrives as `rk_eval`, its
+output leaves through `rk_set_output`, and `jupyter-display` — the one routine
+the kernel adds to the language — is an `rk_register` host function that
+publishes `display_data`. A notebook cell, an agent's tool call and a `.raku`
+file therefore agree by construction.
+
+### The transport is the interesting part
+
+Jupyter's protocol rides on ZeroMQ, and this project links no third-party
+libraries. So the kernel speaks [ZMTP](https://rfc.zeromq.org/spec/23/) itself,
+over plain TCP: the 64-byte greeting, the NULL-mechanism `READY` handshake,
+`MORE`-chained frames — and only the three socket behaviours a kernel needs.
+`ROUTER` for shell and control, where the reply goes back down the connection
+it arrived on; `PUB` for iopub, fanning out to subscribers by topic prefix;
+`REP` for the heartbeat, which is an echo. Everything else a real ZeroMQ does —
+reconnection, high-water marks, the other twelve socket types — is absent
+deliberately: the peer is one frontend that connects once.
+
+Two decisions are worth recording, both of the "advertise less, accept more"
+kind. The kernel announces version **3.0** rather than 3.1, which keeps the
+peer on the older subscription form and off ZMTP heartbeats — less protocol on
+a link that carries one client — while the code still honours the 3.1
+`SUBSCRIBE` command and answers `PING` with `PONG`, so a libzmq that changes
+its mind does not break it. And every message is signed with HMAC-SHA256 over
+its four JSON parts, written out in the same file (about 120 lines of FIPS
+180-4) for the same reason as the JSON: one that does not verify is *dropped*,
+not answered.
+
+### The bug the capture mechanism sets
+
+`rk_set_output` swaps `std::cout` and `std::cerr`'s stream buffers process-wide
+so a cell's printing can be captured. The kernel's own diagnostics therefore
+must not use `std::cerr`: a log line written that way arrives in the notebook
+wearing the user's output as a disguise. They go to the C `stderr` instead,
+which the swap does not touch and which Jupyter puts in its log. It cost one
+silent debugging session to notice, which is why it is written here.
+
+### What it does not do, out loud
+
+The engine has no interrupt point inside an evaluation, so ■ answers, says so
+on iopub, and *exits* — the frontend restarts the kernel and the session is
+gone. `get` reads EOF, because a frontend may have no way to answer a prompt
+and a kernel blocked on one is a hung notebook. `is_complete_request` answers
+`unknown` rather than guessing at what the parser would say. All three are the
+same choice: a visible gap beats a convincing lie.
+
+`tools/jupyter-smoke.raku` is a **Jupyter client written in Raku** — it opens
+the five sockets, does the ZMTP handshake, and carries its own HMAC-SHA256
+pinned to the RFC 4231 vectors, so the gate passes only if two independent
+implementations of both halves agree.
 
 ## Pod and `--doc`
 

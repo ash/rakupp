@@ -30,6 +30,8 @@ reference for the internals; the user-facing command line is documented in
 | `--profile[=dest]` | the routine-level wall-time profiler |
 | `--mcp` | serve the interpreter over the Model Context Protocol on stdio |
 | `--timeout=SECS` | `--mcp` only: the watchdog's limit; `0` disables it |
+| `--jupyter FILE` | run as a Jupyter kernel against Jupyter's connection file |
+| `--jupyter-install` | write the kernelspec that lets Jupyter launch this binary |
 | `--ffi-info` | which FFI backend is live, or why none is |
 | `--precomp-info` | what the parse cache holds |
 | `--precomp-clean` | empty it |

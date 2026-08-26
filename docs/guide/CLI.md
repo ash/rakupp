@@ -201,6 +201,14 @@ stdio, so AI agent clients get `raku` (a persistent session) and
 `RAKULIB` — not `-I` — adds module directories. The whole story is
 [MCP.md](MCP.md).
 
+`--jupyter FILE` runs the process as a [Jupyter kernel](JUPYTER.md) against
+the connection file the frontend passes as `{connection_file}`, and
+`--jupyter-install` writes the kernelspec that makes `jupyter lab` and
+`jupyter console --kernel raku` able to launch it (`--name=NAME` for a second
+build, `--prefix=DIR` for another location). `-M` preloads modules into the
+notebook's session. No ZeroMQ is needed: the binary speaks the wire protocol
+itself. The whole story is [JUPYTER.md](JUPYTER.md).
+
 ## Compiling
 
 `--bundle`, `--aot` and `--exe` produce standalone binaries — see

@@ -14,6 +14,7 @@
 #include "Lint.h"
 #include "Ffi.h"
 #include "Highlight.h"
+#include "JupyterKernel.h"
 #include "McpServer.h"
 #include "Repl.h"
 #include <cstdlib>
@@ -1318,7 +1319,7 @@ int main(int argc, char** argv) {
         static const std::set<std::string> kLongNames = {
             "exe", "cpp", "emit-cpp", "bundle", "aot", "lint", "highlight",
             "ansi", "terminal", "ast", "dump-ast", "doc", "help", "version",
-            "mcp",
+            "mcp", "jupyter",
         };
         std::string bare = argv[1] + 1;
         if (kLongNames.count(bare)) {
@@ -1342,7 +1343,7 @@ int main(int argc, char** argv) {
     // `-o out --exe src` is as good as `--exe src -o out`.
     enum class Mode { Run, Help, Version, FfiInfo, Highlight, Ast, AstRoundtrip,
                       PrecompSetting, PrecompInfo, PrecompClean, Check, Lint,
-                      Cpp, Bundle, Aot, Exe, Mcp };
+                      Cpp, Bundle, Aot, Exe, Mcp, Jupyter, JupyterInstall };
     Mode mode = Mode::Run;
     std::string modeTok;                  // the spelling that selected the mode (for messages)
     std::vector<std::string> libPaths;    // -I, both spellings, any position
@@ -1365,6 +1366,10 @@ int main(int argc, char** argv) {
     bool optimize = false;                // -O (compile modes and --cpp)
     bool sawHtml = false;                 // --html is only legal under --highlight
     long mcpTimeout = -1;                 // --timeout=SECS, only legal under --mcp
+    std::string jupyterConn;              // --jupyter FILE: Jupyter's connection file
+    std::string jupyterName = "raku";     // --jupyter-install --name=NAME
+    std::string jupyterPrefix;            // --jupyter-install --prefix=DIR
+    bool sawJupyterOpt = false;           // --name/--prefix seen (only --jupyter-install wants them)
 
     // Rakudo prints this banner for an unknown option and exits 0; we stay
     // bug-compatible (the exit code included — it is pinned by the suite).
@@ -1408,6 +1413,19 @@ int main(int argc, char** argv) {
             // mode selectors
             if (a == "--highlight") { if (!setMode(Mode::Highlight, a)) return 4; continue; }
             if (a == "--mcp") { if (!setMode(Mode::Mcp, a)) return 4; continue; }
+            // --jupyter FILE: Jupyter launches the kernel with the connection
+            // file as its own argv token, so the flag EATS the next argument —
+            // it is not the program to run, and the two-phase scan would take
+            // it for one.
+            if (a == "--jupyter-install") { if (!setMode(Mode::JupyterInstall, a)) return 4; continue; }
+            if (a == "--jupyter" || a.rfind("--jupyter=", 0) == 0) {
+                if (!setMode(Mode::Jupyter, "--jupyter")) return 4;
+                if (a.size() > 9 && a[9] == '=') jupyterConn = a.substr(10);
+                else if (i + 1 < argc) jupyterConn = argv[++i];
+                continue;
+            }
+            if (a.rfind("--name=", 0) == 0) { jupyterName = a.substr(7); sawJupyterOpt = true; continue; }
+            if (a.rfind("--prefix=", 0) == 0) { jupyterPrefix = a.substr(9); sawJupyterOpt = true; continue; }
             if (a == "--timeout" || a.rfind("--timeout=", 0) == 0) {
                 std::string v = a.size() > 9 && a[9] == '=' ? a.substr(10)
                               : i + 1 < argc ? std::string(argv[++i]) : std::string();
@@ -1585,6 +1603,21 @@ int main(int argc, char** argv) {
                 return 4;
             }
         }
+        if (sawJupyterOpt && mode != Mode::JupyterInstall) {
+            return illegalOpt(jupyterPrefix.empty() ? "--name" : "--prefix");
+        }
+        if (mode == Mode::Jupyter) {
+            // Same rule as --mcp: the kernel IS the program, and its input
+            // arrives over five sockets rather than from a file.
+            if (jupyterConn.empty()) {
+                std::cerr << "--jupyter wants the connection file Jupyter passes as {connection_file}\n";
+                return 4;
+            }
+            if (haveSrc) {
+                std::cerr << "--jupyter serves a notebook frontend and takes no program\n";
+                return 4;
+            }
+        }
         if (!outPath.empty() && !isCompileMode(mode)) return illegalOpt("-o");
         if (optimize && !isCompileMode(mode) && mode != Mode::Cpp) return illegalOpt("-O");
         // --slim shapes the LINK of a compiled binary, so it means nothing to
@@ -1709,6 +1742,11 @@ int main(int argc, char** argv) {
 "                               --timeout=SECS answers a stuck call and exits, and\n"
 "                               the client restarts fresh (default 120; 0 = never);\n"
 "                               -M preloads modules into the session\n"
+"  rakupp --jupyter FILE        Run as a Jupyter kernel against the connection\n"
+"                               file the frontend passes; -M preloads modules\n"
+"  rakupp --jupyter-install     Register this binary as the \"raku\" kernel, so\n"
+"                               jupyter lab / jupyter console can launch it\n"
+"                               (--name=NAME, --prefix=DIR for another location)\n"
 "\n"
 "Inspection:\n"
 "  rakupp --lint SRC [-q]       Static-analyze without running: warn about unused\n"
@@ -1779,6 +1817,21 @@ int main(int argc, char** argv) {
     // native-call bug report, and how the test suite tells its two CI legs
     // apart, so it is worth a flag of its own.
     if (mode == Mode::FfiInfo) { std::cout << ffi::describe() << "\n"; return 0; }
+
+    if (mode == Mode::Jupyter) {
+        rakupp::jupyter::Options jo;
+        jo.connectionFile = jupyterConn;
+        jo.preload = preloadModules;
+        return rakupp::jupyter::runKernel(jo);
+    }
+
+    if (mode == Mode::JupyterInstall) {
+        rakupp::jupyter::InstallOptions io;
+        io.selfExe = exePath;
+        io.name = jupyterName;
+        io.prefix = jupyterPrefix;
+        return rakupp::jupyter::installKernelspec(io);
+    }
 
     if (mode == Mode::Mcp) {
         rakupp::mcp::Options mo;

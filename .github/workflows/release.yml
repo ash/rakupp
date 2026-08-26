@@ -259,6 +259,19 @@ jobs:
         timeout-minutes: 10
         run: build/rakupp tools/mcp-smoke.raku build
 
+      # The Jupyter gate: `rakupp --jupyter` driven by a Jupyter client
+      # written in Raku -- the ZMTP handshake on all five sockets, HMAC-SHA256
+      # signing (pinned to the RFC 4231 vectors on the client side, so the two
+      # implementations have to agree), a cell's stream and result, the
+      # session across cells, a dying cell, jupyter-display, a forged
+      # signature being dropped, the heartbeat, and shutdown. Same tight
+      # per-step limit and same reason: this gate blocks on socket reads from
+      # a kernel that could wedge.
+      - name: Jupyter kernel gate (POSIX)
+        if: runner.os != 'Windows'
+        timeout-minutes: 10
+        run: build/rakupp tools/jupyter-smoke.raku build
+
       # The SLIM negative suite (SLIM-PLAN P3+P4): --slim's grammar,
       # X::Feature::NotBuilt from every cut feature, the --exe-info manifest
       # round-trip, the size budgets, and the P4 scan's decisions (cut the

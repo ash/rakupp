@@ -90,6 +90,7 @@ rakupp --exe app.raku -o app     # compile it
 | `--exe SRC -o OUT` | Native-compile to a standalone binary (also `--bundle`, `--aot`) |
 | `--highlight [SRC]` | Syntax-highlight Raku to HTML (`--html`) or terminal (`--ansi`) |
 | `--mcp` | Serve the interpreter over the Model Context Protocol for AI agent clients |
+| `--jupyter FILE` | Run as a Jupyter kernel (`--jupyter-install` registers it with Jupyter) |
 | `--lint SRC` | Static-analyze without running: unused variables, unreachable code, etc. |
 | `-c` / `--ast SRC` | Compile-check only (parse + every variable declared) / print the parsed AST |
 
@@ -198,6 +199,24 @@ claude mcp add raku -- /path/to/rakupp --mcp
 
 Guide: **[MCP.md](docs/guide/MCP.md)**. Gated by `tools/mcp-smoke.raku`,
 which drives the server exactly as a client does, on every push.
+
+## Raku in a notebook — Jupyter
+
+`rakupp --jupyter-install` registers the binary as a Jupyter kernel; after
+that, `jupyter console --kernel raku` or picking **Raku++** in JupyterLab runs
+notebook cells through this engine. One interpreter serves the whole notebook,
+so a sub defined in cell 3 is callable in cell 9; a cell's output streams as it
+is produced; a cell that dies leaves the session intact; and
+`jupyter-display($html, 'text/html')` hands the frontend something to render.
+
+Nothing needs installing on the Raku side — **no ZeroMQ, no Python module, no
+shared library**. The binary speaks ZMTP and signs its own messages, because
+this project links no third-party libraries.
+
+Guide: **[JUPYTER.md](docs/guide/JUPYTER.md)**. Gated by
+`tools/jupyter-smoke.raku` — a Jupyter client written in Raku, with its own
+HMAC-SHA256 pinned to the RFC 4231 vectors, so both halves of the protocol
+have to agree.
 
 ## Documentation
 
