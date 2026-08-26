@@ -47,6 +47,9 @@ clicks and reconciliations on stderr.
 AppKit accepts windows only on the process main thread, which is what
 `RAKUPP_MAIN_THREAD=1` provides under Raku++; under Rakudo the mainline is
 already the main thread. macOS only, arm64 and x86-64 (a Rosetta Rakudo works).
+The API floor is macOS 10.12.2 (tested on 15.7); the Raku++ side needs a build
+from current `main` — release binaries predate the main-thread hook — while any
+recent Rakudo works as released.
 
 ## How it holds together
 
