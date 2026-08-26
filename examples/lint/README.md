@@ -5,6 +5,13 @@ reports likely mistakes **without running it**, then exits non-zero if it found
 any warnings (notes alone still exit 0). Full rule reference:
 [docs/guide/LINT.md](../../docs/guide/LINT.md).
 
+`--lint` also reports the one static check that is not advisory — a variable
+nothing declares, which stops the program compiling. That prints as `error:`
+with the rule id `undeclared-variable` and exits **2**, not 1. There is no demo
+file for it here because the demos are runnable programs and that one would not
+be; see
+[CLI.md](../../docs/guide/CLI.md#undeclared-variables-are-refused-before-the-program-runs).
+
 Each file here isolates one rule; [`kitchen-sink.raku`](kitchen-sink.raku) trips
 several at once, and [`clean.raku`](clean.raku) is written to pass with nothing
 reported (it exercises the interpolation / closure / topic-variable idioms a

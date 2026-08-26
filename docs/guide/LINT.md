@@ -20,31 +20,38 @@ FILE:LINE: warning|note: message [rule-id]
 and a one-line summary goes to stderr. Runnable, one-rule-per-file demos are in
 [examples/lint/](../../examples/lint).
 
-> **`--lint` never stops a program.** It is the advisory half. The one static
-> check that *does* refuse to run a program is the undeclared-variable check,
-> which is not opt-in and not a lint rule: an undeclared variable is a compile
-> error, so it is reported before the program starts, under `-c`, and by the
-> compile modes. See
+> **The rules below never stop a program** — they are the advisory half, and
+> you may ignore any of them. `--lint` does also report the one static check
+> that is *not* advisory: the undeclared-variable check, which refuses to run
+> the program at all. It is not a lint rule and is not opt-in — an undeclared
+> variable is a compile error, so it is reported before the program starts,
+> under `-c`, and by the compile modes. `--lint` prints it as an **error**
+> rather than a warning, because a file that cannot compile should not be
+> reported as though it merely had a smell. See
 > [CLI.md](CLI.md#undeclared-variables-are-refused-before-the-program-runs).
-> Everything below is warnings you may ignore.
 
-## Warnings vs. notes, and the exit code
+## Errors, warnings, notes, and the exit code
 
-Findings have one of two severities:
+Findings have one of three severities:
 
-- **warning** — almost always a real defect.
+- **error** — the program will not compile. Only the undeclared-variable check
+  raises one; no lint rule does.
+- **warning** — almost always a real defect, but the program still runs.
 - **note** — advisory; the construct is legal and often intentional, but worth a
   second look.
 
-`--lint` exits **1** if it produced any *warning*, **0** if it produced only
-notes or nothing, **2** on a parse error, and **4** on a usage error. Notes
-never fail the run, so `--lint` drops into a CI step or a pre-commit hook and
-only breaks the build on the high-confidence findings.
+`--lint` exits **2** if the file will not compile — a parse error, or any
+error-severity finding — **1** if it produced only warnings, **0** if it
+produced only notes or nothing, and **4** on a usage error. Notes never fail the
+run, so `--lint` drops into a CI step or a pre-commit hook and only breaks the
+build on the high-confidence findings; the two failing codes let a hook tell
+"this will not build" from "this could be tidier".
 
 ## Rules
 
 | Rule | Severity | Flags |
 |------|----------|-------|
+| `undeclared-variable` | error | A variable used that nothing declares — the program will not compile. Not a lint rule: this is the compile-time check ([CLI.md](CLI.md#undeclared-variables-are-refused-before-the-program-runs)) reporting through `--lint` as well, so that analysing a file never says less than running it would. |
 | `unused-variable` | warning | A `my`/`state` lexical that is declared and never referenced anywhere in its scope (reads, writes, and interpolation all count as a reference). |
 | `unused-routine` | warning | A lexical `sub` that is never called and never taken as a `&`-value. Skips `MAIN`/`USAGE` (the runtime calls them), `our`/`is export` routines, methods, and multis. |
 | `redeclaration` | warning | A second `my` of the same name in the same scope — the first binding becomes unreachable. |

@@ -1950,35 +1950,54 @@ int main(int argc, char** argv) {
         return 0;
     }
 
-    // --lint : static analysis only — parse, run the linter, report; never execute.
-    // Prints `FILE:LINE: warning|note: message [rule]`. Exits 1 if any warning
-    // was found (0 if only notes or nothing), 2 on a parse error.
+    // --lint : static analysis only — parse, analyse, report; never execute.
+    // Prints `FILE:LINE: error|warning|note: message [rule]`. Exits 2 if the
+    // file will not compile (a parse error, or an undeclared variable), 1 if
+    // there were only warnings, 0 for notes or nothing.
     if (mode == Mode::Lint) {
         if (!haveSrc) { std::cerr << "Usage: rakupp --lint (FILE | -e CODE) [-q]\n"; return 4; }
         Program prog;
         try {
             Lexer lexer(src);
             Parser parser(lexer.tokenize());
+            parser.libPaths_ = effectiveSearchPath(libPaths);
             prog = parser.parseProgram();
         } catch (const ParseError& e) {
             std::cerr << "===SORRY!=== Parse error at line " << e.line << ": " << e.what() << "\n";
             return 2;
         }
         auto findings = lintProgram(prog);
-        int warns = 0, notes = 0;
+        // The linter only advises, so on its own it would report "no issues" for
+        // a file the compiler refuses outright — which is worse than saying
+        // nothing. The undeclared-variable check joins it as an ERROR, the one
+        // severity here that means the program will not run.
+        if (declCheckEnabled())
+            for (auto& u : findUndeclaredVars(prog, src, effectiveSearchPath(libPaths)))
+                findings.push_back({u.line, 'E', "undeclared-variable",
+                                    "'" + u.name + "' is not declared"});
+        std::stable_sort(findings.begin(), findings.end(),
+                         [](const LintFinding& a, const LintFinding& b) {
+                             if (a.line != b.line) return a.line < b.line;
+                             return a.rule < b.rule;
+                         });
+        int errs = 0, warns = 0, notes = 0;
         for (auto& f : findings) {
-            (f.severity == 'W' ? warns : notes)++;
+            (f.severity == 'E' ? errs : f.severity == 'W' ? warns : notes)++;
             std::cout << fileName << ":" << f.line << ": "
-                      << (f.severity == 'W' ? "warning" : "note") << ": "
-                      << f.message << " [" << f.rule << "]\n";
+                      << (f.severity == 'E' ? "error" : f.severity == 'W' ? "warning" : "note")
+                      << ": " << f.message << " [" << f.rule << "]\n";
         }
         if (!quiet) {
             if (findings.empty()) std::cerr << "rakupp --lint: no issues found in " << fileName << "\n";
-            else std::cerr << "rakupp --lint: " << warns << " warning"
-                           << (warns == 1 ? "" : "s") << ", " << notes << " note"
-                           << (notes == 1 ? "" : "s") << " in " << fileName << "\n";
+            else {
+                std::cerr << "rakupp --lint: ";
+                if (errs) std::cerr << errs << " error" << (errs == 1 ? "" : "s") << ", ";
+                std::cerr << warns << " warning" << (warns == 1 ? "" : "s") << ", "
+                          << notes << " note" << (notes == 1 ? "" : "s")
+                          << " in " << fileName << "\n";
+            }
         }
-        return warns ? 1 : 0;
+        return errs ? 2 : warns ? 1 : 0;
     }
 
     // --cpp : print the C++ that `--exe` would transpile the program to (to stdout)

@@ -22,8 +22,11 @@ prog.raku:2: warning: '$never' is declared but never used [unused-variable]
 rakupp --lint: 1 warning, 1 note in prog.raku
 ```
 
-It exits non-zero if anything was found, so it drops into a pre-commit hook or CI
-unchanged. Full rule list: [LINT.md](../LINT.md).
+It exits non-zero if anything was found — **1** for warnings, **2** if the file
+will not compile at all (a parse error, or a variable nothing declares, which
+`--lint` prints as `error:`) — so it drops into a pre-commit hook or CI
+unchanged, and the hook can tell the two apart. Full rule list:
+[LINT.md](../LINT.md).
 
 ## `die` does not print a backtrace
 

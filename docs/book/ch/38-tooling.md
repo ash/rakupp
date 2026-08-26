@@ -19,7 +19,7 @@ the compiler always runs, whose only job is to stop the program.
 // src/Lint.h
 struct LintFinding {
     int line = 0;
-    char severity = 'W';        // 'W' warning, 'N' note
+    char severity = 'W';        // 'E' error, 'W' warning, 'N' note
     std::string rule;           // a stable id, e.g. "unused-variable"
     std::string message;
 };
@@ -42,6 +42,12 @@ warnings people learn to ignore, at which point the tool is worse than nothing.
 
 Every finding carries a **machine-readable rule id** as well as prose, so a
 project can suppress or gate on a specific rule without matching message text.
+
+No rule here raises the `'E'` severity — the linter only ever advises. It exists
+because `--lint` also reports the next section's check, and the two must not be
+printed alike: a warning is something to consider, an error is a file that will
+not compile. The exit code says the same thing twice over, 1 for warnings and 2
+for anything fatal.
 
 ## The undeclared-variable gate: the same principle, with the program stopped
 
@@ -192,6 +198,20 @@ every `&`-sigil name, anything package-qualified — is not re-implemented here.
 copies of that list would drift, and the failure mode of drift is this check
 refusing a program the interpreter runs happily. Writing it down once was also
 how `$¢`, the match cursor, turned out to be missing from it.
+
+### It reports through `--lint` too
+
+Everything above is about refusing to run a program, which is the opposite of
+what an analysis tool does — so the check reports through `--lint` as well, as an
+`error:` line with the rule id `undeclared-variable`, sorted in among the
+warnings by line.
+
+The alternative was worse than it looks. A tool whose whole purpose is to find
+problems before running would have answered *no issues found* for a file the
+compiler refuses outright, which is not merely unhelpful: it is the tool
+disagreeing with the compiler about whether a program is valid, in the direction
+that tells you to go ahead. Whatever else a linter does, it must never say less
+than running the program would.
 
 ### What it costs
 

@@ -185,7 +185,10 @@ hold globals no static pass over the source can see. `RAKUPP_NO_DECLCHECK=1`
 turns the check off.
 
 `--lint` is the separate, softer tool: warnings about declared-but-unused
-variables, unreachable code and the like, which never stop a program.
+variables, unreachable code and the like, none of which stop a program. It does
+report this check too, as an `error:` line rather than a warning, so that
+analysing a file never says less than running it would — a file `rakupp` refuses
+must not come back from `--lint` as "no issues found".
 | `--ffi-info` | which FFI backend NativeCall will use (see [FFI.md](FFI.md)) |
 | `--exe-info BIN` | a compiled binary's embedded build manifest (version, mode, `--slim` cuts) |
 

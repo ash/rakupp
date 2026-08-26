@@ -105,6 +105,29 @@ allows('repeat binder', '-c', '-e', 'my $n = 0; repeat until $n >= 1 -> $r { say
 # a destructuring pointy signature on `with`, likewise
 allows('with destructure', '-c', '-e', 'with (1,) -> (Int() $v is copy) { say $v }');
 
+# ---- --lint reports it too ----------------------------------------------
+# The linter's own rules only advise, so on its own it answered "no issues
+# found" for a file the compiler refuses outright — a tool built to find
+# problems before running, disagreeing with the compiler in the direction that
+# says go ahead. It now reports the check as an `error:` line, and exits 2.
+my %l = rakupp('--lint', '-e', $BAD);
+@fail.push("--lint missed it: out={%l<out>.trim} err={%l<err>.trim}")
+    unless %l<out>.contains('error:')
+        && %l<out>.contains('[undeclared-variable]')
+        && %l<exit> == 2;
+@fail.push('--lint still claims no issues') if %l<err>.contains('no issues found');
+
+# and it must not swallow the advisory rules while doing so
+my %l2 = rakupp('--lint', '-e', 'my $unused = 1; say $typo;');
+@fail.push("--lint dropped the warnings: {%l2<out>.trim}")
+    unless %l2<out>.contains('[unused-variable]') && %l2<out>.contains('[undeclared-variable]');
+
+# a clean file is still clean, and a warning-only file still exits 1 not 2
+my %l3 = rakupp('--lint', '-e', 'my $x = 1; say $x');
+@fail.push("clean --lint: exit={%l3<exit>}") unless %l3<exit> == 0;
+my %l4 = rakupp('--lint', '-e', 'my $unused = 1; say 2');
+@fail.push("warning-only --lint: exit={%l4<exit>}") unless %l4<exit> == 1;
+
 # ---- imports ------------------------------------------------------------
 # A module may export a VARIABLE, so a name the unit does not declare can still
 # be perfectly legal. The pass looks in the imported source before reporting —
