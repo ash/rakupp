@@ -2362,6 +2362,21 @@ std::vector<Token> Lexer::tokenize() {
         // ∅ (U+2205) is a TERM — the empty Set — not an operator: `$bag ~~ ∅`
         // asks whether it is empty. Lexed as an identifier so the parser reads it
         // in term position like `pi`.
+        } else if (inAngle && (unsigned char)c >= 0x80) {
+            // Inside a word list a non-ASCII char is WORD material. Without
+            // this the Unicode operator aliases below rewrote <÷ × −> into
+            // / * - — the GUI::Wings calculator's op buttons carried ASCII
+            // titles and matched none of their `when '÷'` arms. Collect the
+            // word the same way the angle digit-run branch does, plus any
+            // further multibyte runs.
+            std::string w;
+            while (!eof()) {
+                unsigned char b = (unsigned char)peek();
+                if (b >= 0x80) { for (int k = utf8Len(b); k > 0 && !eof(); k--) w += advance(); continue; }
+                if (ascii::isalnum(b) || b == '_' || b == '.') w += advance();
+                else break;
+            }
+            t = make(Tok::Ident, w);
         } else if ((unsigned char)c == 0xE2 && (unsigned char)peek(1) == 0x88 &&
                    (unsigned char)peek(2) == 0x85) {
             advance(); advance(); advance();
