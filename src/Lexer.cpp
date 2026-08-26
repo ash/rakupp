@@ -1153,9 +1153,15 @@ bool Lexer::tryQuoteForm(Token& out) {
             // '#' (comment) — `m:i;pat;`, `s:g=a=b=`, … . Bare forms keep the
             // conservative set above: without Rakudo's declared-symbol lookup
             // the lexer cannot tell `S%pat%` from `S % $x` (infix %).
+            // '_' is a WORD character, never a delimiter — C's ispunct says
+            // otherwise, and `ss`/`SS` carry an implicit :samespace that makes
+            // `adverbs` non-empty, so every identifier starting with a quote
+            // keyword plus underscore (SS_CENTER, m_A, q_x) lexed as a quote
+            // and swallowed the rest of the line. Rakudo reads all of those as
+            // undeclared routines, i.e. as plain identifiers.
             if ((isRegex || isSubst || isTrans) && !adverbs.empty() &&
                 (unsigned char)d < 0x80 && ascii::ispunct((unsigned char)d) &&
-                d != ':' && d != '#') { close = d; bracket = false; break; }
+                d != ':' && d != '#' && d != '_') { close = d; bracket = false; break; }
             return false;
     }
     // A bracketed substitution needs TWO groups: s(pat)(repl) / S[a][b], OR the
