@@ -8265,6 +8265,34 @@ void Interpreter::registerBuiltins() {
         // evalString itself converts escaping control flow (routine-aware)
         return I.evalString(code.toStr(), /*mainlinePH=*/true);
     };
+    // EVALFILE($path, :$lang) — Rakudo's is `EVAL slurp($filename), :$lang`,
+    // so the file is read first (a missing one dies before the language is
+    // looked at) and every adverb rides through to EVAL unchanged.
+    B["EVALFILE"] = [](Interpreter& I, ValueList& a) -> Value {
+        std::string path; bool havePath = false;
+        ValueList fwd;
+        for (auto& v : a) {
+            if (v.t == VT::Pair && v.namedArg) { fwd.push_back(v); continue; }
+            if (!havePath) { path = v.toStr(); havePath = true; }
+        }
+        if (!havePath) return Value::any();
+        rejectNulPath(path);
+        std::ifstream in(path);
+        if (!in) throwFailedOpen(path);
+        std::ostringstream ss; ss << in.rdbuf();
+        std::string text = ss.str();
+        if (text.find('\r') != std::string::npos) {   // same CRLF -> LF as slurp
+            std::string outT; outT.reserve(text.size());
+            for (size_t i = 0; i < text.size(); i++) {
+                if (text[i] == '\r' && i + 1 < text.size() && text[i + 1] == '\n') continue;
+                outT += text[i];
+            }
+            text.swap(outT);
+        }
+        ValueList args; args.push_back(Value::str(text));
+        for (auto& n : fwd) args.push_back(n);
+        return I.callBuiltin("EVAL", args);
+    };
     // Default @*ARGS -> argument-list conversion (the built-in ARGS-TO-CAPTURE).
     // main-refactored.t adjudicates the rules; see rakuppMainCapture below.
     B["RUN-MAIN-args-to-capture"] = [](Interpreter& I, ValueList& a) -> Value {
