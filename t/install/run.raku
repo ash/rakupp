@@ -286,10 +286,11 @@ check %flaky<err>.contains('trace: '), 'trace: a failure points at the log';
 # the user already needs (the store's bin/) also resolves the shebangs. A
 # machine WITH a raku keeps it. Pinned on a synthetic PATH holding only the
 # tools the installer runs, so the checks hold whether or not THIS machine
-# has a Rakudo.
+# has a Rakudo. gzip is on the list because GNU tar execs it for -xzf
+# (bsdtar decompresses in-process, which is how its absence passed on macOS).
 my $tooldir = $tmp.add('tools-no-raku');
 $tooldir.mkdir;
-for <tar rm shasum sha1sum openssl ln env> -> $t {
+for <tar gzip rm shasum sha1sum openssl ln env> -> $t {
     my $w = run 'sh', '-c', "command -v $t", :out, :err;
     my $path = $w.out.slurp(:close).trim;
     $w.err.slurp(:close);

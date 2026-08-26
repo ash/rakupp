@@ -1239,7 +1239,14 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             time_t t = (time_t)(us / 1000000);
             struct tm tmbuf; struct tm* lt;
             if (tzOff == tzOffsetDyn()) lt = localtime(&t);
-            else { time_t shifted = (time_t)(t + tzOff); lt = gmtime_r(&shifted, &tmbuf); }
+            else {
+                time_t shifted = (time_t)(t + tzOff);
+#if defined(_WIN32)
+                gmtime_s(&tmbuf, &shifted); lt = &tmbuf;
+#else
+                lt = gmtime_r(&shifted, &tmbuf);
+#endif
+            }
             Value sec = inv.s == "Date" ? Value::integer(lt->tm_sec)
                       : Value::number((double)lt->tm_sec + (double)(us % 1000000) / 1e6);
             return mk(lt->tm_year + 1900, lt->tm_mon + 1, lt->tm_mday, lt->tm_hour, lt->tm_min, sec, (long long)t, tzOff);
