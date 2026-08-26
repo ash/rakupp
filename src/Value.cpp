@@ -138,6 +138,23 @@ bool Value::truthy() const {
     return false;
 }
 
+// The numeric value of a Date (its daycount, days since the MJD epoch) or of a
+// DateTime (its posix instant, fractional seconds kept). Rakudo gives Dateish a
+// Numeric this way, so `$date == $other`, `$date < $other` and `+$date` all
+// answer by the DAY, not by whatever fields the hash happens to carry.
+double dateNumeric(const Value& v) {
+    if (!v.hash()) return 0.0;
+    auto fld = [&](const char* k) -> double {
+        auto it = v.hash()->find(k);
+        return it != v.hash()->end() ? it->second.toNum() : 0.0;
+    };
+    if (v.hashKind == "Date")   // days since 1858-11-17 (the civil epoch is 40587 days later)
+        return (double)(civilToDays((long long)fld("year"), (long long)fld("month"),
+                                    (long long)fld("day")) + 40587);
+    double sec = fld("second");
+    return fld("posix") + (sec - std::floor(sec)); // DateTime: the instant it names
+}
+
 long long Value::toInt() const {
     switch (t) {
         case VT::Bool: return b ? 1 : 0;
@@ -207,6 +224,12 @@ long long Value::toInt() const {
                 auto it = hash()->find("addr");
                 if (it != hash()->end()) return it->second.toInt();
             }
+            // A Date numifies to its DAYCOUNT and a DateTime to its Instant
+            // (Rakudo: Dateish does Numeric that way, and `$date == $n` compares
+            // daycounts). Counting the hash's fields instead made two Dates of
+            // the same day compare unequal whenever they held different fields.
+            if (hashKind == "Date" || hashKind == "DateTime")
+                if (hash()) return (long long)dateNumeric(*this);
             return hash() ? (long long)hash()->size() : 0;
         default: return 0;
     }
@@ -269,6 +292,10 @@ double Value::toNum() const {
             if (hashKind == "Blob" || hashKind == "Buf") return (double)blobElems(); // element count, like .Int
             return strToNumOr0(s);
         case VT::Match: return strToNumOr0(s);
+        // a DateTime's instant keeps its fractional seconds — toInt would truncate them
+        case VT::Hash:
+            if ((hashKind == "Date" || hashKind == "DateTime") && hash()) return dateNumeric(*this);
+            return (double)toInt();
         default: return (double)toInt();
     }
 }

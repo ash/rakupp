@@ -20117,6 +20117,9 @@ Value Interpreter::evalBinary(Binary* b) {
                 // dtSec = TAI seconds (posix + fractional + leap seconds elapsed).
                 auto dtSec = [](const Value& v) -> double {
                     if (v.hashKind != "DateTime" && v.hashKind != "Date") return v.toNum();
+                    // A Date compares by DAYCOUNT (Rakudo's Dateish Numeric), not by
+                    // an instant: it names a civil day and carries no clock fields.
+                    if (v.hashKind == "Date") return dateNumeric(v);
                     double p = v.hash() && v.hash()->count("posix") ? (*v.hash())["posix"].toNum() : 0.0;
                     if (v.hash() && v.hash()->count("second")) { double s = (*v.hash())["second"].toNum(); p += s - std::floor(s); }
                     long long ip = (long long)std::floor(p);
@@ -20138,7 +20141,9 @@ Value Interpreter::evalBinary(Binary* b) {
                 if (ldt && rdt && (op == "<" || op == ">" || op == "<=" || op == ">=" ||
                                    op == "==" || op == "!=" || op == "<=>")) {
                     double a = dtSec(l), c = dtSec(r);
-                    if (op == "<=>") return Value::integer(a < c ? -1 : a > c ? 1 : 0);
+                    // `<=>` yields an Order, like every other numeric comparison —
+                    // this arm handed back a bare Int (-1/0/1) instead
+                    if (op == "<=>") return Value::orderVal(a < c ? -1 : a > c ? 1 : 0);
                     bool res = op == "<" ? a < c : op == ">" ? a > c : op == "<=" ? a <= c
                              : op == ">=" ? a >= c : op == "==" ? a == c : a != c;
                     return Value::boolean(res);
@@ -21759,6 +21764,14 @@ Value Interpreter::evalUnary(Unary* u) {
                 long long a = it->second.toInt();
                 return Value::integer(u->op == "-" ? -a : a);
             }
+        }
+        // +$date is its DAYCOUNT and +$datetime its Instant (Rakudo's Dateish
+        // Numeric) — counting the hash's fields gave a number that meant nothing.
+        if (v.t == VT::Hash && v.hash() && (v.hashKind == "Date" || v.hashKind == "DateTime")) {
+            ValueList none;
+            Value n = methodCall(v, "Numeric", none);
+            if (u->op == "-") return n.t == VT::Int ? Value::integer(-n.toInt()) : Value::number(-n.toNum());
+            return n;
         }
         long long n;
         if (v.t == VT::Array) n = (long long)v.arr()->size();

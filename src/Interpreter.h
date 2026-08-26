@@ -1804,5 +1804,8 @@ bool ioSpecMethod(Interpreter& I, const std::string& cls, const std::string& m, 
 long long civilToDays(long long y, long long m, long long d);
 void daysToCivil(long long z, long long& y, long long& m, long long& d);
 Value makeDate(long long days); // build a Date hash (hashKind="Date") from a day count
+// Numeric value of a Date (daycount) / DateTime (posix instant) — how Dateish
+// numifies in Rakudo, and what `==`/`<`/`+` on them compare.
+double dateNumeric(const Value& v);
 
 } // namespace rakupp

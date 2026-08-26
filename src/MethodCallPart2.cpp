@@ -1186,11 +1186,17 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             }
             Value v = Value::makeHash(); v.hashKind = inv.s;
             (*v.hash())["year"] = Value::integer(y); (*v.hash())["month"] = Value::integer(mo); (*v.hash())["day"] = Value::integer(d);
-            (*v.hash())["hour"] = Value::integer(h); (*v.hash())["minute"] = Value::integer(mi);
-            (*v.hash())["second"] = sec; // exact: Int, or Rat/Num for fractional seconds
-            (*v.hash())["posix"] = Value::integer(posix);
+            // A Date is a civil DAY: like Rakudo's (year/month/day/daycount/formatter
+            // attributes only), it stores no time-of-day. `Date.today` used to keep
+            // the clock reading it was built from, so two Dates of the same day
+            // compared unequal and eqv-distinct depending on when they were made.
+            if (inv.s == "DateTime") {
+                (*v.hash())["hour"] = Value::integer(h); (*v.hash())["minute"] = Value::integer(mi);
+                (*v.hash())["second"] = sec; // exact: Int, or Rat/Num for fractional seconds
+                (*v.hash())["posix"] = Value::integer(posix);
+                (*v.hash())["timezone"] = Value::integer(tz);
+            }
             if (haveFmt) (*v.hash())["formatter"] = formatter;
-            if (inv.s == "DateTime") (*v.hash())["timezone"] = Value::integer(tz);
             return v;
         };
         // leap seconds: second 60 must land at 23:59:60 UTC on a real historical
@@ -1436,13 +1442,17 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             return m == "whole-second" ? Value::integer(sv.toInt()) : sv; // .second keeps the fraction
         }
         if (m == "posix") { // `:real` keeps the fractional seconds
+            // a Date stores no clock fields — its posix reading is midnight UTC
+            long long px = inv.hash()->count("posix")
+                ? fld("posix")
+                : civilToDays(fld("year"), fld("month"), fld("day")) * 86400;
             for (auto& a : args)
                 if (a.t == VT::Pair && a.s == "real" && (!a.pairVal() || a.pairVal()->truthy())) {
                     Value sec = inv.hash()->count("second") ? (*inv.hash())["second"] : Value::integer(0);
                     Value frac = applyArith("-", sec, Value::integer(sec.toInt()));
-                    return applyArith("+", Value::integer(fld("posix")), frac);
+                    return applyArith("+", Value::integer(px), frac);
                 }
-            return Value::integer(fld("posix"));
+            return Value::integer(px);
         }
         if (m == "year" || m == "month" || m == "day" || m == "hour" || m == "minute")
             return Value::integer(fld(m.c_str()));
@@ -1501,6 +1511,11 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             (*v.hash())["second"] = frac != 0.0 ? Value::number(outSec + frac) : Value::integer(outSec);
             (*v.hash())["posix"] = Value::integer(ep); (*v.hash())["timezone"] = Value::integer(newTz);
             return v;
+        }
+        if (m == "raku" && inv.hashKind == "Date") { // Rakudo's Date.raku form
+            char buf[48];
+            snprintf(buf, sizeof buf, "Date.new(%lld,%lld,%lld)", fld("year"), fld("month"), fld("day"));
+            return Value::str(buf);
         }
         if (m == "raku" && inv.hashKind == "DateTime") {
             char buf[160];
@@ -1676,6 +1691,13 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if (m == "daycount") { // days since the MJD epoch (1858-11-17)
             long long y = fld("year"), mo = fld("month"), d = fld("day");
             return Value::integer(civilToDays(y, mo, d) + 40587);
+        }
+        // Dateish numifies: a Date IS its daycount (an Int), a DateTime its
+        // Instant — so `$date == $other` and `+$date` answer by the day.
+        if (m == "Numeric" || m == "Real" || (m == "Int" && inv.hashKind == "Date")) {
+            if (inv.hashKind == "Date")
+                return Value::integer(civilToDays(fld("year"), fld("month"), fld("day")) + 40587);
+            ValueList none; return methodCall(inv, "Instant", none);
         }
         if (m == "day-fraction") {
             // a UTC day with a leap second is 86401 seconds long (finite frozen list)
