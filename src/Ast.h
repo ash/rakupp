@@ -360,6 +360,9 @@ enum class NqpOpc : uint16_t {
     What, IsList, IsCont, IsTrue, IsConcrete, CloneOp, Shift, LockOp, UnlockOp,
     // appended: raw file handles (Crypt::Random reads /dev/urandom this way)
     OpenFh, ReadFh, CloseFh,
+    // appended: nqp::stat / nqp::lstat — Path::Finder's whole stat-matcher
+    // surface (.inode/.device/.uid/.gid/.nlinks/…) and its symlink-loop guard
+    Stat, Lstat,
 };
 struct NqpOp : Expr {
     NqpOpc op;

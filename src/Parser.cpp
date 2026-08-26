@@ -8049,6 +8049,12 @@ ExprPtr Parser::makeNqpOp(const std::string& op, std::vector<ExprPtr>& args) {
         {"shift", NqpOpc::Shift},
         {"lock", NqpOpc::LockOp}, {"unlock", NqpOpc::UnlockOp},
         {"open", NqpOpc::OpenFh}, {"readfh", NqpOpc::ReadFh}, {"closefh", NqpOpc::CloseFh},
+        // `nqp::stat($path, nqp::const::STAT_…)` — the const names were already
+        // known; this is the op that reads them. Path::Finder matches on inode,
+        // device, uid, gid, nlinks, blocks, blocksize, devtype and is-dev, and
+        // keys its symlink-loop guard on inode+device.
+        {"stat", NqpOpc::Stat}, {"stat_time", NqpOpc::Stat},
+        {"lstat", NqpOpc::Lstat}, {"lstat_time", NqpOpc::Lstat},
     };
     auto it = k.find(op);
     if (it == k.end()) return nullptr;

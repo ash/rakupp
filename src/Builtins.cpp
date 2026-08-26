@@ -11131,6 +11131,68 @@ Value Interpreter::evalNqpOp(NqpOp* n) {
             Value b = Value::str(std::move(bytes)); b.hashKind = "Buf";
             return b;
         }
+        // nqp::stat($path, FIELD) / nqp::lstat(…) — one stat(2), one field, by the
+        // MoarVM field numbering Parser::nqpConstValue already spells out. Every
+        // caller in the wild reaches for a field IO::Path does not expose:
+        // Path::Finder matches on inode/device/uid/gid/nlinks/blocks/blocksize/
+        // devtype and keys its symlink-loop guard on inode+device.
+        case O::Stat: case O::Lstat: {
+            if (a.size() < 2) return Value::integer(-1);
+            const std::string path = eval(a[0].get()).toStr();
+            const long long field = eval(a[1].get()).toInt();
+#ifdef _WIN32
+            struct ::_stat64 st;
+            const bool ok = ::_stat64(path.c_str(), &st) == 0;
+            const bool lok = ok;                       // no lstat on Windows
+            auto& lst = st;
+#else
+            struct ::stat st, lst;
+            // ISLNK always needs the link's OWN inode, whichever op was called;
+            // everything else follows the link unless this is nqp::lstat
+            const bool lok = ::lstat(path.c_str(), &lst) == 0;
+            const bool ok = n->op == O::Lstat ? lok : ::stat(path.c_str(), &st) == 0;
+            if (n->op == O::Lstat) st = lst;
+#endif
+            // STAT_EXISTS answers the question rather than failing it. Every other
+            // field on an unstattable path THROWS, as Rakudo does — a silent -1
+            // would read as a real inode or uid to a caller comparing numbers.
+            if (field == 0) return Value::integer(ok ? 1 : 0);
+            if (field == 12 && lok) return Value::integer(S_ISLNK(lst.st_mode) ? 1 : 0);
+            if (!ok || (field == 12 && !lok))
+                throw RakuError{Value::typeObj("X::AdHoc"),
+                    "Failed to stat file " + path + ": " + std::strerror(errno)};
+            switch (field) {
+                case  1: return Value::integer((long long)st.st_size);      // FILESIZE
+                case  2: return Value::integer(S_ISDIR(st.st_mode) ? 1 : 0); // ISDIR
+                case  3: return Value::integer(S_ISREG(st.st_mode) ? 1 : 0); // ISREG
+                case  4: return Value::integer(S_ISCHR(st.st_mode) ||        // ISDEV
+                                               S_ISBLK(st.st_mode) ? 1 : 0);
+                case  6: return Value::integer((long long)st.st_atime);     // ACCESSTIME
+                case  7: return Value::integer((long long)st.st_mtime);     // MODIFYTIME
+                case  8: return Value::integer((long long)st.st_ctime);     // CHANGETIME
+                case 10: return Value::integer((long long)st.st_uid);       // UID
+                case 11: return Value::integer((long long)st.st_gid);       // GID
+                case -1: return Value::integer((long long)st.st_dev);       // PLATFORM_DEV
+                case -2: return Value::integer((long long)st.st_ino);       // PLATFORM_INODE
+                case -3: return Value::integer((long long)st.st_mode);      // PLATFORM_MODE
+                case -4: return Value::integer((long long)st.st_nlink);     // PLATFORM_NLINKS
+                case -5: return Value::integer((long long)st.st_rdev);      // PLATFORM_DEVTYPE
+                default: break;
+            }
+#ifndef _WIN32
+            // st_blksize / st_blocks are POSIX-only, and BSD/macOS spells the
+            // creation time st_birthtimespec where Linux has no portable one
+            if (field == -6) return Value::integer((long long)st.st_blksize); // PLATFORM_BLOCKSIZE
+            if (field == -7) return Value::integer((long long)st.st_blocks);  // PLATFORM_BLOCKS
+#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__)
+            if (field == 5) return Value::integer((long long)st.st_birthtime); // CREATETIME
+#endif
+#endif
+            // CREATETIME where the platform has none, and BACKUPTIME everywhere:
+            // MoarVM answers 0 rather than failing
+            if (field == 5 || field == 9) return Value::integer(0);
+            return Value::integer(-1); // an unknown field number
+        }
         case O::CloseFh: {
             if (a.empty()) return Value::nil();
             Value fhv = eval(a[0].get());
