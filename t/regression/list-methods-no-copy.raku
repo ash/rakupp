@@ -16,8 +16,13 @@ check(@a.Bool,  True,  'Bool on a populated array');
 check(@a.AT-POS(1), 20, 'AT-POS');
 check(@a.EXISTS-POS(2), True,  'EXISTS-POS in range');
 check(@a.EXISTS-POS(9), False, 'EXISTS-POS past the end');
-check(@a.AT-POS(-1), 30, 'AT-POS counts back from the end');
-check(@a.EXISTS-POS(-1), True, 'EXISTS-POS does too');
+# A negative index is out of range, not "from the end" — `*-1` is what counts
+# back. This file used to assert the Python-style wraparound, which disagreed
+# with the `@a[-1]` subscript path in the same engine.
+check((try @a.AT-POS(-1)) // $!.^name, 'X::OutOfRange', 'AT-POS(-1) is out of range');
+check(@a.EXISTS-POS(-1), False, 'EXISTS-POS(-1) is simply False');
+check((try @a.ASSIGN-POS(-1, 99)) // $!.^name, 'X::OutOfRange', 'ASSIGN-POS(-1) too');
+check(@a, [10, 20, 30], 'and the refused assignment changed nothing');
 
 my @e;
 check(@e.elems, 0,      'elems of an empty array');

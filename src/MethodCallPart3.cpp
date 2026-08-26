@@ -619,8 +619,21 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             return old;
         }
         long long i = args.empty() ? 0 : args[0].toInt();
-        if (i < 0) i += (long long)inv.arr()->size();
-        bool in = i >= 0 && i < (long long)inv.arr()->size();
+        // A negative index is OUT OF RANGE, not "from the end" — that is what
+        // `*-1` is for. The subscript path settled this long ago (see the
+        // X::OutOfRange Failure in Interpreter.cpp's Index arm); this method
+        // path went on wrapping Python-style, so `@a[-1]` threw while
+        // `@a.AT-POS(-1)` cheerfully answered the last element of the same
+        // array. EXISTS-POS is the one that does not throw: no such index
+        // exists, which is a False rather than an error.
+        if (i < 0) {
+            if (m == "EXISTS-POS") return Value::boolean(false);
+            long long sz = (long long)inv.arr()->size();
+            throw RakuError{Value::typeObj("X::OutOfRange"),
+                            "Index out of range. Is: " + std::to_string(i) +
+                            ", should be in 0.." + std::to_string(sz > 0 ? sz - 1 : 0)};
+        }
+        bool in = i < (long long)inv.arr()->size();
         if (m == "EXISTS-POS") return Value::boolean(in && defined((*inv.arr())[i]));
         if (m == "AT-POS") return in ? (*inv.arr())[i] : Value::any();
         if (m == "ASSIGN-POS") {

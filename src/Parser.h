@@ -184,6 +184,9 @@ private:
     bool isOp(const std::string& s) const;
     bool isIdent(const std::string& s) const;
     const Token& advance();
+    // Standing just past a `[ ]` subscript dimension that began at token `from`:
+    // refuse the literal `@a[-1]` spelling. Defined in Parser.cpp.
+    void rejectNegativeIndex(size_t from) const;
     // token classifiers (member fns so they can recognise user-declared operators)
     bool startsTermToken(const Token& t) const;
     bool startsListopArg(const Token& t) const;

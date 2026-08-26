@@ -106,6 +106,48 @@ bool Parser::isIdent(const std::string& s) const {
     return cur().kind == Tok::Ident && cur().text == s;
 }
 const Token& Parser::advance() { return toks_[pos_++]; }
+
+// A negative subscript does not index from the end in Raku — `*-1` does — so
+// the literal spelling `@a[-1]` is refused outright rather than left to fail at
+// run time with an X::OutOfRange nobody reads until the branch executes. The
+// range form `@a[0..-1]` goes the same way, for the same reason.
+//
+// The rule is deliberately as narrow as Rakudo's, which tests the SOURCE TEXT of
+// each dimension for `^ \s* '-' \d+ \s* $` or a trailing `'..' \s* '-' \d+ \s* $`:
+// the digits must be plain decimal and glued to the minus, and nothing may
+// follow. So `[- 1]`, `[-1_0]`, `[-0x10]`, `[-1+0]`, `[-1, 2]`, `[(-1)]`,
+// `[0..^-1]` and `[0..-$x]` all still parse and still fail at run time, exactly
+// as they do there. Narrowness is the whole point: every one of those reaches
+// the same negative index, and a broader rule would refuse a program Rakudo
+// runs — including the one legitimate reader of a negative subscript, a class
+// whose own AT-POS accepts one. Hash subscripts are untouched: -1 is a
+// perfectly good key.
+//
+// Called with the parse position just past the dimension, which began at `from`.
+void Parser::rejectNegativeIndex(size_t from) const {
+    size_t to = pos_;
+    if (to < from + 2) return;
+    const Token& num = toks_[to - 1];   // the digits
+    const Token& neg = toks_[to - 2];   // the minus glued to them
+    if (num.kind != Tok::IntLit || num.spaceBefore || num.text.empty()) return;
+    for (char c : num.text)
+        if (!ascii::isdigit((unsigned char)c)) return; // 1_0, 0x10, 1.0, 1e0 are not `\d+`
+    if (neg.kind != Tok::Op || neg.text != "-") return;
+    // `[-1]`, or a range whose endpoint it is — `..`, `...`, `^..` end in the two
+    // dots the rule looks for; `..^` and `^..^` do not, and Rakudo lets those by.
+    bool bare = (to - from == 2);
+    bool rangeEnd = false;
+    if (!bare && to - from >= 3) {
+        const Token& op = toks_[to - 3];
+        rangeEnd = op.kind == Tok::Op && op.text.size() >= 2 &&
+                   op.text.compare(op.text.size() - 2, 2, "..") == 0;
+    }
+    if (!bare && !rangeEnd) return;
+    std::string old = "a negative -" + num.text + " subscript to index from the end";
+    std::string repl = "a function such as *-" + num.text;
+    throw ParseError("Unsupported use of " + old + ". In Raku please use: " + repl,
+                     num.line, "X::Obsolete", {{"old", old}, {"replacement", repl}});
+}
 bool Parser::matchOp(const std::string& s) { if (isOp(s)) { advance(); return true; } return false; }
 bool Parser::matchKind(Tok k) { if (cur().kind == k) { advance(); return true; } return false; }
 void Parser::expectKind(Tok k, const char* what) {
@@ -1488,9 +1530,11 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
             auto es = std::make_unique<ExprStmt>();
             if (isKind(Tok::LBracket)) { // »[i] — index each element
                 advance();
+                size_t dimAt = pos_;
                 auto ix = std::make_unique<Index>();
                 ix->base = std::make_unique<VarExpr>("$_");
                 ix->index = parseExpression();
+                rejectNegativeIndex(dimAt);
                 ix->isHash = false;
                 expectKind(Tok::RBracket, "]");
                 es->e = std::move(ix);
@@ -1606,9 +1650,11 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
                 }
                 continue;
             }
+            size_t dimAt = pos_;
             auto idx = std::make_unique<Index>();
             idx->base = std::move(base);
             idx->index = parseExpression();
+            rejectNegativeIndex(dimAt);
             idx->isHash = false;
             // multidim subscript @a[X;Y]: a real multislice — each dim selects at
             // its level (Whatever = all), results flattened (`@aoa[*;1]` = column 1)
@@ -1617,7 +1663,9 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
                 dims->items.push_back(std::move(idx->index));
                 while (matchKind(Tok::Semicolon)) {
                     if (isKind(Tok::RBracket)) break;
+                    dimAt = pos_;
                     dims->items.push_back(parseExpression());
+                    rejectNegativeIndex(dimAt);
                 }
                 idx->index = std::move(dims);
                 idx->multiDim = true;
@@ -1819,15 +1867,19 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
             if (isKind(Tok::LBracket)) {
                 advance();
                 if (isKind(Tok::RBracket)) { advance(); continue; } // .[] zen slice
+                size_t dimAt = pos_;
                 auto idx = std::make_unique<Index>();
                 idx->base = std::move(base); idx->isHash = false;
                 idx->index = parseExpression();
+                rejectNegativeIndex(dimAt);
                 if (isKind(Tok::Semicolon)) { // .[X;Y] multislice, same as @a[X;Y]
                     auto dims = std::make_unique<ListExpr>();
                     dims->items.push_back(std::move(idx->index));
                     while (matchKind(Tok::Semicolon)) {
                         if (isKind(Tok::RBracket)) break;
+                        dimAt = pos_;
                         dims->items.push_back(parseExpression());
+                        rejectNegativeIndex(dimAt);
                     }
                     idx->index = std::move(dims);
                     idx->multiDim = true;
@@ -4725,6 +4777,19 @@ std::vector<std::string> Parser::readAngleWords(const std::string& close) {
     matchOp(close);
     return words;
 }
+// Call from inside a `catch (...)` around an interpolation's sub-parse.
+//
+// An interpolated expression that does not parse is not an error, it is just
+// text — `"@foo["` in a mail address, a stray brace in a CSS snippet — so every
+// such catch degrades to the literal characters. An OBSOLESCENCE diagnostic is
+// the opposite case: the text parsed perfectly well and is being refused on
+// purpose. Swallowing that would quietly turn `"@a[-1]"` from a compile error
+// into the literal string `@a[-1]`, which is worse than either answer.
+static void rethrowIfObsolete() {
+    try { throw; }
+    catch (ParseError& pe) { if (pe.exType == "X::Obsolete") throw; }
+    catch (...) {}
+}
 // Scan a balanced `{ … }` code block inside an interpolated string, RESPECTING
 // quoted spans: a brace inside '…' or "…" is text, not nesting — `{sym('{')}`
 // must not swallow the rest of the string. Returns the inner text and leaves
@@ -4907,7 +4972,7 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
             size_t j = i + 1;
             std::string inner = scanInterpBlock(raw, j);
             flush();
-            try { result->parts.push_back(parseEmbeddedExpr(inner)); } catch (...) {}
+            try { result->parts.push_back(parseEmbeddedExpr(inner)); } catch (...) { rethrowIfObsolete(); }
             i = j + 1;
             continue;
         }
@@ -4942,7 +5007,7 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
             }
             flush();
             if (var.size() == 2) result->parts.push_back(std::make_unique<VarExpr>(var));
-            else try { result->parts.push_back(parseEmbeddedExpr(var)); } catch (...) { lit += var; }
+            else try { result->parts.push_back(parseEmbeddedExpr(var)); } catch (...) { rethrowIfObsolete(); lit += var; }
             i = j;
             continue;
         }
@@ -4968,7 +5033,7 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
                 } else break;
             }
             flush();
-            try { result->parts.push_back(parseEmbeddedExpr(var)); } catch (...) { lit += var; }
+            try { result->parts.push_back(parseEmbeddedExpr(var)); } catch (...) { rethrowIfObsolete(); lit += var; }
             i = j;
             continue;
         }
@@ -4992,7 +5057,7 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
                 }
                 flush();
                 try { result->parts.push_back(parseEmbeddedExpr(fname + "(" + argsrc + ")")); }
-                catch (...) {}
+                catch (...) { rethrowIfObsolete(); }
                 i = k2 + 1;
                 continue;
             }
@@ -5023,7 +5088,8 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
                 j++;
                 std::string inner = scanInterpBlock(raw, j);
                 flush();
-                try { result->parts.push_back(parseEmbeddedExpr(std::string(1, sig) + "(" + inner + ")")); } catch (...) {}
+                try { result->parts.push_back(parseEmbeddedExpr(std::string(1, sig) + "(" + inner + ")")); }
+                catch (...) { rethrowIfObsolete(); }
                 i = j + 1;
                 continue;
             }
@@ -5104,7 +5170,7 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
                     static_cast<VarExpr*>(part.get())->line = base;
                 }
                 result->parts.push_back(std::move(part));
-            } catch (...) { lit += var; }
+            } catch (...) { rethrowIfObsolete(); lit += var; }
             i = j;
             continue;
         }
