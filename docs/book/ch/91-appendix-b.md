@@ -22,6 +22,7 @@ reference for the internals; the user-facing command line is documented in
 |---|---|
 | `--ast`, `--dump-ast` | print the parsed tree as an indented outline |
 | `--ast-roundtrip` | serialise and deserialise the tree, then run it — the cache format's own test |
+| `-c`, `--target=parse` | compile-check only: parse and check every variable is declared |
 | `--lint` | static analysis; does not run the program |
 | `--highlight` | syntax-highlight the source |
 | `--html`, `--ansi`, `--terminal` | pick the highlighter's renderer |
@@ -87,6 +88,7 @@ Flags are position-independent, and the perl-compatible one-liner family
 |---|---|
 | `RAKUPP_TRACE=1` | the module search path and every resolution |
 | `RAKUPP_DUMPTOKENS=1` | the token stream |
+| `RAKUPP_NO_DECLCHECK=1` | skip the undeclared-variable gate (Chapter 38) |
 | `RAKUPP_ACTTRACE=1` | grammar action firing |
 | `RAKUPP_TAP_TRACE=1` | the test harness's own emission |
 | `RAKUPP_KEEPGEN=1` | keep the generated C++ from a compiling mode |

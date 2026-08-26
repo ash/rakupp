@@ -91,7 +91,7 @@ rakupp --exe app.raku -o app     # compile it
 | `--highlight [SRC]` | Syntax-highlight Raku to HTML (`--html`) or terminal (`--ansi`) |
 | `--mcp` | Serve the interpreter over the Model Context Protocol for AI agent clients |
 | `--lint SRC` | Static-analyze without running: unused variables, unreachable code, etc. |
-| `-c` / `--ast SRC` | Syntax-check only / print the parsed AST |
+| `-c` / `--ast SRC` | Compile-check only (parse + every variable declared) / print the parsed AST |
 
 Flags are position-independent and cluster like perl's (`rakupp -pi.bak -e
 '$_ = $_.subst("a", "b")' *.txt` works as you'd hope). Full reference:

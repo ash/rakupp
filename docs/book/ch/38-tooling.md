@@ -9,8 +9,9 @@ that re-parse the language from the outside and drift away from it. Here they
 are all in the same binary, reading the same tree the interpreter reads.
 
 Once a program is a tree, several useful things become short. This chapter
-covers the five tools that are built on the front end rather than on the
-runtime, and one that is built on the call path.
+covers the tools that are built on the front end rather than on the runtime, one
+that is built on the call path, and one thing that is not a tool at all: a check
+the compiler always runs, whose only job is to stop the program.
 
 ## `--lint`: static analysis that runs nothing
 
@@ -41,6 +42,164 @@ warnings people learn to ignore, at which point the tool is worse than nothing.
 
 Every finding carries a **machine-readable rule id** as well as prose, so a
 project can suppress or gate on a specific rule without matching message text.
+
+## The undeclared-variable gate: the same principle, with the program stopped
+
+```cpp
+// src/DeclCheck.h
+struct UndeclaredVar { std::string name; int line; };
+
+using Path = std::vector<std::string>;   // the module search path
+
+std::vector<UndeclaredVar> findUndeclaredVars(const Program& prog,
+                                              const std::string& src,
+                                              const Path& searchPath);
+```
+
+`--lint` is opt-in and only warns. This one nobody asks for and it refuses to
+run the program. It is worth reading straight after the linter, because it is
+the same design constraint with the consequence raised as far as it goes: a
+false warning is an annoyance, a false *refusal* means a working program will
+not start.
+
+The problem it solves is one of timing. An undeclared variable was always an
+error — the interpreter throws `X::Undeclared` from `lvalueOf`/`evalVarExpr` —
+but only when execution *reached* the reference. So
+
+```raku
+my $x = 42;
+say $x;
+say $y;
+say "done";
+```
+
+printed `42` and then died, where a compiler refuses the file. `-c` was worse: it
+parsed the same program and answered `Syntax OK`. And `--exe`, which never asks
+the question at all, emitted C++ naming a variable it had never declared and let
+the C++ compiler report it:
+
+```
+1.rakupp.gen.cpp:38:46: error: use of undeclared identifier 'v_sy';
+                        did you mean 'v_sx'?
+```
+
+which is a diagnostic about generated code the author never wrote.
+
+So the tree is now asked about the whole unit before any of it runs, and the
+answer is a compile-time report:
+
+```
+===SORRY!=== Error while compiling 1.raku
+Variable '$y' is not declared
+at 1.raku:3
+------> say ⏏$y;
+```
+
+### Where it hangs
+
+Not on the interpreter, and deliberately not on every entry point.
+
+```
+rakuppRun ─────► rakuppRunOn(…, declCheck = true)  ─► [gate] ─► run
+rk_run ────────► rakuppRunOn(…, declCheck = false) ─────────► run
+-c --cpp --bundle --aot --exe ─► [gate] ─► the mode's own pipeline
+REPL ──────────────────────────► one line at a time, no gate
+```
+
+`rakuppRun` is the CLI's funnel and asks for the gate; `rakuppRunOn` is what an
+**embedding host** calls through `rk_run`, and it does not. A host's interpreter
+may already hold globals it installed through the extension ABI, and no static
+pass over *this* source can see those. The REPL is exempt for a different
+reason: each line is its own compilation unit, so the late error costs one line,
+which is what a prompt is for. `--mcp` reaches the interpreter through the same
+embedding API and is exempt with it.
+
+The two interpreter call sites bracket both branches of the run path — the fresh
+parse and the precompiled-AST cache hit (Chapter 30) — because a cached tree is
+the same tree and must be asked the same question.
+
+### Two layers, and why the second one exists
+
+The first layer is an AST walk with real lexical scoping. It is
+position-**insensitive** within a scope: a declaration anywhere in the enclosing
+block counts, even below the use, because the engine is that lenient in places
+and a static check must never be stricter than the engine it guards. It knows
+the things a text scan could not:
+
+```
+$^bb                     IS the declaration of $bb in its block
+our $x                   installs into the package — a sibling scope sees it
+loop (my $i = 0; …)      builds no implicit block; $i outlives the loop
+has $x                   with no twigil, is read as a bare $x in the class
+repeat { … } while $c    evaluates the condition inside the body's scope
+my $a = 1 if $c          declares $a even when $c is false
+```
+
+The second layer is a scan of the **source text**, and it only ever removes
+findings: a candidate survives only if the text, too, never spells that name as
+a declaration — anywhere in the file, in any scope. That layer is there because the parser silently drops
+things. `repeat until $c -> $x { … }` has nowhere in `RepeatStmt` to put `$x`;
+`with $e -> (Int() $v is copy) { … }` cannot fit a destructuring signature in
+`GivenStmt::var`; and `stripPseudoPkg` rewrites `$OUR::x` and `$CALLER::y` down
+to a bare `$x`/`$y` before the AST ever sees them. Each of those makes a
+correctly declared variable look undeclared, and refusing such a program would
+be much worse than the late error being replaced.
+
+What the backstop costs is the cross-scope case — a name declared in one routine
+and used in another is not reported. What it buys is that a finding means *this
+name is declared nowhere in this file*, which no gap in the parser can falsify.
+The two layers are not redundant: the AST pass knows about placeholders and
+signatures, which no text scan could; the text scan knows about binders the AST
+lost. Neither alone is both safe and useful.
+
+### Standing down
+
+The same instinct, taken to its conclusion: several constructs end the check for
+the whole unit rather than risk a guess.
+
+| Construct | Why nothing can be known |
+|---|---|
+| `EVAL` / `EVALFILE` | compiles new code against this scope at run time |
+| `::($name)` | names any symbol at run time — and assigning through one creates it |
+| `require` | imports a set of names only the run can determine |
+| `no strict` | is precisely the pragma that makes an undeclared variable legal |
+| `use lib $expr` | a computed search path: any module could be behind it |
+
+Imports are the one case that is resolved rather than surrendered to, because a
+module may export a **variable** (`our $setting is export`) and that name is
+declared nowhere in the importing file. Before reporting anything, the imported
+module's source is located with `rakuppFindModuleSource` — the loader's own
+resolver, over the loader's own search path plus any literal `use lib` — and
+searched for the name. A module that cannot be found, or one carrying a
+`sub EXPORT` that can export whatever it likes, ends the check.
+
+That lookup reads files, so it is deliberately the **last** thing that happens:
+it runs only once a candidate already exists, which is to say only on the way to
+refusing the program. A working run never touches the disk for it.
+
+The match there has to be on the whole name. Matching a prefix let a module's
+`$setting` clear a bogus `$s` in the program, which quietly switched off
+detection for most short names in any program that imports anything — a good
+illustration of how an over-eager *clearing* rule fails silently, in the
+direction that is hard to notice.
+
+### The predicate that must not drift
+
+Which names are exempt — twigils, `$_`, `$/`, `$!`, `$0`…, `@_`, `%_`, `$a`/`$b`,
+every `&`-sigil name, anything package-qualified — is not re-implemented here.
+`isSpecialVar` in `Interpreter.cpp` stopped being `static` and is declared in
+`Interpreter.h`, so this pass calls the same function the throw sites call. Two
+copies of that list would drift, and the failure mode of drift is this check
+refusing a program the interpreter runs happily. Writing it down once was also
+how `$¢`, the match cursor, turned out to be missing from it.
+
+### What it costs
+
+One extra walk of the tree, once, before the program starts: about 0.15 µs per
+line of source — 0.32 ms for a 2,200-line program. That is 2–3% of a
+parse-and-exit (`-c`), 0.2–0.6% of a real run, and immeasurable for anything
+long-lived. `RAKUPP_NO_DECLCHECK=1` switches it off, for the day it is wrong
+about a program that works.
 
 ## `--highlight`: colouring with the compiler's own knowledge
 

@@ -20,11 +20,11 @@ dependencies. Source text goes through a classic front end and then splits by
 mode:
 
 ```
-  source ─► Lexer ─► Parser ─► AST ─┬─ interpret ─► tree-walk (Interpreter)
-                                     ├─ --aot ─────► AstEmit (rebuild AST) ─► cc ─► binary (walks embedded tree)
-                                     └─ --exe ─────► Codegen (AST → C++)    ─► cc ─► binary (native, no interpreter)
+  source ─► Lexer ─► Parser ─► AST ─► DeclCheck ─┬─ interpret ─► tree-walk (Interpreter)
+                                        (gate)   ├─ --aot ─────► AstEmit (rebuild AST) ─► cc ─► binary (walks embedded tree)
+                                                 └─ --exe ─────► Codegen (AST → C++)    ─► cc ─► binary (native, no interpreter)
 
-  source ─────────────────────────── --bundle ───► embed source bytes      ─► cc ─► binary (parses at run time)
+  source ─────────────────────────────── --bundle ───► embed source bytes            ─► cc ─► binary (parses at run time)
 ```
 
 Everything except the CLI entry point is compiled into a **static library,
@@ -70,6 +70,29 @@ interpreter's `eval`/`exec` and the code generator.
 You can see both stages directly: `RAKUPP_DUMPTOKENS=1 rakupp prog.raku` prints
 the token stream, and `rakupp --ast prog.raku` prints the parsed AST as an
 indented text tree (`src/AstDump.cpp`).
+
+### Declaration check — `src/DeclCheck.{h,cpp}`
+
+The one pass that sits between the parser and every mode. It asks whether each
+variable the unit mentions is declared somewhere in its lexical chain, and a
+program that fails is **refused before it starts** — the same answer the
+interpreter's `X::Undeclared` used to give when execution happened to reach the
+reference, moved to where a compiler gives it. It runs on the interpreter path,
+`-c`, `--cpp` and the three compile modes; the REPL (each line is its own unit)
+and the embedding API's `rk_run` (whose interpreter may already hold globals the
+host installed) are exempt, and `RAKUPP_NO_DECLCHECK=1` turns it off.
+
+It is built to be one-sided. An AST walk with position-insensitive lexical
+scoping produces candidates; a scan of the source text then drops any candidate
+the text spells as a declaration anywhere, which covers the binders the parser
+does not keep (`repeat … -> $x`, a destructuring `with … -> ($x)`) and the
+pseudo-package qualifier `stripPseudoPkg` erases from `$OUR::x`. `EVAL`, a
+symbolic reference, `require`, `no strict` and an unresolvable import each end
+the check for the whole unit. The exemption list is not re-implemented: it calls
+`isSpecialVar` in `Interpreter.cpp`, the same predicate the throw sites use, so
+the static answer cannot drift from the runtime one. The full account is in the
+book, [Chapter 38](../book/ch/38-tooling.md); the user-facing description is in
+[../guide/CLI.md](../guide/CLI.md).
 
 ---
 

@@ -20,6 +20,14 @@ FILE:LINE: warning|note: message [rule-id]
 and a one-line summary goes to stderr. Runnable, one-rule-per-file demos are in
 [examples/lint/](../../examples/lint).
 
+> **`--lint` never stops a program.** It is the advisory half. The one static
+> check that *does* refuse to run a program is the undeclared-variable check,
+> which is not opt-in and not a lint rule: an undeclared variable is a compile
+> error, so it is reported before the program starts, under `-c`, and by the
+> compile modes. See
+> [CLI.md](CLI.md#undeclared-variables-are-refused-before-the-program-runs).
+> Everything below is warnings you may ignore.
+
 ## Warnings vs. notes, and the exit code
 
 Findings have one of two severities:
@@ -68,6 +76,12 @@ Concretely:
   unit contains `EVAL`/`EVALFILE` or a `::($name)` symbolic reference, a name
   could be reached by a route the linter can't see, so `unused-variable` and
   `unused-routine` stand down for that unit.
+
+The undeclared-variable check takes the same principle further, because it has
+to: a false warning is an annoyance, but a false *refusal* means a working
+program will not start. It stands down for `EVAL`, `::($name)`, `require`,
+`no strict` and an import it cannot resolve, and it reports a name only when the
+source declares it nowhere.
 - **Loop and binder variables aren't required to be used.** `for ^10 { … }`,
   `if EXPR -> $x { … }`, `given … -> $y { … }` — a topic or binder you don't
   read is idiomatic, not a mistake, so those are tracked (their uses resolve)

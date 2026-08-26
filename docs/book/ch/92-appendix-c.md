@@ -35,6 +35,7 @@
 | the extension ABI | `rakupp_ext.h`, `ExtApi.cpp` | Chapter 36 |
 | threads, the GIL, supplies | `Interpreter.h`'s concurrency section | Chapter 37 |
 | lint, highlight, profile, REPL | `Lint.cpp`, `Highlight.cpp`, `Profiler.cpp`, `Repl.cpp` | Chapter 38 |
+| the undeclared-variable gate | `DeclCheck.cpp`, `isSpecialVar` in `Interpreter.cpp` | Chapter 38 |
 
 ## Rules that are easy to break by accident
 

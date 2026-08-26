@@ -194,6 +194,15 @@ currency, `callBuiltin`/`callCallable` the shared calling convention,
 large reserved stack, including a compiled binary's `main`, so the recursion
 budget matches across modes.
 
+**One compile-time gate.** Before any mode does its own work, the parsed unit is
+asked whether every variable in it is declared, and a program that fails is
+refused rather than started — so a typo on line 90 is not discovered after 89
+lines of output, and `--exe` reports it itself instead of emitting C++ that names
+an identifier it never declared. `--aot` and `--bundle` inherit it at build time;
+a `--bundle` binary, which parses its embedded source at run time, is checked
+again then, since that is the interpreter path. The pass, and why it is careful
+to the point of standing down, is in Chapter 38.
+
 **Modules are always interpreted.** `Codegen` emits a call to
 `Interpreter::rtUse`, a thin mirror of the interpreter's `use` handling, which
 calls the same `loadModule`. Only the *main program* is compiled; a compiled
