@@ -77,16 +77,17 @@ course sets it to `#0969da` — verified live: inside the widget's shadow root,
 `raku.js` is **owned by the raku.online repo** — do not fork it into the course.
 A change to the accent (or anything else in the widget) must be:
 
-1. committed in **raku.online**, then
-2. deployed with `raku.online/deploy.sh` (copies `www/` to the server; stamps a
-   `?v=<md5>` cache tag over the engine files into `index.html` + `raku.js`).
+1. edited in **raku.online**, with `./build.sh` run afterwards — it stamps the
+   `?v=<md5>` cache tag over the engine files into the pages and into `raku.js`
+   itself, and what is committed must already be what gets served;
+2. committed and pushed to `main`, which is the deploy: GitHub Pages publishes
+   `www/` verbatim, with no build step in CI.
 
-Until the edited `raku.js` reaches the live server, the course — which loads
+Until the edited `raku.js` reaches the live site, the course — which loads
 `https://raku.online/raku.js` — keeps showing the old (magenta) widget, **even
 in a local build**, because the script is fetched from raku.online, not from the
-course. `deploy.sh` re-stamps the cache tag, so the standard order is
-**deploy → commit** (the script's own comment: "commit it so the repo mirrors
-the live site"); when the tag is unchanged the two orders coincide.
+course. (An earlier `deploy.sh` mirrored `www/` to a server over sshfs; both the
+mount and the script are gone.)
 
 Reference commit in raku.online: `Refresh interpreter; make embed accent
 themable` (bundled the WASM refresh with the `--rk-embed-accent` hook).
