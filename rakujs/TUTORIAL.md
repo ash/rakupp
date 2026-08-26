@@ -21,9 +21,12 @@ rakupp_run(source, stdin)   →   runs the Raku source string, returns the exit 
 **The whole program is that one string.** The optional second string is what
 the program's standard input contains — `get` / `lines` / `prompt` read it and
 then see EOF (pass `''` for an empty stdin). There are no command-line
-arguments and no files — the browser sandbox has none of those. Anything the
-program `say`s or `print`s is handed back to your page through Emscripten's
-`print` / `printErr` callbacks. So a Raku.js app is always this shape:
+arguments — the browser sandbox has none. There *is* a filesystem: an in-memory
+one that comes with Emscripten, so `spurt`/`slurp`/`dir` work but touch nothing
+outside the module instance and are wiped when it goes
+([PLAYGROUND.md](PLAYGROUND.md#files)). Anything the program `say`s or `print`s
+is handed back to your page through Emscripten's `print` / `printErr`
+callbacks. So a Raku.js app is always this shape:
 
 > build a Raku *source string* → run it → read what it printed.
 

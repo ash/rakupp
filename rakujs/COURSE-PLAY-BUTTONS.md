@@ -94,10 +94,13 @@ themable` (bundled the WASM refresh with the `--rk-embed-accent` hook).
 
 ## Caveats
 
-- **No filesystem, network, argv, or stdin-from-a-terminal** in the WASM build
-  (see `rakujs/TUTORIAL.md`). Addendum solutions are algorithmic, so almost all
-  run as-is, but any that read/write files or reach the network will show a
-  runtime error instead of output rather than silently doing nothing.
+- **No network, argv, or stdin-from-a-terminal** in the WASM build (see
+  `rakujs/TUTORIAL.md`). Addendum solutions are algorithmic, so almost all run
+  as-is, but any that reach the network will show a runtime error instead of
+  output rather than silently doing nothing. File IO does work, against an
+  in-memory filesystem that starts empty and disappears with the instance
+  ([PLAYGROUND.md](PLAYGROUND.md#files)) — so a solution that writes a file and
+  reads it back is fine, one that expects an existing data file is not.
 - **`defer` on the script is fine.** `raku.js` resolves its base URL from
   `document.currentScript || <fallback>`; the fallback handles the deferred case
   (verified: the widget loads and runs under `defer`).

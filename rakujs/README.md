@@ -104,9 +104,17 @@ global `RakuJS`, and there is one function:
 ```
 
 The whole program is that first string; the second is what `get` / `lines` /
-`prompt` read before hitting EOF. There are no files and no command-line
-arguments — the browser sandbox has neither. Output arrives through the
-`print` / `printErr` callbacks.
+`prompt` read before hitting EOF. There are no command-line arguments — the
+browser sandbox has none. Output arrives through the `print` / `printErr`
+callbacks.
+
+There *is* a filesystem, though nothing in the build asks for one: because the
+interpreter calls `fopen`, Emscripten links its default filesystem, and that
+default is **MEMFS** — a tree that lives in the module instance's own memory.
+`spurt`, `slurp`, `dir`, `mkdir` and `unlink` therefore work normally, against a
+`/` that holds `/home/web_user`, `/tmp`, `/dev` and `/proc`. It reaches no disk
+and no network, and it dies with the instance:
+[PLAYGROUND.md](PLAYGROUND.md#files) has the whole picture.
 
 | Export | |
 |---|---|

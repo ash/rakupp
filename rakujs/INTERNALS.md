@@ -85,6 +85,17 @@ It exists because of a real escape: the grammar memo reaper started a
   correctly, at the cost of recursion depth (below).
 - **Output** goes to `std::cout`/`std::cerr`, which Emscripten routes to the
   `print`/`printErr` callbacks. No interpreter changes needed.
+- **The filesystem is inherited, not requested.** `build.sh` passes no
+  filesystem flags at all — no `-sFORCE_FILESYSTEM`, no `IDBFS`, no
+  `NODERAWFS`. One is linked anyway, because the interpreter calls
+  `fopen`/`stat`, and Emscripten's default backend is MEMFS: `/` with
+  `/home/web_user`, `/tmp`, `/dev` and `/proc`, all in the instance's memory,
+  created by `FS.staticInit` before any of our code runs. So Raku file IO works
+  in the browser — a fact of the toolchain rather than a decision — with no path
+  to the visitor's disk and no persistence. Lifetime is the module instance's:
+  the worker builds one and reuses it across runs, so files survive from run to
+  run and vanish with the instance (Stop, restart, `exit`, recursion `RangeError`,
+  reload). [PLAYGROUND.md](PLAYGROUND.md#files) documents it for users.
 
 ## Performance vs native (and Node vs Bun vs browser)
 
@@ -172,6 +183,10 @@ download (cached thereafter).
   `std::terminate`, which the page sees as a bare `Aborted()` — the failure
   [`smoke.cjs`](#the-smoke-test) now guards against.
 - **Sockets** (the pastebin showcase) don't work in the browser sandbox.
+- **Files are in-memory and temporary.** File IO works (MEMFS, above), but the
+  tree starts empty apart from Emscripten's own directories and is discarded with
+  the module instance. Programs that expect files on disk, or state that outlives
+  a run, need the native binary.
 - **`--compile` / native codegen** is irrelevant here — this ships the
   interpreter (`EVAL`), not the C++ transpiler.
 - **`exit`** in user code aborts the worker's module instance; the worker

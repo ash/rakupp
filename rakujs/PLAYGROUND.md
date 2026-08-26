@@ -124,6 +124,42 @@ interpreted by a C++ interpreter compiled to WebAssembly, in a fraction of a
 second: [**Interpreters all the way down**](STACKED-INTERPRETERS.md) explains
 how that stack works and why it's fast.
 
+## Files
+
+Programs in the playground can read and write files. Nothing in the build asks
+for a filesystem — it arrives with Emscripten: the interpreter calls
+`fopen`/`stat`, so the toolchain links its default filesystem, and the default
+backend is **MEMFS**, a tree that lives in the module instance's memory. So
+`spurt`, `slurp`, `open`, `dir`, `mkdir` and `unlink` all behave as they do
+natively, on this tree:
+
+| Path | |
+|---|---|
+| `/` | the working directory — `$*CWD` is `/`, so relative paths land here |
+| `/home/web_user` | Emscripten's default home directory — `$*HOME` points at it |
+| `/tmp` | empty at start; `$*TMPDIR` points at it |
+| `/dev`, `/proc` | Emscripten's usual stubs |
+
+```raku
+say '/'.IO.dir;                          # (/dev /home /proc /tmp)
+'/tmp/note.txt'.IO.spurt: 'some text';
+say '/tmp/note.txt'.IO.slurp;            # some text
+```
+
+Two things follow from where that tree lives.
+
+**Nothing leaves the page.** MEMFS is a few JavaScript objects on the worker's
+heap. The build declares no `IDBFS`, no `NODERAWFS` and no persistence of any
+other kind, so a program cannot see the visitor's disk, and what it writes never
+reaches IndexedDB, the network or the server that served the page.
+
+**It lasts exactly as long as the module instance.** The page builds one
+instance and reuses it, so a file written by one **Run** is still there for the
+next **Run** in the same tab. It is gone whenever the instance is replaced: a
+page reload, **Stop**, pressing **Run** during a run, `exit` in the program, a
+deep-recursion `RangeError`, or the load-stuck retry. This is scratch space for
+a program that wants to write a file and read it back — not storage.
+
 ## How the page is put together
 
 | File | Purpose |
