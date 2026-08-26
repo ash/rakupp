@@ -21,7 +21,7 @@ README below.
 | [**modinfo/**](modinfo) | Ecosystem — 17 zef distributions doing the work | inspects Raku distributions: graph, validation, reports |
 | [**jsonreq/**](jsonreq) | Ecosystem — our own modules composing | curl+jq for JSON APIs: request, query, pretty-print |
 | [**sqlite/**](sqlite) | C libraries — NativeCall and a raw-mode terminal | database client: query, browse, dump; the real libsqlite3 does the work |
-| [**gui/**](gui) | GUI — Cocoa over NativeCall, `react`/`whenever` as the event loop | native macOS apps: the Counter and a decimal-comma Calculator |
+| [**gui/**](gui) | GUI — one program, three backends; `react`/`whenever` as the event loop | native desktop apps: the Counter and a Calculator, Cocoa or GTK |
 
 All paths below are from the repository root, after building `rakupp` (see the
 top-level [README](../README.md)). Every program also compiles to a standalone
@@ -402,7 +402,7 @@ raku showcase/gui/counter.raku                                 # Rakudo, unchang
 WINGS_AUTODRIVE=3 raku showcase/gui/counter.raku               # clicks itself, ~4 s
 ```
 
-The main thread owns AppKit and reconciles widget state each pump turn; the
+The pump thread owns the toolkit and reconciles widget state each pump turn; the
 program body runs on a worker so `react` can park; a click crosses from AppKit
 into a Raku closure through a runtime-minted Objective-C class. No NSRect ever
 crosses the FFI — only NSPoint/NSSize, two doubles, which both macOS ABIs pass

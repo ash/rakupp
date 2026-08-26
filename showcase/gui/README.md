@@ -1,9 +1,10 @@
-# gui — a native macOS app, `react`/`whenever` as the event loop
+# gui — native desktop apps, `react`/`whenever` as the event loop
 
-A desktop Counter app whose widgets are Supplies: a button click, a once-a-second
-clock and Ctrl+C are three `whenever` blocks inside one `react`. The GUI is real
-Cocoa — NSWindow, NSTextField, NSButton — reached through `objc_msgSend` over
-NativeCall, with no C glue and no bindings distribution.
+Two desktop apps whose widgets are Supplies. In the Counter, a button click, a
+once-a-second clock and Ctrl+C are three `whenever` blocks inside one `react`;
+the Calculator adds a keypad of sixteen more. The GUI is real native widgets —
+NSWindow, NSTextField, NSButton on macOS; GtkWindow, GtkLabel, GtkButton on
+Linux — reached through NativeCall, with no C glue and no bindings distribution.
 
 The framework is the **GUI::Wings** module from
 [github.com/ash/raku-modules](https://github.com/ash/raku-modules):
@@ -46,22 +47,32 @@ clicks and reconciliations on stderr.
 
 AppKit accepts windows only on the process main thread, which is what
 `RAKUPP_MAIN_THREAD=1` provides under Raku++; under Rakudo the mainline is
-already the main thread. macOS only, arm64 and x86-64 (a Rosetta Rakudo works).
-The API floor is macOS 10.12.2 (tested on 15.7); the Raku++ side needs a build
-from current `main` — release binaries predate the main-thread hook — while any
-recent Rakudo works as released.
+already the main thread. The API floor is macOS 10.12.2 (tested on 15.7), arm64
+and x86-64 alike; the Raku++ side needs a build from current `main` — release
+binaries predate the main-thread hook — while any recent Rakudo works as
+released.
+
+Neither program mentions Cocoa, so neither is macOS-only: `GUI::Wings` splits
+into a toolkit-free front and `GUI::Wings::Backend::{Cocoa,Gtk,Win32}`, chosen
+by OS and overridable with `WINGS_BACKEND`. The same two files run on GTK3
+unchanged — `WINGS_BACKEND=Gtk raku showcase/gui/counter.raku` — which is how
+they were verified here against Homebrew GTK. The Win32 backend is written but
+has never been run.
 
 ## How it holds together
 
-- The **main thread** owns AppKit: it pumps `nextEventMatchingMask:` inside an
-  autorelease pool, drains a Channel of marshalled UI closures, and *reconciles*
-  widget state — `$l.text`, `window.title` — into Cocoa only when it changed.
+- The **pump thread** owns the toolkit: it pumps events inside an autorelease
+  pool (on Cocoa), drains a Channel of marshalled UI closures, and *reconciles*
+  widget state — `$l.text`, `window.title` — into the toolkit only when it
+  changed. On macOS that thread must be the process main thread; GTK and Win32
+  only require that one thread does all the calls, which this is.
 - The **`app` body runs on a worker**, so `react` can park there without
-  freezing the GUI. Builders (`window`, `label`, `button`) send their AppKit
-  work to the main thread and wait for the ack.
-- A **click** travels AppKit → a runtime-minted Objective-C class whose action
-  method is a Raku sub (`class_addMethod` with a NativeCall closure) → a
-  `Supplier.emit` → the worker's `whenever`.
+  freezing the GUI. Builders (`window`, `label`, `button`) send their toolkit
+  work to the pump thread and wait for the ack.
+- A **click** travels from the toolkit into a Raku closure — on Cocoa through a
+  runtime-minted Objective-C class whose action method is a Raku sub
+  (`class_addMethod` with a NativeCall closure), on GTK through
+  `g_signal_connect_data` — then a `Supplier.emit` → the worker's `whenever`.
 - **No NSRect ever crosses the FFI.** Both macOS ABIs pass an NSPoint/NSSize
   (two doubles) exactly like two `num64` arguments, so geometry goes through
   `setContentSize:` / `setFrameOrigin:` / `setFrameSize:` and the same module

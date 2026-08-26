@@ -2,23 +2,18 @@ use GUI::Wings;
 
 app 'Calculator', {
     # $val is the EXACT value of what the display shows: the display may round
-    # 1/3 to 0,333333, but the math keeps the Rat — 1 ÷ 3 × 3 is exactly 1.
+    # 1/3 to 0.333333, but the math keeps the Rat — 1 ÷ 3 × 3 is exactly 1.
     my ($acc, $val, $op, $fresh) = 0, 0, '', True;
 
     window :title('Calculator'), :size(296, 388), :fixed, {
         my $display = label '0', :font(40), :mono, :align<right>,
                                  :at(16, 316), :size(264, 56);
 
-        # the display speaks decimal comma; the math speaks Raku
-        my sub to-num(Str $s) {
-            my $t = $s.subst(',', '.');
-            $t = $t.chop if $t.ends-with('.');
-            +($t || '0');
-        }
+        # a trailing '.' is mid-entry, not a number yet
+        my sub to-num(Str $s) { +($s.ends-with('.') ?? $s.chop !! $s) }
         my sub fmt($v) {
             my $s = $v.Str;
-            $s = sprintf('%.7g', $v.Num) if $s.chars > 11;
-            $s.subst('.', ',');
+            $s.chars > 11 ?? sprintf('%.7g', $v.Num) !! $s;
         }
         my sub press(Str $k) {
             my $shown = $display.text;
@@ -31,13 +26,13 @@ app 'Calculator', {
                 $val = to-num($display.text);
                 $fresh = False;
             }
-            elsif $k eq ',' {
+            elsif $k eq '.' {
                 if $fresh {
-                    $display.text = '0,';
+                    $display.text = '0.';
                     $fresh = False;
                 }
-                elsif !$shown.contains(',') {
-                    $display.text = $shown ~ ',';
+                elsif !$shown.contains('.') {
+                    $display.text = $shown ~ '.';
                 }
                 $val = to-num($display.text);
             }
@@ -66,7 +61,7 @@ app 'Calculator', {
             }
         }
 
-        my @keys = <7 8 9 ÷  4 5 6 ×  1 2 3 −  C 0 , +>;
+        my @keys = <7 8 9 ÷  4 5 6 ×  1 2 3 −  C 0  . +>;
         my @buttons = @keys.kv.map: -> $i, $k {
             button $k, :font(24), :size(60, 52),
                    :at(16 + ($i mod 4) * 68, 72 + (3 - $i div 4) * 60),
