@@ -451,26 +451,76 @@ module, it must *only* be a module.
 
 Extensions are **native code called from Raku**. Embedding is **Raku called from
 native code**. Same boundary, opposite direction — and the observation that
-shapes the current plan is that the harder half is already built:
+shaped the embedding API is that the harder half was already built:
 
 > The extension ABI has the value vocabulary, the opaque-handle discipline,
 > version negotiation, an error model, and the rule that makes all of it
 > survivable.
 
-So an embedding API does not get a second value vocabulary. `RkValue` is the
-value type, `rk_int`/`rk_str`/`rk_hash`/`rk_at_pos` are the accessors, and an
-earlier proposal for a separate opaque type with its own free function was
-retracted on exactly that ground.
+So embedding did not get a second value vocabulary. `RkValue` is the value type,
+`rk_int`/`rk_str`/`rk_hash`/`rk_at_pos` are the accessors, and an earlier
+proposal for a separate opaque type with its own free function was retracted on
+exactly that ground.
 
 That is worth stating as a design principle rather than a project note: **when
 you publish a boundary, publish one.** Two vocabularies for the same values is
 twice the surface to keep stable, and the whole reason for the handle discipline
 was to have as little of that surface as possible.
 
-Two pieces of it are already in place. `librakupp` is the shared library an
-embedding host links against, and `rk_root` is how such a host keeps a value
-past the call that produced it — the two things an extension never needs and an
-embedder cannot do without.
+### What a host actually calls
+
+`librakupp` is the shared library an embedding host links against, and `rk_root`
+is how it keeps a value past the call that produced it — the two things an
+extension never needs and an embedder cannot do without. On top of those,
+`EmbedApi.cpp` publishes a small lifecycle:
+
+```c
+RkInterp   rk_new (const RkConfig* cfg);   /* NULL = every option off */
+void       rk_free(RkInterp rk);
+int        rk_eval(RkInterp rk, const char* src, RkValue* out);
+int        rk_run (RkInterp rk, const char* src, const char* file,
+                   int* exit_code);
+const char* rk_last_error(RkInterp rk);
+void       rk_set_output(RkInterp rk, RkOutputFn fn, void* userdata);
+void       rk_set_input (RkInterp rk, const char* text, size_t len);
+int        rk_register(RkInterp rk, const char* name, RkHostFn fn, void* ud);
+```
+
+An interpreter is a **session**, not a one-shot: `rk_eval(rk, "my $x = 41")` then
+`rk_eval(rk, "$x + 1")` answers 42, because the mainline scope persists exactly
+as it does at the REPL prompt. `rk_run` is the other shape — a whole program,
+with its `MAIN`, its phasers and its exit code — and it is the one a host reaches
+for when it is running someone's script rather than evaluating an expression.
+
+### Three things the CLI does that a library may not
+
+The most instructive part of the API is a struct of things deliberately turned
+**off**:
+
+```c
+typedef struct {
+    unsigned size;         /* sizeof(RkConfig), so the struct can grow */
+    int own_stack;         /* run Raku on a large-stack thread, as the CLI */
+    int handle_sigpipe;    /* ignore SIGPIPE process-wide */
+    int own_stdout;        /* flush std::cout/std::cerr after each evaluation */
+} RkConfig;
+```
+
+Each is something `rakupp` does as a matter of course and a library must not do
+to its host uninvited. A thread the host did not ask for, a process-wide signal
+disposition that is the host's business and not ours, a flush of streams the
+host owns — all three are correct for a program that *is* the interpreter and
+presumptuous for one that merely contains it. `size` is how a host compiled
+against an older header keeps working when the struct grows.
+
+The same restraint decides `declCheck` in Chapter 38's gate: an embedding host's
+interpreter may already hold globals it installed with `rk_register`, so no
+static pass over the source it hands in could be trusted to judge it.
+
+One interpreter per process is the standing limit, and `--mcp` (Chapter 38) is
+the largest host of this ABI in the tree: a thousand lines that include
+`rakupp.h` and never `Interpreter.h`, despite being compiled into the same
+binary as the interpreter it serves.
 
 ## A footnote on guessing
 

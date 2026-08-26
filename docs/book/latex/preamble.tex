@@ -105,3 +105,11 @@
 % typewriter face to hyphenate, so a long identifier at a line end wraps
 % instead of running into the margin.
 \usepackage[htt]{hyphenat}
+
+% Link colour. meta.yaml cannot carry an RGB triple: pandoc drops whatever
+% `linkcolor:` holds straight into \hypersetup, so the YAML list [0,0.25,0.5]
+% arrived as the colour NAME `00.250.5` and xcolor refused it. It went unnoticed
+% for as long as the book had no links at all — the first `[text](url)` written
+% into a chapter failed the build. Named here (xcolor is already loaded by the
+% time this header is included), and meta.yaml refers to it by name.
+\definecolor{rakuppblue}{rgb}{0,0.25,0.5}

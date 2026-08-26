@@ -21,8 +21,8 @@ monofont: "Menlo"
 monofontoptions:
   - "Scale=0.80"
 colorlinks: true
-linkcolor: [0,0.25,0.5]
-urlcolor: [0,0.25,0.5]
+linkcolor: rakuppblue   # defined in latex/preamble.tex — a YAML list here
+urlcolor: rakuppblue    # reaches \hypersetup as a colour NAME and fails
 toccolor: black
 linestretch: 1.05
 secnumdepth: 2

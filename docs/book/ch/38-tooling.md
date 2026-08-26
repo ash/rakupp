@@ -10,8 +10,10 @@ are all in the same binary, reading the same tree the interpreter reads.
 
 Once a program is a tree, several useful things become short. This chapter
 covers the tools that are built on the front end rather than on the runtime, one
-that is built on the call path, and one thing that is not a tool at all: a check
-the compiler always runs, whose only job is to stop the program.
+that is built on the call path, one that is built on the published C ABI and
+serves the engine to a program that is not a person, and one thing that is not a
+tool at all: a check the compiler always runs, whose only job is to stop the
+program.
 
 ## `--lint`: static analysis that runs nothing
 
@@ -326,6 +328,106 @@ The flag is set by the lexer's runaway-construct diagnostics and by the parser
 when it fails on the end token, so typing `sub f {` at the prompt asks for a
 continuation line while `sub f )` reports an error. One boolean, threaded from
 the lexer to the prompt.
+
+## `--mcp`: the same session, driven by an agent
+
+```cpp
+// src/McpServer.h
+namespace rakupp::mcp {
+struct Options {
+    int timeoutSecs = 120;              // 0 disables the watchdog
+    std::vector<std::string> preload;   // -M modules, as `use <module>;`
+};
+int runServer(const Options& opt);      // serves until stdin closes
+}
+```
+
+The REPL's shape — one interpreter, fed a line at a time, the mainline scope as
+the session — turns out to be what an AI agent wants too. `rakupp --mcp` serves
+exactly that over the
+[Model Context Protocol](https://modelcontextprotocol.io): JSON-RPC 2.0, one
+message per line, on stdio. A client launches the process, discovers its tools
+and calls them mid-conversation.
+
+Two tools, and the interesting thing is that neither is new engine work:
+
+- **`raku`** evaluates source in one persistent session. `my $x = 41` in one
+  call and `$x + 1` in the next is `42`, for the same reason it is in the REPL:
+  it *is* that evaluation path. The reply is what the code printed, or, when it
+  printed nothing, the `.gist` of its last statement after `=> `, which is again
+  the REPL's convention.
+- **`raku-parse`** compiles a grammar from source text and parses with it,
+  answering a JSON tree — or, on a non-match, a diagnosis naming the line,
+  column and deepest rule reached, which is what a client needs in order to fix
+  its grammar and try again.
+
+### It is a host, not a private door
+
+The whole server reaches the engine through the public C ABI of Chapter 36 —
+`rk_new`, `rk_eval`, `rk_set_output`, and for grammars the same
+`rk_grammar_shim()` source every language binding loads. Nothing in
+`McpServer.cpp` includes `Interpreter.h`.
+
+That is the load-bearing decision, and it is worth stating as a rule: **a new
+front door must be a client of the published boundary, not a second one.** An
+agent therefore gets byte-for-byte what a Python binding or plain `rakupp -e`
+would get, and every ABI fix reaches all of them at once. The alternative —
+a server reaching into the interpreter directly because it lives in the same
+binary — would have been shorter to write and would have produced a third set of
+semantics to keep in step.
+
+It is also why `--mcp` is exempt from the declaration gate earlier in this
+chapter: every evaluation arrives through `rk_eval`, like any other embedding
+host's, and the embedding path does not ask for the gate.
+
+### The watchdog, and a bug worth keeping
+
+`rk_eval` cannot be interrupted mid-evaluation — an `rk_interrupt` is future ABI
+work — so a call that never returns would wedge the client forever. A watchdog
+thread, armed around every engine call with that request's id, answers the
+request after `--timeout` seconds (120 by default, `0` to disable) and then ends
+the process. The client starts a fresh server on its next call and the error
+text says the session was lost. That is a poor outcome; a wedged agent is worse.
+
+Two details of it are the kind this book exists to record.
+
+The timeout reply is **assembled by hand**, not built through the server's JSON
+type, because the main thread may be wedged deep inside Raku and the dog must
+not allocate its way through shared machinery to say so.
+
+And the thread is **joined, not detached**:
+
+> destroying a condition variable with a parked waiter is not the no-op macOS
+> makes it — glibc's `pthread_cond_destroy` WAITS for the waiter to leave
+
+A detached dog parked on its condition variable meant the server's return
+blocked forever on Linux and nowhere else, which is how it reached CI as
+six-hour job timeouts rather than as a test failure. The destructor now sets
+`quit_`, notifies, and joins. The timeout path never runs it at all: `_Exit`
+ends the process with the thread still parked, deliberately.
+
+### Two smaller consequences of embedding
+
+`exit` in evaluated code does not end the server, because an embedded evaluation
+refuses to end its host process; it comes back as an error naming the code and
+the session continues. And the interpreter's standard input is pinned to EOF
+with `rk_set_input`, so `get`/`lines`/`$*IN` read nothing instead of eating the
+protocol's own bytes off fd 0 — the server reads that descriptor itself.
+
+The JSON layer is about 300 lines of `McpServer.cpp` rather than a dependency,
+for the reason the rest of the engine has none.
+
+`tools/mcp-smoke.raku` drives a real server over stdio exactly as a client does
+and pins the handshake, both tools, session persistence, the surviving `die`,
+the tree and the diagnosis, and the watchdog's answer-then-exit contract.
+
+### What it does not do
+
+The `raku` tool runs arbitrary Raku with the privileges of the process. There is
+no sandbox, and registering the server grants an agent the trust that handing it
+a shell does. Saying so is the whole of the mitigation here; a sandboxed variant
+is separate work, and the WebAssembly build of Chapter 31 is the natural cage
+for it.
 
 ## Pod and `--doc`
 

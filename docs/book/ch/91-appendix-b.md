@@ -28,6 +28,8 @@ reference for the internals; the user-facing command line is documented in
 | `--html`, `--ansi`, `--terminal` | pick the highlighter's renderer |
 | `--doc` | run `DOC` phasers and print rendered Pod |
 | `--profile[=dest]` | the routine-level wall-time profiler |
+| `--mcp` | serve the interpreter over the Model Context Protocol on stdio |
+| `--timeout=SECS` | `--mcp` only: the watchdog's limit; `0` disables it |
 | `--ffi-info` | which FFI backend is live, or why none is |
 | `--precomp-info` | what the parse cache holds |
 | `--precomp-clean` | empty it |
