@@ -1,4 +1,4 @@
-# wings — a native macOS app, `react`/`whenever` as the event loop
+# gui — a native macOS app, `react`/`whenever` as the event loop
 
 A desktop Counter app whose widgets are Supplies: a button click, a once-a-second
 clock and Ctrl+C are three `whenever` blocks inside one `react`. The GUI is real
@@ -33,9 +33,9 @@ app 'Counter', {
 ## Run it
 
 ```sh
-RAKUPP_MAIN_THREAD=1 build/rakupp showcase/wings/counter.raku    # Raku++
-RAKUPP_MAIN_THREAD=1 build/rakupp ~/raku-modules/GUI-Wings/examples/calculator.raku   # the calculator
-raku showcase/wings/counter.raku                                 # Rakudo, unchanged
+RAKUPP_MAIN_THREAD=1 build/rakupp showcase/gui/counter.raku    # Raku++
+RAKUPP_MAIN_THREAD=1 build/rakupp showcase/gui/calculator.raku                # the calculator
+raku showcase/gui/counter.raku                                 # Rakudo, unchanged
 ```
 
 The window comes up, the title ticks like a clock, the label counts your
@@ -69,5 +69,5 @@ bare `objc_msgSend` that open a window, mint a target class and pump events —
 kept as the reference for what Wings wraps:
 
 ```sh
-RAKUPP_MAIN_THREAD=1 build/rakupp showcase/wings/raw-cocoa.raku
+RAKUPP_MAIN_THREAD=1 build/rakupp showcase/gui/raw-cocoa.raku
 ```

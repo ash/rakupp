@@ -21,7 +21,7 @@ README below.
 | [**modinfo/**](modinfo) | Ecosystem — 17 zef distributions doing the work | inspects Raku distributions: graph, validation, reports |
 | [**jsonreq/**](jsonreq) | Ecosystem — our own modules composing | curl+jq for JSON APIs: request, query, pretty-print |
 | [**sqlite/**](sqlite) | C libraries — NativeCall and a raw-mode terminal | database client: query, browse, dump; the real libsqlite3 does the work |
-| [**wings/**](wings) | GUI — Cocoa over NativeCall, `react`/`whenever` as the event loop | native macOS Counter app: a window, a clock title, a button you click |
+| [**gui/**](gui) | GUI — Cocoa over NativeCall, `react`/`whenever` as the event loop | native macOS apps: the Counter and a decimal-comma Calculator |
 
 All paths below are from the repository root, after building `rakupp` (see the
 top-level [README](../README.md)). Every program also compiles to a standalone
@@ -384,9 +384,9 @@ causes are in
 [`sqlite/README.md`](sqlite/README.md) has the option table, the browser keys,
 and what each part of the binding exercises.
 
-## wings — the GUI story
+## gui — the GUI story
 
-**sqlite** proves NativeCall can talk to a C library; **wings** points the same
+**sqlite** proves NativeCall can talk to a C library; **gui** points the same
 machinery at the Objective-C runtime and gets a real desktop app: NSWindow,
 NSTextField, NSButton, reached through `objc_msgSend` with no glue code. The
 framework on top is the `GUI::Wings` module from
@@ -396,9 +396,10 @@ and SIGINT as three `whenever` streams.
 
 ```sh
 export RAKULIB=$HOME/raku-modules/GUI-Wings/lib
-RAKUPP_MAIN_THREAD=1 build/rakupp showcase/wings/counter.raku    # Raku++
-raku showcase/wings/counter.raku                                 # Rakudo, unchanged
-WINGS_AUTODRIVE=3 raku showcase/wings/counter.raku               # clicks itself, ~4 s
+RAKUPP_MAIN_THREAD=1 build/rakupp showcase/gui/counter.raku    # Raku++
+RAKUPP_MAIN_THREAD=1 build/rakupp showcase/gui/calculator.raku # the calculator
+raku showcase/gui/counter.raku                                 # Rakudo, unchanged
+WINGS_AUTODRIVE=3 raku showcase/gui/counter.raku               # clicks itself, ~4 s
 ```
 
 The main thread owns AppKit and reconciles widget state each pump turn; the
