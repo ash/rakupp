@@ -1,4 +1,5 @@
 #include "Runtime.h"
+#include "DeclCheck.h"
 #include "Interpreter.h"
 #include "Lexer.h"
 #include "Parser.h"
@@ -95,12 +96,23 @@ int rakuppRun(const std::string& src, std::vector<std::string> args,
               const std::vector<std::string>& libPaths) {
     // The CLI's shape: make an interpreter, then run the program in it.
     Interpreter interp;
-    return rakuppRunOn(interp, src, std::move(args), fileName, exePath, libPaths);
+    return rakuppRunOn(interp, src, std::move(args), fileName, exePath, libPaths,
+                       /*declCheck*/ true);
 }
 
 int rakuppRunOn(Interpreter& interp, const std::string& src, std::vector<std::string> args,
                 const std::string& fileName, const std::string& exePath,
-                const std::vector<std::string>& libPaths) {
+                const std::vector<std::string>& libPaths, bool declCheck) {
+    // Issue #32: an undeclared variable is a compile error, so the whole unit is
+    // asked about before ANY of it runs — otherwise `say $x; say $typo;` prints
+    // a line first and dies second. Answers -1 when the program may proceed.
+    auto declCheckRc = [&](const Program& prog) -> int {
+        if (!declCheck || !declCheckEnabled()) return -1;
+        // The loader's own path, so an imported name is looked for where the
+        // import will actually find it.
+        auto us = findUndeclaredVars(prog, src, effectiveSearchPath(libPaths));
+        return us.empty() ? -1 : reportUndeclaredVars(us, fileName, src);
+    };
     try {
         // The main program gets the same precompiled-AST cache its modules do —
         // keyed on this file's path, validated against its contents. A cache hit
@@ -125,6 +137,7 @@ int rakuppRunOn(Interpreter& interp, const std::string& src, std::vector<std::st
                 interp.srcFileAbs_ = absSrcPath(fileName);
                 interp.execPath_ = exePath;
                 interp.libPaths_.insert(interp.libPaths_.begin(), libPaths.begin(), libPaths.end());
+                if (int rc = declCheckRc(cachedProg); rc >= 0) return rc;
                 return interp.run(cachedProg);
             }
         }
@@ -164,6 +177,7 @@ int rakuppRunOn(Interpreter& interp, const std::string& src, std::vector<std::st
         interp.execPath_ = exePath;
         // -I <path> lib dirs take priority over the built-in / env-derived ones.
         interp.libPaths_.insert(interp.libPaths_.begin(), libPaths.begin(), libPaths.end());
+        if (int rc = declCheckRc(prog); rc >= 0) return rc;
         return interp.run(prog);
     } catch (const ParseError& e) {
         std::cerr << "===SORRY!=== Parse error at line " << e.line << ": " << e.what() << "\n";

@@ -241,7 +241,10 @@ static long long dateDays(const Value& v) {
 }
 
 // Variables that may be used without an explicit `my` declaration (never "undeclared").
-static bool isSpecialVar(const std::string& n) {
+// Not static: DeclCheck's before-the-run pass has to exempt exactly the names
+// this exempts, or the two would drift and the static check would reject a
+// program the interpreter runs happily.
+bool isSpecialVar(const std::string& n) {
     if (n.size() < 2) return true;          // bare sigil
     char sig = n[0];
     if (sig == '&') return n[1] != '?';     // &foo code refs (builtins not in env);
@@ -254,6 +257,10 @@ static bool isSpecialVar(const std::string& n) {
     if (n.find("::") != std::string::npos) return true; // package-qualified $Foo::bar (may be undefined)
     if (n == "$a" || n == "$b") return true;          // implicit block/sort params
     if (n == "@_" || n == "%_") return true;
+    // `$¢`, the match cursor: the regex engine installs it in the enclosing
+    // scope alongside `$/`, so like `$/` it is never the program's to declare —
+    // and asking for it where no match has run answers undefined, as Rakudo does.
+    if (n == "$\u00a2") return true;             // U+00A2 CENT SIGN
     return false;
 }
 

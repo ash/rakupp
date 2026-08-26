@@ -158,6 +158,13 @@ std::vector<BundledModule> collectModuleGraph(const Program& prog,
 // module-private. loadModule uses it to publish, codegen to emit the call.
 void collectExportedSubNames(const std::vector<StmtPtr>& stmts, std::set<std::string>& out);
 
+// Whether a variable name may be used with no `my` behind it: the twigil forms
+// ($*dyn $?FILE $.attr $!attr $^ph $:named), $_ $/ $! $0…, @_ %_, $a/$b, every
+// `&`-sigil name, and anything package-qualified. This is the predicate the
+// interpreter's X::Undeclared check consults, exported so DeclCheck's
+// before-the-run pass exempts exactly the same set (Interpreter.cpp).
+bool isSpecialVar(const std::string& n);
+
 // The two independent caching switches, both OFF unless turned on. `modules`
 // caches the parse of every module a program `use`s; `files` caches the main
 // program's own parse. Persisted in the config file (precompConfigPath), which

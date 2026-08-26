@@ -193,6 +193,7 @@ program `use`s are found and embedded, so the binary needs nothing at run time.
 | `RAKUPP_PRECOMP_DIR=…` | Put the cache somewhere other than `~/.cache/rakupp/precomp` |
 | `RAKUPP_CONFIG=…` | Use a different settings file than `~/.config/rakupp/rakupp.config` |
 | `RAKUPP_TRACE=1` | Report every module as it loads: where it came from, and whether it parsed or came from the cache |
+| `RAKUPP_NO_DECLCHECK=1` | Skip the before-the-run undeclared-variable check (see below) |
 
 `-I <path>` (or `-I<path>`, repeatable) prepends directories to the module
 search path, so `use Foo` finds `<path>/Foo.rakumod` — the same as Rakudo's

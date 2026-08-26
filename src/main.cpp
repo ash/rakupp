@@ -10,6 +10,7 @@
 #include "AstSerial.h"
 #include "SlimScan.h"
 #include "Interpreter.h"
+#include "DeclCheck.h"
 #include "Lint.h"
 #include "Ffi.h"
 #include "Highlight.h"
@@ -883,6 +884,26 @@ static std::string injectModuleTable(const std::string& cpp, const std::string& 
            cpp.substr(at + mainSig.size());
 }
 
+// The undeclared-variable gate (DeclCheck.h) for the modes that parse the whole
+// unit before producing anything: --cpp and the three compile modes. `--exe`
+// used to hand this straight to the C++ compiler, which reported it as
+// `use of undeclared identifier 'v_sy'` against generated code the author never
+// wrote (issue #32). Answers -1 when the program may proceed; a parse error is
+// left for the caller, which reports it in its own shape.
+static int declCheckGate(const std::string& src, const std::string& fileName,
+                         const std::vector<std::string>& searchPath) {
+    if (!declCheckEnabled()) return -1;
+    Program prog;
+    try {
+        Lexer lexer(src);
+        Parser parser(lexer.tokenize());
+        parser.libPaths_ = searchPath;
+        prog = parser.parseProgram();
+    } catch (const ParseError&) { return -1; }
+    auto us = findUndeclaredVars(prog, src, searchPath);
+    return us.empty() ? -1 : reportUndeclaredVars(us, fileName, src);
+}
+
 // back with a clear message if the program uses an unsupported construct.
 static int compileNative(const std::string& src, const std::string& srcName, std::string outPath, const std::string& selfExe, bool optimize = false, const std::string& ccOpt = "-O2",
                          const std::vector<std::string>& libPaths = {}) {
@@ -1705,7 +1726,8 @@ int main(int argc, char** argv) {
 "                               reads stdin if no SRC), e.g. as a pygmentize drop-in.\n"
 "                               Flags compose in any order; bare `rakupp --ansi SRC`\n"
 "                               is a shorthand for `--highlight --ansi SRC`\n"
-"  rakupp -c SRC                Check syntax only (parse and report, don't run)\n"
+"  rakupp -c SRC                Compile-check only: parse, check every variable is\n"
+"                               declared, report, don't run\n"
 "  rakupp --doc SRC             Run, then render the program's Pod to stdout\n"
 "  rakupp --exe-info BINARY     A compiled binary's embedded build manifest\n"
 "                               (version, compile mode, --slim cuts)\n"
@@ -1907,13 +1929,22 @@ int main(int argc, char** argv) {
     // (--target=parse is the Rakudo-compatible alias)
     if (mode == Mode::Check) {
         if (!haveSrc) { std::cerr << "Usage: rakupp -c (FILE | -e CODE)\n"; return 4; }
+        Program prog;
         try {
             Lexer lexer(src);
             Parser parser(lexer.tokenize());
-            (void)parser.parseProgram();
+            parser.libPaths_ = effectiveSearchPath(libPaths);
+            prog = parser.parseProgram();
         } catch (const ParseError& e) {
             std::cerr << "===SORRY!=== Parse error at line " << e.line << ": " << e.what() << "\n";
             return 2;
+        }
+        // Syntax is only half of "does this compile": an undeclared variable is
+        // a compile error too, and -c reporting OK for a file that dies on its
+        // third line was the other half of issue #32.
+        if (declCheckEnabled()) {
+            auto us = findUndeclaredVars(prog, src, effectiveSearchPath(libPaths));
+            if (!us.empty()) return reportUndeclaredVars(us, fileName, src);
         }
         std::cout << "Syntax OK\n";
         return 0;
@@ -1953,6 +1984,7 @@ int main(int argc, char** argv) {
     // --cpp : print the C++ that `--exe` would transpile the program to (to stdout)
     if (mode == Mode::Cpp) {
         if (!haveSrc) { std::cerr << "Usage: rakupp --cpp (FILE | -e CODE) [-O]\n"; return 4; }
+        if (int rc = declCheckGate(src, fileName, effectiveSearchPath(libPaths)); rc >= 0) return rc;
         try {
             Lexer lexer(src);
             Parser parser(lexer.tokenize());
@@ -1992,6 +2024,7 @@ int main(int argc, char** argv) {
         if (g_slim.directive == SlimDirective::Verify)
             return slimVerify(mode == Mode::Exe ? 'x' : mode == Mode::Aot ? 'a' : 'b',
                               src, fileName, outPath, exePath, optimize, ccOpt, libPaths);
+        if (int rc = declCheckGate(src, fileName, effectiveSearchPath(libPaths)); rc >= 0) return rc;
         if (mode == Mode::Exe) return compileNative(src, fileName, outPath, exePath, optimize, ccOpt, libPaths);
         if (mode == Mode::Aot) return compileAotAst(src, fileName, outPath, exePath, libPaths);
         return compileToExe(src, fileName, outPath, exePath, libPaths); // --bundle

@@ -22,9 +22,13 @@ int rakuppRun(const std::string& src, std::vector<std::string> args,
 // the host's own session interpreter, so a host embedding rakupp does not end
 // up with a second, hidden one whose construction would steal the process
 // globals from the first.
+// `declCheck` turns on the before-the-run undeclared-variable check (DeclCheck.h).
+// The CLI asks for it; an EMBEDDING host does not, because its interpreter may
+// already hold globals the host installed, which no static pass over this
+// source can see.
 int rakuppRunOn(Interpreter& interp, const std::string& src, std::vector<std::string> args,
                 const std::string& fileName, const std::string& exePath,
-                const std::vector<std::string>& libPaths = {});
+                const std::vector<std::string>& libPaths = {}, bool declCheck = false);
 
 // Same as rakuppRun, but executes on a thread with a large stack so deep
 // (but bounded) recursion works and the interpreter's recursion guard fires

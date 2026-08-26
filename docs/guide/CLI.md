@@ -148,13 +148,44 @@ disabled hooks cost nothing measurable, so there is no separate
 
 | Flag | Meaning |
 |---|---|
-| `-c` | syntax-check only, print `Syntax OK` (parse only — BEGIN does not run, unlike Rakudo) |
+| `-c` | compile-check only, print `Syntax OK` (parse + the undeclared-variable check — BEGIN does not run, unlike Rakudo) |
 | `--lint` | static analysis; `-q` drops the summary (see [LINT.md](LINT.md)) |
 | `--ast` | print the parsed AST (`--dump-ast`, `--target=ast` are aliases) |
 | `--target=parse` | Rakudo-compatible alias of `-c` |
 | `--ast-roundtrip` | prove the AST survives the precomp cache format |
 | `--highlight` | syntax-highlight to HTML (`--ansi` for terminals) |
 | `--precomp-*` | the parsed-module cache (see [CACHING.md](CACHING.md)) |
+
+### Undeclared variables are refused before the program runs
+
+An undeclared variable is a compile error, not a run-time one. Before a program
+starts — and under `-c`, `--cpp`, `--bundle`, `--aot` and `--exe` — rakupp walks
+the whole unit and refuses it if a variable is used that nothing declares:
+
+```
+$ rakupp t.raku
+===SORRY!=== Error while compiling t.raku
+Variable '$y' is not declared
+at t.raku:3
+------> say ⏏$y;
+```
+
+Nothing of the program runs, so a typo on line 90 no longer shows up after 89
+lines of output. The check is one-sided by design: it stands down and says
+nothing whenever the unit can conjure names it cannot see — `EVAL`, a symbolic
+reference `::($name)`, `require`, `no strict`, or an import it cannot resolve on
+the module search path — because refusing a program that works would be far
+worse than the late error it replaces. For the same reason it reports a name
+only when the source declares it *nowhere*; a variable declared in another scope
+is left to the run.
+
+The REPL is untouched (each line is its own unit, and a mistake there costs you
+one line), and so is an embedding host's `rk_run`, whose interpreter may already
+hold globals no static pass over the source can see. `RAKUPP_NO_DECLCHECK=1`
+turns the check off.
+
+`--lint` is the separate, softer tool: warnings about declared-but-unused
+variables, unreachable code and the like, which never stop a program.
 | `--ffi-info` | which FFI backend NativeCall will use (see [FFI.md](FFI.md)) |
 | `--exe-info BIN` | a compiled binary's embedded build manifest (version, mode, `--slim` cuts) |
 
