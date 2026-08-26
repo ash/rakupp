@@ -11548,6 +11548,13 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
         else if (v.t == VT::Hash && (v.hashKind == "Pointer" || v.hashKind == "CArray") && v.hash()->count("addr"))
             putPtr(s, (void*)(intptr_t)(*v.hash())["addr"].toInt()); // live Pointer / CArray handle
         else if (v.t == VT::Code) putPtr(s, ncCallbackPtr(v)); // Raku callback → C function pointer
+        else if (pt == "Str" && v.t != VT::Any && v.t != VT::Type) {
+            // Declared `Str`, given a defined non-Str — a `<7 8 9>` word-list
+            // element is an Int here, where Rakudo's IntStr allomorph still
+            // IS-A Str. Marshal its string form: the old fall-through passed
+            // the raw integer as the char*, and the callee's strlen segfaulted.
+            keep.push_back(v.toStr()); putPtr(s, keep.back().c_str());
+        }
         else if (fp) putNum(s, v.toNum(), w == 4 ? 4 : 8);
         else         putInt(s, v.toInt(), w, sgn);
     }
