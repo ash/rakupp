@@ -181,6 +181,15 @@ The routine's declaring file comes from `Callable::declFile`, recorded when the
 routine was declared, because by the time a backtrace is taken the module that
 declared it is long gone from the current scope.
 
+A program can ask for the same list without throwing anything: `Backtrace.new`
+answers the chain at the point of call, and an `Int` argument drops that many
+innermost frames, so a routine can report its caller's position rather than its
+own. Frames with no declaring routine — the mainline, a bare block — take the
+file whose *top level* is running, `curDeclFile_`. That is the program
+ordinarily, but a module load switches it while the module's body runs, and so
+does `EVALFILE`, which is how a backtrace taken inside an `EVALFILE`d file
+names that file instead of the program that read it.
+
 ## What was gained, and one bug it cost
 
 The cooperative path removes a C++ throw from the exit of most routines and the
