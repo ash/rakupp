@@ -9,6 +9,15 @@ Where the other bindings are a package named `rakulang`, the Wolfram Language
 names contexts: this one is ``RakuLang` ``, one `Get`-able file,
 [RakuLang.wl](RakuLang.wl). Everything it exports starts with `Raku`.
 
+The same package is also published in Wolfram's official Paclet Repository as
+[**RakuppLink**](https://resources.wolframcloud.com/PacletRepository/resources/AntonAntonov/RakuppLink/),
+packaged there by Anton Antonov
+([source](https://github.com/antononcube/WL-RakuppLink-paclet)): this file
+with every exported symbol renamed `Raku*` → `Rakupp*` (`RakuppEval`,
+`RakuppParse`, …), plus in-product reference pages per function, so
+`PacletInstall["AntonAntonov/RakuppLink"]` replaces the `Get` below. The
+paclet is a snapshot; this file is where the binding is maintained.
+
 ## 1. What you need
 
 - **Wolfram Language 13.3 or newer** — the release that added the foreign
