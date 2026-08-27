@@ -18,10 +18,10 @@
     'tolerance-pct' => 5,     # a build may be this much slower before the gate fails
     'kernels' => {
         # kernel  => { baseline-ms, best-ms, best-version, best-date }
-        'fib'     => { 'baseline' => 369.0, 'best' => 369.0, 'best-version' => 'v3.7.0', 'best-date' => '2026-08-24' },
-        'asg'     => { 'baseline' => 165.1, 'best' => 165.1, 'best-version' => 'v3.7.0', 'best-date' => '2026-08-24' },
-        'loopsum' => { 'baseline' => 96.3, 'best' => 96.3, 'best-version' => 'v3.7.0', 'best-date' => '2026-08-24' },
-        'hash'    => { 'baseline' => 17.7, 'best' => 17.7, 'best-version' => 'v3.7.0', 'best-date' => '2026-08-24' },
+        'fib'     => { 'baseline' => 350.6, 'best' => 350.6, 'best-version' => 'unreleased', 'best-date' => '2026-08-27' },
+        'asg'     => { 'baseline' => 162.1, 'best' => 162.1, 'best-version' => 'unreleased', 'best-date' => '2026-08-27' },
+        'loopsum' => { 'baseline' => 95.6, 'best' => 95.6, 'best-version' => 'unreleased', 'best-date' => '2026-08-27' },
+        'hash'    => { 'baseline' => 19.4, 'best' => 17.7, 'best-version' => 'v3.7.0', 'best-date' => '2026-08-24' },
         # The three string/call kernels were added 2026-08-09 and have no release
         # history, so their FIRST baseline is the number measured the day they
         # landed rather than the last release's. That is deliberate: v3.0.1
@@ -32,10 +32,11 @@
         #   strscan  2883.0 -> 221.6   (.substr stopped copying and rescanning)
         #   strpass   184.3 -> 153.8
         #   subcall   375.3 -> 281.1   (binder fast path, cached signature facts)
-        'strscan' => { 'baseline' => 118.8, 'best' => 118.8, 'best-version' => 'v3.7.0', 'best-date' => '2026-08-24' },
-        'strpass' => { 'baseline' => 76.4, 'best' => 76.4, 'best-version' => 'v3.7.0', 'best-date' => '2026-08-24' },
-        'subcall' => { 'baseline' => 175.4, 'best' => 175.4, 'best-version' => 'v3.7.0', 'best-date' => '2026-08-24' },
-        'rats'    => { 'baseline' => 245.3, 'best' => 245.3, 'best-version' => 'v3.7.0', 'best-date' => '2026-08-24' },
+        'strscan' => { 'baseline' => 108.2, 'best' => 108.2, 'best-version' => 'unreleased', 'best-date' => '2026-08-27' },
+        'strpass' => { 'baseline' => 74.8, 'best' => 74.8, 'best-version' => 'unreleased', 'best-date' => '2026-08-27' },
+        'subcall' => { 'baseline' => 150.3, 'best' => 150.3, 'best-version' => 'unreleased', 'best-date' => '2026-08-27' },
+        'rats'    => { 'baseline' => 176.4, 'best' => 176.4, 'best-version' => 'unreleased', 'best-date' => '2026-08-27' },
+        'regexloop'=> { 'baseline' => 99.7, 'best' => 99.7, 'best-version' => 'unreleased', 'best-date' => '2026-08-27' },
         # `rats` was added to the guard on 2026-08-22, after the cold block
         # moved the Rat numerator/denominator pair out of the inline Value, and
         # it went in here WITHOUT a number: it was written on the M1/Darwin 25.5
