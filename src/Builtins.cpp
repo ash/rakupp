@@ -11280,7 +11280,13 @@ Value Interpreter::evalNqpOp(NqpOp* n) {
             // creation time st_birthtimespec where Linux has no portable one
             if (field == -6) return Value::integer((long long)st.st_blksize); // PLATFORM_BLOCKSIZE
             if (field == -7) return Value::integer((long long)st.st_blocks);  // PLATFORM_BLOCKS
-#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__)
+#if defined(__OpenBSD__)
+            // OpenBSD keeps birthtime in the reserved namespace: the member is
+            // __st_birthtim and the one alias its headers define under EVERY
+            // feature-test combination is __st_birthtime — plain st_birthtime
+            // does not exist there.
+            if (field == 5) return Value::integer((long long)st.__st_birthtime); // CREATETIME
+#elif defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__)
             if (field == 5) return Value::integer((long long)st.st_birthtime); // CREATETIME
 #endif
 #endif

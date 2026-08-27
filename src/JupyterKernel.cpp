@@ -297,6 +297,16 @@ inline void closeSock(int fd) {
 #endif
 }
 
+// Winsock's pollfd carries a SOCKET, which is wider than the int the kernel
+// stores, so a braced init from int is a narrowing error under MSVC; go in
+// through the struct's own field type instead, on every platform.
+inline pollfd pollIn(int fd) {
+    pollfd p{};
+    p.fd = (decltype(p.fd))fd;
+    p.events = POLLIN;
+    return p;
+}
+
 enum class Kind { Router, Pub, Rep };
 
 const char* kindName(Kind k) {
@@ -497,8 +507,8 @@ private:
                 snap = peers_;
             }
             std::vector<pollfd> fds;
-            fds.push_back(pollfd{lfd_, POLLIN, 0});
-            for (auto& p : snap) fds.push_back(pollfd{p->fd, POLLIN, 0});
+            fds.push_back(pollIn(lfd_));
+            for (auto& p : snap) fds.push_back(pollIn(p->fd));
             int rc = ::poll(fds.data(), (unsigned long)fds.size(), 200);
             if (quit_.load()) break;
             if (rc < 0) {
