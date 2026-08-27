@@ -1398,6 +1398,12 @@ public:
                               const std::function<Value(ValueList)>& dispatch,
                               ValueList args, const std::vector<ExprPtr>* rwArgs);
     static thread_local std::vector<ProtoCtx> protoStack_;
+    // `&name`s the MAIN PROGRAM declared itself. A module's exports are published
+    // as globals, so without this a `use`d module could overwrite the program's own
+    // sub of the same name — Rakudo never does: an import and a declaration of one
+    // name is a redeclaration ERROR there, and a name the module did not actually
+    // export (a tag the `use` did not ask for) is simply the program's own.
+    std::set<std::string> mainlineSubNames_;
     std::map<std::string, std::string> namedRegex_, namedRegexKind_; // lexical `my regex NAME {…}` -> pattern/kind
     std::vector<std::string> argv_;
     std::shared_ptr<Program> mainSigProg_; // --exe: owns the Params &MAIN's metadata borrows (registerCompiledMain)

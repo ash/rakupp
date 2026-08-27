@@ -2556,6 +2556,15 @@ std::shared_ptr<Param> signatureParamCopy(const Param& p) {
 }
 
 Value makeSignature(const Callable* c) {
+    // A multi group's signature is its PROTO's: `proto method relpath(Mu $path)`
+    // answers `(Mu $path)`, not the empty signature a synthesized dispatcher
+    // carries. `^lookup` hands back the dispatcher, so that is what introspection
+    // sees — Path::Finder reads `.signature.count` off it to decide how to call
+    // the matcher, and an empty one made every proto-declared matcher unusable.
+    if (c && c->isMultiDispatcher && !c->params)
+        for (auto& cand : c->candidates)
+            if (cand.code() && (cand.code()->isProto || cand.code()->isProtoBody) &&
+                cand.code()->params) { c = cand.code(); break; }
     // a .assuming wrapper carries its residual params; everything else renders
     // its declared params
     std::vector<const Param*> ps;
@@ -2596,7 +2605,14 @@ Value makeSignature(const Callable* c) {
     long long arity = 0, count = 0; bool slurpy = false, first = true;
     for (const Param* pp : ps) {
         const Param& p = *pp;
-        if (p.invocant) continue;
+        // The INVOCANT counts. Rakudo reports `method file(Bool $v = True)` as
+        // count 2 / arity 1 — the invocant is a required positional like any
+        // other, and code that asks how many arguments a method takes subtracts
+        // one for it (`$method.signature.count - 1`, which is how Path::Finder
+        // decides whether a matcher takes a value or a list). It is still not
+        // RENDERED here: the Callable does not know the class it was declared
+        // in, so `Mu $:` would be a worse answer than leaving it out.
+        if (p.invocant) { count++; arity++; continue; }
         if (!first) sig += ", ";
         first = false;
         sig += renderParam(p);
@@ -2734,12 +2750,26 @@ Value makeSignature(const Callable* c) {
     // invocant first (unless one was declared) and a trailing `*%_` slurpy
     // (unless the method declares its own named slurpy). Data::Dump renders
     // method signatures as `.params[1 .. *-2]`, which is only right with both
-    // in place. The rendered `str`/arity/count stay as they were.
+    // in place. The rendered `str` stays as it was — the Callable does not know
+    // the class it was declared in, so `Mu $:` would be a worse answer than
+    // leaving the invocant out of the rendering.
     if (c && c->isMethod) {
         bool haveInv = false, haveNamedSlurpy = false;
         for (const Param* pp : ps) {
             if (pp->invocant) haveInv = true;
             if (pp->slurpy && pp->sigil == '%') haveNamedSlurpy = true;
+        }
+        // …and it counts: Rakudo reports `method file(Bool $v = True)` as count 2
+        // / arity 1. Code that asks how many arguments a method takes subtracts
+        // one for the invocant — `$method.signature.count - 1` is how Path::Finder
+        // tells a matcher that takes a value from one that takes a list, and with
+        // the invocant uncounted every one of them looked unusable.
+        if (!haveInv) {
+            arity++;
+            if (!slurpy) count++;
+            (*s.hash())["arity"] = Value::integer(arity);
+            (*s.hash())["count"] = slurpy ? Value::number(std::numeric_limits<double>::infinity())
+                                          : Value::integer(count);
         }
         auto mkParam = [](const std::string& str, const std::string& name,
                           bool invocant, bool slurpy, bool named) {
@@ -2769,7 +2799,8 @@ Value makeSignature(const Callable* c) {
             return pv;
         };
         if (!haveInv)
-            params.arr()->insert(params.arr()->begin(), mkParam("Mu $", "$", true, false, false));
+            // anonymous, as Rakudo's implicit invocant is: its .name is ""
+            params.arr()->insert(params.arr()->begin(), mkParam("Mu $", "", true, false, false));
         if (!haveNamedSlurpy)
             params.arr()->push_back(mkParam("*%_", "%_", false, true, true));
     }
