@@ -7627,6 +7627,14 @@ void Interpreter::registerBuiltins() {
     // `use Rakupp::Ext` too, which is the discoverable spelling for code that is
     // rakupp-only by design.
     // MODULES-PLAN M6: REAL advisory locking on the shared CURI store's
+    // SHA-1 of a STRING, for the installer's short/ index keys. The tool used
+    // to spell this "write a temp file, spawn shasum, read a line" — one
+    // subprocess per provided module and file, which turned `rakupp uninstall
+    // fez` into forty seconds of spawning (~70 keys) and read as a hang.
+    // The engine's own sha1hex (the CURI content addressing) answers in place.
+    B["rakupp-sha1-hex"] = [](Interpreter&, ValueList& a) -> Value {
+        return Value::str(a.empty() ? sha1hex("") : sha1hex(a[0].toStr()));
+    };
     // repo.lock — the store is also zef's and Rakudo's, and a writer that
     // ignores the lock can corrupt it under a concurrent zef. IO::Handle
     // .lock is a stub here (buffered handles carry no live fd), so the

@@ -330,6 +330,13 @@ sub ensure-raku-name(Str $prefix) {
 }
 
 sub sha1-str(Str $s) {
+    # The engine's own SHA-1 when this tool runs under rakupp — hashing a
+    # short string by writing a temp file and SPAWNING shasum cost a whole
+    # subprocess per index key, and `uninstall fez` (~70 keys) spent forty
+    # seconds looking hung. The subprocess path stays as the fallback for
+    # running this tool under Rakudo.
+    my $native = try ::('&rakupp-sha1-hex');
+    return $native($s).uc if $native ~~ Callable;
     my $t = $*TMPDIR.add("rakupp-install-sha-$*PID");
     $t.spurt($s);
     LEAVE $t.unlink;

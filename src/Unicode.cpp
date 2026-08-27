@@ -895,6 +895,25 @@ int uniDigitValue(uint32_t cp) {
     return -1;
 }
 
+// The PROBE form: false (not a throw) when --slim cut the table. The lexer
+// asks this for EVERY non-ASCII codepoint it meets — a » in a comment made a
+// slim'd grammar program detonate at startup while computing an answer that
+// was "no" anyway. A slim'd program whose source really spells an Nl/No
+// numeral literal (Ⅳ) now fails its parse LOUDLY as an unknown term instead.
+// Value-producing askers (.unival) stay on the throwing uniNumValue below.
+bool uniNumValueQuiet(uint32_t cp, long long& num, long long& den) {
+    size_t n; const int64_t* V = ucd::numvTableOrNull(&n);
+    if (!V) return false;
+    size_t lo = 0, hi = n / 3;
+    while (lo < hi) {
+        size_t mid = (lo + hi) / 2;
+        uint32_t c = (uint32_t)V[mid * 3];
+        if (c == cp) { num = V[mid * 3 + 1]; den = V[mid * 3 + 2]; return true; }
+        if (cp < c) hi = mid; else lo = mid + 1;
+    }
+    return false;
+}
+
 bool uniNumValue(uint32_t cp, long long& num, long long& den) {
     size_t n; const int64_t* V = ucd::numvTable(&n); // seam: hoisted once; n = rows of 3
     size_t lo = 0, hi = n / 3;

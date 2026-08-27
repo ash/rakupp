@@ -44,6 +44,12 @@ struct BidiEnt { uint32_t lo, hi; const char* bc; };
 // feature `unicode-names` — unicode_names.cpp (tools/gen-unicode.raku)
 const NameEnt*  namesTable(size_t* n);   // sorted by name; n = entries
 const int64_t*  numvTable(size_t* n);    // flat (cp,num,den) triples; n = int64 count (rows × 3)
+// The PROBE spelling: null when the feature is cut, instead of throwing. For
+// classification questions whose answer is almost always "no" — the LEXER asks
+// "is this cp an Nl/No numeral?" for every non-ASCII char it meets, comments
+// included, and a » in a comment must not detonate a slim binary at startup.
+// Value-PRODUCING askers (.unival) keep the throwing accessor: cuts throw.
+const int64_t*  numvTableOrNull(size_t* n);
 
 // feature `unicode-collation` — unicode_coll_gen.cpp (tools/gen_unicode_coll.py)
 const uint16_t* collceTable(size_t* n);    // flat (L1,L2,L3) triples; n = uint16 count

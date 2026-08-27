@@ -689,7 +689,10 @@ static bool unicodeNumeralValue(uint32_t cp, long long& num, long long& den) {
     // so they are excluded here and handled by the digit path.
     if (cp < 0x80) return false;
     if (ndDigitValue(cp) >= 0) return false;
-    return uniNumValue(cp, num, den);
+    // the QUIET probe: a --slim binary lexes its own embedded source at
+    // runtime (grammar programs re-parse), and this classifier runs for every
+    // non-ASCII cp — comments included; the throwing table killed it on a »
+    return uniNumValueQuiet(cp, num, den);
 }
 
 // Fullwidth ASCII letter (Ａ-Ｚ / ａ-ｚ, U+FF21.., U+FF41..) folded to ASCII, or 0.
