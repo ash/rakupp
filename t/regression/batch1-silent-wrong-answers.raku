@@ -81,22 +81,27 @@ check(Rakudo::Internals::JSON.to-json("x\x[1]"), '"x\\u0001"',
     check($x, 7, 'let in a sub still restores (unchanged)');
 }
 
-# -- a negative subscript read THROWS, like AT-POS and like Rakudo ------------
+# -- a negative subscript read is an ARMED Failure (Roast's shape) ------------
+# (The first cut of this batch made these THROW, from an oracle probe whose
+#  `try { my $v = @a[$neg] }` SANK the Failure at block exit and detonated it
+#  — Roast's S02-types/nested_arrays.t stores them in an array and asserts
+#  `isa-ok …, Failure`, which the eager throw killed. Armed, uniformly, with
+#  Rakudo's 0..^Inf range; use/sink still detonates X::OutOfRange.)
 {
     my @a = 1, 2, 3;
     my $i = -1;
-    try { my $v = @a[$i] }
-    check($!.^name, 'X::OutOfRange', 'a runtime negative subscript read throws');
-    try { my $v = @a[*-5] }
-    check($!.^name, 'X::OutOfRange', 'a *-N below zero throws');
-    try { my $v = @a.AT-POS(-1) }
-    check($!.^name, 'X::OutOfRange', '.AT-POS(-1) still throws');
+    my $v = @a[$i];
+    check($v.^name, 'Failure', 'a runtime negative subscript read is a Failure');
+    try { my $x = $v + 1 }
+    check($!.^name, 'X::OutOfRange', '…armed: using it throws X::OutOfRange');
+    my @collected = (0..3).map({ @a[1 - $_] });
+    check(@collected[3].^name, 'Failure', 'the nested_arrays.t shape: a mapped-in Failure stays a value');
+    check(@a.AT-POS(-1).^name, 'Failure', '.AT-POS(-1) agrees (the site the review meant to fix)');
+    check(@a[*-5].^name, 'Failure', '*-N below zero agrees');
     check(@a[5].defined, False, 'a past-the-end read is still a quiet undefined');
     check(@a[$i + 2], 2, 'a legal computed subscript still reads');
     my @empty;
-    my $last = @empty[*-1];
-    check($last.^name, 'Failure', '@empty[*-1] is the one SOFT case (the last-chunk-if-any idiom)');
-    check($last.defined, False, 'and it answers undefined, not a throw');
+    check(@empty[*-1].^name, 'Failure', '@empty[*-1] soft as always (the last-chunk-if-any idiom)');
 }
 
 # -- .IO.open agrees with open() ----------------------------------------------
