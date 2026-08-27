@@ -32,6 +32,19 @@ my &e = &EVALFILE;
 $f.spurt("32 + 10\n");
 @fail.push('&EVALFILE') unless e($f.absolute) == 42;
 
+# the file's own path is what a backtrace taken from its mainline names —
+# AS GIVEN, not absolutised (S29-context/evalfile.t asserts this, and it is
+# also what makes `Backtrace.new` in an EVALFILE'd file report itself)
+{
+    my $bt = $dir.add('bt.raku');
+    $bt.spurt("Backtrace.new\n");
+    @fail.push('backtrace names the absolute path')
+        unless EVALFILE($bt.absolute).list.grep(*.file eq $bt.absolute).Bool;
+    @fail.push('backtrace names the RELATIVE path as given')
+        unless indir($dir, { EVALFILE("bt.raku") }).list.grep(*.file eq 'bt.raku').Bool;
+    unlink($bt);
+}
+
 # a missing file dies the way slurp does — before :lang is even considered
 my $missing = $dir.add('no-such-file.raku').absolute;
 my $err = '';

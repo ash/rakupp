@@ -8393,6 +8393,15 @@ void Interpreter::registerBuiltins() {
         }
         ValueList args; args.push_back(Value::str(text));
         for (auto& n : fwd) args.push_back(n);
+        // while this file's top level runs it IS the file being compiled: a
+        // routine declared in it records the path in its .declFile, and a
+        // backtrace taken from its mainline names the path rather than the
+        // program that EVALFILE'd it (S29-context/evalfile.t asserts exactly
+        // that). The path goes in AS GIVEN — Rakudo's backtrace does not
+        // absolutise it. Same RAII switch a module load makes.
+        struct DFGuard { std::string& f; std::string s; ~DFGuard() { f = s; } }
+            dfG{I.curDeclFile_, I.curDeclFile_};
+        I.curDeclFile_ = path;
         return I.callBuiltin("EVAL", args);
     };
     // Default @*ARGS -> argument-list conversion (the built-in ARGS-TO-CAPTURE).

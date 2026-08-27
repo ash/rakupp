@@ -1839,6 +1839,22 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if (hash.t == VT::Hash && hash.hash()) *mv.hash() = *hash.hash();
         return mv;
     }
+    // `Backtrace.new` — the call chain at the point of call, the same
+    // innermost-first BacktraceFrame list `Exception.backtrace` answers. The
+    // optional Int drops that many innermost frames (Rakudo's $offset), which
+    // is how a routine reports its CALLER's position rather than its own.
+    // A program that declares its OWN `class Backtrace` keeps it: the built-in
+    // stands aside whenever the name is in classes_.
+    if (inv.t == VT::Type && inv.s == "Backtrace" && m == "new" && !classes_.count("Backtrace")) {
+        Value bt = captureBacktrace();
+        long long off = 0;
+        for (auto& a : args) if (a.t == VT::Int) { off = a.toInt(); break; }
+        if (off > 0 && bt.arr()) {
+            auto& fr = *bt.arr();
+            fr.erase(fr.begin(), fr.begin() + std::min((size_t)off, fr.size()));
+        }
+        return bt;
+    }
     if (inv.t == VT::Type && inv.s == "Failure" && m == "new") {
         // Failure.new (no args) picks up the current $! as its exception.
         Value ex; bool haveEx = false;
