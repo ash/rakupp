@@ -31,7 +31,7 @@ gets built next ([the findings](docs/dev/findings/ECOSWEEP-2026-08.md), with
 the green list and per-dist results). (The 59 in the table below is a small
 curated battery gated on every release; the sweep is the whole ecosystem.)
 
-| | v3.20.0 | at v2.0.0 |
+| | v3.20.1 | at v2.0.0 |
 |---|---:|---:|
 | Roast, per individual test — of what the suite declares‡ | **198,791 of ~218,608 (90%)** | 197,090 of ~203,500 (97%) |
 | Roast, all-or-nothing — files fully passing, of 1,464 | **638 (44%)** | 594 |
