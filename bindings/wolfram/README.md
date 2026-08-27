@@ -15,8 +15,7 @@ packaged there by Anton Antonov
 ([source](https://github.com/antononcube/WL-RakuppLink-paclet)): this file
 with every exported symbol renamed `Raku*` → `Rakupp*` (`RakuppEval`,
 `RakuppParse`, …), plus in-product reference pages per function, so
-`PacletInstall["AntonAntonov/RakuppLink"]` replaces the `Get` below. The
-paclet is a snapshot; this file is where the binding is maintained.
+`PacletInstall["AntonAntonov/RakuppLink"]` replaces the `Get` below.
 
 ## 1. What you need
 
