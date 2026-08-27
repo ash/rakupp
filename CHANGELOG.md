@@ -3,6 +3,17 @@
 Release notes for tagged releases. Numbers are measured, not projected;
 methodology for all Roast figures is in [docs/status/COUNTING.md](docs/status/COUNTING.md).
 
+## v3.20.1 (2026-08-27) — v3.20.0, correctly named
+
+Identical content to v3.20.0 plus the version identity: the v3.20.0 tag was
+cut one commit before the `project(VERSION …)` bump, so its binaries
+self-report 3.7.0 (the v3.0.0 mistake, reprised and caught while completing
+the post-tag procedure). Per the release rules a published tag is never
+moved — v3.20.1 is the same release, built from a commit whose binaries,
+docs and dashboard data all agree on the name. Install this one; the
+v3.20.0 release is marked superseded. All measurements in the v3.20.0
+entry below apply unchanged.
+
 ## v3.20.0 (2026-08-27) — the cooldown: one implementation of everything, and fez installs
 
 | | v3.7.0 | v3.20.0 |
