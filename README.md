@@ -11,13 +11,15 @@ WebAssembly, no server required. It is not a fork of Rakudo and shares no code
 with it; it targets the *language*, measured against
 [**Roast**](https://github.com/Raku/roast), the official Raku test suite.
 
-**Status:** current release **v3.7.0** (2026-08-24) — *the whole ecosystem, and
-a new oracle*: every one of the 2,524 distributions in the zef ecosystem run
-against the engine and the failure clusters fixed, `rakupp install` as a
-first-class installer, a sixth binding host, and the oracle era moved to
-Rakudo **2026.08**. The release before it was *the Perl 5 lessons*: a compact
-insertion-ordered hash payload and three allocation fixes found by benchmarking
-against perl, plus first `DESTROY` support. Every release is written up in the
+**Status:** current release **v3.20.1** (2026-08-27) — *the cooldown: one
+implementation of everything, and fez installs*: a 360° source review worked
+to completion in three gated batches — silent wrong answers fixed, the
+duplicate implementations collapsed to one each, micro-optimisations landed
+only with their own A/B measurements — plus `fez` installing with its tests
+green and `zef` working end-to-end (issue #37). The release before it was
+*the whole ecosystem, and a new oracle*: all 2,524 zef distributions run
+against the engine, `rakupp install` as a first-class installer, and the
+oracle era moved to Rakudo **2026.08**. Every release is written up in the
 [CHANGELOG](CHANGELOG.md).
 
 **Current focus:** the ecosystem sweep — all 2,524 distributions of the zef
