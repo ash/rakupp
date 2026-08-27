@@ -547,6 +547,11 @@ struct ExecContext {
     // object's shared containers, so the pointer survives the frame.
     int wantLvalue = 0;      // 0 off; else the callFrames depth being served
     Value* lvalueOut = nullptr;
+    // mirror of protoStack_.size(), kept here so the per-block-statement
+    // "inside a proto body?" probe reads the ALREADY-LOADED tctx_ instead of
+    // paying a second TLS wrapper call + init guard for the stack itself
+    // (REVIEW-3.7 batch 3 — every {…} statement ran that probe)
+    int protoDepth = 0;
     // `$obj.attr = v` — the attribute's declared type, recorded by the
     // MethodCall lvalue arm so the assignment can enforce it (a role-typed
     // `has C $.x is rw` must reject 42/Mu; roast S14-roles/basic.t)
@@ -1576,8 +1581,37 @@ private:
     Value mixinValue(Value base, const Value& rhs, bool copy);
     Value evalUnary(Unary* u);
     Value postfixI(Value v); // postfix:<i> — multiply by the imaginary unit
-    Value applyReduce(std::string op, ValueList& items); // [op] reduce semantics
 public:
+    // [op] reduce semantics — public because rtReduce, the entry compiled
+    // binaries link, folds through this same implementation (one reduce)
+    Value applyReduce(std::string op, ValueList& items);
+    // `@a <<+=>> 2` / `($t, $y) »+=« (a, b)` — ONE implementation of hyper
+    // compound assignment for the member operator ladders (applyBinOp,
+    // evalBinary); the free applyArith ladder shares the predicate and keeps
+    // a value-only fold (no Interpreter in reach there). lhsExpr, when the
+    // caller has the AST, enables the parenthesised-list write-back.
+    static bool isHyperCompoundAssign(const std::string& inner, const Value& l);
+    Value hyperCompoundAssign(const std::string& inner, const Value& l, const Value& r, Expr* lhsExpr);
+    // Z / X and their Z<op> / X<op> metaop forms — ONE implementation (one-level
+    // element model, lazy-side materialisation, the endless-Z lazy view, and the
+    // Z=> / Z, emit rules). Public: the free applyArith ladder reaches it
+    // through g_cbInterp, the member ladders call it directly.
+    Value zxOp(const std::string& op, Value l, Value r);
+    // The `.can`/`.^lookup` existence probe — call the method with no args and
+    // watch for X::Method::NotFound. One unsafe-names list, one probe dance
+    // (it lived as two verbatim copies that had already drifted on guards).
+    // Answers: 0 = not probeable (side-effectful name), 1 = found, -1 = not found.
+    int probeMethodExists(const Value& inv, const std::string& mn, const char* ioProbePath);
+    // A bare regex literal as a value, through RegexLit::closedPat (skips the
+    // splice copy, the $/@ scans and the obsolete-check memo probe once the
+    // node has published its closed pattern).
+    Value regexLitValue(RegexLit* rl);
+    // The default constructor's attribute walk — providedArgs during the walk,
+    // defaults in the declaring scope with `self` bound, sigil twins, native
+    // seeds, container traits, the trailing public/`is built` binding. ONE
+    // walk; the boxed-builtin constructors used stripped copies.
+    void runAttrDefaults(const std::shared_ptr<ObjectData>& od,
+                         const std::shared_ptr<ClassInfo>& ci, ValueList& args);
     // $*TOLERANCE (dynamic, then lexical), default 1e-15 — Complex→Real coercions
     static double toleranceDyn();
     static long long tzOffsetDyn(); // $*TZ resolution: user dynamic, else system offset
@@ -1812,7 +1846,7 @@ Value  rtSliceFrom(const Value& base, long long from, bool exFrom); // @a[$i .. 
 Value  rtRangeVal(const Value& from, const Value& to, bool exFrom, bool exTo); // from..to (string ranges too)
 ValueList rtMainArgs(const std::vector<std::string>& argv, bool namedAnywhere = false); // argv -> MAIN args (--opt named, rest positional)
 Value& rtIndexRef(Value& base, const Value& key, bool isHash);
-Value  rtReduce(const std::string& op, const Value& list);  // [+] / [*] / … reduction metaop
+Value  rtReduce(Interpreter& I, const std::string& op, const Value& list);  // [+] / [*] / … reduction metaop — folds via applyReduce
 // Endless operands — an infinite Range (1..Inf / 1..*, which carries the
 // ±LLONG_MAX sentinel in its integer endpoints) or a lazy list with no end.
 bool isEndlessRange(const Value& v);

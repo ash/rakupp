@@ -4275,30 +4275,14 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             // reader throws "failed to open" rather than reading anything), and
             // names whose dispatch would WRITE are not probed at all: they keep
             // the old permissive answer rather than risk the side effect.
-            static const std::set<std::string> kUnsafeToProbe = {
-                "print", "say", "put", "note", "printf", "write", "spurt", "open",
-                "mkdir", "rmdir", "symlink", "link", "unlink", "rename", "copy",
-                "move", "chdir", "close", "flush", "seek", "run", "shell", "exit",
-                "throw", "rethrow", "sink", "emit", "send", "recv", "start",
-                "sleep", "kill", "signal", "await", "react", "trans", "subst-mutate" };
             // A TYPE object is not probeable — `Str.^lookup('parse-base')` is the
             // idiomatic way to reach a method object, and the instance dispatch it
             // names cannot run on the type. Only an INSTANCE invocant is probed.
-            if (!mn.empty() && !kUnsafeToProbe.count(mn) &&
-                inv.t != VT::Object && inv.t != VT::Type) {
-                Value probe = inv;
-                if (probe.hashKind == "IO") probe.s = "/nonexistent/rakupp-lookup-probe";
-                bool notFound = false;
-                try { ValueList none; methodCall(probe, mn, none); }
-                catch (RakuError& e) {
-                    const Value& p = e.payload;
-                    notFound = (p.t == VT::Type && p.s == "X::Method::NotFound") ||
-                               (p.t == VT::Object && p.obj() && p.obj()->cls &&
-                                p.obj()->cls->name == "X::Method::NotFound");
-                }
-                catch (...) {}
-                if (notFound) return Value::typeObj("Mu");
-            }
+            // (probeMethodExists carries the shared unsafe-names list and the
+            // NotFound dance — one copy, shared with .can's fallback.)
+            if (!mn.empty() && inv.t != VT::Object && inv.t != VT::Type &&
+                probeMethodExists(inv, mn, "/nonexistent/rakupp-lookup-probe") == -1)
+                return Value::typeObj("Mu");
             Value code; code.t = VT::Code; code.setCode(std::make_shared<Callable>());
             code.code()->name = mn; code.code()->isMethod = true;
             code.code()->builtin = [mn](Interpreter& I, ValueList& a) -> Value {

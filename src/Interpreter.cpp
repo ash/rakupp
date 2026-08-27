@@ -40,6 +40,7 @@ static char** rakupp_environ() { return environ; }
 #include <chrono>
 #include <filesystem>
 #include "AstSerial.h"
+#include "JsonLite.h"
 #include <thread>
 #include <ctime>
 #include <fstream>
@@ -1971,22 +1972,22 @@ const Value* Interpreter::protoBodyOf(const Callable& c) {
 // The frame is popped for the duration so the candidate cannot re-enter it.
 Value Interpreter::protoRedispatch() {
     ProtoCtx ctx = protoStack_.back();
-    protoStack_.pop_back();
+    protoStack_.pop_back(); tctx_.protoDepth--;
     struct Push { std::vector<ProtoCtx>& s; ProtoCtx c;
-                  ~Push() { s.push_back(std::move(c)); } } push{protoStack_, ctx};
+                  ~Push() { s.push_back(std::move(c)); tctx_.protoDepth++; } } push{protoStack_, ctx};
     return ctx.dispatch(ctx.args);
 }
 Value Interpreter::callProtoBody(const Value& proto, const std::function<Value(ValueList)>& dispatch,
                                  ValueList args, const std::vector<ExprPtr>* rwArgs) {
-    protoStack_.push_back(ProtoCtx{dispatch, args});
-    struct Pop { std::vector<ProtoCtx>& s; ~Pop() { s.pop_back(); } } pop{protoStack_};
+    protoStack_.push_back(ProtoCtx{dispatch, args}); tctx_.protoDepth++;
+    struct Pop { std::vector<ProtoCtx>& s; ~Pop() { s.pop_back(); tctx_.protoDepth--; } } pop{protoStack_};
     return callCallable(proto, std::move(args), rwArgs, /*ownFrame=*/true);
 }
 Value Interpreter::callProtoBodyMethod(const Value& proto, const Value& self,
                                        const std::function<Value(ValueList)>& dispatch,
                                        ValueList args, const std::vector<ExprPtr>* rwArgs) {
-    protoStack_.push_back(ProtoCtx{dispatch, args});
-    struct Pop { std::vector<ProtoCtx>& s; ~Pop() { s.pop_back(); } } pop{protoStack_};
+    protoStack_.push_back(ProtoCtx{dispatch, args}); tctx_.protoDepth++;
+    struct Pop { std::vector<ProtoCtx>& s; ~Pop() { s.pop_back(); tctx_.protoDepth--; } } pop{protoStack_};
     return invokeMethod(proto, self, std::move(args), rwArgs, /*ownFrame=*/true);
 }
 
@@ -2334,14 +2335,14 @@ static bool flatScanExpr(const Expr* e) {
         case NK::SymbolicRef: return false;           // `::('$x') = …` defines by name
         case NK::Call: {
             auto* c = static_cast<const Call*>(e);
-            if (c->name == "EVAL" || c->name == "EVALFILE") return false; // declares into the scope
+            if (nameEvalsCode(c->name)) return false; // declares into the scope
             if (!flatScanExpr(c->callee.get())) return false;
             for (auto& x : c->args) if (!flatScanExpr(x.get())) return false;
             return true;
         }
         case NK::MethodCall: {
             auto* m = static_cast<const MethodCall*>(e);
-            if (m->method == "EVAL") return false;
+            if (nameEvalsCode(m->method)) return false; // $path.EVALFILE used to slip this guard
             if (!flatScanExpr(m->inv.get())) return false;
             for (auto& x : m->args) if (!flatScanExpr(x.get())) return false;
             return true;
@@ -6404,7 +6405,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             // `{*}` inside a `proto` body: THE dispatch point. It hands the proto's
             // own arguments to the best candidate (S06). Outside a proto it is just a
             // block evaluating to `*`, which is what it stays.
-            if (!protoStack_.empty() && b->phaser.empty() && !b->isCatch &&
+            if (tctx_.protoDepth > 0 && b->phaser.empty() && !b->isCatch &&
                 b->stmts.size() == 1 && b->stmts[0]->kind == NK::ExprStmt &&
                 static_cast<ExprStmt*>(b->stmts[0].get())->e &&
                 static_cast<ExprStmt*>(b->stmts[0].get())->e->kind == NK::Whatever)
@@ -9401,10 +9402,10 @@ static bool typeMatchesArg(const Value& arg, const std::string& type) {
     // below: the mixin records whatever name the trait_mod had in scope (the module
     // spells it `Constraint`) while the caller may ask fully qualified
     // (`Path::Finder::Constraint`).
-    if (arg.t == VT::Code && arg.code() && !arg.code()->mixinRoles.empty()) {
+    if (arg.t == VT::Code && arg.code() && arg.code()->mixins.p && !arg.code()->mixins.p->roles.empty()) {
         auto tail = type.rfind("::") == std::string::npos
                   ? type : type.substr(type.rfind("::") + 2);
-        for (auto& rn : arg.code()->mixinRoles) {
+        for (auto& rn : arg.code()->mixins.p->roles) {
             if (rn == type) return true;
             auto rtail = rn.rfind("::") == std::string::npos ? rn : rn.substr(rn.rfind("::") + 2);
             if (rtail == tail) return true;
@@ -10202,10 +10203,12 @@ bool Interpreter::boolify(const Value& v) {
         if (Value* topic = tctx_.cur ? tctx_.cur->find("$_") : nullptr) {
             // …and it sets `$/`, which is the whole point of `if /b/ { say $/ }`.
             // (Only the match matters for the answer; the assignment is the side
-            // effect Rakudo's boolification has too.)
+            // effect Rakudo's boolification has too.) Truthiness is read BEFORE
+            // the move, so $/ takes the Match without a ~376-byte Value copy.
             Value m = const_cast<Interpreter*>(this)->regexMatch(rxSubject(*topic), v.s);
-            const_cast<Interpreter*>(this)->setMatchVar(m);
-            return m.truthy();
+            bool t = m.truthy();
+            const_cast<Interpreter*>(this)->setMatchVar(std::move(m));
+            return t;
         }
         return false;
     }
@@ -10281,20 +10284,9 @@ std::string Interpreter::envStr(const std::string& name) {
 // Serialize an uncaught exception as JSON for RAKU_EXCEPTIONS_HANDLER=JSON:
 // { "Type::Name" : { "attr" : value, …, "message" : <msg-or-null> } }
 std::string Interpreter::exceptionToJson(const Value& ex) {
-    auto jstr = [](const std::string& s) {
-        std::string o = "\"";
-        for (char c : s) {
-            switch (c) { case '"': o += "\\\""; break; case '\\': o += "\\\\"; break;
-                         case '\n': o += "\\n"; break; case '\t': o += "\\t"; break;
-                         case '\r': o += "\\r"; break;
-                         default:
-                             if ((unsigned char)c < 0x20) { // other C0 controls: \u00XX
-                                 char b[8]; snprintf(b, sizeof b, "\\u%04X", c);
-                                 o += b;
-                             } else o += c; }
-        }
-        return o + "\"";
-    };
+    // one JSON string escaper for the whole tree (JsonLite) — this had its own
+    // near-copy, byte-different on \b/\f and \u case
+    auto jstr = [](const std::string& s) { std::string o; rakupp::json::dumpStr(s, o); return o; };
     std::string tn = ex.obj() && ex.obj()->cls ? ex.obj()->cls->name : "Exception";
     std::string o = "{\n  " + jstr(tn) + " : {\n";
     bool first = true;
@@ -11051,7 +11043,125 @@ Value Interpreter::captureBacktrace() {
 }
 
 // Reduction metaop for native codegen: fold `op` over a flattened list.
-Value rtReduce(const std::string& op, const Value& list) {
+// `@a <<+=>> 2019` / `($t, $y) »+=« (a, b)` — hyper compound assignment, ONE
+// implementation for all three operator ladders. The base op applies
+// elementwise and MUTATES the left side: an @array's Value shares storage with
+// the caller's container, so writing through l.arr() reaches it. A
+// PARENTHESISED list of scalars is a fresh List of copies, so mutating l.arr
+// reaches nobody — the assignment silently did nothing and runge-kutta.raku
+// sat at t=0 forever; when the caller has the AST (lhsExpr), each scalar is
+// written through its own container instead. Before this helper the fix lived
+// only in evalBinary's copy of three.
+// Z / X and their Z<op> / X<op> metaop forms — the ONE implementation behind
+// all three operator ladders (applyArith reaches it through g_cbInterp).
+// One-level element model: sublists stay whole ((1,0) X (a,b),(c,d) is 2x2,
+// not 2x4 — the applyArith copies used a DEEP flatten and answered 8 pairs);
+// a Blob/Buf spreads to its elements (`$H Z+ $M` in Digest::SHA1).
+Value Interpreter::zxOp(const std::string& op, Value l, Value r) {
+    std::string sub = op.substr(1);
+    auto oneLevel = [](const Value& v) -> ValueList {
+        if (v.t == VT::Array && v.arr()) return *v.arr();
+        if (v.t == VT::Range) return v.flatten();
+        if (v.t == VT::Str && !v.itemized && (v.hashKind == "Blob" || v.hashKind == "Buf"))
+            return v.blobList();
+        return ValueList{v};
+    };
+    // A LAZY operand (`7 xx *`, an infinite sequence) carries only its
+    // materialized PREFIX in `arr` — usually one element — so a zip against one
+    // stopped after a single pair. Z stops at the shortest side, so force the
+    // lazy side out to the other's length. `@$key Z[+^] $i xx *` is how Digest's
+    // HMAC builds its key pad, and it was yielding one byte.
+    // Cross (X) against an infinite side has no finite answer; leave it alone.
+    auto isLazy = [](const Value& v) { return v.t == VT::Array && v.ext(); };
+    // An ENDLESS side — an infinite Range (`2..*`) or an infinite lazy list.
+    // Zipping two of them has no finite answer to compute up front, and
+    // Rakudo's answer is itself lazy: `2..* Z* 2..*` is the perfect squares.
+    // Produce a lazy list that pulls one element from each side per step.
+    auto endlessInt = [&](const Value& v) {
+        if (v.t == VT::Range && !v.rNum() && v.rTo() >= 9000000000000000000LL) return true;
+        if (v.t == VT::Array && v.ext()) {
+            auto st = std::static_pointer_cast<LazySeqState>(v.ext());
+            return st && st->infinite;
+        }
+        return false;
+    };
+    if (op[0] == 'Z' && endlessInt(l) && endlessInt(r)) {
+        // the i-th element of a side, materialising a lazy one as it goes
+        auto nth = [this](Value src, size_t i) -> Value {
+            if (src.t == VT::Range) return Value::integer(src.rFrom() + (long long)i);
+            materializeLazy(src, i + 1);
+            return src.arr() && i < src.arr()->size() ? (*src.arr())[i] : Value::any();
+        };
+        Value out = Value::array(); out.isList = true; out.s = "Seq";
+        auto st = std::make_shared<LazySeqState>(); st->infinite = true;
+        auto idx = std::make_shared<size_t>(0);
+        Value lv = l, rv = r; std::string inner = sub;
+        st->appendNext = [this, nth, idx, lv, rv, inner](ValueList& cache) -> bool {
+            size_t i = (*idx)++;
+            Value x = nth(lv, i), y = nth(rv, i);
+            cache.push_back(inner.empty() || inner == "," ? Value::list(ValueList{x, y})
+                                                          : applyBinOp(inner, x, y));
+            return true;
+        };
+        out.extM() = st;
+        return out;
+    }
+    if (op[0] == 'Z') {
+        if (isLazy(l) && !isLazy(r)) materializeLazy(l, oneLevel(r).size());
+        else if (isLazy(r) && !isLazy(l)) materializeLazy(r, oneLevel(l).size());
+    }
+    ValueList a = oneLevel(l), bb = oneLevel(r);
+    Value out = Value::array(); out.isList = true; out.s = "Seq"; // Z/X are lazy (Rakudo)
+    auto emit = [&](const Value& x, const Value& y) {
+        // `1 Z=> 3` keeps the Int key — forcing .toStr() made it "1" => 3
+        if (sub == "=>") {
+            Value p = Value::pair(x.toStr(), y);
+            if (x.t != VT::Str) p.pairKeyM() = std::make_shared<Value>(x);
+            out.arr()->push_back(p);
+        }
+        else if (sub.empty() || sub == ",") { // Z / X / Z, / X, — tuples
+            Value t = Value::array(); t.isList = true;
+            t.arr()->push_back(x); t.arr()->push_back(y);
+            out.arr()->push_back(t);
+        }
+        else out.arr()->push_back(applyBinOp(sub, x, y));
+    };
+    if (op[0] == 'Z') { for (size_t i = 0; i < a.size() && i < bb.size(); i++) emit(a[i], bb[i]); }
+    else { for (auto& x : a) for (auto& y : bb) emit(x, y); }
+    return out;
+}
+
+bool Interpreter::isHyperCompoundAssign(const std::string& inner, const Value& l) {
+    static const std::set<std::string> eqTailCmp = {"==", "!=", "<=", ">=", "===", "=:="};
+    return inner.size() >= 2 && inner.back() == '=' && !eqTailCmp.count(inner) &&
+           l.t == VT::Array && l.arr();
+}
+Value Interpreter::hyperCompoundAssign(const std::string& inner, const Value& l, const Value& r, Expr* lhsExpr) {
+    std::string base = inner.substr(0, inner.size() - 1);
+    ValueList rhs = r.flatten();
+    if (!rhs.empty() && lhsExpr && lhsExpr->kind == NK::ListExpr) {
+        auto& items = static_cast<ListExpr*>(lhsExpr)->items;
+        for (size_t i = 0; i < items.size(); i++) {
+            Value* slot = nullptr;
+            try { slot = lvalue(items[i].get()); } catch (RakuError&) {}
+            if (!slot) continue;             // not assignable: leave it be
+            *slot = applyBinOp(base, *slot, rhs[i % rhs.size()]);
+            if (i < l.arr()->size()) (*l.arr())[i] = *slot;
+        }
+        return l;
+    }
+    if (!rhs.empty())
+        for (size_t i = 0; i < l.arr()->size(); i++)
+            (*l.arr())[i] = applyBinOp(base, (*l.arr())[i], rhs[i % rhs.size()]);
+    return l;
+}
+
+Value rtReduce(Interpreter& I, const std::string& op, const Value& list) {
+    // The fold itself is applyReduce — the same implementation the interpreter
+    // uses, so a compiled binary chains comparisons, runs scan forms and honors
+    // the R-metaop exactly as the interpreted program does. This used to be a
+    // plain left fold: `[<] 3,1,2` was False interpreted and True compiled,
+    // and `[\+]` folded with the literal op string (REVIEW-3.7 finding 1).
     if (!op.empty() && op[0] != '\\') { // an endless operand is answered whole
         Value r;
         if (endlessReduce(op, list, r)) return r;
@@ -11059,20 +11169,7 @@ Value rtReduce(const std::string& op, const Value& list) {
             for (auto& v : *list.arr()) if (endlessReduce(op, v, r)) return r;
     }
     ValueList items = list.flatten();
-    if (items.empty()) {
-        if (op == "+" || op == "-") return Value::integer(0);
-        if (op == "*" || op == "/") return Value::integer(1);
-        if (op == "~") return Value::str("");
-        // list-building ops over nothing build nothing: [Z] () / [Z~] () / [X] () are ()
-        if (op == "Z" || op == "X" || op == "," ||
-            (op.size() > 1 && (op[0] == 'Z' || op[0] == 'X'))) {
-            Value o = Value::array(); o.isList = true; return o;
-        }
-        return Value::any();
-    }
-    Value acc = items[0];
-    for (size_t k = 1; k < items.size(); k++) acc = applyArith(op, acc, items[k]);
-    return acc;
+    return I.applyReduce(op, items); // empty-list identities live there too
 }
 
 // --- argument binding for native codegen (flexible signatures) ---
@@ -14131,13 +14228,31 @@ static Value regexClosingOver(std::string pat, const std::shared_ptr<Env>& sc) {
     return v;
 }
 
+// A bare regex literal as a VALUE, through the node's closed-pattern cache: a
+// literal whose source has no '$'/'@' splices to itself and closes over
+// nothing, so after the first evaluation the final pattern (obsolete-check
+// passed) is published on the node and every later evaluation skips the
+// splice copy, the two scans, and rejectObsoleteRegex's mutex+map probe —
+// `if /\d/` in a loop paid all of that per iteration (REVIEW-3.7 batch 3).
+Value Interpreter::regexLitValue(RegexLit* rl) {
+    if (const void* p = rl->closedPat.get())
+        return Value::regex(*static_cast<const std::string*>(p));
+    Value v = regexClosingOver(spliceRegexVars(rl->pattern), tctx_.cur);
+    if (!v.ext() && rl->pattern.find('$') == std::string::npos &&
+        rl->pattern.find('@') == std::string::npos) {
+        auto* mine = new std::string(v.s.str());
+        if (rl->closedPat.publish(mine) != mine) delete mine; // another thread won
+    }
+    return v;
+}
+
 // In value context (assignment RHS, colon-pair value), a bare `/pat/` is a Regex
 // OBJECT, not an immediate match against $_ — so `:err(/pat/)` and `my $rx = /pat/`
 // store a Regex that can be smartmatched later.
 Value Interpreter::evalValueOf(Expr* e) {
     // …but an explicit `m//` matches even here: `my $m = m/b/` is the Match.
     if (e && e->kind == NK::RegexLit && !static_cast<RegexLit*>(e)->isM)
-        return regexClosingOver(spliceRegexVars(static_cast<RegexLit*>(e)->pattern), tctx_.cur);
+        return regexLitValue(static_cast<RegexLit*>(e));
     return eval(e);
 }
 
@@ -16536,17 +16651,17 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         // means the bare infix, element-wise (roast issue-2353 test)
         if (inner.size() >= 3 && inner.front() == '[' && inner.back() == ']')
             inner = inner.substr(1, inner.size() - 2);
-        // hyper compound assignment: `@a <<+=>> 2019` applies the base op
-        // elementwise and MUTATES the left array (Value.arr is shared storage,
-        // so writing through it reaches the caller's container)
-        static const std::set<std::string> eqTailCmp = {"==", "!=", "<=", ">=", "===", "=:="};
-        if (inner.size() >= 2 && inner.back() == '=' && !eqTailCmp.count(inner) &&
-            l.t == VT::Array && l.arr()) {
+        // hyper compound assignment — the shared implementation, reached
+        // through g_cbInterp (applyArith is a free function). No AST here, so
+        // no parenthesised-list write-back; an @array LHS shares storage. The
+        // value-only fold below is the last-resort for a null interpreter.
+        if (Interpreter::isHyperCompoundAssign(inner, l)) {
+            if (g_cbInterp) return g_cbInterp->hyperCompoundAssign(inner, l, r, nullptr);
             std::string base = inner.substr(0, inner.size() - 1);
-            ValueList b = listCtx(r);
-            if (!b.empty())
+            ValueList rhs = r.flatten();
+            if (!rhs.empty())
                 for (size_t i = 0; i < l.arr()->size(); i++)
-                    (*l.arr())[i] = applyArith(base, (*l.arr())[i], b[i % b.size()]);
+                    (*l.arr())[i] = applyArith(base, (*l.arr())[i], rhs[i % rhs.size()]);
             return l;
         }
         ValueList a = listCtx(l), b = listCtx(r);
@@ -16619,49 +16734,17 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         if (op == "...^" && !out.arr()->empty()) out.arr()->pop_back();
         return out;
     }
-    if (op == "Z" || (op.size() > 1 && op[0] == 'Z')) { // zip; Z<op> applies op pairwise
-        std::string sub = op.substr(1); // "" -> tuples, "=>" -> pairs, else infix op
-        // NOTE: there is a SECOND Z/X implementation further down (the `Z<op>` arm
-        // that uses oneLevel instead of listCtx). Both are reachable; a fix to one
-        // belongs in the other. See docs/dev/DUPLICATION-AUDIT.
-        //
-        // A lazy operand (`7 xx *`) holds only its materialized prefix, so zipping
-        // against one stopped after a single pair. Z ends at the shortest side, so
-        // force the lazy side out to the other's length.
-        // (applyArith is a free function, so it reaches the interpreter through the
-        // same global the NativeCall trampolines use; it is set in the constructor.)
-        auto isLazy = [](const Value& v) { return v.t == VT::Array && v.ext(); };
-        if (g_cbInterp) {
-            if (isLazy(l) && !isLazy(r)) g_cbInterp->materializeLazy(l, listCtx(r).size());
-            else if (isLazy(r) && !isLazy(l)) g_cbInterp->materializeLazy(r, listCtx(l).size());
-        }
-        ValueList a = listCtx(l), b = listCtx(r);
-        Value out = Value::array(); out.isList = true; out.s = "Seq"; // Rakudo: Z/X are lazy
-        for (size_t i = 0; i < a.size() && i < b.size(); i++) {
-            if (sub.empty()) { Value t = Value::array({a[i], b[i]}); t.isList = true; out.arr()->push_back(t); }
-            else if (sub == "=>") { // `1 Z=> 3` keeps the Int key, not "1"
-                Value pr = Value::pair(a[i].toStr(), b[i]);
-                if (a[i].t != VT::Str) pr.pairKeyM() = std::make_shared<Value>(a[i]);
-                out.arr()->push_back(pr);
-            }
-            else out.arr()->push_back(applyArith(sub, a[i], b[i]));
-        }
-        return out;
-    }
-    if (op == "X" || (op.size() > 1 && op[0] == 'X')) { // cross; X<op> applies op
-        std::string sub = op.substr(1);
-        ValueList a = listCtx(l), b = listCtx(r);
-        Value out = Value::array(); out.isList = true; out.s = "Seq";
-        for (auto& x : a) for (auto& y : b) {
-            if (sub.empty()) { Value t = Value::array({x, y}); t.isList = true; out.arr()->push_back(t); }
-            else if (sub == "=>") { // `1 X=> <a b>` keeps the Int key (like Z=> above)
-                Value pr = Value::pair(x.toStr(), y);
-                if (x.t != VT::Str) pr.pairKeyM() = std::make_shared<Value>(x);
-                out.arr()->push_back(pr);
-            }
-            else out.arr()->push_back(applyArith(sub, x, y));
-        }
-        return out;
+    if (op == "Z" || op == "X" ||
+        (op.size() > 1 && (op[0] == 'Z' || op[0] == 'X'))) { // zip/cross (+metaop forms)
+        // One implementation for all three ladders: zxOp, reached through the
+        // same global the NativeCall trampolines use (set in the constructor).
+        // The copies that lived here used a DEEP flatten (listCtx), so
+        // `(1,0) X (<a b>, <c d>)` answered 8 pairs on this path and 4 on the
+        // others — and this path is what compiled binaries and rtReduce fold
+        // with (REVIEW-3.7 finding 2).
+        if (g_cbInterp) return g_cbInterp->zxOp(op, l, r);
+        throw RakuError{Value::typeObj("X::AdHoc"),
+            "Z/X evaluated before any Interpreter was constructed"};
     }
     if (op == "minmax") { // list infix: a Range spanning both operands' extremes
         ValueList a = l.flatten(), bb = r.flatten();
@@ -17679,7 +17762,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                 res = typeMatchesArg(l, r.s);
             // …and a ROUTINE answering for a role a trait_mod mixed into it in
             // place (`$method does Constraint($p)` — Path::Finder's `is constraint`)
-            if (!res && l.t == VT::Code && l.code() && !l.code()->mixinRoles.empty())
+            if (!res && l.t == VT::Code && l.code() && l.code()->mixins.p && !l.code()->mixins.p->roles.empty())
                 res = typeMatchesArg(l, r.s);
             // TYPE ~~ TYPE: consult the type ancestry (Array ~~ Positional,
             // array[int] ~~ Positional[int], Mix ~~ Associative, …)
@@ -20147,81 +20230,9 @@ Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value
         bool want = r.pairVal() ? boolify(*r.pairVal()) : true;
         return Value::boolean((actual == want) == (op == "~~"));
     }
-    // zip/cross with an inner op (Z&& / Zand / X~) — resolve the inner via applyBinOp
+    // zip/cross with an inner op (Z&& / Zand / X~) — one implementation (zxOp)
     if (op.size() > 1 && (op[0] == 'Z' || op[0] == 'X')) {
-        std::string sub = op.substr(1);
-        // one-level elements: sublists stay whole ((1,0) X (a,b),(c,d) is 2x2, not 2x4);
-        // a Blob/Buf spreads to its elements (`$H Z+ $M` in Digest::SHA1)
-        auto oneLevel = [](const Value& v) -> ValueList {
-            if (v.t == VT::Array && v.arr()) return *v.arr();
-            if (v.t == VT::Range) return v.flatten();
-            if (v.t == VT::Str && !v.itemized && (v.hashKind == "Blob" || v.hashKind == "Buf"))
-                return v.blobList();
-            return ValueList{v};
-        };
-        // A LAZY operand (`7 xx *`, an infinite sequence) carries only its
-        // materialized PREFIX in `arr` — usually one element — so a zip against one
-        // stopped after a single pair. Z stops at the shortest side, so force the
-        // lazy side out to the other's length. `@$key Z[+^] $i xx *` is how Digest's
-        // HMAC builds its key pad, and it was yielding one byte.
-        // Cross (X) against an infinite side has no finite answer; leave it alone.
-        auto isLazy = [](const Value& v) { return v.t == VT::Array && v.ext(); };
-        // An ENDLESS side — an infinite Range (`2..*`) or an infinite lazy list.
-        // Zipping two of them has no finite answer to compute up front, and
-        // Rakudo's answer is itself lazy: `2..* Z* 2..*` is the perfect squares.
-        // Produce a lazy list that pulls one element from each side per step.
-        auto endlessInt = [&](const Value& v) {
-            if (v.t == VT::Range && !v.rNum() && v.rTo() >= 9000000000000000000LL) return true;
-            if (v.t == VT::Array && v.ext()) {
-                auto st = std::static_pointer_cast<LazySeqState>(v.ext());
-                return st && st->infinite;
-            }
-            return false;
-        };
-        if (op[0] == 'Z' && endlessInt(l) && endlessInt(r)) {
-            // the i-th element of a side, materialising a lazy one as it goes
-            auto nth = [this](Value src, size_t i) -> Value {
-                if (src.t == VT::Range) return Value::integer(src.rFrom() + (long long)i);
-                materializeLazy(src, i + 1);
-                return src.arr() && i < src.arr()->size() ? (*src.arr())[i] : Value::any();
-            };
-            Value out = Value::array(); out.isList = true; out.s = "Seq";
-            auto st = std::make_shared<LazySeqState>(); st->infinite = true;
-            auto idx = std::make_shared<size_t>(0);
-            Value lv = l, rv = r; std::string inner = sub;
-            st->appendNext = [this, nth, idx, lv, rv, inner](ValueList& cache) -> bool {
-                size_t i = (*idx)++;
-                Value x = nth(lv, i), y = nth(rv, i);
-                cache.push_back(inner == "," ? Value::list(ValueList{x, y})
-                                             : applyBinOp(inner, x, y));
-                return true;
-            };
-            out.extM() = st;
-            return out;
-        }
-        if (op[0] == 'Z') {
-            if (isLazy(l) && !isLazy(r)) materializeLazy(l, oneLevel(r).size());
-            else if (isLazy(r) && !isLazy(l)) materializeLazy(r, oneLevel(l).size());
-        }
-        ValueList a = oneLevel(l), bb = oneLevel(r);
-        Value out = Value::array(); out.isList = true; out.s = "Seq"; // Z<op>/X<op> are lazy (Rakudo)
-        auto emit = [&](const Value& x, const Value& y) {
-            // `1 Z=> 3` keeps the Int key — forcing .toStr() made it "1" => 3
-            if (sub == "=>") {
-                Value p = Value::pair(x.toStr(), y);
-                if (x.t != VT::Str) p.pairKeyM() = std::make_shared<Value>(x);
-                out.arr()->push_back(p);
-            }
-            else if (sub == ",") { // Z, / X, — tuples
-                Value t = Value::array(); t.isList = true;
-                t.arr()->push_back(x); t.arr()->push_back(y);
-                out.arr()->push_back(t);
-            }
-            else out.arr()->push_back(applyBinOp(sub, x, y));
-        };
-        if (op[0] == 'Z') { for (size_t i = 0; i < a.size() && i < bb.size(); i++) emit(a[i], bb[i]); }
-        else { for (auto& x : a) for (auto& y : bb) emit(x, y); }
-        return out;
+        return zxOp(op, l, r);
     }
     if (op == "minmax") { // Range spanning both operands' extremes
         ValueList a = l.flatten(), bb = r.flatten();
@@ -20262,19 +20273,10 @@ Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value
             return hyperCore(ll, rr, sL, sR,
                 [&](const Value& x, const Value& y, Value*, Value*) { return callCallable(fn, ValueList{x, y}); });
         }
-        // hyper compound assignment: `@a <<+=>> 2019` applies the base op
-        // elementwise and MUTATES the left array (Value.arr is shared storage,
-        // so writing through it reaches the caller's container)
-        static const std::set<std::string> eqTailCmp = {"==", "!=", "<=", ">=", "===", "=:="};
-        if (inner.size() >= 2 && inner.back() == '=' && !eqTailCmp.count(inner) &&
-            l.t == VT::Array && l.arr()) {
-            std::string base = inner.substr(0, inner.size() - 1);
-            ValueList b = listCtx(r);
-            if (!b.empty())
-                for (size_t i = 0; i < l.arr()->size(); i++)
-                    (*l.arr())[i] = applyBinOp(base, (*l.arr())[i], b[i % b.size()]);
-            return l;
-        }
+        // hyper compound assignment — the shared implementation (no AST here,
+        // so no parenthesised-list write-back; an @array LHS shares storage)
+        if (isHyperCompoundAssign(inner, l))
+            return hyperCompoundAssign(inner, l, r, nullptr);
         bool strictL = op.compare(0, 2, ">>") == 0;
         bool strictR = op.compare(op.size() - 2, 2, "<<") == 0;
         Value ll = l, rr = r;
@@ -20622,78 +20624,20 @@ Value Interpreter::evalBinary(Binary* b) {
                 return hyperCore(ll, rr, sL, sR,
                     [&](const Value& x, const Value& y, Value*, Value*) { return callCallable(fn, ValueList{x, y}); });
             }
-            // hyper compound assignment: `@a <<+=>> 2019` applies the base op
-            // elementwise and MUTATES the left array (Value.arr is shared
-            // storage, so writing through it reaches the caller's container)
-            static const std::set<std::string> eqTailCmp = {"==", "!=", "<=", ">=", "===", "=:="};
-            if (inner.size() >= 2 && inner.back() == '=' && !eqTailCmp.count(inner) &&
-                l.t == VT::Array && l.arr()) {
-                std::string base = inner.substr(0, inner.size() - 1);
-                ValueList rhs = r.flatten();
-                // A PARENTHESISED list of scalars — `($t, $y) »+=« (a, b)` — is a
-                // fresh List of copies, so mutating l.arr reaches nobody: the
-                // assignment silently did nothing and runge-kutta.raku sat at
-                // t=0 forever. Write through each element's own container
-                // instead. (`@a »+=« …` needs none of this: an Array's Value
-                // shares its storage with the caller's.)
-                if (!rhs.empty() && b->lhs && b->lhs->kind == NK::ListExpr) {
-                    auto& items = static_cast<ListExpr*>(b->lhs.get())->items;
-                    for (size_t i = 0; i < items.size(); i++) {
-                        Value* slot = nullptr;
-                        try { slot = lvalue(items[i].get()); } catch (RakuError&) {}
-                        if (!slot) continue;             // not assignable: leave it be
-                        *slot = applyBinOp(base, *slot, rhs[i % rhs.size()]);
-                        if (i < l.arr()->size()) (*l.arr())[i] = *slot;
-                    }
-                    return l;
-                }
-                if (!rhs.empty())
-                    for (size_t i = 0; i < l.arr()->size(); i++)
-                        (*l.arr())[i] = applyBinOp(base, (*l.arr())[i], rhs[i % rhs.size()]);
-                return l;
-            }
+            // hyper compound assignment — the shared implementation; this call
+            // site has the AST, so a parenthesised LHS gets its write-back
+            if (isHyperCompoundAssign(inner, l))
+                return hyperCompoundAssign(inner, l, r, b->lhs.get());
             bool strictL = op.compare(0, 2, ">>") == 0;
             bool strictR = op.compare(op.size() - 2, 2, "<<") == 0;
             Value ll = l, rr = r;
             return hyperCore(ll, rr, strictL, strictR,
                 [&](const Value& x, const Value& y, Value*, Value*) { return applyBinOp(inner, x, y); });
         }
-        // zip/cross metaop `Zop`/`Xop` — resolve a user inner operator via applyBinOp
+        // zip/cross metaop `Zop`/`Xop` — one implementation (zxOp), which also
+        // brings this path the endless-Z lazy view it used to lack
         if (op.size() > 1 && (op[0] == 'Z' || op[0] == 'X')) {
-            std::string sub = op.substr(1);
-            auto oneLevel = [](const Value& v) -> ValueList {
-                if (v.t == VT::Array && v.arr()) return *v.arr();
-                if (v.t == VT::Range) return v.flatten();
-                if (v.t == VT::Str && !v.itemized && (v.hashKind == "Blob" || v.hashKind == "Buf"))
-                    return v.blobList(); // `$H Z+ $M` in Digest::SHA1
-                return ValueList{v};
-            };
-            // A lazy operand (`7 xx *`) holds only its materialized prefix, so a zip
-            // against one stopped after a single pair; Z ends at the shortest side,
-            // so force the lazy side to the other's length. Cross against an infinite
-            // side has no finite answer, so it is left alone.
-            auto isLazy = [](const Value& v) { return v.t == VT::Array && v.ext(); };
-            if (op[0] == 'Z') {
-                if (isLazy(l) && !isLazy(r)) materializeLazy(l, oneLevel(r).size());
-                else if (isLazy(r) && !isLazy(l)) materializeLazy(r, oneLevel(l).size());
-            }
-            ValueList a = oneLevel(l), bb = oneLevel(r);
-            Value out = Value::array(); out.isList = true; out.s = "Seq"; // Z<op>/X<op> are lazy (Rakudo)
-            auto emit = [&](const Value& x, const Value& y) {
-                if (sub.empty() || sub == ",") { // Z / Z, — tuples
-                    Value t = Value::array({x, y}); t.isList = true;
-                    out.arr()->push_back(t);
-                }
-                else if (sub == "=>") { // `1 Z=> 3` keeps the Int key, not "1"
-                    Value pr = Value::pair(x.toStr(), y);
-                    if (x.t != VT::Str) pr.pairKeyM() = std::make_shared<Value>(x);
-                    out.arr()->push_back(pr);
-                }
-                else out.arr()->push_back(applyBinOp(sub, x, y));
-            };
-            if (op[0] == 'Z') { for (size_t i = 0; i < a.size() && i < bb.size(); i++) emit(a[i], bb[i]); }
-            else { for (auto& x : a) for (auto& y : bb) emit(x, y); }
-            return out;
+            return zxOp(op, l, r);
         }
         Value res = applyArith(op, l, r);
         tagTemporal(op, l, r, res);
@@ -20785,7 +20729,7 @@ Value Interpreter::evalBinary(Binary* b) {
                 preset = eval(rc->args[0].get());
                 Value res = mixinValue(std::move(base), Value::typeObj(rn), op == "but");
                 if (res.t == VT::Object && res.obj()) res.obj()->attrs[presetAttr] = preset;
-                else if (res.t == VT::Code && res.code()) res.code()->mixinAttrs[presetAttr] = preset;
+                else if (res.t == VT::Code && res.code()) res.code()->mixinsRW().attrs[presetAttr] = preset;
                 if (op == "does" && res.t == VT::Object && res.obj() && res.obj()->hasBoxed) {
                     NK k = b->lhs->kind;
                     if (k == NK::VarExpr || k == NK::Index || k == NK::MethodCall)
@@ -21350,16 +21294,17 @@ Value Interpreter::mixinValue(Value base, const Value& rhs, bool copy) {
     // Constraint` False and the module refused its own keys.
     if (!copy && base.t == VT::Code && base.code() && !roleNames.empty()) {
         auto c = base.code();
+        auto& mx = c->mixinsRW();
         for (auto& rn : roleNames)
-            if (std::find(c->mixinRoles.begin(), c->mixinRoles.end(), rn) == c->mixinRoles.end())
-                c->mixinRoles.push_back(rn);
+            if (std::find(mx.roles.begin(), mx.roles.end(), rn) == mx.roles.end())
+                mx.roles.push_back(rn);
         for (auto& p : pairs)
-            if (p.pairVal()) c->mixinAttrs[p.s] = *p.pairVal();
+            if (p.pairVal()) c->mixinsRW().attrs[p.s] = *p.pairVal();
         // a role's own attributes exist even unset, so its accessors answer
         for (ClassInfo* role : roleInfos)
             if (role)
                 for (auto& a : role->attrs)
-                    c->mixinAttrs.emplace(a.name, Value::any());
+                    c->mixinsRW().attrs.emplace(a.name, Value::any());
         return base;
     }
     // `$a does SomeRole` where $a is an ATTRIBUTE meta-object: mix in place. The
@@ -24850,7 +24795,7 @@ Value Interpreter::eval(Expr* e) {
             // matchers by reducing regexes into one (`.reduce({ /$^a$^b/ })`), which
             // is a block's last statement, so every glob it built matched nothing.
             // `m//` still matches: `(m:g/b/).elems` counts the matches.
-            if (!rl->isM) return regexClosingOver(spliceRegexVars(rl->pattern), tctx_.cur);
+            if (!rl->isM) return regexLitValue(rl);
             Value topic; if (Value* p = tctx_.cur->find("$_")) topic = *p;
             return regexMatch(rxSubject(topic), rl->pattern);
         }
@@ -26321,7 +26266,7 @@ Value Interpreter::eval(Expr* e) {
             // `{*}` in EXPRESSION position inside a proto body (`my $r = {*}`) is the
             // same dispatch point as the statement form — without this it closed over
             // as an ordinary block and the proto returned a Callable
-            if (!protoStack_.empty() && be->params.empty() && !be->isSub &&
+            if (tctx_.protoDepth > 0 && be->params.empty() && !be->isSub &&
                 be->body.size() == 1 && be->body[0]->kind == NK::ExprStmt &&
                 static_cast<ExprStmt*>(be->body[0].get())->e &&
                 static_cast<ExprStmt*>(be->body[0].get())->e->kind == NK::Whatever)

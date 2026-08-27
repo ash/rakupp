@@ -118,11 +118,20 @@ my %kernels =
     # Rat-specific: a regression in that path cannot hide in loop overhead.
     rats    => 'my $t = 0; my $d = 0;
                 for 1 .. 200_000 { my $r = 0.01 * ($_ % 97); $t += $r; $d += $r.denominator }
-                say $t, " ", $d;';
+                say $t, " ", $d;',
+    # regexloop was added 2026-08-27 (REVIEW-3.7 batch 3), after the review
+    # found per-evaluation costs on the regex-literal path — a static-mutex
+    # lock plus a map probe keyed by the whole pattern (rejectObsoleteRegex),
+    # and boolify(Regex) walking the env chain for $/ — that NO kernel could
+    # see: every kernel above is regex-free, so the guard was blind to the
+    # whole class. `if $s ~~ /\d/` in a loop is the shape that pays it, and
+    # it is not synthetic: any grep-like scan over lines is this program.
+    regexloop => 'my $s = "a1b2c3"; my int $n = 0; my $k = 0;
+                  while $n < 200_000 { $k++ if $s ~~ /\d/; $n = $n + 1 }; say $k;';
 
 # The kernel list, in one place: the run loop and the gate loop must agree, and
 # they used to carry two hardcoded copies of it.
-my @KERNELS = <fib asg loopsum hash strscan strpass subcall rats>;
+my @KERNELS = <fib asg loopsum hash strscan strpass subcall rats regexloop>;
 
 
 # The 1-minute load average, and how many cores there are to carry it. A busy

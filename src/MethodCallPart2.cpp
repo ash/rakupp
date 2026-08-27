@@ -101,6 +101,168 @@ static Value builtinCanStub(const std::string& mn, bool isGrammar) {
     return stub;
 }
 
+// The `.can`/`.^lookup` existence probe — one unsafe-names list, one dance.
+// Probing CALLS the method with no arguments and watches for
+// X::Method::NotFound, so a name with side effects must never be probed: a
+// destructive method added to one site's copy of the list stayed probeable
+// through the other's (REVIEW-3.7 finding 8).
+int Interpreter::probeMethodExists(const Value& inv, const std::string& mn, const char* ioProbePath) {
+    static const std::set<std::string> kUnsafeToProbe = {
+        "print", "say", "put", "note", "printf", "write", "spurt", "open",
+        "mkdir", "rmdir", "symlink", "link", "unlink", "rename", "copy",
+        "move", "chdir", "close", "flush", "seek", "run", "shell", "exit",
+        "throw", "rethrow", "sink", "emit", "send", "recv", "start",
+        "sleep", "kill", "signal", "await", "react", "trans", "subst-mutate" };
+    if (mn.empty() || kUnsafeToProbe.count(mn)) return 0;
+    Value probe = inv;
+    if (probe.hashKind == "IO") probe.s = ioProbePath;
+    bool notFound = false;
+    try { ValueList none; methodCall(probe, mn, none); }
+    catch (RakuError& e) {
+        const Value& p = e.payload;
+        notFound = (p.t == VT::Type && p.s == "X::Method::NotFound") ||
+                   (p.t == VT::Object && p.obj() && p.obj()->cls &&
+                    p.obj()->cls->name == "X::Method::NotFound");
+    }
+    catch (...) {}
+    return notFound ? -1 : 1;
+}
+
+// Fill od->attrs for ci's whole inheritance chain, exactly as the default
+// constructor does: named args bind DURING the walk (Rakudo's BUILDALL order,
+// so a later default reading an earlier attribute sees the constructed value),
+// each level's defaults evaluate in the DECLARING class's scope with `self`
+// bound to the object under construction, same-named attrs of different
+// sigils keep separate slots, native types seed their zeros, `is Set`-style
+// containers instantiate, and the trailing pass binds public/`is built`
+// nameds. The boxed-builtin constructors (`class D is DateTime`, SubDate.now)
+// used stripped copies of this walk with NONE of that — `has $.b = $!a * 2`
+// died "no self available" and providedArgs-order was never honoured
+// (REVIEW-3.7 finding 6). Box od->boxed BEFORE calling: parents construct
+// first, so a default may read the boxed parent through self.
+void Interpreter::runAttrDefaults(const std::shared_ptr<ObjectData>& od,
+                                  const std::shared_ptr<ClassInfo>& ci,
+                                  ValueList& args) {
+    // attr defaults evaluate with `self` in scope, so a default
+    // CLOSURE (`has $.cl = { self.foo }`) captures the new object
+    Value selfEarly = Value::object(od);
+    auto savedDenv = tctx_.cur;
+    struct EnvRestore {
+        Interpreter& I; std::shared_ptr<Env> e;
+        ~EnvRestore() { I.tctx_.cur = e; }
+    } envRestore{*this, savedDenv};
+    std::vector<ClassInfo*> chain;
+    for (ClassInfo* c = ci.get(); c; c = c->parent.get()) chain.push_back(c);
+    // Named args bind DURING the walk, not after it — Rakudo's
+    // BUILDALL takes the caller's value for an attribute when one
+    // was passed and only otherwise runs the default, so a LATER
+    // default that reads an earlier attribute sees the constructed
+    // value (`has Code:D $.converter = get-converter($!type)` in
+    // Getopt::Long read the declared Str, never the Int passed).
+    std::map<std::string, const Value*> providedArgs;
+    for (auto& arg : args)
+        if (arg.t == VT::Pair) {
+            const ClassAttr* pat = ci->findAttr(arg.s);
+            if (pat && (pat->pub || pat->built))
+                providedArgs[arg.s] = arg.pairVal();
+        }
+    // `has Digest $.digest` beside `has &!digest`: same bare name,
+    // different sigils. attrs is keyed by bare name, so the twins
+    // clobbered each other (Auth::SCRAM's callable ended up holding
+    // the enum). A non-$ twin stores under "&name"/"@name"/"%name";
+    // the read/write paths try that spelling first.
+    std::map<std::string, std::set<char>> nameSigils;
+    for (ClassInfo* c = ci.get(); c; c = c->parent.get())
+        for (auto& at : c->attrs) nameSigils[at.name].insert(at.sigil);
+    for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
+        // each level's defaults close over ITS declaration scope
+        // (class-body constants/lexicals — `constant %Glyphs` in
+        // Font::AFM must resolve from another module's `.new`),
+        // not over whatever scope the CALLER happens to be in
+        auto denv = std::make_shared<Env>();
+        denv->parent = (*it)->declEnv ? (*it)->declEnv : savedDenv;
+        denv->define("self", selfEarly);
+        tctx_.cur = denv;
+        for (auto& at : (*it)->attrs) {
+            // storage slot: bare name, unless a same-named twin of
+            // another sigil exists — then the non-$ one keys by
+            // "&name"/"@name"/"%name"
+            std::string slot = at.name;
+            if (at.sigil != '$' && nameSigils[at.name].size() > 1)
+                slot = std::string(1, at.sigil) + at.name;
+            auto pit = providedArgs.find(at.name);
+            if (pit != providedArgs.end() && slot == at.name) {
+                od->attrs[slot] = coerceToSigil(
+                    pit->second ? *pit->second : Value::any(), at.sigil);
+                continue;
+            }
+            // The value the slot holds when it has no explicit default.
+            // A native-typed scalar takes its zero (`has atomicint $.n`
+            // starts at 0); a named type takes its TYPE OBJECT (not Any),
+            // so a `.= new` default reads that type object as its invocant
+            // (`has T $.x .= new` == `$!x = T.new`) — Rakudo semantics.
+            Value seed = at.sigil == '@' ? Value::array()
+                       : at.sigil == '%' ? Value::makeHash() : Value::any();
+            if (at.objKeyed && seed.t == VT::Hash) seed.objKeyed = true;
+            if (at.sigil == '$' && !at.type.empty()) {
+                if (at.type == "atomicint" || at.type == "byte" ||
+                    at.type.rfind("int", 0) == 0 || at.type.rfind("uint", 0) == 0)
+                    seed = Value::integer(0);
+                else if (at.type.rfind("num", 0) == 0) seed = Value::number(0);
+                else if (at.type == "str") seed = Value::str("");
+                else if (ascii::isupper((unsigned char)at.type[0])) seed = Value::typeObj(at.type);
+            }
+            bool userContainer = false;
+            if (!at.containerIs.empty() && at.sigil == '%') {
+                static const std::set<std::string> quant = {
+                    "Set", "SetHash", "Bag", "BagHash", "Mix", "MixHash"};
+                if (quant.count(at.containerIs))
+                    seed = makeBaggy({}, at.containerIs); // has %.a is Set — empty Setty
+                else if (classes_.count(at.containerIs)) {
+                    userContainer = true;
+                    // a USER type: the attribute IS an instance of it, so
+                    // its methods are reachable. DBIish declares
+                    // `has %.Converter is DBDish::TypeConverter` and then
+                    // calls `.convert` on it; as a plain Hash there was no
+                    // such method and nothing said which line was at fault.
+                    ValueList none;
+                    seed = methodCall(Value::typeObj(at.containerIs), "new", none);
+                }
+            }
+            // Pre-seed the slot so a self-referential default (`.= new`,
+            // or one reading $!this-attr) sees the seed, not an unset Any.
+            od->attrs[slot] = seed;
+            Value dv = at.hasDefVal ? at.defVal
+                     : at.def ? eval(const_cast<Expr*>(at.def))
+                              : seed;
+            // the SIGIL is a container type: `has @.a = (1,2)` holds an
+            // Array and `has %.h = (a=>1)` a Hash, so `.WHAT` answers
+            // (Array)/(Hash) and the default renderer shows [1, 2] /
+            // {:a(1)} rather than the List and Pair the initialiser
+            // happened to produce.
+            // …but a USER container type is the value: coercing it to
+            // the sigil would turn the object straight back into the
+            // plain Hash it was declared not to be.
+            if (!userContainer) dv = coerceToSigil(dv, at.sigil);
+            od->attrs[slot] = dv;
+        }
+    }
+    tctx_.cur = savedDenv;
+    // the default constructor binds nameds to declared PUBLIC attributes
+    // only; anything else is silently ignored (Rakudo semantics — an
+    // unknown name must NOT enter the attr store, or `$.name` inside a
+    // method would see it instead of dying with X::Method::NotFound)
+    for (auto& arg : args)
+        if (arg.t == VT::Pair) {
+            const ClassAttr* at = ci->findAttr(arg.s);
+            // `is built` opts a PRIVATE attr into construction-by-name —
+            // that is the trait's whole purpose (JSON::Class binds its
+            // $!declarant this way)
+            if (at && (at->pub || at->built))
+                od->attrs[arg.s] = coerceToSigil(arg.pairVal() ? *arg.pairVal() : Value::any(), at->sigil);
+        }
+}
+
 std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName& m, ValueList& args,
                                      const std::vector<ExprPtr>* rwArgs) {
     if (inv.t == VT::Hash && inv.hashKind == "Supply") {
@@ -2512,29 +2674,18 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 // Date): box the built-in and keep the user object's identity/attrs.
                 if (nb == "DateTime" || nb == "Date") {
                     auto od = std::make_shared<ObjectData>(); od->cls = ci; od->hasBoxed = true;
-                    std::vector<ClassInfo*> chain;
-                    for (ClassInfo* c = ci.get(); c; c = c->parent.get()) chain.push_back(c);
-                    for (auto it = chain.rbegin(); it != chain.rend(); ++it)
-                        for (auto& at : (*it)->attrs) {
-                            Value dv;
-                            if (at.hasDefVal) dv = at.defVal;
-                            else if (at.def) { // close over the declaring class's scope
-                                auto sv = tctx_.cur;
-                                if ((*it)->declEnv) tctx_.cur = (*it)->declEnv;
-                                try { dv = eval(const_cast<Expr*>(at.def)); }
-                                catch (...) { tctx_.cur = sv; throw; }
-                                tctx_.cur = sv;
-                            } else dv = at.sigil == '@' ? Value::array()
-                                      : at.sigil == '%' ? Value::makeHash() : Value::any();
-                            if (at.objKeyed && dv.t == VT::Hash) dv.objKeyed = true;
-                            od->attrs[at.name] = dv;
-                        }
+                    // args that are not attribute pairs feed the BUILT-IN's own
+                    // constructor (`D.new(:2000year, a => 5)`: :year boxes the
+                    // DateTime, a => 5 binds the attribute)
                     ValueList builtinArgs;
-                    for (auto& a : args) {
-                        if (a.t == VT::Pair && ci->findAttr(a.s)) od->attrs[a.s] = a.pairVal() ? *a.pairVal() : Value::any();
-                        else builtinArgs.push_back(a);
-                    }
+                    for (auto& a : args)
+                        if (!(a.t == VT::Pair && ci->findAttr(a.s))) builtinArgs.push_back(a);
+                    // box FIRST (the parent constructs before subclass defaults,
+                    // as in Rakudo's BUILDPLAN), then the ONE attribute walk —
+                    // the stripped copy here had no `self` in scope and no
+                    // provided-args-during-walk, so `has $.b = $!a * 2` died
                     od->boxed = methodCall(Value::typeObj(nb), "new", builtinArgs);
+                    runAttrDefaults(od, ci, args);
                     Value self = Value::object(od);
                     if (Value* build = ci->findMethod("BUILD")) sinkBuildResult(invokeMethod(*build, self, args));
                     if (Value* tweak = ci->findMethod("TWEAK")) sinkBuildResult(invokeMethod(*tweak, self, args));
@@ -2543,124 +2694,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 }
                 auto od = std::make_shared<ObjectData>();
                 od->cls = ci;
-                // attr defaults evaluate with `self` in scope, so a default
-                // CLOSURE (`has $.cl = { self.foo }`) captures the new object
-                Value selfEarly = Value::object(od);
-                auto savedDenv = tctx_.cur;
-                struct EnvRestore {
-                    Interpreter& I; std::shared_ptr<Env> e;
-                    ~EnvRestore() { I.tctx_.cur = e; }
-                } envRestore{*this, savedDenv};
-                std::vector<ClassInfo*> chain;
+                runAttrDefaults(od, ci, args);
+                std::vector<ClassInfo*> chain; // the checks below walk it too
                 for (ClassInfo* c = ci.get(); c; c = c->parent.get()) chain.push_back(c);
-                // Named args bind DURING the walk, not after it — Rakudo's
-                // BUILDALL takes the caller's value for an attribute when one
-                // was passed and only otherwise runs the default, so a LATER
-                // default that reads an earlier attribute sees the constructed
-                // value (`has Code:D $.converter = get-converter($!type)` in
-                // Getopt::Long read the declared Str, never the Int passed).
-                std::map<std::string, const Value*> providedArgs;
-                for (auto& arg : args)
-                    if (arg.t == VT::Pair) {
-                        const ClassAttr* pat = ci->findAttr(arg.s);
-                        if (pat && (pat->pub || pat->built))
-                            providedArgs[arg.s] = arg.pairVal();
-                    }
-                // `has Digest $.digest` beside `has &!digest`: same bare name,
-                // different sigils. attrs is keyed by bare name, so the twins
-                // clobbered each other (Auth::SCRAM's callable ended up holding
-                // the enum). A non-$ twin stores under "&name"/"@name"/"%name";
-                // the read/write paths try that spelling first.
-                std::map<std::string, std::set<char>> nameSigils;
-                for (ClassInfo* c = ci.get(); c; c = c->parent.get())
-                    for (auto& at : c->attrs) nameSigils[at.name].insert(at.sigil);
-                for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
-                    // each level's defaults close over ITS declaration scope
-                    // (class-body constants/lexicals — `constant %Glyphs` in
-                    // Font::AFM must resolve from another module's `.new`),
-                    // not over whatever scope the CALLER happens to be in
-                    auto denv = std::make_shared<Env>();
-                    denv->parent = (*it)->declEnv ? (*it)->declEnv : savedDenv;
-                    denv->define("self", selfEarly);
-                    tctx_.cur = denv;
-                    for (auto& at : (*it)->attrs) {
-                        // storage slot: bare name, unless a same-named twin of
-                        // another sigil exists — then the non-$ one keys by
-                        // "&name"/"@name"/"%name"
-                        std::string slot = at.name;
-                        if (at.sigil != '$' && nameSigils[at.name].size() > 1)
-                            slot = std::string(1, at.sigil) + at.name;
-                        auto pit = providedArgs.find(at.name);
-                        if (pit != providedArgs.end() && slot == at.name) {
-                            od->attrs[slot] = coerceToSigil(
-                                pit->second ? *pit->second : Value::any(), at.sigil);
-                            continue;
-                        }
-                        // The value the slot holds when it has no explicit default.
-                        // A native-typed scalar takes its zero (`has atomicint $.n`
-                        // starts at 0); a named type takes its TYPE OBJECT (not Any),
-                        // so a `.= new` default reads that type object as its invocant
-                        // (`has T $.x .= new` == `$!x = T.new`) — Rakudo semantics.
-                        Value seed = at.sigil == '@' ? Value::array()
-                                   : at.sigil == '%' ? Value::makeHash() : Value::any();
-                        if (at.objKeyed && seed.t == VT::Hash) seed.objKeyed = true;
-                        if (at.sigil == '$' && !at.type.empty()) {
-                            if (at.type == "atomicint" || at.type == "byte" ||
-                                at.type.rfind("int", 0) == 0 || at.type.rfind("uint", 0) == 0)
-                                seed = Value::integer(0);
-                            else if (at.type.rfind("num", 0) == 0) seed = Value::number(0);
-                            else if (at.type == "str") seed = Value::str("");
-                            else if (ascii::isupper((unsigned char)at.type[0])) seed = Value::typeObj(at.type);
-                        }
-                        bool userContainer = false;
-                        if (!at.containerIs.empty() && at.sigil == '%') {
-                            static const std::set<std::string> quant = {
-                                "Set", "SetHash", "Bag", "BagHash", "Mix", "MixHash"};
-                            if (quant.count(at.containerIs))
-                                seed = makeBaggy({}, at.containerIs); // has %.a is Set — empty Setty
-                            else if (classes_.count(at.containerIs)) {
-                                userContainer = true;
-                                // a USER type: the attribute IS an instance of it, so
-                                // its methods are reachable. DBIish declares
-                                // `has %.Converter is DBDish::TypeConverter` and then
-                                // calls `.convert` on it; as a plain Hash there was no
-                                // such method and nothing said which line was at fault.
-                                ValueList none;
-                                seed = methodCall(Value::typeObj(at.containerIs), "new", none);
-                            }
-                        }
-                        // Pre-seed the slot so a self-referential default (`.= new`,
-                        // or one reading $!this-attr) sees the seed, not an unset Any.
-                        od->attrs[slot] = seed;
-                        Value dv = at.hasDefVal ? at.defVal
-                                 : at.def ? eval(const_cast<Expr*>(at.def))
-                                          : seed;
-                        // the SIGIL is a container type: `has @.a = (1,2)` holds an
-                        // Array and `has %.h = (a=>1)` a Hash, so `.WHAT` answers
-                        // (Array)/(Hash) and the default renderer shows [1, 2] /
-                        // {:a(1)} rather than the List and Pair the initialiser
-                        // happened to produce.
-                        // …but a USER container type is the value: coercing it to
-                        // the sigil would turn the object straight back into the
-                        // plain Hash it was declared not to be.
-                        if (!userContainer) dv = coerceToSigil(dv, at.sigil);
-                        od->attrs[slot] = dv;
-                    }
-                }
-                tctx_.cur = savedDenv;
-                // the default constructor binds nameds to declared PUBLIC attributes
-                // only; anything else is silently ignored (Rakudo semantics — an
-                // unknown name must NOT enter the attr store, or `$.name` inside a
-                // method would see it instead of dying with X::Method::NotFound)
-                for (auto& arg : args)
-                    if (arg.t == VT::Pair) {
-                        const ClassAttr* at = ci->findAttr(arg.s);
-                        // `is built` opts a PRIVATE attr into construction-by-name —
-                        // that is the trait's whole purpose (JSON::Class binds its
-                        // $!declarant this way)
-                        if (at && (at->pub || at->built))
-                            od->attrs[arg.s] = coerceToSigil(arg.pairVal() ? *arg.pairVal() : Value::any(), at->sigil);
-                    }
                 // enforce an attribute type smiley (`has Int:D $.a` / `has Int:U $.a`)
                 // on the FINAL slot value, matching Rakudo's X::TypeCheck::Attribute::Default.
                 // Only when the attr actually received a value (an explicit default or a
@@ -2763,23 +2799,11 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     Value r = methodCall(Value::typeObj(nb), m, args, rwArgs);
                     if (r.t == VT::Hash && (r.hashKind == "DateTime" || r.hashKind == "Date")) {
                         auto od = std::make_shared<ObjectData>(); od->cls = ci; od->hasBoxed = true; od->boxed = r;
-                        std::vector<ClassInfo*> chain;
-                        for (ClassInfo* c = ci.get(); c; c = c->parent.get()) chain.push_back(c);
-                        for (auto it = chain.rbegin(); it != chain.rend(); ++it)
-                            for (auto& at : (*it)->attrs) {
-                                Value dv;
-                                if (at.hasDefVal) dv = at.defVal;
-                                else if (at.def) { // declaring class's scope, as above
-                                    auto sv = tctx_.cur;
-                                    if ((*it)->declEnv) tctx_.cur = (*it)->declEnv;
-                                    try { dv = eval(const_cast<Expr*>(at.def)); }
-                                    catch (...) { tctx_.cur = sv; throw; }
-                                    tctx_.cur = sv;
-                                } else dv = at.sigil == '@' ? Value::array()
-                                          : at.sigil == '%' ? Value::makeHash() : Value::any();
-                                if (at.objKeyed && dv.t == VT::Hash) dv.objKeyed = true;
-                                od->attrs[at.name] = dv;
-                            }
+                        // the ONE attribute walk (the stripped copy here had no
+                        // `self` in scope); `.now`'s args are the built-in's, so
+                        // none feed attributes
+                        ValueList noAttrArgs;
+                        runAttrDefaults(od, ci, noAttrArgs);
                         return Value::object(od);
                     }
                     return r;
@@ -2939,9 +2963,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     if (inv.t == VT::Code && inv.code()) {
         // an accessor of a role mixed into this routine in place (see mixinValue):
         // `$method.precedence` after `$method does Constraint($p)`
-        if (!inv.code()->mixinAttrs.empty() && args.empty()) {
-            auto ma = inv.code()->mixinAttrs.find(m.s);
-            if (ma != inv.code()->mixinAttrs.end()) return ma->second;
+        if (inv.code()->mixins.p && !inv.code()->mixins.p->attrs.empty() && args.empty()) {
+            auto ma = inv.code()->mixins.p->attrs.find(m.s);
+            if (ma != inv.code()->mixins.p->attrs.end()) return ma->second;
         }
         if (m == "assuming") { // partial application: &f.assuming(a,b)(c) == f(a,b,c)
             Value orig = inv; ValueList pre = args;
@@ -3615,25 +3639,11 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             // Date/DateTime share one dispatch surface here, so a probe cannot
             // tell them apart — the curated Dateish list above is authoritative
             probeInv.hashKind != "Date" && probeInv.hashKind != "DateTime") {
-            static const std::set<std::string> kUnsafe = {
-                "print", "say", "put", "note", "printf", "write", "spurt", "open",
-                "mkdir", "rmdir", "symlink", "link", "unlink", "rename", "copy",
-                "move", "chdir", "close", "flush", "seek", "run", "shell", "exit",
-                "throw", "rethrow", "sink", "emit", "send", "recv", "start",
-                "sleep", "kill", "signal", "await", "react", "trans", "subst-mutate"};
-            if (!kUnsafe.count(mn)) {
-                Value probe = probeInv;
-                if (probe.hashKind == "IO") probe.s = "/nonexistent/rakupp-can-probe";
-                bool notFound = false;
-                try { ValueList none; methodCall(probe, mn, none); }
-                catch (RakuError& e) {
-                    const Value& pl = e.payload;
-                    notFound = (pl.t == VT::Type && pl.s == "X::Method::NotFound") ||
-                               (pl.t == VT::Object && pl.obj() && pl.obj()->cls &&
-                                pl.obj()->cls->name == "X::Method::NotFound");
-                }
-                catch (...) {}
-                if (!notFound) {
+            {
+                // one probe (shared with .^lookup): 1 = found, -1 = not found,
+                // 0 = a side-effectful name that must not be probed (no stub —
+                // the permissive answer this fallback has always given)
+                if (probeMethodExists(probeInv, mn, "/nonexistent/rakupp-can-probe") == 1) {
                     Value stub; stub.t = VT::Code; stub.setCode(std::make_shared<Callable>());
                     stub.code()->name = mn; stub.code()->isMethod = true;
                     std::string mnc = mn;

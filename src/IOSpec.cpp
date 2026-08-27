@@ -30,6 +30,14 @@ std::vector<std::string> segs(const std::string& s) {
 }
 bool isAbs(const std::string& p) { return !p.empty() && p[0] == '/'; }
 
+// $TMPDIR (trailing slashes trimmed) or /tmp — one answer for both dispatch
+// tables below; this lived as two byte-identical copies.
+static Value tmpdirValue() {
+    const char* t = getenv("TMPDIR"); std::string d = (t && *t) ? t : "/tmp";
+    while (d.size() > 1 && d.back() == '/') d.pop_back();
+    Value v = Value::str(d); v.hashKind = "IO"; return v;
+}
+
 // canonpath. Without :parent, "." and redundant "/" collapse but ".." is kept
 // (except leading ".." on an absolute path, which can't ascend past root). With
 // :parent, ".." is resolved against the preceding real segment.
@@ -315,11 +323,7 @@ static bool winSpecMethod(Interpreter& I, const std::string& m, ValueList& args,
             }
         Value v = Value::list(res); v.s = "Seq"; out = v; return true;
     }
-    if (m == "tmpdir") {
-        const char* t = getenv("TMPDIR"); std::string d = (t && *t) ? t : "/tmp";
-        while (d.size() > 1 && d.back() == '/') d.pop_back();
-        Value v = Value::str(d); v.hashKind = "IO"; out = v; return true;
-    }
+    if (m == "tmpdir") { out = tmpdirValue(); return true; }
     return false;
 }
 
@@ -512,11 +516,7 @@ bool ioSpecMethod(Interpreter& I, const std::string& cls, const std::string& m, 
         for (auto& part : splitAll(pathenv, ':')) res.push_back(Value::str(part.empty() ? "." : part));
         Value v = Value::list(res); v.s = "Seq"; out = v; return true;
     }
-    if (m == "tmpdir") {
-        const char* t = getenv("TMPDIR"); std::string d = (t && *t) ? t : "/tmp";
-        while (d.size() > 1 && d.back() == '/') d.pop_back();
-        Value v = Value::str(d); v.hashKind = "IO"; out = v; return true;
-    }
+    if (m == "tmpdir") { out = tmpdirValue(); return true; }
     return false;
 }
 

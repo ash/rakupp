@@ -203,17 +203,84 @@ reading the recent hot-path diffs. Each wants the interleaved-A/B discipline
    `t/regression/batch1-silent-wrong-answers.raku` (32 checks, 28 verbatim
    Rakudo-parallel); full Roast 198,847/218,728 (90.9%) — +168 passes over
    the recorded 198,679, no section down, timeouts = the known S17 family.
-2. **Kill the twins** — reduce metaop through one implementation first (it
-   changes compiled answers; wants an `--exe` leg in `t/`); Z/X one element
-   model; hyper-assign write-back everywhere; construction walk delegated;
-   can/lookup list shared; EVAL/EVALFILE predicate as one function;
-   numify-Str consolidated; tmpdir/cleanup/is-absolute onto IO::Spec; JSON
-   escapers onto JsonLite. Gate: full Roast + `t/run.raku` per sub-batch.
-3. **Measured micro-opts** — regex-literal memoisation + `$/` slot cache
-   (with the new guard kernel); Callable mixin fields behind a pointer;
-   cached signature facts; resolved return types; protoStack counter; single
-   lvalue resolve in `%h{k}++`. Gate: interleaved A/B each, then
-   `perf-guard --check`.
+2. **Kill the twins** — **LANDED 2026-08-27** (same day), in three
+   sub-batches:
+   *B2a (semantics)*: `rtReduce` folds through `applyReduce` — compiled
+   `[<] 3,1,2` now answers False like the interpreter, scans and the R-metaop
+   included, verified byte-identical across interpreted/compiled/Rakudo on a
+   12-case battery; Z/X collapsed to ONE `zxOp` (one-level element model
+   everywhere — the applyArith copies deep-flattened, and that path is what
+   compiled code folds with; the endless-Z lazy view now reaches every
+   ladder; S03-metaops/cross.t +1); hyper compound assignment to one
+   implementation with the parenthesised write-back (the free applyArith
+   ladder reaches it through g_cbInterp — the same global the NativeCall
+   trampolines use).
+   *B2b (mechanical)*: the `.can`/`.^lookup` probe shares one unsafe-names
+   list and one NotFound dance (`probeMethodExists`); the EVAL/EVALFILE
+   predicate is one `nameEvalsCode` in Ast.h and BOTH gaps are closed
+   ($path.EVALFILE no longer slips the flat-scan guard, `.EVAL`-as-method now
+   suppresses Lint's dynamic-name rules); exceptionToJson escapes through
+   JsonLite's dumpStr; IO::Spec's two byte-identical tmpdirs are one. The
+   review's Codegen:1180 JSON-escape claim did NOT verify (that line is
+   sequence codegen) — dropped.
+   *B2c (construction)*: the default constructor's attribute walk is ONE
+   `runAttrDefaults`; the `is DateTime`/`is Date` `.new` and `.now`/`.today`
+   arms delegate to it, boxing the parent FIRST (BUILDPLAN order).
+   `class D is DateTime { has $.a = 1; has $.b = $!a * 2 }` used to die
+   "no self available" — now a=5 b=10, byte-identical to Rakudo. (The
+   quanthash-arm concern dissolved: Rakudo itself runs no attr defaults for
+   `Set.new(1,2)` positionals.)
+   Demoted with data: the numify trio's drift is LATENT — 15 probe inputs
+   (radix prefixes, allomorphs, Unicode minus, Complex) byte-identical on
+   both engines across val() and numeric prefix — so its consolidation is
+   hygiene-when-touched, not a correctness batch. Follow-ups spawned:
+   `»«` strict-length enforcement (rakupp cycles where Rakudo dies —
+   pre-existing, both modes); compiled parenthesised hyper-assign write-back
+   (needs Codegen support for lvalue lists; pre-existing gap).
+   Gates: `t/run.raku` 566/566 with the new
+   `t/regression/batch2-twin-consolidation.raku`; full Roast
+   198,828/218,677 (90.9%) — flat vs batch 1 modulo S17 timeout flutter and
+   one stochastic advent test (verified identical on the pre-batch binary);
+   the affected S03-metaops/S12-class/S32-temporal slice measured
+   1090/1183 before and after B2c exactly.
+3. **Measured micro-opts** — **LANDED 2026-08-27** (same day), every change
+   held to the interleaved-A/B discipline (alternate every run, min of 9+,
+   ratio-judged; fresh arm64 builds; the pre-batch binary snapshotted as the
+   fixed reference):
+   - *Guard kernel `regexloop`* added first — `if /\d/` under a topic in a
+     200k loop — so the class the review found invisible stays visible. Its
+     baseline records at the next `--record` (still pending from the
+     false-red).
+   - *Regex-literal closed-pattern cache* (`RegexLit::closedPat`, the
+     `NumLit::ratCache` publish-once discipline): a literal with no `$`/`@`
+     publishes its final pattern after the first evaluation, skipping the
+     splice copy, both scans, and `rejectObsoleteRegex`'s mutex+map probe
+     per iteration; plus boolify(Regex) reads truthiness BEFORE moving the
+     Match into `$/` (no ~376-byte copy). regexloop **−3.4%/−4.4%/−4.2%**
+     across three independent A/B rounds; X::Obsolete still fires.
+   - *Callable slimmed*: `mixinRoles`/`mixinAttrs` (~72 bytes mid-struct,
+     read in one place) moved behind one lazily-allocated deep-copying
+     pointer. fib **−2.2%/−1.8%** (two rounds); the Path::Finder
+     `does Constraint($p)` mixin shape verified identical pre/post.
+   - *protoDepth on tctx_*: the per-block-statement "inside a proto body?"
+     probe reads the already-loaded ExecContext instead of a second TLS
+     wrapper + guard. A block-statement kernel (300k `{ … }` iterations)
+     measured **−1.9%**.
+   - *Withdrawn with evidence*: the `%h{k}++` "double base resolve" claim is
+     stale — the second resolve is already gated behind `newv <= 0` (the
+     quanthash-removal path) and never runs for counting loops; the
+     `evalIndex` junctionKind `std::string` is an SSO default-construct
+     behind an early Int-key short-circuit (~one branch). hash A/B: −1.0%
+     (noise).
+   - *Deferred as designed-not-measured*: checkRetType return-type
+     resolution caching (the chain is alias→set→classes→subsets→native→
+     closure-constant, and negative caching is unsafe under EVAL-defined
+     types), scoreCandidate signature-fact bits, protoBodyOf resolve-at-
+     install — none has a kernel that measures it; per this batch's own
+     rule they wait for one (a multi-with-subsets loop kernel) rather than
+     land unmeasured.
+   Gates: t/run.raku green on the batch build; S06-multi/S05 roast slice
+   flat; all four A/B kernels improved or noise, none regressed.
 
 ## Already done in this round
 
