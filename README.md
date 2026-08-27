@@ -35,7 +35,7 @@ curated battery gated on every release; the sweep is the whole ecosystem.)
 |---|---:|---:|
 | Roast, per individual test — of what the suite declares‡ | **198,791 of ~218,608 (90%)** | 197,090 of ~203,500 (97%) |
 | Roast, all-or-nothing — files fully passing, of 1,464 | **638 (44%)** | 594 |
-| Official documentation examples byte-identical on both engines | **950** | 952 |
+| Official documentation examples byte-identical on both engines | **955** | 952 |
 | Ecosystem distributions matching their own per-dist reference runs | **97 / 105** | 50 / 59 |
 | Local regression suite | **567** | 312 |
 | `say "Hello"` compiled with `--exe --slim` | **6,510,864 B** | 9,830,680 B (no `--slim`) |
