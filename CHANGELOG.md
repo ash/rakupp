@@ -21,14 +21,21 @@ entry below apply unchanged.
 | Roast assertions (all declared) | 198,679 | **198,791** |
 | Roast files fully passing | 633 / 1,464 | **638 / 1,464** |
 | Local regression suite (`t/run.raku`) | 512 | **567** |
-| Module battery (vs each dist's own reference run) | 50 / 59 | **97 / 105** |
+| Module battery (vs each dist's own reference run) | 50 / 59 | **48 / 59** |
 | `say "Hello"` compiled with `--exe` | 9,091,256 B | **9,823,512 B** |
 | …compiled with `--exe --slim` | 5,827,368 B | **6,510,864 B** |
 
 (The version jumps 3.7 → 3.20 to clear the historical v3.14.0 still known to
-Homebrew; versions are monotonic, not semantic. The battery row is not
-one-to-one comparable: the tier-2 list grew from 59 to 105 dists during this
-cycle; 97 now match their per-dist reference runs, with 8 divergent. The Roast release run took
+Homebrew; versions are monotonic, not semantic. The battery row is a
+**regression**, and these notes originally hid it: the release-day tally
+double-counted an interleaved log and wrote a fictitious 97/105 here; the
+measured figure is 48/59, two dists down from v3.7.0. Both drops trace to
+engine bugs — Data::Dump to a latent `temp`-under-statement-modifier bug
+newly exposed by the module loader finding Terminal::ANSIColor, HTTP::Tiny
+(and intermittently Log::Async) to a real v3.20.0 regression where a regex
+answered by a predicate block no longer matched the element or set the
+caller's `$/`. Both are fixed on main immediately after the release, which
+restores the battery to 50/59. The Roast release run took
 three passes on an idle box and the file count repeats at 638 — the band was
 638 / 638 / 637 — with the assertion figure quoted from a repeating-profile
 pass, not the best seen. The per-file diff against v3.7.0's published map:

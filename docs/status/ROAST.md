@@ -32,7 +32,7 @@ The exact definition of every figure below — and how the harness computes it �
 in [COUNTING.md](COUNTING.md); that file is authoritative if anything here drifts.
 
 **Headline: ~90% of all declared Roast tests pass** (198,791 / 218,608); on the
-stricter file bar, ~43% of files fully pass (638 / 1,464). The per-file breakdown
+stricter file bar, ~44% of files fully pass (638 / 1,464). The per-file breakdown
 comes first below, then the per-test figures. (S15 — Unicode / strings / NFG —
 is now at 100% of assertions: full UCD case tables, grapheme-level regex, and
 complete `uniprop` coverage landed for v1.1; its lone non-passing file is a
@@ -42,17 +42,17 @@ Full suite — **1,464 files**:
 
 | Files | Count | Share of suite |
 |---|---:|---:|
-| **Fully passing** | **633** | **43%** |
-| Partially passing | 692 | 47% |
-| No TAP output | 124 | 8% |
-| Timeouts | 15 | 1.0% |
+| **Fully passing** | **638** | **44%** |
+| Partially passing | 687 | 47% |
+| No TAP output | 121 | 8% |
+| Timeouts | 18 | 1.2% |
 
 (Both files that once wedged the harness with unkillable children are measured
 in-run now: `S04-statements/try.t` scores as an ordinary partial, and
 `S12-construction/destruction.t` fully passes since the DESTROY protocol
 landed. See [dev/findings/ROAST-GAPS.md](../dev/findings/ROAST-GAPS.md).)
 
-**Coverage ≈ 43% of files.** That is the number to quote. About a tenth of the
+**Coverage ≈ 44% of files.** That is the number to quote. About a tenth of the
 suite produces no TAP at all — those files hit a parse error or an unimplemented
 construct and abort before any assertion runs — so they are entirely unmeasured
 territory, not "passing" and not "failing."

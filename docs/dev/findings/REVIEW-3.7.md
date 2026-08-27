@@ -361,3 +361,51 @@ recording as method lessons:
 - Slim-budget comment arch labels corrected (`build/` is x86_64 here).
 - Perf false-red protocol written into the working notes: fresh-build the
   baseline commit before bisecting a red gate.
+
+## Post-release repair, same night (v3.20.1 shipped with two battery drops)
+
+The user noticed the republished site was stale (wasm, dashboard) — pulling
+that thread found the release notes carried a **fictitious battery figure**.
+The docs said 97/105 "on a grown tier-2 list"; no such list or run existed.
+The rel-battery.log rows appear twice (stderr progress note + stdout table,
+interleaved), the release-day tally counted rows instead of the runner's own
+summary line — the true reading was **48 / 59, a 2-dist regression from
+v3.7.0's 50/59** that the fiction hid. Corrected in README.md and
+CHANGELOG.md; the honest sitting is committed to the battery repo (7833cb4)
+and charted on the dashboard.
+
+Both drops were real engine bugs, found, fixed and regression-tested the
+same night (t/regression/pred-answer-regex-and-modifier-temp.raku):
+
+1. **A predicate block's Regex ANSWER must match the element and set the
+   caller's `$/`** — `{ .defined && /re/ }` returns the `&&` RHS as the
+   object (Rakudo agrees: `(True && /A+/)` is a Regex, `$/` untouched);
+   the consumer's boolification is what matches, against the element, with
+   `$/` written through to the caller (Rakudo's Regex.Bool + getlexcaller).
+   The v3.20.0 regex-literal rework (899976b) read the answer's plain truth:
+   always-true, `$/` never set. Broke HTTP::Tiny's multipart-boundary parse
+   (`~$/` = "") and, under load, Log::Async's frame test. Fix: a shared
+   `predAnswerTruthy(I, res, elem)` helper (Builtins.cpp, declared in
+   BuiltinsShared.h) used by matcherAccepts' Code arm, both lazy and eager
+   grep/first, toggle, the Supply tap chain, and the sequence Code endpoint
+   — at those sites the closure frame is already popped, so setMatchVar
+   lands the match exactly where Rakudo puts it.
+
+2. **`temp`/`let` under a statement modifier restored itself instantly.**
+   `temp $x = … unless $c;` — the modifier's flattened branch runs via
+   execBlock IN the enclosing env, and execBlock drained its own temp marks
+   even for these scope-sharing pseudo-blocks, un-tempting the variable the
+   moment the one-line branch finished. Latent (v3.7.0 behaves the same);
+   exposed when the CURI store from the issue-37 work made
+   `try require ::('Terminal::ANSIColor')` start succeeding, turning
+   Data::Dump's colorizor live — its `temp $colorizor = sub {''} unless
+   $color` neutralizer was the no-op, and ANSI codes leaked (9/9 → 1/9).
+   Fix: an execBlock that created no scope of its own (`blockEnv ==
+   saved.get()`) owns no temp/let unwinds — SIZE_MAX tempMark defers them
+   to the enclosing block, matching Rakudo (modifier temp holds to the
+   enclosing block's exit; block-form temp still restores at its own).
+
+With both fixes the battery re-measures at 50/59 — v3.7.0 parity. Also from
+tonight: the concurrent `raku-dc` session (issue #38) independently fixed
+`sub MAIN(:@x)` single-occurrence listification and tightened named-@/%
+scoring to Rakudo's rule; coordination notes live in the session logs.

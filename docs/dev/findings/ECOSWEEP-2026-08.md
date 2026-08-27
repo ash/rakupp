@@ -4,7 +4,11 @@ The full-population successor to [FRESH100-2026-08-20.md](FRESH100-2026-08-20.md
 **every distribution in the REA index — 2,524 dists, latest release of each —**
 put through `rakupp test` (build hook, dependency install, own suite), then a
 fix campaign over the failure clusters, then a re-run of every non-pass dist on
-the fixed engine. Three sittings, 2026-08-23 … 2026-08-24.
+the fixed engine. Three sittings, 2026-08-23 … 2026-08-24. Every distribution
+and its verdict is browsable at
+[raku.online/modules/ecosystem](https://raku.online/modules/ecosystem/)
+(regenerate its snapshot with `sites/modules/tools/distill-ecosweep.raku` in
+the raku.online repo when a sweep updates these TSVs).
 
 ## Method
 
@@ -46,6 +50,12 @@ Math::DistanceFunctions::Edit, App::FIT2GPX, Term::termios, Test::Assertion,
 Text::Caesar, XML — five of them the native-compiling `builder` family that
 could not build at all before. **Green total: 637 of 2,524**
 ([ecosweep/green.txt](ecosweep/green.txt)).
+
+Timeline (the raku.online dashboard mines these dated lines verbatim — keep
+the `- YYYY-MM-DD: N of M` shape in every sweep write-up):
+
+- 2026-08-23: 624 of 2,524
+- 2026-08-25: 637 of 2,524
 
 The modest conversion count is the honest shape of the terrain: each fix tends
 to move its cluster ONE RUNG — a dist that failed to parse now runs its suite
