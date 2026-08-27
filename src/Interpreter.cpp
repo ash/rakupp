@@ -1081,6 +1081,16 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
             return out;
         }
         bool allInt = true; for (auto& s : seed) if (s.t != VT::Int && s.t != VT::Bool) allInt = false;
+        bool deduceFailed = false; std::string dedFrom; // see the deduction arm below
+        auto seqDeduceThrow = [this](const std::string& from) {
+            std::string msg = "Unable to deduce arithmetic or geometric sequence from: " + from;
+            auto& ci = classes_["X::Sequence::Deduction"];
+            auto od = std::make_shared<ObjectData>();
+            od->cls = ci;
+            od->attrs["from"] = Value::str(from);
+            od->attrs["message"] = Value::str(msg);
+            throw RakuError{Value::object(od), msg};
+        };
         double step = 1; bool geometric = false; double ratio = 1;
         if (!hasGen) {
             if (seed.size() >= 3) {
@@ -1097,21 +1107,20 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
                 if (arith) step = a3 - a2;
                 else if (geom) { geometric = true; ratio = a3 / a2; }
                 else {
-                    // (1, 4, 9 ... 100 is X::Sequence::Deduction, not "step 5
-                    // from here on"; Roast asserts the throw with `from`
-                    // carrying the seed list.)
-                    std::string from;
-                    for (size_t k = 0; k < seed.size(); k++) { if (k) from += ","; from += seed[k].toStr(); }
-                    std::string msg = "Unable to deduce arithmetic or geometric sequence from: " + from;
-                    auto& ci = classes_["X::Sequence::Deduction"];
-                    auto od = std::make_shared<ObjectData>();
-                    od->cls = ci;
-                    od->attrs["from"] = Value::str(from);
-                    od->attrs["message"] = Value::str(msg);
-                    throw RakuError{Value::object(od), msg};
+                    // Neither arithmetic nor geometric. WHEN this throws is
+                    // part of the semantics: Rakudo streams the SEEDS first
+                    // and only deduces on generating BEYOND them — roast's
+                    // advent2012-day14 runs `@primes ...^ * > sqrt $n` whose
+                    // endpoint fires inside the seeds, so no deduction ever
+                    // happens; while a BOUNDED numeric endpoint needs the
+                    // step up front and throws here (misc.t: 1,2,5...10).
+                    deduceFailed = true;
+                    for (size_t k = 0; k < seed.size(); k++) { if (k) dedFrom += ","; dedFrom += seed[k].toStr(); }
                 }
             } else if (seed.size() == 2) step = seed[1].toNum() - seed[0].toNum();
             else if (!infinite && !endCode && out.arr()->back().toNum() > endVal) step = -1;
+            if (deduceFailed && !infinite && !endCode)
+                seqDeduceThrow(dedFrom); // a bounded endpoint needs the step NOW
         }
         // Non-numeric seeds (Str / object with .succ) step via succ/pred when the
         // endpoint is Whatever or Code: 'a' ... * ; H.new ... *.y > 10
@@ -1202,6 +1211,7 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
             bool boundedGen = !infinite;
             st->infinite = !boundedGen; // a literal-endpoint gen seq CAN drain (stops on match)
             st->appendNext = [self, gen, hasGen, geometric, ratio, step, allInt, arity,
+                              deduceFailed, dedFrom, seqDeduceThrow,
                               succSeed, succDesc, ratioV, exactRatio, stepV, exactStep,
                               boundedGen, endVal, endValue, atEnd, exclusive](ValueList& cache) -> bool {
                 if (cache.empty() && !hasGen) return false;
@@ -1230,6 +1240,8 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
                         ValueList none;
                         next = self->methodCall(lastE, succDesc ? "pred" : "succ", none);
                     }
+                } else if (deduceFailed) {
+                    seqDeduceThrow(dedFrom); // generating BEYOND the seeds needs the step we never had
                 } else if (geometric) {
                     const Value& lastE = cache.back();
                     // exact multiply FIRST: the llround-through-a-double fast
@@ -1298,6 +1310,8 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
                     ValueList none;
                     next = methodCall(lastE, succDesc ? "pred" : "succ", none);
                 }
+            } else if (deduceFailed) {
+                seqDeduceThrow(dedFrom); // beyond the seeds without a deducible step
             } else if (geometric) {
                 const Value& lastE = out.arr()->back();
                 if (exactRatio && (lastE.t == VT::Int || lastE.t == VT::Rat || lastE.t == VT::Bool))
