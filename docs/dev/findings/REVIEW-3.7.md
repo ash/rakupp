@@ -183,11 +183,26 @@ reading the recent hot-path diffs. Each wants the interleaved-A/B discipline
 
 ## Batch plan
 
-1. **Silent wrong answers** — `let`-in-method restore; `sleep-till` real
-   wait; `slurp`/`spurt`/`mkdir` sub-method parity incl. `:bin`; `.IO.open`
-   throws like the sub; `jsonEncode` key escaping; negative-subscript
-   unification; `parse-base` Failure; undeducible sequence dies. Gate:
-   `t/run.raku` + a regression test per item; Roast where semantics move.
+1. **Silent wrong answers** — **LANDED 2026-08-27** (same day): `let`-in-method
+   restores on all three unwind arms; `sleep-till` deleted outright — it was a
+   rakupp-only stub of a routine Raku never had (`sleep-until` was already
+   real); every bare `Value::typeObj("Failure")` in the tree (8 sites) became
+   an ARMED Failure via the new `armedFailure` helper (parse-base, .UInt,
+   .base-repeating, 0**-negative, Str decrement); undeducible sequences throw
+   X::Sequence::Deduction with `.from` — deduction reads the LAST THREE seeds,
+   as Rakudo does (`1,1,1,2,3 ...` continues +1); `jsonEncode` routes keys and
+   values through `jfEscape`; negative subscript reads throw, with the ONE
+   measured soft case `@empty[*-1]` (Cro's last-chunk-if-any idiom) answering
+   a Failure; `.IO.open` and sub `slurp` are now DELEGATIONS to their richer
+   twins (two twin clusters gone early); method `spurt` gained
+   `rejectNulPath` + `:createonly`/`:x`. The Cro hang the batch surfaced was
+   NOT the batch: rakupp lacked CORE's ProtocolType enum (PROTO_TCP = 6,
+   PROTO_UDP = 17) and the lenient bareword path had been feeding setsockopt
+   a quiet wrong level; the enum is in at Rakudo values. Gates:
+   `t/run.raku` 565/565 with the new
+   `t/regression/batch1-silent-wrong-answers.raku` (32 checks, 28 verbatim
+   Rakudo-parallel); full Roast 198,847/218,728 (90.9%) — +168 passes over
+   the recorded 198,679, no section down, timeouts = the known S17 family.
 2. **Kill the twins** — reduce metaop through one implementation first (it
    changes compiled answers; wants an `--exe` leg in `t/`); Z/X one element
    model; hyper-assign write-back everywhere; construction walk delegated;

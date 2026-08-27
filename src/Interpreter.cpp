@@ -1083,17 +1083,32 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
         double step = 1; bool geometric = false; double ratio = 1;
         if (!hasGen) {
             if (seed.size() >= 3) {
-                // constant difference => arithmetic; else constant ratio => geometric (1,2,4,8 → ×2)
-                bool arith = true, geom = true;
-                double d0 = seed[1].toNum() - seed[0].toNum();
-                double r0 = seed[0].toNum() != 0 ? seed[1].toNum() / seed[0].toNum() : 0;
-                for (size_t i = 1; i + 1 < seed.size(); i++) {
-                    if (std::abs((seed[i + 1].toNum() - seed[i].toNum()) - d0) > 1e-9) arith = false;
-                    if (seed[i].toNum() == 0 || std::abs(seed[i + 1].toNum() / seed[i].toNum() - r0) > 1e-9) geom = false;
+                // Rakudo deduces from the LAST THREE seeds only: `1,1,1,2,3 ...`
+                // continues +1 from its 1,2,3 tail (S03-sequence/basic.t), junk
+                // before the tail notwithstanding. Constant difference =>
+                // arithmetic; else constant ratio => geometric (1,2,4,8 → ×2);
+                // else the sequence is underivable and Rakudo refuses to guess.
+                size_t n3 = seed.size();
+                double a1 = seed[n3 - 3].toNum(), a2 = seed[n3 - 2].toNum(), a3 = seed[n3 - 1].toNum();
+                bool arith = std::abs((a3 - a2) - (a2 - a1)) <= 1e-9;
+                bool geom  = !arith && a1 != 0 && a2 != 0 &&
+                             std::abs(a3 / a2 - a2 / a1) <= 1e-9;
+                if (arith) step = a3 - a2;
+                else if (geom) { geometric = true; ratio = a3 / a2; }
+                else {
+                    // (1, 4, 9 ... 100 is X::Sequence::Deduction, not "step 5
+                    // from here on"; Roast asserts the throw with `from`
+                    // carrying the seed list.)
+                    std::string from;
+                    for (size_t k = 0; k < seed.size(); k++) { if (k) from += ","; from += seed[k].toStr(); }
+                    std::string msg = "Unable to deduce arithmetic or geometric sequence from: " + from;
+                    auto& ci = classes_["X::Sequence::Deduction"];
+                    auto od = std::make_shared<ObjectData>();
+                    od->cls = ci;
+                    od->attrs["from"] = Value::str(from);
+                    od->attrs["message"] = Value::str(msg);
+                    throw RakuError{Value::object(od), msg};
                 }
-                if (arith) step = d0;
-                else if (geom) { geometric = true; ratio = r0; }
-                else step = seed.back().toNum() - seed[seed.size() - 2].toNum();
             } else if (seed.size() == 2) step = seed[1].toNum() - seed[0].toNum();
             else if (!infinite && !endCode && out.arr()->back().toNum() > endVal) step = -1;
         }
@@ -1112,7 +1127,9 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
             bool seedsExact = true;
             for (auto& sv : seed) if (sv.t != VT::Int && sv.t != VT::Bool && sv.t != VT::Rat) seedsExact = false;
             if (seedsExact) {
-                stepV = applyArith("-", seed[1], seed[0]);
+                // the LAST pair — the deduction window — not the first: with a
+                // constant-prefix seed like 1,1,1,2,3 the first pair's 0 is junk
+                stepV = applyArith("-", seed[seed.size() - 1], seed[seed.size() - 2]);
                 exactStep = (stepV.t == VT::Rat) && !allInt;
             }
         }
@@ -1121,14 +1138,16 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
             bool seedsExact = true;
             for (auto& sv : seed) if (sv.t != VT::Int && sv.t != VT::Bool && sv.t != VT::Rat) seedsExact = false;
             if (seedsExact && seed.size() >= 2) {
-                ratioV = applyArith("/", seed[1], seed[0]);
+                const Value& gp = seed[seed.size() - 2]; // the deduction window's pair,
+                const Value& gl = seed[seed.size() - 1]; // matching the last-three rule
+                ratioV = applyArith("/", gl, gp);
                 // an integral ratio must STAY Int: Int/Int yields a Rat here,
                 // and Int × Rat(2/1) walks the whole sequence into integral
                 // Rats (8.0 in .raku, Rat in .WHAT — Rakudo's 1,2,4 ... * are
                 // plain Ints). div is exact and bigint-safe.
-                if (ratioV.t == VT::Rat && seed[1].t != VT::Rat && seed[0].t != VT::Rat &&
-                    !applyArith("%", seed[1], seed[0]).truthy())
-                    ratioV = applyArith("div", seed[1], seed[0]);
+                if (ratioV.t == VT::Rat && gl.t != VT::Rat && gp.t != VT::Rat &&
+                    !applyArith("%", gl, gp).truthy())
+                    ratioV = applyArith("div", gl, gp);
                 exactRatio = (ratioV.t == VT::Rat || ratioV.t == VT::Int);
             }
         }
@@ -2102,6 +2121,9 @@ Interpreter::Interpreter() {
         };
         reg("X::AdHoc", {"payload", "message"}); // `die "msg"` — .payload IS the message
         reg("X::Syntax::Reserved", {"reserved", "instead", "pos", "message"});
+        // `...` with seeds that are neither arithmetic nor geometric throws this
+        // (the sequence builder constructs it with `from` = the seed list)
+        reg("X::Sequence::Deduction", {"from", "message"});
         reg("Exception", {"message"}); // base class: Exception.new is instantiable
         // The X::IO family. rakupp's own IO builtins already THROW these (as bare
         // type objects with a hand-written message); registering them as classes
@@ -13428,7 +13450,10 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
         return checkRetType(c, b.hasVal ? std::move(b.v) : std::move(last));
     }
     catch (RakuError& e) {
-        if (!catchBlk) { runLeaves(false); tctx_.cur = saved; throw; }
+        // `let` restores on the unsuccessful exits, exactly as callCallableRaw
+        // does for subs — the method path missed all three arms, so a `let`
+        // inside a method kept its new value straight through a die.
+        if (!catchBlk) { runLeaves(false); runLetRestoresOf(tctx_.cur); tctx_.cur = saved; throw; }
         tctx_.cur->define("$_", exceptionFor(e));
         tctx_.cur->define("$!", exceptionFor(e));
         bool matched = false;
@@ -13446,7 +13471,7 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
         }
         catch (...) { runLeaves(false); tctx_.cur = saved; throw; }   // die/rethrow from the CATCH
         // Only a matching when/default handles it; an unmatched CATCH rethrows.
-        if (!matched) { runLeaves(false); tctx_.cur = saved; throw; }
+        if (!matched) { runLeaves(false); runLetRestoresOf(tctx_.cur); tctx_.cur = saved; throw; }
         runLeaves(true);
         tctx_.cur = saved;
         copyOutRw(c.params, env, rwArgs);
@@ -13454,7 +13479,7 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
         if (tctx_.returning) { tctx_.returning = false; return std::move(tctx_.returnV); }
         return Value::nil();
     }
-    catch (...) { runLeaves(false); tctx_.cur = saved; throw; }
+    catch (...) { runLeaves(false); runLetRestoresOf(tctx_.cur); tctx_.cur = saved; throw; }
     runLeaves(true);
     tctx_.cur = saved;
     copyOutRw(c.params, env, rwArgs);
@@ -17067,7 +17092,8 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             BigInt bn = getN(l), bd = getD(l);
             if (e >= 0) { BigInt rn = bn.pow(e), rd = bd.pow(e); return anyRat ? mkRat(rn, rd) : Value::bigint(rn); }
             BigInt rn = bd.pow(-e), rd = bn.pow(-e);
-            if (rd.isZero()) return Value::typeObj("Failure");
+            if (rd.isZero()) return armedFailure("X::Numeric::DivideByZero",
+                "Attempt to divide by zero when raising 0 to a negative power");
             return mkRat(rn, rd);
         }
         if (op == "%" || op == "div" || op == "mod" || op == "%%") {
@@ -22036,7 +22062,7 @@ Value Interpreter::evalUnary(Unary* u) {
                 Value newp;
                 if (oldp.t == VT::Str) {
                     if (u->op == "++") newp = Value::str(strSucc(oldp.s));
-                    else { bool ok; std::string r = strPred(oldp.s, ok); newp = ok ? Value::str(r) : Value::typeObj("Failure"); }
+                    else { bool ok; std::string r = strPred(oldp.s, ok); newp = ok ? Value::str(r) : armedFailure("X::AdHoc", "Decrement out of range"); }
                 }
                 else if (oldp.t == VT::Bool) newp = Value::boolean(u->op == "++");
                 else newp = applyArith(u->op == "++" ? "+" : "-", oldp, Value::integer(1));
@@ -22071,7 +22097,7 @@ Value Interpreter::evalUnary(Unary* u) {
             newv = Value::str(strSucc(lv->s));
         } else if (strMagic && u->op == "--") {
             bool ok; std::string r = strPred(lv->s, ok);
-            newv = ok ? Value::str(r) : Value::typeObj("Failure");
+            newv = ok ? Value::str(r) : armedFailure("X::AdHoc", "Decrement out of range");
         } else if (classHas(u->op == "++" ? "succ" : "pred")) {
             newv = methodCall(*lv, u->op == "++" ? "succ" : "pred", {});
         } else {
@@ -23773,13 +23799,22 @@ Value Interpreter::evalIndex(Index* idx) {
                     Value iv = eval(idx->index.get());
                     if (iv.t == VT::Int && !iv.big()) {
                         long long ix = iv.i;
-                        if (ix < 0) { // negative is out of range (no Python wraparound) → Failure
+                        if (ix < 0) { // negative is out of range (no Python wraparound) → THROW
+                            // Rakudo throws here, eagerly — `@a[$neg]` is not a
+                            // soft Failure (and `@a[$neg] // 0` dies there too);
+                            // AT-POS already threw, so the three sites now agree.
+                            // ONE measured exception: `@empty[*-1]` — index -1 on
+                            // an empty array — answers a SOFT Failure in Rakudo
+                            // (`*-2` on empty and `*-N` past a non-empty both
+                            // throw). Cro's "last chunk, if any" idiom leans on
+                            // it; the first throw here hung its live-server test.
                             long long sz = (long long)arr->size();
-                            Value f = Value::makeHash(); f.hashKind = "Failure";
-                            (*f.hash())["exception"] = Value::typeObj("X::OutOfRange");
-                            (*f.hash())["message"] = Value::str("Index out of range. Is: " + std::to_string(ix) +
-                                                              ", should be in 0.." + std::to_string(sz > 0 ? sz - 1 : 0));
-                            return f;
+                            if (ix == -1 && sz == 0)
+                                return armedFailure("X::OutOfRange",
+                                    "Index out of range. Is: -1, should be in 0..0");
+                            throw RakuError{Value::typeObj("X::OutOfRange"),
+                                "Index out of range. Is: " + std::to_string(ix) +
+                                ", should be in 0.." + std::to_string(sz > 0 ? sz - 1 : 0)};
                         }
                         if (ix < (long long)arr->size()) {
                             Value el = (*arr)[ix];
@@ -24657,13 +24692,19 @@ Value Interpreter::evalIndex(Index* idx) {
                 // the function.)
                 // A negative index is OUT OF RANGE in Raku (there is no Python-style
                 // from-the-end wraparound — that is what `@a[*-1]` is for). Both a
-                // literal `@a[-1]` and a `*-N` that resolves below 0 yield a Failure.
+                // literal `@a[-1]` and a `*-N` that resolves below 0 THROW, as
+                // Rakudo's do — a soft Failure here let `@a[$neg] // 0` answer
+                // where Rakudo dies, and disagreed with AT-POS's throw. The ONE
+                // measured soft case is -1 on an EMPTY array (`@empty[*-1]`, the
+                // "last chunk, if any" idiom): Rakudo answers a Failure there
+                // while `*-2` on empty and `*-N` past a non-empty array throw.
                 if (i < 0) {
-                    Value f = Value::makeHash(); f.hashKind = "Failure";
-                    (*f.hash())["exception"] = Value::typeObj("X::OutOfRange");
-                    (*f.hash())["message"] = Value::str("Index out of range. Is: " + std::to_string(i) +
-                                                      ", should be in 0.." + std::to_string(n > 0 ? n - 1 : 0));
-                    return f;
+                    if (i == -1 && n == 0)
+                        return armedFailure("X::OutOfRange",
+                            "Index out of range. Is: -1, should be in 0..0");
+                    throw RakuError{Value::typeObj("X::OutOfRange"),
+                        "Index out of range. Is: " + std::to_string(i) +
+                        ", should be in 0.." + std::to_string(n > 0 ? n - 1 : 0)};
                 }
                 if (i >= 0 && i < n) {
                     // a hole (deleted slot) in a defaulted/typed array reads as the default
@@ -25411,6 +25452,17 @@ Value Interpreter::eval(Expr* e) {
                 std::string key = n.rfind("Endian::", 0) == 0 ? n.substr(8) : n;
                 Value ev = Value::enumVal(key, key == "NativeEndian" ? 0 : key == "LittleEndian" ? 1 : 2);
                 ev.enumType = "Endian"; return ev;
+            }
+            // enum ProtocolType <PROTO_TCP PROTO_UDP> — CORE's IO::Socket
+            // protocol selector, carrying the IPPROTO numbers. Cro::TCP::NoDelay
+            // passes PROTO_TCP straight into setsockopt(2); without the enum the
+            // name only resolved while the unit's declarations were opaque, and a
+            // fresh parse refused it — killing Cro's accept handler mid-request.
+            if (n == "ProtocolType::PROTO_TCP" || n == "PROTO_TCP" ||
+                n == "ProtocolType::PROTO_UDP" || n == "PROTO_UDP") {
+                std::string key = n.rfind("ProtocolType::", 0) == 0 ? n.substr(14) : n;
+                Value ev = Value::enumVal(key, key == "PROTO_TCP" ? 6 : 17);
+                ev.enumType = "ProtocolType"; return ev;
             }
             static const std::set<std::string> types = {
                 "Int", "Str", "Num", "Bool", "Any", "Mu", "Cool", "Numeric", "Real",

@@ -3024,6 +3024,8 @@ static bool jsonParseValue(const std::string& s, size_t& i, Value& out, JsonCfg 
     return out.t != VT::Any && out.t != VT::Nil; // "5." scans but does not numify — die like .Numeric
 }
 
+static void jfEscape(const std::string& s, std::string& out); // defined below (JSON::Fast codec)
+
 static std::string jsonEncode(const Value& v) {
     switch (v.t) {
         case VT::Nil: case VT::Any: case VT::Type: return "null";
@@ -3042,20 +3044,19 @@ static std::string jsonEncode(const Value& v) {
             return r + "]";
         }
         case VT::Hash: {
+            // keys go through the SAME escaper as string values — a quote or a
+            // C0 control in a key used to be concatenated raw, emitting invalid
+            // JSON from Rakudo::Internals::JSON.to-json and the dist-META writer
             std::string r = "{"; bool first = true;
-            if (v.hash()) for (auto& kv : *v.hash()) { if (!first) r += ","; first = false; r += "\"" + kv.first + "\":" + jsonEncode(kv.second); }
+            if (v.hash()) for (auto& kv : *v.hash()) {
+                if (!first) r += ","; first = false;
+                r += "\""; jfEscape(kv.first, r); r += "\":" + jsonEncode(kv.second);
+            }
             return r + "}";
         }
         default: { // string (and anything stringy)
             std::string r = "\"";
-            for (char c : v.toStr()) {
-                switch (c) {
-                    case '"': r += "\\\""; break; case '\\': r += "\\\\"; break;
-                    case '\n': r += "\\n"; break; case '\t': r += "\\t"; break;
-                    case '\r': r += "\\r"; break;
-                    default: r += c;
-                }
-            }
+            jfEscape(v.toStr(), r);
             return r + "\"";
         }
     }
@@ -8821,24 +8822,20 @@ void Interpreter::registerBuiltins() {
         out << content;
         return Value::boolean(true);
     };
-    B["slurp"] = [](Interpreter&, ValueList& a) -> Value {
-        if (!a.empty()) rejectNulPath(a[0].toStr());
+    B["slurp"] = [](Interpreter& I, ValueList& a) -> Value {
         if (a.empty()) { std::ostringstream ss; ss << std::cin.rdbuf(); return Value::str(ss.str()); } // slurp() = $*IN.slurp
-        std::ifstream in(a[0].toStr());
-        if (!in) throwFailedOpen(a[0].toStr());
-        std::ostringstream ss; ss << in.rdbuf();
-        std::string text = ss.str();
-        // same text-mode CRLF -> LF translation as the method form (see above);
-        // `slurp $p, :bin` routes to the method, which keeps the raw bytes
-        if (text.find('\r') != std::string::npos) {
-            std::string outT; outT.reserve(text.size());
-            for (size_t i = 0; i < text.size(); i++) {
-                if (text[i] == '\r' && i + 1 < text.size() && text[i + 1] == '\n') continue;
-                outT += text[i];
-            }
-            text.swap(outT);
+        // Delegate to the METHOD form: one reader, one rule set. The old copy
+        // here opened in text mode with no :bin arm at all — its own comment
+        // claimed ":bin routes to the method" while `slurp $p, :bin` returned
+        // a CRLF-squeezed Str where `$p.IO.slurp(:bin)` returned the raw Blob.
+        Value io = a[0];
+        if (io.t != VT::Hash) {              // a path: dispatch as IO, not bare Str
+            rejectNulPath(io.toStr());       // (a Str invocant must NOT slurp — see the method's guard)
+            io = Value::str(io.toStr());
+            io.hashKind = "IO";
         }
-        return Value::str(text);
+        ValueList rest(a.begin() + 1, a.end());
+        return I.methodCall(io, "slurp", rest);
     };
     // lines() / get() / words() with no arg read from $*ARGFILES: the files named
     // in @*ARGS (awk/perl -n style), or standard input when there are none.
@@ -10386,7 +10383,6 @@ void Interpreter::registerBuiltins() {
         I.sleepYield(a.empty() ? 0 : a[0].toNum());
         return Value::number(0);
     };
-    B["sleep-till"] = [](Interpreter&, ValueList&) -> Value { return Value::boolean(true); };
     B["done"] = [](Interpreter& I, ValueList&) -> Value {
         // `done` inside an on-demand supply activation ends its stream: fire the
         // downstream done callback and close the activation's inner taps.

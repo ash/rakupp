@@ -16,7 +16,7 @@ Reproduce any of them with:
 Scope note: this reflects the current build, defaulting to **Raku 6.d**. Where
 `rakupp` differs from Rakudo or omits something, it is called out inline and
 collected in [§14 rakupp-specific notes](#14-rakupp-specific-notes--caveats). The
-full machine-extracted inventories (214 subroutines, 736 methods) are in the
+full machine-extracted inventories (213 subroutines, 736 methods) are in the
 [appendices](#appendix-a--all-built-in-subroutines).
 
 ---
@@ -520,7 +520,7 @@ with verified examples, grouped by purpose. The complete alphabetical list is in
 
 | Sub | Purpose |
 |---|---|
-| `exit` `sleep` `sleep-till` | process control |
+| `exit` `sleep` `sleep-until` | process control |
 | `start` `await` `Promise` | async (returns awaitable) |
 | `react` `whenever` `supply` `emit` `take` | supplies / reactive |
 | `callsame` `callwith` `nextsame` `nextwith` `samewith` `lastcall` | dispatch redirection |
@@ -1003,7 +1003,7 @@ quietly rakupp-ext-load rakupp-parse-diagnosis rakupp-repo-lock
 rakupp-repo-unlock react rename reverse rindex rmdir roots rotor round
 roundrobin run RUN-MAIN RUN-MAIN-args-to-capture samemark samewith say
 sec sech set shell shift sign signal sink skip skip-rest sleep
-sleep-till sleep-timer sleep-until Slip slip slurp snip snitch so sort
+sleep-timer sleep-until Slip slip slurp snip snitch so sort
 splice split sprintf spurt sqrt srand start subtest succeed sum supply
 symlink take tc throws-like times todo trans truncate uc unimatch
 uniname uninames uniparse uniprop uniprops unival univals unlike

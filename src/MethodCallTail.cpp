@@ -119,7 +119,9 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
     // Str.parse-base($radix) — "ff".parse-base(16) == 255; fractions give a Rat
     if (m == "parse-base" && (inv.t == VT::Str || inv.t == VT::Match) && !args.empty()) {
         std::string s = inv.toStr(); long long base = a0().toInt();
-        if (base < 2 || base > 36) return Value::typeObj("Failure");
+        if (base < 2 || base > 36)
+            return armedFailure("X::Syntax::Number::RadixOutOfRange",
+                                "Radix " + std::to_string(base) + " out of range (allowed: 2..36)");
         size_t i2 = 0; bool neg = false;
         if (i2 < s.size() && (s[i2] == '-' || s[i2] == '+')) { neg = s[i2] == '-'; i2++; }
         auto digval = [&](char c) -> int {
@@ -128,11 +130,16 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             if (c >= 'A' && c <= 'Z') return c - 'A' + 10;
             return -1;
         };
+        auto badDigits = [&]() -> Value {
+            return armedFailure("X::Str::Numeric",
+                                "Cannot convert string to number: '" + s +
+                                "' is not a valid base-" + std::to_string(base) + " number");
+        };
         BigInt whole(0); bool any = false;
         for (; i2 < s.size() && s[i2] != '.'; i2++) {
             if (s[i2] == '_') continue;
             int d = digval(s[i2]);
-            if (d < 0 || d >= base) return Value::typeObj("Failure");
+            if (d < 0 || d >= base) return badDigits();
             whole = whole * BigInt(base) + BigInt(d); any = true;
         }
         BigInt fnum(0), fden(1);
@@ -140,11 +147,11 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             for (i2++; i2 < s.size(); i2++) {
                 if (s[i2] == '_') continue;
                 int d = digval(s[i2]);
-                if (d < 0 || d >= base) return Value::typeObj("Failure");
+                if (d < 0 || d >= base) return badDigits();
                 fnum = fnum * BigInt(base) + BigInt(d); fden = fden * BigInt(base); any = true;
             }
         }
-        if (!any) return Value::typeObj("Failure");
+        if (!any) return badDigits();
         if (fden.fitsLL() && fden.toLL() == 1) {
             if (neg) whole = -whole;
             return Value::bigint(whole);
@@ -237,7 +244,8 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             if (nv.t == VT::Hash && nv.hashKind == "Failure") return nv;
         }
         long long v = inv.toInt();
-        if (v < 0) return Value::typeObj("Failure");
+        if (v < 0) return armedFailure("X::OutOfRange",
+            "Cannot coerce " + std::to_string(v) + " to UInt: it is negative");
         return Value::integer(v);
     }
     // Baggy.kxxv — every key repeated by its weight
@@ -253,7 +261,9 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
     // Rat.base-repeating($radix) — (non-repeating part, repeating cycle)
     if (m == "base-repeating" && inv.t == VT::Rat && inv.ratN() && inv.ratD() && !args.empty()) {
         long long base = a0().toInt();
-        if (base < 2 || base > 36) return Value::typeObj("Failure");
+        if (base < 2 || base > 36)
+            return armedFailure("X::Syntax::Number::RadixOutOfRange",
+                                "Radix " + std::to_string(base) + " out of range (allowed: 2..36)");
         auto digchr = [](int d) -> char { return d < 10 ? char('0' + d) : char('A' + d - 10); };
         BigInt n = inv.ratN()->abs(), d = inv.ratD()->abs();
         std::string sign = inv.ratN()->sign < 0 ? "-" : "";

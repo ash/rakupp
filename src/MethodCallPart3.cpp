@@ -993,15 +993,19 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     if (m == "spurt" && !(inv.t == VT::Hash && inv.hashKind == "FileHandle")) {
         // path-spurt; an open IO::Handle's .spurt is handled in the FileHandle
         // block below (buffer + flush-on-close), not by stringifying the handle
-        bool append = false;
+        rejectNulPath(inv.toStr()); // the sub form always refused NUL; this copy did not
+        bool append = false, createonly = false;
         std::string content;
         bool haveContent = false;
         for (auto& a : args) {
             if (a.t == VT::Pair && a.namedArg) {
                 if (a.s == "append") append = a.pairVal() && a.pairVal()->truthy();
+                else if (a.s == "createonly" || a.s == "x") createonly = a.pairVal() && a.pairVal()->truthy();
             }
             else if (!haveContent) { content = a.toStr(); haveContent = true; }
         }
+        // :createonly / :x — refuse to clobber, same answer as the sub form
+        if (createonly) { std::ifstream probe(inv.toStr()); if (probe) return Value::boolean(false); }
         std::ofstream out(inv.toStr(), append ? (std::ios::out | std::ios::app) : std::ios::out);
         if (!out) return Value::boolean(false);
         out << content;
@@ -1574,32 +1578,14 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         return p;
     }
     if (m == "open") { // returns a buffered file handle
-        Value h = Value::makeHash(); h.hashKind = "FileHandle";
-        (*h.hash())["path"] = Value::str(inv.toStr());
-        std::string mode = "r"; bool excl = false;
-        for (auto& a : args) if (a.t == VT::Pair) {
-            if (a.s == "w") mode = "w"; else if (a.s == "a") mode = "a"; else if (a.s == "r") mode = "r";
-            else if (a.s == "rw") mode = "rw";
-            else if (a.s == "update") mode = "update";
-            else if (a.s == "exclusive" || a.s == "x") excl = true;
-        }
-        if (excl) { // create-new-or-fail — see the open() builtin (File::Temp's claim)
-            std::ifstream probe(inv.toStr());
-            if (probe) throw RakuError{Value::typeObj("X::IO::Exclusive"),
-                "Failed to open file " + inv.toStr() + ": file already exists"};
-            if (mode == "r") mode = "w";
-        }
-        if (mode == "update") {
-            std::ifstream probe(inv.toStr());
-            if (!probe) throw RakuError{Value::typeObj("X::IO::DoesNotExist"),
-                "Failed to open file " + inv.toStr() + ": no such file or directory"};
-        }
-        (*h.hash())["mode"] = Value::str(mode);
-        (*h.hash())["buffer"] = Value::str("");
-        if (mode == "w") { std::ofstream create(inv.toStr(), std::ios::trunc); } // the file exists immediately
-        if (mode == "rw") { std::ofstream create(inv.toStr(), std::ios::app); }  // exists immediately, kept intact
-        if (mode != "r") registerWriteHandle(h.hashS()); // flush at exit if not closed
-        return h;
+        // Delegates to the open() builtin: one implementation, one rule set.
+        // This arm used to be a stripped copy that skipped the read-mode
+        // existence check (so "/nope".IO.open handed back a live handle where
+        // open("/nope") threw), skipped rejectNulPath, and dropped :nl-in.
+        ValueList ca;
+        ca.push_back(Value::str(inv.toStr()));
+        for (auto& a : args) ca.push_back(a);
+        return callBuiltin("open", ca);
     }
     if (inv.t == VT::Hash && inv.hashKind == "FileHandle") {
         // IO::Handle accessors (with defaults); writable via lvalue()
