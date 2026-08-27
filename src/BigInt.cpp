@@ -146,27 +146,55 @@ void BigInt::divmod(const BigInt& a, const BigInt& b, BigInt& q, BigInt& r) {
         r = fromMagU64(am % bm, a.sign);
         return;
     }
-    // long division on magnitudes, base 1e9, via binary search per limb
+    // Long division on magnitudes, base 1e9 — Knuth's algorithm D. The quotient
+    // limb is ESTIMATED from the leading limbs and then corrected, instead of
+    // binary-searched: the search cost ~30 full BigInt multiplications per limb,
+    // which made gcd (Euclid over divmod, and every Rat construction calls it)
+    // 865ms on a 1437-digit/812-digit pair where Rakudo takes 3ms. That was not
+    // a corner: Math::NumberTheory's FatRat digit expansions reduce Rats with
+    // ~600-digit parts on every step, and the file simply never finished.
+    //
+    // Normalizing by `f` so the divisor's top limb is at least BASE/2 is what
+    // bounds the estimate's error to 2 — without it a small leading limb can
+    // make the estimate wrong by a factor of BASE.
+    BigInt babs = b.abs(), aabs = a.abs();
+    uint32_t f = (uint32_t)((uint64_t)BASE / ((uint64_t)babs.mag.back() + 1));
+    if (f > 1) { aabs = aabs * BigInt((long long)f); babs = babs * BigInt((long long)f); }
+    const size_t n = babs.mag.size();
+    const uint64_t vtop = babs.mag[n - 1];
     BigInt cur;          // running remainder (magnitude, positive)
-    BigInt babs = b.abs();
-    q.mag.assign(a.mag.size(), 0);
-    for (int i = (int)a.mag.size() - 1; i >= 0; i--) {
-        // cur = cur*BASE + a.mag[i]
-        cur.mag.insert(cur.mag.begin(), a.mag[i]);
+    q.mag.assign(aabs.mag.size(), 0);
+    for (int i = (int)aabs.mag.size() - 1; i >= 0; i--) {
+        // cur = cur*BASE + aabs.mag[i]
+        cur.mag.insert(cur.mag.begin(), aabs.mag[i]);
         cur.sign = 1; cur.trim();
-        // find largest x in [0,BASE) with babs*x <= cur
-        uint32_t lo = 0, hi = BASE - 1, x = 0;
-        while (lo <= hi) {
-            uint32_t mid = lo + (hi - lo) / 2;
-            BigInt t = babs * BigInt((long long)mid);
-            if (cmpMag(t, cur) <= 0) { x = mid; lo = mid + 1; }
-            else { if (mid == 0) break; hi = mid - 1; }
+        uint32_t x = 0;
+        if (cmpMag(cur, babs) >= 0) {
+            // cur < babs*BASE here, so it is at most one limb longer than babs
+            size_t m = cur.mag.size();
+            uint64_t top = cur.mag[m - 1];
+            if (m > n) top = top * (uint64_t)BASE + cur.mag[m - 2];
+            uint64_t est = top / vtop;
+            if (est > (uint64_t)BASE - 1) est = (uint64_t)BASE - 1;
+            x = (uint32_t)est;
+            BigInt t = babs * BigInt((long long)x);
+            while (x > 0 && cmpMag(t, cur) > 0) { x--; t = subMag(t, babs); }   // at most 2
+            for (;;) { BigInt t2 = t + babs; if (cmpMag(t2, cur) > 0) break; x++; t = t2; }
+            cur = subMag(cur, t);
         }
         q.mag[i] = x;
-        cur = subMag(cur, babs * BigInt((long long)x));
     }
     q.sign = a.sign * b.sign;
     q.trim();
+    if (f > 1) { // undo the normalization on the remainder (f divides it exactly)
+        uint64_t carry = 0;
+        for (int i = (int)cur.mag.size() - 1; i >= 0; i--) {
+            uint64_t v = carry * (uint64_t)BASE + cur.mag[i];
+            cur.mag[i] = (uint32_t)(v / f);
+            carry = v % f;
+        }
+        cur.sign = 1; cur.trim();
+    }
     r = cur; r.sign = (cur.mag.empty() ? 0 : a.sign); r.trim();
 }
 
