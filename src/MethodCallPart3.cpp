@@ -629,10 +629,16 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // exists, which is a False rather than an error.
         if (i < 0) {
             if (m == "EXISTS-POS") return Value::boolean(false);
-            long long sz = (long long)inv.arr()->size();
+            // an ARMED Failure like the subscript sites (REVIEW-3.7 batch 1's
+            // throw unification went the wrong way — Roast stores these in
+            // arrays and asserts the Failure type; the throw killed the file)
+            if (m == "AT-POS")
+                return armedFailure("X::OutOfRange",
+                    "Index out of range. Is: " + std::to_string(i) +
+                    ", should be in 0..^Inf");
             throw RakuError{Value::typeObj("X::OutOfRange"),
                             "Index out of range. Is: " + std::to_string(i) +
-                            ", should be in 0.." + std::to_string(sz > 0 ? sz - 1 : 0)};
+                            ", should be in 0..^Inf"};
         }
         bool in = i < (long long)inv.arr()->size();
         if (m == "EXISTS-POS") return Value::boolean(in && defined((*inv.arr())[i]));

@@ -23803,22 +23803,16 @@ Value Interpreter::evalIndex(Index* idx) {
                     Value iv = eval(idx->index.get());
                     if (iv.t == VT::Int && !iv.big()) {
                         long long ix = iv.i;
-                        if (ix < 0) { // negative is out of range (no Python wraparound) → THROW
-                            // Rakudo throws here, eagerly — `@a[$neg]` is not a
-                            // soft Failure (and `@a[$neg] // 0` dies there too);
-                            // AT-POS already threw, so the three sites now agree.
-                            // ONE measured exception: `@empty[*-1]` — index -1 on
-                            // an empty array — answers a SOFT Failure in Rakudo
-                            // (`*-2` on empty and `*-N` past a non-empty both
-                            // throw). Cro's "last chunk, if any" idiom leans on
-                            // it; the first throw here hung its live-server test.
-                            long long sz = (long long)arr->size();
-                            if (ix == -1 && sz == 0)
-                                return armedFailure("X::OutOfRange",
-                                    "Index out of range. Is: -1, should be in 0..0");
-                            throw RakuError{Value::typeObj("X::OutOfRange"),
+                        if (ix < 0) { // negative is out of range (no Python wraparound) → ARMED Failure
+                            // Roast pins the SOFT form: S02-types/nested_arrays.t
+                            // maps over out-of-range indices and asserts
+                            // `isa-ok @b[3], Failure` with range '0..^Inf' — the
+                            // Failure detonates on use/sink, which is what made a
+                            // bare `try { my $v = @a[$neg] }` LOOK like an eager
+                            // throw when probing Rakudo (the block sinks $v).
+                            return armedFailure("X::OutOfRange",
                                 "Index out of range. Is: " + std::to_string(ix) +
-                                ", should be in 0.." + std::to_string(sz > 0 ? sz - 1 : 0)};
+                                ", should be in 0..^Inf");
                         }
                         if (ix < (long long)arr->size()) {
                             Value el = (*arr)[ix];
@@ -24695,20 +24689,15 @@ Value Interpreter::evalIndex(Index* idx) {
                 // entered only for Array/Range/Str. The live arm is at the end of
                 // the function.)
                 // A negative index is OUT OF RANGE in Raku (there is no Python-style
-                // from-the-end wraparound — that is what `@a[*-1]` is for). Both a
-                // literal `@a[-1]` and a `*-N` that resolves below 0 THROW, as
-                // Rakudo's do — a soft Failure here let `@a[$neg] // 0` answer
-                // where Rakudo dies, and disagreed with AT-POS's throw. The ONE
-                // measured soft case is -1 on an EMPTY array (`@empty[*-1]`, the
-                // "last chunk, if any" idiom): Rakudo answers a Failure there
-                // while `*-2` on empty and `*-N` past a non-empty array throw.
+                // from-the-end wraparound — that is what `@a[*-1]` is for). The
+                // answer is an ARMED Failure that detonates on use — Roast's
+                // nested_arrays.t stores them in an array and asserts the type,
+                // so an eager throw here killed the file (and Cro's
+                // last-chunk-if-any `@empty[*-1]` needs the soft form too).
                 if (i < 0) {
-                    if (i == -1 && n == 0)
-                        return armedFailure("X::OutOfRange",
-                            "Index out of range. Is: -1, should be in 0..0");
-                    throw RakuError{Value::typeObj("X::OutOfRange"),
+                    return armedFailure("X::OutOfRange",
                         "Index out of range. Is: " + std::to_string(i) +
-                        ", should be in 0.." + std::to_string(n > 0 ? n - 1 : 0)};
+                        ", should be in 0..^Inf");
                 }
                 if (i >= 0 && i < n) {
                     // a hole (deleted slot) in a defaulted/typed array reads as the default
