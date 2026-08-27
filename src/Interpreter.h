@@ -1591,7 +1591,12 @@ public:
     // a value-only fold (no Interpreter in reach there). lhsExpr, when the
     // caller has the AST, enables the parenthesised-list write-back.
     static bool isHyperCompoundAssign(const std::string& inner, const Value& l);
-    Value hyperCompoundAssign(const std::string& inner, const Value& l, const Value& r, Expr* lhsExpr);
+    // strictL/strictR — the pointing of the hyper markers (a strict side pins
+    // its length): »op=« with unequal lengths throws X::HyperOp::NonDWIM as
+    // Rakudo's does, «op=« touches only the first RHS-length elements, and
+    // »op=» cycles the RHS (the dwimmy default).
+    Value hyperCompoundAssign(const std::string& inner, const Value& l, const Value& r,
+                              Expr* lhsExpr, bool strictL, bool strictR);
     // Z / X and their Z<op> / X<op> metaop forms — ONE implementation (one-level
     // element model, lazy-side materialisation, the endless-Z lazy view, and the
     // Z=> / Z, emit rules). Public: the free applyArith ladder reaches it

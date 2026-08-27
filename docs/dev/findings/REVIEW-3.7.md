@@ -282,6 +282,48 @@ reading the recent hot-path diffs. Each wants the interleaved-A/B discipline
    Gates: t/run.raku green on the batch build; S06-multi/S05 roast slice
    flat; all four A/B kernels improved or noise, none regressed.
 
+## Post-review arc: issue #37 (fez/zef), 2026-08-27
+
+The cooldown's coda, driven by github.com/ash/rakupp/issues/37 ("fail to
+install fez"). Seven general fixes, each hiding the next, all pinned by
+`t/regression/issue37-fez-zef-install.raku`:
+
+1. The lexer fuses `<->` / `<=>` / `<+>` into single operator tokens; tight
+   after a colonpair name they are the angle-quoted VALUE
+   (`:replacement<->` — fez's actual parse blocker at Fez::CLI:1200).
+2. `verSatisfies` treats bare `"*"` as anything (it segmented to [0] and
+   rejected every candidate).
+3. A non-literal paren `use`-adverb (`:ver($?DISTRIBUTION.meta<version> //
+   '*')`, zef's self-pinning spelling on every module) is UNCONSTRAINED —
+   the raw expression text used to become the requirement string.
+4. `$?DISTRIBUTION` in a `-I`-loaded module is an object with a quiet empty
+   meta, never the bare undefined (whose `.meta` died mid-load and read as
+   "Could not find <module>").
+5. `my Bool @a = Nil` is one default element, as Rakudo's ([Any]; the typed
+   element-type spelling — Rakudo's [Bool] — is a noted residual).
+6. Invoking the undefined value is the Any identity coercion — zef's own
+   02-checkbuild.t reaches `Fez::CLI::<&MAIN>('checkbuild')` through a
+   package-stash miss and Rakudo passes it VACUOUSLY the same way.
+7. `my Hash() %options` — the EMPTY coercion parens (`(Any)` shorthand)
+   parse as part of the declaration (Text::Table::Simple's option builder;
+   they used to fall out as a sink `()` and take the variable with them).
+
+Plus one regex-engine fix from the same sweep: a Junction eigenstate that is
+an INTERPOLATING regex (`rx/ <$_> /`) now matches in the env it closed over
+(threading dropped the rxVal and `<$_>` read the match SUBJECT — fez's
+Fez::Util::Glob matched everything; 25 of its 27 tests failed, now 27/27).
+
+End-to-end, isolated HOME: `rakupp install fez` (tests pass) → `fez version`
+100.0.2 exit 0; `rakupp install --no-test zef` → `zef install
+Text::Table::Simple` (fetch → test → install, exit 0) → the module loads and
+renders. fez's suite 4/4; zef's own suite 1/10 → 8/10 (remaining:
+distribution-depends-parsing.rakutest — deep `:any[…]` alternative-dependency
+resolution in Zef::Client — and install.rakutest). Residuals noted:
+`my Str() @a` coerces the list whole, not per element;
+`.decode('ascii', :replacement<…>)` parses and runs but ignores the
+replacement semantics; `use-ok` imports into the caller's scope (an imported
+MAIN prints usage after a test file's plan — harmless to TAP and exit).
+
 ## Already done in this round
 
 - CI back to green at `6c25a94` (Windows/OpenBSD/slim fixes, budgets
