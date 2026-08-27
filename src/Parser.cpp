@@ -397,6 +397,13 @@ void Parser::scanOpsIn(const std::string& src, const std::string& srcPath) {
     // REDECLARATION of a built-in (`multi infix:<*>(Color, Real)`); registering it
     // as a user op would give it the default precedence and silently reshape every
     // expression in the importing file
+    // `gcd` / `div` / `eq` — an operator spelled as a bare identifier, which is
+    // what the classifier recognises as a WORD infix.
+    auto identShapedOpName = [](const std::string& n) {
+        if (n.empty() || !(ascii::isalpha((unsigned char)n[0]) || n[0] == '_')) return false;
+        for (unsigned char c : n) if (!ascii::isalnum(c) && c != '_') return false;
+        return true;
+    };
     auto asciiOnlyOp = [](const std::string& n) {
         if (n.empty()) return true;
         for (unsigned char c : n)
@@ -436,8 +443,20 @@ void Parser::scanOpsIn(const std::string& src, const std::string& srcPath) {
                 // genuinely new operator (`sub infix:<%%%>`) and has to be known.
                 Token t; t.text = name; t.kind = Tok::Op;
                 bool builtin = classifyInfix(t).valid;
-                if (!builtin) { t.kind = Tok::Ident; builtin = classifyInfix(t).valid; }
+                Token ti; ti.text = name; ti.kind = Tok::Ident;
+                InfixInfo word = classifyInfix(ti);
+                if (!builtin) builtin = word.valid;
                 if (!builtin && !userInfix_.count(name)) regInfix(name, BP_ADD);
+                // A WORD operator the module redeclares (`multi infix:<gcd>(Complex,
+                // Complex)` in Math::NumberTheory) still has to reach the user's
+                // candidates: the built-in `gcd` coerces its operands to Int, so it
+                // answers 25 for `(10 + 15i) gcd 25` instead of deferring. Register it
+                // at the BUILT-IN's own precedence — the file's expressions must not
+                // reshape — and let the runtime fall back to the built-in when no
+                // candidate takes the operands. Word-shaped only: routing every `==`
+                // through a user dispatcher is what the ASCII rule above avoids.
+                else if (word.valid && identShapedOpName(name) && !userInfix_.count(name))
+                    regInfix(name, word.lbp);
             }
             else if (asciiOnlyOp(name)) continue;
             else if (c1 == "prefix") regSet('p', userPrefix_, name);

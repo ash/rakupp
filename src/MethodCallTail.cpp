@@ -1355,20 +1355,52 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             // A key that is itself a LIST is a multi-LEVEL path: the element lands
             // in a hash of hashes, one level per key (`classify { [.&odd, .&big] }`
             // is %h<odd><big>), not under the keys joined into one string.
-            auto add = [&](const std::vector<std::string>& path, const Value& vIn) {
+            // Rakudo's classify/categorize answer an OBJECT hash (`Mu %{Mu}`), so a
+            // key keeps the classifier's own type: `(61,).classify(*)` has the Int
+            // 61 for a key, not "61". Our payload is string-keyed, so the original
+            // travels on the stored value's pairKey — the same channel Set/Bag/Mix
+            // already use, which .key/.keys/.pairs/hashToPairs/.raku all honour.
+            // (Math::NumberTheory reads `$_.key` straight out of a classify and
+            // hands it to `power-mod(Int:D …)`, which a Str never bound.)
+            // An UNDEFINED key keeps its gist — Nil, (Any), (Int) — instead of
+            // collapsing to the empty string. Rakudo shows `Bag(Nil(6))` where
+            // rakupp showed `Bag((6))` for lines a classifier could not key
+            // (issue #14's file: lines with fewer words than the index).
+            auto keyOf = [](const Value& kv) {
+                return rtIsDefined(kv) ? kv.toStr() : kv.gist();
+            };
+            auto keyObj = [](const Value& kv) -> std::shared_ptr<Value> {
+                return kv.t == VT::Str ? nullptr : std::make_shared<Value>(kv);
+            };
+            auto add = [&](const std::vector<Value>& path, const Value& vIn) {
                 // `:as` maps the STORED value; the key still comes from the classifier
                 Value v = asF ? callCallable(*asF, {vIn}) : vIn;
                 Value* level = &h;
                 for (size_t d = 0; d + 1 < path.size(); d++) {
-                    auto it = level->hash()->find(path[d]);
-                    if (it == level->hash()->end() || it->second.t != VT::Hash || !it->second.hash())
-                        (*level->hash())[path[d]] = Value::makeHash();
-                    level = &(*level->hash())[path[d]];
+                    std::string ks = keyOf(path[d]);
+                    auto it = level->hash()->find(ks);
+                    if (it == level->hash()->end() || it->second.t != VT::Hash || !it->second.hash()) {
+                        Value nested = Value::makeHash();
+                        nested.pairKeyM() = keyObj(path[d]);
+                        (*level->hash())[ks] = std::move(nested);
+                    }
+                    level = &(*level->hash())[ks];
                 }
-                const std::string& key = path.back();
+                std::string key = keyOf(path.back());
                 auto it = level->hash()->find(key);
-                if (it == level->hash()->end()) { Value a = Value::array(); a.arr()->push_back(v); (*level->hash())[key] = a; }
-                else { if (it->second.t != VT::Array) { Value a = Value::array(); a.arr()->push_back(it->second); it->second = a; } it->second.arr()->push_back(v); }
+                if (it == level->hash()->end()) {
+                    Value a = Value::array(); a.arr()->push_back(v);
+                    a.pairKeyM() = keyObj(path.back());
+                    (*level->hash())[key] = std::move(a);
+                }
+                else {
+                    if (it->second.t != VT::Array) {
+                        Value a = Value::array(); a.arr()->push_back(it->second);
+                        a.pairKeyM() = it->second.pairKey();
+                        it->second = a;
+                    }
+                    it->second.arr()->push_back(v);
+                }
             };
             for (auto& v : items) {
                 // the classifier may be a Callable (called), a Hash (indexed by the
@@ -1382,14 +1414,11 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 // collapsing to the empty string. Rakudo shows `Bag(Nil(6))` where
                 // rakupp showed `Bag((6))` for lines a classifier could not key
                 // (issue #14's file: lines with fewer words than the index).
-                auto keyOf = [](const Value& kv) {
-                    return rtIsDefined(kv) ? kv.toStr() : kv.gist();
-                };
                 auto pathOf = [&](const Value& kv) {
-                    std::vector<std::string> p;
+                    std::vector<Value> p;
                     if (kv.t == VT::Array && kv.arr() && !kv.itemized && !kv.arr()->empty())
-                        for (auto& e : *kv.arr()) p.push_back(keyOf(e));
-                    else p.push_back(keyOf(kv));
+                        for (auto& e : *kv.arr()) p.push_back(e);
+                    else p.push_back(kv);
                     return p;
                 };
                 // categorize's classifier returns a LIST OF categories (each of
@@ -2608,6 +2637,29 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             BigInt mod = args[1].big() ? *args[1].big() : BigInt(args[1].toInt());
             if (mod.isZero()) return Value::integer(0);
             auto modOf = [&](const BigInt& x) { BigInt q, r; BigInt::divmod(x, mod, q, r); if (r.sign < 0) r = r + mod; return r; };
+            // A NEGATIVE exponent asks for the modular inverse raised to |e|
+            // (Math::NumberTheory's modular-inverse is `power-mod($k, -1, $n)`).
+            // Halving a negative `e` in the square-and-multiply below just ran the
+            // |e| = 1 case and answered the base itself.
+            if (e.sign < 0) {
+                if (mod.abs().fitsLL() && mod.abs().toLL() == 1) return Value::integer(0);
+                // extended Euclid over the residue: x with (base·x) ≡ 1 (mod m)
+                BigInt m = mod.abs(), a = modOf(base);
+                BigInt old_r = a, r0 = m, old_s(1), s0(0);
+                while (!r0.isZero()) {
+                    BigInt q, rem; BigInt::divmod(old_r, r0, q, rem);
+                    old_r = r0; r0 = rem;
+                    BigInt ns = old_s - q * s0; old_s = s0; s0 = ns;
+                }
+                if (!(old_r.fitsLL() && old_r.toLL() == 1))
+                    throw RakuError{Value::typeObj("X::AdHoc"),
+                                    "expmod: " + base.toString() + " has no inverse modulo " +
+                                    mod.toString()};
+                BigInt q, inv; BigInt::divmod(old_s, m, q, inv);
+                if (inv.sign < 0) inv = inv + m;
+                base = inv;
+                e = e.abs();
+            }
             BigInt result(1), b = modOf(base);
             // square-and-multiply over e's bits (via halving)
             BigInt two(2), cur = e;

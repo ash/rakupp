@@ -755,6 +755,123 @@ static void collectPHExpr(const Expr* e, std::set<std::string>& out) {
     }
 }
 
+// --- gather replay support -------------------------------------------------
+// A lazy gather extends itself by RE-RUNNING its block with a larger take cap
+// (there are no coroutines here). That only reproduces the earlier elements if
+// the block is REPLAYABLE — a block that mutates state it did not declare
+// resumes from the mutated variables instead, and the elements the re-run then
+// skipped are lost without a word. Math::NumberTheory's accel-asc keeps its
+// partition state in three variables of the enclosing sub and answered 64 of
+// the 77 partitions of 12. So: find those variables, and restore them before
+// every re-run.
+//
+// Over-collecting is safe (an extra variable is snapshotted and restored to the
+// same value); under-collecting only returns to the old behaviour.
+static void gatherWritesExpr(const Expr* e, std::set<std::string>& writes,
+                             std::set<std::string>& declared);
+static void gatherWritesStmt(const Stmt* s, std::set<std::string>& writes,
+                             std::set<std::string>& declared);
+
+// the root variable a write lands on: `@a`, `@a[$k]`, `%h<x><y>`, `$obj.attr`
+static const VarExpr* writeRootVar(const Expr* e) {
+    while (e) {
+        switch (e->kind) {
+            case NK::VarExpr: return static_cast<const VarExpr*>(e);
+            case NK::Index: e = static_cast<const Index*>(e)->base.get(); break;
+            case NK::MethodCall: e = static_cast<const MethodCall*>(e)->inv.get(); break;
+            default: return nullptr;
+        }
+    }
+    return nullptr;
+}
+static void noteWrite(const Expr* target, std::set<std::string>& writes) {
+    if (const VarExpr* v = writeRootVar(target))
+        if (!v->declare && v->name.size() > 1) writes.insert(v->name);
+}
+static void gatherWritesExpr(const Expr* e, std::set<std::string>& writes,
+                             std::set<std::string>& declared) {
+    if (!e) return;
+    switch (e->kind) {
+        case NK::VarExpr: {
+            auto* v = static_cast<const VarExpr*>(e);
+            if (v->declare) declared.insert(v->name);
+            gatherWritesExpr(v->declDefault.get(), writes, declared);
+            break;
+        }
+        case NK::Assign: { auto* a = static_cast<const Assign*>(e);
+            noteWrite(a->target.get(), writes);
+            gatherWritesExpr(a->target.get(), writes, declared);
+            gatherWritesExpr(a->value.get(), writes, declared); break; }
+        case NK::Unary: { auto* u = static_cast<const Unary*>(e);
+            if (u->op == "++" || u->op == "--") noteWrite(u->operand.get(), writes);
+            gatherWritesExpr(u->operand.get(), writes, declared); break; }
+        case NK::MethodCall: { auto* m = static_cast<const MethodCall*>(e);
+            static const std::set<std::string> kMutators = {
+                "push", "append", "unshift", "prepend", "pop", "shift", "splice",
+                "delete"};
+            if (kMutators.count(m->method) || m->mutate) noteWrite(m->inv.get(), writes);
+            gatherWritesExpr(m->inv.get(), writes, declared);
+            for (auto& a : m->args) gatherWritesExpr(a.get(), writes, declared); break; }
+        case NK::Binary: { auto* b = static_cast<const Binary*>(e);
+            gatherWritesExpr(b->lhs.get(), writes, declared);
+            gatherWritesExpr(b->rhs.get(), writes, declared); break; }
+        case NK::ChainExpr: for (auto& o : static_cast<const ChainExpr*>(e)->operands) gatherWritesExpr(o.get(), writes, declared); break;
+        case NK::Call: { auto* c = static_cast<const Call*>(e); gatherWritesExpr(c->callee.get(), writes, declared);
+            for (auto& a : c->args) gatherWritesExpr(a.get(), writes, declared); break; }
+        case NK::Index: { auto* i = static_cast<const Index*>(e);
+            gatherWritesExpr(i->base.get(), writes, declared);
+            gatherWritesExpr(i->index.get(), writes, declared); break; }
+        case NK::Ternary: { auto* t = static_cast<const Ternary*>(e); gatherWritesExpr(t->cond.get(), writes, declared);
+            gatherWritesExpr(t->then.get(), writes, declared); gatherWritesExpr(t->els.get(), writes, declared); break; }
+        case NK::Range: { auto* r = static_cast<const RangeExpr*>(e);
+            gatherWritesExpr(r->from.get(), writes, declared); gatherWritesExpr(r->to.get(), writes, declared); break; }
+        case NK::Pair: { auto* p = static_cast<const PairExpr*>(e);
+            gatherWritesExpr(p->keyExpr.get(), writes, declared); gatherWritesExpr(p->value.get(), writes, declared); break; }
+        case NK::ListExpr: for (auto& it : static_cast<const ListExpr*>(e)->items) gatherWritesExpr(it.get(), writes, declared); break;
+        case NK::ArrayLit: for (auto& it : static_cast<const ArrayLit*>(e)->items) gatherWritesExpr(it.get(), writes, declared); break;
+        case NK::HashLit: for (auto& it : static_cast<const HashLit*>(e)->items) gatherWritesExpr(it.get(), writes, declared); break;
+        case NK::InterpStr: for (auto& it : static_cast<const InterpStr*>(e)->parts) gatherWritesExpr(it.get(), writes, declared); break;
+        case NK::BlockExpr: for (auto& st : static_cast<const BlockExpr*>(e)->body) gatherWritesStmt(st.get(), writes, declared); break;
+        default: break;
+    }
+}
+static void gatherWritesStmt(const Stmt* s, std::set<std::string>& writes,
+                             std::set<std::string>& declared) {
+    if (!s) return;
+    switch (s->kind) {
+        case NK::ExprStmt: gatherWritesExpr(static_cast<const ExprStmt*>(s)->e.get(), writes, declared); break;
+        case NK::ReturnStmt: gatherWritesExpr(static_cast<const ReturnStmt*>(s)->value.get(), writes, declared); break;
+        case NK::Block: for (auto& st : static_cast<const Block*>(s)->stmts) gatherWritesStmt(st.get(), writes, declared); break;
+        case NK::IfStmt: { auto* i = static_cast<const IfStmt*>(s);
+            for (auto& br : i->branches) { gatherWritesExpr(br.first.get(), writes, declared); gatherWritesStmt(br.second.get(), writes, declared); }
+            gatherWritesStmt(i->elseBlock.get(), writes, declared); break; }
+        case NK::WhileStmt: { auto* w = static_cast<const WhileStmt*>(s);
+            gatherWritesExpr(w->cond.get(), writes, declared); gatherWritesStmt(w->body.get(), writes, declared); break; }
+        case NK::ForStmt: { auto* f = static_cast<const ForStmt*>(s);
+            gatherWritesExpr(f->list.get(), writes, declared); gatherWritesStmt(f->body.get(), writes, declared); break; }
+        case NK::GivenStmt: { auto* g = static_cast<const GivenStmt*>(s);
+            gatherWritesExpr(g->topic.get(), writes, declared);
+            if (g->body) for (auto& st : g->body->stmts) gatherWritesStmt(st.get(), writes, declared); break; }
+        default: break;
+    }
+}
+// A structural copy for the snapshot: an Array/Hash Value shares its payload,
+// so a plain copy would still alias the block's mutations.
+static Value gatherDeepCopy(const Value& v, int depth = 0) {
+    if (depth > 16) return v;
+    Value c = v;
+    if (v.t == VT::Array && v.arr()) {
+        c.setArr(std::make_shared<ValueList>());
+        c.arr()->reserve(v.arr()->size());
+        for (auto& e : *v.arr()) c.arr()->push_back(gatherDeepCopy(e, depth + 1));
+    }
+    else if (v.t == VT::Hash && v.hash()) {
+        c.setHash(std::make_shared<ValueHash>());
+        for (auto& kv : *v.hash()) (*c.hash())[kv.first] = gatherDeepCopy(kv.second, depth + 1);
+    }
+    return c;
+}
+
 static void collectPHStmt(const Stmt* s, std::set<std::string>& out) {
     if (!s) return;
     switch (s->kind) {
@@ -1162,6 +1279,18 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
             }
         }
         bool ascending = hasGen ? true : (geometric ? ratio >= 1 : step >= 0);
+        // A NEGATIVE geometric ratio alternates sign, so the endpoint is compared by
+        // MAGNITUDE — Rakudo's `1, -2, 4 ... 10` is (1 -2 4 -8) and `... 3` is (1 -2).
+        bool seqMagnitude = geometric && ratio < 0;
+        // A DEDUCED sequence has a travel direction, so it can tell when a value has
+        // gone past the endpoint. A generator closure has none (Rakudo runs `5, 4,
+        // { $_ - 1 } ... 10` forever), and neither does a constant step/ratio.
+        bool seqHaveDir = !hasGen && !infinite && !endCode &&
+                          (geometric ? (ratio != 1 && ratio != 0) : step != 0);
+        auto seqPassedEnd = [&](double v) {
+            if (seqMagnitude) return std::fabs(v) > std::fabs(endVal);
+            return ascending ? v > endVal : v < endVal;
+        };
         // How many trailing elements the generator consumes: a `* + *` WhateverCode
         // by its whateverArity, `{ $^a + $^b }` by its placeholder count (the
         // canonical `1, 1, { $^a + $^b } … *` fibonacci), `-> $a, $b {…}` by its
@@ -1280,6 +1409,19 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
                     out.arr()->resize(exclusive ? k : k + 1);
                     return out;
                 }
+        // The endpoint tests every element the sequence EMITS, seeds included:
+        // `3, 5 ... 2` is empty and `0, 4 ... 2` is (0,), not (0, 4). Pushing the
+        // seeds unconditionally made Math::NumberTheory's frobenius-solve —
+        // `for $first, $first + $step ... $limit` — search branches past its limit
+        // and report solutions with negative coefficients.
+        if (seqHaveDir) {
+            auto& es = *out.arr();
+            for (size_t k = 0; k < es.size(); k++) {
+                double v = es[k].toNum();
+                if (seqPassedEnd(v)) { es.resize(k); return out; }
+                if (v == endVal) { es.resize(exclusive ? k : k + 1); return out; }
+            }
+        }
         const size_t CAP = 1000000;
         bool dirKnown = !hasGen; // for a closure gen the travel direction is learned
         while (out.arr()->size() < CAP) {
@@ -1287,7 +1429,9 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
             // Non-gen numeric sequences can pre-check the endpoint; a closure gen
             // must generate first (its direction — and thus overshoot test — is
             // only known once we see the next value).
-            if (!hasGen && !infinite && !endCode && (ascending ? lastV >= endVal : lastV <= endVal)) break; // reached endpoint
+            if (!hasGen && !infinite && !endCode &&
+                (seqMagnitude ? std::fabs(lastV) >= std::fabs(endVal)
+                              : (ascending ? lastV >= endVal : lastV <= endVal))) break; // reached endpoint
             Value next;
             if (hasGen) {
                 ValueList args; size_t n = out.arr()->size();
@@ -1332,7 +1476,7 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
                 out.arr()->push_back(next);
                 continue;
             }
-            if (!infinite) { double nv = next.toNum(); if (ascending ? nv > endVal : nv < endVal) break; } // would overshoot
+            if (!infinite) { double nv = next.toNum(); if (seqPassedEnd(nv)) break; } // would overshoot
             out.arr()->push_back(next);
             if (!infinite && next.toNum() == endVal) break; // hit endpoint exactly
         }
@@ -5179,7 +5323,19 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
                 try {
                     Value res = callCallable(it->second, eargs);
                     if (res.t == VT::Hash && res.hash())
-                        for (auto& kv : *res.hash()) tctx_.cur->define(kv.first, kv.second);
+                        for (auto& kv : *res.hash()) {
+                            // A ROUTINE slot that resolved to the undefined value is
+                            // a failed lookup, not a symbol: `'&golden-ratio' =>
+                            // &Some::Module::golden-ratio` where that sub is
+                            // `is export` but not `our` (Math::NumberTheory's EXPORT
+                            // map — Rakudo hands back an Any there too). Binding it
+                            // can only shadow a name that does resolve. Only the `&`
+                            // sigil: `'$bar' => $b` where `our $b;` is undefined is a
+                            // real export of a real container (roast's gh2979.t).
+                            if (kv.second.t == VT::Any && !kv.first.empty() && kv.first[0] == '&')
+                                continue;
+                            tctx_.cur->define(kv.first, kv.second);
+                        }
                 } catch (RakuError& e) {
                     if (name != "if") // see the replay site: rakupp implements :if natively
                         std::cerr << "===WARNING=== Module " << name
@@ -9542,7 +9698,15 @@ static bool typeMatchesArg(const Value& arg, const std::string& type) {
                        return type == "Int" || type == "Cool" || type == "Numeric" || type == "Real" || natIntTypes.count(type) > 0;
         case VT::Num:  return type == "Num" || type == "Cool" || type == "Numeric" || type == "Real" || natNumTypes.count(type) > 0;
         case VT::Complex: return type == "Complex" || type == "Cool" || type == "Numeric";
-        case VT::Rat:  return type == "Rat" || type == "Cool" || type == "Numeric" || type == "Real";
+        // Rat and FatRat are SIBLINGS, not parent and child (both do Rational):
+        // `(5/13).FatRat ~~ Rat` is False in Rakudo and so is `5/13 ~~ FatRat`.
+        // Neither name was accepted for a FatRat at all, so a `FatRat:D $x`
+        // parameter rejected every FatRat handed to it (Math::NumberTheory's
+        // lueroth-all-rational).
+        case VT::Rat:  if (type == "FatRat") return arg.fatRat();
+                       if (type == "Rat")    return !arg.fatRat();
+                       return type == "Cool" || type == "Numeric" || type == "Real" ||
+                              type == "Rational";
         case VT::Bool:
             // Bool is Int is Cool (and an Enumeration): a Cool/Int candidate
             // must accept True — JSON::Marshal's Cool multi lost to Mu:D here
@@ -10038,6 +10202,14 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args) {
             if (p.sigil == '&' && isDefined(sval) && sval.t != VT::Code &&
                 !(sval.t == VT::Object && sval.obj() && sval.obj()->cls &&
                   sval.obj()->cls->findMethod("CALL-ME"))) return -1;
+            // …and an `@`/`%`-sigil named carries the same implicit Positional /
+            // Associative constraint the positional arm applies to a bare `@a`.
+            // Without it `k => 2` bound `:offset(:@k)!` (as a one-element list),
+            // so Math::NumberTheory's next-prime($x, k => 2) reached the
+            // list-of-offsets candidate and recursed into itself forever.
+            if ((p.sigil == '@' || p.sigil == '%') && isDefined(sval) &&
+                !(p.sigil == '@' ? (typeMatchesArg(sval, "Positional") || sval.t == VT::Range)
+                                 : typeMatchesArg(sval, "Associative"))) return -1;
             if (p.defConstraint == 1 && !isDefined(sval)) return -1;
             if (p.defConstraint == 2 && isDefined(sval)) return -1;
             // Rakudo's candidate sort treats a candidate REQUIRING a named as narrower
@@ -10838,15 +11010,53 @@ int Interpreter::mainProtocol(Value& mainSub, ValueList& margs) {
     // matched MAIN body propagates as a real error instead of being mistaken
     // for "no MAIN candidate" and silently printing Usage.
     bool mainMatches = true;
+    // An option that binds an `@`-sigil named parameter is a LIST even when it
+    // appeared once: `sub MAIN(:@x)` run with `--x=a` gets ("a",), the same
+    // shape `--x=a --x=b` produces. A `@` param does not accept a bare Str (in
+    // an ordinary call Rakudo type-checks it out), so the listing has to happen
+    // here, where MAIN's signatures are in hand. Only names NO candidate spells
+    // with another sigil: with both `(:@x)` and `(:$x)` declared, `--x=a` is the
+    // scalar one.
+    std::set<std::string> listNamed, scalarNamed;
+    {
+        std::vector<const Value*> cands;
+        if (mainSub.code() && mainSub.code()->isMultiDispatcher)
+            for (auto& c : mainSub.code()->candidates) cands.push_back(&c);
+        else if (mainSub.code()) cands.push_back(&mainSub);
+        for (const Value* c : cands) {
+            if (!c->code() || !c->code()->params) continue;
+            for (auto& p : *c->code()->params) {
+                if (!p.named || p.slurpy) continue;
+                std::set<std::string>& into = p.sigil == '@' ? listNamed : scalarNamed;
+                if (!p.namedKey.empty()) into.insert(p.namedKey);
+                if (p.namedKey.empty() || p.aliasBoth)
+                    into.insert(p.name.size() > 1 ? p.name.substr(1) : p.name);
+                for (auto& al : p.aliasKeys) into.insert(al);
+            }
+        }
+        for (auto& k : scalarNamed) listNamed.erase(k);
+    }
+    auto listifyNamed = [&](ValueList& as) {
+        if (listNamed.empty()) return;
+        for (auto& a : as) {
+            if (!isNamedArg(a) || !listNamed.count(a.s)) continue;
+            Value v = a.pairVal() ? *a.pairVal() : Value::boolean(true);
+            if (v.t == VT::Array || v.t == VT::Range) continue;
+            Value lst = Value::array({v}); lst.isList = true;
+            a.setPairVal(std::make_shared<Value>(std::move(lst)));
+        }
+    };
     if (mainSub.code() && mainSub.code()->isMultiDispatcher) {
         mainMatches = false;
         for (auto& cand : mainSub.code()->candidates) {
             ValueList mc = pairedArgs(cand);
+            listifyNamed(mc);
             if (scoreCandidate(cand, mc) >= 0) { mainMatches = true; margs = std::move(mc); break; }
         }
     }
     else if (mainSub.code() && mainSub.code()->params) { // single MAIN: same bind check
         margs = pairedArgs(mainSub);
+        listifyNamed(margs);
         mainMatches = scoreCandidate(mainSub, margs) >= 0;
     }
     else margs = rtMainArgs(argv_, namedAnywhere);
@@ -12491,6 +12701,14 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                 if (as.size() == 2 && c.name.size() > 8 && c.name.back() == '>' &&
                     c.name.rfind("infix:<", 0) == 0)
                     return applyBinOp(c.name.substr(7, c.name.size() - 8), as[0], as[1]);
+                // Same rule for a plain named routine: `multi sub is-prime(Complex:D)`
+                // ADDS a candidate to the built-in &is-prime, it does not hide it.
+                // Rakudo keeps CORE's candidates in the same dispatch, so a call the
+                // user's candidates do not take still reaches the built-in — which is
+                // how Math::NumberTheory's Gaussian-integer candidates call the
+                // integer one (`is-prime($p.re.abs.Int)`) from inside themselves.
+                if (!c.isMethod && !c.name.empty())
+                    if (const BuiltinFn* bf = builtinPtr(c.name)) return (*bf)(*this, as);
                 throw RakuError{Value::typeObj("X::Multi::NoMatch"),
                                 "Cannot resolve caller " + c.name + "(); no matching multi candidate"};
             }
@@ -16660,8 +16878,14 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                 case VT::Num:  out = v.n; return true;
                 case VT::Int:  if (v.big()) return false; out = (double)v.i; return true;
                 case VT::Bool: out = v.b ? 1.0 : 0.0; return true;
+                // toNum(), not numerator/denominator separately: past ~1e308 each
+                // part overflows to ±inf on its own and inf/inf is NaN, so EVERY
+                // comparison with a wide FatRat answered False — `$x > $tol` and
+                // `$x < $tol` both. (It also rounds twice and drifts in the last
+                // bits, which toNum's long division does not.) toNum keeps the
+                // exact-parts single-division fast path inside itself.
                 case VT::Rat:  if (!v.ratN() || !v.ratD() || v.ratD()->isZero()) return false;
-                               out = v.ratN()->toDouble() / v.ratD()->toDouble(); return true;
+                               out = v.toNum(); return true;
                 default: return false;
             }
         };
@@ -17173,6 +17397,32 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         conv = exactify(r, rn) || conv;
         if (conv && (isExact(ln) || ln.t == VT::Complex) && (isExact(rn) || rn.t == VT::Complex))
             return applyArith(op, ln, rn);
+    }
+    // `div`/`mod` over NON-INTEGER reals: Rakudo defines `infix:<div>(Real, Real)`
+    // as the FLOORED division of the two .Int truncations, and `infix:<mod>(Real,
+    // Real)` as `a - (a div b) * b` — so `5.7 mod 3` is 2.7, `-5e0 mod 3` is 1 and
+    // `-5e0 div 3` is -2, the modulus staying in the operand's own type. Coercing
+    // the whole operation to Int (the exact/inexact paths below) answered 2, -2 and
+    // -1. Math::NumberTheory reduces Gaussian integers with
+    // `($a.re mod $m) + ($a.im mod $m) * i`, where .re is a Num.
+    if ((op == "mod" || op == "div") &&
+        (l.t == VT::Rat || r.t == VT::Rat || l.t == VT::Num || r.t == VT::Num) &&
+        !(l.t == VT::Num && !std::isfinite(l.n)) && !(r.t == VT::Num && !std::isfinite(r.n))) {
+        Value li = Value::integer(0), ri = Value::integer(0);
+        // .Int truncates toward zero; a big Rat/Num keeps its full magnitude
+        auto trunc = [](const Value& v) {
+            if (v.t == VT::Int || v.t == VT::Bool) return v;
+            if (v.t == VT::Rat && v.ratN() && v.ratD()) {
+                BigInt q, rem; BigInt::divmod(*v.ratN(), *v.ratD(), q, rem);
+                return q.fitsLL() ? Value::integer(q.toLL()) : Value::bigint(q);
+            }
+            return Value::integer((long long)v.toNum());
+        };
+        li = trunc(l); ri = trunc(r);
+        if (ri.toInt() == 0 && !ri.big()) return divZeroResult(l, op);
+        Value q = applyArith("div", li, ri); // the Int path floors
+        if (op == "div") return q;
+        return applyArith("-", l, applyArith("*", q, r));
     }
     if (isExact(l) && isExact(r)) {
         bool anyRat = (l.t == VT::Rat || r.t == VT::Rat);
@@ -22038,11 +22288,46 @@ Value Interpreter::evalUnary(Unary* u) {
         Value blockClosure;
         if (u->operand->kind == NK::BlockExpr)
             blockClosure = makeClosure(static_cast<BlockExpr*>(u->operand.get()));
+        // Variables the block MUTATES but does not declare: the doubling re-run
+        // below has to start from the same state the probe did, or it resumes
+        // mid-computation and drops everything the probe already consumed. See
+        // gatherWritesStmt. Empty for an ordinary pure generator, which is the
+        // common case and pays nothing.
+        auto snap = std::make_shared<std::vector<std::pair<std::string, Value>>>();
+        // …and where the LAST run left them. Rewinding is only safe while nothing
+        // else has touched those variables since: the block is lazy, so the outer
+        // program keeps running between the probe and an extension, and quietly
+        // undoing its work would be a worse bug than the one this fixes. When they
+        // have moved, the extension falls back to the plain re-run.
+        auto post = std::make_shared<std::vector<std::pair<std::string, Value>>>();
+        std::shared_ptr<Env> genv =
+            (blockClosure.t == VT::Code && blockClosure.code() && blockClosure.code()->closure)
+                ? blockClosure.code()->closure : tctx_.cur;
+        {
+            std::set<std::string> writes, declared;
+            if (u->operand->kind == NK::BlockExpr)
+                for (auto& st : static_cast<BlockExpr*>(u->operand.get())->body)
+                    gatherWritesStmt(st.get(), writes, declared);
+            else gatherWritesExpr(u->operand.get(), writes, declared);
+            for (auto& n : writes)
+                if (!declared.count(n) && genv)
+                    if (Value* p = genv->find(n)) snap->push_back({n, gatherDeepCopy(*p)});
+        }
         // Run the gather block, collecting takes up to `limit` (0 = unlimited).
         // Returns true if the limit was hit (the block may have more to give — i.e.
         // it's infinite or larger than the limit).
-        auto runGather = [this, gu, blockClosure](size_t limit, long long budgetUs,
-                                                  ValueList& out) -> bool {
+        auto runGather = [this, gu, blockClosure, snap, post, genv](size_t limit, long long budgetUs,
+                                                                   ValueList& out,
+                                                                   bool restore = false) -> bool {
+            if (restore && genv) {
+                bool untouched = true;
+                for (auto& kv : *post)
+                    if (Value* p = genv->find(kv.first)) { if (!valueEqv(*p, kv.second)) { untouched = false; break; } }
+                    else { untouched = false; break; }
+                if (untouched)
+                    for (auto& kv : *snap)
+                        if (Value* p = genv->find(kv.first)) *p = gatherDeepCopy(kv.second);
+            }
             auto collector = std::make_shared<ValueList>();
             tctx_.gatherStack.push_back(collector);
             tctx_.gatherLimits.push_back(limit);
@@ -22057,6 +22342,14 @@ Value Interpreter::evalUnary(Unary* u) {
               catch (...) { pop(); throw; }
             pop();
             out = std::move(*collector);
+            if (genv)   // record where this run left the replayed state
+                for (auto& kv : *snap) {
+                    Value* p = genv->find(kv.first);
+                    Value now = p ? gatherDeepCopy(*p) : Value::any();
+                    bool found = false;
+                    for (auto& q : *post) if (q.first == kv.first) { q.second = std::move(now); found = true; break; }
+                    if (!found) post->push_back({kv.first, std::move(now)});
+                }
             return hit;
         };
         // A small first probe: an expensive generator (a prime sieve, say) must not
@@ -22089,9 +22382,10 @@ Value Interpreter::evalUnary(Unary* u) {
         auto st = std::make_shared<LazySeqState>();
         st->gatherSeq = true;
         LazySeqState* stp = st.get();
-        st->appendNext = [this, runGather, stp](ValueList& out) -> bool {
+        st->appendNext = [this, runGather, stp, snap](ValueList& out) -> bool {
             ValueList grown;
-            bool more = runGather(out.size() + std::max<size_t>(64, out.size()), 0, grown);
+            bool more = runGather(out.size() + std::max<size_t>(64, out.size()), 0, grown,
+                                  /*restore=*/!snap->empty());
             for (size_t i = out.size(); i < grown.size(); i++) out.push_back(grown[i]);
             stp->exhausted = !more;
             return more;
@@ -24705,8 +24999,17 @@ Value Interpreter::evalIndex(Index* idx) {
             auto* re = static_cast<RangeExpr*>(idx->index.get());
             // `*` in an endpoint resolves to the list length: `@a[0 .. *-2]`, `@a[*-3 .. *-1]`.
             long long from = resolveWhat(eval(re->from.get()));
-            long long to = resolveWhat(eval(re->to.get()));
-            if (re->exTo) to--;
+            Value toV = eval(re->to.get());
+            // An OPEN end means "through the last index" whether or not the range
+            // excludes it: `@a[2..*]` and `@a[2..^*]` are the same slice (Rakudo
+            // resolves `*` to .elems, so the excluded endpoint is one PAST the
+            // array either way). Resolving `*` to the last index and then honouring
+            // `^` dropped the final element — Math::NumberTheory's convergents
+            // walks `@x[2..^*]` and answered one term short.
+            bool openEnd = toV.t == VT::Whatever ||
+                           (toV.t == VT::Num && std::isinf(toV.n));
+            long long to = resolveWhat(toV);
+            if (re->exTo && !openEnd) to--;
             if (re->exFrom) from++; // `@a[1^..3]` starts at 2 — this path read exTo only
             if (from < 0) from += n;
             isSlice = true;
@@ -25704,7 +26007,12 @@ Value Interpreter::eval(Expr* e) {
                 bool isHyper = it->kind == NK::MethodCall && static_cast<MethodCall*>(it.get())->hyper;
                 // one-arg rule: `[<a b>».Str]` (a SINGLE list-valued item) spreads —
                 // even a hyper result; with several members the comma rules apply.
-                bool oneArgSpread = l->items.size() == 1 && v.t == VT::Array && v.isList && !v.itemized;
+                // A TRAILING COMMA takes the item out of the one-arg rule: `[<a b>,]`
+                // is a 1-element array holding the list, `[<a b>]` is two elements.
+                // (Math::NumberTheory tests `is-deeply factor-integer(11).Array,
+                // [(11, 1),]` — the single-pair-of-factors shape.)
+                bool oneArgSpread = l->items.size() == 1 && !l->fromCommaList &&
+                                    v.t == VT::Array && v.isList && !v.itemized;
                 // A `|` slip splices whatever the surrounding list looks like —
                 // that is the whole point of the operator. `[|@a, @a[0]]` was
                 // keeping the slip whole because the enclosing comma list
@@ -25721,7 +26029,7 @@ Value Interpreter::eval(Expr* e) {
                                  static_cast<VarExpr*>(it.get())->name[0] == '@';
                 bool flatten = oneArgSpread || isSlip ||
                                (!isHyper &&
-                               ((bareAtVar && l->items.size() == 1) ||
+                               ((bareAtVar && l->items.size() == 1 && !l->fromCommaList) ||
                                 (v.t == VT::Array && v.isList && !l->fromCommaList)));
                 if (flatten && v.t == VT::Array) { for (auto& x : *v.arr()) a.arr()->push_back(x); }
                 // A finite Range spreads under the ONE-ARG rule and only there:
@@ -25730,7 +26038,7 @@ Value Interpreter::eval(Expr* e) {
                 // module writes "these are the character sets to draw from".
                 // Spreading every Range item made that four hundred elements of
                 // the wrong type, and the check that rejected it was right to.
-                else if (v.t == VT::Range && l->items.size() == 1 &&
+                else if (v.t == VT::Range && l->items.size() == 1 && !l->fromCommaList &&
                          !v.rExFrom() && v.rTo() - v.rFrom() < 1000000) {
                     for (auto& x : v.flatten()) a.arr()->push_back(x);
                 }
@@ -25929,10 +26237,28 @@ Value Interpreter::eval(Expr* e) {
                     // handed the capture over as one Slip argument instead.
                     ValueList ca; ca.push_back(inv);
                     for (auto& a : evalArgs(mc->args)) ca.push_back(std::move(a));
-                    if (mc->hyper) { // ».$var maps it
+                    if (mc->hyper) { // ».$var / ».&sub maps it over each element
+                        // Same element source as hyperMethodEach: anything that is
+                        // not already an array iterates through flatten(), so a
+                        // RANGE hypers too — `(100 .. 103)».&prime` answered the
+                        // empty list because only VT::Array was walked. The extra
+                        // arguments ride along: `@a».&f(2)` calls f($_, 2).
+                        ValueList extra(ca.begin() + 1, ca.end());
+                        auto one = [&](const Value& el) {
+                            ValueList as; as.push_back(el);
+                            for (auto& x : extra) as.push_back(x);
+                            return callCallable(mv, as);
+                        };
+                        if (inv.t == VT::Hash && inv.hash() && inv.hashKind.empty()) {
+                            Value hout = Value::makeHash();
+                            for (auto& kv : *inv.hash()) (*hout.hash())[kv.first] = one(kv.second);
+                            return hout;
+                        }
                         Value out = Value::array(); out.isList = true;
                         if (inv.t == VT::Array && inv.arr())
-                            for (auto& el : *inv.arr()) out.arr()->push_back(callCallable(mv, ValueList{el}));
+                            for (auto& el : *inv.arr()) out.arr()->push_back(one(el));
+                        else
+                            for (auto& el : inv.flatten()) out.arr()->push_back(one(el));
                         return out;
                     }
                     Value cres = callCallable(mv, ca);

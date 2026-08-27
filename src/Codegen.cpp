@@ -1386,13 +1386,16 @@ struct Codegen {
                 for (size_t i = 0; i < l->items.size(); i++) {
                     if (i) s += ", ";
                     Expr* it = l->items[i].get();
-                    bool one = l->items.size() == 1;
+                    // a TRAILING COMMA (or any comma) takes the members out of the
+                    // one-arg rule: `[<a b>,]` / `[@a,]` is ONE element holding the
+                    // list, exactly as in the interpreter's ArrayLit eval
+                    bool one = l->items.size() == 1 && !l->fromCommaList;
                     bool isHyper = it->kind == NK::MethodCall && static_cast<MethodCall*>(it)->hyper;
                     bool atVar = it->kind == NK::VarExpr && !static_cast<VarExpr*>(it)->name.empty()
                               && static_cast<VarExpr*>(it)->name[0] == '@';
                     if (isSlip(it))
                         s += "rtSlipShallow(" + ex(static_cast<Unary*>(it)->operand.get()) + ")";
-                    else if (atVar)      // a bare @-variable flattens into the literal
+                    else if (atVar && one) // a lone bare @-variable flattens into the literal
                         s += "rtSlipShallow(" + exArg(it) + ")";
                     else if (isHyper)    // hyper results stay one (itemized) element
                         s += (one ? "rtOneArgItem(" : "rtHyperItem(") + exArg(it) + ")";
