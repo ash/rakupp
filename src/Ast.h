@@ -150,7 +150,19 @@ struct StrLit : Expr {
 // A numeric word in a `<…>` list is an allomorph: the numeric value of `num`,
 // tagged so it is ALSO the string `str` (`<42>` is IntStr, `<1/3>` RatStr, `<1e5>` NumStr).
 struct AllomorphLit : Expr { ExprPtr num; std::string str; AllomorphLit(): Expr(NK::AllomorphLit){} };
-struct RegexLit : Expr { std::string pattern; bool isRx = false; /* rx// : a Regex object, never an implicit match */ bool isM = false; /* m// : ALWAYS an immediate match against $_, even in value context (a bare /…/ there is the Regex object) */ std::string declKind; /* "regex"/"token"/"rule" for an anonymous `regex {…}` term: a first-class Regex closing over its scope */ explicit RegexLit(std::string p): Expr(NK::RegexLit), pattern(std::move(p)){} };
+struct RegexLit : Expr {
+    std::string pattern;
+    bool isRx = false; /* rx// : a Regex object, never an implicit match */
+    bool isM = false;  /* m// : ALWAYS an immediate match against $_, even in value context (a bare /…/ there is the Regex object) */
+    std::string declKind; /* "regex"/"token"/"rule" for an anonymous `regex {…}` term: a first-class Regex closing over its scope */
+    // interpreter cache of a CLOSED literal's final pattern (nothing to splice
+    // or close over, obsolete-check passed): `if /\d/` in a hot loop otherwise
+    // re-copies, re-scans for $/@ and re-probes a mutex-guarded memo map on
+    // EVERY evaluation. Same publish-once discipline as NumLit::ratCache; the
+    // payload is an immutable heap std::string.
+    mutable PublishedOnce<const void*> closedPat{nullptr};
+    explicit RegexLit(std::string p): Expr(NK::RegexLit), pattern(std::move(p)){}
+};
 struct ChainExpr : Expr { std::vector<ExprPtr> operands; std::vector<std::string> ops; ChainExpr(): Expr(NK::ChainExpr){} };
 struct SubstLit : Expr { std::string pattern, repl; bool nonMut=false; SubstLit(std::string p, std::string r, bool nm=false): Expr(NK::SubstLit), pattern(std::move(p)), repl(std::move(r)), nonMut(nm){} };
 struct BoolLit : Expr { bool v; explicit BoolLit(bool b): Expr(NK::BoolLit), v(b){} };
@@ -292,6 +304,13 @@ struct Call : Expr { // sub call by name: foo(args)  or  foo args
     std::vector<ExprPtr> args;
     Call(): Expr(NK::Call) {}
 };
+
+// A call that can DEFINE SYMBOLS a static walker cannot see: EVAL compiles new
+// code into the caller's scope, EVALFILE is EVAL over a file. The sub form and
+// the method form both count. Four walkers consult this rule — the flat-scan
+// guard, Lint, DeclCheck, SlimScan — and each used to spell its own subset
+// (the flat-scan guard missed $path.EVALFILE, Lint missed the method form).
+inline bool nameEvalsCode(const std::string& n) { return n == "EVAL" || n == "EVALFILE"; }
 
 struct MethodCall : Expr {
     ExprPtr inv;

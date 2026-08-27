@@ -272,14 +272,14 @@ struct Checker {
                 return;
             case NK::Call: {
                 auto* c = static_cast<const Call*>(e);
-                if (c->name == "EVAL" || c->name == "EVALFILE") { standDown = true; return; }
+                if (nameEvalsCode(c->name)) { standDown = true; return; }
                 walkExpr(c->callee.get());
                 for (auto& a : c->args) walkExpr(a.get());
                 return;
             }
             case NK::MethodCall: {
                 auto* m = static_cast<const MethodCall*>(e);
-                if (m->method == "EVAL" || m->method == "EVALFILE") { standDown = true; return; }
+                if (nameEvalsCode(m->method)) { standDown = true; return; }
                 walkExpr(m->inv.get()); walkExpr(m->methodExpr.get());
                 for (auto& a : m->args) walkExpr(a.get());
                 return;

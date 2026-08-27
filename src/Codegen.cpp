@@ -1023,7 +1023,7 @@ struct Codegen {
             case NK::Unary: {
                 auto* u = static_cast<Unary*>(e);
                 if (u->op.size() >= 3 && u->op.front() == '[' && u->op.back() == ']') // reduce metaop [+] [*] …
-                    return "rtReduce(" + cesc(u->op.substr(1, u->op.size() - 2)) + ", " + exArg(u->operand.get()) + ")";
+                    return "rtReduce(RT, " + cesc(u->op.substr(1, u->op.size() - 2)) + ", " + exArg(u->operand.get()) + ")";
                 if (u->op == "do" || u->op == "try") { // do { } / try { }  (value = last statement)
                     std::string body;
                     if (u->operand->kind == NK::BlockExpr) {

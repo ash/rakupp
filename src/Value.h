@@ -304,8 +304,22 @@ struct Callable {
     // is what makes the mixin visible to a later `^lookup` — boxing the routine
     // into a fresh object, as the general mixin path does, would leave the trait's
     // work somewhere nobody can reach.
-    std::vector<std::string> mixinRoles;
-    std::map<std::string, Value> mixinAttrs;
+    // Behind ONE lazily-allocated pointer: inline, the pair cost ~72 bytes in
+    // the middle of EVERY Callable and pushed the fields every call reads onto
+    // later cache lines, while only a mixin-carrying routine ever uses them
+    // (REVIEW-3.7 batch 3). Copying a Callable deep-copies the holder, exactly
+    // as the inline members copied.
+    struct MixinInfo { std::vector<std::string> roles; std::map<std::string, Value> attrs; };
+    struct MixinPtr {
+        std::unique_ptr<MixinInfo> p;
+        MixinPtr() = default;
+        MixinPtr(const MixinPtr& o) : p(o.p ? std::make_unique<MixinInfo>(*o.p) : nullptr) {}
+        MixinPtr& operator=(const MixinPtr& o) { p = o.p ? std::make_unique<MixinInfo>(*o.p) : nullptr; return *this; }
+        MixinPtr(MixinPtr&&) = default;
+        MixinPtr& operator=(MixinPtr&&) = default;
+    };
+    MixinPtr mixins;                                 // null for every routine without a mixin
+    MixinInfo& mixinsRW() { if (!mixins.p) mixins.p = std::make_unique<MixinInfo>(); return *mixins.p; }
     bool isWhateverCode = false;                    // produced by * currying (composes further)
     long long whateverArity = 0;                    // # of `*` a WhateverCode consumes (`* + *` => 2)
     bool isMethod = false;                          // when invoked via .() the 1st arg is the invocant

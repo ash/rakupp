@@ -77,7 +77,7 @@ struct Scan {
         if (n == "collate") use(F_COLL, "collate");
         if (n == "infix:<unicmp>" || n == "infix:<coll>" ||
             n == "[unicmp]" || n == "[coll]") use(F_COLL, "a " + n + " reference");
-        if (n == "EVAL" || n == "EVALFILE") { use(F_EVAL, n); trigger("EVAL"); }
+        if (nameEvalsCode(n)) { use(F_EVAL, n); trigger("EVAL"); }
         // The builtin Test module's dynamic loaders: use-ok requires a module
         // AT RUN TIME (a require in sub's clothing — found by the battery leg
         // of the differential: a slim'd 01-load.t threw where full passed),

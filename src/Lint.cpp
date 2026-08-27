@@ -296,7 +296,7 @@ struct Linter {
             case NK::Call: {
                 auto* c = static_cast<Call*>(e);
                 if (!c->name.empty()) {
-                    if (c->name == "EVAL" || c->name == "EVALFILE") dynamicNames = true;
+                    if (nameEvalsCode(c->name)) dynamicNames = true;
                     markUse("&" + c->name);
                 }
                 if (c->callee) walkExpr(c->callee.get());
@@ -305,6 +305,7 @@ struct Linter {
             }
             case NK::MethodCall: {
                 auto* m = static_cast<MethodCall*>(e);
+                if (nameEvalsCode(m->method)) dynamicNames = true; // `.&EVAL`-shaped: same suppression as the sub form
                 checkNewArgs(m);
                 walkExpr(m->inv.get());
                 if (m->methodExpr) walkExpr(m->methodExpr.get());
