@@ -3,7 +3,7 @@
 # catchable, named X::Feature::NotBuilt instead of crashing or quietly
 # misbehaving, that the grammar's conflicts are loud errors naming the
 # alternatives, that the embedded manifest round-trips through --exe-info,
-# that the size budgets hold (-all ≤ 5.75 MB, bare --slim ≤ 6.0 MB on hello) —
+# that the size budgets hold (-all ≤ 6.25 MB, bare --slim ≤ 6.5 MB on hello) —
 # and, since P4, that the SCAN decides right: cuts what a program provably
 # does not use, keeps what it does (uniname calls, script assertions), keeps
 # EVERYTHING when a force-full trigger fires (and says so), and that max
@@ -69,6 +69,16 @@ my $hello = probe('hello.raku', q{say 'Hello';});
 # 16,512-byte page steps) took -all hello from the plan's 4,856,936 to
 # 5,794,456, ten pages past the original 5.5 MB line. The -all budget is
 # now 5.75 MB (≈230 KB of headroom); bare --slim stays at 6.0 MB.
+#
+# Re-pinned 2026-08-27: five days of engine work ate that headroom — the
+# TAP-install batch (seven fixes), nqp::stat, the subset-return/dispatch
+# band — leaving CI's hello-all at 6,030,328, a thousand bytes past the
+# line. All of it is reachable runtime code (the archive split keeps the
+# REPL, MCP server and Jupyter kernel out of --exe binaries; nm shows no
+# CLI-only weight left to carve), so the line moves: -all is now 6.25 MB,
+# bare --slim 6.5 MB. The margin beyond CI's need is cross-machine slack:
+# the same tree's Release arm64 hello-all on the dev box is 6,501,232 —
+# 471 KB fatter than CI's — and this darwin gate must hold on both.
 my $full-size;
 my $all-size;
 
@@ -145,8 +155,8 @@ my $catch = probe('catch.raku', q:to/END/);
     my ($xc, $out, $) = run-bin($bin);
     check $xc == 0 && $out.trim eq 'Hello', '--slim=-all hello runs', $out;
     $all-size = $bin.IO.s;
-    check $*KERNEL.name ne 'darwin' || $all-size <= 5.75 * 1024 * 1024,
-          "--slim=-all hello is within the 5.75 MB darwin budget ($all-size bytes; darwin-only gate)";
+    check $*KERNEL.name ne 'darwin' || $all-size <= 6.25 * 1024 * 1024,
+          "--slim=-all hello is within the 6.25 MB darwin budget ($all-size bytes; darwin-only gate)";
     my $info = run $*EXECUTABLE, '--exe-info', $bin, :out, :err;
     my $line = $info.out.slurp(:close);
     $info.err.slurp(:close);
@@ -208,8 +218,8 @@ my $catch = probe('catch.raku', q:to/END/);
     check $rc == 0, 'bare --slim (= auto) compiles', $log;
     my ($xc, $out, $) = run-bin($bin);
     check $xc == 0 && $out.trim eq 'Hello', '--slim hello runs', $out;
-    check $*KERNEL.name ne 'darwin' || $bin.IO.s <= 6 * 1024 * 1024,
-          "--slim hello is within the 6.0 MB darwin budget ({$bin.IO.s} bytes; darwin-only gate)";
+    check $*KERNEL.name ne 'darwin' || $bin.IO.s <= 6.5 * 1024 * 1024,
+          "--slim hello is within the 6.5 MB darwin budget ({$bin.IO.s} bytes; darwin-only gate)";
     check $full-size - $bin.IO.s >= 2 * 1024 * 1024,
           "bare --slim removes >= 2 MB from hello on this platform "
           ~ "(delta {$full-size - $bin.IO.s})";

@@ -152,6 +152,18 @@ inline int closedir(DIR* d) {
 #ifndef S_ISREG
 #define S_ISREG(m) (((m) & _S_IFMT) == _S_IFREG)
 #endif
+#ifndef S_ISCHR
+#define S_ISCHR(m) (((m) & _S_IFMT) == _S_IFCHR)
+#endif
+// _stat64 never reports block devices or symlinks — there is no _S_IFBLK,
+// and stat follows the link — so both questions answer "no", not fail to
+// compile. MinGW ships S_ISBLK but not S_ISLNK; the #ifndefs sort that out.
+#ifndef S_ISBLK
+#define S_ISBLK(m) ((void)(m), 0)
+#endif
+#ifndef S_ISLNK
+#define S_ISLNK(m) ((void)(m), 0)
+#endif
 #if !defined(__MINGW32__)
 using mode_t = int; // MinGW's sys/types.h already has it
 #endif

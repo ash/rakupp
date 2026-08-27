@@ -22,6 +22,13 @@ correctness work, the JSON::Fast native codec) moved slim hello to
 5,794,456 bytes; the live gate in `t/slim/run.raku` is re-pinned at
 ≤ 5.75 MB for `-all` (bare `--slim` stays ≤ 6.0 MB).*
 
+*Update 2026-08-27: another engine batch (the TAP-install fixes,
+nqp::stat, subset-return dispatch) put CI's universal hello-all at
+6,030,328 bytes — 1 KB past the line — with nothing CLI-only left to
+carve out of the `--exe` link. The gate is re-pinned at ≤ 6.25 MB for
+`-all`, bare `--slim` ≤ 6.5 MB; the margin covers the ~470 KB spread
+between CI's toolchain and the dev box's for the same tree.*
+
 ---
 
 ## Where we are — measured
