@@ -76,9 +76,10 @@ my $hello = probe('hello.raku', q{say 'Hello';});
 # line. All of it is reachable runtime code (the archive split keeps the
 # REPL, MCP server and Jupyter kernel out of --exe binaries; nm shows no
 # CLI-only weight left to carve), so the line moves: -all is now 6.25 MB,
-# bare --slim 6.5 MB. The margin beyond CI's need is cross-machine slack:
-# the same tree's Release arm64 hello-all on the dev box is 6,501,232 —
-# 471 KB fatter than CI's — and this darwin gate must hold on both.
+# bare --slim 6.5 MB. The margin beyond CI's need is cross-arch slack:
+# the same tree's hello-all from the dev box's default-arch build/ (which
+# configures to x86_64 there) is 6,501,232 — 471 KB fatter than CI's arm64
+# — and this darwin gate must hold on both slices.
 my $full-size;
 my $all-size;
 

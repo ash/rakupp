@@ -132,6 +132,12 @@ classified and (mostly) repro'd.
 - **[findings/REVIEW-2.0.md](findings/REVIEW-2.0.md)** — the pre-2.0 review of the
   whole hand-written source: nine parallel fresh-eyes passes, five gated fix
   batches, the gates before and after, and what was deliberately deferred.
+- **[findings/REVIEW-3.5.md](findings/REVIEW-3.5.md)** — the pre-3.5 profile-first
+  review: where the samples said the time went, and the batches that followed.
+- **[findings/REVIEW-3.7.md](findings/REVIEW-3.7.md)** — the post-3.7 cooldown
+  review: the perf-gate false red explained by pivot-build forensics, the
+  duplication ledger with proven drift, verified silent bugs, and the
+  guard-blind cost list — with the three-batch plan.
 - **[findings/CONFORMANCE.md](findings/CONFORMANCE.md)** — a dated docs-conformance
   audit log (feature-by-feature against docs.raku.org). Historical, not maintained
   as current reference.
