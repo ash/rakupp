@@ -38,7 +38,7 @@ curated battery gated on every release; the sweep is the whole ecosystem.)
 | Official documentation examples byte-identical on both engines | **950** | 952 |
 | Ecosystem distributions matching their own per-dist reference runs | **97 / 105** | 50 / 59 |
 | Local regression suite | **567** | 312 |
-| `say "Hello"` compiled with `--exe --slim` | **5,827,368 B** | 9,830,680 B (no `--slim`) |
+| `say "Hello"` compiled with `--exe --slim` | **6,510,864 B** | 9,830,680 B (no `--slim`) |
 
 ‡ Counted against each file's declared `plan N`, so a file that aborts is
 charged for every test it failed to run; on the all-or-nothing bar a file
