@@ -173,11 +173,13 @@ at t.raku:3
 Nothing of the program runs, so a typo on line 90 no longer shows up after 89
 lines of output. The check is one-sided by design: it stands down and says
 nothing whenever the unit can conjure names it cannot see — `EVAL`, a symbolic
-reference `::($name)`, `require`, `no strict`, or an import it cannot resolve on
-the module search path — because refusing a program that works would be far
-worse than the late error it replaces. For the same reason it reports a name
-only when the source declares it *nowhere*; a variable declared in another scope
-is left to the run.
+reference `::($name)`, `require`, or an import it cannot resolve on the module
+search path — because refusing a program that works would be far worse than the
+late error it replaces. `no strict` silences it too, but only where the pragma
+reaches: it is lexical, so the check is back on at the closing brace of the
+block that asked for it (and `use strict` turns it back on inside one). For the
+same reason it reports a name only when the source declares it *nowhere*; a
+variable declared in another scope is left to the run.
 
 The REPL is untouched (each line is its own unit, and a mistake there costs you
 one line), and so is an embedding host's `rk_run`, whose interpreter may already

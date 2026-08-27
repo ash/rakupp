@@ -1564,8 +1564,16 @@ size_t rtPosCount(const ValueList& a, size_t from) {
 
 // `use MODULE` for native codegen: mirror exec(UseStmt) — Test flag, language
 // pragma, lib paths, real module loading into the runtime env.
-void Interpreter::rtUse(const std::string& module, const std::string& arg) {
+void Interpreter::rtUse(const std::string& module, const std::string& arg, bool isNo) {
     if (module == "Test") { usedTest_ = true; return; }
+    // `no strict` / `use strict`, as the interpreter's own UseStmt arm does it.
+    // Compiled code resolves an auto-vivified NAME statically (codegen emits
+    // laxVarRef for it), so this flag is here for what compiled code hands back
+    // to the interpreter — and to keep `strict` from being looked for on disk.
+    if (module == "strict") {
+        if (tctx_.cur) tctx_.cur->strictPragma = isNo ? 1 : -1;
+        return;
+    }
     if (module.size() >= 2 && module[0] == 'v' && ascii::isdigit((unsigned char)module[1])) {
         if (module.find("6.c") != std::string::npos) langRev_ = 0;
         else if (module.find("6.d") != std::string::npos) langRev_ = 1;
@@ -6374,7 +6382,14 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             // natively since both of that dist's implementations are Rakudo
             // compiler internals).
             if (u->ifCond && !eval(u->ifCond.get()).truthy()) return Value::any();
-            if (u->isNo && u->module == "strict") { noStrict_ = true; return Value::any(); }
+            // Lexical: the scope executing the pragma carries it, so it lapses
+            // when that scope does (`{ no strict; … }` does not unstrict the
+            // file around it). `use strict` is the same switch the other way —
+            // it turns the check back on inside a lax file.
+            if (u->module == "strict") {
+                if (tctx_.cur) tctx_.cur->strictPragma = u->isNo ? 1 : -1;
+                return Value::any();
+            }
             // `use NativeCall` is a pragma here — the FFI is native to the compiler,
             // so no module file declares the PACKAGE or its EXPORT stash. Suites
             // introspect both (NativeLibs' 01-basic walks
@@ -6863,6 +6878,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 tctx_.pkgPrefix += cd->name + "::";
                 auto pkgEnv = std::make_shared<Env>();
                 pkgEnv->parent = tctx_.cur;
+                pkgEnv->packageFrame = true;
                 auto saved = tctx_.cur; tctx_.cur = pkgEnv;
                 auto savedPkg = curPkgEnv_; curPkgEnv_ = pkgEnv; // `our` inside the package installs here (published qualified)
                 hoistSubs(cd->body); // forward refs: Cro::HTTP::Router calls router-plugin-register long before its definition
@@ -7235,6 +7251,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             // and methods/attr-defaults close over it
             auto bodyEnv = std::make_shared<Env>();
             bodyEnv->parent = tctx_.cur;
+            bodyEnv->packageFrame = true;
             ci->declEnv = bodyEnv; // capture the declaration scope (attr-default closures)
             ci->decl = cd;         // program-lifetime AST view (roleParams for parameterized roles)
             // Normal flow reached the declaration: retire the forward-reference
@@ -10718,6 +10735,28 @@ Value& Interpreter::dynVarRef(const std::string& name) {
     return global_->define(name, Value::any());
 }
 
+// The compiled-code face of `no strict`: a name with no declaration anywhere
+// resolves through the live environment and is CREATED when nothing has it yet
+// — with its sigil's empty default, so `@a.push(1)` on a lax name pushes onto
+// an Array exactly as the interpreter's own undeclared-write path leaves it.
+// Which names get here is decided at compile time by findLaxVars, so this is
+// never reached for a name the program declares.
+Value& Interpreter::laxVarRef(const std::string& name) {
+    if (Value* p = findDynamicLenient(name)) return *p;
+    // The PACKAGE the write stands in, not the block that happened to run
+    // first: the innermost enclosing class/role/module body, else the unit's
+    // own outermost scope. Roast's strict.t asks for both faces of that — a
+    // `$foo = 42` inside `class Foo` is readable in the class and is NOT the
+    // `$foo` a later `use strict` scope refers to — and the block rule got the
+    // ordinary case wrong: Rakudo answers 15 for `no strict; for 1..5 -> $k {
+    // $sum += $k }; say $sum`, where a per-block slot answered (Any) because
+    // every iteration made its own.
+    Value dflt = defaultFor(name.empty() ? '$' : name[0]);
+    for (auto e = tctx_.cur; e; e = e->parent)
+        if (e->packageFrame || !e->parent) return e->define(name, dflt);
+    return (curPkgEnv_ ? curPkgEnv_ : global_)->define(name, dflt);
+}
+
 // %*SUB-MAIN-OPTS<named-anywhere> as seen from MAIN auto-invoke. The mainline's
 // `my %*SUB-MAIN-OPTS` lives in the mainline env (interpreter) or global_
 // (compiled programs route dynamics through dynVarRef), so both faces of the
@@ -13836,9 +13875,17 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             if (!g->vars.count(ve->name)) g->define(ve->name, Value::any());
             return &g->vars[ve->name];
         }
-        if (!isSpecialVar(ve->name) && !noStrict_)
-            throw RakuError{Value::typeObj("X::Undeclared"),
-                            "Variable '" + ve->name + "' is not declared"};
+        if (!isSpecialVar(ve->name)) {
+            if (!noStrictHere())
+                throw RakuError{Value::typeObj("X::Undeclared"),
+                                "Variable '" + ve->name + "' is not declared"};
+            // `no strict` auto-vivifies into the PACKAGE, not into whichever
+            // block happened to write first — Rakudo answers 15 for
+            // `no strict; for 1..5 -> $k { $sum += $k }; say $sum`, and a
+            // per-block slot answered (Any) because each iteration made its own.
+            // laxVarRef is the same slot compiled code reaches for the name.
+            return &laxVarRef(ve->name);
+        }
         // through define(), which routes a layout name into the pad — indexing
         // vars[] directly here would give the same name two homes
         return &tctx_.cur->define(ve->name, defaultFor(sigil));
@@ -25329,7 +25376,7 @@ Value Interpreter::eval(Expr* e) {
             // From 6.e, LEXICAL:: is about LEXICALS: a dynamic is not one, and
             // asking for it through that package is an error rather than a
             // fall-through to the caller chain.
-            if (!isSpecialVar(ve->name) && !noStrict_)
+            if (!isSpecialVar(ve->name) && !noStrictHere())
                 throwTyped("X::Undeclared", {{"symbol", ve->name}},
                            "Variable '" + ve->name + "' is not declared");
             // an UNBOUND dynamic (`@*META-CANDIDATES // <defaults>`) must read as

@@ -31,6 +31,14 @@ struct Checker {
     std::set<std::string> imports;       // non-pragma module names the unit `use`s
     std::vector<std::string> extraLibs;  // literal `use lib` directories
     bool standDown = false;
+    // The `strict` pragma is LEXICAL — `no strict` holds from the statement
+    // that asks for it to the end of the scope that holds it, and does NOT leak
+    // to the scopes around it (`use strict` inside a lax file turns the check
+    // back on the same way). noStrictSaved keeps the enclosing scope's answer
+    // for each scope this pass has open, so popScope can put it back.
+    bool noStrict = false;
+    std::vector<char> noStrictSaved;
+    std::set<std::string> lax;           // names used where the pragma was off
     int curLine = 0;                     // enclosing statement, when a node carries no line
 
     int lineOf(const Node* n) const { return n && n->line ? n->line : curLine; }
@@ -39,6 +47,17 @@ struct Checker {
     // isSpecialVar — so registering anything else is work nobody reads.
     static bool worthTracking(const std::string& n) {
         return n.size() > 1 && (n[0] == '$' || n[0] == '@' || n[0] == '%');
+    }
+    // Every lexical scope this pass opens goes through these two, so that a
+    // `no strict` inside one is undone at its closing brace.
+    void pushScope() {
+        scopes.push_back({});
+        noStrictSaved.push_back(noStrict ? 1 : 0);
+    }
+    void popScope() {
+        scopes.pop_back();
+        noStrict = noStrictSaved.back() != 0;
+        noStrictSaved.pop_back();
     }
     void declare(const std::string& n) {
         if (worthTracking(n)) scopes.back().insert(n);
@@ -68,6 +87,10 @@ struct Checker {
         // lets each of them through, so this must too.
         if (v->pkgSymbol || v->viaPseudoPkg || v->processScoped) return;
         if (!checkable(v->name) || visible(v->name)) return;
+        // Under the pragma the name is not a finding, it is an auto-vivification
+        // — which the native backend has to be told about, because it emits a
+        // C++ local for every variable and this one has no declaration to emit.
+        if (noStrict) { lax.insert(v->name); return; }
         if (!reported.insert(v->name).second) return;
         out.push_back({v->name, lineOf(v)});
     }
@@ -229,13 +252,13 @@ struct Checker {
     void walkBody(const std::vector<Param>& ps, const std::vector<StmtPtr>& body,
                   const std::vector<std::vector<Param>>* alts = nullptr,
                   const Expr* retLiteral = nullptr) {
-        scopes.push_back({});
+        pushScope();
         params(ps);
         if (alts) for (auto& a : *alts) params(a);   // `(sig1) | (sig2)` share the body
         paramExprs(ps);
         walkStmts(body);
         walkExpr(retLiteral);                        // `--> $x` sees the signature
-        scopes.pop_back();
+        popScope();
     }
 
     void walkStmts(const std::vector<StmtPtr>& stmts) {
@@ -249,9 +272,9 @@ struct Checker {
     void walkBlock(const Block* b) {
         if (!b) return;
         if (b->stmtForm) { walkStmts(b->stmts); return; }  // already collected out here
-        scopes.push_back({});
+        pushScope();
         walkStmts(b->stmts);
-        scopes.pop_back();
+        popScope();
     }
 
     void walkExpr(const Expr* e) {
@@ -354,7 +377,7 @@ struct Checker {
                 auto* f = static_cast<const IfStmt*>(s);
                 for (size_t i = 0; i < f->branches.size(); i++) {
                     walkExpr(f->branches[i].first.get());
-                    scopes.push_back({});
+                    pushScope();
                     declare(f->thenVar);                                   // `if E -> $x { }`
                     if (i < f->branchVars.size()) declare(f->branchVars[i]);
                     if (i < f->branchParams.size()) {                      // `if E -> ($a,$b) { }`
@@ -362,45 +385,45 @@ struct Checker {
                         paramExprs(f->branchParams[i]);
                     }
                     walkBlock(f->branches[i].second.get());
-                    scopes.pop_back();
+                    popScope();
                 }
-                scopes.push_back({});
+                pushScope();
                 declare(f->elseVar);
                 params(f->elseParams); paramExprs(f->elseParams);
                 walkBlock(f->elseBlock.get());
-                scopes.pop_back();
+                popScope();
                 return;
             }
             case NK::WhileStmt: {
                 auto* w = static_cast<const WhileStmt*>(s);
                 walkExpr(w->cond.get());
-                scopes.push_back({});
+                pushScope();
                 declare(w->var);
                 params(w->params);
                 paramExprs(w->params);
                 walkBlock(w->body.get());
-                scopes.pop_back();
+                popScope();
                 return;
             }
             case NK::RepeatStmt: {
                 auto* r = static_cast<const RepeatStmt*>(s);
                 // `repeat { my $x = … } while $x` — the condition is evaluated
                 // inside the body's scope, and Raku says so.
-                scopes.push_back({});
+                pushScope();
                 if (r->body) walkStmts(r->body->stmts);
                 walkExpr(r->cond.get());
-                scopes.pop_back();
+                popScope();
                 return;
             }
             case NK::ForStmt: {
                 auto* f = static_cast<const ForStmt*>(s);
                 walkExpr(f->list.get());
-                scopes.push_back({});
+                pushScope();
                 for (auto& v : f->vars) declare(v);
                 params(f->params);
                 paramExprs(f->params);
                 walkBlock(f->body.get());
-                scopes.pop_back();
+                popScope();
                 return;
             }
             case NK::LoopStmt: {
@@ -414,16 +437,16 @@ struct Checker {
             case NK::GivenStmt: {
                 auto* g = static_cast<const GivenStmt*>(s);
                 walkExpr(g->topic.get());
-                scopes.push_back({});
+                pushScope();
                 declare(g->var);
                 params(g->params); paramExprs(g->params);
                 walkBlock(g->body.get());
-                scopes.pop_back();
-                scopes.push_back({});
+                popScope();
+                pushScope();
                 declare(g->elseVar);
                 params(g->elseParams); paramExprs(g->elseParams);
                 walkBlock(g->elseBody.get());
-                scopes.pop_back();
+                popScope();
                 return;
             }
             case NK::WhenStmt: {
@@ -440,8 +463,14 @@ struct Checker {
                 walkExpr(u->argExpr.get());
                 walkExpr(u->ifCond.get());
                 // `no strict` turns an undeclared variable into an auto-vivified
-                // one, which is the whole point of it.
-                if (u->isNo && u->module == "strict") { standDown = true; return; }
+                // one, which is the whole point of it. It is a LEXICAL pragma:
+                // standing the whole pass down here let it out of its block, so
+                // `{ no strict; $a = 5 }; $b = 7` compiled — Rakudo rejects $b.
+                // `use strict` is the same switch the other way: inside a lax
+                // file it turns the check back on for its own scope, which is
+                // the only thing the pragma has ever had to do (strict is the
+                // default, so at the top of a file it is a no-op).
+                if (u->module == "strict") { noStrict = u->isNo; return; }
                 // `use lib 'dir'` widens where an import will be found, so it
                 // widens where this pass looks for one. A COMPUTED path
                 // (`use lib $?FILE.IO.parent`) names a directory only the run
@@ -460,7 +489,7 @@ struct Checker {
                 auto* c = static_cast<const ClassDecl*>(s);
                 walkExpr(c->nameExpr.get());
                 walkExpr(c->verExpr.get()); walkExpr(c->authExpr.get()); walkExpr(c->apiExpr.get());
-                scopes.push_back({});
+                pushScope();
                 params(c->roleParams);
                 paramExprs(c->roleParams);
                 // The package body's own lexicals are in scope for the attribute
@@ -488,7 +517,7 @@ struct Checker {
                     if (m->line) curLine = m->line;
                     walkStmt(m.get());
                 }
-                scopes.pop_back();
+                popScope();
                 return;
             }
             default: return;  // Last/Next/Redo/Empty/NamedRegexDecl — no expressions to walk
@@ -587,9 +616,9 @@ bool clearedByImports(std::vector<UndeclaredVar>& cands,
 std::vector<UndeclaredVar> findUndeclaredVars(const Program& prog, const std::string& src,
                                               const std::vector<std::string>& searchPath) {
     Checker C;
-    C.scopes.push_back({});   // unit scope
+    C.pushScope();   // unit scope
     C.walkStmts(prog.stmts);
-    C.scopes.pop_back();
+    C.popScope();
     if (C.standDown || C.out.empty()) return {};
     C.out.erase(std::remove_if(C.out.begin(), C.out.end(),
                                [&](const UndeclaredVar& c) { return textDeclares(src, c.name); }),
@@ -606,6 +635,21 @@ std::vector<UndeclaredVar> findUndeclaredVars(const Program& prog, const std::st
                   return a.name < b.name;
               });
     return C.out;
+}
+
+LaxVars findLaxVars(const Program& prog, const std::string& src) {
+    Checker C;
+    C.pushScope();   // unit scope
+    C.walkStmts(prog.stmts);
+    C.popScope();
+    LaxVars r;
+    r.complete = !C.standDown;
+    // The same last word the report gets: a name the source spells as a
+    // declaration anywhere is one the backend may well declare, so it is not
+    // ours to route through the runtime.
+    for (auto& n : C.lax)
+        if (!textDeclares(src, n)) r.names.insert(n);
+    return r;
 }
 
 bool declCheckEnabled() {

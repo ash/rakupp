@@ -19,7 +19,13 @@ struct CodegenError { std::string msg; };
 // `use`s (collectModuleGraph fills them). A call to one of those names is
 // resolved through the run-time environment instead of the builtin table, so an
 // exported sub shadows a same-named built-in here as it does in the interpreter.
+// `srcText` is the unit's source. It is consulted only through DeclCheck's
+// findLaxVars, to learn which names a `no strict` region auto-vivifies — those
+// have no declaration to emit a C++ local from, so they are compiled as runtime
+// slots instead. Passing "" answers "no name is declared anywhere", which is
+// safe (a lax unit then falls back to bundling) but coarse.
 std::string transpileToCpp(Program& prog, bool optimize = false, const std::string& srcPath = "",
-                           const std::set<std::string>& moduleExports = {});
+                           const std::set<std::string>& moduleExports = {},
+                           const std::string& srcText = "");
 
 }

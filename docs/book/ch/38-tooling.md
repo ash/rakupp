@@ -170,8 +170,23 @@ the whole unit rather than risk a guess.
 | `EVAL` / `EVALFILE` | compiles new code against this scope at run time |
 | `::($name)` | names any symbol at run time — and assigning through one creates it |
 | `require` | imports a set of names only the run can determine |
-| `no strict` | is precisely the pragma that makes an undeclared variable legal |
 | `use lib $expr` | a computed search path: any module could be behind it |
+
+`no strict` — the pragma that makes an undeclared variable legal — is the one
+that does *not* end the check, because it is lexical: the flag is saved when the
+pass opens a scope and restored when it closes one, so `{ no strict; $a = 5 }`
+leaves the code after the block as strict as it was, and a nested `use strict`
+turns the check back on. Standing the whole pass down for it was a real
+divergence: Rakudo refuses the `$b` in `{ no strict; $a = 5 }; $b = 7`.
+
+The same walk has a second reader. `findLaxVars` returns the other face of the
+answer — not the names the unit fails to declare, but the ones the pragma
+*auto-vivifies* — and the native backend needs it, because it compiles every
+variable to a C++ local and a name with no declaration has no local to compile
+(Chapter 26). The text backstop is what makes that safe: a name reaches the set
+only if the unit declares it nowhere, so it can never collide with a local
+codegen does emit. `complete` reports whether the walk finished; a lax unit that
+stood the pass down is bundled instead of guessed at.
 
 Imports are the one case that is resolved rather than surrendered to, because a
 module may export a **variable** (`our $setting is export`) and that name is

@@ -87,8 +87,11 @@ scoping produces candidates; a scan of the source text then drops any candidate
 the text spells as a declaration anywhere, which covers the binders the parser
 does not keep (`repeat … -> $x`, a destructuring `with … -> ($x)`) and the
 pseudo-package qualifier `stripPseudoPkg` erases from `$OUR::x`. `EVAL`, a
-symbolic reference, `require`, `no strict` and an unresolvable import each end
-the check for the whole unit. The exemption list is not re-implemented: it calls
+symbolic reference, `require` and an unresolvable import each end the check for
+the whole unit; `no strict` suppresses it lexically instead — the flag rides the
+pass's scope stack, so it is restored where the scope ends, and `findLaxVars`
+hands the names it covered to the native backend, which has no local to emit for
+them. The exemption list is not re-implemented: it calls
 `isSpecialVar` in `Interpreter.cpp`, the same predicate the throw sites use, so
 the static answer cannot drift from the runtime one. The full account is in the
 book, [Chapter 38](../book/ch/38-tooling.md); the user-facing description is in

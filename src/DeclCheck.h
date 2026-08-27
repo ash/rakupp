@@ -1,4 +1,5 @@
 #pragma once
+#include <set>
 #include <string>
 #include <vector>
 
@@ -40,6 +41,26 @@ struct UndeclaredVar {
 // cost of not reporting a name that IS declared, but in another scope.
 std::vector<UndeclaredVar> findUndeclaredVars(const Program& prog, const std::string& src,
                                               const std::vector<std::string>& searchPath);
+
+// The names a lexically lax region auto-vivifies — what `no strict` MAKES legal
+// rather than what it hides. Same walk as findUndeclaredVars, opposite face of
+// it: a name lands here when it is used where the pragma is in force and has no
+// declaration the pass can see, and it survives the same source-text backstop,
+// so a name in `names` is one the unit declares NOWHERE. That is what the
+// native backend needs — it emits a C++ local for every variable, and a name
+// with no declaration has no local to emit — and the backstop is what makes the
+// answer safe to act on: a name it never declares cannot collide with one it
+// does.
+//
+// `complete` is false when the pass stood down (EVAL, `require`, a symbolic
+// reference) before finishing: `names` may then be short of what the unit
+// actually auto-vivifies, so a caller that must be exhaustive has to refuse the
+// unit rather than trust it.
+struct LaxVars {
+    std::set<std::string> names;
+    bool complete = true;
+};
+LaxVars findLaxVars(const Program& prog, const std::string& src);
 
 // Print `findings` as a compile-time report on stderr and answer the exit code
 // to leave with (1). `src` is the unit's source, used only to quote the

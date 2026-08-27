@@ -1,6 +1,7 @@
 #include "CNumeric.h"
 #include "AsciiCtype.h"
 #include "Codegen.h"
+#include "DeclCheck.h"
 #include "AstSerial.h"
 #include <functional>
 #include <memory>
@@ -176,6 +177,20 @@ struct Codegen {
     // `__bfN` declarations and the one-time resolution after all code has
     // been generated. rtCallB falls back to the by-name path on null.
     std::map<std::string, int> usedBuiltins_; // name -> __bfN id
+
+    // Names a `no strict` region auto-vivifies (DeclCheck::findLaxVars). Each is
+    // declared NOWHERE in the unit, so there is no C++ local to name: every
+    // reference compiles to a slot in the live environment instead. `laxKnown_`
+    // is false when the check could not finish (EVAL and friends), which makes
+    // a `no strict` unit fall back to bundling rather than emit a local for a
+    // name the pass may not have seen.
+    std::set<std::string> laxVars_;
+    bool laxKnown_ = true;
+    // A variable reference: a C++ local, unless the unit auto-vivifies the name.
+    std::string varRef(const std::string& name) {
+        if (laxVars_.count(name)) return "RT.laxVarRef(" + cesc(name) + ")";
+        return mangleVar(name);
+    }
 
     // Names a `use`d module exports (`is export`). Resolving a call by name at
     // compile time is exactly what a module export defeats: the interpreter's
@@ -889,7 +904,7 @@ struct Codegen {
                                       : "RT.dynVar(" + cesc("$/") + ")";
                     return "rtIndexGet(" + slash + ", Value::integer(" + v->name.substr(1) + "LL), false)";
                 }
-                return mangleVar(v->name); // scalars, @arrays and %hashes are all C++ Value locals
+                return varRef(v->name); // scalars, @arrays and %hashes are all C++ Value locals
             }
             case NK::SelfTerm:
                 if (self_.empty()) unsupported("`self` outside a method");
@@ -1531,7 +1546,13 @@ struct Codegen {
             case NK::UseStmt: { // `use Test` / `use lib '…'` / `use Module` — runtime effects
                 auto* u = static_cast<UseStmt*>(s);
                 std::string arg = u->argExpr ? "(" + ex(u->argExpr.get()) + ").toStr()" : cesc(u->arg);
-                line(ind, "RT.rtUse(" + cesc(u->module) + ", " + arg + ");");
+                // Which names `no strict` auto-vivifies was answered statically;
+                // if that answer is partial, no local emitted from here can be
+                // trusted, so hand the whole unit to the interpreter instead.
+                if (u->isNo && u->module == "strict" && !laxKnown_)
+                    unsupported("`no strict` in a unit the declaration check could not finish");
+                line(ind, "RT.rtUse(" + cesc(u->module) + ", " + arg +
+                          (u->isNo ? ", true" : "") + ");");
                 return;
             }
             case NK::SubDecl: return; // registered by hoistLexicalSubs at block entry
@@ -1724,7 +1745,7 @@ struct Codegen {
             if (v->name == "@*ARGS" || (v->name.size() && v->name[0] == '&') ||
                 (v->name.size() > 1 && v->name[1] == '?'))
                 unsupported("assignment to '" + v->name + "'");
-            return mangleVar(v->name);
+            return varRef(v->name);
         }
         if (e->kind == NK::Index) {
             auto* ix = static_cast<Index*>(e);
@@ -2194,6 +2215,7 @@ struct Codegen {
         if (n.size() < 2 || n[0] != '$') return "";
         char c1 = n[1];
         if (!(ascii::isalpha((unsigned char)c1) || c1 == '_')) return ""; // $!, $/, $0, $*X, $?X, $.x …
+        if (laxVars_.count(n)) return "";  // a runtime slot, not an unboxable local
         return mangleVar(n);
     }
     // Compile e into the lane; returns a C++ `long long` rvalue ("" = lane fails).
@@ -2717,11 +2739,17 @@ static std::string mainSigBlob(Program& prog) {
 }
 
 std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcPath,
-                           const std::set<std::string>& moduleExports) {
+                           const std::set<std::string>& moduleExports,
+                           const std::string& srcText) {
     const std::string mainSig = mainSigBlob(prog);
     Codegen g;
     g.optimize_ = optimize;
     g.moduleExports_ = moduleExports;
+    { // what `no strict` makes legal here — see Codegen::laxVars_
+        LaxVars lv = findLaxVars(prog, srcText);
+        g.laxVars_ = std::move(lv.names);
+        g.laxKnown_ = lv.complete;
+    }
     // pre-pass: collect top-level sub declarations (for forward refs) and enum
     // values (bound as globals so subs can see them).
     std::vector<SubDecl*> subs;

@@ -13,7 +13,8 @@ one function:
 // src/Codegen.h
 std::string transpileToCpp(Program& prog, bool optimize = false,
                            const std::string& srcPath = "",
-                           const std::set<std::string>& moduleExports = {});
+                           const std::set<std::string>& moduleExports = {},
+                           const std::string& srcText = "");
 struct CodegenError { std::string msg; };
 ```
 
@@ -196,6 +197,7 @@ correct answer: there is one implementation, so there is one behaviour.
 driver answers by bundling the whole program. The main cases:
 
 - **grammars**, which need the full engine plus the interpreter hooks;
+- `no strict` in a unit whose declaration check could not finish (below);
 - a few **NativeCall shapes** — `is native(&lib-sub)`, a library name computed by
   an expression, `is rw` out-parameters, and buffer or `CArray` parameters that
   need copy-back;
@@ -237,6 +239,30 @@ importer still reaches the built-in while the module's own code sees its own.
 That fix is a good example of the general hazard in compiling a dynamic
 language: **any decision made at compile time is a promise about the run-time
 environment,** and every such promise needs a reason to be true.
+
+### The other promise: every variable has a declaration
+
+A variable compiles to a C++ local, which is only possible because Raku declares
+its variables — and `no strict` is precisely the pragma that says it need not.
+The generator emitted a reference to a local for the name anyway, so *any*
+program using the pragma failed in the C++ compiler:
+
+```
+nostrict.rakupp.gen.cpp:35:9: error: use of undeclared identifier 'v_szz'
+```
+
+Not a `CodegenError`, so not a fallback either — `--exe` simply could not build
+these programs. The reason to believe the promise now comes from the pass that
+already answers this exact question, `DeclCheck` (Chapter 38): `findLaxVars`
+returns the names a lexically lax region auto-vivifies, and those compile to
+`RT.laxVarRef("$x")` — a slot in the live environment — instead of a local.
+
+What makes the set safe to act on is the pass's *source-text backstop*: a name
+survives into it only if the unit spells a declaration for it nowhere, and a
+name the generator never declares cannot collide with one it does. When the
+check could not finish (`EVAL` and friends stand it down) the set may be short,
+so the generator throws `CodegenError` and the program is bundled — the same
+answer as any other construct it cannot promise anything about.
 
 ## Inspecting the output
 

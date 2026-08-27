@@ -273,6 +273,12 @@ struct Env {
     std::unordered_map<std::string, Value> vars;
     std::shared_ptr<Env> parent;
     bool routineFrame = false; // a ROUTINE activation ($/ scopes here, like Rakudo's per-routine $/)
+    // A `strict` pragma ran HERE: 1 = `no strict` (undeclared variables
+    // auto-vivify in this scope and the ones inside it), -1 = `use strict`
+    // (they do not, whatever the scopes outside say), 0 = neither, ask outwards.
+    signed char strictPragma = 0;
+    bool packageFrame = false; // a class/role/module BODY scope: the home a `no strict`
+                               // auto-vivification inside it belongs to (see laxVarRef)
     bool loopFrame = false;    // a loop-statement `state` frame: plain `my` declares
                                // (e.g. in a while COND) skip past it to the enclosing
                                // scope, so they stay visible after the loop
@@ -718,6 +724,15 @@ public:
     // False on a thread the interpreter never entered — i.e. one the C library
     // made for itself. Such a thread has no lexical scope to run Raku in.
     bool onRakuThread() const { return (bool)tctx_.cur; }
+    // Is `no strict` in force where we stand? The pragma is lexical, so the
+    // answer is "some scope on the way out declared it" — and since this is
+    // only ever asked about a name that has ALREADY failed to resolve, the walk
+    // costs nothing on any path that works.
+    bool noStrictHere() const {
+        for (Env* e = tctx_.cur.get(); e; e = e->parent.get())
+            if (e->strictPragma) return e->strictPragma > 0;
+        return false;
+    }
     Value spawnTimerWhenever(double secs, Value blk, std::shared_ptr<ReactCtx> ctx); // `whenever Promise.in(N)` timer
     Value spawnIntervalWhenever(double interval, double delay, Value blk,
                                 std::shared_ptr<ReactCtx> ctx,
@@ -775,6 +790,7 @@ public:
     Value dynVar(const std::string& name);
     Value rakuIntrospection(bool compiler); // $*RAKU / $*RAKU.compiler // $* / $? magical variables (used by codegen)
     Value& dynVarRef(const std::string& name); // assignable dynamic-var slot (used by codegen)
+    Value& laxVarRef(const std::string& name); // `no strict` auto-vivified slot (used by codegen)
     // $*var resolution in PROPER dynamic order: the current frame's own
     // declaration first (its env chain up to the enclosing routine activation,
     // inclusive), then each caller frame innermost-out with the same bound.
@@ -804,7 +820,8 @@ public:
     int runCompiledMain(Value (*fn)(ValueList&));
     Value& accessorRef(Value& base, const std::string& name); // $obj.accessor lvalue (used by codegen)
     Value postfixIPub(Value v) { return postfixI(std::move(v)); } // postfix:<i> (used by codegen)
-    void rtUse(const std::string& module, const std::string& arg = ""); // `use MODULE` (used by codegen)
+    void rtUse(const std::string& module, const std::string& arg = "",
+               bool isNo = false); // `use`/`no MODULE` (used by codegen)
     Value rtNameTerm(const std::string& n); // bareword: env value / &call / builtin / type object (used by codegen)
     void registerNamedRegex(const std::string& name, const std::string& pattern, const std::string& kind) {
         namedRegex_[name] = pattern; namedRegexKind_[name] = kind; // (used by codegen)
@@ -1474,7 +1491,6 @@ private:
     long testNum_ = 0;
     long failCount_ = 0;
     bool usedTest_ = false;
-    bool noStrict_ = false;  // `no strict` — undeclared variables auto-vivify
     int subtestDepth_ = 0;
     bool subtestFailed_ = false;
     bool bailedOut_ = false; // bail-out was called: suppress the trailing auto-plan

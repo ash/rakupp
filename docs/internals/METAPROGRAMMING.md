@@ -84,7 +84,7 @@ one incidental `RakuAST::` reference), so it is very low-yield to pursue.
 | `macro` / `quasi { … }` | ✗ | AST macros (`use experimental :macros`) |
 | `RakuAST::…`            | ✗ | programmatic AST construction / introspection |
 | slangs — `$~MAIN`, grammar derivation | ◑ | the slang language-objects (`$~MAIN`/`$~Quote`/`$~Regex`/`$~P5Regex`) exist as defined `Grammar` objects; the grammar can't actually be swapped mid-parse |
-| `no strict` / relaxing pragmas | ✗ | strictness can't be turned off |
+| `no strict` / relaxing pragmas | ◑ | `strict` is lexical and both directions work (`no strict` auto-vivifies undeclared variables, `use strict` turns the check back on); the other relaxing pragmas are accepted and ignored |
 | `use experimental :…`  | ◑ | accepted syntactically; the feature itself is usually a no-op |
 
 ## Summary

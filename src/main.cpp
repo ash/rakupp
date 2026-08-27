@@ -930,7 +930,7 @@ static int compileNative(const std::string& src, const std::string& srcName, std
         auto mods = collectModuleGraph(prog, effectiveSearchPath(libPaths), &moduleExports,
                                        &skips, &natives);
         if (!reportModuleEmbedding("--exe", mods, skips, natives)) return 4;
-        cpp = transpileToCpp(prog, optimize, absPath(srcName), moduleExports);
+        cpp = transpileToCpp(prog, optimize, absPath(srcName), moduleExports, src);
         if (!mods.empty()) {
             std::ostringstream decls, calls;
             emitModuleTable(mods, decls, calls);
@@ -2067,7 +2067,7 @@ int main(int argc, char** argv) {
             // same module scan as --exe, so what this prints is what --exe compiles
             std::set<std::string> moduleExports;
             collectModuleGraph(prog, effectiveSearchPath(libPaths), &moduleExports);
-            std::cout << transpileToCpp(prog, optimize, absPath(fileName), moduleExports);
+            std::cout << transpileToCpp(prog, optimize, absPath(fileName), moduleExports, src);
         } catch (const ParseError& e) {
             std::cerr << "===SORRY!=== Parse error at line " << e.line << ": " << e.what() << "\n";
             return 2;

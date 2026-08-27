@@ -86,9 +86,9 @@ Concretely:
 
 The undeclared-variable check takes the same principle further, because it has
 to: a false warning is an annoyance, but a false *refusal* means a working
-program will not start. It stands down for `EVAL`, `::($name)`, `require`,
-`no strict` and an import it cannot resolve, and it reports a name only when the
-source declares it nowhere.
+program will not start. It stands down for `EVAL`, `::($name)`, `require` and
+an import it cannot resolve, is silent inside the lexical scope of a
+`no strict`, and it reports a name only when the source declares it nowhere.
 - **Loop and binder variables aren't required to be used.** `for ^10 { … }`,
   `if EXPR -> $x { … }`, `given … -> $y { … }` — a topic or binder you don't
   read is idiomatic, not a mistake, so those are tracked (their uses resolve)
