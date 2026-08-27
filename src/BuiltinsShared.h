@@ -63,6 +63,7 @@ uint32_t cpAtByte(const std::string& s, size_t b); // decode ONE codepoint at by
 
 bool deepEq(const Value& a, const Value& b);
 bool matcherAccepts(Interpreter& I, const Value& v, const Value& mt);
+bool predAnswerTruthy(Interpreter& I, const Value& res, const Value& elem);
 uint32_t toLowerCp(uint32_t c);
 // `:smartcase` (6.e) folds case only when the needle carries none of its own:
 // a needle spelled in lower case matches either case, one with a capital in it

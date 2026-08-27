@@ -515,7 +515,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     bool match;
                     if (pred.t == VT::Code) {
                         self->topicWriteback_ = &(*src.arr())[*spos - 1]; // $_ mutations alias the element
-                        try { match = self->callCallable(pred, {v}).truthy(); }
+                        try { match = predAnswerTruthy(*self, self->callCallable(pred, {v}), v); }
                         catch (LastEx&) { self->topicWriteback_ = nullptr; return false; } // `last` ends the grep
                         catch (NextEx&) { self->topicWriteback_ = nullptr; continue; }     // `next` skips
                         catch (RedoEx&) { self->topicWriteback_ = nullptr; (*spos)--; continue; } // `redo` retries
@@ -543,7 +543,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 Value v = (*inv.arr())[si];
                 bool match = !havePred ? true
                            : pred.t == VT::Regex ? regexMatch(v.toStr(), pred.s).truthy()
-                           : pred.t == VT::Code ? callCallable(pred, {v}).truthy()
+                           : pred.t == VT::Code ? predAnswerTruthy(*this, callCallable(pred, {v}), v)
                                                 : applyArith("~~", v, pred).truthy();
                 if (match) {
                     if (wantK) return Value::integer((long long)si);
@@ -1946,7 +1946,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             size_t ci = 0;
             for (auto& v : items) {
                 if (ci < conds.size()) {
-                    bool c = callCallable(conds[ci], ValueList{v}).truthy();
+                    bool c = predAnswerTruthy(*this, callCallable(conds[ci], ValueList{v}), v);
                     if (on) { if (c) out.arr()->push_back(v); else { on = false; ci++; } }
                     else if (c) { on = true; ci++; out.arr()->push_back(v); }
                 } else if (on) out.arr()->push_back(v);
@@ -2200,7 +2200,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     ValueList ca;
                     for (size_t k = 0; k < ar && gi + k < items.size(); k++) ca.push_back(items[gi + k]);
                     if (aliasable && ar == 1) topicWriteback_ = &(*inv.arr())[gi]; // $_ mutations alias the element
-                    try { match = callCallable(mt, ca).truthy(); }
+                    try { match = predAnswerTruthy(*this, callCallable(mt, ca), v); }
                     catch (LastEx&) { topicWriteback_ = nullptr; break; }   // `last` in the block ends the grep
                     catch (NextEx&) { topicWriteback_ = nullptr; continue; } // `next` skips the element
                     catch (RedoEx&) { topicWriteback_ = nullptr; gi -= ar; continue; } // `redo` retries it

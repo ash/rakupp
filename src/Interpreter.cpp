@@ -1272,7 +1272,7 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
         // Code endpoint: the first accepted element ends the sequence — check the
         // seeds themselves first (`1, 2, 4 ... * > 3` is (1 2 4))
         auto endAccepts = [&](const Value& v) -> bool {
-            ValueList a{v}; return callCallable(r, a).truthy();
+            ValueList a{v}; return predAnswerTruthy(*this, callCallable(r, a), v);
         };
         if (endCode)
             for (size_t k = 0; k < out.arr()->size(); k++)
@@ -5641,7 +5641,17 @@ Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink) {
     // What this env already owed before the block started: anything beyond this is
     // ours to unwind on the way out, anything below it belongs to an outer scope
     // that happens to share the env (a statement-modifier loop body does).
-    const size_t tempMark = blockEnv->ex ? blockEnv->ex->tempRestores.size() : 0;
+    // A block that created NO scope of its own (a statement-modifier's flattened
+    // branch runs directly in the caller's env) owns no unwinds at all: its
+    // `temp $x = …` belongs to the ENCLOSING block, exactly as if the modifier
+    // were not there. Draining here restored the temp the moment the one-line
+    // branch finished — `temp $colorizor = {''} unless $color` in Data::Dump
+    // un-tempted itself instantly and the colour codes leaked (battery,
+    // v3.20.1). SIZE_MAX makes the runLeavePhasers drain a no-op while its
+    // LEAVE/KEEP/UNDO phasers still run.
+    const bool sharesScope = blockEnv == saved.get();
+    const size_t tempMark = sharesScope ? SIZE_MAX
+                          : blockEnv->ex ? blockEnv->ex->tempRestores.size() : 0;
     bool hasNestedSub = false;
     Value last = Value::any();
     // index of the last statement whose value becomes the block's value; earlier
@@ -5714,7 +5724,7 @@ Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink) {
                     int r = runCatch(e);
                     if (r == 1) continue;                // .resume → next statement
                     runLeavePhasers(b->stmts, /*ok=*/false, tempMark);
-                    if (tctx_.cur && tctx_.cur->ex && !tctx_.cur->ex->letRestores.empty()) {
+                    if (!sharesScope && tctx_.cur && tctx_.cur->ex && !tctx_.cur->ex->letRestores.empty()) {
                         for (auto it = tctx_.cur->ex->letRestores.rbegin(); it != tctx_.cur->ex->letRestores.rend(); ++it) (*it)();
                         tctx_.cur->ex->letRestores.clear();
                     }
@@ -5731,7 +5741,7 @@ Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink) {
     } catch (RakuError& e) {
         runLeavePhasers(b->stmts, /*ok=*/false, tempMark);
         // `let`-saved containers restore only on this UNSUCCESSFUL exit
-        if (tctx_.cur && tctx_.cur->ex && !tctx_.cur->ex->letRestores.empty()) {
+        if (!sharesScope && tctx_.cur && tctx_.cur->ex && !tctx_.cur->ex->letRestores.empty()) {
             for (auto it = tctx_.cur->ex->letRestores.rbegin(); it != tctx_.cur->ex->letRestores.rend(); ++it) (*it)();
             tctx_.cur->ex->letRestores.clear();
         }
@@ -5740,7 +5750,7 @@ Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink) {
         throw;
     } catch (...) {
         runLeavePhasers(b->stmts, /*ok=*/false, tempMark);
-        if (tctx_.cur && tctx_.cur->ex && !tctx_.cur->ex->letRestores.empty()) {
+        if (!sharesScope && tctx_.cur && tctx_.cur->ex && !tctx_.cur->ex->letRestores.empty()) {
             for (auto it = tctx_.cur->ex->letRestores.rbegin(); it != tctx_.cur->ex->letRestores.rend(); ++it) (*it)();
             tctx_.cur->ex->letRestores.clear();
         }

@@ -715,7 +715,7 @@ ValueList Interpreter::applyTapChain(Value& tap, const Value& in, bool& complete
             if (op == "map") { next.push_back(arg.t == VT::Code ? callCallable(arg, ValueList{v}) : v); }
             else if (op == "grep") {
                 bool match;
-                if (arg.t == VT::Code) match = callCallable(arg, ValueList{v}).truthy();
+                if (arg.t == VT::Code) match = predAnswerTruthy(*this, callCallable(arg, ValueList{v}), v);
                 else if (arg.t == VT::Regex) match = regexMatch(v.toStr(), arg.s).truthy();
                 else match = applyArith("~~", v, arg).truthy();
                 if (match) next.push_back(v);
@@ -729,7 +729,7 @@ ValueList Interpreter::applyTapChain(Value& tap, const Value& in, bool& complete
             }
             else if (op == "first") {
                 bool match = true;
-                if (arg.t == VT::Code) match = callCallable(arg, ValueList{v}).truthy();
+                if (arg.t == VT::Code) match = predAnswerTruthy(*this, callCallable(arg, ValueList{v}), v);
                 else if (arg.t == VT::Regex) match = regexMatch(v.toStr(), arg.s).truthy();
                 else if (arg.t != VT::Nil) match = applyArith("~~", v, arg).truthy();
                 if (match) { next.push_back(v); complete = true; }
@@ -1363,7 +1363,7 @@ bool matcherAccepts(Interpreter& I, const Value& v, const Value& mt) {
         if (mt.enumName == "one")  return hits == 1;
         return hits == 0;                                     // none
     }
-    if (mt.t == VT::Code) return I.callCallable(const_cast<Value&>(mt), ValueList{v}).truthy();
+    if (mt.t == VT::Code) return predAnswerTruthy(I, I.callCallable(const_cast<Value&>(mt), ValueList{v}), v);
     // A matcher OBJECT (one whose class defines ACCEPTS) is what `.grep`/`.first`
     // get handed when the pattern is a custom matcher — `.grep(glob("*.txt"))`.
     // applyArith knows nothing about ACCEPTS, so those greps came back empty.
@@ -1375,6 +1375,25 @@ bool matcherAccepts(Interpreter& I, const Value& v, const Value& mt) {
             }
     }
     return applyArith("~~", v, mt).truthy();
+}
+
+// Truth of a CODE matcher's ANSWER, for element `elem`. A block may answer a
+// Regex — `{ .defined && /re/ }` returns the `&&` right side as the object —
+// and Rakudo boolifies that answer by MATCHING it against the element, writing
+// the caller's `$/` (Regex.Bool reads the topic and stores the match through
+// getlexcaller). Reading the Regex value's plain truth instead was always-true
+// and left `$/` unset: HTTP::Tiny's multipart-boundary `~$/` came back ""
+// (battery regression, v3.20.1). The closure's frame is already popped when
+// this runs, so setMatchVar lands the match in the CALLER's `$/`, which is
+// exactly where Rakudo puts it.
+bool predAnswerTruthy(Interpreter& I, const Value& res, const Value& elem) {
+    if (res.t == VT::Regex) {
+        Value m = I.regexMatch(elem.toStr(), res.s);
+        bool t = m.truthy();
+        I.setMatchVar(std::move(m));
+        return t;
+    }
+    return res.truthy();
 }
 
 // The positional arity of a Code value — how many elements `.map`/`for` feed it
