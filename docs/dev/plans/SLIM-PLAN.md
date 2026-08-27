@@ -27,7 +27,8 @@ nqp::stat, subset-return dispatch) put CI's universal hello-all at
 6,030,328 bytes — 1 KB past the line — with nothing CLI-only left to
 carve out of the `--exe` link. The gate is re-pinned at ≤ 6.25 MB for
 `-all`, bare `--slim` ≤ 6.5 MB; the margin covers the ~470 KB spread
-between CI's toolchain and the dev box's for the same tree.*
+between CI's arm64 slice and the dev box's default-arch `build/`
+(x86_64 there) for the same tree.*
 
 ---
 
