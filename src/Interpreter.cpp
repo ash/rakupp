@@ -9546,7 +9546,7 @@ bool Interpreter::subsetMatches(const std::string& name, const Value& v, int dep
     }
     auto it = subsets_.find(name);
     if (it == subsets_.end()) {
-        bool r = typeMatchesArg(v, name);
+        bool r = typeMatchesResolved(v, name);
         if (!cacheKey.empty()) typeSubsetCache[cacheKey] = r;
         return r;
     }
@@ -9579,7 +9579,37 @@ bool Interpreter::subsetMatches(const std::string& name, const Value& v, int dep
 
 bool Interpreter::typeOrSubsetMatches(const Value& v, const std::string& type) {
     if (subsets_.count(type)) return subsetMatches(type, v);
-    return typeMatchesArg(v, type);
+    return typeMatchesResolved(v, type);
+}
+
+// Nominal conformance with SUBSET names resolved — for TYPE OBJECTS only; a
+// defined value takes the ordinary path untouched (a negative Int still fails
+// UInt on its sign). An undefined `subset Port of UInt` attribute reads back
+// as the Port TYPE OBJECT, and a `--> Port` / `--> UInt` boundary must see
+// the Int underneath: Rakudo's core UInt is
+//     subset UInt of Int where { not .defined or $_ >= 0 }
+// so every Int-derived type object passes it SILENTLY, and a subset-named
+// type object conforms wherever its base chain does. URI's
+// `method port(--> Port)` returns exactly this when neither the URI nor its
+// scheme carries a port, and its whole suite died at that boundary. A
+// hash-miss Any still fails an Int-based constraint — nominal first.
+bool Interpreter::typeMatchesResolved(const Value& v, const std::string& type) {
+    if (v.t != VT::Type) return typeMatchesArg(v, type);
+    auto resolve = [&](std::string n) {
+        size_t br = n.find('[');
+        if (br != std::string::npos) n = n.substr(0, br);
+        for (int guard = 0; guard < 16; guard++) {
+            if (n == "UInt") { n = "Int"; break; }
+            auto it = subsets_.find(n);
+            if (it == subsets_.end() || it->second.base.empty()) break;
+            n = it->second.base;
+        }
+        return n;
+    };
+    std::string have = resolve(v.s);
+    std::string want = type == "UInt" ? "Int" : type;
+    if (have == v.s && want == type) return typeMatchesArg(v, type);
+    return typeMatchesArg(Value::typeObj(have), want);
 }
 
 int Interpreter::scoreCandidate(const Value& cand, const ValueList& args) {
@@ -9930,13 +9960,39 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args) {
             if (!ok) return -1;
         }
     }
-    // An UNFILLED optional positional typed by a SUBSET narrows the candidate
-    // anyway: Rakudo picks `(UInt $v?)` over `(Str $v?)` on a zero-arg call
-    // (Date::Event's .etype pair — plain-type twins would be Ambiguous, but a
-    // subset sorts tighter than any class type).
-    for (size_t i = pos.size(); i < positional.size(); i++) {
-        const Param* p = positional[i];
-        if (!p->type.empty() && (subsets_.count(p->type) || p->type == "UInt")) score += 1;
+    // One narrowness BAND, not additive bonuses — max(), because Rakudo's sort
+    // puts both of these in the same band and lets declaration order settle a
+    // meeting of the two (all probed 2026-08-26, both declaration orders):
+    //  - an UNFILLED optional positional typed by a SUBSET narrows the
+    //    candidate: `(UInt $v?)` beats `(Str $v?)` AND a bare `()` on a
+    //    zero-arg call (Date::Event's .etype pair);
+    //  - so does DECLARING any plain named parameter: `(Int $x, :$opt)` beats
+    //    `(Int $x)` for `f(5)` even unsupplied, and `(:$x)` beats `()` — but
+    //    a named SLURPY earns nothing (`(Int $x, *%r)` is Ambiguous with
+    //    `(Int $x)` under Rakudo, and rakupp's tie keeps declaration order).
+    // Summing instead of max-ing made `(UInt $size = 1, :$chars)` outrank
+    // `(:$chars)` declared first, and Data::Generators' random-string()
+    // answered a one-element List where its Str candidate should have won.
+    {
+        bool narrower = false;
+        // …but a SUB-SIGNATURE positional anywhere in the candidate suppresses
+        // the unfilled-subset band: Rakudo scores `((Int $a))` and
+        // `((Int $a), UInt $s = 1)` as TIED — declaration order decides, both
+        // orders probed — while the same pair with a plain `Int $a` slot lets
+        // the UInt band win. Data::Generators' random-date-time((DT, DT))
+        // needs the destructuring two-DateTime candidate it declares first,
+        // not its (sub-sig, UInt $size = 1) sibling.
+        bool subsigged = false;
+        for (const Param* p : positional)
+            if (p->subSig) { subsigged = true; break; }
+        for (size_t i = pos.size(); i < positional.size() && !narrower && !subsigged; i++) {
+            const Param* p = positional[i];
+            if (!p->type.empty() && (subsets_.count(p->type) || p->type == "UInt")) narrower = true;
+        }
+        if (!narrower)
+            for (auto& p : params)
+                if (p.named && !p.slurpy) { narrower = true; break; }
+        if (narrower) score += 1;
     }
     // A slurpy candidate is the LEAST-specific tiebreaker: at equal specificity a
     // fixed-arity candidate wins (`multi f(){}` beats `multi f(*@a){}` on `f()`),
