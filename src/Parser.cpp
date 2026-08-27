@@ -2263,6 +2263,15 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
                 advance(); advance(); advance(); // ( SourceType )
                 coerceTo = type;
             }
+            // …and the EMPTY form `Hash()` — the `(Any)` shorthand. It used to
+            // fall through, leaving `()` behind as a sink expression and the
+            // whole declaration in pieces: `my Hash() %options` lost %options
+            // entirely (Text::Table::Simple's option builder; issue #37's
+            // zef-install leg found it).
+            else if (isKind(Tok::LParen) && peek().kind == Tok::RParen) {
+                advance(); advance(); // ( )
+                coerceTo = type;
+            }
         }
     }
     // sigilless after an optional type:  my Mu \x = …   (bare `my \x` handled above)
@@ -2746,6 +2755,24 @@ ExprPtr Parser::parseColonPair() {
             }
             pair->value = std::move(v);
             expectKind(Tok::RParen, ")");
+            return pair;
+        }
+        // The lexer can FUSE a whole angle value into one operator token —
+        // `:replacement<->` arrives as the rw-pointy arrow `<->`, `:x<=>` as
+        // the spaceship, `:x<+>` as a set op. Right after a colonpair NAME
+        // with no space, such a token is the angle-quoted VALUE and its middle
+        // is the word (fez calls `.decode('ascii', :replacement<->)`; issue #37).
+        if (cur().kind == Tok::Op && !cur().spaceBefore && cur().text.size() > 2 &&
+            cur().text.front() == '<' && cur().text.back() == '>') {
+            std::string middle = cur().text.substr(1, cur().text.size() - 2);
+            advance();
+            auto al = angleWordNumeric(middle);
+            if (al) {
+                auto allo = std::make_unique<AllomorphLit>();
+                allo->num = std::move(al); allo->str = middle;
+                pair->value = std::move(allo);
+            }
+            else pair->value = std::make_unique<StrLit>(middle);
             return pair;
         }
         if (isOp("<") && !cur().spaceBefore) {
@@ -7497,6 +7524,18 @@ StmtPtr Parser::parseStatementImpl() {
                     if (isKind(Tok::RParen)) advance();
                     if (!val.empty() && val[0] == 'v') val = val.substr(1);
                     if (val.size() > 1 && (val[0] == '"' || val[0] == '\'')) val = val.substr(1, val.size() - 2);
+                    // an EXPRESSION in the parens — zef pins every sibling with
+                    // `:ver($?DISTRIBUTION.meta<version> // '*')` — cannot be
+                    // matched textually: the raw source text used to become the
+                    // requirement and reject every candidate ("1.1.3 !~
+                    // $?DISTRIBUTION.meta<version>//…", issue #37). Treat a
+                    // non-literal as UNCONSTRAINED, the same behaviour every
+                    // non-literal spelling had before the paren form existed.
+                    bool literalish = !val.empty();
+                    for (char c : val)
+                        if (!(ascii::isalnum((unsigned char)c) || c == '.' || c == '*' ||
+                              c == '+' || c == '-')) { literalish = false; break; }
+                    if (!literalish) val.clear();
                 }
                 if (adv == "ver") u->verReq = val;
             }

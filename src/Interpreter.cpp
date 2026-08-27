@@ -1821,6 +1821,12 @@ Value rtArrayVal(Value&& v) {
 }
 
 static Value coerceArray(const Value& v) {
+    // `@a = Nil` is ONE element reset to the container default ([Any] — and a
+    // typed array's store turns it into the element type's type object), NOT
+    // an empty list: zef's Build assigns a promise's Nil result into
+    // `my Bool @results` and then counts on `?@results` seeing one element
+    // (Rakudo: Array[Bool].new(Bool)). `()` still empties. (issue #37)
+    if (v.t == VT::Nil) { Value a = Value::array(); a.arr()->push_back(Value::any()); return a; }
     if (v.t == VT::Hash && v.hash() && v.itemized) { Value a = Value::array(); a.arr()->push_back(v); return a; }
     if (v.t == VT::Hash && v.hash()) return hashToPairs(v);
     // a Blob/Buf assigns to an @-array as its elements (`my uint32 @W = $M`
@@ -4000,11 +4006,23 @@ Value Interpreter::buildResourceMap(const std::string& repo, const std::string& 
 // of its modules, so an undefined value there stops the load dead. Built from the
 // source checkout's META6.json; the `meta` hash is what callers actually read.
 Value Interpreter::buildDistribution(const std::string& distRoot) {
+    // ALWAYS an object: a source tree with no META6.json still has a
+    // $?DISTRIBUTION in Rakudo (whose .meta<anything> is a quiet Nil), and
+    // answering the bare undefined here made `use Zef:ver($?DISTRIBUTION.
+    // meta<version> // '*')` die "No such method 'meta'" mid-load, which the
+    // loader then reported as the module not being found at all (issue #37).
+    auto emptyDist = [&]() {
+        Value d = Value::makeHash(); d.hashKind = "Distribution";
+        (*d.hash())["meta"] = Value::makeHash();
+        Value pfx = Value::str(distRoot); pfx.hashKind = "IO";
+        (*d.hash())["prefix"] = pfx;
+        return d;
+    };
     std::ifstream meta(distRoot + "/META6.json");
-    if (!meta) return Value::any();
+    if (!meta) return emptyDist();
     std::ostringstream ss; ss << meta.rdbuf();
     Value m = jsonParseDoc(ss.str());
-    if (m.t != VT::Hash) return Value::any();
+    if (m.t != VT::Hash) return emptyDist();
     // Rakudo's Distribution meta carries `ver` ALONGSIDE `version` (its meta
     // normalization adds the alias) — DBDish stamps every driver with
     // `:ver($?DISTRIBUTION.meta<ver>)` and reads .^ver back in its suite
@@ -4888,6 +4906,11 @@ std::vector<BundledModule> collectModuleGraph(const Program& prog,
 // a prefix with ".*". Segments compare numerically; a missing segment is 0.
 static bool verSatisfies(const std::string& have, const std::string& want) {
     if (want.empty()) return true;
+    // `:ver("*")` / `:ver<*>` is the ANYTHING requirement — zef spells every
+    // sibling use `:ver($?DISTRIBUTION.meta<version> // '*')`, and the bare
+    // star used to fall through to the numeric compare (segments to [0]) and
+    // reject every candidate, versioned or not (issue #37's zef leg)
+    if (want == "*") return true;
     if (have.empty()) return false;   // constrained use, versionless candidate: skip it
     std::string w = want;
     bool plus = !w.empty() && w.back() == '+';
@@ -8542,7 +8565,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 // `when X` == `if $_ ~~ X`: a regex literal already matched $_ above;
                 // a Regex/Callable value is invoked; else a value/type smartmatch.
                 if (w->cond->kind == NK::RegexLit) match = boolify(cv);
-                else if (cv.t == VT::Regex) match = regexMatch(rxSubject(topic), cv.s).truthy();
+                else if (cv.t == VT::Regex) match = regexMatch(rxSubject(topic), cv.s, &cv).truthy();
                 else if (cv.t == VT::Code) match = boolify(callCallable(cv, {topic}));
                 else match = applyArith("~~", topic, cv).truthy();
             }
@@ -9609,7 +9632,7 @@ bool Interpreter::subsetMatches(const std::string& name, const Value& v, int dep
             // the value; anything else (a type, a junction like
             // `Cro::Message | Cro::Connection`) is smartmatched — NOT boolified
             if (cv.t == VT::Code && cv.code()) ok = boolify(callCallable(cv, ValueList{v}));
-            else if (cv.t == VT::Regex) ok = boolify(regexMatch(rxSubject(v), cv.s));
+            else if (cv.t == VT::Regex) ok = boolify(regexMatch(rxSubject(v), cv.s, &cv));
             else ok = boolify(applyBinOp("~~", v, cv));
         } catch (...) { tctx_.cur = saved; if (!cacheKey.empty()) typeSubsetCache[cacheKey] = false; return false; }
         tctx_.cur = saved;
@@ -10205,7 +10228,7 @@ bool Interpreter::boolify(const Value& v) {
             // (Only the match matters for the answer; the assignment is the side
             // effect Rakudo's boolification has too.) Truthiness is read BEFORE
             // the move, so $/ takes the Match without a ~376-byte Value copy.
-            Value m = const_cast<Interpreter*>(this)->regexMatch(rxSubject(*topic), v.s);
+            Value m = const_cast<Interpreter*>(this)->regexMatch(rxSubject(*topic), v.s, &v);
             bool t = m.truthy();
             const_cast<Interpreter*>(this)->setMatchVar(std::move(m));
             return t;
@@ -11136,12 +11159,25 @@ bool Interpreter::isHyperCompoundAssign(const std::string& inner, const Value& l
     return inner.size() >= 2 && inner.back() == '=' && !eqTailCmp.count(inner) &&
            l.t == VT::Array && l.arr();
 }
-Value Interpreter::hyperCompoundAssign(const std::string& inner, const Value& l, const Value& r, Expr* lhsExpr) {
+Value Interpreter::hyperCompoundAssign(const std::string& inner, const Value& l, const Value& r,
+                                       Expr* lhsExpr, bool strictL, bool strictR) {
     std::string base = inner.substr(0, inner.size() - 1);
     ValueList rhs = r.flatten();
+    size_t la = lhsExpr && lhsExpr->kind == NK::ListExpr
+                    ? static_cast<ListExpr*>(lhsExpr)->items.size()
+                    : l.arr()->size();
+    // The pointing of the markers decides the lengths (measured against
+    // Rakudo): »op=« with unequal lengths — a scalar RHS is length 1 — throws;
+    // «op=« touches only the first RHS-length elements; »op=» and the dwimmy
+    // <<op=>> cycle the RHS over the whole array. hyperCore already enforced
+    // this for the plain hyper forms; the compound path silently cycled.
+    if (strictL && strictR && la != rhs.size())
+        throw RakuError{Value::typeObj("X::HyperOp::NonDWIM"),
+            "Lists on either side of non-dwimmy hyperop are not of the same length"};
+    size_t n = (!strictL && strictR && rhs.size() < la) ? rhs.size() : la;
     if (!rhs.empty() && lhsExpr && lhsExpr->kind == NK::ListExpr) {
         auto& items = static_cast<ListExpr*>(lhsExpr)->items;
-        for (size_t i = 0; i < items.size(); i++) {
+        for (size_t i = 0; i < n && i < items.size(); i++) {
             Value* slot = nullptr;
             try { slot = lvalue(items[i].get()); } catch (RakuError&) {}
             if (!slot) continue;             // not assignable: leave it be
@@ -11151,7 +11187,7 @@ Value Interpreter::hyperCompoundAssign(const std::string& inner, const Value& l,
         return l;
     }
     if (!rhs.empty())
-        for (size_t i = 0; i < l.arr()->size(); i++)
+        for (size_t i = 0; i < n; i++)
             (*l.arr())[i] = applyBinOp(base, (*l.arr())[i], rhs[i % rhs.size()]);
     return l;
 }
@@ -12329,6 +12365,12 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
             // Int('123') (DBDish's convert-function builds converters this way)
             if (!args.empty()) return coerceToType(args[0], codeVal.s);
         }
+        // The undefined value IS the Any type object, and invoking it is the
+        // Any coercion — identity (`my $x; $x(5)` is 5 in Rakudo). Fez's own
+        // 02-checkbuild.t leans on this through a package-stash miss:
+        // `Fez::CLI::<&MAIN>('checkbuild')` finds no &MAIN there (the multis
+        // are my-scoped) and Rakudo happily coerces instead (issue #37).
+        if (codeVal.t == VT::Any && !args.empty()) return args[0];
         throw RakuError{Value::typeObj("X::Method::NotFound"), "Cannot invoke non-Callable value of type " + codeVal.typeName()};
     }
     DepthGuard guard(tctx_.callDepth);
@@ -13303,10 +13345,19 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
                         // ancestor's dispatcher would find this very frame still on the
                         // stack and defer straight back down, forever. Rakudo reports
                         // X::Multi::NoMatch here, and now so do we.
-                        bool* mark = parentFrame < redispatchStack_.size()
-                                     ? &redispatchStack_[parentFrame].chainDeferred : nullptr;
-                        if (mark) *mark = true;
-                        struct Unmark { bool* m; ~Unmark() { if (m) *m = false; } } un{mark};
+                        // By INDEX, not pointer: parentNext re-enters dispatch, which
+                        // pushes onto redispatchStack_ — a growth reallocates the
+                        // buffer and a captured &element dangles. The Unmark dtor was
+                        // writing its one byte into the FREED buffer (ASan caught it
+                        // on this very module's cluster test).
+                        size_t markIdx = parentFrame < redispatchStack_.size()
+                                         ? parentFrame : (size_t)-1;
+                        if (markIdx != (size_t)-1) redispatchStack_[markIdx].chainDeferred = true;
+                        struct Unmark {
+                            size_t i;
+                            ~Unmark() { if (i != (size_t)-1 && i < redispatchStack_.size())
+                                            redispatchStack_[i].chainDeferred = false; }
+                        } un{markIdx};
                         return parentNext(as);
                     }
                 }
@@ -16656,7 +16707,8 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         // no parenthesised-list write-back; an @array LHS shares storage. The
         // value-only fold below is the last-resort for a null interpreter.
         if (Interpreter::isHyperCompoundAssign(inner, l)) {
-            if (g_cbInterp) return g_cbInterp->hyperCompoundAssign(inner, l, r, nullptr);
+            if (g_cbInterp) return g_cbInterp->hyperCompoundAssign(inner, l, r, nullptr,
+                op.compare(0, 2, ">>") == 0, op.compare(op.size() - 2, 2, "<<") == 0);
             std::string base = inner.substr(0, inner.size() - 1);
             ValueList rhs = r.flatten();
             if (!rhs.empty())
@@ -20196,7 +20248,12 @@ Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value
     // (the type test first: this runs on EVERY applied operator, and two string
     // compares ahead of it cost ~4% on the string kernels)
     if (r.t == VT::Regex && (op == "~~" || op == "!~~")) {
-        Value m = regexMatch(rxSubject(l), r.s);
+        // pass the VALUE: an interpolating regex (`rx/ <$_> /`) resolves its
+        // vars from the env it closed over — junction autothreading re-enters
+        // HERE per eigenstate, and dropping rxVal made `<$_>` read the
+        // CALLER's topic (the match subject!), so `any @globs` matched
+        // everything (fez's Fez::Util::Glob; issue #37's test leg)
+        Value m = regexMatch(rxSubject(l), r.s, &r);
         if (op == "!~~") return Value::boolean(!m.truthy());
         return m;
     }
@@ -20276,7 +20333,8 @@ Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value
         // hyper compound assignment — the shared implementation (no AST here,
         // so no parenthesised-list write-back; an @array LHS shares storage)
         if (isHyperCompoundAssign(inner, l))
-            return hyperCompoundAssign(inner, l, r, nullptr);
+            return hyperCompoundAssign(inner, l, r, nullptr,
+                op.compare(0, 2, ">>") == 0, op.compare(op.size() - 2, 2, "<<") == 0);
         bool strictL = op.compare(0, 2, ">>") == 0;
         bool strictR = op.compare(op.size() - 2, 2, "<<") == 0;
         Value ll = l, rr = r;
@@ -20627,7 +20685,8 @@ Value Interpreter::evalBinary(Binary* b) {
             // hyper compound assignment — the shared implementation; this call
             // site has the AST, so a parenthesised LHS gets its write-back
             if (isHyperCompoundAssign(inner, l))
-                return hyperCompoundAssign(inner, l, r, b->lhs.get());
+                return hyperCompoundAssign(inner, l, r, b->lhs.get(),
+                    op.compare(0, 2, ">>") == 0, op.compare(op.size() - 2, 2, "<<") == 0);
             bool strictL = op.compare(0, 2, ">>") == 0;
             bool strictR = op.compare(op.size() - 2, 2, "<<") == 0;
             Value ll = l, rr = r;
@@ -21055,7 +21114,7 @@ Value Interpreter::evalBinary(Binary* b) {
             for (auto& e : *r.arr()) {
                 total++;
                 bool m;
-                if (e.t == VT::Regex) m = regexMatch(rxSubject(lTopic), e.s).truthy();
+                if (e.t == VT::Regex) m = regexMatch(rxSubject(lTopic), e.s, &e).truthy(); // &e: an interpolating eigenstate resolves vars from ITS captured env
                 else if (e.t == VT::Code) m = boolify(callCallable(e, ValueList{lTopic}));
                 // a filetest adverb eigenstate — `$p.IO ~~ :d & :x`. The generic
                 // smartmatch below knows nothing about IO or Pairs and answered

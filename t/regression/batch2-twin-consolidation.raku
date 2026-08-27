@@ -23,8 +23,10 @@
 #   * exceptionToJson had its own JSON string escaper (byte-different on
 #     \b/\f and \u case); IO::Spec carried two byte-identical tmpdirs.
 # Contract: exit 0 + last line PASS. (Under Rakudo everything passes except
-# the two rakupp-tooling checks: --lint does not exist there, and its tmpdir
-# spelling keeps a trailing slash.)
+# four engine-specific checks: --lint does not exist there, its tmpdir keeps
+# a trailing slash, and its .can is MRO-table-based — it counts inherited
+# candidates and answers for side-effectful names where rakupp's probe
+# deliberately does not.)
 my @fail;
 sub check($got, $want, $desc) {
     @fail.push("$desc: got «{$got.raku}», wanted «{$want.raku}»") unless $got eqv $want;
@@ -55,6 +57,22 @@ check((<a b> Z, <c d>).raku, '(("a", "c"), ("b", "d")).Seq', 'Z, tuples');
     my ($t, $y) = 0, 1;
     ($t, $y) »+=« (5, 7);
     check("$t $y", '5 8', 'parenthesised scalars get the write-back');
+    # …and the MARKERS' pointing is enforced, as hyperCore always did for the
+    # plain forms (measured against Rakudo, all four spellings):
+    my @s = 1, 2, 3, 4;
+    try { @s »+=« (10, 20) }
+    check($!.^name, 'X::HyperOp::NonDWIM', 'strict-both compound with unequal lengths throws');
+    try { @s »+=« 5 }
+    check($!.^name, 'X::HyperOp::NonDWIM', 'strict-both compound with a scalar throws too');
+    my @c = 1, 2, 3, 4;
+    @c »+=» (10, 20);
+    check(@c.join(','), '11,22,13,24', 'left-strict right-dwim cycles the RHS');
+    my @d = 1, 2, 3, 4;
+    @d «+=« (10, 20);
+    check(@d.join(','), '11,22,3,4', 'left-dwim right-strict touches only the first RHS-length elements');
+    my @e = 1, 2;
+    @e »+=« (10, 20);
+    check(@e.join(','), '11,22', 'strict-both with equal lengths still assigns');
 }
 
 # -- can/^lookup: the shared probe behaves as both sites always did ------------
