@@ -65,6 +65,15 @@ Value numifyStr(const std::string& in);
 Value numifyStrOrThrow(const std::string& in);
 // The quiet form: a non-numeric string becomes an unthrown Failure (Rakudo's `+"a"`).
 Value numifyStrFailure(const std::string& in);
+// An ARMED Failure: payload type + diagnostic, throwing the moment it is used.
+// The bare Failure TYPE OBJECT is never the right return for a refusal — it
+// slid through arithmetic as 0 where Rakudo's Failure detonates.
+inline Value armedFailure(const char* type, const std::string& msg) {
+    Value f = Value::makeHash(); f.hashKind = "Failure";
+    (*f.hash())["exception"] = Value::typeObj(type);
+    (*f.hash())["message"] = Value::str(msg);
+    return f;
+}
 // `val()`: a fully-numeric string becomes the matching allomorph (IntStr/RatStr/
 // NumStr/ComplexStr — the number AND its source spelling); anything else passes
 // through unchanged. Shared by the `val` builtin, prompt(), and MAIN's argv.
