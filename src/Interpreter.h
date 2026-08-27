@@ -966,6 +966,7 @@ public:
     std::mutex beginCacheMu_;
     bool subsetMatches(const std::string& name, const Value& v, int depth = 0);
     bool typeOrSubsetMatches(const Value& v, const std::string& type); // typeMatchesArg + subsets
+    bool typeMatchesResolved(const Value& v, const std::string& type); // type objects only: subset names resolve to their base chain, and UInt tolerates undefined (Rakudo's core UInt guards definedness in its where)
     Value evalNqpOp(NqpOp* n); // the `use nqp` compatibility subset (zero-cost when unused)
     // lone-candidate bind: throw X::TypeCheck::Binding on mismatch. blockParam
     // says the signature belongs to a Block, whose untyped parameters are
