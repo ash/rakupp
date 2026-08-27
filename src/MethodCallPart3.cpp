@@ -1217,11 +1217,24 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             }
             return out;
         };
-        // a relative operand is resolved against the call-time $*CWD first, so the
-        // two are always compared as absolute paths
-        std::string cwd = cwdName();
-        if (!p.empty() && p[0] != '/') p = cwd + "/" + p;
-        if (base.empty() || base[0] != '/') base = cwd + "/" + base;
+        // A relative operand is made absolute first, so the two are always compared
+        // as absolute paths — the INVOCANT against its own `:CWD` (captured when the
+        // path was made, as `.absolute` does), not whatever the process directory
+        // happens to be now. `IO::Path.new($name, :CWD($base))` is how a relative
+        // result carries its base around; resolving it against $*CWD instead walked
+        // out of the process directory with `../..` and back in.
+        {
+            std::string invCwd = inv.ofType().empty() ? cwdName() : inv.ofType();
+            while (invCwd.size() > 1 && invCwd.back() == '/') invCwd.pop_back();
+            if (!p.empty() && p[0] != '/') p = (invCwd == "/" ? "" : invCwd) + "/" + p;
+        }
+        if (base.empty() || base[0] != '/') {
+            std::string bcwd = cwdName();
+            for (auto& a : args)
+                if (a.t != VT::Pair) { if (!a.ofType().empty()) bcwd = a.ofType(); break; }
+            while (bcwd.size() > 1 && bcwd.back() == '/') bcwd.pop_back();
+            base = (bcwd == "/" ? "" : bcwd) + "/" + base;
+        }
         std::vector<std::string> pp = split(p), bb = split(base);
         size_t common = 0;
         while (common < pp.size() && common < bb.size() && pp[common] == bb[common]) common++;
@@ -2936,6 +2949,53 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         //     with its last element first ("abcd"=>"xy" is x y y y) — and a
         //     LONG value side spills into the next pair's pins, which is
         //     faithful to Rakudo even where it surprises.
+        // A REGEX key is not a character set: `.trans(/\s+/ => ' ')` replaces every
+        // MATCH of the pattern, so it is applied as a global substitution before the
+        // char-by-char machinery below ever sees the pairs. Rakudo takes the regex
+        // pairs in order, each over the result of the last.
+        {
+            auto rxKey = [](const Value& v) -> const Value* {
+                if (v.t != VT::Pair || !v.pairKey()) return nullptr;
+                return v.pairKey()->t == VT::Regex ? v.pairKey().get() : nullptr;
+            };
+            std::vector<std::pair<const Value*, std::string>> rxMaps;
+            std::function<void(const Value&)> collectRx = [&](const Value& a) {
+                if (const Value* k = rxKey(a)) {
+                    rxMaps.push_back({k, a.pairVal() ? a.pairVal()->toStr() : std::string()});
+                    return;
+                }
+                if (a.t == VT::Array && a.arr()) for (auto& el : *a.arr()) collectRx(el);
+            };
+            for (auto& a : args) collectRx(a);
+            for (auto& rm : rxMaps) {
+                std::string out; size_t at = 0;
+                for (int guard = 0; guard < 1000000; guard++) {
+                    Value mv = regexMatch(s.substr(at), rm.first->s.str());
+                    if (!mv.truthy()) break;
+                    long long f = methodCall(mv, "from", {}).toInt();
+                    long long t = methodCall(mv, "to", {}).toInt();
+                    if (t <= f) { // a zero-width match cannot drive the scan forward
+                        if ((size_t)(at + f) >= s.size()) break;
+                        out += s.substr(at, (size_t)f + 1); at += (size_t)f + 1; continue;
+                    }
+                    out += s.substr(at, (size_t)f) + rm.second;
+                    at += (size_t)t;
+                    if (at >= s.size()) break;
+                }
+                out += s.substr(std::min(at, s.size()));
+                s = out;
+            }
+            if (!rxMaps.empty()) {
+                bool onlyRx = true;
+                std::function<void(const Value&)> anyCharPair = [&](const Value& a) {
+                    if (a.t == VT::Pair && !rxKey(a) &&
+                        !(a.pairVal() && a.pairVal()->t == VT::Bool)) onlyRx = false;
+                    if (a.t == VT::Array && a.arr()) for (auto& el : *a.arr()) anyCharPair(el);
+                };
+                for (auto& a : args) anyCharPair(a);
+                if (onlyRx) return Value::str(s);
+            }
+        }
         std::vector<const Value*> mpairs;
         bool anyArray = false;
         for (auto& a : args) {

@@ -6216,6 +6216,19 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             if (e->line > 0) curLine_ = e->line; // ExprStmt itself carries no line; use its expression's
             // sink context: an assignment's result is discarded, so don't copy it
             if (sink && e->kind == NK::Assign) return evalAssign(static_cast<Assign*>(e), true);
+            // A bare regex STATEMENT whose value is discarded matches `$_` and sets
+            // `$/` — that is what it is written for. In VALUE position the same
+            // literal is the Regex object itself (see the RegexLit eval), which is
+            // the distinction Rakudo draws: `/b/;` sets `$/`, `do { /b/ }` does not.
+            // (After the assignment fast path: that is the hot statement shape, and
+            // a RegexLit is never an Assign.)
+            if (sink && e->kind == NK::RegexLit) {
+                auto* rl = static_cast<RegexLit*>(e);
+                if (!rl->isRx && !rl->isM && rl->declKind.empty()) {
+                    Value topic; if (Value* p = tctx_.cur->find("$_")) topic = *p;
+                    return regexMatch(rxSubject(topic), rl->pattern);
+                }
+            }
             Value r = eval(e);
             // Rakudo sink semantics: a discarded FRESH object with a user-defined
             // `sink` method has it invoked (HTTP::Status registers each instance in
@@ -10164,8 +10177,14 @@ bool Interpreter::boolify(const Value& v) {
     // (`?$rx` / `if $rx` == `$_ ~~ $rx`) — URI::Encode leans on this to test
     // each char against an unreserved-set pattern.
     if (v.t == VT::Regex) {
-        if (Value* topic = tctx_.cur ? tctx_.cur->find("$_") : nullptr)
-            return regexMatch(rxSubject(*topic), v.s).truthy();
+        if (Value* topic = tctx_.cur ? tctx_.cur->find("$_") : nullptr) {
+            // …and it sets `$/`, which is the whole point of `if /b/ { say $/ }`.
+            // (Only the match matters for the answer; the assignment is the side
+            // effect Rakudo's boolification has too.)
+            Value m = const_cast<Interpreter*>(this)->regexMatch(rxSubject(*topic), v.s);
+            const_cast<Interpreter*>(this)->setMatchVar(m);
+            return m.truthy();
+        }
         return false;
     }
     if (v.t == VT::Object && v.obj() && v.obj()->cls) {
@@ -14054,10 +14073,36 @@ Value applyArith(const std::string& op, const Value& l, const Value& r);
 // scope is current then — so the variable was simply gone. Carry the creating
 // scope on the value (only when the pattern actually names one, so ordinary
 // regexes retain nothing).
+// A retired Perl 5 metachar is a COMPILE-time error: Rakudo throws X::Obsolete
+// when the regex is CONSTRUCTED, not when it is first matched. rakupp compiles
+// lazily, which was invisible while a bare regex literal always matched — now
+// that it evaluates to a Regex, `throws-like '/\Aabc/'` sees the silence.
+// Only a pattern with NO interpolation is checked: its text is final, where an
+// interpolating one is not known until the match. Memoised per pattern text, so
+// a literal in a loop compiles for this check at most once.
+static void rejectObsoleteRegex(const std::string& pat) {
+    static std::mutex m;
+    static std::map<std::string, std::string> seen;
+    std::string obs;
+    {
+        std::lock_guard<std::mutex> lk(m);
+        auto it = seen.find(pat);
+        if (it != seen.end()) obs = it->second;
+        else {
+            rakupp::Regex rx(pat);
+            obs = rx.ok() ? std::string() : rx.obsolete();
+            seen.emplace(pat, obs);
+        }
+    }
+    if (!obs.empty())
+        throw RakuError{Value::typeObj("X::Obsolete"),
+            "Unsupported use of " + obs + "; this Perl 5 metacharacter is gone in Raku"};
+}
 static Value regexClosingOver(std::string pat, const std::shared_ptr<Env>& sc) {
     Value v = Value::regex(std::move(pat));
     if (sc && (v.s.find('$') != std::string::npos || v.s.find('@') != std::string::npos))
         v.extM() = std::static_pointer_cast<void>(sc);
+    else rejectObsoleteRegex(v.s.str());
     return v;
 }
 
@@ -20033,6 +20078,19 @@ Value Interpreter::hyperCore(Value& l, Value& r, bool strictL, bool strictR,
 }
 
 Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value& r) {
+    // `$x ~~ $rx` where the pattern is a Regex VALUE. Matching used to be decided
+    // syntactically — at each site that could see a `/…/` literal — so the
+    // value-level operator never learned it, and every caller that had a Regex in
+    // hand (a `where` clause, a reduce, a hyper) had to special-case it or get
+    // False. Now that a regex literal EVALUATES to a Regex, this is the ordinary
+    // path: `sub f($x where /^\d+$/)` reaches it on every call.
+    // (the type test first: this runs on EVERY applied operator, and two string
+    // compares ahead of it cost ~4% on the string kernels)
+    if (r.t == VT::Regex && (op == "~~" || op == "!~~")) {
+        Value m = regexMatch(rxSubject(l), r.s);
+        if (op == "!~~") return Value::boolean(!m.truthy());
+        return m;
+    }
     // bracket-cited infix (`(1,2) >>[+]<< (3,4)` — the hyper carries the op as
     // `[+]`): the citation means the bare operator; strip once and recurse
     if (op.size() >= 3 && op.front() == '[' && op.back() == ']' && op != "[=]")
@@ -24740,8 +24798,18 @@ Value Interpreter::eval(Expr* e) {
                 v.extM() = std::static_pointer_cast<void>(tctx_.cur);
                 return v;
             }
-            // rx// is always the Regex object; bare /…/ and m// match against $_
-            if (rl->isRx) return regexClosingOver(spliceRegexVars(rl->pattern), tctx_.cur);
+            // A regex literal IS a Regex object — `sub f($p, $q) { /$p$q/ }` returns
+            // one, and so does `do { /b/ }`. What matches `$_` is BOOLIFYING it
+            // (see boolify: `if /b/` and `if $rx` both match, and both set `$/`),
+            // plus a bare regex STATEMENT in sink context, handled where statements
+            // are executed. Evaluating it as a match here made every value position
+            // that has no syntactic special-case — a block's last statement, an
+            // explicit `return`, a ternary branch, the right side of `&&` — answer a
+            // Match, or Nil when `$_` was unset. Path::Finder builds its glob
+            // matchers by reducing regexes into one (`.reduce({ /$^a$^b/ })`), which
+            // is a block's last statement, so every glob it built matched nothing.
+            // `m//` still matches: `(m:g/b/).elems` counts the matches.
+            if (!rl->isM) return regexClosingOver(spliceRegexVars(rl->pattern), tctx_.cur);
             Value topic; if (Value* p = tctx_.cur->find("$_")) topic = *p;
             return regexMatch(rxSubject(topic), rl->pattern);
         }
@@ -26187,6 +26255,10 @@ Value Interpreter::eval(Expr* e) {
                 if (kv.t == VT::Int || kv.t == VT::Num || kv.t == VT::Rat || kv.t == VT::Bool ||
                     kv.t == VT::Array || kv.t == VT::Hash || kv.t == VT::Object || kv.t == VT::Pair ||
                     kv.t == VT::Match || kv.t == VT::Code ||
+                    // a REGEX key stays a Regex: `.trans(/\s+/ => ' ')` matches with
+                    // it, and stringifying it turned the pattern text into a
+                    // character set that mangled the subject
+                    kv.t == VT::Regex ||
                     kv.t == VT::Range) pr.pairKeyM() = std::make_shared<Value>(kv);
                 return pr;
             }
