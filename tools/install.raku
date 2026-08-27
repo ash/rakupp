@@ -821,8 +821,35 @@ sub install-one(%e, Str $prefix, Bool :$no-test, Bool :$force, Bool :$test-only)
     }
 
     # bin/ scripts and declared resources ride through meta<files>
+    # (rel-path => source; an empty source means "the rel-path under the dist
+    # root"). That default is right for every plain resource and WRONG for one
+    # under libraries/: META declares those by their LOGICAL name
+    # (`libraries/json`) while the file a build hook writes carries the
+    # platform's spelling (libjson.dylib / libjson.so / json.dll) — the same
+    # mapping %?RESOURCES applies on lookup. Hand the engine the real file, or
+    # it slurps a path that does not exist and the store receives empty bytes:
+    # a compiled extension that quietly never leaves the build directory, and a
+    # module that silently runs on its fallback for ever after.
     my %files;
     for (%meta<resources> // []).flat -> $r {
+        my $plain = $root.add("resources/$r");
+        if "$r".starts-with('libraries/') && !$plain.e {
+            my $stem  = "$r".substr('libraries/'.chars);
+            my $lib   = $*DISTRO.is-win                ?? "$stem.dll"
+                     !! $*KERNEL.name eq 'darwin'      ?? "lib$stem.dylib"
+                     !!                                   "lib$stem.so";
+            my $built = $root.add("resources/libraries/$lib");
+            if $built.e {
+                %files{"resources/$r"} = $built.absolute;
+                # Rakudo keys these records by the PLATFORM spelling and maps
+                # before consulting them, so the same blob rides in under that
+                # name too — one content, two entries, both engines answered.
+                %files{"resources/libraries/$lib"} = $built.absolute;
+                next;
+            }
+        }
+        note "warning: %e<name>: declared resource $r has no file in the dist — storing it empty"
+            unless $plain.e;
         %files{"resources/$r"} = '';
     }
     if $root.add('bin').d {
