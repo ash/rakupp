@@ -10988,7 +10988,10 @@ Value Interpreter::captureBacktrace() {
         Value f = Value::makeHash(); f.hashKind = "BacktraceFrame";
         std::string file;
         if (code && code->code() && !code->code()->declFile.empty()) file = code->code()->declFile;
-        else file = srcFileAbs_.empty() ? srcFile_ : srcFileAbs_;
+        // no declaring routine (the mainline, or a bare block): the file whose
+        // top level is running — the program, or the module / EVALFILE'd file
+        // that switched curDeclFile_ underneath it
+        else file = curDeclFile();
         (*f.hash())["file"] = Value::str(file);
         (*f.hash())["line"] = Value::integer(line);
         if (code) (*f.hash())["code"] = *code;
