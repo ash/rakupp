@@ -3,6 +3,119 @@
 Release notes for tagged releases. Numbers are measured, not projected;
 methodology for all Roast figures is in [docs/status/COUNTING.md](docs/status/COUNTING.md).
 
+## v3.20.0 (2026-08-27) — the cooldown: one implementation of everything, and fez installs
+
+| | v3.7.0 | v3.20.0 |
+|---|---:|---:|
+| Roast assertions (all declared) | 198,679 | **198,791** |
+| Roast files fully passing | 633 / 1,464 | **638 / 1,464** |
+| Local regression suite (`t/run.raku`) | 512 | **567** |
+| Module battery (vs each dist's own reference run) | 50 / 59 | **97 / 105** |
+| `say "Hello"` compiled with `--exe` | 9,091,256 B | **9,823,512 B** |
+| …compiled with `--exe --slim` | 5,827,368 B | **6,510,864 B** |
+
+(The version jumps 3.7 → 3.20 to clear the historical v3.14.0 still known to
+Homebrew; versions are monotonic, not semantic. The battery row is not
+one-to-one comparable: the tier-2 list grew from 59 to 105 dists during this
+cycle; 97 now match their per-dist reference runs, with 8 divergent. The Roast release run took
+three passes on an idle box and the file count repeats at 638 — the band was
+638 / 638 / 637 — with the assertion figure quoted from a repeating-profile
+pass, not the best seen. The per-file diff against v3.7.0's published map:
+eleven files newly full in every pass (among them `S29-context/evalfile.t`,
+`S06-multi/positional-vs-named.t`, `S17-supply/lines.t`/`words.t`), five of
+the seven drops are the documented harness-timeout family (each passes
+standalone, `nfc-concat.t` at 2943/2943), one is a log-parsing artifact
+verified full standalone, and one — `integration/advent2012-day14.t` — is a
+real, understood change: the engine no longer invents a step for an
+underivable sequence, and that file's prime sieve was passing on a guessed
+step that put 9 into a list of primes; it needs lazy seed streaming, noted
+as a follow-up.)
+
+### A 360° review, then three gated batches
+
+The release is [REVIEW-3.7.md](docs/dev/findings/REVIEW-3.7.md) worked to
+completion: a fresh-eyes review of the tree — fifteen duplication clusters,
+six with proven behavioural drift, verified silent bugs, and the per-op
+costs the perf gate could not see — then three batches, each gated.
+
+**Silent wrong answers.** `[<] 3,1,2` answered `True` compiled and `False`
+interpreted; `"/nope".IO.open` handed back a live handle; `slurp($p, :bin)`
+returned a CRLF-squeezed `Str`; `Rakudo::Internals::JSON.to-json` emitted
+invalid JSON for a quote in a hash key; `let` in a method never restored on
+unwind; `sleep-till` was a stub of a routine Raku doesn't have (deleted —
+`sleep-until` was already real); underivable sequences invented a step where
+Rakudo throws `X::Sequence::Deduction` — deduction reads the last three
+seeds, and it fires when generation actually needs the step, not eagerly;
+every bare `Failure` type-object return became an armed Failure; a negative
+subscript read answers an armed `X::OutOfRange` Failure uniformly across
+the subscript arms and `.AT-POS` (the release gate itself corrected the
+first cut of this, which threw eagerly — Roast stores these Failures in
+arrays and asserts the type). A missing CORE enum surfaced en route:
+`ProtocolType` (`PROTO_TCP`/`PROTO_UDP`) is in at Rakudo's values.
+
+**One implementation of everything.** The reduce metaop (compiled binaries
+now fold through the interpreter's own `applyReduce`), Z/X (one-level
+element model everywhere, the endless-`Z` lazy view on every path), hyper
+compound assignment (parenthesised-list write-back included, and the
+markers' pointing enforced: `»op=«` with unequal lengths throws
+`X::HyperOp::NonDWIM`, measured against Rakudo across the whole matrix),
+the `.can`/`.^lookup` probe, the EVAL/EVALFILE predicate (both gaps
+closed), the JSON string escaper, IO::Spec's tmpdir, and the default
+constructor's attribute walk — each existed as two or three diverging
+copies; each is one now. `class D is DateTime { has $.a = 1; has $.b =
+$!a * 2 }` used to die "no self available"; it constructs byte-identically
+to Rakudo. The strictness gate also flushed out a real use-after-free in
+the multi-method no-match deferral (a raw pointer into `redispatchStack_`
+across a reallocating push; ASan-verified fixed, by index).
+
+**Measured micro-opts.** Every landing carries its own interleaved A/B
+against a snapshotted pre-batch binary: a regex-literal closed-pattern
+cache plus a move into `$/` (a new regex-in-a-loop guard kernel measures
+−3.4/−4.4/−4.2% over three rounds), `Callable` slimmed ~72 bytes mid-struct
+(fib −2.2/−1.8%), and a protoDepth counter replacing a per-block-statement
+TLS probe (−1.9%). Two review claims were withdrawn with evidence rather
+than "optimized"; three designed-but-unmeasured candidates wait for kernels
+of their own.
+
+### The perf gate: a false red, and a re-recorded baseline
+
+Mid-review the gate went red — hash +11%, strscan/rats +7%. Pivot-build
+forensics (seven fresh arm64 builds spanning baseline→HEAD, strict-idle,
+guard-arbitrated) showed no commit moved anything: a fresh build of the
+baseline commit itself reproduced the "regression" against its own recorded
+numbers, with compiler and flags provably unchanged — the 08-24 recording
+captured an unusually quiet machine. The baseline is re-recorded on this
+release's build, and the guard gained its ninth kernel, `regexloop`,
+because no previous kernel contained a regex at all.
+
+### fez installs, zef works ([#37](https://github.com/ash/rakupp/issues/37))
+
+Behind one "fail to install fez" sat seven general bugs, each hiding the
+next: the lexer-fused `<->`/`<=>`/`<+>` tokens as colonpair angle values;
+`:ver("*")` rejecting every candidate; a non-literal `use` adverb matched
+as source text; `$?DISTRIBUTION.meta` dying in `-I`-loaded modules;
+`my Bool @a = Nil` answering empty; "Cannot invoke non-Callable value of
+type Any" where Rakudo coerces; and `my Hash() %options` losing its
+variable to the empty coercion parens. Plus: junction eigenstates that are
+interpolating regexes match in their captured env (fez's glob patterns used
+to match everything). End to end, in a clean HOME: `rakupp install fez`
+runs fez's suite and installs, `fez version` answers; `zef install
+Text::Table::Simple` fetches, tests, installs, and the module runs. zef's
+own suite: 1/10 files → 8/10. And `rakupp uninstall fez` no longer spends
+forty seconds spawning `shasum` per index key — the engine's own SHA-1 is
+exposed to the installer (40.07 s → 0.17 s).
+
+### Portability and the slim contract
+
+CI is green on all five legs: Windows (MSVC and MinGW) gained the missing
+`S_IS*` macros and a `pollfd` cast, OpenBSD its own spelling of birthtime
+(`__st_birthtime`), and the darwin slim budgets were re-derived over real
+growth. The slim-diff release gate caught a compiled grammar program whose
+slim build died on a `»` in a comment — the lexer's exotic-numeral probe
+now answers "no" without consulting the cut table, while value-producing
+askers (`.unival`) still throw: cuts throw, they just don't throw for
+questions the cut cannot change.
+
 ## v3.7.0 (2026-08-24) — the whole ecosystem, and a new oracle
 
 | | v3.6.0 | v3.7.0 |
