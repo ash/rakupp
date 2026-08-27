@@ -3692,6 +3692,11 @@ int Interpreter::run(Program& prog) {
     };
     try {
         hoistSubs(prog.stmts);
+        // Remember what the program declared for itself, before any `use` runs:
+        // a module's publish must not overwrite these (see mainlineSubNames_).
+        if (mainlineSubNames_.empty())
+            for (auto& kv : global_->vars)
+                if (kv.first.size() > 1 && kv.first[0] == '&') mainlineSubNames_.insert(kv.first);
         // Pads (PADS-PLAN.md): the mainline is a pad owner. Installed only on
         // the FIRST program this interpreter runs (EVAL and module mainlines
         // re-enter here; their annotations would point at a layout no frame
@@ -5029,6 +5034,8 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
                         }
                     }
                 }
+                // never clobber a routine the PROGRAM declared itself
+                if (mainlineSubNames_.count(k)) continue;
                 global_->define(k, kv.second);
             }
         };
@@ -12188,6 +12195,18 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     }
     DepthGuard guard(tctx_.callDepth);
     Callable& c = *codeVal.code();
+    // A METHOD GROUP invoked as a plain callable — `$obj.$m(…)` where $m is the
+    // dispatcher `^lookup` handed back — takes its invocant as the first
+    // positional, exactly as a single method does further down. Route it through
+    // the method dispatcher, which knows that; scoring the invocant as an ordinary
+    // argument matched no candidate at all ("Cannot resolve caller relpath()",
+    // which is how Path::Finder calls every proto-declared matcher).
+    if (c.isMultiDispatcher && c.isMethod && !args.empty()) {
+        Value self = std::move(args.front());
+        ValueList rest(std::make_move_iterator(args.begin() + 1),
+                       std::make_move_iterator(args.end()));
+        return invokeMethod(codeVal, self, std::move(rest), rwArgs);
+    }
     if (c.isMultiDispatcher) {
         // Dispatch to the best-scoring candidate not already tried for the given args,
         // pushing a redispatch context so callsame/nextsame (same args) and callwith/
@@ -25659,9 +25678,27 @@ Value Interpreter::eval(Expr* e) {
                     return Value::boolean(false);
                 }
             }
-            if (mc->bang && !tctx_.cur->find("self")) // private call outside any method body
-                throw RakuError{Value::typeObj("X::Method::NotFound"),
-                    "Private method call to '" + mc->method + "' outside the defining class"};
+            // A private call needs a `self` in scope — OR a routine declared inside
+            // the class itself: `my multi rulify(Path::Finder:D $rule) { $rule!rules }`
+            // sits in the class body, has no invocant of its own, and is exactly how
+            // Path::Finder reaches another instance's rules. Rakudo allows a private
+            // call anywhere lexically inside the declaring class; the running
+            // routine's own package is the part of that we can see at runtime.
+            if (mc->bang && !tctx_.cur->find("self")) {
+                bool inPkg = false;
+                if (tctx_.curRoutineVal && tctx_.curRoutineVal->t == VT::Code &&
+                    tctx_.curRoutineVal->code()) {
+                    const std::string& pkg = tctx_.curRoutineVal->code()->pkg;
+                    if (!pkg.empty() && pkg != "GLOBAL") {
+                        auto pit = classes_.find(pkg);
+                        if (pit != classes_.end() && pit->second &&
+                            pit->second->findMethod("!" + mc->method)) inPkg = true;
+                    }
+                }
+                if (!inPkg)
+                    throw RakuError{Value::typeObj("X::Method::NotFound"),
+                        "Private method call to '" + mc->method + "' outside the defining class"};
+            }
             // `/re/.method` operates on the Regex object; only bare /…/ in term
             // position matches $_ (so the invocant must not auto-match here) —
             // but an explicit `m//` DOES match, so `(m:g/b/).elems` counts the
@@ -25685,7 +25722,7 @@ Value Interpreter::eval(Expr* e) {
                     if (((inv.t == VT::Whatever) ||
                          (inv.t == VT::Code && inv.code() && inv.code()->isWhateverCode)) &&
                         !mc->hyper && exprHasWhateverLit(mc->inv.get())) {
-                        ValueList margs; for (auto& a : mc->args) margs.push_back(eval(a.get()));
+                        ValueList margs = evalArgs(mc->args);
                         Value self = inv, fn = mv;
                         Value code; code.t = VT::Code; code.setCode(std::make_shared<Callable>());
                         code.code()->isWhateverCode = true;
@@ -25702,8 +25739,12 @@ Value Interpreter::eval(Expr* e) {
                         };
                         return code;
                     }
+                    // evalArgs, not a bare eval loop: an argument list may carry a
+                    // `|$capture` to splat (`$object.$!method(|$!capture)` — how
+                    // Path::Finder invokes a matcher it looked up), and a raw eval
+                    // handed the capture over as one Slip argument instead.
                     ValueList ca; ca.push_back(inv);
-                    for (auto& a : mc->args) ca.push_back(eval(a.get()));
+                    for (auto& a : evalArgs(mc->args)) ca.push_back(std::move(a));
                     if (mc->hyper) { // ».$var maps it
                         Value out = Value::array(); out.isList = true;
                         if (inv.t == VT::Array && inv.arr())

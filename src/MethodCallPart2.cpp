@@ -3861,7 +3861,16 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     for (auto& x : *e.arr()) o.arr()->push_back(x);
                 else o.arr()->push_back(e);
             }
-            if ((m == "values") && inv.hash()) for (auto& kv : *inv.hash()) o.arr()->push_back(kv.second);
+            // …and a NAMED capture slips the same way: `<term>+` contributes each
+            // sub-match, not one list of them. `$/.values».made` is how a grammar's
+            // TOP action collects what its terms made (Path::Finder's glob parser
+            // is written exactly that way), and with the list unflattened the
+            // `».made` reached a List, which has no .made, so TOP made Nil.
+            if ((m == "values") && inv.hash()) for (auto& kv : *inv.hash()) {
+                if (kv.second.t == VT::Array && kv.second.arr())
+                    for (auto& x : *kv.second.arr()) o.arr()->push_back(x);
+                else o.arr()->push_back(kv.second);
+            }
         } else { // pairs / kv
             if (inv.arr()) for (size_t i = 0; i < inv.arr()->size(); i++) {
                 if (m == "kv") { o.arr()->push_back(Value::integer((long long)i)); o.arr()->push_back((*inv.arr())[i]); }
