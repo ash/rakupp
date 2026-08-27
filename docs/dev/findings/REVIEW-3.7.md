@@ -324,6 +324,35 @@ resolution in Zef::Client — and install.rakutest). Residuals noted:
 replacement semantics; `use-ok` imports into the caller's scope (an imported
 MAIN prints usage after a test file's plan — harmless to TAP and exit).
 
+## Release-gate corrections (2026-08-27, cutting v3.20.0)
+
+The release gates corrected the review's own work twice — both worth
+recording as method lessons:
+
+1. **The file-list gate caught batch 1 unifying negative subscripts in the
+   wrong direction.** The oracle probe `try { my $v = @a[$neg] }` sinks the
+   Failure as the block's value and detonates it — indistinguishable from an
+   eager throw. Roast's S02-types/nested_arrays.t is unambiguous: it maps
+   out-of-range reads INTO an array and asserts `isa-ok …, Failure`. Four
+   roast files died mid-plan under the throw, and the per-run TOTALS never
+   showed it (the batches gained more than the four files lost) — only the
+   RELEASING.md file-list diff did. All three sites now answer the armed
+   Failure with Rakudo's 0..^Inf range; ASSIGN-POS still throws.
+   **Lesson: when probing Failure-vs-throw, read the value's type without
+   sinking it — and gate on the file list, not the totals.**
+2. **X::Sequence::Deduction fires when generation needs the step, not at
+   analysis.** advent2012-day14's `@primes ...^ * > sqrt $n` never needs
+   deduction — its code endpoint fires inside the seed prefix — while a
+   bounded numeric endpoint needs the step up front (misc.t agrees both
+   ways). The first placement of the eager-bounded check also split an
+   else-if chain and briefly broke descending sequences; the batch-1
+   regression file caught it within minutes. day14 reaches 3/6 (from 1/6);
+   full 6/6 needs lazy seed streaming (`@lazy ...^ code` pulling its source
+   instead of deducing) — chipped as a follow-up. v3.7.0 passed the file on
+   a guessed step that put 9 into a list of primes, harmlessly for that
+   program — the file-list diff documents it as the release's one
+   understood non-full regression.
+
 ## Already done in this round
 
 - CI back to green at `6c25a94` (Windows/OpenBSD/slim fixes, budgets
