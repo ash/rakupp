@@ -96,4 +96,13 @@ check(("aéb".encode.decode('ascii', :replacement<->) ~~ Str), True, 'the fez ca
     check("boolify-safe", "boolify-safe", 'placeholder: boolify path covered by regexloop kernel');
 }
 
+# -- the installer's SHA-1 is the engine's, not a subprocess per key ----------
+# (`rakupp uninstall fez` spawned shasum ~70 times — once per provided module
+#  and file — and its forty seconds of spawning read as a hang)
+{
+    my $sha = try ::('&rakupp-sha1-hex');
+    check($sha ~~ Callable, True, 'the engine exposes rakupp-sha1-hex to the installer');
+    check($sha('abc').lc, 'a9993e364706816aba3e25717850c26c9cd0d89d', '…and it is real SHA-1 (engine spells it uppercase)');
+}
+
 if @fail { note "FAILED:\n" ~ @fail.join("\n"); say 'FAIL' } else { say 'PASS' }

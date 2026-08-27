@@ -39,7 +39,9 @@ size_t uniClusterEndUtf8(const std::string& s, size_t pos, size_t len);  // byte
 int uniCollate(const std::vector<uint32_t>& a, const std::vector<uint32_t>& b); // UCA (DUCET) three-way compare
 int32_t uniCharByName(const std::string& name);            // name -> codepoint, or -1
 std::string uniNameOf(uint32_t cp);                        // codepoint -> name, or ""
-bool uniNumValue(uint32_t cp, long long& num, long long& den); // numeric value as num/den
+bool uniNumValue(uint32_t cp, long long& num, long long& den);
+// probe form: false instead of throwing when --slim cut the table (lexer use)
+bool uniNumValueQuiet(uint32_t cp, long long& num, long long& den); // numeric value as num/den
 int uniDigitValue(uint32_t cp); // Nd decimal digit 0-9, -1 otherwise (never-cut table)
 std::string uniGeneralCategory(uint32_t cp);                   // 2-letter general category ("Nd", "Lu", "Cn"…)
 std::string uniScript(uint32_t cp);                            // approximate script ("Latin", "Greek"…)

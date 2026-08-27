@@ -18,5 +18,8 @@ const NameEnt* namesTable(size_t*) {
 const int64_t* numvTable(size_t*) {
     featureMissing("unicode-names", "unival (the Unicode numeric-value table)");
 }
+// the probe form: a cut table answers "table absent" instead of throwing —
+// the lexer classifies every non-ASCII cp against it (see ucd_seam.h)
+const int64_t* numvTableOrNull(size_t* n) { *n = 0; return nullptr; }
 
 } }

@@ -41177,4 +41177,5 @@ extern const size_t NUMV_N = 6069;
 // both, and nothing can reach the data behind the accessor's back.
 const NameEnt* namesTable(size_t* n) { *n = NAMES_N; return NAMES; }
 const int64_t* numvTable(size_t* n) { *n = NUMV_N; return NUMV; }
+const int64_t* numvTableOrNull(size_t* n) { return numvTable(n); }
 } }
