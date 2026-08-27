@@ -29,13 +29,13 @@ gets built next ([the findings](docs/dev/findings/ECOSWEEP-2026-08.md), with
 the green list and per-dist results). (The 59 in the table below is a small
 curated battery gated on every release; the sweep is the whole ecosystem.)
 
-| | v3.7.0 | at v2.0.0 |
+| | v3.20.0 | at v2.0.0 |
 |---|---:|---:|
-| Roast, per individual test — of what the suite declares‡ | **198,679 of ~218,605 (90%)** | 197,090 of ~203,500 (97%) |
-| Roast, all-or-nothing — files fully passing, of 1,464 | **633 (43%)** | 594 |
+| Roast, per individual test — of what the suite declares‡ | **198,791 of ~218,608 (90%)** | 197,090 of ~203,500 (97%) |
+| Roast, all-or-nothing — files fully passing, of 1,464 | **638 (44%)** | 594 |
 | Official documentation examples byte-identical on both engines | **950** | 952 |
-| Ecosystem distributions passing their own `zef` install-time test suite | **50 / 59** | 50 / 59 |
-| Local regression suite | **512** | 312 |
+| Ecosystem distributions matching their own per-dist reference runs | **97 / 105** | 50 / 59 |
+| Local regression suite | **567** | 312 |
 | `say "Hello"` compiled with `--exe --slim` | **5,827,368 B** | 9,830,680 B (no `--slim`) |
 
 ‡ Counted against each file's declared `plan N`, so a file that aborts is
