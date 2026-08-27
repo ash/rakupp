@@ -44,15 +44,26 @@ sub sha1-of(Str $path) {
 # so two dists share one content-addressed blob; :depends declares runtime deps.
 sub make-dist(Str $name, Str $modname, Str $version,
               Bool :$failing-test, Bool :$shared, :@depends, :@build-depends,
-              Bool :$build-hook, Bool :$bin) {
+              Bool :$build-hook, Bool :$bin, Bool :$native-lib) {
     my $safe = $name.subst('::', '-', :g);
     my $droot = $tmp.add("build-$safe-$version");
     my $libdir = $droot.add('lib').add($modname.split('::')[0]);
     $libdir.mkdir;
     my $file = "lib/{$modname.split('::').join('/')}.rakumod";
+    # :native-lib — the JSON::Native shape: META declares a resource by its
+    # LOGICAL name (libraries/gate) and a build hook writes the platform
+    # spelling (libgate.dylib / libgate.so / gate.dll). The module reads it
+    # back through %?RESOURCES, which applies the same mapping on lookup.
+    # Q[…]: %?RESOURCES must reach the written module as TEXT — in a qq
+    # string it would interpolate right here, against this test file's own
+    # (empty) resources, and the module would ship with the lookup missing.
+    my $extra = $native-lib
+        ?? Q[sub native-lib() is export { (try %?RESOURCES<libraries/gate>.IO.slurp) // 'MISSING' }]
+        !! '';
     $droot.add($file).spurt(qq:to/END/);
         unit module $modname;
         sub which-version() is export \{ '$version' \}
+        $extra
         END
     my $provides = "\"$modname\": \"$file\"";
     if $bin {
@@ -69,11 +80,25 @@ sub make-dist(Str $name, Str $modname, Str $version,
     }
     my $deps = @depends.map({ "\"$_\"" }).join(", ");
     my $bdeps = @build-depends.map({ "\"$_\"" }).join(", ");
+    my $res = $native-lib ?? '"resources": ["libraries/gate"],' !! '';
     $droot.add('META6.json').spurt(qq:to/END/);
         \{ "name": "$name", "version": "$version", "auth": "test:gate",
-           "provides": \{ $provides \}, "depends": [$deps],
+           "provides": \{ $provides \}, "depends": [$deps], $res
            "build-depends": [$bdeps] \}
         END
+    if $native-lib {
+        $droot.add('Build.rakumod').spurt(q:to/END/);
+            unit class Build;
+            method build($cwd) {
+                my $ext  = $*DISTRO.is-win ?? 'dll' !! ($*KERNEL.name eq 'darwin' ?? 'dylib' !! 'so');
+                my $stem = $*DISTRO.is-win ?? "gate.$ext" !! "libgate.$ext";
+                my $dir  = $cwd.IO.add('resources/libraries');
+                $dir.mkdir;
+                $dir.add($stem).spurt('native bytes');
+                True
+            }
+            END
+    }
     if $build-hook {
         # the zef protocol: Build.rakumod at the root, method build($cwd).
         # Importing the build-dep proves the hook child sees the target store;
@@ -129,6 +154,9 @@ my ($arc8, $sha8)  = make-dist('Gate::Phased', 'Gate::Phased', '0.1.0');
 # …and an alternation between two RAKU dists: nobody's alternative gets picked
 # for them, so it is reported instead of guessed at.
 my ($arc9, $sha9)  = make-dist('Gate::Choice', 'Gate::Choice', '0.1.0');
+# the JSON::Native shape: a logical libraries/ resource whose file the build
+# hook writes under the platform's spelling
+my ($arc10, $sha10) = make-dist('Gate::Native', 'Gate::Native', '0.1.0', :native-lib);
 
 $tmp.add('index.json').spurt(qq:to/END/);
     [ \{ "name": "Gate::Demo", "version": "0.4.2", "auth": "test:gate",
@@ -176,7 +204,11 @@ $tmp.add('index.json').spurt(qq:to/END/);
          "provides": \{ "Gate::Choice": "lib/Gate/Choice.rakumod" \},
          "depends": \{ "runtime": \{ "requires": [
                           \{ "any": ["Gate::ShareA", "Gate::ShareB"] \} ] \} \},
-         "path": "$sha9.tar.gz" \} ]
+         "path": "$sha9.tar.gz" \},
+      \{ "name": "Gate::Native", "version": "0.1.0", "auth": "test:gate",
+         "dist": "Gate::Native:ver<0.1.0>:auth<test:gate>",
+         "provides": \{ "Gate::Native": "lib/Gate/Native.rakumod" \},
+         "depends": [], "path": "$sha10.tar.gz" \} ]
     END
 
 my $home = $tmp.add('home');
@@ -390,6 +422,31 @@ my %built-gone = installer('--uninstall', 'Gate::Built');
 check %built-gone<exit> == 0, '…and uninstalls cleanly before the M6 choreography';
 my %tst-mix = installer('--test-only', '--list');
 check %tst-mix<exit> == 2, 'test --list is refused as a mode mix';
+
+# ---- a compiled resource: what the hook BUILT reaches the store -------------
+# Gate::Native is the JSON::Native shape: META declares `libraries/gate` by
+# its logical name, the hook writes the platform spelling (libgate.dylib /
+# libgate.so / gate.dll), and the installer must copy the file the hook
+# built. For a while it slurped the logical path instead — which does not
+# exist — and stored empty bytes, so every compiled extension quietly ran on
+# its fallback. A fresh HOME keeps this out of the M6 choreography's store.
+my $home7 = $tmp.add('home7');
+$home7.mkdir;
+my %envn = HOME => $home7.Str, RAKUPP_INSTALL_INDEX => $tmp.add('index.json').Str;
+my $ni = run 'env', |%envn.map({ "{.key}={.value}" }), $EXE, 'install', 'Gate::Native', :out, :err;
+$ni.out.slurp(:close);
+$ni.err.slurp(:close);
+check (try $ni.exitcode) == 0, 'native-lib: a dist with a built libraries/ resource installs';
+my $nu = run 'env', "HOME={$home7}", 'RAKULIB=', $EXE, '-e',
+    'use Gate::Native; print native-lib()', :out, :err;
+check $nu.out.slurp(:close) eq 'native bytes',
+      'native-lib: %?RESOURCES<libraries/gate> serves the BUILT file from the store';
+$nu.err.slurp(:close);
+# ...and the record also carries the platform spelling — the key Rakudo's
+# lookup computes before consulting it, so the shared store answers both
+my $nrec = $home7.add('.raku/dist').dir.first(*.f).slurp;
+check $nrec.contains('resources/libraries/libgate') || $nrec.contains('resources/libraries/gate.dll'),
+      'native-lib: the dist record keys the platform spelling too';
 
 # ---- the phase-hash `depends` ----------------------------------------------
 my %ph-dry = installer('--dry-run', 'Gate::Phased');
