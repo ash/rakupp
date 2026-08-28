@@ -155,6 +155,12 @@ classified and (mostly) repro'd.
   is worth 0.28 ns per node, the tree-walk fallback costs 11.2 ns per node, and
   the `Env` + `ValueList` a call allocates are ~46% of the whole
   interpreted-vs-compiled gap. Measured before any opcode was written.
+- **[experiments/IR-BOUNDARY.md](experiments/IR-BOUNDARY.md)** — the phase-I0
+  measurements IR-EXPERIMENT.md summarises, at full length: how the crossing cost
+  was measured, and the per-node/per-call numbers it produced.
+- **[experiments/IR-PLAN.md](experiments/IR-PLAN.md)** — the register-IR plan
+  I0 was run against, kept because I0 **inverted** it. Filed under experiments,
+  not plans: nothing here is intended to be built.
 - **[experiments/QUOTE-WORD-SHADOWING.md](experiments/QUOTE-WORD-SHADOWING.md)** —
   a declared `sub s` / `sub q` / `sub ms` versus the quoting syntax. Attempted,
   measured, reverted; the record exists so it does not have to be rediscovered.
