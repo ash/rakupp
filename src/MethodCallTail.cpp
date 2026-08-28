@@ -462,7 +462,15 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             // FINITE lazy (a gather that outgrew its probe, a lazy map over a finite
             // source, …): whole-list operations force full materialisation first,
             // so .elems/.sort/.join see every element, not just the cached prefix.
+            // `list`/`Seq`/`cache`/`flat` belong here for the same reason as
+            // `List`/`Array`: each answers the WHOLE sequence. Without them the
+            // generic arm downstream snapshots `toList(inv)` — the 64-element
+            // probe prefix — so `gather for 1..200 { take $_ }.list.elems` said
+            // 64, and `for … .list { }` iterated 64 times, silently dropping the
+            // tail. (An ENDLESS source never reaches here: it keeps its growing
+            // view in the `infinite` arm above, which is what issue #30 built.)
             static const std::set<std::string> forceAll = {
+                "list", "Seq", "cache", "flat",
                 "elems", "end", "pop", "tail", "reverse", "sort", "eager", "List", "Array",
                 "sum", "min", "max", "minmax", "join", "Str", "gist", "raku", "perl", "reduce",
                 "Numeric", "Int", "all", "any", "one", "none", "unique", "squish",

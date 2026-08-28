@@ -1249,6 +1249,15 @@ struct Codegen {
             }
             case NK::Call: {
                 auto* c = static_cast<Call*>(e);
+                // `take-rw` takes the CONTAINER its argument names, so the
+                // gathered element writes back to it. The interpreter resolves
+                // that storage from the argument EXPRESSION (Interpreter::
+                // evalTakeRw); compiled code has native locals with no such
+                // slots, and routing it through the builtin would silently take
+                // a detached copy — `[1 2 3]` where every other backend says
+                // `[2 3 4]`. Refuse, exactly as an `is rw` NativeCall param
+                // does, and let --exe fall back to bundling and stay CORRECT.
+                if (c->name == "take-rw" && !c->callee) unsupported("take-rw");
                 bool slip = false;
                 for (auto& a : c->args) if (isSlip(a.get())) slip = true;
                 std::string vl = argsVL(c->args);
@@ -1463,6 +1472,14 @@ struct Codegen {
                 auto* b = static_cast<Block*>(s.get());
                 if (b->isCatch) { catchBlk = b; continue; }
                 const std::string& ph = b->phaser;
+                // An INIT runs once before the MAINLINE, wherever it is written —
+                // not at the entry of whatever block encloses it. Emitted at this
+                // sequence's start it would become part of that block, so
+                // `gather for … { INIT take … }` would take INTO the gather
+                // instead of throwing (roast S04-statements/gather.t). Only a
+                // top-level one is the mainline's own start; refuse the rest, as
+                // a nested END is refused, and let --exe bundle and stay CORRECT.
+                if (ph == "INIT" && !topLevel) unsupported("a nested INIT phaser");
                 if (ph == "BEGIN" || ph == "CHECK" || ph == "INIT" || ph == "ENTER" || ph == "FIRST") { pre.push_back(b); continue; }
                 if (ph == "LEAVE" || ph == "KEEP" || ph == "UNDO") { post.push_back(b); continue; }
                 if (ph == "END") { if (!topLevel) unsupported("a nested END phaser"); topLevelEnds.push_back(b); continue; }

@@ -524,7 +524,7 @@ with verified examples, grouped by purpose. The complete alphabetical list is in
 | `start` `await` `Promise` | async (returns awaitable) |
 | `react` `whenever` `supply` `emit` `take` | supplies / reactive |
 | `callsame` `callwith` `nextsame` `nextwith` `samewith` `lastcall` | dispatch redirection |
-| `gather` / `take` | lazy generator |
+| `gather` / `take` / `take-rw` | lazy generator (`take-rw` takes the writable container, so mutating the sequence's elements writes back) |
 | `plan` `ok` `nok` `is` `isnt` `is-deeply` `like` `unlike` `cmp-ok` `dies-ok` `lives-ok` `throws-like` `subtest` `pass` `flunk` `done-testing` … | the **Test** suite (built in) |
 
 ```raku
@@ -1005,7 +1005,7 @@ roundrobin run RUN-MAIN RUN-MAIN-args-to-capture samemark samewith say
 sec sech set shell shift sign signal sink skip skip-rest sleep
 sleep-timer sleep-until Slip slip slurp snip snitch so sort
 splice split sprintf spurt sqrt srand start subtest succeed sum supply
-symlink take tc throws-like times todo trans truncate uc unimatch
+symlink take take-rw tc throws-like times todo trans truncate uc unimatch
 uniname uninames uniparse uniprop uniprops unival univals unlike
 unlink unpolar unshift use-ok val values VAR warn WHAT whenever words
 zip

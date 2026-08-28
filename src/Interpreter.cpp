@@ -871,6 +871,197 @@ static void gatherWritesStmt(const Stmt* s, std::set<std::string>& writes,
         default: break;
     }
 }
+// ---- INIT-phaser hoisting -------------------------------------------------
+// Every INIT in the program runs ONCE, before the mainline, in source order —
+// wherever it is written. Rakudo runs the one in a never-taken branch and the
+// one in a sub that is never called, both before the first mainline statement;
+// so `gather for 1..3 { INIT take "OH HAI"; … }` executes that take with no
+// gather on the stack at all, and it throws (roast S04-statements/gather.t).
+// Running it in place instead made the INIT part of the loop body.
+//
+// The walk therefore has to reach through EXPRESSIONS too — the roast case
+// buries its INIT under `say(gather(BlockExpr(for … )))`. A node kind this
+// misses simply leaves that INIT unmarked, and an unmarked INIT still runs at
+// its textual position exactly as before: the fallback is the old behaviour,
+// never a phaser that silently disappears.
+// …with one limit, and it is a real one. Rakudo hoists an INIT in TIME while
+// keeping its LEXICAL scope: `{ my $var; for … { my $s = { INIT { $var++ } } } }`
+// increments the container the mainline later reads, because in Rakudo that
+// container exists from compile time. rakupp builds scopes as blocks execute,
+// so at program-init time the enclosing block has not run and there is no
+// container to reach — hoisting that INIT makes `$var` undeclared.
+//
+// So a NESTED init is hoisted only when it is self-contained: every lexical it
+// names, it declares itself. One that reaches outward keeps running in place,
+// exactly as before (`INIT has run exactly once` in S04-phasers/init.t stays
+// as wrong as it was, rather than becoming a hard error). Top-level INITs are
+// unconditional — run() pre-declares the mainline's `my`s before phasers, so
+// their containers do exist, which is why that case has always worked.
+static bool initFreeStmt(Stmt* s, std::set<std::string>& decl);
+static bool initFreeExpr(Expr* e, std::set<std::string>& decl) {
+    if (!e) return false;
+    switch (e->kind) {
+        case NK::VarExpr: { auto* v = static_cast<VarExpr*>(e);
+            if (v->declare) { decl.insert(v->name); return initFreeExpr(v->declDefault.get(), decl); }
+            // dynamics ($*x) and compile-time vars ($?FILE) do not resolve
+            // lexically, so an early run finds them the same way a late one does
+            if (v->name.size() > 1 && (v->name[1] == '*' || v->name[1] == '?')) return false;
+            return !decl.count(v->name); }
+        case NK::SelfTerm: return true; // no invocant exists at program-init time
+        case NK::BlockExpr: { for (auto& s : static_cast<BlockExpr*>(e)->body) if (initFreeStmt(s.get(), decl)) return true; return false; }
+        case NK::Assign: { auto* a = static_cast<Assign*>(e);
+            // the VALUE first: `my $x = $x` reads the OUTER $x
+            return initFreeExpr(a->value.get(), decl) || initFreeExpr(a->target.get(), decl); }
+        case NK::Binary: { auto* b = static_cast<Binary*>(e);
+            return initFreeExpr(b->lhs.get(), decl) || initFreeExpr(b->rhs.get(), decl); }
+        case NK::Unary: return initFreeExpr(static_cast<Unary*>(e)->operand.get(), decl);
+        case NK::Call: { auto* c = static_cast<Call*>(e);
+            if (initFreeExpr(c->callee.get(), decl)) return true;
+            for (auto& a : c->args) if (initFreeExpr(a.get(), decl)) return true; return false; }
+        case NK::MethodCall: { auto* m = static_cast<MethodCall*>(e);
+            if (initFreeExpr(m->inv.get(), decl) || initFreeExpr(m->methodExpr.get(), decl)) return true;
+            for (auto& a : m->args) if (initFreeExpr(a.get(), decl)) return true; return false; }
+        case NK::Index: { auto* i = static_cast<Index*>(e);
+            return initFreeExpr(i->base.get(), decl) || initFreeExpr(i->index.get(), decl); }
+        case NK::Ternary: { auto* t = static_cast<Ternary*>(e);
+            return initFreeExpr(t->cond.get(), decl) || initFreeExpr(t->then.get(), decl) ||
+                   initFreeExpr(t->els.get(), decl); }
+        case NK::Range: { auto* r = static_cast<RangeExpr*>(e);
+            return initFreeExpr(r->from.get(), decl) || initFreeExpr(r->to.get(), decl); }
+        case NK::Pair: { auto* p = static_cast<PairExpr*>(e);
+            return initFreeExpr(p->keyExpr.get(), decl) || initFreeExpr(p->value.get(), decl); }
+        case NK::ChainExpr: for (auto& o : static_cast<ChainExpr*>(e)->operands) if (initFreeExpr(o.get(), decl)) return true; return false;
+        case NK::ListExpr:  for (auto& i : static_cast<ListExpr*>(e)->items)  if (initFreeExpr(i.get(), decl)) return true; return false;
+        case NK::ArrayLit:  for (auto& i : static_cast<ArrayLit*>(e)->items)  if (initFreeExpr(i.get(), decl)) return true; return false;
+        case NK::HashLit:   for (auto& i : static_cast<HashLit*>(e)->items)   if (initFreeExpr(i.get(), decl)) return true; return false;
+        case NK::InterpStr: for (auto& p : static_cast<InterpStr*>(e)->parts) if (initFreeExpr(p.get(), decl)) return true; return false;
+        case NK::IntLit: case NK::NumLit: case NK::StrLit: case NK::BoolLit:
+        case NK::NameTerm: case NK::Whatever: case NK::RegexLit: case NK::AllomorphLit:
+            return false;
+        default: return true; // an unmodelled node may reach anywhere — don't hoist
+    }
+}
+static bool initFreeStmt(Stmt* s, std::set<std::string>& decl) {
+    if (!s) return false;
+    switch (s->kind) {
+        case NK::EmptyStmt: case NK::LastStmt: case NK::NextStmt: case NK::RedoStmt:
+            return false;
+        case NK::ExprStmt: return initFreeExpr(static_cast<ExprStmt*>(s)->e.get(), decl);
+        case NK::ReturnStmt: return initFreeExpr(static_cast<ReturnStmt*>(s)->value.get(), decl);
+        case NK::VarDecl: { auto* d = static_cast<VarDecl*>(s);
+            if (initFreeExpr(d->init.get(), decl)) return true;
+            for (auto& n : d->names) decl.insert(n);
+            return false; }
+        case NK::Block: { for (auto& x : static_cast<Block*>(s)->stmts) if (initFreeStmt(x.get(), decl)) return true; return false; }
+        case NK::IfStmt: { auto* f = static_cast<IfStmt*>(s);
+            for (auto& br : f->branches) { if (initFreeExpr(br.first.get(), decl)) return true;
+                if (br.second) for (auto& x : br.second->stmts) if (initFreeStmt(x.get(), decl)) return true; }
+            if (f->elseBlock) for (auto& x : f->elseBlock->stmts) if (initFreeStmt(x.get(), decl)) return true;
+            return false; }
+        case NK::WhileStmt: { auto* w = static_cast<WhileStmt*>(s);
+            if (initFreeExpr(w->cond.get(), decl)) return true;
+            if (w->body) for (auto& x : w->body->stmts) if (initFreeStmt(x.get(), decl)) return true; return false; }
+        case NK::ForStmt: { auto* f = static_cast<ForStmt*>(s);
+            if (initFreeExpr(f->list.get(), decl)) return true;
+            for (auto& v : f->vars) decl.insert(v);
+            decl.insert("$_");
+            if (f->body) for (auto& x : f->body->stmts) if (initFreeStmt(x.get(), decl)) return true; return false; }
+        default: return true; // conservative: anything unmodelled blocks the hoist
+    }
+}
+// True when this INIT names no lexical it does not itself declare.
+static bool initIsSelfContained(Block* b) {
+    std::set<std::string> decl;
+    for (auto& s : b->stmts) if (initFreeStmt(s.get(), decl)) return false;
+    return true;
+}
+
+static void collectInitsStmt(Stmt* s, std::vector<Block*>& out, bool topLevel = false);
+static void collectInitsExpr(Expr* e, std::vector<Block*>& out);
+static void collectInitsBody(const std::vector<StmtPtr>& b, std::vector<Block*>& out) {
+    for (auto& s : b) collectInitsStmt(s.get(), out);
+}
+static void collectInitsExpr(Expr* e, std::vector<Block*>& out) {
+    if (!e) return;
+    switch (e->kind) {
+        case NK::BlockExpr: collectInitsBody(static_cast<BlockExpr*>(e)->body, out); return;
+        case NK::Assign: { auto* a = static_cast<Assign*>(e);
+            collectInitsExpr(a->target.get(), out); collectInitsExpr(a->value.get(), out); return; }
+        case NK::Binary: { auto* b = static_cast<Binary*>(e);
+            collectInitsExpr(b->lhs.get(), out); collectInitsExpr(b->rhs.get(), out); return; }
+        case NK::Unary: collectInitsExpr(static_cast<Unary*>(e)->operand.get(), out); return;
+        case NK::Call: { auto* c = static_cast<Call*>(e);
+            collectInitsExpr(c->callee.get(), out);
+            for (auto& a : c->args) collectInitsExpr(a.get(), out); return; }
+        case NK::MethodCall: { auto* m = static_cast<MethodCall*>(e);
+            collectInitsExpr(m->inv.get(), out); collectInitsExpr(m->methodExpr.get(), out);
+            for (auto& a : m->args) collectInitsExpr(a.get(), out); return; }
+        case NK::Index: { auto* i = static_cast<Index*>(e);
+            collectInitsExpr(i->base.get(), out); collectInitsExpr(i->index.get(), out); return; }
+        case NK::Ternary: { auto* t = static_cast<Ternary*>(e);
+            collectInitsExpr(t->cond.get(), out); collectInitsExpr(t->then.get(), out);
+            collectInitsExpr(t->els.get(), out); return; }
+        case NK::Range: { auto* r = static_cast<RangeExpr*>(e);
+            collectInitsExpr(r->from.get(), out); collectInitsExpr(r->to.get(), out); return; }
+        case NK::Pair: { auto* p = static_cast<PairExpr*>(e);
+            collectInitsExpr(p->keyExpr.get(), out); collectInitsExpr(p->value.get(), out); return; }
+        case NK::ChainExpr: for (auto& o : static_cast<ChainExpr*>(e)->operands) collectInitsExpr(o.get(), out); return;
+        case NK::ListExpr:  for (auto& i : static_cast<ListExpr*>(e)->items)  collectInitsExpr(i.get(), out); return;
+        case NK::ArrayLit:  for (auto& i : static_cast<ArrayLit*>(e)->items)  collectInitsExpr(i.get(), out); return;
+        case NK::HashLit:   for (auto& i : static_cast<HashLit*>(e)->items)   collectInitsExpr(i.get(), out); return;
+        case NK::InterpStr: for (auto& p : static_cast<InterpStr*>(e)->parts) collectInitsExpr(p.get(), out); return;
+        default: return;
+    }
+}
+static void collectInitsStmt(Stmt* s, std::vector<Block*>& out, bool topLevel) {
+    if (!s) return;
+    switch (s->kind) {
+        case NK::Block: { auto* b = static_cast<Block*>(s);
+            // an INIT is collected, and its own body is NOT re-walked: a phaser
+            // nested inside it belongs to that one execution, not to a second
+            // hoist that would run it twice
+            if (b->phaser == "INIT") {
+                // top level: always (its containers are pre-declared).
+                // nested: only if it reaches no scope that has yet to exist.
+                if (topLevel || initIsSelfContained(b)) { b->initHoisted = true; out.push_back(b); }
+                return;
+            }
+            collectInitsBody(b->stmts, out); return; }
+        case NK::ExprStmt: collectInitsExpr(static_cast<ExprStmt*>(s)->e.get(), out); return;
+        case NK::VarDecl:  collectInitsExpr(static_cast<VarDecl*>(s)->init.get(), out); return;
+        case NK::ReturnStmt: collectInitsExpr(static_cast<ReturnStmt*>(s)->value.get(), out); return;
+        case NK::SubDecl:  collectInitsBody(static_cast<SubDecl*>(s)->body, out); return;
+        case NK::IfStmt: { auto* f = static_cast<IfStmt*>(s);
+            for (auto& br : f->branches) { collectInitsExpr(br.first.get(), out);
+                if (br.second) collectInitsBody(br.second->stmts, out); }
+            if (f->elseBlock) collectInitsBody(f->elseBlock->stmts, out); return; }
+        case NK::WhileStmt: { auto* w = static_cast<WhileStmt*>(s);
+            collectInitsExpr(w->cond.get(), out);
+            if (w->body) collectInitsBody(w->body->stmts, out); return; }
+        case NK::RepeatStmt: { auto* r = static_cast<RepeatStmt*>(s);
+            if (r->body) collectInitsBody(r->body->stmts, out);
+            collectInitsExpr(r->cond.get(), out); return; }
+        case NK::ForStmt: { auto* f = static_cast<ForStmt*>(s);
+            collectInitsExpr(f->list.get(), out);
+            if (f->body) collectInitsBody(f->body->stmts, out); return; }
+        case NK::LoopStmt: { auto* l = static_cast<LoopStmt*>(s);
+            collectInitsExpr(l->init.get(), out); collectInitsExpr(l->cond.get(), out);
+            collectInitsExpr(l->incr.get(), out);
+            if (l->body) collectInitsBody(l->body->stmts, out); return; }
+        case NK::GivenStmt: { auto* g = static_cast<GivenStmt*>(s);
+            collectInitsExpr(g->topic.get(), out);
+            if (g->body) collectInitsBody(g->body->stmts, out); return; }
+        case NK::WhenStmt: { auto* w = static_cast<WhenStmt*>(s);
+            collectInitsExpr(w->cond.get(), out);
+            if (w->body) collectInitsBody(w->body->stmts, out); return; }
+        case NK::ClassDecl: { auto* c = static_cast<ClassDecl*>(s);
+            for (auto& m : c->methods) collectInitsStmt(m.get(), out);
+            collectInitsBody(c->body, out); return; }
+        case NK::EnumDecl: collectInitsExpr(static_cast<EnumDecl*>(s)->values.get(), out); return;
+        default: return;
+    }
+}
+
 // A structural copy for the snapshot: an Array/Hash Value shares its payload,
 // so a plain copy would still alias the block's mutations.
 static Value gatherDeepCopy(const Value& v, int depth = 0) {
@@ -1894,18 +2085,39 @@ static Value reifyIfFinite(const Value& v) {
     Value r = Value::array(*v.arr()); r.isList = false; return r;
 }
 
+// A `take-rw`n element is a Proxy over the storage it was taken from. LIST
+// ASSIGNMENT decontainerizes it: the array receives the VALUE, in a fresh slot
+// of its own, so `my @s = gather { take-rw $x }; @s[0]++` steps the copy and
+// leaves $x alone — as Rakudo. Iterating the Seq directly (`for f(@a) { $_++ }`)
+// does NOT come through here, which is what keeps write-through working there.
+//
+// Callers gate this on the source being a Seq: only a gather can put a Proxy
+// into a list, so an ordinary `@b = @a` copy never walks the elements at all.
+// (Gating matters — an unconditional pass cost ~8% on array-assignment.)
+static void deproxyElems(Value& a) {
+    if (!g_deproxy || !a.arr()) return;
+    for (auto& e : *a.arr())
+        if (e.t == VT::Hash && e.hashKind == "Proxy" && e.hash()) e = g_deproxy(e);
+}
+
 Value rtArrayVal(const Value& v) {
     // an ITEMIZED hash (`$%h`, `$(%h)`) is one element, not a spread of pairs
     if (v.t == VT::Hash && v.hash() && v.itemized) { Value a = Value::array(); a.arr()->push_back(v); return a; }
     if (v.t == VT::Hash && v.hash()) return hashToPairs(v);
     if (v.t == VT::Array && v.arr()) {
-        if (v.ext()) return reifyIfFinite(v); // a lazy seq stays lazy; a finite gather does not
+        if (v.ext()) { // a lazy seq stays lazy; a finite gather does not
+            Value r = reifyIfFinite(v);
+            if (v.s == "Seq" && r.arrS() != v.arrS()) deproxyElems(r);
+            return r;
+        }
         // a shaped source contributes its LEAVES, as it does in coerceArray —
         // these two must agree, or a program means one thing interpreted and
         // another compiled
         if (isMultiDimShaped(v)) return Value::array(shapedLeaves(v));
-        if (v.isList) { Value r = listToArray(*v.arr()); r.isList = false; return r; }
+        if (v.isList) { Value r = listToArray(*v.arr()); r.isList = false;
+                        if (v.s == "Seq") deproxyElems(r); return r; }
         Value r = Value::array(*v.arr()); // fresh buffer: `@a = @b` must not alias @b
+        if (v.s == "Seq") deproxyElems(r); // take-rw's Proxies decontainerize on assign
         return r;
     }
     if (v.t == VT::Range) return Value::array(v.flatten());
@@ -2020,7 +2232,13 @@ static Value coerceArray(const Value& v) {
         if (v.itemized) { // an itemized Array is ONE element: `my @row = @m[0]` is [[...],]
             Value r = Value::array(); r.arr()->push_back(v); return r;
         }
-        if (v.ext()) return reifyIfFinite(v); // a lazy seq stays lazy; a finite gather does not
+        if (v.ext()) { // a lazy seq stays lazy; a finite gather does not
+            Value r = reifyIfFinite(v);
+            // …and only a FRESH buffer may be decontainerized: a still-lazy seq
+            // is shared with v, where the Proxies are the write-through
+            if (v.s == "Seq" && r.arrS() != v.arrS()) deproxyElems(r);
+            return r;
+        }
         // A shaped array STORED into an unshaped one contributes its leaves:
         // `my @flat = @a[3;2]` is six elements, and so is a `@a is copy`
         // parameter. (Plain binding — `sub f(@a)` — does not come through here,
@@ -2029,7 +2247,9 @@ static Value coerceArray(const Value& v) {
         // `@b = @a` / `@x is copy` copy the top-level buffer — a fresh Array that does
         // NOT alias the source (nested itemized arrays are containers, shared by value,
         // matching Rakudo). Mirrors rtArrayVal so the interpreter and native backends agree.
-        Value r = Value::array(*v.arr()); r.isList = false; return r;
+        Value r = Value::array(*v.arr()); r.isList = false;
+        if (v.s == "Seq") deproxyElems(r); // an eager gather's takes decontainerize
+        return r;
     }
     if (v.t == VT::Range) {
         if (v.rTo() >= 9000000000000000000LL) { // …..Inf : a lazy @-array, materialised on demand
@@ -3052,6 +3272,7 @@ void Interpreter::saveCtx(ExecContext& c) {
     c.gatherStack = std::move(tctx_.gatherStack);
     c.gatherLimits = std::move(tctx_.gatherLimits);
     c.gatherDeadlines = std::move(tctx_.gatherDeadlines);
+    c.topicAliases = std::move(tctx_.topicAliases);
     c.supplyStack = std::move(tctx_.supplyStack);
     c.tapStack    = std::move(tctx_.tapStack);
     c.makeTargets = std::move(tctx_.makeTargets);
@@ -3071,6 +3292,7 @@ void Interpreter::loadCtx(ExecContext& c) {
     tctx_.gatherStack  = std::move(c.gatherStack);
     tctx_.gatherLimits = std::move(c.gatherLimits);
     tctx_.gatherDeadlines = std::move(c.gatherDeadlines);
+    tctx_.topicAliases = std::move(c.topicAliases);
     tctx_.supplyStack  = std::move(c.supplyStack);
     tctx_.tapStack     = std::move(c.tapStack);
     tctx_.makeTargets  = std::move(c.makeTargets);
@@ -3866,7 +4088,7 @@ int Interpreter::run(Program& prog) {
             }
             if (b->phaser == "BEGIN") { beginP.push_back(b); continue; }
             if (b->phaser == "CHECK") { checkP.push_back(b); continue; }
-            if (b->phaser == "INIT")  { initP.push_back(b);  continue; }
+            if (b->phaser == "INIT")  { continue; }  // collected by the whole-program walk below
             if (b->phaser == "END")   { endP.push_back(b);   continue; }
             if (b->phaser == "ENTER") { enterP.push_back(b); continue; } // file scope: before the mainline body
             if (b->phaser == "LEAVE" || b->phaser == "KEEP" || b->phaser == "UNDO")
@@ -3874,6 +4096,10 @@ int Interpreter::run(Program& prog) {
         }
         mainline.push_back(s.get());
     }
+    // Every INIT in the program, at any depth, in source order — including the
+    // top-level ones just skipped. See collectInitsStmt: they run before the
+    // mainline, and their textual positions are then skipped.
+    for (auto& s : prog.stmts) collectInitsStmt(s.get(), initP, /*topLevel=*/true);
     auto runPhaser = [&](Block* b) {
         if (b->stmtForm) { execBlock(b, tctx_.cur); return; } // `INIT my $x = …` declares in the mainline scope
         auto sc = std::make_shared<Env>(); sc->parent = tctx_.cur; execBlock(b, sc);
@@ -3967,7 +4193,7 @@ int Interpreter::run(Program& prog) {
         hoistExprDecls(prog.stmts, global_.get(), nullptr);
         for (auto* b : beginP) runPhaser(b);                                      // BEGIN: source order
         for (auto it = checkP.rbegin(); it != checkP.rend(); ++it) runPhaser(*it); // CHECK: reverse
-        for (auto* b : initP) runPhaser(b);                                       // INIT: source order
+        for (auto* b : initP) runHoistedInit(b);                                  // INIT: source order, program-wide
         for (auto* b : enterP) runPhaser(b);                                      // ENTER: on UNIT-block entry, before the mainline
         // a mainline CONTROL {} is the outermost warn handler for the run
         if (topControl) tctx_.controlHandlers.push_back({topControl, tctx_.cur});
@@ -5373,7 +5599,58 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
             langRev_ = prog->langRev;   // the module's own revision, not the importer's
             if (prog->langRev != 1) anyRevSwitch_ = true;
             hoistSubs(prog->stmts);
+            // A module is a compilation unit too, so its INIT phasers run ONCE,
+            // before its own mainline — including the ones nested in its subs
+            // and blocks. Rakudo runs the INIT of a module sub that is never
+            // called, and runs it exactly once; without this walk each one fired
+            // at its textual position, so an INIT inside `our sub greet` ran on
+            // every call. Same collection and same self-contained rule as the
+            // program mainline and EVAL (see collectInitsStmt); after hoistSubs,
+            // so an INIT may call the module's own subs. A module loaded from
+            // the precomp cache gets a fresh AST with initHoisted clear — the
+            // flag is per-run and deliberately not serialized — so it collects
+            // the same way a freshly parsed one does.
+            //
+            // WHEN they run needs care. Rakudo puts them before the module
+            // mainline (a module INIT reading a mainline `our $x` sees an
+            // undefined value), and can, because `use` is resolved at COMPILE
+            // time there — its dependencies are loaded before any of it runs.
+            // In rakupp a `use` is a mainline statement, so running the INITs
+            // first made `INIT { … Helper::compute() … }` in a module that
+            // `use Helper` die with "Undefined routine". They therefore run
+            // after the module's leading prologue of `use` statements: nothing
+            // is reordered, the dependencies are in, and for the conventional
+            // module — every `use` at the top — this IS Rakudo's position.
+            //
+            // topLevel=FALSE even for the module's own top-level INITs. That
+            // flag means "the containers this INIT names already exist", which
+            // is true of run()'s mainline only because run() pre-declares its
+            // `my`s before any phaser. loadParsed has no such pass, so a module
+            // INIT is hoisted on the same terms as any nested one: only if it
+            // names nothing it does not declare itself. Otherwise `our $stash;
+            // INIT { $stash = … }` hoisted above its own declaration and died
+            // with "Variable '$stash' is not declared".
+            std::vector<Block*> inits;
+            for (auto& st : prog->stmts) collectInitsStmt(st.get(), inits, /*topLevel=*/false);
+            bool initsDone = inits.empty();
+            auto runInitsOnce = [&] {
+                if (initsDone) return;
+                initsDone = true;
+                for (auto* b : inits) runHoistedInit(b);
+            };
+            auto isPrologue = [](Stmt* s) {
+                if (s->kind == NK::UseStmt || s->kind == NK::EmptyStmt) return true;
+                if (s->kind == NK::SubDecl) return true; // hoistSubs already took it
+                // the `unit module Foo;` header itself (an empty-bodied package);
+                // a BRACED `module Foo { … }` carries statements and is not prologue
+                if (s->kind == NK::ClassDecl) { auto* c = static_cast<ClassDecl*>(s);
+                    return c->isPackage && c->body.empty() && c->methods.empty(); }
+                return false;
+            };
             for (auto& st : prog->stmts) {
+                if (!isPrologue(st.get())) runInitsOnce(); // every `use` above us has run
+                if (st->kind == NK::Block && static_cast<Block*>(st.get())->initHoisted)
+                    continue; // ran in runInitsOnce, ahead of this mainline
                 if (st->kind == NK::SubDecl && !static_cast<SubDecl*>(st.get())->name.empty() &&
                     !static_cast<SubDecl*>(st.get())->isMethod) {
                     auto* sd = static_cast<SubDecl*>(st.get());
@@ -5397,6 +5674,7 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
                 }
                 exec(st.get());
             }
+            runInitsOnce(); // a module that is nothing but `use`s and declarations
         }
         catch (RakuError& e) {
             loadingModuleDepth_--; moduleDoImport_ = savedDoImport;
@@ -5720,8 +5998,19 @@ Value Interpreter::evalString(const std::string& src, bool mainlinePH, bool* inc
     // this EVAL/REPL line is its own unit for the bare-name fallback
     unitPush(prog.get());
     struct UnitGuard { Interpreter& I; ~UnitGuard() { I.unitPop(); } } unitG{*this};
+    // EVAL'd code is its own compilation unit, so its INIT phasers run before
+    // ITS mainline — not at their textual position. roast asserts this through
+    // `throws-like '… gather for 1..3 { INIT take "OH HAI"; … }'`: the take has
+    // to happen with no gather on the stack, and only hoisting puts it there.
+    {
+        std::vector<Block*> inits;
+        for (auto& s : prog->stmts) collectInitsStmt(s.get(), inits, /*topLevel=*/true);
+        for (auto* b : inits) runHoistedInit(b);
+    }
     Value last = Value::any();
     for (auto& s : prog->stmts) {
+        // a top-level INIT just ran above; running it again here would double it
+        if (s->kind == NK::Block && static_cast<Block*>(s.get())->initHoisted) continue;
         // An END block in EVAL'd code runs at the END of the whole program (not here),
         // capturing the EVAL scope so it still sees this EVAL's lexicals.
         if (s->kind == NK::Block && static_cast<Block*>(s.get())->phaser == "END") {
@@ -5858,7 +6147,11 @@ void Interpreter::emitTest(bool ok, const std::string& desc, const std::string& 
 // A block-scoped phaser we run at entry/exit rather than in-place.
 static bool isBlockPhaser(Stmt* s) {
     if (s->kind != NK::Block) return false;
-    const std::string& p = static_cast<Block*>(s)->phaser;
+    auto* b = static_cast<Block*>(s);
+    const std::string& p = b->phaser;
+    // A HOISTED INIT already ran, before the mainline — skip it here. One the
+    // program-init walk did not reach keeps running in place, as it always did.
+    if (p == "INIT") return b->initHoisted;
     return p == "ENTER" || p == "LEAVE" || p == "KEEP" || p == "UNDO" || p == "FIRST" ||
            p == "NEXT" || p == "LAST" || p == "QUIT" || p == "CLOSE";
 }
@@ -6606,6 +6899,25 @@ struct LoopStateFrame {
         tc.curStateEnv = frame.get();
     }
     ~LoopStateFrame() { if (on) { t.cur = savedCur; t.curStateEnv = savedState; } }
+};
+
+// One tctx_.topicAliases record for the lifetime of an rw for-loop: "this
+// loop's topic var currently rw-aliases (*arr)[idx]". The loop refreshes
+// scope/idx each iteration via at(); take-rw reads the innermost match to
+// build a Proxy over the element slot itself (the loop's own aliasing is
+// copy-in/copy-out, and the copy-out at iteration end would sever the link).
+struct TopicAliasFrame {
+    std::vector<ExecContext::TopicAlias>* v = nullptr;
+    TopicAliasFrame(ExecContext& tc, bool enable, const std::string& var,
+                    const std::shared_ptr<ValueList>& arr) {
+        if (!enable) return;
+        v = &tc.topicAliases;
+        v->push_back({nullptr, &var, arr, 0});
+    }
+    void at(Env* scope, size_t i) { // between our push and pop, back() is ours
+        if (v) { auto& r = v->back(); r.scope = scope; r.idx = i; }
+    }
+    ~TopicAliasFrame() { if (v) v->pop_back(); }
 };
 
 static void failureDetonate(const Value& v); // an unhandled Failure blows up when USED or SUNK
@@ -8727,6 +9039,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                             if (topic) *topic = asTopic((*arr)[i], var);
                             else scope->define(var, asTopic((*arr)[i], var)); } }
                     };
+                    TopicAliasFrame taf(tctx_, rw, var, arr); // take-rw's view of the aliasing
                     for (i = 0; growTo(i); i++) {
                         if (flat && topic && scope.use_count() == 1) {
                             ParStripe es(*this, arr.get());
@@ -8738,6 +9051,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                             if (i >= arr->size()) break;
                             topic = &scope->define(var, asTopic((*arr)[i], var));
                         }
+                        taf.at(scope.get(), i);
                         bool cont = runLoopBody(fs->body.get(), scope, fs->label, i == 0,
                                                 !endless && i + 1 == arr->size(), col, rb);
                         if (rw) {
@@ -15174,6 +15488,221 @@ Value Interpreter::proxyStore(const Value& proxy, const Value& v) {
                                       : callCallable(it->second, { v });
 }
 
+// The slot-proxy family: Proxies whose FETCH/STORE are native closures over a
+// storage location, so anything that can deproxy/proxyStore — every read and
+// assignment path — reads and writes the location itself. `:=` binds variables
+// with the Env one; take-rw hands all four out depending on what its argument
+// names. Copying such a proxy copies the closure pair, so every copy still
+// reaches the same slot — which is exactly what lets one escape a gather.
+static void slotProxyPair(Value& proxy, std::function<Value(Interpreter&, ValueList&)> f,
+                          std::function<Value(Interpreter&, ValueList&)> s) {
+    Value fetch; fetch.t = VT::Code; fetch.setCode(std::make_shared<Callable>());
+    fetch.code()->builtin = std::move(f);
+    Value store; store.t = VT::Code; store.setCode(std::make_shared<Callable>());
+    store.code()->builtin = std::move(s);
+    (*proxy.hash())["FETCH"] = fetch;
+    (*proxy.hash())["STORE"] = store;
+}
+
+Value Interpreter::makeEnvSlotProxy(std::shared_ptr<Env> owner, const std::string& src) {
+    Value proxy = Value::makeHash(); proxy.hashKind = "Proxy";
+    slotProxyPair(proxy,
+        [owner, src](Interpreter& I, ValueList&) -> Value {
+            Value* op = owner->local(src);
+            if (!op) return Value::any();
+            // a bound-to-bound chain: deref one more Proxy level
+            if (op->t == VT::Hash && op->hashKind == "Proxy" && op->hash()) {
+                auto f2 = op->hash()->find("FETCH");
+                if (f2 != op->hash()->end()) { ValueList none; return I.callCallable(f2->second, none); }
+            }
+            return *op;
+        },
+        [owner, src](Interpreter& I, ValueList& sa) -> Value {
+            Value nv = sa.empty() ? Value::any() : sa[0];
+            Value* op = owner->local(src);
+            if (op && op->t == VT::Hash && op->hashKind == "Proxy" && op->hash()) {
+                auto s2 = op->hash()->find("STORE");
+                if (s2 != op->hash()->end()) { ValueList one{nv}; return I.callCallable(s2->second, one); }
+            }
+            if (op) *op = nv; else owner->define(src, nv);
+            return nv;
+        });
+    return proxy;
+}
+
+Value Interpreter::makeArraySlotProxy(std::shared_ptr<ValueList> arr, size_t idx) {
+    Value proxy = Value::makeHash(); proxy.hashKind = "Proxy";
+    slotProxyPair(proxy,
+        [arr, idx](Interpreter& I, ValueList&) -> Value {
+            ParStripe ps(I, arr.get());
+            return idx < arr->size() ? (*arr)[idx] : Value::any();
+        },
+        [arr, idx](Interpreter& I, ValueList& sa) -> Value {
+            Value nv = sa.empty() ? Value::any() : sa[0];
+            ParStripe ps(I, arr.get());
+            while (arr->size() <= idx) arr->push_back(Value::any());
+            (*arr)[idx] = nv;
+            return nv;
+        });
+    return proxy;
+}
+
+Value Interpreter::makeHashSlotProxy(std::shared_ptr<ValueMap> h, const std::string& key) {
+    Value proxy = Value::makeHash(); proxy.hashKind = "Proxy";
+    slotProxyPair(proxy,
+        [h, key](Interpreter& I, ValueList&) -> Value {
+            ParStripe ps(I, h.get());
+            auto it = h->find(key);
+            return it != h->end() ? it->second : Value::any();
+        },
+        [h, key](Interpreter& I, ValueList& sa) -> Value {
+            Value nv = sa.empty() ? Value::any() : sa[0];
+            ParStripe ps(I, h.get());
+            (*h)[key] = nv;
+            return nv;
+        });
+    return proxy;
+}
+
+Value Interpreter::makeCellProxy(const Value& init) {
+    auto cell = std::make_shared<Value>(init);
+    Value proxy = Value::makeHash(); proxy.hashKind = "Proxy";
+    slotProxyPair(proxy,
+        [cell](Interpreter&, ValueList&) -> Value { return *cell; },
+        [cell](Interpreter&, ValueList& sa) -> Value {
+            *cell = sa.empty() ? Value::any() : sa[0];
+            return *cell;
+        });
+    return proxy;
+}
+
+// A hoisted INIT runs before the mainline, which means outside every routine
+// and every loop — so control flow leaving it has nothing to leave. `sub {
+// INIT return }` is the spec'd X::ControlFlow::Return (roast
+// S04-statements/return.t), NOT a cooperative return that the mainline would
+// honour: that flag silently ended the program, and the rest of return.t's
+// own tests stopped emitting at exactly that line.
+void Interpreter::runHoistedInit(Block* b) {
+    auto escaped = [this]() -> void {
+        tctx_.returning = false; tctx_.loopCtl = 0;
+        throw RakuError{Value::typeObj("X::ControlFlow::Return"),
+                        "Attempt to return outside of any Routine"};
+    };
+    try {
+        if (b->stmtForm) execBlock(b, tctx_.cur); // `INIT my $x = …` declares in the enclosing scope
+        else { auto sc = std::make_shared<Env>(); sc->parent = tctx_.cur; execBlock(b, sc); }
+    }
+    catch (ReturnEx&) { escaped(); }
+    if (tctx_.returning) escaped();
+    tctx_.loopCtl = 0; // a `next`/`last` here belongs to no loop; don't let it steer the mainline
+}
+
+Value Interpreter::gatherTake(const ValueList& items, const Value& ret) {
+    if (tctx_.gatherStack.empty())
+        // outside a gather there is nowhere for the value to go, and silently
+        // handing it back would make take look like a no-op instead of an
+        // error. Roast asserts the exception's parts: illegal => "take",
+        // enclosing => "gather" (S04-statements/gather.t, issue 3416).
+        throwTypedV("X::ControlFlow",
+                    {{"illegal", Value::str("take")}, {"enclosing", Value::str("gather")}},
+                    "take without gather");
+    auto& coll = *tctx_.gatherStack.back();
+    for (auto& x : items) coll.push_back(x);
+    // a lazy gather stops the block once it has produced enough elements
+    size_t lim = tctx_.gatherLimits.empty() ? 0 : tctx_.gatherLimits.back();
+    if (lim && coll.size() >= lim) throw StopGatherEx{};
+    // …and stops when the probe's TIME budget is spent, so a generator
+    // whose takes get steadily more expensive cannot make declaring it
+    // slow. At least one element first: a prefix of none is not a probe.
+    long long dl = tctx_.gatherDeadlines.empty() ? 0 : tctx_.gatherDeadlines.back();
+    if (dl && !coll.empty() && nowMicros() > dl) throw StopGatherEx{};
+    return ret;
+}
+
+// `take-rw EXPR` — take the STORAGE behind EXPR, not a copy of its value: what
+// lands in the gather stream is a slot Proxy, so mutating the sequence's
+// elements later writes through to the place they came from (issue #39):
+//     sub f(@list) { gather for @list { take-rw $_ } }
+//     for f(@a) { $_++ };   # @a's own elements step
+// Which storage that is:
+//   · a variable the topic of a running rw for-loop aliases → the ELEMENT slot
+//     (the loop's own aliasing is copy-in/copy-out and ends with the iteration,
+//     so binding the loop var's Env slot would go dead — tctx_.topicAliases
+//     carries the live (array, index) instead);
+//   · any other visible variable → its Env slot, exactly as `:=` binds it;
+//   · an array/hash subscript → that element/entry's slot;
+//   · anything else (an expression, a fresh `my $ = …`, a runtime-negative
+//     index) → a fresh anonymous cell: still writable through the sequence,
+//     just not aliased to anything — the permissive end of Rakudo's behaviour,
+//     where a non-container take-rw hands back something read-only.
+// Resolve take-rw's argument to a Proxy over the storage it names, or a plain
+// (non-Proxy) Any when it names no storage this can reach.
+Value Interpreter::takeRwSlotProxy(Expr* arg) {
+    Value proxy;
+    if (arg->kind == NK::VarExpr && !static_cast<VarExpr*>(arg)->declare) {
+        const std::string& name = static_cast<VarExpr*>(arg)->name;
+        std::shared_ptr<Env> owner;
+        for (std::shared_ptr<Env> en = tctx_.cur; en; en = en->parent)
+            if (en->local(name)) { owner = en; break; }
+        if (owner) {
+            for (auto it = tctx_.topicAliases.rbegin(); it != tctx_.topicAliases.rend(); ++it)
+                if (it->scope == owner.get() && *it->var == name)
+                    return makeArraySlotProxy(it->arr, it->idx);
+            return makeEnvSlotProxy(owner, name);
+        }
+    }
+    else if (arg->kind == NK::Index) {
+        auto* ix = static_cast<Index*>(arg);
+        if (ix->index && !ix->multiDim) {
+            // resolve the base as an RVALUE: a Value copy shares its underlying
+            // storage, so the slot proxy still aliases the real container — and
+            // a missing base (`@spot[10][…]` probing a border neighbor) does
+            // not autovivify a phantom row the way an lvalue descent would
+            Value baseV = eval(ix->base.get());
+            // the base may itself be a bound slot: reach the container it holds
+            if (baseV.t == VT::Hash && baseV.hashKind == "Proxy" && baseV.hash())
+                baseV = deproxy(baseV);
+            if (baseV.t == VT::Array && baseV.arr() && !ix->isHash) {
+                long long i = eval(ix->index.get()).toInt();
+                if (i >= 0) return makeArraySlotProxy(baseV.arrS(), (size_t)i);
+            }
+            else if (baseV.t == VT::Hash && baseV.hash() && ix->isHash &&
+                     (baseV.hashKind.empty() || baseV.hashKind == "Hash")) {
+                return makeHashSlotProxy(baseV.hashS(), eval(ix->index.get()).toStr());
+            }
+        }
+    }
+    return proxy;
+}
+
+Value Interpreter::evalTakeRw(Call* c) {
+    Expr* arg = c->args[0].get();
+    auto isProxy = [](const Value& p) { return p.t == VT::Hash && p.hashKind == "Proxy"; };
+    Value proxy = takeRwSlotProxy(arg);
+    // `take-rw A // B` — the roast neighbor idiom. Rakudo's `//` hands take-rw
+    // the lhs CONTAINER when its value is defined, so the aliasing survives
+    // the default-or; mirror that by consulting A's slot first and falling to
+    // B (usually a bare `next`) only when A holds nothing.
+    if (!isProxy(proxy) && arg->kind == NK::Binary && static_cast<Binary*>(arg)->op == "//") {
+        auto* b = static_cast<Binary*>(arg);
+        Value lp = takeRwSlotProxy(b->lhs.get());
+        if (isProxy(lp)) {
+            if (isDefined(deproxy(lp))) proxy = lp;
+            else arg = b->rhs.get(); // undefined: B is what gets taken (or fires control)
+        }
+    }
+    if (!isProxy(proxy)) {
+        Value v = eval(arg);
+        // the argument's evaluation may have fired cooperative control flow
+        // (that bare `next`): the loop runner acts on the flag only after this
+        // statement, so pushing now would take a value the block asked to skip
+        if (tctx_.loopCtl || tctx_.returning) return v;
+        proxy = makeCellProxy(v);
+    }
+    ValueList one{proxy};
+    return gatherTake(one, proxy);
+}
+
 bool Interpreter::objListItems(const Value& v, ValueList& out) {
     if (v.t != VT::Object || !v.obj() || !v.obj()->cls) return false;
     std::string which;
@@ -16172,34 +16701,8 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 for (std::shared_ptr<Env> en = tctx_.cur; en; en = en->parent)
                     if (en->local(sv->name)) { owner = en; break; }
                 if (owner) {
-                    std::string src = sv->name;
-                    Value proxy = Value::makeHash(); proxy.hashKind = "Proxy";
-                    Value fetch; fetch.t = VT::Code; fetch.setCode(std::make_shared<Callable>());
-                    fetch.code()->builtin = [owner, src](Interpreter& I, ValueList&) -> Value {
-                        Value* op = owner->local(src);
-                        if (!op) return Value::any();
-                        // a bound-to-bound chain: deref one more Proxy level
-                        if (op->t == VT::Hash && op->hashKind == "Proxy" && op->hash()) {
-                            auto f2 = op->hash()->find("FETCH");
-                            if (f2 != op->hash()->end()) { ValueList none; return I.callCallable(f2->second, none); }
-                        }
-                        return *op;
-                    };
-                    Value store; store.t = VT::Code; store.setCode(std::make_shared<Callable>());
-                    store.code()->builtin = [owner, src](Interpreter& I, ValueList& sa) -> Value {
-                        Value nv = sa.empty() ? Value::any() : sa[0];
-                        Value* op = owner->local(src);
-                        if (op && op->t == VT::Hash && op->hashKind == "Proxy" && op->hash()) {
-                            auto s2 = op->hash()->find("STORE");
-                            if (s2 != op->hash()->end()) { ValueList one{nv}; return I.callCallable(s2->second, one); }
-                        }
-                        if (op) *op = nv; else owner->define(src, nv);
-                        return nv;
-                    };
-                    (*proxy.hash())["FETCH"] = fetch;
-                    (*proxy.hash())["STORE"] = store;
                     Value* blv = lvalue(a->target.get());
-                    *blv = proxy;
+                    *blv = makeEnvSlotProxy(owner, sv->name);
                     return sink ? Value::any() : eval(a->value.get());
                 }
             }
@@ -17295,6 +17798,17 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             case '%': if (c1 == '\0' && b != 0) { if (b == -1) return Value::integer(0); long long m = a % b; if (m && ((m < 0) != (b < 0))) m += b; return Value::integer(m); } break;
         }
     }
+    // An operand that is a Proxy is being READ — FETCH through it, or the
+    // machinery below would see the carrier hash (numifying to its pair count)
+    // instead of the value it stands for. The Binary EVAL path deproxies its
+    // own operands, but not everything routes through it: a WhateverCode
+    // (`.map(* + 1)` over a take-rw'd sequence) calls applyArith directly.
+    // After the Int/Int fast path — a Proxy is never VT::Int — so ordinary
+    // arithmetic pays one predicted branch.
+    if (l.t == VT::Hash && l.hashKind == "Proxy" && l.hash() && g_deproxy)
+        return applyArith(op, g_deproxy(l), r);
+    if (r.t == VT::Hash && r.hashKind == "Proxy" && r.hash() && g_deproxy)
+        return applyArith(op, l, g_deproxy(r));
     // Using a Failure's VALUE detonates it: `(10 div 0) + 1` throws, and so do
     // `*`, `~`, `==` and the coercions. Only the handled-ness queries stay quiet
     // — `.defined`, `so`, `//` — and none of those come through here. We used to
@@ -21572,6 +22086,11 @@ Value Interpreter::evalBinary(Binary* b) {
         }
         else {
             Value l = eval(b->lhs.get()), r = eval(b->rhs.get());
+            // A take-rw'd sequence element is a Proxy over the slot it came
+            // from; rakupp's non-variable =:= is value identity, so compare
+            // what the slot holds (roast: `@neighbors[1][1][0] =:= @spot[0][0]`)
+            if (l.hashKind == "Proxy") l = deproxy(l);
+            if (r.hashKind == "Proxy") r = deproxy(r);
             // TYPE OBJECTS discriminate like ===: valueEq called L =:= Any True,
             // so JSON::Unmarshal's `@x.of =:= Any` always took the untyped
             // branch and typed-array attributes unmarshalled as plain Hashes
@@ -23769,6 +24288,10 @@ Value Interpreter::evalCall(Call* c) {
     if ((c->name == "temp" || c->name == "let") && c->args.size() == 1 &&
         !tctx_.cur->find("&" + c->name))
         return evalTempLet(c);
+    // take-rw also needs its argument by EXPRESSION: the pre-eval would hand it
+    // a detached COPY, and the whole point is taking the storage itself
+    if (c->name == "take-rw" && c->args.size() == 1 && !tctx_.cur->find("&take-rw"))
+        return evalTakeRw(c);
     ValueList args = evalArgs(c->args);
     // Whatever-curry over USER-DEFINED infixes: `* quack 5` / `5 quack *` /
     // `* quack *` build a WhateverCode, exactly like built-in binaries

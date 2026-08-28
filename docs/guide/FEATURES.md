@@ -75,7 +75,7 @@ same-named enclosing package, which Rakudo's own warning calls legacy.
 - `if/elsif/else`, `unless`, `while/until`, `for`, C-style `loop`, `repeat`
 - `given/when/default`, `with/without`
 - Statement modifiers (`if unless while until for given when with`), including chained (`X if A for B`)
-- `last/next/redo` (incl. labeled: `LABEL: for … { last LABEL }`), `gather/take` (lazy — an infinite `gather { loop { take … } }` yields on demand), `do`
+- `last/next/redo` (incl. labeled: `LABEL: for … { last LABEL }`), `gather/take` (lazy — an infinite `gather { loop { take … } }` yields on demand; `take-rw` takes the writable container, so mutating the gathered sequence writes back to where the values came from), `do`
 - `FIRST` loop phaser (runs once, before the first iteration; `last` inside it breaks the loop)
 - **Gaps:** `NEXT`/`LAST` loop phaser ordering vs `LEAVE`
 
@@ -152,7 +152,7 @@ same-named enclosing package, which Rakudo's own warning calls legacy.
 - **Gaps:** true CPU parallelism is opt-in (`RAKUPP_PARALLEL`), off by default; `cas`, stream-retokenizing Supply combinators (`split`/`comb`/`words`/`lines`)
 
 ## Phasers, Modules, Exceptions, Special Vars, Testing
-- Phasers: `BEGIN CHECK INIT END` (top-level ordering), `ENTER/LEAVE` (block entry/exit), `FIRST` (once per loop), `CATCH`; `BEGIN`/`ENTER` usable in value position
+- Phasers: `BEGIN CHECK INIT END` (top-level ordering), `ENTER/LEAVE` (block entry/exit), `FIRST` (once per loop), `CATCH`; `BEGIN`/`ENTER` usable in value position. `INIT` runs once before the mainline wherever it is written — nested in a loop, a sub that is never called, or a branch never taken — provided it names no variable from an enclosing scope; one that does still runs in place
 - `state` variables (persistent), modules `use`/`need`/`no`, `use lib <expr>`, sub hoisting, `EVAL`
 - **POD DOM**: `$=pod` / `@=pod` as `Pod::Block` objects (`Pod::Block::Named`/`::Para`/`::Code`/`::Comment`, `Pod::Heading`, `Pod::Item`) with `.name`/`.contents`/`.level` — delimited/paragraph/abbreviated blocks, nesting, indent-based code blocks; plus `$=finish`
 - Exceptions: `die`/`try`/`CATCH`, `throws-like`, `X::*` (partial), resumable via `.resume` inside a `CATCH`; `fail`/`Failure.new` carry an exception (`.exception`), report undefined for `//`

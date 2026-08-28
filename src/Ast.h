@@ -623,6 +623,11 @@ struct Block : Stmt {
     std::string phaser;     // "BEGIN"/"CHECK"/"INIT"/"END"/... (empty = plain block)
     bool stmtForm = false;  // `PHASER statement;` (no braces): runs in the ENCLOSING
                             // scope, so `INIT my $x = …` declares $x there
+    // INIT only: this block was collected by the program-init walk and has
+    // already run, so its textual position must be SKIPPED. Set once, before
+    // the mainline (hence before any user thread), then only read. Not
+    // serialized — it is a property of one run, not of the AST.
+    bool initHoisted = false;
     Block(): Stmt(NK::Block) {}
 };
 

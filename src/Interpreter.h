@@ -501,6 +501,13 @@ struct ExecContext {
     // DECLARING it slow. A probe that runs out stops where it is, and the gather
     // becomes lazy — which is what a gather of more than 64 takes already is.
     std::vector<long long> gatherDeadlines;
+    // Which ELEMENT SLOT the topic of each running rw for-loop aliases
+    // ({scope,var} → (*arr)[idx], innermost last). The loop's aliasing is
+    // copy-in/copy-out, severed the moment an iteration ends — `take-rw $_`
+    // consults this to hand out a Proxy over the slot itself instead, so the
+    // taken thing stays writable-through after the loop has moved on.
+    struct TopicAlias { Env* scope; const std::string* var; std::shared_ptr<ValueList> arr; size_t idx; };
+    std::vector<TopicAlias> topicAliases;
     std::vector<ValueList*> supplyStack;
     std::vector<std::shared_ptr<SupplyTapCtx>> tapStack; // active on-demand supply activations
     std::vector<Value*> makeTargets;
@@ -885,6 +892,22 @@ public:
     Value coerceToType(const Value& v, const std::string& type);
     // Run a Proxy's STORE for `$proxy = v`. See the definition in Interpreter.cpp.
     Value proxyStore(const Value& proxy, const Value& v);
+    // Proxies over the places a value can live — an Env variable slot (what
+    // `$y := $x` binds), an array element, a hash entry, or a fresh anonymous
+    // cell. All four read/write through native FETCH/STORE closures, so the
+    // whole existing Proxy plumbing (deproxy on read, proxyStore on assign)
+    // applies unchanged. take-rw hands these out; := uses the Env one.
+    Value makeEnvSlotProxy(std::shared_ptr<Env> owner, const std::string& src);
+    Value makeArraySlotProxy(std::shared_ptr<ValueList> arr, size_t idx);
+    Value makeHashSlotProxy(std::shared_ptr<ValueMap> h, const std::string& key);
+    Value makeCellProxy(const Value& init);
+    // The take core shared by `take` and `take-rw`: push into the innermost
+    // gather (honoring its lazy-probe take cap and time budget) or die outside one.
+    // Run one program-init-hoisted INIT phaser. See the definition in Interpreter.cpp.
+    void runHoistedInit(Block* b);
+    Value gatherTake(const ValueList& items, const Value& ret);
+    Value evalTakeRw(Call* c); // `take-rw EXPR` — take the STORAGE, not a copy
+    Value takeRwSlotProxy(Expr* arg); // its arg → slot Proxy (or non-Proxy Any)
     // The hash behind `for values %h` — see the definition in Interpreter.cpp.
     std::shared_ptr<ValueMap> valuesAliasSource(Expr* listExpr);
     // The array behind `for @$x` — likewise; the topic aliases its elements.
