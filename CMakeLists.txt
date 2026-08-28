@@ -51,6 +51,7 @@ include_directories("${CMAKE_CURRENT_BINARY_DIR}/generated")
 execute_process(COMMAND "${CMAKE_COMMAND}"
                         -DSRC_DIR=${CMAKE_CURRENT_SOURCE_DIR}
                         -DOUT_FILE=${RAKUPP_BUILD_HEADER}
+                        -DVERSION=${PROJECT_VERSION}
                         -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/BuildInfo.cmake")
 add_custom_target(rakupp_build_info ALL
   BYPRODUCTS "${RAKUPP_BUILD_HEADER}"
@@ -59,6 +60,7 @@ add_custom_target(rakupp_build_info ALL
   COMMAND "${CMAKE_COMMAND}"
           -DSRC_DIR=${CMAKE_CURRENT_SOURCE_DIR}
           -DOUT_FILE=${RAKUPP_BUILD_HEADER}
+          -DVERSION=${PROJECT_VERSION}
           -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/BuildInfo.cmake"
   COMMENT "Stamping build identity (git describe + date)"
   VERBATIM)

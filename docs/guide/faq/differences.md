@@ -111,8 +111,12 @@ say $*RAKU.compiler.build-date;  # → 2026-08-16            (UTC, at build time
 
 `.build` reads as *74 commits past the v3.14.0 tag, at commit 9ff47ae*, and
 gains a `-modified` suffix when the tree had uncommitted changes; on a tagged
-commit it is just the tag. Built from a source tarball, with no `.git` to ask,
-`.build` is `unknown` rather than a guess — `.build-date` is still stamped.
+commit it is just the tag. The version in it is always the release the binary
+reports: when no tag for that release is reachable — a release tagged on a line
+that was later rebased, say — the count is dropped rather than borrowed from an
+older tag, and the string is `v3.20.1-ga5b4aa8`. Built from a source tarball,
+with no `.git` to ask, `.build` is `unknown` rather than a guess —
+`.build-date` is still stamped.
 Quote `.build` in bug reports: it is the only thing that pins the exact binary.
 
 This is deliberate, and it reverses an earlier decision to report our own

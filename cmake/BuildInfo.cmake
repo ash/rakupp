@@ -10,7 +10,8 @@
 # commit, same day) leaves the timestamp alone and nothing recompiles. Only
 # BuildInfo.cpp includes it, so even a real change rebuilds one file.
 #
-# Expects: SRC_DIR (repo root), OUT_FILE (header to write).
+# Expects: SRC_DIR (repo root), OUT_FILE (header to write), VERSION (the
+# project's own version, so the stamp can never name a different release).
 
 set(RAKUPP_BUILD "unknown")
 find_package(Git QUIET)
@@ -31,6 +32,45 @@ if(GIT_FOUND AND EXISTS "${SRC_DIR}/.git")
     RESULT_VARIABLE _rc)
   if(_rc EQUAL 0 AND _desc)
     set(RAKUPP_BUILD "${_desc}")
+  endif()
+
+  # The tag `describe` lands on must be THIS version, or the stamp names a
+  # release the binary is not. `--tags` fixed one way that happens (a
+  # lightweight tag being skipped); this covers the general one: a release tag
+  # that is not reachable from HEAD at all. v3.20.0/v3.20.1 were tagged on a
+  # line of 22 commits that never landed on main — main carries rebased
+  # equivalents — so describe walked past both and every build off main since
+  # stamped itself `v3.7.0-NNN-g…` while --version's first line said 3.20.1.
+  # A published tag is never moved, so the stamp stops depending on one being
+  # reachable: the version comes from project(VERSION …), which is the single
+  # source of truth, and git contributes only the commit and the dirty flag.
+  if(VERSION)
+    string(REPLACE "." "\\." _vre "${VERSION}")
+    if(NOT RAKUPP_BUILD MATCHES "^v?${_vre}([-.]|$)")
+      execute_process(
+        COMMAND "${GIT_EXECUTABLE}" rev-parse --short HEAD
+        WORKING_DIRECTORY "${SRC_DIR}"
+        OUTPUT_VARIABLE _sha
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET
+        RESULT_VARIABLE _sha_rc)
+      if(_sha_rc EQUAL 0 AND _sha)
+        set(RAKUPP_BUILD "v${VERSION}-g${_sha}")
+        # describe's own --dirty rule: tracked changes only, untracked files
+        # are not a different build.
+        execute_process(
+          COMMAND "${GIT_EXECUTABLE}" status --porcelain --untracked-files=no
+          WORKING_DIRECTORY "${SRC_DIR}"
+          OUTPUT_VARIABLE _dirty
+          OUTPUT_STRIP_TRAILING_WHITESPACE
+          ERROR_QUIET)
+        if(_dirty)
+          set(RAKUPP_BUILD "${RAKUPP_BUILD}-modified")
+        endif()
+      else()
+        set(RAKUPP_BUILD "v${VERSION}")
+      endif()
+    endif()
   endif()
 endif()
 

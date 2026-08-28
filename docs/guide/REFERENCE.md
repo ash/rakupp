@@ -922,9 +922,12 @@ string, `.subparse` allows a partial match. Add an actions class with
 > `$*RAKU.compiler.build` and `.build-date` are **Raku++ extensions** (Rakudo
 > has neither) that identify the individual binary, which `.release`/`.id`
 > cannot — every build between two releases reports the same version.
-> `.build` is `git describe` at build time
-> (`v3.14.0-74-g9ff47ae`, `-modified` if the tree had uncommitted changes, `unknown` when
-> built from a tarball with no `.git`); `.build-date` is the UTC build date.
+> `.build` names the release and the commit it was built from: `git describe`
+> when a tag for that release is reachable (`v3.14.0-74-g9ff47ae` — 74 commits
+> past it), and `v3.20.1-ga5b4aa8` when one is not, so the string can never name
+> a release the binary is not. `-modified` if the tree had uncommitted changes,
+> `unknown` when built from a tarball with no `.git`; `.build-date` is the UTC
+> build date.
 
 ---
 
