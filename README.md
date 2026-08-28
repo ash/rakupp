@@ -36,6 +36,22 @@ remains the per-release QA gate — see
 [RELEASING.md](docs/dev/RELEASING.md) — an instrument, not the ecosystem
 picture.)
 
+**Next, in order — three consolidation releases before the next campaign.**
+Language work has the property Larry Wall kept pointing at: push the design in
+one place and something pops out in another. After a lot of correct individual
+changes, that is where this engine is, so the next three releases add nothing
+new. **v3.21.0** ships what has accumulated since v3.20.1 — issues #38 through
+#42 among them — with the full release gate set green on one machine in one
+sitting. **v3.22.0** is a 360° source review plus the runs that get skipped
+between releases because they are slow: the whole Roast suite, the whole
+2,524-distribution sweep, the conformance matrix. **v3.23.0** re-measures
+every figure this project gates on, from one run, and re-records the baselines
+— a gate whose baseline predates the review is not a gate. Then the standing
+target: **1000 of 2,524** distributions passing their own test suites, up from
+637, where the lever is the 421 that never ran their own tests at all because
+a dependency failed first. The plans are in
+[docs/dev/plans/VERSIONS.md](docs/dev/plans/VERSIONS.md).
+
 | | v3.20.1 | at v2.0.0 |
 |---|---:|---:|
 | Roast, per individual test — of what the suite declares‡ | **198,791 of ~218,608 (90%)** | 197,090 of ~203,500 (97%) |

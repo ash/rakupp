@@ -169,6 +169,78 @@ a compiled program should stop carrying the parts of Raku it cannot reach.
   pruning is a stated non-goal: cutting only *data* keeps the entire failure
   surface at one function.
 
+## v3.21.0 → v3.23.0 — the consolidation arc (planned 2026-08-28)
+
+Three releases in a row that add no campaign. Language work has the property
+Larry Wall kept pointing at — push the design in one place and something pops
+out in another — and after v3.20.1 that is where this engine is: a lot of
+correct individual changes, and no single sitting in which all of them were
+measured together. The arc exists to get back to a known state before the next
+chase starts, and each release is allowed to be boring.
+
+### v3.21.0 — the state after the changes
+
+- **The number:** the full gate set in [RELEASING.md](../RELEASING.md), green,
+  on one machine in one sitting — Roast file list with no regressions, the
+  local suite, `perf-guard --check`, optbench, the slim pair, a second
+  toolchain, and the 59-dist battery back to its v3.7.0 parity figure.
+- **What it carries:** what has accumulated on main since v3.20.1 and cannot
+  reach anyone until there is a tag — issues [#38](https://github.com/ash/rakupp/issues/38),
+  [#39](https://github.com/ash/rakupp/issues/39), [#40](https://github.com/ash/rakupp/issues/40),
+  [#41](https://github.com/ash/rakupp/issues/41), [#42](https://github.com/ash/rakupp/issues/42)
+  (HTTP::Tiny, broken in the only published release), TAP::Harness going green,
+  exact Bag/Mix counts, bound lists refusing the resizing mutators, `--lsp`, the
+  installer's uninstall and version-floor fixes, and a build stamp that names
+  the release it came from.
+- **Not in it:** anything new. A release whose job is to make the next two
+  start from a state a stranger can reproduce.
+
+### v3.22.0 — the 360° review, and a full run
+
+- **The number:** the review's finding list closed, and a Roast file list
+  re-derived from a clean full run rather than carried forward from deltas.
+- **The shape:** a complete source review in the form the last two took
+  ([findings/REVIEW-1.0.md](../findings/REVIEW-1.0.md),
+  [findings/REVIEW-3.7.md](../findings/REVIEW-3.7.md)) — batched, each batch
+  gated, every finding either fixed or written down as deliberate. Plus the
+  runs that get skipped between releases because they are slow: the whole
+  Roast suite, the whole 2,524-distribution sweep, the conformance matrix.
+- **Why it is its own release:** a review that lands inside a feature release
+  is a review nobody can bisect against.
+
+### v3.23.0 — the re-baseline
+
+*This one was left open; the choice below is the author's reading of what the
+arc needs, and can be traded for something better before the code starts.*
+
+- **The number:** every figure this project measures itself by, re-measured
+  from **one** run on the machine of record, and the baselines re-recorded.
+- **Why this and not more fixes:** the problem the arc is answering is as much
+  a measurement problem as a code problem. `perf-baseline.raku` has drifted
+  before and passes silently the whole time — RELEASING.md documents four
+  releases where it did. The conformance sweep, the doc-example count, the
+  Roast map and the ecosystem verdicts are each carried forward between
+  releases and re-derived rarely. After a review that touches everything, a
+  gate whose baseline predates the review is not a gate. So: re-record the
+  perf baseline with the reasons in the CHANGELOG, re-run the conformance
+  halves, regenerate the Roast map, and re-sweep the ecosystem from scratch
+  rather than from the last verdict file.
+- **What it buys:** the 1000-module campaign below gets a starting line that
+  was measured, not inherited.
+
+### Then: 1000 of 2,524
+
+The standing target after the arc — distributions of the Raku ecosystem
+passing **their own** test suites under rakupp, from **637** at the last sweep
+to **1000**. The lever is the blocked cohort, not the failing one: 421
+distributions never ran their own tests at all because a dependency failed
+first, so one fixed dependency releases many dependents at once. A handful of
+those dependencies are ours, which makes the first stretch cheaper than the
+ratio suggests. Findings drive the work, as they have since v2.0.0 —
+[findings/ECOSWEEP-2026-08.md](../findings/ECOSWEEP-2026-08.md), and
+[raku.online/modules/ecosystem](https://raku.online/modules/ecosystem/) for
+what each distribution did.
+
 ## v4.0.0 — Raku that travels (forming, 2026-08-08)
 
 Not yet a settled campaign: the pillars below are decided and written, and the
