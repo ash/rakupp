@@ -255,6 +255,20 @@ the shape of it:
   timeline), [JOURNEY.md](docs/dev/JOURNEY.md) (the method),
   [LONGREAD.md](LONGREAD.md) (the whole arc, long-form).
 
+## Talks
+
+Raku++ is being presented at the two forthcoming Perl & Raku conferences —
+what it is, why it exists, and how it is developed:
+
+| When | Where | Event |
+|---|---|---|
+| Saturday **21 November 2026** | The Café at Zoopla, The Cooperage, 5 Copper Row, London SE1 2LH, UK | [London Perl & Raku Workshop 2026](https://act.yapc.eu/lpw2026/) |
+| **14–16 April 2027** | Stadtteilzentrum Nordstadt Bürgerschule, Klaus-Müller-Kilian-Weg 2, 30167 Hannover, Germany | [29. Deutscher Perl/Raku-Workshop 2027](https://act.yapc.eu/gpw2027/) ([proposal 8053](https://act.yapc.eu/gpw2027/talk/8053)) |
+
+FOSDEM 2027 (Brussels, ULB Solbosch) is on the wish list, but its dates and
+call for participation are not out yet. The running list, with what the talks
+cover and the slides, is **[TALKS.md](TALKS.md)**.
+
 ## Author
 
 Raku++ is created by [Andrew Shitov](https://andrewshitov.com). Read the
