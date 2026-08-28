@@ -6929,6 +6929,10 @@ struct TopicAliasFrame {
 static void failureDetonate(const Value& v); // an unhandled Failure blows up when USED or SUNK
 
 Value Interpreter::exec(Stmt* s, bool sink) {
+#ifdef RAKUPP_NODE_COUNT
+    extern unsigned long long g_execStmts;
+    ++g_execStmts;
+#endif
     if (s->line > 0) curLine_ = s->line; // track for test-failure diagnostics
     switch (s->kind) {
         case NK::ExprStmt: {
@@ -26368,7 +26372,27 @@ struct RatLitParts {
     std::shared_ptr<BigInt> n, d;
 };
 
+#ifdef RAKUPP_NODE_COUNT
+// IR campaign instrumentation (phase I0, docs/dev/experiments/IR-PLAN.md).
+// Compiled in ONLY with -DRAKUPP_NODE_COUNT, so a shipped build carries neither
+// the counters nor the increments. It answers the question the plan's escape
+// hatch rests on: how many AST nodes does a run actually visit? Without that,
+// the per-node crossing cost measured by tools/ir-boundary.cpp cannot be turned
+// into a fraction of runtime.
+unsigned long long g_evalNodes = 0, g_execStmts = 0;
+namespace {
+struct NodeCountReport {
+    ~NodeCountReport() {
+        fprintf(stderr, "[node-count] eval=%llu exec=%llu\n", g_evalNodes, g_execStmts);
+    }
+} g_nodeCountReport;
+}  // namespace
+#endif
+
 Value Interpreter::eval(Expr* e) {
+#ifdef RAKUPP_NODE_COUNT
+    ++g_evalNodes;
+#endif
     switch (e->kind) {
         case NK::IntLit: {
             auto* il = static_cast<IntLit*>(e);
