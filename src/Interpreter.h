@@ -807,6 +807,11 @@ public:
     // kernel's getcwd. IO::Path creation captures this into the path's :CWD
     // (Value.ofType), which `.absolute` resolves against.
     std::string cwdName();
+    // The ON-DISK spelling of an IO value: a relative IO::Path resolves against
+    // its own captured :CWD, not the process directory (Rakudo's model). Every
+    // file OPERATION must go through this — stat'ing the raw string sent
+    // IO::Path.new($f, :CWD($dir)).e to the wrong directory (Builtins.cpp).
+    std::string ioFsPath(const Value& v);
     std::string logicalCwd_; // chdir/indir's logical cwd; empty = getcwd rules
     bool attrWhereOk(const void* whereExpr, const Value& v); // `has $.x where {…}` constraint
     bool mainNamedAnywhere(); // %*SUB-MAIN-OPTS<named-anywhere> in force at MAIN dispatch (used by codegen)
@@ -1347,6 +1352,11 @@ public:
     // downstream; live Suppliers register a tap record; async-socket supplies
     // spawn their I/O worker. Returns a Tap value (ext = TapHandle when wired).
     Value tapSupply(const Value& s, Value emitCb, Value doneCb, Value quitCb);
+    // Park a {emit, done, quit, bin} record on a Proc::Async stream Supply's
+    // proc ({proc, stream, split?…}), wrapping emit in the .lines splitter when
+    // marked; runProcPromise feeds the record when the process runs. Shared by
+    // `.tap`/`.act` (MethodCallPart2) and `whenever` in a supply block (tapSupply).
+    void registerProcStreamTap(const Value& s, Value emitCb, Value doneCb, Value quitCb);
     // Wire a `signal(SIGINT,…)` Supply: install a handler (self-pipe trick),
     // register the tap, and lazily spawn the dispatcher worker that runs the
     // whenever block under the GIL when a signal arrives. reactCtx (may be null)

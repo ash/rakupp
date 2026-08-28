@@ -847,11 +847,29 @@ void Interpreter::runProcPromise(Value& promise, double timeoutSec) {
     auto feed = [&](const char* key, const std::string& data) {
         auto taps = proc.hash()->find(key);
         if (taps == proc.hash()->end() || !taps->second.arr()) return;
-        for (auto& cb : *taps->second.arr()) {
-            Value chunk = Value::str(data);
-            chunk.hashKind = "Blob"; // stdout(:bin) taps get bytes (Buf.append needs a Blob)
-            ValueList ca{chunk};
-            callCallable(cb, ca);
+        for (auto& t : *taps->second.arr()) {
+            // a tap is a RECORD ({emit, done, quit, bin} — MethodCallPart2's
+            // tap branch); a bare callable is tolerated for older callers
+            Value cb = t, done; bool bin = false;
+            if (t.t == VT::Hash && t.hash()->count("emit")) {
+                cb = (*t.hash())["emit"];
+                auto d = t.hash()->find("done"); if (d != t.hash()->end()) done = d->second;
+                auto b = t.hash()->find("bin");  bin = b != t.hash()->end() && b->second.truthy();
+            }
+            if (cb.t == VT::Code && !data.empty()) {
+                Value chunk = Value::str(data);
+                // `.stdout(:bin)` taps get the bytes as a Blob (zef's fetcher
+                // Buf.appends them); a plain tap gets the DECODED Str, as
+                // Rakudo emits — a Blob chunk made every `whenever` block that
+                // string-matched its lines see Blob.new(...) instead of text.
+                if (bin) chunk.hashKind = "Blob";
+                ValueList ca{chunk};
+                callCallable(cb, ca);
+            }
+            // the stream is closed once its process ended: fire the tap's
+            // :done (TAP's stderr relay is `.act({…}, :done({$err.done}))`) —
+            // with or without output, and whatever the exit code
+            if (done.t == VT::Code) { ValueList none; callCallable(done, none); }
         }
     };
     feed("taps", out);
@@ -5436,7 +5454,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         }
     }
     if (inv.t == VT::Str && inv.hashKind == "Version") {
-        if (m == "parts") { // numeric parts as Ints, alpha parts as Strs, '*' as Whatever
+        if (m == "parts") { // numeric parts as Ints, everything else as Strs
             Value out = Value::array(); out.isList = true;
             const std::string& s = inv.s;
             size_t i = 0;
@@ -5446,13 +5464,23 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                     out.arr()->push_back(Value::integer(std::atoll(s.substr(i, j - i).c_str()))); i = j; }
                 else if (ascii::isalpha(c)) { size_t j = i; while (j < s.size() && ascii::isalpha((unsigned char)s[j])) j++;
                     out.arr()->push_back(Value::str(s.substr(i, j - i))); i = j; }
-                else if (c == '*') { Value w; w.t = VT::Whatever; out.arr()->push_back(w); i++; }
+                // a '*' part is the STRING "*", as Rakudo stores it — a Whatever
+                // here made META6's `$ver.parts[0] eq 'v'` curry into a (truthy)
+                // WhateverCode, which shifted v"*" down to an EMPTY version and
+                // let Test::META's asterisk check pass vacuously
+                else if (c == '*') { out.arr()->push_back(Value::str("*")); i++; }
                 else i++;
             }
             return out;
         }
         if (m == "Str") return Value::str(inv.s);
-        if (m == "gist" || m == "raku") return Value::str("v" + inv.s);
+        if (m == "gist") return Value::str("v" + inv.s);
+        // .raku round-trips: only a version whose spelling can follow a bare
+        // `v` (it starts with a digit) prints as the literal; Rakudo spells
+        // Version.new('*') out in full, since `v*` is not valid source
+        if (m == "raku")
+            return Value::str(!inv.s.empty() && ascii::isdigit((unsigned char)inv.s[0])
+                              ? "v" + inv.s : "Version.new('" + inv.s + "')");
         if (m == "plus") return Value::boolean(!inv.s.empty() && inv.s.back() == '+');
         if (m == "whatever") return Value::boolean(inv.s.find('*') != std::string::npos);
     }
@@ -6375,7 +6403,16 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         }
     }
     if (inv.t == VT::Hash && inv.hashKind == "Proc::Async") {
-        if (m == "stdout" || m == "stderr" || m == "Supply") { Value s = Value::makeHash(); s.hashKind = "Supply"; (*s.hash())["proc"] = inv; (*s.hash())["stream"] = Value::str(m); return s; }
+        if (m == "stdout" || m == "stderr" || m == "Supply") {
+            Value s = Value::makeHash(); s.hashKind = "Supply";
+            (*s.hash())["proc"] = inv; (*s.hash())["stream"] = Value::str(m);
+            // `.stdout(:bin)` asks for the raw bytes: its taps keep Blob-kinded
+            // chunks (zef Buf.appends them); a plain stream emits decoded Strs
+            for (auto& a : args)
+                if (a.t == VT::Pair && a.s == "bin" && (!a.pairVal() || a.pairVal()->truthy()))
+                    (*s.hash())["bin"] = Value::boolean(true);
+            return s;
+        }
         if (m == "start") {
             // Rakudo throws on a second .start; ours must too, or the realize
             // fallback would spawn the command a second time.
@@ -6538,6 +6575,10 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         if (m == "close-stdin" || m == "print" || m == "say" || m == "write" || m == "put") return Value::boolean(true);
         // after runProcPromise stored the exit status on the proc:
         if (m == "exitcode") { auto it = inv.hash()->find("exitcode"); return it != inv.hash()->end() ? it->second : Value::integer(-1); }
+        // the signal the process died from; 0 for a normal exit (that is all this
+        // spawn path can see — TAP's Status folds it as `exit +< 8 +| signal`,
+        // and a MISSING .signal broke its whole exit-status relay mid-then)
+        if (m == "signal") return Value::integer(0);
         if (m == "so" || m == "Bool") { auto it = inv.hash()->find("exitcode"); return Value::boolean(it != inv.hash()->end() && it->second.toInt() == 0); }
     }
     // Segment continues in MethodCallPart2.cpp — same ordered chain.
@@ -7551,6 +7592,15 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
         tapRec.hashKind = "Tap";
         return tapRec;
     }
+    // 2b) Proc::Async stream — `whenever $proc.stdout.lines(:!chomp) {…}`
+    // inside a supply block (TAP's parse-stream is exactly this shape): park
+    // the record tap; runProcPromise feeds it when the process runs. This
+    // used to fall through to the bottom SILENTLY, so the stream was never
+    // captured and the block never fired.
+    if (h.count("proc")) {
+        registerProcStreamTap(s, emitCb, doneCb, quitCb);
+        Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
+    }
     // 3) async listen: bind now, accept on a worker; each connection is emitted
     //    (under the GIL) through emitCb.
     // signal Supply tapped inside a `supply {…}` block (no react ctx — the
@@ -7799,6 +7849,22 @@ static std::string logicalJoin(const std::string& base, const std::string& p) {
     std::string out;
     for (auto& s : keep) out += "/" + s;
     return out.empty() ? "/" : out;
+}
+
+// A relative IO::Path belongs to its own captured :CWD, and file operations
+// must resolve against it: `IO::Path.new('x.txt', :CWD($dir)).e` used to stat
+// x.txt wherever the PROCESS happened to stand (TAP::Harness runs whole suites
+// through exactly that shape — SourceHandler dies "Failed to open file" on
+// every .tap source given a :cwd). When the base IS the current directory —
+// the overwhelmingly common case — keep the user's own spelling, so error
+// texts and dir listings read the way they were written.
+std::string Interpreter::ioFsPath(const Value& v) {
+    if (v.hashKind != "IO" || v.t != VT::Str) return v.toStr();
+    const std::string& p = v.s;
+    if (p.empty() || p[0] == '/') return p;
+    const std::string& base = v.ofType();
+    if (base.empty() || base == cwdName()) return p;
+    return logicalJoin(base, p);
 }
 
 void Interpreter::registerBuiltins() {
@@ -8609,7 +8675,7 @@ void Interpreter::registerBuiltins() {
         ValueList fwd;
         for (auto& v : a) {
             if (v.t == VT::Pair && v.namedArg) { fwd.push_back(v); continue; }
-            if (!havePath) { path = v.toStr(); havePath = true; }
+            if (!havePath) { path = I.ioFsPath(v); havePath = true; }
         }
         if (!havePath) return Value::any();
         rejectNulPath(path);
@@ -8909,22 +8975,18 @@ void Interpreter::registerBuiltins() {
     };
     B["take"] = [](Interpreter& I, ValueList& a) -> Value {
         Value v = a.size() == 1 ? a[0] : Value::array(a);
-        if (!I.tctx_.gatherStack.empty()) {
-            auto& coll = *I.tctx_.gatherStack.back();
-            for (auto& x : a) coll.push_back(x);
-            // a lazy gather stops the block once it has produced enough elements
-            size_t lim = I.tctx_.gatherLimits.empty() ? 0 : I.tctx_.gatherLimits.back();
-            if (lim && coll.size() >= lim) throw StopGatherEx{};
-            // …and stops when the probe's TIME budget is spent, so a generator
-            // whose takes get steadily more expensive cannot make declaring it
-            // slow. At least one element first: a prefix of none is not a probe.
-            long long dl = I.tctx_.gatherDeadlines.empty() ? 0 : I.tctx_.gatherDeadlines.back();
-            if (dl && !coll.empty() && nowMicros() > dl) throw StopGatherEx{};
-            return v;
-        }
-        // outside a gather there is nowhere for the value to go, and silently
-        // handing it back made `take` look like a no-op instead of an error
-        throw RakuError{Value::typeObj("X::ControlFlow"), "take without gather"};
+        return I.gatherTake(a, v);
+    };
+    // take-rw is normally a special form (evalCall takes its argument by
+    // EXPRESSION and proxies the storage it names — see evalTakeRw). This is
+    // the indirect-call fallback (`&take-rw($x)`, .map(&take-rw)): the argument
+    // arrives as a detached copy, so the best on offer is a fresh writable
+    // cell — the sequence's element can still be assigned to, it just no
+    // longer aliases the caller's variable.
+    B["take-rw"] = [](Interpreter& I, ValueList& a) -> Value {
+        Value proxy = I.makeCellProxy(a.empty() ? Value::any() : a[0]);
+        ValueList one{proxy};
+        return I.gatherTake(one, proxy);
     };
     // `succeed EXPR` exits the enclosing `when`/`given`, making the given evaluate to EXPR;
     // `proceed` leaves the current `when` but keeps testing later ones.
@@ -8935,14 +8997,17 @@ void Interpreter::registerBuiltins() {
     B["proceed"] = [](Interpreter&, ValueList&) -> Value { throw ProceedEx{}; };
     B["dir"] = [](Interpreter& I, ValueList& a) -> Value {
         std::string path = a.empty() ? "." : a[0].toStr();
+        std::string fsp = a.empty() ? "." : I.ioFsPath(a[0]); // an IO argument's own :CWD wins
         // a `:test` matcher filters basenames (dir("x", test => /\.raku$/))
         Value test; bool haveTest = false;
         for (auto& x : a) if (x.t == VT::Pair && x.s == "test" && x.pairVal()) { test = *x.pairVal(); haveTest = true; }
         std::string base = path;
         while (base.size() > 1 && base.back() == '/') base.pop_back();
         Value out = Value::array();
-        const std::string cw = I.cwdName(); // every entry is an IO::Path based here
-        if (DIR* d = opendir(path.c_str())) {
+        // every entry is an IO::Path based where the ARGUMENT is based
+        const std::string cw = (!a.empty() && a[0].hashKind == "IO" && !a[0].ofType().empty())
+                               ? a[0].ofType() : I.cwdName();
+        if (DIR* d = opendir(fsp.c_str())) {
             while (struct dirent* e = readdir(d)) {
                 std::string n = e->d_name;
                 if (n == "." || n == "..") continue;
@@ -8960,7 +9025,7 @@ void Interpreter::registerBuiltins() {
     };
     B["mkdir"] = [](Interpreter& I, ValueList& a) -> Value {
         if (a.empty()) return Value::boolean(false);
-        std::string path = a[0].toStr();
+        std::string path = I.ioFsPath(a[0]);
         long long mode = 0777;   // mkdir($path, 0o700) — the sub's positional mode
         for (size_t i = 1; i < a.size(); i++) {
             if (a[i].t == VT::Pair && a[i].namedArg && a[i].s == "mode" && a[i].pairVal()) mode = a[i].pairVal()->toInt();
@@ -9000,11 +9065,11 @@ void Interpreter::registerBuiltins() {
         p.ofTypeM() = I.cwdName();
         return p;
     };
-    B["rmdir"] = [](Interpreter&, ValueList& a) -> Value {
+    B["rmdir"] = [](Interpreter& I, ValueList& a) -> Value {
         if (a.empty()) return Value::boolean(false);
-        return Value::boolean(::rmdir(a[0].toStr().c_str()) == 0);
+        return Value::boolean(::rmdir(I.ioFsPath(a[0]).c_str()) == 0);
     };
-    B["spurt"] = [](Interpreter&, ValueList& a) -> Value {
+    B["spurt"] = [](Interpreter& I, ValueList& a) -> Value {
         if (!a.empty()) rejectNulPath(a[0].toStr());
         if (a.empty()) return Value::boolean(false);
         bool append = false, createonly = false;
@@ -9017,7 +9082,7 @@ void Interpreter::registerBuiltins() {
             }
             else if (!haveContent) { content = a[i].toStr(); haveContent = true; }
         }
-        std::string path = a[0].toStr();
+        std::string path = I.ioFsPath(a[0]);
         if (createonly) { std::ifstream probe(path); if (probe) return Value::boolean(false); }
         std::ofstream out(path, append ? (std::ios::out | std::ios::app) : std::ios::out);
         if (!out) return Value::boolean(false);
@@ -9031,10 +9096,10 @@ void Interpreter::registerBuiltins() {
         // claimed ":bin routes to the method" while `slurp $p, :bin` returned
         // a CRLF-squeezed Str where `$p.IO.slurp(:bin)` returned the raw Blob.
         Value io = a[0];
-        if (io.t != VT::Hash) {              // a path: dispatch as IO, not bare Str
+        if (io.t != VT::Hash && io.hashKind != "IO") { // a path: dispatch as IO, not bare Str
             rejectNulPath(io.toStr());       // (a Str invocant must NOT slurp — see the method's guard)
-            io = Value::str(io.toStr());
-            io.hashKind = "IO";
+            io = Value::str(io.toStr());     // an IO::Path passes through AS-IS: rebuilding
+            io.hashKind = "IO";              // it here dropped the path's own :CWD base
         }
         ValueList rest(a.begin() + 1, a.end());
         return I.methodCall(io, "slurp", rest);
@@ -9091,7 +9156,7 @@ void Interpreter::registerBuiltins() {
         // the path is the first POSITIONAL — `open :w, $path` puts the adverb first,
         // and taking args[0] blindly opened a file literally named "w\tTrue"
         std::string path;
-        for (auto& x : a) if (x.t != VT::Pair) { path = x.toStr(); break; }
+        for (auto& x : a) if (x.t != VT::Pair) { path = I.ioFsPath(x); break; }
         rejectNulPath(path);
         std::string mode = "r"; bool excl = false;
         for (auto& x : a) if (x.t == VT::Pair) {
@@ -9149,9 +9214,9 @@ void Interpreter::registerBuiltins() {
     // symlink($target, $name) / link($target, $name) — the sub forms Rakudo
     // exposes (File::Find's suite builds a symlinked directory with the sub form
     // before walking it). `readlink` is a METHOD only, as in Rakudo.
-    B["symlink"] = [](Interpreter&, ValueList& a) -> Value {
+    B["symlink"] = [](Interpreter& I, ValueList& a) -> Value {
         if (a.size() < 2) return Value::boolean(false);
-        std::string target = a[0].toStr(), name = a[1].toStr();
+        std::string target = I.ioFsPath(a[0]), name = I.ioFsPath(a[1]);
         // Rakudo absolutizes the TARGET. It matters: a relative target is read
         // by the OS relative to the LINK's directory, not the cwd, so
         // `symlink("t/dir1/d", "t/dir2/link")` would otherwise dangle.
@@ -9165,9 +9230,9 @@ void Interpreter::registerBuiltins() {
                 "': " + std::strerror(errno)};
         return Value::boolean(true);
     };
-    B["link"] = [](Interpreter&, ValueList& a) -> Value {
+    B["link"] = [](Interpreter& I, ValueList& a) -> Value {
         if (a.size() < 2) return Value::boolean(false);
-        std::string target = a[0].toStr(), name = a[1].toStr();
+        std::string target = I.ioFsPath(a[0]), name = I.ioFsPath(a[1]);
         if (platform_link(target.c_str(), name.c_str()) != 0)
             throw RakuError{Value::typeObj("X::IO::Link"),
                 "Failed to create link called '" + name + "' on target '" + target +
@@ -9181,9 +9246,9 @@ void Interpreter::registerBuiltins() {
     // state afterwards, not who did it.
     B["unlink"] = [](Interpreter& I, ValueList& a) -> Value {
         auto gone = [](const std::string& p) { return ::unlink(p.c_str()) == 0 || errno == ENOENT; };
-        if (I.sixE() && a.size() == 1) return Value::boolean(gone(a[0].toStr()));
+        if (I.sixE() && a.size() == 1) return Value::boolean(gone(I.ioFsPath(a[0])));
         Value ok = Value::array();   // an Array, as Rakudo's `my @ok` is
-        for (auto& f : a) if (gone(f.toStr())) ok.arr()->push_back(f);
+        for (auto& f : a) if (gone(I.ioFsPath(f))) ok.arr()->push_back(f);
         return ok;
     };
     // sub forms of the IO::Path methods (Shell::Command calls them this way)
@@ -9247,12 +9312,20 @@ void Interpreter::registerBuiltins() {
         bool savedFailed = I.subtestFailed_;
         int savedPlanned = I.planned_, savedTestNum = I.testNum_; // a subtest has its own plan + numbering
         long savedFailCount = I.failCount_;
+        // the "# Subtest: <name>" banner, at the ENCLOSING level's indent —
+        // the TAP module's strict Sub-Test parser keys nested blocks off it
+        std::cout << std::string(4 * I.subtestDepth_, ' ')
+                  << "# Subtest" << (desc.empty() ? "" : ": " + desc) << "\n";
         I.subtestDepth_++;
         if (todod) I.todoSubtestDepth_++;
         I.subtestFailed_ = false;
         I.planned_ = -1; I.testNum_ = 0;
         if (code.t == VT::Code) { try { I.callCallable(code, {}); } catch (RakuError&) { I.subtestFailed_ = true; } }
         bool ok = !I.subtestFailed_;
+        // no plan declared inside: the subtest's own trailing plan line closes
+        // its block ("    1..N"), exactly as done-testing would have printed it
+        if (I.planned_ < 0)
+            std::cout << std::string(4 * I.subtestDepth_, ' ') << "1.." << I.testNum_ << "\n";
         if (todod) I.todoSubtestDepth_--;
         I.subtestDepth_--;
         I.subtestFailed_ = savedFailed;
@@ -10495,6 +10568,7 @@ void Interpreter::registerBuiltins() {
                 s.hash()->count("kind") && (*s.hash())["kind"].toStr() == "proc") {
                 I.runProcPromise(s, 0);
                 Value procv = s.hash()->count("proc") ? (*s.hash())["proc"] : s;
+                if (procv.hashKind == "Proc::Async") procv.hashKind = "Proc"; // the block sees a Proc, as await answers
                 ValueList one{procv};
                 try { I.callCallable(blk, one); } catch (NextEx&) {} catch (LastEx&) {} catch (DoneEx&) {}
                 Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
@@ -11234,7 +11308,13 @@ void Interpreter::registerBuiltins() {
                 // promise wrapper made `(await $p.start).exitcode` a method
                 // error here while Rakudo prints the code.
                 auto fin = p.hash()->find("proc");
-                return fin != p.hash()->end() ? fin->second : p;
+                if (fin == p.hash()->end()) return p;
+                // …and it IS a Proc (shared hash, re-kinded): a `multi` with a
+                // `Proc $proc` candidate must match it — TAP::Status.new
+                // (Proc::Async !~~ Proc) silently blessed an EMPTY status from
+                // the still-Async-kinded value, zeroing every harness Wstat.
+                Value pv = fin->second; pv.hashKind = "Proc";
+                return pv;
             }
             if (kind == "proc-ready") {
                 if (p.hash()->count("proc") && (*p.hash())["proc"].hash()) {

@@ -976,8 +976,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     // sent HTTP::Tiny off to slurp a form field. `slurp $path` (the SUB) is
     // unaffected; so is every `$io.slurp`.
     if (m == "slurp" && inv.hashKind == "IO") {
-        std::ifstream in(inv.toStr(), std::ios::binary);
-        if (!in) throwFailedOpen(inv.toStr());
+        std::ifstream in(ioFsPath(inv), std::ios::binary);
+        if (!in) throwFailedOpen(ioFsPath(inv));
         std::ostringstream ss; ss << in.rdbuf();
         std::string text = ss.str();
         bool bin = false;
@@ -1014,8 +1014,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             else if (!haveContent) { content = a.toStr(); haveContent = true; }
         }
         // :createonly / :x — refuse to clobber, same answer as the sub form
-        if (createonly) { std::ifstream probe(inv.toStr()); if (probe) return Value::boolean(false); }
-        std::ofstream out(inv.toStr(), append ? (std::ios::out | std::ios::app) : std::ios::out);
+        if (createonly) { std::ifstream probe(ioFsPath(inv)); if (probe) return Value::boolean(false); }
+        std::ofstream out(ioFsPath(inv), append ? (std::ios::out | std::ios::app) : std::ios::out);
         if (!out) return Value::boolean(false);
         out << content;
         return Value::boolean(true);
@@ -1023,7 +1023,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     if ((m == "e" || m == "f" || m == "d" || m == "r" || m == "w" || m == "x" ||
          m == "rw" || m == "rx" || m == "wx" || m == "rwx") && inv.hashKind == "IO") {
         struct stat st;
-        if (stat(inv.toStr().c_str(), &st) != 0) return Value::boolean(false);
+        if (stat(ioFsPath(inv).c_str(), &st) != 0) return Value::boolean(false);
         if (m == "d") return Value::boolean(S_ISDIR(st.st_mode));
         if (m == "f") return Value::boolean(S_ISREG(st.st_mode));
         if (m == "e") return Value::boolean(true);
@@ -1032,19 +1032,19 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         if (m.find('r') != std::string::npos) mode |= R_OK;
         if (m.find('w') != std::string::npos) mode |= W_OK;
         if (m.find('x') != std::string::npos) mode |= X_OK;
-        return Value::boolean(::access(inv.toStr().c_str(), mode) == 0);
+        return Value::boolean(::access(ioFsPath(inv).c_str(), mode) == 0);
     }
     if (m == "l" && inv.hashKind == "IO") { // symlink? (lstat, so broken links still count)
 #if defined(_WIN32)
         return Value::boolean(false); // Windows: no POSIX symlink test here
 #else
         struct stat st;
-        return Value::boolean(::lstat(inv.toStr().c_str(), &st) == 0 && S_ISLNK(st.st_mode));
+        return Value::boolean(::lstat(ioFsPath(inv).c_str(), &st) == 0 && S_ISLNK(st.st_mode));
 #endif
     }
     if ((m == "s" || m == "z") && inv.hashKind == "IO") { // size / zero-length; both FAIL (softly) if absent
         struct stat st;
-        if (stat(inv.toStr().c_str(), &st) != 0) {
+        if (stat(ioFsPath(inv).c_str(), &st) != 0) {
             Value f = Value::makeHash(); f.hashKind = "Failure";
             (*f.hash())["exception"] = Value::typeObj("X::IO::DoesNotExist");
             (*f.hash())["message"] = Value::str("Failed to stat '" + inv.toStr() + "': no such file or directory");
@@ -1055,7 +1055,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     }
     if (m == "mode" && inv.hashKind == "IO") { // permission bits as a 4-digit octal string
         struct stat st;
-        if (stat(inv.toStr().c_str(), &st) != 0) {
+        if (stat(ioFsPath(inv).c_str(), &st) != 0) {
             Value f = Value::makeHash(); f.hashKind = "Failure";
             (*f.hash())["exception"] = Value::typeObj("X::IO::DoesNotExist");
             (*f.hash())["message"] = Value::str("Failed to stat '" + inv.toStr() + "': no such file or directory");
@@ -1065,7 +1065,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         return Value::str(buf);
     }
     if (m == "mkdir") { // $path.IO.mkdir($mode) / (:$mode) — create the directory and parents
-        std::string path = inv.toStr();
+        std::string path = ioFsPath(inv); // the invocant's own :CWD decides where
         long long mode = 0777;
         for (auto& a : args) {
             if (a.t == VT::Pair && a.namedArg && a.s == "mode" && a.pairVal()) mode = a.pairVal()->toInt();
@@ -1103,15 +1103,15 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 "': Failed to mkdir: " + std::strerror(err));
             return f;
         }
-        Value p = Value::str(path); p.hashKind = "IO";
+        Value p = Value::str(inv.toStr()); p.hashKind = "IO"; // the answer keeps the caller's spelling
         if (!inv.ofType().empty()) p.ofTypeM() = inv.ofType(); // keep the invocant's :CWD
         return p;
     }
     if (m == "unlink") { // $path.IO.unlink — remove the file; True on success
-        return Value::boolean(::unlink(inv.toStr().c_str()) == 0);
+        return Value::boolean(::unlink(ioFsPath(inv).c_str()) == 0);
     }
     if (m == "rmdir") { // $path.IO.rmdir — remove the (empty) directory
-        return Value::boolean(::rmdir(inv.toStr().c_str()) == 0);
+        return Value::boolean(::rmdir(ioFsPath(inv).c_str()) == 0);
     }
     // `$target.IO.symlink($name)` / `.link($name)` — the METHOD forms: the
     // invocant is the TARGET, the argument the new name. (The sub forms live
@@ -1124,7 +1124,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     // otherwise. Guarded to real IO invocants: Str has no .link in Rakudo,
     // and a name that generic must not fall into filesystem writes.
     if ((m == "symlink" || m == "link") && inv.hashKind == "IO" && !args.empty()) {
-        std::string target = inv.toStr(), name = args[0].toStr();
+        std::string target = ioFsPath(inv), name = ioFsPath(args[0]);
         bool symbolic = (m == "symlink");
         if (symbolic && !target.empty() && target[0] != '/') {
             char cbuf[4096];
@@ -1143,7 +1143,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     // rename() is one syscall but only within a filesystem; fall back to a copy +
     // unlink so a cross-device move still works, which is what Rakudo does.
     if ((m == "copy" || m == "rename" || m == "move") && !args.empty()) {
-        std::string from = inv.toStr(), to = args[0].toStr();
+        std::string from = ioFsPath(inv), to = ioFsPath(args[0]);
         bool createonly = false;
         for (auto& a : args)
             if (a.t == VT::Pair && a.s == "createonly") createonly = !a.pairVal() || a.pairVal()->truthy();
@@ -1450,7 +1450,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             return Value::str(out);
         }
         if (m == "readlink") { // the link's own target, unresolved (cf. .resolve)
-            std::string p = inv.toStr(); char lbuf[4096];
+            std::string p = ioFsPath(inv); char lbuf[4096];
             long long n = platform_readlink(p.c_str(), lbuf, sizeof lbuf - 1);
             if (n < 0) throw RakuError{Value::typeObj("X::IO::Symlink"),
                 "Failed to readlink '" + p + "': " + std::strerror(errno)};
@@ -1537,7 +1537,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
 
             Value out = Value::array(); out.isList = true;
             std::string base = inv.toStr();
-            if (DIR* d = opendir(base.c_str())) {
+            if (DIR* d = opendir(ioFsPath(inv).c_str())) {
                 while (struct dirent* e = readdir(d)) {
                     std::string nm = e->d_name;
                     // `.` and `..` are excluded by the DEFAULT :test only. An
@@ -1558,7 +1558,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     }
     if (m == "modified" || m == "created" || m == "accessed" || m == "changed") {
         struct stat st;
-        if (stat(inv.toStr().c_str(), &st) != 0)
+        if (stat(ioFsPath(inv).c_str(), &st) != 0)
             throw RakuError{Value::typeObj("X::IO::DoesNotExist"),
                 "Failed to get the timestamp of '" + inv.toStr() + "': no such file or directory"};
         // an Instant. Sub-second field names differ by platform; Windows stat only
@@ -1581,7 +1581,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         Value v = Value::number(secs); v.hashKind = "Instant"; return identify(v);
     }
     if (m == "chmod" && inv.hashKind == "IO") { // $path.IO.chmod(0o644)
-        ::chmod(inv.toStr().c_str(), (mode_t)(args.empty() ? 0 : args[0].toInt()));
+        ::chmod(ioFsPath(inv).c_str(), (mode_t)(args.empty() ? 0 : args[0].toInt()));
         Value p = Value::str(inv.toStr()); p.hashKind = "IO";
         if (!inv.ofType().empty()) p.ofTypeM() = inv.ofType();
         return p;
@@ -1592,7 +1592,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // existence check (so "/nope".IO.open handed back a live handle where
         // open("/nope") threw), skipped rejectNulPath, and dropped :nl-in.
         ValueList ca;
-        ca.push_back(Value::str(inv.toStr()));
+        ca.push_back(Value::str(ioFsPath(inv))); // the handle works wherever the process wanders
         for (auto& a : args) ca.push_back(a);
         return callBuiltin("open", ca);
     }
@@ -1964,8 +1964,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         }
     }
     if (m == "lines" && inv.hashKind == "IO") {
-        std::ifstream in(inv.toStr()); Value out = Value::array(); out.isList = true; out.s = "Seq";
-        if (!in) throwFailedOpen(inv.toStr());
+        std::ifstream in(ioFsPath(inv)); Value out = Value::array(); out.isList = true; out.s = "Seq";
+        if (!in) throwFailedOpen(ioFsPath(inv));
         std::string line;
         while (std::getline(in, line)) { // strip \r\n too (Windows/HTTP text)
             if (!line.empty() && line.back() == '\r') line.pop_back();

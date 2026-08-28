@@ -164,6 +164,56 @@ static Value nilResetForAttr(const Value& v, const ClassAttr& a) {
     return Value::any();
 }
 
+// Park a tap on a Proc::Async stream Supply ({proc, stream, split?, bin?}).
+// The process's output arrives as ONE chunk when it is reaped (runProcPromise),
+// so a `.lines`-marked stream splits HERE, at the tap: the callback runs once
+// per line. The default chomps; a recorded `:!chomp` keeps each line's
+// terminator — TAP's parse-stream grammar needs the trailing "\n" to close
+// every entry, and chomping regardless made TAP::Harness say NOTESTS.
+// What lands on the proc is a {emit, done, quit, bin} RECORD: the feeder reads
+// the stream flavour and the :done/:quit callbacks from it (TAP relays stderr
+// with `.act({…}, :done({…}), :quit({…}))`, which used to lose both).
+void Interpreter::registerProcStreamTap(const Value& inv, Value cb, Value done, Value quit) {
+    if (!(inv.t == VT::Hash && inv.hash() && inv.hash()->count("proc"))) return;
+    Value proc = (*inv.hash())["proc"];
+    if (!(proc.t == VT::Hash && proc.hash())) return;
+    const char* key = inv.hash()->count("stream") &&
+                      (*inv.hash())["stream"].toStr() == "stderr" ? "taps-err" : "taps";
+    if (!proc.hash()->count(key)) (*proc.hash())[key] = Value::array();
+    if (inv.hash()->count("split") && (*inv.hash())["split"].toStr() == "lines") {
+        bool chomp = !inv.hash()->count("split-chomp") || (*inv.hash())["split-chomp"].truthy();
+        Value w; w.t = VT::Code; w.setCode(std::make_shared<Callable>());
+        Value lineCb = cb;
+        w.code()->builtin = [lineCb, chomp](Interpreter& I, ValueList& a) -> Value {
+            std::string data = a.empty() ? "" : a[0].toStr();
+            for (size_t start = 0; start < data.size();) {
+                size_t nl = data.find('\n', start);
+                std::string line;
+                if (nl == std::string::npos) line = data.substr(start);
+                else if (chomp) {
+                    line = data.substr(start, nl - start);
+                    if (!line.empty() && line.back() == '\r') line.pop_back();
+                }
+                else line = data.substr(start, nl - start + 1); // "\r\n" rides along whole
+                try { I.callCallable(lineCb, ValueList{Value::str(line)}); }
+                catch (NextEx&) {}
+                catch (LastEx&) { break; }
+                if (nl == std::string::npos) break;
+                start = nl + 1;
+            }
+            return Value::any();
+        };
+        cb = w;
+    }
+    Value rec = Value::makeHash();
+    (*rec.hash())["emit"] = cb;
+    (*rec.hash())["done"] = done;
+    (*rec.hash())["quit"] = quit;
+    if (inv.hash()->count("bin") && (*inv.hash())["bin"].truthy())
+        (*rec.hash())["bin"] = Value::boolean(true);
+    (*proc.hash())[key].arr()->push_back(rec);
+}
+
 void Interpreter::runAttrDefaults(const std::shared_ptr<ObjectData>& od,
                                   const std::shared_ptr<ClassInfo>& ci,
                                   ValueList& args) {
@@ -465,6 +515,11 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             Value s = Value::makeHash(); s.hashKind = "Supply";
             *s.hash() = *inv.hash();
             (*s.hash())["split"] = Value::str("lines");
+            // `:!chomp` rides along to the tap-time splitter: each line keeps
+            // its terminator (TAP's parse-stream reads proc output exactly so)
+            for (auto& a : args)
+                if (a.t == VT::Pair && a.s == "chomp")
+                    (*s.hash())["split-chomp"] = Value::boolean(a.pairVal() && a.pairVal()->truthy());
             return s;
         }
         if ((m == "comb" || m == "words" || m == "lines") && listy) {
@@ -571,35 +626,10 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 }
                 else if (done.t == VT::Code) { ValueList none; callCallable(done, none); }
             } else if (!args.empty() && args[0].t == VT::Code && inv.hash()->count("proc")) {
-                // register per-stream: stdout taps under "taps", stderr under "taps-err"
-                Value proc = (*inv.hash())["proc"];
-                const char* key = (*inv.hash())["stream"].toStr() == "stderr" ? "taps-err" : "taps";
-                if (!proc.hash()->count(key)) (*proc.hash())[key] = Value::array();
-                Value cb = args[0];
-                // `$proc.stdout.lines` — the process's output arrives as ONE chunk, so
-                // the line split happens here, at the tap: the block runs once per
-                // line, without the trailing newline. (zef's test/build/fetch backends
-                // are all written as `whenever $proc.stdout.lines { … }`.)
-                if (inv.hash()->count("split") && (*inv.hash())["split"].toStr() == "lines") {
-                    Value w; w.t = VT::Code; w.setCode(std::make_shared<Callable>());
-                    w.code()->builtin = [cb](Interpreter& I, ValueList& a) -> Value {
-                        std::string data = a.empty() ? "" : a[0].toStr();
-                        for (size_t start = 0; start < data.size();) {
-                            size_t nl = data.find('\n', start);
-                            std::string line = nl == std::string::npos ? data.substr(start)
-                                                                       : data.substr(start, nl - start);
-                            if (!line.empty() && line.back() == '\r') line.pop_back();
-                            try { I.callCallable(cb, ValueList{Value::str(line)}); }
-                            catch (NextEx&) {}
-                            catch (LastEx&) { break; }
-                            if (nl == std::string::npos) break;
-                            start = nl + 1;
-                        }
-                        return Value::any();
-                    };
-                    cb = w;
-                }
-                (*proc.hash())[key].arr()->push_back(cb);
+                // a Proc::Async stream (zef's test/build/fetch backends are all
+                // written as `whenever $proc.stdout.lines { … }`): park the
+                // {emit, done, quit, bin} record on the proc for runProcPromise
+                registerProcStreamTap(inv, args[0], done, quit);
             }
             Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
         }
@@ -1197,8 +1227,18 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 (*inv.hash())["result"] = Value::boolean(true);
                 return Value::boolean(true);
             }
+            // a lazily-realized process promise: `.result` is a wait — run the
+            // process now, so the answer is the FINISHED proc (exitcode set)
+            if (kind == "proc") { Value pv = inv; runProcPromise(pv, 0); }
             auto it = inv.hash()->find("result"); if (it != inv.hash()->end()) return it->second;
-            auto pr = inv.hash()->find("proc"); if (pr != inv.hash()->end()) return pr->second; return Value::nil();
+            auto pr = inv.hash()->find("proc");
+            if (pr != inv.hash()->end()) {
+                // a Proc, as await answers (shared hash, re-kinded): TAP's
+                // Status multi takes `Proc $proc`, and the Async kind missed it
+                Value pv = pr->second; pv.hashKind = "Proc";
+                return pv;
+            }
+            return Value::nil();
         }
         if (m == "then") {
             // Deferred: the block runs only once the promise settles, receiving the
@@ -1224,6 +1264,15 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             bool now = false;
             if (ps) { std::lock_guard<std::mutex> lk(ps->m); if (ps->done) now = true; else ps->thens.push_back(run); }
             else if (kind == "timer") spawnDelayedNative(timerRemainingSecs(inv), run); // fire when the timer does, not at t=0
+            else if (kind == "proc") {
+                // a lazily-realized process promise: nobody else will run it, so
+                // `.then` is a realization point (as await is) — the callback
+                // must see the SETTLED parent. Firing at registration handed
+                // TAP's `$start.then({ Status.new($start.result) })` a
+                // still-Planned start, whose taps had seen no output yet.
+                Value pv = inv; runProcPromise(pv, 0);
+                now = true;
+            }
             else now = true;
             if (now) run();
             return np;
