@@ -19,10 +19,10 @@ raku.online — those are ours and belong in
 
 | What | Who | What it does with Raku++ |
 |---|---|---|
-| [**RakuppLink**](#rakupplink--the-wolfram-binding-as-an-official-paclet) | Anton Antonov | ships the Wolfram binding as a paclet in Wolfram's own repository |
-| [**Raku Playground**](#raku-playground--one-dropdown-four-runtimes) | Fernando Correa de Oliveira | offers rakupp as one of four runtimes, in the browser |
-| [**rakupp-dsci**](#rakupp-dsci--the-release-matrix-on-somebody-elses-ci) | Alexey Melezhik | ports this repo's release matrix to another CI |
-| [**sibl**](#sibl--a-guix-channel-with-a-rakupp-package) | 4zv4l | packages rakupp in a personal Guix channel |
+| [**RakuppLink**](https://resources.wolframcloud.com/PacletRepository/resources/AntonAntonov/RakuppLink/) | Anton Antonov | ships the Wolfram binding as a paclet in Wolfram's own repository |
+| [**Raku Playground**](https://fco.github.io/Raku-Playground/?runtime=rakupp) | Fernando Correa de Oliveira | offers rakupp as one of four runtimes, in the browser |
+| [**rakupp-dsci**](https://github.com/melezhik/rakupp-dsci) | Alexey Melezhik | ports the Raku++ release matrix to another CI |
+| [**sibl**](https://github.com/4zv4l/sibl-channel) | 4zv4l | packages rakupp in a personal Guix channel |
 
 ## RakuppLink — the Wolfram binding as an official paclet
 

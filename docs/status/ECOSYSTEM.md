@@ -37,7 +37,7 @@ are where a fix session gets its worklist:
 | **tour** (was `raku-tour`) | "A Tour of Raku": 18 interactive lessons, every example a live editor (raku.online's engine) with output verified against the interpreter. Same generator pattern as the spec. | [ash/raku.online `sites/tour`](https://github.com/ash/raku.online/tree/main/sites/tour) | [raku.online/tour](https://raku.online/tour/) |
 | **drills** | Raku Drills: 150 graded practice questions, A1 to C2 — multiple choice, true/false, type-the-answer and fill-the-gap, the `fill` ones checked by running the finished program in the browser. Hand-maintained JS + a question bank, not generated. | [ash/raku.online `www/drills`](https://github.com/ash/raku.online/tree/main/www/drills) | [raku.online/drills](https://raku.online/drills/) |
 | **examples** | "Raku by example": one page per program in [`examples/`](../../examples) — the README's prose, the full source in a live editor (raku.online's engine), and what it prints. The outputs are **captured from the native interpreter** (`--capture`) and cross-checked byte-identical under Rakudo (`--oracle=raku`), then committed — the site can never show output a program did not produce. | [ash/raku.online `sites/examples`](https://github.com/ash/raku.online/tree/main/sites/examples) | [raku.online/examples](https://raku.online/examples/) |
-| **showcase + live** | The [`showcase/`](../../showcase) projects and [`live/`](../../live) entries as browsable pages, one per README, the index driven by the table in `showcase/README.md` (so a directory the table does not name never reaches the site). One generator builds both sections. | [ash/raku.online `sites/showcase`](https://github.com/ash/raku.online/tree/main/sites/showcase) | [raku.online/showcase](https://raku.online/showcase/) + [/live](https://raku.online/live/) |
+| **showcase + live + in-use** | The [`showcase/`](../../showcase) projects and [`live/`](../../live) entries as browsable pages, one per README, the index driven by the table in `showcase/README.md` (so a directory the table does not name never reaches the site). The same generator builds the **/in-use/ hub** they hang off, and the adoptions page behind it — both from [`live/ADOPTIONS.md`](../../live/ADOPTIONS.md), so a row added there reaches the site through the ordinary sync rather than by hand-editing HTML. | [ash/raku.online `sites/showcase`](https://github.com/ash/raku.online/tree/main/sites/showcase) | [raku.online/showcase](https://raku.online/showcase/) + [/live](https://raku.online/live/) + [/in-use](https://raku.online/in-use/) |
 | **raku-corpus** | Real-world Raku programs used as a beyond-Roast differential test target. | [ash/raku-corpus](https://github.com/ash/raku-corpus) | — (test input) |
 | **Rakugrid** | An engine-neutral behavioural suite for the *language*, organised as a grid: atoms (one construct, one behaviour) and molecules (constructs in combination) over eight orthogonal facet axes, mostly machine-generated. Rakudo is the **oracle, not the arbiter** — every test stores what Rakudo did next to what we assert, and a divergence without a signed ruling fails the build. Runs under any implementation and tests any implementation; its generators run on rakupp. The whole grid — every recorded test, matrix by matrix, plus the divergence clusters and the signed rulings — is browsable at raku.online/grid, rendered by `sites/grid` in the raku.online repo. | [ash/rakugrid](https://github.com/ash/rakugrid) | [raku.online/grid](https://raku.online/grid/) |
 | **raku-eye** | The standing watch: a weekly, unattended GitHub Actions run that measures `main` against fresh Weekly Challenge solutions, new ecosystem releases and the corpus, benchmarks it against the latest Rakudo release, and publishes the result. Measures only — it never edits the compiler, and there is no AI in it. | [ash/raku-eye](https://github.com/ash/raku-eye) | [eye.raku.online](https://eye.raku.online/) |
@@ -55,7 +55,7 @@ graph TD
     TOUR["raku.online/tour<br/>interactive lessons"]
     DRILLS["raku.online/drills<br/>150 practice questions"]
     EXAMPLES["raku.online/examples<br/>the programs, live + captured output"]
-    SHOWCASE["raku.online/showcase + /live<br/>the projects, page per README"]
+    SHOWCASE["raku.online/showcase + /live + /in-use<br/>the projects, page per README;<br/>the hub, from live/ADOPTIONS.md"]
     CORPUS["raku-corpus<br/>real-world programs"]
     GRID["Rakugrid<br/>atoms + molecules<br/>oracle vs expect"]
     EYE["raku-eye<br/>weekly measurement<br/>eye.raku.online"]
@@ -300,7 +300,7 @@ program or README changes here:
 ```sh
 # in the raku.online checkout
 sites/examples/sync.sh   ~/raku++      # programs + README
-sites/showcase/sync.sh   ~/raku++      # showcase/ + live/ READMEs (skips raytracer)
+sites/showcase/sync.sh   ~/raku++      # showcase/ + live/ READMEs + live/ADOPTIONS.md (skips raytracer)
 ( cd sites/examples && rakupp build.raku --capture --oracle=raku )   # re-run every program
 ./build.sh examples && ./build.sh showcase
 ```
@@ -392,7 +392,7 @@ before anything can plot them.
 |---|---|
 | the interpreter (`src/`) | bump `CMakeLists.txt`, re-gate Roast, rebuild wasm (**B**), redeploy raku.online (**B**) — the spec then picks up the engine for free |
 | example programs (`examples/`) | rebuild wasm so `examples.js` regenerates (**B.2**), redeploy raku.online (**B**) — and resync the gallery: `sites/examples/sync.sh`, `rakupp build.raku --capture --oracle=raku`, `./build.sh examples`, commit `www/` (**C**) |
-| a showcase or live README (`showcase/`, `live/`) | `sites/showcase/sync.sh` + `./build.sh showcase` in the raku.online checkout, commit `sites/` + `www/`, push (**C**) |
+| a showcase or live README (`showcase/`, `live/`, `live/ADOPTIONS.md`) | `sites/showcase/sync.sh` + `./build.sh showcase` in the raku.online checkout, commit `sites/` + `www/`, push (**C**) — the same two commands also rebuild the [/in-use](https://raku.online/in-use/) hub and its adoptions list |
 | the playground UI (`rakujs/playground/`) | copy the changed file into `raku.online/www/` and redeploy (**B.3–4**) |
 | a feature's support level or a new feature | write/update its spec page and redeploy the spec (**C**) |
 | a tour lesson | `./build.sh tour` in the raku.online checkout, commit `www/`, push (**C**) |
