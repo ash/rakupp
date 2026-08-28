@@ -2302,3 +2302,250 @@ the harness now sweeps `lib\s*` junk before staging. And this shell runs
 under Rosetta: a default cmake configure produces an x86_64 build that runs
 the whole interpreter under translation (the main build/ tree is one) —
 perf measurements happen on build-arm64 only.
+
+---
+
+## Anton Antonov's ecosystem, and the honest `is-deeply` (2026-08-28)
+
+Issue #38 closed with thirteen general engine fixes found by ONE of
+[antononcube](https://raku.land/zef:antononcube)'s modules. He has 107 in the
+REA index. This batch measures all of them — and starts by fixing the
+instrument, because the previous session had found that a green suite did not
+mean what it said.
+
+### `is-deeply` was not `eqv`
+
+Rakudo's `is-deeply` computes `$got eqv $expected` — type-strict — with one
+adjustment: its `Seq` candidates `.cache` a Seq operand into a List first (so
+`(1,2).Seq eqv (1,2)` is False but `is-deeply (1,2).Seq, (1,2)` passes).
+rakupp routed it through `deepEq`, the loose structural compare, so
+`is-deeply "11", 11` PASSED here and fails there. A 45-case probe against
+Rakudo put **21 of 45 verdicts on the wrong side**, all but one too lenient.
+
+Fixing it also required `eqv` itself to be type-aware for hashes: comparing
+only the ENTRIES made a Hash eqv a Map, a Set eqv a SetHash, a Bag eqv a Mix
+and `my Int %h` eqv `my %h` — every hash flavour equal to every other as long
+as the pairs lined up. After both, 44 of 45 match Rakudo; the last one is the
+one-arg rule (`[[1,2]].elems` is 2 in Rakudo, 1 here), left open.
+
+**The Roast number dips before it climbs, and the dip is the point.** A Roast
+test passes under Rakudo, so a test that starts failing under a strict
+`is-deeply` was ALWAYS producing a value of the wrong type — the loose compare
+was hiding it. 199,033 → 197,226 on the first honest run, and the −1,807
+resolved into exactly two clusters:
+
+- **1,000 assertions in S03-metaops/infix.t alone**: a hyper with a SCALAR on
+  the left (`3 <<~>> @a`) answered a List where Rakudo answers an Array. Only a
+  side that IS a collection can dictate the result's shape. A hyper over a
+  TYPED or OBJECT-KEYED hash lost that too (`my Cool %a; %a >>~<< %b` must stay
+  a `Hash[Cool]`). Both fixed; the file is 5076/5076.
+- **~550 assertions across the six set operators**: the result is the MUTABLE
+  flavour when the LEFT operand is mutable — `SetHash (|) Set` is a SetHash,
+  `Set (|) SetHash` is a Set — and rakupp always answered the immutable one.
+  Symmetric difference is typed on both sides (`SetHash (^) <a b>` is a plain
+  Set), and the one-operand form keeps the flavour for `(|) (&) (^) (.)` but
+  not for `(-)` and `(+)`. Every rule derived operator-by-operator against
+  Rakudo rather than guessed.
+
+### The sweep
+
+`tools/eco-sweep.raku` runs `rakupp test` over a list of distributions and
+records one verdict each (pass / self-fail / dep-fail / build-fail /
+unresolved / timeout), resumable, with a `--reclassify` pass that re-reads the
+logs of a finished run. Anton's 107 dists, newest release first, on a pinned
+binary snapshot.
+
+### The dominoes, and the bugs behind them
+
+Round 1 (the honest binary): **19 pass**, 21 self-fail, 67 dep-fail. Four
+dependencies blocked 45 of the 67 between them. Each turned out to be a
+general engine bug, not a module quirk:
+
+- **HTTP::Tiny (blocked 12)** — `for %h.kv -> $k, @v is copy` dropped the
+  `is copy`: a `for` signature with a trait was still bound by the plain-name
+  path, which records no traits at all, so `@v` stayed the List it was handed
+  instead of the fresh Array the trait asks for. Loop parameters with traits
+  now take real signature binding, which also meant the params path had to
+  consume ONE ELEMENT PER PARAMETER instead of one per iteration — invisible
+  before, because only 1-param signatures (`-> $ (:$k)`) ever reached it.
+- **Data::TypeSystem (blocked 6)** — four bugs, in a chain. Rakudo's `Any`
+  gives EVERY object the one-element-list interface (`Foo.new.elems` is 1,
+  `.list` is `(Foo.new)`, `.keys` is `(0)`); rakupp had it for the simple
+  scalars only, so a module asking `$.type.elems` about one of its own objects
+  died. `.^find_method`/`.^lookup` could not see an ATTRIBUTE ACCESSOR (the
+  accessors are generated at dispatch, not stored in the method table), and on
+  a builtin TYPE OBJECT it answered a method object for every name — so
+  `while $obj.^find_method('type')` looped past the leaf and called `.type` on
+  an Int. Probing a type object through a sentinel instance fixed that, once
+  the probe learned to retry with a dummy argument (a method that REQUIRES one
+  reports NotFound when probed with none, which is how `Str.^lookup('parse-base')`
+  looked missing). `*<A B>` and `*[0,1]` — a Whatever-curried SLICE — answered
+  Nil, because only the single-key form was implemented. And assigning Nil to
+  an attribute has to RESET it to the attribute's default, both by name at
+  construction and through an attributive parameter (`submethod BUILD(:$!type = Any)`).
+- **Text::Levenshtein::Damerau (blocked 16)** — two. `($source,$target) .= reverse`
+  is a mutating method call whose target is a parenthesised LIST, and the
+  generic lvalue path could only say "Target is not assignable"; list-target
+  assignment is now a method both `=` and `.=` share. Then the zero-width
+  UNSPACE: `@currentRow\[$j - 1]` is `@currentRow[$j - 1]`, and rakupp
+  silently dropped the subscript — so the ARRAY took part in the arithmetic
+  and every distance came out 1.
+- **Lingua::NumericWordForms (blocked 16)** — five, and the most interesting
+  set. (a) A dist's META6 `provides` may put a module at a path its NAME does
+  not describe; Rakudo's FileSystem repo resolves through that map and rakupp
+  only tried name-derived paths, so `use Lingua::NumericWordForms` could not
+  find `lib/Lingua/NumericWordForms/NumericWordForms.rakumod`. (b) `C but R` on
+  a bare TYPE NAME was a parse error — the identifier read as a call whose
+  first argument was the routine `but`. (c) Mixing into a type object must
+  ANSWER a type object (`C+{R}`, `.DEFINITE` False); boxing it into an instance
+  sent every type-level call to the box. (d) A role composed at runtime brought
+  its methods and attributes but NOT its grammar rules, so
+  `WordFormParser but %langToRole{$lang}` — which is how the module picks a
+  language — had nothing to parse with. (e) **The LTM tie-break was inverted
+  across inheritance.** Within one grammar the earliest declaration wins a tie;
+  ACROSS inheritance and role composition the DERIVED one does. rakupp walked
+  the base first, so `token h100:sym<General>` beat `token h100:sym<Spanish>`
+  on the same text — the General ACTION ran, and "ciento sesenta y tres" came
+  out 63. (f) A code assertion in a GRAMMAR rule saw only the named captures:
+  `([\w]+) <?{ f($0.Str) }>` asked about an empty string and never matched.
+  All 25 of the dist's test files pass.
+
+Round 3, after those four fell: **29 pass** (+10, none lost), and the blocker
+board re-formed behind them — `silently` (16), Slangify (12),
+DateTime::Grammar (5), Math::DistanceFunctions::Native (4), Parameterizable /
+Math::SparseMatrix::Native / IO::Capture::Simple (3 each). "X blocks N" is not
+a forecast: of Text::Levenshtein::Damerau's 16, most converted into a queue
+behind `silently`, which was next in the same chain.
+
+- **`silently` (blocked 16)** — two more general bugs. `IO::Handle.tell` did
+  not exist at all (a std handle asks the real fd, so a redirected `$*OUT`
+  reports the bytes written; a file handle reports its byte or line cursor, or
+  the size of the buffer it has yet to flush). And `warn` wrote straight to
+  std::cerr instead of going through `$*ERR` as `note` does — so a module
+  redirecting `$*ERR` to capture output saw every `note` and no `warn`.
+
+### Left open, deliberately
+
+- **Slangify (blocks 12)** needs real compiler slangs: a user role mixed into
+  the MAIN grammar through `$*LANG.define_slang`, re-defining `token identifier`
+  for the rest of the compilation. rakupp's parser is hand-written C++; this is
+  an architecture question, not a bug.
+- **IO::Capture::Simple (blocks 3)** now captures — its `$*OUT` type-object
+  sink and the global write both work — but its `$target is rw` parameter is
+  written through a CLOSURE after the sub has returned, and rakupp's rw
+  parameters are copy-back-on-return rather than true aliases. Same known
+  limitation as the native rw-param work.
+- `[[1,2]].elems` is 2 in Rakudo and 1 here (the one-arg rule does not fire for
+  a nested ARRAY, only for a List). Left out of this batch on purpose: it is a
+  change to array construction and deserves its own gate.
+- **A Setty weight is not consistently a Bool or a 1.** `set(42).Mix` renders
+  `42=>Bool::True` where Rakudo gives `42=>1`, and `Mix (^) Mix` renders
+  `c=>1` where Rakudo keeps `c=>Bool::True`. Pre-existing (the same on the
+  binary that started this session); the honest `is-deeply` merely made the
+  ~76 assertions it costs in the two set files visible.
+- `sub f(@a)` binding a List makes it an Array here; Rakudo keeps the List
+  (and `@a.push` on it dies). Correct-but-risky: it would turn a currently
+  working `.push` into an exception across the ecosystem.
+- `.^name` on an INSTANCE drops a hash's parameterisation (`Hash` where
+  Rakudo says `Hash[Cool]`); `.WHAT.^name` is right.
+
+### The gate
+
+| | assertions | fully-pass files | timeouts |
+|---|--:|--:|--:|
+| 2026-08-26 baseline, LOOSE is-deeply | 199,033 | 636 | 5 |
+| honest is-deeply, no fixes yet | 197,226 | 631 | 14 |
+| **after the batch** | **198,845** | **636** | **16** |
+
+t/run.raku 570/570 at every step. The −188 against the loose baseline is what
+honesty costs: every remaining loss is a file where `is-deeply` now reports a
+type divergence it used to hide (the Setty weights, Seq-vs-List results,
+`S02-types/range-iterator`), and no file dies or truncates any more.
+`S16-filehandles/filetest.t` went the other way — 126/128 → 127/128 — because
+tracking its death led to `open`'s spelled-out adverbs (`:mode<wo>, :create`,
+`:truncate`, `:append`) being ignored altogether; `$f.open(:mode<wo>,
+:create).close` is the idiomatic `touch`. Files that went from partial to fully
+passing include S32-str/lines.t and S17-supply/lines.t.
+
+Two more general fixes landed on the way out of the list files: `.=` on an
+`@`/`%` variable stores the SIGIL's container (`@a .= repeated` is an Array,
+not the Seq the method answered), and `.=` EVALUATES to what it stored rather
+than to the raw method result.
+
+### Round two (same day): the second blocker ring
+
+The user's one exclusion: Slangify (12 dists) stays out — it needs real
+compiler slangs (`$*LANG.define_slang` mixing a role into the MAIN grammar),
+an architecture question, not a bug. Everything else on the board was chased.
+
+- **Two sibling roles cannot both bring grammar rules — until now.** In
+  `grammar G does A does B`, only the first `does` becomes the parent; every
+  further role lands in `cd->roles`, whose composition merged methods and
+  attributes but never RULES. `DSL::Shared` composes three roles into every
+  grammar and kept one role's tokens; its suite went 109 failing assertions →
+  7 with the merge (walking each composed role's own parent chain too:
+  `TimeIntervalSpec does TimeIntervalSpeechParts` rides along).
+- **Membership is an identity question, storage stays renderings.** The full
+  identity-key migration for quanthashes was tried AGAIN (the comment in
+  baggyKeyStr warned about it) and costs ~700 roast assertions until Hash keys
+  carry real objects; it was backed out a second time. What stays: `(elem)`/
+  `(cont)` walk the operand's elements comparing `.WHICH` (so
+  `'123' (elem) [123]` is False), a quanthash SUBSCRIPT keys through
+  baggyKeyStr (`$set<a>` and `:exists` work), and `.pick`/`.roll` answer the
+  ELEMENT — `set(1,2).pick` is an Int, not the storage key "1".
+  S03-operators/set_elem.t 295/313 → 301/313.
+- **`.parse(:rule, args => (…))` binds the start rule's parameters as real
+  VALUES** — a `$*`-sigil one is a genuine dynamic every nested rule reads, and
+  a Bool stays a Bool (the stringified form made `<?{ $*extended }>` true for
+  False). DateTime::Grammar's extended-format gate; its 4 files all pass.
+- **`<sign=[+-]>` is a NAMED CAPTURE of an inline character class**, not an
+  alias for a rule called "[+-]". Every offset-bearing RFC-3339 timestamp in
+  DateTime::Grammar failed on it.
+- **A user `method ^parameterize` owns `T[…]`** (Parameterizable): the caret
+  name now parses, `.^name(…)` calls dispatch to a user meta-method with the
+  type as first positional, `T[…]` routes through it, `.^set_name` renames for
+  real, and `R[42]` twice is ONE pun (memoised by argument identity) so a later
+  `~~ R[42]` agrees. The `:D`/`:U` SMILEY is now enforced on ordinary binds —
+  `sub f(Int:D $x)` refuses a type object — which is how Parameterizable picks
+  a parameterization by which MIXIN signature accepts the arguments.
+- **A CStruct's fields live in native memory — `$!re` inside a method now
+  reads them fresh.** The public accessor already did; the attrs-map read
+  handed back the construction-time zeros, so
+  `method value() { $!re + $!im * i }` summed nothing after the C dot product
+  had filled the struct (Math::DistanceFunctions::Native, and the 4 dists
+  behind it). The dist's own `--> num64` on an int-returning C function is
+  upstream noise; the struct is what its tests read.
+- **A CArray binds AS ITSELF through an `@`-parameter** (positional and
+  named), `~~ Positional:D` knows it, a whole-list question (`.all`, `Z`,
+  hyper) decodes its elements first, and construction (`T.new(pts => @src)`)
+  COPIES an @-argument into the attribute — the shared buffer let
+  Algorithm::KDimensionalTree's own `@!points = @!points.pairs` rewrite the
+  caller's @points under its feet.
+- **`* !~~ (Iterable:D | CArray:D)` curries** — a Whatever topic against a
+  junction matcher threaded eagerly to a Bool, and every `where`-gated multi
+  of that shape lost its candidate. Negation applies to the COLLAPSED verdict
+  (`2 !~~ (Int|Str)` is False, not any(False, True)).
+- **A multi method whose candidates all decline falls back to Mu on a type
+  object** — `multi method gist(::?CLASS:D:)` beside `TypeName.gist` answers
+  `(TypeName)` instead of X::Multi::NoMatch (KDTree's gist suite).
+
+Recorded, not chased: DSL::Shared's last three files — one assertion depending
+on a Rakudo side effect (interpolated-regex caching mutates the pattern
+containers' identity mid-run, so its `(elem)` shortcut stops firing after the
+first regex walk — deterministic there, but an artifact), and object-valued
+rule params that need to ride the textual subrule-param channel. `silently`'s
+`$target is rw` written through a closure after return is the standing
+rw-param copy-back limitation.
+
+### The round-two tally
+
+Sweep 7 (2026-08-28, the definitive one): **35 of 107 pass** — 19 at the
+session's start, 29 after round one, 35 after round two. Nothing lost at any
+step. The last four in: Math::DistanceFunctions, Algorithm::KDimensionalTree,
+Math::Nearest, ML::Clustering. t/run.raku 572/572 (two new regression files,
+`is-deeply-strict-and-anton-batch.raku` and `anton-batch-round2.raku`, both
+verified against Rakudo). The blocker board after: Slangify 12 (excluded —
+compiler slangs), DSL::Shared 12 (one assertion depending on a Rakudo caching
+artifact + object-valued rule args), Text::SubParsers 5, BinaryHeap 4,
+Math::SparseMatrix::Native 3, IO::Capture::Simple 3 (rw-param closure
+limitation), Clipboard 2, Net::ZMQ 1 (x86-only libzmq on this box).

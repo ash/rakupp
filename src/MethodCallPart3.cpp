@@ -1,4 +1,7 @@
 #include "CNumeric.h"
+#ifndef _WIN32
+#include <unistd.h>
+#endif
 #include "AsciiCtype.h"
 #include "MethodCallSegment.h"
 #include "BuiltinsShared.h"
@@ -1601,6 +1604,35 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // lock-file-protect guards concurrent zef runs) is thus not provided — fine
         // for a single interpreter process, revisit if real fd-backed IO lands.
         if (m == "lock" || m == "unlock") return Value::boolean(true);
+        // `.tell` — the handle's current offset. A STD handle asks the real fd
+        // (so a redirected $*OUT reports the bytes written, which is how
+        // `silently` checks that a block produced no output); otherwise it is
+        // the byte cursor, or the bytes consumed by the line cursor, or — for a
+        // handle only written to — the size of the pending buffer.
+        if (m == "tell") {
+            auto stdit = inv.hash()->find("std");
+            if (stdit != inv.hash()->end()) {
+                std::string which = stdit->second.toStr();
+                int fd = which == "err" ? 2 : which == "in" ? 0 : 1;
+                if (fd == 1) std::cout.flush(); else if (fd == 2) std::cerr.flush();
+                long long off = (long long)::lseek(fd, 0, SEEK_CUR);
+                return Value::integer(off < 0 ? 0 : off);
+            }
+            auto bp = inv.hash()->find("bpos");
+            if (bp != inv.hash()->end()) return Value::integer(bp->second.toInt());
+            auto lp = inv.hash()->find("pos");
+            auto li = inv.hash()->find("lines");
+            if (lp != inv.hash()->end() && li != inv.hash()->end() && li->second.arr()) {
+                long long want = lp->second.toInt(), off = 0;
+                auto& ls = *li->second.arr();
+                for (long long i = 0; i < want && i < (long long)ls.size(); i++)
+                    off += (long long)ls[i].toStr().size() + 1; // + the separator
+                return Value::integer(off);
+            }
+            auto bufit = inv.hash()->find("buffer");
+            if (bufit != inv.hash()->end()) return Value::integer((long long)bufit->second.toStr().size());
+            return Value::integer(0);
+        }
         if (m == "encoding") { auto it = inv.hash()->find("encoding"); return it != inv.hash()->end() ? it->second : Value::str("utf8"); }
         if (m == "nl-in")  { auto it = inv.hash()->find("nl-in");  return it != inv.hash()->end() ? it->second : Value::str("\n"); }
         if (m == "nl-out") { auto it = inv.hash()->find("nl-out"); return it != inv.hash()->end() ? it->second : Value::str("\n"); }

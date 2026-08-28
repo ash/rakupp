@@ -832,7 +832,8 @@ public:
     // Store through an lvalue expression, refusing a readonly container. Used by
     // the `.=` write-backs, which do not go through the assignment operator and
     // so never met its guard.
-    void assignChecked(struct Expr* target, Value v);
+    Value assignChecked(struct Expr* target, Value v);
+    void assignListTarget(struct ListExpr* lst, const Value& rhs);
     // A code assertion (`<?{…}>` / `<!{…}>`) only evaluates when the engine is
     // handed a hook; with none it defaults to PASS. Every site that builds its
     // own Regex needs this, or one pattern answers differently in each of them.
@@ -1084,7 +1085,8 @@ public:
     // native-codegen entry point. Mutates *target unless nonMut; returns what the
     // interpreted form returns (Match/List for s///, count for tr///, Str for S///).
     Value substApply(Value* target, const std::string& pattern, const std::string& repl, bool nonMut);
-    Value grammarParse(ClassInfo* g, const std::string& input, bool subparse, const std::string& startRule, Value actions);
+    Value grammarParse(ClassInfo* g, const std::string& input, bool subparse, const std::string& startRule, Value actions,
+                       const ValueList* ruleArgs = nullptr);
 
     std::unordered_map<std::string, std::shared_ptr<ClassInfo>> classes_;
     // Package-relative SHORT names: registering a qualified class `URI::Path`
@@ -1381,6 +1383,8 @@ public:
     // static thread_local is safe. Access via the tctx_.<field> members below.
     static thread_local ExecContext tctx_;
     std::shared_ptr<Env> global_;
+    // `R[42]` written twice is ONE type: role puns memoised by argument identity.
+    std::map<std::string, std::string> rolePunCache_;
     std::shared_ptr<Env> curPkgEnv_; // package scope `our` installs into (global_, or a module's env during load)
     // True when the code being executed was written for 6.e or later. Every
     // 6.e-only routine, method and behaviour is gated on this, so a 6.d program

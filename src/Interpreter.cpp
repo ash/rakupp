@@ -203,6 +203,14 @@ static std::string hashSubKey(const Value& k, const Value* base = nullptr) {
     if (k.t == VT::Array && !k.enumType.empty() && k.enumName.empty())
         return base && base->objKeyed ? "(" + std::string(k.enumType.str()) + ")"
                                       : std::string();
+    // A QUANTHASH keys its elements by IDENTITY, not by rendering — `$set{"1"}`
+    // and `$set{1}` are different elements — so a subscript on one has to ask
+    // the same question the constructor did.
+    if (base && base->t == VT::Hash) {
+        static const std::set<std::string> kQuant = {
+            "Set", "SetHash", "Bag", "BagHash", "Mix", "MixHash"};
+        if (kQuant.count(base->hashKind)) return baggyKeyStr(k);
+    }
     return k.toStr();
 }
 
@@ -343,6 +351,14 @@ static bool valueEqv(const Value& a, const Value& b) {
             for (size_t i = 0; i < a.arr()->size(); i++) if (!valueEqv((*a.arr())[i], (*b.arr())[i])) return false;
             return true;
         case VT::Hash:
+            // eqv is type-aware here for exactly the reason it is for Array:
+            // comparing only the ENTRIES made a Hash eqv a Map, a Set eqv a
+            // SetHash, a Bag eqv a Mix and `my Int %h` eqv `my %h` — every
+            // hash flavour equal to every other as long as the pairs lined up.
+            // typeName() carries the flavour (hashKind), ofType the value
+            // constraint and the `{Any}` key shape.
+            if (a.typeName() != b.typeName() || a.ofType() != b.ofType() ||
+                a.objKeyed != b.objKeyed) return false;
             if (!a.hash() || !b.hash() || a.hash()->size() != b.hash()->size()) return false;
             for (auto& kv : *a.hash()) { auto it = b.hash()->find(kv.first); if (it == b.hash()->end() || !valueEqv(kv.second, it->second)) return false; }
             return true;
@@ -5120,6 +5136,43 @@ static std::string metaVersion(const std::string& distRoot) {
     return s.substr(k + 1, e - k - 1);
 }
 
+// The `provides` map of a source checkout's META6.json: Rakudo's
+// CompUnit::Repository::FileSystem resolves through it, so a distribution may
+// put a module anywhere it likes. Lingua::NumericWordForms ships
+// `Lingua::NumericWordForms` at lib/Lingua/NumericWordForms/NumericWordForms.rakumod,
+// and a path search derived from the NAME cannot find it (16 dists behind it).
+// Deliberately a textual scan, like metaVersion above — the file is small and a
+// JSON parser is not available this early.
+static std::string metaProvidesPath(const std::string& distRoot, const std::string& name) {
+    std::ifstream in(distRoot + "/META6.json");
+    if (!in) return "";
+    std::ostringstream ss; ss << in.rdbuf();
+    const std::string& s = ss.str();
+    size_t pv = s.find("\"provides\"");
+    if (pv == std::string::npos) return "";
+    const std::string key = "\"" + name + "\"";
+    // search only inside the provides object
+    size_t brace = s.find('{', pv);
+    if (brace == std::string::npos) return "";
+    int depth = 0; size_t end = brace;
+    for (; end < s.size(); end++) {
+        if (s[end] == '{') depth++;
+        else if (s[end] == '}') { depth--; if (!depth) break; }
+    }
+    size_t k = s.find(key, brace);
+    if (k == std::string::npos || k > end) return "";
+    k = s.find(':', k + key.size()); if (k == std::string::npos || k > end) return "";
+    // the value may be a plain string or an object with a "file" key
+    size_t q = s.find_first_not_of(" \t\r\n", k + 1);
+    if (q == std::string::npos) return "";
+    if (s[q] == '{') { q = s.find("\"file\"", q); if (q == std::string::npos || q > end) return "";
+                       q = s.find(':', q); if (q == std::string::npos) return "";
+                       q = s.find_first_not_of(" \t\r\n", q + 1); }
+    if (q == std::string::npos || s[q] != '"') return "";
+    size_t e2 = s.find('"', q + 1); if (e2 == std::string::npos) return "";
+    return s.substr(q + 1, e2 - q - 1);
+}
+
 void Interpreter::loadModule(const std::string& name, const std::vector<std::string>& importArgs, bool doImport, bool quiet, const std::string& verReq) {
     if (loadedModules_.count(name)) {
         // The module body ran once and stays run — but a repeat `use` still
@@ -5430,6 +5483,33 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
         if (repoSpecStore(pathEntry, storePre)) continue; // an inst# store joins phase 2 below
         const std::string base = repoSpecDir(pathEntry);
         for (const std::string& dir : {base, base + "/lib"}) {
+            // A dist's META6 `provides` may put the module at a path the name
+            // does not describe; that mapping is tried FIRST, as Rakudo's
+            // FileSystem repo does, and the name-derived paths remain the
+            // fallback for the (usual) checkout with no META6.
+            std::string metaRel;
+            {
+                std::string dr = dir;
+                if (dr == "lib") dr = ".";
+                else if (dr.size() > 4 && dr.compare(dr.size() - 4, 4, "/lib") == 0)
+                    dr = dr.substr(0, dr.size() - 4);
+                std::string pf = metaProvidesPath(dr, name);
+                if (!pf.empty()) {
+                    std::string full = dr + "/" + pf;
+                    std::ifstream mv(full);
+                    if (mv) {
+                        if (traceLoad)
+                            std::cerr << "[Load] " << name << " <- META6 provides " << full << "\n";
+                        std::ostringstream ms; ms << mv.rdbuf();
+                        resourceStack_.push_back(buildSourceResourceMap(dr));
+                        distStack_.push_back(buildDistribution(dr));
+                        struct RG { std::vector<Value>& s; ~RG() { s.pop_back(); } } rg2{resourceStack_};
+                        struct DG { std::vector<Value>& s; ~DG() { s.pop_back(); } } dg2{distStack_};
+                        loadSource(ms.str(), full);
+                        return;
+                    }
+                }
+            }
             for (size_t xi = 0; xi < nExts; xi++) {
                 const char* ext = exts[xi];
                 std::ifstream in(dir + "/" + rel + ext);
@@ -6249,9 +6329,52 @@ static void* dlopenLib(const std::string& lib) {
 // argv — what `P[%defaults].new` and `Q[Int].mk` dispatch on. A shallow copy of
 // the role's ClassInfo keeps its methods/attrs; only the param bindings differ.
 Value Interpreter::makeRolePun(ClassInfo* role, const std::string& roleName, ValueList& argv) {
+    // An EXPLICIT parameterization type-checks its arguments: `role R[Any:D $x]`
+    // refuses a type object and `role S[Str $q]` refuses a 42, which is how a
+    // module picks between parameterizations by trying them (Parameterizable's
+    // `multi method MIXIN`). bindRoleParamsInto below is deliberately lenient —
+    // a bare `does R` must still take the parameter DEFAULTS — so the check
+    // belongs here, where the arguments were actually written.
+    if (role->decl && !role->decl->roleParams.empty()) {
+        auto refuse = [&]() {
+            throwTyped("X::Role::Parametric::NoSuchCandidate", {{"role", roleName}},
+                       "No appropriate parametric role variant available for '" + roleName + "'");
+        };
+        size_t pi = 0;
+        for (auto& p : role->decl->roleParams) {
+            if (p.named || p.slurpy) continue;
+            size_t ai = 0, seen = 0; bool found = false;
+            for (; ai < argv.size(); ai++)
+                if (!argv[ai].namedArg && seen++ == pi) { found = true; break; }
+            pi++;
+            if (!found || p.typeCapture) continue;   // `::T` captures whatever it is given
+            const Value& a = argv[ai];
+            if (p.defConstraint == 1 && !isDefined(a)) refuse();
+            if (p.defConstraint == 2 && isDefined(a)) refuse();
+            if (!p.type.empty() && p.type != "Any" && p.type != "Mu" &&
+                !typeOrSubsetMatches(a, p.type)) refuse();
+        }
+    }
+    // The SAME parameterization is the SAME type: `Answer[42]` written twice
+    // must produce one pun, or `$obj does Answer[42]` and a later
+    // `$obj ~~ Answer[42]` disagree (Parameterizable's does-ok). Keyed by the
+    // arguments' identities; anything without a stable identity (a Code, an
+    // object) is left uncached rather than wrongly shared.
+    std::string punKey = roleName;
+    bool cacheable = true;
+    for (auto& a : argv) {
+        if (a.t == VT::Code || a.t == VT::Object) { cacheable = false; break; }
+        punKey += "\x01" + whichOf(a);
+    }
+    if (cacheable) {
+        auto hit = rolePunCache_.find(punKey);
+        if (hit != rolePunCache_.end() && classes_.count(hit->second))
+            return Value::typeObj(hit->second);
+    }
     auto pun = std::make_shared<ClassInfo>(*role);
     static int punSerial = 0;
     pun->name = roleName + "\x01pun" + std::to_string(++punSerial);
+    if (cacheable) rolePunCache_[punKey] = pun->name;
     pun->doneRoles.insert(roleName); // `~~ P` still answers True
     pun->roleParamBindings.clear();
     bindRoleParamsInto(pun.get(), role, argv, role->declEnv);
@@ -7382,6 +7505,38 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     if (!dup) ci->attrs.push_back(a);
                 }
                 for (auto& sub : it->second->doneRoles) ci->doneRoles.insert(sub); // role-of-role
+                // …and the role's GRAMMAR RULES. Only the first `does` becomes the
+                // parent (whose rules the grammar walk finds); every further role
+                // lands here, and its tokens were simply dropped — a grammar
+                // composing three DSL::Shared roles kept one role's rules.
+                // The class's own declarations win a name clash; between two
+                // composed roles the EARLIER `does` wins, matching methods.
+                {
+                    // …walking the composed role's WHOLE chain: a role's own
+                    // `does` puts its sub-role in the parent slot
+                    // (TimeIntervalSpec does TimeIntervalSpeechParts), and those
+                    // rules have to arrive too.
+                    std::set<ClassInfo*> seenR;
+                    std::function<void(ClassInfo*)> mergeRules = [&](ClassInfo* rc) {
+                        if (!rc || !seenR.insert(rc).second) return;
+                        for (auto& rk : rc->rules) {
+                            bool own = false;
+                            for (auto& r0 : cd->rules) if (r0.name == rk.first) { own = true; break; }
+                            if (own || ci->rules.count(rk.first)) continue;
+                            ci->rules[rk.first] = rk.second;
+                            auto ki = rc->ruleKind.find(rk.first);
+                            if (ki != rc->ruleKind.end()) ci->ruleKind[rk.first] = ki->second;
+                            auto pi2 = rc->ruleParams.find(rk.first);
+                            if (pi2 != rc->ruleParams.end()) ci->ruleParams[rk.first] = pi2->second;
+                        }
+                        for (auto& nm : rc->ruleOrder)
+                            if (std::find(ci->ruleOrder.begin(), ci->ruleOrder.end(), nm) == ci->ruleOrder.end())
+                                ci->ruleOrder.push_back(nm);
+                        mergeRules(rc->parent.get());
+                        for (auto& p2 : rc->extraParents) mergeRules(p2.get());
+                    };
+                    mergeRules(it->second.get());
+                }
             }
             // a role used as a parent (`class C does R` where R lands as parent) also counts
             if (ci->parent && ci->parent->isRole) ci->doneRoles.insert(ci->parent->name);
@@ -8596,13 +8751,21 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             // `-> (:key($k), :value($v))` / nested sub-signatures: real signature
             // binding — each element is the single argument of the pointy signature.
             if (!fs->params.empty()) {
-                for (size_t i = 0; haveItem(i); i++) {
+                // ONE element per PARAMETER, as everywhere else in a `for`:
+                // `-> $k, @v is copy` over `%h.kv` takes two per iteration. This
+                // used to pass a single element however many parameters there
+                // were, which was invisible while only 1-param signatures
+                // (`-> $ (:$k)`) reached here.
+                size_t np = fs->params.size();
+                for (size_t i = 0; haveItem(i); i += np) {
                     auto scope = std::make_shared<Env>(); scope->parent = tctx_.cur;
-                    ValueList one{itemsR[i]};
-                    one[0].namedArg = false; // a loop topic is a VALUE, never a named arg
-                    bindParams(fs->params, one, scope);
+                    ValueList row;
+                    for (size_t k = 0; k < np; k++)
+                        row.push_back(haveItem(i + k) ? itemsR[i + k] : Value::any());
+                    for (auto& a : row) a.namedArg = false; // a loop topic is a VALUE, never a named arg
+                    bindParams(fs->params, row, scope);
                     if (!runLoopBody(fs->body.get(), scope, fs->label, i == 0,
-                                     !liveSt && i + 1 == itemsR.size(), col)) break;
+                                     !liveSt && i + np >= itemsR.size(), col)) break;
                 }
                 return forResult();
             }
@@ -9001,6 +9164,20 @@ static inline bool isMuTypeObject(const Value& v) {
 }
 
 void Interpreter::typeCheckBind(const Param& p, const Value& v, bool blockParam) {
+    // A type SMILEY is part of the constraint: `Int:D $x` refuses a type object
+    // and `Int:U $x` refuses an instance. The smiley was recorded (multi
+    // dispatch scores on it) but never enforced on an ordinary bind, so
+    // `sub f(Int:D $x) {…}; f(Int)` bound happily — and a module choosing a
+    // parameterization by which signature ACCEPTS its arguments always got the
+    // first one (Parameterizable).
+    if (p.defConstraint == 1 && !isDefined(v))
+        throw RakuError{Value::typeObj("X::Parameter::InvalidConcreteness"),
+            "Parameter '" + p.name + "' must be an object instance of type '" +
+            (p.type.empty() ? std::string("Any") : p.type) + "', not a type object"};
+    if (p.defConstraint == 2 && isDefined(v))
+        throw RakuError{Value::typeObj("X::Parameter::InvalidConcreteness"),
+            "Parameter '" + p.name + "' must be a type object of type '" +
+            (p.type.empty() ? std::string("Any") : p.type) + "', not an object instance"};
     // `Any` is everything BELOW Mu, so an Any-constrained parameter takes any
     // value except Mu itself. Asked before the type-object bypass on the next
     // line, which is what previously let `sub f($x) {…}; f(Mu)` bind where
@@ -9062,6 +9239,19 @@ void Interpreter::typeCheckBind(const Param& p, const Value& v, bool blockParam)
     throw RakuError{Value::typeObj("X::TypeCheck::Binding"),
         "Type check failed in binding to parameter '" + p.name + "'; expected " +
         p.type + " but got " + v.typeName() + " (" + typeCheckRepr(v) + ")"};
+}
+
+// An ATTRIBUTIVE parameter (`submethod BUILD(:$!type = Any)`) ASSIGNS to the
+// attribute, so Nil resets it to the attribute's default the way `$x = Nil`
+// already did for an ordinary container. The value's own class says what that
+// default is: an untyped attribute goes back to Any, a typed one to its type.
+static Value nilResetForAttrSlot(const Value& v, const Value& self, const std::string& an) {
+    if (v.t != VT::Nil) return v;
+    if (self.t == VT::Object && self.obj() && self.obj()->cls)
+        if (const ClassAttr* at = self.obj()->cls->findAttr(an))
+            if (!at->type.empty() && ascii::isupper((unsigned char)at->type[0]))
+                return Value::typeObj(at->type);
+    return Value::any();
 }
 
 void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
@@ -9195,6 +9385,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                     Value av = v;
                     if (p.name[0] == '@') av = coerceArray(av);
                     else if (p.name[0] == '%') av = coerceHash(av);
+                    else av = nilResetForAttrSlot(av, *sp, p.name.substr(2));
                     sp->obj()->attrs[p.name.substr(2)] = std::move(av);
                 }
         };
@@ -9316,7 +9507,9 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                 // sharing leaked host/user-agent back into the caller's hash)
                 Value bv = it->second;
                 if (p.sigil == '@') {
-                    if (bv.t == VT::Array && bv.itemized) { Value u = bv; u.itemized = false; bv = coerceArray(u); }
+                    // a CArray binds AS ITSELF here too (see the positional arm)
+                    if (bv.t == VT::Str && bv.hashKind == "CArray") { bv.itemized = false; }
+                    else if (bv.t == VT::Array && bv.itemized) { Value u = bv; u.itemized = false; bv = coerceArray(u); }
                     else if (bv.t == VT::Array && !p.isCopy && !bv.isList && !bv.ext()) { /* bind: share */ }
                     else bv = coerceArray(bv);
                 }
@@ -9367,6 +9560,11 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                        with Positional[License] must answer @x.of == License, not
                        wrap the type in a one-element array (JSON::Unmarshal) */
                 }
+                // a CArray IS Positional and binds AS ITSELF: coercing it to a
+                // plain Array threw away its type (`@v ~~ CArray:D` is how
+                // Math::DistanceFunctions picks the native fast path) and copied
+                // the buffer a C callee was expected to see.
+                else if (v.t == VT::Str && v.hashKind == "CArray") { v.itemized = false; /* bind raw, decont */ }
                 else if (v.t == VT::Array && v.itemized) { Value u = v; u.itemized = false; v = coerceArray(u); }
                 else if (v.t == VT::Array && !p.isCopy && !v.isList && !v.ext()) { /* bind: share the buffer */ }
                 else v = coerceArray(v);
@@ -9415,6 +9613,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                         Value av = v;
                         if (p.name[0] == '@') av = coerceArray(av);
                         else if (p.name[0] == '%') av = coerceHash(av);
+                        else av = nilResetForAttrSlot(av, *sp, p.name.substr(2));
                         sp->obj()->attrs[p.name.substr(2)] = std::move(av);
                     }
             }
@@ -9551,6 +9750,10 @@ static bool typeNameConforms(const std::string& lnIn, const std::string& rn,
         // (utf8 is a Blob but not Cool). Without the Buf→Blob step `Buf ~~ Blob`
         // was False, and DBDish::mysql then decided a BLOB column needed .decode.
         {"Blob",  {"Blob", "Positional", "Stringy", "Cool"}},
+        // a CArray does Positional/Iterable (NativeCall's class declares both) —
+        // absent here, `$carray ~~ Positional:D` was False and every module
+        // guarding its native path on it fell through (Math::DistanceFunctions)
+        {"CArray", {"CArray", "Positional", "Iterable"}},
         {"Buf",   {"Buf", "Blob", "Positional", "Stringy", "Cool"}},
         {"blob8", {"blob8", "Blob", "Positional", "Stringy", "Cool"}},
         {"blob16",{"blob16", "Blob", "Positional", "Stringy", "Cool"}},
@@ -10353,10 +10556,49 @@ struct DepthGuard {
 // Shared by the direct `@a».m` path and the closure a `*.attr».m` WhateverCode
 // curries into; the latter used to fall back to a plain method call, which
 // dispatched to the CONTAINER ("No such method 'lang' for invocant of type 'Array'").
+// The methods Rakudo marks `is nodal`: the ones that ask about a CONTAINER
+// rather than about a value. A hyper applies those to each node and stops
+// there; every other method reaches the LEAVES, descending through nested
+// collections. Derived by running each name of Any/List/Array's method table
+// through `[[1,2],]».NAME` under Rakudo and comparing the answer with the
+// node's own and with the per-leaf one (scratch probe nodal2/nodal3).
+static bool isNodalMethod(const std::string& m) {
+    static const std::set<std::string> kNodal = {
+        "Array", "Bag", "BagHash", "Hash", "List", "Map", "Mix", "MixHash",
+        "Seq", "Set", "SetHash", "Slip", "Supply",
+        "all", "antipairs", "any", "append", "batch", "categorize", "classify",
+        "combinations", "elems", "end", "first", "flat", "grep", "hash", "head",
+        "item", "join", "keys", "kv", "list", "map", "max", "min", "minmax",
+        "none", "one", "pairs", "pairup", "permutations", "pop", "prepend",
+        "push", "reduce", "repeated", "reverse", "roll", "rotate", "rotor",
+        "serial", "shift", "slice", "sort", "squish", "sum", "tail", "tree",
+        "unique", "unshift", "values",
+        // …and the ones the probe could not classify because they take an
+        // argument (it would have had to invent one). S03-metaops/hyper.t names
+        // them: without `flatmap` here the hyper descended and asked an Int for
+        // it, which took the whole file down.
+        "deepmap", "duckmap", "flatmap", "invert", "nodemap", "pick",
+        "produce", "splice"};
+    return kNodal.count(m) > 0;
+}
+
 Value Interpreter::hyperMethodEach(const Value& inv, const std::string& m, ValueList& args) {
+    // A non-nodal method reaches the LEAVES: `[[1,2],[3,4]]».Str` is
+    // `[["1","2"],["3","4"]]`, not two stringified rows, and `@data».are` over
+    // a list of hashes answers a hash of types per element. rakupp stopped at
+    // the top level for every method, which is only right for the nodal ones.
+    const bool nodal = isNodalMethod(m);
+    auto descends = [&](const Value& v) {
+        return !nodal && ((v.t == VT::Array && v.arr()) ||
+                          (v.t == VT::Hash && v.hash() && v.hashKind.empty()));
+    };
+    auto each = [&](const Value& el) {
+        return descends(el) ? hyperMethodEach(el, m, args) : methodCall(el, m, args);
+    };
     if (inv.t == VT::Hash && inv.hash() && inv.hashKind.empty()) {
         Value hout = Value::makeHash();
-        for (auto& kv : *inv.hash()) (*hout.hash())[kv.first] = methodCall(kv.second, m, args);
+        hout.ofTypeM() = inv.ofType(); hout.objKeyed = inv.objKeyed;
+        for (auto& kv : *inv.hash()) (*hout.hash())[kv.first] = each(kv.second);
         return hout;
     }
     Value out = Value::array();
@@ -10364,12 +10606,17 @@ Value Interpreter::hyperMethodEach(const Value& inv, const std::string& m, Value
     // once per byte — flatten() would hand back the whole buffer as one item
     if (inv.t == VT::Str && (inv.hashKind == "Blob" || inv.hashKind == "Buf")) {
         for (auto& el : inv.blobList()) out.arr()->push_back(methodCall(el, m, args));
+        out.isList = true;
+        return out;
     }
-    else if (inv.t == VT::Array && inv.arr())
-        for (auto& el : *inv.arr()) out.arr()->push_back(methodCall(el, m, args));
+    if (inv.t == VT::Array && inv.arr())
+        for (auto& el : *inv.arr()) out.arr()->push_back(each(el));
     else
-        for (auto& el : inv.flatten()) out.arr()->push_back(methodCall(el, m, args));
-    out.isList = true;
+        for (auto& el : inv.flatten()) out.arr()->push_back(each(el));
+    // …and the answer keeps the invocant's shape: an Array in, an Array out —
+    // for the DEEP methods. A nodal one answers a List either way (Rakudo maps
+    // the nodes with nodemap, whose result is a Seq): `@a».elems` is `(1, 1)`.
+    out.isList = nodal || !(inv.t == VT::Array && !inv.isList);
     return out;
 }
 
@@ -10604,14 +10851,32 @@ void Interpreter::materializeLazy(const Value& v, size_t n) {
 // An INFINITE one is left alone: draining it would not return. Walking that
 // incrementally means teaching each loop to pull as it goes, which is its own
 // change — `for 1, { $_ + 1 } ... * { last … }` is still short.
-void Interpreter::assignChecked(Expr* target, Value v) {
+Value Interpreter::assignChecked(Expr* target, Value v) {
+    // A parenthesised list target distributes: `($a, $b) .= reverse` is the
+    // mutating form of `($a, $b) = ($a, $b).reverse`, and lvalue() has nothing
+    // to hand back for the list itself.
+    if (target && target->kind == NK::ListExpr) {
+        assignListTarget(static_cast<ListExpr*>(target), v);
+        return v;
+    }
+    // The SIGIL is a container type on the way back in, exactly as it is for a
+    // plain `=`: `@a .= repeated` stores an Array, not the Seq the method
+    // answered, and `%h .= Hash` a Hash. (This is `.=`'s only caller, so the
+    // coercion cannot leak into an ordinary assignment.)
+    if (target && target->kind == NK::VarExpr) {
+        const std::string& nm = static_cast<VarExpr*>(target)->name;
+        if (!nm.empty() && nm[0] == '@') v = coerceArray(v);
+        else if (!nm.empty() && nm[0] == '%') v = coerceHash(v);
+    }
     if (Value* lv = lvalue(target)) {
         if (lv->readonly)
             throw RakuError{Value::typeObj("X::Assignment::RO"),
                             "Cannot assign to a readonly variable or a value"};
         v.readonly = false;                 // the flag marks the container, not the value
         *lv = std::move(v);
+        return *lv;
     }
+    return v;
 }
 
 void Interpreter::drainIfFiniteLazy(const Value& v) {
@@ -13652,6 +13917,23 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
                     }
                     return out;
                 }
+                // A multi METHOD whose candidates all decline still has the
+                // BUILTIN behind it — `multi method gist(::?CLASS:D:)` on a TYPE
+                // OBJECT falls back to Mu's gist ('(TypeName)'), exactly as a
+                // user ACCEPTS falls back to Mu.ACCEPTS. Only for names the
+                // dispatcher below can actually answer; anything else keeps the
+                // honest X::Multi::NoMatch.
+                if (selfCopy.t == VT::Type) {
+                    // Mu's own answers for a type object, computed without
+                    // re-entering dispatch (which would find the same multi)
+                    std::string shortName = selfCopy.s;
+                    size_t colons = shortName.rfind("::");
+                    if (colons != std::string::npos) shortName = shortName.substr(colons + 2);
+                    if (c.name == "gist" || c.name == "raku" || c.name == "perl")
+                        return Value::str("(" + shortName + ")");
+                    if (c.name == "Str") return Value::str("");
+                    if (c.name == "Bool") return Value::boolean(false);
+                }
                 throw RakuError{Value::typeObj("X::Multi::NoMatch"),
                                 "No matching multi candidate for method " + c.name};
             }
@@ -14069,6 +14351,15 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
         // chain, so a callee's assignment to a caller's dynamic vanished.
         if (ve->name.size() > 1 && ve->name[1] == '*')
             if (Value* dp = findDynamicLenient(ve->name)) return dp;
+        // The three standard handles have no stored container until someone
+        // writes one — they are synthesized on read. A write must therefore land
+        // in the GLOBAL scope, the way Rakudo's setting-level container does:
+        // `sub capture_on { $*OUT = … }` has to redirect the caller's output,
+        // and minting a local left the sub redirecting nothing but itself
+        // (IO::Capture::Simple).
+        if ((ve->name == "$*OUT" || ve->name == "$*ERR" || ve->name == "$*IN") &&
+            !tctx_.cur->find(ve->name) && global_)
+            return &global_->define(ve->name, dynVar(ve->name));
         Value* p = tctx_.cur->find(ve->name);
         if (p) return p;
         // &?BLOCK / &?ROUTINE: not real slots — nothing assignable here
@@ -15114,6 +15405,68 @@ std::vector<ValueList> Interpreter::expandDimTuples(const Value& root, const Val
     return tuples;
 }
 
+// Assign a VALUE across a parenthesised list of targets — `($a, $b) = …`,
+// and equally `($a, $b) .= reverse`, which is a mutating method call whose
+// target happens to be that list (Text::Levenshtein::Damerau swaps its two
+// strings that way, and the generic lvalue path could only say "Target is
+// not assignable"). Nested list targets destructure recursively.
+void Interpreter::assignListTarget(ListExpr* lst, const Value& rhs) {
+    // one-level list flattening (Raku): a List/Range spreads, but an itemized
+    // `[...]` Array stays one element — so `my ($a,$b) = M, [7,8]` gives $b = [7,8].
+    auto spread = [](const Value& r) -> ValueList {
+        ValueList vals;
+        if (r.t == VT::Array && r.arr()) {
+            // `my ($a, $b) = @m[3;2]` takes the leaves in row-major order,
+            // so $a is 1 and $b is 2 — not the first two ROWS.
+            ValueList shaped;
+            if (isMultiDimShaped(r)) shapedLeaves(r, shaped);
+            for (auto& it : (isMultiDimShaped(r) ? shaped : *r.arr())) {
+                if (it.t == VT::Range) { for (auto& e : it.flatten()) vals.push_back(e); }
+                else if (it.t == VT::Array && it.isList && it.arr()) { for (auto& e : *it.arr()) vals.push_back(e); }
+                else vals.push_back(it);
+            }
+        } else if (r.t == VT::Range) vals = r.flatten();
+        else vals.push_back(r);
+        return vals;
+    };
+    // Bind positionally; a nested list target (`my (\a, (\b, \c))`) recursively
+    // destructures the corresponding element.
+    std::function<void(ListExpr*, const Value&)> bind = [&](ListExpr* L, const Value& r) {
+        ValueList vals = spread(r);
+        size_t vi = 0; // value cursor (a slurpy @/% target consumes the rest)
+        for (size_t i = 0; i < L->items.size(); i++) {
+            Expr* tgt = L->items[i].get();
+            if (tgt->kind == NK::Whatever) { vi++; continue; } // `(*, $a) = …` skips a value
+            if (tgt->kind == NK::VarExpr) {
+                const std::string& nm = static_cast<VarExpr*>(tgt)->name;
+                if (nm.size() >= 1 && (nm[0] == '@' || nm[0] == '%')) {
+                    // an @/% target slurps every remaining value; later targets get Any
+                    Value rest = Value::array();
+                    for (size_t j = vi; j < vals.size(); j++) rest.arr()->push_back(vals[j]);
+                    vi = vals.size();
+                    Value* lv = lvalue(tgt);
+                    if (nm[0] == '%') { rest.isList = true; *lv = coerceHash(rest); }
+                    else *lv = rest;
+                    continue;
+                }
+            }
+            Value v = (vi < vals.size()) ? vals[vi] : Value::any();
+            vi++;
+            if (tgt->kind == NK::ListExpr) bind(static_cast<ListExpr*>(tgt), v);
+            else {
+                Value* lv = lvalue(tgt);
+                // A native container keeps its width across the store, exactly as
+                // the scalar path does: `my uint32 ($a, $b) = …` has to wrap at 32
+                // bits, and overwriting the Value outright threw the width away.
+                int nb = lv->natBits; bool ns = lv->natSigned, nf = lv->natFloat;
+                *lv = v;
+                if (nb) wrapNative(*lv, nb, ns, nf);
+            }
+        }
+    };
+    bind(lst, rhs);
+}
+
 Value Interpreter::evalAssignInner(Assign* a, bool sink) {
 
     // A `my` DYNAMIC declaration is visible WHILE its own initializer runs —
@@ -15213,62 +15566,8 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
     // approximates := as assignment for containers throughout (as with
     // sigilless ); File::Temp's t/03 does `my (&tempfile, &tempdir) := ...`
     if ((a->op == "=" || a->op == ":=") && a->target->kind == NK::ListExpr) {
-        auto* lst = static_cast<ListExpr*>(a->target.get());
         Value rhs = eval(a->value.get());
-        // one-level list flattening (Raku): a List/Range spreads, but an itemized
-        // `[...]` Array stays one element — so `my ($a,$b) = M, [7,8]` gives $b = [7,8].
-        auto spread = [](const Value& r) -> ValueList {
-            ValueList vals;
-            if (r.t == VT::Array && r.arr()) {
-                // `my ($a, $b) = @m[3;2]` takes the leaves in row-major order,
-                // so $a is 1 and $b is 2 — not the first two ROWS.
-                ValueList shaped;
-                if (isMultiDimShaped(r)) shapedLeaves(r, shaped);
-                for (auto& it : (isMultiDimShaped(r) ? shaped : *r.arr())) {
-                    if (it.t == VT::Range) { for (auto& e : it.flatten()) vals.push_back(e); }
-                    else if (it.t == VT::Array && it.isList && it.arr()) { for (auto& e : *it.arr()) vals.push_back(e); }
-                    else vals.push_back(it);
-                }
-            } else if (r.t == VT::Range) vals = r.flatten();
-            else vals.push_back(r);
-            return vals;
-        };
-        // Bind positionally; a nested list target (`my (\a, (\b, \c))`) recursively
-        // destructures the corresponding element.
-        std::function<void(ListExpr*, const Value&)> bind = [&](ListExpr* L, const Value& r) {
-            ValueList vals = spread(r);
-            size_t vi = 0; // value cursor (a slurpy @/% target consumes the rest)
-            for (size_t i = 0; i < L->items.size(); i++) {
-                Expr* tgt = L->items[i].get();
-                if (tgt->kind == NK::Whatever) { vi++; continue; } // `(*, $a) = …` skips a value
-                if (tgt->kind == NK::VarExpr) {
-                    const std::string& nm = static_cast<VarExpr*>(tgt)->name;
-                    if (nm.size() >= 1 && (nm[0] == '@' || nm[0] == '%')) {
-                        // an @/% target slurps every remaining value; later targets get Any
-                        Value rest = Value::array();
-                        for (size_t j = vi; j < vals.size(); j++) rest.arr()->push_back(vals[j]);
-                        vi = vals.size();
-                        Value* lv = lvalue(tgt);
-                        if (nm[0] == '%') { rest.isList = true; *lv = coerceHash(rest); }
-                        else *lv = rest;
-                        continue;
-                    }
-                }
-                Value v = (vi < vals.size()) ? vals[vi] : Value::any();
-                vi++;
-                if (tgt->kind == NK::ListExpr) bind(static_cast<ListExpr*>(tgt), v);
-                else {
-                    Value* lv = lvalue(tgt);
-                    // A native container keeps its width across the store, exactly as
-                    // the scalar path does: `my uint32 ($a, $b) = …` has to wrap at 32
-                    // bits, and overwriting the Value outright threw the width away.
-                    int nb = lv->natBits; bool ns = lv->natSigned, nf = lv->natFloat;
-                    *lv = v;
-                    if (nb) wrapNative(*lv, nb, ns, nf);
-                }
-            }
-        };
-        bind(lst, rhs);
+        assignListTarget(static_cast<ListExpr*>(a->target.get()), rhs);
         return rhs;
     }
 
@@ -16070,6 +16369,19 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                     else                         *lv->arr() = *nv.arr();
                     nv.setArr(lv->arrS());
                 }
+                // A FRESH slot (an attribute a custom BUILD writes first, before
+                // any seed) must still own its OWN buffer: storing the coerced
+                // value as-is shared the CALLER's array, and the module's later
+                // `@!points = @!points.pairs` rewrote the caller's @points
+                // (Algorithm::KDimensionalTree's search points turned into
+                // index=>point pairs under the caller's feet).
+                else if (nv.t == VT::Array && nv.arr() && !nv.payloadUnique()) {
+                    Value own = Value::array();
+                    *own.arr() = *nv.arr();
+                    own.isList = false;
+                    own.ofTypeM() = nv.ofType();
+                    nv = own;
+                }
                 *lv = nv;
             }
             if (!keepType.empty() && lv->ofType().empty()) lv->ofTypeM() = keepType;
@@ -16544,10 +16856,25 @@ static void setRep(const std::string& k, const Value& v) {
     if (g_setReps.size() > 4096) g_setReps.clear();
     g_setReps.emplace(k, v);
 }
-// wrap a weight map as the tier's IMMUTABLE type (Set / Bag / Mix)
-static Value setWrap(const std::map<std::string, double>& res, int tier) {
+// Is this operand a QuantHash at all, and is it the MUTABLE flavour? A set
+// operator answers the mutable type when its LEFT operand is mutable —
+// `SetHash (|) Set` is a SetHash, `Set (|) SetHash` a Set — which is how
+// Rakudo decides it, and rakupp always answered the immutable one.
+static bool isQuantHashVal(const Value& v) {
+    return v.t == VT::Hash && (v.hashKind == "Set" || v.hashKind == "SetHash" ||
+                               v.hashKind == "Bag" || v.hashKind == "BagHash" ||
+                               v.hashKind == "Mix" || v.hashKind == "MixHash");
+}
+static bool isMutableQuantHash(const Value& v) {
+    return v.t == VT::Hash && (v.hashKind == "SetHash" || v.hashKind == "BagHash" ||
+                               v.hashKind == "MixHash");
+}
+// wrap a weight map as the tier's type (Set / Bag / Mix, or their Hash twins)
+static Value setWrap(const std::map<std::string, double>& res, int tier, bool mut = false) {
     Value h = Value::makeHash();
-    h.hashKind = tier == 2 ? "Mix" : tier == 1 ? "Bag" : "Set";
+    h.hashKind = tier == 2 ? (mut ? "MixHash" : "Mix")
+               : tier == 1 ? (mut ? "BagHash" : "Bag")
+                           : (mut ? "SetHash" : "Set");
     for (auto& kv : res) {
         if (tier == 2 ? kv.second == 0 : kv.second <= 0) continue;
         Value cnt = tier == 0 ? Value::boolean(true)
@@ -16570,7 +16897,14 @@ static int setOpMinTier(const std::string& op) {
 // single-operand form: `(|) $x` coerces (union with nothing IS the coercion)
 static Value setCoerceOne(const std::string& op, const Value& v) {
     int tier = std::max(settyTier(v), setOpMinTier(op));
-    return setWrap(setWeights(v, tier), tier);
+    // The one-operand form keeps the flavour for the operators whose Rakudo
+    // candidate returns `self` — `[(|)] SetHash.new(<a b>)` is a SetHash — but
+    // `(-)` and `(+)` coerce to the immutable type even from a mutable operand
+    // (`[(-)] SetHash` is a Set, `[(+)] SetHash` a Bag). Derived operator by
+    // operator against Rakudo; `(.)` really does answer BagHash from a SetHash.
+    bool keepsFlavour = !(op == "(-)" || op == "\xE2\x88\x96" ||
+                          op == "(+)" || op == "\xE2\x8A\x8E");
+    return setWrap(setWeights(v, tier), tier, keepsFlavour && isMutableQuantHash(v));
 }
 
 static Value setOp(const std::string& op, const Value& l, const Value& r) {
@@ -16590,20 +16924,65 @@ static Value setOp(const std::string& op, const Value& l, const Value& r) {
         double hi = (double)rng.rTo() - (rng.rExTo() ? 1 : 0);
         return v >= lo && v <= hi;
     };
+    // MEMBERSHIP is an IDENTITY question — `'123' (elem) [123]` is False, the
+    // Str and the Int are different elements — while the quanthash STORAGE keys
+    // stay renderings (changing those was tried and costs ~700 roast assertions
+    // until Hash keys carry real objects). So the membership tests walk the
+    // operand's ELEMENTS and compare `.WHICH`, instead of asking the rendering-
+    // keyed weight map. DSL::Shared's fuzzy matcher gates on exactly this: its
+    // `(elem)` shortcut fired for a numeric word and skipped the regex walk.
+    auto hasElem = [&](const Value& hay, const Value& needle) -> bool {
+        const std::string want = whichOf(needle);
+        auto elemMatches = [&](const Value& el) { return whichOf(el) == want; };
+        if (hay.t == VT::Hash && hay.hash()) {
+            bool setK = settyTier(hay) == 0 && !hay.hashKind.empty();
+            for (auto& kv : *hay.hash()) {
+                double w = hay.hashKind.empty() || setK ? (kv.second.truthy() ? 1.0 : 0.0)
+                                                        : kv.second.toNum();
+                if (w == 0) continue;
+                // An OBJECT-KEYED hash stores its keys as strings (the standing
+                // object-hash limitation) — the Int 13 in `my %h{Any}` arrives
+                // here as "13", so identity comparison against the real Int can
+                // only compare renderings until keys carry objects.
+                bool keyShaped = hay.objKeyed ||
+                                 hay.ofType().find(',') != std::string::npos; // Hash[V,K]
+                if (keyShaped && !kv.second.pairKey()) {
+                    if (kv.first == needle.toStr()) return true;
+                    continue;
+                }
+                Value el = kv.second.pairKey() ? *kv.second.pairKey() : Value::str(kv.first);
+                if (elemMatches(el)) return true;
+            }
+            return false;
+        }
+        if (hay.t == VT::Array || hay.t == VT::Range) {
+            for (auto& x : hay.flatten()) {
+                if (x.t == VT::Pair) { // pair→weight reading, as setWeights has it
+                    if (!(x.pairVal() && x.pairVal()->truthy())) continue;
+                    Value el = x.pairKey() ? *x.pairKey() : Value::str(x.s);
+                    if (elemMatches(el)) return true;
+                }
+                else if (elemMatches(x)) return true;
+            }
+            return false;
+        }
+        if (hay.t == VT::Pair)
+            return hay.pairVal() && hay.pairVal()->truthy() &&
+                   elemMatches(hay.pairKey() ? *hay.pairKey() : Value::str(hay.s));
+        return elemMatches(hay); // a scalar is a one-element set
+    };
     if (op == "(elem)" || op == "∈" || op == "(!elem)" || op == "∉") {
         bool neg = (op == "(!elem)" || op == "∉");
         if (r.t == VT::Range) return Value::boolean(neg ? !rangeHas(r, l) : rangeHas(r, l));
         if (lazySetOperand(r)) throw RakuError{Value::typeObj("X::Cannot::Lazy"), "Cannot " + op + " a lazy list"};
-        auto b = setWeights(r, settyTier(r)); std::string k = baggyKeyStr(l);
-        bool in = b.count(k) && b[k] != 0;
+        bool in = hasElem(r, l);
         return Value::boolean(neg ? !in : in);
     }
     if (op == "(cont)" || op == "∋" || op == "(!cont)" || op == "∌") {
         bool neg = (op == "(!cont)" || op == "∌");
         if (l.t == VT::Range) return Value::boolean(neg ? !rangeHas(l, r) : rangeHas(l, r));
         if (lazySetOperand(l)) throw RakuError{Value::typeObj("X::Cannot::Lazy"), "Cannot " + op + " a lazy list"};
-        auto a = setWeights(l, settyTier(l)); std::string k = baggyKeyStr(r);
-        bool in = a.count(k) && a[k] != 0;
+        bool in = hasElem(l, r);
         return Value::boolean(neg ? !in : in);
     }
     if (lazySetOperand(l) || lazySetOperand(r))
@@ -16643,7 +17022,11 @@ static Value setOp(const std::string& op, const Value& l, const Value& r) {
     }
     else if (op == "(+)" || op == "⊎") { res = a; for (auto& kv : b) res[kv.first] += kv.second; }
     else if (op == "(.)" || op == "⊍") { for (auto& kv : a) if (b.count(kv.first)) res[kv.first] = kv.second * b[kv.first]; }
-    return setWrap(res, tier);
+    // MUTABILITY follows the LEFT operand — except symmetric difference, whose
+    // candidates are typed on BOTH sides, so `SetHash (^) <a b>` is a plain Set.
+    bool mut = isMutableQuantHash(l) &&
+               (!(op == "(^)" || op == "\xE2\x8A\x96") || isQuantHashVal(r));
+    return setWrap(res, tier, mut);
 }
 
 // Multi-arg symmetric difference. Rakudo's (^)/⊖ is a genuine list operator, not
@@ -16676,7 +17059,12 @@ static Value setSymDiffN(const ValueList& operands) {
         }
         res[k] = t1 - t2;
     }
-    return setWrap(res, tier);
+    // Same mutability rule as the binary form: the FIRST operand decides, and
+    // symmetric difference needs every operand to be a QuantHash for the
+    // mutable answer (`[(^)] SetHash, <a b>` is a plain Set).
+    bool mut = !operands.empty() && isMutableQuantHash(operands[0]);
+    if (mut) for (auto& o : operands) if (!isQuantHashVal(o)) { mut = false; break; }
+    return setWrap(res, tier, mut);
 }
 
 bool isJunction(const Value& v) {
@@ -16718,6 +17106,18 @@ static BigInt bigBitwise(const BigInt& a, const BigInt& b, char which) {
 static ValueList listCtx(const Value& v) {
     if (v.t == VT::Str && !v.itemized && (v.hashKind == "Blob" || v.hashKind == "Buf"))
         return v.blobList();
+    // a CArray yields its DECODED elements — flatten() kept it whole (one item)
+    // and the Blob arm would have walked its raw bytes; `@v1 Z @v2` over two
+    // CArrays is Math::DistanceFunctions' pure fallback path
+    if (v.t == VT::Str && !v.itemized && v.hashKind == "CArray") {
+        std::string et = v.enumName.empty() ? std::string("int64") : v.enumName.str();
+        int w = Interpreter::ncElemSize(et);
+        long long n = w > 0 ? (long long)(v.s.size() / (size_t)w) : 0;
+        ValueList out;
+        for (long long i = 0; i < n; i++)
+            out.push_back(Interpreter::ncReadElem((long long)(intptr_t)v.s.data(), et, i));
+        return out;
+    }
     return v.flatten();
 }
 
@@ -17045,10 +17445,13 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         // only boolean context collapses: (5 == 3|5|7).gist is
         // 'any(False, True, False)' (S03-junctions/misc.t)
         if ((op == "~~" || op == "!~~") && !jleft && !isJunction(l)) {
+            // negation applies to the COLLAPSED verdict: `2 !~~ (Int|Str)` is
+            // !(2 ~~ Int|Str) = False — threading "!~~" per eigenstate made it
+            // any(False, True) = True
             int t = 0, total = 0;
-            for (auto& e : *j.arr()) { total++; if (applyArith(op, l, e).truthy()) t++; }
+            for (auto& e : *j.arr()) { total++; if (applyArith("~~", l, e).truthy()) t++; }
             bool res = j.enumName == "any" ? t > 0 : j.enumName == "all" ? t == total : j.enumName == "one" ? t == 1 : t == 0;
-            return Value::boolean(res);
+            return Value::boolean(op == "~~" ? res : !res);
         }
         // A junction TOPIC collapses too — see the evalBinary arm for why. It
         // threads OUTSIDE a junction matcher, and a regex matcher keeps its
@@ -19919,7 +20322,8 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
 }
 
 Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool subparse,
-                                const std::string& startRule, Value actions) {
+                                const std::string& startRule, Value actions,
+                                const ValueList* ruleArgs) {
     bool haveActions = (actions.t == VT::Object || actions.t == VT::Type);
     ClassInfo* actCls = nullptr;
     if (actions.t == VT::Object && actions.obj()) actCls = actions.obj()->cls.get();
@@ -19967,10 +20371,17 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
     // alphabetical order and silently mis-rank ties.
     std::vector<std::string> declOrder;
     std::set<std::string> declSeen;
+    // MOST DERIVED FIRST. Within one grammar the earliest declaration wins an LTM
+    // tie; ACROSS inheritance (and role composition, which puts the composed role
+    // in the parent slot) the derived declaration wins, exactly as method
+    // resolution does. Walking the base first made a base candidate outrank the
+    // derived one on every tie — `token h100:sym<General>` beat
+    // `token h100:sym<Spanish>` on the same text, so the General ACTION ran and
+    // Lingua::NumericWordForms read "ciento sesenta y tres" as 63.
     std::function<void(ClassInfo*)> collect = [&](ClassInfo* c) {
         if (!c) return;
-        collect(c->parent.get());
         for (auto& r : c->rules) {
+            if (gm.rules.count(r.first)) continue; // a more-derived declaration already won
             GrammarMatcher::Rule rule;
             rule.pattern = r.second;
             rule.kind = c->ruleKind.count(r.first) ? c->ruleKind.at(r.first) : "token";
@@ -19979,6 +20390,12 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
             gm.rules[r.first] = std::move(rule);
         }
         for (auto& nm : c->ruleOrder) if (declSeen.insert(nm).second) declOrder.push_back(nm);
+        collect(c->parent.get());
+        // `class G does A does B` puts A in the parent slot and B (and every
+        // further role) in extraParents — which nothing here ever walked, so a
+        // SECOND sibling role's rules simply did not exist in the grammar.
+        // DSL::Shared composes three roles into every grammar and lost two.
+        for (auto& p : c->extraParents) collect(p.get());
     };
     collect(g);
     // `<name>` where the grammar chain declares no such rule but a LEXICAL
@@ -20050,7 +20467,8 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
     // the named captures so far) temporarily bound; `:my`/assignments persist in tctx_.cur.
     using NamedMap = GrammarHooks::NamedMap; using ParamMap = GrammarHooks::ParamMap;
     auto runCode = [this, &input, parseCode, pendingMakes](const std::string& code, long from, long to,
-                                             const NamedMap& named, const ParamMap& params) -> Value {
+                                             const NamedMap& named, const ParamMap& params,
+                                             const std::vector<std::pair<long, long>>* caps = nullptr) -> Value {
         auto prog = parseCode(code);
         if (!prog) return Value::any();
         // build $/ over [from..to] with the named sub-captures attached
@@ -20058,6 +20476,20 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
         for (auto& nm : named)
             m.hashRef()[nm.first] = Value::matchVal(input.substr(nm.second.first, nm.second.second - nm.second.first),
                                                   nm.second.first, nm.second.second);
+        // …and the POSITIONAL ones, when the caller has them. A code assertion in
+        // a GRAMMAR rule saw only the named captures, so `([\w]+) <?{ f($0.Str) }>`
+        // — the shape a grammar uses to gate a token on a lookup — asked about an
+        // empty string and never matched (Lingua::NumericWordForms::Koremutake).
+        std::vector<std::pair<std::string, Value>> capSlots;
+        if (caps) {
+            for (size_t ci = 0; ci < caps->size(); ci++) {
+                long cb = (*caps)[ci].first, ce = (*caps)[ci].second;
+                Value cv = cb >= 0 && ce >= cb ? Value::matchVal(input.substr(cb, ce - cb), cb, ce)
+                                               : Value::any();
+                m.arrRef().push_back(cv);
+                capSlots.push_back({"$" + std::to_string(ci), cv});
+            }
+        }
         // save & overlay $/ + params; restore them after (but let :my vars persist)
         std::vector<std::pair<std::string, Value>> restore;
         auto overlay = [&](const std::string& name, const Value& v) {
@@ -20067,7 +20499,16 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
         };
         bool hadSlash = tctx_.cur->find("$/") != nullptr; Value savedSlash = hadSlash ? *tctx_.cur->find("$/") : Value::nil();
         setMatchVar(m);
-        for (auto& p : params) overlay(p.first, Value::str(p.second));
+        for (auto& cs : capSlots) overlay(cs.first, cs.second);
+        for (auto& p : params) {
+            // A rule parameter with NO textual value (the entry rule's, when the
+            // caller passed `args => (…)` instead of a `<rule($x)>` argument
+            // string) must not shadow the real value grammarParse bound into the
+            // match scope — overlaying "" there made `<?{ $*extended }>` read an
+            // empty string for a Bool the caller had supplied.
+            if (p.second.empty() && tctx_.cur->find(p.first)) continue;
+            overlay(p.first, Value::str(p.second));
+        }
         Value makeTarget; tctx_.makeTargets.push_back(&makeTarget); // capture an inline `make`
         Value last = Value::any();
         try { for (auto& s : prog->stmts) last = exec(s.get()); }
@@ -20082,6 +20523,12 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
     gm.hooks.assertPass = [runCode, parseCode](const std::string& code, long from, long to, const NamedMap& nm, const ParamMap& pm) -> bool {
         if (!parseCode(code)) return true; // unparseable assertion → lenient pass
         return runCode(code, from, to, nm, pm).truthy();
+    };
+    gm.hooks.assertPassCaps = [runCode, parseCode](const std::string& code, long from, long to, const NamedMap& nm,
+                                                   const std::vector<std::pair<long, long>>& caps,
+                                                   const ParamMap& pm) -> bool {
+        if (!parseCode(code)) return true; // unparseable assertion → lenient pass
+        return runCode(code, from, to, nm, pm, &caps).truthy();
     };
     gm.hooks.run = [runCode, pendingMakeCode](const std::string& code, long from, long to, const NamedMap& nm, const ParamMap& pm) {
         // a `make` block is deferred to build() (it may reference children's .made);
@@ -20332,6 +20779,16 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
     {
         auto matchScope = std::make_shared<Env>();
         matchScope->parent = tctx_.cur;
+        // `.parse($s, :rule<TOP>, args => (…))` binds the START RULE's parameters.
+        // They land in the match scope as real VALUES rather than as the textual
+        // params a `<rule($x)>` call passes, so a `$*`-sigil one is a genuine
+        // dynamic every nested rule can read and a Bool stays a Bool — the
+        // stringified form made `<?{ $*extended }>` true for `False`.
+        // (DateTime::Grammar gates its whole extended-format branch on it.)
+        if (ruleArgs && !ruleArgs->empty())
+            if (const std::vector<std::string>* pn = g->findRuleParams(startRule))
+                for (size_t i = 0; i < pn->size() && i < ruleArgs->size(); i++)
+                    if (!(*pn)[i].empty()) matchScope->define((*pn)[i], (*ruleArgs)[i]);
         auto savedScope = tctx_.cur;
         tctx_.cur = matchScope;
         matched = gm.parse(input, startRule, subparse, tree, endPos);
@@ -20459,6 +20916,11 @@ Value Interpreter::hyperCore(Value& l, Value& r, bool strictL, bool strictR,
         }
         Value out = Value::makeHash();
         if (src.t == VT::Hash) out.hashKind = src.hashKind; else out.hashKind.clear();
+        // A hyper over a TYPED or OBJECT-KEYED hash answers the same flavour:
+        // `my Cool %a; %a >>~<< %b` is a Hash[Cool] and `my %a{Any}` stays
+        // Hash[Any,Any]. Only hashKind travelled, so every result came back a
+        // plain Hash.
+        if (src.t == VT::Hash) { out.ofTypeM() = src.ofType(); out.objKeyed = src.objKeyed; }
         for (auto& kv : pairs) (*out.hash())[kv.first] = kv.second;
         return out;
     };
@@ -20495,6 +20957,21 @@ Value Interpreter::hyperCore(Value& l, Value& r, bool strictL, bool strictR,
                                              : deepApply(l, kv.second, lroot, &kv.second)});
         return hashOut(pairs, h);
     }
+    // a CArray operand hypers over its DECODED elements (`@vector <<*>> @vector`
+    // is the pure norm in Math::DistanceFunctions) — as one item it reached
+    // applyArith, which tried to numify the raw byte string
+    auto carrayList = [](Value& v) {
+        if (v.t == VT::Str && v.hashKind == "CArray") {
+            Value out = Value::array(); out.isList = true;
+            std::string et = v.enumName.empty() ? std::string("int64") : v.enumName.str();
+            int w = Interpreter::ncElemSize(et);
+            long long n = w > 0 ? (long long)(v.s.size() / (size_t)w) : 0;
+            for (long long i = 0; i < n; i++)
+                out.arr()->push_back(Interpreter::ncReadElem((long long)(intptr_t)v.s.data(), et, i));
+            v = out;
+        }
+    };
+    carrayList(l); carrayList(r);
     bool lIter = l.t == VT::Array || l.t == VT::Range;
     bool rIter = r.t == VT::Array || r.t == VT::Range;
     auto isInf = [](const Value& v) {
@@ -20547,8 +21024,13 @@ Value Interpreter::hyperCore(Value& l, Value& r, bool strictL, bool strictR,
     // The result MIRRORS the left operand's shape, as Rakudo does: an Array in
     // gives an Array out (`@a >>+>> @b` gists `[8 10]`), a List in gives a List
     // (`(6,8) >>+>> @b` gists `(8 10)`). rakupp always answered a List.
+    // …but only a side that IS a collection can dictate a shape: with a scalar
+    // on the left (`3 <<~>> @a`) the RIGHT operand does, so that is an Array —
+    // which is 1000 assertions of S03-metaops/infix.t on its own, and was
+    // invisible while is-deeply compared an Array and a List as equal.
+    const Value& shaper = lIter ? l : r;
     Value out = Value::array();
-    out.isList = !(l.t == VT::Array && !l.isList);
+    out.isList = !(shaper.t == VT::Array && !shaper.isList);
     for (size_t i = 0; i < n && !la.empty() && !ra.empty(); i++) {
         const Value& x = la[i % la.size()];
         const Value& y = ra[i % ra.size()];
@@ -21429,6 +21911,23 @@ Value Interpreter::evalBinary(Binary* b) {
             return Value::boolean(op == "~~" ? res : !res);
         }
         if (isJunction(r)) {
+            // …but a WHATEVER topic CURRIES first: `* !~~ (Iterable:D | CArray:D)`
+            // is the matcher WhateverCode a `where` clause wants, not a collapsed
+            // Bool. Threading before currying evaluated the junction against the
+            // Whatever itself, and every where-gated multi taking that shape lost
+            // its candidate (Algorithm::KDimensionalTree's k-nearest).
+            if (lTopic.t == VT::Whatever ||
+                (lTopic.t == VT::Code && lTopic.code() && lTopic.code()->isWhateverCode &&
+                 b->lhs->kind == NK::Whatever)) {
+                Value rc = r; std::string opc = op;
+                Value code; code.t = VT::Code; code.setCode(std::make_shared<Callable>());
+                code.code()->isWhateverCode = true; code.code()->whateverArity = 1;
+                code.code()->builtin = [rc, opc](Interpreter& I, ValueList& a) -> Value {
+                    Value topic = a.empty() ? Value::any() : a[0];
+                    return I.applyBinOp(opc, topic, rc);
+                };
+                return code;
+            }
             // autothread the smartmatch over the junction's eigenstates (each matched
             // with full ~~ semantics, so a junction of regexes / blocks works too)
             int t = 0, total = 0;
@@ -21730,6 +22229,7 @@ Value Interpreter::mixinValue(Value base, const Value& rhs, bool copy) {
     }
 
     std::shared_ptr<ObjectData> obj;
+    bool baseWasType = false; // `C but R` on a KNOWN class stays a TYPE OBJECT (C+{R})
     if (base.t == VT::Object && base.obj()) {
         obj = base.objS();
         if (copy) { // `but` works on a fresh copy; the original is untouched
@@ -21746,10 +22246,18 @@ Value Interpreter::mixinValue(Value base, const Value& rhs, bool copy) {
         obj = std::make_shared<ObjectData>();
         obj->boxed = base;
         obj->hasBoxed = true;
-        auto bc = std::make_shared<ClassInfo>();
-        bc->name = base.typeName();
-        bc->nativeParent = base.typeName();
-        obj->cls = bc;
+        // A TYPE OBJECT of a class we know derives from THAT class, so its own
+        // methods and grammar rules survive the mixin (`Base but GR` has to keep
+        // parsing with Base's rules). Only an unknown/builtin type gets the bare
+        // placeholder.
+        auto known = base.t == VT::Type ? classes_.find(base.s) : classes_.end();
+        if (known != classes_.end() && known->second) { obj->cls = known->second; baseWasType = true; }
+        else {
+            auto bc = std::make_shared<ClassInfo>();
+            bc->name = base.typeName();
+            bc->nativeParent = base.typeName();
+            obj->cls = bc;
+        }
     }
     // A new anonymous class derived from the current one, composing the role(s).
     auto nc = std::make_shared<ClassInfo>();
@@ -21760,6 +22268,22 @@ Value Interpreter::mixinValue(Value base, const Value& rhs, bool copy) {
     for (ClassInfo* role : roleInfos) {
         for (auto& kv : role->methods) nc->methods[kv.first] = kv.second;
         for (auto& sub : role->doneRoles) nc->doneRoles.insert(sub);
+        // …and its GRAMMAR RULES. A role composed at runtime brought its methods
+        // and attributes but not its tokens, so `Base but SomeGrammarRole` had
+        // nothing to parse with — which is how Lingua::NumericWordForms picks a
+        // language (`WordFormParser but %langToRole{$lang}`).
+        for (auto& kv : role->rules) {
+            if (nc->rules.count(kv.first)) continue;
+            nc->rules[kv.first] = kv.second;
+            auto ki = role->ruleKind.find(kv.first);
+            if (ki != role->ruleKind.end()) nc->ruleKind[kv.first] = ki->second;
+            auto pi = role->ruleParams.find(kv.first);
+            if (pi != role->ruleParams.end()) nc->ruleParams[kv.first] = pi->second;
+        }
+        for (auto& nm : role->ruleOrder)
+            if (std::find(nc->ruleOrder.begin(), nc->ruleOrder.end(), nm) == nc->ruleOrder.end())
+                nc->ruleOrder.push_back(nm);
+        if (role->isGrammar) nc->isGrammar = true;
         // A parameterized role mixed in at RUNTIME binds its params too, exactly as
         // a class body's `does R` does — `Array[T] but JSON::Class` then `.to-json`
         // must still see $opt-in (JSON::Class 050-array.t). A pun (`R[3]`) already
@@ -21799,6 +22323,11 @@ Value Interpreter::mixinValue(Value base, const Value& rhs, bool copy) {
     noteSymbolMutation("does/but mixin");
     classes_[nc->name] = nc;
     obj->cls = nc;
+    // Mixing into a TYPE OBJECT answers a type object, as Rakudo does: `C but R`
+    // is `C+{R}` with `.DEFINITE` False, and `.new`/`.parse` on it behave like
+    // any other type. Boxing it into an instance made every type-level call —
+    // a grammar's `.parse` above all — dispatch to the box instead.
+    if (baseWasType) return Value::typeObj(nc->name);
     Value out; out.t = VT::Object; out.setObj(obj);
     // A role mixed in at RUNTIME runs its BUILD submethod NOW, on the object it
     // was mixed into — construction already happened, so this is the only point
@@ -24348,6 +24877,22 @@ Value Interpreter::evalIndex(Index* idx) {
             return makeRolePun(role, base.s, argv);
         }
     }
+    // A class with a user `method ^parameterize` decides for itself what `T[…]`
+    // means: `Ultimate[42]` runs it and answers whatever it returns. Checked
+    // before the generic path below, which would quietly build `Ultimate[Int]`.
+    if (base.t == VT::Type && !idx->isHash && idx->index) {
+        auto cit = classes_.find(base.s);
+        if (cit == classes_.end()) cit = classes_.find(resolveClassAlias(base.s));
+        if (cit != classes_.end() && cit->second)
+            if (Value* umm = cit->second->findMethod("^parameterize")) {
+                Value iv = eval(idx->index.get());
+                ValueList a2; a2.push_back(base);
+                if (iv.t == VT::Array && iv.isList && !iv.itemized && iv.arr())
+                    for (auto& e : *iv.arr()) a2.push_back(e);
+                else a2.push_back(iv);
+                return invokeMethod(*umm, base, a2, nullptr);
+            }
+    }
     // parameterizing a type at runtime: array[$T] / Hash[$K] — yields Type[param]
     if (base.t == VT::Type && !idx->isHash && idx->index) {
         Value p = eval(idx->index.get());
@@ -24442,6 +24987,29 @@ Value Interpreter::evalIndex(Index* idx) {
             Value arg = a.empty() ? Value::any() : a[0];
             Value b = arg;
             if (inner.t == VT::Code && inner.code() && inner.code()->isWhateverCode) b = I.callCallable(inner, ValueList{arg});
+            // A LIST subscript is a SLICE, curried the same as anywhere else:
+            // `*<A B>` answers two values and `*[0,1]` two elements. Only the
+            // single-key form was implemented, so `.map(*<A B>)` — the idiom for
+            // pulling columns out of a list of records — answered Nil per row.
+            if (keyv.t == VT::Array || keyv.t == VT::Range) {
+                Value out = Value::array(); out.isList = true;
+                for (auto& k : keyv.flatten()) {
+                    if (isHash) {
+                        if ((b.t == VT::Hash || b.t == VT::Match) && b.hash()) {
+                            auto it = b.hash()->find(k.toStr());
+                            out.arr()->push_back(it != b.hash()->end() ? it->second : Value::any());
+                        } else out.arr()->push_back(Value::any());
+                    } else {
+                        long long n = k.toInt();
+                        if ((b.t == VT::Array || b.t == VT::Match) && b.arr()) {
+                            if (n < 0) n += (long long)b.arr()->size();
+                            out.arr()->push_back(n >= 0 && n < (long long)b.arr()->size()
+                                                 ? itemizeElem((*b.arr())[n]) : Value::any());
+                        } else out.arr()->push_back(Value::any());
+                    }
+                }
+                return out;
+            }
             if (isHash) {
                 std::string k = keyv.toStr();
                 if ((b.t == VT::Hash || b.t == VT::Match) && b.hash()) { auto it = b.hash()->find(k); return it != b.hash()->end() ? it->second : Value::nil(); }
@@ -24787,7 +25355,10 @@ Value Interpreter::evalIndex(Index* idx) {
         for (auto& kv : sliceKeys) {
             bool exists = false; Value val; Value keyV;
             if (idx->isHash) {
-                std::string key = kv.toStr(); keyV = Value::str(key);
+                // a QUANTHASH keys by identity — `$set<a>:exists` has to ask the
+                // same question the constructor answered (hashSubKey does it for
+                // the plain-subscript path)
+                std::string key = hashSubKey(kv, &base); keyV = Value::str(kv.toStr());
                 if (base.t == VT::Hash && base.hash()) {
                     auto it = base.hash()->find(key);
                     if (it != base.hash()->end()) { exists = true; val = it->second; }
@@ -25454,6 +26025,21 @@ Value Interpreter::eval(Expr* e) {
                 }
                 if (selfp && selfp->t == VT::Object && selfp->obj()) {
                     std::string an = ve->name.substr(2);
+                    // A repr('CStruct') object's fields LIVE IN NATIVE MEMORY: a
+                    // C callee may have written them since construction, so
+                    // `$!re` inside a method must read through the same
+                    // native-memory path the public accessor uses. Reading the
+                    // Raku-side attrs map handed back the CONSTRUCTION-time
+                    // value — Math::DistanceFunctions::Native's
+                    // `method value() { $!re + $!im * i }` summed two zeros
+                    // after the C dot product had already filled the struct.
+                    if (selfp->obj()->cls &&
+                        (selfp->obj()->cls->repr == "CStruct" ||
+                         selfp->obj()->cls->repr == "CPPStruct" ||
+                         selfp->obj()->cls->repr == "CUnion") &&
+                        selfp->obj()->attrs.count("__native_ptr")) {
+                        try { return methodCall(*selfp, an, {}); } catch (RakuError&) {}
+                    }
                     // `$.name` is `self.name`: a METHOD call, always. The attribute
                     // read is only a shortcut for the generated accessor, so it must
                     // not win when a real method of that name exists — URI::Query
@@ -26265,7 +26851,7 @@ Value Interpreter::eval(Expr* e) {
                     // `.=` still mutates through an INDIRECT call: `$auth .= &url-decode`
                     // is `$auth = url-decode($auth)` (HTTP::Tiny decodes the userinfo
                     // this way), and the plain-method path below never sees it.
-                    if (mc->mutate) assignChecked(mc->inv.get(), cres);
+                    if (mc->mutate) return assignChecked(mc->inv.get(), cres); // `.=` is its STORED value
                     return cres;
                 }
                 mc->method = mv.toStr(); // resolved here so write- routing below sees it
@@ -26562,7 +27148,7 @@ Value Interpreter::eval(Expr* e) {
                     // the exception and the invocant — so it moves rather than
                     // copying the vector and every Value in it.
                     Value res = methodCall(inv, mname, std::move(args), &mc->args);
-                    if (mc->mutate) assignChecked(mc->inv.get(), res);
+                    if (mc->mutate) return assignChecked(mc->inv.get(), res); // `.=` is its STORED value
                     return res;
                 }
                 catch (RakuError& err) {
@@ -26586,7 +27172,7 @@ Value Interpreter::eval(Expr* e) {
                 }
             }
             Value res = methodCall(inv, mname, std::move(args), &mc->args);
-            if (mc->mutate) assignChecked(mc->inv.get(), res);
+            if (mc->mutate) return assignChecked(mc->inv.get(), res); // `.=` is its STORED value
             return res;
         }
         case NK::Ternary: {

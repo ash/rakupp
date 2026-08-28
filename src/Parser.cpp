@@ -680,6 +680,11 @@ bool Parser::startsListopArg(const Token& t) const {
             static const std::set<std::string> wordInfix = {
                 "eq", "ne", "lt", "gt", "le", "ge", "cmp", "leg", "eqv", "before", "after", "unicmp", "coll",
                 "x", "xx", "and", "or", "andthen", "orelse", "div", "mod", "gcd", "lcm",
+                // …and the mixin infixes: `C but R` / `C does R` on a bare TYPE
+                // NAME read as a call to `C` whose first argument was the routine
+                // `but`, so mixing a role into a type object was a parse error
+                // (Lingua::NumericWordForms picks its parser role that way).
+                "but", "does", "min", "max", "minmax",
             };
             if (wordInfix.count(t.text)) return false;
             // a keyword directly followed by `=>` is a bareword PAIR KEY, not the
@@ -1476,6 +1481,16 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
         if (pos_ > 0 && pos_ - 1 == lastBlockClose_ && lastBlockClose_ >= stmtStart_ &&
             cur().line != toks_[pos_ - 1].line)
             break;
+        // ZERO-WIDTH UNSPACE before a subscript: `@row\[$j - 1]` is `@row[$j - 1]`.
+        // The lexer already drops `\` before a postfix dot and before a
+        // whitespace run; glued to a bracket it survives to here, where the
+        // position says it cannot be a Capture literal — a term is already in
+        // hand. Without this the subscript was silently dropped and the ARRAY
+        // itself took part in the arithmetic (Text::Levenshtein::Damerau's
+        // inner loop, which then answered a distance of 1 for every pair).
+        if (isOp("\\") && !cur().spaceBefore &&
+            (peek().kind == Tok::LBracket || peek().kind == Tok::LBrace ||
+             peek().kind == Tok::LParen)) { advance(); continue; }
         // when parsing the operand of a prefix op, a space-preceded `.method` binds
         // to the whole prefix expression, not the operand — stop here so the caller grabs it.
         if (stopAtSpaceDot && isOp(".") && cur().spaceBefore) break;
@@ -5881,7 +5896,14 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
     s->isProto = isProto;
     std::string declInfix; // set when this is an `infix:<…>` declaration (for precedence traits)
     if (isOp("!")) { advance(); s->isPrivate = true; } // private method `method !name` — self!name only
-    if (isKind(Tok::Ident)) s->name = advance().text;
+    // `method ^parameterize(…)` — a META-METHOD: it lives on the type's HOW and is
+    // reached as `T.^parameterize`, which is also what `T[…]` calls. The caret was
+    // dropped, so the declaration became an anonymous method and `Ultimate[42]`
+    // silently took the builtin parameterization (Parameterizable).
+    if (isOp("^") && !peek().spaceBefore && peek().kind == Tok::Ident) {
+        advance(); s->name = "^" + advance().text;
+    }
+    else if (isKind(Tok::Ident)) s->name = advance().text;
     else if (isKind(Tok::Var)) s->name = advance().text; // &-name
     else if (isOp("::") && peek().kind == Tok::LParen) {
         // INDIRECT name: `sub ::(EXPR) (…) {…}` / `method ::('name') {…}` —
@@ -7104,9 +7126,13 @@ StmtPtr Parser::parseFor() {
         if (doubly) s->rwVars = true; // `<->`: params alias the source elements
         if (isKind(Tok::LParen)) s->destructure = true; // `-> ($a,$b)`: unpack each element
         std::vector<Param> ps = parsePointyParams();
-        bool anySub = false;
-        for (auto& p : ps) { anySub = anySub || (bool)p.subSig; if (p.isRw) s->rwVars = true; }
-        if (anySub) s->params = std::move(ps); // real signature binding (named/nested destructure)
+        bool anySub = false, anyCopy = false;
+        for (auto& p : ps) { anySub = anySub || (bool)p.subSig; anyCopy = anyCopy || p.isCopy;
+                             if (p.isRw) s->rwVars = true; }
+        // `is copy` needs real signature binding too — the plain-name path drops
+        // every trait, so `for %h.kv -> $k, @v is copy` bound the hash value as
+        // it stood (a List) instead of the fresh Array the trait asks for.
+        if (anySub || anyCopy) s->params = std::move(ps); // real signature binding
         else for (auto& p : ps) s->vars.push_back(p.name);
     }
     s->body = parseBlock();
@@ -7227,9 +7253,11 @@ StmtPtr Parser::applyModifiers(StmtPtr s) {
                 if (es->e && es->e->kind == NK::BlockExpr) {
                     auto* be = static_cast<BlockExpr*>(es->e.get());
                     if (!be->params.empty()) {
-                        bool anySub = false;
-                        for (auto& p : be->params) anySub = anySub || (bool)p.subSig;
+                        bool anySub = false, anyCopy = false;
+                        for (auto& p : be->params) { anySub = anySub || (bool)p.subSig;
+                                                     anyCopy = anyCopy || p.isCopy; }
                         if (anySub) { fs->destructure = true; fs->params = std::move(be->params); }
+                        else if (anyCopy) fs->params = std::move(be->params); // traits need real binding
                         else for (auto& p : be->params) fs->vars.push_back(p.name);
                         auto blk = std::make_unique<Block>();
                         blk->stmts = std::move(be->body);

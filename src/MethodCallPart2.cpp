@@ -116,16 +116,25 @@ int Interpreter::probeMethodExists(const Value& inv, const std::string& mn, cons
     if (mn.empty() || kUnsafeToProbe.count(mn)) return 0;
     Value probe = inv;
     if (probe.hashKind == "IO") probe.s = ioProbePath;
-    bool notFound = false;
-    try { ValueList none; methodCall(probe, mn, none); }
-    catch (RakuError& e) {
-        const Value& p = e.payload;
-        notFound = (p.t == VT::Type && p.s == "X::Method::NotFound") ||
-                   (p.t == VT::Object && p.obj() && p.obj()->cls &&
-                    p.obj()->cls->name == "X::Method::NotFound");
-    }
-    catch (...) {}
-    return notFound ? -1 : 1;
+    auto probeWith = [&](ValueList as) {
+        bool nf = false;
+        try { methodCall(probe, mn, as); }
+        catch (RakuError& e) {
+            const Value& p = e.payload;
+            nf = (p.t == VT::Type && p.s == "X::Method::NotFound") ||
+                 (p.t == VT::Object && p.obj() && p.obj()->cls &&
+                  p.obj()->cls->name == "X::Method::NotFound");
+        }
+        catch (...) {}
+        return nf;
+    };
+    // A method that REQUIRES an argument reports NotFound when probed with
+    // none — rakupp dispatches on the argument list, so `"".parse-base()` looks
+    // exactly like a missing name. One retry with a dummy argument tells the
+    // two apart: a name that does not exist still says NotFound, a real one
+    // fails some other way (or succeeds).
+    if (!probeWith(ValueList{})) return 1;
+    return probeWith(ValueList{Value::integer(0)}) ? -1 : 1;
 }
 
 // Fill od->attrs for ci's whole inheritance chain, exactly as the default
@@ -140,6 +149,20 @@ int Interpreter::probeMethodExists(const Value& inv, const std::string& mn, cons
 // died "no self available" and providedArgs-order was never honoured
 // (REVIEW-3.7 finding 6). Box od->boxed BEFORE calling: parents construct
 // first, so a default may read the boxed parent through self.
+// Assigning Nil RESETS a container to its default — that is what Nil is for,
+// and it holds for an attribute initialised by name as much as for `$x = Nil`
+// (which rakupp already did). `class C { has $.t }; C.new(t => Nil).t` is Any,
+// and a typed attribute takes its own type object. Storing the Nil itself made
+// a module's `.new(type => Nil)` sentinel render as `Nil` instead of `(Any)`.
+static Value nilResetForAttr(const Value& v, const ClassAttr& a) {
+    if (v.t != VT::Nil) return v;
+    if (a.sigil == '@') return Value::array();
+    if (a.sigil == '%') return Value::makeHash();
+    if (!a.type.empty() && ascii::isupper((unsigned char)a.type[0]))
+        return Value::typeObj(a.type);
+    return Value::any();
+}
+
 void Interpreter::runAttrDefaults(const std::shared_ptr<ObjectData>& od,
                                   const std::shared_ptr<ClassInfo>& ci,
                                   ValueList& args) {
@@ -193,7 +216,7 @@ void Interpreter::runAttrDefaults(const std::shared_ptr<ObjectData>& od,
             auto pit = providedArgs.find(at.name);
             if (pit != providedArgs.end() && slot == at.name) {
                 od->attrs[slot] = coerceToSigil(
-                    pit->second ? *pit->second : Value::any(), at.sigil);
+                    nilResetForAttr(pit->second ? *pit->second : Value::any(), at), at.sigil);
                 continue;
             }
             // The value the slot holds when it has no explicit default.
@@ -259,7 +282,8 @@ void Interpreter::runAttrDefaults(const std::shared_ptr<ObjectData>& od,
             // that is the trait's whole purpose (JSON::Class binds its
             // $!declarant this way)
             if (at && (at->pub || at->built))
-                od->attrs[arg.s] = coerceToSigil(arg.pairVal() ? *arg.pairVal() : Value::any(), at->sigil);
+                od->attrs[arg.s] = coerceToSigil(
+                    nilResetForAttr(arg.pairVal() ? *arg.pairVal() : Value::any(), *at), at->sigil);
         }
 }
 
@@ -2230,15 +2254,31 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         auto cit = classes_.find(inv.s);
         if (cit != classes_.end()) {
             auto ci = cit->second;
+            // A user-declared META-METHOD — `method ^parameterize(Mu:U \obj, **@pos)`
+            // — answers the `.^name(…)` call on its type. Rakudo hands the type in
+            // as the first positional (the invocant is the HOW), which is the
+            // signature every such method is written to (Parameterizable).
+            if (Value* umm = ci->findMethod("^" + m.s)) {
+                ValueList a2; a2.reserve(args.size() + 1);
+                a2.push_back(inv);
+                for (auto& x : args) a2.push_back(x);
+                return invokeMethod(*umm, inv, a2, nullptr);
+            }
             // grammar entry points
             if ((m == "parse" || m == "subparse" || m == "parsefile") && (ci->isGrammar || ci->findRule("TOP"))) {
                 bool sub = (m == "subparse");
                 // the built-in parse behavior (also the `next` candidate for a user override)
                 auto builtinParse = [this, ci, sub](ValueList a) -> Value {
                     std::string startRule = "TOP"; Value actions;
+                    ValueList ruleArgs; // `args => (…)` — the start rule's parameters
                     for (auto& arg : a) {
                         if (arg.t == VT::Pair && arg.s == "rule") startRule = arg.pairVal() ? arg.pairVal()->toStr() : "TOP";
                         if (arg.t == VT::Pair && arg.s == "actions" && arg.pairVal()) actions = *arg.pairVal();
+                        if (arg.t == VT::Pair && arg.s == "args" && arg.pairVal()) {
+                            const Value& av = *arg.pairVal();
+                            if (av.t == VT::Array && av.arr()) ruleArgs = *av.arr();
+                            else if (av.t != VT::Any) ruleArgs.push_back(av);
+                        }
                     }
                     // an undefined parse target dies (Rakudo: warns on Any-to-Str
                     // coercion, then dies calling .chars on it) instead of
@@ -2248,7 +2288,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                             "No such method 'chars' for invocant of type '" +
                             a[0].typeName() + "'"};
                     std::string input = a.empty() ? "" : a[0].toStr();
-                    Value r = grammarParse(ci.get(), input, sub, startRule, actions);
+                    Value r = grammarParse(ci.get(), input, sub, startRule, actions,
+                                           ruleArgs.empty() ? nullptr : &ruleArgs);
                     // From 6.e a FAILED .parse is a Failure carrying
                     // X::Syntax::Confused, not a bare Nil — 6.e gives grammars a
                     // base class whose parse reports where it stopped. .subparse
@@ -2289,7 +2330,27 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             if (m == "find_method" || m == "lookup") {
                 std::string mn = args.empty() ? "" : args[0].toStr();
                 Value* um = ci->findMethod(mn);
-                return um ? *um : Value::nil();
+                if (um) return *um;
+                // An ATTRIBUTE ACCESSOR is a method too: `has $.type` publishes
+                // `.type`, and `.^find_method('type')` must find it. The
+                // accessors are generated at dispatch rather than stored in
+                // `methods`, so the meta-lookup answered Nil and a module
+                // walking `while $obj.^find_method('type')` stopped at the first
+                // node (Data::TypeSystem's is-full-array).
+                for (ClassInfo* c = &*ci; c; c = c->parent.get())
+                    for (auto& a : c->attrs)
+                        if (a.pub && a.name == mn) {
+                            Value code; code.t = VT::Code;
+                            code.setCode(std::make_shared<Callable>());
+                            code.code()->name = mn; code.code()->isMethod = true;
+                            code.code()->builtin = [mn](Interpreter& I, ValueList& av) -> Value {
+                                if (av.empty()) return Value::any();
+                                Value in2 = av[0]; ValueList rest(av.begin() + 1, av.end());
+                                return I.methodCall(in2, mn, rest);
+                            };
+                            return code;
+                        }
+                return Value::nil();
             }
             if (m == "declares_method") { // locally declared (not inherited)?
                 std::string mn = args.empty() ? "" : args[0].toStr();
@@ -2359,7 +2420,25 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                  m == "invalidate_method_caches" || m == "publish_boolification_spec") &&
                 !(ci && ci->findMethod(m)))
                 return inv;
-            if (m == "set_name" || m == "set_shortname") { if (!args.empty()) ci->name = args[0].toStr(); return inv; }
+            if (m == "set_name" || m == "set_shortname") {
+                // Rename the CLASS and publish it under the new name, then answer
+                // a type object carrying it: the caller holds a Value whose `s` is
+                // the old name, and `.^name` reads that — so without re-registering
+                // and handing the renamed type back, `.^set_name` looked like a
+                // no-op (Parameterizable names each parameterization this way).
+                if (!args.empty()) {
+                    std::string nn = args[0].toStr();
+                    if (!nn.empty() && nn != ci->name) {
+                        ci->name = nn;
+                        classes_[nn] = ci;      // reachable under its new name
+                        noteSymbolMutation("set_name");
+                        Value rn = Value::typeObj(nn);
+                        rn.ofTypeM() = inv.ofType();
+                        return rn;
+                    }
+                }
+                return inv;
+            }
             // the Versioning SETTERS: only the getters existed, while the howOps
             // forwarding table already rewrote `$t.HOW.set_ver($t, v)` into
             // `$t.^set_ver(v)` — faithfully forwarding to a method that was not there.

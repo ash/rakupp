@@ -1481,6 +1481,32 @@ Regex::NodePtr Regex::parseAtom() {
             while (!eof() && depth > 0) { char d = pat_[pos_++]; if (d == '<') depth++; else if (d == '>') depth--; }
             auto nop = std::make_unique<Node>(); nop->k = K::Nop; return nop;
         } else {
+            // `<name=[…]>` — a NAMED CAPTURE of an inline character class, not an
+            // alias for a rule called "[…]". DateTime::Grammar writes a numeric
+            // timezone offset as `<sign=[+-]> <hour=.D2>`, and reading the class
+            // as a rule name made every offset-bearing RFC-3339 timestamp fail.
+            {
+                size_t j = pos_;
+                while (j < pat_.size() && (ascii::isalnum((unsigned char)pat_[j]) ||
+                                           pat_[j] == '_' || pat_[j] == '-')) j++;
+                if (j > pos_ && j < pat_.size() && pat_[j] == '=' &&
+                    (pat_[j + 1] == '[' ||
+                     ((pat_[j + 1] == '-' || pat_[j + 1] == '+') && pat_[j + 2] == '['))) {
+                    std::string alias = pat_.substr(pos_, j - pos_);
+                    pos_ = j + 1;                       // past `name=`
+                    auto cls = std::make_unique<Node>();
+                    cls->k = K::Class; cls->icase = curIcase_;
+                    if (peek() == '-') { pos_++; cls->negate = true; }
+                    else if (peek() == '+') pos_++;
+                    pos_++;                              // '['
+                    parseClassBodyMember(cls.get());
+                    if (peek() == '>') pos_++;
+                    auto g = std::make_unique<Node>();
+                    g->k = K::Group; g->capIndex = -1; g->capName = alias;
+                    g->kids.push_back(std::move(cls));
+                    return g;
+                }
+            }
             // named char class or subrule; balance inner <…> so a property value
             // like `<:bc<L>>` (property `bc`, value `L`) reads as one unit.
             std::string name;

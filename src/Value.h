@@ -993,13 +993,18 @@ struct ClassInfo {
     const std::string* findRule(const std::string& n) const {
         auto it = rules.find(n);
         if (it != rules.end()) return &it->second;
-        if (parent) return parent->findRule(n);
+        if (parent) if (const std::string* r = parent->findRule(n)) return r;
+        // sibling roles land in extraParents and carry rules too (see the
+        // grammar collect walk) — without this a grammar composing two roles
+        // answered "not a grammar" for every rule of the second one
+        for (auto& p : extraParents) if (p) if (const std::string* r = p->findRule(n)) return r;
         return nullptr;
     }
     const std::vector<std::string>* findRuleParams(const std::string& n) const {
         auto it = ruleParams.find(n);
         if (it != ruleParams.end()) return &it->second;
-        if (parent) return parent->findRuleParams(n);
+        if (parent) if (auto* r = parent->findRuleParams(n)) return r;
+        for (auto& p : extraParents) if (p) if (auto* r = p->findRuleParams(n)) return r;
         return nullptr;
     }
     const ClassAttr* findAttr(const std::string& n) const {

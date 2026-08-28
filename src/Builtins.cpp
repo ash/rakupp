@@ -867,7 +867,22 @@ void Interpreter::runProcPromise(Value& promise, double timeoutSec) {
 // `.WHAT` and the default renderer both disagreed with Rakudo.
 Value coerceToSigil(Value v, char sigil) {
     if (sigil == '@') {
-        if (v.t == VT::Array) { v.isList = false; v.itemized = false; return v; }
+        // …and the attribute OWNS its buffer. Construction is assignment, not
+        // binding: `T.new(pts => @src)` fills @!pts FROM @src, and passing the
+        // caller's array through here let the class's own later
+        // `@!pts = @!pts.pairs` rewrite @src under the caller's feet
+        // (Algorithm::KDimensionalTree).
+        if (v.t == VT::Array) {
+            v.isList = false; v.itemized = false;
+            if (v.arr() && !v.payloadUnique()) {
+                Value own = Value::array();
+                *own.arr() = *v.arr();
+                own.ofTypeM() = v.ofType();
+                own.elemDefaultM() = v.elemDefault();
+                return own;
+            }
+            return v;
+        }
         if (v.t == VT::Nil || v.t == VT::Any) return v;
         Value a = Value::array();
         if (v.t == VT::Range) *a.arr() = v.flatten(); else a.arr()->push_back(v);
@@ -2049,6 +2064,9 @@ std::string doSprintf(const std::string& fmt, const ValueList& args, int langRev
     return out;
 }
 
+// Structural equality that ignores TYPE at the leaves ("11" == 11). This is
+// NOT `eqv` and no longer backs is-deeply, which uses eqv; the one caller
+// left is 6.e `snip`, where the value predicate is a smartmatch.
 bool deepEq(const Value& a, const Value& b) {
     forceLazy(a); forceLazy(b);   // a lazy gather compares by its ELEMENTS
     // A Proxy is a container: compare what it HOLDS, at any depth. URI::Query
@@ -2857,6 +2875,24 @@ Value Interpreter::ioEmit(const std::string& s, const char* dynVar, bool toErr) 
     // capture classes override only WRITE). Routing print at an object that
     // defines neither used to re-enter the global print through the
     // native-parent delegation and recurse to a stack overflow.
+    // …and a TYPE OBJECT is a sink too: `$*OUT = class { method print(*@a) {…} }`
+    // hands over the class itself, which is the shortest way to capture output
+    // and is exactly what IO::Capture::Simple does. Only instances were routed,
+    // so every `say` walked past the capture to the real stream.
+    if (h && h->t == VT::Type && !h->s.empty()) {
+        auto ci = classes_.find(h->s);
+        if (ci != classes_.end() && ci->second) {
+            if (ci->second->findMethod("print")) {
+                ValueList pa{Value::str(s)};
+                return methodCall(*h, "print", pa);
+            }
+            if (Value* wm = ci->second->findMethod("WRITE")) {
+                Value blob = Value::str(s);
+                blob.hashKind = "Blob";
+                return invokeMethod(*wm, *h, ValueList{blob}, nullptr);
+            }
+        }
+    }
     if (h && h->t == VT::Object && h->obj() && h->obj()->cls) {
         // Outside the lock below on purpose: this re-enters the interpreter to
         // run a user method, which may itself print. Holding a non-recursive
@@ -4175,7 +4211,15 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     }
     // `.are`/`.snip` on a type object or lone scalar treat it as a 1-element list
     // (so `Int.are` → Int, `42.are` → Int).
-    if ((m == "are" || m == "snip") && inv.t != VT::Array && inv.t != VT::Range && inv.t != VT::Hash) {
+    // …and a Date/DateTime is a VALUE, not a collection: it only happens to be
+    // stored as a tagged Hash, so `$date.are` walked its FIELDS and answered
+    // Pair. (Data::TypeSystem deduced Pair for every date column.)
+    auto dateish = [](const Value& v) {
+        return v.t == VT::Hash && (v.hashKind == "Date" || v.hashKind == "DateTime" ||
+                                   v.hashKind == "Instant" || v.hashKind == "Duration");
+    };
+    if ((m == "are" || m == "snip") && inv.t != VT::Array && inv.t != VT::Range &&
+        (inv.t != VT::Hash || dateish(inv))) {
         Value one = Value::array(); one.isList = true; one.arr()->push_back(inv);
         return methodCall(one, m, args, rwArgs);
     }
@@ -4228,6 +4272,14 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             // a DEFINITENESS-constrained type reports its smiley: `Any:D.^name`
             if (inv.t == VT::Type && inv.i)
                 return Value::str(inv.typeName() + (inv.i == 1 ? ":D" : ":U"));
+            // …and a class RENAMED through `.^set_name` answers its current name
+            // even through a handle that still carries the old one — the name
+            // lives on the metaobject, which is what set_name mutates.
+            if (inv.t == VT::Type && inv.ofType().empty()) {
+                auto cn = classes_.find(inv.s);
+                if (cn != classes_.end() && cn->second && !cn->second->name.empty())
+                    return Value::str(cn->second->name);
+            }
             return Value::str(inv.typeName());
         }
         // `.^base_type` — the same type without its definiteness constraint
@@ -4266,6 +4318,22 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             return r;
         }
         if (mm == "WHAT") return Value::typeObj(inv.typeName());
+        // A user-declared META-METHOD wins over the builtin one: `method
+        // ^parameterize(Mu:U \obj, **@pos)` is how a class makes ITSELF
+        // parameterizable, and the builtin below would quietly answer `X[Int]`
+        // instead of running it (Parameterizable).
+        {
+            std::string tn = inv.t == VT::Type ? inv.s : inv.typeName();
+            auto cit2 = classes_.find(tn);
+            if (cit2 != classes_.end() && cit2->second)
+                if (Value* umm = cit2->second->findMethod("^" + mm)) {
+                    Value tobj2 = Value::typeObj(tn);
+                    ValueList a2; a2.reserve(args.size() + 1);
+                    a2.push_back(tobj2);
+                    for (auto& a : args) a2.push_back(a);
+                    return invokeMethod(*umm, tobj2, a2, nullptr);
+                }
+        }
         // `X.^parameterize(T)` yields the parameterized type `X[T]` (same as `X[T]`)
         if (mm == "parameterize") {
             Value ty = Value::typeObj(inv.t == VT::Type ? inv.s : inv.typeName());
@@ -4299,8 +4367,21 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             // names cannot run on the type. Only an INSTANCE invocant is probed.
             // (probeMethodExists carries the shared unsafe-names list and the
             // NotFound dance — one copy, shared with .can's fallback.)
-            if (!mn.empty() && inv.t != VT::Object && inv.t != VT::Type &&
-                probeMethodExists(inv, mn, "/nonexistent/rakupp-lookup-probe") == -1)
+            // A TYPE OBJECT of a builtin is probed through a SENTINEL instance,
+            // the way `.can` already does: `Int.^find_method('type')` has to be
+            // falsy, and answering a method object for every name made a module
+            // walking `while $obj.^find_method('type')` loop past the leaf type
+            // and call `.type` on an Int (Data::TypeSystem's is-full-array).
+            Value probeInv = inv;
+            if (inv.t == VT::Type && !classes_.count(inv.s)) {
+                if (inv.s == "Str") probeInv = Value::str("");
+                else if (inv.s == "Int") probeInv = Value::integer(0);
+                else if (inv.s == "Num") probeInv = Value::number(0);
+                else if (inv.s == "Bool") probeInv = Value::boolean(false);
+            }
+            if (!mn.empty() && probeInv.t != VT::Object && probeInv.t != VT::Type &&
+                probeInv.t != VT::Any && probeInv.t != VT::Nil &&
+                probeMethodExists(probeInv, mn, "/nonexistent/rakupp-lookup-probe") == -1)
                 return Value::typeObj("Mu");
             Value code; code.t = VT::Code; code.setCode(std::make_shared<Callable>());
             code.code()->name = mn; code.code()->isMethod = true;
@@ -4901,7 +4982,16 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     // side fill the bytes, and reads the digest back with `.list».chr`;
     // falling through to the generic Str path answered ONE element (itself).
     if (inv.t == VT::Str && inv.hashKind == "CArray" &&
-        (m == "list" || m == "values" || m == "List" || m == "Array" || m == "Seq")) {
+        (m == "list" || m == "values" || m == "List" || m == "Array" || m == "Seq" ||
+         // …and every other whole-list question asks THROUGH the element list:
+         // `.all ~~ Numeric` is how a module validates a CArray argument, and
+         // the generic Str path junction'd the ARRAY as one item (and `Z`/`map`
+         // walked its raw BYTES). One decode, then the ordinary list dispatch.
+         m == "all" || m == "any" || m == "one" || m == "none" ||
+         m == "map" || m == "grep" || m == "first" || m == "sort" || m == "reverse" ||
+         m == "sum" || m == "min" || m == "max" || m == "join" || m == "kv" ||
+         m == "pairs" || m == "keys" || m == "head" || m == "tail" || m == "flat" ||
+         m == "cache" || m == "reduce" || m == "batch" || m == "rotor")) {
         std::string et = inv.enumName.empty() ? std::string("int64") : inv.enumName.str();
         int w = Interpreter::ncElemSize(et);
         long long n = w > 0 ? (long long)(inv.s.size() / (size_t)w) : 0;
@@ -4909,7 +4999,9 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         for (long long i = 0; i < n; i++)
             out.arr()->push_back(Interpreter::ncReadElem((long long)(intptr_t)inv.s.data(), et, i));
         if (m == "Seq") out.s = "Seq";
-        return out;
+        static const std::set<std::string> direct = {"list", "values", "List", "Array", "Seq"};
+        if (direct.count(m)) return out;
+        return methodCall(out, m, args, rwArgs); // the rest re-dispatch on the list
     }
     // Encoding::Registry / streaming decoder — the Rakudo encoding API that
     // Cro's HTTP parsers drive. The decoder is a stateful byte buffer with
@@ -6544,6 +6636,24 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     // G {…}` works there. Create it now and try once more.
     if (inv.t == VT::Type && !inv.s.empty() && materializePendingType(inv.s))
         return methodCall(inv, m, args);
+    // Rakudo's Any gives EVERY object the one-element-list interface:
+    // `Foo.new.elems` is 1, `.list` is `(Foo.new)`, `.head` is the object
+    // itself, `.keys` is `(0)`. rakupp had this for the simple scalars only
+    // (42.elems is 1), so a module asking `$.type.elems` about an object of one
+    // of its own classes died where Rakudo answers 1 — Data::TypeSystem's
+    // Examiner, and the six dists queued behind it. Last resort, after every
+    // user method and builtin path has already declined.
+    if (inv.t == VT::Object) {
+        static const std::set<std::string> kOneElem = {
+            "elems", "end", "list", "List", "Array", "flat", "cache", "eager",
+            "values", "keys", "pairs", "antipairs", "kv", "head", "tail",
+            "first", "map", "grep", "sort", "reverse", "reduce", "unique",
+            "squish", "skip", "batch", "rotor", "combinations", "permutations"};
+        if (kOneElem.count(m)) {
+            Value one = Value::array(); one.arr()->push_back(inv); one.isList = true;
+            return methodCall(one, m, args);
+        }
+    }
     if (std::getenv("RAKUPP_TRACE"))
         std::cerr << "[NoMethod] ." << m << " on " << inv.typeName()
                   << " at " << (srcFile_.empty() ? "?" : srcFile_) << ":" << curLine_ << "\n";
@@ -7758,8 +7868,11 @@ void Interpreter::registerBuiltins() {
         // a dynamically-enclosing CONTROL {} sees the CX::Warn first; if it
         // .resume's, the warning is handled and nothing prints
         if (I.runControlWarn(msg)) return Value::boolean(true);
-        std::cerr << msg << "\n";
-        return Value::boolean(true);
+        // …and it goes through `$*ERR`, exactly as `note` does — writing to
+        // std::cerr directly walked past a dynamically-overridden handle, so a
+        // module that redirects $*ERR to capture output (silently, Trap) saw
+        // every `note` and no `warn`.
+        return I.ioEmit(msg + "\n", "$*ERR", true);
     };
     B["die"] = [](Interpreter& I, ValueList& a) -> Value {
         Value payload = a.empty() ? Value::str("Died") : a[0];
@@ -8066,7 +8179,25 @@ void Interpreter::registerBuiltins() {
     B["like"]   = [likeTest](Interpreter& I, ValueList& a) -> Value { return likeTest(I, a, true); };
     B["unlike"] = [likeTest](Interpreter& I, ValueList& a) -> Value { return likeTest(I, a, false); };
     B["is-deeply"] = [](Interpreter& I, ValueList& a) -> Value {
-        bool c = a.size() >= 2 && deepEq(a[0], a[1]);
+        // is-deeply IS `eqv` — type-strict — and not the looser structural
+        // compare. Rakudo's Test.rakumod computes `$got eqv $expected`, so
+        // `is-deeply "11", 11` FAILS there; routing this through deepEq made it
+        // pass here, which is the dangerous shape: a suite that goes green
+        // without agreeing on a single type. The one adjustment Test.rakumod
+        // makes is its Seq candidates, which `.cache` a Seq operand into a List
+        // before comparing (`(1,2).Seq eqv (1,2)` is False, but
+        // `is-deeply (1,2).Seq, (1,2)` passes).
+        auto cached = [](const Value& v) -> Value {
+            if (v.t == VT::Array && v.isList && v.s == "Seq") {
+                forceLazy(v);
+                Value c = v; c.s = ""; // Seq.cache is a List
+                return c;
+            }
+            return v;
+        };
+        // applyArith, not valueEqv directly: `eqv` autothreads a Junction
+        // operand there, and `is-deeply 1, 1|2` relies on it.
+        bool c = a.size() >= 2 && applyArith("eqv", cached(a[0]), cached(a[1])).truthy();
         I.emitTest(c, testDesc(a, 2), testDirective(a)); // adverbs are not the description
         if (!c && a.size() >= 2) { // failure diagnostics (stderr), Rakudo-style
             std::cerr << "# expected: " << rakuRepr(a[1]) << "\n"
@@ -8908,6 +9039,28 @@ void Interpreter::registerBuiltins() {
             else if (x.s == "rw") mode = "rw";           // read/write, create if missing, NO truncate
             else if (x.s == "update") mode = "update";   // read/write, must exist
             else if (x.s == "exclusive" || x.s == "x") excl = true; // create-new-or-fail (O_EXCL)
+        }
+        // The SPELLED-OUT form Rakudo also takes: `:mode<ro|wo|rw>` with
+        // `:create`/`:truncate`/`:append`. `$f.open(:mode<wo>, :create).close`
+        // is the idiomatic `touch` (roast's own filetest.t does it), and
+        // without this the adverbs were ignored, the handle opened read-only,
+        // and the open threw "no such file or directory".
+        {
+            std::string modeAdv; bool wantCreate = false, wantTrunc = false, wantApp = false;
+            for (auto& x : a) if (x.t == VT::Pair) {
+                bool on = !x.pairVal() || x.pairVal()->truthy();
+                if (x.s == "mode" && x.pairVal()) modeAdv = x.pairVal()->toStr();
+                else if (x.s == "create")   wantCreate = on;
+                else if (x.s == "truncate") wantTrunc = on;
+                else if (x.s == "append")   wantApp = on;
+            }
+            if (!modeAdv.empty() || wantCreate || wantTrunc || wantApp) {
+                if (modeAdv == "ro") mode = "r";
+                else if (wantApp) mode = "a";
+                else if (wantTrunc) mode = "w";
+                else if (wantCreate) mode = "rw";       // create if missing, keep the content
+                else if (modeAdv == "wo" || modeAdv == "rw") mode = "update"; // must exist
+            }
         }
         // :nl-in(...) — custom input line separator(s); .lines/.get honour it
         Value nlIn;

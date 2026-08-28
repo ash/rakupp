@@ -1808,11 +1808,18 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                         "Cannot .pick from a " + inv.hashKind + "; use .roll instead"};
                 if (!args.empty() && args[0].t == VT::Num && std::isnan(args[0].n))
                     throw RakuError{Value::typeObj("X::AdHoc"), "Cannot coerce NaN to an Int"};
-                std::vector<std::pair<std::string, double>> pool; // key, weight
+                // element, weight — the ELEMENT, not the map key: a quanthash keys
+                // by identity (`Str|a`), so drawing the key would hand back that
+                // identity string instead of the value that was put in.
+                std::vector<std::pair<Value, double>> pool;
                 double total = 0;
                 for (auto& kv : *inv.hash()) {
                     double w = setty.count(inv.hashKind) ? 1.0 : kv.second.toNum();
-                    if (w > 0) { pool.push_back({kv.first, w}); total += w; }
+                    if (w > 0) {
+                        pool.push_back({kv.second.pairKey() ? *kv.second.pairKey()
+                                                            : Value::str(kv.first), w});
+                        total += w;
+                    }
                 }
                 auto draw = [&]() -> long long { // weighted index, -1 when exhausted
                     if (total <= 0) return -1;
@@ -1835,7 +1842,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     Value empty = Value::array(); empty.isList = true; empty.s = "Seq";
                     return empty;
                 }
-                if (args.empty()) { long long k = draw(); return k < 0 ? Value::nil() : Value::str(pool[k].first); }
+                if (args.empty()) { long long k = draw(); return k < 0 ? Value::nil() : pool[k].first; }
                 bool all = args[0].t == VT::Whatever ||
                            // the NAME `Whatever` is the TYPE OBJECT, and Rakudo
                            // treats .roll(Whatever) exactly as .roll(*)
@@ -1850,10 +1857,10 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     st->appendNext = [poolC, totalC](ValueList& cache) -> bool {
                         double r = randDouble() * totalC;
                         for (auto& pw : poolC) {
-                            if (r < pw.second) { cache.push_back(Value::str(pw.first)); return true; }
+                            if (r < pw.second) { cache.push_back(pw.first); return true; }
                             r -= pw.second;
                         }
-                        if (!poolC.empty()) { cache.push_back(Value::str(poolC.back().first)); return true; }
+                        if (!poolC.empty()) { cache.push_back(poolC.back().first); return true; }
                         return false;
                     };
                     out.extM() = st;
@@ -1869,7 +1876,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     for (long long i = 0; i < n; i++) {
                         long long k = draw();
                         if (k < 0) break;
-                        out.arr()->push_back(Value::str(pool[k].first));
+                        out.arr()->push_back(pool[k].first);
                         double dec = std::min(1.0, pool[k].second);
                         pool[k].second -= dec; total -= dec;
                     }
@@ -1877,7 +1884,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 else for (long long i = 0; i < n; i++) {
                     long long k = draw();
                     if (k < 0) break;
-                    out.arr()->push_back(Value::str(pool[k].first));
+                    out.arr()->push_back(pool[k].first);
                 }
                 return out;
             }
