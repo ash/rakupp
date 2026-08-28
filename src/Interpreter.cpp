@@ -4832,6 +4832,60 @@ static bool dirEntryCaseExact(const std::string& cand) {
 #endif
 }
 
+// `use Foo:ver<...>` constraint check — defined below with the version
+// helpers; the installed-dist picker needs it first.
+static bool verSatisfies(const std::string& have, const std::string& want);
+
+// Version ORDER, for choosing among installed candidates: dot-separated
+// segments compare numerically ("0.1.10" is newer than "0.1.9"), a missing
+// segment is 0 — the same reading verSatisfies gives a segment. <0 / 0 / >0.
+static int verCmp(const std::string& a, const std::string& b) {
+    auto segs = [](const std::string& s) {
+        std::vector<long> out; long cur = 0; bool any = false;
+        for (char ch : s) {
+            if (ch >= '0' && ch <= '9') { cur = cur * 10 + (ch - '0'); any = true; }
+            else if (ch == '.') { out.push_back(any ? cur : 0); cur = 0; any = false; }
+        }
+        out.push_back(any ? cur : 0);
+        return out;
+    };
+    auto av = segs(a), bv = segs(b);
+    size_t n = std::max(av.size(), bv.size());
+    for (size_t i = 0; i < n; i++) {
+        long x = i < av.size() ? av[i] : 0, y = i < bv.size() ? bv[i] : 0;
+        if (x != y) return x < y ? -1 : 1;
+    }
+    return 0;
+}
+
+// Pick ONE dist out of a short/<sha1(name)>/ index directory, which holds one
+// 5-line entry file per installed dist providing the name (ver / auth / api /
+// source-sha / dist-id). Several versions routinely COEXIST — installing a
+// dependency pinned `:ver<0.1.7>` does not remove an already-installed 0.1.8 —
+// and readdir order is filesystem-arbitrary (APFS hashes names), so taking the
+// first entry loaded Statistics::Distributions as 0.1.7 or 0.1.8 by directory
+// hash. The winner is chosen instead: the NEWEST version that satisfies
+// verReq, which is how Rakudo resolves the same store. False when none does.
+static bool pickInstalledDist(const std::string& shortDir, const std::string& verReq,
+                              std::string& entryOut, std::vector<std::string>& linesOut) {
+    DIR* dd = opendir(shortDir.c_str());
+    if (!dd) return false;
+    std::vector<std::string> entries;
+    while (struct dirent* e = readdir(dd)) { std::string n = e->d_name; if (n != "." && n != "..") entries.push_back(n); }
+    closedir(dd);
+    entryOut.clear();
+    for (auto& cand : entries) {
+        std::ifstream meta(shortDir + "/" + cand);
+        std::vector<std::string> ls; std::string ln;
+        while (std::getline(meta, ln)) ls.push_back(ln);
+        if (ls.size() < 4 || ls[3].empty()) continue;
+        if (!verReq.empty() && !verSatisfies(ls[0], verReq)) continue;
+        if (!entryOut.empty() && verCmp(ls[0], linesOut[0]) <= 0) continue;
+        entryOut = cand; linesOut = std::move(ls);
+    }
+    return !entryOut.empty();
+}
+
 static bool findModuleSourceFor(const std::string& name,
                                 const std::vector<std::string>& searchPath,
                                 std::string& pathOut, std::string& srcOut,
@@ -4862,17 +4916,11 @@ static bool findModuleSourceFor(const std::string& name,
     }
     std::string nameSha = sha1hex(name);
     for (auto& repo : repoPrefixesFor(searchPath)) {
-        std::string shortDir = repo + "/short/" + nameSha;
-        DIR* dd = opendir(shortDir.c_str());
-        if (!dd) continue;
-        std::string entry;
-        while (struct dirent* e = readdir(dd)) { std::string n = e->d_name; if (n != "." && n != "..") { entry = n; break; } }
-        closedir(dd);
-        if (entry.empty()) continue;
-        std::ifstream meta(shortDir + "/" + entry);
-        std::vector<std::string> lines; std::string ln;
-        while (std::getline(meta, ln)) lines.push_back(ln);
-        if (lines.size() < 4 || lines[3].empty()) continue;
+        // no version constraint in scope on this path (parser export scan,
+        // bundler): the newest installed candidate is the one the
+        // unconstrained loader will run, so scan that one
+        std::string entry; std::vector<std::string> lines;
+        if (!pickInstalledDist(repo + "/short/" + nameSha, "", entry, lines)) continue;
         std::ifstream src(repo + "/sources/" + lines[3]);
         if (!src) continue;
         std::ostringstream ss; ss << src.rdbuf();
@@ -5566,25 +5614,11 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
     // (inst# entries from `use lib`/-I/RAKULIB first, then the default repos)
     std::string nameSha = sha1hex(name);
     for (auto& repo : repoPrefixesFor(libPaths_)) {
-        std::string shortDir = repo + "/short/" + nameSha;
-        DIR* dd = opendir(shortDir.c_str());
-        if (!dd) continue;
-        std::vector<std::string> entries;
-        while (struct dirent* e = readdir(dd)) { std::string n = e->d_name; if (n != "." && n != "..") entries.push_back(n); }
-        closedir(dd);
-        if (entries.empty()) continue;
-        // several installed versions may share the short name: take the first
-        // that satisfies the `use` constraint (line 1 of the index = version)
+        // several installed versions may share the short name: take the NEWEST
+        // that satisfies the `use` constraint (pickInstalledDist). Taking the
+        // first that satisfied loaded whichever version readdir put first.
         std::string entry; std::vector<std::string> lines;
-        for (auto& cand : entries) {
-            std::ifstream meta(shortDir + "/" + cand);
-            std::vector<std::string> ls; std::string ln;
-            while (std::getline(meta, ln)) ls.push_back(ln);
-            if (ls.size() < 4 || ls[3].empty()) continue;
-            if (!verReq.empty() && !verSatisfies(ls[0], verReq)) continue;
-            entry = cand; lines = std::move(ls); break;
-        }
-        if (entry.empty()) continue;
+        if (!pickInstalledDist(repo + "/short/" + nameSha, verReq, entry, lines)) continue;
         std::ifstream src(repo + "/sources/" + lines[3]);
         if (!src) continue;
         if (traceLoad)
