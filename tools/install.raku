@@ -480,11 +480,31 @@ sub candidates(@index, %want) {
     }).List
 }
 
+# The store as index-shaped entries, so candidates() can be asked "does
+# anything already installed satisfy this?" with the same matcher the index
+# gets. Only the fields that matcher reads — there is no archive behind these.
+sub installed-entries(Str $prefix) {
+    my @e;
+    my $d = $prefix.IO.add('dist');
+    return @e unless $d.d;
+    for $d.dir.grep(*.f) -> $f {
+        my %m = try json-decode($f.slurp);
+        next unless %m && %m<name>;
+        @e.push: { name     => %m<name>,
+                   version  => (%m<version> // %m<ver> // ''),
+                   auth     => (%m<auth> // ''),
+                   api      => (%m<api> // ''),
+                   provides => (%m<provides> // {}) };
+    }
+    @e
+}
+
 # The dependency-first install plan for the requested identities. Each plan
 # entry is the index entry hash; %notes collects what was skipped and why.
-sub resolve(@index, @wants, %notes) {
+sub resolve(@index, @wants, %notes, Str :$prefix = '') {
     my @plan;
     my %planned;   # dist identity -> True
+    my @installed = $prefix eq '' ?? () !! installed-entries($prefix);
     my @work = @wants.map({ parse-identity($_) });
     while @work {
         my %want = @work.shift;
@@ -500,13 +520,40 @@ sub resolve(@index, @wants, %notes) {
             note "note: {%want<name>} — not in the zef index, resolved from the REA archive"
                 if @c;
         }
-        # A pinned :ver/:auth that matches nothing ANYWHERE falls back to
-        # name-only, loudly — first the live index, then the archive.
-        if !@c && (%want<ver> ne '' || %want<auth> ne '') {
+        my $pin = %want<name>
+            ~ (%want<ver>  ne '' ?? ":ver<{%want<ver>}>"   !! '')
+            ~ (%want<auth> ne '' ?? ":auth<{%want<auth>}>" !! '');
+        # Neither index has it — but the STORE might, and a dist installed
+        # from a checkout (`rakupp install .`) is in no index at all. That is
+        # exactly what a `ver<X+>` floor on an unreleased version describes.
+        # Satisfied is satisfied: nothing to plan, and nothing below runs —
+        # the loosening under it would answer "at least X" with an older
+        # release and downgrade the dependency out from under whoever asked.
+        if !@c && @installed {
+            my @have = candidates(@installed, %want);
+            if @have {
+                my %h = @have[0];
+                note "note: $pin — not in the index; the installed "
+                   ~ "{%h<name>}:ver<{%h<version>}>:auth<{%h<auth>}> satisfies it";
+                %planned{%h<name>} = True;
+                %planned{$_} = True for (%h<provides> // {}).keys;
+                next;
+            }
+        }
+        # A pin that matches nothing ANYWHERE loosens, loudly. :auth goes
+        # first — the cpan→zef migrations are why this exists — and the
+        # VERSION only when the pin is not a floor: `X+` is a requirement,
+        # and the one answer it cannot take is a release older than X.
+        my $floor = %want<ver>.ends-with('+');
+        if !@c && %want<auth> ne '' {
+            my %no-auth = name => %want<name>, ver => %want<ver>, auth => '', from => %want<from>;
+            @c = candidates(@index, %no-auth);
+            @c = candidates(rea-index(), %no-auth) unless @c;
+            note "note: $pin is not in the index — using {@c[0]<dist> // @c[0]<name>} (the pin may predate an ecosystem migration)"
+                if @c;
+        }
+        if !@c && %want<ver> ne '' && !$floor {
             my %bare = name => %want<name>, ver => '', auth => '', from => %want<from>;
-            my $pin = %want<name>
-                ~ (%want<ver>  ne '' ?? ":ver<{%want<ver>}>"   !! '')
-                ~ (%want<auth> ne '' ?? ":auth<{%want<auth>}>" !! '');
             @c = candidates(@index, %bare);
             if @c {
                 note "note: $pin is not in the index — using {@c[0]<dist> // @c[0]<name>} (the pin may predate an ecosystem migration)";
@@ -518,8 +565,11 @@ sub resolve(@index, @wants, %notes) {
             }
         }
         if !@c {
-            %notes{%want<name>} = 'not in the ecosystem index'
-                unless %planned{%want<name>};   # a planned dist also PROVIDES names
+            unless %planned{%want<name>} {   # a planned dist also PROVIDES names
+                %notes{%want<name>} = $floor
+                    ?? "nothing at {%want<ver>} in the index, the archive or the store"
+                    !! 'not in the ecosystem index';
+            }
             next;
         }
         my %e = @c[0];
@@ -988,6 +1038,107 @@ sub store-check(Str $prefix) {
     $broken ?? 1 !! 0
 }
 
+# ---- one distribution out of the store -------------------------------------
+# The gates first (provenance, dependents), then the mark-and-sweep. False
+# means a gate refused it and nothing was touched. %dists is the live picture
+# of the store and shrinks here: the sweep asks it which blobs are still
+# referenced, so a second removal in the same run sees the first one gone.
+sub remove-one(Str $prefix, Str $dist-id, %meta, %dists,
+               Bool :$force, Bool :$for-reinstall) {
+    my $p = $prefix.IO;
+    my $identity = "{%meta<name>}:ver<{%meta<version> // ''}>:auth<{%meta<auth> // ''}>";
+
+    # ours? (a zef-installed dist is zef's; --force means you mean it).
+    # REINSTALL only warns: its destruction is bounded — the dist is
+    # replaced in the same run and becomes rakupp-owned, which the warning
+    # says out loud. Plain uninstall (pure removal) keeps the hard refusal.
+    if !$force && !is-owned($prefix, $dist-id) {
+        if $for-reinstall {
+            note "warning: $identity was not installed by `rakupp install` — reinstalling anyway; it becomes rakupp-owned";
+        }
+        else {
+            note "$identity was not installed by `rakupp install` — refusing (--force to override)";
+            trace("uninstall refused: $identity is not rakupp-owned");
+            return False;
+        }
+    }
+    # reverse dependencies: anything still installed that depends on a
+    # name this dist provides?
+    my @provided = (%meta<provides> // {}).keys;
+    my @dependents;
+    for %dists.kv -> $oid, %om {
+        next if $oid eq $dist-id;
+        for (%om<depends> // []).flat.grep(Str) -> $dep {
+            my %d = parse-identity($dep);
+            @dependents.push("{%om<name>}:ver<{%om<version> // ''}>")
+                if @provided.first(* eq %d<name>);
+        }
+    }
+    if @dependents && !$force {
+        if $for-reinstall {
+            note "$identity is depended on by {@dependents.unique.join(', ')} — reinstalling in place";
+        }
+        else {
+            note "$identity is still depended on by {@dependents.unique.join(', ')} — refusing (--force to override)";
+            trace("uninstall refused: $identity has dependents ({@dependents.unique.join(', ')})");
+            return False;
+        }
+    }
+
+    with-repo-lock($prefix, {
+        # blobs THIS dist references, and blobs everything ELSE references
+        my @mine = (%meta<files> // {}).values.grep(* ne '');
+        my %still;
+        for %dists.kv -> $oid, %om {
+            next if $oid eq $dist-id;
+            %still{$_} = True for (%om<files> // {}).values.grep(* ne '');
+        }
+        # 1. index entries FIRST: a missing blob behind a live entry is a
+        #    broken `use`; an orphaned blob is only wasted disk. Provided
+        #    modules AND files — bin/resources entries are indexed under
+        #    sha1 of their rel-path, which is what Rakudo's `.files` reads.
+        for |@provided, |(%meta<files> // {}).keys -> $key {
+            my $e = $p.add('short').add(sha1-str($key)).add($dist-id);
+            $e.unlink if $e.e;
+            my $sdir = $e.parent;
+            $sdir.rmdir if $sdir.d && !$sdir.dir;
+        }
+        # 2. blobs nothing else references (content-addressed and shared)
+        for @mine.unique -> $sha {
+            next if %still{$sha};
+            for <sources resources bin> -> $sub {
+                my $b = $p.add($sub).add($sha);
+                $b.unlink if $b.e;
+            }
+        }
+        # 2b. named bin wrappers (bin/<script>, the engine writes one per
+        #     bin/ entry at install). Kept while ANY remaining dist still
+        #     carries a script of that name — wrappers dispatch by name,
+        #     not by dist, so the survivor keeps answering.
+        for (%meta<files> // {}).keys.grep(*.starts-with('bin/')) -> $rel {
+            my $script = $rel.substr(4);
+            next if $script eq '' || $script.contains('/');
+            my $still-provided = False;
+            for %dists.kv -> $oid, %om {
+                next if $oid eq $dist-id;
+                $still-provided = True if (%om<files> // {}){$rel}:exists;
+            }
+            unless $still-provided {
+                my $w = $p.add('bin').add($script);
+                $w.unlink if $w.e;
+            }
+        }
+        # 3. the dist record LAST: a crash mid-way leaves a record that
+        #    still describes what to finish
+        $p.add('dist').add($dist-id).unlink;
+        drop-owned($prefix, $dist-id);
+    });
+    %dists{$dist-id}:delete;
+    say "uninstalled $identity";
+    trace("uninstalled: $identity ($dist-id)");
+    True
+}
+
 # ---- uninstall (M6): mark-and-sweep over a shared, content-addressed store --
 # :for-reinstall relaxes three refusals, because the dist is coming right
 # back: "not installed" becomes a fresh install (note, skip the removal),
@@ -1012,6 +1163,9 @@ sub do-uninstall(@names, Str $prefix, Bool :$force, Bool :$for-reinstall) {
         %dists{$f.basename} = %m if %m;
     }
 
+    # Names are independent: one that refuses does not stop the rest, and the
+    # exit code reports that something asked for did not happen.
+    my $rc = 0;
     for @names -> $want-str {
         my %want = parse-identity($want-str);
         my @hits = %dists.grep(-> $kv {
@@ -1027,108 +1181,29 @@ sub do-uninstall(@names, Str $prefix, Bool :$force, Bool :$for-reinstall) {
             }
             note "not installed: $want-str";
             trace("uninstall refused: $want-str is not installed");
-            return 1;
+            $rc = 1;
+            next;
         }
+        # More than one installed distribution answers to this name — the
+        # ordinary shape after an upgrade, and what `zef uninstall` handles by
+        # matching every installed dist against the spec and removing each one
+        # that matches. Refusing instead made the name unremovable in practice:
+        # the identity the refusal asked to be typed instead (`Foo:ver<1.0>`)
+        # is a redirection to every shell that would have to pass it through.
         if @hits.elems > 1 {
-            note "ambiguous: $want-str matches {@hits.elems} distributions — name a version:";
-            note "  {.value<name>}:ver<{.value<version>}>:auth<{.value<auth> // ''}>" for @hits;
-            trace("uninstall refused: $want-str is ambiguous ({@hits.elems} matches)");
-            return 1;
+            note "$want-str matches {@hits.elems} installed distributions — removing all";
+            trace("uninstall: $want-str matches {@hits.elems} distributions");
         }
-        my $dist-id = @hits[0].key;
-        my %meta = @hits[0].value;
-        my $identity = "{%meta<name>}:ver<{%meta<version> // ''}>:auth<{%meta<auth> // ''}>";
-
-        # ours? (a zef-installed dist is zef's; --force means you mean it).
-        # REINSTALL only warns: its destruction is bounded — the dist is
-        # replaced in the same run and becomes rakupp-owned, which the warning
-        # says out loud. Plain uninstall (pure removal) keeps the hard refusal.
-        if !$force && !is-owned($prefix, $dist-id) {
-            if $for-reinstall {
-                note "warning: $identity was not installed by `rakupp install` — reinstalling anyway; it becomes rakupp-owned";
-            }
-            else {
-                note "$identity was not installed by `rakupp install` — refusing (--force to override)";
-                trace("uninstall refused: $identity is not rakupp-owned");
-                return 1;
-            }
+        for @hits.sort(-> $a, $b {   # newest first
+            newer($a.value<version> // '', $b.value<version> // '') ?? Order::Less
+            !! newer($b.value<version> // '', $a.value<version> // '') ?? Order::More
+            !! Order::Same
+        }) -> $hit {
+            $rc = 1 unless remove-one($prefix, $hit.key, $hit.value, %dists,
+                                      :$force, :$for-reinstall);
         }
-        # reverse dependencies: anything still installed that depends on a
-        # name this dist provides?
-        my @provided = (%meta<provides> // {}).keys;
-        my @dependents;
-        for %dists.kv -> $oid, %om {
-            next if $oid eq $dist-id;
-            for (%om<depends> // []).flat.grep(Str) -> $dep {
-                my %d = parse-identity($dep);
-                @dependents.push("{%om<name>}:ver<{%om<version> // ''}>")
-                    if @provided.first(* eq %d<name>);
-            }
-        }
-        if @dependents && !$force {
-            if $for-reinstall {
-                note "$identity is depended on by {@dependents.unique.join(', ')} — reinstalling in place";
-            }
-            else {
-                note "$identity is still depended on by {@dependents.unique.join(', ')} — refusing (--force to override)";
-                trace("uninstall refused: $identity has dependents ({@dependents.unique.join(', ')})");
-                return 1;
-            }
-        }
-
-        with-repo-lock($prefix, {
-            # blobs THIS dist references, and blobs everything ELSE references
-            my @mine = (%meta<files> // {}).values.grep(* ne '');
-            my %still;
-            for %dists.kv -> $oid, %om {
-                next if $oid eq $dist-id;
-                %still{$_} = True for (%om<files> // {}).values.grep(* ne '');
-            }
-            # 1. index entries FIRST: a missing blob behind a live entry is a
-            #    broken `use`; an orphaned blob is only wasted disk. Provided
-            #    modules AND files — bin/resources entries are indexed under
-            #    sha1 of their rel-path, which is what Rakudo's `.files` reads.
-            for |@provided, |(%meta<files> // {}).keys -> $key {
-                my $e = $p.add('short').add(sha1-str($key)).add($dist-id);
-                $e.unlink if $e.e;
-                my $sdir = $e.parent;
-                $sdir.rmdir if $sdir.d && !$sdir.dir;
-            }
-            # 2. blobs nothing else references (content-addressed and shared)
-            for @mine.unique -> $sha {
-                next if %still{$sha};
-                for <sources resources bin> -> $sub {
-                    my $b = $p.add($sub).add($sha);
-                    $b.unlink if $b.e;
-                }
-            }
-            # 2b. named bin wrappers (bin/<script>, the engine writes one per
-            #     bin/ entry at install). Kept while ANY remaining dist still
-            #     carries a script of that name — wrappers dispatch by name,
-            #     not by dist, so the survivor keeps answering.
-            for (%meta<files> // {}).keys.grep(*.starts-with('bin/')) -> $rel {
-                my $script = $rel.substr(4);
-                next if $script eq '' || $script.contains('/');
-                my $still-provided = False;
-                for %dists.kv -> $oid, %om {
-                    next if $oid eq $dist-id;
-                    $still-provided = True if (%om<files> // {}){$rel}:exists;
-                }
-                unless $still-provided {
-                    my $w = $p.add('bin').add($script);
-                    $w.unlink if $w.e;
-                }
-            }
-            # 3. the dist record LAST: a crash mid-way leaves a record that
-            #    still describes what to finish
-            $p.add('dist').add($dist-id).unlink;
-            drop-owned($prefix, $dist-id);
-        });
-        %dists{$dist-id}:delete;
-        say "uninstalled $identity";
-        trace("uninstalled: $identity ($dist-id)");
     }
-    0
+    $rc
 }
 
 sub list-installed(Str $prefix) {
@@ -1301,7 +1376,7 @@ sub MAIN(
     }
     my %local-names;
     %local-names{.<name>} = True for @local-entries;
-    my @plan = (@wants ?? resolve(@index, @wants, %notes) !! ())
+    my @plan = (@wants ?? resolve(@index, @wants, %notes, :prefix($to)) !! ())
         .grep(-> %e { !%local-names{%e<name>} });
     @plan.append(@local-entries);
 

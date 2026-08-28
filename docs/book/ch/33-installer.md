@@ -219,7 +219,7 @@ wearing a trench coat. Reclaiming space is uninstall's job, explicitly.
 
 Deleting from a shared, content-addressed store is the hard half, which is
 why it landed last and why the checker (below) was written *before* the
-delete path. `rakupp uninstall Foo` refuses three ways before it touches
+delete path. `rakupp uninstall Foo` refuses two ways before it touches
 anything:
 
 - **Not installed by us.** If the dist-id is not in `rakupp-install/owned`,
@@ -229,7 +229,18 @@ anything:
 - **Still depended on.** Any other installed distribution whose `depends`
   names a module this one provides blocks the removal, with the dependents
   named.
-- **Ambiguous.** Two installed versions match a bare name; name a version.
+A bare name that matches *several* installed distributions is not one of the
+refusals. Two versions behind one name is the ordinary result of an upgrade —
+the store keeps versions side by side by design — and `zef uninstall` answers
+it by matching every installed distribution against the spec and removing each
+one that matches. rakupp does the same, saying how many it found first. The
+refusal this replaced asked for a version instead, and the identity it asked
+to be typed (`Foo:ver<1.0>`) is a redirection to every shell that would have
+had to pass it through, which left the name unremovable in practice.
+
+Each match still goes through the two gates above on its own, and a match a
+gate refuses does not stop the others: what was removed is reported line by
+line, and the exit code reports that something asked for did not happen.
 
 The removal itself is ordered by failure mode, under the same `repo.lock`:
 

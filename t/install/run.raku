@@ -157,6 +157,14 @@ my ($arc9, $sha9)  = make-dist('Gate::Choice', 'Gate::Choice', '0.1.0');
 # the JSON::Native shape: a logical libraries/ resource whose file the build
 # hook writes under the platform's spelling
 my ($arc10, $sha10) = make-dist('Gate::Native', 'Gate::Native', '0.1.0', :native-lib);
+# two versions of ONE name, plus a third that exists only as a checkout, and a
+# dependent pinned to a floor above everything the index carries — the shapes
+# behind `uninstall Foo` with two Foos installed, and behind issue #40
+my ($arcT1, $shaT1) = make-dist('Gate::Twin', 'Gate::Twin', '1.0');
+my ($arcT2, $shaT2) = make-dist('Gate::Twin', 'Gate::Twin', '2.0');
+my ($arcT3, $shaT3) = make-dist('Gate::Twin', 'Gate::Twin', '3.0');
+my ($arcF, $shaF)   = make-dist('Gate::Floor', 'Gate::Floor', '0.1.0',
+                                :depends(['Gate::Twin:ver<3.0+>']));
 
 $tmp.add('index.json').spurt(qq:to/END/);
     [ \{ "name": "Gate::Demo", "version": "0.4.2", "auth": "test:gate",
@@ -208,7 +216,19 @@ $tmp.add('index.json').spurt(qq:to/END/);
       \{ "name": "Gate::Native", "version": "0.1.0", "auth": "test:gate",
          "dist": "Gate::Native:ver<0.1.0>:auth<test:gate>",
          "provides": \{ "Gate::Native": "lib/Gate/Native.rakumod" \},
-         "depends": [], "path": "$sha10.tar.gz" \} ]
+         "depends": [], "path": "$sha10.tar.gz" \},
+      \{ "name": "Gate::Twin", "version": "1.0", "auth": "test:gate",
+         "dist": "Gate::Twin:ver<1.0>:auth<test:gate>",
+         "provides": \{ "Gate::Twin": "lib/Gate/Twin.rakumod" \},
+         "depends": [], "path": "$shaT1.tar.gz" \},
+      \{ "name": "Gate::Twin", "version": "2.0", "auth": "test:gate",
+         "dist": "Gate::Twin:ver<2.0>:auth<test:gate>",
+         "provides": \{ "Gate::Twin": "lib/Gate/Twin.rakumod" \},
+         "depends": [], "path": "$shaT2.tar.gz" \},
+      \{ "name": "Gate::Floor", "version": "0.1.0", "auth": "test:gate",
+         "dist": "Gate::Floor:ver<0.1.0>:auth<test:gate>",
+         "provides": \{ "Gate::Floor": "lib/Gate/Floor.rakumod" \},
+         "depends": ["Gate::Twin:ver<3.0+>"], "path": "$shaF.tar.gz" \} ]
     END
 
 my $home = $tmp.add('home');
@@ -625,6 +645,69 @@ check %rea-pin<exit> == 0
       && %rea-pin<err>.contains('resolved from the REA archive')
       && !%rea-pin<err>.contains('matches nothing'),
       'REA: a dead exact pin is satisfied exactly from the archive';
+
+# ---- one name, two installed versions: uninstall takes both ----------------
+# `zef uninstall` matches every installed distribution against the spec and
+# removes each one that matches. Two versions behind a name is the ordinary
+# result of an upgrade; refusing it left the name unremovable in practice,
+# since the identity a refusal asks to be typed instead is a redirection to
+# the shell that would have to pass it through.
+my $homeT = $tmp.add('home-twin');
+$homeT.mkdir;
+my %envT = %env.clone;
+%envT<HOME> = $homeT.Str;
+sub installer-twin(*@args) {
+    my $p = run 'env', |%envT.map({ "{.key}={.value}" }), $EXE, 'install', |@args, :out, :err;
+    my $out = $p.out.slurp(:close);
+    my $err = $p.err.slurp(:close);
+    { exit => (try $p.exitcode) // 1, out => $out, err => $err }
+}
+
+my %tw1 = installer-twin('Gate::Twin:ver<1.0>');
+my %tw2 = installer-twin('Gate::Twin:ver<2.0>');
+check %tw1<exit> == 0 && %tw2<exit> == 0,
+      'twin: two versions of one name install side by side';
+my %twlist = installer-twin('--list');
+check %twlist<out>.contains('Gate::Twin:ver<1.0>') && %twlist<out>.contains('Gate::Twin:ver<2.0>'),
+      'twin: …and --list shows both';
+my %twre = installer-twin('--reinstall', 'Gate::Twin');
+check %twre<exit> == 0
+      && %twre<out>.contains('uninstalled Gate::Twin:ver<2.0>')
+      && %twre<out>.contains('uninstalled Gate::Twin:ver<1.0>')
+      && %twre<out>.contains('installed Gate::Twin:ver<2.0>'),
+      'twin: reinstall clears every version behind the name and installs the newest';
+my %twrelist = installer-twin('--list');
+check %twrelist<out>.contains('Gate::Twin:ver<2.0>')
+      && !%twrelist<out>.contains('Gate::Twin:ver<1.0>'),
+      'twin: …and only the newest is left';
+installer-twin('Gate::Twin:ver<1.0>');
+my %twun = installer-twin('--uninstall', 'Gate::Twin');
+check %twun<exit> == 0
+      && %twun<err>.contains('matches 2 installed distributions')
+      && %twun<out>.contains('uninstalled Gate::Twin:ver<2.0>')
+      && %twun<out>.contains('uninstalled Gate::Twin:ver<1.0>'),
+      'twin: a bare name uninstalls every distribution behind it';
+my %twchk = installer-twin('--check');
+check %twchk<exit> == 0 && %twchk<out>.contains('0 broken'),
+      'twin: …and the store is left consistent';
+
+# ---- a ver<X+> floor is a requirement, not a preference (issue #40) --------
+# The index carries Gate::Twin 1.0 and 2.0; 3.0 exists only as a checkout, the
+# shape of a dependency installed from a local path before its release. The
+# floor must be answered by the installed 3.0 — and when nothing answers it,
+# REPORTED, never satisfied by loosening the pin down onto an older release.
+my %fl1 = installer-twin($tmp.add('build-Gate-Twin-3.0').Str);
+check %fl1<exit> == 0, 'floor: a checkout the index does not carry installs from its path';
+my %fl2 = installer-twin('--dry-run', 'Gate::Floor');
+check %fl2<exit> == 0
+      && %fl2<err>.contains('the installed Gate::Twin:ver<3.0>')
+      && !%fl2<out>.contains('Gate::Twin:ver<2.0>'),
+      'floor: an installed version satisfies a floor the index cannot';
+installer-twin('--uninstall', 'Gate::Twin');
+my %fl3 = installer-twin('--dry-run', 'Gate::Floor');
+check %fl3<out>.contains('nothing at 3.0+')
+      && !%fl3<out>.contains('Gate::Twin:ver<2.0>'),
+      'floor: …and with nothing to satisfy it, reported rather than downgraded';
 
 say "install gate: $ok ok, $bad failed";
 exit 1 if $bad;

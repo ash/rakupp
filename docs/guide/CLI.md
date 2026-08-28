@@ -327,7 +327,8 @@ rakupp install .                 # this directory's dist; deps from the index
 rakupp install ./my-dist         # any path — an argument starting with . or /
 rakupp test Foo                  # build + run Foo's own suite; installs its
                                  # deps, never Foo — the measurement command
-rakupp uninstall Foo             # remove what THIS installer put there
+rakupp uninstall Foo             # remove what THIS installer put there —
+                                 # every installed version behind the name
 rakupp reinstall Foo             # uninstall + install fresh, one command
 rakupp install --list            # what is installed in the target store
 rakupp install --check           # store integrity report; fixes nothing
@@ -356,7 +357,13 @@ suite imports exactly what the plan installed, wherever `--to` pointed.
 Resolution is zef-index-first with the community's REA archive
 (github.com/Raku/REA) as the fallback, the same order zef itself uses —
 names and exact `:ver`/`:auth` pins the live index no longer carries still
-resolve. A distribution's own test suite runs under rakupp before it is
+resolve. A pin neither index answers is put to the STORE next: a dependency
+installed from a checkout is in no index at all, and an already-installed
+version that satisfies the pin satisfies it. Only then does the pin loosen,
+and loosening drops `:auth` before `:ver` and never drops a `ver<X+>` floor —
+answering "at least X" with a release older than X is the one answer that
+cannot work, so an unsatisfiable floor is reported instead.
+A distribution's own test suite runs under rakupp before it is
 marked installed (`--no-test` skips; `--dry-run` prints the plan and writes
 nothing). Each command alone prints its full usage.
 
