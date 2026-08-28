@@ -14,6 +14,7 @@
 #include "Lint.h"
 #include "Ffi.h"
 #include "Highlight.h"
+#include "Lsp.h"
 #include "JupyterKernel.h"
 #include "McpServer.h"
 #include "Repl.h"
@@ -1319,7 +1320,7 @@ int main(int argc, char** argv) {
         static const std::set<std::string> kLongNames = {
             "exe", "cpp", "emit-cpp", "bundle", "aot", "lint", "highlight",
             "ansi", "terminal", "ast", "dump-ast", "doc", "help", "version",
-            "mcp", "jupyter",
+            "mcp", "lsp", "jupyter",
         };
         std::string bare = argv[1] + 1;
         if (kLongNames.count(bare)) {
@@ -1343,7 +1344,7 @@ int main(int argc, char** argv) {
     // `-o out --exe src` is as good as `--exe src -o out`.
     enum class Mode { Run, Help, Version, FfiInfo, Highlight, Ast, AstRoundtrip,
                       PrecompSetting, PrecompInfo, PrecompClean, Check, Lint,
-                      Cpp, Bundle, Aot, Exe, Mcp, Jupyter, JupyterInstall };
+                      Cpp, Bundle, Aot, Exe, Mcp, Lsp, Jupyter, JupyterInstall };
     Mode mode = Mode::Run;
     std::string modeTok;                  // the spelling that selected the mode (for messages)
     std::vector<std::string> libPaths;    // -I, both spellings, any position
@@ -1413,6 +1414,7 @@ int main(int argc, char** argv) {
             // mode selectors
             if (a == "--highlight") { if (!setMode(Mode::Highlight, a)) return 4; continue; }
             if (a == "--mcp") { if (!setMode(Mode::Mcp, a)) return 4; continue; }
+            if (a == "--lsp") { if (!setMode(Mode::Lsp, a)) return 4; continue; }
             // --jupyter FILE: Jupyter launches the kernel with the connection
             // file as its own argv token, so the flag EATS the next argument —
             // it is not the program to run, and the two-phase scan would take
@@ -1591,6 +1593,12 @@ int main(int argc, char** argv) {
         if (sawHtml && mode != Mode::Highlight) return illegalOpt("--html");
         if (quiet && mode != Mode::Lint) return illegalOpt("-q");
         if (mcpTimeout >= 0 && mode != Mode::Mcp) return illegalOpt("--timeout");
+        if (mode == Mode::Lsp && haveSrc) {
+            // Same shape as --mcp: the server IS the program, stdio is the
+            // protocol, and the editor sends documents over it — not argv.
+            std::cerr << "--lsp serves diagnostics over stdio and takes no program\n";
+            return 4;
+        }
         if (mode == Mode::Mcp) {
             // The server IS the program; stdio is the protocol. A source file
             // or -e here is a misunderstanding worth a sentence, not a guess.
@@ -1772,6 +1780,8 @@ int main(int argc, char** argv) {
 "  rakupp --exe-info BINARY     A compiled binary's embedded build manifest\n"
 "                               (version, compile mode, --slim cuts)\n"
 "  rakupp --target=parse|ast    Rakudo-compatible aliases of -c / --ast\n"
+"  rakupp --lsp                 Run the Language Server (JSON-RPC on stdin/stdout)\n"
+"                               for editor integration: live parse/lint diagnostics\n"
 "  rakupp --help, -h            Show this help\n"
 "  rakupp --version, -V, -v     Show the version\n"
 "  rakupp --ffi-info            Show which FFI backend NativeCall will use\n"
@@ -1834,6 +1844,12 @@ int main(int argc, char** argv) {
         io.prefix = jupyterPrefix;
         return rakupp::jupyter::installKernelspec(io);
     }
+
+    // --lsp : the Language Server, JSON-RPC over stdin/stdout. Diagnostics only
+    // (v1): it runs the SAME lex -> parse -> lintProgram pipeline as --lint, so an
+    // editor's squiggles can never disagree with the CLI. Nothing in the engine is
+    // reached — no interpreter, no codegen.
+    if (mode == Mode::Lsp) return rakupp::runLsp();
 
     if (mode == Mode::Mcp) {
         rakupp::mcp::Options mo;

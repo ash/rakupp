@@ -1,0 +1,59 @@
+{
+  "name": "rakupp",
+  "displayName": "Raku++ (rakupp)",
+  "description": "Raku language support powered by the rakupp language server: live parse and lint diagnostics.",
+  "version": "0.9.1",
+  "publisher": "ash",
+  "license": "Artistic-2.0",
+  "repository": { "type": "git", "url": "https://github.com/ash/rakupp" },
+  "engines": { "vscode": "^1.75.0" },
+  "categories": ["Programming Languages", "Linters"],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "raku",
+        "aliases": ["Raku", "Raku++", "raku", "perl6"],
+        "extensions": [".raku", ".rakumod", ".rakutest", ".rakudoc", ".p6", ".pl6", ".pm6"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "raku",
+        "scopeName": "source.raku",
+        "path": "./syntaxes/raku.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "title": "Raku++",
+      "properties": {
+        "rakupp.path": {
+          "type": "string",
+          "default": "rakupp",
+          "description": "Path to the rakupp executable. Use an absolute path if rakupp is not on your PATH (e.g. /Users/you/rakupp/build/rakupp)."
+        },
+        "rakupp.trace.server": {
+          "type": "string",
+          "enum": ["off", "messages", "verbose"],
+          "default": "off",
+          "description": "Trace the JSON-RPC traffic between VS Code and the rakupp language server (shown in the 'Raku++' output channel)."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^18.19.0",
+    "@types/vscode": "^1.75.0",
+    "typescript": "^5.4.0"
+  }
+}

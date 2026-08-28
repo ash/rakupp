@@ -1,0 +1,127 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Raku",
+  "scopeName": "source.raku",
+  "comment": "Baseline TextMate grammar for Raku. Coloring only; all diagnostics come from the rakupp language server.",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#numbers" },
+    { "include": "#declarations" },
+    { "include": "#keywords" },
+    { "include": "#types" },
+    { "include": "#variables" },
+    { "include": "#operators" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.number-sign.raku",
+          "match": "#.*$"
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.raku",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [
+            { "name": "constant.character.escape.raku", "match": "\\\\." },
+            {
+              "name": "variable.other.interpolation.raku",
+              "match": "[$@%&][\\w:]+"
+            }
+          ]
+        },
+        {
+          "name": "string.quoted.single.raku",
+          "begin": "'",
+          "end": "'",
+          "patterns": [{ "name": "constant.character.escape.raku", "match": "\\\\['\\\\]" }]
+        },
+        {
+          "name": "string.quoted.other.q.raku",
+          "begin": "\\b(qq?|qw)\\s*\\{",
+          "end": "\\}"
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.raku",
+          "match": "\\b(0[xob][0-9a-fA-F_]+|[0-9][0-9_]*(\\.[0-9_]+)?([eE][-+]?[0-9]+)?)\\b"
+        }
+      ]
+    },
+    "declarations": {
+      "patterns": [
+        {
+          "match": "\\b(sub|method|submethod|multi|proto)\\s+([-\\w']+)",
+          "captures": {
+            "1": { "name": "storage.type.function.raku" },
+            "2": { "name": "entity.name.function.raku" }
+          }
+        },
+        {
+          "match": "\\b(class|role|grammar|module|package|enum|subset)\\s+([\\w:]+)",
+          "captures": {
+            "1": { "name": "storage.type.class.raku" },
+            "2": { "name": "entity.name.type.raku" }
+          }
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.raku",
+          "match": "\\b(if|elsif|else|unless|with|orwith|without|while|until|repeat|for|loop|given|when|default|gather|take|return|return-rw|last|next|redo|start|react|whenever|supply|emit|done|make|made|do)\\b"
+        },
+        {
+          "name": "storage.modifier.raku",
+          "match": "\\b(my|our|has|state|let|temp|constant|anon|augment|supersede|unit)\\b"
+        },
+        {
+          "name": "keyword.other.raku",
+          "match": "\\b(use|no|need|require|import|is|does|but|but-repl|BEGIN|END|CHECK|INIT|FIRST|LAST|NEXT|ENTER|LEAVE|KEEP|UNDO|PRE|POST|CATCH|CONTROL)\\b"
+        }
+      ]
+    },
+    "types": {
+      "patterns": [
+        {
+          "name": "support.type.raku",
+          "match": "\\b(Int|UInt|Num|Rat|Complex|Str|Bool|Array|Hash|List|Seq|Map|Set|Bag|Mix|Pair|Range|Buf|Blob|Any|Mu|Cool|Junction|IO|Proc|Promise|Channel|Supply|Callable|Code|Block|Routine|Sub|Method|Signature|Capture|Nil|Whatever|WhateverCode|Date|DateTime|Instant|Duration|Version)\\b"
+        }
+      ]
+    },
+    "variables": {
+      "patterns": [
+        {
+          "name": "variable.other.raku",
+          "match": "[$@%&](\\*|!|\\.|\\^|:)?[\\w][\\w'-]*"
+        },
+        {
+          "name": "variable.language.raku",
+          "match": "[$@%]?[$@%&]?/|\\$_|\\$!|\\$/|\\$\\d+"
+        }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.raku",
+          "match": "(\\+\\+|--|\\*\\*|\\+|-|\\*|/|%%|%|xx|x|~~|~|\\|\\||&&|//|\\?\\?|!!|\\.\\.\\.?|<=>|=>|->|==>|<==|=|:=|::=|\\?\\.|\\.\\.)"
+        },
+        {
+          "name": "keyword.operator.word.raku",
+          "match": "\\b(eq|ne|lt|le|gt|ge|cmp|leg|before|after|and|or|not|xor|div|mod|gcd|lcm)\\b"
+        }
+      ]
+    }
+  }
+}
