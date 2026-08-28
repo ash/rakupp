@@ -6072,7 +6072,19 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                     done = isClosed();
                 }
                 if (done) break;
-                if (liveWorkers_.load() <= 0 && cuedLoads_.load() <= 0) break; // nobody left to send
+                if (liveWorkers_.load() <= 0 && cuedLoads_.load() <= 0) {
+                    // nobody left to send — but the last sender may have sent and
+                    // closed BETWEEN the drain above and this check (it decrements
+                    // the worker count only after its close lands). One final
+                    // locked sweep, or that tail is silently dropped: t/run's
+                    // parallel example lost "100 121 144" exactly here once,
+                    // under machine load. `.receive` re-checks under its lock
+                    // after the same break; `.list` returned without looking.
+                    std::lock_guard<std::recursive_mutex> lk(chm);
+                    for (auto& x : q) o.arr()->push_back(x);
+                    q.clear();
+                    break;
+                }
                 if (gilHeld_) yieldToWorkerFor(0.02);
                 else std::this_thread::sleep_for(std::chrono::milliseconds(2));
             }
