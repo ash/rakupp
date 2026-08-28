@@ -28,6 +28,16 @@ we run somebody else's software; there we run our own, every day.
 |---|---|---|
 | [**sparrow/**](sparrow) | [Sparrow6](https://github.com/melezhik/Sparrow6), an automation framework (`zef:sp1983`) | a process per task, in Bash, Raku and Perl — so it measures what starting an interpreter costs |
 
+## The other direction — [ADOPTIONS.md](ADOPTIONS.md)
+
+Everything above is other people's software running on this engine.
+**[ADOPTIONS.md](ADOPTIONS.md)** is the mirror image: other people's software
+that reached for *the engine* — a Wolfram paclet in Wolfram's own repository, a
+browser playground that offers rakupp as one of four runtimes, a Guix channel, a
+port of the release matrix to somebody else's CI. Nothing to run there and
+nothing checked in there either; it is a record of what other people have done
+with Raku++, links and credits only.
+
 ## How an entry works
 
 The tool is installed, never checked in: `rakupp install <dist>` or

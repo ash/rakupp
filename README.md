@@ -138,7 +138,9 @@ exploring Raku++:
   a Raku grammar, and a pastebin HTTP server on raw sockets.
 - **[live/](live)** — real software from the ecosystem, run unmodified: whole
   tools people already use, driven by Raku++ exactly as their authors wrote
-  them.
+  them. The other direction — other people's software that reached for *this*
+  engine — is **[live/ADOPTIONS.md](live/ADOPTIONS.md)**: a Wolfram paclet, a
+  browser playground offering rakupp as one of four runtimes, a Guix channel.
 
 ## Run Raku in the browser — Raku.js
 
