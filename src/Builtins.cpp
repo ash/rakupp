@@ -5533,7 +5533,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                     double v = a.pairVal()->toNum();
                     if (std::isnan(v)) throw RakuError{Value::typeObj("X::Scheduler::CueInNaNSeconds"),
                         "Cannot pass NaN as a number of seconds to Scheduler.cue"};
-                    delay = a.s == "in" ? v : std::max(0.0, v - (double)::time(nullptr));
+                    delay = a.s == "in" ? v : std::max(0.0, v - epochNowSecs()); // :at is absolute, on the `now` clock (whole-second time() lost the fraction)
                 }
                 else if (a.s == "every") {
                     every = a.pairVal()->toNum();
@@ -6306,7 +6306,17 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     }
     if (inv.t == VT::Type && inv.s == "Promise") {
         Value p = Value::makeHash(); p.hashKind = "Promise";
-        if (m == "in" || m == "at") { (*p.hash())["kind"] = Value::str("timer"); (*p.hash())["seconds"] = args.empty() ? Value::number(0) : args[0]; (*p.hash())["status"] = Value::str("Planned"); return p; }
+        if (m == "in" || m == "at") {
+            // `.in($n)` is relative, `.at($instant)` absolute — normalize to the
+            // absolute fire time (epoch seconds, the `now` clock) at creation, so
+            // every consumer waits exactly the remainder (see timerRemainingSecs).
+            (*p.hash())["kind"] = Value::str("timer");
+            double arg = args.empty() ? 0 : args[0].toNum();
+            (*p.hash())["seconds"] = args.empty() ? Value::number(0) : args[0];
+            (*p.hash())["fires_at"] = Value::number(m == "in" ? epochNowSecs() + arg : arg);
+            (*p.hash())["status"] = Value::str("Planned");
+            return p;
+        }
         if (m == "anyof" || m == "allof") {
             (*p.hash())["kind"] = Value::str(m); Value ps = Value::array();
             for (auto& x : flattenArgs(args)) {
@@ -6954,7 +6964,8 @@ Value Interpreter::spawnSupplyTimer(double secs, Value blk, std::shared_ptr<Supp
     Interpreter* self = this;
     if (secs < 0) secs = 0;
     Value fireW = ctxCallable(ctx, [blk, ctx](Interpreter& I2, ValueList&) -> Value {
-        if (!ctx->done && !ctx->doneFired) { ValueList none; try { I2.callCallable(blk, none); } catch (NextEx&) {} catch (LastEx&) {} catch (DoneEx&) {} }
+        // shutdown mid-delay: release the pending hold, but never run the block
+        if (!I2.workerAbort_.load(std::memory_order_relaxed) && !ctx->done && !ctx->doneFired) { ValueList none; try { I2.callCallable(blk, none); } catch (NextEx&) {} catch (LastEx&) {} catch (DoneEx&) {} }
         ctx->pending--;
         I2.maybeFinishSupply(ctx);
         return Value::any();
@@ -6962,10 +6973,14 @@ Value Interpreter::spawnSupplyTimer(double secs, Value blk, std::shared_ptr<Supp
     throttleSpawn();
     addWorker(BigStackThread([self, secs, fireW, fin, spawnScope, ctx]() mutable {
         t_isWorker = true;
-        double slept = 0;
-        while (slept < secs && !ctx->done && !ctx->doneFired) { // GIL not held; cancellable
-            std::this_thread::sleep_for(std::chrono::duration<double>(0.05));
-            slept += 0.05;
+        // GIL not held; slices against a fixed deadline (drift-free, huge/Inf-safe)
+        // and wakes early on `done`/`.close` or shutdown.
+        auto end = std::chrono::steady_clock::now() + std::chrono::duration<double>(secs);
+        while (!ctx->done && !ctx->doneFired && !self->workerAbort_.load(std::memory_order_relaxed)) {
+            auto now = std::chrono::steady_clock::now();
+            if (now >= end) break;
+            double left = std::chrono::duration<double>(end - now).count();
+            std::this_thread::sleep_for(std::chrono::duration<double>(left < 0.05 ? left : 0.05));
         }
         self->gil_.lock();
         ExecContext wctx; self->loadCtx(wctx);
@@ -7105,6 +7120,40 @@ Value Interpreter::spawnSupplyInterval(double interval, double delay, Value blk,
     Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
 }
 
+// Run a NATIVE continuation on a worker after a real delay — the `.then` of a
+// timer promise (`Promise.in(3).then({…})` ran its block at t=0 before). The
+// same sliced wait as spawnTimerWhenever: shutdown wakes it within ~50 ms, and
+// an aborted worker never runs the continuation.
+void Interpreter::spawnDelayedNative(double secs, std::function<void()> fn) {
+    engageGil();
+    liveWorkers_++;
+    auto fin = std::make_shared<std::atomic<bool>>(false);
+    auto spawnScope = tctx_.cur ? tctx_.cur : global_;
+    Interpreter* self = this;
+    if (secs < 0) secs = 0;
+    throttleSpawn();
+    addWorker(BigStackThread([self, secs, fn, fin, spawnScope]() mutable {
+        t_isWorker = true;
+        bool stopped = false;                                          // GIL not held
+        auto end = std::chrono::steady_clock::now() + std::chrono::duration<double>(secs);
+        for (;;) {
+            if (self->workerAbort_.load(std::memory_order_relaxed)) { stopped = true; break; }
+            auto now = std::chrono::steady_clock::now();
+            if (now >= end) break;
+            double left = std::chrono::duration<double>(end - now).count();
+            std::this_thread::sleep_for(std::chrono::duration<double>(left < 0.05 ? left : 0.05));
+        }
+        self->gil_.lock();
+        ExecContext wctx; self->loadCtx(wctx);
+        tctx_.cur = spawnScope;
+        tctx_.dynStack.push_back(spawnScope.get());
+        if (!stopped) { try { fn(); } catch (...) {} }
+        self->gilYieldNotify();
+        self->liveWorkers_--;
+        fin->store(true, std::memory_order_release);
+    }), fin);
+}
+
 Value Interpreter::spawnTimerWhenever(double secs, Value blk, std::shared_ptr<ReactCtx> ctx) {
     engageGil();
     if (ctx) { std::lock_guard<std::mutex> lk(ctx->m); ctx->liveSources++; }
@@ -7113,17 +7162,28 @@ Value Interpreter::spawnTimerWhenever(double secs, Value blk, std::shared_ptr<Re
     auto spawnScope = tctx_.cur ? tctx_.cur : global_;
     Interpreter* self = this;
     if (secs < 0) secs = 0;
-    if (secs > 35) secs = 35; // bounded like sleepYield, so a stray huge timer can't hang the process
     throttleSpawn();
     addWorker(BigStackThread([self, secs, blk, ctx, fin, spawnScope]() mutable {
         t_isWorker = true;
-        std::this_thread::sleep_for(std::chrono::duration<double>(secs)); // GIL not held
+        // The full delay is honored (issue #41 capped it at 35 s) — slept in
+        // slices against a fixed deadline so shutdown or `done` wakes the worker
+        // within ~50 ms, and in double-rep time so a huge/Inf timer can't
+        // overflow sleep_for's int64 nanosecond range.
+        bool stopped = false;                                          // GIL not held
+        auto end = std::chrono::steady_clock::now() + std::chrono::duration<double>(secs);
+        for (;;) {
+            if (self->workerAbort_.load(std::memory_order_relaxed) || (ctx && ctx->closed)) { stopped = true; break; }
+            auto now = std::chrono::steady_clock::now();
+            if (now >= end) break;
+            double left = std::chrono::duration<double>(end - now).count();
+            std::this_thread::sleep_for(std::chrono::duration<double>(left < 0.05 ? left : 0.05));
+        }
         self->gil_.lock();
         ExecContext wctx; self->loadCtx(wctx);
         tctx_.cur = spawnScope;
         tctx_.dynStack.push_back(spawnScope.get());
         if (ctx) self->reactStack_.push_back(ctx);
-        if (!(ctx && ctx->closed)) {
+        if (!stopped && !(ctx && ctx->closed)) {
             ValueList none;
             try { self->callCallable(blk, none); } catch (NextEx&) {} catch (LastEx&) {} catch (DoneEx&) {} catch (...) {}
         }
@@ -10033,8 +10093,7 @@ void Interpreter::registerBuiltins() {
             // firing immediately — Cro's connection/headers timeouts rely on it).
             if (src.t == VT::Hash && src.hashKind == "Promise" && src.hash()->count("kind") &&
                 (*src.hash())["kind"].toStr() == "timer") {
-                double secs = src.hash()->count("seconds") ? (*src.hash())["seconds"].toNum() : 0;
-                return I.spawnSupplyTimer(secs, blk, ctx);
+                return I.spawnSupplyTimer(timerRemainingSecs(src), blk, ctx);
             }
             // whenever Supply.interval(N) in a supply block: a repeating ticker
             // that keeps this activation open until done/close stops it.
@@ -10412,9 +10471,8 @@ void Interpreter::registerBuiltins() {
             // as a react source, so it doesn't defeat a timeout guard by firing at t=0.
             if (s.t == VT::Hash && s.hashKind == "Promise" &&
                 s.hash()->count("kind") && (*s.hash())["kind"].toStr() == "timer") {
-                double secs = s.hash()->count("seconds") ? (*s.hash())["seconds"].toNum() : 0;
                 std::shared_ptr<ReactCtx> ctx = I.reactStack_.empty() ? nullptr : I.reactStack_.back();
-                return I.spawnTimerWhenever(secs, blk, ctx);
+                return I.spawnTimerWhenever(timerRemainingSecs(s), blk, ctx);
             }
             // whenever $proc.ready { … } — fires once with the PID if the process
             // has already run, and does NOT start it (that is `.start`'s job).
@@ -10511,13 +10569,9 @@ void Interpreter::registerBuiltins() {
         }
         return Value::nil();
     };
-    // Because execution is synchronous (no real parallelism to wait for), sleep is
-    // CAPPED to a small delay: it must be defined (many async tests call it) without
-    // risking harness timeouts — e.g. a daemon thread's `sleep 10000`. No passing
-    // test can depend on real elapsed time (sleep used to be undefined → an error).
     B["sleep"] = [](Interpreter& I, ValueList& a) -> Value {
-        I.sleepYield(a.empty() ? 0 : a[0].toNum());  // GIL-released + capped (see sleepYield)
-        return Value::any(); // sleep returns Nil
+        I.sleepYield(a.empty() ? 0 : a[0].toNum());  // GIL-released, full duration (see sleepYield)
+        return Value::nil(); // sleep returns Nil (roast: `$nil = sleep(…); $nil === Nil`)
     };
     // `sleep-until $instant` sleeps until that moment and answers whether it
     // actually waited — an instant already past answers False without sleeping.
@@ -10545,7 +10599,8 @@ void Interpreter::registerBuiltins() {
     };
     B["sleep-timer"] = [](Interpreter& I, ValueList& a) -> Value {
         I.sleepYield(a.empty() ? 0 : a[0].toNum());
-        return Value::number(0);
+        // the time NOT slept — a Duration, and 0 unless the sleep was interrupted
+        Value d = Value::number(0); d.hashKind = "Duration"; return identify(d);
     };
     B["done"] = [](Interpreter& I, ValueList&) -> Value {
         // `done` inside an on-demand supply activation ends its stream: fire the
@@ -11091,19 +11146,39 @@ void Interpreter::registerBuiltins() {
                 return ps->result;
             }
             std::string kind = p.hash()->count("kind") ? (*p.hash())["kind"].toStr() : "";
+            if (kind == "timer") {
+                // `await Promise.in($n)` / `.at($t)`: a real wait for the timer's
+                // remainder, then Kept with True — it returned immediately before
+                // (issue #41's family: a bare timer await was a no-op).
+                double left = timerRemainingSecs(p);
+                if (left > 0) I.sleepYield(left);
+                (*p.hash())["status"] = Value::str("Kept");
+                (*p.hash())["result"] = Value::boolean(true);
+                return Value::boolean(true);
+            }
             if (kind == "anyof" || kind == "allof") {
-                double timeout = 0; Value* procP = nullptr;
+                Value* procP = nullptr;
+                std::vector<Value*> timers;                     // timer members (Promise.in/.at)
                 std::vector<std::shared_ptr<PromiseState>> pss; // start/spawn promises in the combinator
                 std::vector<Value*> psvals;
                 if (p.hash()->count("promises")) for (auto& q : *(*p.hash())["promises"].arr()) {
                     if (q.t == VT::Hash && q.hashKind == "Promise") {
                         std::string k = q.hash()->count("kind") ? (*q.hash())["kind"].toStr() : "";
-                        if (k == "timer") timeout = (*q.hash())["seconds"].toNum();
+                        if (k == "timer") timers.push_back(&q);
                         else if (k == "proc") procP = &q;
                         else if (q.ext()) { pss.push_back(std::static_pointer_cast<PromiseState>(q.ext())); psvals.push_back(&q); }
                     }
                 }
-                if (procP) I.runProcPromise(*procP, timeout);
+                // The nearest/farthest timer member's remaining delay, at this moment.
+                auto timerLeft = [&](bool nearest) {
+                    double L = nearest ? std::numeric_limits<double>::infinity() : 0;
+                    for (auto* t : timers) {
+                        double r = timerRemainingSecs(*t); if (r < 0) r = 0;
+                        L = nearest ? std::min(L, r) : std::max(L, r);
+                    }
+                    return L;
+                };
+                if (procP) I.runProcPromise(*procP, timers.empty() ? 0 : timerLeft(true));
                 // WAIT for the member start-promises — anyof: until ANY settles (a
                 // timer member is the deadline); allof: until EVERY one settles.
                 // (They were ignored before, so `await Promise.anyof: $todo, $time-up`
@@ -11116,9 +11191,10 @@ void Interpreter::registerBuiltins() {
                     if (kind == "allof") {
                         for (auto& ps : pss) I.awaitPromise(ps);
                     } else {
-                        auto deadline = std::chrono::steady_clock::now() +
-                            std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-                                std::chrono::duration<double>(timeout > 0 ? timeout : 3600));
+                        // double-rep deadline: a huge/Inf timer must not overflow
+                        // the int64 nanosecond range (it means "no deadline")
+                        double dl = timers.empty() ? 3600 : timerLeft(true);
+                        auto deadline = std::chrono::steady_clock::now() + std::chrono::duration<double>(dl);
                         while (!anyDone() && std::chrono::steady_clock::now() < deadline)
                             I.sleepYield(0.01); // GIL released so the workers can run
                     }
@@ -11130,6 +11206,22 @@ void Interpreter::registerBuiltins() {
                             if (!pss[i]->broken) (*psvals[i]->hash())["result"] = pss[i]->result;
                         }
                     }
+                }
+                else if (kind == "anyof" && !timers.empty() && !procP) {
+                    // only timers: anyof settles with the NEAREST one — it
+                    // returned at t=0 before (issue #41's family)
+                    double L = timerLeft(true);
+                    if (L > 0) I.sleepYield(L);
+                }
+                if (kind == "allof" && !timers.empty()) {
+                    // allof is not settled until every timer member has fired too
+                    double L = timerLeft(false);
+                    if (L > 0) I.sleepYield(L);
+                }
+                // timer members whose moment has passed are Kept now
+                for (auto* t : timers) if (timerRemainingSecs(*t) <= 0) {
+                    (*t->hash())["status"] = Value::str("Kept");
+                    (*t->hash())["result"] = Value::boolean(true);
                 }
                 (*p.hash())["status"] = Value::str("Kept");
                 return p;

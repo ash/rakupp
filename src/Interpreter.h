@@ -739,6 +739,7 @@ public:
                                 std::shared_ptr<TapHandle> handle); // Supply.interval ticker
     Value spawnChannelWhenever(Value chan, Value blk, std::shared_ptr<ReactCtx> ctx); // `whenever $channel`
     Value spawnSupplyTimer(double secs, Value blk, std::shared_ptr<SupplyTapCtx> ctx); // same, inside a supply {} block
+    void spawnDelayedNative(double secs, std::function<void()> fn); // run fn on a worker after a real delay (Promise.in(N).then)
     Value spawnSupplyInterval(double interval, double delay, Value blk,
                               std::shared_ptr<SupplyTapCtx> ctx); // Supply.interval inside a supply {} block
     // anonymous pun of a parameterized role with `[...]` args bound (P[%h].new / Q[Int].mk)

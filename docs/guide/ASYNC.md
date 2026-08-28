@@ -354,8 +354,10 @@ into their sleeps concurrently and wake in duration order — the tasks are
 The same handoff keeps ordinary code predictable: a `start` block that just
 computes runs to completion the moment it's spawned (its effects are visible
 immediately, as in a synchronous model), so only blocks that actually *wait*
-interleave. `sleep` is capped (so a runaway `sleep 10000` can't wedge things),
-which preserves small relative delays but not real wall-clock durations.
+interleave. `sleep` honors the full requested duration — `sleep 333` sleeps
+333 real seconds — as do `Promise.in`/`.at` timers; a worker still parked in
+one when the program ends is woken and unwound at teardown, so a pending
+timer never delays exit.
 
 Under `RAKUPP_PARALLEL=1` sleep-sort still sorts — the workers now run on
 independent threads outright rather than being handed off one at a time — but the

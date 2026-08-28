@@ -3173,28 +3173,29 @@ bool Interpreter::yieldToWorkerFor(double secs) {
 
 // sleep with the GIL released, so sibling worker threads run (and sleep) at the
 // same time — this is what makes concurrent-timing programs (e.g. sleep-sort)
-// actually interleave. Capped so a runaway `sleep 10000` can't wedge the suite.
+// actually interleave. The full duration is honored: `sleep 333` sleeps 333 s
+// (issue #41 — an early cap here made every mainline sleep return after 1 s).
+// A runaway sleep in a TEST is the harness's problem (run-roast kills a file at
+// its per-file timeout); the language must not round wall-clock time down.
 void Interpreter::sleepYield(double secs) {
-    if (secs <= 0) return;
-    // cap: preserves small relative delays (sleep-sort), bounded for the harness.
-    // With workers outstanding the full duration matters (scheduler cues fire
-    // during the sleep) — allow it, still bounded.
-    double cap = (liveWorkers_.load() > 0 || cuedLoads_.load() > 0) ? 35.0 : 1.0;
-    if (secs > cap) secs = cap;
+    if (!(secs > 0)) return;                             // zero, negative, NaN: no wait
     // A WORKER sleeps in slices against a fixed deadline, so it notices
     // shutdown within ~50 ms — one long sleep_for made it hold drainWorkers'
     // 2 s grace for the sleep's whole remainder (a GUI window's close button
-    // felt seconds slow). The mainline keeps the single uninterrupted sleep;
-    // the deadline keeps a sliced sleep's total duration exact.
+    // felt seconds slow). The mainline sleeps in hour-long chunks: effectively
+    // uninterrupted, but `sleep 1e19` / `sleep Inf` never feed sleep_for a
+    // duration past the int64 nanosecond range (libstdc++ overflows there and
+    // returns at once). The deadline arithmetic stays in double-rep time for
+    // the same reason; it also keeps a sliced sleep's total duration exact.
     auto sliceUntilAbort = [&](double s) -> bool {       // true: abort observed
-        if (!t_isWorker) { std::this_thread::sleep_for(std::chrono::duration<double>(s)); return false; }
+        const double slice = t_isWorker ? 0.05 : 3600.0;
         auto end = std::chrono::steady_clock::now() + std::chrono::duration<double>(s);
         for (;;) {
-            if (workerAbort_.load(std::memory_order_relaxed)) return true;
+            if (t_isWorker && workerAbort_.load(std::memory_order_relaxed)) return true;
             auto now = std::chrono::steady_clock::now();
             if (now >= end) return false;
             double left = std::chrono::duration<double>(end - now).count();
-            std::this_thread::sleep_for(std::chrono::duration<double>(left < 0.05 ? left : 0.05));
+            std::this_thread::sleep_for(std::chrono::duration<double>(left < slice ? left : slice));
         }
     };
     // No GIL held (single-threaded) or parallel mode (no GIL at all): just sleep.
@@ -3361,13 +3362,22 @@ Value Interpreter::cueJob(Value code, double delaySecs, double everySecs, long l
     addWorker(BigStackThread([self, code, cs, fin, spawnScope, delaySecs, everySecs, times, stopF, catchF]() mutable {
         t_isWorker = true;
         auto clock0 = std::chrono::steady_clock::now();
-        auto napUntil = [&](double secsFromStart) { // GIL not held here; drift-free deadline
-            auto dl = clock0 + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-                          std::chrono::duration<double>(std::min(secsFromStart, 600.0)));
-            std::this_thread::sleep_until(dl);
+        // Drift-free deadline from the cue's start, slept in slices so shutdown
+        // (workerAbort_) and .cancel wake it within ~50 ms instead of holding the
+        // worker for the delay's whole remainder. Double-rep arithmetic: a huge
+        // `:in`/`:every` must not overflow the int64 nanosecond range.
+        auto napUntil = [&](double secsFromStart) -> bool { // true: abort/cancel observed
+            for (;;) {
+                if (self->workerAbort_.load(std::memory_order_relaxed)) return true;
+                if (cs->cancelled.load(std::memory_order_relaxed)) return true;
+                double left = secsFromStart -
+                    std::chrono::duration<double>(std::chrono::steady_clock::now() - clock0).count();
+                if (left <= 0) return false;
+                std::this_thread::sleep_for(std::chrono::duration<double>(left < 0.05 ? left : 0.05));
+            }
         };
         double firedAt = delaySecs;
-        napUntil(delaySecs);
+        bool interrupted = napUntil(delaySecs);
         self->gil_.lock();
         ExecContext wctx;
         self->loadCtx(wctx);
@@ -3375,6 +3385,7 @@ Value Interpreter::cueJob(Value code, double delaySecs, double everySecs, long l
         tctx_.dynStack.push_back(spawnScope.get());
         long long ran = 0;
         for (;;) {
+            if (interrupted) break; // shutdown or .cancel during a nap: never run
             if (cs->cancelled.load(std::memory_order_relaxed)) break;
             if (stopF.t == VT::Code) {
                 bool stop = false;
@@ -3402,7 +3413,7 @@ Value Interpreter::cueJob(Value code, double delaySecs, double everySecs, long l
                 self->saveCtx(parked);
                 self->gilYieldNotify();
                 firedAt += everySecs;      // fixed cadence from the START, not from run end
-                napUntil(firedAt);
+                interrupted = napUntil(firedAt);
                 self->gil_.lock();
                 self->loadCtx(parked);
             }

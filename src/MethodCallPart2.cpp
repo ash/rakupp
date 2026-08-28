@@ -1,5 +1,6 @@
 #include "CNumeric.h"
 #include "AsciiCtype.h"
+#include "BuiltinsShared.h" // timerRemainingSecs — Promise.in/.at state is time-derived
 #include "MethodCallSegment.h"
 #include <chrono> // DateTime.now subsecond stamp (portable — MSVC has no sys/time.h)
 #if !defined(_WIN32)
@@ -1152,7 +1153,13 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         auto childState = [&](Value& c, bool& done, bool& broken) {
             done = broken = false;
             if (c.ext()) { auto s = std::static_pointer_cast<PromiseState>(c.ext()); done = s->done; broken = s->broken; }
-            else if (c.hash() && c.hash()->count("status")) { auto s = (*c.hash())["status"].toStr(); broken = (s == "Broken"); done = (s == "Kept" || s == "Broken"); }
+            else if (c.hash() && c.hash()->count("status")) {
+                auto s = (*c.hash())["status"].toStr(); broken = (s == "Broken"); done = (s == "Kept" || s == "Broken");
+                // an UNSETTLED timer child settles when its moment passes (nobody
+                // flips the hash) — but an explicit keep/break above wins
+                if (!done && c.hash()->count("kind") && (*c.hash())["kind"].toStr() == "timer")
+                    done = timerRemainingSecs(c) <= 0;
+            }
         };
         auto comboStatus = [&]() -> std::string {
             if (!inv.hash()->count("promises")) return "Kept";
@@ -1167,6 +1174,12 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         std::string st;
         if (kind == "anyof" || kind == "allof") st = comboStatus();
         else if (ps) st = ps->done ? (ps->broken ? "Broken" : "Kept") : "Planned";
+        else if (kind == "timer") {
+            // time-derived: nobody flips the hash when the delay elapses — but an
+            // explicit keep/break (stored status) wins over the clock
+            std::string hs = inv.hash()->count("status") ? (*inv.hash())["status"].toStr() : "";
+            st = (hs == "Kept" || hs == "Broken") ? hs : (timerRemainingSecs(inv) <= 0 ? "Kept" : "Planned");
+        }
         else st = inv.hash()->count("status") ? (*inv.hash())["status"].toStr() : "Kept";
 
         // Return the PromiseStatus enum value (matches the Planned/Broken/Kept
@@ -1177,6 +1190,13 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if (m == "result") {
             if (kind == "anyof" || kind == "allof") return Value::boolean(true);
             if (ps) { awaitPromise(ps); if (ps->broken) throw RakuError{ ps->cause, ps->causeMsg.empty() ? std::string("Promise broken") : ps->causeMsg }; return ps->result; }
+            if (kind == "timer" && st != "Broken" && !inv.hash()->count("result")) { // .result blocks until the timer fires, like await (a keep-settled timer falls through to its stored result)
+                double left = timerRemainingSecs(inv);
+                if (left > 0) sleepYield(left);
+                (*inv.hash())["status"] = Value::str("Kept");
+                (*inv.hash())["result"] = Value::boolean(true);
+                return Value::boolean(true);
+            }
             auto it = inv.hash()->find("result"); if (it != inv.hash()->end()) return it->second;
             auto pr = inv.hash()->find("proc"); if (pr != inv.hash()->end()) return pr->second; return Value::nil();
         }
@@ -1203,6 +1223,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             };
             bool now = false;
             if (ps) { std::lock_guard<std::mutex> lk(ps->m); if (ps->done) now = true; else ps->thens.push_back(run); }
+            else if (kind == "timer") spawnDelayedNative(timerRemainingSecs(inv), run); // fire when the timer does, not at t=0
             else now = true;
             if (now) run();
             return np;

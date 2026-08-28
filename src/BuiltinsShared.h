@@ -4,6 +4,7 @@
 // that file is what forced them into a header. Internal to the implementation —
 // nothing outside src/ should include this.
 #include "Value.h"
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -14,6 +15,26 @@
 #include <set>
 
 namespace rakupp {
+
+// Seconds since the epoch, on the same clock the `now` term reads (so timer
+// promises and `now` arithmetic can't disagree by a truncated fraction).
+inline double epochNowSecs() {
+    return std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
+}
+
+// Remaining delay, in seconds, of a timer Promise (hashKind "Promise", kind
+// "timer"). Negative means the fire time has passed. Promise.in/.at stamp the
+// absolute fire time as `fires_at` at CREATION, so a timer consumed late (a
+// `whenever` armed after the promise was made, an `await` reached mid-program)
+// waits only the remainder — and Promise.at's absolute instant is never
+// mistaken for a relative delay. `seconds` (relative, from consumption) is the
+// fallback for a timer hash made without a stamp.
+inline double timerRemainingSecs(const Value& p) {
+    auto f = p.hash()->find("fires_at");
+    if (f != p.hash()->end()) return f->second.toNum() - epochNowSecs();
+    auto s = p.hash()->find("seconds");
+    return s != p.hash()->end() ? s->second.toNum() : 0.0;
+}
 
 // The next LOGICAL NEWLINE in a UTF-8 string at or after `from`, as (offset,
 // length), or (npos, 0) when there is none. Raku's `.lines` breaks on the whole

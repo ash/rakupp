@@ -17,6 +17,15 @@ my $TIMEOUT = (%*ENV<ROAST_TIMEOUT> // 10).Int; # parallel-mode legs need headro
     # retries, worker scheduling) that the GIL leg never sees — thread.t takes
     # ~20 s there and PASSES. The GIL baseline keeps the default 10.
 
+# Files whose SPEC requires more wall time than the default allows — sleep.t
+# genuinely sleeps ~15 s of mainline (it asserts sleep 3 takes >= 2 s; issue #41
+# made sleeps real, so the file went from partial-in-1s to passing-in-18s).
+# Values are seconds; everything else keeps $TIMEOUT.
+my %SLOW-FILES =
+    'S29-context/sleep.t'  => 30,  # mainline sleep 3 × asserted-real, 4 blocks
+    'S17-supply/batch.t'   => 30,  # batch(:seconds(5)): aligns to 5 s periods, twice
+;
+
 # The I/O tests write RELATIVE paths, so they land in whatever directory the
 # harness was started from — the repo root. Several never clean up (open.t's
 # `create_this_file`/`create_this_file2`, file-tests.t's `symlink-existing`/
@@ -180,7 +189,8 @@ while $next < @files.elems {
     # Each worker runs its file AND parses the TAP, so parsing overlaps with the
     # other workers' child processes instead of serialising between batches.
     my sub run-one($f) {
-        my ($out, $timedout) = run-with-timeout($BIN, $f, $TIMEOUT);
+        my $rel = $f.substr($ROOT.chars + 1);
+        my ($out, $timedout) = run-with-timeout($BIN, $f, %SLOW-FILES{$rel} // $TIMEOUT);
         my ($planned, $ran, $passed, $failed) = parse-tap($out);
         [$timedout, $planned, $ran, $passed, $failed, $out.contains('# SKIP')]; # an Array stays one item
     }
