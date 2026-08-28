@@ -262,7 +262,7 @@ what it is, why it exists, and how it is developed:
 
 | When | Where | Event |
 |---|---|---|
-| Saturday **21 November 2026** | The Café at Zoopla, The Cooperage, 5 Copper Row, London SE1 2LH, UK | [London Perl & Raku Workshop 2026](https://act.yapc.eu/lpw2026/) |
+| Saturday **21 November 2026** | The Café at Zoopla, The Cooperage, 5 Copper Row, London SE1 2LH, UK | [London Perl & Raku Workshop 2026](https://act.yapc.eu/lpw2026/) ([proposal 8059](https://act.yapc.eu/lpw2026/talk/8059)) |
 | **14–16 April 2027** | Stadtteilzentrum Nordstadt Bürgerschule, Klaus-Müller-Kilian-Weg 2, 30167 Hannover, Germany | [29. Deutscher Perl/Raku-Workshop 2027](https://act.yapc.eu/gpw2027/) ([proposal 8053](https://act.yapc.eu/gpw2027/talk/8053)) |
 
 FOSDEM 2027 (Brussels, ULB Solbosch) is on the wish list, but its dates and

@@ -13,7 +13,9 @@ built. The deck lives in [presentation/](presentation/): the interactive
 - **Where:** The Café at Zoopla, The Cooperage, 5 Copper Row, London SE1 2LH,
   United Kingdom.
 - **Site:** <https://act.yapc.eu/lpw2026/>
-- **Status:** a Raku++ talk is planned; attendance is free, with optional
+- **Status:** talk proposed —
+  [proposal 8059](https://act.yapc.eu/lpw2026/talk/8059) (the page stays
+  private until the talk is accepted). Attendance is free, with optional
   supporter tickets.
 
 ### 29. Deutscher Perl/Raku-Workshop 2027
@@ -27,7 +29,7 @@ built. The deck lives in [presentation/](presentation/): the interactive
   [proposal 8053](https://act.yapc.eu/gpw2027/talk/8053) (the page stays
   private until the talk is accepted).
 
-## Wanted, not yet possible
+## Wanted, not yet open
 
 ### FOSDEM 2027
 
