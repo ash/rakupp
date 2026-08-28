@@ -6373,15 +6373,14 @@ void Interpreter::runLoopLast(Block* body, const std::shared_ptr<Env>& scope) {
     }
 }
 
-bool Interpreter::runLoopBody(Block* body, std::shared_ptr<Env> scope, const std::string& label,
-                             bool isFirst, bool isLast, ValueList* collect,
-                             const std::function<void()>& rebind) {
-    safePoint(); // once per iteration: lets a shutting-down worker unwind out of a tight loop
-    // Which loop phasers this body declares — decided ONCE on the AST node. The
-    // common phaser-less body then pays no per-iteration statement scan and no
-    // phaser branches at all (the scan alone was measurable on tight loops).
-    signed char ph = body->loopPhasers;
-    if (ph < 0) {
+// Which loop phasers a body declares — decided ONCE on the AST node. The common
+// phaser-less body then pays no per-iteration statement scan and no phaser
+// branches at all (the scan alone was measurable on tight loops). The for-loops
+// consult it too: whether a LAST is waiting is what decides whether their
+// end-of-list test may cost a lookahead. Bit 1 NEXT, 2 LAST, 4 FIRST.
+signed char loopPhaserMask(Block* body) {
+    if (!body) return 0;
+    if (body->loopPhasers < 0) {
         signed char mask = 0;
         for (auto& s : body->stmts)
             if (s->kind == NK::Block) {
@@ -6391,8 +6390,15 @@ bool Interpreter::runLoopBody(Block* body, std::shared_ptr<Env> scope, const std
                 else if (b->phaser == "FIRST") mask |= 4;
             }
         body->loopPhasers = mask;
-        ph = mask;
     }
+    return body->loopPhasers;
+}
+
+bool Interpreter::runLoopBody(Block* body, std::shared_ptr<Env> scope, const std::string& label,
+                             bool isFirst, bool isLast, ValueList* collect,
+                             const std::function<void()>& rebind) {
+    safePoint(); // once per iteration: lets a shutting-down worker unwind out of a tight loop
+    signed char ph = loopPhaserMask(body);
     const bool hasNext = ph & 1, hasLast = ph & 2, hasFirst = ph & 4;
     // FIRST/LAST run in the loop-body scope so the loop variable ($_) is visible.
     auto inScope = [&](void (Interpreter::*ph2)(const std::vector<StmtPtr>&)) {
@@ -8811,12 +8817,16 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                          static_cast<VarExpr*>(fs->list.get())->name != "$_"));
                     // an ENDLESS lazy source iterates LIVE, growing just-in-time —
                     // a snapshot would freeze `.say for (1 xx *)` at the cached
-                    // prefix (issue #30); finite lazies were drained above
+                    // prefix (issue #30); finite lazies were drained above.
+                    // An unfinished GATHER is live for the same reason: nothing
+                    // knows where it ends, and draining it to find out is the
+                    // work this avoids (see drainIfFiniteLazy).
                     std::shared_ptr<ValueList> liveArr;
                     std::shared_ptr<LazySeqState> liveSt;
                     if (!oneItem && lv.t == VT::Array && lv.arr() && lv.ext() && !isMultiDimShaped(lv)) {
                         auto st = std::static_pointer_cast<LazySeqState>(lv.ext());
-                        if (st->appendNext && st->infinite) { liveSt = st; liveArr = lv.arrS(); }
+                        if (st->appendNext && (st->infinite || (st->gatherSeq && !st->exhausted)))
+                            { liveSt = st; liveArr = lv.arrS(); }
                     }
                     if (oneItem) items.push_back(lv);
                     else if (lv.t == VT::Array && lv.arr()) {
@@ -8842,10 +8852,18 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                         while (itemsR.size() <= want && liveSt->appendNext(itemsR)) {}
                         return want < itemsR.size();
                     };
+                    // A live source only learns it is at its end by asking for one
+                    // more element, so only a body with a LAST phaser waiting pays
+                    // that lookahead — and an endless source is never at its end.
+                    const bool wantsLast = loopPhaserMask(fs->body.get()) & 2;
+                    auto atEnd = [&](size_t next) -> bool {
+                        if (!liveSt) return next >= itemsR.size();
+                        return wantsLast && !haveItem(next);
+                    };
                     for (size_t i = 0; haveItem(i); i++) {
                         env->vars["$_"] = itemsR[i];
                         if (!runLoopBody(fs->body.get(), env, fs->label, i == 0,
-                                         !liveSt && i + 1 == itemsR.size(), col)) break;
+                                         atEnd(i + 1), col)) break;
                     }
                 }
                 if (hadTopic) env->vars["$_"] = savedTopic; else env->vars.erase("$_");
@@ -9024,14 +9042,31 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     auto lzst = listv.ext() && arr == listv.arrS()
                                     ? std::static_pointer_cast<LazySeqState>(listv.ext())
                                     : std::shared_ptr<LazySeqState>();
+                    // An unfinished GATHER grows the same way, and for the same
+                    // reason: it was not drained on the way in because nothing
+                    // knows where it ends (see drainIfFiniteLazy), so this loop
+                    // is what pulls on it. Unlike a truly endless source it can
+                    // RUN OUT, and then it does have a positional last
+                    // iteration — which is why `live` and `endless` are two
+                    // flags rather than one.
                     const bool endless = lzst && lzst->appendNext && lzst->infinite;
+                    const bool live = endless ||
+                        (lzst && lzst->appendNext && lzst->gatherSeq && !lzst->exhausted);
                     auto growTo = [&](size_t want) -> bool { // true = element `want` exists
                         if (want < arr->size()) return true;
-                        if (!endless) return false;
+                        if (!live) return false;
                         while (arr->size() <= want && lzst->appendNext(*arr)) {}
                         return want < arr->size();
                     };
                     const bool flat = flatLoopBody(fs->body.get());
+                    // A live source only learns it is at its end by asking for one
+                    // more element, so only a body with a LAST phaser waiting pays
+                    // that lookahead; an endless one is never at its end anyway.
+                    const bool wantsLast = loopPhaserMask(fs->body.get()) & 2;
+                    auto atEnd = [&](size_t next) -> bool {
+                        if (!live) return next == arr->size();
+                        return wantsLast && !growTo(next);
+                    };
                     Value* topic = nullptr;
                     size_t i = 0;
                     std::function<void()> rb = [&] { // redo re-copies (aliases keep writes)
@@ -9053,7 +9088,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                         }
                         taf.at(scope.get(), i);
                         bool cont = runLoopBody(fs->body.get(), scope, fs->label, i == 0,
-                                                !endless && i + 1 == arr->size(), col, rb);
+                                                atEnd(i + 1), col, rb);
                         if (rw) {
                             auto it = scope->vars.find(var);
                             if (it != scope->vars.end()) { ParStripe es3(*this, arr.get());
@@ -9071,12 +9106,15 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             // An ENDLESS lazy source iterates the LIVE list, growing it
             // just-in-time per iteration — a snapshot would freeze the loop at
             // whatever prefix happened to be cached (issue #30). Finite lazies
-            // were drained above and keep the snapshot path.
+            // were drained above and keep the snapshot path; an unfinished
+            // GATHER is live too, since nothing knows where it ends and finding
+            // out costs a run of its generator (see drainIfFiniteLazy).
             std::shared_ptr<ValueList> liveArr;
             std::shared_ptr<LazySeqState> liveSt;
             if (!scalarItem && listv.t == VT::Array && listv.arr() && listv.ext()) {
                 auto st = std::static_pointer_cast<LazySeqState>(listv.ext());
-                if (st->appendNext && st->infinite) { liveSt = st; liveArr = listv.arrS(); }
+                if (st->appendNext && (st->infinite || (st->gatherSeq && !st->exhausted)))
+                    { liveSt = st; liveArr = listv.arrS(); }
             }
             // a Blob/Buf iterates its BYTES (as Int) — `for $data -> $b1,$b2?,$b3?`
             // is how MIME::Base64 & friends read the buffer. Only an explicitly
@@ -9107,6 +9145,14 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 while (itemsR.size() <= want && liveSt->appendNext(itemsR)) {}
                 return want < itemsR.size();
             };
+            // A live source only learns it is at its end by asking for one more
+            // element, so only a body with a LAST phaser waiting pays that
+            // lookahead — and an endless source is never at its end.
+            const bool wantsLast = loopPhaserMask(fs->body.get()) & 2;
+            auto atEnd = [&](size_t next) -> bool {
+                if (!liveSt) return next >= itemsR.size();
+                return wantsLast && !haveItem(next);
+            };
             // `-> (:key($k), :value($v))` / nested sub-signatures: real signature
             // binding — each element is the single argument of the pointy signature.
             if (!fs->params.empty()) {
@@ -9124,7 +9170,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     for (auto& a : row) a.namedArg = false; // a loop topic is a VALUE, never a named arg
                     bindParams(fs->params, row, scope);
                     if (!runLoopBody(fs->body.get(), scope, fs->label, i == 0,
-                                     !liveSt && i + np >= itemsR.size(), col)) break;
+                                     atEnd(i + np), col)) break;
                 }
                 return forResult();
             }
@@ -9136,7 +9182,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     for (size_t k = 0; k < fs->vars.size(); k++)
                         scope->define(fs->vars[k], k < row.size() ? row[k] : Value::any());
                     if (!runLoopBody(fs->body.get(), scope, fs->label, i == 0,
-                                     !liveSt && i + 1 == itemsR.size(), col)) break;
+                                     atEnd(i + 1), col)) break;
                 }
                 return forResult();
             }
@@ -9162,7 +9208,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     }
                 }
                 if (!runLoopBody(fs->body.get(), scope, fs->label, i == 0,
-                                 !liveSt && i + nvars >= itemsR.size(), col)) break;
+                                 atEnd(i + nvars), col)) break;
             }
             return forResult();
         }
@@ -11239,9 +11285,21 @@ Value Interpreter::assignChecked(Expr* target, Value v) {
 }
 
 void Interpreter::drainIfFiniteLazy(const Value& v) {
-    if (v.t == VT::Array && v.arr() && v.ext() &&
-        !std::static_pointer_cast<LazySeqState>(v.ext())->infinite)
-        materializeLazy(v, 1000000);
+    if (!(v.t == VT::Array && v.arr() && v.ext())) return;
+    auto st = std::static_pointer_cast<LazySeqState>(v.ext());
+    if (st->infinite) return;
+    // A gather that outgrew its probe is not KNOWN to be finite. It is a block
+    // that has not yet said it is done, and the only way to ask is to run it —
+    // so draining one here ran its generator up to the million-element cap to
+    // find out. For a generator that costs anything that is unbounded work for
+    // a loop that wanted two elements: Digest::SHA3's squeeze phase is
+    // `gather loop { take …; $state .= &KeccakF1600 }`, one Keccak permutation
+    // per take, and `sha3_256('hello world')` — which needs ONE — spent them a
+    // million at a time. Those iterate LIVE instead, exactly as an endless
+    // source does; a gather that reaches its end says so, and from then on
+    // this drains it like any other finite lazy list.
+    if (st->gatherSeq && !st->exhausted) return;
+    materializeLazy(v, 1000000);
 }
 
 // what a MISSING (or deleted) element reads as: `is default(v)` beats the type default
@@ -15607,15 +15665,26 @@ Value Interpreter::gatherTake(const ValueList& items, const Value& ret) {
                     {{"illegal", Value::str("take")}, {"enclosing", Value::str("gather")}},
                     "take without gather");
     auto& coll = *tctx_.gatherStack.back();
+    // "at least one element first" is a statement about what was ALREADY
+    // collected, so it has to be read before this take pushes: testing coll
+    // after the push made it true on the very first take, and a gather whose
+    // first take lands after the budget — spent on setup BEFORE it, not on
+    // takes — was declared lazy without having probed anything. Digest::SHA3's
+    // outer gather is that shape: its list expression builds (and probes) the
+    // endless inner gather, so its own first take is already past the budget.
+    // Being declared lazy means being re-run on demand, and re-running a block
+    // whose list expression is `samewith …` fails outright: by then the
+    // dispatcher whose scope it needs is gone.
+    const bool hadSome = !coll.empty();
     for (auto& x : items) coll.push_back(x);
     // a lazy gather stops the block once it has produced enough elements
     size_t lim = tctx_.gatherLimits.empty() ? 0 : tctx_.gatherLimits.back();
     if (lim && coll.size() >= lim) throw StopGatherEx{};
     // …and stops when the probe's TIME budget is spent, so a generator
     // whose takes get steadily more expensive cannot make declaring it
-    // slow. At least one element first: a prefix of none is not a probe.
+    // slow. A prefix of none is not a probe.
     long long dl = tctx_.gatherDeadlines.empty() ? 0 : tctx_.gatherDeadlines.back();
-    if (dl && !coll.empty() && nowMicros() > dl) throw StopGatherEx{};
+    if (dl && hadSome && nowMicros() > dl) throw StopGatherEx{};
     return ret;
 }
 
