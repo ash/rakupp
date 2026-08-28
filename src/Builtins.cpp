@@ -10952,11 +10952,12 @@ void Interpreter::registerBuiltins() {
     // router walks.
     B["flat"] = [](Interpreter&, ValueList& a) -> Value {
         Value out = Value::array(); out.isList = true;
-        // Same rule as `.flat`: a nested LIST always spreads, a nested ARRAY
-        // container only when its parent was a list — array assignment itemises
-        // each element, so `flat [[1,2],[3]]` stays two elements.
+        // Same rule as `.flat`, and it is about the SLOT: a bare list slot
+        // spreads its Iterable, an ARRAY's slot never does — array assignment
+        // itemises each element. `flat [[1,2],[3]]` stays two elements, and so
+        // does `my @a = (1,2),(3,4); flat @a`, List elements or not.
         std::function<void(const Value&, bool)> deeper = [&](const Value& x, bool ofArray) {
-            if (x.t == VT::Array && x.arr() && !x.itemized && (x.isList || !ofArray))
+            if (x.t == VT::Array && x.arr() && !x.itemized && !ofArray)
                 for (auto& e : *x.arr()) deeper(e, !x.isList);
             else if (x.t == VT::Range) for (auto& e : x.flatten()) out.arr()->push_back(e);
             else out.arr()->push_back(x);

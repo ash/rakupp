@@ -5,9 +5,12 @@ namespace rakupp {
 
 // One element of a .flat: append x (or its spread) to out. Shared by the eager
 // arm and the lazy view over an endless source (issue #30 follow-up) — the
-// rules are .flat's own: a nested LIST always spreads, a nested ARRAY container
-// is held back by its parent being an Array, `.item` opts out, and `:hammer`
-// (6.e) flattens containers regardless.
+// rules are .flat's own, and they are about the SLOT x sits in, not about x:
+// a bare list slot spreads its Iterable, an ARRAY's slot never does because
+// array assignment itemises each element into a Scalar container. So
+// `my @a = (1,2),(3,4); @a.flat` is TWO elements even though each element is
+// a List, while `((1,2),(3,4)).flat` is four. `.item` opts out either way,
+// and `:hammer` (6.e) flattens containers regardless.
 static void flatOneInto(const Value& x, bool ofArray, bool hammer, ValueList& out) {
     if (hammer) {
         if (x.t == VT::Array && x.arr()) { for (auto& e : *x.arr()) flatOneInto(e, false, true, out); return; }
@@ -19,7 +22,7 @@ static void flatOneInto(const Value& x, bool ofArray, bool hammer, ValueList& ou
         out.push_back(x);
         return;
     }
-    if (x.t == VT::Array && x.arr() && !x.itemized && (x.isList || !ofArray))
+    if (x.t == VT::Array && x.arr() && !x.itemized && !ofArray)
         for (auto& e : *x.arr()) flatOneInto(e, !x.isList, false, out);
     else if (!ofArray && x.t == VT::Hash && x.hash() && x.hashKind.empty())
         for (auto& kv : *x.hash()) out.push_back(Value::pair(kv.first, kv.second));
