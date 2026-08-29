@@ -10,12 +10,20 @@ Run these in order. Every one must pass **before** the version is bumped.
 ### 1. Roast — no regression
 
 ```bash
-ROAST=/path/to/roast rakupp tools/run-roast.raku --workers=4 | tee roast.txt
+ROAST=/path/to/roast rakupp tools/run-roast.raku --workers=4 \
+    --list=docs/status/roast-lists/vX.Y.Z.list | tee roast.txt
 ```
 
 Compare against the previous release's figure in [CHANGELOG.md](../../CHANGELOG.md).
 
-Keep that `roast.txt` — the per-file `[PASS] 3/3 …` lines are what step 6 below
+`--list=` writes the fully-passing file paths as **data** — collected as each
+file is judged, not reconstructed from the printed output. **Commit that file**:
+it is this release's entry in [`docs/status/roast-lists/`](../status/roast-lists/),
+and it is the baseline the NEXT release diffs against. v3.20.1 archived nothing,
+so v3.21.0's diff fell back to a development run found in `rc-work/` — which is
+`.gitignore`d scratch and was never that release's own measurement.
+
+Keep `roast.txt` too — the per-file `[PASS] 3/3 …` lines are what step 6 below
 feeds to `gen-roast-map.raku`, and re-running the suite just to get them back
 costs an hour.
 
@@ -40,11 +48,34 @@ against the previous release; the assertion count moves with machine load and
 the timeout profile, so it cannot tell you whether anything broke:
 
 ```bash
-grep -E '^\s*\[PASS\]' old.txt | awk '{print $NF}' | sort > old.pass
-grep -E '^\s*\[PASS\]' new.txt | awk '{print $NF}' | sort > new.pass
-comm -23 old.pass new.pass    # regressed — must be empty
-comm -13 old.pass new.pass    # gained
+cd docs/status/roast-lists
+comm -23 vPREV-union.list vNEXT-union.list    # regressed — must be empty
+comm -13 vPREV-union.list vNEXT-union.list    # gained
 ```
+
+Archive TWO files: `vX.Y.Z.list` from the run whose count is the repeating
+profile, and `vX.Y.Z-union.list` holding every file that passed in ANY run.
+**Diff the unions.** The `S17-*` concurrency tests sit near the 10s timeout and
+flap under `--workers=4` — v3.22.0's three runs gave 642 / 642 / 644, and every
+file that moved was `[TIME]` in the run that lost it and passed when run alone.
+Diffing single runs turns that flap into reported regressions.
+
+Both files are written sorted, so `comm` needs no `sort`. **Do not rebuild these
+lists with `grep '[PASS]' | awk '{print $NF}'`** — that is how the gate used to
+work and it was not reliable. At `--workers=4` the children's TAP diagnostics
+were spliced into the parent's status lines, consistently four a run:
+
+```
+  [PASS]    4/4  S03-smart# Failed test 'smartmatch with list RHS …' at …
+```
+
+The tallies survived it (they are computed from captured output), but the LIST
+did not: `$NF` on such a line is not a path, so four files a run silently lost
+their identity and read as regressions — and the site's roast map inherited the
+undercount, writing 639 where the run had measured 643. The cause was an
+untapped `Proc::Async` stderr, which is INHERITED and so wrote straight into the
+parent's own stream; fixed in v3.22.0. The `--list=` file exists so that the
+gate no longer depends on that output's framing at all.
 
 At v3.0.1 that showed zero regressions and three gains against a headline
 figure 111 assertions *lower* than v3.0.0's published number. Without the file
@@ -118,6 +149,40 @@ recorded baseline catches.
 
 Absolute times are machine-specific. The gate compares two builds on the *same*
 machine; on a new one, re-record before trusting a failure.
+
+The command above needs no `RAKUPP=` on the machine of record. It used to: the
+default was `build/rakupp`, which on that box is an **x86_64** build sitting
+beside a native `build-arm64/`, so the gate as documented reported
+`INCONCLUSIVE — … is x86_64 on a arm64 host` instead of measuring, and every run
+of the v3.21.0 sitting needed `RAKUPP=build-arm64/rakupp` to get a number at
+all. Since v3.22.0 the default searches `build/`, `build-arm64/` and `./rakupp`
+and picks the first built for THIS architecture, saying so in its banner when
+that is not the first candidate. An explicitly set `RAKUPP` is still honoured
+exactly as given — that is what the A/B usage depends on.
+
+**What this gate does and does not mean, as of v3.22.0.** The baseline moved
+between 2026-08-27 and 2026-08-29 — five of nine kernels up 8–26%, four
+unchanged — and after two sittings of work **the cause is not known**. Ruled out
+by measurement: the code, load, OS and toolchain, power and thermal state, the
+kernels themselves, a different machine, build nondeterminism (two builds of one
+commit are byte-identical), binary layout (deliberate perturbation buys ≤3.5%),
+the macOS nano allocator, and the min-of-3 metric (twenty runs span 5%). The
+write-up is in [findings/GATES-3.22.md](../findings/GATES-3.22.md).
+
+Two consequences for reading this gate:
+
+- **The `vs best` column is the honest headline, not `delta`.** `baseline` is
+  the re-recorded number, so `delta` reads ≈+1% while `rats` is 36% behind the
+  fastest ever measured on this machine. Quote `vs best` when reporting.
+- **The gate is blind in one direction.** If the machine returns to its old
+  form, `rats` will read ~25% FASTER than baseline and the gate will say
+  nothing. A large negative delta on the movers is not a win to announce; it is
+  this open question resolving itself, and it should be investigated, not
+  recorded.
+
+The same measurements put a floor under the tolerance: ~1.7% run-to-run on an
+identical binary, plus up to ~3.5% from layout alone. A 5% tolerance is not much
+above that, so a 6% reading is a re-measure, not a finding.
 
 Two known blind spots, both live as of v3.0.1:
 
@@ -315,6 +380,28 @@ So:
    previous release's numbers legitimately appear once or twice in the prose
    that documents them. What must not appear is a fourth value in the same
    role as the headline — that is a file the refresh missed.
+
+   That grep has a **blind spot**, and it cost v3.21.0 two stale tables: a count
+   written as a bare cell carries no denominator, so the pattern never reaches
+   it. Run the checker too, which reads the headline figures structurally:
+
+   ```bash
+   rakupp tools/check-figures.raku --expect=NNN     # NNN = this run's fully-passing count
+   ```
+
+   It compares the standing `| **Fully passing** | … |` cells in
+   `docs/status/ROAST.md` and `docs/guide/GUIDE.md` against README's comparison
+   row, and fails if they disagree with each other or with `--expect`. Those two
+   cells are exactly what the grep missed: ROAST.md sat at **638** while the tag
+   read 643 — and that row is the one raku-spec's `gen-dashboard.raku` parses, so
+   the dashboard published the stale number. GUIDE.md's table was **v1.x-era**
+   (528 fully passing, 238 no-TAP, 12 timeouts), sitting directly beneath
+   assertion figures the refresh had just updated.
+
+   The cells must stay bare: `gen-dashboard.raku` strips every non-digit from
+   that cell, so writing `643 / 1,464` there to make the grep reach it would make
+   the dashboard read `6431464`. That is why this is a checker and not a
+   reformat.
 4. **Check CI is green on the exact commit you are about to tag**, then tag,
    then publish.
 

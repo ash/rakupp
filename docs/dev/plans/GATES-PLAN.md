@@ -68,10 +68,15 @@ A plain `my @c = 1,2,3; (flat @c »xx» 4).elems` is 3 on both — the divergenc
 needs the bound slot. `Digest::RIPEMD` builds its 80-entry constant table
 through exactly that shape, so `@K` arrives with 5 entries.
 
-**Candidate fix, untested:** the elements already carry `itemized`, which
-assignment sets and binding does not, so the gate may want to be `!x.itemized`
-alone, dropping `ofArray`. That gives `my @a = (1,2),(3,4); @a.flat` → 2,
-`((1,2),(3,4)).flat` → 4, and the destructured case → 6.
+> **Superseded — this candidate fix is wrong.** Measured against Rakudo,
+> dropping `ofArray` makes `my @c = 1,2,3; (flat @c »xx» 4).elems` answer 6
+> where both engines agree on 3: a new divergence in the other direction. The
+> `.flat` gate is right. The bug is one layer down, in **binding**: Rakudo keeps
+> a List argument a List (`sub f(@c) { @c.WHAT }` over `(1,2,3)` is `List`, not
+> `Array`), and a List's slots are bare, which is what spreads. rakupp coerced
+> every bound `@` parameter to an Array. Fixed in `bindParams`
+> (`src/Interpreter.cpp`); see [findings/GATES-3.22.md](../findings/GATES-3.22.md)
+> for the six-cell before/after table and the 68-form differential.
 
 **Done when:** all nineteen forms `0ae9387` enumerates still agree with Rakudo;
 `Digest-1.1.0`'s `t/ripemd.t` scores 9 ok; a `t/regression/` case covers the
@@ -108,6 +113,15 @@ from v3.20.1, so v3.21.0's diff fell back to a development run found in
 diff recipe names where it lives.
 
 ### A4. A compiled binary ignores `-e`; `slim-diff` does not reap
+
+> **The scope here is too narrow, and it was measured the hard way.** With the
+> `-e` refusal implemented, the v3.22.0 sitting still reached **2,633 processes
+> and load average 95** — from `run $*EXECUTABLE, '-I', $dir, $prog`, which
+> contains no `-e`. The confusion is about `$*EXECUTABLE`, not about `-e`, and
+> **49 of the 388 corpus files spawn it**. What the binary needs is a re-entry
+> bound, not an argument blacklist; and slim-diff's group kill could never have
+> worked, because every child rakupp spawns calls `setpgid(0,0)` and so leads
+> its own group. See [findings/GATES-3.22.md](../findings/GATES-3.22.md).
 
 `t/regression/anton-batch-round2.raku` does `run $*EXECUTABLE, '-e', $code`.
 Under the interpreter that is `rakupp -e …`. Compiled, `$*EXECUTABLE` is the
