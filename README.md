@@ -54,8 +54,8 @@ a dependency failed first. The plans are in
 
 | | v3.21.0 | at v2.0.0 |
 |---|---:|---:|
-| Roast, per individual test — of what the suite declares‡ | **198,943 of ~218,803 (90%)** | 197,090 of ~203,500 (97%) |
-| Roast, all-or-nothing — files fully passing, of 1,464 | **643 (44%)** | 594 |
+| Roast, per individual test — of what the suite declares‡ | **198,956 of ~218,764 (90%)** | 197,090 of ~203,500 (97%) |
+| Roast, all-or-nothing — files fully passing, of 1,464 | **642 (44%)** | 594 |
 | Official documentation examples byte-identical on both engines | **954** | 952 |
 | Of the Raku ecosystem's [2,524 distributions](https://raku.online/modules/ecosystem/), passing their own test suites | **637** | — |
 | Local regression suite | **578** | 312 |

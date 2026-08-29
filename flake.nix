@@ -24,7 +24,7 @@
             pname = "rakupp";
             # Keep in step with project(RakuPP VERSION …) in CMakeLists.txt
             # (docs/dev/RELEASING.md step 1 lists every place the version lives).
-            version = "3.21.0";
+            version = "3.22.0";
             src = self;
             nativeBuildInputs = [ pkgs.cmake ];
             cmakeBuildType = "Release";

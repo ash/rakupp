@@ -3,6 +3,161 @@
 Release notes for tagged releases. Numbers are measured, not projected;
 methodology for all Roast figures is in [docs/status/COUNTING.md](docs/status/COUNTING.md).
 
+## v3.22.0 (2026-08-29) — the instruments, fixed and then proved
+
+The second of three consolidation releases
+([dev/plans/VERSIONS.md](docs/dev/plans/VERSIONS.md)), planned in
+[GATES-PLAN.md](docs/dev/plans/GATES-PLAN.md) and written up in
+[findings/GATES-3.22.md](docs/dev/findings/GATES-3.22.md).
+
+v3.21.0 passed all seven release gates and shipped a silent wrong answer:
+`Digest`'s RIPEMD returned incorrect hashes for every input. One gate of seven
+saw it, and the first reading of that gate was wrong too. This release fixes the
+instruments, and then does the thing no release here has done before — **asks
+each gate to prove it can fail.**
+
+| | v3.21.0 | v3.22.0 |
+|---|---:|---:|
+| Roast assertions (all declared) | 198,943 | **198,956** |
+| Roast files fully passing | 643 / 1,464 | **642 / 1,464** |
+| Local regression suite (`t/run.raku`) | 578 | **579** |
+| Module battery (vs each dist's own reference run) | 49 / 59 | **50 / 59** |
+| Documentation examples byte-identical on both engines | 954 | **950** |
+| Gates that detect a planted defect | — | **8 / 8** |
+| `say "Hello"` compiled with `--exe` | 9,446,216 B | **9,446,328 B** |
+| …compiled with `--exe --slim` | 6,165,528 B | **6,165,624 B** |
+
+Roast is the repeating profile of three runs (642 / 642 / 644). **No file
+regressed**: the union of the three is 644, and every file in the previous full
+run's list appears in it. The files that vary are all `S17-*` concurrency and
+scheduler tests near the 10-second per-file timeout — each `[TIME]` in the run
+that lost it, and passing when run alone. The file counts fall by one against
+v3.21.0 while assertions rise; both sit inside the band the previous release
+also reported. The documentation-example figure moves four, inside the ±5 flap
+band that Rakudo's per-process hash-order randomisation produces. Binary sizes
+are arm64.
+
+### The wrong answer, and where it actually lived
+
+`Digest::RIPEMD` builds its 80-entry constant table by destructuring
+`[&a, $b, @c, $d]` and then `flat @c »xx» 16`. It got 5 entries, so every round
+after the fourth read off the end.
+
+The plan blamed `.flat`'s spread gate. **Measured against Rakudo, that diagnosis
+was wrong**, and the fix it proposed would have introduced a fresh divergence in
+the other direction. `.flat` is right. Binding is what was broken: Rakudo keeps a
+List argument a **List** (`sub f(@c)` over `(1,2,3)` answers `List`, not
+`Array`), because binding never itemises — and a List's slots are bare, which is
+exactly what spreads.
+
+Fixed in `bindParams`, and then, because a defect is a shape and not an incident,
+the other twelve `coerceArray` call sites were read: **two more instances** of
+the same bug were in the named-parameter arm (`sub f(:@c)`) and the
+named-destructuring arm (`sub f(@a [$x, *@y])`). The remaining sites are
+assignment or attribute storage, where coercing is correct and Rakudo agrees. An
+86-form differential corpus against Rakudo as oracle now agrees on 85; the one
+holdout (`@c` bound to a Range answering `Array` where Rakudo says `Range`)
+predates this work and is written down rather than quietly fixed.
+
+### The gates
+
+Six of the seven had a defect. All are fixed, each with a before-and-after
+number:
+
+- **Roast's harness corrupted its own status lines.** `Proc::Async` INHERITS an
+  untapped stderr, so at `--workers=4` the children's TAP diagnostics wrote into
+  the parent's stream — 14,026 lines of them in the v3.21.0-era run, splicing
+  through exactly four `[PASS]` lines. Since RELEASING.md calls the file LIST the
+  gate, and that list was `awk '{print $NF}'` over those lines, four files a run
+  silently lost their path. Now 0, across three full runs. The fully-passing list
+  is also written as **data** (`--list=`) and archived per release in
+  [docs/status/roast-lists/](docs/status/roast-lists/), so the gate no longer
+  depends on parsing decorated output at all.
+- **A compiled binary re-ran itself without bound.** `run $*EXECUTABLE, …` reaches
+  the interpreter when interpreted and the binary itself when compiled, so the
+  spawn re-runs the program that did the spawning. Gate 4b left **1,253 processes
+  at load average 450** in the v3.21.0 sitting and reported
+  `ALL SLIM-DIFF CHECKS PASSED`. Refusing `-e` was not enough — 49 of the 388
+  corpus programs spawn `$*EXECUTABLE`, and one of them reached **2,633 processes
+  and load 95** during this sitting with that guard already in place. A compiled
+  binary now refuses to re-enter itself (with `RAKUPP_ALLOW_SELF_EXEC=1` to opt
+  out): 2,633 processes → a peak of 1.
+- **slim-diff killed a process GROUP, which could never have worked**, because
+  every child rakupp spawns calls `setpgid(0,0)` and so leads its own group. It
+  now walks the tree deepest-first, before `wait`, while the links still exist —
+  6 stray processes → 0 — and a run that leaks cannot report PASSED.
+- **`perf-guard` and `run-optbench` both measured the wrong binary.** Each
+  defaulted to `build/rakupp`, which on the machine of record is an **x86_64**
+  build beside a native `build-arm64/`. Gate 3 reported INCONCLUSIVE rather than
+  measuring; gate 4 compiled x86_64 binaries that SIGSEGV here and reported
+  `--exe did not run` for all eight kernels, which reads as a total
+  code-generator failure and is nothing of the kind. Both now search by host
+  architecture, and both documented commands work with no environment variable.
+- **The battery compared a run against itself.** `run-dist-tests.raku` rewrites
+  `scans/dist-tests.tsv` in place, so reading it afterwards compares the run to
+  what it just wrote — which is how gate 6 first concluded "no regression" while
+  `Digest` had gone `PASS 4/4 → DIFF 3/4`. It now reads `git show HEAD:` first and
+  reports gained / regressed / unchanged directly, exiting non-zero on a
+  regression.
+- **The figure-refresh proof was blind to bare table cells.** Two standing tables
+  write the count without a denominator, so the grep never reached them, and both
+  went stale through v3.21.0 — including the exact row the dashboard parses, which
+  is why it published 638 while the tag read 643. They cannot simply be given
+  denominators (the dashboard strips every non-digit from that cell and would
+  read `6431464`), so there is now a checker, `tools/check-figures.raku`, which
+  reads the headline figures structurally.
+
+### Every gate detects a planted defect — 8 of 8
+
+The release's number. For each gate a defect it is supposed to catch was
+injected, the gate's own documented command run unmodified, and the result
+required to be red. It is repeatable — `rakupp tools/prove-gates.raku --all` —
+and every plant records how to undo itself before it acts.
+
+Two of the plants are only meaningful because the obvious version does not work:
+`--slim` removes only what it has *proven* unused, so no corpus program can make
+full and slim disagree — the faithful plant is a bug in the cutting machinery
+itself. And gate 3's plant doctors the recorded baseline rather than building a
+slower engine: identical arithmetic, but it proves the gate's comparison and red
+path, **not** that a real slowdown clears the noise floor.
+
+Three plants were wrong before they were right, each producing a false `MISSED`
+against a gate that was working correctly. That is written up too, because a
+harness that cries wolf is how a gate gets ignored.
+
+### The performance baseline, still unexplained
+
+Four more hypotheses are dead, including the plan's leading one. Two builds of
+one commit are **byte-identical**, so build nondeterminism is out. Deliberate
+layout perturbation — inert code inserted into a translation unit — moves the
+kernels by at most **3.5%** against the 8–26% to explain, so binary layout is
+out. `MallocNanoZone=0` changes nothing, so the allocator is out. And twenty
+consecutive runs of `rats` span 5% with a minimum of 250.5 ms, so the min-of-3
+metric is out: 185.9 is not a lucky draw from this machine, it is a regime this
+machine is not in.
+
+**The cause is still not known.** What is now known is that it is neither a
+measurement artifact nor a build artifact. Gate 3's meaning is stated honestly in
+RELEASING.md, including that **it is blind in one direction**: if the box returns
+to its old form, `rats` will read ~25% *faster* than baseline and the gate will
+say nothing. Read the `vs best` column, which still shows `rats +36.2%`.
+
+The same work produced the gate's first measured noise floor: ~1.7% run-to-run on
+an identical binary, plus up to ~3.5% from layout alone, under a 5% tolerance.
+
+### Also
+
+`--exe` cannot compile sub-signature destructuring (`sub f([$b, @c])` emits C++
+referencing an undeclared variable) — found while checking the compiled path, and
+invisible to every gate, because slim-diff files such programs under "does not
+compile at all: not this gate's business" and optbench only compiles its own nine
+kernels. slim-diff now **names** the programs it could not compile instead of
+reporting a bare count of 23.
+
+The 360° source review that v3.22.0 was originally scoped to carry is **not
+done** — three files of eighty-three. What was reviewed is the `coerceArray`
+neighbourhood, and it produced the two extra binding fixes above.
+
 ## v3.21.0 (2026-08-29) — the state after the changes
 
 The first of three consolidation releases (the arc is written up in
