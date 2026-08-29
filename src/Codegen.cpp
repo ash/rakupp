@@ -2992,7 +2992,8 @@ std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcP
     g.out << reg << "}\n\n";
 
     // main()
-    g.out << "namespace rakupp { int rakuppMainOnBigStack(int (*)(void*), void*); void setConsoleUtf8(); }\n"
+    g.out << "namespace rakupp { int rakuppMainOnBigStack(int (*)(void*), void*); void setConsoleUtf8();\n"
+             "                  int rakuppRefuseInterpreterEval(int, char**); }\n"
              "static int __rakupp_main_body(void* __ctxp) {\n"
              "    int argc = static_cast<std::pair<int, char**>*>(__ctxp)->first;\n"
              "    char** argv = static_cast<std::pair<int, char**>*>(__ctxp)->second;\n"
@@ -3013,6 +3014,9 @@ std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcP
              "// recursion a far smaller budget than the interpreter, on every platform.\n"
              "int main(int argc, char** argv) {\n"
              "    rakupp::setConsoleUtf8();  // Windows: UTF-8 console output (no-op elsewhere)\n"
+             // a compiled binary has no source to eval: refuse `-e` instead of
+             // silently re-running the embedded program (the gate-4b fork bomb)
+             "    if (int __rc = rakupp::rakuppRefuseInterpreterEval(argc, argv)) return __rc;\n"
              "    std::pair<int, char**> __ctx{argc, argv};\n"
              "    return rakupp::rakuppMainOnBigStack(&__rakupp_main_body, &__ctx);\n}\n";
     return g.out.str();

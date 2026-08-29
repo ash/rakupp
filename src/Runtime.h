@@ -41,6 +41,11 @@ int rakuppRunBigStack(const std::string& src, std::vector<std::string> args,
 // interpreter-parity recursion budget on every platform.
 int rakuppMainOnBigStack(int (*body)(void*), void* ctx);
 
+// Guard for COMPILED binaries: refuse a first-position `-e`/`--eval` rather than
+// silently re-running the embedded program. Returns 0 to continue, else an exit
+// code. See the comment on the definition for the fork bomb this stops.
+int rakuppRefuseInterpreterEval(int argc, char** argv);
+
 // Interpret an already-built Program (real AOT: the AST is reconstructed at the
 // compiled program's startup, so no lexing/parsing happens). `finish` is the
 // `$=finish` POD data block (empty if none).

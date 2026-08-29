@@ -798,7 +798,8 @@ static int compileToExe(const std::string& src, const std::string& srcName, std:
                 "#define RAKUPP_REALPATH(p, r) realpath((p), (r))\n"
                 "#endif\n"
                 "namespace rakupp { int rakuppRunBigStack(const std::string&, std::vector<std::string>,"
-                " const std::string&, const std::string&, const std::vector<std::string>&); void setConsoleUtf8(); }\n";
+                " const std::string&, const std::string&, const std::vector<std::string>&); void setConsoleUtf8();"
+                " int rakuppRefuseInterpreterEval(int, char**); }\n";
         stub << "static const unsigned char SRC[] = {";
         for (size_t i = 0; i < src.size(); i++) { if (i) stub << ","; stub << (int)(unsigned char)src[i]; }
         if (src.empty()) stub << "0"; // avoid zero-size array; length tracked separately
@@ -832,6 +833,8 @@ static int compileToExe(const std::string& src, const std::string& srcName, std:
         stub << "namespace rakupp { void rakuppRegisterModule(const std::string&, const char*, unsigned long, const std::string&);\n"
                 "                  void rakuppRegisterModuleSource(const std::string&, const char*, unsigned long); }\n";
         stub << "int main(int argc, char** argv) {\n"
+             // a bundled binary embeds ONE program: `-e` has nothing to eval here
+             << "  if (int rc = rakupp::rakuppRefuseInterpreterEval(argc, argv)) return rc;\n"
              << bundleModuleCalls
              << "  rakupp::setConsoleUtf8();\n"
                 "  std::string src(reinterpret_cast<const char*>(SRC), SRC_LEN);\n"

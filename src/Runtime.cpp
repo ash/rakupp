@@ -261,6 +261,134 @@ static int onBigStack(const std::function<int()>& fn) {
     return ctx.rc;
 }
 
+// A COMPILED binary is NOT the interpreter: it carries one program and runs
+// that one. `-e CODE` therefore has nothing to eval — and quietly passing it
+// through as an ordinary argument means the binary re-runs its OWN program
+// while the caller believes it ran the code it handed over.
+//
+// That is not theoretical. `t/regression/anton-batch-round2.raku` does
+// `run $*EXECUTABLE, '-e', $code`, which under the interpreter is `rakupp -e …`.
+// Compiled, `$*EXECUTABLE` is the binary, which re-ran its embedded program,
+// reached the same line, and spawned another copy — each generation naming its
+// temp dylib after the previous PID. It reached 1,253 processes and load average
+// 450 during the v3.21.0 gate-4b run, which then reported ALL SLIM-DIFF CHECKS
+// PASSED and left the chain running.
+//
+// Only the FIRST argument is examined, and only its exact `-e` / `--eval`
+// spellings: that is the interpreter-invocation shape, and it leaves a compiled
+// program free to take `-e=value` as a MAIN named argument, or its own `-e`
+// anywhere else in its argv. Returns 0 to continue, or an exit code to return.
+//
+// Refusing `-e` is not enough on its own, because the confusion is not about
+// `-e`: it is about $*EXECUTABLE. `t/regression/private-call-and-import-shadowing.raku`
+// does `run $*EXECUTABLE, '-I', $dir, $prog` — no `-e` anywhere — and compiled
+// that re-ran its own program, reached line 68 again, and spawned another copy.
+// It reached 2,633 processes and load average 95 in about two minutes, with the
+// `-e` guard already in place. So there are two rules here:
+//
+//   depth 0 — refuse only the unambiguous `-e`/`--eval`, which cannot mean
+//             anything to a binary that embeds its program. Everything else a
+//             top-level invocation passes is the program's own business: a
+//             compiled linter invoked as `mylint foo.raku` must keep working.
+//   depth 1 — refuse EVERYTHING. A compiled binary running a copy of ITSELF is
+//             the $*EXECUTABLE confusion in every case this corpus contains, and
+//             refusing at the first re-entry is what bounds the damage to
+//             `1 + spawn-sites` short-lived processes instead of squaring it at
+//             every generation.
+//
+// A program that re-executes itself ON PURPOSE sets RAKUPP_ALLOW_SELF_EXEC=1 and
+// is left alone. That opt-out is deliberate: the guard cannot tell intent from
+// argv, so the one who knows says so.
+//
+// Depth rides in the environment as `<count> <realpath>`, keyed to THIS binary,
+// so a chain of different programs never accumulates a count.
+static const char* kReentryVar = "RAKUPP_EXE_REENTRY";
+
+static std::string selfPath(int argc, char** argv) {
+    if (argc <= 0 || !argv[0]) return "";
+    char rp[4096];
+#ifdef _WIN32
+    if (_fullpath(rp, argv[0], sizeof rp)) return rp;
+#else
+    if (realpath(argv[0], rp)) return rp;
+#endif
+    return argv[0];
+}
+
+static void setEnvVar(const char* name, const std::string& value) {
+#ifdef _WIN32
+    _putenv_s(name, value.c_str());
+#else
+    setenv(name, value.c_str(), 1);
+#endif
+}
+
+int rakuppRefuseInterpreterEval(int argc, char** argv) {
+    std::string me = selfPath(argc, argv);
+    // The messages below deliberately do NOT name argv[0]. They are read by
+    // tools/slim-diff.raku, which compares two builds of the same program
+    // byte-for-byte, and those two builds differ only in their filename — so
+    // naming it made every $*EXECUTABLE-spawning program report a spurious
+    // "stderr differs (640 vs 640 chars)". The reader already knows what they
+    // ran; a fixed prefix says everything the path would.
+
+    // The variable is `<self> <total> <realpath>`: how many copies of THIS
+    // binary are already above us, and how many rakupp-compiled binaries of any
+    // kind are. The second number exists because the first can be defeated —
+    // binary A spawning B spawning A resets A's count every time B rewrites the
+    // path — and two programs calling each other is as unbounded as one calling
+    // itself. Keying only on the path would have left that open.
+    int depth = 0, total = 0;
+    if (const char* prev = getenv(kReentryVar)) {
+        std::string p = prev;
+        size_t s1 = p.find(' ');
+        size_t s2 = s1 == std::string::npos ? std::string::npos : p.find(' ', s1 + 1);
+        if (s2 != std::string::npos) {
+            total = std::atoi(p.substr(s1 + 1, s2 - s1 - 1).c_str());
+            if (!me.empty() && p.substr(s2 + 1) == me)
+                depth = std::atoi(p.substr(0, s1).c_str());
+        }
+    }
+    // Generous, because a legitimate pipeline of distinct compiled tools could
+    // plausibly nest a few deep; a runaway passes it in well under a second.
+    const int kMaxTotal = 8;
+
+    const char* allow = getenv("RAKUPP_ALLOW_SELF_EXEC");
+    bool selfExecAllowed = allow && *allow && std::string(allow) != "0";
+
+    if ((depth >= 1 || total >= kMaxTotal) && !selfExecAllowed) {
+        std::cerr << "rakupp: refusing to run — this is a compiled binary re-running ITSELF.\n"
+                  << "Something spawned $*EXECUTABLE expecting the interpreter. Compiled, that is\n"
+                  << "this binary, which carries one program, so the spawn re-runs the program that\n"
+                  << "did the spawning: a chain that grows until the machine stops. (One such chain\n"
+                  << "reached 2,633 processes and load average 95.)\n"
+                  << "If the code means `run $*EXECUTABLE, ...` to reach the Raku interpreter, it must\n"
+                  << "name it: that is a different program from this one.\n"
+                  << "If this program re-executes itself on purpose, set RAKUPP_ALLOW_SELF_EXEC=1.\n";
+        // (the same message covers a ring of DISTINCT compiled binaries calling
+        // one another, which the per-binary count alone cannot see)
+        return 2;
+    }
+
+    if (argc >= 2) {
+        std::string a1 = argv[1];
+        if (a1 == "-e" || a1 == "--eval") {
+            std::cerr << "rakupp: " << a1 << " is the INTERPRETER's flag, and this is a compiled binary.\n"
+                      << "It carries one program — the one it was built from — so there is nothing to eval,\n"
+                      << "and running it anyway would silently run that embedded program instead of your code.\n"
+                      << "To evaluate source, use the interpreter: rakupp " << a1 << " 'CODE'\n";
+            return 2;
+        }
+    }
+
+    // record our own generation for any copy of us we go on to spawn
+    if (!me.empty()) {
+        setEnvVar(kReentryVar, std::to_string(depth + 1) + " "
+                             + std::to_string(total + 1) + " " + me);
+    }
+    return 0;
+}
+
 int rakuppRunBigStack(const std::string& src, std::vector<std::string> args,
                       const std::string& fileName, const std::string& exePath,
                       const std::vector<std::string>& libPaths) {
