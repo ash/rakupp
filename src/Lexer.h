@@ -84,6 +84,9 @@ private:
     std::string heredocFeats_; // interpolation features of a `qq:!c:to/…/` heredoc ("" = all)
     std::vector<std::string> pendingHeredocFeats_; // one per pendingHeredocs_ entry
     std::string heredocMarker_;  // set by tryQuoteForm when a :to form is seen
+    // …and the marker is not the flag: `q :to '' ` names the EMPTY terminator (a
+    // blank line ends that body), so an empty heredocMarker_ is a real heredoc.
+    bool heredocPending_ = false;
     bool heredocInterp_ = false;
     // `q:to/…/` processes the same backslash escapes `q[…]` does (`\\` → `\`,
     // `\'` → `'`); `Q:to/…/` processes none, `qq:to/…/` processes all. Only the

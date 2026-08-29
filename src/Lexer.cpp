@@ -1035,15 +1035,80 @@ bool Lexer::tryQuoteForm(Token& out) {
     { size_t ws = p; while (ws < src_.size() && (src_[ws] == ' ' || src_[ws] == '\t')) ws++;
       if (ws > p && ws < src_.size() &&
           (src_[ws] == '(' || src_[ws] == '[' || src_[ws] == '{' || src_[ws] == '<' ||
-           src_[ws] == '/')) p = ws; }
+           src_[ws] == '/')) p = ws;
+      // …and before a quote or a Unicode delimiter once an ADVERB has been seen:
+      // `q :to '' x 2` (the quine of issue #31 — a heredoc a blank line ends) and
+      // `q :w «a b»`. The adverb is what makes the form unambiguous; a bare
+      // `q 'x'` stays a call to a declared `sub q`, the same reading the
+      // adjacent-paren rule above gives `q('x')`, since a one-pass lexer cannot
+      // know what is declared.
+      else if (ws > p && ws < src_.size() && !adverbs.empty() &&
+               !isRegex && !isSubst && !isTrans &&
+               (src_[ws] == '\'' || src_[ws] == '"' || (unsigned char)src_[ws] >= 0x80))
+          p = ws; }
     if (p >= src_.size()) return false;
+    // What the delimited text BECOMES is decided by the FORM, not by which
+    // delimiter carried it: qx runs a shell command, :w splits a word list, :to
+    // names a heredoc terminator. The Unicode-delimiter branches below stopped
+    // short of this and handed back a plain string, so `qw«a b»` called an
+    // undeclared `qw` and `q:to«END»` never opened a heredoc. Answers false when
+    // the form asks for none of the three — the caller then builds the string.
+    auto quoteFormTail = [&](const std::string& raw) -> bool {
+        if (isExec) { // qx = literal command, qqx = interpolated command
+            out = make(w == "qqx" ? Tok::StrInterp : Tok::StrLit, raw);
+            out.text2 = "qx";
+            return true;
+        }
+        // the :w / :words adverb makes any q-form a word list: `q:w /a b/`
+        if (isWords || adverbs.find(":w ") != std::string::npos ||
+            adverbs.find(":words ") != std::string::npos) {
+            out = make(Tok::QwList, raw);
+            // the FORM decides quote protection (ww) and interpolation (qq):
+            // the parser splits the words differently for each — qqww{ "\n" || }
+            // is two words, the first a real newline (Text::Utils' suite)
+            bool interpF  = (w == "qq" || w == "qqw" || w == "qqww");
+            bool protectF = (w == "qww" || w == "qqww" ||
+                             adverbs.find(":ww ") != std::string::npos);
+            out.text2 = protectF ? (interpF ? "qqww" : "qww")
+                                 : (interpF ? "qqw"  : "qw");
+            return true;
+        }
+        // heredoc: q:to/MARKER/ — the delimited text is the terminator; body follows at line end
+        if (adverbs.find(":to ") != std::string::npos || adverbs.find(":heredoc ") != std::string::npos) {
+            heredocMarker_ = raw;
+            heredocPending_ = true;
+            heredocInterp_ = (w == "qq");
+            heredocEscapes_ = (w == "q");   // Q:to keeps every backslash; q:to unescapes
+            // A heredoc may carry interpolation adverbs of its own: `qq:!c:to/CODE/`
+            // interpolates variables but NOT `{…}` blocks — Test::Output's suite builds
+            // Raku source that way, and running those blocks while merely BUILDING the
+            // string is the difference between a test and a syntax-shaped accident.
+            heredocFeats_.clear();
+            if (heredocInterp_) {
+                std::string feats = "sahfcb";
+                auto drop = [&](const char* nm, char f) {
+                    if (adverbs.find(":!" + std::string(nm) + " ") != std::string::npos) {
+                        size_t at = feats.find(f);
+                        if (at != std::string::npos) feats.erase(at, 1);
+                    }
+                };
+                drop("s", 's'); drop("scalar", 's'); drop("a", 'a'); drop("array", 'a');
+                drop("h", 'h'); drop("hash", 'h'); drop("f", 'f'); drop("function", 'f');
+                drop("c", 'c'); drop("closure", 'c'); drop("b", 'b'); drop("backslash", 'b');
+                if (feats != "sahfcb") heredocFeats_ = feats;
+            }
+            out = make(heredocInterp_ ? Tok::StrInterp : Tok::StrLit, ""); // body filled at line end
+            return true;
+        }
+        return false;
+    };
     // arbitrary Unicode delimiter: `Q:b♥…♥` — the same codepoint closes; no
-    // nesting, backslash protects. Only plain q/qq/Q forms (not m/s/tr/words).
-    if (!isRegex && !isSubst && !isTrans && !isWords && !isExec &&
+    // nesting, backslash protects. Every q-family form (not m/s/tr). `q｢…｣` is
+    // one of these: the standalone ｢…｣ quote handled elsewhere never sees the
+    // `q`, so excluding the pair here left `q:to｢END｣` as an undeclared call.
+    if (!isRegex && !isSubst && !isTrans &&
         (unsigned char)src_[p] >= 0x80 &&
-        !((unsigned char)src_[p] == 0xC2 && p + 1 < src_.size() && (unsigned char)src_[p + 1] == 0xAB) && // « handled below
-        !((unsigned char)src_[p] == 0xEF && p + 2 < src_.size() &&
-          (unsigned char)src_[p + 1] == 0xBD && (unsigned char)src_[p + 2] == 0xA2)) { // ｢ handled elsewhere (fullwidth EF-pairs stay eligible)
+        !((unsigned char)src_[p] == 0xC2 && p + 1 < src_.size() && (unsigned char)src_[p + 1] == 0xAB)) { // « handled below
         unsigned char b0 = (unsigned char)src_[p];
         int dlen = b0 >= 0xF0 ? 4 : b0 >= 0xE0 ? 3 : 2;
         if (p + dlen <= src_.size()) {
@@ -1084,6 +1149,7 @@ bool Lexer::tryQuoteForm(Token& out) {
             }
             if (eof()) runawayTerm(DC, D, startLine);
             for (int k = 0; k < dlen; k++) advance(); // closing delimiter
+            if (quoteFormTail(raw)) return true;
             bool interp = (w == "qq");
             std::string feats = interp ? "sahfcb" : "";
             bool anyFeat = quoteFeatAdverbs(adverbs, feats);
@@ -1096,7 +1162,7 @@ bool Lexer::tryQuoteForm(Token& out) {
     }
     // guillemet-delimited quote: Q«…» / Q««…»» (double «« matches »», so a single
     // » may appear inside). q interpolates nothing extra; qq interpolates.
-    if (!isRegex && !isSubst && !isTrans && !isWords &&
+    if (!isRegex && !isSubst && !isTrans &&
         p + 1 < src_.size() && (unsigned char)src_[p] == 0xC2 && (unsigned char)src_[p + 1] == 0xAB) {
         while (pos_ < p) advance(); // consume the keyword (+ adverbs/whitespace)
         const int startLine = line_;
@@ -1121,6 +1187,7 @@ bool Lexer::tryQuoteForm(Token& out) {
             for (int k = 0; k < opens; k++) { o += "\xC2\xAB"; c += "\xC2\xBB"; }
             runawayTerm(c, o, startLine);
         }
+        if (quoteFormTail(raw)) return true;
         {
             bool interp = (w == "qq");
             std::string feats = interp ? "sahfcb" : "";
@@ -1304,51 +1371,7 @@ bool Lexer::tryQuoteForm(Token& out) {
             runawayTerm(std::string(reps, close), std::string(reps, d), startLine);
     }
     else raw = readPart(patQuoteAware, codeBlocks);
-    if (isExec) { // qx = literal command, qqx = interpolated command
-        out = make(w == "qqx" ? Tok::StrInterp : Tok::StrLit, raw);
-        out.text2 = "qx";
-        return true;
-    }
-    // the :w / :words adverb makes any q-form a word list: `q:w /a b/`
-    if (isWords || adverbs.find(":w ") != std::string::npos ||
-        adverbs.find(":words ") != std::string::npos) {
-        out = make(Tok::QwList, raw);
-        // the FORM decides quote protection (ww) and interpolation (qq):
-        // the parser splits the words differently for each — qqww{ "\n" || }
-        // is two words, the first a real newline (Text::Utils' suite)
-        bool interpF  = (w == "qq" || w == "qqw" || w == "qqww");
-        bool protectF = (w == "qww" || w == "qqww" ||
-                         adverbs.find(":ww ") != std::string::npos);
-        out.text2 = protectF ? (interpF ? "qqww" : "qww")
-                             : (interpF ? "qqw"  : "qw");
-        return true;
-    }
-    // heredoc: q:to/MARKER/ — the delimited text is the terminator; body follows at line end
-    if (adverbs.find(":to ") != std::string::npos || adverbs.find(":heredoc ") != std::string::npos) {
-        heredocMarker_ = raw;
-        heredocInterp_ = (w == "qq");
-        heredocEscapes_ = (w == "q");   // Q:to keeps every backslash; q:to unescapes
-        // A heredoc may carry interpolation adverbs of its own: `qq:!c:to/CODE/`
-        // interpolates variables but NOT `{…}` blocks — Test::Output's suite builds
-        // Raku source that way, and running those blocks while merely BUILDING the
-        // string is the difference between a test and a syntax-shaped accident.
-        heredocFeats_.clear();
-        if (heredocInterp_) {
-            std::string feats = "sahfcb";
-            auto drop = [&](const char* nm, char f) {
-                if (adverbs.find(":!" + std::string(nm) + " ") != std::string::npos) {
-                    size_t at = feats.find(f);
-                    if (at != std::string::npos) feats.erase(at, 1);
-                }
-            };
-            drop("s", 's'); drop("scalar", 's'); drop("a", 'a'); drop("array", 'a');
-            drop("h", 'h'); drop("hash", 'h'); drop("f", 'f'); drop("function", 'f');
-            drop("c", 'c'); drop("closure", 'c'); drop("b", 'b'); drop("backslash", 'b');
-            if (feats != "sahfcb") heredocFeats_ = feats;
-        }
-        out = make(heredocInterp_ ? Tok::StrInterp : Tok::StrLit, ""); // body filled at line end
-        return true;
-    }
+    if (quoteFormTail(raw)) return true; // qx / :w / :to are decided by the form
     if (isSubst || isTrans) {
         std::string repl;
         if (assignForm) { // s[pat] OP= repl : the RHS applied per match
@@ -2598,11 +2621,12 @@ std::vector<Token> Lexer::tokenize() {
         //  EOF, which is a better diagnostic than silently resuming.)
         t.spaceBefore = spaced;
         out.push_back(std::move(t)); // t is dead after this (heredoc bookkeeping reads `out`)
-        if (!heredocMarker_.empty()) { // a q:to/MARKER/ was just lexed
+        if (heredocPending_) { // a q:to/MARKER/ was just lexed
             pendingHeredocs_.emplace_back(heredocMarker_, out.size() - 1, heredocInterp_);
             pendingHeredocEsc_.push_back(heredocEscapes_);
             pendingHeredocFeats_.push_back(heredocFeats_);
             heredocMarker_.clear();
+            heredocPending_ = false;
         }
     }
     // A bare `< … >` word list still open at end of input never got its `>`.

@@ -1,6 +1,8 @@
 #include "AsciiCtype.h"
 #include "Highlight.h"
+#include "Unicode.h"
 #include <cctype>
+#include <cstdint>
 #include <set>
 #include <string>
 #include <vector>
@@ -122,11 +124,36 @@ struct Scanner {
     static bool identStart(char c) { return ascii::isalpha((unsigned char)c) || c == '_'; }
     static bool identCont(char c) { return ascii::isalnum((unsigned char)c) || c == '_'; }
 
-    // matching close for a bracket delimiter (else the same char)
+    // matching close for a bracket delimiter (else the same char). ASCII only:
+    // this used to carry `case '\xAB': return '\xBB'`, which is the SECOND byte
+    // of « and » — so `q:to«END»` scanned for a lone 0xC2, stopped on the first
+    // byte of the closer and left the second outside the span. A delimiter is a
+    // codepoint, not a byte; delimPair() below reads the whole sequence.
     static char closeDelim(char o) {
         switch (o) { case '(': return ')'; case '[': return ']';
                      case '{': return '}'; case '<': return '>';
-                     case '\xAB': return '\xBB'; default: return o; }
+                     default: return o; }
+    }
+
+    static int utf8Len(unsigned char b) { return b >= 0xF0 ? 4 : b >= 0xE0 ? 3 : b >= 0xC0 ? 2 : 1; }
+
+    // The delimiter at `j` and the one that closes it, both as UTF-8 sequences.
+    // Non-ASCII pairs follow the lexer's rule so the two agree on where a quote
+    // ends: the Bidi mirror when the codepoint has one (« → », ｢ → ｣, 「 → 」),
+    // else the next codepoint (〝 U+301D has no mirror and closes with 〞).
+    void delimPair(size_t j, std::string& open, std::string& close) const {
+        size_t dlen = (size_t)utf8Len((unsigned char)s[j]);
+        if (j + dlen > s.size()) dlen = 1;
+        open = s.substr(j, dlen);
+        if (dlen == 1) { close = std::string(1, closeDelim(s[j])); return; }
+        uint32_t cp = (unsigned char)open[0] & (0xFF >> (dlen + 1));
+        for (size_t k = 1; k < dlen; k++) cp = (cp << 6) | ((unsigned char)open[k] & 0x3F);
+        int32_t mir = uniBidiMirror(cp);
+        uint32_t cc = mir >= 0 ? (uint32_t)mir : cp + 1;
+        close.clear();
+        if (cc < 0x800) { close += (char)(0xC0 | (cc >> 6)); close += (char)(0x80 | (cc & 0x3F)); }
+        else if (cc < 0x10000) { close += (char)(0xE0 | (cc >> 12)); close += (char)(0x80 | ((cc >> 6) & 0x3F)); close += (char)(0x80 | (cc & 0x3F)); }
+        else { close += (char)(0xF0 | (cc >> 18)); close += (char)(0x80 | ((cc >> 12) & 0x3F)); close += (char)(0x80 | ((cc >> 6) & 0x3F)); close += (char)(0x80 | (cc & 0x3F)); }
     }
 
     void run() {
@@ -262,21 +289,22 @@ struct Scanner {
         // adverbs like :i :g :s:m
         while (j < s.size() && s[j] == ':') { j++; while (j < s.size() && (identCont(s[j]) || s[j] == '(')) { if (s[j]=='('){int d=1;j++;while(j<s.size()&&d){if(s[j]=='(')d++;else if(s[j]==')')d--;j++;}break;} j++; } while (j<s.size()&&(s[j]==' '||s[j]=='\t'))j++; }
         if (j >= s.size()) { emit(s.substr(startBol, j - startBol), cls, true); i = j; return; }
-        char open = s[j];
-        char close = closeDelim(open);
+        std::string open, close;
+        delimPair(j, open, close);
         auto scanBody = [&](size_t from) -> size_t {
-            size_t k = from + 1;
-            if (open == close) { // non-bracketing delimiter
-                while (k < s.size()) { if (s[k] == '\\') { k += 2; continue; } if (s[k] == close) { k++; break; } k++; }
-            } else { // bracketing: track nesting
-                int depth = 1; k = from + 1;
-                while (k < s.size() && depth) { if (s[k] == '\\') { k += 2; continue; } if (s[k] == open) depth++; else if (s[k] == close) depth--; k++; }
+            size_t k = from + open.size();
+            int depth = 1;
+            while (k < s.size() && depth) {
+                if (s[k] == '\\') { k += 2; continue; }
+                if (open != close && s.compare(k, open.size(), open) == 0) { depth++; k += open.size(); continue; }
+                if (s.compare(k, close.size(), close) == 0) { depth--; k += close.size(); continue; }
+                k++;
             }
             return k;
         };
         size_t k = scanBody(j);
         if (twoParts) {
-            if (open == close) { k = scanBody(k - 1); }            // s/a/b/ shares middle delim
+            if (open == close) { k = scanBody(k - close.size()); }  // s/a/b/ shares middle delim
             else { while (k < s.size() && (s[k]==' '||s[k]=='\t')) k++; if (k < s.size()) k = scanBody(k); } // s[a][b]
         }
         emit(s.substr(startBol, k - startBol), cls, true);
@@ -359,6 +387,10 @@ struct Scanner {
             size_t k = j; while (k < s.size() && (s[k] == ' ' || s[k] == '\t')) k++;
             if (k < s.size() && s[k] == ':') return true;                 // adverb → quote form
             if (k < s.size() && (s[k]=='/'||s[k]=='{'||s[k]=='['||s[k]=='('||s[k]=='<'||s[k]=='!'||s[k]=='|'||s[k]=='\''||s[k]=='"')) return true;
+            // An ADJACENT non-ASCII delimiter: `q«a b»`, `Q♥…♥`, `q:to｢END｣`.
+            // Adjacency is what the lexer requires of these too — with no adverb
+            // to commit the form, `q ♥…♥` is a call to a declared `q`.
+            if (j < s.size() && (unsigned char)s[j] >= 0x80) return true;
             return false;
         };
         static const std::set<std::string> strForms = {"q", "qq", "Q", "qw", "qqw", "Qw", "qww"};

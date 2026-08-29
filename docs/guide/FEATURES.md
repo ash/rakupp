@@ -47,7 +47,7 @@ same-named enclosing package, which Rakudo's own warning calls legacy.
 - Int (arbitrary precision / bignum), Num, Rat, **Complex** (`3+4i`); FatRat ~
 - Radix `0x` `0o` `0b` `0d` and `:N<…>` (`:16<ff>`, `:36<aZ>`), `_` separators (strictly between digits — `1__0`/`100_` are errors), exponent `1e5`; string→number coercion parses all of these plus Complex (`+"1+2i"`) and the Unicode minus `−`
 - Leading-dot fractions `.5`, imaginary `4i`, `∞`/`Inf`/`NaN`, superscripts `²`
-- Strings: `'…'` `"…"` `q//` `qq//` `Q//`, heredocs `q:to/END/`
+- Strings: `'…'` `"…"` `q//` `qq//` `Q//`, heredocs `q:to/END/` (the terminator takes any quote delimiter, `q:to«END»` included)
 - Unicode string quotes `‘’ “” ｢｣`, qw `<…>` and guillemet `«…»`
 - Escapes `\n \t \x[…] \o[…]` and `\c[NAME]` (Unicode character names)
 - Unicode identifiers (combining marks, Latin-Extended, Greek, fullwidth, letterlike)

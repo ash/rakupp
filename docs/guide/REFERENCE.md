@@ -127,6 +127,25 @@ my $s = q:to/END/;
 say $s.lines.elems;      # → 2   (the /…/ marker's indent is stripped)
 ```
 
+A heredoc's terminator is delimited like any other quote — `q:to«END»`,
+`q:to｢END｣`, `q:to「END」`, `q:to[END]`, `q:to♥END♥` all name `END` — and once
+an adverb has been given, whitespace may sit before the delimiter. That is what
+makes `q :to ''` legal: it names the **empty** terminator, so a blank line ends
+the body.
+
+```raku
+my $u = q:to«END»;
+    a heredoc, terminator in guillemets
+    END
+say $u.lines.elems;      # → 1
+
+my $blank = q :to '';
+one
+two
+
+say $blank.lines.elems;  # → 2
+```
+
 > **Note:** the `$(…)` string-contextualiser interpolation form is **not**
 > supported inside strings — use `{…}` for any computed interpolation.
 
