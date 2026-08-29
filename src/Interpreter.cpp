@@ -9467,6 +9467,18 @@ Value Interpreter::makeTypedEx(const std::string& type,
         classes_[type] = ci;
         it = classes_.find(type);
     }
+    else {
+        // The class may already exist WITHOUT the attributes this throw carries —
+        // registered by an earlier throw of the same type with a different set, or
+        // by a bare `Value::typeObj(name)` throw that carries none. The object
+        // below would then hold the attribute while the class declared no
+        // accessor, so `$!.method` died with an X::Method::NotFound of its own.
+        for (auto& kv : attrs) {
+            bool have = false;
+            for (auto& a : it->second->attrs) if (a.name == kv.first) { have = true; break; }
+            if (!have) { ClassAttr a; a.name = kv.first; a.sigil = '$'; a.pub = true; it->second->attrs.push_back(a); }
+        }
+    }
     Value ex; ex.t = VT::Object; ex.setObj(std::make_shared<ObjectData>());
     ex.obj()->cls = it->second;
     for (auto& kv : attrs) ex.obj()->attrs[kv.first] = kv.second;
@@ -24415,6 +24427,27 @@ std::recursive_mutex& Interpreter::atomicStripe(const void* p) {
     return stripes[(reinterpret_cast<uintptr_t>(p) >> 4) & 63];
 }
 
+// A private call needs a `self` in scope — OR a routine declared inside the
+// class itself: `my multi rulify(Path::Finder:D $rule) { $rule!rules }` sits in
+// the class body, has no invocant of its own, and is exactly how Path::Finder
+// reaches another instance's rules. Rakudo allows a private call anywhere
+// lexically inside the declaring class; the running routine's own package is
+// the part of that we can see at runtime.
+void Interpreter::requirePrivateCallScope(const std::string& name) {
+    if (tctx_.cur->find("self")) return;
+    if (tctx_.curRoutineVal && tctx_.curRoutineVal->t == VT::Code &&
+        tctx_.curRoutineVal->code()) {
+        const std::string& pkg = tctx_.curRoutineVal->code()->pkg;
+        if (!pkg.empty() && pkg != "GLOBAL") {
+            auto pit = classes_.find(pkg);
+            if (pit != classes_.end() && pit->second &&
+                pit->second->findMethod("!" + name)) return;
+        }
+    }
+    throw RakuError{Value::typeObj("X::Method::NotFound"),
+        "Private method call to '" + name + "' outside the defining class"};
+}
+
 Value Interpreter::evalCall(Call* c) {
     // temp/let take their argument by EXPRESSION — the generic args pre-eval
     // would run a `temp $a = 23` assignment before the snapshot is taken
@@ -27484,27 +27517,10 @@ Value Interpreter::eval(Expr* e) {
                     return Value::boolean(false);
                 }
             }
-            // A private call needs a `self` in scope — OR a routine declared inside
-            // the class itself: `my multi rulify(Path::Finder:D $rule) { $rule!rules }`
-            // sits in the class body, has no invocant of its own, and is exactly how
-            // Path::Finder reaches another instance's rules. Rakudo allows a private
-            // call anywhere lexically inside the declaring class; the running
-            // routine's own package is the part of that we can see at runtime.
-            if (mc->bang && !tctx_.cur->find("self")) {
-                bool inPkg = false;
-                if (tctx_.curRoutineVal && tctx_.curRoutineVal->t == VT::Code &&
-                    tctx_.curRoutineVal->code()) {
-                    const std::string& pkg = tctx_.curRoutineVal->code()->pkg;
-                    if (!pkg.empty() && pkg != "GLOBAL") {
-                        auto pit = classes_.find(pkg);
-                        if (pit != classes_.end() && pit->second &&
-                            pit->second->findMethod("!" + mc->method)) inPkg = true;
-                    }
-                }
-                if (!inPkg)
-                    throw RakuError{Value::typeObj("X::Method::NotFound"),
-                        "Private method call to '" + mc->method + "' outside the defining class"};
-            }
+            // A private call needs a `self` in scope — see requirePrivateCallScope.
+            // A `self!"$name"()` has no name yet: it is checked once the name
+            // expression has been evaluated, below.
+            if (mc->bang && !mc->methodExpr) requirePrivateCallScope(mc->method);
             // `/re/.method` operates on the Regex object; only bare /…/ in term
             // position matches $_ (so the invocant must not auto-match here) —
             // but an explicit `m//` DOES match, so `(m:g/b/).elems` counts the
@@ -27583,6 +27599,7 @@ Value Interpreter::eval(Expr* e) {
                     return cres;
                 }
                 mc->method = mv.toStr(); // resolved here so write- routing below sees it
+                if (mc->bang) requirePrivateCallScope(mc->method); // `self!"$name"()`
             }
             // qualified `$obj.Class::method` — dispatch to Class's method directly,
             // reaching past the invocant's own override (e.g. `self.Parent::meth`

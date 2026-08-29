@@ -230,6 +230,12 @@ The `MethodCall` node carries the variants as flags:
 | `$o>>.m` | `hyper` | apply to each element |
 | `$o.^m` | `meta` | a meta-object call |
 
+The flags combine: `self!"$name"()` is `bang` *and* `methodExpr`, and the name is
+not known until the expression has been evaluated — so the check that a private
+call is lexically inside its class runs after that, not before the invocant. The
+private branch used to take the interpolation's raw source text as the name and
+dispatch to a method spelled `!$name` (issue #43).
+
 `.^` calls go to the meta-object. Most are answered directly — `.^name`,
 `.^methods`, `.^attributes`, `.^parents`, `.^roles` — but `.HOW` must return a
 *persistent* object, because `T.HOW does SomeRole` mixins have to stick. So

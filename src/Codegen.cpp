@@ -1319,6 +1319,10 @@ struct Codegen {
             case NK::MethodCall: {
                 auto* m = static_cast<MethodCall*>(e);
                 if (m->maybe) unsupported("method-call form (.?)");
+                // The name is a run-time value (`."$name"()`, `self!"$name"()`,
+                // `.$callable`) and nothing here evaluates it — emitting the
+                // static `m->method` dispatched to the empty name. Bundle instead.
+                if (m->methodExpr) unsupported("an indirect method call (.\"$name\"())");
                 if (m->hyper) {
                     if (m->mutate) unsupported(">>.= hyper-mutate");
                     return "rtHyperMethod(RT, " + ex(m->inv.get()) + ", " + cesc(m->method) + ", " + argsVL(m->args) + ")";

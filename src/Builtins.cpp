@@ -6747,9 +6747,20 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     if (std::getenv("RAKUPP_TRACE"))
         std::cerr << "[NoMethod] ." << m << " on " << inv.typeName()
                   << " at " << (srcFile_.empty() ? "?" : srcFile_) << ":" << curLine_ << "\n";
-    throwTyped("X::Method::NotFound",
-               {{"method", m}, {"typename", inv.typeName()}},
-               "No such method '" + m + "' for invocant of type '" + inv.typeName() + "'");
+    // A private call arrives as its DISPATCH KEY — `!wrong`, which is what the
+    // class method tables are keyed by (`md->isPrivate ? "!" + name : name`).
+    // The exception reports the method as it was WRITTEN, and says which kind
+    // of call it was: roast's S12-methods/private.t asks for
+    // `method => 'wrong', private => &so`, and Rakudo's message names the kind
+    // too. Only the key is prefixed — a Raku method name cannot begin with `!`.
+    const bool priv = m.size() > 1 && m[0] == '!';
+    const std::string name = priv ? m.substr(1) : (const std::string&)m;
+    throwTypedV("X::Method::NotFound",
+                {{"method",   Value::str(name)},
+                 {"typename", Value::str(inv.typeName())},
+                 {"private",  Value::boolean(priv)}},
+                std::string("No such ") + (priv ? "private " : "") + "method '" +
+                    (const std::string&)m + "' for invocant of type '" + inv.typeName() + "'");
 }
 
 // ---------------- real supply wiring (on-demand supplies, async sockets) ----

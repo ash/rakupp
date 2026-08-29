@@ -1853,8 +1853,19 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
             advance(); // !
             auto mc = std::make_unique<MethodCall>();
             mc->inv = std::move(base);
-            mc->method = advance().text;
+            // `self!"$name"()` names the private method at RUN time, exactly as
+            // `."$name"()` does for a public one — and the interpolation must be
+            // parsed as an expression, not taken as the token's literal text
+            // (which dispatched to a method spelled `!$name`, issue #43).
+            bool quotedName = cur().kind == Tok::StrLit || cur().kind == Tok::StrInterp;
+            if (cur().kind == Tok::StrInterp) mc->methodExpr = parsePrimary();
+            else mc->method = advance().text;
             mc->bang = true; // private call: only valid with a self in scope
+            // Same rule the public `."name"()` path keeps (S12): a quoted name
+            // must be immediately called. Bare `self!"$m"` used to parse as a
+            // no-argument call, so `self!"$m" = 5` wrote into nothing.
+            if (quotedName && !isKind(Tok::LParen))
+                error("indirect method call requires parentheses: $obj!'name'()");
             if (isKind(Tok::LParen)) { advance(); mc->args = parseCallArgs(); }
             else if (isOp(":") && (startsTermToken(peek()) ||
                      (peek().kind == Tok::Ident && (peek().text == "my" || peek().text == "our" || peek().text == "state")))) {

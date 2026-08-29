@@ -1688,6 +1688,8 @@ public:
     }
     Value defaultScheduler_; // the ONE $*SCHEDULER (copies share .hash(), so attr writes persist)
 private:
+    // `$obj!meth` is legal only lexically inside the declaring class; throws otherwise.
+    void requirePrivateCallScope(const std::string& name);
     Value evalCall(Call* c);
     Value evalTempLet(Call* c); // temp/let: snapshot BEFORE arg evaluation
     Value evalIndex(Index* idx);

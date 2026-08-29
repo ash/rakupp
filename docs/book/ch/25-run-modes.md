@@ -174,7 +174,8 @@ and AOT buy distribution and build-time error reporting, not throughput.
 struct CodegenError { std::string msg; };
 ```
 
-mainly grammars, and a handful of NativeCall shapes that need copy-back the
+mainly grammars, indirect method calls (`."$name"()`, whose name no generated
+call site evaluates), and a handful of NativeCall shapes that need copy-back the
 generated call site cannot express. The driver catches it and **transparently
 bundles the whole program instead**.
 
