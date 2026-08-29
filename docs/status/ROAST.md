@@ -42,10 +42,10 @@ Full suite — **1,464 files**:
 
 | Files | Count | Share of suite |
 |---|---:|---:|
-| **Fully passing** | **638** | **44%** |
-| Partially passing | 687 | 47% |
+| **Fully passing** | **643** | **44%** |
+| Partially passing | 685 | 47% |
 | No TAP output | 121 | 8% |
-| Timeouts | 18 | 1.2% |
+| Timeouts | 15 | 1.0% |
 
 (Both files that once wedged the harness with unkillable children are measured
 in-run now: `S04-statements/try.t` scores as an ordinary partial, and

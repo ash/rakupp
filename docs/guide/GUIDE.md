@@ -48,10 +48,10 @@ implementation. Against the full Roast suite of **1,464 `.t` files**:
 
 | Files | Count | Share of suite |
 |---|---:|---:|
-| **Fully passing** | **528** | **36%** |
+| **Fully passing** | **643** | **44%** |
 | Partially passing | 685 | 47% |
-| No TAP output (parse error / unimplemented) | 238 | 16% |
-| Timeouts | 12 | 0.8% |
+| No TAP output (parse error / unimplemented) | 121 | 8% |
+| Timeouts | 15 | 1.0% |
 
 Two numbers describe where Raku++ stands, and they measure different things:
 

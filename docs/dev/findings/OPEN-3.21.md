@@ -110,7 +110,23 @@ reported `2 timed out (not judged)`, then `ALL SLIM-DIFF CHECKS PASSED`, and
 left the chain running. Two fixes: a compiled binary should refuse `-e` rather
 than run something else, and slim-diff's timeout should kill the process tree.
 
-## 6. `perf-guard` picks the wrong binary by default
+## 6. The doc-refresh verification has a blind spot for bare table cells
+
+RELEASING.md's step-3 proof greps for figures in their `198,791 / 218,608`
+shape. Two standing tables write the count as a bare cell and were missed by
+it, both found only when the dashboard disagreed with the release:
+
+- `docs/status/ROAST.md`'s `| **Fully passing** | **638** | **44%** |` — which
+  is the exact row `gen-dashboard.raku` parses, so the first dashboard run put
+  `main` at 638 while the tag read 643.
+- `docs/guide/GUIDE.md`'s table, which was **v1.x-era** (528 fully passing, 238
+  no-TAP, 12 timeouts) sitting directly beneath assertion figures the refresh
+  had just updated.
+
+The recipe should also grep for the bare forms, or those tables should carry
+their denominators so the existing pattern catches them.
+
+## 7. `perf-guard` picks the wrong binary by default
 
 It takes the first of `build/`, `build-arm64/`, `./rakupp`. On the machine of
 record `build/` is the **x86_64** build, so the gate command exactly as
