@@ -12,23 +12,12 @@ with it; it targets the *language*, measured against
 [**Roast**](https://github.com/Raku/roast), the official Raku test suite.
 
 **Status:** current release **v3.23.0** (2026-08-29) — *the re-baseline*: the
-last of three consolidation releases. It set out to re-measure every figure this
-project gates on through the instruments v3.22.0 had just fixed — and began by
-reviewing those instruments, which found **twenty-five more defects**. Three
-would have corrupted this release's own numbers: nothing recorded *which* rakupp
-or *which* Roast a gate had measured (three binaries answer to `rakupp` on the
-machine of record, the right one first by PATH ordering alone); the documented
-build command produced a *translated* binary, because cmake itself is x86_64
-there; and `perf-guard`'s standing-debt note named one kernel of five. A
-twenty-sixth was an engine bug the review tripped over — a `:g` match did not
-carry its subject, so `.from` counted **bytes** on any non-ASCII string.
-It also corrected a claim: v3.22.0 said *every* gate detects a planted defect,
-but conformance has **no red path at all** — and that is the check producing
-README's documentation-example figure.
-The release before it was *the instruments, fixed and then proved*: v3.21.0
-passed all seven gates and shipped a silent wrong answer, so v3.22.0 fixed them
-and asked each to prove it can fail. Every release is written up in the
-[CHANGELOG](CHANGELOG.md).
+last of three consolidation releases. Every gated figure re-measured in one
+sitting, on one binary against one Roast revision, with both recorded for the
+first time. It began by reviewing the measuring tools themselves, which found
+**twenty-five defects** ([the findings](docs/dev/findings/TOOLS-3.23.md)) —
+three of them would have corrupted this release's own numbers. Every release is
+written up in the [CHANGELOG](CHANGELOG.md).
 
 **Current focus:** the ecosystem sweep — all 2,524 distributions of the Raku
 ecosystem run against rakupp, and the engine gets fixed until real modules
@@ -44,31 +33,25 @@ remains the per-release QA gate — see
 [RELEASING.md](docs/dev/RELEASING.md) — an instrument, not the ecosystem
 picture.)
 
-**Three consolidation releases before the next campaign.** Language work has the
-property Larry Wall kept pointing at: push the design in one place and something
-pops out in another. After a lot of correct individual changes, that is where
-this engine is, so these three add nothing new.
+**Three consolidation releases, now done.** Language work has the property Larry
+Wall kept pointing at: push the design in one place and something pops out in
+another. After a lot of correct individual changes, that is where this engine
+was — so these three added nothing new.
 
-- **v3.21.0** — *the state after the changes.* ✅ Shipped what had accumulated
-  since v3.20.1 — issues #38 through #42 among them — measured together on one
-  machine in one sitting. It also passed all seven gates and shipped a silent
-  wrong answer, which set the next release's agenda.
-- **v3.22.0** — *the instruments, fixed and then proved.* ✅ Scoped as the 360°
-  source review; the v3.21.0 sitting changed the order, because a review produces
-  verdicts and verdicts inherit the reliability of whatever measured them. Six of
-  the seven gates had a defect. All are fixed, and **every gate that can fail now
-  detects a planted defect** — `rakupp tools/prove-gates.raku --all`. The review
-  itself is **barely begun, three files of eighty-three**, and carries forward.
-- **v3.23.0** — *re-measure everything.* ⬜ Every figure this project gates on,
-  from one run, with the baselines re-recorded and each one naming what produced
-  it: a gate whose baseline predates the review is not a gate. It began with a
-  review of the instruments — **twenty-five defects, all fixed**
-  ([the findings](docs/dev/findings/TOOLS-3.23.md)) — because nothing recorded
-  *which* rakupp or *which* Roast a gate had measured, and three of them
-  would have corrupted this release's own numbers. It inherits v3.22.0's source
-  review, three files of eighty-three, and the open question that release did not
-  close — why the performance baseline moved, with build nondeterminism, binary
-  layout, the allocator and the metric now eliminated and no cause found.
+- **v3.21.0** — *the state after the changes.* ✅ What had accumulated since
+  v3.20.1, measured together in one sitting. It passed all seven gates and
+  shipped a silent wrong answer anyway, which set the next release's agenda.
+- **v3.22.0** — *the instruments, fixed and then proved.* ✅ Six of the seven
+  gates had a defect of their own. All fixed, and **every gate that can fail
+  detects a planted defect** — `rakupp tools/prove-gates.raku --all`.
+- **v3.23.0** — *the re-baseline.* ✅ Every gated figure from one run, baselines
+  re-recorded, each naming what produced it — a gate whose baseline predates the
+  review is not a gate. It also corrected a claim: conformance has **no red path
+  at all**, so it is a report, not a gate.
+
+Left open by the arc: the source review is **three files of eighty-three**, and
+the performance baseline has moved twice with no cause found — build
+nondeterminism, binary layout, the allocator and the metric are all eliminated.
 
 Then the standing target: **1000 of 2,524** distributions passing their own test
 suites, up from 637, where the lever is the 421 that never ran their own tests at
