@@ -3,6 +3,86 @@
 Release notes for tagged releases. Numbers are measured, not projected;
 methodology for all Roast figures is in [docs/status/COUNTING.md](docs/status/COUNTING.md).
 
+## v3.21.0 (2026-08-29) — the state after the changes
+
+The first of three consolidation releases (the arc is written up in
+[dev/plans/VERSIONS.md](docs/dev/plans/VERSIONS.md)). It adds no campaign. Its
+job is to get what accumulated on main since v3.20.1 into a tag, measured
+together on one machine in one sitting, so the review that follows starts from
+a state a stranger can reproduce.
+
+| | v3.20.1 | v3.21.0 |
+|---|---:|---:|
+| Roast assertions (all declared) | 198,791 | **198,943** |
+| Roast files fully passing | 638 / 1,464 | **643 / 1,464** |
+| Local regression suite (`t/run.raku`) | 567 | **578** |
+| Module battery (vs each dist's own reference run) | 49 / 59 | **49 / 59** |
+| Documentation examples byte-identical on both engines | 955 | **954** |
+| `say "Hello"` compiled with `--exe` | 9,823,512 B | **9,446,216 B** |
+| …compiled with `--exe --slim` | 6,510,864 B | **6,165,528 B** |
+
+Roast is the repeating profile of four runs (643 / 642 / 639 / 643); the 639
+came from a run during which the OS resumed Photos analysis and Spotlight
+indexing, and its timeout count rose from 15 to 20 to match. The gate is the
+file LIST, and it is clean: every file passing in the most recent full baseline
+passes in at least one of the four runs, and the six that vary between runs are
+all timeout-prone concurrency and exit tests. The documentation-example figure
+moves one, inside the ±5 flap band that Rakudo's per-process hash-order
+randomisation produces. Binary sizes are arm64.
+
+**What it carries.** Issue [#38](https://github.com/ash/rakupp/issues/38)
+(twelve engine bugs behind one number-theory module),
+[#39](https://github.com/ash/rakupp/issues/39) (`take-rw` takes the container),
+[#40](https://github.com/ash/rakupp/issues/40) (the resolver stopped answering
+a `ver<X+>` floor with an older release),
+[#41](https://github.com/ash/rakupp/issues/41) (`sleep 333` sleeps 333
+seconds), and [#42](https://github.com/ash/rakupp/issues/42) — HTTP::Tiny,
+broken in v3.20.1, where a predicate block's Regex answer was read as plain
+truth so `$/` was never set. Plus TAP::Harness going green, exact Bag/Mix
+counts past `long long`, bound Lists refusing the resizing mutators, `--lsp`,
+long division by Knuth algorithm D, a `.flat` that asks what slot an element
+sits in, and an uninstall that removes every version behind a name the way
+`zef uninstall` does.
+
+**The performance gate, and why its baseline moved.** `perf-guard --check`
+failed on five of nine kernels — fib +7.8%, strscan +10.0%, subcall +11.0%,
+rats +26.0%, regexloop +18.5% — and the baseline was re-recorded rather than
+the release being held. The reason it is not a code regression: every commit
+between the previous record and this tag was built arm64 and measured one at a
+time on a settled machine, eight points across the window, and no kernel moves
+outside noise at any of them. The control is the finding — the commit that
+RECORDED the old baseline, rebuilt today, measures fib 377.7 / rats 237.0 /
+regexloop 134.8, which are today's numbers and not the ones it wrote. The one
+real movement in the window runs the other way: `ea81a5f` makes regexloop ~10%
+faster. Ruled out by measurement rather than argument: machine load (identical
+at load 2.5 and 4.0, before and after a reboot), OS and toolchain (unchanged
+since February), power and thermal state, and the kernels themselves
+(`perf-guard.raku` byte-identical since the last record). A different machine
+does not explain it either — four of the nine kernels still match the old
+numbers, and a slower box would move all nine.
+
+So the previous baseline is not reproducible on this machine and the cause is
+not known. `best` keeps every earlier figure, so `vs best` still reads fib
++12.2%, strscan +11.8%, subcall +13.5%, rats +31.7%, regexloop +19.2% — the
+debt is carried in the open rather than reset — and the full account sits in
+`tools/perf-baseline.raku` beside the numbers. **Do not read those five as a
+target that was met.** Finding the cause belongs to v3.22.0.
+
+**Left open, for the review.** Four things this release's gates exposed about
+the gates themselves. The Roast harness interleaves child diagnostics into its
+own status lines under `--workers=4` (four corrupted lines per run — the
+tallies are computed from data and are sound, but the file list is parsed from
+those lines). No `roast.txt` was archived from v3.20.1, so the documented
+file-list diff had no baseline and fell back to a development run. A compiled
+binary accepts and silently ignores `-e`, so a program that shells out to
+`$*EXECUTABLE -e …` re-runs itself — `t/regression/anton-batch-round2.raku`
+does exactly that and fork-bombed the machine to 1,253 processes during
+`slim-diff`, which reported the timeout, passed, and left the chain running
+rather than reaping it. And `perf-guard` picks the first of `build/`,
+`build-arm64/`, `./rakupp`, which on the machine of record is the x86_64 build
+— so the gate command exactly as RELEASING.md writes it reports inconclusive
+instead of measuring.
+
 ## v3.20.1 (2026-08-27) — v3.20.0, correctly named
 
 Identical content to v3.20.0 plus the version identity: the v3.20.0 tag was

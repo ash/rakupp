@@ -11,15 +11,15 @@ WebAssembly, no server required. It is not a fork of Rakudo and shares no code
 with it; it targets the *language*, measured against
 [**Roast**](https://github.com/Raku/roast), the official Raku test suite.
 
-**Status:** current release **v3.20.1** (2026-08-27) — *the cooldown: one
-implementation of everything, and fez installs*: a 360° source review worked
-to completion in three gated batches — silent wrong answers fixed, the
-duplicate implementations collapsed to one each, micro-optimisations landed
-only with their own A/B measurements — plus `fez` installing with its tests
-green and `zef` working end-to-end (issue #37). The release before it was
-*the whole ecosystem, and a new oracle*: all 2,524 zef distributions run
-against the engine, `rakupp install` as a first-class installer, and the
-oracle era moved to Rakudo **2026.08**. Every release is written up in the
+**Status:** current release **v3.21.0** (2026-08-29) — *the state after the
+changes*: the first of three consolidation releases, adding no campaign. It
+carries what had accumulated on main since the previous tag and could not reach
+anyone without one — issues #38 through #42 among them, including HTTP::Tiny,
+which v3.20.1 shipped broken — measured together on one machine in one sitting.
+The release before it was *the cooldown: one implementation of everything, and
+fez installs*: a 360° source review worked to completion in three gated
+batches, plus `fez` installing with its tests green and `zef` working
+end-to-end (issue #37). Every release is written up in the
 [CHANGELOG](CHANGELOG.md).
 
 **Current focus:** the ecosystem sweep — all 2,524 distributions of the Raku
@@ -52,14 +52,14 @@ target: **1000 of 2,524** distributions passing their own test suites, up from
 a dependency failed first. The plans are in
 [docs/dev/plans/VERSIONS.md](docs/dev/plans/VERSIONS.md).
 
-| | v3.20.1 | at v2.0.0 |
+| | v3.21.0 | at v2.0.0 |
 |---|---:|---:|
-| Roast, per individual test — of what the suite declares‡ | **198,791 of ~218,608 (90%)** | 197,090 of ~203,500 (97%) |
-| Roast, all-or-nothing — files fully passing, of 1,464 | **638 (44%)** | 594 |
-| Official documentation examples byte-identical on both engines | **955** | 952 |
+| Roast, per individual test — of what the suite declares‡ | **198,943 of ~218,803 (90%)** | 197,090 of ~203,500 (97%) |
+| Roast, all-or-nothing — files fully passing, of 1,464 | **643 (44%)** | 594 |
+| Official documentation examples byte-identical on both engines | **954** | 952 |
 | Of the Raku ecosystem's [2,524 distributions](https://raku.online/modules/ecosystem/), passing their own test suites | **637** | — |
-| Local regression suite | **567** | 312 |
-| `say "Hello"` compiled with `--exe --slim` | **6,510,864 B** | 9,830,680 B (no `--slim`) |
+| Local regression suite | **578** | 312 |
+| `say "Hello"` compiled with `--exe --slim` | **6,165,528 B** | 9,830,680 B (no `--slim`) |
 
 ‡ Counted against each file's declared `plan N`, so a file that aborts is
 charged for every test it failed to run; on the all-or-nothing bar a file

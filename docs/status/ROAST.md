@@ -31,8 +31,8 @@ gauge of how much of the language actually works).
 The exact definition of every figure below — and how the harness computes it — is
 in [COUNTING.md](COUNTING.md); that file is authoritative if anything here drifts.
 
-**Headline: ~90% of all declared Roast tests pass** (198,791 / 218,608); on the
-stricter file bar, ~44% of files fully pass (638 / 1,464). The per-file breakdown
+**Headline: ~90% of all declared Roast tests pass** (198,943 / 218,803); on the
+stricter file bar, ~44% of files fully pass (643 / 1,464). The per-file breakdown
 comes first below, then the per-test figures. (S15 — Unicode / strings / NFG —
 is now at 100% of assertions: full UCD case tables, grapheme-level regex, and
 complete `uniprop` coverage landed for v1.1; its lone non-passing file is a
@@ -60,7 +60,7 @@ territory, not "passing" and not "failing."
 ### The assertion count
 
 Measured per individual test rather than per file, the honest figure is
-**198,791 of ~218,608 declared tests — 90.9%**. "Declared" means every test the
+**198,943 of ~218,803 declared tests — 90.9%**. "Declared" means every test the
 suite intends to run: for files that ran, their emitted plan; for files that
 abort before emitting any TAP, the `plan N` count read straight from their
 source. Counting those aborting files (all their tests failing) is what keeps the
@@ -69,9 +69,9 @@ three denominators, widest-to-strictest:
 
 | Denominator | Ratio | What it includes |
 |---|---|---|
-| tests that **ran** | 198,791 / 205,091 (~97%) | only assertions files actually emitted — flatters, ignores aborts |
-| tests **planned** (files that emitted a plan) | 198,791 / 215,496 (~92%) | + tests lost when a file aborts mid-plan |
-| **all declared** tests | 198,791 / 218,608 (90.9%) | + tests in parse-error files, recovered from source. This denominator grows as parse fixes land — files that died before announcing a plan now declare their real (often larger, dynamic) plans, so the percentage can dip while absolute passes rise |
+| tests that **ran** | 198,943 / 205,417 (~97%) | only assertions files actually emitted — flatters, ignores aborts |
+| tests **planned** (files that emitted a plan) | 198,943 / 215,691 (~92%) | + tests lost when a file aborts mid-plan |
+| **all declared** tests | 198,943 / 218,803 (90.9%) | + tests in parse-error files, recovered from source. This denominator grows as parse fixes land — files that died before announcing a plan now declare their real (often larger, dynamic) plans, so the percentage can dip while absolute passes rise |
 
 The 90% is the per-test analog of the ~43% file coverage. Three notes on scope:
 
@@ -165,6 +165,14 @@ substring: `build/rakupp tools/run-roast.raku S05`.
 the GIL while a worker waits on its child process, so the children genuinely
 overlap. Output and totals are identical to a sequential run — results are
 tallied and printed in file order regardless of N.
+
+_Snapshot 2026-08-29, the v3.21.0 release run (`--workers=4`, four passes):
+643 / 1,464 files fully passing (~44% coverage); 685 partial, 121 no-TAP,
+15 timeout. The file count repeats at 643 (band 643 / 642 / 639 / 643 — the
+639 came from a pass during which the OS resumed Photos analysis and Spotlight
+indexing, and its timeouts rose to 20). No file regressed: every file passing
+in the previous full run passes in at least one of the four, and the six that
+vary between passes are all timeout-prone concurrency and exit tests._
 
 _Snapshot 2026-08-27, the v3.20.0 release run (`--workers=4`, three passes
 on an idle box): 638 / 1,464 files fully passing (~44% coverage); 687
