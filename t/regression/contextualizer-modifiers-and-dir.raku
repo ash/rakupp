@@ -27,9 +27,17 @@ my @fail;
 # the try existed, on CI only (the module IS installed on the dev machine, which
 # is exactly how the gap hid locally). `require` fails at run time, catchably;
 # the rest of this file's checks keep running everywhere either way.
+# The directory is derived from $?FILE, not written as the relative 'src' this
+# check used to pass. A bare relative path made the whole file depend on being
+# run from the repo root, silently: `t/run.raku` says nothing about a working
+# directory, every other path in this file is either '.' or absolute, and the
+# only symptom was `file-find (0)` — a count, with nothing to say the directory
+# had not been looked at. Found when a release harness ran the suite from its
+# own scratch directory and one check of 580 went red.
 {
-    my $n = try { require File::Find; find(dir => 'src', name => 'Value.h').elems };
-    with $n     { @fail.push("file-find ($n)") unless $n == 1 }
+    my $src = $?FILE.IO.parent.parent.parent.add('src').Str;   # t/regression/… -> repo root
+    my $n = try { require File::Find; find(dir => $src, name => 'Value.h').elems };
+    with $n     { @fail.push("file-find ($n) in $src") unless $n == 1 }
     else        { note '# File::Find not installed here — skipping find() check' }
 }
 

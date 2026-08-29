@@ -250,7 +250,7 @@ the front.*
   fixed**. Three of them would have corrupted this release's own numbers:
   nothing recorded *which* rakupp or *which* Roast a run measured (three rakupp
   binaries answer on PATH here, and the right one is first by ordering alone);
-  the documentation-example figure was swept with a v3.20.1 x86_64 build; and
+  the repo's own docs sweep ran on a v3.20.1 x86_64 build; and
   `perf-guard`'s debt note named one kernel of five, silent about the `rats
   +37.4%` this arc exists to carry. One of them was an engine bug the review
   tripped over — a `:g` match did not carry its subject, so `.from`/`.to` were

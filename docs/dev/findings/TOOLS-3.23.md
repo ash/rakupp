@@ -177,11 +177,10 @@ no PID and no cleanup, so two concurrent runs of gate 4 compiled over each
 other's binaries and each measured the other's build. Now PID-scoped and
 removed on the way out.
 
-## 8. The documentation-example figure was measured with a two-release-old engine
+## 8. The repo's own docs sweep ran on a two-release-old engine
 
-`doc-examples-diff.raku` — which produces README's *"950 documentation examples
-byte-identical on both engines"* — defaulted to `build/rakupp` and checked only
-that the path was executable. On the machine of record:
+`doc-examples-diff.raku` defaulted to `build/rakupp` and checked only that the
+path was executable. On the machine of record:
 
 ```
 build/rakupp        v3.20.1, Mach-O x86_64
@@ -190,7 +189,26 @@ build-arm64/rakupp  v3.22.0, Mach-O arm64
 
 An x86_64 binary runs perfectly well under Rosetta, so the default swept with a
 two-release-old engine and said nothing about it. This is A5's shape, third
-instance, on a headline figure.
+instance.
+
+> **Correction (same sitting).** This entry first said the tool "produces
+> README's *950 documentation examples byte-identical on both engines*". **It
+> does not**, and the error is the same class this document is about: a claim
+> about where a figure comes from, made from the tool's name rather than from
+> its output. `doc-examples-diff.raku` sweeps every ```raku fence in **this
+> repo's** `docs/` — measured this sitting: **223 MATCH** of 299 blocks. The
+> README figure is the official Raku documentation, ~1,495 `=begin code` blocks
+> under `/Users/ash/doc`, and it is produced by **gate 7's `typerun.raku`**,
+> recorded as `examples.ok` in raku.online's `src/data/history.jsonl`
+> (950 ok / 125 rakupp-differs / 23 rakudo-differs / 130 doc-drift /
+> 129 all-differ / 94 not-runnable = 1,451).
+>
+> Which makes the finding *worse*, not better, and it belongs with O1:
+> **README's documentation-example headline is produced by the one release check
+> that has no red path.** `typerun.raku` exits 0 on any divergence, so the figure
+> behind that row moves only when a human reads it. The stale-binary defect in
+> `doc-examples-diff` is real and is fixed; it was simply never the tool behind
+> that number.
 
 **Fixed:** architecture-filtered search, an explicit refusal for a cross-arch
 binary, and a banner:

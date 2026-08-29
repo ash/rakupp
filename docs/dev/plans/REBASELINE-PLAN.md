@@ -40,9 +40,12 @@ exists to perform:
   passing where v3.22.0 reports `1 / 2` — a plausible number with no tell. The
   Roast checkout was unrecorded too, and gate 1 is a *diff against the previous
   release's list*: if Roast moves, the diff blames the engine.
-- **The documentation-example figure was measured with a two-release-old
-  engine.** `doc-examples-diff.raku` defaulted to `build/rakupp`, which on this
-  box is a v3.20.1 **x86_64** build that runs fine under Rosetta.
+- **The docs sweep ran on a two-release-old engine.** `doc-examples-diff.raku`
+  defaulted to `build/rakupp`, which on this box is a v3.20.1 **x86_64** build
+  that runs fine under Rosetta. (It sweeps *this repo's* `docs/` — 223 of 299
+  blocks matching. README's "official documentation examples" figure is a
+  different corpus entirely, produced by gate 7's `typerun.raku`; attributing it
+  to this tool was an error made and corrected during the review.)
 - **`perf-guard`'s standing-debt note named one kernel of five**, from a
   hardcoded list of the four kernels that existed before 2026-08-09 — so it
   reported `fib +6.5%` and stayed silent about `rats +37.4%`, which is the
@@ -163,8 +166,13 @@ produced it.
 5. **The 59-dist battery**, against the committed baseline.
 6. **Conformance**, both halves, and the ±5 flap band stated rather than read
    as progress.
-7. **The documentation examples**, re-swept — with the arm64 binary, which is
-   the first time that will be true of the figure README publishes.
+7. **Both example sweeps, which are different corpora and must not be quoted for
+   each other.** `tools/doc-examples-diff.raku` covers this repo's own `docs/`
+   (299 blocks); README's *"Official documentation examples byte-identical"* row
+   is gate 7's `typerun.raku` over the official Raku docs (~1,495 `=begin code`
+   blocks), recorded as `examples.ok` in raku.online's `history.jsonl`. Note
+   that the README figure therefore comes from the one release check with **no
+   red path** — see B1.
 8. **The ecosystem**, re-swept **from scratch**: a fresh `--out`, not the
    previous verdict file. `eco-sweep` now says `N measured, M skipped` so this
    is checkable rather than assumed.

@@ -188,6 +188,20 @@ sub measure(Str $code) {
 # regression, so a release can be gated on it. --record rewrites the baseline.
 # Without either it just prints the numbers, as it always did.
 my $BASEFILE = $repo.add('tools/perf-baseline.raku');
+# The tolerance, for the record guard below — the gate block re-reads the file
+# for itself, so this is deliberately a small separate read rather than shared
+# state between two code paths that run at different times.
+sub b-tol() { (EVAL slurp $BASEFILE)<tolerance-pct> // 5 }
+
+# `git describe` ends in -modified when the binary was built from a tree with
+# uncommitted changes. RELEASING.md forbids shipping such a binary; a baseline
+# RECORDED from one is the same defect one level down — every later release
+# would be gated against a number produced by a build nobody can reconstruct.
+sub build-is-modified(Str $bin --> Bool) {
+    my $p = run($bin, '--version', :out, :err);
+    my $t = $p.out.slurp(:close); $p.err.slurp(:close);
+    so $t.contains('-modified')
+}
 my $check  = so @*ARGS.grep('--check');
 my $record = so @*ARGS.grep('--record');
 # --for=vX.Y.Z names the release the baseline is being recorded FOR. Without it
@@ -204,6 +218,8 @@ my $RECORD-FOR = do {
 
 
 say provenance-line('perf-guard', %PICK);
+note "note: this build is -modified (built from a tree with uncommitted changes), "
+   ~ "so its numbers name no commit that exists." if build-is-modified($RAKUPP);
 my %now;
 my %spread;
 say "kernel      best (ms)   spread";
@@ -218,6 +234,51 @@ say sprintf('%-10s %8s    %5.1f%%   (worst kernel; the quiet-machine floor is ~1
             'spread', '', $worst-spread);
 
 if $record {
+    # --record REWRITES the baseline every future release is gated against, and
+    # until v3.23.0 it was the only path here with no guard at all: `--check`,
+    # which merely reports, refuses to judge a noisy machine three ways, while
+    # the IRREVERSIBLE operation measured whatever it got and wrote it down.
+    # That is backwards. A bad `--check` is re-run; a bad `--record` becomes the
+    # number every later release is compared against, and RELEASING.md documents
+    # four releases where a stale baseline passed silently the whole time.
+    #
+    # Same signals as the gate, plus the spread, and `--force` for the case where
+    # the noise is understood and the record is deliberate anyway.
+    if build-is-modified($RAKUPP) {
+        note "";
+        note "perf-guard REFUSED to record — $RAKUPP was built from a modified tree.";
+        note "Its `--version` Build line ends in -modified, so it names no commit that";
+        note "exists. A baseline recorded from it could never be re-measured, and every";
+        note "later release would be gated against it. Commit or stash, rebuild, re-run.";
+        note "(--force does not override this: the problem is the input, not the noise.)";
+        exit 2;
+    }
+
+    my $force = so @*ARGS.grep('--force');
+    unless $force {
+        my @noisy = @KERNELS.grep({ (%spread{$_} // 0) > b-tol() });
+        my $load  = machine-load();
+        my $cores = core-count();
+        my @why;
+        @why.push("load {$load.round(0.1)} on {$cores} cores ({(100 * $load / $cores).round}%)")
+            if $load > $cores * 0.6;
+        @why.push("{@noisy.elems} kernel(s) whose runs span more than the tolerance: "
+                ~ @noisy.map({ "$_ {%spread{$_}.round(0.1)}%" }).join(', '))
+            if @noisy;
+        if @why {
+            note "";
+            note "perf-guard REFUSED to record — this machine cannot be measured right now.";
+            note "  $_" for @why;
+            note "";
+            note "A recorded baseline is what every later release is gated against, so a";
+            note "number taken here would not be re-measurable — and the gate would then";
+            note "certify it silently. Re-run on an idle machine, or pass --force if the";
+            note "noise is understood and the record is deliberate (and say so in the";
+            note "CHANGELOG, as RELEASING.md asks).";
+            exit 2;
+        }
+    }
+
     my %b = EVAL slurp $BASEFILE;
     # Rewrite ONLY the kernel lines, rebuilt from the parsed data — every comment
     # in the file survives, because the file's explanation of why the baseline is

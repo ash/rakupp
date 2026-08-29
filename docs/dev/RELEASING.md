@@ -376,7 +376,18 @@ Both halves feed <https://raku.online/spec/rules/divergences/>. This is slow
 (~25 min for the types sweep), which is why it runs per release rather than per
 batch.
 
-**This is the one entry on this list that cannot fail.** None of the four tools
+**README's documentation-example figure comes from here.** The row *"Official
+documentation examples byte-identical on both engines"* is `typerun.raku`'s
+`examples.ok`, swept over the official Raku docs (~1,495 `=begin code` blocks)
+and recorded in raku.online's `src/data/history.jsonl`. It is NOT
+`tools/doc-examples-diff.raku`, which sweeps this repo's own `docs/` — a
+different, much smaller corpus (223 of 299 blocks matching, measured
+2026-08-29). Do not quote one for the other; that mistake was made during the
+v3.23.0 review and is written up in
+[findings/TOOLS-3.23.md](../findings/TOOLS-3.23.md).
+
+**This is the one entry on this list that cannot fail** — which means that
+headline figure is produced by the only release check with no red path. None of the four tools
 has a red path: `matrix.raku`, `conformance.raku` and `divergences.raku` contain
 no `exit` at all, and `typerun.raku` exits non-zero only on a timeout (124) or a
 missing command (127) — infrastructure, not conformance. Measured 2026-08-29:
