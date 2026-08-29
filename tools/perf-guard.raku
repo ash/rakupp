@@ -31,72 +31,23 @@
 # (`raku`), since it only spawns the target binary as a subprocess and times it.
 
 my $repo   = $*PROGRAM.absolute.IO.parent.parent;
+use lib $?FILE.IO.parent.add('lib').Str;
+use Gate;
 
-# …a binary built for ANOTHER ARCHITECTURE runs under translation, which costs a
-# uniform 1.7-2x: every kernel goes over tolerance at once and none of it says
-# anything about the code. The gate reported a 70-100% regression that way while
-# the arm64 build of the same commit measured 7% FASTER than the baseline.
-sub host-arch(--> Str) {
-    return '' if $*DISTRO.is-win;
-    # hw.optional.arm64 is 1 on Apple Silicon even when the ASKING process is
-    # translated — `uname -m` is not, it reports the caller's own architecture.
-    my $s = run('sysctl', '-n', 'hw.optional.arm64', :out, :err);
-    my $v = $s.out.slurp(:close).trim; $s.err.slurp(:close);
-    return 'arm64' if $v eq '1';
-    my $u = run('uname', '-m', :out, :err);
-    my $m = $u.out.slurp(:close).trim; $u.err.slurp(:close);
-    $m
-}
-sub binary-arch(Str $path --> Str) {
-    my $f = run('file', '-b', $path, :out, :err);
-    my $desc = $f.out.slurp(:close); $f.err.slurp(:close);
-    $desc.contains('arm64') ?? 'arm64' !! $desc.contains('x86_64') ?? 'x86_64' !! ''
-}
+# Which binary to measure, and whether it is the right one for this machine —
+# all of it in tools/lib/Gate.rakumod now. A binary built for ANOTHER
+# ARCHITECTURE runs under translation at a uniform 1.7-2x: every kernel goes
+# over tolerance at once and none of it says anything about the code. This gate
+# once reported a 70-100% regression that way while the arm64 build of the same
+# commit measured 7% FASTER than baseline. It says INCONCLUSIVE rather than
+# REFUSED because exit 2 is this gate's documented "re-run", never a pass.
+my %PICK = pick-rakupp($repo);
+require-native(%PICK, :tool<perf-guard>, :verdict<INCONCLUSIVE>,
+    :consequence('It would be measured under translation, which costs a uniform 1.7-2x '
+               ~ 'and makes every kernel look like a regression.'));
+my $HOST   = %PICK<host>;
+my $RAKUPP = %PICK<path>;
 
-my $HOST = host-arch();
-
-# Which binary to measure. An EXPLICIT RAKUPP is honoured exactly as given —
-# that is the whole point of the A/B usage above, and second-guessing it would
-# make the comparison a lie. With none set, the default SEARCHES, and it filters
-# by architecture rather than taking the first path that exists: on the machine
-# of record `build/` holds an x86_64 build beside a native `build-arm64/`, so
-# taking the first path made the command RELEASING.md documents report
-# INCONCLUSIVE instead of measuring, and every run of the v3.21.0 sitting needed
-# RAKUPP=build-arm64/rakupp to get a number at all. A gate whose documented
-# invocation does not measure is not a gate.
-my @candidates = <build/rakupp build-arm64/rakupp rakupp>.map({ $repo.add($_).Str });
-my $RAKUPP = %*ENV<RAKUPP>;
-my $picked-by-arch = False;
-without $RAKUPP {
-    my @runnable = @candidates.grep(*.IO.x);
-    # prefer one built for THIS host; fall back to the first runnable so the
-    # arch check below still explains itself instead of silently finding nothing
-    my $native = $HOST ?? @runnable.first({ binary-arch($_) eq $HOST }) !! Nil;
-    $picked-by-arch = ?$native && @runnable && $native ne @runnable[0];
-    $RAKUPP = $native // @runnable[0] // @candidates[0];
-}
-
-# A MISSING binary must stop the run, not pass it. Every kernel then "runs" in
-# under a millisecond and the guard reports a huge speed-up and exits OK — which
-# is exactly what happened when a stale build/ directory was removed and the
-# default path stopped existing.
-unless $RAKUPP.IO.x {
-    note "perf-guard: no runnable binary at $RAKUPP";
-    note "Searched: {@candidates.join(', ')}";
-    note "Set RAKUPP=/path/to/rakupp, or build one of those.";
-    exit 2;
-}
-
-{
-    my $bin = binary-arch($RAKUPP);
-    if $bin && $HOST && $bin ne $HOST {
-        note "perf-guard INCONCLUSIVE — $RAKUPP is $bin on a $HOST host.";
-        note "It would be measured under translation, which costs 1.7-2x uniformly";
-        note "and makes every kernel look like a regression.";
-        note "Build for this machine, or point RAKUPP at the $HOST binary.";
-        exit 2;
-    }
-}
 my $RUNS   = 4;   # 1 warm-up (discarded) + 3 measured
 
 my %kernels =
@@ -159,6 +110,37 @@ my %kernels =
 # they used to carry two hardcoded copies of it.
 my @KERNELS = <fib asg loopsum hash strscan strpass subcall rats regexloop>;
 
+# …and it must stay in step with %kernels. A kernel added to the hash but not to
+# this list is never measured and never gated, silently — the same shape as
+# run-optbench's hand-written @benches, which produced a false MISSED against a
+# working gate (findings/GATES-3.22.md, Part C).
+{
+    my @missing = %kernels.keys.grep({ $_ !(elem) @KERNELS }).sort;
+    my @unknown = @KERNELS.grep({ !%kernels{$_}:exists }).sort;
+    if @missing || @unknown {
+        note "perf-guard: \@KERNELS and %kernels disagree — the gate would measure the wrong set.";
+        note "  in %kernels but not gated: @missing.join(', ')" if @missing;
+        note "  gated but not defined:     @unknown.join(', ')" if @unknown;
+        exit 2;
+    }
+}
+
+# The standing debt against `best`, worst first. RELEASING.md: "The `vs best`
+# column is the honest headline, not `delta` … Quote `vs best` when reporting."
+# Every success path calls this, so the note cannot be skipped by the exit taken.
+sub report-debt(%now, %b, $tol) {
+    my @debt = @KERNELS.map({
+            my $best = %b<kernels>{$_}<best>;
+            next unless $best.defined && %now{$_}.defined;
+            my $pct = 100 * (%now{$_} - $best) / $best;
+            $pct > $tol ?? ($_ => $pct) !! Empty
+        }).sort({ -.value });
+    return unless @debt;
+    note "note: still behind the best ever measured on: "
+       ~ @debt.map({ "{.key} +{.value.round(0.1)}%" }).join(', ')
+       ~ " (the `best` column — standing debt, not a new regression)";
+}
+
 
 # The 1-minute load average, and how many cores there are to carry it. A busy
 # machine cannot be judged: absolute times here move by tens of percent when
@@ -177,7 +159,16 @@ sub core-count(--> Int) {
     $n || 1
 }
 
-sub measure(Str $code --> Numeric) {
+# Returns (best, spread%) — the minimum of the measured runs, and how far the
+# SLOWEST measured run sat above it. That spread is the gate's own noise reading,
+# taken from data it already collects, and it is a better instrument than the
+# load average: GATES-3.22 Part B measured 1.7% run-to-run on a quiet machine, so
+# a kernel whose runs span far more than that was not measured on a quiet one —
+# whatever `uptime` says. Load average is a 1-minute decayed figure over runnable
+# threads; it can read 4.0 on a machine that is quiet right now and 4.0 on one
+# that is fighting this process for a core, and the gate cannot tell those apart.
+# The spread can.
+sub measure(Str $code) {
     my $tmp = $*TMPDIR.add("perf-guard-{$*PID}-{1e6.rand.Int}.raku");
     $tmp.spurt($code);
     my @ms;
@@ -188,7 +179,9 @@ sub measure(Str $code --> Numeric) {
         @ms.push: ((now - $t0) * 1000).round(0.1);
     }
     $tmp.unlink;
-    @ms.skip(1).min;   # best of the measured runs
+    my @m = @ms.skip(1);             # drop the warm-up
+    my $min = @m.min;
+    ($min, $min > 0 ?? 100 * (@m.max - $min) / $min !! 0)
 }
 
 # --check compares against tools/perf-baseline.raku and EXITS NON-ZERO on a
@@ -197,16 +190,32 @@ sub measure(Str $code --> Numeric) {
 my $BASEFILE = $repo.add('tools/perf-baseline.raku');
 my $check  = so @*ARGS.grep('--check');
 my $record = so @*ARGS.grep('--record');
+# --for=vX.Y.Z names the release the baseline is being recorded FOR. Without it
+# the stamp names the version of the binary that was measured, which during a
+# release sitting is still the PREVIOUS one — gates run before the version bump.
+# (`.?substr` is NOT the way to write this: the safe call finds a `substr` on
+# Nil, which coerces to the EMPTY STRING rather than staying undefined — so `//`
+# keeps it and the stamp reads `2026-08-29 ()`. Rakudo warns about the coercion;
+# rakupp does it silently. Both engines agree on the behaviour.)
+my $RECORD-FOR = do {
+    my $a = @*ARGS.first(*.starts-with('--for='));
+    $a.defined && $a.chars > 6 ?? $a.substr(6) !! Str;
+};
 
-say "perf-guard: $RAKUPP"
-    ~ ($picked-by-arch ?? "  (chosen over an earlier candidate: it is the $HOST build)" !! "");
+
+say provenance-line('perf-guard', %PICK);
 my %now;
-say "kernel      best (ms)";
-say "-" x 24;
+my %spread;
+say "kernel      best (ms)   spread";
+say "-" x 33;
 for @KERNELS -> $k {
-    %now{$k} = measure(%kernels{$k});
-    printf "%-10s %8.1f\n", $k, %now{$k};
+    (%now{$k}, %spread{$k}) = measure(%kernels{$k});
+    printf "%-10s %8.1f    %5.1f%%\n", $k, %now{$k}, %spread{$k};
 }
+# One line saying how quiet the machine was, in the gate's own units.
+my $worst-spread = %spread.values.max;
+say sprintf('%-10s %8s    %5.1f%%   (worst kernel; the quiet-machine floor is ~1.7%%)',
+            'spread', '', $worst-spread);
 
 if $record {
     my %b = EVAL slurp $BASEFILE;
@@ -262,14 +271,38 @@ if $record {
         }
         @out.splice($last-kernel + 1, 0, |@lines);
     }
+    # Stamp the provenance line. --record used to leave `recorded` alone while
+    # --check printed it, so the field had to be hand-edited after every record
+    # or the gate reported the wrong provenance for its own numbers. That is the
+    # mechanism behind RELEASING.md's documented blind spot: the baseline went
+    # four releases without a re-record (`2026-07-29 (v1.5.1)` while v3.0.0
+    # shipped) and passed the whole time, because nothing in the output moved.
+    my $stamp = "{Date.today} ({$RECORD-FOR // 'v' ~ binary-version($RAKUPP)})";
+    my $stamped = False;
+    for @out.kv -> $i, $l {
+        next unless $l.trim.starts-with("'recorded'");
+        @out[$i] = "    'recorded' => '$stamp',";
+        $stamped = True;
+    }
+    unless $stamped {
+        note "record: no 'recorded' line in {$BASEFILE.basename} to stamp — the file's";
+        note "shape changed and this tool can no longer date its own output. Refusing";
+        note "to write a baseline nobody can date.";
+        exit 1;
+    }
     $BASEFILE.spurt(@out.join("\n") ~ "\n");
     # verify the write actually took, rather than trusting the substitution
     my %after = EVAL slurp $BASEFILE;
     # compare at the precision actually written, not bit-for-bit
     my @bad = %now.keys.grep({ abs(%after<kernels>{$_}<baseline> - %now{$_}) > 0.05 });
     if @bad { note "record FAILED to update: @bad.join(', ')"; exit 1 }
+    if (%after<recorded> // '') ne $stamp {
+        note "record FAILED to stamp 'recorded': wrote '$stamp', reads back '{%after<recorded> // ''}'";
+        exit 1;
+    }
     say "";
     say "recorded {%now.elems} kernels into {$BASEFILE.basename}";
+    say "stamped: recorded => '$stamp'   (measured with $RAKUPP)";
     say "added: @new.join(', ') (no previous baseline)" if @new;
     exit 0;
 }
@@ -278,6 +311,7 @@ if $check {
     my %b   = EVAL slurp $BASEFILE;
     my $tol = %b<tolerance-pct>;
     my @bad;
+    my @bad-kernels;
     say "";
     say "gate: baseline {$BASEFILE.basename} (recorded %b<recorded>), tolerance {$tol}%";
     say "kernel        now   baseline    delta   vs best";
@@ -302,7 +336,7 @@ if $check {
         my $d    = 100 * (%now{$k} - $base) / $base;
         my $vb   = 100 * (%now{$k} - $best) / $best;
         printf "%-10s %7.1f  %9.1f  %+6.1f%%  %+6.1f%%\n", $k, %now{$k}, $base, $d, $vb;
-        @bad.push("$k {$d.round(0.1)}% slower than baseline") if $d > $tol;
+        if $d > $tol { @bad.push("$k {$d.round(0.1)}% slower than baseline"); @bad-kernels.push($k) }
     }
     say "";
     if @ungated {
@@ -317,18 +351,27 @@ if $check {
     if @bad {
         note "perf-guard: {@bad.elems} kernel(s) over tolerance — re-measuring before believing it";
         my @still;
+        my @still-kernels;
         for @KERNELS -> $k {
             my $base = %b<kernels>{$k}<baseline> // next;
             next unless 100 * (%now{$k} - $base) / $base > $tol;
-            my $again = measure(%kernels{$k});
+            my ($again, $again-spread) = measure(%kernels{$k});
+            %spread{$k} = %spread{$k} max $again-spread;
             my $d = 100 * ($again - $base) / $base;
             printf "  %-10s re-run %7.1f  (was %.1f)  %+.1f%%\n", $k, $again, %now{$k}, $d;
-            @still.push("$k {$d.round(0.1)}% slower than baseline") if $d > $tol;
+            if $d > $tol { @still.push("$k {$d.round(0.1)}% slower than baseline"); @still-kernels.push($k) }
         }
         @bad = @still;
+        @bad-kernels = @still-kernels;
         unless @bad {
             say "";
             say "perf-guard OK — the first reading did not reproduce (machine noise).";
+            # …and the standing debt still applies. This path used to exit here,
+            # so a run where any kernel flapped above tolerance and re-measured
+            # clean printed no `vs best` note at all — and with a 5% tolerance
+            # sitting barely above the 1.7% run-to-run and 3.5% layout floors
+            # measured in findings/GATES-3.22.md, that path is common, not rare.
+            report-debt(%now, %b, $tol);
             exit 0;
         }
     }
@@ -338,6 +381,64 @@ if $check {
         # accusing the code. (Every false alarm this gate has raised so far was a
         # background process, not a regression.)
         my $load = machine-load(); my $cores = core-count();
+
+        # The gate's OWN noise reading comes first, because it is measured rather
+        # than inferred. If a kernel's three runs span more than the tolerance
+        # it is being asked to enforce, the reading cannot support a verdict
+        # either way — the difference it is accusing the build of is smaller than
+        # the difference between two runs of the SAME build.
+        #
+        # This exists because the load check alone was not enough. Measured
+        # 2026-08-29: at load 4.33 on 8 cores (54%, under the 60% cut below) an
+        # UNMODIFIED HEAD binary failed this gate with five kernels 7.6-10.3%
+        # slower than baseline, and the re-measure CONFIRMED it rather than
+        # clearing it. Both of those defences were built against a transient — a
+        # daemon waking up — and a sustained load is not transient, so it
+        # reproduces and passes straight through them.
+        my @noisy = @bad-kernels.grep({ (%spread{$_} // 0) > $tol });
+        if @noisy {
+            note "";
+            note "perf-guard INCONCLUSIVE — the measurement is noisier than the thing it measures.";
+            for @noisy -> $k {
+                note sprintf('  %-10s runs span %.1f%%, but the gate fires at %s%% — '
+                           ~ 'this reading cannot tell a regression from the machine.',
+                             $k, %spread{$k}, $tol);
+            }
+            note "Load average {$load.round(0.1)} on {$cores} cores. Re-run on an idle machine.";
+            note "Kernels over tolerance: @bad.join('; ')";
+            exit 2;
+        }
+
+        # Second measured signal: is the slowdown LOCALIZED?
+        #
+        # A code regression is localized — it slows the kernels that touch the
+        # code it changed. Machine contention is not: it slows everything at
+        # once, and roughly equally, which keeps each kernel's own spread SMALL
+        # while inflating every absolute number. That is the case the spread
+        # check above cannot see, and it is the one actually observed: at load
+        # 4.33 on 8 cores an unmodified binary came back with fib +9.1%,
+        # asg +10.3%, strpass +8.4%, subcall +7.6% and rats +8.7% — five of nine,
+        # spanning arithmetic, calls, strings and Rats, which share no code path.
+        # A change that slowed all four of those families at once would be a
+        # rewrite, not a regression, and would not arrive as a surprise.
+        #
+        # Reporting INCONCLUSIVE here is safe in the direction that matters:
+        # RELEASING.md defines exit 2 as "run it again on an idle machine, never
+        # a pass", so a genuine broad regression is still blocked — it is simply
+        # not yet ACCUSED, and an idle re-run will confirm it.
+        my $gated = @KERNELS.grep({ %b<kernels>{$_}<baseline>.defined }).elems;
+        if $gated >= 4 && @bad-kernels >= $gated / 2 {
+            note "";
+            note "perf-guard INCONCLUSIVE — {@bad-kernels.elems} of $gated kernels are over tolerance at once.";
+            note "That is not the shape of a code regression: these kernels span arithmetic,";
+            note "calls, strings, hashing and regex, and share no code path. A machine slows";
+            note "them all together; a change slows the ones it touched.";
+            note "Load average {$load.round(0.1)} on {$cores} cores.";
+            note "Kernels over tolerance: @bad.join('; ')";
+            note "Re-run on an idle machine — if it really is this broad, it will say so again.";
+            exit 2;
+        }
+
         if $load > $cores * 0.6 {
             note "";
             note "perf-guard INCONCLUSIVE — load average {$load.round(0.1)} on {$cores} cores.";
@@ -346,17 +447,26 @@ if $check {
             note "Re-run when the machine is idle.";
             exit 2;
         }
+        # A FAILED verdict must show the machine state that produced it. The
+        # INCONCLUSIVE branch above prints the load; this one did not, so the
+        # gate's most consequential output was the one that said least about
+        # its own conditions. Measured 2026-08-29: at load 4.33 on 8 cores —
+        # 54%, just under the 60% cut above — an UNMODIFIED HEAD binary failed
+        # this gate with five kernels 7.6-10.3% slower than baseline, and the
+        # re-measure confirmed rather than cleared it, because the load was
+        # sustained rather than a spike. Both defences assume a transient.
         note "perf-guard FAILED (confirmed on re-measure): @bad.join('; ')";
+        note "Machine at the time: load {$load.round(0.1)} on {$cores} cores "
+           ~ "({(100 * $load / $cores).round}% — the inconclusive cut is 60%).";
+        note "A sustained load defeats BOTH the re-measure and the cut above: it"
+           ~ " is not a spike, so it reproduces. Confirm on an idle machine, and"
+           ~ " A/B against a binary built WITHOUT the change before believing it.";
         note "A release must not ship a performance regression. Either fix it, or —";
         note "if the cost is understood and accepted — re-record the baseline with";
         note "`rakupp tools/perf-guard.raku --record` and say why in the CHANGELOG.";
         exit 1;
     }
     say "perf-guard OK — no kernel is more than {$tol}% slower than the last release.";
-    my @debt = <fib asg loopsum hash>.grep({
-        %b<kernels>{$_}<best>.defined
-        && 100 * (%now{$_} - %b<kernels>{$_}<best>) / %b<kernels>{$_}<best> > $tol });
-    note "note: still behind the best ever measured on: @debt.join(', ') "
-       ~ "(see the `best` column — standing debt, not a new regression)" if @debt;
+    report-debt(%now, %b, $tol);
     exit 0;
 }

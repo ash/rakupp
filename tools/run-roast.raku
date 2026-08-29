@@ -17,6 +17,8 @@
 # It was not reliable: see the stderr note in run-with-timeout.
 
 my $ROOT    = (%*ENV<ROAST> // '/Users/ash/roast').IO.absolute;  # set $ROAST to your Roast checkout
+use lib $?FILE.IO.parent.add('lib').Str;
+use Gate;
 my $BIN     = $*EXECUTABLE.absolute;   # test whichever compiler is running this harness
 my $TIMEOUT = (%*ENV<ROAST_TIMEOUT> // 10).Int; # parallel-mode legs need headroom:
     # under RAKUPP_PARALLEL a thread-spawning file pays real contention (cas
@@ -150,6 +152,31 @@ for @*ARGS -> $a {
     elsif $a ~~ /^ '--list=' (.+) $/  { $LISTFILE = ~$0 }
     else { @patterns.push($a) }
 }
+# ---------------------------------------------------------------------------
+# Provenance. A run of this harness produces the release's headline figure and
+# the file list the NEXT release diffs against, and until now it recorded
+# neither of its two inputs: which rakupp was measured, and which Roast.
+#
+# The binary matters because `$*EXECUTABLE` is whatever ran this file, and
+# RELEASING.md writes the gate as `rakupp tools/run-roast.raku` — a PATH lookup.
+# On the machine of record `rakupp` resolves to three different binaries in
+# order: build-arm64/ (v3.22.0), /usr/local/bin (v1.0.0) and /opt/homebrew/bin
+# (v0.5.1). The first is correct by PATH ordering alone, and the other two would
+# produce a plausible, much lower number with nothing in the output to say so.
+#
+# Roast matters because it is an upstream checkout that moves. Gate 1 is a DIFF
+# against the previous release's list; if Roast changed between the two runs,
+# files appear and disappear and the diff charges every one of them to the
+# engine. Nothing in this repo recorded the revision, so no past release's
+# measurement can be reproduced.
+sub roast-revision(--> Str) {
+    my $p = run('git', '-C', $ROOT, 'rev-parse', '--short', 'HEAD', :out, :err);
+    my $r = $p.out.slurp(:close).trim; $p.err.slurp(:close);
+    $r || 'not-a-git-checkout'
+}
+# (binary-version lives in tools/lib/Gate.rakumod — the harness tests whatever
+# ran it, so there is no CHOICE to make here, only a version to report.)
+
 my @files;
 for find-t($ROOT) -> $f {
     if @patterns.elems == 0 {
@@ -159,6 +186,27 @@ for find-t($ROOT) -> $f {
         for @patterns -> $p { if $f.contains($p) { @files.push($f); last } }
     }
 }
+
+# What the Roast checkout looks like BEFORE the run. Some tests write beside
+# their own .t file rather than into the working directory — S16-io/lines.t does
+# `$*PROGRAM.sibling('lines.testing')` — so the per-run scratch directory above
+# cannot catch them: the path is absolute and derived from the file's location in
+# an upstream tree we do not patch. The residue is reported instead, because the
+# provenance line now names a Roast REVISION, and a revision does not describe a
+# checkout that has files in it the revision never had.
+sub roast-untracked(--> Set) {
+    my $p = run('git', '-C', $ROOT, 'status', '--porcelain', '--untracked-files=all',
+                :out, :err);
+    my $o = $p.out.slurp(:close); $p.err.slurp(:close);
+    $o.lines.grep(*.starts-with('?? ')).map(*.substr(3)).Set
+}
+my $BEFORE = roast-untracked();
+
+my $PROVENANCE = "rakupp {binary-version($BIN)} ($BIN) | roast {roast-revision()} ($ROOT)"
+                ~ ($BEFORE ?? " + {$BEFORE.elems} untracked" !! '')
+                ~ " | {@files.elems} files | workers $WORKERS";
+say "run-roast: $PROVENANCE";
+say "";
 
 # Map a file's relative path to its synopsis/section key (matches the ROAST.md table).
 sub seckey($rel) {
@@ -291,8 +339,34 @@ if $LISTFILE {
         note "  the file list is corrupted, not just cosmetically: {@bad.head(4).join(', ')}";
     }
     else {
+        # A sidecar, not a header line: the .list file is diffed with `comm`,
+        # which would report a differing comment line as a changed path.
+        my $meta = "$LISTFILE.meta";
+        $meta.IO.spurt("$PROVENANCE\nfully-passing {@fullypassing.elems}\ngenerated {DateTime.now.truncated-to('second')}\n");
         say "";
         say "Fully-passing file list ({@fullypassing.elems} paths) -> $LISTFILE";
+        say "Provenance -> $meta";
+    }
+}
+
+# Files this run left in the Roast checkout. Not fatal — Roast is upstream and
+# we do not patch it — but a run that dirties its own input should say so.
+{
+    my @new = (roast-untracked() (-) $BEFORE).keys.sort;
+    if @new {
+        note "";
+        note "run-roast: this run left {@new.elems} file(s) in the Roast checkout:";
+        note "  $_" for @new.head(8);
+        note "  …and {@new.elems - 8} more" if @new > 8;
+        note "  (tests that write beside their own .t file, e.g. S16-io/lines.t's";
+        note "   \$*PROGRAM.sibling — the per-run scratch dir cannot intercept an";
+        note "   absolute path. Remove them so the next run starts from the revision";
+        note "   the provenance line names.)";
+    }
+    elsif $BEFORE {
+        note "";
+        note "run-roast: the Roast checkout already had {$BEFORE.elems} untracked file(s) "
+           ~ "before this run — the provenance line says so.";
     }
 }
 

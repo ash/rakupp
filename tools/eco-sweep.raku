@@ -3,7 +3,12 @@
 # one verdict per line, so a batch of an author's ecosystem can be measured the
 # same way twice.
 #
-#   rakupp tools/eco-sweep.raku LIST.tsv --out=RESULT.tsv --logs=DIR [--timeout=480]
+#   rakupp tools/eco-sweep.raku --out=RESULT.tsv --logs=DIR [--timeout=480] LIST.tsv
+#
+# NOTE THE ORDER: every --option must come BEFORE LIST.tsv. Raku's MAIN parser
+# stops treating `--x=y` as an option once a positional has been seen, so the
+# order this line used to show (LIST.tsv first) prints the usage message and
+# sweeps nothing — on both rakupp and Rakudo.
 #
 # LIST.tsv is `date TAB name TAB version` (a `date` header line is skipped);
 # only the NAME column is used, and the file's order is the sweep's order.
@@ -14,6 +19,9 @@
 #
 # Resumable: a name already present in --out is skipped, so a wedged sweep
 # restarts without re-paying the modules it already measured.
+
+use lib $?FILE.IO.parent.add('lib').Str;
+use Gate;
 
 sub classify($log) {
     my $txt = $log.IO.e ?? $log.IO.slurp !! '';
@@ -56,10 +64,30 @@ sub MAIN($list, :$out!, :$logs!, Int :$timeout = 480, :$store = '',
     if $out.IO.e {
         for $out.IO.lines -> $l { %done{$l.split("\t")[1] // ''} = True }
     }
-    my $fh = open $out, :a;
+    # --reclassify REWRITES rather than appends. It used to append, so a
+    # reclassified sweep left two rows per distribution in --out and every
+    # consumer had to know to take the last one — a silent trap for anything
+    # that counted verdicts. The rows are collected and written at the end;
+    # a measuring run still appends line by line, so a wedged sweep keeps
+    # everything it has already paid for.
+    my $fh = $reclassify ?? Nil !! open($out, :a);
+    my @reclassified;
+    sub emit(Str $row) {
+        if $reclassify { @reclassified.push($row) }
+        else           { $fh.say($row); $fh.flush }
+    }
     my $n = +@names;
+    my $measured = 0;
+    my $skipped  = 0;
+    # Say WHAT is being swept with. A sweep's verdicts are a headline figure
+    # (README: "N of the ecosystem's 2,524 distributions") and carried no record
+    # of the engine that produced them.
+    my $ver = binary-version($rakupp);
+    note "eco-sweep: rakupp $ver ($rakupp) | $n names from $list | -> $out";
+    note "eco-sweep: {%done.elems} already in $out and will be skipped" if %done.elems && !$reclassify;
     for @names.kv -> $i, $name {
-        if %done{$name} && !$reclassify { note "[{$i+1}/$n] $name — already recorded, skipping"; next }
+        if %done{$name} && !$reclassify { $skipped++; note "[{$i+1}/$n] $name — already recorded, skipping"; next }
+        $measured++;
         my $logfile = $logs.IO.add($name.subst('::', '-', :g) ~ '.log');
         my $toArg = $store ?? "--to='$store'" !! '';
         my $cmd = "'$rakupp' test $toArg '$name' > '$logfile' 2>&1";
@@ -70,8 +98,7 @@ sub MAIN($list, :$out!, :$logs!, Int :$timeout = 480, :$store = '',
             if $v eq 'self-fail' && $w && $w ne $name { $v = 'dep-fail'; $nt = $w }
             elsif $v eq 'self-fail' { $nt = diagnosis($logfile) }
             else { $nt = $w || diagnosis($logfile) }
-            $fh.say(join "\t", $i + 1, $name, $v, '', $nt);
-            $fh.flush;
+            emit(join "\t", $i + 1, $name, $v, '', $nt);
             note "[{$i+1}/$n] $name — $v";
             next;
         }
@@ -92,10 +119,22 @@ sub MAIN($list, :$out!, :$logs!, Int :$timeout = 480, :$store = '',
         }
         elsif $verdict eq 'self-fail' { $note = diagnosis($logfile) }
         else { $note = $who || diagnosis($logfile) }
-        $fh.say(join "\t", $i + 1, $name, $verdict, $secs, $note);
-        $fh.flush;
+        emit(join "\t", $i + 1, $name, $verdict, $secs, $note);
         note "[{$i+1}/$n] $name — $verdict ({$secs}s)";
     }
-    $fh.close;
-    note "sweep done: $n modules -> $out";
+    if $reclassify {
+        $out.IO.spurt(@reclassified.join("\n") ~ "\n");
+        note "reclassified {@reclassified.elems} rows -> $out (rewritten, not appended)";
+    }
+    else { $fh.close }
+    # Report what was MEASURED, not the size of the input list. This said
+    # "sweep done: 2524 modules" whether it ran 2,524 or zero — the resume skip
+    # is keyed on a name already appearing in --out, so pointing a re-sweep at
+    # the previous result file does nothing and says the same sentence. v3.23.0
+    # asks for the ecosystem re-swept "from scratch rather than from the last
+    # verdict file", which is exactly the distinction this line used to hide.
+    my $verb = $reclassify ?? 'reclassified' !! 'measured';
+    note "sweep done: $measured $verb, $skipped skipped (already in \$out), $n in the list -> $out";
+    note "NOTHING WAS MEASURED — every name was already in $out. Use a fresh --out for a full re-sweep."
+        if $measured == 0 && $n > 0;
 }

@@ -10,8 +10,16 @@
 # After an *intentional* output change, refresh a golden:
 #   build/rakupp examples/NAME.raku > t/expected/NAME.out
 #
-# (Kept as one self-contained file on purpose: rakupp's module `is export` is
-# still flaky for many-sub modules, so the helpers live here inline.)
+# (Kept as one self-contained file on purpose — but NOT for the reason this note
+# used to give. It said rakupp's `is export` was "still flaky for many-sub
+# modules"; that was measured on 2026-08-29 and is not true, and while it stood
+# it was the reason six tools carried six copies of the same binary-picking code
+# instead of sharing one (findings/TOOLS-3.23.md, O2). The real reason is
+# narrower and still holds: this harness runs under the binary UNDER TEST, so
+# loading its helpers through a module would make the test suite depend on the
+# very module system it is testing — a broken `use` would look like 580 broken
+# checks. Tools that merely measure rakupp have no such constraint and now share
+# tools/lib/Gate.rakumod.)
 
 my $ROOT  = $?FILE.IO.parent.parent;                 # repo root, CWD-independent
 my $EXP   = $?FILE.IO.parent.add('expected');

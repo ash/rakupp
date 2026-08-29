@@ -23,9 +23,25 @@
 # that breaks somewhere, so failures there are the content. Pass a PATH-SUBSTRING
 # (e.g. `guide`) to sweep only the pages that are meant to work everywhere.
 
-my $RAKUPP = @*ARGS[0] // 'build/rakupp';
+# Which binary to sweep with — tools/lib/Gate.rakumod owns the choice. This
+# defaulted to a bare 'build/rakupp' and checked only that the path was
+# executable, which is the shape findings/GATES-3.22.md A5 names ("anything that
+# picks a binary by taking the first path that exists has it") — and the instance
+# that mattered most, because the figure this tool produces is a HEADLINE:
+# README's "N documentation examples byte-identical on both engines". An x86_64
+# binary runs perfectly well under Rosetta, so the default swept with a
+# two-release-old engine and said nothing about it.
+use lib $?FILE.IO.parent.add('lib').Str;
+use Gate;
+
+my $repo = $?FILE.IO.parent.parent;
+my %PICK = pick-rakupp($repo, :candidates(@*ARGS[0] ?? [@*ARGS[0]] !! <build/rakupp build-arm64/rakupp rakupp>));
+require-native(%PICK, :tool<doc-examples-diff>,
+    :consequence('It runs under translation, so a timeout here means the emulator rather '
+               ~ 'than the engine — and the count would name a build nobody asked for.'));
+my $RAKUPP = %PICK<path>;
 my $FILTER = @*ARGS[1] // '';
-unless $RAKUPP.IO.x { note "no runnable binary at $RAKUPP"; exit 2 }
+note provenance-line('doc-examples-diff', %PICK) ~ ' vs raku';
 
 my $tmp = $*TMPDIR.add("doc-diff-{$*PID}.raku");
 my %tally;

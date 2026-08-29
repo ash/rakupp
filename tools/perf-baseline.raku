@@ -93,8 +93,13 @@
     # open rather than resetting it, and v3.22.0's review owns finding the
     # cause. Do not read these five numbers as a target that was met.
     #
-    # NOTE: `--record` does not stamp the 'recorded' field below, and `--check`
-    # prints it — so it must be edited by hand after every record, or the gate
-    # reports the wrong provenance for its own numbers.
+    # `--record` stamps the 'recorded' field below and verifies it read back,
+    # and `--check` prints it. It did NOT until v3.23.0: the field was
+    # hand-maintained, which is the mechanism behind RELEASING.md's documented
+    # blind spot — the baseline went four releases without a re-record
+    # (`2026-07-29 (v1.5.1)` while v3.0.0 shipped) and the gate passed the whole
+    # time, because nothing in its output moved. Pass `--for=vX.Y.Z` to name the
+    # release; without it the stamp names the version of the binary measured,
+    # which during a release sitting is still the previous one.
     'recorded' => '2026-08-29 (v3.21.0)',
 }

@@ -30,7 +30,8 @@
 my $tools = $*PROGRAM.absolute.IO.parent;   # tools/
 my $repo  = $tools.parent;                  # repo root
 my $bench = $tools.add('bench');            # benchmark programs live here
-my $RAKUPP = %*ENV<RAKUPP> // $repo.add('build/rakupp').Str;
+use lib $?FILE.IO.parent.add('lib').Str;
+use Gate;
 my $RAKUDO = %*ENV<RAKUDO> // 'raku';
 my $PERL   = %*ENV<PERL>   // 'perl';   # only used by benches that ship a .pl twin
 
@@ -42,30 +43,19 @@ for @*ARGS -> $a {
     else { note "run-bench: unknown argument $a"; exit 2 }
 }
 
-# A binary built for ANOTHER ARCHITECTURE runs under translation, which costs
-# a uniform 1.7-2x — perf-guard refuses that binary; this harness silently
-# benchmarked it (a stale x86_64 build/ beside a build-arm64/ inflated every
-# interp row ~1.9x and startup 8x, and the numbers nearly shipped in
-# BENCHMARKS.md at v3.14.0). Same guard, same wording, same remedy.
-unless $*DISTRO.is-win {
-    my $s = run('sysctl', '-n', 'hw.optional.arm64', :out, :err);
-    my $host = $s.out.slurp(:close).trim eq '1' ?? 'arm64' !! do {
-        $s.err.slurp(:close);
-        my $u = run('uname', '-m', :out, :err);
-        my $m = $u.out.slurp(:close).trim; $u.err.slurp(:close);
-        $m
-    };
-    my $f = run('file', '-b', $RAKUPP, :out, :err);
-    my $desc = $f.out.slurp(:close); $f.err.slurp(:close);
-    my $bin = $desc.contains('arm64') ?? 'arm64'
-           !! $desc.contains('x86_64') ?? 'x86_64' !! '';
-    if $bin && $host && $bin ne $host {
-        note "run-bench REFUSED — $RAKUPP is $bin on a $host host.";
-        note "It would be measured under translation, which costs 1.7-2x uniformly.";
-        note "Build for this machine, or point RAKUPP at the $host binary.";
-        exit 2;
-    }
-}
+# A binary built for ANOTHER ARCHITECTURE runs under translation, which costs a
+# uniform 1.7-2x. This harness once silently benchmarked one: a stale x86_64
+# build/ beside a build-arm64/ inflated every interp row ~1.9x and startup 8x,
+# and the numbers nearly shipped in BENCHMARKS.md at v3.14.0. tools/lib/Gate.rakumod
+# owns the check now — and the DEFAULT is searched rather than hardcoded, because
+# `build/rakupp` was both the documented default and, for two releases, the wrong
+# binary: this tool's own documented command exited 2 rather than measuring.
+my %PICK = pick-rakupp($repo);
+require-native(%PICK, :tool<run-bench>,
+    :consequence('It would be measured under translation, which costs 1.7-2x uniformly.'));
+my $RAKUPP = %PICK<path>;
+note provenance-line('run-bench', %PICK);
+
 my $RUNS   = 7;   # 1 warm-up round (discarded) + 6 measured
 
 my @benches =

@@ -126,7 +126,13 @@ gate
       LEAVE $undo();
       my ($rc, $out, $err) = sh($RAKUPP, $ROOT.add('tools/perf-guard.raku').Str, '--check');
       # 1 = regression (what we want); 2 = inconclusive (machine too busy to say)
-      return (False, "INCONCLUSIVE (exit 2) — machine too loaded to judge; re-run idle")
+      # Nil, not False: the gate did not stay GREEN in front of the defect, it
+      # declined to judge — which is the gate working. Scoring that as MISSED
+      # would report a false accusation against a correct gate, the exact
+      # failure mode Part C of GATES-3.22 warns about ("when a gate reports
+      # MISSED, suspect the plant first"). perf-guard grew two more ways to
+      # reach this state in v3.23.0, so it is no longer rare.
+      return (Nil, "INCONCLUSIVE (exit 2) — machine too loaded to judge; re-run idle")
           if $rc == 2;
       ( $rc == 1, "exit $rc; baseline fib $was -> $now" )
   };
@@ -288,6 +294,53 @@ gate
       ( $rc != 0, "GCC build exit $rc" )
   };
 
+# --- the figure checker (RELEASING.md step 3) -------------------------------
+# Not one of the numbered gates, but it is a release check with a red path, and
+# v3.22.0 verified it by hand exactly once. The plant is the defect it was
+# WRITTEN for: docs/status/ROAST.md's standing cell left at the previous
+# release's number while the tag moved on — 638 against a tag reading 643, which
+# is also the row raku-spec's gen-dashboard.raku parses, so the stale figure went
+# to the website.
+gate
+  id     => 'figures',
+  name   => 'check-figures (docs agree)',
+  defect => 'the standing ROAST.md cell left at the previous release\'s number',
+  cost   => '~5 s',
+  run    => sub {
+      my $f = $ROOT.add('docs/status/ROAST.md');
+      # take whatever the cell says now and doctor it, so the plant does not
+      # rot the way three of v3.22.0's did when the numbers moved
+      my $cur = $f.lines.first(*.trim.lc.starts-with('| **fully passing**'));
+      return (False, 'no standing "Fully passing" row in ROAST.md to plant into')
+          unless $cur.defined;
+      my $stale = $cur.subst(/(\d+)/, { ~(+$0 - 4) });
+      my $undo = plant-edit($f, $cur, $stale);
+      LEAVE $undo();
+      my ($rc, $out, $err) = sh($RAKUPP, $ROOT.add('tools/check-figures.raku').Str);
+      my $named = ($out ~ $err).contains('DISAGREEMENT');
+      ( $rc != 0, "exit $rc" ~ ($named ?? ', and it says DISAGREEMENT' !! ', but it does NOT name the disagreement') )
+  };
+
+# --- gate 7: conformance — NOT PLANTABLE, and that is the finding -----------
+# There is no plant here because there is nothing to catch. RELEASING.md lists
+# conformance under "The gates … Every one must pass", but none of its four
+# tools has a red path: `matrix.raku`, `conformance.raku` and `divergences.raku`
+# contain no `exit` at all, and `typerun.raku` exits non-zero only on a timeout
+# (124) or a missing command (127) — infrastructure, not conformance. Measured
+# 2026-08-29: conformance.raku and divergences.raku both exit 0.
+#
+# So gate 7 is a REPORT that a human has to read, not a gate that can fail, and
+# a plant would only have discovered that. It is named here rather than omitted
+# silently, because a harness that lists eight gates and says nothing about the
+# ninth implies a coverage it does not have — which is the same failure this
+# whole file exists to stop.
+my $UNPROVABLE = q:to/NOTE/;
+  7        conformance                      NO RED PATH — cannot be planted.
+           matrix/conformance/divergences.raku contain no `exit`; typerun.raku
+           exits only 124 (timeout) / 127 (no command). It is a report to read,
+           not a gate that can fail. See findings/TOOLS-3.23.md O1.
+  NOTE
+
 # ---------------------------------------------------------------------------
 # drive
 # ---------------------------------------------------------------------------
@@ -299,6 +352,9 @@ if $list {
         say sprintf('%-8s %-16s %s%s', %g<id>, %g<cost>, %g<defect>,
                     %g<slow> ?? '   [--all only]' !! '');
     }
+    say '';
+    say 'Release checks with NO plant, and why:';
+    print $UNPROVABLE;
     exit 0;
 }
 
@@ -323,18 +379,33 @@ for @run -> %g {
         CATCH { default { $caught = False; $detail = "the plant itself failed: {.message}" } }
     }
     my $secs = ((now - $t0) / 1).round;
-    say ($caught ?? 'CAUGHT  ' !! 'MISSED  ') ~ "({$secs}s)  $detail";
+    # three outcomes, not two: caught, missed, and "the experiment could not be
+    # performed" — a gate that exits 2 has judged nothing either way.
+    say (!$caught.defined ?? 'UNPROVED' !! $caught ?? 'CAUGHT  ' !! 'MISSED  ')
+      ~ "  ({$secs}s)  $detail";
     @results.push([%g<id>, $caught, $detail]);
 }
 
 say "";
-my @missed = @results.grep({ !.[1] });
+my @missed   = @results.grep({ .[1].defined && !.[1] });
+my @unproved = @results.grep({ !.[1].defined });
+my @caught   = @results.grep({ .[1].defined && .[1] });
+
 if @missed {
     say "{@missed.elems} of {@results.elems} gates did NOT catch their planted defect:";
     say "  gate {.[0]}: {.[2]}" for @missed;
     say "";
     say "A gate that stays green with a defect in front of it is not measuring anything.";
     exit 1;
+}
+if @unproved {
+    say "{@caught.elems} of {@results.elems} gates caught their planted defect.";
+    say "{@unproved.elems} could not be judged this run — the gate declined, which is the";
+    say "gate working, but it leaves the plant unproved:";
+    say "  gate {.[0]}: {.[2]}" for @unproved;
+    say "";
+    say "Nothing is broken. Re-run these on an idle machine before quoting a score.";
+    exit 2;
 }
 say "every gate caught its planted defect ({@results.elems} of {@results.elems}).";
 exit 0;

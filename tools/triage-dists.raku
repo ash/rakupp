@@ -1,7 +1,13 @@
 #!/usr/bin/env rakupp
 # Triage the self-test-fail dists: run each one's suite and record the FIRST
 # thing that went wrong, so shared root causes show up as repeated signatures.
-sub MAIN(Str $list, Str :$rakupp = '/Users/ash/raku++/build/rakupp', Int :$timeout = 240) {
+# The default is the rakupp RUNNING this tool, not a hardcoded path. It was
+# '/Users/ash/raku++/build/rakupp', which on the machine of record is a
+# v3.20.1 x86_64 build sitting beside a native build-arm64/ — so the default
+# analysed a two-release-old engine, on one developer's machine only.
+# Pass --rakupp=PATH BEFORE the positional argument to override it: Raku's
+# MAIN parser stops recognising options once a positional has been seen.
+sub MAIN(Str $list, Str :$rakupp = $*EXECUTABLE.absolute, Int :$timeout = 240) {
     for $list.IO.lines.grep(*.trim.chars) -> $name {
         my $proc = Proc::Async.new($rakupp, 'test', $name);
         my $out = '';

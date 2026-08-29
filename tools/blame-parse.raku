@@ -7,7 +7,13 @@
 # one top-level construct at a time — the one whose removal lets the file parse
 # is the culprit. O(constructs) parses, and it points at the real line rather
 # than wherever the mis-scan finally gave up.
-sub MAIN(Str $file, Str :$rakupp = '/Users/ash/raku++/build/rakupp') {
+# The default is the rakupp RUNNING this tool, not a hardcoded path. It was
+# '/Users/ash/raku++/build/rakupp', which on the machine of record is a
+# v3.20.1 x86_64 build sitting beside a native build-arm64/ — so the default
+# analysed a two-release-old engine, on one developer's machine only.
+# Pass --rakupp=PATH BEFORE the positional argument to override it: Raku's
+# MAIN parser stops recognising options once a positional has been seen.
+sub MAIN(Str $file, Str :$rakupp = $*EXECUTABLE.absolute) {
     my @lines = $file.IO.lines;
     my $tmp = $*TMPDIR.add("blame-{$*PID}.raku");
 

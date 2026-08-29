@@ -122,10 +122,74 @@ for @values -> $v {
 
 my $bad = False;
 
+# ---------------------------------------------------------------------------
+# The file-bucket arithmetic: fully + partial + no-TAP + timeout == denominator.
+#
+# This is an INTERNAL-consistency check, so unlike everything above it applies to
+# historical snapshots too — a v3.21.0 paragraph is allowed to carry v3.21.0's
+# numbers, but they still have to add up to the same 1,464 files. That makes it
+# free of the noise that would come from checking old figures for currency.
+#
+# It exists because two stale figures survived the v3.22.0 refresh and neither
+# the RELEASING.md grep nor the checks above could see them: docs/guide/FEATURES.md
+# carried v3.21.0's `685 partial` beside v3.22.0's `642` fully passing (summing to
+# 1,463), and docs/status/ROAST.md's v3.21.0 snapshot opened with `642` in a
+# paragraph whose own next sentence said the count repeats at 643 — which is what
+# that release shipped. Both add up wrong, and nothing was looking.
+sub bucket-check(IO::Path $doc, Str $rel --> Int) {
+    my $flat = $doc.slurp.subst(/\s+/, ' ', :g);
+    my $seen = 0;
+    for $flat.match(
+            / $<p>=(\d+) ' partial, ' $<n>=(\d+) ' no-TAP, ' $<t>=(\d+) ' timeout' /,
+            :g) -> $m
+    {
+        $seen++;
+        # the nearest preceding "N / D" pair — the fully-passing count and the
+        # denominator the paragraph is quoting
+        my $before = $flat.substr(0, $m.from).substr(*- (200 min $m.from));
+        my @pairs = $before.match(/ $<f>=(\d+) \s* '/' \s* $<d>=(\d+ [',' \d+]*) /, :g);
+        unless @pairs {
+            say "  $rel: '{~$m<p>} partial' with no fully-passing count near it — not checked";
+            next;
+        }
+        my $pair  = @pairs[*-1];
+        my $fully = (~$pair<f>).Int;
+        my $denom = (~$pair<d>).subst(',', '', :g).Int;
+        my $sum   = $fully + (~$m<p>).Int + (~$m<n>).Int + (~$m<t>).Int;
+        next if $sum == $denom;
+        say "";
+        say "ARITHMETIC: $rel — $fully fully + {~$m<p>} partial + {~$m<n>} no-TAP + {~$m<t>} timeout";
+        say "  = $sum, but the denominator beside them is $denom (off by {$sum - $denom}).";
+        say "  One of those four is from a different run.";
+        $bad = True;
+    }
+    $seen
+}
+my ($triples, $files) = 0, 0;
+for @docs -> $doc {
+    my $n = bucket-check($doc, $doc.relative($ROOT));
+    if $n { $triples += $n; $files++ }
+}
+say "";
+say "check-figures: file-bucket arithmetic verified on $triples snapshot{$triples == 1 ?? '' !! 's'} in $files file{$files == 1 ?? '' !! 's'}";
+
 # the version the docs call current, and the documentation-example count — the
 # two neighbours of the cell above, both of which went stale while it did not
 sub agree(@seen, $want, Str $what, Str $flag) {
-    return False unless @seen;
+    # Finding NOTHING is a failure, not a pass. This used to `return False`
+    # here, so `--version=3.23.0 --examples=950` exited 0 against a tree that
+    # stated neither: the checker reported only on what its rules happened to
+    # reach, which is the same false comfort as the grep it replaced — the
+    # blind spot this file's own header describes, one layer up. A rule that
+    # matches nothing means the doc changed shape or the figure is gone, and
+    # both are worth knowing before a release.
+    unless @seen {
+        say "";
+        say "NOT FOUND: no $what anywhere in the checked docs.";
+        say "Either the figure is gone, or its shape changed and this rule no";
+        say "longer reaches it. $flag cannot be verified against nothing.";
+        return True;
+    }
     my @distinct = @seen.map(*.[2]).unique.sort;
     say "";
     say sprintf('  %-8s %s', ~$_[2], "{$_[0]}:{$_[1]}  ({$_[3]})") for @seen;

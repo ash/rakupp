@@ -2,7 +2,13 @@
 # ast-opportunity.raku — how much material would an AST-level `-O` actually have
 # to work with?
 #
-#   rakupp tools/ast-opportunity.raku FILE... [--rakupp=PATH]
+#   rakupp tools/ast-opportunity.raku [--rakupp=PATH] FILE...
+#
+# NOTE THE ORDER: --rakupp must come BEFORE the files. With a slurpy `*@files`
+# there is no error if it does not — Raku's MAIN parser stops recognising
+# options after the first positional, so `FILE --rakupp=PATH` (the order this
+# line used to show) silently keeps the DEFAULT binary and hands
+# `--rakupp=PATH` to the analysis as though it were a filename.
 #
 # Reads `rakupp --ast` for each file and counts the patterns a tree optimizer
 # would rewrite. This is a STATIC count: it says how much foldable material

@@ -17,6 +17,8 @@
 # Override binaries via env: RAKUPP=/path/to/rakupp RAKUDO=raku
 
 my $tools  = $*PROGRAM.absolute.IO.parent;
+use lib $?FILE.IO.parent.add('lib').Str;
+use Gate;
 my $repo   = $tools.parent;
 my $bench  = $tools.add('optbench');
 # Which rakupp compiles the kernels. An EXPLICIT RAKUPP is honoured as given;
@@ -27,53 +29,17 @@ my $bench  = $tools.add('optbench');
 # x86_64 binaries — which SIGSEGV under translation here. Every kernel then
 # reports `--exe did not run`, which reads as a code-generator bug and is not
 # one. (perf-guard had the same defect; so did rakujs/build.sh before it.)
-sub host-arch(--> Str) {
-    return '' if $*DISTRO.is-win;
-    # hw.optional.arm64 is 1 on Apple Silicon even when the ASKING process is
-    # translated — `uname -m` reports the caller's own architecture instead.
-    my $s = run('sysctl', '-n', 'hw.optional.arm64', :out, :err);
-    my $v = $s.out.slurp(:close).trim; $s.err.slurp(:close);
-    return 'arm64' if $v eq '1';
-    my $u = run('uname', '-m', :out, :err);
-    my $m = $u.out.slurp(:close).trim; $u.err.slurp(:close);
-    $m
-}
-sub binary-arch(Str $path --> Str) {
-    my $f = run('file', '-b', $path, :out, :err);
-    my $d = $f.out.slurp(:close); $f.err.slurp(:close);
-    $d.contains('arm64') ?? 'arm64' !! $d.contains('x86_64') ?? 'x86_64' !! ''
-}
-my $HOST = host-arch();
-my @candidates = <build/rakupp build-arm64/rakupp rakupp>.map({ $repo.add($_).Str });
-my $RAKUPP = %*ENV<RAKUPP>;
-my $picked-by-arch = False;
-without $RAKUPP {
-    my @runnable = @candidates.grep(*.IO.x);
-    my $native = $HOST ?? @runnable.first({ binary-arch($_) eq $HOST }) !! Nil;
-    $picked-by-arch = ?$native && @runnable && $native ne @runnable[0];
-    $RAKUPP = $native // @runnable[0] // @candidates[0];
-}
-# A missing binary must stop the run: without this, every program "fails to
-# compile" identically and the comparison looks like a real, reproducible bug
-# (a stale build/ directory once sent a release bisect down exactly that path).
-unless $RAKUPP.IO.x {
-    note "run-optbench: no runnable binary at $RAKUPP";
-    note "Searched: {@candidates.join(', ')}";
-    note "Set RAKUPP=/path/to/rakupp, or build one of those.";
-    exit 2;
-}
-# …and one built for another architecture is worse than missing: it compiles,
-# and the binaries it emits crash, which looks like a correctness failure.
-{
-    my $bin = binary-arch($RAKUPP);
-    if $bin && $HOST && $bin ne $HOST {
-        note "run-optbench INCONCLUSIVE — $RAKUPP is $bin on a $HOST host.";
-        note "The binaries it compiles would not run here. Point RAKUPP at the $HOST build.";
-        exit 2;
-    }
-}
-note "run-optbench: $RAKUPP"
-   ~ ($picked-by-arch ?? "  (chosen over an earlier candidate: it is the $HOST build)" !! "");
+# All of it lives in tools/lib/Gate.rakumod now. For THIS gate a wrong-arch
+# compiler is worse than a missing one: it compiles successfully and emits
+# binaries that crash, so the failure arrives dressed as a correctness bug.
+my %PICK = pick-rakupp($repo);
+require-native(%PICK, :tool<run-optbench>, :verdict<INCONCLUSIVE>,
+    :consequence('It would COMPILE successfully and emit binaries that crash here, so '
+               ~ 'every kernel would report `--exe did not run` — which reads as a '
+               ~ 'code-generator bug and is not one.'));
+my $HOST   = %PICK<host>;
+my $RAKUPP = %PICK<path>;
+note provenance-line('run-optbench', %PICK);
 my $RAKUDO = %*ENV<RAKUDO> // 'raku';
 my $RUNS   = 6;   # 1 warm-up (discarded) + 5 measured
 
@@ -90,6 +56,26 @@ my @benches =
     %( :name<nummath>,     :note('Mandelbrot escape count — Num math, no lane yet') ),
     %( :name<arrayidx>,    :note('2M @a[$i] read-modify-write — no element lane yet') ),
     %( :name<methodcalls>, :note('1M monomorphic method calls — not devirtualized yet') );
+
+# @benches is hand-written (each kernel carries a note saying which pass it
+# showcases), so it can drift from what is actually on disk — a file dropped
+# into tools/optbench/ is never run and nothing says so. That is not
+# hypothetical: findings/GATES-3.22.md Part C records a prove-gates plant that
+# added a new kernel file, watched gate 4 stay green, and first reported MISSED
+# against a gate that was working correctly. Cross-check the two.
+{
+    my @on-disk = $bench.dir.grep(*.extension eq 'raku').map(*.basename.subst(/'.raku'$/, '')).sort;
+    my @listed  = @benches.map({ ~.<name> }).sort;
+    my @unrun   = @on-disk.grep({ $_ !(elem) @listed });
+    my @missing = @listed.grep({ $_ !(elem) @on-disk });
+    if @unrun || @missing {
+        note "run-optbench: tools/optbench/ and \@benches disagree.";
+        note "  on disk but never run: @unrun.join(', ')"      if @unrun;
+        note "  listed but no file:    @missing.join(', ')"    if @missing;
+        note "A kernel this gate does not run is a kernel it cannot gate.";
+        exit 2;
+    }
+}
 
 # Best (minimum) wall-clock over the measured runs, in milliseconds.
 sub measure(@cmd --> Numeric) {
@@ -126,8 +112,11 @@ my @rows;
 my $mismatch = False;
 for @benches -> %b {
     my $path = $bench.add("%b<name>.raku").Str;
-    my $base = "/tmp/rakupp-opt-%b<name>-base";
-    my $opt  = "/tmp/rakupp-opt-%b<name>-O";
+    # PID-scoped: these were fixed paths, so two runs of this gate at once
+    # compiled over each other's binaries and each measured the other's build.
+    my $base = $*TMPDIR.add("rakupp-opt-{$*PID}-%b<name>-base").Str;
+    my $opt  = $*TMPDIR.add("rakupp-opt-{$*PID}-%b<name>-O").Str;
+    LEAVE { .IO.unlink for $base, $opt }
 
     unless compile($path, $base) && compile($path, $opt, '-O') {
         printf "%-12s %9s   (compile failed)\n", %b<name>, 'n/a';
