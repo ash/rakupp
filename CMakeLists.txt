@@ -1,4 +1,46 @@
 cmake_minimum_required(VERSION 3.16)
+
+# On macOS, default the build architecture to the HOST's — not to whatever
+# architecture `cmake` itself happens to be built for.
+#
+# CMake infers the target from the architecture of its OWN process, so an
+# x86_64 cmake running under Rosetta on an Apple Silicon machine configures an
+# x86_64 build from the documented command in README.md. That is not
+# hypothetical: on the machine of record the only cmake is
+# /usr/local/bin/cmake, an Intel-Homebrew x86_64 binary that precedes
+# /opt/homebrew on PATH, so `cmake -S . -B build && cmake --build build`
+# produced a TRANSLATED binary at the most-documented path in the project.
+#
+# It cost three separate gate defects before anyone looked at why: perf-guard
+# and run-optbench both measured that binary instead of the native one, and
+# doc-examples-diff swept the documentation with it. Translation costs a uniform
+# 1.7-2x, so every one of those numbers was wrong in the same direction.
+#
+# hw.optional.arm64 answers for the HOST even when the asking process is
+# translated; `uname -m` reports the caller's own architecture and would repeat
+# the bug. An explicit -DCMAKE_OSX_ARCHITECTURES (build-x64, build-universal,
+# and CI's release matrix) is left exactly as given.
+if(APPLE AND NOT CMAKE_OSX_ARCHITECTURES)
+  execute_process(COMMAND /usr/sbin/sysctl -n hw.optional.arm64
+                  OUTPUT_VARIABLE _rakupp_host_arm64
+                  OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+  # Only ACT on a positive answer. If sysctl is missing or silent we do not know
+  # the host, and guessing "x86_64" there would force a translated build on the
+  # very machines this block exists to protect — a worse failure than the one it
+  # fixes, and a silent one. Say nothing and let CMake behave exactly as before.
+  if(_rakupp_host_arm64 STREQUAL "1")
+    set(CMAKE_OSX_ARCHITECTURES "arm64" CACHE STRING "Build for the host architecture" FORCE)
+    message(STATUS "rakupp: building for the host architecture arm64")
+  elseif(_rakupp_host_arm64 STREQUAL "0")
+    set(CMAKE_OSX_ARCHITECTURES "x86_64" CACHE STRING "Build for the host architecture" FORCE)
+    message(STATUS "rakupp: building for the host architecture x86_64")
+  else()
+    message(STATUS "rakupp: could not determine the host architecture; leaving "
+                   "CMAKE_OSX_ARCHITECTURES to CMake. If this build comes out "
+                   "translated, pass -DCMAKE_OSX_ARCHITECTURES explicitly.")
+  endif()
+endif()
+
 project(RakuPP VERSION 3.22.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
