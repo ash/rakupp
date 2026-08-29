@@ -244,11 +244,23 @@ fromWL[a_Association] := Module[{h = $ff["rk_hash"][$ctx]},
   h];
 fromWL[x_] := rakuFail["cannot pass a " <> ToString[Head[x]] <> " to Raku"];
 
+(* An Int, exactly. rk_int_get is an int64 and BigInt::toLL saturates there,
+   so INT64_MAX and INT64_MIN may each be a wider Int in disguise; the digits
+   settle it, and read back as the same number when they are not. Wolfram
+   integers have no width, so nothing is lost here. *)
+wideInt[v_] := Module[{n = $ff["rk_int_get"][$ctx, v], s},
+  If[n =!= 9223372036854775807 && n =!= -9223372036854775808, Return[n]];
+  s = readStr[v];
+  Which[
+    !StringMatchQ[s, RegularExpression["-?[0-9]+"]], n,   (* a non-decimal allomorph *)
+    StringStartsQ[s, "-"], -FromDigits[StringDrop[s, 1]],
+    True, FromDigits[s]]];
+
 (* RkType: 0 Any, 1 Bool, 2 Int, 3 Num, 4 Rat, 5 Str, 6 Array, 7 Hash, 8 Other *)
 toWL[v_] := Switch[$ff["rk_type"][$ctx, v],
   0, Null,
   1, $ff["rk_truthy"][$ctx, v] =!= 0,
-  2, $ff["rk_int_get"][$ctx, v],
+  2, wideInt[v],
   3 | 4, $ff["rk_num_get"][$ctx, v],
   6, Table[toWL[$ff["rk_at_pos"][$ctx, v, i]],
        {i, 0, $ff["rk_elems"][$ctx, v] - 1}],

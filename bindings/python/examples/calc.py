@@ -35,7 +35,7 @@ print("stats: count={} sum={} mean={} max={}".format(   # a Raku hash -> a Pytho
 
 print("greet:", raku.call("greet", {"name": "Ada", "age": 36}))
 
-# Raku integers do not overflow; past 64 bits this one hands back digits.
+# Raku integers do not overflow; past 64 bits one crosses as a Python int.
 print("30! =", raku.call("factorial", 30))
 
 # A die inside Raku crosses as RakuError, the host's own exception type.

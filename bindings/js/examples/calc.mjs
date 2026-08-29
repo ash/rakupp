@@ -29,8 +29,9 @@ console.log(`stats: count=${s.count} sum=${s.sum} mean=${s.mean} max=${s.max}`);
                                                      // a Raku hash -> a JS object
 console.log("greet:", raku.call("greet", { name: "Ada", age: 36 }));
 
-// Raku integers do not overflow; past 64 bits this one hands back digits.
-console.log("30! =", raku.call("factorial", 30));
+// Raku integers do not overflow; past 64 bits one crosses as a BigInt, which
+// console.log would print with its `n` suffix — String() is the plain digits.
+console.log("30! =", String(raku.call("factorial", 30)));
 
 // A die inside Raku crosses as RakuError, the host's own exception type.
 try {

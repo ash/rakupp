@@ -84,6 +84,50 @@ There is nothing to install: `Get["/path/to/bindings/wolfram/RakuLang.wl"]`
 loads the package into a kernel or a notebook. The examples below locate it
 relative to themselves, so they run against a fresh checkout.
 
+The paclet is the other route, and needs no checkout:
+
+```bash
+wolframscript -code 'PacletInstall["AntonAntonov/RakuppLink"]'
+```
+
+``Needs["AntonAntonov`RakuppLink`"]`` then replaces the `Get`, and every
+exported name gains the prefix it is published under: `RakuEval` is
+`RakuppEval`, `RakuLoad` is `RakuppLoad`, and so on through all nineteen.
+Give `Needs` a line of its own — a `.wls` file, or a cell. A single
+`wolframscript -code 'Needs[…]; RakuppEval["1+1"]'` does not work: the whole
+line is parsed before any of it evaluates, so `RakuppEval` is already a
+``Global` `` symbol when the context arrives, and back comes a
+`RakuppEval::shdw` warning and the expression unevaluated. That `Global`
+symbol then outlives the mistake — a later `Needs` does not dislodge it, and
+every use keeps printing itself back at you until ``Remove["Global`Rakupp*"]``
+or a fresh kernel clears it. A genuine one-liner wants `PacletSymbol`, a
+function rather than an import:
+
+```bash
+wolframscript -code 'PacletSymbol["AntonAntonov/RakuppLink", "RakuppEval"]["[*] 1..20"]'
+```
+
+Either route needs the library found the same way, and everything past that
+is the same too — the paclet is this file, renamed. A session under it,
+declaring a postfix operator once and then using it from both sides of the
+boundary:
+
+```wl
+Needs["AntonAntonov`RakuppLink`"]
+
+RakuppEval["
+multi sub postfix:<!>(0)                  { 1 }
+multi sub postfix:<!>(Int $n where * > 0) { $n * ($n - 1)! }
+"];
+
+RakuppEval["5!"]                       (* 120 *)
+RakuppEval["(0..10).map({ $_! })"]     (* {1, 1, 2, 6, 24, 120, 720, ...} *)
+RakuppCall["postfix:<!>", 12]          (* 479001600 — an operator is a routine,
+                                          so it answers to its name *)
+RakuppCan["postfix:<!>"]               (* True *)
+RakuppEval["25!"]                      (* 15511210043330985984000000 — exact *)
+```
+
 Finding the library usually needs no configuration: if `rakupp` is on PATH,
 the loader takes `librakupp` from beside it — an installed layout's sibling
 `lib/`, a Homebrew keg's, or the build directory the binary sits in.
@@ -198,9 +242,14 @@ Raku `Int` → `Integer`, `Num`/`Rat` → `Real`, `Str` → `String`, `List` →
 a `Rational` argument crosses *exactly*, as a Raku `Rat` (`1/3` stays a
 third, not `0.333…`), though a `Rat` result still arrives as a `Real`.
 
-An integer wider than 64 bits arrives as a string of digits. In a
-`RakuTree`, a match node with no sub-captures becomes its matched *text* —
-`qty` is the string `"2"` — so use `RakuInt` on the node, or an actions
+An integer wider than 64 bits arrives as an exact `Integer`: `Int` crosses
+through `rk_int_get`, which is an `int64`, so the package reads the digits
+instead whenever that saturates — `RakuEval["2**70"]` is
+`1180591620717411303424`. The argument direction has no width limit either:
+an `Integer` of any size goes out exactly, through `rk_int_s`.
+
+In a `RakuTree`, a match node with no sub-captures becomes its matched *text*
+— `qty` is the string `"2"` — so use `RakuInt` on the node, or an actions
 class, for numbers.
 
 ## 7. Errors

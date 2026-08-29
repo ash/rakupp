@@ -28,9 +28,11 @@ sub greet(%who) { "Hello, %who<name>! You are %who<age>." }
 # A Raku list comes back as the host's own list type.
 sub primes-below($n) { (2 ..^ $n).grep(*.is-prime).List }
 
-# Raku integers do not overflow. Past 64 bits the host cannot hold the
-# number, so this returns the digits as a string — the honest conversion.
-sub factorial($n) { ([*] 1..$n).Str }
+# Raku integers do not overflow, and neither does the crossing: past 64 bits
+# the number arrives as the host's own big integer where the host has one, and
+# as its digits where it has none. This one returns the Int itself, so every
+# binding's wide-integer path is on the gate.
+sub factorial($n) { [*] 1..$n }
 
 # Errors cross the boundary too: this die becomes the host's own exception
 # type — RakuError, ParseError's sibling.

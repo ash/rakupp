@@ -58,7 +58,7 @@ func main() {
 	die(err)
 	fmt.Println("greet:", greet)
 
-	// Raku integers do not overflow; past 64 bits this one hands back digits.
+	// Raku integers do not overflow; past 64 bits one crosses as a *big.Int.
 	fact, err := rakulang.Call("factorial", 30)
 	die(err)
 	fmt.Println("30! =", fact)

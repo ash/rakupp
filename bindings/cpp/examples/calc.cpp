@@ -54,7 +54,7 @@ int main() {
     rakupp::Tree who = std::map<std::string, rakupp::Tree>{{"name", "Ada"}, {"age", 36}};
     std::cout << "greet: " << rakupp::call("greet", {who}).str() << "\n";
 
-    // Raku integers do not overflow; past 64 bits this one hands back digits.
+    // Raku integers do not overflow; past 64 bits one crosses as its digits.
     std::cout << "30! = " << rakupp::call("factorial", {30}).str() << "\n";
 
     // A die inside Raku crosses as RakuError, the host's own exception type.

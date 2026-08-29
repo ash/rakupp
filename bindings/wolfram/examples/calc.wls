@@ -30,7 +30,7 @@ Print["stats: count=", s["count"], " sum=", s["sum"],   (* a Raku hash -> an Ass
 
 Print["greet: ", RakuCall["greet", <|"name" -> "Ada", "age" -> 36|>]];
 
-(* Raku integers do not overflow; past 64 bits this one hands back digits. *)
+(* Raku integers do not overflow; past 64 bits one crosses as an Integer. *)
 Print["30! = ", RakuCall["factorial", 30]];
 
 (* A die inside Raku crosses as Failure["RakuError", ...], the host's own kind. *)

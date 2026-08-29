@@ -164,8 +164,13 @@ Three things are worth knowing before they surprise you:
   for its `mean`, because a Rat printed by six languages is six different
   strings. (The Wolfram binding *sends* a `Rational` exactly, as a Rat — the
   one host with the type — but a Rat still arrives back as a `Real`.)
-- **An integer wider than 64 bits arrives as a string of digits.** That is
-  the honest conversion; `30!` in the `calc` example is the demonstration.
+- **An integer wider than 64 bits still arrives exactly.** The C ABI hands
+  integers over as an `int64` and saturates past that, so each binding reads
+  the digits when it sees the saturating value: the number comes back as the
+  host's own big integer where the host has one (a Python `int`, a Wolfram
+  `Integer`, a JS `BigInt`, a Go `*big.Int`) and as its decimal digits where
+  it has none (Rust `Tree::Str`, a C++ `std::string`). `30!` in the `calc`
+  example is the demonstration.
 - **In a `tree()`, a match node with no sub-captures becomes its matched
   text.** So `qty` arrives as the string `"2"`, not the number 2. Use
   `.int()` on the node, or an actions class, when you want numbers.

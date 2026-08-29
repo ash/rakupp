@@ -137,8 +137,9 @@ Raku `Int` → `number`, `Num`/`Rat` → `number`, `Str` → `string`, `List` �
 `Array`, `Hash` → `Object`, `True`/`False` → `boolean`, `Any` → `null`. The
 same rules run in reverse for arguments.
 
-An integer wider than 64 bits arrives as a string of digits — JS numbers
-would lose it silently, which is the reason. In a `tree()`, a match node with
+An integer wider than 64 bits arrives as a `BigInt`, and so does any integer
+past 2^53 — a JS number would lose those silently, which is the reason. In a
+`tree()`, a match node with
 no sub-captures becomes its matched *text*, so `qty` is the string `"2"`; use
 `.int()` on the node, or an actions class, for numbers.
 

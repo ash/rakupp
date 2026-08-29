@@ -37,6 +37,8 @@ import "C"
 import (
 	"errors"
 	"fmt"
+	"math"
+	"math/big"
 	"os"
 	"sort"
 	"sync"
@@ -129,8 +131,25 @@ func (s *session) goStr(v C.RkValue) string {
 	return C.GoStringN(p, C.int(n))
 }
 
-// toGo converts an engine value to nil / bool / int64 / float64 / string /
-// []interface{} / map[string]interface{} — the Tree() shape.
+// goInt reads an Int, exactly. rk_int_get is an int64 and BigInt::toLL
+// saturates there, so MaxInt64 and MinInt64 may each be a wider Int in
+// disguise; the digits settle it, and parse back to the same number when they
+// are not. A wide one arrives as a *big.Int.
+func (s *session) goInt(v C.RkValue) interface{} {
+	n := int64(C.rk_int_get(s.c, v))
+	if n == math.MaxInt64 || n == math.MinInt64 {
+		if b, ok := new(big.Int).SetString(s.goStr(v), 10); ok {
+			if b.IsInt64() && b.Int64() == n {
+				return n            // it really was the saturating value
+			}
+			return b
+		}
+	}
+	return n
+}
+
+// toGo converts an engine value to nil / bool / int64 / *big.Int / float64 /
+// string / []interface{} / map[string]interface{} — the Tree() shape.
 func (s *session) toGo(v C.RkValue) interface{} {
 	switch C.rk_type(s.c, v) {
 	case C.RK_ANY:
@@ -138,7 +157,7 @@ func (s *session) toGo(v C.RkValue) interface{} {
 	case C.RK_BOOL:
 		return C.rk_truthy(s.c, v) != 0
 	case C.RK_INT:
-		return int64(C.rk_int_get(s.c, v))
+		return s.goInt(v)
 	case C.RK_NUM, C.RK_RAT:
 		return float64(C.rk_num_get(s.c, v))
 	case C.RK_ARRAY:

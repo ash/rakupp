@@ -145,7 +145,9 @@ Raku `Int` → `Tree` / `int_()`, `Num`/`Rat` → `num()`, `Str` → `str()`,
 `List` → `list()`, `Hash` → `map()`, `True`/`False` → `boolean()`, `Any` →
 `is_null()`. The same rules run in reverse for arguments.
 
-An integer wider than 64 bits arrives as a string of digits. In a `tree()`, a
+An integer wider than 64 bits arrives as a string of digits: the C ABI hands
+integers over as an `int64`, and the standard library has no wider integer to
+put one in. In a `tree()`, a
 match node with no sub-captures becomes its matched *text*, so `qty` is the
 string `"2"`; use `.int_()` on the node, or an actions class, for numbers.
 

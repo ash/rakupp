@@ -29,6 +29,11 @@ __all__ = ["Grammar", "Match", "RakuError", "ParseError", "Interp", "interpreter
 
 _SHIM_ABI = 1  # must equal rk-shim-abi() in grammar_shim.raku
 
+# rk_int_get is an int64 and BigInt::toLL saturates there, so an Int arriving
+# as either of these may be a wider one in disguise — see _int_of.
+_INT64_MAX = 2 ** 63 - 1
+_INT64_MIN = -(2 ** 63)
+
 
 class RakuError(Exception):
     """A Raku-side failure: a die, a parse error in grammar source, a missing
@@ -172,6 +177,27 @@ class Interp:
             return h
         raise TypeError(f"cannot pass a {type(x).__name__} to Raku")
 
+    def _str_of(self, v):
+        """The value's Str coercion, per the header: the text of a Str, the
+        digits of an Int, a gist for anything else."""
+        import ctypes
+        n = ctypes.c_size_t()
+        p = self._lib.rk_str_get(self._ctx, v, ctypes.byref(n))
+        return ctypes.string_at(p, n.value).decode("utf-8", "replace") if p else ""
+
+    def _int_of(self, v):
+        """An Int, exactly. rk_int_get is an int64 and BigInt::toLL saturates
+        there, so INT64_MAX and INT64_MIN may each be a wider Int in disguise;
+        the digits settle it, and parse back to the same number when they are
+        not. Python integers have no width, so nothing is lost here."""
+        n = self._lib.rk_int_get(self._ctx, v)
+        if n == _INT64_MAX or n == _INT64_MIN:
+            try:
+                return int(self._str_of(v))
+            except ValueError:      # an allomorph whose text is not decimal
+                pass
+        return n
+
     def _to_py(self, v):
         import ctypes
         c, lib = self._ctx, self._lib
@@ -181,13 +207,11 @@ class Interp:
         if t == RK_BOOL:
             return bool(lib.rk_truthy(c, v))
         if t == RK_INT:
-            return lib.rk_int_get(c, v)
+            return self._int_of(v)
         if t in (RK_NUM, RK_RAT):
             return lib.rk_num_get(c, v)
         if t == RK_STR or t == RK_OTHER:  # RK_OTHER stringifies, per the header
-            n = ctypes.c_size_t()
-            p = lib.rk_str_get(c, v, ctypes.byref(n))
-            return ctypes.string_at(p, n.value).decode("utf-8", "replace") if p else ""
+            return self._str_of(v)
         if t == RK_ARRAY:
             return [self._to_py(lib.rk_at_pos(c, v, i))
                     for i in range(lib.rk_elems(c, v))]

@@ -178,11 +178,25 @@ class Session {
     return new TextDecoder().decode(toArrayBuffer(p, 0, n));
   }
 
+  // An Int, exactly. rk_int_get is an i64 and BigInt::toLL saturates there, so
+  // 2^63-1 and -2^63 may each be a wider Int in disguise; the digits settle it.
+  // A JS number stops being exact at 2^53, so anything past that stays a
+  // BigInt rather than quietly rounding.
+  intOf(v) {
+    const raw = this.f.rk_int_get(this.c, v);            // i64 arrives as a BigInt
+    const n = typeof raw === "bigint" ? raw : BigInt(raw);
+    if (n === 9223372036854775807n || n === -9223372036854775808n) {
+      const s = this.readStr(v);
+      if (/^-?[0-9]+$/.test(s)) return BigInt(s);        // not decimal: an allomorph
+    }
+    return (n >= -9007199254740991n && n <= 9007199254740991n) ? Number(n) : n;
+  }
+
   toJs(v) {
     switch (this.f.rk_type(this.c, v)) {
       case RK_ANY: return null;
       case RK_BOOL: return this.f.rk_truthy(this.c, v) !== 0;
-      case RK_INT: return Number(this.f.rk_int_get(this.c, v));
+      case RK_INT: return this.intOf(v);
       case RK_NUM: case RK_RAT: return this.f.rk_num_get(this.c, v);
       case RK_ARRAY: {
         const n = Number(this.f.rk_elems(this.c, v));

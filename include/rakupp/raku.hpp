@@ -25,6 +25,7 @@
 
 #include "rakupp.h"
 
+#include <limits>
 #include <map>
 #include <stdexcept>
 #include <string>
@@ -129,12 +130,26 @@ struct Session {
         return h;
     }
 
+    /* An Int, exactly. rk_int_get is an int64 and BigInt::toLL saturates
+     * there, so INT64_MAX and INT64_MIN may each be a wider Int in disguise.
+     * The standard library has no big integer, so a wide one arrives as its
+     * digits; one that only looked wide is still the number it always was. */
+    Tree int_of(RkValue v) {
+        long long n = rk_int_get(c, v);
+        if (n != std::numeric_limits<long long>::max() &&
+            n != std::numeric_limits<long long>::min()) return {n};
+        size_t sn = 0;
+        const char* p = rk_str_get(c, v, &sn);
+        std::string digits(p ? p : "", sn);
+        return digits == std::to_string(n) ? Tree{n} : Tree{std::move(digits)};
+    }
+
     /* engine -> C++ */
     Tree tree_of(RkValue v) {
         switch (rk_type(c, v)) {
             case RK_ANY:  return {};
             case RK_BOOL: return {rk_truthy(c, v) != 0};
-            case RK_INT:  return {rk_int_get(c, v)};
+            case RK_INT:  return int_of(v);
             case RK_NUM:
             case RK_RAT:  return {rk_num_get(c, v)};
             case RK_ARRAY: {

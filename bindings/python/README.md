@@ -145,7 +145,9 @@ Raku `Int` → `int`, `Num`/`Rat` → `float`, `Str` → `str`, `List` → `list
 `Hash` → `dict`, `True`/`False` → `bool`, `Any` → `None`. The same rules run
 in reverse for arguments.
 
-An integer wider than 64 bits arrives as a string of digits. In a `tree()`, a
+An integer wider than 64 bits arrives as an ordinary Python `int`: the C ABI
+hands integers over as an `int64`, so the binding reads the digits instead
+whenever that saturates. In a `tree()`, a
 match node with no sub-captures becomes its matched *text* — `qty` is the
 string `"2"` — so use `.int()` on the node, or an actions class, for numbers.
 

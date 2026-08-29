@@ -48,7 +48,7 @@ fn main() -> Result<(), Error> {
         [("name".to_string(), "Ada".into()), ("age".to_string(), 36.into())].into();
     println!("greet: {}", show(&call("greet", &[who.into()])?));
 
-    // Raku integers do not overflow; past 64 bits this one hands back digits.
+    // Raku integers do not overflow; past 64 bits one crosses as Tree::Str digits.
     println!("30! = {}", show(&call("factorial", &[30.into()])?));
 
     // A die inside Raku crosses as Error::Raku, the host's own error type.

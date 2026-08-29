@@ -142,7 +142,9 @@ Raku `Int` → `int64`, `Num`/`Rat` → `float64`, `Str` → `string`, `List` �
 `[]interface{}`, `Hash` → `map[string]interface{}`, `True`/`False` → `bool`,
 `Any` → `nil`. The same rules run in reverse for arguments.
 
-An integer wider than 64 bits arrives as a string of digits. In a `Tree()`, a
+An integer wider than 64 bits arrives as a `*big.Int`: the C ABI hands
+integers over as an `int64`, so the binding reads the digits instead whenever
+that saturates. In a `Tree()`, a
 match node with no sub-captures becomes its matched *text*, so `qty` is the
 string `"2"`; use `.Int()` on the node, or an actions class, for numbers.
 

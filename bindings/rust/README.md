@@ -140,7 +140,9 @@ Raku `Int` → `Tree::Int(i64)`, `Num`/`Rat` → `Tree::Num(f64)`, `Str` →
 iteration is key-sorted and deterministic), `True`/`False` → `Tree::Bool`,
 `Any` → `Tree::Null`. The same rules run in reverse for arguments.
 
-An integer wider than 64 bits arrives as `Tree::Str` holding the digits. In a
+An integer wider than 64 bits arrives as `Tree::Str` holding the digits: the
+C ABI hands integers over as an `i64`, and std has no wider integer to put one
+in. In a
 `tree()`, a match node with no sub-captures becomes its matched *text*, so
 `qty` is `Tree::Str("2")`; use `.int()?` on the node, or an actions class,
 for numbers.

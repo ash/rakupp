@@ -203,7 +203,21 @@ impl Session {
             match rk_type(self.c, v) {
                 RK_ANY => Tree::Null,
                 RK_BOOL => Tree::Bool(rk_truthy(self.c, v) != 0),
-                RK_INT => Tree::Int(rk_int_get(self.c, v)),
+                // An Int, exactly. rk_int_get is an i64 and BigInt::toLL
+                // saturates there, so i64::MAX and i64::MIN may each be a wider
+                // Int in disguise. std has no big integer, so a wide one
+                // arrives as its digits; one that only looked wide parses back
+                // into the i64 it always was.
+                RK_INT => {
+                    let n = rk_int_get(self.c, v);
+                    match (n == i64::MAX || n == i64::MIN)
+                        .then(|| self.read_str(v))
+                        .filter(|s| s.parse::<i64>() != Ok(n))
+                    {
+                        Some(s) => Tree::Str(s),
+                        None => Tree::Int(n),
+                    }
+                }
                 RK_NUM | RK_RAT => Tree::Num(rk_num_get(self.c, v)),
                 RK_ARRAY => {
                     let n = rk_elems(self.c, v);
