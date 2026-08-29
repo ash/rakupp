@@ -11,20 +11,23 @@ WebAssembly, no server required. It is not a fork of Rakudo and shares no code
 with it; it targets the *language*, measured against
 [**Roast**](https://github.com/Raku/roast), the official Raku test suite.
 
-**Status:** current release **v3.22.0** (2026-08-29) — *the instruments, fixed
-and then proved*: the second of three consolidation releases. v3.21.0 passed all
-seven release gates and shipped a silent wrong answer — `Digest`'s RIPEMD hashed
-every input incorrectly — so this release fixes the gates and then asks each one
-to prove it can fail: **every gate that can fail detects a planted defect** — 8
-plants across the 7 gates with a red path, which no release here has claimed
-before. (The eighth, conformance, turned out to have no red path at all; v3.23.0
-found that and says so.) The wrong answer itself was in parameter binding, not where
-the plan expected, and reading the neighbouring code found two more instances of
-the same defect.
-The release before it was *the cooldown: one implementation of everything, and
-fez installs*: a 360° source review worked to completion in three gated
-batches, plus `fez` installing with its tests green and `zef` working
-end-to-end (issue #37). Every release is written up in the
+**Status:** current release **v3.23.0** (2026-08-29) — *the re-baseline*: the
+last of three consolidation releases. It set out to re-measure every figure this
+project gates on through the instruments v3.22.0 had just fixed — and began by
+reviewing those instruments, which found **twenty-five more defects**. Three
+would have corrupted this release's own numbers: nothing recorded *which* rakupp
+or *which* Roast a gate had measured (three binaries answer to `rakupp` on the
+machine of record, the right one first by PATH ordering alone); the documented
+build command produced a *translated* binary, because cmake itself is x86_64
+there; and `perf-guard`'s standing-debt note named one kernel of five. A
+twenty-sixth was an engine bug the review tripped over — a `:g` match did not
+carry its subject, so `.from` counted **bytes** on any non-ASCII string.
+It also corrected a claim: v3.22.0 said *every* gate detects a planted defect,
+but conformance has **no red path at all** — and that is the check producing
+README's documentation-example figure.
+The release before it was *the instruments, fixed and then proved*: v3.21.0
+passed all seven gates and shipped a silent wrong answer, so v3.22.0 fixed them
+and asked each to prove it can fail. Every release is written up in the
 [CHANGELOG](CHANGELOG.md).
 
 **Current focus:** the ecosystem sweep — all 2,524 distributions of the Raku
@@ -72,14 +75,14 @@ suites, up from 637, where the lever is the 421 that never ran their own tests a
 all because a dependency failed first. The plans are in
 [docs/dev/plans/VERSIONS.md](docs/dev/plans/VERSIONS.md).
 
-| | v3.22.0 | at v2.0.0 |
+| | v3.23.0 | at v2.0.0 |
 |---|---:|---:|
-| Roast, per individual test — of what the suite declares‡ | **198,956 of ~218,764 (90%)** | 197,090 of ~203,500 (97%) |
-| Roast, all-or-nothing — files fully passing, of 1,464 | **642 (44%)** | 594 |
+| Roast, per individual test — of what the suite declares‡ | **198,939 of ~218,773 (90%)** | 197,090 of ~203,500 (97%) |
+| Roast, all-or-nothing — files fully passing, of 1,464 | **643 (44%)** | 594 |
 | Official documentation examples byte-identical on both engines | **950** | 952 |
 | Of the Raku ecosystem's [2,524 distributions](https://raku.online/modules/ecosystem/), passing their own test suites | **637** | — |
 | Local regression suite | **578** | 312 |
-| `say "Hello"` compiled with `--exe --slim` | **6,165,528 B** | 9,830,680 B (no `--slim`) |
+| `say "Hello"` compiled with `--exe --slim` | **6,165,624 B** | 9,830,680 B (no `--slim`) |
 
 ‡ Counted against each file's declared `plan N`, so a file that aborts is
 charged for every test it failed to run; on the all-or-nothing bar a file

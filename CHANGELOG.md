@@ -3,6 +3,133 @@
 Release notes for tagged releases. Numbers are measured, not projected;
 methodology for all Roast figures is in [docs/status/COUNTING.md](docs/status/COUNTING.md).
 
+## v3.23.0 (2026-08-29) — the re-baseline
+
+The last of three consolidation releases
+([dev/plans/VERSIONS.md](docs/dev/plans/VERSIONS.md)), planned in
+[REBASELINE-PLAN.md](docs/dev/plans/REBASELINE-PLAN.md) and written up in
+[findings/TOOLS-3.23.md](docs/dev/findings/TOOLS-3.23.md).
+
+v3.22.0 fixed seven gates and proved they go red. This release was meant to
+re-measure everything through them — and began by reviewing the instruments
+themselves, which found **twenty-five more defects**. Three would have corrupted
+this release's own numbers, so the review had to come first.
+
+| | v3.22.0 | v3.23.0 |
+|---|---:|---:|
+| Roast assertions (all declared) | 198,956 | **198,939** |
+| Roast files fully passing | 642 / 1,464 | **643 / 1,464** |
+| Local regression suite (`t/run.raku`) | 579 | **580** |
+| Module battery (vs each dist's own reference run) | 50 / 59 | **50 / 59** |
+| Documentation examples byte-identical on both engines | 950 | **950** |
+| `say "Hello"` compiled with `--exe` | 9,446,328 B | **9,446,328 B** |
+| …compiled with `--exe --slim` | 6,165,624 B | **6,165,624 B** |
+
+Roast is the repeating profile of three runs (640 / 643 / 643), all on
+`v3.22.0-6-g17b17a8` against Roast `b2cbe8a42`. **No file regressed**: the union
+of the three runs diffed against v3.22.0's union is empty in both directions.
+
+### Nothing recorded what was being measured
+
+Every gate here is written `rakupp tools/…`, which is a PATH lookup — and on the
+machine of record three rakupp binaries answer to that name (v3.22.0, v1.0.0,
+v0.5.1), the right one first by ordering alone. Measured on a single Roast file,
+v1.0.0 reports `0 / 2` fully passing where v3.22.0 reports `1 / 2`, with nothing
+in the output to say which ran. The Roast checkout was unrecorded too, and gate 1
+is a *diff against the previous release's list* — so a moved Roast gets charged
+to the engine.
+
+Both are now named in `run-roast.raku`'s banner and in a `.meta` sidecar beside
+the archived list, and RELEASING.md gains a **gate 0**: say what is being
+measured before measuring it.
+
+### The build command produced a translated binary, because cmake is x86_64
+
+`build/` held an x86_64 build beside a native `build-arm64/`, and rebuilding it
+with the command README documents produced x86_64 **again**. The only cmake on
+that machine is an Intel-Homebrew binary ahead of `/opt/homebrew` on PATH, and
+CMake infers the target from its own process. One fact upstream of three gate
+defects: perf-guard and run-optbench both measured that binary, and the docs
+sweep ran on it. `CMakeLists.txt` now asks the kernel instead — and only acts on
+a positive answer, since guessing would force a translated build on exactly the
+machines it protects.
+
+### The irreversible half of the perf gate had no guard
+
+`--check`, which only reports, refuses to judge a noisy machine three ways.
+`--record`, which rewrites the baseline every later release is gated against,
+had none. It now refuses on a noisy machine (`--force` overrides) and on a
+`-modified` build (which does not override — a baseline that names no commit
+could never be re-measured).
+
+### The baseline was re-recorded, and it absorbs a debt
+
+Stated plainly, because re-recording without an explanation is how debt gets
+lost. Seven kernels moved up and two down:
+
+| | fib | asg | loopsum | hash | strscan | strpass | subcall | rats | regexloop |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| was | 377.7 | 160.4 | 96.6 | 18.3 | 121.4 | 73.5 | 171.5 | 237.0 | 123.8 |
+| now | 385.9 | 165.9 | 96.0 | 18.4 | 124.3 | 74.8 | 174.8 | 246.6 | 123.6 |
+
+**This is the second consecutive release to absorb drift with no identified
+cause.** v3.22.0 eliminated build nondeterminism, binary layout, the allocator
+and the metric; this sitting added an A/B against a binary built without the
+release's own change, which reads the same numbers — so it is not the code
+either. `best` is retained, so `vs best` keeps the whole debt in the open:
+`rats +39.3%`, `regexloop +21.7%`, `strscan +17.6%`, `subcall +17.4%`,
+`fib +9.3%`. Quote that column, not `delta`.
+
+The gate's summary line could not previously say so: it carried a third
+hardcoded copy of the kernel list — the four that existed before 2026-08-09 — so
+it named `fib` alone and stayed silent about `rats`. It now reports every kernel,
+worst first, on both success paths.
+
+### Gate 7 cannot fail, and it produces a headline figure
+
+v3.22.0's number was "every gate detects a planted defect — 8 of 8". The count
+was right; the claim was not. Gate 4b contributes two plants, and **conformance
+has no red path at all** — `matrix.raku`, `conformance.raku` and
+`divergences.raku` contain no `exit`, and `typerun.raku` exits only on a timeout
+or a missing command. It is a report a human reads.
+
+Which matters more than it first appears: README's *"documentation examples
+byte-identical on both engines"* row is `typerun.raku`'s output, so that headline
+is produced by the one release check that cannot go red. `prove-gates --list` now
+names it under "Release checks with NO plant, and why", and a plant was added for
+the figure checker, which *can* fail.
+
+### Also in this release
+
+- **A `:g` match carries its subject.** `.orig`, `.prematch` and `.postmatch`
+  answered the matched text rather than the subject, and `.from`/`.to` were
+  **byte** offsets — right by accident on ASCII, wrong on anything else.
+  `"— a — b — c".match(/<[abc]>/, :g)».from` gave 4, 10, 16 where Rakudo gives
+  2, 6, 10. Found by a tool, not a test.
+- **`tools/lib/Gate.rakumod`** — binary selection, architecture detection and the
+  provenance line in one place instead of six copies in four forms.
+- **`eco-sweep`'s documented command did not run** (Raku's `MAIN` stops parsing
+  options after a positional), and it reported the size of its input rather than
+  what it measured.
+- **`check-figures` passed on a tree stating nothing**; a flag it cannot verify
+  is now a failure, and it checks that the file buckets sum to the denominator.
+- **`prove-gates` gained a third outcome.** Improving gate 3 made it report a
+  gate that *declined to judge* as MISSED — a false accusation against a correct
+  gate. `CAUGHT` / `MISSED` / `UNPROVED`.
+
+### Deliberately not in this release
+
+- **The ecosystem was not re-swept.** The plan called for all 2,524
+  distributions from a fresh verdict file; it was stopped after 55. The
+  **637 of 2,524** figure is therefore *carried forward from August*, not
+  re-measured, and should not be read as a v3.23.0 measurement.
+- **Conformance has no pass/fail criterion yet.** The tooling lives in the
+  raku.online repo; until it exists, "every gate" is written "every gate that
+  can fail".
+- **The source review is still 3 files of 83.** Its two named leads — `--exe`
+  failing to compile a sub-signature destructure, and a `Range` bound to `@c` —
+  are both places a gate is known not to look.
+
 ## v3.22.0 (2026-08-29) — the instruments, fixed and then proved
 
 The second of three consolidation releases
