@@ -9918,8 +9918,19 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                 if (p.sigil == '@') {
                     // a CArray binds AS ITSELF here too (see the positional arm)
                     if (bv.t == VT::Str && bv.hashKind == "CArray") { bv.itemized = false; }
-                    else if (bv.t == VT::Array && bv.itemized) { Value u = bv; u.itemized = false; bv = coerceArray(u); }
-                    else if (bv.t == VT::Array && !p.isCopy && !bv.isList && !bv.ext()) { /* bind: share */ }
+                    // …and the same List-vs-Array rule as the positional arm below:
+                    // binding never itemises, so `sub f(:@c)` called with a List
+                    // keeps a List, whose slots are bare and therefore spread under
+                    // `.flat`. This arm was found by asking where else the
+                    // positional bug could live, after it shipped wrong RIPEMD
+                    // hashes in v3.21.0 — it is the same defect, one path over.
+                    else if (bv.t == VT::Array && bv.itemized) {
+                        Value u = bv; u.itemized = false;
+                        bv = u.isList ? u : coerceArray(u);
+                    }
+                    else if (bv.t == VT::Array && !p.isCopy && !bv.ext()) {
+                        if (bv.s == "Seq") bv.s.clear();   // a reified Seq binds as a List
+                    }
                     else bv = coerceArray(bv);
                 }
                 else if (p.sigil == '%') {
@@ -9951,9 +9962,19 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
             Value v = positional[pi++];
             if (p.subSig) {
                 destructure(p, v);
-                // a *named* destructuring param (`@a [$x, *@y]`) also binds the whole arg
-                if (!p.name.empty())
-                    env->define(p.name, p.sigil == '@' ? coerceArray(v) : p.sigil == '%' ? coerceHash(v) : v);
+                // a *named* destructuring param (`@a [$x, *@y]`) also binds the whole
+                // arg — and BINDS it, so the List-vs-Array rule of the arms below
+                // applies here too (third site of the same defect; see A1).
+                if (!p.name.empty()) {
+                    Value bound = v;
+                    if (p.sigil == '@') {
+                        if (!(bound.t == VT::Array && bound.isList && !bound.itemized))
+                            bound = coerceArray(bound);
+                        else if (bound.s == "Seq") bound.s.clear();
+                    }
+                    else if (p.sigil == '%') bound = coerceHash(bound);
+                    env->define(p.name, bound);
+                }
                 continue;
             }
             // parameter binding is not assignment: an ITEMIZED Array (`$[1,2]`,
@@ -9974,8 +9995,31 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                 // Math::DistanceFunctions picks the native fast path) and copied
                 // the buffer a C callee was expected to see.
                 else if (v.t == VT::Str && v.hashKind == "CArray") { v.itemized = false; /* bind raw, decont */ }
-                else if (v.t == VT::Array && v.itemized) { Value u = v; u.itemized = false; v = coerceArray(u); }
-                else if (v.t == VT::Array && !p.isCopy && !v.isList && !v.ext()) { /* bind: share the buffer */ }
+                else if (v.t == VT::Array && v.itemized) {
+                    // An itemized Positional binds as the Positional it is, and as
+                    // WHICH one: `$(1,2,3)` is a List and stays a List, `$[1,2,3]`
+                    // and `@m[0]` are Arrays and stay Arrays. Coercing both to an
+                    // Array lost the first, and with it the spread — Rakudo's
+                    // `my $l = ((1,2),(3,4)); sub f(@c) { @c.flat }` is four.
+                    Value u = v;
+                    u.itemized = false;
+                    v = u.isList ? u : coerceArray(u);
+                }
+                // …and a LIST binds AS THE LIST IT IS. Binding never itemises, so
+                // Rakudo keeps `sub f(@c)` called with `(7,8,9)` a List — `@c.WHAT`
+                // is List, not Array — and a List's slots are BARE, so `@c.flat`
+                // spreads its Iterable elements where an Array's would not.
+                // Coercing here made every bound `@` param an Array and cost
+                // Digest::RIPEMD its constant table: `flat @c »xx» 16` over a
+                // destructured `@c` gave 5 entries instead of 80. `is copy` still
+                // copies into an Array, which is what makes THAT arm give 2.
+                else if (v.t == VT::Array && !p.isCopy && !v.ext()) {
+                    // bind: share the buffer. A reified Seq binds as the LIST it
+                    // becomes — Rakudo's `sub f(@c)` over `(1,2,3).Seq` answers
+                    // List, not Seq; the values and the one-shot-ness are already
+                    // settled by this point, only the marker would have leaked.
+                    if (v.s == "Seq") v.s.clear();
+                }
                 else v = coerceArray(v);
             }
             else if (p.sigil == '%') {
