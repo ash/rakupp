@@ -12,6 +12,7 @@ README below.
 | [**forth/**](forth) | Language power — a stack machine + word dictionary | interpreter that runs Forth files or a REPL |
 | [**perl/**](perl) | Language power — sigil variables, context, regex | interpreter that runs Perl 5 files or a REPL |
 | [**python/**](python) | Language power — the off-side rule, via an INDENT/DEDENT tokenizer | interpreter that runs Python 3 files or a REPL |
+| [**raku/**](raku) | Parsing — a grammar of Raku, so rakupp parses itself | parse-checks Raku files; prints the parse tree |
 | [**markdown/**](markdown) | Parsing — a grammar that emits HTML | converter: Markdown in, a styled page out |
 | [**json/**](json) | Parsing — a grammar that round-trips data | parse, pretty-print / minify, and query JSON |
 | [**pastebin/**](pastebin) | Deployable — a hand-written HTTP server on raw sockets | native binary you point a browser at |
@@ -26,6 +27,25 @@ README below.
 All paths below are from the repository root, after building `rakupp` (see the
 top-level [README](../README.md)). Every program also compiles to a standalone
 native binary with `rakupp --exe`.
+
+## raku — the self-hosting story
+
+A grammar of Raku, written in Raku, run by rakupp: the fifteen precedence
+levels, statement forms and term shapes of [`src/Parser.cpp`](../src/Parser.cpp)
+restated as grammar rules. It parses `examples/` completely, most of
+`showcase/` — including itself — and prints a parse tree in which `2 * 3` sits
+under `1 + 2 * 3` because `BP_MUL` is tighter than `BP_ADD`.
+
+```sh
+build/rakupp showcase/raku/raku-grammar.raku examples/fibonacci.raku
+build/rakupp showcase/raku/raku-grammar.raku --tree examples/hanoi.raku
+build/rakupp showcase/raku/raku-grammar.raku --check=examples
+```
+
+Raku is not a context-free language, so the grammar is explicit about where it
+stops: custom operators, computed precedence, `use MONKEY-TYPING`, the regex
+sublanguage, and heredoc bodies. [The README](raku) names each one and gives
+the measured coverage.
 
 ## lisp — the language-power story
 

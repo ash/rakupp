@@ -185,6 +185,35 @@ section('showcase/json (parse + serialize + query)');
        "json: --compact minifies to one line");
 }
 
+# ---- raku showcase (a grammar of Raku, run by rakupp) ------------------
+# The coverage counts are asserted as floors, not exact figures: they should
+# only ever go up, and a drop means the grammar stopped describing something
+# the compiler still accepts.
+section('showcase/raku (Raku parsed by a Raku grammar)');
+{
+    my $gram = $ROOT.add('showcase/raku/raku-grammar.raku').Str;
+
+    my ($self, $rc) = run-rakupp($gram, $gram);
+    ok($rc == 0 && $self.contains('parsed'), "raku: the grammar parses itself");
+
+    my ($ex, $) = run-rakupp($gram, "--check={$ROOT.add('examples')}");
+    my $ex-ok = ($ex ~~ / (\d+) '/' (\d+) ' files parsed' /);
+    ok($ex-ok && +$ex-ok[0] == +$ex-ok[1],
+       "raku: every examples/ file parses ({$ex-ok ?? ~$ex-ok !! 'no count'})");
+
+    my ($sh, $) = run-rakupp($gram, "--check={$ROOT.add('showcase')}");
+    my $sh-ok = ($sh ~~ / (\d+) '/' (\d+) ' files parsed' /);
+    ok($sh-ok && +$sh-ok[0] >= 25, "raku: at least 25 showcase/ files parse ({$sh-ok ?? ~$sh-ok !! 'no count'})");
+
+    # the ladder is the point: `2 * 3` has to sit under `1 + 2 * 3`
+    my $tmp = $ROOT.add('t/.raku-grammar-tree.raku');
+    $tmp.spurt("my \$x = 1 + 2 * 3;\n");
+    my ($tree, $) = run-rakupp($gram, '--tree', $tmp.Str);
+    $tmp.unlink;
+    ok($tree.contains('additive-expr') && $tree.contains('multiplicative-expr  2 * 3'),
+       "raku: --tree nests multiplication under addition");
+}
+
 # ---- server showcases (pastebin + chat) -------------------------------
 # The servers are long-lived accept loops. rakupp's Proc::Async deadlocks when
 # the same process then does blocking socket I/O, so we background them through
