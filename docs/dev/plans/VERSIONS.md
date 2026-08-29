@@ -195,10 +195,18 @@ chase starts, and each release is allowed to be boring.
 - **Not in it:** anything new. A release whose job is to make the next two
   start from a state a stranger can reproduce.
 
-### v3.22.0 — the 360° review, and a full run
+### v3.22.0 — instruments first, then the review
 
-- **The number:** the review's finding list closed, and a Roast file list
-  re-derived from a clean full run rather than carried forward from deltas.
+*Planned in [GATES-PLAN.md](GATES-PLAN.md), written the day v3.21.0 shipped.
+The order below is not the order this section was first written in: the v3.21.0
+sitting put the instruments ahead of the review, because that release passed all
+seven gates and shipped a silent wrong answer anyway, and six of the seven
+turned out to have a defect of their own.*
+
+- **The number:** every gate detects a planted defect — for each of the seven,
+  inject a known break, run the gate unmodified, confirm it goes red. Then the
+  review's finding list closed, and a Roast file list re-derived from a clean
+  full run rather than carried forward from deltas.
 - **The shape:** a complete source review in the form the last two took
   ([findings/REVIEW-1.0.md](../findings/REVIEW-1.0.md),
   [findings/REVIEW-3.7.md](../findings/REVIEW-3.7.md)) — batched, each batch
