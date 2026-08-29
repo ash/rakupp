@@ -205,6 +205,14 @@ chase starts, and each release is allowed to be boring.
   gated, every finding either fixed or written down as deliberate. Plus the
   runs that get skipped between releases because they are slow: the whole
   Roast suite, the whole 2,524-distribution sweep, the conformance matrix.
+- **It starts with a list it did not have to find.** v3.21.0's own gates left
+  six findings, written up with repros in
+  [findings/OPEN-3.21.md](../findings/OPEN-3.21.md). The first is an engine bug
+  that release SHIPS — `flat` over a BOUND array stops spreading (`0ae9387`),
+  so `Digest`'s RIPEMD hashes wrong, silently, and only the 59-dist battery
+  saw it. The second is the perf baseline moving for a reason still unknown.
+  The other four are gates that cannot be read or that pass while leaving
+  damage. Fixing the first two is this release's floor, not its ceiling.
 - **Why it is its own release:** a review that lands inside a feature release
   is a review nobody can bisect against.
 
