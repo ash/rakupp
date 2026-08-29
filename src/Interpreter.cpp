@@ -20760,21 +20760,36 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
     } else if (global) {
         for (long i = 1; i <= total; i++) sel.insert(i);
     } else if (total >= 1) sel.insert(1);
+    // Every Match reports the WHOLE subject as its .orig, exactly as the m//
+    // path does (`mk`, above): only from/to say which part matched. This path —
+    // which is what `.match(:g)`, `.comb(:match)` and every s/// adverb use —
+    // built its Matches without it, so `.orig`, `.prematch` and `.postmatch`
+    // answered the MATCHED TEXT instead of the subject, and `.from`/`.to` fell
+    // through graphemeOff's no-subject branch and reported BYTE offsets. That
+    // last one is correct by accident on ASCII and wrong on any string with a
+    // multi-byte character, which is why it survived: `"— a — b — c".match(
+    // /<[abc]>/, :g)` gives from = 4, 10, 16 where Rakudo gives 2, 6, 10.
+    auto origStr = std::make_shared<std::string>(subj);
+    auto mkm = [&](long from, long to) {
+        Value mv = Value::matchVal(subj.substr(from, to - from), from, to);
+        mv.extM() = origStr;
+        return mv;
+    };
     // Match value (positional + named captures) for one raw match.
     auto build = [&](const RxMatch& mm) {
-        Value v = Value::matchVal(subj.substr(mm.from, mm.to - mm.from), mm.from, mm.to);
+        Value v = mkm((long)mm.from, (long)mm.to);
         for (size_t ci = 0; ci < mm.caps.size(); ci++) {
             if (mm.listCaps.count((int)ci)) { // repeated capture → $ci is an Array
                 Value lst = Value::array();
                 auto it = mm.capReps.find((int)ci);
                 if (it != mm.capReps.end())
-                    for (auto& o : it->second) lst.arrRef().push_back(Value::matchVal(subj.substr(o.first, o.second - o.first), o.first, o.second));
+                    for (auto& o : it->second) lst.arrRef().push_back(mkm((long)o.first, (long)o.second));
                 v.arrRef().push_back(lst);
                 continue;
             }
             auto& c = mm.caps[ci];
             if (c.first < 0) v.arrRef().push_back(Value::nil());
-            else v.arrRef().push_back(Value::matchVal(subj.substr(c.first, c.second - c.first), c.first, c.second));
+            else v.arrRef().push_back(mkm((long)c.first, (long)c.second));
         }
         for (auto& kv : mm.named) {
             // a named capture under a quantifier is LIST-valued: every collated
@@ -20783,11 +20798,11 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
             if (mm.listNames && mm.listNames->count(kv.first) && ch != mm.children.end()) {
                 Value lst = Value::array(); lst.isList = true;
                 for (auto& pn : ch->second)
-                    lst.arrRef().push_back(Value::matchVal(subj.substr(pn.from, pn.to - pn.from), pn.from, pn.to));
+                    lst.arrRef().push_back(mkm((long)pn.from, (long)pn.to));
                 v.hashRef()[kv.first] = std::move(lst);
                 continue;
             }
-            v.hashRef()[kv.first] = Value::matchVal(subj.substr(kv.second.first, kv.second.second - kv.second.first), kv.second.first, kv.second.second);
+            v.hashRef()[kv.first] = mkm((long)kv.second.first, (long)kv.second.second);
         }
         return v;
     };
