@@ -19,15 +19,61 @@
 my $tools  = $*PROGRAM.absolute.IO.parent;
 my $repo   = $tools.parent;
 my $bench  = $tools.add('optbench');
-my $RAKUPP = %*ENV<RAKUPP> // $repo.add('build/rakupp').Str;
+# Which rakupp compiles the kernels. An EXPLICIT RAKUPP is honoured as given;
+# with none set the default SEARCHES and filters by ARCHITECTURE, because taking
+# the first path that exists is a trap this repo has now hit three times. On the
+# machine of record `build/` holds an x86_64 build beside a native
+# `build-arm64/`, so the gate command exactly as RELEASING.md writes it compiled
+# x86_64 binaries — which SIGSEGV under translation here. Every kernel then
+# reports `--exe did not run`, which reads as a code-generator bug and is not
+# one. (perf-guard had the same defect; so did rakujs/build.sh before it.)
+sub host-arch(--> Str) {
+    return '' if $*DISTRO.is-win;
+    # hw.optional.arm64 is 1 on Apple Silicon even when the ASKING process is
+    # translated — `uname -m` reports the caller's own architecture instead.
+    my $s = run('sysctl', '-n', 'hw.optional.arm64', :out, :err);
+    my $v = $s.out.slurp(:close).trim; $s.err.slurp(:close);
+    return 'arm64' if $v eq '1';
+    my $u = run('uname', '-m', :out, :err);
+    my $m = $u.out.slurp(:close).trim; $u.err.slurp(:close);
+    $m
+}
+sub binary-arch(Str $path --> Str) {
+    my $f = run('file', '-b', $path, :out, :err);
+    my $d = $f.out.slurp(:close); $f.err.slurp(:close);
+    $d.contains('arm64') ?? 'arm64' !! $d.contains('x86_64') ?? 'x86_64' !! ''
+}
+my $HOST = host-arch();
+my @candidates = <build/rakupp build-arm64/rakupp rakupp>.map({ $repo.add($_).Str });
+my $RAKUPP = %*ENV<RAKUPP>;
+my $picked-by-arch = False;
+without $RAKUPP {
+    my @runnable = @candidates.grep(*.IO.x);
+    my $native = $HOST ?? @runnable.first({ binary-arch($_) eq $HOST }) !! Nil;
+    $picked-by-arch = ?$native && @runnable && $native ne @runnable[0];
+    $RAKUPP = $native // @runnable[0] // @candidates[0];
+}
 # A missing binary must stop the run: without this, every program "fails to
 # compile" identically and the comparison looks like a real, reproducible bug
 # (a stale build/ directory once sent a release bisect down exactly that path).
 unless $RAKUPP.IO.x {
     note "run-optbench: no runnable binary at $RAKUPP";
-    note "Set RAKUPP=/path/to/rakupp (the default is <repo>/build/rakupp).";
+    note "Searched: {@candidates.join(', ')}";
+    note "Set RAKUPP=/path/to/rakupp, or build one of those.";
     exit 2;
 }
+# …and one built for another architecture is worse than missing: it compiles,
+# and the binaries it emits crash, which looks like a correctness failure.
+{
+    my $bin = binary-arch($RAKUPP);
+    if $bin && $HOST && $bin ne $HOST {
+        note "run-optbench INCONCLUSIVE — $RAKUPP is $bin on a $HOST host.";
+        note "The binaries it compiles would not run here. Point RAKUPP at the $HOST build.";
+        exit 2;
+    }
+}
+note "run-optbench: $RAKUPP"
+   ~ ($picked-by-arch ?? "  (chosen over an earlier candidate: it is the $HOST build)" !! "");
 my $RAKUDO = %*ENV<RAKUDO> // 'raku';
 my $RUNS   = 6;   # 1 warm-up (discarded) + 5 measured
 

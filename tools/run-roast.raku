@@ -2,13 +2,19 @@
 # Roast test harness, self-hosted in Raku and run by rakupp itself.
 #
 # Usage:
-#   build/rakupp tools/run-roast.raku [--workers=N] [PATTERN ...]
+#   build/rakupp tools/run-roast.raku [--workers=N] [--list=FILE] [PATTERN ...]
 #
 # With no PATTERN, runs every .t file under $ROOT. A PATTERN is matched as a
 # substring against the path. --workers=N runs N test files at a time: each
 # file's subprocess runs from a `start` worker, and the interpreter parks the
 # GIL while a worker waits on its child, so the children genuinely overlap.
 # Results are tallied and printed in file order regardless of N.
+#
+# --list=FILE writes the fully-passing file paths, one per line, sorted. THAT is
+# what a release diff should compare — RELEASING.md calls the file list the gate,
+# and reconstructing it with `grep '[PASS]' | awk '{print $NF}'` over decorated
+# human-readable output makes the gate only as reliable as that output's framing.
+# It was not reliable: see the stderr note in run-with-timeout.
 
 my $ROOT    = (%*ENV<ROAST> // '/Users/ash/roast').IO.absolute;  # set $ROAST to your Roast checkout
 my $BIN     = $*EXECUTABLE.absolute;   # test whichever compiler is running this harness
@@ -66,6 +72,16 @@ sub run-with-timeout($bin, $file, $timeout) {
     my $proc = Proc::Async.new($bin, $file);
     my $out = '';
     $proc.stdout.tap(-> $chunk { $out ~= $chunk });
+    # …and STDERR, which must be captured even though nothing reads it. An
+    # untapped Proc::Async stderr is INHERITED, so at --workers=4 the children's
+    # TAP diagnostics were written straight into the parent's own stream and
+    # spliced mid-line into its per-file status lines — consistently four a run:
+    #     [PASS]    4/4  S03-smar# Failed test '$obj ~~ Pair, nonexistent, …
+    # The tallies survived that (they are computed from $out), but RELEASING.md
+    # calls the file LIST the gate, and that list is `awk '{print $NF}'` over
+    # these lines — so four files a run silently lost their path and read as
+    # regressions, and the site's roast map inherited the undercount.
+    $proc.stderr.tap(-> $chunk { });
     my $done = $proc.start(:cwd($SCRATCH.absolute));
     await Promise.anyof($done, Promise.in($timeout));
     my $timedout = $done.status ne 'Kept';
@@ -127,9 +143,11 @@ sub static-plan($file) {
 }
 
 my $WORKERS = 1;
+my $LISTFILE;
 my @patterns;
 for @*ARGS -> $a {
     if $a ~~ /^ '--workers=' (\d+) $/ { $WORKERS = (+$0) max 1 }
+    elsif $a ~~ /^ '--list=' (.+) $/  { $LISTFILE = ~$0 }
     else { @patterns.push($a) }
 }
 my @files;
@@ -182,6 +200,7 @@ my (%sec-full, %sec-part, %sec-time, %sec-notap, %sec-pass, %sec-tot);
 # GIL is parked while a worker waits on its child); parsing and tallying happen
 # on the main thread afterwards, in file order, so output and totals match a
 # sequential run.
+my @fullypassing;   # the release gate's file LIST, collected as data not as text
 my $next = 0;
 while $next < @files.elems {
     my $hi = ($next + $WORKERS) min @files.elems;
@@ -250,12 +269,31 @@ while $next < @files.elems {
         %sec-part{$sec}++;
         $mark = 'part';
     }
+    @fullypassing.push($rel) if $mark eq 'PASS';
     # live per-file result (skip the no-TAP noise, like the Python harness)
     if $mark ne '----' {
         say sprintf('  [%s]  %5s  %s', $mark, "$passed/$ran", $rel);
     }
     }
     $next = $hi;
+}
+
+# The gate's file list, as DATA. Written before the summary so a run that dies
+# formatting its own tables still leaves the thing a release actually diffs.
+# A self-check comes with it: every path here must end in `.t`. If one does not,
+# something has interleaved with output that is supposed to be ours alone, and
+# the list is not trustworthy — say so loudly rather than write a quiet lie.
+if $LISTFILE {
+    my @bad = @fullypassing.grep({ !.ends-with('.t') });
+    $LISTFILE.IO.spurt(@fullypassing.sort.join("\n") ~ "\n");
+    if @bad {
+        note "run-roast: {@bad.elems} fully-passing entr{@bad.elems == 1 ?? 'y does' !! 'ies do'} not end in .t —";
+        note "  the file list is corrupted, not just cosmetically: {@bad.head(4).join(', ')}";
+    }
+    else {
+        say "";
+        say "Fully-passing file list ({@fullypassing.elems} paths) -> $LISTFILE";
+    }
 }
 
 my $declared = $tot-plan + $notap-declared;  # every test any file declares it will run

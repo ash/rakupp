@@ -24,28 +24,18 @@
 # Usage — A/B two binaries:
 #     RAKUPP=/path/to/old rakupp tools/perf-guard.raku
 #     RAKUPP=/path/to/new rakupp tools/perf-guard.raku
-# Default RAKUPP is ./build/rakupp. It also runs under Rakudo (`raku`), since it
-# only spawns the target binary as a subprocess and times it.
+# With RAKUPP unset the default searches ./build/rakupp, ./build-arm64/rakupp and
+# ./rakupp, and picks the first one built for THIS architecture — a box that keeps
+# both an x86_64 build/ and a native build-arm64/ otherwise measured the wrong one.
+# An explicitly set RAKUPP is always honoured as given. It also runs under Rakudo
+# (`raku`), since it only spawns the target binary as a subprocess and times it.
 
 my $repo   = $*PROGRAM.absolute.IO.parent.parent;
-my $RAKUPP = %*ENV<RAKUPP> // $repo.add('build/rakupp').Str;
-# A MISSING binary must stop the run, not pass it. Every kernel then "runs" in
-# under a millisecond and the guard reports a huge speed-up and exits OK — which
-# is exactly what happened when a stale build/ directory was removed and the
-# default path stopped existing.
-unless $RAKUPP.IO.x {
-    note "perf-guard: no runnable binary at $RAKUPP";
-    note "Set RAKUPP=/path/to/rakupp (the default is <repo>/build/rakupp).";
-    exit 2;
-}
 
-# …and a binary built for ANOTHER ARCHITECTURE runs under translation, which
-# costs a uniform 1.7-2x: every kernel goes over tolerance at once and none of it
-# says anything about the code. It is easy to hit — the default is
-# <repo>/build/rakupp, and a machine that also keeps a build-arm64/ can leave a
-# stale x86_64 binary at the default path. The gate reported a 70-100% regression
-# across the board that way while the arm64 build of the same commit measured 7%
-# FASTER than the baseline.
+# …a binary built for ANOTHER ARCHITECTURE runs under translation, which costs a
+# uniform 1.7-2x: every kernel goes over tolerance at once and none of it says
+# anything about the code. The gate reported a 70-100% regression that way while
+# the arm64 build of the same commit measured 7% FASTER than the baseline.
 sub host-arch(--> Str) {
     return '' if $*DISTRO.is-win;
     # hw.optional.arm64 is 1 on Apple Silicon even when the ASKING process is
@@ -57,17 +47,53 @@ sub host-arch(--> Str) {
     my $m = $u.out.slurp(:close).trim; $u.err.slurp(:close);
     $m
 }
-{
-    my $f = run('file', '-b', $RAKUPP, :out, :err);
+sub binary-arch(Str $path --> Str) {
+    my $f = run('file', '-b', $path, :out, :err);
     my $desc = $f.out.slurp(:close); $f.err.slurp(:close);
-    my $bin = $desc.contains('arm64') ?? 'arm64'
-           !! $desc.contains('x86_64') ?? 'x86_64' !! '';
-    my $host = host-arch();
-    if $bin && $host && $bin ne $host {
-        note "perf-guard INCONCLUSIVE — $RAKUPP is $bin on a $host host.";
+    $desc.contains('arm64') ?? 'arm64' !! $desc.contains('x86_64') ?? 'x86_64' !! ''
+}
+
+my $HOST = host-arch();
+
+# Which binary to measure. An EXPLICIT RAKUPP is honoured exactly as given —
+# that is the whole point of the A/B usage above, and second-guessing it would
+# make the comparison a lie. With none set, the default SEARCHES, and it filters
+# by architecture rather than taking the first path that exists: on the machine
+# of record `build/` holds an x86_64 build beside a native `build-arm64/`, so
+# taking the first path made the command RELEASING.md documents report
+# INCONCLUSIVE instead of measuring, and every run of the v3.21.0 sitting needed
+# RAKUPP=build-arm64/rakupp to get a number at all. A gate whose documented
+# invocation does not measure is not a gate.
+my @candidates = <build/rakupp build-arm64/rakupp rakupp>.map({ $repo.add($_).Str });
+my $RAKUPP = %*ENV<RAKUPP>;
+my $picked-by-arch = False;
+without $RAKUPP {
+    my @runnable = @candidates.grep(*.IO.x);
+    # prefer one built for THIS host; fall back to the first runnable so the
+    # arch check below still explains itself instead of silently finding nothing
+    my $native = $HOST ?? @runnable.first({ binary-arch($_) eq $HOST }) !! Nil;
+    $picked-by-arch = ?$native && @runnable && $native ne @runnable[0];
+    $RAKUPP = $native // @runnable[0] // @candidates[0];
+}
+
+# A MISSING binary must stop the run, not pass it. Every kernel then "runs" in
+# under a millisecond and the guard reports a huge speed-up and exits OK — which
+# is exactly what happened when a stale build/ directory was removed and the
+# default path stopped existing.
+unless $RAKUPP.IO.x {
+    note "perf-guard: no runnable binary at $RAKUPP";
+    note "Searched: {@candidates.join(', ')}";
+    note "Set RAKUPP=/path/to/rakupp, or build one of those.";
+    exit 2;
+}
+
+{
+    my $bin = binary-arch($RAKUPP);
+    if $bin && $HOST && $bin ne $HOST {
+        note "perf-guard INCONCLUSIVE — $RAKUPP is $bin on a $HOST host.";
         note "It would be measured under translation, which costs 1.7-2x uniformly";
         note "and makes every kernel look like a regression.";
-        note "Build for this machine, or point RAKUPP at the $host binary.";
+        note "Build for this machine, or point RAKUPP at the $HOST binary.";
         exit 2;
     }
 }
@@ -172,7 +198,8 @@ my $BASEFILE = $repo.add('tools/perf-baseline.raku');
 my $check  = so @*ARGS.grep('--check');
 my $record = so @*ARGS.grep('--record');
 
-say "perf-guard: $RAKUPP";
+say "perf-guard: $RAKUPP"
+    ~ ($picked-by-arch ?? "  (chosen over an earlier candidate: it is the $HOST build)" !! "");
 my %now;
 say "kernel      best (ms)";
 say "-" x 24;
