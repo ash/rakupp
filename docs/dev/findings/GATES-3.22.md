@@ -344,6 +344,10 @@ next to it.
 
 # Part C — every gate detects a planted defect
 
+> **Corrected in v3.23.0:** read this as *every gate that can fail* — 8 plants
+> across 7 gates. Gate 7 (conformance) has no red path and was never planted;
+> see [TOOLS-3.23.md](TOOLS-3.23.md).
+
 **The release's number: 8 of 8.** For each gate a defect it is supposed to catch
 was injected, the gate's own documented command was run unmodified, and the
 result had to be RED. No release has claimed this before, and it is exactly what

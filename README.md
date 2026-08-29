@@ -15,8 +15,10 @@ with it; it targets the *language*, measured against
 and then proved*: the second of three consolidation releases. v3.21.0 passed all
 seven release gates and shipped a silent wrong answer — `Digest`'s RIPEMD hashed
 every input incorrectly — so this release fixes the gates and then asks each one
-to prove it can fail: **8 of 8 detect a planted defect**, which no release here
-has claimed before. The wrong answer itself was in parameter binding, not where
+to prove it can fail: **every gate that can fail detects a planted defect** — 8
+plants across the 7 gates with a red path, which no release here has claimed
+before. (The eighth, conformance, turned out to have no red path at all; v3.23.0
+found that and says so.) The wrong answer itself was in parameter binding, not where
 the plan expected, and reading the neighbouring code found two more instances of
 the same defect.
 The release before it was *the cooldown: one implementation of everything, and
@@ -51,14 +53,19 @@ this engine is, so these three add nothing new.
 - **v3.22.0** — *the instruments, fixed and then proved.* ✅ Scoped as the 360°
   source review; the v3.21.0 sitting changed the order, because a review produces
   verdicts and verdicts inherit the reliability of whatever measured them. Six of
-  the seven gates had a defect. All are fixed, and **8 of 8 now detect a planted
-  defect** — `rakupp tools/prove-gates.raku --all`. The review itself is **barely
-  begun, three files of eighty-three**, and carries forward.
+  the seven gates had a defect. All are fixed, and **every gate that can fail now
+  detects a planted defect** — `rakupp tools/prove-gates.raku --all`. The review
+  itself is **barely begun, three files of eighty-three**, and carries forward.
 - **v3.23.0** — *re-measure everything.* ⬜ Every figure this project gates on,
-  from one run, with the baselines re-recorded: a gate whose baseline predates the
-  review is not a gate. It inherits the review, and the open question v3.22.0 did
-  not close — why the performance baseline moved, with build nondeterminism,
-  binary layout, the allocator and the metric now eliminated and no cause found.
+  from one run, with the baselines re-recorded and each one naming what produced
+  it: a gate whose baseline predates the review is not a gate. It began with a
+  review of the instruments — **twenty-five defects, all fixed**
+  ([the findings](docs/dev/findings/TOOLS-3.23.md)) — because nothing recorded
+  *which* rakupp or *which* Roast a gate had measured, and three of them
+  would have corrupted this release's own numbers. It inherits v3.22.0's source
+  review, three files of eighty-three, and the open question that release did not
+  close — why the performance baseline moved, with build nondeterminism, binary
+  layout, the allocator and the metric now eliminated and no cause found.
 
 Then the standing target: **1000 of 2,524** distributions passing their own test
 suites, up from 637, where the lever is the 421 that never ran their own tests at

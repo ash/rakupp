@@ -182,7 +182,7 @@ to splice into the parent's output, consistently four a run, because
 `Proc::Async` INHERITS an untapped stderr._
 
 _Snapshot 2026-08-29, the v3.21.0 release run (`--workers=4`, four passes):
-642 / 1,464 files fully passing (~44% coverage); 685 partial, 121 no-TAP,
+643 / 1,464 files fully passing (~44% coverage); 685 partial, 121 no-TAP,
 15 timeout. The file count repeats at 643 (band 643 / 642 / 639 / 643 — the
 639 came from a pass during which the OS resumed Photos analysis and Spotlight
 indexing, and its timeouts rose to 20). No file regressed: every file passing

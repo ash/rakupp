@@ -107,12 +107,21 @@ number:
   read `6431464`), so there is now a checker, `tools/check-figures.raku`, which
   reads the headline figures structurally.
 
-### Every gate detects a planted defect — 8 of 8
+### Every gate that can fail detects a planted defect — 8 plants, 7 gates
 
 The release's number. For each gate a defect it is supposed to catch was
 injected, the gate's own documented command run unmodified, and the result
 required to be red. It is repeatable — `rakupp tools/prove-gates.raku --all` —
 and every plant records how to undo itself before it acts.
+
+> **Corrected in v3.23.0.** This section originally read "every gate detects a
+> planted defect — 8 of 8". The count was right — 8 plants — but the claim was
+> not: gate 4b contributes two of them, and **gate 7 (conformance) has no red
+> path**, so it was never planted and could not be. None of its four tools exits
+> non-zero on a divergence (`matrix.raku`, `conformance.raku` and
+> `divergences.raku` contain no `exit`; `typerun.raku` exits only on a timeout or
+> a missing command). It is a report a human reads, not a gate that can fail.
+> See [findings/TOOLS-3.23.md](docs/dev/findings/TOOLS-3.23.md).
 
 Two of the plants are only meaningful because the obvious version does not work:
 `--slim` removes only what it has *proven* unused, so no corpus program can make

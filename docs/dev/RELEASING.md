@@ -7,6 +7,55 @@ something real at least once; the notes say what.
 
 Run these in order. Every one must pass **before** the version is bumped.
 
+### 0. Say what is being measured, before measuring it
+
+Two inputs decide every number below, and until v3.23.0 neither was recorded.
+
+**The binary.** Every gate command here is written `rakupp tools/…`, which is a
+PATH lookup, and gates 1 and 2 test `$*EXECUTABLE` — whichever binary ran the
+harness. On the machine of record three answer to that name:
+
+```bash
+which -a rakupp
+```
+
+```
+/Users/ash/raku++/build-arm64/rakupp     # v3.22.0
+/usr/local/bin/rakupp                    # v1.0.0   (Homebrew Cellar, 22 July)
+/opt/homebrew/bin/rakupp                 # v0.5.1
+```
+
+The right one is first **by PATH ordering alone**. Measured on a single Roast
+file, v1.0.0 reports `0 / 2` fully passing where v3.22.0 reports `1 / 2` — a
+plausible number, from a two-year-old engine, with nothing in the output to say
+so. `run-roast.raku` and the perf/optbench/doc-example tools now open by naming
+the binary and its version; **read that line** rather than trusting the shell.
+
+**The Roast checkout.** Gate 1 is a *diff against the previous release's file
+list*. Roast is upstream and moves, so if it changed between two releases, files
+appear and disappear and the diff charges every one of them to the engine. Note
+the revision before starting, and put it in the CHANGELOG entry:
+
+```bash
+git -C "$ROAST" rev-parse --short HEAD && git -C "$ROAST" log -1 --format=%ci
+```
+
+`run-roast.raku` records it too — in its banner, and in the `.meta` sidecar
+written beside `--list=`. A release whose Roast revision differs from its
+predecessor's must say so, and must not read the list diff as an engine change.
+
+**Start from a clean checkout.** The banner also counts untracked files, because
+a revision does not describe a tree that has files in it the revision never had.
+The per-run scratch directory catches tests writing *relative* paths, but not one
+writing beside its own `.t` file — `S16-io/lines.t` does
+`$*PROGRAM.sibling('lines.testing')`, an absolute path in an upstream tree we do
+not patch — so the harness reports what it left instead:
+
+```bash
+git -C "$ROAST" clean -n      # look first
+git -C "$ROAST" clean -f
+```
+
 ### 1. Roast — no regression
 
 ```bash
@@ -26,6 +75,10 @@ so v3.21.0's diff fell back to a development run found in `rc-work/` — which i
 Keep `roast.txt` too — the per-file `[PASS] 3/3 …` lines are what step 6 below
 feeds to `gen-roast-map.raku`, and re-running the suite just to get them back
 costs an hour.
+
+`--list=` also writes `vX.Y.Z.list.meta` beside it: the rakupp version and path,
+the Roast revision and path, the file count and the worker count. **Commit that
+too.** It is the only record of what produced the list, and gate 0 says why.
 
 Read the **denominators**, not just the pass count. A file that dies removes its
 tests from *both* sides of "tests that ran", so a real regression can leave the
@@ -126,10 +179,30 @@ The gate has three outcomes, not two:
 
 That third state exists because every false alarm this gate has raised was a
 background process, not the build: Spotlight indexing, `ecosystemanalyticsd`,
-WindowServer, and once four `pandoc` jobs at 50% each. A failing kernel is
-re-measured before the gate believes it, and if the load average is above 60% of
-the core count it reports **inconclusive and exits 2** rather than accusing the
-code. Treat exit 2 as "run it again on an idle machine", never as a pass.
+WindowServer, and once four `pandoc` jobs at 50% each. Treat exit 2 as "run it
+again on an idle machine", never as a pass.
+
+Three things have to be true before the gate accuses the code, and as of v3.23.0
+two of them are **measured** rather than inferred:
+
+1. **The failing kernel is re-measured.** A real regression reproduces.
+2. **Its runs must not span more than the tolerance.** `measure()` reports the
+   spread of its own runs beside the minimum, and the table shows it. If a
+   kernel's three runs differ by more than the 5% it is enforcing, the reading
+   cannot support a verdict either way — the difference being blamed on the
+   build is smaller than the difference between two runs of the same build.
+3. **Fewer than half the gated kernels are over tolerance.** A code regression
+   is localized; contention is not. Six of nine kernels failing at once, across
+   arithmetic, calls, strings, hashing and regex — which share no code path — is
+   the machine's signature, not a change's.
+
+Signals 2 and 3 were added because the load check alone was not enough, and the
+gap was measured rather than argued: at load 4.33 on 8 cores (54%, *under* the
+60% cut) an **unmodified** binary failed this gate with five kernels 7.6–10.3%
+slower, and the re-measure confirmed rather than cleared it. Both older defences
+were built against a transient — a daemon waking up — and a sustained load is
+not transient, so it reproduces straight through them. A FAILED verdict now also
+prints the load that produced it, which only the inconclusive path used to do.
 
 If the gate genuinely fails, the options are to fix it, or — when the cost is
 understood and deliberate — to re-record the baseline and **say why in the
@@ -174,6 +247,14 @@ Two consequences for reading this gate:
 - **The `vs best` column is the honest headline, not `delta`.** `baseline` is
   the re-recorded number, so `delta` reads ≈+1% while `rats` is 36% behind the
   fastest ever measured on this machine. Quote `vs best` when reporting.
+
+  Until v3.23.0 the gate's own summary line could not tell you that. It listed
+  the standing debt from a hardcoded `<fib asg loopsum hash>` — the four kernels
+  that existed before the string, call and Rat kernels were added — so it named
+  `fib +6.5%` and stayed silent about `rats +37.4%`. It now reports every kernel,
+  worst first. It also used to skip the note entirely when a kernel read over
+  tolerance and then re-measured clean, which with a 5% tolerance over a 1.7%
+  run-to-run and 3.5% layout floor is a common path, not a rare one.
 - **The gate is blind in one direction.** If the machine returns to its old
   form, `rats` will read ~25% FASTER than baseline and the gate will say
   nothing. A large negative delta on the movers is not a win to announce; it is
@@ -188,11 +269,25 @@ Two known blind spots, both live as of v3.0.1:
 
 - **The baseline drifts out of date silently.** It went four releases without
   being re-recorded (`2026-07-29 (v1.5.1)` while v3.0.0 shipped), and it passes
-  the whole time, which is why nobody noticed. It now reads
-  `2026-08-11 (v3.14.0)`. Re-record deliberately at a release (and say so in the
-  CHANGELOG), or the "no regression since last release" claim quietly stops
-  meaning that — and check the recorded date before repeating this note, which
-  itself went stale and was quoted as fact during the v3.5.0 gates.
+  the whole time, which is why nobody noticed. Re-record deliberately at a
+  release (and say so in the CHANGELOG), or the "no regression since last
+  release" claim quietly stops meaning that.
+
+  **Do not quote the recorded date from this file — read it from the output.**
+  This note has gone stale twice: it was quoted as fact during the v3.5.0 gates,
+  and it then sat at `2026-08-11 (v3.14.0)` while the baseline said
+  `2026-08-29 (v3.21.0)`. `--check` prints the real one in its `gate:` line.
+
+  The mechanism behind all of that is fixed as of v3.23.0: `--record` used to
+  leave the `recorded` field alone while `--check` printed it, so the provenance
+  was hand-maintained and nothing moved when it was forgotten. It now stamps the
+  field, verifies it reads back, and names the binary it measured. Pass the
+  release it is being recorded for — gates run *before* the version bump, so
+  without it the stamp names the previous release:
+
+  ```bash
+  rakupp tools/perf-guard.raku --record --for=vX.Y.Z
+  ```
 - **There is no string kernel.** `fib`/`asg`/`loopsum`/`hash` are arithmetic,
   hashing and control flow. v3.0.1 replaced the entire string representation
   in `Value` and the gate could not have seen a regression either way. If a
@@ -280,6 +375,20 @@ rakupp tools/conformance.raku && rakupp tools/divergences.raku     # reports
 Both halves feed <https://raku.online/spec/rules/divergences/>. This is slow
 (~25 min for the types sweep), which is why it runs per release rather than per
 batch.
+
+**This is the one entry on this list that cannot fail.** None of the four tools
+has a red path: `matrix.raku`, `conformance.raku` and `divergences.raku` contain
+no `exit` at all, and `typerun.raku` exits non-zero only on a timeout (124) or a
+missing command (127) — infrastructure, not conformance. Measured 2026-08-29:
+`conformance.raku` and `divergences.raku` both exit 0.
+
+So read it as a **report**, not a gate. The pass/fail judgement is yours: compare
+the divergence count against the previous release's, allow the ±5 flap band
+below, and account for anything outside it before tagging. `prove-gates` lists
+this under "Release checks with NO plant, and why" rather than pretending to
+cover it, and until conformance gets a committed baseline and a real criterion
+(the tooling for which lives in the raku.online repo), the honest form of
+v3.22.0's claim is "every gate **that can fail** detects a planted defect".
 
 This leaves `src/data/typerun.raku` and `src/data/matrix.raku` rewritten but
 **unpublished** — step 6 in the next section is what turns them into pages.
@@ -409,6 +518,22 @@ So:
    that cell, so writing `643 / 1,464` there to make the grep reach it would make
    the dashboard read `6431464`. That is why this is a checker and not a
    reformat.
+
+   Two things it learned in v3.23.0, both from being wrong first:
+
+   - **A flag whose figure it cannot find is now a failure, not a pass.** It used
+     to check only what its rules happened to reach, so
+     `--examples=950 --version=3.23.0` exited 0 against a tree stating neither —
+     the same false comfort as the grep it replaced, one layer up.
+   - **It checks the file-bucket arithmetic**: fully + partial + no-TAP + timeout
+     must equal the denominator. Unlike everything else in that tool this applies
+     to historical snapshots too, because it is internal consistency rather than
+     currency — a v3.21.0 paragraph may carry v3.21.0's numbers, but they still
+     have to add up to 1,464. It was written because two figures survived the
+     v3.22.0 refresh that nothing else could see: `docs/guide/FEATURES.md`
+     carried v3.21.0's `685 partial` beside v3.22.0's `642` (summing to 1,463),
+     and `docs/status/ROAST.md`'s v3.21.0 snapshot opened with `642` in a
+     paragraph whose next sentence said the count repeats at 643.
 4. **Check CI is green on the exact commit you are about to tag**, then tag,
    then publish.
 
@@ -451,35 +576,94 @@ So:
    clone** from your working copy — `brew audit`/`brew fetch` read *that* one,
    so testing your edit means copying the file in (then `git checkout --` to
    leave it clean) or pushing first.
-6. **Republish the site data** — the graphs and listings under
-   <https://raku.online/spec/> and <https://raku.online/spec/rules/>, *and* the
-   hand-written figures on the front page (see below).
+6. **Republish raku.online.** This is the step that gets forgotten, because the
+   release is already out by then and everything looks finished. It isn't —
+   until this runs, the site announces the new version while showing the
+   previous release's engine, graphs and measurements.
 
-Step 6 is the one that gets forgotten, because the release itself is already
-out by then and everything looks finished. It isn't: gate 7 rewrote the
-conformance data in the raku.online checkout and left it sitting there, so until
-this runs, the site shows the *previous* release's divergences, coverage meters
-and Roast map while announcing the new version.
+### What always runs, and what runs on demand
 
-**After the tag, not before.** `gen-dashboard.raku` mines the rakupp repo's `v*`
-tags and reads `docs/status/ROAST.md` / `docs/status/BENCHMARKS.md` *as committed at each one*.
-Run it before tagging and the new release is simply absent from the timeline —
-and since it only collects, never measures, nothing warns you.
+Split them by what the thing actually carries. Anything carrying the **version
+number or the release timeline** moves at every release, because the release is
+what changed it. Anything carrying a **measurement** only moves when the sweep
+behind it was re-run — regenerating it from stale inputs writes a new date onto
+an old number, which is worse than leaving it.
+
+**On a major version (`X.0.0`), all of it runs**, and the sweeps that feed the
+second group are re-run first. A major is the release people actually go and
+look at, and it is the wrong one to have a two-release-old ecosystem table on.
+
+| | when | why |
+|---|---|---|
+| **The Raku.js WASM engine** | **always** | it *is* the engine; `/play/` and every run button on the site execute it |
+| **Front page + install page figures** | **always** | hand-written, no generator, no check |
+| **`snapshot.raku` → `gen-dashboard.raku`** | **always** | the timeline gains a point per tag; skip one and it is missing forever |
+| **`gen-roast-map.raku`** | **always** | gate 1 produced a new `roast.txt`; it is the release's own measurement |
+| **`spec` + `spec/rules`** | on demand — **always on a major** | only meaningful if gate 7's sweep was actually run this cycle |
+| **`modules` / ecosystem** | on demand — **always on a major** | only meaningful after a fresh `eco-sweep`; the listing is 2,524 verdicts, not a version string |
+| **`tour`, `faq`, `book`, `examples`, `showcase`, `grid`** | on demand — **always on a major** | content-driven: they change when their own source changes, not when the engine ships |
+
+#### Always — after the tag, never before
+
+`gen-dashboard.raku` mines the rakupp repo's `v*` tags and reads
+`docs/status/ROAST.md` / `docs/status/BENCHMARKS.md` *as committed at each one*. Run it
+before tagging and the new release is simply absent from the timeline — and
+since it only collects, never measures, nothing warns you.
 
 ```bash
-# in the raku.online checkout, sites/spec
-rakupp tools/gen-roast-map.raku /path/to/roast.txt $(date +%F)  # gate 1's output
-rakupp tools/snapshot.raku --rakupp=/path/to/rakupp --oracle=raku   # BEFORE the dashboard
-rakupp tools/gen-dashboard.raku --rakupp-repo=/path/to/raku++ --battery=/path/to/raku-module-battery
-../../../raku++/rakujs/build.sh    # the playground engine — see the notes below
-./verify.sh                                    # both sites, every example, publishes nothing
-cd ../.. && ./build.sh spec                    # sites/spec -> www/spec
+# in the raku.online checkout
+../raku++/rakujs/build.sh                       # 1. the playground engine…
+#    …which builds into raku++/rakujs/playground/ and copies NOTHING. Do that:
+cp ../raku++/rakujs/playground/rakujs.js   www/
+cp ../raku++/rakujs/playground/rakujs.wasm www/
+cp ../raku++/rakujs/playground/examples.js www/play/
+#    (worker.js is NOT copied — the site keeps its own variant.)
+#    Then check the bundle you copied, not the build — see below:
+strings www/rakujs.wasm | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+$'
+
+cd sites/spec
+rakupp tools/gen-roast-map.raku /path/to/roast.txt $(date +%F)      # 2. gate 1's output
+rakupp tools/snapshot.raku   --rakupp=/path/to/rakupp --oracle=raku # 3. BEFORE the dashboard
+rakupp tools/gen-dashboard.raku --rakupp-repo=/path/to/raku++ \
+                               --battery=/path/to/raku-module-battery   # 4.
+./verify.sh                                     # every example, publishes nothing
+cd ../.. && ./build.sh spec                     # sites/spec -> www/spec
 ```
 
-Then commit `www/` *together with* `sites/spec/src/data/`, and push. The Pages
-workflow publishes `www/` **verbatim** — there is no build step in CI, so
-anything not built and committed locally does not go live, and the regenerated
-data files alone change nothing that a visitor sees.
+Then edit the **hand-written version figures** (below), commit `www/`
+*together with* `sites/spec/src/data/`, and push.
+
+#### On demand — and unconditionally on a major
+
+Run these only when the sweep behind them was part of this cycle. Each needs its
+data regenerated **before** `build.sh` renders it, or you publish the same page
+with a newer date:
+
+```bash
+cd sites/spec                                   # gate 7 must have run this cycle
+rakupp tools/typerun.raku --rakupp=/path/to/rakupp --oracle=raku
+rakupp tools/matrix.raku  --rakupp=/path/to/rakupp --oracle=raku
+rakupp tools/conformance.raku && rakupp tools/divergences.raku
+cd ../.. && ./build.sh spec                     # /spec and /spec/rules
+
+# the ecosystem listing — needs a fresh eco-sweep, not the last verdict file
+./build.sh modules                              # /modules and /modules/ecosystem
+
+./build.sh all                                  # on a major: everything, in one go
+```
+
+`build.sh` takes `theme`, `tour`, `spec`, `grid`, `faq`, `book`, `modules`,
+`examples`, `showcase`, or `all`.
+
+**On a major, do it in this order**: re-run the sweeps → regenerate the data →
+`./build.sh all` → `sites/spec/verify.sh` (run it from that directory) → then
+the always-list above (the WASM engine,
+the snapshot and the dashboard), so the dashboard's last line describes the data
+that is actually on the site.
+
+The Pages workflow publishes `www/` **verbatim** — there is no build step in CI,
+so anything not built and committed locally does not go live, and the
+regenerated data files alone change nothing that a visitor sees.
 
 `snapshot.raku` sits between two ordering hazards, one on each side — the
 v2.0.0 release hit the second one and shipped a dashboard whose conformance
@@ -498,7 +682,7 @@ trend ended at the previous release:
   `gen-dashboard` is safe (it only collects); re-running `snapshot` is NOT
   (it would append a duplicate line).
 
-Two more collectors go stale silently — neither fails, they just stop:
+Three more things go stale silently — none of them fails, they just stop:
 
 - **The dashboard's modules series** is mined from the *battery repo's commit
   subjects* (`Tier-2: N/50` for the old probe bar, `battery: N/59` for the
@@ -507,11 +691,23 @@ Two more collectors go stale silently — neither fails, they just stop:
   while the README says something better.
 - **The playground engine** (`/play/` and every embedded run button) is the
   Raku.js WASM bundle, built separately by `rakujs/build.sh` from the tagged
-  source and copied into the site's `www/` (`rakujs.js` + `rakujs.wasm`).
-  Nothing regenerates it: skip this and the playground banner keeps
-  announcing the previous release — v2.0.0 shipped while `/play/` still said
-  1.7.0, and v3.0.0 shipped while it still said 2.0.0. Rebuild it, copy the
-  pair over, and let `build.sh` re-stamp the cache-busting hashes.
+  source. Nothing regenerates it from the site side: skip this and the
+  playground banner keeps announcing the previous release — v2.0.0 shipped
+  while `/play/` still said 1.7.0, and v3.0.0 shipped while it still said
+  2.0.0.
+
+  **The build copies nothing.** It writes into `raku++/rakujs/playground/`, and
+  three files have to be moved by hand: `rakujs.js` and `rakujs.wasm` into
+  `www/`, and `examples.js` into `www/play/`. (`worker.js` is *not* copied — the
+  site keeps its own variant, so overwriting it would be a regression.) Then let
+  `build.sh` re-stamp the cache-busting hashes.
+
+  `build.sh` regenerates `examples.js` with a rakupp it chooses itself, and
+  since v3.22.0 it checks that binary is native rather than taking the first
+  candidate — the same trap as perf-guard and optbench. It prints which one it
+  used (`==> generating examples.js with …`); read that line, because it filters
+  by architecture but not by *age*, and the examples every visitor runs are
+  generated by whatever it picked.
 
   **Then check the bundle you just copied, rather than trusting the build.**
   The banner is not in the page — `worker.js` calls `rakupp_version` on the
@@ -525,9 +721,11 @@ Two more collectors go stale silently — neither fails, they just stop:
   visitor keeps running the cached old engine.
 
 - **The front page and the install page carry hand-written figures.**
-  `www/index.html` and `www/install/index.html` are edited directly — `sites/`
-  holds only faq, spec and tour, so no generator touches them and no check
-  compares them to anything. They said `Version 2.0.0` with v2.0.0's Roast and
+  `www/index.html` and `www/install/index.html` are edited directly. `sites/`
+  holds `6e`, `book`, `examples`, `faq`, `grid`, `modules`, `showcase`, `spec`
+  and `tour` — and no source for either of these two, so nothing generates them
+  and no check compares them to anything. (`build.sh` *touches* `www/index.html`,
+  but only to re-stamp its `?v=` cache tag; it never writes the figures.) They said `Version 2.0.0` with v2.0.0's Roast and
   distribution numbers for **two** releases, while the CHANGELOG moved twice.
   Update, in both files:
 
@@ -544,6 +742,115 @@ Two more collectors go stale silently — neither fails, they just stop:
 
 If a sweep was skipped, skip its regeneration too rather than re-running an old
 tool against new data — the point of the history is that each line is one
-coherent run. `inventory.raku` and `typedoc.raku` need a Rakudo doc checkout and
+coherent run. That is the whole reason for the on-demand column above: a
+regenerated page with a new date and last release's numbers is worse than an
+untouched one, because the date is the only thing a reader has to judge it by.
+
+**A major version is the exception, and it is not a licence to regenerate from
+stale inputs** — it is an instruction to *re-run the sweeps first*, then
+regenerate everything. If a sweep genuinely cannot be run for a major, say so in
+the CHANGELOG rather than publishing its page with a fresh timestamp. `inventory.raku` and `typedoc.raku` need a Rakudo doc checkout and
 only change when the *documentation* does, not when Raku++ does; they are not
 per-release work.
+
+---
+
+## The things that get forgotten
+
+Everything below is written out in full above. This is the short list, because
+every one of them has actually been missed at least once, and none of them
+fails loudly — a forgotten step here looks exactly like a finished release.
+The cost is named so the list stays a record rather than a ritual.
+
+**Before the gates**
+
+- [ ] **Name the binary.** `which -a rakupp` — three answer on the machine of
+      record, and the right one is first by PATH ordering alone. Read the
+      provenance line each tool now prints. *(v1.0.0 scores a Roast subset 0/2
+      where v3.22.0 scores 1/2, with nothing in the output to say which ran.)*
+- [ ] **Note the Roast revision**, and put it in the CHANGELOG. *(Gate 1 is a
+      diff against the last release's list; if Roast moved, the diff blames the
+      engine for it.)*
+- [ ] **Check `build/` is native**: `file -b build/rakupp`. Fixed at the root in
+      v3.23.0 — `CMakeLists.txt` now defaults to the host architecture — but the
+      cause is still on the machine: `/usr/local/bin/cmake` is an **x86_64**
+      binary ahead of `/opt/homebrew` on PATH, and CMake infers the target from
+      its own process, so the documented `cmake -S . -B build` produced a
+      *translated* binary for as long as anyone had been running it. *(Three
+      gate failures downstream of that one fact: perf-guard, optbench,
+      doc-examples-diff.)* A configure now prints
+      `-- rakupp: building for the host architecture arm64`.
+
+**Around the gates**
+
+- [ ] **Three Roast runs, not one**, and quote the repeating profile. Diff the
+      **unions**. *(v3.0.0 published the top of its band and it never
+      reproduced.)*
+- [ ] **Archive `vX.Y.Z.list`, `vX.Y.Z-union.list` and the `.meta` sidecar**, and
+      commit them. *(v3.20.1 archived nothing, so v3.21.0 diffed against
+      `.gitignore`d scratch.)*
+- [ ] **Re-record the perf baseline deliberately** — `--record --for=vX.Y.Z` —
+      and say why in the CHANGELOG. *(Went four releases stale, passing the whole
+      time.)*
+- [ ] **Run the battery after performance work**, not only before a release.
+      *(`Supply.wait` had never blocked; only the battery noticed.)*
+- [ ] **Commit the battery repo with `battery: N/59` in the subject.** *(The
+      dashboard mines that string; nothing warns when it goes stale.)*
+
+**Writing the release**
+
+- [ ] **`--version` must name the new version and must not end in `-modified`.**
+      *(v3.0.0 shipped announcing 2.0.0.)*
+- [ ] **Bump all three package files** — `CMakeLists.txt`, `.guix/…/rakupp-package.scm`,
+      `flake.nix`.
+- [ ] **Add the release's row to `docs/status/MILESTONES.md`.** *(Sat four
+      releases stale, v2.0.0 → v3.14.0.)*
+- [ ] **`check-figures --expect=N --examples=N --version=X.Y.Z` — all three
+      flags.** *(With one flag it reported agreement while README still called
+      the previous release current, in the table it had just checked. A flag
+      whose figure it cannot find is now a failure, not a pass, and
+      `prove-gates --gate=figures` proves it goes red.)*
+- [ ] **CI green on the exact commit you are about to tag**, and never move a
+      published tag. *(v3.0.0 served binaries built from two different commits.)*
+
+**After the tag — the half that is easiest to skip, because it already looks done**
+
+- [ ] **Bump the Homebrew tap** (a separate repo; three places in the formula).
+      *(Sat on 1.1.0 for eleven releases.)*
+
+*raku.online, every release — these carry the version or the timeline:*
+
+- [ ] **Rebuild the Raku.js WASM engine, copy all three files, and check the
+      bundle you copied** — `rakujs.js`/`rakujs.wasm` into `www/`, `examples.js`
+      into `www/play/`; the build copies nothing itself. Verify with
+      `strings www/rakujs.wasm | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+$'`. *(v2.0.0
+      shipped with `/play/` announcing 1.7.0; v3.0.0 with 2.0.0; v3.22.0's was
+      built by a two-release-old compiler because "native" was never checked.)*
+- [ ] **`gen-roast-map.raku`** with this release's `roast.txt`.
+- [ ] **`snapshot.raku` after gate 7's sweep and before `gen-dashboard`.**
+      *(Append-only: snapshot early and the release permanently records the
+      previous one's numbers. v2.0.0 hit this.)*
+- [ ] **`gen-dashboard.raku`** — after the tag, or the release is missing from
+      every graph and nothing warns you.
+- [ ] **Edit the hand-written figures on `www/index.html` and
+      `www/install/index.html`.** Nothing generates them and no check compares
+      them. *(Two releases stale.)*
+- [ ] **Commit `www/` together with `sites/spec/src/data/` and push.** Pages
+      publishes `www/` verbatim — there is no build step in CI.
+
+*raku.online, on demand — these carry measurements, so only if the sweep ran:*
+
+- [ ] **`/spec` and `/spec/rules`** — only if gate 7's sweep ran this cycle.
+- [ ] **`/modules` and `/modules/ecosystem`** — only after a fresh `eco-sweep`,
+      not from the last verdict file.
+- [ ] **`tour`, `faq`, `book`, `examples`, `showcase`, `grid`** — only if their
+      own source changed.
+
+*On a MAJOR version (`X.0.0`), none of the above is optional:*
+
+- [ ] **Re-run the sweeps first**, then regenerate, then `./build.sh all`, then
+      `sites/spec/verify.sh` — in that order, so the dashboard's last line describes the
+      data actually on the site. A major is the release people go and look at,
+      and the wrong one to leave a two-release-old ecosystem table on. If a sweep
+      genuinely cannot be run, say so in the CHANGELOG rather than republishing
+      its page with a fresh timestamp.

@@ -226,11 +226,14 @@ turned out to have a defect of their own.*
 
 ### v3.23.0 — the re-baseline
 
-*This one was left open; the choice below is the author's reading of what the
-arc needs, and can be traded for something better before the code starts.*
+*Planned in [REBASELINE-PLAN.md](REBASELINE-PLAN.md). This section was left open
+when the arc was written — "can be traded for something better before the code
+starts" — and it was: the plan is the traded-in version, and it grew one step at
+the front.*
 
 - **The number:** every figure this project measures itself by, re-measured
-  from **one** run on the machine of record, and the baselines re-recorded.
+  from **one** run on the machine of record, the baselines re-recorded, and
+  **each one naming what produced it**.
 - **Why this and not more fixes:** the problem the arc is answering is as much
   a measurement problem as a code problem. `perf-baseline.raku` has drifted
   before and passes silently the whole time — RELEASING.md documents four
@@ -241,6 +244,26 @@ arc needs, and can be traded for something better before the code starts.*
   perf baseline with the reasons in the CHANGELOG, re-run the conformance
   halves, regenerate the Roast map, and re-sweep the ecosystem from scratch
   rather than from the last verdict file.
+- **The step at the front, which the original scope did not have.** Before
+  re-measuring anything, the instruments were reviewed —
+  [findings/TOOLS-3.23.md](../findings/TOOLS-3.23.md), **twenty-five defects, all
+  fixed**. Three of them would have corrupted this release's own numbers:
+  nothing recorded *which* rakupp or *which* Roast a run measured (three rakupp
+  binaries answer on PATH here, and the right one is first by ordering alone);
+  the documentation-example figure was swept with a v3.20.1 x86_64 build; and
+  `perf-guard`'s debt note named one kernel of five, silent about the `rats
+  +37.4%` this arc exists to carry. One of them was an engine bug the review
+  tripped over — a `:g` match did not carry its subject, so `.from`/`.to` were
+  byte offsets on any non-ASCII string.
+- **One claim corrected.** v3.22.0 said "every gate detects a planted defect".
+  Gate 7 (conformance) **cannot** detect one: none of its four tools has a red
+  path — `matrix`, `conformance` and `divergences` contain no `exit`, and
+  `typerun` exits only on a timeout or a missing command. It is a report a human
+  reads, not a gate that can fail. The figure checker, which *can* fail, is now
+  planted and caught.
+- **What carries forward:** v3.22.0's source review is 3 files of 83, and its
+  two named leads are both places a gate is known not to look — `--exe` failing
+  to compile a sub-signature destructure, and a `Range` bound to `@c`.
 - **What it buys:** the 1000-module campaign below gets a starting line that
   was measured, not inherited.
 
