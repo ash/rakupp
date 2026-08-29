@@ -11,11 +11,14 @@ WebAssembly, no server required. It is not a fork of Rakudo and shares no code
 with it; it targets the *language*, measured against
 [**Roast**](https://github.com/Raku/roast), the official Raku test suite.
 
-**Status:** current release **v3.21.0** (2026-08-29) — *the state after the
-changes*: the first of three consolidation releases, adding no campaign. It
-carries what had accumulated on main since the previous tag and could not reach
-anyone without one — issues #38 through #42 among them, including HTTP::Tiny,
-which v3.20.1 shipped broken — measured together on one machine in one sitting.
+**Status:** current release **v3.22.0** (2026-08-29) — *the instruments, fixed
+and then proved*: the second of three consolidation releases. v3.21.0 passed all
+seven release gates and shipped a silent wrong answer — `Digest`'s RIPEMD hashed
+every input incorrectly — so this release fixes the gates and then asks each one
+to prove it can fail: **8 of 8 detect a planted defect**, which no release here
+has claimed before. The wrong answer itself was in parameter binding, not where
+the plan expected, and reading the neighbouring code found two more instances of
+the same defect.
 The release before it was *the cooldown: one implementation of everything, and
 fez installs*: a 360° source review worked to completion in three gated
 batches, plus `fez` installing with its tests green and `zef` working
@@ -36,27 +39,37 @@ remains the per-release QA gate — see
 [RELEASING.md](docs/dev/RELEASING.md) — an instrument, not the ecosystem
 picture.)
 
-**Next, in order — three consolidation releases before the next campaign.**
-Language work has the property Larry Wall kept pointing at: push the design in
-one place and something pops out in another. After a lot of correct individual
-changes, that is where this engine is, so the next three releases add nothing
-new. **v3.21.0** ships what has accumulated since v3.20.1 — issues #38 through
-#42 among them — with the full release gate set green on one machine in one
-sitting. **v3.22.0** is a 360° source review plus the runs that get skipped
-between releases because they are slow: the whole Roast suite, the whole
-2,524-distribution sweep, the conformance matrix. **v3.23.0** re-measures
-every figure this project gates on, from one run, and re-records the baselines
-— a gate whose baseline predates the review is not a gate. Then the standing
-target: **1000 of 2,524** distributions passing their own test suites, up from
-637, where the lever is the 421 that never ran their own tests at all because
-a dependency failed first. The plans are in
+**Three consolidation releases before the next campaign.** Language work has the
+property Larry Wall kept pointing at: push the design in one place and something
+pops out in another. After a lot of correct individual changes, that is where
+this engine is, so these three add nothing new.
+
+- **v3.21.0** — *the state after the changes.* ✅ Shipped what had accumulated
+  since v3.20.1 — issues #38 through #42 among them — measured together on one
+  machine in one sitting. It also passed all seven gates and shipped a silent
+  wrong answer, which set the next release's agenda.
+- **v3.22.0** — *the instruments, fixed and then proved.* ✅ Scoped as the 360°
+  source review; the v3.21.0 sitting changed the order, because a review produces
+  verdicts and verdicts inherit the reliability of whatever measured them. Six of
+  the seven gates had a defect. All are fixed, and **8 of 8 now detect a planted
+  defect** — `rakupp tools/prove-gates.raku --all`. The review itself is **barely
+  begun, three files of eighty-three**, and carries forward.
+- **v3.23.0** — *re-measure everything.* ⬜ Every figure this project gates on,
+  from one run, with the baselines re-recorded: a gate whose baseline predates the
+  review is not a gate. It inherits the review, and the open question v3.22.0 did
+  not close — why the performance baseline moved, with build nondeterminism,
+  binary layout, the allocator and the metric now eliminated and no cause found.
+
+Then the standing target: **1000 of 2,524** distributions passing their own test
+suites, up from 637, where the lever is the 421 that never ran their own tests at
+all because a dependency failed first. The plans are in
 [docs/dev/plans/VERSIONS.md](docs/dev/plans/VERSIONS.md).
 
-| | v3.21.0 | at v2.0.0 |
+| | v3.22.0 | at v2.0.0 |
 |---|---:|---:|
 | Roast, per individual test — of what the suite declares‡ | **198,956 of ~218,764 (90%)** | 197,090 of ~203,500 (97%) |
 | Roast, all-or-nothing — files fully passing, of 1,464 | **642 (44%)** | 594 |
-| Official documentation examples byte-identical on both engines | **954** | 952 |
+| Official documentation examples byte-identical on both engines | **950** | 952 |
 | Of the Raku ecosystem's [2,524 distributions](https://raku.online/modules/ecosystem/), passing their own test suites | **637** | — |
 | Local regression suite | **578** | 312 |
 | `say "Hello"` compiled with `--exe --slim` | **6,165,528 B** | 9,830,680 B (no `--slim`) |

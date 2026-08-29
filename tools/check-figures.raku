@@ -24,15 +24,26 @@
 # legitimately appear in the text that documents them. A checker that flagged
 # those would be noise, and noise is how a gate becomes a ritual.
 #
+# It checks THREE things, because one of them was learned the hard way. After the
+# v3.22.0 figure refresh this tool reported "all headline figures agree at 642"
+# while README.md still called v3.21.0 the current release, still labelled its
+# comparison column `v3.21.0`, and still carried the previous release's
+# documentation-example count — all in the same table it had just checked. A
+# checker that covers one cell of a row family gives the same false comfort as
+# the grep it replaced.
+#
 # Usage:
-#   rakupp tools/check-figures.raku              # all headline figures must agree
-#   rakupp tools/check-figures.raku --expect=643 # …and must equal this run's count
-# Exit 0 = agreement (and matches --expect if given). Exit 1 = not.
+#   rakupp tools/check-figures.raku                     # headline figures must agree
+#   rakupp tools/check-figures.raku --expect=642 \
+#          --examples=950 --version=3.22.0              # …and match this release
+# Exit 0 = agreement (and matches every --flag given). Exit 1 = not.
 
 my $ROOT = $?FILE.IO.parent.parent;
-my $expect;
+my ($expect, $examples, $version);
 for @*ARGS -> $a {
-    if $a ~~ / ^ '--expect=' (\d+) $ / { $expect = +$0 }
+    if    $a ~~ / ^ '--expect='   (\d+) $ /            { $expect   = +$0 }
+    elsif $a ~~ / ^ '--examples=' (\d+) $ /            { $examples = +$0 }
+    elsif $a ~~ / ^ '--version='  (\d+ ['.' \d+]+) $ / { $version  = ~$0 }
     else { note "unknown argument: $a"; exit 2 }
 }
 
@@ -43,7 +54,9 @@ my @docs = <
     docs/guide/OVERVIEW.md
 >.map({ $ROOT.add($_) }).grep(*.e);
 
-my @sightings;   # [relative-path, line-number, value, how-it-is-written]
+my @sightings;      # [relative-path, line-number, value, how-it-is-written]
+my @versions;       # the release version as the docs state it
+my @examples-seen;  # the documentation-example count
 
 for @docs -> $doc {
     my $rel = $doc.relative($ROOT);
@@ -56,6 +69,25 @@ for @docs -> $doc {
             next unless @cells.elems > 2;
             my $digits = @cells[2].subst(/ <-[0..9]> /, '', :g);
             @sightings.push([$rel, $n, +$digits, 'standing table cell']) if $digits;
+        }
+        # the release VERSION, wherever the docs state it as current. Both of
+        # these went stale through the v3.22.0 refresh while the figures beside
+        # them were updated, which is the worst of both: a table labelled with
+        # one release holding another's numbers.
+        if $t.lc.starts-with('**status:**') && $t ~~ / 'v' (\d+ ['.' \d+]+) / {
+            @versions.push([$rel, $n, ~$0, 'Status line']);
+        }
+        elsif $t ~~ / ^ '| |' \s* 'v' (\d+ ['.' \d+]+) \s* '|' / {
+            @versions.push([$rel, $n, ~$0, 'comparison-table header']);
+        }
+        # the documentation-example count, the other bare cell in that same row
+        # family — no denominator, so the figure grep cannot see it either
+        elsif $t.lc.contains('documentation examples byte-identical')
+           || $t.lc.contains('documentation examples reproduced exactly') {
+            my @cells = $t.split('|');
+            if @cells.elems > 2 && @cells[2] ~~ / (\d+) / {
+                @examples-seen.push([$rel, $n, (~$0).Int, 'documentation-example cell']);
+            }
         }
         # README's comparison row, whose label carries the denominator:
         #   | Roast … files fully passing, of 1,464 | **643 (44%)** | 594 |
@@ -89,6 +121,28 @@ for @values -> $v {
 }
 
 my $bad = False;
+
+# the version the docs call current, and the documentation-example count — the
+# two neighbours of the cell above, both of which went stale while it did not
+sub agree(@seen, $want, Str $what, Str $flag) {
+    return False unless @seen;
+    my @distinct = @seen.map(*.[2]).unique.sort;
+    say "";
+    say sprintf('  %-8s %s', ~$_[2], "{$_[0]}:{$_[1]}  ({$_[3]})") for @seen;
+    my $bad = False;
+    if @distinct > 1 {
+        say "DISAGREEMENT: the docs state {@distinct.elems} different $what at once ({@distinct.join(', ')}).";
+        $bad = True;
+    }
+    if $want.defined && !(@distinct == 1 && @distinct[0] eqv $want) {
+        say "STALE: $flag says {$want}; the docs say {@distinct.join(' and ')}.";
+        $bad = True;
+    }
+    $bad
+}
+$bad = True if agree(@versions,      $version,  'release version',            '--version');
+$bad = True if agree(@examples-seen, $examples, 'documentation-example count', '--examples');
+
 if @values > 1 {
     say "";
     say "DISAGREEMENT: the docs state {@values.elems} different current file counts at once";

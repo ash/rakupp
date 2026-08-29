@@ -386,8 +386,15 @@ So:
    it. Run the checker too, which reads the headline figures structurally:
 
    ```bash
-   rakupp tools/check-figures.raku --expect=NNN     # NNN = this run's fully-passing count
+   rakupp tools/check-figures.raku --expect=NNN --examples=NNN --version=X.Y.Z
    ```
+
+   Pass all three. `--expect` alone checks one cell of a row family, and that is
+   how v3.22.0's refresh reported "all headline figures agree at 642" while
+   README.md still called v3.21.0 the current release, still labelled its
+   comparison column `v3.21.0`, and still carried the previous release's
+   documentation-example count — in the same table it had just checked. A table
+   labelled with one release holding another's numbers is worse than a stale one.
 
    It compares the standing `| **Fully passing** | … |` cells in
    `docs/status/ROAST.md` and `docs/guide/GUIDE.md` against README's comparison
