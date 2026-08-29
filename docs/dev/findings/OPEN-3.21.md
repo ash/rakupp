@@ -1,6 +1,6 @@
 # What v3.21.0's gates found, and left open
 
-Six findings from the v3.21.0 release sitting (2026-08-29). One is an engine
+Seven findings from the v3.21.0 release sitting (2026-08-29). One is an engine
 bug the release SHIPS; the rest are about the gates themselves — a gate that
 cannot be read, or that reports green while leaving damage, is on its way to
 becoming a ritual. All are v3.22.0's, and each is written with the repro so
