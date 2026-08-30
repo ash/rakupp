@@ -103,13 +103,26 @@ Two candidate fixes, cheapest first:
   no guard. Bigger blast radius (every `tctx_.` site), so only if the first
   pass leaves the line high.
 
-### 3. Small-buffer argument lists
+### 3. Small-buffer argument lists — NOT VIABLE AS WRITTEN, AND NOT NEEDED (2026-08-30)
 
-`ValueList args` is a heap `vector<Value>` per call, and
-`__emplace_back_slow_path` shows up in every profile taken this session. Almost
-every call passes 0-3 arguments. A small-buffer vector (inline capacity 4)
-removes the allocation for the common arity. `ValueList` is a typedef, so this
-is one type swap plus whatever `std::vector`-specific API the codebase leans on.
+The plan said "`ValueList` is a typedef, so this is one type swap". That was the
+mistake: it is a typedef SHARED WITH THE ARRAY PAYLOAD — `Value::arr()` returns
+`ValueList*`. Giving it an inline capacity of 4 would put 832 bytes (4 x
+sizeof(Value)) inside every Raku array in the program. Not an optimisation, a
+memory catastrophe. An argument-only type would need its own name and a change to
+every `callCallable`/`methodCall`/`invokeMethod` signature.
+
+It is also no longer pointing at anything. `__emplace_back_slow_path` was in every
+profile when this was written; after phase 1 pooled the method frame it dropped
+out of the top sixteen entirely. And the biggest per-call allocation left — `@_`,
+a full copy of the argument list materialised into the frame on EVERY call, used
+by almost no Raku code — measures neutral when removed: method 1.08x, privmeth
+0.98x, Graph 0.96x, all noise, and one of them the wrong way.
+
+So the allocation phase 1 did not remove is not worth chasing. If argument
+handling ever matters again, `@_` is the thing to make lazy, and the honest way is
+a static "does this body mention `@_`" flag (a DecidedOnce on the Block, like
+`simpleOp`) that stays conservative about EVAL — not a container swap.
 
 ### 4. Attribute slots — PADS-PLAN for `has`
 

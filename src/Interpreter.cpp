@@ -13442,6 +13442,7 @@ struct PooledFrame {
 } // namespace
 
 Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs, bool ownFrame, bool arityCheck) {
+    ExecContext& tcx = tctx_;   // one thread-local resolution — see execBlock
     // --profile: routine-level entry/exit (RAII — this function returns in many
     // places). Bare blocks and builtins are skipped: block time lands in the
     // enclosing routine, builtins in their caller. Off-cost: one branch.
@@ -13461,10 +13462,10 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     struct FloorGuard {
         ExecContext& t; size_t saved; bool active;
         ~FloorGuard() { if (active) t.redispatchFloor = saved; }
-    } floorG{tctx_, tctx_.redispatchFloor, false};
+    } floorG{tcx, tcx.redispatchFloor, false};
     if (codeVal.t == VT::Code && codeVal.code() && !codeVal.code()->isBlock) {
         floorG.active = true;
-        tctx_.redispatchFloor = redispatchStack_.size() - (ownFrame && !redispatchStack_.empty() ? 1 : 0);
+        tcx.redispatchFloor = redispatchStack_.size() - (ownFrame && !redispatchStack_.empty() ? 1 : 0);
     }
     // The revision the callee was COMPILED under governs its body, not the one
     // its caller happens to be running under. Without this, a sub in a 6.e
@@ -13540,7 +13541,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
         if (!codeVal.enumType.empty() && !codeVal.enumName.empty() && !args.empty()) {
             const Value& a0 = args[0];
             if (a0.enumType == codeVal.enumType) return a0;
-            Value* ty = tctx_.cur ? tctx_.cur->find(codeVal.enumType) : nullptr;
+            Value* ty = tcx.cur ? tcx.cur->find(codeVal.enumType) : nullptr;
             if (!ty && global_) ty = global_->find(codeVal.enumType);
             if (ty && ty->t == VT::Array && ty->arr()) {
                 long long counter2 = 0;
@@ -13575,7 +13576,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
         if (codeVal.t == VT::Any && !args.empty()) return args[0];
         throw RakuError{Value::typeObj("X::Method::NotFound"), "Cannot invoke non-Callable value of type " + codeVal.typeName()};
     }
-    DepthGuard guard(tctx_.callDepth);
+    DepthGuard guard(tcx.callDepth);
     Callable& c = *codeVal.code();
     // A METHOD GROUP invoked as a plain callable — `$obj.$m(…)` where $m is the
     // dispatcher `^lookup` handed back — takes its invocant as the first
@@ -13872,14 +13873,14 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
         if (sixE() || !(c.isBlock && args.empty()))
             env->define("@_", Value::array(slurpyArgs(args)));
     }
-    auto saved = tctx_.cur;
-    Env* savedState = tctx_.curStateEnv;
-    tctx_.cur = env;
-    tctx_.curStateEnv = c.stateEnv.get();
-    tctx_.dynStack.push_back(saved ? saved.get() : global_.get()); // caller's scope, for dynamic $*var lookup
+    auto saved = tcx.cur;
+    Env* savedState = tcx.curStateEnv;
+    tcx.cur = env;
+    tcx.curStateEnv = c.stateEnv.get();
+    tcx.dynStack.push_back(saved ? saved.get() : global_.get()); // caller's scope, for dynamic $*var lookup
     // callframe(N) walks these; RAII, because this function has many exit paths
-    tctx_.callFrames.push_back({curLine_, &codeVal});
-    struct CFGuard { ExecContext& t; ~CFGuard() { if (!t.callFrames.empty()) t.callFrames.pop_back(); } } cfG{tctx_};
+    tcx.callFrames.push_back({curLine_, &codeVal});
+    struct CFGuard { ExecContext& t; ~CFGuard() { if (!t.callFrames.empty()) t.callFrames.pop_back(); } } cfG{tcx};
     // restore() puts the caller's scope back; called on every exit path. (ENTER
     // phasers now run inside the try, and the CATCH body is wrapped, so a throw
     // from either restores instead of leaking dynStack / bleeding scope.)
@@ -13892,32 +13893,32 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
             if (routine) t.curRoutineVal = cv;
         }
         ~MagicalGuard() { t.curBlockVal = savedB; t.curRoutineVal = savedR; }
-    } magicalGuard{tctx_, &codeVal, !c.isBlock};
+    } magicalGuard{tcx, &codeVal, !c.isBlock};
     auto restore = [&] {
         // a mutated implicit $_ flows back to the caller's element (grep/map aliasing)
         if (topicWB && implicitTopic_local) {
             auto it = env->vars.find("$_");
             if (it != env->vars.end()) *topicWB = it->second;
         }
-        tctx_.cur = saved; tctx_.curStateEnv = savedState; tctx_.dynStack.pop_back();
+        tcx.cur = saved; tcx.curStateEnv = savedState; tcx.dynStack.pop_back();
     };
     // cooperative-return frame bookkeeping: every callable bumps frameTop;
     // a ROUTINE (not a bare block) is a return boundary
-    ++tctx_.frameTop;
-    uint64_t savedFrameTop = tctx_.frameTop, savedRoutineFrame = tctx_.curRoutineFrame;
+    ++tcx.frameTop;
+    uint64_t savedFrameTop = tcx.frameTop, savedRoutineFrame = tcx.curRoutineFrame;
     // A bare block is not a routine — except the one a worker thread starts on,
     // which must own its `$/` rather than share the lexical scope every worker
     // closes over. One-shot, consumed here (see spawnPromise).
     bool isRoutine = !c.isBlock || forceRoutineFrame_;
     forceRoutineFrame_ = false;
-    if (isRoutine) { tctx_.curRoutineFrame = tctx_.frameTop; env->routineFrame = true; } // $/ scopes here
+    if (isRoutine) { tcx.curRoutineFrame = tcx.frameTop; env->routineFrame = true; } // $/ scopes here
     struct FrameGuard {
         ExecContext& t; uint64_t ft, rf;
         ~FrameGuard() { t.frameTop = ft - 1; t.curRoutineFrame = rf; }
-    } fguard{tctx_, savedFrameTop, savedRoutineFrame};
+    } fguard{tcx, savedFrameTop, savedRoutineFrame};
     Value last = Value::any();
     if (c.body) hasNestedSub = hoistSubs(*c.body); // nested named subs are visible throughout the body
-    if (c.body) hoistExprDecls(*c.body, tctx_.cur.get(), &c.hoistNeed); // `my` buried in ternary/nqp branches → routine scope
+    if (c.body) hoistExprDecls(*c.body, tcx.cur.get(), &c.hoistNeed); // `my` buried in ternary/nqp branches → routine scope
     // an inline CATCH {} anywhere in the body handles exceptions from the whole block
     // (which statement, if any, is a static property — this used to rescan the
     // whole statement list on every call, for a body that almost never has one)
@@ -13970,12 +13971,12 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                     last = r->value ? eval(r->value.get()) : Value::any();
                 } else
                     last = exec(s, i != lastReal); // non-final statements sink
-                if (tctx_.returning) { // cooperative return reached this routine
-                    if (isRoutine) { tctx_.returning = false; last = std::move(tctx_.returnV); }
+                if (tcx.returning) { // cooperative return reached this routine
+                    if (isRoutine) { tcx.returning = false; last = std::move(tcx.returnV); }
                     break; // a bare block propagates the flag to its routine
                 }
             }
-            if (lpc && !tctx_.returning) { // driver-run loop phasers, in this invocation's env
+            if (lpc && !tcx.returning) { // driver-run loop phasers, in this invocation's env
                 if (lpc & 4) runNextPhasers(*c.body, env);
                 if (lpc & 2) runLastPhasers(*c.body);
             }
@@ -14002,8 +14003,8 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
         return b.hasVal ? b.v : last;
     } catch (RakuError& e) {
         if (catchBlk) {
-            tctx_.cur->define("$_", exceptionFor(e));
-            tctx_.cur->define("$!", exceptionFor(e));
+            tcx.cur->define("$_", exceptionFor(e));
+            tcx.cur->define("$!", exceptionFor(e));
             bool matched = false;
             try {
                 struct G { int& d; G(int& x) : d(x) { d++; } ~G() { d--; } } g{catchDepth_};
@@ -14027,33 +14028,33 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
             // whose clauses matched none — or with no clauses at all — rethrows.
             if (!matched) {
                 if (c.body) runLeavePhasers(*c.body, /*ok=*/false);
-                runLetRestoresOf(tctx_.cur);
-                tctx_.cur = saved; tctx_.curStateEnv = savedState; tctx_.dynStack.pop_back();
+                runLetRestoresOf(tcx.cur);
+                tcx.cur = saved; tcx.curStateEnv = savedState; tcx.dynStack.pop_back();
                 throw;
             }
             if (c.body) runLeavePhasers(*c.body);
             restore();
             copyOutRw(c.params, env, rwArgs);
             // A `return` inside the CATCH returns from this routine (R2).
-            if (isRoutine && tctx_.returning) { tctx_.returning = false; return std::move(tctx_.returnV); }
+            if (isRoutine && tcx.returning) { tcx.returning = false; return std::move(tcx.returnV); }
             return Value::nil();
         }
         if (c.body) runLeavePhasers(*c.body, /*ok=*/false);
-        runLetRestoresOf(tctx_.cur); // unsuccessful exit
-        tctx_.cur = saved; tctx_.curStateEnv = savedState; tctx_.dynStack.pop_back();
+        runLetRestoresOf(tcx.cur); // unsuccessful exit
+        tcx.cur = saved; tcx.curStateEnv = savedState; tcx.dynStack.pop_back();
         throw;
     } catch (LeaveEx& le) {
         if (c.body) runLeavePhasers(*c.body);
-        tctx_.cur = saved; tctx_.curStateEnv = savedState; tctx_.dynStack.pop_back();
+        tcx.cur = saved; tcx.curStateEnv = savedState; tcx.dynStack.pop_back();
         return le.hasVal ? le.v : Value::nil(); // `leave` exits this block with its value
     } catch (...) {
         if (c.body) runLeavePhasers(*c.body, /*ok=*/false);
-        runLetRestoresOf(tctx_.cur); // unsuccessful exit
-        tctx_.cur = saved; tctx_.curStateEnv = savedState; tctx_.dynStack.pop_back();
+        runLetRestoresOf(tcx.cur); // unsuccessful exit
+        tcx.cur = saved; tcx.curStateEnv = savedState; tcx.dynStack.pop_back();
         throw;
     }
     if (c.body) runLeavePhasers(*c.body);
-    tctx_.cur = saved; tctx_.curStateEnv = savedState; tctx_.dynStack.pop_back();
+    tcx.cur = saved; tcx.curStateEnv = savedState; tcx.dynStack.pop_back();
     // a mutated implicit $_ flows back to the caller's element (grep/map aliasing)
     if (topicWB && implicitTopic_local) {
         auto it = env->vars.find("$_");
@@ -14431,6 +14432,7 @@ Value Interpreter::invokeMethodChain(const std::string& name, ClassInfo* startCl
 
 Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueList args, const std::vector<ExprPtr>* rwArgs, bool ownFrame,
                                 Value* selfBack, bool skipWrappers) {
+    ExecContext& tcx = tctx_;   // one thread-local resolution — see execBlock
     if (codeVal.t != VT::Code || !codeVal.code()) return Value::any();
     // A NativeCall method: the invocant is C's first argument, then the rest.
     // (`$mysql.mysql_query($sql)` is `mysql_query(mysql, sql)`; a type-object
@@ -14506,7 +14508,7 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
         for (auto& a : args) withInv.push_back(std::move(a));
         return runLevel((int)wraps.size() - 1, std::move(withInv));
     }
-    DepthGuard guard(tctx_.callDepth);
+    DepthGuard guard(tcx.callDepth);
     Callable& c = *codeVal.code();
     if (c.isMultiDispatcher) {
         // Mirror the multi-sub dispatcher: push a redispatch frame around the
@@ -14724,47 +14726,47 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
                 (*h.hash())[a.s.str()] = *a.pairVal();
         if (!h.hash()->empty()) env->define("%_", std::move(h));
     }
-    auto saved = tctx_.cur;
-    tctx_.cur = env;
+    auto saved = tcx.cur;
+    tcx.cur = env;
     // state declarations in this method's body must write to ITS stateEnv (the
     // one spliced into env->parent above), not the caller's; RAII restores on
     // every exit path
-    Env* savedStateEnv = tctx_.curStateEnv;
-    tctx_.curStateEnv = stEnv.get(); // the SAME env spliced into env->parent above —
+    Env* savedStateEnv = tcx.curStateEnv;
+    tcx.curStateEnv = stEnv.get(); // the SAME env spliced into env->parent above —
                                      // declaring into one and reading through the other
                                      // is "Variable '%lookup' is not declared"
-    struct StateGuard { ExecContext& t; Env* s; ~StateGuard() { t.curStateEnv = s; } } stG{tctx_, savedStateEnv};
+    struct StateGuard { ExecContext& t; Env* s; ~StateGuard() { t.curStateEnv = s; } } stG{tcx, savedStateEnv};
     // a method frame is a dynamic-scope boundary like a sub frame: push the
     // CALLER's env so `$*CRO-ROUTE-SET`-style dynamics set in a calling sub stay
     // visible through method calls (Cro's route -> definition-complete -> plugin)
-    tctx_.dynStack.push_back(saved ? saved.get() : global_.get());
-    tctx_.callFrames.push_back({curLine_, &codeVal}); // for callframe(N)
+    tcx.dynStack.push_back(saved ? saved.get() : global_.get());
+    tcx.callFrames.push_back({curLine_, &codeVal}); // for callframe(N)
     struct DynGuard { ExecContext& t;
         ~DynGuard() { t.dynStack.pop_back(); if (!t.callFrames.empty()) t.callFrames.pop_back(); }
-    } dynG{tctx_};
+    } dynG{tcx};
     // callsame/nextsame scope: this activation sees only frames pushed FOR it
     // (ownFrame) — never the caller's (a frameless bottom method must not
     // re-enter its caller's chain; that was an infinite nextsame loop)
-    size_t savedFloor = tctx_.redispatchFloor;
-    tctx_.redispatchFloor = redispatchStack_.size() - (ownFrame && !redispatchStack_.empty() ? 1 : 0);
-    struct FloorGuard2 { ExecContext& t; size_t s; ~FloorGuard2() { t.redispatchFloor = s; } } floorG2{tctx_, savedFloor};
+    size_t savedFloor = tcx.redispatchFloor;
+    tcx.redispatchFloor = redispatchStack_.size() - (ownFrame && !redispatchStack_.empty() ? 1 : 0);
+    struct FloorGuard2 { ExecContext& t; size_t s; ~FloorGuard2() { t.redispatchFloor = s; } } floorG2{tcx, savedFloor};
     // A method is a routine boundary for cooperative return, exactly like a sub:
     // establish a frame so a `return` inside a loop/native block in the body unwinds
     // to here instead of leaking the `returning` flag past the loop (mirrors callCallable).
-    ++tctx_.frameTop;
-    uint64_t savedFrameTop = tctx_.frameTop, savedRoutineFrame = tctx_.curRoutineFrame;
-    tctx_.curRoutineFrame = tctx_.frameTop;
+    ++tcx.frameTop;
+    uint64_t savedFrameTop = tcx.frameTop, savedRoutineFrame = tcx.curRoutineFrame;
+    tcx.curRoutineFrame = tcx.frameTop;
     // …and `$/` scopes to it, exactly as it does to a sub's. Only callCallable
     // marked its Env, so a MATCH inside a method wrote through to the caller's
     // `$/` and destroyed it: HTTP::Tiny reads `$<status>` again after calling
     // `self.read-header-lines(…)` and got Nil, so every response came back
     // `success => False`. (The third thing invokeMethod was missing that
     // callCallable already had.)
-    tctx_.cur->routineFrame = true;
+    tcx.cur->routineFrame = true;
     struct FrameGuard {
         ExecContext& t; uint64_t ft, rf;
         ~FrameGuard() { t.frameTop = ft - 1; t.curRoutineFrame = rf; }
-    } fguard{tctx_, savedFrameTop, savedRoutineFrame};
+    } fguard{tcx, savedFrameTop, savedRoutineFrame};
     Value last = Value::any();
     // A method body is a routine scope like a sub's: a `my` buried in a
     // ternary/nqp branch — or under a statement modifier (`my $x = … if …`)
@@ -14772,7 +14774,7 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
     // (callCallableRaw) has always done this; methods never did, so
     // `method t { my $auth = … if $cond; $auth ~= … }` died "not declared"
     // whenever the condition was false (rakupp issue #13's follow-up).
-    if (c.body) hoistExprDecls(*c.body, tctx_.cur.get(), &c.hoistNeed);
+    if (c.body) hoistExprDecls(*c.body, tcx.cur.get(), &c.hoistNeed);
     // A method body may carry a CATCH, exactly as a sub's does. This path had no
     // handling for one at all — its unwinder ended in `catch (...) { restore;
     // throw; }` — so `method m { CATCH { default { return … } }; die }` lost the
@@ -14816,11 +14818,11 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
                     auto* r = static_cast<ReturnStmt*>(s);
                     // `return-rw` in lvalue mode: surface the container (same
                     // rule as the exec-site ReturnStmt arm)
-                    if (r->isRw && r->value && tctx_.wantLvalue &&
-                        tctx_.wantLvalue == (int)tctx_.callFrames.size()) {
-                        try { tctx_.lvalueOut = lvalue(r->value.get()); } catch (RakuError&) {}
+                    if (r->isRw && r->value && tcx.wantLvalue &&
+                        tcx.wantLvalue == (int)tcx.callFrames.size()) {
+                        try { tcx.lvalueOut = lvalue(r->value.get()); } catch (RakuError&) {}
                     }
-                    last = tctx_.lvalueOut && r->isRw ? *tctx_.lvalueOut
+                    last = tcx.lvalueOut && r->isRw ? *tcx.lvalueOut
                          : r->value ? eval(r->value.get()) : Value::any();
                 }
                 // …and an `is rw` / `is raw` routine with an IMPLICIT return: the
@@ -14828,29 +14830,29 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
                 // so hand THAT back rather than a copy of its value. Only the
                 // explicit `return-rw` spelling was assignable before.
                 else if (i + 1 == nst && s->kind == NK::ExprStmt && c.retRw &&
-                         tctx_.wantLvalue &&
-                         tctx_.wantLvalue == (int)tctx_.callFrames.size()) {
+                         tcx.wantLvalue &&
+                         tcx.wantLvalue == (int)tcx.callFrames.size()) {
                     Expr* fe = static_cast<ExprStmt*>(s)->e.get();
-                    try { tctx_.lvalueOut = lvalue(fe); }
-                    catch (RakuError&) { tctx_.lvalueOut = nullptr; }
-                    last = tctx_.lvalueOut ? *tctx_.lvalueOut : exec(s);
+                    try { tcx.lvalueOut = lvalue(fe); }
+                    catch (RakuError&) { tcx.lvalueOut = nullptr; }
+                    last = tcx.lvalueOut ? *tcx.lvalueOut : exec(s);
                 }
                 else
                     last = exec(s);
-                if (tctx_.returning) { // cooperative return reached this method boundary
-                    tctx_.returning = false; last = std::move(tctx_.returnV);
+                if (tcx.returning) { // cooperative return reached this method boundary
+                    tcx.returning = false; last = std::move(tcx.returnV);
                     break;
                 }
             }
         }
-    } catch (ReturnEx& r) { runLeaves(true); tctx_.cur = saved; copyOutRw(c.params, env, rwArgs);
+    } catch (ReturnEx& r) { runLeaves(true); tcx.cur = saved; copyOutRw(c.params, env, rwArgs);
                             if (selfBack) if (Value* sp = env->find("self")) *selfBack = *sp;
                             return checkRetType(c, std::move(r.v)); }
     catch (BreakGivenEx& b) {
         // a matched `when` in the method body: the routine is its topicalizer,
         // so it exits the method with the when-block's value (mirrors callCallable)
         runLeaves(true);
-        tctx_.cur = saved; copyOutRw(c.params, env, rwArgs);
+        tcx.cur = saved; copyOutRw(c.params, env, rwArgs);
         if (selfBack) if (Value* sp = env->find("self")) *selfBack = *sp;
         return checkRetType(c, b.hasVal ? std::move(b.v) : std::move(last));
     }
@@ -14858,9 +14860,9 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
         // `let` restores on the unsuccessful exits, exactly as callCallableRaw
         // does for subs — the method path missed all three arms, so a `let`
         // inside a method kept its new value straight through a die.
-        if (!catchBlk) { runLeaves(false); runLetRestoresOf(tctx_.cur); tctx_.cur = saved; throw; }
-        tctx_.cur->define("$_", exceptionFor(e));
-        tctx_.cur->define("$!", exceptionFor(e));
+        if (!catchBlk) { runLeaves(false); runLetRestoresOf(tcx.cur); tcx.cur = saved; throw; }
+        tcx.cur->define("$_", exceptionFor(e));
+        tcx.cur->define("$!", exceptionFor(e));
         bool matched = false;
         try {
             struct G { int& d; G(int& x) : d(x) { d++; } ~G() { d--; } } g{catchDepth_};
@@ -14870,23 +14872,23 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
         catch (ResumeEx&)     { matched = true; }   // .resume: absorbed
         catch (ReturnEx& r) {                       // `return`/`fail` from the CATCH
             runLeaves(true);
-            tctx_.cur = saved; copyOutRw(c.params, env, rwArgs);
+            tcx.cur = saved; copyOutRw(c.params, env, rwArgs);
             if (selfBack) if (Value* sp = env->find("self")) *selfBack = *sp;
             return r.v;
         }
-        catch (...) { runLeaves(false); tctx_.cur = saved; throw; }   // die/rethrow from the CATCH
+        catch (...) { runLeaves(false); tcx.cur = saved; throw; }   // die/rethrow from the CATCH
         // Only a matching when/default handles it; an unmatched CATCH rethrows.
-        if (!matched) { runLeaves(false); runLetRestoresOf(tctx_.cur); tctx_.cur = saved; throw; }
+        if (!matched) { runLeaves(false); runLetRestoresOf(tcx.cur); tcx.cur = saved; throw; }
         runLeaves(true);
-        tctx_.cur = saved;
+        tcx.cur = saved;
         copyOutRw(c.params, env, rwArgs);
         if (selfBack) if (Value* sp = env->find("self")) *selfBack = *sp;
-        if (tctx_.returning) { tctx_.returning = false; return std::move(tctx_.returnV); }
+        if (tcx.returning) { tcx.returning = false; return std::move(tcx.returnV); }
         return Value::nil();
     }
-    catch (...) { runLeaves(false); runLetRestoresOf(tctx_.cur); tctx_.cur = saved; throw; }
+    catch (...) { runLeaves(false); runLetRestoresOf(tcx.cur); tcx.cur = saved; throw; }
     runLeaves(true);
-    tctx_.cur = saved;
+    tcx.cur = saved;
     copyOutRw(c.params, env, rwArgs);
     // `self = …` in a method on a VALUE type (an `augment`ed Hash/Array/Str) has to
     // reach the caller's container — the invocant is passed by value, so the frame's
