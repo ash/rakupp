@@ -47,7 +47,7 @@ nothing at all. The workflow is:
 distribution's own test suite before marking it installed. Its full option list —
 version pins, `--dry-run`, `--list`, `uninstall`, `reinstall`, `test` — is in
 [CLI.md](CLI.md#installing-modules). How much of the ecosystem runs today:
-all 2,524 distributions, each with its sweep verdict, are listed at
+all 2,526 distributions, each with its sweep verdict, are listed at
 [raku.online/modules/ecosystem](https://raku.online/modules/ecosystem/).
 
 Under the hood, Raku++ looks for installed modules in the standard locations
