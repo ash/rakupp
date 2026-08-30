@@ -2140,6 +2140,25 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             Value v = Value::makeHash(); v.hashKind = t; return v;
         }
     }
+    // `List.from-iterator($it)` — and the Array/Seq/Slip spellings. Drains the
+    // iterator into the named container, whether it is a user object doing
+    // Iterator or one of ours: both answer `pull-one` until IterationEnd. The
+    // Agnostic role family builds `.list`/`.List`/`.Array`/`.Slip` on this one
+    // method, so without it a Hash::Agnostic class had none of the four.
+    if (m == "from-iterator" && args.size() == 1 &&
+        (inv.s == "List" || inv.s == "Array" || inv.s == "Seq" || inv.s == "Slip")) {
+        Value out = Value::array();
+        out.isList = inv.s != "Array";
+        if (inv.s == "Seq") out.s = "Seq";
+        for (;;) {
+            ValueList none;
+            Value x = methodCall(args[0], "pull-one", none);
+            if (x.t == VT::Type && x.s == "IterationEnd") break;
+            if (x.t == VT::Any || x.t == VT::Nil) break; // a drained builtin iterator
+            out.arr()->push_back(std::move(x));
+        }
+        return out;
+    }
     if (inv.t == VT::Type && (inv.s == "List" || inv.s == "Array" || inv.s == "Seq" || inv.s == "array") && m == "new") {
         if (inv.s == "array" && inv.ofType().empty()) // native arrays need a type parameter
             throw RakuError{Value::typeObj("X::MustBeParametric"),
@@ -4061,6 +4080,24 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if (inv.ofType().empty()) return Value::typeObj("Mu");
         std::string ot = inv.ofType(); auto c = ot.find(','); if (c != std::string::npos) ot = ot.substr(0, c);
         return Value::typeObj(ot);
+    }
+    // `self.rakuseen(NAME, { … })` — Rakudo's cycle guard for a user-written
+    // `.raku`: run the block, unless this very object is already being rendered
+    // further up the same `.raku`, in which case print the short form instead of
+    // recursing forever. Hash::Agnostic (and the Array::Agnostic family) build
+    // every `.raku` on it, so without it the method died on the first call.
+    if (m == "rakuseen" && args.size() >= 2 && args[1].t == VT::Code) {
+        static thread_local std::set<const void*> inProgress;
+        const void* id = inv.t == VT::Object && inv.obj() ? (const void*)inv.obj()
+                       : inv.hash() ? (const void*)inv.hash()
+                       : inv.arr()  ? (const void*)inv.arr() : nullptr;
+        std::string nm = args[0].t == VT::Type ? args[0].s : args[0].toStr();
+        if (id && inProgress.count(id)) return Value::str(nm + ".new(...)");
+        if (id) inProgress.insert(id);
+        struct Pop { std::set<const void*>& s; const void* k;
+            ~Pop() { if (k) s.erase(k); } } pop{inProgress, id};
+        ValueList none;
+        return callCallable(args[1], none);
     }
     if (m == "WHAT") {
         // typed container -> its parameterized type object (Array[Int] / Hash[Int,Str])

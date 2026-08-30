@@ -223,6 +223,7 @@ private:
 public:
     bool strictSep_ = false; // set by EVAL: strict statement separation in snippets
     int routineDepth_ = 0;   // nesting of sub/method bodies (&?ROUTINE legality)
+    bool sawReturnRw_ = false; // a `return-rw` was parsed in the routine body being read
 private:
     StmtPtr parseStatementImpl();
     StmtPtr applyModifiers(StmtPtr s);

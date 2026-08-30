@@ -4209,7 +4209,16 @@ int Interpreter::run(Program& prog) {
                 if (x && x->kind == NK::VarExpr && static_cast<VarExpr*>(x)->declare) {
                     auto* ve = static_cast<VarExpr*>(x);
                     if (!ve->name.empty() && !global_->find(ve->name)) {
-                        if (ve->declShape && ve->name[0] == '@')
+                        // A CONTAINER TRAIT decides what the variable IS (`my %h is
+                        // Set`, `my %h is MyHash`), and the type it names may not be
+                        // registered yet at pre-declaration time. Leave those to the
+                        // declaration itself rather than pre-defining a plain Hash
+                        // that the trait can no longer replace — which is why a
+                        // mainline `my %h is Set;` stayed a Hash while the same line
+                        // inside a block did not.
+                        if (!ve->containerIs.empty() &&
+                            (ve->name[0] == '%' || ve->name[0] == '@')) { /* declaration handles it */ }
+                        else if (ve->declShape && ve->name[0] == '@')
                             global_->define(ve->name, makeShapedContainer(evalShapeDims(ve->declShape.get()), ve->declType));
                         else
                             global_->define(ve->name, typedDefault(ve->declType, ve->name[0]));
@@ -4227,9 +4236,15 @@ int Interpreter::run(Program& prog) {
                 else predeclare(e); }
             if (nm.empty() || global_->find(nm)) continue;
             std::string dtype; // honor the declared type so `my num $n` pre-declares 0, not Any
+            const VarExpr* dve = nullptr;
             if (s->kind == NK::ExprStmt) { Expr* e = static_cast<ExprStmt*>(s)->e.get();
-                if (e && e->kind == NK::VarExpr) dtype = static_cast<VarExpr*>(e)->declType;
-                else if (e && e->kind == NK::Assign) { auto* a = static_cast<Assign*>(e); if (a->target && a->target->kind == NK::VarExpr) dtype = static_cast<VarExpr*>(a->target.get())->declType; } }
+                if (e && e->kind == NK::VarExpr) dve = static_cast<VarExpr*>(e);
+                else if (e && e->kind == NK::Assign) { auto* a = static_cast<Assign*>(e); if (a->target && a->target->kind == NK::VarExpr) dve = static_cast<VarExpr*>(a->target.get()); } }
+            if (dve) dtype = dve->declType;
+            // …and the same deferral the predeclare walk makes: a container trait
+            // decides what the variable IS, and pre-defining a plain Hash here
+            // left the trait nothing to act on.
+            if (dve && !dve->containerIs.empty() && (nm[0] == '%' || nm[0] == '@')) continue;
             global_->define(nm, typedDefault(dtype, nm[0])); }
         // the same modifier/ternary-buried declarations the block path hoists
         // (`my $x = E if COND` at file scope must declare $x even when COND is
@@ -7195,6 +7210,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 c.code()->langRev = langRev_;
                 c.code()->closure = tctx_.cur;
                 c.code()->retType = sd->retType;
+                c.code()->retRw = sd->retRw;
                 c.code()->declFile = curDeclFile();
                 c.code()->pod = sd->pod;
                 // a statement-level `my method m {…}` is a SubDecl with isMethod set;
@@ -7467,6 +7483,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     code.code()->name = md->name;
                     code.code()->params = &md->params;
                     code.code()->retType = md->retType;
+                    code.code()->retRw = md->retRw;
                     code.code()->pod = md->pod;
                     code.code()->body = &md->body;
                     code.code()->langRev = langRev_;
@@ -8080,6 +8097,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 code.code()->name = mdName;
                 code.code()->params = &md->params;
                 code.code()->retType = md->retType;
+                code.code()->retRw = md->retRw;
                 code.code()->body = &md->body;
                 code.code()->langRev = langRev_;
                 code.code()->closure = bodyEnv;
@@ -14694,7 +14712,20 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
                     }
                     last = tctx_.lvalueOut && r->isRw ? *tctx_.lvalueOut
                          : r->value ? eval(r->value.get()) : Value::any();
-                } else
+                }
+                // …and an `is rw` / `is raw` routine with an IMPLICIT return: the
+                // caller asked for a container and the final expression names one,
+                // so hand THAT back rather than a copy of its value. Only the
+                // explicit `return-rw` spelling was assignable before.
+                else if (i + 1 == nst && s->kind == NK::ExprStmt && c.retRw &&
+                         tctx_.wantLvalue &&
+                         tctx_.wantLvalue == (int)tctx_.callFrames.size()) {
+                    Expr* fe = static_cast<ExprStmt*>(s)->e.get();
+                    try { tctx_.lvalueOut = lvalue(fe); }
+                    catch (RakuError&) { tctx_.lvalueOut = nullptr; }
+                    last = tctx_.lvalueOut ? *tctx_.lvalueOut : exec(s);
+                }
+                else
                     last = exec(s);
                 if (tctx_.returning) { // cooperative return reached this method boundary
                     tctx_.returning = false; last = std::move(tctx_.returnV);
@@ -14841,9 +14872,24 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             Value init = typedDefault(ve->declType, sigil);
             if (ve->declShape && sigil == '@') // shaped array `my @a[2;3]`
                 init = makeShapedContainer(evalShapeDims(ve->declShape.get()), ve->declType);
-            if (!ve->containerIs.empty() && sigil == '%') { // my %h is Set — an empty Setty
-                init = makeBaggy({}, ve->containerIs);
-                init.ofTypeM() = ve->containerOf; // `is Bag[Int]` keys on Int
+            if (!ve->containerIs.empty() && (sigil == '%' || sigil == '@')) {
+                static const std::set<std::string> quant = {
+                    "Set", "SetHash", "Bag", "BagHash", "Mix", "MixHash"};
+                if (sigil == '%' && quant.count(ve->containerIs)) { // my %h is Set — an empty Setty
+                    init = makeBaggy({}, ve->containerIs);
+                    init.ofTypeM() = ve->containerOf; // `is Bag[Int]` keys on Int
+                }
+                // A USER container type: the VARIABLE *is* an instance of it, so
+                // its own methods answer. `my %h is MyHash` where MyHash does
+                // Hash::Agnostic is the whole point of that role — as a plain
+                // Hash, `%h.^name` said Hash, `%h ~~ Hash::Agnostic` was False,
+                // and every method the role supplies (.Str/.raku/.Slip/…) was
+                // answered by the built-in Hash instead. The ATTRIBUTE form
+                // (`has %.a is Type`) already did this; the `my` form did not.
+                else if (classes_.count(ve->containerIs)) {
+                    ValueList none;
+                    init = methodCall(Value::typeObj(ve->containerIs), "new", none);
+                }
             }
             if (ve->declDefault) { // `is default(v)`: initial AND reset value
                 Value dv = eval(ve->declDefault.get());
@@ -15174,6 +15220,34 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             try { base = lvalue(mc->inv.get()); } catch (RakuError&) {}
             if (base && base->t == VT::Array && base->arr() && !base->arr()->empty() && !base->isList)
                 return mc->method == "head" ? &base->arr()->front() : &base->arr()->back();
+        }
+        // A method declared `is rw` / `is raw` hands back a CONTAINER, so a call to
+        // it is an assignment target: `$obj.meth(…) = v`, and `self.AT-KEY($k) =
+        // value` in particular — the shape Hash::Agnostic's ASSIGN-KEY is built
+        // on. Invoked in LVALUE MODE, the same protocol `$obj<key> = v` uses.
+        // Limited to a plain-variable invocant (`self`, `$obj`) so no other
+        // target pays a second evaluation of its invocant expression.
+        if ((mc->inv->kind == NK::VarExpr || mc->inv->kind == NK::SelfTerm) &&
+            !mc->meta && !mc->methodExpr && !mc->hyper) {
+            Value invv;
+            bool haveInv = false;
+            try { invv = eval(mc->inv.get()); haveInv = true; } catch (RakuError&) {}
+            if (haveInv && invv.t == VT::Object && invv.obj() && invv.obj()->cls) {
+                Value* mv = invv.obj()->cls->findMethodForCall(mc->method);
+                if (mv && mv->t == VT::Code && mv->code() && mv->code()->retRw) {
+                    static thread_local Value rwHold;
+                    ValueList args;
+                    for (auto& a : mc->args) args.push_back(eval(a.get()));
+                    struct WantG { ExecContext& t; int w; Value* o;
+                        ~WantG() { t.wantLvalue = w; t.lvalueOut = o; }
+                    } wg{tctx_, tctx_.wantLvalue, tctx_.lvalueOut};
+                    tctx_.wantLvalue = (int)tctx_.callFrames.size() + 1;
+                    tctx_.lvalueOut = nullptr;
+                    rwHold = methodCall(invv, mc->method, args);
+                    if (Value* out = tctx_.lvalueOut) return out;
+                    return &rwHold;
+                }
+            }
         }
         // container-access methods as l-values: `%h.AT-KEY("k") = v`,
         // `@a.AT-POS(i) = v`, and multidim `@a.AT-POS(i, j) = v`
@@ -26996,6 +27070,26 @@ Value Interpreter::eval(Expr* e) {
                     return de->define(ve->name, makeShapedContainer(evalShapeDims(ve->declShape.get()), ve->declType));
                 }
                 if (ve->declDynamic) de->x().varDynamic.insert(ve->name); // `is dynamic`
+                // `my %h is Set;` / `my %h is MyHash;` with NO initialiser — the
+                // same container trait the assignment path honours. Declared on
+                // its own the trait was dropped, so `my %i is NoAT-KEY;` (how
+                // Hash::Agnostic's suite checks a role's required methods) left a
+                // plain Hash behind and every check about it asked the wrong
+                // object.
+                if (!ve->containerIs.empty() && (sigil == '%' || sigil == '@')) {
+                    static const std::set<std::string> quant = {
+                        "Set", "SetHash", "Bag", "BagHash", "Mix", "MixHash"};
+                    if (sigil == '%' && quant.count(ve->containerIs)) {
+                        Value c = makeBaggy({}, ve->containerIs);
+                        c.ofTypeM() = ve->containerOf;
+                        return de->define(ve->name, std::move(c));
+                    }
+                    if (classes_.count(ve->containerIs)) {
+                        ValueList none;
+                        return de->define(ve->name,
+                                          methodCall(Value::typeObj(ve->containerIs), "new", none));
+                    }
+                }
                 if (!ve->declType.empty() || !de->local(ve->name)) {
                     if (sigil == '$' && !ve->declType.empty() && ascii::isupper((unsigned char)ve->declType[0]))
                         de->x().varDefault[ve->name] = Value::typeObj(ve->declType); // `$x = Nil` resets to (Type)

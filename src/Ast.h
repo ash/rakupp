@@ -526,6 +526,8 @@ struct SubDecl : Stmt {
     std::vector<std::vector<Param>> altParams; // extra `(sig1) | (sig2)` signatures, share the body
     std::vector<StmtPtr> body;
     std::vector<SubTraitSpec> traits; // non-built-in `is` traits, dispatched to user trait_mod:<is> multis
+    bool retRw = false;  // `is rw` / `is raw` on the ROUTINE: its result is the CONTAINER its final
+                         // expression names, so `$obj.meth(…) = v` writes through it
     ExprPtr retLiteral; // `--> 1` literal return: the body yields this value
     bool retLiteralPresent = false; // stays true after retLiteral is moved into the body
     bool isMulti = false;

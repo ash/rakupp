@@ -328,6 +328,7 @@ struct Callable {
     bool isBlock = false;                            // a bare { } block (no `return`), not a Sub/Routine
     bool isRegexRoutine = false;                     // `my regex R {…}` / token / rule — .^name is Regex, not Sub
     std::string retType;                             // declared return type (`of`/`returns`/`-->`), "" = none
+    bool retRw = false;                              // `is rw`/`is raw` on the routine: its result IS a container
     std::vector<Value> wrappers;                      // &routine.wrap({…}) stack (outermost last); .unwrap pops
     bool isNative = false;                            // `is native` — a C FFI call
     std::string nativeLib, nativeSym;                // library ("" = default namespace) and C symbol

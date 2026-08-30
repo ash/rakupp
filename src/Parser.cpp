@@ -6210,6 +6210,13 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
                 continue;
             }
         }
+        // `is rw` / `is raw` on the ROUTINE ITSELF: its result is the container its
+        // final expression names, so an assignment to the call writes through it.
+        // `method AT-KEY($k) is raw { %!h.AT-KEY($k) }` is the shape Hash::Agnostic
+        // builds its whole ASSIGN-KEY on (`self.AT-KEY($key) = value`).
+        if (isIdent("is") && peek().kind == Tok::Ident &&
+            (peek().text == "rw" || peek().text == "raw"))
+            s->retRw = true;
         // a non-built-in `is NAME` / `is NAME(expr)` trait: captured for dispatch
         // to a user `multi sub trait_mod:<is>` at declaration time
         if (isIdent("is") && peek().kind == Tok::Ident) {
@@ -6262,7 +6269,12 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
         // lexical, so propagate inReactBlock_ into the body (a top-level sub
         // still has it false and so still rejects a stray `whenever`).
         routineDepth_++; // &?ROUTINE is legal inside
+        bool savedRw = sawReturnRw_; sawReturnRw_ = false;
         auto blk = parseBlock();
+        // `return-rw` makes the routine container-returning even with no `is rw`
+        // trait, which is what Rakudo does (`method m($i) { return-rw @!a[$i] }`).
+        if (sawReturnRw_) s->retRw = true;
+        sawReturnRw_ = savedRw;
         routineDepth_--;
         s->body = std::move(blk->stmts);
     }
@@ -7851,6 +7863,7 @@ StmtPtr Parser::parseStatementImpl() {
             advance();
             auto r = std::make_unique<ReturnStmt>();
             r->isRw = (kw == "return-rw");
+            if (r->isRw) sawReturnRw_ = true; // …and the routine reading this body returns a container
             if (!isKind(Tok::Semicolon) && !isKind(Tok::End) && !isKind(Tok::RBrace) &&
                 cur().kind != Tok::Ident) {
                 r->value = parseExpression();

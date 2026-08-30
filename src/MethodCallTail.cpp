@@ -1495,8 +1495,12 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         }
         if (m == "are") { // 6.e: narrowest common type, or `.are(T)` = all-conform check
             if (!args.empty()) {
+                // `.are(T)` asks whether every element CONFORMS to T, which is the
+                // smartmatch question — the nominal matcher used here knows
+                // nothing about a Pair (or a Match, or a junction), so a list of
+                // Pairs was reported as not being Pairs at all.
                 std::string t = typeOfVal(args[0]);
-                for (auto& el : items) if (!rtTypeMatch(el, t))
+                for (auto& el : items) if (!applyArith("~~", el, args[0]).truthy())
                     throw RakuError{Value::typeObj("X::AdHoc"), "Not all list elements are of type " + t};
                 return Value::boolean(true);
             }
