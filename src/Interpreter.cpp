@@ -13414,6 +13414,7 @@ struct FramePool {
     void release(std::shared_ptr<Env>&& e) {
         if (!e || e.use_count() != 1 || free.size() >= 32) { e.reset(); return; }
         e->vars.clear();          // keeps the bucket array — the next call's
+        e->selfSlot = nullptr;    // …and the recorded `self` dies with them
         e->parent.reset();        // "$_" insert does not rehash
         e->routineFrame = false;
         e->loopFrame = false;
@@ -15008,7 +15009,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
         }
         // attribute lvalue: $.x / $!x
         if (ve->name.size() > 2 && (ve->name[1] == '.' || ve->name[1] == '!')) {
-            Value* selfp = tctx_.cur->find("self");
+            Value* selfp = tctx_.cur->findSelf();
             // self is a stamped Proxy subclass instance (AttrProxy): its attrs
             // live as prefixed keys on the proxy hash itself
             if (selfp && selfp->t == VT::Hash && selfp->hashKind == "Proxy" &&
@@ -15023,7 +15024,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                 if (ve->name[0] == '$' && selfp->obj()->cls)
                     for (ClassInfo* ci = selfp->obj()->cls.get(); ci; ci = ci->parent.get())
                         for (auto& at : ci->attrs)
-                            if (at.name == ve->name.substr(2)) {
+                            if (at.name == ve->attrBare) {
                                 if (at.sigil == '$' && !at.type.empty() &&
                                     ascii::isupper((unsigned char)at.type[0]))
                                     tctx_.lastLvalueAttrType = at.type;
@@ -15032,11 +15033,11 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                             }
                 selfAttrTypeDone:
                 // the sigil-disambiguated twin first (see the read path)
-                if (ve->name[0] != '$') {
-                    auto st = selfp->obj()->attrs.find(std::string(1, ve->name[0]) + ve->name.substr(2));
+                if (!ve->attrTwin.empty()) {
+                    auto st = selfp->obj()->attrs.find(ve->attrTwin);
                     if (st != selfp->obj()->attrs.end()) return &st->second;
                 }
-                return &selfp->obj()->attrs[ve->name.substr(2)];
+                return &selfp->obj()->attrs[ve->attrBare];
             }
         }
         // a placeholder's caret/colon spelling resolves to its bare slot
@@ -15070,7 +15071,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
         // inside a method, a bare `@something` may be the twigil-less attribute
         // `has @something` — resolve it against the invocant's declared attrs
         if (ve->name.size() > 1) {
-            if (Value* selfp = tctx_.cur->find("self")) {
+            if (Value* selfp = tctx_.cur->findSelf()) {
                 if (selfp->t == VT::Object && selfp->obj() && selfp->obj()->cls) {
                     std::string an = ve->name.substr(1);
                     for (auto& at : selfp->obj()->cls->attrs)
@@ -15519,7 +15520,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
     }
     // `self{$k} = v` / `self[$i] = v` inside a method mutates the invocant
     if (e->kind == NK::SelfTerm) {
-        if (Value* p = tctx_.cur->find("self")) return p;
+        if (Value* p = tctx_.cur->findSelf()) return p;
     }
     // sigilless variable used as an lvalue (`my \a := $a; a = 10`): a bareword that
     // resolves to a bound lexical is assignable through its slot.
@@ -17522,7 +17523,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             // not env vars, so the varDefault search below never sees them.
             bool isAttr = nm.size() > 2 && (nm[1] == '!' || nm[1] == '.');
             if (isAttr) {
-                Value* selfp = tctx_.cur->find("self");
+                Value* selfp = tctx_.cur->findSelf();
                 if (selfp && selfp->t == VT::Object && selfp->obj() && selfp->obj()->cls) {
                     std::string an = nm.substr(2);
                     for (ClassInfo* c = selfp->obj()->cls.get(); c; c = c->parent.get()) {
@@ -25072,7 +25073,7 @@ std::recursive_mutex& Interpreter::atomicStripe(const void* p) {
 // lexically inside the declaring class; the running routine's own package is
 // the part of that we can see at runtime.
 void Interpreter::requirePrivateCallScope(const std::string& name) {
-    if (tctx_.cur->find("self")) return;
+    if (tctx_.cur->findSelf()) return;
     if (tctx_.curRoutineVal && tctx_.curRoutineVal->t == VT::Code &&
         tctx_.curRoutineVal->code()) {
         const std::string& pkg = tctx_.curRoutineVal->code()->pkg;
@@ -27305,6 +27306,69 @@ Value Interpreter::eval(Expr* e) {
                 }
                 return Value::any(); // an unset slot is undefined, not an error
             }
+            // An ATTRIBUTE (`$!x`, `@.y`) is answered here, ahead of the hundred-odd
+            // `ve->name == "literal"` compares below. It cannot be any of them —
+            // every special name they test has `=`, `?` or `*` as its second
+            // character, and the two bare-sigil terms are one character long — but
+            // it sat after all of them, and the plain-lexical fast path above
+            // deliberately excludes twigilled names, so every attribute read in a
+            // method body walked the whole chain. `std::string == const char*`
+            // called from eval() was the top line of Graph's profile.
+            if (ve->name.size() > 2 && (ve->name[1] == '.' || ve->name[1] == '!')) {
+                Value* selfp = tctx_.cur->findSelf();
+                if (!selfp)
+                    throwTyped("X::Syntax::NoSelf", {{"variable", ve->name}},
+                               "Variable " + ve->name +
+                               " used where no 'self' is available");
+                // self is a stamped Proxy subclass instance (AttrProxy): attrs
+                // live as prefixed keys on the proxy hash itself
+                if (selfp->t == VT::Hash && selfp->hashKind == "Proxy" &&
+                    selfp->hash() && selfp->hash()->count("\x01cls")) {
+                    auto it = selfp->hash()->find("\x01" "a" + ve->name);
+                    return it != selfp->hash()->end() ? it->second : Value::any();
+                }
+                if (selfp && selfp->t == VT::Object && selfp->obj()) {
+                    const std::string& an = ve->attrBare;   // built once, at parse
+                    // A repr('CStruct') object's fields LIVE IN NATIVE MEMORY: a
+                    // C callee may have written them since construction, so
+                    // `$!re` inside a method must read through the same
+                    // native-memory path the public accessor uses. Reading the
+                    // Raku-side attrs map handed back the CONSTRUCTION-time
+                    // value — Math::DistanceFunctions::Native's
+                    // `method value() { $!re + $!im * i }` summed two zeros
+                    // after the C dot product had already filled the struct.
+                    if (selfp->obj()->cls &&
+                        (selfp->obj()->cls->repr == "CStruct" ||
+                         selfp->obj()->cls->repr == "CPPStruct" ||
+                         selfp->obj()->cls->repr == "CUnion") &&
+                        selfp->obj()->attrs.count("__native_ptr")) {
+                        try { return methodCall(*selfp, an, {}); } catch (RakuError&) {}
+                    }
+                    // `$.name` is `self.name`: a METHOD call, always. The attribute
+                    // read is only a shortcut for the generated accessor, so it must
+                    // not win when a real method of that name exists — URI::Query
+                    // has a private `$!query` beside `multi method query`, and
+                    // reading the attribute returned the stale cache the method was
+                    // written to recompute. `$!name` stays a direct attribute read.
+                    if (ve->name[1] == '.' && selfp->obj()->cls) {
+                        bool hasMethod = false;
+                        for (ClassInfo* c = selfp->obj()->cls.get(); c && !hasMethod; c = c->parent.get())
+                            if (c->methods.count(an)) hasMethod = true;
+                        if (hasMethod) return methodCall(*selfp, an, {});
+                    }
+                    // `&!digest` beside `$.digest`: same bare name, different
+                    // sigils — the non-$ twin is stored under "&digest" (see
+                    // the construction walk), so try that spelling first
+                    if (!ve->attrTwin.empty()) {
+                        auto st = selfp->obj()->attrs.find(ve->attrTwin);
+                        if (st != selfp->obj()->attrs.end()) return st->second;
+                    }
+                    auto it = selfp->obj()->attrs.find(an);
+                    if (it != selfp->obj()->attrs.end()) return it->second;
+                    if (ve->name[1] == '.') return methodCall(*selfp, an, {});
+                }
+                return defaultFor(sigil);
+            }
             // A bare `%` / `@` term is an ANONYMOUS empty Hash / Array — `% .classify-list:
             // …` builds its result in one. (A bare `$` is the anonymous state scalar and
             // is handled by the parser.)
@@ -27434,61 +27498,6 @@ Value Interpreter::eval(Expr* e) {
                 }
                 Value* dp = de->local(ve->name);
                 return dp ? *dp : Value::any();
-            }
-            if (ve->name.size() > 2 && (ve->name[1] == '.' || ve->name[1] == '!')) {
-                Value* selfp = tctx_.cur->find("self");
-                if (!selfp)
-                    throwTyped("X::Syntax::NoSelf", {{"variable", ve->name}},
-                               "Variable " + ve->name +
-                               " used where no 'self' is available");
-                // self is a stamped Proxy subclass instance (AttrProxy): attrs
-                // live as prefixed keys on the proxy hash itself
-                if (selfp->t == VT::Hash && selfp->hashKind == "Proxy" &&
-                    selfp->hash() && selfp->hash()->count("\x01cls")) {
-                    auto it = selfp->hash()->find("\x01" "a" + ve->name);
-                    return it != selfp->hash()->end() ? it->second : Value::any();
-                }
-                if (selfp && selfp->t == VT::Object && selfp->obj()) {
-                    std::string an = ve->name.substr(2);
-                    // A repr('CStruct') object's fields LIVE IN NATIVE MEMORY: a
-                    // C callee may have written them since construction, so
-                    // `$!re` inside a method must read through the same
-                    // native-memory path the public accessor uses. Reading the
-                    // Raku-side attrs map handed back the CONSTRUCTION-time
-                    // value — Math::DistanceFunctions::Native's
-                    // `method value() { $!re + $!im * i }` summed two zeros
-                    // after the C dot product had already filled the struct.
-                    if (selfp->obj()->cls &&
-                        (selfp->obj()->cls->repr == "CStruct" ||
-                         selfp->obj()->cls->repr == "CPPStruct" ||
-                         selfp->obj()->cls->repr == "CUnion") &&
-                        selfp->obj()->attrs.count("__native_ptr")) {
-                        try { return methodCall(*selfp, an, {}); } catch (RakuError&) {}
-                    }
-                    // `$.name` is `self.name`: a METHOD call, always. The attribute
-                    // read is only a shortcut for the generated accessor, so it must
-                    // not win when a real method of that name exists — URI::Query
-                    // has a private `$!query` beside `multi method query`, and
-                    // reading the attribute returned the stale cache the method was
-                    // written to recompute. `$!name` stays a direct attribute read.
-                    if (ve->name[1] == '.' && selfp->obj()->cls) {
-                        bool hasMethod = false;
-                        for (ClassInfo* c = selfp->obj()->cls.get(); c && !hasMethod; c = c->parent.get())
-                            if (c->methods.count(an)) hasMethod = true;
-                        if (hasMethod) return methodCall(*selfp, an, {});
-                    }
-                    // `&!digest` beside `$.digest`: same bare name, different
-                    // sigils — the non-$ twin is stored under "&digest" (see
-                    // the construction walk), so try that spelling first
-                    if (ve->name[0] != '$') {
-                        auto st = selfp->obj()->attrs.find(std::string(1, ve->name[0]) + an);
-                        if (st != selfp->obj()->attrs.end()) return st->second;
-                    }
-                    auto it = selfp->obj()->attrs.find(an);
-                    if (it != selfp->obj()->attrs.end()) return it->second;
-                    if (ve->name[1] == '.') return methodCall(*selfp, an, {});
-                }
-                return defaultFor(sigil);
             }
             // dynamic variable ($*foo/@*foo/%*foo): the current frame's own
             // declaration, then the caller chain, then the lenient closure
@@ -27728,7 +27737,7 @@ Value Interpreter::eval(Expr* e) {
             return eval(&tmp);
         }
         case NK::SelfTerm: {
-            Value* p = tctx_.cur->find("self");
+            Value* p = tctx_.cur->findSelf();
             if (!p)
                 throwTyped("X::Syntax::Self::WithoutObject", {},
                            "'self' used where no object is available");
@@ -27744,7 +27753,7 @@ Value Interpreter::eval(Expr* e) {
             // read off the live invocant (self.WHAT); a type-object self keeps
             // its own name
             if (n == "::?CLASS") {
-                if (Value* selfp = tctx_.cur->find("self")) {
+                if (Value* selfp = tctx_.cur->findSelf()) {
                     if (selfp->t == VT::Object && selfp->obj() && selfp->obj()->cls)
                         return Value::typeObj(selfp->obj()->cls->name);
                     if (selfp->t == VT::Type) return *selfp;

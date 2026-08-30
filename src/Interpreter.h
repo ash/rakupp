@@ -356,6 +356,18 @@ struct Env {
         if (it != vars.end()) return &it->second;
         return layout ? padFind(name) : nullptr;
     }
+    // `self` reached by POINTER, not by name. Every attribute access — `$!x`,
+    // `@.y`, in every method body — began with find("self"), which hashes the
+    // string and probes a map at each level of the chain; Graph's sift-down does
+    // about ten of those per call and 38k calls per diameter, which put the env
+    // hash table near the top of its profile. define() records the slot when the
+    // name is "self", so this walk is a null test per level and no hashing at all.
+    Value* selfSlot = nullptr;
+    Value* findSelf() {
+        for (Env* e = this; e; e = e->parent.get())
+            if (e->selfSlot) return e->selfSlot;
+        return nullptr;
+    }
     Value* find(const std::string& name) {
         // Map FIRST: a slotted name never lives in the map (define redirects
         // and erases), so this order only costs the rare slow-path lookup of
@@ -391,12 +403,15 @@ struct Env {
                 // a half-made one.
                 Value& slotv = pad[it->second];
                 slotv = std::move(v);
+                if (name.size() == 4 && name[0] == 's' && name == "self") selfSlot = &slotv;
                 padLive.fetch_or((uint64_t)1 << it->second, std::memory_order_release);
                 if (!vars.empty()) vars.erase(name);
                 return slotv;
             }
         }
-        return vars[name] = std::move(v);
+        Value& slot = vars[name] = std::move(v);
+        if (name.size() == 4 && name[0] == 's' && name == "self") selfSlot = &slot;
+        return slot;
     }
     // Iteration that sees BOTH stores — for the introspection walkers
     // (breakSelfClosures, replNames, the __stash__ dump).

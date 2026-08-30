@@ -208,7 +208,26 @@ struct VarExpr : Expr {
     // fails the compare and takes the map path.
     DecidedOnce<int> padSlot{-1};
     DecidedOnce<const void*> padOwner{nullptr};
-    explicit VarExpr(std::string n): Expr(NK::VarExpr), name(std::move(n)) {}
+    // Derived from `name`, filled at construction so it is read-only at run time
+    // (no lazy fill, so no race under RAKUPP_PARALLEL, and nothing to serialise —
+    // a deserialised node runs the same constructor). The attribute paths rebuilt
+    // both of these with substr on EVERY read and write, and the write path did it
+    // inside the MRO walk: two std::string allocations per attribute access.
+    //   attrBare — `$!x` / `@.x` → "x", the key attrs is stored under
+    //   attrTwin — `@!x` → "@x", the sigil-disambiguated twin the paths try first
+    std::string attrBare, attrTwin;
+    // Idempotent, and called from BOTH places a VarExpr gets its name: the
+    // constructor, and the AST-cache reader — which default-constructs the node
+    // and assigns `name` afterwards, so a deserialised node would otherwise carry
+    // an empty cache and every attribute read in a precompiled module would miss.
+    void syncAttrCache() {
+        attrBare.clear(); attrTwin.clear();
+        if (name.size() > 2 && (name[1] == '!' || name[1] == '.')) {
+            attrBare = name.substr(2);
+            if (name[0] != '$') attrTwin = std::string(1, name[0]) + attrBare;
+        }
+    }
+    explicit VarExpr(std::string n): Expr(NK::VarExpr), name(std::move(n)) { syncAttrCache(); }
 };
 
 // bareword used as a term (type name, enum, sub w/o parens handled separately)

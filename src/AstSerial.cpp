@@ -231,7 +231,8 @@ template <class IO> void visit(IO& io, VarExpr& n)  { F(io, n.name); F(io, n.dec
                                                       F(io, n.containerIs); F(io, n.containerOf);
                                                       ioExpr(io, n.declShape); F(io, n.namedBind);
                                                       F(io, n.processScoped);
-                                                      ioExpr(io, n.declTypeExpr); }
+                                                      ioExpr(io, n.declTypeExpr);
+                                                      n.syncAttrCache(); }  // derived from `name`, not stored
 template <class IO> void visit(IO& io, NameTerm& n) { F(io, n.name); F(io, n.ofType); F(io, n.defConstraint); }
 template <class IO> void visit(IO& io, ListExpr& n) { ioExprVec(io, n.items); F(io, n.parenned); F(io, n.semicolon); }
 template <class IO> void visit(IO& io, SymbolicRef& n) { ioExpr(io, n.nameExpr); ioExprVec(io, n.segs);

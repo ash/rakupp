@@ -3663,6 +3663,21 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                     return invokeMethodChain(m, ci.get(), inv, std::move(args), rwArgs, um, owner);
         }
     }
+    // `@a.BIND-POS($i, $container)` is answered in methodCallTail, which is the
+    // LAST of the three dispatch parts — so every call walked the whole built-in
+    // ladder to reach it. BinaryHeap's sift-down makes about eight per call and
+    // 300k for one `Graph.diameter`, which put `std::string == const char*` at the
+    // top of that profile. The arm itself still lives in methodCallTail (with the
+    // immutable-List check and the rest); this is only the shortcut to it.
+    if (inv.t == VT::Array && inv.arr() && args.size() >= 2 && m == "BIND-POS" && !inv.isList) {
+        long long i = args[0].toInt();
+        if (i < 0) i += (long long)inv.arr()->size();
+        if (i >= 0) {
+            while ((long long)inv.arr()->size() <= i) inv.arr()->push_back(Value::any());
+            (*inv.arr())[(size_t)i] = args[1];
+            return args[1];
+        }
+    }
     // read the environment ONCE, not on every method call — getenv walks environ
     static const bool kTrace = std::getenv("RAKUPP_TRACE") != nullptr;
     if (kTrace) std::cerr << "[M] ." << m << " on type=" << (int)inv.t << " s=[" << inv.s << "]" << (inv.t==VT::Object && inv.obj() && inv.obj()->cls ? " ("+inv.obj()->cls->name+")" : "") << "\n";
