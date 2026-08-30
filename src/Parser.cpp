@@ -2279,6 +2279,7 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
            (peek().kind == Tok::Ident && peek(2).kind == Tok::LBrace)))))
         return parsePrefix();
     std::string type, coerceTo;
+    ExprPtr typeExpr;               // a parameterized declared type, as `Type[args]`
     bool indirectType = false;
     // type-capture declaration:  my ::T $x  (binds T to the type of $x; we just parse it)
     if (isOp("::") && peek().kind == Tok::Ident) { advance(); advance(); indirectType = true; }
@@ -2310,15 +2311,40 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
                 // $hash .= new` must build a uint8 array, and dropping the group
                 // left an element-typeless CArray whose every stride was 8 —
                 // Digest::SHA256::Native read its digest back as int64 garbage
+                const std::string baseType = type;
+                const size_t brStart = pos_;
                 int d = 0;
+                bool plainTypeList = true;   // only names and commas inside?
                 std::string ptxt;
                 do {
                     if (isKind(Tok::LBracket)) d++;
                     else if (isKind(Tok::RBracket)) d--;
+                    else if (!(isKind(Tok::Ident) || isKind(Tok::Comma) ||
+                               (isKind(Tok::Op) && cur().text == "::")))
+                        plainTypeList = false;
                     ptxt += cur().text;
                     advance();
                 } while (d > 0 && !isKind(Tok::End));
                 type += ptxt;
+                // …but the group is only a NAME the runtime can resolve when it
+                // spells types. `my BinaryHeap::MinHeap[{ $^a.tail <=> $^b.tail }] $h`
+                // (Graph's priority queues) made the fiction
+                // "BinaryHeap::MinHeap[{$^a.tail<=>$^b.tail}]", which matches no
+                // registered class — `.new` on it threw and every method fell
+                // through to a built-in. Keep the text for the type-list forms and
+                // ALSO record `Type[args]` as the expression it is, so the
+                // declaration can evaluate the real parameterization.
+                if (!plainTypeList) {
+                    const size_t brEnd = pos_;
+                    pos_ = brStart;
+                    advance();                       // '['
+                    auto ix = std::make_unique<Index>();
+                    ix->base = std::make_unique<NameTerm>(baseType);
+                    ix->index = parseExpression();
+                    ix->isHash = false;
+                    typeExpr = std::move(ix);
+                    pos_ = brEnd;                    // the text scan is authoritative
+                }
             }
             // `my Array of Int @box` — of-chained element type before the variable
             while (isIdent("of") && peek().kind == Tok::Ident) { advance(); type = advance().text; }
@@ -2475,6 +2501,7 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
         }
         auto ve = std::make_unique<VarExpr>(advance().text);
         ve->declare = true; ve->declScope = scope; ve->declType = type; ve->declCoerce = coerceTo;
+        ve->declTypeExpr = std::move(typeExpr);
         // shaped array `my @a[3]` / `my @a[2;2]`: the `[...]` right after the sigil
         // (no space) is a dimension list, not a subscript. Semicolons separate dims.
         if (ve->name[0] == '@' && isKind(Tok::LBracket) && !cur().spaceBefore) {

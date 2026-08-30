@@ -20,7 +20,7 @@ namespace rakupp {
 
 // Bumped whenever the encoding or the AST changes shape. A cache entry carrying
 // a different version is ignored, never reinterpreted.
-inline constexpr uint32_t kAstSerialVersion = 13; // v13: IfStmt/GivenStmt destructuring `->` binders + AttrInfo.handlesTo
+inline constexpr uint32_t kAstSerialVersion = 14; // v14: VarExpr.declTypeExpr (a parameterized declared type)
 
 struct AstSerialError { std::string msg; };
 

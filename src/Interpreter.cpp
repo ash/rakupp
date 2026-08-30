@@ -274,6 +274,7 @@ bool isSpecialVar(const std::string& n) {
 }
 
 extern std::function<Value(const Value&)> g_deproxy;
+extern std::function<Value*(const std::string&)> g_lexInfixLookup;
 
 // `Any` has two spellings inside the interpreter: an untyped slot with nothing
 // in it holds VT::Any (the default-constructed Value), while the TERM `Any`
@@ -674,6 +675,23 @@ static Value typedDefault(const std::string& type, char sigil) {
 // and an object hash lost its key type. One rule, reached from both sides.
 Value rtTypedDefault(const char* type, char sigil) {
     return typedDefault(type ? type : "", sigil);
+}
+
+// What a DECLARATION starts its variable at. Normally the declared type's empty
+// container, but a PARAMETERIZED type is carried as the expression `Type[args]`
+// too (VarExpr.declTypeExpr): its textual name is only source text, so
+// `my BinaryHeap::MinHeap[{ $^a.tail <=> $^b.tail }] $h` — Graph's priority
+// queues — named no registered class and every method on `$h` fell through to a
+// built-in. Running the expression yields the real parameterized type object,
+// which is what `$h.push` then dispatches on.
+Value Interpreter::declInitial(const VarExpr* ve, char sigil) {
+    if (ve && ve->declTypeExpr && sigil == '$') {
+        try {
+            Value t = eval(ve->declTypeExpr.get());
+            if (t.t == VT::Type) return t;
+        } catch (RakuError&) {}   // unresolvable: fall back to the textual type
+    }
+    return typedDefault(ve ? ve->declType : std::string(), sigil);
 }
 
 // Truncate an integer value to a native type's bit width (wraparound), keeping the tag.
@@ -2411,6 +2429,10 @@ std::function<bool(const std::string&, const Value&, bool&)> g_subsetCheck;
 // interpreter publishes one here — same shape as g_subsetCheck above.
 std::function<Value(const Value&)> g_deproxy;
 std::atomic<bool> g_lexShadowsInfix{false};
+// applyArith is a free function, but the Whatever-curry it builds has to resolve
+// a shadowing `&infix:<op>` in the scope it is being written in — same shape as
+// g_deproxy, and set from the same place.
+std::function<Value*(const std::string&)> g_lexInfixLookup;
 
 void rtSetAliasView(const std::unordered_map<std::string, std::string>* a,
                     const std::unordered_map<std::string, std::shared_ptr<ClassInfo>>* c); // defined near typeMatchesArg
@@ -2442,6 +2464,7 @@ Interpreter::Interpreter() {
     rtSetAliasView(&classAliases_, &classes_); // package-relative short names for the type matchers
     g_objListItems = [this](const Value& v, ValueList& out) { return objListItems(v, out); };
     g_deproxy = [this](const Value& v) -> Value { return deproxy(v); };
+    g_lexInfixLookup = [this](const std::string& op) -> Value* { return lexInfixLookup(op); };
     g_subsetCheck = [this](const std::string& name, const Value& v, bool& out) {
         if (!subsets_.count(name)) return false;
         out = subsetMatches(name, v);
@@ -2662,7 +2685,7 @@ void Interpreter::hoistExprDecls(const std::vector<StmtPtr>& stmts, Env* env, De
                 if (cond && v->declare && v->declScope == "my" && !v->name.empty()) {
                     found = true;
                     if (!env->local(v->name))
-                        env->define(v->name, typedDefault(v->declType, v->name[0]));
+                        env->define(v->name, declInitial(v, v->name[0]));
                 }
                 if (v->declDefault) self(self, v->declDefault.get(), cond);
                 break;
@@ -4221,10 +4244,18 @@ int Interpreter::run(Program& prog) {
                         // inside a block did not.
                         if (!ve->containerIs.empty() &&
                             (ve->name[0] == '%' || ve->name[0] == '@')) { /* declaration handles it */ }
+                        // Same reasoning for a PARAMETERIZED declared type
+                        // (`my BinaryHeap::MinHeap[{ … }] $h`): the base type
+                        // comes from a module, so at pre-declaration time — before
+                        // any `use` has run — the parameterization cannot be
+                        // evaluated, and pre-defining the textual fallback would
+                        // leave the variable holding a type object that names no
+                        // class. Leave it to the declaration, which runs after.
+                        else if (ve->declTypeExpr) { /* declaration handles it */ }
                         else if (ve->declShape && ve->name[0] == '@')
                             global_->define(ve->name, makeShapedContainer(evalShapeDims(ve->declShape.get()), ve->declType));
                         else
-                            global_->define(ve->name, typedDefault(ve->declType, ve->name[0]));
+                            global_->define(ve->name, declInitial(ve, ve->name[0]));
                     }
                 }
             };
@@ -4248,6 +4279,9 @@ int Interpreter::run(Program& prog) {
             // decides what the variable IS, and pre-defining a plain Hash here
             // left the trait nothing to act on.
             if (dve && !dve->containerIs.empty() && (nm[0] == '%' || nm[0] == '@')) continue;
+            // …and for a parameterized declared type, whose base comes from a
+            // module that has not been `use`d yet at this point
+            if (dve && dve->declTypeExpr) continue;
             global_->define(nm, typedDefault(dtype, nm[0])); }
         // the same modifier/ternary-buried declarations the block path hoists
         // (`my $x = E if COND` at file scope must declare $x even when COND is
@@ -14910,14 +14944,14 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
 
         if (ve->declare) {
             if (ve->declScope == "state" && tctx_.curStateEnv) { // persistent across calls
-                if (!tctx_.curStateEnv->vars.count(ve->name)) tctx_.curStateEnv->define(ve->name, typedDefault(ve->declType, sigil));
+                if (!tctx_.curStateEnv->vars.count(ve->name)) tctx_.curStateEnv->define(ve->name, declInitial(ve, sigil));
                 return &tctx_.curStateEnv->vars[ve->name];
             }
             // a plain `my` never lands in a loop-statement state frame — a declare
             // in a while COND stays visible after the loop
             Env* de = tctx_.cur.get();
             while (de->loopFrame && de->parent) de = de->parent.get();
-            Value init = typedDefault(ve->declType, sigil);
+            Value init = declInitial(ve, sigil);
             if (ve->declShape && sigil == '@') // shaped array `my @a[2;3]`
                 init = makeShapedContainer(evalShapeDims(ve->declShape.get()), ve->declType);
             if (!ve->containerIs.empty() && (sigil == '%' || sigil == '@')) {
@@ -17138,23 +17172,14 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                         Value fill = base->ofType().empty() ? Value::any() : typedElemDefault(*base);
                         while ((long long)arr->size() <= i) arr->push_back(fill);
                         size_t at = (size_t)i;
-                        Value proxy = Value::makeHash(); proxy.hashKind = "Proxy";
-                        Value fetch; fetch.t = VT::Code; fetch.setCode(std::make_shared<Callable>());
-                        fetch.code()->builtin = [arr, at](Interpreter&, ValueList&) -> Value {
-                            return at < arr->size() ? (*arr)[at] : Value::any();
-                        };
-                        Value store; store.t = VT::Code; store.setCode(std::make_shared<Callable>());
-                        store.code()->builtin = [arr, at](Interpreter&, ValueList& sa) -> Value {
-                            Value nv = sa.empty() ? Value::any() : sa[0];
-                            while (arr->size() <= at) arr->push_back(Value::any());
-                            (*arr)[at] = nv;
-                            return nv;
-                        };
-                        (*proxy.hash())["FETCH"] = fetch;
-                        (*proxy.hash())["STORE"] = store;
+                        // the slot may ALREADY hold an alias (BIND-POS put one
+                        // there): bind to that container, not to the slot holding it
+                        Value proxy = ((*arr)[at].t == VT::Hash && (*arr)[at].hashKind == "Proxy" &&
+                                       (*arr)[at].hash())
+                                    ? (*arr)[at] : arraySlotProxy(arr, at);
                         Value* blv = lvalue(a->target.get());
                         *blv = proxy;
-                        return sink ? Value::any() : (*arr)[at];
+                        return sink ? Value::any() : deproxy(proxy);
                     }
                 }
             }
@@ -18514,7 +18539,14 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         };
         code.code()->whateverArity = arityOf(l) + arityOf(r);
         std::string opc = op; Value lc = l, rc = r;
-        code.code()->builtin = [opc, lc, rc](Interpreter& I, ValueList& a) -> Value {
+        // `my &precedes = * cmp * == Less` inside a routine that took
+        // `&infix:<cmp>` as a parameter: the closure ESCAPES that routine (this
+        // is how BinaryHeap's MIXIN hands a comparator to its role), so the
+        // shadowing lexical has to be captured here, where `* cmp *` was
+        // written, not looked up in whatever scope happens to run it later.
+        Value shadow;
+        if (g_lexInfixLookup) if (Value* sf = g_lexInfixLookup(opc)) shadow = *sf;
+        code.code()->builtin = [opc, lc, rc, shadow](Interpreter& I, ValueList& a) -> Value {
             size_t idx = 0;
             auto resolve = [&](const Value& v) -> Value {
                 if (v.t == VT::Whatever) return idx < a.size() ? a[idx++] : Value::any();
@@ -18528,10 +18560,10 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             };
             Value lv = resolve(lc); // resolve left before right — argument order matters
             Value rv = resolve(rc);
-            // the curry RUNS here, long after `* cmp *` was written: a lexical
-            // `&infix:<cmp>` still shadows the built-in at this point, which is
-            // exactly how BinaryHeap's `* cmp * == Less` picks up the comparator
-            // its MIXIN was handed.
+            // the shadow captured where the curry was WRITTEN wins; failing that,
+            // one visible from here (a `* cmp *` written and run in one scope)
+            if (shadow.t == VT::Code && shadow.code())
+                return I.callCallable(shadow, ValueList{lv, rv});
             if (Value* f = I.lexShadowedInfix(opc, lv, rv))
                 return I.callCallable(*f, ValueList{lv, rv});
             return applyArith(opc, lv, rv);
@@ -22145,9 +22177,91 @@ Value Interpreter::hyperCore(Value& l, Value& r, bool strictL, bool strictR,
     return (!lIter && !rIter && out.arr()->size() == 1) ? (*out.arr())[0] : out;
 }
 
+// A proxy standing for `@a[i]`: it captures the STORAGE and the index, never a
+// pointer into the vector, so a push that reallocates leaves it valid.
+Value Interpreter::arraySlotProxy(std::shared_ptr<ValueList> arr, size_t at) {
+    Value proxy = Value::makeHash(); proxy.hashKind = "Proxy";
+    Value fetch; fetch.t = VT::Code; fetch.setCode(std::make_shared<Callable>());
+    fetch.code()->builtin = [arr, at](Interpreter&, ValueList&) -> Value {
+        return at < arr->size() ? (*arr)[at] : Value::any();
+    };
+    Value store; store.t = VT::Code; store.setCode(std::make_shared<Callable>());
+    store.code()->builtin = [arr, at](Interpreter&, ValueList& sa) -> Value {
+        Value nv = sa.empty() ? Value::any() : sa[0];
+        while (arr->size() <= at) arr->push_back(Value::any());
+        (*arr)[at] = nv;
+        return nv;
+    };
+    (*proxy.hash())["FETCH"] = fetch;
+    (*proxy.hash())["STORE"] = store;
+    return proxy;
+}
+
+// The CONTAINER an expression denotes, as a proxy — for the two places that bind
+// rather than read: `@path.BIND-POS($i, $node)` stores the container, not its
+// value, and BinaryHeap's sift-down walks a heap by building exactly such a path
+// of aliases. Falls back to the plain value for anything with no container
+// behind it, which is what Rakudo's `is raw` binding does too.
+Value Interpreter::containerOfExpr(Expr* e) {
+    if (!e) return Value::any();
+    // an expression that ALREADY holds an alias hands that same alias on, rather
+    // than wrapping a second proxy around the slot that holds it
+    if (e->kind == NK::NameTerm || e->kind == NK::VarExpr) {
+        const std::string& n = e->kind == NK::NameTerm
+            ? static_cast<NameTerm*>(e)->name : static_cast<VarExpr*>(e)->name;
+        if (tctx_.cur)
+            if (Value* p = tctx_.cur->find(n)) {
+                if (p->t == VT::Hash && p->hashKind == "Proxy" && p->hash()) return *p;
+                if (e->kind == NK::VarExpr) {
+                    for (std::shared_ptr<Env> en = tctx_.cur; en; en = en->parent)
+                        if (en->local(n)) return makeEnvSlotProxy(en, n);
+                }
+            }
+    }
+    if (e->kind == NK::Index) {
+        auto* ix = static_cast<Index*>(e);
+        if (ix->index && !ix->multiDim) {
+            Value* base = nullptr;
+            try { base = lvalue(ix->base.get(), /*asInvocant=*/true); } catch (RakuError&) { base = nullptr; }
+            if (base && !ix->isHash && base->t == VT::Array && base->arr() && !base->shape()) {
+                if (std::shared_ptr<ValueList> arr = base->arrS()) {
+                    Value kv = eval(ix->index.get());
+                    if (kv.t == VT::Code && kv.code() && kv.code()->isWhateverCode)
+                        kv = callCallable(kv, ValueList{Value::integer((long long)arr->size())});
+                    long long i = kv.toInt();
+                    if (i < 0) i += (long long)arr->size();
+                    if (i >= 0) {
+                        while ((long long)arr->size() <= i) arr->push_back(Value::any());
+                        size_t at = (size_t)i;
+                        // the slot may itself hold an alias — pass that one along
+                        if ((*arr)[at].t == VT::Hash && (*arr)[at].hashKind == "Proxy" && (*arr)[at].hash())
+                            return (*arr)[at];
+                        return arraySlotProxy(arr, at);
+                    }
+                }
+            }
+        }
+    }
+    return eval(e);
+}
+
 // The lexical `&infix:<op>` that shadows a built-in of the same spelling, or
 // null. Only ever consulted once g_lexShadowsInfix is armed, so the key is
 // built in a reused buffer rather than a fresh string per operator.
+// The name half of the lookup, with no operands to judge — what the WhateverCode
+// curry needs, because it must resolve the shadow where `* cmp *` was WRITTEN.
+Value* Interpreter::lexInfixLookup(const std::string& op) {
+    if (!g_lexShadowsInfix.load(std::memory_order_relaxed) || !tctx_.cur) return nullptr;
+    static thread_local std::string key;
+    key.assign("&infix:<").append(op).append(">");
+    Value* f = tctx_.cur->find(key);
+    // Only an anonymous binding is a lexical shadow; a declared `sub infix:<op>`
+    // carries its own name and belongs to the multi-dispatch path (see the
+    // g_lexShadowsInfix note in Interpreter.h).
+    if (f && f->t == VT::Code && f->code() && !f->code()->name.empty()) return nullptr;
+    return f;
+}
+
 Value* Interpreter::lexShadowedInfix(const std::string& op, const Value& l, const Value& r) {
     if (!g_lexShadowsInfix.load(std::memory_order_relaxed) || !tctx_.cur) return nullptr;
     // `* cmp *` still CURRIES into a WhateverCode (applyArith builds it) — the
@@ -22158,14 +22272,7 @@ Value* Interpreter::lexShadowedInfix(const std::string& op, const Value& l, cons
         return v.t == VT::Whatever || (v.t == VT::Code && v.code() && v.code()->isWhateverCode);
     };
     if (wish(l) || wish(r)) return nullptr;
-    static thread_local std::string key;
-    key.assign("&infix:<").append(op).append(">");
-    Value* f = tctx_.cur->find(key);
-    // Only an anonymous binding is a lexical shadow; a declared `sub infix:<op>`
-    // carries its own name and belongs to the multi-dispatch path (see the
-    // g_lexShadowsInfix note in Interpreter.h).
-    if (f && f->t == VT::Code && f->code() && !f->code()->name.empty()) return nullptr;
-    return f;
+    return lexInfixLookup(op);
 }
 
 Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value& r) {
@@ -27201,7 +27308,7 @@ Value Interpreter::eval(Expr* e) {
             }
             if (ve->declare) {
                 if (ve->declScope == "state" && tctx_.curStateEnv) { // persistent across calls
-                    if (!tctx_.curStateEnv->vars.count(ve->name)) tctx_.curStateEnv->define(ve->name, typedDefault(ve->declType, sigil));
+                    if (!tctx_.curStateEnv->vars.count(ve->name)) tctx_.curStateEnv->define(ve->name, declInitial(ve, sigil));
                     return tctx_.curStateEnv->vars[ve->name];
                 }
                 // a plain `my` never lands in a loop-statement state frame — a
@@ -27260,7 +27367,7 @@ Value Interpreter::eval(Expr* e) {
                 if (!ve->declType.empty() || !de->local(ve->name)) {
                     if (sigil == '$' && !ve->declType.empty() && ascii::isupper((unsigned char)ve->declType[0]))
                         de->x().varDefault[ve->name] = Value::typeObj(ve->declType); // `$x = Nil` resets to (Type)
-                    return de->define(ve->name, typedDefault(ve->declType, sigil));
+                    return de->define(ve->name, declInitial(ve, sigil));
                 }
                 Value* dp = de->local(ve->name);
                 return dp ? *dp : Value::any();
@@ -28310,6 +28417,14 @@ Value Interpreter::eval(Expr* e) {
                 }
             }
             ValueList args = evalArgs(mc->args);
+            // `@path.BIND-POS($i, $node)` binds a CONTAINER into the slot, so its
+            // second argument is taken raw rather than read. BinaryHeap's
+            // sift-down builds a path of aliases into the heap this way and then
+            // shifts values down it; with the value instead, every write landed
+            // in a copy and `pop` answered an unordered heap.
+            if ((mc->method == "BIND-POS" || mc->method == "BIND-KEY") &&
+                !mc->meta && !mc->methodExpr && mc->args.size() >= 2)
+                args[1] = containerOfExpr(mc->args[1].get());
             // `$x.&foo(...)` — call the sub `foo` (not a method) with the invocant prepended:
             // foo($x, ...). Used a lot for "method-ish" helpers, e.g. `@a.sort: { .&naturally }`.
             if (mc->method.size() > 1 && mc->method[0] == '&' && !mc->meta) {

@@ -186,6 +186,12 @@ struct VarExpr : Expr {
     std::string containerIs;     // `my %h is Set` — the container type trait (Set/Bag/Mix…)
     std::string containerOf;     // `my %h is Bag[Int]` — the container's key-type parameter
     ExprPtr declShape;           // shaped array `my @a[3]` / `my @a[2;2]`: the dimension list
+    // `my BinaryHeap::MinHeap[{ … }] $h` — the declared type PARAMETERIZED with
+    // something that is not a plain type list. declType holds the group's source
+    // text, which is right for `CArray[uint8]` (a name the runtime knows) and a
+    // fiction for anything else, so the type is also kept as the expression
+    // `Type[args]` and evaluated at declaration time to get the real type object.
+    ExprPtr declTypeExpr;
     bool namedBind = false;      // `my (:@a, :@b) := %h` — binds the RHS hash's value by bare name
     // Written as a pseudo-package lookup (`MY::<$x>`, `LEXICAL::<$y>`): a MISS is
     // an answer, not a compile error. Rakudo hands back Nil before 6.e and a

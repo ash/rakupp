@@ -330,6 +330,22 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             (*inv.hash())[kkey(args[0])] = args[1]; return args[1];
         }
     }
+    // `@a.BIND-POS($i, $container)` — the positional twin of BIND-KEY. The value
+    // arrives as the caller's CONTAINER (the eval arm takes that argument raw),
+    // so storing it as-is makes the slot an alias for it: reading `@a[$i]` in a
+    // value context fetches through it, and binding to `@a[$i]` picks the same
+    // container up. BinaryHeap's `!sift-down` is built entirely on this.
+    if (inv.t == VT::Array && inv.arr() && m == "BIND-POS" && args.size() >= 2) {
+        if (inv.isList && inv.s.empty() && inv.enumName.empty())
+            throwTyped("X::Immutable", {{"method", m}, {"typename", "List"}},
+                "Cannot call 'BIND-POS' on an immutable 'List'");
+        long long i = args[0].toInt();
+        if (i < 0) i += (long long)inv.arr()->size();
+        if (i < 0) i = 0;
+        while ((long long)inv.arr()->size() <= i) inv.arr()->push_back(Value::any());
+        (*inv.arr())[(size_t)i] = args[1];
+        return args[1];
+    }
     // (Array AT-POS/EXISTS-POS/ASSIGN-POS/DELETE-POS are fully handled in
     // methodCallPart3, which runs before this file — no Array arm here.)
     if (inv.t == VT::Pair) {

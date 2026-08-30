@@ -881,7 +881,11 @@ public:
     Value postfixIPub(Value v) { return postfixI(std::move(v)); } // postfix:<i> (used by codegen)
     void rtUse(const std::string& module, const std::string& arg = "",
                bool isNo = false); // `use`/`no MODULE` (used by codegen)
+    Value* lexInfixLookup(const std::string& op);    // the lexical &infix:<op>, name lookup only
     Value* lexShadowedInfix(const std::string& op, const Value& l, const Value& r); // lexical &infix:<op> shadowing a built-in
+    Value declInitial(const VarExpr* ve, char sigil); // a declaration's starting value (parameterized types included)
+    Value arraySlotProxy(std::shared_ptr<ValueList> arr, size_t at); // a container standing for @a[i]
+    Value containerOfExpr(Expr* e);                  // the container an expression denotes, for BIND-POS
     Value rtNameTerm(const std::string& n); // bareword: env value / &call / builtin / type object (used by codegen)
     void registerNamedRegex(const std::string& name, const std::string& pattern, const std::string& kind) {
         namedRegex_[name] = pattern; namedRegexKind_[name] = kind; // (used by codegen)

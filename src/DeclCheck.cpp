@@ -114,6 +114,7 @@ struct Checker {
                 declarePlaceholder(v->name);
                 collectExpr(v->declDefault.get());
                 collectExpr(v->declShape.get());
+                collectExpr(v->declTypeExpr.get());
                 return;
             }
             case NK::Assign: {
@@ -284,6 +285,7 @@ struct Checker {
                 auto* v = static_cast<const VarExpr*>(e);
                 walkExpr(v->declDefault.get());
                 walkExpr(v->declShape.get());
+                walkExpr(v->declTypeExpr.get());
                 if (v->declare) { declare(v->name); return; }
                 use(v);
                 return;
