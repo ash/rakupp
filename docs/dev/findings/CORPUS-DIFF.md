@@ -116,6 +116,20 @@ per-file clusters: `corpus-diff/rp-classes3.tsv`.
 > all; and positional captures were numbered straight through alternatives where
 > Raku restarts them per branch. Details, and the two consequences that fell out
 > of fixing them, in [../plans/LTM-PLAN.md](../plans/LTM-PLAN.md) phase 5.
+>
+> **And one the same sweep caught on the way past**: `sub3.pl` was recorded
+> MATCH here and had gone silent — `say min(3, 9)` printed a BLANK LINE. A
+> word-infix operator name was vetoed from starting a list operator's argument
+> (the rule that keeps `Seq eqv Seq` and `$x div $y` infix), so `say` became a
+> no-argument call — hence the blank line — and `min` an infix between it and
+> the parenthesised list. Two rules now decide it, both Rakudo-verified: an
+> identifier TIGHT against `(` is a call and never an infix; and for the three
+> word-operators that are also SUBS (min/max/minmax) the parenless reading
+> follows what is on the LEFT — after a lowercase bareword, a routine name,
+> they start its argument (`say min @a`, `lower min 3, 9`), while after a bare
+> TYPE NAME the infix wins (`Inf min 5`). The rest of the word infixes
+> (eq/ne/div/eqv/but/does/…) are not subs at all and keep the blanket veto.
+> Case: `t/regression/wordop-name-called-as-listop.raku`.
 
 First run of the [raku-corpus](https://github.com/ash/raku-corpus) differential
 harness: every corpus program with a deterministic Rakudo reference output was run

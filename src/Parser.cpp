@@ -579,7 +579,7 @@ bool Parser::startsTermToken(const Token& t) const {
     }
 }
 // what may begin a list-op argument (no parens; conservative on leading symbols)
-bool Parser::startsListopArg(const Token& t) const {
+bool Parser::startsListopArg(const Token& t, const std::string& lhsName) const {
     switch (t.kind) {
         case Tok::IntLit: case Tok::NumLit: case Tok::StrLit: case Tok::VersionLit: case Tok::StrInterp: case Tok::RegexLit: case Tok::SubstLit:
         case Tok::Var: case Tok::LParen:
@@ -686,6 +686,25 @@ bool Parser::startsListopArg(const Token& t) const {
                 // (Lingua::NumericWordForms picks its parser role that way).
                 "but", "does", "min", "max", "minmax",
             };
+            // …but an identifier TIGHT against `(` is a call, never an infix —
+            // that is the rule Raku states, and it is what `say min(3, 9)` needs:
+            // vetoing it made `say` a no-argument call (printing a blank line)
+            // and `min` an infix between it and the parenthesised list. Same for
+            // `max`/`minmax`, and for any user sub that happens to share a
+            // word-operator's name.
+            if (wordInfix.count(t.text) && &t == &cur() &&
+                peek().kind == Tok::LParen && !peek().spaceBefore)
+                return true;
+            // Three of them are also list-op SUBS. Which reading wins is decided
+            // by what is on the LEFT: after a bare TYPE NAME the infix is meant
+            // (`Inf min 5` is 5), and that is the case this veto exists for —
+            // but after a lowercase bareword, which is a ROUTINE name and not a
+            // term, they start its argument. `say min @a` is say(min(@a)), and
+            // `lower min 3, 9` is lower(min(3, 9)), both Rakudo-verified.
+            static const std::set<std::string> alsoSubs = {"min", "max", "minmax"};
+            if (alsoSubs.count(t.text) && !lhsName.empty() &&
+                ascii::islower((unsigned char)lhsName[0]))
+                return true;
             if (wordInfix.count(t.text)) return false;
             // a keyword directly followed by `=>` is a bareword PAIR KEY, not the
             // keyword: `register('Anna', role => 'admin')`
@@ -4629,7 +4648,7 @@ ExprPtr Parser::parsePrimary() {
             if (sigilless_.count(name)) return std::make_unique<NameTerm>(name);
             // For +/-/? the prefix reading is only valid when the operand is
             // tight against the operator (`f -5` => f(-5), but `f - 5` => f() - 5).
-            bool listopOk = startsListopArg(cur());
+            bool listopOk = startsListopArg(cur(), name);
             // Higher-order list builtins accept a pointy-block first arg without parens:
             // `map -> $v {…}, @list` (a bare `{…}` already works via startsListopArg). Gated
             // to these names so a general `bareword ->` isn't misread as a listop call.

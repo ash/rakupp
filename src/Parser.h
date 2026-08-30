@@ -189,7 +189,7 @@ private:
     void rejectNegativeIndex(size_t from) const;
     // token classifiers (member fns so they can recognise user-declared operators)
     bool startsTermToken(const Token& t) const;
-    bool startsListopArg(const Token& t) const;
+    bool startsListopArg(const Token& t, const std::string& lhsName = "") const;
     int infixBpOf(const std::string& op) const;    // binding power of a named infix (builtin or user)
     // `use Foo` where Foo declares operators: find its source and register them,
     // so `$c ◐ 20` parses in the importing file. Defined in Parser.cpp.
