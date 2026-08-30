@@ -119,24 +119,32 @@ operands by pointer instead of copying a Value), copies both operands,
 builds `"&infix:<*>"` in a string, walks the scope chain to the root and
 fails, then takes generic `applyBinOp` instead of `applyArith`.
 
-Measured, 500k iterations, rakupp, `$x * $x`:
+Measured, 500k iterations of `$x OP $y`, rakupp at HEAD, best of three:
 
-| op | slot | alone | `use BinaryHeap` |
-|---|---|---|---|
-| `*` | 61 | 0.0880 | **0.1601** |
-| `+` | 35 | 0.0892 | 0.0921 |
-| `-` | 47 | 0.0879 | 0.0917 |
-| `<` | 41 | 0.0951 | 0.0904 |
-| `%` | 63 | 0.0912 | 0.0940 |
-| `==` | 16 | 0.0896 | 0.0929 |
-| `/` | 59 | 0.4943 | 0.5064 |
+| op | slot | alone | `use BinaryHeap` | |
+|---|---|---|---|---|
+| `*` | **61** | 0.1109 | **0.1846** | **+66%** |
+| `+` | 35 | 0.0918 | 0.0954 | +4% |
+| `-` | 47 | 0.0935 | 0.1053 | +13% |
+| `<` | 41 | 0.0951 | 0.0945 | -1% |
+| `%` | 63 | 0.0928 | 0.1107 | +19% |
+| `==` | 16 | 0.1032 | 0.1025 | 0% |
+| `/` | 59 | 0.5273 | 0.5018 | -5% |
 
-Only slot 61 moves, by 82%. (`==` moves too, by ~29%, but only after a heap
-is actually instantiated, since `cmp` is armed by `MIXIN` rather than at
-load.) Other colliding pairs the same hash produces: `eqv`/`gcd` (56),
-`>=`/`-` (47), `x`/`===` (17). **This is a general fault** — any program
-binding an anonymous `&infix:<…>` silently slows an unrelated operator
-across its whole run — and it should be fixed whatever happens to Graph.
+Slot 61 is the outlier. The `-` and `%` rows are machine noise — this box
+was carrying other work and single runs drift ±15%; an earlier quieter pass
+put every non-`*` row inside ±5%, with `*` at +82%. Do not read those two
+rows as signal. What does not depend on the timing at all is the arithmetic
+(`lexShadowSlot("precedes") == lexShadowSlot("*") == 61`) and the code path
+at Interpreter.cpp:22595, and both say the same thing.
+
+(`==` does move as well, ~29%, but only once a heap is actually
+instantiated, since `cmp` is armed by `MIXIN` rather than at load — this
+table only does `use BinaryHeap`.) Other colliding pairs the same hash
+produces: `eqv`/`gcd` (56), `>=`/`-` (47), `x`/`===` (17). **This is a
+general fault** — any program binding an anonymous `&infix:<…>` silently
+slows an unrelated operator across its whole run — and it should be fixed
+whatever happens to Graph.
 
 **2. Element binding is our most expensive primitive.** `!sift-down` is
 968 ms exclusive of the 1922 ms run, 37,872 calls, and it is built out of
@@ -177,14 +185,21 @@ class, `submethod TWEAK`, a `Callable $.comparator` invoked as
 `BIND-POS`, and no anonymous `&infix:<…>` binding**, so neither of the two
 faults above arms at all.
 
-`Graph::Grid.new(12,12).diameter`, interleaved, best of three, this machine
-(2026-08-30; a first attempt on a loaded box read the two engines as equal
-and was wrong — these are the numbers):
+`Graph::Grid.new(12,12).diameter`, interleaved, best of three, rakupp at
+HEAD (2026-08-31):
 
 | Graph | rakupp | Rakudo | ratio |
 |---|---|---|---|
-| 0.1.2 (BinaryHeap) | 1.931 | 0.638 | 3.03x |
-| 0.1.3 (LeftistHeap) | 4.489 | 2.630 | **1.71x** |
+| 0.1.2 (BinaryHeap) | 1.978 | 0.626 | 3.16x |
+| 0.1.3 (LeftistHeap) | 4.488 | 2.842 | **1.58x** |
+
+The rakupp column is reproducible to ~2%; the Rakudo column drifted ~8%
+between passes on a busy box, so read the ratios as "about 3x" and "about
+1.6x", not to three digits. (Two earlier readings were discarded: one on a
+box at load 10, which reported the two engines as equal and was simply
+wrong, and one taken against a binary carrying uncommitted experimental
+patches. Re-measured from a clean build of HEAD; rakupp's own times moved
+under 2.5%, so the patches were not what those numbers were showing.)
 
 Two things at once, and both belong in any reply to #47. Our **ratio**
 improves, 3.03x to 1.71x, because the two faults above stop arming. The
