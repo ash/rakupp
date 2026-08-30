@@ -36,6 +36,17 @@ Next up:
   incremental sweeps cannot make, the four session phases, and the four small
   pieces of tooling it needs first.
 
+- **[plans/NATIVE-MATH-PLAN.md](plans/NATIVE-MATH-PLAN.md)** — native math
+  (planned 2026-08-31), and the three things measured to be worth more first.
+  Started as "infer numeric types in the AST and stop building `Value`s";
+  the profiles taken before any code moved it to fourth and found a
+  control-flow defect on the way: every unlabelled `next`/`last` in a
+  **mainline** loop throws, at ~80 µs each, because the cooperative flag path
+  keys on `curLoopFrame != 0` and the mainline's own frame number is 0.
+  Also why a plain integer loop spends 36% in thread-local access and 7% on
+  arithmetic, why `my int` currently buys nothing, and why the native-math
+  change should be typed *expressions* rather than typed *slots*.
+
 The three v3.0.0 pillar plans, smallest first:
 
 - **[plans/CLI-PLAN.md](plans/CLI-PLAN.md)** — a real command-line surface:
