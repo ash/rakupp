@@ -128,17 +128,38 @@ exactly the shape pads solved for lexicals:
 
 Measured target: attribute read from 4x toward parity.
 
-### 5. Call-site inline cache
+### 5. Call-site inline cache — BUILT, MEASURED NEUTRAL, REVERTED (2026-08-30)
 
-Annotate each `MethodCall` node with the last `(ClassInfo*, resolved Value*)`
-pair. A monomorphic site — nearly all of them — becomes a pointer compare and
-skips `methodCallInner`'s preamble entirely. Depth being cheap means this is
-worth less than it looks for lookup, but it is the only phase that removes the
-`methodCallInner` entry cost, and the private/multi rows (8x, 10x) are where it
-should show.
+The design was: annotate each `MethodCall` node with the last `(ClassInfo*,
+resolved Value*)` pair, so a monomorphic site becomes a pointer compare and skips
+`methodCallInner`'s preamble; invalidate on a generation counter that
+`noteSymbolMutation` bumps (which turned out to be exactly the right hook — every
+method-table change already goes through it).
 
-Invalidation: a generation counter on `ClassInfo`, bumped by `augment`, mixin,
-`set_name`, and any method-table write.
+It was built that way — one atomic word on the node pointing at an immutable,
+interpreter-owned record, so a racing reader sees a whole entry or none — and it
+passed all 595 checks. Then, measured against the same binary with the cache
+switched off at run time:
+
+| kernel | ic off | ic on | |
+|---|---|---|---|
+| method | 0.25 | 0.25 | 1.00x |
+| privmeth | 0.49 | 0.48 | 0.98x |
+| multimeth | 0.53 | 0.54 | 1.02x |
+| Graph 12x12 | 1.80 | 1.78 | 0.99x |
+
+Neutral, and reverted. The reason is phase 0: once the resolution is made once
+and handed to `invokeMethodChain`, all a cache can save is a single ValueHash
+probe on the class's own method table plus a short preamble — and a probe on a
+table of a dozen names with a cached hash is not measurable. The plan already
+suspected this ("depth being cheap means this is worth less than it looks"); what
+it got wrong was expecting the private and multi rows to show a win, since their
+extra cost is in `requirePrivateCallScope` and `scoreCandidate`, neither of which
+a dispatch cache touches.
+
+Worth re-testing only if profiling ever puts `findMethodForCall` back near the
+top — for instance after the built-in ladder gets a real dispatch table and the
+class probe stops being dwarfed by everything around it.
 
 ### 6. Compact slot containers
 
