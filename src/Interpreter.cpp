@@ -6309,13 +6309,18 @@ void Interpreter::runLeavePhasers(const std::vector<StmtPtr>& stmts, bool ok, si
 }
 
 Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink) {
-    auto saved = tctx_.cur;
-    tctx_.cur = std::move(scope);
+    // ONE thread-local resolution for the whole block. `tctx_` is a non-trivial
+    // static thread_local, so on macOS every mention of it is a _tlv_get_addr call
+    // plus an init guard — the top line of every profile taken for
+    // DISPATCH-PERF-PLAN.md — and this function names it thirty-one times.
+    ExecContext& tcx = tctx_;
+    auto saved = tcx.cur;
+    tcx.cur = std::move(scope);
     // A named sub hoisted into this block leaks the block env via a closure cycle
     // (see breakSelfClosures). Break it just before restoring tctx_.cur, while the
     // block env is still held by tctx_.cur (so the raw pointer is valid). Gated on
     // hasNestedSub → zero cost for the overwhelmingly common sub-free block.
-    Env* blockEnv = tctx_.cur.get();
+    Env* blockEnv = tcx.cur.get();
     // What this env already owed before the block started: anything beyond this is
     // ours to unwind on the way out, anything below it belongs to an outer scope
     // that happens to share the env (a statement-modifier loop body does).
@@ -6362,7 +6367,7 @@ Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink) {
         ControlReg(ExecContext& tc, Block* cb, std::shared_ptr<Env> env)
             : t(tc), on(cb != nullptr) { if (on) t.controlHandlers.push_back({cb, std::move(env)}); }
         ~ControlReg() { if (on) t.controlHandlers.pop_back(); }
-    } controlReg{tctx_, controlBlk, tctx_.cur}; // tctx_.cur IS the block env here
+    } controlReg{tcx, controlBlk, tcx.cur}; // tctx_.cur IS the block env here
     hasNestedSub = hoistSubs(b->stmts);
     hoistExprDecls(b->stmts, blockEnv, &b->hoistNeed); // `my` buried in ternary/nqp branches → block scope
     runEnterPhasers(b->stmts);
@@ -6370,11 +6375,11 @@ Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink) {
     // block should carry on after the throwing statement).
     // 0 = handled, 1 = .resume (carry on at the next statement), 2 = unmatched → rethrow
     auto runCatch = [&](RakuError& e) -> int {
-        tctx_.cur->define("$_", exceptionFor(e));
-        tctx_.cur->define("$!", exceptionFor(e));
+        tcx.cur->define("$_", exceptionFor(e));
+        tcx.cur->define("$!", exceptionFor(e));
         bool matched = false;
-        uint64_t savedGF = tctx_.curGivenFrame; tctx_.curGivenFrame = 0; // when here must THROW (the loop below detects it by catch)
-        struct GFRestore { ExecContext& t; uint64_t f; ~GFRestore() { t.curGivenFrame = f; } } gfr{tctx_, savedGF};
+        uint64_t savedGF = tcx.curGivenFrame; tcx.curGivenFrame = 0; // when here must THROW (the loop below detects it by catch)
+        struct GFRestore { ExecContext& t; uint64_t f; ~GFRestore() { t.curGivenFrame = f; } } gfr{tcx, savedGF};
         try {
             struct G { int& d; G(int& x) : d(x) { d++; } ~G() { d--; } } g{catchDepth_};
             for (auto& s : catchBlk->stmts) exec(s.get());
@@ -6402,43 +6407,43 @@ Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink) {
                     int r = runCatch(e);
                     if (r == 1) continue;                // .resume → next statement
                     runLeavePhasers(b->stmts, /*ok=*/false, tempMark);
-                    if (!sharesScope && tctx_.cur && tctx_.cur->ex && !tctx_.cur->ex->letRestores.empty()) {
-                        for (auto it = tctx_.cur->ex->letRestores.rbegin(); it != tctx_.cur->ex->letRestores.rend(); ++it) (*it)();
-                        tctx_.cur->ex->letRestores.clear();
+                    if (!sharesScope && tcx.cur && tcx.cur->ex && !tcx.cur->ex->letRestores.empty()) {
+                        for (auto it = tcx.cur->ex->letRestores.rbegin(); it != tcx.cur->ex->letRestores.rend(); ++it) (*it)();
+                        tcx.cur->ex->letRestores.clear();
                     }
                     if (hasNestedSub) breakSelfClosures(blockEnv);
-                    tctx_.cur = saved;
+                    tcx.cur = saved;
                     if (r == 2) throw;                   // R1: unmatched → rethrow
                     return Value::nil();                 // handled
                 }
             } else {
                 last = exec(s.get(), sink || i != lastIdx);
             }
-            if (tctx_.returning || tctx_.loopCtl || tctx_.givenCtl) break; // cooperative return/next/last/when unwinds native blocks
+            if (tcx.returning || tcx.loopCtl || tcx.givenCtl) break; // cooperative return/next/last/when unwinds native blocks
         }
     } catch (RakuError& e) {
         runLeavePhasers(b->stmts, /*ok=*/false, tempMark);
         // `let`-saved containers restore only on this UNSUCCESSFUL exit
-        if (!sharesScope && tctx_.cur && tctx_.cur->ex && !tctx_.cur->ex->letRestores.empty()) {
-            for (auto it = tctx_.cur->ex->letRestores.rbegin(); it != tctx_.cur->ex->letRestores.rend(); ++it) (*it)();
-            tctx_.cur->ex->letRestores.clear();
+        if (!sharesScope && tcx.cur && tcx.cur->ex && !tcx.cur->ex->letRestores.empty()) {
+            for (auto it = tcx.cur->ex->letRestores.rbegin(); it != tcx.cur->ex->letRestores.rend(); ++it) (*it)();
+            tcx.cur->ex->letRestores.clear();
         }
         if (hasNestedSub) breakSelfClosures(blockEnv);
-        tctx_.cur = saved;
+        tcx.cur = saved;
         throw;
     } catch (...) {
         runLeavePhasers(b->stmts, /*ok=*/false, tempMark);
-        if (!sharesScope && tctx_.cur && tctx_.cur->ex && !tctx_.cur->ex->letRestores.empty()) {
-            for (auto it = tctx_.cur->ex->letRestores.rbegin(); it != tctx_.cur->ex->letRestores.rend(); ++it) (*it)();
-            tctx_.cur->ex->letRestores.clear();
+        if (!sharesScope && tcx.cur && tcx.cur->ex && !tcx.cur->ex->letRestores.empty()) {
+            for (auto it = tcx.cur->ex->letRestores.rbegin(); it != tcx.cur->ex->letRestores.rend(); ++it) (*it)();
+            tcx.cur->ex->letRestores.clear();
         }
         if (hasNestedSub) breakSelfClosures(blockEnv);
-        tctx_.cur = saved;
+        tcx.cur = saved;
         throw;
     }
     runLeavePhasers(b->stmts, /*ok=*/true, tempMark);
     if (hasNestedSub) breakSelfClosures(blockEnv);
-    tctx_.cur = saved;
+    tcx.cur = saved;
     return last;
 }
 
@@ -14945,12 +14950,13 @@ Value Interpreter::evalInterp(InterpStr* s) {
 }
 
 Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
+    ExecContext& tcx = tctx_;   // one thread-local resolution — see execBlock
     if (e->kind == NK::VarExpr) {
         auto* ve = static_cast<VarExpr*>(e);
         char sigil = ve->name.empty() ? '$' : ve->name[0];
         // process-immutable dynamics; a user `my $*PID` shadow stays assignable
         if (!ve->declare && (ve->name == "$*PID" || ve->name == "$*EXECUTABLE" ||
-                             ve->name == "$*EXECUTABLE-NAME") && !tctx_.cur->find(ve->name))
+                             ve->name == "$*EXECUTABLE-NAME") && !tcx.cur->find(ve->name))
             throw RakuError{Value::typeObj("X::Assignment::RO"),
                             "Cannot modify an immutable value (" + ve->name + ")"};
 
@@ -14966,13 +14972,13 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
         }
 
         if (ve->declare) {
-            if (ve->declScope == "state" && tctx_.curStateEnv) { // persistent across calls
-                if (!tctx_.curStateEnv->vars.count(ve->name)) tctx_.curStateEnv->define(ve->name, declInitial(ve, sigil));
-                return &tctx_.curStateEnv->vars[ve->name];
+            if (ve->declScope == "state" && tcx.curStateEnv) { // persistent across calls
+                if (!tcx.curStateEnv->vars.count(ve->name)) tcx.curStateEnv->define(ve->name, declInitial(ve, sigil));
+                return &tcx.curStateEnv->vars[ve->name];
             }
             // a plain `my` never lands in a loop-statement state frame — a declare
             // in a while COND stays visible after the loop
-            Env* de = tctx_.cur.get();
+            Env* de = tcx.cur.get();
             while (de->loopFrame && de->parent) de = de->parent.get();
             Value init = declInitial(ve, sigil);
             if (ve->declShape && sigil == '@') // shaped array `my @a[2;3]`
@@ -15009,7 +15015,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
         }
         // attribute lvalue: $.x / $!x
         if (ve->name.size() > 2 && (ve->name[1] == '.' || ve->name[1] == '!')) {
-            Value* selfp = tctx_.cur->findSelf();
+            Value* selfp = tcx.cur->findSelf();
             // self is a stamped Proxy subclass instance (AttrProxy): its attrs
             // live as prefixed keys on the proxy hash itself
             if (selfp && selfp->t == VT::Hash && selfp->hashKind == "Proxy" &&
@@ -15019,16 +15025,16 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                 // record the attr's declared type for the assignment check
                 // (`$.method = $m.uc` with `has RequestMethod $.method is rw`
                 // must throw on a value outside the subset — HTTP::Request)
-                tctx_.lastLvalueAttrType.clear();
-                tctx_.lastLvalueAttrWhere = nullptr;
+                tcx.lastLvalueAttrType.clear();
+                tcx.lastLvalueAttrWhere = nullptr;
                 if (ve->name[0] == '$' && selfp->obj()->cls)
                     for (ClassInfo* ci = selfp->obj()->cls.get(); ci; ci = ci->parent.get())
                         for (auto& at : ci->attrs)
                             if (at.name == ve->attrBare) {
                                 if (at.sigil == '$' && !at.type.empty() &&
                                     ascii::isupper((unsigned char)at.type[0]))
-                                    tctx_.lastLvalueAttrType = at.type;
-                                if (at.sigil == '$') tctx_.lastLvalueAttrWhere = at.where;
+                                    tcx.lastLvalueAttrType = at.type;
+                                if (at.sigil == '$') tcx.lastLvalueAttrWhere = at.where;
                                 goto selfAttrTypeDone;
                             }
                 selfAttrTypeDone:
@@ -15042,7 +15048,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
         }
         // a placeholder's caret/colon spelling resolves to its bare slot
         if (ve->name.size() > 2 && (ve->name[1] == '^' || ve->name[1] == ':'))
-            if (Value* ph = tctx_.cur->find(std::string(1, ve->name[0]) + ve->name.substr(2)))
+            if (Value* ph = tcx.cur->find(std::string(1, ve->name[0]) + ve->name.substr(2)))
                 return ph;
         // Pads (PADS-PLAN.md): annotated write target — same owner-identity
         // compare as the read path; a mismatch or a not-yet-live slot falls
@@ -15062,16 +15068,16 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
         // and minting a local left the sub redirecting nothing but itself
         // (IO::Capture::Simple).
         if ((ve->name == "$*OUT" || ve->name == "$*ERR" || ve->name == "$*IN") &&
-            !tctx_.cur->find(ve->name) && global_)
+            !tcx.cur->find(ve->name) && global_)
             return &global_->define(ve->name, dynVar(ve->name));
-        Value* p = tctx_.cur->find(ve->name);
+        Value* p = tcx.cur->find(ve->name);
         if (p) return p;
         // &?BLOCK / &?ROUTINE: not real slots — nothing assignable here
         // (reads go through the VarExpr eval path)
         // inside a method, a bare `@something` may be the twigil-less attribute
         // `has @something` — resolve it against the invocant's declared attrs
         if (ve->name.size() > 1) {
-            if (Value* selfp = tctx_.cur->findSelf()) {
+            if (Value* selfp = tcx.cur->findSelf()) {
                 if (selfp->t == VT::Object && selfp->obj() && selfp->obj()->cls) {
                     std::string an = ve->name.substr(1);
                     for (auto& at : selfp->obj()->cls->attrs)
@@ -15084,7 +15090,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
         // one CREATES it — that is what a symbol table is for. It must land in the
         // global scope, not the current block, or the symbol vanishes at scope exit.
         if (ve->pkgSymbol) {
-            auto g = global_ ? global_ : tctx_.cur;
+            auto g = global_ ? global_ : tcx.cur;
             if (!g->vars.count(ve->name)) g->define(ve->name, Value::any());
             return &g->vars[ve->name];
         }
@@ -15101,7 +15107,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
         }
         // through define(), which routes a layout name into the pad — indexing
         // vars[] directly here would give the same name two homes
-        return &tctx_.cur->define(ve->name, defaultFor(sigil));
+        return &tcx.cur->define(ve->name, defaultFor(sigil));
     }
     if (e->kind == NK::SymbolicRef) {
         auto* sr = static_cast<SymbolicRef*>(e);
@@ -15121,7 +15127,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
         eval(e); // performs the mutation, storing through the invocant
         if (mc->inv && mc->inv->kind == NK::VarExpr) {
             auto* ve = static_cast<VarExpr*>(mc->inv.get());
-            if (Value* p = tctx_.cur->find(ve->name)) return p; // the just-built value
+            if (Value* p = tcx.cur->find(ve->name)) return p; // the just-built value
         }
         return lvalue(mc->inv.get());
     }
@@ -15133,7 +15139,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             // answer the just-assigned slot directly: recursing into a declaring
             // VarExpr would re-declare it and wipe the value
             auto* ve = static_cast<VarExpr*>(a->target.get());
-            if (Value* p = tctx_.cur->find(ve->name)) return p;
+            if (Value* p = tcx.cur->find(ve->name)) return p;
         }
         return lvalue(a->target.get());
     }
@@ -15212,11 +15218,11 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                 // FETCH/STORE closures make the copy transparent)
                 struct WantG { ExecContext& t; int w; Value* o;
                     ~WantG() { t.wantLvalue = w; t.lvalueOut = o; }
-                } wg{tctx_, tctx_.wantLvalue, tctx_.lvalueOut};
-                tctx_.wantLvalue = (int)tctx_.callFrames.size() + 1;
-                tctx_.lvalueOut = nullptr;
+                } wg{tcx, tcx.wantLvalue, tcx.lvalueOut};
+                tcx.wantLvalue = (int)tcx.callFrames.size() + 1;
+                tcx.lvalueOut = nullptr;
                 atKeyHold = methodCall(*base, "AT-KEY", ValueList{k});
-                if (Value* out = tctx_.lvalueOut) return out;
+                if (Value* out = tcx.lvalueOut) return out;
                 return &atKeyHold;
             }
             // …or a DELEGATED one: `has Callable %!Conversions{Mu:U} handles
@@ -15258,11 +15264,11 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                 // lvalue mode — same contract as the AT-KEY arm above
                 struct WantG { ExecContext& t; int w; Value* o;
                     ~WantG() { t.wantLvalue = w; t.lvalueOut = o; }
-                } wg{tctx_, tctx_.wantLvalue, tctx_.lvalueOut};
-                tctx_.wantLvalue = (int)tctx_.callFrames.size() + 1;
-                tctx_.lvalueOut = nullptr;
+                } wg{tcx, tcx.wantLvalue, tcx.lvalueOut};
+                tcx.wantLvalue = (int)tcx.callFrames.size() + 1;
+                tcx.lvalueOut = nullptr;
                 atPosHold = methodCall(*base, "AT-POS", ValueList{k});
-                if (Value* out = tctx_.lvalueOut) return out;
+                if (Value* out = tcx.lvalueOut) return out;
                 return &atPosHold;
             }
             // …or a DELEGATED AT-POS: `has @!cache handles <AT-POS elems>`
@@ -15345,11 +15351,11 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                     for (auto& a : mc->args) args.push_back(eval(a.get()));
                     struct WantG { ExecContext& t; int w; Value* o;
                         ~WantG() { t.wantLvalue = w; t.lvalueOut = o; }
-                    } wg{tctx_, tctx_.wantLvalue, tctx_.lvalueOut};
-                    tctx_.wantLvalue = (int)tctx_.callFrames.size() + 1;
-                    tctx_.lvalueOut = nullptr;
+                    } wg{tcx, tcx.wantLvalue, tcx.lvalueOut};
+                    tcx.wantLvalue = (int)tcx.callFrames.size() + 1;
+                    tcx.lvalueOut = nullptr;
                     rwHold = methodCall(invv, mc->method, args);
-                    if (Value* out = tctx_.lvalueOut) return out;
+                    if (Value* out = tcx.lvalueOut) return out;
                     return &rwHold;
                 }
             }
@@ -15473,15 +15479,15 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             // (`$cont.obj.arr = …`) came through this same arm and left ITS
             // type in the channel, which then wrongly checked the outer target
             // (roast S12-attributes/clone.t died "expected LeObject but got Str")
-            tctx_.lastLvalueAttrType.clear();
-            tctx_.lastLvalueAttrWhere = nullptr;
+            tcx.lastLvalueAttrType.clear();
+            tcx.lastLvalueAttrWhere = nullptr;
             for (ClassInfo* ci = base->obj()->cls.get(); ci; ci = ci->parent.get())
                 for (auto& at : ci->attrs)
                     if (at.name == mc->method) {
                         if (at.sigil == '$' && !at.type.empty() &&
                             ascii::isupper((unsigned char)at.type[0]))
-                            tctx_.lastLvalueAttrType = at.type;
-                        if (at.sigil == '$') tctx_.lastLvalueAttrWhere = at.where;
+                            tcx.lastLvalueAttrType = at.type;
+                        if (at.sigil == '$') tcx.lastLvalueAttrWhere = at.where;
                         goto attrTypeDone;
                     }
             attrTypeDone:
@@ -15520,13 +15526,13 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
     }
     // `self{$k} = v` / `self[$i] = v` inside a method mutates the invocant
     if (e->kind == NK::SelfTerm) {
-        if (Value* p = tctx_.cur->findSelf()) return p;
+        if (Value* p = tcx.cur->findSelf()) return p;
     }
     // sigilless variable used as an lvalue (`my \a := $a; a = 10`): a bareword that
     // resolves to a bound lexical is assignable through its slot.
     if (e->kind == NK::NameTerm) {
         auto* nt = static_cast<NameTerm*>(e);
-        if (Value* p = tctx_.cur->find(nt->name)) return p;
+        if (Value* p = tcx.cur->find(nt->name)) return p;
     }
     // `OUR::{'&name'} := v` — binding into the current package's namespace by
     // subscript. JSON::Class re-exports `trait_mod:<is>` exactly this way from
@@ -15539,7 +15545,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
         if (ix->base && ix->base->kind == NK::NameTerm && ix->index) {
             const std::string& bn = static_cast<NameTerm*>(ix->base.get())->name;
             if (bn == "OUR::" || bn == "OUR") {
-                std::string sym = tctx_.pkgPrefix + eval(ix->index.get()).toStr();
+                std::string sym = tcx.pkgPrefix + eval(ix->index.get()).toStr();
                 if (Value* p = global_->find(sym)) return p;
                 global_->define(sym, Value::any());
                 return global_->find(sym);
