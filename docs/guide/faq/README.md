@@ -38,6 +38,11 @@ trips over.
 - **[performance.md](performance.md)** — "my program is slow": what compiling
   does and does not speed up, with measured numbers, and the things that are slow
   in any Raku.
+- **[garbage-collection.md](garbage-collection.md)** — there isn't one:
+  `shared_ptr` refcounting, what that buys (a 1.5 MB floor, no stop-the-world
+  pause) and what it costs (cycles are never reclaimed, and the free is on your
+  clock), when `DESTROY` actually runs, why a dropped filehandle is not closed,
+  and how to tell a leak from a materialised list.
 - **[debugging.md](debugging.md)** — when something goes wrong: `--lint`,
   `--ast`, `--cpp`, telling your bug from ours, and what to put in a report.
 - **[differences.md](differences.md)** — where Raku++ and Rakudo differ, in both
