@@ -1875,7 +1875,8 @@ bool nameTermConstant(const std::string& n, Value& out, bool sixE) {
 
 Value Interpreter::rtNameTerm(const std::string& n) {
     if (tctx_.cur) {
-        if (Value* p = tctx_.cur->find(n)) return *p;
+        if (Value* p = tctx_.cur->find(n)) // bound slot: fetch, as the eval path does
+            return (p->t == VT::Hash && p->hashKind == "Proxy" && p->hash()) ? deproxy(*p) : *p;
         if (Value* f = tctx_.cur->find("&" + n)) return callCallable(*f, {});
     }
     // after the env/&routine lookups, so a user's own `sub now {…}` still wins
@@ -2412,6 +2413,7 @@ std::function<bool(const std::string&, const Value&, bool&)> g_subsetCheck;
 // rakuRepr is a free function with no interpreter to call FETCH with, so the
 // interpreter publishes one here — same shape as g_subsetCheck above.
 std::function<Value(const Value&)> g_deproxy;
+std::atomic<bool> g_lexShadowsInfix{false};
 
 void rtSetAliasView(const std::unordered_map<std::string, std::string>* a,
                     const std::unordered_map<std::string, std::shared_ptr<ClassInfo>>* c); // defined near typeMatchesArg
@@ -14097,7 +14099,25 @@ void Interpreter::copyOutRw(const std::vector<Param>* params, std::shared_ptr<En
     size_t pi = 0;
     for (auto& p : *params) {
         if (p.named) continue;
-        if (p.invocant) continue;  // an explicit `C:U:` invocant consumes no arg slot
+        if (p.invocant) {
+            // backstop for the `is rw` invocant linked in setupRwLinks — the
+            // link already wrote through on assignment, this catches a mutation
+            // that bypassed it. Same unchanged-guard as the parameters below.
+            if (p.isRw && !p.name.empty()) {
+                auto li = env->xr().rwLinks.find(p.name);
+                Value* pv = env->local(p.name);
+                if (li != env->xr().rwLinks.end() && pv) {
+                    auto sy = env->xr().rwSynced.find(p.name);
+                    if (!(sy != env->xr().rwSynced.end() && valueEqv(*pv, sy->second))) {
+                        auto savedCur = tctx_.cur;
+                        tctx_.cur = li->second.second;   // the caller's scope
+                        try { if (Value* lv = lvalue(li->second.first)) *lv = *pv; } catch (...) {}
+                        tctx_.cur = savedCur;
+                    }
+                }
+            }
+            continue;  // an explicit `C:U:` invocant consumes no arg slot
+        }
         if (p.slurpy) break;
         // rwSynced-only entries are the Buf-bound params (see setupRwLinks):
         // they copy back when mutated, same unchanged-guard as `is rw`
@@ -14158,7 +14178,23 @@ void Interpreter::setupRwLinks(const std::vector<Param>* params, std::shared_ptr
     size_t pi = 0;
     for (auto& p : *params) {
         if (p.named) continue;
-        if (p.invocant) continue;  // an explicit `C:U:` invocant consumes no arg slot
+        if (p.invocant) {
+            // `method f(::?CLASS:U $_ is rw: …)` ASSIGNS to its invocant to
+            // autovivify the caller's variable — BinaryHeap's whole `my
+            // BinaryHeap::MinHeap $h; $h.push(…)` idiom, and Graph's priority
+            // queues with it. The invocant consumes no argument slot, so it
+            // takes its expression from tctx_ rather than rwArgs, and links the
+            // same way an `is rw` parameter does: an assignment to `$_` writes
+            // straight into the caller's container.
+            if (p.isRw && !p.name.empty() && tctx_.rwInvocantExpr) {
+                env->x().rwLinks[p.name] = { tctx_.rwInvocantExpr, tctx_.cur };
+                Value* ip = env->local(p.name);
+                env->x().rwSynced[p.name] = ip ? *ip : Value::any();
+                anyRwLinks_ = true;
+                tctx_.rwInvocantExpr = nullptr;   // consumed: no nested call inherits it
+            }
+            continue;
+        }
         if (p.slurpy) break;
         if ((p.isRw || p.isRaw || p.sigil == '\\') && pi < rwArgs->size()) {
             Expr* ae = (*rwArgs)[pi].get();
@@ -16987,17 +17023,30 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 }
             }
         }
+        // `my \p = @a[i]` is a BIND in Raku, not an assignment — the term ALIASES
+        // the element, which is how BinaryHeap reads a heap node
+        // (`my \parent = @!array[$pos]`) and then shifts it down through the
+        // alias. Parsed as a plain `=` to a sigilless declarator, it copied, so
+        // both slot arms below accept that spelling alongside `:=`.
+        auto sigillessDecl = [](Assign* as) {
+            if (as->op != "=" || as->target->kind != NK::VarExpr) return false;
+            auto* v = static_cast<VarExpr*>(as->target.get());
+            return v->declare && !v->name.empty() && v->name[0] != '$' &&
+                   v->name[0] != '@' && v->name[0] != '%' && v->name[0] != '&';
+        };
+        const bool bindsSlot = (a->op == ":=" || sigillessDecl(a));
+        const bool slotTarget = a->target->kind == NK::VarExpr &&
+            !static_cast<VarExpr*>(a->target.get())->name.empty() &&
+            (static_cast<VarExpr*>(a->target.get())->name[0] == '$' || sigillessDecl(a));
         // `$x := %h{key}` binds the hash SLOT, not its value: a later `$x = v`
         // writes into the hash. Config walks a nested config with
         // `$index := $index{$_}` and then assigns through the last binding.
         // The map is node-stable and held by shared_ptr, so the slot survives
         // any later insertion — an ARRAY element deliberately does not qualify
         // (its storage is a vector, and a push would leave the binding dangling).
-        if (a->op == ":=" && a->target->kind == NK::VarExpr && a->value->kind == NK::Index) {
-            auto* tv = static_cast<VarExpr*>(a->target.get());
+        if (bindsSlot && a->target->kind == NK::VarExpr && a->value->kind == NK::Index) {
             auto* ix = static_cast<Index*>(a->value.get());
-            if (ix->isHash && ix->index && !ix->multiDim &&
-                !tv->name.empty() && tv->name[0] == '$') {
+            if (ix->isHash && ix->index && !ix->multiDim && slotTarget) {
                 // the base may have no lvalue at all — `$x := PROCESS::{"\$OUT"}`
                 // subscripts a pseudo-package, not a container. Fall through to the
                 // ordinary bind rather than letting "not assignable" escape.
@@ -17044,6 +17093,73 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                     return sink ? Value::any() : (*h)[key];
                 }
             }
+        }
+        // `$x := @a[$i]` binds the array SLOT, exactly as the hash arm above binds
+        // a hash slot. It was left out because a vector REALLOCATES under a push,
+        // so a raw pointer into it would dangle — but the proxy never holds one:
+        // it captures the storage plus the INDEX (resolved once, at bind time,
+        // like Rakudo) and re-reads the element on every FETCH/STORE. Without the
+        // alias the bind silently degraded to a copy, and every write through it
+        // was dropped: BinaryHeap sifts with `my $node := @!array[$pos]` and then
+        // assigns through the binding, so its heaps stayed in insertion order and
+        // Graph's A* walked a 100x100 grid off a heap that was never a heap.
+        if (bindsSlot && a->target->kind == NK::VarExpr && a->value->kind == NK::Index) {
+            auto* ix = static_cast<Index*>(a->value.get());
+            if (!ix->isHash && ix->index && !ix->multiDim && slotTarget) {
+                Value* base = nullptr;
+                try { base = lvalue(ix->base.get(), /*asInvocant=*/true); } catch (RakuError&) { base = nullptr; }
+                std::shared_ptr<ValueList> arr;
+                // a shaped array indexes through its own protocol, and an immutable
+                // List has no slot to write — both fall through to the plain bind
+                if (base && base->t == VT::Array && base->arr() && !base->shape() &&
+                    !(base->isList && base->s != "Seq" && base->enumName.empty()))
+                    arr = base->arrS();
+                if (arr) {
+                    Value kv = eval(ix->index.get());
+                    if (kv.t == VT::Code && kv.code() && kv.code()->isWhateverCode)
+                        kv = callCallable(kv, ValueList{Value::integer((long long)arr->size())});
+                    long long i = kv.toInt();
+                    if (i < 0) i += (long long)arr->size();
+                    if (i >= 0) {
+                        // `my $x := @a[5]` on a shorter array autovivifies the slot,
+                        // so the later `$x = 9` lands at 5 and not past the end
+                        Value fill = base->ofType().empty() ? Value::any() : typedElemDefault(*base);
+                        while ((long long)arr->size() <= i) arr->push_back(fill);
+                        size_t at = (size_t)i;
+                        Value proxy = Value::makeHash(); proxy.hashKind = "Proxy";
+                        Value fetch; fetch.t = VT::Code; fetch.setCode(std::make_shared<Callable>());
+                        fetch.code()->builtin = [arr, at](Interpreter&, ValueList&) -> Value {
+                            return at < arr->size() ? (*arr)[at] : Value::any();
+                        };
+                        Value store; store.t = VT::Code; store.setCode(std::make_shared<Callable>());
+                        store.code()->builtin = [arr, at](Interpreter&, ValueList& sa) -> Value {
+                            Value nv = sa.empty() ? Value::any() : sa[0];
+                            while (arr->size() <= at) arr->push_back(Value::any());
+                            (*arr)[at] = nv;
+                            return nv;
+                        };
+                        (*proxy.hash())["FETCH"] = fetch;
+                        (*proxy.hash())["STORE"] = store;
+                        Value* blv = lvalue(a->target.get());
+                        *blv = proxy;
+                        return sink ? Value::any() : (*arr)[at];
+                    }
+                }
+            }
+        }
+        // `$node := parent`, where `parent` is a sigilless term ALREADY bound to
+        // a slot: a bind copies the ALIAS, so it reads the raw slot instead of
+        // the value the NameTerm eval fetches for rvalue use. This is how
+        // BinaryHeap walks a node up the heap — `$node := parent` each round.
+        if (bindsSlot && a->value->kind == NK::NameTerm && tctx_.cur) {
+            const std::string& rn = static_cast<NameTerm*>(a->value.get())->name;
+            if (Value* rp = tctx_.cur->find(rn))
+                if (rp->t == VT::Hash && rp->hashKind == "Proxy" && rp->hash()) {
+                    Value slot = *rp;                 // lvalue() may invalidate rp
+                    Value* blv = lvalue(a->target.get());
+                    *blv = slot;
+                    return sink ? Value::any() : deproxy(slot);
+                }
         }
         Value rhs = evalValueOf(a->value.get()); // `$rx = /pat/` stores a Regex object
         // coercion-type container `my Int(Str) $x = '42'`: coerce the value to the target
@@ -18400,6 +18516,12 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             };
             Value lv = resolve(lc); // resolve left before right — argument order matters
             Value rv = resolve(rc);
+            // the curry RUNS here, long after `* cmp *` was written: a lexical
+            // `&infix:<cmp>` still shadows the built-in at this point, which is
+            // exactly how BinaryHeap's `* cmp * == Less` picks up the comparator
+            // its MIXIN was handed.
+            if (Value* f = I.lexShadowedInfix(opc, lv, rv))
+                return I.callCallable(*f, ValueList{lv, rv});
             return applyArith(opc, lv, rv);
         };
         return code;
@@ -22011,6 +22133,29 @@ Value Interpreter::hyperCore(Value& l, Value& r, bool strictL, bool strictR,
     return (!lIter && !rIter && out.arr()->size() == 1) ? (*out.arr())[0] : out;
 }
 
+// The lexical `&infix:<op>` that shadows a built-in of the same spelling, or
+// null. Only ever consulted once g_lexShadowsInfix is armed, so the key is
+// built in a reused buffer rather than a fresh string per operator.
+Value* Interpreter::lexShadowedInfix(const std::string& op, const Value& l, const Value& r) {
+    if (!g_lexShadowsInfix.load(std::memory_order_relaxed) || !tctx_.cur) return nullptr;
+    // `* cmp *` still CURRIES into a WhateverCode (applyArith builds it) — the
+    // shadowing lexical applies when that closure RUNS, and the run comes back
+    // through here with real operands. Intercepting the curry itself would call
+    // the user's block once, eagerly, with two Whatevers.
+    auto wish = [](const Value& v) {
+        return v.t == VT::Whatever || (v.t == VT::Code && v.code() && v.code()->isWhateverCode);
+    };
+    if (wish(l) || wish(r)) return nullptr;
+    static thread_local std::string key;
+    key.assign("&infix:<").append(op).append(">");
+    Value* f = tctx_.cur->find(key);
+    // Only an anonymous binding is a lexical shadow; a declared `sub infix:<op>`
+    // carries its own name and belongs to the multi-dispatch path (see the
+    // g_lexShadowsInfix note in Interpreter.h).
+    if (f && f->t == VT::Code && f->code() && !f->code()->name.empty()) return nullptr;
+    return f;
+}
+
 Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value& r) {
     // `$x ~~ $rx` where the pattern is a Regex VALUE. Matching used to be decided
     // syntactically — at each site that could see a `/…/` literal — so the
@@ -22114,6 +22259,7 @@ Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value
         return hyperCore(ll, rr, strictL, strictR,
             [&](const Value& x, const Value& y, Value*, Value*) { return applyBinOp(inner, x, y); });
     }
+    if (Value* f = lexShadowedInfix(op, l, r)) return callCallable(*f, ValueList{l, r});
     try { return applyArith(op, l, r); }
     catch (RakuError&) {
         if (Value* f = tctx_.cur->find("&infix:<" + op + ">")) return callCallable(*f, ValueList{l, r});
@@ -22248,6 +22394,18 @@ Value Interpreter::evalBinary(Binary* b) {
         bool rmeta = op.size() > 1 && op[0] == 'R' &&
                      (!ascii::isalnum((unsigned char)op[1]) || reverseWordOp(op));
         b->simpleOp = (rmeta || special.count(op)) ? 0 : 1;
+    }
+    // A lexical `&infix:<op>` wins over the built-in it spells. Gated on
+    // simpleOp==1 — the plain eager operators — because that path goes straight
+    // to applyArith and never reaches applyBinOp's own check; everything in the
+    // `special` set above (`&&`, `//`, `~~`, `xx`, ranges, Z/X) keeps its own
+    // thunking and picks the override up in applyBinOp instead. Metaops
+    // (`Rcmp`, `[cmp]`) carry a different `op` string, so they are untouched.
+    if (b->simpleOp == 1 && g_lexShadowsInfix.load(std::memory_order_relaxed)) {
+        Value lv = eval(b->lhs.get());
+        Value rv = eval(b->rhs.get());
+        if (Value* f = lexShadowedInfix(op, lv, rv)) return callCallable(*f, ValueList{lv, rv});
+        return applyBinOp(op, lv, rv);
     }
     if (b->simpleOp == 1) {
         // Specialised shapes: `$n < 2`, `2 * $n`, `$a + $b` — what hot loops are
@@ -27515,7 +27673,13 @@ Value Interpreter::eval(Expr* e) {
                 "Uni", "NFC", "NFD", "NFKC", "NFKD",
             };
             if (types.count(n)) return Value::typeObj(n);
-            if (Value* p = tctx_.cur->find(n)) return *p;
+            // A sigilless term BOUND to a container slot (`my \p = @a[1]`) holds
+            // that slot's Proxy. Reading it as an rvalue must FETCH, exactly as
+            // the `$`-variable paths do: handing the Proxy itself back let it be
+            // copied into the assignment target, and a later write to that copy
+            // reached back into the array it aliased.
+            if (Value* p = tctx_.cur->find(n))
+                return (p->t == VT::Hash && p->hashKind == "Proxy" && p->hash()) ? deproxy(*p) : *p;
             if (Value* f = tctx_.cur->find("&" + n)) return callCallable(*f, {});
             // AFTER the lexical lookups, as the codegen runtime's rtNameTerm has
             // always done it: a sigilless parameter or constant named `i`, `e`,
@@ -27856,6 +28020,14 @@ Value Interpreter::eval(Expr* e) {
                          !static_cast<RegexLit*>(mc->inv.get())->isM)
                 ? regexLitValue(static_cast<RegexLit*>(mc->inv.get()))
                 : eval(mc->inv.get());
+            // Offer the invocant EXPRESSION to the callee's binder: a candidate
+            // whose invocant is `is rw` links it like an rw parameter and writes
+            // assignments back into the caller's variable (see setupRwLinks).
+            // Restored on the way out, and cleared by whoever consumes it, so
+            // nothing downstream sees a stale expression.
+            struct RwInvG { ExecContext& t; Expr* prev; ~RwInvG() { t.rwInvocantExpr = prev; } }
+                rwInvG{tctx_, tctx_.rwInvocantExpr};
+            tctx_.rwInvocantExpr = mc->inv.get();
             if (mc->methodExpr) { // indirect ."$name"() / .$var (Callable or name)
                 Value mv = eval(mc->methodExpr.get());
                 // A TYPE OBJECT is invocable too: Rakudo compiles `.$foo` to
@@ -28145,7 +28317,19 @@ Value Interpreter::eval(Expr* e) {
                 (mc->inv->kind == NK::Index || mc->inv->kind == NK::VarExpr) &&
                 (mc->method == "push" || mc->method == "append" ||
                  mc->method == "unshift" || mc->method == "prepend" ||
-                 mc->method == "ASSIGN-KEY" || mc->method == "BIND-KEY")) {
+                 mc->method == "ASSIGN-KEY" || mc->method == "BIND-KEY") &&
+                // …but a TYPED slot whose class defines the method ITSELF dispatches
+                // there. `my BinaryHeap::MinHeap $h; $h.push(…)` has to reach
+                // BinaryHeap's own `::?CLASS:U $_ is rw:` candidate, which
+                // autovivifies the heap; replacing the type object with a plain
+                // Array instead left `$h` an Array for the rest of its life, so
+                // `$h.pop` was Array.pop — LIFO — and Graph's Dijkstra ran as a
+                // depth-first search. An untyped Any/Nil slot has no class to ask
+                // and keeps vivifying a container, as Rakudo's `Any.push` does.
+                !(inv.t == VT::Type && [&] {
+                    auto cit = classes_.find(resolveClassAlias(inv.s));
+                    return cit != classes_.end() && cit->second->findMethod(mc->method);
+                }())) {
                 bool hashy = mc->method == "ASSIGN-KEY" || mc->method == "BIND-KEY";
                 try {
                     if (Value* slot = lvalue(mc->inv.get())) {

@@ -269,6 +269,23 @@ struct PadLayout {
     }
 };
 
+// Armed when an ANONYMOUS `&infix:<op>` binding enters a scope — `my
+// &infix:<cmp> = {…}`, or a parameter named `&infix:<cmp>`, which is how
+// BinaryHeap takes a custom comparator. Such a binding SHADOWS the built-in
+// operator it spells, but the built-in ran first and only a THROW fell through
+// to the lexical lookup, so an override of a WORKING built-in never got a turn.
+//
+// A DECLARED `sub infix:<op>` is deliberately excluded: that is a multi-dispatch
+// participant, and the candidate machinery already consults it with a
+// no-candidate fallback to the built-in. Routing it through the shadow path
+// instead made `12 gcd 18` re-enter Math::NumberTheory's Complex/Rat-only
+// `infix:<gcd>` proto until the stack ran out.
+//
+// The binary paths consult the lexical first once this is set; until then they
+// pay one relaxed load. A bool rather than a name set so that arming it from a
+// worker thread stays race-free.
+extern std::atomic<bool> g_lexShadowsInfix;
+
 struct Env {
     std::unordered_map<std::string, Value> vars;
     std::shared_ptr<Env> parent;
@@ -344,6 +361,13 @@ struct Env {
     // Layout names land in the pad; the map-twin erase covers a lenient-mode
     // write that happened before the declaration executed.
     Value& define(const std::string& name, Value v) {
+        // `&infix:<op>` entering a scope arms the shadow check (g_lexShadowsInfix),
+        // but ONLY for an anonymous binding — see g_lexShadowsInfix. Gated on the
+        // first two characters, so every other define pays two loads.
+        if (name.size() > 9 && name[0] == '&' && name[1] == 'i' &&
+            name.compare(0, 8, "&infix:<") == 0 &&
+            !(v.t == VT::Code && v.code() && !v.code()->name.empty()))
+            g_lexShadowsInfix.store(true, std::memory_order_relaxed);
         if (layout) {
             auto it = layout->byName.find(name);
             if (it != layout->byName.end()) {
@@ -477,6 +501,14 @@ struct SupplyTapCtx {
 // This is the Stage-1 foundation for real concurrency; nothing swaps yet.
 struct ExecContext {
     std::shared_ptr<Env> cur;
+    // The invocant EXPRESSION of the method call currently being set up, for a
+    // candidate whose invocant is declared `is rw` (`multi method push(::?CLASS:U
+    // $_ is rw: …)` — how BinaryHeap autovivifies `my BinaryHeap::MinHeap $h`
+    // on first push). rwArgs carries the ARGUMENT expressions, and the invocant
+    // consumes no argument slot, so it needs its own channel to reach
+    // setupRwLinks. Consumed and cleared the moment a matching parameter uses
+    // it, so a nested call cannot inherit it.
+    Expr* rwInvocantExpr = nullptr;
     std::vector<Env*> dynStack;
     int callDepth = 0;
     // Reusable argument buffers for evalNqpOp, one per nesting depth. Every nqp
@@ -835,6 +867,7 @@ public:
     Value postfixIPub(Value v) { return postfixI(std::move(v)); } // postfix:<i> (used by codegen)
     void rtUse(const std::string& module, const std::string& arg = "",
                bool isNo = false); // `use`/`no MODULE` (used by codegen)
+    Value* lexShadowedInfix(const std::string& op, const Value& l, const Value& r); // lexical &infix:<op> shadowing a built-in
     Value rtNameTerm(const std::string& n); // bareword: env value / &call / builtin / type object (used by codegen)
     void registerNamedRegex(const std::string& name, const std::string& pattern, const std::string& kind) {
         namedRegex_[name] = pattern; namedRegexKind_[name] = kind; // (used by codegen)

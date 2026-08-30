@@ -46,6 +46,20 @@ struct BigInt {
         if (mag[1] != 446744073u) return mag[1] < 446744073u;
         return mag[0] <= 709551615u;
     }
+#if defined(__SIZEOF_INT128__)
+    // magnitude fits in an unsigned __int128. Four base-1e9 limbs top out at
+    // 1e36-1, comfortably under 2^128; only a five-limb value needs the compare
+    // against 2^128-1 = 340282366920938463463374607431768211455.
+    bool fitsU128() const {
+        if (mag.size() > 5) return false;
+        if (mag.size() < 5) return true;
+        if (mag[4] != 340u) return mag[4] < 340u;
+        if (mag[3] != 282366920u) return mag[3] < 282366920u;
+        if (mag[2] != 938463463u) return mag[2] < 938463463u;
+        if (mag[1] != 374607431u) return mag[1] < 374607431u;
+        return mag[0] <= 768211455u;
+    }
+#endif
     long long toLL() const;
     // The low 64 bits, two's complement, WRAPPING rather than saturating. toLL()
     // deliberately saturates because its callers are indices and codepoints, where

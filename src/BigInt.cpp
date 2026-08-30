@@ -94,24 +94,6 @@ BigInt BigInt::operator+(const BigInt& o) const {
 
 BigInt BigInt::operator-(const BigInt& o) const { return *this + (-o); }
 
-BigInt BigInt::operator*(const BigInt& o) const {
-    if (sign == 0 || o.sign == 0) return BigInt();
-    BigInt r;
-    r.mag.assign(mag.size() + o.mag.size(), 0);
-    for (size_t i = 0; i < mag.size(); i++) {
-        uint64_t carry = 0;
-        for (size_t j = 0; j < o.mag.size() || carry; j++) {
-            uint64_t cur = r.mag[i + j] + carry +
-                (j < o.mag.size() ? (uint64_t)mag[i] * o.mag[j] : 0);
-            r.mag[i + j] = (uint32_t)(cur % BASE);
-            carry = cur / BASE;
-        }
-    }
-    r.sign = sign * o.sign;
-    r.trim();
-    return r;
-}
-
 // The magnitude as a uint64. Only valid when fitsU64(), which is what the two
 // fast paths below check first; the intermediate never overflows because that
 // guarantee bounds the whole value by 2^64-1.
@@ -126,6 +108,49 @@ static inline BigInt fromMagU64(unsigned long long m, int sign) {
     BigInt r;
     while (m) { r.mag.push_back((uint32_t)(m % 1000000000ull)); m /= 1000000000ull; }
     r.sign = r.mag.empty() ? 0 : sign;
+    return r;
+}
+
+#if defined(__SIZEOF_INT128__)
+// The same two helpers one limb-width up. Values in the 64-128 bit band are
+// where real arithmetic lives once it stops fitting a machine word — Pollard
+// rho squares a ~1e17 modulus into ~1e34 on every step — and the base-1e9 long
+// division below pays a heap allocation per quotient limb to get there.
+static inline unsigned __int128 magU128(const BigInt& x) {
+    unsigned __int128 v = 0;
+    for (std::size_t i = x.mag.size(); i-- > 0;) v = v * 1000000000u + x.mag[i];
+    return v;
+}
+static inline BigInt fromMagU128(unsigned __int128 m, int sign) {
+    BigInt r;
+    while (m) { r.mag.push_back((uint32_t)(m % 1000000000u)); m /= 1000000000u; }
+    r.sign = r.mag.empty() ? 0 : sign;
+    return r;
+}
+#endif
+
+BigInt BigInt::operator*(const BigInt& o) const {
+    if (sign == 0 || o.sign == 0) return BigInt();
+#if defined(__SIZEOF_INT128__)
+    // (2^64-1)^2 < 2^128, so two u64 magnitudes always multiply exactly into a
+    // u128 — one hardware multiply in place of the base-1e9 schoolbook loop and
+    // its per-limb `% BASE` / `/ BASE`.
+    if (fitsU64() && o.fitsU64())
+        return fromMagU128((unsigned __int128)magU64(*this) * magU64(o), sign * o.sign);
+#endif
+    BigInt r;
+    r.mag.assign(mag.size() + o.mag.size(), 0);
+    for (size_t i = 0; i < mag.size(); i++) {
+        uint64_t carry = 0;
+        for (size_t j = 0; j < o.mag.size() || carry; j++) {
+            uint64_t cur = r.mag[i + j] + carry +
+                (j < o.mag.size() ? (uint64_t)mag[i] * o.mag[j] : 0);
+            r.mag[i + j] = (uint32_t)(cur % BASE);
+            carry = cur / BASE;
+        }
+    }
+    r.sign = sign * o.sign;
+    r.trim();
     return r;
 }
 
@@ -146,6 +171,18 @@ void BigInt::divmod(const BigInt& a, const BigInt& b, BigInt& q, BigInt& r) {
         r = fromMagU64(am % bm, a.sign);
         return;
     }
+#if defined(__SIZEOF_INT128__)
+    // …and one 128-bit divide for the next band up. `($x * $x + $c) % $n` with a
+    // ~1e17 modulus lands here on every Pollard-rho step: the dividend is ~1e34,
+    // so it misses the u64 path and used to run algorithm D, which allocates a
+    // BigInt per quotient limb. Two hardware divides instead.
+    if (a.fitsU128() && b.fitsU128()) {
+        unsigned __int128 am = magU128(a), bm = magU128(b);
+        q = fromMagU128(am / bm, a.sign * b.sign);
+        r = fromMagU128(am % bm, a.sign);
+        return;
+    }
+#endif
     // Long division on magnitudes, base 1e9 — Knuth's algorithm D. The quotient
     // limb is ESTIMATED from the leading limbs and then corrected, instead of
     // binary-searched: the search cost ~30 full BigInt multiplications per limb,

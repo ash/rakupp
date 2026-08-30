@@ -2239,10 +2239,20 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     }
     if (inv.t == VT::Type) {
         if (inv.s.rfind("IO::Spec", 0) == 0) { Value r; if (ioSpecMethod(*this, inv.s, m, args, r)) return r; }
-        // `.CREATE` is the low-level allocator: an instance with attributes at their
-        // declared defaults and NO BUILD/TWEAK run. Delegating to .new/.bless would
-        // pass the one documented example (`Mu.CREATE.defined` is True) while being
-        // semantically wrong, so it builds the ObjectData directly.
+        // `.CREATE` is the low-level allocator: an instance whose attributes hold
+        // their empty CONTAINERS, with no BUILD/TWEAK and no initializer run.
+        // Delegating to .new/.bless would pass the one documented example
+        // (`Mu.CREATE.defined` is True) while being semantically wrong, so it
+        // builds the ObjectData directly.
+        //
+        // The container is what matters, and it was missing: every attribute got
+        // Any regardless of sigil, so `has @!array` on a CREATE'd object was not
+        // an Array and `has int $!elems` was not 0. BinaryHeap allocates exactly
+        // this way (`multi method new(--> BinaryHeap:D) { self.CREATE }`), so
+        // every heap it handed out was unusable — which is what left Graph's
+        // Dijkstra and A* walking an unordered queue. rtTypedDefault is the same
+        // rule the `my` declarators use: `@` → [], `%` → {}, native → 0/"",
+        // `Int` → the type object, untyped `$` → Any.
         if (m == "CREATE") {
             auto od = std::make_shared<ObjectData>();
             auto it = classes_.find(resolveClassAlias(inv.s));
@@ -2251,7 +2261,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 for (auto* c = it->second.get(); c; c = c->parent.get())
                     for (auto& at : c->attrs)
                         if (!od->attrs.count(at.name))
-                            od->attrs[at.name] = at.type.empty() ? Value::any() : Value::typeObj(at.type);
+                            od->attrs[at.name] = rtTypedDefault(at.type.c_str(), at.sigil);
             }
             return Value::object(od);
         }
