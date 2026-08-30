@@ -269,11 +269,12 @@ struct PadLayout {
     }
 };
 
-// Armed when an ANONYMOUS `&infix:<op>` binding enters a scope — `my
-// &infix:<cmp> = {…}`, or a parameter named `&infix:<cmp>`, which is how
-// BinaryHeap takes a custom comparator. Such a binding SHADOWS the built-in
-// operator it spells, but the built-in ran first and only a THROW fell through
-// to the lexical lookup, so an override of a WORKING built-in never got a turn.
+// Which operator SPELLINGS some scope has shadowed with an anonymous
+// `&infix:<op>` binding — `my &infix:<cmp> = {…}`, or a parameter named
+// `&infix:<cmp>`, which is how BinaryHeap takes a custom comparator. Such a
+// binding shadows the built-in operator it spells, but the built-in ran first
+// and only a THROW fell through to the lexical lookup, so an override of a
+// WORKING built-in never got a turn.
 //
 // A DECLARED `sub infix:<op>` is deliberately excluded: that is a multi-dispatch
 // participant, and the candidate machinery already consults it with a
@@ -281,10 +282,22 @@ struct PadLayout {
 // instead made `12 gcd 18` re-enter Math::NumberTheory's Complex/Rat-only
 // `infix:<gcd>` proto until the stack ran out.
 //
-// The binary paths consult the lexical first once this is set; until then they
-// pay one relaxed load. A bool rather than a name set so that arming it from a
-// worker thread stays race-free.
-extern std::atomic<bool> g_lexShadowsInfix;
+// A 64-bit BLOOM FILTER over the spelling, not a name set: one relaxed load and
+// a bit test per operator, no allocation, and a fetch_or to arm, so a worker
+// thread can arm it without a race. It was a plain bool, which meant that once
+// ANY program armed it every `+` in that program built a lookup key and walked
+// the scope chain — 2.4x on a plain arithmetic loop, and Graph arms it, so Graph
+// paid it everywhere. A false positive only costs the full lookup, which is what
+// used to happen unconditionally.
+extern std::atomic<uint64_t> g_lexShadowMask;
+inline unsigned lexShadowSlot(const char* p, size_t n) {
+    return (unsigned)((p[0] * 31u + p[n - 1] * 7u + n) & 63u);
+}
+inline bool lexShadowPossible(const std::string& op) {
+    if (op.empty()) return false;
+    uint64_t m = g_lexShadowMask.load(std::memory_order_relaxed);
+    return m && ((m >> lexShadowSlot(op.data(), op.size())) & 1);
+}
 
 struct Env {
     std::unordered_map<std::string, Value> vars;
@@ -361,13 +374,14 @@ struct Env {
     // Layout names land in the pad; the map-twin erase covers a lenient-mode
     // write that happened before the declaration executed.
     Value& define(const std::string& name, Value v) {
-        // `&infix:<op>` entering a scope arms the shadow check (g_lexShadowsInfix),
-        // but ONLY for an anonymous binding — see g_lexShadowsInfix. Gated on the
-        // first two characters, so every other define pays two loads.
+        // `&infix:<op>` entering a scope arms the filter for THAT spelling, and
+        // only for an anonymous binding — see g_lexShadowMask. Gated on the first
+        // two characters, so every other define pays two loads.
         if (name.size() > 9 && name[0] == '&' && name[1] == 'i' &&
-            name.compare(0, 8, "&infix:<") == 0 &&
+            name.compare(0, 8, "&infix:<") == 0 && name.back() == '>' &&
             !(v.t == VT::Code && v.code() && !v.code()->name.empty()))
-            g_lexShadowsInfix.store(true, std::memory_order_relaxed);
+            g_lexShadowMask.fetch_or(1ull << lexShadowSlot(name.data() + 8, name.size() - 9),
+                                     std::memory_order_relaxed);
         if (layout) {
             auto it = layout->byName.find(name);
             if (it != layout->byName.end()) {
@@ -884,7 +898,6 @@ public:
     Value* lexInfixLookup(const std::string& op);    // the lexical &infix:<op>, name lookup only
     Value* lexShadowedInfix(const std::string& op, const Value& l, const Value& r); // lexical &infix:<op> shadowing a built-in
     Value declInitial(const VarExpr* ve, char sigil); // a declaration's starting value (parameterized types included)
-    Value arraySlotProxy(std::shared_ptr<ValueList> arr, size_t at); // a container standing for @a[i]
     Value containerOfExpr(Expr* e);                  // the container an expression denotes, for BIND-POS
     Value rtNameTerm(const std::string& n); // bareword: env value / &call / builtin / type object (used by codegen)
     void registerNamedRegex(const std::string& name, const std::string& pattern, const std::string& kind) {

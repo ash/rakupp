@@ -2428,7 +2428,7 @@ std::function<bool(const std::string&, const Value&, bool&)> g_subsetCheck;
 // rakuRepr is a free function with no interpreter to call FETCH with, so the
 // interpreter publishes one here — same shape as g_subsetCheck above.
 std::function<Value(const Value&)> g_deproxy;
-std::atomic<bool> g_lexShadowsInfix{false};
+std::atomic<uint64_t> g_lexShadowMask{0};
 // applyArith is a free function, but the Whatever-curry it builds has to resolve
 // a shadowing `&infix:<op>` in the scope it is being written in — same shape as
 // g_deproxy, and set from the same place.
@@ -17176,7 +17176,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                         // there): bind to that container, not to the slot holding it
                         Value proxy = ((*arr)[at].t == VT::Hash && (*arr)[at].hashKind == "Proxy" &&
                                        (*arr)[at].hash())
-                                    ? (*arr)[at] : arraySlotProxy(arr, at);
+                                    ? (*arr)[at] : makeArraySlotProxy(arr, at);
                         Value* blv = lvalue(a->target.get());
                         *blv = proxy;
                         return sink ? Value::any() : deproxy(proxy);
@@ -22177,26 +22177,6 @@ Value Interpreter::hyperCore(Value& l, Value& r, bool strictL, bool strictR,
     return (!lIter && !rIter && out.arr()->size() == 1) ? (*out.arr())[0] : out;
 }
 
-// A proxy standing for `@a[i]`: it captures the STORAGE and the index, never a
-// pointer into the vector, so a push that reallocates leaves it valid.
-Value Interpreter::arraySlotProxy(std::shared_ptr<ValueList> arr, size_t at) {
-    Value proxy = Value::makeHash(); proxy.hashKind = "Proxy";
-    Value fetch; fetch.t = VT::Code; fetch.setCode(std::make_shared<Callable>());
-    fetch.code()->builtin = [arr, at](Interpreter&, ValueList&) -> Value {
-        return at < arr->size() ? (*arr)[at] : Value::any();
-    };
-    Value store; store.t = VT::Code; store.setCode(std::make_shared<Callable>());
-    store.code()->builtin = [arr, at](Interpreter&, ValueList& sa) -> Value {
-        Value nv = sa.empty() ? Value::any() : sa[0];
-        while (arr->size() <= at) arr->push_back(Value::any());
-        (*arr)[at] = nv;
-        return nv;
-    };
-    (*proxy.hash())["FETCH"] = fetch;
-    (*proxy.hash())["STORE"] = store;
-    return proxy;
-}
-
 // The CONTAINER an expression denotes, as a proxy — for the two places that bind
 // rather than read: `@path.BIND-POS($i, $node)` stores the container, not its
 // value, and BinaryHeap's sift-down walks a heap by building exactly such a path
@@ -22236,7 +22216,7 @@ Value Interpreter::containerOfExpr(Expr* e) {
                         // the slot may itself hold an alias — pass that one along
                         if ((*arr)[at].t == VT::Hash && (*arr)[at].hashKind == "Proxy" && (*arr)[at].hash())
                             return (*arr)[at];
-                        return arraySlotProxy(arr, at);
+                        return makeArraySlotProxy(arr, at);
                     }
                 }
             }
@@ -22246,24 +22226,24 @@ Value Interpreter::containerOfExpr(Expr* e) {
 }
 
 // The lexical `&infix:<op>` that shadows a built-in of the same spelling, or
-// null. Only ever consulted once g_lexShadowsInfix is armed, so the key is
+// null. Only reached when the filter admits the spelling, so the key is
 // built in a reused buffer rather than a fresh string per operator.
 // The name half of the lookup, with no operands to judge — what the WhateverCode
 // curry needs, because it must resolve the shadow where `* cmp *` was WRITTEN.
 Value* Interpreter::lexInfixLookup(const std::string& op) {
-    if (!g_lexShadowsInfix.load(std::memory_order_relaxed) || !tctx_.cur) return nullptr;
+    if (!lexShadowPossible(op) || !tctx_.cur) return nullptr;
     static thread_local std::string key;
     key.assign("&infix:<").append(op).append(">");
     Value* f = tctx_.cur->find(key);
     // Only an anonymous binding is a lexical shadow; a declared `sub infix:<op>`
     // carries its own name and belongs to the multi-dispatch path (see the
-    // g_lexShadowsInfix note in Interpreter.h).
+    // g_lexShadowMask note in Interpreter.h).
     if (f && f->t == VT::Code && f->code() && !f->code()->name.empty()) return nullptr;
     return f;
 }
 
 Value* Interpreter::lexShadowedInfix(const std::string& op, const Value& l, const Value& r) {
-    if (!g_lexShadowsInfix.load(std::memory_order_relaxed) || !tctx_.cur) return nullptr;
+    if (!lexShadowPossible(op) || !tctx_.cur) return nullptr;
     // `* cmp *` still CURRIES into a WhateverCode (applyArith builds it) — the
     // shadowing lexical applies when that closure RUNS, and the run comes back
     // through here with real operands. Intercepting the curry itself would call
@@ -22520,7 +22500,7 @@ Value Interpreter::evalBinary(Binary* b) {
     // `special` set above (`&&`, `//`, `~~`, `xx`, ranges, Z/X) keeps its own
     // thunking and picks the override up in applyBinOp instead. Metaops
     // (`Rcmp`, `[cmp]`) carry a different `op` string, so they are untouched.
-    if (b->simpleOp == 1 && g_lexShadowsInfix.load(std::memory_order_relaxed)) {
+    if (b->simpleOp == 1 && lexShadowPossible(op)) {
         Value lv = eval(b->lhs.get());
         Value rv = eval(b->rhs.get());
         if (Value* f = lexShadowedInfix(op, lv, rv)) return callCallable(*f, ValueList{lv, rv});

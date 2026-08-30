@@ -3640,6 +3640,25 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 : (mName == "Stringy" && !userStringy) ? kStr
                                                        : mName};
     auto a0 = [&]() -> Value { return args.empty() ? Value::any() : args[0]; };
+    // A USER OBJECT whose class defines the method dispatches HERE. The arm that
+    // does it lives in methodCallPart2, which is reached ~3000 lines down this
+    // function, so every call to a user method first walked the entire built-in
+    // ladder — thousands of `m == "..."` string compares. That is why a plain
+    // method call measured 5.6x Rakudo and a private one 10x, while rakupp's own
+    // loop is 4x FASTER: the cost was dispatch, not the work.
+    //
+    // Only the plain case is taken. `new` (whose multis ADD to the default
+    // constructor), a role STUB satisfied by an attribute, and a `handles`-
+    // delegated name all have rules the full arm knows, so they fall through to
+    // it unchanged. Everything in the ladder that touches a user object already
+    // guards itself with `!cls->findMethod(m)`, so nothing there wanted this call.
+    if (inv.t == VT::Object && inv.obj() && inv.obj()->cls && m != "new") {
+        auto ci = inv.obj()->cls;
+        if (ci->delegatedNames.empty() || !ci->delegatedNames.count(m))
+            if (Value* um = ci->findMethodForCall(m, langRev_ < 2))
+                if (!(um->t == VT::Code && um->code() && um->code()->isStub))
+                    return invokeMethodChain(m, ci.get(), inv, std::move(args), rwArgs);
+    }
     // read the environment ONCE, not on every method call — getenv walks environ
     static const bool kTrace = std::getenv("RAKUPP_TRACE") != nullptr;
     if (kTrace) std::cerr << "[M] ." << m << " on type=" << (int)inv.t << " s=[" << inv.s << "]" << (inv.t==VT::Object && inv.obj() && inv.obj()->cls ? " ("+inv.obj()->cls->name+")" : "") << "\n";
