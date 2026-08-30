@@ -10671,6 +10671,15 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args) {
     }
     for (size_t i = 0; i < positional.size() && i < pos.size(); i++) {
         const Param* p = positional[i];
+        // A JUNCTION is Mu but NOT Any, so it does not bind to an `Any` — or
+        // unconstrained, which means the same — parameter at all: in Rakudo no
+        // such candidate matches and the call AUTOTHREADS instead. Scoring it as
+        // a match let `multi g(Any $x)` beside `multi g(Str $x)` swallow
+        // `g("a"|"b")` whole, and Path::Finder's globulize handed the raw
+        // junction back where a matcher was wanted. (The scoring rule further
+        // down already knew the type relation; only the bind did not.)
+        if (p->sigil == '$' && (p->type.empty() || p->type == "Any") &&
+            !p->coerce && !p->subSig && !p->litVal && isJunction(pos[i])) return -1;
         if (p->litVal) { // literal parameter: arg must equal the literal
             Value lv = eval(p->litVal.get());
             bool eq = (pos[i].isNumeric() && lv.isNumeric()) ? (pos[i].toNum() == lv.toNum())
@@ -19361,6 +19370,14 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             // equal to the empty string. Rakudo says False for every type object,
             // whatever the string.
             res = false;
+        } else if (r.t == VT::Any) {
+            // A bare undefined scalar on the RIGHT is the `Any` TYPE OBJECT, so
+            // this is a type check — the answer `$x ~~ Any` gives, True for
+            // everything but Mu (which sits above Any). valueEq made it a value
+            // comparison instead, so `$x ~~ @list[$i]` past the end of @list was
+            // False; Path::Finder reads exactly that to decide it has run out of
+            // path components, and pruned every candidate.
+            res = !(l.t == VT::Type && l.s == "Mu");
         } else {
             res = valueEq(l, r);
         }
@@ -19707,7 +19724,23 @@ std::string Interpreter::spliceRegexVars(const std::string& pat) {
             bool inAngle = !out.empty() && out.back() == '<' && j < pat.size() && pat[j] == '>';
             Value* v = tctx_.cur->find("$" + pat.substr(i + 1 + tw, j - i - 1 - tw)); // `$^x` binds as `$x`
             if (v && !inAngle) {
-                if (v->t == VT::Regex) { out += spliceRegexValue(v->s); sawRegex = true; }
+                if (v->t == VT::Regex) {
+                    // An `@array` atom inside the spliced value belongs to the
+                    // scope that value was WRITTEN in. Pasting the source text
+                    // alone would leave the name to be resolved HERE instead,
+                    // where it usually does not exist — which is how
+                    // Path::Finder's `{a,b}` and `[a-z]` matchers, built as
+                    // `/@list/` inside a grammar action and then folded
+                    // together by a `reduce`, came out matching nothing.
+                    std::string src = v->s.str();
+                    if (v->ext() && src.find('@') != std::string::npos && !isP5Pattern(src)) {
+                        auto savedOuter = tctx_.cur;
+                        tctx_.cur = std::static_pointer_cast<Env>(v->ext());
+                        src = rxInterpArrays(src);
+                        tctx_.cur = savedOuter;
+                    }
+                    out += spliceRegexValue(src); sawRegex = true;
+                }
                 else out += quoteMetaRx(v->toStr());
                 i = j - 1;
                 continue;
@@ -19837,11 +19870,18 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
     // FIRST; anything still unresolved then falls back to the current scope (so
     // an in-flight `$0`, or a caller's variable, still works).
     bool p5pat = isP5Pattern(pat); // :P5 — Perl-5-syntax pattern: raw-source interpolation
+    // …and an `@array` atom resolves there too. It used to be interpolated ONLY
+    // in the scope doing the matching, so a regex that outlived the scope it was
+    // written in found nothing: `sub f { my @l = <foo bar>; /@l/ }` matched
+    // nothing at all once `f` had returned. Path::Finder's glob grammar builds
+    // every `{a,b}` and `[a-z]` matcher exactly that way, inside a `make`.
     if (!wired && rxVal && rxVal->t == VT::Regex && rxVal->ext() &&
-        pat.find('$') != std::string::npos) {
+        (pat.find('$') != std::string::npos ||
+         (!p5pat && pat.find('@') != std::string::npos))) {
         auto savedOuter = tctx_.cur;
         tctx_.cur = std::static_pointer_cast<Env>(rxVal->ext());
         pat = p5pat ? interpP5Pattern(pat) : interpRegexPattern(pat);
+        if (!p5pat) pat = rxInterpArrays(pat);
         tctx_.cur = savedOuter;
     }
     if (!wired) pat = p5pat ? interpP5Pattern(pat) : interpRegexPattern(pat);
@@ -23951,7 +23991,10 @@ ValueList Interpreter::evalArgs(const std::vector<ExprPtr>& exprs) {
         if (a->kind == NK::RegexLit && !static_cast<RegexLit*>(a.get())->isM) {
             // a regex literal passed as an argument is a Regex object, not a match
             // (an explicit `m//` still matches: `say (m/b/).Str`)
-            args.push_back(Value::regex(static_cast<RegexLit*>(a.get())->pattern));
+            // — and the SAME object `my $r = /…/` would make, closing over this
+            // scope. Building it raw here left `f(/@list/)` with no scope to
+            // resolve `@list` in once `f` had passed it on.
+            args.push_back(regexLitValue(static_cast<RegexLit*>(a.get())));
         } else if (a->kind == NK::Unary && static_cast<Unary*>(a.get())->op == "|") {
             Value v = eval(static_cast<Unary*>(a.get())->operand.get());
             // |@list slips positionally ONE level (post-GLR: nested lists stay
@@ -27527,7 +27570,7 @@ Value Interpreter::eval(Expr* e) {
             // matches instead of asking a Regex for its elems
             Value inv = (mc->inv && mc->inv->kind == NK::RegexLit &&
                          !static_cast<RegexLit*>(mc->inv.get())->isM)
-                ? Value::regex(static_cast<RegexLit*>(mc->inv.get())->pattern)
+                ? regexLitValue(static_cast<RegexLit*>(mc->inv.get()))
                 : eval(mc->inv.get());
             if (mc->methodExpr) { // indirect ."$name"() / .$var (Callable or name)
                 Value mv = eval(mc->methodExpr.get());

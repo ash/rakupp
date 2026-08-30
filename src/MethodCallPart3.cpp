@@ -17,6 +17,45 @@
 // "not handled here".
 namespace rakupp {
 
+namespace {
+
+// UTF-8 (and utf8-c8) is what a rakupp Str already holds, so naming it changes
+// nothing — and must not, or `:enc<utf8>` would be stricter than no `:enc`.
+bool encIsUtf8(const std::string& enc) {
+    std::string n;
+    for (char c : enc) if (ascii::isalnum((unsigned char)c)) n += (char)ascii::tolower((unsigned char)c);
+    return n.empty() || n == "utf8" || n == "utf8c8";
+}
+// the encoding an open handle carries (`open $p, :enc<latin1>`), "" for none
+std::string handleEnc(const Value& h) {
+    auto it = h.hash()->find("encoding");
+    return it != h.hash()->end() ? it->second.toStr() : std::string();
+}
+
+} // namespace
+
+// `:enc` on a file read or write. rakupp holds every Str as UTF-8, so text in
+// another encoding is converted at the edge — through `.decode`/`.encode`,
+// which already know every encoding rakupp speaks, rather than a second table
+// beside them. Reads and writes must move together: decoding on the way in
+// while writing raw would break every round trip through a latin-1 file.
+std::string Interpreter::encAdverb(const ValueList& args) {
+    for (auto& a : args)
+        if (a.t == VT::Pair && a.s == "enc" && a.pairVal() && a.pairVal()->t != VT::Any)
+            return a.pairVal()->toStr();
+    return "";
+}
+std::string Interpreter::decodeTextEnc(const std::string& bytes, const std::string& enc) {
+    if (encIsUtf8(enc)) return bytes;
+    Value b = Value::str(bytes); b.hashKind = "Blob";
+    return methodCall(b, "decode", ValueList{Value::str(enc)}).toStr();
+}
+std::string Interpreter::encodeTextEnc(const std::string& text, const std::string& enc) {
+    if (encIsUtf8(enc)) return text;
+    Value t = Value::str(text);
+    return methodCall(t, "encode", ValueList{Value::str(enc)}).toStr();
+}
+
 std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName& m, ValueList& args,
                                      const std::vector<ExprPtr>* rwArgs) {
     auto a0 = [&]() -> Value { return args.empty() ? Value::any() : args[0]; };
@@ -983,6 +1022,9 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         std::string text = ss.str();
         bool bin = false;
         for (auto& a : args) if (a.t == VT::Pair && a.s == "bin" && a.pairVal() && a.pairVal()->truthy()) bin = true;
+        // decode BEFORE the CRLF fold below: in a wide encoding a CR is not a
+        // lone 0x0D byte, so folding the raw bytes would cut a character in half
+        if (!bin) text = decodeTextEnc(text, encAdverb(args));
         // TEXT mode translates the line separator: an IO::Handle's default
         // :nl-in is ["\n", "\r\n"], so a CRLF file reads back with plain LF
         // (`"a\r\nb".IO.slurp.encode.bytes` is 4 in Rakudo, not 5). :bin is the
@@ -1016,7 +1058,10 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         }
         // :createonly / :x — refuse to clobber, same answer as the sub form
         if (createonly) { std::ifstream probe(ioFsPath(inv)); if (probe) return Value::boolean(false); }
-        std::ofstream out(ioFsPath(inv), append ? (std::ios::out | std::ios::app) : std::ios::out);
+        content = encodeTextEnc(content, encAdverb(args)); // `:enc` — write the file's own encoding
+        // BINARY, as Rakudo writes: a text-mode stream would rewrite \n on
+        // Windows, and in a wide encoding that byte is half of a character.
+        std::ofstream out(ioFsPath(inv), std::ios::binary | (append ? std::ios::app : std::ios::trunc));
         if (!out) return Value::boolean(false);
         out << content;
         return Value::boolean(true);
@@ -1634,7 +1679,30 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             if (bufit != inv.hash()->end()) return Value::integer((long long)bufit->second.toStr().size());
             return Value::integer(0);
         }
-        if (m == "encoding") { auto it = inv.hash()->find("encoding"); return it != inv.hash()->end() ? it->second : Value::str("utf8"); }
+        if (m == "encoding") { // with an argument it SETS, as in Rakudo, and answers the new name
+            if (!args.empty() && args[0].t != VT::Any) {
+                // Switching MID-STREAM keeps the read position — but what
+                // survives is the BYTE offset, not the character index: the two
+                // encodings disagree about where the next character begins. So
+                // re-encode what has been read under the OLD name to get that
+                // offset, drop the decoded cache, and let the next read decode
+                // the REST under the new one. (io.t writes one file in
+                // windows-1252 and latin-1 and then reads it back the same way.)
+                auto cps = inv.hash()->find("cps");
+                if (cps != inv.hash()->end() && cps->second.arr()) {
+                    long long pos = (*inv.hash())["cpos"].toInt();
+                    std::string consumed;
+                    auto& v = *cps->second.arr();
+                    for (long long i = 0; i < pos && i < (long long)v.size(); i++) consumed += v[i].toStr();
+                    auto ps = inv.hash()->find("cpskip");
+                    long long prev = ps != inv.hash()->end() ? ps->second.toInt() : 0;
+                    (*inv.hash())["cpskip"] =
+                        Value::integer(prev + (long long)encodeTextEnc(consumed, handleEnc(inv)).size());
+                    inv.hash()->erase("cps");
+                }
+                (*inv.hash())["encoding"] = Value::str(args[0].toStr());
+            }
+            auto it = inv.hash()->find("encoding"); return it != inv.hash()->end() ? it->second : Value::str("utf8"); }
         if (m == "nl-in")  { auto it = inv.hash()->find("nl-in");  return it != inv.hash()->end() ? it->second : Value::str("\n"); }
         if (m == "nl-out") { auto it = inv.hash()->find("nl-out"); return it != inv.hash()->end() ? it->second : Value::str("\n"); }
         if (m == "path" || m == "IO") {
@@ -1655,6 +1723,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 for (auto& a : args) s += (m == "say" ? a.gist() : a.toStr());
                 if (m != "print") s += "\n";
             }
+            s = encodeTextEnc(s, handleEnc(inv)); // the handle's `:enc` names the BYTES on disk
             auto stdit = inv.hash()->find("std");
             if (stdit != inv.hash()->end()) { // $*OUT / $*ERR — write straight to the stream
                 std::lock_guard<std::mutex> lk(rtOutMutex());
@@ -1792,7 +1861,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 }
                 if (!haveContent) { c = a; haveContent = true; }
             }
-            (*inv.hash())["buffer"] = Value::str((*inv.hash())["buffer"].toStr() + c.toStr());
+            (*inv.hash())["buffer"] =
+                Value::str((*inv.hash())["buffer"].toStr() + encodeTextEnc(c.toStr(), handleEnc(inv)));
             // Without :close the content sits in "buffer" and reaches the file on
             // .close (zef's spurt-package-list). WITH it, the caller is done with
             // the handle and expects the bytes on disk — File::Temp's own suite
@@ -1819,9 +1889,11 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             auto cap = inv.hash()->find("captured"); // in-memory handle (e.g. Proc.out)
             if (cap != inv.hash()->end() && cap->second.truthy()) return (*inv.hash())["buffer"];
             if (inv.hash()->find("std") != inv.hash()->end() && (*inv.hash())["std"].toStr() == "in") {
-                std::ostringstream ss; ss << std::cin.rdbuf(); return Value::str(ss.str()); // $*IN.slurp
+                std::ostringstream ss; ss << std::cin.rdbuf();                          // $*IN.slurp
+                return Value::str(decodeTextEnc(ss.str(), handleEnc(inv)));
             }
-            std::ifstream in((*inv.hash())["path"].toStr()); std::ostringstream ss; ss << in.rdbuf(); return Value::str(ss.str());
+            std::ifstream in((*inv.hash())["path"].toStr(), std::ios::binary); std::ostringstream ss; ss << in.rdbuf();
+            return Value::str(decodeTextEnc(ss.str(), handleEnc(inv)));
         }
         // .getc / .readchars: load the file's codepoints once, track a cursor in "cpos".
         if (m == "getc" || m == "readchars") {
@@ -1852,9 +1924,13 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 struct stat st;
                 if (::stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode))
                     throw RakuError{Value::typeObj("X::IO"), "Cannot read characters from a directory: " + path};
-                std::ifstream in(path); std::ostringstream ss; ss << in.rdbuf();
+                std::ifstream in(path, std::ios::binary); std::ostringstream ss; ss << in.rdbuf();
+                std::string raw = ss.str();
+                auto ps = inv.hash()->find("cpskip"); // bytes already read under an EARLIER encoding
+                long long skip = ps != inv.hash()->end() ? ps->second.toInt() : 0;
+                if (skip > 0) raw = skip <= (long long)raw.size() ? raw.substr(skip) : std::string();
                 Value cps = Value::array();
-                for (auto cp : utf8cp(ss.str())) cps.arr()->push_back(Value::str(cpToUtf8(cp)));
+                for (auto cp : utf8cp(decodeTextEnc(raw, handleEnc(inv)))) cps.arr()->push_back(Value::str(cpToUtf8(cp)));
                 (*inv.hash())["cps"] = cps;
                 (*inv.hash())["cpos"] = Value::integer(0);
             }
@@ -1887,7 +1963,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 if (!sep.empty() && sep != "\n") {
                     std::string content;
                     if (isStdin) { std::ostringstream ss; ss << std::cin.rdbuf(); content = ss.str(); }
-                    else { std::ifstream in((*inv.hash())["path"].toStr()); std::ostringstream ss; ss << in.rdbuf(); content = ss.str(); }
+                    else { std::ifstream in((*inv.hash())["path"].toStr(), std::ios::binary); std::ostringstream ss; ss << in.rdbuf(); content = ss.str(); }
+                    content = decodeTextEnc(content, handleEnc(inv));
                     size_t start = 0, p;
                     while ((p = content.find(sep, start)) != std::string::npos) {
                         lines.arr()->push_back(Value::str(content.substr(start, p - start)));
@@ -1920,8 +1997,10 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                             lines.arr()->push_back(Value::str(line));
                         }
                     } else {
-                        std::ifstream in((*inv.hash())["path"].toStr());
-                        while (std::getline(in, line)) {
+                        std::ifstream in((*inv.hash())["path"].toStr(), std::ios::binary);
+                        std::ostringstream raw; raw << in.rdbuf();
+                        std::istringstream src(decodeTextEnc(raw.str(), handleEnc(inv)));
+                        while (std::getline(src, line)) {
                             if (!line.empty() && line.back() == '\r') line.pop_back();
                             lines.arr()->push_back(Value::str(line));
                         }
@@ -1965,10 +2044,12 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         }
     }
     if (m == "lines" && inv.hashKind == "IO") {
-        std::ifstream in(ioFsPath(inv)); Value out = Value::array(); out.isList = true; out.s = "Seq";
+        std::ifstream in(ioFsPath(inv), std::ios::binary); Value out = Value::array(); out.isList = true; out.s = "Seq";
         if (!in) throwFailedOpen(ioFsPath(inv));
+        std::ostringstream raw; raw << in.rdbuf();
+        std::istringstream src(decodeTextEnc(raw.str(), encAdverb(args)));
         std::string line;
-        while (std::getline(in, line)) { // strip \r\n too (Windows/HTTP text)
+        while (std::getline(src, line)) { // strip \r\n too (Windows/HTTP text)
             if (!line.empty() && line.back() == '\r') line.pop_back();
             out.arr()->push_back(Value::str(line));
         }
@@ -2087,7 +2168,18 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         for (auto& a : args) if (a.t != VT::Pair) { enc = a.toStr(); break; }
         std::string norm;
         for (char ch : enc) if (ascii::isalnum((unsigned char)ch)) norm += (char)ascii::tolower((unsigned char)ch);
-        bool latin1 = norm == "iso88591" || norm == "latin1" || norm == "windows1252";
+        // windows-1252 is latin-1 except across 0x80..0x9F, where it carries
+        // printable characters instead of C1 controls; Rakudo leaves the five
+        // unassigned slots (0x81/0x8D/0x8F/0x90/0x9D) as the C1 codepoint of the
+        // same number, and S16-filehandles/io.t checks the bytes one by one.
+        static const uint32_t kCp1252High[32] = {
+            0x20AC, 0x0081, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021,
+            0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0x008D, 0x017D, 0x008F,
+            0x0090, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014,
+            0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0x009D, 0x017E, 0x0178,
+        };
+        bool cp1252 = norm == "windows1252" || norm == "cp1252";
+        bool latin1 = norm == "iso88591" || norm == "latin1" || cp1252;
         if (m == "encode") {
             // `:replacement` substitutes for every character the encoding cannot
             // represent; a bare `:replacement` means "?". Without it an
@@ -2102,9 +2194,18 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             Value b;
             if (latin1) { // one byte per codepoint (<= 0xFF; others become '?')
                 std::string bytes;
-                for (uint32_t cp : utf8cp(inv.s))
-                    if (cp <= 0xFF) bytes += (char)(unsigned char)cp;
+                for (uint32_t cp : utf8cp(inv.s)) {
+                    int byte = -1;
+                    if (cp1252) {
+                        for (int k = 0; k < 32; k++) if (kCp1252High[k] == cp) { byte = 0x80 + k; break; }
+                        // a C1 control that windows-1252 spends on a character
+                        // has no byte of its own left
+                        if (byte < 0 && cp <= 0xFF && !(cp >= 0x80 && cp <= 0x9F)) byte = (int)cp;
+                    }
+                    else if (cp <= 0xFF) byte = (int)cp;
+                    if (byte >= 0) bytes += (char)(unsigned char)byte;
                     else bytes += haveRepl ? repl : "?";
+                }
                 b = Value::str(bytes);
             } else if (ascii && haveRepl) {
                 std::string bytes;
@@ -2149,10 +2250,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         }
         if (latin1) { // each byte is a codepoint
             std::string out;
-            for (unsigned char byte : inv.s) {
-                if (byte < 0x80) out += (char)byte;
-                else { out += (char)(0xC0 | (byte >> 6)); out += (char)(0x80 | (byte & 0x3F)); }
-            }
+            for (unsigned char byte : inv.s)
+                out += cpToUtf8(cp1252 && byte >= 0x80 && byte <= 0x9F ? kCp1252High[byte - 0x80] : byte);
             return Value::str(out);
         }
         // utf-16 / utf-32: read fixed-width code units, form codepoints (with

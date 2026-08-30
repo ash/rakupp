@@ -63,7 +63,10 @@ std::string canon(const std::string& path, bool parent, bool qnx = false) {
     std::string r;
     for (size_t i = 0; i < stack.size(); i++) { if (i) r += '/'; r += stack[i]; }
     std::string prefix = dslash ? "//" : "/";
-    if (r.empty()) return abs ? prefix : (parent ? "." : "");
+    // A non-empty RELATIVE path whose every segment vanished was made of "." and
+    // "/" alone, so it names the current directory: canonpath("./.") is ".", not
+    // "" (an empty argument already returned "" above).
+    if (r.empty()) return abs ? prefix : ".";
     return abs ? prefix + r : r;
 }
 
@@ -169,7 +172,7 @@ std::string winCanonCat(const std::vector<std::string>& parts, bool parent, bool
         if (joined.empty()) return unc ? v.vol : v.vol + "\\";
         return v.vol + "\\" + joined;
     }
-    if (joined.empty()) return !v.vol.empty() ? v.vol : (parent ? "." : "");
+    if (joined.empty()) return !v.vol.empty() ? v.vol : "."; // as in canon(): "." names the cwd
     return v.vol + joined;
 }
 
@@ -272,10 +275,11 @@ static bool winSpecMethod(Interpreter& I, const std::string& m, ValueList& args,
         std::string cb = winCanonCat({pos.size() > 1 ? P(1) : cwdStr()}, false, false);
         WinVol vp = winVolume(cp, true), vb = winVolume(cb, true);
         if (vp.vol != vb.vol) { out = Value::str(cp); return true; } // different volumes: stay absolute
-        auto segsOf = [](const std::string& s) {
+        auto segsOf = [](const std::string& s) {   // "." carries no depth: "a\\." is one level, and a bare "." is none
             std::vector<std::string> r; std::string cur;
-            for (char c : s) { if (wsep(c)) { if (!cur.empty()) r.push_back(cur); cur.clear(); } else cur += c; }
-            if (!cur.empty()) r.push_back(cur);
+            auto flush = [&] { if (!cur.empty() && cur != ".") r.push_back(cur); cur.clear(); };
+            for (char c : s) { if (wsep(c)) flush(); else cur += c; }
+            flush();
             return r;
         };
         auto ps = segsOf(vp.rest), bs = segsOf(vb.rest);

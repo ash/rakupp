@@ -947,6 +947,7 @@ public:
     Value evalAssignInner(Assign* a, bool sink);
     bool anyRwLinks_ = false; // sticky: some frame created an rw link (guards the per-assignment hook)
     int scoreCandidate(const Value& cand, const ValueList& args); // -1 = no match, else specificity
+    bool methodTakesJunction(const Value& inv, const std::string& m, size_t ai); // param `ai` accepts a Junction whole
     bool boolify(const Value& v); // boolean context: honours a custom .Bool method on objects
     // TARG lever B: a condition of a chapter-19-specialized comparison shape
     // over plain Ints answers as a C++ bool with no Value round trip.
@@ -1103,6 +1104,12 @@ public:
     Value regexMatch(const std::string& subject, const std::string& pattern,
                      const Value* rxVal = nullptr);
     std::string rxInterpArrays(const std::string& pat); // `/@arr/` -> longest-first literal alternation
+    // `:enc` on file I/O: rakupp holds every Str as UTF-8, so text in another
+    // encoding is converted at the edge. Both route through `.decode`/`.encode`,
+    // which already own the encoding table.
+    static std::string encAdverb(const ValueList& args); // the `:enc` value, "" when absent
+    std::string decodeTextEnc(const std::string& bytes, const std::string& enc); // file bytes -> Str
+    std::string encodeTextEnc(const std::string& text, const std::string& enc);  // Str -> file bytes
     Value regexSubst(const std::string& subject, const std::string& pattern,
                      const std::string& repl, std::string& out, bool& changed);
     // .subst / s/// with occurrence-selection adverbs (:g/:x/:nth/:p/:c) and the

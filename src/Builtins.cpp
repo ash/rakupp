@@ -3451,6 +3451,38 @@ void Interpreter::wrapJsonFastExports(Env& moduleEnv) {
 }
 
 
+// Does the user-declared method `m` on this invocant take a Junction WHOLE at
+// argument position `ai`? A parameter typed `Mu` or `Junction` (or a slurpy)
+// accepts one, and Rakudo hands the junction over intact instead of
+// autothreading — `method name(Mu $name)` is exactly how Path::Finder takes
+// `"*.pm" | "*.pod"` and threads it itself, one layer down. Same rule
+// callCallable already applies to plain subs.
+bool Interpreter::methodTakesJunction(const Value& inv, const std::string& m, size_t ai) {
+    ClassInfo* cls = nullptr;
+    if (inv.t == VT::Object && inv.obj()) cls = inv.obj()->cls.get();
+    else if (inv.t == VT::Type) {
+        auto it = classes_.find(inv.s.str());
+        if (it != classes_.end()) cls = it->second.get();
+    }
+    if (!cls) return false;
+    Value* mv = cls->findMethod(m);
+    if (!mv || mv->t != VT::Code || !mv->code()) return false;
+    std::vector<const Value*> cands;
+    if (mv->code()->isMultiDispatcher) for (auto& c : mv->code()->candidates) cands.push_back(&c);
+    else cands.push_back(mv);
+    for (const Value* cv : cands) {
+        if (!cv->code() || !cv->code()->params) continue;
+        size_t seen = 0;
+        for (const Param& p : *cv->code()->params) {
+            if (p.named || p.invocant) continue;
+            if (p.slurpy) return true;
+            if (seen == ai) { if (p.type == "Mu" || p.type == "Junction") return true; break; }
+            seen++;
+        }
+    }
+    return false;
+}
+
 // `.kv`/`.keys`/`.values`/`.pairs`/`.antipairs` answer a Seq on EVERY container in
 // Rakudo — Hash, Array, List, Pair, Match alike. Marking them at the one dispatch
 // point keeps that uniform instead of tagging a dozen construction sites.
@@ -3471,6 +3503,7 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
         static const std::set<std::string> junctionMatcherMethods = {
             "grep", "first", "classify", "categorize", "index-of", "split", "comb", "match", "subst"};
         if (m.empty() || m[0] == '^' || junctionMatcherMethods.count(m)) break;
+        if (methodTakesJunction(inv, m, ai)) continue;  // the signature asked for it whole
         Value jr = Value::array(); jr.enumName = args[ai].enumName; jr.isList = true;
         for (auto& e : *args[ai].arr()) {
             ValueList a2 = args; a2[ai] = e;
@@ -9134,7 +9167,8 @@ void Interpreter::registerBuiltins() {
         }
         std::string path = I.ioFsPath(a[0]);
         if (createonly) { std::ifstream probe(path); if (probe) return Value::boolean(false); }
-        std::ofstream out(path, append ? (std::ios::out | std::ios::app) : std::ios::out);
+        content = I.encodeTextEnc(content, Interpreter::encAdverb(a)); // `:enc`, and binary — as the method form
+        std::ofstream out(path, std::ios::binary | (append ? std::ios::app : std::ios::trunc));
         if (!out) return Value::boolean(false);
         out << content;
         return Value::boolean(true);
@@ -9255,6 +9289,10 @@ void Interpreter::registerBuiltins() {
         (*h.hash())["path"] = Value::str(path);
         (*h.hash())["mode"] = Value::str(mode);
         (*h.hash())["buffer"] = Value::str("");
+        // :enc(...) — the handle's text encoding; every read through it decodes
+        // with this instead of assuming the bytes are already UTF-8
+        for (auto& x : a) if (x.t == VT::Pair && x.s == "enc" && x.pairVal() && x.pairVal()->t != VT::Any)
+            (*h.hash())["encoding"] = Value::str(x.pairVal()->toStr());
         if (nlIn.t != VT::Any) (*h.hash())["nl-in"] = nlIn;
         if (mode == "w") { std::ofstream create(path, std::ios::trunc); } // the file exists immediately
         if (mode == "rw") { std::ofstream create(path, std::ios::app); }  // exists immediately, kept intact
