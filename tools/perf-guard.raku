@@ -104,11 +104,47 @@ my %kernels =
     # whole class. `if $s ~~ /\d/` in a loop is the shape that pays it, and
     # it is not synthetic: any grep-like scan over lines is this program.
     regexloop => 'my $s = "a1b2c3"; my int $n = 0; my $k = 0;
-                  while $n < 200_000 { $k++ if $s ~~ /\d/; $n = $n + 1 }; say $k;';
+                  while $n < 200_000 { $k++ if $s ~~ /\d/; $n = $n + 1 }; say $k;',
+    # The five OO kernels were added 2026-08-30 (DISPATCH-PERF-PLAN.md), after
+    # Anton's issue #47 measured Graph at 4x Rakudo and the guard could not see
+    # why. Every kernel above is a sub call, a loop, a string or a regex — SUB
+    # calls are well covered (fib is recursive calls, subcall is a typed `is rw`
+    # signature 200k times) and they run at ~2x Rakudo. Nothing called a METHOD,
+    # read an attribute, or dispatched a multi, and those run at 5.8x, 4x and 10x.
+    # The whole class was invisible, which is how BinaryHeap's sift-down — thirty
+    # such operations, 38k times for one `Graph.diameter` — became the reason a
+    # correct Graph is slower than a wrong one.
+    #   method    — the plain case: a user method on an instance. The baseline the
+    #               other four are read against.
+    #   attrread  — the same call plus ONE attribute read, so the difference from
+    #               `method` is the attribute; both must be quoted to read it.
+    #   privmeth  — `self!p(…)`. Measured at ~2x `method`: it builds the "!name"
+    #               string per call and re-checks the calling scope.
+    #   multimeth — proto + two candidates. Measured at ~2x `method` as well, and
+    #               scoreCandidate is its own line in every profile taken.
+    #   objnew    — construction, which is the frame cost plus BUILDALL.
+    method    => 'class K { method m($a) { $a } }
+                  my $k = K.new; my $t = 0; my int $n = 0;
+                  while $n < 400_000 { $t = $k.m(1); $n = $n + 1 }; say $t;',
+    attrread  => 'class K { has @!a = 1, 2, 3; method m($a) { @!a[0] } }
+                  my $k = K.new; my $t = 0; my int $n = 0;
+                  while $n < 400_000 { $t = $k.m(1); $n = $n + 1 }; say $t;',
+    privmeth  => 'class K { method !p($a) { $a }; method m($a) { self!p($a) } }
+                  my $k = K.new; my $t = 0; my int $n = 0;
+                  while $n < 400_000 { $t = $k.m(1); $n = $n + 1 }; say $t;',
+    multimeth => 'class K { proto method m(|) {*}
+                            multi method m(Int $x) { $x }
+                            multi method m(Str $x) { $x } }
+                  my $k = K.new; my $t = 0; my int $n = 0;
+                  while $n < 400_000 { $t = $k.m(1); $n = $n + 1 }; say $t;',
+    objnew    => 'class K { has $.a; has $.b }
+                  my $t; my int $n = 0;
+                  while $n < 200_000 { $t = K.new(a => 1, b => 2); $n = $n + 1 }; say $t.a;';
 
 # The kernel list, in one place: the run loop and the gate loop must agree, and
 # they used to carry two hardcoded copies of it.
-my @KERNELS = <fib asg loopsum hash strscan strpass subcall rats regexloop>;
+my @KERNELS = <fib asg loopsum hash strscan strpass subcall rats regexloop
+                method attrread privmeth multimeth objnew>;
 
 # …and it must stay in step with %kernels. A kernel added to the hash but not to
 # this list is never measured and never gated, silently — the same shape as

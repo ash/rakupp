@@ -963,6 +963,9 @@ public:
     // applies unchanged. take-rw hands these out; := uses the Env one.
     Value makeEnvSlotProxy(std::shared_ptr<Env> owner, const std::string& src);
     Value makeArraySlotProxy(std::shared_ptr<ValueList> arr, size_t idx);
+    ValueList* slotProxyTarget(const Value& proxy, size_t& idxOut); // compact array slot, or null
+    Value slotProxyRead(const Value& proxy);
+    Value slotProxyWrite(const Value& proxy, const Value& nv);
     Value makeHashSlotProxy(std::shared_ptr<ValueMap> h, const std::string& key);
     Value makeCellProxy(const Value& init);
     // The take core shared by `take` and `take-rw`: push into the innermost
@@ -985,8 +988,11 @@ public:
     bool grepFilterKeeps(Expr* pred, const Value& v);
     // Invoke method `name` found from `startCls`, pushing a redispatch context so
     // callsame/nextsame reach the same method on the owning class's parent (recursively).
+    // preUm/preOwner: a caller that has ALREADY resolved the method passes it in,
+    // so the MRO is not walked again (see the definition).
     Value invokeMethodChain(const std::string& name, ClassInfo* startCls, const Value& self,
-                            ValueList args, const std::vector<ExprPtr>* rwArgs = nullptr);
+                            ValueList args, const std::vector<ExprPtr>* rwArgs = nullptr,
+                            Value* preUm = nullptr, ClassInfo* preOwner = nullptr);
     void copyOutRw(const std::vector<Param>* params, std::shared_ptr<Env>& env, const std::vector<ExprPtr>* rwArgs);
     // `soleCandidate` = this routine is not part of a multi, so an `is rw`
     // parameter given a container-less argument is an error rather than a

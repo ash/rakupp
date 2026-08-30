@@ -3654,10 +3654,14 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     // guards itself with `!cls->findMethod(m)`, so nothing there wanted this call.
     if (inv.t == VT::Object && inv.obj() && inv.obj()->cls && m != "new") {
         auto ci = inv.obj()->cls;
-        if (ci->delegatedNames.empty() || !ci->delegatedNames.count(m))
-            if (Value* um = ci->findMethodForCall(m, langRev_ < 2))
+        if (ci->delegatedNames.empty() || !ci->delegatedNames.count(m)) {
+            ClassInfo* owner = nullptr;
+            if (Value* um = ci->findMethodForCall(m, langRev_ < 2, &owner))
                 if (!(um->t == VT::Code && um->code() && um->code()->isStub))
-                    return invokeMethodChain(m, ci.get(), inv, std::move(args), rwArgs);
+                    // hand the resolution on — invokeMethodChain would otherwise
+                    // hash and walk for the same name all over again
+                    return invokeMethodChain(m, ci.get(), inv, std::move(args), rwArgs, um, owner);
+        }
     }
     // read the environment ONCE, not on every method call — getenv walks environ
     static const bool kTrace = std::getenv("RAKUPP_TRACE") != nullptr;

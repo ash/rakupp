@@ -968,21 +968,26 @@ struct ClassInfo {
     // consuming class? Yes up to 6.d — composition flattens the role into the
     // class. Since 6.e submethods are NOT composed, and only a class-qualified
     // `$obj.Role::name` call reaches them.
-    Value* findMethodForCall(const std::string& m, bool roleSubs = true) {
+    // `owner` (if given) receives the ClassInfo the method was found in, exactly as
+    // findMethod's does — so a caller that resolves here can hand the result to
+    // invokeMethodChain instead of making it walk the MRO a second time.
+    Value* findMethodForCall(const std::string& m, bool roleSubs = true, ClassInfo** owner = nullptr) {
         auto it = methods.find(m);
         if (it != methods.end()) {
             if (!roleSubs && roleSubmethods.count(m)) return nullptr; // 6.e: not composed
+            if (owner) *owner = this;
             return &it->second;
         }
         // A submethod reached through a real ancestor CLASS is never inherited.
         auto inherited = [&](ClassInfo* c) -> Value* {
             if (!c) return nullptr;
-            Value* r = c->findMethodForCall(m, roleSubs);
+            Value* r = c->findMethodForCall(m, roleSubs, owner);
             if (r && r->code() && r->code()->isSubmethod && (!c->isRole || !roleSubs)) return nullptr;
             return r;
         };
         if (Value* r = inherited(parent.get())) return r;
         for (auto& p : extraParents) if (Value* r = inherited(p.get())) return r;
+        if (owner) *owner = nullptr;
         return nullptr;
     }
     Value* findMethod(const std::string& m) { return findMethod(m, nullptr); }

@@ -13396,6 +13396,45 @@ static void runLetRestoresOf(const std::shared_ptr<Env>& e) {
     e->ex->letRestores.clear();
 }
 
+// A per-thread pool of call frames — see the note at its first user. It lives at
+// file scope because BOTH call paths need it: subs come through callCallableRaw,
+// methods through invokeMethod, and only the first one had it. That asymmetry was
+// the whole difference between a sub call at ~2x Rakudo and a method call at
+// 5.8x — every method allocated a control block, an Env and its hash buckets, and
+// destroyed them again, per call (DISPATCH-PERF-PLAN.md).
+namespace {
+struct FramePool {
+    std::vector<std::shared_ptr<Env>> free;
+    std::shared_ptr<Env> acquire() {
+        if (free.empty()) return std::make_shared<Env>();
+        auto e = std::move(free.back());
+        free.pop_back();
+        return e;
+    }
+    void release(std::shared_ptr<Env>&& e) {
+        if (!e || e.use_count() != 1 || free.size() >= 32) { e.reset(); return; }
+        e->vars.clear();          // keeps the bucket array — the next call's
+        e->parent.reset();        // "$_" insert does not rehash
+        e->routineFrame = false;
+        e->loopFrame = false;
+        e->ex.reset();
+        e->layout.reset();        // pads: next call re-attaches its own layout;
+        e->pad.clear();           // clear() keeps the vector's capacity, the
+        e->padLive.store(0, std::memory_order_relaxed); // same trick the bucket array plays above
+        free.push_back(std::move(e));
+    }
+};
+thread_local FramePool g_framePool;
+// Hands out a pooled frame that returns itself on scope exit. A frame anything
+// captured — a closure, an rwLink, a stateEnv chain — fails the use_count test in
+// release() and is simply dropped instead of reused.
+struct PooledFrame {
+    std::shared_ptr<Env> env;
+    PooledFrame() : env(g_framePool.acquire()) {}
+    ~PooledFrame() { g_framePool.release(std::move(env)); }
+};
+} // namespace
+
 Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs, bool ownFrame, bool arityCheck) {
     // --profile: routine-level entry/exit (RAII — this function returns in many
     // places). Bare blocks and builtins are skipped: block time lands in the
@@ -13664,33 +13703,8 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     // and the first-insert rehash. A frame whose use_count proves nobody kept
     // it is reset and reused; one anything captured — a closure, an rwLink, a
     // stateEnv chain — stays out of the pool for good.
-    struct FramePool {
-        std::vector<std::shared_ptr<Env>> free;
-        std::shared_ptr<Env> acquire() {
-            if (free.empty()) return std::make_shared<Env>();
-            auto e = std::move(free.back());
-            free.pop_back();
-            return e;
-        }
-        void release(std::shared_ptr<Env>&& e) {
-            if (!e || e.use_count() != 1 || free.size() >= 32) { e.reset(); return; }
-            e->vars.clear();          // keeps the bucket array — the next call's
-            e->parent.reset();        // "$_" insert does not rehash
-            e->routineFrame = false;
-            e->loopFrame = false;
-            e->ex.reset();
-            e->layout.reset();        // pads: next call re-attaches its own layout;
-            e->pad.clear();           // clear() keeps the vector's capacity, the
-            e->padLive.store(0, std::memory_order_relaxed); // same trick the bucket array plays above
-            free.push_back(std::move(e));
-        }
-    };
-    static thread_local FramePool framePool_;
-    auto env = framePool_.acquire();
-    struct FrameReturn {
-        std::shared_ptr<Env>& env;
-        ~FrameReturn() { framePool_.release(std::move(env)); }
-    } frameReturn{env};
+    PooledFrame frame_;
+    auto& env = frame_.env;
     // Break the leak cycle a nested named sub would form (see breakSelfClosures).
     // The guard fires only when hoistSubs (below) reported a nested sub, and
     // destructs before `env` does, on every exit path. `env` is a live local, so
@@ -14349,9 +14363,14 @@ void Interpreter::rwWriteThrough(Expr* target) {
 }
 
 Value Interpreter::invokeMethodChain(const std::string& name, ClassInfo* startCls, const Value& self,
-                                     ValueList args, const std::vector<ExprPtr>* rwArgs) {
-    ClassInfo* owner = nullptr;
-    Value* um = startCls ? startCls->findMethod(name, &owner) : nullptr;
+                                     ValueList args, const std::vector<ExprPtr>* rwArgs,
+                                     Value* preUm, ClassInfo* preOwner) {
+    // A caller that already resolved the method hands it in: methodCallInner's
+    // user-object fast path does, and without this the same name was hashed and
+    // walked up the MRO three times for one call — once there, once here, once
+    // for the redispatch probe below.
+    ClassInfo* owner = preOwner;
+    Value* um = preUm ? preUm : (startCls ? startCls->findMethod(name, &owner) : nullptr);
     if (!um)
         throw RakuError{Value::typeObj("X::Method::NotFound"),
                         "No next method '" + name + "' to redispatch to (callsame/nextsame)"};
@@ -14614,7 +14633,10 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
         for (auto& x : args) a2.push_back(std::move(x));
         return c.builtin(*this, a2);
     }
-    auto env = std::make_shared<Env>();
+    // The pooled frame, exactly as callCallableRaw takes one — this allocation is
+    // what made a method call cost more than twice a sub call.
+    PooledFrame frame_;
+    auto& env = frame_.env;
     // `state` vars in a method body (or a for-body executed inline within it)
     // live in the method's own persistent env, spliced into the lookup chain —
     // exactly like callClosure. Without this, curStateEnv stays the CALLER's:
@@ -15813,6 +15835,9 @@ Value Interpreter::coerceToType(const Value& v, const std::string& type) {
 
 Value Interpreter::deproxy(Value v) {
     if (v.t == VT::Hash && v.hashKind == "Proxy" && v.hash()) {
+        { size_t idx = 0; if (ValueList* arr = slotProxyTarget(v, idx)) {   // compact slot: no call
+              ParStripe ps(*this, arr);
+              return idx < arr->size() ? (*arr)[idx] : Value::any(); } }
         auto it = v.hash()->find("FETCH");
         if (it == v.hash()->end()) return v;
         // FETCH may be written as a `method` — XML::Element's is — in which case the
@@ -15828,6 +15853,11 @@ Value Interpreter::deproxy(Value v) {
 // `sub ($, $v)` STORE — the spelling every module uses — takes the value in its
 // SECOND parameter; a one-parameter STORE still gets just the value.
 Value Interpreter::proxyStore(const Value& proxy, const Value& v) {
+    { size_t idx = 0; if (ValueList* arr = slotProxyTarget(proxy, idx)) {   // compact slot: no call
+          ParStripe ps(*this, arr);
+          while (arr->size() <= idx) arr->push_back(Value::any());
+          (*arr)[idx] = v;
+          return v; } }
     auto it = proxy.hash()->find("STORE");
     if (it == proxy.hash()->end()) return v;
     // `method ($val)` takes the Proxy as its invocant; `sub ($, $v)` takes it as the
@@ -15880,21 +15910,74 @@ Value Interpreter::makeEnvSlotProxy(std::shared_ptr<Env> owner, const std::strin
     return proxy;
 }
 
+// The array-slot proxy is COMPACT: the target lives in the proxy itself (the two
+// hidden keys below) and FETCH/STORE are one SHARED pair of builtins that read it
+// back out of the proxy they are handed. A per-proxy closure pair cost two
+// make_shared<Callable> plus two std::function allocations on top of the hash —
+// about seven allocations for what is a pointer and an index — and BinaryHeap's
+// sift-down builds roughly thirty of them per call, 38k calls for one
+// `Graph.diameter`. deproxy/proxyStore read the keys directly and never call at
+// all; the entries stay present, and callable, for the generic FETCH/STORE sites.
+static const char* kSlotArr = "\x01arr";
+static const char* kSlotIdx = "\x01idx";
+
 Value Interpreter::makeArraySlotProxy(std::shared_ptr<ValueList> arr, size_t idx) {
+    // Built once. STORE carries a two-parameter signature so codeArity sends it
+    // the proxy alongside the value (proxyStore's `sub ($, $v)` spelling); a
+    // builtin never binds its params, so they cost nothing else.
+    static const Value kFetch = [] {
+        Value f; f.t = VT::Code; f.setCode(std::make_shared<Callable>());
+        f.code()->builtin = [](Interpreter& I, ValueList& a) -> Value {
+            if (a.empty() || !a[0].hash()) return Value::any();
+            return I.slotProxyRead(a[0]);
+        };
+        return f;
+    }();
+    static const Value kStore = [] {
+        Value st; st.t = VT::Code; st.setCode(std::make_shared<Callable>());
+        static const std::vector<Param> kTwo(2);
+        st.code()->params = &kTwo;
+        st.code()->builtin = [](Interpreter& I, ValueList& a) -> Value {
+            if (a.size() < 2 || !a[0].hash()) return a.empty() ? Value::any() : a.back();
+            return I.slotProxyWrite(a[0], a[1]);
+        };
+        return st;
+    }();
     Value proxy = Value::makeHash(); proxy.hashKind = "Proxy";
-    slotProxyPair(proxy,
-        [arr, idx](Interpreter& I, ValueList&) -> Value {
-            ParStripe ps(I, arr.get());
-            return idx < arr->size() ? (*arr)[idx] : Value::any();
-        },
-        [arr, idx](Interpreter& I, ValueList& sa) -> Value {
-            Value nv = sa.empty() ? Value::any() : sa[0];
-            ParStripe ps(I, arr.get());
-            while (arr->size() <= idx) arr->push_back(Value::any());
-            (*arr)[idx] = nv;
-            return nv;
-        });
+    Value av; av.t = VT::Array; av.setArr(arr);          // shares the storage
+    (*proxy.hash())[kSlotArr] = std::move(av);
+    (*proxy.hash())[kSlotIdx] = Value::integer((long long)idx);
+    (*proxy.hash())["FETCH"] = kFetch;
+    (*proxy.hash())["STORE"] = kStore;
     return proxy;
+}
+
+// The compact slot's target, or null when this proxy is not one.
+ValueList* Interpreter::slotProxyTarget(const Value& proxy, size_t& idxOut) {
+    if (!proxy.hash()) return nullptr;
+    auto ai = proxy.hash()->find(kSlotArr);
+    if (ai == proxy.hash()->end() || !ai->second.arr()) return nullptr;
+    auto ii = proxy.hash()->find(kSlotIdx);
+    idxOut = ii == proxy.hash()->end() ? 0 : (size_t)ii->second.toInt();
+    return ai->second.arr();
+}
+
+Value Interpreter::slotProxyRead(const Value& proxy) {
+    size_t idx = 0;
+    ValueList* arr = slotProxyTarget(proxy, idx);
+    if (!arr) return Value::any();
+    ParStripe ps(*this, arr);
+    return idx < arr->size() ? (*arr)[idx] : Value::any();
+}
+
+Value Interpreter::slotProxyWrite(const Value& proxy, const Value& nv) {
+    size_t idx = 0;
+    ValueList* arr = slotProxyTarget(proxy, idx);
+    if (!arr) return nv;
+    ParStripe ps(*this, arr);
+    while (arr->size() <= idx) arr->push_back(Value::any());
+    (*arr)[idx] = nv;
+    return nv;
 }
 
 Value Interpreter::makeHashSlotProxy(std::shared_ptr<ValueMap> h, const std::string& key) {
