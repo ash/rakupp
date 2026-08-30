@@ -463,6 +463,18 @@ struct WorkerAbortEx {};
 extern thread_local bool t_isWorker;     // true only on `start`/async worker threads
 extern thread_local Value t_threadSelf;   // the Thread instance running this worker (empty on main)
 extern thread_local unsigned t_safePtCtr; // loop iterations since this worker last yielded the GIL
+// Loop iterations since the running gather probe last read the clock. The probe's
+// budget is checked once per N of them (see gatherProbePoint); approximate is
+// fine, so one counter for all loops on the thread.
+extern thread_local unsigned t_gatherTickCtr;
+// …and the deadline itself, mirrored out of tctx_.gatherDeadlines.back() (0 when
+// no gather on this thread is probing). The mirror is what the per-iteration
+// check reads: tctx_ is a thread_local of NON-TRIVIAL type, so every access to it
+// carries an initialization check, and putting one at the top of runLoopBody cost
+// ~3% on loopsum. A plain scalar thread_local is a bare load. pushGatherFrame /
+// popGatherFrame (and saveCtx/loadCtx, which move the stack between threads' parked
+// contexts) are the only writers, so it cannot drift from the stack.
+extern thread_local long long t_gatherDeadline;
 
 // A real (wired) tap of an on-demand `supply {…}` block. `closers` tear down
 // inner taps / listening sockets; `closePhasers` are the block's CLOSE blocks.
@@ -665,6 +677,8 @@ struct ReactCtx {
     // synchronous drains queue here; B["react"] runs them after the body.
     std::vector<std::function<void()>> deferred;
 };
+
+long long nowMicros(); // steady_clock microseconds — the gather probe's budget clock
 
 class Interpreter {
 public:
@@ -1386,6 +1400,35 @@ public:
         // Periodically hand the GIL back so a compute-bound worker can't starve the
         // main thread (which may be parked in yieldToWorker waiting for exactly this).
         if (++t_safePtCtr >= 4096) { t_safePtCtr = 0; workerYield(); }
+    }
+    // The gather probe's TIME budget, checked once per loop iteration — because a
+    // probe spends it on WORK, not only on takes. `gather for 1..* { take $_ if
+    // 45 < $_ < 55 }` runs dry after nine elements and then loops forever, so a
+    // budget consulted only in gatherTake is never consulted again and merely
+    // DECLARING the gather never returns. Stopping here means what filling the
+    // take cap means: the prefix stands, the gather is lazy, and a consumer that
+    // asks for more gets an unbudgeted re-run. A prefix of NONE is not a probe
+    // (gatherTake says why), so a gather that has taken nothing yet runs on.
+    inline void gatherProbePoint() {
+        if (!t_gatherDeadline) return;         // nothing probing here (growing runs unbudgeted)
+        if (++t_gatherTickCtr < 256) return;   // reading the clock is the cost, not the check
+        t_gatherTickCtr = 0;
+        gatherProbeCheck();
+    }
+    void gatherProbeCheck();  // out-of-line: read the clock, and stop the probe if it is spent
+    // One gather activation — collector, take cap, probe deadline — pushed and
+    // popped as a unit so t_gatherDeadline stays in step with the stack.
+    inline void pushGatherFrame(std::shared_ptr<ValueList> coll, size_t limit, long long deadline) {
+        tctx_.gatherStack.push_back(std::move(coll));
+        tctx_.gatherLimits.push_back(limit);
+        tctx_.gatherDeadlines.push_back(deadline);
+        t_gatherDeadline = deadline;
+    }
+    inline void popGatherFrame() {
+        tctx_.gatherStack.pop_back();
+        tctx_.gatherLimits.pop_back();
+        tctx_.gatherDeadlines.pop_back();
+        t_gatherDeadline = tctx_.gatherDeadlines.empty() ? 0 : tctx_.gatherDeadlines.back();
     }
     void workerYield(); // out-of-line: brief GIL release so siblings/main make progress
     // Cooperative handoff. gilYieldNotify() releases the GIL AND wakes a thread

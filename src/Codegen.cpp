@@ -1068,10 +1068,12 @@ struct Codegen {
                 }
                 if (u->op == "gather") { // gather { … take … } — probe-and-double lazy, like the interp
                     std::string body;
+                    gatherDepth_++;   // loops in here check the probe's budget per iteration
                     if (u->operand->kind == NK::BlockExpr) {
                         auto* be = static_cast<BlockExpr*>(u->operand.get());
                         body = capture([&]() { for (auto& s : be->body) stmt(s.get(), 0); });
                     } else body = exArg(u->operand.get()) + ";\n";
+                    gatherDepth_--;
                     return "RT.rtGather(Value::closure([=](ValueList&)->Value{\n" + body + "return Value::any(); }))";
                 }
                 if (u->op == "next" || u->op == "last" || u->op == "redo") {
@@ -1512,6 +1514,10 @@ struct Codegen {
     std::set<std::string> boundSpecials; // $/ or $! bound as a parameter in the current body (locals win over RT.dynVar)
     std::set<std::string> envSubs;  // lexical subs registered in the runtime env (`sub f {…}` inside a block)
     int loopDepth_ = 0;             // native loops enclosing the emission point IN THIS function body
+    // gather blocks enclosing the emission point. A loop inside one gets a
+    // per-iteration gather-probe check (loopBody); every other loop — the hot
+    // benchmark kernels — emits exactly what it emitted before.
+    int gatherDepth_ = 0;
     void collectExprDecls(Expr* e, std::vector<std::string>& out, bool root = true) {
         if (!e) return;
         if (e->kind == NK::Assign) {
@@ -1954,6 +1960,11 @@ struct Codegen {
     }
 
     void loopBody(Block* b, int ind, const std::string& label = "") {
+        // A gather probe spends its budget on WORK, not only on takes: a block
+        // that stops taking and keeps looping (`gather for 1..* { take $_ if 45
+        // < $_ < 55 }`) would never consult the budget again and never return.
+        // Interpreted loops check it in runLoopBody; compiled ones check it here.
+        if (gatherDepth_ > 0) line(ind, "RT.gatherProbePoint();");
         bool hasRedo = false;
         for (auto& st : b->stmts) if (stmtHasRedo(st.get())) { hasRedo = true; break; }
         std::string pass = label.empty() ? "!__e.label.empty()"
