@@ -1319,31 +1319,28 @@ ValueList rtMainArgs(const std::vector<std::string>& argv, bool namedAnywhere) {
 // interpreter's gather — run the block collecting takes up to a cap; if the cap
 // is hit the result is lazy and extends by re-running with a doubled cap.
 Value Interpreter::rtGather(Value blockClosure) {
-    auto runGather = [this, blockClosure](size_t limit, ValueList& out) -> bool {
+    auto runGather = [this, blockClosure](size_t limit, long long budgetUs, ValueList& out) -> bool {
         auto collector = std::make_shared<ValueList>();
-        tctx_.gatherStack.push_back(collector);
-        tctx_.gatherLimits.push_back(limit);
-        tctx_.gatherDeadlines.push_back(0);
+        pushGatherFrame(collector, limit, budgetUs ? nowMicros() + budgetUs : 0);
         bool hit = false;
         try { ValueList noargs; callCallable(blockClosure, noargs); }
         catch (StopGatherEx&) { hit = true; }
-        catch (...) { tctx_.gatherStack.pop_back(); tctx_.gatherLimits.pop_back();
-                      tctx_.gatherDeadlines.pop_back(); throw; }
-        tctx_.gatherStack.pop_back(); tctx_.gatherLimits.pop_back();
-        tctx_.gatherDeadlines.pop_back();
+        catch (...) { popGatherFrame(); throw; }
+        popGatherFrame();
         out = std::move(*collector);
         return hit;
     };
     const size_t INITIAL = 64;
+    const long long PROBE_US = 20000;   // as in the interpreter's gather — see there for why
     ValueList prefix;
-    if (!runGather(INITIAL, prefix)) { // finite: eager, but still a Seq
+    if (!runGather(INITIAL, PROBE_US, prefix)) { // finite: eager, but still a Seq
         Value a = Value::array(std::move(prefix)); a.isList = true; a.s = "Seq"; return a;
     }
     Value arr = Value::array(prefix); arr.isList = true; arr.s = "Seq";
     auto st = std::make_shared<LazySeqState>();
-    st->appendNext = [this, runGather](ValueList& out) -> bool {
+    st->appendNext = [this, runGather](ValueList& out) -> bool {   // growing runs unbudgeted
         ValueList grown;
-        bool more = runGather(out.size() + std::max<size_t>(64, out.size()), grown);
+        bool more = runGather(out.size() + std::max<size_t>(64, out.size()), 0, grown);
         for (size_t i = out.size(); i < grown.size(); i++) out.push_back(grown[i]);
         return more;
     };
@@ -3316,6 +3313,7 @@ void Interpreter::saveCtx(ExecContext& c) {
     c.gatherStack = std::move(tctx_.gatherStack);
     c.gatherLimits = std::move(tctx_.gatherLimits);
     c.gatherDeadlines = std::move(tctx_.gatherDeadlines);
+    t_gatherDeadline = 0;   // nothing of this thread's is probing while it is parked
     c.topicAliases = std::move(tctx_.topicAliases);
     c.supplyStack = std::move(tctx_.supplyStack);
     c.tapStack    = std::move(tctx_.tapStack);
@@ -3336,6 +3334,7 @@ void Interpreter::loadCtx(ExecContext& c) {
     tctx_.gatherStack  = std::move(c.gatherStack);
     tctx_.gatherLimits = std::move(c.gatherLimits);
     tctx_.gatherDeadlines = std::move(c.gatherDeadlines);
+    t_gatherDeadline = tctx_.gatherDeadlines.empty() ? 0 : tctx_.gatherDeadlines.back();
     tctx_.topicAliases = std::move(c.topicAliases);
     tctx_.supplyStack  = std::move(c.supplyStack);
     tctx_.tapStack     = std::move(c.tapStack);
@@ -3499,6 +3498,8 @@ void Interpreter::gilUnpark(bool wasParked) {
 thread_local bool t_isWorker = false;
 thread_local Value t_threadSelf;
 thread_local unsigned t_safePtCtr = 0;
+thread_local unsigned t_gatherTickCtr = 0;
+thread_local long long t_gatherDeadline = 0;
 
 // Called from a worker's safe point every few thousand loop iterations: release the
 // GIL (waking a main thread parked in yieldToWorker), give the scheduler a chance to
@@ -6457,6 +6458,7 @@ bool Interpreter::runLoopBody(Block* body, std::shared_ptr<Env> scope, const std
                              bool isFirst, bool isLast, ValueList* collect,
                              const std::function<void()>& rebind) {
     safePoint(); // once per iteration: lets a shutting-down worker unwind out of a tight loop
+    gatherProbePoint(); // …and lets a gather probe that has stopped TAKING still stop looping
     signed char ph = loopPhaserMask(body);
     const bool hasNext = ph & 1, hasLast = ph & 2, hasFirst = ph & 4;
     // FIRST/LAST run in the loop-body scope so the loop variable ($_) is visible.
@@ -11367,6 +11369,16 @@ void Interpreter::syncEnvToProcess() {
 long long nowMicros() {
     return std::chrono::duration_cast<std::chrono::microseconds>(
                std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+// The gather probe's per-loop-iteration check, off the inline fast path (see
+// gatherProbePoint). A prefix of NONE is not a probe — gatherTake says why the
+// first take has to be allowed to land however long it takes — so a gather that
+// has taken nothing yet keeps running.
+void Interpreter::gatherProbeCheck() {
+    if (nowMicros() <= t_gatherDeadline) return;
+    if (tctx_.gatherStack.empty() || tctx_.gatherStack.back()->empty()) return;
+    throw StopGatherEx{};
 }
 
 static void forceLazyImpl(const Value& v) {
@@ -23865,12 +23877,9 @@ Value Interpreter::evalUnary(Unary* u) {
                         if (Value* p = genv->find(kv.first)) *p = gatherDeepCopy(kv.second);
             }
             auto collector = std::make_shared<ValueList>();
-            tctx_.gatherStack.push_back(collector);
-            tctx_.gatherLimits.push_back(limit);
-            tctx_.gatherDeadlines.push_back(budgetUs ? nowMicros() + budgetUs : 0);
+            pushGatherFrame(collector, limit, budgetUs ? nowMicros() + budgetUs : 0);
             bool hit = false;
-            auto pop = [this] { tctx_.gatherStack.pop_back(); tctx_.gatherLimits.pop_back();
-                                tctx_.gatherDeadlines.pop_back(); };
+            auto pop = [this] { popGatherFrame(); };
             try {
                 if (gu->operand->kind == NK::BlockExpr) callCallable(blockClosure, {});
                 else eval(gu->operand.get());
