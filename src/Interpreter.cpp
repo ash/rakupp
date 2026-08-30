@@ -300,6 +300,55 @@ static inline bool isAnyTypeObject(const Value& v) {
     return v.t == VT::Any || (v.t == VT::Type && v.s == "Any" && v.ofType().empty());
 }
 
+static int ncScalarWidth(const std::string& t, bool& sign, bool& isFloat);
+static bool valueEqv(const Value& a, const Value& b);
+
+// eqv for a `repr('CStruct')`/CUnion instance. Such an object holds NO Raku
+// attributes — only `__native_ptr`, the address of its native body — so the
+// generic attribute walk compared two malloc addresses and called every pair of
+// distinct structs unequal, however identical their contents.
+//
+// Rakudo compares them field by field, and renders a POINTER field without its
+// contents (`.raku` gives a bare `CArray[num64].new`), so only the scalar
+// fields discriminate. That is not an oversight to improve on: a raw pointer
+// carries no length, and nothing at this boundary can say how much of it to
+// compare. Math::SparseMatrix::Native is exactly this shape — `$m[2] eqv
+// $m.row-at(2)` is two structs with equal numbers and two different buffers,
+// and Rakudo says True.
+static bool ncStructEqv(const Value& a, const Value& b) {
+    ClassInfo* ci = a.obj()->cls.get();
+    long long pa = a.obj()->attrs.at("__native_ptr").toInt();
+    long long pb = b.obj()->attrs.at("__native_ptr").toInt();
+    if (pa == pb) return true;
+    if (!pa || !pb) return false;
+    for (auto& at : ci->attrs) {
+        std::string an = at.name;
+        if (!an.empty() && (an[0] == '$' || an[0] == '@' || an[0] == '%')) an = an.substr(1);
+        if (!an.empty() && (an[0] == '!' || an[0] == '.')) an = an.substr(1);
+        std::string type;
+        long long off = Interpreter::ncFieldOffset(ci, an, type);
+        if (off < 0) continue;
+        std::string bt = type.substr(0, type.find('['));
+        // Str is a char* the struct points AT, and its length is its own — so it
+        // is the one pointer field that can be, and in Rakudo is, compared.
+        if (bt == "Str") {
+            long long x = 0, y = 0;
+            std::memcpy(&x, (void*)(intptr_t)(pa + off), 8);
+            std::memcpy(&y, (void*)(intptr_t)(pb + off), 8);
+            if (!x || !y) { if (x != y) return false; continue; }
+            if (std::strcmp((const char*)(intptr_t)x, (const char*)(intptr_t)y) != 0) return false;
+            continue;
+        }
+        // Pointer, CArray and a nested class field are all bare addresses: not
+        // comparable, and Rakudo does not compare them either.
+        bool sgn, isF;
+        if (!ncScalarWidth(type, sgn, isF)) continue;
+        if (!valueEqv(Interpreter::ncReadElem(pa + off, type, 0),
+                      Interpreter::ncReadElem(pb + off, type, 0))) return false;
+    }
+    return true;
+}
+
 static bool valueEqv(const Value& a, const Value& b) {
     // A Proxy is a container: compare what it HOLDS. `is-deeply $q<foo>, $('1','3')`
     // over URI::Query's list of Proxy containers compared containers against
@@ -371,7 +420,15 @@ static bool valueEqv(const Value& a, const Value& b) {
                    valueEqv(a.pairVal() ? *a.pairVal() : Value::any(), b.pairVal() ? *b.pairVal() : Value::any());
         // structural, like Rakudo's default eqv: same class + eqv attributes
         // (a clone eqv its source; identity alone was too narrow)
-        case VT::Object: return objectStructEqv(a, b, valueEqv);
+        case VT::Object:
+            // …except a native-backed struct, whose state is in C memory rather
+            // than in `attrs` — see ncStructEqv.
+            if (a.obj() && b.obj() && a.obj()->cls && a.obj()->cls == b.obj()->cls &&
+                (a.obj()->cls->repr == "CStruct" || a.obj()->cls->repr == "CPPStruct" ||
+                 a.obj()->cls->repr == "CUnion") &&
+                a.obj()->attrs.count("__native_ptr") && b.obj()->attrs.count("__native_ptr"))
+                return ncStructEqv(a, b);
+            return objectStructEqv(a, b, valueEqv);
         // A RANGE compares by its endpoint FORM, exclusion markers included —
         // expanding it made `1..^5 eqv 1..4` True, and built the whole list to
         // answer. A CODE object is identical only to itself. A TYPE object carries
@@ -15457,6 +15514,66 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                         return &methHold;
                 }
             }
+            // A name reached through `handles` is DELEGATED, so assigning to it
+            // must write the DELEGATE'S attribute: `has $.core handles <v>` makes
+            // `$o.v = 7` mean `$o.core.v = 7`. The fall-through at the foot of
+            // this arm instead writes `attrs["v"]` on the OUTER object — a
+            // phantom attribute nothing ever reads, so the write vanished while
+            // `.v` went on answering the delegate's untouched value.
+            // Math::SparseMatrix delegates `implicit-value` to its core matrix
+            // and sets it exactly this way.
+            //
+            // Only when the outer class has no attribute of that name itself: a
+            // real attribute keeps the ordinary path, delegation or not.
+            if (!mc->meta && !mc->hyper && !mc->methodExpr) {
+                bool ownAttr = false;
+                for (ClassInfo* ci = base->obj()->cls.get(); ci && !ownAttr; ci = ci->parent.get())
+                    for (auto& at : ci->attrs)
+                        if (at.name == mc->method) { ownAttr = true; break; }
+                Value* cur = base;
+                std::string want = mc->method;
+                // a bounded walk, so a chain (`handles` onto something that also
+                // delegates) resolves and a cyclic one cannot spin.
+                for (int hop = 0; !ownAttr && hop < 16; hop++) {
+                    if (!cur || cur->t != VT::Object || !cur->obj() || !cur->obj()->cls) break;
+                    const ClassAttr* via = nullptr;
+                    std::string to = want;
+                    for (ClassInfo* ci = cur->obj()->cls.get(); ci && !via; ci = ci->parent.get())
+                        for (auto& at : ci->attrs) {
+                            for (size_t h = 0; h < at.handles.size(); h++)
+                                if (at.handles[h] == want || at.handles[h] == "*") {
+                                    via = &at;
+                                    if (h < at.handlesTo.size() && !at.handlesTo[h].empty())
+                                        to = at.handlesTo[h];
+                                    break;
+                                }
+                            if (via) break;
+                        }
+                    if (!via) break;
+                    Value* d = &cur->obj()->attrs[via->name];
+                    if (d->t != VT::Object || !d->obj() || !d->obj()->cls) break;
+                    const ClassAttr* target = nullptr;
+                    for (ClassInfo* ci = d->obj()->cls.get(); ci && !target; ci = ci->parent.get())
+                        for (auto& at : ci->attrs)
+                            if (at.name == to) { target = &at; break; }
+                    if (target) {
+                        // the delegate's own accessor rules still apply
+                        if (!mc->bang && !asInvocant &&
+                            !(target->pub && (target->rw || target->sigil == '@' || target->sigil == '%')))
+                            throw RakuError{Value::typeObj("X::Assignment::RO"),
+                                "Cannot modify an immutable '" + to + "'"};
+                        tcx.lastLvalueAttrType.clear();
+                        tcx.lastLvalueAttrWhere = nullptr;
+                        if (target->sigil == '$') {
+                            if (!target->type.empty() && ascii::isupper((unsigned char)target->type[0]))
+                                tcx.lastLvalueAttrType = target->type;
+                            tcx.lastLvalueAttrWhere = target->where;
+                        }
+                        return &d->obj()->attrs[to];
+                    }
+                    cur = d; want = to;   // the delegate delegates onward
+                }
+            }
             // Assigning to `$obj.attr` is only allowed through a PUBLIC `is rw`
             // accessor. If the name matches any other attribute — a private
             // `$!x`, or a public read-only `$.x` — the value is read-only, so
@@ -16543,7 +16660,26 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 std::string type; long long off = ncFieldOffset(inv.obj()->cls.get(), mc->method, type);
                 if (off >= 0) {
                     Value rhs = eval(a->value.get());
-                    ncWriteElem(inv.obj()->attrs["__native_ptr"].toInt() + off, type, 0, rhs);
+                    // A CArray/Pointer field stores the ADDRESS of its value's
+                    // buffer. When that value is a byte-backed CArray/Buf the
+                    // buffer belongs to the VALUE, and ncWriteElem would record
+                    // the address of the temporary `rhs` — leaving the field
+                    // pointing into freed heap the moment this statement ended.
+                    // Keep the buffer alive ON THE STRUCT and take the address
+                    // from the copy that now lives as long as the object does.
+                    // (Rakudo refuses this assignment outright. Recording a
+                    // dangling pointer was already the worse answer; once a
+                    // write actually reaches the pointer — which it now does,
+                    // see the live-CArray arm in evalAssignInner — it corrupts
+                    // the heap instead of being quietly dropped.)
+                    std::string bt = type.substr(0, type.find('['));
+                    if ((bt == "CArray" || bt == "Pointer") && rhs.t == VT::Str &&
+                        (rhs.hashKind == "CArray" || rhs.hashKind == "Buf" || rhs.hashKind == "Blob")) {
+                        Value& kept = (inv.obj()->attrs["__native_keep_" + mc->method] = rhs);
+                        ncWriteElem(inv.obj()->attrs["__native_ptr"].toInt() + off, "int64", 0,
+                                    Value::integer((long long)(intptr_t)kept.s.data()));
+                    }
+                    else ncWriteElem(inv.obj()->attrs["__native_ptr"].toInt() + off, type, 0, rhs);
                     return sink ? Value::any() : rhs;
                 }
             }
@@ -16951,6 +17087,32 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                     try { held = eval(ix->base.get()); bp = &held; } catch (RakuError&) { bp = nullptr; }
                 }
                 else try { bp = lvalue(ix->base.get(), /*asInvocant=*/true); } catch (RakuError&) {}
+                // A LIVE CArray/Pointer is only a handle carrying an address, so
+                // the write lands in native memory whether the base is an lvalue
+                // or the temporary an accessor just returned. That is what lets a
+                // CStruct's OWN member be filled: `$m.values[$i] = …` reaches the
+                // array through the generated accessor, never through a variable,
+                // and the byte-backed arm above takes only a VarExpr base — so
+                // every such write fell through to the generic container path and
+                // was silently discarded. Math::SparseMatrix::Native builds every
+                // matrix exactly this way, and read every one of them back as
+                // zeroes. The base is the one already evaluated above, so this
+                // costs no extra evaluation of a side-effecting accessor.
+                if (bp && !ix->isHash && bp->t == VT::Hash && bp->hash() &&
+                    (bp->hashKind == "CArray" || bp->hashKind == "Pointer") &&
+                    bp->hash()->count("addr")) {
+                    std::string of = bp->hash()->count("of") ? (*bp->hash())["of"].toStr() : "int64";
+                    // A CArray[Str] slot is a char* the ARRAY has to own (see
+                    // ncOwnStrElem). A live array has nowhere to keep the string,
+                    // and a pointer to a temporary would outlive it — so leave
+                    // that case exactly as it was rather than store a dangler.
+                    if (of != "Str") {
+                        long long i = eval(ix->index.get()).toInt();
+                        Value v = evalValueOf(a->value.get());
+                        if (i >= 0) ncWriteElem((*bp->hash())["addr"].toInt(), of, i, v);
+                        return v;
+                    }
+                }
                 if (bp && bp->t == VT::Object && bp->obj() && bp->obj()->cls) {
                     const char* meth = ix->isHash ? "ASSIGN-KEY" : "ASSIGN-POS";
                     bool has = false;
@@ -24413,6 +24575,28 @@ Value Interpreter::evalUnary(Unary* u) {
     }
     // postfix:<i> — multiply by the imaginary unit: (3)i, (2i)i → -2
     if (u->op == "i" && u->postfix) return postfixI(std::move(v));
+    // A user-defined prefix operator on an OBJECT outranks the built-in one, as
+    // its narrower candidate does in Rakudo — `multi sub prefix:<->(M:D $m)` is
+    // more specific than the built-in's Any/Numeric. The user lookup at the foot
+    // of this function is only reached when NO built-in arm claimed the operator
+    // first, so an overload of a built-in NAME (`-`, `+`, `~`) was unreachable:
+    // Math::SparseMatrix's `-$matrix` numified the object and answered `-0`
+    // instead of negating it. Its `infix:<+>` overload worked all along, which is
+    // why this looked like an operator-overloading gap rather than a prefix one.
+    //
+    // Restricted to an object operand, so no built-in prefix on an Int/Str/Array
+    // changes, and to a lookup that actually finds a sub — a class with no
+    // overload in scope costs one failed Env lookup and behaves exactly as before.
+    if (!u->postfix && v.t == VT::Object && v.obj() && v.obj()->cls) {
+        if (Value* f = tctx_.cur->find("&prefix:<" + u->op + ">")) {
+            try { return callCallable(*f, ValueList{v}); }
+            catch (RakuError& e) {
+                // no candidate for this class: fall through to the built-in, the
+                // way Rakudo's own wider candidate would have taken it.
+                if (!(e.payload.t == VT::Type && e.payload.s == "X::Multi::NoMatch")) throw;
+            }
+        }
+    }
     // numeric prefix on an object uses its .Numeric (or .Bridge/.Int): `+$o`, `-$o`
     if ((u->op == "+" || u->op == "-") && v.t == VT::Object && v.obj() && v.obj()->cls) {
         for (const char* nm : {"Numeric", "Bridge", "Int"})
@@ -25905,8 +26089,16 @@ Value Interpreter::postfixI(Value v) {
 // `my @row = @rows[0]` is one element, not the inner list spread over the
 // target (Rakudo: array elements are Scalars). A slice returns a fresh list of
 // elements and never comes through here, so it still flattens.
-static Value itemizeElem(const Value& v) {
-    if (v.t != VT::Array || v.itemized || v.ext()) return v;
+// An ARRAY's elements each live in their own Scalar container, so reading one
+// out itemizes it: `my @a = (1,2),(3,4); @a[0]` is `$(1, 2)`. A LIST's do not —
+// `my $l = ((1,2),(3,4)); $l[0]` is a plain `(1, 2)` — and itemizing there too
+// made every sublist read out of a list arrive as one opaque item. It shows up
+// wherever such an element is then passed to a SLURPY, which is exactly what
+// `*@indexes` does: Math::SparseMatrix's `$m[<b c>; <A C>]` handed row-slice a
+// single $("b","c") instead of two strings, and it rejected them.
+// Already-itemized elements are left alone: a list may legitimately hold one.
+static Value itemizeElem(const Value& v, bool fromList = false) {
+    if (fromList || v.t != VT::Array || v.itemized || v.ext()) return v;
     Value r = v; r.itemized = true; return r;
 }
 
@@ -25989,10 +26181,46 @@ Value Interpreter::evalIndex(Index* idx) {
                 // containers that are not plain Arrays. Anything else, including
                 // out of range, falls through to the general path.
                 if (have && i >= 0 && i < (long long)bp->arr()->size())
-                    return itemizeElem((*bp->arr())[i]);
+                    return itemizeElem((*bp->arr())[i], bp->isList);
             }
         }
     }
+
+    // A user-defined `postcircumfix:<[ ]>` / `postcircumfix:<[; ]>` takes the
+    // subscript over from the built-in one, as it does in Rakudo — there both
+    // are candidates of the SAME multi, and the invocant's type picks the
+    // winner. rakupp registers a user postcircumfix only for a CUSTOM bracket
+    // pair (Parser.cpp's userPostcircumfix_), and `[` is a bracket the parser
+    // has already claimed, so `multi sub postcircumfix:<[; ]>(M:D, @ix)`
+    // compiled and was then never reached. Math::SparseMatrix exports exactly
+    // that as its element accessor, and `$m[3;2]` quietly answered Any.
+    //
+    // Only an OBJECT base is offered to it: Array/Hash/Str/Buf/CArray keep the
+    // built-in subscript, which is both the hot path and what Rakudo's own
+    // narrower candidates win anyway. A call matching no candidate falls back
+    // to the built-in path — which is what Rakudo's `Any` candidate does.
+    auto userPostcircumfix = [&](const Value& baseV, Value& out) -> bool {
+        if (baseV.t != VT::Object || !baseV.obj() || !baseV.obj()->cls) return false;
+        if (!idx->index || !idx->adverb.empty()) return false;
+        if (idx->multiDim && idx->index->kind != NK::ListExpr) return false;
+        Value* fn = extFindRoutine(idx->multiDim ? "&postcircumfix:<[; ]>"
+                                                 : "&postcircumfix:<[ ]>");
+        if (!fn || fn->t != VT::Code) return false;
+        ValueList args{baseV};
+        if (idx->multiDim) {
+            Value ixs = Value::array(); ixs.isList = true;
+            for (auto& de : static_cast<ListExpr*>(idx->index.get())->items)
+                ixs.arr()->push_back(eval(de.get()));
+            args.push_back(ixs);
+        }
+        else args.push_back(eval(idx->index.get()));
+        try { out = callCallable(*fn, args); }
+        catch (RakuError& e) {
+            if (e.payload.t == VT::Type && e.payload.s == "X::Multi::NoMatch") return false;
+            throw;
+        }
+        return true;
+    };
 
     // multidim slice @a[X;Y(;Z)] / %h{X;Y;Z}: walk level by level; Whatever
     // selects all elements at its level; scalar/list/range dims select those.
@@ -26052,7 +26280,12 @@ Value Interpreter::evalIndex(Index* idx) {
                 return (*out.arr())[0];
             return out;
         };
-        if (idx->adverb.empty()) return multiDimRead(eval(idx->base.get()));
+        if (idx->adverb.empty()) {
+            Value bv = eval(idx->base.get());
+            Value r;
+            if (userPostcircumfix(bv, r)) return r;
+            return multiDimRead(bv);
+        }
     }
     // (Shaped declarations `my @a[5]` now carry their dimensions on the declarator
     // itself — `declShape` — so they never reach here as an Index node. A bare
@@ -26288,6 +26521,12 @@ Value Interpreter::evalIndex(Index* idx) {
     // An object that implements or delegates (`handles`) AT-KEY/AT-POS is
     // subscripted through it: `$obj<k>` == `$obj.AT-KEY("k")`, `$obj[i]` ==
     // `$obj.AT-POS(i)` (zef's config: `class :: { has %.hash handles <AT-KEY …> }`).
+    // …but a user-written `postcircumfix:<[ ]>` outranks AT-POS, as its
+    // narrower candidate does in Rakudo (see userPostcircumfix above).
+    if (base.t == VT::Object && !idx->multiDim) {
+        Value r;
+        if (userPostcircumfix(base, r)) return r;
+    }
     if (base.t == VT::Object && base.obj() && base.obj()->cls && !idx->multiDim) {
         std::function<bool(ClassInfo*, const std::string&)> covers =
             [&](ClassInfo* c, const std::string& n) -> bool {
@@ -26385,7 +26624,7 @@ Value Interpreter::evalIndex(Index* idx) {
                         if ((b.t == VT::Array || b.t == VT::Match) && b.arr()) {
                             if (n < 0) n += (long long)b.arr()->size();
                             out.arr()->push_back(n >= 0 && n < (long long)b.arr()->size()
-                                                 ? itemizeElem((*b.arr())[n]) : Value::any());
+                                                 ? itemizeElem((*b.arr())[n], b.isList) : Value::any());
                         } else out.arr()->push_back(Value::any());
                     }
                 }
@@ -26397,7 +26636,7 @@ Value Interpreter::evalIndex(Index* idx) {
                 return Value::nil();
             }
             long long n = keyv.toInt();
-            if ((b.t == VT::Array || b.t == VT::Match) && b.arr()) { if (n < 0) n += (long long)b.arr()->size(); if (n >= 0 && n < (long long)b.arr()->size()) return itemizeElem((*b.arr())[n]); }
+            if ((b.t == VT::Array || b.t == VT::Match) && b.arr()) { if (n < 0) n += (long long)b.arr()->size(); if (n >= 0 && n < (long long)b.arr()->size()) return itemizeElem((*b.arr())[n], b.isList); }
             return Value::nil();
         };
         return code;
