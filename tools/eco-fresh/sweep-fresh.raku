@@ -16,9 +16,41 @@
 # outrun a pipe buffer and deadlock a reader that slurps one stream at a time.
 # The timeout is perl's alarm — macOS ships no timeout(1), and a wedged child
 # must not take the sweep with it.
+#
+# Two things a sweep of this size has to get right, both learned the hard way:
+# the timeout kills a process GROUP, and a dist that never ran gets no verdict.
+# See TIMEOUT-GROUP and the abort in MAIN.
+
+# perl is the timeout, because macOS ships no timeout(1) — and it FORKS rather
+# than execs, so something is still alive to enforce the budget. The child
+# leads its own process group (setpgrp) and the alarm kills that whole GROUP:
+# the shell, `rakupp test`, and every test process under them. An earlier
+# version had perl exec the shell and let the alarm kill perl, which killed
+# nothing — the tree below was merely ORPHANED, and a suite that spawns
+# processes went on spawning them with no budget left to stop it.
+# Test::Selector 0.4.2 is such a suite (t/all.rakutest re-invokes itself
+# through a generated temp script, unbounded), and one dist took the machine
+# to its 4,000-process ceiling. The group kill runs on the normal exit path
+# too, which reaps the servers and workers a suite starts and never stops.
+# Exit 142 is the timeout (128 + SIGALRM's 14), the code the shell used to
+# report when the alarm killed perl itself.
+my constant TIMEOUT-GROUP = q:to/PERL/.trim;
+    my ($limit, $cmd) = @ARGV;
+    open(STDIN, "<", "/dev/null");
+    my $pid = fork();
+    exit(127) unless defined $pid;
+    unless ($pid) { setpgrp(0, 0); exec("/bin/sh", "-c", $cmd); exit(127) }
+    $SIG{ALRM} = sub { kill(-9, $pid); waitpid($pid, 0); exit(142) };
+    alarm($limit);
+    waitpid($pid, 0);
+    my $status = $?;
+    alarm(0);
+    kill(-9, $pid);
+    exit($status & 127 ? 128 + ($status & 127) : $status >> 8);
+    PERL
 
 sub classify($target, $log, $exit) {
-    return ('timeout', '') if $exit == 142;      # SIGALRM through the shell
+    return ('timeout', '') if $exit == 142;      # the alarm in TIMEOUT-GROUP
     my @lines = $log.lines;
     return ('pass', '') if $exit == 0 && @lines.grep({ /^ 'tested ' / && / '— suite green' / });
 
@@ -81,13 +113,35 @@ sub MAIN($list, :$store!, :$logs!, :$out!, :$timeout = 180, :$rakupp = $*EXECUTA
         my $logfile = $logs.IO.add($name.subst('::', '-', :g) ~ '.log');
         my $cmd = "'$rakupp' test --to='$store' '$name' > '$logfile' 2>&1";
         my $t0 = now;
-        my $p = run '/usr/bin/perl', '-e',
-                    'alarm shift; open(STDIN, "<", "/dev/null"); exec "/bin/sh", "-c", $ARGV[0] or exit 127',
-                    ~$timeout, $cmd, :err;
+        my $p = run '/usr/bin/perl', '-e', TIMEOUT-GROUP, ~$timeout, $cmd, :err;
         $p.err.slurp(:close);
         my $secs = ((now - $t0) * 10).Int / 10;
         my $log = $logfile.e ?? $logfile.slurp !! '';
+
         my ($verdict, $detail) = classify($name, $log, $p.exitcode);
+
+        # `other` is the bucket classify() falls into when it recognizes
+        # nothing in the log, and it is the one verdict that can mean the
+        # HARNESS failed rather than the dist. The two are told apart by the
+        # clock: a real `other` is a suite that ran and exited strangely, and
+        # the common one is the 120-second timeout. A child that never
+        # started — no process slots left, or the binary moved — comes back
+        # instantly. Recording that as a verdict is how a saturated machine
+        # writes 2,400 rows that read exactly like measurements and are not;
+        # it happened here, and the whole sweep had to be thrown away. So a
+        # near-instant `other` stops the sweep for a human to look at.
+        if $verdict eq 'other' && $secs < 1 {
+            note '';
+            note "ABORTING at $name: `rakupp test` came back in {$secs}s with "
+               ~ "nothing a verdict can be read from (exit {$p.exitcode}).";
+            note "  " ~ ($log.lines.grep(*.trim.chars).head // '(empty log)').trim;
+            note "That is the harness failing, not the dist — most likely the "
+               ~ "machine is out of process slots (compare `ps ax | wc -l` "
+               ~ "with `ulimit -u`) or --rakupp does not exist.";
+            note "Nothing is recorded for $name. Fix it and re-run: $out is "
+               ~ "resumable and keeps every dist already in it.";
+            exit 3;
+        }
         my $err = $verdict eq 'pass' ?? '' !! first-error($log);
         my $h = $out.IO.open(:a);
         $h.say: "$name\t$ver\t$date\t$verdict\t{cell($detail)}\t$secs\t{$p.exitcode}\t{cell($err)}";
