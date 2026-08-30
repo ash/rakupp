@@ -108,6 +108,14 @@ per-file clusters: `corpus-diff/rp-classes3.tsv`.
 > `rp-classes2.tsv`. Still parked: grammar2/4 (embedded code blocks reading
 > `$0`/`$<name>` mid-match, probe double-execution), op48 (`:=` container
 > aliasing), metaop18 (`S&`), channel9 deadlock.
+>
+> **grammar2/4 unparked 2026-08-30** — both byte-identical to their Rakudo
+> reference now. Four defects, none of them backtracking: the Alt ranking probe
+> ran user code; a named capture's list-ness was decided by what matched rather
+> than by the pattern; a mid-match `$<n>` could not see the occurrence list at
+> all; and positional captures were numbered straight through alternatives where
+> Raku restarts them per branch. Details, and the two consequences that fell out
+> of fixing them, in [../plans/LTM-PLAN.md](../plans/LTM-PLAN.md) phase 5.
 
 First run of the [raku-corpus](https://github.com/ash/raku-corpus) differential
 harness: every corpus program with a deterministic Rakudo reference output was run

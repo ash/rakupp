@@ -1,6 +1,9 @@
 # Plan: true Longest-Token Matching (LTM)
 
-**Status: planned, not started.** One of the three **v3.0.0** pillars
+**Status: phases 1-4 LANDED 2026-08-08/09 (the default flipped 2026-08-09);
+phase 5 opened 2026-08-30 — the header below said "planned, not started" for
+three weeks after the flip, which is how a stale status line reads.** One of
+the three **v3.0.0** pillars
 ([VERSIONS.md](VERSIONS.md); the others are [CLI-PLAN.md](CLI-PLAN.md) and
 [PARALLEL-PLAN.md](PARALLEL-PLAN.md)), and the
 one the pre-v3 discussion ranked as the tallest of the "real walls"
@@ -367,6 +370,56 @@ the baseline predates the tree's WIP).
    contained change instead of a rewrite. Also the review-noted
    consolidation of the engine's seven copies of the builtin-class tables,
    which the NFA transition guards will want anyway.
+
+   > **Phase 5, first half: DELIVERED 2026-08-30.** The item was mis-stated,
+   > and measuring it first is what showed that: blocks re-running under
+   > BACKTRACKING is not a divergence at all — Rakudo re-runs them too, and
+   > rakupp already agreed on every probe. What actually cost the two parked
+   > corpus programs (books/perl6-at-a-glance/grammar2.pl, grammar4.pl —
+   > CORPUS-DIFF.md's "embedded code blocks reading `$0`/`$<name>` mid-match,
+   > probe double-execution") was four separate defects, none of them
+   > backtracking:
+   >
+   > 1. **The Alt RANKING probe ran user code.** Ranking measures how far each
+   >    branch reaches; a bare `{…}` is zero-width and always passes, so
+   >    running it changes no measurement and fires the side effect a second
+   >    time. `MState::probing` now suppresses `runOnly` blocks for the
+   >    duration of the probe — assertions still run, because they decide the
+   >    branch. This is the "never execute user code while ranking" promise
+   >    holding on the probe path too, not just the NFA one.
+   > 2. **A named capture's list-ness was decided by what matched**, not by
+   >    the pattern. Rakudo decides it declaratively: `<n> [ <n> ]?` over "1"
+   >    is a ONE-element list because a path could reach `<n>` twice, while
+   >    `<n> | <n>` is a lone Match because alternatives are separate paths.
+   >    `markRepeatedNames` counts occurrences per path (sum along a sequence,
+   >    max across alternatives) at compile time.
+   > 3. **A mid-match `$<n>` could not see the list at all** — the block's
+   >    cursor was built from the flat name→span map, which keeps only the last
+   >    occurrence, so `<n> '+' <n> { $<n>.elems }` read 0 where the finished
+   >    match reads 2. A new `runCursor` hook carries the occurrence vectors,
+   >    on both the plain-regex and grammar paths.
+   > 4. **Positional captures were numbered straight through alternatives.**
+   >    Raku restarts numbering in every branch: in `| (a) '=' (b) | (c) '=' (d)`
+   >    the second branch's groups are `$0`/`$1` too, and the alternation is as
+   >    wide as its widest branch, not the sum. A block in the second branch
+   >    was reading `$0` as unset and its own captures as `$2`/`$3`. (P5 mode
+   >    keeps straight-through numbering and its own parser.)
+   >
+   > Two more fell out of fixing those. A match's positional list is sized by
+   > what MATCHED, not by how many groups the pattern has (`(a) | (x)(y)(z)`
+   > over "a" has one capture; only TRAILING unset ones go, a hole in the
+   > middle stays) — and once the list could shrink, `$0..$N` had to be cleared
+   > beyond it, because an earlier match had defined them as real vars in
+   > scopes still visible from here. Without that second half, `"a" ~~
+   > m:P5/a|(b)/` left `$0` holding the previous match's capture, which three
+   > S05-modifier/Perl_*.t files caught immediately.
+   >
+   > Both parked corpus programs are byte-identical to their Rakudo reference
+   > now. Gates: t/run 590/590 (the case is
+   > `t/regression/regex-alt-captures-and-cursor.raku`, green under Rakudo
+   > 2026.08 too), six roast slices file-identical against a clean-HEAD
+   > baseline, perf guard neutral. Still open in phase 5: the seven copies of
+   > the builtin-class tables.
 6. **Docs**: a "How LTM works here" section in
    [internals/PARSING.md](../../internals/PARSING.md)'s regex companion (or
    a new `internals/REGEX-LTM.md`): the concept explainer from this plan,

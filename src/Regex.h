@@ -77,6 +77,8 @@ struct FnRef {
 // match time — code assertions, `:my`/`{…}` side-effects, runtime `$var` atoms,
 // and `** { … }` quantifier bounds — all against the interpreter's live scope.
 struct ParseNode; // declared below — the hooks reference completed nodes
+struct RxCursorCaps;   // defined below, once ChildMap is — the mid-match cursor's capture lists
+
 struct GrammarHooks {
     using NamedMap = FlatMap<std::pair<long, long>>; // named-capture byte spans, for $/ / $<x>
     using ParamMap = std::map<std::string, std::string>;           // current rule params, e.g. $indent
@@ -99,6 +101,12 @@ struct GrammarHooks {
     // can offer `$0`. Set by the plain-regex path; preferred over `run` when set.
     std::function<void(const std::string&, long, long, const NamedMap&,
                        const std::vector<std::pair<long, long>>&, const ParamMap&)> runCaps;
+    // Same again, plus the cursor's per-name occurrence lists — so `$<n>` inside
+    // the block has the SHAPE it will have when the match finishes, list and all.
+    // Preferred over `runCaps` when set.
+    std::function<void(const std::string&, long, long, const NamedMap&,
+                       const std::vector<std::pair<long, long>>&,
+                       const RxCursorCaps&, const ParamMap&)> runCursor;
     std::function<std::string(const std::string&, const NamedMap&, const ParamMap&)> str;             // $var atom
     std::function<std::pair<long,long>(const std::string&, const NamedMap&, const ParamMap&)> range;  // ** {…}
     // Save/restore interpreter side-effect state (`:my` vars, deferred makes) so an LTM
@@ -121,6 +129,17 @@ struct GrammarHooks {
 // re-recording a memoized sub-match is a refcount bump, not a subtree copy.
 struct ParseNode;
 using ChildMap = FlatMap<std::vector<ParseNode>>;
+
+// What a MID-MATCH code block needs beyond the flat capture spans: the per-name
+// occurrence lists and which captures are list-valued. Without them the `$/` a
+// `{…}` block sees collapses every repeated name to its last occurrence, so
+// `<n> '+' <n> { $<n>.elems }` read 0 where the finished match reads 2.
+struct RxCursorCaps {
+    const ChildMap* children = nullptr;
+    const std::map<int, std::vector<std::pair<long, long>>>* capReps = nullptr;
+    std::shared_ptr<const std::set<int>> listCaps;
+    std::shared_ptr<const std::set<std::string>> listNames;
+};
 struct ParseNode {
     std::string name;
     std::string actualRule; // proto entry: the winning `name:sym<…>` candidate (else empty)
@@ -292,6 +311,8 @@ private:
     std::shared_ptr<std::set<std::string>> listNames_; // subrule capture keys under a repetition quantifier
     std::shared_ptr<std::set<std::string>> hashNames_; // `%<name>=…` hash-valued capture keys
     void collectListNames(const Node* n); // walk a quantified atom, gathering capturing subrule keys
+    void markRepeatedNames();             // …and the names a single path can reach twice
+    static void countCaptureNames(const Node* n, std::map<std::string, int>& out);
     bool ok_ = true;
     std::string obsolete_;               // retired metachar seen (e.g. "\\A"), for X::Obsolete
     bool icase_ = false;
@@ -351,6 +372,12 @@ public:
         const GrammarHooks* hooks = nullptr;               // interpreter callbacks (null = lenient/no runtime eval)
         const std::string* curSym = nullptr;               // proto candidate's sym value, so `<sym>` matches it
         long firstCode = -1;                               // string pos at the first bare `{…}` block (ends the LTM declarative prefix)
+        // Depth of the Alt RANKING probe. Ranking must not execute user code —
+        // the probe measures how far each branch reaches, and a bare `{…}` is
+        // zero-width and always passes, so running it changes no measurement and
+        // fires its side effects a second time (`| 'print' <v> { say … }` said
+        // everything twice). Assertions still run: they DECIDE the branch.
+        int probing = 0;
         long litPrefix = -1;                               // end pos of the leading literal-atom run from startPos (-1 = not started)
         long steps = 0;                                    // backtracking step budget (guards catastrophic patterns)
         // Bare `{…}` blocks QUEUED rather than run where they appear: the matcher

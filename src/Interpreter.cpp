@@ -20073,6 +20073,11 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
             if (c.first < 0) v.arrRef().push_back(Value::nil());
             else v.arrRef().push_back(mk(c.first, c.second));
         }
+        // Rakudo sizes a match's positional list by what ACTUALLY matched, not by
+        // how many groups the pattern has: `(a) | (x)(y)(z)` over "a" has ONE
+        // capture, and `(a) (b)?` over "a" has one too. Only TRAILING unset
+        // captures go — a hole in the middle stays, as `[(a)]? (b)` shows.
+        while (v.arr() && !v.arr()->empty() && v.arr()->back().t == VT::Nil) v.arrRef().pop_back();
         for (auto& kv : m.named)
             if (!m.children.count(kv.first))
                 v.hashRef()[kv.first] = mk(kv.second.first, kv.second.second);
@@ -20180,16 +20185,26 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
     // abandoned never fires and a branch that is retried never fires twice. Running
     // them eagerly instead is what broke subst.t and longest-alternative.t.
     if (hookScan.find('{') != std::string::npos) {
-        rmHooks.runCaps = [this, &inlineMade, &build](
+        auto runBlock = [this, &inlineMade, &build](
                               const std::string& code, long from, long to,
                               const GrammarHooks::NamedMap& named,
                               const std::vector<std::pair<long, long>>& caps,
-                              const GrammarHooks::ParamMap&) {
+                              const RxCursorCaps* cc) {
             // `$/` and `$¢` inside the block are the CURSOR: the match as far as the
             // engine has got, captures and all. Building it through build() is what
             // gives the block `$0`, `$<name>`, `.pos` and the rest.
             RxMatch cur; cur.matched = true; cur.from = from; cur.to = to;
             cur.caps = caps; cur.named = named;
+            // …including the per-name OCCURRENCE LISTS when the engine offers them,
+            // so a repeated name reads here with the shape the finished match will
+            // give it (`<n> '+' <n> { $<n>.elems }` is 2, not 0) instead of
+            // collapsing to whichever occurrence landed last.
+            if (cc) {
+                if (cc->children) cur.children = *cc->children;
+                if (cc->capReps) cur.capReps = *cc->capReps;
+                if (cc->listCaps) cur.listCaps = *cc->listCaps;
+                cur.listNames = cc->listNames;
+            }
             Value cursor = build(cur);
             bool hadSlash = tctx_.cur->find("$/") != nullptr;
             Value savedSlash = hadSlash ? *tctx_.cur->find("$/") : Value::nil();
@@ -20227,6 +20242,19 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
                 tctx_.cur->define(it->first, it->second);
             if (Value* s2 = tctx_.cur->find("$/")) { if (hadSlash) *s2 = savedSlash; }
             if (featThrow) throw fe;
+        };
+        rmHooks.runCaps = [runBlock](const std::string& code, long from, long to,
+                                     const GrammarHooks::NamedMap& named,
+                                     const std::vector<std::pair<long, long>>& caps,
+                                     const GrammarHooks::ParamMap&) {
+            runBlock(code, from, to, named, caps, nullptr);
+        };
+        rmHooks.runCursor = [runBlock](const std::string& code, long from, long to,
+                                       const GrammarHooks::NamedMap& named,
+                                       const std::vector<std::pair<long, long>>& caps,
+                                       const RxCursorCaps& cc,
+                                       const GrammarHooks::ParamMap&) {
+            runBlock(code, from, to, named, caps, &cc);
         };
         wantHooks = true;
     }
@@ -20373,6 +20401,16 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
     if (mv.t == VT::Match) {
         if (mv.arr()) for (size_t k = 0; k < mv.arr()->size(); k++) tctx_.cur->define("$" + std::to_string(k), (*mv.arr())[k]);
         if (mv.hash()) for (auto& kv : *mv.hash()) tctx_.cur->define("$<" + kv.first + ">", kv.second);
+        // …and clear the slots THIS match does not have. `$0..$N` are aliases of
+        // `$/`, but an earlier match defined them as real vars in scopes still
+        // visible from here, so a narrower match read the previous one's
+        // captures: `"a" ~~ m:P5/a|(b)/` left `$0` holding whatever the last
+        // match put there instead of the undefined the unmatched group means.
+        for (long k = (long)(mv.arr() ? mv.arr()->size() : 0); ; k++) {
+            std::string nm = "$" + std::to_string(k);
+            if (!tctx_.cur->find(nm)) break;
+            tctx_.cur->define(nm, Value::nil());
+        }
     } else {
         // FAILED match: $0..$N are aliases of $/ (now Nil), but earlier matches
         // defined them as real vars in scopes still visible from here — shadow
@@ -20443,6 +20481,11 @@ Value Interpreter::regexSubst(const std::string& subject, const std::string& pat
             if (c.first < 0) v.arrRef().push_back(Value::nil());
             else v.arrRef().push_back(Value::matchVal(subject.substr(c.first, c.second - c.first), c.first, c.second));
         }
+        // Rakudo sizes a match's positional list by what ACTUALLY matched, not by
+        // how many groups the pattern has: `(a) | (x)(y)(z)` over "a" has ONE
+        // capture, and `(a) (b)?` over "a" has one too. Only TRAILING unset
+        // captures go — a hole in the middle stays, as `[(a)]? (b)` shows.
+        while (v.arr() && !v.arr()->empty() && v.arr()->back().t == VT::Nil) v.arrRef().pop_back();
         for (auto& kv : mm.named)
             if (!mm.children.count(kv.first))
                 v.hashRef()[kv.first] = Value::matchVal(subject.substr(kv.second.first, kv.second.second - kv.second.first), kv.second.first, kv.second.second);
@@ -20923,6 +20966,8 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
             if (c.first < 0) v.arrRef().push_back(Value::nil());
             else v.arrRef().push_back(mkm((long)c.first, (long)c.second));
         }
+        // …trailing unset captures are not part of the list (see the other builders)
+        while (v.arr() && !v.arr()->empty() && v.arr()->back().t == VT::Nil) v.arrRef().pop_back();
         for (auto& kv : mm.named) {
             // a named capture under a quantifier is LIST-valued: every collated
             // occurrence becomes one Match ($m<bit>.list in URI::Encode's decoder)
@@ -21292,7 +21337,8 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
     using NamedMap = GrammarHooks::NamedMap; using ParamMap = GrammarHooks::ParamMap;
     auto runCode = [this, &input, parseCode, pendingMakes](const std::string& code, long from, long to,
                                              const NamedMap& named, const ParamMap& params,
-                                             const std::vector<std::pair<long, long>>* caps = nullptr) -> Value {
+                                             const std::vector<std::pair<long, long>>* caps = nullptr,
+                                             const RxCursorCaps* cc = nullptr) -> Value {
         auto prog = parseCode(code);
         if (!prog) return Value::any();
         // build $/ over [from..to] with the named sub-captures attached
@@ -21300,6 +21346,23 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
         for (auto& nm : named)
             m.hashRef()[nm.first] = Value::matchVal(input.substr(nm.second.first, nm.second.second - nm.second.first),
                                                   nm.second.first, nm.second.second);
+        // …and where a name has OCCURRENCES rather than one span, the list it will
+        // be in the finished match. The flat `named` map keeps only the last span
+        // per name, so `<n> '+' <n> { $<n>.elems }` read 0 mid-match where the
+        // finished match reads 2.
+        if (cc && cc->children)
+            for (auto& kv : *cc->children) {
+                const auto& occ = kv.second;
+                if (occ.empty()) continue;
+                bool asList = occ.size() > 1 || (cc->listNames && cc->listNames->count(kv.first));
+                auto one = [&](const ParseNode& pn) {
+                    return Value::matchVal(input.substr(pn.from, pn.to - pn.from), pn.from, pn.to);
+                };
+                if (!asList) { m.hashRef()[kv.first] = one(occ.back()); continue; }
+                Value lst = Value::array(); lst.isList = true;
+                for (auto& pn : occ) lst.arrRef().push_back(one(pn));
+                m.hashRef()[kv.first] = std::move(lst);
+            }
         // …and the POSITIONAL ones, when the caller has them. A code assertion in
         // a GRAMMAR rule saw only the named captures, so `([\w]+) <?{ f($0.Str) }>`
         // — the shape a grammar uses to gate a token on a lookup — asked about an
@@ -21359,6 +21422,15 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
         // other blocks (`:my`, indentation assignments) run now for their side effects.
         if (code.find("make") != std::string::npos) (*pendingMakeCode)[{from, to}].push_back(code);
         else runCode(code, from, to, nm, pm);
+    };
+    // The same, with the cursor's capture lists — preferred by the engine when set,
+    // and the only way a mid-match `$<n>` sees a repeated name as the list it is.
+    gm.hooks.runCursor = [runCode, pendingMakeCode](const std::string& code, long from, long to,
+                                                    const NamedMap& nm,
+                                                    const std::vector<std::pair<long, long>>& caps,
+                                                    const RxCursorCaps& cc, const ParamMap& pm) {
+        if (code.find("make") != std::string::npos) (*pendingMakeCode)[{from, to}].push_back(code);
+        else runCode(code, from, to, nm, pm, &caps, &cc);
     };
     gm.hooks.str = [runCode](const std::string& expr, const NamedMap& nm, const ParamMap& pm) -> std::string {
         // Fast path: a bare `$param` atom (e.g. `$indent`) is by far the most common

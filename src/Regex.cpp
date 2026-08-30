@@ -112,6 +112,7 @@ Regex::Regex(const std::string& pattern, const std::string& flags) : pat_(patter
     } catch (...) {
         ok_ = false;
     }
+    markRepeatedNames();
 }
 
 // =====================  Perl 5 pattern syntax (:P5)  =====================
@@ -780,8 +781,16 @@ Regex::NodePtr Regex::parseAlt() {
     // A leading/empty branch (`[ | A | B ]` — cosmetic in Raku) must NOT become a
     // zero-width alternative that always wins; drop empty branches.
     auto isEmpty = [](const NodePtr& n) { return n->k == K::Seq && n->kids.empty(); };
+    // Positional capture numbering RESTARTS in every alternative, as Raku
+    // defines it: in `| (a) '=' (b) | (c) '=' (d) ` the second branch's groups
+    // are $0 and $1 too, and an alternation's capture count is the WIDEST branch
+    // rather than the sum. Numbering them straight through made a block in the
+    // second branch read `$0` as unset and `$2`/`$3` as its own captures. (P5
+    // mode numbers straight through and keeps its own parser, p5Alt.)
+    int capBase = ncaps_, capWidest = ncaps_;
     auto first = parseConj();
     if (peek() != '|') return first;
+    capWidest = std::max(capWidest, ncaps_);
     auto alt = std::make_unique<Node>();
     alt->k = K::Alt;
     if (!isEmpty(first)) alt->kids.push_back(std::move(first));
@@ -789,9 +798,12 @@ Regex::NodePtr Regex::parseAlt() {
     while (peek() == '|') {
         pos_++;
         if (peek() == '|') { pos_++; sawDouble = true; } // `||` = sequential first-match
+        ncaps_ = capBase;
         auto branch = parseConj();
+        capWidest = std::max(capWidest, ncaps_);
         if (!isEmpty(branch)) alt->kids.push_back(std::move(branch));
     }
+    ncaps_ = capWidest;
     // pure `|` uses LTM (longest-token wins); any `||` present → first-match (conservative)
     alt->firstMatch = sawDouble;
     if (alt->kids.size() == 1) return std::move(alt->kids[0]);
@@ -895,6 +907,48 @@ Regex::NodePtr Regex::parseSeq() {
 // Gather every capturing <subrule> key inside a quantified atom: those captures
 // are list-valued in Rakudo even with 0 or 1 occurrences (`<pair>*` gives an
 // Array). Zero-width assertions (<?before …>) don't record captures — skip them.
+// How many times ONE path through `n` can reach each capture name. Rakudo
+// decides a named capture's list-ness declaratively, off the pattern rather
+// than off what matched: `<n> [ <n> ]?` against "1" gives a ONE-element list,
+// not a lone Match, because a path through the pattern could have reached
+// `<n>` twice. Alternatives do not add up — they are separate paths — so
+// `<n> | <n>` stays a lone Match. Quantified atoms are marked at parse time by
+// collectListNames; this is the other half of the same rule.
+void Regex::countCaptureNames(const Node* n, std::map<std::string, int>& out) {
+    if (!n || n->k == K::Look) return;   // zero-width assertions record nothing
+    if (n->k == K::Subrule) {
+        if (n->ruleCapture && !n->ruleName.empty())
+            out[n->ruleAlias.empty() ? n->ruleName : n->ruleAlias] += 1;
+        return;                                  // a subrule's own captures are its own
+    }
+    if (n->k == K::Alt || n->k == K::Conj) {
+        // separate paths: the count is the WORST branch, never the sum
+        for (auto& kd : n->kids) {
+            std::map<std::string, int> branch;
+            countCaptureNames(kd.get(), branch);
+            for (auto& kv : branch) out[kv.first] = std::max(out[kv.first], kv.second);
+        }
+        return;
+    }
+    if (n->k == K::Group && !n->capName.empty()) out[n->capName] += 1;
+    std::map<std::string, int> inner;
+    for (auto& kd : n->kids) countCaptureNames(kd.get(), inner);
+    // a repeating quantifier makes every name under it reachable twice over
+    bool repeats = n->k == K::Rep && (n->max < 0 || n->max > 1);
+    for (auto& kv : inner) out[kv.first] += repeats ? kv.second * 2 : kv.second;
+}
+
+void Regex::markRepeatedNames() {
+    if (!root_) return;
+    std::map<std::string, int> counts;
+    countCaptureNames(root_.get(), counts);
+    for (auto& kv : counts) {
+        if (kv.second < 2) continue;
+        if (!listNames_) listNames_ = std::make_shared<std::set<std::string>>();
+        listNames_->insert(kv.first);
+    }
+}
+
 void Regex::collectListNames(const Node* n) {
     if (!n || n->k == K::Look) return;
     if (n->k == K::Subrule && n->ruleCapture && !n->ruleName.empty()) {
@@ -2625,7 +2679,20 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
             const auto& params = st.grammar ? st.grammar->currentParams() : kNoParams;
             if (n->runOnly) { // execute for side effects, zero-width, always pass
                 if (n->ltmStop && st.firstCode < 0) st.firstCode = pos; // a bare code block ends the LTM declarative prefix
-                if (st.hooks && st.hooks->runCaps) st.hooks->runCaps(n->lit, st.startPos, pos, st.named, st.caps, params);
+                if (st.probing) return k(pos); // ranking measures; it does not run the program
+                // Hand the block the cursor's OCCURRENCE LISTS as well as the flat
+                // spans, so a repeated name reads inside `{…}` with the same shape
+                // it will have when the match finishes rather than collapsing to
+                // its last occurrence.
+                if (st.hooks && st.hooks->runCursor) {
+                    RxCursorCaps cc;
+                    cc.children = &st.children;
+                    cc.capReps = &st.capReps;
+                    cc.listCaps = listCapsPtr();
+                    cc.listNames = listNamesPtr();
+                    st.hooks->runCursor(n->lit, st.startPos, pos, st.named, st.caps, cc, params);
+                }
+                else if (st.hooks && st.hooks->runCaps) st.hooks->runCaps(n->lit, st.startPos, pos, st.named, st.caps, params);
                 else if (st.hooks && st.hooks->run) st.hooks->run(n->lit, st.startPos, pos, st.named, params);
                 return k(pos);
             }
@@ -2749,11 +2816,13 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
             auto savedReps = st.capReps;
             long savedCapFrom = st.capFrom, savedCapTo = st.capTo, savedFirstCode = st.firstCode, savedLitPrefix = st.litPrefix;
             std::vector<std::pair<long, size_t>> order; // (greedy end, branch index)
+            st.probing++; // …and no user code runs while we are only measuring
             for (size_t i = 0; i < n->kids.size(); i++) {
                 long e0 = -1;
                 matchNode(n->kids[i].get(), st, pos, [&](long e) { e0 = e; return true; });
                 if (e0 >= 0) order.push_back({e0, i});
             }
+            st.probing--;
             st.caps = std::move(savedCaps); st.named = std::move(savedNamed);
             st.children = std::move(savedChildren);
             st.capReps = std::move(savedReps);
