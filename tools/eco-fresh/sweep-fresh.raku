@@ -121,16 +121,28 @@ sub MAIN($list, :$store!, :$logs!, :$out!, :$timeout = 180, :$rakupp = $*EXECUTA
         my ($verdict, $detail) = classify($name, $log, $p.exitcode);
 
         # `other` is the bucket classify() falls into when it recognizes
-        # nothing in the log, and it is the one verdict that can mean the
-        # HARNESS failed rather than the dist. The two are told apart by the
-        # clock: a real `other` is a suite that ran and exited strangely, and
-        # the common one is the 120-second timeout. A child that never
-        # started — no process slots left, or the binary moved — comes back
-        # instantly. Recording that as a verdict is how a saturated machine
-        # writes 2,400 rows that read exactly like measurements and are not;
-        # it happened here, and the whole sweep had to be thrown away. So a
-        # near-instant `other` stops the sweep for a human to look at.
-        if $verdict eq 'other' && $secs < 1 {
+        # nothing in the log, and it is the one verdict that can also mean the
+        # HARNESS failed rather than the dist. Recording that as a verdict is
+        # how a saturated machine writes 2,400 rows that read exactly like
+        # measurements and are not; it happened here, and the whole sweep had
+        # to be thrown away.
+        #
+        # The two are told apart by asking whether `rakupp test` ever spoke.
+        # It announces itself before it does anything — the resolved plan, or
+        # a note ahead of it, or the one-line refusal it exits on — so a log
+        # with any of that in it belongs to a dist that RAN, whatever the
+        # clock says and however odd the exit. FindBin-libs is the case that
+        # taught this: no META6.json in its archive, a legitimate verdict in
+        # 0.8 seconds, which an earlier version of this guard called a machine
+        # failure and stopped a 2,525-dist sweep over. What the harness
+        # failing looks like instead is silence plus an exit code only the
+        # wrapper can produce: 127 (fork or exec failed), 128 (the shell could
+        # not exec), or -1 (rakupp could not spawn perl at all).
+        my $spoke = $log.contains('plan (') || $log.contains('note: ')
+                 || $log.contains('cannot resolve') || $log.contains('fetch failed')
+                 || $log.contains('===SORRY');
+        if $verdict eq 'other' && !$spoke && $secs < 5
+           && $p.exitcode == -1 | 127 | 128 {
             note '';
             note "ABORTING at $name: `rakupp test` came back in {$secs}s with "
                ~ "nothing a verdict can be read from (exit {$p.exitcode}).";

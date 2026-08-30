@@ -1,11 +1,13 @@
 # The whole ecosystem, under `rakupp test`
 
 The full-population successor to [FRESH100-2026-08-20.md](FRESH100-2026-08-20.md):
-**every distribution in the REA index — 2,524 dists, latest release of each —**
-put through `rakupp test` (build hook, dependency install, own suite), then a
-fix campaign over the failure clusters, then a re-run of every non-pass dist on
-the fixed engine. Three sittings, 2026-08-23 … 2026-08-24. Every distribution
-and its verdict is browsable at
+**every distribution in the REA index — latest release of each —** put through
+`rakupp test` (build hook, dependency install, own suite), then a fix campaign
+over the failure clusters, then the population measured again. Six sittings,
+2026-08-23 … 2026-08-30; the population was 2,524 dists at the first and
+**2,526 at the last**, which is why the denominator moves. The standing figure
+is the most recent line of the Timeline below, not the first table.
+Every distribution and its verdict is browsable at
 [raku.online/modules/ecosystem](https://raku.online/modules/ecosystem/)
 (regenerate its snapshot with `sites/modules/tools/distill-ecosweep.raku` in
 the raku.online repo when a sweep updates these TSVs).
@@ -56,6 +58,7 @@ the `- YYYY-MM-DD: N of M` shape in every sweep write-up):
 
 - 2026-08-23: 624 of 2,524
 - 2026-08-25: 637 of 2,524
+- 2026-08-30: 746 of 2,526
 
 The modest conversion count is the honest shape of the terrain: each fix tends
 to move its cluster ONE RUNG — a dist that failed to parse now runs its suite
@@ -317,3 +320,99 @@ for the first time — the one-rung-up shape this campaign keeps meeting, and
 52 fresh first-errors for the next triage to cluster. Four conversions in
 all, counting Getopt::Long itself. The population total is not restated here:
 it was last measured on a different engine, and only a re-sweep can move it.
+
+## The re-sweep (2026-08-30, on v3.23.0-8-g5e23726): 746 of 2,526
+
+The population measured again, end to end, on the engine as it stands after
+sitting five — the first full re-measurement since 2026-08-25, and the one
+v3.23.0 deliberately left undone (its CHANGELOG says so: the 637 figure was
+carried forward, not measured). Index refreshed the same day: 15,029 archived
+releases, **2,526 dists**, two more than August's population. Per-dist results
+in [ecosweep/resweep-2526.tsv](ecosweep/resweep-2526.tsv), the green list in
+[ecosweep/green-2526.txt](ecosweep/green-2526.txt).
+
+| verdict | dists | August |
+|---|---:|---:|
+| **pass** | **746** | 637 |
+| self-fail | 1,228 | 1,341 |
+| dep-fail | 337 | 425 |
+| other | 67 | 95 |
+| build-fail | 51 | 23 |
+| timeout | 49 | — |
+| dep-build-fail | 46 | 13 |
+| fetch-fail | 2 | 3 |
+
+`timeout` is a new bucket, not a new failure: August's harness could not tell
+a suite that ran out of time from one that exited strangely, and both landed
+in `other`. Read `other` + `timeout` = 116 against August's 95 if you want the
+comparable pair. `build-fail` and `dep-build-fail` rising while `dep-fail`
+falls is the same effect one rung along — dists that never reached their build
+step now reach it.
+
+**637 → 746 decomposes as 125 conversions, 18 regressions, 2 new dists** (both
+passing). The regressions are real: every one of the 18 was re-measured alone,
+single-threaded, on an idle machine, and every one reproduced.
+
+- Eleven fail their own suites — Algorithm::Tarjan, Context, DB::ORM::Quicky,
+  Date::Calendar::Gregorian, Date::Calendar::Julian, HTML::Tag,
+  JavaScript::D3, Rmv::JIRA, URL, and behind URL its dependent
+  HTTP::API::MusicBrainz.
+- Four now time out at 120 s: Log::Async and P6TK, plus WebService::Nominatim
+  and WebService::Overpass — the last two call remote APIs, so upstream rate
+  limiting is not excluded and they are worth re-checking before being read as
+  engine work.
+- Three fail their native build: Device::Velleman::K8055, RPi::Device::SMBus
+  (and RPi::Device::PiGlow behind it), Terminal::Readsecret.
+
+Date::Calendar::Julian and Log::Async were two of the thirteen that August's
+re-run converted TO pass, so both have moved twice.
+
+**Getopt::Long blocks nothing.** It passes, and no dist in the population now
+names it among its failing dependencies — sitting five's 55-dist cohort,
+confirmed at population scale. The blocked cohort is 383 dists (was 421),
+waiting on 486 distinct distributions, 288 of them on more than one. The
+blockers the most dists wait on are now the async and serialization
+constellation: IO::Socket::Async::SSL 63, Log::Timeline 62, CBOR::Simple 62,
+IO::Path::ChildSecure 60, IO::Capture::Simple 36, HTTP::UserAgent 36,
+NativeHelpers::Blob 30, Slangify 22.
+
+### What the sweep's own instrument got wrong
+
+The first attempt at this sweep produced a complete-looking result file that
+was almost entirely fabricated, and the two defects behind it are worth
+recording because neither was visible in the output.
+
+**One distribution took the machine down.** Test::Selector 0.4.2's
+`t/all.rakutest` re-invokes itself through a generated temp script without
+bound under rakupp. The 120-second budget did not stop it: `perl -e alarm`
+exec'd the shell, so the alarm killed perl and merely ORPHANED the `sh` and
+the `rakupp test` below it, which went on spawning. It reached 2,905 processes
+against a 4,000-process ceiling, and nothing on the machine could fork —
+including the commands needed to diagnose it.
+
+**The sweep then invented 2,400 verdicts.** `classify()` has no bucket for
+"the child never started", so a failed fork fell through to the verdict
+`other`, in zero seconds, and the run sprinted to the end of every shard
+writing rows that were indistinguishable from measurements except by their
+timings. Both are fixed in `tools/eco-fresh/sweep-fresh.raku` (commits
+"The sweep's timeout killed one process and orphaned the tree below it" and
+"The abort guard called a malformed distribution a broken machine"): perl
+forks rather than execs and the alarm kills the process GROUP, and a sweep
+that cannot start a child aborts with what it saw instead of recording it.
+The guard's first form was too eager — it read the clock alone and stopped a
+run over FindBin-libs, whose archive genuinely has no META6.json and which
+legitimately fails in 0.8 s — so it now asks whether `rakupp test` ever spoke
+and reserves the abort for silence plus an exit code only the wrapper emits.
+
+Test::Selector was measured last and alone, with a process-table watchdog
+armed: it reached 1,549 processes, the watchdog killed the tree, and it
+records `self-fail`. That is the one verdict in this sweep reached with
+intervention rather than on its own.
+
+**Method, for repeatability.** Four shards over four private stores, seeded
+first with the 476 modules named by two or more dists (`rank-deps.raku` then
+`seed-store.raku`, 450 of 476 installed); budget 120 s per dist;
+`OPENSSL_PREFIX=/opt/homebrew/opt/openssl@3`. Run two shards at a time under
+`nice -n 10` rather than four, to keep the machine usable — the sweep is
+long, not urgent. Zero harness aborts and no watchdog firing across all
+2,525 shard dists.
