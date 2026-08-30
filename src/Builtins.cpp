@@ -2709,6 +2709,15 @@ Value makeSignature(const Callable* c) {
     Value params = Value::array(); params.isList = true;
     for (const Param* pp : ps) {
         const Param& p = *pp;
+        // A parameter carrying user traits keeps the ONE meta-object its traits
+        // were dispatched against: a `trait_mod:<is>` mixes roles into it at
+        // declaration time, and a freshly rendered copy would have forgotten
+        // them. Only trait-carrying parameters are cached — every other
+        // signature renders as it always did.
+        if (!p.userTraits.empty() && p.metaBox) {
+            params.arr()->push_back(p.metaBox->v);
+            continue;
+        }
         Value pv = Value::makeHash(); pv.hashKind = "Parameter";
         // how the parameter renders on its own — Value::gist reads this, so a
         // `say $sig.params[0]` shows `Int $one` rather than the attribute dump
@@ -2740,6 +2749,14 @@ Value makeSignature(const Callable* c) {
                 tv = Value::typeObj(p.sigil == '@' ? "Positional" : "Associative");
                 tv.ofTypeM() = p.type; // renders as Positional[Str]; .of answers Str
             }
+            // a COERCION parameter reports the coercion type itself, as Rakudo
+            // does: `Foo(Str) :$foo` is `Foo(Str)` and a bare `Foo()` is
+            // `Foo(Any)`. Both halves live in the name — see the ^coerce /
+            // ^target_type / ^constraint_type surface, which is how
+            // Getopt::Long decides what to parse an option's argument into.
+            else if (p.coerce && !p.type.empty())
+                tv = Value::typeObj(p.type + "(" +
+                                    (p.coerceFrom.empty() ? std::string("Any") : p.coerceFrom) + ")");
             else tv = Value::typeObj(
                 !p.type.empty() ? p.type
                 : p.sigil == '@' ? "Positional"
@@ -2817,6 +2834,11 @@ Value makeSignature(const Callable* c) {
                 if (!p.namedKey.empty()) nn.arr()->push_back(Value::str(p.namedKey));
             }
             (*pv.hash())["named_names"] = nn;
+        }
+        // …and remember it, for the identity the trait dispatch above relies on
+        if (!p.userTraits.empty()) {
+            p.metaBox = std::make_shared<ParamMetaBox>();
+            p.metaBox->v = pv;
         }
         params.arr()->push_back(pv);
     }
@@ -4340,6 +4362,22 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     }
     if (!m.empty() && m[0] == '^') {
         std::string mm = m.substr(1);
+        // A COERCION type object (`Foo(Str)`) carries both halves in its name,
+        // which is the only place they fit — a type object IS a name here.
+        // Getopt::Long picks an option's conversion through exactly this
+        // surface: parse the argument as the CONSTRAINT type, and unless the
+        // result already is the TARGET type, hand it to the target's COERCE.
+        if (mm == "constraint_type" || mm == "target_type" || mm == "coerce") {
+            size_t o = inv.t == VT::Type ? inv.s.find('(') : std::string::npos;
+            if (o != std::string::npos && o > 0 && !inv.s.empty() && inv.s.back() == ')') {
+                std::string target = inv.s.substr(0, o);
+                std::string from = inv.s.substr(o + 1, inv.s.size() - o - 2);
+                if (mm == "constraint_type") return Value::typeObj(from.empty() ? "Any" : from);
+                if (mm == "target_type") return Value::typeObj(target);
+                if (args.empty()) return Value::any();
+                return methodCall(Value::typeObj(target), "COERCE", ValueList{args[0]});
+            }
+        }
         if (mm == "name") {
             if (inv.t == VT::Type && inv.s == "Metamodel::ClassHOW")
                 return Value::str("Perl6::Metamodel::ClassHOW"); // Rakudo's full metaclass name
@@ -4705,6 +4743,14 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         if (m == "type" && inv.hash()->count(m)) return (*inv.hash())[m];
         if (m == "positional") return Value::boolean(!(*inv.hash())["named"].truthy() && !(*inv.hash())["slurpy"].truthy());
         if (m == "sigil") { const std::string& n = (*inv.hash())["name"].s; return Value::str(n.empty() ? "$" : n.substr(0, 1)); }
+        // An accessor of a role a parameter trait mixed in (`$param does
+        // Formatted::Named(:$argument)` put the role's attributes into this same
+        // map): `$param.argument`. Last, so it can never shadow a real
+        // Parameter method — the Attribute meta-object ends the same way.
+        {
+            auto ai = inv.hash()->find(m);
+            if (ai != inv.hash()->end()) return ai->second;
+        }
     }
     // a Capture's .list is its POSITIONAL args, .hash/.Map its NAMED (Pair) args
     // Capture.new(:list(...), :hash(...)) — build the \(…)-style capture value

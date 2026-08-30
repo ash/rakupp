@@ -5377,6 +5377,24 @@ static void aliasAttrName(Param& p) {
     if (bare != p.namedKey) p.aliasKeys.push_back(bare);  // `:x(:$!x)` names one key, not two
 }
 
+// `is NAME` / `is NAME(EXPR)` on a parameter, where NAME is none of the built-in
+// flags (rw/copy/raw/required): a USER trait. Its argument is parsed as a real
+// expression rather than skipped, because that is where the payload lives —
+// `:$foo is option("=s%")` is how Getopt::Long declares an option's spec, and
+// the interpreter hands both to a `trait_mod:<is>(Parameter, :option(…))` when
+// the routine is declared. Mirrors the attribute-trait parse exactly.
+void Parser::recordParamTrait(Param& p, const std::string& name) {
+    if (isKind(Tok::LParen) && !cur().spaceBefore) {
+        advance();
+        ExprPtr arg = isKind(Tok::RParen) ? nullptr : parseExpression();
+        while (!isKind(Tok::RParen) && !isKind(Tok::End)) advance();
+        if (isKind(Tok::RParen)) advance();
+        p.userTraits.emplace_back(name, std::move(arg));
+        return;
+    }
+    p.userTraits.emplace_back(name, nullptr); // bare `is getopt`
+}
+
 std::vector<Param> Parser::parseSignature(Tok closeTok) {
     std::vector<Param> params;
     std::vector<std::pair<size_t, int>> podClaims; // (param index, `#=` line) — resolved at close
@@ -5541,10 +5559,15 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
                 std::string trait = advance().text;
                 if (trait == "where") p.whereExpr = parseExpr(BP_ASSIGN + 1); // stop before the `= default`
                 else if (!isKind(Tok::Comma) && !isKind(Tok::RParen) && !isKind(Tok::End) && !isOp("=")) {
+                    bool builtinTrait = false;
                     if (trait == "is" && (isIdent("rw") || isIdent("copy") || isIdent("raw"))) {
                         p.isRw = cur().text == "rw"; p.isCopy = cur().text == "copy"; p.isRaw = cur().text == "raw";
+                        builtinTrait = true;
                     }
+                    std::string traitName = isKind(Tok::Ident) ? cur().text : std::string();
                     advance();
+                    if (trait == "is" && !builtinTrait && !traitName.empty())
+                        recordParamTrait(p, traitName);
                 }
             }
             if (matchOp("=")) p.defaultVal = parseExpr(BP_ASSIGN);
@@ -5776,17 +5799,22 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
             std::string trait = advance().text;
             if (trait == "where") p.whereExpr = parseExpr(BP_ASSIGN + 1); // stop before the `= default`
             else if (!isKind(Tok::Comma) && !isKind(Tok::RParen) && !isKind(Tok::End) && !isOp("=")) {
+                bool builtinTrait = false;
                 if (trait == "is" && (isIdent("rw") || isIdent("copy") || isIdent("raw"))) {
                     p.isRw   = cur().text == "rw";
                     p.isCopy = cur().text == "copy";
                     p.isRaw  = cur().text == "raw";
+                    builtinTrait = true;
                 }
                 // `is required` — same meaning as the `!` marker ($*USAGE
                 // prints such a named param without brackets; issue #17)
-                if (trait == "is" && isIdent("required")) p.required = true;
+                if (trait == "is" && isIdent("required")) { p.required = true; builtinTrait = true; }
+                std::string traitName = isKind(Tok::Ident) ? cur().text : std::string();
                 advance(); // the trait word (rw/copy/encoded/…)
+                if (trait == "is" && !builtinTrait && !traitName.empty())
+                    recordParamTrait(p, traitName);
                 // a parenthesised trait argument: `is encoded('utf8')` — skip it
-                if (isKind(Tok::LParen)) {
+                else if (isKind(Tok::LParen)) {
                     int d = 0;
                     do { if (isKind(Tok::LParen)) d++; else if (isKind(Tok::RParen)) d--; advance(); } while (d > 0 && !isKind(Tok::End));
                 }

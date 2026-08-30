@@ -3110,6 +3110,17 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
 
     // Code introspection / currying
     if (inv.t == VT::Code && inv.code()) {
+        // A role mixed into a routine keeps the routine's OWN identity (see
+        // mixinValue), so nothing ever renamed its type and `.WHAT` still
+        // answered the bare `Sub`. Rakudo answers the mixin type, and
+        // Getopt::Long's `is getopt` trait tests exactly that: `&main1.WHAT
+        // !=== Sub`, and a `.^name` that contains the role's name.
+        if (m == "WHAT" && inv.code()->mixins.p && !inv.code()->mixins.p->roles.empty()) {
+            std::string suffix;
+            for (auto& rn : inv.code()->mixins.p->roles)
+                suffix += (suffix.empty() ? "" : ",") + rn;
+            return Value::typeObj(inv.typeName() + "+{" + suffix + "}");
+        }
         // an accessor of a role mixed into this routine in place (see mixinValue):
         // `$method.precedence` after `$method does Constraint($p)`
         if (inv.code()->mixins.p && !inv.code()->mixins.p->attrs.empty() && args.empty()) {
@@ -4201,6 +4212,14 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             if (!ev && global_) ev = global_->find(inv.s);
             if (ev && ev->t == VT::Array && !ev->enumType.empty() && ev->enumName.empty())
                 return Value::typeObj("Metamodel::EnumHOW");
+        }
+        // …and a COERCION type object (`Foo(Str)`) answers a CoercionHOW, which
+        // is how a module tells a coercion apart from a plain type before
+        // asking for its two halves (Getopt::Long's coercion-converter branch).
+        if (inv.t == VT::Type) {
+            size_t o = inv.s.find('(');
+            if (o != std::string::npos && o > 0 && inv.s.back() == ')')
+                return Value::typeObj("Metamodel::CoercionHOW");
         }
         // A USER class gets ONE persistent metaobject, so `T.HOW does SomeRole`
         // mixins stick (Method::Also's AliasableClassHOW). Its class is named

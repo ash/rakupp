@@ -3227,12 +3227,56 @@ bool Interpreter::hoistSubs(const std::vector<StmtPtr>& stmts) {
 
 // Run a hoisted sub's user `is` traits at its textual position (the sub itself
 // was registered at scope entry; the trait handler may use `my`s declared above).
+// A parameter's own user traits: `sub f(:$foo is option("=s%"))` calls
+// trait_mod:<is>(Parameter, :option("=s%")). The Parameter meta-object comes out
+// of the signature itself and is cached on the Param, so whatever the trait
+// mixes into it is what every later `.signature.params` answers with — which is
+// how Getopt::Long reads an option's spec back off a sub it was handed.
+void Interpreter::applyParamTraits(const std::vector<Param>& params, const Value& fn) {
+    bool any = false;
+    for (auto& pp : params) if (!pp.userTraits.empty()) { any = true; break; }
+    if (!any || fn.t != VT::Code || !fn.code()) return;
+    Value* tm = tctx_.cur->find("&trait_mod:<is>");
+    if (!tm || tm->t != VT::Code) return;
+    // …from the candidate whose signature IS this declaration's: a multi's name
+    // answers with the dispatcher, and the dispatcher's own params are the
+    // proto's, not the candidate's.
+    const Callable* c = fn.code();
+    if (c->params != &params)
+        for (auto& cand : c->candidates)
+            if (cand.t == VT::Code && cand.code() && cand.code()->params == &params) {
+                c = cand.code(); break;
+            }
+    if (c->params != &params) return;
+    Value sig = makeSignature(c);
+    if (!sig.hash()) return;
+    Value& pl = (*sig.hash())["params"];
+    if (pl.t != VT::Array || !pl.arr()) return;
+    size_t i = 0;
+    for (auto& pp : params) {
+        if (i >= pl.arr()->size()) break;
+        Value pm = (*pl.arr())[i++];
+        for (auto& ut : pp.userTraits) {
+            Value tv = ut.second ? eval(ut.second.get()) : Value::boolean(true);
+            Value pr = Value::pair(ut.first, tv); pr.namedArg = true;
+            ValueList ta; ta.push_back(pm); ta.push_back(pr);
+            try { callCallable(*tm, ta); }
+            catch (RakuError& te) {
+                // no candidate = not a user trait at all; anything else is the
+                // trait body's own error and belongs to the program
+                if (te.message.rfind("Cannot resolve caller", 0) != 0) throw;
+            }
+        }
+    }
+}
+
 void Interpreter::applySubTraits(SubDecl* sd) {
+    Value* fn = tctx_.cur->find("&" + sd->name);
+    if (!fn) return;
+    applyParamTraits(sd->params, *fn);
     if (sd->traits.empty()) return;
     Value* tm = tctx_.cur->find("&trait_mod:<is>");
     if (!tm || tm->t != VT::Code) return;
-    Value* fn = tctx_.cur->find("&" + sd->name);
-    if (!fn) return;
     for (auto& st : sd->traits) {
         Value arg = st.arg ? eval(st.arg.get()) : Value::boolean(true);
         Value p = Value::pair(st.name, arg); p.namedArg = true;
@@ -7309,6 +7353,10 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     }
                 }
             }
+            // …and the PARAMETERS' own traits, for a sub that is NOT hoisted
+            // (an anonymous or nested one); a hoisted named sub gets them from
+            // applySubTraits, at its textual position.
+            if (!hoistingSubs_) applyParamTraits(sd->params, code);
             // `(sig1) | (sig2)` is ONE routine with alternative signatures — its
             // candidates share a single `state`-variable store.
             if (!sd->altParams.empty()) {
@@ -9445,6 +9493,11 @@ Value Interpreter::makeClosure(BlockExpr* be) {
     code.code()->hadSig = be->isPointy;
     code.code()->retType = be->retType; // `-> $x --> Int {…}` / `sub (--> Int) {…}`
     if (be->params.empty()) code.code()->placeholders = computePlaceholders(be->body);
+    // An anonymous `sub (…) {…}` or `-> … {…}` carries parameter traits just as a
+    // declared sub does, and reaches none of the declaration paths: the trait on
+    // `sub (Str :$foo is option(*.flip)) {}` — a converter handed to Getopt::Long
+    // inline — has only this one place to run.
+    applyParamTraits(be->params, code);
     return code;
 }
 
@@ -10285,6 +10338,13 @@ static bool typeNameConforms(const std::string& lnIn, const std::string& rn,
 
 static bool typeMatchesArg(const Value& arg, const std::string& type) {
     if (type.empty() || type == "Any" || type == "Mu") return true;
+    // A container is TRANSPARENT to a type test: `$x ~~ Positional` asks what the
+    // container holds, never what the container is. Without this a bound slot
+    // answered as a Hash — and so as Associative — whatever it actually held.
+    if (arg.t == VT::Hash && arg.hashKind == "Proxy" && arg.hash() && g_deproxy) {
+        Value held = g_deproxy(arg);
+        if (!(held.t == VT::Hash && held.hashKind == "Proxy")) return typeMatchesArg(held, type);
+    }
     // a role mixed into a ROUTINE in place (see mixinValue): `$method ~~ Constraint`.
     // Matched by the name's TAIL as well as in full, exactly as the attribute case
     // below: the mixin records whatever name the trait_mod had in scope (the module
@@ -10304,13 +10364,15 @@ static bool typeMatchesArg(const Value& arg, const std::string& type) {
     // mixing the roles in, so answer the role checks from those keys. Matched
     // by the name's TAIL — JSON::Unmarshal spells them lexically, other code
     // fully qualified.
-    if (arg.t == VT::Hash && arg.hashKind == "Attribute" && arg.hash()) {
+    // Roles a user trait_mod actually mixed in (`$a does MetaAttribute::Customary`,
+    // `$param does Formatted::Named(…)`) — asked for BOTH meta-object kinds, and
+    // before the name-matched fallbacks, so a module that spells its own traits
+    // wins over them. A miss falls through to the ordinary matching below: this
+    // answers what the roles say, it does not decide what the object is.
+    if (arg.t == VT::Hash && (arg.hashKind == "Attribute" || arg.hashKind == "Parameter") &&
+        arg.hash()) {
         auto tail = type.rfind("::") == std::string::npos
                   ? type : type.substr(type.rfind("::") + 2);
-        auto has = [&](const char* k) { return arg.hash()->count(k) != 0; };
-        // Roles a user trait_mod actually mixed in (`$a does MetaAttribute::Customary`)
-        // — checked FIRST, so a module that spells its own traits wins over the
-        // name-matched fallbacks below.
         auto rit = arg.hash()->find(ATTR_ROLES_KEY);
         if (rit != arg.hash()->end() && rit->second.t == VT::Array && rit->second.arr())
             for (auto& rn : *rit->second.arr()) {
@@ -10319,6 +10381,11 @@ static bool typeMatchesArg(const Value& arg, const std::string& type) {
                 auto rtail = r.rfind("::") == std::string::npos ? r : r.substr(r.rfind("::") + 2);
                 if (rtail == tail) return true;
             }
+    }
+    if (arg.t == VT::Hash && arg.hashKind == "Attribute" && arg.hash()) {
+        auto tail = type.rfind("::") == std::string::npos
+                  ? type : type.substr(type.rfind("::") + 2);
+        auto has = [&](const char* k) { return arg.hash()->count(k) != 0; };
         if (tail == "NamedAttribute") return has("trait:json-name");
         if (tail == "CustomUnmarshaller")     return has("trait:unmarshalled-by");
         if (tail == "CustomUnmarshallerCode") return has("trait:unmarshalled-by") && (*arg.hash())["trait:unmarshalled-by"].t == VT::Code;
@@ -19100,6 +19167,16 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     }
     if (op == "~~" || op == "!~~") {
         bool res;
+        // A CONTAINER smartmatches by what it holds, never by what it is: a
+        // bound slot (`%h{$k} := $x`, or the container a `KEY => my $x` pair
+        // carries) is a Proxy, and a Proxy is a Hash — so `given .value { when
+        // Associative {…} }` used to fire for a bound SCALAR and mistake an
+        // option for a hash-valued one.
+        if (l.t == VT::Hash && l.hashKind == "Proxy" && l.hash() && g_deproxy) {
+            Value held = g_deproxy(l);
+            if (!(held.t == VT::Hash && held.hashKind == "Proxy"))
+                return applyArith(op, held, r);
+        }
         // Whatever on the RHS matches anything (Whatever.ACCEPTS is always True):
         // `when *`, `$x ~~ *`. (~~ never curries — see kNoCurry above.)
         if (r.t == VT::Whatever) return Value::boolean(op == "~~");
@@ -19231,8 +19308,11 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             if (!res && l.t == VT::Object) res = typeMatchesArg(l, r.s);
             // an Attribute meta-object answering the JSON attribute-role checks
             // (`$attr ~~ JSON::Name::NamedAttribute`) — typeMatchesArg owns the
-            // trait-key → role mapping
-            if (!res && l.t == VT::Hash && l.hashKind == "Attribute")
+            // trait-key → role mapping. A Parameter meta-object answers the same
+            // way for a role a parameter trait mixed into it (`$param does
+            // Formatted::Named(…)`, which is how Getopt::Long marks an option).
+            if (!res && l.t == VT::Hash &&
+                (l.hashKind == "Attribute" || l.hashKind == "Parameter"))
                 res = typeMatchesArg(l, r.s);
             // …and a ROUTINE answering for a role a trait_mod mixed into it in
             // place (`$method does Constraint($p)` — Path::Finder's `is constraint`)
@@ -22333,14 +22413,40 @@ Value Interpreter::evalBinary(Binary* b) {
             // (its own answer is by the BARE name, which is not what it just
             // registered when a package prefix is in force — re-resolve either way)
             if (ci == classes_.end()) { materializePendingType(rc->name); ci = resolve(); }
+            // …and the NAMED spelling of the same thing: `$obj does R(:a(9))`
+            // presets the role's attribute `a`. Rakudo takes both, and it is the
+            // form a trait_mod reaches for when the value it has is already in a
+            // variable of that name (`$param does Formatted::Named(:$argument)`
+            // — Getopt::Long's option marker). Evaluating `R(:a(9))` normally
+            // makes an anonymous PARAMETERIZED role instead, so the object came
+            // back matching nothing.
+            bool allPairs = !rc->args.empty();
+            for (auto& a : rc->args) if (a->kind != NK::Pair) { allPairs = false; break; }
+            bool onePositional = rc->args.size() == 1 && ci != classes_.end() &&
+                                 ci->second && ci->second->attrs.size() == 1 &&
+                                 rc->args[0]->kind != NK::Pair;
             if (ci != classes_.end() && ci->second && ci->second->isRole &&
-                rc->args.size() == 1 && ci->second->attrs.size() == 1 &&
-                rc->args[0]->kind != NK::Pair) {
-                presetAttr = ci->second->attrs[0].name;
-                preset = eval(rc->args[0].get());
+                (onePositional || allPairs)) {
+                // (attribute name, value) for each preset the form carries
+                std::vector<std::pair<std::string, Value>> presets;
+                if (onePositional)
+                    presets.emplace_back(ci->second->attrs[0].name, eval(rc->args[0].get()));
+                else
+                    for (auto& a : rc->args) {
+                        auto* pe = static_cast<PairExpr*>(a.get());
+                        std::string key = pe->keyExpr ? eval(pe->keyExpr.get()).toStr() : pe->key;
+                        if (key.empty()) continue;
+                        presets.emplace_back(key, pe->value ? eval(pe->value.get())
+                                                            : Value::boolean(true));
+                    }
                 Value res = mixinValue(std::move(base), Value::typeObj(rn), op == "but");
-                if (res.t == VT::Object && res.obj()) res.obj()->attrs[presetAttr] = preset;
-                else if (res.t == VT::Code && res.code()) res.code()->mixinsRW().attrs[presetAttr] = preset;
+                for (auto& pr : presets) {
+                    if (res.t == VT::Object && res.obj()) res.obj()->attrs[pr.first] = pr.second;
+                    else if (res.t == VT::Code && res.code()) res.code()->mixinsRW().attrs[pr.first] = pr.second;
+                    // a meta-object (Attribute/Parameter) keeps the role's state
+                    // as plain keys of its own map — see mixinValue
+                    else if (res.t == VT::Hash && res.hash()) (*res.hash())[pr.first] = pr.second;
+                }
                 if (op == "does" && res.t == VT::Object && res.obj() && res.obj()->hasBoxed) {
                     NK k = b->lhs->kind;
                     if (k == NK::VarExpr || k == NK::Index || k == NK::MethodCall)
@@ -22942,7 +23048,13 @@ Value Interpreter::mixinValue(Value base, const Value& rhs, bool copy) {
     // does, would leave the trait's work in a value nobody can reach. This is the
     // shape every attribute trait_mod uses: `$a does MetaAttribute::Customary;
     // $a.where = 'unknown'` (META6), and the JSON:: ecosystem's traits likewise.
-    if (!copy && base.t == VT::Hash && base.hashKind == "Attribute" && base.hash()) {
+    // A Parameter meta-object is the same shape and needs the same treatment:
+    // `$param does Formatted::Named(:$argument)` inside a `trait_mod:<is>` has
+    // to land in the map the signature hands out, or `.signature.params` answers
+    // a Parameter that has forgotten its own trait (Getopt::Long reads every
+    // option spec back that way).
+    if (!copy && base.t == VT::Hash &&
+        (base.hashKind == "Attribute" || base.hashKind == "Parameter") && base.hash()) {
         Value& roles = (*base.hash())[ATTR_ROLES_KEY];
         if (roles.t != VT::Array || !roles.arr()) { roles = Value::array(); roles.isList = true; }
         for (auto& rn : roleNames) roles.arr()->push_back(Value::str(rn));
@@ -26482,7 +26594,13 @@ Value Interpreter::evalIndex(Index* idx) {
         ValueList f = base.flatten();
         if (i >= 0 && i < (long long)f.size()) return f[i];
     } else if (base.t == VT::Pair || base.t == VT::Int || base.t == VT::Num ||
-               base.t == VT::Rat || base.t == VT::Bool || base.t == VT::Complex) {
+               base.t == VT::Rat || base.t == VT::Bool || base.t == VT::Complex ||
+               // …and so is a REGEX or a plain OBJECT: `/ ^ (\w+) /[0]` is that
+               // very regex, which is how Getopt::Long spells the match it wants
+               // (`.key ~~ / ^ (\w+) /[0]`). Answering Any there made the
+               // smartmatch `$key ~~ Any` — True — and the option's name became
+               // "True". An object with its own AT-POS never reaches here.
+               base.t == VT::Regex || base.t == VT::Object) {
         // a scalar is a one-item list: $b.grabpairs[0] indexes the single Pair.
         //
         // Rakudo THROWS X::OutOfRange for any other index (`42[2]`), and the Str
@@ -28063,9 +28181,29 @@ Value Interpreter::eval(Expr* e) {
         }
         case NK::Pair: {
             auto* p = static_cast<PairExpr*>(e);
+            // `KEY => my $x` — the pair carries the CONTAINER, not a copy of its
+            // value, so binding the pair's value somewhere else and assigning
+            // through it writes back to `$x`. That is the out-parameter idiom:
+            // `get-options-from(@args, 'foo' => my $foo)` hands Getopt::Long a
+            // place to put the parsed option. Rakudo preserves the container for
+            // ANY variable on the right of `=>`; only the DECLARATION form is
+            // done here, which is where it carries the meaning — a plain
+            // `k => $x` keeps copying, so nothing that works today changes.
+            auto pairValueOf = [&](Expr* ve) -> Value {
+                if (ve && ve->kind == NK::VarExpr) {
+                    auto* vx = static_cast<VarExpr*>(ve);
+                    if (vx->declare && vx->name.size() > 1 && vx->name[0] == '$') {
+                        Value declared = evalValueOf(ve);   // runs the declaration
+                        for (std::shared_ptr<Env> en = tctx_.cur; en; en = en->parent)
+                            if (en->local(vx->name)) return makeEnvSlotProxy(en, vx->name);
+                        return declared;
+                    }
+                }
+                return evalValueOf(ve);
+            };
             if (p->keyExpr) {
                 Value kv = eval(p->keyExpr.get());
-                Value pr = Value::pair(kv.toStr(), evalValueOf(p->value.get()));
+                Value pr = Value::pair(kv.toStr(), pairValueOf(p->value.get()));
                 // a non-string key (number, object, match, array, hash, code) is preserved
                 // so `.key` and `.raku` reflect its real type (e.g. `1 => 2`, not `"1" => 2`)
                 if (kv.t == VT::Int || kv.t == VT::Num || kv.t == VT::Rat || kv.t == VT::Bool ||
@@ -28078,7 +28216,7 @@ Value Interpreter::eval(Expr* e) {
                     kv.t == VT::Range) pr.pairKeyM() = std::make_shared<Value>(kv);
                 return pr;
             }
-            return Value::pair(p->key, evalValueOf(p->value.get())); // `:err(/pat/)` → Regex value
+            return Value::pair(p->key, pairValueOf(p->value.get())); // `:err(/pat/)` → Regex value
         }
         case NK::BlockExpr: {
             auto* be = static_cast<BlockExpr*>(e);

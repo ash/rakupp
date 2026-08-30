@@ -252,6 +252,7 @@ private:
     // sub-signature, then is/where traits.
     void parseSigillessTail(Param& p);
     std::vector<Param> parseSignature(Tok closeTok = Tok::RParen); // after '(' … ')' (or '[' … ']' for a sub-signature)
+    void recordParamTrait(Param& p, const std::string& name); // `is option("=s%")` — a user parameter trait
     std::vector<Param> parsePointyParams();   // -> $a, \b { ... }  (stops at '{')
 
     // expressions

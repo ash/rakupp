@@ -241,3 +241,79 @@ declarator (EXPORTHOW) gates its four dependents; Parameterizable's
 `^parameterize` protocol gates BinaryHeap → Graph → LLM::Graph; the
 `does`-mixin-on-values feature gates Getopt::Long's tail and its 55
 dependents.
+
+## Sitting five (2026-08-30): the Getopt::Long gauntlet, closed
+
+The frontier named directly above. **Getopt::Long's suite is green**, so the
+single biggest dep-blocker in the population — 55 dists name it — no longer
+blocks anything. It took six fixes, and only the first was the one the
+frontier note predicted.
+
+**A parameter's user traits never ran at all.** `sub f(:$foo is
+option("=s%"))` should call `trait_mod:<is>(Parameter, :option("=s%"))`; the
+parser consumed the trait word and its parenthesised argument and threw both
+away, so no handler ever saw them — the whole `is option` / `is getopt`
+surface the module reads its option specs through was inert. Parameters now
+carry `userTraits` exactly as attributes do, and the traits are dispatched
+where the routine is declared. Three things had to hold for the mixin the
+handler applies to survive: the Parameter meta-object is built ONCE and
+cached on the Param (`.signature.params` renders a fresh hash from the struct
+every time it is asked, so a copy would forget the trait one line later); a
+`does` on a Parameter meta-object mixes in PLACE, as the Attribute branch
+already did; and both the role check and the accessor fall back to the
+mixed-in role's keys, again as attributes do. Anonymous subs and pointy
+blocks run them too — `sub (Str :$foo is option(*.flip)) {}` is handed to the
+module inline and reaches none of the declaration paths.
+
+**`does R(:name(value))` made an anonymous parameterized role.** The
+positional preset (`does R(7)`) was honoured and the named spelling was not,
+so `$param does Formatted::Named(:$argument)` — the form a trait_mod reaches
+for when the value is already in a variable of that name — came back matching
+nothing. Both spellings now preset the role's attributes, on an object, on a
+routine, and on a meta-object.
+
+**A role mixed into a ROUTINE left its type alone.** The mixin is recorded on
+the Callable so the object keeps its identity (Path::Finder needs that), but
+nothing renamed the type: `.WHAT` still answered the bare `Sub` while `~~` and
+the accessors said otherwise. `&main1.WHAT !=== Sub` and a `.^name` carrying
+the role's name are two of the suite's assertions.
+
+**Coercion types answered nothing.** `Foo(Str) :$foo` reported a bare `Foo`,
+so a module could not tell a coercion from a plain type. A coercion parameter
+now reports `Foo(Str)`, its `.HOW` is a `Metamodel::CoercionHOW`, and
+`^constraint_type` / `^target_type` / `^coerce` answer — the last running the
+target's own `COERCE`.
+
+**`KEY => my $x` now carries the CONTAINER.** The out-parameter idiom:
+`get-options-from(@args, 'foo' => my $foo)` hands the module a place to put
+the parsed option, and binding the pair's value into a hash then assigning
+through it has to reach `$foo`. Scope, stated plainly: Rakudo preserves the
+container for ANY variable on the right of `=>`; this does it for the
+DECLARATION form only, which is where the idiom lives — `k => $x` still
+copies. Two consequences fell out and are fixed with it: a container is
+transparent to a type test (a bound scalar is not `Associative`, which is
+what `given .value { when Associative {…} }` was reading it as), and it gists
+as what it holds rather than as its own FETCH/STORE pair, which `.raku`
+already did.
+
+**And the one that was actually costing the last two assertions:** a
+non-Positional value is its own single element, `42[0] === 42`. That held for
+Int and Str and not for a Regex or a plain object, so `/ ^ (\w+) /[0]` — how
+the module spells the match it wants — answered `Any`, the smartmatch became
+`$key ~~ Any`, and every option was named "True". Regex and objects
+self-index now; an object with its own `AT-POS` never reaches that arm.
+
+**Gates.** t/run 589/589 (the case is
+`t/regression/getopt-long-parameter-traits.raku`, and it passes byte-for-byte
+under Rakudo 2026.08 too); six roast slices (S02/S04/S05/S06/S12/S32)
+**file-identical** against a clean-HEAD baseline build — 306 fully-passing
+files before and after, no losses and no gains; perf guard neutral (every
+kernel within noise, several a shade faster).
+
+**Measured effect on the blocked cohort.** All 55 dists that named
+Getopt::Long, re-run against a scratch store: **3 convert to pass**
+(Base64::Native, RKDS, App::Prove6) and the other 52 now RUN their own suites
+for the first time — the one-rung-up shape this campaign keeps meeting, and
+52 fresh first-errors for the next triage to cluster. Four conversions in
+all, counting Getopt::Long itself. The population total is not restated here:
+it was last measured on a different engine, and only a re-sweep can move it.

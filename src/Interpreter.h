@@ -1013,6 +1013,7 @@ public:
         }
     }; // pre-declare `my` vars buried in expressions (ternary/nqp branches) — Raku block scoping
     void applySubTraits(SubDecl* sd); // run user `is` traits of a hoisted sub at its textual position
+    void applyParamTraits(const std::vector<Param>& params, const Value& fn); // …and a signature's PARAMETER traits
     // subset NAME of BASE where EXPR — refinement types for dispatch and ~~
     // langRev: the revision the subset was DECLARED under. Rakudo's SubsetHOW
     // records it (that is what `Even.^ver` reports, "6.d" or "6.e"), and it is

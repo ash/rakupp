@@ -894,6 +894,11 @@ struct ClassAttr {
 // The Attribute meta-object for one declared attribute, built once and cached on
 // the ClassAttr (MethodCallPart2.cpp) — user `is` traits mix roles into it.
 Value attributeMetaObject(ClassAttr& a, const std::string& ownerName);
+
+// The box Param::metaBox points at (Ast.h forward-declares it): one Parameter
+// meta-object, kept alive by the parameter it describes.
+struct ParamMetaBox { Value v; };
+
 // Where `$attr does SomeRole` records the roles a trait mixed in. A \x01 prefix
 // keeps it out of the way of any real key: role attributes live in the same map
 // under their plain names, which is what makes `$a.where` work afterwards.

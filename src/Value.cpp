@@ -1,6 +1,7 @@
 #include "CNumeric.h"
 #include "Value.h"
 #include "Interpreter.h" // RakuError (zero-denominator Rat Str-coercion throws)
+#include "BuiltinsShared.h" // g_deproxy — a container gists as what it holds
 
 #ifdef RAKUPP_PTR_CENSUS
 #include <atomic>
@@ -527,6 +528,13 @@ std::string Value::toStr() const {
 }
 
 std::string Value::gist() const {
+    // A CONTAINER gists as what it HOLDS — `.raku` already does (rakuRepr), and
+    // without the same here a bound slot rendered as its own FETCH/STORE pair:
+    // `say ('k' => my $v)` printed the closures instead of `k => (Any)`.
+    if (t == VT::Hash && hashKind == "Proxy" && hash() && g_deproxy) {
+        Value held = g_deproxy(*this);
+        if (!(held.t == VT::Hash && held.hashKind == "Proxy")) return held.gist();
+    }
     forceLazy(*this);   // …and gists as them too: `say gather { take 1 }` is (1)
     // an ENDLESS sequence must not pass its cached prefix off as the whole
     // list: a Seq gists as Rakudo's "(...)", a lazy Array shows what is
