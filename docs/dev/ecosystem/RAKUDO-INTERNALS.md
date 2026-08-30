@@ -89,3 +89,22 @@ hazard is real:
   public doorway is **the JSON::Native module**; `Rakupp::Internals::JSON`
   is for toolchain code that cannot have dependencies (install.raku), and
   nothing else.
+
+## The narrow case: private surface reached through the MOP
+
+`Rakudo::Internals` is the *named* version of this problem. There is an
+unnamed one: a module that needs a language feature Raku does not document,
+and reaches it through the meta-object protocol instead of a namespace.
+[BINARYHEAP.md](BINARYHEAP.md) is the worked example — `Parameterizable`
+declares `method ^parameterize` on a class (undocumented Rakudo, by its own
+POD's admission) because roles cannot autovivify and classes cannot be
+parameterized, and `BinaryHeap` builds on it with `BIND-POS`, `Mu.CREATE`
+and an `is rw` invocant.
+
+Same diagnosis, different scale. The census above is nine of the top 200
+including the installer, so removal is not realistic and honesty is the
+policy. That chain is *one* dist deep in each link and its only consumer
+replaced it in Graph 0.1.3 — so the policy there is narrower: answer the
+MOP hook generically (which costs 0.2% and adds no documented-language
+surface), fix the engine faults it exposed on their own merits, and tune
+for nothing.
