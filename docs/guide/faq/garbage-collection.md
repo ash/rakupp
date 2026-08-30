@@ -15,24 +15,63 @@ Figures below were measured on macOS arm64 (M-series), 2026-08-30, rakupp
 ## What refcounting buys
 
 **A small floor.** Nothing is reserved for a heap, so the baseline is the
-program, not the collector:
+program, not the collector. The program here is a file containing one
+statement, `say 1`, measured whole-process from launch to exit:
 
-| `say 1` | peak footprint | max RSS |
+```bash
+/usr/bin/time -l rakupp floor.raku          # and the same line for `raku`
+```
+
+| running `say 1` | peak footprint | max RSS |
 |---|---:|---:|
-| rakupp | 1.5 MB | 4.2 MB |
-| Rakudo | 91.1 MB | 113.4 MB |
+| rakupp | 1.4 MB | 4.2 MB |
+| Rakudo | 91.5 MB | 125.2 MB |
+
+Both columns because the two metrics count differently: *peak memory footprint*
+is what macOS charges the process, *maximum resident set size* also counts the
+clean pages mapped in from the binary and the shared libraries. Each wobbles a
+few MB between runs — Rakudo's RSS came out anywhere from 113 to 125 MB — and
+the gap does not.
 
 **No stop-the-world phase.** Freeing happens inline, at the drop, on the thread
 that dropped it. There is no moment when the program is paused so a collector
-can walk the heap. The same allocation-heavy loop (200,000 iterations, each
-building a hash and an array from it), counting iterations that took longer
-than a millisecond:
+can walk the heap. This program allocates steadily, times every iteration, and
+counts the slow ones:
 
-| run | rakupp: >1 ms / >5 ms / worst | Rakudo: >1 ms / >5 ms / worst |
+```raku
+my ($over1, $over5, $worst) = 0, 0, 0;
+my $t = now;
+for ^200_000 -> $i {
+    my %h = a => $i, b => $i * 2, c => "s$i";
+    my @a = %h.values;
+    my $dt = now - $t;
+    if $i > 1_000 {                        # past warm-up
+        $over1++ if $dt > 0.001;
+        $over5++ if $dt > 0.005;
+        $worst  = $dt if $dt > $worst;
+    }
+    $t = now;
+}
+printf "over 1 ms: %d, over 5 ms: %d, worst %.1f ms\n", $over1, $over5, $worst * 1000;
+```
+
+Six consecutive runs of it per engine, on an otherwise idle machine:
+
+| run | rakupp — >1 ms / >5 ms / worst | Rakudo — >1 ms / >5 ms / worst |
 |---|---|---|
-| 1 | 0 / 0 / 0.9 ms | 23 / 14 / 13.4 ms |
-| 2 | 6 / 0 / 1.7 ms | 28 / 17 / 45.1 ms |
-| 3 | 0 / 0 / 0.4 ms | 23 / 15 / 129.0 ms |
+| 1 | 0 / 0 / 0.4 ms | 19 / 13 / 21.0 ms |
+| 2 | 0 / 0 / 0.6 ms | 20 / 15 / 35.2 ms |
+| 3 | 0 / 0 / 0.5 ms | 19 / 15 / 18.1 ms |
+| 4 | 0 / 0 / 0.5 ms | 23 / 18 / 10.9 ms |
+| 5 | 3 / 0 / 1.8 ms | 17 / 13 / 18.6 ms |
+| 6 | 0 / 0 / 0.7 ms | 19 / 12 / 13.8 ms |
+
+The middle column is the one to read, and machine load is the reason to be
+careful with the other two: run the same program while a compile is going and
+rakupp's row moves too — one such run gave 30 / 8 / 30.1 ms. What does not move
+is Rakudo's twelve-to-eighteen iterations over 5 ms in *every* run, idle or not.
+Those are the collector; rakupp's occasional millisecond is the operating
+system.
 
 If you are writing something latency-sensitive — a request handler, an audio
 callback, a game loop — that is the property you are buying.
@@ -40,14 +79,24 @@ callback, a game loop — that is the property you are buying.
 ## What it costs
 
 **The free is on your clock.** A collector defers the work; refcounting bills
-it at the drop, and a big drop is a big bill. Building a 2,000,000-element
-array of two-element arrays, then releasing it with `@big = ()`:
+it at the drop, and a big drop is a big bill:
+
+```raku
+my $t0 = now;
+my @big = (^2_000_000).map({ [$_, $_ * 2] }).Array;
+my $built = now - $t0;
+my $t1 = now;
+@big = ();                                  # the last reference goes here
+my $freed = now - $t1;
+printf "build %.0f ms, free %.0f ms\n", $built * 1000, $freed * 1000;
+```
 
 | | build | free |
 |---|---:|---:|
-| rakupp | 4514 ms | **544 ms** |
-| Rakudo | 16526 ms | **2 ms** |
+| rakupp | 3357 ms | **485 ms** |
+| Rakudo | 17205 ms | **2 ms** |
 
+The build column moves by a second between runs; the free column does not.
 Rakudo's 2 ms is not free memory, it is postponed work — but if a half-second
 lands in the wrong place, move the drop somewhere it does not matter, or let
 the structure die with the process.
@@ -69,17 +118,18 @@ sub cyc() {
 }
 ```
 
-Calling that in a loop, against the same routine with the last line removed:
+Peak footprint of `for ^N { cyc() }` — the block form of `for`, so the loop
+itself allocates nothing — against the same routine with the last line removed:
 
 | iterations | no cycle | cycle | Rakudo, cycle |
 |---:|---:|---:|---:|
-| 100,000 | 2 MB | 857 MB | 164 MB |
+| 100,000 | 2 MB | 857 MB | 163 MB |
 | 400,000 | 2 MB | 3423 MB | 189 MB |
 
 About 8.6 KB per cycle, growing forever. Rakudo's collector finds them, which
 is exactly what a collector is for.
 
-The same applies to a container that contains itself:
+The same loop, with the body replaced by a container that contains itself:
 
 | shape | leaked per iteration |
 |---|---:|
