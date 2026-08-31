@@ -4,7 +4,7 @@ A from-scratch C++17 interpreter for the Raku language, tested against the
 [Roast](https://github.com/Raku/roast) suite. This document inventories what
 works today, grouped by theme. **~** marks partial support; gaps are noted per section.
 
-See [REFERENCE.md](REFERENCE.md) for an exhaustive lookup sheet (every operator, subroutine, and method with a verified example), [COOKBOOK.md](COOKBOOK.md) for a cookbook of runnable snippets (each verified against `rakupp`), [examples/](../../examples) for complete example programs, and [showcase/](../../showcase) for mid-size showcase programs.
+See [REFERENCE.md](REFERENCE.md) for an exhaustive lookup sheet (every operator, subroutine, and method with a verified example), [RECIPES.md](RECIPES.md) for recipes of runnable snippets (each verified against `rakupp`), [examples/](../../examples) for complete example programs, and [showcase/](../../showcase) for mid-size showcase programs.
 
 Roast standing: measured per individual test, **~90% of all declared tests pass** (198,939 / ~218,773, counting tests in files that abort before running); on the stricter file bar, **643 / 1,464 fully pass (~44%)** (685 partial, 121 no-TAP, 15 timeout). See [COUNTING.md](../status/COUNTING.md) for how these are defined. (The declared denominator grows as parse fixes land: files that previously died before announcing a plan now declare their real, often larger, dynamic plans.)
 

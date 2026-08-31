@@ -2,7 +2,7 @@
 
 An exhaustive, example-driven reference for the Raku dialect that **`rakupp`
 actually implements**. Unlike [FEATURES.md](FEATURES.md) (thematic inventory) and
-[COOKBOOK.md](COOKBOOK.md) (task recipes), this document is organised as a *lookup
+[RECIPES.md](RECIPES.md) (task recipes), this document is organised as a *lookup
 sheet*: every operator, built-in subroutine, method, and syntactic form, each with
 a signature and a runnable example.
 
@@ -1136,4 +1136,4 @@ wrap write write-bits write-ubits wx x yada year yyyy-mm-dd z zip
 *Generated against the `rakupp` build in this repository; every `# →` output was
 produced by running the snippet. If a feature regresses or a caveat is fixed,
 update the relevant section — see [FEATURES.md](FEATURES.md) and
-[COOKBOOK.md](COOKBOOK.md) for the companion docs.*
+[RECIPES.md](RECIPES.md) for the companion docs.*

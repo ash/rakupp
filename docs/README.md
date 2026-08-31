@@ -1,11 +1,12 @@
 # docs/
 
 All Raku++ documentation. The [top-level README](../README.md) is the entry
-point; everything else lives here, in four places:
+point; everything else lives here, in six places:
 
 | Directory | What is in it |
 |---|---|
 | **[guide/](guide/)** | the manual — how to *use* Raku++ |
+| **[cookbook/](cookbook/)** | whole tasks worked end to end, with the programs beside the page |
 | **[internals/](internals/)** | how it works inside |
 | **[book/](book/)** | *Raku++ Internals* — the same ground at book length, as a PDF |
 | **[status/](status/)** | how good it is: conformance, speed, roadmap |
@@ -26,7 +27,7 @@ point; everything else lives here, in four places:
 
 - **[guide/FEATURES.md](guide/FEATURES.md)** — inventory of supported language features, by theme.
 - **[guide/REFERENCE.md](guide/REFERENCE.md)** — the exhaustive, example-driven lookup sheet: every operator, subroutine and method with a verified example.
-- **[guide/COOKBOOK.md](guide/COOKBOOK.md)** — a cookbook of runnable one-liner snippets, each verified against `rakupp`.
+- **[guide/RECIPES.md](guide/RECIPES.md)** — recipes: short, runnable one-liner snippets, each verified against `rakupp`.
 
 ### Topics
 
@@ -52,6 +53,19 @@ point; everything else lives here, in four places:
 - **[guide/CACHING.md](guide/CACHING.md)** — the precompiled parse: opt-in caching of parsed ASTs, with two switches (`--precomp-modules`, `--precomp-files`) because they are worth measurably different amounts. What is stored (the AST, not bytecode), where it lives, exactly what invalidates an entry, and how it compares with Rakudo's `.precomp` and Python's `__pycache__`.
 - **[guide/MEMORY.md](guide/MEMORY.md)** — memory demands and limits: reserved vs. resident, stack sizes and measured recursion depths per mode (interpreter / `--exe` / wasm), and the data-side guardrails.
 - **[guide/INF.md](guide/INF.md)** — what an endless list can still answer: why `[+] 1..Inf` is `Inf`, `[*] ^Inf` is `0` and `[~] 1..Inf` is an error, the one rule behind all three, and the two places a prefix is still walked.
+
+---
+
+## cookbook/ — whole tasks, worked end to end
+
+One page per task, each built around programs that run — the files sit beside
+the page, so a recipe can be cloned rather than copied out of prose. Longer
+than [guide/RECIPES.md](guide/RECIPES.md), which is one-liners, and than
+[guide/faq/](guide/faq/), which is a paragraph and a caveat.
+
+- **[cookbook/databases.md](cookbook/databases.md)** — reading and writing a table with DBIish, the same program against SQLite, MySQL and PostgreSQL: the two things that differ between the engines, the placeholder that does not, and the five traps (`:database<$file>` silently not interpolating, `$sth.rows` answering 0 for a SELECT on SQLite, values interpolated into SQL, an architecture mismatch between interpreter and client library, and a driver whose missing library is named only on the second line).
+
+Mirrored at [raku.online/cookbook/](https://raku.online/cookbook/).
 
 ---
 

@@ -451,4 +451,4 @@ binary (`--bundle`, `--aot`, or native `--exe`); see the top-level
 [README](../README.md) and [GUIDE.md](../docs/guide/GUIDE.md) for how that works and which
 constructs the native path supports today. For a broader, snippet-sized tour of
 the language — short `-e` one-liners rather than whole programs — see
-[COOKBOOK.md](../docs/guide/COOKBOOK.md).
+[RECIPES.md](../docs/guide/RECIPES.md).

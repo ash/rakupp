@@ -262,8 +262,11 @@ the shape of it:
 
 - **[docs/guide/](docs/guide/)** — the manual: [FEATURES.md](docs/guide/FEATURES.md),
   the [REFERENCE.md](docs/guide/REFERENCE.md) lookup sheet, a
-  [COOKBOOK.md](docs/guide/COOKBOOK.md), the [faq/](docs/guide/faq/), modules,
+  [RECIPES.md](docs/guide/RECIPES.md), the [faq/](docs/guide/faq/), modules,
   Unicode, async, networking, NativeCall, embedding, the CLI.
+- **[docs/cookbook/](docs/cookbook/)** — whole tasks worked end to end, the
+  programs beside the page. Mirrored at
+  [raku.online/cookbook/](https://raku.online/cookbook/).
 - **[docs/internals/](docs/internals/)** — how it works inside:
   [ARCHITECTURE.md](docs/internals/ARCHITECTURE.md), parsing, the runtime
   model, the optimizer — and the 320-page book *Raku++ Internals*

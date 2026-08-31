@@ -3,7 +3,7 @@
 Short, task-shaped answers to questions people actually ask — "how do I …",
 "why does this print twice", "does Rakudo do the same".
 
-These are not a tutorial and not a reference. [COOKBOOK.md](../COOKBOOK.md) has
+These are not a tutorial and not a reference. [RECIPES.md](../RECIPES.md) has
 runnable one-liners by topic; [REFERENCE.md](../REFERENCE.md) has every operator,
 sub and method. This is for the questions in between, where the answer is a
 paragraph and a caveat rather than a signature.

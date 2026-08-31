@@ -1,6 +1,6 @@
-# Raku++ — Cookbook
+# Raku++ — Recipes
 
-A cookbook companion to [FEATURES.md](FEATURES.md): short, runnable one-liner
+A recipe companion to [FEATURES.md](FEATURES.md): short, runnable one-liner
 snippets. For complete example programs, see [examples/](../../examples); for mid-size
 showcase programs, [showcase/](../../showcase). **Every
 snippet below has been run on `rakupp` and produces the output shown** (`# → …`).
