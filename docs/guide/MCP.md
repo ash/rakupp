@@ -52,6 +52,10 @@ or per-project, in a `.mcp.json`:
 }
 ```
 
+This repository carries such a `.mcp.json` already, pointing at
+`./build/rakupp` — a checkout that has been built serves its own interpreter to
+the agent working on it, with nothing to register.
+
 Claude Desktop takes the same `command`/`args` shape in its
 `claude_desktop_config.json` under `mcpServers`.
 

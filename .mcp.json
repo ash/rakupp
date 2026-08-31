@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "raku": {
+      "command": "./build/rakupp",
+      "args": ["--mcp"]
+    }
+  }
+}

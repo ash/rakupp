@@ -231,6 +231,9 @@ claude mcp add raku -- /path/to/rakupp --mcp
 }
 ```
 
+This repository carries one, pointing at `./build/rakupp`: a built checkout
+serves its own interpreter to the agent working on it.
+
 Guide: **[MCP.md](docs/guide/MCP.md)**. Gated by `tools/mcp-smoke.raku`,
 which drives the server exactly as a client does, on every push.
 
