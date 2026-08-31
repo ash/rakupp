@@ -1206,11 +1206,14 @@ same 1.7–2× this file warns about elsewhere — and the harness's arch guard,
 which inspects `$RAKUPP` only, would not have caught it. `file` on the mutsu
 binary is now part of the runbook._
 
-_**mutsu is the first engine in this file that is a like-for-like architecture
-match.** Both it and Raku++ are native arm64 here; Rakudo is not. So the
-Raku++-vs-mutsu columns are the only untranslated comparison the file has ever
-carried, and where the two disagree with the Rakudo column about a kernel, the
-mutsu column is the better evidence._
+_**mutsu arrived on the day the whole table became like-for-like.** When the
+mutsu lane was written up it was the only engine here architecture-matched with
+ours — both native arm64, against an x86_64 Rakudo under Rosetta — and this note
+said so. The Rakudo re-measurement later the same day closed that gap for every
+column at once, so the narrower claim is obsolete: **every engine on this page is
+now a native arm64 binary**, and no column carries a translation penalty. The
+build trap that produced the caveat is still live for anyone reproducing this —
+see the arm64 note above — it is the recorded numbers that are now clean._
 
 _**2026-08-31, later the same day: the caveat above is fixable after all, and
 the penalty it assumed was too large.** homebrew/core ships an `arm64_sequoia`
