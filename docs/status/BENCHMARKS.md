@@ -1252,9 +1252,11 @@ binaries whose `--version` reports the previous release (v3.20.0 says 3.7.0,
 v3.0.0 says 2.0.0) — distinct builds by hash and size, only the embedded string
 stale, so the sweep keys rows by tag and never by `--version`.
 
-The per-release numbers live in `src/data/bench-measured.tsv` in the raku-spec
-repo, which the dashboard generator now reads instead of scraping this file at
-each tag. [`tools/rakupp-bench-sweep.sh`](../../tools/rakupp-bench-sweep.sh) reproduces
+The per-release numbers live in `sites/spec/src/data/bench-backfill.tsv` in the
+raku.online repo, where they replaced a 2026-08-21 sitting taken on the Darwin
+25.5 box (one kernel, 22 tags). `gen-dashboard.raku` merges them as an override
+per engine rather than as gap-fill, because a tag's own committed tables were
+measured on whatever machine that release had. [`tools/rakupp-bench-sweep.sh`](../../tools/rakupp-bench-sweep.sh) reproduces
 the whole thing on another machine (see
 [dev/BENCH-SWEEP.md](../dev/BENCH-SWEEP.md), and
 `rakupp-bench-sweep.ps1` for Windows); note that on any x86_64 host MoarVM *has* its JIT, so a Rakudo column
