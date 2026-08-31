@@ -19,12 +19,13 @@ against two other engines:
   the JIT on by default as it ships)
 - **rakudo** — Rakudo interpreting the source (MoarVM + JIT)
 
-**mutsu is new to this file as of the 2026-08-31 sitting**, and it is the only
-lane here that is a like-for-like *architecture* match with ours: both are
-native arm64 binaries on the benchmark machine, where Rakudo runs translated
-(see the Rosetta caveat in the methodology). Where this page compares Raku++
-with mutsu, the comparison is clean; where it compares either with Rakudo, the
-translation penalty is in the Rakudo column.
+**mutsu is new to this file as of the 2026-08-31 sitting**, which is also the
+first sitting in which every engine on this page is a native arm64 binary. The
+Rakudo column was re-measured that day against from-source builds of 2026.06,
+2026.07 and 2026.08; earlier revisions of this file measured it with an x86_64
+Rakudo under Rosetta 2, so **the Rakudo figures here are not comparable with
+those in any earlier revision** — the Raku++ columns are. The methodology says
+what changed and what it cost.
 
 Raku++ has two other standalone-binary modes — `--bundle` and `--aot` — but both
 *tree-walk* the program, so they run at **`interp` speed** and aren't shown
@@ -44,11 +45,11 @@ there.)
 
 - **Startup:** ~2–3 ms on this machine (3.0 ms interpreting, 2.5 ms native) —
   a tiny native binary with no VM to spin up. For one-liners, CLI glue, and
-  small programs it is instant. mutsu starts in 4.4 ms; Rakudo in 152.7. The
+  small programs it is instant. mutsu starts in 4.4 ms; Rakudo in 74.7. The
   two newer engines are on one side of that gap and the reference on the other.
 - **Native (`--exe`) beats Rakudo on fourteen of the fifteen kernels** — from
-  4.9× on `arrayops` to 19.9× on `loopsum`, 30.6× on `hash`, and 57.2× on
-  `strcat`. On the fifteenth it falls 1.1× short. Compiling removes interpreter
+  3.2× on `arrayops` to 17.5× on `loopsum`, 16.7× on `hash`, and 29.7× on
+  `strcat`. On the fifteenth it falls 1.6× short. Compiling removes interpreter
   overhead.
 - **The interpreter beats Rakudo on fourteen of the fifteen too**, `fib` and
   `streq` included since 2026-08-22 — both had been Rakudo's for the whole life
@@ -71,12 +72,12 @@ there.)
   ahead of Rakudo (string `eq`/`lt` compile to inline byte-compares — see
   [internals/DISPATCH.md](../internals/DISPATCH.md) for the dispatch story),
   and 2.9× and 29.4× ahead of mutsu.
-- The `loopsum` loop kernel went from 1.5× to 2.8× when lexical pads landed,
-  and reads **3.2×** now. `hashfill`, one of the two kernels with a Perl 5 twin, reads 3.8×
+- The `loopsum` loop kernel gained most when lexical pads landed; against a
+  native reference it reads **2.8×**. `hashfill`, one of the two kernels with a Perl 5 twin, reads 2.6×
   this sitting — the kernel is the noisiest in the set (allocation-bound), so
   the ladder in "vs Perl 5" below is the row to read, not this one.
 - **String building (`~=`) appends in place** in every mode, so `strcat` is
-  O(n) rather than O(n²) — 20.0× ahead of Rakudo and 12.4× ahead of mutsu even
+  O(n) rather than O(n²) — 10.3× ahead of Rakudo and 12.4× ahead of mutsu even
   interpreted.
 
 ## Methodology
@@ -130,18 +131,49 @@ there.)
   (`strcat` 179.9 → 166.3 ms, `loopsum` 261.7 → 276.4 ms), which is within
   ordinary sitting-to-sitting spread, so read the change as noise rather than
   as Rakudo getting faster or slower.
-- **The reference engine runs under Rosetta 2, and that flatters every ratio
-  here.** The only Rakudo on this machine is the Intel Homebrew build
-  (`/usr/local`), an **x86_64** binary translated on an arm64 host; the ARM
-  prefix has no rakudo formula. This file already warns that a *Raku++* binary
-  measured that way pays a uniform 1.7–2× penalty — the reference pays it too,
-  and nothing in the harness catches it, because the arch guard only inspects
-  `$RAKUPP`. Every revision of this file has measured Rakudo the same way, so
-  the series is self-consistent and the *trends* are sound; the absolute
-  multiples against Rakudo are not a like-for-like comparison and should be
-  read as an upper bound. Correcting it means installing an arm64 Rakudo and
-  re-measuring the whole series, which would break comparability with every
-  earlier revision — a deliberate open item, not an oversight.
+- **The Rakudo column is measured against a native arm64 build**, as of the
+  2026-08-31 re-measurement. Every revision of this file *before* that one
+  measured Rakudo with the Intel Homebrew build (`/usr/local`), an **x86_64**
+  binary translated on an arm64 host, because it was the only Rakudo installed
+  here. The reference is now built from source at each era tag — 2026.06,
+  2026.07 and 2026.08, one toolchain for all three — so a step at an era
+  boundary cannot be a packaging artefact.
+
+  **Which arm64 Rakudo it is matters, not just which version.** A from-source
+  build and homebrew/core's `arm64_sequoia` bottle of the *same* v2026.08
+  differ by up to 12% per kernel, in different directions — `fib` 11% faster
+  from source, `strcat` 9% faster, `loopsum` 6% slower — reproduced to within
+  1% across three separate runs. On `fib` that is the difference between
+  Raku++ level and Raku++ 1.1× behind, so the reference build is named here,
+  not just its version. The bottle lives at `/opt/homebrew/bin/raku` and has
+  to be asked for by path, since `/usr/local/bin` precedes `/opt/homebrew/bin`
+  on this machine's `$PATH` and bare `raku` still resolves to the x86_64 build.
+
+  **MoarVM has no JIT backend on arm64.** Its JIT sources are x64-only: the
+  generated Makefile consumes `$(JIT_STUB)` (`src/jit/stub.o`) and never
+  `$(JIT_ARCH_X64)`, and the arm64 `libmoar` exports 18 JIT symbols against the
+  x86_64 build's 148, with none of the emit/tile/DynASM machinery. Both the
+  Homebrew bottle and the from-source builds agree. So the reference here runs
+  spesh but no machine code, while the old translated reference ran the full
+  x64 JIT under Rosetta. The two are not the same engine minus a penalty, and
+  an x86_64 `rakudo` column from another machine is not comparable with this
+  one.
+
+  **What translation cost, for the record** — measured on both builds of
+  v2026.08, interleaved, best of 6, on 2026-08-31, and *net* of the missing
+  JIT rather than a pure translation cost:
+
+  | penalty | kernels |
+  |---|---|
+  | 1.7–1.9× | `startup` 1.84×, `strcat` 1.76× |
+  | 1.3–1.7× | `hash` 1.67×, `sortby` 1.55×, `bigint` 1.48×, `textsplit` 1.44×, `regex` 1.42×, `hashfill` 1.37×, `arrayops` 1.35×, `fib` 1.33× |
+  | 1.0–1.3× | `loopsum` 1.26×, `rats` 1.23×, `objects` 1.23×, `arraypush` 1.21×, `sortnums` 1.04×, `streq` 1.00× |
+
+  Mean 1.38×, and per-kernel: `streq` (1.00×) and `sortnums` (1.04×) were free,
+  which is what "net of the missing JIT" looks like — those are kernels where
+  the x64 JIT paid enough to cancel Rosetta's cost. Nothing in the harness
+  catches a mis-built *reference*, because the arch guard inspects `$RAKUPP`
+  only; `tools/run-bench.raku` now records the Rakudo binary it used.
 - **Harness:** [`tools/run-bench.raku`](../../tools/run-bench.raku) — itself a Raku
   program, run *by Raku++* (it also runs under Rakudo). It only spawns each
   engine as a fresh subprocess and times it with `now`, so the language the
@@ -200,11 +232,12 @@ arm64 binary, and a first build attempt duly failed at the link step *for
 x86_64*. An arm64 Rust plus arm64 `pcre2` and `libffi` (`/opt/homebrew`) were
 installed for this sitting; `file` on the result reads `Mach-O 64-bit
 executable arm64`. This matters more than it sounds: an x86_64 mutsu would have
-run under Rosetta at the same uniform 1.7–2× penalty this file already warns
-about for a mis-built Raku++ binary, and every row would have flattered us by
-roughly that factor with nothing in the harness to catch it. **Check `file` on
-the mutsu binary before believing any row below**, exactly as the harness
-already does for `$RAKUPP`.
+run under Rosetta and flattered every row, with nothing in the harness to catch
+it. How much by is not predictable from the Raku++ figure — the penalty turns
+out to be engine- and kernel-dependent (1.0–1.8× on Rakudo, measured; see the
+methodology), so the only safe move is not to translate the binary at all.
+**Check `file` on the mutsu binary before believing any row below**, exactly as
+the harness already does for `$RAKUPP`.
 
 ## Pending re-measurement: four changes landed after this sitting (2026-08-31)
 
@@ -271,11 +304,19 @@ process startup, not a workload.
 
 ### Interpreter vs Rakudo and mutsu
 
-The tree-walker wins on **fourteen of these fifteen kernels** against Rakudo.
-The exception is `objects`, and it is the point of the row: it is the only
-kernel that measures `class`/`has`/method dispatch — the shape most real Raku
-code is written in — and Rakudo leads it by **1.7×**. That is not a machine
-artefact; see below.
+The tree-walker wins on **eleven of these fifteen kernels** against Rakudo, is
+level on two (`streq`, `rats`), and loses two. The larger loss is `objects`,
+and it is the point of the row: it is the only kernel that measures
+`class`/`has`/method dispatch — the shape most real Raku code is written in —
+and Rakudo leads it by **2.4×**. That is not a machine artefact; see below.
+The other loss is `fib`, by 1.1×.
+
+These are measured against a **native arm64 Rakudo**, which is what changed the
+count from the fourteen-of-fifteen this file reported while the reference ran
+under Rosetta 2 — see the methodology. `sortby`'s Rakudo lane is bimodal on
+this machine (~168 ms or ~198 ms, nothing between, in five of sixteen
+re-measurements); this sitting landed in the slow state, so read its 6.1× as
+5.2–6.1×.
 
 Against **mutsu** the interpreter wins twelve of fifteen, is level on one
 (`sortby`), and loses three: `bigint` by 3.5×, `fib` by 1.4×, `sortnums` by
@@ -283,12 +324,14 @@ Against **mutsu** the interpreter wins twelve of fifteen, is level on one
 see "What mutsu is faster at" below. Bold marks a Raku++ lead; otherwise the
 winning engine is named.
 
-The two rows Rakudo held for the whole life of this file both fell on
-2026-08-22, and both are tiny-body kernels where a JIT should be at its best:
-`fib` (tiny-body recursion) went level with the `Value` shrink and ahead when
-lexical pads landed, and `streq` (1M string comparisons) crossed with the TARG
-assignment slice. Neither margin is comfortable — 1.3× and 1.2× — so read them
-as level rather than as leads.
+The two rows Rakudo had held for the whole life of this file were reported as
+crossing on 2026-08-22 — `fib` (tiny-body recursion) with the `Value` shrink
+and lexical pads, `streq` (1M string comparisons) with the TARG assignment
+slice. Against a native reference neither crossing holds: `streq` is level and
+`fib` is a 1.1× Rakudo lead. Both are tiny-body kernels where a JIT should be
+at its best, and it is worth naming what the reference does here — MoarVM's JIT
+backend is x64-only, so on arm64 it compiles `src/jit/stub.o` and runs with
+spesh but no machine-code JIT.
 
 Variable handling is what moved all of it. Resolving a `my` to a frame slot
 instead of a hash lookup halved `loopsum` (1.5× → 2.4× against Rakudo) and took
@@ -300,21 +343,21 @@ clearest sign the wins are where they claim to be.
 
 | Benchmark | Raku++ (interp) | mutsu | Rakudo | vs Rakudo | vs mutsu |
 |---|---:|---:|---:|---|---|
-| strcat    |   8.6 ms |  106.9 ms | 171.6 ms | **20.0×** | **12.4×** |
-| hash      |  18.8 ms |   42.0 ms | 223.7 ms | **11.9×** | **2.2×** |
-| sortby    |  32.2 ms |   32.8 ms | 296.4 ms | **9.2×** | level |
-| bigint    |  31.4 ms |    9.1 ms | 245.8 ms | **7.8×** | mutsu 3.5× |
-| regex     |  41.1 ms |  238.5 ms | 294.7 ms | **7.2×** | **5.8×** |
-| sortnums  |  33.7 ms |   30.4 ms | 237.4 ms | **7.0×** | mutsu 1.1× |
-| textsplit |  64.7 ms |  246.3 ms | 309.6 ms | **4.8×** | **3.8×** |
-| arrayops  |  59.9 ms |   97.7 ms | 285.8 ms | **4.8×** | **1.6×** |
-| hashfill  | 109.5 ms |  392.9 ms | 413.6 ms | **3.8×** | **3.6×** |
-| loopsum   |  86.2 ms |  123.6 ms | 274.3 ms | **3.2×** | **1.4×** |
-| arraypush | 129.4 ms |  383.3 ms | 366.8 ms | **2.8×** | **3.0×** |
-| rats      | 243.0 ms |  367.6 ms | 333.4 ms | **1.4×** | **1.5×** |
-| fib       | 352.7 ms |  245.6 ms | 465.9 ms | **1.3×** | mutsu 1.4× |
-| streq     | 232.2 ms |  609.3 ms | 287.9 ms | **1.2×** | **2.6×** |
-| objects   | 498.0 ms | 1585.1 ms | 297.8 ms | Rakudo 1.7× | **3.2×** |
+| strcat    |   8.6 ms |  106.9 ms |  89.0 ms | **10.3×** | **12.4×** |
+| hash      |  18.8 ms |   42.0 ms | 122.0 ms | **6.5×** | **2.2×** |
+| sortby    |  32.2 ms |   32.8 ms | 195.3 ms | **6.1×** | level |
+| sortnums  |  33.7 ms |   30.4 ms | 188.7 ms | **5.6×** | mutsu 1.1× |
+| bigint    |  31.4 ms |    9.1 ms | 159.1 ms | **5.1×** | mutsu 3.5× |
+| regex     |  41.1 ms |  238.5 ms | 182.1 ms | **4.4×** | **5.8×** |
+| arrayops  |  59.9 ms |   97.7 ms | 187.8 ms | **3.1×** | **1.6×** |
+| textsplit |  64.7 ms |  246.3 ms | 186.7 ms | **2.9×** | **3.8×** |
+| loopsum   |  86.2 ms |  123.6 ms | 242.1 ms | **2.8×** | **1.4×** |
+| hashfill  | 109.5 ms |  392.9 ms | 281.8 ms | **2.6×** | **3.6×** |
+| arraypush | 129.4 ms |  383.3 ms | 261.2 ms | **2.0×** | **3.0×** |
+| streq     | 232.2 ms |  609.3 ms | 233.9 ms | level | **2.6×** |
+| rats      | 243.0 ms |  367.6 ms | 236.8 ms | level | **1.5×** |
+| fib       | 352.7 ms |  245.6 ms | 315.6 ms | Rakudo 1.1× | mutsu 1.4× |
+| objects   | 498.0 ms | 1585.1 ms | 207.8 ms | Rakudo 2.4× | **3.2×** |
 
 **`regex` regressed at v3.6.0 — bisected and fixed after the tag.** On this
 machine the interpreted row was 88.5 ms at v3.14.0 (2026-08-11) and 113.4 ms
@@ -344,29 +387,29 @@ interpreter row to the fifth-best.
 ### Native (`--exe`) vs Rakudo and mutsu
 
 Compiling removes interpreter overhead on top of that — pushing every row
-ahead of Rakudo except one, where it very nearly reaches level: `objects`
-compiled is 336.7 ms against Rakudo's **interpreter** at 297.8. Against mutsu
+ahead of Rakudo except one: `objects` compiled is 336.7 ms against Rakudo's
+**interpreter** at 207.8, so Rakudo still leads that row by 1.6×. Against mutsu
 the compiled binary wins **fourteen of fifteen**, `bigint` being the sole
 exception and by the same 3.3× it costs the interpreter. The last column is the
 speed-up over interpreting the same program.
 
 | Benchmark | Raku++ (`--exe`) | mutsu | Rakudo | vs Rakudo | vs mutsu | vs interp |
 |---|---:|---:|---:|---|---|---:|
-| strcat    |   3.0 ms |  106.9 ms | 171.6 ms | **57.2×** | **35.6×** | 2.9× |
-| hash      |   7.3 ms |   42.0 ms | 223.7 ms | **30.6×** | **5.8×** | 2.6× |
-| loopsum   |  13.8 ms |  123.6 ms | 274.3 ms | **19.9×** | **9.0×** | 6.2× |
-| sortby    |  21.3 ms |   32.8 ms | 296.4 ms | **13.9×** | **1.5×** | 1.5× |
-| streq     |  20.7 ms |  609.3 ms | 287.9 ms | **13.9×** | **29.4×** | 11.2× |
-| sortnums  |  19.1 ms |   30.4 ms | 237.4 ms | **12.4×** | **1.6×** | 1.8× |
-| regex     |  27.4 ms |  238.5 ms | 294.7 ms | **10.8×** | **8.7×** | 1.5× |
-| hashfill  |  38.6 ms |  392.9 ms | 413.6 ms | **10.7×** | **10.2×** | 2.8× |
-| bigint    |  30.2 ms |    9.1 ms | 245.8 ms | **8.1×**  | mutsu 3.3× | 1.0× |
-| textsplit |  38.7 ms |  246.3 ms | 309.6 ms | **8.0×**  | **6.4×** | 1.7× |
-| arraypush |  55.3 ms |  383.3 ms | 366.8 ms | **6.6×**  | **6.9×** | 2.3× |
-| fib       |  85.4 ms |  245.6 ms | 465.9 ms | **5.5×**  | **2.9×** | 4.1× |
-| arrayops  |  58.7 ms |   97.7 ms | 285.8 ms | **4.9×**  | **1.7×** | 1.0× |
-| rats      | 148.8 ms |  367.6 ms | 333.4 ms | **2.2×**  | **2.5×** | 1.6× |
-| objects   | 336.7 ms | 1585.1 ms | 297.8 ms | Rakudo 1.1× | **4.7×** | 1.5× |
+| strcat    |   3.0 ms |  106.9 ms |  89.0 ms | **29.7×** | **35.6×** | 2.9× |
+| loopsum   |  13.8 ms |  123.6 ms | 242.1 ms | **17.5×** | **9.0×** | 6.2× |
+| hash      |   7.3 ms |   42.0 ms | 122.0 ms | **16.7×** | **5.8×** | 2.6× |
+| streq     |  20.7 ms |  609.3 ms | 233.9 ms | **11.3×** | **29.4×** | 11.2× |
+| sortnums  |  19.1 ms |   30.4 ms | 188.7 ms | **9.9×** | **1.6×** | 1.8× |
+| sortby    |  21.3 ms |   32.8 ms | 195.3 ms | **9.2×** | **1.5×** | 1.5× |
+| hashfill  |  38.6 ms |  392.9 ms | 281.8 ms | **7.3×** | **10.2×** | 2.8× |
+| regex     |  27.4 ms |  238.5 ms | 182.1 ms | **6.6×** | **8.7×** | 1.5× |
+| bigint    |  30.2 ms |    9.1 ms | 159.1 ms | **5.3×**  | mutsu 3.3× | 1.0× |
+| textsplit |  38.7 ms |  246.3 ms | 186.7 ms | **4.8×**  | **6.4×** | 1.7× |
+| arraypush |  55.3 ms |  383.3 ms | 261.2 ms | **4.7×**  | **6.9×** | 2.3× |
+| fib       |  85.4 ms |  245.6 ms | 315.6 ms | **3.7×**  | **2.9×** | 4.1× |
+| arrayops  |  58.7 ms |   97.7 ms | 187.8 ms | **3.2×**  | **1.7×** | 1.0× |
+| rats      | 148.8 ms |  367.6 ms | 236.8 ms | **1.6×**  | **2.5×** | 1.6× |
+| objects   | 336.7 ms | 1585.1 ms | 207.8 ms | Rakudo 1.6× | **4.7×** | 1.5× |
 
 ### What mutsu is faster at
 
@@ -451,13 +494,18 @@ Four of the five are wins. `objects` is not, and it was the reason to add them:
 |---|---:|---:|---:|---:|---|
 | M1 / Darwin 25.5, first sitting | 568.5 ms | 314.4 ms | — | 254.4 ms | Rakudo 2.2× |
 | M3 / Darwin 24.6, 2026-08-24    | 518.8 ms | 285.1 ms | — | 285.6 ms | Rakudo 1.8× |
-| M3 / Darwin 24.6, these tables  | 498.0 ms | 336.7 ms | 1585.1 ms | 297.8 ms | Rakudo 1.7× |
+| M3 / Darwin 24.6, these tables  | 498.0 ms | 336.7 ms | 1585.1 ms | 207.8 ms | Rakudo 2.4× |
+
+The first two Rakudo cells were measured under Rosetta 2 and the third against
+a native arm64 build, so only the Raku++ columns are comparable down the table;
+the Rakudo column changes scale at the last row.
 
 **The machine was not the explanation.** The first sitting's note estimated
-that correcting for the box would narrow the gap to "roughly 1.5×"; the direct
-M3 measurement puts it at **1.7×**, so the loss is real and slightly larger
-than the correction predicted. Compiling does not rescue it either: `--exe` at
-336.7 ms does not quite reach Rakudo's *interpreter*, the only row in these
+that correcting for the box would narrow the gap to "roughly 1.5×"; measured
+against a native arm64 Rakudo it is **2.4×**, so the loss is real and larger
+than the correction predicted — and larger than this file reported while the
+reference was translated. Compiling does not rescue it either: `--exe` at
+336.7 ms does not reach Rakudo's *interpreter* at 207.8, the only row in these
 tables where that is true. The compiled side agrees independently — `methodcalls`
 under `-O` gains 1.0×, i.e. the optimizer has nothing to give a monomorphic
 method call yet, because it is not devirtualized.
@@ -511,16 +559,18 @@ the ratio-ordered tables above.
 
 | mode | startup | vs Rakudo |
 |---|---:|---:|
-| Raku++ native `--exe` | 2.5 ms | **61.1×** |
-| Raku++ interp | 3.0 ms | **50.9×** |
-| mutsu | 4.4 ms | **34.7×** |
-| Rakudo | 152.7 ms | — |
+| Raku++ native `--exe` | 2.5 ms | **29.9×** |
+| Raku++ interp | 3.0 ms | **24.9×** |
+| mutsu | 4.4 ms | **17.0×** |
+| Rakudo | 74.7 ms | — |
 
 A native Raku++ binary has no VM to bring up and no precompiled runtime to
-load; Rakudo's 153 ms is a fixed cost paid by every row in every table on this
-page, its own included. **mutsu is in the same order of magnitude as us and
-not Rakudo** — 4.4 ms, so 1.8× our compiled binary and 1.5× our interpreter,
-but 34.7× faster to start than the reference. That is the clearest
+load; Rakudo's 75 ms is a fixed cost paid by every row in every table on this
+page, its own included. (It was 152.7 ms while the reference ran under Rosetta
+2 — startup was the kernel that paid the largest translation penalty, 1.84×.)
+**mutsu is in the same order of magnitude as us and not Rakudo** — 4.4 ms, so
+1.8× our compiled binary and 1.5× our interpreter, but 17.0× faster to start
+than the reference. That is the clearest
 architectural agreement between the two newer implementations: neither has a
 `CORE.setting` to load, and mutsu chose Cranelift over LLVM specifically to
 keep it that way. The gap that separates the three engines on this row is a
@@ -553,11 +603,11 @@ startup-inclusive; the `perl` on this machine's PATH is v5.44.0), after the
 | Perl 5 | 103.2 ms | — |
 | Raku++ interp | 109.5 ms | 1.1× slower |
 | mutsu | 392.9 ms | 3.8× slower |
-| Rakudo | 413.6 ms | 4.0× slower |
+| Rakudo | 281.8 ms | 2.7× slower |
 
 **mutsu lands with Rakudo on this one, not with us**, and it is the kernel
 where that is most striking: the two engines with a real garbage collector sit
-at ~390–415 ms and the two Raku++ modes at 39–110 ms. `hashfill` allocates
+at ~280–395 ms and the two Raku++ modes at 39–110 ms. `hashfill` allocates
 200,000 interpolated string keys and sweeps them, which is exactly the shape
 that makes a collector earn its keep — and exactly the shape refcounting
 without a collector does cheaply, as long as the program makes no cycles. This
@@ -568,7 +618,7 @@ much faster here and we leak cycles; they collect cycles and pay for it here.
 `textsplit` is the second kernel with a `.pl` twin, and it is the one perl
 still wins: 34.1 ms against Raku++'s 64.7 interpreted (1.9× behind) and 38.7
 compiled (1.1× behind). mutsu runs it in 246.3 ms — 7.2× behind perl, and the
-only engine here that Rakudo (309.6 ms, 9.1× behind) is within hailing distance
+only engine here that Rakudo (186.7 ms, 5.5× behind) is within hailing distance
 of. Two twins now disagree about where the perl comparison stands, which is
 more informative than one agreeing with itself — hashing is level, text
 munging is not.
@@ -773,6 +823,16 @@ architecture matches your host before believing the numbers:
 
 ```sh
 cargo build --release && file target/release/mutsu
+```
+
+The same check applies to **Rakudo**, which the harness does not verify — its
+arch guard inspects `$RAKUPP` only. On Apple Silicon an Intel Homebrew Rakudo
+runs under Rosetta 2 at a per-kernel cost of 1.0–1.8× (figures in the
+methodology), and `raku --version` does not report the architecture:
+
+```sh
+file $(which rakudo)               # want: Mach-O 64-bit executable arm64
+raku -e 'say $*KERNEL.hardware'    # want: arm64 — reads x86_64 when translated
 ```
 
 _Snapshot taken 2026-07-22 with Raku++ 1.0.0 at 583 / 1,462 Roast files fully
@@ -1151,3 +1211,51 @@ match.** Both it and Raku++ are native arm64 here; Rakudo is not. So the
 Raku++-vs-mutsu columns are the only untranslated comparison the file has ever
 carried, and where the two disagree with the Rakudo column about a kernel, the
 mutsu column is the better evidence._
+
+_**2026-08-31, later the same day: the caveat above is fixable after all, and
+the penalty it assumed was too large.** homebrew/core ships an `arm64_sequoia`
+bottle for rakudo/moarvm/nqp at v2026.08 — the exact version this sitting
+measures — so "the ARM prefix has no rakudo formula" was stale, not a
+constraint. It is installed at `/opt/homebrew/bin/raku`. Measuring the two
+builds of v2026.08 against each other gives a translation penalty of **1.00× to
+1.84×, mean 1.38×**, not the uniform 1.7–2× this file had assumed by carrying
+the figure over from mis-built Raku++ binaries. Only `startup` (1.84×) and
+`strcat` (1.76×) reach that band; `streq` (1.00×) and `sortnums` (1.04×) are
+free, confirmed on a 12-round re-check against a `strcat` control that held at
+1.76× on both minimum and median. The x86_64 control reproduced this sitting's
+published Rakudo column to within ~1% on every kernel re-timed, which
+established that the two references could be measured against each other. The
+tables were then **re-measured rather than corrected arithmetically** — see the
+next note._
+
+_**2026-08-31: every released build re-measured, each against its own era's
+Rakudo.** All 28 tagged releases ship a `rakupp-macos-universal.tar.gz`, and a
+bare invocation runs its arm64 slice — checked, not assumed: `loopsum` reads
+198 ms bare and under `arch -arm64`, against 337 ms under `arch -x86_64`. Each
+release was run through `tools/run-bench.raku` against a from-source Rakudo
+matching its release date (2026.06 through 2026-07-24, 2026.07 through
+2026-08-21, 2026.08 after): 16 kernels, 453 rows, and every engine agreed on
+output in every row. Because the Rakudo lane is re-measured once per release
+rather than once per sitting, its within-era spread is a direct noise figure
+for the sitting — ~2%, except `sortby`, which is bimodal at ~168/198 ms with
+nothing between and is flagged wherever it is quoted. The interp column
+reproduced the published one to within 2.1% worst case, so only the reference
+side moved.
+
+Three things the release series shows that no single sitting could, because
+each happened between sittings: `sortby` interpreted fell from 3.9 s to 60 ms
+at **v1.2.5**; `arraypush` was quadratic until **v1.5.2** and cannot be
+measured before it at all — a single run exceeds 10 s, so those eleven rows are
+recorded as skipped in the sweep data rather than estimated; and **v3.7.0**
+halved `loopsum` and took 43% off compiled `fib`. Two releases also ship
+binaries whose `--version` reports the previous release (v3.20.0 says 3.7.0,
+v3.0.0 says 2.0.0) — distinct builds by hash and size, only the embedded string
+stale, so the sweep keys rows by tag and never by `--version`.
+
+The per-release numbers live in `src/data/bench-measured.tsv` in the raku-spec
+repo, which the dashboard generator now reads instead of scraping this file at
+each tag. [`tools/rakupp-bench-sweep.sh`](../../tools/rakupp-bench-sweep.sh) reproduces
+the whole thing on another machine (see
+[dev/BENCH-SWEEP.md](../dev/BENCH-SWEEP.md), and
+`rakupp-bench-sweep.ps1` for Windows); note that on any x86_64 host MoarVM *has* its JIT, so a Rakudo column
+measured there is not comparable with the one above._
