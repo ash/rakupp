@@ -114,7 +114,7 @@ rakupp --exe app.raku -o app     # compile it
 |---|---|
 | `FILE` / `-e 'CODE'` / `-` *(stdin)* | Run a program from a file, a one-liner, or standard input (`rakupp - ARGS…` gives a stdin program its `@*ARGS`) |
 | `-I <path>` / `-M <module>` | Add a module search directory / load a module first (both repeatable) |
-| `-n` / `-p` / `-a` / `-F<sep>` / `-i[.ext]` | The perl one-liner family: line loop, autoprint, autosplit, in-place edit (clusters: `-lane`, `-pi.bak`) |
+| `-n` / `-p` / `-a` / `-F<sep>` / `-i[.ext]` | The Perl one-liner family: line loop, autoprint, autosplit, in-place edit (clusters: `-lane`, `-pi.bak`) |
 | `--profile[=FILE]` | Routine-level wall-time profile after the run (`.json` for machine-readable) |
 | `--exe SRC -o OUT` | Native-compile to a standalone binary (also `--bundle`, `--aot`) |
 | `--highlight [SRC]` | Syntax-highlight Raku to HTML (`--html`) or terminal (`--ansi`) |
@@ -123,7 +123,7 @@ rakupp --exe app.raku -o app     # compile it
 | `--lint SRC` | Static-analyze without running: unused variables, unreachable code, etc. |
 | `-c` / `--ast SRC` | Compile-check only (parse + every variable declared) / print the parsed AST |
 
-Flags are position-independent and cluster like perl's (`rakupp -pi.bak -e
+Flags are position-independent and cluster like Perl's (`rakupp -pi.bak -e
 '$_ = $_.subst("a", "b")' *.txt` works as you'd hope). Full reference:
 [CLI.md](docs/guide/CLI.md).
 
@@ -274,7 +274,7 @@ the shape of it:
 - **[docs/status/](docs/status/)** — how good it is:
   [ROAST.md](docs/status/ROAST.md) per-section statistics,
   [COUNTING.md](docs/status/COUNTING.md) methodology,
-  [BENCHMARKS.md](docs/status/BENCHMARKS.md) vs Rakudo (and perl),
+  [BENCHMARKS.md](docs/status/BENCHMARKS.md) vs Rakudo, mutsu, and Perl,
   [ROADMAP.md](docs/status/ROADMAP.md).
 - **The story:** [MILESTONES.md](docs/status/MILESTONES.md) (the dated
   timeline), [JOURNEY.md](docs/dev/JOURNEY.md) (the method),
