@@ -23339,7 +23339,7 @@ Value Interpreter::evalBinary(Binary* b) {
             ValueList args = evalArgs(c->args);
             args.push_back(src);
             if (!c->name.empty()) {
-                if (Value* f = tctx_.cur->find("&" + c->name)) return callCallable(*f, std::move(args));
+                if (Value* f = tctx_.cur->find(callAmpName(c))) return callCallable(*f, std::move(args));
                 if (!builtinRefs_.empty()) {
                     auto rit = builtinRefs_.find(c->name);
                     if (rit != builtinRefs_.end() && rit->second.code() && !rit->second.code()->wrappers.empty())
@@ -25452,7 +25452,7 @@ Value Interpreter::evalCall(Call* c) {
     // temp/let take their argument by EXPRESSION — the generic args pre-eval
     // would run a `temp $a = 23` assignment before the snapshot is taken
     if ((c->name == "temp" || c->name == "let") && c->args.size() == 1 &&
-        !tctx_.cur->find("&" + c->name))
+        !tctx_.cur->find(callAmpName(c)))
         return evalTempLet(c);
     // take-rw also needs its argument by EXPRESSION: the pre-eval would hand it
     // a detached COPY, and the whole point is taking the storage itself
@@ -25466,7 +25466,7 @@ Value Interpreter::evalCall(Call* c) {
             return v.t == VT::Whatever || (v.t == VT::Code && v.code() && v.code()->isWhateverCode);
         };
         if (isW(args[0]) || isW(args[1])) {
-            Value* fp = tctx_.cur->find("&" + c->name);
+            Value* fp = tctx_.cur->find(callAmpName(c));
             if (fp) {
                 Value f = *fp;
                 Value a0 = args[0], a1 = args[1];
@@ -25592,7 +25592,7 @@ Value Interpreter::evalCall(Call* c) {
         // atomic ops on an `atomicint` container. Under the GIL these are plain
         // read-modify-write (the lock already serialises them); they take the
         // container by reference, so operate on its lvalue.
-        if (c->name.rfind("atomic-", 0) == 0 && !c->args.empty() && !tctx_.cur->find("&" + c->name)) {
+        if (c->name.rfind("atomic-", 0) == 0 && !c->args.empty() && !tctx_.cur->find(callAmpName(c))) {
             if (Value* lv = lvalue(c->args[0].get())) {
                 // REAL atomicity (the GIL used to be the only serialization —
                 // in parallel mode these lost updates: 12,540 of 20,000 in the
@@ -25624,7 +25624,7 @@ Value Interpreter::evalCall(Call* c) {
                 }
             }
         }
-        if (Value* f = tctx_.cur->find("&" + c->name)) return callCallable(*f, std::move(args), &c->args, /*ownFrame=*/false, /*arityCheck=*/true);
+        if (Value* f = tctx_.cur->find(callAmpName(c))) return callCallable(*f, std::move(args), &c->args, /*ownFrame=*/false, /*arityCheck=*/true);
         // sub-form container mutators AUTOVIVIFY their first argument's slot:
         // `push %h{$k}, $dist` fills the slot with an Array and appends (Rakudo
         // semantics; zef's ecosystem short-name index is built exactly this way).

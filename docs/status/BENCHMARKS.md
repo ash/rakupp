@@ -153,6 +153,61 @@ adding numbers from a different box would break the one property that makes
 these rows comparable across revisions. The column fills in at the next
 bench-machine sitting.
 
+## Pending re-measurement: four changes landed after this sitting (2026-08-31)
+
+**Every table below predates these, and none of them is folded in.** The rows in
+this file are all measured on the machine named under Methodology, and the work
+described here was done on a different one (Apple M1, Darwin 25.5 — the box this
+file already warns runs a uniformly slower Raku++ binary). Splicing numbers from
+it into these tables would break the one property that makes revisions
+comparable, so the tables stand as measured and the next bench-machine sitting
+picks the changes up. What follows is the M1 before/after for each, from the
+same harness kernels, best of 9:
+
+| kernel | lane | before | after | mutsu (same box) |
+|---|---|---:|---:|---:|
+| bigint   | `--exe` | 45.2 ms | **11.4 ms** | 11.5 ms |
+| bigint   | interp  | 60.4 ms | **12.6 ms** | 11.5 ms |
+| sortnums | `--exe` | 26.4 ms | 22.6 ms | 40.6 ms |
+| loopsum  | `--exe` | 16.5 ms | 15.1 ms | 158.4 ms |
+| fib      | interp  | 447.5 ms | 424.4 ms | 308.7 ms |
+
+Four changes, all described in
+[internals/OPTIMIZATION.md](../internals/OPTIMIZATION.md) under its list of
+non-`-O` defaults:
+
+- **A one-limb `BigInt` multiply** whose carry stays in a register, with the limb
+  product split off the carry chain. `bigint` is 90% inside that loop by profile;
+  it is the whole 4× above, and it lands in every mode because it is a runtime
+  change rather than a codegen one. It closes the one kernel where mutsu led
+  `--exe`, which is what prompted the work.
+- **`.sort` on an all-native-Int list** orders a flat `(key, index)` array instead
+  of calling `valueCmp` through two random probes into an array of `Value`s.
+- **`applyArith` takes the operator as a `const char*`**, so compiled code stops
+  building a `std::string` per operator to have its first byte read.
+- **The `&name` lexical key of a `Call` is built once** and published on the node,
+  rather than concatenated on each of `fib`'s 1.6 M calls.
+
+Two things measured on that box are worth recording even though they are not
+changes to the engine:
+
+- **`--exe -O` is a large, unmeasured lane.** This file's `native` column is
+  plain `--exe`; the harness never passes `-O`. On the same M1, `-O` takes `fib`
+  from 92.2 to **21.2 ms**, `loopsum` from 15.1 to 8.1, `arrayops` from 84.5 to
+  58.4, and `streq` from 25.6 to 18.1. `-O` is documented as
+  semantics-preserving and opt-in; whether the published column should measure
+  it, both, or stay as it is, is a decision this file has not taken.
+- **Caching `tctx_` in the big dispatch functions is a LOSS.** `_tlv_get_addr` is
+  the top leaf of an interpreted `fib` profile at ~18%, and `execBlock` and
+  `callCallableRaw` already take one resolution per call for exactly that reason.
+  Extending the same cut to `exec`, `eval`, `evalBinary` and `evalUnary` made
+  `fib` *worse* — 425 → 478 ms — because those are dispatch switches whose
+  branches mostly touch `tctx_` zero or one times, so binding the reference at
+  entry pays the thread-local call on every path and holds a register across
+  2 500 lines. Removing the thread-local qualifier outright (unsafe; measured
+  only as a ceiling) buys 12% on `fib` and 21% on `loopsum`, so the cost is real
+  — but it is not recoverable this way.
+
 ## Results
 
 Best of 6 timed runs per engine (7 spawned, the first discarded as warm-up),

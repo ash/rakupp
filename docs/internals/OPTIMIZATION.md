@@ -32,11 +32,12 @@ rakupp --cpp -O prog.raku             # print the optimized C++ to stdout
 By default the transpiler is faithful but generic: every value is a boxed
 `Value`, operators in **value position** go through the runtime's string-keyed
 dispatcher (`applyArith`), and every user-sub call packs its arguments into a
-`ValueList` (a `std::vector<Value>` — a heap allocation per call). (Two dispatch
-cuts apply even without `-O`, because they are plumbing rather than speculation:
-comparisons in **conditions** use the inline `rtLtB`/`rtEqSB`-family helpers,
-and builtin calls go through pointers cached once at startup — see
-[DISPATCH.md](DISPATCH.md).)
+`ValueList` (a `std::vector<Value>` — a heap allocation per call). (Three
+dispatch cuts apply even without `-O`, because they are plumbing rather than
+speculation: comparisons in **conditions** use the inline `rtLtB`/`rtEqSB`-family
+helpers, builtin calls go through pointers cached once at startup — see
+[DISPATCH.md](DISPATCH.md) — and `applyArith` itself takes the operator as a
+`const char*`, described below.)
 
 ```cpp
 // sub fib($n) { $n < 2 ?? $n !! fib($n-1) + fib($n-2) }
@@ -403,6 +404,100 @@ mechanically small — 18 compile errors, each either "make a local copy here" o
 "let this helper take const&" — but it trades away the accidental safety copying
 provides against a callee mutating the container its own invocant lives in, so it
 wants an aliasing audit of the 178 call sites rather than a quick pass.
+
+## A fourth default: `applyArith` reads the operator without building a string
+
+`applyArith`'s parameter is a `const std::string&`, and non-`-O` codegen calls it
+with a literal: `applyArith("+", …)`. Every such call therefore **constructed a
+`std::string`** — a short one, so no allocation, but still an object built and
+destroyed — before the dispatcher could look at its first byte, and the first
+thing it looks at is whether the first byte is `+`.
+
+An overload taking the operator as it is (`Interpreter.h`) answers the small-Int
+case the string version answers first anyway, and hands everything else to that
+same function, so the result is identical either way:
+
+```cpp
+inline Value applyArith(const char* op, const Value& l, const Value& r) {
+    if (rtBothInt(l, r) && op[0] != '\0' && op[1] == '\0') {
+        long long a = l.i, b = r.i, z;
+        switch (op[0]) {
+            case '+': if (!rakupp::add_ovf(a, b, &z)) return Value::integer(z); break;
+            /* -  *  <  > … */
+        }
+    }
+    return applyArith(std::string(op), l, r);   // unchanged for everything else
+}
+```
+
+`op` is a literal at every call site, so the switch folds to one comparison and
+nothing survives into the binary but the taken branch. Like the two cuts above
+it is plumbing rather than speculation, so it is on in every mode; what `-O`
+adds on top is emitting `rtAdd` directly and skipping the call altogether.
+
+On this machine (Apple M1, best of 9): compiled `loopsum` 16.5 → 15.1 ms,
+compiled `fib` 95.5 → 92.5 ms. The interpreter reaches `applyArith` from the AST
+with a `std::string` already in hand, so it is unaffected.
+
+## A fifth default: `.sort` on native Ints orders a flat key array
+
+The generic `.sort` decides its order by calling `valueCmp` from inside
+`std::stable_sort`, and its comparator does two things per comparison that are
+both worse than they look: an out-of-line call, and two **random probes** into
+the element array. `Value` is about a hundred bytes, so sorting 50 000 of them
+walks a 5 MB working set in shuffled order. On compiled `sortnums` —
+`(1 .. 50_000).map({ … }).sort` — the comparator was **35% of the run**.
+
+When every element is a native (non-bignum) `Int`, the whole order is decided by
+one `int64` apiece. So: check that in one linear pass, pull the keys into a flat
+array of `(key, index)` pairs, and sort *that* with an inlined compare. The
+working set drops from `sizeof(Value)` per element to sixteen bytes, and the
+index tiebreak is what keeps a plain `std::sort` stable. Anything the scan does
+not describe — a mixed list, a bignum, a list too long for a 32-bit index —
+falls through to the `valueCmp` path untouched.
+
+The same specialisation applies to the *keys* of the 1-ary key-extractor path
+above, which is how `.sort(*.chars)` reaches it.
+
+Compiled `sortnums` 26.4 → 22.6 ms on this machine; interpreted 41.7 → 38.5 ms.
+
+## A sixth default: a bignum times one limb keeps its carry in a register
+
+`BigInt` stores magnitudes base 1e9, and multiplication was one schoolbook loop
+for every shape. That loop routes each limb's carry through `r.mag[i+1]` — a
+store the next iteration must load back — and needs a second inner pass per limb
+to place it, so a big-by-small product ran at two iterations and two
+store-to-load round trips per limb. A **running product** is entirely that shape:
+`$f *= $_`, factorials, radix scaling.
+
+Two changes, both inside `BigInt::operator*`:
+
+1. When one side is a single limb, take a dedicated one-pass loop that keeps the
+   carry in a register.
+2. In that loop, split the limb product **before** folding the carry in.
+   `(src[i]*m + carry) / BASE` puts a division on the carry chain, and division
+   by 1e9 is a multiply-high plus a shift — five-odd cycles every limb must wait
+   for. `src[i]*m` does not depend on the carry, so its own split runs ahead of
+   the chain; folding the carry into the low half is then an add and a
+   conditional subtract, and the chain is three cycles.
+
+```cpp
+uint32_t carry = 0;
+for (std::size_t i = 0; i < n; i++) {
+    uint64_t p  = (uint64_t)src[i] * m;
+    uint32_t ph = (uint32_t)(p / BigInt::BASE);          // off the carry chain
+    uint32_t pl = (uint32_t)(p - (uint64_t)ph * BigInt::BASE);
+    uint32_t low = pl + carry;                           // both < BASE, so < 2^32
+    if (low >= BigInt::BASE) { low -= BigInt::BASE; ph++; }
+    dst[i] = low;
+    carry  = ph;
+}
+```
+
+`bigint` (`$f *= $_ for 1 .. 5000`, then `.chars`) is 90% inside this loop by
+profile, and it moved on this machine from 45.2 to 11.4 ms compiled and 60.4 to
+12.6 ms interpreted — a 4.0× and 4.8×. It is a runtime change, not a codegen
+one, so `--exe`, `-O` and the interpreter all get it.
 
 ## Forwarding the C++ optimization level
 

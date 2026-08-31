@@ -1883,6 +1883,30 @@ inline bool rtIntBox(const Value& v)  { return v.t == VT::Int && !v.big(); }
 // --exe `is rw` params: bind a reference into the (caller-visible) ValueList slot.
 inline Value& rtPosRef(ValueList& a, size_t i) { if (a.size() <= i) a.resize(i + 1); return a[i]; }
 inline bool rtIntSlot(const Value& v) { return v.t == VT::Int && !v.big() && v.enumName.empty(); }
+// Non-`-O` codegen emits every value-position operator as `applyArith("+", …)`,
+// and the parameter is a std::string — so a one- or two-character literal was
+// built into a temporary on every one of fib's 1.6M calls before the dispatcher
+// could look at its first byte. This overload takes the literal as it is and
+// answers the small-Int case that the string version answers first anyway;
+// everything it does not recognise falls through to that same function, so the
+// result is identical either way. `op` is a literal at every call site, so the
+// switch folds to a single comparison. This is plumbing, not speculation — it
+// is on in every mode, like the `rtLtB` condition lane and the cached builtin
+// pointers (DISPATCH.md); what `-O` adds on top is emitting `rtAdd` directly.
+inline Value applyArith(const char* op, const Value& l, const Value& r) {
+    if (rtBothInt(l, r) && op[0] != '\0' && op[1] == '\0') {
+        long long a = l.i, b = r.i, z;
+        switch (op[0]) {
+            case '+': if (!rakupp::add_ovf(a, b, &z)) return Value::integer(z); break;
+            case '-': if (!rakupp::sub_ovf(a, b, &z)) return Value::integer(z); break;
+            case '*': if (!rakupp::mul_ovf(a, b, &z)) return Value::integer(z); break;
+            case '<': return Value::boolean(a < b);
+            case '>': return Value::boolean(a > b);
+            default: break;
+        }
+    }
+    return applyArith(std::string(op), l, r);
+}
 inline Value rtAdd(const Value& l, const Value& r) { long long z; if (rtBothInt(l, r) && !rakupp::add_ovf(l.i, r.i, &z)) return Value::integer(z); return applyArith("+", l, r); }
 inline Value rtSub(const Value& l, const Value& r) { long long z; if (rtBothInt(l, r) && !rakupp::sub_ovf(l.i, r.i, &z)) return Value::integer(z); return applyArith("-", l, r); }
 inline Value rtMul(const Value& l, const Value& r) { long long z; if (rtBothInt(l, r) && !rakupp::mul_ovf(l.i, r.i, &z)) return Value::integer(z); return applyArith("*", l, r); }

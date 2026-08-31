@@ -2038,6 +2038,34 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             return out;
         }
         if (m == "sort") {
+            // Deciding the order from a flat array of int64 keys instead of from
+            // the Values themselves. Every comparison in the generic path is an
+            // out-of-line valueCmp plus two RANDOM probes into an array of
+            // Values — sizeof(Value) is ~100 bytes, so 50k elements is a 5 MB
+            // working set the sort walks in shuffled order, and the comparator
+            // measured 35% of `(1..50_000).map(…).sort` compiled. When every
+            // element is a native Int the whole order is decided by one int64
+            // apiece: pull those out, sort sixteen-byte (key, index) pairs with
+            // an inlined compare, and the probes go away with the call. The
+            // index tiebreak is what makes plain sort stable here.
+            //
+            // Returns false — leaving `order` untouched — for any list this does
+            // not describe, including one long enough that an index needs more
+            // than 32 bits.
+            auto sortByNativeInt = [](const ValueList& xs, std::vector<size_t>& order) {
+                if (xs.size() > 0xFFFFFFFFull) return false;
+                for (const Value& v : xs)
+                    if (!((v.t == VT::Int && !v.big()) || v.t == VT::Bool)) return false;
+                std::vector<std::pair<long long, uint32_t>> kv(xs.size());
+                for (size_t i = 0; i < xs.size(); i++)
+                    kv[i] = { xs[i].t == VT::Bool ? (xs[i].b ? 1LL : 0LL) : xs[i].i, (uint32_t)i };
+                std::sort(kv.begin(), kv.end(), [](const std::pair<long long, uint32_t>& a,
+                                                   const std::pair<long long, uint32_t>& b) {
+                    return a.first != b.first ? a.first < b.first : a.second < b.second;
+                });
+                for (size_t i = 0; i < kv.size(); i++) order[i] = kv[i].second;
+                return true;
+            };
             // :k sorts the INDICES of the elements instead of the elements
             bool wantK = false;
             for (auto& av : args)
@@ -2066,11 +2094,12 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     // `(0..0x1FFFF).sort(*.uniname.chars)` took 49s against Rakudo's 1.2s.
                     std::vector<Value> keys(items.size());
                     for (size_t i = 0; i < items.size(); i++) keys[i] = callCallable(blk, {items[i]});
-                    std::stable_sort(order.begin(), order.end(), [&](size_t x, size_t y) {
-                        return valueCmp(keys[x], keys[y]) < 0;
-                    });
+                    if (!sortByNativeInt(keys, order))
+                        std::stable_sort(order.begin(), order.end(), [&](size_t x, size_t y) {
+                            return valueCmp(keys[x], keys[y]) < 0;
+                        });
                 }
-            } else {
+            } else if (!sortByNativeInt(items, order)) {
                 std::stable_sort(order.begin(), order.end(), [&](size_t x, size_t y) {
                     const Value& xa = items[x]; const Value& yb = items[y];
                     bool nx = xa.t == VT::Num && std::isnan(xa.n), ny = yb.t == VT::Num && std::isnan(yb.n);

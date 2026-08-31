@@ -129,6 +129,44 @@ static inline BigInt fromMagU128(unsigned __int128 m, int sign) {
 }
 #endif
 
+// Multiply a magnitude by a SINGLE limb. The general loop below routes each
+// limb's carry through r.mag[i+1] — a store the next iteration must load back
+// — and needs a second inner pass per limb to place it, so a big-by-small
+// product runs at two iterations and two store-to-load round trips per limb.
+// Keeping the carry in a register does both in one pass, and a running product
+// (`$f *= $_`, factorials, radix scaling) is entirely this shape.
+//
+// carry stays below BASE by induction: with a.mag[i] and m both < BASE and
+// carry < BASE, cur <= (BASE-1)*BASE < 2^63, so cur/BASE <= BASE-1.
+static BigInt mulLimb(const BigInt& a, uint32_t m) {
+    BigInt r;
+    if (m == 0 || a.sign == 0) return r;
+    const std::size_t n = a.mag.size();
+    r.mag.resize(n + 1);
+    const uint32_t* src = a.mag.data();
+    uint32_t* dst = r.mag.data();
+    // Splitting the limb product BEFORE folding the carry in is what makes this
+    // loop fast. `(src[i]*m + carry) / BASE` puts a division on the carry chain,
+    // and division by 1e9 is a multiply-high plus a shift — five-odd cycles that
+    // every limb must wait for. src[i]*m does not depend on the carry, so its
+    // own split runs ahead of the chain; folding the carry into the low half is
+    // then an add and a conditional subtract, and the chain is three cycles.
+    uint32_t carry = 0;
+    for (std::size_t i = 0; i < n; i++) {
+        uint64_t p = (uint64_t)src[i] * m;
+        uint32_t ph = (uint32_t)(p / BigInt::BASE);
+        uint32_t pl = (uint32_t)(p - (uint64_t)ph * BigInt::BASE);
+        uint32_t low = pl + carry;              // both < BASE, so < 2e9 < 2^32
+        if (low >= BigInt::BASE) { low -= BigInt::BASE; ph++; }
+        dst[i] = low;
+        carry = ph;                             // ph <= BASE-2 before the bump
+    }
+    dst[n] = carry;
+    r.sign = a.sign;
+    r.trim();
+    return r;
+}
+
 BigInt BigInt::operator*(const BigInt& o) const {
     if (sign == 0 || o.sign == 0) return BigInt();
 #if defined(__SIZEOF_INT128__)
@@ -138,6 +176,9 @@ BigInt BigInt::operator*(const BigInt& o) const {
     if (fitsU64() && o.fitsU64())
         return fromMagU128((unsigned __int128)magU64(*this) * magU64(o), sign * o.sign);
 #endif
+    // Exactly one of the two is a single limb: one pass, carry in a register.
+    if (o.mag.size() == 1) { BigInt r = mulLimb(*this, o.mag[0]); if (r.sign) r.sign = sign * o.sign; return r; }
+    if (mag.size() == 1)   { BigInt r = mulLimb(o, mag[0]);       if (r.sign) r.sign = sign * o.sign; return r; }
     BigInt r;
     r.mag.assign(mag.size() + o.mag.size(), 0);
     for (size_t i = 0; i < mag.size(); i++) {

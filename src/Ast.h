@@ -327,8 +327,24 @@ struct Call : Expr { // sub call by name: foo(args)  or  foo args
     std::string name;
     ExprPtr callee;     // when invoking a code expression: $code(...)
     std::vector<ExprPtr> args;
+    // The LEXICAL LOOKUP KEY for `name` — "&" + name. evalCall resolves every
+    // named call through `find("&" + c->name)`, so the concatenation ran on
+    // each of fib's 1.6M calls only to produce the same four bytes again.
+    // Published once, like closedPat: payload is an immutable heap std::string,
+    // derived from `name`, so nothing serialises it — it refills on first use.
+    mutable PublishedOnce<const void*> ampName{nullptr};
     Call(): Expr(NK::Call) {}
 };
+
+// `&name` for a Call, built at most once per node (see Call::ampName). A caller
+// on the losing side of the race frees its own copy and uses the winner's.
+inline const std::string& callAmpName(const Call* c) {
+    if (const void* p = c->ampName.get()) return *static_cast<const std::string*>(p);
+    auto* mine = new std::string("&" + c->name);
+    const void* won = c->ampName.publish(mine);
+    if (won != mine) delete mine;
+    return *static_cast<const std::string*>(won);
+}
 
 // A call that can DEFINE SYMBOLS a static walker cannot see: EVAL compiles new
 // code into the caller's scope, EVALFILE is EVAL over a file. The sub form and
