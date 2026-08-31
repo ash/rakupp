@@ -21,7 +21,8 @@ Rakudo for every tag:
 ```
 
 Useful flags: `--kernels=all` (all 16 kernels instead of the 3 charted ones),
-`--workdir=PATH`, `--jobs=N`.
+`--tags=v3.22.0,v3.23.0` (a subset), `--passes=N` (interleaved passes for the
+per-era Rakudo measurement, default 4), `--workdir=PATH`, `--jobs=N`.
 
 **Requires:** `curl`, `tar`, `git`, a C++ compiler (`c++`/`g++`/`clang++` — the
 `native` lane compiles each kernel with `rakupp --exe`), plus `perl` and `make`
@@ -53,9 +54,39 @@ Add `-Mingw` to use the MinGW builds instead of the MSVC ones.
 ## Send back
 
 - `<workdir>/series.tsv` — one row per (tag, kernel), min and median ms for the
-  `interp`, `native` and `rakudo` lanes
+  `interp`, `native` and `rakudo` lanes. **Its `rakudo` column is the
+  correctness oracle, not a chartable reference** — see below.
+- `<workdir>/rakudo-eras.tsv` — the Rakudo reference: one value per Rakudo
+  release per kernel, plus a `converge_pct` column.
 - `<workdir>/environment.txt` — CPU, compiler, Rakudo versions, and the
   repeatability probe
+
+## Why Rakudo is measured once per RAKUDO release
+
+Rakudo ships monthly. It cannot change between two Raku++ tags cut on the same
+day, so any difference in a per-tag Rakudo column is run-to-run noise. On the
+reference machine that noise reached **19% on `sortby`** (whose Rakudo lane is
+bimodal there, ~168 ms or ~198 ms with nothing between) and 2–10% elsewhere,
+and it drew on the dashboard as if Rakudo had got faster and slower between
+releases cut hours apart.
+
+So the script measures each Rakudo **once**, keyed by date: 20 timed runs per
+kernel after a discarded warm-up, every era interleaved inside each round,
+`--passes=N` such passes (default 4), and the minimum across all of them.
+
+`converge_pct` compares the first half of the passes against the second.
+**Above ~2% means the floor has not converged** — raise `--passes` or quiet the
+machine. Two passes is not enough *and is not a check either*: run as sequential
+blocks they track the machine's drift rather than the engine, and on the
+reference machine they disagreed by up to 10% (`objects` consistently ~10%
+faster in the second pass, `fib` ~7% slower, in all three eras) while the
+four-pass minimum settled to within 1.8%.
+
+One thing that survives even a bad sitting: the **era-to-era ratios** reproduce
+to 1–2% because interleaving protects the comparison. It is the absolute floor
+that drifts. If your numbers differ from the reference machine's in absolute
+terms but agree on the ratios between Rakudo releases, that is the expected
+result, not a discrepancy.
 
 ## Things that will bite, and why they are handled
 
