@@ -2187,10 +2187,19 @@ Value Interpreter::bufSplice(Value& buf, ValueList& args) {
         if (args[k].t == VT::Pair) continue;
         if (args[k].t == VT::Array || args[k].t == VT::Range)
             for (auto& e : args[k].flatten()) repl += (char)(unsigned char)(e.toInt() & 0xFF);
+        // A Blob/Buf replacement is Positional over its BYTES, and splicing one
+        // buffer into another is the ordinary way to build a binary message.
+        // It is a VT::Str internally, so it fell to the scalar arm below and
+        // went in as ONE byte holding its element COUNT — BSON::Simple wrote
+        // `5` where "hello" belonged.
+        else if (args[k].t == VT::Str &&
+                 (args[k].hashKind == "Buf" || args[k].hashKind == "Blob"))
+            for (auto& e : args[k].blobList()) repl += (char)(unsigned char)(e.toInt() & 0xFF);
         else repl += (char)(unsigned char)(args[k].toInt() & 0xFF);
     }
     Value removed = Value::str(buf.s.substr((size_t)from, (size_t)len));
     removed.hashKind = buf.hashKind;
+    removed.ofTypeM() = buf.ofType();   // the removed bytes are the same Buf[uint8]
     if (removed.hashKind == "Buf") identify(removed); // a fresh Buf, not the spliced one
     buf.s.replace((size_t)from, (size_t)len, repl);
     return removed;
@@ -2690,7 +2699,14 @@ Value makeSignature(const Callable* c) {
         if (!first) sig += ", ";
         first = false;
         sig += renderParam(p);
-        if (!p.named) { if (p.slurpy) slurpy = true; else { count++; if (!p.optional && !p.defaultVal && p.defaultRaku.empty()) arity++; } }
+        // `*%opts` slurps NAMED arguments and takes no positional at all, so it
+        // does not make the count Inf — only *@ / **@ / +@ do. Every method
+        // carries an implicit one, which is how this reached signatures that never
+        // wrote it: Path::Finder builds a filter's Capture from
+        // `signature.count`, and Inf sent one-argument filters down the
+        // many-arguments branch, wrapping the pattern in a Seq.
+        if (!p.named && !(p.slurpy && p.sigil == '%'))
+        { if (p.slurpy) slurpy = true; else { count++; if (!p.optional && !p.defaultVal && p.defaultRaku.empty()) arity++; } }
     }
     // a declared return type is part of the signature's rendering: `($x --> Int)`
     // (space-separated, no comma — and `(--> Int)` when there are no parameters)
@@ -3508,7 +3524,8 @@ bool Interpreter::methodTakesJunction(const Value& inv, const std::string& m, si
 // `.kv`/`.keys`/`.values`/`.pairs`/`.antipairs` answer a Seq on EVERY container in
 // Rakudo — Hash, Array, List, Pair, Match alike. Marking them at the one dispatch
 // point keeps that uniform instead of tagging a dozen construction sites.
-Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList args, const std::vector<ExprPtr>* rwArgs) {
+Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList args, const std::vector<ExprPtr>* rwArgs,
+                              bool skipOwn) {
     // A JUNCTION argument autothreads: `$s.contains(none "01")` is a junction of
     // the per-eigenstate answers, which collapses later. This used to live only in
     // the MethodCall eval arm, so every internal caller lost it — the one that
@@ -3533,7 +3550,7 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
         }
         return jr;
     }
-    Value r = methodCallInner(inv, m, std::move(args), rwArgs);
+    Value r = methodCallInner(inv, m, std::move(args), rwArgs, skipOwn);
     if (r.t == VT::Array && r.isList && r.s.empty() &&
         (m == "kv" || m == "keys" || m == "values" || m == "pairs" ||
          m == "antipairs" || m == "invert" ||
@@ -3568,7 +3585,8 @@ Value* Interpreter::builtinExtMethod(const Value& inv, const std::string& m) {
     return nullptr;
 }
 
-Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName, ValueList args, const std::vector<ExprPtr>* rwArgs) {
+Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName, ValueList args, const std::vector<ExprPtr>* rwArgs,
+                                   bool skipOwn) {
     // The invocant arrives BY REFERENCE. It used to be by value, which cost a
     // 376-byte copy and up to eleven atomic refcount bumps on every method call —
     // to serve the handful of arms that actually rewrite it (the class-alias
@@ -3612,7 +3630,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         if (invIn.hash()->count("FETCH")) {
             Value fetched = deproxy(invIn);
             if (!(fetched.t == VT::Hash && fetched.hashKind == "Proxy"))
-                return methodCallInner(fetched, mName, std::move(args), rwArgs);
+                return methodCallInner(fetched, mName, std::move(args), rwArgs, skipOwn);
         }
     }
     const Value& inv = *invp;
@@ -3636,9 +3654,10 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     const bool userStringy = mName == "Stringy" &&
                              inv.t == VT::Object && inv.obj() && inv.obj()->cls &&
                              inv.obj()->cls->findMethod("Stringy");
-    const MName m{(mName == "perl" && !userPerl)      ? kRaku
-                : (mName == "Stringy" && !userStringy) ? kStr
-                                                       : mName};
+    MName m{(mName == "perl" && !userPerl)      ? kRaku
+          : (mName == "Stringy" && !userStringy) ? kStr
+                                                 : mName};
+    m.skipOwn = skipOwn;
     auto a0 = [&]() -> Value { return args.empty() ? Value::any() : args[0]; };
     // A USER OBJECT whose class defines the method dispatches HERE. The arm that
     // does it lives in methodCallPart2, which is reached ~3000 lines down this
@@ -3652,7 +3671,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     // delegated name all have rules the full arm knows, so they fall through to
     // it unchanged. Everything in the ladder that touches a user object already
     // guards itself with `!cls->findMethod(m)`, so nothing there wanted this call.
-    if (inv.t == VT::Object && inv.obj() && inv.obj()->cls && m != "new") {
+    if (inv.t == VT::Object && inv.obj() && inv.obj()->cls && m != "new" && !m.skipOwn) {
         auto ci = inv.obj()->cls;
         if (ci->delegatedNames.empty() || !ci->delegatedNames.count(m)) {
             ClassInfo* owner = nullptr;
@@ -4925,8 +4944,10 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
          m == "keys" || m == "values" || m == "pairs" || m == "antipairs" || m == "kv" ||
          m == "Bool")) {
         ValueList pos; std::map<std::string, Value> named;
+        // A Pair is a named part only if it WENT IN as one: `\(:a(1))` is named,
+        // `\(('a' => 1))` and a Pair slurped from a positional argument are not.
         if (inv.arr()) for (auto& e : *inv.arr()) {
-            if (e.t == VT::Pair) named[e.s] = e.pairVal() ? *e.pairVal() : Value::any();
+            if (e.t == VT::Pair && e.namedArg) named[e.s] = e.pairVal() ? *e.pairVal() : Value::any();
             else pos.push_back(e);
         }
         if (m == "list") { Value o = Value::array(); o.isList = true; *o.arr() = pos; return o; }
@@ -5854,7 +5875,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         return o;
     }
     if (m == "DateTime" && inv.hashKind == "Instant" && inv.isNumeric()) {
-        ValueList mk{Value::number(inv.toNum())};
+        ValueList mk{Value::number(inv.toNum() - 10.0)};  // Instant is POSIX + 10
         if (sixE()) { // 6.e: `.DateTime(:timezone = $*TZ)`, as on Date
             bool given = false;
             for (auto& a2 : args)
@@ -10825,8 +10846,7 @@ void Interpreter::registerBuiltins() {
         if (a.empty()) return Value::boolean(false);
         // measured against the same high-resolution clock `now` reads, so a
         // fraction-of-a-second target is not lost to truncation
-        auto d = std::chrono::system_clock::now().time_since_epoch();
-        double now = std::chrono::duration<double>(d).count();
+        double now = epochNowSecs();
         double target = a[0].toNum();
         if (target <= now) return Value::boolean(false);
         I.sleepYield(target - now);

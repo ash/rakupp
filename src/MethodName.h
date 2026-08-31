@@ -26,6 +26,11 @@ struct MName {
     const std::string& s;
     std::size_t n;        // cached length: the first test on every comparison
     std::uint64_t pre;    // first 8 bytes, so short names compare as one integer
+    // `self.Mu::Str` — dispatch PAST the invocant's own methods, straight to the
+    // built-in behaviour the qualifier names. Without it the call re-entered the
+    // very override that made it (Hash::Agnostic's `multi method Str(::?ROLE:U:)
+    // { self.Mu::Str }` recursed until the stack ran out).
+    bool skipOwn = false;
     explicit MName(const std::string& v) : s(v), n(v.size()), pre(pack(v.data(), v.size())) {}
     static std::uint64_t pack(const char* p, std::size_t k) {
         std::uint64_t w = 0;

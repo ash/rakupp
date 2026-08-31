@@ -372,6 +372,129 @@ const std::string* rakuppEmbeddedModuleSource(const std::string& name) {
     return it == m.end() ? nullptr : &it->second;
 }
 
+// ---- `use lib` at PARSE time -------------------------------------------------
+// The operators a module declares are harvested from its source while the file
+// that `use`s it is still being parsed (scanModuleOps), and that harvest walks
+// libPaths_. A program that puts its own directory on the search path — every
+// dist whose tests say `use lib $*PROGRAM.sibling('lib')` — therefore had to be
+// followed HERE too, or the module was found at run time and invisible at parse
+// time, and its operators never registered. (BSON::Simple's suite declares
+// `circumfix:<⦃ ⦄>` in t/lib and uses it on the next line.)
+//
+// Only spellings that name a fixed place are evaluated: a literal, and the
+// `$?FILE`/`$*PROGRAM` walks. Anything computed stays a run-time-only addition,
+// exactly as it was before.
+static std::string usePathParent(std::string p) {
+    while (p.size() > 1 && p.back() == '/') p.pop_back();
+    size_t slash = p.find_last_of('/');
+    if (slash == std::string::npos) return ".";
+    if (slash == 0) return "/";
+    return p.substr(0, slash);
+}
+
+static bool staticUsePath(const Expr* e, const std::string& srcFile, std::string& out) {
+    if (!e) return false;
+    switch (e->kind) {
+        case NK::StrLit:
+            out = static_cast<const StrLit*>(e)->v;
+            return !out.empty();
+        // A double-quoted path is an interpolating string even when nothing in it
+        // interpolates (`.add("t/lib")`); the constant case is still a fixed place.
+        case NK::InterpStr: {
+            for (auto& part : static_cast<const InterpStr*>(e)->parts) {
+                if (!part || part->kind != NK::StrLit) return false;
+                out += static_cast<const StrLit*>(part.get())->v;
+            }
+            return !out.empty();
+        }
+        case NK::VarExpr: {
+            const std::string& n = static_cast<const VarExpr*>(e)->name;
+            if (n == "$?FILE" || n == "$*PROGRAM" || n == "$*PROGRAM-NAME") {
+                if (srcFile.empty() || srcFile == "-e" || srcFile == "-") return false;
+                out = srcFile;
+                return true;
+            }
+            if (n == "$*CWD") { out = "."; return true; }
+            return false;
+        }
+        case NK::Binary: {
+            auto* b = static_cast<const Binary*>(e);
+            std::string l, r;
+            if (b->op != "~") return false;
+            if (!staticUsePath(b->lhs.get(), srcFile, l)) return false;
+            if (!staticUsePath(b->rhs.get(), srcFile, r)) return false;
+            out = l + r;
+            return true;
+        }
+        case NK::MethodCall: {
+            auto* m = static_cast<const MethodCall*>(e);
+            if (m->meta || m->bang || m->hyper || m->methodExpr || m->mutate) return false;
+            std::string base;
+            if (!staticUsePath(m->inv.get(), srcFile, base)) return false;
+            const std::string& name = m->method;
+            // The identity steps: they change the TYPE of the path object, or
+            // spell it differently, but never which directory it names.
+            if (name == "IO" || name == "Str" || name == "absolute" || name == "path" ||
+                name == "resolve" || name == "cleanup" || name == "self") {
+                if (!m->args.empty()) return false;
+                out = base;
+                return true;
+            }
+            if (name == "parent" || name == "dirname") {
+                long long up = 1;
+                if (m->args.size() == 1) {
+                    if (name == "dirname" || m->args[0]->kind != NK::IntLit) return false;
+                    up = static_cast<const IntLit*>(m->args[0].get())->v;
+                    if (up < 0 || up > 64) return false;
+                }
+                else if (!m->args.empty()) return false;
+                out = base;
+                for (long long i = 0; i < up; i++) out = usePathParent(out);
+                return true;
+            }
+            if (name == "sibling" || name == "add" || name == "child") {
+                if (m->args.size() != 1) return false;
+                std::string part;
+                if (!staticUsePath(m->args[0].get(), srcFile, part)) return false;
+                out = (name == "sibling" ? usePathParent(base) : base) + "/" + part;
+                return true;
+            }
+            return false;
+        }
+        default: return false;
+    }
+}
+
+// `use lib` takes one path or a list of them (`use lib <lib t/lib>`), so the
+// argument may be a list expression; an item that cannot be evaluated statically
+// drops the whole addition rather than adding a half-right search path.
+static bool staticUsePaths(const Expr* e, const std::string& srcFile,
+                           std::vector<std::string>& out) {
+    if (!e) return false;
+    if (e->kind == NK::ListExpr) {
+        for (auto& item : static_cast<const ListExpr*>(e)->items) {
+            std::string one;
+            if (!staticUsePath(item.get(), srcFile, one)) return false;
+            out.push_back(one);
+        }
+        return true;
+    }
+    std::string one;
+    if (!staticUsePath(e, srcFile, one)) return false;
+    out.push_back(one);
+    return true;
+}
+
+// The operand of a user-defined circumfix or postcircumfix is a TERM, not an
+// argument list, so `key => value` written between the brackets arrives as a
+// POSITIONAL Pair — the same rule parens already carry (PairExpr::parenned).
+// BSON::Simple's suite is written entirely in `⦃ hello => 'world' ⦄`, and
+// passing that pair as a NAMED argument left `Hash::Ordered.new(|c)` empty.
+static ExprPtr circumfixOperand(ExprPtr e) {
+    if (e && e->kind == NK::Pair) static_cast<PairExpr*>(e.get())->parenned = true;
+    return e;
+}
+
 void Parser::scanModuleOps(const std::string& module) {
     if (module.empty() || module[0] == 'v' || !scannedMods_.insert(module).second) return;
     // A module compiled into this binary answers before the disk is consulted.
@@ -1521,7 +1644,7 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
             call->name = "postcircumfix:<" + open + " " + close + ">";
             call->args.push_back(std::move(base));
             std::string savedClose = pcfxClose_; pcfxClose_ = close; // don't reopen the close inside content
-            if (cur().text != close) call->args.push_back(parseExpression());
+            if (cur().text != close) call->args.push_back(circumfixOperand(parseExpression()));
             pcfxClose_ = savedClose;
             if (cur().text == close) advance(); else error("expected postcircumfix closing '" + close + "'");
             base = std::move(call);
@@ -2592,9 +2715,14 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
             matchKind(Tok::RBrace);
             ve->declType = (ve->declType.empty() ? (langRev_ >= 2 ? "Mu" : "Any") : ve->declType) + "," + keyType;
         }
-        lastIsDynamic_ = false;
+        lastContainerIs_.clear(); lastContainerOf_.clear(); lastIsDynamic_ = false;
         skipTraits(scope != "has", &ve->declDefault);
         if (lastIsDynamic_) { ve->declDynamic = true; lastIsDynamic_ = false; }
+        if (!lastContainerOf_.empty()) { ve->containerOf = lastContainerOf_; lastContainerOf_.clear(); }
+        // `my % is Hash::Ordered = …` — an ANONYMOUS variable takes the container
+        // trait exactly as a named one does; dropping it left a plain Hash, and the
+        // assignment that follows never reached the container type's STORE.
+        if (!lastContainerIs_.empty()) { ve->containerIs = lastContainerIs_; lastContainerIs_.clear(); }
         return ve;
     }
     error("expected variable after declarator");
@@ -3021,7 +3149,14 @@ ExprPtr Parser::parsePrimary() {
         std::string open = advance().text, close = userCircumfix_[open];
         auto call = std::make_unique<Call>();
         call->name = "circumfix:<" + open + " " + close + ">";
-        if (cur().text != close) call->args.push_back(parseExpression());
+        if (cur().text != close) call->args.push_back(circumfixOperand(parseExpression()));
+        else {
+            // empty brackets still pass ONE argument — the empty list the term
+            // between them evaluates to (`⦃ ⦄` is `\(())`, not `\()`)
+            auto empty = std::make_unique<ListExpr>();
+            empty->parenned = true;
+            call->args.push_back(std::move(empty));
+        }
         if (cur().text == close) advance(); else error("expected circumfix closing '" + close + "'");
         return call;
     }
@@ -7714,6 +7849,16 @@ StmtPtr Parser::parseStatementImpl() {
                         u->importArgs.push_back(cur().text);
                     advance();
                 }
+            }
+            // The path this statement adds has to be on the search path for the
+            // REST of this parse: a `use` below it names a module that lives there,
+            // and its operators are harvested now (see staticUsePath).
+            if (u->module == "lib" && !u->isNo) {
+                std::vector<std::string> paths;
+                if (!u->arg.empty()) paths.push_back(u->arg);
+                else if (u->argExpr) staticUsePaths(u->argExpr.get(), srcFile_, paths);
+                for (auto& path : paths)
+                    if (!path.empty()) libPaths_.insert(libPaths_.begin(), path);
             }
             matchKind(Tok::Semicolon);
             return u;

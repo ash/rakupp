@@ -50,6 +50,9 @@ public:
     // Module search path, for finding the operators a `use`d module declares —
     // filled by the runtime from -I/RAKULIB before parsing. See scanModuleOps.
     std::vector<std::string> libPaths_{"lib", ".", "rakulib"};
+    // Path of the file being parsed, so `use lib $?FILE.IO.parent.add('lib')`
+    // can name a directory while the parse is still running. "" / "-e" = none.
+    std::string srcFile_;
     // pre-declare a user-defined operator (so EVAL'd code can parse custom infixes)
     void declareUserOp(const std::string& kind, const std::string& name) {
         if (kind == "infix") userInfix_[name] = 120 /*BP_ADD default*/;

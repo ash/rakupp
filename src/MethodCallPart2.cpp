@@ -1655,8 +1655,12 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             }
             if (!isoStr && inv.s == "DateTime" && pos.size() == 1 && pos[0].isNumeric()) {
                 // DateTime.new($posix) — seconds since the epoch (frac OK); a :timezone
-                // shifts the displayed civil time (posix itself stays the same instant)
+                // shifts the displayed civil time (posix itself stays the same instant).
+                // An INSTANT argument (`DateTime.new(now)`) is on the Instant clock,
+                // which carries the epoch offset `.to-posix` takes back off — the civil
+                // time it names is the POSIX one.
                 double pep = pos[0].toNum();
+                if (pos[0].hashKind == "Instant") pep -= kInstantEpochOffset;
                 long long ip = (long long)std::floor(pep);
                 double frac = pep - (double)ip;
                 long long lt = ip + tz;
@@ -1754,7 +1758,11 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             double sec = sit != inv.hash()->end() ? sit->second.toNum() : 0.0;
             long long ep = civilToDays(fld("year"), fld("month"), fld("day")) * 86400 +
                            fld("hour") * 3600 + fld("minute") * 60 - fld("timezone");
-            Value v = Value::number((double)ep + sec); v.hashKind = "Instant"; return identify(v);
+            // +10: an Instant is POSIX plus the pre-1972 leap seconds `to-posix`
+            // subtracts again. Handing back raw POSIX made every `.Instant.to-posix`
+            // ten seconds early — BSON::Simple encodes its datetimes through exactly
+            // that pair.
+            Value v = Value::number((double)ep + sec + 10.0); v.hashKind = "Instant"; return identify(v);
         }
         if ((m == "timezone" || m == "offset") && inv.hashKind == "DateTime") return Value::integer(fld("timezone"));
         if ((m == "in-timezone" || m == "utc" || m == "local") && inv.hashKind == "DateTime") {
@@ -2130,8 +2138,16 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     }
     if (inv.t == VT::Type && m == "new") {
         const std::string& t = inv.s;
-        if (t == "Str" || t == "Cool") return Value::str("");
-        if (t == "Int") return Value::integer(0);
+        // `Int.new(5)` / `Str.new(value => 'x')` — the constructors Rakudo gives
+        // these two. They were reached with the arguments already in hand and
+        // answered 0 / "" for every one of them, which is what a `class Int64 is
+        // Int` inherits when it constructs.
+        const Value* given = nullptr;
+        for (auto& a : args)
+            if (a.t == VT::Pair) { if (a.s == "value" && a.pairVal()) given = a.pairVal(); }
+            else if (!given) given = &a;
+        if (t == "Str" || t == "Cool") return Value::str(given ? given->toStr() : "");
+        if (t == "Int") return given ? Value::integer(given->toInt()) : Value::integer(0);
         if (t == "Num" || t == "Real" || t == "Numeric") return Value::number(0.0);
         if (t == "Bool") return Value::boolean(false);
         // `Mu.new` / `Any.new` — an instance of the bare root type: defined (so
@@ -2223,6 +2239,20 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             // it used to be paired up as a KEY, so the hash came back empty
             if (items[k].t == VT::Hash && items[k].hash() && !items[k].itemized) {
                 for (auto& kv : *items[k].hash()) (*v.hash())[kv.first] = kv.second;
+                continue;
+            }
+            // …and so does an OBJECT doing Associative: `Hash.new(self)` is how the
+            // Hash::Agnostic family builds its `.Hash`, and the object was paired up
+            // as a KEY, so the hash came back empty.
+            if (items[k].t == VT::Object && items[k].obj() && items[k].obj()->cls &&
+                items[k].obj()->cls->findMethod("pairs") &&
+                (items[k].obj()->cls->findMethod("AT-KEY") || items[k].obj()->cls->doesRole("Associative"))) {
+                for (auto& p : toList(methodCall(items[k], "pairs", {})))
+                    if (p.t == VT::Pair) {
+                        Value pv = p.pairVal() ? *p.pairVal() : Value::any();
+                        if (pv.t == VT::Hash && pv.hashKind == "Proxy" && pv.hash()) pv = deproxy(pv);
+                        (*v.hash())[p.s] = pv;
+                    }
                 continue;
             }
             if (items[k].t == VT::Pair) (*v.hash())[items[k].s] = items[k].pairVal() ? *items[k].pairVal() : Value::any();
@@ -2750,7 +2780,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 // through the CHAIN, so a callwith/callsame inside the custom new
                 // has a dispatcher (AttrProxy.new's callwith → the builtin Proxy.new)
                 if (useCustom) return invokeMethodChain(m, ci.get(), inv, args, rwArgs);
-            } else if (ci->findMethodForCall(m, langRev_ < 2)) {
+            } else if (!m.skipOwn && ci->findMethodForCall(m, langRev_ < 2)) {
                 return invokeMethodChain(m, ci.get(), inv, args, rwArgs);
             }
             // accessing an attribute (public accessor) on a type object is illegal
@@ -2862,6 +2892,38 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     // as in Rakudo's BUILDPLAN), then the ONE attribute walk —
                     // the stripped copy here had no `self` in scope and no
                     // provided-args-during-walk, so `has $.b = $!a * 2` died
+                    od->boxed = methodCall(Value::typeObj(nb), "new", builtinArgs);
+                    runAttrDefaults(od, ci, args);
+                    Value self = Value::object(od);
+                    if (Value* build = ci->findMethod("BUILD")) sinkBuildResult(invokeMethod(*build, self, args));
+                    if (Value* tweak = ci->findMethod("TWEAK")) sinkBuildResult(invokeMethod(*tweak, self, args));
+                    maybeRegisterDestroy(self);
+                    return self;
+                }
+                // A class subclassing a SCALAR built-in (`class Int64 is Int`,
+                // `class Symbol is Str`): box the value its parent's constructor
+                // makes, so the instance numifies, stringifies and compares as
+                // that value while .WHAT keeps answering the user type. Without
+                // the box `Int64.new(-42)` was an attribute-less object whose
+                // numeric value was its address.
+                // …but only for a class that adds NOTHING of its own — no
+                // attributes and no methods, just a name for the built-in's
+                // values (`class Int64 is Int does Special {}`). A class that adds
+                // either is an ordinary object that merely INHERITS the built-in's
+                // type: roast's `class NotComplex is Cool { method Numeric {…} }`
+                // decides its own numification, and `class DifferentReal is Real {
+                // has $.value }` keeps state the box would throw away.
+                bool addsOwn = false;
+                for (ClassInfo* c2 = ci.get(); c2 && !addsOwn; c2 = c2->parent.get())
+                    if (!c2->attrs.empty() || !c2->methods.empty()) addsOwn = true;
+                if (!addsOwn &&
+                    (nb == "Int" || nb == "Num" || nb == "Rat" || nb == "FatRat" ||
+                     nb == "Str" || nb == "Cool" || nb == "Real" || nb == "Numeric" ||
+                     nb == "Complex" || nb == "Bool")) {
+                    auto od = std::make_shared<ObjectData>(); od->cls = ci; od->hasBoxed = true;
+                    ValueList builtinArgs;   // attribute pairs stay with the object
+                    for (auto& a : args)
+                        if (!(a.t == VT::Pair && ci->findAttr(a.s))) builtinArgs.push_back(a);
                     od->boxed = methodCall(Value::typeObj(nb), "new", builtinArgs);
                     runAttrDefaults(od, ci, args);
                     Value self = Value::object(od);
@@ -2988,7 +3050,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 }
             }
             if (m == "raku") return Value::str(inv.s); // type-object .raku is the bare name
-            if (m == "gist") return Value::str("(" + inv.s + ")");
+            if (m == "gist") return Value::str(inv.gist()); // `(ShortName)` — see Value::gist
             if (m == "Str") return Value::str(""); // type objects stringify empty
         }
     }
@@ -3026,7 +3088,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         auto ci = inv.obj()->cls;
         // a name the class delegates with `handles` (and does not declare itself) is
         // answered by the delegation, never by a method a composed role supplied
-        Value* um0 = (!ci->delegatedNames.empty() && ci->delegatedNames.count(m))
+        Value* um0 = (m.skipOwn || (!ci->delegatedNames.empty() && ci->delegatedNames.count(m)))
                      ? nullptr : ci->findMethodForCall(m, langRev_ < 2);
         if (um0) {
             // a role's STUB method (`method body-serializer-selector() { ... }`)
@@ -3280,6 +3342,13 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             long long n = 0; bool slurpy = false;
             if (inv.code()->params) for (auto& p : *inv.code()->params) {
                 if (p.named) continue;
+                // `*%opts` slurps NAMED arguments and accepts no positional at
+                // all, so it does not make the count Inf — only *@ / **@ / +@ do.
+                // (Every method carries an implicit one, so this reached far past
+                // the signatures that write it: Path::Finder decides how to build
+                // a filter's Capture from `signature.count`, and Inf sent every
+                // one-argument filter down the many-arguments branch.)
+                if (p.slurpy && p.sigil == '%') continue;
                 if (p.slurpy) slurpy = true; else n++;
             } else n = (long long)inv.code()->placeholders.size();
             return slurpy ? Value::number(std::numeric_limits<double>::infinity()) : Value::integer(n);

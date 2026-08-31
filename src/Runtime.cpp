@@ -159,6 +159,7 @@ int rakuppRunOn(Interpreter& interp, const std::string& src, std::vector<std::st
         // the same search path the Interpreter will use, so a `use`d module's
         // operator declarations are found while this file is still being parsed
         parser.libPaths_.insert(parser.libPaths_.begin(), libPaths.begin(), libPaths.end());
+        parser.srcFile_ = fileName;   // `use lib $*PROGRAM.sibling('lib')` resolves here too
         if (const char* rl = std::getenv("RAKULIB"))
             for (auto& d : splitSearchPath(rl)) parser.libPaths_.push_back(d);
         Program prog = parser.parseProgram();

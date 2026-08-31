@@ -232,6 +232,12 @@ long long Value::toInt() const {
             if (hashKind == "Date" || hashKind == "DateTime")
                 if (hash()) return (long long)dateNumeric(*this);
             return hash() ? (long long)hash()->size() : 0;
+        // A class deriving a built-in (`class Int64 is Int`) or a `but`/`does`
+        // mixin over a value numifies to the value it BOXES — `toStr` has always
+        // done this, and a numeric context has the same answer to give. Without
+        // it BSON::Simple's `$buf.write-int64($pos, $_)` on an Int64 wrote 0.
+        case VT::Object:
+            return obj() && obj()->hasBoxed ? obj()->boxed.toInt() : 0;
         default: return 0;
     }
 }
@@ -297,6 +303,8 @@ double Value::toNum() const {
         case VT::Hash:
             if ((hashKind == "Date" || hashKind == "DateTime") && hash()) return dateNumeric(*this);
             return (double)toInt();
+        case VT::Object:   // as in toInt: a boxed built-in numifies as its box
+            return obj() && obj()->hasBoxed ? obj()->boxed.toNum() : 0.0;
         default: return (double)toInt();
     }
 }
@@ -576,9 +584,17 @@ std::string Value::gist() const {
         case VT::Type:
             // IterationEnd is a SENTINEL, not a type object — it gists bare
             if (s == "IterationEnd") return s;
-            // IO::Spec::Unix gists by its SHORT name, `(Unix)` — Rakudo does
-            if (s.rfind("IO::Spec::", 0) == 0) return "(" + s.substr(10) + ")";
-            return "(" + (ofType().empty() ? s : s + "[" + ofType() + "]") + ")";
+            // A type object gists by its SHORT name — Rakudo renders `.^shortname`,
+            // the last `::` segment: `IO::Path` is `(Path)`, `X::AdHoc` is
+            // `(AdHoc)`, `Hash::Ordered` is `(Ordered)`. The parameterization stays
+            // attached (`Array[Int]` is `(Array[Int])`), and `.raku`/`.^name` keep
+            // answering the full name.
+            {
+                std::string short_ = s;
+                auto sep = short_.rfind("::");
+                if (sep != std::string::npos) short_ = short_.substr(sep + 2);
+                return "(" + (ofType().empty() ? short_ : short_ + "[" + ofType() + "]") + ")";
+            }
         // a Regex gists as the literal that makes it, `rx/a/` — not as its bare
         // pattern text (which is what .Str answers, and what the engine consumes)
         case VT::Regex: if (g_rakuRepr) return g_rakuRepr(*this); return s;

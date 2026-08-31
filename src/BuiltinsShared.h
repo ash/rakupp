@@ -16,10 +16,19 @@
 
 namespace rakupp {
 
+// An Instant in this engine is POSIX plus the ten pre-1972 leap seconds:
+// `Instant.from-posix` adds them and `.to-posix` takes them back off. Every
+// producer of an Instant — `now`, `DateTime.Instant` — has to add them too, or
+// the pair does not round-trip (BSON::Simple encodes datetimes through exactly
+// that pair, and every timestamp came out ten seconds early).
+inline constexpr double kInstantEpochOffset = 10.0;
+
 // Seconds since the epoch, on the same clock the `now` term reads (so timer
-// promises and `now` arithmetic can't disagree by a truncated fraction).
+// promises and `now` arithmetic can't disagree — by a truncated fraction, or by
+// the offset above: `sleep-until(now - 5)` compares against this).
 inline double epochNowSecs() {
-    return std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
+    return std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count()
+           + kInstantEpochOffset;
 }
 
 // Remaining delay, in seconds, of a timer Promise (hashKind "Promise", kind

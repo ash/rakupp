@@ -903,6 +903,7 @@ static int declCheckGate(const std::string& src, const std::string& fileName,
         Lexer lexer(src);
         Parser parser(lexer.tokenize());
         parser.libPaths_ = searchPath;
+        parser.srcFile_ = fileName;
         prog = parser.parseProgram();
     } catch (const ParseError&) { return -1; }
     auto us = findUndeclaredVars(prog, src, searchPath);
@@ -921,6 +922,7 @@ static int compileNative(const std::string& src, const std::string& srcName, std
         Lexer lexer(src);
         Parser parser(lexer.tokenize());
         parser.libPaths_ = effectiveSearchPath(libPaths); // find a `use`d module's operators
+        parser.srcFile_ = srcName;
         Program prog = parser.parseProgram();
         // The program is compiled; its MODULES ride along as parsed ASTs, so the
         // binary is self-sufficient. (Natively compiling module code is a separate
@@ -1006,6 +1008,7 @@ static int compileAotAst(const std::string& src, const std::string& srcName, std
         Lexer lexer(src);
         Parser parser(lexer.tokenize());
         parser.libPaths_ = effectiveSearchPath(libPaths); // find a `use`d module's operators
+        parser.srcFile_ = srcName;
         finish = lexer.finishData();
         Program prog = parser.parseProgram();
         // Everything the program `use`s, resolved and parsed NOW, so the binary
@@ -1144,6 +1147,7 @@ static int slimExplain(const std::string& src, const std::string& srcName,
         Lexer lexer(src);
         Parser parser(lexer.tokenize());
         parser.libPaths_ = effectiveSearchPath(libPaths);
+        parser.srcFile_ = srcName;
         prog = parser.parseProgram();
         mods = collectModuleGraph(prog, effectiveSearchPath(libPaths));
     } catch (const ParseError& e) {
@@ -2008,6 +2012,7 @@ int main(int argc, char** argv) {
             Lexer lexer(src);
             Parser parser(lexer.tokenize());
             parser.libPaths_ = effectiveSearchPath(libPaths);
+            parser.srcFile_ = fileName;
             prog = parser.parseProgram();
         } catch (const ParseError& e) {
             std::cerr << "===SORRY!=== Parse error at line " << e.line << ": " << e.what() << "\n";
@@ -2035,6 +2040,7 @@ int main(int argc, char** argv) {
             Lexer lexer(src);
             Parser parser(lexer.tokenize());
             parser.libPaths_ = effectiveSearchPath(libPaths);
+            parser.srcFile_ = fileName;
             prog = parser.parseProgram();
         } catch (const ParseError& e) {
             std::cerr << "===SORRY!=== Parse error at line " << e.line << ": " << e.what() << "\n";
@@ -2082,6 +2088,7 @@ int main(int argc, char** argv) {
             Lexer lexer(src);
             Parser parser(lexer.tokenize());
             parser.libPaths_ = effectiveSearchPath(libPaths);
+            parser.srcFile_ = fileName;
             Program prog = parser.parseProgram();
             // same module scan as --exe, so what this prints is what --exe compiles
             std::set<std::string> moduleExports;

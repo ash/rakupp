@@ -1624,6 +1624,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
 #endif
         // an INSTANT, not a bare Num: `.modified.DateTime` must dispatch
         // (HTTP::Tiny's mirror builds if-modified-since from it)
+        // Raw POSIX, no epoch offset: Rakudo's `.modified.Int` is exactly what
+        // `nqp::stat(…, STAT_MODIFYTIME)` answers, leap seconds and all.
         Value v = Value::number(secs); v.hashKind = "Instant"; return identify(v);
     }
     if (m == "chmod" && inv.hashKind == "IO") { // $path.IO.chmod(0o644)

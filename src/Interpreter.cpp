@@ -296,6 +296,8 @@ extern std::function<Value*(const std::string&)> g_lexInfixLookup;
 //
 // NOT applied to =:=, which is container identity: `my $x; $x =:= Any` is
 // False on Rakudo too, and a container is not the object it holds.
+static bool syntacticNamedArg(const Expr* a, const Value& v);
+
 static inline bool isAnyTypeObject(const Value& v) {
     return v.t == VT::Any || (v.t == VT::Type && v.s == "Any" && v.ofType().empty());
 }
@@ -1927,8 +1929,10 @@ bool nameTermConstant(const std::string& n, Value& out, bool sixE) {
         out = Value::makeHash(); out.hashKind = "Set"; return true;
     }
     if (n == "now") { // Instant: high-resolution seconds since the epoch
-        auto d = std::chrono::system_clock::now().time_since_epoch();
-        out = Value::number(std::chrono::duration<double>(d).count());
+        // …on the `now` clock, which carries the Instant epoch offset that
+        // `.to-posix` takes back off (see epochNowSecs). Handing out raw POSIX
+        // put `now.to-posix` ten seconds in the past.
+        out = Value::number(epochNowSecs());
         out.hashKind = "Instant";
         identify(out);
         return true;
@@ -5487,6 +5491,7 @@ std::vector<BundledModule> collectModuleGraph(const Program& prog,
             Lexer lx(src);
             Parser parser(lx.tokenize());
             parser.libPaths_ = searchPath;                // its own `use`s resolve like the real load
+            parser.srcFile_ = path;
             mp = parser.parseProgram();
             finish = lx.finishData();
         } catch (ParseError&) {                           // let the run-time loader report it
@@ -5910,6 +5915,7 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
             // imported operators and sigilless constants are known while its body
             // parses (Text::Utils reads SPACE from Text::Utils::Vars).
             parser.libPaths_ = libPaths_;
+            parser.srcFile_ = srcPath;
             *prog = parser.parseProgram();
             finish = lx.finishData();
             if (!cpath.empty())
@@ -15961,9 +15967,7 @@ Value Interpreter::coerceToType(const Value& v, const std::string& type) {
 
 Value Interpreter::deproxy(Value v) {
     if (v.t == VT::Hash && v.hashKind == "Proxy" && v.hash()) {
-        { size_t idx = 0; if (ValueList* arr = slotProxyTarget(v, idx)) {   // compact slot: no call
-              ParStripe ps(*this, arr);
-              return idx < arr->size() ? (*arr)[idx] : Value::any(); } }
+        { size_t idx = 0; if (slotProxyTarget(v, idx)) return slotProxyRead(v); }   // compact slot: no call
         auto it = v.hash()->find("FETCH");
         if (it == v.hash()->end()) return v;
         // FETCH may be written as a `method` — XML::Element's is — in which case the
@@ -15979,11 +15983,7 @@ Value Interpreter::deproxy(Value v) {
 // `sub ($, $v)` STORE — the spelling every module uses — takes the value in its
 // SECOND parameter; a one-parameter STORE still gets just the value.
 Value Interpreter::proxyStore(const Value& proxy, const Value& v) {
-    { size_t idx = 0; if (ValueList* arr = slotProxyTarget(proxy, idx)) {   // compact slot: no call
-          ParStripe ps(*this, arr);
-          while (arr->size() <= idx) arr->push_back(Value::any());
-          (*arr)[idx] = v;
-          return v; } }
+    { size_t idx = 0; if (slotProxyTarget(proxy, idx)) return slotProxyWrite(proxy, v); }   // compact slot: no call
     auto it = proxy.hash()->find("STORE");
     if (it == proxy.hash()->end()) return v;
     // `method ($val)` takes the Proxy as its invocant; `sub ($, $v)` takes it as the
@@ -16046,6 +16046,16 @@ Value Interpreter::makeEnvSlotProxy(std::shared_ptr<Env> owner, const std::strin
 // all; the entries stay present, and callable, for the generic FETCH/STORE sites.
 static const char* kSlotArr = "\x01arr";
 static const char* kSlotIdx = "\x01idx";
+// An array slot alias names a POSITION, where Rakudo's names the element's own
+// Scalar. The two agree while the array only grows at the end (`my $x := @a[1];
+// @a.push(9); $x = 5` still writes element 1) — but once the array SHRINKS, the
+// position no longer means the element that was bound. Rakudo's alias keeps the
+// value its container held; ours does too, from here: kSlotSize is the length at
+// bind time and kSlotLast the value last read through the alias. Hash::Ordered's
+// DELETE-KEY names an element, splices it away and returns the name, which
+// otherwise answered the NEXT element's value.
+static const char* kSlotSize = "\x01siz";
+static const char* kSlotLast = "\x01lst";
 
 Value Interpreter::makeArraySlotProxy(std::shared_ptr<ValueList> arr, size_t idx) {
     // Built once. STORE carries a two-parameter signature so codeArity sends it
@@ -16073,6 +16083,8 @@ Value Interpreter::makeArraySlotProxy(std::shared_ptr<ValueList> arr, size_t idx
     Value av; av.t = VT::Array; av.setArr(arr);          // shares the storage
     (*proxy.hash())[kSlotArr] = std::move(av);
     (*proxy.hash())[kSlotIdx] = Value::integer((long long)idx);
+    (*proxy.hash())[kSlotSize] = Value::integer((long long)arr->size());
+    (*proxy.hash())[kSlotLast] = idx < arr->size() ? (*arr)[idx] : Value::any();
     (*proxy.hash())["FETCH"] = kFetch;
     (*proxy.hash())["STORE"] = kStore;
     return proxy;
@@ -16088,12 +16100,26 @@ ValueList* Interpreter::slotProxyTarget(const Value& proxy, size_t& idxOut) {
     return ai->second.arr();
 }
 
+// True once the array has SHRUNK since the alias was made: the position it holds
+// no longer names the element it was bound to (see kSlotSize).
+static bool slotProxyDetached(const Value& proxy, const ValueList* arr) {
+    auto it = proxy.hash()->find(kSlotSize);
+    return it != proxy.hash()->end() && arr->size() < (size_t)it->second.toInt();
+}
+
 Value Interpreter::slotProxyRead(const Value& proxy) {
     size_t idx = 0;
     ValueList* arr = slotProxyTarget(proxy, idx);
     if (!arr) return Value::any();
     ParStripe ps(*this, arr);
-    return idx < arr->size() ? (*arr)[idx] : Value::any();
+    auto& ph = *proxy.hash();
+    if (slotProxyDetached(proxy, arr)) {
+        auto it = ph.find(kSlotLast);
+        return it != ph.end() ? it->second : Value::any();
+    }
+    Value v = idx < arr->size() ? (*arr)[idx] : Value::any();
+    ph[kSlotLast] = v;   // what the alias keeps if the array shrinks later
+    return v;
 }
 
 Value Interpreter::slotProxyWrite(const Value& proxy, const Value& nv) {
@@ -16101,6 +16127,8 @@ Value Interpreter::slotProxyWrite(const Value& proxy, const Value& nv) {
     ValueList* arr = slotProxyTarget(proxy, idx);
     if (!arr) return nv;
     ParStripe ps(*this, arr);
+    (*proxy.hash())[kSlotLast] = nv;
+    if (slotProxyDetached(proxy, arr)) return nv;  // written to the detached element
     while (arr->size() <= idx) arr->push_back(Value::any());
     (*arr)[idx] = nv;
     return nv;
@@ -17466,7 +17494,9 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         // with "Cannot assign to a readonly variable". Accepting it silently is
         // the worst direction for a divergence: it lets code be written against
         // rakupp that no other implementation will run.
-        if (lv->readonly)
+        // …but a BIND to an ELEMENT replaces what is bound there, so rebinding a
+        // slot that a previous bind made immutable is not an assignment to it.
+        if (lv->readonly && !(a->op == ":=" && a->target->kind == NK::Index))
             throw RakuError{Value::typeObj("X::Assignment::RO"),
                             "Cannot assign to a readonly variable or a value"};
         // …and the flag does NOT travel with the value. It marks the CONTAINER,
@@ -17485,8 +17515,20 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         // and `.convert-function` then answered "no such method" on a Hash.
         if (a->op == "=" && lv->t == VT::Object && lv->obj() && lv->obj()->cls &&
             lv->obj()->cls->findMethod("STORE")) {
-            Value r = methodCall(*lv, "STORE", ValueList{rhs});
-            return sink ? Value::any() : r;
+            // …but only for a %/@ variable. A `$` scalar HOLDS its object rather
+            // than BEING a container of that type — `my $v = Hash::Ordered.new(…);
+            // $v = 1` replaces what the scalar holds. (The container trait itself
+            // is only honoured for % and @; see the declaration's containerIs arm.)
+            // BSON::Simple's decoder reuses one `my Mu $value` for every element,
+            // so the first assignment after a subdocument reached Hash::Ordered's
+            // STORE with a single non-Pair value and died on an odd element count.
+            bool scalarTarget = a->target->kind == NK::VarExpr &&
+                !static_cast<VarExpr*>(a->target.get())->name.empty() &&
+                static_cast<VarExpr*>(a->target.get())->name[0] == '$';
+            if (!scalarTarget) {
+                Value r = methodCall(*lv, "STORE", ValueList{rhs});
+                return sink ? Value::any() : r;
+            }
         }
         // `$obj.attr = v` enforces the attribute's DECLARED type (recorded by
         // the MethodCall lvalue arm): `has C $.x is rw` rejects 42 and Mu.
@@ -17791,6 +17833,19 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         if (a->target->kind == NK::VarExpr) {
             auto* tv = static_cast<VarExpr*>(a->target.get());
             if (tv->declare && tv->declScope == "constant") lv->readonly = true;
+        }
+        // Binding a VALUE into a hash element puts it in the slot with no Scalar
+        // container around it, so that element is immutable afterwards —
+        // `%h<k> := 137` then `%h<k> = 666` is an error, as it is in Rakudo.
+        // Binding something that NAMES a container (`%h<k> := $foo`, Getopt::Long's
+        // `%hash{$name} := .value`) aliases that container instead, and writing
+        // through the alias is the whole point of it.
+        if (a->op == ":=" && a->target->kind == NK::Index &&
+            static_cast<Index*>(a->target.get())->isHash) {
+            NK rk = a->value->kind;
+            if (rk != NK::VarExpr && rk != NK::Index && rk != NK::MethodCall &&
+                rk != NK::Call && rk != NK::SymbolicRef)
+                lv->readonly = true;
         }
         return sink ? Value::any() : *lv;
     }
@@ -24136,11 +24191,24 @@ Value Interpreter::evalUnary(Unary* u) {
         return Value::boolean(u->op[3] == 'e' ? found : !found);
     }
     if (u->op == "capture") { // \(…): a Capture — one item, assoc-indexable on its named parts
-        Value v = eval(u->operand.get());
-        if (v.t != VT::Array) { // \(:named) / \(42): a single part is still a Capture
-            Value one = Value::array();
-            if (v.t != VT::Nil) one.arr()->push_back(std::move(v));
-            v = std::move(one);
+        // A Capture literal IS the argument list it stands for, so build it the way
+        // a call builds its arguments: `k => v` and `|%h` become NAMED parts, `|@a`
+        // slips positionally, and a bare `@a` is ONE positional. Evaluating the
+        // parens as a plain list instead spread `\(@a)` over three parts and lost
+        // the named/positional split entirely — `f(|$c)` then had to guess, and
+        // guessed "every Pair is named", which is wrong for a positional one.
+        struct BorrowedArg {   // one non-list operand, lent to evalArgs and taken back
+            std::vector<ExprPtr> v;
+            explicit BorrowedArg(Expr* e) { v.emplace_back(e); }
+            ~BorrowedArg() { for (auto& p : v) p.release(); }
+        };
+        Value v = Value::array();
+        if (u->operand->kind == NK::ListExpr)
+            *v.arr() = evalArgs(static_cast<ListExpr*>(u->operand.get())->items);
+        else {
+            BorrowedArg one(u->operand.get());
+            ValueList got = evalArgs(one.v);
+            for (auto& g : got) if (g.t != VT::Nil) v.arr()->push_back(std::move(g));
         }
         v.hashKind = "Capture"; v.itemized = true; v.isList = false;
         return v;
@@ -24605,6 +24673,15 @@ Value Interpreter::evalUnary(Unary* u) {
                 if (u->op == "-") return n.t == VT::Int ? Value::integer(-n.toInt()) : Value::number(-n.toNum());
                 return n;
             }
+        // …and a class deriving a built-in numifies as the value it BOXES:
+        // `+Int64.new(-42)` is -42, not the object's address.
+        if (v.obj()->hasBoxed) {
+            Value b = v.obj()->boxed;
+            ValueList none;
+            Value n = b.isNumeric() ? b : methodCall(b, "Numeric", none);
+            if (u->op == "-") return n.t == VT::Int ? Value::integer(-n.toInt()) : Value::number(-n.toNum());
+            return n;
+        }
     }
     // …and a CAPTURE numifies to its POSITIONAL count: the named parts are not
     // elements, so `+\(2, 3, :a(7))` is 2, not 3.
@@ -24773,6 +24850,28 @@ Value Interpreter::evalUnary(Unary* u) {
     throw RakuError{Value::typeObj("X::NYI"), "Unsupported prefix '" + u->op + "'"};
 }
 
+// Only a syntactic pair (k=>v / :k(v), i.e. a NK::Pair expression) whose key is a
+// bare identifier is a NAMED argument; a Pair value from a variable/call/list — or
+// with a non-identifier key (`3 => 4`), a quoted key, or parens around it — is
+// positional. A CAPTURE makes exactly the same split, which is why the test lives
+// here rather than inside evalArgs.
+static bool syntacticNamedArg(const Expr* a, const Value& v) {
+    if (v.t != VT::Pair || !a || a->kind != NK::Pair) return false;
+    auto* pe = static_cast<const PairExpr*>(a);
+    if (pe->quotedKey || pe->parenned) return false;
+    const std::string& k = pe->key;
+    // Raku identifiers are Unicode: `:μ(5)` is as much a named argument as
+    // `:mu(5)`. The lexer already vetted the token, so a non-ASCII byte here is
+    // part of a letter it accepted — treat the whole multibyte run as identifier
+    // material rather than rejecting it and passing the pair positionally.
+    bool ident = !k.empty() && (ascii::isalpha((unsigned char)k[0]) ||
+                                k[0] == '_' || (unsigned char)k[0] >= 0x80);
+    for (size_t ci = 1; ident && ci < k.size(); ci++)
+        if (!ascii::isalnum((unsigned char)k[ci]) && k[ci] != '-' && k[ci] != '_' &&
+            k[ci] != '\'' && (unsigned char)k[ci] < 0x80)
+            ident = false;
+    return ident;
+}
 ValueList Interpreter::evalArgs(const std::vector<ExprPtr>& exprs) {
     ValueList args;
     for (auto& a : exprs) {
@@ -24788,16 +24887,12 @@ ValueList Interpreter::evalArgs(const std::vector<ExprPtr>& exprs) {
             // |@list slips positionally ONE level (post-GLR: nested lists stay
             // whole elements — |(<a b>, <c d>) is two List arguments, not four
             // strings); |%hash slips as named args.
-            // A CAPTURE is an Array carrying hashKind "Capture"; the Pairs inside it
-            // are its NAMED parts, so `|$c` must slip them as nameds. Pushed verbatim
-            // they arrived as trailing positionals — `min |\(1,7,3, by => {1/$_})`
-            // compared four values instead of three with a :by.
+            // A CAPTURE is an Array carrying hashKind "Capture", and each of its
+            // parts already knows whether it went in named — so slipping one hands
+            // them back exactly as they arrived: `min |\(1,7,3, by => {1/$_})` keeps
+            // its :by named, `f(|\(('a' => 1)))` keeps its Pair positional.
             if (v.t == VT::Array && v.arr()) {
-                bool cap = v.hashKind == "Capture";
-                for (auto& x : *v.arr()) {
-                    if (cap && x.t == VT::Pair) { Value pr = x; pr.namedArg = true; args.push_back(std::move(pr)); }
-                    else args.push_back(x);
-                }
+                for (auto& x : *v.arr()) args.push_back(x);
             }
             else if (v.t == VT::Range) { for (auto& x : v.flatten()) args.push_back(x); }
             // A Blob/Buf is Positional over its ELEMENTS, so `|$blob` slips those
@@ -24830,26 +24925,7 @@ ValueList Interpreter::evalArgs(const std::vector<ExprPtr>& exprs) {
             // (Not at the subscript — `$.root{$k}` inside an `is rw` AT-KEY has to
             // hand back the container itself, which is how a write reaches STORE.)
             if (v.t == VT::Hash && v.hashKind == "Proxy" && v.hash()) v = deproxy(v);
-            // Only a syntactic pair (k=>v / :k(v), i.e. a NK::Pair expression) whose key
-            // is a bare identifier is a NAMED argument; a Pair value from a variable/
-            // call/list — or with a non-identifier key (`3 => 4`) — is positional.
-            if (v.t == VT::Pair && a->kind == NK::Pair &&
-                !static_cast<PairExpr*>(a.get())->quotedKey &&
-                !static_cast<PairExpr*>(a.get())->parenned) {
-                const std::string& k = static_cast<PairExpr*>(a.get())->key;
-                // Raku identifiers are Unicode: `:μ(5)` is as much a named
-                // argument as `:mu(5)`. The lexer already vetted the token, so a
-                // non-ASCII byte here is part of a letter it accepted — treat the
-                // whole multibyte run as identifier material rather than
-                // rejecting it and passing the pair positionally.
-                bool ident = !k.empty() && (ascii::isalpha((unsigned char)k[0]) ||
-                                            k[0] == '_' || (unsigned char)k[0] >= 0x80);
-                for (size_t ci = 1; ident && ci < k.size(); ci++)
-                    if (!ascii::isalnum((unsigned char)k[ci]) && k[ci] != '-' && k[ci] != '_' &&
-                        k[ci] != '\'' && (unsigned char)k[ci] < 0x80)
-                        ident = false;
-                if (ident) v.namedArg = true;
-            }
+            if (v.t == VT::Pair && syntacticNamedArg(a.get(), v)) v.namedArg = true;
             args.push_back(std::move(v));
         }
     }
@@ -25702,11 +25778,16 @@ Value Interpreter::evalCall(Call* c) {
     // Rakudo only coerces when no CALL-ME exists. rwArgs = the call's argument
     // exprs, so an `is raw`/`is rw` CALL-ME param can write back (Trap assigns
     // the built object INTO the freshly-declared `my $*OUT` it was handed).
+    // A class named by its SHORT name from inside its own package — `Symbol(…)`
+    // for BSON::Simple::Symbol — is registered under the FULL one, so the
+    // coercion call has to follow the same alias every other type lookup does.
+    // Without it the name read as an undefined routine.
+    const std::string& coerceName = resolveClassAlias(c->name);
     {
-        auto cit = classes_.find(c->name);
+        auto cit = classes_.find(coerceName);
         if (cit != classes_.end())
             if (Value* cm = cit->second->findMethod("CALL-ME"))
-                return invokeMethod(*cm, Value::typeObj(c->name), std::move(args), &c->args);
+                return invokeMethod(*cm, Value::typeObj(coerceName), std::move(args), &c->args);
     }
     // General type-coercion call `T(x)`: a known type used as a routine coerces its
     // sole argument through the argument's `.T` method (Raku's coercion protocol) —
@@ -25714,7 +25795,7 @@ Value Interpreter::evalCall(Call* c) {
     // Only reached after the specialized coercers above, so it just upgrades former
     // "Undefined routine" errors into real coercions (or a clearer "No such method").
     {
-        auto cit = classes_.find(c->name);
+        auto cit = classes_.find(coerceName);
         if (!args.empty() && (cit != classes_.end() || isKnownTypeName(c->name))) {
             Value a0 = args[0];
             // already a T — identity. doesRole self-matches only for ROLES, so
@@ -25722,8 +25803,8 @@ Value Interpreter::evalCall(Call* c) {
             bool isaT = false;
             if (a0.t == VT::Object && a0.obj() && a0.obj()->cls) {
                 for (const ClassInfo* ci = a0.obj()->cls.get(); ci; ci = ci->parent.get())
-                    if (ci->name == c->name) { isaT = true; break; }
-                isaT = isaT || a0.obj()->cls->doesRole(c->name);
+                    if (ci->name == coerceName) { isaT = true; break; }
+                isaT = isaT || a0.obj()->cls->doesRole(coerceName);
             }
             if (isaT)
                 return a0;
@@ -25735,8 +25816,8 @@ Value Interpreter::evalCall(Call* c) {
                     a0.obj()->cls->findMethod(c->name))
                     return methodCall(a0, c->name, ValueList{});
                 if (Value* co = cit->second->findMethod("COERCE"))
-                    return invokeMethod(*co, Value::typeObj(c->name), std::move(args), &c->args);
-                return methodCall(Value::typeObj(c->name), "new", std::move(args));
+                    return invokeMethod(*co, Value::typeObj(coerceName), std::move(args), &c->args);
+                return methodCall(Value::typeObj(coerceName), "new", std::move(args));
             }
             return methodCall(a0, c->name, ValueList{});
         }
@@ -26959,9 +27040,29 @@ Value Interpreter::evalIndex(Index* idx) {
             junctionKind = std::string(iv.enumName.str());
             slice = true;
         }
+        // An object doing Associative answers the presentation adverbs through its
+        // own protocol: `keys` for the zen/whatever slices, EXISTS-KEY/AT-KEY per
+        // key. `:exists`/`:delete` were already routed to it above; `:k`/`:v`/`:kv`
+        // /`:p` fell to this generic path, which reads a native Hash's storage and
+        // so answered () for every Hash::Agnostic consumer.
+        auto objHas = [&](const char* n) {
+            if (base.t != VT::Object || !base.obj() || !base.obj()->cls) return false;
+            std::function<bool(ClassInfo*)> walk = [&](ClassInfo* c) -> bool {
+                if (!c) return false;
+                if (c->methods.count(n)) return true;
+                for (auto& a : c->attrs) for (auto& h : a.handles) if (h == n) return true;
+                if (walk(c->parent.get())) return true;
+                for (auto& pp : c->extraParents) if (pp && walk(pp.get())) return true;
+                return false;
+            };
+            return walk(base.obj()->cls.get());
+        };
+        const bool assocObj = idx->isHash && objHas("AT-KEY");
         ValueList sliceKeys;
         if (allElems) {
-            if (idx->isHash && base.t == VT::Hash && base.hash())
+            if (assocObj && objHas("keys"))
+                for (auto& k : toList(methodCall(base, "keys", {}))) sliceKeys.push_back(k);
+            else if (idx->isHash && base.t == VT::Hash && base.hash())
                 for (auto& e2 : *base.hash()) sliceKeys.push_back(Value::str(e2.first));
             else if (base.t == VT::Array && base.arr())
                 for (long long i = 0; i < (long long)base.arr()->size(); i++)
@@ -26979,7 +27080,17 @@ Value Interpreter::evalIndex(Index* idx) {
                 // same question the constructor answered (hashSubKey does it for
                 // the plain-subscript path)
                 std::string key = hashSubKey(kv, &base); keyV = Value::str(kv.toStr());
-                if (base.t == VT::Hash && base.hash()) {
+                if (assocObj) {
+                    exists = !objHas("EXISTS-KEY") ||
+                             methodCall(base, "EXISTS-KEY", ValueList{kv}).truthy();
+                    if (exists) {
+                        val = methodCall(base, "AT-KEY", ValueList{kv});
+                        // AT-KEY may hand back the CONTAINER (Hash::Ordered's Proxy):
+                        // an adverb reports the value it holds
+                        if (val.t == VT::Hash && val.hashKind == "Proxy" && val.hash()) val = deproxy(val);
+                    }
+                }
+                else if (base.t == VT::Hash && base.hash()) {
                     auto it = base.hash()->find(key);
                     if (it != base.hash()->end()) { exists = true; val = it->second; }
                 }
@@ -28545,8 +28656,17 @@ Value Interpreter::eval(Expr* e) {
                     ValueList ma = evalArgs(mc->args);
                     return invokeMethodChain(mc->method, cit->second.get(), inv, ma, &mc->args);
                 }
-                // an unknown qualifier (e.g. a built-in type like `Any::elems`) falls
-                // through to ordinary dispatch on the bare method name.
+                // A BUILT-IN qualifier (`self.Mu::Str`, `self.Any::gist`) names a
+                // type above every user class, so it means the built-in behaviour —
+                // dispatch past the invocant's own methods. Plain fall-through
+                // re-entered the override that asked, and Hash::Agnostic's
+                // `multi method Str(::?ROLE:U:) { self.Mu::Str }` recursed away.
+                if (cit == classes_.end() && isKnownTypeName(mc->methodQual)) {
+                    ValueList ma = evalArgs(mc->args);
+                    return methodCall(inv, mc->method, std::move(ma), &mc->args, /*skipOwn=*/true);
+                }
+                // any other unknown qualifier falls through to ordinary dispatch
+                // on the bare method name.
             }
             // $/.make(v) attaches the ast to the MATCH ITSELF (not a copy)
             if (inv.t == VT::Match && !mc->meta && mc->method == "make") {

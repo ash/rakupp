@@ -288,6 +288,12 @@ template <class IO> void visit(IO& io, SubDecl& n)  {
     F(io, n.isExport); F(io, n.isOur); F(io, n.retType); F(io, n.pod);
     F(io, n.isNative); F(io, n.nativeLib); F(io, n.nativeLibSub);
     ioExpr(io, n.nativeLibExpr); F(io, n.nativeSym); ioExpr(io, n.nativeSymExpr);
+    // `is raw`/`is rw` on the ROUTINE. The trait itself is not in n.traits (the
+    // parser consumes it into this flag), so a cached module came back with the
+    // flag off and every `self.AT-KEY($k) = $v` through an `is raw` accessor
+    // assigned to a COPY — Hash::Ordered took its writes only on the run that
+    // wrote the cache, and answered empty on every run that read it.
+    F(io, n.retRw);
 }
 template <class IO> void visit(IO& io, ClassDecl& n) {
     F(io, n.name); F(io, n.parent); ioVec(io, n.extraParents); ioVec(io, n.roles);

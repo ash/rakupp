@@ -931,8 +931,12 @@ public:
     // own Regex needs this, or one pattern answers differently in each of them.
     struct GrammarHooks codeAssertHooks();
     static bool patHasCodeAssert(const std::string& pat);
-    Value methodCall(const Value& inv, const std::string& method, ValueList args, const std::vector<ExprPtr>* rwArgs = nullptr);
-    Value methodCallInner(const Value& inv, const std::string& method, ValueList args, const std::vector<ExprPtr>* rwArgs);
+    // skipOwn: `self.Mu::meth` — bypass the invocant's own methods for THIS
+    // dispatch only, so a built-in qualifier reaches the built-in behaviour.
+    Value methodCall(const Value& inv, const std::string& method, ValueList args, const std::vector<ExprPtr>* rwArgs = nullptr,
+                     bool skipOwn = false);
+    Value methodCallInner(const Value& inv, const std::string& method, ValueList args, const std::vector<ExprPtr>* rwArgs,
+                          bool skipOwn = false);
     // Ordered SEGMENTS of the same dispatch chain, split out of methodCallInner to
     // get it under control (it was 9,138 lines). Each returns nullopt for "not
     // handled here"; they must be called in this order — see MethodCallTail.cpp.
