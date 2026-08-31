@@ -1826,6 +1826,18 @@ Value rtRangeVal(const Value& from, const Value& to, bool exFrom, bool exTo) {
         }
         return strRangeList(from.s, to.s, exFrom, exTo);
     }
+    // `1..*` / `*..5`: a Whatever endpoint is unbounded, the LLONG extreme
+    // marking an infinite range exactly as the NK::RangeLit arm does. Without
+    // this, `*` fell through to `.toInt()` — which is 0 — so under --exe every
+    // Whatever range was built INSIDE OUT: `1..*` was the empty `1..0`, and so
+    // `for 1..* {…}` ran zero times, `(1..*)[3]` was Nil, `5 ~~ 1..*` was False,
+    // `.head(4)` was (), and `*..5` was `0..5`. All silent wrong answers.
+    if (from.t == VT::Whatever && to.t == VT::Whatever)
+        return Value::range(-9223372036854775807LL - 1, 9223372036854775807LL, false, false);
+    if (to.t == VT::Whatever)
+        return Value::range(from.toInt(), 9223372036854775807LL, exFrom, false);
+    if (from.t == VT::Whatever)
+        return Value::range(-9223372036854775807LL - 1, to.toInt(), false, exTo);
     // A FRACTIONAL range keeps its real endpoints, exactly as the interpreter's
     // own `..` does: `to.toInt()` alone made `0 ..^ 2.5` the integer range
     // `0..^2`, so under --exe every fractional range was silently truncated at
