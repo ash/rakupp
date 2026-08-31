@@ -172,6 +172,64 @@ score any Raku that can run the harness itself. When you do that, set whatever
 the other engine's fudge switch is — and record it next to the number, because a
 figure without its bar attached is not evidence.
 
+### Worked example: mutsu's 98%, and our number counted their way
+
+mutsu's README states it **passes 1,433 out of 1,464 Roast files in full** —
+**97.9%** — against our 643 / 1,464 (43.9%). That is the comparison a reader
+will make, so this section does it properly: first what their number means, then
+what ours becomes under their rules.
+
+**Their rules, from their own runner** (`Makefile` target `roast`, driving
+`prove` over `scripts/run-roast-test.sh`), against ours:
+
+| | Raku++ | mutsu |
+|---|---|---|
+| fudge | unconditional, no off switch | `MUTSU_FUDGE=1`, exported by the runner |
+| files attempted | all **1,464** | a **1,435-file whitelist** (`roast-whitelist.txt`) |
+| denominator published | 1,464 | 1,464 — the 29 unrun files count against them |
+| per-file timeout | **10 s** | **30 s** default, escalated per file to 60 / 90 / 120 / **180 s** |
+| flaky files | none; one run each | 24 files in `flaky-tests.txt` are **re-rolled** on failure |
+
+Both engines therefore measure on the **same fudged bar**, which is the
+difference that would have mattered most. The whitelist does not flatter them
+either: they publish against the full 1,464, so the 29 files they never run are
+counted as not passing. That is the conservative choice, and it is worth saying
+plainly rather than implying otherwise.
+
+**The one rule that moves our number is the timeout**, and it moves it by very
+little. Re-running the whole suite at their 30-second default — the only change,
+same binary (`v3.23.0-45-gb6905bf`), same Roast revision `b2cbe8a42`, same
+counting rules — takes the timeout column from 12 files to 4:
+
+| bar | fully passing | assertions, all declared |
+|---|---:|---:|
+| ours (10 s) | 643 / 1,464 (43.9%) | 198,939 / 218,773 (90.9%) |
+| **counted their way (30 s + their per-file escalations)** | **647 / 1,464 (44.2%)** | **199,331 / 219,033 (91.0%)** |
+
+**Four files, three tenths of a point.** The four that come back are
+`S15-nfg/concat-stable.t`, `S17-scheduler/at.t`, `S17-scheduler/every.t` and
+`S17-scheduler/in.t` — three schedulers and an NFG concat, all of which finish
+between 10 s and 30 s. Four more still time out at 30 s
+(`S03-operators/minmax.t`, `S03-operators/repeat.t`,
+`S17-promise/nonblocking-await.t`, `integration/99problems-41-to-50.t`), and the
+remaining four run to completion but fail on assertions rather than the clock,
+so no timeout budget recovers them.
+
+**So the counting rules are not the story.** Adopting every one of mutsu's
+conventions moves Raku++ from 43.9% to 44.2%, against their 97.9%. The gap is
+coverage, and the shape of ours is the all-or-nothing file bar: we pass ~91% of
+declared assertions but leave a residue in most files, so the file count stays
+low while the assertion count does not. See
+["Why measure 4 is the honest per-test number"](#why-measure-4-is-the-honest-per-test-number).
+
+**Their figure independently checks out.** Running mutsu 0.23.0 under *our*
+harness with `MUTSU_FUDGE=1` — our 10-second bar, not theirs — gives 1,419 /
+1,464, and twelve of the files it loses are timeouts their own runner budgets 30
+to 180 seconds for. 1,419 at 10 s and 1,433 at 30 s+ are the same engine
+measured on two bars, not a discrepancy. Note also that the README's 1,433 was
+written 2026-07-23 and the file itself points at their site for the live figure,
+so treat it as a floor rather than a current reading.
+
 ## Zero-regression discipline
 
 A change ships only if the sorted list of fully-passing files (`[PASS]` lines) has

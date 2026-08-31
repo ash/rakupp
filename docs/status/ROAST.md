@@ -176,6 +176,14 @@ Two caveats, both in mutsu's favour: the 12 files that timed out under our
 10-second budget are given 30–180 seconds by mutsu's own runner, and mutsu
 reports 1,433 on its own harness. So 1,419 is a floor, not a ceiling.
 
+That budget helps our row too, and by much less — which is the point. Re-run at
+mutsu's 30-second default, Raku++ goes 643 → **647 / 1,464 (44.2%)**: four files
+come back, the timeout column drops 12 → 4, and the rest of the gap is untouched.
+Adopting every one of their counting conventions moves us three tenths of a
+point against their 97.9%, so the difference here is coverage, not bookkeeping.
+The rule-by-rule comparison is worked through in
+[COUNTING.md](COUNTING.md#worked-example-mutsus-98-and-our-number-counted-their-way).
+
 The shape of the difference is as informative as its size. Raku++ passes a high
 proportion of assertions almost everywhere (90%) but leaves a residue in most
 files, so the all-or-nothing file bar stays low; mutsu has cleaned up that tail
