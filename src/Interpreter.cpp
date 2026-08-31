@@ -10361,6 +10361,17 @@ static const std::string& aliasType(const std::string& type) {
 }
 
 
+// A hash-BACKED built-in is not thereby Associative. DateTime and Date are
+// stored as hashes here (year/month/day/... slots), so the structural answer
+// below made `$dt ~~ Associative` True where Rakudo says False — DateTime and
+// Date do Dateish and nothing else. BSON::Simple's encoder tests Associative
+// BEFORE Dateish, so a DateTime was written out as a sub-document of its own
+// accessors instead of the 8-byte BSON datetime, silently and byte-wrong.
+static bool hashKindIsAssociative(const std::string& kind) {
+    return kind != "DateTime" && kind != "Date";
+}
+
+
 // Does the TYPE NAME `ln` conform to `rn`? The built-in "does" table, the
 // numeric/string tower, and the user class/role ancestry — one answer, shared by
 // the `~~` operator and by parameter dispatch. They used to disagree: `~~` knew
@@ -10615,7 +10626,9 @@ static bool typeMatchesArg(const Value& arg, const std::string& type) {
             // $s)). It is NOT an IO, and IO::Socket::Async is not an IO::Socket
             // either; both of those are False on Rakudo too.
             if (arg.hashKind == "Socket" && (type == "IO::Socket" || type == "IO::Socket::INET")) return true;
-            return type == "Hash" || type == "Map" || type == "Associative" || (arg.hashKind == type);
+            if (arg.hashKind == type) return true;
+            if (!hashKindIsAssociative(arg.hashKind)) return false;
+            return type == "Hash" || type == "Map" || type == "Associative";
         case VT::Pair: return type == "Pair";
         case VT::Code: return type == "Code" || type == "Callable" || type == "Routine" || type == "Block" || type == "Sub" ||
                               (type == "Method" && arg.code() && arg.code()->isMethod); // a method is a Method, not just a Sub
@@ -12256,7 +12269,8 @@ bool rtTypeMatch(const Value& v, const std::string& type) {
             // — a false match sends it into an infinite `jsonify(.cache)` loop)
             if (type == "Seq") return v.s == "Seq";
             return type == "Array" || type == "List" || type == "Positional" || type == "Iterable";
-        case VT::Hash:    return type == "Hash" || type == "Associative" || type == "Map";
+        case VT::Hash:    return hashKindIsAssociative(v.hashKind) &&
+                                 (type == "Hash" || type == "Associative" || type == "Map");
         case VT::Code:    return type == "Code" || type == "Callable" || type == "Routine" || type == "Block";
         case VT::Object: {
             for (ClassInfo* c = v.obj() && v.obj()->cls ? v.obj()->cls.get() : nullptr; c; c = c->parent.get()) {
@@ -19891,7 +19905,13 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             if (!res) {
                 if ((r.s == "Positional" || r.s == "Iterable") && l.t == VT::Array) res = true;
                 else if (r.s == "Iterable" && l.t == VT::Range) res = true;
-                else if ((r.s == "Associative" || r.s == "Map") && l.t == VT::Hash) res = true;
+                // ...but only for kinds that really are hashes: DateTime/Date ride
+                // on VT::Hash and are NOT Associative (same shape as the Stringy
+                // exclusion below). BSON::Simple's `when Associative` sits ahead
+                // of its `when Dateish`, so a True here encoded a DateTime as a
+                // sub-document of its own accessors.
+                else if ((r.s == "Associative" || r.s == "Map") && l.t == VT::Hash &&
+                         hashKindIsAssociative(l.hashKind)) res = true;
                 else if (r.s == "Callable" && l.t == VT::Code) res = true;
                 // ...but only for actual strings: an IO::Path/Version/IO::Special
                 // rides on VT::Str and is NOT Stringy (Blob/Buf genuinely are)
