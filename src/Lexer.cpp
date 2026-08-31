@@ -2164,9 +2164,17 @@ static bool prevIsClearTerm(const std::vector<Token>& out) {
     switch (pv.kind) {
         case Tok::IntLit: case Tok::NumLit: case Tok::StrLit: case Tok::StrInterp:
         case Tok::VersionLit: case Tok::QwList: case Tok::Var:
+        case Tok::RegexLit: case Tok::SubstLit:
         case Tok::RParen: case Tok::RBracket: case Tok::RBrace:
             return true;
         case Tok::Ident: {
+            // A method NAME closes a term — `$l.chars ^fff^ …` is the flip-flop,
+            // never a listop `chars` taking `^fff^ …` as its argument.
+            if (out.size() >= 2) {
+                const Token& pp = out[out.size() - 2];
+                static const std::set<std::string> methodCall = {".", ".^", ".?", ".=", ".&"};
+                if (pp.kind == Tok::Op && methodCall.count(pp.text)) return true;
+            }
             static const std::set<std::string> terms = {"True", "False", "Nil", "Inf", "NaN"};
             return terms.count(pv.text) > 0;
         }
