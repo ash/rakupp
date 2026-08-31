@@ -10808,6 +10808,21 @@ bool Interpreter::typeMatchesResolved(const Value& v, const std::string& type) {
     return typeMatchesArg(Value::typeObj(have), want);
 }
 
+// A `&x` parameter is implicitly Callable, and a Callable TYPE OBJECT satisfies
+// that the way any type object satisfies its own type. ML::TriesWithFrequencies
+// passes a bare `WhateverCode` where a post-processing function is optional
+// (`self.trie-map($tr, &preFunc, WhateverCode, 1)`), which is the call every one
+// of its removal methods goes through. Only the Code family counts — an `Int` or
+// a user class still fails, which is what keeps `log($parent, &task)` apart from
+// `log(&task, *%data)`.
+static bool isCallableTypeObj(const Value& v) {
+    if (v.t != VT::Type) return false;
+    static const std::set<std::string> kCallableTypes = {
+        "Callable", "Code", "Routine", "Sub", "Method", "Submethod",
+        "Block", "WhateverCode", "Regex"};
+    return kCallableTypes.count(v.s) > 0;
+}
+
 int Interpreter::scoreCandidate(const Value& cand, const ValueList& args) {
     if (cand.t != VT::Code || !cand.code() || !cand.code()->params) return 0; // no signature: lowest specificity
     const auto& params = *cand.code()->params;
@@ -10970,13 +10985,13 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args) {
         else if (p->sigil == '&' && !p->type.empty() && p->type != "Callable") {
             // `Int &x` constrains the routine's RETURN type — not modeled; accept
             // any Code so dispatch proceeds (return-type dispatch logged as a gap)
-            if (pos[i].t != VT::Code) return -1;
+            if (pos[i].t != VT::Code && !isCallableTypeObj(pos[i])) return -1;
         }
         else if (p->sigil == '&') {
-            // a bare `&task` param requires a Callable — a type object or plain
-            // value must not bind (Log::Timeline's log($parent,&task) vs
-            // log(&task,*%data) dispatch depends on this)
-            if (pos[i].t != VT::Code) return -1;
+            // a bare `&task` param requires a Callable — a NON-Callable type
+            // object or plain value must not bind (Log::Timeline's
+            // log($parent,&task) vs log(&task,*%data) dispatch depends on this)
+            if (pos[i].t != VT::Code && !isCallableTypeObj(pos[i])) return -1;
         }
         else if (p->coerce && !p->type.empty()) {
             // coercion type `Str(Cool)`: any coercible argument matches — the
@@ -15470,13 +15485,24 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
         // on. Invoked in LVALUE MODE, the same protocol `$obj<key> = v` uses.
         // Limited to a plain-variable invocant (`self`, `$obj`) so no other
         // target pays a second evaluation of its invocant expression.
-        if ((mc->inv->kind == NK::VarExpr || mc->inv->kind == NK::SelfTerm) &&
+        if ((mc->inv->kind == NK::VarExpr || mc->inv->kind == NK::SelfTerm ||
+             mc->inv->kind == NK::NameTerm) &&
             !mc->meta && !mc->methodExpr && !mc->hyper) {
             Value invv;
             bool haveInv = false;
             try { invv = eval(mc->inv.get()); haveInv = true; } catch (RakuError&) {}
-            if (haveInv && invv.t == VT::Object && invv.obj() && invv.obj()->cls) {
-                Value* mv = invv.obj()->cls->findMethodForCall(mc->method);
+            ClassInfo* invCls = nullptr;
+            if (haveInv && invv.t == VT::Object && invv.obj()) invCls = invv.obj()->cls.get();
+            // …and on a TYPE OBJECT. `my $.x` in a class body publishes a
+            // class-level lexical through a generated accessor, and `Type.x = v`
+            // writes it — the only invocant that reaches such a container.
+            else if (haveInv && invv.t == VT::Type) {
+                auto ct = classes_.find(invv.s);
+                if (ct == classes_.end()) ct = classes_.find(resolveClassAlias(invv.s));
+                if (ct != classes_.end()) invCls = ct->second.get();
+            }
+            if (invCls) {
+                Value* mv = invCls->findMethodForCall(mc->method);
                 if (mv && mv->t == VT::Code && mv->code() && mv->code()->retRw) {
                     static thread_local Value rwHold;
                     ValueList args;
@@ -24704,10 +24730,13 @@ Value Interpreter::evalUnary(Unary* u) {
     }
     Value v = eval(u->operand.get());
     // Whatever-currying for prefix ops: `~*`, `-*`, `+*`, `?*`, `!*` become a
-    // WhateverCode (e.g. `.sort: ~*` sorts by stringification).
+    // WhateverCode (e.g. `.sort: ~*` sorts by stringification). `^*` is here too,
+    // because `@chars[^(*-1)]` — everything but the last element — is how
+    // ML::TriesWithFrequencies walks a word backwards; evaluated eagerly it built
+    // an empty range, so every trie came out one node deep.
     if ((v.t == VT::Whatever || (v.t == VT::Code && v.code() && v.code()->isWhateverCode)) &&
         (u->op == "~" || u->op == "-" || u->op == "+" || u->op == "?" || u->op == "!" ||
-         u->op == "so" || u->op == "not" || u->op == "+^")) {
+         u->op == "so" || u->op == "not" || u->op == "+^" || u->op == "^")) {
         Value inner = v; std::string op = u->op;
         Value code; code.t = VT::Code; code.setCode(std::make_shared<Callable>()); code.code()->isWhateverCode = true;
         code.code()->builtin = [inner, op](Interpreter& I, ValueList& a) -> Value {
@@ -24723,6 +24752,7 @@ Value Interpreter::evalUnary(Unary* u) {
                 return b.isNumeric() ? b : Value::number(b.toNum());
             }
             if (op == "?" || op == "so") return Value::boolean(b.truthy());
+            if (op == "^") return Value::range(0, strictInt(b), false, true);
             if (op == "+^") { // bitwise NOT: -(x+1), exact at any width
                 if (b.big()) {
                     BigInt res = BigInt(0) - (*b.big() + BigInt(1));

@@ -2083,8 +2083,16 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     throw RakuError{Value::typeObj("X::TypeCheck::Argument"),
                         "Uncallable 0-arity comparator for sort"};
                 if (arity >= 2) {
+                    // Rakudo's merge takes the RIGHT element only when
+                    // `by(left, right) > 0`, so a comparator that answers a Bool
+                    // rather than an Order still orders the list: `.sort(-> $a,
+                    // $b { $b.value > $a.value })` is descending there, and
+                    // ML::TriesWithFrequencies sorts its Pareto children that
+                    // way. Asked as `cmp(x, y) < 0` no pair ever compared less
+                    // and the list came back untouched. The two spellings agree
+                    // for every antisymmetric comparator.
                     std::stable_sort(order.begin(), order.end(), [&](size_t x, size_t y) {
-                        return callCallable(blk, {items[x], items[y]}).toInt() < 0;
+                        return callCallable(blk, {items[y], items[x]}).toInt() > 0;
                     });
                 } else {
                     // A 1-ary block is a KEY EXTRACTOR, so it runs ONCE PER ELEMENT and
@@ -2370,9 +2378,24 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 if (a.t == VT::Array || a.t == VT::Range) { for (auto& x : a.flatten()) flat.push_back(x); continue; }
                 flat.push_back(a);
             }
-            for (auto& a : flat) {
-                if (a.t != VT::Pair) continue;
-                std::string key = a.s; Value val = a.pairVal() ? *a.pairVal() : Value::any();
+            // Rakudo pairs consecutive NON-Pair items up as key, value:
+            // `%h.push: ('a', 42)` is `a => 42`, and a lone trailing item warns
+            // and contributes nothing. ML::TriesWithFrequencies rebuilds every
+            // traversed node with `%resChildren.push: ($k, $chNode)`, so dropping
+            // the non-Pair items left each rebuilt trie childless.
+            for (size_t fi = 0; fi < flat.size(); fi++) {
+                const Value& a = flat[fi];
+                std::string key; Value val;
+                if (a.t == VT::Pair) {
+                    key = a.s; val = a.pairVal() ? *a.pairVal() : Value::any();
+                } else {
+                    if (fi + 1 >= flat.size()) {
+                        std::string msg = "Trailing item in Hash." + m.s;
+                        if (quietDepth_ == 0 && !runControlWarn(msg)) std::cerr << msg << "\n";
+                        break;
+                    }
+                    key = a.toStr(); val = flat[++fi];
+                }
                 auto it = inv.hash()->find(key);
                 if (it == inv.hash()->end()) {
                     // a NEW key stores the value as it is; only a LIST value spreads
@@ -2627,6 +2650,11 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             // treated as the list of values (flattened one level); multiple args are each
             // added as-is (nested lists preserved, exactly like push).
             auto appendValues = [](ValueList& args) -> ValueList {
+                // …but an ITEMIZED array is one item, not a list to flatten:
+                // `@paths.append($[|@prefix, $node])` adds ONE path, which is how
+                // ML::TriesWithFrequencies gathers its root-to-leaf paths.
+                // (`push` never had to say so — it flattens nothing.)
+                if (args.size() == 1 && args[0].itemized) return args;
                 if (args.size() == 1 && isMultiDimShaped(args[0]))
                     return shapedLeaves(args[0]);   // a shaped array appends its leaves
                 if (args.size() == 1 && args[0].t == VT::Array && args[0].arr())

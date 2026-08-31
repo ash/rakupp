@@ -96,3 +96,30 @@ carrying its `Param` list, register the group as a multi dispatcher — would le
 the interpreter's own `scoreCandidate` and `parentNext` pick the candidate while
 every body stays native code. That wins back all 21 files without a second
 dispatcher to keep in sync with the first.
+
+## Role BODY lexicals are shared across composers (2026-08-31)
+
+Found while making `ML::TriesWithFrequencies` install (issue #53). A role's body
+runs **once**, and every class that composes the role closes over that one pad;
+Rakudo instantiates the body per composition, so each composer gets its own copy.
+
+```raku
+role R { my $x = 'ROOT'; method get { $x }; method set($v) { $x = $v } }
+class A does R { }
+class B does R { }
+A.new.set('A!');
+say A.new.get, " ", B.new.get;   # Rakudo: A! ROOT   ·   rakupp: A! A!
+```
+
+The same shows through the `my $.x` class-level accessor that issue #53 added
+(`Parser::desugarDotDecl`), since the accessor reads exactly such a lexical:
+after `C.rl = 'X'` on a class composing `role R { my Str $.rl = 'ROOT'; … }`,
+Rakudo still answers `ROOT` for `R.rl` and rakupp answers `X`.
+
+Nothing measured depends on it — the divergence needs two classes composing one
+role *and* a mutated body lexical, and no distribution in the sweep does that —
+which is why it is recorded rather than fixed. The fix is not local: the
+ClassDecl path in `Interpreter.cpp` builds one `bodyEnv` per role declaration and
+the composition loop copies the method `Value`s with their closures intact, so a
+faithful version has to re-run (or clone) the body per composition and repoint
+each composed `Callable`'s `closure` at the fresh env.

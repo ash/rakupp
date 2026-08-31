@@ -1177,7 +1177,9 @@ sub call-sub(PerlSub $sub, @args, $ctx) {
             when RetX { $result = .value }
         }
     }
-    $result;
+    # decontainerized: a list assigned into a `$` is ONE item, so a caller's
+    # `@out.append(call-sub(...))` would add an empty return as an empty element
+    @$result;
 }
 
 # ---------- builtins ----------------------------------------------------

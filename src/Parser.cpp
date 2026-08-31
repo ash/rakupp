@@ -2086,21 +2086,40 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
                 continue;
             }
             // postcircumfix method syntax: .{ } .[ ] .( )
+            // `@a».[0]` / `@a».{$k}` subscript EVERY element, the same way
+            // `».<key>` above does — spelling the hyper with the dot went through
+            // the hyper-method-call branch, which left the subscript to be read as
+            // an ordinary one on the list itself. ML::TriesWithFrequencies's own
+            // suite matches on `$m.values>>.[0]>>.Str`.
+            auto hyperSubscript = [&](std::unique_ptr<Index> idx, ExprPtr inv) {
+                idx->base = std::make_unique<VarExpr>("$_");
+                auto mc2 = std::make_unique<MethodCall>();
+                mc2->inv = std::move(inv);
+                mc2->method = "map";
+                auto blk = std::make_unique<BlockExpr>();
+                auto es = std::make_unique<ExprStmt>();
+                es->e = std::move(idx);
+                blk->body.push_back(std::move(es));
+                mc2->args.push_back(std::move(blk));
+                return mc2;
+            };
             if (isKind(Tok::LBrace)) {
                 advance();
                 auto idx = std::make_unique<Index>();
-                idx->base = std::move(base); idx->isHash = true;
+                idx->isHash = true;
                 idx->index = parseExpression();
                 expectKind(Tok::RBrace, "}");
+                if (hyperNext) { hyperNext = false; base = hyperSubscript(std::move(idx), std::move(base)); continue; }
+                idx->base = std::move(base);
                 base = std::move(idx);
                 continue;
             }
             if (isKind(Tok::LBracket)) {
                 advance();
-                if (isKind(Tok::RBracket)) { advance(); continue; } // .[] zen slice
+                if (isKind(Tok::RBracket)) { advance(); hyperNext = false; continue; } // .[] zen slice
                 size_t dimAt = pos_;
                 auto idx = std::make_unique<Index>();
-                idx->base = std::move(base); idx->isHash = false;
+                idx->isHash = false;
                 idx->index = parseExpression();
                 rejectNegativeIndex(dimAt);
                 if (isKind(Tok::Semicolon)) { // .[X;Y] multislice, same as @a[X;Y]
@@ -2116,6 +2135,8 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
                     idx->multiDim = true;
                 }
                 expectKind(Tok::RBracket, "]");
+                if (hyperNext) { hyperNext = false; base = hyperSubscript(std::move(idx), std::move(base)); continue; }
+                idx->base = std::move(base);
                 base = std::move(idx);
                 continue;
             }
@@ -6610,6 +6631,55 @@ void Parser::checkVirtualCallInDefault(size_t defStart) {
     }
 }
 
+// `my $.x` / `our @.y` / `state %.z` in a class or role body. Rakudo reads that
+// as TWO declarations: a lexical the body's own code closes over, and a package
+// accessor of the bare name — so `$.x` inside the type's methods is
+// `self.x` like any other dotted form, and `Type.x` answers from outside too.
+// ML::TriesWithFrequencies::Trieish publishes its two label strings exactly this
+// way, and the whole distribution failed to install without it (issue #53).
+//
+// The lexical is renamed to a spelling no source can produce (`$ .x` — a space
+// cannot appear in a variable name), which is what lets the generated accessor
+// read it DIRECTLY instead of recursing back through `self`. The accessor is a
+// real synthesized method, so role composition, type-object calls, `.^methods`
+// and AST serialization all take it without a special case of their own.
+namespace {
+std::string dotDeclLexName(const std::string& n) { // `$.x` -> `$ .x`
+    return std::string(1, n[0]) + " " + n.substr(1);
+}
+void addDotDeclAccessor(ClassDecl& cd, const std::string& lexName,
+                        const std::string& bare, int line) {
+    auto md = std::make_unique<SubDecl>();
+    md->name = bare;
+    md->isMethod = true;
+    md->hadSig = true; // an explicit (empty) signature: nothing to scan for placeholders
+    md->retRw = true;  // the accessor IS the lexical: `Type.x = v` writes it, as in Rakudo
+    md->line = line;
+    auto es = std::make_unique<ExprStmt>();
+    es->e = std::make_unique<VarExpr>(lexName);
+    es->e->line = line;
+    es->line = line;
+    md->body.push_back(std::move(es));
+    cd.methods.push_back(std::move(md));
+}
+void desugarDotDecl(Expr* e, ClassDecl& cd, int line) {
+    if (!e) return;
+    if (e->kind == NK::Assign) { desugarDotDecl(static_cast<Assign*>(e)->target.get(), cd, line); return; }
+    if (e->kind == NK::ListExpr) { // `my ($.a, $.b)`
+        for (auto& it : static_cast<ListExpr*>(e)->items) desugarDotDecl(it.get(), cd, line);
+        return;
+    }
+    if (e->kind != NK::VarExpr) return;
+    auto* v = static_cast<VarExpr*>(e);
+    if (!v->declare || v->name.size() < 3 || v->name[1] != '.') return;
+    if (v->declScope != "my" && v->declScope != "our" && v->declScope != "state") return;
+    std::string bare = v->name.substr(2);
+    v->name = dotDeclLexName(v->name);
+    v->syncAttrCache(); // the renamed node is a plain lexical, not an attribute
+    addDotDeclAccessor(cd, v->name, bare, v->line ? v->line : line);
+}
+} // namespace
+
 StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isUnit,
                            const std::string& kindKw) {
     // 'class'/'role'/'grammar'/'module'/'package' already consumed
@@ -7196,6 +7266,11 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
         // `my` lexicals and plain expressions run in the body scope the methods
         // close over (`my $lex = ...; method m { $lex }`); the rest is discarded.
         auto st = parseStatement();
+        // `my $.x = …`: split into the lexical the body closes over and the
+        // accessor method the name promises (see desugarDotDecl above). A
+        // module/package body has no method table, so it keeps the plain form.
+        if (st && !isPackage && st->kind == NK::ExprStmt)
+            desugarDotDecl(static_cast<ExprStmt*>(st.get())->e.get(), *cd, st->line);
         // a bare `...`/`!!!`/`???` is the whole-type stub (`class Foo { ... }`) —
         // it must not execute at declaration time
         bool bareStub = false;
