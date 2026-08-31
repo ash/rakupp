@@ -152,7 +152,7 @@ row at a time and an empty list when there are none left, so it is the one to
 use on a result set you would rather not hold in memory. Re-run `$sth.execute`
 before fetching again.
 
-## Five things that bite
+## Three things that bite
 
 **`:database<$file>` does not interpolate.** Angle brackets are quote-words, so
 
@@ -187,42 +187,67 @@ different statement for every value, breaks on an apostrophe, and is the
 injection hole. A `?` and a value passed to `execute` avoid all three, and let
 the server reuse the prepared plan.
 
-**The interpreter and the client library must be the same architecture.** On a
-Mac with an Intel Homebrew under `/usr/local`, `libmysqlclient` and `libpq` are
-x86_64, so an arm64 `rakupp` cannot open them:
+## When a driver cannot find its library
+
+DBIish loads the client library through NativeCall at connect time, so this is
+where most first runs stop. The message has three shapes and they mean
+different things.
+
+**A name and a list of paths tried** — the library exists but is not where the
+loader looks. Homebrew's `postgresql@17` is keg-only, so libpq stays inside the
+keg and never reaches `/usr/local/lib`:
 
 ```output
 DBIish: DBDish::Pg needs 'pq', not found.
-	Detail: … (mach-o file, but is an incompatible architecture (have 'x86_64', need 'arm64e' or 'arm64'))
+	Detail: Cannot locate native library 'pq': dlopen(pq, 0x0009): tried: 'pq' (no such file), '/System/Volumes/Preboot/Cryptexes/OSpq' (no such file), '/usr/lib/pq' (no such file, not in dyld cache), 'pq' (no such file)
 ```
 
-Use the interpreter build that matches the library. When a connection reports a
-driver "not found", read past the first line — the detail after it is dlopen's,
-and names every path that was tried.
+There is no `DBIISH_PG_LIB` to point at it — `NativeLibs::Searcher.at-runtime`
+takes a name, not a path — so the library has to become findable instead. For
+one run, name the directory:
 
-**`needs '', not found` means the driver looked and found nothing at all.** The
-MySQL driver does not take a library path: it probes by soname, `mariadb`
-versions 0 to 4 and then `mysqlclient` versions 16 to 21. Homebrew's MySQL 9.7
-installs `libmysqlclient.24.dylib`, outside that range, so no candidate matches
-and the message has an empty library name where the others have `'pq'` or
-`'sqlite3'`:
+```sh
+DYLD_LIBRARY_PATH=/usr/local/lib/postgresql@17 rakupp names-pg.raku   # LD_LIBRARY_PATH on Linux
+```
+
+Permanently, put it where the loader already looks: link the keg, or symlink
+`libpq.5.dylib` into a directory on the default search path.
+
+**An empty name** — the driver probed and nothing matched. This is MySQL's,
+and only MySQL's: its driver takes no library path at all but goes by soname,
+`mariadb` versions 0 to 4 and then `mysqlclient` 16 to 21. Homebrew's MySQL 9.7
+installs `libmysqlclient.24.dylib`, outside the range, so there is no candidate
+and nothing to name:
 
 ```output
 DBIish: DBDish::mysql needs '', not found.
 	Detail: Cannot locate symbol 'mysql_init' in native library ''
 ```
 
-Name the file, and the probe stops guessing:
+Here there *is* an environment variable, and naming the file stops the guessing:
 
 ```sh
 DBIISH_MYSQL_LIB=/usr/local/opt/mysql/lib/libmysqlclient.24.dylib rakupp names-mysql.raku
 ```
 
-An architecture mismatch produces this *same* message, because a candidate that
-will not load is simply a candidate that did not match — where the PostgreSQL
-driver quotes dlopen and names the architecture, this one reports only that the
-search came up empty. So if the environment variable alone does not fix it,
-the next thing to check is the architecture, above.
+**`incompatible architecture`** — found, and refused. The interpreter and the
+client library have to match. On a Mac with an Intel Homebrew under
+`/usr/local`, `libmysqlclient` and `libpq` are x86_64, so an arm64 `rakupp`
+cannot open either:
+
+```output
+DBIish: DBDish::Pg needs 'pq', not found.
+	Detail: … (mach-o file, but is an incompatible architecture (have 'x86_64', need 'arm64e' or 'arm64'))
+```
+
+Use the interpreter build that matches the library.
+
+The catch is that the MySQL driver cannot tell you which of these it hit. A
+candidate that will not load is simply a candidate that did not match, so an
+architecture mismatch there prints the same empty-name line as a soname out of
+range. The PostgreSQL driver quotes dlopen and names the architecture; the
+MySQL one reports only that the search came up empty, so rule the two out in
+order — set the variable first, then check the architecture.
 
 ## Setting up a server to run these against
 

@@ -4,6 +4,15 @@
 #
 # Change the five connection values below to match your server. The SQL that
 # creates the database and role this expects is in the recipe.
+#
+# If this reports `DBDish::Pg needs 'pq', not found` with a list of paths that
+# were tried, libpq is not on the loader's search path — Homebrew's
+# postgresql@17 is keg-only, so it never reaches /usr/local/lib. There is no
+# environment variable for the library itself; name the directory instead:
+#
+#   DYLD_LIBRARY_PATH=/usr/local/lib/postgresql@17 rakupp names-pg.raku
+#
+# (LD_LIBRARY_PATH on Linux.)
 
 use DBIish;
 
