@@ -63,7 +63,7 @@ the page, so a recipe can be cloned rather than copied out of prose. Longer
 than [guide/RECIPES.md](guide/RECIPES.md), which is one-liners, and than
 [guide/faq/](guide/faq/), which is a paragraph and a caveat.
 
-- **[cookbook/databases.md](cookbook/databases.md)** — reading and writing a table with DBIish, the same program against SQLite, MySQL and PostgreSQL: the two things that differ between the engines, the placeholder that does not, and the five traps (`:database<$file>` silently not interpolating, `$sth.rows` answering 0 for a SELECT on SQLite, values interpolated into SQL, an architecture mismatch between interpreter and client library, and a driver whose missing library is named only on the second line).
+- **[cookbook/dbiish.md](cookbook/dbiish.md)** — reading and writing a table with DBIish, the same program against SQLite, MySQL and PostgreSQL: the two things that differ between the engines, the placeholder that does not, and the five traps (`:database<$file>` silently not interpolating, `$sth.rows` answering 0 for a SELECT on SQLite, values interpolated into SQL, an architecture mismatch between interpreter and client library, and a driver whose missing library is named only on the second line).
 
 Mirrored at [raku.online/cookbook/](https://raku.online/cookbook/).
 

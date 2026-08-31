@@ -15,14 +15,14 @@ where a recipe needs one, and the output shown is what it printed.
 
 ## Recipes
 
-- **[databases.md](databases.md)** — reading and writing a table with DBIish,
+- **[dbiish.md](dbiish.md)** — reading and writing a table with DBIish,
   the same program against SQLite, MySQL and PostgreSQL. What differs between
   the three engines (two things), what does not (the placeholders), and the
   five traps: `:database<$file>` silently not interpolating, `$sth.rows`
   answering 0 for a SELECT on SQLite, values interpolated into SQL, an
   architecture mismatch between the interpreter and the client library, and a
   driver that reports its library missing on the second line.
-  Programs: [databases/](databases/).
+  Programs: [dbiish/](dbiish/).
 
 ## Adding one
 

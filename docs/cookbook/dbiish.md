@@ -1,6 +1,6 @@
-# Cookbook — one program, three databases
+# Cookbook — DBIish: one program, three databases
 
-Reading and writing a table with [DBIish](https://github.com/raku-community-modules/DBIish),
+Reading and writing a table with [DBIish](https://raku.land/zef:raku-community-modules/DBIish),
 the ecosystem's database interface, against SQLite, MySQL and PostgreSQL.
 
 Every program on this page was run under Raku++ against a real server of each
@@ -64,7 +64,7 @@ id: 2, name: My name is nr. 2
 id: 3, name: My name is nr. 3
 ```
 
-The whole file is [databases/names-sqlite.raku](databases/names-sqlite.raku).
+The whole file is [dbiish/names-sqlite.raku](dbiish/names-sqlite.raku).
 
 ## MySQL
 
@@ -86,7 +86,7 @@ $dbh.execute(q:to/SQL/);
 ```
 
 Everything from `prepare` onwards is unchanged, and so is the output. The full
-program is [databases/names-mysql.raku](databases/names-mysql.raku); the same
+program is [dbiish/names-mysql.raku](dbiish/names-mysql.raku); the same
 driver serves MariaDB.
 
 ## PostgreSQL
@@ -107,7 +107,7 @@ $dbh.execute(q:to/SQL/);
     SQL
 ```
 
-Again the rest is identical: [databases/names-pg.raku](databases/names-pg.raku).
+Again the rest is identical: [dbiish/names-pg.raku](dbiish/names-pg.raku).
 
 One thing to expect from PostgreSQL and not from the other two — dropping a
 table that is not there is a notice, and libpq writes notices to **stderr**:
