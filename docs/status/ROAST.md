@@ -146,6 +146,46 @@ run2-exit 0
 - The **6.d** snapshot's assertion total (~20k) is dominated by the sprintf
   format-conversion files (`sprintf-{b,c,d,e,f,o,s,u,x}.t`), now largely passing.
 
+## Where this stands among implementations
+
+Roast is the common yardstick, so it is worth knowing where the other engines
+land on it. **Rakudo runs essentially all of the suite** — it is the reference,
+and it is the oracle both other implementations check themselves against.
+
+**[mutsu](https://github.com/tokuhirom/mutsu)**, the Rust implementation, is
+**well ahead of Raku++ on Roast coverage**. Measured 2026-08-31 by running
+`tools/run-roast.raku` under a mutsu binary — this harness scores whatever
+engine runs it, so both rows below come from the same harness, the same Roast
+revision (`b2cbe8a42`), the same 1,464 files, the same 10-second per-file
+timeout, and the same counting rules:
+
+| | files fully passing | assertions, all declared |
+|---|---:|---:|
+| **mutsu** 0.23.0 | **1,419 / 1,464 (96.9%)** | **216,807 / 218,173 (99.4%)** |
+| **Raku++** 3.23.0 | 643 / 1,464 (43.9%) | 198,939 / 218,773 (90.0%) |
+
+Both runs are on the **fudged bar** — Raku++ honours Roast's `#?rakudo`
+directives unconditionally, and mutsu's equivalent was switched on with
+`MUTSU_FUDGE=1` for the measurement. Getting that wrong is the easiest way to
+produce a meaningless comparison: measured with mutsu's fudge left at its default
+of *off*, the same harness scored it 1,227 rather than 1,419. See
+[COUNTING.md](COUNTING.md#comparing-our-figure-with-another-implementations)
+before setting either number beside anything else.
+
+Two caveats, both in mutsu's favour: the 12 files that timed out under our
+10-second budget are given 30–180 seconds by mutsu's own runner, and mutsu
+reports 1,433 on its own harness. So 1,419 is a floor, not a ceiling.
+
+The shape of the difference is as informative as its size. Raku++ passes a high
+proportion of assertions almost everywhere (90%) but leaves a residue in most
+files, so the all-or-nothing file bar stays low; mutsu has cleaned up that tail
+across nearly every synopsis. The one section where Raku++ is not behind is
+**S15** (Unicode / strings / NFG), where both are at ~100% of assertions.
+
+For how the three implementations are built, and why their coverage and speed
+profiles differ the way they do, see
+[faq/implementations.md](../guide/faq/implementations.md).
+
 ## Reproducing these numbers
 
 ```sh

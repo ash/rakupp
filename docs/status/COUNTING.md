@@ -114,25 +114,63 @@ with `fudge`, converting those comments into real skip/todo for the target
 backend. A `#?rakudo todo` marks a test even the reference implementation cannot
 yet pass; a `#?rakudo.jvm …` marks one that fails only on the JVM backend.
 
-Raku++ is a **moar-like backend**, so it honours exactly the directives Rakudo-moar
-would — and only those:
+Raku++ is a **moar-like backend**, so it honours exactly the directives
+Rakudo-moar would — and only those. The implementation is `applyRakudoFudge()`
+in [`src/Lexer.cpp`](../../src/Lexer.cpp) (see the comment block at the top of
+that function for the authoritative verb list), which rewrites the source as it
+is lexed:
 
-- **`#?rakudo todo` / `#?rakudo.moar todo` are honoured.** The lexer rewrites each
-  such line into a `todo('reason', N)` call, so those N tests emit `# TODO` and
-  their failures don't count — identical to what Rakudo's own harness does. These
-  are **Rakudo-compatibility passes, not genuine feature coverage**: they mark
-  tests the spec itself flags as not-yet-passable. Only a handful of files flip
-  on this (they had *no other* failure), and the effect on the assertion
-  numerators is a rounding error.
-- **`#?rakudo skip` is NOT honoured — we attempt the test.** Skipping a block
-  correctly needs its emitted-test count (which we can't know without running),
-  and, more importantly, if we *can* pass a skipped test that is a real win worth
-  counting. Same for backend-specific `#?rakudo.jvm …` / `#?rakudo.js …`: those
-  run and pass on Rakudo-moar, so they plainly belong in the count.
+| verb | what we do |
+|---|---|
+| `todo` | rewrite the directive line into `todo('reason', N);` — the next N tests emit `# TODO`, so their failures don't count |
+| `skip` | comment out the next N test statements / column-0 `{…}` blocks and emit `skip('reason', numtests);` in their place, so the plan stays satisfied without running the guarded construct |
+| `emit` | replace the directive line with its argument code, verbatim |
+| `eval` / `try` | treated as `skip` (they guard constructs that need `EVAL` protection) |
+| `#?DOES n` | the next statement — or `sub NAME` — counts as n tests |
 
-So the denominator is **not** padded down: we still attempt every `skip`-marked
-and backend-specific test. The only concession is honouring `todo` exactly as the
-moar backend does — the honest, Rakudo-faithful direction to err.
+Only bare `#?rakudo` and `#?rakudo.moar` apply. **`#?rakudo.jvm`, `#?rakudo.js`
+and `#?v6…` are deliberately not honoured**: those tests run and pass on
+Rakudo-moar, so they plainly belong in the count. Line numbers are preserved
+throughout — one line in, one line out — so a runtime error still names the
+right line in the original file.
+
+We do the rewriting **in the lexer rather than by shelling out to Roast's own
+`fudge`**, and that is not a stylistic choice. `fudge` prepends the generated
+call to the test line but *leaves the directive comment in place*, so a file
+preprocessed by `fudge` and then run by Raku++ would have every `todo` applied
+twice — the second one leaking onto the following test and silently hiding a
+real failure. Anything measuring Raku++ must run the raw `.t` files.
+
+> **History.** Until fudge-skip landed (commit `25c25ee`, "Roast 350 → 378")
+> this section said `skip` was *not* honoured, and that claim outlived the code
+> by some weeks. If you are reconciling an old number with a new one, that is
+> the discontinuity.
+
+### Comparing our figure with another implementation's
+
+**A Roast number measured with fudge applied and one measured without it are not
+comparable, and the gap is not small.** The suite carries 262 `#?rakudo skip`
+and 282 `#?rakudo todo` directives spread across 407 of its 1,464 files, so
+whether an engine honours them moves the file-level figure by hundreds of files.
+Before setting our number beside anyone else's, establish that both were taken
+on the same bar.
+
+Two things make this easy to get wrong:
+
+- **Ours is always on.** `applyRakudoFudge` runs unconditionally in the lexer,
+  so every Raku++ Roast figure ever published is a *fudged-bar* figure. There is
+  no unfudged mode and no flag to compare against.
+- **Other engines may default it off.** [mutsu](https://github.com/tokuhirom/mutsu),
+  the Rust implementation, does the same rewriting inside its own interpreter
+  (`src/runtime/run_roast_preprocess.rs`) over the same verb set plus `#?v6 …
+  skip`, but gates it behind **`MUTSU_FUDGE=1`, which is off by default** and set
+  by its own runner. Pointing our harness at a mutsu binary without that variable
+  measures it unfudged and understates it by a wide margin.
+
+`tools/run-roast.raku` takes `$*EXECUTABLE` as the engine under test, so it can
+score any Raku that can run the harness itself. When you do that, set whatever
+the other engine's fudge switch is — and record it next to the number, because a
+figure without its bar attached is not evidence.
 
 ## Zero-regression discipline
 

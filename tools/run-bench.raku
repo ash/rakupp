@@ -1,9 +1,13 @@
 #!/usr/bin/env raku
-# Benchmark harness — times each program in tools/bench/ three ways and prints a
-# comparison table:
+# Benchmark harness — times each program in tools/bench/ on every engine it can
+# find and prints a comparison table:
 #   * interp — Raku++ interpreting the source
 #   * native — Raku++ `--exe` (transpiled to C++, compiled to a native binary)
+#   * mutsu  — mutsu, a Raku implementation in Rust (bytecode VM + Cranelift JIT)
 #   * rakudo — Rakudo interpreting the source
+#
+# The mutsu lane is OPTIONAL and skipped when no mutsu is installed; see
+# resolve-mutsu below. Rakudo is the correctness oracle for every lane.
 #
 # Run it with Raku++ (dogfooding, matches run-roast.raku):
 #
@@ -108,6 +112,27 @@ sub first-line(@cmd --> Str) {
     $p.exitcode == 0 ?? ($out.lines[0] // '') !! ''
 }
 
+# The mutsu lane is OPTIONAL. mutsu (github.com/tokuhirom/mutsu) is a separate
+# Raku implementation — a Rust bytecode VM with a Cranelift JIT — and most
+# machines running this harness will not have one. Resolution order is $MUTSU,
+# then `mutsu` on PATH, then a checkout under $HOME; when nothing answers
+# `--version` with a mutsu banner the column reads `—` and no other lane is
+# affected. A mutsu disagreement is REPORTED but never fails the run: this
+# harness gates OUR lanes, and another implementation's result is a reference
+# point, not a defect in our suite.
+sub resolve-mutsu(--> Str) {
+    my @cand;
+    @cand.push(%*ENV<MUTSU>) if %*ENV<MUTSU>;
+    @cand.push('mutsu');
+    @cand.push(%*ENV<HOME> ~ '/mutsu/target/release/mutsu') if %*ENV<HOME>;
+    for @cand -> $c {
+        my $v = (try first-line([$c, '--version'])) // '';
+        return $c if $v.lc.starts-with('mutsu');
+    }
+    return Str;
+}
+my $MUTSU = resolve-mutsu();
+
 sub median(@ms --> Numeric) {
     my @s = @ms.sort;
     my $n = +@s;
@@ -123,15 +148,21 @@ if $tfh {
         $p.exitcode == 0 ?? $c !! ''
     };
     my $rakudo-v = first-line([$RAKUDO, '--version']);
+    my $mutsu-v  = $MUTSU.defined ?? first-line([$MUTSU, '--version']) !! '';
     my $rakupp-v = first-line([$RAKUPP, '--version']);
     my $cpu = do {
         my $p = run('sysctl', '-n', 'machdep.cpu.brand_string', :out, :err);
         my $c = $p.out.slurp(:close).trim; $p.err.slurp(:close);
         if $p.exitcode != 0 || !$c {
-            $c = ('/proc/cpuinfo'.IO.e
-                  ?? ('/proc/cpuinfo'.IO.lines.first(*.starts-with('model name')) // '')
-                       .split(':')[1] // ''
-                  !! '').trim;
+            # Split across statements on purpose: as one chained ternary, with
+            # `.split(':')` continued onto its own line, Rakudo ends the
+            # expression before the `[1]` and dies with "Missing infix inside
+            # []" — so `raku -c tools/run-bench.raku` failed even though rakupp
+            # parsed it. This file documents that it runs under BOTH engines.
+            my $model = '/proc/cpuinfo'.IO.e
+                        ?? ('/proc/cpuinfo'.IO.lines.first(*.starts-with('model name')) // '')
+                        !! '';
+            $c = ($model ?? ($model.split(':')[1] // '') !! '').trim;
         }
         $c
     };
@@ -145,16 +176,18 @@ if $tfh {
     $tfh.say: "# rakupp_commit=$commit";
     $tfh.say: "# rakupp_version=$rakupp-v";
     $tfh.say: "# rakudo_version=$rakudo-v";
+    $tfh.say: "# mutsu_version=$mutsu-v";
     $tfh.say: "# cpu=$cpu";
     $tfh.say: "# cxx=$cxx";
     $tfh.say: ('kernel',
                'interp_min_ms', 'interp_med_ms', 'native_min_ms', 'native_med_ms',
+               'mutsu_min_ms', 'mutsu_med_ms',
                'rakudo_min_ms', 'rakudo_med_ms', 'perl_min_ms', 'perl_med_ms',
                'flags').join("\t");
 }
 
 my $mismatch = False;
-printf "%-12s %10s %10s %10s %10s   %s\n", 'benchmark', 'interp', 'native', 'rakudo', 'perl', 'note';
+printf "%-12s %10s %10s %10s %10s %10s   %s\n", 'benchmark', 'interp', 'native', 'mutsu', 'rakudo', 'perl', 'note';
 for @benches -> %b {
     my $path = $bench.add(%b<file>).Str;
     my $nbin = "/tmp/rakupp-bench-$*PID-{%b<name>}"; # unique per run: macOS wedges re-execs of an overwritten exe path
@@ -167,6 +200,7 @@ for @benches -> %b {
     my $oi = capture([$RAKUPP, $path]);
     my $on = $built ?? capture([$nbin]) !! Str;
     my $or = capture([$RAKUDO, $path]);
+    my $om = $MUTSU.defined ?? capture([$MUTSU, $path]) !! Str;
     my $op = $ppath.defined ?? capture([$PERL, $ppath]) !! Str;
     my $oracle = $or.defined ?? 'rakudo' !! 'interp';
     my $ref    = $or // $oi;
@@ -177,14 +211,21 @@ for @benches -> %b {
     @bad.push("interp ≠ $oracle")          if $oi.defined && $or.defined && $oi ne $or;
     @bad.push("native ≠ $oracle")          if $on.defined && $ref.defined && $on ne $ref;
     @bad.push("perl ≠ $oracle")            if $op.defined && $ref.defined && $op ne $ref;
+    # A third-party engine's disagreement is recorded next to the row and stays
+    # out of @bad: it must not turn our own correctness gate red.
+    my @othereng;
+    @othereng.push('mutsu did not run')     if $MUTSU.defined && !$om.defined;
+    @othereng.push("mutsu ≠ $oracle")       if $om.defined && $ref.defined && $om ne $ref;
     my $flag = '';
     if @bad { $mismatch = True; $flag = "   ⚠ {@bad.join('; ')}"; }
+    $flag ~= "   (mutsu: {@othereng.join('; ')})" if @othereng;
 
     # One lane per engine that produced output; each measured round times every
     # lane once, back to back, warm-up round discarded.
     my @lanes;
     @lanes.push: 'interp' => [$RAKUPP, $path]              if $oi.defined;
     @lanes.push: 'native' => [$nbin]                       if $built && $on.defined;
+    @lanes.push: 'mutsu'  => [$MUTSU, $path]               if $om.defined;
     @lanes.push: 'rakudo' => [$RAKUDO, $path]              if $or.defined;
     @lanes.push: 'perl'   => [$PERL, $ppath]               if $ppath.defined && $op.defined;
     my %times;
@@ -199,18 +240,21 @@ for @benches -> %b {
     my sub cell(Str $k) { %times{$k} ?? sprintf('%.1fms', %times{$k}.min) !! 'n/a' }
     my $interp = cell('interp');
     my $native = cell('native');
+    my $mutsu  = $MUTSU.defined ?? cell('mutsu') !! '—';
     my $rakudo = cell('rakudo');
     my $perl   = $ppath.defined ?? cell('perl') !! '—';
-    printf "%-12s %10s %10s %10s %10s   %s%s\n", %b<name>, $interp, $native, $rakudo, $perl, %b<note>, $flag;
+    printf "%-12s %10s %10s %10s %10s %10s   %s%s\n", %b<name>, $interp, $native, $mutsu, $rakudo, $perl, %b<note>, $flag;
 
     if $tfh {
         my sub pair(Str $k) {
             %times{$k} ?? (sprintf('%.1f', %times{$k}.min), sprintf('%.1f', median(%times{$k})))
                        !! ('', '')
         }
+        my @all = |@bad, |@othereng;
         $tfh.say: (%b<name>,
-                   |pair('interp'), |pair('native'), |pair('rakudo'), |pair('perl'),
-                   (@bad ?? @bad.join('; ') !! 'ok')).join("\t");
+                   |pair('interp'), |pair('native'), |pair('mutsu'),
+                   |pair('rakudo'), |pair('perl'),
+                   (@all ?? @all.join('; ') !! 'ok')).join("\t");
     }
 }
 $tfh andthen .close;

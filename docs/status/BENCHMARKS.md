@@ -131,6 +131,28 @@ there.)
   gate — and prints a `perl` column (`—` for rows without a twin). Override the
   binary with `PERL=`.
 
+### The mutsu lane
+
+`tools/run-bench.raku` can also time **[mutsu](https://github.com/tokuhirom/mutsu)**,
+an independent Raku implementation in Rust — a bytecode VM with a Cranelift JIT
+(on by default). It is a genuinely different set of engineering trade-offs from
+either engine already in this table, which is what makes it worth measuring
+against: Rakudo tells us where a mature optimising VM lands, and mutsu tells us
+where a second from-scratch implementation lands.
+
+The lane is **optional and auto-discovered** — `$MUTSU`, then `mutsu` on `PATH`,
+then `$HOME/mutsu/target/release/mutsu`. On a machine with no mutsu the column
+reads `—` and nothing else changes. Rakudo remains the correctness oracle for
+every lane, and a mutsu disagreement is reported beside the row but never turns
+the harness's own gate red: this harness gates *our* lanes, and another
+implementation's result is a reference point, not a defect in our suite.
+
+**The tables below do not carry a mutsu column yet.** Every row in this file is
+measured on the machine named above, and the lane landed after the last sitting;
+adding numbers from a different box would break the one property that makes
+these rows comparable across revisions. The column fills in at the next
+bench-machine sitting.
+
 ## Results
 
 Best of 6 timed runs per engine (7 spawned, the first discarded as warm-up),
