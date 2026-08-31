@@ -105,12 +105,29 @@ sub find-t($dir) {
     return @out;
 }
 
-# Parse TAP text -> (planned, ran, passed, failed). planned is -1 if absent.
+# Parse TAP text -> (planned, ran, passed, failed, skipped, todo-failed).
+# planned is -1 if absent.
+#
+# `passed` counts a `# skip` line and a `# todo` line as passing, which is right
+# — a skip is not a failure, and a TODO failure is an expected one — but it means
+# the headline assertion figure is a SHIELDED number, and nothing used to say by
+# how much. The last two return values are that disclosure:
+#
+#   skipped      `ok N # skip …`      — never executed
+#   todo-failed  `not ok N # todo …`  — executed, genuinely failed, counted as a
+#                                       pass because the suite marks it expected
+#
+# `ok N # todo …` is deliberately in neither: it ran and it passed, so it needs
+# no shield. Both counts include the suite's OWN skip()/todo() calls as well as
+# the ones our fudge rewriting produces, because TAP cannot tell them apart —
+# see COUNTING.md for the static split.
 sub parse-tap($out) {
     my $planned = -1;
     my $ran = 0;
     my $passed = 0;
     my $failed = 0;
+    my $skipped = 0;
+    my $todo-failed = 0;
     for $out.lines -> $ln {
         if $ln.starts-with('1..') {
             if $planned < 0 { $planned = $ln.substr(3).words[0].Int }  # first plan wins
@@ -118,8 +135,12 @@ sub parse-tap($out) {
         elsif $ln.starts-with('ok') || $ln.starts-with('not ok') {
             my $isok = !$ln.starts-with('not ok');
             my $lc = $ln.lc;
-            my $skip = $lc.contains('# skip') || $lc.contains('# todo');
+            my $is-skip = $lc.contains('# skip');
+            my $is-todo = $lc.contains('# todo');
+            my $skip = $is-skip || $is-todo;
             $ran++;
+            $skipped++     if $is-skip;
+            $todo-failed++ if $is-todo && !$isok;
             if $isok || $skip {
                 $passed++;
             }
@@ -128,7 +149,7 @@ sub parse-tap($out) {
             }
         }
     }
-    return ($planned, $ran, $passed, $failed);
+    return ($planned, $ran, $passed, $failed, $skipped, $todo-failed);
 }
 
 # Statically read a file's declared test count from its `plan N;` line, WITHOUT
@@ -235,6 +256,8 @@ my $pass = 0;
 my $partial = 0;
 my $noplan = 0;
 my $timeout = 0;
+my $tot-skip = 0;        # `ok … # skip` lines counted as passes
+my $tot-todofail = 0;    # `not ok … # todo` lines counted as passes
 my $tot-ran = 0;
 my $tot-pass = 0;
 my $tot-plan = 0;
@@ -258,8 +281,10 @@ while $next < @files.elems {
     my sub run-one($f) {
         my $rel = $f.substr($ROOT.chars + 1);
         my ($out, $timedout) = run-with-timeout($BIN, $f, %SLOW-FILES{$rel} // $TIMEOUT);
-        my ($planned, $ran, $passed, $failed) = parse-tap($out);
-        [$timedout, $planned, $ran, $passed, $failed, $out.contains('# SKIP')]; # an Array stays one item
+        my ($planned, $ran, $passed, $failed, $skipped, $todofail) = parse-tap($out);
+        # New fields go on the END: the unpack below is positional.
+        [$timedout, $planned, $ran, $passed, $failed, $out.contains('# SKIP'),
+         $skipped, $todofail]; # an Array stays one item
     }
     my @outs;
     if $WORKERS > 1 && @batch.elems > 1 {
@@ -275,6 +300,7 @@ while $next < @files.elems {
     my $sec = seckey($rel);
     my $r = @outs[$k];
     my ($timedout, $planned, $ran, $passed, $failed, $has-skip) = $r[0], $r[1], $r[2], $r[3], $r[4], $r[5];
+    my ($skipped, $todofail) = $r[6] // 0, $r[7] // 0;
     if $timedout {
         $timeout++;
         %sec-time{$sec}++;
@@ -283,6 +309,8 @@ while $next < @files.elems {
     }
     $tot-ran  += $ran;
     $tot-pass += $passed;
+    $tot-skip += $skipped;
+    $tot-todofail += $todofail;
     %sec-pass{$sec} += $passed;
     %sec-tot{$sec}  += $ran;
     # "planned" denominator: how many tests the file *intended* to run. Where a plan
@@ -383,6 +411,14 @@ say sprintf("Assertions passed:    %d / %d  (%.1f%%)  of tests that ran", $tot-p
 say sprintf("Assertions passed:    %d / %d  (%.1f%%)  of tests planned by files that emitted a plan", $tot-pass, $tot-plan, $ppct);
 say sprintf("Assertions passed:    %d / %d  (%.1f%%)  of ALL declared tests (+%d from %d no-TAP files read from source; %d more have no static plan)",
             $tot-pass, $declared, $dpct, $notap-declared, $notap-counted, $notap-unknown);
+# What the pass count is SHIELDED by. Both categories are legitimately counted as
+# passes above; this line says how many, so the headline can be read net.
+my $shielded = $tot-skip + $tot-todofail;
+my $net      = $tot-pass - $shielded;
+say sprintf("  of which shielded:  %d skipped + %d todo-failed = %d (%.2f%% of the pass count)",
+            $tot-skip, $tot-todofail, $shielded, $tot-pass ?? 100 * $shielded / $tot-pass !! 0);
+say sprintf("Assertions passed NET of skip/todo: %d / %d  (%.1f%%)  of ALL declared tests",
+            $net, $declared, $declared ?? 100 * $net / $declared !! 0);
 
 # ---- Per-synopsis breakdown, formatted paste-ready for the ROAST.md table ----
 sub sec-order($s) {

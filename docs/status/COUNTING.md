@@ -149,11 +149,21 @@ real failure. Anything measuring Raku++ must run the raw `.t` files.
 ### Comparing our figure with another implementation's
 
 **A Roast number measured with fudge applied and one measured without it are not
-comparable, and the gap is not small.** The suite carries 262 `#?rakudo skip`
-and 282 `#?rakudo todo` directives spread across 407 of its 1,464 files, so
-whether an engine honours them moves the file-level figure by hundreds of files.
+comparable at the FILE level, and the gap is not small.** At Roast `b2cbe8a42`
+the suite carries **310 `#?rakudo`/`#?rakudo.moar` skip directives shielding 473
+tests**, and **359 todo directives shielding 454**, across **277** of its 1,464
+files. (Counting the backend-specific `.jvm`/`.js` directives we deliberately do
+*not* honour would make it 451 and 585 directives across 386 files — so always
+say which set you counted.) One shielded test is enough to decide whether a file
+fully passes, which is why honouring them moves the file figure by hundreds.
 Before setting our number beside anyone else's, establish that both were taken
 on the same bar.
+
+**At the assertion level the same directives are nearly irrelevant**, and that
+asymmetry is the single most useful thing to know when reading the two measures
+side by side — 927 shielded tests against ~218,000 declared is 0.42%. The
+measured version of that is in
+["The assertion figures net of skip and todo"](#the-assertion-figures-net-of-skip-and-todo).
 
 Two things make this easy to get wrong:
 
@@ -229,6 +239,68 @@ to 180 seconds for. 1,419 at 10 s and 1,433 at 30 s+ are the same engine
 measured on two bars, not a discrepancy. Note also that the README's 1,433 was
 written 2026-07-23 and the file itself points at their site for the live figure,
 so treat it as a floor rather than a current reading.
+
+### The assertion figures net of skip and todo
+
+Every assertion figure on this page and in [ROAST.md](ROAST.md) is a **shielded**
+number, and until 2026-08-31 nothing said by how much. `parse-tap` in
+[`tools/run-roast.raku`](../../tools/run-roast.raku) counts two kinds of line as
+passing:
+
+- `ok N # skip …` — the test never executed;
+- `not ok N # todo …` — the test executed, genuinely failed, and is counted as a
+  pass because the suite marks the failure expected.
+
+Both are the right call: a skip is not a failure, and a TODO failure is a known
+one. But a reader comparing 91% with 99% deserves to know what each figure rests
+on, so the harness now reports it. Two lines were added to the summary — the
+existing ones are unchanged, so the zero-regression gate is unaffected:
+
+```
+  of which shielded:  1169 skipped + 197 todo-failed = 1366 (0.69% of the pass count)
+Assertions passed NET of skip/todo: 197800 / 218825  (90.4%)  of ALL declared tests
+```
+
+**Measured on both engines**, same harness, same Roast revision `b2cbe8a42`,
+same 10-second bar, both on the fudged bar (`MUTSU_FUDGE=1` for theirs), one
+sitting each on 2026-08-31:
+
+| | Raku++ 3.23.0 | mutsu 0.23.0 |
+|---|---:|---:|
+| assertions passed (shielded, as published) | 199,166 / 218,825 (**91.0%**) | 216,784 / 218,149 (**99.4%**) |
+| ├ `ok … # skip` | 1,169 | 1,159 |
+| └ `not ok … # todo` | 197 | 279 |
+| total shielded | 1,366 (0.69% of passes) | 1,438 (0.66% of passes) |
+| **assertions passed NET of skip/todo** | **197,800 / 218,825 (90.4%)** | **215,346 / 218,149 (98.7%)** |
+
+**The shield is a wash.** Both engines are propped up by almost exactly the same
+amount — 1,366 against 1,438 assertions, 0.69% against 0.66% of their respective
+pass counts — because both are running the same suite and honouring the same
+directive set. Stripping it costs us 0.6 points and them 0.7. The 91-vs-99 gap
+comes back as 90.4-vs-98.7, entirely intact.
+
+So: **`#?rakudo skip` explains none of the distance between the two assertion
+figures.** It explains a great deal of the distance between the two *file*
+figures — measured unfudged, the same harness scores mutsu 1,227 rather than
+1,419 — and that is the whole point of keeping the two measures apart.
+
+Two honest caveats on the table:
+
+- **The skipped counts include the suite's own `skip()`/`todo()` calls**, not
+  just the ones fudge rewriting produces; TAP cannot tell the two apart after the
+  fact. The static split is in the section above: of the ~1,169 skips, 473 are
+  attributable to `#?rakudo skip` directives and the rest are the tests' own.
+- **The denominators differ slightly** (218,825 against 218,149) because each is
+  built from what that engine's run could see — we fall back to a static `plan N`
+  read for 76 no-TAP files where mutsu needs it for only 4. That difference is a
+  coverage fact in mutsu's favour, not a counting artefact; see
+  ["The declared denominator grows with coverage"](#the-declared-denominator-grows-with-coverage).
+
+One number on this page is deliberately *not* net: the headline stays the
+shielded one, because that is what every other implementation publishes and
+changing it unilaterally would make our figure incomparable rather than more
+honest. The net figure is here so that anyone can do the subtraction, and so
+that a future sitting cannot quietly grow the shield without it showing.
 
 ## Zero-regression discipline
 

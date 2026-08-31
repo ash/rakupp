@@ -33,7 +33,12 @@ in [COUNTING.md](COUNTING.md); that file is authoritative if anything here drift
 
 **Headline: ~90% of all declared Roast tests pass** (198,939 / 218,773); on the
 stricter file bar, ~44% of files fully pass (643 / 1,464). The per-file breakdown
-comes first below, then the per-test figures. (S15 — Unicode / strings / NFG —
+comes first below, then the per-test figures. That assertion figure is the
+**shielded** one, as every implementation's is: it counts `ok … # skip` and
+`not ok … # todo` lines as passes. Net of both it is 90.4% rather than 91.0% —
+1,366 assertions, 0.69% of the pass count. mutsu's equivalent shield is 1,438
+(0.66%), so it is a wash between the two; the measured breakdown is in
+[COUNTING.md](COUNTING.md#the-assertion-figures-net-of-skip-and-todo). (S15 — Unicode / strings / NFG —
 is now at 100% of assertions: full UCD case tables, grapheme-level regex, and
 complete `uniprop` coverage landed for v1.1; its lone non-passing file is a
 performance timeout, not a correctness gap. See [ROAST-GAPS](../dev/findings/ROAST-GAPS.md).)
