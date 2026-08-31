@@ -17,6 +17,10 @@ trips over.
 
 - **[shell.md](shell.md)** — running external commands: `run` vs `shell`,
   capturing output, feeding input, exit codes, and what a `Proc` shows you.
+- **[buffering.md](buffering.md)** — why output does not appear when you
+  expect it: `.out-buffer` and `.flush`, the three places output can sit (your
+  own handles, a file you opened, a child's stdout), the child's own buffer
+  that you cannot set from outside, and how to tell which one is holding it.
 - **[background-processes.md](background-processes.md)** — `Proc::Async`:
   fire-and-forget processes that outlive the program (and where Raku's own
   documentation stands on that), when `.start` spawns, taps, `bind-stdin`
