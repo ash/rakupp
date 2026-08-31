@@ -4,6 +4,12 @@
 #
 # Change the five connection values below to match your server. The SQL that
 # creates the database and user this expects is in the recipe.
+#
+# If this reports `DBDish::mysql needs '', not found`, the driver probed for
+# libmysqlclient by soname (versions 16 to 21) and found none — Homebrew's
+# MySQL 9.7 ships version 24. Name the file instead:
+#
+#   DBIISH_MYSQL_LIB=/usr/local/opt/mysql/lib/libmysqlclient.24.dylib rakupp names-mysql.raku
 
 use DBIish;
 

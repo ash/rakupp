@@ -196,12 +196,33 @@ DBIish: DBDish::Pg needs 'pq', not found.
 	Detail: … (mach-o file, but is an incompatible architecture (have 'x86_64', need 'arm64e' or 'arm64'))
 ```
 
-Use the interpreter build that matches the library.
+Use the interpreter build that matches the library. When a connection reports a
+driver "not found", read past the first line — the detail after it is dlopen's,
+and names every path that was tried.
 
-**A driver whose library is missing skips rather than fails loudly** in
-DBIish's own test suite. When a connection reports the driver "not found",
-read past the first line: the detail after it is dlopen's, and names every path
-that was tried.
+**`needs '', not found` means the driver looked and found nothing at all.** The
+MySQL driver does not take a library path: it probes by soname, `mariadb`
+versions 0 to 4 and then `mysqlclient` versions 16 to 21. Homebrew's MySQL 9.7
+installs `libmysqlclient.24.dylib`, outside that range, so no candidate matches
+and the message has an empty library name where the others have `'pq'` or
+`'sqlite3'`:
+
+```output
+DBIish: DBDish::mysql needs '', not found.
+	Detail: Cannot locate symbol 'mysql_init' in native library ''
+```
+
+Name the file, and the probe stops guessing:
+
+```sh
+DBIISH_MYSQL_LIB=/usr/local/opt/mysql/lib/libmysqlclient.24.dylib rakupp names-mysql.raku
+```
+
+An architecture mismatch produces this *same* message, because a candidate that
+will not load is simply a candidate that did not match — where the PostgreSQL
+driver quotes dlopen and names the architecture, this one reports only that the
+search came up empty. So if the environment variable alone does not fix it,
+the next thing to check is the architecture, above.
 
 ## Setting up a server to run these against
 
