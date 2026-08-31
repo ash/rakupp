@@ -119,9 +119,13 @@ and the collation are all in-tree. mutsu takes `num-bigint`, ICU, `libffi` and
 Cranelift off the shelf. Neither is the right answer in general. Ours means one
 binary, no supply chain and no version skew, paid for by having to write and
 maintain every one of those ourselves — and `bigint` is a kernel where a
-well-tuned external library is simply faster than what we hand-rolled. Theirs
-means large, mature components for free, paid for in build time and in a
-dependency graph to keep current.
+well-tuned external library is simply faster than what we hand-rolled. That is
+now measured rather than predicted: **3.5× interpreted and 3.3× compiled**, and
+it is the one kernel of the sixteen where mutsu beats both Raku++ modes.
+Compiling does not rescue it, because the time is inside the runtime's own
+multiply rather than in the loop around it. Theirs means large, mature
+components for free, paid for in build time and in a dependency graph to keep
+current.
 
 ### What you can ship
 
@@ -137,7 +141,8 @@ and the whole ecosystem behind `zef`.
 Measured on this machine (macOS Darwin 25.5, Apple M1), 2026-08-31 — rakupp
 3.23.0, mutsu 0.23.0, Rakudo v2026.08 on MoarVM 2026.08. These are start-up and
 footprint figures, which are stable across machines in *shape* if not in exact
-value; the throughput tables live in
+value; the throughput tables — which as of the 2026-08-31 sitting carry a
+mutsu column on all sixteen kernels — live in
 [BENCHMARKS.md](../../status/BENCHMARKS.md) and are measured on a different,
 dedicated box.
 
