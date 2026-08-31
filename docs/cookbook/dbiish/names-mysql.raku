@@ -1,6 +1,6 @@
 #!/usr/bin/env raku
 # One program, three databases — the MySQL version (MariaDB uses this driver too).
-#   rakupp docs/recipes/databases/names-mysql.raku
+#   rakupp docs/cookbook/dbiish/names-mysql.raku
 #
 # Change the five connection values below to match your server. The SQL that
 # creates the database and user this expects is in the recipe.

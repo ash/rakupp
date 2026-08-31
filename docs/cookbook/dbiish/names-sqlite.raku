@@ -1,6 +1,6 @@
 #!/usr/bin/env raku
 # One program, three databases — the SQLite version.
-#   rakupp docs/recipes/databases/names-sqlite.raku
+#   rakupp docs/cookbook/dbiish/names-sqlite.raku
 #
 # SQLite needs no server: the database is the file named below, and the driver
 # creates it. The MySQL and PostgreSQL versions beside this one differ only in

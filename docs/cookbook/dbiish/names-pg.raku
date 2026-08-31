@@ -1,6 +1,6 @@
 #!/usr/bin/env raku
 # One program, three databases — the PostgreSQL version.
-#   rakupp docs/recipes/databases/names-pg.raku
+#   rakupp docs/cookbook/dbiish/names-pg.raku
 #
 # Change the five connection values below to match your server. The SQL that
 # creates the database and role this expects is in the recipe.
