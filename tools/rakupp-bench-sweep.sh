@@ -29,6 +29,7 @@ KERNELS=fib,loopsum,strcat  # 'all' = every kernel in tools/bench
 RAKUDO_MODE=source          # source | single
 RAKUDO_SINGLE=
 ONLY_TAGS=                  # comma-separated subset, e.g. v3.22.0,v3.23.0
+PASSES=4                    # interleaved passes for the per-ERA Rakudo measurement
 JOBS=$( (nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4) )
 
 # tag / release-date / the Rakudo current on that date.
@@ -76,6 +77,7 @@ for arg in "$@"; do
     --rakudo=*)       RAKUDO_SINGLE=${arg#*=} ;;
     --repo-ref=*)     REPO_REF=${arg#*=} ;;
     --tags=*)         ONLY_TAGS=${arg#*=} ;;
+    --passes=*)       PASSES=${arg#*=} ;;
     --jobs=*)         JOBS=${arg#*=} ;;
     -h|--help)        sed -n '2,20p' "$0"; exit 0 ;;
     *) echo "unknown argument: $arg" >&2; exit 2 ;;
@@ -288,6 +290,68 @@ echo "$TAGS" | while read -r tag date era; do
   ' "$f" >> "$OUT"
 done
 
+# ---------------------------------------------- Rakudo, once per RAKUDO release
+# The sweep above measures the rakudo lane once per RAKU++ tag, because the
+# harness needs it as the correctness oracle. Those numbers must NOT be charted:
+# Rakudo ships monthly, so it cannot change between two Raku++ tags cut on the
+# same day, and every difference in that column is run-to-run noise. On the
+# reference machine it wobbled up to 19% on sortby (whose Rakudo lane is bimodal
+# there, ~168/198ms) and 2-10% elsewhere.
+#
+# So measure each Rakudo ONCE, properly, and key it by DATE: 20 timed runs after
+# a discarded warm-up, every era interleaved inside each round, $PASSES such
+# passes, and the minimum across all of them. Two passes is not enough and not
+# a check either — run as sequential blocks they track the machine's drift and
+# disagreed by up to 10% on the reference machine. Convergence is reported
+# below: compare the first half of the passes against the second.
+ERAS_OUT=$WORKDIR/rakudo-eras.tsv
 say ""
-say "done. $(( $(wc -l < "$OUT") - 1 )) rows -> $OUT"
-say "send back: $OUT and $WORKDIR/environment.txt"
+say "measuring Rakudo once per release ($PASSES interleaved passes) ..."
+{
+  echo 'my $out = @*ARGS[0]; my $passes = +@*ARGS[1]; my @kernels = @*ARGS[2].split(",");'
+  echo 'my @eras; for @*ARGS[3..*] -> $spec { my ($n, $p) = $spec.split("="); @eras.push: { name => $n, path => $p } }'
+  echo 'sub t($b, $k) { my $t0 = now; run($b, $k, :out, :err).out.slurp(:close); (now - $t0) * 1000 }'
+  echo 'my %best; my %half;'
+  echo 'for ^$passes -> $pass {'
+  echo '  for @kernels -> $k {'
+  echo '    my $path = "REPO/tools/bench/$k.raku";'
+  echo '    for ^21 -> $r {'
+  echo '      for @eras -> %e {'
+  echo '        my $ms = t(%e<path>, $path);'
+  echo '        next if $r == 0;'
+  echo '        my $key = %e<name> ~ "\t" ~ $k;'
+  echo '        %best{$key} = $ms if !(%best{$key}:exists) || $ms < %best{$key};'
+  echo '        my $h = $pass < $passes / 2 ?? "A" !! "B";'
+  echo '        %half{$h}{$key} = $ms if !(%half{$h}{$key}:exists) || $ms < %half{$h}{$key};'
+  echo '      }'
+  echo '    }'
+  echo '  }'
+  echo '  note "  pass {$pass + 1}/$passes done";'
+  echo '}'
+  echo 'my $fh = $out.IO.open(:w);'
+  echo '$fh.say: "era\tkernel\tms\tconverge_pct";'
+  echo 'my $worst = 0;'
+  echo 'for %best.keys.sort -> $key {'
+  echo '  my $a = %half<A>{$key} // %best{$key}; my $b = %half<B>{$key} // %best{$key};'
+  echo '  my $d = ((($a max $b) / ($a min $b)) - 1) * 100;'
+  echo '  $worst = $d if $d > $worst;'
+  echo '  $fh.say: ($key, sprintf("%.1f", %best{$key}), sprintf("%.1f", $d)).join("\t");'
+  echo '}'
+  echo '$fh.close;'
+  echo 'printf "  halves agree to within %.1f%% (>2%% means the floor has NOT converged)\n", $worst;'
+} | sed "s#REPO#$WORKDIR/repo#" > "$WORKDIR/eras.raku"
+
+ERA_ARGS=""
+for v in $(echo "$TAGS" | awk '$3 != "" {print $3}' | sort -u); do
+  rp=$(rakudo_for "$v")
+  [ -x "$rp" ] || command -v "$rp" >/dev/null 2>&1 || continue
+  ERA_ARGS="$ERA_ARGS $v=$rp"
+done
+# shellcheck disable=SC2086
+"$DRIVER" "$WORKDIR/eras.raku" "$ERAS_OUT" "$PASSES" "$KERNELS" $ERA_ARGS
+
+say ""
+say "done."
+say "  $(( $(wc -l < "$OUT") - 1 )) rows -> $OUT   (per-tag; rakudo column is ORACLE ONLY)"
+say "  $(( $(wc -l < "$ERAS_OUT") - 1 )) rows -> $ERAS_OUT   (the rakudo reference, one per release)"
+say "send back: $OUT, $ERAS_OUT and $WORKDIR/environment.txt"

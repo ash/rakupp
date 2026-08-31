@@ -39,6 +39,7 @@ param(
   [string]    $RepoRef  = 'v3.23.0',              # pinned: identical kernels everywhere
   [string]    $DriverTag = 'v3.23.0',             # which rakupp interprets the harness
   [string]    $OnlyTags = '',                     # comma-separated subset of tags
+  [int]       $Passes = 4,                        # interleaved passes for the per-ERA Rakudo run
   [switch]    $Mingw                              # use the MinGW build instead of MSVC
 )
 
@@ -212,6 +213,58 @@ foreach ($t in $Tags) {
 Remove-Item Env:\RAKUPP, Env:\RAKUDO -ErrorAction SilentlyContinue
 
 # ---- aggregation ----
+# ---- Rakudo, once per RAKUDO release -----------------------------------------
+# The sweep above measures the rakudo lane once per RAKU++ tag because the
+# harness needs it as its correctness oracle. Do NOT chart those numbers:
+# Rakudo ships monthly, so it cannot change between two Raku++ tags cut on the
+# same day, and every difference there is run-to-run noise (up to 19% on sortby
+# on the reference machine). Measure each Rakudo ONCE instead, keyed by date.
+$erasOut = Join-Path $WorkDir 'rakudo-eras.tsv'
+$erasRaku = Join-Path $WorkDir 'eras.raku'
+$benchDir = (Join-Path $RepoDir 'tools\bench') -replace '\\','/'
+@"
+my `$out = @*ARGS[0]; my `$passes = +@*ARGS[1]; my @kernels = @*ARGS[2].split(",");
+my @eras; for @*ARGS[3..*] -> `$spec { my (`$n, `$p) = `$spec.split("="); @eras.push: { name => `$n, path => `$p } }
+sub t(`$b, `$k) { my `$t0 = now; run(`$b, `$k, :out, :err).out.slurp(:close); (now - `$t0) * 1000 }
+my %best; my %half;
+for ^`$passes -> `$pass {
+  for @kernels -> `$k {
+    my `$path = "$benchDir/`$k.raku";
+    for ^21 -> `$r {
+      for @eras -> %e {
+        my `$ms = t(%e<path>, `$path);
+        next if `$r == 0;
+        my `$key = %e<name> ~ "\t" ~ `$k;
+        %best{`$key} = `$ms if !(%best{`$key}:exists) || `$ms < %best{`$key};
+        my `$h = `$pass < `$passes / 2 ?? "A" !! "B";
+        %half{`$h}{`$key} = `$ms if !(%half{`$h}{`$key}:exists) || `$ms < %half{`$h}{`$key};
+      }
+    }
+  }
+  note "  pass {`$pass + 1}/`$passes done";
+}
+my `$fh = `$out.IO.open(:w);
+`$fh.say: "era\tkernel\tms\tconverge_pct";
+my `$worst = 0;
+for %best.keys.sort -> `$key {
+  my `$a = %half<A>{`$key} // %best{`$key}; my `$b = %half<B>{`$key} // %best{`$key};
+  my `$d = (((`$a max `$b) / (`$a min `$b)) - 1) * 100;
+  `$worst = `$d if `$d > `$worst;
+  `$fh.say: (`$key, sprintf("%.1f", %best{`$key}), sprintf("%.1f", `$d)).join("\t");
+}
+`$fh.close;
+printf "  halves agree to within %.1f%% (>2%% means the floor has NOT converged)\n", `$worst;
+"@ | Set-Content $erasRaku
+
+Write-Host ''
+Write-Host "measuring Rakudo once per release ($Passes interleaved passes) ..."
+$eraArgs = @()
+foreach ($e in ($Tags | ForEach-Object { $_[2] } | Sort-Object -Unique)) {
+  $rp = Rakudo-For $e
+  if ($rp -and (Test-Path $rp)) { $eraArgs += "$e=$rp" }
+}
+& $Driver $erasRaku $erasOut "$Passes" $Kernels @eraArgs
+
 $out = Join-Path $WorkDir 'series.tsv'
 $rows = @("tag`tdate`trakudo`tkernel`tinterp_min`tinterp_med`tnative_min`tnative_med`trakudo_min`trakudo_med`tflags")
 foreach ($t in $Tags) {
@@ -240,5 +293,8 @@ foreach ($t in $Tags) {
 }
 $rows | Set-Content $out
 Write-Host ''
-Write-Host "done. $($rows.Count - 1) rows -> $out"
-Write-Host "send back: $out and $(Join-Path $WorkDir 'environment.txt')"
+Write-Host ''
+Write-Host "done."
+Write-Host "  $($rows.Count - 1) rows -> $out   (per-tag; rakudo column is ORACLE ONLY)"
+Write-Host "  the rakudo reference, one value per release -> $erasOut"
+Write-Host "send back: $out, $erasOut and $(Join-Path $WorkDir 'environment.txt')"
