@@ -131,7 +131,9 @@ same-named enclosing package, which Rakudo's own warning calls legacy.
 - Math: `abs sqrt floor ceiling round sign exp log log10 log2` + full trig, `polymod`, `base`, `rand` / `.rand`, constants `pi tau e`
 
 ## I/O, System, Concurrency
-- `open`/FileHandle (`.lines .get .slurp .print .say .put .getc .readchars .close`; `close`/`getc` sub forms), `dir`, `make-temp-file`
+- `open`/FileHandle (`.lines .get .slurp .print .say .put .getc .readchars .flush .close`; `close`/`getc` sub forms), `dir`, `make-temp-file`
+- Output buffering: `.out-buffer` reads and (as an l-value) sets how many bytes a handle may hold back — `0`/`False` writes every `print` straight through, `True` restores the default block, an `Int` is the size; also as an adverb at open (`open $f, :w, :!out-buffer`). Setting it flushes what is already pending, as does `.flush`. `$*OUT`/`$*ERR` are unbuffered, as in Rakudo, so a `say` reaches a pipe as it is written; an output-heavy program can buy the block back with `$*OUT.out-buffer = 65536`. A file handle holds back 8 KiB by default, where Rakudo writes through
+- `run`/`shell` without `:out` give the child our own stdout, so its output appears as it is produced rather than at its exit; `Proc::Async` `.stdout`/`.stderr` taps are fed each chunk as it is read, and `.lines` taps fire per line
 - `IO::Path` tests & stat: `.e .f .d .r .w .x` (real `access()`), `.s` (size), `.z` (empty), `.l` (symlink), `.mode` (octal string), `.modified/.changed/.accessed` (distinct-precision Instants), `.chmod`; filetest-adverb smartmatch `$path.IO ~~ :e/:d/:f/:r/:w/:x/:s/:z/:l`; `chmod`/`unlink`/`mkdir` subs
 - `say`/`print`/`put`/`note` (and their method forms) honour a user-overridden dynamic `$*OUT`/`$*ERR` — assigning `my $*OUT = $mock-handle` reroutes output through its `.print`
 - `run` → standard `Proc` (`.out.slurp .exitcode .so`; `+$proc` is the exit status); bidirectional `run(:in,:out)` (`.in.spurt` / `.out.slurp`, e.g. piping through `pandoc`); `shell(CMD)` runs `CMD` through `/bin/sh -c` (redirections/pipes work)

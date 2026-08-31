@@ -165,14 +165,19 @@ static Value nilResetForAttr(const Value& v, const ClassAttr& a) {
 }
 
 // Park a tap on a Proc::Async stream Supply ({proc, stream, split?, bin?}).
-// The process's output arrives as ONE chunk when it is reaped (runProcPromise),
-// so a `.lines`-marked stream splits HERE, at the tap: the callback runs once
-// per line. The default chomps; a recorded `:!chomp` keeps each line's
-// terminator — TAP's parse-stream grammar needs the trailing "\n" to close
-// every entry, and chomping regardless made TAP::Harness say NOTESTS.
-// What lands on the proc is a {emit, done, quit, bin} RECORD: the feeder reads
-// the stream flavour and the :done/:quit callbacks from it (TAP relays stderr
-// with `.act({…}, :done({…}), :quit({…}))`, which used to lose both).
+// The process's output arrives in CHUNKS as it is produced (runProcPromise's
+// sink), so a `.lines`-marked stream splits HERE, at the tap: the callback runs
+// once per line, as soon as that line's newline has arrived. A chunk boundary
+// falls wherever the pipe felt like putting it, so the tail of one is carried
+// over to the next and only released when a newline turns up — or, for a last
+// line with no terminator, when the stream ends (the feeder calls the wrapper
+// one final time with `final` set). The default chomps; a recorded `:!chomp`
+// keeps each line's terminator — TAP's parse-stream grammar needs the trailing
+// "\n" to close every entry, and chomping regardless made TAP::Harness say
+// NOTESTS.
+// What lands on the proc is a {emit, done, quit, bin, lines} RECORD: the feeder
+// reads the stream flavour and the :done/:quit callbacks from it (TAP relays
+// stderr with `.act({…}, :done({…}), :quit({…}))`, which used to lose both).
 void Interpreter::registerProcStreamTap(const Value& inv, Value cb, Value done, Value quit) {
     if (!(inv.t == VT::Hash && inv.hash() && inv.hash()->count("proc"))) return;
     Value proc = (*inv.hash())["proc"];
@@ -184,23 +189,38 @@ void Interpreter::registerProcStreamTap(const Value& inv, Value cb, Value done, 
         bool chomp = !inv.hash()->count("split-chomp") || (*inv.hash())["split-chomp"].truthy();
         Value w; w.t = VT::Code; w.setCode(std::make_shared<Callable>());
         Value lineCb = cb;
-        w.code()->builtin = [lineCb, chomp](Interpreter& I, ValueList& a) -> Value {
-            std::string data = a.empty() ? "" : a[0].toStr();
-            for (size_t start = 0; start < data.size();) {
+        auto carry = std::make_shared<std::string>(); // the tail of the last chunk
+        w.code()->builtin = [lineCb, chomp, carry](Interpreter& I, ValueList& a) -> Value {
+            bool final = a.size() > 1 && a[1].truthy();  // stream ended: release the tail
+            *carry += a.empty() ? "" : a[0].toStr();
+            std::string data; data.swap(*carry);
+            size_t start = 0;
+            for (; start < data.size();) {
                 size_t nl = data.find('\n', start);
+                if (nl == std::string::npos) break;       // incomplete: wait for more
                 std::string line;
-                if (nl == std::string::npos) line = data.substr(start);
-                else if (chomp) {
+                if (chomp) {
                     line = data.substr(start, nl - start);
                     if (!line.empty() && line.back() == '\r') line.pop_back();
                 }
                 else line = data.substr(start, nl - start + 1); // "\r\n" rides along whole
+                start = nl + 1;
                 try { I.callCallable(lineCb, ValueList{Value::str(line)}); }
                 catch (NextEx&) {}
-                catch (LastEx&) { break; }
-                if (nl == std::string::npos) break;
-                start = nl + 1;
+                catch (LastEx&) { start = data.size(); break; }
             }
+            std::string rest = data.substr(start);
+            // A last line with no terminator is still a line — but only once the
+            // stream is over; until then it may just be half of one.
+            if (final) {
+                // As-is, terminator and all — there is none to add, and under
+                // :!chomp the consumer is reading exactly what the child wrote.
+                if (!rest.empty()) {
+                    try { I.callCallable(lineCb, ValueList{Value::str(rest)}); }
+                    catch (NextEx&) {} catch (LastEx&) {}
+                }
+            }
+            else *carry = rest;
             return Value::any();
         };
         cb = w;
@@ -209,6 +229,10 @@ void Interpreter::registerProcStreamTap(const Value& inv, Value cb, Value done, 
     (*rec.hash())["emit"] = cb;
     (*rec.hash())["done"] = done;
     (*rec.hash())["quit"] = quit;
+    // Only a line-splitting wrapper understands the end-of-stream call; a raw
+    // callback would just see a spurious empty chunk.
+    if (inv.hash()->count("split") && (*inv.hash())["split"].toStr() == "lines")
+        (*rec.hash())["lines"] = Value::boolean(true);
     if (inv.hash()->count("bin") && (*inv.hash())["bin"].truthy())
         (*rec.hash())["bin"] = Value::boolean(true);
     (*proc.hash())[key].arr()->push_back(rec);

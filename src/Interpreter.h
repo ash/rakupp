@@ -104,6 +104,22 @@ inline constexpr const char* kOracleEra = "2026.08";
 // a data race on std::cout's state and a lost-update on a FileHandle's buffer.
 // NEVER hold it across a call back into Raku (a user `print` method may print).
 std::mutex& rtOutMutex();
+
+// IO::Handle.out-buffer — the byte budget a write handle may hold back before
+// it must reach the file (0 = none, write through). $*OUT and $*ERR have no
+// persistent container of their own (every read of the dynamic synthesizes a
+// fresh handle), so THEIR setting lives in a process-wide slot instead, one per
+// stream — the same place the std::ostream it controls lives.
+long long& rtStdOutBuffer(bool err);
+// The block a FILE handle holds back when nobody said otherwise. The standard
+// handles do not use it: they default to 0 (unbuffered), as Rakudo's do — see
+// rtStdOutBuffer. A file handle keeps a block because rakupp has no persistent
+// fd behind one, so writing through would cost an open/write/close per print.
+inline constexpr long long kDefaultOutBuffer = 8192;
+// Rakudo's coercion for the setter: False means none, True means "the default
+// size", and anything else is the size itself. Negative sizes clamp to 0.
+long long outBufferSize(const Value& v);
+
 // SHA-1 as UPPERCASE hex (Interpreter.cpp) — the CURI short-index / content-id scheme.
 std::string sha1hex(const std::string& msg);
 
@@ -1533,6 +1549,23 @@ public:
     void registerWriteHandle(const std::shared_ptr<ValueMap>& h) { openWriteHandles_.push_back(h); }
     void flushOpenWriteHandles();  // flush any unclosed write handle at program exit
     std::vector<std::shared_ptr<ValueMap>> openWriteHandles_;
+    // ---- IO::Handle output buffering (out-buffer) --------------------------
+    // The one place bytes written through a file handle reach the file: append
+    // `s`, honouring the handle's mode and whether earlier bytes already went
+    // out (so a second write appends instead of truncating what the first one
+    // wrote). Caller holds rtOutMutex.
+    void fhAppendToFile(const std::shared_ptr<ValueMap>& h, const std::string& s);
+    // Hand `s` to a write handle: buffer it, or push it (and whatever was
+    // pending) to the file when out-buffer says it no longer fits.
+    void fhWrite(const Value& h, const std::string& s);
+    // Put whatever is pending on disk now. Returns true if anything moved.
+    bool fhFlush(const Value& h);
+    // The effective out-buffer of a handle — a std handle's lives process-wide.
+    long long fhOutBuffer(const Value& h);
+    // `$fh.out-buffer = N`. The RESIZE itself flushes, which is what makes the
+    // size observable: roast's S32-io/out-buffering.t sets a new size mid-write
+    // and reads the file before anything else is written.
+    Value fhSetOutBuffer(const Value& h, const Value& n);
 
     // Per-thread execution registers — current scope, dyn-var chain, gather/supply/
     // make collectors, call depth, package prefix. Held in a `static thread_local`

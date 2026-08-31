@@ -97,13 +97,6 @@ say run('echo', 'z', :out).command.join(' ');   # echo z
 
 ## Where Raku++ and Rakudo differ
 
-**Pass-through output is buffered, not live.** When you do *not* pass `:out`,
-Rakudo hands the child your terminal directly, so a long-running command's output
-appears as it is produced. Raku++ captures internally and echoes when the child
-exits, so you see it all at once at the end. For anything that streams progress
-over time, that is a visible difference. With `:out` both engines capture and
-behave identically.
-
 **Windows.** `shell` runs its argument through `%COMSPEC%` (`cmd.exe`), not
 `/bin/sh` — so `shell('dir')` works and `shell('ls')` does not, unless you have
 an `ls.exe` on `PATH`. `run` starts an executable directly; if the name is not an

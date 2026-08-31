@@ -201,11 +201,18 @@ static std::string winEnvBlock(const std::vector<std::string>& kvs) {
 // keeps run()'s `:!err` meaning /dev/null rather than the terminal.
 struct SpawnStdio {
     bool captureOut = false, captureErr = false;
+    bool outToNull = false; // when !captureOut: /dev/null instead of inheriting (`:!out`)
     bool errToNull = false; // when !captureErr: /dev/null instead of inheriting
 #if !defined(_WIN32)
     int stdinFd = -1, stdoutFd = -1, stderrFd = -1; // bind-* pipe ends
 #endif
 };
+
+// Delivered each chunk of a child's output AS IT ARRIVES, so a Proc::Async tap
+// fires while the process runs instead of once at the end. Called with the GIL
+// HELD — the drain loop parks it and unparks around this — so the callback may
+// re-enter the interpreter and run a `whenever` block.
+using ChildChunkSink = std::function<void(bool isErr, const char* data, size_t n)>;
 
 // A started-but-unreaped child.
 struct SpawnedChild {
@@ -236,6 +243,15 @@ static SpawnedChild spawnChildStart(const std::vector<std::string>& argv, const 
                                     const std::vector<std::string>* envKV, const SpawnStdio& io) {
     SpawnedChild sc;
     if (argv.empty()) return sc;
+    // Anything we have written but not yet handed to the OS must go out BEFORE
+    // the child starts. A child that inherits our stdout writes to the same fd
+    // directly, so whatever is still sitting in std::cout's buffer would land
+    // AFTER it — `print "building: "; run 'make'` came out in the wrong order
+    // whenever our own output was redirected rather than a terminal.
+    {
+        std::lock_guard<std::mutex> lk(rtOutMutex());
+        std::cout.flush(); std::cerr.flush();
+    }
 #if defined(_WIN32)
     // Windows: CreateProcess with inherited pipes; the finish half polls the
     // read ends via PeekNamedPipe. Compile-verified under mingw g++; behaviour
@@ -285,7 +301,9 @@ static SpawnedChild spawnChildStart(const std::vector<std::string>& argv, const 
     // as stdin, since STARTF_USESTDHANDLES needs all three handles usable.
     HANDLE outNul = INVALID_HANDLE_VALUE, outH = INVALID_HANDLE_VALUE;
     if (!io.captureOut) {
-        outH = GetStdHandle(STD_OUTPUT_HANDLE);
+        // `:!out` wants the output GONE, not on our console — the same rule
+        // `:!err` already follows.
+        outH = io.outToNull ? INVALID_HANDLE_VALUE : GetStdHandle(STD_OUTPUT_HANDLE);
         if (outH == nullptr || outH == INVALID_HANDLE_VALUE) {
             outNul = CreateFileA("NUL", GENERIC_WRITE, FILE_SHARE_WRITE, &sa, OPEN_EXISTING, 0, nullptr);
             outH = outNul;
@@ -374,7 +392,8 @@ static SpawnedChild spawnChildStart(const std::vector<std::string>& argv, const 
         if (io.stdinFd >= 0) dup2(io.stdinFd, STDIN_FILENO);
         if (io.captureOut) dup2(pipefd[1], STDOUT_FILENO);
         else if (io.stdoutFd >= 0) dup2(io.stdoutFd, STDOUT_FILENO);
-        // neither: STDOUT_FILENO is left exactly as we got it (inherited)
+        else if (io.outToNull) { int devnull = open("/dev/null", O_WRONLY); if (devnull >= 0) dup2(devnull, STDOUT_FILENO); }
+        // none of those: STDOUT_FILENO is left exactly as we got it (inherited)
         if (io.captureErr) dup2(errfd[1], STDERR_FILENO);
         else if (io.stderrFd >= 0) dup2(io.stderrFd, STDERR_FILENO);
         else if (io.errToNull) { int devnull = open("/dev/null", O_WRONLY); if (devnull >= 0) dup2(devnull, STDERR_FILENO); }
@@ -416,27 +435,41 @@ static SpawnedChild spawnChildStart(const std::vector<std::string>& argv, const 
 // own children — concurrently.
 static void spawnChildFinish(SpawnedChild& sc, double timeoutSec,
                              std::string& out, std::string* errOut,
-                             int& exitCode, bool& timedout, Interpreter* gil) {
+                             int& exitCode, bool& timedout, Interpreter* gil,
+                             const ChildChunkSink* sink = nullptr,
+                             std::exception_ptr* sinkErr = nullptr) {
     exitCode = -1; timedout = false;
     if (!sc.pid) return;
     bool parked = gil ? gil->gilPark() : false; // drop the GIL for the wait below
     auto start = std::chrono::steady_clock::now();
     char buf[8192];
+    // Hand a chunk to the sink with the GIL back in hand, then park again for the
+    // next wait. A throw from the callback (a user `whenever` block dying) is
+    // held rather than let out: the child still has to be reaped and its
+    // descriptors closed, so the caller rethrows once that is done.
+    auto deliver = [&](bool isErr, const char* d, size_t n) {
+        if (!sink || !*sink || n == 0) return;
+        if (parked) { gil->gilUnpark(true); parked = false; }
+        try { (*sink)(isErr, d, n); }
+        catch (...) { if (sinkErr && !*sinkErr) *sinkErr = std::current_exception(); }
+        if (gil) parked = gil->gilPark();
+    };
 #if defined(_WIN32)
     bool oEof = (sc.outR == nullptr), eEof = (sc.errR == nullptr);
-    auto drain = [&](HANDLE h, std::string* dst, bool& eof) {
+    auto drain = [&](HANDLE h, std::string* dst, bool isErr, bool& eof) {
         DWORD avail = 0;
         if (!PeekNamedPipe(h, nullptr, 0, nullptr, &avail, nullptr)) { eof = true; return; }
         while (avail > 0) {
             DWORD want = avail > sizeof buf ? (DWORD)sizeof buf : avail, rd = 0;
             if (!ReadFile(h, buf, want, &rd, nullptr) || rd == 0) { eof = true; return; }
             if (dst) dst->append(buf, rd);
+            deliver(isErr, buf, rd);
             if (!PeekNamedPipe(h, nullptr, 0, nullptr, &avail, nullptr)) { eof = true; return; }
         }
     };
     while (!oEof || !eEof) {
-        if (!oEof) drain(sc.outR, &out, oEof);
-        if (!eEof) drain(sc.errR, errOut, eEof);
+        if (!oEof) drain(sc.outR, &out, false, oEof);
+        if (!eEof) drain(sc.errR, errOut, true, eEof);
         if (oEof && eEof) break;
         bool exited = WaitForSingleObject(sc.hProcess, 0) == WAIT_OBJECT_0;
         if (timeoutSec > 0) {
@@ -474,13 +507,13 @@ static void spawnChildFinish(SpawnedChild& sc, double timeoutSec,
         poll(pfds, nf, 50);
         if (!oEof) for (;;) {
             ssize_t n = read(fd, buf, sizeof buf);
-            if (n > 0) { out.append(buf, (size_t)n); continue; }
+            if (n > 0) { out.append(buf, (size_t)n); deliver(false, buf, (size_t)n); continue; }
             if (n == 0) oEof = true;
             break;
         }
         if (!eEof) for (;;) {
             ssize_t n = read(efd, buf, sizeof buf);
-            if (n > 0) { if (errOut) errOut->append(buf, (size_t)n); continue; }
+            if (n > 0) { if (errOut) errOut->append(buf, (size_t)n); deliver(true, buf, (size_t)n); continue; }
             if (n == 0) eEof = true;
             break;
         }
@@ -529,17 +562,23 @@ static void spawnChildFinish(SpawnedChild& sc, double timeoutSec,
 // the child's diagnostics reach the terminal or the CI log) and discarding it
 // (`:!err`). Both used to mean /dev/null, which is how a MAIN usage message
 // from a child rakupp vanished and left a failing raku-eye leg undiagnosable.
+// `outMode` says the same three things about stdout: 1 capture (`:out`),
+// 0 discard (`:!out`), -1 INHERIT ours — which is the un-adverbed default and
+// the only one that is LIVE, the child writing to our fd as it goes.
 static void spawnCapture(const std::vector<std::string>& argv, double timeoutSec,
                          std::string& out, int& exitCode, bool& timedout,
                          Interpreter* gil = nullptr, std::string* errOut = nullptr,
                          const std::string& cwd = "", long long* pidOut = nullptr,
                          const std::vector<std::string>* envKV = nullptr,
-                         bool errInherit = false) {
+                         bool errInherit = false, int outMode = 1,
+                         const ChildChunkSink* sink = nullptr,
+                         std::exception_ptr* sinkErr = nullptr) {
     out.clear(); exitCode = -1; timedout = false;
     if (errOut) errOut->clear();
     if (argv.empty()) return;
     SpawnStdio io;
-    io.captureOut = true;
+    io.captureOut = outMode == 1;
+    io.outToNull  = outMode == 0;
     io.captureErr = errOut != nullptr;
     io.errToNull = !errOut && !errInherit;
     SpawnedChild sc = spawnChildStart(argv, cwd, envKV, io);
@@ -552,7 +591,7 @@ static void spawnCapture(const std::vector<std::string>& argv, double timeoutSec
         return;
     }
     if (pidOut) *pidOut = sc.pid;
-    spawnChildFinish(sc, timeoutSec, out, errOut, exitCode, timedout, gil);
+    spawnChildFinish(sc, timeoutSec, out, errOut, exitCode, timedout, gil, sink, sinkErr);
 }
 
 // Spawn a child, feed `input` to its stdin, and capture its stdout. Uses poll on
@@ -825,6 +864,47 @@ void Interpreter::runProcPromise(Value& promise, double timeoutSec) {
     Value& proc = pit->second;
     std::string out, err; int code = -1; bool timedout = false;
     long long childPid = 0;
+    // Walk one stream's taps. A tap is a RECORD ({emit, done, quit, bin, lines}
+    // — MethodCallPart2's tap branch); a bare callable is tolerated for older
+    // callers. `body` decides what to do with each one.
+    auto eachTap = [&](const char* key, const std::function<void(Value& cb, Value& done, bool bin, bool lines)>& body) {
+        auto taps = proc.hash()->find(key);
+        if (taps == proc.hash()->end() || !taps->second.arr()) return;
+        for (auto& t : *taps->second.arr()) {
+            Value cb = t, done; bool bin = false, lines = false;
+            if (t.t == VT::Hash && t.hash()->count("emit")) {
+                cb = (*t.hash())["emit"];
+                auto d = t.hash()->find("done"); if (d != t.hash()->end()) done = d->second;
+                auto b = t.hash()->find("bin");  bin = b != t.hash()->end() && b->second.truthy();
+                auto l = t.hash()->find("lines"); lines = l != t.hash()->end() && l->second.truthy();
+            }
+            body(cb, done, bin, lines);
+        }
+    };
+    // One chunk, straight from the pipe, to every tap on that stream. This runs
+    // WHILE the child is alive — that is the whole point: `whenever
+    // $proc.stdout.lines` used to fire only once the process had exited, so a
+    // runner relaying a build's progress relayed it all after the build (issue
+    // #51). rakupp's own react loop drives it, so a `whenever` block printing a
+    // line prints it now.
+    auto emitChunk = [&](const char* key, const std::string& data) {
+        if (data.empty()) return;
+        eachTap(key, [&](Value& cb, Value&, bool bin, bool) {
+            if (cb.t != VT::Code) return;
+            Value chunk = Value::str(data);
+            // `.stdout(:bin)` taps get the bytes as a Blob (zef's fetcher
+            // Buf.appends them); a plain tap gets the DECODED Str, as
+            // Rakudo emits — a Blob chunk made every `whenever` block that
+            // string-matched its lines see Blob.new(...) instead of text.
+            if (bin) chunk.hashKind = "Blob";
+            ValueList ca{chunk};
+            callCallable(cb, ca);
+        });
+    };
+    std::exception_ptr sinkErr;
+    ChildChunkSink sink = [&](bool isErr, const char* d, size_t n) {
+        emitChunk(isErr ? "taps-err" : "taps", std::string(d, n));
+    };
     long long tok = 0;
     { auto t = proc.hash()->find("spawn-token");
       if (t != proc.hash()->end()) { tok = t->second.toInt(); proc.hash()->erase(t); } }
@@ -834,49 +914,39 @@ void Interpreter::runProcPromise(Value& promise, double timeoutSec) {
           auto it = g_spawned.find(tok);
           if (it != g_spawned.end()) { sc = it->second; g_spawned.erase(it); } }
         childPid = sc.pid;
-        spawnChildFinish(sc, timeoutSec, out, &err, code, timedout, this);
+        spawnChildFinish(sc, timeoutSec, out, &err, code, timedout, this, &sink, &sinkErr);
     }
     else {
         std::vector<std::string> argv;
         if (proc.hash()->count("argv")) for (auto& x : *(*proc.hash())["argv"].arr()) argv.push_back(x.toStr());
         std::string cwd;
         { auto c = promise.hash()->find("cwd"); if (c != promise.hash()->end()) cwd = c->second.toStr(); }
-        spawnCapture(argv, timeoutSec, out, code, timedout, this, &err, cwd, &childPid);
+        spawnCapture(argv, timeoutSec, out, code, timedout, this, &err, cwd, &childPid,
+                     nullptr, false, 1, &sink, &sinkErr);
     }
     if (childPid) (*proc.hash())["pid"] = Value::integer(childPid);
-    auto feed = [&](const char* key, const std::string& data) {
-        auto taps = proc.hash()->find(key);
-        if (taps == proc.hash()->end() || !taps->second.arr()) return;
-        for (auto& t : *taps->second.arr()) {
-            // a tap is a RECORD ({emit, done, quit, bin} — MethodCallPart2's
-            // tap branch); a bare callable is tolerated for older callers
-            Value cb = t, done; bool bin = false;
-            if (t.t == VT::Hash && t.hash()->count("emit")) {
-                cb = (*t.hash())["emit"];
-                auto d = t.hash()->find("done"); if (d != t.hash()->end()) done = d->second;
-                auto b = t.hash()->find("bin");  bin = b != t.hash()->end() && b->second.truthy();
+    // The stream is closed once its process ended: release a line-splitter's
+    // unterminated tail, then fire the tap's :done (TAP's stderr relay is
+    // `.act({…}, :done({$err.done}))`) — with or without output, and whatever
+    // the exit code.
+    auto finishTaps = [&](const char* key) {
+        eachTap(key, [&](Value& cb, Value& done, bool, bool lines) {
+            if (lines && cb.t == VT::Code) {
+                ValueList fin{Value::str(""), Value::boolean(true)};
+                callCallable(cb, fin);
             }
-            if (cb.t == VT::Code && !data.empty()) {
-                Value chunk = Value::str(data);
-                // `.stdout(:bin)` taps get the bytes as a Blob (zef's fetcher
-                // Buf.appends them); a plain tap gets the DECODED Str, as
-                // Rakudo emits — a Blob chunk made every `whenever` block that
-                // string-matched its lines see Blob.new(...) instead of text.
-                if (bin) chunk.hashKind = "Blob";
-                ValueList ca{chunk};
-                callCallable(cb, ca);
-            }
-            // the stream is closed once its process ended: fire the tap's
-            // :done (TAP's stderr relay is `.act({…}, :done({$err.done}))`) —
-            // with or without output, and whatever the exit code
             if (done.t == VT::Code) { ValueList none; callCallable(done, none); }
-        }
+        });
     };
-    feed("taps", out);
-    feed("taps-err", err);
+    finishTaps("taps");
+    finishTaps("taps-err");
     (*proc.hash())["exitcode"] = Value::integer(code);
     (*proc.hash())["timedout"] = Value::boolean(timedout);
     (*promise.hash())["status"] = Value::str(timedout ? "Broken" : "Kept");
+    // A tap block that died threw inside the drain loop, where letting it out
+    // would have left the child unreaped and its descriptors open. It was held
+    // until here; now that the process is settled, it goes on its way.
+    if (sinkErr) std::rethrow_exception(sinkErr);
 }
 
 // An attribute's SIGIL is a container type: `has @.a` holds an Array and
@@ -2932,6 +3002,140 @@ std::mutex& rtOutMutex() {
     return m;
 }
 
+// ---- IO::Handle.out-buffer ---------------------------------------------------
+// $*OUT / $*ERR are synthesized fresh on every read of the dynamic — there is no
+// container to write an attribute into — so `.out-buffer` for them lives here,
+// one slot per stream, for as long as the process does.
+//
+// BOTH start at 0, which is what Rakudo reports and how Rakudo behaves: a `say`
+// is due the moment it is written. std::cerr already was unbuffered (unitbuf);
+// std::cout was not, and on a pipe or a file that meant every `say` sat in its
+// block buffer until the program ended — so a rakupp program in a pipeline was
+// silent while it ran (issue #51, hit three separate ways). The cost is one
+// write(2) per say: a 200k-line filter piped out goes 0.25s -> 0.38s here,
+// against 0.36-0.67s for Rakudo doing the same thing. A program that wants the
+// block back asks for it — `$*OUT.out-buffer = 65536` — which is more than
+// Rakudo offers, since it ignores the setting on its standard handles.
+long long& rtStdOutBuffer(bool err) {
+    static long long out = 0, er = 0;
+    return err ? er : out;
+}
+// $*IN has no output to buffer; it answers 0 and keeps the two output slots
+// out of reach — routing it to $*OUT's would let `$*IN.out-buffer = 0` silently
+// unbuffer someone else's stream.
+static long long g_stdInOutBuffer = 0;
+
+// Rakudo's coercion: :!out-buffer / False is none, True is "the default size",
+// an Int is that many bytes. A negative size is no buffer at all.
+long long outBufferSize(const Value& v) {
+    if (v.t == VT::Bool) return v.truthy() ? kDefaultOutBuffer : 0;
+    if (v.t == VT::Any || v.t == VT::Nil) return kDefaultOutBuffer;
+    long long n = v.toInt();
+    return n < 0 ? 0 : n;
+}
+
+long long Interpreter::fhOutBuffer(const Value& h) {
+    if (h.t != VT::Hash || !h.hash()) return kDefaultOutBuffer;
+    auto st = h.hash()->find("std");
+    if (st != h.hash()->end()) {
+        const std::string which = st->second.toStr();
+        return which == "in" ? g_stdInOutBuffer : rtStdOutBuffer(which == "err");
+    }
+    auto it = h.hash()->find("out-buffer");
+    return it == h.hash()->end() ? kDefaultOutBuffer : it->second.toInt();
+}
+
+// Can this handle's pending bytes reach a file at all? An IN-MEMORY handle —
+// Proc.out, $*ARGFILES, IO::String, anything opened read-only — has nowhere to
+// put them: its "buffer" IS the content, and emptying it to make room would
+// simply lose data. Those keep the unlimited buffer they always had.
+static bool fhWritesToFile(const ValueMap& m) {
+    auto p = m.find("path");
+    if (p == m.end() || p->second.toStr().empty()) return false;
+    auto mo = m.find("mode");
+    if (mo == m.end()) return false;
+    const std::string mode = mo->second.toStr();
+    return mode == "w" || mode == "a" || mode == "rw" || mode == "update";
+}
+
+void Interpreter::fhAppendToFile(const std::shared_ptr<ValueMap>& h, const std::string& s) {
+    if (!fhWritesToFile(*h)) return;
+    std::string mode = (*h)["mode"].toStr();
+    bool wrote = (*h)["wrote"].truthy();   // earlier bytes are already out there
+    std::ofstream out((*h)["path"].toStr(),
+                      std::ios::binary | ((mode == "a" || wrote) ? std::ios::app : std::ios::trunc));
+    if (out) out << s;
+    // Even an EMPTY write settles the truncate question: the file has been
+    // opened for this handle, so the next one must append rather than start over.
+    (*h)["wrote"] = Value::boolean(true);
+}
+
+bool Interpreter::fhFlush(const Value& h) {
+    if (h.t != VT::Hash || !h.hash()) return false;
+    auto st = h.hash()->find("std");
+    if (st != h.hash()->end()) {
+        std::lock_guard<std::mutex> lk(rtOutMutex());
+        if (st->second.toStr() == "err") std::cerr.flush(); else std::cout.flush();
+        return true;
+    }
+    auto m = h.hashS();
+    if (!m || !fhWritesToFile(*m)) return false;
+    std::lock_guard<std::mutex> lk(rtOutMutex());
+    // A COPY, not a reference into the map: fhAppendToFile writes "wrote" back,
+    // and an insert can rehash the map out from under a reference to a value in it.
+    std::string pending = (*m)["buffer"].s;
+    if (pending.empty()) return false;
+    (*m)["buffer"] = Value::str("");
+    fhAppendToFile(m, pending);
+    return true;
+}
+
+void Interpreter::fhWrite(const Value& h, const std::string& s) {
+    auto m = h.hashS();
+    if (!m) return;
+    // -1: no file behind this handle, so no size can ever force a write out.
+    long long size = fhWritesToFile(*m) ? fhOutBuffer(h) : -1;
+    // Appending is a READ-MODIFY-WRITE on state the handle shares, so two
+    // threads writing to one file both read the buffer, both append, and one
+    // write is simply lost. Under the output lock it is one update at a time.
+    std::lock_guard<std::mutex> lk(rtOutMutex());
+    {   // Room for it: hold it back. This is the ONLY branch a buffered handle
+        // takes, and it is the hot one.
+        Value& buf = (*m)["buffer"];
+        if (size < 0 || (size > 0 && (long long)(buf.s.size() + s.size()) <= size)) {
+            buf = Value::str(buf.s + s);
+            return;
+        }
+    }
+    std::string pending = (*m)["buffer"].s;      // copied for the same reason as above
+    if (!pending.empty()) { (*m)["buffer"] = Value::str(""); fhAppendToFile(m, pending); }
+    // A write at least a bufferful on its own has nothing to gain from the
+    // buffer and goes straight out; a smaller remainder starts the next one.
+    if (size == 0 || (long long)s.size() >= size) { if (!s.empty()) fhAppendToFile(m, s); }
+    else (*m)["buffer"] = Value::str(s);
+}
+
+Value Interpreter::fhSetOutBuffer(const Value& h, const Value& n) {
+    long long size = outBufferSize(n);
+    if (h.t != VT::Hash || !h.hash()) return Value::integer(size);
+    auto st = h.hash()->find("std");
+    if (st != h.hash()->end()) {
+        const std::string which = st->second.toStr();
+        if (which == "in") { g_stdInOutBuffer = size; return Value::integer(size); }
+        bool err = which == "err";
+        rtStdOutBuffer(err) = size;
+        // Whatever is already sitting in the stream's own buffer belongs to the
+        // OLD size — the point of switching to 0 is that it comes out now.
+        std::lock_guard<std::mutex> lk(rtOutMutex());
+        if (err) std::cerr.flush(); else std::cout.flush();
+        return Value::integer(size);
+    }
+    fhFlush(h);                                  // the resize itself flushes
+    std::lock_guard<std::mutex> lk(rtOutMutex());
+    (*h.hash())["out-buffer"] = Value::integer(size);
+    return Value::integer(size);
+}
+
 Value Interpreter::ioEmit(const std::string& s, const char* dynVar, bool toErr) {
     // Dynamic ($*) lookup: the current lexical scope, then the caller chain.
     Value* h = nullptr;
@@ -3002,7 +3206,13 @@ Value Interpreter::ioEmit(const std::string& s, const char* dynVar, bool toErr) 
     // them matters as much as within one.
     {
         std::lock_guard<std::mutex> lk(rtOutMutex());
-        (toErr ? std::cerr : std::cout) << s;
+        std::ostream& os = toErr ? std::cerr : std::cout;
+        os << s;
+        // out-buffer 0: the bytes are due NOW. Without this a `say` whose output
+        // is a pipe rather than a terminal sat in std::cout's block buffer until
+        // the program ended, so anything watching the pipe live saw nothing
+        // (issue #51 — a runner streaming a child's output through rakupp).
+        if (rtStdOutBuffer(toErr) == 0) os.flush();
     }
     return Value::boolean(true);
 }
@@ -9044,15 +9254,19 @@ void Interpreter::registerBuiltins() {
         // (`run |@cmd, :out($out-fh)`, then slurp the file) fetched every page
         // as an empty body while its headers arrived intact.
         Value outSink, errSink;
+        // A default-constructed Value is Any, not Nil — "was a sink given?" needs
+        // its own flag, and testing `.t == VT::Nil` for it (as this did) answered
+        // "yes" for every un-adverbed run.
+        bool haveOutSink = false, haveErrSink = false;
         auto asSink = [](const Value* pv) {
             return pv && ((pv->t == VT::Hash && pv->hashKind == "FileHandle") || pv->t == VT::Object);
         };
         for (auto& v : flattenArgs(a)) {
             if (v.t == VT::Pair) {
                 if (v.s == "out") { wantOut = v.pairVal() ? v.pairVal()->truthy() : true; outMode = wantOut ? 1 : 0;
-                                    if (asSink(v.pairVal())) outSink = *v.pairVal(); }
+                                    if (asSink(v.pairVal())) { outSink = *v.pairVal(); haveOutSink = true; } }
                 else if (v.s == "err") { wantErr = v.pairVal() ? v.pairVal()->truthy() : true; errMode = wantErr ? 1 : 0;
-                                    if (asSink(v.pairVal())) errSink = *v.pairVal(); }
+                                    if (asSink(v.pairVal())) { errSink = *v.pairVal(); haveErrSink = true; } }
                 else if (v.s == "in") wantIn = v.pairVal() ? v.pairVal()->truthy() : true;
                 // :timeout(N) — a rakupp extension (Rakudo's run has no such
                 // adverb): SIGKILL the child's process group after N seconds.
@@ -9092,21 +9306,26 @@ void Interpreter::registerBuiltins() {
         // :err captures; :!err captures-and-discards (so probes like
         // `zrun('git','--help', :!out, :!err)` stay silent); unspecified inherits.
         long long childPid = 0;
+        // No `:out` (and no sink to fill): the child gets OUR stdout, so its
+        // output appears as it is produced. Capturing it and echoing at exit —
+        // what this used to do — made every streaming child silent until it
+        // finished (issue #51: a runner relaying a build's progress).
+        int outSpawn = (outMode == -1 && !haveOutSink) ? -1 : (outMode == 0 ? 0 : 1);
         spawnCapture(argv, timeoutSec, out, code, timedout, &I, errMode != -1 ? &err : nullptr, cwd, &childPid,
-                     haveEnv ? &envKV : nullptr, errMode == -1);
+                     haveEnv ? &envKV : nullptr, errMode == -1, outSpawn);
         // Deliver a redirected stream to its handle. The child has already
         // finished, so this is a copy rather than a live redirection — the
         // handle sees the whole stream at once, in order, which is what a
         // caller that closes and reads the file afterwards wants.
-        auto drainTo = [&I](Value& sink, const std::string& text) {
-            if (sink.t == VT::Nil || text.empty()) return;
+        auto drainTo = [&I](Value& sink, bool have, const std::string& text) {
+            if (!have || text.empty()) return;
             ValueList pa{Value::str(text)};
             I.methodCall(sink, "print", pa);
         };
-        drainTo(outSink, out);
-        drainTo(errSink, err);
-        if (outMode == -1) std::cout << out; // not capturing: echo child stdout (approximates inherit)
-        if (errMode == -1) { /* the child inherited our stderr and wrote straight to it */ }
+        drainTo(outSink, haveOutSink, out);
+        drainTo(errSink, haveErrSink, err);
+        // Neither stream needs echoing any more: an un-adverbed child wrote to
+        // our own descriptors while it ran.
         (*p.hash())["exitcode"] = Value::integer(code);
         (*p.hash())["out-str"] = Value::str(out);
         (*p.hash())["err-str"] = Value::str(err);
@@ -9139,8 +9358,7 @@ void Interpreter::registerBuiltins() {
         std::string out, err; int code = 0; bool timedout = false;
         long long childPid = 0;
         spawnCapture(argv, 0, out, code, timedout, &I, errMode != -1 ? &err : nullptr, "", &childPid,
-                     nullptr, errMode == -1);
-        if (outMode == -1) std::cout << out;
+                     nullptr, errMode == -1, outMode);  // no `:out`: the child writes to ours, live
         Value p = Value::makeHash(); p.hashKind = "Proc";
         Value av = Value::array(); av.isList = true; av.arr()->push_back(Value::str(cmd));
         (*p.hash())["argv"] = av; // .command — shell reports the command string
@@ -9399,6 +9617,13 @@ void Interpreter::registerBuiltins() {
         for (auto& x : a) if (x.t == VT::Pair && x.s == "enc" && x.pairVal() && x.pairVal()->t != VT::Any)
             (*h.hash())["encoding"] = Value::str(x.pairVal()->toStr());
         if (nlIn.t != VT::Any) (*h.hash())["nl-in"] = nlIn;
+        // :out-buffer(N) / :!out-buffer — how many bytes the handle may hold
+        // back before they must reach the file. Absent, it keeps the default
+        // block; :!out-buffer (False) makes every write land immediately, which
+        // is how a program writes a log another process is tailing.
+        for (auto& x : a) if (x.t == VT::Pair && x.s == "out-buffer")
+            (*h.hash())["out-buffer"] =
+                Value::integer(outBufferSize(x.pairVal() ? *x.pairVal() : Value::boolean(true)));
         if (mode == "w") { std::ofstream create(path, std::ios::trunc); } // the file exists immediately
         if (mode == "rw") { std::ofstream create(path, std::ios::app); }  // exists immediately, kept intact
         if (mode != "r") I.registerWriteHandle(h.hashS()); // flush at exit if not closed

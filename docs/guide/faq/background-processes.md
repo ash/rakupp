@@ -158,11 +158,16 @@ this trap; their suggested spelling is `try sink await $p.start;`.)
 tap stdout before running the process". Raku++ accepts the tap silently and it
 sees nothing. Tap first on both.
 
-**Output timing.** Rakudo streams a tapped process's output as it is produced.
-Raku++ delivers it to the taps when the promise is realized (the `await`, or
-the `whenever $proc.start`), as one batch. Same data, later arrival — and a
-tapped process that prints more than the OS pipe buffer (64 KB is common)
-pauses until you await.
+**Output timing.** Both engines stream a tapped process's output as it is
+produced: each chunk read from the pipe goes straight to the taps, and a
+`.lines` tap fires per line, holding back only a partial one until its newline
+arrives. The difference is *when the reading starts*. Rakudo reads from the
+moment of `.start`; Raku++ reads while the promise is being realized — the
+`await`, or the `whenever $proc.start`. Inside a `react` (the shape every
+snippet above uses) that is the same thing. But a process you `.start` and then
+leave unawaited is not being read at all under Raku++: its taps stay quiet, and
+once it has printed more than the OS pipe buffer (64 KB is common) it blocks
+until you await.
 
 **Writing to stdin is not implemented.** `Proc::Async.new(…, :w)` with
 `.print`/`.say`/`.write`/`.close-stdin` is a working feature in Rakudo; in

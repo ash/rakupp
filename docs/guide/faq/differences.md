@@ -62,18 +62,34 @@ strictly, Rakudo is the better checker.
 
 ## Differences you will actually run into
 
-**Output from a child process is buffered, not live.** Without `:out`, Rakudo
-gives the child your terminal so output appears as produced; Raku++ captures and
-echoes when it exits. With `:out` both behave identically. See
-[shell.md](shell.md).
+**A file handle buffers; `$*OUT` and `$*ERR` do not.** Both engines write every
+`say` straight out. They differ on `open`ed handles: Rakudo writes those through
+too, while Raku++ holds back an 8 KiB block, so a file being written is not yet
+complete on disk until it is closed or flushed. It matters when something else
+is reading it live — a log being tailed. `.out-buffer` is the documented switch
+and works here as it does in Rakudo:
+
+```raku
+my $log = open $path, :w, :!out-buffer;  # every write lands immediately
+$log.flush;                              # or push out what is pending, once
+```
+
+The reason for the difference is that a Raku++ handle has no persistent
+descriptor behind it, so writing through costs an open/write/close per `print`.
+The same knob goes the other way on the standard handles — `$*OUT.out-buffer =
+65536` buys back the block for an output-heavy program, which Rakudo cannot do.
 
 **`Proc::Async`: sunk failures, `.signal`, stdin.** Rakudo throws when a failed
 process's `Proc` result is sunk (`await $p.start;` as a bare statement) and
 reports a signal death as `exitcode 0` plus `.signal`; Raku++ keeps going —
 check `.so` — and reports `exitcode -1` with no `.signal`. Writing to the
-child's stdin (`:w`, `.print`, `.close-stdin`) is not implemented, and tapped
-output arrives when the promise is realized rather than live. See
+child's stdin (`:w`, `.print`, `.close-stdin`) is not implemented. See
 [background-processes.md](background-processes.md).
+
+**`.out` on a `run` you did not capture.** Rakudo hands back a bare `IO::Pipe`
+type object, so reading it dies; Raku++ hands back an empty handle, so it reads
+as `""`. In both, the output went to your own stdout as the child produced it —
+pass `:out` if you want it.
 
 **`Str.succ` on a trailing non-alphanumeric.** `'a!'.succ` is `'b!'` here and
 `'a!'` in Rakudo. Deliberate: Rakudo's own source comments describe a rule its

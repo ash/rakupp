@@ -3973,14 +3973,18 @@ void Interpreter::flushOpenWriteHandles() {
         auto cl = h->find("closed"); if (cl != h->end() && cl->second.truthy()) continue;
         auto fl = h->find("flushed"); if (fl != h->end() && fl->second.truthy()) continue;
         std::string mode = (*h)["mode"].toStr();
-        const std::string& buf = (*h)["buffer"].s;
+        // A COPY: the lookups below can insert into the map, and an insert can
+        // rehash it out from under a reference to a value in it.
+        std::string buf = (*h)["buffer"].s;
         if ((mode == "rw" || mode == "update") && buf.empty()) continue; // nothing written — leave the file alone
         // A handle that was .flush-ed already has part of its output on disk:
         // append the rest, and write nothing at all when there is no rest.
-        bool wrote = (*h)["wrote"].truthy();
-        if (wrote && buf.empty()) continue;
-        std::ofstream out((*h)["path"].toStr(), (mode == "a" || wrote) ? std::ios::app : std::ios::trunc);
-        if (out) out << buf;
+        if ((*h)["wrote"].truthy() && buf.empty()) continue;
+        // Through the same writer every other flush uses — this used to be a
+        // second copy of it that opened the file in TEXT mode, so on Windows a
+        // handle whose output went out in two pieces got two different newline
+        // translations.
+        fhAppendToFile(h, buf);
     }
     openWriteHandles_.clear();
 }
@@ -16719,6 +16723,26 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             (ve->name[0] == '$' || ve->name[0] == '@' || ve->name[0] == '%') &&
             !tctx_.cur->vars.count(ve->name))
             tctx_.cur->define(ve->name, defaultFor(ve->name[0]));
+    }
+
+    // `$fh.out-buffer = N` — IO::Handle's one rw output knob. Not an ordinary
+    // lvalue slot: the RESIZE itself has to flush what is already pending (that
+    // is what makes the new size observable, and roast's S32-io/out-buffering.t
+    // reads the file straight after setting it), and $*OUT / $*ERR have no
+    // persistent container at all — every read of the dynamic synthesizes a
+    // fresh handle, so a write into that copy would be gone by the next `say`.
+    if (a->op == "=" && a->target->kind == NK::MethodCall) {
+        auto* mc = static_cast<MethodCall*>(a->target.get());
+        if (mc->method == "out-buffer" && mc->args.empty() && !mc->meta && !mc->hyper &&
+            !mc->bang && !mc->methodExpr &&
+            (mc->inv->kind == NK::VarExpr || mc->inv->kind == NK::Index ||
+             mc->inv->kind == NK::SelfTerm)) {
+            Value inv = eval(mc->inv.get());  // read-only invocant: no side effect to double
+            if (inv.t == VT::Hash && inv.hashKind == "FileHandle" && inv.hash()) {
+                Value n = fhSetOutBuffer(inv, eval(a->value.get()));
+                return sink ? Value::any() : n;
+            }
+        }
     }
 
     // NativeCall CStruct field write: `$s.field = v` writes native memory at the

@@ -1728,20 +1728,14 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             s = encodeTextEnc(s, handleEnc(inv)); // the handle's `:enc` names the BYTES on disk
             auto stdit = inv.hash()->find("std");
             if (stdit != inv.hash()->end()) { // $*OUT / $*ERR — write straight to the stream
+                bool toErr = stdit->second.toStr() == "err";
                 std::lock_guard<std::mutex> lk(rtOutMutex());
-                (stdit->second.toStr() == "err" ? std::cerr : std::cout) << s;
+                std::ostream& os = toErr ? std::cerr : std::cout;
+                os << s;
+                if (rtStdOutBuffer(toErr) == 0) os.flush(); // out-buffer 0: due now
                 return Value::boolean(true);
             }
-            // Appending to an open handle is a READ-MODIFY-WRITE on state the
-            // handle shares, so two threads writing to one file both read the
-            // buffer, both append, and one write is simply lost — twelve
-            // threads writing a line each produced eleven lines. Under the
-            // output lock it is one update at a time.
-            {
-                std::lock_guard<std::mutex> lk(rtOutMutex());
-                Value& buf = (*inv.hash())["buffer"];
-                buf = Value::str(buf.toStr() + s);
-            }
+            fhWrite(inv, s);
             return Value::boolean(true);
         }
         if (m == "t") { // is the handle a terminal? files never; std handles ask isatty
@@ -1765,16 +1759,14 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             }
             auto wstd = inv.hash()->find("std");
             if (wstd != inv.hash()->end()) { // $*OUT / $*ERR: straight to the stream,
-                std::lock_guard<std::mutex> lk(rtOutMutex()); // as .print does — a std
-                std::ostream& os = wstd->second.toStr() == "err" ? std::cerr : std::cout;
-                os.write(bytes.data(), (std::streamsize)bytes.size()); // handle has no path
-                return Value::boolean(true);                  // to flush a buffer to
+                bool toErr = wstd->second.toStr() == "err";  // as .print does — a std
+                std::lock_guard<std::mutex> lk(rtOutMutex()); // handle has no path
+                std::ostream& os = toErr ? std::cerr : std::cout;
+                os.write(bytes.data(), (std::streamsize)bytes.size());
+                if (rtStdOutBuffer(toErr) == 0) os.flush();
+                return Value::boolean(true);
             }
-            {   // same read-modify-write as .print above, same lock
-                std::lock_guard<std::mutex> lk(rtOutMutex());
-                Value& buf = (*inv.hash())["buffer"];
-                buf = Value::str(buf.toStr() + bytes);
-            }
+            fhWrite(inv, bytes); // same buffering rule as .print above
             return Value::boolean(true);
         }
         if (m == "read") { // binary read: up to N bytes from a byte cursor, as a Buf
@@ -1810,31 +1802,17 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             (*inv.hash())["bpos"] = Value::integer(pos + take);
             return b;
         }
-        // .flush — put what has been written on disk NOW, without closing. These
-        // handles buffer in memory until .close, so without this a program that
-        // flushes deliberately (a log, a trace file read by something else while
-        // it runs) saw nothing until it exited — and `.flush` itself did not
-        // exist, so it died instead.
-        if (m == "flush") {
-            auto st = inv.hash()->find("std");
-            if (st != inv.hash()->end()) {
-                if (st->second.toStr() == "err") std::cerr.flush(); else std::cout.flush();
-                return Value::boolean(true);
-            }
-            std::string mode = (*inv.hash())["mode"].toStr();
-            const std::string& buf = (*inv.hash())["buffer"].s;
-            if (!buf.empty() && (mode == "w" || mode == "a" || mode == "rw" || mode == "update")) {
-                bool wrote = (*inv.hash())["wrote"].truthy();
-                std::ofstream out((*inv.hash())["path"].toStr(),
-                                  std::ios::binary | ((mode == "a" || wrote) ? std::ios::app : std::ios::trunc));
-                if (out) out << buf;
-                // The buffer is now on disk: keep only what comes AFTER it, and
-                // remember to append from here on. Truncating again at close
-                // would delete exactly what the flush was for.
-                (*inv.hash())["buffer"] = Value::str("");
-                (*inv.hash())["wrote"]  = Value::boolean(true);
-            }
-            return Value::boolean(true);
+        // .flush — put what has been written on disk NOW, without closing. A
+        // handle holds bytes back up to its out-buffer, so without this a
+        // program that flushes deliberately (a log, a trace file read by
+        // something else while it runs) saw nothing until it exited — and
+        // `.flush` itself did not exist, so it died instead.
+        if (m == "flush") { fhFlush(inv); return Value::boolean(true); }
+        // .out-buffer — how many bytes the handle may hold back. Readable, and
+        // writable through the assignment path (which flushes on resize).
+        if (m == "out-buffer") {
+            if (!args.empty()) return fhSetOutBuffer(inv, args[0]);
+            return Value::integer(fhOutBuffer(inv));
         }
         if (m == "close") {
             std::string mode = (*inv.hash())["mode"].toStr();
@@ -1863,8 +1841,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 }
                 if (!haveContent) { c = a; haveContent = true; }
             }
-            (*inv.hash())["buffer"] =
-                Value::str((*inv.hash())["buffer"].toStr() + encodeTextEnc(c.toStr(), handleEnc(inv)));
+            fhWrite(inv, encodeTextEnc(c.toStr(), handleEnc(inv)));
             // Without :close the content sits in "buffer" and reaches the file on
             // .close (zef's spurt-package-list). WITH it, the caller is done with
             // the handle and expects the bytes on disk — File::Temp's own suite

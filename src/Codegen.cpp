@@ -1877,6 +1877,18 @@ struct Codegen {
             unsupported("binding (:=) of a non-scalar");
         }
         std::string rhs = exArg(a->value.get());
+        // `$fh.out-buffer = N` is not a slot write: the resize has to flush what
+        // is pending, and $*OUT/$*ERR keep the setting process-wide because the
+        // dynamic synthesizes a fresh handle on every read. Through the generic
+        // accessorRef path this compiled to a write into `dynVarRef("$*OUT")`,
+        // which for an unbound dynamic is a fresh Any — "Target is not
+        // assignable" at runtime, where the interpreter honoured it.
+        if (a->op == "=" && tgt->kind == NK::MethodCall) {
+            auto* mc = static_cast<MethodCall*>(tgt);
+            if (mc->method == "out-buffer" && mc->args.empty() && !mc->meta &&
+                !mc->hyper && !mc->bang && !mc->methodExpr)
+                return "RT.fhSetOutBuffer(" + ex(mc->inv.get()) + ", " + rhs + ")";
+        }
         // `@a[$i; $j] = v` — ASSIGN-POS descends the dimensions and writes the
         // leaf, which is what the interpreter does with the same node.
         if (a->op == "=" && tgt->kind == NK::Index && static_cast<Index*>(tgt)->multiDim) {
