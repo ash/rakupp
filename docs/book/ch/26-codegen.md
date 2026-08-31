@@ -185,6 +185,10 @@ because transpiling them would mean duplicating an engine:
 - **`use`** — `RT.rtUse`;
 - **the `...` sequence operator** — `RT.seqOp` and `RT.seqOpGroups`;
 - **hyper operators** — `rtHyperMethod` and the hyper core;
+- **indirect method calls** — `rtIndirectMethod`: the generated site
+  evaluates the name expression, and the runtime either calls the `Code` it
+  produced (with the invocant first) or dispatches the name it stringifies
+  to, through the one method dispatcher;
 - **`nqp::` ops** — `rtNqpOp`, the same function the interpreter calls
   (Chapter 34).
 

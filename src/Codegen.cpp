@@ -1321,15 +1321,34 @@ struct Codegen {
             case NK::MethodCall: {
                 auto* m = static_cast<MethodCall*>(e);
                 if (m->maybe) unsupported("method-call form (.?)");
-                // The name is a run-time value (`."$name"()`, `self!"$name"()`,
-                // `.$callable`) and nothing here evaluates it — emitting the
-                // static `m->method` dispatched to the empty name. Bundle instead.
-                if (m->methodExpr) unsupported("an indirect method call (.\"$name\"())");
+                // The dispatch-key prefix of the call form: the class method
+                // tables key a private method `!name` and the metamodel `^name`
+                // (classRegister emits the same keys).
+                const char* pfx = m->bang ? "!" : m->meta ? "^" : "";
+                if (m->methodExpr) {
+                    // The name is a RUN-TIME value — `."$name"()`, `.$callable`,
+                    // `.&sub`, `self!"$name"()`. Sequenced through locals rather
+                    // than passed as sibling arguments, so the invocant is
+                    // evaluated before the name expression (C++ leaves argument
+                    // order unspecified; the interpreter evaluates left to right).
+                    if (m->hyper && m->mutate) unsupported(">>.= hyper-mutate");
+                    if (m->mutate && m->inv->kind != NK::VarExpr && m->inv->kind != NK::Index)
+                        unsupported(".= on this invocant");
+                    std::string mv = ex(m->methodExpr.get());
+                    if (m->mutate) { // $x .= &f — rebind the invocant to the result
+                        return "([&]()->Value{ Value& __r = " + lvalueExpr(m->inv.get()) + "; Value __m = " + mv +
+                               "; __r = rtIndirectMethod(RT, __r, __m, " + argsVL(m->args) + ", " + cesc(pfx) +
+                               ", false); return __r; }())";
+                    }
+                    return "([&]()->Value{ Value __i = " + ex(m->inv.get()) + "; Value __m = " + mv +
+                           "; return rtIndirectMethod(RT, __i, __m, " + argsVL(m->args) + ", " + cesc(pfx) + ", " +
+                           (m->hyper ? "true" : "false") + "); }())";
+                }
                 if (m->hyper) {
                     if (m->mutate) unsupported(">>.= hyper-mutate");
                     return "rtHyperMethod(RT, " + ex(m->inv.get()) + ", " + cesc(m->method) + ", " + argsVL(m->args) + ")";
                 }
-                std::string name = m->meta ? "^" + m->method : m->method;
+                std::string name = pfx + m->method;
                 if (m->mutate) { // $x .= meth : rebind the invocant to the result
                     if (m->inv->kind != NK::VarExpr && m->inv->kind != NK::Index) unsupported(".= on this invocant");
                     return "([&]()->Value{ Value& __r = " + lvalueExpr(m->inv.get()) + "; __r = RT.methodCall(__r, "
@@ -2445,6 +2464,16 @@ struct Codegen {
     std::string methodCandFn(const std::string& cls, const std::string& meth, int k) {
         return methodFn(cls, meth) + "__" + std::to_string(k);
     }
+
+    // The DISPATCH KEY of a declared method. A private `method !name` is keyed
+    // `!name` — the same key the interpreter registers (Interpreter.cpp: `md->
+    // isPrivate ? "!" + mdName : mdName`) and the same one a `self!name` call
+    // site emits. Keying both under the bare name made a class with `method
+    // !foo` AND `method foo` emit one C++ body twice (a redefinition error out
+    // of the generated file), and let `$obj.foo` reach the private one.
+    static std::string methodKey(const SubDecl* md) {
+        return md->isPrivate ? "!" + md->name : md->name;
+    }
     void classMethodDefs(ClassDecl* cd) {
         if (cd->isPackage) unsupported("a package declaration");
         // an indirect ::() name exists only when the declaration RUNS — the
@@ -2455,8 +2484,9 @@ struct Codegen {
         std::map<std::string, int> multiSeq; // per-name candidate counter
         for (auto& mp : cd->methods) {
             SubDecl* md = mp.get();
-            std::string fname = md->isMulti ? methodCandFn(cd->name, md->name, multiSeq[md->name]++)
-                                            : methodFn(cd->name, md->name);
+            const std::string mkey = methodKey(md);
+            std::string fname = md->isMulti ? methodCandFn(cd->name, mkey, multiSeq[mkey]++)
+                                            : methodFn(cd->name, mkey);
             BodyScope __bs{this, /*closure=*/false};
             line(0, "static Value " + fname + "(ValueList& __a) {");
             line(1, "try {"); // a METHOD body is a ReturnEx boundary too (same rule as bodyDef)
@@ -2548,8 +2578,8 @@ struct Codegen {
             std::map<std::string, std::vector<SubDecl*>> multis;
             std::map<std::string, int> seq;
             for (auto& mp : cd->methods) {
-                if (mp->isMulti) { multis[mp->name].push_back(mp.get()); continue; }
-                line(1, "  " + ci + "->methods[" + cesc(mp->name) + "] = Value::closure(" + methodFn(cd->name, mp->name) + ");");
+                if (mp->isMulti) { multis[methodKey(mp.get())].push_back(mp.get()); continue; }
+                line(1, "  " + ci + "->methods[" + cesc(methodKey(mp.get())) + "] = Value::closure(" + methodFn(cd->name, methodKey(mp.get())) + ");");
             }
             for (auto& kv : multis) {
                 if (const char* why = undecidableMulti(cd, kv.first, kv.second))
@@ -2925,7 +2955,7 @@ std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcP
         g.out << "static Value " << mangleSub(mc.first) << "(ValueList);\n";
     for (ClassDecl* cd : classes)
         for (auto& mp : cd->methods)
-            g.out << "static Value " << g.methodFn(cd->name, mp->name) << "(ValueList&);\n";
+            g.out << "static Value " << g.methodFn(cd->name, Codegen::methodKey(mp.get())) << "(ValueList&);\n";
     g.out << "\n";
 
     // Generate all code into buffers FIRST (definitions, class registration,

@@ -1893,6 +1893,43 @@ Value rtHyperMethod(Interpreter& I, const Value& inv, const std::string& m, Valu
     return out;
 }
 
+// An INDIRECT method call for native codegen — `$obj."$name"()`, `$obj.$code`,
+// `$obj.&sub`, `self!"$name"()`, `@a».&f`. `mv` is the already-evaluated name
+// expression, `prefix` the dispatch-key prefix of the call form ("!" private,
+// "^" metamodel, "" ordinary). Mirrors the methodExpr path of the interpreter's
+// MethodCall eval, minus its Whatever currying: codegen curries statically
+// (exArg wraps a `*`-bearing expression in a closure before this is reached).
+Value rtIndirectMethod(Interpreter& I, const Value& inv, const Value& mv, ValueList args,
+                       const char* prefix, bool hyper) {
+    // A Code — or a TYPE OBJECT, which Rakudo invokes as a coercion, so
+    // `$value.$ct` with `my $ct = Rat` is Rat($value) — is CALLED with the
+    // invocant as its first argument, rather than named as a method.
+    if (mv.t == VT::Code || mv.t == VT::Type) {
+        auto one = [&](const Value& self) {
+            ValueList ca;
+            ca.reserve(args.size() + 1);
+            ca.push_back(self);
+            for (auto& a : args) ca.push_back(a);
+            return I.callCallable(mv, std::move(ca));
+        };
+        if (!hyper) return one(inv);
+        if (inv.t == VT::Hash && inv.hash() && inv.hashKind.empty()) { // %h».&f keeps the keys
+            Value hout = Value::makeHash();
+            for (auto& kv : *inv.hash()) (*hout.hash())[kv.first] = one(kv.second);
+            return hout;
+        }
+        Value out = Value::array(); out.isList = true;
+        if (inv.t == VT::Array && inv.arr())
+            for (auto& el : *inv.arr()) out.arr()->push_back(one(el));
+        else
+            for (auto& el : inv.flatten()) out.arr()->push_back(one(el));
+        return out;
+    }
+    std::string name = prefix + mv.toStr();
+    if (hyper) return rtHyperMethod(I, inv, name, std::move(args));
+    return I.methodCall(inv, name, std::move(args));
+}
+
 // |x for native codegen. In argument position (argPos): arrays/ranges spread
 // positionally and a hash spreads as named args — mirroring evalArgs. In a list
 // literal a hash stays one item — mirroring the ListExpr eval.

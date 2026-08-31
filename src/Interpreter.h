@@ -2016,6 +2016,11 @@ Value  rtShapedArray(const ValueList& dims, const std::string& declType); // `my
 void   rtShapedStore(Value& lv, const Value& rhs, const std::string& keepType); // `@a[3;2] = …`
 void   rtSpreadArg(ValueList& as, const Value& v, bool argPos); // |x spread into an arg/list being built
 Value  rtHyperMethod(Interpreter& I, const Value& inv, const std::string& m, ValueList args); // >>.method
+// `$obj."$name"()` / `$obj.$code` / `self!"$name"()`: the method NAME (or the
+// Code/type object to call with the invocant) is a run-time value; `prefix` is
+// the call form's dispatch-key prefix ("!" private, "^" meta, "" ordinary).
+Value  rtIndirectMethod(Interpreter& I, const Value& inv, const Value& mv, ValueList args,
+                        const char* prefix, bool hyper);
 Value  rtSlipVal(const Value& v);   // |x as a list element (a List that splices, pre-spread deep)
 Value  rtSlipShallow(const Value& v); // |x in value position (one-level splice marker)
 void   rtXxAppend(ValueList& out, Value one); // one `xx` replication: a Slip contributes its elements
