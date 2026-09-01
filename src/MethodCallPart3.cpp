@@ -56,6 +56,20 @@ std::string Interpreter::encodeTextEnc(const std::string& text, const std::strin
     return methodCall(t, "encode", ValueList{Value::str(enc)}).toStr();
 }
 
+// `.succ`/`.pred` on a NUMBER are `self + 1` / `self - 1` through the exact
+// numeric tower, not through toInt(). toInt() saturates a bignum to INT64_MAX —
+// BigInt::toLL does that deliberately, because its other callers are indices and
+// codepoints, where a silent wrap is garbage — so adding one to it wrapped to
+// INT64_MIN and `(10**30).succ` answered -9223372036854775808. A plain
+// `(2**63-1).succ` wrapped for the same reason, having no room left to grow into.
+// The same truncation threw away a Rat's or a Num's fractional part and a
+// Complex's imaginary one: `2.5.succ` was 3, `(3+4i).succ` was 1. Rakudo's
+// Real.succ is `self + 1`, and `++`/`--` here always were; only the named methods
+// were not. Everything else — Bool, Str, Date, a type object — keeps its own arm.
+static bool succPredExact(const Value& v) {
+    return v.t == VT::Int || v.t == VT::Rat || v.t == VT::Num || v.t == VT::Complex;
+}
+
 std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName& m, ValueList& args,
                                      const std::vector<ExprPtr>* rwArgs) {
     auto a0 = [&]() -> Value { return args.empty() ? Value::any() : args[0]; };
@@ -902,6 +916,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     }
     if (m == "succ") {
         if (inv.t == VT::Bool) return Value::boolean(true);   // Bool saturates
+        if (succPredExact(inv)) return applyArith("+", inv, Value::integer(1));
         if (inv.t != VT::Str) return Value::integer(inv.toInt() + 1);
         Value r = Value::str(strSucc(inv.s));
         // an IO::Path stays an IO::Path (`"foo/file_02.txt".IO.succ` is an IO::Path)
@@ -917,6 +932,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             o.hashKind = inv.hashKind; o.enumName = inv.enumName;
             return o;
         }
+        if (succPredExact(inv)) return applyArith("-", inv, Value::integer(1));
         return Value::integer(inv.toInt() - 1);
     }
     if (m == "is-prime") {
