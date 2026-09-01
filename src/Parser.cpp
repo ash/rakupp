@@ -1612,6 +1612,31 @@ std::vector<ExprPtr> Parser::parseCallArgs(ExprPtr* invocant) {
 
 ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
     bool hyperNext = false;
+    // A zen slice — `$x<>`, `$x[]`, `$x{}` and their dotted spellings — DECONTAINERISES.
+    // It was a plain no-op here, which is right for `@a<>` and wrong for a Scalar:
+    // `for $aoa<>` then walked the ONE item the Scalar is instead of the elements it
+    // holds, which is how a JSON::Fast array-of-arrays came back nested one deep
+    // (issue #55). It stays a no-op on `@`/`%`, which are never itemised, and when a
+    // subscript or an assignment follows: `$a<>[0] = 9` and `%h<> = …` write through
+    // the container, and a decontainerised value has nothing to write to.
+    auto zenDecont = [&](ExprPtr b) -> ExprPtr {
+        if (b->kind == NK::VarExpr) {
+            const std::string& n = static_cast<VarExpr*>(b.get())->name;
+            if (n.size() > 1 && (n[0] == '@' || n[0] == '%')) return b;
+        }
+        if (!cur().spaceBefore &&
+            (cur().kind == Tok::LBracket || cur().kind == Tok::LBrace || cur().kind == Tok::QwList ||
+             (cur().kind == Tok::Op && (cur().text == "<" || cur().text == "\xC2\xAB"))))
+            return b;
+        if (cur().kind == Tok::Op && !cur().text.empty() && cur().text.back() == '=' &&
+            cur().text != "==" && cur().text != "!=" && cur().text != "<=" &&
+            cur().text != ">=" && cur().text != "=:=" && cur().text != "=~=")
+            return b; // `=`, `:=`, `.=`, `+=`, … every one of them targets the container
+        auto u = std::make_unique<Unary>();
+        u->op = "decont";
+        u->operand = std::move(b);
+        return u;
+    };
     for (;;) {
         // A block-closing `}` at end of line ends the statement — for a POSTFIX
         // continuation just as for an infix one. `@a .= sort: { .chars }` followed
@@ -1860,6 +1885,7 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
                     zi->isHash = false;
                     base = std::move(zi);
                 }
+                else base = zenDecont(std::move(base));
                 continue;
             }
             size_t dimAt = pos_;
@@ -1899,6 +1925,7 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
                     zi->isHash = true;
                     base = std::move(zi);
                 }
+                else base = zenDecont(std::move(base));
                 continue;
             }
             auto idx = std::make_unique<Index>();
@@ -1963,6 +1990,7 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
                     zi->isHash = true;
                     base = std::move(zi);
                 }
+                else base = zenDecont(std::move(base));
                 continue;
             }
             char sigilCtx = 0;
@@ -2062,6 +2090,11 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
             if (isOp("<") && !cur().spaceBefore) {
                 advance();
                 std::vector<std::string> words = readAngleWords(">");
+                if (words.empty()) { // `.<>` — the dotted zen slice, same as `<>`
+                    hyperNext = false;
+                    base = zenDecont(std::move(base));
+                    continue;
+                }
                 auto keyIndex = [&](ExprPtr b) {
                     auto idx = std::make_unique<Index>();
                     idx->base = std::move(b); idx->isHash = true;
@@ -2105,6 +2138,11 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
             };
             if (isKind(Tok::LBrace)) {
                 advance();
+                if (isKind(Tok::RBrace)) { // .{} zen slice
+                    advance(); hyperNext = false;
+                    base = zenDecont(std::move(base));
+                    continue;
+                }
                 auto idx = std::make_unique<Index>();
                 idx->isHash = true;
                 idx->index = parseExpression();
@@ -2116,7 +2154,11 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
             }
             if (isKind(Tok::LBracket)) {
                 advance();
-                if (isKind(Tok::RBracket)) { advance(); hyperNext = false; continue; } // .[] zen slice
+                if (isKind(Tok::RBracket)) { // .[] zen slice
+                    advance(); hyperNext = false;
+                    base = zenDecont(std::move(base));
+                    continue;
+                }
                 size_t dimAt = pos_;
                 auto idx = std::make_unique<Index>();
                 idx->isHash = false;

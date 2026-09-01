@@ -3084,7 +3084,7 @@ std::shared_ptr<const PadLayout> Interpreter::resolvePads(const std::vector<Stmt
     // not listed (gather, start, lazy, supply, react, …) is not entered.
     static const std::set<std::string> kNowUnary = {
         "-", "+", "!", "?", "~", "not", "so", "++", "--", "^", "|",
-        "ctx$", "ctx@", "ctx%", "item", "?^", "+^", "~^"};
+        "ctx$", "ctx@", "ctx%", "item", "decont", "?^", "+^", "~^"};
 
     auto annE = [&](auto&& self, const Expr* e) -> void {
         if (!e) return;
@@ -15949,7 +15949,10 @@ std::shared_ptr<ValueList> Interpreter::derefArrayAlias(Expr* listExpr) {
                 if (av->t == VT::Array && av->arr() && !av->isList) return av->arrS();
         return nullptr;
     }
-    if (u->op != "ctx@" || !u->operand || u->operand->kind != NK::VarExpr) return nullptr;
+    // `for $rgb<> { $_ = … }` is the same reach: the zen slice decontainerises the
+    // very same Array, so the topic must alias its elements, not copies of them
+    if (u->op != "ctx@" && u->op != "decont") return nullptr;
+    if (!u->operand || u->operand->kind != NK::VarExpr) return nullptr;
     auto* ve = static_cast<VarExpr*>(u->operand.get());
     if (ve->name.empty() || ve->name[0] != '$') return nullptr;
     Value* v = tctx_.cur->find(ve->name);
@@ -24514,6 +24517,13 @@ Value Interpreter::evalUnary(Unary* u) {
             for (auto& g : got) if (g.t != VT::Nil) v.arr()->push_back(std::move(g));
         }
         v.hashKind = "Capture"; v.itemized = true; v.isList = false;
+        return v;
+    }
+    // the zen slice `$x<>` / `$x[]` / `$x{}` — `.item`'s exact inverse: the value
+    // steps out of its item container, so `for $aoa<>` walks the elements
+    if (u->op == "decont") {
+        Value v = eval(u->operand.get());
+        if (v.t == VT::Array || v.t == VT::Hash) v.itemized = false;
         return v;
     }
     if (u->op == "ctx$" || u->op == "ctx@" || u->op == "ctx%") {

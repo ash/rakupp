@@ -2605,8 +2605,13 @@ std::vector<Token> Lexer::tokenize() {
         // brace or `;` bails out (word lists never span statements or blocks)
         if (t.kind == Tok::Op && !t.text.empty()) {
             if (angleWords_ == 0) {
-                // tight `<>` in term position is the Perl 5 null-filehandle read
-                if (t.text == "<" && peek() == '>' && angleTermContext(out))
+                // tight `<>` in term position is the Perl 5 null-filehandle read —
+                // but after a postfix dot it is the zen slice `$x.<>`, which is a
+                // SUBSCRIPT, not a term, and the only reason a dot puts us in term
+                // context at all is that `%h.<key>` is one too.
+                if (t.text == "<" && peek() == '>' && angleTermContext(out) &&
+                    !(!out.empty() && out.back().kind == Tok::Op &&
+                      (out.back().text == "." || out.back().text == "?.")))
                     throw ParseError("Unsupported use of <>; in Raku please use "
                                      "lines() to read input, ('') for a null "
                                      "string or () for an empty list",
