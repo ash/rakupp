@@ -31,8 +31,8 @@ gauge of how much of the language actually works).
 The exact definition of every figure below — and how the harness computes it — is
 in [COUNTING.md](COUNTING.md); that file is authoritative if anything here drifts.
 
-**Headline: ~90% of all declared Roast tests pass** (198,939 / 218,773); on the
-stricter file bar, ~44% of files fully pass (643 / 1,464). The per-file breakdown
+**Headline: ~90% of all declared Roast tests pass** (199,846 / 219,374); on the
+stricter file bar, ~44% of files fully pass (646 / 1,464). The per-file breakdown
 comes first below, then the per-test figures. That assertion figure is the
 **shielded** one, as every implementation's is: it counts `ok … # skip` and
 `not ok … # todo` lines as passes. Net of both it is 90.4% rather than 91.0% —
@@ -47,10 +47,10 @@ Full suite — **1,464 files**:
 
 | Files | Count | Share of suite |
 |---|---:|---:|
-| **Fully passing** | **643** | **44%** |
-| Partially passing | 686 | 47% |
-| No TAP output | 121 | 8% |
-| Timeouts | 15 | 1.0% |
+| **Fully passing** | **646** | **44%** |
+| Partially passing | 685 | 47% |
+| No TAP output | 119 | 8% |
+| Timeouts | 14 | 1.0% |
 
 (Both files that once wedged the harness with unkillable children are measured
 in-run now: `S04-statements/try.t` scores as an ordinary partial, and
@@ -65,7 +65,7 @@ territory, not "passing" and not "failing."
 ### The assertion count
 
 Measured per individual test rather than per file, the honest figure is
-**198,939 of ~218,773 declared tests — 90.9%**. "Declared" means every test the
+**199,846 of ~219,374 declared tests — 90.9%**. "Declared" means every test the
 suite intends to run: for files that ran, their emitted plan; for files that
 abort before emitting any TAP, the `plan N` count read straight from their
 source. Counting those aborting files (all their tests failing) is what keeps the
@@ -74,9 +74,9 @@ three denominators, widest-to-strictest:
 
 | Denominator | Ratio | What it includes |
 |---|---|---|
-| tests that **ran** | 198,939 / 205,416 (~97%) | only assertions files actually emitted — flatters, ignores aborts |
-| tests **planned** (files that emitted a plan) | 198,939 / 215,661 (~92%) | + tests lost when a file aborts mid-plan |
-| **all declared** tests | 198,939 / 218,773 (90.9%) | + tests in parse-error files, recovered from source. This denominator grows as parse fixes land — files that died before announcing a plan now declare their real (often larger, dynamic) plans, so the percentage can dip while absolute passes rise |
+| tests that **ran** | 199,846 / 206,251 (~97%) | only assertions files actually emitted — flatters, ignores aborts |
+| tests **planned** (files that emitted a plan) | 199,846 / 216,304 (~92%) | + tests lost when a file aborts mid-plan |
+| **all declared** tests | 199,846 / 219,374 (90.9%) | + tests in parse-error files, recovered from source. This denominator grows as parse fixes land — files that died before announcing a plan now declare their real (often larger, dynamic) plans, so the percentage can dip while absolute passes rise |
 
 The 90% is the per-test analog of the ~43% file coverage. Three notes on scope:
 
@@ -167,7 +167,7 @@ timeout, and the same counting rules:
 | | files fully passing | assertions, all declared |
 |---|---:|---:|
 | **mutsu** 0.23.0 | **1,419 / 1,464 (96.9%)** | **216,807 / 218,173 (99.4%)** |
-| **Raku++** 3.23.0 | 643 / 1,464 (43.9%) | 198,939 / 218,773 (90.0%) |
+| **Raku++** 3.23.0 | 646 / 1,464 (43.9%) | 199,846 / 219,374 (90.0%) |
 
 Both runs are on the **fudged bar** — Raku++ honours Roast's `#?rakudo`
 directives unconditionally, and mutsu's equivalent was switched on with
@@ -218,6 +218,18 @@ substring: `build/rakupp tools/run-roast.raku S05`.
 the GIL while a worker waits on its child process, so the children genuinely
 overlap. Output and totals are identical to a sequential run — results are
 tallied and printed in file order regardless of N.
+
+_Snapshot 2026-09-01, the v3.24.0 release run (`--workers=4`, three passes):
+646 / 1,464 files fully passing (~44% coverage); 685 partial, 119 no-TAP,
+14 timeout. The file count repeats at 646 (band 645 / 646 / 646). No file
+regressed: the union of the three passes, diffed against v3.23.0's union, is
+empty in the regressed direction and gains three (`S12-attributes/mutators.t`,
+`S12-methods/lvalue.t`, `S32-io/out-buffering.t`). Measured on
+`v3.23.0-64-g8ba790a` against Roast `b2cbe8a42` — the same Roast revision
+v3.23.0 used, so the list diff is an engine comparison and nothing else. An
+EARLIER three passes on this release's code, before two regressions were fixed,
+read 640 / 641 / 640: the file LIST is what showed those, since that band
+overlaps v3.23.0's own._
 
 _Snapshot 2026-08-29, the v3.23.0 release run (`--workers=4`, three passes):
 643 / 1,464 files fully passing (~44% coverage); 685 partial, 121 no-TAP,

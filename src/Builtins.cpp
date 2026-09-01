@@ -5933,7 +5933,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 if (a.s == "at") sawAt = true;
                 if (a.s == "times") sawTimes = true;
                 if (a.s == "in" || a.s == "at") {
-                    double v = a.pairVal()->toNum();
+                    double v = a.s == "at" ? instantSecsOf(*a.pairVal()) : a.pairVal()->toNum();
                     if (std::isnan(v)) throw RakuError{Value::typeObj("X::Scheduler::CueInNaNSeconds"),
                         "Cannot pass NaN as a number of seconds to Scheduler.cue"};
                     delay = a.s == "in" ? v : std::max(0.0, v - epochNowSecs()); // :at is absolute, on the `now` clock (whole-second time() lost the fraction)
@@ -6726,7 +6726,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             // absolute fire time (epoch seconds, the `now` clock) at creation, so
             // every consumer waits exactly the remainder (see timerRemainingSecs).
             (*p.hash())["kind"] = Value::str("timer");
-            double arg = args.empty() ? 0 : args[0].toNum();
+            double arg = args.empty() ? 0 : (m == "at" ? instantSecsOf(args[0]) : args[0].toNum());
             (*p.hash())["seconds"] = args.empty() ? Value::number(0) : args[0];
             (*p.hash())["fires_at"] = Value::number(m == "in" ? epochNowSecs() + arg : arg);
             (*p.hash())["status"] = Value::str("Planned");
@@ -11072,7 +11072,7 @@ void Interpreter::registerBuiltins() {
         // measured against the same high-resolution clock `now` reads, so a
         // fraction-of-a-second target is not lost to truncation
         double now = epochNowSecs();
-        double target = a[0].toNum();
+        double target = instantSecsOf(a[0]);
         if (target <= now) return Value::boolean(false);
         I.sleepYield(target - now);
         return Value::boolean(true);

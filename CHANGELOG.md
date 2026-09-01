@@ -3,6 +3,324 @@
 Release notes for tagged releases. Numbers are measured, not projected;
 methodology for all Roast figures is in [docs/status/COUNTING.md](docs/status/COUNTING.md).
 
+## v3.24.0 (2026-09-01) — what other people's code asked for
+
+The consolidation arc ended at v3.23.0 with a known state and no campaign
+running. This release is what turned up next, and almost none of it was chosen
+here: eight GitHub issues, six third-party distributions that would not install,
+and one outside report that two dists were ~40% slower than Rakudo. The work
+followed them.
+
+| | v3.23.0 | v3.24.0 |
+|---|---:|---:|
+| Roast assertions (all declared) | 198,939 | **199,846** |
+| Roast files fully passing | 643 / 1,464 | **646 / 1,464** |
+| Local regression suite (`t/run.raku`) | 580 | **609** |
+| Module battery (vs each dist's own reference run) | 50 / 59 | **50 / 59** |
+| Documentation examples byte-identical on both engines | 950 | **953** |
+| Of the ecosystem's 2,526 distributions, passing their own suites | 637 | **746** |
+| `say "Hello"` compiled with `--exe` | 9,446,328 B | **9,567,336 B** |
+| …compiled with `--exe --slim` | 6,165,624 B | **6,286,248 B** |
+
+Roast is the repeating profile of three runs (645 / 646 / 646) on
+`v3.23.0-64-g8ba790a` against Roast `b2cbe8a42` — the same revision v3.23.0
+measured, so the file-list diff is an engine comparison and nothing else. **No
+file regressed**: the union of the three, diffed against v3.23.0's union, is
+empty in that direction and gains three.
+
+
+### The ecosystem measured again: 637 -> 746 of 2,526
+
+v3.23.0 carried its 637 forward rather than measuring it, and said so. This
+release measures it: the whole REA population, end to end, on
+`v3.23.0-8-g5e23726` — **746 of 2,526** passing their own test suites
+([findings/ECOSWEEP-2026-08.md](docs/dev/findings/ECOSWEEP-2026-08.md)). The
+index was refreshed the same day (15,029 archived releases, two more dists than
+August), which is why the denominator moves.
+
+The engine measured is eight commits into this cycle, not the release binary.
+That is the honest provenance: a full sweep is an afternoon on four shards, and
+re-running it per tag is not what the number is for.
+
+**637 -> 746 decomposes as 125 conversions, 18 regressions and 2 new dists.**
+The 18 are real — each was re-measured alone, single-threaded, on an idle
+machine, and each reproduced. Eleven fail their own suites, four now time out at
+120 s (two of those call remote APIs, so upstream rate limiting is not excluded),
+three fail their native build. Date::Calendar::Julian and Log::Async have now
+moved twice, having been among the thirteen August's re-run converted TO pass.
+
+`timeout` is a new verdict bucket rather than a new failure: August's harness
+could not tell a suite that ran out of time from one that exited strangely, and
+both landed in `other`. The comparable pair is `other` + `timeout` = 116 against
+August's 95.
+
+The standing lever is unchanged and is not the suites: **383 dists never run
+their own tests at all** because a dependency fails first, waiting on 486
+distinct distributions. The blockers the most dists wait on are now the async and
+serialization constellation — IO::Socket::Async::SSL (63), Log::Timeline (62),
+CBOR::Simple (62). Getopt::Long, which blocked a 55-dist cohort at the last
+sitting, passes and blocks nothing.
+
+Six distributions were made to install along the way, each one opening a cluster
+of engine defects rather than a single fix: **Path::Finder** (five bugs, one per
+test file), **Getopt::Long** (a parameter's own traits were parsed and thrown
+away, and five more), **Math::SparseMatrix** (LibraryMake was never the blocker;
+six engine defects were), **BSON::Simple** (its own brackets did not parse, and
+eleven more sat behind them), **ML::TriesWithFrequencies** ([#53], six gaps, of
+which the reported one was the first), and **BinaryHeap** ([#47], which leans on
+five undocumented Rakudo features).
+
+### Dispatch: method calls and attributes stop allocating
+
+DISPATCH-PERF-PLAN.md, run to its end and then corrected where the plan was
+wrong. The gate could not see any of it beforehand: `perf-guard` covered SUB
+calls well and nothing in it called a method, read an attribute, or dispatched
+a multi. Sub calls ran at ~2x Rakudo and were guarded; method calls ran at 5.8x
+and were not. Five kernels — `method`, `attrread`, `privmeth`, `multimeth`,
+`objnew` — close that hole, and they came first because without them none of the
+rest was measurable.
+
+What the profile said, against what the plan assumed:
+
+- **`invokeMethod` allocated a frame that sub calls got from a pool.**
+  `callCallableRaw` has had a per-thread `FramePool` since the Data::Generators
+  work; `invokeMethod` called `make_shared<Env>` per method call. That single
+  difference is most of the gap between a sub call at ~2x and a method call at
+  5.8x.
+- **Phase 4 was proposed as a storage change and the storage was not the
+  problem.** The plan wanted a slot vector on `ObjectData`; 101 sites touch
+  `attrs` directly, so that would have been the most invasive change in the plan.
+  Caller attribution found the real cost: `VarExpr`'s fast path for plain
+  lexicals is gated on the second character being a letter, which excludes every
+  twigil, so `@!array` walked ~100 `ve->name == "$*SOMETHING"` compares on every
+  read before reaching the attribute arm. The arm moved above them.
+- **Phase 3 is not viable as written, and phase 5 measured neutral and was
+  reverted.** Both are recorded in the plan as such rather than quietly dropped.
+
+Measured same-moment against the pre-plan binary, best of six: attribute read
+0.64x, method call 0.81x, fib 0.94x, asg 0.91x.
+
+One regression the plan caused and this release fixes: `g_lexShadowsInfix` was a
+bool, so the moment ANY scope bound an `&infix:<op>`, every operator in that
+program built a lookup key in a thread_local string and walked the scope chain.
+A plain arithmetic loop went 0.32s to 0.77s for having such a binding somewhere.
+It is a 64-bit Bloom filter over the operator spelling now, and the armed and
+unarmed loops time the same.
+
+
+### Three regressions this release introduced, and the gate that caught each
+
+None of the three was visible in a headline figure, and each was caught by a
+different gate. That is the argument for keeping all of them.
+
+**Gate 1 is a diff of the fully-passing file LIST, not a count.** Three files
+regressed while the count moved 643 -> 640 — inside the band the suite flaps by,
+so the number said nothing. All three fail when run ALONE, single-threaded, and
+v3.23.0 rebuilt from its tag passes all three.
+
+*`my %` and `my &` died inside any block.* The parser spells a bare-sigil
+declaration `%!anon`, so its second character is `!` and it reads exactly like a
+private attribute. The dispatch work hoisted the attribute arm above the ~100
+`ve->name == "$*LITERAL"` compares in eval's VarExpr case, reasoning that no
+special name could collide — "their second characters are `=`, `?` and `*`" —
+which is true of the literals it moved past and not of the parser's own
+synthetic name. So `{ my % }` asked for a `self` a plain block has not got.
+`my $` and `my @` never showed it: they lex as `Var` rather than `Op` and reach
+no read, which is why one sigil pair broke and the other did not.
+
+*Every DateTime handed to a timer was ten seconds in the past.* An Instant
+carries `kInstantEpochOffset` — it is what `now` returned — and a DateTime's
+numeric value is raw POSIX, with only `.Instant` adding it. The BSON::Simple
+work put that offset on `now` and `DateTime.Instant` so `.Instant.to-posix`
+would round-trip, and left the comparisons reading `.toNum()`:
+
+- `sleep-until(DateTime)` returned False without waiting.
+- `Promise.at(DateTime)` fired immediately — 0 s where Rakudo waits 2.01 s.
+- `Scheduler.cue(:at)` had the same shape.
+- `$*INIT-INSTANT` came from the raw system clock, so it sat exactly ten seconds
+  behind `INIT now` — twice the tolerance of the Roast file that measures it.
+
+The Instant spelling of the same moment worked throughout, so the two disagreed
+by ten seconds with nothing to say which was wrong. `instantSecsOf()` is the one
+conversion now. **Roast saw only two of the four**: `Promise.at(DateTime)` and
+`Scheduler.cue(:at)` have no test in Roast or in `t/`, and would have shipped
+silently — they were found by following the first two to their cause rather than
+fixing them where they showed.
+
+**The module battery caught the third, and it is the one worth remembering.**
+JSON::Fast went PASS -> DIFF, its `t/07-datetime.t` dying with "Don't know how to
+jsonify DateTime". The bug it exposed is older than the release:
+
+    $dt ~~ Dateish              True     (both engines)
+    nqp::istype($dt, Dateish)   False    (Rakudo: True)
+
+`rtTypeMatch` — the path `nqp::istype` and native multi-dispatch take — matched a
+tagged built-in against its OWN NAME and never the role it does, while `~~` reads
+a table that has carried `Date`/`DateTime -> Dateish` all along. The same
+question down two paths, answering differently.
+
+What changed this cycle is only the cover. A hash-BACKED DateTime used to count
+as Associative, which is wrong, and JSON::Fast's `jsonify` tests Associative
+BEFORE Dateish — so every DateTime had been leaving through a branch that was
+wrong for a reason that happened to produce the right bytes. Making Associative
+correct removed the branch, and the real gap showed. **A correct fix did not
+break this; it stopped hiding it** — and nothing about the Associative change
+could have predicted that, which is why the battery is a release gate and not a
+nice-to-have.
+
+All three are fixed, each with a regression test asserting both halves of what
+went wrong.
+
+### Performance: the baseline is re-recorded, and one kernel moved up
+
+The baseline was re-recorded for this release (`perf-guard --record
+--for=v3.24.0`). Two reasons, and the first is the larger one: **five of the
+fourteen kernels had no recorded baseline at all.** `method`, `attrread`,
+`privmeth`, `multimeth` and `objnew` were added by the dispatch work in this
+cycle, and until they are recorded the gate reads them as "not gated" — the five
+kernels covering the exact code path this release changed most were the five the
+gate could not fail on.
+
+The second is `strscan`, which is **+6.5% against v3.23.0's recorded number** and
+over the 5% tolerance. It is recorded rather than fixed, and this is what is
+known about it.
+
+Measured on the machine of record, each figure `perf-guard`'s min-of-three, and
+each source built and measured in one sitting:
+
+| kernel | v3.23.0, rebuilt today | v3.24.0 | |
+|---|---:|---:|---|
+| loopsum | 95.6 | 84.1 | **-11.9%** |
+| fib | 384.8 | 339.7 | **-11.5%** |
+| strpass | 74.8 | 67.8 | **-9.4%** |
+| subcall | 177.4 | 161.1 | **-9.1%** |
+| asg | 164.6 | 152.2 | **-7.5%** |
+| hash | 18.2 | 18.0 | -1.1% |
+| rats | 249.2 | 246.5 | -1.1% |
+| regexloop | 122.6 | 125.2 | +2.1% |
+| **strscan** | **127.6** | **132.4** | **+3.9%** |
+
+**The v3.23.0 baseline reproduces on this machine today.** That matters, because
+the last two releases could not say it: the drift written up in
+[findings/GATES-3.22.md](docs/dev/findings/GATES-3.22.md) moved five kernels
+8-26% for reasons still unknown, and both v3.22.0 and v3.23.0 absorbed a
+re-record without being able to attribute it. Rebuilt from the v3.23.0 tag in a
+fresh worktree and measured beside this release's binary, every kernel lands
+within 1-3% of its recorded number. So the table above is a comparison of code,
+not of two machine moods, and the wins in it are real.
+
+What `strscan` is not:
+
+- **Not layout.** Two independent builds of identical HEAD source, in different
+  paths, give 132.6 and 131.9; two builds of pre-regression source give 127.6 and
+  128.1. The runbook puts binary layout at up to 3.5%, which is the same size as
+  this effect — so it was tested rather than assumed, and both sides reproduce.
+- **Not the dispatch work.** `strscan` still measured 128.1 at `a4f9266`, after
+  the whole DISPATCH-PERF-PLAN batch had landed.
+- **Not the machine.** See above.
+- **Not algorithmic.** `.chars` and `.substr`/`.ord` are all built-in method
+  calls in the same loop shape. `.chars` is unchanged to within 0.5% across the
+  window (55.6 -> 55.8 ms); `.substr`+`.ord` moves 126.1 -> 130.4. The two
+  resolve in different places: `chars` is matched in `Builtins.cpp`, `substr` at
+  `MethodCallPart3.cpp:2606` and `ord` at `:3276`.
+
+Bisected, the step falls after `49bdf34` — so in `f3ec99b` (`.succ`/`.pred`
+through the numeric tower) or `911d904` (prefix `+`/`-` de-duplicated). Neither
+touches strings, `Value`'s layout, or `substr`; `f3ec99b` adds lines to
+`MethodCallPart3` above both hot arms.
+
+Which is the honest reading: **this is the cost of dispatching built-in methods
+by walking a chain of `m == "..."` compares, and `strscan` is the kernel that
+walks the deepest part of it 400,000 times.** Two commits that add a few lines
+ahead of `substr` move it a few percent; the same structure is why a method call
+is 4.5x Rakudo while rakupp's own loop is 4x faster. `ece4e87`'s notes name the
+fix — give method and attribute names slot indices, the way PADS-PLAN.md did for
+lexicals — and name it as a project rather than a patch. It is not this
+release's, and the number is recorded here rather than absorbed silently.
+
+`regexloop` at +2.1% is inside tolerance and is not separately explained.
+
+### Issues
+
+Eight closed since v3.23.0, six of them with a fix in this cycle.
+
+- **[#31] Custom heredoc delimiters** — a heredoc terminator takes any quote
+  delimiter, the empty one included.
+- **[#43] Private methods called through a string reference** — a quoted private
+  method name was taken as its own source text.
+- **[#45] `."$name"()` not natively compiled** — it compiles now, and a private
+  method keeps its own key.
+- **[#51] Disabling output buffering** — three separate things held output back,
+  and the reporter met all three in turn relaying a build through rakupp.
+  `.out-buffer` did not exist at all, so `$*OUT.out-buffer = 0` was silently a
+  no-op: reading `$*OUT` synthesizes a fresh handle, so the write landed in a
+  temporary. `$*OUT` also kept an 8 KiB block whenever stdout was a pipe, so a
+  rakupp program in a pipeline said nothing until it ended — it is 0 now, as
+  Rakudo, at a cost of one `write(2)` per `say` (a 200k-line filter goes 0.24s to
+  0.37s, against Rakudo's 0.36-0.49s, and `out-buffer = 65536` buys the block
+  back). `run`/`shell` captured what nobody asked them to capture, and
+  `Proc::Async` handed every tap its whole stream at once, after the child was
+  already gone. Roast's `S32-io/out-buffering.t` goes 0/4 to 3/4.
+- **[#52] `Undefined routine 'fff^'`** — `/a/ ^fff^ /b/` failed because a regex
+  literal did not count as a term.
+- **[#53] Cannot install ML::TriesWithFrequencies** — six gaps, of which the
+  reported one was the first.
+
+**[#47]** (Graph and Math::NumberTheory ~40% slower) is the one that stayed open,
+and it is the reason the dispatch work exists. Both dists reproduce, but only
+`factor-integer` was a performance problem: the Graph benchmark answered 399
+where the diameter is 38, and looked faster only because it was not doing the
+work. Four silent wrong answers, all of which BinaryHeap walks through in one
+`push`. Bigint division and multiplication grew 128-bit fast paths — `%` was 4.1x
+Rakudo and `div` 6.0x, now 1.4x and 2.1x — and the 20x20 diameter goes 20.1s to
+17.8s. It stays open because what is left is not arithmetic: it is the dispatch
+cost the performance section describes.
+
+Also fixed, from outside the tracker: every language binding turned an `Int`
+wider than 64 bits into 9223372036854775807 — not an error, not a truncation
+anyone would notice, just a different number — in the value path and inside lists
+and hashes, in all six bindings. Seven guides documented the opposite, and the
+`30!` example named as the demonstration stringified on the Raku side before the
+boundary, so the one case that would have caught it never reached the conversion.
+The fix needs no ABI change.
+
+### Also in this release
+
+**A grammar of Raku, written in Raku, run by rakupp — and it parses itself.**
+
+**Bigint multiplication, twice.** The one-limb multiply took `bigint` level with
+mutsu and stopped there; two things were still on the table and they multiply
+out. The carry chain was the whole cost — every limb's carry feeds the next, so a
+single-chain loop retires one limb per round trip through that dependency, about
+five cycles a limb where the instruction count says one and a half. Eight
+independent chains, interleaved in one loop body, with the seven carry-outs paid
+back afterwards by a rippling add. Once no chain's latency is on the critical
+path the shape of the step inverts: the split-first form exists only to keep the
+division off the carry chain, and with eight chains there is nothing to keep off.
+Then three copies of the magnitude per step went to zero for `$f *= $_`, via a
+reference, a move overload, and `applyArithInto` naming the destination once
+rather than twice. Counted with a malloc shim: 32,163 allocations and 34.0 MB
+copied before, 2,297 and 0.13 MB after. 13.0 -> 7.4 ms interpreted, 11.1 -> 6.2
+compiled, against mutsu's 11.2. **The limb base did not change, and that was
+measured rather than assumed** — base 2^64 is ~3.4x on this multiply but takes
+decimal output from O(n) to O(n²).
+
+**mutsu joins the benchmark tables.** A second from-scratch Raku implementation,
+measured on the same machine under the same harness — and an arm64 trap that
+nearly faked the result. One claim was retired on the strength of it.
+
+**A Cookbook** ([docs/cookbook/](docs/cookbook/)) — whole tasks worked end to
+end, starting with DBIish against SQLite, MySQL and PostgreSQL, including the
+three shapes of "driver cannot find its library".
+
+**A `.mcp.json` at the repository root**, so a built checkout serves its own
+interpreter to the agent working on it — `./build/rakupp` relative, not the
+absolute path a client outside the tree has to spell.
+
+**`$*OUT` is unbuffered, as Rakudo's is.** See [#51] above; the cost is one
+`write(2)` per `say`, and `$*OUT.out-buffer = 65536` buys the block back — which
+Rakudo cannot do, since it ignores the setting on its own standard handles.
+
 ## v3.23.0 (2026-08-29) — the re-baseline
 
 The last of three consolidation releases
