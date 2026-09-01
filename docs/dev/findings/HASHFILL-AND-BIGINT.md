@@ -7,10 +7,11 @@ together rather than separately.
 
 This is a companion piece. The mechanism lives in
 [internals/OPTIMIZATION.md](../../internals/OPTIMIZATION.md), the measurements
-in [status/BENCHMARKS.md](../../status/BENCHMARKS.md), and the fuller narrative
-of the first episode in
-[book chapter 40](../../book/ch/40-the-speed-campaign.md). What is here is the
-pair, and what they have in common.
+in [status/BENCHMARKS.md](../../status/BENCHMARKS.md), and the fuller
+narratives in the book —
+[chapter 40](../../book/ch/40-the-speed-campaign.md) for the first episode,
+[chapter 42](../../book/ch/42-the-carry-chain.md) for the second. What is here
+is the pair, and what they have in common.
 
 ---
 
