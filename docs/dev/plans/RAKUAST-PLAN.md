@@ -1,13 +1,25 @@
-# RakuAST in rakupp — a design note (not implemented)
+# RakuAST in rakupp — design note and implementation plan
 
-**Status: deferred, deliberately.** Nothing here is built. This records the
-design we settled on and the measurements behind it, so the next person to look
-at RakuAST does not have to re-derive them.
+**Status: scheduled.** Part I (below) is the design note settled 2026-07-31 and
+re-verified 2026-08-18 — nothing in it is reopened. Part II (second half of this
+document, added 2026-09-01) phases the implementation; the trigger is the
+mainstreaming announcement
+([dev.to/lizmat/mainstreaming-rakuast](https://dev.to/lizmat/mainstreaming-rakuast-49j8)):
+RakuAST becomes Rakudo's **default** frontend at 2026.09 (announced for ~Sept 26,
+not yet shipped; the legacy frontend goes behind `RAKUDO_LEGACY=1` and is removed
+at 6.e later in 2026), `macro` is removed upstream, and slangs move to new hooks.
+Ecosystem modules will now adopt RakuAST for real — and a module that uses it
+does not degrade under rakupp, it hard-fails. The 2026-08 eco-sweep already
+counts **12 dists (the Intl/L10N family) failing on `.AST`**
+([ECOSWEEP-2026-08](../findings/ECOSWEEP-2026-08.md)).
 
-Written 2026-07-31 (rakupp v1.5.2+); every measurement and probe below
+Part I written 2026-07-31 (rakupp v1.5.2+); every measurement and probe below
 re-verified 2026-08-18 against **Rakudo 2026.07** — the newest release at the time —
 and **rakupp 3.14.0**. Nothing in the design changed; the drift in the numbers
-is noted where it happened. `grep -rn RakuAST src/` is still empty.
+is noted where it happened. (`grep -rn RakuAST src/` was empty then; as of
+2026-09-01 it finds two comment lines, Builtins.cpp:6225-6227, and nothing else.)
+
+# Part I — the design note
 
 ## What RakuAST is
 
@@ -231,12 +243,14 @@ value is not faithfully source-able, put the object in a side table and emit a
 reference to a synthetic lexical:
 
 ```
-$RAKUAST-LIT-7            # instead of  -> $x { #`(Block|…) ... }
+$RAKUAST-LIT7             # instead of  -> $x { #`(Block|…) ... }
 ```
 
 then EVAL the text in a scope where those names are bound to the real objects.
 Identity preserved, closures preserved, still no compiler. Text stays the
-bridge, with a value channel running alongside it.
+bridge, with a value channel running alongside it. (Spelling note, verified
+2026-09-01: the name must not put a hyphen before a digit — `$RAKUAST-LIT-7`
+parses as subtraction, in rakupp and Rakudo alike. `$RAKUAST-LIT7` is fine.)
 
 ## Could the view be 1:1 with Rakudo's tree?
 
@@ -400,3 +414,455 @@ costs and why the diff has to be run on the tree rather than on `.DEPARSE`.
 - <https://rakudo.org/post/announce-rakudo-release-2026.07> — the newest release
   as of 2026-08-18: performance work and ecosystem-module parity for RakuAST,
   still with no switch of the default frontend.
+- <https://dev.to/lizmat/mainstreaming-rakuast-49j8> — the 2026-08 announcement
+  that triggered Part II: RakuAST default at 2026.09, legacy removed at 6.e,
+  `macro` removed, slangs re-hooked (Slangify assists), some P5xxx modules
+  disabled.
+
+---
+
+# Part II — the implementation plan (2026-09-01)
+
+Phases for the option-B view. This part phases the design above; it does not
+reopen it. Drafted against the sources at v3.23.0+, with every file:line below
+read in the current tree; the plan was then adversarially reviewed on three
+axes (speed, coverage, completeness) and the findings folded in — the build
+seam, the parallel-mode registry, the two-period oracle, and the refusal spec
+all came out of that review.
+
+## The hard constraint, restated
+
+No side effects on speed (perf-guard kernels, startup, binary size, `--slim`,
+the WASM bundle) or coverage (Roast pass counts, module battery, ecosystem
+green list). Each phase states how neutrality is achieved **by construction**,
+and each ends with the full gate battery green:
+
+1. `tools/perf-guard.raku --check` exit 0 on an idle machine, **plus** an
+   explicit A/B against the pre-phase commit (same arch, same machine, per the
+   6E-PLAN P5 precedent). The A/B is not optional: a uniform small cost — the
+   exact shape a stray hook would take — reads INCONCLUSIVE under the
+   localization defence, and only the A/B resolves it.
+2. Roast: three runs at the **pinned Roast revision** (currently b2cbe8a42,
+   2026-06-12), union list archived, `comm -23 vPREV-union vNEXT-union` empty —
+   **plus** a per-file pass-counts diff: any file whose pass count *dropped* is
+   listed and explained. The union list is blind to erosion inside partial
+   files; the counts diff is the tripwire. (Needs a small `run-roast` addition:
+   archive per-file counts next to the file list.)
+3. `rakupp t/run.raku` green, plus the phase's own new regression cases.
+4. `tools/run-optbench.raku` — interpreter, `--exe`, `--exe -O`, Rakudo
+   identical output.
+5. `t/slim/run.raku` size budgets on **both darwin slices** (arm64 and
+   x86_64 — the binding ledge is ~52 KB on x86_64-darwin against the 6.25 MB
+   budget; the ~471 KB figure in early drafts was the cross-arch delta, not
+   headroom) and `tools/slim-diff.raku` byte-identical.
+6. Module battery not regressed (checkout must be re-established first — see
+   Open items; gate 6 must actually run, not be waived).
+7. Startup (`tools/bench/startup.raku`) and non-slim binary sizes (rakupp CLI,
+   plain `--exe` hello) recorded before/after — recorded numbers per the
+   BENCHMARKS.md convention, not budgets.
+8. **WASM row**: rebuild via `rakujs/build.sh`, run `rakujs/smoke.cjs`, record
+   the `rakujs.wasm` byte and gzipped deltas. `build.sh` sweeps all of
+   `src/*.cpp` into the bundle and bundle bytes ARE playground startup; no
+   other gate watches this.
+
+**Release-train rule**: P0 never ships in a public release without P2. Name
+existence alone flips ecosystem feature-detection (`try ::('RakuAST::Node')`,
+`.^find_method('DEPARSE')`) from a working fallback path onto a RakuAST path
+that dies; existence and a surface that answers must land together.
+
+## Architecture decisions carried into every phase
+
+- **The RakuAST classes live in their own immutable registry, never in
+  `classes_`.** Executing ClassDecls would tail-alias bare `Statement` /
+  `Expression` into general resolution (Interpreter.cpp:8613-8621) — a
+  semantics leak — and seeding `classes_` lazily is a data race: in default
+  parallel mode `engageGil` never takes the GIL for compute
+  (Interpreter.cpp:3484), so inserting into the map while workers read it
+  lock-free is the exact rehash-under-reader crash the `noteSymbolMutation`
+  machinery polices. Instead: build the complete map of ClassInfos once and
+  publish it via the codebase's own `PublishedOnce` idiom (release-store /
+  acquire-load, Ast.h:45-71) — a single atomic publish, safe post-freeze, safe
+  in parallel mode, zero cost on every path that never misses. Consult it only
+  where `classes_` has already missed: the NameTerm known-check
+  (Interpreter.cpp:28459-28496 vicinity), the method-call miss path
+  (Builtins.cpp:7075 vicinity), and the handful of `classes_.find` misses that
+  RakuAST semantics needs (`~~` RHS resolution, `typeCheckBind` for
+  `RakuAST::Node $x` params — enumerate at P0, expected 4-6 sites). Node
+  instances carry `shared_ptr<ClassInfo>` in ObjectData directly, so dispatch
+  and MRO walks are pointer chases that touch no map. Consequences for free:
+  `resolveClassAlias`'s suffix scan never sees these names, so `Foo::Call`
+  can never mis-alias to `RakuAST::Call` — no exclusion code needed; and a
+  user's own `class RakuAST::Mine {}` (legal today, stays legal) lives in
+  `classes_` and shadows naturally.
+- **The trigger is a parser-set bool, not a source scan.** A `usesRakuAst`
+  flag on `Program` (beside `langRev`, Ast.h:829-832), set when a
+  `RakuAST::`-prefixed name or the `:rakuast` adverb is parsed. Zero startup
+  work, and it works for EVAL'd units because EVAL parses through the same
+  Parser. The module-load path checks it where `langRev_` is already
+  save/restored (Interpreter.cpp:5810/5893), so a `require`d module
+  materializes (one atomic publish) before its own execution.
+- **Do not put the prefix into `isKnownTypeName`** — it is revision-agnostic
+  and consulted by class-parent checks, param typing, and the tail-alias
+  suppressor; gating happens where `sixE()` and the pragma state are in scope.
+- **Build seam, stated because the default is wrong**: CMake globs `src/*.cpp`
+  into `rakupp_rt` — the base runtime every `--slim` binary links — and only
+  the explicit `RAKUPP_PARSE_SOURCES` list (CMakeLists.txt:139, Lexer+Parser)
+  goes to the parse archive. Every new `RakuAst*.cpp` TU must be added to
+  `RAKUPP_PARSE_SOURCES` explicitly, and every symbol the runtime side calls
+  into them (the materializer, the view/deparse/eval entries) gets a throwing
+  double in `src/stubs/stub_eval.cpp`, or `--slim=-eval` links break. The
+  story is coherent — `.AST` *is* the parser, so its stub throws the same
+  requires-eval error. CMakeLists.txt and the stubs file are on the P0/P1
+  file lists. SlimScan learns `.AST`, `.DEPARSE`, `.EVAL`-on-tree, and
+  `RakuAST::` names as F_EVAL uses (SlimScan.cpp:44-47); the slim hello binary
+  contains none of this. No fifth slim feature unless P2 measurement shows
+  `parse.a` growth threatening the darwin budgets — measure first, decide
+  then.
+- **`.AST` is Cool, not Str.** Verified on Rakudo 2026.08: `42.AST` and
+  `<42>.AST` both return `RakuAST::StatementList`. The fast ladder arm sits
+  late (after the hot Part3 Str arms, beside the Cool `EVAL` arm,
+  MethodCallPart3.cpp:430) guarded on Str **without** an allomorph exclusion;
+  the method-miss path handles any other Cool by toStr-then-parse. Buf/Blob
+  still refuse.
+- **`.DEPARSE` / `.EVAL` / `visit-children` are not ladder arms at all**: they
+  are `Callable::builtin` Code values on the `RakuAST::Node` ClassInfo,
+  inherited by every node class via the normal parent walk — they exist only
+  after materialization, and cost nothing before it.
+- **The view builder is a read-only walk.** It follows AstSerial's pattern
+  (one case per NK via the EXPR_KINDS/STMT_KINDS X-macros, **throwing**
+  default — never AstDump's silent `default:`), writes no
+  `DecidedOnce`/`PublishedOnce` cache field, dereferences no `padOwner`,
+  clones nothing.
+- **Nodes are plain ObjectData** over the registry ClassInfos, built directly
+  (the `$*REPO` / `.CREATE` pattern), skipping the construction protocol.
+- **The refusal is pinned to measured Rakudo, not styled after a neighbor.**
+  Verified on 2026.08: the class is `X::Experimental`, the message verbatim
+  `Use of RakuAST is experimental; please 'use experimental :rakuast;'`, and
+  `::('RakuAST::IntLiteral')` without the pragma returns a **Failure**, not
+  the type. The gate runs BEFORE any registry consultation on both the plain
+  and symbolic paths (the symbolic path returns a Failure carrying
+  X::Experimental, mirroring the X::NoSuchSymbol pattern). Timing divergence
+  recorded, not fought: Rakudo refuses at compile time (===SORRY!===), rakupp
+  at first mention during the walk — same divergence class as the evalString
+  timing notes.
+- **Oracle, two periods.** Until Rakudo 2026.09 ships, the oracle is the
+  installed **2026.08**: `.AST`/`.DEPARSE`/tree probes need no env var there
+  (verified: `'42'.AST` works stock), but whole-program probes (the four scope
+  probes, round-trip output identity) run **twice**, stock and
+  `RAKUDO_RAKUAST=1`, to anticipate the default flip. On the 2026.09 release:
+  re-pin, drop the env var, re-run the oracle suite as its own recorded step.
+  Every published match-percentage names its oracle version.
+
+## Entry criteria (before P0 lands)
+
+- Re-establish the module-battery checkout and a fresh ecosystem source list
+  on this machine (both are missing — machine-switch residue). Grep the
+  ecosystem sources for `RakuAST::`, `::('RakuAST`, `find_method('DEPARSE'`,
+  and `experimental :rakuast`; publish the hit list. This is the population
+  the release-train rule protects.
+- Build the pre-campaign same-arch binary for the A/B leg (RELEASING.md
+  forbids trusting figures from a `-modified` tree; no second checkout exists
+  yet).
+- **Fudge-shield inventory**: rakupp rides Roast's `#?rakudo todo "fixed in
+  RakuAST"` shields today (verified: S02-literals/pairs.t:84 is a genuine
+  rakupp fail counted as shielded; S09-typed-arrays/hashes.t's `%h{Int}.of`
+  wants Mu, gets Any). Run the ten RakuAST-marked files once with the todo
+  directives stripped and archive which union memberships depend on which
+  shields — when the pin advances past 2026.09 and upstream deletes those
+  todos, the diff is then pre-explained instead of looking like RakuAST
+  fallout. Where an underlying fail is cheap (`.of` ⇒ Mu), schedule it
+  independently.
+- Record the S32-str/format.t baseline (today: aborts at test 2 of 49, `No
+  such method 'Callable' for invocant of type 'Format'`). It is the only Roast
+  file that executes a `RakuAST::` name — a free canary: its count must not
+  move during P0-P4, and any movement means a phase leaked behavior.
+- When Rakudo 2026.09 ships: probe the actual 6.d gating rule before trusting
+  the design note's — (a) bare 6.d + `RakuAST::IntLiteral.new(42)`, (b) with
+  pragma, (c) `use v6.e.PREVIEW`, (d) `::('RakuAST::…')` in all three. If
+  mainstreaming relaxed the pragma requirement, our gate follows measured
+  Rakudo, not the note — otherwise the gate hard-refuses exactly the new
+  adopter modules this plan exists to serve. Fold the four probes into the
+  per-release oracle re-check.
+
+## P0 — pragma gating + the RakuAST:: registry skeleton
+
+**What lands.** `use experimental :rakuast` becomes real, and the ~39 head
+class names exist — constructible, `~~ RakuAST::Node` works, MRO walks — with
+no `.AST` yet. (Not publicly released before P2; see the release-train rule.)
+
+- Parser: capture the `:rakuast` adverb. Today it vanishes both ways — the
+  spaced form falls through the arg-capture loop (Parser.cpp:7905-7927), the
+  tight form is consumed but only `ver` kept (:7897). Push the pair into
+  `UseStmt::importArgs` when the module is `experimental`; lexical parse-time
+  state as an `experimentalScopes_` twin of `monkeyScopes_` (Parser.h:244-246,
+  push/pop at 5517/5527). The capture stays **pure**: regression cases assert
+  `use experimental :cached;` / `:pack;` (spaced and tight) remain silent
+  no-ops under both revisions, interpreted and `--exe`, and no consumer of
+  `importArgs` fires for module `experimental`.
+- Interpreter: a per-compilation-unit flag beside `langRev_`
+  (Interpreter.h:1604), set at Interpreter.cpp:4233, save/restored around
+  module load where `langRev_` already is (5810/5893) — inside the measured
+  ~1% 6.e-campaign machinery, which a pure-6.d program bypasses.
+- The gate at the NameTerm known-check and the method-call miss path, per the
+  pinned refusal spec above, ordered before registry consultation.
+- `RakuAstClasses.cpp` (new TU, in `RAKUPP_PARSE_SOURCES`): the static table
+  (name, parent, attrs) for the ~39 head classes + `RakuAST::Node`, the
+  one-shot builder, the `PublishedOnce` publish. Stub doubles in
+  `src/stubs/stub_eval.cpp`.
+- SlimScan: `RakuAST::` names and the pragma count as F_EVAL uses.
+
+**Files**: src/Parser.{cpp,h}, src/Interpreter.{cpp,h}, src/Builtins.cpp,
+src/SlimScan.cpp, src/RakuAstClasses.cpp (new), src/stubs/stub_eval.cpp,
+CMakeLists.txt.
+
+**Speed neutrality by construction**: the prefix check sits on lookup paths
+that today end in a throw; startup does zero new work; nothing enters
+`classes_`; no node structs change; slim binaries unchanged. **Coverage**: no
+Roast file at the pin uses the pragma or asserts X::Experimental (grep
+verified, zero hits), so the gate flips nothing there; the battery grep from
+the entry criteria bounds the ecosystem exposure.
+
+**Acceptance**: full battery, plus regression cases — pragma accepted under
+6.d; `RakuAST::IntLiteral` visible under `use v6.e.PREVIEW` without pragma;
+refused under bare 6.d with the verbatim message, all three shapes (plain
+name, `::('RakuAST::…')` answering a Failure, and `class RakuAST::Mine {}`
+still working); bare `Node`/`Statement`/`Call` still unresolved after touching
+RakuAST; a threaded program `require`-ing a RakuAST-using module; `--exe`
+parity throughout.
+
+**Size**: ~300-500 lines.
+
+## P1 — the `.AST` view builder
+
+**What lands.** `'source'.AST` builds the view from our tree, plus the four
+parse-time surface facts the oracle needs.
+
+- `RakuAstView.cpp` (new TU, parse archive): `buildExpr`/`buildStmt`, one case
+  per NK via the X-macros, throwing default. All 49 NKs handled; kinds with no
+  faithful mapping throw a clear "not implemented", never a wrong tree.
+  Target: the ~39 classes covering 95% of corpus nodes.
+- The `.AST` arm with Cool semantics (see architecture). `.AST` runs
+  Lexer+Parser only. **Both recorded divergences from the design note carry
+  over**: (1) rakupp surfaces syntax errors but not Rakudo's compile-time
+  undeclared-variable errors; (2) **BEGIN executes at `.AST` time in Rakudo**
+  (re-verified on 2026.08) and does not in rakupp. The oracle harness filters
+  or flags corpus files containing BEGIN/CHECK/INIT so the Rakudo side's
+  execution cannot contaminate the match run — same filter for P2's output
+  comparison.
+- The four surface facts, one constant store each on parse paths already
+  taken, batched into **one** `kAstSerialVersion` bump (15→16, one-time cache
+  reparse, noted in release notes):
+  - `Call::parenned` (sites Parser.cpp:4789/2311 true, 4904 false). The one
+    field that cannot hide in padding: sizeof 80→88, nano-malloc bucket
+    80→96. Hot offsets unchanged; the byte is never read at eval.
+  - `VarExpr::synthTopic` at the bare-`.` site (Parser.cpp:4170) — hole @41,
+    sizeof stays 296.
+  - `Index::angleKey` (angle sites 1924-1994, 2063-2090, 1697-1715) — hole
+    @35, sizeof stays 80.
+  - `SubDecl::retTypeSpell` ('o'/'r'/'a') at the trait sites 6435-6438 and
+    the sigRetType_ merge at 6278 — hole @191, sizeof stays 368.
+  - Matching `F(io,…)` lines in AstSerial.cpp. While the version bumps anyway,
+    verify (and fix if real) the two suspected pre-existing serializer gaps —
+    `VarExpr::viaPseudoPkg`/`pseudoPkg` and `Param::userTraits` — so users pay
+    one cache invalidation, not two.
+
+**Files**: src/RakuAstView.cpp (new), src/RakuAstClasses.cpp,
+src/MethodCallPart3.cpp, src/Ast.h (four fields, stated positions),
+src/Parser.cpp (four stores), src/AstSerial.{cpp,h}, src/SlimScan.cpp,
+CMakeLists.txt, src/stubs/stub_eval.cpp.
+
+**Speed**: builder read-only; arm late; three of four fields padding-neutral;
+Call's +8 B (bucket +16 B) is the one thing that could show, and it is paid at
+**parse** time per Call node — so the A/B set is fib/subcall/method **plus**
+`tools/bench/startup.raku` as an explicit old-vs-new A/B **plus** one
+grammar-heavy parse (tools/bench grammar-json), per-kernel deltas quoted.
+
+**Acceptance**: full battery, plus (a) `'…'.AST ~~ RakuAST::Node` over every
+examples/ + showcase/ file that parses; (b) the **tree oracle** — serialize
+class name + scalar attributes on both engines, diff per the two-period oracle
+rule, reported as a match percentage per corpus file. The oracle number is
+published and improved, not pass/fail; P1's pass/fail is the battery plus (a).
+Regression cases include `42.AST` and `<42>.AST` (Rakudo-checked) and a Buf
+invocant refusing.
+
+**Size**: ~850-1,550 lines.
+
+## P2 — `.DEPARSE` + the property gate
+
+**What lands.** The renderer back to source, and the harness that makes it
+trustworthy.
+
+- `.DEPARSE` as a builtin Code method on `RakuAST::Node` (invokeMethod's
+  builtin arm), renderer in `RakuAstDeparse.cpp` (parse archive), X-macro
+  exhaustiveness discipline.
+- Fidelity bounds recorded, not fought: StrLit keeps only the NFC value, so
+  DEPARSE emits canonical quoting — which is what Rakudo does too (all four
+  quote spellings are one QuotedString upstream), so parity costs nothing.
+  Desugar shapes deparse as their lowered form for now.
+- The property harness (tools/rakuast-roundtrip.raku): for a corpus,
+  `parse → .AST → .DEPARSE → parse` must yield an equivalent tree AND running
+  both must produce identical output. Corpora: showcase/, examples/,
+  raku-corpus, a Roast slice. Raw counts per corpus; a file that cannot
+  round-trip is fixed or listed with its reason.
+- **Constructed-tree corpus, not just view-built trees.** The round-trip
+  property only ever feeds the renderer fully-populated trees the view builder
+  made; real consumers construct with `.new` — optional children unset,
+  defaults in play — and mutate. Import a slice of **Rakudo's own
+  t/12-rakuast suite** (rakudo repo, not roast: construct-with-`.new` →
+  `.DEPARSE`/`.EVAL` with inline expectations, pre-oracled upstream) and run
+  it here: at P2, DEPARSE must throw-clearly-or-render on every constructed
+  shape, never crash. Raw counts published next to the round-trip numbers.
+
+**Acceptance**: full battery (slim on both darwin slices — this is the phase
+where `parse.a` grows most; the WASM delta decides whether the
+`RAKUJS_NO_RAKUAST` stub-swap toggle in build.sh is worth building), plus the
+round-trip property green on examples/ + showcase/, plus the t/12-rakuast
+DEPARSE slice. After this phase `RakuAST::IntLiteral.new(42).DEPARSE` answers
+`42` — the exact probe the live 6e matrix runs (gen-6e.raku:48-50), and the
+matrix row can flip.
+
+**Size**: ~1,000-1,400 lines.
+
+## P3 — `.EVAL` on a tree + the side table
+
+**What lands.** The bridge back: DEPARSE → EVAL in the caller's scope, with
+the side table for unrenderable values.
+
+- `.EVAL` builtin on `RakuAST::Node`: deparse; make a child Env
+  (`sc->parent = tctx_.cur`, the phaser-runner pattern); `Env::define` each
+  side-table entry as `$RAKUAST-LITn`; RAII-swap `tctx_.cur`; `evalString`;
+  restore. The child Env isolates the synthetic names afterward while the
+  parent link preserves the proven caller-scope visibility.
+- The side table fills during DEPARSE when a Literal holds a value with no
+  faithful rendering (closures, live objects — the `from-value` cases); bare
+  user-called `.DEPARSE` renders the synthetic name too (same behavior class
+  as Rakudo's address comment, but ours round-trips when EVAL'd — the point).
+- MONKEY-SEE-NO-EVAL stays the accepted no-op it is (pre-existing, recorded).
+
+**Acceptance**: full battery, plus the four scope probes rewritten as tree
+EVALs (expected 42/42/99/21, two-period oracle), a closure/live-object case
+proving identity survives (`===` after the trip — the case Rakudo's text
+rendering silently loses), and the t/12-rakuast EVAL slice matching its inline
+expectations. Confirm `.EVAL`-on-tree spellings are matched by
+`nameEvalsCode` (Ast.h:354) so DeclCheck/SlimScan stay consistent.
+
+**Size**: ~150-250 lines; evalString does the heavy work.
+
+## P4 — traversal + widening driven by real modules
+
+**What lands.** `visit-children` (Code callback, children in Rakudo's
+documented order), `@*LINEAGE` (a dynamic defined in the callback's frame —
+the `$*PACKAGE` define pattern), and vocabulary growth from ~39 toward the
+~125 real-code classes, **pulled by an acceptance corpus of 2-3 real
+RakuAST-using ecosystem modules** — candidate one is Slangify (named in the
+mainstreaming post); the L10N/Intl family (the 12 `.AST`-blocked dists from
+the eco-sweep) supplies the rest, refreshed by the entry-criteria grep on
+post-2026.09 sources. Classes the corpus never touches stay unimplemented
+with clear errors.
+
+**Acceptance**: full battery, the acceptance modules' RakuAST paths
+demonstrated (whole suites where unrelated features allow), the tree-oracle
+percentage re-published. S32-str/format.t:52 becomes passable in principle,
+but the file needs the Format/Formatter surface (it aborts at test 2 today) —
+a separate campaign; do not claim the file. The canary discipline from the
+entry criteria still applies.
+
+## Mainstreaming consequences, recorded
+
+- **The oracle**: two periods, per the architecture section. The 1:1 match
+  rate stays a reported percentage pinned to a Rakudo version, re-checked per
+  release (upstream is still moving).
+- **`macro` is dead upstream.** We never built it; the METAPROGRAMMING.md
+  Phase 5 frontier loses `macro`/`quasi` at the cost of a doc edit. What
+  replaces that space is RakuAST itself — this plan.
+- **Slangs re-hook** (Slangify assists). Out of scope (Deferred); Slangify's
+  own RakuAST usage makes it P4 corpus material.
+- **Roast will move.** The pin (b2cbe8a42) predates 2026.09; upstream may add
+  real RakuAST tests, and the "fixed in RakuAST" shields we verifiably ride
+  will vanish as the legacy frontend dies. The entry-criteria inventory
+  pre-explains that diff; advancing the pin is its own decision, made outside
+  any phase landing.
+- **P5xxx disabling is an upstream baseline change.** P5* dists sit on our
+  green list (ECOSWEEP-2026-08). Before the first post-2026.09 eco-sweep,
+  snapshot which P5* dists upstream disabled and mark those rows
+  environment-moved — the Roast pin-and-record discipline applied to the
+  green list — so they are never charged to the engine.
+
+## Deferred, with reasons
+
+- **`CHECK { $*CU }`** — the same deparse/re-parse trick works in principle,
+  but it is the most invasive part of the surface and the least used; revisit
+  when an acceptance module actually needs it.
+- **The vocabulary tail** — 26 of the 125 observed classes appear ≤3 times in
+  24k corpus nodes; they throw clear "not implemented", widened on demand.
+- **Slang hooks** — upstream just replaced its own mechanism; do not chase a
+  moving interface.
+- **A fifth surface fact** (`.method: args` vs `.method(args)`) — MethodCall
+  has hole room @109-111, but the oracle should show it matters before it
+  costs a serializer line.
+- **Compile-time timing divergences** — the 6.d refusal fires at first
+  mention here vs Rakudo's compile-time SORRY; undeclared variables surface
+  at run time; `my` inside EVAL'd text declares into the caller's scope; user
+  `class RakuAST::Mine {}` is accepted here where Rakudo SORRYs. All
+  pre-existing evalString/walk-order divergences that RakuAST inherits, not
+  RakuAST work — recorded so post-2026.09 Roast tests asserting Rakudo's
+  timing are diagnosed correctly.
+
+## Doc-sync checklist (each phase syncs what it changed)
+
+- docs/guide/FEATURES.md:38-41 (the 50/51 line and "Deliberately not done:
+  RakuAST") and faq/6e.md:475-481 (which says 52/53 — the two already
+  disagree; sync both to the figure the live matrix re-measures, not to each
+  other). After P2 the matrix row can flip.
+- faq/6e.md:139-149 (the 6.d/6.e gating table becomes current behavior at P0)
+  and :389 (the `macro` matrix row cites `use experimental :macros`, removed
+  upstream at 2026.09).
+- The live matrix is measured, not hand-scored: re-run
+  raku.online's gen-6e.raku and republish /spec/6e after P2.
+- docs/internals/METAPROGRAMMING.md:80/:85/:111 — the "one incidental
+  reference" note, the ✗ row, the frontier list, plus the macro-removal note.
+- **Five more stale "not there yet" sites**: guide/OVERVIEW.md:88,
+  guide/HIGHLIGHTS.md:124, internals/ARCHITECTURE.md:352,
+  internals/PARSING.md:536, dev/README.md:79-86 (flip "deferred, not built"
+  to in-progress at P0, done at P2/P4).
+- 6E-PLAN.md:104-107 ("the matrix will keep showing it red") retires at P2.
+- Roast/README/ROAST/COUNTING numbers move only if the figures move; then
+  RELEASING.md step 3 applies. BENCHMARKS.md startup row when re-measured;
+  release notes carry the one-time AST-cache invalidation at P1.
+- The auto-memory tracking this area (raku-pp-metaprog: "Phase 5 =
+  macros/RakuAST/slangs frontier"; raku-pp-big-areas) updates at P0 landing.
+
+## Open items
+
+1. Re-establish the module-battery checkout and an ecosystem source list on
+   this machine (both missing; machine-switch residue). Gate 6 and the
+   feature-detection grep depend on it.
+2. Build the pre-campaign same-arch binary for the A/B leg.
+3. Rakudo 2026.09, when it ships: the four gating probes, the oracle re-pin,
+   and the pragma-rule verification (entry criteria).
+4. `.^add_method`/`augment` on RakuAST classes: ClassInfo-backed classes take
+   the normal path, which is Rakudo-parity — confirm as the deliberate policy
+   at P0 rather than inherit it silently.
+5. The two suspected AstSerial gaps (VarExpr::viaPseudoPkg/pseudoPkg,
+   Param::userTraits): verify; if real they affect precompiled-module
+   coverage independently of RakuAST and belong inside P1's version bump.
+6. Advancing the Roast pin past b2cbe8a42: separate decision; P4's claims
+   read better against a post-2026.09 Roast, and the shield inventory must
+   exist first.
+7. Per the perf-kernel convention, no `.AST` kernel is required (nothing
+   always-on lands); if any phase ends up adding a hook after all, that phase
+   adds the kernel.
+
+## Size summary
+
+| Phase | New/changed code | Notes |
+|---|---:|---|
+| P0 | ~300-500 lines | capture, gate, 39-class table, stubs, CMake |
+| P1 | ~850-1,550 lines | builder ≈2-3× AstSerial's walking body; 4 fields, 1 serializer bump |
+| P2 | ~1,000-1,400 lines | renderer + round-trip harness + t/12-rakuast slice |
+| P3 | ~150-250 lines | side table + Env plumbing; evalString reused |
+| P4 | ~150 + demand-driven | traversal small; widening priced by the corpus |
+
+Total first cut (P0-P3): roughly 2,300-3,700 lines, all in parse-archive TUs
+except ~150 lines of gate/capture/arm touches and four bytes of AST fields
+(one of which grows Call 80→88 — the P1 A/B owns proving that neutral).
