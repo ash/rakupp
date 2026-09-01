@@ -11,13 +11,15 @@ WebAssembly, no server required. It is not a fork of Rakudo and shares no code
 with it; it targets the *language*, measured against
 [**Roast**](https://github.com/Raku/roast), the official Raku test suite.
 
-**Status:** current release **v3.23.0** (2026-08-29) — *the re-baseline*: the
-last of three consolidation releases. Every gated figure re-measured in one
-sitting, on one binary against one Roast revision, with both recorded for the
-first time. It began by reviewing the measuring tools themselves, which found
-**twenty-five defects** ([the findings](docs/dev/findings/TOOLS-3.23.md)) —
-three of them would have corrupted this release's own numbers. Every release is
-written up in the [CHANGELOG](CHANGELOG.md).
+**Status:** current release **v3.24.0** (2026-09-01) — *what other people's
+code asked for*: the first release after the consolidation arc, and almost none
+of it was chosen here. Eight GitHub issues, six third-party distributions that
+would not install, and one outside report that two dists ran ~40% slower than
+Rakudo — which is what drove the dispatch work. Method calls and attribute reads
+stop allocating; the ecosystem was measured again rather than carried forward.
+The release gates caught three regressions it had introduced, none of them
+visible in the headline count. Every release is written up in the
+[CHANGELOG](CHANGELOG.md).
 
 **Current focus:** the ecosystem sweep — all 2,526 distributions of the Raku
 ecosystem run against rakupp, and the engine gets fixed until real modules
@@ -48,24 +50,32 @@ was — so these three added nothing new.
   re-recorded, each naming what produced it — a gate whose baseline predates the
   review is not a gate. It also corrected a claim: conformance has **no red path
   at all**, so it is a report, not a gate.
+- **v3.24.0** — *what other people's code asked for.* ✅ Method calls and
+  attribute reads stop allocating — five OO kernels went into the perf gate
+  first, because it covered sub calls at ~2x Rakudo and could not see method
+  calls at 5.8x at all. Ecosystem re-measured to **746 / 2,526**. Gate 1 and the
+  module battery caught three regressions this release introduced, while the
+  headline count moved inside its own flap band.
 
-Left open by the arc: the source review is **three files of eighty-three**, and
-the performance baseline has moved twice with no cause found — build
-nondeterminism, binary layout, the allocator and the metric are all eliminated.
+Left open by the arc: the source review is **three files of eighty-three**. The
+performance baseline had moved twice with no cause found; v3.24.0 rebuilt
+v3.23.0's own source on the same machine and every kernel landed within 1-3% of
+its recorded number, so the drift did not recur and this release's figures are a
+comparison of code.
 
 Then the standing target: **1000 of 2,526** distributions passing their own test
 suites, up from 746, where the lever is the 383 that never ran their own tests at
 all because a dependency failed first. The plans are in
 [docs/dev/plans/VERSIONS.md](docs/dev/plans/VERSIONS.md).
 
-| | v3.23.0 | at v2.0.0 |
+| | v3.24.0 | at v2.0.0 |
 |---|---:|---:|
-| Roast, per individual test — of what the suite declares‡ | **198,939 of ~218,773 (90%)** | 197,090 of ~203,500 (97%) |
-| Roast, all-or-nothing — files fully passing, of 1,464 | **643 (44%)** | 594 |
-| Official documentation examples byte-identical on both engines | **950** | 952 |
+| Roast, per individual test — of what the suite declares‡ | **199,846 of ~219,374 (90%)** | 197,090 of ~203,500 (97%) |
+| Roast, all-or-nothing — files fully passing, of 1,464 | **646 (44%)** | 594 |
+| Official documentation examples byte-identical on both engines | **953** | 952 |
 | Of the Raku ecosystem's [2,526 distributions](https://raku.online/modules/ecosystem/), passing their own test suites | **746** | — |
-| Local regression suite | **578** | 312 |
-| `say "Hello"` compiled with `--exe --slim` | **6,165,624 B** | 9,830,680 B (no `--slim`) |
+| Local regression suite | **609** | 312 |
+| `say "Hello"` compiled with `--exe --slim` | **6,286,248 B** | 9,830,680 B (no `--slim`) |
 
 ‡ Counted against each file's declared `plan N`, so a file that aborts is
 charged for every test it failed to run; on the all-or-nothing bar a file

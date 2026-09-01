@@ -6,7 +6,7 @@ works today, grouped by theme. **~** marks partial support; gaps are noted per s
 
 See [REFERENCE.md](REFERENCE.md) for an exhaustive lookup sheet (every operator, subroutine, and method with a verified example), [RECIPES.md](RECIPES.md) for recipes of runnable snippets (each verified against `rakupp`), [examples/](../../examples) for complete example programs, and [showcase/](../../showcase) for mid-size showcase programs.
 
-Roast standing: measured per individual test, **~90% of all declared tests pass** (198,939 / ~218,773, counting tests in files that abort before running); on the stricter file bar, **643 / 1,464 fully pass (~44%)** (685 partial, 121 no-TAP, 15 timeout). See [COUNTING.md](../status/COUNTING.md) for how these are defined. (The declared denominator grows as parse fixes land: files that previously died before announcing a plan now declare their real, often larger, dynamic plans.)
+Roast standing: measured per individual test, **~90% of all declared tests pass** (199,846 / ~219,374, counting tests in files that abort before running); on the stricter file bar, **646 / 1,464 fully pass (~44%)** (685 partial, 119 no-TAP, 14 timeout). See [COUNTING.md](../status/COUNTING.md) for how these are defined. (The declared denominator grows as parse fixes land: files that previously died before announcing a plan now declare their real, often larger, dynamic plans.)
 
 ## Language versions (6.c / 6.d / 6.e)
 
