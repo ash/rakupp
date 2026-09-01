@@ -123,3 +123,24 @@ ClassDecl path in `Interpreter.cpp` builds one `bodyEnv` per role declaration an
 the composition loop copies the method `Value`s with their closures intact, so a
 faithful version has to re-run (or clone) the body per composition and repoint
 each composed `Callable`'s `closure` at the fresh env.
+
+## An `INIT` block is hoisted only when nothing precedes it (2026-09-01)
+
+`INIT` runs once before the mainline wherever it is written. rakupp hoists it
+only when it is the first statement; written lower, it runs in place.
+
+```raku
+sleep 2;
+my $manual = INIT now;
+say ($*INIT-INSTANT - $manual).round(0.001);
+```
+
+rakupp `-2.011`, Rakudo `-0.076` — the whole preceding `sleep` sits inside the
+gap, because the `INIT now` was evaluated where it stands rather than at program
+start. With the `INIT` on the first line both engines answer ~0.
+
+Not a regression: v3.23.0 answers `-2.011` too. Found while writing
+`t/regression/datetime-timer-clock.raku`, whose `$*INIT-INSTANT` check has to sit
+at the top of the file for exactly this reason — Roast's
+`S28-named-variables/init-instant.t` never sees it because its `INIT` is on
+line 7 with nothing slow above it.

@@ -31,6 +31,22 @@ inline double epochNowSecs() {
            + kInstantEpochOffset;
 }
 
+// Seconds on that same clock for a user-supplied POINT IN TIME — the argument of
+// `sleep-until`, `Promise.at`, `Scheduler.cue(:at)`. An Instant already carries
+// the offset (it is what `now` returned); a DateTime's numeric value is raw
+// POSIX, and only `.Instant` adds it. Comparing a DateTime straight against
+// epochNowSecs() therefore put every DateTime target kInstantEpochOffset seconds
+// in the PAST: `sleep-until(DateTime)` returned False without waiting and
+// `Promise.at(DateTime)` fired immediately, while the Instant spelling of the
+// same moment worked — so the two disagreed by ten seconds with nothing to show
+// which was wrong. Roast caught the first (S29-context/sleep.t); the second is
+// covered by t/regression/datetime-timer-clock.raku.
+inline double instantSecsOf(const Value& v) {
+    double s = v.toNum();
+    if (v.hashKind == "DateTime") s += kInstantEpochOffset;
+    return s;
+}
+
 // Remaining delay, in seconds, of a timer Promise (hashKind "Promise", kind
 // "timer"). Negative means the fire time has passed. Promise.in/.at stamp the
 // absolute fire time as `fires_at` at CREATION, so a timer consumed late (a
