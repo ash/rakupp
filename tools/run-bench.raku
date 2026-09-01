@@ -27,6 +27,10 @@
 #     --tsv=PATH           write a machine-readable TSV: metadata header lines
 #                          (`# key=value`), then one row per kernel with min
 #                          and median per lane
+#     --rusage             also measure CPU time (user+sys) and peak RSS per
+#                          lane, printed as a second table. Measured in its own
+#                          pass AFTER the timing rounds, so the wall-clock
+#                          numbers stay exactly what they were without it.
 #
 # Override the binaries via environment:
 #     RAKUPP=/path/to/rakupp RAKUDO=raku ./build/rakupp tools/run-bench.raku
@@ -41,9 +45,11 @@ my $PERL   = %*ENV<PERL>   // 'perl';   # only used by benches that ship a .pl t
 
 my $tsv-path = '';
 my @only;
+my $rusage = False;
 for @*ARGS -> $a {
     if $a.starts-with('--tsv=') { $tsv-path = $a.substr(6) }
     elsif $a.starts-with('--only=') { @only = $a.substr(7).split(',')>>.trim }
+    elsif $a eq '--rusage' { $rusage = True }
     else { note "run-bench: unknown argument $a"; exit 2 }
 }
 
@@ -133,6 +139,65 @@ sub resolve-mutsu(--> Str) {
 }
 my $MUTSU = resolve-mutsu();
 
+# CPU time (ms, user+sys) and peak RSS (KiB) for ONE run of @cmd, read out of
+# `/usr/bin/time`. Two incompatible formats are in play and both are parsed:
+#
+#   BSD/macOS  `-l`:  "0.05 real  0.02 user  0.01 sys" then "1359872  maximum
+#                     resident set size" — RSS in BYTES.
+#   GNU/Linux  `-v`:  "User time (seconds): 0.02" / "Maximum resident set size
+#                     (kbytes): 1327" — RSS in KILOBYTES.
+#
+# Getting the unit wrong is a 1024x error that still looks like a plausible
+# memory figure, so the two are parsed by their own distinct wording rather than
+# by grabbing the first number on a "maximum resident set size" line.
+#
+# Why not getrusage(RUSAGE_CHILDREN) from inside this harness: its ru_maxrss is
+# the maximum over ALL children reaped so far and never falls, so after one
+# heavy lane every later lane would report that same peak. Spawning under
+# /usr/bin/time gives each run its own isolated accounting.
+#
+# Returns a Hash with <cpu rss>, or an empty Hash when neither format parses —
+# every caller renders that as n/a rather than as a zero.
+#
+# $reps runs are wrapped in ONE `sh -c` and the CPU total divided by it, because
+# both formats report CPU to 10ms and the fast kernels finish inside a single
+# quantum: measured one at a time, `native`/`hash` reads a flat 0ms however many
+# times it is sampled. Peak RSS needs no such help — it is the max over the
+# wrapped children, which is the same figure a single run would give.
+sub rusage-run(@cmd, Int $reps = 1 --> Hash) {
+    my $gnu = !$*DISTRO.name.lc.contains('macos' | 'darwin');
+    my $flag = $gnu ?? '-v' !! '-l';
+    my $p = do if $reps > 1 {
+        my $one = @cmd.map({ q{'} ~ .subst(q{'}, q{'\''}, :g) ~ q{'} }).join(' ');
+        run('/usr/bin/time', $flag, '/bin/sh', '-c', "$one; " x $reps, :out, :err);
+    }
+    else {
+        run('/usr/bin/time', $flag, |@cmd, :out, :err);
+    }
+    $p.out.slurp(:close);
+    my $err = $p.err.slurp(:close);
+    return {} unless $p.exitcode == 0;
+
+    my ($cpu, $rss);
+    # BSD: bare numbers labelled by trailing words, RSS in bytes.
+    if $err ~~ / $<u>=[\d+ ['.' \d+]?] \s+ 'user' \s+ $<s>=[\d+ ['.' \d+]?] \s+ 'sys' / {
+        $cpu = (+$<u> + +$<s>) * 1000;
+    }
+    if $err ~~ / $<b>=[\d+] \s+ 'maximum resident set size' / {
+        $rss = (+$<b>) / 1024;
+    }
+    # GNU: "Key: value", RSS already in kilobytes.
+    if $err ~~ / 'User time (seconds):' \s* $<u>=[\d+ ['.' \d+]?] / {
+        my $u = +$<u>;
+        my $s = $err ~~ / 'System time (seconds):' \s* $<s>=[\d+ ['.' \d+]?] / ?? +$<s> !! 0;
+        $cpu = ($u + $s) * 1000;
+    }
+    if $err ~~ / 'Maximum resident set size (kbytes):' \s* $<k>=[\d+] / {
+        $rss = +$<k>;
+    }
+    ($cpu.defined && $rss.defined) ?? { cpu => $cpu / $reps, rss => $rss } !! {}
+}
+
 sub median(@ms --> Numeric) {
     my @s = @ms.sort;
     my $n = +@s;
@@ -187,6 +252,7 @@ if $tfh {
 }
 
 my $mismatch = False;
+my @rusage-rows;   # one per kernel, filled only under --rusage
 printf "%-12s %10s %10s %10s %10s %10s   %s\n", 'benchmark', 'interp', 'native', 'mutsu', 'rakudo', 'perl', 'note';
 for @benches -> %b {
     my $path = $bench.add(%b<file>).Str;
@@ -237,6 +303,27 @@ for @benches -> %b {
             %times{$lane.key}.push((now - $t0) * 1000) if $i > 0;
         }
     }
+    # A SEPARATE pass, after the timing rounds: every run here is wrapped in
+    # /usr/bin/time, and that wrapper's own fork/exec would otherwise land
+    # inside the wall-clock figures the rest of this file publishes.
+    if $rusage {
+        my %ru;
+        for @lanes -> $lane {
+            # Enough repetitions to clear ~80ms of CPU, from the wall time this
+            # lane just recorded: a 300ms kernel needs one, a 7ms kernel twelve.
+            # Capped so a pathologically fast lane cannot spawn hundreds.
+            my $wall = %times{$lane.key} ?? %times{$lane.key}.min !! 100;
+            my $reps = $wall > 0 ?? min(20, max(1, ceiling(80 / $wall))) !! 1;
+            my (@cpu, @rss);
+            for ^3 {
+                my %r = rusage-run($lane.value, $reps);
+                if %r { @cpu.push(%r<cpu>); @rss.push(%r<rss>) }
+            }
+            %ru{$lane.key} = { cpu => @cpu.min, rss => @rss.min } if @cpu;
+        }
+        @rusage-rows.push: { name => %b<name>, ru => %ru };
+    }
+
     my sub cell(Str $k) { %times{$k} ?? sprintf('%.1fms', %times{$k}.min) !! 'n/a' }
     my $interp = cell('interp');
     my $native = cell('native');
@@ -258,6 +345,26 @@ for @benches -> %b {
     }
 }
 $tfh andthen .close;
+
+if @rusage-rows {
+    # Two figures per lane: CPU is user+sys, so a lane that uses more than one
+    # core reads ABOVE its own wall time — that is the point of showing it next
+    # to the first table rather than instead of it. Peak RSS is the high-water
+    # mark of the process, which for the native lane includes no interpreter.
+    my @lanes = <interp native mutsu rakudo perl>;
+    say '';
+    say '# CPU time (user+sys) and peak RSS — min of 3 runs, measured separately';
+    printf "%-12s %s\n", 'benchmark',
+           @lanes.map({ sprintf '%18s', $_ }).join;
+    for @rusage-rows -> %row {
+        printf "%-12s %s\n", %row<name>,
+               @lanes.map(-> $l {
+                   my %r = %row<ru>{$l} // {};
+                   sprintf '%18s', %r ?? sprintf('%.0fms/%.1fMB', %r<cpu>, %r<rss> / 1024)
+                                      !! '—'
+               }).join;
+    }
+}
 
 if $mismatch {
     note '';

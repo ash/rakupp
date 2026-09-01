@@ -112,7 +112,9 @@ there.)
   engines** — each measured round times every engine once, back to back — so a
   load spike lands on all lanes instead of one column, and `--tsv=` writes the
   median alongside the minimum plus the CPU and C++ toolchain the sitting ran
-  on. The reference engines are the check that this sitting is comparable with
+  on. `--rusage` adds CPU time and peak RSS per lane; the tables below are
+  wall-clock only, and no figure here comes from that mode.
+  The reference engines are the check that this sitting is comparable with
   the previous one: on the ten kernels both sittings share, Rakudo lands
   within ±1.6% of its previous row and `perl` within 2%, so the Raku++ movement
   below is the code, not the machine. The rev named above is the last **code** commit measured, not

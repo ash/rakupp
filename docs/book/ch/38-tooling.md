@@ -563,7 +563,7 @@ available body of real-program testing.
 | Tool | What it does |
 |---|---|
 | `tools/run-roast.raku` | the Roast harness |
-| `tools/run-bench.raku` | the benchmark harness, three engines |
+| `tools/run-bench.raku` | the benchmark harness, four engines; `--rusage` adds CPU and peak memory |
 | `tools/perf-guard.raku` | the release performance gate |
 | `tools/run-optbench.raku` | compiles each optimiser showcase twice, checks byte-identical output, then times |
 | `tools/gen-unicode.raku` | generates Unicode tables |

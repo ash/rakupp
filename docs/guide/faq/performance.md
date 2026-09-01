@@ -72,10 +72,18 @@ is constant.
 The repo has the harnesses used for its own numbers:
 
 ```bash
-rakupp tools/perf-guard.raku       # interpreter hot path, ~10s
-rakupp tools/run-bench.raku        # interpreter / --exe / Rakudo, 3-way
-rakupp tools/run-optbench.raku     # --exe vs --exe -O, and verifies they agree
+rakupp tools/perf-guard.raku          # interpreter hot path, ~10s
+rakupp tools/run-bench.raku           # interpreter / --exe / mutsu / Rakudo
+rakupp tools/run-bench.raku --rusage  # the same, plus CPU time and peak RSS
+rakupp tools/run-optbench.raku        # --exe vs --exe -O, and verifies they agree
 ```
+
+`--rusage` adds a second table: CPU time (user+sys) and peak resident set size
+per lane, measured in its own pass so the wall-clock numbers are exactly what
+they are without it. Reading the two together is what tells you *which* resource
+a change moved — a lane whose CPU exceeds its wall time is using more than one
+core, and peak RSS is the figure that separates the interpreter from `--exe`,
+which carries no interpreter at all.
 
 `run-optbench` checks that all four modes produce *identical output* before it
 reports a timing, so it catches an optimisation that changed an answer.
