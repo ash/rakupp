@@ -904,6 +904,13 @@ struct Codegen {
                                       : "RT.dynVar(" + cesc("$/") + ")";
                     return "rtIndexGet(" + slash + ", Value::integer(" + v->name.substr(1) + "LL), false)";
                 }
+                // a bare `@`/`%` TERM is a fresh empty container every mention —
+                // the anonymous slot a `my @` declares carries the \x01 sentinel,
+                // so no spelling of a name can reach it (the interpreter answers
+                // these the same way)
+                if (!v->declare && v->name.size() == 1 &&
+                    (v->name[0] == '@' || v->name[0] == '%'))
+                    return v->name[0] == '@' ? "Value::array()" : "Value::makeHash()";
                 return varRef(v->name); // scalars, @arrays and %hashes are all C++ Value locals
             }
             case NK::SelfTerm:

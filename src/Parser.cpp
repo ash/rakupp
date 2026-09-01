@@ -2653,7 +2653,9 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
                 continue;
             }
             if (!isKind(Tok::Var)) error("expected variable in declaration");
-            auto ve = std::make_unique<VarExpr>(advance().text);
+            std::string dnm = advance().text;
+            if (dnm.size() == 1 && std::strchr("$@%&", dnm[0])) dnm += kAnonSlot; // `my ($, $b)`: unnameable, as above
+            auto ve = std::make_unique<VarExpr>(dnm);
             ve->declare = true; ve->declScope = scope;
             // A type written BEFORE the parenthesis applies to every variable in
             // the list — `my Int ($a, $b)` declares two Int, and `my uint32
@@ -2696,7 +2698,16 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
                 throw ParseError("Cannot declare a match variable", cur().line,
                                  "X::Syntax::Variable::Match", {});
         }
-        auto ve = std::make_unique<VarExpr>(advance().text);
+        std::string vname = advance().text;
+        // A BARE sigil lands here too when the lexer Var-lexed it (`my $`, `my @`,
+        // and `my %`/`my &` where a `=` follows tight). Named by the sigil alone
+        // the anonymous variable was NAMEABLE: after `my @ = 1, 2` a later bare
+        // `@` term found it and answered [1, 2], where Rakudo's bare `@` is a
+        // fresh empty Array every time. Same kAnonSlot sentinel as the
+        // bare-sigil branch below, and the shape/key-type/trait machinery of
+        // this branch keeps working — name[0] is still the sigil.
+        if (vname.size() == 1 && std::strchr("$@%&", vname[0])) vname += kAnonSlot;
+        auto ve = std::make_unique<VarExpr>(vname);
         ve->declare = true; ve->declScope = scope; ve->declType = type; ve->declCoerce = coerceTo;
         ve->declTypeExpr = std::move(typeExpr);
         // shaped array `my @a[3]` / `my @a[2;2]`: the `[...]` right after the sigil
@@ -3642,6 +3653,19 @@ ExprPtr Parser::parsePrimary() {
                 auto u = std::make_unique<Unary>();
                 u->op = "ctx$"; u->operand = parsePrimary();
                 return u;
+            }
+            // sink-assignment to an anonymous container, VAR-lexed spelling: the
+            // lexer hands `% = …` (and tight `%=%h`) over as a Var token where the
+            // operator-position one arrives as an Op and takes the branch in
+            // parsePrimary's Op case. Falling through named the target `@`/`%`,
+            // which made the anonymous variable nameable — `@ = (1,2); (@).raku`
+            // answered [1, 2] where Rakudo's bare `@` term is a fresh Array.
+            if (cur().text.size() == 1 &&
+                (cur().text[0] == '@' || cur().text[0] == '%') &&
+                peek().kind == Tok::Op && peek().text == "=") {
+                auto ave = std::make_unique<VarExpr>(advance().text + kAnonSlot);
+                ave->declare = true; ave->declScope = "my";
+                return ave;
             }
             // bare `$` as a TERM is an anonymous STATE variable — each textual
             // occurrence is its own persistent slot (`say ++$ ~ ". " ~ $_`

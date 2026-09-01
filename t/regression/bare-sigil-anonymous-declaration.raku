@@ -11,6 +11,13 @@
 # spell — so it is out of reach of the twigil test AND of a bare `%` term, which
 # in Rakudo is a FRESH hash rather than the anonymous variable beside it.
 #
+# The named branch had the second half of the same bug: it named a bare `$`/`@`
+# slot by the SIGIL ALONE, which made the anonymous variable NAMEABLE — after
+# `my @ = 1, 2` a later bare `@` term found it and answered [1, 2], where
+# Rakudo's bare `@` is a fresh empty Array every time. The sink-assign spelling
+# (`@ = (1, 2)`) leaked the same way through the ordinary-variable path. Both
+# now mint the kAnonSlot name too.
+#
 # Every expectation below was checked against Rakudo.
 
 my $fails = 0;
@@ -39,9 +46,25 @@ ck((do { my $ }).^name, 'Any',   'of `my $`, an undefined Any');
 ck((my % = (a => 1)).raku, '{:a(1)}', 'my % = … assigns');
 ck((my @ = 1, 2).raku,     '[1, 2]',  'my @ = … assigns');
 
-# --- and the slot is UNNAMEABLE: a bare `%` term is a fresh hash ------------
+# --- and the slot is UNNAMEABLE: a bare `%`/`@` term is a fresh container ---
 ck((%).raku, '{}', 'a bare % term does not find the anonymous variable above it');
 ck((% .classify-list({ $_ %% 2 })).raku, '{}', 'the bare % term still classifies into itself');
+ck((do { my @ = 1, 2; (@).raku }), '[]', 'a bare @ term does not find `my @` beside it');
+ck((do { my % = (a => 1); (%).raku }), '{}', 'nor does % find `my %`');
+ck((do { @ = (1, 2); (@).raku }), '[]', 'the sink `@ = …` is anonymous too');
+ck((do { % = (b => 2); (%).raku }), '{}', 'and the sink `% = …`');
+ck((do { my %h = c => 3; (%=%h).raku }), '{:c(3)}', 'the TIGHT sink `(%=%h)` still assigns and yields');
+
+# --- the named branch's machinery still works for the anonymous forms -------
+ck((do { my @[3]; "ok" }), "ok", 'a shaped anonymous array declares');
+ck((do { my @[3] = 7, 8, 9; "ok" }), "ok", 'and takes an initializer');
+ck((do { my Int @; "ok" }), "ok", 'a typed anonymous array lives');
+ck((do { my ($, $b) = 1, 2; $b }), 2, 'the $ placeholder in a destructure still skips a value');
+ck((do { state @; "ok" }), "ok", 'state @ lives');
+
+# --- bare `$` is untouched: a per-mention anonymous state variable ----------
+ck((do { my $ = 5; ($).raku }), 'Any', 'a bare $ term is not `my $` beside it');
+ck((do { sub f { ++state $ }; (f, f, f).raku }), '(1, 2, 3)', 'the state $ counter still counts');
 
 say $fails ?? "FAIL ($fails)" !! "PASS";
 exit $fails ?? 1 !! 0;
