@@ -1,0 +1,170 @@
+rank	name	layer	depth	needed_by	version	verdict	deps	rakuast	auth	error
+1	JSON::Fast	top100	0	22	0.20.1	pass	237		zef:timo	
+2	Cro::HTTP	top100	0	3	0.8.13	timeout	54		zef:cro	
+3	File::Temp	top100	0	7	0.0.12	pass	53		zef:raku-community-modules	
+4	Terminal::ANSIColor	top100	0	3	0.14	pass	52		zef:raku-community-modules	
+5	HTTP::UserAgent	top100	0	2	1.2.0	self-fail	48		zef:raku-community-modules	FAILED: 030-cookies.rakutest | # Failed test 'set-cookie 1/11' at HTTP-UserAgent-1.2.0/t/030-cookies.rakutest line 24
+6	JSON::Tiny	top100	0	0	1.0	pass	40		cpan:MORITZ	
+7	YAMLish	top100	0	3	0.1.3	pass	38		zef:leont	
+8	URI	top100	0	6	0.3.8	pass	37		zef:raku-community-modules	
+9	File::Find	top100	0	6	0.2.5	pass	37		zef:raku-community-modules	
+10	MIME::Base64	top100	0	11	1.2.5	pass	35		zef:raku-community-modules	
+11	IO::Socket::SSL	top100	0	5	0.0.4	pass	34		zef:raku-community-modules	
+12	XML	top100	0	0	0.3.6	pass	33		zef:raku-community-modules	
+13	Test::META	top100	0	1	0.0.20	pass	31		zef:jonathanstowe	
+14	DBIish	top100	0	0	0.6.8	pass	27		zef:raku-community-modules	
+15	URI::Encode	top100	0	1	1.0	pass	27		zef:raku-community-modules	
+16	HTTP::Tiny	top100	0	3	0.2.6	pass	26		zef:jjatria	
+17	Sparrowdo	top100	0	0	0.1.55	pass	23		zef:sp1983	
+18	Digest::HMAC	top100	0	4	1.0.7	pass	22		zef:jjmerelo	
+19	Method::Also	top100	0	4	0.0.10	pass	22		zef:lizmat	
+20	LibraryMake	top100	0	4	1.0.5	pass	20		zef:jjmerelo	
+21	File::Directory::Tree	top100	0	17	0.2	pass	20		zef:raku-community-modules	
+22	Digest	top100	0	0	1.1.0	pass	20		zef:grondilu	
+23	Math::Libgsl::Constants	top100	0	1	0.0.13	self-fail	20		zef:FRITH	FAILED: 00-use.rakutest | # Failed test 'The module can be use-d ok: Math::Libgsl::Constants' at Math-Libgsl-Constants-0.0.13/t/00-use.rakutest line 6
+24	DSL::Shared	top100	0	0	0.2.11	self-fail	19		zef:antononcube	FAILED: Array-of-regexes-matches.rakutest | # Failed test at dist/t/Array-of-regexes-matches.rakutest line 36
+25	Hash::Merge	top100	0	6	2.0.0	pass	19		cpan:TYIL	
+26	File::Which	top100	0	5	1.0.1	pass	18		github:azawawi	
+27	Terminal::ANSI	top100	0	2	0.0.25	pass	18		cpan:BDUGGAN	
+28	UUID	top100	0	0	1.0.0	pass	18		github:retupmoca	
+29	OpenSSL	top100	0	14	0.2.9	pass	17		zef:raku-community-modules	
+30	Text::Utils	top100	0	0	4.0.2	pass	17		zef:tbrowder	
+31	Log::Async	top100	0	1	0.0.17	timeout	17		zef:bduggan	
+32	LWP::Simple	top100	0	0	0.109	timeout	16		zef:dwarring	
+33	HTTP::Status	top100	0	3	0.0.5	pass	16		zef:lizmat	
+34	JSON::Class	top100	0	2	0.0.6	pass	16		zef:vrurg	
+35	Base64	top100	0	5	0.0.2	pass	15		github:ugexe	
+36	Data::Dump	top100	0	2	0.0.18	pass	15		zef:tony-o	
+37	DateTime::Format	top100	0	2	0.1.5	pass	15		zef:raku-community-modules	
+38	Sparrow6	top100	0	1	0.0.93	pass	15		zef:sp1983	
+39	Distribution::Builder::MakeFromJSON	top100	0	3	0.6	pass	14		github:niner	
+40	PDF::Content	top100	0	1	0.9.11	self-fail	14		zef:dwarring	FAILED: basic.t | ===SORRY!=== Parse error at line 291: Error while compiling module PDF::Content::Ops (line 291): expected ] (got 'k')
+41	Color	top100	0	3	1.004001	pass	14		zef:raku-community-modules	
+42	NativeHelpers::Blob	top100	0	0	0.1.13	self-fail	13		zef:raku-community-modules	FAILED: 01-basic.rakutest | Can't determine actual Offset
+43	Data::TypeSystem	top100	0	0	0.1.8	pass	13		zef:antononcube	
+44	Digest::SHA256::Native	top100	0	0	1.0.1	pass	13		zef:bduggan	
+45	OO::Monitors	top100	0	7	1.1.7	pass	13		zef:raku-community-modules	
+46	UUID::V4	top100	0	1	1.0.0	pass	13		zef:masukomi	
+47	Shell::Command	top100	0	5	1.2	pass	12		zef:raku-community-modules	
+48	Cro::Core	top100	0	4	0.8.10	pass	12		zef:cro	
+49	Gnome::N	top100	0	2	0.1.54	self-fail	12		zef:martimm	FAILED: GlibToRakuTypes.rakutest | Undefined routine 'void'
+50	Config	top100	0	0	3.0.4	pass	11		cpan:TYIL	
+51	Digest::SHA1::Native	top100	0	1	1.0.1	pass	11		zef:bduggan	
+52	NativeHelpers::Array	top100	0	1	0.0.6	pass	11		zef:jonathanstowe	
+53	PDF::Lite	top100	0	0	0.0.15	self-fail	11		zef:dwarring	FAILED: 00-readme.t | # Failed test 'code sample' at PDF-Lite-0.0.15/t/00-readme.t line 19
+54	WWW	top100	0	0	1.005007	pass	11		zef:raku-community-modules	
+55	Test::Output	top100	0	0	1.3	pass	10		zef:lizmat	
+56	Cro::WebSocket	top100	0	0	0.8.10	timeout	10		zef:cro	
+57	MacOS::NativeLib	top100	0	0	0.0.6	pass	10		zef:lizmat	
+58	Date::Calendar::Strftime	top100	0	0	0.1.1	pass	10		zef:jforget	
+59	Gnome::Glib	top100	0	1	0.1.12	self-fail	10		zef:martimm	FAILED: N-Array.rakutest | Undefined routine 'void'
+60	Pod::Load	top100	0	0	0.7.2	self-fail	10		zef:jjmerelo	FAILED: 01-basic.t | # Testing strings
+61	Template::Mustache	top100	0	0	1.2.6	self-fail	10		zef:raku-community-modules	FAILED: 01-basic.rakutest | ===SORRY!=== Parse error at line 614: Error while compiling module Template::Mustache (line 614): Confused (got '}')
+62	Term::termios	top100	0	0	0.2.8	pass	10		zef:krunen	
+63	LLM::Functions	top100	0	1	0.5.10	self-fail	10		zef:antononcube	FAILED: 02-LLM-evaluators.rakutest | No such method 'evaluator' for invocant of type 'Any'
+64	IO::Socket::Async::SSL	top100	0	4	0.8.2	self-fail	9		zef:raku-community-modules	FAILED: client-server.rakutest | The socket was closed during negotiation
+65	Air	top100	0	0	0.1.32	self-fail	9		zef:librasteve	"FAILED: 01-basic.rakutest | Useless use of constant string """
+66	AttrX::Mooish	top100	0	3	1.0.10	self-fail	9		zef:vrurg	FAILED: 010-base.custom.rakutest | # Failed test 'Class Basics' at AttrX-Mooish-v1.0.10/t/010-base.custom.rakutest line 15
+67	Cairo	top100	0	0	0.2.7	self-fail	9		github:timo	FAILED: matrix.t | Variable $.header used where no 'self' is available
+68	Clipboard	top100	0	0	0.1.2	self-fail	9		zef:antononcube	FAILED: 01-copy-to-clipboard.t | /bin/sh: xclip: command not found
+69	Gnome::GObject	top100	0	0	0.1.12	self-fail	9		zef:martimm	FAILED: N-Value.rakutest | Undefined routine 'void'
+70	HTML::Escape	top100	0	1	0.0.1	pass	9		github:moznion	
+71	HTTP::Easy	top100	0	1	1.3	pass	9		zef:raku-community-modules	
+72	Intl::CLDR	top100	0	0	0.7.6	self-fail	9		zef:guifa	FAILED: 00-sanity.rakutest | ===SORRY!=== Parse error at line 153: Error while compiling module Intl::CLDR::Types::ExemplarCharacters (line 153): expected } (got '')
+73	IRC::Client	top100	0	0	4.0.15	pass	9		zef:lizmat	
+74	Math::Libgsl::Matrix	top100	0	0	0.6.1	dep-build-fail	9		zef:FRITH	
+75	PDF::Font::Loader	top100	0	0	0.8.15	dep-build-fail	9		zef:dwarring	
+76	Text::MiscUtils	top100	0	0	0.0.13	self-fail	9		zef:japhb	FAILED: 02-layout.rakutest | Undefined routine 'nqp::unipropcode'
+77	XDG::BaseDirectory	top100	0	1	0.0.15	pass	9		zef:jonathanstowe	
+78	NativeLibs	top100	0	0	0.0.9	pass	9		zef:raku-community-modules	
+79	PDF	top100	0	2	0.6.15	self-fail	9		zef:dwarring	FAILED: 00-helloworld.t | Undefined routine 'export'
+80	Terminal::WCWidth	top100	0	0	0.1.5	pass	9		zef:raku-community-modules	
+81	Terminal::Width	top100	0	0	1.1	self-fail	9		zef:raku-community-modules	FAILED: 00-use.t | tput: No value for $TERM and no -T specified
+82	META6	top100	0	2	0.0.1	pass	8		zef:dss	
+83	Compress::Zlib	top100	0	3	1.1.0	self-fail	8		github:retupmoca	FAILED: 02-stream.t | # Failed test 'Get data when a chunk is deflated' at P6-Compress-Zlib-master/t/02-stream.t line 146
+84	Config::TOML	top100	0	0	0.1.3	pass	8		zef:raku-community-modules	
+85	Crust	top100	0	0	0.0.1	dep-fail	8		github:tokuhirom	FAILED: 010_basic.t | # Failed test 'Test for seek() and read()' at IO-Blob-0.0.1/t/010_basic.t line 172
+86	Pod::To::Markdown	top100	0	0	0.2.2	self-fail	8		zef:raku-community-modules	FAILED: code-lang.rakutest | ===SORRY!=== Parse error at line 614: Error while compiling module Template::Mustache (line 614): Confused (got '}')
+87	Test::Mock	top100	0	0	1.8	self-fail	7		zef:raku-community-modules	FAILED: computing.rakutest | No such method 'add_parent' for invocant of type '<anon|1>'
+88	Cro::WebApp	top100	0	1	0.10.1	self-fail	7		zef:cro	FAILED: compile-all.rakutest | ===SORRY!=== Parse error at line 522: Error while compiling module Cro::WebApp::Template::Parser (line 522): expected } (got '')
+89	Crypt::Random	top100	0	5	0.4.1	pass	7		github:skinkade	
+90	HTTP::Tinyish	top100	0	0	0.4.1	pass	7		zef:skaji	
+91	Color::Names	top100	0	2	2.0.0	self-fail	7		zef:thundergnat	FAILED: 01-basic.rakutest | # Failed test 'X11 loads ok' at Color-Names-2.0.0/t/01-basic.rakutest line 11
+92	Image::Markup::Utilities	top100	0	2	0.1.2	pass	7		zef:antononcube	
+93	Slangify	top100	0	0	0.0.5	self-fail	7		zef:lizmat	"FAILED: 01-basic.rakutest | Useless use of constant string ?""Successfully slanged"" in sink context (line 11)"
+94	Text::CSV	top100	0	0	0.022	self-fail	7	legacy	zef:Tux	FAILED: 10_base.t | ===SORRY!=== Parse error at line 18: expected ) (got '(')
+95	Base64::Native	top100	0	2	0.0.10	pass	7		zef:dwarring	
+96	CSS::Grammar	top100	0	2	0.4.3	self-fail	7		zef:dwarring	FAILED: compat.t | # Failed test 'css1 ws warnings' at CSS-Grammar-0.4.3/t/compat.t line 76
+97	CSS::Properties	top100	0	0	0.10.9	self-fail	7		zef:dwarring	FAILED: 00-readme.t | ===SORRY!=== Parse error at line 165: Error while compiling module CSS::Properties (line 165): Cannot put required parameter $copy after named parameters
+98	Getopt::Long	top100	0	0	0.4.2	pass	7		cpan:LEONT	
+99	JSON::Name	top100	0	0	0.0.7	pass	7		zef:jonathanstowe	
+100	LLM::DWIM	top100	0	0	0.0.6	self-fail	7		zef:bduggan	FAILED: 00-use.rakutest | # Failed test 'The module can be use-d ok: LLM::DWIM' at LLM-DWIM-0.0.6/t/00-use.rakutest line 4
+	Abbreviations	dep	2	1	2.2.3	pass	2		zef:tbrowder	
+	AlgorithmsIT	dep	1	1	0.0.4	pass	1		zef:tbrowder	
+	Apache::LogFormat	dep	1	1	*	self-fail	1		github:lestrrat	FAILED: 00-sanity.t | ===SORRY!=== Parse error at line 65: Error while compiling module Apache::LogFormat::Compiler (line 65): Confused (got ';')
+	Backtrace::AsHTML	dep	1	1	0.0.1	self-fail	1		github:moznion	FAILED: 01-basic.t | No such method 'as-html' for invocant of type 'List'
+	CBOR::Simple	dep	2	4	0.1.4	self-fail	5		zef:japhb	FAILED: 01-basic.rakutest | # Failed test 'cbor-encode produces correct blob' at CBOR-Simple-0.1.4/t/01-basic.rakutest line 23
+	Compress::Zlib::Raw	dep	1	4	1.0.1	pass	3		github:retupmoca	
+	Cookie::Baker	dep	1	1	*	self-fail	4		github:tokuhirom	FAILED: 02_crush.t | Target is not assignable
+	Crane	dep	1	1	0.1.2	self-fail	1		zef:raku-community-modules	FAILED: add.rakutest | ===SORRY!=== Parse error at line 67: Error while compiling module Crane::Transform (line 67): expected { (got ';')
+	Cro::HTTP::Test	test-dep		0	0.8.1	self-fail	0		cpan:JNTHN	FAILED: checks.t | Type check failed in binding to parameter '$incoming'; expected Supply but got List (( ))
+	Cro::TLS	dep	1	4	0.8.10	pass	3		zef:cro	
+	Cromponent	dep	1	1	0.0.14	dep-fail	1		zef:FCO	FAILED: checks.t | Type check failed in binding to parameter '$incoming'; expected Supply but got List (( ))
+	CSS::Module	dep	1	1	0.7.7	self-fail	4		zef:dwarring	FAILED: 00basic.t | ===SORRY!=== Parse error at line 496: Error while compiling module CSS::Writer (line 496): expected { (got ';')
+	CSS::Module::CSS3::Selectors	dep	2	1	0.0.6	self-fail	2		zef:dwarring	FAILED: 00basic.t | ===SORRY!=== Parse error at line 26: expected } (got '')
+	CSS::Nested	dep	2	1	0.0.1	pass	1		zef:FCO	
+	CSS::Specification	dep	2	1	0.5.3	self-fail	1		zef:dwarring	FAILED: 00basic.t | ===SORRY!=== Parse error at line 173: expected } (got '')
+	CSS::Writer	dep	1	2	0.3.3	self-fail	4		zef:dwarring	FAILED: 00basic.t | ===SORRY!=== Parse error at line 496: Error while compiling module CSS::Writer (line 496): expected { (got ';')
+	Date::Names	dep	1	1	2.3.2	pass	4		zef:tbrowder	
+	DateTime::Grammar	dep	2	2	0.1.3	pass	3		zef:antononcube	
+	DateTime::Parse	dep	1	7	0.9.1	pass	5		github:sergot	
+	Encode	dep	1	3	0.0.3	pass	3		github:sergot	
+	Font::AFM	dep	1	3	1.24.10	self-fail	4		zef:dwarring	FAILED: font-metrics-courier.t | Type check failed in assignment to $glyph-name; expected Str but got Any (Any)
+	Getopt::Tiny	dep	1	1	*	self-fail	1		github:tokuhirom	FAILED: 01-basic.t | Could not find Pod::To::Text in:
+	Hash::int	dep	1	3	0.0.7	self-fail	2		zef:lizmat	FAILED: 01-basic.rakutest | # Failed test 'did it create a list' at Hash-int-0.0.7/t/01-basic.rakutest line 23
+	Hash::MultiValue	dep	1	1	0.7	self-fail	2		cpan:HANENKAMP	FAILED: basic.t | # Failed test 'correct value after bind' at Hash-MultiValue-0.7/t/basic.t line 251
+	HTTP::HPACK	dep	1	4	1.0.3	pass	3		zef:raku-community-modules	
+	HTTP::MultiPartParser	dep	1	1	*	self-fail	2		github:tokuhirom	FAILED: 035_headers.t | # Failed test 'parts (--xxx\x0D\x0AFoo:\x20Foo\x0D\x0ABar:\x20Bar\x0D\x0A\x0D\x0A\x0D\x0A--xxx--\x0D\x0A)' at p6-HTTP-MultiPartParser-master/t/035_headers.t line 57
+	HTTP::Parser	dep	2	1	0.0.2	self-fail	1		github:tokuhirom	FAILED: 01-request-parser.t | # Failed test at p6-HTTP-Parser-master/t/01-request-parser.t line 104
+	HTTP::Server::Tiny	dep	1	1	0.0.2	dep-fail	3		github:tokuhirom	FAILED: 010_basic.t | # Failed test 'Test for seek() and read()' at IO-Blob-0.0.1/t/010_basic.t line 172
+	if	dep	1	6	0.1.5	pass	5		zef:raku-community-modules	
+	Intl::LanguageTag	dep	1	1	0.12.7	self-fail	7		zef:guifa	FAILED: 00-sanity.rakutest | ===SORRY!=== Parse error at line 533: Error while compiling module Intl::LanguageTag::BCP47 (line 533): Confused (got ')')
+	Intl::LanguageTaggish	dep	2	1	0.2	pass	2		zef:guifa	
+	IO::Blob	dep	2	1	0.0.1	self-fail	3		github:moznion	FAILED: 010_basic.t | # Failed test 'Test for seek() and read()' at IO-Blob-0.0.1/t/010_basic.t line 172
+	IO::Capture::Simple	test-dep		0	v0.0.2	self-fail	5		zef:jjmerelo	FAILED: capture.t | # Failed test 'OH HAI! in captured string' at raku-io-capture-simple/t/capture.t line 10
+	IO::Glob	dep	1	1	0.9.0	pass	4		cpan:HANENKAMP	
+	IO::Path::ChildSecure	dep	1	4	1.2	self-fail	1		zef:raku-community-modules	FAILED: 01-operation.rakutest | # Failed test 'code returned a Failure' at IO-Path-ChildSecure-1.2/t/01-operation.rakutest line 49
+	IO::Path::XDG	dep	1	1	0.2.0	pass	2		cpan:TYIL	
+	JSON::JWT	dep	1	4	1.1.2	pass	2		zef:raku-community-modules	
+	JSON::OptIn	dep	1	1	0.0.2	pass	3		zef:jonathanstowe	
+	License::SPDX	dep	1	2	3.28.0	pass	1		zef:jonathanstowe	
+	Lingua::NumericWordForms	dep	1	1	0.6.2	pass	2		zef:antononcube	
+	LLM::Prompts	dep	1	1	0.2.15	self-fail	7		zef:antononcube	FAILED: 02-prompt-parsing.rakutest | # Failed test 'Parsing function cell spec' at dist/t/02-prompt-parsing.rakutest line 33
+	Log	dep	1	1	0.3.2	pass	4		github:whity	
+	Log::Timeline	dep	1	4	0.5.2	self-fail	5		zef:raku-community-modules	FAILED: output-cbor-sequence.rakutest | # Failed test 'Timestamp is an instant (1)' at Log-Timeline-0.5.2/t/output-cbor-sequence.rakutest line 42
+	Math::DistanceFunctions::Edit	dep	1	1	0.1.3	pass	2		zef:antononcube	
+	Math::Libgsl::Complex	dep	1	1	0.0.5	build-fail	4		zef:FRITH	
+	Method::Protected	dep	1	1	0.0.4	self-fail	3		zef:lizmat	FAILED: 01-basic.rakutest | # Failed test 'can we increment' at Method-Protected-0.0.4/t/01-basic.rakutest line 10
+	Native::Packing	dep	1	2	0.0.6	self-fail	1		zef:dwarring	FAILED: 00-readme.t | # Failed test 'code sample' at Native-Packing-0.0.6/t/00-readme.t line 14
+	PDF::Grammar	dep	1	3	0.3.6	self-fail	5		zef:dwarring	FAILED: 00objects.t | ===SORRY!=== Parse error at line 39: expected } (got '/#6E')
+	Pod::To::HTML	dep	1	1	0.9.0	self-fail	7		zef:raku-community-modules	FAILED: 010-basic.rakutest | ===SORRY!=== Parse error at line 614: Error while compiling module Template::Mustache (line 614): Confused (got '}')
+	Prompt	dep	1	1	0.0.11	self-fail	3		zef:lizmat	FAILED: 01-basic.rakutest | # Failed test ''prompt' not exported by default' at Prompt-0.0.11/t/01-basic.rakutest line 6
+	silently	dep	1	1	0.0.7	pass	2		zef:lizmat	
+	Slang::Tuxic	dep	1	1	0.0.5	self-fail	1	legacy	zef:raku-community-modules	"FAILED: 01-basic.rakutest | Useless use of constant string ""-%d-"" in sink context (line 13)"
+	Test::Async	test-dep		0	0.1.17	self-fail	1		zef:vrurg	FAILED: 003-declaration.rakutest | ===WARNING=== Module Test::Async::Decl EXPORT failed: Could not find NQPHLL in:
+	Test::Util::ServerPort	test-dep		0	0.0.5	pass	1		zef:jonathanstowe	
+	Test::When	test-dep		0	2.1	pass	0		zef:raku-community-modules	
+	Text::Levenshtein::Damerau	dep	1	1	0.2.0	pass	4		github:ugexe	
+	Text::Markdown	dep	1	1	1.1.1	self-fail	7		zef:JJMERELO	FAILED: parse-link-with-code.t | ===SORRY!=== Parse error at line 19: Ending delimiter TEXT not found for heredoc
+	Text::SubParsers	dep	1	2	0.1.4	self-fail	5		zef:antononcube	FAILED: 01-basic-usage.t | # Failed test at dist/t/01-basic-usage.t line 138
+	TinyFloats	dep	3	4	0.0.5	pass	1		zef:japhb	
+	TOML	dep	1	1	3	self-fail	7		zef:tony-o	FAILED: 00-load.t | # Failed test 'The module can be use-d ok: TOML' at t/00-load.t line 4
+	Trap	dep	2	1	0.0.5	pass	1		zef:lizmat	
+	User::Language	dep	1	1	0.5.2	self-fail	4		zef:guifa	FAILED: 00-sanity.t | ===SORRY!=== Parse error at line 533: Error while compiling module Intl::LanguageTag::BCP47 (line 533): Confused (got ')')
+	WWW::Gemini	dep	1	2	0.0.25	pass	2		zef:antononcube	
+	WWW::LLaMA	dep	1	2	0.1.3	pass	2		zef:antononcube	
+	WWW::MistralAI	dep	1	2	0.1.3	pass	2		zef:antononcube	
+	WWW::Ollama	dep	1	2	0.0.7	pass	2		zef:antononcube	
+	WWW::OpenAI	dep	1	2	0.3.20	pass	2		zef:antononcube	
+	WWW::OpenRouter	dep	1	2	0.0.3	pass	2		zef:antononcube	
+	X::Intl	dep	3	1	0.1	pass	0		zef:guifa	

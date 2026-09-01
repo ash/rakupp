@@ -95,9 +95,13 @@ Earlier plans:
 
 ## ecosystem/ — the v2.0 campaign
 
-- **[ecosystem/ECOSYSTEM-TOP50.md](ecosystem/ECOSYSTEM-TOP50.md)** — the measured
-  top-50 by reverse dependencies over the Raku Ecosystem Archive: the ranking, the
-  version pins, and the observations that shaped the working set.
+- **[ecosystem/ECOSYSTEM-TOP100.md](ecosystem/ECOSYSTEM-TOP100.md)** — the current
+  working set: the top-100 by reverse dependencies over the Raku Ecosystem Archive
+  **plus the dependency closure underneath it** (169 dists), each with its sweep
+  verdict and its RakuAST flag. Raw data in `top100-battery.tsv`.
+- **[ecosystem/ECOSYSTEM-TOP50.md](ecosystem/ECOSYSTEM-TOP50.md)** — superseded by
+  the above; kept for the v2.0.0 record: the ranking, the version pins, and the
+  observations that shaped that campaign's working set.
 - **[ecosystem/V2-MODULES-PLAN.md](ecosystem/V2-MODULES-PLAN.md)** — the campaign
   plan: why running real zef modules is the layer that makes an implementation
   useful, and the phases to get there.

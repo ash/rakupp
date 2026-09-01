@@ -1,5 +1,10 @@
 # The measured ecosystem top-50 (working set for v2.0.0)
 
+> **Superseded 2026-09-01 by [ECOSYSTEM-TOP100.md](ECOSYSTEM-TOP100.md)**, which
+> extends the same ranking to 100 and adds the dependency closure the campaign
+> actually has to get through. Kept for the v2.0.0 record: the pins and the
+> tier reasoning below are what that campaign ran against.
+
 Reverse-dependency ranking over the **Raku Ecosystem Archive** (Raku/REA
 META.json, fetched 2026-07-22; 14,764 dist-versions, ~2,505 distinct dists,
 latest version per dist by release-date). `run` = distinct dists that
