@@ -12300,6 +12300,17 @@ bool rtTypeMatch(const Value& v, const std::string& type) {
     // reported type — nqp::istype($result, Failure) is how JSON::Fast rejects a
     // malformed number, and the tag was never consulted here
     if (!v.hashKind.empty() && (type == v.hashKind || type == v.typeName())) return true;
+    // …and the ROLE it does, not only its own name. Date and DateTime do
+    // Dateish; typeNameConforms says so and `~~` reads it, but this is a THIRD
+    // path — nqp::istype and native multi-dispatch — and it matched the tag
+    // alone, so `nqp::istype($dt, Dateish)` was False while `$dt ~~ Dateish`
+    // was True. Nothing showed it while a hash-backed DateTime still counted as
+    // Associative: JSON::Fast tests Associative BEFORE Dateish, so DateTimes
+    // went down the wrong branch and came out looking right. Fixing the
+    // Associative answer took that cover away and JSON::Fast's own
+    // t/07-datetime.t went red with "Don't know how to jsonify DateTime".
+    if (type == "Dateish" && (v.hashKind == "DateTime" || v.hashKind == "Date"))
+        return true;
     // a stamped Proxy-subclass instance (AttrProxy) answers its class name too
     if (v.t == VT::Hash && v.hashKind == "Proxy" && v.hash()) {
         auto ki = v.hash()->find("\x01cls");
