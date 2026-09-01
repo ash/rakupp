@@ -1610,6 +1610,17 @@ std::vector<ExprPtr> Parser::parseCallArgs(ExprPtr* invocant) {
     return args;
 }
 
+// The slot an ANONYMOUS declaration gets: `my %`, `my $`, the placeholder a
+// literal takes in `my ($a, "foo")`, the target of a sink `@ = (…)`. It was
+// spelled `!anon`, and that second character is the PRIVATE-ATTRIBUTE twigil —
+// so evaluating the declaration (which a block does, for its value) walked into
+// the attribute path and died with "Variable %!anon used where no 'self' is
+// available". `\x01` is the house sentinel for a name no source text can spell
+// (\x01cls, \x01pun, \x01arr), which is exactly what an anonymous slot wants:
+// unreachable by the twigil test above it, and unreachable by a bare `%` term,
+// which in Rakudo is a FRESH hash and not the anonymous variable next to it.
+static const char* kAnonSlot = "\x01" "anon";
+
 ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
     bool hyperNext = false;
     // A zen slice — `$x<>`, `$x[]`, `$x{}` and their dotted spellings — DECONTAINERISES.
@@ -2635,7 +2646,7 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
             // binds nothing — an anonymous slot stands in
             if (isKind(Tok::StrLit) || isKind(Tok::StrInterp) || isKind(Tok::IntLit) || isKind(Tok::NumLit)) {
                 advance();
-                auto anon = std::make_unique<VarExpr>("$!anon");
+                auto anon = std::make_unique<VarExpr>(std::string("$") + kAnonSlot);
                 anon->declare = true; anon->declScope = scope;
                 list->items.push_back(std::move(anon));
                 if (!matchKind(Tok::Comma)) break;
@@ -2768,7 +2779,7 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
     if ((isKind(Tok::Op) && cur().text.size() == 1 && strchr("$@%&", cur().text[0])) ||
         (isKind(Tok::Var) && cur().text.size() == 1)) {
         std::string sig = advance().text;
-        auto ve = std::make_unique<VarExpr>(sig + "!anon");
+        auto ve = std::make_unique<VarExpr>(sig + kAnonSlot);
         ve->declare = true; ve->declScope = scope; ve->declType = type;
         // anonymous object hash `my %{Str:D} is default(…)` — the braced key type
         if (sig == "%" && isKind(Tok::LBrace) && peek().kind == Tok::Ident) {
@@ -4177,7 +4188,7 @@ ExprPtr Parser::parsePrimary() {
             if ((t.text == "@" || t.text == "%" || t.text == "$") &&
                 peek().kind == Tok::Op && peek().text == "=" && peek().spaceBefore) {
                 advance();
-                auto ve = std::make_unique<VarExpr>(t.text + "!anon");
+                auto ve = std::make_unique<VarExpr>(t.text + kAnonSlot);
                 ve->declare = true; ve->declScope = "my";
                 return ve;
             }
