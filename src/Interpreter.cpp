@@ -6829,6 +6829,9 @@ bool isKnownTypeName(const std::string& n) {
         // the old always-lenient fallback had been quietly covering them.
         "Dateish", "Format", "Formatter", "IterationEnd", "Lock::Async", "Signal",
         "Systemic", "Endian", "Encoding", "ValueObjAt", "Telemetry", "RaceSeq",
+        // REPL — Rakudo's read-eval-print object, which the sandbox pattern
+        // drives directly (methodCallInner answers it; see the REPL block there)
+        "REPL",
         "Rational", "PositionalBindFailover", "Sequence", "Awaitable",
         "Scheduler", "ForeignCode", "NFC", "NFD", "NFKC", "NFKD",
     };
@@ -20614,6 +20617,88 @@ static std::shared_ptr<const Regex> compileRegexCached(const std::string& pat, c
     cache.emplace(std::move(key), re);
     return re;
 }
+// The `<NAME>` subrule resolver over the lexical `my regex/token/rule` table
+// (and the qualified `<Grammar::rule>` form), built once and shared by every
+// entry point that compiles a raw pattern — `~~` and the occurrence scanner
+// behind subst/comb/split/match alike. It used to exist only on the `~~` path,
+// so `$str.subst(&rule, …)` compiled `<name>` as an unknown assertion and
+// matched it as zero-width: a pattern that matched perfectly under `~~`
+// quietly matched nothing under .subst. `lexNames` and `useHooks` are the
+// caller's and must outlive the resolver, which holds them by reference.
+void Interpreter::lexSubResolver(SubResolver& resolver, std::set<std::string>& lexNames,
+                                 const GrammarHooks*& useHooks) {
+    for (auto& kv : namedRegex_) lexNames.insert(kv.first);
+    resolver = [&](const std::string& name, const std::string& subj, long pos, RxMatch& out) -> bool {
+        if (name == "ws") { long p = pos; while (p < (long)subj.size() && ascii::isspace((unsigned char)subj[p])) p++; out.from = pos; out.to = p; out.matched = true; return true; }
+        // `<Grammar::rule>` — a QUALIFIED rule reference inside a plain regex.
+        // URI declares `subset Scheme of Str where /^ [ '' || <IETF::RFC_Grammar::URI::scheme> ] $/`,
+        // and without this the name resolved to nothing, took the lenient
+        // zero-width branch below, and the subset accepted only the empty string.
+        {
+            auto qs = name.rfind("::");
+            if (qs != std::string::npos && qs > 0) {
+                std::string gname = name.substr(0, qs), rname = name.substr(qs + 2);
+                auto cit = classes_.find(gname);
+                if (cit == classes_.end()) cit = classes_.find(resolveClassAlias(gname));
+                if (cit != classes_.end() && cit->second && cit->second->findRule(rname)) {
+                    Value m = grammarParse(cit->second.get(), subj.substr(pos),
+                                           /*subparse=*/true, rname, Value());
+                    if (!isDefined(m)) return false;
+                    out.from = pos;
+                    out.to = pos + (long)m.s.size();   // Match.s is the matched text
+                    out.matched = true;
+                    // Carry the rule's OWN captures back as spans. Returning only
+                    // the extent threw away everything the rule matched inside —
+                    // URI::Path reads `$path<segment>` / `$path<segment-nz>` off
+                    // exactly this match to build its segment list, and without
+                    // them every mutated path had one empty segment.
+                    std::function<void(const Value&, ParseNode&)> fill =
+                        [&](const Value& mv, ParseNode& node) {
+                        node.from = pos + mv.rFrom();
+                        node.to   = pos + mv.rTo();
+                        if (!mv.hash()) return;
+                        auto kids = std::make_shared<ChildMap>();
+                        auto lists = std::make_shared<std::set<std::string>>();
+                        for (auto& kv : *mv.hash()) {
+                            auto addOne = [&](const Value& one) {
+                                if (one.t != VT::Match) return;
+                                ParseNode child; child.name = kv.first;
+                                fill(one, child);
+                                node.named[kv.first] = {child.from, child.to};
+                                (*kids)[kv.first].push_back(std::move(child));
+                            };
+                            if (kv.second.t == VT::Array && kv.second.arr()) {
+                                lists->insert(kv.first);          // a quantified capture stays a list
+                                for (auto& e : *kv.second.arr()) addOne(e);
+                            }
+                            else addOne(kv.second);
+                        }
+                        if (!kids->empty()) node.kids = kids;
+                        if (!lists->empty()) node.listNames = lists;
+                    };
+                    ParseNode root;
+                    fill(m, root);
+                    out.named = root.named;
+                    if (root.kids) out.children = *root.kids;
+                    if (root.listNames) out.listNames = root.listNames;
+                    return true;
+                }
+            }
+        }
+        auto it = namedRegex_.find(name);
+        if (it == namedRegex_.end()) { out.from = pos; out.to = pos; out.matched = true; return true; }
+        const std::string& kind = namedRegexKind_[name];
+        std::string flags = kind == "rule" ? "sr"       // rule:  sigspace + ratchet
+                          : kind == "token" ? "r"        // token: ratchet (no backtracking)
+                          : "";                          // regex: backtracking, no sigspace
+        // …and an `@array` atom in the body is an alternation of its elements,
+        // resolved when the subrule is REACHED (the array may have grown since
+        // the declaration), exactly as for a regex matched directly.
+        auto sub = compileRegexCached(rxInterpArrays(it->second), flags);
+        // useHooks: a `my regex` body still runs its {…} blocks / <?{…}>
+        return sub->matchAt(subj, pos, out, resolver, &lexNames, useHooks);
+    };
+}
 
 Value Interpreter::regexMatch(const std::string& subject, const std::string& pattern,
                               const Value* rxVal) {
@@ -20724,6 +20809,19 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
     }
     if (!wired) pat = p5pat ? interpP5Pattern(pat) : interpRegexPattern(pat);
     if (!wired && !p5pat) pat = rxInterpArrays(pat); // `/@alpha/` — array elements as longest-first alternation
+    // Wired mode leaves `$var` atoms to the match-time str hook, but an
+    // `@array` atom is an ALTERNATION of the elements — a shape no atom hook
+    // can return — so it is spliced into the source here instead, in the
+    // regex's own closed-over scope. Without this a declared `my regex X {
+    // @langs }` silently matched nothing (Text::CodeProcessing keys every
+    // code-chunk header on `@codeChuckLangs` that way, so every chunk in
+    // every document went unrecognised).
+    if (wired && !p5pat && pat.find('@') != std::string::npos) {
+        auto savedOuter = tctx_.cur;
+        if (rxVal && rxVal->ext()) tctx_.cur = std::static_pointer_cast<Env>(rxVal->ext());
+        pat = rxInterpArrays(pat);
+        tctx_.cur = savedOuter;
+    }
     // flavor flags for anonymous declarators: token = ratchet, rule = ratchet+sigspace
     std::string reFlags = wired ? (rxVal->hashKind == "token" ? "r"
                                  : rxVal->hashKind == "rule" ? "sr" : "") : "";
@@ -20738,75 +20836,8 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
     // lenient (zero-width) so existing patterns with unhandled assertions don't start failing.
     // A lexical name also SHADOWS a same-named built-in subrule (my regex ident {…} beats <ident>).
     std::set<std::string> lexNames;
-    for (auto& kv : namedRegex_) lexNames.insert(kv.first);
     SubResolver resolver;
-    resolver = [&](const std::string& name, const std::string& subj, long pos, RxMatch& out) -> bool {
-        if (name == "ws") { long p = pos; while (p < (long)subj.size() && ascii::isspace((unsigned char)subj[p])) p++; out.from = pos; out.to = p; out.matched = true; return true; }
-        // `<Grammar::rule>` — a QUALIFIED rule reference inside a plain regex.
-        // URI declares `subset Scheme of Str where /^ [ '' || <IETF::RFC_Grammar::URI::scheme> ] $/`,
-        // and without this the name resolved to nothing, took the lenient
-        // zero-width branch below, and the subset accepted only the empty string.
-        {
-            auto qs = name.rfind("::");
-            if (qs != std::string::npos && qs > 0) {
-                std::string gname = name.substr(0, qs), rname = name.substr(qs + 2);
-                auto cit = classes_.find(gname);
-                if (cit == classes_.end()) cit = classes_.find(resolveClassAlias(gname));
-                if (cit != classes_.end() && cit->second && cit->second->findRule(rname)) {
-                    Value m = grammarParse(cit->second.get(), subj.substr(pos),
-                                           /*subparse=*/true, rname, Value());
-                    if (!isDefined(m)) return false;
-                    out.from = pos;
-                    out.to = pos + (long)m.s.size();   // Match.s is the matched text
-                    out.matched = true;
-                    // Carry the rule's OWN captures back as spans. Returning only
-                    // the extent threw away everything the rule matched inside —
-                    // URI::Path reads `$path<segment>` / `$path<segment-nz>` off
-                    // exactly this match to build its segment list, and without
-                    // them every mutated path had one empty segment.
-                    std::function<void(const Value&, ParseNode&)> fill =
-                        [&](const Value& mv, ParseNode& node) {
-                        node.from = pos + mv.rFrom();
-                        node.to   = pos + mv.rTo();
-                        if (!mv.hash()) return;
-                        auto kids = std::make_shared<ChildMap>();
-                        auto lists = std::make_shared<std::set<std::string>>();
-                        for (auto& kv : *mv.hash()) {
-                            auto addOne = [&](const Value& one) {
-                                if (one.t != VT::Match) return;
-                                ParseNode child; child.name = kv.first;
-                                fill(one, child);
-                                node.named[kv.first] = {child.from, child.to};
-                                (*kids)[kv.first].push_back(std::move(child));
-                            };
-                            if (kv.second.t == VT::Array && kv.second.arr()) {
-                                lists->insert(kv.first);          // a quantified capture stays a list
-                                for (auto& e : *kv.second.arr()) addOne(e);
-                            }
-                            else addOne(kv.second);
-                        }
-                        if (!kids->empty()) node.kids = kids;
-                        if (!lists->empty()) node.listNames = lists;
-                    };
-                    ParseNode root;
-                    fill(m, root);
-                    out.named = root.named;
-                    if (root.kids) out.children = *root.kids;
-                    if (root.listNames) out.listNames = root.listNames;
-                    return true;
-                }
-            }
-        }
-        auto it = namedRegex_.find(name);
-        if (it == namedRegex_.end()) { out.from = pos; out.to = pos; out.matched = true; return true; }
-        const std::string& kind = namedRegexKind_[name];
-        std::string flags = kind == "rule" ? "sr"       // rule:  sigspace + ratchet
-                          : kind == "token" ? "r"        // token: ratchet (no backtracking)
-                          : "";                          // regex: backtracking, no sigspace
-        auto sub = compileRegexCached(it->second, flags);
-        // useHooks: a `my regex` body still runs its {…} blocks / <?{…}>
-        return sub->matchAt(subj, pos, out, resolver, &lexNames, useHooks);
-    };
+    lexSubResolver(resolver, lexNames, useHooks);
     // Every Match — the top one and each capture — reports the WHOLE subject as
     // its .orig; only from/pos say which part matched. Sharing one string keeps
     // `.raku`/.prematch/.postmatch right on captures too, at one allocation.
@@ -20855,30 +20886,7 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
             // as a bare span. `my regex ps { $<pr> = <Grammar::rule> }` matched
             // through `<ps>` produced a Match with an empty .hash, so URI::Path
             // could not tell which alternative had matched.
-            std::function<Value(const ParseNode&)> childMatch = [&](const ParseNode& c) -> Value {
-                Value cv = Value::matchVal(subject.substr(c.from, c.to - c.from), c.from, c.to);
-                for (size_t ci = 0; ci < c.caps.size(); ci++) {
-                    auto& p = c.caps[ci];
-                    cv.arrRef().push_back(p.first < 0 ? Value::nil()
-                        : Value::matchVal(subject.substr(p.first, p.second - p.first), p.first, p.second));
-                }
-                for (auto& nm : c.named)
-                    if (!c.kids || !c.kids->count(nm.first))
-                        cv.hashRef()[nm.first] = Value::matchVal(
-                            subject.substr(nm.second.first, nm.second.second - nm.second.first),
-                            nm.second.first, nm.second.second);
-                if (c.kids) for (auto& ck : *c.kids) {
-                    bool many = ck.second.size() > 1 ||
-                                (c.listNames && c.listNames->count(ck.first));
-                    if (!many) cv.hashRef()[ck.first] = childMatch(ck.second[0]);
-                    else {
-                        Value a2 = Value::array(); a2.isList = true;
-                        for (auto& g : ck.second) a2.arr()->push_back(childMatch(g));
-                        cv.hashRef()[ck.first] = a2;
-                    }
-                }
-                return cv;
-            };
+            auto childMatch = [&](const ParseNode& c) { return matchFromNode(c, subject); };
             if (!asList) {
                 v.hashRef()[kv.first] = childMatch(kv.second[0]);
             } else {
@@ -21462,6 +21470,35 @@ bool Interpreter::patHasCodeAssert(const std::string& pat) {
     return pat.find("?{") != std::string::npos || pat.find("!{") != std::string::npos;
 }
 
+// One capture's Match, WITH its own capture tree under it. A capture that
+// matched through a subrule — or through a capture-scoping group, where
+// `$<header>=( $<lang>=… )` puts `lang` inside `header` — carries nested
+// captures, and a builder that keeps only its span answers Nil for
+// `$<header><lang>`. Shared by every Match builder so they cannot disagree.
+Value Interpreter::matchFromNode(const ParseNode& c, const std::string& subject,
+                                 const std::shared_ptr<std::string>& orig) {
+    Value cv = Value::matchVal(subject.substr(c.from, c.to - c.from), c.from, c.to);
+    // `.orig`/.prematch/.postmatch read the WHOLE subject when the builder has
+    // it to share; the callers that never did keep not doing it.
+    if (orig) cv.extM() = orig;
+    for (auto& p : c.caps)
+        cv.arrRef().push_back(p.first < 0 ? Value::nil()
+            : Value::matchVal(subject.substr(p.first, p.second - p.first), p.first, p.second));
+    for (auto& nm : c.named)
+        if (!c.kids || !c.kids->count(nm.first))
+            cv.hashRef()[nm.first] = Value::matchVal(
+                subject.substr(nm.second.first, nm.second.second - nm.second.first),
+                nm.second.first, nm.second.second);
+    if (c.kids) for (auto& ck : *c.kids) {
+        bool many = ck.second.size() > 1 || (c.listNames && c.listNames->count(ck.first));
+        if (!many) { cv.hashRef()[ck.first] = matchFromNode(ck.second[0], subject, orig); continue; }
+        Value a2 = Value::array(); a2.isList = true;
+        for (auto& g : ck.second) a2.arr()->push_back(matchFromNode(g, subject, orig));
+        cv.hashRef()[ck.first] = a2;
+    }
+    return cv;
+}
+
 std::string Interpreter::substSelect(const std::string& subj, const std::string& pat,
                                      Value* replArg, ValueList& args, long& nsub, bool literal,
                                      const std::string* tmplRepl, Value* matchResult) {
@@ -21661,8 +21698,18 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
         const Regex& re = *reP;
         const GrammarHooks* useHooks = wantSsHooks ? &ssHooks : nullptr;
         if (!re.ok()) return subj;
+        // `<NAME>` in the pattern means a lexical `my regex NAME {…}` here just
+        // as it does under `~~`; without the resolver those names compiled to
+        // an unknown assertion and matched zero-width, so a pattern built from
+        // named pieces matched under `~~` and not under .subst/.comb/.split.
+        // Built only when the pattern can actually name one.
+        std::set<std::string> lexNames;
+        SubResolver resolver;
+        if (!namedRegex_.empty() && realPat.find('<') != std::string::npos)
+            lexSubResolver(resolver, lexNames, useHooks);
         long pos = haveStart ? startPos : 0; RxMatch mm;
-        while (pos >= 0 && pos <= (long)subj.size() && re.search(subj, pos, mm, nullptr, nullptr, useHooks)) {
+        while (pos >= 0 && pos <= (long)subj.size() &&
+               re.search(subj, pos, mm, resolver, lexNames.empty() ? nullptr : &lexNames, useHooks)) {
             matches.push_back(mm);
             pos = mm.to > mm.from ? mm.to : mm.to + 1;
         }
@@ -21732,9 +21779,15 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
             auto ch = mm.children.find(kv.first);
             if (mm.listNames && mm.listNames->count(kv.first) && ch != mm.children.end()) {
                 Value lst = Value::array(); lst.isList = true;
-                for (auto& pn : ch->second)
-                    lst.arrRef().push_back(mkm((long)pn.from, (long)pn.to));
+                for (auto& pn : ch->second) lst.arrRef().push_back(matchFromNode(pn, subj, origStr));
                 v.hashRef()[kv.first] = std::move(lst);
+                continue;
+            }
+            // …and a capture with a tree of its own keeps it, so the block a
+            // .subst is given can read `$<header><lang>` exactly as the `~~`
+            // path's match can.
+            if (ch != mm.children.end() && !ch->second.empty()) {
+                v.hashRef()[kv.first] = matchFromNode(ch->second.back(), subj, origStr);
                 continue;
             }
             v.hashRef()[kv.first] = mkm((long)kv.second.first, (long)kv.second.second);
@@ -25977,6 +26030,13 @@ Value Interpreter::evalCall(Call* c) {
             }
             return methodCall(Value::list(flat), c->name, ValueList{});
         }
+        // `Hash(…)` / `Map(…)`: the whole argument list becomes ONE hash, later
+        // keys winning — which is how a sub layers defaults, computed values
+        // and extras into the hash it returns (`Hash(%defaults, %computed,
+        // %extra)`). The generic coercion path below reaches only args[0], so
+        // every argument after the first used to be dropped in silence.
+        if ((c->name == "Hash" || c->name == "Map") && args.size() > 1)
+            return methodCall(Value::typeObj(c->name), "new", args);
         // `DateTime($instant)` / `Date($str)` coercion routines == .new
         if ((c->name == "DateTime" || c->name == "Date") && !args.empty())
             return methodCall(Value::typeObj(c->name), "new", args);

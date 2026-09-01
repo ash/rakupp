@@ -423,6 +423,10 @@ enum class NqpOpc : uint16_t {
     // appended: nqp::stat / nqp::lstat — Path::Finder's whole stat-matcher
     // surface (.inode/.device/.uid/.gid/.nlinks/…) and its symlink-loop guard
     Stat, Lstat,
+    // appended: nqp::getcomp('Raku') — the running compiler as an object. The
+    // REPL-sandbox pattern (Jupyter::Kernel, Text::CodeProcessing) asks for it
+    // and hands it straight to REPL.new.
+    GetComp,
 };
 struct NqpOp : Expr {
     NqpOpc op;

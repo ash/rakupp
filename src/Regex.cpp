@@ -1166,6 +1166,14 @@ Regex::NodePtr Regex::parseAtom() {
             }
             auto g = std::make_unique<Node>();
             g->k = K::Group; g->capIndex = -1; g->capName = name;
+            {   // `$<a>=( … )` opens a capture, and a capture scopes the names
+                // matched inside it: they hang off `$<a>` rather than off the
+                // enclosing match. The bracket form `$<a>=[ … ]` does not
+                // capture, so its contents stay where they were written.
+                const Node* inner = child.get();
+                if (inner->k == K::Rep && !inner->kids.empty()) inner = inner->kids[0].get();
+                g->nestNames = inner->k == K::Group && inner->capIndex >= 0;
+            }
             g->kids.push_back(std::move(child));
             return g;
         }
@@ -2990,8 +2998,20 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
             const Node* child = n->kids[0].get();
             int ci = n->capIndex;
             const std::string& cn = n->capName;
+            // For a name-scoping group (`$<a>=( … )`): how many occurrences each
+            // name had on the way IN. Anything past that count when the child is
+            // done was matched inside this group and belongs to it.
+            std::vector<std::pair<std::string, size_t>> pre;
+            if (n->nestNames && !cn.empty()) {
+                pre.reserve(st.children.size());
+                for (auto& ce : st.children) pre.emplace_back(ce.first, ce.second.size());
+            }
             return matchNode(child, st, pos, [&](long np) -> bool {
                 std::pair<long,long> savedC{-1,-1}, savedN{-1,-1}; bool hadN = false;
+                // what this group took out of the enclosing scope, kept so a
+                // backtrack over it puts everything back exactly as it was
+                std::vector<std::pair<std::string, std::vector<ParseNode>>> taken;
+                std::vector<std::pair<std::string, std::pair<long, long>>> takenNamed;
                 if (ci >= 0 && ci < (long)st.caps.size()) { savedC = st.caps[ci]; st.caps[ci] = {pos, np}; }
                 // a capture under a repetition quantifier collates every occurrence
                 // into a list (`(\d)+` → $0 is an Array), matching Rakudo
@@ -3001,6 +3021,41 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                     // also collate the occurrence (empty name = plain capture, not a rule),
                     // so a capture repeated under a quantifier yields a list like Rakudo's
                     ParseNode leaf; leaf.from = pos; leaf.to = np;
+                    // A capture-scoping group takes the names matched inside it
+                    // out of the enclosing match and hangs them off itself —
+                    // `$<header>=( $<lang>=… )` answers `$<header><lang>`, and
+                    // nothing at the top level (Rakudo's shape; reading the
+                    // header's own parameters off the header is what every
+                    // document weaver does with such a pattern).
+                    if (n->nestNames) {
+                        auto preCount = [&](const std::string& nm) -> size_t {
+                            for (auto& p : pre) if (p.first == nm) return p.second;
+                            return 0;
+                        };
+                        std::shared_ptr<ChildMap> kids;
+                        for (size_t i = 0; i < st.children.size(); ) {
+                            auto ent = st.children.begin() + i;
+                            size_t b = preCount(ent->first);
+                            if (ent->first == cn || ent->second.size() <= b) { i++; continue; }
+                            if (!kids) kids = std::make_shared<ChildMap>();
+                            std::vector<ParseNode> mine(ent->second.begin() + b, ent->second.end());
+                            leaf.named[ent->first] = {mine.back().from, mine.back().to};
+                            for (auto& one : mine) (*kids)[ent->first].push_back(one);
+                            taken.push_back({ent->first, std::move(mine)});
+                            ent->second.resize(b);
+                            auto nit = st.named.find(ent->first);
+                            if (nit != st.named.end()) {
+                                takenNamed.push_back({ent->first, nit->second});
+                                // an occurrence from BEFORE this group survives, and
+                                // the top-level span goes back to it
+                                if (b) nit->second = {ent->second.back().from, ent->second.back().to};
+                                else st.named.erase(nit);
+                            }
+                            if (b) { i++; continue; }
+                            st.children.erase(ent);
+                        }
+                        if (kids) { leaf.kids = kids; leaf.listNames = listNames_; }
+                    }
                     // `$<value>=<value-sq>` — a named group wrapping a SUBRULE keeps that
                     // subrule's own tree, so `$<value><val>` still reaches inside. A bare
                     // span would drop it: XML's attribute rule captures single-quoted
@@ -3008,7 +3063,9 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                     // The wrapped subrule recorded its own node over exactly this span;
                     // find it by span rather than by walking the AST, which the sigspace
                     // forms wrap in a Seq.
-                    for (auto& ce : st.children) {
+                    // (Not for a capture-scoping group: there the subrule is a CHILD of
+                    // the capture — `$<params><rule>` — which the pass above put in place.)
+                    if (!n->nestNames) for (auto& ce : st.children) {
                         if (ce.first == cn || ce.second.empty()) continue;
                         const ParseNode& sub = ce.second.back();
                         if (sub.from != pos || sub.to != np) continue;
@@ -3032,6 +3089,10 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                     if (hadN) st.named[cn] = savedN; else st.named.erase(cn);
                     st.children[cn].pop_back();
                     if (st.children[cn].empty()) st.children.erase(cn);
+                    // …and everything this group scoped out goes back where it was
+                    for (auto& t : taken)
+                        for (auto& one : t.second) st.children[t.first].push_back(one);
+                    for (auto& t : takenNamed) st.named[t.first] = t.second;
                 }
                 return false;
             });

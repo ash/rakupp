@@ -2825,6 +2825,23 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     // before the regex (`.subst(:g, /re/, repl)`), so we can't assume positions.
     int rxIdx = -1;
     for (size_t i = 0; i < args.size(); i++) if (args[i].t == VT::Regex) { rxIdx = (int)i; break; }
+    // A DECLARED `my regex NAME {…}` arrives as the Callable the declaration
+    // defines (`&NAME`), not as a Regex value — so `.subst(&NAME, …)`,
+    // `.split(&NAME)` and their kin found no pattern argument at all and
+    // quietly returned the subject unchanged, though `$s ~~ &NAME` matched.
+    // Keeping the patterns in one place and passing them around by name is
+    // ordinary style (Text::CodeProcessing keeps a search regex per document
+    // format in a hash), so recover the source and read it as the pattern —
+    // the same source, compiled the same way, that `~~ &NAME` runs.
+    if (rxIdx < 0)
+        for (size_t i = 0; i < args.size(); i++)
+            if (args[i].t == VT::Code && args[i].code() && args[i].code()->isRegexRoutine) {
+                auto it = namedRegex_.find(args[i].code()->name);
+                if (it == namedRegex_.end()) continue;
+                args[i] = Value::regex(it->second);
+                rxIdx = (int)i;
+                break;
+            }
     // `"abc".match("b")` — a Str needle is a LITERAL pattern, not a regex.
     // An ARRAY needle is its elements joined by a space (`.match([1,2,3])`).
     if (m == "match" && inv.t == VT::Str && inv.hashKind.empty() && !args.empty() &&

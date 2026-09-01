@@ -280,6 +280,12 @@ private:
         int capIndex = -1;               // -1 => non-capturing
         std::string capName;
         bool listCap = false;            // capture is under a repetition quantifier (*/+/**) → $n is a list
+        // `$<a>=( … )`: the parens are a CAPTURE, and a capture is its own
+        // capture scope — names matched inside belong to `$<a>`, not to the
+        // enclosing match. `$<a>=[ … ]` only groups, so its contents stay where
+        // they were written. Decided at parse time; only these groups pay for
+        // the bookkeeping.
+        bool nestNames = false;
         // Subrule
         std::string ruleName;
         std::string ruleArgs;            // raw args of a parameterised call <name($x, '')>

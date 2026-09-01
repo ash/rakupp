@@ -2549,3 +2549,132 @@ compiler slangs), DSL::Shared 12 (one assertion depending on a Rakudo caching
 artifact + object-valued rule args), Text::SubParsers 5, BinaryHeap 4,
 Math::SparseMatrix::Native 3, IO::Capture::Simple 3 (rw-param closure
 limitation), Clipboard 2, Net::ZMQ 1 (x86-only libzmq on this box).
+
+## 2026-09-01 — Text::CodeProcessing installs, and the five faults behind `nqp::getcomp`
+
+`rakupp install Text::CodeProcessing` stopped at the first thing it could see:
+
+```
+FAILED: 02-string-code-chunks-processing-markdown.rakutest
+  Undefined routine 'nqp::getcomp'
+```
+
+That op is one line of a larger surface, and answering it only moved the
+failure. Behind it were five more faults, **none of them about nqp** and all of
+them general: two in how the regex engine scopes and reports captures, two in
+paths that had quietly diverged from the `~~` path, one in a coercion. The
+dist's own suite went **1 of 8 files to 8 of 8** — seven of the eight DIED
+(`nqp::getcomp`, then `No such method 'match'` for a regex passed by name, then
+the chunk regex matching nothing at all), and the one that ran wove the wrong
+diagnostics into its output.
+
+### The surface: a REPL is an object, and modules drive it
+
+`nqp::getcomp("Raku")`, `REPL.new($compiler, {})`, `.repl-eval(…)` — the
+Jupyter::Kernel sandbox, copied verbatim into this dist. What it needs is a
+**persistent evaluation scope**, which `EVAL` cannot give. Written up in
+[RAKUDO-INTERNALS.md](RAKUDO-INTERNALS.md#the-compiler-as-an-object-nqpgetcomp--repl)
+with the shape of rakupp's answer; the short version is that the session lives
+on the REPL object rather than in a context handed back and forth.
+
+56. **`$<a>=( … )` is a capture SCOPE; `$<a>=[ … ]` is not.** Named captures
+    written inside a *paren* capture belong to it — Rakudo answers
+    `$<a><b>` and no top-level `$<b>` — while the bracket form only groups, so
+    its contents stay where they were written. rakupp recorded every name flat
+    at the top level, so `$<header><lang>` was Nil for a pattern that reads a
+    code chunk's header and then asks the header for its own parameters. That
+    is not an exotic shape: it is how you write one regex that captures a
+    region and, inside it, the fields of that region.
+
+    The fix is in the group's own match: a capture-scoping group snapshots the
+    per-name occurrence counts on the way in and, when its body is done, takes
+    the ones it added out of the enclosing match and hangs them off itself
+    (restoring them if a later backtrack unwinds it). It is decided at PARSE
+    time — `Node::nestNames`, set only when the named group wraps a paren
+    capture — so no other group pays for the bookkeeping.
+
+57. **A declared `my regex R {…}` was invisible to `.subst` / `.split` /
+    `.comb` / `.match`.** `$s ~~ &R` matched; `$s.subst(&R, …)` returned the
+    subject unchanged, silently. The declaration defines `&R` as a *Callable*
+    that runs the regex, and those methods scan their arguments for a `Regex`
+    value and found none — so there was no pattern argument at all. Keeping
+    patterns in one place and passing them around by name is ordinary style
+    (this dist keeps one search regex per document format in a hash), and the
+    failure mode is the worst kind: a correct-looking no-op.
+
+58. **`<NAME>` did not resolve in the occurrence scanner.** The `~~` path
+    builds a subrule resolver over the lexical `my regex` table; `substSelect`
+    — behind subst/comb/split/match-with-adverbs — passed `nullptr` and got the
+    lenient unknown-assertion reading, which is zero-width. So a pattern built
+    from named pieces matched under `~~` and matched *nothing of its named
+    parts* under `.subst`. One resolver now, `Interpreter::lexSubResolver`,
+    used by both.
+
+59. **…and that scanner's Match builder dropped every capture's own tree.** It
+    kept `named` spans only, so the block a `.subst` is given could read
+    `$<header>` but not `$<header><lang>` — the same information loss as #56,
+    arrived at from the other end. Both builders (and the `~~` path's, which
+    had the recursion inline) now share `Interpreter::matchFromNode`.
+
+60. **`Hash(%a, %b, %c)` kept only `%a`.** The generic type-coercion call
+    reaches `args[0]` and calls `.Hash` on it; every argument after the first
+    was dropped in silence. Layering defaults, computed values and extras into
+    one returned hash is what the form is FOR. `Hash(…)`/`Map(…)` with more
+    than one argument now go to `.new`, which already merged correctly — and
+    the list-to-Hash coercion under it was wrong too: a Hash element
+    stringified into a KEY (`(%a, %b).Hash` was `{"x\t1\ny\t2" => {…}}`)
+    instead of contributing its pairs.
+
+### Two diagnostics, because a weaver publishes them
+
+A document weaver puts the compiler's error text INTO the document, so its
+tests pin the wording. Both cases were rakupp's own phrasing where Rakudo has a
+name for the situation, and in both the name is the part that points at the fix:
+
+- `42 *` with nothing after it said `Confused: missing required term after
+  infix (got '')` — two readings glued together, with a description of an
+  end-of-input token that is not there to see. It is `Missing required term
+  after infix` (X::Comp::AdHoc) now, and it fires for the non-EOF case too
+  (`$( 42 * )`). What decides it is whether the term parse failed at exactly
+  the position an infix's operand was required — and that condition had to be
+  the real one, not "the input ran out": running out has many other causes, and
+  roast pins one of them (`say $\` is Rakudo's plain `Confused`,
+  S02-one-pass-parsing/misc.t). The old wording covered both by saying both
+  things at once; splitting them is what let each be right.
+- Two statements inside `$( … )` with no separator said `expected ) (got
+  '$answer')`. Rakudo names it: `Two terms in a row across lines (missing
+  semicolon or comma?)` — reported when a TERM stands where a closing bracket
+  belongs, on a later line than the token before it.
+
+### Left open
+
+**A `<subrule>` under a `+ %` quantifier does not backtrack.** `<p>+ % [\h* ','
+\h*]` over `a=1, b=2` fails here and matches under Rakudo, because a resolver
+call returns one end position and nothing retries a shorter one when what
+follows fails; the same pattern written inline backtracks correctly. It costs
+this dist nothing (its headers carry one parameter per chunk in the suite) and
+it is a real limitation of the resolver interface — the fix is to let the
+caller ask for a match ending before a given offset, which the engine can
+already express as a continuation. Noted, not taken.
+
+### The gate
+
+`rakupp install Text::CodeProcessing` installs, which means its own suite ran
+8/8 first. `t/run.raku` **612/612**, including the new
+`t/regression/repl-sandbox-and-capture-scoping.raku` (everything below its
+section 1 verified against Rakudo); `unterminated-quotes-at-eof` was updated,
+since the `Q(oops;` case now lands in the generic `Confused` bucket rather than
+the hedged wording it shared with the infix case.
+
+Roast A/B on this box, same Roast revision, `63e29e6` vs the change:
+**643 → 642 files**, and the difference is load flapping in BOTH directions —
+each of the three files the new run lost (`S15-nfg/emoji-test.t`,
+`S17-promise/stress.t`, `S17-scheduler/times.t`) and both it gained
+(`S29-conversions/hash.t`, `APPENDICES/A02-some-day-maybe/concreteness.t`) pass
+serially under BOTH binaries. **No file regressed and none genuinely gained**;
+the assertion delta (199,799 → 195,376) is `emoji-test.t`'s 3,825 plus the
+other timeouts, out of the denominator as well as the numerator.
+
+`CodeUnit`, the other dist the sweep reported against `nqp::getcomp`, now gets
+past it and stops on `nqp::eqaddr` — a different op, shared with `Tuple` and
+`are`, and not taken here.

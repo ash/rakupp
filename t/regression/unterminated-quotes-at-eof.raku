@@ -96,9 +96,10 @@ bad qq{say "hi";\nsay qq\{oops;\n}, q{Couldn't find terminator } ~ '}' ~ q{ (cor
 # argument list runs off the end — the same reading Rakudo gives it ("Unable to
 # parse expression in argument list; couldn't find final ')'"). It stays in this
 # file because it LOOKS like the others and used to be one of them; the wording
-# is ours, and describes the confusing token rather than the opener because the
-# argument expression fails before the list terminator is looked for.
-bad qq{say "hi";\nsay Q(oops;\n},   q{missing required term after infix}, 'Q( ) is a call, not a quote';
+# is ours — Rakudo's generic bucket for the family — because the argument
+# expression fails before the list terminator is looked for. (It used to name a
+# missing term "after infix", which was a hedge: there is no infix here.)
+bad qq{say "hi";\nsay Q(oops;\n},   q{Confused}, 'Q( ) is a call, not a quote';
 bad qq{say "hi";\nsay q[[oops];\n}, q{Couldn't find terminator ]] (corresponding [[ was at line 2)}, 'q[[ ]] doubled bracket';
 bad qq{say "hi";\nsay qw<a b c;\n},  q{Couldn't find terminator > (corresponding < was at line 2)}, 'qw<>';
 bad "say \"hi\";\nsay Q\x[AB]oops;\n", q{Couldn't find terminator }, 'guillemet Q«»';

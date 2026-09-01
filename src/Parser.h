@@ -122,6 +122,11 @@ private:
     int sigOwnerLine_ = 0;        // decl line of the routine whose signature is being parsed:
                                   // its leading `#|` belongs to the routine, not to a parameter
     int anonStateN_ = 0;          // unique ids for bare-`$` anonymous state vars
+    // Token index at which an infix's right-hand term must start. A term parse
+    // that fails EXACTLY there is a missing operand ("Missing required term
+    // after infix"), not a confused statement — the two read very differently
+    // to whoever has to fix the code.
+    size_t infixRhsPos_ = (size_t)-1;
     bool useNqp_ = false;         // saw `use nqp` — enables the nqp:: op subset
     // Language revision of the unit being parsed: 0=6.c, 1=6.d (the default),
     // 2=6.e. Set when `use v6.X` is parsed — which the language guarantees is

@@ -5425,6 +5425,85 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             return Value::any();
         }
     }
+    // ---- REPL — a read-eval scope as an object -----------------------------
+    // Rakudo's REPL is a class, and a whole family of modules drives it
+    // DIRECTLY rather than through EVAL, because EVAL forgets: the sandbox in
+    // Jupyter::Kernel — copied verbatim into Text::CodeProcessing, and from
+    // there into the notebook/weaving dists — wants `my $x = 42` typed in one
+    // cell to still be there in the next. The idiom is always the same three
+    // lines: `nqp::getcomp('Raku')`, `REPL.new($compiler, {})`, then
+    // `.repl-eval($code, $exception, :outer_ctx(…), :interactive(1))`.
+    //
+    // Rakudo persists the scope by handing back the eval'd code's CONTEXT and
+    // taking it again as :outer_ctx next time. rakupp keeps the scope on the
+    // REPL object instead (in `ext`), which is the same promise with none of
+    // the context plumbing: two REPLs are two independent sessions, and
+    // :outer_ctx is accepted and ignored. $*MAIN_CTX therefore stays
+    // undefined, which the sandboxes already handle — they only assign
+    // $!save_ctx `if $*MAIN_CTX`.
+    if (inv.t == VT::Type && inv.s == "REPL" && m == "new") {
+        Value r = Value::makeHash();
+        r.hashKind = "REPL";
+        if (!args.empty()) (*r.hash())["compiler"] = args[0];
+        auto sess = std::make_shared<Env>();
+        sess->parent = global_;
+        // A ROUTINE frame, so a dynamic the session does not declare itself is
+        // looked for in the CALLER rather than in global: a weaver wraps each
+        // chunk in `my $*OUT = $*OUT but role {…}` to capture its output, and
+        // walking through to the global $*OUT would print past the capture.
+        sess->routineFrame = true;
+        r.extM() = std::static_pointer_cast<void>(sess);
+        return r;
+    }
+    if (inv.t == VT::Hash && inv.hashKind == "REPL") {
+        if (m == "repl-eval") {
+            auto sess = std::static_pointer_cast<Env>(inv.ext());
+            if (!sess) throw RakuError{Value::typeObj("X::AdHoc"), "REPL has no session scope"};
+            std::string code = args.empty() ? "" : args[0].toStr();
+            Value out;
+            bool failed = false; RakuError err;
+            {
+                // The line runs in the SESSION scope, with the caller's frame
+                // still on the dynamic stack: `my` lands in the session (that
+                // is the persistence), while $*OUT/$*ERR and every other
+                // dynamic resolve exactly where they would have at the call.
+                auto saved = tctx_.cur;
+                Env* savedState = tctx_.curStateEnv;
+                tctx_.dynStack.push_back(saved.get());
+                struct Guard {
+                    ExecContext& t; std::shared_ptr<Env> cur; Env* st;
+                    ~Guard() { t.cur = std::move(cur); t.curStateEnv = st; t.dynStack.pop_back(); }
+                } g{tctx_, saved, savedState};
+                tctx_.cur = sess;
+                tctx_.curStateEnv = sess.get(); // mainline `state` belongs to the session
+                try { out = evalString(code, /*mainlinePH=*/true); }
+                catch (FeatureNotBuilt&) { throw; } // a SLIM stub: loud, never a reported "line failed"
+                catch (RakuError& e) { failed = true; err = e; }
+            }
+            if (!failed) return out;
+            // Rakudo reports a failed line through the second parameter (it is
+            // declared raw, so the assignment reaches the caller's variable)
+            // and returns Nil. Do the same through the caller's argument
+            // expression; with no lvalue to write — a literal, a call whose
+            // arguments this dispatch never saw — the exception is thrown
+            // instead, which the sandboxes' own CATCH picks up.
+            if (rwArgs && rwArgs->size() > 1 && args.size() > 1 && args[1].t != VT::Pair) {
+                Value* lv = nullptr;
+                try { lv = lvalue((*rwArgs)[1].get()); } catch (RakuError&) {}
+                if (lv) { *lv = exceptionFor(err); return Value::nil(); }
+            }
+            throw err;
+        }
+        // Whether the last line was cut off mid-expression (`my $x = 42 +`).
+        // rakupp answers False: a REPL asks for a continuation line only when
+        // it is reading from a human, and this object is being driven by a
+        // program, which has no more lines to offer — the same reading Rakudo
+        // takes with multi-line input disabled, and the one the weavers want,
+        // since an unfinished chunk has to become a visible error.
+        if (m == "input-incomplete") return Value::boolean(false);
+        if (m == "ctxsave") return Value::nil(); // the context is the object; nothing to save
+        if (m == "compiler") return inv.hash()->count("compiler") ? (*inv.hash())["compiler"] : Value::any();
+    }
     // The built-in JSON codec, under two names. Rakupp::Internals::JSON is
     // the first-party, durable one — what rakupp's own tooling calls.
     // Rakudo::Internals::JSON is COMPATIBILITY surface: real ecosystem code
@@ -12642,6 +12721,20 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
         }
         case O::Decont: return v.empty() ? Value::nil() : v[0];        // container strip = identity
         case O::P6BoxS: return Value::str(v.empty() ? std::string() : v[0].toStr());
+        // nqp::getcomp('Raku') — the running compiler, the same object
+        // $*RAKU.compiler answers. NQP names a compiler by HLL, and the only
+        // one this process has is ours; an unknown name is null, as in NQP,
+        // which is what makes `nqp::getcomp("Raku") || nqp::getcomp('perl6')`
+        // (the REPL-sandbox idiom) pick the first spelling that exists.
+        case O::GetComp: {
+            const std::string n = v.empty() ? std::string() : v[0].toStr();
+            if (n != "Raku" && n != "raku" && n != "perl6" && n != "Perl6") return Value::nil();
+            Value r = Value::makeHash();
+            r.hashKind = "Compiler";
+            (*r.hash())["name"] = Value::str("Raku++");
+            (*r.hash())["ver"] = Value::str(kOracleEra);
+            return r;
+        }
         default: break;
     }
     throw RakuError{Value::typeObj("X::NYI"), "nqp op not implemented in this build"};

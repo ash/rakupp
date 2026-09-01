@@ -23,6 +23,15 @@
 
 namespace rakupp {
 
+// From Regex.h, which this header does not need in full: the subrule resolver
+// a compiled pattern calls for `<NAME>`, and the match-time callbacks into the
+// interpreter. (An identical alias in both headers is one type, not two.)
+struct RxMatch;
+struct GrammarHooks;
+struct ParseNode;
+using SubResolver = std::function<bool(const std::string& name, const std::string& subj,
+                                       long pos, RxMatch& out)>;
+
 // How a type-check failure renders the offending value (Rakudo: `.raku`, elided
 // past 23 chars). Shared by the five message builders across Interpreter/Builtins.
 std::string typeCheckRepr(const Value& v);
@@ -1213,6 +1222,16 @@ public:
     std::string spliceRegexVars(const std::string& pat);
     Value regexMatch(const std::string& subject, const std::string& pattern,
                      const Value* rxVal = nullptr);
+    // The `<NAME>` subrule resolver over the lexical `my regex/token/rule`
+    // table, shared by `~~` and by the occurrence scanner behind
+    // subst/comb/split/match. `lexNames` and `useHooks` belong to the caller
+    // and must outlive the resolver, which holds them by reference.
+    void lexSubResolver(SubResolver& resolver, std::set<std::string>& lexNames,
+                        const GrammarHooks*& useHooks);
+    // One capture's Match with its own capture tree under it (`$<a><b>`),
+    // shared by every Match builder.
+    static Value matchFromNode(const ParseNode& c, const std::string& subject,
+                               const std::shared_ptr<std::string>& orig = nullptr);
     std::string rxInterpArrays(const std::string& pat); // `/@arr/` -> longest-first literal alternation
     // `:enc` on file I/O: rakupp holds every Str as UTF-8, so text in another
     // encoding is converted at the edge. Both route through `.decode`/`.encode`,

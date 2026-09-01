@@ -2350,7 +2350,15 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             // `@a.kv.reverse.hash` inverts an index map (value => index).
             Value h = Value::makeHash();
             for (size_t k = 0; k < items.size(); k++) {
-                if (items[k].t == VT::Pair)
+                // …and a HASH element contributes its own pairs, rather than
+                // its stringification standing in as one key: `(%a, %b).Hash`
+                // is how hashes are merged (later keys win), and pairing the
+                // first one up with the second as key => value made nonsense
+                // of it.
+                if (items[k].t == VT::Hash && items[k].hash()) {
+                    for (auto& kv : *items[k].hash()) (*h.hash())[kv.first] = kv.second;
+                }
+                else if (items[k].t == VT::Pair)
                     (*h.hash())[items[k].s] = items[k].pairVal() ? *items[k].pairVal() : Value::any();
                 else if (k + 1 < items.size()) {
                     std::string key = items[k].toStr(); // sequenced explicitly: in `m[f(k)] = g(++k)`

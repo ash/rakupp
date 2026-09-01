@@ -151,7 +151,25 @@ void Parser::rejectNegativeIndex(size_t from) const {
 bool Parser::matchOp(const std::string& s) { if (isOp(s)) { advance(); return true; } return false; }
 bool Parser::matchKind(Tok k) { if (cur().kind == k) { advance(); return true; } return false; }
 void Parser::expectKind(Tok k, const char* what) {
-    if (cur().kind != k) error(std::string("expected ") + what);
+    if (cur().kind != k) {
+        // A TERM standing where a closing bracket belongs, on a later line than
+        // the token before it: the author wrote a second statement and left out
+        // the separator. Rakudo names that case rather than reporting the
+        // missing bracket, and it is the naming that points at the fix — a
+        // two-statement `$( … )` (how a REPL sandbox wraps a code chunk) read
+        // as "expected )" told the author nothing about the missing semicolon.
+        if ((k == Tok::RParen || k == Tok::RBracket) && pos_ > 0 &&
+            cur().line > toks_[pos_ - 1].line) {
+            switch (cur().kind) {
+                case Tok::Var: case Tok::Ident: case Tok::IntLit: case Tok::NumLit:
+                case Tok::StrLit: case Tok::StrInterp: case Tok::VersionLit:
+                    throw ParseError("Two terms in a row across lines (missing semicolon or comma?)",
+                                     cur().line, "X::Comp::AdHoc", {});
+                default: break;
+            }
+        }
+        error(std::string("expected ") + what);
+    }
     advance();
 }
 void Parser::error(const std::string& msg) {
@@ -1324,6 +1342,7 @@ ExprPtr Parser::parseExpr(int minbp) {
         }
 
         int nextMin = listAssign ? BP_ZIP : (in.rightAssoc ? in.lbp : in.lbp + 1); // list assign includes Z/X (looser than comma)
+        infixRhsPos_ = pos_;   // a term is REQUIRED here (see parsePrimary's default)
         ExprPtr rhs = parseExpr(nextMin);
 
         if (in.isAssign) {
@@ -5036,8 +5055,24 @@ ExprPtr Parser::parsePrimary() {
             return std::make_unique<NameTerm>(name);
         }
         default:
-            if (isKind(Tok::End)) // `42 +` — an infix with no right-hand side
-                error("Confused: missing required term after infix");
+            // `42 +` (input ran out) or `$( 42 * )` (something that is not a
+            // term is next, right where the operand belongs) — an infix with no
+            // right-hand side. Rakudo's exact wording and type, because a REPL
+            // shows this diagnostic to a human, and a document weaver puts it
+            // in the document: `error()`'s "(got '')" describes an
+            // end-of-input token that isn't there to see. atEof still stands
+            // for the ran-out case, so rakupp's own REPL asks for a
+            // continuation line rather than refusing the input.
+            //
+            // Only where an infix's operand was actually required: running out
+            // of input has many other causes (`say $\` is Rakudo's "Confused",
+            // and roast pins it), and this message used to be given to all of
+            // them with "Confused:" glued on the front to cover both readings.
+            if (pos_ == infixRhsPos_) {
+                ParseError pe("Missing required term after infix", cur().line, isKind(Tok::End));
+                pe.exType = "X::Comp::AdHoc";
+                throw pe;
+            }
             error("Confused"); // Rakudo's generic "confused parse" message
     }
 }
@@ -8555,6 +8590,8 @@ ExprPtr Parser::makeNqpOp(const std::string& op, std::vector<ExprPtr>& args) {
         // keys its symlink-loop guard on inode+device.
         {"stat", NqpOpc::Stat}, {"stat_time", NqpOpc::Stat},
         {"lstat", NqpOpc::Lstat}, {"lstat_time", NqpOpc::Lstat},
+        // the running compiler, for the REPL-sandbox pattern (see REPL below)
+        {"getcomp", NqpOpc::GetComp},
     };
     auto it = k.find(op);
     if (it == k.end()) return nullptr;

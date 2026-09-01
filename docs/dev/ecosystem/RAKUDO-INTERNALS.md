@@ -108,3 +108,43 @@ replaced it in Graph 0.1.3 — so the policy there is narrower: answer the
 MOP hook generically (which costs 0.2% and adds no documented-language
 surface), fix the engine faults it exposed on their own merits, and tune
 for nothing.
+
+## The compiler as an object: `nqp::getcomp` + `REPL`
+
+There is a third shape, and it is the most load-bearing of the three: a module
+that wants **a persistent evaluation scope** — `my $x = 42` typed in one cell
+still there in the next — and has no public way to ask for one. `EVAL` forgets,
+so the ecosystem reaches for the compiler and its REPL object directly:
+
+```raku
+use nqp;
+$!compiler := nqp::getcomp("Raku") || nqp::getcomp('perl6');
+$!repl = REPL.new($!compiler, {});
+...
+$!repl.repl-eval($code, $exception, :outer_ctx($!save_ctx), :interactive(1));
+```
+
+Those five lines are Jupyter::Kernel's sandbox, copied verbatim into
+Text::CodeProcessing and from there into the notebook and document-weaving
+dists that build on it. `nqp::getcomp` alone accounts for two of the ecosystem
+sweep's self-failures (Text::CodeProcessing, CodeUnit), and everything that
+depends on those inherits it.
+
+rakupp answers both names:
+
+- **`nqp::getcomp('Raku')`** (and `'perl6'`, which is why the idiom's `||`
+  exists) — the compiler object `$*RAKU.compiler` already was. An unknown HLL
+  name is null, as in NQP.
+- **`REPL`** — `.new($compiler, $adverbs)`, `.repl-eval($code, $exception,
+  *%adverbs)`, `.input-incomplete`, `.ctxsave`. Rakudo persists the scope by
+  handing back the eval'd code's *context* and taking it again as
+  `:outer_ctx`; rakupp keeps the scope on the REPL object, which is the same
+  promise with none of the context plumbing — two REPLs are two independent
+  sessions, `:outer_ctx` is accepted and ignored, and `$*MAIN_CTX` stays
+  undefined, which the sandboxes already handle (`if $*MAIN_CTX` guards every
+  use). A line runs in the session scope with the caller's frame still on the
+  dynamic stack, so `my` lands in the session while `$*OUT` resolves where the
+  caller put it — which is what lets a weaver capture a chunk's output by
+  wrapping the call in `my $*OUT = $*OUT but role {…}`.
+
+Same policy as the census above: answered so real code runs, and nothing more.
