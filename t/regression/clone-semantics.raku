@@ -1,7 +1,7 @@
 # Regression: `.clone` diverged from Rakudo in five ways, and the two dispatch
 # gaps a user-written `clone` runs into.
 #
-# Found by diffing ~130 clone cases against Rakudo 2026.07:
+# Found by diffing ~130 clone cases against Rakudo 2026.08, 2026-09-01:
 #
 #   1. A Pair cloned to ITSELF. VT::Pair fell into the "immutable — clone is the
 #      value" arm of the non-object clone, but every copy of a Pair Value shares
