@@ -483,6 +483,25 @@ So:
    v3.14.0) before anyone noticed, because nothing in this list said so.
    `docs/status/BENCHMARKS.md` too if the benchmarks were re-run.
 
+   **Re-measure BENCHMARKS.md BEFORE the tag, not after.** raku.online's
+   `gen-dashboard.raku` mines this file *as committed at each ref*, so a tag
+   draws whatever it said when it was cut and no later edit can move that point.
+   v3.24.0 shipped with tables taken at `v3.23.0-45-gb6905bf` — before the
+   eight-carry-chain multiply — so the published `bigint` series read ~31 ms for
+   an engine that does it in 5.8, and the release's own point still carries the
+   pre-fix prose. Only `main` moved when the file was corrected afterwards.
+
+   Two more traps behind that one, both found the same day:
+
+   - **`bench-backfill.tsv` also carries `main` rows.** They OVERRIDE the mined
+     numbers, so correcting the doc alone is not enough: leave them and the
+     chart drops at the release and jumps back at `main`, drawing a regression
+     that never happened. Update the tag's rows *and* `main`'s.
+   - **The tag's rows come from the released ARTIFACT**, not a local build —
+     that is what makes releases comparable with each other. Download
+     `rakupp-macos-universal.tar.gz`, check it against its `.sha256`, and
+     measure that. `main`'s rows come from the local build at the tag.
+
    Then **prove** they agree, because a half-landed refresh looks exactly like
    a finished one — at v3.0.0 two files carried the new numbers and six kept
    the old, and the timeout count read 5 in one file and 10 in another:
@@ -775,6 +794,14 @@ The cost is named so the list stays a record rather than a ritual.
 
 **Before the gates**
 
+- [ ] **Pass `RAKUPP=` explicitly to every measuring tool.** `pick-rakupp`
+      searches `build/` before `build-arm64/` and takes the first NATIVE one, so
+      a stale-but-arm64 `build/` wins and the tool measures an engine dozens of
+      commits old while its banner says only `rakupp 3.x.y`. It did this to
+      `perf-guard`, `run-optbench` and `run-bench` (twice) during the v3.24.0
+      release, with `build/` 28 commits behind — `run-bench` reported `bigint`
+      at 31.3 ms where the release does 5.8, and recording that would have put a
+      6x-wrong number in the file every later release is gated against.
 - [ ] **Name the binary.** `which -a rakupp` — three answer on the machine of
       record, and the right one is first by PATH ordering alone. Read the
       provenance line each tool now prints. *(v1.0.0 scores a Roast subset 0/2
