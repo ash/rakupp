@@ -285,8 +285,18 @@ struct Callable {
     // from a 6.e program.
     int langRev = -1;
     std::shared_ptr<Env> closure;
-    std::shared_ptr<Env> stateEnv;                 // persistent storage for `state` vars (across calls)
-    std::once_flag stateInit;                      // stateEnv is created exactly once (thread-safe under parallel calls)
+    // `state` storage and the flag that publishes it, held together so that a
+    // COPY of a routine starts with neither. `&f.clone` is a new routine and
+    // Rakudo gives it fresh `state` slots rather than the origin's — and the
+    // holder is also what makes Callable copyable at all, since std::once_flag
+    // is not. Copy-ASSIGNMENT stays deleted (as it already was).
+    struct StateSlot {
+        std::shared_ptr<Env> env;                  // persistent storage for `state` vars (across calls)
+        std::once_flag init;                       // env is created exactly once (thread-safe under parallel calls)
+        StateSlot() = default;
+        StateSlot(const StateSlot&) {}             // a clone starts with no state env of its own
+    };
+    StateSlot state;
     BuiltinFn builtin;                             // set => builtin
     std::vector<std::string> placeholders;         // $^a auto-params (sorted)
     std::vector<Value> candidates;                 // multi-dispatch candidates
@@ -338,9 +348,17 @@ struct Callable {
     const Expr* nativeSymExpr = nullptr;             // ditto for `is symbol(EXPR)` — a computed C symbol name
     void* nativeSymCache = nullptr;                   // resolved fn pointer — dlopen/dlsym once, not per call
                                                       // (5 dlopen candidates per call cost a flat ~67 µs)
-    void* nativeCifCache = nullptr;                   // prepared libffi call interface, built once per signature.
-                                                      // ffi_prep_cif is ~80 ns — 20% of a whole crossing — so it
-                                                      // must not run per call. Opaque here; see ncFreeCif.
+    // Prepared libffi call interface, built once per signature. ffi_prep_cif is
+    // ~80 ns — 20% of a whole crossing — so it must not run per call. Opaque
+    // here; see ncFreeCif. OWNED (~Callable frees it), so a copy must start
+    // empty rather than inherit the pointer and free it a second time; the
+    // clone simply prepares its own on first call.
+    struct CifSlot {
+        void* p = nullptr;
+        CifSlot() = default;
+        CifSlot(const CifSlot&) {}
+    };
+    CifSlot nativeCifCache;
     ~Callable();
     bool isStub = false;                              // body is a bare `...`/`!!!` stub (role requirement)
     bool usesArgs = false;                            // body references @_ / %_ (implicit slurpy signature)

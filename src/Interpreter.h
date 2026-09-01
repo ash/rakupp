@@ -627,6 +627,21 @@ struct ExecContext {
     uint64_t frameTop = 0;        // incremented per callCallableRaw activation
     size_t redispatchFloor = 0;   // frames below this index are another routine's (callsame/nextsame can't see them)
     uint64_t curRoutineFrame = 0; // frameTop at the nearest enclosing ROUTINE entry
+    // The BUILT-IN standing behind the user method currently running, for
+    // callsame/nextsame. A user method that overrides a built-in (`method clone
+    // { … callsame … }` over Mu.clone) has no user candidate under it, so
+    // invokeMethodChain pushes no redispatch frame — pushing one per method call
+    // would cost EVERY call a pair of closures and a copy of its arguments, and
+    // almost none of them redispatch. The activation leaves this breadcrumb
+    // instead: three borrowed pointers into invokeMethodChain's own frame, which
+    // outlives the call, read only when no visible frame answers. `frame` is the
+    // activation it belongs to, so a nested routine's callsame cannot claim it.
+    struct BuiltinFallback {
+        const std::string* name = nullptr;
+        const Value* self = nullptr;
+        const ValueList* args = nullptr;
+        uint64_t frame = 0;
+    } builtinFallback;
     // Cooperative unlabelled next/last/redo: set when the statement executes in
     // the SAME callable frame as the innermost native loop (no closure between);
     // labelled or cross-frame control still throws NextEx/LastEx/RedoEx.
@@ -981,7 +996,11 @@ public:
     // handler .resume'd, so the default stderr print is suppressed; false =
     // no handler, or it finished without resuming (default behaviour stands).
     bool runControlWarn(const std::string& msg);
-    std::string gistOf(const Value& v); // .gist, honouring a user-defined `method gist` (for say/note)
+    // .gist, honouring a user-defined `method gist` (for say/note). skipUser
+    // bypasses that method — the built-in behind it, which is where `self.Mu::gist`
+    // and a `method gist { callsame }` both have to land (else either re-enters the
+    // user method and recurses forever).
+    std::string gistOf(const Value& v, bool skipUser = false);
     std::string strOf(const Value& v);  // .Str,  honouring user `method Str`/`gist` (for print/put/interpolation)
     // prefix `+` / `-` on a value, in full. A member because the object arms call
     // user methods; public because the `+*` / `-*` WhateverCode closure runs it
@@ -992,7 +1011,10 @@ public:
     std::string rxSubject(const Value& v) { return v.t == VT::Object ? strOf(v) : v.toStr(); }
     Value invokeMethod(const Value& codeVal, const Value& self, ValueList args, const std::vector<ExprPtr>* rwArgs = nullptr, bool ownFrame = false,
                        Value* selfBack = nullptr,  // selfBack: copy the frame's `self` out (rw invocant)
-                       bool skipWrappers = false); // true: innermost wrap level reached — run the body
+                       bool skipWrappers = false, // true: innermost wrap level reached — run the body
+                       // the built-in behind this method, for callsame/nextsame: filled in by
+                       // the caller, stamped with this activation's frame and installed here
+                       ExecContext::BuiltinFallback* fallback = nullptr);
     // A method `augment`-ed onto a BUILT-IN type, if there is one for this invocant.
     Value* builtinExtMethod(const Value& inv, const std::string& m);
     // What an object contributes when assigned to a `%` container: its own

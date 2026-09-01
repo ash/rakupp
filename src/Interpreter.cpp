@@ -3439,7 +3439,7 @@ void Interpreter::breakSelfClosures(Env* env) {
         if (v.t == VT::Code && v.code() && v.payloadUnique() &&
             v.code()->closure.get() == env) {
             v.code()->closure.reset();
-            v.code()->stateEnv.reset();
+            v.code()->state.env.reset();
         }
     });
 }
@@ -7544,7 +7544,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             // candidates share a single `state`-variable store.
             if (!sd->altParams.empty()) {
                 auto shared = std::make_shared<Env>(); shared->parent = tctx_.cur;
-                auto share = [&](Value& c) { std::call_once(c.code()->stateInit, [&] { c.code()->stateEnv = shared; }); };
+                auto share = [&](Value& c) { std::call_once(c.code()->state.init, [&] { c.code()->state.env = shared; }); };
                 share(code);
                 for (auto& c : altCands) share(c);
             }
@@ -13005,7 +13005,7 @@ struct NcCif {
     unsigned                nfixed   = 0;
     ffi::Cif                cif;
 };
-Callable::~Callable() { delete (NcCif*)nativeCifCache; }
+Callable::~Callable() { delete (NcCif*)nativeCifCache.p; }
 
 // Declared Raku return type → the libffi type of the C return value. Null when
 // libffi is unavailable (the caller then takes the fixed-prototype path).
@@ -13350,18 +13350,18 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
             return variadic ? F.prep_var(buf, F.abi, (unsigned)nfixed, (unsigned)na, rtype, na ? at : nullptr)
                             : F.prep(buf, F.abi, (unsigned)na, rtype, na ? at : nullptr);
         };
-        NcCif* cached = (NcCif*)c.nativeCifCache;
+        NcCif* cached = (NcCif*)c.nativeCifCache.p;
         if (cached && cached->rtype == rtype && cached->variadic == variadic &&
             cached->nfixed == (unsigned)(variadic ? nfixed : 0) &&
             cached->atypes.size() == na &&
             std::equal(cached->atypes.begin(), cached->atypes.end(), atypes))
             cifp = cached->cif.buf;
-        if (!cifp && !c.nativeCifCache) {
+        if (!cifp && !c.nativeCifCache.p) {
             auto* nc = new NcCif();
             nc->atypes.assign(atypes, atypes + na); nc->rtype = rtype;
             nc->variadic = variadic; nc->nfixed = (unsigned)(variadic ? nfixed : 0);
             if (prepInto(nc->cif.buf, nc->atypes.data()) == 0) {
-                c.nativeCifCache = nc;   // published once; a racing thread stores the same shape
+                c.nativeCifCache.p = nc;   // published once; a racing thread stores the same shape
                 cifp = nc->cif.buf;
             }
             else delete nc;
@@ -13888,12 +13888,12 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     // `state` vars live in a per-callable persistent env spliced into the lookup chain.
     // Its parent is constant (the closure scope, or global), so create it exactly once
     // — never rewrite it per call. That keeps concurrent invocations of the SAME closure
-    // (parallel mode) from racing on c.stateEnv; call_once gives a lock-free fast path.
-    std::call_once(c.stateInit, [&] {
-        c.stateEnv = std::make_shared<Env>();
-        c.stateEnv->parent = c.closure ? c.closure : global_;
+    // (parallel mode) from racing on c.state.env; call_once gives a lock-free fast path.
+    std::call_once(c.state.init, [&] {
+        c.state.env = std::make_shared<Env>();
+        c.state.env->parent = c.closure ? c.closure : global_;
     });
-    env->parent = c.stateEnv;
+    env->parent = c.state.env;
     // Pads (PADS-PLAN.md): every Callable body is a pad owner, resolved at its
     // first call (padReady publishes; the layout itself is cached per BODY, so
     // .assuming wrappers sharing a body agree on slots). The layout goes on
@@ -14040,7 +14040,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     auto saved = tcx.cur;
     Env* savedState = tcx.curStateEnv;
     tcx.cur = env;
-    tcx.curStateEnv = c.stateEnv.get();
+    tcx.curStateEnv = c.state.env.get();
     tcx.dynStack.push_back(saved ? saved.get() : global_.get()); // caller's scope, for dynamic $*var lookup
     // callframe(N) walks these; RAII, because this function has many exit paths
     tcx.callFrames.push_back({curLine_, &codeVal});
@@ -14558,8 +14558,16 @@ Value Interpreter::invokeMethodChain(const std::string& name, ClassInfo* startCl
     // the implicit Grammar ancestor has no builtin method table to redispatch
     // into — keep the no-native-base behaviour for grammars
     if (nb == "Grammar") nb.clear();
-    if (!userNext && nb.empty())
-        return invokeMethod(*um, self, args, rwArgs);
+    if (!userNext && nb.empty()) {
+        // No USER candidate under this method — but a built-in may still stand
+        // behind it (`method clone {…callsame…}` over Mu.clone, `method Str`
+        // over Any.Str). Hand the activation a breadcrumb to it rather than
+        // pushing a redispatch frame: `name`, `self` and `args` all outlive the
+        // call in this frame, and the pointers cost nothing when nobody asks.
+        ExecContext::BuiltinFallback fb{&name, &self, &args, 0};
+        return invokeMethod(*um, self, args, rwArgs, /*ownFrame=*/false,
+                            /*selfBack=*/nullptr, /*skipWrappers=*/false, &fb);
+    }
     RedispatchCtx rc;
     rc.sameArgs = args;
     rc.fromChain = true; // marks the parent-class deferral frame for multi-method exhaustion
@@ -14595,7 +14603,7 @@ Value Interpreter::invokeMethodChain(const std::string& name, ClassInfo* startCl
 }
 
 Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueList args, const std::vector<ExprPtr>* rwArgs, bool ownFrame,
-                                Value* selfBack, bool skipWrappers) {
+                                Value* selfBack, bool skipWrappers, ExecContext::BuiltinFallback* fallback) {
     ExecContext& tcx = tctx_;   // one thread-local resolution — see execBlock
     if (codeVal.t != VT::Code || !codeVal.code()) return Value::any();
     // A NativeCall method: the invocant is C's first argument, then the rest.
@@ -14834,11 +14842,11 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
         }
     }
     if (!stEnv) {
-        std::call_once(c.stateInit, [&] {
-            c.stateEnv = std::make_shared<Env>();
-            c.stateEnv->parent = c.closure ? c.closure : global_;
+        std::call_once(c.state.init, [&] {
+            c.state.env = std::make_shared<Env>();
+            c.state.env->parent = c.closure ? c.closure : global_;
         });
-        stEnv = c.stateEnv;
+        stEnv = c.state.env;
     }
     env->parent = stEnv;
     env->define("self", self);
@@ -14920,6 +14928,13 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
     ++tcx.frameTop;
     uint64_t savedFrameTop = tcx.frameTop, savedRoutineFrame = tcx.curRoutineFrame;
     tcx.curRoutineFrame = tcx.frameTop;
+    // The built-in behind THIS method, for a callsame/nextsame in its body. It is
+    // stamped with the activation's own frame, and cleared when there is none, so
+    // that a method with no built-in under it cannot inherit an outer one's.
+    struct FBGuard { ExecContext& t; ExecContext::BuiltinFallback s; ~FBGuard() { t.builtinFallback = s; } }
+        fbG{tcx, tcx.builtinFallback};
+    if (fallback) { fallback->frame = tcx.curRoutineFrame; tcx.builtinFallback = *fallback; }
+    else tcx.builtinFallback = ExecContext::BuiltinFallback{};
     // …and `$/` scopes to it, exactly as it does to a sub's. Only callCallable
     // marked its Env, so a MATCH inside a method wrote through to the caller's
     // `$/` and destroyed it: HTTP::Tiny reads `$<status>` again after calling
@@ -18713,6 +18728,24 @@ bool rtMulAssignBig(Value& dst, const Value& r) {
     return true;
 }
 
+// `=:=` on a REFERENCE type is the identity of the thing itself, never of what
+// it holds. An Array/Hash/Object/Code/Pair/Match IS its payload slot, and every
+// copy of one Value shares that slot — so a container still recognises itself
+// when it arrives by another route (a sub's return value, an element read),
+// while two equal-looking containers stay two containers. Without this the
+// non-variable arm fell through to valueEq and answered by CONTENTS: both
+// `[1,2] =:= @a` and `@a.clone =:= @a` came out True.
+static bool identicalRef(const Value& l, const Value& r) {
+    return l.t == r.t && l.isList == r.isList && l.pk_ == r.pk_ && l.p_ && l.p_ == r.p_;
+}
+static bool isRefValue(const Value& v) {
+    switch (v.t) {
+        case VT::Array: case VT::Hash: case VT::Object:
+        case VT::Code:  case VT::Pair: case VT::Match: case VT::Regex: return true;
+        default: return false;
+    }
+}
+
 Value applyArith(const std::string& op, const Value& l, const Value& r) {
     // Hot path: 1–2-char arithmetic/comparison ops on plain Int/Int — the
     // overwhelmingly common case — dispatched by a single char, skipping the
@@ -19918,6 +19951,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         // attributes unmarshalled as plain Hashes.
         if (l.t == VT::Type && r.t == VT::Type)
             return Value::boolean(l.s == r.s && l.ofType() == r.ofType());
+        if (isRefValue(l) || isRefValue(r)) return Value::boolean(identicalRef(l, r));
         return Value::boolean(l.t == r.t && valueEq(l, r));
     }
     if (op == "~~" || op == "!~~") {
@@ -23335,6 +23369,7 @@ Value Interpreter::evalBinary(Binary* b) {
             // branch and typed-array attributes unmarshalled as plain Hashes
             if (l.t == VT::Type && r.t == VT::Type)
                 same = (l.s == r.s && l.ofType() == r.ofType());
+            else if (isRefValue(l) || isRefValue(r)) same = identicalRef(l, r);
             else same = (l.t == r.t) && valueEq(l, r);
         }
         return Value::boolean(op[0] == '!' ? !same : same);
@@ -25316,7 +25351,7 @@ static void failureDetonate(const Value& v) {
                         m != v.hash()->end() ? m->second.toStr() : "Failure"};
     }
 }
-std::string Interpreter::gistOf(const Value& v) {
+std::string Interpreter::gistOf(const Value& v, bool skipUser) {
     failureDetonate(v);
     // An ENDLESS lazy sequence gists as Rakudo's "(...)" — a lazy ARRAY shows
     // its reified prefix and marks the rest. say/print must not pretend the
@@ -25349,7 +25384,12 @@ std::string Interpreter::gistOf(const Value& v) {
         v.hash() && v.hash()->count("formatter"))
         return methodCall(v, "Str", {}).toStr();
     if (v.t == VT::Object && v.obj() && v.obj()->cls) {
-        if (Value* m = v.obj()->cls->findMethod("gist")) { ValueList none; return invokeMethod(*m, v, none).toStr(); }
+        // through the CHAIN, not straight at the method: a user `method gist`
+        // that defers (`nextsame`/`callsame`) needs the candidate under it —
+        // a parent's gist, or the built-in one — and invokeMethod alone
+        // establishes neither.
+        if (!skipUser && v.obj()->cls->findMethod("gist"))
+            return invokeMethodChain("gist", v.obj()->cls.get(), v, {}, nullptr).toStr();
         // exceptions gist to their message (`say $!` prints "boom", not X::AdHoc<obj>)
         // NOTE: this is the X::-NAME test, not "is it an Exception". A user
         // subclass of Exception not named X::* gists as Class<obj> here while `~$e`

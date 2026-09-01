@@ -8513,13 +8513,33 @@ void Interpreter::registerBuiltins() {
         if (I.redispatchStack_.size() <= I.tctx_.redispatchFloor) return nullptr;
         return &I.redispatchStack_.back();
     };
+    // …and with no frame at all there may still be a BUILT-IN under the running
+    // method: `method clone { … callsame … }` overrides Mu.clone, and a user
+    // method that overrides a built-in gets no redispatch frame (see
+    // ExecContext::builtinFallback — one per method call would be too dear).
+    // `skipOwn` re-enters the dispatch with the invocant's own methods bypassed,
+    // which lands exactly on the built-in. The breadcrumb is cleared for the
+    // duration, so a redispatch that somehow reaches the same method again
+    // cannot loop on it. Returns nullopt when this activation has no built-in
+    // behind it — then the no-dispatcher error stands, as before.
+    auto builtinNext = [](Interpreter& I, const ValueList* with) -> std::optional<Value> {
+        ExecContext::BuiltinFallback fb = I.tctx_.builtinFallback;
+        if (!fb.name || !fb.self || !fb.args || fb.frame != I.tctx_.curRoutineFrame)
+            return std::nullopt;
+        struct Restore { ExecContext& t; ExecContext::BuiltinFallback s;
+                         ~Restore() { t.builtinFallback = s; } } r{I.tctx_, fb};
+        I.tctx_.builtinFallback = ExecContext::BuiltinFallback{};
+        return I.methodCall(*fb.self, *fb.name, with ? *with : *fb.args,
+                            nullptr, /*skipOwn=*/true);
+    };
     B["lastcall"] = [dispTop](Interpreter& I, ValueList&) -> Value {
         if (auto* d = dispTop(I)) d->lastcall = true;
         return Value::boolean(true);
     };
-    B["callsame"] = [dispTop](Interpreter& I, ValueList&) -> Value {
+    B["callsame"] = [dispTop, builtinNext](Interpreter& I, ValueList&) -> Value {
         auto* d = dispTop(I);
         if (!d) {
+            if (auto b = builtinNext(I, nullptr)) return *b;
             if (I.redispatchStack_.empty()) I.throwTypedV("X::NoDispatcher", {{"redispatcher", Value::str("callsame")}},
                               "callsame is not in the dynamic scope of a dispatcher");
             return Value::nil(); // exhausted chain bottom
@@ -8527,9 +8547,10 @@ void Interpreter::registerBuiltins() {
         if (d->lastcall) return Value::nil(); // trimmed by lastcall
         return d->next(d->sameArgs);
     };
-    B["callwith"] = [dispTop](Interpreter& I, ValueList& a) -> Value {
+    B["callwith"] = [dispTop, builtinNext](Interpreter& I, ValueList& a) -> Value {
         auto* d = dispTop(I);
         if (!d) {
+            if (auto b = builtinNext(I, &a)) return *b;
             if (I.redispatchStack_.empty()) I.throwTypedV("X::NoDispatcher", {{"redispatcher", Value::str("callwith")}},
                               "callwith is not in the dynamic scope of a dispatcher");
             return Value::nil();
@@ -8537,9 +8558,10 @@ void Interpreter::registerBuiltins() {
         if (d->lastcall) return Value::nil();
         return d->next(a);
     };
-    B["nextsame"] = [dispTop](Interpreter& I, ValueList&) -> Value {
+    B["nextsame"] = [dispTop, builtinNext](Interpreter& I, ValueList&) -> Value {
         auto* d = dispTop(I);
         if (!d) {
+            if (auto b = builtinNext(I, nullptr)) throw ReturnEx{*b};
             if (I.redispatchStack_.empty()) I.throwTypedV("X::NoDispatcher", {{"redispatcher", Value::str("nextsame")}},
                               "nextsame is not in the dynamic scope of a dispatcher");
             throw ReturnEx{Value::nil()};
@@ -8555,9 +8577,10 @@ void Interpreter::registerBuiltins() {
                               "samewith is not in the dynamic scope of a dispatcher");
         return d->restart(a);
     };
-    B["nextwith"] = [dispTop](Interpreter& I, ValueList& a) -> Value {
+    B["nextwith"] = [dispTop, builtinNext](Interpreter& I, ValueList& a) -> Value {
         auto* d = dispTop(I);
         if (!d) {
+            if (auto b = builtinNext(I, &a)) throw ReturnEx{*b};
             if (I.redispatchStack_.empty()) I.throwTypedV("X::NoDispatcher", {{"redispatcher", Value::str("nextwith")}},
                               "nextwith is not in the dynamic scope of a dispatcher");
             throw ReturnEx{Value::nil()};

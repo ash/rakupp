@@ -3140,9 +3140,35 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 return invokeMethodChain(m, ci.get(), inv, args, rwArgs);
         }
         if (m == "clone") { // shallow copy, with :name(val) attribute overrides
+            // `clone(*%twiddles)` takes NAMED arguments only. A positional is a
+            // dispatch failure in Rakudo, not a silently ignored extra — and a
+            // silently ignored one is worse than useless: `.clone($replacement)`
+            // looks like it did something.
+            for (auto& a : args)
+                if (a.t != VT::Pair)
+                    throw RakuError{Value::typeObj("X::Multi::NoMatch"),
+                        "Cannot resolve caller clone(" + inv.typeName() + ":D: " + a.typeName() +
+                        (rtIsDefined(a) ? ":D" : ":U") + "); none of these signatures matches:\n"
+                        "    (Mu:U $:: *%_)\n    (Mu:D $:: *%twiddles)"};
             Value nv = inv; auto ni = std::make_shared<ObjectData>();
             ni->cls = inv.obj()->cls; ni->attrs = inv.obj()->attrs;
-            for (auto& a : args) if (a.t == VT::Pair) ni->attrs[a.s] = a.pairVal() ? *a.pairVal() : Value::any();
+            // A twiddle names a PUBLIC attribute — one with an accessor. Rakudo
+            // walks `self.^attributes` and twiddles only those, so `$!private`
+            // keeps the value it was cloned with (even under `is built`, which
+            // opens CONSTRUCTION by name and nothing else), and an unknown name
+            // is ignored rather than entering the attr store, where `$.name`
+            // would find it instead of dying with X::Method::NotFound.
+            // The value ASSIGNS into the attribute's container rather than
+            // replacing it: `has @.a` holds an Array whatever shape the twiddle
+            // had, exactly as construction does — binding the raw value left
+            // `.clone(a => (1,2))` with a List that `.push` could not touch.
+            for (auto& a : args) {
+                if (a.t != VT::Pair) continue;
+                const ClassAttr* at = ci->findAttr(a.s);
+                if (!at || !at->pub) continue;
+                ni->attrs[a.s] = coerceToSigil(
+                    nilResetForAttr(a.pairVal() ? *a.pairVal() : Value::any(), *at), at->sigil);
+            }
             nv.setObj(ni); return nv;
         }
         // a grammar INSTANCE (`Grammar.new`) parses just like the type object
@@ -3946,7 +3972,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     // and falls back to `Class<obj>`, so `say $x` and `say $x.gist` disagreed.
     // A LAZY list goes through gistOf too: an endless one must answer "(...)"
     // (Rakudo), not pass its cached prefix off as the whole list.
-    if (m == "gist") return Value::str(inv.t == VT::Object ? gistOf(inv)
+    if (m == "gist") return Value::str(inv.t == VT::Object ? gistOf(inv, m.skipOwn)
         : inv.t == VT::Array && inv.arr() && inv.ext() ? gistOf(inv)
         : inv.gist());
     if (m == "raku" && inv.t == VT::Array && inv.arr() && inv.ext() &&
@@ -4259,6 +4285,27 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     if (m == "clone") { // non-object clone: shallow copy of containers, self for immutables
         if (inv.t == VT::Array) { Value nv = inv; nv.setArr(std::make_shared<ValueList>(*inv.arr())); return nv; }
         if (inv.t == VT::Hash)  { Value nv = inv; nv.setHash(std::make_shared<ValueMap>(*inv.hash())); return nv; }
+        // A PAIR is mutable through `.value` (Rakudo declares it `is rw`), and
+        // every copy of the Value shares the one cell it points at — so the
+        // immutable return below handed back an ALIAS, and `$p.clone.value = 7`
+        // rewrote $p. Copy the cell: the clone owns its own value.
+        if (inv.t == VT::Pair) {
+            Value nv = inv;
+            nv.setPairVal(std::make_shared<Value>(inv.pairVal() ? *inv.pairVal() : Value::any()));
+            return nv;
+        }
+        // A MATCH is a distinct object after cloning too — mdW() copies the body
+        // in place, since this Value and the original now share it.
+        if (inv.t == VT::Match) { Value nv = inv; nv.mdW(); return nv; }
+        // A ROUTINE/BLOCK clones into a NEW code object sharing the closure but
+        // not the `state` slots — `my $c = $b.clone` restarts $b's state vars,
+        // which is the whole reason to clone a closure. (Callable's copy leaves
+        // the state holder empty; see Value.h.)
+        if (inv.t == VT::Code && inv.code()) {
+            Value nv = inv;
+            nv.setCode(std::make_shared<Callable>(*inv.code()));
+            return nv;
+        }
         return inv; // Int/Num/Rat/Str/Bool/… are immutable — clone is the value itself
     }
     // `Metamodel::ClassHOW.new_type(:name, :ver, :auth)` — a class created at
