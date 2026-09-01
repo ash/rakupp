@@ -114,6 +114,11 @@ Earlier plans:
 Living logs. Each one is a corpus we ran both engines over, with the divergences
 classified and (mostly) repro'd.
 
+The selection below is the divergence logs and the reviews. The directory also
+holds campaign reports, gate post-mortems and performance investigations —
+**[findings/README.md](findings/README.md)** indexes all of it, and is the place
+to look when what you want is not listed here.
+
 - **[findings/ROAST-GAPS.md](findings/ROAST-GAPS.md)** — classification of
   everything that still blocks a full Roast pass (from a systematic scan of all
   failing files), with a suggested attack order.
@@ -152,6 +157,11 @@ classified and (mostly) repro'd.
 - **[findings/CONFORMANCE.md](findings/CONFORMANCE.md)** — a dated docs-conformance
   audit log (feature-by-feature against docs.raku.org). Historical, not maintained
   as current reference.
+- **[findings/HASHFILL-AND-BIGINT.md](findings/HASHFILL-AND-BIGINT.md)** — the
+  two times an outside comparison said we were slower and did not say where
+  (`hashfill` against perl, `bigint` against mutsu), what each turned out to be,
+  and the one thing they had in common: a large share of both gaps was copying
+  rather than computing.
 
 ## experiments/ — measured, recorded, sometimes reverted
 
