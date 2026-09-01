@@ -24171,6 +24171,119 @@ Value Interpreter::hyperPostfixApply(const std::string& op, Value v) {
     });
 }
 
+// Prefix `+` and prefix `-` on a value, whole. This lived only inside
+// evalUnary, and the WhateverCode that `+*` / `-*` curries into carried its own,
+// much thinner copy — which had drifted badly. That copy numified through
+// toNum() and boxed a Num, so `"123".comb.map(+*)` produced (1e0, 2e0, 3e0)
+// where the same operator applied directly gives (1, 2, 3); a list numified to
+// its element count as a Num rather than an Int, a Bool came back as a Bool,
+// `-*` over a Rat gave a Num and over a Complex gave -0e0, and `-*` over a
+// bignum saturated through toInt(). One implementation now, so the curried form
+// and the direct one cannot disagree again.
+//
+// Every `op` reaching here is "+" or "-". The arms are verbatim from evalUnary
+// and in the order it ran them, each keeping its own — now redundant — check of
+// which of the two it serves, so that an arm stays readable and movable on its
+// own. The last two always return, so this is total for both operators.
+Value Interpreter::prefixNumeric(const std::string& op, const Value& v) {
+    // numeric prefix on an object uses its .Numeric (or .Bridge/.Int): `+$o`, `-$o`
+    if ((op == "+" || op == "-") && v.t == VT::Object && v.obj() && v.obj()->cls) {
+        for (const char* nm : {"Numeric", "Bridge", "Int"})
+            if (Value* m = v.obj()->cls->findMethod(nm)) {
+                ValueList none; Value n = invokeMethod(*m, v, none);
+                if (op == "-") return n.t == VT::Int ? Value::integer(-n.toInt()) : Value::number(-n.toNum());
+                return n;
+            }
+        // …and a class deriving a built-in numifies as the value it BOXES:
+        // `+Int64.new(-42)` is -42, not the object's address.
+        if (v.obj()->hasBoxed) {
+            Value b = v.obj()->boxed;
+            ValueList none;
+            Value n = b.isNumeric() ? b : methodCall(b, "Numeric", none);
+            if (op == "-") return n.t == VT::Int ? Value::integer(-n.toInt()) : Value::number(-n.toNum());
+            return n;
+        }
+    }
+    // …and a CAPTURE numifies to its POSITIONAL count: the named parts are not
+    // elements, so `+\(2, 3, :a(7))` is 2, not 3.
+    if ((op == "+" || op == "-") && v.t == VT::Array && v.hashKind == "Capture") {
+        ValueList none; Value n = methodCall(v, "Numeric", none);
+        return op == "-" ? Value::integer(-n.toInt()) : n;
+    }
+    // A Blob/Buf is Positional too, so numeric context is its ELEMENT COUNT, not a
+    // numification of its bytes as text. `+"key".encode` is 3; rakupp was reading
+    // the bytes as the string "key" and throwing "Cannot convert string to number".
+    // Digest's HMAC pads its key with `if +$key < $block-size`, so every HMAC came
+    // out wrong — the padding branch never ran.
+    if ((op == "+" || op == "-") && v.t == VT::Str && !v.itemized &&
+        (v.hashKind == "Blob" || v.hashKind == "Buf" || v.hashKind == "utf8")) {
+        long long n = v.blobElems();
+        return Value::integer(op == "-" ? -n : n);
+    }
+    // Numeric context of a list/array/hash/range is its element count —
+    // except a Proc / Proc::Async, which numifies to its exit status (+$proc).
+    if ((op == "+" || op == "-") &&
+        (v.t == VT::Array || v.t == VT::Hash || v.t == VT::Range) &&
+        !(v.t == VT::Hash && (v.hashKind == "Proc" || v.hashKind == "Proc::Async" ||
+                              v.hashKind == "StrDistance"))) {
+        // a Bag/Mix numifies to its .total (sum of counts/weights), possibly fractional
+        if (v.t == VT::Hash && v.hash() &&
+            (v.hashKind.rfind("Bag", 0) == 0 || v.hashKind.rfind("Mix", 0) == 0)) {
+            double t = 0; bool allInt = true;
+            for (auto& kv : *v.hash()) { t += kv.second.toNum(); if (kv.second.t != VT::Int && kv.second.t != VT::Bool) allInt = false; }
+            if (op == "-") t = -t;
+            return allInt ? Value::integer((long long)t) : Value::number(t);
+        }
+        // +$ptr is the ADDRESS, not an element count: a NativeCall Pointer is
+        // a { addr, of } hash, so counting its keys numified every pointer to 2.
+        if (v.t == VT::Hash && v.hash() && (v.hashKind == "Pointer" || v.hashKind == "CArray")) {
+            auto it = v.hash()->find("addr");
+            if (it != v.hash()->end()) {
+                long long a = it->second.toInt();
+                return Value::integer(op == "-" ? -a : a);
+            }
+        }
+        // +$date is its DAYCOUNT and +$datetime its Instant (Rakudo's Dateish
+        // Numeric) — counting the hash's fields gave a number that meant nothing.
+        if (v.t == VT::Hash && v.hash() && (v.hashKind == "Date" || v.hashKind == "DateTime")) {
+            ValueList none;
+            Value n = methodCall(v, "Numeric", none);
+            if (op == "-") return n.t == VT::Int ? Value::integer(-n.toInt()) : Value::number(-n.toNum());
+            return n;
+        }
+        long long n;
+        if (v.t == VT::Array) n = (long long)v.arr()->size();
+        else if (v.t == VT::Hash) n = (long long)v.hash()->size();
+        else n = (long long)v.flatten().size();
+        return Value::integer(op == "-" ? -n : n);
+    }
+    if (op == "-") {
+        if (v.t == VT::Complex) return Value::complex(-v.n, -v.im());
+        if (v.t == VT::Int && v.big()) return Value::bigint(-(*v.big()));
+        if (v.t == VT::Int || v.t == VT::Bool) return Value::integer(-v.toInt());
+        if (v.t == VT::Rat) { Value r = Value::rat(-(*v.ratN()), *v.ratD()); r.fatRatM() = v.fatRat(); return r; }
+        if (v.t == VT::Str || v.t == VT::Match) {
+            Value n = v.t == VT::Str ? numifyStrFailure(v.s) : numifyStr(strOf(v));
+            if (n.t == VT::Hash && n.hashKind == "Failure") return n; // -"a" is a quiet Failure too
+            if (n.t == VT::Int && !n.big()) return Value::integer(-n.toInt());
+            return n.t==VT::Rat ? Value::rat(-(*n.ratN()),*n.ratD()) : Value::number(-n.toNum());
+        }
+        return Value::number(-v.toNum());
+    }
+    if (op == "+") {
+        if (v.t == VT::Bool) return Value::integer(v.b ? 1 : 0); // +True == 1
+        if (v.isAllomorph()) { // +IntStr strips to the pure numeric side
+            Value nv = v; nv.hashKind.clear(); nv.s.clear(); return nv;
+        }
+        if (v.t == VT::Match) return numifyStr(strOf(v)); // +$0 of digits is an Int, like +Str
+        if (v.isNumeric() && !v.enumName.empty()) { // +EnumValue is a PLAIN Int, not the name
+            Value nv = v; nv.enumName.clear(); nv.enumType.clear(); return nv;
+        }
+        // `+"a"` is an error, not an undefined value (Rakudo: X::Str::Numeric)
+        return v.isNumeric() ? v : (v.t == VT::Str ? numifyStrFailure(v.s) : Value::number(v.toNum()));
+    }
+}
+
 Value Interpreter::evalUnary(Unary* u) {
     // hyper prefix `-«(…)` / `--«%h`: apply the op per element, descending into
     // nested arrays and hash values (keys kept); ++/-- mutate the elements in
@@ -24815,13 +24928,9 @@ Value Interpreter::evalUnary(Unary* u) {
             Value b = arg;
             if (inner.t == VT::Code && inner.code() && inner.code()->isWhateverCode) b = I.callCallable(inner, ValueList{arg});
             if (op == "~") return Value::str(b.toStr());
-            if (op == "-") return b.t == VT::Int ? Value::integer(-b.toInt()) : Value::number(-b.toNum());
-            if (op == "+") {
-                if (b.isAllomorph()) { // +IntStr strips to the pure numeric side
-                    Value nb = b; nb.hashKind.clear(); nb.s.clear(); return nb;
-                }
-                return b.isNumeric() ? b : Value::number(b.toNum());
-            }
+            // …and `+`/`-` are the SAME implementation the direct path runs, not
+            // a second one that drifts (prefixNumeric).
+            if (op == "+" || op == "-") return I.prefixNumeric(op, b);
             if (op == "?" || op == "so") return Value::boolean(b.truthy());
             if (op == "^") return Value::range(0, strictInt(b), false, true);
             if (op == "+^") { // bitwise NOT: -(x+1), exact at any width
@@ -24859,102 +24968,9 @@ Value Interpreter::evalUnary(Unary* u) {
             }
         }
     }
-    // numeric prefix on an object uses its .Numeric (or .Bridge/.Int): `+$o`, `-$o`
-    if ((u->op == "+" || u->op == "-") && v.t == VT::Object && v.obj() && v.obj()->cls) {
-        for (const char* nm : {"Numeric", "Bridge", "Int"})
-            if (Value* m = v.obj()->cls->findMethod(nm)) {
-                ValueList none; Value n = invokeMethod(*m, v, none);
-                if (u->op == "-") return n.t == VT::Int ? Value::integer(-n.toInt()) : Value::number(-n.toNum());
-                return n;
-            }
-        // …and a class deriving a built-in numifies as the value it BOXES:
-        // `+Int64.new(-42)` is -42, not the object's address.
-        if (v.obj()->hasBoxed) {
-            Value b = v.obj()->boxed;
-            ValueList none;
-            Value n = b.isNumeric() ? b : methodCall(b, "Numeric", none);
-            if (u->op == "-") return n.t == VT::Int ? Value::integer(-n.toInt()) : Value::number(-n.toNum());
-            return n;
-        }
-    }
-    // …and a CAPTURE numifies to its POSITIONAL count: the named parts are not
-    // elements, so `+\(2, 3, :a(7))` is 2, not 3.
-    if ((u->op == "+" || u->op == "-") && v.t == VT::Array && v.hashKind == "Capture") {
-        ValueList none; Value n = methodCall(v, "Numeric", none);
-        return u->op == "-" ? Value::integer(-n.toInt()) : n;
-    }
-    // A Blob/Buf is Positional too, so numeric context is its ELEMENT COUNT, not a
-    // numification of its bytes as text. `+"key".encode` is 3; rakupp was reading
-    // the bytes as the string "key" and throwing "Cannot convert string to number".
-    // Digest's HMAC pads its key with `if +$key < $block-size`, so every HMAC came
-    // out wrong — the padding branch never ran.
-    if ((u->op == "+" || u->op == "-") && v.t == VT::Str && !v.itemized &&
-        (v.hashKind == "Blob" || v.hashKind == "Buf" || v.hashKind == "utf8")) {
-        long long n = v.blobElems();
-        return Value::integer(u->op == "-" ? -n : n);
-    }
-    // Numeric context of a list/array/hash/range is its element count —
-    // except a Proc / Proc::Async, which numifies to its exit status (+$proc).
-    if ((u->op == "+" || u->op == "-") &&
-        (v.t == VT::Array || v.t == VT::Hash || v.t == VT::Range) &&
-        !(v.t == VT::Hash && (v.hashKind == "Proc" || v.hashKind == "Proc::Async" ||
-                              v.hashKind == "StrDistance"))) {
-        // a Bag/Mix numifies to its .total (sum of counts/weights), possibly fractional
-        if (v.t == VT::Hash && v.hash() &&
-            (v.hashKind.rfind("Bag", 0) == 0 || v.hashKind.rfind("Mix", 0) == 0)) {
-            double t = 0; bool allInt = true;
-            for (auto& kv : *v.hash()) { t += kv.second.toNum(); if (kv.second.t != VT::Int && kv.second.t != VT::Bool) allInt = false; }
-            if (u->op == "-") t = -t;
-            return allInt ? Value::integer((long long)t) : Value::number(t);
-        }
-        // +$ptr is the ADDRESS, not an element count: a NativeCall Pointer is
-        // a { addr, of } hash, so counting its keys numified every pointer to 2.
-        if (v.t == VT::Hash && v.hash() && (v.hashKind == "Pointer" || v.hashKind == "CArray")) {
-            auto it = v.hash()->find("addr");
-            if (it != v.hash()->end()) {
-                long long a = it->second.toInt();
-                return Value::integer(u->op == "-" ? -a : a);
-            }
-        }
-        // +$date is its DAYCOUNT and +$datetime its Instant (Rakudo's Dateish
-        // Numeric) — counting the hash's fields gave a number that meant nothing.
-        if (v.t == VT::Hash && v.hash() && (v.hashKind == "Date" || v.hashKind == "DateTime")) {
-            ValueList none;
-            Value n = methodCall(v, "Numeric", none);
-            if (u->op == "-") return n.t == VT::Int ? Value::integer(-n.toInt()) : Value::number(-n.toNum());
-            return n;
-        }
-        long long n;
-        if (v.t == VT::Array) n = (long long)v.arr()->size();
-        else if (v.t == VT::Hash) n = (long long)v.hash()->size();
-        else n = (long long)v.flatten().size();
-        return Value::integer(u->op == "-" ? -n : n);
-    }
-    if (u->op == "-") {
-        if (v.t == VT::Complex) return Value::complex(-v.n, -v.im());
-        if (v.t == VT::Int && v.big()) return Value::bigint(-(*v.big()));
-        if (v.t == VT::Int || v.t == VT::Bool) return Value::integer(-v.toInt());
-        if (v.t == VT::Rat) { Value r = Value::rat(-(*v.ratN()), *v.ratD()); r.fatRatM() = v.fatRat(); return r; }
-        if (v.t == VT::Str || v.t == VT::Match) {
-            Value n = v.t == VT::Str ? numifyStrFailure(v.s) : numifyStr(strOf(v));
-            if (n.t == VT::Hash && n.hashKind == "Failure") return n; // -"a" is a quiet Failure too
-            if (n.t == VT::Int && !n.big()) return Value::integer(-n.toInt());
-            return n.t==VT::Rat ? Value::rat(-(*n.ratN()),*n.ratD()) : Value::number(-n.toNum());
-        }
-        return Value::number(-v.toNum());
-    }
-    if (u->op == "+") {
-        if (v.t == VT::Bool) return Value::integer(v.b ? 1 : 0); // +True == 1
-        if (v.isAllomorph()) { // +IntStr strips to the pure numeric side
-            Value nv = v; nv.hashKind.clear(); nv.s.clear(); return nv;
-        }
-        if (v.t == VT::Match) return numifyStr(strOf(v)); // +$0 of digits is an Int, like +Str
-        if (v.isNumeric() && !v.enumName.empty()) { // +EnumValue is a PLAIN Int, not the name
-            Value nv = v; nv.enumName.clear(); nv.enumType.clear(); return nv;
-        }
-        // `+"a"` is an error, not an undefined value (Rakudo: X::Str::Numeric)
-        return v.isNumeric() ? v : (v.t == VT::Str ? numifyStrFailure(v.s) : Value::number(v.toNum()));
-    }
+    // prefix `+` / `-` in full — shared with the `+*` / `-*` WhateverCode below,
+    // which used to carry its own thinner copy of it (see prefixNumeric)
+    if (u->op == "+" || u->op == "-") return prefixNumeric(u->op, v);
     if (u->op == "~") {
         // prefix ~ is an OPERATOR, so it autothreads over a junction (Rakudo:
         // `~(1|2)` is any("1", "2")); the .Str METHOD does not, and both engines

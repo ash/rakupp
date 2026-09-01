@@ -974,6 +974,10 @@ public:
     bool runControlWarn(const std::string& msg);
     std::string gistOf(const Value& v); // .gist, honouring a user-defined `method gist` (for say/note)
     std::string strOf(const Value& v);  // .Str,  honouring user `method Str`/`gist` (for print/put/interpolation)
+    // prefix `+` / `-` on a value, in full. A member because the object arms call
+    // user methods; public because the `+*` / `-*` WhateverCode closure runs it
+    // too, rather than carrying the second, thinner copy it used to.
+    Value prefixNumeric(const std::string& op, const Value& v);
     // The string a regex matches AGAINST. An object matches on its Str form:
     // `$path ~~ /…/` where $path is a URI::Path must see "/a/b", as in Rakudo.
     std::string rxSubject(const Value& v) { return v.t == VT::Object ? strOf(v) : v.toStr(); }
