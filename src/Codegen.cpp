@@ -1921,12 +1921,15 @@ struct Codegen {
             std::string ref = lvalueExpr(tgt);
             if (binop == "~") // in-place append (O(n) string building) — default, not -O-gated
                 return "([&]()->Value{ Value& __r = " + ref + "; rtCatAssign(__r, " + rhs + "); return __r; }())";
-            std::string fb = fastBin(binop);
+            std::string fb = binop == "*" ? std::string() : fastBin(binop); // see `*=` note below
             std::string nv = binop == "||" ? "RT.boolify(__r) ? __r : (" + rhs + ")"
                            : binop == "&&" ? "RT.boolify(__r) ? (" + rhs + ") : __r"
                            : binop == "//" ? "!rtIsDefined(__r) ? (" + rhs + ") : __r"
                            : !fb.empty() ? fb + "(__r, " + rhs + ")"
                            : "applyArith(" + cesc(binop) + ", __r, " + rhs + ")";
+            if (fb.empty() && binop != "||" && binop != "&&" && binop != "//")
+                return "([&]()->Value{ Value& __r = " + ref + "; return applyArithInto("
+                       + cesc(binop) + ", __r, " + rhs + "); }())";
             return "([&]()->Value{ Value& __r = " + ref + "; __r = " + nv + "; return __r; }())";
         }
         std::string lhs = lvalueExpr(tgt);
@@ -1935,8 +1938,16 @@ struct Codegen {
         if (binop == "//") return lhs + " = !rtIsDefined(" + lhs + ") ? (" + rhs + ") : " + lhs;
         if (binop == "~") // in-place append (O(n) string building) — default, not -O-gated
             return "([&]()->Value&{ rtCatAssign(" + lhs + ", " + rhs + "); return " + lhs + "; }())";
-        if (std::string f = fastBin(binop); !f.empty()) return lhs + " = " + f + "(" + lhs + ", " + rhs + ")"; // -O
-        return lhs + " = applyArith(" + cesc(binop) + ", " + lhs + ", " + rhs + ")";
+        // `*=` skips the -O shortcut on purpose: `lhs = rtMul(lhs, rhs)` names the
+        // destination twice and so can never multiply over it, and rtMul's inline
+        // small-Int case is the first thing applyArith tests anyway, so
+        // applyArithInto gives up nothing and gains the BigInt in-place path.
+        if (std::string f = fastBin(binop); !f.empty() && binop != "*")
+            return lhs + " = " + f + "(" + lhs + ", " + rhs + ")"; // -O
+        // applyArithInto, not `lhs = applyArith(...)`: same result, but the
+        // destination is named once, so a BigInt accumulator can be multiplied
+        // over instead of copied in and out (rtMulAssignBig).
+        return "applyArithInto(" + cesc(binop) + ", " + lhs + ", " + rhs + ")";
     }
 
     void ifStmt(IfStmt* f, int ind) {

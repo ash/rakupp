@@ -118,14 +118,22 @@ Raku++ links nothing: the BigInt, the Unicode tables, the regex engine, the FFI
 and the collation are all in-tree. mutsu takes `num-bigint`, ICU, `libffi` and
 Cranelift off the shelf. Neither is the right answer in general. Ours means one
 binary, no supply chain and no version skew, paid for by having to write and
-maintain every one of those ourselves — and `bigint` is a kernel where a
-well-tuned external library is simply faster than what we hand-rolled. That is
-now measured rather than predicted: **3.5× interpreted and 3.3× compiled**, and
-it is the one kernel of the sixteen where mutsu beats both Raku++ modes.
-Compiling does not rescue it, because the time is inside the runtime's own
-multiply rather than in the loop around it. Theirs means large, mature
-components for free, paid for in build time and in a dependency graph to keep
-current.
+maintain every one of those ourselves. Theirs means large, mature components for
+free, paid for in build time and in a dependency graph to keep current.
+
+This page used to predict that `bigint` would be the kernel where a well-tuned
+external library simply beats what we hand-rolled, and for a while it was:
+measured at **3.5× interpreted and 3.3× compiled**, the one kernel of the sixteen
+where mutsu beat both Raku++ modes. Two passes on our own multiply have since
+reversed it — 7.4 ms interpreted and 6.2 compiled against mutsu's 11.2, on the
+box where all three were measured together. The honest version of the prediction
+is narrower than the one that was written here: what an off-the-shelf library
+buys you is *everything at once*, not any particular kernel. `num-bigint`'s
+base-2^64 limbs are still about 10× ahead of our base-1e9 ones on a general
+n×n product — we simply have not needed that shape enough to pay for it, and
+base 1e9 is what makes printing a large integer O(n) instead of O(n²). Every one
+of those trades is ours to make and to get wrong; that is the actual cost of
+taking no dependencies.
 
 ### What you can ship
 

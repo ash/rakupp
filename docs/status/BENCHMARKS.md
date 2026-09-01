@@ -58,11 +58,18 @@ there.)
 - **Against mutsu, the interpreter wins twelve of fifteen and `--exe` wins
   fourteen.** The three the tree-walker loses are `bigint` (3.5×), `fib` (1.4×)
   and `sortnums` (1.1×); compiled, only `bigint` still goes their way. See
-  "What mutsu is faster at".
-- **`bigint` is the one clear loss, and it was predicted.** mutsu links
-  `num-bigint`; we hand-rolled ours because we take no dependencies, and it is
-  3.5× slower interpreted and 3.3× compiled. `--exe` does not help — the time
-  is inside the runtime's multiply, not the loop around it.
+  "What mutsu is faster at" — and the next bullet, because `bigint` has since
+  moved the other way.
+- **`bigint` WAS the one clear loss, and it was predicted.** mutsu links
+  `num-bigint`; we hand-rolled ours because we take no dependencies, and in this
+  sitting it is 3.5× slower interpreted and 3.3× compiled. `--exe` does not help
+  — the time is inside the runtime's multiply, not the loop around it, which is
+  also why it was fixable without touching the code generator. **Two passes on
+  that multiply landed the same day this sitting was taken and reversed the
+  result**: on the M1 box, measured through this harness against a binary of the
+  commit before them, `bigint` reads 7.4 ms interpreted and 6.2 compiled against
+  mutsu's 11.2. It is not folded into the tables below — see "Pending
+  re-measurement" for why, and for the numbers.
 - **The fifteenth is `objects`, and Rakudo leads it by 1.7×** — but it leads
   mutsu on that kernel by **5.3×**. It is the only kernel that measures
   `class`/`has`/method dispatch, the shape most real Raku code is written in,
@@ -239,7 +246,7 @@ methodology), so the only safe move is not to translate the binary at all.
 **Check `file` on the mutsu binary before believing any row below**, exactly as
 the harness already does for `$RAKUPP`.
 
-## Pending re-measurement: four changes landed after this sitting (2026-08-31)
+## Pending re-measurement: six changes landed after this sitting (2026-08-31)
 
 **Every table below predates these, and none of them is folded in.** The rows in
 this file are all measured on the machine named under Methodology, and the work
@@ -252,13 +259,29 @@ same harness kernels, best of 9:
 
 | kernel | lane | before | after | mutsu (same box) |
 |---|---|---:|---:|---:|
-| bigint   | `--exe` | 45.2 ms | **11.4 ms** | 11.5 ms |
-| bigint   | interp  | 60.4 ms | **12.6 ms** | 11.5 ms |
+| bigint   | `--exe` | 45.2 ms | **6.2 ms** | 11.2 ms |
+| bigint   | interp  | 60.4 ms | **7.4 ms** | 11.2 ms |
 | sortnums | `--exe` | 26.4 ms | 22.6 ms | 40.6 ms |
 | loopsum  | `--exe` | 16.5 ms | 15.1 ms | 158.4 ms |
 | fib      | interp  | 447.5 ms | 424.4 ms | 308.7 ms |
 
-Four changes, all described in
+The two `bigint` rows are two passes on the same kernel, taken a few hours apart
+on the same box. The first pass (the one-limb multiply below) took it to 11.4 ms
+compiled and 12.6 interpreted — level with mutsu, which is where it stopped
+being a loss. The second pass is what the 6.2 and 7.4 are, and it was measured
+against a purpose-built binary of the commit before it, through
+`tools/run-bench.raku` itself, in one interleaved sitting at load average 2.3:
+
+| kernel | lane | before this pass | after | mutsu, same sitting |
+|---|---|---:|---:|---:|
+| bigint | interp  | 13.0 ms | **7.4 ms** | 11.2 ms |
+| bigint | `--exe` | 11.1 ms | **6.2 ms** | 11.2 ms |
+
+Five other kernels were measured in the same sitting as a control — `loopsum`,
+`fib`, `hash`, `streq`, `rats`, both lanes each — and every one landed within
+±2% of the before-binary, which is this box's run-to-run spread.
+
+Six changes, all described in
 [internals/OPTIMIZATION.md](../internals/OPTIMIZATION.md) under its list of
 non-`-O` defaults:
 
@@ -267,6 +290,14 @@ non-`-O` defaults:
   it is the whole 4× above, and it lands in every mode because it is a runtime
   change rather than a codegen one. It closes the one kernel where mutsu led
   `--exe`, which is what prompted the work.
+- **Eight carry chains in that loop, and the accumulator multiplied in place.**
+  The one-limb loop was latency-bound on its own carry chain and the interpreter
+  copied the whole magnitude in and out of it twice per step; splitting the
+  magnitude into eight independently-carried segments makes the loop
+  throughput-bound, and mutating the accumulator when the box provably owns it
+  alone removes the copies. Counted with a `malloc` shim over the whole
+  benchmark: 32,163 allocations and 34.0 MB of copying before, 2,297 and 0.13 MB
+  after — of which 74 allocations are one `std::vector` growing geometrically.
 - **`.sort` on an all-native-Int list** orders a flat `(key, index)` array instead
   of calling `valueCmp` through two random probes into an array of `Value`s.
 - **`applyArith` takes the operator as a `const char*`**, so compiled code stops
@@ -428,6 +459,20 @@ number. Note the shape of it: `--exe` does not help (1.0× over interp), because
 the time is inside the runtime's own multiply, not in interpreting the loop
 around it. That is the same reason `arrayops` is flat under compilation, and it
 is the honest limit of the `--exe` answer to performance.
+
+*This row has since been reversed.* Two passes on that same multiply landed on
+the day of this sitting, and because the time really was inside the runtime's
+multiply, that is all it took: on the M1 box, through this harness against a
+binary of the commit before them, `bigint` reads 7.4 ms interpreted and 6.2
+compiled against mutsu's 11.2. The predicted trade was real, and it was a
+statement about the code we had rather than about hand-rolling as such — a
+base-1e9 magnitude times one limb, eight carry chains deep and written back over
+the accumulator, is not slower than `num-bigint` on this shape. What it does not
+touch is the *general* n×n product, where `num-bigint`'s base-2^64 limbs are
+still measured 10× ahead of our base-1e9 ones; base 1e9 is what makes decimal
+output O(n) instead of O(n²), and that trade is
+[kept deliberately](../internals/OPTIMIZATION.md). The numbers are under
+"Pending re-measurement"; the tables here stand as this sitting measured them.
 
 **`fib` — 245.6 ms against our 352.7 interpreted, so 1.4×.** This is the
 Cranelift JIT doing the thing a JIT is for: tiny-body recursion, the same

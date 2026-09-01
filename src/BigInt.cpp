@@ -129,42 +129,123 @@ static inline BigInt fromMagU128(unsigned __int128 m, int sign) {
 }
 #endif
 
-// Multiply a magnitude by a SINGLE limb. The general loop below routes each
-// limb's carry through r.mag[i+1] — a store the next iteration must load back
-// — and needs a second inner pass per limb to place it, so a big-by-small
-// product runs at two iterations and two store-to-load round trips per limb.
-// Keeping the carry in a register does both in one pass, and a running product
-// (`$f *= $_`, factorials, radix scaling) is entirely this shape.
+// Multiply a magnitude by a SINGLE limb. The general schoolbook loop below
+// routes each limb's carry through r.mag[i+1] — a store the next iteration must
+// load back — and needs a second inner pass per limb to place it, so a
+// big-by-small product runs at two iterations and two store-to-load round trips
+// per limb. Keeping the carry in a register does both in one pass, and a running
+// product (`$f *= $_`, factorials, radix scaling) is entirely this shape.
 //
-// carry stays below BASE by induction: with a.mag[i] and m both < BASE and
-// carry < BASE, cur <= (BASE-1)*BASE < 2^63, so cur/BASE <= BASE-1.
+// One limb of that pass: `d[i] = s[i]*m + carry`, base 1e9.
+//
+// This folds the carry into the product BEFORE splitting it, which puts the
+// division by 1e9 on the carry chain — deliberately. The alternative, splitting
+// s[i]*m first so that only an add and a conditional subtract depend on the
+// carry, has a three-cycle chain instead of seven, and it WAS the faster form
+// while the loop ran one chain. It is not any more: mulRunK below runs eight
+// independent chains, so no chain's latency is on the critical path, and what is
+// left to pay is instructions. This shape is six of them — load, umaddl, umulh,
+// shift, msub, store — against the split form's twelve. Measured on the
+// factorial kernel at K=8, all three forms in one harness: fold-first 2.46 ms,
+// a reciprocal-of-m form 2.80 (M = ceil(2^64*m/1e9), two multiply-highs in place
+// of the divide — same three multiply-class ops, the real floor here, and four
+// more scalar ones), split-first 3.48.
+//
+// p cannot overflow, and carry stays below BASE, by induction: s[i] and m are
+// both < BASE and carry < BASE, so p <= (BASE-1)^2 + BASE-1 < 1e18 < 2^63 and
+// q = p/BASE <= BASE-1.
+static inline void mulStep(uint32_t* d, const uint32_t* s, std::size_t i,
+                           uint32_t m, uint32_t& carry) {
+    uint64_t p = (uint64_t)s[i] * m + carry;
+    uint64_t q = p / BigInt::BASE;              // a multiply-high and a shift
+    d[i] = (uint32_t)(p - q * BigInt::BASE);    // one fused multiply-subtract
+    carry = (uint32_t)q;
+}
+
+// Add one limb into position k and let it ripple. Both addends are < BASE, so
+// the sum is < 2^31 and the carry out is 0 or 1; the ripple stops at the first
+// limb that does not overflow, which is the first one on all but a vanishing
+// fraction of calls. It cannot run past `n`: the caller's array is sized to hold
+// the whole product, and a partial sum of a value is bounded by that value —
+// the `k <= n` guard is a belt on top of that, not the reason it terminates.
+static inline void addLimbAt(uint32_t* d, std::size_t k, std::size_t n, uint32_t c) {
+    while (c && k <= n) {
+        uint32_t v = d[k] + c;
+        if (v >= BigInt::BASE) { d[k] = v - BigInt::BASE; c = 1; }
+        else { d[k] = v; c = 0; }
+        k++;
+    }
+}
+
+// dst[0..n] = src[0..n-1] * m, dst == src allowed. n >= 1, m in [2, BASE).
+//
+// THE CARRY CHAIN WAS THE WHOLE COST. Every limb's carry feeds the next one, so
+// a single-chain loop can only retire one limb per round trip through that
+// dependency however wide the core is — measured, about five cycles a limb where
+// the instruction count says one and a half.
+//
+// So run K chains. Cut the magnitude into K contiguous segments, give each its
+// own carry starting at zero, and interleave their steps in one loop body. The
+// chains are independent, so they issue in parallel and the loop becomes
+// throughput-bound instead of latency-bound.
+//
+// What that owes afterwards is K-1 carries: segment j's carry-out belongs at the
+// first limb of segment j+1, which was computed as if nothing came in from below.
+// Paying it back is addLimbAt, and the payments commute — each is an addition of
+// a fixed amount at a fixed position — so the order does not matter and a ripple
+// running on into a later segment is still just an addition on the array.
+//
+// Short magnitudes keep a single chain: K chains need K segments' worth of work
+// in flight to pay for the fold-back, and below a couple of dozen limbs there is
+// nothing to overlap.
+template <std::size_t K>
+static inline void mulRunK(uint32_t* d, const uint32_t* s, std::size_t n, uint32_t m) {
+    const std::size_t q = n / K;
+    uint32_t c[K] = {0};
+    for (std::size_t i = 0; i < q; i++)
+        for (std::size_t j = 0; j < K; j++) mulStep(d + j * q, s + j * q, i, m, c[j]);
+    // n % K leftovers belong to the last segment, which runs past q
+    for (std::size_t i = q; i < n - (K - 1) * q; i++)
+        mulStep(d + (K - 1) * q, s + (K - 1) * q, i, m, c[K - 1]);
+    d[n] = c[K - 1];
+    for (std::size_t j = 0; j + 1 < K; j++) addLimbAt(d, (j + 1) * q, n, c[j]);
+}
+
+static void mulRun(uint32_t* d, const uint32_t* s, std::size_t n, uint32_t m) {
+    // Eight measured best on an M1 over the factorial kernel: 4 and 6 are within
+    // 3%, 2 is 1.5x worse, 16 gives the fold-back more segments than the loop
+    // saves. Below 32 limbs there are fewer than four limbs per segment and the
+    // single chain wins outright.
+    if (n >= 32) { mulRunK<8>(d, s, n, m); return; }
+    uint32_t carry = 0;
+    for (std::size_t i = 0; i < n; i++) mulStep(d, s, i, m, carry);
+    d[n] = carry;
+}
+
 static BigInt mulLimb(const BigInt& a, uint32_t m) {
     BigInt r;
     if (m == 0 || a.sign == 0) return r;
     const std::size_t n = a.mag.size();
     r.mag.resize(n + 1);
-    const uint32_t* src = a.mag.data();
-    uint32_t* dst = r.mag.data();
-    // Splitting the limb product BEFORE folding the carry in is what makes this
-    // loop fast. `(src[i]*m + carry) / BASE` puts a division on the carry chain,
-    // and division by 1e9 is a multiply-high plus a shift — five-odd cycles that
-    // every limb must wait for. src[i]*m does not depend on the carry, so its
-    // own split runs ahead of the chain; folding the carry into the low half is
-    // then an add and a conditional subtract, and the chain is three cycles.
-    uint32_t carry = 0;
-    for (std::size_t i = 0; i < n; i++) {
-        uint64_t p = (uint64_t)src[i] * m;
-        uint32_t ph = (uint32_t)(p / BigInt::BASE);
-        uint32_t pl = (uint32_t)(p - (uint64_t)ph * BigInt::BASE);
-        uint32_t low = pl + carry;              // both < BASE, so < 2e9 < 2^32
-        if (low >= BigInt::BASE) { low -= BigInt::BASE; ph++; }
-        dst[i] = low;
-        carry = ph;                             // ph <= BASE-2 before the bump
-    }
-    dst[n] = carry;
+    mulRun(r.mag.data(), a.mag.data(), n, m);
     r.sign = a.sign;
     r.trim();
     return r;
+}
+
+// The same kernel over the magnitude it is handed rather than a fresh one. The
+// extra limb is pushed FIRST so the carry always has somewhere to land, and
+// push_back grows geometrically — so a product that runs for thousands of steps
+// pays an amortised O(1) reallocation per step instead of an allocation, a
+// zero-fill and a free every step.
+void BigInt::mulLimbInPlace(uint32_t m) {
+    if (sign == 0) return;
+    if (m == 1) return;
+    if (m == 0) { mag.clear(); sign = 0; return; }
+    const std::size_t n = mag.size();
+    mag.push_back(0);
+    mulRun(mag.data(), mag.data(), n, m);
+    trim();
 }
 
 BigInt BigInt::operator*(const BigInt& o) const {
@@ -287,7 +368,7 @@ BigInt BigInt::pow(long long e) const {
 }
 
 BigInt BigInt::gcd(BigInt a, BigInt b) {
-    a = a.abs(); b = b.abs();
+    a.makeAbs(); b.makeAbs();   // by value already: no reason to copy them again
     // Euclid entirely in registers when both fit — the general loop below builds
     // two BigInts per step and calls divmod, and Value::rat() calls this on
     // EVERY Rat it constructs.

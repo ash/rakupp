@@ -499,6 +499,109 @@ profile, and it moved on this machine from 45.2 to 11.4 ms compiled and 60.4 to
 12.6 ms interpreted — a 4.0× and 4.8×. It is a runtime change, not a codegen
 one, so `--exe`, `-O` and the interpreter all get it.
 
+## A seventh default: eight carry chains, and the accumulator multiplied in place
+
+That loop got `bigint` level with mutsu, and stopping there left two things on
+the table — one in the loop and one around it.
+
+**In the loop: the carry chain was the whole cost.** Every limb's carry feeds
+the next, so however wide the core is, the loop can only retire one limb per
+round trip through that dependency. Measured, about five cycles a limb where the
+instruction count says one and a half. The fix is to stop having one chain: cut
+the magnitude into eight contiguous segments, give each its own carry starting at
+zero, and interleave their steps in a single loop body. The chains are
+independent, so they issue in parallel and the loop becomes throughput-bound.
+
+What that owes afterwards is seven carries — segment *j*'s carry-out belongs at
+the first limb of segment *j+1*, which was computed as if nothing came in from
+below. Paying it back is one add with a ripple that stops at the first limb which
+does not overflow, and the payments commute, so the order does not matter.
+
+Once no chain's latency is on the critical path, the *shape* of the step inverts.
+The split above exists to keep the division off the carry chain, and it costs
+twelve instructions a limb to do it. With eight chains there is nothing to keep
+off, so the step folds the carry in first and pays one division — six
+instructions: load, `umaddl`, `umulh`, shift, `msub`, store. All three forms
+measured in one harness on the factorial kernel at K=8: fold-first **2.46 ms**,
+a reciprocal-of-`m` form 2.80 (`M = ceil(2^64·m/1e9)`, two multiply-highs instead
+of the divide — the same three multiply-class ops, which is the real floor here,
+and four more scalar ones), the split form above 3.48.
+
+```cpp
+static inline void mulStep(uint32_t* d, const uint32_t* s, std::size_t i,
+                           uint32_t m, uint32_t& carry) {
+    uint64_t p = (uint64_t)s[i] * m + carry;
+    uint64_t q = p / BigInt::BASE;              // a multiply-high and a shift
+    d[i] = (uint32_t)(p - q * BigInt::BASE);    // one fused multiply-subtract
+    carry = (uint32_t)q;
+}
+```
+
+Eight is measured, not chosen: 4 and 6 are within 3%, 2 is 1.5× worse, 16 gives
+the fold-back more segments than the loop saves. Below 32 limbs a single chain
+wins outright and that is what runs.
+
+**Around the loop: three copies of the magnitude per step, for one multiply.**
+`$f *= $_` reached `applyArith`, which copied the accumulator in by value
+(`toBig()` returns a `BigInt`), built a new magnitude for the product, and copied
+*that* into the result box (`make_shared<BigInt>(const BigInt&)`). Three O(limbs)
+passes around one O(limbs) multiply, and a running product is thousands of limbs
+long by the end.
+
+Two of those go away with a reference (`toBigRef`) and a move overload
+(`Value::bigint(BigInt&&)`). The third needs the destination and the left operand
+to be named once rather than twice, which is what `applyArithInto` is: the
+compound-assign form of `applyArith`, emitted by the code generator in place of
+`lhs = applyArith(op, lhs, rhs)` and called by the interpreter's op= paths. When
+the box provably owns its magnitude alone it multiplies over it and allocates
+nothing.
+
+*Provably* is two conditions, not one, and each catches a shape the other misses.
+`ValueExt` is copy-on-write, so a plain copy of a `Value` shares the cold block
+and leaves the *magnitude's* use count at one while two Values plainly reach it.
+And a `Range` built over a big endpoint splices the same `shared_ptr<BigInt>`
+into a *different* cold block, so the block can be unshared while the magnitude is
+not. Both counts must be one. The rest of the guard is the fields that
+`dst = Value::bigint(...)` would have reset and an in-place write would instead
+preserve — an enum identity, a native width, a readonly binding, an itemized tag.
+It also refuses outright while worker threads are live: `dst = applyArith(...)`
+already races there, but growing a magnitude *reallocates*, so a racing reader
+that has already loaded `mag.data()` reads freed memory rather than a
+stale-but-valid limb.
+
+Counted with a `malloc` shim over the whole benchmark, against a `+=` control
+that does the same loop without the bignum:
+
+| | allocations | bytes copied |
+|---|---:|---:|
+| before | 32,163 | 34,019,701 |
+| after | **2,297** (control 2,223) | **131,852** (control 59,986) |
+| after, `--exe -O` | **2,057** | **119,998** |
+
+Seventy-four allocations for 4,966 bignum steps — one `std::vector` growing
+geometrically — and 33.9 MB of copying gone.
+
+Together the two passes take `bigint` from 13.0 ms to **7.4** interpreted and
+11.1 to **6.2** compiled, measured through `tools/run-bench.raku` against a
+purpose-built binary of the commit before them, in one interleaved sitting at
+load average 2.3. mutsu reads 11.2 in the same sitting. Five other kernels were
+measured as a control and all landed within ±2%.
+
+**What this does not do is make the general n×n product fast.** That is still a
+plain schoolbook loop, and `num-bigint`'s base-2^64 limbs are measured about 10×
+ahead of our base-1e9 ones on it. Base 1e9 is not an accident: it makes decimal
+output O(n), where every power-of-two radix makes it O(n²) — measured, a
+16,326-digit number converts in 0.087 ms from base 1e9 and 0.73 ms from base 2^64
+with a divide-and-conquer split over Knuth algorithm D, rising to 1.3 ms against
+129 ms at 261,211 digits. A base change would also silently alter Rat→Num
+rounding at `Value.cpp`'s `dblExact`, whose `mag.size() <= 1` means "below 1e9,
+hence exact in a double" and would come to mean "below 2^64". If base 2^64 is
+ever worth it, the reason is that 10× on general multiplication, and the
+divide-and-conquer conversion stack has to be built first so `.Str` never
+regresses. Base 1e18 was measured too and is the worst of the three: it needs the
+same rewrite for 1.16× on this loop, because dividing a 128-bit product by 1e18
+exactly costs three multiplies where base 2^64 costs none.
+
 ## Forwarding the C++ optimization level
 
 `--exe` compiles the generated C++ at **`-O2`** by default. A level on the `-O`
@@ -689,6 +792,16 @@ rest, so every row here is comparable:
 | nummath     | 120.5 ms | 92.2 ms      | 1.3×      | 430.7 ms  | `Num` lanes — **not built yet** |
 | methodcalls | 284.4 ms | 274.6 ms     | 1.0×      | 309.3 ms  | devirtualizing monomorphic calls — **not built yet** |
 | stringbuild | 5.7 ms   | 5.6 ms       | 1.0×      | 209.2 ms  | 400k `~=` — already O(n) by default |
+
+A ninth kernel, **`bigmul`** (`$f *= $_ for 1 .. 10000`), was added on
+2026-08-31 and is not in the sitting above, so its numbers are from the M1 box
+and belong beside the seventh default's, not beside these: `--exe` 15.6 ms,
+`--exe -O` 15.7 ms — **1.0×** — against Rakudo's 1048.9. It reads like `nummath`
+on purpose. It is here for the *agreement* check rather than the timing: nothing
+else in this directory leaves `int64` (`powmod` tops out at 1e18), so the
+compound-assign lane the code generator emits for `*=` had no four-lane
+coverage at all — and `-O` reaches that lane by a different route than plain
+`--exe`, with a bignum accumulator the one shape where the two could disagree.
 
 What little the three "not built yet" rows gain comes from the parts of the
 loop that ARE laneable — the int counter and its comparison — not from the work

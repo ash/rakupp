@@ -1142,7 +1142,13 @@ bool valueEq(const Value& a, const Value& b) {
         // exact Int/Int first: as doubles, 2**53 == 2**53+1 (same lesson valueCmp
         // already carries for its big-Int cross-multiply arm)
         if (a.t == VT::Int && b.t == VT::Int) {
-            if (a.big() || b.big()) return BigInt::cmp(a.toBig(), b.toBig()) == 0;
+            // by reference: `==` between two bignums copied BOTH magnitudes to
+            // compare them, which is O(limbs) on an operation that reads at most
+            // one limb before it can answer
+            if (a.big() || b.big()) {
+                BigInt ta, tb;
+                return BigInt::cmp(a.toBigRef(ta), b.toBigRef(tb)) == 0;
+            }
             return a.i == b.i;
         }
         return a.toNum() == b.toNum();

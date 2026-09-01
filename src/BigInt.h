@@ -28,10 +28,18 @@ struct BigInt {
     BigInt operator+(const BigInt& o) const;
     BigInt operator-(const BigInt& o) const;
     BigInt operator*(const BigInt& o) const;
+    // `*this` times a SINGLE limb (m < BASE), written back over the existing
+    // magnitude. `$f *= $_` is a running product whose accumulator is thousands
+    // of limbs long, and building the answer somewhere else means allocating that
+    // many limbs, zero-filling them, and freeing the old ones once per step — all
+    // of it the same order as the multiply. Sign is left alone: the caller owns
+    // it, because it also owns the multiplier's.
+    void mulLimbInPlace(uint32_t m);
     // truncated division (toward zero) + remainder with sign of dividend
     static void divmod(const BigInt& a, const BigInt& b, BigInt& q, BigInt& r);
 
     BigInt abs() const { BigInt c = *this; if (c.sign < 0) c.sign = 1; return c; }
+    void makeAbs() { if (sign < 0) sign = 1; }  // abs() without copying the magnitude
     BigInt pow(long long e) const;
     static BigInt gcd(BigInt a, BigInt b);
 

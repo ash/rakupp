@@ -1907,6 +1907,36 @@ inline Value applyArith(const char* op, const Value& l, const Value& r) {
     }
     return applyArith(std::string(op), l, r);
 }
+
+// `$x *= $y` where the destination IS the left operand. `dst = applyArith("*",
+// dst, dst)`-shaped code reads the accumulator, copies it into the operator,
+// builds a whole new magnitude, and copies that back into the box — three
+// O(limbs) passes around one O(limbs) multiply. When the box provably owns its
+// magnitude alone, the multiply can write over it instead. Returns true when it
+// did; false leaves `dst` untouched for the general path.
+bool rtMulAssignBig(Value& dst, const Value& r);
+// The in-place half on its own: true when it multiplied over the destination,
+// false when it did nothing at all. A caller that must hold a lock across the
+// write uses this rather than the whole thing below, so the general path keeps
+// its lock discipline — and the in-place arm itself needs no lock, because
+// rtMulAssignBig refuses exactly while worker threads are live.
+inline bool applyArithIntoTry(const char* op, Value& dst, const Value& r) {
+    return op[0] == '*' && op[1] == '\0' && dst.t == VT::Int && dst.x_ &&
+           r.t == VT::Int && !r.big() && rtMulAssignBig(dst, r);
+}
+// The compound-assign form of applyArith: same result as `dst = applyArith(op,
+// dst, r)`, and that is exactly what it falls back to. Returns the destination,
+// so it drops into the value position the assignment expression held.
+inline Value& applyArithInto(const char* op, Value& dst, const Value& r) {
+    if (applyArithIntoTry(op, dst, r)) return dst;
+    dst = applyArith(op, dst, r);
+    return dst;
+}
+inline Value& applyArithInto(const std::string& op, Value& dst, const Value& r) {
+    if (op.size() == 1 && applyArithIntoTry(op.c_str(), dst, r)) return dst;
+    dst = applyArith(op, dst, r);
+    return dst;
+}
 inline Value rtAdd(const Value& l, const Value& r) { long long z; if (rtBothInt(l, r) && !rakupp::add_ovf(l.i, r.i, &z)) return Value::integer(z); return applyArith("+", l, r); }
 inline Value rtSub(const Value& l, const Value& r) { long long z; if (rtBothInt(l, r) && !rakupp::sub_ovf(l.i, r.i, &z)) return Value::integer(z); return applyArith("-", l, r); }
 inline Value rtMul(const Value& l, const Value& r) { long long z; if (rtBothInt(l, r) && !rakupp::mul_ovf(l.i, r.i, &z)) return Value::integer(z); return applyArith("*", l, r); }

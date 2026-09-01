@@ -16483,8 +16483,21 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                     Env* pf = nullptr;
                     for (Env* e2 = tctx_.cur.get(); e2; e2 = e2->parent.get())
                         if (e2->layout) { pf = e2; break; }
+                    // An Int past a machine word keeps its magnitude in the cold
+                    // block, so `!slot->x_` sent EVERY bignum accumulator down the
+                    // long path — and `$f *= $_` is the shape that wants the short
+                    // one most. Such a block holds nothing but the magnitude, the
+                    // op= arm below is what the long path reaches anyway (its extra
+                    // machinery is Proxy stores, `is rw` links and infix overloads,
+                    // none of which a plain Int has), and the two shapes the arm
+                    // does care about are excluded by name. Plain `=` keeps the
+                    // strict test: it overwrites the box wholesale and has never
+                    // needed to look inside it.
+                    bool coldOk = !slot->x_ ||
+                                  (sv >= 2 && slot->t == VT::Int && slot->big() &&
+                                   slot->enumName.empty() && slot->natBits == 0);
                     if (pf->layout->simple[tv->padSlot] &&
-                        !slot->x_ && !slot->readonly && slot->hashKind.empty() &&
+                        coldOk && !slot->readonly && slot->hashKind.empty() &&
                         slot->t != VT::Object) {
                         int nb = slot->natBits; bool nsg = slot->natSigned, nfl = slot->natFloat;
                         if (sv == 1) {
@@ -16524,7 +16537,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                                 ParStripe ws(*this, slot);
                                 if (asciiRhs) slot->s += rhs.s;
                                 else slot->s = nfcNormalize(slot->s + rhs.s);
-                            } else {
+                            } else if (!applyArithIntoTry(bop, *slot, rhs)) {
                                 Value nv = applyArith(bop, *slot, rhs);
                                 ParStripe ws(*this, slot);
                                 *slot = std::move(nv);
@@ -18138,7 +18151,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
     if (!overloaded) {
         // fall back to a user `sub infix:<OP>` when the operator isn't built-in
         // (so `$m mx= 9` works for any operands, not just objects)
-        try { *lv = applyArith(binop, *lv, rhs); }
+        try { applyArithInto(binop, *lv, rhs); }
         catch (RakuError&) {
             if (Value* f = tctx_.cur->find("&infix:<" + binop + ">")) *lv = callCallable(*f, ValueList{*lv, rhs});
             else throw;
@@ -18630,6 +18643,53 @@ static Value boxI128(__int128 v) {
     return r.big() && r.big()->fitsLL() ? Value::integer(r.big()->toLL()) : r;
 }
 #endif // RAKUPP_HAS_INT128
+
+// In-place `*=` on a BigInt accumulator. Every guard here is a field that
+// `dst = Value::bigint(...)` would have RESET and an in-place mutation would
+// instead preserve: an enum identity, a native width, a readonly binding, an
+// itemized/Buf tag, a payload slot, or any other cold-block member. Sole
+// ownership is two counts, not one — one Value pointing at this cold block, and
+// one cold block pointing at this magnitude — because ValueExt is copy-on-write,
+// so a shared block hands the same BigInt to a Value that never asked to be
+// changed.
+bool rtMulAssignBig(Value& dst, const Value& r) {
+    // NOT while worker threads are live. `dst = applyArith(...)` already races
+    // there — a torn Value copy — but writing over the magnitude is strictly
+    // worse: growing it reallocates, so a racing reader that already loaded
+    // mag.data() reads freed memory rather than a stale-but-valid limb, and
+    // use_count() is itself a check a sibling thread can invalidate before the
+    // write. Same predicate ParStripe engages on, for the same reason.
+    if (g_cbInterp && g_cbInterp->parallelMode_ &&
+        g_cbInterp->liveWorkers_.load(std::memory_order_relaxed) > 0) return false;
+    // Sole owner in BOTH dimensions, and each catches a real aliasing shape the
+    // other misses. A copy of the Value shares the cold block, so `x.big` stays
+    // at one use while two Values plainly reach the magnitude; and a Range built
+    // over a big endpoint aliases the SAME shared_ptr<BigInt> into a different
+    // cold block (`r.bigM() = to.big()`), so the block can be unshared while the
+    // magnitude is not.
+    if (dst.x_.use_count() != 1) return false;
+    ValueExt& x = *dst.x_;
+    if (!x.big || x.big.use_count() != 1) return false;
+    if (!dst.enumName.empty() || !dst.enumType.empty() || !dst.hashKind.empty() ||
+        dst.itemized || dst.readonly || dst.natBits || dst.p_ || dst.isList ||
+        dst.objKeyed || dst.namedArg)
+        return false;
+    if (x.ratN || x.ratD || x.pairKey || x.elemDefault || x.ext || x.shape || !x.ofType.empty())
+        return false;
+    const long long m = r.i;
+    if (m == 0) { dst = Value::integer(0); return true; }
+    // A multiplier past one limb needs the general schoolbook product; only the
+    // one-limb case can be written back over the accumulator in a single pass.
+    unsigned long long um = m < 0 ? (unsigned long long)(-(m + 1)) + 1ull : (unsigned long long)m;
+    if (um >= BigInt::BASE) return false;
+    BigInt& b = *x.big;
+    b.mulLimbInPlace((uint32_t)um);
+    if (m < 0) b.sign = -b.sign;
+    // |b| only grew, so it cannot have fallen back inside a machine word — but
+    // Value::bigint checks, so this checks too, and the two stay interchangeable.
+    if (b.fitsLL()) dst = Value::integer(b.toLL());
+    return true;
+}
 
 Value applyArith(const std::string& op, const Value& l, const Value& r) {
     // Hot path: 1–2-char arithmetic/comparison ops on plain Int/Int — the
@@ -19344,7 +19404,12 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                     else if (ua >= ub) return boxU128(ua - ub);   // "-", non-negative
                 }
 #endif
-                BigInt a = l.toBig(), b = r.toBig();
+                // References, not copies: a running product's accumulator is
+                // thousands of limbs, and copying it in and out of the operator
+                // cost as much as the multiply.
+                BigInt ta, tb;
+                const BigInt& a = l.toBigRef(ta);
+                const BigInt& b = r.toBigRef(tb);
                 return Value::bigint(op == "+" ? a + b : op == "-" ? a - b : a * b);
             }
             BigInt n1 = getN(l), d1 = getD(l), n2 = getN(r), d2 = getD(r), n, d;
@@ -19419,7 +19484,9 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                 if (rem != 0 && ((rem < 0) != (b < 0))) rem += b; // sign follows divisor (matches BigInt path)
                 return Value::integer(rem); // % / mod
             }
-            BigInt a = l.toBig(), b = r.toBig();
+            BigInt ta, tb;
+            const BigInt& a = l.toBigRef(ta);
+            const BigInt& b = r.toBigRef(tb);
             if (b.isZero()) return divZeroResult(l, op);
             BigInt q, rem; BigInt::divmod(a, b, q, rem);
             // Raku `div` floors (rounds toward -∞); BigInt::divmod truncates toward
@@ -19678,12 +19745,16 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                                 "Cannot convert " + v->toStr() + " to Int"};
     }
     if (op == "gcd") {
-        if (l.big() || r.big()) return Value::bigint(BigInt::gcd(l.toBig().abs(), r.toBig().abs()));
+        // gcd() takes its arguments by value and takes their absolute value
+        // itself, so the temporaries move straight in — `.abs()` here copied both
+        // magnitudes for nothing.
+        if (l.big() || r.big()) return Value::bigint(BigInt::gcd(l.toBig(), r.toBig()));
         long long x = std::llabs(l.toInt()), y = std::llabs(r.toInt()); while (y) { long long t = x % y; x = y; y = t; } return Value::integer(x);
     }
     if (op == "lcm") {
         if (l.big() || r.big()) {
-            BigInt a = l.toBig().abs(), b = r.toBig().abs();
+            BigInt a = l.toBig(), b = r.toBig();
+            a.makeAbs(); b.makeAbs();
             if (a.isZero() || b.isZero()) return Value::integer(0);
             BigInt g = BigInt::gcd(a, b), q, rem;
             BigInt::divmod(a, g, q, rem);

@@ -55,6 +55,7 @@ my @benches =
     # and what's next", so the table reports the gap rather than only the wins.
     %( :name<nummath>,     :note('Mandelbrot escape count — Num math, no lane yet') ),
     %( :name<arrayidx>,    :note('2M @a[$i] read-modify-write — no element lane yet') ),
+    %( :name<bigmul>,      :note('10000! by `*=` — the bignum compound-assign lane, no -O route') ),
     %( :name<methodcalls>, :note('1M monomorphic method calls — not devirtualized yet') );
 
 # @benches is hand-written (each kernel carries a note saying which pass it

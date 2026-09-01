@@ -600,6 +600,16 @@ struct Value {
         else v.bigM() = std::make_shared<BigInt>(b);
         return v;
     }
+    // Same, for a temporary. Every arithmetic site builds its result BigInt and
+    // then hands it straight here, so the const& form copied the whole magnitude
+    // one more time on the way in — O(limbs) per operation, which on a running
+    // product (`$f *= $_`) is the same order as the multiply itself.
+    static Value bigint(BigInt&& b) {
+        Value v; v.t = VT::Int;
+        if (b.fitsLL()) v.i = b.toLL();
+        else v.bigM() = std::make_shared<BigInt>(std::move(b));
+        return v;
+    }
     static Value rat(BigInt n, BigInt d) {
         if (d.sign == 0) return ratZ(std::move(n), std::move(d)); // zero denominator: ±1/0 or 0/0, not 1/1
         Value v; v.t = VT::Rat;
@@ -627,6 +637,17 @@ struct Value {
         if (t == VT::Int) return big() ? *big() : BigInt(i);
         if (t == VT::Bool) return BigInt(b ? 1 : 0);
         return BigInt((long long)toInt());
+    }
+    // toBig() WITHOUT the copy for the case that actually matters: an Int that
+    // already holds a BigInt hands back a reference to it. Anything else is
+    // materialized into the caller's `tmp` (a machine word, so building it is
+    // O(1)) and that is what the reference names. The caller must keep `tmp`
+    // alive as long as it uses the result — hence the scratch-parameter shape
+    // rather than a returned optional.
+    const BigInt& toBigRef(BigInt& tmp) const {
+        if (t == VT::Int && big()) return *big();
+        tmp = toBig();
+        return tmp;
     }
     static Value number(double x) { Value v; v.t = VT::Num; v.n = x; return v; }
     static Value complex(double re, double imag) { Value v; v.t = VT::Complex; v.n = re; v.imM() = imag; return v; }
