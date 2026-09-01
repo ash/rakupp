@@ -233,6 +233,7 @@ there is one code path rather than a fast one and a general one.
 | `Str` | `char*` | pointer |
 | `Buf` / `Blob` | the bytes, copied back after the call | pointer |
 | `Pointer` `Pointer[T]` `CArray[T]` | the pointer | pointer |
+| `Pointer[void]` | C's `void *` — a pointer at nothing in particular | pointer |
 | a `repr('CStruct')` / `CPointer` / `CUnion` class | a pointer to it | pointer |
 | `&callback (…)` | a C function pointer | pointer |
 
@@ -319,6 +320,22 @@ gettimeofday($tv, Pointer);
 say $tv.sec > 1_700_000_000;   # True
 ```
 
+A struct-typed field declared with `HAS` is **inlined** rather than pointed at —
+C's `struct Inner in;` beside `has`'s `struct Inner *in;`. The accessor hands
+back a view onto the outer struct's own bytes, so writing through it writes
+there:
+
+```raku
+use NativeCall;
+class TimeVal is repr('CStruct') { has int64 $.sec is rw; has int64 $.usec is rw; }
+class Span    is repr('CStruct') { HAS TimeVal $.from; HAS TimeVal $.to; }
+
+my $s = Span.new;
+$s.from.sec = 100;
+$s.to.sec   = 200;
+say nativesizeof(Span);   # 32 — two structs back to back, not two pointers
+```
+
 `is repr('CUnion')` overlays every field at offset 0 and is as wide as its
 widest member:
 
@@ -376,9 +393,6 @@ ignored with a warning on stderr, rather than run anyway.
   [dev/plans/LIBFFI-PLAN.md](../dev/plans/LIBFFI-PLAN.md) §6). A return of up to
   8 bytes can be declared `int64` and unpacked by hand.
 - **Callbacks fired from a thread the C library owns** (see above).
-- **Embedded structs.** A struct-typed field is a pointer, not an inlined
-  struct; Rakudo's `HAS` is not implemented.
-- `explicitly-manage`.
 
 ---
 

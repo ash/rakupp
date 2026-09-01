@@ -6986,11 +6986,15 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
             matchKind(Tok::Semicolon);
             continue;
         }
-        if (isIdent("has")) {
+        if (isIdent("has") || isIdent("HAS")) {
             if (isPackage)
                 throw ParseError("A " + kindKw + " cannot have attributes",
                                  cur().line, "X::Attribute::Package",
                                  {{"package-kind", kindKw}});
+            // `HAS` declares the member INLINE — C's `struct T t;` where `has`
+            // means `struct T *t;`. It is a declarator in its own right, not a
+            // trait, so it is read here and nowhere else.
+            const bool attrInlined = isIdent("HAS");
             advance();
             // optional type before the attribute var: `has Int $.x`, `has Int:D $.x`,
             // `has Array[Int] $.x` — consume the type name, any :D/:U/:_ smiley, and [..] params.
@@ -7046,6 +7050,7 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
                         a.type = attrType;              // the shared type applies to each
                         a.defConstraint = attrSmiley;   // …and so does its :D/:U smiley
                         a.coerce = attrCoerce;
+                        a.inlined = attrInlined;
                         a.sigil = vn[0];
                         size_t idx = 1;
                         if (vn.size() > 1 && (vn[1] == '.' || vn[1] == '!')) { a.pub = (vn[1] == '.'); idx = 2; }
@@ -7069,6 +7074,7 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
                 a.type = attrType;
                 a.defConstraint = attrSmiley;
                 a.coerce = attrCoerce;
+                a.inlined = attrInlined;
                 a.sigil = vn[0];
                 size_t idx = 1;
                 if (vn.size() > 1 && (vn[1] == '.' || vn[1] == '!')) { a.pub = (vn[1] == '.'); idx = 2; }

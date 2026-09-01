@@ -5284,6 +5284,22 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             long long fa = base + off;
             // scalar field: read directly; pointer/Str/class field: read the 8-byte
             // pointer and box it appropriately.
+            // An INLINE member (`HAS Inner $.in`) IS these bytes — hand back a
+            // view onto them, so `$o.in.x` reads and `$o.in.x = 1` writes the
+            // outer struct's own memory. ncFieldOffset marks it; a plain `has`
+            // of the same type stores a POINTER and is dereferenced below.
+            if (type.rfind("HAS ", 0) == 0) {
+                std::string inner = type.substr(4);
+                auto ict = classes_.find(inner);
+                if (ict == classes_.end()) ict = classes_.find(resolveClassAlias(inner));
+                if (ict != classes_.end()) {
+                    Value o; o.t = VT::Object; o.setObj(std::make_shared<ObjectData>());
+                    o.obj()->cls = ict->second;
+                    o.obj()->attrs["__native_ptr"] = Value::integer(fa);
+                    return o;   // borrowed: the OUTER struct owns the memory
+                }
+                type = inner;
+            }
             std::string bt = type.substr(0, type.find('['));
             if (bt == "Str") { long long p; std::memcpy(&p, (void*)(intptr_t)fa, 8); return Value::str(p ? std::string((const char*)(intptr_t)p) : ""); }
             if (bt == "Pointer") { long long p; std::memcpy(&p, (void*)(intptr_t)fa, 8); return ncMakePointer(type, (void*)(intptr_t)p); }
@@ -5314,7 +5330,12 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         // were the same test here, which inverted both against Rakudo.
         if (m == "defined") return Value::boolean(true);
         if (m == "Bool" || m == "so") return Value::boolean(addr != 0);
-        if (m == "gist" || m == "Str" || m == "raku") return Value::str("Pointer" + std::string(of.empty() ? "" : "[" + of + "]") + "<" + std::to_string(addr) + ">");
+        // Rakudo prints the address in HEX and spells NULL out; `.raku` is the
+        // constructor form, not the angle-bracket gist. (The class name stays
+        // short here, as every other NativeCall type's `.^name` does.)
+        if (m == "gist" || m == "Str") return Value::str(ncPointerText("Pointer", of, addr));
+        if (m == "raku") return Value::str("Pointer" + std::string(of.empty() ? "" : "[" + of + "]") +
+                                           ".new(" + std::to_string(addr) + ")");
         if (m == "deref") return ncReadElem(addr, of, 0);
         // an UNPARAMETERISED Pointer is C's `void *`, and that is what Rakudo's
         // `Pointer.of` answers — NativeHelpers::Pointer refuses arithmetic on
@@ -5329,6 +5350,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         if (m == "Numeric" || m == "Int") return Value::integer(addr);
         if (m == "defined") return Value::boolean(true);   // as for Pointer above
         if (m == "Bool") return Value::boolean(addr != 0);
+        if (m == "of" && !of.empty()) return Value::typeObj(of);
     }
     if (inv.t == VT::Type && (inv.s == "CArray" || inv.s.rfind("CArray[", 0) == 0)) {
         std::string et = inv.s.rfind("CArray[", 0) == 0 ? inv.s.substr(7, inv.s.size() - 8)
@@ -5347,23 +5369,34 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 }
             }
             Value c = Value::str(bytes); c.hashKind = "CArray";
+            // A CArray IS a native buffer: its address is what C is handed, so the
+            // storage must be SHARED by every copy of the value rather than
+            // duplicated on the first copy. Without this, `nativecast(Pointer, $c)`
+            // could only ever point at whichever copy it happened to be given.
+            c.s.promote();
             // the pointers can only be filled once `c` exists to own the strings
             for (size_t k = 0; k < strArgs.size(); k++) {
                 long long p = Interpreter::ncOwnStrElem(c, strArgs[k]);
-                std::memcpy(c.s.mut().data() + k * (size_t)esz, &p, sizeof p);
+                std::memcpy(c.s.mutInPlace() + k * (size_t)esz, &p, sizeof p);
             }
             c.enumName = et; // remember the element type
             return c;
         }
+        // `CArray[int32].of` is the element type. Only the PARAMETERISED one
+        // answers it — a bare `CArray.of` is no method under Rakudo either.
+        if (m == "of" && !et.empty()) return Value::typeObj(et);
         if (m == "allocate") {
             long long n = args.empty() ? 0 : args[0].toInt();
             if (n < 0) throw RakuError{Value::typeObj("X::AdHoc"), // Rakudo's message for a negative count
                 "Unable to allocate an array of " + std::to_string((unsigned long long)n) + " elements"};
             Value c = Value::str(std::string((size_t)n * esz, '\0')); c.hashKind = "CArray";
+            c.s.promote();   // shared storage, as `new` above
             c.enumName = et;
             return c;
         }
     }
+    if (inv.t == VT::Str && inv.hashKind == "CArray" && m == "of" && !inv.enumName.empty())
+        return Value::typeObj(inv.enumName.str());
     if (inv.t == VT::Str && inv.hashKind == "CArray" && m == "elems") {
         const std::string& et = inv.enumName;
         int esz = Interpreter::ncElemSize(et);
@@ -11675,6 +11708,51 @@ void Interpreter::registerBuiltins() {
         if (v.t != VT::Type) return v.toStr();
         return (!v.ofType().empty() && v.s.find('[') == std::string::npos) ? v.s + "[" + v.ofType() + "]" : v.s;
     };
+    // refresh($obj) — Rakudo re-reads a CStruct's native memory into the Raku
+    // object after C wrote through the pointer. Here a CStruct attribute read
+    // ALWAYS goes to native memory (there is no cached copy to invalidate), so
+    // the call has nothing to do but answer Rakudo's 1.
+    B["refresh"] = [](Interpreter&, ValueList&) -> Value { return Value::integer(1); };
+    // explicitly-manage($str) — asks Rakudo to hand C a buffer that outlives the
+    // call rather than a borrowed one. Our Str marshalling already owns every
+    // buffer it passes (ncOwnStrElem keeps it alive for the value's lifetime),
+    // so the string is returned unchanged; the point is that the NAME resolves,
+    // since it is a DEFAULT export that dists call unconditionally.
+    B["explicitly-manage"] = [](Interpreter&, ValueList& a) -> Value {
+        return a.empty() ? Value::any() : a[0];
+    };
+    // check_routine_sanity(&sub) — Rakudo's own signature validator, warning
+    // about parameter types NativeCall cannot marshal. The marshaller here
+    // reports an unusable type at the call itself, with the offending type
+    // named, so this answers True rather than duplicating the check.
+    B["check_routine_sanity"] = [](Interpreter&, ValueList&) -> Value { return Value::boolean(true); };
+    // guess_library_name($lib) — the file `is native($lib)` resolves to. Takes
+    // the same shapes the trait does: a bare name, a full path, a (name, version)
+    // list, or a provider sub that answers one.
+    B["guess_library_name"] = [](Interpreter& I, ValueList& a) -> Value {
+        if (a.empty()) return Value::str("");
+        Value v = a[0];
+        if (v.t == VT::Code && v.code()) { ValueList none; v = I.callCallable(v, none); }
+        std::string lib;
+        if (v.t == VT::Array && v.arr() && !v.arr()->empty()) {
+            // (name, version): Rakudo appends the version to the decorated name
+            lib = (*v.arr())[0].toStr();
+            std::string ver = v.arr()->size() > 1 ? (*v.arr())[1].toStr() : "";
+            std::string got = I.ncGuessLibraryName(lib);
+            if (!ver.empty() && got.find(ver) == std::string::npos) {
+#if defined(__APPLE__)
+                return Value::str("lib" + lib + "." + ver + ".dylib");
+#else
+                return Value::str("lib" + lib + ".so." + ver);
+#endif
+            }
+            return Value::str(got);
+        }
+        lib = v.t == VT::Type ? v.s.str() : v.toStr();
+        // a path (or anything with a directory part) is taken as written, as the trait does
+        if (lib.find('/') != std::string::npos) return Value::str(lib);
+        return Value::str(I.ncGuessLibraryName(lib));
+    };
     B["cglobal"] = [ncTypeName](Interpreter& I, ValueList& a) -> Value {
         // the library may arrive as a PROVIDER sub — cglobal(&LIB, …) is the
         // Math::Libgsl family's spelling — and its ANSWER is the library name,
@@ -11682,6 +11760,11 @@ void Interpreter::registerBuiltins() {
         std::string lib;
         if (a.size() > 0) {
             if (a[0].t == VT::Code && a[0].code()) { ValueList none; lib = I.callCallable(a[0], none).toStr(); }
+            // An UNDEFINED library means the running program itself — `cglobal(Str,
+            // 'errno', int32)` is the documented spelling, and taking the type's
+            // NAME for it sent dlopen looking for a library called "Str".
+            else if (a[0].t == VT::Type &&
+                     (a[0].s == "Str" || a[0].s == "Any" || a[0].s == "Mu" || a[0].s == "Nil")) lib = "";
             else lib = a[0].t == VT::Type ? a[0].s.str() : a[0].toStr();
         }
         std::string sym  = a.size() > 1 ? a[1].toStr() : "";
@@ -11712,6 +11795,13 @@ void Interpreter::registerBuiltins() {
         }
         return Value::integer(addr);
     };
+    // Every NativeCall routine answers to its QUALIFIED name as well. Two of them
+    // (guess_library_name, check_routine_sanity) are :ALL-only exports, so the
+    // qualified spelling is the ONLY one a plain `use NativeCall` program has —
+    // and it resolved nowhere.
+    for (const char* n : {"nativecast", "nativesizeof", "cglobal", "refresh",
+                          "explicitly-manage", "guess_library_name", "check_routine_sanity"})
+        B[std::string("NativeCall::") + n] = B[n];
     B["await"] = [](Interpreter& I, ValueList& a) -> Value {
         // resolve a Promise, running any pending Proc::Async work (with the timeout from an anyof timer)
         std::function<Value(Value&)> resolve = [&](Value& p) -> Value {

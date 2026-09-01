@@ -622,6 +622,10 @@ struct AttrDecl {
     bool objKeyed = false; // `has %!h{Mu:U}` — an object-keyed hash: TYPE-OBJECT
                            // subscript keys stay distinct ("(Name)") instead of
                            // stringifying to "" like a plain hash's
+    bool inlined = false;  // declared with `HAS`, not `has`: in a CStruct/CUnion
+                           // the member IS the struct, laid out in place, where
+                           // `has` stores a POINTER to one (C's `struct T t;` vs
+                           // `struct T *t;`)
     // USER traits (`is json-name('licenseId')`, `is unmarshalled-by(-> $d {…})`,
     // bare `is json-skip`): name + argument expression (null for bare). The
     // built-in traits above never appear here; these are what the JSON::Name /

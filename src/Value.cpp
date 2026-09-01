@@ -461,8 +461,7 @@ std::string Value::toStr() const {
                 // the element type lives in the "of" ENTRY (as .gist reads it),
                 // not in the ofType field
                 std::string of = hash()->count("of") ? hash()->at("of").toStr() : "";
-                return hashKind + (of.empty() ? "" : "[" + of + "]") + "<" +
-                       std::to_string(hash()->at("addr").toInt()) + ">";
+                return ncPointerText(hashKind.str(), of, hash()->at("addr").toInt());
             }
             if (hashKind == "Format" && hash() && hash()->count("fmt")) return hash()->at("fmt").toStr();
             // An IO::Handle Strs as its PATH — `"foo".IO.open.Str` is "foo".
@@ -1070,6 +1069,14 @@ static bool succWindowCp(const std::vector<uint32_t>& c, int& lo, int& hi) {
 static bool sxAscii(const std::string& s) {
     for (unsigned char c : s) if (c >= 0x80) return false;
     return true;
+}
+
+std::string ncPointerText(const std::string& kind, const std::string& of, long long addr) {
+    std::string out = kind + (of.empty() ? "" : "[" + of + "]") + "<";
+    if (!addr) return out + "NULL>";
+    char buf[32];
+    std::snprintf(buf, sizeof buf, "0x%llx", (unsigned long long)addr);
+    return out + buf + ">";
 }
 
 std::string strSucc(const std::string& s) {

@@ -6764,7 +6764,12 @@ bool isNativeTypeName(const std::string& n) {
         "int", "int8", "int16", "int32", "int64", "uint", "uint8", "uint16",
         "uint32", "uint64", "byte", "num", "num32", "num64", "str", "atomicint",
         "array", "bool", "size_t", "ssize_t", "long", "longlong", "ulong",
-        "ulonglong"};
+        // `void` is NativeCall's own type, not a native storage type: it exists
+        // only to parameterize a pointer that points at nothing in particular
+        // (`Pointer[void]`, the C `void *`). It belongs in this set all the same
+        // — every consumer asks "is this name a type at all?", and without it a
+        // bare `void` was an undeclared name and `Pointer[void]` died at parse.
+        "ulonglong", "void"};
     return t.count(n) > 0;
 }
 
@@ -7269,19 +7274,30 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             // them: the package as a type object, its symbols as qualified globals
             // that .WHO reads back as the stash.
             if (u->module == "NativeCall" && global_ && !global_->vars.count("NativeCall")) {
+                // …and the split is the real one: `use NativeCall` hands you
+                // DEFAULT, while guess_library_name / check_routine_sanity are
+                // :ALL-only (that is why a bare call to either is undeclared
+                // under Rakudo too).
                 static const char* ncNames[] = {
                     "&nativecast", "&nativesizeof", "&cglobal", "&explicitly-manage",
-                    "&refresh", "&guess_library_name", "&trait_mod:<is>",
+                    "&refresh", "&trait_mod:<is>", "&postcircumfix:<[ ]>",
                     "Pointer", "CArray", "OpaquePointer", "NativeCall",
-                    "bool", "void", "long", "longlong", "ulong", "ulonglong", "size_t",
+                    "bool", "void", "long", "longlong", "ulong", "ulonglong",
+                    "size_t", "ssize_t",
+                };
+                static const char* ncAllOnly[] = {
+                    "&guess_library_name", "&check_routine_sanity",
                 };
                 for (const char* pkg : {"NativeCall", "NativeCall::EXPORT",
-                                        "NativeCall::EXPORT::DEFAULT", "NativeCall::EXPORT::ALL"})
+                                        "NativeCall::EXPORT::DEFAULT", "NativeCall::EXPORT::ALL",
+                                        "NativeCall::Types"})
                     global_->define(pkg, Value::typeObj(pkg));
                 for (const char* n : ncNames)
                     for (const char* which : {"NativeCall::EXPORT::DEFAULT::",
                                               "NativeCall::EXPORT::ALL::"})
                         global_->define(std::string(which) + n, Value::typeObj(n));
+                for (const char* n : ncAllOnly)
+                    global_->define(std::string("NativeCall::EXPORT::ALL::") + n, Value::typeObj(n));
             }
             if (u->module == "Test") usedTest_ = true;
             else if (u->module.size() >= 2 && u->module[0] == 'v' && ascii::isdigit((unsigned char)u->module[1])) {
@@ -7699,6 +7715,8 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                         ca.defConstraint = a.defConstraint;
                         ca.containerIs = a.containerIs;
                         ca.objKeyed = a.objKeyed;
+                        ca.inlined = a.inlined;
+                        if (ca.inlined) { ca.inlineCls = ncInlineClass(ca.type); haveInlineAttrs_ = true; }
                         ci->attrs.push_back(ca);
                     }
                     for (auto& r : cd->rules) { ci->rules[r.name] = r.pattern; ci->ruleKind[r.name] = r.kind; ci->ruleOrder.push_back(r.name); }
@@ -8238,6 +8256,8 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 ca.built = a.built;
                 ca.defConstraint = a.defConstraint;
                 ca.objKeyed = a.objKeyed;
+                ca.inlined = a.inlined;
+                if (ca.inlined) { ca.inlineCls = ncInlineClass(ca.type); haveInlineAttrs_ = true; }
                 ca.def = a.def.get();
                 ca.where = a.whereExpr.get();
                 ca.declId = &a;
@@ -12769,16 +12789,66 @@ std::string Interpreter::ncResolveTypeAlias(ClassInfo* ci, const std::string& t)
     if (v && v->t == VT::Type && v->s != t && ncScalarWidth(v->s, sgn, isF)) return v->s;
     return t;
 }
+// The struct a `HAS` member inlines, looked up when the OUTER class is declared.
+// (An inner struct C's header declared later is not a struct this can lay out —
+// the member falls back to pointer width, as it did before `HAS` existed.)
+std::shared_ptr<ClassInfo> Interpreter::ncInlineClass(const std::string& type) {
+    auto it = classes_.find(type);
+    if (it == classes_.end()) it = classes_.find(resolveClassAlias(type));
+    if (it == classes_.end()) return nullptr;
+    const std::string& r = it->second->repr;
+    if (r != "CStruct" && r != "CPPStruct" && r != "CUnion") return nullptr;
+    return it->second;
+}
+
+// The width and alignment one member contributes to its struct's layout. A
+// plain member is a scalar or a machine pointer; a `HAS` member is the WHOLE
+// inner struct, laid out in place — C's `struct T t;` beside `struct T *t;` —
+// so it is as wide as that struct and aligned like its widest field. Taking the
+// size for the alignment too would be wrong the moment it is not a power of two
+// (a 12-byte struct aligns to 4, not 12).
+void Interpreter::ncMemberLayout(const ClassAttr& a, const std::string& at,
+                                 long long& w, long long& align) {
+    // A struct that inlines itself (only reachable by reopening one) has no
+    // layout at all — C forbids it. Bound the walk rather than recurse forever.
+    static thread_local int depth = 0;
+    if (a.inlined && a.inlineCls && depth < 16) {
+        ++depth;
+        w = ncStructSize(a.inlineCls.get());
+        align = ncStructAlign(a.inlineCls.get());
+        --depth;
+        if (w <= 0) w = align = 1;
+        return;
+    }
+    bool sgn, isF; int sw = ncScalarWidth(at, sgn, isF);
+    w = align = sw ? sw : 8;
+}
+// A struct's own alignment: the widest alignment any member needs.
+long long Interpreter::ncStructAlign(ClassInfo* ci) {
+    long long maxA = 1;
+    for (auto& a : ci->attrs) {
+        long long w, al; ncMemberLayout(a, ncResolveTypeAlias(ci, a.type), w, al);
+        if (al > maxA) maxA = al;
+    }
+    return maxA;
+}
 long long Interpreter::ncFieldOffset(ClassInfo* ci, const std::string& field, std::string& type) {
     const bool uni = (ci->repr == "CUnion");
     long long off = 0;
     for (auto& a : ci->attrs) {
         std::string at = ncResolveTypeAlias(ci, a.type);
-        bool sgn, isF; int w = ncScalarWidth(at, sgn, isF); if (w == 0) w = 8;
-        if (!uni) off = (off + w - 1) / w * w;
+        long long w, align; ncMemberLayout(a, at, w, align);
+        if (!uni) off = (off + align - 1) / align * align;
         std::string an = a.name; if (!an.empty() && (an[0]=='$'||an[0]=='@'||an[0]=='%')) an = an.substr(1);
         if (!an.empty() && (an[0]=='!'||an[0]=='.')) an = an.substr(1);
-        if (an == field) { type = at.empty() ? "int64" : at; return uni ? 0 : off; }
+        // An INLINE member answers its offset with the type marked, so the read
+        // path hands back a view ONTO those bytes instead of dereferencing them
+        // as a pointer.
+        if (an == field) {
+            type = at.empty() ? "int64" : at;
+            if (a.inlined) type = "HAS " + type;
+            return uni ? 0 : off;
+        }
         if (!uni) off += w;
     }
     return -1;
@@ -12787,11 +12857,17 @@ long long Interpreter::ncStructSize(ClassInfo* ci) {
     const bool uni = (ci->repr == "CUnion");
     long long off = 0, maxA = 1;
     for (auto& a : ci->attrs) {
-        bool sgn, isF; int w = ncScalarWidth(ncResolveTypeAlias(ci, a.type), sgn, isF); if (w == 0) w = 8;
-        if (w > maxA) maxA = w;
+        long long w, align; ncMemberLayout(a, ncResolveTypeAlias(ci, a.type), w, align);
+        if (align > maxA) maxA = align;
         if (uni) { if (w > off) off = w; continue; }   // a union is as wide as its widest member
-        off = (off + w - 1) / w * w; off += w;
+        off = (off + align - 1) / align * align; off += w;
     }
+    // A union pads out to its own alignment exactly as a struct does — C's
+    // `union { struct { int x, y, z; } t; long n; }` is 16 bytes, not 12, and a
+    // struct that embeds one is laid out on that 16. Rakudo answers 12 here;
+    // that is MoarVM under-reporting, and copying it would mis-place every field
+    // after such a member. (Only reachable at all through `HAS`: a union of
+    // scalars is already a multiple of its widest member.)
     return off ? (off + maxA - 1) / maxA * maxA : 0;
 }
 
@@ -12799,6 +12875,29 @@ long long Interpreter::ncStructSize(ClassInfo* ci) {
 long long Interpreter::ncRawAddr(const Value& v) {
     if (v.t == VT::Object && v.obj() && v.obj()->attrs.count("__native_ptr")) return v.obj()->attrs.at("__native_ptr").toInt();
     if (v.t == VT::Hash && v.hash()) { auto it = v.hash()->find("addr"); if (it != v.hash()->end()) return it->second.toInt(); }
+    // A BYTE-BACKED CArray — one built here rather than handed back by C — has a
+    // real address too: its own storage. Answering 0 made `nativecast(Pointer, $c)`
+    // a NULL pointer, and the next native call dereferenced it (`strlen` on the
+    // result is a segfault, not a wrong answer). The storage is a shared body
+    // (CArray.new promotes it), so this is the same buffer every copy of the
+    // value sees; the body is retained in a small ring so a Pointer taken from a
+    // TEMPORARY CArray outlives the statement that made it.
+    if (v.t == VT::Str && v.hashKind == "CArray") {
+        // Promote when it is not already shared. An inline buffer lives INSIDE
+        // this Value — which is routinely a temporary copy of the caller's — so
+        // its address would dangle the moment the statement ended. Promotion
+        // changes the storage, never the string, so the const is honest.
+        const_cast<Value&>(v).s.promote();
+        if (auto body = v.s.bodyPtr()) {
+            static std::mutex m;
+            static std::deque<std::shared_ptr<const StrBody>> retained;
+            std::lock_guard<std::mutex> lk(m);
+            retained.push_back(body);
+            if (retained.size() > 256) retained.pop_front();
+            return (long long)(intptr_t)body->text.data();
+        }
+        return (long long)(intptr_t)v.s.data();
+    }
     if (v.t == VT::Int) return v.i;
     return 0;
 }
@@ -13483,7 +13582,18 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
     for (auto& cb : cabacks) {
         if (!rwArgs || cb.arg < rwArgOff || cb.arg - rwArgOff >= rwArgs->size()) continue;
         try { if (Value* lv = lvalue((*rwArgs)[cb.arg - rwArgOff].get()))
-                  if (lv->t == VT::Str && (lv->hashKind == "CArray" || lv->hashKind == "Buf")) lv->s = keep[cb.keep];
+                  if (lv->t == VT::Str && (lv->hashKind == "CArray" || lv->hashKind == "Buf")) {
+                      // IN PLACE while the length is unchanged (which it is — C
+                      // wrote into a same-sized copy). The buffer's ADDRESS is
+                      // what a Pointer taken from this array holds, and assigning
+                      // the string forks it: a short one lands back in inline
+                      // storage, so the next `nativecast(Pointer, $c)` pointed at
+                      // a temporary instead of the array.
+                      if (lv->s.size() == keep[cb.keep].size() && !keep[cb.keep].empty()) {
+                          if (char* d = lv->s.mutInPlace()) std::memcpy(d, keep[cb.keep].data(), keep[cb.keep].size());
+                      }
+                      else lv->s = keep[cb.keep];
+                  }
         } catch (RakuError&) {}
     }
 
@@ -13534,6 +13644,25 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
         }
     }
     return Value::integer(ri);
+}
+
+// guess_library_name(lib): the file name `is native(lib)` would actually open.
+// Rakudo's NativeCall exports this (under :ALL) and dists call it to REPORT what
+// they bound to — so it must answer the same candidate the FFI picks, not a
+// platform-decorated guess. The first spelling that dlopens wins; with none, the
+// decorated default is returned so the answer is still a usable name.
+std::string Interpreter::ncGuessLibraryName(const std::string& lib) {
+    if (lib.empty()) return "";
+    for (const std::string& cand : libCandidates(lib))
+        if (void* h = dlopen(cand.c_str(), RTLD_LAZY | RTLD_GLOBAL)) { (void)h; return cand; }
+    dlerror(); // clear the failures we provoked
+#if defined(__APPLE__)
+    return "lib" + lib + ".dylib";
+#elif defined(_WIN32)
+    return lib + ".dll";
+#else
+    return "lib" + lib + ".so";
+#endif
 }
 
 // cglobal(lib, symbol, Type): resolve a C global variable's address via dlsym and
@@ -16829,10 +16958,42 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         // back its structs by index, and `$!binds[$col].buffer_length = …` is how
         // DBDish::mysql fills every result buffer. Both forms only READ the
         // invocant, so evaluating it here is safe if no branch below claims it.
+        // …and it may be one accessor deeper: `$outer.inner.field = v`, where
+        // `.inner` is an INLINE (`HAS`) member and the view it hands back borrows
+        // the outer struct's memory. That view is resolved from the DECLARATION —
+        // the accessor is never called — because the general path evaluates its
+        // invocant and would then run it a second time for every `$a.b.c = 1`
+        // it did not claim.
+        Value inlineInv;
+        if (haveInlineAttrs_ && mc->args.empty() && !mc->meta && !mc->hyper &&
+            mc->inv->kind == NK::MethodCall) {
+            auto* im = static_cast<MethodCall*>(mc->inv.get());
+            if (im->args.empty() && !im->meta && !im->hyper &&
+                (im->inv->kind == NK::VarExpr || im->inv->kind == NK::SelfTerm)) {
+                Value ov = eval(im->inv.get());   // a variable: re-reading it is free
+                if (ov.t == VT::Object && ov.obj() && ov.obj()->cls &&
+                    ov.obj()->attrs.count("__native_ptr") &&
+                    !ov.obj()->cls->findMethod(im->method)) {
+                    std::string it2;
+                    long long ioff = ncFieldOffset(ov.obj()->cls.get(), im->method, it2);
+                    if (ioff >= 0 && it2.rfind("HAS ", 0) == 0) {
+                        auto ict = classes_.find(it2.substr(4));
+                        if (ict == classes_.end()) ict = classes_.find(resolveClassAlias(it2.substr(4)));
+                        if (ict != classes_.end()) {
+                            inlineInv.t = VT::Object;
+                            inlineInv.setObj(std::make_shared<ObjectData>());
+                            inlineInv.obj()->cls = ict->second;
+                            inlineInv.obj()->attrs["__native_ptr"] =
+                                Value::integer(ov.obj()->attrs["__native_ptr"].toInt() + ioff);
+                        }
+                    }
+                }
+            }
+        }
         if (mc->args.empty() && !mc->meta && !mc->hyper &&
             (mc->inv->kind == NK::VarExpr || mc->inv->kind == NK::Index ||
-             mc->inv->kind == NK::SelfTerm)) {
-            Value inv = eval(mc->inv.get());
+             mc->inv->kind == NK::SelfTerm || inlineInv.t == VT::Object)) {
+            Value inv = inlineInv.t == VT::Object ? inlineInv : eval(mc->inv.get());
             // `$a.where = 'unknown'` on an ATTRIBUTE meta-object: the accessor
             // belongs to a role a trait mixed in, and the role's state lives in
             // the meta-object's shared map. Only names already present — a role
@@ -17248,7 +17409,9 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                         if (bp->s.size() < need) bp->s.resize(need, '\0');
                         if (et == "Str") { // the slot is a char* into memory the array owns
                             long long p = ncOwnStrElem(*bp, v);
-                            std::memcpy(bp->s.mut().data() + (size_t)i * esz, &p, sizeof p);
+                            // IN PLACE: `mut()` forks the shared buffer, and the
+                            // buffer is what C was handed (see CArray.new).
+                            std::memcpy(bp->s.mutInPlace() + (size_t)i * esz, &p, sizeof p);
                         }
                         else ncWriteElem((long long)(intptr_t)bp->s.data(), et, i, v);
                     }
@@ -28493,7 +28656,23 @@ Value Interpreter::eval(Expr* e) {
                         return makeRolePun(rit->second.get(), n, argv);
                     }
                 }
-                Value ty = Value::typeObj(n); ty.ofTypeM() = nt->ofType;
+                Value ty = Value::typeObj(n);
+                // The parameter is the name as WRITTEN, so `Pointer[NativeCall::Types::void]`
+                // carried the qualified spelling into the type's own name and read
+                // back as a different type from `Pointer[void]`. Canonicalise each
+                // argument the way a bare name resolves.
+                if (nt->ofType.find("NativeCall::") != std::string::npos) {
+                    std::string canon;
+                    size_t pos = 0;
+                    while (pos <= nt->ofType.size()) {
+                        size_t c = nt->ofType.find(',', pos);
+                        std::string part = nt->ofType.substr(pos, c == std::string::npos ? std::string::npos : c - pos);
+                        canon += resolveClassAlias(part);
+                        if (c == std::string::npos) break;
+                        canon += ","; pos = c + 1;
+                    }
+                    ty.ofTypeM() = canon;
+                } else ty.ofTypeM() = nt->ofType;
                 ty.i = nt->defConstraint;
                 return ty;
             }

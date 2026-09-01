@@ -216,7 +216,10 @@ maps into it, deliberately keeping the Raku type names in one place.
 
 Structs are laid out with natural alignment; `.new` allocates zeroed native
 memory, and field reads and writes go to that memory, so a C function can fill
-one in. `nativesizeof` answers from the same layout code.
+one in. `nativesizeof` answers from the same layout code. A member declared with
+`HAS` is inlined rather than pointed at — it contributes the inner struct's own
+width and alignment, and its accessor hands back a view onto the outer struct's
+bytes rather than dereferencing a pointer.
 
 ```cpp
 // src/Interpreter.h — the pointer helpers
@@ -228,6 +231,7 @@ static void ncWriteElem(long long addr, const std::string& ofType,
 static long long ncFieldOffset(ClassInfo* ci, const std::string& field,
                                std::string& type);
 static long long ncStructSize(ClassInfo* ci);
+static long long ncStructAlign(ClassInfo* ci);
 ```
 
 ## Callbacks
@@ -316,6 +320,3 @@ bundled binary instead.
   spelling. A return of up to 8 bytes can be declared `int64` and unpacked by
   hand.
 - **Callbacks fired from a thread the C library owns**, as above.
-- **Embedded structs.** A struct-typed field is a pointer, not an inlined
-  struct.
-- `explicitly-manage`.

@@ -837,10 +837,20 @@ public:
     // array does). 0 for an undefined value — C's NULL.
     static long long ncOwnStrElem(Value& arr, const Value& v);
     static std::string ncResolveTypeAlias(ClassInfo* ci, const std::string& t); // `constant my_bool = int8` → "int8"
+    std::shared_ptr<ClassInfo> ncInlineClass(const std::string& type); // the struct a `HAS` member inlines
+    // True once any class has declared a `HAS` member. The assignment path
+    // consults it before looking for an inline-struct view, so a program with no
+    // such member never pays the extra invocant evaluation that lookup needs.
+    bool haveInlineAttrs_ = false;
     static long long ncFieldOffset(ClassInfo* ci, const std::string& field, std::string& type); // CStruct field byte offset
     static long long ncStructSize(ClassInfo* ci);   // CStruct total padded size
+    static long long ncStructAlign(ClassInfo* ci);  // …and the alignment it imposes on its container
+    // Width + alignment one member contributes (a `HAS` member is the inner struct itself)
+    static void ncMemberLayout(const ClassAttr& a, const std::string& at,
+                               long long& w, long long& align);
     static long long ncRawAddr(const Value& v); // extract a raw pointer from a native value (0 if none)
     Value cglobal(const std::string& lib, const std::string& sym, const std::string& type); // C global variable
+    std::string ncGuessLibraryName(const std::string& lib); // the file `is native(lib)` would dlopen
     long runCallback(int slot, long a0, long a1, long a2, long a3, long a4, long a5); // NativeCall callback dispatch
     void runFfiClosure(void* closure, void* ret, void** args); // NativeCall ffi_closure dispatch
     // False on a thread the interpreter never entered — i.e. one the C library
@@ -1295,6 +1305,26 @@ public:
         // special-case downstream just works
         if (n == "OpaquePointer") { static const std::string P = "Pointer"; return P; }
         if (classes_.count(n)) return n;
+        // NativeCall's types under their QUALIFIED spelling. A module that does
+        // not import them still names them in full — `NativeCall::Types::void`
+        // is how a signature says "void *" without `use NativeCall` in scope —
+        // and every one of them was an undeclared name. They resolve to the same
+        // short type object the imported spelling gives, so a Pointer built
+        // either way is the same Pointer.
+        if (n.rfind("NativeCall::", 0) == 0) {
+            static const std::map<std::string, std::string> ncq = [] {
+                std::map<std::string, std::string> m;
+                for (const char* t : {"void", "bool", "long", "longlong", "ulong",
+                                      "ulonglong", "size_t", "ssize_t",
+                                      "Pointer", "CArray", "OpaquePointer"})
+                    for (const char* pre : {"NativeCall::", "NativeCall::Types::"})
+                        m[pre + std::string(t)] =
+                            std::string(t) == "OpaquePointer" ? "Pointer" : t;
+                return m;
+            }();
+            auto q = ncq.find(n);
+            if (q != ncq.end()) return q->second;
+        }
         auto it = classAliases_.find(n);
         if (it != classAliases_.end()) return it->second;
         // A nested type named by a PARTIAL path from inside its own package:

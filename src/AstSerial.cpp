@@ -185,7 +185,7 @@ template <class IO> void ioAttr(IO& io, AttrDecl& a) {
     F(io, a.name); F(io, a.sigil); F(io, a.containerIs); F(io, a.pub); F(io, a.rw);
     F(io, a.required); F(io, a.built); F(io, a.requiredWhy); F(io, a.type);
     F(io, a.coerce); ioVec(io, a.handles); ioVec(io, a.handlesTo); F(io, a.defConstraint);
-    F(io, a.objKeyed);
+    F(io, a.objKeyed); F(io, a.inlined);
     if constexpr (IO::reading) {
         size_t n = io.count();
         a.userTraits.clear(); a.userTraits.resize(n);

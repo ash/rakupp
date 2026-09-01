@@ -818,6 +818,10 @@ bool valueEq(const Value& a, const Value& b);   // numeric/str smart equality
 bool objectStructEqv(const Value& a, const Value& b,
                      bool (*eq)(const Value&, const Value&));
 int valueCmp(const Value& a, const Value& b);   // for <=> / cmp
+// The text of a NativeCall Pointer / live CArray: `Pointer[int32]<0x1f4>`, and
+// `<NULL>` for the null one. Hex, as Rakudo prints it and as every C debugger
+// does — this is an ADDRESS, and it is read to be compared with one.
+std::string ncPointerText(const std::string& kind, const std::string& of, long long addr);
 std::string strSucc(const std::string& s);             // Raku magic string increment
 std::string strPred(const std::string& s, bool& ok);  // magic decrement (ok=false on underflow)
 
@@ -917,6 +921,11 @@ struct ClassAttr {
                                         // "" (or a missing entry) = the same name
     int defConstraint = 0; // type smiley on the attr type: 0=none, 1=:D (defined), 2=:U (undefined)
     bool objKeyed = false; // `has %!h{Mu:U}` — object-keyed hash (type-object keys stay distinct)
+    bool inlined = false;  // `HAS` — a CStruct member laid out IN PLACE, not by pointer
+    // …and the struct it inlines, resolved once when the class is declared. The
+    // layout helpers are static (valueEqv reaches them from a free function),
+    // so they cannot consult the class registry themselves.
+    std::shared_ptr<ClassInfo> inlineCls;
     const void* declId = nullptr;     // identity of the declaring AttrDecl (diamond-composition dedup)
     // user traits, evaluated at class-declaration time (`is json-name('x')` →
     // {"json-name", Str}; `is unmarshalled-by({…})` → {"unmarshalled-by", Code};

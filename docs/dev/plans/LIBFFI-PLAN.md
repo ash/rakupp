@@ -15,8 +15,8 @@ Measurements were taken with `build-arm64/rakupp` on macOS/arm64 and the system
 
 > **Outcome:** every row of the table below is fixed except the by-value struct
 > one — which turns out to be something Rakudo cannot express either, so it is
-> new surface rather than a gap (§6). The `explicitly-manage` half of the
-> `CUnion` row is also still absent.
+> new surface rather than a gap (§6). (`explicitly-manage` landed later, with the
+> rest of NativeCall's exported names — see issue #57.)
 > The user-facing description of what the FFI does *now* is
 > [guide/FFI.md](../../guide/FFI.md).
 
@@ -48,7 +48,7 @@ and a per-`Callable` `dlopen`/`dlsym` cache (`Value.h:83`).
 | `ldexpf(3e0, 2) --> num32` | `0` | **silently wrong** — a `float` arg passed as `double` |
 | 9 integer arguments | `X::NYI: too many register arguments` | clean error |
 | struct by value (arg or return) | not expressible | absent |
-| `CUnion`, `explicitly-manage` | not implemented | absent |
+| `CUnion`, `explicitly-manage` | not implemented | absent (both landed since) |
 | callback with >6 args, float args, or a non-integer return | truncated to `long` | wrong |
 
 The callback path is the weakest part: `runCallback`
