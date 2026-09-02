@@ -440,6 +440,27 @@ check %built<exit> == 0 && %built<err>.contains('installed Gate::Built'),
       '…and a real install of the same hooked dist works';
 my %built-gone = installer('--uninstall', 'Gate::Built');
 check %built-gone<exit> == 0, '…and uninstalls cleanly before the M6 choreography';
+
+# ---- issue #49: the plan is a topological order, not discovery reversed ----
+# `rakupp install File::Directory::Tree OpenSSL` names both, and the second
+# one's Build.rakumod imports the first. Breadth-first discovery queued the
+# tree module first and OpenSSL second, and reversing that ran OpenSSL's hook
+# against a store that did not hold its build-dep yet. Gate::Demo before
+# Gate::Built is the same shape; a fresh HOME keeps the hook child honest
+# (nothing else on the machine can answer `use Gate::Demo`).
+my %ord = installer('--dry-run', 'Gate::Demo', 'Gate::Built');
+check %ord<exit> == 0 && %ord<out>.index('Gate::Demo') < %ord<out>.index('Gate::Built'),
+      'issue #49: a dependency named BEFORE its dependent still plans first';
+my $home49 = $tmp.add('home49');
+$home49.mkdir;
+my %env49 = HOME => $home49.Str, RAKUPP_INSTALL_INDEX => $tmp.add('index.json').Str;
+my $i49 = run 'env', |%env49.map({ "{.key}={.value}" }), $EXE, 'install',
+              'Gate::Demo', 'Gate::Built', :out, :err;
+$i49.out.slurp(:close);
+my $e49 = $i49.err.slurp(:close);
+check (try $i49.exitcode) == 0 && $e49.contains('installed Gate::Built')
+      && !$e49.contains('BUILD FAILED'),
+      'issue #49: …and the hook finds its build-dep in a fresh store';
 my %tst-mix = installer('--test-only', '--list');
 check %tst-mix<exit> == 2, 'test --list is refused as a mode mix';
 

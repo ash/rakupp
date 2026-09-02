@@ -587,8 +587,44 @@ sub resolve(@index, @wants, %notes, Str :$prefix = '') {
         }
         @plan.push(%e);
     }
-    # dependencies first: a dist queued later was queued BY something earlier
-    @plan.reverse.List
+    # Dependencies first — a topological order over the plan, NOT the reverse
+    # of discovery. Discovery is breadth-first, and reversing it puts a dist
+    # before its dependency whenever that dependency was discovered earlier
+    # by another route: `install File::Directory::Tree OpenSSL` names both,
+    # so the tree module is queued first and OpenSSL second, and the reverse
+    # ran OpenSSL's Build.rakumod — which imports the tree module — against
+    # a store that did not hold it yet (issue #49). Any dist whose META lists
+    # a dependency before a sibling that itself needs it hit the same wall.
+    plan-order(@plan)
+}
+
+# Depth-first over the plan: a dist is emitted after every planned dist it
+# depends on. Dependencies name MODULES and plan entries name dists, so the
+# lookup goes through `provides` too. A cycle (two dists that test-depend on
+# each other) breaks at the back edge — whichever was discovered first goes
+# first — rather than looping.
+sub plan-order(@plan --> List) {
+    my %at;   # every module or dist name a plan entry answers to -> its index
+    for @plan.kv -> $i, %e {
+        %at{%e<name>} //= $i;
+        %at{$_} //= $i for (%e<provides> // {}).keys;
+    }
+    my @order;
+    my @state = 0 xx @plan.elems;   # 0 unseen, 1 on the path, 2 emitted
+    sub visit(Int $i) {
+        return if @state[$i];
+        @state[$i] = 1;
+        for <depends build-depends test-depends> -> $field {
+            for dep-identities(@plan[$i]{$field}) -> $id {
+                my $j = %at{parse-identity(~$id)<name>};
+                visit($j) if $j.defined && $j != $i;
+            }
+        }
+        @state[$i] = 2;
+        @order.push(@plan[$i]);
+    }
+    visit($_) for ^@plan.elems;
+    @order.List
 }
 
 sub base-url {
