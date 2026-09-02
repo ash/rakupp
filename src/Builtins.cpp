@@ -5946,6 +5946,34 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         }
         std::ostringstream ss; ss << in.rdbuf();
         std::string text = ss.str();
+        // Rakudo refuses to precompile `use lib`: it is a compile-time statement
+        // that reshapes the repository chain, so a module loaded THROUGH the
+        // precompilation store (which is what this path is) dies with
+        // "'use lib' cannot be precompiled and thus cannot be used in a module".
+        // Pod::Load's own suite loads a script that opens with `use lib <. ./t>`
+        // and asserts that refusal reaches it as X::Pod::Load::SourceErrors. The
+        // scan is by statement start, skipping comment lines and pod blocks.
+        {
+            std::istringstream ls(text);
+            std::string ln; int lineNo = 0; bool inPod = false;
+            while (std::getline(ls, ln)) {
+                lineNo++;
+                size_t a = ln.find_first_not_of(" \t");
+                if (a == std::string::npos) continue;
+                std::string t = ln.substr(a);
+                if (t[0] == '=') { // pod directive: `=begin`/`=pod` open, `=end`/`=cut` close
+                    if (t.rfind("=begin", 0) == 0 || t.rfind("=pod", 0) == 0) inPod = true;
+                    else if (t.rfind("=end", 0) == 0 || t.rfind("=cut", 0) == 0) inPod = false;
+                    continue;
+                }
+                if (inPod || t[0] == '#') continue;
+                if (t.rfind("use lib", 0) == 0 && (t.size() == 7 || !(ascii::isalnum((unsigned char)t[7]) || t[7] == '-' || t[7] == ':')))
+                    throw RakuError{Value::typeObj("X::AdHoc"),
+                        "===SORRY!=== Error while compiling " + src + "\n"
+                        "'use lib' cannot be precompiled and thus cannot be used in a module\n"
+                        "at " + src + ":" + std::to_string(lineNo)};
+            }
+        }
         // Precompilation never RUNS a mainline, and `$=pod` is a parse-time
         // product here — so the pod DOM is read straight off the source, and a
         // `unit module` file (Pod::Load's own t/unit.pod6) needs no wrapping
@@ -9230,6 +9258,7 @@ void Interpreter::registerBuiltins() {
             {"Pod::Block", {"Pod::Block", "Any", "Mu"}},
             {"Pod::Block::Named", {"Pod::Block::Named", "Pod::Block", "Any", "Mu"}},
             {"Pod::Block::Para", {"Pod::Block::Para", "Pod::Block", "Any", "Mu"}},
+            {"Pod::FormattingCode", {"Pod::FormattingCode", "Pod::Block", "Any", "Mu"}},
             {"Pod::Block::Code", {"Pod::Block::Code", "Pod::Block", "Any", "Mu"}},
             {"Pod::Block::Comment", {"Pod::Block::Comment", "Pod::Block", "Any", "Mu"}},
             {"Pod::Block::Table", {"Pod::Block::Table", "Pod::Block", "Any", "Mu"}},
@@ -11777,6 +11806,13 @@ void Interpreter::registerBuiltins() {
             if (v.t == VT::Pair && v.namedArg && v.s == "with" && v.pairVal()) { with = *v.pairVal(); continue; }
             items.push_back(v);
         }
+        // The single-argument rule (`+lol`): ONE iterable argument is the list of
+        // lists to zip, not itself a list — `zip(((1,2),(3,4)))` is `((1,3),(2,4))`
+        // and `zip @fitted.map(*.[^$max])` transposes the rows. Treating that one
+        // argument as the only list wrapped every element a level too deep, and
+        // Text::MiscUtils' text-columns handed `("",)` to a Str:D parameter.
+        if (items.size() == 1 && items[0].t == VT::Array && items[0].arr())
+            items = *items[0].arr();
         Value z = I.applyReduce("Z", items);
         if (with.t == VT::Code && z.arr()) { // zip(:with(&f)) folds each tuple with &f
             Value out = Value::array(); out.isList = true;

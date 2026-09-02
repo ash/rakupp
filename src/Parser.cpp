@@ -1835,6 +1835,17 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
             advance();
             continue;
         }
+        // dot-form hyper SUBSCRIPT: @a.»<key> / @a.»[0] / @a.»{k} — the same drop
+        // of the dot, so the »<…> branch above reads it. `.».Str` was handled
+        // (a `.` after the marker) but a tight subscript opener was not, and
+        // Color::Names' `…».value.»<name>` died "expected method name after '.'".
+        if (isOp(".") && peek().kind == Tok::Op && (peek().text == "»" || peek().text == ">>") &&
+            (peek(2).kind == Tok::LBracket ||
+             ((peek(2).kind == Tok::LBrace ||
+               (peek(2).kind == Tok::Op && peek(2).text == "<")) && !peek(2).spaceBefore))) {
+            advance();
+            continue;
+        }
         // dot-postfix operator: $x.++ / $x.??? (and hyper .».++ / ».??? forms).
         // SYMBOLIC postfixes only — `.foo` (wordy) is always a method call.
         // The postfix must touch the dot: `$o. ++` is the obsolete P5 concat form

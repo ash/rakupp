@@ -17649,6 +17649,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                             for (int b = 0; b < w; b++)
                                 mb[(size_t)j * w + b] = (char)(unsigned char)((x2 >> (8 * b)) & 0xFF);
                     }
+                    bp->s.promote(); // shared storage from here on (see the single-index arm)
                     rwWriteThrough(idx->base.get());
                     return sink ? Value::any() : eval(a->target.get());
                 }
@@ -17666,6 +17667,14 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 if (char* mb = bp->s.mutInPlace())
                     for (int k = 0; k < w; k++)           // little-endian, truncating
                         mb[(size_t)i * w + k] = (char)(unsigned char)((x >> (8 * k)) & 0xFF);
+                // Shared storage from here on, as `.reallocate` already makes it: a
+                // later `nativecast(CArray[uint8], $buf)` must view THESE bytes. The
+                // cast promotes only the temporary copy it is handed, so a buffer
+                // grown by index — Compress::Zlib's flush sizes its output with
+                // `$output-buf[1023] = 1` — gave zlib a view onto a copy, and the
+                // Z_FINISH trailer came back as six zero bytes: "uncompress data
+                // error". After the write, so it lands on the uniquely-owned bytes.
+                bp->s.promote();
                 rwWriteThrough(idx->base.get());
                 return sink ? Value::any() : bp->blobElemAt(i);
             }

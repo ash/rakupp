@@ -1013,6 +1013,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         auto& h = *inv.hash();
         if (m == "name")     return h.count("name") ? h["name"] : Value::str("");
         if (m == "type")     return h.count("type") ? h["type"] : Value::str("");
+        if (m == "meta")     return h.count("meta") ? h["meta"] : Value::array(); // L<text|url>'s url, X<>'s entries
         if (m == "contents") return h.count("contents") ? h["contents"] : Value::array();
         if (m == "level")    return h.count("level") ? h["level"] : Value::integer(1);
         if (m == "config")   return h.count("config") ? h["config"] : Value::makeHash();

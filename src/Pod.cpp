@@ -43,10 +43,99 @@ static Value mkPod(const std::string& cls) {
     (*v.hash())["contents"] = Value::array();
     return v;
 }
+// ---------- formatting codes: B<bold> C<code> L<text|url> Z<comment> … ----------
+//
+// Inside paragraph text an uppercase letter directly before `<` opens a
+// formatting code, closed by the matching `>`; `<<…>>` (any run) or `«…»`
+// delimit text that itself holds angle brackets, and every code but the
+// literal ones (C, V) nests. Rakudo makes each a Pod::FormattingCode with
+// `.type`, `.contents` and `.meta` (the part after `|` in L<>, D<>, X<>, M<>,
+// P<>), and the paragraph's contents alternate Str and code. Before this a
+// paragraph was ONE Str, so Pod::Load's `.contents[0].contents[0].type` found
+// "No such method 'type' for invocant of type 'Str'" — and every Pod::To::*
+// renderer walks the same nodes.
+static void parseFormatting(const std::string& s, ValueList& out);
+
+static Value mkFmt(char type, const std::string& inner) {
+    Value f = mkPod("Pod::FormattingCode");
+    (*f.hash())["type"] = Value::str(std::string(1, type));
+    Value meta = Value::array();
+    std::string body = inner;
+    if (type == 'L' || type == 'D' || type == 'X' || type == 'M' || type == 'P') {
+        size_t bar = inner.find('|');
+        if (bar != std::string::npos) {
+            body = inner.substr(0, bar);
+            meta.arr()->push_back(Value::str(inner.substr(bar + 1)));
+        }
+    }
+    Value c = Value::array();
+    if (type == 'C' || type == 'V') { if (!body.empty()) c.arr()->push_back(Value::str(body)); }
+    else parseFormatting(body, *c.arr());
+    (*f.hash())["contents"] = c;
+    (*f.hash())["meta"] = meta;
+    return f;
+}
+
+// The opener a code letter at `k` is followed by: a run of `<` (its length in
+// nOpen) or `«` (guil). Answers the index just past it, or npos when the
+// letter is ordinary text.
+static size_t fmtOpener(const std::string& s, size_t k, size_t& nOpen, bool& guil) {
+    nOpen = 0; guil = false;
+    if (k + 1 >= s.size() || s[k] < 'A' || s[k] > 'Z') return std::string::npos;
+    size_t j = k + 1;
+    if (s.compare(j, 2, "\xC2\xAB") == 0) { guil = true; return j + 2; }
+    while (j < s.size() && s[j] == '<') { nOpen++; j++; }
+    return nOpen ? j : std::string::npos;
+}
+
+// The closer of a code whose body starts at `k`: a run of nOpen `>` (or `»`).
+// A NESTED code met on the way is skipped whole by ITS OWN delimiter, so
+// `B<bold I<nested>>` closes I at the first `>` and B at the second, and a
+// `>` inside `C<<a>b>>` is text. Answers the closer's index, or npos.
+static size_t fmtClose(const std::string& s, size_t k, size_t nOpen, bool guil) {
+    const size_t n = s.size();
+    const std::string closer = guil ? "\xC2\xBB" : std::string(nOpen, '>');
+    while (k < n) {
+        size_t m; bool g;
+        size_t body = fmtOpener(s, k, m, g);
+        if (body != std::string::npos) {
+            size_t e = fmtClose(s, body, m, g);
+            if (e != std::string::npos) { k = e + (g ? 2 : m); continue; }
+            // an unclosed nested opener is text — read on from its letter
+        }
+        if (s.compare(k, closer.size(), closer) == 0) return k;
+        k++;
+    }
+    return std::string::npos;
+}
+
+static void parseFormatting(const std::string& s, ValueList& out) {
+    std::string text;
+    auto flush = [&]() { if (!text.empty()) { out.push_back(Value::str(text)); text.clear(); } };
+    const size_t n = s.size();
+    size_t i = 0;
+    while (i < n) {
+        size_t nOpen; bool guil;
+        size_t body = fmtOpener(s, i, nOpen, guil);
+        if (body != std::string::npos) {
+            size_t end = fmtClose(s, body, nOpen, guil);
+            if (end != std::string::npos) {
+                flush();
+                out.push_back(mkFmt(s[i], s.substr(body, end - body)));
+                i = end + (guil ? 2 : nOpen);
+                continue;
+            }
+            // no closer: it was ordinary text after all
+        }
+        text += s[i]; i++;
+    }
+    flush();
+}
+
 static Value mkPara(const std::string& text) {
     Value p = mkPod("Pod::Block::Para");
     Value pc = Value::array();
-    pc.arr()->push_back(Value::str(collapseWs(text)));
+    parseFormatting(collapseWs(text), *pc.arr());
     (*p.hash())["contents"] = pc;
     return p;
 }
