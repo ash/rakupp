@@ -12,6 +12,7 @@
 #include <memory>
 #include <cstdlib>
 #include "Unicode.h"
+#include "Pod.h"
 #include <complex>
 #include <functional>
 #include "Regex.h"
@@ -4309,10 +4310,17 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         if (anyObj) return Value::str(strOf(inv));
     }
     // a binary buffer has no string semantics: .Str is an error (use .decode)
+    // — except an ENCODING-typed blob, which knows how to read itself: Rakudo's
+    // `utf8.Str` is `.decode`, and PSGI stringifies a `Str.encode` body exactly
+    // so (`$output ~= $segment.Str`).
     if (inv.t == VT::Str && (inv.hashKind == "Buf" || inv.hashKind == "Blob") &&
-        m == "Str")
+        m == "Str") {
+        if (inv.enumName == "utf8" || inv.enumName == "utf16" || inv.enumName == "utf32") {
+            ValueList none; return methodCall(inv, "decode", none);
+        }
         throwTyped("X::Buf::AsStr", {{"method", "Str"}},
                    "Cannot use a Buf as a string, but you called the Str method on it");
+    }
     // reverse/rotate are illegal only on a MULTI-dimensional fixed array; a 1-dim
     // shaped array reverses/rotates fine (returns a reordered list, no resize).
     if (inv.t == VT::Array && inv.shape() && inv.shape()->size() >= 2 && (m == "reverse" || m == "rotate"))
@@ -5337,6 +5345,15 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         if (m == "raku") return Value::str("Pointer" + std::string(of.empty() ? "" : "[" + of + "]") +
                                            ".new(" + std::to_string(addr) + ")");
         if (m == "deref") return ncReadElem(addr, of, 0);
+        // pointer arithmetic in ELEMENTS, as NativeHelpers::Pointer grafts onto
+        // Pointer: `.succ`/`.pred` step one element, `.add($n)` steps n. A
+        // `void *` has no element size and dies, as in C.
+        if (m == "succ" || m == "pred" || m == "add") {
+            int w = of.empty() ? 0 : ncElemSize(of);   // a scalar's width, else pointer-sized
+            if (w == 0) throw RakuError{Value::typeObj("X::AdHoc"), "Can't do arithmetic with a void pointer"};
+            long long n = m == "add" ? (args.empty() ? 0 : args[0].toInt()) : (m == "succ" ? 1 : -1);
+            return ncMakePointer("Pointer[" + of + "]", (void*)(intptr_t)(addr + n * w));
+        }
         // an UNPARAMETERISED Pointer is C's `void *`, and that is what Rakudo's
         // `Pointer.of` answers — NativeHelpers::Pointer refuses arithmetic on
         // exactly this test, and "Pointer" made it look like an 8-byte element.
@@ -5344,6 +5361,11 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     }
     // live CArray[T] over native memory (returned by a native call): element read
     if (inv.t == VT::Hash && inv.hashKind == "CArray" && inv.hash()->count("addr")) {
+        // a LIVE array (from C, or a nativecast view) has no known length —
+        // Rakudo dies the same way; NativeHelpers::Blob's suite asserts it
+        if (m == "elems")
+            throw RakuError{Value::typeObj("X::AdHoc"),
+                            "Don't know how many elements a C array returned from a library has"};
         long long addr = (*inv.hash())["addr"].toInt();
         std::string of = inv.hash()->count("of") ? (*inv.hash())["of"].toStr() : "int64";
         if (m == "AT-POS" || m == "[]") return ncReadElem(addr, of, args.empty() ? 0 : args[0].toInt());
@@ -5359,7 +5381,15 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         if (m == "new") {
             std::string bytes;
             ValueList strArgs;   // CArray[Str]: the array owns the strings it points at
-            for (auto& a : flattenArgs(args)) {
+            // `CArray[uint8].new($blob)` — a Blob/Buf argument supplies its BYTES as
+            // the elements (IO::Socket::Async::SSL hands a PKCS12 file to
+            // d2i_PKCS12 this way); it numified to one element before
+            ValueList items;
+            if (args.size() == 1 && args[0].t == VT::Str &&
+                (args[0].hashKind == "Buf" || args[0].hashKind == "Blob"))
+                items = args[0].blobList();
+            else items = flattenArgs(args);
+            for (auto& a : items) {
                 if (et == "num32") { float f = (float)a.toNum(); bytes.append((const char*)&f, 4); }
                 else if (et == "num64") { double d = a.toNum(); bytes.append((const char*)&d, 8); }
                 else if (et == "Str") { bytes.append((size_t)esz, '\0'); strArgs.push_back(a); }
@@ -5812,6 +5842,47 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             auto it = inv.hash()->find(m);
             return it != inv.hash()->end() ? it->second : Value::any();
         }
+    }
+    // CompUnit::PrecompilationId.new-from-string($src) — an opaque id; the
+    // source spelling is as good an identity as any here.
+    if (inv.t == VT::Type && inv.s == "CompUnit::PrecompilationId" && m == "new-from-string") {
+        Value o; o.t = VT::Object; o.setObj(std::make_shared<ObjectData>());
+        o.obj()->cls = classes_["CompUnit::PrecompilationId"];
+        o.obj()->attrs["id"] = Value::str(args.empty() ? "" : args[0].toStr());
+        return o;
+    }
+    // CompUnit::PrecompilationRepository::Default.try-load($dependency) — compile
+    // the dependency's source and hand back a handle whose `.unit` holds its
+    // `$=pod`. The file is wrapped as a module the way Pod::Load's own string
+    // path does it, so a script's mainline never runs twice and its pod is what
+    // comes out. A failed compile answers Nil, which is what try-load means.
+    if (inv.t == VT::Object && inv.obj() && inv.obj()->cls &&
+        inv.obj()->cls->name == "CompUnit::PrecompilationRepository::Default" &&
+        (m == "try-load" || m == "load")) {
+        std::string src;
+        if (!args.empty() && args[0].t == VT::Object && args[0].obj()) {
+            auto it = args[0].obj()->attrs.find("src");
+            if (it != args[0].obj()->attrs.end()) src = ioFsPath(it->second);
+        }
+        std::ifstream in(src);
+        if (!in) {
+            if (m == "load") throwTyped("X::AdHoc", {}, "Cannot load " + src);
+            return Value::nil();
+        }
+        std::ostringstream ss; ss << in.rdbuf();
+        std::string text = ss.str();
+        // Precompilation never RUNS a mainline, and `$=pod` is a parse-time
+        // product here — so the pod DOM is read straight off the source, and a
+        // `unit module` file (Pod::Load's own t/unit.pod6) needs no wrapping
+        // that would make it illegal.
+        Value pod = Value::array();
+        *pod.arr() = parsePod(text);
+        Value unit = Value::makeHash();
+        (*unit.hash())["$=pod"] = pod;
+        Value h; h.t = VT::Object; h.setObj(std::make_shared<ObjectData>());
+        h.obj()->cls = classes_["CompUnit::Handle"];
+        h.obj()->attrs["unit"] = unit;
+        return h;
     }
     // CompUnit::DependencySpecification.new(:short-name<Foo>, …) — a module dependency
     // descriptor. Requires a Str short-name; the version/auth/api matchers default True.
@@ -8633,6 +8704,9 @@ void Interpreter::registerBuiltins() {
             if (it != I.classes_.end()) {
                 ex.t = VT::Object; ex.setObj(std::make_shared<ObjectData>()); ex.obj()->cls = it->second;
                 ex.obj()->attrs["message"] = Value::str(a[0].toStr());
+                // `fail %h` keeps the value as the exception's PAYLOAD, as Rakudo's
+                // X::AdHoc does (Text::SubParsers reports a failed parse that way)
+                ex.obj()->attrs["payload"] = a[0];
             } else ex = Value::str(a[0].toStr());
         } else {
             Value* be = I.tctx_.cur->find("$!");
@@ -12352,6 +12426,41 @@ Value Interpreter::evalNqpOp(NqpOp* n) {
         }
         v.push_back(eval(e.get()));
     }
+    // `nqp::create(self)` on a USER class makes an instance of that class —
+    // uninitialised attributes, no BUILD — which is what a hand-rolled `new`
+    // then fills (Hash::int binds `$!hash` through p6bindattrinvres). The
+    // shared leaf op knows only the core REPRs and answered a bare buffer, so
+    // `my %h is Hash::int` got an Array back from `.new` and fell through to
+    // a plain Hash — every method the class defines silently unused.
+    // The Unicode property reads go through the `uniprop` method, which knows
+    // every property name and its value forms; the "code" is the name itself
+    // (see UniPropCode). `_bool` answers 0/1, `_int` a number, `_str` the
+    // value's string form (General_Category → "Lu", East_Asian_Width → "W").
+    if ((n->op == NqpOpc::GetUniPropStr || n->op == NqpOpc::GetUniPropBool ||
+         n->op == NqpOpc::GetUniPropInt) && v.size() >= 2) {
+        ValueList pa; pa.push_back(Value::str(v[1].toStr()));
+        Value r = methodCall(Value::integer(v[0].toInt()), "uniprop", pa);
+        if (n->op == NqpOpc::GetUniPropStr) return Value::str(r.toStr());
+        if (n->op == NqpOpc::GetUniPropBool) return Value::integer(r.truthy() ? 1 : 0);
+        return Value::integer(r.t == VT::Bool ? (r.truthy() ? 1 : 0) : r.toInt());
+    }
+    if (n->op == NqpOpc::Create && v.size() == 1 && v[0].t == VT::Type) {
+        std::string tn = v[0].s;
+        auto it = classes_.find(tn);
+        if (it == classes_.end()) it = classes_.find(resolveClassAlias(tn));
+        if (it != classes_.end() && it->second) {
+            std::string bare = tn;
+            if (auto q = bare.rfind("::"); q != std::string::npos) bare = bare.substr(q + 2);
+            static const std::set<std::string> kCoreRepr = {
+                "Map", "Hash", "IterationMap", "List", "Uni", "NFC", "NFD", "NFKC", "NFKD",
+                "IterationBuffer", "Array" };
+            if (!kCoreRepr.count(bare)) {
+                Value o; o.t = VT::Object; o.setObj(std::make_shared<ObjectData>());
+                o.obj()->cls = it->second;
+                return o;
+            }
+        }
+    }
     return rtNqpOp(n->op, v); // eager leaf ops — shared with native codegen
 }
 
@@ -12714,8 +12823,52 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
             }
             return Value::array(); // IterationBuffer / … — a plain buffer
         }
+        // Identity, as `===` reads it: reference types by their reference, a type
+        // object by its name (IterationEnd is one), everything else by value.
+        case O::Eqaddr: {
+            if (v.size() < 2) return Value::integer(0);
+            const Value& l = v[0]; const Value& r = v[1];
+            bool same;
+            if (l.t != r.t) same = false;
+            else if (l.t == VT::Object) same = l.obj() == r.obj();
+            else if (l.t == VT::Type)   same = l.s == r.s;
+            else if (l.t == VT::Code)   same = l.code() == r.code();
+            else if (l.t == VT::Array)  same = l.arr() == r.arr();
+            else if (l.t == VT::Hash)   same = l.hash() == r.hash();
+            else same = l.toStr() == r.toStr() && l.hashKind == r.hashKind;
+            return Value::integer(same ? 1 : 0);
+        }
+        // nqp::objprimspec(T): 0 for an object type, 1/2/3 for the native
+        // int/num/str kinds (10 is MoarVM's unsigned int, which AttrX::Mooish
+        // treats as an int too).
+        case O::ObjPrimSpec: {
+            if (v.empty() || v[0].t != VT::Type) return Value::integer(0);
+            const std::string& n = v[0].s;
+            if (n == "str") return Value::integer(3);
+            if (n == "num" || n == "num32" || n == "num64") return Value::integer(2);
+            if (n == "int" || n == "int8" || n == "int16" || n == "int32" || n == "int64" ||
+                n == "uint" || n == "uint8" || n == "uint16" || n == "uint32" || n == "uint64" ||
+                n == "byte" || n == "long" || n == "longlong" || n == "ulong" || n == "ulonglong" ||
+                n == "size_t" || n == "ssize_t" || n == "bool" || n == "atomicint")
+                return Value::integer(1);
+            return Value::integer(0);
+        }
+        // nqp::unipropcode('General_Category'): MoarVM hands back a small
+        // integer it later resolves the name from again. There is no table to
+        // index here, so the code IS the name — carried as a Str, which every
+        // getuniprop_* below accepts as the property. Unknown names answer 0.
+        case O::UniPropCode: {
+            if (v.empty()) return Value::integer(0);
+            return Value::str(v[0].toStr());
+        }
+        case O::HllBool:
+            return Value::boolean(!v.empty() && v[0].truthy());
         case O::Istype: {
             std::string tn = v[1].t == VT::Type ? v[1].s : v[1].typeName();
+            // `nqp::istype(Mu, Any)` is 0: Any sits BELOW Mu, so the Mu type
+            // object conforms only to Mu — the same rule `~~` applies. CBOR::Simple
+            // tells CBOR null (Any:U) from CBOR undefined (Mu) by exactly this.
+            if (tn == "Any" && v[0].t == VT::Type && v[0].s == "Mu") return Value::integer(0);
             return Value::integer(rtTypeMatch(v[0], tn) ? 1 : 0);
         }
         case O::Getattr: {
@@ -12729,6 +12882,12 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
             }
             // '$!reified' / '$!storage' name the container's own backing store
             if (v[0].t == VT::Array || v[0].t == VT::Hash) return v[0];
+            // a Pair's two attributes: `nqp::getattr($p, Pair, '$!key')` is how
+            // Hash::int's STORE reads each pair without a method call
+            if (v[0].t == VT::Pair) {
+                if (nm == "$!key" || nm == "key") return Value::str(v[0].s);
+                if (nm == "$!value" || nm == "value") return v[0].pairVal() ? *v[0].pairVal() : Value::any();
+            }
             if (v[0].t == VT::Object && v[0].obj()) {
                 std::string bare = nm.size() > 2 ? nm.substr(2) : nm;
                 auto it = v[0].obj()->attrs.find(bare);

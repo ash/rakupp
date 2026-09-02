@@ -427,6 +427,12 @@ enum class NqpOpc : uint16_t {
     // REPL-sandbox pattern (Jupyter::Kernel, Text::CodeProcessing) asks for it
     // and hands it straight to REPL.new.
     GetComp,
+    // appended: identity (`nqp::eqaddr($x, IterationEnd)` — Hash::int's STORE
+    // loop), the native-kind probe AttrX::Mooish sizes attribute storage by,
+    // and the Unicode property trio Text::MiscUtils measures display width
+    // with (`unipropcode('East_Asian_Width')` then `getuniprop_str($ord, $code)`).
+    Eqaddr, ObjPrimSpec, UniPropCode, GetUniPropStr, GetUniPropBool, GetUniPropInt,
+    HllBool,   // nqp::hllbool($i) — a Raku Bool from a native truth value (Hash::int's EXISTS-KEY)
 };
 struct NqpOp : Expr {
     NqpOpc op;

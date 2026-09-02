@@ -64,6 +64,10 @@ sub BPointer(Blob:D \blob, :$typed) is export {
 
 sub carray-from-blob(Blob:D \blob, :$managed) is export {
     my \t = elem-type(blob);
+    # the dist's contract: an UNMANAGED array is a view onto the blob's own
+    # bytes (pointer-to answers the same address for both, and .elems is
+    # unknowable); :managed copies into an array the engine owns
+    return nativecast(CArray[t], blob) unless $managed;
     my $arr = CArray[t].new;
     $arr[blob.elems - 1] = 0 if blob.elems;   # force allocation to size
     $arr[$_] = blob[$_] for ^blob.elems;

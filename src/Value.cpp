@@ -355,8 +355,12 @@ std::string Value::toStr() const {
     forceLazy(*this);   // an unpulled gather stringifies as its ELEMENTS, not as ()
     // (a Blob/Buf uses enumName for its ENCODING, and a flavored IO::Path for its
     // OS grammar — neither is an enum key)
-    if (!enumName.empty() && hashKind != "Blob" && hashKind != "Buf" && hashKind != "IO")
+    if (!enumName.empty() && hashKind != "Blob" && hashKind != "Buf" && hashKind != "IO") {
+        // a Str-VALUED member stringifies to its value (`enum E (x => "val")`:
+        // ~x is "val"), an Int-valued one to its key — Rakudo-verified both ways
+        if (t == VT::Int && pairVal() && pairVal()->t == VT::Str) return pairVal()->s;
         return enumName;
+    }
     if (isAllomorph()) return s; // the allomorph's source string ("0123", "1/3", …)
     switch (t) {
         case VT::Nil:
@@ -851,6 +855,14 @@ std::string Value::typeName() const {
             if (s == "Uni" || s == "NFC" || s == "NFD" || s == "NFKC" || s == "NFKD") return s;
             if (enumName == "any" || enumName == "all" || enumName == "one" || enumName == "none") return "Junction";
             if (hashKind == "Capture") return "Capture"; // \(…) literal
+            // a native array names its element: `array[uint8]` — the type
+            // CBOR::Simple and NativeHelpers::Blob read back through `.^name`
+            if (!isList && !ofType().empty()) {
+                static const std::set<std::string> kNative = {
+                    "int", "int8", "int16", "int32", "int64", "uint", "uint8", "uint16", "uint32", "uint64",
+                    "num", "num32", "num64", "str"};
+                if (kNative.count(ofType())) return "array[" + ofType() + "]";
+            }
             return !isList ? "Array" : s == "Seq" ? "Seq" : s == "Slip" ? "Slip" : "List";
         case VT::Hash:  if (hashKind == "Pod" && hash() && hash()->count("podclass")) return hash()->at("podclass").s;
                         // a connected async socket is an IO::Socket::Async (Rakudo's

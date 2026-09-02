@@ -33,7 +33,11 @@ multi sub pointer-add(Pointer:D \p, Int $off) is export { shift-by(p, $off) }
 multi sub infix:<+>(Pointer:D \p, Int $off) is export { shift-by(p, $off) }
 multi sub infix:<+>(Int $off, Pointer:D \p) is export { shift-by(p, $off) }
 multi sub infix:<->(Pointer:D \p, Int $off) is export { shift-by(p, -$off) }
+# two pointers subtract to their distance in BYTES, as the dist's suite reads it
+multi sub infix:<->(Pointer:D \a, Pointer:D \b) is export { +a - +b }
 multi sub prefix:<++>(Pointer:D \p is rw) is export { p = shift-by(p, 1) }
 multi sub prefix:<-->(Pointer:D \p is rw) is export { p = shift-by(p, -1) }
+multi sub postfix:<++>(Pointer:D \p is rw) is export { my \old = p; p = shift-by(p, 1); old }
+multi sub postfix:<-->(Pointer:D \p is rw) is export { my \old = p; p = shift-by(p, -1); old }
 
 # vim: expandtab shiftwidth=4

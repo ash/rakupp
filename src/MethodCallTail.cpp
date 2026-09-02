@@ -1238,7 +1238,15 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 }
                 return Value::str(out);
             }
-            for (size_t k = 0; k < items.size(); k++) { if (k) out += sep; out += doSprintf(fmt, {items[k]}); }
+            for (size_t k = 0; k < items.size(); k++) {
+                if (k) out += sep;
+                // a Pair element formats as its (key, value) — `@pairs.fmt('%s: %s', ', ')`
+                // is how CBOR::Simple prints a map in diagnostic notation
+                if (items[k].t == VT::Pair)
+                    out += doSprintf(fmt, {Value::str(items[k].s),
+                                           items[k].pairVal() ? *items[k].pairVal() : Value::any()});
+                else out += doSprintf(fmt, {items[k]});
+            }
             return Value::str(out);
         }
         if (m == "sum") {
@@ -2722,6 +2730,10 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     // happens to be an array, and before 6.e there was no way to
                     // say it — every replacement flattened.
                     if (sixE() && args[k].t == VT::Array && args[k].itemized) { repl.push_back(args[k]); continue; }
+                    // an ITEMIZED hash is one replacement element in every language
+                    // version — a `$value` holding a Hash is what Crane splices in,
+                    // and flattening it to pairs scattered the record across the array
+                    if (args[k].t == VT::Hash && args[k].itemized) { repl.push_back(args[k]); continue; }
                     for (auto& x : toList(args[k])) repl.push_back(x);
                 }
                 inv.arr()->erase(inv.arr()->begin() + start, inv.arr()->begin() + start + count);

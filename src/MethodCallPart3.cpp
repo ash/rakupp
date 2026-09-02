@@ -823,6 +823,15 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     }
     if (m == "package" && inv.t == VT::Code && inv.code())
         return Value::typeObj(inv.code()->pkg.empty() ? "GLOBAL" : inv.code()->pkg);
+    // `.rw` — was the routine declared `is rw`/`is raw`? (Method::Protected picks
+    // its wrapper by it)
+    if (m == "rw" && inv.t == VT::Code && inv.code()) return Value::boolean(inv.code()->retRw);
+    // `.set_name($n)` — Routine's name setter (a cloned wrapper takes the
+    // wrapped method's name in Method::Protected)
+    if (m == "set_name" && inv.t == VT::Code && inv.code() && !args.empty()) {
+        inv.code()->name = args[0].toStr();
+        return inv;
+    }
     if (m == "of" && inv.t == VT::Type) { // array[int].of / Array[Str].of
         if (const char* vt = quantValueType(inv.s)) return Value::typeObj(vt); // Bag.of is UInt
         // An unparameterized byte buffer's element is uint8, as in Rakudo —
@@ -2233,6 +2242,10 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             // and renders it that way in `.raku`, which is what the documented
             // `(try $blob.decode) // $blob` fallback prints when it keeps the blob.
             b.enumName = latin1 ? "Blob[uint8]" : "utf8";
+            // SHARED storage from birth: every copy of this blob then points at
+            // the same bytes, so `nativecast(CArray[uint8], $blob)` (NativeHelpers::
+            // Blob's pointer-to) is a view onto them and C writes are visible
+            b.s.promote();
             return b;
         }
         // decode: the invocant is a byte string (Buf/Blob).
@@ -2457,6 +2470,15 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             if (prop == "ISO_Comment" || prop == "isc") return Value::str(""); // empty since Unicode 5.2
             // enumerated properties (Age, Line_Break, East_Asian_Width, Numeric_Type, …)
             std::string ev = uniEnumProp(prop, cp);
+            // East_Asian_Width answers its SHORT alias, as MoarVM does ("Na",
+            // not "Narrow") — Text::MiscUtils keys its width tables by it
+            if (!ev.empty() && (prop == "East_Asian_Width" || prop == "ea")) {
+                static const std::map<std::string, std::string> kEaw = {
+                    {"Neutral", "N"}, {"Narrow", "Na"}, {"Ambiguous", "A"},
+                    {"Wide", "W"}, {"Halfwidth", "H"}, {"Fullwidth", "F"}};
+                auto it = kEaw.find(ev);
+                if (it != kEaw.end()) return Value::str(it->second);
+            }
             if (!ev.empty()) return Value::str(ev);
             // otherwise a binary property — strict (unknown names are False, not a lenient match)
             int b = uniBinaryProp(cp, prop);

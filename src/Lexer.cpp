@@ -1231,7 +1231,11 @@ bool Lexer::tryQuoteForm(Token& out) {
             // undeclared routines, i.e. as plain identifiers.
             if ((isRegex || isSubst || isTrans) && !adverbs.empty() &&
                 (unsigned char)d < 0x80 && ascii::ispunct((unsigned char)d) &&
-                d != ':' && d != '#' && d != '_') { close = d; bracket = false; break; }
+                d != ':' && d != '#' && d != '_' &&
+                // a CLOSING bracket never opens a quote: `self<ms>` is an angle
+                // subscript, and `ms>` inside it read as `m:s` delimited by `>`,
+                // swallowing Intl::LanguageTag's next 20 lines into a regex
+                d != '>' && d != ')' && d != ']' && d != '}') { close = d; bracket = false; break; }
             return false;
     }
     // A bracketed substitution needs TWO groups: s(pat)(repl) / S[a][b], OR the
@@ -1725,6 +1729,10 @@ bool Lexer::tryRuleDecl(std::vector<Token>& out, bool spaced) {
             // in a string ('}' / "}") is NOT a block delimiter; track quotes too
             if (q) { if (ch == q) q = 0; body += advance(); continue; }
             if (ch == '\'' || ch == '"') { q = ch; body += advance(); continue; }
+            // …and a `#` comment runs to the end of the line, braces and all:
+            // Template::Mustache's `<?{ # XXX … }>` assertion carries a `}`
+            // in its commentary, which closed the block one line early.
+            if (ch == '#') { while (!eof() && peek() != '\n') body += advance(); continue; }
             if (ch == '{') bd++; else if (ch == '}') bd--;
             body += advance(); continue;
         }
@@ -1735,7 +1743,15 @@ bool Lexer::tryRuleDecl(std::vector<Token>& out, bool spaced) {
         // ' ` # { characters as words)
         if (sd == 0 && ch == '<' && (peek(1) == ' ' || peek(1) == '\t')) {
             int ad = 0;
-            do { char c2 = peek(); if (c2 == '<') ad++; else if (c2 == '>') ad--; body += advance(); }
+            // …an ESCAPED bracket is a member too: `< # ^ / \< $ >` (Template::
+            // Mustache's section sigils) counted its `\<` as nesting and read
+            // to the end of the file for the matching `>`
+            do {
+                char c2 = peek();
+                if (c2 == '\\') { body += advance(); if (!eof()) body += advance(); continue; }
+                if (c2 == '<') ad++; else if (c2 == '>') ad--;
+                body += advance();
+            }
             while (!eof() && ad > 0);
             continue;
         }
@@ -2218,6 +2234,15 @@ static bool angleTermContext(const std::vector<Token>& out) {
                 "is", "ok", "nok", "isnt", "like", "unlike", "and", "or", "not", "so", "dd",
             };
             if (kw.count(pv.text) > 0) return true;
+            // `:name<#>` — a colonpair's angle VALUE: the key is an identifier
+            // glued to a `:`, and what follows is a word list, never a
+            // comparison. Without this the `#` inside started a comment that
+            // ran to the end of the line and took the closing `>` with it
+            // (PDF::Grammar's `ast => :name<#>`).
+            if (!pv.spaceBefore && out.size() >= 2) {
+                const Token& pp = out[out.size() - 2];
+                if (pp.kind == Tok::Op && pp.text == ":") return true;
+            }
             // `use lib <./t/Utils>` / `use Foo <import args>`: after the module name
             // of a use/no/need, a `<…>` is a word list — never a comparison. Without
             // this the content is lexed as code, and `/t/` in a path becomes a
@@ -2616,7 +2641,13 @@ std::vector<Token> Lexer::tokenize() {
                                      "lines() to read input, ('') for a null "
                                      "string or () for an empty list",
                                      line_, "X::Obsolete", {{"old", "<>"}});
-                if (t.text == "<" && peek() != ']' && angleTermContext(out)) { angleWords_++; angleLine_ = t.line; }
+                if (t.text == "<" && peek() != ']' &&
+                    (angleTermContext(out) ||
+                     // `self<key>` — a postcircumfix on the term `self`, never a
+                     // comparison (Intl::LanguageTag's `method x (--> Type) { self<ms> }`)
+                     (!t.spaceBefore && !out.empty() && out.back().kind == Tok::Ident &&
+                      out.back().text == "self")))
+                    { angleWords_++; angleLine_ = t.line; }
             } else {
                 // inside a list: an exact `<` nests; a token LEADING with `>`
                 // (`>`, `>=`, `>>`) or END-glued to one with no `<` inside

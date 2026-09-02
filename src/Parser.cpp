@@ -855,7 +855,11 @@ bool Parser::startsListopArg(const Token& t, const std::string& lhsName) const {
             // absent from kBlockKeywords (as statements they start a term), so
             // without this the call swallowed the modifier and died looking for a
             // routine called `with`.
-            if (t.text == "with" || t.text == "without") return false;
+            // …unless GLUED to a paren, which is a call of a sub named `with`
+            // (Crane's `:&with!` parameter, applied as `with(…)`) — Rakudo reads
+            // `with(` the same way and says so
+            if (t.text == "with" || t.text == "without")
+                return &t == &cur() && peek().kind == Tok::LParen && !peek().spaceBefore;
             // sub/method/do/start begin an expression (anonymous routine / do-block); my/our/state/has/
             // constant begin a declaration expression that is a valid list-op argument (`ok my $x = 5, "d"`)
             return !kBlockKeywords.count(t.text) ||
@@ -2478,7 +2482,11 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
         // …traits included: `my constant \COLORS is export(:colors) = %( … )`
         // (Color::Names). Left in the token stream, the trait made the `=` look
         // like an assignment TO it — "Target is not assignable".
+        lastIsExport_ = false;
         skipTraits(scope != "has", &ve->declDefault);
+        // …and `is export` on the constant is a fact the interpreter needs: a
+        // `unit class` body publishes nothing on its own (Color::Names::X11)
+        if (lastIsExport_) { ve->declExport = true; lastIsExport_ = false; }
         return ve;
     }
     // `my sub {42}()` — an anonymous sub expression under `my` is just the sub
@@ -2590,7 +2598,9 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
         // `my constant \COLORS is export(:colors) = %( … )`. Without this the
         // trait stayed in the token stream and the `=` looked like an assignment
         // to `is export(:colors)`, which is "Target is not assignable".
+        lastIsExport_ = false;
         skipTraits(scope != "has", &ve->declDefault);
+        if (lastIsExport_) { ve->declExport = true; lastIsExport_ = false; }
         return ve;
     }
     if (isKind(Tok::LParen)) {
@@ -2797,7 +2807,12 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
         sigilless_.insert(cname);
         auto ve = std::make_unique<VarExpr>(cname);
         ve->declare = true; ve->declScope = scope;
+        lastIsExport_ = false;
         skipTraits();
+        // `constant \COLORS is export(:colors) = …` — the trait was skipped and
+        // its flag left set for the NEXT declaration to pick up; a constant in
+        // a `unit class` body is published nowhere else (Color::Names::X11)
+        if (lastIsExport_) { ve->declExport = true; lastIsExport_ = false; }
         // `constant foo;` — a constant must be initialized
         if (isKind(Tok::Semicolon) || isKind(Tok::End))
             throw ParseError("Missing initializer on constant declaration",
@@ -5958,9 +5973,21 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
                 else if (sm == "U") p.defConstraint = 2;
             }
             if (isKind(Tok::LBracket) && !cur().spaceBefore) {
+                // A NativeCall type keeps its parameter: `CArray[uint8]` names an
+                // element width the marshalling needs — the callback signature
+                // `&cb (CArray[uint8], uint8 …)` of IO::Socket::Async::SSL's ALPN
+                // selector read its bytes eight at a time without it. Other
+                // parameterised types stay bare here, as they always were.
+                bool keep = p.type == "CArray" || p.type == "Pointer";
+                std::string inner;
                 int depth = 0;
-                do { if (isKind(Tok::LBracket)) depth++; else if (isKind(Tok::RBracket)) depth--; advance(); }
+                do {
+                    if (isKind(Tok::LBracket)) depth++; else if (isKind(Tok::RBracket)) depth--;
+                    if (keep) inner += cur().text;
+                    advance();
+                }
                 while (depth > 0 && !isKind(Tok::End));
+                if (keep) p.type += inner;
             }
             // coercion type Str(Cool)  OR  destructuring sub-signature  Pair ( :key($k), … )
             // Coercion is the tight single-ident form; anything else is a sub-signature.
@@ -7586,7 +7613,11 @@ ExprPtr Parser::applyExprModifiers(ExprPtr e) {
             e = std::move(tern);
             continue;
         }
-        if (isIdent("with") || isIdent("without")) {
+        // `with(EXPR)` GLUED to its paren is a CALL of a sub named `with` — Crane
+        // takes `:&with!` and applies it so — never the topicalizer; Rakudo
+        // says as much ("interpreted as a 'with()' function call")
+        if ((isIdent("with") || isIdent("without")) &&
+            !(peek().kind == Tok::LParen && !peek().spaceBefore)) {
             // `$(EXPR with X)` — a topicalizer, like the plain-paren path:
             // desugar to  do { with X { EXPR } }.
             std::string mod = advance().text;
@@ -8144,7 +8175,11 @@ StmtPtr Parser::parseStatementImpl() {
             ws->body = parseBlock();
             return ws;
         }
-        if (kw == "given" || kw == "with" || kw == "without" || kw == "orwith" || kw == "orwithout") {
+        if ((kw == "given" || kw == "with" || kw == "without" || kw == "orwith" || kw == "orwithout") &&
+            // `with(EXPR)` glued to its paren is a CALL of a sub named `with`
+            // (Crane applies its `:&with!` parameter so); the statement form
+            // always has whitespace — Rakudo insists on it
+            !((kw == "with" || kw == "without") && peek().kind == Tok::LParen && !peek().spaceBefore)) {
             bool isWith = (kw == "with" || kw == "orwith");
             bool isWithout = (kw == "without" || kw == "orwithout");
             advance();
@@ -8563,6 +8598,7 @@ ExprPtr Parser::makeNqpOp(const std::string& op, std::vector<ExprPtr>& args) {
         {"findnotcclass", NqpOpc::FindNotCClass}, {"iscclass", NqpOpc::IsCClass},
         {"list", NqpOpc::List}, {"list_i", NqpOpc::ListI}, {"list_s", NqpOpc::ListS},
         {"elems", NqpOpc::Elems}, {"atpos", NqpOpc::Atpos}, {"atpos_i", NqpOpc::AtposI},
+        {"atpos_u", NqpOpc::AtposI}, {"hllbool", NqpOpc::HllBool},
         {"bindpos", NqpOpc::Bindpos}, {"bindpos_i", NqpOpc::BindposI},
         {"push", NqpOpc::Push}, {"push_i", NqpOpc::PushI}, {"push_s", NqpOpc::PushS},
         {"pop_s", NqpOpc::PopS}, {"shift_i", NqpOpc::ShiftI}, {"splice", NqpOpc::Splice},
@@ -8581,6 +8617,9 @@ ExprPtr Parser::makeNqpOp(const std::string& op, std::vector<ExprPtr>& args) {
         {"p6scalarwithvalue", NqpOpc::P6ScalarWithValue},
         {"null", NqpOpc::Null}, {"isnanorinf", NqpOpc::IsNanOrInf},
         {"isnull", NqpOpc::IsNull}, {"isnull_s", NqpOpc::IsNull},
+        {"eqaddr", NqpOpc::Eqaddr}, {"objprimspec", NqpOpc::ObjPrimSpec},
+        {"unipropcode", NqpOpc::UniPropCode}, {"getuniprop_str", NqpOpc::GetUniPropStr},
+        {"getuniprop_bool", NqpOpc::GetUniPropBool}, {"getuniprop_int", NqpOpc::GetUniPropInt},
         // the AttrX::Mooish surface
         {"hllize", NqpOpc::Decont}, {"box_s", NqpOpc::P6BoxS},
         {"what", NqpOpc::What}, {"islist", NqpOpc::IsList},

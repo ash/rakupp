@@ -2,6 +2,7 @@
 #include "AsciiCtype.h"
 #include "Interpreter.h"
 #include <functional>
+#include <tuple>
 #include <memory>
 #include <cstring>
 #include "Platform.h"
@@ -47,6 +48,7 @@ static char** rakupp_environ() { return environ; }
 #include <iostream>
 #include <regex>
 #include <set>
+#include "Pod.h"
 #include <sstream>
 #if !defined(_WIN32)
 #include <dirent.h>   // Windows gets the FindFirstFile-based shim from Platform.h
@@ -187,6 +189,10 @@ bool rtIsDefined(const Value& v) {
     // JSON::Fast renders it "null" through exactly that test. Junctions carry
     // enumName ("any"/"all"/…) and stay defined.
     if (v.t == VT::Array && !v.enumType.empty() && v.enumName.empty()) return false;
+    // an EMPTY Slip is undefined (`Empty.defined` is False, Rakudo-verified; a
+    // non-empty one is defined): `with $x // ('Warn' if $w)` must not fire on
+    // the Empty a false statement-`if` yields (Template::Mustache's log level)
+    if (v.t == VT::Array && v.s == "Slip" && (!v.arr() || v.arr()->empty())) return false;
     return v.t != VT::Nil && v.t != VT::Any && v.t != VT::Type && !(v.t == VT::Hash && v.hashKind == "Failure");
 }
 static bool isDefined(const Value& v) { return rtIsDefined(v); }
@@ -610,6 +616,10 @@ Value numifyStr(const std::string& in) {
                         body[k-1] != 'e' && body[k-1] != 'E') { split = k; break; }
                 }
                 std::string reStr, imStr;
+                // a bare `i` (or `+i`/`-i`) is a WORD, not the imaginary unit:
+                // `"i".Numeric` and `"is".Numeric` fail under Rakudo, and
+                // Text::SubParsers' number scanner runs every token through it
+                if (body.find_first_of("0123456789") == std::string::npos) throw std::runtime_error("not numeric");
                 if (split == std::string::npos) { reStr = "0"; imStr = body.empty() ? "1" : body; }
                 else { reStr = body.substr(0, split); imStr = body.substr(split);
                        if (imStr == "+" || imStr == "-") imStr += "1"; }
@@ -1312,7 +1322,12 @@ Value valAllomorph(const Value& v) {
         case VT::Int:     n.hashKind = "IntStr";     break;
         case VT::Rat:     n.hashKind = "RatStr";     break;
         case VT::Num:     n.hashKind = "NumStr";     break;
-        case VT::Complex: n.hashKind = "ComplexStr"; break;
+        // a bare `i` (or `+i`/`-i`) is a WORD, not the imaginary unit: val("i")
+        // is Str under Rakudo, and Text::SubParsers runs every token of "The
+        // average mass is 55 lbs." through val — "is" came back as a Str, but
+        // its numeric sub-parser then tried the prefix "i" and got 0+1i.
+        case VT::Complex: if (v.s.str().find_first_of("0123456789") == std::string::npos) return v;
+                          n.hashKind = "ComplexStr"; break;
         default: return v;
     }
     n.s = v.s; // the allomorph's Str face is the original spelling
@@ -2340,7 +2355,14 @@ Value rtArrayVal(Value&& v) {
     return rtArrayVal(static_cast<const Value&>(v));
 }
 
-static Value coerceArray(const Value& v) {
+static bool isNativeScalarName(const std::string& t) {
+    static const std::set<std::string> k = {
+        "int", "int8", "int16", "int32", "int64", "uint", "uint8", "uint16", "uint32", "uint64",
+        "num", "num32", "num64", "str", "byte", "long", "longlong", "ulong", "ulonglong",
+        "size_t", "ssize_t", "bool", "atomicint"};
+    return k.count(t) > 0;
+}
+static Value coerceArray(const Value& v, bool nativeTarget = false) {
     // `@a = Nil` is ONE element reset to the container default ([Any] — and a
     // typed array's store turns it into the element type's type object), NOT
     // an empty list: zef's Build assigns a promise's Nil result into
@@ -2351,7 +2373,10 @@ static Value coerceArray(const Value& v) {
     if (v.t == VT::Hash && v.hash()) return hashToPairs(v);
     // a Blob/Buf assigns to an @-array as its elements (`my uint32 @W = $M`
     // in Digest::SHA1 — 32-bit words for blob32)
-    if (v.t == VT::Str && !v.itemized && (v.hashKind == "Blob" || v.hashKind == "Buf")) {
+    // …but only into a NATIVE array: `my @a = "hi".encode` is ONE element under
+    // Rakudo (a Blob is not Iterable), and PSGI's `my @body = $body` relied on
+    // that — its utf8 body arrived as a list of byte Ints.
+    if (nativeTarget && v.t == VT::Str && !v.itemized && (v.hashKind == "Blob" || v.hashKind == "Buf")) {
         Value r = Value::array(v.blobList()); r.isList = false; return r;
     }
     if (v.t == VT::Array) {
@@ -2469,7 +2494,12 @@ static Value coerceHash(const Value& v, bool store = false, bool objKeyed = fals
                          items[i].enumName.empty())
                     k2 = "(" + std::string(items[i].enumType.str()) + ")";
             }
-            (*h.hash())[k2] = items[i + 1];
+            // …and keeps the key AS STORED for an object hash, so `.keys`
+            // answers the Int (`my %h{Mu} = 1, 2, 3, 4` — CBOR::Simple encodes
+            // such keys as integers)
+            Value stored = items[i + 1];
+            if (objKeyed && items[i].t != VT::Str) stored.pairKeyM() = std::make_shared<Value>(items[i]);
+            (*h.hash())[k2] = std::move(stored);
             i++;
         }
     }
@@ -2531,6 +2561,12 @@ thread_local int Interpreter::threadDepth_ = 0;
 // the live interpreter's class registry, for free-function smartmatch on user
 // type objects (applyArith has no Interpreter&); the newest instance wins
 static std::unordered_map<std::string, std::shared_ptr<ClassInfo>>* g_matchClasses = nullptr;
+// …and the alias table beside it, for the identity operators (free functions)
+static const std::unordered_map<std::string, std::string>* g_classAliases = nullptr;
+static const std::string& aliasedClassName(const std::string& n) {
+    if (g_classAliases) { auto it = g_classAliases->find(n); if (it != g_classAliases->end()) return it->second; }
+    return n;
+}
 // subset check for free-function ~~ (`5 ~~ Five`): returns true and sets `out`
 // when the RHS names a live subset; the newest interpreter instance wins
 std::function<bool(const std::string&, const Value&, bool&)> g_subsetCheck;
@@ -2571,6 +2607,7 @@ Interpreter::Interpreter() {
     g_cbInterp = this; // NativeCall callback trampolines dispatch through here
     g_revInterp = this; // divide-by-zero shape consults the live language revision
     g_matchClasses = &classes_;
+    g_classAliases = &classAliases_;
     rtSetAliasView(&classAliases_, &classes_); // package-relative short names for the type matchers
     g_objListItems = [this](const Value& v, ValueList& out) { return objListItems(v, out); };
     g_deproxy = [this](const Value& v) -> Value { return deproxy(v); };
@@ -2636,8 +2673,10 @@ Interpreter::Interpreter() {
             for (const char* rel : {"/../rakulib", "/../libexec/rakupp/rakulib"}) {
                 std::string cand = dir + rel;
                 struct ::stat st;
-                if (::stat(cand.c_str(), &st) == 0 && S_ISDIR(st.st_mode))
+                if (::stat(cand.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) {
                     libPaths_.push_back(cand);
+                    if (shadowLibDir_.empty()) shadowLibDir_ = cand;
+                }
             }
         }
     }
@@ -2718,6 +2757,24 @@ Interpreter::Interpreter() {
         auto reg = std::make_shared<ClassInfo>();
         reg->name = "CompUnit::RepositoryRegistry";
         classes_["CompUnit::RepositoryRegistry"] = reg;
+        // The precompilation surface Pod::Load loads a FILE's pod through:
+        // a store over a prefix, a repository over the store, a dependency
+        // naming the source, and `try-load` answering a handle whose `.unit`
+        // carries `$=pod`. rakupp compiles the file when asked (there is no
+        // bytecode to cache), so these are the shapes, with the loading done in
+        // methodCall — exactly the string path Pod::Load itself takes, minus
+        // the cache directory it never needs.
+        auto mkShim = [&](const char* nm, std::initializer_list<const char*> attrs) {
+            auto c = std::make_shared<ClassInfo>();
+            c->name = nm;
+            for (const char* a : attrs) { ClassAttr ca; ca.name = a; ca.sigil = '$'; ca.pub = true; c->attrs.push_back(ca); }
+            classes_[nm] = c;
+        };
+        mkShim("CompUnit::PrecompilationStore::FileSystem", {"prefix"});
+        mkShim("CompUnit::PrecompilationRepository::Default", {"store"});
+        mkShim("CompUnit::PrecompilationDependency::File", {"src", "id", "spec"});
+        mkShim("CompUnit::PrecompilationId", {"id"});
+        mkShim("CompUnit::Handle", {"unit"});
         // $*REPO is the head of the repo chain — an Installation over ~/.raku, which is
         // exactly the prefix rakupp resolves `use` from. Methods handled in methodCall.
         auto od = std::make_shared<ObjectData>(); od->cls = inst;
@@ -4503,13 +4560,18 @@ int Interpreter::run(Program& prog) {
     // would point into a dead scope
     if (topControl && !tctx_.controlHandlers.empty()) tctx_.controlHandlers.pop_back();
     flushOpenWriteHandles(); // write out any file handle the program forgot to .close
-    drainWorkers(); // join any outstanding async workers before we tear down
     // Compilation-unit LEAVE/KEEP/UNDO phasers run (reverse source order) on the
     // way out — after the mainline, before END.
     for (auto it = leaveP.rbegin(); it != leaveP.rend(); ++it) {
         try { runPhaser(*it); } catch (ExitEx& e) { code = e.code; } catch (...) {}
     }
+    // END phasers run with the WORKERS STILL ALIVE, as Rakudo's do (its thread
+    // pool outlives the mainline and dies with the process). Log::Async's END
+    // is `logger.done`, which starts a worker to close its Supply and then
+    // waits on that Supply — drained first, the worker never ran and the wait
+    // never returned, so every program that used the logger hung at exit.
     runEnds(); // END phasers (reverse source order), after the mainline
+    drainWorkers(); // join any outstanding async workers before we tear down
     // Rakudo's Test module never fabricates a trailing plan (and does not warn):
     // a file that ran tests without `plan`/`done-testing` just ends its TAP.
     // Rakudo's end-of-run summary when some tests failed.
@@ -6032,7 +6094,18 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
     if (traceLoad) {
         std::cerr << "[LibPaths]"; for (auto& b : libPaths_) std::cerr << " [" << b << "]"; std::cerr << "\n";
     }
-    for (auto& pathEntry : libPaths_) {
+    // A SHADOWED name resolves from the engine's rakulib first, ahead of any
+    // -I path or store: the ecosystem NativeHelpers::Blob/CStruct/Pointer read
+    // MoarVM's REPR memory layout by design and cannot run here, so even the
+    // dist's OWN suite — which `rakupp test` runs with the dist's lib in
+    // front — must exercise the shadow, which keeps the same surface.
+    std::vector<std::string> searchOrder = libPaths_;
+    if (!shadowLibDir_.empty() && isShadowedModule(name)) {
+        searchOrder.erase(std::remove(searchOrder.begin(), searchOrder.end(), shadowLibDir_),
+                          searchOrder.end());
+        searchOrder.insert(searchOrder.begin(), shadowLibDir_);
+    }
+    for (auto& pathEntry : searchOrder) {
         std::string storePre;
         if (repoSpecStore(pathEntry, storePre)) continue; // an inst# store joins phase 2 below
         const std::string base = repoSpecDir(pathEntry);
@@ -6157,6 +6230,14 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
 }
 
 Value Interpreter::evalString(const std::string& src, bool mainlinePH, bool* incompleteOut) {
+    // `$=pod` inside the EVAL is the EVAL's own compilation unit's pod, as in
+    // Rakudo — Pod::Load's whole method is `EVAL "module M { $source }\n$=pod"`.
+    // The main program's DOM is put back on every exit path.
+    struct PodSwap {
+        std::vector<Value>& slot; std::vector<Value> saved;
+        PodSwap(std::vector<Value>& s, std::vector<Value> mine) : slot(s), saved(std::move(s)) { slot = std::move(mine); }
+        ~PodSwap() { slot = std::move(saved); }
+    } podSwap(podDom_, src.find("\n=") != std::string::npos || src.rfind("=", 0) == 0 ? parsePod(src) : std::vector<Value>{});
     Lexer lexer(src);
     auto prog = std::make_shared<Program>();
     try {
@@ -6852,6 +6933,22 @@ bool isKnownTypeName(const std::string& n) {
 // OpenSSL 7/7 → 1/7).
 static std::vector<std::string> libCandidates(const std::string& l) {
     std::vector<std::string> cands;
+    // A name that is already a FILE name — `libcairo.2.dylib`, what the
+    // (name, Version) form of `is native` resolves to — is tried as given and
+    // under the library dirs dyld does not search by default; wrapping it in
+    // another `lib…dylib` produced nothing that exists.
+    if (l.find(".dylib") != std::string::npos || l.find(".so") != std::string::npos ||
+        l.find(".dll") != std::string::npos) {
+        cands.push_back(l);
+#if defined(__APPLE__)
+        cands.push_back("/opt/homebrew/lib/" + l);
+        cands.push_back("/usr/local/lib/" + l);
+        cands.push_back("/opt/local/lib/" + l);
+#else
+        cands.push_back("/usr/local/lib/" + l);
+#endif
+        return cands;
+    }
 #if defined(__APPLE__)
     if (l == "ssl" || l == "crypto") {
         for (const char* v : {".3", ".1.1"}) {
@@ -7168,6 +7265,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
     switch (s->kind) {
         case NK::ExprStmt: {
             Expr* e = static_cast<ExprStmt*>(s)->e.get();
+            tctx_.curStmtExpr = e;   // the statement's own expression (see cooperative next/last/redo)
             if (e->line > 0) curLine_ = e->line; // ExprStmt itself carries no line; use its expression's
             // sink context: an assignment's result is discarded, so don't copy it
             if (sink && e->kind == NK::Assign) return evalAssign(static_cast<Assign*>(e), true);
@@ -7243,6 +7341,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             if (!sd->name.empty()) {
                 SubsetInfo info{sd->baseType, sd->where.get()};
                 info.langRev = langRev_;   // `Even.^ver` answers with this
+                info.declEnv = tctx_.cur;   // `where { LogLevels{$_}:exists }` reads its class's constant (Template::Mustache)
                 subsets_[sd->name] = info;
                 // …and under the PACKAGE-QUALIFIED name, the way a class registers.
                 // Without it an importer writing `URI::Scheme` got a bare type
@@ -7433,7 +7532,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                             try {
                                 Value r = eval(sd->nativeLibExpr.get());
                                 if (r.t == VT::Code) { ValueList none; r = callCallable(r, none); }
-                                if (isDefined(r)) c.code()->nativeLib = r.toStr();
+                                if (isDefined(r)) c.code()->nativeLib = ncLibNameOf(r);
                             } catch (RakuError&) {}
                         }
                         // No lib yet? Keep the AST and retry at first call, in
@@ -7608,9 +7707,16 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             Value pairs = Value::array();
             for (auto& it : items) {
                 std::string key; Value val;
-                if (it.t == VT::Pair) { key = it.s; val = it.pairVal() ? *it.pairVal() : Value::integer(counter); if (val.t == VT::Int) counter = val.toInt() + 1; }
+                if (it.t == VT::Pair) { key = it.s; val = it.pairVal() ? *it.pairVal() : Value::integer(counter); if (val.t == VT::Int && !val.big()) counter = val.toInt() + 1; }
                 else { key = it.toStr(); val = Value::integer(counter++); }
-                Value ev = Value::enumVal(key, val.t == VT::Int ? val.toInt() : counter++);
+                Value ev;
+                // An Int beyond int64 (`CBOR_Max_UInt_8Byte => 18446744073709551615`)
+                // IS the member's value, not an ordinal to clamp: `toInt()` saturated
+                // it to 2^63-1, so every range test CBOR::Simple wrote against the
+                // constant sent a legal uint64 down the bignum-tag path. Keep the
+                // BigInt payload and tag it with the member name like any other.
+                if (val.t == VT::Int && val.big()) { ev = val; ev.enumName = key; }
+                else ev = Value::enumVal(key, val.t == VT::Int ? val.toInt() : counter++);
                 // a NON-Int enum value (`enum Blerp (One => "Eins")`) keeps its real
                 // value beside the ordinal; `.value` and `.pair` answer with it
                 if (val.t != VT::Int) ev.setPairVal(std::make_shared<Value>(val));
@@ -7711,7 +7817,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     for (auto& md : cd->methods) addTo(ci->methods, md.get());
                     for (auto& a : cd->attrs) {
                         ClassAttr ca; ca.name = a.name; ca.sigil = a.sigil;
-                        ca.pub = a.pub; ca.rw = a.rw; ca.required = a.required; ca.def = a.def.get(); ca.where = a.whereExpr.get(); ca.type = a.type; ca.requiredWhy = a.requiredWhy;
+                        ca.pub = a.pub; ca.rw = a.rw; ca.required = a.required; ca.def = a.def.get(); ca.where = a.whereExpr.get(); ca.type = resolveAttrTypeAlias(a.type); ca.requiredWhy = a.requiredWhy;
                         ca.defConstraint = a.defConstraint;
                         ca.containerIs = a.containerIs;
                         ca.objKeyed = a.objKeyed;
@@ -8246,7 +8352,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                                     "Attribute '" + std::string(1, a.sigil) + "!" + a.name +
                                     "' conflicts in class '" + clsName +
                                     "' composition: also declared in role '" + role->name + "'"};
-                ClassAttr ca; ca.name = a.name; ca.sigil = a.sigil; ca.pub = a.pub; ca.rw = a.rw; ca.required = a.required; ca.type = a.type; ca.requiredWhy = a.requiredWhy;
+                ClassAttr ca; ca.name = a.name; ca.sigil = a.sigil; ca.pub = a.pub; ca.rw = a.rw; ca.required = a.required; ca.type = resolveAttrTypeAlias(a.type); ca.requiredWhy = a.requiredWhy;
                 // `class Foo is rw` — every PUBLIC attribute is writable
                 // (Compress::Zstd's buffer structs)
                 if (cd->classRw && a.pub) ca.rw = true;
@@ -8282,6 +8388,10 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 Value code; code.t = VT::Code;
                 code.setCode(std::make_shared<Callable>());
                 code.code()->name = mdName;
+                // `.package` is the DECLARING type, not the enclosing package —
+                // Method::Protected's trait reads `$method.package.HOW` to refuse
+                // a role method, and GLOBAL made every method look class-borne
+                code.code()->pkg = clsName;
                 code.code()->params = &md->params;
                 code.code()->retType = md->retType;
                 code.code()->retRw = md->retRw;
@@ -8340,7 +8450,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                         try {
                             Value r = eval(md->nativeLibExpr.get());
                             if (r.t == VT::Code) { ValueList none; r = callCallable(r, none); }
-                            if (isDefined(r)) code.code()->nativeLib = r.toStr();
+                            if (isDefined(r)) code.code()->nativeLib = ncLibNameOf(r);
                         } catch (RakuError&) {}
                         if (code.code()->nativeLib.empty())
                             code.code()->nativeLibExpr = md->nativeLibExpr.get();
@@ -8621,7 +8731,19 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                                 Value p = Value::pair(st.name, arg); p.namedArg = true;
                                 ValueList ta; ta.push_back(target); ta.push_back(p);
                                 try { callCallable(*tm, ta); }
-                                catch (RakuError&) {} // no matching candidate: not this handler's trait
+                                catch (RakuError& te) {
+                                    // no matching candidate: not this handler's trait — but a
+                                    // handler that RAN and died is the trait refusing the
+                                    // method (Method::Protected: "Cannot apply 'is protected'
+                                    // … in a role"), and that refusal must reach the caller
+                                    const Value& pl = te.payload;
+                                    bool noMatch = (pl.t == VT::Type && pl.s == "X::Multi::NoMatch") ||
+                                                   (pl.t == VT::Object && pl.obj() && pl.obj()->cls &&
+                                                    pl.obj()->cls->name == "X::Multi::NoMatch") ||
+                                                   te.message.rfind("Cannot resolve caller", 0) == 0 ||
+                                                   te.message.rfind("No matching", 0) == 0;
+                                    if (!noMatch) throw;
+                                }
                             }
                         }
                         if (prevPkg) bodyEnv->define("$*PACKAGE", savedPkg);
@@ -10554,6 +10676,13 @@ static bool typeNameConforms(const std::string& lnIn, const std::string& rn,
 
 static bool typeMatchesArg(const Value& arg, const std::string& type) {
     if (type.empty() || type == "Any" || type == "Mu") return true;
+    // A member of a Str-VALUED enum is a Str: `our Str enum CSSObject
+    // «:AtRule<at-rule>»` derives the enum type from Str, and CSS::Grammar
+    // hands its members to `Str :$type` parameters. The member rides here as
+    // an ordinal with the real value beside it (see the enum declaration).
+    if (arg.t == VT::Int && !arg.enumName.empty() && arg.pairVal() &&
+        arg.pairVal()->t == VT::Str && (type == "Str" || type == "Stringy" || type == "Cool"))
+        return true;
     // A container is TRANSPARENT to a type test: `$x ~~ Positional` asks what the
     // container holds, never what the container is. Without this a bound slot
     // answered as a Hash — and so as Associative — whatever it actually held.
@@ -10780,7 +10909,7 @@ bool Interpreter::subsetMatches(const std::string& name, const Value& v, int dep
         return false;
     }
     if (si.where) {
-        auto env = std::make_shared<Env>(); env->parent = tctx_.cur;
+        auto env = std::make_shared<Env>(); env->parent = si.declEnv ? si.declEnv : tctx_.cur;
         env->define("$_", v);
         auto saved = tctx_.cur; tctx_.cur = env;
         bool ok = false;
@@ -11051,7 +11180,7 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args) {
             bool ok = p->sigil == '@'
                           ? (typeMatchesArg(av, "Positional") || av.t == VT::Range ||
                              (av.t == VT::Type && (av.s == "Positional" || av.s == "Array" || av.s == "List")))
-                          : (typeMatchesArg(av, "Associative") ||
+                          : (typeMatchesArg(av, "Associative") || av.t == VT::Pair ||   // a Pair is Associative
                              (av.t == VT::Type && (av.s == "Associative" || av.s == "Hash" || av.s == "Map")));
             if (!ok) return -1;
             // Outranks a coercion parameter, which scores 2 by accepting anything
@@ -12332,10 +12461,22 @@ bool rtTypeMatch(const Value& v, const std::string& type) {
     // an enum VALUE matches the Enumeration role, its own enum type, and its name
     if (!v.enumName.empty() &&
         (type == "Enumeration" || type == v.enumType || type == v.enumName)) return true;
+    // …and a Str-valued member is a Str (the enum type derives from Str)
+    if (!v.enumName.empty() && v.pairVal() && v.pairVal()->t == VT::Str &&
+        (type == "Str" || type == "Stringy")) return true;
     // a TAGGED built-in (Failure, IO::Path, FileHandle, Blob, …) matches its own
     // reported type — nqp::istype($result, Failure) is how JSON::Fast rejects a
     // malformed number, and the tag was never consulted here
     if (!v.hashKind.empty() && (type == v.hashKind || type == v.typeName())) return true;
+    // …and the QuantHash roles: a Set is Setty, a Bag Baggy, a Mix Mixy (CBOR::Simple
+    // encodes a Set with the set tag by exactly this test)
+    if (v.t == VT::Hash && !v.hashKind.empty()) {
+        const std::string& hk = v.hashKind;
+        bool setty = hk == "Set" || hk == "SetHash", baggy = hk == "Bag" || hk == "BagHash",
+             mixy = hk == "Mix" || hk == "MixHash";
+        if ((type == "Setty" && setty) || (type == "Baggy" && baggy) || (type == "Mixy" && mixy) ||
+            (type == "QuantHash" && (setty || baggy || mixy))) return true;
+    }
     // …and the ROLE it does, not only its own name. Date and DateTime do
     // Dateish; typeNameConforms says so and `~~` reads it, but this is a THIRD
     // path — nqp::istype and native multi-dispatch — and it matched the tag
@@ -12358,24 +12499,52 @@ bool rtTypeMatch(const Value& v, const std::string& type) {
         return true;
     switch (v.t) {
         case VT::Int:     return type == "Int" || type == "Numeric" || type == "Real";
-        case VT::Num:     return type == "Num" || type == "Numeric" || type == "Real";
-        case VT::Rat:     return type == "Rat" || type == "Numeric" || type == "Real";
+        case VT::Num:
+            // an Instant/Duration rides on a Num but is not one: Rakudo's
+            // `Instant ~~ Num` is False (Real and Numeric hold) — CBOR::Simple
+            // tests Num before Instant and tagged every Instant as a float
+            if (v.hashKind == "Instant" || v.hashKind == "Duration")
+                return type == "Numeric" || type == "Real";
+            return type == "Num" || type == "Numeric" || type == "Real";
+        case VT::Rat:     return type == "Rat" || type == "Rational" || type == "Numeric" || type == "Real" ||
+                                 (type == "FatRat" && v.fatRat());
         case VT::Complex: return type == "Complex" || type == "Numeric";
         case VT::Str:
             // tagged non-strings that ride on VT::Str (IO::Path, Version,
             // IO::Special) are not Str/Stringy; their own names matched above
             if (v.hashKind == "IO" || v.hashKind == "Version" || v.hashKind == "IO::Special")
                 return false;
+            // A byte buffer rides on VT::Str too, and is NOT a Str: it is a
+            // Blob (Stringy and Positional through the role), a Buf only when
+            // writable — `utf8` is a Blob, not a Buf. CBOR::Simple asks
+            // `istype($_, Str)` before `istype($_, Blob)` and every Buf went
+            // out as a text string (major type 3, not 2).
+            if (v.hashKind == "Buf" || v.hashKind == "Blob" || v.hashKind == "utf8" ||
+                v.hashKind == "CArray") {
+                if (type == "Str") return false;
+                if (type == "Blob" || type == "Stringy" || type == "Positional") return v.hashKind != "CArray";
+                if (type == "Buf") return v.hashKind == "Buf";
+                return false;
+            }
             return type == "Str" || type == "Stringy";
         // Bool is an Int-backed enum, so `True ~~ Int` / nqp::istype(True, Int)
         // hold (CBOR::Simple classifies Bool via nqp::istype($_, Numeric)).
         case VT::Bool:    return type == "Bool" || type == "Int" ||
                                  type == "Numeric" || type == "Real";
+        // a Pair is a Pair (and Associative): Hash::int's STORE sorts each
+        // pulled item with `nqp::istype($x, Pair)` before reading its key
+        case VT::Pair:    return type == "Pair" || type == "Associative";
+        // a real Nil (bound into an array) is a Nil — CBOR::Simple tags it as
+        // "absent" rather than null
+        case VT::Nil:     return type == "Nil";
         case VT::Array:
             // a Seq is an Array tagged `.s == "Seq"`; a plain Array/List is NOT a
             // Seq (JSON::Fast's jsonify tests `istype($_, Seq)` before Positional
             // — a false match sends it into an infinite `jsonify(.cache)` loop)
             if (type == "Seq") return v.s == "Seq";
+            // a NATIVE array (`array[uint8]`, `my num32 @a`) is an `array`, which
+            // CBOR::Simple tests before Positional to emit a typed-array tag
+            if (type == "array") return !v.isList && isNativeScalarName(v.ofType());
             return type == "Array" || type == "List" || type == "Positional" || type == "Iterable";
         case VT::Hash:    return hashKindIsAssociative(v.hashKind) &&
                                  (type == "Hash" || type == "Associative" || type == "Map");
@@ -12763,7 +12932,14 @@ void Interpreter::ncWriteElem(long long addr, const std::string& ofType, long lo
         else        { double x = val.toNum();       std::memcpy(base, &x, 8); }
         return;
     }
+    // a byte-backed CArray/Buf value stores the ADDRESS of its bytes — through
+    // ncRawAddr, which promotes and RETAINS the storage: `$out[0] =
+    // CArray[uint8].new(…)` inside an OpenSSL ALPN callback must outlive the
+    // statement that wrote it, since the library reads the protocol name after
+    // the callback returns
     long long v = val.t == VT::Object || val.t == VT::Hash ? Interpreter::ncRawAddr(val)
+                : val.t == VT::Str && (val.hashKind == "CArray" || val.hashKind == "Buf" || val.hashKind == "Blob")
+                    ? Interpreter::ncRawAddr(val)
                 : val.t == VT::Str ? (long long)(intptr_t)val.s.c_str() : val.toInt();
     switch (w) {
         case 1: { int8_t  x = (int8_t)v;  std::memcpy(base, &x, 1); break; }
@@ -12798,6 +12974,72 @@ long long Interpreter::ncOwnStrElem(Value& arr, const Value& v) {
     if (!owned) { owned = std::make_shared<Owned>(); arr.extM() = owned; }
     owned->push_back(std::make_shared<std::string>(v.toStr()));
     return (long long)(intptr_t)owned->back()->c_str();
+}
+
+// Store `rhs` into a CStruct's field at `off` (of native `type`), on `inv`.
+// A CArray/Pointer field stores the ADDRESS of its value's buffer. When that
+// value is a byte-backed CArray/Buf the buffer belongs to the VALUE, and
+// ncWriteElem would record the address of the temporary `rhs` — leaving the
+// field pointing into freed heap the moment the statement ended. Keep the
+// buffer alive ON THE STRUCT and take the address from the copy that now lives
+// as long as the object does. (Rakudo refuses this assignment outright.
+// Recording a dangling pointer was already the worse answer; once a write
+// actually reaches the pointer — which it now does, see the live-CArray arm in
+// evalAssignInner — it corrupts the heap instead of being quietly dropped.)
+// A LIVE CArray (nativecast over a Blob) carries the Blob's own address and is
+// written as that address, so C fills the caller's buffer, not a copy.
+void Interpreter::ncStoreStructField(Value& inv, const std::string& field, const std::string& type,
+                                     long long off, const Value& rhs) {
+    std::string bt = type.substr(0, type.find('['));
+    if ((bt == "CArray" || bt == "Pointer") && rhs.t == VT::Str &&
+        (rhs.hashKind == "CArray" || rhs.hashKind == "Buf" || rhs.hashKind == "Blob")) {
+        Value& kept = (inv.obj()->attrs["__native_keep_" + field] = rhs);
+        ncWriteElem(inv.obj()->attrs["__native_ptr"].toInt() + off, "int64", 0,
+                    Value::integer((long long)(intptr_t)kept.s.data()));
+    }
+    else ncWriteElem(inv.obj()->attrs["__native_ptr"].toInt() + off, type, 0, rhs);
+}
+
+// `has GType $.g-type` where `constant GType is export = uint64` (Gnome::N's
+// GlibToRakuTypes, and its `void-ptr` = Pointer[void]): the attribute's declared
+// type is a constant ALIASING a type. Resolved once, when the class is declared,
+// in the declaring scope — every later check (assignment, construction, the
+// CStruct layout) then sees the real name. Only a name that is not itself a
+// class or subset is looked up, so a type that merely shares its name with a
+// term keeps winning; and only a TYPE value counts.
+std::string Interpreter::resolveAttrTypeAlias(const std::string& t) {
+    if (t.empty() || classes_.count(t) || subsets_.count(t)) return t;
+    Value* v = tctx_.cur ? tctx_.cur->find(t) : nullptr;
+    if (v && v->t == VT::Type && !v->s.empty() && v->s != t) return v->s;
+    return t;
+}
+
+// The names rakulib/ shadows on purpose — see the resolver's search order.
+bool Interpreter::isShadowedModule(const std::string& name) {
+    return name == "NativeHelpers::Blob" || name == "NativeHelpers::CStruct" ||
+           name == "NativeHelpers::Pointer";
+}
+
+// The library an `is native(EXPR)` names. A Str is taken as written; the
+// (name, Version) pair NativeCall's `is native('cairo', v2)` also accepts as a
+// two-element list — `our $cairolib = ('cairo', v2)` in Cairo — becomes the
+// platform's versioned file name, as Rakudo's guess_library_name spells it:
+// libcairo.2.dylib here, libcairo.so.2 on Linux, cairo-2.dll on Windows.
+std::string Interpreter::ncLibNameOf(const Value& r) {
+    if (r.t == VT::Array && r.arr() && r.arr()->size() == 2) {
+        std::string name = (*r.arr())[0].toStr();
+        std::string ver = (*r.arr())[1].toStr();
+        if (!ver.empty() && ver[0] == 'v') ver = ver.substr(1);
+        if (name.rfind("lib", 0) != 0) name = "lib" + name;
+#if defined(_WIN32)
+        return name.substr(3) + "-" + ver + ".dll";
+#elif defined(__APPLE__)
+        return name + "." + ver + ".dylib";
+#else
+        return name + ".so." + ver;
+#endif
+    }
+    return r.toStr();
 }
 
 std::string Interpreter::ncResolveTypeAlias(ClassInfo* ci, const std::string& t) {
@@ -12905,7 +13147,12 @@ long long Interpreter::ncRawAddr(const Value& v) {
     // (CArray.new promotes it), so this is the same buffer every copy of the
     // value sees; the body is retained in a small ring so a Pointer taken from a
     // TEMPORARY CArray outlives the statement that made it.
-    if (v.t == VT::Str && v.hashKind == "CArray") {
+    // …and a Buf/Blob is byte storage the same way: `nativecast(CArray[uint8],
+    // $blob)` must yield a view ONTO the blob (Compress::Zlib::Raw's
+    // z_stream.set-input/set-output hand zlib the caller's buffers exactly so),
+    // and a 0 here made every such view a NULL pointer — deflate answered
+    // Z_STREAM_ERROR with all its counters correctly set.
+    if (v.t == VT::Str && (v.hashKind == "CArray" || v.hashKind == "Buf" || v.hashKind == "Blob")) {
         // Promote when it is not already shared. An inline buffer lives INSIDE
         // this Value — which is routinely a temporary copy of the caller's — so
         // its address would dangle the moment the statement ended. Promotion
@@ -13075,7 +13322,15 @@ void Interpreter::runFfiClosure(void* user, void* ret, void** args) {
 }
 
 // A Raku Callable passed where C wants a function pointer.
-static void* ncCallbackPtr(const Value& v) {
+// `declSig` is the signature the NATIVE routine declared for its callback
+// parameter — `&callback (SSL, CArray[CArray[uint8]], CArray[uint8], CArray[uint8],
+// uint8, Pointer --> int32)` in IO::Socket::Async::SSL — and it is what C will
+// actually pass. The Raku block handed over is usually UNTYPED (`-> $ssl, $out,
+// $outlen, $in, $inlen, $arg { … }`), and reading its `uint8` as a 64-bit
+// integer picked up whatever the register held above the byte: the ALPN
+// selector looped over a length in the billions and the handshake never ended.
+// A type the block wrote itself still wins.
+static void* ncCallbackPtr(const Value& v, const std::vector<Param>* declSig = nullptr) {
     const ffi::Lib& F = ffi::lib();
     if (F.ok && F.closure_alloc && F.prep_closure_loc && v.code()) {
         auto it = g_ncClosures.find(v.code());
@@ -13085,9 +13340,10 @@ static void* ncCallbackPtr(const Value& v) {
         const std::vector<Param>* ps = v.code()->params;
         // No signature at all: assume the two-argument comparator shape, which
         // is what the fixed pool defaulted to and covers qsort/bsearch.
-        size_t arity = ps ? ps->size() : 2;
+        size_t arity = declSig && !declSig->empty() ? declSig->size() : ps ? ps->size() : 2;
         for (size_t i = 0; i < arity; i++) {
             std::string pt = (ps && i < ps->size()) ? (*ps)[i].type : "";
+            if (pt.empty() && declSig && i < declSig->size()) pt = (*declSig)[i].type;
             cl->ptypes.push_back(pt);
             cl->atypes.push_back(ncFfiCbParamType(pt));
         }
@@ -13195,7 +13451,7 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
             try {
                 Value r = eval(const_cast<Expr*>(c.nativeLibExpr));
                 if (r.t == VT::Code) { ValueList none; r = callCallable(r, none); }
-                if (isDefined(r)) lib = r.toStr();
+                if (isDefined(r)) lib = ncLibNameOf(r);
             } catch (RakuError&) {}
             tctx_.cur = savedEnv;
         }
@@ -13420,7 +13676,7 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
         else if (v.t == VT::Object && v.obj() && v.obj()->attrs.count("__native_ptr")) putPtr(s, (void*)(intptr_t)v.obj()->attrs["__native_ptr"].toInt());
         else if (v.t == VT::Hash && (v.hashKind == "Pointer" || v.hashKind == "CArray") && v.hash()->count("addr"))
             putPtr(s, (void*)(intptr_t)(*v.hash())["addr"].toInt()); // live Pointer / CArray handle
-        else if (v.t == VT::Code) putPtr(s, ncCallbackPtr(v)); // Raku callback → C function pointer
+        else if (v.t == VT::Code) putPtr(s, ncCallbackPtr(v, p ? p->subSig.get() : nullptr)); // Raku callback → C function pointer
         else if (pt == "Str" && v.t != VT::Any && v.t != VT::Type) {
             // Declared `Str`, given a defined non-Str — a `<7 8 9>` word-list
             // element is an Int here, where Rakudo's IntStr allomorph still
@@ -14693,7 +14949,19 @@ void Interpreter::rwWriteThrough(Expr* target) {
     Value v = *e->local(name);
     auto savedCur = tctx_.cur;
     tctx_.cur = it->second.second; // the caller's scope, where the arg expr lives
-    try { if (Value* lv = lvalue(peelIncDec(it->second.first))) *lv = v; } catch (...) {}
+    try {
+        if (Value* lv = lvalue(peelIncDec(it->second.first))) {
+            *lv = v;
+            // The caller's argument may itself be an `is rw` parameter one frame
+            // up (`sub on($o is rw) { cls_on($o) }`): push the write on through
+            // the chain, in the caller's scope. The return-time copy-back covers
+            // this while the frames are live; a closure that writes AFTER they
+            // returned — IO::Capture::Simple's capturing `$*OUT` class, whose
+            // `print` appends to a parameter two `is rw` hops away — has only
+            // this path, and stopped one hop short of the variable.
+            rwWriteThrough(peelIncDec(it->second.first));
+        }
+    } catch (...) {}
     tctx_.cur = savedCur;
     e->x().rwSynced[name] = v;
 }
@@ -15118,6 +15386,7 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
     // (callCallableRaw) has always done this; methods never did, so
     // `method t { my $auth = … if $cond; $auth ~= … }` died "not declared"
     // whenever the condition was false (rakupp issue #13's follow-up).
+    if (c.body) hoistSubs(*c.body); // a method body's nested named subs are visible before their declaration (Template::Mustache's get-template)
     if (c.body) hoistExprDecls(*c.body, tcx.cur.get(), &c.hoistNeed);
     // A method body may carry a CATCH, exactly as a sub's does. This path had no
     // handling for one at all — its unwinder ended in `catch (...) { restore;
@@ -16828,6 +17097,17 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                 }
             }
         }
+        // `constant \COLORS is export(:colors) = …` in a `unit class` body: the
+        // same publish. A `unit module` republishes its whole scope, so the
+        // constant reached importers there and nowhere else — Color::Names
+        // keeps every one of its twelve palettes behind exactly this line.
+        else if (ve->declare && ve->declScope == "constant" && ve->declExport &&
+                 !ve->name.empty()) {
+            if (Value* p = tctx_.cur->find(ve->name)) {
+                if (curPkgEnv_) curPkgEnv_->define(ve->name, *p);
+                global_->define(ve->name, *p);
+            }
+        }
     }
     // one hook covers every assignment form (=, op=, ||= …): if the target is a
     // linked rw/raw param, push the new value through to the caller immediately
@@ -17048,26 +17328,31 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 std::string type; long long off = ncFieldOffset(inv.obj()->cls.get(), mc->method, type);
                 if (off >= 0) {
                     Value rhs = eval(a->value.get());
-                    // A CArray/Pointer field stores the ADDRESS of its value's
-                    // buffer. When that value is a byte-backed CArray/Buf the
-                    // buffer belongs to the VALUE, and ncWriteElem would record
-                    // the address of the temporary `rhs` — leaving the field
-                    // pointing into freed heap the moment this statement ended.
-                    // Keep the buffer alive ON THE STRUCT and take the address
-                    // from the copy that now lives as long as the object does.
-                    // (Rakudo refuses this assignment outright. Recording a
-                    // dangling pointer was already the worse answer; once a
-                    // write actually reaches the pointer — which it now does,
-                    // see the live-CArray arm in evalAssignInner — it corrupts
-                    // the heap instead of being quietly dropped.)
-                    std::string bt = type.substr(0, type.find('['));
-                    if ((bt == "CArray" || bt == "Pointer") && rhs.t == VT::Str &&
-                        (rhs.hashKind == "CArray" || rhs.hashKind == "Buf" || rhs.hashKind == "Blob")) {
-                        Value& kept = (inv.obj()->attrs["__native_keep_" + mc->method] = rhs);
-                        ncWriteElem(inv.obj()->attrs["__native_ptr"].toInt() + off, "int64", 0,
-                                    Value::integer((long long)(intptr_t)kept.s.data()));
-                    }
-                    else ncWriteElem(inv.obj()->attrs["__native_ptr"].toInt() + off, type, 0, rhs);
+                    ncStoreStructField(inv, mc->method, type, off, rhs);
+                    return sink ? Value::any() : rhs;
+                }
+            }
+        }
+    }
+    // …and the same write from INSIDE a method: `$!avail-in = $stuff.bytes` and
+    // `$!next-in := nativecast(CArray[uint8], $stuff)` — Compress::Zlib::Raw's
+    // z_stream setters. The attribute lvalue arm hands back the Raku-side
+    // attrs slot, which the C side never reads: the struct went to `deflate`
+    // with every counter still zero, and zlib answered Z_STREAM_ERROR. The
+    // read path already goes through native memory; the write must too.
+    if ((a->op == "=" || a->op == ":=") && a->target->kind == NK::VarExpr) {
+        auto* ve = static_cast<VarExpr*>(a->target.get());
+        if (ve->name.size() > 2 && ve->name[0] == '$' && (ve->name[1] == '!' || ve->name[1] == '.')) {
+            Value* selfp = tctx_.cur->findSelf();
+            if (selfp && selfp->t == VT::Object && selfp->obj() && selfp->obj()->cls &&
+                (selfp->obj()->cls->repr == "CStruct" || selfp->obj()->cls->repr == "CPPStruct" ||
+                 selfp->obj()->cls->repr == "CUnion") &&
+                selfp->obj()->attrs.count("__native_ptr")) {
+                std::string type; long long off = ncFieldOffset(selfp->obj()->cls.get(), ve->attrBare, type);
+                if (off >= 0 && type.rfind("HAS ", 0) != 0) {
+                    Value rhs = eval(a->value.get());
+                    Value self = *selfp;
+                    ncStoreStructField(self, ve->attrBare, type, off, rhs);
                     return sink ? Value::any() : rhs;
                 }
             }
@@ -17106,7 +17391,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                         }
                 }
                 Value* lv = lvalue(it.get());
-                if (ve->name[0] == '@') *lv = coerceArray(v);
+                if (ve->name[0] == '@') *lv = coerceArray(v, isNativeScalarName(lv->ofType()));
                 else if (ve->name[0] == '%') *lv = coerceHash(v, /*store=*/true, lv->objKeyed);
                 else *lv = v;
             }
@@ -17459,6 +17744,25 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         // protocol calls its ASSIGN-KEY / ASSIGN-POS. Without this the assignment
         // fell through to the generic container path and silently did nothing —
         // every URI::Query mutation (`$q<qux> = '4'`) was a no-op.
+        // `%h{$k} := $v` / `@a[$i] := $v` on a USER container: its own BIND-KEY /
+        // BIND-POS answers (Hash::int keeps a native-int hash behind them; the
+        // generic lvalue path wrote into a copy the object never saw)
+        if (a->op == ":=" && a->target->kind == NK::Index) {
+            auto* ix = static_cast<Index*>(a->target.get());
+            if (ix->index && !ix->multiDim && ix->adverb.empty() && ix->base->kind == NK::VarExpr) {
+                Value base = eval(ix->base.get());
+                if (base.t == VT::Object && base.obj() && base.obj()->cls) {
+                    const char* meth = ix->isHash ? "BIND-KEY" : "BIND-POS";
+                    if (base.obj()->cls->findMethod(meth)) {
+                        Value key = eval(ix->index.get());
+                        Value rhs = evalValueOf(a->value.get());
+                        ValueList ba; ba.push_back(key); ba.push_back(rhs);
+                        Value r = methodCall(base, meth, ba);
+                        return sink ? Value::any() : r;
+                    }
+                }
+            }
+        }
         if (a->op == "=" && a->target->kind == NK::Index) {
             auto* ix = static_cast<Index*>(a->target.get());
             if (ix->index && !ix->multiDim && ix->adverb.empty() &&
@@ -17976,6 +18280,12 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                         c->doesRole("Positional") || c->doesRole("Iterable")) { positional = true; break; }
                 if (positional) *lv = rhs;
                 else *lv = coerceArray(rhs);
+            }
+            // a Blob/Buf assigned to a NATIVE array spreads as its elements
+            // (`my uint32 @W = $M`); to an ordinary one it is a single item
+            else if (a->op == "=" && rhs.t == VT::Str && !rhs.itemized &&
+                     (rhs.hashKind == "Blob" || rhs.hashKind == "Buf")) {
+                *lv = coerceArray(rhs, isNativeScalarName(lv->ofType()));
             }
             else if (a->op == "=" && a->value && a->value->kind == NK::VarExpr &&
                      !static_cast<VarExpr*>(a->value.get())->name.empty() &&
@@ -20091,7 +20401,12 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         if (l.t != r.t && isAnyTypeObject(l) && isAnyTypeObject(r)) same = true;
         else if (l.t != r.t) same = false;
         else if (l.t == VT::Object) same = (l.obj() == r.obj());
-        else if (l.t == VT::Type) same = (l.s == r.s && l.ofType() == r.ofType());
+        // a type object reached through an ALIAS (`%export<LanguageTag> =
+        // LanguageTag::BCP47`, or a class's tail name) is the same object as the
+        // class itself — Intl::LanguageTag's suite binds both and asks `=:=`
+        else if (l.t == VT::Type) same = (l.s == r.s || aliasedClassName(l.s) == aliasedClassName(r.s) ||
+                                          l.typeName() == r.typeName()) &&
+                                         l.ofType() == r.ofType();
         else if (l.t == VT::Code) same = (l.code() == r.code());
         // Lists/Arrays are reference identity — except a CAPTURE, which is the one
         // Array-shaped VALUE type: `\(1,2) === \(1,2)` is True. Its parts carry
@@ -20138,7 +20453,12 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         // a RANGE by its endpoint form, not by its elements (`1..^5 === 1..4`)
         else if (l.t == VT::Range) same = (whichOf(l) == whichOf(r));
         // a parameterised TYPE keeps its parameter: Array[Int] is not Array[Str]
-        else if (l.t == VT::Type) same = (l.s == r.s && l.ofType() == r.ofType());
+        // a type object reached through an ALIAS (`%export<LanguageTag> =
+        // LanguageTag::BCP47`, or a class's tail name) is the same object as the
+        // class itself — Intl::LanguageTag's suite binds both and asks `=:=`
+        else if (l.t == VT::Type) same = (l.s == r.s || aliasedClassName(l.s) == aliasedClassName(r.s) ||
+                                          l.typeName() == r.typeName()) &&
+                                         l.ofType() == r.ofType();
         else same = (l.toStr() == r.toStr()); // value types (Int/Str/Num/Rat/...)
         return Value::boolean(op == "===" ? same : !same); // !== and !=== both negate identity
     }
@@ -20148,8 +20468,9 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         // ===: valueEq treated L =:= Any as True, so JSON::Unmarshal's
         // `@x.of =:= Any` guard always took the untyped branch and typed-array
         // attributes unmarshalled as plain Hashes.
-        if (l.t == VT::Type && r.t == VT::Type)
-            return Value::boolean(l.s == r.s && l.ofType() == r.ofType());
+        if (l.t == VT::Type && r.t == VT::Type)   // an alias names the same type object (see `===`)
+            return Value::boolean((l.s == r.s || aliasedClassName(l.s) == aliasedClassName(r.s) ||
+                                   l.typeName() == r.typeName()) && l.ofType() == r.ofType());
         if (isRefValue(l) || isRefValue(r)) return Value::boolean(identicalRef(l, r));
         return Value::boolean(l.t == r.t && valueEq(l, r));
     }
@@ -20276,6 +20597,9 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                   (r.s == "Any" && !(l.t == VT::Type && l.s == "Mu")) || r.s == "Mu" ||
                   // an enum VALUE does the Enumeration role (and its own type)
                   (!l.enumName.empty() && (r.s == "Enumeration" || r.s == l.enumType.str())) ||
+                  // …and a Str-valued member IS a Str (the enum type derives from it)
+                  (!l.enumName.empty() && l.pairVal() && l.pairVal()->t == VT::Str &&
+                   (r.s == "Str" || r.s == "Stringy")) ||
                   (l.t == VT::Code && (r.s == "Code" || r.s == "Callable" ||
                    (r.s == "WhateverCode" && l.code() && l.code()->isWhateverCode))) ||
                   (r.s == "Numeric" && l.isNumeric()) ||
@@ -22824,7 +23148,36 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
             tctx_.cur = savedScope;
             setMatchVar(Value::nil()); return Value::nil();
         }
-        completionLog->clear(); // success: the normal bottom-up build fires everything once
+        // Success: the bottom-up build below fires an action for every node
+        // in the TREE — but a rule reached only through a non-capturing call
+        // (`<.ws>` → `<.comment>` → `<unclosed-comment>`, CSS::Grammar's
+        // unterminated-comment warning) leaves no node, and Rakudo fires its
+        // action all the same. Those completions are in the log; replay the
+        // ones the tree does not carry, in completion order, exactly as the
+        // failure path does.
+        if (haveActions && actCls && !completionLog->empty()) {
+            std::set<std::tuple<std::string, long, long>> inTree;
+            std::function<void(const ParseNode&)> walk = [&](const ParseNode& pn) {
+                inTree.insert({pn.name, pn.from, pn.to});
+                if (!pn.actualRule.empty()) inTree.insert({pn.actualRule, pn.from, pn.to});
+                if (pn.kids) for (auto& kv : *pn.kids) for (auto& k : kv.second) walk(k);
+            };
+            walk(tree);
+            replayBuild = true;
+            for (auto& pn : *completionLog) {
+                if (inTree.count({pn.name, pn.from, pn.to})) continue;
+                Value mv;
+                try { mv = build(pn); } catch (...) { continue; }
+                if (!pn.actualRule.empty() && pn.actualRule != pn.name)
+                    try { runAction(pn.actualRule, mv); } catch (RakuError&) {}
+                try { runAction(pn.name, mv); } catch (RakuError&) {}
+                // no `made` is kept: nothing in the tree can name this node, and a
+                // captured rule over the SAME span must not inherit it (CSS::Grammar's
+                // compat suite read a comment's made through its enclosing token)
+            }
+            replayBuild = false;
+        }
+        completionLog->clear(); // the normal bottom-up build fires the rest once
         // build with the match scope still current: a deferred `{ make … }`
         // may read the rule's `:my` vars (Cro's route matcher makes `$cap`)
         Value mv;
@@ -24670,7 +25023,14 @@ Value Interpreter::evalUnary(Unary* u) {
         throw ReturnEx{v};
     }
     if (u->op == "last" || u->op == "next" || u->op == "redo") {
-        if (tctx_.curLoopFrame != 0 && tctx_.frameTop == tctx_.curLoopFrame) {
+        // The cooperative form — set a flag, return, let the loop see it after
+        // the STATEMENT — is only right when the control word IS the statement.
+        // As an operand (`my Str $s = %h{$_} // next`, Font::AFM's glyph walk)
+        // the value it returns would finish the statement first: the typed
+        // assignment saw Any and died. So an operand throws, and the loop
+        // catches the exception exactly as it does from a nested block.
+        if (tctx_.curLoopFrame != 0 && tctx_.frameTop == tctx_.curLoopFrame &&
+            u == tctx_.curStmtExpr) {
             tctx_.loopCtl = u->op == "next" ? 1 : u->op == "last" ? 2 : 3; // cooperative
             return Value::any();
         }
@@ -25194,6 +25554,15 @@ Value Interpreter::evalUnary(Unary* u) {
             return code;
         }
         Value* lv = lvalue(u->operand.get());
+        // a NativeCall Pointer steps by ELEMENTS through `.succ`/`.pred`, as
+        // Rakudo's `++` does for any object that answers them (NativeHelpers::
+        // Pointer's suite walks a CArray with `$p++`)
+        if (lv && lv->t == VT::Hash && lv->hashKind == "Proxy" == false && lv->hashKind == "Pointer") {
+            Value old = *lv;
+            ValueList none;
+            *lv = methodCall(old, u->op == "++" ? "succ" : "pred", none);
+            return u->postfix ? old : *lv;
+        }
         // `++`/`--` MUTATE, so a readonly container refuses them just as `=` does.
         // They never went through the assignment guard — this path resolves the
         // lvalue and writes it directly — so `sub f($x) { $x++ }` and
@@ -28319,6 +28688,13 @@ Value Interpreter::eval(Expr* e) {
                     if (it != selfp->obj()->attrs.end()) return it->second;
                     if (ve->name[1] == '.') return methodCall(*selfp, an, {});
                 }
+                // `$.metrics` with a TYPE OBJECT as self is still a method call
+                // (Font::AFM's generated metrics classes are used uninstantiated:
+                // `Font::Metrics::courier.BBox` reads `$.metrics<BBox>`)
+                if (selfp && selfp->t == VT::Type && ve->name[1] == '.') {
+                    ValueList none;
+                    return methodCall(*selfp, ve->attrBare, none);
+                }
                 return defaultFor(sigil);
             }
             // A bare `%` / `@` term is an ANONYMOUS empty Hash / Array — `% .classify-list:
@@ -29305,7 +29681,13 @@ Value Interpreter::eval(Expr* e) {
                 if (mc->method == "reallocate") { // grow (zero-fill) or truncate in place
                     ValueList wargs = evalArgs(mc->args);
                     size_t n = wargs.empty() ? 0 : (size_t)wargs[0].toInt();
-                    if (Value* lv = lvalue(mc->inv.get())) { lv->s.resize(n, '\0'); return *lv; }
+                    if (Value* lv = lvalue(mc->inv.get())) {
+                        lv->s.resize(n, '\0');
+                        // shared storage from here on: `set-output($buf)` hands
+                        // C a view onto THESE bytes (Compress::Zlib's stream)
+                        lv->s.promote();
+                        return *lv;
+                    }
                     Value out = inv; out.s.resize(n, '\0'); return out;
                 }
                 if (mc->method == "pop" || mc->method == "shift") {

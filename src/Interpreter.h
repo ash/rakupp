@@ -646,6 +646,7 @@ struct ExecContext {
     // the SAME callable frame as the innermost native loop (no closure between);
     // labelled or cross-frame control still throws NextEx/LastEx/RedoEx.
     int loopCtl = 0;              // 0 none, 1 next, 2 last, 3 redo
+    const Expr* curStmtExpr = nullptr; // the expression the current ExprStmt is evaluating — a bare `next`/`last`/`redo` may go cooperative only when it IS this
     uint64_t curLoopFrame = 0;    // frameTop when the innermost native loop body runs
     // Cooperative `when`/`default`/`succeed`: a match in the SAME callable frame
     // as its enclosing given (or loop) body sets givenCtl instead of throwing
@@ -837,6 +838,12 @@ public:
     // array does). 0 for an undefined value — C's NULL.
     static long long ncOwnStrElem(Value& arr, const Value& v);
     static std::string ncResolveTypeAlias(ClassInfo* ci, const std::string& t); // `constant my_bool = int8` → "int8"
+    void ncStoreStructField(Value& inv, const std::string& field, const std::string& type, long long off, const Value& rhs);
+    static std::string ncLibNameOf(const Value& r); // `is native(('cairo', v2))` → libcairo.2.dylib
+    static bool isShadowedModule(const std::string& name); // rakulib/ names that beat an ecosystem copy
+    std::string shadowLibDir_;                             // the binary-relative rakulib/, once found
+    std::shared_ptr<ClassInfo> howRoleClsInfo_;            // Metamodel::ParametricRoleGroupHOW, shared by every role
+    std::string resolveAttrTypeAlias(const std::string& t); // `has GType $.x` with `constant GType = uint64`
     std::shared_ptr<ClassInfo> ncInlineClass(const std::string& type); // the struct a `HAS` member inlines
     // True once any class has declared a `HAS` member. The assignment path
     // consults it before looking for an inline-struct view, so a program with no
@@ -1168,7 +1175,8 @@ public:
     // langRev: the revision the subset was DECLARED under. Rakudo's SubsetHOW
     // records it (that is what `Even.^ver` reports, "6.d" or "6.e"), and it is
     // not decoration — the metamodel keys type-check behaviour off it.
-    struct SubsetInfo { std::string base; const Expr* where = nullptr; int langRev = 1; };
+    struct SubsetInfo { std::string base; const Expr* where = nullptr; int langRev = 1;
+                        std::shared_ptr<Env> declEnv; };   // the where-clause CLOSES over its declaration scope
     std::unordered_map<std::string, SubsetInfo> subsets_;
     // per-site `ff`/`fff` flip-flop latch + how many elements since it fired
     // (the result while on is that count, not a Bool)

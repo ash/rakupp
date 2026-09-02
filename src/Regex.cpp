@@ -596,7 +596,11 @@ Regex::NodePtr Regex::p5Escape() {
         case 'Z': { auto n = std::make_unique<Node>(); n->k = K::AnchorEnd; return n; } // end or before final \n
         case 'z': { auto n = std::make_unique<Node>(); n->k = K::AnchorEnd; n->absEnd = true; return n; }
         case 'G': { auto n = std::make_unique<Node>(); n->k = K::AnchorStart; return n; } // ≈ \A: anchored at search start
-        case 'n': return mkLit("\n");
+        // `\n` is the LOGICAL newline — LF, CR, CRLF (one grapheme), NEL, VT, FF,
+        // LS, PS — not the byte 0x0A: `"a\r\nb" ~~ /a \n b/` holds under Rakudo,
+        // and PDF::Grammar's ws-char class counts a CRLF as one of its members
+        case 'n': return mkClass('n', false);
+        case 'N': return mkClass('n', true);
         case 't': return mkLit("\t");
         case 'r': return mkLit("\r");
         case 'f': return mkLit("\f");
@@ -669,7 +673,9 @@ Regex::NodePtr Regex::p5Class() {
                 negMembers.push_back(std::move(m));
                 return -1;
             }
-            case 'n': return '\n';
+            // `\n` in a class is the logical newline too: LF (returned), plus CR
+            // and NEL as extra members; CRLF is covered by the LF member (NFG)
+            case 'n': cls->ranges.push_back({0x0D, 0x0D}); cls->cpRanges.push_back({0x85, 0x85}); return '\n';
             case 't': return '\t';
             case 'r': return '\r';
             case 'f': return '\f';
@@ -1493,6 +1499,10 @@ Regex::NodePtr Regex::parseAtom() {
                 std::string code;
                 while (!eof() && depth > 0) {
                     char d = pat_[pos_++];
+                    // the code is Raku: a `#` comment runs to the end of the line,
+                    // braces inside it included (Template::Mustache's linetag
+                    // assertion is three lines of commentary and one expression)
+                    if (d == '#') { code += d; while (!eof() && pat_[pos_] != '\n') code += pat_[pos_++]; continue; }
                     if (d == '{') depth++;
                     else if (d == '}') { depth--; if (depth == 0) break; }
                     code += d;
@@ -1933,7 +1943,8 @@ Regex::NodePtr Regex::parseAtom() {
         }
         n->k = K::Lit; n->icase = curIcase_; n->imark = curImark_;
         switch (e) {
-            case 'n': n->lit = "\n"; break;
+            case 'n': n->k = K::Class; n->classFlags = "n"; break;   // the logical newline (see mkClass 'n')
+            case 'N': n->k = K::Class; n->classFlags = "n"; n->negate = true; break;
             case 't': n->lit = "\t"; break;
             case 'r': n->lit = "\r"; break;
             case 'e': n->lit = "\x1b"; break;
@@ -2189,6 +2200,8 @@ static bool charClassCp(char flag, uint32_t cp) {
         // (Nl) are NOT word characters, though both are :N.
         case 'w': return cp == '_' || uniMatchesProp(cp, "L") || uniMatchesProp(cp, "Nd");
         case 's': return isUnicodeSpace(cp);
+        case 'n': return cp == 0x0A || cp == 0x0B || cp == 0x0C || cp == 0x0D ||
+                         cp == 0x85 || cp == 0x2028 || cp == 0x2029; // the logical newline
         case 'u': return uniMatchesProp(cp, "Lu");
         case 'l': return uniMatchesProp(cp, "Ll");
         case 'p': return uniMatchesProp(cp, "P");
@@ -2248,10 +2261,17 @@ bool Regex::classMatch(const Node* n, char ch) const {
             // ASCII-range codepoint entries (\c[LF], \x0A, …) participate too
             if (!pos) for (auto& r : n->cpRanges) if (c >= r.first && c <= r.second) { pos = true; break; }
             if (!pos && c < 0x80 && (T.bits[c] & posMask)) pos = true;
+            // a flag the ASCII table does not carry (`\n`, the logical newline)
+            // is tested directly, byte by byte
+            if (!pos) for (char f : n->classFlags)
+                if (T.slot[(unsigned char)f] < 0 && charClassCp(f, c)) { pos = true; break; }
             return pos;
         };
         auto subtracted = [&](unsigned char c) -> bool {
-            return c < 0x80 && (T.bits[c] & negMask);
+            if (c < 0x80 && (T.bits[c] & negMask)) return true;
+            for (char f : n->negClassFlags)
+                if (T.slot[(unsigned char)f] < 0 && charClassCp(f, c)) return true;
+            return false;
         };
         for (int i = 0; i < 8; i++) n->byteset[i] = 0;
         for (int v = 0; v < 256; v++) {
@@ -2301,6 +2321,11 @@ long Regex::trySingleChar(const std::string& s, long pos) const {
     const Node* n = root_.get();
     if (n->k == K::Any) return s[pos] == '\n' ? -1 : pos + 1;
     if (n->k == K::Lit) return s[pos] == n->lit[0] ? pos + 1 : -1;
+    // NFG: a CRLF is one grapheme, a class member exactly when LF is, and a
+    // match takes both bytes (the K::Class arm's rule — this leaf path is what
+    // a one-class token like PDF::Grammar's `ws-char` runs through as a subrule)
+    if (s[pos] == '\r' && pos + 1 < (long)s.size() && s[pos + 1] == '\n')
+        return classMatch(n, '\n') ? pos + 2 : -1;
     return classMatch(n, s[pos]) ? pos + 1 : -1; // Class
 }
 
@@ -2646,6 +2671,9 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                 // grapheme matches the codepoint ranges.
                 long gEnd = (long)uniClusterEndUtf8(st.s, pos, len);
                 bool single = (gEnd == pos + clen);
+                // the CRLF grapheme is a member exactly when LF is (Rakudo:
+                // `<[\n]>` and `<[\x0A]>`-style classes take it, `<[\r]>` does not)
+                if (!single && gEnd == pos + 2 && c0 == '\r' && st.s[pos + 1] == '\n') { single = true; cp = 0x0A; }
                 bool in = false;
                 for (auto& mem : n->clusterMembers)                 // whole-grapheme members
                     if ((long)mem.size() == gEnd - pos && st.s.compare(pos, mem.size(), mem) == 0) { in = true; break; }
@@ -2697,6 +2725,13 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                     if (!in) return false;
                     return k(gEnd);
                 }
+            }
+            // NFG: "\r\n" is ONE grapheme. It is a member of a class exactly when
+            // the LF is (`<[\n]>`, `\s`, `\n` match it; `<[\r]>` does not —
+            // Rakudo-verified), and a match consumes both bytes.
+            if (st.s[pos] == '\r' && pos + 1 < len && st.s[pos + 1] == '\n') {
+                if (!classMatch(n, '\n')) return false;
+                return k(pos + 2);
             }
             if (!classMatch(n, st.s[pos])) return false;
             return k(pos + 1);

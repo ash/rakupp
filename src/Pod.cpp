@@ -465,6 +465,46 @@ std::vector<Value> parsePod(const std::string& src) {
     { std::stringstream ss(src); std::string ln; while (std::getline(ss, ln)) lines.push_back(ln); }
     ValueList top; size_t i = 0;
     parseSeq(lines, i, "", false, top, 0);
+    // Declarator blocks: a run of `#|` lines (leading) or a `#=` tail (trailing)
+    // documents the declaration beside it, and Rakudo lists each as a
+    // Pod::Block::Declarator in `$=pod` — Pod::Load's suite reads a class's
+    // `#| Base class for magicians` back out of exactly that. The text is
+    // kept as the block's one content; the declaration it belongs to is not
+    // modelled here (no consumer of these blocks asks for it).
+    auto trim = [](std::string t) {
+        size_t a = t.find_first_not_of(" \t"); if (a == std::string::npos) return std::string();
+        size_t b = t.find_last_not_of(" \t\r"); return t.substr(a, b - a + 1);
+    };
+    std::string leading;
+    for (size_t k = 0; k < lines.size(); k++) {
+        std::string t = trim(lines[k]);
+        if (t.rfind("#|", 0) == 0) { if (!leading.empty()) leading += ' '; leading += trim(t.substr(2)); continue; }
+        if (!leading.empty()) {
+            Value d = mkPod("Pod::Block::Declarator");
+            Value pc = Value::array(); pc.arr()->push_back(Value::str(leading));
+            (*d.hash())["contents"] = pc;
+            top.push_back(d);
+            leading.clear();
+        }
+        size_t h = t.find("#=");
+        if (h != std::string::npos && (h == 0 || t[h - 1] == ' ' || t[h - 1] == '\t')) {
+            // not inside a string literal: no quote opened before it on the line
+            bool quoted = false;
+            for (size_t q = 0; q < h; q++) if (t[q] == '\'' || t[q] == '"') quoted = !quoted;
+            if (!quoted) {
+                Value d = mkPod("Pod::Block::Declarator");
+                Value pc = Value::array(); pc.arr()->push_back(Value::str(trim(t.substr(h + 2))));
+                (*d.hash())["contents"] = pc;
+                top.push_back(d);
+            }
+        }
+    }
+    if (!leading.empty()) {
+        Value d = mkPod("Pod::Block::Declarator");
+        Value pc = Value::array(); pc.arr()->push_back(Value::str(leading));
+        (*d.hash())["contents"] = pc;
+        top.push_back(d);
+    }
     return top;
 }
 

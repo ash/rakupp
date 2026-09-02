@@ -4087,9 +4087,15 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     if (inv.t == VT::Int && !inv.enumName.empty()) {
         if (m == "key") return Value::str(inv.enumName);
         // a non-Int enum value (`One => "Eins"`) rides in pairVal beside the ordinal
-        if (m == "value") return inv.pairVal() ? *inv.pairVal() : Value::integer(inv.toInt());
-        if (m == "pair") return Value::pair(inv.enumName,
-                                            inv.pairVal() ? *inv.pairVal() : Value::integer(inv.toInt()));
+        // …and a member whose Int exceeds int64 carries it as its own BigInt
+        // payload (see the enum declaration): strip the tag rather than clamp
+        auto plain = [&]() -> Value {
+            if (inv.pairVal()) return *inv.pairVal();
+            if (inv.big()) { Value n = inv; n.enumName.clear(); n.enumType.clear(); return n; }
+            return Value::integer(inv.toInt());
+        };
+        if (m == "value") return plain();
+        if (m == "pair") return Value::pair(inv.enumName, plain());
         // TYPE-level queries reach the enum type object — the tagged pair-list the
         // declaration built. `.enums` was implemented only there, so `Mass.enums`
         // worked and `g.enums` fell off the ladder. The VT::Array guard matters:
@@ -4430,8 +4436,16 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if (hci) {
             if (hci->howObj.t != VT::Object) {
                 if (!howClsInfo_) { howClsInfo_ = std::make_shared<ClassInfo>(); howClsInfo_->name = "Metamodel::ClassHOW"; }
+                // a ROLE's metaobject is not a ClassHOW: Rakudo answers
+                // ParametricRoleGroupHOW for the bare role name, and
+                // Method::Protected refuses `is protected` on a role method by
+                // testing `$method.package.HOW.WHAT =:= Metamodel::ClassHOW`
+                if (hci->isRole && !howRoleClsInfo_) {
+                    howRoleClsInfo_ = std::make_shared<ClassInfo>();
+                    howRoleClsInfo_->name = "Metamodel::ParametricRoleGroupHOW";
+                }
                 Value h; h.t = VT::Object; h.setObj(std::make_shared<ObjectData>());
-                h.obj()->cls = howClsInfo_;
+                h.obj()->cls = hci->isRole ? howRoleClsInfo_ : howClsInfo_;
                 h.obj()->attrs["__type"] = Value::typeObj(hci->name);
                 hci->howObj = std::move(h);
             }

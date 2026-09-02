@@ -129,6 +129,65 @@ bug (`Useless use of constant string … in sink context`) that also stops `Air`
 `Slang::Tuxic`. **Text::CSV** (#94) is the row that leaves — it reaches the 100
 only through `Slang::Tuxic`, whose hook is upstream's to re-land.
 
+## The 2026-09-02 sitting: the closure's roots, twenty-odd faults deep
+
+The 24 engine-side roots the 2026-09-01 re-check named were walked one at a
+time, each reproduced against Rakudo 2026.08 before it was touched. The fixes
+are all engine-side and uncommitted-then-committed together; the gates held
+throughout: `t/run.raku` 617/617 (with the new
+`t/regression/top100-roots-2026-09-02.raku`, which passes byte-for-byte under
+Rakudo too), the six roast slices (S02/S04/S05/S06/S12/S32) **file-identical**
+against a clean-HEAD baseline build, and a direct best-of-five of the binary
+against that same baseline within 2% — perf-neutral.
+
+**Five roots convert end to end** (their whole suite green from the seeded
+store), and one of them is the sitting's headline:
+
+| root | in the battery | was | what it unblocks |
+|---|---|---|--:|
+| **Log::Async** | #31 | `timeout` (hung at exit) | 17 dependents |
+| Text::SubParsers | dependency | `self-fail` | 2 |
+| Font::AFM | dependency | `self-fail` | 3 |
+| PSGI | dependency | `self-fail` | 1 (HTTP::Easy) |
+| IO::Capture::Simple | test-dep | `self-fail` | 3 |
+
+Log::Async did not fail a test — it **hung after the last one**. Its `END`
+phaser is `logger.done`, which starts a worker to close a Supply and then waits
+on that Supply; rakupp drained its workers *before* running END phasers, so the
+worker never ran and the wait never returned. END now runs with the pool still
+alive, as Rakudo's does, and the 17-file suite is green.
+
+The other roots each turned on a specific, previously-missing behaviour, and the
+same fixes move a further cluster of roots most of the way without closing them:
+
+- **CBOR::Simple** — `nqp::istype(Mu, Any)` is 0, a Buf is a Blob and not a Str,
+  an Instant is Real and not a Num, a native array is an `array` that names its
+  element, and an enum member past int64 keeps its value rather than clamping to
+  2^63-1. `t/01-basic` and `t/06-typed-arrays` go green; three tag cases and the
+  pre-existing `t/02-malformed` hang (present in HEAD, not this sitting) remain.
+- **CSS::Grammar** 42 → 6 failing, **PDF::Grammar** 26 → 11, **Template::Mustache**
+  from a parse error to a running suite with 9 left — behind the logical-newline
+  regex class (`\n` and a `<[…]>` class member match a CRLF as one grapheme, as
+  in Rakudo), a `#` comment inside a `<?{…}>` code assertion, an escaped bracket
+  inside a `< word list >`, and grammar actions on a rule reached only through a
+  non-capturing call firing on success as well as on failure.
+- **Color::Names**, **Gnome::N**, **Pod::Load**, **NativeHelpers::Blob**,
+  **Method::Protected** each have their reported error fixed and a representative
+  file green; their full suites still fail a tail (Gnome::N's `NativeLib.t` fails
+  under Rakudo too — environment; Method::Protected wants `nextcallee`).
+
+The fix families, by the ecosystem law each restores: constant export from a
+`unit class` body; `nqp::create`/`getattr`/`eqaddr`/`hllbool`/`strtocodes` and
+the `getuniprop_*` trio; a CStruct field written from inside a method reaching
+native memory; an attribute typed by a constant that aliases a native type; an
+`is rw` parameter's write reaching a variable two frames up; `next`/`last` as an
+operand throwing rather than going cooperative (so `my Str $s = %h{$_} // next`
+does not finish the assignment first); an empty Slip is undefined; `with(` glued
+to its paren is a call; a native callback typed from the routine's declared
+signature (the OpenSSL ALPN selector read its length byte eight-wide and looped
+forever without it); the Pod::Load precompilation surface as a shim; and the
+NativeHelpers::Blob/Pointer shadow modules made real views onto engine storage.
+
 ## The 100
 
 | # | dist | run | version | auth | verdict | RakuAST |
