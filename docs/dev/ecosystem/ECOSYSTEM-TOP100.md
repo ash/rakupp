@@ -140,7 +140,7 @@ Rakudo too), the six roast slices (S02/S04/S05/S06/S12/S32) **file-identical**
 against a clean-HEAD baseline build, and a direct best-of-five of the binary
 against that same baseline within 2% — perf-neutral.
 
-**Five roots convert end to end** (their whole suite green from the seeded
+**Four roots convert end to end** (their whole suite green from the seeded
 store), and one of them is the sitting's headline:
 
 | root | in the battery | was | what it unblocks |
@@ -149,7 +149,12 @@ store), and one of them is the sitting's headline:
 | Text::SubParsers | dependency | `self-fail` | 2 |
 | Font::AFM | dependency | `self-fail` | 3 |
 | PSGI | dependency | `self-fail` | 1 (HTTP::Easy) |
-| IO::Capture::Simple | test-dep | `self-fail` | 3 |
+
+A fifth, IO::Capture::Simple, converted mid-sitting on an eager `is rw`
+write-through chain, but that walk was O(n²) where a cursor is threaded
+`is rw` through a recursion — JSON::Fast (#1, 237 dependents) parses deep input
+that way — so the chaining was reverted to a single hop and IO::Capture::Simple
+reverts to open. It needs the container/binding model, not the hot path.
 
 Log::Async did not fail a test — it **hung after the last one**. Its `END`
 phaser is `logger.done`, which starts a worker to close a Supply and then waits
