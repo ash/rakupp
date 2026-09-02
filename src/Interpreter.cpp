@@ -14949,19 +14949,15 @@ void Interpreter::rwWriteThrough(Expr* target) {
     Value v = *e->local(name);
     auto savedCur = tctx_.cur;
     tctx_.cur = it->second.second; // the caller's scope, where the arg expr lives
-    try {
-        if (Value* lv = lvalue(peelIncDec(it->second.first))) {
-            *lv = v;
-            // The caller's argument may itself be an `is rw` parameter one frame
-            // up (`sub on($o is rw) { cls_on($o) }`): push the write on through
-            // the chain, in the caller's scope. The return-time copy-back covers
-            // this while the frames are live; a closure that writes AFTER they
-            // returned — IO::Capture::Simple's capturing `$*OUT` class, whose
-            // `print` appends to a parameter two `is rw` hops away — has only
-            // this path, and stopped one hop short of the variable.
-            rwWriteThrough(peelIncDec(it->second.first));
-        }
-    } catch (...) {}
+    // ONE hop only: write through to the caller's slot. Chaining further up on
+    // every write is quadratic where an `is rw` cursor is threaded through a
+    // recursion — JSON::Fast's `int $pos is rw` down parse-obj/array/value made
+    // deep input O(n^2) — and it is redundant while the frames are live, since
+    // each frame's return-time copyOutRw carries the write on up. (The
+    // after-return closure case — IO::Capture::Simple's captured `$*OUT` writing
+    // two rw hops away once the frames have gone — is NOT served by this path;
+    // it needs the container model, big-area #2, and stays open.)
+    try { if (Value* lv = lvalue(peelIncDec(it->second.first))) *lv = v; } catch (...) {}
     tctx_.cur = savedCur;
     e->x().rwSynced[name] = v;
 }
