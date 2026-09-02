@@ -208,11 +208,11 @@ return v;
 ## `ValueList` — the universal currency
 
 ```cpp
-using ValueList = std::vector<Value>;              // src/Value.h
+using ValueList = RVec<Value>;                     // src/Value.h, src/ValueVec.h
 using BuiltinFn = std::function<Value(Interpreter&, ValueList&)>;
 ```
 
-A `ValueList` is just a vector of values, and it is the single currency for
+A `ValueList` is a growable array of values, and it is the single currency for
 "more than one value" everywhere in the runtime:
 
 - **Array/List/Seq storage** is a `shared_ptr<ValueList>` (`Value::arr`).
@@ -222,9 +222,34 @@ A `ValueList` is just a vector of values, and it is the single currency for
   kind `Array` wrapping a `ValueList`.
 
 Because arguments and list elements are the same type, spreading (`|@a`),
-slurping (`*@rest`), and flattening are all just vector operations. The
+slurping (`*@rest`), and flattening are all just list operations. The
 distinction between a *List* (parenthesized, flattening) and an *Array* is a flag
 (`isList`, `src/Value.h`), not a different container.
+
+### Why it is not a `std::vector`
+
+It was one until 2026-09-02. `RVec` ([src/ValueVec.h](../../src/ValueVec.h))
+implements the `std::vector` subset the tree uses, with `std::vector`'s
+semantics — raw-pointer iterators, growth invalidating everything,
+`push_back(v[0])` legal — and differs in two measured places:
+
+- **It grows in one pass.** `std::vector` reallocating fills a second buffer
+  and then walks the old one again to destroy each source. `RVec` constructs
+  and destroys per element in a single walk, and where the standard library
+  tolerates a bitwise move that walk is a `memcpy` — a `Value` is *trivially
+  relocatable*, and `bitwiseRelocOk()` decides at run time whether this
+  library's `std::string` is (libc++ and MSVC yes; libstdc++ no, because a
+  short string points at its own inline buffer).
+- **Small blocks come off a thread-local free list**, kept per exact capacity
+  for capacities 1 to 4. Both roles of the type meet here: the argument list a
+  call builds is one or two elements and its block was almost its whole cost
+  (32.35 ns → 9.48), while an Array payload is why the lists are per-capacity
+  rather than one rounded-up size class — a million one-element arrays would
+  otherwise hold a million four-element blocks.
+
+That the two uses of one type want opposite things from a block-sizing policy
+is the main thing to know before changing it. `tools/reloc-probe.cpp` prints
+which relocation path is live.
 
 ## Variables, `Env`, and scope
 

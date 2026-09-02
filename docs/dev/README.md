@@ -175,11 +175,21 @@ to look when what you want is not listed here.
 - **[experiments/METHOD-DISPATCH-EXPERIMENT.md](experiments/METHOD-DISPATCH-EXPERIMENT.md)**
   — why the interpreter's `if (m == …)` dispatch chain was **not** replaced with a
   hash map or a switch: the measurements, and the direction that would actually pay.
+- **[experiments/SITTING-2026-09-02.md](experiments/SITTING-2026-09-02.md)** —
+  the sitting that made `ValueList` its own container (one-pass relocating
+  growth, a per-capacity free list for the small blocks, `kPromote` 64 → 23),
+  written around the four things that went wrong: a 2.4% regression that was
+  code layout, a relocatability probe that was wrong for most of the day and
+  cost only speed, a free-list block size that cost 56% more memory, and two
+  agreeing single runs that agreed on a number 12% off.
 - **[experiments/IR-EXPERIMENT.md](experiments/IR-EXPERIMENT.md)** — why the
   tree-walker was **not** replaced with a bytecode/register IR: opcode dispatch
   is worth 0.28 ns per node, the tree-walk fallback costs 11.2 ns per node, and
   the `Env` + `ValueList` a call allocates are ~46% of the whole
   interpreted-vs-compiled gap. Measured before any opcode was written.
+  **Re-measured 2026-09-02**: dispatch still under 1% of a node visit, but the
+  crossing tax that made a partial lowering impossible is now zero, because it
+  was a property of a 376-byte `Value`.
 - **[experiments/IR-BOUNDARY.md](experiments/IR-BOUNDARY.md)** — the phase-I0
   measurements IR-EXPERIMENT.md summarises, at full length: how the crossing cost
   was measured, and the per-node/per-call numbers it produced.

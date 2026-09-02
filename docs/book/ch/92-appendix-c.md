@@ -11,6 +11,7 @@
 | string performance | `Value.h` `CowStr`, `BuiltinsShared.h` | Chapters 9 and 24 |
 | the number tower | `BigInt.cpp`, `IntOps.h`, `Value::rat` | Chapter 11 |
 | scoping, assignment, binding | `Interpreter.cpp` `lvalue`, `evalAssign` | Chapter 12 |
+| how lists and argument lists are stored | `ValueVec.h` `RVec`, `Value.h`'s `ValueList` | Chapter 12 |
 | calls and signatures | `Interpreter.cpp` `callCallableRaw`, `bindParams` | Chapter 14 |
 | `return`, `next`, `last`, `when` | the cooperative registers in `ExecContext` | Chapter 15 |
 | a built-in routine | `Builtins.cpp` `registerBuiltins` | Chapter 16 |
@@ -65,6 +66,15 @@ per distinct value.
 **Do not add a non-`const` `operator[]`, `begin()` or `data()` to `CowStr`.**
 That is exactly the interface that made copy-on-write non-conforming for
 `std::string`.
+
+**Nothing in a `Value` may point at itself.** `ValueList` relocates its buffer
+with a `memcpy`, which is sound only while every member survives having its
+bytes moved without the source being destroyed. A field with an interior
+pointer, a self-registering handle or an intrusive list node breaks it — and
+breaks it silently, by producing wrong data rather than by failing to compile.
+The near-miss is already in the struct: libstdc++'s short `std::string` points
+at its own inline buffer, which is why the path is chosen by a run-time probe.
+Run `tools/reloc-probe.cpp` after touching the struct.
 
 **Add an early exit, never restructure the general path underneath it.** The
 first node specialisation cost the control 5.7% by doing the latter.
@@ -133,6 +143,15 @@ grapheme indices; storage is UTF-8 bytes.
 
 **Handle** — an opaque `RkValue` in the extension ABI. The mechanism by which an
 extension never sees `Value`.
+
+**Trivially relocatable** — a type whose bytes may be moved to a new address
+without the source being destroyed, with the result equivalent to
+move-constructing and then destroying. `Value` is; libstdc++'s short
+`std::string` is not. It is what lets `RVec` grow by `memcpy`.
+
+**Free list** — a chain of released blocks of one size, kept for reuse instead
+of being returned to the allocator. `RVec` keeps one per capacity for the
+small argument-list sizes; the frame pool is the same idea for `Env`.
 
 **Model gap** — a construct the longest-token automaton builder could not model,
 as opposed to one that genuinely ends the declarative prefix. A gap forces a

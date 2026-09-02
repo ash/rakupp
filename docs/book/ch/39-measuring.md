@@ -16,6 +16,27 @@ Stated once, applied everywhere:
 - **keep a control kernel** that the change under test cannot possibly affect.
 - **state the conditions**: machine, architecture, compiler, date.
 
+- **prefer a load-independent metric when the machine is not yours to quiet.**
+  `/usr/bin/time -l` reports **instructions retired** and **cycles elapsed** on
+  macOS 12 and later. Instructions retired does not move when a browser or a
+  build is running alongside, which is what makes a developer box measurable at
+  all — and it is what `perf-guard --check` cannot offer, since it refuses to
+  report under load rather than reporting something misleading.
+
+Read the two counters together, because the pair says more than either:
+
+| reading | meaning |
+|---|---|
+| instructions down | work was removed; the size of the drop is the size of the win |
+| instructions flat, cycles down | the same work done more efficiently — better locality, a bulk `memcpy` instead of a loop |
+| instructions up, wall clock down | suspect code layout, and say so rather than quoting the wall clock |
+
+One addition to the control rule, learned the hard way: the control should be a
+**control binary**, not only a control kernel. Build it from the same tree with
+just the line under test reverted. A rename, a new header, an inlining decision
+that shifts a 30,000-line translation unit — any of these moves code layout by
+itself, and comparing against the last release charges that to the change.
+
 The control is the part people skip and the part that carries the argument.
 Chapter 19's table has a row for a pure method-dispatch loop, containing nothing
 node specialisation can touch:
@@ -46,6 +67,33 @@ which is which is unreliable at exactly that scale.
 
 The rule that follows: **a performance change is an interleaved A/B against
 `perf-guard`, not an opinion.**
+
+`perf-guard` has one honest limitation: it refuses to report on a machine under
+load, by its own detector, which on a developer's daily box means most of the
+time. That refusal is correct — a gate that reports noise is worse than one
+that reports nothing — but it leaves a gap, and the instruction-count A/B above
+is what fills it. The gate still owns the release; the counters own the day-to-day.
+
+## Three kernels, three resolutions
+
+The number that makes the previous section usable is not a ratio at all. It is
+the **spread of a kernel measured against itself**: the same unchanged binary,
+run eight times.
+
+| kernel | spread over eight runs |
+|---|---|
+| `fib` | 6.4093–6.4119 G instructions, ±0.02% |
+| grammar JSON parse | 1.8493–1.8839 G, ±1.9% |
+| `streq` | 4.90–5.00 G, ±2% |
+
+Two orders of magnitude between the tightest and the loosest, on the same
+machine, in the same minute. The mechanism is the parallel runtime: its worker
+threads do variable amounts of work, so the variance lands on kernels that
+allocate and thread and not on tight arithmetic loops. A 1% ratio measured on
+`fib` is a finding. A 1% ratio measured on the grammar parse is nothing at all.
+
+**Measure a kernel's spread on one binary before trusting any ratio from it.**
+The next section is what happens when you do not.
 
 ## The correctness gates
 
@@ -116,7 +164,9 @@ as a finding.
 | the packed-prefix name comparison | 60% of a profile to 8.5% |
 | `strtod` instead of a caught `stod` | removed a C++ throw from the hottest path |
 | node specialisation | removed a `Value` copy and a literal rebuild per evaluation |
-| direct-arity calls | removed the per-call `ValueList` |
+| direct-arity calls | removed the per-call `ValueList` — in compiled code |
+| the small-block free list | removed the same allocation in *interpreted* code: 32.35 ns to 9.48 |
+| one-pass relocating list growth | removed a whole second walk over the buffer |
 | native integer lanes | removed the per-operation `Value` |
 | the key-once sort | removed an asymptotic factor |
 
@@ -129,13 +179,20 @@ as a finding.
   speed-up.
 - **a dispatch table for the method ladder** — would chase 8.5% of a profile, and
   is not a drop-in because the ladder is guarded and order-sensitive.
+- **a flat threaded execution loop** — perl's `run.c` in one line, and the most
+  frequently proposed change to any tree-walker. Measured twice, a month apart:
+  the opcode `switch` is worth 0.32 ns against a node visit costing 46 to 85.
+  Under one per cent. Chapter 41.
 
 The generalisation: **on this codebase, removing an allocation has always paid
 and removing a branch almost never has.** That is a property of a tree-walker
 over a fat value type, and it is worth re-deriving before assuming it holds
-somewhere else.
+somewhere else. The two cleanest witnesses sit at opposite ends of the two
+lists above and were measured within days of each other: the free list is pure
+allocation removal and paid; the threaded loop is pure branch removal and did
+not.
 
-## Three ways the measurement itself was wrong
+## Four ways the measurement itself was wrong
 
 Worth more than the successes.
 
@@ -158,6 +215,22 @@ by a correct observation — that a method 177 comparisons in cost the same as o
 812 in — before a profiler showed the cost was `strlen` on a literal, not the
 ladder's length.
 
+**Two agreeing single runs, agreeing on a wrong number.** A string-representation
+change was published as an 8.9% win on grammar JSON parsing. It is 0.1%. The
+measurement was one run per binary; it was taken twice, on different corpora,
+and both times said 8 to 9 per cent, which felt like confirmation. It was not.
+The grammar parse spreads ±1.9% on an unchanged binary, and the two readings
+had agreed on a value about 12% above the kernel's own floor — an agreement
+between two draws from the same wide distribution, which is exactly what
+independent confirmation is supposed to rule out and does not, when the draws
+share a bias. Best of five put the real figure at 0.1%, and the change's honest
+case turned out to rest on a different kernel entirely.
+
+The rule that came out of it is the previous section: the spread is a property
+of the kernel, it varies by two orders of magnitude across the suite, and it
+has to be measured before any ratio from that kernel is quoted. Repeating a
+measurement is not the same as repeating it enough.
+
 ## Where the remaining time is
 
 For an interpreted method-heavy loop, after everything above:
@@ -169,12 +242,19 @@ For an interpreted method-heavy loop, after everything above:
 | method-name comparison | 8.5% |
 | the dispatch function's own body | 6.1% |
 
-Forty-two per cent in allocation and value churn. The shape of the fix is known —
-pass the invocant and argument list by reference rather than by value, and shrink
-`Value` — and both are being approached carefully rather than quickly, because
-the first trades away an accidental safety property and the second is a
-representation change that the extension ABI was specifically designed to
-survive (Chapter 36).
+Forty-two per cent in allocation and value churn — which is what the profile
+said when this chapter was written, and both halves have since been worked.
+`Value` was shrunk twice, 344 to 208 to 128 (Chapter 40). The argument list was
+attacked not from the direction this paragraph predicted — by-reference passing,
+which trades away an accidental safety property and is still undone — but from
+a third: making the allocation itself nearly free, which needed no aliasing
+audit at all.
+
+That is the more useful lesson to carry out of this chapter. A cost can be
+correctly identified, and the *shape of the fix* can still be wrong. "Pass it
+by reference" and "make the allocation cheap" address the same 31% and have
+nothing else in common: one is a 178-site audit of what may alias, the other is
+sixty lines in one header. Naming a cost is worth more than naming its cure.
 
 ## Honesty as a practice
 

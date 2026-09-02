@@ -273,16 +273,25 @@ roughly three times what Rakudo charges, down from about twenty. The profile of
 | method-name comparison | 8.5% |
 | the dispatch function's own body | 6.1% |
 
-The 42% in allocation and value churn is the remaining target, and it has a
-known shape: both `methodCall` and `methodCallInner` take their invocant and
-argument list **by value**, so every call copies a `Value` — with its eleven
-`shared_ptr` members — and heap-allocates a `ValueList`.
+The 42% in allocation and value churn was the remaining target when this
+profile was taken, and it had a known shape: both `methodCall` and
+`methodCallInner` take their invocant and argument list **by value**, so every
+call copies a `Value` and allocates a `ValueList`.
+
+Two of the three costs in that sentence have since shrunk without the by-value
+signatures changing at all. A `Value` carried eleven `shared_ptr` members then
+and carries two now (Chapter 40), so the copy is a fraction of what it was; and
+the `ValueList` for a short argument list no longer reaches the allocator,
+because small blocks come off a free list (Chapter 12). What is left is the
+copy itself, which is smaller, on a path that is otherwise unchanged.
 
 Switching both to `const&` is mechanically small: eighteen compile errors, each
 either "make a local copy here" or "let this helper take `const&`". It has not
 been done because it trades away the accidental safety that copying provides
 against a callee mutating the container its own invocant lives in. That wants an
-aliasing audit of 178 call sites, not a quick pass.
+aliasing audit of 178 call sites, not a quick pass — and the case for spending
+that audit is weaker now than when it was written, because the cost it would
+recover has been reduced twice by changes that needed no audit at all.
 
 ## Honest limitations
 

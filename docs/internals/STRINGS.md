@@ -37,7 +37,7 @@ Two arms, exactly one live:
 class CowStr {
     std::string s_;                          // short: inline
     std::shared_ptr<const StrBody> p_;       // long: shared, immutable
-    static constexpr size_t kPromote = 64;
+    static constexpr size_t kPromote = 23;
 };
 ```
 
@@ -57,18 +57,36 @@ constructor — two threads copying the same `Value` would race on it. Eager
 promotion means **a `const CowStr` is never written to at all**, which is what
 makes the type safe to share without a lock.
 
-### The threshold is 64
+### The threshold is 23 (it was 64 until 2026-09-02)
 
-Above every mainstream SSO capacity, measured:
+The relevant numbers are the SSO capacities, measured:
 
 | standard library | `sizeof(std::string)` | SSO capacity |
 |---|---:|---:|
 | libc++ (clang) | 24 | 22 |
 | libstdc++ (g++ 14, 16) | 32 | 15 |
 
-So 64 leaves a band where a copy is a couple of words and no allocation
-happens either way, and only promotes when copying is the thing being paid
-for. It is not a tuned number; it is a deliberately safe one.
+The original 64 sat above every mainstream capacity: it left a band where a
+copy was a couple of words and no allocation happened either way, and promoted
+only when copying was clearly the thing being paid for. Deliberately safe
+rather than tuned.
+
+It was also wrong at one end. Between libc++'s 22 and the threshold's 64 sat a
+band where the inline arm had already stopped being free — a 30-byte string is
+a heap `std::string` that mallocs on **every copy**, while a 70-byte one copies
+by refcount — so a 33-byte string cost more to pass around than a 68-byte one,
+for no reason but the constant. The threshold is now libc++'s boundary, and the
+policy with it: promote wherever `std::string` would allocate anyway.
+
+Measured at best of five runs: mid-band strings copied twice **+19.8%**
+instructions, built and read once **+4.9%**, `textsplit` **+3.0%**; grammar
+parsing, `streq` and `strcat` flat because their strings are not in the band.
+One counter-case at **−5.6%**: a mid-band string used as a hash key, which is
+constructed, hashed, copied *out* into the hash's key storage and dropped —
+never reaching the second copy at which promotion starts paying, while paying
+promotion's two allocations up front (`make_shared`'s block, then `StrBody`'s
+own `std::string` buffer). Storing `StrBody`'s text inline would remove that
+loss; it is the same change the 32-byte `Value` design needs.
 
 ### The body caches string properties
 
@@ -160,7 +178,7 @@ with its own lifetime and thread-safety problem — strictly worse than owning
 40 lines.
 
 The threshold difference is the same argument from the other end: `fbstring`
-promotes at 255 because copy avoidance is all it buys. `CowStr` promotes at 64
+promotes at 255 because copy avoidance is all it buys. `CowStr` promotes at 23
 because promotion also buys the cache.
 
 ---
@@ -244,6 +262,6 @@ copying path costs time and nothing else. Two cheap checks.
 - **Scaling, not speed.** Time the operation over inputs of n, 2n, 4n, 8n. ×2
   per doubling is fine; ×4 is the bug this class exists to prevent. This is
   the test that found `findnotcclass` after four other sites had been fixed.
-- **Promotion actually happening.** A string that never crosses 64 bytes is
+- **Promotion actually happening.** A string that never crosses 23 bytes is
   never promoted and never caches anything — which is correct, but means a
   benchmark built from short strings proves nothing about either mechanism.

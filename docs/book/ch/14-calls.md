@@ -2,9 +2,11 @@
 
 Calling something is the most frequent non-trivial act in a Raku program, and
 in a tree-walker it is also one of the most expensive: the floor for a trivial
-call is around forty-six nanoseconds, and only about a quarter of that is
-dispatch. Where the other three quarters go is what shaped the optimizer of
-Chapter 27, and it is easier to see once the mechanism is laid out.
+call was around forty-six nanoseconds when this chapter was first measured, and
+only about a quarter of that was dispatch. Where the other three quarters went
+is what shaped the optimizer of Chapter 27 — and, later, what got most of the
+same win back inside the interpreter. Both are easier to see once the mechanism
+is laid out.
 
 A call happens in three phases: build the argument list, activate the callee,
 bind the parameters. Each has a fast path, and each fast path exists because
@@ -39,7 +41,18 @@ Two things to notice.
 **An argument list is just a `ValueList`.** Named arguments are ordinary `Pair`
 values carrying a `namedArg` flag; the positional/named split happens later, at
 bind time. That is why spreading (`|@a`), slurping (`*@rest`) and flattening are
-all vector operations rather than a separate protocol.
+all list operations rather than a separate protocol.
+
+**And that list is the most frequent one in the tree**, which is why it stopped
+being a `std::vector`. One is built, filled, passed and destroyed on every
+interpreted call, and for the one- or two-element shape almost the whole of its
+cost was the heap block: 32 nanoseconds against a call that takes about 265.
+`ValueList` now takes small blocks off a thread-local free list — allocation is
+a pop, release is a push — and that shape costs 9.5 ns. See *The list
+container* in Chapter 12 for the container itself, including the reason the
+free list is kept per exact capacity rather than rounding every small request
+up to one size class: an argument list and a million-element array want
+opposite things from that policy, and they are the same type.
 
 **Only a *syntactic* pair is a named argument.** `f(k => 1)` and `f(:k(1))` pass
 a named argument; `f($pair)` and `f(3 => 4)` pass a positional one, even though
@@ -199,8 +212,8 @@ std::shared_ptr<Env> closure;
 std::shared_ptr<Env> stateEnv;         // persistent `state` storage
 std::once_flag stateInit;
 BuiltinFn builtin;                     // set ⇒ this is a builtin
-std::vector<Value> candidates;         // multi-dispatch candidates
-std::vector<Value> wrappers;           // .wrap stack, outermost last
+ValueList candidates;                  // multi-dispatch candidates
+ValueList wrappers;                    // .wrap stack, outermost last
 DecidedOnce<signed char> hoistNeed{-1};
 DecidedOnce<signed char> arityShape{-1};
 int arityMaxPos = 0, arityReqPos = 0; bool arityUnbounded = false;
@@ -274,9 +287,21 @@ Measured against the runtime library, 2 million iterations, minimum of six:
 
 The lookup tax is real but modest at 8 to 9 nanoseconds. The important number is
 the **floor**: about 46 nanoseconds for a *trivial* call, nearly all of it the
-`ValueList` — a heap-allocating `std::vector` built per call.
+`ValueList` — at the time, a heap-allocating `std::vector` built per call.
 
-Dispatch was a quarter of the overhead. The argument vector was the rest. That
-finding is what shaped the optimiser in Chapter 27: its first pass gives
-fixed-arity subs direct `Value` parameters and removes the vector entirely,
-which buys more than any lookup cache can.
+Dispatch was a quarter of the overhead. The argument list was the rest. That
+finding shaped two different pieces of work, years apart in the book's ordering
+and months apart in fact.
+
+The first is the optimiser of Chapter 27: its opening pass gives fixed-arity
+subs direct `Value` parameters and removes the list entirely, which buys more
+than any lookup cache can. That only ever helped compiled code.
+
+The second is the free list above, which attacked the same allocation from
+inside the interpreter and took most of it: the one-argument shape from 32.35
+to 9.48 ns, `fib` 8.8% fewer instructions, a two-argument call loop 13%. The
+lesson is not that the optimiser was unnecessary — it removes the list rather
+than making it cheap, and it is still the larger win where it applies. It is
+that a cost identified once can be worth attacking twice, from different
+sides, and that "the allocation is the cost" survived being true for long
+enough to be acted on in two entirely different places.

@@ -104,15 +104,18 @@ for the `@` and `%` sigils**:
 if (v.t == VT::Array) {
     if (v.itemized) { … }             // an itemized array is ONE element
     if (v.ext) return v;              // a lazy seq stays lazy
-    Value r = Value::array(*v.arr);   // *v.arr copies the vector
+    Value r = Value::array(*v.arr);   // *v.arr copies the element list
     r.isList = false; return r;
 }
 ```
 
-`*v.arr` dereferences the pointer and copies the underlying vector, so `@b` gets
-its own storage. Hashes copy the same way. Scalar assignment is a plain struct
-overwrite, so `my $x = @a` stores an `Array` value that *does* still share
-`@a`'s buffer — because an item container is a reference to one thing.
+`*v.arr` dereferences the pointer and copies the underlying `ValueList`, so
+`@b` gets its own storage. That copy is the most visible O(n) event in the
+language, and it is the reason `ValueList` is a container this project owns
+rather than a `std::vector` — see *The list container* below. Hashes copy the
+same way. Scalar assignment is a plain struct overwrite, so `my $x = @a` stores
+an `Array` value that *does* still share `@a`'s buffer — because an item
+container is a reference to one thing.
 
 Two consequences to keep straight:
 
@@ -234,6 +237,72 @@ After that, behaviour follows the tag and two flags:
 
 That pair carries a surprising amount of Raku's list semantics, and most of the
 one-argument-rule subtleties in the built-ins reduce to testing them.
+
+## The list container
+
+`ValueList` is the type behind every Array — `Value::arr` is a
+`shared_ptr<ValueList>` — and it is also the argument list of every call. Until
+2026-09 it was a `typedef` for `std::vector<Value>`. It is now `RVec<Value>`,
+a container this project owns ([src/ValueVec.h](../../../src/ValueVec.h)),
+implementing the `std::vector` subset the tree uses with `std::vector`'s
+semantics: raw-pointer iterators, growth invalidating everything,
+`push_back(v[0])` still legal.
+
+It differs in two places, both of them measured.
+
+**It grows in one pass.** `std::vector` reallocating means filling a second
+buffer element by element and then walking the old buffer *again* to destroy
+each source. `RVec` constructs the new element and destroys the old one in a
+single walk. Over a hundred megabytes of `Value`, one pass instead of two is
+the larger half of this change: `arrayops` retires 30% fewer instructions,
+`listbuild` 26%, `sortnums` 19%.
+
+**Where the standard library permits it, that pass is a `memcpy`.** A `Value`
+is *trivially relocatable* — moving its bytes to a new address and not
+destroying the source is equivalent to move-constructing and then destroying,
+which is exactly what a reallocation does. Nothing in it points at itself:
+`i`/`n` are scalars, `IStr` is an interned pointer, the payload and cold-block
+slots are `shared_ptr` pairs.
+
+Nothing except one member. `CowStr`'s inline `std::string` is relocatable on
+libc++ and MSVC, which compute a short string's data address from `this`, and
+is **not** on libstdc++, which stores `_M_p` aimed at its own inline buffer —
+a bitwise copy there reads the original object's storage and dangles the moment
+it is reused. `bitwiseRelocOk()` asks the library at run time rather than
+trusting a macro, relocating a short string and checking where the copy's
+characters come from, and a library that fails the probe keeps correct
+behaviour and loses only the speedup.
+
+That probe is worth a warning to anyone editing `Value`. Its first version
+asked whether a short string's `data()` lay *inside* the string object — which
+is true everywhere, because that is what the small-buffer optimisation is — so
+it answered "not relocatable" on every platform, the `memcpy` path never ran
+for a whole day of measurement, and nothing failed, because the fallback is
+correct. [tools/reloc-probe.cpp](../../../tools/reloc-probe.cpp) prints which
+path is live, and exists precisely because a correctness-preserving fallback
+can hide a dead fast path indefinitely.
+
+### Small blocks come off a free list
+
+A `ValueList` is not only a list. It is the argument list of every interpreted
+call, and for a one- or two-element list the heap block *is* the cost: 32 ns
+against a call that takes about 265. `RVec` keeps a thread-local free list of
+blocks for capacities 1 through 4, so allocation is a pop and release is a
+push. The one-argument shape drops to 9.5 ns; `fib` retires 8.8% fewer
+instructions, a two-argument call loop 13%.
+
+The lists are kept **per exact capacity**, not per rounded-up size class, and
+that is the whole design decision. One four-element block for every small
+request is simpler and marginally faster on call-shaped work — but a
+`ValueList` is also every Array's payload, and a program holding a million
+one-element arrays then holds a million four-element blocks: 560–663 MB
+against 292–296, paying 22% of its cycles in the extra memory traffic. The two
+users of the type want opposite things from a block-sizing policy, and
+per-capacity lists are what give both of them what they want.
+
+This is Perl 5's arena-and-free-list discipline (`sv.c`) applied to the one
+allocation two separate investigations had already named as the thing to
+remove — see Chapter 40.
 
 ## Shaped arrays and typed containers
 

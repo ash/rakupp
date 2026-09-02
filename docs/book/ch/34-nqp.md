@@ -131,8 +131,15 @@ Value Interpreter::evalNqpOp(NqpOp* n) {
 
 An nqp-heavy program is nqp-heavy in the extreme: a tokenizer written in Raku
 runs about 1.5 million operations on a 278 KB document. Building a fresh
-`ValueList` per operation is a malloc and a free per op, for a vector of one to
+`ValueList` per operation was a malloc and a free per op, for a list of one to
 four values.
+
+(Those are now exactly the sizes `ValueList` keeps on a free list — see
+Chapter 12 — so the same op costs a pop and a push instead. The buffers below
+still pay, because they also save the clear and refill, and because the
+re-entrancy argument that picks the container has nothing to do with
+allocation. But this section was written when the allocator was the whole
+cost, and it no longer is.)
 
 ```cpp
 // src/Interpreter.h — ExecContext

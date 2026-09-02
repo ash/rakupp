@@ -38,10 +38,16 @@ the differences are pure dispatch (ns/call, min of 6):
 Two readings. First, the by-name lookup tax is real but modest (~8–9 ns);
 caching the pointer recovers essentially all of it. Second — and more
 important — **the floor itself is high**: ~46 ns for a *trivial* call, nearly
-all of it the `ValueList` (a heap-allocating `std::vector`) built per call.
-Dispatch was a quarter of the overhead; the argument vector is the rest. That
-is why `-O`'s direct-arity pass (plain `Value` parameters, no `ValueList`)
-exists and why it buys more than any lookup cache can.
+all of it the `ValueList` built per call — at the time, a heap-allocating
+`std::vector`. Dispatch was a quarter of the overhead; the argument list is the
+rest. That is why `-O`'s direct-arity pass (plain `Value` parameters, no
+`ValueList`) exists and why it buys more than any lookup cache can.
+
+Since 2026-09-02 the interpreter takes most of the same cost from the other
+side: `ValueList` is `RVec<Value>` and its small blocks come off a thread-local
+free list, so the one-argument shape costs 9.5 ns rather than 32. `-O`'s pass
+still wins where it applies — removing the list beats making it cheap — but the
+gap it closes is narrower than the table above implies.
 
 Operators are a different story. `applyArith` has an Int/Int and a Num fast
 path at the top of its chain, so hot arithmetic was never badly off:

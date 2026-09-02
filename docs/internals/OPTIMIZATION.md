@@ -32,7 +32,9 @@ rakupp --cpp -O prog.raku             # print the optimized C++ to stdout
 By default the transpiler is faithful but generic: every value is a boxed
 `Value`, operators in **value position** go through the runtime's string-keyed
 dispatcher (`applyArith`), and every user-sub call packs its arguments into a
-`ValueList` (a `std::vector<Value>` — a heap allocation per call). (Three
+`ValueList` (a list built and torn down per call; since 2026-09-02 its block,
+for the short lists a call actually builds, comes off a thread-local free list
+rather than the allocator — see [RUNTIME.md](RUNTIME.md)). (Three
 dispatch cuts apply even without `-O`, because they are plumbing rather than
 speculation: comparisons in **conditions** use the inline `rtLtB`/`rtEqSB`-family
 helpers, builtin calls go through pointers cached once at startup — see
@@ -220,7 +222,7 @@ std::stable_sort(order.begin(), order.end(), [&](size_t x, size_t y) {
 });
 
 // after — a Schwartzian transform: n calls, then compare the keys
-std::vector<Value> keys(items.size());
+ValueList keys(items.size());
 for (size_t i = 0; i < items.size(); i++) keys[i] = callCallable(blk, {items[i]});
 std::stable_sort(order.begin(), order.end(), [&](size_t x, size_t y) {
     return valueCmp(keys[x], keys[y]) < 0;

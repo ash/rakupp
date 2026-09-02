@@ -31,7 +31,7 @@ Two arms, exactly one live:
 class CowStr {
     std::string s_;                        // short: inline
     std::shared_ptr<const StrBody> p_;     // long: shared, immutable
-    static constexpr size_t kPromote = 64;
+    static constexpr size_t kPromote = 23;
 
     void take(std::string x) {
         if (x.size() >= kPromote) {
@@ -61,18 +61,59 @@ Eager promotion means **a `const CowStr` is never written to at all**, which is
 what makes the type safe to share without a lock. That single property is what
 lets everything else here be lock-free.
 
-### The threshold is 64
+### The threshold is 23, and it used to be 64
 
-Above every mainstream small-buffer capacity, measured:
+The relevant numbers are the small-buffer capacities, measured:
 
 | standard library | `sizeof(std::string)` | SSO capacity |
 |---|---:|---:|
 | libc++ (clang) | 24 | 22 |
 | libstdc++ (g++ 14, 16) | 32 | 15 |
 
-So 64 leaves a band in which a copy is a couple of words and no allocation
-happens either way, and only promotes when copying is the thing being paid for.
-It is not a tuned number; it is a deliberately safe one.
+The original threshold was 64, chosen to sit above every mainstream capacity.
+That left a band in which a copy was a couple of words and no allocation
+happened either way, and it promoted only where copying was clearly the thing
+being paid for. It was not a tuned number; it was a deliberately safe one.
+
+It was also, by construction, wrong at one end. Between libc++'s 22 and the
+threshold's 64 sat a band where the inline arm had already stopped being free:
+a 30-byte string is a heap `std::string` that mallocs **on every copy**, while
+a 70-byte one is a shared body that copies by refcount. A 33-byte string cost
+more to pass around than a 68-byte one, for no reason but the constant.
+
+So the threshold moved to 23 — libc++'s boundary, the point where the inline
+representation stops being free — and the policy inverted with it: promote
+wherever `std::string` would allocate anyway, rather than wherever sharing is
+obviously worth it. On libstdc++, whose capacity is 15, the new value leaves a
+16..22 band that is now promoted where it need not be; that is the cost of
+having one constant rather than a per-library one, and it is small.
+
+The honest ledger for the change, measured as instruction counts at best of
+five runs: mid-band strings copied twice **+19.8%**, built and read once
+**+4.9%**, `textsplit` **+3.0%**, and one measured counter-case at **−5.6%**.
+Grammar parsing, string comparison and string appending are all flat, because
+their strings are not in the band. The change is kept because the shapes it
+helps are commoner than the shape it hurts, not because the measurement is
+emphatic — and the counter-case is the next section.
+
+### The counter-case: a mid-band string used as a hash key
+
+A promoted string costs **two** allocations, not one: `make_shared` fuses the
+control block with `StrBody`, but `StrBody::text` heap-allocates its own
+buffer. An unpromoted mid-band string costs the single `std::string` malloc.
+Copies are free afterwards, so promotion pays from roughly the second copy
+onward.
+
+A hash key never gets there. It is built, hashed, and copied *out* into the
+hash's own key storage, and the `Value` is then dropped — one construction,
+one read, no copy that a shared body could make cheap. Two hundred thousand
+mid-band keys measure 5.6% more instructions after the threshold change, and
+that is the whole shape of the trade written in one program.
+
+The fix is not the threshold. It is `StrBody` storing its text inline rather
+than as a `std::string` member, which would collapse promotion to a single
+allocation and remove the loss entirely — the same change the 32-byte `Value`
+design needs, for the same reason.
 
 ### The body caches string properties
 
@@ -164,7 +205,8 @@ owning forty lines.
 
 The threshold difference makes the same argument from the other end.
 `fbstring` promotes at 255 because copy avoidance is all it buys. `CowStr`
-promotes at 64 because promotion also buys the cache.
+promotes at 23 because promotion also buys the cache — an order of magnitude
+earlier, for a type that gets something out of the body besides sharing.
 
 ## What it costs
 
@@ -240,6 +282,8 @@ path costs time and nothing else. Two cheap checks.
 exists to prevent. That is the test which found `findnotcclass` after four
 other sites had already been fixed.
 
-**Confirm promotion is actually happening.** A string that never crosses 64
+**Confirm promotion is actually happening.** A string that never crosses 23
 bytes is never promoted and caches nothing — which is correct, but means a
-benchmark built from short strings proves nothing about either mechanism.
+benchmark built from short strings proves nothing about either mechanism. The
+bar is low enough now that most real text clears it; it was 64, and a good
+deal of plausible-looking test data used to sit under it.

@@ -257,8 +257,14 @@ a segmentation fault.
 ## What this costs, honestly
 
 Re-dispatching every AST node on every execution is inherently slower than
-bytecode or a JIT. The profile of a method-heavy loop, after the fixes in
-Chapters 10 and 11, looks like this:
+bytecode or a JIT — but by how much is a question with an answer, and the
+answer is smaller than the sentence suggests. Counted directly: the dispatch
+`switch` costs **0.32 ns**, and a node visit costs **46 to 85 ns**. The
+re-dispatch is under one per cent of what visiting a node costs. Chapter 41
+has the measurement and what follows from it.
+
+Where the rest goes is the profile of a method-heavy loop, after the fixes in
+Chapters 10 and 11:
 
 | | share |
 |---|---:|
@@ -277,3 +283,11 @@ per-call `ValueList`, the per-operation `Value` box, the per-copy string — and
 not after the dispatch mechanism. The one place the dispatch mechanism itself
 was worth attacking is Chapter 19, and even there the win came from removing
 copies rather than from removing branches.
+
+All three of those allocations have since been attacked, and the sentence
+above should now be read in the past tense: the per-copy string by `CowStr`
+(Chapter 9), the per-operation `Value` by the native lanes (Chapter 27), and
+the per-call `ValueList` twice — removed outright in compiled code by the
+optimiser's first pass, and made nearly free in interpreted code by the block
+free list of Chapter 12. What is left in the 31% is the object and payload
+allocations that a program genuinely asks for.

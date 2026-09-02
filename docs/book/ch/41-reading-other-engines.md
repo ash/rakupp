@@ -42,9 +42,12 @@ keeping:
 ## Nine engines, one line of inheritance each
 
 **Perl 5** contributed the applied playbook of Chapter 40 — pads, result
-slots, the stored-hash table, the head/body diagnosis — and the framing
-sentence the whole shelf keeps confirming: pay per compile, not per use;
-don't carry per value what only some values need.
+slots, the stored-hash table, arenas and free lists, the head/body diagnosis —
+and the framing sentence the whole shelf keeps confirming: pay per compile, not
+per use; don't carry per value what only some values need. Its arena discipline
+was the last item on the list to be applied and produced the largest
+single-shape win in the tree: the argument list a call allocates, 32.35
+nanoseconds down to 9.48.
 
 **PHP 7** is the same family's playbook executed as one deliberate rewrite —
 roughly 2× on real applications with no JIT — and the best-documented proof
@@ -85,8 +88,8 @@ rediscover named arguments by scanning every argument list on every call.
 per-variable capture cells, pointing into the frame while it lives and
 closing over the value when it dies — which is the closure half of the
 container refactor, reached by a third independent road. Its register VM
-paper is filed as the tightest starting spec for a future threaded
-execution loop.
+paper is filed as the tightest starting spec for a threaded execution loop —
+which is now filed rather than queued, for the reason two sections below.
 
 **JavaScriptCore** published the constants everyone else implies: a wrong
 speculation costs three to four orders of magnitude more than a right one
@@ -158,19 +161,65 @@ short form of the convergences the index records:
   heuristics when reads suffered.
 - Resumable control flow forbids a C-stack-recursive runloop — two VMs,
   independently, which is why first-class `gather` resumption waits for
-  the threaded loop rather than arriving before it.
+  the threaded loop rather than arriving before it. That is now the *only*
+  surviving argument for the loop here; the speed one was measured away.
 - Layout before dispatch before compilation machinery. The JITs bolted on
   late moved real workloads least; the interpreters' layout years moved
   them most.
+
+## The one item the shelf recommends and this engine does not take
+
+Perl's `run.c` is the most quotable thing on the shelf:
+
+```c
+while ((PL_op = op = op->op_ppaddr(aTHX))) ;
+```
+
+The whole interpreter, flattened: each op does its work and returns
+`op_next`, a pointer the compiler filled in once. No recursion, no dispatch on
+node kind, one indirect call per op. It is item 3 of the Perl study and the
+change most often proposed for any tree-walker, including by people who have
+read this book's earlier chapters and drawn the obvious conclusion.
+
+It has been measured here twice, a month apart, and the answer both times was
+no. The opcode `switch` alone costs **0.32 ns**. A node visit costs **46 to 85
+ns** — `fib` 46, `asg` 61, `call` 65, `loopsum` 72, `method` 85, counted with a
+`-DRAKUPP_NODE_COUNT` build and divided into wall clock. Flat dispatch is
+between four and seven tenths of one per cent of a node visit. The interpreter
+is not slow because it walks a tree; it is slow because of what it does at each
+node, which is what every batch of Chapter 40 attacked instead.
+
+The second measurement did change one thing, and it is worth recording because
+it inverts an argument this book used to make. A partial lowering — an IR that
+handles what it can and calls back into the tree-walker for the rest — used to
+be impossible, because the callback was expensive: parking an interpreter
+intermediate in addressable storage rather than a non-escaping local cost
+**+11.2 ns per un-lowered node**, which put break-even at around 42% of all
+executed nodes lowered. There is no incremental path through a number like
+that.
+
+That tax is now **−0.02 ns**. It was never really about registers; it was a
+property of a 376-byte `Value` carrying five `std::string`s and eleven
+`shared_ptr`s, and destroying and re-constructing one in memory the optimiser
+cannot reason about. At 128 bytes it has vanished. The break-even fraction went
+from 42% to zero.
+
+So the structural objection is gone and the motive never arrived. If an IR is
+ever built here it will be for the thing that would actually pay — unboxed
+typed registers, a slot known to hold a `long long` for the extent of a loop,
+with a `Value` built only where it escapes — or for resumable control flow,
+which is the bullet above. "Flat instructions are faster than a tree" is not a
+reason, and two measurements a month apart say so.
 
 ## Where it stops, for now
 
 The campaign and the reading programme end at the same line: everything
 cheap and local is banked, and what remains is architecture — the
 head/body endgame coupled to the container refactor, the callsite cache
-programme, the threaded loop, lazy bodies. Each has its design inputs
-parked in a plan document with the relevant studies cited, so the work can
-start from evidence instead of from recollection.
+programme, lazy bodies, and a threaded loop that is now possible and still
+unmotivated. Each has its design inputs parked in a plan document with the
+relevant studies cited, so the work can start from evidence instead of from
+recollection.
 
 The next campaign is not speed at all — it is modules. The shelf will
 still be there when the profiles point back.

@@ -3,8 +3,17 @@
 An optimizer for a language this dynamic has a narrower job than the name
 suggests. It is not looking for cleverness; it is looking for generality the
 program never asked for and is being charged for anyway. Chapter 14 measured a
-call and found the cost sitting in the boxed argument vector rather than in
+call and found the cost sitting in the boxed argument list rather than in
 dispatch, and the three passes here follow from that one finding.
+
+The finding has since been acted on twice. This chapter is the first way:
+compile the list out of existence where the signature allows it. The second
+came later and from inside the interpreter — make the allocation itself nearly
+free, with a free list of small blocks (Chapter 12) — which narrowed the gap
+these passes close without changing what they do. Removing a cost is still
+worth more than cheapening it, and the passes below still measure what they
+always did against the `-O`-off baseline; the honest note is that the baseline
+moved.
 
 `--exe` and its inspection twin `--cpp` accept `-O`. Everything under it is
 **semantics-preserving**: it changes how the compiled program computes, never
@@ -20,7 +29,9 @@ rakupp --cpp -O prog.raku             # print the optimized C++
 
 By default the transpiler is faithful but generic: every value is a boxed
 `Value`, operators in value position go through `applyArith`, and every user-sub
-call packs its arguments into a `ValueList` — a heap allocation per call.
+call packs its arguments into a `ValueList` — which, for the short lists a call
+actually builds, now comes off a free list rather than the allocator, but is
+still a list built and torn down per call.
 
 ```cpp
 // sub fib($n) { $n < 2 ?? $n !! fib($n-1) + fib($n-2) }
@@ -176,7 +187,7 @@ per element**. Raku++ used to call the 1-ary block inside the comparator:
 
 ```cpp
 // after — a Schwartzian transform: n calls, then compare the keys
-std::vector<Value> keys(items.size());
+ValueList keys(items.size());
 for (size_t i = 0; i < items.size(); i++)
     keys[i] = callCallable(blk, {items[i]});
 std::stable_sort(order.begin(), order.end(), [&](size_t x, size_t y) {

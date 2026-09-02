@@ -518,7 +518,7 @@ implementations of both halves agree.
 
 ```cpp
 // src/Pod.h
-std::vector<Value> parsePod(const std::string& src);
+ValueList parsePod(const std::string& src);
 ```
 
 Pod blocks are parsed into the `$=pod` DOM — a list of `Pod::Block` values, each

@@ -9,8 +9,11 @@ on the same program. Two days later the interpreter led Rakudo on all ten
 benchmark kernels, the native binary led `perl` 2.8× on the kernel that started
 it, and `sizeof(Value)` had fallen from 344 bytes to 128. This chapter is the
 story of those two days: four batches of work, each one an application of the
-same two decisions, and each one measured under Chapter 39's rules before it
-was believed.
+same few decisions, and each one measured under Chapter 39's rules before it
+was believed. A fifth batch arrived ten days later, from the same probe and a
+different direction, and it is here too — partly for what it bought, and partly
+because it produced the campaign's cleanest example of a measurement that was
+wrong in a way no test could catch.
 
 Nothing in the campaign is an algorithm. Every batch attacks a *constant
 factor* — the cost per variable read, per hash probe, per value copied, per
@@ -362,6 +365,85 @@ Combined: subcall −19.5%, strpass −19.5%, strscan −12%, loopsum −8%, the
 `my int` while-shape −45% in isolation; a closing slice gave parameters the
 same slot annotations variables have, worth another −4% on fib and subcall.
 
+## Batch five: the list container itself
+
+Ten days later, and from a different direction. The size campaign's probe had
+priced a `Value` copy from every angle; on the way it measured something that
+was not about `sizeof` at all. Building a million-element list spent more time
+in `std::vector`'s reallocation than in the pushes — because a reallocation
+with a non-trivial element type is *two* passes over the buffer, one to
+move-construct into the new storage and one to walk the old storage destroying
+each source.
+
+`ValueList` stopped being a `std::vector`. `RVec<Value>`
+([src/ValueVec.h](../../../src/ValueVec.h)) implements the `std::vector` subset
+the tree uses, with `std::vector`'s semantics, and grows in one pass — and,
+where the standard library tolerates a bitwise move, that pass is a `memcpy`,
+because a `Value` is trivially relocatable. Chapter 12 has the container.
+
+Then the argument list. A `ValueList` is not only every Array's payload; it is
+built, filled, passed and destroyed on every interpreted call, and for the one-
+or two-element shape the heap block was almost the whole cost. Small blocks now
+come off a thread-local free list, kept per exact capacity for capacities one
+to four: allocation is a pop, release is a push, 32.35 ns down to 9.48. That is
+Perl's item 8 — `sv.c`'s arenas and free lists — applied to the one allocation
+two separate investigations had already named.
+
+Measured against the batch's own starting binary, instructions and cycles,
+minimum of five runs: arrayops 1.303/1.201, listbuild 1.259/1.223, sortnums
+1.188/1.201, multimeth 1.139/1.136, a two-argument call loop 1.130/1.088,
+textsplit 1.116/1.111, fib 1.086/1.043, hashfill 1.054/1.051. Nothing below
+parity.
+
+### The probe that was wrong all day
+
+Batch two had its census blind spot and batch three had its falsifier firing.
+This batch's self-correction is the sharpest of the three, because nothing
+failed.
+
+The `memcpy` path is guarded by `bitwiseRelocOk()`, which decides whether the
+standard library's `std::string` survives a bitwise move. Its first version
+asked whether a short string's `data()` pointer lay inside the string object.
+It does — on every implementation, because that is precisely what the
+small-buffer optimisation *is*. So the probe answered "not relocatable"
+everywhere, libc++ included; the `memcpy` path never ran; and every number
+measured that day came from the fallback loop.
+
+No test could have caught it. The fallback is correct — it is what
+`std::vector` does — so the only symptom was a number smaller than it should
+have been, in a project where nobody yet knew what it should have been. It was
+found by asking the binary a question nobody had asked: a five-line program
+printing which path was live.
+
+The right question is whether the object stores a *pointer* to those
+characters. libstdc++ aims `_M_p` at its own `_M_local_buf`; libc++ and MSVC
+compute the address from `this`. The probe now relocates a string and checks
+where the copy's characters come from.
+
+Two things came out of it. The first is a number: turning `memcpy` on added
+`listbuild` 6.1% of cycles, `arrayops` 4.2%, `sortnums` 1.1%, and nothing
+elsewhere — so **most of this batch was never the `memcpy`**, it was the second
+walk. The second is a habit, now a file:
+[tools/reloc-probe.cpp](../../../tools/reloc-probe.cpp) prints which path is
+live, because a correctness-preserving fallback can hide a dead fast path
+indefinitely, and this codebase now has two of them.
+
+### And a size that cost memory
+
+The free list has an obvious form: round every small request up to one
+four-element block, one size class, one list. Simplest code, and marginally
+the faster of the two on call-shaped work.
+
+It also made a program holding a million one-element arrays go from 292–296 MB
+to 560–663, and pay 22% of its cycles in the extra memory traffic. A
+`ValueList` is an argument list *and* an Array payload, and the two uses want
+opposite things from a block-sizing policy. Per-capacity lists give both what
+they want.
+
+Which is batch two's lesson in a new place: a census of what typical programs
+do bounds neither what the language allows nor what a different user of the
+same structure needs.
+
 ## Where it landed
 
 The re-measured standing on 2026-08-22, same machine as every earlier
@@ -406,25 +488,39 @@ And the costs are stated with the wins: startup grew 0.3–0.6 ms — laying
 out a pad is a fixed per-process cost — and long-lived churning hashes
 carry tombstones. Both were prices worth paying; neither is hidden.
 
-And the leftover list is part of the result. The loop floor and the
-per-node `eval` return protocol are untouched — they are the opening
-argument for a threaded execution loop, which is a design document away, not
-a weekend. The 128-byte `Value` still carries its `CowStr` inline; the
-head/body endgame is deliberately coupled to the container refactor. The
-campaign stopped where the next step stopped being a constant factor and
+And the leftover list is part of the result. The 128-byte `Value` still
+carries its `CowStr` inline; the head/body endgame is deliberately coupled to
+the container refactor, one piece of which batch five has now landed.
+
+The loop floor and the per-node `eval` return protocol are also untouched, and
+they used to be described here as the opening argument for a threaded
+execution loop — a design document away, not a weekend. That document was
+written, in the form of a measurement, and the answer is no: the opcode
+`switch` is worth 0.32 ns against a node visit costing 46 to 85 nanoseconds.
+Under one per cent. What *did* change is the objection that had made a partial
+lowering impossible — the escape-analysis tax on parking an intermediate in
+addressable storage, +11.2 ns per un-lowered node when it was first measured
+and −0.02 ns now, because it was a property of a 376-byte `Value` and this
+campaign shrank it. The structural barrier fell; the motive never arrived.
+Chapter 41 carries the numbers.
+
+The campaign stopped where the next step stopped being a constant factor and
 started being an architecture.
 
-## The two decisions
+## The three decisions
 
-Every batch above is one of two decisions, made at a new layer:
+Every batch above is one of three decisions, made at a new layer:
 
 1. **Pay per compile, not per use.** Slot numbers instead of name hashes;
    op classes instead of string cascades; accept classes instead of type
    matching; stored key hashes instead of re-hashed probes.
 2. **Stop carrying per value what only some values need.** The cold block;
    the payload slot; tags as interned handles; the topic written in place.
+3. **Keep the block instead of giving it back.** The frame pool, then the
+   `ValueList` free list — the same decision applied to memory rather than to
+   compilation, and the one Perl's arenas are the canonical instance of.
 
-Perl's speed is mostly these two decisions applied everywhere for thirty
+Perl's speed is mostly these three decisions applied everywhere for thirty
 years. The campaign compressed the applying; the deciding had been done for
 us, and reading it cost two days. What else the other engines had already
 decided — and which of it this codebase had independently decided the same

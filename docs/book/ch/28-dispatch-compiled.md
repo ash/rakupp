@@ -36,9 +36,15 @@ Two readings. The by-name lookup tax is real but modest, and caching the pointer
 recovers essentially all of it.
 
 **The more important reading is that the floor itself is high.** About 46
-nanoseconds for a *trivial* call, nearly all of it the `ValueList` — a
-heap-allocating `std::vector` built per call. Dispatch was a quarter of the
-overhead; the argument vector was the rest.
+nanoseconds for a *trivial* call, nearly all of it the `ValueList` — at the
+time, a heap-allocating `std::vector` built per call. Dispatch was a quarter of
+the overhead; the argument list was the rest.
+
+That floor has since moved twice: `ValueList` stopped being a `std::vector`,
+and its small blocks stopped reaching the allocator (Chapter 12), which took
+the one-argument shape from 32 nanoseconds to 9.5. The passes below still pay —
+they remove the list rather than making it cheap, and removing is worth more
+than cheapening — but the gap they close is narrower than this table implies.
 
 Operators are a different story, because `applyArith` has integer and number
 fast paths at the top of its chain:

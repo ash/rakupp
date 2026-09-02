@@ -41,6 +41,11 @@ static thread_local bool t_isWorker;
 static thread_local Value t_threadSelf;
 ```
 
+(Two more live outside this header and are worth knowing about: the call-frame
+pool, and `RVec`'s free list of small `ValueList` blocks — both per-thread
+caches of released memory rather than per-thread state, so neither needs a
+lock and neither is visible to another thread.)
+
 The comment on the call registers records the scale: as plain members they were
 written by every call on every thread, and were TSan's top report — **2,761
 lines on a program with no sharing in it at all**.
@@ -63,6 +68,40 @@ struct RelaxedLine {
 
 Thread-local storage is not free on every platform, and a diagnostic field does
 not need to be exactly right.
+
+That lesson was learned again, expensively, on a field that *does* need to be
+right. Comparing this tree against the shipped v3.24.0 release found the plain
+assignment loop and the range-sum loop running 1.4 to 2 per cent *slower* than
+the release, and a bisect narrowed it to one line added to the `ExprStmt` arm
+of `exec`:
+
+```cpp
+tctx_.curStmtExpr = e;   // which expression this statement is evaluating
+```
+
+`tctx_` is thread-local, so on macOS that store is a real call to
+`_tlv_get_addr` — the second-heaviest symbol in an interpreter profile — and
+placing it at the top of the arm forces a resolution the rest of the arm would
+otherwise have folded into one. It costs about 34 instructions **per statement
+executed**: an empty loop body is unchanged, and every non-empty body moves by
+the same amount, which is how the cost was pinned to the statement rather than
+to the operation.
+
+The difference from `curLine_` is that this one cannot simply be made
+approximate. Cooperative `next`/`last`/`redo` read `curStmtExpr` to tell a bare
+loop control from one nested inside an expression, so the field has to be
+exact. The fix is to pay for it less often — set it only for statements whose
+expression *can* contain a bare loop control, which is a parse-time property of
+the node — or to hoist the thread-local resolution to the top of `exec`, where
+the function needs it anyway. Neither is done at the time of writing.
+
+The counterweight is worth stating in the same breath, because it stops this
+reading as "thread-locals are bad". The `ValueList` free list of Chapter 12 is
+a *new* `thread_local` on the hottest path in the tree — every interpreted call
+touches it — and it is one of the largest wins in this book. A thread-local
+access costs what it costs; what matters is how much work rides on the access.
+One pointer store per statement is a bad trade. Removing a `malloc` per call is
+a good one.
 
 ## Stage 2: the symbol-table freeze
 

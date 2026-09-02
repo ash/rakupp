@@ -264,8 +264,10 @@ solving the same layering problem the same way.
 | **`Value`** | **392**, on the build these numbers were taken from |
 
 Every `Value` carries every field, live or not. A `ValueList` of integers is
-about fifty times the size of a `vector<int64_t>`. That is the price of
-branch-free field access and trivial copyability, and it is a real price:
+about fifty times the size of a `vector<int64_t>` on the build these numbers
+come from, and sixteen times at the 128 bytes the struct reached later. That is
+the price of branch-free field access and trivial copyability, and it is a real
+price:
 the profile of a method-call-heavy loop puts 31% of the time in heap allocation
 and 11% in `Value` copy and destruction.
 
@@ -281,10 +283,30 @@ Chapter 40's.
 That instability is also the single most important input to the extension ABI
 in Chapter 36, which is why an extension module never sees this struct at all.
 
+The shrinking had one consequence nobody planned for, and it is recorded in
+Chapter 41 rather than here: the cost of parking a `Value` in long-lived,
+addressable storage — the thing that had made a partially lowered bytecode IR
+structurally impossible — is a function of how much struct there is to
+construct and destroy. At 376 bytes it was 11.2 nanoseconds per node. At 128
+it is zero. A representation change removed an architectural objection, which
+is not a connection the plan predicted.
+
 ## Honest limitations
 
 - **Memory per value**, as above. It is the accepted cost of the design, not an
   oversight, but it is the thing to attack first if the design is ever revisited.
+- **Nothing in a `Value` may point at itself.** This one has no compiler
+  enforcement and no test, and breaking it is silent. `ValueList` relocates its
+  buffer with a `memcpy` when the standard library allows it (Chapter 12),
+  which is only sound because moving a `Value`'s bytes to a new address and not
+  destroying the source is equivalent to move-constructing and destroying: true
+  of the scalars, of `IStr`'s interned pointer, and of the `shared_ptr` slots.
+  The near-miss is already in the struct — libstdc++'s short `std::string`
+  stores a pointer to its own inline buffer, which is why the relocation path
+  is decided by a run-time probe rather than assumed. Any future field with an
+  interior pointer, a self-registering handle, or an intrusive list node breaks
+  that path, and it will break it by producing wrong data rather than by
+  failing to compile.
 - **`ext` is untyped.** Nothing but convention stops two subsystems from parking
   incompatible state in it for the same tag.
 - **Reference semantics are emulated.** The identity-token trick covers the
