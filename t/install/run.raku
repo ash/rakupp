@@ -328,6 +328,18 @@ check %qdry<exit> == 0 && %qdry<out>.contains('(already installed)') && %qdry<ou
       'M5: --dry-run -q still prints the plan — it is the product, not narration';
 my %list = installer('--list');
 check %list<out>.contains('Gate::Demo:ver<0.4.2>'), 'install --list shows it';
+# under the identity: the installer, each module's blob, each bin wrapper
+my $demo-block = %list<out>.substr(%list<out>.index('Gate::Demo:ver<0.4.2>'));
+$demo-block = $demo-block.substr(0, $_) with $demo-block.index("\nGate::");
+check $demo-block.contains('installed by: rakupp'),
+      'install --list says rakupp installed it';
+check $demo-block.contains($home.add('.raku/sources').absolute) && $demo-block.contains("Gate::Demo "),
+      'install --list gives the module file its store path';
+check $demo-block.contains('bin/gate-hello') && $demo-block.contains($home.add('.raku/bin/gate-hello').absolute),
+      'install --list names the bin wrapper and its path';
+my %qlist = installer('-q', '--list');
+check %qlist<out>.contains('Gate::Demo:ver<0.4.2>') && !%qlist<out>.contains('installed by'),
+      '-q --list keeps the identity lines and drops the detail';
 
 # ---- M4: the test gate refuses a dist whose own suite fails ----------------
 my %flaky = installer('Gate::Flaky');
@@ -612,6 +624,9 @@ check %unb<exit> == 0, 'M6: an owned dist uninstalls fine';
 installer('--no-test', 'Gate::Flaky');
 # simulate a foreign (zef-installed) dist: erase our provenance for Flaky
 $owned.spurt("\n");
+my %zlist = installer('--list');
+check %zlist<out>.contains('installed by: zef'),
+      '--list reports a dist without our provenance as zef-installed';
 my %notours = installer('--uninstall', 'Gate::Flaky');
 check %notours<exit> != 0 && %notours<err>.contains('not installed by'),
       'M6: a dist without our provenance is refused';

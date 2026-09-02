@@ -49,7 +49,7 @@ always did.
 
 | Mode | What `-q` drops |
 |---|---|
-| `install`, `reinstall`, `uninstall`, `test` | the plan, progress, `already installed:`, `provided by rakupp:`, `done:` — not warnings, refusals, failures, or the `--list`, `--check` and `--dry-run` reports |
+| `install`, `reinstall`, `uninstall`, `test` | the plan, progress, `already installed:`, `provided by rakupp:`, `done:`, and the per-dist detail under `--list`'s identity lines — not warnings, refusals, failures, the identity lines themselves, or the `--check` and `--dry-run` reports |
 | `-c` | `Syntax OK` (the exit code is the verdict) |
 | `--lint` | the summary line; findings stay |
 | `--exe`, `--aot`, `--bundle` | `Compiled …` and the embedded-module list; a module that could *not* be embedded is still reported |
@@ -352,13 +352,31 @@ rakupp test Foo                  # build + run Foo's own suite; installs its
 rakupp uninstall Foo             # remove what THIS installer put there —
                                  # every installed version behind the name
 rakupp reinstall Foo             # uninstall + install fresh, one command
-rakupp install --list            # what is installed in the target store
+rakupp install --list            # what is installed: identity, installer,
+                                 # module files, bin wrappers (-q: identities)
 rakupp install --check           # store integrity report; fixes nothing
 rakupp install --refresh         # refetch the cached ecosystem index(es)
 rakupp install --to=PATH Foo     # another store prefix (default ~/.raku)
 rakupp install -q Foo            # only warnings and failures; nothing on
                                  # success (-q goes with every command here)
 ```
+
+`--list` prints one identity line per installed distribution and, under
+it, who installed the dist — `rakupp`, or `zef` for one this installer did
+not put there — then the store path of every module file it provides and
+the wrapper path of every command it put in `bin/`. Paths are absolute
+(shortened here):
+
+```console
+$ rakupp install --list
+HTTP::Tiny:ver<0.2.6>:auth<zef:jjatria>  (HTTP::Tiny)
+    installed by: rakupp
+    HTTP::Tiny  ~/.raku/sources/B8D9978ECCC705A8781DD91A00AAF3500916C95C
+    bin/rakurl  ~/.raku/bin/rakurl
+```
+
+A blob or wrapper the record names but the disk lacks is flagged beside its
+path; `--check` is the full audit. With `-q` only the identity lines print.
 
 A distribution that ships commands in `bin/` gets a named, executable
 wrapper per script — `~/.raku/bin/s6` for Sparrow6's `s6` — the same
@@ -403,7 +421,8 @@ it at the end.
 With `-q` that re-run prints nothing at all: the plan, the progress lines,
 `already installed:` and `done:` are narration, and narration is what
 `-q` removes ([Quiet mode](#quiet-mode)). Warnings, refusals, failures and
-the `--list`, `--check` and `--dry-run` reports stay.
+the `--check` and `--dry-run` reports stay, as do `--list`'s identity lines
+(only the detail under each goes).
 
 An argument that starts with `.` or `/` is a PATH — zef's own rule,
 adopted verbatim — naming a directory whose `META6.json` is the dist. It

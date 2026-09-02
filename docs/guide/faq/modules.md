@@ -28,7 +28,8 @@ distribution's own test suite before marking it installed, and writes the same
 ```sh
 rakupp install Foo:ver<1.2.3>   # a specific version (installs are additive)
 rakupp install --dry-run Foo    # print the plan, write nothing
-rakupp install --list           # what is installed in the target store
+rakupp install --list           # what is installed: identity, installer,
+                                # module files, bin wrappers (-q: identities)
 rakupp uninstall Foo            # remove what THIS installer put there
 ```
 

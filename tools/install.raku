@@ -7,7 +7,9 @@
 #   rakupp install Foo::Bar              install newest satisfying, plus deps
 #   rakupp install Foo:ver<1.2.3>        a specific version (still additive)
 #   rakupp install --dry-run Foo         the full plan, nothing written
-#   rakupp install --list                what is installed in the home store
+#   rakupp install --list                what is installed in the home store:
+#                                        identity, installer, module files,
+#                                        bin wrappers (-q: identities only)
 #
 # The store it writes is the CURI layout rakupp already READS (and Rakudo and
 # zef share): install is the writer for a reader that already exists. Updates
@@ -282,6 +284,9 @@ sub trace-pointer() {
 # refusals, failures, usage, and the PRODUCTS of --list, --check and
 # --dry-run keep their plain say/note: a quiet run that succeeds prints
 # nothing at all, and one that fails prints exactly what it always did.
+# --list's product is its identity lines; the detail under each (who
+# installed the dist, where its module files are, which commands it put in
+# bin/) is the one report part -q drops — see list-installed.
 # The trace log is the record, not chatter, and is written either way.
 my $QUIET = False;
 sub progress(Str $msg) { note $msg unless $QUIET }
@@ -1256,17 +1261,71 @@ sub do-uninstall(@names, Str $prefix, Bool :$force, Bool :$for-reinstall) {
     $rc
 }
 
+# The dist-ids this tool installed, read once for a whole listing
+# (is-owned re-reads the file per call — right for one uninstall, wrong for
+# eighty dists).
+sub owned-set(Str $prefix) {
+    my $f = owned-file($prefix);
+    my %o;
+    %o{$_} = True for ($f.e ?? $f.lines.grep(*.chars) !! ());
+    %o
+}
+
+# The blob behind one provided module. Both writers record provides as
+# { "Foo": { "lib/Foo.rakumod": { "file": <sha> } } }; the raw META6 shape
+# ({ "Foo": "lib/Foo.rakumod" }) resolves through the files map instead.
+sub provided-blob(%m, Str $mod --> Str) {
+    my $v = (%m<provides> // {}){$mod};
+    return '' without $v;
+    if $v ~~ Associative {
+        for $v.values -> $rec {
+            return ~$rec<file> if $rec ~~ Associative && ($rec<file> // '') ne '';
+        }
+        return '';
+    }
+    ~((%m<files> // {}){~$v} // '')
+}
+
+# One dist per identity line, as always. Under it (not under -q): who
+# installed the dist — `rakupp` if its id is in this tool's owned record,
+# else `zef`, the only other writer of this store in practice — then one
+# line per provided module with the store path of its source blob, and one
+# per bin/ script with the path of its wrapper. Absolute paths, so a line
+# can be pasted into an editor as it stands; a blob or wrapper that should
+# be on disk and is not says so beside its path (--check is the full audit).
 sub list-installed(Str $prefix) {
-    my $dist-dir = $prefix.IO.add('dist');
+    my $p = $prefix.IO;
+    my $dist-dir = $p.add('dist');
     unless $dist-dir.d {
         say "nothing installed in $prefix";
         return;
     }
-    for $dist-dir.dir.sort -> $f {
+    my %owned = owned-set($prefix);
+    for $dist-dir.dir.grep(*.f).sort -> $f {
         my %m = try json-decode($f.slurp);
         next unless %m;
-        my $provides = (%m<provides> // {}).keys.sort.join(', ');
-        say "{%m<name>}:ver<{%m<version> // '?'}>:auth<{%m<auth> // ''}>  ({$provides})";
+        my @mods = (%m<provides> // {}).keys.sort;
+        say "{%m<name>}:ver<{%m<version> // '?'}>:auth<{%m<auth> // ''}>  ({@mods.join(', ')})";
+        # the identity line is the product; the rest is what -q drops
+        next if $QUIET;
+        say "    installed by: {%owned{$f.basename} ?? 'rakupp' !! 'zef'}";
+        my @rows;
+        for @mods -> $mod {
+            my $sha = provided-blob(%m, $mod);
+            if $sha eq '' {
+                @rows.push: $mod => '(no file recorded)';
+                next;
+            }
+            my $blob = $p.add('sources').add($sha);
+            @rows.push: $mod => $blob.absolute ~ ($blob.e ?? '' !! '  (missing)');
+        }
+        for (%m<files> // {}).keys.grep({ .starts-with('bin/') && .chars > 4 && !.substr(4).contains('/') }).sort -> $rel {
+            my $w = $p.add('bin').add($rel.substr(4));
+            @rows.push: $rel => $w.absolute ~ ($w.e ?? '' !! '  (wrapper missing)');
+        }
+        next unless @rows;
+        my $wide = @rows.map(*.key.chars).max;
+        say "    {.key}{' ' x ($wide - .key.chars + 2)}{.value}" for @rows;
     }
 }
 
@@ -1299,7 +1358,7 @@ sub installed-identities(Str $prefix) {
 sub MAIN(
     *@modules,                 #= modules or dists to install (Foo, Foo:ver<1.2+>)
     Bool :$dry-run,            #= resolve and print the plan; write nothing
-    Bool :$list,               #= list what is installed in the target store
+    Bool :$list,               #= list what is installed in the target store (identity, installer, files, bin; -q: identities only)
     Bool :$check,              #= check the store's integrity; fix nothing
     Bool :$uninstall,          #= remove distributions (rakupp uninstall Foo)
     Bool :$reinstall,          #= uninstall then install fresh (rakupp reinstall Foo)
@@ -1390,7 +1449,8 @@ sub MAIN(
                    rakupp reinstall [--no-test] [--force] Module|Path ...
             options:
               --dry-run        resolve and print the plan; write nothing
-              --list           what is installed in the target store
+              --list           what is installed in the target store: identity,
+                               installer, module files, bin wrappers (-q: identities only)
               --check          store integrity report (exit 1 on damage); fixes nothing
               --no-test        skip the per-distribution test suites
               --force          reinstall / uninstall despite refusals
