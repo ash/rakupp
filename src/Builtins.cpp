@@ -573,11 +573,17 @@ static void spawnCapture(const std::vector<std::string>& argv, double timeoutSec
                          const std::vector<std::string>* envKV = nullptr,
                          bool errInherit = false, int outMode = 1,
                          const ChildChunkSink* sink = nullptr,
-                         std::exception_ptr* sinkErr = nullptr) {
+                         std::exception_ptr* sinkErr = nullptr,
+                         int stdinFd = -1) {
     out.clear(); exitCode = -1; timedout = false;
     if (errOut) errOut->clear();
     if (argv.empty()) return;
     SpawnStdio io;
+#if !defined(_WIN32)
+    io.stdinFd = stdinFd; // `:in($handle)` — the child's stdin IS this descriptor
+#else
+    (void)stdinFd;
+#endif
     io.captureOut = outMode == 1;
     io.outToNull  = outMode == 0;
     io.captureErr = errOut != nullptr;
@@ -710,6 +716,75 @@ void spawnWithInput(const std::vector<std::string>& argv, const std::string& inp
     while (waitpid(pid, &status, 0) == -1 && errno == EINTR) {}
     exitCode = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
     if (parked) gil->gilUnpark(true); // reacquire the GIL before touching interpreter state
+#endif
+}
+
+// The child's stdin for a `:in($handle)` adverb. Rakudo hands the child the
+// handle's OWN descriptor, so a child that inspects its stdin sees the plain
+// file — macOS `script` does a tcgetattr on it, `test -f /dev/stdin` holds —
+// and reads the file's bytes. rakupp's file handle carries a path rather than
+// a descriptor, so the path is opened here (from the start: the reader keeps a
+// line cursor, not a byte offset); an in-memory handle — a captured Proc.out
+// or .err, $*ARGFILES — is spooled to an unlinked temp file; a descriptor-
+// backed one (nqp::open's, a socket's) is dup'd. Returns the descriptor the
+// child dup2s onto 0 — the caller closes it after the spawn — or -1 for
+// `:in($*IN)`, which is inherit. `resolved` says whether the value was a
+// usable handle at all; anything else keeps its old meaning (a Bool).
+// Before this, `run` read ANY `:in` value as the Bool that selects the
+// deferred piped mode and `shell` ignored `:in` outright, so the child got OUR
+// stdin: Roast's Test::Util run-with-tty passes a file handle precisely so that
+// `script` sees a plain fd, and under a harness whose stdin is a pipe or a
+// socket S32-io/out-buffering.t's "prompt does not hang" either lost its
+// input or died in tcgetattr — a flap in every Roast sweep.
+static int stdinFdForHandle(const Value& h, bool& resolved) {
+    resolved = false;
+#if defined(_WIN32)
+    (void)h;
+    return -1;
+#else
+    if (h.t != VT::Hash || !h.hash()) return -1;
+    const auto& fh = *h.hash();
+    auto field = [&](const char* k) -> const Value* {
+        auto it = fh.find(k); return it != fh.end() ? &it->second : nullptr;
+    };
+    if (h.hashKind == "FileHandle") {
+        if (const Value* std_ = field("std")) { resolved = std_->toStr() == "in"; return -1; }
+        if (const Value* path = field("path")) {
+            if (path->toStr().empty()) return -1;
+            int fd = ::open(path->toStr().c_str(), O_RDONLY);
+            if (fd < 0) return -1;
+            resolved = true;
+            return fd;
+        }
+        if (const Value* buf = field("buffer")) {
+            const char* td = std::getenv("TMPDIR");
+            std::string tmpl = td && *td ? td : "/tmp";
+            if (tmpl.back() != '/') tmpl += '/';
+            tmpl += "rakupp-stdin-XXXXXX";
+            std::vector<char> name(tmpl.begin(), tmpl.end()); name.push_back('\0');
+            int fd = ::mkstemp(name.data());
+            if (fd < 0) return -1;
+            ::unlink(name.data());
+            const std::string content = buf->toStr();
+            size_t off = 0;
+            while (off < content.size()) {
+                ssize_t n = ::write(fd, content.data() + off, content.size() - off);
+                if (n <= 0) break;
+                off += (size_t)n;
+            }
+            ::lseek(fd, 0, SEEK_SET);
+            resolved = true;
+            return fd;
+        }
+        return -1;
+    }
+    if (const Value* fdv = field("fd")) {
+        int fd = ::dup((int)fdv->toInt());
+        if (fd < 0) return -1;
+        resolved = true;
+        return fd;
+    }
+    return -1;
 #endif
 }
 
@@ -9475,6 +9550,7 @@ void Interpreter::registerBuiltins() {
     B["run"] = [](Interpreter& I, ValueList& a) -> Value {
         std::vector<std::string> argv; bool wantOut = false, wantIn = false, wantErr = false;
         int outMode = -1, errMode = -1; // -1 unspecified (inherit/echo), 0 :!x (discard), 1 :x (capture)
+        int inFd = -1; bool haveInHandle = false; // `:in($handle)`: the child's stdin itself
         std::vector<std::string> envKV; bool haveEnv = false; std::string cwd;
         double timeoutSec = 0;
         // `:out($fh)` / `:err($fh)` — not a flag but a SINK: Rakudo sends the
@@ -9496,7 +9572,14 @@ void Interpreter::registerBuiltins() {
                                     if (asSink(v.pairVal())) { outSink = *v.pairVal(); haveOutSink = true; } }
                 else if (v.s == "err") { wantErr = v.pairVal() ? v.pairVal()->truthy() : true; errMode = wantErr ? 1 : 0;
                                     if (asSink(v.pairVal())) { errSink = *v.pairVal(); haveErrSink = true; } }
-                else if (v.s == "in") wantIn = v.pairVal() ? v.pairVal()->truthy() : true;
+                else if (v.s == "in") {
+                    // a HANDLE is the child's stdin (stdinFdForHandle); a Bool
+                    // keeps the deferred piped mode below
+                    bool resolved = false;
+                    int fd = v.pairVal() ? stdinFdForHandle(*v.pairVal(), resolved) : -1;
+                    if (resolved) { inFd = fd; haveInHandle = true; }
+                    else wantIn = v.pairVal() ? v.pairVal()->truthy() : true;
+                }
                 // :timeout(N) — a rakupp extension (Rakudo's run has no such
                 // adverb): SIGKILL the child's process group after N seconds.
                 // Advertised in this builtin's comment since the initial
@@ -9520,7 +9603,7 @@ void Interpreter::registerBuiltins() {
         Value p = Value::makeHash(); p.hashKind = "Proc"; // standard Proc object
         (*p.hash())["argv"] = av; // for .command
         I.syncEnvToProcess(); // child inherits any %*ENV changes the program made
-        if (wantIn) {
+        if (wantIn && !haveInHandle) {
             // Defer spawning: the process runs when its stdin is written via
             // `.in.spurt(...)`, so we can feed input and capture output together.
             (*p.hash())["deferred"] = Value::boolean(true);
@@ -9541,7 +9624,10 @@ void Interpreter::registerBuiltins() {
         // finished (issue #51: a runner relaying a build's progress).
         int outSpawn = (outMode == -1 && !haveOutSink) ? -1 : (outMode == 0 ? 0 : 1);
         spawnCapture(argv, timeoutSec, out, code, timedout, &I, errMode != -1 ? &err : nullptr, cwd, &childPid,
-                     haveEnv ? &envKV : nullptr, errMode == -1, outSpawn);
+                     haveEnv ? &envKV : nullptr, errMode == -1, outSpawn, nullptr, nullptr, inFd);
+#if !defined(_WIN32)
+        if (inFd >= 0) ::close(inFd); // the child holds its own copy
+#endif
         // Deliver a redirected stream to its handle. The child has already
         // finished, so this is a copy rather than a live redirection — the
         // handle sees the whole stream at once, in order, which is what a
@@ -9567,10 +9653,12 @@ void Interpreter::registerBuiltins() {
     B["shell"] = [](Interpreter& I, ValueList& a) -> Value {
         std::string cmd; bool wantOut = false, wantErr = false;
         int outMode = -1, errMode = -1; // -1 unspecified, 0 :!x discard, 1 :x capture
+        int inFd = -1; // `:in($handle)`: the child's stdin itself (a Bool `:in` is not a shell() mode)
         for (auto& v : flattenArgs(a)) {
             if (v.t == VT::Pair) {
                 if (v.s == "out") { wantOut = v.pairVal() ? v.pairVal()->truthy() : true; outMode = wantOut ? 1 : 0; }
                 else if (v.s == "err") { wantErr = v.pairVal() ? v.pairVal()->truthy() : true; errMode = wantErr ? 1 : 0; }
+                else if (v.s == "in" && v.pairVal()) { bool resolved = false; int fd = stdinFdForHandle(*v.pairVal(), resolved); if (resolved) inFd = fd; }
             }
             else if (cmd.empty()) cmd = v.toStr();
         }
@@ -9587,7 +9675,10 @@ void Interpreter::registerBuiltins() {
         std::string out, err; int code = 0; bool timedout = false;
         long long childPid = 0;
         spawnCapture(argv, 0, out, code, timedout, &I, errMode != -1 ? &err : nullptr, "", &childPid,
-                     nullptr, errMode == -1, outMode);  // no `:out`: the child writes to ours, live
+                     nullptr, errMode == -1, outMode, nullptr, nullptr, inFd);  // no `:out`: the child writes to ours, live
+#if !defined(_WIN32)
+        if (inFd >= 0) ::close(inFd);
+#endif
         Value p = Value::makeHash(); p.hashKind = "Proc";
         Value av = Value::array(); av.isList = true; av.arr()->push_back(Value::str(cmd));
         (*p.hash())["argv"] = av; // .command — shell reports the command string
