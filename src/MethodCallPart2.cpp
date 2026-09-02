@@ -3988,6 +3988,18 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         return Value::str(out + "...).lazy.Seq");
     }
     if (m == "raku") return Value::str(rakuRepr(inv));
+    // A Match is Iterable over its POSITIONAL CAPTURES, so its list coercions answer
+    // `$0, $1, …` — not the Match itself. `$/.Slip` slips those captures into the
+    // surrounding list, which is how Sparrow6 reads a check's captures
+    // (`$matched>>.Slip>>.Str`); the generic `.Slip` below sees a non-Array and
+    // handed back the Match, so the whole match came out where `$0` belonged.
+    if (inv.t == VT::Match && (m == "Slip" || m == "List")) {
+        Value o = Value::array(); o.isList = true;
+        if (inv.arr()) *o.arr() = *inv.arr();
+        if (m == "Slip") o.s = "Slip";
+        return o;
+    }
+    if (inv.t == VT::Match && m == "Capture") return inv; // a Match already IS one
     if (m == "Slip") { // a Slip flattens into any list-building context (from-list, list literals)
         if (inv.t == VT::Array) { Value r = inv; r.isList = true; r.s = "Slip"; return r; }
         if (inv.t == VT::Range) { Value r = Value::array(); *r.arr() = inv.flatten(); r.isList = true; r.s = "Slip"; return r; }

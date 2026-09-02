@@ -225,6 +225,7 @@ Regex::NodePtr Regex::p5Quant(NodePtr atom) {
 // its header-name token that way). Captures are renumbered onto the end of the
 // host's, so `$0` keeps meaning what the host wrote.
 Regex::NodePtr Regex::parseSplice() {
+    if (pat_[pos_ + 1] == 'S') return parseSubSplice(); // the assertion form: a CALL
     size_t span = spliceSpan(pat_, pos_);
     bool p5 = pat_[pos_ + 1] == 'P';
     size_t hdr = pat_.find('\x01', pos_ + 1) + 1;
@@ -264,6 +265,39 @@ Regex::NodePtr Regex::parseSplice() {
         scope(sub.root_.get());
     }
     return std::move(sub.root_);
+}
+
+// `<$var>` / `<alias=$var>` (Regex::subSpliceOf). Unlike a pasted splice this one
+// keeps the callee WHOLE and calls it: the sub-pattern gets its own capture frame,
+// so `<mymatch=$p>` over `A (\S+) A` fills `$<mymatch>[0]`, and the host's own `$0`
+// keeps meaning what the host wrote. Pasting it in instead renumbered the callee's
+// groups onto the host, which is how Sparrow6's `<mymatch=$pattern>` reported the
+// WHOLE match where Rakudo reports the inner capture.
+Regex::NodePtr Regex::parseSubSplice() {
+    size_t span = spliceSpan(pat_, pos_);
+    size_t hdr = pat_.find('\x01', pos_ + 1) + 1;
+    std::string payload = pat_.substr(hdr, pos_ + span - hdr);
+    pos_ += span;
+    bool p5 = !payload.empty() && payload[0] == 'P';
+    if (!payload.empty()) payload.erase(0, 1);
+    size_t sep = payload.find('\x1f');
+    std::string capName = sep == std::string::npos ? std::string() : payload.substr(0, sep);
+    std::string src = sep == std::string::npos ? payload : payload.substr(sep + 1);
+    // The CHARACTER-matching adverbs in force here reach into the callee, as they
+    // do in Rakudo: `m:i/<$lc>/` matches "ABC". The structural ones (`:s`, ratchet)
+    // do not — those belong to the body that wrote them, not to what it calls.
+    std::string flags = p5 ? "5" : "";
+    if (curIcase_) flags += 'i';
+    if (curImark_) flags += 'm';
+    inlineSubs_.push_back(std::make_unique<Regex>(src, flags));
+    const Regex* sub = inlineSubs_.back().get();
+    auto n = std::make_unique<Node>();
+    if (!sub->ok() || !sub->root()) { n->k = K::Nop; return n; }
+    n->k = K::Subrule;
+    n->inlineRx = sub;
+    n->ruleName = capName;              // the key the call records under ("" = no capture)
+    n->ruleCapture = !capName.empty();
+    return n;
 }
 
 Regex::NodePtr Regex::p5Atom() {
@@ -1628,6 +1662,10 @@ Regex::NodePtr Regex::parseAtom() {
                     // <alias=.rule> — the dot only suppresses the RULE-NAME capture;
                     // the alias still captures (Cro::MediaType: `<attribute=.token>`)
                     if (!nm.empty() && nm[0] == '.') { nm = nm.substr(1); sr->aliasDotted = true; }
+                    // <alias=&rule> — the callee is named as a CODE object (a lexical
+                    // `my regex R`). It resolves by the bare name, and only the alias
+                    // captures: `&R` is not a name `$<…>` could ever be asked for.
+                    else if (!nm.empty() && nm[0] == '&') { nm = nm.substr(1); sr->aliasDotted = true; }
                 }
                 // parameterised call <name($x, '')> — peel off the argument list
                 auto lp = nm.find('(');
@@ -2380,6 +2418,9 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
             return (m != n->negate) ? k(pos) : false; // zero-width; negate flips
         }
         case K::Subrule: {
+            // `<$var>` / `<alias=$var>` — an interpolated pattern, compiled with its
+            // own front-end and CALLED here (its captures are its own).
+            if (n->inlineRx) return matchInlineSub(n, st, pos, k);
             // Grammar path: backtrackable — thread `k` through the callee. The name→meta
             // resolution is cached on the node (compiled Regexes live in the matcher's cache,
             // so node and matcher share a lifetime).
@@ -2390,6 +2431,15 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                                             st, pos, k,
                                             /*alsoBareName=*/n->ruleCapture && !n->ruleAlias.empty() && !n->aliasDotted);
             }
+            // `<alias=rule>` OUTSIDE a grammar records under the ALIAS — and, exactly
+            // as in one, also under the rule name: `<w=alpha>` fills `$<w>` and
+            // `$<alpha>` both. The opt-outs `<w=.alpha>` and `<w=&R>` record under
+            // the alias alone. All of them are Rakudo's readings; the plain path used
+            // the RULE name as the only key, so `$<w>` was simply absent and
+            // `<mymatch=&R>` filed its match under the unaskable name `&R`.
+            const std::string& capKey = n->ruleAlias.empty() ? n->ruleName : n->ruleAlias;
+            const bool alsoRuleName = !n->ruleAlias.empty() && !n->aliasDotted &&
+                                      !n->ruleName.empty() && n->ruleName != capKey;
             // `<~~>` — recurse into the pattern this node was written in (the
             // whole regex, or the sub-pattern it was spliced in from). This is
             // how a balanced-bracket matcher is written without naming a rule.
@@ -2409,16 +2459,23 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
             if (!(st.lexNames && st.lexNames->count(n->ruleName))) {
                 long e = builtinRuleMatch(n->ruleName, st.s, pos, len);
                 if (e >= 0) {
-                    if (n->ruleCapture && !n->ruleName.empty()) { // record $<name> for a capturing built-in
-                        const std::string& cn = n->ruleName;
-                        auto saved = st.named.count(cn) ? st.named[cn] : std::pair<long, long>{-1, -1};
-                        bool had = st.named.count(cn);
-                        st.named[cn] = {pos, e};
-                        ParseNode leaf; leaf.name = cn; leaf.from = pos; leaf.to = e;
-                        st.children[cn].push_back(std::move(leaf)); // <alpha>+ collates into a list
+                    if (n->ruleCapture && !capKey.empty()) { // record $<name> for a capturing built-in
+                        const std::string& rn = n->ruleName;
+                        auto saved = st.named.count(capKey) ? st.named[capKey] : std::pair<long, long>{-1, -1};
+                        bool had = st.named.count(capKey);
+                        bool had2 = alsoRuleName && st.named.count(rn);
+                        auto saved2 = had2 ? st.named[rn] : std::pair<long, long>{-1, -1};
+                        st.named[capKey] = {pos, e};
+                        ParseNode leaf; leaf.name = rn; leaf.from = pos; leaf.to = e;
+                        if (alsoRuleName) { st.named[rn] = {pos, e}; st.children[rn].push_back(leaf); }
+                        st.children[capKey].push_back(std::move(leaf)); // <alpha>+ collates into a list
                         if (k(e)) return true;
-                        st.children[cn].pop_back(); if (st.children[cn].empty()) st.children.erase(cn);
-                        if (had) st.named[cn] = saved; else st.named.erase(cn);
+                        st.children[capKey].pop_back(); if (st.children[capKey].empty()) st.children.erase(capKey);
+                        if (had) st.named[capKey] = saved; else st.named.erase(capKey);
+                        if (alsoRuleName) {
+                            st.children[rn].pop_back(); if (st.children[rn].empty()) st.children.erase(rn);
+                            if (had2) st.named[rn] = saved2; else st.named.erase(rn);
+                        }
                         return false;
                     }
                     return k(e);
@@ -2430,12 +2487,14 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
             // pass a parameterised call's args to the resolver, encoded after \x1f
             std::string call = n->ruleArgs.empty() ? n->ruleName : (n->ruleName + "\x1f" + n->ruleArgs);
             if (!(*st.resolver)(call, st.s, pos, sub)) return false;
-            if (n->ruleCapture && !n->ruleName.empty()) {
-                const std::string& cn = n->ruleName;
-                auto savedN = st.named.count(cn) ? st.named[cn] : std::pair<long,long>{-1,-1};
-                bool had = st.named.count(cn);
-                st.named[cn] = {sub.from, sub.to};
-                ParseNode leaf; leaf.name = cn; leaf.from = sub.from; leaf.to = sub.to;
+            if (n->ruleCapture && !capKey.empty()) {
+                const std::string& rn = n->ruleName;
+                auto savedN = st.named.count(capKey) ? st.named[capKey] : std::pair<long,long>{-1,-1};
+                bool had = st.named.count(capKey);
+                bool had2 = alsoRuleName && st.named.count(rn);
+                auto savedN2 = had2 ? st.named[rn] : std::pair<long,long>{-1,-1};
+                st.named[capKey] = {sub.from, sub.to};
+                ParseNode leaf; leaf.name = rn; leaf.from = sub.from; leaf.to = sub.to;
                 for (auto& kv : sub.named) leaf.named[kv.first] = kv.second;
                 leaf.caps = sub.caps;
                 // …and the sub-match TREE. A `my regex` whose body captures through
@@ -2448,10 +2507,15 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                 if (sub.listNames) leaf.listNames = sub.listNames;
                 if (!sub.listCaps.empty())
                     leaf.listCaps = std::make_shared<const std::set<int>>(sub.listCaps);
-                st.children[cn].push_back(std::move(leaf)); // collates repeated <cn> into a list
+                if (alsoRuleName) { st.named[rn] = {sub.from, sub.to}; st.children[rn].push_back(leaf); }
+                st.children[capKey].push_back(std::move(leaf)); // collates repeated calls into a list
                 if (k(sub.to)) return true;
-                st.children[cn].pop_back(); if (st.children[cn].empty()) st.children.erase(cn);
-                if (had) st.named[cn] = savedN; else st.named.erase(cn);
+                st.children[capKey].pop_back(); if (st.children[capKey].empty()) st.children.erase(capKey);
+                if (had) st.named[capKey] = savedN; else st.named.erase(capKey);
+                if (alsoRuleName) {
+                    st.children[rn].pop_back(); if (st.children[rn].empty()) st.children.erase(rn);
+                    if (had2) st.named[rn] = savedN2; else st.named.erase(rn);
+                }
                 return false;
             }
             return k(sub.to);
@@ -3099,6 +3163,43 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
         }
     }
     return false;
+}
+
+// Call an inline sub-pattern (`<$var>` / `<alias=$var>`) as a subrule: match it in
+// a FRESH frame, then — when the assertion is aliased — record that frame as one
+// nested sub-match under the alias before running the caller's continuation. The
+// same shape as GrammarMatcher::matchSubMeta's non-ratchet path, minus the rule
+// table: `k` is threaded through, so the caller can still backtrack into the callee.
+bool Regex::matchInlineSub(const Node* n, MState& st, long pos, const FnRef& k) const {
+    const Regex* re = n->inlineRx;
+    MState sub{st.s, std::vector<std::pair<long, long>>(re->ncaps(), {-1, -1}), {}, {}, st.resolver, st.grammar};
+    sub.hooks = st.hooks; sub.lexNames = st.lexNames; sub.curSym = st.curSym;
+    sub.startPos = pos; sub.probing = st.probing; sub.steps = st.steps;
+    const std::string& capKey = n->ruleName;
+    bool ok = re->matchNode(re->root(), sub, pos, [&](long end) -> bool {
+        if (!n->ruleCapture || capKey.empty()) return k(end);
+        // a `<( … )>` inside the callee trims what the SUB-MATCH reports
+        long cf = sub.capFrom >= 0 ? sub.capFrom : pos, ct = sub.capFrom >= 0 ? sub.capTo : end;
+        ParseNode pn; pn.name = capKey; pn.from = cf; pn.to = ct;
+        pn.caps = sub.caps; pn.named = sub.named;
+        if (!sub.children.empty()) pn.kids = std::make_shared<const ChildMap>(sub.children);
+        pn.listNames = re->listNamesPtr(); pn.listCaps = re->listCapsPtr();
+        if (!sub.capReps.empty())
+            pn.capReps = std::make_shared<const std::map<int, std::vector<std::pair<long, long>>>>(sub.capReps);
+        bool had = st.named.count(capKey);
+        auto saved = had ? st.named[capKey] : std::pair<long, long>{-1, -1};
+        st.named[capKey] = {cf, ct};
+        st.children[capKey].push_back(std::move(pn)); // repeated calls collate into a list
+        if (k(end)) return true;
+        st.children[capKey].pop_back();               // backtrack: drop this occurrence
+        if (st.children[capKey].empty()) st.children.erase(capKey);
+        if (had) st.named[capKey] = saved; else st.named.erase(capKey);
+        return false;
+    });
+    // the step budget is the whole match's, not this frame's — and the caller's
+    // continuation ran INSIDE the callee's match, so take whichever counted further
+    st.steps = std::max(st.steps, sub.steps);
+    return ok;
 }
 
 bool Regex::search(const std::string& subject, long startPos, RxMatch& out) const {

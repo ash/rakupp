@@ -6,9 +6,9 @@
 #   /<$p>/    → the string is a pattern      /$p/    → the string is literal
 #   /<@arr>/  → each element is a pattern    /@arr/  → literal alternation
 #
-# (NOT asserted: captures inside an interpolated pattern. Rakudo does not
-# expose them as $0 of the OUTER regex; rakupp does. Both match the same text,
-# so this is a numbering difference, tracked separately.)
+# (Captures inside an interpolated pattern are asserted in
+# issue54-interpolated-assertion-captures.raku: the assertion form is a CALL,
+# so the value's groups are the sub-match's and never the host's $0.)
 # Contract: exit 0 + last line PASS.
 my @fail;
 

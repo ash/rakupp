@@ -11383,10 +11383,23 @@ Value Interpreter::hyperMethodEach(const Value& inv, const std::string& m, Value
         out.isList = true;
         return out;
     }
+    // A SLIP element splices its mapped result into the surrounding list, where a
+    // plain nested list keeps its shape (`[[1,2],]>>.Str` stays nested). Only the
+    // DESCENDING case slips — a nodal method answers about the node itself, so
+    // `@m>>.Slip` is still a list OF slips. This is what flattens
+    // `$m>>.Slip>>.Str` down to the captures themselves.
+    auto emit = [&](const Value& el) {
+        Value r = each(el);
+        if (descends(el) && el.s == "Slip" && r.t == VT::Array && r.arr()) {
+            for (auto& x : *r.arr()) out.arr()->push_back(x);
+            return;
+        }
+        out.arr()->push_back(std::move(r));
+    };
     if (inv.t == VT::Array && inv.arr())
-        for (auto& el : *inv.arr()) out.arr()->push_back(each(el));
+        for (auto& el : *inv.arr()) emit(el);
     else
-        for (auto& el : inv.flatten()) out.arr()->push_back(each(el));
+        for (auto& el : inv.flatten()) emit(el);
     // …and the answer keeps the invocant's shape: an Array in, an Array out —
     // for the DEEP methods. A nodal one answers a List either way (Rakudo maps
     // the nodes with nodemap, whose result is a Seq): `@a».elems` is `(1, 1)`.
@@ -20515,11 +20528,39 @@ std::string Interpreter::rxInterpArrays(const std::string& pat) {
                 // alternation of LITERALS (issue #15). Same positional rule as
                 // the scalar form.
                 bool inAngle = !out.empty() && out.back() == '<' && j < pat.size() && pat[j] == '>';
+                // `<alias=@arr>` — the aliased assertion, found by the same
+                // leftward scan the scalar `<alias=$var>` does. Without it the
+                // `<alias=` stayed put and the substituted alternation read as an
+                // inline CHARACTER CLASS (`<w=[…]>`), so `<w=@arr>` over
+                // ('A (\S+) A', 'zz') matched the single letter "A".
+                std::string alias;
+                bool aliased = false;
+                if (!inAngle && j < pat.size() && pat[j] == '>' && !out.empty() && out.back() == '=') {
+                    size_t b = out.size() - 1, e = b;
+                    while (e > 0 && (ascii::isalnum((unsigned char)out[e - 1]) ||
+                                     out[e - 1] == '_' || out[e - 1] == '-')) e--;
+                    if (e > 0 && e < b && out[e - 1] == '<') { alias = out.substr(e, b - e); aliased = true; }
+                }
                 std::vector<std::string> els;
                 for (auto& e : *v->arr()) els.push_back(e.toStr());
                 std::stable_sort(els.begin(), els.end(),
                     [](const std::string& a, const std::string& b) { return a.size() > b.size(); });
-                if (inAngle) out.pop_back();        // drop the '<'
+                // The ASSERTION forms are CALLS, like their scalar counterparts:
+                // the alternation matches in its own capture frame, so an element's
+                // `(…)` fills the sub-match's `$0` rather than renumbering onto the
+                // host's — and `$<alias>` is that whole frame.
+                if (inAngle || aliased) {
+                    std::string src;
+                    for (size_t k = 0; k < els.size(); k++) {
+                        if (k) src += " | ";        // `|` — see the LTM note below
+                        src += "[ "; src += els[k]; src += " ]";
+                    }
+                    if (aliased) out.erase(out.size() - alias.size() - 2); // drop `<alias=`
+                    else out.pop_back();                                   // drop the '<'
+                    out += Regex::subSpliceOf(alias, src, false);
+                    i = j;                          // skip the '>'
+                    continue;
+                }
                 out += "[ ";
                 for (size_t k = 0; k < els.size(); k++) {
                     // `|`, not `||`: Rakudo interpolates @arr as an LTM
@@ -20530,11 +20571,10 @@ std::string Interpreter::rxInterpArrays(const std::string& pat) {
                     // declarative prefix — `[ arrow || time ] flies` on
                     // "timeflies" pruned the whole branch (exhaustive.t 71).
                     if (k) out += " | ";
-                    if (inAngle) { out += "[ "; out += els[k]; out += " ]"; }
-                    else out += quoteMetaRx(els[k]);
+                    out += quoteMetaRx(els[k]);
                 }
                 out += " ]";
-                i = inAngle ? j : j - 1;            // skip the '>' in the assertion form
+                i = j - 1;
                 continue;
             }
         }
@@ -20596,6 +20636,17 @@ static std::string spliceRegexValue(const std::string& src) {   // …into a RAK
 static std::string spliceRegexValueP5(const std::string& src) { // …into a PERL 5 one
     return isP5Pattern(src) ? "(?:" + src.substr(src.find(' ') + 1) + ")"
                             : Regex::spliceOf(src, false);
+}
+
+// The regex SOURCE behind an interpolated value, for the ASSERTION forms `<$var>`
+// and `<alias=$var>` — which COMPILE the value instead of matching it literally.
+// A Regex hands over its own pattern text (with a `:P5` prefix peeled off; the
+// flavour travels beside the source, not inside it); anything else, its Str.
+static std::string rxSourceOf(const Value& v, bool& p5) {
+    std::string src = v.t == VT::Regex ? v.s.str() : v.toStr();
+    p5 = isP5Pattern(src);
+    if (p5) src = src.substr(src.find(' ') + 1);
+    return src;
 }
 
 // :P5 interpolation — Perl semantics: `$var` splices its value as raw regex
@@ -20716,7 +20767,13 @@ std::string Interpreter::interpRegexPattern(const std::string& in) {
                 bool inAngle = !out.empty() && out.back() == '<' && j < pat.size() && pat[j] == '>';
                 if (v && inAngle) {
                     out.pop_back();                 // drop the '<'
-                    out += "[ " + v->toStr() + " ]"; // group it: alternations stay contained
+                    // A CALL, not a paste: the value matches in its own capture
+                    // frame, so an inner `(…)` stays the callee's `$0` and never
+                    // renumbers onto the host's — Rakudo discards it entirely for
+                    // the unaliased form, since nothing names the sub-match.
+                    bool vp5 = false;
+                    std::string vsrc = rxSourceOf(*v, vp5);
+                    out += Regex::subSpliceOf("", vsrc, vp5);
                     i = j;                          // skip the '>'
                     continue;
                 }
@@ -20735,7 +20792,14 @@ std::string Interpreter::interpRegexPattern(const std::string& in) {
                     if (e > 0 && e < b && out[e - 1] == '<') {
                         std::string alias = out.substr(e, b - e);
                         out.erase(e - 1);           // drop `<alias=`
-                        out += "$<" + alias + ">=[ " + v->toStr() + " ]";
+                        // The aliased call captures the CALLEE's frame under
+                        // `alias`. Rewriting it to `$<alias>=[ … ]` instead only
+                        // grouped: the callee's `(\S+)` became the host's `$0` and
+                        // `$<alias>` reported the whole span, so Sparrow6 read
+                        // "ABCDCBA" where Rakudo reads "BCDCB".
+                        bool vp5 = false;
+                        std::string vsrc = rxSourceOf(*v, vp5);
+                        out += Regex::subSpliceOf(alias, vsrc, vp5);
                         i = j;                      // skip the '>'
                         continue;
                     }

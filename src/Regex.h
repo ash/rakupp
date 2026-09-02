@@ -292,6 +292,10 @@ private:
         std::string ruleAlias;           // capture key for <alias=rule> (else = ruleName)
         bool aliasDotted = false;        // <alias=.rule> — the alias captures, the rule name does NOT
         bool ruleCapture = true;         // <name> captures as $<name>; <.name> does not
+        // `<$var>` / `<alias=$var>`: the interpolated value, compiled with its own
+        // front-end and CALLED here rather than pasted in. Owned by the host regex
+        // (inlineSubs_), so the pointer lives exactly as long as this node does.
+        const Regex* inlineRx = nullptr;
         mutable const GrammarRuleMeta* metaCache = nullptr; // per-node name resolution (grammar path)
         // Look: zero-width assertion — kids[0] is the inner pattern; `negate` = <!…>,
         // `behind` = lookbehind (<?after…>) vs lookahead (<?before…>/<?…>).
@@ -328,6 +332,10 @@ private:
     bool ratchet_ = false; // `token`/`rule`: quantifiers are possessive, matches commit (no backtracking)
     int assertDepth_ = 0; // >0 while parsing an assertion inner (so parseSeq stops at `>`)
     NodePtr root_;
+    // Sub-patterns this regex CALLS rather than contains (`<$var>` assertions).
+    // Kept whole — the call site needs the callee's capture count and list-capture
+    // sets, not just its tree — and owned here so a node's `inlineRx` never dangles.
+    std::vector<std::unique_ptr<Regex>> inlineSubs_;
 
     // :P5/:Perl5 — the pattern is Perl 5 syntax. A second FRONT-END over the same
     // Node AST; the matcher is untouched. Parse-time state mirrors the Raku
@@ -427,10 +435,20 @@ public:
     static std::string spliceOf(const std::string& src, bool p5) {
         return std::string("\x01") + (p5 ? 'P' : 'R') + std::to_string(src.size()) + "\x01" + src;
     }
+    // The ASSERTION spelling of the same thing — `<$var>` and `<alias=$var>`. There
+    // the value is not pasted into the host at all: Rakudo reads the angles as a
+    // CALL, so the sub-pattern matches in its own capture frame and its groups fill
+    // the sub-match's `$0`, never the host's. KIND 'S' carries the capture key the
+    // call records under ("" = <$var>, which captures nothing):
+    //     \x01 S LENGTH \x01 FLAVOUR NAME \x1f SOURCE   FLAVOUR = 'P' | 'R'
+    static std::string subSpliceOf(const std::string& capName, const std::string& src, bool p5) {
+        std::string payload = std::string(1, p5 ? 'P' : 'R') + capName + "\x1f" + src;
+        return std::string("\x01S") + std::to_string(payload.size()) + "\x01" + payload;
+    }
     // Total byte length of the marker starting at `i`, or 0 if there is none.
     static size_t spliceSpan(const std::string& s, size_t i) {
         if (i >= s.size() || s[i] != '\x01' || i + 2 >= s.size()) return 0;
-        if (s[i + 1] != 'P' && s[i + 1] != 'R') return 0;
+        if (s[i + 1] != 'P' && s[i + 1] != 'R' && s[i + 1] != 'S') return 0;
         size_t j = i + 2, n = 0;
         while (j < s.size() && s[j] >= '0' && s[j] <= '9') n = n * 10 + (size_t)(s[j++] - '0');
         if (j == i + 2 || j >= s.size() || s[j] != '\x01') return 0;
@@ -440,6 +458,10 @@ public:
     // `token space { <[\ \t]> }`): returns true if this regex is exactly that.
     bool rootIsSingleChar() const;
     NodePtr parseSplice(); // compile a \x01-marked sub-pattern with its own front-end
+    NodePtr parseSubSplice(); // …and the KIND 'S' form, which is CALLED, not pasted
+    // Match an inline sub-pattern (`<$var>`) as a subrule: fresh capture frame,
+    // recorded under `n->ruleName` when the assertion is aliased.
+    bool matchInlineSub(const Node* n, MState& st, long pos, const FnRef& k) const;
     // If rootIsSingleChar(), test it at `pos`: returns pos+1 on match, -1 on no match.
     long trySingleChar(const std::string& s, long pos) const;
 private:
