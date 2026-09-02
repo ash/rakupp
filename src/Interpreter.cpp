@@ -8264,6 +8264,37 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             // a role used as a parent (`class C does R` where R lands as parent) also counts
             if (ci->parent && ci->parent->isRole) ci->doneRoles.insert(ci->parent->name);
             for (auto& p : ci->extraParents) if (p && p->isRole) ci->doneRoles.insert(p->name);
+            // Carry a composed role's `is also` dispatcher-aliases onto THIS type:
+            // the alias is a second name for the multi group the role provides —
+            // found in our merged methods, or in the role's own when it arrives as
+            // a parent (walked, not copied). A CLASS installs the alias (its own
+            // same-named method wins); a ROLE only remembers it, so `role B does A`
+            // still delivers A's alias to the class that eventually does B. Only a
+            // role that carried `is also` has anything here. (See
+            // ClassInfo::alsoRoleAliases; Method::Also #19's role case.)
+            for (ClassInfo* role : composedRoles) {
+                if (role->alsoRoleAliases.empty()) continue;
+                for (auto& ra : role->alsoRoleAliases) {
+                    // the group may be merged into us, or up the composed chain
+                    // (roles that arrive as parents are walked, not copied) — a
+                    // full lookup finds it either way, incl. `role B does A`.
+                    Value group;
+                    if (Value* g = ci->findMethod(ra.first)) group = *g;
+                    if (!(group.t == VT::Code && group.code() && group.code()->isMultiDispatcher)) {
+                        auto rit = role->methods.find(ra.first);
+                        if (rit != role->methods.end()) group = rit->second;
+                    }
+                    if (!(group.t == VT::Code && group.code() &&
+                          group.code()->isMultiDispatcher)) continue;
+                    for (auto& alias : ra.second) {
+                        if (cd->isRole) {
+                            auto& v = ci->alsoRoleAliases[ra.first];
+                            if (std::find(v.begin(), v.end(), alias) == v.end()) v.push_back(alias);
+                        }
+                        else if (!ci->methods.count(alias)) ci->methods[alias] = group;
+                    }
+                }
+            }
             ci->isGrammar = cd->isGrammar;
             ci->isMonitor = cd->isMonitor;
             // A grammar with no explicit parent derives from the built-in
@@ -8728,6 +8759,28 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                             }
                             for (auto& st : md->traits) {
                                 Value arg = st.arg ? eval(st.arg.get()) : Value::boolean(true);
+                                // Method::Also's ROLE path adds the alias to each
+                                // COMPOSING class, not to the role, and only for a
+                                // dispatcher (proto/multi group — its `is_dispatcher`
+                                // guard). Its AliasableRoleHOW.specialize leans on MOP
+                                // (multi_methods_to_incorporate, instantiate_generic)
+                                // we don't run; but the alias is just a second name
+                                // for the group, so record it and let composition
+                                // carry it into the consumer (Method::Also #19's
+                                // t/01-basic role case).
+                                if (cd->isRole && st.name == "also" && st.arg) {
+                                    const std::string& mkey = std::get<2>(mq);
+                                    auto mit2 = ci->methods.find(mkey);
+                                    if (mit2 != ci->methods.end() && mit2->second.t == VT::Code &&
+                                        mit2->second.code() && mit2->second.code()->isMultiDispatcher) {
+                                        auto rec = [&](const Value& v) {
+                                            std::string a = v.toStr();
+                                            if (!a.empty()) ci->alsoRoleAliases[mkey].push_back(a);
+                                        };
+                                        if (arg.arr()) for (auto& e : *arg.arr()) rec(e);
+                                        else rec(arg);
+                                    }
+                                }
                                 Value p = Value::pair(st.name, arg); p.namedArg = true;
                                 ValueList ta; ta.push_back(target); ta.push_back(p);
                                 try { callCallable(*tm, ta); }

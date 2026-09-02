@@ -997,6 +997,15 @@ struct ClassInfo {
     // the few role methods that declare `state`.
     std::map<const Callable*, std::shared_ptr<Env>> roleStateEnvs;
 
+    // `is also<alias>` (Method::Also) on a DISPATCHER method inside a ROLE: Rakudo
+    // adds the alias not to the role but to every class that composes it, in
+    // AliasableRoleHOW.specialize — and only for a proto/multi group (the
+    // `is_dispatcher` guard), never a plain method. rakupp records (real name →
+    // alias names) here when the role's method trait runs; the composition loop
+    // points each alias at the multi group it copied into the consumer. Empty for
+    // the vast majority of roles, which carry no `is also`.
+    std::map<std::string, std::vector<std::string>> alsoRoleAliases;
+
     // Does this class do a role named `rn` — directly, transitively via a
     // composed role, or through a parent? (A role also "does" itself.)
     bool doesRole(const std::string& rn) const {
