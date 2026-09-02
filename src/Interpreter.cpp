@@ -13677,11 +13677,17 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
         else if (v.t == VT::Hash && (v.hashKind == "Pointer" || v.hashKind == "CArray") && v.hash()->count("addr"))
             putPtr(s, (void*)(intptr_t)(*v.hash())["addr"].toInt()); // live Pointer / CArray handle
         else if (v.t == VT::Code) putPtr(s, ncCallbackPtr(v, p ? p->subSig.get() : nullptr)); // Raku callback → C function pointer
-        else if (pt == "Str" && v.t != VT::Any && v.t != VT::Type) {
+        else if (pt == "Str" && v.t != VT::Any && v.t != VT::Type && v.t != VT::Nil) {
             // Declared `Str`, given a defined non-Str — a `<7 8 9>` word-list
             // element is an Int here, where Rakudo's IntStr allomorph still
             // IS-A Str. Marshal its string form: the old fall-through passed
             // the raw integer as the char*, and the callee's strlen segfaulted.
+            // Nil is NOT that case: it binds to a `Str` parameter as the type
+            // object, and the type object is NULL. `ERR_error_string($e, Nil)`
+            // asks OpenSSL for its static buffer that way; stringifying Nil to
+            // "" handed it a one-byte string to write 256 bytes into, and the
+            // heap corruption surfaced as an intermittent crash in OpenSSL's
+            // own test suite (10-client-ca-file), two runs in three.
             keep.push_back(v.toStr()); putPtr(s, keep.back().c_str());
         }
         else if (fp) putNum(s, v.toNum(), w == 4 ? 4 : 8);

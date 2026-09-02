@@ -1,4 +1,4 @@
-# Regression: four NativeCall defects, all found making OpenSSL's suite pass.
+# Regression: five NativeCall defects, all found making OpenSSL's suite pass.
 #
 # 1. A Blob argument was COPIED into a per-call temporary and the callee got a
 #    pointer to it, so the pointer dangled the moment the call returned. Most C
@@ -24,6 +24,13 @@
 # 4. A native function returning NULL where a repr('CStruct') class is declared
 #    was boxed as an INSTANCE holding address 0 — defined, and true. NULL is the
 #    type object. `unless my $s = SSL_load_client_CA_file(…)` never fired.
+#
+# 5. Nil for a `Str` parameter was marshalled as "" — a one-byte buffer —
+#    where Nil binds as the type object and the type object is NULL.
+#    `ERR_error_string($e, Nil)` asks OpenSSL for its static buffer with that
+#    NULL; given "" instead, OpenSSL wrote a 256-byte message into one byte of
+#    heap, and the corruption surfaced later as a crash in whatever libcrypto
+#    allocated next — OpenSSL's 10-client-ca-file test, two runs in three.
 # Contract: exit 0 + last line PASS.
 use NativeCall;
 my @fail;
@@ -75,5 +82,15 @@ ok('NULL keeps its type', $missing.^name, 'Handle');
 # a non-NULL return is still a live instance
 my $live = getenv-struct($var);
 ok('non-NULL is defined', $live.defined);
+
+# ---- 5. Nil for a Str parameter is NULL -------------------------------------
+# getcwd(NULL, 0) allocates and answers the directory (glibc, musl and the
+# BSDs all do); getcwd(buf, 0) with a non-NULL buf is EINVAL and answers NULL.
+# So the call below succeeds only if Nil went across as NULL — with the old
+# one-byte "" it came back undefined.
+sub getcwd(Str, size_t --> Str) is native { * }
+my $cwd = getcwd(Nil, 0);
+ok('Nil to a Str parameter is NULL', $cwd.defined);
+ok('…and the callee answered through it', $cwd.starts-with('/') || $cwd.contains(':'));
 
 if @fail { note "FAILED:\n" ~ @fail.join("\n"); say 'FAIL' } else { say 'PASS' }
