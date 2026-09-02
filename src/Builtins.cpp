@@ -8673,6 +8673,26 @@ void Interpreter::registerBuiltins() {
         if (d->lastcall) throw ReturnEx{Value::nil()};
         throw ReturnEx{d->next(d->sameArgs)};
     };
+    // `nextcallee` — the next-less-specific candidate as a Callable, WITHOUT
+    // calling it. `my &orig = nextcallee; orig(self, |c)` is how a `.wrap`
+    // wrapper reaches the routine it wrapped (Method::Protected's lock wrapper).
+    B["nextcallee"] = [dispTop, builtinNext](Interpreter& I, ValueList&) -> Value {
+        auto* d = dispTop(I);
+        std::function<Value(ValueList)> nextFn;
+        if (d && !d->lastcall) nextFn = d->next;
+        else if (auto b = builtinNext(I, nullptr)) { Value bv = *b; nextFn = [bv](ValueList) { return bv; }; }
+        else {
+            if (I.redispatchStack_.empty())
+                I.throwTypedV("X::NoDispatcher", {{"redispatcher", Value::str("nextcallee")}},
+                              "nextcallee is not in the dynamic scope of a dispatcher");
+            return Value::nil();
+        }
+        // the returned Callable runs the captured next candidate with WHATEVER
+        // args it is handed (the wrapper passes `self, |c` back through)
+        return Value::closure([nextFn](ValueList& a) -> Value {
+            ValueList copy = a; return nextFn(std::move(copy));
+        });
+    };
     B["samewith"] = [dispTop](Interpreter& I, ValueList& a) -> Value {
         // re-dispatch the CURRENT routine from scratch with new args, returning its result
         auto* d = dispTop(I);

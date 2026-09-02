@@ -4958,7 +4958,7 @@ ExprPtr Parser::parsePrimary() {
             // args and take none of their own, so `"[" ~ callsame ~ "]"` must not read
             // the trailing `~ "]"` (prefix ~) as an argument. (callwith/nextwith/
             // samewith DO take args and are left alone.)
-            if (name == "callsame" || name == "nextsame") listopOk = false;
+            if (name == "callsame" || name == "nextsame" || name == "nextcallee") listopOk = false;
             // `so *` / `not *` — a bare Whatever curries through the boolish prefix
             // (a general `name *` stays multiplication)
             if (!listopOk && cur().kind == Tok::Op && cur().text == "*" &&
