@@ -31,19 +31,31 @@ compatibility.
   The program behaves as if it began with `use Foo;` *on its own first
   line*, so error line numbers do not shift.
 - `--doc` — after the run, render the program's POD to stdout.
-- `-q` / `--quiet` — drop the lines a mode prints *about itself*: `Syntax
-  OK` under `-c`, the `--lint` summary, `Compiled …` from the compile
-  modes, the REPL banner, the installer's progress and `already installed:`
-  lines. What a mode is *for* — a program's output, lint findings, the AST,
-  `install --list` — and every warning and error stay. One option, taken by
-  every mode, before or after its command; where a mode has nothing
-  informational to say it changes nothing. A quiet run that succeeds prints
-  nothing; one that fails prints what it always did.
+- `-q` / `--quiet` — drop what a mode says about itself; see
+  [Quiet](#quiet-mode) below.
 - `-v` / `-V` / `--version`, `-h` / `--help` — from any position.
   `--version` reports the release, the Raku version implemented, and the
   build's own identity: the `git describe` commit it came from, the build
   date, the platform it targets and the compiler that made it. Quote it
   whole in a bug report.
+
+### Quiet mode
+
+`-q` (or `--quiet`) is one option, taken by every mode, before or after
+its command. It drops the lines a mode prints *about itself* — progress,
+success, banners — and never a mode's product, its warnings or its errors.
+A quiet run that succeeds prints nothing; one that fails prints what it
+always did.
+
+| Mode | What `-q` drops |
+|---|---|
+| `install`, `reinstall`, `uninstall`, `test` | the plan, progress, `already installed:`, `provided by rakupp:`, `done:` — not warnings, refusals, failures, or the `--list`, `--check` and `--dry-run` reports |
+| `-c` | `Syntax OK` (the exit code is the verdict) |
+| `--lint` | the summary line; findings stay |
+| `--exe`, `--aot`, `--bundle` | `Compiled …` and the embedded-module list; a module that could *not* be embedded is still reported |
+| the REPL, `--mcp` | the banner |
+| `--jupyter-install`, `--precomp-clean`, `--precomp-*=on\|off`, `--ast-roundtrip` | the success line |
+| everything else | nothing — accepted, no effect |
 
 ## The one-liner family
 
@@ -156,13 +168,15 @@ disabled hooks cost nothing measurable, so there is no separate
 
 | Flag | Meaning |
 |---|---|
-| `-c` | compile-check only, print `Syntax OK` (parse + the undeclared-variable check — BEGIN does not run, unlike Rakudo); `-q` drops the `Syntax OK`, so the exit code is the whole verdict |
+| `-c` | compile-check only, print `Syntax OK` (parse + the undeclared-variable check — BEGIN does not run, unlike Rakudo); `-q` drops the `Syntax OK` |
 | `--lint` | static analysis; `-q` drops the summary (see [LINT.md](LINT.md)) |
 | `--ast` | print the parsed AST (`--dump-ast`, `--target=ast` are aliases) |
 | `--target=parse` | Rakudo-compatible alias of `-c` |
 | `--ast-roundtrip` | prove the AST survives the precomp cache format |
 | `--highlight` | syntax-highlight to HTML (`--ansi` for terminals) |
 | `--precomp-*` | the parsed-module cache (see [CACHING.md](CACHING.md)) |
+| `--ffi-info` | which FFI backend NativeCall will use (see [FFI.md](FFI.md)) |
+| `--exe-info BIN` | a compiled binary's embedded build manifest (version, mode, `--slim` cuts) |
 
 ### Undeclared variables are refused before the program runs
 
@@ -199,8 +213,6 @@ variables, unreachable code and the like, none of which stop a program. It does
 report this check too, as an `error:` line rather than a warning, so that
 analysing a file never says less than running it would — a file `rakupp` refuses
 must not come back from `--lint` as "no issues found".
-| `--ffi-info` | which FFI backend NativeCall will use (see [FFI.md](FFI.md)) |
-| `--exe-info BIN` | a compiled binary's embedded build manifest (version, mode, `--slim` cuts) |
 
 ## Serving
 
@@ -388,12 +400,10 @@ index identity disagrees with its own `META6.json` — a different `:auth`,
 say — cannot be recognized until its archive is open, and the engine refuses
 it at the end.
 
-With `-q` (or `--quiet`; before the command or anywhere after it) that
-re-run prints nothing at all. The plan, the progress lines, `already
-installed:` and `done:` are narration, and narration is what `-q` removes
-— the exit code and the store are the answer. Warnings, refusals, failures
-and the reports of `--list`, `--check` and `--dry-run` are not narration
-and stay; a `--dry-run -q` still prints its plan.
+With `-q` that re-run prints nothing at all: the plan, the progress lines,
+`already installed:` and `done:` are narration, and narration is what
+`-q` removes ([Quiet mode](#quiet-mode)). Warnings, refusals, failures and
+the `--list`, `--check` and `--dry-run` reports stay.
 
 An argument that starts with `.` or `/` is a PATH — zef's own rule,
 adopted verbatim — naming a directory whose `META6.json` is the dist. It
