@@ -2730,10 +2730,13 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     // happens to be an array, and before 6.e there was no way to
                     // say it — every replacement flattened.
                     if (sixE() && args[k].t == VT::Array && args[k].itemized) { repl.push_back(args[k]); continue; }
-                    // an ITEMIZED hash is one replacement element in every language
-                    // version — a `$value` holding a Hash is what Crane splices in,
-                    // and flattening it to pairs scattered the record across the array
-                    if (args[k].t == VT::Hash && args[k].itemized) { repl.push_back(args[k]); continue; }
+                    // a Hash is ONE replacement element in every language version,
+                    // itemized or not: `@a.splice(1, 0, %h)` inserts the whole hash
+                    // (only `|%h` flattens it — and as NAMED args, which splice
+                    // ignores). Flattening a bare `%h` to its pairs scattered the
+                    // record across the array — Crane's positional `add` splices a
+                    // `$value` holding a Hash exactly this way.
+                    if (args[k].t == VT::Hash) { repl.push_back(args[k]); continue; }
                     for (auto& x : toList(args[k])) repl.push_back(x);
                 }
                 inv.arr()->erase(inv.arr()->begin() + start, inv.arr()->begin() + start + count);
