@@ -31,6 +31,14 @@ compatibility.
   The program behaves as if it began with `use Foo;` *on its own first
   line*, so error line numbers do not shift.
 - `--doc` — after the run, render the program's POD to stdout.
+- `-q` / `--quiet` — drop the lines a mode prints *about itself*: `Syntax
+  OK` under `-c`, the `--lint` summary, `Compiled …` from the compile
+  modes, the REPL banner, the installer's progress and `already installed:`
+  lines. What a mode is *for* — a program's output, lint findings, the AST,
+  `install --list` — and every warning and error stay. One option, taken by
+  every mode, before or after its command; where a mode has nothing
+  informational to say it changes nothing. A quiet run that succeeds prints
+  nothing; one that fails prints what it always did.
 - `-v` / `-V` / `--version`, `-h` / `--help` — from any position.
   `--version` reports the release, the Raku version implemented, and the
   build's own identity: the `git describe` commit it came from, the build
@@ -148,7 +156,7 @@ disabled hooks cost nothing measurable, so there is no separate
 
 | Flag | Meaning |
 |---|---|
-| `-c` | compile-check only, print `Syntax OK` (parse + the undeclared-variable check — BEGIN does not run, unlike Rakudo) |
+| `-c` | compile-check only, print `Syntax OK` (parse + the undeclared-variable check — BEGIN does not run, unlike Rakudo); `-q` drops the `Syntax OK`, so the exit code is the whole verdict |
 | `--lint` | static analysis; `-q` drops the summary (see [LINT.md](LINT.md)) |
 | `--ast` | print the parsed AST (`--dump-ast`, `--target=ast` are aliases) |
 | `--target=parse` | Rakudo-compatible alias of `-c` |
@@ -216,7 +224,9 @@ itself. The whole story is [JUPYTER.md](JUPYTER.md).
 `--bundle`, `--aot` and `--exe` produce standalone binaries — see
 [COMPILERS.md](COMPILERS.md) and [NATIVE.md](NATIVE.md). Their flags
 (`-o OUT`, `-O[level]`, `-I`, `--slim[=SPEC]`) compose in any order with the
-mode, before or after the source file.
+mode, before or after the source file. `-q` drops the `Compiled …` line and
+the list of embedded modules; a module that could *not* be embedded is still
+reported, because the binary will need the disk for it.
 
 ### `--slim` — how much of itself a compiled binary keeps
 
@@ -334,6 +344,8 @@ rakupp install --list            # what is installed in the target store
 rakupp install --check           # store integrity report; fixes nothing
 rakupp install --refresh         # refetch the cached ecosystem index(es)
 rakupp install --to=PATH Foo     # another store prefix (default ~/.raku)
+rakupp install -q Foo            # only warnings and failures; nothing on
+                                 # success (-q goes with every command here)
 ```
 
 A distribution that ships commands in `bin/` gets a named, executable
@@ -375,6 +387,13 @@ you mean it anyway. One case still pays full price: a distribution whose
 index identity disagrees with its own `META6.json` — a different `:auth`,
 say — cannot be recognized until its archive is open, and the engine refuses
 it at the end.
+
+With `-q` (or `--quiet`; before the command or anywhere after it) that
+re-run prints nothing at all. The plan, the progress lines, `already
+installed:` and `done:` are narration, and narration is what `-q` removes
+— the exit code and the store are the answer. Warnings, refusals, failures
+and the reports of `--list`, `--check` and `--dry-run` are not narration
+and stay; a `--dry-run -q` still prints its plan.
 
 An argument that starts with `.` or `/` is a PATH — zef's own rule,
 adopted verbatim — naming a directory whose `META6.json` is the dist. It

@@ -1297,9 +1297,11 @@ int installKernelspec(const InstallOptions& opt) {
     out << js;
     out.close();
 
-    std::cout << "wrote " << file.string() << "\n";
-    std::cout << "run a notebook with it:  jupyter console --kernel " << opt.name << "\n";
-    std::cout << "                         jupyter lab      (pick \"" << opt.displayName << "\")\n";
+    if (!opt.quiet) {
+        std::cout << "wrote " << file.string() << "\n";
+        std::cout << "run a notebook with it:  jupyter console --kernel " << opt.name << "\n";
+        std::cout << "                         jupyter lab      (pick \"" << opt.displayName << "\")\n";
+    }
     return 0;
 }
 

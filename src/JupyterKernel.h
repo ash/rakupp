@@ -27,10 +27,12 @@ struct InstallOptions {
     std::string prefix;       // --prefix=DIR: DIR/share/jupyter/… instead of the user dir
     std::string name = "raku";        // the kernelspec directory name
     std::string displayName = "Raku++";
+    bool quiet = false;               // -q: write it, say nothing (errors still speak)
 };
 
 // Writes a kernelspec so `jupyter lab` / `jupyter console --kernel raku` can
-// find this binary. Prints the path it wrote. Returns the process exit code.
+// find this binary. Prints the path it wrote (unless quiet). Returns the
+// process exit code.
 int installKernelspec(const InstallOptions& opt);
 
 } // namespace rakupp::jupyter

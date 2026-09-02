@@ -13,7 +13,10 @@ namespace rakupp {
 //
 // Lives in the `rakupp` executable rather than the runtime library, so nothing
 // here is linked into the binaries `--exe` produces.
-int rakuppRepl(const std::string& exePath, const std::vector<std::string>& libPaths);
+// `quiet` (-q) skips the banner — python's -q, for a session that starts at
+// the prompt.
+int rakuppRepl(const std::string& exePath, const std::vector<std::string>& libPaths,
+               bool quiet = false);
 
 // Is stdin a terminal? This is the whole of the REPL-vs-program decision, so it
 // lives next to the REPL rather than behind another platform #ifdef in main().

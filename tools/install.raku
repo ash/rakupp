@@ -273,6 +273,20 @@ sub trace-pointer() {
         if $TRACE-PATH;
 }
 
+# ---- quiet ------------------------------------------------------------------
+# -q / --quiet (issue #50, the same option every rakupp mode takes). The lines
+# that only NARRATE — an index or archive being fetched, a hook building, a
+# suite running, a dist installed, a plan entry the store already holds,
+# `done:` — go through progress() (stderr, where `note` had them) or inform()
+# (stdout, where `say` had them), and both fall silent under -q. Warnings,
+# refusals, failures, usage, and the PRODUCTS of --list, --check and
+# --dry-run keep their plain say/note: a quiet run that succeeds prints
+# nothing at all, and one that fails prints exactly what it always did.
+# The trace log is the record, not chatter, and is written either way.
+my $QUIET = False;
+sub progress(Str $msg) { note $msg unless $QUIET }
+sub inform(Str $msg)   { say  $msg unless $QUIET }
+
 # The wrappers the engine writes carry a `raku` shebang (Rakudo's own
 # template, so they run under either engine) — whether that name resolves on
 # THIS machine decides whether a freshly installed command runs at all.
@@ -321,7 +335,7 @@ sub ensure-raku-name(Str $prefix) {
     # file stays runnable under Rakudo either way
     my $p = try run 'ln', '-s', $target, $link.Str, :out, :err;
     if $p && $p.exitcode == 0 && $link.e {
-        note "linked: {$link} -> $target (no `raku` was on PATH, and the bin wrappers' shebang needs one)";
+        progress("linked: {$link} -> $target (no `raku` was on PATH, and the bin wrappers' shebang needs one)");
         trace("env: linked {$link} -> $target");
     }
     else {
@@ -408,7 +422,7 @@ sub load-index(Bool $refresh) {
         trace("index: cache hit ({$cache}, age {((now.to-posix[0] - $cache.modified.to-posix[0]) / 60).Int} min)");
         return json-decode($cache.slurp);
     }
-    note "fetching ecosystem index: $url";
+    progress("fetching ecosystem index: $url");
     trace("index: fetching $url");
     my $text = fetch-text($url);
     my $idx = json-decode($text);    # parse BEFORE caching: a bad fetch must not poison the cache
@@ -444,7 +458,7 @@ sub rea-index() {
         @REA = json-decode($cache.slurp).list;
         return @REA;
     }
-    note "fetching the REA archive index: $url";
+    progress("fetching the REA archive index: $url");
     trace("rea-index: fetching $url");
     my $text = fetch-text($url);
     my $idx = json-decode($text);    # parse BEFORE caching — same rule as the zef index
@@ -517,7 +531,7 @@ sub resolve(@index, @wants, %notes, Str :$prefix = '') {
         # predates the author's cpan→zef migration and exists only in REA.
         if !@c {
             @c = candidates(rea-index(), %want);
-            note "note: {%want<name>} — not in the zef index, resolved from the REA archive"
+            progress("note: {%want<name>} — not in the zef index, resolved from the REA archive")
                 if @c;
         }
         my $pin = %want<name>
@@ -533,8 +547,8 @@ sub resolve(@index, @wants, %notes, Str :$prefix = '') {
             my @have = candidates(@installed, %want);
             if @have {
                 my %h = @have[0];
-                note "note: $pin — not in the index; the installed "
-                   ~ "{%h<name>}:ver<{%h<version>}>:auth<{%h<auth>}> satisfies it";
+                progress("note: $pin — not in the index; the installed "
+                       ~ "{%h<name>}:ver<{%h<version>}>:auth<{%h<auth>}> satisfies it");
                 %planned{%h<name>} = True;
                 %planned{$_} = True for (%h<provides> // {}).keys;
                 next;
@@ -549,18 +563,18 @@ sub resolve(@index, @wants, %notes, Str :$prefix = '') {
             my %no-auth = name => %want<name>, ver => %want<ver>, auth => '', from => %want<from>;
             @c = candidates(@index, %no-auth);
             @c = candidates(rea-index(), %no-auth) unless @c;
-            note "note: $pin is not in the index — using {@c[0]<dist> // @c[0]<name>} (the pin may predate an ecosystem migration)"
+            progress("note: $pin is not in the index — using {@c[0]<dist> // @c[0]<name>} (the pin may predate an ecosystem migration)")
                 if @c;
         }
         if !@c && %want<ver> ne '' && !$floor {
             my %bare = name => %want<name>, ver => '', auth => '', from => %want<from>;
             @c = candidates(@index, %bare);
             if @c {
-                note "note: $pin is not in the index — using {@c[0]<dist> // @c[0]<name>} (the pin may predate an ecosystem migration)";
+                progress("note: $pin is not in the index — using {@c[0]<dist> // @c[0]<name>} (the pin may predate an ecosystem migration)");
             }
             else {
                 @c = candidates(rea-index(), %bare);
-                note "note: $pin matches nothing — using {@c[0]<dist> // @c[0]<name>} from the REA archive"
+                progress("note: $pin matches nothing — using {@c[0]<dist> // @c[0]<name>} from the REA archive")
                     if @c;
             }
         }
@@ -744,7 +758,7 @@ sub run-build-hook(%e, $root, Str $prefix --> Bool) {
             trace("BUILD FAILED: %e<name> — builder name '$builder' is not a module name");
             return False;
         }
-        note "building %e<name>: builder $builder";
+        progress("building %e<name>: builder $builder");
         trace("build: %e<name> via builder $builder");
         my $prog = vm-toolchain-shim() ~ q:to/END/.subst('BUILDER', $builder, :g);
             use BUILDER;
@@ -772,7 +786,7 @@ sub run-build-hook(%e, $root, Str $prefix --> Bool) {
         trace("build: no hook");
         return True;
     }
-    note "building %e<name>: {$hook.basename}";
+    progress("building %e<name>: {$hook.basename}");
     trace("build: %e<name> via {$hook.basename}");
     my $p = run $*EXECUTABLE.absolute, '-I', "inst#$prefix", '-I', $root.IO.Str, '-e',
                 vm-toolchain-shim()
@@ -798,7 +812,7 @@ sub run-dist-tests(%e, $root, Str $prefix) {
         trace("tests: none shipped");
         return True;
     }
-    note "testing %e<name>: {@tests.elems} file{@tests.elems == 1 ?? '' !! 's'}";
+    progress("testing %e<name>: {@tests.elems} file{@tests.elems == 1 ?? '' !! 's'}");
     trace("tests: {@tests.elems} file{@tests.elems == 1 ?? '' !! 's'}");
     for @tests -> $t {
         # `-I inst#<prefix>`: the suite must see the dependencies this plan
@@ -854,7 +868,7 @@ sub install-one(%e, Str $prefix, Bool :$no-test, Bool :$force, Bool :$test-only)
         # clean up. The build hook and the test gate still stand between
         # it and the store, exactly as for a fetched archive.
         $root = %e<local-root>.IO;
-        note "installing {%e<dist> // %e<name>} from {$root}";
+        progress("installing {%e<dist> // %e<name>} from {$root}");
         trace("dist {%e<dist> // %e<name>}: local directory {$root} — no fetch, no checksum");
     }
     else {
@@ -863,7 +877,7 @@ sub install-one(%e, Str $prefix, Bool :$no-test, Bool :$force, Bool :$test-only)
         $tmp.mkdir;
 
         my $tarball = $tmp.add('dist.tar.gz').Str;
-        note "fetching $url";
+        progress("fetching $url");
         trace("dist {%e<dist> // %e<name>}: fetching $url");
         fetch-file($url, $tarball);
         trace("fetched: {$tarball.IO.s} bytes");
@@ -908,7 +922,7 @@ sub install-one(%e, Str $prefix, Bool :$no-test, Bool :$force, Bool :$test-only)
     # `rakupp test`: measurement, not installation — the suite verdict IS the
     # product, and the store stays exactly as the plan's dependencies left it
     if $test-only {
-        note "tested {%e<dist> // %e<name>} — suite green, not installed (--test)";
+        progress("tested {%e<dist> // %e<name>} — suite green, not installed (--test)");
         trace("tested: {%e<dist> // %e<name>} — suite green, not installed");
         return True;
     }
@@ -987,7 +1001,7 @@ sub install-one(%e, Str $prefix, Bool :$no-test, Bool :$force, Bool :$test-only)
         }
         ensure-raku-name($prefix) if %files.keys.first(*.starts-with('bin/'));
     }
-    note "installed {%e<dist> // %e<name>}";
+    progress("installed {%e<dist> // %e<name>}");
     trace("installed: {%e<dist> // %e<name>}");
     True
 }
@@ -1112,7 +1126,7 @@ sub remove-one(Str $prefix, Str $dist-id, %meta, %dists,
     }
     if @dependents && !$force {
         if $for-reinstall {
-            note "$identity is depended on by {@dependents.unique.join(', ')} — reinstalling in place";
+            progress("$identity is depended on by {@dependents.unique.join(', ')} — reinstalling in place");
         }
         else {
             note "$identity is still depended on by {@dependents.unique.join(', ')} — refusing (--force to override)";
@@ -1170,7 +1184,7 @@ sub remove-one(Str $prefix, Str $dist-id, %meta, %dists,
         drop-owned($prefix, $dist-id);
     });
     %dists{$dist-id}:delete;
-    say "uninstalled $identity";
+    inform("uninstalled $identity");
     trace("uninstalled: $identity ($dist-id)");
     True
 }
@@ -1186,7 +1200,7 @@ sub do-uninstall(@names, Str $prefix, Bool :$force, Bool :$for-reinstall) {
     my $p = $prefix.IO;
     unless $p.add('dist').d {
         if $for-reinstall {
-            note "nothing installed in $prefix — installing fresh";
+            progress("nothing installed in $prefix — installing fresh");
             return 0;
         }
         note "nothing installed in $prefix";
@@ -1212,7 +1226,7 @@ sub do-uninstall(@names, Str $prefix, Bool :$force, Bool :$for-reinstall) {
         });
         if !@hits {
             if $for-reinstall {
-                note "not installed: $want-str — installing fresh";
+                progress("not installed: $want-str — installing fresh");
                 next;
             }
             note "not installed: $want-str";
@@ -1227,7 +1241,7 @@ sub do-uninstall(@names, Str $prefix, Bool :$force, Bool :$for-reinstall) {
         # the identity the refusal asked to be typed instead (`Foo:ver<1.0>`)
         # is a redirection to every shell that would have to pass it through.
         if @hits.elems > 1 {
-            note "$want-str matches {@hits.elems} installed distributions — removing all";
+            progress("$want-str matches {@hits.elems} installed distributions — removing all");
             trace("uninstall: $want-str matches {@hits.elems} distributions");
         }
         for @hits.sort(-> $a, $b {   # newest first
@@ -1293,8 +1307,10 @@ sub MAIN(
     Bool :$test-only,          #= build + run the named dists' suites; install only their deps (rakupp test)
     Bool :$force,              #= reinstall / uninstall despite refusals
     Bool :$refresh,            #= refetch the ecosystem index (else cached 24h)
+    Bool :q(:$quiet),          #= only warnings and failures; nothing on success
     Str  :$to = %*ENV<HOME> ~ '/.raku',  #= the CURI store prefix to write
 ) {
+    $QUIET = ?$quiet;
     # `rakupp uninstall --list` is a mode mix, not a synonym for install
     # --list — refuse it rather than silently answering as a different command
     if ($uninstall || $reinstall || $test-only) && ($list || $check) {
@@ -1356,11 +1372,11 @@ sub MAIN(
         # stop. The REA cache refreshes only if it exists — nobody pays for
         # the 18 MB archive index before their first REA-resolved install.
         my @index = load-index(True).list;
-        say "index refreshed: {@index.elems} distributions";
+        inform("index refreshed: {@index.elems} distributions");
         if cache-dir.add('rea-meta.json').e {
             $REA-REFRESH = True;
             my @rea = rea-index();
-            say "REA archive index refreshed: {@rea.elems} archived releases";
+            inform("REA archive index refreshed: {@rea.elems} archived releases");
         }
         return;
     }
@@ -1381,6 +1397,8 @@ sub MAIN(
               --refresh        refetch the ecosystem index(es) (else cached 24h);
                                alone: refresh and stop
               --to=PATH        the store prefix to use (default: ~/.raku)
+              -q, --quiet      only warnings and failures; nothing on success
+                               (with any command, before or after it)
             END
         exit 2;
     }
@@ -1430,10 +1448,16 @@ sub MAIN(
     # took out are gone from dist/ and install fresh.
     my %have = $force ?? {} !! installed-identities($to);
 
-    say "plan ({@plan.elems} distribution{@plan.elems == 1 ?? '' !! 's'}, dependencies first):";
+    # The plan is narration on a real run and THE product of --dry-run, so -q
+    # drops it only on the former. What was skipped is neither: a dependency
+    # this run will not provide is always said.
+    my $show-plan = $dry-run || !$QUIET;
+    say "plan ({@plan.elems} distribution{@plan.elems == 1 ?? '' !! 's'}, dependencies first):"
+        if $show-plan;
     for @plan -> %e {
         my $known = %have{identity-key(%e<name>, %e<version>, %e<auth>, %e<api>)};
-        say "  {%e<dist> // %e<name>}   {archive-url(%e)}{$known ?? '   (already installed)' !! ''}";
+        say "  {%e<dist> // %e<name>}   {archive-url(%e)}{$known ?? '   (already installed)' !! ''}"
+            if $show-plan;
     }
     for %notes.sort -> $n {
         say "  skipped: {$n.key} — {$n.value}";
@@ -1460,7 +1484,7 @@ sub MAIN(
         # object headers — so it cannot run here (nor on JVM Rakudo), and its suite
         # cannot pass. Installing it would only put a broken copy behind the shadow.
         if !$is-target && shadowed-by-rakulib(%e) {
-            say "provided by rakupp: {%e<dist> // %e<name>} — using the bundled shadow";
+            inform("provided by rakupp: {%e<dist> // %e<name>} — using the bundled shadow");
             trace("shadowed by rakulib: {%e<dist> // %e<name>} — skipped");
             next;
         }
@@ -1468,14 +1492,14 @@ sub MAIN(
         # suite and only THEN be refused by the engine — say so now instead.
         # (`rakupp test` still tests the dists it was NAMED, installed or not.)
         if !$is-target && %have{identity-key(%e<name>, %e<version>, %e<auth>, %e<api>)} {
-            say "already installed: {%e<dist> // %e<name>} (use --force to reinstall)";
+            inform("already installed: {%e<dist> // %e<name>} (use --force to reinstall)");
             trace("already installed: {%e<dist> // %e<name>} — skipped");
             next;
         }
         my $done = try install-one(%e, $to, :$no-test, :$force, :test-only($is-target));
         unless $done {
             if $!.Str.contains('already installed') {
-                say "already installed: {%e<dist> // %e<name>} (use --force to reinstall)";
+                inform("already installed: {%e<dist> // %e<name>} (use --force to reinstall)");
                 trace("already installed: {%e<dist> // %e<name>} — the engine refused");
                 next;
             }
@@ -1487,6 +1511,6 @@ sub MAIN(
             exit 1;
         }
     }
-    say "done: {@plan.elems} distribution{@plan.elems == 1 ?? '' !! 's'} processed into $to";
+    inform("done: {@plan.elems} distribution{@plan.elems == 1 ?? '' !! 's'} processed into $to");
     trace("done: {@plan.elems} distribution{@plan.elems == 1 ?? '' !! 's'} processed into $to");
 }

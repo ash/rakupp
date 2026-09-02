@@ -629,9 +629,10 @@ Json initializeResult(const Json* params) {
 } // namespace
 
 int runServer(const Options& opt) {
-    std::cerr << "rakupp --mcp: serving MCP over stdio (timeout "
-              << (opt.timeoutSecs > 0 ? std::to_string(opt.timeoutSecs) + "s" : std::string("off"))
-              << "); this is a machine protocol — point an MCP client here, not a keyboard\n";
+    if (!opt.quiet)
+        std::cerr << "rakupp --mcp: serving MCP over stdio (timeout "
+                  << (opt.timeoutSecs > 0 ? std::to_string(opt.timeoutSecs) + "s" : std::string("off"))
+                  << "); this is a machine protocol — point an MCP client here, not a keyboard\n";
     Session session(opt.preload);
     Watchdog dog;
     dog.start(opt.timeoutSecs);

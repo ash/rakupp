@@ -587,11 +587,12 @@ void printResult(Interpreter& interp, const Value& v) {
 struct ReplCtx {
     std::string exePath;
     std::vector<std::string> libPaths;
+    bool quiet = false;   // -q: no banner
 };
 
 int replMain(ReplCtx& ctx) {
     setConsoleUtf8();
-    std::cout << "Raku++ " << RAKUPP_VERSION << " — \\h for help, ^D to exit\n";
+    if (!ctx.quiet) std::cout << "Raku++ " << RAKUPP_VERSION << " — \\h for help, ^D to exit\n";
 
     auto fresh = [&]() {
         auto interp = std::make_unique<Interpreter>();
@@ -691,8 +692,8 @@ bool replForced() {
     return e && *e && std::strcmp(e, "0") != 0;
 }
 
-int rakuppRepl(const std::string& exePath, const std::vector<std::string>& libPaths) {
-    ReplCtx ctx{exePath, libPaths};
+int rakuppRepl(const std::string& exePath, const std::vector<std::string>& libPaths, bool quiet) {
+    ReplCtx ctx{exePath, libPaths, quiet};
     // Same 1 GiB stack a script gets: recursion typed at the prompt should reach
     // as deep as recursion in a file.
     return rakuppMainOnBigStack([](void* p) { return replMain(*static_cast<ReplCtx*>(p)); }, &ctx);

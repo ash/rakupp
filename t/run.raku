@@ -424,6 +424,13 @@ for <examples tools/bench tools/optbench> -> $dir {
     my $got = $p.out.slurp(:close);
     ok($got eq $EXP.add('fibonacci.out').IO.slurp, "the native fibonacci binary matches the golden");
     try unlink $bin;
+    # …and -q drops the "Compiled (native)" line and nothing else (issue #50)
+    my $qbin = $*TMPDIR.add("rakupp-suite-exe-q-$*PID").Str;
+    $p = run($*EXECUTABLE, '--exe', '-q', $ROOT.add('examples/fibonacci.raku').Str, '-o', $qbin, :out, :err);
+    $p.out.slurp(:close);
+    my $qmsg = $p.err.slurp(:close);
+    ok($p.exitcode == 0 && $qmsg eq '' && $qbin.IO.e, "--exe -q builds the binary and says nothing");
+    try unlink $qbin;
 }
 # Native parity: deep recursion (real main-thread stack), CATCH .message on
 # builtin errors, block-final if/else value, Order-comparator sort — each of
@@ -855,6 +862,19 @@ section('the CLI surface (goldens for the v3 parser refactor)');
            '--lint -q keeps findings, drops the summary');
         ($o, $e, $x) = run-rakupp-err('--lint', '-e', 'say 1');
         ok($x == 0, '--lint on a clean program exits 0');
+    }
+
+    # -q / --quiet is ONE option, taken by every mode (issue #50): a mode's
+    # own narration goes; its output, warnings and errors stay
+    {
+        is(run-rakupp('-q', '-e', 'say 42')[0], "42\n", '-q in run mode: the program is the output, untouched');
+        my ($o, $e, $x) = run-rakupp-err('-c', '-q', '-e', 'say 42');
+        ok($x == 0 && $o eq '' && $e eq '', '-c -q: a clean program prints nothing, exit 0');
+        ($o, $e, $x) = run-rakupp-err('--quiet', '-c', '-e', 'my $x = ;');
+        ok($x == 2 && $e.contains('===SORRY!==='), '-c --quiet keeps the error and its exit code');
+        ($o, $e, $x) = run-rakupp-err('-q', '--ast', '-e', 'say 1');
+        ok($x == 0 && $o eq run-rakupp('--ast', '-e', 'say 1')[0],
+           '-q under --ast: the tree is the product, printed unchanged');
     }
 
     # --ast and its alias print the same tree

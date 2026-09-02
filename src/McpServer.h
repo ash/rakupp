@@ -18,6 +18,9 @@ struct Options {
     // -M modules, loaded into the session as `use <module>;` before the
     // first tool call.
     std::vector<std::string> preload;
+    // -q: no "serving MCP over stdio" banner on stderr. The protocol traffic
+    // and any error are untouched.
+    bool quiet = false;
 };
 
 // Serves until stdin closes (how MCP clients end a server). The return value

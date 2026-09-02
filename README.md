@@ -132,6 +132,7 @@ rakupp --exe app.raku -o app     # compile it
 | `--jupyter FILE` | Run as a Jupyter kernel (`--jupyter-install` registers it with Jupyter) |
 | `--lint SRC` | Static-analyze without running: unused variables, unreachable code, etc. |
 | `-c` / `--ast SRC` | Compile-check only (parse + every variable declared) / print the parsed AST |
+| `-q` / `--quiet` | Drop what a mode says about itself (`Syntax OK`, `Compiled …`, the installer's `already installed:`); output, warnings and errors stay. Any mode |
 
 Flags are position-independent and cluster like Perl's (`rakupp -pi.bak -e
 '$_ = $_.subst("a", "b")' *.txt` works as you'd hope). Full reference:

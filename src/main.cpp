@@ -246,17 +246,28 @@ struct SlimSpec {
 };
 static SlimSpec g_slim;                 // default = level `safe`, nothing cut
 static bool g_standalone = false;       // --standalone: an unembeddable module is a build ERROR (MODULES-PLAN B2)
+// -q / --quiet — ONE option, accepted by every mode (issue #50). It drops the
+// lines a mode prints about its own progress or success: `Compiled …`,
+// `Syntax OK`, the lint summary, the REPL banner, the installer's `already
+// installed:`. It never drops a mode's PRODUCT (a program's output, lint
+// findings, the AST, `install --list`), a warning, or an error — a quiet run
+// that succeeds prints nothing, one that fails prints what it always did.
+// A mode with nothing informational to say accepts the flag and changes
+// nothing, the way -l does.
+static bool g_quiet = false;
 
 // MODULES-PLAN B1: every compile mode says what it embedded and — one line
 // each, with the reason — what it could NOT. B2: under --standalone the
 // skips are fatal. B5: the native libraries the binary will still dlopen
 // are named; they cannot be embedded and must not be hidden.
 // Returns false when --standalone must fail the build.
+// -q keeps the skips and the natives: both say the binary will need the
+// disk, which is a caveat about the product, not narration.
 static bool reportModuleEmbedding(const char* mode,
                                   const std::vector<rakupp::BundledModule>& mods,
                                   const std::vector<rakupp::ModuleSkip>& skips,
                                   const std::set<std::string>& natives) {
-    if (!mods.empty()) {
+    if (!mods.empty() && !g_quiet) {
         std::cerr << mode << ": embedded " << mods.size() << " module"
                   << (mods.size() == 1 ? "" : "s") << ":";
         for (auto& m : mods) std::cerr << " " << m.name;
@@ -862,7 +873,7 @@ static int compileToExe(const std::string& src, const std::string& srcName, std:
 #endif
         return 5;
     }
-    std::cerr << "Compiled " << srcName << " -> " << outPath << "\n";
+    if (!g_quiet) std::cerr << "Compiled " << srcName << " -> " << outPath << "\n";
     return 0;
 }
 
@@ -985,7 +996,7 @@ static int compileNative(const std::string& src, const std::string& srcName, std
 #endif
         return 5;
     }
-    std::cerr << "Compiled (native) " << srcName << " -> " << outPath << "\n";
+    if (!g_quiet) std::cerr << "Compiled (native) " << srcName << " -> " << outPath << "\n";
     return 0;
 }
 
@@ -1055,7 +1066,7 @@ static int compileAotAst(const std::string& src, const std::string& srcName, std
 #endif
         return 5;
     }
-    std::cerr << "Compiled (AOT) " << srcName << " -> " << outPath << "\n";
+    if (!g_quiet) std::cerr << "Compiled (AOT) " << srcName << " -> " << outPath << "\n";
     return 0;
 }
 
@@ -1270,7 +1281,7 @@ static int slimVerify(char modeCh, const std::string& src, const std::string& sr
         std::cerr << "Cannot move " << slimBin << " to " << outPath << "\n";
         return 5;
     }
-    std::cerr << "verified: slim and full agree — emitted " << outPath << " (slim)\n";
+    if (!g_quiet) std::cerr << "verified: slim and full agree — emitted " << outPath << " (slim)\n";
     return 0;
 }
 
@@ -1291,10 +1302,22 @@ int main(int argc, char** argv) {
     // directory.
     static std::vector<std::string> installArgs;
     static std::vector<char*> installArgv;
-    bool isUninstall = argc >= 2 && std::string(argv[1]) == "uninstall";
-    bool isReinstall = argc >= 2 && std::string(argv[1]) == "reinstall";
-    bool isTestCmd   = argc >= 2 && std::string(argv[1]) == "test";
-    if (argc >= 2 && (std::string(argv[1]) == "install" || isUninstall || isReinstall || isTestCmd)) {
+    // -q / --quiet may come before the command word (`rakupp -q install Foo`)
+    // or anywhere after it (`rakupp install Foo -q`); either way it reaches
+    // the installer as one leading --quiet and never as a module name. MAIN
+    // would file a `-q` that follows a positional under the slurpy — Rakudo
+    // does the same — so the lifting happens here, where the rest of the
+    // option surface is position-independent too.
+    auto isQuietTok = [](const char* a) {
+        return std::strcmp(a, "-q") == 0 || std::strcmp(a, "--quiet") == 0;
+    };
+    int cmdAt = 1;
+    while (cmdAt < argc && isQuietTok(argv[cmdAt])) cmdAt++;
+    std::string cmdWord = cmdAt < argc ? argv[cmdAt] : "";
+    bool isUninstall = cmdWord == "uninstall";
+    bool isReinstall = cmdWord == "reinstall";
+    bool isTestCmd   = cmdWord == "test";
+    if (cmdWord == "install" || isUninstall || isReinstall || isTestCmd) {
         std::string exeDir = exePath.substr(0, exePath.find_last_of("/\\"));
         std::string script;
         for (const char* rel : {"/../libexec/rakupp/install.raku", "/../tools/install.raku"}) {
@@ -1311,7 +1334,17 @@ int main(int argc, char** argv) {
         if (isUninstall) installArgs.push_back("--uninstall");
         if (isReinstall) installArgs.push_back("--reinstall");
         if (isTestCmd)   installArgs.push_back("--test-only");
-        for (int i = 2; i < argc; i++) installArgs.push_back(argv[i]);
+        bool quietCmd = cmdAt > 1;
+        std::vector<std::string> rest;
+        for (int i = cmdAt + 1; i < argc; i++) {
+            if (isQuietTok(argv[i])) { quietCmd = true; continue; }
+            rest.push_back(argv[i]);
+        }
+        // --quiet goes BEFORE the module names: a named argument that follows a
+        // positional is filed under MAIN's slurpy (measured: `Foo -q Bar` puts
+        // -q in @modules, under this engine and under Rakudo alike)
+        if (quietCmd) installArgs.push_back("--quiet");
+        for (auto& r : rest) installArgs.push_back(r);
         for (auto& s : installArgs) installArgv.push_back(const_cast<char*>(s.c_str()));
         argv = installArgv.data();
         argc = (int)installArgv.size();
@@ -1370,7 +1403,7 @@ int main(int argc, char** argv) {
     std::string fieldSep;                 // -F: separator (implies -a)
     bool haveF = false, fieldSepRegex = false;
     long recMode = -1;                    // -0[octal]: 0 = NUL records, 0777 = slurp
-    bool quiet = false;                   // --lint -q
+    bool quiet = false;                   // -q / --quiet: any mode (see g_quiet)
     bool optimize = false;                // -O (compile modes and --cpp)
     bool sawHtml = false;                 // --html is only legal under --highlight
     long mcpTimeout = -1;                 // --timeout=SECS, only legal under --mcp
@@ -1482,7 +1515,7 @@ int main(int argc, char** argv) {
                 if (profileDest.empty()) { std::cerr << "Usage: rakupp --profile[=FILE] PROGRAM\n"; return 4; }
                 continue;
             }
-            if (a == "--quiet" || a == "-q") { quiet = true; continue; }
+            if (a == "--quiet" || a == "-q") { quiet = g_quiet = true; continue; }
             if (a == "-o") { if (i + 1 < argc) outPath = argv[++i]; continue; }
             if (a.rfind("-o", 0) == 0 && a.size() > 2) { outPath = a.substr(2); continue; }
             // any -O… turns on the codegen optimizer; a suffix (-O3/-Os/…)
@@ -1598,7 +1631,7 @@ int main(int argc, char** argv) {
     // same banner the flag would have earned in run mode all along
     if (mode != Mode::Help && mode != Mode::Version && mode != Mode::FfiInfo) {
         if (sawHtml && mode != Mode::Highlight) return illegalOpt("--html");
-        if (quiet && mode != Mode::Lint) return illegalOpt("-q");
+        // (-q is deliberately absent here: every mode takes it — see g_quiet)
         if (mcpTimeout >= 0 && mode != Mode::Mcp) return illegalOpt("--timeout");
         if (mode == Mode::Lsp && haveSrc) {
             // Same shape as --mcp: the server IS the program, stdio is the
@@ -1725,6 +1758,11 @@ int main(int argc, char** argv) {
 "  --profile[=FILE]             Routine-level wall-time profile after the run\n"
 "                               (stderr by default; a .json FILE gets JSON).\n"
 "                               Builtins are attributed to their caller\n"
+"  -q, --quiet                  Drop the lines a mode prints about itself: `Syntax\n"
+"                               OK`, the lint summary, `Compiled …`, the installer's\n"
+"                               progress and `already installed:`, the REPL banner.\n"
+"                               A mode's output, warnings and errors stay. Taken by\n"
+"                               every mode, before or after its command\n"
 "\n"
 "Compile to a standalone binary (each takes FILE or -e CODE, plus -o OUT):\n"
 "  rakupp --bundle SRC -o OUT   Embed source + interpreter (whole language)\n"
@@ -1750,6 +1788,8 @@ int main(int argc, char** argv) {
 "                               store; installs their deps, never the dists\n"
 "  rakupp install --list        What is installed; --check: store integrity\n"
 "                               report; --refresh: refetch the cached index(es)\n"
+"  rakupp install -q MODULE     Only warnings and failures; nothing on success\n"
+"                               (-q goes with every command here, in any position)\n"
 "\n"
 "Serve:\n"
 "  rakupp --mcp                 Serve the interpreter over the Model Context\n"
@@ -1849,6 +1889,7 @@ int main(int argc, char** argv) {
         io.selfExe = exePath;
         io.name = jupyterName;
         io.prefix = jupyterPrefix;
+        io.quiet = g_quiet;
         return rakupp::jupyter::installKernelspec(io);
     }
 
@@ -1862,6 +1903,7 @@ int main(int argc, char** argv) {
         rakupp::mcp::Options mo;
         if (mcpTimeout >= 0) mo.timeoutSecs = (int)mcpTimeout;
         mo.preload = preloadModules;
+        mo.quiet = g_quiet;
         return rakupp::mcp::runServer(mo);
     }
 
@@ -1924,7 +1966,7 @@ int main(int argc, char** argv) {
             std::ostringstream d1, d2;
             dumpAst(prog, d1); dumpAst(back, d2);
             if (d1.str() != d2.str()) { std::cerr << "ROUNDTRIP-DUMP " << fileName << "\n"; return 1; }
-            std::cout << "ok " << fileName << "  (" << blob.size() << " bytes)\n";
+            if (!g_quiet) std::cout << "ok " << fileName << "  (" << blob.size() << " bytes)\n";
         } catch (const AstSerialError& e) {
             std::cerr << "SERIAL " << fileName << ": " << e.msg << "\n";
             return 1;
@@ -1952,8 +1994,9 @@ int main(int argc, char** argv) {
             std::cerr << "Cannot write " << precompConfigPath() << "\n";
             return 5;
         }
-        std::cout << key << " = " << (on ? "on" : "off")
-                  << "   (saved in " << precompConfigPath() << ")\n";
+        if (!g_quiet)
+            std::cout << key << " = " << (on ? "on" : "off")
+                      << "   (saved in " << precompConfigPath() << ")\n";
         return 0;
     }
     if (mode == Mode::PrecompInfo || mode == Mode::PrecompClean) {
@@ -1965,8 +2008,9 @@ int main(int argc, char** argv) {
         }
         if (mode == Mode::PrecompClean) {
             auto [n, bytes] = precompCacheClear();
-            std::cout << "removed " << n << " entr" << (n == 1 ? "y" : "ies")
-                      << " (" << (bytes + 1023) / 1024 << " KB) from " << dir << "\n";
+            if (!g_quiet)
+                std::cout << "removed " << n << " entr" << (n == 1 ? "y" : "ies")
+                          << " (" << (bytes + 1023) / 1024 << " KB) from " << dir << "\n";
             return 0;
         }
         auto entries = precompCacheList();
@@ -2025,7 +2069,7 @@ int main(int argc, char** argv) {
             auto us = findUndeclaredVars(prog, src, effectiveSearchPath(libPaths));
             if (!us.empty()) return reportUndeclaredVars(us, fileName, src);
         }
-        std::cout << "Syntax OK\n";
+        if (!g_quiet) std::cout << "Syntax OK\n";   // -q: the exit code is the verdict
         return 0;
     }
 
@@ -2134,7 +2178,7 @@ int main(int argc, char** argv) {
     if (!haveSrc) {
         if (rakupp::stdinIsTerminal() || rakupp::replForced()) {
             // Bare `rakupp` at a terminal: an interactive session.
-            return rakupp::rakuppRepl(exePath, libPaths);
+            return rakupp::rakuppRepl(exePath, libPaths, g_quiet);
         }
         // Bare `rakupp` with stdin redirected — `echo … | rakupp`, `rakupp < f.raku`
         // — is a whole program arriving on stdin, exactly as before.

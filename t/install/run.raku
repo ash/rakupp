@@ -306,6 +306,26 @@ check !%again<err>.contains('fetching') && !%again<err>.contains('testing'),
       'M5: …without fetching or testing the archive again';
 check %again<out>.contains('(already installed)'),
       'M5: the plan marks what the store already holds';
+# -q (issue #50): the same re-run says nothing at all — every line it would
+# print is narration, and narration is what -q removes; the exit code and
+# the store are the answer. Three spellings: before the module, after it,
+# and before the command word itself.
+my %quiet = installer('-q', 'Gate::Demo');
+check %quiet<exit> == 0 && %quiet<out> eq '' && %quiet<err> eq '',
+      'M5: install -q on an all-installed plan prints nothing';
+my %quiet2 = installer('Gate::Demo', '--quiet');
+check %quiet2<exit> == 0 && %quiet2<out> eq '' && %quiet2<err> eq '',
+      'M5: …--quiet after the module name too';
+{
+    my $p = run 'env', |%env.map({ "{.key}={.value}" }), $EXE, '-q', 'install', 'Gate::Demo', :out, :err;
+    my $out = $p.out.slurp(:close);
+    my $err = $p.err.slurp(:close);
+    check $p.exitcode == 0 && $out eq '' && $err eq '',
+          'M5: …and `rakupp -q install`, before the command word';
+}
+my %qdry = installer('-q', '--dry-run', 'Gate::Demo');
+check %qdry<exit> == 0 && %qdry<out>.contains('(already installed)') && %qdry<out>.contains('dry run'),
+      'M5: --dry-run -q still prints the plan — it is the product, not narration';
 my %list = installer('--list');
 check %list<out>.contains('Gate::Demo:ver<0.4.2>'), 'install --list shows it';
 

@@ -24,7 +24,12 @@ profiler (`--profile`, JSON option), three compile modes plus `--slim` and
 controls. One borrow happened without being named: rustc's `-vV` verbose
 version — `--version` already prints commit, build date, platform, and
 compiler, which is the bug-report block that flag exists for (FFI backend
-stays separate under `--ffi-info`).
+stays separate under `--ffi-info`). Added 2026-09-02, from
+[issue #50](https://github.com/ash/rakupp/issues/50): `-q`/`--quiet` (pip,
+cargo, apt — the near-universal spelling), one option every mode takes
+that drops a mode's own narration (`Syntax OK`, `Compiled …`, the
+installer's `already installed:`, the REPL banner) and never its product,
+warnings or errors; it had existed for `--lint` alone.
 
 ## Debugging and introspection
 
