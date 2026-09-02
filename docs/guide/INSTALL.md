@@ -30,6 +30,24 @@ so it works from any directory whether run out of `build/` or from an install
 prefix. If you copy the binary somewhere on its own, point it back with
 `RAKUPP_HOME=<prefix>`.
 
+`rakupp install` is a Raku program, `install.raku`, shipped **beside** the
+binary rather than inside it: an install layout has it at
+`libexec/rakupp/install.raku` (every release archive and `cmake --install`
+include it), a checkout at `tools/install.raku`. The binary looks in exactly
+those two places relative to itself and nowhere else — `RAKUPP_HOME` does not
+cover it — and without the file `rakupp install` stops with "cannot find
+install.raku beside this binary". So when you ship the binary alone, into a
+container say, put the script from the **same release** back beside it:
+
+```dockerfile
+COPY bin/rakupp                  /usr/local/bin/rakupp
+COPY libexec/rakupp/install.raku /usr/local/libexec/rakupp/install.raku
+```
+
+Homebrew's prebuilt-binary route (macOS) currently drops `libexec/` too, so a
+`brew install rakupp` has no `rakupp install` until the tap ships that
+directory; the formula's source build (`cmake --install`) is unaffected.
+
 ## Build from source
 
 ```sh

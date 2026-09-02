@@ -157,6 +157,58 @@ Both native dependencies are already `dlopen`ed on demand, so they cost an
 unused binary nothing: TLS through the system libssl (the existing HTTPS
 mechanism) and zlib the same way, via NativeCall.
 
+> **Revisited 2026-09-02 — where the script must live, and the single-binary
+> case.** Nothing changed here; this records the state and a recommendation.
+>
+> The binary finds the script in exactly two places, relative to its own
+> resolved path: `../libexec/rakupp/install.raku` (an installed layout —
+> `cmake --install` writes it, so every release archive carries it) and
+> `../tools/install.raku` (a checkout). Anywhere else, `rakupp install` exits
+> 4 with "cannot find install.raku beside this binary". `RAKUPP_HOME`, which
+> points a stray binary back at its runtime library for `--exe`, is not
+> consulted for this.
+>
+> Two real routes ship the binary without the script. A user who copies
+> `rakupp` alone into a Docker image — the question that prompted this note —
+> gets the exit-4 line. And the Homebrew tap's prebuilt-binary branch
+> installs `bin/`, `lib/librakupp_rt.a` and `include/rakupp/` out of the
+> release tarball and drops `libexec/`, so `brew install rakupp` on macOS —
+> the first install route the README offers — has no `rakupp install` at all
+> (the formula's source-build branch runs `cmake --install` and is fine). The
+> tap fix is one line; the container fix is one `COPY`; both are in
+> [INSTALL.md](../../guide/INSTALL.md) and the [modules FAQ](../../guide/faq/modules.md).
+>
+> The three reasons above argue against putting the installer *in C++, in the
+> runtime*. They do not reach a different shape: the script's 72 KB of text
+> embedded as a byte array in the CLI's own translation unit (`main.cpp`,
+> which — like the REPL — is already kept out of `rakupp_rt` so that no
+> `--exe` binary carries what it cannot reach), used only when the
+> beside-the-binary lookup fails.
+>
+> - *Compile modes and embedders.* `--exe` links `librakupp_rt.a` and never
+>   copies the CLI, so no compiled program and no embedder carries a byte of
+>   it; and what would be embedded is Raku text that shells out to curl and
+>   tar, not an HTTP client, tar reader or index parser in C++.
+> - *Cadence.* The file beside the binary keeps winning, so a checkout edits
+>   `tools/install.raku` without a rebuild and a release can still ship a
+>   newer libexec copy; the embedded copy is the fallback only. The installer
+>   and the interpreter ship in one release anyway.
+> - *Dogfooding.* Unchanged: it stays the Raku program in `tools/`, and the
+>   installer gate keeps testing that file.
+>
+> Cost: about 72 KB in a 12.4 MB binary. Mechanics, when it is done: a CMake
+> step generates a header from `tools/install.raku` as a byte array (MSVC
+> caps a string literal well below this size — the reason AstEmit.cpp emits
+> bytes), declared as a dependency so editing the script rebuilds the CLI;
+> main.cpp runs the embedded source when the file lookup fails; the trace log
+> says which copy ran; and a gate check runs the binary from a bare
+> directory. Not chosen: fetching the script from GitHub on a miss (a network
+> and trust problem in place of a packaging one), and documenting the `COPY`
+> line alone (it fixes only the readers of that page).
+>
+> **Decision: recommended, not done.** The workarounds are documented; the
+> embed waits for a sitting of its own.
+
 ### What it does
 
 1. Fetch the ecosystem index (fez/360; REA as a second source).
