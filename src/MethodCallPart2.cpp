@@ -5,6 +5,11 @@
 #include <chrono> // DateTime.now subsecond stamp (portable — MSVC has no sys/time.h)
 #if !defined(_WIN32)
 #include <unistd.h> // gethostname — $*KERNEL.hostname
+#include <cstdio> // $*DISTRO on macOS (macDistro)
+#include <cstring> // $*DISTRO on macOS (macDistro)
+#include <fstream> // $*DISTRO on macOS (macDistro)
+#include <sstream> // $*DISTRO on macOS (macDistro)
+#include <map> // $*DISTRO on macOS (macDistro)
 #endif
 
 // Segment 2 of the method-dispatch chain, split out of methodCallInner.
@@ -361,6 +366,65 @@ void Interpreter::runAttrDefaults(const std::shared_ptr<ObjectData>& od,
                     nilResetForAttr(arg.pairVal() ? *arg.pairVal() : Value::any(), *at), at->sigil);
         }
 }
+
+#if defined(__APPLE__)
+// $*DISTRO on macOS, filled in the way Rakudo's src/core.c/Distro.rakumod does
+// it: the `sw_vers` fields (ProductVersion is .version, BuildVersion is
+// .release), 'Apple Inc.' for .auth, and for .desc the marketing name — a
+// static table up to El Capitan, after that the phrase the system's own
+// software-licence page opens with ("SOFTWARE LICENSE AGREEMENT FOR macOS
+// Tahoe 26"), "<unknown>" when neither answers. Roast keys TODO guards on that
+// string (`todo(…) if $*DISTRO.desc eq 'Sonoma' | 'Sequoia' | 'Tahoe 26'`,
+// S32-io/out-buffering.t), and we answered our NAME for it, 0 for the version
+// and the KERNEL release for .release — so a guard Rakudo trips on this OS
+// never fired here. Read once, lazily, on first use.
+struct MacDistro { std::string version, release, desc; bool loaded = false; };
+static const MacDistro& macDistro() {
+    static MacDistro d;
+    if (d.loaded) return d;
+    d.loaded = true;
+    if (FILE* p = popen("sw_vers 2>/dev/null", "r")) {
+        char line[512];
+        auto trim = [](std::string& t) {
+            size_t a = t.find_first_not_of(" \t\r\n"), b = t.find_last_not_of(" \t\r\n");
+            t = a == std::string::npos ? std::string() : t.substr(a, b - a + 1);
+        };
+        while (fgets(line, sizeof line, p)) {
+            std::string s(line);
+            size_t c = s.find(':');
+            if (c == std::string::npos) continue;
+            std::string k = s.substr(0, c), v = s.substr(c + 1);
+            trim(k); trim(v);
+            if (k == "ProductVersion") d.version = v;
+            else if (k == "BuildVersion") d.release = v;
+        }
+        pclose(p);
+    }
+    // Rakudo's table, keyed on the WHOLE version string as its own is
+    static const std::map<std::string, std::string> kNames = {
+        {"10.0", "Cheetah"}, {"10.1", "Puma"}, {"10.2", "Jaguar"}, {"10.3", "Panther"},
+        {"10.4", "Tiger"}, {"10.5", "Leopard"}, {"10.6", "Snow Leopard"}, {"10.7", "Lion"},
+        {"10.8", "Mountain Lion"}, {"10.9", "Mavericks"}, {"10.10", "Yosemite"}, {"10.11", "El Capitan"},
+    };
+    auto it = kNames.find(d.version);
+    if (it != kNames.end()) { d.desc = it->second; return d; }
+    d.desc = "<unknown>";
+    std::ifstream in("/System/Library/CoreServices/Setup Assistant.app/Contents/Resources/en.lproj/OSXSoftwareLicense.html",
+                     std::ios::binary);
+    if (in) {
+        std::ostringstream ss; ss << in.rdbuf();
+        const std::string html = ss.str();
+        static const char* kPhrase = "SOFTWARE LICENSE AGREEMENT FOR macOS ";
+        size_t at = html.find(kPhrase);
+        if (at != std::string::npos) {
+            at += std::strlen(kPhrase);
+            size_t end = html.find('<', at);
+            d.desc = html.substr(at, end == std::string::npos ? std::string::npos : end - at);
+        }
+    }
+    return d;
+}
+#endif
 
 std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName& m, ValueList& args,
                                      const std::vector<ExprPtr>* rwArgs) {
@@ -1070,6 +1134,17 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // `$*VM.request-garbage-collection` — the one hook Raku offers to ask
         // for finalization. Runs the pending-DESTROY sweep (see Interpreter.h).
         if (m == "request-garbage-collection") { runPendingDestroys(); return Value::boolean(true); }
+#if defined(__APPLE__)
+        if (inv.hashKind == "Distro") { // what Rakudo reads off `sw_vers` — see macDistro()
+            const MacDistro& md = macDistro();
+            const std::string ver = md.version.empty() ? "0" : md.version;
+            if (m == "version") { Value v = Value::str(ver); v.hashKind = "Version"; return v; }
+            if (m == "release") return Value::str(md.release.empty() ? "unknown" : md.release);
+            if (m == "desc")    return Value::str(md.desc);
+            if (m == "auth")    return Value::str("Apple Inc.");
+            if (m == "gist")    return Value::str(name + " (" + ver + ")"); // Systemic.gist: "$name ($version)"
+        }
+#endif
         if (m == "name" || m == "Str" || m == "gist" || m == "auth" || m == "desc") return Value::str(name);
         if (m == "is-win") return Value::boolean(false);
         if (m == "version") return Value::str("0");
