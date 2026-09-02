@@ -29,9 +29,14 @@ rakupp --cpp -O prog.raku             # print the optimized C++
 
 By default the transpiler is faithful but generic: every value is a boxed
 `Value`, operators in value position go through `applyArith`, and every user-sub
-call packs its arguments into a `ValueList` — which, for the short lists a call
-actually builds, now comes off a free list rather than the allocator, but is
-still a list built and torn down per call.
+call packs its arguments into a `ValueList` — a heap allocation per call.
+
+That last clause was true without qualification when these passes were written,
+and it is the sentence they were written against. It is now half true: the
+short lists a call actually builds come off a free list rather than the
+allocator (Chapter 12), so what remains is a list built and torn down per call
+without touching `malloc`. The passes below still remove it outright, which is
+still worth more.
 
 ```cpp
 // sub fib($n) { $n < 2 ?? $n !! fib($n-1) + fib($n-2) }

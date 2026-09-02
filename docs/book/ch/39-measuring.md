@@ -242,13 +242,19 @@ For an interpreted method-heavy loop, after everything above:
 | method-name comparison | 8.5% |
 | the dispatch function's own body | 6.1% |
 
-Forty-two per cent in allocation and value churn — which is what the profile
-said when this chapter was written, and both halves have since been worked.
-`Value` was shrunk twice, 344 to 208 to 128 (Chapter 40). The argument list was
-attacked not from the direction this paragraph predicted — by-reference passing,
-which trades away an accidental safety property and is still undone — but from
-a third: making the allocation itself nearly free, which needed no aliasing
-audit at all.
+Forty-two per cent in allocation and value churn. The shape of the fix looked
+known when this was written: pass the invocant and argument list by reference
+rather than by value, and shrink `Value` — both to be approached carefully
+rather than quickly, because the first trades away an accidental safety
+property and the second is a representation change that the extension ABI was
+specifically designed to survive (Chapter 36).
+
+Half of that came true and half did not, which is the interesting part.
+`Value` was shrunk twice, 344 to 208 to 128, and the ABI did survive it exactly
+as designed. The argument list was never passed by reference — the 178-call-site
+aliasing audit is still undone — and the cost was taken anyway, from a third
+direction nobody had written down: making the allocation itself nearly free
+(Chapter 12), which needed no audit at all.
 
 That is the more useful lesson to carry out of this chapter. A cost can be
 correctly identified, and the *shape of the fix* can still be wrong. "Pass it
