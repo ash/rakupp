@@ -9055,7 +9055,16 @@ void Interpreter::registerBuiltins() {
             else if (bothNum && op == ">=") c = x.toNum() >= y.toNum();
             else if (op == "eq") c = x.toStr() == y.toStr();
             else if (op == "ne") c = x.toStr() != y.toStr();
-            else c = applyArith(op, x, y).truthy(); // ===, eqv, ~~, before/after, user ops…
+            // `~~` is the FULL matcher: a block on the right is CALLED with the
+            // value (`cmp-ok $out, '~~', { .contains: "FOO" & "bar" }` — Roast's
+            // Test::Util run-with-tty judges a child's STDOUT that way), a regex
+            // is matched, a junction of matchers threaded, an ACCEPTS object
+            // asked. applyArith knows none of that and answered False for every
+            // block, so S32-io/out-buffering.t's "prompt does not hang" failed
+            // with both expected words sitting in the captured output.
+            else if (op == "~~")  c = matcherAccepts(I, x, y);
+            else if (op == "!~~") c = !matcherAccepts(I, x, y);
+            else c = applyArith(op, x, y).truthy(); // ===, eqv, before/after, user ops…
         }
         // On failure, present the operands via .raku (the "presentable" form) — not
         // .Str, which some objects make die — and name the matcher like Rakudo.
