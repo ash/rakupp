@@ -6131,8 +6131,8 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
                         std::ostringstream ms; ms << mv.rdbuf();
                         resourceStack_.push_back(buildSourceResourceMap(dr));
                         distStack_.push_back(buildDistribution(dr));
-                        struct RG { std::vector<Value>& s; ~RG() { s.pop_back(); } } rg2{resourceStack_};
-                        struct DG { std::vector<Value>& s; ~DG() { s.pop_back(); } } dg2{distStack_};
+                        struct RG { ValueList& s; ~RG() { s.pop_back(); } } rg2{resourceStack_};
+                        struct DG { ValueList& s; ~DG() { s.pop_back(); } } dg2{distStack_};
                         loadSource(ms.str(), full);
                         return;
                     }
@@ -6172,8 +6172,8 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
                     distRoot = distRoot.substr(0, distRoot.size() - 4);
                 resourceStack_.push_back(buildSourceResourceMap(distRoot));
                 distStack_.push_back(buildDistribution(distRoot));
-                struct RGuard { std::vector<Value>& s; ~RGuard() { s.pop_back(); } } rg{resourceStack_};
-                struct DGuard { std::vector<Value>& s; ~DGuard() { s.pop_back(); } } dg{distStack_};
+                struct RGuard { ValueList& s; ~RGuard() { s.pop_back(); } } rg{resourceStack_};
+                struct DGuard { ValueList& s; ~DGuard() { s.pop_back(); } } dg{distStack_};
                 loadSource(ss.str(), dir + "/" + rel + ext);
                 return;
             }
@@ -6197,8 +6197,8 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
         // id) so BEGIN-time `%?RESOURCES<x>.slurp` resolves. Pop after loading.
         resourceStack_.push_back(buildResourceMap(repo, entry));
         distStack_.push_back(buildInstalledDistribution(repo, entry)); // $?DISTRIBUTION
-        struct RGuard { std::vector<Value>& s; ~RGuard() { s.pop_back(); } } rg{resourceStack_};
-        struct DGuard { std::vector<Value>& s; ~DGuard() { s.pop_back(); } } dg{distStack_};
+        struct RGuard { ValueList& s; ~RGuard() { s.pop_back(); } } rg{resourceStack_};
+        struct DGuard { ValueList& s; ~DGuard() { s.pop_back(); } } dg{distStack_};
         loadSource(ss.str(), repo + "/sources/" + lines[3]);
         return;
     }
@@ -6235,10 +6235,10 @@ Value Interpreter::evalString(const std::string& src, bool mainlinePH, bool* inc
     // Rakudo — Pod::Load's whole method is `EVAL "module M { $source }\n$=pod"`.
     // The main program's DOM is put back on every exit path.
     struct PodSwap {
-        std::vector<Value>& slot; std::vector<Value> saved;
-        PodSwap(std::vector<Value>& s, std::vector<Value> mine) : slot(s), saved(std::move(s)) { slot = std::move(mine); }
+        ValueList& slot; ValueList saved;
+        PodSwap(ValueList& s, ValueList mine) : slot(s), saved(std::move(s)) { slot = std::move(mine); }
         ~PodSwap() { slot = std::move(saved); }
-    } podSwap(podDom_, src.find("\n=") != std::string::npos || src.rfind("=", 0) == 0 ? parsePod(src) : std::vector<Value>{});
+    } podSwap(podDom_, src.find("\n=") != std::string::npos || src.rfind("=", 0) == 0 ? parsePod(src) : ValueList{});
     Lexer lexer(src);
     auto prog = std::make_shared<Program>();
     try {
@@ -7635,7 +7635,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 return c;
             };
             Value code = makeCand(&sd->params);
-            std::vector<Value> altCands;
+            ValueList altCands;
             for (auto& ap : sd->altParams) altCands.push_back(makeCand(&ap));
             // dispatch non-built-in `is` traits to a user trait_mod:<is> multi:
             // `sub foo() is traced {…}` calls trait_mod:<is>($foo, :traced).
@@ -13252,7 +13252,7 @@ long long Interpreter::ncRawAddr(const Value& v) {
 // are not supported. Pointer/int args reach the callback as Int addresses.
 // (g_cbInterp is defined up near the other file-scope interpreter state so the
 // constructor can set it.)
-static std::vector<Value> g_cbSlots;   // slot → Raku Callable (never shrinks)
+static ValueList g_cbSlots;   // slot → Raku Callable (never shrinks)
 
 // RAKUPP_FFI_TRACE=1 — one line per native crossing on stderr. An external
 // tracer (lldb, ltrace, dtrace) cannot do this job: it sees C symbols, and the
@@ -15614,7 +15614,7 @@ Value Interpreter::evalInterp(InterpStr* s) {
         // the general infix autothreader nests `(1|2) + (3&4)` and matches Rakudo.
         // (Rakudo's `~` with two MIXED kinds nests differently again — an exotic
         // grouping this deliberately does not chase.)
-        std::function<Value(std::vector<Value>&)> expand = [&](std::vector<Value>& parts) -> Value {
+        std::function<Value(ValueList&)> expand = [&](ValueList& parts) -> Value {
             size_t idx = parts.size(); bool idxTight = false;
             for (size_t k = 0; k < parts.size(); k++) {
                 if (!isJunction(parts[k])) continue;
@@ -15643,7 +15643,7 @@ Value Interpreter::evalInterp(InterpStr* s) {
             parts[idx] = jv;
             return out;
         };
-        std::vector<Value> parts(vals.begin(), vals.end());
+        ValueList parts(vals.begin(), vals.end());
         return expand(parts);
     }
     std::string out;
@@ -21846,7 +21846,7 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
         long long total = (long long)all.size();
         if (nthStar) nthList.push_back(total - nthOfs);
         std::sort(nthList.begin(), nthList.end());
-        std::vector<Value> picked;
+        ValueList picked;
         for (long long n : nthList)
             if (n >= 1 && n <= total) picked.push_back(build(all[n - 1]));
         if (picked.empty()) { setMatchVar(Value::nil()); return Value::nil(); }
@@ -22695,7 +22695,7 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
         return r;
     };
     std::string out; long last = 0, occ = 0;
-    std::vector<Value> selMatches;
+    ValueList selMatches;
     for (auto& mm : matches) {
         occ++;
         out += subj.substr(last, mm.from - last);
@@ -24746,7 +24746,7 @@ Value Interpreter::mixinValue(Value base, const Value& rhs, bool copy) {
     // a list of them, or a `:name(value)` Pair mixing one attribute).
     std::vector<ClassInfo*> roleInfos;
     std::vector<std::string> roleNames;
-    std::vector<Value> pairs, valueMixins;
+    ValueList pairs, valueMixins;
     std::function<void(const Value&)> collect = [&](const Value& v) {
         if (v.t == VT::Type) {
             roleNames.push_back(v.s);

@@ -274,12 +274,44 @@ Remaining:
 | 5 | cached string form on numerics | medium | low-medium | unblocked: the inline CowStr is empty on an Int — IOK/POK almost literally; needs the write-on-read thread audit |
 | 1 | head/body endgame (CowStr + i/n into the body, ~64-byte head) | largest remaining | large | plan WITH the container/binding refactor |
 | 7 | args as pointers on one stack | medium | large | same refactor as 1 |
-| 3 | threaded-op execution loop | large | large | design doc first; after 4, when dispatch is the top cost |
-| 8 | pool remaining payload allocations | small now | low | opportunistic only |
+| 3 | threaded-op execution loop | **measured: under 1% of a node visit** | large | re-measured 2026-09-02; see below |
+| ~~8~~ | ~~pool remaining payload allocations~~ | **done for the args list, 2026-09-02** | low | the rest stays opportunistic |
 
 (Method-name interning in dispatch — not a perl technique, but named by the
 same profile as a top-two remaining cost — slots between 4 and 1;
 docs/book/ch/10-interning.md carries the story.)
+
+### Item 3 was re-measured, 2026-09-02 — and it is still not the win
+
+Asked for directly ("take the way perl flattens the ast tree to speed up
+traversing"), so it was re-priced against today's interpreter rather than
+quoted from August. The opcode `switch` alone is **0.32 ns**; a node visit
+costs **46-85 ns** on the same box (`fib` 46, `asg` 61, `loopsum` 72, `call`
+65, `method` 85, from a `-DRAKUPP_NODE_COUNT` build). Flat dispatch is
+0.4-0.7% of a node visit. Perl's loop is not what makes perl fast here; what
+it removes we have almost none of.
+
+What DID change is worth recording, because it was the reason a partial
+lowering was impossible: the escape-analysis tax on parking an intermediate
+in addressable storage was +11.2 ns per un-lowered node in August and is
+**-0.02 ns** today. That tax was a property of a 376-byte `Value` with five
+`std::string`s and eleven `shared_ptr`s; at 128 bytes it has vanished, and
+with it the ~42% break-even that made the IR all-or-nothing. The structural
+objection is gone; the motive is still absent. Full numbers in
+[IR-EXPERIMENT.md](../../experiments/IR-EXPERIMENT.md).
+
+### Item 8 is done for the allocation that mattered, 2026-09-02
+
+`sv.c`'s arena-and-free-list discipline, applied to the per-call argument
+`ValueList` — which two separate investigations had already named as the
+thing to remove. `RVec` ([src/ValueVec.h](../../../src/ValueVec.h)) keeps a
+thread-local free list of blocks per exact capacity for capacities 1-4:
+allocation is a pop, release is a push. The one-argument-call shape goes
+**32.35 ns -> 9.48 ns**; in the engine, `fib` +8.8% instructions, a
+two-argument call loop +13.0%, `method` +7.7%, `listbuild` +24.9%. Same file
+also made `ValueList` grow in ONE pass — a memcpy where the standard library
+allows a bitwise move — instead of `std::vector`'s fill-then-destroy pair. Details in
+[VALUE32-PLAN.md](../../plans/VALUE32-PLAN.md), batches F and 3.
 
 Items 1–3 are the same lesson at three layers: **stop paying per-use for what
 can be paid per-compile** (slots, offsets, op order) **and stop carrying

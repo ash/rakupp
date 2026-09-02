@@ -356,7 +356,7 @@ struct Env {
     // inner `my` of the same name runs. The layout is owned (shared_ptr): a
     // frame captured by a closure can outlive the Callable it came from.
     std::shared_ptr<const PadLayout> layout;
-    std::vector<Value> pad;
+    ValueList pad;
     // ATOMIC, because a frame can be SHARED under RAKUPP_PARALLEL (two start
     // blocks closing over the mainline both reach global_'s layout) and the
     // bit is a PUBLICATION: define() writes the slot's Value first, then
@@ -537,7 +537,7 @@ struct TapHandle {
     std::mutex m;
     bool closed = false;
     std::vector<std::function<void()>> closers;
-    std::vector<Value> closePhasers;
+    ValueList closePhasers;
 };
 // One activation of an on-demand supply block (pushed on tctx_.tapStack while
 // the block or one of its whenever-blocks runs). `emit` routes to emitCb — or
@@ -740,7 +740,7 @@ struct ReactCtx {
     // the cause once its loop unwinds (a refused connect fails the react)
     bool quitFlag = false;
     Value quitErr;
-    std::vector<Value> closers; // Supply.on-close callbacks for THIS react (guard with m)
+    ValueList closers; // Supply.on-close callbacks for THIS react (guard with m)
     // Deferred whenever activations (issue #18): Rakudo runs the react BODY
     // first and only then activates subscriptions — a `say` after a
     // `whenever <a b c>.Supply` prints before the first emitted value. The
@@ -1734,7 +1734,7 @@ public:
 public:
     std::string finishData_;          // $=finish data block of the module being run
     std::string podData_;             // rendered =pod content (printed at end in --doc mode)
-    std::vector<Value> podDom_;       // $=pod structured DOM (Pod::Block values)
+    ValueList podDom_;       // $=pod structured DOM (Pod::Block values)
     bool docMode_ = false;            // --doc: run DOC phasers and print the rendered POD
     // A test builtin that RUNS user code before reporting (lives-ok/dies-ok/
     // throws-like/…) must name its own CALL SITE, not wherever the block ended up:
@@ -1753,8 +1753,8 @@ public:
     Value captureBacktrace();         // innermost-first BacktraceFrame list (Exception.throw)
     // %?RESOURCES for the module currently being loaded (dist resource files);
     // a stack because module loads nest (a module can `use` another).
-    std::vector<Value> resourceStack_;
-    std::vector<Value> distStack_; // $?DISTRIBUTION of the module being compiled
+    ValueList resourceStack_;
+    ValueList distStack_; // $?DISTRIBUTION of the module being compiled
     // run-script executes an installed script via a NESTED run(); the wrapper's
     // own &MAIN is still in scope there, and auto-dispatching it again would
     // recurse forever when the script defines no MAIN of its own. This holds

@@ -3,6 +3,11 @@
 *2026-08-08. Nothing here landed. This is the record of an experiment so it does
 not have to be run twice.*
 
+> **Re-measured 2026-09-02 — read the last section too.** The verdict below
+> still stands, but one of its two legs broke: the escape-analysis tax that
+> made a partially lowered IR impossible was a property of a 376-byte `Value`
+> and is now zero. Dispatch is still worth under 1% of a node visit.
+
 The proposal was the standard one: stop walking the AST, lower each routine to a
 flat register IR, and execute it in a small VM — keeping the existing `Value`,
 the existing runtime, and the tree-walker as a per-node fallback (`EVAL_NODE
@@ -189,3 +194,102 @@ Node counts come from a build with `-DRAKUPP_NODE_COUNT` plus a two-line
 `#ifdef` (on the `ir` branch). Re-measure before trusting any of this on another
 machine, and re-measure on a **quiet** one: a self-comparison of one binary
 against itself showed ±5.8% spread at one round.
+
+---
+
+## Re-measured 2026-09-02: the objection is gone, the motive is not
+
+Put again by the user, from the other end: take from Perl 5 *the way it
+flattens the AST tree to speed up traversing it* (PERL5-TECHNIQUES item 3,
+`run.c`'s `while ((PL_op = op = op->op_ppaddr(aTHX)));`). This file says no.
+It said so on 2026-08-08, and since then the interpreter it measured has
+changed enough that the answer had to be re-taken rather than quoted: pads
+landed, TARG landed, `ValueHash` replaced the `std::map` payload, and
+`sizeof(Value)` went 376 -> 200 -> 128. Both halves of the verdict were
+re-run against today's tree (Darwin 25.5 / M1, `build/` release static libs,
+`tools/ir-boundary.cpp` unchanged).
+
+**Half of it inverted.**
+
+| | 2026-08-08 | 2026-09-02 |
+|---|---:|---:|
+| opcode `switch` alone | 0.28 ns | 0.32 ns |
+| crossing tax, naive register move-assign | +11.7 ns | **+4.13 ns** |
+| crossing tax, destroy-dead + construct-in-place, **static** storage | +11.2 ns | **-0.02 ns** |
+| the same on a stack buffer | -0.01 ns | -0.02 ns |
+| break-even lowered fraction, naive VM | ~42% | **13.4%** |
+| break-even lowered fraction, dead-slot VM | (not the quoted figure) | **0%** |
+
+The escape-analysis finding — "any scheme that parks interpreter
+intermediates in long-lived, addressable storage pays it" — **no longer
+holds at that price**. It was a property of a 376-byte `Value` carrying five
+`std::string`s and eleven `shared_ptr`s: destroying and re-constructing one
+in memory LLVM cannot reason about was expensive because there was so much
+of it. Today's `Value` is 128 bytes with one `CowStr` and two `shared_ptr`s,
+and the same shape in `static` storage measures free.
+
+So the structural objection this file rested on is gone. **A partially
+lowered IR is now possible**: the un-lowered fallback costs nothing, which
+is exactly the property that was missing.
+
+**The other half did not invert.** Node counts from a `-DRAKUPP_NODE_COUNT`
+build, against best-of-5 wall clock on the release build:
+
+| kernel | eval + exec nodes | ns per node visit, 2026-08-08 | today |
+|---|---:|---:|---:|
+| fib | 9,984,480 | 75 | **46** |
+| asg | 4,000,009 | 137 | **61** |
+| loopsum | 2,000,009 | 105 | **72** |
+| method | 3,200,015 | 118 | **85** |
+| call | 3,200,012 | 99 | **65** |
+
+(`fib`'s node count is identical to August's to the node, which is the
+cross-check that the instrumentation and the kernel still agree. The
+`method` and `call` counts are lower because these are re-written kernels,
+not the ir-branch ones.)
+
+Per-node work fell about 40%, and dispatch rose from 0.28 to 0.32 ns — so
+flat dispatch is now **0.4% to 0.7% of a node visit**, against 0.3% before.
+Flattening the tree is still worth *less than one percent*, and the reason
+is unchanged: the interpreter is not slow because it walks a tree, it is
+slow because of what it does at each node.
+
+One caveat on the saving side, which matters if anyone revives this. The
+probe's model of the tree-walk — two `Env::find` calls, a guard, then
+`applyArith`, 33.61 ns — is the PRE-PADS interpreter. Since PADS-PLAN, an
+annotated reference indexes the frame directly and those two lookups are
+gone from exactly the shapes an IR would lower first. The probe's "+30.50 ns
+saved per lowered node" is therefore an overstatement of what is left to
+win, by roughly the two lookups it still charges.
+
+### What was done instead, and what it measured
+
+The file's own two recommendations were the per-call `Env` (103 ns) and the
+per-call argument `ValueList` (51 ns). The first has since been softened by
+the thread-local call-frame pool. The second had not been touched. It was
+re-priced at **32.35 ns** today and then removed, as a thread-local free
+list of small blocks inside the `ValueList` container itself — no IR, no VM,
+no new execution mode, one file:
+
+```
+one-argument list, built + passed + destroyed, x5000000
+  today                  32.35 ns/call
+  free-list block         9.48 ns/call  (3.41x)
+  inline 2-elem buffer    4.41 ns/call  (7.34x)
+  reused list (ceiling)   7.96 ns/call  (4.06x)
+```
+
+In the engine: `fib` +8.8% instructions, a two-argument sub-call loop
++13.0%, `method` +7.7%, `listbuild` +24.9%. Details and the memory trade
+that decided the block-sizing are in
+[VALUE32-PLAN.md](../plans/VALUE32-PLAN.md) batch 3.
+
+### The standing answer
+
+Unchanged in direction, changed in reason. Flat dispatch is not worth
+doing — it buys under 1% of a node visit. What *is* now true, and was not in
+August, is that an IR could be introduced incrementally without a crossing
+tax; so if the thing that would revive it ever arrives — **unboxed typed
+registers**, still the only structure in which that analysis can be
+expressed — the incremental path is open. The premise to keep rejecting is
+still "flat instructions are faster than a tree".

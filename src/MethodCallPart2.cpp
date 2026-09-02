@@ -1643,7 +1643,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 return v.t == VT::Whatever || (v.t == VT::Code && v.code() && v.code()->isWhateverCode);
             };
 
-            std::vector<Value> pos;
+            ValueList pos;
             bool isoStr = false;
             bool haveNamedField = false;
             size_t posN = 0;
@@ -3373,7 +3373,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             // residual signature: params the priming bound disappear; the rest
             // (unbound positional tail, unbound nameds, slurpies) remain
             if (inv.code()->params || inv.code()->hasPrimed) {
-                std::vector<Value> posArgs; std::map<std::string, Value> namedBound;
+                ValueList posArgs; std::map<std::string, Value> namedBound;
                 for (auto& a : pre) {
                     if (a.t == VT::Pair) namedBound[a.s] = a.pairVal() ? *a.pairVal() : Value::any();
                     else posArgs.push_back(a); // a `*` here is a hole, not a value

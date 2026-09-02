@@ -1407,7 +1407,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             auto keyObj = [](const Value& kv) -> std::shared_ptr<Value> {
                 return kv.t == VT::Str ? nullptr : std::make_shared<Value>(kv);
             };
-            auto add = [&](const std::vector<Value>& path, const Value& vIn) {
+            auto add = [&](const ValueList& path, const Value& vIn) {
                 // `:as` maps the STORED value; the key still comes from the classifier
                 Value v = asF ? callCallable(*asF, {vIn}) : vIn;
                 Value* level = &h;
@@ -1450,7 +1450,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 // rakupp showed `Bag((6))` for lines a classifier could not key
                 // (issue #14's file: lines with fewer words than the index).
                 auto pathOf = [&](const Value& kv) {
-                    std::vector<Value> p;
+                    ValueList p;
                     if (kv.t == VT::Array && kv.arr() && !kv.itemized && !kv.arr()->empty())
                         for (auto& e : *kv.arr()) p.push_back(e);
                     else p.push_back(kv);
@@ -1493,7 +1493,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         if (m == "snip" && sixE()) { // 6.e: split into sublists — each predicate consumes the
             // leading run it matches; leftovers form the final sublist. The predicate
             // arg is one Callable/type-object, or a list of them.
-            std::vector<Value> preds;
+            ValueList preds;
             for (auto& p : args) {
                 if (p.t == VT::Array && p.arr()) for (auto& q : *p.arr()) preds.push_back(q); // a (p1,p2) list of preds
                 else preds.push_back(p);
@@ -2014,7 +2014,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             // true value flips ON (emitted) and consumes the condition. Out of
             // conditions → the state freezes. :off starts in the OFF state.
             bool on = true;
-            std::vector<Value> conds;
+            ValueList conds;
             for (auto& a : args) {
                 if (a.t == VT::Pair && a.s == "off") on = !(a.pairVal() && a.pairVal()->truthy());
                 else if (a.t == VT::Code) conds.push_back(a);
@@ -2108,7 +2108,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     // which is what Rakudo does. Calling it inside the comparator ran it
                     // O(n log n) times instead of O(n): the documented
                     // `(0..0x1FFFF).sort(*.uniname.chars)` took 49s against Rakudo's 1.2s.
-                    std::vector<Value> keys(items.size());
+                    ValueList keys(items.size());
                     for (size_t i = 0; i < items.size(); i++) keys[i] = callCallable(blk, {items[i]});
                     if (!sortByNativeInt(keys, order))
                         std::stable_sort(order.begin(), order.end(), [&](size_t x, size_t y) {

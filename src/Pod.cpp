@@ -549,7 +549,7 @@ static void parseSeq(const std::vector<std::string>& lines, size_t& i,
     }
 }
 
-std::vector<Value> parsePod(const std::string& src) {
+ValueList parsePod(const std::string& src) {
     std::vector<std::string> lines;
     { std::stringstream ss(src); std::string ln; while (std::getline(ss, ln)) lines.push_back(ln); }
     ValueList top; size_t i = 0;

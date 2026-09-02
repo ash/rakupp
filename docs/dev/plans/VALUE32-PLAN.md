@@ -223,6 +223,323 @@ table. The counter-case to look for is construct-once-never-copied strings, and
 the thing to watch is `mut()`, which un-promotes: a repeatedly appended string
 in that band would move between representations more often than it does today.
 
+## Landed: both cheap items, 2026-09-02
+
+Both of the section above's items are implemented, on a **different machine
+from the one that wrote this file** — Darwin 25.5, Apple M1, load average
+~2.3 throughout. That machine reads interpreter kernels slower than the
+benchmarks box, so none of the numbers below is comparable with
+BENCHMARKS.md and none of them belongs in it. What makes them trustworthy
+anyway is the metric: every engine ratio here is **instructions retired**
+and **cycles elapsed** (`/usr/bin/time -l`), measured against a CONTROL
+BINARY built from this exact tree with the one line under test reverted.
+Instructions retired does not move with machine load, which is what made
+measuring on a busy box legitimate at all — and it is also what settled the
+one apparent regression, below.
+
+### Item F — `ValueList` grows by relocating
+
+[src/ValueVec.h](../../../src/ValueVec.h) is `RVec<T>`, and
+`using ValueList = RVec<Value>` replaces `std::vector<Value>` everywhere
+(the 53 sites that spelled the container out were renamed to the typedef
+first, so the swap is one line). It is the `std::vector` API subset the tree
+uses, with `std::vector`'s semantics — raw-pointer iterators, growth
+invalidating everything, `push_back(v[0])` still legal — and two differences:
+a reallocation is ONE pass rather than `std::vector`'s two, and where the
+standard library allows it the pass is a `memcpy`.
+
+The licence for the `memcpy` is that `Value` is trivially relocatable. The
+exception is the `std::string` inside `CowStr`: libstdc++ stores a pointer
+aimed at its own inline buffer, so a bitwise move leaves the copy reading the
+original's storage. `bitwiseRelocOk()` asks the library at run time rather
+than trusting a macro, and the answer picks between `memcpy` and a
+move-and-destroy loop — so a standard library that fails the probe keeps
+correct behaviour and loses only that half of the speedup.
+
+Probe, this machine:
+
+```
+F. vector<Value> build 1000000 Ints   grow 19.71 ms | reserve  7.73 | reloc-grow  8.58 (2.30x vs grow)
+   vector<Value> build 1000000 Strs   grow 21.48 ms |               reloc-grow 14.19 (1.51x)
+```
+
+A relocating grow lands within 11% of a perfectly pre-`reserve`d build. The
+plan predicted 1.46x/1.74x from the other machine; 2.30x here.
+
+Engine A/B against the control, **cycles**:
+
+| kernel | ratio |
+|---|---:|
+| listbuild (1M `map`, `grep`, `reverse`) | 1.117 |
+| sortnums | 1.101 |
+| arrayops | 1.070 |
+| bigarr (2M push + sum + map) | 1.054 |
+| sortby | 1.050 |
+| textsplit | 1.030 |
+| strarr (500k Str push + sort) | 1.030 |
+| objects | 1.009 |
+| hashfill | 1.001 |
+| arraypush | 0.978 |
+
+Instructions move by at most 2% on any of these, in either direction: the
+gain is not fewer operations, it is that a bulk `memcpy` retires far more
+bytes per cycle than a move loop. `arraypush`'s 0.978 is the one below
+parity and its instruction count went the other way (1.008) — noise.
+
+The fourteen `perf-guard` kernels are **flat on instructions** (0.998 to
+1.007, every one), with cycles scattering ±2.5% in both directions. That
+scatter is worth a note, because wall clock first said `fib` had regressed
+2.4% and it took instruction counting to disprove it: `fib` retires **+0.14%**
+instructions on the new container and a standalone probe of the exact
+call-path shape — build a one-element list, hand it to a function by value,
+destroy it — has `RVec` **ahead** of `std::vector` by 1.088x. The remaining
+1% of cycles is code layout in a 30,000-line translation unit whose object
+code shrank by 311 KB, not work the container does.
+
+**The relocation was measured twice, and the first time it was not running.**
+`bitwiseRelocOk()`'s first version asked whether a short string's `data()`
+pointer lay inside the string object. It does — on every implementation, that
+is what the small-buffer optimisation *is* — so the probe answered "not
+relocatable" everywhere and every number above was produced by the FALLBACK
+move-and-destroy loop. The question it should have asked is whether the
+object holds a *stored pointer* to those characters, which is what libstdc++
+has and libc++ and MSVC do not; the probe now relocates a string and checks
+where the copy's characters come from.
+
+That mistake is worth keeping in the file, because of what it says about the
+two halves of the win:
+
+- **Most of the gain above is not `memcpy` at all.** It is that `RVec` grows
+  in ONE pass — construct the new element and destroy the old one per element
+  — where `std::vector` builds a `__split_buffer`, fills it, and then destroys
+  the old buffer in a second pass over the same memory. Two passes over
+  128 MB is the cost, and it is paid whether or not the bytes can be moved
+  bitwise.
+- **Turning `memcpy` on adds the rest**: against the same build with the probe
+  still answering false, `listbuild` +6.1% cycles, `arrayops` +4.2%,
+  `sortnums` +1.1%, everything else inside noise, with instruction counts flat
+  throughout (0.995-1.013). `memcpy` is not fewer instructions than a
+  vectorised move loop; it is the same work at better throughput.
+
+So the fallback is not a formality for libstdc++ to limp along on — it was
+the shipping path for the whole first measurement, and it is most of the win.
+[tools/reloc-probe.cpp](../../../tools/reloc-probe.cpp) exists so the
+question "which path is live here" has an answer that does not require
+reading the header: it prints the path, names what this standard library
+should be taking, and exercises the corner a wrong bitwise move destroys.
+
+Two design choices worth recording:
+
+- **The allocation pattern stays exactly `std::vector`'s** — the first block is
+  the size asked for, and only then does capacity double. Rounding the first
+  block up instead (to four elements, so a short argument list takes one
+  allocation rather than three) first looked like a 2.4% cost on `fib` by wall
+  clock; instruction counting then showed that reading to be the same layout
+  noise as the paragraph above, so it is NOT the reason. The reason arrived
+  later and is memory: batch 3 below makes small blocks nearly free to
+  allocate, which makes rounding up attractive again — and a program holding a
+  million one-element arrays then holds a million four-element blocks, 560-663
+  MB against the 292-296 MB it holds today. A `ValueList` is the payload of
+  every Array VALUE, not only an argument list, and that is what forbids the
+  round-up.
+- **The grow path builds the new element into the NEW buffer** before the old
+  one is freed, rather than copying it to a temporary first. That is what makes
+  `push_back(v[0])` legal — `std::vector` guarantees it — and it is also one
+  `Value` move cheaper on the path that runs for every empty list's first
+  push.
+
+### Item G — `CowStr::kPromote` 64 -> 23
+
+One line. A 23..63-byte string was a heap `std::string` that mallocs on every
+copy; it is now a shared body that copies by refcount. 23 is libc++'s
+small-string boundary, so the change moves exactly the band where the inline
+representation had already stopped being free.
+
+Instruction ratios against the item-F build, **minimum of five runs each**:
+
+| workload | ratio |
+|---|---:|
+| mid-band strings, each copied twice | 1.198 |
+| mid-band strings, built and read once | 1.049 |
+| textsplit | 1.030 |
+| grammar JSON parse (api / strings / numbers / deep) | 1.001 / 1.005 / 1.001 / 0.999 |
+| hashfill, streq, strcat, `-c` parse-check | 1.000 |
+| **mid-band strings as hash keys** | **0.945** |
+
+That table is the second one this section had. **The first was wrong, and the
+way it was wrong is the reason the "minimum of five runs" is in bold.** It
+was built from single runs, and it claimed the grammar JSON parses at 1.089
+and 1.084 — which would have made them the headline evidence. They are flat.
+A single run of that parse lands anywhere in a ~2% band, and two consecutive
+readings had happened to agree at a value ~12% above the floor. `fib`, by
+contrast, repeats to ±0.02%. So the honest procedure is per-kernel: measure
+the spread before trusting a ratio, and quote a minimum of several runs.
+
+What the corrected table says is narrower than the first one, and still
+positive. The plan asked for `streq`, `strcat`, `textsplit` and a JSON parse.
+`streq` and `strcat` are outside the band entirely — a five-byte literal, and
+a string that grows past 63 in its first sixty iterations — and measure
+exactly flat, which is the right answer for a change that cannot touch them.
+`textsplit` is the one real workload that moves, at 3.0%. The grammar parses
+do not move at all: a `Match` keeps its captures as substrings that are
+mostly short or long, not mid-band.
+
+The plan's predicted counter-case did **not** appear: a mid-band string built
+and read once is 1.049, not a loss, because a Raku string value is copied at
+least once before anything reads it — the probe's zero-copy column has no
+program behind it.
+
+A different counter-case did appear, and it is worth recording because it
+explains the whole trade. **Mid-band strings used as hash keys retire 5.9%
+more instructions.** A promoted string costs two allocations, not one — the
+`make_shared` block, and then the `std::string` inside `StrBody` allocating
+its own buffer — where an unpromoted one costs the single `std::string`
+malloc. Copies are free afterwards, so promotion pays from roughly the second
+copy onward; a key is copied *out* into the hash's own key storage and the
+Value is then dropped, which is the one common shape that never gets there.
+`hashfill` does not show it because its keys (`"key$i"`) are under 23 bytes.
+Storing `StrBody`'s text inline instead of as a `std::string` member would
+collapse promotion to one allocation and remove this loss — that is the same
+change design C in the ladder needs, and it is the reason to expect C's
+string numbers to be better than this band's.
+
+On this evidence item G is the weakest of the three changes: one real
+workload at 3%, a synthetic best case at 20%, a synthetic worst case at
+-5.6%, and flat everywhere else. It is kept because the shapes it helps are
+commoner than the shape it hurts, not because the measurement is emphatic.
+
+### Batch 3 — small `ValueList` blocks come off a free list
+
+This one is not from the size question at all. It arrived from the other
+half of the session's work (see *The AST-flattening question*, below): the
+IR experiment of 2026-08-08 measured the per-call argument `ValueList` at
+51 ns against a ~451 ns interpreted call and named removing it as one of the
+two things worth doing. Re-priced today, in the container this batch already
+owns, the shape is:
+
+```
+one-argument list, built + passed + destroyed, x5000000
+  RVec (batch F)          161.75 ms   32.35 ns/call
+  free-list block          47.40 ms    9.48 ns/call  (3.41x)
+  inline 2-elem buffer     22.03 ms    4.41 ns/call  (7.34x)
+  reused list (ceiling)    39.80 ms    7.96 ns/call  (4.06x)
+```
+
+So `RVec` keeps a thread-local free list of blocks, per EXACT capacity, for
+capacities 1 through 4, up to 64 blocks each. Allocation is a pop, release is
+a push, and a thread that exits gives its blocks back.
+
+Per exact capacity, not per rounded-up size class, and the difference is the
+whole design. One four-element block for every small request is simpler and
+slightly faster, but a `ValueList` is also the payload of every Array Value:
+a million one-element arrays then hold a million four-element blocks. That
+variant measured 560-663 MB of peak RSS against 292-296 MB, and paid 22% of
+that program's cycles in the extra memory traffic. Per-capacity lists keep
+the speed and leave the footprint where it was (298-424 MB across runs, a
+band that overlaps the unpooled one — this workload's RSS is noisy).
+
+Measured against the batch-G build:
+
+| kernel | instructions | cycles |
+|---|---:|---:|
+| listbuild | 1.249 | 1.059 |
+| call (400k two-argument sub calls) | 1.130 | 1.061 |
+| fib | 1.088 | 1.080 |
+| method | 1.077 | 1.044 |
+| subcall | 1.057 | 1.021 |
+| hashfill | 1.051 | 1.019 |
+| a million one-element arrays | 1.047 | 1.046 |
+| objects | 1.035 | 1.030 |
+| objnew | 1.035 | 1.045 |
+| asg, loopsum (no calls) | flat | flat |
+
+This is perl's item 8 (`sv.c`'s arenas and free lists, PERL5-TECHNIQUES),
+applied to the one allocation two separate investigations had already
+named.
+
+### The whole sitting, against HEAD
+
+Four changes — relocating one-pass growth, the promote threshold, the
+small-block free list, and the probe fix that finally turned `memcpy` on —
+as one A/B against the binary this session started from. Instructions retired
+and cycles elapsed, **minimum of five runs each**:
+
+| kernel | instructions | cycles |
+|---|---:|---:|
+| arrayops | 1.303 | 1.201 |
+| listbuild | 1.259 | 1.223 |
+| sortnums | 1.188 | 1.201 |
+| sortby | 1.148 | 1.141 |
+| multimeth | 1.139 | 1.136 |
+| bigarr | 1.134 | 1.133 |
+| call (400k two-argument calls) | 1.130 | 1.088 |
+| strcat | 1.123 | 1.082 |
+| textsplit | 1.116 | 1.111 |
+| privmeth | 1.093 | 1.065 |
+| strscan | 1.087 | 1.065 |
+| fib | 1.086 | 1.043 |
+| method | 1.084 | 1.050 |
+| attrread | 1.084 | 1.063 |
+| strarr | 1.067 | 1.064 |
+| strpass | 1.058 | 1.017 |
+| subcall | 1.056 | 1.021 |
+| hashfill | 1.054 | 1.051 |
+| a million one-element arrays | 1.042 | 1.082 |
+| arraypush | 1.037 | 1.046 |
+| objects | 1.029 | 1.033 |
+| regex | 1.028 | 1.040 |
+| objnew | 1.024 | 1.043 |
+| bigint, rats, asg, regexloop, hash, streq | 0.995-1.001 | flat |
+
+Nothing is below parity. The six flat kernels are the ones the changes cannot
+reach — a scalar assignment loop, a `Rat` loop, a five-byte string compare —
+and they are flat to within their own repeat spread.
+
+### Gates
+
+- `t/run.raku` 631/631, including a new case,
+  [t/regression/valuelist-relocating-growth.raku](../../../t/regression/valuelist-relocating-growth.raku),
+  which drives the corners a hand-written container gets wrong where
+  `std::vector` does not: self-referential push at every doubling boundary,
+  splice/unshift holes across a reallocation, Str elements (the one member
+  that is not bitwise-relocatable everywhere), and relocated bytes carrying
+  live refcounts.
+- Roast per-file diff: **jitter only**, on a full run after each change —
+  four runs, including one after the probe fix put the `memcpy` path into
+  service for the first time. 648, 648, 647 and 647 fully-passing files
+  against the 647 of `v3.24.0-union.list`, with three files the baseline runs
+  had flapped (`S04-statements/loop.t`, `S09-typed-arrays/native-decl.t`,
+  `integration/advent2012-day03.t`) passing in all four. Every file that
+  appeared to be lost in any run was re-run SERIALLY under both the new
+  binary and HEAD and behaved identically — `S15-nfg/concatenation.t` 15/15,
+  `S15-nfg/emoji-test.t` 3825/3825, `S17-scheduler/basic.t` 34/34, and
+  `S17-promise/stress.t`, `S29-context/exit.t`, `S17-channel/stress.t`,
+  `S17-lowlevel/cas-loop-int.t`, `S17-scheduler/times.t`,
+  `S03-operators/scalar-assign.t`, the two `APPENDICES/A02` files. No file
+  was lost twice, and the S17 family are the usual four-worker timeout
+  flappers.
+- `t/stress/run.raku` 26/26 in the release build, after each change.
+- ThreadSanitizer: the same five pre-existing `-parallel` failures under the
+  new binary and under the control, verified by building the control under
+  TSan too — so they are the tree's, not this work's. Re-run after the
+  thread-local pool landed and again after the `memcpy` path went live:
+  unchanged both times. No new race.
+- The probe (`tools/value32-probe.cpp`) re-run after the batch.
+- `perf-guard --check` was NOT run: this box fails its load detector uniformly,
+  which is what the interleaved instruction-count A/B above replaces.
+
+### What this means for the rest of the file
+
+The falsifier "if the relocating `ValueList` gets most of the array-path win
+on its own" is **not** triggered. The probe's 4.5x on the array path was a
+`sizeof` measurement and relocation collects a tenth of it on real kernels;
+the remaining nine-tenths is still allocation and memory bandwidth, which is
+what design A addresses. But the same measurement re-prices A honestly: the
+array-path kernels moved 3-12% for a change that touches one typedef, so a
+56-byte `Value` should be expected in the same band rather than in the
+probe's, and A's ~190 ownership sites should be weighed against that.
+
+
 ## The ladder
 
 | | size | what it costs | measured |

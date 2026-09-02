@@ -228,6 +228,48 @@ Include a **control kernel** — one the change provably cannot touch — in the
 same alternating run. Without it a table of improvements is equally consistent
 with the machine having been quieter the second time.
 
+### Measure instructions, not milliseconds, on a machine you cannot quiet
+
+Added 2026-09-02, after a container change read as a 2.4% regression on `fib`
+by wall clock and turned out to retire **0.14% more instructions**. The whole
+difference was code layout in a translation unit whose object code had moved.
+
+`/usr/bin/time -l` reports **instructions retired** and **cycles elapsed** on
+macOS 12+. Instructions retired does not move with machine load, which makes
+it the honest metric on a developer box with other work on it — where
+`perf-guard --check` refuses to report at all, and where interleaving only
+narrows the error rather than removing it. Read the two together:
+
+- **instructions flat, cycles down** — the change did the same work more
+  efficiently (bulk `memcpy` instead of a move loop, better locality). Real.
+- **instructions down** — the change removed work. Real, and the size of the
+  drop is the size of the win.
+- **instructions up, wall clock down** (or the reverse) — suspect layout, and
+  say so rather than quoting the wall clock.
+
+Two cautions. First, build a **control binary** from the same tree with only
+the line under test reverted, and compare against that rather than against
+the last release: a rename or a header move changes layout by itself.
+
+Second, and this is the one that bit: **instruction counts are not equally
+repeatable across kernels, and a single run of a noisy one will lie to you.**
+Measured spreads on one unchanged binary, eight runs each:
+
+| kernel | spread |
+|---|---|
+| `fib` | 6.4093-6.4119 G, ±0.02% |
+| grammar JSON parse | 1.8493-1.8839 G, ±1.9% |
+| `streq` | 4.90-5.00 G, ±2% |
+
+A sitting in 2026-09 measured the grammar parse once per build and read an
+8.9% improvement from a change that repeats at 0.1%. Two consecutive single
+runs had agreed, which felt like confirmation and was not: they had agreed on
+a value ~12% above the kernel's own floor. The variance is the parallel
+runtime's workers doing variable work, so it lands on kernels that allocate
+and thread, not on tight arithmetic loops. **Measure the spread of the kernel
+on one binary before trusting any ratio from it, and quote the minimum of at
+least five runs.**
+
 ## Follow-on: node specialization
 
 The largest win since this campaign came from applying its own lesson (remove

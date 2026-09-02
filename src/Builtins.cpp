@@ -4052,8 +4052,8 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                     if (content.empty()) continue;
                     resourceStack_.push_back(buildResourceMap(repo, distId));
                     distStack_.push_back(buildInstalledDistribution(repo, distId));
-                    struct RG { std::vector<Value>& s; ~RG() { s.pop_back(); } } rg{resourceStack_};
-                    struct DG { std::vector<Value>& s; ~DG() { s.pop_back(); } } dg{distStack_};
+                    struct RG { ValueList& s; ~RG() { s.pop_back(); } } rg{resourceStack_};
+                    struct DG { ValueList& s; ~DG() { s.pop_back(); } } dg{distStack_};
                     // the caller (an installed bin wrapper) has a &MAIN of its
                     // own in scope; the nested run() must not auto-invoke it
                     inheritedMainBarrier_ = tctx_.cur ? tctx_.cur->find("&MAIN") : nullptr;
@@ -6462,7 +6462,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     }
     if (inv.t == VT::Type && inv.s == "Pair" && m == "new") {
         Value key = Value::any(), val = Value::any();
-        std::vector<Value> pos;
+        ValueList pos;
         for (auto& x : args) {
             if (x.t == VT::Pair && x.s == "key")        key = x.pairVal() ? *x.pairVal() : Value::any();
             else if (x.t == VT::Pair && x.s == "value") val = x.pairVal() ? *x.pairVal() : Value::any();
@@ -6974,7 +6974,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         if (m == "zip") {
             // zip N list-backed supplies element-wise (stopping at the shortest); an
             // optional :with(&op) combines each row instead of emitting a tuple List.
-            std::vector<Value> streams; Value withOp;
+            ValueList streams; Value withOp;
             for (auto& a : args) {
                 if (a.t == VT::Pair && (a.s == "with" || a.s == "as") && a.pairVal()) { withOp = *a.pairVal(); continue; }
                 if (!(a.t == VT::Hash && a.hashKind == "Supply" && a.hash()->count("values")))
@@ -7412,8 +7412,8 @@ static Value supplyPhaserCode(const Block* b, std::shared_ptr<Env> closure) {
     return v;
 }
 // Collect LAST/QUIT/CLOSE phasers from a block's top-level statements.
-static void scanSupplyPhasers(const Value& blk, std::vector<Value>* lastP,
-                              std::vector<Value>* quitP, std::vector<Value>* closeP,
+static void scanSupplyPhasers(const Value& blk, ValueList* lastP,
+                              ValueList* quitP, ValueList* closeP,
                               std::shared_ptr<Env> phaserEnv = nullptr) {
     if (blk.t != VT::Code || !blk.code() || !blk.code()->body) return;
     // phaserEnv (issue #18): a LAST phaser reads the block's parameters as of
@@ -7454,7 +7454,7 @@ void Interpreter::maybeFinishSupply(const std::shared_ptr<SupplyTapCtx>& ctx) {
 void Interpreter::closeTapHandle(const std::shared_ptr<TapHandle>& h) {
     if (!h) return;
     std::vector<std::function<void()>> closers;
-    std::vector<Value> phasers;
+    ValueList phasers;
     {
         std::lock_guard<std::mutex> lk(h->m);
         if (h->closed) return;
@@ -7743,7 +7743,7 @@ Value Interpreter::wrapSupplyChain(const Value& supply, Value consumer) {
         chain.arr()->push_back(s2);
     }
     (*rec->hash())["chain"] = chain;
-    std::vector<Value> quitP;
+    ValueList quitP;
     scanSupplyPhasers(consumer, nullptr, &quitP, nullptr);
     Value w; w.t = VT::Code; w.setCode(std::make_shared<Callable>());
     w.code()->builtin = [rec, consumer, quitP](Interpreter& I, ValueList& a) -> Value {
@@ -7781,7 +7781,7 @@ Value Interpreter::spawnSupplyInterval(double interval, double delay, Value blk,
     if (interval < 0.001) interval = 0.001; // Rakudo clamps a zero/negative interval
     if (delay < 0) delay = 0;
     auto tick = std::make_shared<long long>(0);
-    std::vector<Value> quitP;
+    ValueList quitP;
     scanSupplyPhasers(blk, nullptr, &quitP, nullptr);
     Value fireW = ctxCallable(ctx, [blk, ctx, tick, quitP](Interpreter& I2, ValueList&) -> Value {
         if (!ctx->done && !ctx->doneFired) {
@@ -8213,7 +8213,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
         auto handle = std::make_shared<TapHandle>();
         auto ctx = std::make_shared<SupplyTapCtx>();
         ctx->emitCb = emitCb; ctx->doneCb = doneCb; ctx->quitCb = quitCb; ctx->tap = handle;
-        std::vector<Value> quitP;
+        ValueList quitP;
         scanSupplyPhasers(blk, nullptr, &quitP, &handle->closePhasers);
         tctx_.tapStack.push_back(ctx);
         noCycleBreak_++;
@@ -9341,7 +9341,7 @@ void Interpreter::registerBuiltins() {
         // named matcher. A thrown exception is NOT a pass (that's throws-like);
         // neither is a Failure the block already handled (.so / .Bool).
         std::string desc;
-        std::vector<Value> matchers;
+        ValueList matchers;
         for (size_t i = 2; i < a.size(); i++) {
             if (a[i].t == VT::Pair && a[i].namedArg) matchers.push_back(a[i]);
             else if (a[i].t == VT::Str && desc.empty()) desc = a[i].s;
@@ -10912,7 +10912,7 @@ void Interpreter::registerBuiltins() {
             for (auto& h : extTaps) if (h) I.closeTapHandle(h);
         }
         {   // react is over: its whenever taps close — run on-close callbacks
-            std::vector<Value> closers;
+            ValueList closers;
             { std::lock_guard<std::mutex> lk(ctx->m); closers.swap(ctx->closers); }
             for (auto& cb : closers) if (cb.t == VT::Code) { try { I.callCallable(cb, {}); } catch (...) {} }
         }
@@ -10959,7 +10959,7 @@ void Interpreter::registerBuiltins() {
             // kept — awaiting it synchronously hung the whole response pipeline).
             if (src.t == VT::Hash && src.hashKind == "Promise" && src.ext()) {
                 auto ps = std::static_pointer_cast<PromiseState>(src.ext());
-                std::vector<Value> lastP, quitP;
+                ValueList lastP, quitP;
                 scanSupplyPhasers(blk, &lastP, &quitP, nullptr);
                 // a promise is a live source until it settles: hold the supply open
                 // (so the block that ends after registering it doesn't finish early),
@@ -11001,7 +11001,7 @@ void Interpreter::registerBuiltins() {
                 try { I.callCallable(blk, one); } catch (NextEx&) {} catch (LastEx&) {} catch (DoneEx&) {}
                 Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
             }
-            std::vector<Value> lastP, quitP;
+            ValueList lastP, quitP;
             scanSupplyPhasers(blk, &lastP, &quitP, nullptr);
             Value emitW = ctxCallable(ctx, [blk](Interpreter& I2, ValueList& args) -> Value {
                 try { ValueList one = args; return I2.callCallable(blk, one); }
@@ -11120,7 +11120,7 @@ void Interpreter::registerBuiltins() {
                     // sees the last value (same trick as the from-list path below).
                     auto phEnv = std::make_shared<Env>();
                     phEnv->parent = blk.code() ? blk.code()->closure : nullptr;
-                    std::vector<Value> lastP, quitP;
+                    ValueList lastP, quitP;
                     scanSupplyPhasers(blk, &lastP, &quitP, nullptr, phEnv);
                     std::vector<std::string> pnames;
                     if (blk.code() && blk.code()->params)
@@ -11212,7 +11212,7 @@ void Interpreter::registerBuiltins() {
                     // that dies quits its tap (see tapSupply), so this is the path
                     // `whenever $producer { QUIT {…} }` arrives on.
                     std::shared_ptr<ReactCtx> rctx = I.reactStack_.empty() ? nullptr : I.reactStack_.back();
-                    std::vector<Value> lastP, quitP;
+                    ValueList lastP, quitP;
                     scanSupplyPhasers(blk, &lastP, &quitP, nullptr);
                     Value emitW; emitW.t = VT::Code; emitW.setCode(std::make_shared<Callable>());
                     Value blkCopy = blk;
@@ -11269,7 +11269,7 @@ void Interpreter::registerBuiltins() {
                     // sees the LAST value of $c (Rakudo semantics)
                     auto phEnv = std::make_shared<Env>();
                     phEnv->parent = blk.code() ? blk.code()->closure : nullptr;
-                    std::vector<Value> lastP, quitP;
+                    ValueList lastP, quitP;
                     scanSupplyPhasers(blk, &lastP, &quitP, nullptr, phEnv);
                     std::vector<std::string> pnames;
                     if (blk.code() && blk.code()->params)
@@ -11364,7 +11364,7 @@ void Interpreter::registerBuiltins() {
                         // cause (a refused .connect must fail the react, not run the
                         // block with Any — Cro::TCP's dies-ok relies on it)
                         Value ex = cause.t == VT::Nil ? Value::str(causeMsg) : cause;
-                        std::vector<Value> quitP;
+                        ValueList quitP;
                         scanSupplyPhasers(blk, nullptr, &quitP, nullptr);
                         if (!quitP.empty()) {
                             for (auto& q : quitP) { ValueList one{ex}; try { I.callCallable(q, one); } catch (...) {} }
@@ -11382,7 +11382,7 @@ void Interpreter::registerBuiltins() {
                 if (!I.reactStack_.empty()) {
                     auto rctx = I.reactStack_.back();
                     { std::lock_guard<std::mutex> lk(rctx->m); rctx->liveSources++; }
-                    std::vector<Value> quitP;
+                    ValueList quitP;
                     scanSupplyPhasers(blk, nullptr, &quitP, nullptr);
                     Interpreter* self = &I;
                     Value blkCopy = blk;

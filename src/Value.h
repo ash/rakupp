@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "IStr.h"
+#include "ValueVec.h"
 
 namespace rakupp {
 
@@ -71,7 +72,7 @@ class CowStr {
     // Below this, a copy is a couple of words and sharing would cost more than
     // it saves (an allocation per string). Above it, copying is the thing we are
     // here to avoid.
-    static constexpr size_t kPromote = 64;
+    static constexpr size_t kPromote = 23;
 
     void take(std::string x) {
         if (x.size() >= kPromote) { p_ = std::make_shared<const StrBody>(std::move(x)); s_.clear(); }
@@ -240,7 +241,7 @@ struct Env;
 class Interpreter;
 struct PadLayout; // Interpreter.h — the pad slot table a Callable's frames use
 
-using ValueList = std::vector<Value>;
+using ValueList = RVec<Value>;
 using BuiltinFn = std::function<Value(Interpreter&, ValueList&)>;
 
 // A callable: either a user sub (params+body+closure) or a builtin.
@@ -299,7 +300,7 @@ struct Callable {
     StateSlot state;
     BuiltinFn builtin;                             // set => builtin
     std::vector<std::string> placeholders;         // $^a auto-params (sorted)
-    std::vector<Value> candidates;                 // multi-dispatch candidates
+    ValueList candidates;                          // multi-dispatch candidates
     std::shared_ptr<Callable> dispatcherC;         // the proto a candidate belongs to (set where a
                                                    // dispatch group is synthesized; .dispatcher reads it)
     bool isMultiDispatcher = false;
@@ -339,7 +340,7 @@ struct Callable {
     bool isRegexRoutine = false;                     // `my regex R {…}` / token / rule — .^name is Regex, not Sub
     std::string retType;                             // declared return type (`of`/`returns`/`-->`), "" = none
     bool retRw = false;                              // `is rw`/`is raw` on the routine: its result IS a container
-    std::vector<Value> wrappers;                      // &routine.wrap({…}) stack (outermost last); .unwrap pops
+    ValueList wrappers;                              // &routine.wrap({…}) stack (outermost last); .unwrap pops
     bool isNative = false;                            // `is native` — a C FFI call
     std::string nativeLib, nativeSym;                // library ("" = default namespace) and C symbol
     std::string nativeLibSub;                        // `is native(&sub)` — sub called at runtime for the lib path

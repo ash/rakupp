@@ -8,5 +8,5 @@ namespace rakupp {
 // values (VT::Hash, hashKind "Pod") with a "podclass"/"name"/"level"/"config"/
 // "contents" shape. Delimited (=begin/=end), paragraph (=for), and abbreviated
 // (=head1 …) forms; nested blocks; whitespace-collapsed paragraphs.
-std::vector<Value> parsePod(const std::string& src);
+ValueList parsePod(const std::string& src);
 }
