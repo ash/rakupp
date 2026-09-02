@@ -14469,9 +14469,20 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     tcx.cur = env;
     tcx.curStateEnv = c.state.env.get();
     tcx.dynStack.push_back(saved ? saved.get() : global_.get()); // caller's scope, for dynamic $*var lookup
-    // callframe(N) walks these; RAII, because this function has many exit paths
-    tcx.callFrames.push_back({curLine_, &codeVal});
-    struct CFGuard { ExecContext& t; ~CFGuard() { if (!t.callFrames.empty()) t.callFrames.pop_back(); } } cfG{tcx};
+    // callframe(N) walks these; RAII, because this function has many exit paths.
+    // The frame also puts the CALLER's line back when it pops: the callee's
+    // statements advance curLine_ into its own body — and its own FILE, when
+    // it lives in a module — so without this `is f(), 3` failing reported the
+    // last line f() ran, not the line of the `is`. (JSON::Native's suite
+    // announced a failure "at t/02-write.t line 420" of a 115-line file: 420
+    // was inside JSON::Fast's to-json, which the test's oracle had called.)
+    // Restored on every exit, throw included: whatever runs next runs in the
+    // caller.
+    const int callLine = curLine_;
+    tcx.callFrames.push_back({callLine, &codeVal});
+    struct CFGuard { ExecContext& t; Interpreter* self; int line;
+        ~CFGuard() { if (!t.callFrames.empty()) t.callFrames.pop_back(); self->curLine_ = line; }
+    } cfG{tcx, this, callLine};
     // restore() puts the caller's scope back; called on every exit path. (ENTER
     // phasers now run inside the try, and the CATCH body is wrapped, so a throw
     // from either restores instead of leaking dynStack / bleeding scope.)
@@ -15347,10 +15358,13 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
     // CALLER's env so `$*CRO-ROUTE-SET`-style dynamics set in a calling sub stay
     // visible through method calls (Cro's route -> definition-complete -> plugin)
     tcx.dynStack.push_back(saved ? saved.get() : global_.get());
-    tcx.callFrames.push_back({curLine_, &codeVal}); // for callframe(N)
-    struct DynGuard { ExecContext& t;
-        ~DynGuard() { t.dynStack.pop_back(); if (!t.callFrames.empty()) t.callFrames.pop_back(); }
-    } dynG{tcx};
+    // for callframe(N); and the caller's line comes back with the pop, as in
+    // callCallableRaw — a method body advances curLine_ exactly like a sub's
+    const int callLine = curLine_;
+    tcx.callFrames.push_back({callLine, &codeVal});
+    struct DynGuard { ExecContext& t; Interpreter* self; int line;
+        ~DynGuard() { t.dynStack.pop_back(); if (!t.callFrames.empty()) t.callFrames.pop_back(); self->curLine_ = line; }
+    } dynG{tcx, this, callLine};
     // callsame/nextsame scope: this activation sees only frames pushed FOR it
     // (ownFrame) — never the caller's (a frameless bottom method must not
     // re-enter its caller's chain; that was an infinite nextsame loop)
