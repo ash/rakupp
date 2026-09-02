@@ -2513,6 +2513,7 @@ thread_local ExecContext Interpreter::tctx_;
 thread_local Value* Interpreter::topicWriteback_ = nullptr;
 thread_local Value* Interpreter::builtinTopicWB_ = nullptr;
 thread_local bool Interpreter::noAutothread_ = false;
+thread_local bool Interpreter::valueSmartmatch_ = false;
 thread_local bool Interpreter::forceRoutineFrame_ = false;
 thread_local int Interpreter::loopPhaserCtl_ = 0;
 thread_local const std::vector<Value*>* Interpreter::pendingRwSlots_ = nullptr;
@@ -9764,7 +9765,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 if (w->cond->kind == NK::RegexLit) match = boolify(cv);
                 else if (cv.t == VT::Regex) match = regexMatch(rxSubject(topic), cv.s, &cv).truthy();
                 else if (cv.t == VT::Code) match = boolify(callCallable(cv, {topic}));
-                else match = applyArith("~~", topic, cv).truthy();
+                else match = smartmatchValue("~~", topic, cv).truthy(); // $_ is a VALUE: a `*` in it does not curry
             }
             if (match) {
                 auto scope = std::make_shared<Env>(); scope->parent = tctx_.cur;
@@ -10577,7 +10578,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
             // value; anything else (a type, a junction like `Any:U|Blob|Cool`) is
             // smartmatched — NOT just boolified
             if (cv.t == VT::Code && cv.code()) ok = boolify(callCallable(cv, ValueList{val}));
-            else ok = boolify(applyBinOp("~~", val, cv));
+            else ok = boolify(smartmatchValue("~~", val, cv));
         } catch (...) { tctx_.cur = saved; throw; }
         tctx_.cur = saved;
         if (!ok)
@@ -10990,7 +10991,7 @@ bool Interpreter::subsetMatches(const std::string& name, const Value& v, int dep
             // `Cro::Message | Cro::Connection`) is smartmatched — NOT boolified
             if (cv.t == VT::Code && cv.code()) ok = boolify(callCallable(cv, ValueList{v}));
             else if (cv.t == VT::Regex) ok = boolify(regexMatch(rxSubject(v), cv.s, &cv));
-            else ok = boolify(applyBinOp("~~", v, cv));
+            else ok = boolify(smartmatchValue("~~", v, cv));
         } catch (...) { tctx_.cur = saved; if (!cacheKey.empty()) typeSubsetCache[cacheKey] = false; return false; }
         tctx_.cur = saved;
         if (!cacheKey.empty()) typeSubsetCache[cacheKey] = ok;
@@ -11118,7 +11119,7 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args) {
             // `where EXPR` smartmatches (same rule as the positional arm below):
             // a Code is called with the list, anything else matched against it.
             if (cv.t == VT::Code && cv.code()) ok = boolify(callCallable(cv, ValueList{lst}));
-            else ok = boolify(applyBinOp("~~", lst, cv));
+            else ok = boolify(smartmatchValue("~~", lst, cv));
         } catch (...) { tctx_.cur = saved; return -1; }
         tctx_.cur = saved;
         if (!ok) return -1;
@@ -11148,7 +11149,7 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args) {
         try {
             Value cv = eval(p.whereExpr.get());
             if (cv.t == VT::Code && cv.code()) ok = boolify(callCallable(cv, ValueList{h}));
-            else ok = boolify(applyBinOp("~~", h, cv));
+            else ok = boolify(smartmatchValue("~~", h, cv));
         } catch (...) { tctx_.cur = saved; return -1; }
         tctx_.cur = saved;
         if (!ok) return -1;
@@ -11324,7 +11325,7 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args) {
                 // is always truthy — so a candidate that should have been skipped won
                 // the dispatch and then died in the bind (XML's open-xml).
                 if (cv.t == VT::Code && cv.code()) ok = boolify(callCallable(cv, ValueList{wv}));
-                else ok = boolify(applyBinOp("~~", wv, cv));
+                else ok = boolify(smartmatchValue("~~", wv, cv));
             } catch (...) { tctx_.cur = saved; return -1; }
             tctx_.cur = saved;
             if (!ok) return -1;
@@ -11409,7 +11410,7 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args) {
                 // smartmatch, same rule as the positional arm above (a Code is
                 // called; anything else is matched — `where Int` on a named param)
                 if (cv.t == VT::Code && cv.code()) ok = boolify(callCallable(cv, ValueList{v}));
-                else ok = boolify(applyBinOp("~~", v, cv));
+                else ok = boolify(smartmatchValue("~~", v, cv));
             } catch (...) { tctx_.cur = saved; return -1; }
             tctx_.cur = saved;
             if (!ok) return -1;
@@ -12169,7 +12170,7 @@ bool Interpreter::attrWhereOk(const void* whereExpr, const Value& v) {
     try {
         Value cv = eval(const_cast<Expr*>(static_cast<const Expr*>(whereExpr)));
         if (cv.t == VT::Code && cv.code()) ok = boolify(callCallable(cv, ValueList{v}));
-        else ok = boolify(applyBinOp("~~", v, cv));
+        else ok = boolify(smartmatchValue("~~", v, cv));
     } catch (...) { tctx_.cur = saved; throw; }
     tctx_.cur = saved;
     return ok;
@@ -19363,6 +19364,12 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             case '%': if (c1 == '\0' && b != 0) { if (b == -1) return Value::integer(0); long long m = a % b; if (m && ((m < 0) != (b < 0))) m += b; return Value::integer(m); } break;
         }
     }
+    // one-shot (Interpreter::valueSmartmatch_): the left operand is a Whatever
+    // VALUE in a smartmatch, not the literal `*` that curries. Consumed at once,
+    // so the nested calls this one makes — an ACCEPTS method's own code — curry
+    // as they always did. After the fast path: a Whatever is never VT::Int.
+    const bool valueMatch = Interpreter::valueSmartmatch_;
+    if (valueMatch) Interpreter::valueSmartmatch_ = false;
     // An operand that is a Proxy is being READ — FETCH through it, or the
     // machinery below would see the carrier hash (numifying to its pair count)
     // instead of the value it stands for. The Binary EVAL path deproxies its
@@ -19573,7 +19580,11 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             // !(2 ~~ Int|Str) = False — threading "!~~" per eigenstate made it
             // any(False, True) = True
             int t = 0, total = 0;
-            for (auto& e : *j.arr()) { total++; if (applyArith("~~", l, e).truthy()) t++; }
+            for (auto& e : *j.arr()) { // each eigenstate match inherits the value-smartmatch rule
+                total++;
+                if (valueMatch) Interpreter::valueSmartmatch_ = true;
+                if (applyArith("~~", l, e).truthy()) t++;
+            }
             bool res = j.enumName == "any" ? t > 0 : j.enumName == "all" ? t == total : j.enumName == "one" ? t == 1 : t == 0;
             return Value::boolean(op == "~~" ? res : !res);
         }
@@ -19582,7 +19593,11 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         // junction of Matches.
         if ((op == "~~" || op == "!~~") && isJunction(l) && r.t != VT::Regex) {
             int t = 0, total = 0;
-            for (auto& e : *l.arr()) { total++; if (applyArith("~~", e, r).truthy()) t++; }
+            for (auto& e : *l.arr()) {
+                total++;
+                if (valueMatch) Interpreter::valueSmartmatch_ = true;
+                if (applyArith("~~", e, r).truthy()) t++;
+            }
             bool res = l.enumName == "any" ? t > 0 : l.enumName == "all" ? t == total
                      : l.enumName == "one" ? t == 1 : t == 0;
             return Value::boolean(op == "~~" ? res : !res);
@@ -19660,7 +19675,11 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     // a HyperWhatever on the RIGHT of a smartmatch is the always-matching
     // PATTERN (`@a ~~ **` holds for any list), not a curry
     if ((op == "~~" || op == "!~~") && r.t == VT::Whatever && r.b) skipCurry = true;
-    if (!skipCurry && (isWhateverish(l) || isWhateverish(r))) {
+    // …and a Whatever that is a VALUE in a smartmatch (valueMatch) never curries:
+    // `given * { when Pair {…} }` asks Pair.ACCEPTS(*), which is False, where the
+    // curried WhateverCode was truthy and took the arm (Mathematica::Serializer's
+    // encoder dispatches a bare `*` through exactly such a chain).
+    if (!skipCurry && !valueMatch && (isWhateverish(l) || isWhateverish(r))) {
         Value code; code.t = VT::Code; code.setCode(std::make_shared<Callable>());
         code.code()->isWhateverCode = true;
         // each `*` consumes one argument left-to-right, so `* + *` has arity 2
@@ -23549,6 +23568,22 @@ Value* Interpreter::lexShadowedInfix(const std::string& op, const Value& l, cons
     return lexInfixLookup(op);
 }
 
+// `l ~~ r` (or `!~~`) where l is a VALUE already in hand — a `when` topic, a
+// bound argument a `where` clause checks, an element a matcher tests, what a
+// variable holds — and never the literal `*` term that Whatever-curries. Rakudo
+// decides currying syntactically, so such a value is an ordinary object there:
+// `Pair.ACCEPTS(*)` is False and `given * { when Pair {…} }` passes the arm
+// over. applyArith cannot see the syntax; the one-shot flag tells it. Raised
+// only when it would change anything — a Whatever(Code) on the left — and
+// dropped again in case applyBinOp answered without reaching applyArith.
+Value Interpreter::smartmatchValue(const std::string& op, const Value& l, const Value& r) {
+    if (!(l.t == VT::Whatever || (l.t == VT::Code && l.code() && l.code()->isWhateverCode)))
+        return applyBinOp(op, l, r);
+    struct Drop { ~Drop() { Interpreter::valueSmartmatch_ = false; } } drop;
+    Interpreter::valueSmartmatch_ = true;
+    return applyBinOp(op, l, r);
+}
+
 Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value& r) {
     // `$x ~~ $rx` where the pattern is a Regex VALUE. Matching used to be decided
     // syntactically — at each site that could see a `/…/` literal — so the
@@ -24469,7 +24504,9 @@ Value Interpreter::evalBinary(Binary* b) {
             // Bool. Threading before currying evaluated the junction against the
             // Whatever itself, and every where-gated multi taking that shape lost
             // its candidate (Algorithm::KDimensionalTree's k-nearest).
-            if (lTopic.t == VT::Whatever ||
+            // …and only when the `*` is WRITTEN there: the Whatever a variable
+            // holds is a value, and `$w ~~ (A|B)` threads and answers False
+            if ((lTopic.t == VT::Whatever && exprHasWhateverLit(b->lhs.get())) ||
                 (lTopic.t == VT::Code && lTopic.code() && lTopic.code()->isWhateverCode &&
                  b->lhs->kind == NK::Whatever)) {
                 Value rc = r; std::string opc = op;
@@ -24563,7 +24600,12 @@ Value Interpreter::evalBinary(Binary* b) {
                 }
             }
         }
-        return applyArith(op, lTopic, r); // generic smartmatch on the already-evaluated operands
+        // generic smartmatch on the already-evaluated operands — the Whatever a
+        // VARIABLE holds is a value here (`my $w = *; $w ~~ Pair` is False on
+        // Rakudo); only a written `*` curries
+        if (lTopic.t == VT::Whatever && !exprHasWhateverLit(b->lhs.get()))
+            return smartmatchValue(op, lTopic, r);
+        return applyArith(op, lTopic, r);
     }
     if (op == "ff" || op == "fff" || op == "ff^" || op == "fff^" ||
         op == "^ff" || op == "^fff" || op == "^ff^" || op == "^fff^") {

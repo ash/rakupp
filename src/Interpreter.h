@@ -799,6 +799,15 @@ public:
     // one-shot: the next callCallable does NOT autothread junction args
     // (Junction.THREAD passes each eigenstate — junctions included — whole)
     static thread_local bool noAutothread_;
+    // one-shot: the next applyArith does NOT Whatever-curry. Currying is
+    // SYNTACTIC on Rakudo — only a literal `*` written in the expression
+    // composes — and a Whatever that arrives as a VALUE (a `when` topic, the
+    // argument a `where` clause checks, an element a matcher tests, what a
+    // variable holds) is an ordinary object that `Pair.ACCEPTS` simply declines.
+    // applyArith sees values only, so the callers holding one raise this
+    // through smartmatchValue().
+    static thread_local bool valueSmartmatch_;
+    Value smartmatchValue(const std::string& op, const Value& l, const Value& r);
     // one-shot: the next callCallable's activation is a ROUTINE frame even for a
     // bare block. `start { … }` sets it so `$/` scopes to the worker rather than
     // to the lexical scope every worker closes over — where all of them assigned

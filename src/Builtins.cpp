@@ -1478,7 +1478,7 @@ bool matcherAccepts(Interpreter& I, const Value& v, const Value& mt) {
                 return I.methodCall(const_cast<Value&>(mt), "ACCEPTS", one).truthy();
             }
     }
-    return applyArith("~~", v, mt).truthy();
+    return I.smartmatchValue("~~", v, mt).truthy(); // an element that IS `*` is a value, not a curry
 }
 
 // Truth of a CODE matcher's ANSWER, for element `elem`. A block may answer a
