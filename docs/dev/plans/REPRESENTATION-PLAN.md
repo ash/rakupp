@@ -449,6 +449,32 @@ slot; parmap correct and t/stress/parallel-map PASS under `RAKUPP_PARALLEL=1`,
 and the ThreadSanitizer build runs both with **zero reports** through the new
 slot accessors and the MatchData clone path.
 
+#### Batch 5 — the head/body endgame, 128 → 56 → 32: [VALUE32-PLAN.md](VALUE32-PLAN.md) (written 2026-09-02)
+
+Phase 1's target was ≤ 64 bytes and batch 4 stopped at 128, so the rest of it
+has its own file. Priced with [tools/value32-probe.cpp](../../../tools/value32-probe.cpp);
+the three results that change how the remaining work should be ordered:
+
+- **the hash path is no longer the argument.** `ValueHash` took structure
+  building to 31 ns/entry, against the 302 that opened this campaign — so the
+  1.83× this file attributes to `sizeof(Value)` was measured through a
+  `std::map` that no longer exists. The array path is where the size lever
+  still reads 5.0× (1M Int `push_back`, 128-byte `Value` vs a 32-byte
+  stand-in);
+- **the intrusive refcount is worth 1.08×, not more.** Trading a 16-byte
+  `shared_ptr` for an 8-byte `Ref` buys size; it does not buy copy speed, since
+  the atomic increment is the cost either way;
+- **56% of the array build is `std::vector` GROWTH, which is not a `sizeof`
+  problem at all.** `Value` is trivially relocatable but `std::vector` cannot
+  know it, so every reallocation move-constructs a million elements. A
+  memcpy-growing `ValueList` measures 1.5× on the whole build with `Value` left
+  at 128 bytes.
+
+And one finding beside the plan rather than in it: `CowStr`'s `kPromote = 64`
+makes a 23..63-byte string malloc **on every copy**, so a 33-byte string costs
+1.7× more than a 68-byte one. One line, and it needs `streq`/`strcat`/
+`textsplit` to say whether it is a win.
+
 ### Phase 2 — MEASURED AND REVERTED, and what it found instead (2026-08-09)
 
 Phase 2 was written and it works: `RakuHash` — `unordered_map` storage with a
