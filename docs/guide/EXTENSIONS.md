@@ -156,7 +156,13 @@ serializer wants.
 
 `RkType` is deliberately coarse — it tells you what you can *do* with a value,
 not where it sits in Raku's type hierarchy. Anything the ABI has no vocabulary
-for arrives as `RK_OTHER`; stringify it.
+for arrives as `RK_OTHER`; stringify it. That includes the Raku types the engine
+happens to carry on a plain representation — a `Date` (a hash of year, month and
+day inside), a `Buf` (a `Str` inside), an `IO::Path`, an `Instant`, an enum
+value (an `Int` inside), an allomorph such as `<42>`, a junction. They are
+`RK_OTHER`, never the hash or `Int` underneath, and `rk_str_get` gives their
+`Str` — `"2026-08-10"`, `Green`. A `Map` is the one tagged value that is what it
+looks like: it walks as `RK_HASH`.
 
 ### Arguments
 

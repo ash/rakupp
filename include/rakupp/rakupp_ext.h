@@ -123,7 +123,15 @@ typedef enum {
     RK_STR   = 5,
     RK_ARRAY = 6,
     RK_HASH  = 7,
-    RK_OTHER = 8   /* something this ABI has no vocabulary for; stringify it */
+    RK_OTHER = 8   /* something this ABI has no vocabulary for; stringify it.
+                      That includes every value the engine carries on a plain
+                      representation without it BEING one — a Date, DateTime,
+                      Buf, IO::Path, Instant, an enum value, an allomorph such
+                      as <42>, a junction: never the hash, Str or Int
+                      underneath, so a serializer cannot leak a Date's fields
+                      or write an enum as its ordinal. rk_str_get gives their
+                      Str ("2026-08-10", "Green"). A Map is the one tagged
+                      value that is what it looks like: it walks as RK_HASH. */
 } RkType;
 
 /* ---- constructing ---- */

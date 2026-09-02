@@ -64,6 +64,7 @@ my @requests =
     Q<{"jsonrpc":"2.0","id":14,"method":"tools/call","params":{"name":"raku_nope","arguments":{}}}>,
     Q<{"jsonrpc":"2.0","id":15,"method":"tools/call","params":{"name":"raku","arguments":{"code":"exit 9"}}}>,
     Q<{"jsonrpc":"2.0","id":16,"method":"tools/call","params":{"name":"raku","arguments":{"code":"$x"}}}>,
+    Q<{"jsonrpc":"2.0","id":17,"method":"tools/call","params":{"name":"raku-parse","arguments":{"grammar":"grammar D { token TOP { \\d+ } }; class DA { method TOP($/) { make Date.new(2026, 8, 10) } }","text":"1","name":"D","actions":"DA"}}}>,
     ;
 
 my $p = run $rakupp.Str, '--mcp', '--timeout=120', :in, :out, :err;
@@ -75,8 +76,8 @@ $p.err.slurp(:close);
 check $p.exitcode == 0, 'the server exits 0 when its client closes stdin',
     "exit code {$p.exitcode}";
 
-# One request carried no id (the initialized notification): 17 in, 16 answers.
-check @lines.elems == 16, 'every id answered, the notification not',
+# One request carried no id (the initialized notification): 18 in, 17 answers.
+check @lines.elems == 17, 'every id answered, the notification not',
     "got {@lines.elems} lines";
 check @lines.grep(!*.starts-with('{')) == 0,
     'stdout carries the protocol and nothing else';
@@ -112,6 +113,11 @@ check reply(14).contains('-32602') && reply(14).contains('raku_nope'),
 check reply(15).contains(Q{"isError":true}) && reply(15).contains(Q{exit(9)}),
     'exit comes back as an error naming its code — the server lives', reply(15);
 check reply(16).contains(Q{=> 41}), 'the session SURVIVES the exit attempt', reply(16);
+# A made value crosses through the extension ABI's rk_type. A Date is a hash
+# of year/month/day inside the engine, and it once crossed as exactly that;
+# the ABI now calls it RK_OTHER and it crosses as its Str.
+check reply(17).contains(Q{\"made\":\"2026-08-10\"}),
+    'a made Date crosses as its Str, not as the hash of its fields', reply(17);
 
 # ---- the watchdog -----------------------------------------------------------
 # `loop {}` cannot be interrupted, so the contract is: answer the request

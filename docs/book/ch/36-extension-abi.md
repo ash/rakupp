@@ -182,6 +182,15 @@ in Raku's type hierarchy. Anything the ABI has no vocabulary for arrives as
 choice: a fine one would have to track the language's type system, which is
 exactly the coupling this design exists to avoid.
 
+Coarse cuts one way only. A `Date` is a hash of year, month and day inside the
+engine, an enum value is an `Int`, a `Buf` is a `Str` — and none of them arrive
+as that carrier. They are `RK_OTHER`, and `rk_str_get` gives their `Str`
+(`"2026-08-10"`, `Green`), because an extension that was told `RK_HASH` would
+serialise the date's fields, and one told `RK_INT` would write the enum's
+ordinal. JSON::Native's C writer did exactly the first of those until the
+mapping was fixed. The one tagged value that is what it looks like is a `Map`,
+which walks as `RK_HASH`.
+
 ```c
 /* arguments */
 size_t  rk_argc (RkCtx c);                    /* positionals only */

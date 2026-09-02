@@ -70,6 +70,29 @@ int main(void) {
           rk_type(c, v) == RK_HASH && rk_elems(c, v) == 2 &&
           strcmp(rk_key_at(c, v, 0, 0), "a") == 0, "a Hash is walkable");
 
+    /* Values the engine carries on a plain representation without BEING it —
+     * a Date is a hash of year/month/day inside, an enum value an Int, a Buf
+     * a Str, an allomorph an Int whose Str is its source text — are RK_OTHER
+     * to the ABI, and stringify. JSON::Native's C writer once serialised a
+     * Date as {"year":2026,"month":8,"day":10} because rk_type said RK_HASH.
+     * A Map is the one tagged hash that walks as a hash. */
+    check(rk_eval(rk, "Date.new(2026, 8, 10)", &v) == RK_OK &&
+          rk_type(c, v) == RK_OTHER &&
+          strcmp(rk_str_get(c, v, 0), "2026-08-10") == 0,
+          "a Date is RK_OTHER and stringifies, not a hash of its fields");
+    check(rk_eval(rk, "enum Colour <Red Green>", 0) == RK_OK &&
+          rk_eval(rk, "Green", &v) == RK_OK &&
+          rk_type(c, v) == RK_OTHER &&
+          strcmp(rk_str_get(c, v, 0), "Green") == 0,
+          "an enum value is RK_OTHER and stringifies to its key, not its ordinal");
+    check(rk_eval(rk, "Buf.new(1, 2)", &v) == RK_OK && rk_type(c, v) == RK_OTHER,
+          "a Buf is RK_OTHER, not the Str inside it");
+    check(rk_eval(rk, "<42>", &v) == RK_OK && rk_type(c, v) == RK_OTHER,
+          "an allomorph is RK_OTHER, not the Int inside it");
+    check(rk_eval(rk, "Map.new('a', 1)", &v) == RK_OK &&
+          rk_type(c, v) == RK_HASH && rk_elems(c, v) == 1 &&
+          strcmp(rk_key_at(c, v, 0, 0), "a") == 0, "a Map walks as a hash");
+
     /* --- an interpreter is a SESSION, not a one-shot -------------------- */
     check(rk_eval(rk, "my $x = 41", 0) == RK_OK, "a declaration evaluates");
     check(rk_eval(rk, "$x + 1", &v) == RK_OK && rk_int_get(c, v) == 42,

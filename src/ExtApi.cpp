@@ -85,6 +85,21 @@ RkType rk_type(RkCtx, RkValue v) {
     if (!x) return RK_ANY;
     switch (x->t) {
         case VT::Nil: case VT::Any: case VT::Type: return RK_ANY;
+        default: break;
+    }
+    // A KINDED value rides a plain carrier without being one: a Date is a
+    // Hash tagged "Date" (year/month/day inside), a DateTime likewise, a Buf
+    // a Str tagged "Buf", an IO::Path a Str, an Instant a Num, an allomorph
+    // (<42>) an Int whose Str is its source text, an enum value an Int whose
+    // Str is its KEY, a junction an Array. Answering with the carrier handed
+    // extensions the internals: JSON::Native's C writer serialised a Date as
+    // {"year":2026,"month":8,"day":10} where JSON::Fast writes "2026-08-10",
+    // and an enum value as the bare word Green. These are RK_OTHER — "no
+    // vocabulary; stringify it" — and rk_str_get gives their Str. The one tag
+    // that IS the plain thing is Map, rk_map's own: it walks as a hash.
+    if (!x->enumName.empty()) return RK_OTHER;
+    if (!x->hashKind.empty() && !(x->t == VT::Hash && x->hashKind == "Map")) return RK_OTHER;
+    switch (x->t) {
         case VT::Bool:  return RK_BOOL;
         case VT::Int:   return RK_INT;
         case VT::Num:   return RK_NUM;
