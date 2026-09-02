@@ -1821,11 +1821,20 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             return Value::str(buf);
         }
         if (m == "raku" && inv.hashKind == "DateTime") {
+            // Rakudo's form is POSITIONAL — `DateTime.new(2022,1,1,2,9,0)` — the
+            // second is the stored value's own Str (0.5, 0.333333, 59.999: not
+            // truncated to a whole second) and `:timezone(N)` trails only when N
+            // is not 0. The named form printed here before was ours alone;
+            // Mathematica::Serializer rewrites this string into a WL
+            // DateObject[{…}] by substitution and pins the Rakudo text exactly.
+            auto sit = inv.hash()->find("second");
+            std::string sec = sit != inv.hash()->end() ? sit->second.toStr() : "0";
             char buf[160];
-            snprintf(buf, sizeof buf,
-                "DateTime.new(:year(%lld), :month(%lld), :day(%lld), :hour(%lld), :minute(%lld), :second(%lld), :timezone(%lld))",
-                fld("year"), fld("month"), fld("day"), fld("hour"), fld("minute"), fld("second"), fld("timezone"));
-            return Value::str(buf);
+            snprintf(buf, sizeof buf, "DateTime.new(%lld,%lld,%lld,%lld,%lld,%s",
+                     fld("year"), fld("month"), fld("day"), fld("hour"), fld("minute"), sec.c_str());
+            std::string out = buf;
+            if (long long tz = fld("timezone")) out += ",:timezone(" + std::to_string(tz) + ")";
+            return Value::str(out + ")");
         }
         if (m == "mm-dd-yyyy" || m == "dd-mm-yyyy") { // US / European date strings
             char buf[48];

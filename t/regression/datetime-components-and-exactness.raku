@@ -73,4 +73,21 @@ check(DateTime.new('2008-12-31T23:59:60Z').Str, '2008-12-31T23:59:60Z', 'a-leap-
 check(DateTime.new('2008-12-31T23:59:60Z').earlier(:1day).Str,
       '2008-12-30T23:59:59Z', 'and-clamps-when-the-day-changes');
 
+# .raku is Rakudo's POSITIONAL form, the second exact and :timezone only when
+# non-zero — Mathematica::Serializer turns this text into a WL DateObject[{…}]
+# by substitution and pins `DateTime.new(2022,1,1,2,9,0)` exactly; the named
+# `DateTime.new(:year(2022), …, :second(0), :timezone(0))` form printed before
+# was ours alone, and it truncated 59.999 to 59 on the way.
+check(DateTime.new(2022,1,1,2,9,0).raku,   'DateTime.new(2022,1,1,2,9,0)',   'raku-is-positional');
+check(DateTime.new(2022,1,1,2,9,0.5).raku, 'DateTime.new(2022,1,1,2,9,0.5)', 'raku-keeps-a-fractional-second');
+check(DateTime.new(2022,1,1,2,9,1/3).raku, 'DateTime.new(2022,1,1,2,9,0.333333)', 'raku-prints-a-Rat-second-as-Str-does');
+check(DateTime.new(2022,1,1,2,9,59.999e0).raku, 'DateTime.new(2022,1,1,2,9,59.999)', 'raku-keeps-a-Num-second');
+check(DateTime.new('2022-01-01T02:09:00.123Z').raku, 'DateTime.new(2022,1,1,2,9,0.123)', 'raku-after-parsing');
+check(DateTime.new(2022,1,1,2,9,0, :timezone(3600)).raku, 'DateTime.new(2022,1,1,2,9,0,:timezone(3600))', 'raku-shows-a-non-zero-timezone');
+check(DateTime.new(2022,1,1,2,9,0, :timezone(-3600)).raku, 'DateTime.new(2022,1,1,2,9,0,:timezone(-3600))', 'raku-negative-timezone');
+check(DateTime.new(2022,1,1,2,9,0, :timezone(3600)).utc.raku, 'DateTime.new(2022,1,1,1,9,0)', 'raku-after-utc-drops-the-zero-timezone');
+check(DateTime.new(2022,1,1,2,9,0).later(:1hour).raku, 'DateTime.new(2022,1,1,3,9,0)', 'raku-after-later');
+check(DateTime.new(0).raku, 'DateTime.new(1970,1,1,0,0,0)', 'raku-of-the-epoch');
+check(Date.new(2022,1,1).raku, 'Date.new(2022,1,1)', 'Date-raku-unchanged');
+
 if @fail { note "FAILED: @fail.join('; ')"; say 'FAIL' } else { say 'PASS' }

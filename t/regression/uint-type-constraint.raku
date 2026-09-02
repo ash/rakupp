@@ -35,4 +35,22 @@ try { positional(-1); CATCH { default { $threw = True } } }
 my UInt $v = 5;
 check($v.gist, '5', 'a UInt container holds a value');
 
+# The subset is `where { not .defined or $_ >= 0 }` on Rakudo: Nil is no Int at
+# all, so it fails; the Int TYPE OBJECT is admitted by the where clause; and a
+# Bool is a non-negative Int. Nil passing let Mathematica::Serializer's
+# `when UInt` arm take a Nil Pair value and answer `Nil.Str` — an empty string
+# where `NULL` was due (Rule["condo",] for Rule["condo",NULL]).
+check((Nil ~~ UInt).gist,  'False', 'smartmatch: Nil is not a UInt');
+check((Any ~~ UInt).gist,  'False', 'smartmatch: nor is Any');
+check((Int ~~ UInt).gist,  'True',  'smartmatch: the Int type object is (undefined is admitted)');
+check((Bool ~~ Int).gist,  'True',  'smartmatch: the Bool type object is an Int (its MRO is Bool, Int, Cool)');
+check((Bool ~~ UInt).gist, 'True',  'smartmatch: so it is a UInt too');
+check((True ~~ UInt).gist, 'True',  'smartmatch: and True, a non-negative Int');
+check((Cool ~~ UInt).gist, 'False', 'smartmatch: Cool sits above Int and is not');
+check(positional(True), 'g=True', 'a UInt positional takes a Bool');
+sub typed(UInt $x) { $x.gist }
+check(typed(Int), '(Int)', 'and the Int type object');
+my $where = do given Nil { when UInt { 'UInt' }; when Int { 'Int' }; default { 'default' } };
+check($where, 'default', 'given Nil: the UInt arm is passed over');
+
 if @fail { note "FAILED: @fail.join('; ')"; say 'FAIL' } else { say 'PASS' }

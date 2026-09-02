@@ -10687,7 +10687,11 @@ static bool typeNameConforms(const std::string& lnIn, const std::string& rn,
             {"Rat", {"Rational", "Real", "Numeric", "Cool"}},
             {"FatRat", {"Rational", "Real", "Numeric", "Cool"}}, // NOT a Rat: both do Rational
             {"Complex", {"Numeric", "Cool"}},
-            {"Str", {"Stringy", "Cool"}}, {"Bool", {"Cool"}},
+            {"Str", {"Stringy", "Cool"}},
+            // Bool is an Int-backed enum: its MRO is Bool, Int, Cool, Any, Mu, so
+            // the TYPE object conforms to Int/Real/Numeric as its values do
+            // (`Bool ~~ Int` is True on Rakudo; it answered False here)
+            {"Bool", {"Int", "Real", "Numeric", "Cool"}},
         };
         auto tw = tower.find(ln);
         if (tw != tower.end()) for (auto& anc : tw->second) if (anc == rn) { baseOk = true; break; }
@@ -10844,7 +10848,9 @@ static bool typeMatchesArg(const Value& arg, const std::string& type) {
             // Bool is Int is Cool (and an Enumeration): a Cool/Int candidate
             // must accept True — JSON::Marshal's Cool multi lost to Mu:D here
             // and a Bool serialized as an empty object
-            return type == "Bool" || type == "Int" || type == "Cool" ||
+            // …and, being a non-negative Int, it is a UInt too (`True ~~ UInt`
+            // is True on Rakudo, and `sub f(UInt $x)` takes True)
+            return type == "Bool" || type == "Int" || type == "UInt" || type == "Cool" ||
                    type == "Numeric" || type == "Real" || type == "Enumeration";
         case VT::Str:
             // a byte buffer is NOT Stringy: Blob/Buf bind only buffer-typed
@@ -10920,6 +10926,10 @@ static bool typeMatchesArg(const Value& arg, const std::string& type) {
         // when one of the two names is not a type we know — an unregistered user
         // type must not be dispatched away on our ignorance.
         case VT::Type: {
+            // Rakudo's UInt is `subset UInt of Int where { not .defined or $_ >= 0 }`:
+            // the where clause ADMITS the undefined, so the Int type object (and
+            // every Int-derived one) conforms — `Int ~~ UInt` is True there
+            if (type == "UInt") return typeNameConforms(arg.s, "Int", arg.ofType(), std::string());
             if (typeNameConforms(arg.s, type, arg.ofType(), std::string())) return true;
             std::string ln = arg.s;
             size_t br = ln.find('['); if (br != std::string::npos) ln = ln.substr(0, br);
@@ -10928,7 +10938,14 @@ static bool typeMatchesArg(const Value& arg, const std::string& type) {
             };
             return !(known(ln) && known(type));
         }
-        default: return true; // Nil/Type/unknown subset/enum: lenient
+        // Nil stays lenient for a NOMINAL constraint (a Nil rakupp produces
+        // where Rakudo has a value must not cost a candidate) — but UInt is a
+        // CONSTRAINED subset of Int and Nil is no Int, so `Nil ~~ UInt` is
+        // False, as on Rakudo. Being lenient here sent a Nil Pair value down the
+        // `when UInt` arm of Mathematica::Serializer's encoder, whose handler
+        // is `$i.Str`: Rule["condo",] where Rule["condo",NULL] was due.
+        case VT::Nil: return type != "UInt";
+        default: return true; // unknown subset/enum: lenient
     }
 }
 
