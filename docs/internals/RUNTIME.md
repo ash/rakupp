@@ -75,27 +75,44 @@ plain struct that carries a type tag plus a field for every kind of payload,
 with the heavy payloads behind `shared_ptr`.
 
 ```cpp
-enum class VT { Nil, Any, Bool, Int, Num, Str, Array, Hash, Code, Range,
-                Pair, Type, Whatever, Object, Rat, Regex, Match, Complex };
+enum class VT : uint8_t { Nil, Any, Bool, Int, Num, Str, Array, Hash, Code,
+                          Range, Pair, Type, Whatever, Object, Rat, Regex,
+                          Match, Complex };
+enum class PK : uint8_t { None, List, Hash, Code, PairV, Obj, Match };
 
-struct Value {
-    VT t = VT::Any;              // the discriminator — which fields are live
-    bool b;  long long i;  double n, im;   // Bool / Int / Num / (Complex imag)
-    CowStr s;                    // Str; also the type name for Type, key for Pair
-                                 // (copy-on-write above 64 bytes — see STRINGS.md)
-    // ... flags: isList, itemized, readonly, namedArg, fatRat, ...
-    std::shared_ptr<ValueList> arr;              // Array / List / Seq elements
-    std::shared_ptr<std::map<std::string, Value>> hash;   // Hash entries
-    std::shared_ptr<Callable> code;              // Code
-    std::shared_ptr<ObjectData> obj;             // Object (user class instance)
-    std::shared_ptr<BigInt> big, ratN, ratD;     // bignum Int / Rat numerator+denominator
-    std::shared_ptr<void> ext;                   // opaque: Promise/Channel/lazy-seq state
-    // ... Range bounds, enum name, element type, native-int width, ...
+struct Value {                   // 128 bytes
+    long long i = 0;             // Int; a Type's definiteness; a Seq's position
+    double    n = 0;             // Num; the real part of a Complex
+    CowStr    s;                 // Str; also the type name for Type, key for Pair
+                                 // (copy-on-write above 23 bytes — see STRINGS.md)
+    IStr      hashKind;          // "" Hash, else Set/Bag/Mix/Buf… — interned
+    VT   t = VT::Any;            // the discriminator — which fields are live
+    bool b, isList, itemized, objKeyed, readonly, namedArg, natSigned, natFloat;
+    PK   pk_ = PK::None;         // what the payload slot holds
+    int  natBits = 0;            // native width uint8/int16/…; 0 = not native
+    std::shared_ptr<void>     p_;  // THE payload slot: list, hash, Callable,
+                                   // Pair value, object — or a MatchData
+                                   // holding three of them at once
+    std::shared_ptr<ValueExt> x_;  // the cold block: Rat parts, Complex imag,
+                                   // Range ends, BigInt, shape, ofType…
+                                   // null on almost every value
+    IStr enumName, enumType;       // enum key and enum type — interned
 };
 ```
 
 (Full definition: `src/Value.h`.) The `VT t` tag is the discriminator;
-code reads the fields that tag makes live. Small scalars (`Bool`, `Int`, `Num`,
+code reads the fields that tag makes live.
+
+**The accessors are the interface, not the fields.** `arr`, `hash`, `code`,
+`pairVal` and `obj` were five separate `shared_ptr` members until the payload
+slot replaced them, and `big`, `ratN`, `ratD`, `pairKey`, `ext`, `shape`,
+`ofType`, `im` and the `Range` bounds were inline until the cold block took
+them — but each is still reached as `v.arr()`, `v.ratN()`, `v.rFrom()` and
+still returns what it always did. That is deliberate: about 3,900 call sites
+depend on it, and the accessors were introduced before the fields moved so
+that they would not have to move again. Read older notes in this directory
+with that in mind; where they name a field, the accessor of that name is what
+exists now. Small scalars (`Bool`, `Int`, `Num`,
 `Range` bounds, `Complex`) live inline in the struct; anything with sharable or
 unbounded storage (`Array`, `Hash`, `Code`, `Object`, bignums) lives behind a
 `shared_ptr`.
@@ -165,12 +182,12 @@ A few tag choices are worth noting because they reuse fields cleverly:
   arithmetic, so any `FatRat` operand makes the result a `FatRat` — and is
   **exempt from the spill**, staying an arbitrary-precision rational forever
   (`src/Interpreter.cpp`).
-- **An `Int`** is a `long long i` until it overflows, then it grows a
-  `shared_ptr<BigInt> big`; `Value::bigint` picks inline vs. heap automatically
-  (`src/Value.h`).
-- **An enum value** is a `VT::Int` carrying its integer plus `enumName`/`enumType`
-  strings (`src/Value.h`), so `Less`/`Same`/`More` compare as `-1/0/1` yet
-  stringify as their name.
+- **An `Int`** is a `long long i` until it overflows, then it grows a `BigInt`
+  in the cold block, reached as `v.big()`; `Value::bigint` picks inline vs.
+  heap automatically (`src/Value.h`).
+- **An enum value** is a `VT::Int` carrying its integer plus `enumName` and
+  `enumType` — interned handles, not strings (`src/IStr.h`) — so
+  `Less`/`Same`/`More` compare as `-1/0/1` yet stringify as their name.
 - **A `Junction`** is a `VT::Array` tagged by `enumName ∈ {any,all,one,none}` —
   no dedicated `VT`. See [Junctions](#junctions).
 

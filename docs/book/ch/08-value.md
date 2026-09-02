@@ -9,10 +9,38 @@ written in statically-typed C++17 with no garbage collector. One data structure
 carries the entire distance between those two facts.
 
 ```cpp
-// src/Value.h
-enum class VT { Nil, Any, Bool, Int, Num, Str, Array, Hash, Code, Range,
-                Pair, Type, Whatever, Object, Rat, Regex, Match, Complex };
+// src/Value.h — as it stands
+enum class VT : uint8_t { Nil, Any, Bool, Int, Num, Str, Array, Hash, Code,
+                          Range, Pair, Type, Whatever, Object, Rat, Regex,
+                          Match, Complex };
+enum class PK : uint8_t { None, List, Hash, Code, PairV, Obj, Match };
 
+struct Value {                     // 128 bytes
+    long long i = 0;               // Int; a Type's definiteness; a Seq's position
+    double    n = 0;               // Num; the real part of a Complex
+    CowStr    s;                   // Str; also the Type name and the Pair key
+    IStr      hashKind;            // "" Hash, else Set/Bag/Mix/Buf… — interned
+    VT   t = VT::Any;              // the discriminator
+    bool b, isList, itemized, objKeyed, readonly, namedArg,
+         natSigned, natFloat;      // packed together so they cost one word
+    PK   pk_ = PK::None;           // what the payload slot holds
+    int  natBits = 0;              // native width uint8/int16/…; 0 = not native
+    std::shared_ptr<void>     p_;  // THE payload slot: a list, a hash, a
+                                   // Callable, a Pair's value, an object — or a
+                                   // MatchData carrying three of them at once
+    std::shared_ptr<ValueExt> x_;  // the cold block: Rat parts, Complex imag,
+                                   // Range ends, BigInt, shape, ofType…
+                                   // null on almost every value
+    IStr enumName, enumType;       // enum key and enum type — interned
+};
+```
+
+Two `shared_ptr`s, one interned tag, a packed word of flags. That is not what
+this chapter was written against, and the original is worth seeing, because
+every argument below is easier to follow when the fields are all in the open:
+
+```cpp
+// src/Value.h — the 392-byte original, for the arguments that follow
 struct Value {
     VT t = VT::Any;              // the discriminator
     bool b; long long i; double n, im;    // Bool / Int / Num / Complex imag
@@ -35,6 +63,22 @@ struct Value {
 Eighteen tags, eleven `shared_ptr`s, and a pile of flags. It looks
 indefensible. It is not, and the case for it is the most important argument in
 this book.
+
+**Read the field names below as the original's, because they still work.** The
+three campaigns that took 392 to 128 (Chapter 40) moved fields; they did not
+rename anything a reader or a caller uses. `arr`, `hash`, `code`, `pairVal` and
+`obj` became one kind-tagged slot, and `big`, `ratN`, `ratD`, `pairKey`, `ext`,
+`shape`, `ofType`, `im` and the `Range` ends went behind a lazily-allocated
+cold block — but every one of them is still spelled `v.arr()`, `v.ratN()`,
+`v.rFrom()`, and returns what it always did. Roughly 3,900 call sites depended
+on that, which is why the accessors were introduced *before* the fields moved.
+The struct got smaller; the model did not change.
+
+The one place the change is visible is the `Match`, and it is visible because
+the design below forced it: a `Match` genuinely needs `arr`, `hash` and
+`pairVal` at once, so it is the single licensed co-occupant of the payload
+slot, riding in a `MatchData` body that holds all three. The next section is
+why that mattered.
 
 ## Why not a union, a variant, or a class hierarchy
 
@@ -263,33 +307,107 @@ solving the same layering problem the same way.
 | `CowStr` | 40 |
 | **`Value`** | **392**, on the build these numbers were taken from |
 
-Every `Value` carries every field, live or not. A `ValueList` of integers is
-about fifty times the size of a `vector<int64_t>` on the build these numbers
-come from, and sixteen times at the 128 bytes the struct reached later. That is
-the price of branch-free field access and trivial copyability, and it is a real
-price:
+Every `Value` carries every field, live or not — or, since the cold block, every
+field it might plausibly need with the rest one pointer away. A `ValueList` of
+integers is about fifty times the size of a `vector<int64_t>` on the build these
+numbers come from. That is the price of branch-free field access and trivial
+copyability, and it is a real price:
 the profile of a method-call-heavy loop puts 31% of the time in heap allocation
 and 11% in `Value` copy and destruction.
 
-The number moves. It was 392, then 376, then 344 in the course of ordinary
-optimisation work — and the representation plan then delivered its two
-census-guided batches, 344 → 208 → 128, the story Chapter 40 tells. Two of
-the earlier reductions are already in this chapter: `hashKind`, `enumName` and
-`enumType` became interned 8-byte handles instead of 24-byte strings
-(Chapter 10), and the string payload became a copy-on-write type (Chapter 9).
-The cold-block and payload-slot moves that took it the rest of the way are
-Chapter 40's.
+The number moves, which is why this chapter shows two listings. It has been
+392, 376, 344, 208 and 128 bytes, and the next section walks the whole lineage
+— including the step that made it smaller and slower, and had to be reverted.
+
+The table above prices the 392-byte original because that is the version the
+argument was made against, and because the ratio it produces — fifty times a
+`vector<int64_t>` — is the number that made the case for shrinking. At 128
+bytes the same ratio is sixteen. The design did not change; the tax did.
 
 That instability is also the single most important input to the extension ABI
 in Chapter 36, which is why an extension module never sees this struct at all.
 
-The shrinking had one consequence nobody planned for, and it is recorded in
-Chapter 41 rather than here: the cost of parking a `Value` in long-lived,
-addressable storage — the thing that had made a partially lowered bytecode IR
-structurally impossible — is a function of how much struct there is to
-construct and destroy. At 376 bytes it was 11.2 nanoseconds per node. At 128
-it is zero. A representation change removed an architectural objection, which
-is not a connection the plan predicted.
+## The struct, version by version
+
+`Value` is the most-rewritten data structure in the project, and every rewrite
+was measured. The lineage is worth having in one place, because the individual
+steps are scattered across four later chapters and because two of them are
+lessons rather than wins.
+
+| | bytes | what changed |
+|---|---:|---|
+| original | 392 | four `std::string`s, eleven `shared_ptr`s, all inline |
+| ordinary work | 376 | field-level tidying, no design change |
+| *attempted* | *360* | **flags packed to remove padding — reverted** |
+| batch 1 | 344 | `hashKind`, `enumName`, `enumType` interned (Chapter 10) |
+| batch 2 | 208 | the cold block: rarely-used fields behind one lazy pointer |
+| batch 4 | 128 | five payload pointers become one kind-tagged slot |
+| design A | *56* | proposed: intrusive refcount, kind-specific bodies, packed tags |
+| design C | *32* | proposed: the string leaves the struct too |
+
+**The reverted step is the most instructive.** In July 2026 the flags —
+`fatRat`, the three `Range` booleans, `natBits` and its two companions — sat
+between 8- and 16-byte members and forced 23 bytes of pure padding. Grouping
+them was free: no behaviour change, no risk, 376 down to 360. It measured
+**2.5% slower**, consistently, over six alternating rounds.
+
+The explanation is that the hot field offsets did not move — `t`, `b`, `i`,
+`n`, `im`, `s`, `hashKind` stayed exactly where they were — while `arr` and
+every pointer after it shifted by eight bytes. Smaller is not automatically
+faster when the thing you shrink is padding a cache line was absorbing anyway,
+and a *free* change can still cost. The size campaign that eventually
+succeeded did not repack fields; it moved them out of the struct.
+
+**Batch 1 replaced types, not layout.** Three of the four `std::string`s were
+secondary type tags drawn from a closed vocabulary — container kinds, type
+names — so they became interned 8-byte handles (Chapter 10). Fifteen
+non-trivial members became twelve, `sizeof` went 392 to 344, and a JSON parse
+got 4 to 6 per cent faster at every document size while a twelve-thousand-entry
+hash build went from 302 to 265 nanoseconds per entry. The win is not the
+bytes; it is that a copy stopped running three string constructors.
+
+**Batch 2 asked what a typical value actually carries.** A census instrumented
+every `Value` destruction and counted which pointers were live: of thirty
+million destructions, **25.6 million carried none** of `big`, `ratN`, `ratD`,
+`pairKey`, `ext`, `shape` or the `Range` fields. So those moved behind one
+lazily-allocated, copy-on-write block, and an `Int` stopped paying for a `Rat`
+it does not have. Reads never allocate; writes clone a shared block first.
+
+**Batch 4 collapsed the payload.** The same census said `arr`, `hash`, `code`,
+`pairVal` and `obj` are mutually exclusive on every live value — with exactly
+one exception, the `Match`, which needs three at once — so five pointers became
+one `shared_ptr<void>` plus a one-byte kind tag, and the `Match` got a combined
+body. That is where the `MatchData` mentioned at the top of this chapter comes
+from: it exists because the union argument this chapter opens with is *true*,
+and the one place it is true had to be given somewhere to live.
+
+Batch 4 also produced the campaign's sharpest reminder that a census bounds
+what typical programs do and not what the language allows. A container declared
+`is default(9)` carries its element default *alongside* its payload — a live
+co-occurrence the thirty-million-destruction census never sampled, because it
+is rare per value and unremarkable per program. Three regression files
+segfaulted within minutes of the change. The default now lives in the cold
+block, where rare-per-value belongs.
+
+**What the shrinking bought that nobody planned.** Two consequences arrived
+from outside the campaign's own goals. The first is in Chapter 41: the cost of
+parking a `Value` in long-lived addressable storage, which had made a partially
+lowered bytecode IR structurally impossible, is a function of how much struct
+there is to construct and destroy — 11.2 nanoseconds per node at 376 bytes,
+zero at 128. The second is in Chapter 12: at 128 bytes with two `shared_ptr`s
+and no self-referential member, a `Value` is *trivially relocatable*, which is
+what lets a list of them grow by `memcpy`. Neither was a design goal. Both
+follow from the same reduction.
+
+**What is left.** Fifty-six bytes is reachable without touching the string: an
+intrusive refcount instead of `shared_ptr`, kind-specific bodies instead of the
+generic cold block, the tag word packed, and `i`/`n` unioned. Thirty-two means
+the string leaves the struct, and the probe says the two ways of doing that
+differ by seven times in opposite directions — a heap body is 1.6× slower than
+today, an inline buffer 3.7 to 4.4× faster, and the second costs a
+fifteen-hundred-site type change. Sixteen is not a layout change at all: it needs
+values to stop being refcounted and the container to stop living inside the
+value, which is a rewrite of assignment and binding rather than a batch.
 
 ## Honest limitations
 
