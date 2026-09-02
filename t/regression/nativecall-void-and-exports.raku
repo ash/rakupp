@@ -31,6 +31,22 @@ check(nativecast(Pointer[void], $vp).Int == 4242, 'nativecast to Pointer[void]')
 constant void-ptr = Pointer[void];    # the issue's own line
 check(void-ptr.gist.contains('void'), 'constant = Pointer[void]');
 
+# 1b. …and that constant used AS A TYPE, which is the only reason to declare it.
+# The RETURN position is the one that was broken: the marshaller matched the
+# declared name against its arms literally, `void-ptr` matched none, and malloc
+# handed back a bare Int — so `$p ~~ Pointer` was False and `free($p)` was given
+# an integer. Both silently, which is what makes it worth a test.
+sub nc_malloc(size_t             --> void-ptr) is native is symbol('malloc') {*}
+sub nc_memcpy(void-ptr, void-ptr, size_t --> void-ptr) is native is symbol('memcpy') {*}
+sub nc_free(void-ptr)                          is native is symbol('free')   {*}
+my $bytes = CArray[uint8].new(0x41, 0x42, 0x43, 0);
+my $heap  = nc_malloc($bytes.elems);
+check($heap ~~ Pointer,               'a `--> void-ptr` return is a Pointer, not an Int');
+check(?$heap,                         'and a non-NULL one');
+nc_memcpy($heap, nativecast(void-ptr, $bytes), $bytes.elems);
+check(nativecast(Str, $heap) eq 'ABC', 'C wrote through the aliased void *');
+nc_free($heap);
+
 # 2. the qualified spellings name the same types
 check(NativeCall::Types::void === void,         'NativeCall::Types::void is void');
 check(NativeCall::Types::Pointer === Pointer,   'NativeCall::Types::Pointer is Pointer');

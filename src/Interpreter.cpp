@@ -12675,6 +12675,16 @@ static std::string ncElemType(const std::string& t) {
     size_t b = t.find('[');
     return b == std::string::npos ? "" : t.substr(b + 1, t.size() - b - 2);
 }
+// Does this spelling name a return type the marshaller already understands?
+// Only a name that does NOT is worth a closure lookup for a constant alias.
+static bool ncKnownRetSpelling(const std::string& t) {
+    if (t.empty() || t == "void" || t == "Nil" || t == "Str" ||
+        t == "Bool" || t == "bool") return true;
+    if (t == "Pointer" || t.rfind("Pointer[", 0) == 0) return true;
+    if (t == "CArray"  || t.rfind("CArray[", 0)  == 0) return true;
+    bool sgn, flt; return ncScalarWidth(t, sgn, flt) > 0;
+}
+
 // A live Pointer holds { addr, of } — deref reads native memory of type `of`.
 Value Interpreter::ncMakePointer(const std::string& type, void* p) {
     Value v = Value::makeHash(); v.hashKind = "Pointer";
@@ -13409,7 +13419,20 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
         else         putInt(s, v.toInt(), w, sgn);
     }
 
-    const std::string& rt = c.retType;
+    // The declared return type may be a CONSTANT aliasing a native one —
+    // `constant void-ptr = Pointer[void];` and then `--> void-ptr`, which is the
+    // spelling issue #57 reported and the reason the alias is declared at all.
+    // Resolve it ONCE here, so the libffi return type, the boxing and the width
+    // truncation below all see the type the constant names: unresolved, the name
+    // matched no arm and `malloc` handed back a bare Int instead of a Pointer.
+    // (`--> PwStruct` already resolved, but only in the class arm, via ncClass.)
+    std::string rtAlias;
+    if (!c.retType.empty() && c.closure && !ncKnownRetSpelling(c.retType))
+        if (Value* cv = c.closure->find(c.retType))
+            if (cv->t == VT::Type && !cv->s.empty())
+                rtAlias = (!cv->ofType().empty() && cv->s.find('[') == std::string::npos)
+                        ? cv->s.str() + "[" + std::string(cv->ofType()) + "]" : cv->s.str();
+    const std::string& rt = rtAlias.empty() ? c.retType : rtAlias;
     bool retFP  = ncIsFloatType(rt);
     bool retF32 = (rt == "num32");
     if (retF32 && needFfi.empty()) needFfi = "a num32 return value";
