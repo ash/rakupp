@@ -2691,6 +2691,11 @@ void Lexer::processHeredocs(std::vector<Token>& out) {
             std::string line;
             while (!eof() && peek() != '\n') line += advance();
             if (!eof()) advance(); // newline
+            // A CRLF source leaves the terminator line ending in '\r'; strip it
+            // for the marker comparison (and off the body line below), or
+            // `TEXT\r` never equals `TEXT` and the heredoc "runs away" to EOF
+            // (Text::Markdown ships its tests with CRLF line endings).
+            if (!line.empty() && line.back() == '\r') line.pop_back();
             // trimmed comparison to the marker
             size_t a = line.find_first_not_of(" \t");
             std::string trimmed = (a == std::string::npos) ? "" : line.substr(a);

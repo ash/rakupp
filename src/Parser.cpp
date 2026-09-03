@@ -4293,7 +4293,10 @@ ExprPtr Parser::parsePrimary() {
             }
             if (t.text == "*") { advance(); return std::make_unique<WhateverExpr>(); }
             if (t.text == "**") { advance(); auto w = std::make_unique<WhateverExpr>(); w->hyper = true; return w; } // HyperWhatever (e.g. %h{**})
-            if (t.text == "||") { // slip-subscript `@a[|| @dims]` / `%h{|| @keys}`: navigate by a list of indices/keys
+            // slip-subscript `@a[|| @dims]` / `%h{|| @keys}`: navigate by a list
+            // of indices/keys — but NOT `||(EXPR)` glued to a paren, which is the
+            // orphaned-infix term handled further down (TOML::NQP).
+            if (t.text == "||" && !(peek().kind == Tok::LParen && !peek().spaceBefore)) {
                 advance(); auto u = std::make_unique<Unary>(); u->op = "dimslip"; u->operand = parseExpr(BP_COMMA + 1); return u;
             }
             if (t.text == "\xE2\x88\x9E") { advance(); auto inf = std::make_unique<NumLit>(std::numeric_limits<double>::infinity()); inf->raw = "\xE2\x88\x9E"; return inf; } // ∞
@@ -4380,6 +4383,17 @@ ExprPtr Parser::parsePrimary() {
                 }
                 matchKind(Tok::RBracket);
                 return std::make_unique<VarExpr>("&infix:<" + hyperMarkersToUni(op) + ">");
+            }
+            // `&&(EXPR)` / `||(EXPR)` glued to `(` in TERM position is the value
+            // of that parenthesised expression, the leading operator dropped,
+            // exactly as Rakudo reads it (with a SPACE, `&& (EXPR)`, Rakudo errors
+            // too, and leading `//` is a NULL REGEX, not this). Malformed but
+            // real: TOML::NQP:255 writes `return @part if COND;` then a `&&(more);`
+            // line, and Rakudo runs it (TOML → LLM::DWIM depend on it).
+            if ((t.text == "&&" || t.text == "||") &&
+                peek().kind == Tok::LParen && !peek().spaceBefore) {
+                advance();                       // drop the orphaned operator
+                return parsePrimary();           // the `(EXPR)` that follows is the term
             }
             error("unexpected operator in term position");
         }
