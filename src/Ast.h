@@ -590,6 +590,9 @@ struct SubDecl : Stmt {
     std::vector<ExprPtr> immediateArgs; // `sub f($n) {…}(1)` — declare, then call at once
     bool immediateCall = false;
     bool isExport = false; // `is export` — visible to importers of the enclosing module
+    std::vector<std::string> exportTags; // `is export(:foo :bar)` — the tag names (empty = the
+                                         // default `is export`); a non-DEFAULT/MANDATORY tag is
+                                         // published only when the importer requests it (`use Mod :foo`)
     bool isOur = false;    // `our sub` — also installed in the package/global scope (visible to sibling blocks)
     std::string retType;   // `of Num` / `returns Int` / `--> T` return type (for .returns/.of)
     std::string pod;       // `#|` leading declarator pod (.WHY)

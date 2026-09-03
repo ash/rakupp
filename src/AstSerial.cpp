@@ -285,7 +285,7 @@ template <class IO> void visit(IO& io, SubDecl& n)  {
     F(io, n.isMulti); F(io, n.isProto); F(io, n.hadSig); F(io, n.isMethod);
     F(io, n.isSubmethod); F(io, n.isPrivate);
     ioExprVec(io, n.immediateArgs); F(io, n.immediateCall);
-    F(io, n.isExport); F(io, n.isOur); F(io, n.retType); F(io, n.pod);
+    F(io, n.isExport); ioVec(io, n.exportTags); F(io, n.isOur); F(io, n.retType); F(io, n.pod);
     F(io, n.isNative); F(io, n.nativeLib); F(io, n.nativeLibSub);
     ioExpr(io, n.nativeLibExpr); F(io, n.nativeSym); ioExpr(io, n.nativeSymExpr);
     // `is raw`/`is rw` on the ROUTINE. The trait itself is not in n.traits (the

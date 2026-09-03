@@ -1281,6 +1281,12 @@ public:
     // each loaded module's `sub EXPORT(*@_)`, kept so a REPEAT `use` can run the
     // import protocol again in the new scope (JSON::Fast's per-scope defaults)
     std::map<std::string, Value> moduleExportSubs_;
+    // each loaded module's SELECTIVE `is export(:tag)` subs (key, value, tags),
+    // kept so a REPEAT `use Mod :tag` can import the ones its tag now selects —
+    // they are withheld on a plain `use`, so the module body's one run does not
+    // publish them (Prompt: plain `use Prompt` then `use Prompt :prompt`).
+    struct SelectiveExport { std::string key; Value value; std::vector<std::string> tags; };
+    std::map<std::string, std::vector<SelectiveExport>> moduleSelectiveExports_;
     // sets $/ $0..; rxVal (an anonymous `regex {…}` value) engages wired mode:
     // code blocks/assertions run for real, in the regex's closed-over scope
     // What a `for` walks: an object with its own `.iterator` decides for itself.

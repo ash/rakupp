@@ -6465,7 +6465,29 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
     // (note whether an `is export` trait is present — governs module visibility;
     //  capture `of T` / `returns T` / `--> T` as the return type)
     while (!isKind(Tok::LBrace) && !isKind(Tok::End) && !isKind(Tok::Semicolon)) {
-        if (isIdent("export")) s->isExport = true;
+        if (isIdent("export")) {
+            s->isExport = true;
+            // `is export(:foo :bar)` — capture the tag names. A tag that is not
+            // DEFAULT/MANDATORY is published only when the importer asks for it
+            // (`use Mod :foo`), as in Rakudo; a plain `is export` has none and is
+            // a default export. (Prompt's `sub prompt is export(:prompt)`.)
+            if (peek().kind == Tok::LParen) {
+                advance(); advance(); // `export` `(`
+                int d = 1;
+                while (d > 0 && !isKind(Tok::End)) {
+                    if (isKind(Tok::LParen)) { d++; advance(); continue; }
+                    if (isKind(Tok::RParen)) { d--; advance(); continue; }
+                    // a colonpair tag `:foo` / `:!foo` / `:foo<v>`
+                    if (isOp(":") && (peek().kind == Tok::Ident)) {
+                        advance(); s->exportTags.push_back(advance().text);
+                        // skip an optional value adverb `<…>` / `(…)`
+                        continue;
+                    }
+                    advance();
+                }
+                continue; // the `export` ident was not advanced past by the loop head
+            }
+        }
         // NativeCall traits: `is native` / `is native('lib')` / `is symbol('name')`
         if (isIdent("native")) {
             s->isNative = true;
@@ -8135,6 +8157,18 @@ StmtPtr Parser::parseStatementImpl() {
                             else w += c;
                         }
                         if (!w.empty()) u->importArgs.push_back(w);
+                    }
+                    // `use Mod :tag` — a colonpair selects an export tag; capture the
+                    // NAME as an import argument (`use Prompt :prompt`). `:!tag` and a
+                    // valued `:tag<v>` are consumed but not treated as a plain request.
+                    if (isOp(":") && peek().kind == Tok::Ident) {
+                        advance();                       // :
+                        std::string tag = advance().text;
+                        bool valued = (isOp("<") && !cur().spaceBefore) ||
+                                      (isKind(Tok::QwList) && !cur().spaceBefore) ||
+                                      (isKind(Tok::LParen) && !cur().spaceBefore);
+                        if (!valued) u->importArgs.push_back(tag);
+                        continue;                        // already advanced past the pair
                     }
                     if ((isKind(Tok::StrLit) || isKind(Tok::StrInterp)) && u->arg.empty()) u->arg = cur().text;
                     // `use Mod "use-args"` — a STRING argument reaches sub EXPORT

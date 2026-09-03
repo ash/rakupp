@@ -5592,6 +5592,23 @@ void collectExportedSubNames(const std::vector<StmtPtr>& stmts, std::set<std::st
     }
 }
 
+// Name → the export TAGS of an `is export(:foo :bar)` sub. Only tag-bearing subs
+// are recorded; a plain `is export` (default) has no entry. A tag that is not
+// DEFAULT/MANDATORY is a SELECTIVE export — published only when the importer
+// asks for it (`use Mod :foo`), as in Rakudo. `sub prompt is export(:prompt)`.
+void collectExportTagsByName(const std::vector<StmtPtr>& stmts,
+                             std::map<std::string, std::vector<std::string>>& out) {
+    for (auto& st : stmts) {
+        if (!st) continue;
+        if (st->kind == NK::SubDecl) {
+            auto* sd = static_cast<SubDecl*>(st.get());
+            if (sd->isExport && !sd->name.empty() && !sd->exportTags.empty())
+                out[sd->name] = sd->exportTags;
+        } else if (st->kind == NK::ClassDecl)
+            collectExportTagsByName(static_cast<ClassDecl*>(st.get())->body, out);
+    }
+}
+
 std::vector<BundledModule> collectModuleGraph(const Program& prog,
                                               const std::vector<std::string>& searchPath,
                                               std::set<std::string>* exportsOut,
@@ -5758,6 +5775,22 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
         // may depend on the args: `use JSON::Fast <immutable !pretty>` in one
         // block, plain `use JSON::Fast` in the next). Ordinary `is export`
         // symbols were published to global and are already visible.
+        // A repeat `use Mod :tag` imports the selective exports its tag now
+        // selects into THIS scope (the module body already ran; the subs were
+        // withheld then). DEFAULT/MANDATORY tags import unconditionally.
+        if (doImport) {
+            auto sit = moduleSelectiveExports_.find(name);
+            if (sit != moduleSelectiveExports_.end()) {
+                std::set<std::string> reqTags(importArgs.begin(), importArgs.end());
+                bool reqAll = reqTags.count("ALL") != 0; // `:ALL` imports every export
+                for (auto& se : sit->second) {
+                    bool want = reqAll;
+                    for (const std::string& tag : se.tags)
+                        if (tag == "DEFAULT" || tag == "MANDATORY" || reqTags.count(tag)) { want = true; break; }
+                    if (want && !mainlineSubNames_.count(se.key)) tctx_.cur->define(se.key, se.value);
+                }
+            }
+        }
         auto it = moduleExportSubs_.find(name);
         if (doImport && it != moduleExportSubs_.end()) {
             ValueList eargs;
@@ -5834,6 +5867,23 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
         // codegen runs over the module graph, so `--exe` agrees with this.
         std::set<std::string> exported;
         collectExportedSubNames(prog->stmts, exported);
+        // Selective exports: `is export(:foo)` publishes only when the importer
+        // asks (`use Mod :foo`). Build the name→tags map and the requested-tag
+        // set; a tag named DEFAULT or MANDATORY always publishes.
+        std::map<std::string, std::vector<std::string>> exportTagsByName;
+        collectExportTagsByName(prog->stmts, exportTagsByName);
+        std::set<std::string> requestedTags(importArgs.begin(), importArgs.end());
+        // `use Mod :ALL` is the catch-all: it imports EVERY exported sub whatever
+        // its tag (Text::Utils, Abbreviations test with `:ALL`).
+        bool wantAll = requestedTags.count("ALL") != 0;
+        auto tagWithheld = [&](const std::string& bare) -> bool {
+            if (wantAll) return false;
+            auto it = exportTagsByName.find(bare);
+            if (it == exportTagsByName.end()) return false; // plain `is export`, or not exported
+            for (const std::string& tag : it->second)
+                if (tag == "DEFAULT" || tag == "MANDATORY" || requestedTags.count(tag)) return false;
+            return true; // every tag is selective and none was requested
+        };
         tctx_.cur = moduleEnv;
         auto savedPkg = curPkgEnv_; curPkgEnv_ = moduleEnv; // `our sub` in the module installs here, not main's global
         // A `unit module Foo;` sets pkgPrefix for the rest of the file so its
@@ -5878,6 +5928,17 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
                 }
                 // never clobber a routine the PROGRAM declared itself
                 if (mainlineSubNames_.count(k)) continue;
+                // a SELECTIVE `is export(:tag)` sub stays out of the importer's
+                // lexical scope unless its tag was requested — Rakudo's rule, and
+                // what `nok MY::<&prompt>:exists` after a plain `use Prompt` checks.
+                // Record it (with its tags) so a later `use Mod :tag` can import it
+                // without re-running the module body.
+                if (k.size() > 1 && k[0] == '&') {
+                    auto tit = exportTagsByName.find(k.substr(1));
+                    if (tit != exportTagsByName.end() && !name.empty())
+                        moduleSelectiveExports_[name].push_back({k, kv.second, tit->second});
+                    if (tagWithheld(k.substr(1))) continue;
+                }
                 global_->define(k, kv.second);
             }
         };
