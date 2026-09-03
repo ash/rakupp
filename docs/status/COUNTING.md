@@ -22,12 +22,12 @@ narrowest:
 
 | # | Measure | Current | Definition |
 |---|---|---|---|
-| 1 | **Files fully passing** | 646 / 1,464 (**~43%**) | a file counts only if *every* planned assertion passes (or it legitimately `plan skip-all`s) |
-| 2 | Assertions of **tests that ran** | 199,846 / 206,251 (~97%) | numerator ÷ assertions the files actually emitted |
-| 3 | Assertions of **tests planned** | 199,846 / 216,304 (~92%) | ÷ the plan `N` of every file that emitted a plan (so tests lost to a mid-file abort count against us) |
-| 4 | Assertions of **all declared tests** | 199,846 / 219,374 (**~90%**) | ÷ every test any file declares — including files that abort before emitting TAP, whose `plan N` is read from source |
+| 1 | **Files fully passing** | 651 / 1,464 (**~44%**) | a file counts only if *every* planned assertion passes (or it legitimately `plan skip-all`s) |
+| 2 | Assertions of **tests that ran** | 199,980 / 206,378 (~97%) | numerator ÷ assertions the files actually emitted |
+| 3 | Assertions of **tests planned** | 199,980 / 216,356 (~92%) | ÷ the plan `N` of every file that emitted a plan (so tests lost to a mid-file abort count against us) |
+| 4 | Assertions of **all declared tests** | 199,980 / 219,403 (**~91%**) | ÷ every test any file declares — including files that abort before emitting TAP, whose `plan N` is read from source |
 
-**Measure 1 (files, ~43%)** and **measure 4 (all declared tests, ~90%)** are the
+**Measure 1 (files, ~44%)** and **measure 4 (all declared tests, ~91%)** are the
 two headline numbers. 2 and 3 are diagnostic context, not headlines.
 
 ## Why measure 4 is the honest per-test number
@@ -37,8 +37,8 @@ its `1..N` line, so it emits *nothing*. Under measures 2 and 3 that file
 contributes 0 to both numerator and denominator — its tests simply vanish, which
 silently flatters the rate. Measure 4 closes that hole: for any file that emitted
 no plan at runtime, the harness reads the intended `plan N` straight from the
-source and counts all N as failing. That is why 4's denominator (219,374) is ~3.1k larger
-than 3's (216,304) — those 3,112 tests live in 77 no-TAP files (parse errors
+source and counts all N as failing. That is why 4's denominator (219,403) is ~3.0k larger
+than 3's (216,356) — those 3,047 tests live in 75 no-TAP files (parse errors
 and runtime aborts), recovered from source. A parse error can no longer hide
 its tests.
 
@@ -57,18 +57,18 @@ file (no-TAP), there is no static integer to read from source, so the file
 contributes **0** — its tests are genuinely uncountable for that run.
 
 The consequence: **a run that executes more of the suite gets a larger
-denominator.** Our current run recovers **219,374** declared tests. (This number
+denominator.** Our current run recovers **219,403** declared tests. (This number
 GROWS as parse fixes land: a file that used to die before announcing its plan now
 declares its real — often larger, dynamically computed — plan, so the percentage
 can dip while absolute passes rise.) Only **3 no-TAP files** still have no static
 plan to read, so the uncountable remainder is now marginal.
 
-So our same 199,846 passes read two ways:
+So our same 199,980 passes read two ways:
 
-- **~90%** against *our* denominator (199,846 / 219,374) — *"of the tests we can
+- **~91%** against *our* denominator (199,980 / 219,403) — *"of the tests we can
   account for, how many pass."* This is what a single harness run can measure,
   and it is the number we quote.
-- Essentially the **same ~90%** against the suite's *full* declared total —
+- Essentially the **same ~91%** against the suite's *full* declared total —
   our runner now recovers almost every file's plan, so the two denominators
   have converged; *"of every test the whole suite could declare, how many pass."*
 
@@ -213,8 +213,8 @@ counting rules — takes the timeout column from 12 files to 4:
 
 | bar | fully passing | assertions, all declared |
 |---|---:|---:|
-| ours (10 s) | 646 / 1,464 (43.9%) | 199,846 / 219,374 (90.9%) |
-| **counted their way (30 s + their per-file escalations)** | **647 / 1,464 (44.2%)** | **199,331 / 219,033 (91.0%)** |
+| ours (10 s), v3.25.0 | 651 / 1,464 (44.5%) | 199,980 / 219,403 (91.1%) |
+| **counted their way (30 s + their per-file escalations), measured at `v3.23.0-45-gb6905bf`** | **647 / 1,464 (44.2%)** | **199,331 / 219,033 (91.0%)** |
 
 **Four files, three tenths of a point.** The four that come back are
 `S15-nfg/concat-stable.t`, `S17-scheduler/at.t`, `S17-scheduler/every.t` and

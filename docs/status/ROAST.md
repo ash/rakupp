@@ -31,12 +31,12 @@ gauge of how much of the language actually works).
 The exact definition of every figure below — and how the harness computes it — is
 in [COUNTING.md](COUNTING.md); that file is authoritative if anything here drifts.
 
-**Headline: ~90% of all declared Roast tests pass** (199,846 / 219,374); on the
-stricter file bar, ~44% of files fully pass (646 / 1,464). The per-file breakdown
+**Headline: ~90% of all declared Roast tests pass** (199,980 / 219,403); on the
+stricter file bar, ~44% of files fully pass (651 / 1,464). The per-file breakdown
 comes first below, then the per-test figures. That assertion figure is the
 **shielded** one, as every implementation's is: it counts `ok … # skip` and
-`not ok … # todo` lines as passes. Net of both it is 90.4% rather than 91.0% —
-1,366 assertions, 0.69% of the pass count. mutsu's equivalent shield is 1,438
+`not ok … # todo` lines as passes. Net of both it is 90.5% rather than 91.1% —
+1,372 assertions, 0.69% of the pass count. mutsu's equivalent shield is 1,438
 (0.66%), so it is a wash between the two; the measured breakdown is in
 [COUNTING.md](COUNTING.md#the-assertion-figures-net-of-skip-and-todo). (S15 — Unicode / strings / NFG —
 is now at 100% of assertions: full UCD case tables, grapheme-level regex, and
@@ -47,10 +47,10 @@ Full suite — **1,464 files**:
 
 | Files | Count | Share of suite |
 |---|---:|---:|
-| **Fully passing** | **646** | **44%** |
-| Partially passing | 685 | 47% |
-| No TAP output | 119 | 8% |
-| Timeouts | 14 | 1.0% |
+| **Fully passing** | **651** | **44%** |
+| Partially passing | 683 | 47% |
+| No TAP output | 117 | 8% |
+| Timeouts | 13 | 0.9% |
 
 (Both files that once wedged the harness with unkillable children are measured
 in-run now: `S04-statements/try.t` scores as an ordinary partial, and
@@ -65,7 +65,7 @@ territory, not "passing" and not "failing."
 ### The assertion count
 
 Measured per individual test rather than per file, the honest figure is
-**199,846 of ~219,374 declared tests — 90.9%**. "Declared" means every test the
+**199,980 of ~219,403 declared tests — 91.1%**. "Declared" means every test the
 suite intends to run: for files that ran, their emitted plan; for files that
 abort before emitting any TAP, the `plan N` count read straight from their
 source. Counting those aborting files (all their tests failing) is what keeps the
@@ -74,13 +74,13 @@ three denominators, widest-to-strictest:
 
 | Denominator | Ratio | What it includes |
 |---|---|---|
-| tests that **ran** | 199,846 / 206,251 (~97%) | only assertions files actually emitted — flatters, ignores aborts |
-| tests **planned** (files that emitted a plan) | 199,846 / 216,304 (~92%) | + tests lost when a file aborts mid-plan |
-| **all declared** tests | 199,846 / 219,374 (90.9%) | + tests in parse-error files, recovered from source. This denominator grows as parse fixes land — files that died before announcing a plan now declare their real (often larger, dynamic) plans, so the percentage can dip while absolute passes rise |
+| tests that **ran** | 199,980 / 206,378 (~97%) | only assertions files actually emitted — flatters, ignores aborts |
+| tests **planned** (files that emitted a plan) | 199,980 / 216,356 (~92%) | + tests lost when a file aborts mid-plan |
+| **all declared** tests | 199,980 / 219,403 (91.1%) | + tests in parse-error files, recovered from source. This denominator grows as parse fixes land — files that died before announcing a plan now declare their real (often larger, dynamic) plans, so the percentage can dip while absolute passes rise |
 
 The 90% is the per-test analog of the ~43% file coverage. Three notes on scope:
 
-1. **~2.9k of the denominator comes from no-TAP files** (76 of them, read from
+1. **~3.0k of the denominator comes from no-TAP files** (75 of them, read from
    source); 3 more no-TAP files use a dynamic `plan *` / `done-testing` and are
    genuinely uncountable, so they sit outside even this figure.
 2. **S15 (Unicode) is ~91k of the reached total**, passing at ~100%, so it lifts
@@ -105,34 +105,33 @@ while many of its files still don't run at all — read it alongside No-TAP.
 | Section | Theme | Full | Part | Time | No-TAP | Assertions | % |
 |---|---|---:|---:|---:|---:|---:|---:|
 | S01 | Overview | 14 | 0 | 0 | 0 | 89/89 | 100% |
-| S02 | Literals, types, magicals | 54 | 76 | 0 | 17 | 7080/7752 | 91% |
-| S03 | Operators | 48 | 62 | 3 | 12 | 22435/23121 | 97% |
-| S04 | Blocks, statements, phasers | 30 | 44 | 0 | 3 | 1225/1492 | 82% |
-| S05 | Regexes & grammars | 38 | 56 | 0 | 4 | 5753/6258 | 92% |
-| S06 | Subroutines & signatures | 23 | 56 | 0 | 15 | 1500/1759 | 85% |
+| S02 | Literals, types, magicals | 54 | 77 | 0 | 16 | 7156/7830 | 91% |
+| S03 | Operators | 47 | 64 | 2 | 12 | 23188/23948 | 97% |
+| S04 | Blocks, statements, phasers | 30 | 44 | 0 | 3 | 1242/1501 | 83% |
+| S05 | Regexes & grammars | 38 | 56 | 0 | 4 | 5781/6258 | 92% |
+| S06 | Subroutines & signatures | 23 | 57 | 0 | 14 | 1513/1782 | 85% |
 | S07 | Iterators | 2 | 4 | 0 | 0 | 224/268 | 84% |
-| S09 | Data structures | 2 | 20 | 0 | 0 | 915/1117 | 82% |
+| S09 | Data structures | 3 | 19 | 0 | 0 | 921/1117 | 82% |
 | S10 | Packages | 2 | 6 | 0 | 1 | 42/79 | 53% |
 | S11 | Modules | 9 | 9 | 0 | 4 | 63/95 | 66% |
-| S12 | Objects & classes | 27 | 62 | 0 | 12 | 1277/1527 | 84% |
+| S12 | Objects & classes | 29 | 61 | 0 | 11 | 1329/1573 | 84% |
 | S13 | Overloading | 5 | 1 | 0 | 1 | 64/71 | 90% |
-| S14 | Roles | 6 | 16 | 0 | 3 | 269/331 | 81% |
-| S15 | Unicode / strings / NFG | 79 | 0 | 2 | 0 | 91737/91737 | 100% |
-| S16 | I/O | 14 | 19 | 0 | 4 | 334/486 | 69% |
-| S17 | Concurrency (supply/promise/async) | 41 | 40 | 9 | 9 | 964/1096 | 88% |
+| S14 | Roles | 7 | 15 | 0 | 3 | 283/331 | 85% |
+| S15 | Unicode / strings / NFG | 80 | 1 | 0 | 0 | 91805/91807 | 100% |
+| S16 | I/O | 14 | 19 | 0 | 4 | 420/572 | 73% |
+| S17 | Concurrency (supply/promise/async) | 44 | 39 | 7 | 9 | 938/1100 | 85% |
 | S19 | Command-line | 6 | 1 | 0 | 1 | 22/24 | 92% |
 | S22 | Package format | 0 | 1 | 0 | 0 | 5/5 | 100% |
 | S24 | Testing | 11 | 4 | 0 | 2 | 95/112 | 85% |
-| S26 | Documentation (POD) | 6 | 20 | 0 | 1 | 304/464 | 66% |
+| S26 | Documentation (POD) | 6 | 20 | 0 | 1 | 341/534 | 64% |
 | S28 | Special variables | 3 | 0 | 0 | 0 | 9/9 | 100% |
-| S29 | Builtins & context | 7 | 7 | 0 | 0 | 426/449 | 95% |
-| S32 | Standard types (str/list/num/…) | 122 | 125 | 1 | 15 | 41941/44522 | 94% |
-| integration | Cross-feature programs | 67 | 41 | 1 | 10 | 1090/1176 | 93% |
-| 6.c | v6.c language snapshot | 2 | 13 | 0 | 3 | 633/700 | 90% |
+| S29 | Builtins & context | 8 | 6 | 0 | 0 | 444/458 | 97% |
+| S32 | Standard types (str/list/num/…) | 122 | 125 | 1 | 15 | 41960/44563 | 94% |
+| integration | Cross-feature programs | 72 | 37 | 1 | 9 | 1116/1194 | 93% |
+| 6.c | v6.c language snapshot | 2 | 13 | 0 | 3 | 635/706 | 90% |
 | 6.d | v6.d language snapshot | 15 | 3 | 0 | 0 | 20264/20310 | 100% |
 | APPENDICES | — | 2 | 1 | 2 | 1 | 19/30 | 63% |
 | MISC / t | — | 3 | 0 | 0 | 3 | 12/12 | 100% |
-run2-exit 0
 
 ### Reading the table
 
@@ -167,7 +166,7 @@ timeout, and the same counting rules:
 | | files fully passing | assertions, all declared |
 |---|---:|---:|
 | **mutsu** 0.23.0 | **1,419 / 1,464 (96.9%)** | **216,807 / 218,173 (99.4%)** |
-| **Raku++** 3.23.0 | 646 / 1,464 (43.9%) | 199,846 / 219,374 (90.0%) |
+| **Raku++** 3.25.0 | 651 / 1,464 (44.5%) | 199,980 / 219,403 (91.1%) |
 
 Both runs are on the **fudged bar** — Raku++ honours Roast's `#?rakudo`
 directives unconditionally, and mutsu's equivalent was switched on with
@@ -218,6 +217,17 @@ substring: `build/rakupp tools/run-roast.raku S05`.
 the GIL while a worker waits on its child process, so the children genuinely
 overlap. Output and totals are identical to a sequential run — results are
 tallied and printed in file order regardless of N.
+
+_Snapshot 2026-09-03, the v3.25.0 release run (`--workers=4`, three passes):
+651 / 1,464 files fully passing (~44% coverage); 683 partial, 117 no-TAP,
+13 timeout. The file count repeats at 651 (band 651 / 651 / 650). No file
+regressed: the union of the three passes, diffed against v3.24.0\x27s union, is
+empty in the regressed direction and gains four (`S04-statements/loop.t`,
+`S09-typed-arrays/native-decl.t`, `S15-nfg/concat-stable.t`,
+`integration/advent2012-day03.t`); the one file that moved between passes,
+`S03-operators/scalar-assign.t`, was `[TIME]` in the pass that lost it. Measured
+on `v3.24.0-51-g4d873a8` against Roast `b2cbe8a42` — the same Roast revision
+v3.24.0 used, so the list diff is an engine comparison and nothing else._
 
 _Snapshot 2026-09-01, the v3.24.0 release run (`--workers=4`, three passes):
 646 / 1,464 files fully passing (~44% coverage); 685 partial, 119 no-TAP,

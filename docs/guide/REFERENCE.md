@@ -16,7 +16,7 @@ Reproduce any of them with:
 Scope note: this reflects the current build, defaulting to **Raku 6.d**. Where
 `rakupp` differs from Rakudo or omits something, it is called out inline and
 collected in [§14 rakupp-specific notes](#14-rakupp-specific-notes--caveats). The
-full machine-extracted inventories (213 subroutines, 736 methods) are in the
+full machine-extracted inventories (221 subroutines, 736 methods) are in the
 [appendices](#appendix-a--all-built-in-subroutines).
 
 ---
@@ -448,7 +448,7 @@ say (1,2) X* (3,4);       # → (3 4 6 8)       cross-with-*
 
 ## 5. Built-in subroutines
 
-`rakupp` registers **214** built-in subroutines. Below are the commonly used ones
+`rakupp` registers **221** built-in subroutines. Below are the commonly used ones
 with verified examples, grouped by purpose. The complete alphabetical list is in
 [Appendix A](#appendix-a--all-built-in-subroutines).
 
@@ -1004,33 +1004,34 @@ while writing this sheet:
 
 ## Appendix A — all built-in subroutines
 
-The 214 subroutines registered by `Interpreter::registerBuiltins()`
+The 221 subroutines registered by `Interpreter::registerBuiltins()`
 (`src/Builtins.cpp`), alphabetically:
 
 ```
-!!! ... ??? __format__ __qx__ __radix __radix-list __sym-exists abs
-acosec acosech acotan acotanh append asec asech atan2 await bag
-bail-out bail_out cache callframe callsame callwith can-ok ceiling
-cglobal chars chdir chmod chr chrs cis classify close cmp-ok comb copy
-cosec cosech cotan cotanh cross dd defined diag die dies-ok dir
-does-ok done done-testing done_testing eager elems emit end EVAL
-eval-dies-ok eval-lives-ok EVALFILE exit exp expmod fail fails-like
-first flat floor flunk full-barrier get getc gist grep hash index
-indir is is-approx is-deeply is-prime isa-ok isnt item join keys kv
-lastcall lazy lc leave like lines link list lives-ok log log10 log2
-make make-temp-dir make-temp-file map minmax mix mkdir move nativecast
-nativesizeof nextsame nextwith nok not note ok open ord ords pack
-parse-base pass plan pop prepend print printf proceed prompt push put
-quietly rakupp-ext-load rakupp-parse-diagnosis rakupp-repo-lock
-rakupp-repo-unlock react rename reverse rindex rmdir roots rotor round
-roundrobin run RUN-MAIN RUN-MAIN-args-to-capture samemark samewith say
-sec sech set shell shift sign signal sink skip skip-rest sleep
-sleep-timer sleep-until Slip slip slurp snip snitch so sort
-splice split sprintf spurt sqrt srand start subtest succeed sum supply
-symlink take take-rw tc throws-like times todo trans truncate uc unimatch
-uniname uninames uniparse uniprop uniprops unival univals unlike
-unlink unpolar unshift use-ok val values VAR warn WHAT whenever words
-zip
+!!! ... ??? EVAL EVALFILE RUN-MAIN RUN-MAIN-args-to-capture Slip VAR
+WHAT __format__ __qx__ __radix __radix-list __sym-exists abs acosec
+acosech acotan acotanh append asec asech atan2 await bag bail-out
+bail_out cache callframe callsame callwith can-ok ceiling cglobal
+chars chdir check_routine_sanity chmod chr chrs cis classify close
+cmp-ok comb copy cosec cosech cotan cotanh cross dd defined diag die
+dies-ok dir does-ok done done-testing done_testing eager elems emit
+end eval-dies-ok eval-lives-ok exit exp explicitly-manage expmod fail
+fails-like first flat floor flunk full-barrier get getc gist grep
+guess_library_name hash index indir is is-approx is-deeply is-prime
+isa-ok isnt item join keys kv lastcall lazy lc leave like lines link
+list lives-ok log log10 log2 make make-temp-dir make-temp-file map
+minmax mix mkdir move nativecast nativesizeof nextcallee nextsame
+nextwith nok not note ok open ord ords pack parse-base pass plan pop
+prepend print printf proceed prompt push put quietly rakupp-ext-load
+rakupp-parse-diagnosis rakupp-repo-lock rakupp-repo-unlock
+rakupp-sha1-hex react refresh rename reverse rindex rmdir roots rotor
+round roundrobin run samemark samewith say sec sech set shell shift
+sign signal sink skip skip-rest sleep sleep-timer sleep-until slip
+slurp snip snitch so sort splice split sprintf spurt sqrt srand start
+subtest succeed sum supply symlink take take-rw tc throws-like times
+todo trait_mod:<of> trans truncate uc unimatch uniname uninames
+uniparse uniprop uniprops unival univals unlike unlink unpolar
+unshift use-ok val values warn whenever words zip
 ```
 
 ## Appendix B — all methods

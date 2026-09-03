@@ -353,6 +353,14 @@ blocked — returning `True` immediately for every Supply, 0 ms against Rakudo's
 317 ms — because Log::Async uses it as a barrier and nothing in Roast or
 `t/` did.
 
+**Run it alone.** At v3.25.0 the battery ran beside the slim differential and
+the conformance sweep (load 5–6 on 8 cores) and reported Digest PASS → DIFF on
+`t/ripemd.t` twice; alone, on a quiet box, the same commit passed it in 22 of 22
+runs under every condition that could be recreated, including a `-j8` rebuild
+at load 9–11. The runner discards its children's output, so a verdict taken
+under concurrent gates cannot be diagnosed afterwards — only re-run. Gates 1, 4b
+and 6 all spawn per-file children with wall-clock caps; run them one at a time.
+
 **Run this after any performance work, not just before a release.** A change
 that makes the interpreter faster is a change to every race in the system: the
 same fault had been latent for releases and only became visible when the main

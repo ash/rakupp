@@ -48,17 +48,18 @@ there.)
   small programs it is instant. mutsu starts in 4.4 ms; Rakudo in 75.6. The
   two newer engines are on one side of that gap and the reference on the other.
 - **Native (`--exe`) beats Rakudo on fourteen of the fifteen kernels** — from
-  3.2× on `arrayops` to 16.7× on `loopsum`, 17.0× on `hash`, and 29.1× on
+  3.9× on `arrayops` to 18.6× on `loopsum`, 16.7× on `hash`, and 29.1× on
   `strcat`. On the fifteenth it falls 1.6× short. Compiling removes interpreter
   overhead.
-- **The interpreter beats Rakudo on fourteen of the fifteen too**, `fib` and
-  `streq` included since 2026-08-22 — both had been Rakudo's for the whole life
-  of this file, and both are thin (1.3×, 1.2×), so read them as "level, our
-  side" rather than as leads.
-- **Against mutsu, the interpreter wins twelve of fifteen and `--exe` wins all
-  fifteen.** The tree-walker loses one, `fib` (1.4×), and is level on `sortby`
-  and `sortnums`. Compiled, nothing goes their way any more. See
-  "What mutsu is faster at" — and the next bullet, which is what changed.
+- **The interpreter beats Rakudo on eleven of the fifteen**, is level on three
+  (`fib`, `streq`, `rats` — within 5% either way against a native arm64
+  Rakudo), and loses one, `objects`. `fib` and `streq` had been Rakudo's for
+  the whole life of this file; against the native reference they are level,
+  not leads.
+- **Against mutsu, the interpreter wins fourteen of fifteen and `--exe` wins all
+  fifteen.** The tree-walker loses one, `fib` (1.2×). Compiled, nothing goes
+  their way. See "What mutsu is faster at" — and the next bullet, which is
+  what changed.
 - **`bigint` WAS the one clear loss, it was predicted, and it is now a lead.**
   mutsu links `num-bigint`; we hand-rolled ours because we take no
   dependencies, and at the 2026-08-31 sitting it was 3.5× slower interpreted
@@ -67,36 +68,45 @@ there.)
   touching the code generator. Two passes on that multiply (eight independent
   carry chains, and the accumulator multiplied in place) landed the same day
   that sitting was taken, and the 2026-09-01 sitting measures the result on
-  this machine: **5.8 ms interpreted and 4.7 compiled against mutsu's 9.1** —
+  this machine: **5.7 ms interpreted and 4.6 compiled against mutsu's 9.1** —
   from a 3.5× deficit to a 1.6× lead interpreted, and it is the change that
   takes `--exe` to a clean sweep of the mutsu column.
-- **The fifteenth is `objects`, and Rakudo leads it by 1.7×** — but it leads
-  mutsu on that kernel by **5.3×**. It is the only kernel that measures
+- **The fifteenth is `objects`, and Rakudo leads it by 1.6× compiled and 2.3×
+  interpreted** — but it leads mutsu on that kernel by **7.7×**. It is the only kernel that measures
   `class`/`has`/method dispatch, the shape most real Raku code is written in,
   and neither from-scratch engine is close to `spesh`. Adding the kernel is
   what found it; nothing is profiled yet.
-- Compiling still widens `fib` and `streq`: `--exe` puts them 5.5× and 13.9×
+- Compiling still widens `fib` and `streq`: `--exe` puts them 6.1× and 11.9×
   ahead of Rakudo (string `eq`/`lt` compile to inline byte-compares — see
   [internals/DISPATCH.md](../internals/DISPATCH.md) for the dispatch story),
-  and 2.9× and 29.4× ahead of mutsu.
+  and 4.8× and 31.4× ahead of mutsu.
 - The `loopsum` loop kernel gained most when lexical pads landed; against a
-  native reference it reads **2.7×**. `hashfill`, one of the two kernels with a Perl 5 twin, reads 2.6×
+  native reference it reads **2.7×**. `hashfill`, one of the two kernels with a Perl 5 twin, reads 2.8×
   this sitting — the kernel is the noisiest in the set (allocation-bound), so
   the ladder in "vs Perl 5" below is the row to read, not this one.
 - **String building (`~=`) appends in place** in every mode, so `strcat` is
-  O(n) rather than O(n²) — 10.3× ahead of Rakudo and 12.6× ahead of mutsu even
+  O(n) rather than O(n²) — 10.8× ahead of Rakudo and 13.2× ahead of mutsu even
   interpreted.
 
 ## Methodology
 
-- **Machine:** macOS (Darwin 24.6, Apple Silicon M3), re-measured 2026-09-01 at
-  `v3.24.0` — the SAME machine as every earlier revision
-  of this file, so the rows are comparable with the 2026-08-24, the 2026-08-22
-  and the 2026-08-21 ones. The reference lanes are the proof of that: against
-  the 2026-08-24 sitting Rakudo moved within ±4.3% on every shared kernel and
-  `perl` by 7.8%, while the Raku++ lanes moved -11% to +3% — a spread that is
-  code (45 commits of it), not machine. The box was **not** idle by the
-  1-min < 2.5 rule during this sitting (load hovered ~4, `mediaanalysisd`
+- **Machine:** macOS (Darwin 24.6, Apple Silicon M3), re-measured 2026-09-03 at
+  `v3.24.0-51-g4d873a8` (the v3.25.0 release commit, before the tag) — the SAME
+  machine as every earlier revision of this file, so the rows are comparable
+  with the 2026-09-01, 2026-08-24, 2026-08-22 and 2026-08-21 ones. The
+  reference lanes are the proof of that: re-measured in the same sitting,
+  Rakudo landed within ±2.3% and mutsu within ±3.3% of the committed columns on
+  every kernel, so both are **carried forward unchanged** (the rule below) and
+  only the Raku++ lanes move — interpreted -22% (`arrayops`) to +2.6% (`streq`),
+  compiled -40% (`fib`) to +2.9% (`rats`), a spread that is code (51 commits),
+  not machine. The box was **not** idle by the 1-min < 2.5 rule (load ~2.5–4;
+  `WindowServer` and `ecosystemanalyticsd` each holding a third of a core, the
+  same background the previous sitting overrode on evidence); the evidence here
+  is the three passes themselves, which agree to within 3.5% on every
+  interpreted cell and 2.8% on every compiled cell but `sortnums` (7.0%), and
+  the reference lanes above. The `-O` table further down was not re-measured
+  this sitting. The previous sitting's note: the box was **not** idle by the
+  1-min < 2.5 rule during it either (load hovered ~4, `mediaanalysisd`
   pegging a core); that rule was overridden on evidence rather than waived — a
   repeatability probe read max/min = 1.028 on `hash` over nine consecutive
   runs, and `hash` interp itself landed at 18.8 ms against the previous
@@ -108,7 +118,7 @@ there.)
   fast or faster there — not a machine-speed difference, so those rows were
   replaced rather than kept. See the re-snapshot log at the end.) This sitting
   is three full harness passes, minimum across all three; the three passes
-  agreed to within 1–2% on every cell. The harness now **interleaves the
+  agreed to within 3.5% on every interpreted cell (see above). The harness now **interleaves the
   engines** — each measured round times every engine once, back to back — so a
   load spike lands on all lanes instead of one column, and `--tsv=` writes the
   median alongside the minimum plus the CPU and C++ toolchain the sitting ran
@@ -250,10 +260,11 @@ the harness already does for `$RAKUPP`.
 
 ## Pending re-measurement: six changes landed after the 2026-08-31 sitting
 
-**RESOLVED for `bigint` on 2026-09-01.** The tables above are now the v3.24.0
-sitting, taken on the machine of record, and the two bigint passes ARE folded
-in: `bigint` reads 5.8 ms interpreted and 4.7 compiled there, against the 60.4
-and 45.2 the 2026-08-31 tables carried. The M1 figures below are kept as the
+**RESOLVED for `bigint` on 2026-09-01.** The tables above are the v3.25.0
+sitting (2026-09-03) on the machine of record, and the two bigint passes ARE
+folded in: `bigint` reads 5.7 ms interpreted and 4.6 compiled there (5.8 and
+4.7 at the v3.24.0 sitting, which this one reproduces within 2%), against the
+60.4 and 45.2 the 2026-08-31 tables carried. The M1 figures below are kept as the
 record of what was predicted, and they under-called it — they projected 7.4 and
 6.2 from a slower box.
 
@@ -347,11 +358,11 @@ process startup, not a workload.
 ### Interpreter vs Rakudo and mutsu
 
 The tree-walker wins on **eleven of these fifteen kernels** against Rakudo, is
-level on two (`streq`, `rats`), and loses two. The larger loss is `objects`,
-and it is the point of the row: it is the only kernel that measures
-`class`/`has`/method dispatch — the shape most real Raku code is written in —
-and Rakudo leads it by **2.4×**. That is not a machine artefact; see below.
-The other loss is `fib`, by 1.1×.
+level on three (`streq`, `rats`, and — as of this sitting — `fib`), and loses
+one. The loss is `objects`, and it is the point of the row: it is the only
+kernel that measures `class`/`has`/method dispatch — the shape most real Raku
+code is written in — and Rakudo leads it by **2.3×**. That is not a machine
+artefact; see below.
 
 These are measured against a **native arm64 Rakudo**, which is what changed the
 count from the fourteen-of-fifteen this file reported while the reference ran
@@ -360,20 +371,21 @@ per Rakudo release**, not once per Raku++ release: Rakudo ships monthly, so it
 is a constant between its own releases and any variation in it was noise. Each
 value is the minimum of 80 runs across four interleaved passes.
 
-Against **mutsu** the interpreter wins twelve of fifteen, is level on two
-(`sortby`, `sortnums`), and loses one: `fib`, by 1.4×. That is a change of
-shape rather than of degree — at the previous sitting `bigint` was mutsu's
-largest lead (3.5× interpreted) and `sortnums` a small one, and the
-eight-carry-chain multiply in v3.24.0 turned `bigint` into a **1.6×** Raku++
-lead. `fib` is the one mutsu still holds, and its cause is unchanged — see
-"What mutsu is faster at" below. Bold marks a Raku++ lead; otherwise the
+Against **mutsu** the interpreter wins fourteen of fifteen and loses one:
+`fib`, by 1.2× (1.4× at the previous sitting). `sortby` and `sortnums`, level
+last time, are 1.2× leads now — the list container's one-pass growth is where
+a sort's temporaries live. Two sittings ago `bigint` was mutsu's largest lead
+(3.5× interpreted); the eight-carry-chain multiply in v3.24.0 turned it into a
+**1.6×** Raku++ lead. `fib` is the one mutsu still holds, and its cause is
+unchanged — see "What mutsu is faster at" below. Bold marks a Raku++ lead; otherwise the
 winning engine is named.
 
 The two rows Rakudo had held for the whole life of this file were reported as
 crossing on 2026-08-22 — `fib` (tiny-body recursion) with the `Value` shrink
 and lexical pads, `streq` (1M string comparisons) with the TARG assignment
-slice. Against a native reference neither crossing holds: `streq` is level and
-`fib` is a 1.1× Rakudo lead. Both are tiny-body kernels where a JIT should be
+slice. Against a native reference neither crossing holds as a lead: `streq` is level,
+and `fib` — a 1.1× Rakudo lead at the previous sitting — is level too as of
+this one (299.4 against 311.4 ms). Both are tiny-body kernels where a JIT should be
 at its best, and it is worth naming what the reference does here — MoarVM's JIT
 backend is x64-only, so on arm64 it compiles `src/jit/stub.o` and runs with
 spesh but no machine-code JIT.
@@ -388,21 +400,21 @@ clearest sign the wins are where they claim to be.
 
 | Benchmark | Raku++ (interp) | mutsu | Rakudo | vs Rakudo | vs mutsu |
 |---|---:|---:|---:|---|---|
-| bigint    |     5.8 ms |      9.1 ms |   160.9 ms | **27.7×** | **1.6×** |
-| strcat    |     8.5 ms |    106.9 ms |    87.4 ms | **10.3×** | **12.6×** |
-| hash      |    17.9 ms |     42.0 ms |   123.8 ms | **6.9×** | **2.3×** |
-| sortnums  |    31.2 ms |     30.4 ms |   189.4 ms | **6.1×** | level |
-| sortby    |    31.8 ms |     32.8 ms |   163.4 ms | **5.1×** | level |
-| regex     |    40.6 ms |    238.5 ms |   182.2 ms | **4.5×** | **5.9×** |
-| arrayops  |    61.3 ms |     97.7 ms |   189.0 ms | **3.1×** | **1.6×** |
-| textsplit |    66.1 ms |    246.3 ms |   184.5 ms | **2.8×** | **3.7×** |
-| loopsum   |    84.3 ms |    123.6 ms |   230.4 ms | **2.7×** | **1.5×** |
-| hashfill  |   108.8 ms |    392.9 ms |   284.1 ms | **2.6×** | **3.6×** |
-| arraypush |   133.0 ms |    383.3 ms |   262.5 ms | **2.0×** | **2.9×** |
-| streq     |   223.1 ms |    609.3 ms |   231.6 ms | level | **2.7×** |
-| rats      |   242.4 ms |    367.6 ms |   236.6 ms | level | **1.5×** |
-| fib       |   345.2 ms |    245.6 ms |   311.4 ms | Rakudo 1.1× | mutsu 1.4× |
-| objects   |   509.5 ms |   1585.1 ms |   207.2 ms | Rakudo 2.5× | **3.1×** |
+| bigint    |      5.7 ms |      9.1 ms |    160.9 ms | **28.2×** | **1.6×** |
+| strcat    |      8.1 ms |    106.9 ms |     87.4 ms | **10.8×** | **13.2×** |
+| sortnums  |     25.7 ms |     30.4 ms |    189.4 ms | **7.4×** | **1.2×** |
+| hash      |     18.2 ms |     42.0 ms |    123.8 ms | **6.8×** | **2.3×** |
+| sortby    |     28.0 ms |     32.8 ms |    163.4 ms | **5.8×** | **1.2×** |
+| regex     |     38.1 ms |    238.5 ms |    182.2 ms | **4.8×** | **6.3×** |
+| arrayops  |     47.8 ms |     97.7 ms |    189.0 ms | **4.0×** | **2.0×** |
+| textsplit |     58.0 ms |    246.3 ms |    184.5 ms | **3.2×** | **4.2×** |
+| hashfill  |    103.2 ms |    392.9 ms |    284.1 ms | **2.8×** | **3.8×** |
+| loopsum   |     85.8 ms |    123.6 ms |    230.4 ms | **2.7×** | **1.4×** |
+| arraypush |    127.5 ms |    383.3 ms |    262.5 ms | **2.1×** | **3.0×** |
+| fib       |    299.4 ms |    245.6 ms |    311.4 ms | level | mutsu 1.2× |
+| streq     |    228.8 ms |    609.3 ms |    231.6 ms | level | **2.7×** |
+| rats      |    243.9 ms |    367.6 ms |    236.6 ms | level | **1.5×** |
+| objects   |    479.5 ms |   1585.1 ms |    207.2 ms | Rakudo 2.3× | **3.3×** |
 
 **`regex` regressed at v3.6.0 — bisected and fixed after the tag.** On this
 machine the interpreted row was 88.5 ms at v3.14.0 (2026-08-11) and 113.4 ms
@@ -432,31 +444,32 @@ interpreter row to the fifth-best.
 ### Native (`--exe`) vs Rakudo and mutsu
 
 Compiling removes interpreter overhead on top of that — pushing every row
-ahead of Rakudo except one: `objects` compiled is 337.5 ms against Rakudo's
+ahead of Rakudo except one: `objects` compiled is 324.6 ms against Rakudo's
 **interpreter** at 207.2, so Rakudo still leads that row by 1.6×. Against mutsu
-the compiled binary now wins **all fifteen**. `bigint` was the sole exception
-at the previous sitting, costing 3.3× compiled; v3.24.0's eight-carry-chain
-multiply makes it a **1.9×** lead instead, and that single change is what
-closes the sweep. The last column is the speed-up over interpreting the same
+the compiled binary wins **all fifteen**. `bigint` was the sole exception two
+sittings ago, costing 3.3× compiled; v3.24.0's eight-carry-chain multiply made
+it a **2.0×** lead instead, and that single change is what closed the sweep.
+The largest mover this sitting is `fib`: 85.2 → 51.3 ms compiled, the
+argument-list free list under a kernel that is nothing but calls. The last column is the speed-up over interpreting the same
 program.
 
 | Benchmark | Raku++ (`--exe`) | mutsu | Rakudo | vs Rakudo | vs mutsu | vs interp |
 |---|---:|---:|---:|---|---|---:|
-| bigint    |     4.7 ms |      9.1 ms |   160.9 ms | **34.2×** | **1.9×** | 1.2× |
-| strcat    |     3.1 ms |    106.9 ms |    87.4 ms | **28.2×** | **34.5×** | 2.7× |
-| loopsum   |    12.5 ms |    123.6 ms |   230.4 ms | **18.4×** | **9.9×** | 6.7× |
-| hash      |     7.4 ms |     42.0 ms |   123.8 ms | **16.7×** | **5.7×** | 2.4× |
-| streq     |    19.2 ms |    609.3 ms |   231.6 ms | **12.1×** | **31.7×** | 11.6× |
-| sortnums  |    16.7 ms |     30.4 ms |   189.4 ms | **11.3×** | **1.8×** | 1.9× |
-| sortby    |    20.4 ms |     32.8 ms |   163.4 ms | **8.0×** | **1.6×** | 1.6× |
-| hashfill  |    38.2 ms |    392.9 ms |   284.1 ms | **7.4×** | **10.3×** | 2.8× |
-| regex     |    27.1 ms |    238.5 ms |   182.2 ms | **6.7×** | **8.8×** | 1.5× |
-| textsplit |    39.1 ms |    246.3 ms |   184.5 ms | **4.7×** | **6.3×** | 1.7× |
-| arraypush |    55.8 ms |    383.3 ms |   262.5 ms | **4.7×** | **6.9×** | 2.4× |
-| fib       |    85.2 ms |    245.6 ms |   311.4 ms | **3.7×** | **2.9×** | 4.1× |
-| arrayops  |    59.0 ms |     97.7 ms |   189.0 ms | **3.2×** | **1.7×** | 1.0× |
-| rats      |   150.2 ms |    367.6 ms |   236.6 ms | **1.6×** | **2.4×** | 1.6× |
-| objects   |   337.5 ms |   1585.1 ms |   207.2 ms | Rakudo 1.6× | **4.7×** | 1.5× |
+| bigint    |      4.6 ms |      9.1 ms |    160.9 ms | **35.0×** | **2.0×** | 1.2× |
+| strcat    |      3.0 ms |    106.9 ms |     87.4 ms | **29.1×** | **35.6×** | 2.7× |
+| loopsum   |     12.4 ms |    123.6 ms |    230.4 ms | **18.6×** | **10.0×** | 6.9× |
+| hash      |      7.4 ms |     42.0 ms |    123.8 ms | **16.7×** | **5.7×** | 2.5× |
+| sortnums  |     14.3 ms |     30.4 ms |    189.4 ms | **13.2×** | **2.1×** | 1.8× |
+| streq     |     19.4 ms |    609.3 ms |    231.6 ms | **11.9×** | **31.4×** | 11.8× |
+| sortby    |     19.2 ms |     32.8 ms |    163.4 ms | **8.5×** | **1.7×** | 1.5× |
+| hashfill  |     35.6 ms |    392.9 ms |    284.1 ms | **8.0×** | **11.0×** | 2.9× |
+| regex     |     26.5 ms |    238.5 ms |    182.2 ms | **6.9×** | **9.0×** | 1.4× |
+| fib       |     51.3 ms |    245.6 ms |    311.4 ms | **6.1×** | **4.8×** | 5.8× |
+| textsplit |     34.6 ms |    246.3 ms |    184.5 ms | **5.3×** | **7.1×** | 1.7× |
+| arraypush |     53.0 ms |    383.3 ms |    262.5 ms | **5.0×** | **7.2×** | 2.4× |
+| arrayops  |     48.2 ms |     97.7 ms |    189.0 ms | **3.9×** | **2.0×** | 1.0× |
+| rats      |    154.5 ms |    367.6 ms |    236.6 ms | **1.5×** | **2.4×** | 1.6× |
+| objects   |    324.6 ms |   1585.1 ms |    207.2 ms | Rakudo 1.6× | **4.9×** | 1.5× |
 
 ### What mutsu is faster at
 

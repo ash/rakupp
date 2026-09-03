@@ -3,6 +3,407 @@
 Release notes for tagged releases. Numbers are measured, not projected;
 methodology for all Roast figures is in [docs/status/COUNTING.md](docs/status/COUNTING.md).
 
+## v3.25.0 (2026-09-03) — the roots under the top hundred
+
+v3.24.0 followed what other people's code asked for. This release keeps the
+same source of work and changes how it is read: not one distribution at a time
+but the hundred most depended-on dists **and the 69 underneath them**, measured
+as one battery and worked by *cause* — because a top-100 dist does not go green
+until everything it installs does, and because one engine fault usually sits
+under several rows. Two days, 51 commits, and almost every one of them names the
+dist that found it and the general rule it restores.
+
+| | v3.24.0 | v3.25.0 |
+|---|---:|---:|
+| Roast assertions (all declared) | 199,846 | **199,980** |
+| Roast files fully passing | 646 / 1,464 | **651 / 1,464** |
+| Local regression suite (`t/run.raku`) | 609 | **637** |
+| Module battery (vs each dist's own reference run) | 50 / 59 | 50 / 59 |
+| Top-100 battery, own suite / end to end / whole closure | 62 / 58 / 95 | **67 / 60 / 103** |
+| Documentation examples byte-identical on both engines | 953 | 953 |
+| Of the ecosystem's 2,526 distributions, passing their own suites | 746 | 746 (carried forward) |
+| `say "Hello"` compiled with `--exe` | 9,567,336 B | **9,753,480 B** |
+| …compiled with `--exe --slim` | 6,286,248 B | **6,455,800 B** |
+
+Roast is the repeating profile of three runs (651 / 651 / 650) on
+`v3.24.0-51-g4d873a8` against Roast `b2cbe8a42` — the same revision v3.24.0
+measured, so the file-list diff is an engine comparison and nothing else. **No
+file regressed**: the union of the three, diffed against v3.24.0's union, is
+empty in that direction and gains four — `S04-statements/loop.t`,
+`S09-typed-arrays/native-decl.t`, `integration/advent2012-day03.t`, and
+`S15-nfg/concat-stable.t`, which [COUNTING.md](docs/status/COUNTING.md) lists
+among the files that only came back under a 30-second budget; it now finishes
+inside the 10-second one in all three runs. The one file that moved between
+runs (`S03-operators/scalar-assign.t`) was `[TIME]` in the run that lost it and
+passes in the other two.
+
+The ecosystem figure is **carried forward, not measured**: no whole-ecosystem
+sweep ran this cycle. The top-100 battery is what ran instead, and the next
+section says what it found.
+
+Every gate ran on that commit: the local suite 637 of 637, optbench with all
+nine kernels agreeing across the interpreter, `--exe`, `--exe -O` and Rakudo,
+the slim differential 407 identical of 437 programs with none timed out, the
+slim negative suite, a GCC 16 build, the battery (below), and the conformance
+sweep — 953 documentation examples byte-identical and 23 operator divergences,
+both unchanged from v3.24.0.
+
+### The top-100 and its closure: 62 → 67 own suite, 58 → 60 end to end, 95 → 103 of 169
+
+[ECOSYSTEM-TOP100.md](docs/dev/ecosystem/ECOSYSTEM-TOP100.md) extends the
+top-50 ranking to 100 and adds the part the top-50 never had — the transitive
+dependency closure, 169 dists — with a battery that installs from an empty store
+and runs every dependency's own suite on the way. Nine dependency-layer dists
+each block two or more of the hundred and were invisible from the ranking
+alone.
+
+The 2026-09-01 re-check named 24 engine-side roots under the non-passing rows.
+They were worked one at a time, each reproduced against Rakudo 2026.08 before it
+was touched, and the whole 169 were re-run on 2026-09-03 at `v3.24.0-43`
+([the refresh](docs/dev/ecosystem/ECOSYSTEM-TOP100.md#the-2026-09-03-refresh-at-v3240-43-g8a3ca15),
+raw verdicts in
+[top100-battery-2026-09-03.tsv](docs/dev/ecosystem/top100-battery-2026-09-03.tsv)).
+Eight rows moved to pass and none moved off it: Log::Async, Pod::Load,
+Text::MiscUtils, Compress::Zlib, Color::Names, Font::AFM, Text::SubParsers,
+User::Language. Four more went green after that measurement and are not in its
+table — Text::Markdown and LLM::DWIM (two parser tolerances), HTTP::Parser (a
+non-captured rule's children keep their `.made`) and Prompt (selective export
+tags) — plus Method::Also, Text::CodeProcessing, Mathematica::Serializer and
+JSON::Native from the issue and installer work below.
+
+**A refresh is for the rows that broke, not the ones that passed.** Two dists
+that pass in the pinned table failed under HEAD, and a third failed one run in
+three:
+
+- **URI** (#8, nine dists behind it) — `.port = Nil` on `has Port $.port is rw`
+  over `subset Port of UInt` type-checked the Nil. Assigning `Nil` *resets* a
+  container to its default, which rakupp did for `$x = Nil`, `@a[0] = Nil` and
+  `$!attr = Nil` but not through an accessor; a reset is not an assignment, so
+  neither the declared type nor a `where` clause is asked about it.
+- **Config** (#50) — `use Log` died "Could not find Logger::NDC" because the
+  installer had installed the dist Logger 0.4.0 to satisfy `Log`: that
+  version's META misnames its modules `Log`, `Log::NDC`, and candidates were
+  ordered by version alone. A dist *named* for what was asked now outranks one
+  that merely lists the module in `provides`.
+- **Log::Async** (#31) — `t/14-frame` failed 7 runs in 20. The line of the
+  statement now executing was one process-wide slot (a `thread_local` costs a
+  TLV lookup per statement, measured +6% on `loopsum`), so once a worker existed
+  two threads wrote it and `callframe(1)` on the mainline could read the logging
+  worker's line. Creating a worker latches the line per-thread for the rest of
+  the run, so only programs that spawn threads pay. 0 in 30 after.
+
+Log::Async had also been the battery's one `timeout` that was really a hang: its
+END phaser starts a worker to close a Supply and waits on it, and rakupp drained
+its workers *before* running END phasers. END now runs with the pool alive, as
+Rakudo's does.
+
+**The fixes, by the law each restores.** Grouped by kind rather than by dist,
+since that is how they were found:
+
+- *Grammars and regexes.* An interpolated assertion `<name=$pattern>` is a
+  **call**, not a spliced group — the callee matches in its own capture frame
+  and its captures do not renumber the host's ([#54], and Sparrow6's whole
+  check engine is written on that spelling). `$<a>=( … )` is a capture scope and
+  `$<a>=[ … ]` is not. A `my regex R {…}` handed to `.subst`/`.split`/`.comb`
+  arrives as the Callable `&R` and is now found. A rule reached through a
+  non-capturing `<.rule>` call keeps its children's `.made` on the success
+  replay, keyed by name as well as span so a same-span sibling cannot inherit
+  it. A proto used as the parse entry point (`.parse(:rule<x>)`) fires its
+  action once. An escaped punctuation character that *starts* a range in a
+  `<[…]>` class (`\]..\~`) is a range. `\n` and a class member match CRLF as one
+  grapheme; a `#` comment inside `<?{…}>`; an escaped bracket in `< word list >`.
+- *Parsing.* A zen slice `$x<>` / `$x[]` / `$x{}` **decontainerises** — `for
+  $aoa<>` walks the elements, not the one item the Scalar is ([#55]; the gap
+  dated to v0.1.0). `.<>` and `.{}` did not parse at all. `subset X of Str:D`
+  keeps the smiley on the base type instead of dropping it as a statement of its
+  own — which then read the following `is export(:TAG)` as a call to a routine
+  named `export`. A `}` at end of line ends a statement only when it closes a
+  *block*, never a subscript. A heredoc whose terminator line ends in CRLF
+  terminates. `&&(EXPR)` glued to a paren in term position is the expression,
+  as Rakudo reads it. `require Mod:ver(v0.3.3+)` inside a block no longer
+  swallows the block's closing brace. `my :($a, $b = EXPR) := …` binds a
+  signature literal, defaults included. The dot-hyper subscript `@a.»<key>`
+  parses. A bare `my @` is no longer *nameable* by a later bare `@` term, and
+  the anonymous slot is named with the `\x01` sentinel rather than `!anon`,
+  which read as a private-attribute twigil and made `{ my % }` die.
+- *Dispatch and values.* Whatever-currying is **syntactic**: a `*` that arrives
+  as a value does not curry, so `given * { when Pair {…} }` no longer takes the
+  Pair arm and `sub f($x where Int)` no longer accepts `*`. `Nil ~~ UInt` is
+  False. `nextcallee` exists. `callsame`/`nextsame` from a user method that
+  overrides a *built-in* find a dispatcher. `~$obj` runs a user `method Str`
+  through the method chain, so a `Str` that defers with `nextsame` has somewhere
+  to defer to. A Junction used as a hash key autothreads into every key. A Hash
+  in `.splice`'s replacement is one element, not its flattened pairs. `zip` of a
+  single iterable zips that list's elements. `Hash(%a, %b)` merges. An
+  `is export(:tag)` sub is published only when the importer asks for the tag
+  (or `:ALL`) — deliberately narrower than Rakudo in that a plain `use` still
+  gets the defaults, because withholding a default that works was the larger
+  risk in the battery. A role's `is also<alias>` lands on the composing class.
+  `.^add_parent` on a runtime-built type works.
+- *`.clone`*, diffed over ~130 cases against Rakudo: a Pair cloned to itself
+  (every copy shared the one cell), `@`/`%` twiddles bound the raw value instead
+  of assigning into the container, twiddles reached private attributes, a
+  positional argument was silently ignored, and a Routine cloned to itself so
+  the clone shared the origin's `state` variables. `=:=` answered by contents
+  whenever an operand was not a plain variable.
+- *Processes and I/O.* `run`/`shell` `:in($handle)` hand the child the handle's
+  own descriptor rather than rakupp's stdin — Roast's run-with-tty lost its
+  input or died in `tcgetattr` on a socket. `$*DISTRO` on macOS reads `sw_vers`
+  as Rakudo does (`.desc` "Tahoe 26", `.version` v26.5.1), so the `todo` guards
+  keyed on it fire. A Buf grown by index is shared storage, so a later
+  `nativecast(CArray[uint8], $buf)` sees those bytes.
+- *Test.* A failure names the line of the `is`, not the last line its arguments
+  ran — JSON::Native's suite reported line 420 of a 115-line file. The
+  call-frame guards restore the caller's line on return and on throw alike,
+  which also made two million sub+method calls faster (0.84 s against 1.05 s on
+  the previous release), since it replaced per-site patching with one relaxed
+  store. `cmp-ok $x, '~~', {block}` calls the block; it answered False for every
+  Code, Regex or Junction matcher.
+- *NativeCall.* `void` was the one exported type name the engine did not carry
+  ([#57]), and the sweep behind it found seven more: the qualified
+  `NativeCall::Types::*` spellings resolved nowhere; `refresh`,
+  `explicitly-manage`, `guess_library_name` and `check_routine_sanity` were
+  advertised and undefined; `nativecast(Pointer, $carray)` answered NULL for a
+  byte-backed CArray and the next call dereferenced it; a `--> void-ptr`
+  constant alias resolved as an argument type but not as a return one, so a
+  pointer came back as a bare Int and nothing raised. Nil for a `Str` parameter
+  is NULL, not `""` — OpenSSL's `ERR_error_string($e, Nil)` was handed a
+  one-byte buffer for a 256-byte message, and its `10-client-ca-file` test
+  crashed two runs in three. A native callback is typed from the routine's
+  declared signature.
+- *nqp.* `istype(Mu, Any)` is 0; `create()` on a user class; `getattr` over a
+  Pair; `eqaddr`, `hllbool`, `strtocodes`, the `getuniprop_*` trio; `getcomp`.
+  A Buf is a Blob not a Str, an Instant is Real not a Num, a native array is an
+  `array` that names its element, an enum member past int64 keeps its value.
+- *The extension ABI.* A kinded value is `RK_OTHER`, not its carrier: a Date is
+  a Hash inside the engine, so JSON::Native's C writer was told `RK_HASH` and
+  wrote `{"year":2026,"month":8,"day":10}` where JSON::Fast writes
+  `"2026-08-10"`; an enum came out as the bare word, a Buf as a string of its
+  bytes. Engine-side only, so every already-built extension is fixed by the
+  binary. For the bindings and the MCP server this means a Date crosses as its
+  Str and an enum value as its key.
+- *Text::CodeProcessing* asked for `nqp::getcomp('Raku')` and a `REPL` object
+  with a persistent evaluation scope — Jupyter::Kernel's sandbox, copied into
+  the weaving dists. rakupp keeps the session on the REPL object rather than
+  plumbing contexts; its suite goes 1 of 8 files to 8 of 8.
+
+One conversion was **taken back**. `7af7584` made an `is rw` write walk the
+whole chain of `is rw` frames eagerly, which converted IO::Capture::Simple and
+made JSON::Fast's threaded `int $pos is rw` cursor O(n²) — a 50,000-character
+nested document turned a linear parse into minutes and timed the #1 dist's suite
+out. The write-through goes one hop again; deep-nest parse is back to linear
+(2,000 levels 11.8 s → 0.5 s), and IO::Capture::Simple reverts to open, since
+what it needs is the container/binding model rather than a chain walk on the hot
+path.
+
+**What blocks the most rows now** is the async and serialization constellation
+the ecosystem sweep already named: IO::Socket::Async::SSL (8), CSS::Grammar (8),
+CBOR::Simple (7), Log::Timeline (6), IO::Path::ChildSecure (6). Five rows are
+environment, not engine — `xclip`, `$TERM`, and the Math::Libgsl trio wanting
+GSL's headers on the compiler's search path — and stay recorded that way.
+
+### Issues
+
+Seven closed since v3.24.0, six of them with a fix in this cycle.
+
+- **[#49] Fail to build OpenSSL** — the resolver discovered dists breadth-first
+  and *reversed* the list, which is not a dependency order: naming both
+  File::Directory::Tree and OpenSSL ran OpenSSL's `Build.rakumod` (which imports
+  the tree module) against a store that did not hold it yet. The plan now ends
+  with a depth-first pass over `depends`, `build-depends` and `test-depends`;
+  the same reversal had mis-planned 14 single-name installs in the current index.
+- **[#50] `rakupp install` should be quiet when nothing needs doing** — `-q` is
+  one option every mode takes, not a `--lint` special case: it drops the lines a
+  mode prints *about itself* and never its product, its warnings or its errors.
+- **[#54] Regex captures with `<mymatch=$pattern>`** — see above; four faults
+  sat between the reported spelling and the wrong answer, and the program needs
+  all of them.
+- **[#55] Parsing JSON into arrays of arrays** — the zen slice, above. Not
+  JSON::Fast's bug; the module is only what walked someone into it.
+- **[#57] `type void not recognized`** — one word, and the seven NativeCall gaps
+  the sweep behind it found.
+- **[#59] Cannot install Mathematica::Serializer** — two engine bugs behind one
+  "subtle" diff: `Nil ~~ UInt` was True, and `DateTime.raku` printed a named
+  form of rakupp's own (and truncated a fractional second) where Rakudo's is
+  positional. Plus Whatever-currying on a value, which sent a bare `*` down the
+  encoder's `when Pair` arm.
+- **[#21] Using modules from rakubrew+zef** — closed as answered; the
+  `install --list` change below is the tooling side of it.
+
+**[#47]** stays open. The dispatch cost it names is still the cost; what moved
+this cycle is below.
+
+### Performance: the list container, and the 2% a shipped binary hides
+
+**`ValueList` stops being a `std::vector`.** `src/ValueVec.h` is `RVec<T>`, the
+`std::vector` subset the tree uses with the same semantics, and two things that
+`std::vector` cannot do for a `Value`:
+
+- **Growth is one pass.** `std::vector` fills a second buffer and walks the old
+  one again to destroy it; `RVec` constructs and destroys per element in a single
+  walk, and where the standard library tolerates a bitwise move it is a
+  `memcpy`. A `Value` is trivially relocatable — nothing in it points at itself —
+  except the `std::string` inside `CowStr` on libstdc++, so `bitwiseRelocOk()`
+  asks the library at run time rather than trusting a macro. That probe was
+  wrong for most of the sitting and nothing caught it: it asked whether a short
+  string's `data()` lay inside the string object, which is true on every
+  implementation, so the memcpy path never ran and every number measured that
+  day came from the fallback. Which turns out to be most of the win: the
+  one-pass walk is worth more here than the bitwise move.
+- **Small blocks come off a thread-local free list**, kept per *exact* capacity
+  for 1–4. The tree's most frequent `ValueList` by far is the one- or
+  two-element argument list built on every interpreted call, and its heap block
+  is the whole of its cost (priced at 51 ns in IR-EXPERIMENT, 32 ns here, 9.5 ns
+  off the list). Per exact capacity rather than per size class is the design
+  decision: a `ValueList` is also every Array's payload, and one four-element
+  block per small request made a million one-element arrays hold 560–663 MB
+  against 292–296.
+
+`CowStr::kPromote` moved 64 → 23, libc++'s small-string boundary. This is the
+weakest of the three and is recorded with its counter-case: a mid-band string
+used as a hash key pays promotion's two allocations and never reaches the copy
+at which they start paying (-5.6% there, +3–20% elsewhere).
+
+[VALUE32-PLAN.md](docs/dev/plans/VALUE32-PLAN.md) prices the rest of the
+representation work and is the probe that predicted this at 1.5× on the array
+build. Its finding that reorders the remaining plan: 56% of the array build was
+`std::vector` *growth*, which is not a `sizeof` problem at all; the hash path is
+no longer the argument (31 ns/entry after `ValueHash`, against the 302 that
+opened the campaign); and the 32-byte layout stands or falls on whether a short
+Str's bytes stay inline — 7× apart between the two answers.
+
+**Measured against what a user downloads**, not against a local baseline: the
+v3.24.0 `rakupp-macos-universal.tar.gz` from the GitHub release, beside a local
+build of the same commit, HEAD, and HEAD with the list work, counting
+instructions retired so the comparison does not depend on the box being quiet
+([SITTING-2026-09-02.md](docs/dev/experiments/SITTING-2026-09-02.md)). The CI
+universal build is fair — within 1% of a local build on 25 of 26 kernels; the
+exception is `bigint`, where the release retires 5.2% *more* instructions than
+a local build of the same source. Against that release this tree retires 2–29%
+fewer instructions on 20 of 26 kernels: `arrayops` 1.29×, `sortnums` 1.19×,
+`sortby` 1.14×, `strcat` 1.14×, `multimeth` 1.14×, `fib` 1.08×, `method` and
+`strscan` 1.08×. Wall clock on longer programs, both builds alternating every
+repetition: a 1M-element map/grep/reverse pipeline 906 → 725 ms, a 2M
+push-and-sum 1,907 → 1,685 ms.
+
+**Two kernels read below the release and the cause is named and not fixed.**
+`asg` 0.986, `loopsum` 0.983. Bisected on `asg`, whose instruction count repeats
+to ±0.02%: one line, `tctx_.curStmtExpr = e;` in the ExprStmt arm of `exec`,
+costs 34 instructions per statement executed — `tctx_` is `thread_local`, macOS
+resolves that with a real `_tlv_get_addr` call, and putting it at the top of the
+arm forces a resolution the rest of the arm would otherwise fold into one.
+Deleting it is not the fix: cooperative `next`/`last`/`redo` read it to tell a
+bare loop control from one nested in an expression. The fix is to set it only
+for statements whose expression can hold one, a parse-time property, or to
+hoist the resolution; neither is done here. The 9–12% on grammar parsing between
+v3.24.0 and HEAD is un-bisected and is the open item.
+
+### The perf gate: seven kernels faster, and the baseline this release leaves un-recorded
+
+`perf-guard --check` against v3.24.0's recorded baseline, on the machine of
+record, best of three per kernel:
+
+| kernel | v3.24.0 baseline | v3.25.0 | |
+|---|---:|---:|---|
+| multimeth | 430.4 | 353.1 | **-18.0%** |
+| strscan | 131.1 | 113.0 | **-13.8%** |
+| fib | 344.8 | 300.2 | **-12.9%** |
+| privmeth | 357.7 | 313.8 | **-12.3%** |
+| method | 201.0 | 179.5 | **-10.7%** |
+| subcall | 164.9 | 148.7 | **-9.8%** |
+| attrread | 221.3 | 201.2 | **-9.1%** |
+| objnew | 386.6 | 372.4 | -3.7% |
+| rats | 248.7 | 243.4 | -2.1% |
+| strpass | 68.9 | 67.7 | -1.7% |
+| asg | 150.6 | 151.3 | +0.5% |
+| hash | 17.3 | 17.4 | +0.6% |
+| regexloop | 125.0 | 126.3 | +1.0% |
+| loopsum | 83.7 | 86.0 | +2.7% |
+
+No kernel is over the 5% tolerance. The seven that moved are the call-shaped
+ones, which is where a free list under the argument list would show; `strscan`,
+recorded at +6.5% last release rather than fixed, is 13.8% under that
+recording and 4.4% over the best ever measured. `loopsum` +2.7% and `asg` +0.5%
+are the `curStmtExpr` line above, measured by instruction count at 1–2% and not
+fixed.
+
+**The baseline was not re-recorded, and it is the one checklist item this
+release leaves open.** `perf-guard --record --for=v3.25.0` refused twice: its
+own noise check found kernels whose three runs spread past the 5% it enforces
+(hash 8.5%, attrread 8.4%, regexloop 5.8% on the first attempt; loopsum 6.2%,
+hash 5.6% on the second) while `WindowServer` and `ecosystemanalyticsd` each
+held a third of a core. The minima it measured agree with the check's to within
+1–2% on every kernel, so the table above is the release's — but a baseline is
+what every later release is gated against, and the tool's refusal was not
+overridden with `--force`. Until a quiet sitting records it, the gate compares
+against v3.24.0's numbers and carries the slack in the table above. `rats`
+(+38% against the best ever measured) and `regexloop` (+26.7%) remain the
+standing debt from [findings/GATES-3.22.md](docs/dev/findings/GATES-3.22.md).
+
+### The battery: 50 of 59, and a regression that was the gates racing each other
+
+`tier2/run-dist-tests.raku` on the release commit, run alone on a quiet box:
+**50 PASS · 2 DIFF · 6 ENV · 1 without tests, no verdict changed** against the
+committed record. Within its DIFF, NativeHelpers::Blob passes 3 of its 4 files
+where it passed 1 (the `nativecast(Pointer, $carray)` work above); AttrX::Mooish
+is unchanged at 1 of 35.
+
+The first run of the day said otherwise — **Digest PASS → DIFF on `t/ripemd.t`**,
+the same RIPEMD test that caught v3.21.0's silent wrong answer — and a
+Digest-only re-run twenty minutes later said it again. Both runs shared one
+condition: the slim differential (437 programs compiled twice), the conformance
+sweep and the battery were running *at the same time*, load 5–6 on 8 cores. The
+test itself never failed again: ten standalone runs, the harness's own
+environment replayed variable by variable (fresh `HOME`, `TZ=UTC`, the staged
+copy, the perl alarm wrapper, the four files in sequence), three runs through a
+logging wrapper, three more under a clean `-j8` rebuild at load 9–11 (slowest
+18 s against the 60 s cap), and eight CPU burners (16.6 s) — 9 of 9 with the
+right hashes every time. The runner discards its children's output, so whether
+those two failures were the cap or a wrong answer cannot be told after the
+fact; what can be said is that they reproduce in no condition that can be
+recreated alone, and that the verdict the release records is the quiet run's.
+The rule that comes out of it is for RELEASING.md: **the battery runs alone**,
+and the runner should keep a failing file's output.
+
+### Also in this release
+
+**`rakupp install --list`** says who installed each dist (rakupp or zef), where
+its module files are, and which `bin/` wrappers it wrote; `-q` keeps the
+identity lines only.
+
+**`run-bench --rusage`** adds CPU time and peak RSS per lane, measured in its
+own pass after the timing rounds so no wall-clock figure moves. What it shows
+on the machine of record: Raku++ holds 28–53× less peak RSS than Rakudo
+(4.3–5.6 MB interpreted, 2.8–4.2 MB under `--exe`, against 140–227 MB), and
+Rakudo is the only engine whose CPU exceeds its wall time.
+
+**BENCHMARKS.md is corrected for v3.24.0.** That release's tables were taken
+before the eight-carry-chain multiply, so its `bigint` series read ~31 ms for an
+engine that does it in 5.8. Only `main` moves — the dashboard mines the file as
+committed at each tag — which is why [RELEASING.md](docs/dev/RELEASING.md) now
+says to re-measure *before* the tag, and to pass `RAKUPP=` to every measuring
+tool: `pick-rakupp` prefers `build/` over `build-arm64/` and fed five tools a
+28-commit-old engine in one release. This release did both: its tables are
+three harness passes on `v3.24.0-51-g4d873a8`, the reference lanes re-measured
+in the same sitting and found within ±2.3% (Rakudo) and ±3.3% (mutsu) of the
+committed columns, so those are carried and only the Raku++ lanes move —
+`arrayops` interpreted 61.3 → 47.8 ms, `sortnums` 31.2 → 25.7, `fib` compiled
+85.2 → 51.3, `objects` 509.5 → 479.5; `streq` +2.6% and `rats` +0.6% the
+other way, inside the sitting's own spread.
+
+**RakuAST**: Rakudo 2026.09 makes RakuAST the default frontend, and
+[RAKUAST-PLAN.md](docs/dev/plans/RAKUAST-PLAN.md) turns the deferred design
+note into a phased implementation plan (P0 pragma and class registry, P1 `.AST`
+view, P2 DEPARSE and the round-trip gate, P3 `.EVAL`, P4 traversal). The 20
+eco-sweep dists failing only for want of that surface wait for the phases; none
+is in the top 100 or its closure, which is what makes waiting free.
+
+**The book** gains chapter 42, *The Carry Chain* (the bigint episode end to
+end), a 145-entry glossary as appendix D, a Value chapter that shows the struct
+as it stands beside the one it was written against and the lineage between
+them, and diagrams whose box glyphs finally join up — a scale mismatch and a
+`\lineskip`, both invisible until measured. 386 pages.
+
 ## v3.24.0 (2026-09-01) — what other people's code asked for
 
 The consolidation arc ended at v3.23.0 with a known state and no campaign

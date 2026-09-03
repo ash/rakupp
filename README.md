@@ -11,15 +11,13 @@ WebAssembly, no server required. It is not a fork of Rakudo and shares no code
 with it; it targets the *language*, measured against
 [**Roast**](https://github.com/Raku/roast), the official Raku test suite.
 
-**Status:** current release **v3.24.0** (2026-09-01) — *what other people's
-code asked for*: the first release after the consolidation arc, and almost none
-of it was chosen here. Eight GitHub issues, six third-party distributions that
-would not install, and one outside report that two dists ran ~40% slower than
-Rakudo — which is what drove the dispatch work. Method calls and attribute reads
-stop allocating; the ecosystem was measured again rather than carried forward.
-The release gates caught three regressions it had introduced, none of them
-visible in the headline count. Every release is written up in the
-[CHANGELOG](CHANGELOG.md).
+**Status:** current release **v3.25.0** (2026-09-03) — *the roots under the top
+hundred*: the hundred most depended-on distributions and the 69 underneath them,
+measured as one battery and worked by cause rather than by dist — 62 → 67 of 100
+passing their own suites, 58 → 60 end to end, 95 → 103 of the 169 — the engine
+faults under those rows fixed by cause, each named with the rule it restores.
+Seven issues closed; the list container stops being a `std::vector`. Every release is
+written up in the [CHANGELOG](CHANGELOG.md).
 
 **Current focus:** the ecosystem sweep — all 2,526 distributions of the Raku
 ecosystem run against rakupp, and the engine gets fixed until real modules
@@ -56,6 +54,10 @@ was — so these three added nothing new.
   calls at 5.8x at all. Ecosystem re-measured to **746 / 2,526**. Gate 1 and the
   module battery caught three regressions this release introduced, while the
   headline count moved inside its own flap band.
+- **v3.25.0** — *the roots under the top hundred.* ✅ The top-100 battery and
+  its 169-dist closure, worked by cause: 62 → 67 own suite, 58 → 60 end to end.
+  A refresh found two rows that had quietly broken since the pinned sweep, which
+  is what a refresh is for. `ValueList` grows in one pass off a free list.
 
 Left open by the arc: the source review is **three files of eighty-three**. The
 performance baseline had moved twice with no cause found; v3.24.0 rebuilt
@@ -68,14 +70,14 @@ suites, up from 746, where the lever is the 383 that never ran their own tests a
 all because a dependency failed first. The plans are in
 [docs/dev/plans/VERSIONS.md](docs/dev/plans/VERSIONS.md).
 
-| | v3.24.0 | at v2.0.0 |
+| | v3.25.0 | at v2.0.0 |
 |---|---:|---:|
-| Roast, per individual test — of what the suite declares‡ | **199,846 of ~219,374 (90%)** | 197,090 of ~203,500 (97%) |
-| Roast, all-or-nothing — files fully passing, of 1,464 | **646 (44%)** | 594 |
+| Roast, per individual test — of what the suite declares‡ | **199,980 of ~219,403 (91%)** | 197,090 of ~203,500 (97%) |
+| Roast, all-or-nothing — files fully passing, of 1,464 | **651 (44%)** | 594 |
 | Official documentation examples byte-identical on both engines | **953** | 952 |
 | Of the Raku ecosystem's [2,526 distributions](https://raku.online/modules/ecosystem/), passing their own test suites | **746** | — |
-| Local regression suite | **609** | 312 |
-| `say "Hello"` compiled with `--exe --slim` | **6,286,248 B** | 9,830,680 B (no `--slim`) |
+| Local regression suite | **637** | 312 |
+| `say "Hello"` compiled with `--exe --slim` | **6,455,800 B** | 9,830,680 B (no `--slim`) |
 
 ‡ Counted against each file's declared `plan N`, so a file that aborts is
 charged for every test it failed to run; on the all-or-nothing bar a file
