@@ -24,7 +24,9 @@ You should be comfortable reading C++ and comfortable reading Raku, but you do
 not need to be an expert in either, and you certainly do not need to have
 implemented a language before. Where a piece of compiler folklore is
 load-bearing — precedence climbing, Thompson construction, packrat memoisation,
-copy-on-write — it is explained where it is used rather than assumed.
+copy-on-write — it is explained where it is used rather than assumed, and
+Appendix D collects the whole vocabulary, general and local, in one
+alphabetical list.
 
 Three kinds of reader were in mind:
 
@@ -72,6 +74,7 @@ If you are here for one thing in particular:
 | Raku in a browser | Chapter 31 |
 | installing modules, and the store zef shares | Chapter 33 |
 | calling C, or being called from it | Chapters 35 and 36 |
+| a term you have not met before | Appendix D, the glossary |
 
 ## Conventions {-}
 

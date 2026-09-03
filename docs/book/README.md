@@ -5,8 +5,8 @@ AST, `Value`, the interpreter, the regex and grammar engine, Unicode, the four
 run modes, the native code generator and its optimizer, module loading,
 NativeCall, the extension ABI, and the concurrency runtime.
 
-**[Raku++-Internals.pdf](Raku++-Internals.pdf)** — 363 pages, 42 chapters in
-ten parts, plus three appendices.
+**[Raku++-Internals.pdf](Raku++-Internals.pdf)** — 383 pages, 42 chapters in
+ten parts, plus four appendices.
 
 ## Building it
 
@@ -72,11 +72,17 @@ for `/N` or `/Count` finds nothing (or, worse, finds an unrelated `/N` and
 reports it confidently). Get it from the typesetter instead:
 
 ```sh
-pandoc docs/book/meta.yaml <(cat docs/book/ch/*.md) --to latex --standalone \
-  --include-in-header docs/book/latex/preamble.tex --toc --number-sections \
-  --top-level-division=chapter -o /tmp/bk.tex
+rakupp docs/book/build.raku --keep
+pandoc docs/book/meta.yaml docs/book/.book.md --to latex --standalone \
+  --include-in-header docs/book/latex/preamble.tex --toc --toc-depth=2 \
+  --number-sections --top-level-division=chapter -o /tmp/bk.tex
 cd /tmp && tectonic bk.tex --keep-logs && grep "Output written" bk.log
 ```
+
+Use the merged `.book.md` the builder leaves behind, not `cat ch/*.md`: `cat`
+puts no blank line between files, so each chapter's `#` heading becomes a lazy
+continuation of the previous chapter's last paragraph, the chapters run
+together, and the count comes out short.
 
 ## What it is not
 

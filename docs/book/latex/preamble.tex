@@ -121,3 +121,13 @@
 % into a chapter failed the build. Named here (xcolor is already loaded by the
 % time this header is included), and meta.yaml refers to it by name.
 \definecolor{rakuppblue}{rgb}{0,0.25,0.5}
+
+% ---------------------------------------------------------------- glossary
+% Letter dividers in Appendix D. A \subsection would be numbered (secnumdepth
+% is 2) and would want a contents line; twenty-six of either is noise. This is
+% a plain marker instead, kept with at least the first entry beneath it.
+\newcommand{\glossletter}[1]{%
+  \par\needspace{4\baselineskip}%
+  \vspace{1.15\baselineskip}%
+  {\sffamily\bfseries\large #1}%
+  \par\nobreak\vspace{0.25\baselineskip}\nobreak}

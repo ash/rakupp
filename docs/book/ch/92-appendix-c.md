@@ -1,4 +1,7 @@
-# Source Map and Glossary
+# Source Map
+
+The vocabulary the book uses — the general compiler terms and this project's
+own — is in Appendix D.
 
 ## Where to look for what
 
@@ -90,105 +93,3 @@ buffers and syscalls.
 
 **A derived-data mechanism must degrade to recomputation, never to a guess.**
 Every failure mode in the caching and emitting paths ends in "parse it again".
-
-## Glossary
-
-**AOT** — the `--aot` mode: parse at build time, emit C++ that rebuilds the AST,
-then interpret it at run time.
-
-**Allomorph** — a value that is simultaneously a number and its own string, such
-as `IntStr`. Represented as a numeric tag with the text in `s`.
-
-**Autothreading** — distributing an operation over a junction's eigenstates and
-recombining the results.
-
-**Bundle** — the `--bundle` mode: embed the source bytes in a standalone binary
-that parses and interprets them at run time.
-
-**Byteset** — a 256-bit bitmap cached on a regex character-class node, answering
-"does this byte match?" without re-deriving the class.
-
-**Cooperative control flow** — implementing `return`, `next`, `last` and `when`
-with a flag and a frame counter instead of a C++ exception, when no callable
-boundary was crossed.
-
-**Declarative prefix** — the leading part of a regex alternative made of
-literals, character classes and quantifiers, up to the first procedural
-construct. What longest-token matching ranks by.
-
-**Decided-once field** — a mutable field on an AST node holding a fact about the
-syntax, computed on first evaluation and never recomputed.
-
-**Eigenstate** — one of the values inside a junction.
-
-**Fat struct** — the `Value` design: one struct with a type tag and a field for
-every kind of payload, several of which may be live at once.
-
-**Seam** — an accessor that is the only way to reach a piece of data, so the
-object defining it can be swapped for a stub at link time. What makes a
-Unicode table cuttable.
-
-**Trigger** (in `--slim`) — a construct meaning the program can run code the
-scan never saw, so every feature is kept. An unmodelled AST node is one.
-
-**Emscripten** — the toolchain that compiles the runtime to WebAssembly.
-Its `-fexceptions` mode routes C++ throws through JavaScript, which is what
-bounds recursion depth in the browser.
-
-**GIL** — the global interpreter lock. Only its holder may touch interpreter
-state; it is engaged lazily on first concurrent use.
-
-**Grapheme** — what a reader calls a character. Raku's string indices are
-grapheme indices; storage is UTF-8 bytes.
-
-**Handle** — an opaque `RkValue` in the extension ABI. The mechanism by which an
-extension never sees `Value`.
-
-**Trivially relocatable** — a type whose bytes may be moved to a new address
-without the source being destroyed, with the result equivalent to
-move-constructing and then destroying. `Value` is; libstdc++'s short
-`std::string` is not. It is what lets `RVec` grow by `memcpy`.
-
-**Free list** — a chain of released blocks of one size, kept for reuse instead
-of being returned to the allocator. `RVec` keeps one per capacity for the
-small argument-list sizes; the frame pool is the same idea for `Env`.
-
-**Model gap** — a construct the longest-token automaton builder could not model,
-as opposed to one that genuinely ends the declarative prefix. A gap forces a
-fallback to the probe ranker.
-
-**NFG** — Raku's normalization-form-grapheme storage model. Strings are
-normalised to NFC on the way in.
-
-**Packrat memo** — the cache of a ratcheting grammar rule's match at a position,
-sound because such a rule does not backtrack.
-
-**Publish** — the step at the end of module loading that copies the module's
-environment into the global one.
-
-**Ratchet** — the property of `token` and `rule` that their quantifiers are
-possessive and their matches commit.
-
-**Sigspace** — the `:s` adverb and the `rule` declarator, under which whitespace
-in a pattern means "match optional whitespace here". Implemented by wrapping
-atoms with a `<ws>` subrule at compile time.
-
-**Sink context** — a statement whose value is discarded, signalled down so an
-assignment need not materialise its result.
-
-**Slip** — `|@a`, a list that splices into the surrounding list or argument list.
-
-**Specificity** — the score `scoreCandidate` assigns a multi-dispatch candidate.
-
-**Superinstruction** — a fused node kind representing a common pattern. The
-approach node specialisation deliberately did *not* take.
-
-**Transparent** (of a regex construct, in ranking) — treated as an epsilon
-transition by the longest-token automaton, because the commit engine will
-enforce it for real.
-
-**Twigil** — the second sigil character: `*` dynamic, `!`/`.` attribute, `^`
-placeholder, `?` compile-time.
-
-**Wrapper stack** — the `&routine.wrap({…})` layers on a `Callable`, run
-outermost first, each able to `callsame` into the next.
