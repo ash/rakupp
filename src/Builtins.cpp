@@ -9759,33 +9759,27 @@ void Interpreter::registerBuiltins() {
         throw BreakGivenEx{v, !a.empty()};
     };
     B["proceed"] = [](Interpreter&, ValueList&) -> Value { throw ProceedEx{}; };
+    // `sub dir(Cool $path = '.', Mu :$test)` — the path is the first POSITIONAL
+    // and defaults to `.`. Issue #62: this took a[0] blindly, so a named-only
+    // call `dir(test => /csv$/)` stringified the Pair, opendir failed on
+    // "test\t…", and the answer was a silent empty list. The listing itself
+    // lived here as a second, worse copy of IO::Path.dir (its own `.`/`..`
+    // rule, `./x` entries, `ACCEPTS` on a Block died) — now the sub is the
+    // method, as in Rakudo: `$path.IO.dir(:$test)`.
     B["dir"] = [](Interpreter& I, ValueList& a) -> Value {
-        std::string path = a.empty() ? "." : a[0].toStr();
-        std::string fsp = a.empty() ? "." : I.ioFsPath(a[0]); // an IO argument's own :CWD wins
-        // a `:test` matcher filters basenames (dir("x", test => /\.raku$/))
-        Value test; bool haveTest = false;
-        for (auto& x : a) if (x.t == VT::Pair && x.s == "test" && x.pairVal()) { test = *x.pairVal(); haveTest = true; }
-        std::string base = path;
-        while (base.size() > 1 && base.back() == '/') base.pop_back();
-        Value out = Value::array();
-        // every entry is an IO::Path based where the ARGUMENT is based
-        const std::string cw = (!a.empty() && a[0].hashKind == "IO" && !a[0].ofType().empty())
-                               ? a[0].ofType() : I.cwdName();
-        if (DIR* d = opendir(fsp.c_str())) {
-            while (struct dirent* e = readdir(d)) {
-                std::string n = e->d_name;
-                if (n == "." || n == "..") continue;
-                if (haveTest) { ValueList m{Value::str(n)}; if (!I.methodCall(test, "ACCEPTS", m).truthy()) continue; }
-                // dir() yields IO::Path entries (Rakudo semantics) — File::Find,
-                // and any `.d`/`.IO` on the result, need real IO::Path objects.
-                // The root dir already ends in '/' — dir("/") is "/.file", not "//.file".
-                Value p = Value::str(base + (base.back() == '/' ? "" : "/") + n); p.hashKind = "IO";
-                p.ofTypeM() = cw;
-                out.arr()->push_back(p);
-            }
-            closedir(d);
+        Value path; bool havePath = false;
+        ValueList named;
+        for (auto& x : a) {
+            if (x.t == VT::Pair && x.namedArg) named.push_back(x);
+            else if (!havePath) { path = x; havePath = true; }
         }
-        return out;
+        Value io;
+        if (havePath && path.hashKind == "IO") io = path; // an IO argument's own :CWD wins
+        else {
+            io = Value::str(havePath ? path.toStr() : "."); io.hashKind = "IO";
+            io.ofTypeM() = I.cwdName();   // entries capture the CALL-TIME base, as Rakudo's do
+        }
+        return I.methodCall(io, "dir", named);
     };
     B["mkdir"] = [](Interpreter& I, ValueList& a) -> Value {
         if (a.empty()) return Value::boolean(false);

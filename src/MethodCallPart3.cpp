@@ -1608,21 +1608,44 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
 
             Value out = Value::array(); out.isList = true;
             std::string base = inv.toStr();
-            if (DIR* d = opendir(ioFsPath(inv).c_str())) {
-                while (struct dirent* e = readdir(d)) {
-                    std::string nm = e->d_name;
-                    // `.` and `..` are excluded by the DEFAULT :test only. An
-                    // explicit :test replaces that filter, so `dir(:test(*))`
-                    // yields them too — IO::Glob's `glob(*).dir` counts on it.
-                    if (!haveTest && (nm == "." || nm == "..")) continue;
-                    if (haveTest && !matcherAccepts(*this, Value::str(nm), test)) continue;
-                    // a `.` directory contributes nothing to the entry's path —
-                    // `'.'.IO.dir` yields `META6.json`, not `./META6.json`, the
-                    // same rule `.child` follows
-                    out.arr()->push_back(asIO(base == "." ? nm
-                        : base + (base.empty() || base.back() == '/' ? "" : "/") + nm));
-                }
-                closedir(d);
+            const std::string fs = ioFsPath(inv);
+            DIR* d = opendir(fs.c_str());
+            if (!d) {
+                // A path that cannot be listed is an X::IO::Dir, as in Rakudo —
+                // not an empty listing. Answering [] here is what kept issue #62
+                // invisible: the sub form opened a stringified Pair, failed, and
+                // reported a directory with nothing in it.
+                const int err = errno;
+                const std::string cw = cwdName();
+                const std::string abs = (!fs.empty() && fs[0] == '/') ? fs
+                                      : (cw == "/" ? "" : cw) + "/" + fs;
+                throw RakuError{Value::typeObj("X::IO::Dir"),
+                    "Failed to get the directory contents of '" + abs + "': " + std::strerror(err)};
+            }
+            // Inside a :test callback `$*CWD` is the path's OWN :CWD (S32-io/dir.t:
+            // `dir(IO::Path.new($d, :CWD($d)), :test{ $*CWD })` sees $d), so a
+            // captured base that differs from the ambient one is switched in for
+            // the walk. The guard also closes the DIR on any exit, a `die` in the
+            // callback included.
+            const std::string ownCwd = inv.ofType();
+            const bool scopeCwd = haveTest && !ownCwd.empty() && ownCwd != cwdName();
+            struct Listing {
+                DIR* d; Interpreter& I; std::string saved; bool restore;
+                ~Listing() { closedir(d); if (restore) I.logicalCwd_ = saved; }
+            } listing{d, *this, logicalCwd_, scopeCwd};
+            if (scopeCwd) logicalCwd_ = ownCwd;
+            while (struct dirent* e = readdir(d)) {
+                std::string nm = e->d_name;
+                // `.` and `..` are excluded by the DEFAULT :test only. An
+                // explicit :test replaces that filter, so `dir(:test(*))`
+                // yields them too — IO::Glob's `glob(*).dir` counts on it.
+                if (!haveTest && (nm == "." || nm == "..")) continue;
+                if (haveTest && !matcherAccepts(*this, Value::str(nm), test)) continue;
+                // a `.` directory contributes nothing to the entry's path —
+                // `'.'.IO.dir` yields `META6.json`, not `./META6.json`, the
+                // same rule `.child` follows
+                out.arr()->push_back(asIO(base == "." ? nm
+                    : base + (base.empty() || base.back() == '/' ? "" : "/") + nm));
             }
             return out;
         }
