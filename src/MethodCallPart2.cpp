@@ -2626,6 +2626,28 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 }
                 return args.size() >= 2 ? args[1] : Value::nil();
             }
+            if (m == "add_parent" && !args.empty()) { // .^add_parent(Type) — runtime inheritance
+                // Test::Mock builds a mock type with `Metamodel::ClassHOW.new_type`
+                // then `.^add_parent($mocked)` so the mock is-a the mocked type;
+                // Method::Protected reparents a class the same way. A user parent
+                // becomes the class's parent (or an extra parent if it already has
+                // one); a built-in becomes its native parent (`is Str`-style).
+                std::string pn = args[0].t == VT::Type ? args[0].s : args[0].typeName();
+                if (pn.empty() || pn == "Any" || pn == "Mu") return inv;
+                noteSymbolMutation("runtime .^add_parent");
+                auto pit = classes_.find(pn);
+                if (pit == classes_.end()) pit = classes_.find(resolveClassAlias(pn));
+                if (pit != classes_.end()) {
+                    if (!ci->parent) ci->parent = pit->second;
+                    else if (ci->parent.get() != pit->second.get()) {
+                        bool have = ci->parent.get() == pit->second.get();
+                        for (auto& ep : ci->extraParents) if (ep.get() == pit->second.get()) have = true;
+                        if (!have) ci->extraParents.push_back(pit->second);
+                    }
+                }
+                else if (isKnownTypeName(pn)) ci->nativeParent = pn;
+                return inv;
+            }
             if (m == "add_role" && !args.empty()) { // .^add_role(Role) — runtime composition
                 // The compile-time compose loop also merges multis and detects
                 // conflicts; a runtime add takes the simple child-wins merge, which

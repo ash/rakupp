@@ -7997,7 +7997,22 @@ StmtPtr Parser::parseStatementImpl() {
             if (isKind(Tok::Ident)) {
                 auto u = std::make_unique<UseStmt>();
                 u->module = advance().text;
-                while (!isKind(Tok::Semicolon) && !isKind(Tok::End)) advance(); // skip <...> import list
+                // Skip the name adverbs (`:ver(v0.3.3+)`, `:auth<…>`) and any
+                // `<…>` import list — both accepted and ignored, since
+                // loadModule publishes the module's subs globally. STOP at a
+                // block close or comma, not just `;`/End: `lives-ok { require
+                // CSS::Grammar:ver(v0.3.3+) }, "…"` has no semicolon, and eating
+                // to End swallowed the block's `}` (the CSS cluster: CSS::Module,
+                // ::CSS3::Selectors, ::Specification). Balanced (…) / […] keep
+                // an inner `}`/`,` (a version range's parens) from ending it.
+                int depth = 0;
+                while (!isKind(Tok::End)) {
+                    if (depth == 0 && (isKind(Tok::Semicolon) || isKind(Tok::RBrace) ||
+                                       isKind(Tok::Comma) || isKind(Tok::RParen))) break;
+                    if (isKind(Tok::LParen) || isKind(Tok::LBracket)) depth++;
+                    else if (isKind(Tok::RParen) || isKind(Tok::RBracket)) depth--;
+                    advance();
+                }
                 matchKind(Tok::Semicolon);
                 return u;
             }

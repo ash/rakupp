@@ -2463,21 +2463,31 @@ static Value coerceHash(const Value& v, bool store = false, bool objKeyed = fals
     else if (v.t == VT::Pair) items.push_back(v);
     else if (v.t == VT::Object && g_objListItems && g_objListItems(v, items)) { /* filled above */ }
     else if (v.t != VT::Nil && v.t != VT::Any) items.push_back(v);
+    // The key a value stands for in a plain / object hash: an OBJECT hash keys
+    // a type object (and an enum's bare type) by "(Name)", the same convention
+    // the subscript paths use, instead of the empty stringification that
+    // collapsed Getopt::Long's whole converter table onto one key.
+    auto keyStr = [&](const Value& k, const std::string& fallback) -> std::string {
+        if (objKeyed) {
+            if (k.t == VT::Type) return "(" + k.s + ")";
+            if (k.t == VT::Array && !k.enumType.empty() && k.enumName.empty())
+                return "(" + std::string(k.enumType.str()) + ")";
+        }
+        return fallback;   // the pair's own key string (empty stays empty)
+    };
     for (size_t i = 0; i < items.size(); i++) {
         if (items[i].t == VT::Pair) {
-            // an OBJECT hash keys a type-object Pair key by "(Name)" — the
-            // same convention the subscript paths use — instead of the empty
-            // stringification that collapsed Getopt::Long's whole converter
-            // table onto one key
-            std::string key = items[i].s;
-            if (objKeyed && items[i].pairKey()) {
-                const Value& pk = *items[i].pairKey();
-                if (pk.t == VT::Type) key = "(" + pk.s + ")";
-                // an ENUM type object as a key follows the same convention
-                else if (pk.t == VT::Array && !pk.enumType.empty() && pk.enumName.empty())
-                    key = "(" + std::string(pk.enumType.str()) + ")";
+            Value pv = items[i].pairVal() ? *items[i].pairVal() : Value::any();
+            const std::shared_ptr<Value>& pk = items[i].pairKey();
+            // a JUNCTION key autothreads: `'W'|'W*' => X` stores X under BOTH
+            // 'W' and 'W*', as Rakudo does when a Junction is assigned as a key
+            // (PDF::Content::Ops' %Transition table keys ops by `'W'|'W*'` and
+            // `any(PaintingOps.keys)`, and rakupp kept only the "any" string).
+            if (pk && isJunction(*pk)) {
+                for (auto& eig : *pk->arr()) (*h.hash())[keyStr(eig, eig.toStr())] = pv;
+                continue;
             }
-            (*h.hash())[key] = items[i].pairVal() ? *items[i].pairVal() : Value::any();
+            (*h.hash())[keyStr(pk ? *pk : items[i], items[i].s)] = pv;
         } else if (items[i].t == VT::Hash && items[i].hash() && items[i].hashKind.empty() &&
                    !items[i].itemized) {
             // a plain (non-itemized) Hash in the list MERGES its pairs
