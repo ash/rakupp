@@ -23245,8 +23245,17 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
         // back to a method named after the proto itself. (A failure-replay
         // build dispatches its own method — build must not double-fire.)
         if (!replayBuild) {
+            // A proto used as the parse ENTRY POINT (`.parse(:rule<string>)`)
+            // records the winning candidate in actualRule and the PROTO in name.
+            // Fire the candidate — and NOT the proto as well: an explicit `proto
+            // method string {*}` in the actions class, invoked directly with just
+            // `$/`, cannot pick a `:sym<…>` candidate and dies "No matching multi
+            // candidate" (CSS::Grammar parses `string` as its entry rule). Rakudo
+            // fires the candidate once; the proto merely redispatches. actualRule
+            // is set ONLY on this proto-entry path, so this never drops a wanted
+            // firing elsewhere.
             if (!pn.actualRule.empty() && pn.actualRule != pn.name) runAction(pn.actualRule, mv);
-            runAction(pn.name, mv);
+            else runAction(pn.name, mv);
         }
         return mv;
     };

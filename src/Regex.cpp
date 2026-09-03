@@ -2051,7 +2051,36 @@ void Regex::parseClassBodyMember(Node* node) {
                 }
                 if (neg) node->negate = !node->negate;
             }
-            else node->ranges.push_back({(unsigned char)e, (unsigned char)e}); // \: \# \- etc → literal
+            else {
+                // A simple escaped punctuation char — `\]`, `\)`, `\~`, `\!` — is
+                // a literal, and may START A RANGE: `<[ \]..\~ ]>` is `]`..`~`, as
+                // in CSS::Grammar's stringchar-regular class. Without this the `..`
+                // fell through as two literal dots and the range collapsed to the
+                // two endpoints plus a stray `.` (so "hi" matched nothing).
+                uint32_t lo = (unsigned char)e;
+                size_t afterLo = pos_;
+                while (ascii::isspace((unsigned char)peek())) pos_++;
+                if (!(peek() == '.' && peek(1) == '.')) pos_ = afterLo;
+                if (peek() == '.' && peek(1) == '.') {
+                    pos_ += 2;
+                    while (ascii::isspace((unsigned char)peek())) pos_++;
+                    uint32_t hi;
+                    if (peek() == '\\') { // a second escaped endpoint (`\]..\~`)
+                        pos_++; hi = (unsigned char)pat_[pos_++];
+                    } else { // a plain (possibly multibyte) endpoint
+                        unsigned char c0 = (unsigned char)pat_[pos_++];
+                        if (c0 < 0x80) hi = c0;
+                        else {
+                            int clen = (c0 >> 5) == 0x6 ? 2 : (c0 >> 4) == 0xe ? 3 : (c0 >> 3) == 0x1e ? 4 : 1;
+                            hi = (uint32_t)(c0 & (0xFF >> (clen + 1)));
+                            for (int i = 1; i < clen && !eof(); i++) hi = (hi << 6) | ((unsigned char)pat_[pos_++] & 0x3F);
+                        }
+                    }
+                    if (lo < 0x80 && hi < 0x80) node->ranges.push_back({(unsigned char)lo, (unsigned char)hi});
+                    else node->cpRanges.push_back({lo, hi});
+                }
+                else node->ranges.push_back({(unsigned char)e, (unsigned char)e}); // \: \# \- etc → literal
+            }
             continue;
         }
         // A literal member may be a multibyte UTF-8 codepoint (e.g. <[é]>);
