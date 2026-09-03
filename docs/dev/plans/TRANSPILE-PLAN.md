@@ -5,6 +5,10 @@ run 2026-09-03 against `build-arm64/rakupp` (v3.25.0), Node 20.11.1 and Bun
 1.3.14 on the benchmark machine (Darwin 24.6, arm64). Every number below is
 from that sitting unless it cites [BENCHMARKS.md](../../status/BENCHMARKS.md)
 (2026-08-31, same box) or [rakujs/INTERNALS.md](../../../rakujs/INTERNALS.md).
+Prompted by [Raku/problem-solving#527](https://github.com/Raku/problem-solving/issues/527)
+(lizmat, 2026-09-03), the proposal to remove Rakudo's JavaScript backend, with
+[rakudo/rakudo#6632](https://github.com/rakudo/rakudo/pull/6632) as its first
+sweep; *Prior art* below says what that changes here.
 
 Goal: `rakupp --target=js prog.raku -o prog.js` emits a JavaScript program
 that runs under Node, Bun, Deno and in a browser, behaves exactly as the
@@ -19,6 +23,10 @@ compiled to WebAssembly: it runs the *whole* language today, at the price of
 a 7.5 MB engine, a tree-walk behind `-fexceptions` trampolines, a ~200-level
 recursion cap, and no way to touch the page it runs in. This plan produces
 JavaScript *code*; Raku.js remains the fallback that makes the mode total.
+Raku.js also keeps shipping with every release regardless of this plan —
+`rakujs-<tag>.zip` on each tag, the engine the playground runs — and the
+fallback tier below *depends* on it: a transpiled program that leaves the
+core runs on the release's own WASM build, never on an older one.
 
 ## Why a second backend, and why JavaScript first
 
@@ -42,7 +50,10 @@ JavaScript before Rust because Rust would be *another native target*, and we
 have one: its runtime question answers itself (link `librakupp` through the C
 ABI, as [bindings/rust](../../../bindings/rust) already does). JavaScript is
 the target with no runtime to link, and therefore the one that forces every
-design question the seam must answer.
+design question the seam must answer. It is also the target no Raku
+implementation will have once Rakudo's is gone: Raku++ and Mutsu both reach
+the browser through WebAssembly, and neither emits JavaScript code or can
+touch the page it runs in.
 
 ## What the probes said (2026-09-03)
 
@@ -91,6 +102,14 @@ Therefore: an **ASCII fast path** (0.2 ms), and for non-ASCII strings **our
 own grapheme-break tables**, generated into JS by the same generator that
 produces `unicode_gb_gen.cpp` — so `.chars` prints the same number under
 Node, Bun and Safari, and cannot drift from the native engine.
+
+**NFG is a requirement of this target, not a property of its runtime.** The
+argument the community now makes for retiring Rakudo's JS backend (#527) is
+that the WASM alternatives keep graphemes where that backend never did; a
+transpiled Raku++ that lost them would undercut an argument made in Raku++'s
+name. So P1's first batch takes the 48 regression programs that touch
+graphemes as in-core targets, and `"e\x[301]".chars` being 1 under Node, Bun
+and a browser is a named check in the corpus gate.
 
 **Hash → `Map`.** Map vs plain object: 1.7 vs 1.3 ms on Node, 1.5 vs 6.1 ms
 on Bun. Map is also the semantically right one (insertion order, any key
@@ -326,8 +345,10 @@ Source maps: every node carries `line`, so `-o prog.js` also writes
 ## The command line
 
 - **`--target=js`**, no alias. It is the extensible key (`--target=parse|ast`
-  already exist as Rakudo muscle memory; Rakudo's own JS backend answered to
-  `--target=js`), and `--target=rust` slots in later without a new flag.
+  already exist as Rakudo muscle memory; Rakudo's JS backend answered to
+  `--target=js`, so it is the spelling people know — and with that backend
+  being removed (#527) there is no live Rakudo feature left for it to
+  conflict with), and `--target=rust` slots in later without a new flag.
 - Output: to stdout without `-o` (as `--cpp` does); with `-o prog.js` the
   program, `prog.js.map`, and the runtime sidecar `rakupp-rt.js` next to it,
   written from a copy embedded in the `rakupp` binary the way the grammar
@@ -425,8 +446,14 @@ rakudo and nqp; published to npm as `rakudo`; the 6pad playground). It
 answered to `--target=js` and it compiled the **whole CORE setting** through
 nqp-js, so every program shipped the setting — many megabytes and seconds of
 startup — and the runtime was a translation of MoarVM's object model into JS.
-The sources reachable today show no substantive work after 2019; it is prior
-art, not a dependency. This plan differs in each of the three places that
+It is now being removed: on 2026-09-03 lizmat opened
+[Raku/problem-solving#527](https://github.com/Raku/problem-solving/issues/527)
+— the backend has bit-rotted, and Raku++ and Mutsu already run Raku in the
+browser through WebAssembly *with* NFG, which the JS backend never had — with
+[rakudo/rakudo#6632](https://github.com/rakudo/rakudo/pull/6632) as the first
+sweep (59 files, about 1,900 lines). It is prior art, not a dependency, and its
+programs are not a migration target: they leaned on nqp-level JS ops that
+nothing here reproduces. This plan differs in each of the three places that
 made it heavy: the runtime is written for the core rather than compiled from
 a setting, the interpreter stays the oracle and the differential suite the
 gate, and the fallback for everything else is an engine that already exists
@@ -474,16 +501,21 @@ their JS. This is where the thousand-fold speed-up reaches a reader.
 for real; then a one-page design note against `Backend`, written the same
 way this one was — probes first.
 
-P3 and P4 can swap: if the browser page is the point, interop comes before
-grammars; if the playground and the parser-module scenario are, grammars
-first. That ordering is a decision for review, not for this plan.
+**P4 comes before P3.** With Rakudo's backend gone, nothing in the Raku world
+can drive a web page from Raku code — the WASM route runs Raku in a browser
+but cannot touch the page — while grammars in the browser already exist
+through the WASM engine. Interop fills the hole the removal opens; grammars
+make an existing thing smaller and faster. If review prefers the playground
+and parser-module scenarios first, the two phases swap cleanly; nothing in
+either depends on the other.
 
 ## Decisions for review
 
 1. **`--target=js` with no alias** (against `--js`). Recommended as written.
 2. **Refuse by default, `--fallback=wasm` to opt in** (against `--exe`'s
    silent fallback). Recommended as written, for the artifact-class reason.
-3. **P3 before P4, or P4 before P3** — depends on which scenario is first.
+3. **P4 before P3** — recommended, for the reason above: interop is what the
+   Raku world loses with #527; grammars in the browser it already has.
 4. **Where the runtime is published** — inside the binary (decided) and at
    `raku.online/rt/<version>/` (proposed).
 5. **The Num representation** — decided by the P1 probe, not here; the plan
