@@ -529,6 +529,27 @@ extern thread_local unsigned t_gatherTickCtr;
 // popGatherFrame (and saveCtx/loadCtx, which move the stack between threads' parked
 // contexts) are the only writers, so it cannot drift from the stack.
 extern thread_local long long t_gatherDeadline;
+// The line of the statement now executing (test diagnostics, callframe, the line
+// a call frame records for its caller). One process-wide value while only the
+// mainline runs Raku code — a plain relaxed store per statement, which is what
+// the hot path can afford; see RelaxedLine. The moment a worker thread exists
+// that sharing is a LIE: two threads write the same slot, and a `callframe(1)`
+// taken on the mainline can read the worker's line. Log::Async stamps every
+// message with `callframe(1)`, and its t/14-frame failed 7 runs in 20 that way.
+// So creating a worker latches g_stmtLineThreaded on for the rest of the run and
+// every thread keeps its own line from then on — the TLV cost per statement
+// (+6% on loopsum, which is why this is not simply a thread_local) is paid only
+// by programs that actually spawn threads.
+extern std::atomic<int> g_stmtLine;          // the shared line, single-threaded runs
+extern std::atomic<bool> g_stmtLineThreaded; // …until a worker exists
+extern thread_local int t_stmtLine;          // …and then, one per thread
+inline void stmtLinesGoThreaded() {
+    if (!g_stmtLineThreaded.load(std::memory_order_relaxed)) {
+        // the spawning thread keeps the line it is on: it is the only writer so far
+        t_stmtLine = g_stmtLine.load(std::memory_order_relaxed);
+        g_stmtLineThreaded.store(true, std::memory_order_relaxed);
+    }
+}
 
 // A real (wired) tap of an on-demand `supply {…}` block. `closers` tear down
 // inner taps / listening sockets; `closePhasers` are the block's CLOSE blocks.
@@ -1185,6 +1206,7 @@ public:
     // records it (that is what `Even.^ver` reports, "6.d" or "6.e"), and it is
     // not decoration — the metamodel keys type-check behaviour off it.
     struct SubsetInfo { std::string base; const Expr* where = nullptr; int langRev = 1;
+                        int defConstraint = 0;             // the base type's :D / :U smiley
                         std::shared_ptr<Env> declEnv; };   // the where-clause CLOSES over its declaration scope
     std::unordered_map<std::string, SubsetInfo> subsets_;
     // per-site `ff`/`fff` flip-flop latch + how many elements since it fired
@@ -1429,6 +1451,9 @@ public:
     public:
         BigStackThread() = default;
         template <typename F> explicit BigStackThread(F f) {
+            // A second thread is about to run Raku code: the statement line stops
+            // being one shared slot and becomes one per thread (see g_stmtLine).
+            stmtLinesGoThreaded();
             auto* fn = new Fn{std::move(f)};
             const size_t kStack = (size_t)256 << 20; // 256 MiB (virtual; committed on use)
 #if defined(_WIN32)
@@ -1785,13 +1810,20 @@ private:
     bool bailedOut_ = false; // bail-out was called: suppress the trailing auto-plan
     // Source line of the statement currently executing (test diagnostics).
     // Written on EVERY statement, so a thread_local costs a TLV lookup per
-    // statement on macOS — measured +6% on loopsum. A relaxed atomic member
-    // is a plain store, defined under concurrency, and TSan-clean; the value
-    // being process-wide is the same arbitrariness diagnostics always had.
+    // statement on macOS — measured +6% on loopsum. A relaxed atomic global is
+    // a plain store, defined under concurrency, and TSan-clean. It stays that
+    // one shared value until a worker thread is created, at which point the
+    // sharing would put another thread's line in this one's frames and every
+    // thread moves to its own (stmtLinesGoThreaded, above).
     struct RelaxedLine {
-        std::atomic<int> v{0};
-        void operator=(int x) { v.store(x, std::memory_order_relaxed); }
-        operator int() const { return v.load(std::memory_order_relaxed); }
+        void operator=(int x) {
+            if (g_stmtLineThreaded.load(std::memory_order_relaxed)) t_stmtLine = x;
+            else g_stmtLine.store(x, std::memory_order_relaxed);
+        }
+        operator int() const {
+            return g_stmtLineThreaded.load(std::memory_order_relaxed)
+                       ? t_stmtLine : g_stmtLine.load(std::memory_order_relaxed);
+        }
     } curLine_;
     int todoRemaining_ = 0;  // number of upcoming tests marked TODO by a bare `todo` statement
     std::string todoReason_; // reason for the pending TODO block

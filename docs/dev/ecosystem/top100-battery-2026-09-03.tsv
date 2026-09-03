@@ -1,0 +1,170 @@
+rank	name	layer	version	verdict_2026_08_30	verdict_2026_09_03	seconds	first_error
+	Abbreviations	dep	2.2.3	pass	pass	0.9	
+	AlgorithmsIT	dep	0.0.4	pass	pass	1	
+	Apache::LogFormat	dep	*	self-fail	self-fail	0.9	FAILED: 00-sanity.t | ===SORRY!=== Parse error at line 65: Error while compiling module Apache::LogFormat::Compiler (line 65): Missing required term after infix
+	Backtrace::AsHTML	dep	0.0.1	self-fail	self-fail	0.9	FAILED: 01-basic.t | No such method 'as-html' for invocant of type 'List'
+	CBOR::Simple	dep	0.1.4	self-fail	self-fail	161	FAILED: 02-malformed.rakutest | # Failed test 'End of input in a head (18)' at /var/folders/x1/pjhp8m3n0ks9wlph53lzfw400000gs/T/rakupp-install-60544-CBOR--Simple/CBOR-Simple-0.1.4/t/02-malformed.rakutest line 79
+	CSS::Module	dep	0.7.7	self-fail	self-fail	1.1	FAILED: 00basic.t | Method 'color' must be implemented by CSS::Module::CSS1 because it is required by roles: CSS::Module::CSS1::Gen::External.
+	CSS::Module::CSS3::Selectors	dep	0.0.6	self-fail	self-fail	0.8	FAILED: 00basic.t | ===SORRY!=== Parse error at line 26: expected } (got '')
+	CSS::Nested	dep	0.0.1	pass	pass	0.9	
+	CSS::Specification	dep	0.5.3	self-fail	self-fail	0.9	FAILED: 00basic.t | ===SORRY!=== Parse error at line 173: expected } (got '')
+	CSS::Writer	dep	0.3.3	self-fail	self-fail	0.9	FAILED: 00basic.t | # Failed test 'writer stringification' at /var/folders/x1/pjhp8m3n0ks9wlph53lzfw400000gs/T/rakupp-install-61013-CSS--Writer/CSS-Writer-0.3.3/t/00basic.t line 11
+	Compress::Zlib::Raw	dep	1.0.1	pass	pass	1	
+	Cookie::Baker	dep	*	self-fail	self-fail	0.8	FAILED: 02_crush.t | Target is not assignable
+	Crane	dep	0.1.2	self-fail	self-fail	1.1	FAILED: add.rakutest | # Failed test at /var/folders/x1/pjhp8m3n0ks9wlph53lzfw400000gs/T/rakupp-install-60881-Crane/Crane-0.1.2/t/add.rakutest line 144
+	Cro::TLS	dep	0.8.10	pass	pass	1.1	
+	Cromponent	dep	0.0.14	dep-fail	dep-fail	2	FAILED: checks.t | Type check failed in binding to parameter '$incoming'; expected Supply but got List (( ))
+	Date::Names	dep	2.3.2	pass	pass	1.5	
+	DateTime::Grammar	dep	0.1.3	pass	pass	0.9	
+	DateTime::Parse	dep	0.9.1	pass	pass	0.8	
+	Encode	dep	0.0.3	pass	pass	0.9	
+	Font::AFM	dep	1.24.10	self-fail	pass	0.9	
+	Getopt::Tiny	dep	*	self-fail	self-fail	0.8	FAILED: 01-basic.t | Could not find Pod::To::Text in:
+	HTTP::HPACK	dep	1.0.3	pass	pass	1	
+	HTTP::MultiPartParser	dep	*	self-fail	self-fail	0.9	FAILED: 035_headers.t | # Failed test 'parts (--xxx\x0DFoo:\x20Foo\x0DBar:\x20Bar\x0D\x0D\x0D--xxx--\x0D)' at /var/folders/x1/pjhp8m3n0ks9wlph53lzfw400000gs/T/rakupp-install-61174-HTTP--MultiPartParser/p6-HTTP-MultiPartParser-master/t/035_headers.t line 57
+	HTTP::Parser	dep	0.0.2	self-fail	self-fail	0.8	FAILED: 01-request-parser.t | # Failed test at /var/folders/x1/pjhp8m3n0ks9wlph53lzfw400000gs/T/rakupp-install-61185-HTTP--Parser/p6-HTTP-Parser-master/t/01-request-parser.t line 104
+	HTTP::Server::Tiny	dep	0.0.2	dep-fail	dep-fail	0.8	FAILED: 010_basic.t | # Failed test 'Test for seek() and read()' at /var/folders/x1/pjhp8m3n0ks9wlph53lzfw400000gs/T/rakupp-install-61196-IO--Blob/IO-Blob-0.0.1/t/010_basic.t line 166
+	Hash::MultiValue	dep	0.7	self-fail	self-fail	1.1	FAILED: basic.t | # Failed test 'correct value after change elsewhere' at /var/folders/x1/pjhp8m3n0ks9wlph53lzfw400000gs/T/rakupp-install-61147-Hash--MultiValue/Hash-MultiValue-0.7/t/basic.t line 34
+	Hash::int	dep	0.0.7	self-fail	self-fail	0.8	FAILED: 01-basic.rakutest | Type check failed in binding to parameter '$key'; expected int but got Str ("frobnob")
+	IO::Blob	dep	0.0.1	self-fail	self-fail	0.7	FAILED: 010_basic.t | # Failed test 'Test for seek() and read()' at /var/folders/x1/pjhp8m3n0ks9wlph53lzfw400000gs/T/rakupp-install-61241-IO--Blob/IO-Blob-0.0.1/t/010_basic.t line 166
+	IO::Glob	dep	0.9.0	pass	pass	1.6	
+	IO::Path::ChildSecure	dep	1.2	self-fail	self-fail	0.8	FAILED: 01-operation.rakutest | # Failed test 'code returned a Failure' at /var/folders/x1/pjhp8m3n0ks9wlph53lzfw400000gs/T/rakupp-install-61279-IO--Path--ChildSecure/IO-Path-ChildSecure-1.2/t/01-operation.rakutest line 49
+	IO::Path::XDG	dep	0.2.0	pass	pass	0.7	
+	Intl::LanguageTag	dep	0.12.7	self-fail	self-fail	1	FAILED: 00-sanity.rakutest | # Failed test at /var/folders/x1/pjhp8m3n0ks9wlph53lzfw400000gs/T/rakupp-install-61217-Intl--LanguageTag/dist/t/00-sanity.rakutest line 21
+	Intl::LanguageTaggish	dep	0.2	pass	pass	0.8	
+	JSON::JWT	dep	1.1.2	pass	pass	1.1	
+	JSON::OptIn	dep	0.0.2	pass	pass	0.8	
+	LLM::Prompts	dep	0.2.15	self-fail	self-fail	1.2	FAILED: 02-prompt-parsing.rakutest | # Failed test 'Parsing function cell spec' at /var/folders/x1/pjhp8m3n0ks9wlph53lzfw400000gs/T/rakupp-install-61395-LLM--Prompts/dist/t/02-prompt-parsing.rakutest line 33
+	License::SPDX	dep	3.28.0	pass	pass	1.3	
+	Lingua::NumericWordForms	dep	0.6.2	pass	pass	45.4	
+	Log	dep	0.3.2	pass	pass	0.8	
+	Log::Timeline	dep	0.5.2	self-fail	self-fail	14.3	FAILED: output-socket.rakutest | # Timeout while waiting for first events
+	Math::DistanceFunctions::Edit	dep	0.1.3	pass	pass	2.9	
+	Math::Libgsl::Complex	dep	0.0.5	build-fail	build-fail	1.4	
+	Method::Protected	dep	0.0.4	self-fail	self-fail	27.1	FAILED: 01-basic.rakutest | No such method 'add_attribute' for invocant of type 'GLOBAL'
+	Native::Packing	dep	0.0.6	self-fail	self-fail	0.8	FAILED: 00-readme.t | # Failed test 'code sample' at /var/folders/x1/pjhp8m3n0ks9wlph53lzfw400000gs/T/rakupp-install-61528-Native--Packing/Native-Packing-0.0.6/t/00-readme.t line 14
+	PDF::Grammar	dep	0.3.6	self-fail	self-fail	0.9	FAILED: 00objects.t | # Failed test 'ws: ws parse:  ' at /var/folders/x1/pjhp8m3n0ks9wlph53lzfw400000gs/T/rakupp-install-61539-PDF--Grammar/PDF-Grammar-0.3.6/t/00objects.t line 52
+	Pod::To::HTML	dep	0.9.0	self-fail	self-fail	1.7	FAILED: 010-basic.rakutest | # Failed test at /var/folders/x1/pjhp8m3n0ks9wlph53lzfw400000gs/T/rakupp-install-61550-Pod--To--HTML/Pod-To-HTML-0.9.0/t/010-basic.rakutest line 11
+	Prompt	dep	0.0.11	self-fail	self-fail	0.8	FAILED: 01-basic.rakutest | # Failed test ''prompt' not exported by default' at /var/folders/x1/pjhp8m3n0ks9wlph53lzfw400000gs/T/rakupp-install-61561-Prompt/Prompt-0.0.11/t/01-basic.rakutest line 6
+	Slang::Tuxic	dep	0.0.5	self-fail	self-fail	0.8	FAILED: 01-basic.rakutest | Useless use of constant string "-%d-" in sink context (line 13)
+	TOML	dep	3	self-fail	self-fail	0.9	FAILED: 00-load.t | # Failed test 'The module can be use-d ok: TOML' at /var/folders/x1/pjhp8m3n0ks9wlph53lzfw400000gs/T/rakupp-install-61722-TOML/t/00-load.t line 4
+	Text::Levenshtein::Damerau	dep	0.2.0	pass	pass	0.9	
+	Text::Markdown	dep	1.1.1	self-fail	self-fail	1.5	FAILED: parse-link-with-code.t | ===SORRY!=== Parse error at line 19: Ending delimiter TEXT not found for heredoc
+	Text::SubParsers	dep	0.1.4	self-fail	pass	17.4	
+	TinyFloats	dep	0.0.5	pass	pass	0.9	
+	Trap	dep	0.0.5	pass	pass	0.8	
+	User::Language	dep	0.5.2	self-fail	pass	1	
+	WWW::Gemini	dep	0.0.25	pass	pass	1	
+	WWW::LLaMA	dep	0.1.3	pass	pass	0.9	
+	WWW::MistralAI	dep	0.1.3	pass	pass	0.9	
+	WWW::Ollama	dep	0.0.7	pass	pass	1.1	
+	WWW::OpenAI	dep	0.3.20	pass	pass	1.2	
+	WWW::OpenRouter	dep	0.0.3	pass	pass	0.8	
+	X::Intl	dep	0.1	pass	pass	0.9	
+	if	dep	0.1.5	pass	pass	0.8	
+	silently	dep	0.0.7	pass	pass	0.9	
+	Cro::HTTP::Test	test-dep	0.8.1	self-fail	self-fail	2.4	FAILED: checks.t | Type check failed in binding to parameter '$incoming'; expected Supply but got List (( ))
+	IO::Capture::Simple	test-dep	v0.0.2	self-fail	self-fail	0.8	FAILED: capture.t | # Failed test 'OH HAI! in captured string' at /var/folders/x1/pjhp8m3n0ks9wlph53lzfw400000gs/T/rakupp-install-61251-IO--Capture--Simple/raku-io-capture-simple/t/capture.t line 10
+	Test::Async	test-dep	0.1.17	self-fail	self-fail	0.9	FAILED: 003-declaration.rakutest | ===WARNING=== Module Test::Async::Decl EXPORT failed: Could not find NQPHLL in:
+	Test::Util::ServerPort	test-dep	0.0.5	pass	pass	1.2	
+	Test::When	test-dep	2.1	pass	pass	1	
+1	JSON::Fast	top100	0.20.1	pass	pass	7.5	
+2	Cro::HTTP	top100	0.8.13	timeout	timeout	300	
+3	File::Temp	top100	0.0.12	pass	pass	1.1	
+4	Terminal::ANSIColor	top100	0.14	pass	pass	0.8	
+5	HTTP::UserAgent	top100	1.2.0	self-fail	self-fail	2.1	FAILED: 030-cookies.rakutest | # Failed test 'set-cookie 1/11' at /var/folders/x1/pjhp8m3n0ks9wlph53lzfw400000gs/T/rakupp-install-57994-HTTP--UserAgent/HTTP-UserAgent-1.2.0/t/030-cookies.rakutest line 24
+6	JSON::Tiny	top100	1.0	pass	pass	1	
+7	YAMLish	top100	0.1.3	pass	pass	1.4	
+8	URI	top100	0.3.8	pass	pass	1.3	
+9	File::Find	top100	0.2.5	pass	pass	1	
+10	MIME::Base64	top100	1.2.5	pass	pass	1	
+11	IO::Socket::SSL	top100	0.0.4	pass	pass	1.2	
+12	XML	top100	0.3.6	pass	pass	1.2	
+13	Test::META	top100	0.0.20	pass	pass	2	
+14	DBIish	top100	0.6.8	pass	pass	2.7	
+15	URI::Encode	top100	1.0	pass	pass	0.8	
+16	HTTP::Tiny	top100	0.2.6	pass	pass	1	
+17	Sparrowdo	top100	0.1.55	pass	pass	2	
+18	Digest::HMAC	top100	1.0.7	pass	pass	1.1	
+19	Method::Also	top100	0.0.10	pass	pass	0.9	
+20	LibraryMake	top100	1.0.5	pass	pass	2.5	
+21	File::Directory::Tree	top100	0.2	pass	pass	0.9	
+22	Digest	top100	1.1.0	pass	pass	13.2	
+23	Math::Libgsl::Constants	top100	0.0.13	self-fail	self-fail	0.9	FAILED: 00-use.rakutest | # Failed test 'The module can be use-d ok: Math::Libgsl::Constants' at /var/folders/x1/pjhp8m3n0ks9wlph53lzfw400000gs/T/rakupp-install-58379-Math--Libgsl--Constants/Math-Libgsl-Constants-0.0.13/t/00-use.rakutest line 6
+24	DSL::Shared	top100	0.2.11	self-fail	self-fail	2.4	FAILED: Array-of-regexes-matches.rakutest | # Failed test at /var/folders/x1/pjhp8m3n0ks9wlph53lzfw400000gs/T/rakupp-install-58392-DSL--Shared/dist/t/Array-of-regexes-matches.rakutest line 36
+25	Hash::Merge	top100	2.0.0	pass	pass	0.9	
+26	File::Which	top100	1.0.1	pass	pass	1	
+27	Terminal::ANSI	top100	0.0.25	pass	pass	1	
+28	UUID	top100	1.0.0	pass	pass	0.8	
+29	OpenSSL	top100	0.2.9	pass	pass	3	
+30	Text::Utils	top100	4.0.2	pass	pass	1.7	
+31	Log::Async	top100	0.0.17	timeout	pass	8.1	
+32	LWP::Simple	top100	0.109	timeout	timeout	300	
+33	HTTP::Status	top100	0.0.5	pass	pass	1	
+34	JSON::Class	top100	0.0.6	pass	pass	1.2	
+35	Base64	top100	0.0.2	pass	pass	0.9	
+36	Data::Dump	top100	0.0.18	pass	pass	0.9	
+37	DateTime::Format	top100	0.1.5	pass	pass	1.3	
+38	Sparrow6	top100	0.0.93	pass	pass	2.8	
+39	Distribution::Builder::MakeFromJSON	top100	0.6	pass	pass	0.9	
+40	PDF::Content	top100	0.9.11	self-fail	self-fail	2.2	FAILED: basic.t | ===SORRY!=== Parse error at line 653: Error while compiling module PDF::Content::Ops (line 653): Confused (got ')')
+41	Color	top100	1.004001	pass	pass	1	
+42	NativeHelpers::Blob	top100	0.1.13	self-fail	self-fail	1.4	FAILED: 02-cstruct.rakutest | No such method 'shape' for invocant of type 'LinearArraypun1'
+43	Data::TypeSystem	top100	0.1.8	pass	pass	0.9	
+44	Digest::SHA256::Native	top100	1.0.1	pass	pass	2.9	the sweep saw one of 12 concurrent streams miss under load; the suite is green on re-run and 20/20 standalone (both this build and clean HEAD)
+45	OO::Monitors	top100	1.1.7	pass	pass	0.9	
+46	UUID::V4	top100	1.0.0	pass	pass	1.3	
+47	Shell::Command	top100	1.2	pass	pass	0.9	
+48	Cro::Core	top100	0.8.10	pass	pass	1.3	
+49	Gnome::N	top100	0.1.54	self-fail	self-fail	1.1	FAILED: NativeLib.rakutest | # Failed test 'lib names' at /var/folders/x1/pjhp8m3n0ks9wlph53lzfw400000gs/T/rakupp-install-59525-Gnome--N/t/NativeLib.rakutest line 10
+50	Config	top100	3.0.4	pass	pass	2.8	
+51	Digest::SHA1::Native	top100	1.0.1	pass	pass	2.3	
+52	NativeHelpers::Array	top100	0.0.6	pass	pass	1.1	
+53	PDF::Lite	top100	0.0.15	self-fail	self-fail	2.3	FAILED: 00-readme.t | re-run after the signature-literal fix; the sweep's row read a parse error
+54	WWW	top100	1.005007	pass	pass	2.6	
+55	Test::Output	top100	1.3	pass	pass	0.8	
+56	Cro::WebSocket	top100	0.8.10	timeout	timeout	300	
+57	MacOS::NativeLib	top100	0.0.6	pass	pass	0.9	
+58	Date::Calendar::Strftime	top100	0.1.1	pass	pass	1.7	
+59	Gnome::Glib	top100	0.1.12	self-fail	self-fail	1	FAILED: N-Error.rakutest | # Failed test 'ISA test' at /var/folders/x1/pjhp8m3n0ks9wlph53lzfw400000gs/T/rakupp-install-59825-Gnome--Glib/t/N-Error.rakutest line 32
+60	Pod::Load	top100	0.7.2	self-fail	pass	1.5	
+61	Template::Mustache	top100	1.2.6	self-fail	self-fail	1.2	FAILED: 01-basic.rakutest | # Failed test 'Standalone interpolation should not alter surrounding whitesp' at /var/folders/x1/pjhp8m3n0ks9wlph53lzfw400000gs/T/rakupp-install-59853-Template--Mustache/Template-Mustache-1.2.6/t/01-basic.rakutest line 6
+62	Term::termios	top100	0.2.8	pass	pass	2.6	
+63	LLM::Functions	top100	0.5.10	self-fail	self-fail	3.5	FAILED: 04-LLM-chats.rakutest | # Failed test at /var/folders/x1/pjhp8m3n0ks9wlph53lzfw400000gs/T/rakupp-install-59905-LLM--Functions/dist/t/04-LLM-chats.rakutest line 50
+64	IO::Socket::Async::SSL	top100	0.8.2	self-fail	self-fail	14.6	FAILED: encoding.rakutest | # Failed test 'UTF-8 decoding with bytes over boundaries correctly handled' at /var/folders/x1/pjhp8m3n0ks9wlph53lzfw400000gs/T/rakupp-install-59925-IO--Socket--Async--SSL/IO-Socket-Async-SSL-0.8.2/t/encoding.rakutest line 38
+65	Air	top100	0.1.32	self-fail	self-fail	2.6	FAILED: 01-basic.rakutest | Undefined routine 'h1'
+66	AttrX::Mooish	top100	1.0.10	self-fail	self-fail	1.3	FAILED: 010-base.custom.rakutest | # Failed test 'Class Basics' at /var/folders/x1/pjhp8m3n0ks9wlph53lzfw400000gs/T/rakupp-install-59975-AttrX--Mooish/AttrX-Mooish-v1.0.10/t/010-base.custom.rakutest line 8
+67	Cairo	top100	0.2.7	self-fail	self-fail	1	FAILED: matrix.t | # Running cairo version: 1.18.4 (module 0.3.6, Raku 2026.08)
+68	Clipboard	top100	0.1.2	self-fail	self-fail	0.8	FAILED: 01-copy-to-clipboard.t | /bin/sh: xclip: command not found
+69	Gnome::GObject	top100	0.1.12	self-fail	self-fail	1.1	FAILED: T-value.rakutest | Undefined routine 'gobject-lib'
+70	HTML::Escape	top100	0.0.1	pass	pass	0.6	
+71	HTTP::Easy	top100	1.3	pass	pass	0.9	
+72	Intl::CLDR	top100	0.7.6	self-fail	self-fail	2.2	FAILED: 00-sanity.rakutest | ===SORRY!=== Parse error at line 153: Error while compiling module Intl::CLDR::Types::ExemplarCharacters (line 153): expected } (got '')
+73	IRC::Client	top100	4.0.15	pass	pass	1	
+74	Math::Libgsl::Matrix	top100	0.6.1	dep-build-fail	dep-build-fail	1.7	
+75	PDF::Font::Loader	top100	0.8.15	dep-build-fail	self-fail	2.6	FAILED: cmap-fixed-width.t | Could not find NativeCall::Types in:
+76	Text::MiscUtils	top100	0.0.13	self-fail	pass	1	
+77	XDG::BaseDirectory	top100	0.0.15	pass	pass	1.4	
+78	NativeLibs	top100	0.0.9	pass	pass	0.9	
+79	PDF	top100	0.6.15	self-fail	self-fail	1.7	FAILED: 00-helloworld.t | No such method 'new' for invocant of type 'Any' (re-run after the signature-literal fix; the sweep's row read a parse error)
+80	Terminal::WCWidth	top100	0.1.5	pass	pass	0.9	
+81	Terminal::Width	top100	1.1	self-fail	self-fail	1.2	FAILED: 00-use.t | tput: No value for $TERM and no -T specified
+82	META6	top100	0.0.1	pass	pass	1.6	
+83	Compress::Zlib	top100	1.1.0	self-fail	pass	1	
+84	Config::TOML	top100	0.1.3	pass	pass	0.9	
+85	Crust	top100	0.0.1	dep-fail	dep-fail	2.3	FAILED: 010_basic.t | # Failed test 'Test for seek() and read()' at /var/folders/x1/pjhp8m3n0ks9wlph53lzfw400000gs/T/rakupp-install-60245-IO--Blob/IO-Blob-0.0.1/t/010_basic.t line 166
+86	Pod::To::Markdown	top100	0.2.2	self-fail	self-fail	1.8	FAILED: code-lang.rakutest | # Failed test 'Pod with lang set renders correctly' at /var/folders/x1/pjhp8m3n0ks9wlph53lzfw400000gs/T/rakupp-install-60255-Pod--To--Markdown/Pod-To-Markdown-0.2.2/t/code-lang.rakutest line 18
+87	Test::Mock	top100	1.8	self-fail	self-fail	0.9	FAILED: computing.rakutest | No such method 'add_parent' for invocant of type '<anon|1>'
+88	Cro::WebApp	top100	0.10.1	self-fail	self-fail	2.7	FAILED: compile-all.rakutest | ===SORRY!=== Parse error at line 522: Error while compiling module Cro::WebApp::Template::Parser (line 522): expected } (got '')
+89	Crypt::Random	top100	0.4.1	pass	pass	1	
+90	HTTP::Tinyish	top100	0.4.1	pass	pass	1	
+91	Color::Names	top100	2.0.0	self-fail	pass	1.5	
+92	Image::Markup::Utilities	top100	0.1.2	pass	pass	1.9	
+93	Slangify	top100	0.0.5	self-fail	self-fail	0.9	FAILED: 01-basic.rakutest | Useless use of constant string ?"Successfully slanged" in sink context (line 11)
+94	Text::CSV	top100	0.022	self-fail	self-fail	1.2	FAILED: 10_base.t | ===SORRY!=== Parse error at line 18: expected ) (got '(')
+95	Base64::Native	top100	0.0.10	pass	pass	2.4	
+96	CSS::Grammar	top100	0.4.3	self-fail	self-fail	1	FAILED: compat.t | # Failed test 'css1 string parse: 'hi\021 there'' at /var/folders/x1/pjhp8m3n0ks9wlph53lzfw400000gs/T/rakupp-install-60411-CSS--Grammar/CSS-Grammar-0.4.3/t/compat.t line 56
+97	CSS::Properties	top100	0.10.9	self-fail	self-fail	1.3	FAILED: 00-readme.t | ===SORRY!=== Parse error at line 165: Error while compiling module CSS::Properties (line 165): Cannot put required parameter $copy after named parameters
+98	Getopt::Long	top100	0.4.2	pass	pass	0.7	
+99	JSON::Name	top100	0.0.7	pass	pass	0.8	
+100	LLM::DWIM	top100	0.0.6	self-fail	self-fail	3.6	FAILED: 00-use.rakutest | # Failed test 'The module can be use-d ok: LLM::DWIM' at /var/folders/x1/pjhp8m3n0ks9wlph53lzfw400000gs/T/rakupp-install-60455-LLM--DWIM/LLM-DWIM-0.0.6/t/00-use.rakutest line 4

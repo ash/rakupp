@@ -3694,6 +3694,9 @@ void Interpreter::gilUnpark(bool wasParked) {
 // True only on `start`/async worker threads — gates the safe-point abort (defined
 // inline in the header) so the main thread is never unwound.
 thread_local bool t_isWorker = false;
+std::atomic<int> g_stmtLine{0};
+std::atomic<bool> g_stmtLineThreaded{false};
+thread_local int t_stmtLine = 0;
 thread_local Value t_threadSelf;
 thread_local unsigned t_safePtCtr = 0;
 thread_local unsigned t_gatherTickCtr = 0;
@@ -7342,6 +7345,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             if (!sd->name.empty()) {
                 SubsetInfo info{sd->baseType, sd->where.get()};
                 info.langRev = langRev_;   // `Even.^ver` answers with this
+                info.defConstraint = sd->defConstraint;   // `of Str:D`
                 info.declEnv = tctx_.cur;   // `where { LogLevels{$_}:exists }` reads its class's constant (Template::Mustache)
                 subsets_[sd->name] = info;
                 // …and under the PACKAGE-QUALIFIED name, the way a class registers.
@@ -10976,6 +10980,13 @@ bool Interpreter::subsetMatches(const std::string& name, const Value& v, int dep
     }
     const SubsetInfo& si = it->second;
     if (!si.base.empty() && !subsetMatches(si.base, v, depth + 1)) {
+        if (!cacheKey.empty()) typeSubsetCache[cacheKey] = false;
+        return false;
+    }
+    // the base type's smiley: `subset S of Str:D` accepts no type object,
+    // `of Str:U` accepts nothing else
+    if ((si.defConstraint == 1 && !isDefined(v)) ||
+        (si.defConstraint == 2 && isDefined(v))) {
         if (!cacheKey.empty()) typeSubsetCache[cacheKey] = false;
         return false;
     }
@@ -17283,6 +17294,18 @@ void Interpreter::assignListTarget(ListExpr* lst, const Value& rhs) {
         size_t vi = 0; // value cursor (a slurpy @/% target consumes the rest)
         for (size_t i = 0; i < L->items.size(); i++) {
             Expr* tgt = L->items[i].get();
+            // `my :($a, $b, $c = EXPR) := …` — a signature-literal target's
+            // per-slot DEFAULT, which the parser leaves as the item `$c = EXPR`.
+            // A value from the right-hand list wins; the default fills the slot
+            // the list does not reach. PDF::COS::Tie binds a two-element
+            // `(obj-num, gen-num)` into a three-parameter signature whose third
+            // parameter defaults to `$.reader`.
+            Expr* slotDefault = nullptr;
+            if (tgt->kind == NK::Assign && static_cast<Assign*>(tgt)->op == "=") {
+                auto* as = static_cast<Assign*>(tgt);
+                slotDefault = as->value.get();
+                tgt = as->target.get();
+            }
             if (tgt->kind == NK::Whatever) { vi++; continue; } // `(*, $a) = …` skips a value
             if (tgt->kind == NK::VarExpr) {
                 const std::string& nm = static_cast<VarExpr*>(tgt)->name;
@@ -17297,7 +17320,9 @@ void Interpreter::assignListTarget(ListExpr* lst, const Value& rhs) {
                     continue;
                 }
             }
-            Value v = (vi < vals.size()) ? vals[vi] : Value::any();
+            Value v = vi < vals.size() ? vals[vi]
+                    : slotDefault      ? eval(const_cast<Expr*>(slotDefault))
+                                       : Value::any();
             vi++;
             if (tgt->kind == NK::ListExpr) bind(static_cast<ListExpr*>(tgt), v);
             else {
@@ -18300,6 +18325,19 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             static_cast<VarExpr*>(a->target.get())->name.size() > 2 &&
             (static_cast<VarExpr*>(a->target.get())->name[1] == '.' ||
              static_cast<VarExpr*>(a->target.get())->name[1] == '!');
+        // `$obj.attr = Nil` RESETS the attribute to its default — Nil is the
+        // reset value, never a stored one — the rule `$x = Nil`, `@a[0] = Nil`
+        // and `$!attr = Nil` already followed. A reset is not an assignment, so
+        // neither the declared type nor a `where` constraint is asked about it:
+        // URI's `.port = Nil` (`has Port $.port is rw`, `subset Port of UInt`)
+        // died the type check instead of emptying the port.
+        if (a->op == "=" && rhs.t == VT::Nil && a->target->kind == NK::MethodCall) {
+            const std::string& aty = tctx_.lastLvalueAttrType;
+            rhs = (!aty.empty() && aty != "Mu" && aty != "Any")
+                      ? Value::typeObj(aty) : Value::any();
+            tctx_.lastLvalueAttrType.clear();
+            tctx_.lastLvalueAttrWhere = nullptr;
+        }
         // …and its `where {…}` constraint: `has Numeric $.lat where { -90 <= $_ <= 90 }`
         // rejects an out-of-range assignment (Date::Event's lat/lon setters)
         if (a->op == "=" && (a->target->kind == NK::MethodCall || selfAttrTarget) &&
@@ -26240,8 +26278,15 @@ std::string Interpreter::strOf(const Value& v) {
             if (Value* m = cit->second->findMethod("Str")) { ValueList none; return invokeMethod(*m, v, none).toStr(); }
     }
     if (v.t == VT::Object && v.obj() && v.obj()->cls) {
+        // through the CHAIN, as gistOf does: a user `method Str` that defers
+        // (`nextsame` for the built-in stringification, as CSS::Writer's does
+        // when it has no AST to write) needs the candidate under it, and
+        // invokeMethod alone establishes no dispatcher — "nextsame is not in
+        // the dynamic scope of a dispatcher" came out of `~$obj` while a plain
+        // `$obj.Str` was fine.
         for (const char* nm : {"Str", "gist", "Stringy"}) // ~$o uses .Stringy, print uses .Str
-            if (Value* m = v.obj()->cls->findMethod(nm)) { ValueList none; return invokeMethod(*m, v, none).toStr(); }
+            if (v.obj()->cls->findMethod(nm))
+                return invokeMethodChain(nm, v.obj()->cls.get(), v, {}, nullptr).toStr();
         // an Exception stringifies to its .message (Raku: Exception.Str is .message),
         // whether message is a method or a plain attribute.
         if (Value* m = v.obj()->cls->findMethod("message")) { ValueList none; return invokeMethod(*m, v, none).toStr(); }

@@ -783,6 +783,7 @@ struct EmptyStmt : Stmt { EmptyStmt(): Stmt(NK::EmptyStmt) {} };
 struct SubsetDecl : Stmt {
     std::string name;
     std::string baseType;  // "" = Any
+    int defConstraint = 0; // the base type's smiley: 1 = :D, 2 = :U (0 = none)
     ExprPtr where;         // may be null (pure alias)
     SubsetDecl(): Stmt(NK::SubsetDecl) {}
 };

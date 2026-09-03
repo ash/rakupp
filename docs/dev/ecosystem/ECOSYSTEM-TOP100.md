@@ -13,11 +13,17 @@ the boundary is genuinely ragged — 86 dists have `run` ≥ 8 and 23 tie at 7, 
 ranks 87-100 are the first 14 of that tie. `Rakudo`/`nqp`/`zef`/`Test` are
 excluded throughout.
 
-Verdicts are the 2026-08-30 whole-ecosystem sweep at **v3.23.0-8-g5e23726**
-([ECOSWEEP-2026-08](../findings/ECOSWEEP-2026-08.md)); the `RakuAST` column is
-the flag from raku.online's `tools/rakuast-fallout.raku` (see
+Verdicts in the tables below are the 2026-08-30 whole-ecosystem sweep at
+**v3.23.0-8-g5e23726** ([ECOSWEEP-2026-08](../findings/ECOSWEEP-2026-08.md)); the
+`RakuAST` column is the flag from raku.online's `tools/rakuast-fallout.raku` (see
 [RAKUAST-PLAN.md](../plans/RAKUAST-PLAN.md)). Raw data:
 [top100-battery.tsv](top100-battery.tsv).
+
+**Those cells are dated, and they are not re-written when the engine moves** —
+each re-measurement is its own section below, newest last, and the latest is
+[the 2026-09-03 refresh](#the-2026-09-03-refresh-at-v3240-43-g8a3ca15) (67/100
+own suite, 60/100 end to end), whose per-dist verdicts are in
+[top100-battery-2026-09-03.tsv](top100-battery-2026-09-03.tsv).
 
 ## The battery
 
@@ -192,6 +198,117 @@ to its paren is a call; a native callback typed from the routine's declared
 signature (the OpenSSL ALPN selector read its length byte eight-wide and looped
 forever without it); the Pod::Load precompilation surface as a shim; and the
 NativeHelpers::Blob/Pointer shadow modules made real views onto engine storage.
+
+## The 2026-09-03 refresh at v3.24.0-43-g8a3ca15
+
+Forty-three commits of engine work had landed since the pinned sweep and none of
+it had been measured against the battery, so the whole 169 were re-run: a store
+seeded `--no-test` for this build, then `rakupp test` on every member, same
+method as the 2026-08-30 table. Raw data:
+[top100-battery-2026-09-03.tsv](top100-battery-2026-09-03.tsv), which carries
+both verdicts per dist.
+
+| question | 2026-08-30 | 2026-09-03 |
+|---|--:|--:|
+| top-100 passing its own suite, dependencies assumed installed | 62 / 100 | **67 / 100** |
+| top-100 green end to end (its whole closure passes too) | 58 / 100¹ | **60 / 100** |
+| the whole battery, own suite | 95 / 169 | **103 / 169** |
+
+¹ the 2026-09-01 re-check's number, the closest comparable measurement.
+
+Eight rows moved to `pass` and none moved off it: **Log::Async** (#31, was the
+`timeout` that was really a hang), **Pod::Load** (#60), **Text::MiscUtils**
+(#76), **Compress::Zlib** (#83), **Color::Names** (#91), and the dependencies
+**Font::AFM**, **Text::SubParsers**, **User::Language**. That is the 2026-09-02
+sittings' work showing up in a full measurement rather than in per-dist probes.
+
+### What a refresh is actually for: two rows had broken
+
+`no rows lost` is the *end* of this story, not the start. Two dists that pass in
+the pinned table failed under HEAD, and a third failed better than one run in
+three:
+
+- **URI (#8, nine dists behind it)** — `.port = Nil` on `has Port $.port is rw`
+  (`subset Port of UInt`) died "Type check failed in assignment; expected
+  URI::Port but got Nil". Assigning `Nil` RESETS a container to its default;
+  rakupp did that for `$x = Nil`, `@a[0] = Nil` and `$!attr = Nil`, but the
+  accessor path type-checked the Nil instead. A reset is not an assignment, so
+  neither the declared type nor a `where` clause is consulted for it.
+- **Config (#50)** — `use Log` died "Could not find Logger::NDC". The installer
+  had installed the dist **Logger 0.4.0** to satisfy `Log`: two dists offer that
+  module, because Logger 0.4.0's META mistakenly names its modules `Log`,
+  `Log::NDC`… (its own 0.4.1 corrected the typo), and candidates were ordered by
+  version alone, so 0.4.0 outranked the dist actually named `Log` at 0.3.2. A
+  dist NAMED for what was asked now outranks one that merely lists the module in
+  `provides`. Nothing in the engine: `tools/install.raku`.
+- **Log::Async (#31)** — its `t/14-frame` failed 7 runs in 20. The line of the
+  statement now executing is one process-wide slot (a thread_local costs a TLV
+  lookup per statement, measured +6% on loopsum), and the moment a worker exists
+  two threads write it: a `callframe(1)` taken on the mainline could read the
+  logging worker's line. Creating a worker now latches the line per-thread for
+  the rest of the run, so only programs that spawn threads pay for it. 0 in 30
+  after.
+
+The lesson the ecosystem battery keeps teaching is the one in the note above the
+tables: **a cell is a measurement, not a fact about today's engine**. Only a
+re-run says which way a row has moved.
+
+### Four parse-and-dispatch faults, and the cluster behind them
+
+- `subset LatinStr of Str:D` — the smiley belongs to the base type. Unconsumed
+  it fell out of the declaration as a statement of its own ("Useless use of
+  :D(True) in sink context") and took the following `is export(:LatinStr)` with
+  it, which then read as a call to a routine named `export`. PDF::COS declares
+  three subsets that way, and **PDF (#79)** stopped at the first.
+- A `}` at end of line ends the statement — but a SUBSCRIPT's `}` is not a
+  block's. `return %h{$k}` with its `if %h{$k}:exists` on the next line lost the
+  modifier and read the `if` as a fresh block-if ("expected { (got ';')"). One
+  line of **CSS::Writer**, three dists behind it.
+- `my :($sigil, $type) := …` — a signature literal where a parenthesised
+  declaration list goes, defaults included: PDF::COS::Tie binds a two-element
+  `(obj-num, gen-num)` into a three-parameter signature whose third defaults to
+  `$.reader`.
+- `~$obj` reached a user `method Str` without a dispatcher, so a `Str` that
+  defers with `nextsame` (CSS::Writer's, when it has no AST to write) died
+  "nextsame is not in the dynamic scope of a dispatcher" — while `$obj.Str` was
+  fine. Stringification now goes through the method chain, as `gist` already did.
+
+CSS::Writer goes from a parse error to 19 of 21 in `write-css.t`; PDF compiles
+its whole library and stops on a runtime `No such method 'new' for invocant of
+type 'Any'`. Neither converts — they are named here because the faults are
+general, not because the dists are done.
+
+### The blockers now
+
+| root | in the battery | verdict | blocks | first error |
+|---|---|---|--:|---|
+| IO::Socket::Async::SSL | #64 | self-fail | 8 | UTF-8 decoding with bytes over a boundary |
+| CSS::Grammar | #96 | self-fail | 8 | `css1 string parse: 'hi\021 there'` |
+| CBOR::Simple | dependency | self-fail | 7 | `End of input in a head (18)` (t/02-malformed, which used to hang) |
+| Log::Timeline | dependency | self-fail | 6 | output-socket: timeout waiting for first events |
+| IO::Path::ChildSecure | dependency | self-fail | 6 | `code returned a Failure` |
+| Cro::HTTP | #2 | timeout | 5 | — |
+| AttrX::Mooish | #66 | self-fail | 5 | `Class Basics` |
+| PDF::Grammar | dependency | self-fail | 4 | `ws: ws parse: ' '` |
+| Hash::int | dependency | self-fail | 4 | type check binding `$key` |
+| PDF | #79 | self-fail | 3 | `No such method 'new' for invocant of type 'Any'` |
+| Native::Packing | dependency | self-fail | 3 | README code sample |
+| CSS::Writer | dependency | self-fail | 3 | `writer stringification` |
+
+Five rows are environment, not engine, and should stay recorded that way:
+**Clipboard** (#68) wants `xclip`, **Terminal::Width** (#81) wants `$TERM`, and
+the **Math::Libgsl** trio (#23, #74, and the dependency Math::Libgsl::Complex)
+wants GSL's headers on the compiler's search path — its Makefile hardcodes the
+Linux `-I/usr/include/gsl` and leans on `%CCFLAGS%` for the rest, which on macOS
+carries neither Homebrew prefix. `CPATH=/opt/homebrew/include
+LIBRARY_PATH=/opt/homebrew/lib` builds all three; stock Rakudo's `cflags` on
+this machine carry no prefix either.
+
+Gates for the six engine fixes and the installer change: `t/run.raku` 632/632 (with the new
+`t/regression/top100-refresh-2026-09-03.raku`, which passes byte-for-byte under
+Rakudo 2026.08 too), seven roast slices (S02/S04/S05/S06/S12/S17/S32) against a
+clean-HEAD baseline build with no file lost, and an interleaved best-of-five of
+both binaries on loopsum/fib/hash/objects/regex within measurement noise.
 
 ## The 100
 

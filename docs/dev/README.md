@@ -98,7 +98,9 @@ Earlier plans:
 - **[ecosystem/ECOSYSTEM-TOP100.md](ecosystem/ECOSYSTEM-TOP100.md)** — the current
   working set: the top-100 by reverse dependencies over the Raku Ecosystem Archive
   **plus the dependency closure underneath it** (169 dists), each with its sweep
-  verdict and its RakuAST flag. Raw data in `top100-battery.tsv`.
+  verdict and its RakuAST flag. Raw data in `top100-battery.tsv` (the pinned
+  2026-08-30 sweep) and `top100-battery-2026-09-03.tsv` (the latest refresh:
+  67/100 own suite, 60/100 end to end, 103/169 across the battery).
 - **[ecosystem/ECOSYSTEM-TOP50.md](ecosystem/ECOSYSTEM-TOP50.md)** — superseded by
   the above; kept for the v2.0.0 record: the ranking, the version pins, and the
   observations that shaped that campaign's working set.

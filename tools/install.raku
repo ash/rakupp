@@ -492,8 +492,18 @@ sub candidates(@index, %want) {
     });
     @c .= grep(-> %e { ver-ok(%e<version> // '', %want<ver>) });
     @c .= grep(-> %e { (%e<auth> // '') eq %want<auth> }) if %want<auth> ne '';
-    @c.sort(-> %a, %b {   # newest version first
-        newer(%a<version> // '', %b<version> // '') ?? Order::Less
+    # A dist NAMED for what was asked outranks one that merely lists the module
+    # in `provides`, however much newer the second is. Real case: `Log` is a
+    # dist (0.3.2), and Logger 0.4.0's META claims to provide `Log` as well —
+    # a typo its own 0.4.1 corrected. On version alone Logger 0.4.0 won, so
+    # `install Log` installed Logger, whose Logger.rakumod opens `use
+    # Logger::NDC` — a module 0.4.0 registers under the wrong name — and
+    # every dist that loads Log (Config #50) died at `use Log`.
+    @c.sort(-> %a, %b {   # exact dist name first, then newest version
+        my $an = (%a<name> // '') eq %want<name>;
+        my $bn = (%b<name> // '') eq %want<name>;
+        $an != $bn ?? ($an ?? Order::Less !! Order::More)
+        !! newer(%a<version> // '', %b<version> // '') ?? Order::Less
         !! newer(%b<version> // '', %a<version> // '') ?? Order::More
         !! Order::Same
     }).List

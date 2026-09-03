@@ -2614,6 +2614,14 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
         if (lastIsExport_) { ve->declExport = true; lastIsExport_ = false; }
         return ve;
     }
+    // `my :($sigil, $type) := do given …` — a SIGNATURE literal standing where a
+    // parenthesised declaration list would. For the positional-only shape the two
+    // spellings bind the same way, so drop the `:` and let the list branch below
+    // declare the variables; a signature that says something a list cannot (a
+    // named or slurpy parameter) is left to the error at the end of this
+    // function rather than bound to the wrong thing. PDF::COS::Tie's `method
+    // raku` is written this way, and the parse error stopped all of PDF (#79).
+    if (isOp(":") && peek().kind == Tok::LParen) advance();
     if (isKind(Tok::LParen)) {
         advance();
         auto list = std::make_unique<ListExpr>();
@@ -6666,7 +6674,23 @@ StmtPtr Parser::parseSubset() {
     // (`is export(:TAG)`), which must be consumed with it or it desyncs the
     // stream. Loop until neither matches.
     for (;;) {
-        if (isIdent("of")) { advance(); if (isKind(Tok::Ident)) sd->baseType = advance().text; continue; }
+        if (isIdent("of")) {
+            advance();
+            if (isKind(Tok::Ident)) sd->baseType = advance().text;
+            // …and the base type's SMILEY: `subset LatinStr of Str:D` is a
+            // subset of the DEFINITE Str. Unconsumed, the `:D` fell out of the
+            // declaration and became a statement of its own ("Useless use of
+            // :D(True) in sink context"), taking any following `is export(…)`
+            // with it — which then parsed as a call to a routine named
+            // `export`. That is what stopped PDF (#79) and everything under it.
+            if (isOp(":") && peek().kind == Tok::Ident &&
+                (peek().text == "D" || peek().text == "U" || peek().text == "_")) {
+                advance();
+                std::string sm = advance().text;
+                sd->defConstraint = sm == "D" ? 1 : sm == "U" ? 2 : 0;
+            }
+            continue;
+        }
         // `will complain { … }` (use experimental :will-complain, 6.e): a custom
         // type-check MESSAGE. Parse-only — the failure still throws, it just
         // carries the stock text. JSON::Class hangs one on its AssocOrPos subset.
@@ -7685,10 +7709,16 @@ ExprPtr Parser::applyExprModifiers(ExprPtr e) {
 }
 
 StmtPtr Parser::applyModifiers(StmtPtr s) {
-    // a `}` at end-of-line TERMINATES the statement (Rakudo's rule) — so
+    // a BLOCK's `}` at end-of-line TERMINATES the statement (Rakudo's rule) — so
     // `x => {…}\n if COND {…}` starts a NEW if statement, while a modifier on
-    // a continuation line after a non-brace token still attaches
-    if (pos_ > 0 && toks_[pos_ - 1].kind == Tok::RBrace &&
+    // a continuation line after a non-brace token still attaches. Any RBrace
+    // used to count, and a SUBSCRIPT's brace is not a block's: `return %h{$k}`
+    // with its `if %h{$k}:exists` on the next line lost the modifier and the
+    // `if` was read as a fresh block-if ("expected { (got ';')"). That one
+    // line is CSS::Writer's, and it stopped four dists in the battery.
+    // lastBlockClose_ is the same test the infix and method-call continuation
+    // rules use; the statement being parsed must own the brace.
+    if (pos_ > 0 && pos_ - 1 == lastBlockClose_ && lastBlockClose_ >= stmtStart_ &&
         cur().line != toks_[pos_ - 1].line) return s;
     if (cur().kind == Tok::Ident) {
         const std::string& kw = cur().text;
