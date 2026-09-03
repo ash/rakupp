@@ -57,6 +57,37 @@
 \newunicodechar{►}{\fbb{►}}
 \newunicodechar{▸}{\fbb{▸}}
 
+% ---------------------------------------------------------------- diagrams
+% The fallbacks above are declared at the surrounding text size, which is what
+% prose wants. A verbatim block is not prose, and newunicodechar's active
+% characters survive verbatim's catcode regime, so the ┌ │ ┼ ─ ► of a diagram
+% arrived from Menlo at full size while the text around them arrived from
+% Menlo at Scale=0.80. A quarter of a character wider per glyph: in the
+% chapter-1 pipeline the `│` on the `(─► AST)` line, which has two box glyphs
+% before it, sat 2.6pt to the right of the `│` above it.
+%
+% So a verbatim block gets fallback families carrying the mono scale, and the
+% grid closes up. Then the leading: a column of `│` was dashed rather than
+% solid, because each glyph is 11.04pt tall against a 14.9pt baseline. Setting
+% \baselineskip alone does nothing here — TeX abandons \baselineskip whenever
+% two boxes would come closer than \lineskiplimit and falls back to \lineskip,
+% and the 1.08pt gap in the shipped diagrams was exactly the default 1pt
+% \lineskip showing through. Both are set, so whichever branch TeX takes the
+% boxes meet.
+%
+% This has to go after \verbatim@font's \selectfont, which recomputes
+% \baselineskip from the size it just chose, so it is appended to that macro
+% rather than run at the start of the environment.
+\newfontfamily\boxfontmono{Menlo}[Scale=0.80]
+\newfontfamily\symfontmono{STIX Two Text}[Scale=0.80]
+\makeatletter
+\g@addto@macro\verbatim@font{%
+  \renewcommand{\fbb}[1]{{\boxfontmono #1}}%
+  \renewcommand{\fbs}[1]{{\symfontmono #1}}%
+  \baselineskip=11.04pt\relax
+  \lineskip=\z@ \lineskiplimit=\z@}
+\makeatother
+
 % ---------------------------------------------------------------- page furniture
 \pagestyle{fancy}
 \fancyhf{}
