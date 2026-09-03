@@ -20,6 +20,14 @@ The user-facing documentation is one level up, in [../](../README.md).
 
 Next up:
 
+- **[plans/TRANSPILE-PLAN.md](plans/TRANSPILE-PLAN.md)** — `--target=js`, a **second
+  Codegen with JavaScript as its output** (design draft 2026-09-03, for
+  review): why reach rather than speed justifies it, the probes that fixed the
+  Int and Str representations (a JS number until overflow; our own grapheme
+  tables, because `Intl.Segmenter` is 150× apart between hosts), the
+  whole-program tiering with the WASM engine as the fallback, `use JS` interop,
+  the gates, and the `Backend` seam a Rust target would reuse.
+
 - **[plans/SLIM-PLAN.md](plans/SLIM-PLAN.md)** — the **v3.14.0** campaign
   (planned 2026-08-09, starts after v3.0.1): `--exe` output stops carrying
   the parts of Raku the program cannot reach. Where the 9.8 MB actually
