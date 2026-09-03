@@ -277,6 +277,23 @@ void Interpreter::runAttrDefaults(const std::shared_ptr<ObjectData>& od,
     std::map<std::string, std::set<char>> nameSigils;
     for (ClassInfo* c = ci.get(); c; c = c->parent.get())
         for (auto& at : c->attrs) nameSigils[at.name].insert(at.sigil);
+    // A value the CALLER passed for a typed container attribute keeps the
+    // attribute's element type — the coercion below builds a fresh Array/Hash
+    // that knows nothing of the declaration — and every element it brings has
+    // to satisfy it, the same check the attribute's own later writes get.
+    auto typedContainer = [&](Value v, const ClassAttr& at) -> Value {
+        if ((at.sigil != '@' && at.sigil != '%') || at.type.empty()) return v;
+        if (v.t != VT::Array && v.t != VT::Hash) return v;
+        if (v.t == VT::Hash && !v.hashKind.empty()) return v; // a Set/Bag keys on ofType
+        if (v.ofType().empty()) v.ofTypeM() = at.type;
+        std::string want = elemTypeOf(v);
+        if (!want.empty()) {
+            std::string sym = std::string(1, at.sigil) + "!" + at.name;
+            if (v.t == VT::Array && v.arr()) for (auto& el : *v.arr()) checkElemType(want, el, sym);
+            else if (v.hash()) for (auto& kv : *v.hash()) checkElemType(want, kv.second, sym);
+        }
+        return v;
+    };
     for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
         // each level's defaults close over ITS declaration scope
         // (class-body constants/lexicals — `constant %Glyphs` in
@@ -295,8 +312,8 @@ void Interpreter::runAttrDefaults(const std::shared_ptr<ObjectData>& od,
                 slot = std::string(1, at.sigil) + at.name;
             auto pit = providedArgs.find(at.name);
             if (pit != providedArgs.end() && slot == at.name) {
-                od->attrs[slot] = coerceToSigil(
-                    nilResetForAttr(pit->second ? *pit->second : Value::any(), at), at.sigil);
+                od->attrs[slot] = typedContainer(coerceToSigil(
+                    nilResetForAttr(pit->second ? *pit->second : Value::any(), at), at.sigil), at);
                 continue;
             }
             // The value the slot holds when it has no explicit default.
@@ -304,8 +321,13 @@ void Interpreter::runAttrDefaults(const std::shared_ptr<ObjectData>& od,
             // starts at 0); a named type takes its TYPE OBJECT (not Any),
             // so a `.= new` default reads that type object as its invocant
             // (`has T $.x .= new` == `$!x = T.new`) — Rakudo semantics.
-            Value seed = at.sigil == '@' ? Value::array()
-                       : at.sigil == '%' ? Value::makeHash() : Value::any();
+            // …and a TYPED container attribute (`has Str @.data`, `has Int %.h`)
+            // is an Array[Str]/Hash[Int]: the element type has to be ON the
+            // slot, or `.of` answers (Mu) and nothing checks what enters it —
+            // `has Str @.data` silently took Ints (issue #63).
+            Value seed = at.sigil == '@' || at.sigil == '%'
+                       ? rtTypedDefault(at.type.c_str(), at.sigil)
+                       : Value::any();
             if (at.objKeyed && seed.t == VT::Hash) seed.objKeyed = true;
             if (at.sigil == '$' && !at.type.empty()) {
                 if (at.type == "atomicint" || at.type == "byte" ||
@@ -346,7 +368,7 @@ void Interpreter::runAttrDefaults(const std::shared_ptr<ObjectData>& od,
             // …but a USER container type is the value: coercing it to
             // the sigil would turn the object straight back into the
             // plain Hash it was declared not to be.
-            if (!userContainer) dv = coerceToSigil(dv, at.sigil);
+            if (!userContainer) dv = typedContainer(coerceToSigil(dv, at.sigil), at);
             od->attrs[slot] = dv;
         }
     }
@@ -362,8 +384,8 @@ void Interpreter::runAttrDefaults(const std::shared_ptr<ObjectData>& od,
             // that is the trait's whole purpose (JSON::Class binds its
             // $!declarant this way)
             if (at && (at->pub || at->built))
-                od->attrs[arg.s] = coerceToSigil(
-                    nilResetForAttr(arg.pairVal() ? *arg.pairVal() : Value::any(), *at), at->sigil);
+                od->attrs[arg.s] = typedContainer(coerceToSigil(
+                    nilResetForAttr(arg.pairVal() ? *arg.pairVal() : Value::any(), *at), at->sigil), *at);
         }
 }
 

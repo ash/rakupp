@@ -35,6 +35,14 @@ using SubResolver = std::function<bool(const std::string& name, const std::strin
 // How a type-check failure renders the offending value (Rakudo: `.raku`, elided
 // past 23 chars). Shared by the five message builders across Interpreter/Builtins.
 std::string typeCheckRepr(const Value& v);
+// The value half of a typed container's `ofType` — the ELEMENT type it
+// constrains its slots to, "" when it constrains nothing (untyped, Any/Mu, or
+// one of the NATIVE lowercase types, which have their own narrower checks).
+// A Hash's ofType is "valueType,keyType"; an Array's is the element type.
+std::string elemTypeOfSpec(const std::string& ofType);
+// How an element-check message names the container written to: a variable's own
+// spelling, or an accessor's private-attribute spelling (`self.data` → `@!data`).
+std::string containerNameOf(const Expr* e, char sigil);
 
 double randDouble(); // uniform random in [0,1)
 // Bareword value constants (pi/e/i/tau/now/time/rand) — true when `n` is one,
@@ -705,6 +713,10 @@ struct ExecContext {
     // `has C $.x is rw` must reject 42/Mu; roast S14-roles/basic.t)
     std::string lastLvalueAttrType;
     const void* lastLvalueAttrWhere = nullptr; // the attr's `where {…}` Expr, checked beside the type
+    // `@a[0] = v` / `%h<k> = v` — the ELEMENT type of the container the
+    // subscript reached, recorded by the Index lvalue arm so the assignment can
+    // enforce it (`my Int @a; @a[1] = $*ERR` throws; roast S02-types/array.t)
+    std::string lastLvalueElemType;
 };
 
 // Backs a lazy list (an infinite `… … *` sequence, or `.map` over one). The Value
@@ -1218,6 +1230,19 @@ public:
     std::mutex beginCacheMu_;
     bool subsetMatches(const std::string& name, const Value& v, int depth = 0);
     bool typeOrSubsetMatches(const Value& v, const std::string& type); // typeMatchesArg + subsets
+    // A typed container (`my Int @a`, `has Str @.d`, `my Str %h`) checks EVERY
+    // value that enters an element, exactly as a typed scalar checks its
+    // assignment: assignment, slice assignment, list initialisation and the
+    // structural mutators all funnel through here. `elemTypeOf` is the value
+    // half of a container's `ofType` (a hash's is "valueType,keyType"); an
+    // empty one, or Any/Mu, checks nothing. `symbol` names the container in
+    // the message when the site knows it ("@a", "@!data").
+    std::string elemTypeOf(const Value& container);
+    void checkElemType(const std::string& want, const Value& v, const std::string& symbol);
+    void checkElemType(const Value& container, const Value& v, const std::string& symbol = "") {
+        std::string w = elemTypeOf(container);
+        if (!w.empty()) checkElemType(w, v, symbol);
+    }
     bool typeMatchesResolved(const Value& v, const std::string& type); // type objects only: subset names resolve to their base chain, and UInt tolerates undefined (Rakudo's core UInt guards definedness in its where)
     Value evalNqpOp(NqpOp* n); // the `use nqp` compatibility subset (zero-cost when unused)
     // lone-candidate bind: throw X::TypeCheck::Binding on mismatch. blockParam

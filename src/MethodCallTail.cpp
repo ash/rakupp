@@ -2612,7 +2612,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             // a native-typed array (`my str @a`, `my int @a`) rejects a value of the
             // wrong native kind — str takes Str, int/uint/byte take Int, num takes Real
             auto natCheck = [&](const Value& v) {
-                if (inv.ofType().empty()) return;
+                if (inv.ofType().empty() || v.t == VT::Nil) return; // a Nil RESETS, it is not a store
                 std::string bt = inv.ofType().substr(0, inv.ofType().find(','));
                 bool isNat = bt == "str" || bt == "byte" || bt.compare(0, 3, "int") == 0 ||
                              bt.compare(0, 4, "uint") == 0 || bt.compare(0, 3, "num") == 0;
@@ -2633,7 +2633,19 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     throw RakuError{Value::typeObj("X::IllegalOnFixedDimensionArray"),
                         "Cannot " + m + " a fixed-dimension array"};
             }
-            if (m == "push" || m == "unshift" || m == "append" || m == "prepend") for (auto& a : args) natCheck(a);
+            // a BOXED typed array (`my Int @a`, `has Str @.d`) checks the same
+            // way — that is the half natCheck left out, and it is why
+            // `has Str @.data` silently accepted Ints (issue #63).
+            const std::string boxedElem = elemTypeOf(inv);
+            // Both checks see the value that ACTUALLY LANDS, so they run per
+            // arm, after append/prepend's one-level flattening: `my int @a;
+            // @a.append([1,2])` appends two ints and is legal (natCheck read
+            // the raw argument and rejected the Array), while `my Int @a;
+            // @a.push([1,2])` stores the Array itself and is not.
+            auto elemCheck = [&](const Value& v) {
+                natCheck(v);
+                if (!boxedElem.empty()) checkElemType(boxedElem, v, "");
+            };
             // P3 (the no-crash contract): in parallel mode the structural
             // mutators below run under the array's stripe — unguarded
             // concurrent pushes are still a race for the USER's data (loss is
@@ -2661,7 +2673,27 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 return Value::any();
             };
             // push/unshift add each argument as one element; append/prepend flatten
-            if (m == "push") { for (auto& a : args) inv.arr()->push_back(elemDef(natMask(a))); return inv; } // returns the array (shared storage)
+            // A SLIP argument SLIPS: `@a.push(Empty)` adds nothing and
+            // `@a.push(slip(7, 8))` adds two elements, where an ordinary list
+            // argument (`()`, `[]`) is one. append/prepend already flatten a
+            // lone Positional, so only push/unshift had to say so — they
+            // stored the Slip itself, which left `@a.push: Empty` one element
+            // longer than Rakudo (roast S02-types/undefined-types.t) and, once
+            // a typed array started checking its elements, made an Int array
+            // reject the Empty it should have ignored.
+            auto slipped = [](const ValueList& in) -> ValueList {
+                bool any = false;
+                for (auto& x : in) if (x.t == VT::Array && x.s == "Slip" && !x.itemized) { any = true; break; }
+                if (!any) return in;
+                ValueList out;
+                for (auto& x : in)
+                    if (x.t == VT::Array && x.s == "Slip" && !x.itemized) {
+                        if (x.arr()) for (auto& y : *x.arr()) out.push_back(y);
+                    }
+                    else out.push_back(x);
+                return out;
+            };
+            if (m == "push") { for (auto& a : slipped(args)) { Value v = natMask(a); elemCheck(v); inv.arr()->push_back(elemDef(v)); } return inv; } // returns the array (shared storage)
             // append/prepend follow the single-argument rule: a lone Positional arg is
             // treated as the list of values (flattened one level); multiple args are each
             // added as-is (nested lists preserved, exactly like push).
@@ -2677,10 +2709,10 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     return *args[0].arr();   // one-level: the sole list's own elements
                 return args;               // 2+ args: each as-is
             };
-            if (m == "append") { for (auto& a : appendValues(args)) inv.arr()->push_back(elemDef(a)); return inv; }
-            if (m == "unshift") { ValueList u; for (auto& a : args) u.push_back(elemDef(a));
+            if (m == "append") { for (auto& a : appendValues(args)) { elemCheck(a); inv.arr()->push_back(elemDef(a)); } return inv; }
+            if (m == "unshift") { ValueList u; for (auto& a : slipped(args)) { elemCheck(a); u.push_back(elemDef(a)); }
                                   inv.arr()->insert(inv.arr()->begin(), u.begin(), u.end()); return inv; }
-            if (m == "prepend") { auto f = appendValues(args); for (auto& a : f) a = elemDef(a);
+            if (m == "prepend") { auto f = appendValues(args); for (auto& a : f) { elemCheck(a); a = elemDef(a); }
                                   inv.arr()->insert(inv.arr()->begin(), f.begin(), f.end()); return inv; }
             // popping/shifting an EMPTY Array yields a FAILURE, not a bare
             // undefined value: it boolifies False — so `while @a.shift -> $x`
@@ -2739,6 +2771,21 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     if (args[k].t == VT::Hash) { repl.push_back(args[k]); continue; }
                     for (auto& x : toList(args[k])) repl.push_back(x);
                 }
+                // a typed array checks its REPLACEMENTS before any of them lands
+                // — a splice that dies leaves the array untouched — and says
+                // so with its own exception (Rakudo: X::TypeCheck::Splice).
+                // A NATIVE element type is a separate story that stays as it
+                // is: Rakudo rejects it as an unboxing failure (X::AdHoc,
+                // "This type cannot unbox to a native integer"), not as a
+                // splice type check, and rakupp does not reject it at all.
+                if (std::string want = elemTypeOf(inv); !want.empty())
+                    for (auto& x : repl) {
+                        if (x.t == VT::Nil || typeOrSubsetMatches(x, want)) continue;
+                        throwTypedV("X::TypeCheck::Splice",
+                            {{"got", x}, {"expected", Value::typeObj(want)}},
+                            "Type check failed in splice; expected " + want +
+                                " but got " + x.typeName() + " (" + typeCheckRepr(x) + ")");
+                    }
                 inv.arr()->erase(inv.arr()->begin() + start, inv.arr()->begin() + start + count);
                 inv.arr()->insert(inv.arr()->begin() + start, repl.begin(), repl.end());
                 return removed;

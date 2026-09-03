@@ -11088,6 +11088,83 @@ bool Interpreter::typeOrSubsetMatches(const Value& v, const std::string& type) {
     return typeMatchesResolved(v, type);
 }
 
+// The ELEMENT type a container constrains its slots to, "" for an unconstrained
+// one. A container's `ofType` is the declarator's encoding: an Array's is the
+// element type outright, a Hash's is "valueType,keyType" — the VALUE half is
+// what an element assignment has to satisfy. Any/Mu constrain nothing, and the
+// NATIVE lowercase types have their own (narrower, pre-existing) checks.
+// The first comma at BRACKET DEPTH ZERO. A Hash's ofType is
+// "valueType,keyType", so the value type is everything before that comma — but
+// an element type may itself be PARAMETERISED and carry commas inside its own
+// brackets (`my Hash[Int,Str] @a`), which a plain find(',') cut in half.
+static size_t topLevelComma(const std::string& s) {
+    int depth = 0;
+    for (size_t i = 0; i < s.size(); i++) {
+        if (s[i] == '[') depth++;
+        else if (s[i] == ']') { if (depth) depth--; }
+        else if (s[i] == ',' && depth == 0) return i;
+    }
+    return std::string::npos;
+}
+std::string elemTypeOfSpec(const std::string& ofType) {
+    if (ofType.empty()) return "";
+    std::string first = ofType.substr(0, topLevelComma(ofType));
+    if (first.empty() || first == "Any" || first == "Mu" || first == "Cool") return "";
+    if (!ascii::isupper((unsigned char)first[0])) return ""; // native: see natCheck
+    return first;
+}
+std::string Interpreter::elemTypeOf(const Value& container) {
+    if (container.ofType().empty()) return "";
+    if (container.t != VT::Array && container.t != VT::Hash) return ""; // Range/IO::Path ride on ofType too
+    if (container.t == VT::Hash && !container.hashKind.empty()) return ""; // a Set/Bag keys on ofType
+    return elemTypeOfSpec(container.ofType());
+}
+
+// How an element-check message names the container written to: its own spelling
+// for a variable (`@a`), the private-attribute spelling for an accessor
+// (`self.data` → `@!data`), nothing for an expression with no name of its own.
+std::string containerNameOf(const Expr* e, char sigil) {
+    if (!e) return "";
+    if (e->kind == NK::VarExpr) return static_cast<const VarExpr*>(e)->name;
+    if (e->kind == NK::MethodCall)
+        return std::string(1, sigil) + "!" + static_cast<const MethodCall*>(e)->method;
+    return "";
+}
+
+// A value entering a typed container's element must conform, exactly as a typed
+// scalar's assignment must. Only Nil is exempt, and only because it is not a
+// store at all: it RESETS the slot to the element default, which
+// nilElemDefault/elemDef have already turned it into. Everything else is asked,
+// including the two values that look like they should slip through:
+//   * an UNDEFINED value carries its own type, and conforms iff that type does
+//     (`my Str @a; @a[0] = Str` is fine, `= Any` is not);
+//   * a Failure does NOT soak into a typed container the way it does into an
+//     untyped one — the check has to look at it, and Rakudo fails the
+//     assignment (oracle-checked: `my Int @a; @a[0] = Failure.new("boom")`
+//     throws X::TypeCheck::Assignment).
+// The predicate is nominal conformance, not `~~`: a Junction smart-matches Int
+// and is still an illegal Int element, which is Rakudo's rule too.
+void Interpreter::checkElemType(const std::string& want, const Value& v, const std::string& symbol) {
+    if (v.t == VT::Nil) return;
+    // A PARAMETERISED element type constrains TWICE: the value must be that
+    // base type AND carry the same parameterisation. `my Array[Int] @a` takes
+    // an Array[Int] and neither an Array[Str] nor a plain Array — Rakudo
+    // rejects both, and roast S06-currying/positional.t declares exactly
+    // `my Array[Int] @AoAoI = $@AoI, $@AoI`.
+    size_t br = want.find('[');
+    if (br != std::string::npos && !want.empty() && want.back() == ']') {
+        if (typeOrSubsetMatches(v, want.substr(0, br)) &&
+            v.ofType() == want.substr(br + 1, want.size() - br - 2)) return;
+    }
+    else if (typeOrSubsetMatches(v, want)) return;
+    throwTypedV("X::TypeCheck::Assignment",
+                {{"got", v}, {"expected", Value::typeObj(want)}},
+                "Type check failed for an element of " +
+                    (symbol.empty() ? std::string("the container") : symbol) +
+                    "; expected " + want + " but got " + v.typeName() +
+                    (isDefined(v) ? " (" + typeCheckRepr(v) + ")" : " " + v.gist()));
+}
+
 // Nominal conformance with SUBSET names resolved — for TYPE OBJECTS only; a
 // defined value takes the ordinary path untouched (a negative Int still fails
 // UInt on its sign). An undefined `subset Port of UInt` attribute reads back
@@ -15938,6 +16015,11 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             base = &callBaseHold;
         }
         else base = lvalue(idx->base.get(), /*asInvocant=*/true); // subscript base: reaching in, not overwriting
+        // A TYPED container constrains what its elements may hold; the
+        // assignment that follows this lvalue is the only place that knows the
+        // value, so hand it the constraint here (the twin of
+        // lastLvalueAttrType). Cleared by the assignment before it asks.
+        if (base) tcx.lastLvalueElemType = elemTypeOf(*base);
         // assignment to an adverbed multidim subscript (`%h{a;b;c}:!exists = v`)
         // has no postcircumfix candidate — it dies
         if (idx->multiDim && !idx->adverb.empty())
@@ -17633,6 +17715,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             return tctx_.curStateEnv->vars[ve->name];
     }
 
+    auto targetName = [&](char sg) { return containerNameOf(a->target.get(), sg); };
     // The container is the TARGET's; the VALUE's shape is the operator's when it
     // named one. Split them here, after the target has had its say.
     targetSigil = sigil;
@@ -18141,6 +18224,8 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                         Value out = Value::array(); out.isList = true;
                         for (size_t i = 0; i < ks.size(); i++) {
                             Value v = i < vs.size() ? nilElemDefault(vs[i], *bp) : Value::any();
+                            // a typed container checks a SLICE assignment too
+                            checkElemType(*bp, v, containerNameOf(ix->base.get(), ix->isHash ? '%' : '@'));
                             if (ix->isHash && bp->t == VT::Hash && bp->hash()) {
                                 const std::string& hk = bp->hashKind;
                                 if (hk == "SetHash" || hk == "BagHash" || hk == "MixHash") {
@@ -18345,7 +18430,20 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             if (!ct.empty()) rhs = coerceToType(rhs, ct);
         }
         tctx_.lastLvalueAttrType.clear();
+        tctx_.lastLvalueElemType.clear();
         Value* lv = lvalue(a->target.get());
+        // `@a[0] = v` into a TYPED container enforces the element type, the
+        // same rule a typed scalar's assignment follows (`my Int @a; @a[1] =
+        // $*ERR` throws — roast S02-types/array.t). The Index lvalue arm left
+        // the constraint behind; Nil is not an assignment but a RESET, and the
+        // arm further down turns it into the element default.
+        if (a->op == "=" && a->target->kind == NK::Index && !tctx_.lastLvalueElemType.empty()) {
+            std::string want = tctx_.lastLvalueElemType;
+            tctx_.lastLvalueElemType.clear();
+            auto* ixt = static_cast<Index*>(a->target.get());
+            checkElemType(want, rhs, containerNameOf(ixt->base.get(), ixt->isHash ? '%' : '@'));
+        }
+        tctx_.lastLvalueElemType.clear();
         // A plain scalar parameter is READONLY in Raku — `is copy` is what makes
         // it writable. Ours bound every parameter as if `is copy` were always
         // on, so `sub f($s) { $s ~~ s/a/b/ }` worked here and died on Rakudo
@@ -18507,7 +18605,20 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 Value nv = coerceArray(rhs);
                 if (nv.arr()) { // each element enters a container: Nil resets
                     Value proto; proto.ofTypeM() = keepType; proto.elemDefaultM() = keepDefault;
-                    for (auto& el : *nv.arr()) el = nilElemDefault(el, proto);
+                    std::string want = elemTypeOfSpec(keepType);
+                    // `@a = Nil` is a RESET to ONE default element, never a
+                    // store — so it is not type-checked, and in a TYPED
+                    // container the element is that type's type object, not a
+                    // bare Any (Rakudo: `my Bool @r = Nil` is
+                    // Array[Bool].new(Bool); coerceArray can only synthesise
+                    // the Any, because it does not know the target's type).
+                    const bool reset = rhs.t == VT::Nil;
+                    for (auto& el : *nv.arr()) {
+                        el = nilElemDefault(reset ? Value::nil() : el, proto);
+                        // …and a TYPED one checks it: `my Int @a = 1, "x"` throws
+                        if (!want.empty() && !reset)
+                            checkElemType(want, el, targetName('@'));
+                    }
                 }
                 // `=` REFILLS the same container (Raku identity): anything bound
                 // to @a — a `-> $x` capture, `:=` alias, closure — tracks the change.
@@ -18582,6 +18693,10 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 // right-hand side itself, so `my %s := set <a b>` stays a Set
                 bool keepObjKeyed = lv->t == VT::Hash && lv->objKeyed;
                 Value nv = coerceHash(rhs, /*store=*/a->op == "=", keepObjKeyed);
+                // a typed hash (`my Int %h = a => "x"`) checks every value in
+                if (std::string want = elemTypeOfSpec(keepType); !want.empty() && nv.hash())
+                    for (auto& kv : *nv.hash())
+                        checkElemType(want, kv.second, targetName('%'));
                 if (lv->t == VT::Hash && lv->hash() && nv.hash() && lv->hash() != nv.hash()) {
                     *lv->hash() = *nv.hash(); // refill in place, keep container identity
                     nv.setHash(lv->hashS());
