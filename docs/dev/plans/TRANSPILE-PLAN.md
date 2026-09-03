@@ -168,6 +168,48 @@ reports it, and the program either gets the fallback or a refusal. The core
 grows the way everything here grows: by the batch loop, one row of the
 refusal histogram at a time, gated on the differential suite.
 
+## Why the WASM build stays
+
+Asked directly, 2026-09-03, once the plan existed: does a JavaScript target
+make Raku.js unnecessary? No — and not only because the fallback tier needs
+it. Recorded here so the question is not reopened every time the JS tier
+grows.
+
+- **It is the only tier that runs the whole language, and it costs nothing
+  to keep that true.** Raku.js is the interpreter itself, compiled. Every
+  engine fix reaches the browser on the next build, with no second
+  implementation to maintain. The JS core will be a subset for a long time:
+  the C++ backend, after months, covers 249 of 413 regression programs, and
+  the JS one starts inside that boundary. Anything that parses at run time —
+  `EVAL`, the showcase interpreters, grammars with LTM until P3 ports it —
+  stays WASM-only for good.
+- **Other people stand on it.** Raku/problem-solving#527 cites Raku++ in the
+  browser as the reason Rakudo can retire its own JS backend. The spec site,
+  the tour, the course and third-party pages using the `raku.js` widget all
+  run this engine. Dropping it would pull the floor from an argument being
+  made in Raku++'s name.
+- **This plan assumes it.** "Refuse by default, `--fallback=wasm` to opt in"
+  only works if the fallback works; without the WASM build the JS mode is
+  partial and the corpus gate has nowhere to send what it refuses.
+- **The two are complementary, not competing.** Where JS wins, WASM loses:
+  a thousand times faster on the kernels, kilobytes against 7.5 MB, DOM and
+  npm access, deep recursion. Where WASM wins, JS may never catch up:
+  completeness, exact semantics by construction, run-time parsing. It is the
+  relation between `--exe` and `--bundle`, and nobody proposes dropping
+  bundling because native compilation exists.
+- **The cost is small.** An additive build, one CI job, one zip per tag, a
+  smoke test; nothing in `src/` is touched by it.
+
+What shifts is the roles, not the presence. Today WASM is the only browser
+path; after P1–P3 the playground tries the transpiler first and falls back to
+WASM, as `--exe` falls back to `--aot`. The WASM build may also improve from
+its own side if Emscripten fixes the exception-handling personality bug that
+forces `-fexceptions` (see [rakujs/INTERNALS.md](../../../rakujs/INTERNALS.md)):
+native Wasm-EH would lift the ~200-level recursion cap and cut the trampoline
+tax. The only world in which WASM becomes unnecessary is one where the JS
+runtime reaches full parity, parser included — a second implementation of
+Raku, which is exactly the weight that sank Rakudo.js. Not a goal.
+
 ## The shape of the output
 
 `tools/bench/fib.raku`, as P1 should emit it (mangling reused from the C++
