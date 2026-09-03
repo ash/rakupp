@@ -22909,6 +22909,16 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
     // Inline `{ make … }` blocks in a token run during matching; their made value is
     // recorded here by span and applied to the node in build().
     auto pendingMakes = std::make_shared<std::map<std::pair<long, long>, Value>>();
+    // …and a NAME-qualified twin, filled by the success-path replay of rules
+    // reached through a non-capturing `<.rule>` call. A non-captured rule's
+    // children are not in the tree either, so when the parent's replay rebuilds
+    // them their actions are suppressed and any `.make` they set is lost — so
+    // `$/<child>.made` came back empty (HTTP::Parser reads its header name that
+    // way; the whole key vanished). The span-only map cannot carry it: a
+    // captured rule over the SAME span (CSS::Grammar's token-over-comment) would
+    // then inherit a sibling's made. Keying by NAME as well as span keeps each
+    // rule's made to itself.
+    auto pendingMakesNamed = std::make_shared<std::map<std::tuple<std::string, long, long>, Value>>();
     // A block containing `make` is DEFERRED: it runs in build() with $/ = the fully-built
     // match (so `{ make $/.values[0].ast }` sees children's .made). A queue per span
     // disambiguates a parent and child that happen to share the same span (innermost-first).
@@ -23223,6 +23233,13 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
         }
         auto pm = pendingMakes->find({pn.from, pn.to});
         if (pm != pendingMakes->end() && !mv.pairVal()) mv.setPairVal(std::make_shared<Value>(pm->second));
+        // a made value the success replay recorded for THIS rule at THIS span
+        // (its own name — never a same-span sibling's): applied when the parent's
+        // replay rebuilds this child with its action suppressed
+        if (!mv.pairVal()) {
+            auto pmn = pendingMakesNamed->find({pn.name, pn.from, pn.to});
+            if (pmn != pendingMakesNamed->end()) mv.setPairVal(std::make_shared<Value>(pmn->second));
+        }
         // an action-class method (if any) can still override; a proto node
         // dispatches to the winning candidate's method (`x:sym<y>`), falling
         // back to a method named after the proto itself. (A failure-replay
@@ -23333,9 +23350,16 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
                 if (!pn.actualRule.empty() && pn.actualRule != pn.name)
                     try { runAction(pn.actualRule, mv); } catch (RakuError&) {}
                 try { runAction(pn.name, mv); } catch (RakuError&) {}
-                // no `made` is kept: nothing in the tree can name this node, and a
-                // captured rule over the SAME span must not inherit it (CSS::Grammar's
-                // compat suite read a comment's made through its enclosing token)
+                // Keep the made, but ONLY under this node's own name+span, so a
+                // PARENT replayed later (completion order is bottom-up) can read
+                // `$/<child>.made` when it rebuilds this child. A same-span
+                // captured rule has a different NAME and so cannot inherit it —
+                // the span-only map's hazard that this twin exists to avoid.
+                if (mv.pairVal()) {
+                    (*pendingMakesNamed)[{pn.name, pn.from, pn.to}] = *mv.pairVal();
+                    if (!pn.actualRule.empty() && pn.actualRule != pn.name)
+                        (*pendingMakesNamed)[{pn.actualRule, pn.from, pn.to}] = *mv.pairVal();
+                }
             }
             replayBuild = false;
         }
