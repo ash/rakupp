@@ -1,4 +1,5 @@
 #pragma once
+#include "AsciiCtype.h"
 #include <atomic>
 #include <cstdint>
 #include <iosfwd>
@@ -456,6 +457,28 @@ struct PairExpr : Expr {
     ExprPtr value;
     PairExpr(): Expr(NK::Pair) {}
 };
+
+// The SYNTACTIC half of "is this argument a NAMED one": a bare `k => v` /
+// `:k(v)` whose key is a plain identifier. A quoted key, parens around the pair,
+// a dynamic key (which leaves `key` empty) or a non-identifier key (`3 => 4`)
+// all make it positional. Interpreter's syntacticNamedArg() adds the runtime
+// half — that the value really is a Pair — while the PARSER needs the syntactic
+// test on its own, for the `;`-segments of an argument list, which discard
+// their named arguments. Shared so the two cannot drift apart.
+inline bool syntacticNamedPair(const Expr* a) {
+    if (!a || a->kind != NK::Pair) return false;
+    auto* pe = static_cast<const PairExpr*>(a);
+    if (pe->quotedKey || pe->parenned) return false;
+    const std::string& k = pe->key;
+    // Raku identifiers are Unicode: `:μ(5)` is as much a named argument as `:mu(5)`.
+    bool ident = !k.empty() && (ascii::isalpha((unsigned char)k[0]) ||
+                                k[0] == '_' || (unsigned char)k[0] >= 0x80);
+    for (size_t ci = 1; ident && ci < k.size(); ci++)
+        if (!ascii::isalnum((unsigned char)k[ci]) && k[ci] != '-' && k[ci] != '_' &&
+            k[ci] != '\'' && (unsigned char)k[ci] < 0x80)
+            ident = false;
+    return ident;
+}
 
 // The Parameter meta-object a parameter's traits mix into, held by the Param
 // itself so it survives to every later `.signature.params`. Defined in Value.h,

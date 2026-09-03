@@ -26193,21 +26193,7 @@ Value Interpreter::evalUnary(Unary* u) {
 // positional. A CAPTURE makes exactly the same split, which is why the test lives
 // here rather than inside evalArgs.
 static bool syntacticNamedArg(const Expr* a, const Value& v) {
-    if (v.t != VT::Pair || !a || a->kind != NK::Pair) return false;
-    auto* pe = static_cast<const PairExpr*>(a);
-    if (pe->quotedKey || pe->parenned) return false;
-    const std::string& k = pe->key;
-    // Raku identifiers are Unicode: `:μ(5)` is as much a named argument as
-    // `:mu(5)`. The lexer already vetted the token, so a non-ASCII byte here is
-    // part of a letter it accepted — treat the whole multibyte run as identifier
-    // material rather than rejecting it and passing the pair positionally.
-    bool ident = !k.empty() && (ascii::isalpha((unsigned char)k[0]) ||
-                                k[0] == '_' || (unsigned char)k[0] >= 0x80);
-    for (size_t ci = 1; ident && ci < k.size(); ci++)
-        if (!ascii::isalnum((unsigned char)k[ci]) && k[ci] != '-' && k[ci] != '_' &&
-            k[ci] != '\'' && (unsigned char)k[ci] < 0x80)
-            ident = false;
-    return ident;
+    return v.t == VT::Pair && syntacticNamedPair(a);
 }
 ValueList Interpreter::evalArgs(const std::vector<ExprPtr>& exprs) {
     ValueList args;

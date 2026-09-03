@@ -110,10 +110,12 @@ about exactly this case.)
 ## Verified, and deliberately left open
 
 Each was oracle-checked in the same session; none is on the path of the report.
+(#1 has since been CLOSED — see `t/regression/semicolon-arglist-segments.raku`.
+The row is kept, annotated, so the numbering in the commit message still reads.)
 
 | # | Repro | Rakudo 2026.08 | rakupp |
 |---|---|---|---|
-| 1 | `C.new(a => 1;)` — a `;` inside an argument list | "Default constructor for 'C' only takes named arguments" (the pair became positional) | accepted as a named argument |
+| 1 | `C.new(a => 1;)` — a `;` inside an argument list | "Default constructor for 'C' only takes named arguments" (the pair became positional) | **FIXED** — a `;`-segment is now always a List, a trailing `;` adds an empty one, and a named argument inside a segment vanishes |
 | 2 | `my @a; @a.push(a => 1)` | `[]` — a bare pair in an argument list is a NAMED argument, and `push` ignores it | `[:a(1)]` — pushed as a positional |
 | 3 | `my @a; @a.push(1\|2)` | `[any(1, 2)]` — one Junction element | `[1, 2]` — flattened |
 | 4 | `my int @a = 1,2,3; @a.splice(1,1,"x")` | `X::AdHoc`, "This type cannot unbox to a native integer" | stores `"x"` unchecked (a NATIVE element type; the boxed path is fixed) |

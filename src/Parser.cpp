@@ -1595,30 +1595,40 @@ std::vector<ExprPtr> Parser::parseCallArgs(ExprPtr* invocant) {
         }
         break;
     }
-    // semicolon argument segments — `zip(1,2; 3,4; 5,6)` / `f(@a; @b)`: each
-    // `;`-segment is ONE argument (a List when it has several items, the bare
-    // expression when it has one)
+    // semicolon argument segments — `zip(1,2; 3,4)` / `f(@a; @b)`. Each
+    // `;`-segment is ONE POSITIONAL argument and is ALWAYS a List, even when it
+    // holds a single item: Rakudo gives `f(1; 2)` the capture \((1,), (2,)),
+    // which is exactly why `zip(@a; @b)` zips two ONE-element lists and yields a
+    // single ([1,2], [3,4]) instead of zipping the arrays element-wise.
+    // A TRAILING `;` contributes a final EMPTY segment — `f(1;)` is \((1,), ()).
+    // And a NAMED argument inside a segment is absorbed by that segment's own
+    // list construction and VANISHES, the way List.new(x => 1, 2) is (2,): so
+    // `f(x => 1, 2; 3)` is \((2,), (3,)) and `f(x => 1;)` is \((), ()) with no
+    // named argument at all. That last rule is why `Check.new(tr => self.clone;)`
+    // reaches the default constructor with two positionals and no `tr`.
     if (isKind(Tok::Semicolon)) {
         auto segArg = [](std::vector<ExprPtr>& items) -> ExprPtr {
-            if (items.size() == 1) return std::move(items[0]);
             auto seg = std::make_unique<ListExpr>();
-            seg->parenned = true;
-            for (auto& it : items) seg->items.push_back(std::move(it));
+            seg->parenned = true; // one argument, not a spread
+            for (auto& it : items)
+                if (!syntacticNamedPair(it.get())) seg->items.push_back(std::move(it));
             return seg;
         };
         std::vector<ExprPtr> first = std::move(args);
         args.clear();
         args.push_back(segArg(first));
         while (matchKind(Tok::Semicolon)) {
-            if (isKind(Tok::RParen)) break;
-            ExprPtr se = parseExpression();
             std::vector<ExprPtr> items;
-            if (se->kind == NK::ListExpr && !static_cast<ListExpr*>(se.get())->parenned) {
-                auto* l = static_cast<ListExpr*>(se.get());
-                for (auto& it : l->items) items.push_back(std::move(it));
+            if (!isKind(Tok::RParen)) {
+                ExprPtr se = parseExpression();
+                if (se->kind == NK::ListExpr && !static_cast<ListExpr*>(se.get())->parenned) {
+                    auto* l = static_cast<ListExpr*>(se.get());
+                    for (auto& it : l->items) items.push_back(std::move(it));
+                }
+                else items.push_back(std::move(se));
             }
-            else items.push_back(std::move(se));
             args.push_back(segArg(items));
+            if (isKind(Tok::RParen)) break;
         }
     }
     // Running out of file inside an argument list is almost always an unclosed
