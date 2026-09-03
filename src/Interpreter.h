@@ -29,6 +29,7 @@ namespace rakupp {
 struct RxMatch;
 struct GrammarHooks;
 struct ParseNode;
+struct RxCursorCall;
 using SubResolver = std::function<bool(const std::string& name, const std::string& subj,
                                        long pos, RxMatch& out)>;
 
@@ -513,6 +514,23 @@ struct ResumeEx {}; // `.resume` inside a CATCH — resume execution after the t
 struct StopGatherEx {}; // a lazy gather has produced enough — unwind the (possibly infinite) block
 struct ProceedEx {};    // `proceed` leaves a `when` block but keeps matching later ones
 struct RakuError { Value payload; std::string message; };
+
+// The `self` of a grammar method reached through a `<.method>` subrule call
+// (issue #64): a Match positioned at the call — `.pos`, `.target`, `.orig` —
+// that also answers the grammar's rules and methods as method calls. `call`
+// is the engine's re-entry point and lives only as long as the call it was
+// made for; afterwards the cursor is a plain Match that can no longer parse.
+struct GrammarCursor {
+    ClassInfo* grammar = nullptr;
+    // The re-entry point sits in a slot SHARED by every Match this cursor
+    // hands out (`self.b` returns a cursor too), and the hook empties the one
+    // slot when the call ends — so a Match the method kept cannot reach a
+    // matcher that has since returned.
+    std::shared_ptr<RxCursorCall*> live;
+    RxCursorCall* call() const { return live ? *live : nullptr; }
+    std::shared_ptr<std::string> input; // the whole subject, shared with `.orig`
+    std::string rule;                   // the rule this cursor is the match OF (empty: the bare cursor)
+};
 // X::Feature::NotBuilt from a SLIM stub (FeatureGate.cpp). Its own C++ type so
 // the LENIENT catch sites — regex code-block parse/exec, the regex ctor —
 // can rethrow exactly this and keep swallowing ordinary errors: "this binary
@@ -1334,6 +1352,10 @@ public:
     // shared by every Match builder.
     static Value matchFromNode(const ParseNode& c, const std::string& subject,
                                const std::shared_ptr<std::string>& orig = nullptr);
+    // …and the way back: a Match VALUE (with its capture tree) as a parse node,
+    // spans shifted by `offset`. A qualified `<G::rule>` call and a grammar
+    // method's returned Match both hand their result to the engine this way.
+    static void matchValueToNode(const Value& mv, long offset, ParseNode& node);
     std::string rxInterpArrays(const std::string& pat); // `/@arr/` -> longest-first literal alternation
     // `:enc` on file I/O: rakupp holds every Str as UTF-8, so text in another
     // encoding is converted at the edge. Both route through `.decode`/`.encode`,

@@ -21598,32 +21598,8 @@ void Interpreter::lexSubResolver(SubResolver& resolver, std::set<std::string>& l
                     // URI::Path reads `$path<segment>` / `$path<segment-nz>` off
                     // exactly this match to build its segment list, and without
                     // them every mutated path had one empty segment.
-                    std::function<void(const Value&, ParseNode&)> fill =
-                        [&](const Value& mv, ParseNode& node) {
-                        node.from = pos + mv.rFrom();
-                        node.to   = pos + mv.rTo();
-                        if (!mv.hash()) return;
-                        auto kids = std::make_shared<ChildMap>();
-                        auto lists = std::make_shared<std::set<std::string>>();
-                        for (auto& kv : *mv.hash()) {
-                            auto addOne = [&](const Value& one) {
-                                if (one.t != VT::Match) return;
-                                ParseNode child; child.name = kv.first;
-                                fill(one, child);
-                                node.named[kv.first] = {child.from, child.to};
-                                (*kids)[kv.first].push_back(std::move(child));
-                            };
-                            if (kv.second.t == VT::Array && kv.second.arr()) {
-                                lists->insert(kv.first);          // a quantified capture stays a list
-                                for (auto& e : *kv.second.arr()) addOne(e);
-                            }
-                            else addOne(kv.second);
-                        }
-                        if (!kids->empty()) node.kids = kids;
-                        if (!lists->empty()) node.listNames = lists;
-                    };
                     ParseNode root;
-                    fill(m, root);
+                    matchValueToNode(m, pos, root);
                     out.named = root.named;
                     if (root.kids) out.children = *root.kids;
                     if (root.listNames) out.listNames = root.listNames;
@@ -22421,6 +22397,38 @@ bool Interpreter::patHasCodeAssert(const std::string& pat) {
 // `$<header>=( $<lang>=… )` puts `lang` inside `header` — carries nested
 // captures, and a builder that keeps only its span answers Nil for
 // `$<header><lang>`. Shared by every Match builder so they cannot disagree.
+void Interpreter::matchValueToNode(const Value& mv, long offset, ParseNode& node) {
+    node.from = offset + mv.rFrom();
+    node.to   = offset + mv.rTo();
+    // positional captures: one span each (a list-valued one keeps its last)
+    if (mv.arr())
+        for (auto& p : *mv.arr()) {
+            const Value* one = &p;
+            if (p.t == VT::Array && p.arr() && !p.arr()->empty()) one = &p.arr()->back();
+            if (one->t == VT::Match) node.caps.push_back({offset + one->rFrom(), offset + one->rTo()});
+            else node.caps.push_back({-1, -1});
+        }
+    if (!mv.hash()) return;
+    auto kids = std::make_shared<ChildMap>();
+    auto lists = std::make_shared<std::set<std::string>>();
+    for (auto& kv : *mv.hash()) {
+        auto addOne = [&](const Value& one) {
+            if (one.t != VT::Match) return;
+            ParseNode child; child.name = kv.first;
+            matchValueToNode(one, offset, child);
+            node.named[kv.first] = {child.from, child.to};
+            (*kids)[kv.first].push_back(std::move(child));
+        };
+        if (kv.second.t == VT::Array && kv.second.arr()) {
+            lists->insert(kv.first);          // a quantified capture stays a list
+            for (auto& e : *kv.second.arr()) addOne(e);
+        }
+        else addOne(kv.second);
+    }
+    if (!kids->empty()) node.kids = kids;
+    if (!lists->empty()) node.listNames = lists;
+}
+
 Value Interpreter::matchFromNode(const ParseNode& c, const std::string& subject,
                                  const std::shared_ptr<std::string>& orig) {
     Value cv = Value::matchVal(subject.substr(c.from, c.to - c.from), c.from, c.to);
@@ -23243,6 +23251,63 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
         tctx_.cur->vars = s->vars;
     };
 
+    // `<.name>` where `name` is an ordinary METHOD of the grammar (issue #64):
+    // Rakudo dispatches every subrule call as a method call on the cursor, so
+    // `[ 'c' || <.panic("expected c")> ]` reaches `method panic` — which dies
+    // with a line number, the standard way a grammar reports a parse error.
+    // The engine asks once per name whether a method exists; the call hands
+    // the method a cursor as `self` (a Match at the call position carrying the
+    // whole subject, so `self.pos` / `self.target` read as in Rakudo) and takes
+    // a returned Match as the subrule's match. The subject is copied for the
+    // cursor's `.orig` once, on the first call, and only then.
+    gm.hooks.hasMethod = [g](const std::string& nm) -> bool {
+        return g->findMethodForCall(nm) != nullptr;
+    };
+    auto cursorOrig = std::make_shared<std::shared_ptr<std::string>>();
+    gm.hooks.callMethod = [this, g, &input, runCode, cursorOrig](
+            const std::string& name, const std::string& args, long pos,
+            const NamedMap& named, const std::vector<std::pair<long, long>>& caps,
+            const ParamMap& params, RxCursorCall& call, long& endOut, ParseNode& nodeOut) -> int {
+        ClassInfo* owner = nullptr;
+        Value* method = g->findMethodForCall(name, langRev_ < 2, &owner);
+        if (!method) return 0;
+        // the call's arguments are Raku source, evaluated where a rule's own
+        // code blocks are: rule params and the match so far in scope
+        ValueList av;
+        if (!args.empty()) {
+            Value lst = runCode("(" + args + ",)", pos, pos, named, params, &caps);
+            if (lst.t == VT::Array && lst.arr()) for (auto& e : *lst.arr()) av.push_back(e);
+            else if (lst.t != VT::Any) av.push_back(lst);
+        }
+        if (!*cursorOrig) *cursorOrig = std::make_shared<std::string>(input);
+        auto cur = std::make_shared<GrammarCursor>();
+        cur->grammar = g; cur->input = *cursorOrig;
+        cur->live = std::make_shared<RxCursorCall*>(&call);
+        Value self = Value::matchVal("", pos, pos);
+        self.extM() = *cursorOrig;
+        self.mdW().cursor = cur;
+        Value r;
+        try { r = invokeMethodChain(name, g, self, std::move(av), nullptr, method, owner); }
+        catch (...) { *cur->live = nullptr; throw; }
+        *cur->live = nullptr; // the engine's re-entry point dies with the call
+        if (r.t == VT::Match) {
+            if (r.rTo() < pos) return 0;   // a failed rule call, handed back as-is
+            endOut = r.rTo();
+            nodeOut = ParseNode{};
+            matchValueToNode(r, 0, nodeOut);
+            // a Match that IS a rule's answers to that rule's name, so the tree
+            // fires the rule's action, not one named after the method
+            if (r.md() && r.md()->cursor) {
+                auto rc = std::static_pointer_cast<GrammarCursor>(r.md()->cursor);
+                if (!rc->rule.empty()) nodeOut.name = rc->rule;
+            }
+            return 1;
+        }
+        if (!rtIsDefined(r)) return 0;
+        throw RakuError{Value::typeObj("X::AdHoc"),
+            "Method '" + name + "' was called as a subrule and must return a Match, not " + r.typeName()};
+    };
+
     // Completed-subrule log: on an overall parse FAILURE the actions of the
     // subrules that DID complete replay in completion order — Rakudo fires
     // actions during the match and a failing TOP does not unfire them
@@ -23470,7 +23535,10 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
                     if (!(*pn)[i].empty()) matchScope->define((*pn)[i], (*ruleArgs)[i]);
         auto savedScope = tctx_.cur;
         tctx_.cur = matchScope;
-        matched = gm.parse(input, startRule, subparse, tree, endPos);
+        // a grammar method may `die` mid-parse (issue #64): the exception is the
+        // caller's, the match scope is not
+        try { matched = gm.parse(input, startRule, subparse, tree, endPos); }
+        catch (...) { tctx_.cur = savedScope; throw; }
         // G1: publish the highwater for rakupp-parse-diagnosis — byte offset
         // to CHARACTER position here, where the input is at hand. A success
         // clears it; a stale diagnosis must not outlive the parse it names.

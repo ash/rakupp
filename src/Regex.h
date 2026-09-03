@@ -120,6 +120,18 @@ struct GrammarHooks {
     // serves as a staleness stamp, since named-regex registration is
     // last-wins and a re-declared token must invalidate cached expansions.
     std::function<bool(const std::string& name, std::string& text, std::string& flags)> namedRule;
+    // A `<name>` that is neither a rule nor a proto of the grammar but an
+    // ORDINARY METHOD on it. Rakudo compiles every subrule call as a method
+    // call on the cursor, so `<.panic("…")>` reaches `method panic` — the
+    // die-for-parse-errors idiom (issue #64). hasMethod answers once per name
+    // (cached in GrammarRuleMeta); callMethod invokes the method with the
+    // cursor as `self` and answers 1 matched (endOut/nodeOut filled) or 0
+    // failed. `cursor` lets the method's own `self.rule(…)` re-enter this
+    // very matcher. An exception thrown inside propagates out of the parse.
+    std::function<bool(const std::string&)> hasMethod;
+    std::function<int(const std::string& name, const std::string& args, long pos,
+                      const NamedMap&, const std::vector<std::pair<long, long>>&, const ParamMap&,
+                      struct RxCursorCall& cursor, long& endOut, ParseNode& nodeOut)> callMethod;
 };
 
 // A node of the parse tree recorded by the backtracking GrammarMatcher: which rule
@@ -186,6 +198,7 @@ struct GrammarRuleMeta {
     Regex* noArg = nullptr;        // pre-compiled body for a parameterless rule
     const std::vector<std::string>* proto = nullptr; // protoregex candidate names (if this name is a proto)
     bool isWs = false;             // built-in <ws>
+    bool isMethod = false;         // not a rule/proto, but the grammar has an ordinary method by this name
     bool scoped = false;           // body declares `:my` — its dynamic vars are per-invocation
                                    // (save/restore interpreter scope around the call)
     bool dynDep = false;           // body declares `:my` or reads a dynamic var ($*/@*/%*): its match
@@ -392,6 +405,13 @@ public:
         // fires its side effects a second time (`| 'print' <v> { say … }` said
         // everything twice). Assertions still run: they DECIDE the branch.
         int probing = 0;
+        // …and the same, inherited by every RULE FRAME the probe descends into.
+        // `probing` itself is deliberately per frame — a called rule's blocks and
+        // `:my` still run under a probe (its assertions may read them) — but a
+        // grammar METHOD is user code that Rakudo's ranking never reaches, so it
+        // passes zero-width anywhere under a probe. (`[ <a> | <b> ]` with a
+        // `<.panic>` at the end of `a` must rank, then commit to `b`.)
+        int probeAbove = 0;
         long litPrefix = -1;                               // end pos of the leading literal-atom run from startPos (-1 = not started)
         long steps = 0;                                    // backtracking step budget (guards catastrophic patterns)
         // Bare `{…}` blocks QUEUED rather than run where they appear: the matcher
@@ -557,6 +577,20 @@ private:
     std::string evalArg(const std::string& e) const;
     std::vector<std::string> splitArgs(const std::string& s) const;
     std::string interpParams(const std::string& pat, const std::map<std::string, std::string>& sc) const;
+};
+
+// The engine side of a `<.method>` call's `self`: while the method runs, its
+// `self.rule(…)` comes back through here and matches in the SAME parse — same
+// memo, same dynamic scope, same completion log — rather than in a fresh one.
+// Borrowed from the matcher's stack: valid only while callMethod is running,
+// which is why the interpreter's cursor drops its pointer when the call ends.
+struct RxCursorCall {
+    GrammarMatcher* gm;
+    Regex::MState* st;
+    bool hasRule(const std::string& name) const;
+    // Match rule `name` at `pos` (args as `<rule(…)>` call text). On success fill
+    // `out` (name = the rule, span, captures, subtree) and return true.
+    bool callRule(const std::string& name, const std::string& args, long pos, ParseNode& out);
 };
 
 } // namespace rakupp

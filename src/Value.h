@@ -443,6 +443,9 @@ struct MatchData {
     std::shared_ptr<ValueList> pos;  // positional captures ($0, $1, …)
     std::shared_ptr<ValueMap> named; // named captures ($<x>)
     std::shared_ptr<Value> made;     // .made / .ast (was parked in pairVal)
+    // A grammar CURSOR: the `self` a `<.method>` subrule call hands its method
+    // (Interpreter.h's GrammarCursor). Null on every ordinary Match.
+    std::shared_ptr<void> cursor;
 };
 
 // What the payload slot holds. Distinct from VT on purpose — see MatchData.

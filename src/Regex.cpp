@@ -3522,10 +3522,15 @@ const GrammarMatcher::NameMeta& GrammarMatcher::nameMeta(const std::string& name
     }
     auto pit = protos.find(name);
     if (pit != protos.end()) m.proto = &pit->second;
+    // Neither a rule nor a proto, but the grammar has an ordinary METHOD by this
+    // name: the call reaches it (Rakudo dispatches every subrule call as a method
+    // call). Asked once per name; a method outranks the built-in classes below,
+    // exactly as a user `method alpha` would override the inherited one.
+    if (!rule && !m.proto && hooks.hasMethod && hooks.hasMethod(name)) m.isMethod = true;
     // Only fall back to the built-in <ws> when the grammar hasn't defined its own —
     // a user `token ws { … }` (e.g. to skip comments) must win over the builtin.
-    m.isWs = (name == "ws" && !rule);
-    if (!rule) { // built-in char-class fallbacks for names the grammar doesn't define
+    m.isWs = (name == "ws" && !rule && !m.isMethod);
+    if (!rule && !m.isMethod) { // built-in char-class fallbacks for names the grammar doesn't define
         if (name == "digit") m.builtinClass = "d"; else if (name == "alpha") m.builtinClass = "a";
         else if (name == "alnum" || name == "ident") m.builtinClass = "ad";
         else if (name == "space") m.builtinClass = "s";
@@ -3541,10 +3546,32 @@ bool GrammarMatcher::matchSub(const std::string& name, const std::string& args, 
     return matchSubMeta(nameMeta(name), name, args, capKey, st, pos, k);
 }
 
+bool RxCursorCall::hasRule(const std::string& name) const {
+    return gm->rules.count(name) || gm->protos.count(name);
+}
+
+bool RxCursorCall::callRule(const std::string& name, const std::string& args, long pos, ParseNode& out) {
+    // Record under a private key, take the first completion (a method call
+    // cannot be backtracked INTO, in Rakudo either), and lift the node out of
+    // the caller's frame again — the continuation answered true, so nothing
+    // rolled it back for us. The rule's own action fired on completion, its
+    // memo entry stands, and its highwater note is in: all as a `<name>` would.
+    static const std::string key = "\x01cursor";
+    bool ok = gm->matchSub(name, args, key, *st, pos, [](long) { return true; });
+    auto it = st->children.find(key);
+    if (it != st->children.end()) {
+        if (ok && !it->second.empty()) { out = std::move(it->second.back()); it->second.pop_back(); }
+        if (it->second.empty()) st->children.erase(it);
+    }
+    st->named.erase(key);
+    return ok;
+}
+
 int GrammarMatcher::ltmResolve(const std::string& name, const void*& regexOut, char& flagOut) {
     const NameMeta& m = nameMeta(name);
     if (m.isWs) return 2;
     if (m.proto) return 0;             // nested proto: not unioned here (yet)
+    if (m.isMethod) return 0;          // user code: never part of a declarative prefix
     if (m.dynDep) return 0;            // caller-state-dependent body
     if (m.rule) {
         auto* rl = static_cast<const Rule*>(m.rule);
@@ -3667,6 +3694,43 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
         });
         for (auto& r : ranked)
             if (matchSub(*r.cand, args, capKey, st, pos, k)) return true;
+        return false;
+    }
+    // An ordinary METHOD of the grammar (issue #64): call it with the cursor as
+    // `self`. A returned Match continues the parse at its end (`self.b`, or
+    // `self` for a zero-width pass); anything it throws leaves the parse.
+    if (meta.isMethod) {
+        // User code ends the LTM declarative prefix, as a bare `{…}` does — and
+        // an Alt RANKING probe measures without running it, exactly as for one.
+        if (st.firstCode < 0) st.firstCode = pos;
+        if (st.probing || st.probeAbove) return k(pos);
+        if (!st.hooks || !st.hooks->callMethod) { noteFail(pos, name); return false; }
+        RxCursorCall cursor{this, &st};
+        long end = -1; ParseNode pn;
+        int r = st.hooks->callMethod(name, args, pos, st.named, st.caps, currentParams(), cursor, end, pn);
+        if (r <= 0 || end < pos) { noteFail(pos, name); return false; }
+        if (capKey.empty()) return k(end);
+        // capturing `<method>`: record what the method matched under the key,
+        // the same push/continue/roll-back as every other recorded subrule
+        const bool alsoRule = alsoBareName && capKey != name && capKey[0] != '\x01';
+        if (pn.name.empty()) pn.name = name;
+        const std::string& rn = pn.name;
+        bool hadSpan = st.named.count(capKey);
+        auto savedSpan = hadSpan ? st.named[capKey] : std::pair<long, long>{-1, -1};
+        bool hadSpan2 = alsoRule && st.named.count(rn);
+        auto savedSpan2 = hadSpan2 ? st.named[rn] : std::pair<long, long>{-1, -1};
+        st.named[capKey] = {pn.from, pn.to};
+        if (alsoRule) { st.named[rn] = {pn.from, pn.to}; st.children[rn].push_back(pn); }
+        st.children[capKey].push_back(std::move(pn));
+        if (k(end)) return true;
+        st.children[capKey].pop_back();
+        if (st.children[capKey].empty()) st.children.erase(capKey);
+        if (hadSpan) st.named[capKey] = savedSpan; else st.named.erase(capKey);
+        if (alsoRule) {
+            st.children[rn].pop_back();
+            if (st.children[rn].empty()) st.children.erase(rn);
+            if (hadSpan2) st.named[rn] = savedSpan2; else st.named.erase(rn);
+        }
         return false;
     }
     if (meta.isWs) { // built-in <ws>: \s* gated by <!ww> — same matcher as the plain-regex path
@@ -3802,6 +3866,7 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
         if (!re || !re->ok()) { if (memoise) memo_[mkey].matched = false; return false; }
         Regex::MState sub{st.s, std::vector<std::pair<long, long>>(re->ncaps(), {-1, -1}), {}, {}, nullptr, this};
         sub.startPos = pos; sub.hooks = st.hooks; sub.curSym = symPtr;
+        sub.probeAbove = st.probing + st.probeAbove;
         scope_.push_back(std::move(bound));
         // A `:my` rule opens a fresh dynamic scope: snapshot the interpreter's `:my` vars so
         // the rule's declarations (and shadows) are rolled back when it exits, restoring the
@@ -3860,6 +3925,7 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
     if (!re || !re->ok()) return false;
     Regex::MState sub{st.s, std::vector<std::pair<long, long>>(re->ncaps(), {-1, -1}), {}, {}, nullptr, this};
     sub.startPos = pos; sub.hooks = st.hooks; sub.curSym = symPtr; // propagate hooks + candidate sym
+    sub.probeAbove = st.probing + st.probeAbove;
     scope_.push_back(std::move(bound));
     std::shared_ptr<void> savedScope = (meta.scoped && st.hooks && st.hooks->saveState)
                                      ? st.hooks->saveState() : nullptr;   // fresh dynamic scope for `:my`

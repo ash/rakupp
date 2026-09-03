@@ -3968,6 +3968,42 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                     return invokeMethodChain(m, ci.get(), inv, std::move(args), rwArgs, um, owner);
         }
     }
+    // A grammar CURSOR — the `self` of a method reached through `<.method>`
+    // (issue #64) — answers its grammar's RULES as method calls (`self.b`,
+    // `self.expr($x)`: matched in the running parse, at the cursor's position),
+    // then the grammar's own methods (`self.panic(…)`), and is otherwise the
+    // Match it is: `.pos`, `.target`, `.orig` fall through to the Match arms.
+    if (inv.t == VT::Match && inv.md() && inv.md()->cursor && !m.skipOwn) {
+        auto cur = std::static_pointer_cast<GrammarCursor>(inv.md()->cursor);
+        RxCursorCall* call = cur->call();
+        if (call && call->hasRule(m)) {
+            // arguments travel as `<rule(…)>` call text: quoted strings, which is
+            // what a rule parameter is once it is bound
+            std::string argText;
+            for (auto& a : args) {
+                if (a.t == VT::Pair) continue;
+                if (!argText.empty()) argText += ", ";
+                argText += '\'';
+                for (char c : a.toStr()) { if (c == '\\' || c == '\'') argText += '\\'; argText += c; }
+                argText += '\'';
+            }
+            ParseNode node;
+            if (!call->callRule(m, argText, (long)inv.rTo(), node)) return Value::nil();
+            Value r = matchFromNode(node, *cur->input, cur->input);
+            auto next = std::make_shared<GrammarCursor>(*cur); // shares `live`
+            next->rule = m;
+            r.mdW().cursor = next;
+            return r;
+        }
+        if (call && cur->grammar) {
+            ClassInfo* owner = nullptr;
+            if (Value* um = cur->grammar->findMethodForCall(m, langRev_ < 2, &owner))
+                return invokeMethodChain(m, cur->grammar, inv, std::move(args), rwArgs, um, owner);
+        }
+        else if (!call && cur->grammar && (cur->grammar->findRule(m) || cur->grammar->findMethodForCall(m)))
+            throw RakuError{Value::typeObj("X::AdHoc"),
+                "Cannot call '" + std::string(m) + "' on a grammar cursor outside the parse it belongs to"};
+    }
     // `@a.BIND-POS($i, $container)` is answered in methodCallTail, which is the
     // LAST of the three dispatch parts — so every call walked the whole built-in
     // ladder to reach it. BinaryHeap's sift-down makes about eight per call and
