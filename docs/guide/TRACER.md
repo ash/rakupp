@@ -61,6 +61,77 @@ Paths are shown the way you would type them. The program appears as you invoked
 it, a module under the working directory appears relative to it, and anything
 further away appears in full.
 
+### Across modules
+
+Each frame names the file its routine was **declared** in, not the file the
+program started in. A chain that runs through two modules says so.
+
+```raku
+# lib/App/Store.rakumod
+unit module App::Store;
+
+sub fetch($id) is export {
+    die "no such record: $id" unless $id > 0;
+    { :$id, name => "record-$id" }
+}
+```
+
+```raku
+# lib/App/Service.rakumod
+unit module App::Service;
+use App::Store;
+
+sub load($id) is export {
+    fetch($id)
+}
+```
+
+```raku
+# uncaught.raku
+use lib $*PROGRAM.parent.add('lib');
+use App::Service;
+
+load(-1);
+```
+
+```
+no such record: -1
+  in sub fetch at lib/App/Store.rakumod line 4
+      4 |     die "no such record: $id" unless $id > 0;
+  in sub load at lib/App/Service.rakumod line 5
+  in block <unit> at uncaught.raku line 4
+```
+
+The declaring file is recorded when the routine is declared, because by the
+time an error is raised the module that declared it is long out of scope. A
+frame with no declaring routine — the mainline, a bare block — takes the file
+whose *top level* is running. That is the program ordinarily, but it is the
+module while a module's body runs, and the `EVALFILE`d file inside one of
+those.
+
+The same chain, read by a program that catches it:
+
+```raku
+try { load(-1) }
+
+for $!.backtrace.list.kv -> $i, $f {
+    # .subname is "<unit>" for a file's mainline and "" for a bare block
+    printf "  %d  %-8s %-18s line %d\n",
+           $i, $f.subname || '(block)', $f.file.IO.basename, $f.line;
+}
+```
+
+```
+  0  fetch    Store.rakumod      line 4
+  1  load     Service.rakumod    line 5
+  2  (block)  caught.raku        line 4
+  3  <unit>   caught.raku        line 4
+```
+
+Frame 2 is the `try` block and frame 3 the program's mainline; the renderer
+spells those `in block ` and `in block <unit>`. Note that `.file` answers the
+full path even where the printed frame line shortened it.
+
 ### Recursion does not fill the screen
 
 A run of identical frames folds:
