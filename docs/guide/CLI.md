@@ -228,64 +228,9 @@ boom in baz with 2
   in block <unit> at t1.raku line 10
 ```
 
-The first line is the message and nothing else, so a script that reads it with
-`head -1` or greps for it keeps working. Below it, one line per live routine
-call, innermost first: what was running, the file it was declared in, and the
-line executing there. A method frame names its class, because `in method new`
-on its own does not say which `new` ran. The frame the error came from also
-shows its source line.
-
-A typed exception names its type on a line of its own, which is what you need
-to write a `CATCH`:
-
-```
-No such method 'nonexistent-method' for invocant of type 'Int'
-  (X::Method::NotFound)
-  in sub g at t3.raku line 1
-```
-
-Runs of identical frames fold, so a recursion that died three hundred deep
-does not fill the terminal:
-
-```
-  in sub fact at rec.raku line 1
-  in sub fact at rec.raku line 1
-  in sub fact at rec.raku line 1
-  ... 198 more frames of sub fact
-  in block <unit> at rec.raku line 2
-```
-
-Some errors have **two** positions, and both are printed. A `fail` is created
-in one place and only goes off when something uses the value, so the frames
-show where it was made and then, under a label, where it detonated:
-
-```
-bad 5
-  in sub inner at f2.raku line 1
-      1 | sub inner($x) { fail "bad $x" }
-  in sub outer at f2.raku line 2
-  in block <unit> at f2.raku line 3
-
-Actually thrown at:
-  in block <unit> at f2.raku line 5
-```
-
-An exception from inside a `start` block reads the same way. The frames are
-the worker's, where the error actually is, and the label marks the `await`
-that collected it:
-
-```
-in worker
-  in sub work at aw.raku line 1
-  in block  at aw.raku line 2
-
-Awaited at:
-  in block <unit> at aw.raku line 3
-```
-
-A `warn` gets one frame, the line it was warned from, because a warning
-points at a line rather than reporting an incident. A syntax error shows the
-line it is complaining about.
+The message stays line 1, so a script that reads it with `head -1` keeps
+working. Below it, one line per live call, innermost first, and the source
+line of the frame the error came from.
 
 | Knob | Meaning |
 |---|---|
@@ -294,11 +239,9 @@ line it is complaining about.
 | `RAKUPP_BACKTRACE=0` | the message alone, no frames |
 | `NO_COLOR` | no ANSI colour (colour is off already when stderr is not a terminal) |
 
-Inside a program, a caught exception carries the same information.
-`$!.backtrace` is the list of frames — each with `.file`, `.line`, `.subname`
-and `.code` — and it reports where the exception was **thrown**, not where you
-asked. `$!.gist` is the message followed by those frames; `$!.Str` is the
-message alone. A `rethrow` keeps the original position.
+The whole story — errors with two positions (`fail`, `await`), how `warn` and
+syntax errors report, and the `$!.backtrace` API — is
+[TRACER.md](TRACER.md).
 
 ## Serving
 

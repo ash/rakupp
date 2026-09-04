@@ -176,19 +176,140 @@ the routine itself. It is pushed next to `dynStack`, which every call already
 pays for, so it costs a vector append.
 
 That is what `callframe(N)` walks — `Log::Async` stamps every message with
-`callframe(1)` — and what `Exception.throw` turns into a `BacktraceFrame` list.
+`callframe(1)` — and what a program reads through `Backtrace.new`, which answers
+the chain at the point of call; an `Int` argument drops that many innermost
+frames, so a routine can report its caller's position rather than its own.
+
 The routine's declaring file comes from `Callable::declFile`, recorded when the
 routine was declared, because by the time a backtrace is taken the module that
-declared it is long gone from the current scope.
+declared it is long gone from the current scope. Frames with no declaring
+routine — the mainline, a bare block — take the file whose *top level* is
+running, `curDeclFile_`. That is the program ordinarily, but a module load
+switches it while the module's body runs, and so does `EVALFILE`, which is how
+a backtrace taken inside an `EVALFILE`d file names that file instead of the
+program that read it.
 
-A program can ask for the same list without throwing anything: `Backtrace.new`
-answers the chain at the point of call, and an `Int` argument drops that many
-innermost frames, so a routine can report its caller's position rather than its
-own. Frames with no declaring routine — the mainline, a bare block — take the
-file whose *top level* is running, `curDeclFile_`. That is the program
-ordinarily, but a module load switches it while the module's body runs, and so
-does `EVALFILE`, which is how a backtrace taken inside an `EVALFILE`d file
-names that file instead of the program that read it.
+### Where the chain has to be captured
+
+For a long time all of that machinery existed and almost nothing used it. An
+uncaught error printed its message and stopped: no file, no line, no chain.
+`$!.backtrace` after a `try` answered a single frame on the line of the
+question rather than the line of the throw.
+
+The reason is the interesting part, and it is the same C++ unwinding this
+chapter has been about. `callFrames` is maintained by a scope guard:
+
+```cpp
+struct CFGuard { ExecContext& t; Interpreter* self; int line;
+    ~CFGuard() { if (!t.callFrames.empty()) t.callFrames.pop_back(); self->curLine_ = line; }
+};
+```
+
+When a `RakuError` is thrown, the C++ runtime unwinds through every frame
+between the throw and the handler, running exactly those destructors on the way.
+By the time any `catch` block runs, the stack it would want to describe has
+already been dismantled, frame by frame. **A backtrace cannot be taken where the
+exception is caught. It has to be taken where it is thrown.**
+
+There are two places that could do it. One is the unwind itself: have `CFGuard`
+notice `std::uncaught_exceptions() > 0` and append its own frame to a
+thread-local record on the way out. That is cheaper per throw, since it records
+only the frames actually unwound — but it puts a thread-local read on *every
+routine return* in the interpreter, and it needs a discipline at every `catch`
+site to stop frames from a swallowed exception leaking into the next trace.
+
+The other is the throw. `RakuError` is the one type every Raku-level error is
+raised as, so giving it a constructor makes every one of the roughly 320 throw
+sites in the tree capture without any of them being edited:
+
+```cpp
+RakuError::RakuError(Value p, std::string m)
+    : payload(std::move(p)), message(std::move(m)) {
+    bt = btCaptureNow();
+}
+```
+
+This is the version that shipped. The cost model decided it: a constructor costs
+one reference-count bump per live frame *on the path that throws*, and exactly
+nothing on the path that does not. The unwind-based version is faster in the
+rare case and slower in the common one, which is the wrong way round.
+
+The record is one shared allocation:
+
+```cpp
+struct BtFrame  { std::shared_ptr<Callable> code; int line = 0; };
+struct BtRecord { std::vector<BtFrame> frames; std::string originFile; };
+```
+
+`code` is an *owning* pointer, not the borrowed `const Value*` the live stack
+holds, precisely because the record has to outlive the unwind that destroys
+what the live stack points at.
+
+### Handing it to the program
+
+`exceptionFor` is the single funnel through which a caught `RakuError` becomes
+a Raku exception object — `try`, `CATCH`, the mainline handler and `.resume`
+all go through it — so that is where the record is attached, as an opaque
+handle rather than a materialised list. A `try` that never asks for the
+backtrace pays one pointer store; the `BacktraceFrame` objects are built the
+first time a program actually asks, and cached back onto the exception.
+
+An existing record is never overwritten. A `rethrow`, a `.resume`, or a
+`die $caught` keeps the position the exception was *first* raised from, which
+is the only position that answers "where is the bug".
+
+### Errors that happen in one place and are noticed in another
+
+Two constructs break the assumption that an error has a single position, and
+both are common enough that reporting the wrong one is worse than reporting
+none.
+
+A **Failure** is created by `fail`, or by any failed coercion, and then lies
+dormant until something uses the value. The throw happens at the *use*. Reported
+naively, every such error blames a line that merely read a variable. So a
+Failure records its own creation:
+
+```cpp
+Value rakuppNewFailure() {
+    Value f = Value::makeHash(); f.hashKind = "Failure";
+    f.extM() = btCaptureNow();
+    return f;
+}
+```
+
+and `failureDetonate` puts the creation chain in front and labels the throw
+`Actually thrown at:`, which is Rakudo's spelling. That helper replaced 26
+hand-written `Value::makeHash(); hashKind = "Failure"` pairs scattered across
+five files — the kind of duplication that guarantees a later change reaches
+only some of them.
+
+Failures are the one part of this feature that is not free, because ordinary
+code makes them in bulk. The measured cost is about 9% of making a Failure, of
+which roughly half is the walk and half the allocations. The first version cost
+12.6%; the difference is where the record lives. Storing it as a `__bt` entry in
+the Failure's hash cost a map node and a second `Value`; a Failure's own `ext`
+handle was sitting unused, so the record went there instead.
+
+A **`start` block** dies on a worker thread, and some later `await` on some
+other thread is where a program hears about it. `PromiseState` carries the
+worker's record across the boundary alongside the cause, and `await` reports
+the worker's frames first, then labels its own line `Awaited at:`.
+
+### One renderer
+
+Everything that prints a chain goes through one function, so the uncaught
+printer, `.gist`, `Backtrace.Str`, `warn`, the JSON handler and the REPL cannot
+drift apart on what an error looks like. The style struct is what separates
+them: the terminal gets a source-line excerpt under the origin frame, the
+exception type, folded runs of identical frames and colour; `.gist` and
+`Backtrace.Str` get none of it, because those are strings that programs print
+and compare rather than terminal output.
+
+There is one deliberate departure from Rakudo's frame text. Rakudo prints
+`in method new`; Raku++ prints `in method Foo::new`. In a program where six
+classes each declare a `new`, the bare form does not say which one ran. The
+package goes inside the name part, ahead of the ` at `, so anything parsing
+these lines by splitting on ` at ` is unaffected.
 
 ## What was gained, and one bug it cost
 
