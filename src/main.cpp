@@ -5,6 +5,13 @@
 #include <cstdint>
 #include <cstdio>
 #include "Codegen.h"
+#include "codegen/Js.h"
+#ifdef _WIN32
+#include <process.h>
+#define getpid _getpid
+#else
+#include <unistd.h>
+#endif
 #include "Lexer.h"
 #include "Parser.h"
 #include "AstSerial.h"
@@ -513,7 +520,7 @@ static int exeInfo(const std::string& path) {
                   "executable (or one from before v3.14)\n";
         return 1;
     }
-    size_t end = bytes.find('\0', at);
+    size_t end = bytes.find_first_of(std::string("\0\n", 2), at);   // a .js carries it in a comment line
     std::cout << bytes.substr(at, end == std::string::npos ? std::string::npos : end - at)
               << "\n";
     return 0;
@@ -919,6 +926,120 @@ static int declCheckGate(const std::string& src, const std::string& fileName,
     } catch (const ParseError&) { return -1; }
     auto us = findUndeclaredVars(prog, src, searchPath);
     return us.empty() ? -1 : reportUndeclaredVars(us, fileName, src);
+}
+
+// ---- --target=js ------------------------------------------------------------
+static bool g_jsVerify = false;
+static std::string g_jsFallback;
+
+static std::string jsHostCommand() {
+    if (const char* h = std::getenv("RAKUPP_JS")) if (*h) return h;
+    for (const char* c : { "node", "bun", "deno" }) {
+        std::string probe = std::string("command -v ") + c + " >/dev/null 2>&1";
+#ifdef _WIN32
+        probe = std::string("where ") + c + " >NUL 2>&1";
+#endif
+        if (runCommand(probe) == 0) return c == std::string("deno") ? "deno run -A" : c;
+    }
+    return "";
+}
+
+// Run the program under the interpreter and under the JS host; true when
+// stdout, stderr and the exit status agree byte for byte (the --slim=verify
+// protocol). `jsPath` is the emitted program; it must be runnable as is.
+static bool jsVerify(const std::string& src, const std::string& srcName, const std::string& jsPath,
+                     const std::string& selfExe, const std::vector<std::string>& libPaths, std::string& why) {
+    std::string host = jsHostCommand();
+    if (host.empty()) { why = "no JavaScript host found (set RAKUPP_JS, or put node/bun on PATH)"; return false; }
+    std::string base = jsPath + ".verify";
+    std::string rakuFile = srcName == "-e" ? base + ".raku" : srcName;
+    if (srcName == "-e") { std::ofstream f = openOut(rakuFile); f << src; }
+    std::string io = base + ".i-out", ie = base + ".i-err", jo = base + ".j-out", je = base + ".j-err";
+    std::string incs; for (auto& p : libPaths) incs += " -I " + shq(p);
+    int xi = runCommand(shq(selfExe) + incs + " " + shq(rakuFile) + " < /dev/null > " + shq(io) + " 2> " + shq(ie));
+    int xj = runCommand(host + " " + shq(jsPath) + " < /dev/null > " + shq(jo) + " 2> " + shq(je));
+    auto slurp = [](const std::string& p) { std::ifstream f(p, std::ios::binary); return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>()); };
+    std::string so = slurp(io), sj = slurp(jo), eo = slurp(ie), ej = slurp(je);
+#ifndef _WIN32
+    if (xi > 255) xi >>= 8;
+    if (xj > 255) xj >>= 8;
+#endif
+    bool agree = xi == xj && so == sj && eo == ej;
+    if (!agree) {
+        why = "exit " + std::to_string(xi) + " vs " + std::to_string(xj);
+        if (so != sj) why += "; stdout differs (" + std::to_string(so.size()) + " vs " + std::to_string(sj.size()) + " bytes)";
+        if (eo != ej) why += "; stderr differs (" + std::to_string(eo.size()) + " vs " + std::to_string(ej.size()) + " bytes)";
+        if (!ej.empty() && eo != ej) why += "\n  js stderr: " + ej.substr(0, 300);
+    }
+    for (auto& p : { io, ie, jo, je }) removeFile(p);
+    if (srcName == "-e") removeFile(rakuFile);
+    return agree;
+}
+
+// The JS backend's driver: parse, transpile (or wrap for the WASM tier), verify
+// when asked, then write the program — to stdout without -o, else to OUT.js plus
+// the runtime sidecar rakupp-rt.js (unless --standalone inlined it).
+static int compileJs(const std::string& src, const std::string& srcName, std::string outPath,
+                     const std::string& selfExe, const std::vector<std::string>& libPaths) {
+    if (!outPath.empty() && outIsDirectory(outPath)) { std::cerr << "Cannot write " << outPath << ": is a directory\n"; return 5; }
+    if (int rc = declCheckGate(src, srcName, effectiveSearchPath(libPaths)); rc >= 0) return rc;
+    JsOptions jo;
+    jo.srcPath = srcName == "-e" ? "-e" : absPath(srcName);
+    jo.srcText = src;
+    jo.version = RAKUPP_VERSION;
+    jo.standalone = g_standalone;
+    std::string js;
+    bool wasm = false;
+    try {
+        Lexer lexer(src);
+        Parser parser(lexer.tokenize());
+        parser.libPaths_ = effectiveSearchPath(libPaths);
+        parser.srcFile_ = srcName;
+        Program prog = parser.parseProgram();
+        std::vector<ModuleSkip> skips; std::set<std::string> natives;
+        auto mods = collectModuleGraph(prog, effectiveSearchPath(libPaths), &jo.moduleExports, &skips, &natives);
+        if (!mods.empty()) throw CodegenError{"a `use`d module (" + mods.front().name + ")"};
+        js = transpileToJs(prog, jo);
+    } catch (const ParseError& e) {
+        std::cerr << "===SORRY!=== Parse error at line " << e.line << ": " << e.what() << "\n";
+        return 2;
+    } catch (const CodegenError& e) {
+        if (g_jsFallback != "wasm") {
+            std::cerr << "note: " << e.msg << " — outside the JavaScript core; --fallback=wasm runs it on the WebAssembly engine instead\n";
+            return 5;
+        }
+        if (!g_quiet) std::cerr << "note: " << e.msg << " — outside the JavaScript core; emitting the WebAssembly-engine wrapper\n";
+        js = jsWasmWrapper(src, jo);
+        wasm = true;
+    }
+    if (g_jsVerify) {
+        // verify runs a file: the standalone form, which every host runs as a plain
+        // script (an ES module needs the host's module detection or a package.json)
+        std::string vpath = (outPath.empty() ? std::string(".rakupp-verify-") + std::to_string((long long)getpid()) : outPath) + ".verify.js";
+        std::string runnable = js;
+        if (!wasm && !g_standalone) { JsOptions so = jo; so.standalone = true;
+            Lexer lexer(src); Parser parser(lexer.tokenize()); parser.libPaths_ = effectiveSearchPath(libPaths); parser.srcFile_ = srcName;
+            Program prog = parser.parseProgram(); runnable = transpileToJs(prog, so); }
+        { std::ofstream f = openOut(vpath); if (!f) { std::cerr << "Cannot write " << vpath << "\n"; return 5; } f << runnable; }
+        std::string why;
+        bool ok = jsVerify(src, srcName, vpath, selfExe, libPaths, why);
+        removeFile(vpath);
+        if (!ok) {
+            std::cerr << "--verify: the interpreter and the JavaScript program DISAGREE — nothing emitted.\n(" << why << "; if the program is nondeterministic, verify cannot judge it.)\n";
+            return 6;
+        }
+        if (!g_quiet) std::cerr << "verified: interpreter and JavaScript agree" << (outPath.empty() ? "" : " — emitting " + outPath) << "\n";
+    }
+    if (outPath.empty()) { std::cout << js; return 0; }
+    { std::ofstream f = openOut(outPath); if (!f) { std::cerr << "Cannot write " << outPath << "\n"; return 5; } f << js; }
+    if (!wasm && !g_standalone) {
+        std::string dir = outPath; size_t sl = dir.find_last_of("/\\"); dir = sl == std::string::npos ? "" : dir.substr(0, sl + 1);
+        std::string rtPath = dir + "rakupp-rt.js";
+        std::ofstream f = openOut(rtPath); if (!f) { std::cerr << "Cannot write " << rtPath << "\n"; return 5; }
+        f << jsRuntimeModule();
+    }
+    if (!g_quiet) std::cerr << "Compiled (js" << (wasm ? ", wasm wrapper" : "") << ") " << srcName << " -> " << outPath << "\n";
+    return 0;
 }
 
 // back with a clear message if the program uses an unsupported construct.
@@ -1384,7 +1505,7 @@ int main(int argc, char** argv) {
     // `-o out --exe src` is as good as `--exe src -o out`.
     enum class Mode { Run, Help, Version, FfiInfo, Highlight, Ast, AstRoundtrip,
                       PrecompSetting, PrecompInfo, PrecompClean, Check, Lint,
-                      Cpp, Bundle, Aot, Exe, Mcp, Lsp, Jupyter, JupyterInstall };
+                      Cpp, Bundle, Aot, Exe, Mcp, Lsp, Jupyter, JupyterInstall, Js };
     Mode mode = Mode::Run;
     std::string modeTok;                  // the spelling that selected the mode (for messages)
     std::vector<std::string> libPaths;    // -I, both spellings, any position
@@ -1506,8 +1627,18 @@ int main(int argc, char** argv) {
                 std::string t = a.substr(9);
                 if (t == "parse") { if (!setMode(Mode::Check, a)) return 4; }
                 else if (t == "ast") { if (!setMode(Mode::Ast, a)) return 4; }
-                else { std::cerr << "Unknown --target '" << t << "' (supported: parse, ast)\n"; return 4; }
+                else if (t == "js") { if (!setMode(Mode::Js, a)) return 4; }
+                else { std::cerr << "Unknown --target '" << t << "' (supported: parse, ast, js)\n"; return 4; }
                 continue;
+            }
+            // --target=js companions (TRANSPILE-PLAN): --verify runs the program under
+            // the interpreter and the JS host and emits only on agreement;
+            // --fallback=wasm opts in to the WebAssembly-wrapper tier.
+            if (a == "--verify") { g_jsVerify = true; continue; }
+            if (a.rfind("--fallback=", 0) == 0) {
+                std::string f = a.substr(11);
+                if (f != "wasm") { std::cerr << "Unknown --fallback '" << f << "' (supported: wasm)\n"; return 4; }
+                g_jsFallback = f; continue;
             }
             if (a == "--profile") { profileDest = "-"; continue; }
             if (a.rfind("--profile=", 0) == 0) {
@@ -1666,12 +1797,13 @@ int main(int argc, char** argv) {
                 return 4;
             }
         }
-        if (!outPath.empty() && !isCompileMode(mode)) return illegalOpt("-o");
+        if (!outPath.empty() && !isCompileMode(mode) && mode != Mode::Js) return illegalOpt("-o");
+        if ((g_jsVerify || !g_jsFallback.empty()) && mode != Mode::Js) return illegalOpt(g_jsVerify ? "--verify" : "--fallback");
         if (optimize && !isCompileMode(mode) && mode != Mode::Cpp) return illegalOpt("-O");
         // --slim shapes the LINK of a compiled binary, so it means nothing to
         // the interpreter or to --cpp (which emits source and never links).
         if (g_slimExplicit && !isCompileMode(mode)) return illegalOpt("--slim");
-        if (g_standalone && !isCompileMode(mode)) return illegalOpt("--standalone");
+        if (g_standalone && !isCompileMode(mode) && mode != Mode::Js) return illegalOpt("--standalone");
         // -M applies where the program is checked, compiled or run; the pure
         // source tools see the file exactly as written
         if (!preloadModules.empty() &&
@@ -1817,6 +1949,12 @@ int main(int argc, char** argv) {
 "  rakupp --precomp-files=on|off     Cache the main program's own parse (default off)\n"
 "  rakupp --cpp SRC [-O]        Print the C++ that --exe would transpile to\n"
 "                               (add -O to print the optimized codegen instead)\n"
+"  rakupp --target=js SRC       Transpile to JavaScript (to stdout; -o OUT.js writes\n"
+"                               the program and its runtime rakupp-rt.js beside it;\n"
+"                               --standalone inlines the runtime). --verify runs the\n"
+"                               program under the interpreter and under node and\n"
+"                               emits only if they agree; --fallback=wasm accepts a\n"
+"                               program outside the JS core by wrapping the WASM engine\n"
 "  rakupp --highlight [SRC]     Syntax-highlight Raku (--html [default] / --ansi;\n"
 "                               reads stdin if no SRC), e.g. as a pygmentize drop-in.\n"
 "                               Flags compose in any order; bare `rakupp --ansi SRC`\n"
@@ -2122,6 +2260,12 @@ int main(int argc, char** argv) {
             }
         }
         return errs ? 2 : warns ? 1 : 0;
+    }
+
+    // --target=js : transpile to JavaScript (TRANSPILE-PLAN.md)
+    if (mode == Mode::Js) {
+        if (!haveSrc) { std::cerr << "Usage: rakupp --target=js (FILE | -e CODE) [-o OUT.js] [--standalone] [--verify] [--fallback=wasm]\n"; return 4; }
+        return compileJs(src, fileName, outPath, exePath, libPaths);
     }
 
     // --cpp : print the C++ that `--exe` would transpile the program to (to stdout)

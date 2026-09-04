@@ -413,6 +413,32 @@ for <examples tools/bench tools/optbench> -> $dir {
     ok(!@fellback, "$dir: every program transpiles natively");
     diag("fell back (or parse error): {@fellback.join(', ')}") if @fellback;
 }
+# The JavaScript backend (--target=js, docs/guide/JS.md): the six P1 kernels
+# transpile, run under node and agree with the interpreter byte for byte
+# (--verify), a program outside the core is refused in the --cpp shape, and the
+# WebAssembly-wrapper tier is one flag away. Skipped without node on PATH.
+section('--target=js (JavaScript backend)');
+{
+    my $node = run('sh', '-c', 'command -v node', :!out, :!err).exitcode == 0;
+    if $node {
+        my $js = $*TMPDIR.add("rakupp-suite-js-$*PID.js");
+        for <fib loopsum strcat hash streq sortnums> -> $k {
+            my $p = run($*EXECUTABLE, '--target=js', '--standalone', '--verify', '-q',
+                        $ROOT.add("tools/bench/$k.raku").Str, '-o', $js.Str, :out, :err);
+            ok($p.exitcode == 0, "--target=js --verify: $k agrees with the interpreter");
+            diag($p.err.slurp(:close)) if $p.exitcode != 0;
+        }
+        my $r = run($*EXECUTABLE, '--target=js', '-e', 'say "a" ~~ /a/', :out, :err);
+        my $err = $r.err.slurp(:close);
+        ok($r.exitcode == 5 && $err.starts-with('note: a regex'), 'a program outside the JS core is refused with exit 5');
+        my $w = run($*EXECUTABLE, '--target=js', '--fallback=wasm', '-q', '-e', 'say "a" ~~ /a/', :out, :err);
+        ok($w.exitcode == 0 && $w.out.slurp(:close).contains('"mode":"js-wasm"'), '--fallback=wasm emits the WebAssembly wrapper with its manifest');
+        my $i = run($*EXECUTABLE, '--exe-info', $js.Str, :out, :err);
+        ok($i.out.slurp(:close).contains('"mode":"js"'), '--exe-info reads a .js manifest');
+        $js.unlink if $js.e;
+    }
+    else { ok(True, '--target=js checks skipped: no node on PATH'); }
+}
 # And one full end-to-end native build: transpile + C++-compile + run + golden.
 {
     my $bin = $*TMPDIR.add("rakupp-suite-exe-$*PID").Str;

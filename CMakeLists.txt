@@ -121,6 +121,12 @@ list(REMOVE_ITEM RAKUPP_SOURCES "${RAKUPP_MAIN}")
 # no `--exe` binary carries a line editor it can never reach.
 set(RAKUPP_REPL "${CMAKE_CURRENT_SOURCE_DIR}/src/Repl.cpp")
 list(REMOVE_ITEM RAKUPP_SOURCES "${RAKUPP_REPL}")
+# The JavaScript backend (--target=js) and its embedded runtime are CLI-only for
+# the same reason: no `--exe` binary transpiles, and the 200 KB runtime blob
+# would otherwise ride along in every one of them.
+set(RAKUPP_JS "${CMAKE_CURRENT_SOURCE_DIR}/src/codegen/Js.cpp"
+              "${CMAKE_CURRENT_SOURCE_DIR}/src/JsRuntimeSrc.cpp")
+list(REMOVE_ITEM RAKUPP_SOURCES ${RAKUPP_JS})
 
 # ---- the SLIM archive split (SLIM-PLAN P2) ----------------------------------
 # The four cuttable feature groups live in their own archives, so `--exe` can
@@ -261,7 +267,7 @@ if(RAKUPP_BUILD_SHARED OR RAKUPP_LINK_SHARED)
   endif()
 endif()
 
-add_executable(rakupp "${RAKUPP_MAIN}" "${RAKUPP_REPL}")
+add_executable(rakupp "${RAKUPP_MAIN}" "${RAKUPP_REPL}" ${RAKUPP_JS})
 if(RAKUPP_LINK_SHARED)
   target_link_libraries(rakupp PRIVATE rakupp_shared)
 else()

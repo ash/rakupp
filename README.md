@@ -129,6 +129,7 @@ rakupp --exe app.raku -o app     # compile it
 | `-n` / `-p` / `-a` / `-F<sep>` / `-i[.ext]` | The Perl one-liner family: line loop, autoprint, autosplit, in-place edit (clusters: `-lane`, `-pi.bak`) |
 | `--profile[=FILE]` | Routine-level wall-time profile after the run (`.json` for machine-readable) |
 | `--exe SRC -o OUT` | Native-compile to a standalone binary (also `--bundle`, `--aot`) |
+| `--target=js SRC -o OUT.js` | Transpile to JavaScript for Node, Bun, Deno or a browser (`--verify` checks it against the interpreter; see [JS.md](docs/guide/JS.md)) |
 | `--highlight [SRC]` | Syntax-highlight Raku to HTML (`--html`) or terminal (`--ansi`) |
 | `--mcp` | Serve the interpreter over the Model Context Protocol for AI agent clients |
 | `--jupyter FILE` | Run as a Jupyter kernel (`--jupyter-install` registers it with Jupyter) |

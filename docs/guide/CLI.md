@@ -231,6 +231,16 @@ build, `--prefix=DIR` for another location). `-M` preloads modules into the
 notebook's session. No ZeroMQ is needed: the binary speaks the wire protocol
 itself. The whole story is [JUPYTER.md](JUPYTER.md).
 
+## Transpiling to JavaScript
+
+`--target=js` emits a JavaScript program (to stdout, or `-o prog.js` with the
+runtime `rakupp-rt.js` written beside it; `--standalone` inlines it) that
+runs under Node, Bun, Deno or a browser. `--verify` runs the program under
+the interpreter and under the JavaScript host and emits only when they agree
+byte for byte; a program outside the JavaScript core is refused with the
+construct and line, or accepted with `--fallback=wasm` as a wrapper around
+the WebAssembly engine. See [JS.md](JS.md).
+
 ## Compiling
 
 `--bundle`, `--aot` and `--exe` produce standalone binaries — see

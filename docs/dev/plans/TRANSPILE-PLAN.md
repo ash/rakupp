@@ -1,6 +1,13 @@
 # Plan: `--target=js` — a second Codegen, with JavaScript as its output
 
-**Status: DESIGN DRAFT 2026-09-03 — for review; code not started.** Probes
+**Status: P0 and the first P1 batch landed 2026-09-03** — `--target=js`,
+`-o`, `--standalone`, `--verify`, `--fallback=wasm`, the manifest line, the
+runtime in `src/js-rt/` (embedded through `src/JsRuntimeSrc.cpp` by
+`tools/js/gen-rt-src.raku`), the emitter in `src/codegen/Js.cpp`, the corpus
+gate `t/js/run.raku` and the ranking tool `tools/js/rank-builtins.raku`;
+user docs in [JS.md](../../guide/JS.md). The six P1 kernels verify; the
+gate's numbers are in *Where it stands* at the end. The design below is the
+draft as reviewed; where the code decided differently it says so there. Probes
 run 2026-09-03 against `build-arm64/rakupp` (v3.25.0), Node 20.11.1 and Bun
 1.3.14 on the benchmark machine (Darwin 24.6, arm64). Every number below is
 from that sitting unless it cites [BENCHMARKS.md](../../status/BENCHMARKS.md)
@@ -562,3 +569,54 @@ either depends on the other.
    `raku.online/rt/<version>/` (proposed).
 5. **The Num representation** — decided by the P1 probe, not here; the plan
    records the candidate and why.
+
+## Where it stands (2026-09-03, first sitting)
+
+What landed, measured on the benchmark machine (Darwin 24.6, arm64, Node
+20.11.1), against `build-arm64/rakupp` at v3.25.0-6:
+
+- **P0, complete.** `--target=js`, `-o` (program + `rakupp-rt.js` sidecar),
+  `--standalone`, `--verify` (exit 6 on disagreement), `--fallback=wasm`
+  (the Node and browser wrapper; checked against `rakujs/node-build`), the
+  manifest line (`--exe-info` reads a `.js`), `t/js/run.raku` with its three
+  numbers and the refusal histogram, `tools/js/rank-builtins.raku`, the
+  docs. The CLI-only CMake list keeps the 220 KB runtime out of `--exe`
+  binaries. `t/run.raku` gained seven checks (the six kernels under
+  `--verify`, the refusal shape, the wrapper's manifest).
+- **P1, most of it, and the P2 objects.** The runtime covers the value table
+  above (Int→BigInt promotion, boxed integral Nums, exact Rats with the
+  2⁶⁴ degradation, graphemes from the generated UAX #29 tables, Map-backed
+  hashes), subs with full signatures and multi dispatch, classes/roles/
+  enums/subsets with accessors and `BUILD`/`TWEAK`, `gather`/`take` as a
+  generator or eagerly, `CATCH`/`LEAVE`/`END`, junctions, sets/bags/mixes,
+  `MAIN` with the interpreter's usage shape, IO::Path under Node/Bun/Deno.
+- **Numbers.** The six kernels agree with the interpreter under `--verify`.
+  Examples: 16 of 21 in-core and agreeing; the other 5 are the four
+  regex/grammar programs (P3) and `life` (random seed, not judgeable).
+  Regression corpus (417 programs, the edge-case suite by design): **35
+  agree, 306 refused, 96 disagreeing**. The refusal histogram's head is
+  legitimate — names outside the core (Proc::Async, Buf, Supplier…), regex
+  matches and literals, grammars, EVAL, NativeCall, nqp, programs that spawn
+  `$*EXECUTABLE` — and the disagreements are a long tail of one-feature
+  cases (multi narrowness ties, `.^mro` details, Date arithmetic, Str-range
+  cross products, sink context), each named in the gate's output.
+- **Speed, wall clock with Node's ~40 ms startup:** fib(29) 65 ms vs 297 ms
+  interpreted, streq 82 vs 238, loopsum 41 vs 90; strcat/hash/sortnums are
+  startup-bound and slower than the interpreter's 10–27 ms.
+
+Where the code decided differently from the draft:
+
+- Default output is an ES module with the sidecar; `--standalone` is a plain
+  script. Node before 22.7 will not run the ESM `.js` unflagged, so `--verify`
+  and the gate run the standalone form (documented in JS.md).
+- No source map yet (`-o` writes no `.map`); P4 as the phase list says.
+- The `Num` box was not probed against mandel separately: mandel is in-core
+  and agrees, which is the same evidence.
+- `--fallback=wasm` prepends `@*ARGS = (…);` to the source on the first line
+  (the WASM engine has no argv), so line numbers hold.
+- Value-collecting loops (`do for`) are in; `redo` is a labelled inner loop;
+  loop variables are declared outside the loop so `LAST` sees the last one.
+
+Next, in the plan's order: the disagreement tail down to 0 for the examples
+and the kernels' neighbours (it is the gate's list), then P4 (`use JS`,
+async colouring) before P3 (the regex tree + matcher), as decided above.
