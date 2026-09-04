@@ -37,6 +37,13 @@ say ('a!' ... 'zz!').elems;    # Raku++: 702.  Rakudo: does not terminate.
 That one is a deliberate divergence, not an accident — a compiler that hangs is
 worse than one that answers.
 
+**A more readable backtrace.** Both engines name every frame of an uncaught
+error. Raku++ also shows the source line the error came from, names the
+exception type, folds runs of identical frames so a deep recursion does not
+fill the terminal, and puts a method's class in the frame (`in method
+Foo::new`, where Rakudo prints a bare `in method new`). See
+[TRACER.md](../TRACER.md).
+
 **And a handful of documented behaviours it gets right where Rakudo has drifted.**
 The conformance sweep classifies 19 examples as *doc and Raku++ agree, Rakudo does
 not*. Most are small — `1.asinh` gives the documented `0.881373587019543` here and
@@ -49,9 +56,6 @@ rather than real wins; the classified list lives in
 **Maturity and coverage.** Rakudo is a complete, production implementation with
 two decades behind it. Raku++ passes ~90% of Roast; the remaining 10% is real
 language, and you will find it if you go looking.
-
-**`die` prints a backtrace.** Raku++ prints the message only — see
-[debugging.md](debugging.md).
 
 **Stricter parsing.** Rakudo rejects some programs Raku++ accepts, a missing
 semicolon between statements among them. If you want your syntax checked

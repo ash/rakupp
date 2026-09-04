@@ -47,8 +47,9 @@ trips over.
   pause) and what it costs (cycles are never reclaimed, and the free is on your
   clock), when `DESTROY` actually runs, why a dropped filehandle is not closed,
   and how to tell a leak from a materialised list.
-- **[debugging.md](debugging.md)** — when something goes wrong: `--lint`,
-  `--ast`, `--cpp`, telling your bug from ours, and what to put in a report.
+- **[debugging.md](debugging.md)** — when something goes wrong: what a `die`
+  tells you, `--lint`, `--ast`, `--cpp`, telling your bug from ours, and what
+  to put in a report.
 - **[differences.md](differences.md)** — where Raku++ and Rakudo differ, in both
   directions: what Raku++ does that Rakudo does not, where Rakudo is ahead, and
   the handful you will actually run into.

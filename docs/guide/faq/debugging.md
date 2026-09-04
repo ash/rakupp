@@ -28,35 +28,35 @@ will not compile at all (a parse error, or a variable nothing declares, which
 unchanged, and the hook can tell the two apart. Full rule list:
 [LINT.md](../LINT.md).
 
-## `die` does not print a backtrace
+## What does a `die` tell me?
 
-Today a `die` prints its message and nothing else:
+The message, then where it happened and how the program got there:
 
 ```
 $ rakupp -e 'sub f($x) { die "boom: $x" }; f(3)'
 boom: 3
+  in sub f at -e line 1
+  in block <unit> at -e line 1
 ```
 
-Rakudo also names the frames (`in sub f at … line 1`). Raku++ does not yet. Until
-it does, the practical substitutes are:
+Frames run innermost first, and each one names a place you can go and look:
+the routine, the file it was declared in, and the line executing there. The
+frame the error came from also shows its source line, when the source can be
+read. `--ll-exception` shows every frame with nothing folded;
+`RAKUPP_BACKTRACE=0` prints the message alone, which is what a test with a
+golden recorded before any of this existed will want.
 
-**Catch it and print what you know.**
+A caught exception carries the same chain, and reports where it was *thrown*
+rather than where you asked:
 
 ```raku
 sub risky($x) { die "boom: $x" }
 try { risky(3) }
-with $! { say "failed: ", .message, " (", .^name, ")" }
+with $! { say .message, " thrown in ", .backtrace.list[0].subname }
 ```
 
-**Add your own frame markers** where a stack would have helped:
-
-```raku
-sub outer() { note "→ outer"; inner() }
-sub inner() { note "→ inner"; die "here" }
-```
-
-`note` writes to stderr, so it stays out of your program's output and survives
-being piped.
+The whole story — errors with two positions, and the `$!.backtrace` API — is
+[TRACER.md](../TRACER.md).
 
 ## Telling your bug from ours
 
