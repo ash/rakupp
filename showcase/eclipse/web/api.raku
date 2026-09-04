@@ -13,6 +13,7 @@ sub record($e) {
         k => $e.k.Num, jd => $e.jd.Num, gamma => $e.gamma.Num, u => $e.u.Num,
         magnitude => $e.magnitude.Num, penumbral => $e.penumbral.Num,
         saros => $e.saros, central => $e.central, sinF => $e.sinF.Num,
+        mp => $e.mp.Num,
         dtotal => $e.dtotal.Num, dpartial => $e.dpartial.Num,
         dpenumbral => $e.dpenumbral.Num,
         year => $e.year,
@@ -72,36 +73,44 @@ my %api =
     },
 
     # The mean phase and its corrections, term by term: chapter 2's widget.
-    terms => -> $k {
+    # @on is a per-term on/off mask (empty means all of them), so the page can
+    # switch a term off and watch the prediction drift.
+    terms => -> $k, @on {
         my %a = moon-args($k);
-        my $e = %a<e>;
-        my $m = %a<m>;
-        my $mp = %a<mp>;
-        my $f = %a<f>;
-        my $om = %a<om>;
+        my @t = phase-terms($k);
         my $mean = mean-phase($k);
-        my @t =
-            %( name => "-0.40720 sin M'",      v => -0.40720 * sind($mp) ),
-            %( name => "+0.17241 E sin M",     v =>  0.17241 * $e * sind($m) ),
-            %( name => "+0.01608 sin 2M'",     v =>  0.01608 * sind(2 * $mp) ),
-            %( name => "+0.01039 sin 2F",      v =>  0.01039 * sind(2 * $f) ),
-            %( name => "+0.00739 E sin(M'-M)", v =>  0.00739 * $e * sind($mp - $m) ),
-            %( name => "-0.00514 E sin(M'+M)", v => -0.00514 * $e * sind($mp + $m) ),
-            %( name => "+0.00208 E2 sin 2M",   v =>  0.00208 * $e * $e * sind(2 * $m) ),
-            %( name => "-0.00111 sin(M'-2F)",  v => -0.00111 * sind($mp - 2 * $f) ),
-            %( name => "-0.00057 sin(M'+2F)",  v => -0.00057 * sind($mp + 2 * $f) ),
-            %( name => "-0.00017 sin Omega",   v => -0.00017 * sind($om) );
-        my $jde = phase-jde($k);
+        my $full = $mean + @t.map(*.value).sum;
+        my $part = $mean;
+        for @t.kv -> $i, $p {
+            $part += $p.value if !@on || @on[$i];
+        }
         %(
-            k => $k.Num, mean => $mean.Num, jde => $jde.Num,
-            meanStamp => jd-stamp($mean), stamp => jd-stamp(td-to-ut($jde)),
+            k => $k.Num, mean => $mean.Num, jde => $full.Num, partial => $part.Num,
+            meanStamp => jd-stamp(td-to-ut($mean)),
+            stamp => jd-stamp(td-to-ut($full)),
+            partStamp => jd-stamp(td-to-ut($part)),
+            errorMinutes => (($part - $full) * 1440).Num,
             m => %a<m>.Num, mp => %a<mp>.Num, f => %a<f>.Num, om => %a<om>.Num,
-            e => $e.Num, t => %a<t>.Num,
-            sinF => sind($f).Num,
-            deltaT => delta-t(jd-year($jde)).Num,
-            terms => @t.map({ %( name => $_<name>, v => $_<v>.Num, minutes => ($_<v> * 1440).Num ) }).Array,
-            rest => ($jde - $mean - @t.map({ $_<v> }).sum).Num,
+            e => %a<e>.Num, t => %a<t>.Num,
+            sinF => sind(%a<f>).Num,
+            deltaT => delta-t(jd-year($full)).Num,
+            terms => @t.map({ %( name => .key, v => .value.Num,
+                                 minutes => (.value * 1440).Num ) }).Array,
         );
+    },
+
+    # A hypothetical eclipse: gamma and u straight from a slider, run through
+    # the same classifier the real ones use.
+    classify => -> $gamma, $u {
+        my %v = classify-solar($gamma.Num, $u.Num);
+        %( type => %v<type>, central => %v<central>, magnitude => %v<magnitude>.Num );
+    },
+
+    classify-lunar => -> $gamma, $u, $mp {
+        my %v = classify-lunar($gamma.Num, $u.Num, $mp.Num);
+        %( type => %v<type>, magnitude => %v<magnitude>.Num,
+           penumbral => %v<penumbral>.Num, dtotal => %v<dtotal>.Num,
+           dpartial => %v<dpartial>.Num, dpenumbral => %v<dpenumbral>.Num );
     },
 
     # The lunation number closest to a calendar date, New Moon or Full.

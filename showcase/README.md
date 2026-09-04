@@ -458,7 +458,10 @@ hand-entered from NASA's *Five Millennium Canon* in `reference/catalogue.tsv`;
 the 64th was total by 0.0006 of a magnitude and is documented as the limit of a
 truncated series. `tools/build.raku` bundles the engine with `web/api.raku`,
 transpiles it, and inlines the result into a single dependency-free page whose
-seven chapters compute every number live.
+seven chapters compute every number live. The controls are the point: γ and u
+go on sliders and run through the same `classify-solar` a real eclipse does, so
+you can hunt the hybrid band by hand; each of the 26 correction terms gets a
+checkbox, so you can watch the series converge from ten hours out to exact.
 
 Writing it found a `--target=js` bug: a multi-word hash slice was emitted as one
 item instead of a list, so the transpiled engine silently predicted an eclipse

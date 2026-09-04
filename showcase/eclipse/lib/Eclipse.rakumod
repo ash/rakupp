@@ -234,80 +234,91 @@ sub planetary($k, $t) is export {
     (0.000023 * sind(331.55 +  3.592518 * $k));
 }
 
-#| The instant (TD, as a Julian Day) of a phase of the Moon.
-#| $k must be an integer plus 0, 0.25, 0.5 or 0.75.
-sub phase-jde($k) is export {
+#| Every periodic correction to the mean phase, as `name => days` pairs, in
+#| the order Meeus prints them. `phase-jde` is the mean phase plus their sum;
+#| a caller that wants to watch the series converge -- or see how wrong the
+#| straight line alone is -- can add them one at a time.
+sub phase-terms($k) is export {
     my $frac = $k - floor($k);
     my %a = moon-args($k);
     my ($t, $e, $m, $mp, $f, $om) = %a<t e m mp f om>;
-    my $jde = mean-phase($k) + planetary($k, $t);
+    my @terms;
+    my sub term($coeff, $name, $value) {
+        @terms.push: (sprintf('%+.5f ', $coeff) ~ $name) => $coeff * $value;
+    }
 
     if $frac == 0 || $frac == 0.5 {
         # New Moon and Full Moon differ only in the fifth decimal of the
-        # first two coefficients -- the same physics seen from either side.
-        my $c1 = $frac == 0 ?? -0.40720 !! -0.40614;
-        my $c2 = $frac == 0 ??  0.17241 !!  0.17302;
-        my $c3 = $frac == 0 ??  0.01608 !!  0.01614;
-        my $c4 = $frac == 0 ??  0.01039 !!  0.01043;
-        my $c5 = $frac == 0 ??  0.00739 !!  0.00734;
-        my $c6 = $frac == 0 ?? -0.00514 !! -0.00515;
-        my $c7 = $frac == 0 ??  0.00208 !!  0.00209;
-        $jde += $c1 * sind($mp)
-              + $c2 * $e * sind($m)
-              + $c3 * sind(2 * $mp)
-              + $c4 * sind(2 * $f)
-              + $c5 * $e * sind($mp - $m)
-              + $c6 * $e * sind($mp + $m)
-              + $c7 * $e * $e * sind(2 * $m)
-              - 0.00111 * sind($mp - 2 * $f)
-              - 0.00057 * sind($mp + 2 * $f)
-              + 0.00056 * $e * sind(2 * $mp + $m)
-              - 0.00042 * sind(3 * $mp)
-              + 0.00042 * $e * sind($m + 2 * $f)
-              + 0.00038 * $e * sind($m - 2 * $f)
-              - 0.00024 * $e * sind(2 * $mp - $m)
-              - 0.00017 * sind($om)
-              - 0.00007 * sind($mp + 2 * $m)
-              + 0.00004 * sind(2 * $mp - 2 * $f)
-              + 0.00004 * sind(3 * $m)
-              + 0.00003 * sind($mp + $m - 2 * $f)
-              + 0.00003 * sind(2 * $mp + 2 * $f)
-              - 0.00003 * sind($mp + $m + 2 * $f)
-              + 0.00003 * sind($mp - $m + 2 * $f)
-              - 0.00002 * sind($mp - $m - 2 * $f)
-              - 0.00002 * sind(3 * $mp + $m)
-              + 0.00002 * sind(4 * $mp);
+        # first seven coefficients -- the same physics seen from either side.
+        my $new = $frac == 0;
+        term($new ?? -0.40720 !! -0.40614, "sin M'",        sind($mp));
+        term($new ??  0.17241 !!  0.17302, 'E sin M',       $e * sind($m));
+        term($new ??  0.01608 !!  0.01614, "sin 2M'",       sind(2 * $mp));
+        term($new ??  0.01039 !!  0.01043, 'sin 2F',        sind(2 * $f));
+        term($new ??  0.00739 !!  0.00734, "E sin(M'-M)",   $e * sind($mp - $m));
+        term($new ?? -0.00514 !! -0.00515, "E sin(M'+M)",   $e * sind($mp + $m));
+        term($new ??  0.00208 !!  0.00209, 'E2 sin 2M',     $e * $e * sind(2 * $m));
+        term(-0.00111, "sin(M'-2F)",    sind($mp - 2 * $f));
+        term(-0.00057, "sin(M'+2F)",    sind($mp + 2 * $f));
+        term( 0.00056, "E sin(2M'+M)",  $e * sind(2 * $mp + $m));
+        term(-0.00042, "sin 3M'",       sind(3 * $mp));
+        term( 0.00042, 'E sin(M+2F)',   $e * sind($m + 2 * $f));
+        term( 0.00038, 'E sin(M-2F)',   $e * sind($m - 2 * $f));
+        term(-0.00024, "E sin(2M'-M)",  $e * sind(2 * $mp - $m));
+        term(-0.00017, 'sin Omega',     sind($om));
+        term(-0.00007, "sin(M'+2M)",    sind($mp + 2 * $m));
+        term( 0.00004, "sin(2M'-2F)",   sind(2 * $mp - 2 * $f));
+        term( 0.00004, 'sin 3M',        sind(3 * $m));
+        term( 0.00003, "sin(M'+M-2F)",  sind($mp + $m - 2 * $f));
+        term( 0.00003, "sin(2M'+2F)",   sind(2 * $mp + 2 * $f));
+        term(-0.00003, "sin(M'+M+2F)",  sind($mp + $m + 2 * $f));
+        term( 0.00003, "sin(M'-M+2F)",  sind($mp - $m + 2 * $f));
+        term(-0.00002, "sin(M'-M-2F)",  sind($mp - $m - 2 * $f));
+        term(-0.00002, "sin(3M'+M)",    sind(3 * $mp + $m));
+        term( 0.00002, "sin 4M'",       sind(4 * $mp));
     }
     else {
-        $jde += -0.62801 * sind($mp)
-              + 0.17172 * $e * sind($m)
-              - 0.01183 * $e * sind($mp + $m)
-              + 0.00862 * sind(2 * $mp)
-              + 0.00804 * sind(2 * $f)
-              + 0.00454 * $e * sind($mp - $m)
-              + 0.00204 * $e * $e * sind(2 * $m)
-              - 0.00180 * sind($mp - 2 * $f)
-              - 0.00070 * sind($mp + 2 * $f)
-              - 0.00040 * sind(3 * $mp)
-              - 0.00034 * $e * sind(2 * $mp - $m)
-              + 0.00032 * $e * sind($m + 2 * $f)
-              + 0.00032 * $e * sind($m - 2 * $f)
-              - 0.00028 * $e * $e * sind($mp + 2 * $m)
-              + 0.00027 * $e * sind(2 * $mp + $m)
-              - 0.00017 * sind($om)
-              - 0.00005 * sind($mp - $m - 2 * $f)
-              + 0.00004 * sind(2 * $mp + 2 * $f)
-              - 0.00004 * sind($mp + $m + 2 * $f)
-              + 0.00004 * sind($mp - 2 * $m)
-              + 0.00003 * sind($mp + $m - 2 * $f)
-              + 0.00003 * sind(3 * $m)
-              + 0.00002 * sind(2 * $mp - 2 * $f)
-              + 0.00002 * sind($mp - $m + 2 * $f)
-              - 0.00002 * sind(3 * $mp + $m);
+        term(-0.62801, "sin M'",        sind($mp));
+        term( 0.17172, 'E sin M',       $e * sind($m));
+        term(-0.01183, "E sin(M'+M)",   $e * sind($mp + $m));
+        term( 0.00862, "sin 2M'",       sind(2 * $mp));
+        term( 0.00804, 'sin 2F',        sind(2 * $f));
+        term( 0.00454, "E sin(M'-M)",   $e * sind($mp - $m));
+        term( 0.00204, 'E2 sin 2M',     $e * $e * sind(2 * $m));
+        term(-0.00180, "sin(M'-2F)",    sind($mp - 2 * $f));
+        term(-0.00070, "sin(M'+2F)",    sind($mp + 2 * $f));
+        term(-0.00040, "sin 3M'",       sind(3 * $mp));
+        term(-0.00034, "E sin(2M'-M)",  $e * sind(2 * $mp - $m));
+        term( 0.00032, 'E sin(M+2F)',   $e * sind($m + 2 * $f));
+        term( 0.00032, 'E sin(M-2F)',   $e * sind($m - 2 * $f));
+        term(-0.00028, "E2 sin(M'+2M)", $e * $e * sind($mp + 2 * $m));
+        term( 0.00027, "E sin(2M'+M)",  $e * sind(2 * $mp + $m));
+        term(-0.00017, 'sin Omega',     sind($om));
+        term(-0.00005, "sin(M'-M-2F)",  sind($mp - $m - 2 * $f));
+        term( 0.00004, "sin(2M'+2F)",   sind(2 * $mp + 2 * $f));
+        term(-0.00004, "sin(M'+M+2F)",  sind($mp + $m + 2 * $f));
+        term( 0.00004, "sin(M'-2M)",    sind($mp - 2 * $m));
+        term( 0.00003, "sin(M'+M-2F)",  sind($mp + $m - 2 * $f));
+        term( 0.00003, 'sin 3M',        sind(3 * $m));
+        term( 0.00002, "sin(2M'-2F)",   sind(2 * $mp - 2 * $f));
+        term( 0.00002, "sin(M'-M+2F)",  sind($mp - $m + 2 * $f));
+        term(-0.00002, "sin(3M'+M)",    sind(3 * $mp + $m));
+        # the quarters carry one extra term, added at First and subtracted at Last
         my $w = 0.00306 - 0.00038 * $e * cosd($m) + 0.00026 * cosd($mp)
               - 0.00002 * cosd($mp - $m) + 0.00002 * cosd($mp + $m) + 0.00002 * cosd(2 * $f);
-        $jde += $frac == 0.25 ?? $w !! -$w;
+        @terms.push: 'W (quarter offset)' => ($frac == 0.25 ?? $w !! -$w);
     }
+    # Venus and Jupiter tugging on the Earth's orbit: fourteen terms worth
+    # half an hour between them, too small to be worth listing one by one.
+    @terms.push: '14 planetary terms' => planetary($k, $t);
+    @terms;
+}
+
+#| The instant (TD, as a Julian Day) of a phase of the Moon.
+#| $k must be an integer plus 0, 0.25, 0.5 or 0.75.
+sub phase-jde($k) is export {
+    my $jde = mean-phase($k);
+    $jde += .value for phase-terms($k);
     $jde;
 }
 
@@ -345,6 +356,7 @@ class Prediction {
     has Real $.penumbral is rw;   # lunar: penumbral magnitude
     has Int  $.saros     is rw;
     has Real $.sinF      is rw;   # how far from the node, as a sine
+    has Real $.mp        is rw;   # the Moon's mean anomaly: it sets the speed
     has Real $.dpartial  is rw;   # lunar: how long each phase lasts, minutes
     has Real $.dtotal    is rw;
     has Real $.dpenumbral is rw;
@@ -372,6 +384,73 @@ sub saros-series($k, Bool :$lunar) is export {
     my ($k0, $s0) = $lunar ?? (229, 129) !! (218, 145);
     my $n = (38 * (floor($k) - $k0) + $s0) % 223;
     $n <= 0 ?? $n + 223 !! $n;
+}
+
+#| What a solar eclipse with this gamma and this u looks like. The two
+#| numbers are the whole taxonomy: gamma says whether the shadow axis lands
+#| on the Earth at all, u says whether the umbral cone reached the ground.
+#| An empty type means no eclipse -- the Moon's shadow passed us by.
+sub classify-solar($gamma, $u) is export {
+    my $g = abs($gamma);
+    my %v = type => '', central => False, magnitude => 0e0, penumbral => 0e0,
+            dpartial => 0e0, dtotal => 0e0, dpenumbral => 0e0;
+    return %v if $g > 1.5433 + $u;
+    if $g < 0.9972 {
+        # The axis hits the Earth: somewhere the eclipse is central.
+        %v<central> = True;
+        %v<magnitude> = 1e0;
+        if $u < 0 {
+            %v<type> = 'total';
+        }
+        elsif $u > 0.0047 {
+            %v<type> = 'annular';
+        }
+        else {
+            # The narrow band where the cone's tip skims the surface: the
+            # eclipse is annular at the ends of its track and total in the
+            # middle, because the Earth curves away under it. Meeus's test.
+            my $omega = 0.00464 * sqrt(1 - $gamma ** 2);
+            %v<type> = $u < $omega ?? 'hybrid' !! 'annular';
+        }
+    }
+    else {
+        %v<type> = 'partial';
+        %v<magnitude> = (1.5433 + $u - $g) / (0.5461 + 2 * $u);
+        # Between 0.9972 and 0.9972 + |u| the axis misses the globe but the
+        # cone itself still grazes a pole: total or annular, and non-central.
+        %v<type> = 'non-central ' ~ ($u < 0 ?? 'total' !! 'annular')
+            if $g < 0.9972 + abs($u);
+    }
+    %v;
+}
+
+#| The same for a lunar eclipse. Two shadows: the umbra, radius 0.7403 - u,
+#| and the penumbra around it. The magnitude is the fraction of the Moon's
+#| diameter inside the umbra; 1.0 or more and the Moon is wholly in it.
+#| $mp is the Moon's mean anomaly, which sets how fast it crosses.
+sub classify-lunar($gamma, $u, $mp) is export {
+    my $g = abs($gamma);
+    my %v = type => '', central => False, magnitude => 0e0, penumbral => 0e0,
+            dpartial => 0e0, dtotal => 0e0, dpenumbral => 0e0;
+    my $umbral = (1.0128 - $u - $g) / 0.5450;
+    my $pen    = (1.5573 + $u - $g) / 0.5450;
+    return %v if $pen <= 0;
+    %v<magnitude> = $umbral;
+    %v<penumbral> = $pen;
+    %v<type> = $umbral >= 1 ?? 'total' !! $umbral > 0 ?? 'partial' !! 'penumbral';
+
+    # n is the Moon's speed through the shadow, in Earth radii per hour; the
+    # chord across a circle of radius r is 2*sqrt(r^2 - gamma^2), so the
+    # phase lasts 2 * 60/n * that half-chord. Meeus gives the semiduration;
+    # these fields are the whole thing, in minutes.
+    my $n = 0.5458 + 0.0400 * cosd($mp);
+    my $rp = 1.0128 - $u;      # the Moon touching the umbra
+    my $rt = 0.4678 - $u;      # the Moon wholly inside it
+    my $rh = 1.5573 + $u;      # the outer edge of the penumbra
+    %v<dpenumbral> = 120 / $n * sqrt($rh ** 2 - $gamma ** 2) if $rh ** 2 > $gamma ** 2;
+    %v<dpartial>   = 120 / $n * sqrt($rp ** 2 - $gamma ** 2) if $rp ** 2 > $gamma ** 2;
+    %v<dtotal>     = 120 / $n * sqrt($rt ** 2 - $gamma ** 2) if $rt ** 2 > $gamma ** 2;
+    %v;
 }
 
 #| The eclipse at lunation $k, or Nil if the Moon misses.
@@ -444,70 +523,18 @@ sub eclipse-at($k) is export {
           + 0.0004 * cosd(2 * $mp)
           - 0.0005 * $e * cosd($m + $mp);
 
-    my $g = abs($gamma);
-    my $ec = Prediction.new(
+    my %v = $lunar ?? classify-lunar($gamma, $u, $mp) !! classify-solar($gamma, $u);
+    return Nil unless %v<type>;
+
+    Prediction.new(
         kind => $lunar ?? 'lunar' !! 'solar',
         k => $k, jde => $jde, jd => td-to-ut($jde),
-        gamma => $gamma, u => $u, sinF => $sinF,
+        gamma => $gamma, u => $u, sinF => $sinF, mp => $mp,
         saros => saros-series($k, :$lunar),
-        central => False, magnitude => 0e0, penumbral => 0e0,
-        dpartial => 0e0, dtotal => 0e0, dpenumbral => 0e0, type => '',
+        type => %v<type>, central => %v<central>,
+        magnitude => %v<magnitude>, penumbral => %v<penumbral>,
+        dpartial => %v<dpartial>, dtotal => %v<dtotal>, dpenumbral => %v<dpenumbral>,
     );
-
-    if $lunar {
-        # Two shadows: the umbra, radius 0.7403 - u, and the penumbra around
-        # it. The magnitude is the fraction of the Moon's diameter inside
-        # the umbra; 1.0 or more and the Moon is wholly inside it.
-        my $umbral = (1.0128 - $u - $g) / 0.5450;
-        my $pen    = (1.5573 + $u - $g) / 0.5450;
-        return Nil if $pen <= 0;
-        $ec.magnitude = $umbral;
-        $ec.penumbral = $pen;
-        $ec.type = $umbral >= 1 ?? 'total' !! $umbral > 0 ?? 'partial' !! 'penumbral';
-
-        # n is the Moon's speed through the shadow, in Earth radii per hour;
-        # the chord across a circle of radius r is 2*sqrt(r^2 - gamma^2), so
-        # the phase lasts 2 * 60/n * that half-chord. Meeus gives the
-        # semiduration; these fields are the whole thing, in minutes.
-        my $n = 0.5458 + 0.0400 * cosd($mp);
-        my $rp = 1.0128 - $u;      # the Moon touching the umbra
-        my $rt = 0.4678 - $u;      # the Moon wholly inside it
-        my $rh = 1.5573 + $u;      # the outer edge of the penumbra
-        $ec.dpenumbral = 120 / $n * sqrt($rh ** 2 - $gamma ** 2) if $rh ** 2 > $gamma ** 2;
-        $ec.dpartial   = 120 / $n * sqrt($rp ** 2 - $gamma ** 2) if $rp ** 2 > $gamma ** 2;
-        $ec.dtotal     = 120 / $n * sqrt($rt ** 2 - $gamma ** 2) if $rt ** 2 > $gamma ** 2;
-    }
-    else {
-        return Nil if $g > 1.5433 + $u;
-        if $g < 0.9972 {
-            # The axis hits the Earth: somewhere the eclipse is central.
-            $ec.central = True;
-            $ec.magnitude = 1e0;
-            if $u < 0 {
-                $ec.type = 'total';
-            }
-            elsif $u > 0.0047 {
-                $ec.type = 'annular';
-            }
-            else {
-                # The narrow band where the cone's tip skims the surface:
-                # the eclipse is annular at the ends of its track and total
-                # in the middle. Meeus's test for it.
-                my $omega = 0.00464 * sqrt(1 - $gamma ** 2);
-                $ec.type = $u < $omega ?? 'hybrid' !! 'annular';
-            }
-        }
-        else {
-            $ec.type = 'partial';
-            $ec.magnitude = (1.5433 + $u - $g) / (0.5461 + 2 * $u);
-            # Between 0.9972 and 0.9972 + |u| the axis misses the globe but
-            # the cone itself still grazes a pole: total or annular, and
-            # non-central.
-            $ec.type = 'non-central ' ~ ($u < 0 ?? 'total' !! 'annular')
-                if $g < 0.9972 + abs($u);
-        }
-    }
-    $ec;
 }
 
 #| Every eclipse whose greatest phase falls between two Julian Days.

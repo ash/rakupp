@@ -73,13 +73,18 @@ is the Espenak & Meeus piecewise fit for TD − UT, the gap between the uniform
 clock the theory runs on and the rotating Earth's own.
 
 **Phases.** `k` counts New Moons from the one of 2000 January 6; `k + 0.5` is a
-Full Moon. `mean-phase` is a straight line in `k`; `phase-jde` adds the
-periodic corrections of Meeus chapter 49 — 25 lunar and solar terms plus 14
-planetary ones. The largest, `−0.40720 sin M'`, is worth ±9.8 hours on its own.
+Full Moon. `mean-phase` is a straight line in `k`; `phase-terms` returns the
+periodic corrections of Meeus chapter 49 as `name => days` pairs — 25 lunar and
+solar terms plus the 14 planetary ones — and `phase-jde` is simply their sum
+added to the mean. Handing back the terms rather than a number is what lets the
+book switch them off one at a time: with none of them the answer is ten hours
+out, the largest two recover all but twenty minutes of that, and the last dozen
+are worth seconds each.
 
 **Eclipses.** `eclipse-at($k)` rejects the month outright when `|sin F| > 0.36`
 — five New Moons in six — and otherwise computes two numbers from Meeus
-chapter 54:
+chapter 54, then hands them to `classify-solar` or `classify-lunar`, which are
+pure functions of those two numbers and nothing else:
 
 - **gamma**, the least distance between the shadow axis and the centre of the
   Earth, in Earth radii. Under 0.9972 the axis lands on the Earth and the
@@ -94,6 +99,11 @@ chapter 54:
 For lunar eclipses the same two numbers give the umbral and penumbral
 magnitudes and, from the chord of the Moon's path across each shadow circle,
 the duration of every phase.
+
+Because the classifiers take only γ and u, the book can put both on sliders and
+send hypothetical values through the very same code a real eclipse goes
+through. That is the difference between reading that the hybrid band is
+`0 < u < 0.0047` and finding it by hand.
 
 **Saros.** Eclipses 223 lunations apart form a family; consecutive family
 numbers are one *inex* (358 lunations) apart. So `k = k0 + 223a + 358b` and the
@@ -182,6 +192,17 @@ total/annular/hybrid classification as a scatter plot of every eclipse of a
 century; the Earth's shadow with the Moon's path drawn through it; a whole
 saros family with gamma drifting from pole to pole across thirteen centuries;
 and Delta T, the one quantity in the calculation that cannot be computed.
+
+Most of them are things to move rather than read:
+
+| Chapter | What you drive | What it shows |
+|---|---|---|
+| 1 | a scrubber over the window of months | eclipse seasons arriving 19 days earlier each year |
+| 2 | a checkbox per correction term, all 26 | the series converging — switch one off, watch the error |
+| 3 | γ and u on sliders | the verdict flipping total → hybrid → annular → partial → nothing |
+| 5 | γ and u again, over the Earth's shadow | the Moon's path and every duration, recomputed |
+| 6 | a stepper along a saros family | 6585.32 days per step, γ drifting a fixed amount each time |
+| 7 | a year slider from 1000 BC to 2500 | ΔT, and the longitude error it costs |
 
 ## What it exercised
 

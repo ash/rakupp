@@ -67,6 +67,10 @@ table.plain td.n { font-family: var(--mono); text-align: right; }
 .controls input, .controls select { font-family: var(--mono); font-size: 15px; padding: 6px 8px; border: 1px solid var(--sky-line); border-radius: 3px; background: #060a15; color: var(--sky-ink); min-width: 92px; }
 .controls select { min-width: 220px; }
 .controls input[type=range] { width: 190px; accent-color: var(--gold); padding: 0; border: 0; background: transparent; }
+.controls input[type=checkbox] { accent-color: var(--gold); width: 15px; height: 15px; min-width: 0; padding: 0; border: 0; background: transparent; }
+.controls .val { color: var(--gold); font-size: 13px; font-variant-numeric: tabular-nums; letter-spacing: 0; }
+.controls label.chk { flex-direction: row; align-items: center; gap: 8px; text-transform: none; letter-spacing: .02em; font-size: 12.5px; padding-bottom: 7px; cursor: pointer; }
+.controls label.wide { flex: 1 1 280px; }
 .controls .presets { display: flex; gap: 7px; flex-wrap: wrap; }
 .controls button { font-family: var(--mono); font-size: 12.5px; letter-spacing: .05em; padding: 6px 11px; border-radius: 3px; border: 1px solid var(--sky-line); background: transparent; color: var(--sky-dim); cursor: pointer; }
 .controls button:hover { border-color: var(--gold); color: var(--gold); }
@@ -91,7 +95,10 @@ table.data td.t-hybrid { color: #ff9de0; }
 table.data .tall { max-height: 340px; }
 .tallbox { max-height: 360px; overflow: auto; }
 .bars { display: flex; flex-direction: column; gap: 5px; margin-top: 4px; }
-.bars .row { display: grid; grid-template-columns: 190px 1fr 92px; gap: 10px; align-items: center; font-family: var(--mono); font-size: 12.5px; color: var(--sky-dim); }
+.bars .row { display: grid; grid-template-columns: 22px 178px 1fr 88px; gap: 9px; align-items: center; font-family: var(--mono); font-size: 12px; color: var(--sky-dim); }
+.bars .row input[type=checkbox] { accent-color: var(--gold); width: 14px; height: 14px; margin: 0; cursor: pointer; }
+.bars .row.off { opacity: .38; }
+.bars .row.off .track i { background: var(--sky-dim); }
 .bars .track { height: 15px; background: #0d1425; border-radius: 2px; overflow: hidden; position: relative; }
 .bars .track i { position: absolute; top: 0; height: 100%; background: var(--gold); opacity: .85; }
 .bars .track u { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--sky-line); }
@@ -108,7 +115,11 @@ table.data .tall { max-height: 340px; }
   nav.rail a { grid-template-columns: auto; }
   nav.rail a .n { display: none; }
   nav.rail .foot { display: none; }
-  .bars .row { grid-template-columns: 130px 1fr 74px; font-size: 11.5px; }
+  .bars .row { grid-template-columns: 20px 118px 1fr 70px; gap: 7px; font-size: 11px; }
+  .controls input[type=range] { width: 160px; }
+  .controls select { min-width: 0; width: 100%; }
+  .controls label { flex: 1 1 140px; }
+  .controls label.chk { flex: 1 1 100%; }
 }
 @media (prefers-reduced-motion: no-preference) { html { scroll-behavior: smooth; } }
 </style>
@@ -159,6 +170,7 @@ anomalistic     27.554550 d   perigee to perigee (this one sets total vs annular
       <label>syzygy
         <select id="s-kind"><option value="0">New Moon (solar)</option><option value="1">Full Moon (lunar)</option></select>
       </label>
+      <label>scrub the window <input type="range" id="s-scrub" min="1900" max="2090" step="1" value="2024"><span class="val" id="s-scrub-v">2024</span></label>
     </div>
     <canvas id="s-canvas" height="300"></canvas>
     <div class="legend">
@@ -194,12 +206,19 @@ anomalistic     27.554550 d   perigee to perigee (this one sets total vs annular
     </div>
     <div class="readout">
       <div><div class="k">lunation k</div><div class="v" id="t-k">&#8211;</div><div class="s" id="t-t"></div></div>
-      <div><div class="k">mean phase</div><div class="v" id="t-mean" style="font-size:19px">&#8211;</div><div class="s">the straight line alone</div></div>
-      <div><div class="k">corrected</div><div class="v hi" id="t-real" style="font-size:19px">&#8211;</div><div class="s" id="t-shift"></div></div>
+      <div><div class="k">mean phase alone</div><div class="v" id="t-mean" style="font-size:18px">&#8211;</div><div class="s">the straight line</div></div>
+      <div><div class="k">your series</div><div class="v hi" id="t-part" style="font-size:18px">&#8211;</div><div class="s" id="t-count"></div></div>
+      <div><div class="k">full series</div><div class="v" id="t-real" style="font-size:18px">&#8211;</div><div class="s" id="t-shift"></div></div>
+      <div><div class="k">your error</div><div class="v" id="t-err">&#8211;</div><div class="s">minutes off the full answer</div></div>
     </div>
-    <h3 style="color:var(--sky-dim);font-size:12px;font-family:var(--mono);letter-spacing:.12em;text-transform:uppercase;margin:26px 0 10px">the ten largest corrections, in minutes</h3>
-    <div class="bars" id="t-bars"></div>
-    <p class="note">The bar chart is signed: the tick in each track is zero, gold runs to the term's value. Two terms carry almost everything, and they are the two ellipses in the problem — the Moon's around the Earth and the Earth's around the Sun. <span id="t-ang"></span></p>
+    <div class="controls" style="margin:24px 0 8px">
+      <div class="presets">
+        <button id="t-all">every term</button><button id="t-none">none</button>
+        <button id="t-two">only the big two</button><button id="t-ten">the largest ten</button>
+      </div>
+    </div>
+    <div class="bars" id="t-bars" style="max-height:400px;overflow:auto;padding-right:6px"></div>
+    <p class="note">Switch a term off and watch the prediction drift. The bars are signed: the tick in each track is zero, gold runs to the term's value in minutes. With nothing on, the answer is the straight line — ten hours out. The two ellipses in the problem, the Moon's around the Earth and the Earth's around the Sun, recover all but twenty minutes of that between them, and the last dozen terms are worth seconds. That is what a convergent series looks like from the inside. <span id="t-ang"></span></p>
   </div>
 </section>
 
@@ -221,13 +240,18 @@ anomalistic     27.554550 d   perigee to perigee (this one sets total vs annular
       <label>years <input type="number" id="g-from" value="2020" step="1"> </label>
       <label>&nbsp; <input type="number" id="g-to" value="2035" step="1"></label>
     </div>
+    <div class="controls">
+      <label class="chk"><input type="checkbox" id="g-follow" checked> take gamma and u from that eclipse</label>
+      <label>gamma <input type="range" id="g-gam" min="-1.8" max="1.8" step="0.002" value="0.34"><span class="val" id="g-gam-v"></span></label>
+      <label>u <input type="range" id="g-us" min="-0.03" max="0.06" step="0.0002" value="-0.01"><span class="val" id="g-us-v"></span></label>
+    </div>
     <svg class="diagram" id="g-svg" viewBox="-190 -125 380 250" role="img" aria-label="the Earth seen from the Sun, with the Moon's shadow axis"></svg>
     <div class="readout">
       <div><div class="k">gamma</div><div class="v hi" id="g-gamma">&#8211;</div><div class="s" id="g-km"></div></div>
       <div><div class="k">u</div><div class="v" id="g-u">&#8211;</div><div class="s" id="g-ustate"></div></div>
       <div><div class="k">verdict</div><div class="v" id="g-type" style="font-size:22px">&#8211;</div><div class="s" id="g-mag"></div></div>
     </div>
-    <p class="note">The blue disc is the Earth as the Sun sees it; the dashed circle is the limit <b>1.5433 + u</b>, beyond which the penumbra misses us entirely. The gold line is the path of the shadow axis, and the gold dot the moment of greatest eclipse. Drag through the list: the dot walks from one edge of the disc to the other as you step along a saros series.</p>
+    <p class="note">The blue disc is the Earth as the Sun sees it; the dashed circle is the limit <b>1.5433 + u</b>, beyond which the penumbra misses us entirely. The gold line is the path of the shadow axis, and the gold dot the moment of greatest eclipse. Clear the checkbox and drive the two numbers by hand — the verdict comes from <b>classify-solar</b>, the same function every real eclipse goes through. Hunt for the hybrid sliver: it is only <b>0 &lt; u &lt; 0.0047</b> wide, two or three eclipses a century.</p>
   </div>
 </section>
 
@@ -288,15 +312,21 @@ penumbral magnitude = (1.5573 + u - |gamma|) / 0.5450     &gt;  0  ->  something
       <label>years <input type="number" id="l-from" value="2020" step="1"></label>
       <label>&nbsp; <input type="number" id="l-to" value="2035" step="1"></label>
     </div>
+    <div class="controls">
+      <label class="chk"><input type="checkbox" id="l-follow" checked> take gamma and u from that eclipse</label>
+      <label>gamma <input type="range" id="l-gam" min="-1.7" max="1.7" step="0.002" value="0.35"><span class="val" id="l-gam-v"></span></label>
+      <label>u <input type="range" id="l-us" min="-0.03" max="0.06" step="0.0002" value="0.02"><span class="val" id="l-us-v"></span></label>
+    </div>
     <svg class="diagram" id="l-svg" viewBox="-210 -105 420 210" role="img" aria-label="the Earth's umbra and penumbra with the Moon's path"></svg>
     <div class="readout">
+      <div><div class="k">verdict</div><div class="v" id="l-verdict" style="font-size:22px">&#8211;</div><div class="s" id="l-where"></div></div>
       <div><div class="k">umbral magnitude</div><div class="v hi" id="l-mag">&#8211;</div><div class="s" id="l-type"></div></div>
       <div><div class="k">gamma</div><div class="v" id="l-gamma">&#8211;</div></div>
       <div><div class="k">totality</div><div class="v" id="l-tot">&#8211;</div><div class="s">minutes</div></div>
       <div><div class="k">partial</div><div class="v" id="l-par">&#8211;</div><div class="s">minutes</div></div>
       <div><div class="k">penumbral</div><div class="v" id="l-pen">&#8211;</div><div class="s">minutes</div></div>
     </div>
-    <p class="note">Ghost discs mark the contacts: outer penumbra, umbra, totality, then the same in reverse. A path near the middle of the shadow gives the long, dark totalities; one that grazes the edge gives a <b>penumbral</b> eclipse, which is a slight dimming that most people looking straight at it fail to notice.</p>
+    <p class="note">Ghost discs mark the contacts: outer penumbra, umbra, totality, then the same in reverse. Slide gamma to zero and the Moon goes through the middle of the umbra, which is where the long totalities come from — over an hour and a half, and the record is about 107 minutes. Slide it past <b>1.0128 − u</b> and the umbra is missed entirely: a <b>penumbral</b> eclipse, a slight dimming that most people looking straight at it fail to notice.</p>
   </div>
 </section>
 
@@ -323,6 +353,7 @@ penumbral magnitude = (1.5573 + u - |gamma|) / 0.5450     &gt;  0  ->  something
         <button data-n="126" data-k="0">126 &#183; 2026 Aug 12</button>
         <button data-n="136" data-k="1">136 &#183; 2022 Nov 8</button>
       </div>
+      <label class="wide">step through the family <input type="range" id="r-step" min="0" max="70" step="1" value="0" style="width:100%"><span class="val" id="r-step-v"></span></label>
     </div>
     <canvas id="r-canvas" height="280"></canvas>
     <div class="readout">
@@ -332,6 +363,7 @@ penumbral magnitude = (1.5573 + u - |gamma|) / 0.5450     &gt;  0  ->  something
       <div><div class="k">span</div><div class="v hi" id="r-span" style="font-size:19px">&#8211;</div><div class="s">years</div></div>
     </div>
     <div class="tallbox scroll" style="margin-top:18px"><table class="data" id="r-table"></table></div>
+    <p class="note" id="r-now"></p>
     <p class="note">Series numbers are not arbitrary and not random: consecutive numbers are one <b>inex</b> apart — 358 lunations, 28.9 years — so the engine recovers a series number from k with a single modular inverse: <b>38 &#215; (k &#8722; anchor) mod 223</b>. No lookup table anywhere in this book.</p>
   </div>
 </section>
@@ -420,8 +452,18 @@ penumbral magnitude = (1.5573 + u - |gamma|) / 0.5450     &gt;  0  ->  something
   }
 
   // ---- chapter 1: the eclipse seasons -------------------------------------
+  function scrubSeasons() {
+    const a = clampi($('s-from').value, -1000, 2990), b = clampi($('s-to').value, a, a + 60);
+    const span = b - a;
+    const start = Number($('s-scrub').value);
+    $('s-scrub-v').textContent = start + '–' + (start + span);
+    $('s-from').value = start; $('s-to').value = start + span;
+    drawSeasons();
+  }
   function drawSeasons() {
     const a = clampi($('s-from').value, -1000, 2990), b = clampi($('s-to').value, a, a + 60);
+    $('s-scrub').value = a;
+    $('s-scrub-v').textContent = a + '–' + b;
     const lunar = $('s-kind').value === '1';
     const pts = E.seasons(a, b, lunar);
     const [x, W, H] = pen($('s-canvas'));
@@ -457,16 +499,25 @@ penumbral magnitude = (1.5573 + u - |gamma|) / 0.5450     &gt;  0  ->  something
   }
 
   // ---- chapter 2: the correction terms ------------------------------------
+  let termMask = null;                    // null until the first draw sizes it
   function drawTerms() {
     const d = $('t-date').value || '2026-08-12';
     const [yy, mm, dd] = d.split('-').map(Number);
     const full = $('t-phase').value === '1';
     const k = E.nearest(yy, mm, dd, full);
-    const r = E.terms(k);
+    const probe = E.terms(k, []);
+    if (!termMask || termMask.length !== probe.terms.length)
+      termMask = probe.terms.map(() => true);
+    const r = E.terms(k, termMask);
+    const on = termMask.filter(Boolean).length;
     $('t-k').textContent = full ? (Math.floor(k) + ' + ½') : String(k);
     $('t-t').textContent = 'T = ' + sgn(r.t, 5) + ' centuries';
     $('t-mean').textContent = r.meanStamp;
+    $('t-part').textContent = r.partStamp;
+    $('t-count').textContent = on + ' of ' + termMask.length + ' terms on';
     $('t-real').textContent = r.stamp;
+    $('t-err').textContent = Math.abs(r.errorMinutes) < 0.05 ? 'exact' : sgn(r.errorMinutes, 1);
+    $('t-err').className = 'v' + (Math.abs(r.errorMinutes) < 0.05 ? ' hi' : '');
     const shift = (r.jde - r.mean) * 24;
     $('t-shift').textContent = 'moved by ' + sgn(shift, 2) + ' hours';
     $('t-ang').innerHTML = `Here M = <b>${f(r.m, 2)}&deg;</b>, M' = <b>${f(r.mp, 2)}&deg;</b>, `
@@ -474,17 +525,25 @@ penumbral magnitude = (1.5573 + u - |gamma|) / 0.5450     &gt;  0  ->  something
       + (Math.abs(r.sinF) < 0.36 ? 'inside the eclipse window.' : 'outside the eclipse window, so no eclipse this month.');
     const max = Math.max(...r.terms.map((t) => Math.abs(t.minutes)), 1);
     let h = '';
-    for (const t of r.terms) {
+    r.terms.forEach((t, i) => {
       const w = 50 * Math.abs(t.minutes) / max;
       const left = t.minutes >= 0 ? 50 : 50 - w;
-      h += `<div class="row"><span>${t.name.replace(/</g, '&lt;')}</span>`
+      h += `<div class="row${termMask[i] ? '' : ' off'}">`
+         + `<input type="checkbox" data-i="${i}"${termMask[i] ? ' checked' : ''} aria-label="${t.name}">`
+         + `<span>${t.name.replace(/</g, '&lt;')}</span>`
          + `<span class="track"><u style="left:50%"></u><i style="left:${left}%;width:${w}%"></i></span>`
-         + `<span class="v">${sgn(t.minutes, 1)}</span></div>`;
-    }
-    h += `<div class="row"><span>+ 14 planetary terms</span>`
-       + `<span class="track"><u style="left:50%"></u></span>`
-       + `<span class="v">${sgn(r.rest * 1440, 1)}</span></div>`;
+         + `<span class="v">${Math.abs(t.minutes) < 0.05 ? sgn(t.minutes, 3) : sgn(t.minutes, 1)}</span></div>`;
+    });
     $('t-bars').innerHTML = h;
+    $('t-bars').querySelectorAll('input').forEach((b) => b.addEventListener('change', () => {
+      termMask[Number(b.dataset.i)] = b.checked;
+      drawTerms();
+    }));
+  }
+  function setMask(fn) {
+    if (!termMask) return;
+    termMask = termMask.map((_, i) => fn(i));
+    drawTerms();
   }
 
   // ---- chapter 3: the fundamental plane ------------------------------------
@@ -499,8 +558,17 @@ penumbral magnitude = (1.5573 + u - |gamma|) / 0.5450     &gt;  0  ->  something
     drawGamma();
   }
   function drawGamma() {
-    const e = solarList[Number($('g-pick').value) || 0];
-    if (!e) return;
+    const pick = solarList[Number($('g-pick').value) || 0];
+    if (!pick) return;
+    const follow = $('g-follow').checked;
+    if (follow) { $('g-gam').value = pick.gamma; $('g-us').value = pick.u; }
+    const gamma = Number($('g-gam').value), u = Number($('g-us').value);
+    $('g-gam-v').textContent = sgn(gamma, 3);
+    $('g-us-v').textContent = sgn(u, 4);
+    // a hypothetical eclipse goes through the very same classifier
+    const v = follow ? pick : E.classify(gamma, u);
+    const e = { gamma, u, type: v.type || 'no eclipse', central: v.central,
+                magnitude: v.magnitude, date: follow ? pick.date : 'a hypothetical eclipse' };
     const svg = $('g-svg');
     svg.innerHTML = '';
     const S = 62;                                   // pixels per Earth radius
@@ -517,8 +585,8 @@ penumbral magnitude = (1.5573 + u - |gamma|) / 0.5450     &gt;  0  ->  something
       stroke: SKY.gold, 'stroke-width': 1, 'stroke-dasharray': '2 3' }));
     svg.appendChild(svgEl('circle', { cx: 0, cy: 0, r: 2, fill: SKY.dim }));
     const ur = Math.max(2.2, Math.abs(e.u) * S * 6);   // u is tiny: show it 6x
-    svg.appendChild(svgEl('circle', { cx: 0, cy: gy, r: ur, fill: colourOf(e.type),
-      'fill-opacity': .9 }));
+    svg.appendChild(svgEl('circle', { cx: 0, cy: gy, r: ur,
+      fill: e.type === 'no eclipse' ? SKY.grey : colourOf(e.type), 'fill-opacity': .9 }));
     const lab = (tx, ty, s, col, anchor) => {
       const t = svgEl('text', { x: tx, y: ty, fill: col || SKY.dim,
         'font-family': 'IBM Plex Mono, monospace', 'font-size': 9.5,
@@ -527,6 +595,8 @@ penumbral magnitude = (1.5573 + u - |gamma|) / 0.5450     &gt;  0  ->  something
     };
     lab(6, gy - 7, 'gamma = ' + sgn(e.gamma, 4), SKY.gold);
     lab(-176, -112, e.date + '  ·  ' + e.type, SKY.ink);
+    lab(-176, 114, follow ? 'following the eclipse above'
+                          : 'gamma and u driven by hand · classify-solar decides');
     lab(-176, -100, 'umbral cone radius u = ' + sgn(e.u, 4) + ' (drawn ×6)');
     lab(0.9972 * S + 5, 4, 'Earth', '#8fb0e8');
     lab(lim * S - 4, -lim * S + 12, '1.5433 + u', SKY.dim, 'end');
@@ -535,7 +605,8 @@ penumbral magnitude = (1.5573 + u - |gamma|) / 0.5450     &gt;  0  ->  something
     $('g-u').textContent = sgn(e.u, 4);
     $('g-ustate').textContent = e.u < 0 ? 'the cone reaches the ground' : 'the cone falls short';
     $('g-type').textContent = e.type;
-    $('g-mag').textContent = e.central ? 'central: the axis lands on the Earth'
+    $('g-mag').textContent = e.type === 'no eclipse' ? 'the shadow passes above or below us'
+      : e.central ? 'central: the axis lands on the Earth'
       : 'magnitude ' + f(e.magnitude, 3);
   }
 
@@ -600,8 +671,20 @@ penumbral magnitude = (1.5573 + u - |gamma|) / 0.5450     &gt;  0  ->  something
     drawLunar();
   }
   function drawLunar() {
-    const e = lunarList[Number($('l-pick').value) || 0];
-    if (!e) return;
+    const pick = lunarList[Number($('l-pick').value) || 0];
+    if (!pick) return;
+    const follow = $('l-follow').checked;
+    if (follow) { $('l-gam').value = pick.gamma; $('l-us').value = pick.u; }
+    const gamma = Number($('l-gam').value), u = Number($('l-us').value);
+    $('l-gam-v').textContent = sgn(gamma, 3);
+    $('l-us-v').textContent = sgn(u, 4);
+    // the Moon's mean anomaly sets how fast it crosses, so a what-if borrows
+    // it from the eclipse in the list — the durations stay meaningful
+    const v = follow ? pick : E['classify-lunar'](gamma, u, pick.mp);
+    const e = { gamma, u, mp: pick.mp, type: v.type || 'no eclipse',
+                magnitude: v.magnitude, penumbral: v.penumbral, saros: pick.saros,
+                dtotal: v.dtotal, dpartial: v.dpartial, dpenumbral: v.dpenumbral,
+                date: follow ? pick.date : 'a hypothetical eclipse' };
     const svg = $('l-svg'); svg.innerHTML = '';
     const S = 64;
     const rU = (0.7403 - e.u) * S, rP = (1.2848 + e.u) * S, rM = 0.2725 * S;
@@ -627,11 +710,14 @@ penumbral magnitude = (1.5573 + u - |gamma|) / 0.5450     &gt;  0  ->  something
         'text-anchor': anchor || 'start' });
       t.textContent = s; svg.appendChild(t);
     };
-    lab(-204, -92, e.date + '  ·  ' + e.type + '  ·  saros ' + e.saros, SKY.ink);
+    lab(-204, -92, e.date + '  ·  ' + e.type + (follow ? '  ·  saros ' + e.saros : ''), SKY.ink);
     lab(-204, -80, 'umbra 0.7403 − u = ' + f(0.7403 - e.u, 4) + '   penumbra 1.2848 + u = ' + f(1.2848 + e.u, 4));
     lab(6, gy - rM - 6, 'gamma = ' + sgn(e.gamma, 4), SKY.gold);
     lab(0, rP + 12, 'penumbra', SKY.dim, 'middle');
     const mag = e.type === 'penumbral' ? e.penumbral : e.magnitude;
+    $('l-verdict').textContent = e.type;
+    $('l-where').textContent = follow ? 'saros ' + e.saros
+      : 'gamma and u by hand · classify-lunar decides';
     $('l-mag').textContent = f(mag, 3);
     $('l-type').textContent = e.type === 'penumbral' ? 'penumbral magnitude' : 'of the Moon’s diameter';
     $('l-gamma').textContent = sgn(e.gamma, 4);
@@ -641,12 +727,17 @@ penumbral magnitude = (1.5573 + u - |gamma|) / 0.5450     &gt;  0  ->  something
   }
 
   // ---- chapter 6: a saros series --------------------------------------------
-  function drawSaros() {
+  let sarosRun = [];
+  function drawSaros(keepStep) {
     const n = clampi($('r-num').value, 1, 223);
     const lunar = $('r-kind').value === '1';
     const run = E.saros(n, lunar);
+    sarosRun = run;
     const [x, W, H] = pen($('r-canvas'));
-    if (!run.length) { $('r-n').textContent = '0'; return; }
+    if (!run.length) { $('r-n').textContent = '0'; $('r-now').textContent = ''; return; }
+    $('r-step').max = String(run.length - 1);
+    if (!keepStep) $('r-step').value = String(Math.floor(run.length / 2));
+    const at = Math.min(run.length - 1, Number($('r-step').value));
     const L = 46, R = 14, T = 16, B = 28;
     const y0 = run[0].year, y1 = run[run.length - 1].year;
     const px = (yr) => L + (W - L - R) * (yr - y0) / Math.max(1, y1 - y0);
@@ -671,10 +762,24 @@ penumbral magnitude = (1.5573 + u - |gamma|) / 0.5450     &gt;  0  ->  something
     x.beginPath();
     run.forEach((e, i) => { const p = [px(e.year), py(e.gamma)]; i ? x.lineTo(...p) : x.moveTo(...p); });
     x.strokeStyle = 'rgba(240,192,96,.35)'; x.lineWidth = 1; x.stroke();
-    for (const e of run) {
-      x.beginPath(); x.arc(px(e.year), py(e.gamma), 3, 0, 7);
+    run.forEach((e, i) => {
+      x.beginPath(); x.arc(px(e.year), py(e.gamma), i === at ? 5 : 3, 0, 7);
       x.fillStyle = colourOf(e.type); x.fill();
-    }
+      if (i === at) {
+        x.beginPath(); x.arc(px(e.year), py(e.gamma), 9, 0, 7);
+        x.strokeStyle = SKY.gold; x.lineWidth = 1.4; x.stroke();
+        x.beginPath(); x.moveTo(px(e.year) + .5, T); x.lineTo(px(e.year) + .5, H - B);
+        x.strokeStyle = 'rgba(240,192,96,.35)'; x.stroke();
+      }
+    });
+    const cur = run[at];
+    $('r-step-v').textContent = '#' + (at + 1) + ' of ' + run.length;
+    $('r-now').innerHTML = `Number <b>${at + 1}</b> of the family: <b>${cur.date}</b>, `
+      + `${cur.type}, gamma <b>${sgn(cur.gamma, 4)}</b>`
+      + (at > 0 ? ` — <b>${f(cur.jd - run[at - 1].jd, 2)}</b> days after number ${at}, `
+                  + `which is 223 lunations, and gamma moved `
+                  + `<b>${sgn(cur.gamma - run[at - 1].gamma, 4)}</b> in that time.`
+                : ' — the first of the family, a glancing partial eclipse at one pole.');
     $('r-n').textContent = run.length;
     $('r-first').textContent = run[0].date;
     $('r-last').textContent = run[run.length - 1].date;
@@ -682,7 +787,7 @@ penumbral magnitude = (1.5573 + u - |gamma|) / 0.5450     &gt;  0  ->  something
     let h = '<thead><tr><th>#</th><th>date</th><th>UT</th><th>type</th><th>gamma</th><th>magnitude</th></tr></thead><tbody>';
     run.forEach((e, i) => {
       const mag = e.kind === 'lunar' && e.type === 'penumbral' ? e.penumbral : e.magnitude;
-      h += `<tr><td>${i + 1}</td><td>${e.date}</td><td>${e.stamp.slice(11)}</td>`
+      h += `<tr${i === at ? ' style="background:#16203c"' : ''}><td>${i + 1}</td><td>${e.date}</td><td>${e.stamp.slice(11)}</td>`
          + `<td class="t-${e.type.split(' ').pop()}">${e.type}</td><td>${sgn(e.gamma, 4)}</td>`
          + `<td>${e.central ? '≥ 1' : f(mag, 3)}</td></tr>`;
     });
@@ -728,22 +833,33 @@ penumbral magnitude = (1.5573 + u - |gamma|) / 0.5450     &gt;  0  ->  something
   // ---- wiring ---------------------------------------------------------------
   const on = (id, ev, fn) => $(id).addEventListener(ev, fn);
   on('s-from', 'change', drawSeasons); on('s-to', 'change', drawSeasons);
-  on('s-kind', 'change', drawSeasons);
+  on('s-kind', 'change', drawSeasons); on('s-scrub', 'input', scrubSeasons);
   on('t-date', 'change', drawTerms); on('t-phase', 'change', drawTerms);
+  on('t-all', 'click', () => setMask(() => true));
+  on('t-none', 'click', () => setMask(() => false));
+  on('t-two', 'click', () => setMask((i) => i < 2));
+  on('t-ten', 'click', () => setMask((i) => i < 10));
   on('g-pick', 'change', drawGamma); on('g-from', 'change', fillGamma); on('g-to', 'change', fillGamma);
+  on('g-follow', 'change', drawGamma);
+  for (const id of ['g-gam', 'g-us'])
+    on(id, 'input', () => { $('g-follow').checked = false; drawGamma(); });
+  on('l-follow', 'change', drawLunar);
+  for (const id of ['l-gam', 'l-us'])
+    on(id, 'input', () => { $('l-follow').checked = false; drawLunar(); });
+  on('r-step', 'input', () => drawSaros(true));
   on('q-from', 'change', drawSolar); on('q-to', 'change', drawSolar);
   document.querySelectorAll('#w-solar .presets button').forEach((b) =>
     b.addEventListener('click', () => { $('q-from').value = b.dataset.a; $('q-to').value = b.dataset.b; drawSolar(); }));
   on('l-pick', 'change', drawLunar); on('l-from', 'change', fillLunar); on('l-to', 'change', fillLunar);
-  on('r-num', 'change', drawSaros); on('r-kind', 'change', drawSaros);
+  on('r-num', 'change', () => drawSaros(false)); on('r-kind', 'change', () => drawSaros(false));
   document.querySelectorAll('#w-saros .presets button').forEach((b) =>
-    b.addEventListener('click', () => { $('r-num').value = b.dataset.n; $('r-kind').value = b.dataset.k; drawSaros(); }));
+    b.addEventListener('click', () => { $('r-num').value = b.dataset.n; $('r-kind').value = b.dataset.k; drawSaros(false); }));
   on('d-year', 'input', drawDeltaT);
 
   let t = null;
   window.addEventListener('resize', () => {
     clearTimeout(t);
-    t = setTimeout(() => { drawSeasons(); drawSolar(); drawSaros(); drawDeltaT(); }, 150);
+    t = setTimeout(() => { drawSeasons(); drawSolar(); drawSaros(true); drawDeltaT(); }, 150);
   });
 
   drawNext();
@@ -752,7 +868,7 @@ penumbral magnitude = (1.5573 + u - |gamma|) / 0.5450     &gt;  0  ->  something
   fillGamma();
   drawSolar();
   fillLunar();
-  drawSaros();
+  drawSaros(false);
   drawDeltaT();
 })();
 </script>
