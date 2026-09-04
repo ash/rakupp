@@ -122,6 +122,25 @@ function item(v) { return v; }
 function flatten(...items) { return flat(items.length === 1 ? items[0] : mkList(items)); }
 // pick(N, @list) / roll(N, @list): the sub form takes the count first
 const countFirst = (v, n) => n !== undefined && (v instanceof RWhatever || v === T.Whatever || typeof v === 'number' || typeof v === 'bigint') && (n instanceof RList || n instanceof RSeq || n instanceof RRange);
+// :16<ff> / :16("ff") — every character a digit of that base, `_` between digits, one radix point; BigInt throughout
+function radix(base, sv) {
+    base = Number(toInt(base)); const s = str(sv);
+    const bad = (why) => { throw new RakuError(`Cannot convert string to number: ${why} in ':${base}<${s}>'`, 'X::Str::Numeric'); };
+    let val = 0n, den = 0n; const bb = BigInt(base); let any = false;
+    for (let i = 0; i < s.length; i++) {
+        const c = s[i];
+        if (c === '_') { if (i === 0 || i + 1 === s.length) bad("'_' must be between digits"); continue; }
+        if (c === '.') { if (den !== 0n) bad('more than one radix point'); den = 1n; continue; }
+        const code = c.charCodeAt(0);
+        const d = code >= 48 && code <= 57 ? code - 48 : code >= 97 && code <= 122 ? code - 87 : code >= 65 && code <= 90 ? code - 55 : -1;
+        if (d < 0 || d >= base) bad(`base-${base} number must begin with valid digits or '.'`);
+        val = val * bb + BigInt(d); if (den !== 0n) den *= bb; any = true;
+    }
+    if (!any) bad(`base-${base} number must begin with valid digits or '.'`);
+    if (den > 1n) return ratResult(val, den);
+    return normBig(val);
+}
+function radixList(base, ...digits) { const bb = BigInt(Number(toInt(base))); let v = 0n; for (const d of digits) { if (d instanceof RNamed) continue; for (const x of itemsOf(d)) v = v * bb + BigInt(toInt(x)); } return normBig(v); }
 function pick(v, n) { return countFirst(v, n) ? pickFrom(n, v) : pickFrom(v, n); }
 function roll(v, n) { return countFirst(v, n) ? rollFrom(n, v) : rollFrom(v, n); }
 function categorize(f, v, ...a) { return categorizeList(v, f, nm(a).get("as")); }
@@ -290,7 +309,7 @@ Object.assign(R, {
     say, print, put, note, printf, dd, exit, sqrt, sin, cos, tan, asin, acos, atan, sinh, cosh, tanh, exp, cbrt, log, log2, log10, atan2,
     floor, ceiling, truncate, round, sign, 'is-prime': isPrime, expmod, polymod, factorial, rand, randNum, srand, min, max, sum, elems, end, join, reverse, sort, map, grep, first,
     unique, keys, values, kv, pairs, push, append, pop, shift, unshift, prepend, splice, zip, roundrobin, head, tail, defined: defd, item, flat: flatten, pick, roll,
-    categorize, classify, reduce, produce, any: anyJ, all: allJ, none: noneJ, one: oneJ, set, bag, mix, chrs: chrsOf, ords: ordsOf, ucfirst, slurp: slurpB, spurt: spurtB,
+    categorize, classify, '__radix': radix, '__radix-list': radixList, reduce, produce, any: anyJ, all: allJ, none: noneJ, one: oneJ, set, bag, mix, chrs: chrsOf, ords: ordsOf, ucfirst, slurp: slurpB, spurt: spurtB,
     lines: linesB, get, prompt, sleep, now, time, open, close, mkdir, rmdir, unlink, dir, chdir, shell, run, ioPath, EVAL, OPS, opFn, reduceOp, zipOp, crossOp, hyperOp, hyperPrefix,
     assumingCall, seqOp, lazyOf, eagerOf, cacheOf, chars, ord, chr, uc, lc, tc, tclc, flip, trim, chomp, chop, substr, index: strIndex, rindex: strRindex, split: (sep, s, ...a) => strSplit(s, sep, ...a), words, comb,
     sprintf, abs, gcd, lcm, not, so, gist, raku, str, numify, truncate, 'trim-leading': trimLeading, 'trim-trailing': trimTrailing, samecase, indent, fc, wordcase, minmax: minmaxOf, 'is-prime': isPrime, warn, die, fail, take,

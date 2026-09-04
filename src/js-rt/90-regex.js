@@ -116,6 +116,87 @@ function classMatchAt(n, s, pos) {          // → end of the consumed grapheme,
 }
 function fold(x) { return x.toUpperCase().toLowerCase(); }
 function isWordAt(s, i) { if (i < 0 || i >= s.length) return false; const cp = s.codePointAt(i); return cp === 0x5F || ccFlag('a', cp, String.fromCodePoint(cp)) || ccFlag('d', cp, String.fromCodePoint(cp)); }
+// ---- LTM: longest-token matching ---------------------------------------------
+// The declarative prefix of a branch — literals, classes, `.`, anchors, groups,
+// quantifiers and the rules they call — is scanned as a set of reachable input
+// positions (the port of LtmNfa's ranking: one scan, no user code, no
+// backtracking). A branch is tried in order of the furthest position its prefix
+// reaches, then the number of literal characters on that path, then source
+// order; a branch whose prefix cannot match is not a candidate; a prefix that
+// ends at once (code, a lookaround, a variable) ranks last but is tried.
+function ltmReach(n, from, ctx, depth) {
+    const s = ctx.s, out = new Map();
+    const add = (p, l) => { const c = out.get(p); if (c === undefined || l > c) out.set(p, l); };
+    const gapAt = () => ({ pos: from, gap: true });
+    if (!n || depth > 40) return gapAt();
+    switch (n.k) {
+        case 'Lit': { const L = n.lit.length; const want = n.icase ? n.lit.toLowerCase() : n.lit; for (const [p, l] of from) { const a = s.slice(p, p + L); if ((n.icase ? a.toLowerCase() : a) === want && a.length === L) add(p + L, l + L); } return { pos: out, gap: false }; }
+        case 'Any': for (const [p, l] of from) if (p < s.length) add(clusterEnd(s, p), l); return { pos: out, gap: false };
+        case 'Class': for (const [p, l] of from) { const e = classMatchAt(n, s, p); if (e >= 0) add(e, l); } return { pos: out, gap: false };
+        case 'Nop': case 'CapStart': case 'CapEnd': return { pos: from, gap: false };
+        case 'AnchorStart': for (const [p, l] of from) if (p === 0 || ((n.multiline || n.p5Line) && s[p - 1] === '\n')) add(p, l); return { pos: out, gap: false };
+        case 'AnchorEnd': for (const [p, l] of from) if (p === s.length || (p === s.length - 1 && s[p] === '\n') || (n.multiline && s[p] === '\n')) add(p, l); return { pos: out, gap: false };
+        case 'WBLeft': for (const [p, l] of from) if (isWordAt(s, p) && !isWordAt(s, p - 1)) add(p, l); return { pos: out, gap: false };
+        case 'WBRight': for (const [p, l] of from) if (!isWordAt(s, p) && isWordAt(s, p - 1)) add(p, l); return { pos: out, gap: false };
+        case 'Seq': {
+            let cur = from;
+            for (const kid of n.kids || []) { const r = ltmReach(kid, cur, ctx, depth); cur = r.pos; if (r.gap) return { pos: cur, gap: true }; if (!cur.size) return { pos: cur, gap: false }; }
+            return { pos: cur, gap: false };
+        }
+        case 'Alt': { let gap = false; for (const kid of n.kids || []) { const r = ltmReach(kid, from, ctx, depth); for (const [p, l] of r.pos) add(p, l); if (r.gap) gap = true; } return { pos: out, gap }; }
+        case 'Group': return ltmReach(n.kids[0], from, ctx, depth);
+        case 'Rep': {
+            if (n.repCode) return gapAt();
+            const kid = n.kids[0], min = n.min, max = n.max;
+            let cur = from, gap = false;
+            if (min === 0) for (const [p, l] of from) add(p, l);
+            for (let i = 0; (max < 0 || i < max) && i < 100; i++) {
+                const r = ltmReach(kid, cur, ctx, depth + 1);
+                if (r.gap) { gap = true; for (const [p, l] of r.pos) add(p, l); break; }
+                if (!r.pos.size) break;
+                if (i + 1 >= min) for (const [p, l] of r.pos) add(p, l);
+                let next = r.pos;
+                if (n.sep) { const rs = ltmReach(n.sep, next, ctx, depth + 1); if (rs.gap) { gap = true; break; } next = rs.pos; }
+                let grew = false; for (const [p, l] of next) { const c = cur.get(p); if (c === undefined || l > c) grew = true; }
+                if (!grew && i + 1 >= min) break;
+                cur = next;
+            }
+            return { pos: out, gap };
+        }
+        case 'Subrule': {
+            const name = n.name;
+            if (name[0] === '$' || name[0] === '@' || n.args || n.argsFn) return gapAt();
+            if (name === 'sym') { if (ctx.sym == null) return gapAt(); return ltmReach({ k: 'Lit', lit: ctx.sym }, from, ctx, depth); }
+            if (n.inline) return ltmReach(n.inline.root, from, ctx, depth + 1);
+            const rule = ctx.grammar ? findRule(ctx.grammar, name) : null;
+            if (rule && !rule.proto) { if (rule.mk) return gapAt(); return ltmReach(rule.rx.root, from, ctx, depth + 1); }
+            if (ctx.grammar) {
+                const cands = protoCandidates(ctx.grammar, name);
+                if (cands.length) { let gap = false; for (const c of cands) { if (c.rule.mk) { gap = true; continue; } const r = ltmReach(c.rule.rx.root, from, { ...ctx, sym: c.sym }, depth + 1); for (const [p, l] of r.pos) add(p, l); if (r.gap) gap = true; } return { pos: out, gap }; }
+            }
+            const lex = namedRegexes.get(name);
+            if (lex) return ltmReach(lex.root, from, ctx, depth + 1);
+            if (ctx.grammar && ctx.grammar.findUser(name)) return gapAt();
+            let known = true;
+            for (const [p, l] of from) { const e = builtinRule(name, s, p); if (e === undefined) { known = false; break; } if (e >= 0) add(e, l); }
+            return known ? { pos: out, gap: false } : gapAt();
+        }
+        default: return gapAt();   // Look, Code, VarMatch, Conj, CondRef
+    }
+}
+function ltmRank(kids, st, pos, syms) {
+    if (kids.length < 2) return kids.map((_, i) => i);
+    const base = { s: st.s, grammar: st.ctx.grammar, sym: st.curSym };
+    const ranked = [];
+    kids.forEach((kid, i) => {
+        const r = ltmReach(kid, new Map([[pos, 0]]), syms ? { ...base, sym: syms[i] } : base, 0);
+        let end = -1, lit = 0;
+        for (const [p, l] of r.pos) if (p > end || (p === end && l > lit)) { end = p; lit = l; }
+        if (end >= 0) ranked.push({ i, end, lit });
+    });
+    ranked.sort((a, b) => b.end - a.end || b.lit - a.lit || a.i - b.i);
+    return ranked.map(r => r.i);
+}
 function litPrefixLen(n) {            // the leading literal run of a branch (LTM approximation)
     if (!n) return 0;
     if (n.k === 'Lit') return n.lit.length;
@@ -161,9 +242,7 @@ function m(n, st, pos, k) {
         case 'Alt': {
             const kids = n.kids || [];
             if (n.firstMatch || n.classCombo) { for (const kid of kids) if (m(kid, st, pos, k)) return true; return false; }
-            let order = n._order;
-            if (!order) { order = kids.map((kid, i) => [litPrefixLen(kid), i]).sort((a, b) => b[0] - a[0] || a[1] - b[1]).map(x => kids[x[1]]); n._order = order; }
-            for (const kid of order) if (m(kid, st, pos, k)) return true;
+            for (const i of ltmRank(kids, st, pos, null)) if (m(kids[i], st, pos, k)) return true;
             return false;
         }
         case 'Conj': {
@@ -388,7 +467,9 @@ function subrule(n, st, pos, k) {
     if (st.ctx.grammar) {
         const cands = protoCandidates(st.ctx.grammar, name);
         if (cands.length) {
-            for (const c of cands) {
+            const roots = cands.map(c => c.rule.mk ? { k: 'Code' } : c.rule.rx.root);   // a parameterized candidate has no static prefix
+            for (const i of ltmRank(roots, st, pos, cands.map(c => c.sym))) {
+                const c = cands[i];
                 const ok = callRule(c.rule, c.name, n, st, pos, (sub, q) => { sub.rule = c.name; sub.actualRule = c.name; return record(sub, q); }, c.sym);
                 if (ok) return true;
             }
@@ -415,7 +496,8 @@ function subrule(n, st, pos, k) {
 // Call a rule (a compiled RRegex with a kind) at pos: its own capture frame; a
 // ratchet rule commits to its first match and is memoized per (rule, pos).
 function callRule(rule, name, n, st, pos, record, sym) {
-    const rx = rule.rx;
+    const args = n.argsFn ? n.argsFn(cursorMatch(st, pos)) : null;
+    const rx = rule.mk ? rule.mk(...(args || [])) : rule.rx;   // a parameterized rule: the pattern is built from the arguments
     const ratchet = !!rx.tree.ratchet;
     const memoKey = ratchet && !n.argsFn ? rx : null;
     if (memoKey) {
@@ -424,7 +506,7 @@ function callRule(rule, name, n, st, pos, record, sym) {
     }
     const st2 = new RxState(st.s, rx, st.ctx);
     st2.steps = st.steps; st2.startPos = pos; st2.memo = st.memo; if (sym !== undefined) st2.curSym = sym;
-    if (n.argsFn) st2.args = n.argsFn(cursorMatch(st, pos));
+    if (args) st2.args = args;
     let result = null;
     if (ratchet) {
         let end = -1;
@@ -661,6 +743,8 @@ function allMatches(s, rxo, ctx, overlap) {
 function rxMatch(subject, rxo, ctx) {
     if (subject instanceof RJunction) return new RJunction(subject.kind, subject.items.map(x => rxMatch(x, rxo, ctx)));   // autothreads
     const s = str(subject);
+    if (rxo.adv.nth) { const all = allMatches(s, rxo, ctx, false); const w = rxo.adv.nth(Nil); if (w instanceof RList || w instanceof RSeq || w instanceof RRange) return mkList(arr(w).map(i => all[Number(toInt(i)) - 1]).filter(x => x)); const mt = all[Number(toInt(w)) - 1]; return mt || Nil; }
+    if (rxo.adv.x) { const all = allMatches(s, rxo, ctx, false); const w = rxo.adv.x(Nil); if (w instanceof RRange) { const lo = Number(toInt(w.from)) + (w.exFrom ? 1 : 0), hi = w.to === Infinity ? Infinity : Number(toInt(w.to)) - (w.exTo ? 1 : 0); return all.length >= lo ? mkList(all.slice(0, Math.min(hi, all.length))) : Nil; } const k = Number(toInt(w)); return all.length >= k ? mkList(all.slice(0, k)) : Nil; }
     if (rxo.adv.g || rxo.adv.ov) return mkList(allMatches(s, rxo, ctx, !!rxo.adv.ov));
     if (rxo.adv.ex) { const out = []; for (let start = 0; start <= s.length; start++) { const st = new RxState(s, rxo, ctx); st.startPos = start; m(rxo.root, st, start, (q) => { const mt = new RMatch(s, start, q); finishMatch(mt, new RxState(s, rxo, ctx), rxo.tree); out.push(mt); return false; }); } return mkList(out); }
     const mt = runSearch(s, rxo, ctx, 0);
@@ -679,7 +763,9 @@ function substMutate(s, pat, ...a) {
 function rxSubst(subject, rxo, replFn, opts) {
     const s = str(subject);
     const global = !!(rxo.adv.g || (opts && opts.g));
-    const ms = global ? allMatches(s, rxo, null, false) : (() => { const one = runSearch(s, rxo, null, 0); return one ? [one] : []; })();
+    let ms = global ? allMatches(s, rxo, null, false) : (() => { const one = runSearch(s, rxo, null, 0); return one ? [one] : []; })();
+    if (rxo.adv.nth) { const all = allMatches(s, rxo, null, false); const mt = all[Number(toInt(rxo.adv.nth(Nil))) - 1]; ms = mt ? [mt] : []; }
+    else if (rxo.adv.x) { const all = allMatches(s, rxo, null, false); const k = Number(toInt(rxo.adv.x(Nil))); ms = all.length >= k ? all.slice(0, k) : []; }
     if (!ms.length) return { s, m: global ? mkList([]) : Nil };
     let out = '', last = 0;
     for (const mt of ms) { out += s.slice(last, mt.from) + str(replFn(mt)); last = mt.to; }
@@ -766,4 +852,4 @@ M(T.Match, {
 });
 const regexGist = (s) => 'rx/' + (s.src === undefined ? '…' : s.src) + '/';
 M(T.Regex, { gist: regexGist, Str: regexGist, raku: regexGist, ACCEPTS: (s, v) => { const mt = runSearch(str(v), s, null, 0); return mt ? mt : Nil; }, Bool: (s) => true, defined: (s) => true, 'WHAT': (s) => T.Regex, 'match': (s, v) => rxMatch(v, s) });
-Object.assign(R, { RRegex, RMatch, rx, isMatch: (v) => v instanceof RMatch, isRegex: (v) => v instanceof RRegex, isFailure: (v) => v instanceof RFailure, substMutate, cursorCall, matchEndAt, rxFromString, namedRegex, rxMatch, rxSubst, regexMatch, regexComb, regexSplit, make, matchAt, matchNamed, grammarParse, allMatches, runSearch, matchGist });
+Object.assign(R, { RRegex, RMatch, rx, isMatch: (v) => v instanceof RMatch, boolOf: (v, t) => v instanceof RRegex ? (runSearch(str(t), v, null, 0) || Nil) : v, isRegex: (v) => v instanceof RRegex, isFailure: (v) => v instanceof RFailure, substMutate, cursorCall, matchEndAt, rxFromString, namedRegex, rxMatch, rxSubst, regexMatch, regexComb, regexSplit, make, matchAt, matchNamed, grammarParse, allMatches, runSearch, matchGist });

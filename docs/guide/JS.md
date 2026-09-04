@@ -115,13 +115,19 @@ string in the variable parse that string as a pattern at run time (the
 subset a pattern string carries: literals, quotes, `\d\w\s`, classes,
 groups, quantifiers, alternation, `:i`); a bare `@array` is an alternation
 of its strings, longest first; `~~` with a Regex in a variable sets `$/`,
-and a `.subst` replacement block sees the match as `$/`. Alternation is
-first-match ordered by the longest literal prefix — an approximation of
-longest-token matching that the second half of the regex work replaces
-with a port of the native LTM ranker.
+and a `.subst` replacement block sees the match as `$/`. `|` alternation
+and proto dispatch use longest-token matching: each branch's declarative
+prefix (literals, classes, `.`, anchors, groups, quantifiers and the rules
+they call, up to the first code block, lookaround or variable) is scanned
+against the input and the branches are tried furthest-reach first, ties by
+literal count, then source order — the same ranking the engine's NFA
+answers. Rules with parameters (`token kw($k) { $k … }`, called as
+`<kw('if')>`) build their pattern per call; `:nth(n)`, `:x(n)` and `:3rd`
+are match-level adverbs; `:16<ff>`, `:16("ff")` and `:256[…]` radix forms
+are numbers.
 
-Outside (refused, or run through `--fallback=wasm`): `:nth`/`:x` and `:P5`
-regex adverbs, `EVAL` and `require` of computed names, `use` of a module,
+Outside (refused, or run through `--fallback=wasm`): `:P5` regexes,
+`EVAL` and `require` of computed names, `use` of a module,
 NativeCall, threads and `react`/`supply`/`Channel`, `temp`/`let`,
 `Proc::Async`, the `Test` module.
 

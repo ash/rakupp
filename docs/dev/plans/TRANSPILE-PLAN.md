@@ -717,7 +717,34 @@ Where the code decided differently from the draft:
   Version wildcards, the iterator protocol (`skip-one`), `Complex` from
   a string, `for @a { s/// }` writing back into the array.
 
-Next: the second half of P3 (LTM as a port of LtmNfa, `:nth`/`:x`/`:P5`),
-the showcase interpreters as the P3 gate (perl/js need parameterized
-rules, python/json need `__radix`), then the P4 remainder (`sleep` in a
-Worker, source maps, `.d.ts`, the npm recipe).
+- **P3, second half (2026-09-04, same sitting): LTM and the showcase
+  gate.** `ltmRank` in `90-regex.js` ranks `|` branches and proto
+  candidates the way `LtmNfa` does — one scan of each branch's declarative
+  prefix over the input as a set of reachable positions (with the literal
+  count along the best path), rules expanded through the grammar,
+  `<sym>` substituted per candidate, stopping at code, lookarounds,
+  variables and parameterized rules; a branch whose prefix cannot match is
+  not tried, an empty prefix ranks last. It is a direct port of the
+  ranking, not of the NFA: the tree is walked per attempt instead of being
+  compiled to states, which the examples did not notice. Parameterized
+  rules (`mk: (v_k) => R.rx(…)` built per call), `:nth`/`:x`/`:3rd`, the
+  `__radix` builtins. Two emitter bugs the showcases found: a `when`
+  body's `break` took its label from a reference into the block stack
+  that a nested `given` had moved (an empty or wrong label — the lisp
+  interpreter returned from the wrong block), and a routine declaring
+  `$/` as a parameter (every action method) had that parameter clobbered
+  by any `~~ /…/` inside it, where the interpreter keeps it — matches now
+  assign `$/` only where it is the lexical, not a parameter. `.made` and
+  `.ast` results are items in array literals and list assignment (a scalar
+  container in Rakudo; the runtime has no containers, so the two sites
+  where the showcases needed it special-case the method name). The four
+  smoke inputs of `rakujs/smoke.cjs` — lisp, js, perl, python — agree with
+  the interpreter under node; issue #64's `Ranked` grammar ranks as the
+  engine does. Two interpreter findings on the way, not the transpiler's:
+  `"a1b2c3" ~~ m:x(2)/\d/` answers Nil where `.match(/\d/, :x(2))` and
+  Rakudo answer the two matches, and `[ %h ].elems` is 1 where Rakudo
+  flattens the hash (2). Then three regressions the gate caught and the fixes: `:my` variables inside regex blocks belong to the enclosing routine, `for $param` over a bound Blob iterates (a parameter is bound, not a container, so only a variable the body writes through `$_` is aliased), a Regex held in a scalar matches `$_` in boolean context and as a bare statement. Gate 18: **117 in-core and agreeing of 442, 254 refused, 71 disagreeing.**
+
+Next: `:P5` (a port of the Perl 5 pattern parser, or refuse-and-fall
+back), the JSON grammar workload as a speed check of the ranker, then the
+P4 remainder (`sleep` in a Worker, source maps, `.d.ts`, the npm recipe).
