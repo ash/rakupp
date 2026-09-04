@@ -30,6 +30,16 @@ carve out of the `--exe` link. The gate is re-pinned at ≤ 6.25 MB for
 between CI's arm64 slice and the dev box's default-arch `build/`
 (x86_64 there) for the same tree.*
 
+*Update 2026-09-04: the issue #67 tracer (uncaught errors, `warn`,
+`fail` and `await` now report the frames they came from) added 67,504
+bytes of reachable runtime code; CI's hello-all reached 6,575,736. The
+`--target=js` backend that landed in the same window costs `--exe`
+nothing — `Js.cpp` and `JsRuntimeSrc.cpp` are held out of `rakupp_rt`
+beside the REPL. Re-pinned at ≤ 7.0 MB for `-all`, bare `--slim`
+≤ 7.25 MB, set by the x86_64 slice (7,069,936) rather than CI's arm64
+one (6,557,736 on the same tree) — the wider slice had passed both old
+budgets only because CI never builds it.*
+
 ---
 
 ## Where we are — measured
