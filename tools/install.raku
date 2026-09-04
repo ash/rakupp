@@ -873,7 +873,8 @@ sub shadowed-by-rakulib(%e --> Bool) {
     })
 }
 
-sub install-one(%e, Str $prefix, Bool :$no-test, Bool :$force, Bool :$test-only) {
+sub install-one(%e, Str $prefix, Bool :$no-test, Bool :$force, Bool :$test-only,
+                :%have, :%broken) {
     my $tmp;   # download scratch — set only when there is a download
     LEAVE { run 'rm', '-rf', $tmp.Str if $tmp }   # never a user's directory
     my $root;
@@ -925,6 +926,21 @@ sub install-one(%e, Str $prefix, Bool :$no-test, Bool :$force, Bool :$test-only)
 
     my %meta = json-decode($root.add('META6.json').slurp);
     trace("meta: {%meta<name> // '?'} ver<{%meta<version> // '?'}> auth<{%meta<auth> // ''}> (root {$root.basename})");
+
+    # The index and the dist can disagree about auth — REA rewrites it, so
+    # Hash::Merge 2.0.0 is auth<cpan:TYIL> in the index and auth<github:scriptkitties>
+    # in its own META6.json. The store is keyed by what the META says, so the
+    # plan's pre-check asked with the wrong identity and missed. Ask again with
+    # the dist's own identity, now that it is known, rather than paying for a
+    # build hook and a whole test suite that end in the engine's refusal.
+    if !$force && !$test-only
+       && %have{identity-key(%meta<name>, %meta<version> // %meta<ver>, %meta<auth>, %meta<api>)} {
+        inform("already installed: {%e<dist> // %e<name>} (use --force to reinstall)");
+        trace("already installed: {%e<dist> // %e<name>} — the dist's own identity "
+              ~ "({%meta<name>}:auth<{%meta<auth> // ''}>) is in the store; the index calls it "
+              ~ "auth<{%e<auth> // ''}>");
+        return True;
+    }
 
     if !run-build-hook(%e, $root, $prefix) {
         die "%e<name>: its build hook fails under rakupp — not installing";
@@ -980,6 +996,18 @@ sub install-one(%e, Str $prefix, Bool :$no-test, Bool :$force, Bool :$test-only)
     %meta<files> = %files if %files;
     trace("files: " ~ (%files ?? %files.keys.sort.join(' ') !! 'none'));
 
+    # Damaged record for THIS identity? The engine's refusal is decided by the
+    # short/ entry alone, so it answered "already installed" to every attempt
+    # to fix one while `use` kept failing with "Could not find" — the one state
+    # the installer could not cure. Overwrite it instead. Asked with the META's
+    # identity, like the skip above: the store is keyed by that, not the index.
+    my $repair = ?%broken{identity-key(%meta<name>, %meta<version> // %meta<ver>,
+                                       %meta<auth>, %meta<api>)};
+    if $repair {
+        progress("repairing {%e<dist> // %e<name>}: the store has its record but not its files");
+        trace("repair: {%e<dist> // %e<name>} — the store's record is missing blobs; overwriting");
+    }
+
     # repository-for-spec, not .new: it is the constructor that carries the
     # prefix through to the engine's writer (the same path zef used here).
     # The engine returns the dist-id; recording it is what makes uninstall
@@ -987,7 +1015,7 @@ sub install-one(%e, Str $prefix, Bool :$no-test, Bool :$force, Bool :$test-only)
     my $repo = CompUnit::RepositoryRegistry.repository-for-spec("inst#$prefix");
     my $dist = InstallableDist.new(meta => %meta, root => $root.Str);
     my $dist-id = with-repo-lock($prefix, {
-        my $id = $repo.install($dist, :force($force));
+        my $id = $repo.install($dist, :force($force || $repair));
         record-owned($prefix, ~$id) if $id ~~ Str;
         $id
     });
@@ -1353,17 +1381,41 @@ sub identity-key($name, $ver, $auth, $api) {
 # passed. Asking the store FIRST is what makes a repeated
 # `rakupp install Sparrow6` a listing instead of seventeen fetch-build-test
 # cycles that all end in "already installed".
-sub installed-identities(Str $prefix) {
-    my %have;
+#
+# …and DAMAGED, in the same pass: a record whose blobs are gone. It is not an
+# installation — `use` fails on it with "Could not find" — so it must not
+# answer "already installed" to the plan, and install-one overwrites it rather
+# than letting the engine refuse. (--check reports the same condition as
+# BROKEN; this is what makes install the cure for what --check names.)
+sub store-state(Str $prefix) {
+    my (%have, %broken);
     my $dist-dir = $prefix.IO.add('dist');
-    return %have unless $dist-dir.d;
+    return { have => %have, broken => %broken } unless $dist-dir.d;
     for $dist-dir.dir.grep(*.f) -> $f {
         my %m = try json-decode($f.slurp);
         next unless %m;
-        %have{identity-key(%m<name>, %m<version> // %m<ver>, %m<auth>, %m<api>)} = True;
+        my $key = identity-key(%m<name>, %m<version> // %m<ver>, %m<auth>, %m<api>);
+        (store-blobs-present($prefix, %m) ?? %have !! %broken){$key} = True;
     }
-    %have
+    { have => %have, broken => %broken }
 }
+
+# Every blob a dist record names, still on disk? (the same three directories
+# store-check looks in — sources/ for modules, resources/ and bin/ for the rest)
+sub store-blobs-present(Str $prefix, %m --> Bool) {
+    my $p = $prefix.IO;
+    for (%m<files> // {}).values.grep(* ne '') -> $sha {
+        return False unless <sources resources bin>.first({ $p.add($_).add(~$sha).e });
+    }
+    True
+}
+
+# Raku's default MAIN parsing stops reading options at the first positional, so
+# `rakupp install Config --no-test` put `--no-test` in @modules and installed
+# with the test gate still on — silently, and the failure message that suggests
+# the option is printed AFTER the name it follows. Every option this command
+# takes reads naturally on either side of the dist name; let both spellings work.
+my %*SUB-MAIN-OPTS = :named-anywhere;
 
 sub MAIN(
     *@modules,                 #= modules or dists to install (Foo, Foo:ver<1.2+>)
@@ -1516,7 +1568,12 @@ sub MAIN(
     # --force means "do it anyway", so it asks the store nothing. Under
     # `rakupp reinstall` this runs AFTER the removal above — the dists it
     # took out are gone from dist/ and install fresh.
-    my %have = $force ?? {} !! installed-identities($to);
+    my (%have, %broken);
+    unless $force {
+        my %state = store-state($to);
+        %have   = %state<have>;
+        %broken = %state<broken>;
+    }
 
     # The plan is narration on a real run and THE product of --dry-run, so -q
     # drops it only on the former. What was skipped is neither: a dependency
@@ -1566,7 +1623,8 @@ sub MAIN(
             trace("already installed: {%e<dist> // %e<name>} — skipped");
             next;
         }
-        my $done = try install-one(%e, $to, :$no-test, :$force, :test-only($is-target));
+        my $done = try install-one(%e, $to, :$no-test, :$force, :test-only($is-target),
+                                   :%have, :%broken);
         unless $done {
             if $!.Str.contains('already installed') {
                 inform("already installed: {%e<dist> // %e<name>} (use --force to reinstall)");

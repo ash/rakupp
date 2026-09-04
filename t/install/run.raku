@@ -44,7 +44,8 @@ sub sha1-of(Str $path) {
 # so two dists share one content-addressed blob; :depends declares runtime deps.
 sub make-dist(Str $name, Str $modname, Str $version,
               Bool :$failing-test, Bool :$shared, :@depends, :@build-depends,
-              Bool :$build-hook, Bool :$bin, Bool :$native-lib) {
+              Bool :$build-hook, Bool :$bin, Bool :$native-lib,
+              Str :$meta-auth = 'test:gate') {
     my $safe = $name.subst('::', '-', :g);
     my $droot = $tmp.add("build-$safe-$version");
     my $libdir = $droot.add('lib').add($modname.split('::')[0]);
@@ -82,7 +83,7 @@ sub make-dist(Str $name, Str $modname, Str $version,
     my $bdeps = @build-depends.map({ "\"$_\"" }).join(", ");
     my $res = $native-lib ?? '"resources": ["libraries/gate"],' !! '';
     $droot.add('META6.json').spurt(qq:to/END/);
-        \{ "name": "$name", "version": "$version", "auth": "test:gate",
+        \{ "name": "$name", "version": "$version", "auth": "$meta-auth",
            "provides": \{ $provides \}, "depends": [$deps], $res
            "build-depends": [$bdeps] \}
         END
@@ -165,6 +166,12 @@ my ($arcT2, $shaT2) = make-dist('Gate::Twin', 'Gate::Twin', '2.0');
 my ($arcT3, $shaT3) = make-dist('Gate::Twin', 'Gate::Twin', '3.0');
 my ($arcF, $shaF)   = make-dist('Gate::Floor', 'Gate::Floor', '0.1.0',
                                 :depends(['Gate::Twin:ver<3.0+>']));
+# the Hash::Merge shape: the index and the archive disagree about auth (REA
+# rewrites it — Hash::Merge 2.0.0 is cpan:TYIL in the index and
+# github:scriptkitties in its own META6.json). The store is keyed by the META,
+# so a pre-check asking with the index's identity can only miss.
+my ($arcR, $shaR)   = make-dist('Gate::Renamed', 'Gate::Renamed', '0.1.0',
+                                :meta-auth('github:gate'));
 
 $tmp.add('index.json').spurt(qq:to/END/);
     [ \{ "name": "Gate::Demo", "version": "0.4.2", "auth": "test:gate",
@@ -228,7 +235,11 @@ $tmp.add('index.json').spurt(qq:to/END/);
       \{ "name": "Gate::Floor", "version": "0.1.0", "auth": "test:gate",
          "dist": "Gate::Floor:ver<0.1.0>:auth<test:gate>",
          "provides": \{ "Gate::Floor": "lib/Gate/Floor.rakumod" \},
-         "depends": ["Gate::Twin:ver<3.0+>"], "path": "$shaF.tar.gz" \} ]
+         "depends": ["Gate::Twin:ver<3.0+>"], "path": "$shaF.tar.gz" \},
+      \{ "name": "Gate::Renamed", "version": "0.1.0", "auth": "cpan:GATE",
+         "dist": "Gate::Renamed:ver<0.1.0>:auth<cpan:GATE>",
+         "provides": \{ "Gate::Renamed": "lib/Gate/Renamed.rakumod" \},
+         "depends": [], "path": "$shaR.tar.gz" \} ]
     END
 
 my $home = $tmp.add('home');
@@ -347,6 +358,57 @@ check %flaky<exit> != 0 && %flaky<err>.contains('test suite fails'),
       'M4: a failing test suite refuses the install';
 my %forced = installer('--no-test', 'Gate::Flaky');
 check %forced<exit> == 0, 'M4: --no-test overrides, loudly chosen';
+
+# ---- options AFTER the module name -----------------------------------------
+# Raku's default MAIN parsing stops reading options at the first positional, so
+# the spelling the refusal above prints — the option named after the dist it
+# follows — put `--no-test` in @modules and left the gate on, saying only
+# "skipped: --no-test — not in the ecosystem index" among the plan's lines.
+my %trailing = installer('Gate::Flaky', '--no-test');
+check %trailing<exit> == 0 && !%trailing<out>.contains('--no-test'),
+      'options: --no-test after the module name is an option, not a dist name';
+my %tdry = installer('Gate::Demo', '--dry-run');
+check %tdry<exit> == 0 && %tdry<out>.contains('dry run: nothing written'),
+      'options: …and --dry-run after it too';
+
+# ---- the index and the archive disagree about auth -------------------------
+# The store is keyed by the identity in the META, so the plan's pre-check —
+# which only has the index's — misses, and the archive has to be fetched
+# before anyone can tell. What must NOT follow is the rest of the cycle: a
+# build hook and a whole test suite run for a dist already in the store, all
+# to arrive at the engine's refusal.
+my %ren1 = installer('Gate::Renamed');
+check %ren1<exit> == 0 && %ren1<err>.contains('installed Gate::Renamed'),
+      'auth: a dist whose META renames its auth installs';
+my %ren2 = installer('Gate::Renamed');
+check %ren2<exit> == 0 && %ren2<out>.contains('already installed'),
+      'auth: …and a re-install is recognized on the archive\'s own identity';
+check !%ren2<err>.contains('testing Gate::Renamed'),
+      'auth: …before its suite is run again';
+
+# ---- a store whose blob went missing repairs itself -------------------------
+# "Already installed" is a REFUSAL, and it used to be decided by the short/
+# entry alone. Once sources/<sha> had gone missing under one, every reinstall
+# was refused for ever while `use` kept failing with "Could not find" — the one
+# damaged state the installer could not fix, and --check could only report.
+# Both halves (the store pre-check and the engine's own) now ask whether the
+# blob is still there.
+my $blob = $home.add('.raku/sources').dir.first({ .f && .slurp.contains('unit module Gate::Demo') });
+check $blob.defined, 'repair: the module blob is in the store';
+$blob.unlink if $blob;
+my %broken = installer('--check');
+check %broken<exit> != 0 && %broken<out>.contains('needs a missing blob'),
+      'repair: --check sees the blob is gone';
+my %repair = installer('Gate::Demo');
+check %repair<exit> == 0 && %repair<err>.contains('installed Gate::Demo'),
+      'repair: a plain install rewrites it, rather than answering "already installed"';
+my %rechk = installer('--check');
+check %rechk<exit> == 0 && %rechk<out>.contains('0 broken'),
+      'repair: …and the store is whole again';
+my $ruse = run 'env', "HOME={$home}", 'RAKULIB=', $EXE, '-e',
+               'use Gate::Demo; print which-version()', :out, :err;
+check $ruse.out.slurp(:close) eq '0.4.2', 'repair: the module loads once more';
+$ruse.err.slurp(:close);
 
 # ---- the trace log: every run leaves an attachable account ------------------
 # The support loop this closes: "install did not work on my machine" arrives

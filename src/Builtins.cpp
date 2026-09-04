@@ -4343,6 +4343,11 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 std::string ver  = meta.count("version") ? meta["version"].toStr() : mstr("ver");
                 std::string auth = mstr("auth");
                 std::string api  = mstr("api");
+                // NB the "\0"s append NOTHING — std::string + const char* stops at
+                // the terminator — so the id is the four fields CONCATENATED, and
+                // every dist-id on every store on disk was computed that way.
+                // Adding the separators would rename every record and orphan every
+                // installed distribution: this line is a format, not a hash call.
                 std::string distId = sha1hex(name + "\0" + ver + "\0" + auth + "\0" + api);
                 std::string distRoot = methodCall(dist, "IO", ValueList{}).toStr();
                 auto mkdirp = [](const std::string& p) {
