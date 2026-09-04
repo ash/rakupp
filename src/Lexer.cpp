@@ -850,6 +850,87 @@ void Lexer::runawayTerm(const std::string& close, const std::string& open, int s
                      line_, true);
 }
 
+// Index just past the balanced group that opens at src[p] — `(…)`, `[…]` or
+// `{…}` — with a nested '…'/"…" treated as opaque. npos when it never closes:
+// the caller then leaves the bracket to the ordinary scanner rather than
+// running away to end of input.
+static size_t balancedGroupEnd(const std::string& src, size_t p) {
+    static const char opens[] = "([{", closes[] = ")]}";
+    const char* which = (p < src.size() && src[p]) ? strchr(opens, src[p]) : nullptr;
+    if (!which) return std::string::npos;
+    const char open = src[p], close = closes[which - opens];
+    int depth = 0;
+    for (; p < src.size(); p++) {
+        char ch = src[p];
+        if (ch == '\\') { p++; continue; }
+        if (ch == '"' || ch == '\'') { // a nested string literal is opaque
+            char q = ch;
+            for (p++; p < src.size() && src[p] != q; p++)
+                if (src[p] == '\\') p++;
+            if (p >= src.size()) return std::string::npos;
+            continue;
+        }
+        if (ch == open) depth++;
+        else if (ch == close && --depth == 0) return p + 1;
+    }
+    return std::string::npos;
+}
+
+// Index just past the variable name and postfix chain that follow an
+// interpolation sigil at `p` (the byte after the sigil). This mirrors the chain
+// parseInterpString() accepts — `[…]`, `{…}`, `.name(…)`, `.(…)` — because those
+// groups are Raku CODE: a quote inside one belongs to that code and must not end
+// the string being lexed. Issue #65: `"@strings.join('"|"')"` ended at the quote
+// inside the argument list, and the remainder lexed as `| "…"` — a Junction.
+// `<…>` is deliberately left out: it cannot contain a delimiter, and scanning to
+// its `>` would swallow the rest of a `"$a<$b"` comparison.
+static size_t interpChainEnd(const std::string& src, size_t p) {
+    const size_t n = src.size();
+    size_t q = p;
+    if (q + 1 < n && src[q] && strchr("*!.^?", src[q]) &&
+        (ascii::isalpha((unsigned char)src[q + 1]) || src[q + 1] == '_')) q++; // twigil
+    const size_t nameStart = q;
+    while (q < n && (rakuIdentCont(src[q]) || (unsigned char)src[q] >= 0x80)) q++;
+    while (q + 1 < n && rakuIdentJoins(src[q], src[q + 1])) {
+        q++;
+        while (q < n && rakuIdentCont(src[q])) q++;
+    }
+    if (q == nameStart) return p; // no name after the sigil: nothing to protect
+    for (;;) {
+        size_t open = std::string::npos;
+        if (q < n && (src[q] == '[' || src[q] == '{' || src[q] == '(')) open = q;
+        else if (q + 1 < n && src[q] == '.' &&
+                 (src[q + 1] == '[' || src[q + 1] == '{' || src[q + 1] == '(')) open = q + 1;
+        if (open != std::string::npos) {
+            size_t e = balancedGroupEnd(src, open);
+            if (e == std::string::npos) break;
+            q = e;
+            continue;
+        }
+        // `.name`, optionally with a meta-sigil (`.^name`, `.?meth`, `.&f`) and
+        // optionally called. A bare `.name` copies through byte for byte — only
+        // the parser decides whether it interpolates — but consuming it here lets
+        // a LATER link in the chain still be protected.
+        if (q + 1 < n && src[q] == '.' &&
+            (ascii::isalpha((unsigned char)src[q + 1]) || src[q + 1] == '_' ||
+             ((src[q + 1] == '^' || src[q + 1] == '?' || src[q + 1] == '&') && q + 2 < n &&
+              (ascii::isalpha((unsigned char)src[q + 2]) || src[q + 2] == '_')))) {
+            size_t k = q + 1;
+            if (src[k] == '^' || src[k] == '?' || src[k] == '&') k++;
+            while (k < n && rakuIdentCont(src[k])) k++;
+            if (k < n && src[k] == '(') {
+                size_t e = balancedGroupEnd(src, k);
+                if (e == std::string::npos) break;
+                k = e;
+            }
+            q = k;
+            continue;
+        }
+        break;
+    }
+    return q;
+}
+
 Token Lexer::lexQuoted(char quote) {
     const int startLine = line_;
     advance(); // opening quote
@@ -905,6 +986,14 @@ Token Lexer::lexQuoted(char quote) {
                 raw += '\\';
                 if (!eof()) raw += advance();
             }
+        } else if (quote != '\'' && (c == '$' || c == '@' || c == '%' || c == '&')) {
+            // An interpolated variable's postfix chain is Raku code, so a quote
+            // inside it — `"@a.join("-")"`, `"%h{"k"}"` — is that code's own quote,
+            // not this string's closer. Copy the chain whole; parseInterpString()
+            // does the actual parsing later. With no chain to protect this is just
+            // the sigil, exactly as the literal branch would have appended it.
+            raw += c;
+            for (size_t end = interpChainEnd(src_, pos_); pos_ < end; ) raw += advance();
         } else if (c == '{' && quote != '\'') {
             // Interpolation code block: capture the balanced { … } as a unit so a
             // nested string ("…"/'…') inside it doesn't prematurely close the outer
@@ -1257,6 +1346,17 @@ bool Lexer::tryQuoteForm(Token& out) {
             { assignForm = true; assignOp = op; }
         else if (q >= src_.size() || src_[q] != d) return false;
     }
+    // A qq-family quote interpolates, so a variable's postfix chain inside it is
+    // Raku code and may legitimately carry this quote's delimiter:
+    // `qq{@a.join("}")}`. Scan such a chain as a unit, exactly as lexQuoted()
+    // does for `"…"`. Regex/subst parts are excluded — their own quote and
+    // character-class handling below owns that text.
+    bool interpChain = false;
+    if (!isRegex && !isSubst && !isTrans) {
+        std::string feats = (w.rfind("qq", 0) == 0) ? "sahfcb" : "";
+        quoteFeatAdverbs(adverbs, feats);
+        interpChain = feats.find_first_of("sah") != std::string::npos;
+    }
     bool patQuoteAware = (isRegex || isSubst) && !bracket; // regex/subst PATTERN: '...'/{...}/<...>/[...] protect the delimiter
     bool codeBlocks = (isRegex || isSubst); // regex/subst may contain { ... } embedded code
     // Perl-5 regex mode (rx:P5/…/) uses Perl bracket semantics where `[` does not
@@ -1277,6 +1377,11 @@ bool Lexer::tryQuoteForm(Token& out) {
         while (!eof()) {
             char ch = peek();
             if (ch == '\\') { classOpen = false; advance(); raw += '\\'; if (!eof()) raw += advance(); continue; }
+            if (interpChain && (ch == '$' || ch == '@' || ch == '%' || ch == '&')) {
+                raw += advance();
+                for (size_t e = interpChainEnd(src_, pos_); pos_ < e; ) raw += advance();
+                continue;
+            }
             // inside a { ... } code block (regex pattern OR subst replacement): it is
             // Raku, so track string quotes — a brace in a string ('}' / "}") is not a
             // block delimiter and must not miscount the nesting
