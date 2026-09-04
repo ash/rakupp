@@ -16,11 +16,13 @@ struct JsOptions {
     bool standalone = false;              // inline the runtime into the one file
     std::string rtPath = "./rakupp-rt.js"; // the sidecar's import path otherwise
     std::set<std::string> moduleExports;  // `is export` subs of `use`d modules (unused until modules land)
+    bool module = false;
+    std::string mapUrl;                   // when set: the `//# sourceMappingURL=` the program ends with (main writes the map beside it)                  // --module: an ES module exporting the program's subs, classes and MAIN instead of running it
 };
 
 // Transpile a whole program into a JavaScript program. Throws CodegenError on any
 // construct outside the JS core; the message carries the source line.
-std::string transpileToJs(Program& prog, const JsOptions& opt);
+std::string transpileToJs(Program& prog, const JsOptions& opt, std::string* dts = nullptr, std::string* map = nullptr);   // dts: the TypeScript declarations of a --module; map: the source map JSON
 
 // The runtime, assembled from src/js-rt/*.js (generated: src/JsRuntimeSrc.cpp).
 std::string jsRuntimeSource();

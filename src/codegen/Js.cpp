@@ -105,7 +105,7 @@ string rt(const string& name) { return jsIdent(name) ? "R." + name : "R[" + jsSt
 // Builtins the runtime exports by Raku name (src/js-rt/50-builtins.js). A call
 // to a name outside this table is a refusal, so the histogram names the gap.
 const std::set<string> kBuiltins = {
-    "boolOf", "isMatch", "isRegex", "smartmatchWith", "attrSet", "isFailure", "substMutate", "withDefault", "__radix", "__radix-list",
+    "module", "exportFn", "exportType", "exportMain", "boolOf", "isMatch", "isRegex", "smartmatchWith", "attrSet", "isFailure", "substMutate", "withDefault", "__radix", "__radix-list",
     "say", "print", "put", "note", "printf", "dd", "exit", "sqrt", "sin", "cos", "tan", "asin", "acos", "atan", "sinh", "cosh", "tanh", "exp", "cbrt",
     "log", "log2", "log10", "atan2", "floor", "ceiling", "truncate", "round", "sign", "is-prime", "expmod", "polymod", "rand", "srand", "min", "max", "sum",
     "elems", "end", "join", "reverse", "sort", "map", "grep", "first", "unique", "keys", "values", "kv", "pairs", "push", "append", "pop", "shift", "unshift",
@@ -303,7 +303,10 @@ struct JsGen {
     JsGen(Program& p, const JsOptions& o) : opt(o), prog(p) {}
 
     // -- output plumbing --
-    void line(int ind, const string& s) { out << string(ind * 4, ' ') << s << "\n"; }
+    // every JS line carries the Raku line of the statement it came from as a trailing
+    // marker; transpileToJs turns the markers into the source map and strips them
+    int pendingSrcLine = 0;
+    void line(int ind, const string& s) { out << string(ind * 4, ' ') << s; if (pendingSrcLine > 0 && !s.empty()) { out << " //@L" << pendingSrcLine; pendingSrcLine = 0; } out << "\n"; }
     string capture(const std::function<void()>& f) {
         std::ostringstream saved; saved.swap(out);
         f();
@@ -468,7 +471,11 @@ struct JsGen {
     bool isItemized(Expr* e) {
         if (e->kind == NK::VarExpr) { auto* v = static_cast<VarExpr*>(e); return v->name[0] == '$' && v->name != "$_" && !fn().params.count(v->name); }
         if (e->kind == NK::MethodCall) { auto* m = static_cast<MethodCall*>(e); return !m->hyper && !m->methodExpr && (m->method == "made" || m->method == "ast"); }   // .made lives in a scalar container
-        if (e->kind == NK::Index) { auto* ix = static_cast<Index*>(e); return ix->adverb.empty() && ix->index && !isSliceIndex(ix->index.get()); }
+        if (e->kind == NK::Index) {
+            auto* ix = static_cast<Index*>(e);
+            if (ix->base && ix->base->kind == NK::VarExpr && static_cast<VarExpr*>(ix->base.get())->name == "$/") return false;   // $<x>: a Match's captures are bound, not containers — `for $<pair>` iterates
+            return ix->adverb.empty() && ix->index && !isSliceIndex(ix->index.get());
+        }
         if (e->kind == NK::Unary) return static_cast<Unary*>(e)->op == "ctx$";
         return false;
     }
@@ -1062,7 +1069,6 @@ struct JsGen {
                 pat.erase(p, i + 2 - p + (i + 2 < pat.size() ? 1 : 0)); break;
             }
         }
-        if (pat.find(":P5 ") != string::npos || pat.find(":Perl5 ") != string::npos) refuse("a Perl 5 regex (:P5)", lineNo);
         if (pat.find('\x01') != string::npos) refuse("a regex with an interpolated sub-pattern", lineNo);
         Regex re(pat, flags);
         if (!re.ok()) refuse("a regex the engine could not parse: /" + pat + "/", lineNo);
@@ -1072,6 +1078,10 @@ struct JsGen {
             pure = false;
             return embedRegexCode(kind, text, lineNo);
         });
+        if (tree.find("{k:\"CondRef\"") != string::npos) refuse("a Perl 5 conditional group (?(N)…)", lineNo);
+        if (pat.find(":P5 ") != string::npos || pat.find(":Perl5 ") != string::npos) {   // the interpreter splices a variable's text into a P5 pattern; the tree cannot
+            for (size_t p = pat.find('$'); p != string::npos; p = pat.find('$', p + 1)) if (p + 1 < pat.size() && (ascii::isalpha((unsigned char)pat[p + 1]) || pat[p + 1] == '_') && (p == 0 || pat[p - 1] != '\\')) refuse("a variable interpolated into a Perl 5 regex", lineNo);
+        }
         string obj = "R.rx(" + tree + ", " + (adv.empty() ? "null" : "{ " + adv + " }") + ", " + jsStr(pattern) + ")";   // the source text is the gist
         return pure ? litConst(obj) : obj;
     }
@@ -1502,6 +1512,7 @@ struct JsGen {
 
     // ---- the statement switch ----
     void stmt(Stmt* s, int ind, bool tail) {
+        if (s->line > 0) pendingSrcLine = s->line;
         if (!s->label.empty() && !isLoopNode(s)) refuse("a label on a non-loop statement", s->line);
         switch (s->kind) {
             case NK::EmptyStmt: return;
@@ -2161,7 +2172,7 @@ struct JsGen {
 
     // -------------------------------------------------------------- classes --
     void classDecl(ClassDecl* c, int ind) {
-        if (c->isPackage) refuse("a package/module declaration", c->line);
+        if (c->isPackage) { if (moduleName.empty()) moduleName = c->name; emitStmts(c->body, ind, false); return; }   // `module X { … }`: its body, here
         // a grammar: its rules are compiled patterns the runtime's matcher resolves by name
         if (c->isAugment) refuse("augment", c->line);
         if (c->nameExpr) refuse("a class with a computed name", c->line);
@@ -2241,6 +2252,74 @@ struct JsGen {
         lastClassJs = jsName;
     }
     string lastClassJs;
+    string moduleName;
+    // --module: what the ES module exports — `is export` subs (every named sub when none is
+    // marked), classes, grammars, enums, and MAIN as a function of its argv
+    struct ExportEntry { string name, js, dts; };
+    std::vector<ExportEntry> exportsOf(const std::vector<StmtPtr>& ss) {
+        std::vector<ExportEntry> out;
+        bool anyMarked = false;
+        std::function<void(const std::vector<StmtPtr>&, bool)> walk = [&](const std::vector<StmtPtr>& stmts, bool count) {
+            for (auto& sp : stmts) {
+                Stmt* s = sp.get();
+                if (s->kind == NK::SubDecl) { auto* d = static_cast<SubDecl*>(s); if (!d->name.empty() && !d->isMethod && !d->isSubmethod && d->isExport) anyMarked = true; }
+                if (s->kind == NK::ClassDecl && static_cast<ClassDecl*>(s)->isPackage) walk(static_cast<ClassDecl*>(s)->body, count);
+            }
+        };
+        walk(ss, true);
+        std::set<string> seen;
+        std::function<void(const std::vector<StmtPtr>&)> collect = [&](const std::vector<StmtPtr>& stmts) {
+            for (auto& sp : stmts) {
+                Stmt* s = sp.get();
+                if (s->kind == NK::SubDecl) {
+                    auto* d = static_cast<SubDecl*>(s);
+                    if (d->name.empty() || d->isMethod || d->isSubmethod || d->name == "MAIN" || seen.count(d->name)) continue;
+                    if (anyMarked && !d->isExport) continue;
+                    seen.insert(d->name); out.push_back({ d->name, "R.exportFn(" + mangleSub(d->name) + ", " + jsStr(d->name) + ")", dtsSub(d) });
+                } else if (s->kind == NK::ClassDecl) {
+                    auto* c = static_cast<ClassDecl*>(s);
+                    if (c->isPackage) { collect(c->body); continue; }
+                    if (c->name.empty() || c->isStubDecl || seen.count(c->name)) continue;
+                    seen.insert(c->name); out.push_back({ c->name, "R.exportType(" + mangleType(c->name) + ")", (c->isGrammar || !c->rules.empty()) ? "RakuGrammar" : "RakuClass" });
+                } else if (s->kind == NK::EnumDecl) {
+                    auto* e = static_cast<EnumDecl*>(s);
+                    if (e->name.empty() || seen.count(e->name)) continue;
+                    seen.insert(e->name); out.push_back({ e->name, "R.exportType(" + mangleType(e->name) + ")", "RakuEnum" });
+                }
+            }
+        };
+        collect(ss);
+        return out;
+    }
+    std::vector<ExportEntry> exportTable;   // filled by program() under --module
+    // the TypeScript type of a parameter / return: the core scalars by name, containers by sigil, the rest `any`
+    static string dtsType(const Param& p) {
+        if (p.sigil == '@') return "any[]";
+        if (p.sigil == '%') return "Record<string, any>";
+        if (p.sigil == '&') return "(...args: any[]) => any";
+        string t = p.type; if (t.size() > 2 && (t.compare(t.size() - 2, 2, ":D") == 0 || t.compare(t.size() - 2, 2, ":U") == 0)) t = t.substr(0, t.size() - 2);
+        if (t == "Int" || t == "Num" || t == "Rat" || t == "Numeric" || t == "Real" || t == "UInt" || t == "int" || t == "num") return "number";
+        if (t == "Str" || t == "str") return "string";
+        if (t == "Bool") return "boolean";
+        if (t == "Positional" || t == "List" || t == "Array") return "any[]";
+        if (t == "Associative" || t == "Hash" || t == "Map") return "Record<string, any>";
+        if (t == "Callable" || t == "Code" || t == "Sub" || t == "Block") return "(...args: any[]) => any";
+        return "any";
+    }
+    static string dtsIdent(const string& raku) { string o; for (unsigned char c : raku) o += (ascii::isalnum(c) || c == '_') ? (char)c : '_'; if (o.empty() || ascii::isdigit((unsigned char)o[0])) o = "_" + o; return o; }
+    string dtsSub(SubDecl* d) {
+        if (d->isMulti) return "(...args: any[]) => any";
+        string pos, named; bool slurpy = false;
+        for (auto& p : d->params) {
+            if (p.invocant) continue;
+            if (p.named) { named += (named.empty() ? "" : "; ") + dtsIdent(p.namedKey.empty() ? (p.name.size() > 1 ? p.name.substr(1) : p.name) : p.namedKey) + "?: " + dtsType(p); continue; }
+            if (p.slurpy) { slurpy = true; continue; }
+            pos += (pos.empty() ? "" : ", ") + dtsIdent(p.name.size() > 1 ? p.name.substr(1) : "arg") + (p.optional || p.defaultVal ? "?" : "") + ": " + dtsType(p);
+        }
+        if (slurpy) pos += (pos.empty() ? "" : ", ") + string("...rest: any[]");
+        if (!named.empty()) pos += (pos.empty() ? "" : ", ") + string("named?: { ") + named + " }";
+        return "(" + pos + ") => any";
+    }
     void enumDecl(EnumDecl* e, int ind) {
         string tyName = e->name.empty() ? "_anon_enum" + std::to_string(++labelN) : e->name;
         string ty = mangleType(tyName);
@@ -2325,7 +2404,18 @@ struct JsGen {
             topics.push_back("v___0");
             emitStmts(prog.stmts, 1, false);
             topics.pop_back();
-            if (hasMain) {
+            if (opt.module) {   // hand the exports back instead of running MAIN
+                exportTable = exportsOf(prog.stmts);
+                string table;
+                for (auto& e : exportTable) table += (table.empty() ? "" : ", ") + jsStr(e.name) + ": " + e.js;
+                if (hasMain) {
+                    string cands;
+                    for (auto& mc : mainCands) cands += (cands.empty() ? "" : ", ") + string("{ fn: ") + mc.fn + ", params: [" + mainParams(*mc.params) + "] }";
+                    table += (table.empty() ? "" : ", ") + string("MAIN: R.exportMain([") + cands + "])";
+                    exportTable.push_back({ "MAIN", "" });
+                }
+                line(1, "return { " + table + " };");
+            } else if (hasMain) {
                 string cands;
                 for (auto& mc : mainCands) cands += (cands.empty() ? "" : ", ") + string("{ fn: ") + mc.fn + ", params: [" + mainParams(*mc.params) + "] }";
                 line(1, "return R.runMain([" + cands + "], R.host.argv);");
@@ -2381,9 +2471,72 @@ std::string jsRuntimeModule() {
            + jsRuntimeSource() + "\nexport default R;\n";
 }
 
-std::string transpileToJs(Program& prog, const JsOptions& opt) {
+// ---- source maps ----------------------------------------------------------
+// Each generated line maps to the Raku line of its statement (column 0), the
+// standard's "one segment per line" shape: enough for stack traces and a
+// debugger's line stepping. Fields are base64 VLQ, relative to the previous
+// segment as the format requires.
+static void vlq(std::string& o, long v) {
+    static const char* B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    unsigned long u = v < 0 ? ((unsigned long)(-v) << 1) | 1 : ((unsigned long)v << 1);
+    do { unsigned d = u & 31; u >>= 5; if (u) d |= 32; o += B64[d]; } while (u);
+}
+static std::string jsonStr(const std::string& s) {
+    std::string o = "\"";
+    for (unsigned char c : s) {
+        if (c == '"') o += "\\\""; else if (c == '\\') o += "\\\\"; else if (c == '\n') o += "\\n"; else if (c == '\r') o += "\\r"; else if (c == '\t') o += "\\t";
+        else if (c < 0x20) { char b[8]; std::snprintf(b, sizeof b, "\\u%04x", c); o += b; } else o += (char)c;
+    }
+    return o + "\"";
+}
+// strip the ` //@Lnn` markers, collecting (generated line → source line)
+static std::string stripLineMarkers(const std::string& text, std::vector<int>& srcLines) {
+    std::string out; out.reserve(text.size());
+    size_t pos = 0; int cur = 0;
+    while (pos < text.size()) {
+        size_t nl = text.find('\n', pos); if (nl == std::string::npos) nl = text.size();
+        std::string l = text.substr(pos, nl - pos);
+        size_t m = l.rfind(" //@L");
+        if (m != std::string::npos && m + 5 < l.size() && l.find_first_not_of("0123456789", m + 5) == std::string::npos) { cur = std::atoi(l.c_str() + m + 5); l.erase(m); }
+        srcLines.push_back(cur);
+        out += l; out += '\n';
+        pos = nl + 1;
+    }
+    return out;
+}
+static std::string sourceMapJson(const std::vector<int>& srcLines, const std::string& file, const std::string& srcName, const std::string& srcText) {
+    std::string mappings; long prevSrc = 0;
+    for (size_t i = 0; i < srcLines.size(); i++) {
+        if (i) mappings += ';';
+        if (srcLines[i] <= 0) continue;
+        long s = srcLines[i] - 1;
+        vlq(mappings, 0); vlq(mappings, 0); vlq(mappings, s - prevSrc); vlq(mappings, 0);
+        prevSrc = s;
+    }
+    return "{\"version\":3,\"file\":" + jsonStr(file) + ",\"sources\":[" + jsonStr(srcName) + "],\"sourcesContent\":[" + jsonStr(srcText) + "],\"names\":[],\"mappings\":\"" + mappings + "\"}\n";
+}
+std::string transpileToJs(Program& prog, const JsOptions& opt, std::string* dts, std::string* map) {
     JsGen g(prog, opt);
     string body = g.program();
+    if (dts && opt.module) {
+        std::ostringstream d;
+        d << "// Generated by `rakupp --target=js --module` — rakupp " << opt.version << ", source " << sourceHash(opt.srcText) << "\n";
+        d << "export interface RakuObject { [method: string]: any; toString(): string; }\n";
+        d << "export interface RakuMatch extends RakuObject { made: any; [capture: string]: any; }\n";
+        d << "export interface RakuClass { (...args: any[]): RakuObject; new: (...args: any[]) => RakuObject; type: any; }\n";
+        d << "export interface RakuGrammar extends RakuClass { parse(text: string, opts?: Record<string, any>): RakuMatch | undefined; subparse(text: string, opts?: Record<string, any>): RakuMatch | undefined; }\n";
+        d << "export interface RakuEnum extends RakuClass { [member: string]: any; }\n";
+        for (auto& e : g.exportTable) {
+            string ty = e.name == "MAIN" ? "(...argv: string[]) => any" : e.dts;
+            if (jsIdent(e.name)) d << "export const " << e.name << ": " << ty << ";\n";
+            else d << "declare const " << JsGen::dtsIdent(e.name) << ": " << ty << ";\nexport { " << JsGen::dtsIdent(e.name) << " as " << jsStr(e.name) << " };\n";
+        }
+        d << "declare const _default: { " ;
+        bool first = true;
+        for (auto& e : g.exportTable) { d << (first ? "" : "; ") << jsStr(e.name) << ": " << (e.name == "MAIN" ? "(...argv: string[]) => any" : e.dts); first = false; }
+        d << " };\nexport default _default;\n";
+        *dts = d.str();
+    }
     std::ostringstream o;
     o << "// Generated by `rakupp --target=js` — rakupp " << opt.version << ", source " << sourceHash(opt.srcText) << "\n";
     o << jsManifestLine(opt, "js");
@@ -2394,11 +2547,30 @@ std::string transpileToJs(Program& prog, const JsOptions& opt) {
         o << "// ---- rakupp-rt.js (embedded by --standalone) ----\n";
         o << jsRuntimeSource();
         o << "\n__rakupp_program(R);\n";
+    } else if (opt.module) {
+        // an ES module: the mainline runs at import (top-level await), then the exports
+        o << "import R from " << jsStr(opt.rtPath) << ";\n";
+        o << "const __m = await R.module(" << (g.mainAsync ? "async " : "") << "() => {\n" << body << "});\n";
+        int i = 0;
+        for (auto& e : g.exportTable) {
+            string tmp = "__e" + std::to_string(++i);
+            o << "const " << tmp << " = __m[" << jsStr(e.name) << "];\n";
+            o << "export { " << tmp << " as " << (jsIdent(e.name) ? e.name : jsStr(e.name)) << " };\n";
+        }
+        o << "export default __m;\n";
     } else {
         o << "import R from " << jsStr(opt.rtPath) << ";\n";
         o << "R.main(" << (g.mainAsync ? "async " : "") << "() => {\n" << body << "}, { mainExit: true });\n";
     }
-    return o.str();
+    std::vector<int> srcLines;
+    std::string text = stripLineMarkers(o.str(), srcLines);
+    if (map) {
+        std::string file = opt.mapUrl.size() > 4 ? opt.mapUrl.substr(0, opt.mapUrl.size() - 4) : "";
+        std::string srcName = opt.srcPath; size_t sl = srcName.find_last_of("/\\"); if (sl != std::string::npos) srcName = srcName.substr(sl + 1);
+        *map = sourceMapJson(srcLines, file, srcName, opt.srcText);
+    }
+    if (!opt.mapUrl.empty()) text += "//# sourceMappingURL=" + opt.mapUrl + "\n";
+    return text;
 }
 
 std::string jsWasmWrapper(const std::string& src, const JsOptions& opt) {

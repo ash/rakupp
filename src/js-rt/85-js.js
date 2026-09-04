@@ -58,7 +58,7 @@ function fromJs(v) {
         case 'object':
             if (v === null) return Nil;
             if (Array.isArray(v)) return mkArray(v.map(fromJs));
-            if (v instanceof RObj || v instanceof RList || v instanceof RHash || v instanceof RType || v instanceof RJsObj) return v;   // ours, coming back
+            if (v instanceof RObj || v instanceof RList || v instanceof RHash || v instanceof RType || v instanceof RJsObj || v instanceof RNamed || v instanceof RMatch || v instanceof RRegex || v instanceof REnum || v instanceof RPair) return unwrapped.get(v) || v;   // ours, coming back (a proxy hands back its object)
             if (v instanceof Error && v.raku) return v.raku;
             return new RJsObj(v);
     }

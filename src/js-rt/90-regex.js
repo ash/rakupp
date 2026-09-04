@@ -23,6 +23,15 @@ function rx(tree, adv, src) { return new RRegex(tree, adv, src); }
 
 // ---- character tests ------------------------------------------------------------
 const propCache = new Map();
+// Raku's property spellings → JavaScript's: the POSIX-style names, the long category names; a few are predicates
+const PROP_ALIAS = { alpha: 'Alphabetic', Alpha: 'Alphabetic', digit: 'Nd', Digit: 'Nd', space: 'White_Space', Space: 'White_Space', upper: 'Uppercase', Upper: 'Uppercase', lower: 'Lowercase', Lower: 'Lowercase', punct: 'P', Punct: 'P', xdigit: 'Hex_Digit', XDigit: 'Hex_Digit', cntrl: 'Cc', Cntrl: 'Cc', Letter: 'L', Number: 'N', Punctuation: 'P', Symbol: 'S', Separator: 'Z', Mark: 'M', Other: 'C', Cased_Letter: 'LC' };
+const PROP_FN = { alnum: (cp, ch) => ccFlag('a', cp, ch) || ccFlag('d', cp, ch), word: (cp, ch) => ccFlag('w', cp, ch), blank: (cp, ch) => ccFlag('b', cp, ch), graph: (cp, ch) => ccFlag('g', cp, ch), print: (cp, ch) => ccFlag('r', cp, ch), ident: (cp, ch) => cp === 0x5F || ccFlag('a', cp, ch) };
+function propTest(name, cp, ch) {
+    const fn = PROP_FN[name]; if (fn) return fn(cp, ch);
+    const re = propRe(PROP_ALIAS[name] || name);
+    if (!re) throw new RakuError(`Unrecognized Unicode property '${name}' in a regex`, 'X::Syntax::Regex');
+    return re.test(ch);
+}
 function propRe(name) {
     let r = propCache.get(name);
     if (r === undefined) {
@@ -106,8 +115,7 @@ function classMatchAt(n, s, pos) {          // → end of the consumed grapheme,
     if (!hit && n.uprop) {
         let name = n.uprop, neg = false;
         if (name[0] === '!') { neg = true; name = name.slice(1); }
-        const re = propRe(name);
-        const r = re ? re.test(String.fromCodePoint(cp)) : true;
+        const r = propTest(name, cp, String.fromCodePoint(cp));
         hit = neg ? !r : r;
     }
     if (n.negFlags && hit && classFlagsMatch(n.negFlags, cp, String.fromCodePoint(cp))) hit = false;
@@ -128,7 +136,7 @@ function ltmReach(n, from, ctx, depth) {
     const s = ctx.s, out = new Map();
     const add = (p, l) => { const c = out.get(p); if (c === undefined || l > c) out.set(p, l); };
     const gapAt = () => ({ pos: from, gap: true });
-    if (!n || depth > 40) return gapAt();
+    if (!n || depth > 6) return gapAt();   // enough prefix to rank on; a recursive grammar would otherwise be scanned to its leaves at every level
     switch (n.k) {
         case 'Lit': { const L = n.lit.length; const want = n.icase ? n.lit.toLowerCase() : n.lit; for (const [p, l] of from) { const a = s.slice(p, p + L); if ((n.icase ? a.toLowerCase() : a) === want && a.length === L) add(p + L, l + L); } return { pos: out, gap: false }; }
         case 'Any': for (const [p, l] of from) if (p < s.length) add(clusterEnd(s, p), l); return { pos: out, gap: false };
@@ -150,7 +158,8 @@ function ltmReach(n, from, ctx, depth) {
             const kid = n.kids[0], min = n.min, max = n.max;
             let cur = from, gap = false;
             if (min === 0) for (const [p, l] of from) add(p, l);
-            for (let i = 0; (max < 0 || i < max) && i < 100; i++) {
+            let i = 0;
+            for (; (max < 0 || i < max) && i < 100; i++) {
                 const r = ltmReach(kid, cur, ctx, depth + 1);
                 if (r.gap) { gap = true; for (const [p, l] of r.pos) add(p, l); break; }
                 if (!r.pos.size) break;
@@ -161,6 +170,7 @@ function ltmReach(n, from, ctx, depth) {
                 if (!grew && i + 1 >= min) break;
                 cur = next;
             }
+            if (i >= 100 && (max < 0 || i < max)) gap = true;   // the scan stopped, not the pattern: what follows is not required
             return { pos: out, gap };
         }
         case 'Subrule': {

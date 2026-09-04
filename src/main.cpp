@@ -930,6 +930,7 @@ static int declCheckGate(const std::string& src, const std::string& fileName,
 
 // ---- --target=js ------------------------------------------------------------
 static bool g_jsVerify = false;
+static bool g_jsModule = false;         // --module: emit an ES module that exports instead of running
 static bool g_jsRuntimeOnly = false;
 static std::string g_jsFallback;
 
@@ -989,8 +990,12 @@ static int compileJs(const std::string& src, const std::string& srcName, std::st
     jo.srcText = src;
     jo.version = RAKUPP_VERSION;
     jo.standalone = g_standalone;
-    std::string js;
+    jo.module = g_jsModule;
+    if (g_jsModule && g_standalone) { std::cerr << "--module writes an ES module; --standalone cannot export (drop one of them)\n"; return 5; }
+    if (g_jsModule && g_jsVerify) { std::cerr << "--verify runs a program; a --module has nothing to run\n"; return 5; }
+    std::string js, dts, srcMap;
     bool wasm = false;
+    if (!outPath.empty()) { std::string base = outPath; size_t sl = base.find_last_of("/\\"); if (sl != std::string::npos) base = base.substr(sl + 1); jo.mapUrl = base + ".map"; }
     try {
         Lexer lexer(src);
         Parser parser(lexer.tokenize());
@@ -1000,7 +1005,7 @@ static int compileJs(const std::string& src, const std::string& srcName, std::st
         std::vector<ModuleSkip> skips; std::set<std::string> natives;
         auto mods = collectModuleGraph(prog, effectiveSearchPath(libPaths), &jo.moduleExports, &skips, &natives);
         for (auto& m : mods) if (m.name != "JS") throw CodegenError{"a `use`d module (" + m.name + ")"};   // JS is the interop stub the emitter knows
-        js = transpileToJs(prog, jo);
+        js = transpileToJs(prog, jo, &dts, &srcMap);
     } catch (const ParseError& e) {
         std::cerr << "===SORRY!=== Parse error at line " << e.line << ": " << e.what() << "\n";
         return 2;
@@ -1018,7 +1023,7 @@ static int compileJs(const std::string& src, const std::string& srcName, std::st
         // script (an ES module needs the host's module detection or a package.json)
         std::string vpath = (outPath.empty() ? std::string(".rakupp-verify-") + std::to_string((long long)getpid()) : outPath) + ".verify.js";
         std::string runnable = js;
-        if (!wasm && !g_standalone) { JsOptions so = jo; so.standalone = true;
+        if (!wasm && !g_standalone) { JsOptions so = jo; so.standalone = true; so.mapUrl.clear();
             Lexer lexer(src); Parser parser(lexer.tokenize()); parser.libPaths_ = effectiveSearchPath(libPaths); parser.srcFile_ = srcName;
             Program prog = parser.parseProgram(); runnable = transpileToJs(prog, so); }
         { std::ofstream f = openOut(vpath); if (!f) { std::cerr << "Cannot write " << vpath << "\n"; return 5; } f << runnable; }
@@ -1038,6 +1043,16 @@ static int compileJs(const std::string& src, const std::string& srcName, std::st
         std::string rtPath = dir + "rakupp-rt.js";
         std::ofstream f = openOut(rtPath); if (!f) { std::cerr << "Cannot write " << rtPath << "\n"; return 5; }
         f << jsRuntimeModule();
+    }
+    if (!wasm && !srcMap.empty()) {   // the source map beside the program: OUT.js.map, named by the program's last line
+        std::ofstream f = openOut(outPath + ".map"); if (!f) { std::cerr << "Cannot write " << outPath << ".map\n"; return 5; }
+        f << srcMap;
+    }
+    if (g_jsModule && !dts.empty()) {   // the TypeScript declarations beside the module: X.js → X.d.ts
+        std::string dpath = outPath; if (dpath.size() > 3 && dpath.compare(dpath.size() - 3, 3, ".js") == 0) dpath = dpath.substr(0, dpath.size() - 3); else if (dpath.size() > 4 && dpath.compare(dpath.size() - 4, 4, ".mjs") == 0) dpath = dpath.substr(0, dpath.size() - 4);
+        dpath += ".d.ts";
+        std::ofstream f = openOut(dpath); if (!f) { std::cerr << "Cannot write " << dpath << "\n"; return 5; }
+        f << dts;
     }
     if (!g_quiet) std::cerr << "Compiled (js" << (wasm ? ", wasm wrapper" : "") << ") " << srcName << " -> " << outPath << "\n";
     return 0;
@@ -1636,6 +1651,7 @@ int main(int argc, char** argv) {
             // the interpreter and the JS host and emits only on agreement;
             // --fallback=wasm opts in to the WebAssembly-wrapper tier.
             if (a == "--verify") { g_jsVerify = true; continue; }
+            if (a == "--module") { g_jsModule = true; continue; }
             if (a == "--runtime") { g_jsRuntimeOnly = true; continue; }
             if (a.rfind("--fallback=", 0) == 0) {
                 std::string f = a.substr(11);
@@ -1800,6 +1816,7 @@ int main(int argc, char** argv) {
             }
         }
         if (!outPath.empty() && !isCompileMode(mode) && mode != Mode::Js) return illegalOpt("-o");
+        if (g_jsModule && mode != Mode::Js) return illegalOpt("--module");
         if ((g_jsVerify || g_jsRuntimeOnly || !g_jsFallback.empty()) && mode != Mode::Js) return illegalOpt(g_jsVerify ? "--verify" : g_jsRuntimeOnly ? "--runtime" : "--fallback");
         if (optimize && !isCompileMode(mode) && mode != Mode::Cpp) return illegalOpt("-O");
         // --slim shapes the LINK of a compiled binary, so it means nothing to
@@ -1953,7 +1970,8 @@ int main(int argc, char** argv) {
 "                               (add -O to print the optimized codegen instead)\n"
 "  rakupp --target=js SRC       Transpile to JavaScript (to stdout; -o OUT.js writes\n"
 "                               the program and its runtime rakupp-rt.js beside it;\n"
-"                               --standalone inlines the runtime). --verify runs the\n"
+"                               --standalone inlines the runtime; --module exports the\n"
+"                               subs, classes and MAIN instead of running). --verify runs the\n"
 "                               program under the interpreter and under node and\n"
 "                               emits only if they agree; --fallback=wasm accepts a\n"
 "                               program outside the JS core by wrapping the WASM engine;\n"
@@ -2274,7 +2292,7 @@ int main(int argc, char** argv) {
             if (!g_quiet) std::cerr << "Wrote the JavaScript runtime -> " << outPath << "\n";
             return 0;
         }
-        if (!haveSrc) { std::cerr << "Usage: rakupp --target=js (FILE | -e CODE) [-o OUT.js] [--standalone] [--verify] [--fallback=wasm]\n       rakupp --target=js --runtime [-o rakupp-rt.js]\n"; return 4; }
+        if (!haveSrc) { std::cerr << "Usage: rakupp --target=js (FILE | -e CODE) [-o OUT.js] [--standalone | --module] [--verify] [--fallback=wasm]\n       rakupp --target=js --runtime [-o rakupp-rt.js]\n"; return 4; }
         return compileJs(src, fileName, outPath, exePath, libPaths);
     }
 

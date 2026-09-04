@@ -224,6 +224,73 @@ function usage(cands) {
 
 // The program entry: install the host, run, catch what the interpreter's main
 // catches, flush, and leave an exit code.
+// --module: the mainline runs at import time; its exceptions reach the importer as
+// JavaScript errors; the returned table is what the module exports
+function moduleInit(body) {
+    startTime = host.now();
+    ARGS = mkArray(host.argv.slice());
+    ENV = new RHash(new Map(host.env));
+    let r;
+    try { r = body(); } catch (e) { host.flush(); throw toJs(e); }
+    if (r && typeof r.then === 'function') return r.then(v => { host.flush(); return v; }, e => { host.flush(); throw toJs(e); });
+    host.flush();
+    return Promise.resolve(r);
+}
+// what crosses OUT of an exported routine: values by copy, objects and matches
+// as proxies whose properties call the Raku methods
+const unwrapped = new WeakMap();
+function exportVal(v) {
+    if (v instanceof RObj || v instanceof RMatch) return wrapObj(v);
+    if (v instanceof RList || v instanceof RSeq) return arr(v).map(exportVal);
+    if (v instanceof RHash) { const o = {}; for (const [k, x] of v.m) o[k] = exportVal(x); return o; }
+    if (v instanceof RPair) { const o = {}; o[str(v.k)] = exportVal(v.v); return o; }
+    if (v instanceof RSlip) return v.a.map(exportVal);
+    return toJs(v);
+}
+function wrapObj(o) {
+    const p = new Proxy(o, {
+        get(t, k) {
+            if (typeof k !== 'string') return t[k];
+            if (k === 'then') return undefined;
+            if (k === 'raku') return t;
+            if (k === 'toString') return () => str(t);
+            if (k === 'toJSON') return () => exportVal(t instanceof RMatch ? t.Str() : t);
+            if (t instanceof RMatch) {   // captures are properties: m.k, m[0], m.made
+                if (/^\d+$/.test(k)) return exportVal(t.pos(Number(k)));
+                if (t.named.has(k)) return exportVal(t.name(k));
+                if (k === 'made' || k === 'ast') return exportVal(t.made === undefined ? Nil : t.made);   // a value, not a method
+            }
+            if (can(t, k)) return (...a) => outCall(() => mc(t, k, ...inArgs(a)));
+            if (k in t) { const x = t[k]; return typeof x === 'function' ? x.bind(t) : exportVal(x); }
+            return undefined;
+        },
+        has(t, k) { return (typeof k === 'string' && can(t, k)) || k in t; },
+    });
+    unwrapped.set(p, o);
+    return p;
+}
+// arguments coming IN from JavaScript: a trailing plain object is the named arguments; a
+// Raku exception on the way out is a JavaScript Error carrying it as `.raku`
+const isPlainObj = (x) => x !== null && typeof x === 'object' && (Object.getPrototypeOf(x) === Object.prototype || Object.getPrototypeOf(x) === null);
+function inArgs(a) {
+    const out = a.map(fromJs);
+    if (a.length && isPlainObj(a[a.length - 1])) out[out.length - 1] = named(Object.entries(a[a.length - 1]).map(([k, v]) => [k, fromJs(v)]));
+    return out;
+}
+function outCall(f) { try { return exportVal(f()); } catch (e) { throw toJs(e); } finally { host.flush(); } }   // `say` output leaves with the call
+function exportFn(fn, name) { const f = (...a) => outCall(() => fn(...inArgs(a))); Object.defineProperty(f, 'name', { value: name }); return f; }
+function exportMain(cands) { return (...argv) => outCall(() => runMain(cands, argv.map(String))); }
+function exportType(T) {
+    const C = (...a) => outCall(() => construct(T, ...inArgs(a)));
+    Object.defineProperty(C, 'name', { value: T.name });
+    C.new = C; C.type = T;
+    if (T.mro.some(t => t.rules)) {
+        C.parse = (s, o) => outCall(() => { const a = inArgs(o ? [s, o] : [s]); return grammarParse(T, a[0], a, false); });
+        C.subparse = (s, o) => outCall(() => { const a = inArgs(o ? [s, o] : [s]); return grammarParse(T, a[0], a, true); });
+    }
+    if (T.isEnum && T.enumValues) for (const e of T.enumValues) C[e.key] = e;
+    return C;
+}
 function main(body, opts) {
     startTime = host.now();
     ARGS = mkArray(host.argv.slice());
@@ -259,4 +326,4 @@ function reportUncaught(e) {
 function setUsage(s) { usageText = s; }
 function envGet(k) { const v = host.env.get(k); return v === undefined ? Any : v; }
 
-Object.assign(R, { host, dynVar, atEnd, runMain, main, reportUncaught, setUsage, envGet, STDIN, STDOUT, STDERR, mkProc, usage });
+Object.assign(R, { host, dynVar, atEnd, runMain, main, module: moduleInit, exportFn, exportMain, exportType, exportVal, wrapObj, reportUncaught, setUsage, envGet, STDIN, STDOUT, STDERR, mkProc, usage });

@@ -745,6 +745,64 @@ Where the code decided differently from the draft:
   Rakudo answer the two matches, and `[ %h ].elems` is 1 where Rakudo
   flattens the hash (2). Then three regressions the gate caught and the fixes: `:my` variables inside regex blocks belong to the enclosing routine, `for $param` over a bound Blob iterates (a parameter is bound, not a container, so only a variable the body writes through `$_` is aliased), a Regex held in a scalar matches `$_` in boolean context and as a bare statement. Gate 18: **117 in-core and agreeing of 442, 254 refused, 71 disagreeing.**
 
-Next: `:P5` (a port of the Perl 5 pattern parser, or refuse-and-fall
-back), the JSON grammar workload as a speed check of the ranker, then the
-P4 remainder (`sleep` in a Worker, source maps, `.d.ts`, the npm recipe).
+- **P3, third sitting (2026-09-04): `:P5`, the JSON workload, three
+  ranker/runtime gaps.** `:P5` patterns need no port: the engine's Perl 5
+  parser builds the same tree, so the refusal is gone; what stays refused
+  is `(?(N)…)` (the tree's `CondRef`) and a variable inside a P5 pattern
+  (the interpreter splices its text into the source). The JSON grammar
+  workload ([jg.raku](../../../tools/bench/grammar-json/jg.raku), `canon`
+  mode) agrees byte for byte on all four corpora under node, after three
+  fixes it forced: every Unicode property class (`<:alpha>`, `<:Lu>`,
+  `<:Letter>`) matched anything because Raku's spellings are not
+  JavaScript's (an alias table and predicates now; an unknown property
+  dies instead of matching), the ranker's repetition cap made a long
+  array's prefix look unmatchable (a truncated scan is now a gap, not a
+  failure), and `for $<pair>` iterated once over the list (a Match's
+  captures are bound, not containers). The ranker's expansion depth is
+  bounded at 6 like the NFA's recursion guard: deep.json went from 1524 ms
+  to 324 ms. Best of 3, ms, interpreter / node 24:
+
+  | corpus | interpreter | node |
+  |---|---|---|
+  | numbers.json (146 KB) | 196 | 171 |
+  | strings.json (224 KB) | 305 | 399 |
+  | api.json (201 KB) | 398 | 256 |
+  | deep.json (161 KB) | 483 | 324 |
+
+  `sleep` already blocks for real under Node, Bun and Deno
+  (`Atomics.wait` on the main thread; the browser falls back to a spin), so
+  that P4 item is done. Gate 19: **119 in-core and agreeing of 442, 252 refused, 71 disagreeing.**
+
+- **P4, `--module` and the npm recipe (2026-09-04).** `rakupp --target=js
+  --module X.rakumod -o x.js` writes an ES module (the mainline runs at
+  import under top-level `await`; `R.module` is the entry) that exports the
+  `is export` subs — every named sub when none is marked — the classes,
+  grammars and enums, and `MAIN` as a function of its argv; names that are
+  not JavaScript identifiers are exported under their Raku spelling (ES2022
+  string export names). `unit module X;` / `module X { … }` are accepted.
+  The boundary: a trailing plain object is the named arguments, a sub's
+  result crosses as in `use JS`, an object or a Match as a proxy whose
+  properties call the Raku methods (captures and `.made` are properties),
+  a Raku exception as a JavaScript Error carrying `.raku`; `say` output is
+  flushed with every call. Beside the module, `x.d.ts` declares each export
+  from its signature (`Int`→`number`, `Str`→`string`, `@`→`any[]`, named
+  parameters as a trailing `named?: {…}`, multis as `(...args) => any`),
+  and the classes as `RakuClass`/`RakuGrammar`/`RakuEnum`. The npm shape
+  is the module, its `.d.ts`, `rakupp-rt.js` and a `package.json` with
+  `"type": "module"` — [JS.md](../../guide/JS.md) has it. `--module`
+  excludes `--standalone` and `--verify`. Two suite checks build a module
+  and import it from a `.mjs` under node.
+
+- **P4, source maps (same day).** Every statement's first generated line
+  carries its Raku line as a trailing marker (`//@L12`) through the
+  emitter's buffers; `transpileToJs` strips the markers and builds the
+  standard one-segment-per-line mappings (base64 VLQ, column 0). `-o
+  prog.js` writes `prog.js.map` and ends the program with the
+  `sourceMappingURL` line; `--verify` and stdout output carry none. Under
+  `node --enable-source-maps` a JavaScript-level error's stack names the
+  `.raku` line; a `die` still prints the Raku message alone, as the
+  interpreter does. That closes P4 as planned: `use JS`, `start`/`await`,
+  `sleep`, `--module` with `.d.ts`, the npm shape, source maps.
+
+Next: the design-level disagreements (itemization, allomorphs), then
+`react`/`supply`/`Channel` as their own sitting.

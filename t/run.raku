@@ -435,7 +435,31 @@ section('--target=js (JavaScript backend)');
         ok($w.exitcode == 0 && $w.out.slurp(:close).contains('"mode":"js-wasm"'), '--fallback=wasm emits the WebAssembly wrapper with its manifest');
         my $i = run($*EXECUTABLE, '--exe-info', $js.Str, :out, :err);
         ok($i.out.slurp(:close).contains('"mode":"js"'), '--exe-info reads a .js manifest');
+        my $map = $js.Str ~ '.map';
+        ok($map.IO.e && $map.IO.slurp.contains('"mappings":"') && $js.slurp.lines.tail.starts-with('//# sourceMappingURL='), '-o writes the source map beside the program');
+        $map.IO.unlink if $map.IO.e;
         $js.unlink if $js.e;
+        # --module: an ES module a JavaScript file imports; the .d.ts beside it
+        my $mdir = $*TMPDIR.add("rakupp-suite-jsmod-$*PID"); $mdir.mkdir;
+        $mdir.add('M.rakumod').spurt(q:to/END/);
+            unit module M;
+            sub greet(Str $n, Int :$times = 1) is export { ("hi $n" xx $times).join(' ') }
+            sub hidden { 'no' }
+            class C { has Int $.n = 0; method bump { $!n++; self } }
+            grammar G { token TOP { <k> '=' <v> } token k { \w+ } token v { \d+ } }
+            END
+        $mdir.add('package.json').spurt('{ "type": "module" }');
+        $mdir.add('use.mjs').spurt(q:to/END/);
+            import M, { greet, C, G } from './m.js';
+            const c = C.new({ n: 2 }); c.bump();
+            console.log(greet('x', { times: 2 }), c.n(), String(G.parse('a=1').v), typeof M.hidden);
+            END
+        my $mb = run($*EXECUTABLE, '--target=js', '--module', '-q', $mdir.add('M.rakumod').Str, '-o', $mdir.add('m.js').Str, :out, :err);
+        ok($mb.exitcode == 0 && $mdir.add('m.d.ts').e && $mdir.add('m.d.ts').slurp.contains('export const greet: (n: string, named?: { times?: number }) => any'),
+           '--module writes the ES module and its .d.ts');
+        my $mu = run('node', $mdir.add('use.mjs').Str, :out, :err, :cwd($mdir.Str));
+        is($mu.out.slurp(:close), "hi x hi x 3 1 undefined\n", 'a JavaScript file imports and calls the module');
+        try { for $mdir.dir { .unlink }; $mdir.rmdir; }
     }
     else { ok(True, '--target=js checks skipped: no node on PATH'); }
 }

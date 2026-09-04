@@ -278,7 +278,7 @@ class RRat {                                              // exact; d > 0, gcd 1
 }
 class RPair { constructor(k, v) { this.k = k; this.v = v; } }
 class RSlip { constructor(a) { this.a = a; } }            // `|@x` / slip(...)
-class REnum { constructor(ty, key, val) { this.ty = ty; this.key = key; this.val = val; } }
+class REnum { constructor(ty, key, val) { this.ty = ty; this.key = key; this.val = val; } toString() { return this.key; } valueOf() { return this.val; } }
 class RNamed { constructor(m) { this.m = m; } }           // named arguments, trailing
 class RObj { constructor(ty) { this.ty = ty; } }          // a user-class instance
 class RWhatever { }
@@ -443,9 +443,9 @@ function toNumeric(v, op) {
             if (v instanceof RRange) return v.elemsOrInf();
             if (v instanceof RSeq) return v.elems();
             if (v instanceof RFailure) throw v.err;
-            if (v instanceof RPair) return toNumeric(v.v);
 )RKJS",
-R"RKJS(            if (v instanceof RMatch) return strToNumeric(v.Str());
+R"RKJS(            if (v instanceof RPair) return toNumeric(v.v);
+            if (v instanceof RMatch) return strToNumeric(v.Str());
             if (v instanceof RObj) {
                 const m = v.ty.findUser('Numeric') || v.ty.findUser('Int') || v.ty.findUser('Num');
                 if (m) return toNumeric(m(v));
@@ -733,9 +733,9 @@ function cmp(a, b) {
     if (a instanceof RType && b instanceof RType) return order(strCmp(a.name, b.name));
     if (a instanceof RList && b instanceof RList) {
         const x = a.arr(), y = b.arr(), n = Math.min(x.length, y.length);
-        for (let i = 0; i < n; i++) { const c = cmp(x[i], y[i]); if (c !== Same) return c; }
 )RKJS",
-R"RKJS(        return order(x.length - y.length);
+R"RKJS(        for (let i = 0; i < n; i++) { const c = cmp(x[i], y[i]); if (c !== Same) return c; }
+        return order(x.length - y.length);
     }
     if (a instanceof RPair && b instanceof RPair) { const c = cmp(a.k, b.k); return c !== Same ? c : cmp(a.v, b.v); }
     if (a instanceof RVersion && b instanceof RVersion) return order(a.cmp(b));
@@ -1033,9 +1033,9 @@ function inc(v) {
 function dec(v) {
     if (typeof v === 'number') { if (Number.isInteger(v)) { const r = v - 1; return r < -MAX_SAFE ? normBig(BigInt(v) - 1n) : r; } return numResult(v - 1); }
     if (typeof v === 'bigint') return normBig(v - 1n);
-    if (typeof v === 'string') return strPred(v);
 )RKJS",
-R"RKJS(    if (v instanceof RType || v === null || v === undefined) return -1;
+R"RKJS(    if (typeof v === 'string') return strPred(v);
+    if (v instanceof RType || v === null || v === undefined) return -1;
     if (typeof v === 'boolean') return false;
     if (v instanceof REnum) { const vs = v.ty.enumValues; const i = vs.indexOf(v); return vs[Math.max(i - 1, 0)]; }
     return sub(v, 1);
@@ -1313,9 +1313,9 @@ function comb(s, pat, ...rest) {
     }
     const p = str(pat), out = [];
     if (p === '') return mkList(graphemes(s));
-    let i = 0; while ((i = s.indexOf(p, i)) >= 0) { out.push(p); i += p.length; if (limit !== undefined && out.length >= toInt(limit)) break; }
 )RKJS",
-R"RKJS(    return mkList(out);
+R"RKJS(    let i = 0; while ((i = s.indexOf(p, i)) >= 0) { out.push(p); i += p.length; if (limit !== undefined && out.length >= toInt(limit)) break; }
+    return mkList(out);
 }
 function indent(s, n) {
     const k = toInt(n);
@@ -1562,9 +1562,9 @@ class RSeq {
 function seqOf(genFn, lazy) { return new RSeq(genFn(), lazy); }
 
 class RRange {
-    constructor(from, to, exFrom, exTo) { this.from = from; this.to = to; this.exFrom = !!exFrom; this.exTo = !!exTo; }
 )RKJS",
-R"RKJS(    isInfinite() { return this.to === Infinity || this.to instanceof RWhatever || (typeof this.to === 'number' && this.to === Infinity); }
+R"RKJS(    constructor(from, to, exFrom, exTo) { this.from = from; this.to = to; this.exFrom = !!exFrom; this.exTo = !!exTo; }
+    isInfinite() { return this.to === Infinity || this.to instanceof RWhatever || (typeof this.to === 'number' && this.to === Infinity); }
     isNumeric() { return isNumeric(this.from) && (isNumeric(this.to) || this.to instanceof RWhatever); }
     isIntRange() { return isIntVal(this.from) && (isIntVal(this.to) || this.isInfinite()); }
     lo() { return this.exFrom ? add(this.from, 1) : this.from; }
@@ -1837,12 +1837,12 @@ function assignArray(a, src) {
     if (src instanceof RSeq && src.lazy) { a.a = []; a.src = src; return a; }
     const items = itemsOf(src);
     const copy = items === a.a ? items.slice() : items.slice();
-    for (let i = 0; i < copy.length; i++) { const x = copy[i]; if (x instanceof RSlip) copy[i] = mkArray(x.a.slice()); }
+)RKJS",
+R"RKJS(    for (let i = 0; i < copy.length; i++) { const x = copy[i]; if (x instanceof RSlip) copy[i] = mkArray(x.a.slice()); }
     a.a = copy;
     return a;
 }
-)RKJS",
-R"RKJS(function newArray(src) { return assignArray(mkArray([]), src === undefined ? [] : src); }
+function newArray(src) { return assignArray(mkArray([]), src === undefined ? [] : src); }
 function newHash(src) { return src === undefined ? new RHash() : assignHash(new RHash(), src); }
 // flat: recursive flattening of non-itemized lists
 function flat(v) {
@@ -2065,10 +2065,10 @@ function pushTo(a, ...items) {
         return a;
     }
     if (a instanceof RObj) { const m = a.ty.findUser('push'); if (m) return m(a, ...items); }
-    if (!(a instanceof RList)) throw new RakuError(`Cannot call push on a ${typeName(a)}`);
-    for (const it of items) { if (it instanceof RSlip) a.a.push(...it.a); else a.a.push(it); }
 )RKJS",
-R"RKJS(    return a;
+R"RKJS(    if (!(a instanceof RList)) throw new RakuError(`Cannot call push on a ${typeName(a)}`);
+    for (const it of items) { if (it instanceof RSlip) a.a.push(...it.a); else a.a.push(it); }
+    return a;
 }
 function appendTo(a, ...items) { if (a instanceof RHash) return pushTo(a, ...items); for (const it of items) { if (it instanceof RNamed) continue; a.a.push(...itemsOf(it)); } return a; }
 function unshiftTo(a, ...items) { const add = []; for (const it of items) { if (it instanceof RSlip) add.push(...it.a); else add.push(it); } a.a.unshift(...add); return a; }
@@ -2301,12 +2301,12 @@ function fail(...args) {
 function exc(e) {
     if (e instanceof RakuError) return e;
     if (e instanceof RObj) return e;
-    if (e instanceof RangeError && /call stack/i.test(e.message)) return new RakuError('Maximum call stack size exceeded (raise it with node --stack-size)', 'X::Internal');
+)RKJS",
+R"RKJS(    if (e instanceof RangeError && /call stack/i.test(e.message)) return new RakuError('Maximum call stack size exceeded (raise it with node --stack-size)', 'X::Internal');
     if (e instanceof Error) return new RakuError(e.message, 'X::Internal');
     return new RakuError(String(e), 'X::AdHoc');
 }
-)RKJS",
-R"RKJS(function isControl(e) { return e instanceof NextCtl || e instanceof LastCtl || e instanceof RedoCtl || e instanceof RetCtl || e instanceof ExitCtl || e instanceof SuccCtl || e instanceof TakeCtl; }
+function isControl(e) { return e instanceof NextCtl || e instanceof LastCtl || e instanceof RedoCtl || e instanceof RetCtl || e instanceof ExitCtl || e instanceof SuccCtl || e instanceof TakeCtl; }
 function excMessage(e) { if (e instanceof RakuError) return e.message; if (e instanceof RObj) { const m = e.ty.findUser('message'); if (m) return str(m(e)); const a = e['a_message']; if (a !== undefined) return str(a); } return str(e); }
 function excType(e) { if (e instanceof RakuError) return T[e.type] || mkExType(e.type); if (e instanceof RObj) return e.ty; return T.Exception; }
 function mkExType(name) { if (!T[name]) { const t = mkType(name, [T.Exception]); return t; } return T[name]; }
@@ -2522,13 +2522,13 @@ class RSetty {
     valuesList() { return Array.from(this.m.values(), e => e.n); }
     pairsList() { return Array.from(this.m.values(), e => pair(e.v, e.n)); }
     listItems() { return this.isSet() ? this.keysList() : this.pairsList(); }
-    total() { let t = 0; for (const e of this.m.values()) t = this.isSet() ? t + 1 : add(t, e.n); return t; }
+)RKJS",
+R"RKJS(    total() { let t = 0; for (const e of this.m.values()) t = this.isSet() ? t + 1 : add(t, e.n); return t; }
     elems() { return this.m.size; }
     sortedEntries() { return Array.from(this.m.values()).sort((a, b) => cmpNum(a.v, b.v)); }
     Str() { return this.sortedEntries().map(e => this.isSet() ? str(e.v) : str(e.v) + '(' + str(e.n) + ')').join(' '); }
     gist() {
-)RKJS",
-R"RKJS(        const ents = this.sortedEntries();
+        const ents = this.sortedEntries();
         const body = ents.map(e => this.isSet() ? gist(e.v) : gist(e.v) + '(' + gist(e.n) + ')').join(' ');
         return this.ty.name + '(' + body + ')';
     }
@@ -2714,14 +2714,14 @@ function max(...args) { const [pos, named] = splitArgs(args); return maxOf(pos.l
 function sum(...args) { return sumList(args.length === 1 ? args[0] : mkList(args)); }
 function elems(v) { return elemsOf(v); }
 function end(v) { return elemsOf(v) - 1; }
-function join(sep, ...items) { return joinList(mkList(spliceSlips(items)), sep); }
+)RKJS",
+R"RKJS(function join(sep, ...items) { return joinList(mkList(spliceSlips(items)), sep); }
 function reverse(...items) { return reverseList(items.length === 1 ? items[0] : mkList(items)); }
 function sort(...args) {
     let f; if (args.length > 1 && typeof args[0] === 'function') f = args.shift();
     return sortList(args.length === 1 ? args[0] : mkList(args), f);
 }
-)RKJS",
-R"RKJS(function map(f, ...items) { return mapList(items.length === 1 ? items[0] : mkList(items), f); }
+function map(f, ...items) { return mapList(items.length === 1 ? items[0] : mkList(items), f); }
 function grep(f, ...items) { return grepList(items.length === 1 ? items[0] : mkList(items), f); }
 function first(f, ...items) { let named; if (items.length && items[items.length - 1] instanceof RNamed) named = items.pop().m; return firstOf(items.length === 1 ? items[0] : mkList(items), f, named); }
 function unique(...items) { return uniqueList(items.length === 1 ? items[0] : mkList(items)); }
@@ -2895,10 +2895,10 @@ function seqOp(items, endv, exclusive) {
     if (!genFn) {
         const n = starts.length;
         if (n >= 3 && starts.every(isNumeric)) {
-            const d1 = sub(starts[1], starts[0]), d2 = sub(starts[2], starts[1]);
-            if (numeq(d1, d2)) genFn = x => add(x, d1);
 )RKJS",
-R"RKJS(            else if (!numeq(starts[0], 0) && !numeq(starts[1], 0) && numeq(div(starts[1], starts[0]), div(starts[2], starts[1]))) { const r = div(starts[1], starts[0]); genFn = x => { const y = mul(x, r); return (y instanceof RRat && y.d === 1n) ? normBig(y.n) : y; }; }
+R"RKJS(            const d1 = sub(starts[1], starts[0]), d2 = sub(starts[2], starts[1]);
+            if (numeq(d1, d2)) genFn = x => add(x, d1);
+            else if (!numeq(starts[0], 0) && !numeq(starts[1], 0) && numeq(div(starts[1], starts[0]), div(starts[2], starts[1]))) { const r = div(starts[1], starts[0]); genFn = x => { const y = mul(x, r); return (y instanceof RRat && y.d === 1n) ? normBig(y.n) : y; }; }
             else throw new RakuError('Unable to deduce arithmetic or geometric sequence from: ' + starts.map(str).join(',') + '. Did you try to use a Whatever (*) without a block?');
         } else if (n === 2 && starts.every(isNumeric)) { const d = sub(starts[1], starts[0]); genFn = x => add(x, d); }
         else if (n === 1 && isNumeric(starts[0])) { genFn = !lazy && typeof endv !== 'function' && isNumeric(endv) && lt(endv, starts[0]) ? (x => sub(x, 1)) : (x => add(x, 1)); }
@@ -3005,9 +3005,9 @@ M(T.Mu, {
     'chunks': (s, n) => batchList(s, n), 'tree': (s) => s, 'antipair': (s) => s instanceof RPair ? pair(s.v, s.k) : Any, 'SET-SELF': (s) => s, 'BUILDALL': (s) => s, 'bless': (s, ...a) => buildObj(s, ...a), 'CREATE': (s) => new RObj(s),
     'perl': (s) => raku(s), 'gistseen': (s) => gist(s), 'iterator-end': () => T.IterationEnd, 'DEFINITE': (s) => defined(s), 'REPR': (s) => 'P6opaque', 'HOW': (s) => typeOf(s), 'WHY': (s) => Nil, 'set': (s, v) => s,
     'seed': (s, v) => s, 'srand': (s) => srand(s), 'exit': (s) => exit(s), 'sleep': (s) => sleep(s), 'now': () => now(), 'time': () => time(),
-    'is-integer': (s) => isIntVal(toNumeric(s)), 'msb': (s) => { const b = big(s); return b === 0n ? Nil : b.toString(2).length - 1; }, 'lsb': (s) => { const b = big(s); if (b === 0n) return Nil; let i = 0; let x = b; while ((x & 1n) === 0n) { x >>= 1n; i++; } return i; },
 )RKJS",
-R"RKJS(    'Complex': (s) => new RComplex(toFloat(s), 0), 're': (s) => s instanceof RComplex ? mkNum(s.re) : toNumeric(s), 'im': (s) => s instanceof RComplex ? mkNum(s.im) : 0,
+R"RKJS(    'is-integer': (s) => isIntVal(toNumeric(s)), 'msb': (s) => { const b = big(s); return b === 0n ? Nil : b.toString(2).length - 1; }, 'lsb': (s) => { const b = big(s); if (b === 0n) return Nil; let i = 0; let x = b; while ((x & 1n) === 0n) { x >>= 1n; i++; } return i; },
+    'Complex': (s) => new RComplex(toFloat(s), 0), 're': (s) => s instanceof RComplex ? mkNum(s.re) : toNumeric(s), 'im': (s) => s instanceof RComplex ? mkNum(s.im) : 0,
     'Range': (s) => range(0, s, false, true), 'succ': (s) => inc(s), 'pred': (s) => dec(s), 'grep-index': (s, f) => { const out = []; let i = 0; const t = matcherOf(f); for (const x of iter(s)) { if (t(x)) out.push(i); i++; } return mkSeq(out); },
     'first-index': (s, f) => { let i = 0; const t = matcherOf(f); for (const x of iter(s)) { if (t(x)) return i; i++; } return Nil; }, 'last-index': (s, f) => { const a = arr(s); const t = matcherOf(f); for (let i = a.length - 1; i >= 0; i--) if (t(a[i])) return i; return Nil; },
     'sort-by': (s, f) => sortList(s, f), 'maxpairs': (s) => { const ps = arr(pairsOf(s)); if (!ps.length) return mkSeq([]); const m = maxOf(ps.map(p => p.v)); return mkSeq(ps.filter(p => cmpNum(p.v, m) === 0)); }, 'minpairs': (s) => { const ps = arr(pairsOf(s)); if (!ps.length) return mkSeq([]); const m = minOf(ps.map(p => p.v)); return mkSeq(ps.filter(p => cmpNum(p.v, m) === 0)); },
@@ -3452,7 +3452,74 @@ function usage(cands) {
 // The program entry: install the host, run, catch what the interpreter's main
 // catches, flush, and leave an exit code.
 )RKJS",
-R"RKJS(function main(body, opts) {
+R"RKJS(// --module: the mainline runs at import time; its exceptions reach the importer as
+// JavaScript errors; the returned table is what the module exports
+function moduleInit(body) {
+    startTime = host.now();
+    ARGS = mkArray(host.argv.slice());
+    ENV = new RHash(new Map(host.env));
+    let r;
+    try { r = body(); } catch (e) { host.flush(); throw toJs(e); }
+    if (r && typeof r.then === 'function') return r.then(v => { host.flush(); return v; }, e => { host.flush(); throw toJs(e); });
+    host.flush();
+    return Promise.resolve(r);
+}
+// what crosses OUT of an exported routine: values by copy, objects and matches
+// as proxies whose properties call the Raku methods
+const unwrapped = new WeakMap();
+function exportVal(v) {
+    if (v instanceof RObj || v instanceof RMatch) return wrapObj(v);
+    if (v instanceof RList || v instanceof RSeq) return arr(v).map(exportVal);
+    if (v instanceof RHash) { const o = {}; for (const [k, x] of v.m) o[k] = exportVal(x); return o; }
+    if (v instanceof RPair) { const o = {}; o[str(v.k)] = exportVal(v.v); return o; }
+    if (v instanceof RSlip) return v.a.map(exportVal);
+    return toJs(v);
+}
+function wrapObj(o) {
+    const p = new Proxy(o, {
+        get(t, k) {
+            if (typeof k !== 'string') return t[k];
+            if (k === 'then') return undefined;
+            if (k === 'raku') return t;
+            if (k === 'toString') return () => str(t);
+            if (k === 'toJSON') return () => exportVal(t instanceof RMatch ? t.Str() : t);
+            if (t instanceof RMatch) {   // captures are properties: m.k, m[0], m.made
+                if (/^\d+$/.test(k)) return exportVal(t.pos(Number(k)));
+                if (t.named.has(k)) return exportVal(t.name(k));
+                if (k === 'made' || k === 'ast') return exportVal(t.made === undefined ? Nil : t.made);   // a value, not a method
+            }
+            if (can(t, k)) return (...a) => outCall(() => mc(t, k, ...inArgs(a)));
+            if (k in t) { const x = t[k]; return typeof x === 'function' ? x.bind(t) : exportVal(x); }
+            return undefined;
+        },
+        has(t, k) { return (typeof k === 'string' && can(t, k)) || k in t; },
+    });
+    unwrapped.set(p, o);
+    return p;
+}
+// arguments coming IN from JavaScript: a trailing plain object is the named arguments; a
+// Raku exception on the way out is a JavaScript Error carrying it as `.raku`
+const isPlainObj = (x) => x !== null && typeof x === 'object' && (Object.getPrototypeOf(x) === Object.prototype || Object.getPrototypeOf(x) === null);
+function inArgs(a) {
+    const out = a.map(fromJs);
+    if (a.length && isPlainObj(a[a.length - 1])) out[out.length - 1] = named(Object.entries(a[a.length - 1]).map(([k, v]) => [k, fromJs(v)]));
+    return out;
+}
+function outCall(f) { try { return exportVal(f()); } catch (e) { throw toJs(e); } finally { host.flush(); } }   // `say` output leaves with the call
+function exportFn(fn, name) { const f = (...a) => outCall(() => fn(...inArgs(a))); Object.defineProperty(f, 'name', { value: name }); return f; }
+function exportMain(cands) { return (...argv) => outCall(() => runMain(cands, argv.map(String))); }
+function exportType(T) {
+    const C = (...a) => outCall(() => construct(T, ...inArgs(a)));
+    Object.defineProperty(C, 'name', { value: T.name });
+    C.new = C; C.type = T;
+    if (T.mro.some(t => t.rules)) {
+        C.parse = (s, o) => outCall(() => { const a = inArgs(o ? [s, o] : [s]); return grammarParse(T, a[0], a, false); });
+        C.subparse = (s, o) => outCall(() => { const a = inArgs(o ? [s, o] : [s]); return grammarParse(T, a[0], a, true); });
+    }
+    if (T.isEnum && T.enumValues) for (const e of T.enumValues) C[e.key] = e;
+    return C;
+}
+function main(body, opts) {
     startTime = host.now();
     ARGS = mkArray(host.argv.slice());
     ENV = new RHash(new Map(host.env));
@@ -3487,7 +3554,7 @@ function reportUncaught(e) {
 function setUsage(s) { usageText = s; }
 function envGet(k) { const v = host.env.get(k); return v === undefined ? Any : v; }
 
-Object.assign(R, { host, dynVar, atEnd, runMain, main, reportUncaught, setUsage, envGet, STDIN, STDOUT, STDERR, mkProc, usage });
+Object.assign(R, { host, dynVar, atEnd, runMain, main, module: moduleInit, exportFn, exportMain, exportType, exportVal, wrapObj, reportUncaught, setUsage, envGet, STDIN, STDOUT, STDERR, mkProc, usage });
 
 // ---- 80-glue.js ----
 // Glue the emitter relies on: closures with arity metadata, boxes for `is rw`,
@@ -3626,7 +3693,8 @@ function toJs(v) {
             if (v instanceof RSetty) return v.keysList().map(toJs);
             if (v instanceof RakuError) { const e = new Error(v.message); e.raku = v; return e; }
             if (v instanceof RComplex) return { re: v.re, im: v.im };
-            if (v instanceof RDate) return new Date(v.d.getTime());
+)RKJS",
+R"RKJS(            if (v instanceof RDate) return new Date(v.d.getTime());
             if (v instanceof RIOPath) return v.path;
             if (v instanceof RVersion) return v.Str();
             return v;   // a Raku object crosses as itself (identity)
@@ -3650,7 +3718,7 @@ function fromJs(v) {
         case 'object':
             if (v === null) return Nil;
             if (Array.isArray(v)) return mkArray(v.map(fromJs));
-            if (v instanceof RObj || v instanceof RList || v instanceof RHash || v instanceof RType || v instanceof RJsObj) return v;   // ours, coming back
+            if (v instanceof RObj || v instanceof RList || v instanceof RHash || v instanceof RType || v instanceof RJsObj || v instanceof RNamed || v instanceof RMatch || v instanceof RRegex || v instanceof REnum || v instanceof RPair) return unwrapped.get(v) || v;   // ours, coming back (a proxy hands back its object)
             if (v instanceof Error && v.raku) return v.raku;
             return new RJsObj(v);
     }
@@ -3687,8 +3755,7 @@ const JS = new RJsObj(globalThis);
 M(JsObjectT, {
     gist: (s) => jsStr(s), Str: (s) => jsStr(s), raku: (s) => 'JS::Object(' + jsStr(s) + ')', Bool: (s) => jsTruthy(s), so: (s) => jsTruthy(s), defined: (s) => s.v != null,
     'AT-KEY': (s, k) => jsGet(s, k), 'ASSIGN-KEY': (s, k, v) => jsSet(s, k, v), 'EXISTS-KEY': (s, k) => jsExists(s, k), 'AT-POS': (s, i) => jsGet(s, Number(toInt(i))), 'ASSIGN-POS': (s, i, v) => jsSet(s, Number(toInt(i)), v),
-)RKJS",
-R"RKJS(    'new': (s, ...a) => jsNew(s, a), 'keys': (s) => mkSeq(Object.keys(s.v)), 'elems': (s) => s.v != null && s.v.length !== undefined ? s.v.length : Object.keys(s.v).length,
+    'new': (s, ...a) => jsNew(s, a), 'keys': (s) => mkSeq(Object.keys(s.v)), 'elems': (s) => s.v != null && s.v.length !== undefined ? s.v.length : Object.keys(s.v).length,
     'list': (s) => mkList(Array.from(s.v, fromJs)), 'List': (s) => mkList(Array.from(s.v, fromJs)), 'Array': (s) => mkArray(Array.from(s.v, fromJs)), 'Hash': (s) => { const h = new RHash(); for (const k of Object.keys(s.v)) h.m.set(k, fromJs(s.v[k])); return h; },
     'Numeric': (s) => fromJs(Number(s.v)), 'Int': (s) => toInt(fromJs(Number(s.v))), 'Num': (s) => mkNum(Number(s.v)), 'WHAT': (s) => JsObjectT, 'js': (s) => s, 'typeof': (s) => typeof s.v, 'instanceof': (s, c) => s.v instanceof (c instanceof RJsObj ? c.v : c),
     'invoke': (s, ...a) => fromJs(s.v(...a.map(toJs))), 'call': (s, ...a) => fromJs(s.v(...a.map(toJs))),
@@ -3784,6 +3851,15 @@ function rx(tree, adv, src) { return new RRegex(tree, adv, src); }
 
 // ---- character tests ------------------------------------------------------------
 const propCache = new Map();
+// Raku's property spellings → JavaScript's: the POSIX-style names, the long category names; a few are predicates
+const PROP_ALIAS = { alpha: 'Alphabetic', Alpha: 'Alphabetic', digit: 'Nd', Digit: 'Nd', space: 'White_Space', Space: 'White_Space', upper: 'Uppercase', Upper: 'Uppercase', lower: 'Lowercase', Lower: 'Lowercase', punct: 'P', Punct: 'P', xdigit: 'Hex_Digit', XDigit: 'Hex_Digit', cntrl: 'Cc', Cntrl: 'Cc', Letter: 'L', Number: 'N', Punctuation: 'P', Symbol: 'S', Separator: 'Z', Mark: 'M', Other: 'C', Cased_Letter: 'LC' };
+const PROP_FN = { alnum: (cp, ch) => ccFlag('a', cp, ch) || ccFlag('d', cp, ch), word: (cp, ch) => ccFlag('w', cp, ch), blank: (cp, ch) => ccFlag('b', cp, ch), graph: (cp, ch) => ccFlag('g', cp, ch), print: (cp, ch) => ccFlag('r', cp, ch), ident: (cp, ch) => cp === 0x5F || ccFlag('a', cp, ch) };
+function propTest(name, cp, ch) {
+    const fn = PROP_FN[name]; if (fn) return fn(cp, ch);
+    const re = propRe(PROP_ALIAS[name] || name);
+    if (!re) throw new RakuError(`Unrecognized Unicode property '${name}' in a regex`, 'X::Syntax::Regex');
+    return re.test(ch);
+}
 function propRe(name) {
     let r = propCache.get(name);
     if (r === undefined) {
@@ -3832,7 +3908,8 @@ function clusterEnd(s, i) {
     while (j < s.length) {
         const c2 = s.codePointAt(j), cur = gbProp(c2), ip = incbProp(c2);
         let brk;
-        if (prev === GB_CR && cur === GB_LF) brk = false;
+)RKJS",
+R"RKJS(        if (prev === GB_CR && cur === GB_LF) brk = false;
         else if (prev === GB_Control || prev === GB_CR || prev === GB_LF) brk = true;
         else if (cur === GB_Control || cur === GB_CR || cur === GB_LF) brk = true;
         else if (prev === GB_L && (cur === GB_L || cur === GB_V || cur === GB_LV || cur === GB_LVT)) brk = false;
@@ -3867,8 +3944,7 @@ function classMatchAt(n, s, pos) {          // → end of the consumed grapheme,
     if (!hit && n.uprop) {
         let name = n.uprop, neg = false;
         if (name[0] === '!') { neg = true; name = name.slice(1); }
-        const re = propRe(name);
-        const r = re ? re.test(String.fromCodePoint(cp)) : true;
+        const r = propTest(name, cp, String.fromCodePoint(cp));
         hit = neg ? !r : r;
     }
     if (n.negFlags && hit && classFlagsMatch(n.negFlags, cp, String.fromCodePoint(cp))) hit = false;
@@ -3889,7 +3965,7 @@ function ltmReach(n, from, ctx, depth) {
     const s = ctx.s, out = new Map();
     const add = (p, l) => { const c = out.get(p); if (c === undefined || l > c) out.set(p, l); };
     const gapAt = () => ({ pos: from, gap: true });
-    if (!n || depth > 40) return gapAt();
+    if (!n || depth > 6) return gapAt();   // enough prefix to rank on; a recursive grammar would otherwise be scanned to its leaves at every level
     switch (n.k) {
         case 'Lit': { const L = n.lit.length; const want = n.icase ? n.lit.toLowerCase() : n.lit; for (const [p, l] of from) { const a = s.slice(p, p + L); if ((n.icase ? a.toLowerCase() : a) === want && a.length === L) add(p + L, l + L); } return { pos: out, gap: false }; }
         case 'Any': for (const [p, l] of from) if (p < s.length) add(clusterEnd(s, p), l); return { pos: out, gap: false };
@@ -3897,8 +3973,7 @@ function ltmReach(n, from, ctx, depth) {
         case 'Nop': case 'CapStart': case 'CapEnd': return { pos: from, gap: false };
         case 'AnchorStart': for (const [p, l] of from) if (p === 0 || ((n.multiline || n.p5Line) && s[p - 1] === '\n')) add(p, l); return { pos: out, gap: false };
         case 'AnchorEnd': for (const [p, l] of from) if (p === s.length || (p === s.length - 1 && s[p] === '\n') || (n.multiline && s[p] === '\n')) add(p, l); return { pos: out, gap: false };
-)RKJS",
-R"RKJS(        case 'WBLeft': for (const [p, l] of from) if (isWordAt(s, p) && !isWordAt(s, p - 1)) add(p, l); return { pos: out, gap: false };
+        case 'WBLeft': for (const [p, l] of from) if (isWordAt(s, p) && !isWordAt(s, p - 1)) add(p, l); return { pos: out, gap: false };
         case 'WBRight': for (const [p, l] of from) if (!isWordAt(s, p) && isWordAt(s, p - 1)) add(p, l); return { pos: out, gap: false };
         case 'Seq': {
             let cur = from;
@@ -3912,7 +3987,8 @@ R"RKJS(        case 'WBLeft': for (const [p, l] of from) if (isWordAt(s, p) && !
             const kid = n.kids[0], min = n.min, max = n.max;
             let cur = from, gap = false;
             if (min === 0) for (const [p, l] of from) add(p, l);
-            for (let i = 0; (max < 0 || i < max) && i < 100; i++) {
+            let i = 0;
+            for (; (max < 0 || i < max) && i < 100; i++) {
                 const r = ltmReach(kid, cur, ctx, depth + 1);
                 if (r.gap) { gap = true; for (const [p, l] of r.pos) add(p, l); break; }
                 if (!r.pos.size) break;
@@ -3923,6 +3999,7 @@ R"RKJS(        case 'WBLeft': for (const [p, l] of from) if (isWordAt(s, p) && !
                 if (!grew && i + 1 >= min) break;
                 cur = next;
             }
+            if (i >= 100 && (max < 0 || i < max)) gap = true;   // the scan stopped, not the pattern: what follows is not required
             return { pos: out, gap };
         }
         case 'Subrule': {
@@ -4066,7 +4143,8 @@ function stepSingle(n, s, pos) {
     if (n.k === 'Any') return pos < s.length ? clusterEnd(s, pos) : -1;
     return classMatchAt(n, s, pos);
 }
-function rep(n, st, pos, k) {
+)RKJS",
+R"RKJS(function rep(n, st, pos, k) {
     const s = st.s, kid = n.kids[0];
     let mn = n.min, mx = n.max;
     if (n.repCode) { const r = n.repCode(cursorMatch(st, pos)); if (r instanceof RRange) { mn = Number(toInt(r.lo())); mx = r.isInfinite() ? -1 : Number(toInt(r.hi())); } else { mn = mx = Number(toInt(r)); } }
@@ -4172,8 +4250,7 @@ function builtinRule(name, s, pos) {
 }
 // a grammar's rule by name, through its inheritance chain
 function findRule(ty, name) {
-)RKJS",
-R"RKJS(    if (!ty) return null;
+    if (!ty) return null;
     for (const t of ty.mro) if (t.rules && t.rules[name]) return t.rules[name];
     return null;
 }
@@ -4350,7 +4427,8 @@ function cursorCall(cur, name, args) {
     const rule = findRule(g, name);
     if (rule && !rule.proto) { callRule(rule, name, n, cur.st, cur.pos, rec); return out || Nil; }
     const cands = protoCandidates(g, name);
-    if (cands.length) { for (const c of cands) if (callRule(c.rule, c.name, n, cur.st, cur.pos, rec, c.sym)) return out; return Nil; }
+)RKJS",
+R"RKJS(    if (cands.length) { for (const c of cands) if (callRule(c.rule, c.name, n, cur.st, cur.pos, rec, c.sym)) return out; return Nil; }
     const meth = g.findUser(name);
     if (meth) return meth(cur, ...args);
     return undefined;
@@ -4425,8 +4503,7 @@ function parseRxString(src, ic) {
             if (/[A-Za-z0-9]/.test(e)) bad(`the escape \\${e}`);
             return lit(e);
         }
-)RKJS",
-R"RKJS(        if (c === '.') { i++; return { k: 'Any' }; }
+        if (c === '.') { i++; return { k: 'Any' }; }
         if (c === '^') { i++; if (src[i] === '^') { i++; return { k: 'AnchorStart', multiline: 1 }; } return { k: 'AnchorStart' }; }
         if (c === '$') { i++; if (src[i] === '$') { i++; return { k: 'AnchorEnd', multiline: 1 }; } if (/[\w<]/.test(src[i] || '')) bad('a variable'); return { k: 'AnchorEnd' }; }
         if (src.startsWith('>>', i)) { i += 2; return { k: 'WBRight' }; }
@@ -4577,7 +4654,8 @@ function matchHash(mt) { const h = new RHash(); for (const [k, v] of mt.named) h
 function grammarParse(ty, subject, args, subparse) {
     const [pos, named] = splitArgs(args);
     const s = str(pos[0]);
-    const ruleName = named.has('rule') ? str(named.get('rule')) : 'TOP';
+)RKJS",
+R"RKJS(    const ruleName = named.has('rule') ? str(named.get('rule')) : 'TOP';
     const actions = named.get('actions');
     const rule = findRule(ty, ruleName);
     if (!rule) throw new RakuError(`No such method '${ruleName}' for invocant of type '${ty.name}'`, 'X::Method::NotFound');

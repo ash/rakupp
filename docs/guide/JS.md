@@ -27,6 +27,11 @@ node prog.js                                  # run it (bun, deno too)
   compiled against. Node 22.7 and later, Bun, Deno and browsers run an ES
   module `.js` as is; an older Node needs `--experimental-default-type=module`
   or a `package.json` with `"type": "module"` — or `--standalone`.
+- **`-o` also writes `prog.js.map`**, a source map from every generated line
+  to the Raku line of its statement, named on the program's last line.
+  `node --enable-source-maps prog.js` reports JavaScript-level errors and
+  `Internal error` stacks at `prog.raku` lines, and a debugger steps by Raku
+  line. A `die` prints the Raku message as the interpreter does, map or not.
 - **`--standalone`** inlines the runtime: one plain script, no module system
   needed, runs anywhere (`node`, `bun`, `deno run`, `<script src>`). The
   program is at the top of the file, the runtime below it.
@@ -126,7 +131,11 @@ answers. Rules with parameters (`token kw($k) { $k … }`, called as
 are match-level adverbs; `:16<ff>`, `:16("ff")` and `:256[…]` radix forms
 are numbers.
 
-Outside (refused, or run through `--fallback=wasm`): `:P5` regexes,
+`:P5` patterns are parsed by the engine's Perl 5 parser into the same tree,
+so they match here too, except the conditional group `(?(N)…)` and a
+variable interpolated into the pattern (the interpreter splices its text).
+
+Outside (refused, or run through `--fallback=wasm`):
 `EVAL` and `require` of computed names, `use` of a module,
 NativeCall, threads and `react`/`supply`/`Channel`, `temp`/`let`,
 `Proc::Async`, the `Test` module.
@@ -136,6 +145,62 @@ The corpus gate, `rakupp t/js/run.raku`, transpiles every program in
 interpreter; its report has the three numbers that describe the state of the
 work — in-core and agreeing, refused (with the histogram of reasons, which is
 the work queue), disagreeing (must be 0).
+
+## As a module: `--module` and npm
+
+```
+rakupp --target=js --module Greet.rakumod -o greet.js   # greet.js, greet.d.ts, rakupp-rt.js
+```
+
+A `--module` output is an ES module that runs the file's mainline at import
+time and exports, instead of running `MAIN`:
+
+- every sub marked `is export` — or every named sub when none is marked;
+- every class, grammar and enum;
+- `MAIN`, as a function of its command-line arguments.
+
+Names that are not JavaScript identifiers (`add-all`) are exported under
+their Raku spelling (`import { "add-all" as addAll } …`). The default export
+is the table of all of them. `unit module X;` and `module X { … }` are
+accepted; the names are exported unqualified.
+
+```js
+import { greet, "add-all" as addAll, Counter, KV } from './greet.js';
+greet('Ann');                      // a positional
+greet('Bob', { times: 2 });        // a trailing plain object is the named arguments
+addAll(1, 2, 3);                   // a slurpy takes the rest
+const c = Counter.new({ n: 5 });   // a class: .new(...) or a call; methods are methods
+c.bump(10); String(c); c.n();      // Str is toString; an accessor is a method
+const m = KV.parse('x=42');        // a grammar: parse/subparse → a Match or undefined
+m.k; m.v.Int(); m.made;            // captures are properties on the Match
+```
+
+Values cross as in `use JS`: numbers, strings, booleans and arrays by copy,
+hashes as plain objects. An object or a Match comes out as a proxy whose
+properties call its Raku methods (arguments marshalled the same way) and
+whose `.raku` is the underlying object; passed back into a Raku routine it
+is the object again. A Raku exception reaches the importer as a JavaScript
+`Error` with the exception as `.raku`. An enum value prints as its name and
+numbers as its value.
+
+`greet.d.ts` declares the exports for TypeScript: a sub's positional
+parameters with `Int`/`Num`/`Rat` as `number`, `Str` as `string`, `Bool` as
+`boolean`, `@`/`%` as `any[]`/`Record<string, any>`, named parameters as a
+trailing `named?: { … }` object, multis as `(...args: any[]) => any`; classes
+as `RakuClass`, grammars as `RakuGrammar`, enums as `RakuEnum`.
+
+The npm shape is three files and a manifest:
+
+```json
+{ "name": "greet", "version": "1.0.0", "type": "module",
+  "exports": "./greet.js", "types": "./greet.d.ts", "files": ["greet.js", "greet.d.ts", "rakupp-rt.js"] }
+```
+
+`"type": "module"` is what lets Node 20 load the `.js` as an ES module
+(`-o greet.mjs` works without it). The runtime is the same `rakupp-rt.js`
+as for a program, so several modules built by the same rakupp can share
+one copy. `--module` excludes `--standalone` (a plain script cannot export)
+and `--verify` (a module has nothing to run); `END` blocks do not run.
 
 ## Speed
 

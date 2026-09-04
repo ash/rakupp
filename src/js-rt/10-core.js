@@ -114,7 +114,7 @@ class RRat {                                              // exact; d > 0, gcd 1
 }
 class RPair { constructor(k, v) { this.k = k; this.v = v; } }
 class RSlip { constructor(a) { this.a = a; } }            // `|@x` / slip(...)
-class REnum { constructor(ty, key, val) { this.ty = ty; this.key = key; this.val = val; } }
+class REnum { constructor(ty, key, val) { this.ty = ty; this.key = key; this.val = val; } toString() { return this.key; } valueOf() { return this.val; } }
 class RNamed { constructor(m) { this.m = m; } }           // named arguments, trailing
 class RObj { constructor(ty) { this.ty = ty; } }          // a user-class instance
 class RWhatever { }
