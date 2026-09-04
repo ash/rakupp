@@ -827,5 +827,31 @@ Where the code decided differently from the draft:
   `.private` and the "private method" wording, a private call outside its
   class refused before lookup, `IO::Path.succ` on the stem. Gate 26: **137 in-core and agreeing of 444, 254 refused, 53 disagreeing** (from 119 / 252 / 71 at the last commit). The interpreter is inconsistent on one point met here: `@n>>.elems` answers a List and `[[1,2],]>>.Str` an Array; the runtime keeps the invocant's type, which is what the corpus checks.
 
-Next: `react`/`supply`/`Channel` as their own sitting; the container
-model (`$(…)` itemization, `given $x` topics, `=:=`) stays design-level.
+- **`react`/`supply`/`Channel` (2026-09-04).** `src/js-rt/87-supply.js`:
+  one thread, cooperative. A `start` block is a microtask; `sleep` is an
+  await on a timer (so a started block runs while the main line sleeps,
+  which is how every corpus program uses them); `.receive`, `react`, a
+  Channel's `.list` and a live Supply's `.list` are await points the emitter
+  colours through (`isAwaitMethod`, `awaitsIn`). A `receive` with nothing
+  queued waits while a `start` block or a timer is live and answers `Nil`
+  once nobody can send — decided by polling a macrotask later, after the
+  finishing block's own microtasks. Supplies are tap lists; a `supply {}`
+  block runs once per tap with `emit`/`done` bound to that tap through a
+  dynamic context stack; `whenever` subscribes inside a react or supply
+  context, `done` throws a control exception that finishes the whole
+  context, `last` closes one subscription, LAST/QUIT phasers are the tap's
+  done/quit; a react finishes when its body and every subscription are
+  done. `Supply.interval` and `Promise.in` count as live timers.
+  Combinators are derived supplies; `.lines`/`.words` buffer across
+  messages. Colouring was fixed on the way: an await inside a callback
+  block (a `start` inside a `map`) no longer makes the enclosing routine
+  async, only `do`/`try`/`gather` bodies do; and a method call whose block
+  argument awaits (`.map({ $ch.receive })`) has its result awaited so the
+  callback's promises are collected. Every corpus program that uses these —
+  twelve regression tests, `examples/parallel.raku`, `examples/sleep-sort.raku`
+  — agrees with the interpreter. Also from that list: `[!after]` and
+  `[R//]` metaops, `[op]=` with a bracketed infix, `Nil[…]`, an allomorph
+  as a smartmatch pattern, `.defined` on a junction. Gate 29: **148 in-core and agreeing of 445, 242 refused, 55 disagreeing** (from 137 / 254 / 53 at the last commit; the newly judged disagreements — package-relative names, complex-number narrowing — were refused before).
+
+Next: the container model (`$(…)` itemization, `given $x` topics, `=:=`),
+still design-level, and whatever the next corpus sweep surfaces.

@@ -210,15 +210,22 @@ const OPS = {
 };
 function strBitOp(a, b, f) { const x = str(a), y = str(b); const n = Math.max(x.length, y.length); let o = ''; for (let i = 0; i < n; i++) o += String.fromCharCode(f(x.charCodeAt(i) || 0, y.charCodeAt(i) || 0)); return o; }
 const OP_IDENTITY = { '+': 0, '-': 0, '*': 1, '~': '', '&&': true, '||': false, 'and': true, 'or': false, 'min': Infinity, 'max': -Infinity, '+|': 0, '+&': -1, '+^': 0, 'gcd': 0, 'lcm': 1, '?|': false, '?&': true, '?^': false, 'xor': false, '**': 1, '(|)': undefined };
-function opFn(op) { const f = OPS[op]; if (!f) throw new RakuError(`operator ${op} is not in the JS core yet`); f.opName = op; f.rightAssoc = RIGHT_OPS.has(op); return f; }
+function opFn(op) { let f = OPS[op]; if (!f && op[0] === '!' && OPS[op.slice(1)]) { const g = OPS[op.slice(1)]; f = (a, b) => !truthy(g(a, b)); }   // [!after]: the negated operator
+    if (!f && op[0] === 'R' && OPS[op.slice(1)]) { const g = OPS[op.slice(1)]; f = (a, b) => g(b, a); }   // [R//]: the reversed operator
+    if (!f) throw new RakuError(`operator ${op} is not in the JS core yet`); f.opName = op; f.rightAssoc = RIGHT_OPS.has(op); return f; }
 // [op] LIST — the reduce metaoperator, with chaining for comparison ops
-const CHAIN_OPS = new Set(['==', '!=', '<', '<=', '>', '>=', 'eq', 'ne', 'lt', 'le', 'gt', 'ge', '===', 'eqv', '=:=', '~~']);
+const CHAIN_OPS = new Set(['==', '!=', '<', '<=', '>', '>=', 'eq', 'ne', 'lt', 'le', 'gt', 'ge', '===', 'eqv', '=:=', '~~', 'before', 'after']);
+const isChainOp = (op) => CHAIN_OPS.has(op[0] === '!' ? op.slice(1) : op);   // [!after] chains like [after]
 const RIGHT_OPS = new Set(['**', '=>', 'xx', 'x']);
 function reduceOp(op, v, triangle) {
+    if (op === 'R,' && triangle) return mkSeq(arr(v).map((_, i, items) => mkList(items.slice(0, i + 1).reverse())));   // [\R,]: each prefix reversed
+    if (op[0] === 'R' && !OPS[op] && OPS[op.slice(1)]) return reduceOp(op.slice(1), mkList(arr(v).slice().reverse()), triangle);   // [R-] 1,2,3 is 3-2-1: the list reversed, folded left ([\R-]: 3 1 0)
     const items = arr(v);
     const f = opFn(op);
     if (triangle) {
         if (!items.length) return mkSeq([]);
+        if (op === ',') return mkSeq(items.map((_, i) => mkList(items.slice(0, i + 1))));   // [\,]: the flat prefixes
+        if (isChainOp(op)) { const out = [true]; let acc = true; for (let i = 1; i < items.length; i++) { acc = acc && truthy(f(items[i - 1], items[i])); out.push(acc); } return mkSeq(out); }   // [\!eq] 1,2,3: True, then each prefix
         if (RIGHT_OPS.has(op)) {   // [\**] 2,3,4 → (4 81 2**81): the folds from the right, in that order
             const out = []; let acc = items[items.length - 1]; out.push(acc);
             for (let i = items.length - 2; i >= 0; i--) { acc = f(items[i], acc); out.push(acc); }
@@ -230,7 +237,7 @@ function reduceOp(op, v, triangle) {
     }
     if (v instanceof RRange && v.isInfinite()) { if (op === '+' || op === '*') return Infinity; throw new RakuError('Cannot reduce an infinite Range'); }
     if (!items.length) { if (op in OP_IDENTITY && OP_IDENTITY[op] !== undefined) return OP_IDENTITY[op]; return Nil; }
-    if (CHAIN_OPS.has(op)) { for (let i = 0; i + 1 < items.length; i++) if (!truthy(f(items[i], items[i + 1]))) return false; return true; }
+    if (isChainOp(op)) { for (let i = 0; i + 1 < items.length; i++) if (!truthy(f(items[i], items[i + 1]))) return false; return true; }
     if (op === '<=>' || op === 'cmp' || op === 'leg') { if (items.length === 1) return Nil; let acc = f(items[0], items[1]); for (let i = 2; i < items.length && (acc instanceof REnum && acc.val === 0); i++) acc = f(items[i - 1], items[i]); return acc; }
     if (op === ',') return mkList(items.slice());
     if (RIGHT_OPS.has(op)) { let acc = items[items.length - 1]; for (let i = items.length - 2; i >= 0; i--) acc = f(items[i], acc); return acc; }
@@ -311,7 +318,7 @@ Object.assign(R, {
     say, print, put, note, printf, dd, exit, sqrt, sin, cos, tan, asin, acos, atan, sinh, cosh, tanh, exp, cbrt, log, log2, log10, atan2,
     floor, ceiling, truncate, round, sign, 'is-prime': isPrime, expmod, polymod, factorial, rand, randNum, srand, min, max, sum, elems, end, join, reverse, sort, map, grep, first,
     unique, keys, values, kv, pairs, push, append, pop, shift, unshift, prepend, splice, zip, roundrobin, head, tail, defined: defd, item, flat: flatten, pick, roll,
-    categorize, classify, val, allo, '__radix': radix, '__radix-list': radixList, reduce, produce, any: anyJ, all: allJ, none: noneJ, one: oneJ, set, bag, mix, chrs: chrsOf, ords: ordsOf, ucfirst, slurp: slurpB, spurt: spurtB,
+    categorize, classify, opFn, val, allo, '__radix': radix, '__radix-list': radixList, reduce, produce, any: anyJ, all: allJ, none: noneJ, one: oneJ, set, bag, mix, chrs: chrsOf, ords: ordsOf, ucfirst, slurp: slurpB, spurt: spurtB,
     lines: linesB, get, prompt, sleep, now, time, open, close, mkdir, rmdir, unlink, dir, chdir, shell, run, ioPath, EVAL, OPS, opFn, reduceOp, zipOp, crossOp, hyperOp, hyperPrefix,
     assumingCall, seqOp, lazyOf, eagerOf, cacheOf, chars, ord, chr, uc, lc, tc, tclc, flip, trim, chomp, chop, substr, index: strIndex, rindex: strRindex, split: (sep, s, ...a) => strSplit(s, sep, ...a), words, comb,
     sprintf, abs, gcd, lcm, not, so, gist, raku, str, numify, truncate, 'trim-leading': trimLeading, 'trim-trailing': trimTrailing, samecase, indent, fc, wordcase, minmax: minmaxOf, 'is-prime': isPrime, warn, die, fail, take,

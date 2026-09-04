@@ -138,7 +138,7 @@ variable interpolated into the pattern (the interpreter splices its text).
 
 Outside (refused, or run through `--fallback=wasm`):
 `EVAL` and `require` of computed names, `use` of a module,
-NativeCall, threads and `react`/`supply`/`Channel`, `temp`/`let`,
+NativeCall, threads and `signal`, `temp`/`let`,
 `Proc::Async`, the `Test` module.
 
 The corpus gate, `rakupp t/js/run.raku`, transpiles every program in
@@ -289,6 +289,33 @@ say await JS.fetch($url).then(-> $r { $r.json });   # a native Promise, awaited
 The interpreter runs `start` on real threads, so a program whose output
 depends on their interleaving is not judged by `--verify`; the golden
 `t/js/interop/async.raku` shows the deterministic ordering JavaScript gives.
+
+## `react`, `supply`, `Channel`
+
+One thread, cooperatively: `start` is a microtask, `sleep` yields to the
+event loop, `.receive`, `react` and a Channel's `.list` wait on promises the
+emitter awaits (the routines around them are coloured `async`, as for
+`await`). Taps run synchronously on `emit`. What works:
+
+- `Supplier.new` / `Supplier::Preserving.new`, `.emit`, `.done`, `.quit`,
+  `.Supply`; a live Supply's `.tap(&code, :done, :quit)` → a Tap with
+  `.close`, `.act`; `supply { emit …; done }` blocks, run once per tap;
+  `Supply.from-list`, `Supply.interval($s, $delay)`; `.map`, `.grep`, `.do`,
+  `.head`, `.first`, `.skip`, `.unique`, `.squish`, `.batch`, `.lines(:!chomp)`,
+  `.words`, `.on-close`, `.Promise`, `.wait`, `.Channel`, `.list`.
+- `Channel.new`, `.send`, `.receive`, `.poll`, `.close`, `.closed`, `.fail`,
+  `.Supply`, `.list`. A `.receive` with nothing queued waits while a `start`
+  block or a timer is still live and answers `Nil` once nobody can send, as
+  the interpreter does; on a closed channel it dies.
+- `react { whenever X { … } }` over a Supply, Supplier, Channel, Promise or
+  list; `done` ends the react (or the supply block) from anywhere inside,
+  `last` closes one subscription, `LAST`/`QUIT` phasers in a whenever body
+  are its done/quit. `whenever` inside `supply { }` too. `Promise.in`,
+  `$p.vow`, `Promise(supply { … })`.
+
+Outside: `signal`, `Proc::Async`, `Lock`, threads, `hyper`/`race`, and any
+program that needs true parallelism — a busy `start` block runs only when
+the main line yields.
 
 ## In a browser
 

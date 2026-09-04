@@ -38,6 +38,7 @@ function mcSet(inv, name, v) {
 function meta(inv, name, ...args) { const t = inv instanceof RType ? inv : typeOf(inv); return mc(t, name, ...args); }
 // Int($x) / Str(…) / a subset or class coercion
 function coerce(ty, v) {
+    if (ty === T.Promise) { if (v instanceof RSupply) return supplyPromise(v); if (v instanceof RPromise) return v; }   // Promise(supply { … })
     if (ty === T.Int) return toInt(toNumeric(v));
     if (ty === T.Num) return mkNum(toFloat(v));
     if (ty === T.Str) return str(v);

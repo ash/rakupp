@@ -101,7 +101,7 @@ M(T.Hash, { elems: (s) => s.m.size, Bool: (s) => s.m.size > 0, Str: (s) => str(s
     'classify-list': (s, f, ...l) => { const mf = mapperFn(f); const src = l.length === 1 ? l[0] : mkList(l); for (const x of iter(src)) { const k = hashKey(mf(x)); let b = s.m.get(k); if (!b) { b = mkArray([]); s.m.set(k, b); } b.a.push(x); } return s; },
     'categorize-list': (s, f, ...l) => { const mf = mapperFn(f); const src = l.length === 1 ? l[0] : mkList(l); for (const x of iter(src)) for (const key of itemsOf(mf(x))) { const k = hashKey(key); let b = s.m.get(k); if (!b) { b = mkArray([]); s.m.set(k, b); } b.a.push(x); } return s; },
     'Hash': (s) => s, 'hash': (s) => s, 'clone': (s) => new RHash(new Map(s.m), s.ty), 'Map': (s) => s, 'Set': (s) => toSetty(s, T.Set), 'Bag': (s) => toSetty(s, T.Bag), 'Mix': (s) => toSetty(s, T.Mix), 'SetHash': (s) => toSetty(s, T.SetHash), 'BagHash': (s) => toSetty(s, T.BagHash), 'MixHash': (s) => toSetty(s, T.MixHash), 'iterator': (s) => s.pairs()[Symbol.iterator](),
-    'Int': (s) => s.m.size, 'Numeric': (s) => s.m.size, 'min': (s, ...a) => nm(a).size ? minMaxAdv(s, posArgs(a)[0], false, nm(a)) : minOf(s, posArgs(a)[0]), 'max': (s, ...a) => nm(a).size ? minMaxAdv(s, posArgs(a)[0], true, nm(a)) : maxOf(s, posArgs(a)[0]), 'grep': (s, f) => grepList(s, f), 'map': (s, f) => mapList(s, f), 'first': (s, ...a) => firstOf(s, posArgs(a)[0], nm(a)), 'of': (s) => s.of || T.Mu, 'keyof': (s) => T.Str, 'default': (s) => s.dflt === undefined ? Any : s.dflt, 'sum': (s) => sumList(mkList(s.values())), 'join': (s, sep) => joinList(mkList(s.pairs()), sep) });
+    'Int': (s) => s.m.size, 'Numeric': (s) => s.m.size, 'min': (s, ...a) => nm(a).size ? minMaxHash(s, false, nm(a)) : minMaxHash(s, false, null), 'max': (s, ...a) => nm(a).size ? minMaxHash(s, true, nm(a)) : minMaxHash(s, true, null), 'grep': (s, f) => grepList(s, f), 'map': (s, f) => mapList(s, f), 'first': (s, ...a) => firstOf(s, posArgs(a)[0], nm(a)), 'of': (s) => s.of || T.Mu, 'keyof': (s) => T.Str, 'default': (s) => s.dflt === undefined ? Any : s.dflt, 'sum': (s) => sumList(mkList(s.values())), 'join': (s, sep) => joinList(mkList(s.pairs()), sep) });
 M(T.Pair, { key: (s) => s.k, value: (s) => s.v, kv: (s) => mkList([s.k, s.v]), keys: (s) => mkList([s.k]), values: (s) => mkList([s.v]), pairs: (s) => mkList([s]), antipair: (s) => pair(s.v, s.k), invert: (s) => { const v = s.v instanceof RScalar ? s.v.v : s.v; return mkSeq(v instanceof RList ? v.a.map(x => pair(x, s.k)) : [pair(v, s.k)]); }, Str: (s) => str(s), gist: (s) => pairGist(s), raku: (s) => pairRaku(s), Bool: (s) => true, 'freeze': (s) => s, 'Hash': (s) => hashFrom([[hashKey(s.k), s.v]]), 'hash': (s) => hashFrom([[hashKey(s.k), s.v]]), 'elems': (s) => 1, 'Numeric': (s) => 1, 'Int': (s) => 1, 'AT-KEY': (s, k) => hget(s, k), 'EXISTS-KEY': (s, k) => hexists(s, k), 'ACCEPTS': (s, v) => smartmatch(v, s), 'Map': (s) => hashFrom([[hashKey(s.k), s.v]]) });
 M(T.Whatever, { gist: () => '*', raku: () => '*', Str: () => '*' });
 M(T.Junction, { gist: (s) => junctionGist(s), Str: (s) => junctionStr(s), raku: (s) => junctionRaku(s), Bool: (s) => junctionBool(s), 'defined': (s) => new RJunction(s.kind, s.items.map(defined)), 'so': (s) => junctionBool(s), 'not': (s) => !junctionBool(s), 'eigenstates': (s) => mkList(s.items), 'THREAD': (s, f) => new RJunction(s.kind, s.items.map(f)) });
@@ -151,6 +151,8 @@ function mc(inv, name, ...args) {
         if (name === 'new') return jsNew(inv.__js, args);
         if (name in inv.__js) return jsCall(inv.__js, name, args);
     }
+    if (inv instanceof RJunction && name === 'defined') return junctionBool(new RJunction(inv.kind, inv.items.map(x => defined(x))));   // .defined threads, then collapses
+    if (inv instanceof RJunction && name === 'DEFINITE') return true;   // the junction itself is an instance
     if (inv instanceof RJunction && name !== 'gist' && name !== 'Str' && name !== 'raku' && name !== 'Bool' && name !== 'so' && name !== 'not' && name !== 'defined' && name !== 'WHAT' && name !== 'eigenstates') {
         return new RJunction(inv.kind, inv.items.map(x => mc(x, name, ...args)));
     }
@@ -295,3 +297,15 @@ function rangeRand(s) {
     return numResult(a + rand() * (b - a));
 }
 M(T['IO::Handle'], { 'out-buffer': (s) => s.outBuffer === undefined ? (s.kind === 'out' || s.kind === 'err' ? 0 : 8192) : s.outBuffer });   // a file is buffered by default; the standard streams are not
+// a Hash's min/max go by value: the pair, or with :v the value, :k the key, :kv both, :p the pair
+function minMaxHash(h, isMax, named) {
+    const ps = arr(pairsOf(h)); let best = null, ties = [];
+    const byValue = named && named.size;   // the adverbs compare values; the bare form compares whole pairs
+    for (const p of ps) { const c = best ? (byValue ? (isMax ? cmpNum(p.v, best.v) : -cmpNum(p.v, best.v)) : (isMax ? cmpNum(p, best) : -cmpNum(p, best))) : 1; if (c > 0) { best = p; ties = [p]; } else if (c === 0) ties.push(p); }
+    const has = (n) => named && truthy(named.get(n) ?? false);
+    if (!best) return (named && named.size) ? mkList([]) : (isMax ? -Infinity : Infinity);   // empty: no positions to answer; the bare form is the identity
+    if (has('v')) return mkList(ties.map(p => p.v)); if (has('k')) return mkList(ties.map(p => p.k)); if (has('kv')) return mkList(ties.flatMap(p => [p.k, p.v])); if (has('p')) return mkList(ties);
+    return best;   // the bare form: the pair (whole pairs compare by value first)
+}
+M(T.Hash, { 'max': (s, ...a) => minMaxHash(s, true, nm(a)), 'min': (s, ...a) => minMaxHash(s, false, nm(a)) });
+for (const t of [T.Set, T.SetHash, T.Bag, T.BagHash, T.Mix, T.MixHash]) M(t, { 'max': (s, ...a) => minMaxHash(s, true, nm(a)), 'min': (s, ...a) => minMaxHash(s, false, nm(a)) });

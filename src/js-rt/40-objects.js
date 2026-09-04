@@ -32,7 +32,7 @@ function exc(e) {
     if (e instanceof Error) return new RakuError(e.message, 'X::Internal');
     return new RakuError(String(e), 'X::AdHoc');
 }
-function isControl(e) { return e instanceof NextCtl || e instanceof LastCtl || e instanceof RedoCtl || e instanceof RetCtl || e instanceof ExitCtl || e instanceof SuccCtl || e instanceof TakeCtl; }
+function isControl(e) { return e instanceof DoneCtl || e instanceof NextCtl || e instanceof LastCtl || e instanceof RedoCtl || e instanceof RetCtl || e instanceof ExitCtl || e instanceof SuccCtl || e instanceof TakeCtl; }
 function excMessage(e) { if (e instanceof RakuError) return e.message; if (e instanceof RObj) { const m = e.ty.findUser('message'); if (m) return str(m(e)); const a = e['a_message']; if (a !== undefined) return str(a); } return str(e); }
 function excType(e) { if (e instanceof RakuError) return T[e.type] || mkExType(e.type); if (e instanceof RObj) return e.ty; return T.Exception; }
 function mkExType(name) { if (!T[name]) { const t = mkType(name, [T.Exception]); return t; } return T[name]; }
@@ -117,6 +117,10 @@ function buildObj(ty, ...args) {
         if (ty === T.Int || ty === T.Num || ty === T.Str || ty === T.Bool) { const [pos] = splitArgs(args); return pos.length ? coerce(ty, pos[0]) : (ty === T.Str ? '' : ty === T.Bool ? false : 0); }
         if (ty === T.Nil) return Nil;
         if (ty === T.Promise) return mkPromise();
+        if (ty === SupplyT) return new RSupply();
+        if (ty === SupplierT) return new RSupplier(false);
+        if (ty === SupplierPreservingT) return new RSupplier(true);
+        if (ty === ChannelT) return new RChannel();
         if (ty === T.Any || ty === T.Mu) return new RObj(defClass(null, { parents: [T.Any] }));
         if (ty === T.Capture) { const [pos, named] = splitArgs(args); return new RCapture(pos, new Map(named)); }
         if (ty === T.Date || ty === T.DateTime) return dateNew(ty, args);
@@ -283,7 +287,8 @@ function toSetty(v, ty) {
     return mkSetty(ty, [v]);
 }
 function setOp(op, a, b) {
-    const A = a instanceof RSetty ? a : toSetty(a, T.Set), B = b instanceof RSetty ? b : toSetty(b, T.Set);
+    const anyBag = (a instanceof RSetty && !a.isSet()) || (b instanceof RSetty && !b.isSet()) || op === '⊎' || op === '⊍';   // a Bag operand, or (+)/(.), lifts a list to a Bag with its counts
+    const A = a instanceof RSetty ? a : toSetty(a, anyBag ? T.Bag : T.Set), B = b instanceof RSetty ? b : toSetty(b, anyBag ? T.Bag : T.Set);
     const baggy = !A.isSet() || !B.isSet();
     const ty = A.isMix() || B.isMix() ? T.Mix : baggy ? T.Bag : T.Set;
     const out = new RSetty(ty);

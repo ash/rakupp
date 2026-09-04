@@ -196,6 +196,7 @@ function hashKey(k) {
 }
 // %h{k}
 function hget(h, k) {
+    if (h === Nil) return Nil;   // Nil<k> is Nil
     if (h instanceof RHash) { if (typeof k !== 'string') { if (k instanceof RList || k instanceof RSeq || k instanceof RRange) return hslice(h, k); k = hashKey(k); } const v = h.m.get(k); return v === undefined ? (h.dflt === undefined ? Any : h.dflt) : v; }
     if (h instanceof RSetty) return h.get(k);
     if (h instanceof RPair) return str(k) === str(h.k) ? h.v : Nil;
@@ -363,6 +364,7 @@ function spreadArgs(v) { if (v instanceof RCapture) return v.named.size ? v.pos.
 
 // --- indexing ------------------------------------------------------------
 function aget(a, i) {
+    if (a === Nil) return (i instanceof RList || i instanceof RSeq || i instanceof RRange) ? mkList(arr(i).map(() => Nil)) : Nil;   // Nil[0] is Nil, Nil[0,1] is (Nil Nil)
     if (a instanceof RMatch) {   // $m[0], $m[0,1], $m[0..1], $m[*]
         if (typeof i === 'number') return a.pos(i);
         if (i instanceof RWhatever || typeof i === 'function') return matchList(a);
@@ -745,6 +747,7 @@ function smartmatch(v, pat) {
     if (pat instanceof RType) return isa(v, pat) || (pat === Nil && v === Nil);
     if (typeof pat === 'function') { if (pat.rtype === T.WhateverCode) return truthy(pat(v)); return truthy(pat(v)); }
     if (pat instanceof RRegex) return regexMatch(v, pat);
+    if (pat instanceof RAllo) return isNumeric(v) ? numeq(v, pat.n) : str(v) === pat.s;   // an allomorph matches numerically a Numeric, by string otherwise
     if (pat instanceof RRange) return pat.contains(v);
     if (pat instanceof RJunction) return junctionBool(junctionOp((x, p) => smartmatch(x, p), v, pat));
     if (typeof pat === 'string') return str(v) === pat;

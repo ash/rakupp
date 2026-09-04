@@ -195,6 +195,11 @@ function typeOf(v) {
             if (v instanceof RMatch) return T.Match;
             if (v instanceof RRegex) return T.Regex;
             if (v instanceof RJunction) return T.Junction;
+            if (v instanceof RSupply) return SupplyT;
+            if (v instanceof RSupplier) return v.supply.preserving ? SupplierPreservingT : SupplierT;
+            if (v instanceof RChannel) return ChannelT;
+            if (v instanceof RTap) return TapT;
+            if (v instanceof RVow) return VowT;
             if (v instanceof RWhatever) return T.Whatever;
             if (v instanceof RSetty) return v.ty;
             if (v instanceof RComplex) return T.Complex;

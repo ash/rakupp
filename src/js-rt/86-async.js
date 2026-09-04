@@ -37,7 +37,7 @@ async function awaitP(x) {
     if (x instanceof RList || x instanceof RSeq) return mkList(await Promise.all(arr(x).map(awaitP)));
     return x;
 }
-function promiseIn(secs) { const p = new RPromise(); setTimeout(() => p.keep(true), Math.max(0, toFloat(secs) * 1000)); return p; }
+function promiseIn(secs) { const p = new RPromise(); activeTimers++; setTimeout(() => { activeTimers--; p.keep(true); }, Math.max(0, toFloat(secs) * 1000)); return p; }
 function promiseAllof(ps) { const p = new RPromise(); const list = arr(ps).map(x => x instanceof RPromise ? x.p : Promise.resolve(toJs(x))); Promise.allSettled(list).then(() => p.keep(true)); return p; }
 function promiseAnyof(ps) { const p = new RPromise(); const list = arr(ps).map(x => x instanceof RPromise ? x.p : Promise.resolve(toJs(x))); let done = false; for (const q of list) q.then(() => { if (!done) { done = true; p.keep(true); } }, () => { if (!done) { done = true; p.keep(true); } }); return p; }
 // .then(&cb): a new Promise kept with cb's value, cb receiving the settled original

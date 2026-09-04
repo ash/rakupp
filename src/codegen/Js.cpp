@@ -105,7 +105,7 @@ string rt(const string& name) { return jsIdent(name) ? "R." + name : "R[" + jsSt
 // Builtins the runtime exports by Raku name (src/js-rt/50-builtins.js). A call
 // to a name outside this table is a refusal, so the histogram names the gap.
 const std::set<string> kBuiltins = {
-    "allo", "val", "module", "exportFn", "exportType", "exportMain", "boolOf", "isMatch", "isRegex", "smartmatchWith", "attrSet", "isFailure", "substMutate", "withDefault", "__radix", "__radix-list",
+    "opFn", "react", "supplyBlock", "whenever", "emit", "done", "sleepP", "allo", "val", "module", "exportFn", "exportType", "exportMain", "boolOf", "isMatch", "isRegex", "smartmatchWith", "attrSet", "isFailure", "substMutate", "withDefault", "__radix", "__radix-list",
     "say", "print", "put", "note", "printf", "dd", "exit", "sqrt", "sin", "cos", "tan", "asin", "acos", "atan", "sinh", "cosh", "tanh", "exp", "cbrt",
     "log", "log2", "log10", "atan2", "floor", "ceiling", "truncate", "round", "sign", "is-prime", "expmod", "polymod", "rand", "srand", "min", "max", "sum",
     "elems", "end", "join", "reverse", "sort", "map", "grep", "first", "unique", "keys", "values", "kv", "pairs", "push", "append", "pop", "shift", "unshift",
@@ -118,12 +118,13 @@ const std::set<string> kBuiltins = {
 };
 // Names the runtime answers as type objects (R.T.<name>).
 const std::set<string> kCoreTypes = {
+    "Supply", "Supplier", "Supplier::Preserving", "Channel", "Tap", "Vow",
     "Mu", "Any", "Cool", "Numeric", "Real", "Int", "Num", "Rational", "Rat", "FatRat", "Str", "Bool", "Nil", "Positional", "Iterable", "List", "Array", "Seq", "Slip",
     "Range", "Associative", "Map", "Hash", "Pair", "Callable", "Code", "Block", "Routine", "Sub", "Method", "Whatever", "WhateverCode", "Exception", "X::AdHoc",
     "Failure", "Junction", "Order", "Setty", "Set", "SetHash", "Baggy", "Bag", "BagHash", "Mixy", "Mix", "MixHash", "Complex", "IO", "IO::Path", "IO::Handle",
     "Stringy", "Version", "Date", "DateTime", "Instant", "Match", "Regex", "Capture", "Signature", "IterationEnd", "Int:D", "Str:D", "Promise", "PromiseStatus",
 };
-const std::set<string> kLaterTypes = { "Supplier", "Supply", "Channel", "Lock", "Thread", "Proc", "Proc::Async", "IO::Socket::INET", "IO::Socket::Async", "Semaphore", "Lock::Async", "Scheduler", "ThreadPoolScheduler", "atomicint" };
+const std::set<string> kLaterTypes = { "Lock", "Thread", "Proc", "Proc::Async", "IO::Socket::INET", "IO::Socket::Async", "Semaphore", "Lock::Async", "Scheduler", "ThreadPoolScheduler", "atomicint" };
 const std::map<string, string> kBinOps = {
     {"+", "add"}, {"-", "sub"}, {"*", "mul"}, {"/", "div"}, {"%", "mod"}, {"**", "pow"}, {"div", "idiv"}, {"mod", "imod"}, {"gcd", "gcd"}, {"lcm", "lcm"},
     {"~", "concat"}, {"x", "xrepeat"}, {"==", "numeq"}, {"!=", "numne"}, {"<", "lt"}, {"<=", "le"}, {">", "gt"}, {">=", "ge"},
@@ -288,12 +289,19 @@ struct JsGen {
     // or a call to a coloured sub / a coloured method name — is `async`, and every
     // call to it is awaited. Decided once in prepass, by fixpoint.
     std::set<string> asyncSubs, asyncMethods;
-    bool awaitsIn(Node* n) {              // does this function body await (not counting nested routines)?
+    bool usesChannel = false;            // the program names Channel: `.list` may have to wait for a close
+    bool isAwaitMethod(const string& m) { return m == "receive" || m == "wait" || (usesChannel && m == "list"); }
+    bool hasAsyncBlockArg(const std::vector<ExprPtr>& as) { for (auto& a : as) if (a->kind == NK::BlockExpr && !static_cast<BlockExpr*>(a.get())->isSub && stmtsAwait(static_cast<BlockExpr*>(a.get())->body)) return true; return false; }
+    // Does this function body await? Nested closures are their own functions — a `start`
+    // block or a map callback that awaits does not make its enclosing routine async — except
+    // the blocks run in place as IIFEs: do, try, gather.
+    bool awaitsIn(Node* n) {
         return contains(n, [&](Node* x) {
-            if (x->kind == NK::Call) { auto* c = static_cast<Call*>(x); return c->name == "await" || (!c->name.empty() && asyncSubs.count(c->name)); }
-            if (x->kind == NK::MethodCall) { auto* m = static_cast<MethodCall*>(x); return m->method == "result" || asyncMethods.count(m->method); }
+            if (x->kind == NK::Call) { auto* c = static_cast<Call*>(x); return c->name == "await" || c->name == "react" || c->name == "sleep" || (!c->name.empty() && asyncSubs.count(c->name)); }
+            if (x->kind == NK::MethodCall) { auto* m = static_cast<MethodCall*>(x); return m->method == "result" || isAwaitMethod(m->method) || asyncMethods.count(m->method) || hasAsyncBlockArg(m->args); }
+            if (x->kind == NK::Unary) { auto* u = static_cast<Unary*>(x); if ((u->op == "do" || u->op == "try" || u->op == "gather") && u->operand && u->operand->kind == NK::BlockExpr) return stmtsAwait(static_cast<BlockExpr*>(u->operand.get())->body); }
             return false;
-        }, true);
+        }, false);
     }
     bool stmtsAwait(const std::vector<StmtPtr>& ss) { for (auto& s : ss) if (awaitsIn(s.get())) return true; return false; }
     string sinkVar;                      // value-collecting loop: tail values are pushed here, not returned
@@ -508,6 +516,7 @@ struct JsGen {
         auto u = kUnicodeOps.find(op);
         if (u != kUnicodeOps.end()) return binop(u->second, L, R_, lineNo);
         if (kTableOps.count(op)) return "R.OPS[" + jsStr(op) + "](" + L + ", " + R_ + ")";
+        if (op.size() >= 3 && op.front() == '[' && op.back() == ']') return "R.opFn(" + jsStr(op.substr(1, op.size() - 2)) + ")(" + L + ", " + R_ + ")";   // a [R//] b: the bracketed (reversed, negated) infix
         refuse("infix operator '" + op + "'", lineNo);
     }
 
@@ -833,7 +842,6 @@ struct JsGen {
             string inner = op.substr(1, op.size() - 2);
             bool tri = !inner.empty() && inner[0] == '\\';
             if (tri) inner = inner.substr(1);
-            if (inner.size() > 1 && inner[0] == 'R' && !ascii::isalnum((unsigned char)inner[1])) refuse("a reversed reduce metaop", u->line);
             return "R.reduceOp(" + jsStr(inner) + ", " + exArg(x) + (tri ? ", true" : "") + ")";
         }
         if (op == "do") return doBlock(x, false);
@@ -960,6 +968,9 @@ struct JsGen {
             if (r->kind == NK::ListExpr) refuse("a sequence with a list on the right", b->line);
             return "R.seqOp(" + seeds + ", " + endv + ", " + (op == "...^" ? "true" : "false") + ")";
         }
+        if (op == "R//") { string t = tmp(); return "(R.defined(" + t + " = " + exArg(b->rhs.get()) + ") ? " + t + " : " + exArg(b->lhs.get()) + ")"; }   // the reversed defined-or, still lazy
+        if (op == "R||" || op == "Ror") { string t = tmp(); return "(R.truthy(" + t + " = " + exArg(b->rhs.get()) + ") ? " + t + " : " + exArg(b->lhs.get()) + ")"; }
+        if (op == "R&&" || op == "Rand") { string t = tmp(); return "(R.truthy(" + t + " = " + exArg(b->rhs.get()) + ") ? " + exArg(b->lhs.get()) + " : " + t + ")"; }
         if (op.size() > 1 && op[0] == 'R' && !ascii::isalnum((unsigned char)op[1])) return binop(op.substr(1), exArg(b->rhs.get()), exArg(b->lhs.get()), b->line);
         if (op.size() > 1 && op[0] == 'Z' && op != "Z") return "R.zipOp(" + jsStr(op.substr(1)) + ", " + exArg(b->lhs.get()) + ", " + exArg(b->rhs.get()) + ")";
         if (op.size() > 1 && op[0] == 'X' && op != "X" && op != "Xor" && !ascii::isalpha((unsigned char)op[1])) return "R.crossOp(" + jsStr(op.substr(1)) + ", " + exArg(b->lhs.get()) + ", " + exArg(b->rhs.get()) + ")";
@@ -1189,6 +1200,26 @@ struct JsGen {
         }
         const string& name = c->name;
         if (name == "await") { if (c->args.size() != 1) refuse("await with " + std::to_string(c->args.size()) + " arguments", c->line); return "(await R.awaitP(" + exArg(c->args[0].get()) + "))"; }
+        if (name == "sleep") return "(await R.sleepP(" + (c->args.empty() ? "undefined" : exArg(c->args[0].get())) + "))";   // the event loop runs meanwhile
+        if ((name == "react" || name == "supply") && c->args.size() == 1 && c->args[0]->kind == NK::BlockExpr) {
+            string body = blockClosure(static_cast<BlockExpr*>(c->args[0].get()));
+            return name == "react" ? "(await R.awaitP(R.react(" + body + ")))" : "R.supplyBlock(" + body + ")";
+        }
+        if (name == "whenever" && c->args.size() == 2 && c->args[1]->kind == NK::BlockExpr) {
+            auto* be = static_cast<BlockExpr*>(c->args[1].get());
+            string phasers;
+            for (auto& st : be->body) {   // LAST / QUIT phasers are the tap's done and quit
+                if (st->kind != NK::Block) continue;
+                auto* b = static_cast<Block*>(st.get());
+                if (b->phaser == "LAST" || b->phaser == "QUIT") {
+                    string body = fnBody(false, [&]() { if (b->phaser == "QUIT") { string nt = newTopic(); topics.push_back(nt); line(2, "let " + nt + " = _e;"); } emitStmts(b->stmts, 2, false); if (b->phaser == "QUIT") topics.pop_back(); }, 2);
+                    phasers += (phasers.empty() ? "" : ", ") + string(b->phaser == "LAST" ? "last: () => {\n" : "quit: (_e) => {\n") + body + "    }";
+                }
+            }
+            return "R.whenever(" + exArg(c->args[0].get()) + ", " + blockClosure(be) + (phasers.empty() ? "" : ", { " + phasers + " }") + ")";
+        }
+        if (name == "emit" && c->args.size() == 1) return "R.emit(" + exArg(c->args[0].get()) + ")";
+        if (name == "done" && c->args.empty()) return "R.done()";
         if (name == "start") {
             if (c->args.size() != 1) refuse("start with " + std::to_string(c->args.size()) + " arguments", c->line);
             Expr* a = c->args[0].get();
@@ -1304,6 +1335,8 @@ struct JsGen {
         string call = fnName + "(" + inv + ", " + jsStr(name) + (m->args.empty() ? "" : ", " + args(m->args)) + ")";
         substSlash = false;
         if (name == "parse" || name == "subparse" || name == "parsefile" || name == "match") { fn().usesSlash = true; call = slashSet(call); }
+        if (isAwaitMethod(name)) return "(await R.awaitP(" + call + "))";   // .receive / .wait / a Channel's .list
+        if (hasAsyncBlockArg(m->args)) return "(await R.awaitP(" + call + "))";   // .map({ $ch.receive }): the callback's promises, collected
         if (asyncMethods.count(name)) return "(await " + call + ")";
         return call;
     }
@@ -2412,6 +2445,7 @@ struct JsGen {
     }
     bool mainAsync = false;
     string program() {
+        usesChannel = opt.srcText.find("Channel") != string::npos;
         prepass();
         mainAsync = stmtsAwait(prog.stmts);
         fns.emplace_back();

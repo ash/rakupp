@@ -51,7 +51,7 @@ if (IS_NODE && nodeRequire) {
     host.writeOut = s => { try { fs.writeSync(1, s); } catch (e) { if (e.code === 'EAGAIN') { host.writeOut(s); } else if (e.code !== 'EPIPE') throw e; } };
     host.writeErr = s => { try { fs.writeSync(2, s); } catch (e) { if (e.code !== 'EPIPE') throw e; } };
     host.readStdin = () => { try { return fs.readFileSync(0, 'utf8'); } catch (e) { return ''; } };
-    host.exit = code => { host.flush(); process.exitCode = code; };
+    host.exit = code => { host.flush(); process.exit(code); };   // the program is over: a live interval or a poll must not keep the process alive
     host.slurp = (p, ...a) => { try { return fs.readFileSync(str(p), 'utf8'); } catch (e) { throw new RakuError(`Failed to open file ${str(p)}: ${e.code === 'ENOENT' ? 'No such file or directory' : e.message}`, 'X::IO::DoesNotExist'); } };
     host.spurt = (p, content, ...a) => { const named = nm(a); const opts = truthy(named.get('append')) ? { flag: 'a' } : truthy(named.get('createonly')) ? { flag: 'wx' } : {}; fs.writeFileSync(str(p), str(content), opts); return true; };
     host.appendFile = (p, s) => { fs.appendFileSync(p, s); };
