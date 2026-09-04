@@ -522,6 +522,19 @@ struct ProceedEx {};    // `proceed` leaves a `when` block but keeps matching la
 // `catch` runs there is nothing left to walk.
 struct BtFrame { std::shared_ptr<Callable> code; int line = 0; };
 
+// A captured chain plus the file its routine-less frames belong to, in ONE
+// shared allocation. Failures are made in bulk — every failed coercion is one —
+// so the record is what they carry, in the Value's own spare handle rather than
+// as an extra map entry (measured: the entry alone cost ~6% of making a
+// Failure). `originFile` is empty when it is simply the program being run.
+struct BtRecord { std::vector<BtFrame> frames; std::string originFile; };
+
+// A Failure hash that REMEMBERS where it was made. A Failure is created in one
+// place and detonates in another, often far away, and until it carries the
+// first position the error can only report the second — which is the line that
+// merely USED the value. (Rakudo prints both, under "Actually thrown at:".)
+Value rakuppNewFailure();
+
 // The interpreter's Raku-level throw. Constructing one CAPTURES the live call
 // chain (issue #67): every `throw RakuError{payload, message}` in the tree —
 // `die`, and some 320 sites in the builtins — records where it happened, at
@@ -530,8 +543,13 @@ struct BtFrame { std::shared_ptr<Callable> code; int line = 0; };
 // uncaught-error printer (Interpreter::exceptionFor attaches them).
 struct RakuError {
     Value payload; std::string message;
-    std::shared_ptr<std::vector<BtFrame>> frames; // innermost first; null = not captured
-    std::string originFile;                       // curDeclFile() at the throw
+    std::shared_ptr<BtRecord> bt;                 // innermost first; null = not captured
+    // A SECOND position some errors have, printed under a label of its own:
+    // a `fail` is created in one place and detonates in another, and a `start`
+    // block dies in a worker that some later `await` reports. `frames` is
+    // always where the error came FROM; alt is the other end.
+    std::shared_ptr<BtRecord> altBt;
+    std::string altLabel;
     RakuError() = default;
     RakuError(Value p, std::string m);            // captures (defined in Interpreter.cpp)
     // …and the form that does NOT: a RakuError built only to be converted
@@ -801,6 +819,9 @@ struct PromiseState {
     Value result;        // the kept value
     Value cause;         // exception payload when broken
     std::string causeMsg; // exception message when broken
+    // …and WHERE it broke. The worker's own call chain: without it, an
+    // `await` can only report its own line, which is never where the error is.
+    std::shared_ptr<BtRecord> causeBt;
     std::vector<std::function<void()>> thens; // `.then` continuations, fired once on settle
 };
 
@@ -1879,14 +1900,17 @@ public:
     BtStyle btStyleForStderr();       // the style the uncaught printer uses (env + isatty)
     // Rakudo-shaped frame lines ("  in sub f at FILE line N\n" each), for a
     // captured chain. `originFile` names the file whose top level was running.
-    std::string renderFrames(const std::vector<BtFrame>& fr, const std::string& originFile,
-                             const BtStyle& st);
+    std::string renderFrames(const BtRecord& rec, const BtStyle& st);
     // …and for a materialized Backtrace list of BacktraceFrame hashes.
     std::string renderBacktraceValue(const Value& bt, const BtStyle& st);
     // The frames a caught exception object carries (`__bt`), materialized into
     // a Backtrace list on first ask and cached back onto the object.
     Value backtraceOf(const Value& exObj);
     std::string srcLineOf(const std::string& file, int line); // one source line, cached ("" = unavailable)
+    // The whole diagnostic an uncaught error prints: message, type, frames, and
+    // the alt section when there is one. Also what `warn` and the REPL render.
+    std::string renderError(const RakuError& e, const BtStyle& st);
+    std::string warnFrame();          // the one frame a `warn` reports ("" when off)
     std::map<std::string, std::vector<std::string>> srcLineCache_;
     // %?RESOURCES for the module currently being loaded (dist resource files);
     // a stack because module loads nest (a module can `use` another).

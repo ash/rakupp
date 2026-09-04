@@ -1,6 +1,6 @@
 # Plan: backtraces — the default tracer (issue #67)
 
-**Status: P1 LANDED 2026-09-04; P2 partly landed with it. P3/P4 open.** Probes run against
+**Status: P1, P2 and P3 LANDED 2026-09-04. P4 open.** Probes run against
 `build/rakupp` at e5db047; Rakudo 2025.x from `/usr/local/bin/raku` as the
 oracle. Prompted by [issue #67](https://github.com/ash/rakupp/issues/67)
 ("Stack trace wanted"); the verbosity knob was already on the wish list in
@@ -260,7 +260,7 @@ paths, collapse + cap, colour + `NO_COLOR`, `--ll-exception`,
 FEATURES/REFERENCE per [raku-pp-doc-sync]; the CLI-BORROW entry marked
 done.
 
-**P3 — the other throw paths.** `warn` (innermost user frame); `fail`
+**P3 — the other throw paths. DONE 2026-09-04.** `warn` (innermost user frame); `fail`
 (capture at the `fail` into the Failure hash → `Actually thrown at:`
 section on detonation; measure a fail-heavy loop, e.g. `"abc".Int` × 1e6,
 before/after — builtin Failures are created in C++ and should capture in
@@ -357,15 +357,45 @@ Two departures from the design above, both deliberate:
 The excerpt separator is an ASCII `|`, not the `│` this document first drew:
 the trace goes to a terminal whose encoding we do not control.
 
-## What P1 did NOT change (P3, unchanged from the plan above)
+## What P3 landed (2026-09-04)
 
-Confirmed by probe after landing:
+- **`warn`** prints its message and the ONE frame it was warned from, which
+  is what Rakudo prints and the right amount for a warning.
+- **`fail`** reports both of its positions: the frames where the Failure was
+  MADE, then `Actually thrown at:` and the detonation. Byte-compatible with
+  Rakudo's layout. Every Failure in the tree now carries its creation chain,
+  through one `rakuppNewFailure()` that replaced the 26 hand-written
+  `Value::makeHash(); hashKind = "Failure"` pairs.
+- **`await`** reports the WORKER's frames, then `Awaited at:` and the line
+  that collected the exception. `PromiseState` carries the record across the
+  thread boundary. This departs from Rakudo, which leads with
+  `An operation first awaited:` and indents the message inside a second
+  section — that layout puts the message on neither the first line nor the
+  left margin, and everything here depends on the message being line 1.
+- **Compile-time errors** show the source line they are complaining about.
+  The `------> …⏏…` column pointer is still P4: `ParseError` carries a line
+  but no column, and `Token` has one, so threading it through is mechanical
+  but touches every construction site.
 
-- `warn` still prints its message alone. Rakudo adds the innermost frame.
-- `fail` reports the DETONATION site, not the `fail` site. Rakudo prints
-  both, under an `Actually thrown at:` heading.
-- An exception from inside `start {…}` reports the `await` site, not the
-  worker's own chain. The worker captures correctly — the frames are lost
-  where the Promise stores the exception.
-- Compile-time errors have no `------> …⏏…` source pointer yet, though they
-  do now get the excerpt line.
+### The cost, measured
+
+`RakuError`'s capture is still free on the non-throwing path. Failures are
+different: they are made in BULK by ordinary code, since every failed
+coercion is one. On a loop that does nothing but make and discard Failures
+(`"abc".Int` × 200 000, interleaved A/B against the P1 commit):
+
+| version | ns per Failure | vs control |
+|---|---:|---:|
+| first cut (record in a `__bt` map entry) | 2501 | +12.6% |
+| record in the Value's own spare handle | 3064 | +9.5% |
+
+(The two rows were measured against different control runs on a loaded
+machine; the percentages are the comparison, not the absolute numbers.) A
+probe build that captured the chain and then threw it away cost +6%, so the
+walk and the storage are about half each. What remains is three allocations:
+the shared record, its frame vector, and the Value's cold block.
+
+The perf-guard kernels contain no Failures, so the gate will not see this;
+it is recorded here instead. If it ever matters, the next step is a small
+inline frame array inside `BtRecord` — measured depth on this path is two or
+three frames, so the vector's buffer allocation is pure overhead.

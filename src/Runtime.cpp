@@ -186,9 +186,16 @@ int rakuppRunOn(Interpreter& interp, const std::string& src, std::vector<std::st
         return interp.run(prog);
     } catch (const ParseError& e) {
         std::cerr << "===SORRY!=== Parse error at line " << e.line << ": " << e.what() << "\n";
+        // …and the line itself. A syntax error names a position the reader has
+        // to go and look at; showing it here saves the trip (issue #67).
+        std::string sl = interp.srcLineOf(interp.srcFileAbs_.empty() ? fileName : interp.srcFileAbs_, e.line);
+        if (!sl.empty()) std::cerr << "      " << e.line << " | " << sl << "\n";
         return 1; // a compile-time (syntax) error exits 1, like Rakudo
     } catch (const RakuError& e) {
-        std::cerr << e.message << "\n";
+        // the same diagnostic the mainline handler prints — this is the path a
+        // throw from a BEGIN/CHECK phaser or module load takes, and it used to
+        // lose the frames the error was carrying all along
+        std::cerr << interp.renderError(e, interp.btStyleForStderr());
         return 1;
     } catch (const std::exception& e) {
         std::cerr << "Internal error: " << e.what() << "\n";

@@ -255,6 +255,38 @@ does not fill the terminal:
   in block <unit> at rec.raku line 2
 ```
 
+Some errors have **two** positions, and both are printed. A `fail` is created
+in one place and only goes off when something uses the value, so the frames
+show where it was made and then, under a label, where it detonated:
+
+```
+bad 5
+  in sub inner at f2.raku line 1
+      1 | sub inner($x) { fail "bad $x" }
+  in sub outer at f2.raku line 2
+  in block <unit> at f2.raku line 3
+
+Actually thrown at:
+  in block <unit> at f2.raku line 5
+```
+
+An exception from inside a `start` block reads the same way. The frames are
+the worker's, where the error actually is, and the label marks the `await`
+that collected it:
+
+```
+in worker
+  in sub work at aw.raku line 1
+  in block  at aw.raku line 2
+
+Awaited at:
+  in block <unit> at aw.raku line 3
+```
+
+A `warn` gets one frame, the line it was warned from, because a warning
+points at a line rather than reporting an incident. A syntax error shows the
+line it is complaining about.
+
 | Knob | Meaning |
 |---|---|
 | `--ll-exception` | every frame, nothing folded, no limit (Rakudo's flag) |

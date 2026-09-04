@@ -4752,7 +4752,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         std::string want = args[0].toStr();
         Value found = methodCall(inv, "can", ValueList{Value::str(want)});
         if (found.t == VT::Array && found.arr() && !found.arr()->empty()) return (*found.arr())[0];
-        Value f = Value::makeHash(); f.hashKind = "Failure";
+        Value f = rakuppNewFailure();
         (*f.hash())["exception"] = Value::typeObj("X::Method::NotFound");
         (*f.hash())["message"]   = Value::str("No such method '" + want + "' for invocant of type '" +
                                             inv.typeName() + "'");
@@ -8788,7 +8788,10 @@ void Interpreter::registerBuiltins() {
         // std::cerr directly walked past a dynamically-overridden handle, so a
         // module that redirects $*ERR to capture output (silently, Trap) saw
         // every `note` and no `warn`.
-        return I.ioEmit(msg + "\n", "$*ERR", true);
+        // …and where it was warned FROM. Rakudo prints the innermost frame only,
+        // which is the right amount for a warning: the reader wants the line to
+        // go look at, not the whole chain. RAKUPP_BACKTRACE=full gives the rest.
+        return I.ioEmit(msg + "\n" + I.warnFrame(), "$*ERR", true);
     };
     B["die"] = [](Interpreter& I, ValueList& a) -> Value {
         Value payload = a.empty() ? Value::str("Died") : a[0];
@@ -8945,7 +8948,7 @@ void Interpreter::registerBuiltins() {
         // "Failed" — so `.exception.message` answers rather than dying on Any
         if (ex.t != VT::Object)
             ex = I.makeTypedEx("X::AdHoc", {}, ex.t == VT::Str ? ex.s.str() : std::string("Failed"));
-        Value f = Value::makeHash(); f.hashKind = "Failure";
+        Value f = rakuppNewFailure();
         (*f.hash())["exception"] = ex;
         (*f.hash())["message"] = ex.obj() && ex.obj()->attrs.count("message")
                              ? ex.obj()->attrs["message"] : Value::str("Failed");
@@ -9924,7 +9927,7 @@ void Interpreter::registerBuiltins() {
         if (!isDir) {
             if (!err) err = EEXIST;   // the path exists, and is not a directory
             char ob[24]; snprintf(ob, sizeof ob, "0o%llo", (unsigned long long)mode);
-            Value f = Value::makeHash(); f.hashKind = "Failure";
+            Value f = rakuppNewFailure();
             (*f.hash())["exception"] = Value::typeObj("X::IO::Mkdir");
             (*f.hash())["message"] = Value::str(
                 "Failed to create directory '" + path + "' with mode '" + std::string(ob) +
@@ -10500,7 +10503,7 @@ void Interpreter::registerBuiltins() {
         if (a[0].hashKind == "IO" && !a[0].ofType().empty() && !to.empty() && to[0] != '/')
             to = logicalJoin(a[0].ofType(), to);
         if (::chdir(to.c_str()) != 0) {
-            Value f = Value::makeHash(); f.hashKind = "Failure";
+            Value f = rakuppNewFailure();
             (*f.hash())["message"] = Value::str("Failed to change the working directory to '" + a[0].toStr() + "'");
             return f;
         }
@@ -12167,8 +12170,17 @@ void Interpreter::registerBuiltins() {
             if (p.ext()) {
                 auto ps = std::static_pointer_cast<PromiseState>(p.ext());
                 I.awaitPromise(ps);
-                if (ps->broken)
-                    throw RakuError{ ps->cause, ps->causeMsg.empty() ? std::string("Promise broken") : ps->causeMsg };
+                if (ps->broken) {
+                    RakuError err{ ps->cause, ps->causeMsg.empty() ? std::string("Promise broken") : ps->causeMsg };
+                    // the error happened in the WORKER; this thread's chain is
+                    // merely where it was collected, so it goes under a label
+                    if (ps->causeBt && !ps->causeBt->frames.empty()) {
+                        err.altBt = err.bt;
+                        err.altLabel = "Awaited at:";
+                        err.bt = ps->causeBt;
+                    }
+                    throw err;
+                }
                 return ps->result;
             }
             std::string kind = p.hash()->count("kind") ? (*p.hash())["kind"].toStr() : "";

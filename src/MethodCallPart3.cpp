@@ -237,7 +237,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     // .min/.max because an open-BOTTOM range answers LLONG_MIN.
     if (m == "rand" && inv.t == VT::Range) {
         auto softly = [](const char* type, const std::string& msg) {
-            Value f = Value::makeHash(); f.hashKind = "Failure";
+            Value f = rakuppNewFailure();
             (*f.hash())["exception"] = Value::typeObj(type);
             (*f.hash())["message"]   = Value::str(msg);
             return f;
@@ -554,7 +554,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         if (inv.t == VT::Num && !std::isfinite(inv.n)) return inv;
         // zero-denominator Rats cannot round — they FAIL (X::Numeric::DivideByZero)
         if (inv.t == VT::Rat && inv.ratD() && inv.ratD()->isZero()) {
-            Value f = Value::makeHash(); f.hashKind = "Failure";
+            Value f = rakuppNewFailure();
             (*f.hash())["exception"] = Value::typeObj("X::Numeric::DivideByZero");
             return f;
         }
@@ -1116,7 +1116,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     if ((m == "s" || m == "z") && inv.hashKind == "IO") { // size / zero-length; both FAIL (softly) if absent
         struct stat st;
         if (stat(ioFsPath(inv).c_str(), &st) != 0) {
-            Value f = Value::makeHash(); f.hashKind = "Failure";
+            Value f = rakuppNewFailure();
             (*f.hash())["exception"] = Value::typeObj("X::IO::DoesNotExist");
             (*f.hash())["message"] = Value::str("Failed to stat '" + inv.toStr() + "': no such file or directory");
             return f;
@@ -1127,7 +1127,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     if (m == "mode" && inv.hashKind == "IO") { // permission bits as a 4-digit octal string
         struct stat st;
         if (stat(ioFsPath(inv).c_str(), &st) != 0) {
-            Value f = Value::makeHash(); f.hashKind = "Failure";
+            Value f = rakuppNewFailure();
             (*f.hash())["exception"] = Value::typeObj("X::IO::DoesNotExist");
             (*f.hash())["message"] = Value::str("Failed to stat '" + inv.toStr() + "': no such file or directory");
             return f;
@@ -1167,7 +1167,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         if (!isDir) {
             if (!err) err = EEXIST;   // the path exists, and is not a directory
             char ob[24]; snprintf(ob, sizeof ob, "0o%llo", (unsigned long long)mode);
-            Value f = Value::makeHash(); f.hashKind = "Failure";
+            Value f = rakuppNewFailure();
             (*f.hash())["exception"] = Value::typeObj("X::IO::Mkdir");
             (*f.hash())["message"] = Value::str(
                 "Failed to create directory '" + path + "' with mode '" + std::string(ob) +
@@ -1225,7 +1225,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             struct stat sf{}, st{};
             if (::stat(from.c_str(), &sf) == 0 && ::stat(to.c_str(), &st) == 0 &&
                 sf.st_dev == st.st_dev && sf.st_ino == st.st_ino) {
-                Value f = Value::makeHash(); f.hashKind = "Failure";
+                Value f = rakuppNewFailure();
                 (*f.hash())["exception"] = Value::typeObj(m == "move" ? "X::IO::Move" : "X::IO::Copy");
                 (*f.hash())["message"] = Value::str(
                     "Failed to " + m + " '" + from + "' to '" + to +
@@ -2424,7 +2424,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 // (out of Unicode's range, or nothing to read); before it the
                 // string "<unassigned>" stands in, which reads like a name.
                 if (sixE()) {
-                    Value f = Value::makeHash(); f.hashKind = "Failure";
+                    Value f = rakuppNewFailure();
                     (*f.hash())["exception"] = Value::typeObj("X::AdHoc");
                     (*f.hash())["message"]   = Value::str("Unassigned codepoint: 0x" +
                                                         [&]{ char b[16]; snprintf(b, sizeof b, "%X", cp); return std::string(b); }());
@@ -2837,7 +2837,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             if (fd < 0 || fd > 9.2e18) {
                 // fails-like wants a RETURNED Failure whose typed exception
                 // carries the offending value in .got
-                Value f = Value::makeHash(); f.hashKind = "Failure";
+                Value f = rakuppNewFailure();
                 (*f.hash())["exception"] = makeTypedEx("X::OutOfRange",
                     {{"got", args[1]}, {"what", Value::str("start argument to " + m)},
                      {"range", Value::str("0.." + std::to_string(n))}},
@@ -3323,7 +3323,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             pos = pargs[1].t == VT::Code ? callCallable(pargs[1], ValueList{Value::integer(len)}).toInt()
                                          : pargs[1].toInt();
         if (pos < 0 || pos > len) { // out of range FAILS (fails-like X::OutOfRange)
-            Value f = Value::makeHash(); f.hashKind = "Failure";
+            Value f = rakuppNewFailure();
             (*f.hash())["exception"] = Value::typeObj("X::OutOfRange");
             return f;
         }

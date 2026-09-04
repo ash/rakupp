@@ -156,7 +156,7 @@ void collectPubAttrs(ClassInfo* c, std::vector<const ClassAttr*>& out) {
 static Interpreter* g_revInterp = nullptr;
 Value divideByZero(const Value& lhs, const char* opName) {
     Value ex = Value::typeObj("X::Numeric::DivideByZero");
-    Value f = Value::makeHash(); f.hashKind = "Failure";
+    Value f = rakuppNewFailure();
     (*f.hash())["exception"] = ex;
     (*f.hash())["message"] = Value::str("Attempt to divide " + lhs.toStr() +
                                       " by zero using infix:<" + opName + ">");
@@ -645,7 +645,7 @@ Value numifyStrFailure(const std::string& in) {
     std::string msg = anyDigit
         ? "Cannot convert string to number: trailing characters after number in '" + t + "'"
         : "Cannot convert string to number: base-10 number must begin with valid digits or '.' in '" + t + "'";
-    Value f = Value::makeHash(); f.hashKind = "Failure";
+    Value f = rakuppNewFailure();
     (*f.hash())["exception"] = Value::typeObj("X::Str::Numeric");
     (*f.hash())["message"] = Value::str(msg);
     return f;
@@ -3773,7 +3773,12 @@ Value Interpreter::spawnPromise(Value code, Value threadVal) {
                 forceRoutineFrame_ = true;
                 r = code.t == VT::Code ? self->callCallable(code, noargs) : code;
             }
-            catch (const RakuError& e) { broke = true; cause = e.payload; ps->causeMsg = e.message; }
+            catch (const RakuError& e) {
+                broke = true; cause = e.payload; ps->causeMsg = e.message;
+                // carry the WORKER's chain out with the exception: the awaiting
+                // thread's own stack says nothing about where this died
+                ps->causeBt = e.bt;
+            }
             catch (...) { broke = true; }
             std::vector<std::function<void()>> fire;
             {
@@ -4556,27 +4561,11 @@ int Interpreter::run(Program& prog) {
                 if (!cf.empty())
                     std::cerr << "===SORRY!=== Error while compiling " << cf << "\n"
                               << e.message << "\nat " << cf << ":" << cl << "\n";
-                else {
-                    // A RUNTIME error: the message, then where it happened and
-                    // how the program got there (issue #67). The message stays
-                    // line 1 byte for byte — every golden and grep that reads
-                    // the first line keeps working.
-                    BtStyle st = btStyleForStderr();
-                    std::string frames = e.frames ? renderFrames(*e.frames, e.originFile, st)
-                                                  : std::string();
-                    std::string type;
-                    if (st.typeLine && !frames.empty() && e.payload.t == VT::Object &&
-                        e.payload.obj() && e.payload.obj()->cls) {
-                        // the type is what a reader needs to write a CATCH; the
-                        // ad-hoc one carries no information a message does not
-                        const std::string& tn = e.payload.obj()->cls->name;
-                        if (tn != "X::AdHoc" && !tn.empty())
-                            type = std::string("  ") + (st.colour ? "\033[2m" : "") + "(" + tn + ")" +
-                                   (st.colour ? "\033[0m" : "") + "\n";
-                    }
-                    std::cerr << (st.colour ? "\033[1m" : "") << e.message
-                              << (st.colour ? "\033[0m" : "") << "\n" << type << frames;
-                }
+                // A RUNTIME error: the message, then where it happened and how
+                // the program got there (issue #67). The message stays line 1
+                // byte for byte — every golden and grep that reads the first
+                // line keeps working.
+                else std::cerr << renderError(e, btStyleForStderr());
             }
             code = 1;
             crashed = true;
@@ -12856,19 +12845,51 @@ bool rtTypeMatch(const Value& v, const std::string& type) {
 // is one refcount increment per live frame per throw, and zero on the path
 // that does not throw — the alternative (recording frames as they unwind) puts
 // a thread-local read on every routine return, which the perf gate would see.
-RakuError::RakuError(Value p, std::string m)
-    : payload(std::move(p)), message(std::move(m)) {
+// The live chain, innermost first. Shared by every position we record: a
+// throw, a `warn`, the making of a Failure, and a worker breaking a Promise.
+static std::shared_ptr<BtRecord> btCaptureNow() {
     auto& fr = Interpreter::tctx_.callFrames;
-    frames = std::make_shared<std::vector<BtFrame>>();
-    frames->reserve(fr.size() + 1);
+    auto out = std::make_shared<BtRecord>();
+    out->frames.reserve(fr.size() + 1);
     int line = currentStmtLine();
     for (size_t idx = fr.size(); ; idx--) {
         const Value* cv = idx > 0 ? fr[idx - 1].code : nullptr;
-        frames->push_back(BtFrame{cv ? cv->codeS() : nullptr, line});
+        out->frames.push_back(BtFrame{cv ? cv->codeS() : nullptr, line});
         if (idx == 0) break;
         line = fr[idx - 1].line;   // the CALL SITE line inside the next frame out
     }
-    if (g_cbInterp) originFile = g_cbInterp->curDeclFile();
+    // left EMPTY when it is simply the program being run, which is the common
+    // case: the renderer falls back to it, and a Failure is made often enough
+    // that copying the path every time showed up
+    if (g_cbInterp && g_cbInterp->curDeclFile() != g_cbInterp->srcFileAbs_)
+        out->originFile = g_cbInterp->curDeclFile();
+    return out;
+}
+
+RakuError::RakuError(Value p, std::string m)
+    : payload(std::move(p)), message(std::move(m)) {
+    bt = btCaptureNow();
+}
+
+// A Failure remembers where it was MADE — see the declaration in Interpreter.h.
+// Failures are made in BULK by ordinary code (every failed coercion is one), so
+// this pays for itself in allocations, not in the walk: the chain is two or
+// three frames deep and the string was the expensive part. The origin file is
+// stored only when it is NOT the program being run, which is the rare case (a
+// module's top level); the renderer falls back to the program otherwise.
+Value rakuppNewFailure() {
+    Value f = Value::makeHash(); f.hashKind = "Failure";
+    // in the Value's OWN spare handle, not a map entry: nothing else puts a
+    // Failure's ext to use, and the entry was measurable
+    f.extM() = btCaptureNow();
+    return f;
+}
+
+// …and back out of whatever is carrying it.
+static std::shared_ptr<BtRecord> btOf(const Value& v) {
+    if (!v.ext()) return nullptr;
+    auto r = std::static_pointer_cast<BtRecord>(v.ext());
+    return r && !r->frames.empty() ? r : nullptr;
 }
 
 // One source line of a file, for the excerpt under the origin frame. Read once
@@ -12951,8 +12972,9 @@ Interpreter::BtStyle Interpreter::btStyleForStderr() {
     return st;
 }
 
-std::string Interpreter::renderFrames(const std::vector<BtFrame>& fr, const std::string& originFile,
-                                      const BtStyle& st) {
+std::string Interpreter::renderFrames(const BtRecord& rec, const BtStyle& st) {
+    const std::vector<BtFrame>& fr = rec.frames;
+    const std::string& originFile = rec.originFile;
     if (st.cap == 0 && !st.full) return "";
     const char* DIM = st.colour ? "\033[2m" : "";
     const char* BLD = st.colour ? "\033[1m" : "";
@@ -12960,11 +12982,17 @@ std::string Interpreter::renderFrames(const std::vector<BtFrame>& fr, const std:
     // one pass to the printable form, then collapse runs of identical lines
     struct Line { std::string what, where, file; int line; };
     std::vector<Line> out;
-    for (size_t i = 0; i < fr.size(); i++) {
+    // A chain captured on a WORKER thread ends in the thread's own empty base:
+    // no routine, and no line, because nothing on that thread has run a
+    // statement outside the block. It names nowhere, so it is not a frame.
+    size_t n = fr.size();
+    while (n > 1 && !fr[n - 1].code && fr[n - 1].line == 0) n--;
+    for (size_t i = 0; i < n; i++) {
         const Callable* c = fr[i].code.get();
         if (!st.full && btFrameHidden(c)) continue;
-        std::string file = c && !c->declFile.empty() ? c->declFile : originFile;
-        out.push_back({btFrameName(c, i + 1 == fr.size()),
+        std::string file = c && !c->declFile.empty() ? c->declFile
+                         : (!originFile.empty() ? originFile : srcFileAbs_);
+        out.push_back({btFrameName(c, i + 1 == n),
                        btDisplayPath(file, srcFileAbs_, srcFile_), file, fr[i].line});
     }
     auto lineOf = [&](const Line& l) {
@@ -13012,24 +13040,64 @@ std::string Interpreter::renderFrames(const std::vector<BtFrame>& fr, const std:
     return s;
 }
 
+// The whole diagnostic: message, type, frames, and the second position when
+// the error has one. ONE function, so the uncaught printer, `warn`, the REPL
+// and an embedding host never drift apart on what an error looks like.
+std::string Interpreter::renderError(const RakuError& e, const BtStyle& st) {
+    const char* DIM = st.colour ? "\033[2m" : "";
+    const char* BLD = st.colour ? "\033[1m" : "";
+    const char* OFF = st.colour ? "\033[0m" : "";
+    std::string out = std::string(BLD) + e.message + OFF + "\n";
+    std::string frames = e.bt ? renderFrames(*e.bt, st) : std::string();
+    if (st.typeLine && !frames.empty() && e.payload.t == VT::Object &&
+        e.payload.obj() && e.payload.obj()->cls) {
+        // the type is what a reader needs in order to write a CATCH; the ad-hoc
+        // one carries nothing the message does not already say
+        const std::string& tn = e.payload.obj()->cls->name;
+        if (tn != "X::AdHoc" && !tn.empty())
+            out += std::string("  ") + DIM + "(" + tn + ")" + OFF + "\n";
+    }
+    out += frames;
+    if (e.altBt && !e.altLabel.empty()) {
+        // the second section is a POSITION, not a second incident: one excerpt
+        // per error, under the frame the error actually came from
+        BtStyle alts = st; alts.excerpt = false;
+        std::string alt = renderFrames(*e.altBt, alts);
+        if (!alt.empty()) out += "\n" + e.altLabel + "\n" + alt;
+    }
+    return out;
+}
+
+// Where a `warn` was warned from. One frame — the innermost — because a
+// warning is a pointer to a line, not an incident report; RAKUPP_BACKTRACE=full
+// asks for the whole chain, and =0 turns it off with everything else.
+std::string Interpreter::warnFrame() {
+    BtStyle st = btStyleForStderr();
+    st.excerpt = st.typeLine = st.colour = false;   // it goes through $*ERR, which may be a file
+    if (st.cap == 0 && !st.full) return "";
+    auto rec = btCaptureNow();
+    if (!rec || rec->frames.empty()) return "";
+    if (!st.full && rec->frames.size() > 1) rec->frames.resize(1);
+    return renderFrames(*rec, st);
+}
+
 // The same renderer over a MATERIALIZED Backtrace (a list of BacktraceFrame
 // hashes) — what `$!.backtrace.Str` and `Backtrace.new.Str` print.
 std::string Interpreter::renderBacktraceValue(const Value& bt, const BtStyle& st) {
-    std::vector<BtFrame> fr;
-    std::string origin;
+    BtRecord rec;
     if (bt.t == VT::Array && bt.arr())
         for (auto& f : *bt.arr()) {
             if (f.t != VT::Hash || !f.hash()) continue;
             auto& h = *f.hash();
             auto ci = h.find("code"), li = h.find("line"), fi = h.find("file");
-            fr.push_back(BtFrame{ci != h.end() ? ci->second.codeS() : nullptr,
-                                 li != h.end() ? (int)li->second.toInt() : 0});
+            rec.frames.push_back(BtFrame{ci != h.end() ? ci->second.codeS() : nullptr,
+                                         li != h.end() ? (int)li->second.toInt() : 0});
             // the frames with no declaring routine fall back to this; the
             // OUTERMOST frame is the mainline, so its file is the right one
             // (the first frame's may be a module's)
-            if (fi != h.end() && !fr.back().code) origin = fi->second.toStr();
+            if (fi != h.end() && !rec.frames.back().code) rec.originFile = fi->second.toStr();
         }
-    return renderFrames(fr, origin, st);
+    return renderFrames(rec, st);
 }
 
 // The frames a caught exception carries. exceptionFor stores them as an opaque
@@ -13041,14 +13109,15 @@ Value Interpreter::backtraceOf(const Value& exObj) {
     auto it = at.find("__bt");
     if (it == at.end()) return captureBacktrace();
     if (it->second.t == VT::Array) return it->second;   // already materialized
-    auto raw = std::static_pointer_cast<std::vector<BtFrame>>(it->second.ext());
+    auto raw = btOf(it->second);
     if (!raw) return captureBacktrace();
-    std::string origin = it->second.s.str();
+    const std::string& origin = raw->originFile;
     Value bt = Value::array(); bt.isList = true; bt.s = "Backtrace";
-    for (auto& f : *raw) {
+    for (auto& f : raw->frames) {
         Value h = Value::makeHash(); h.hashKind = "BacktraceFrame";
         const Callable* c = f.code.get();
-        (*h.hash())["file"] = Value::str(c && !c->declFile.empty() ? c->declFile : origin);
+        (*h.hash())["file"] = Value::str(c && !c->declFile.empty() ? c->declFile
+                                       : (!origin.empty() ? origin : srcFileAbs_));
         (*h.hash())["line"] = Value::integer(f.line);
         if (f.code) { Value cv; cv.t = VT::Code; cv.setCode(f.code); (*h.hash())["code"] = cv; }
         bt.arr()->push_back(std::move(h));
@@ -26478,7 +26547,7 @@ Value Interpreter::evalUnary(Unary* u) {
         {
             const std::string msg = "prefix:<~^> not yet implemented. Sorry.";
             Value ex = makeTypedEx("X::NYI", {{"feature", Value::str("prefix:<~^>")}}, msg);
-            Value f = Value::makeHash(); f.hashKind = "Failure";
+            Value f = rakuppNewFailure();
             (*f.hash())["exception"] = ex;
             (*f.hash())["message"] = Value::str(msg);
             return f;
@@ -26629,13 +26698,13 @@ bool Interpreter::runControlWarn(const std::string& msg) {
 // backtrace: one shared_ptr, no BacktraceFrame hashes built. `s` doubles as the
 // origin file (the frame files that have no declaring routine).
 static void attachFrames(Value& ex, const RakuError& e) {
-    if (!e.frames || e.frames->empty()) return;
+    if (!e.bt || e.bt->frames.empty()) return;
     if (ex.t != VT::Object || !ex.obj()) return;
     // never overwrite: a rethrow, a `.resume`, or `die $caught` keeps the
     // position the exception was FIRST thrown from, as Rakudo's does
     if (ex.obj()->attrs.count("__bt")) return;
-    Value h = Value::str(e.originFile);
-    h.extM() = e.frames;
+    Value h = Value::any();
+    h.extM() = e.bt;
     ex.obj()->attrs["__bt"] = std::move(h);
 }
 
@@ -26697,8 +26766,19 @@ static void failureDetonate(const Value& v) {
         if (h != v.hash()->end() && h->second.truthy()) return;
         auto m = v.hash()->find("message");
         auto e = v.hash()->find("exception");
-        throw RakuError{e != v.hash()->end() ? e->second : Value::typeObj("X::AdHoc"),
-                        m != v.hash()->end() ? m->second.toStr() : "Failure"};
+        RakuError err{e != v.hash()->end() ? e->second : Value::typeObj("X::AdHoc"),
+                      m != v.hash()->end() ? m->second.toStr() : "Failure"};
+        // A Failure has TWO positions, and the one the reader needs first is
+        // where it was made: `my $r = risky()` is where the error is, and this
+        // line merely used the value. The constructor captured the detonation;
+        // put the creation site in front of it and label the other, as Rakudo
+        // does. (Rakudo's word for the detonation is "Actually thrown at:".)
+        if (auto made = btOf(v)) {
+            err.altBt = err.bt;
+            err.altLabel = "Actually thrown at:";
+            err.bt = made;
+        }
+        throw err;
     }
 }
 std::string Interpreter::gistOf(const Value& v, bool skipUser) {
@@ -27281,7 +27361,7 @@ Value Interpreter::evalCall(Call* c) {
             // it lives until used, and assigning it into an attribute detonates
             // (Date::Event's `dies-ok { .new(:Etype(300)) }`)
             {
-                Value f = Value::makeHash(); f.hashKind = "Failure";
+                Value f = rakuppNewFailure();
                 (*f.hash())["exception"] = Value::typeObj("X::Enum::NoValue");
                 (*f.hash())["message"] = Value::str(
                     "No value '" + args[0].toStr() + "' found in enum " +
@@ -29769,7 +29849,7 @@ Value Interpreter::eval(Expr* e) {
             // is still a compile error.
             if (ve->viaPseudoPkg) {
                 if (!sixE()) return Value::any();
-                Value f = Value::makeHash(); f.hashKind = "Failure";
+                Value f = rakuppNewFailure();
                 (*f.hash())["exception"] = Value::typeObj("X::NoSuchSymbol");
                 (*f.hash())["message"]   = Value::str("No such symbol '" + ve->name + "'");
                 return f;
@@ -29798,7 +29878,7 @@ Value Interpreter::eval(Expr* e) {
                 VarExpr tmp(nm); tmp.line = e->line;
                 try { return eval(&tmp); }
                 catch (RakuError&) {
-                    Value f = Value::makeHash(); f.hashKind = "Failure";
+                    Value f = rakuppNewFailure();
                     (*f.hash())["exception"] = Value::str("No such symbol '" + nm + "'");
                     return f; // soft failure: falsey / undefined
                 }
@@ -30006,7 +30086,7 @@ Value Interpreter::eval(Expr* e) {
                     // The exception slot carries the TYPE (failureDetonate
                     // throws it), so `try ::($n); $!.^name` answers
                     // X::NoSuchSymbol exactly as Rakudo's does.
-                    Value f = Value::makeHash(); f.hashKind = "Failure";
+                    Value f = rakuppNewFailure();
                     (*f.hash())["exception"] = Value::typeObj("X::NoSuchSymbol");
                     (*f.hash())["message"]   = Value::str("No such symbol '" + n + "'");
                     return f;

@@ -2296,7 +2296,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         Value ex; bool haveEx = false;
         for (auto& a : args) if (a.t == VT::Object) { ex = a; haveEx = true; } // Failure.new($ex) / :exception
         if (!haveEx) { Value* be = tctx_.cur->find("$!"); if (be && be->t != VT::Nil && be->t != VT::Type) ex = *be; }
-        Value f = Value::makeHash(); f.hashKind = "Failure";
+        Value f = rakuppNewFailure();
         (*f.hash())["exception"] = ex;
         return f;
     }
@@ -2596,7 +2596,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     // base class whose parse reports where it stopped. .subparse
                     // keeps answering with what it managed to match.
                     if (sixE() && !sub && (r.t == VT::Nil || r.t == VT::Any || r.t == VT::Type)) {
-                        Value f = Value::makeHash(); f.hashKind = "Failure";
+                        Value f = rakuppNewFailure();
                         (*f.hash())["exception"] = Value::typeObj("X::Syntax::Confused");
                         (*f.hash())["message"]   = Value::str("Confused");
                         return f;
@@ -3903,7 +3903,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // a zero-denominator Rat FAILS on Int coercion (a Failure, not a throw —
         // fails-like requires the returned unhandled Failure)
         if (inv.t == VT::Rat && inv.ratD() && inv.ratD()->isZero()) {
-            Value f = Value::makeHash(); f.hashKind = "Failure";
+            Value f = rakuppNewFailure();
             (*f.hash())["exception"] = Value::typeObj("X::Numeric::DivideByZero");
             return f;
         }

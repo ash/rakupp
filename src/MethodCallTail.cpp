@@ -2720,7 +2720,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             // but detonates with X::Cannot::Empty the moment the value is USED.
             if (m == "pop" || m == "shift") {
                 if (inv.arr()->empty()) {
-                    Value f = Value::makeHash(); f.hashKind = "Failure";
+                    Value f = rakuppNewFailure();
                     (*f.hash())["exception"] = makeTypedEx("X::Cannot::Empty",
                         {{"action", Value::str(m)}, {"what", Value::str("Array")}},
                         "Cannot " + m + " from an empty Array");
@@ -2984,7 +2984,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         (inv.isNumeric() || inv.t == VT::Str || inv.t == VT::Match ||
          inv.t == VT::Array || inv.t == VT::Range || inv.t == VT::Complex ||
          (inv.t == VT::Hash && (inv.hashKind.empty() || inv.hashKind == "Hash" || inv.hashKind == "Map")))) {
-        Value f = Value::makeHash(); f.hashKind = "Failure";
+        Value f = rakuppNewFailure();
         (*f.hash())["exception"] = Value::typeObj("X::AdHoc");
         (*f.hash())["message"] = Value::str(strOf(inv));
         (*f.hash())["payload"] = inv;
