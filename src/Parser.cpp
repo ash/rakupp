@@ -6844,8 +6844,38 @@ void Parser::checkVirtualCallInDefault(size_t defStart) {
     // `has $.x = $.y` — a virtual call in an attribute default runs against a
     // partially constructed object; `has $.a = $^b` — a placeholder cannot
     // parameterize an attribute default. Rakudo rejects both at compile time.
+    //
+    // The two bans reach different depths. A virtual call stays illegal inside
+    // a nested block (`has &.f = { $.y }` is an error in Rakudo too), but a
+    // placeholder is CLAIMED by a block literal in the default — which is how
+    // `has &.seqLeftSepForm = { ($^a, $^b) }` is written (issue #60,
+    // FunctionalParsers). Only a block that runs where it stands (`do`, `try`,
+    // `gather`, a control block) or one that already carries an explicit
+    // signature (`-> $x { … }`) leaves the placeholder with nothing to bind to.
+    static const std::set<std::string> runsInPlace = {
+        "do", "try", "gather", "start", "quietly", "supply", "react", "whenever",
+        "race", "hyper", "lazy", "eager", "once", "sink",
+        "if", "elsif", "else", "unless", "with", "orwith", "without",
+        "while", "until", "repeat", "loop", "for", "given", "when", "default",
+    };
+    std::vector<bool> claims; // per open `{`: can that block take a signature?
     for (size_t i = defStart; i < pos_ && i < toks_.size(); i++) {
         const Token& tk = toks_[i];
+        if (tk.kind == Tok::LBrace) {
+            const Token* prev = i > defStart ? &toks_[i - 1] : nullptr;
+            bool claimsPH = true;
+            if (prev) {
+                // `do { … }` and friends run the block right here, with no
+                // signature to hang a placeholder on
+                if (prev->kind == Tok::Ident && runsInPlace.count(prev->text)) claimsPH = false;
+                // `sub ($x) { … }`, `-> $x { … }`, `if (…) { … }`: the block
+                // already has (or cannot have) a signature of its own
+                else if (prev->kind == Tok::RParen || prev->kind == Tok::Var) claimsPH = false;
+            }
+            claims.push_back(claimsPH);
+            continue;
+        }
+        if (tk.kind == Tok::RBrace) { if (!claims.empty()) claims.pop_back(); continue; }
         if (tk.kind != Tok::Var || tk.text.size() <= 2) continue;
         if (tk.text[1] == '.' &&
             (ascii::isalpha((unsigned char)tk.text[2]) || tk.text[2] == '_'))
@@ -6853,11 +6883,15 @@ void Parser::checkVirtualCallInDefault(size_t defStart) {
                              "partially constructed object", tk.line,
                              "X::Syntax::VirtualCall", {{"call", tk.text}});
         if (tk.text[1] == '^' &&
-            (ascii::isalpha((unsigned char)tk.text[2]) || tk.text[2] == '_'))
+            (ascii::isalpha((unsigned char)tk.text[2]) || tk.text[2] == '_')) {
+            // the INNERMOST enclosing block decides: `{ do { $^a } }` is an
+            // error in Rakudo even though the outer block could have taken it
+            if (!claims.empty() && claims.back()) continue;
             throw ParseError("Placeholder variable " + tk.text + " may not be "
                              "used here because the surrounding block does not "
                              "take a signature", tk.line,
                              "X::Placeholder::Attribute", {{"placeholder", tk.text}});
+        }
     }
 }
 
