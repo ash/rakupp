@@ -356,12 +356,23 @@ host adapter is one object, `R.host`, chosen at load: Node/Bun, Deno, a Web
 Worker or the main thread). Files and `%*ENV` do not exist there and say so
 when used. DOM access from Raku (`use JS`) is P4 of the plan.
 
-A worked example of the whole path is
-[`showcase/eclipse`](../../showcase/eclipse): one engine — 550 lines of Raku
-predicting solar and lunar eclipses — driving both a terminal program and an
-interactive book in a browser. Its `tools/build.raku` is the three steps in
-order: concatenate the module with the browser API into a single file (which
-is what `--target=js` takes), transpile with `--standalone`, and inline the
-result into the page. The browser API is a hash of closures published with
+Three worked examples of the whole path live in `showcase/`, each one engine
+driving both a terminal program and an interactive book in a browser:
+[`eclipse`](../../showcase/eclipse) predicts solar and lunar eclipses,
+[`fourier`](../../showcase/fourier) builds waveforms out of sine waves and
+takes signals apart again, and [`orbits`](../../showcase/orbits) places the
+planets and prices a transfer between them.
+
+Each has the same `tools/build.raku`, and it is the three steps in order:
+concatenate the module with the browser API into a single file (which is what
+`--target=js` takes), transpile with `--standalone`, and inline the result
+into the page. The browser API is a hash of closures published with
 `JS<eclipse> = %api`, so the page calls `eclipse.saros(139, false)` and gets
 plain arrays back.
+
+They are also the corpus that has found most of the emitter's recent bugs —
+between them, a multi-word hash slice and a sequence subscript that were
+emitted as single items, a sequence that stepped over its endpoint and never
+terminated, and a missing `Complex.new`. All four produced plausible output
+rather than an error, which is the argument for checking a transpiler against
+programs whose answers are independently known.

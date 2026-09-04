@@ -1731,9 +1731,17 @@ Token Lexer::lexIdentOrVar() {
         // `v1(...)` is a CALL of a routine named v1, not a version literal — a
         // version is never invoked, and lexing it as one made `sub v1 {…}; v1()`
         // die with "Cannot invoke non-Callable value of type Version".
-        if (peek() == '(' && ver.find('.') == std::string::npos &&
-            ver.find('*') == std::string::npos && ver.find('+') == std::string::npos)
-            return make(Tok::Ident, "v" + ver);
+        bool plain = ver.find('.') == std::string::npos &&
+                     ver.find('*') == std::string::npos && ver.find('+') == std::string::npos;
+        if (peek() == '(' && plain) return make(Tok::Ident, "v" + ver);
+        // `v1 => 1` is a PAIR whose key is the identifier, not a version: the
+        // fat arrow auto-quotes the bareword to its left, and `%h<v1>` has to
+        // find it. Rakudo lexes it that way too.
+        if (plain) {
+            size_t k = 0;
+            while (peek(k) == ' ' || peek(k) == '\t') k++;
+            if (peek(k) == '=' && peek(k + 1) == '>') return make(Tok::Ident, "v" + ver);
+        }
         return make(Tok::VersionLit, ver);
     }
     // bareword identifier (may start with a Unicode letter, e.g. π, αβγ)

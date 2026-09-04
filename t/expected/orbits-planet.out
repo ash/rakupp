@@ -1,0 +1,28 @@
+Mars on 2026-09-04
+
+the six elements
+  a        1.5237153 au       semi-major axis: the size
+  e        0.0934151          eccentricity: the shape (0 is a circle)
+  i          1.84752°         inclination to the ecliptic
+  node      49.48150°         longitude of the ascending node
+  w        -73.30659°         argument of perihelion
+  M         84.66246°         mean anomaly: where it would be if it moved evenly
+
+Kepler's equation, M = E - e sin E
+  step 0   E = 1.570648679817   |error| = 4.05e-04
+  step 1   E = 1.571053736392   |error| = 7.66e-09
+  step 2   E = 1.571053728729   |error| = 0.00e+00
+  step 3   E = 1.571053728729   |error| = 0.00e+00
+  converged in 3 steps
+
+where that puts it
+  true anomaly       95.37479°    the angle actually seen from the Sun
+  radius vector      1.523752 au   228 million km
+  longitude          71.53933°
+  latitude            0.69403°
+  period              686.996 d    1.8809 years
+  orbital speed       24.1285 km/s  (vis-viva at this distance)
+  at perihelion       26.4990 km/s
+  at aphelion         21.9712 km/s
+
+  from the Earth     1.833392 au   15.2 light-minutes, elongation 56.21°

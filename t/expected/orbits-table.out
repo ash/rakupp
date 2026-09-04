@@ -1,0 +1,15 @@
+The solar system on 2026-09-04
+
+planet    longitude  latitude    r (au)     delta elongation    light  period
+----------------------------------------------------------------------------------------
+Mercury    185.464°    4.774°   0.39553    1.3778      6.77°   11.5 m     87.97 d
+Venus      310.699°   -2.751°   0.72823    0.5314     44.00°    4.4 m    224.70 d
+Earth      341.126°    0.001°   1.00863         —          —        —    365.26 d
+Mars        71.539°    0.694°   1.52375    1.8334     56.21°   15.2 m    687.00 d
+Jupiter    128.991°    0.622°   5.29570    6.1731     27.15°   51.3 m   4334.72 d
+Saturn       9.954°   -2.417°   9.44278    8.5738    147.92°   71.3 m  10756.50 d
+Uranus      62.346°   -0.156°  19.44057   19.3123     95.82°  160.6 m  30701.87 d
+Neptune      2.476°   -1.370°  29.87790   28.9411    157.92°  240.7 m  60228.00 d
+
+Heliocentric ecliptic longitude and latitude; delta is the distance from
+the Earth, and light is how long the view of it is out of date.

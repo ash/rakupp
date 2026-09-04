@@ -1,0 +1,21 @@
+The overshoot that will not go away
+
+Add harmonics to a square wave and the partial sum gets closer everywhere
+except at the jump, where it always shoots about 9% too far. More terms
+make the overshoot narrower, never shorter.
+
+ harmonics      peak value       overshoot
+--------------------------------------------
+         3       1.2004218        10.0211%
+         5       1.1883566         9.4178%
+        11       1.1813016         9.0651%
+        21       1.1796688         8.9834%
+        51       1.1791028         8.9551%
+       101       1.1790115         8.9506%
+       201       1.1789877         8.9494%
+       401       1.1789816         8.9491%
+--------------------------------------------
+     limit       1.1789797         8.9490%
+
+The limit is 2*Si(pi)/pi, where Si is the sine integral -- computed
+here by the same midpoint rule, not looked up.

@@ -291,20 +291,29 @@ function seqOp(items, endv, exclusive) {
     }
     const arity = genFn.arity !== undefined ? genFn.arity : genFn.length;
     const wantsAll = genFn.slurpy;
+    // A numeric sequence stops when it PASSES the endpoint, not only when it
+    // lands on it: `1, 3 ...^ 2` is `(1)`, because 3 is already past 2. Without
+    // this the step steps straight over the limit and the sequence never ends.
+    const numericEnd = !lazy && typeof endv !== 'function' && isNumeric(endv);
+    const crossed = (p, v) => numericEnd && p !== undefined && isNumeric(p) && isNumeric(v) &&
+        ((lt(p, endv) && gt(v, endv)) || (gt(p, endv) && lt(v, endv)));
     return new RSeq((function* () {
         const hist = [];
+        let prev;
         for (const s of starts) {
             if (endTest(s)) { if (!exclusive) yield s; return; }
-            yield s; hist.push(s);
+            if (crossed(prev, s)) return;
+            yield s; hist.push(s); prev = s;
         }
         for (;;) {
             let nx;
             if (wantsAll) nx = genFn(...hist);
             else if (arity <= 0) nx = genFn();
             else nx = genFn(...hist.slice(-arity));
-            if (nx instanceof RSlip) { for (const x of nx.a) { if (endTest(x)) { if (!exclusive) yield x; return; } yield x; hist.push(x); } continue; }
+            if (nx instanceof RSlip) { for (const x of nx.a) { if (endTest(x)) { if (!exclusive) yield x; return; } if (crossed(prev, x)) return; yield x; hist.push(x); prev = x; } continue; }
             if (endTest(nx)) { if (!exclusive) yield nx; return; }
-            yield nx; hist.push(nx);
+            if (crossed(prev, nx)) return;
+            yield nx; hist.push(nx); prev = nx;
             if (hist.length > 64) hist.splice(0, hist.length - 64);
         }
     })(), lazy);

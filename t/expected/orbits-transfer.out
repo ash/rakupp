@@ -1,0 +1,19 @@
+Hohmann transfer, Earth to Mars
+
+The cheapest two-burn move between two circular orbits: leave on an
+ellipse that just touches both, then circularise on arrival.
+
+  departure orbit speed     29.785 km/s
+  on the transfer ellipse   32.729 km/s        first burn    2.945 km/s
+
+  arriving at               21.480 km/s
+  target orbit speed        24.129 km/s        second burn   2.649 km/s
+
+  total delta-v 5.594 km/s
+  time of flight             258.9 days      0.71 years
+  launch window every        779.9 days      the synodic period
+  target must lead by        +44.3°         at the moment you leave
+
+Both orbits are taken as circular and coplanar. A real mission solves
+Lambert's problem for the actual departure and arrival dates instead,
+which is why porkchop plots exist -- see the README.

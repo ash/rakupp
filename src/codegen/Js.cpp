@@ -514,6 +514,11 @@ struct JsGen {
             case NK::ArrayLit: return static_cast<ArrayLit*>(i)->items.size() != 1;   // `%h<a b>` builds a plain ArrayLit, not a word-list one
             case NK::Unary: return static_cast<Unary*>(i)->op == "^";
             case NK::VarExpr: return static_cast<VarExpr*>(i)->name[0] == '@';
+            // a sequence or a repetition as a subscript is a list of indices too:
+            // `@a[(0, 2 ...^ $n)]` (the even elements), `@a[1 xx 3]`
+            case NK::Binary: { auto* b = static_cast<Binary*>(i);
+                return b->op == "..." || b->op == "...^" || b->op == "^..." ||
+                       b->op == "^...^" || b->op == "xx"; }
             default: return false;
         }
     }

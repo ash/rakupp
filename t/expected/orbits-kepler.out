@@ -1,0 +1,18 @@
+Newton-Raphson on M = E - e sin E, for e = 0.6
+
+Kepler could not solve his own equation in closed form, and neither can
+anyone else -- E is not an elementary function of M. So we guess and
+correct: each step roughly doubles the number of correct digits.
+
+     M       steps  convergence, |error| per step
+--------------------------------------------------------------------------
+    0°           1       0      0
+   30°           5   1e-01  1e-02  9e-05  4e-09  1e-16  1e-16
+   60°           4   8e-02  2e-03  1e-06  3e-13  2e-16
+   90°           4   1e-01  2e-03  4e-07  2e-14  2e-16
+  120°           4   2e-01  3e-03  1e-06  8e-14  4e-16
+  150°           4   2e-01  9e-04  3e-08  4e-16  4e-16
+  180°           1       0      0
+
+Read a row left to right: 1e-01, 1e-03, 1e-07, 1e-15, 0. That doubling
+is what quadratic convergence looks like from the outside.

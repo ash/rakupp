@@ -1,0 +1,33 @@
+# Values this engine is measured against. Nothing here was produced by it:
+# the periods are the IAU sidereal periods, the event dates come from the
+# standard almanacs, and the transfer figures are the textbook Hohmann
+# numbers for Earth to Mars. `orbits.raku --check` reproduces them.
+#
+# kind	subject	value	tolerance	note
+period	Mercury	87.969	0.01	sidereal period, days
+period	Venus	224.701	0.01	sidereal period, days
+period	Earth	365.256	0.01	sidereal period, days
+period	Mars	686.980	0.05	sidereal period, days
+period	Jupiter	4332.589	3.0	sidereal period, days
+period	Saturn	10759.22	6.0	sidereal period, days
+period	Uranus	30685.4	25.0	sidereal period, days
+period	Neptune	60189.0	45.0	sidereal period, days
+synodic	Venus	583.92	0.1	Earth-Venus synodic period, days
+synodic	Mars	779.94	0.1	Earth-Mars synodic period, days
+synodic	Jupiter	398.88	0.1	Earth-Jupiter synodic period, days
+synodic	Saturn	378.09	0.1	Earth-Saturn synodic period, days
+opposition	Mars	2020-10-13	1	greatest-elongation event date
+opposition	Mars	2022-12-08	1	greatest-elongation event date
+opposition	Mars	2025-01-16	1	greatest-elongation event date
+opposition	Mars	2027-02-19	1	greatest-elongation event date
+opposition	Jupiter	2022-09-26	1	the close one
+opposition	Jupiter	2023-11-03	1	greatest-elongation event date
+opposition	Jupiter	2024-12-07	1	greatest-elongation event date
+opposition	Saturn	2022-08-14	1	greatest-elongation event date
+opposition	Saturn	2023-08-27	1	greatest-elongation event date
+opposition	Saturn	2025-09-21	1	greatest-elongation event date
+hohmann	dv1	2.945	0.01	Earth to Mars, first burn, km/s
+hohmann	dv2	2.649	0.01	Earth to Mars, second burn, km/s
+hohmann	tof	258.8	0.5	Earth to Mars, time of flight, days
+speed	escape	11.180	0.01	escape speed at the equatorial radius, km/s
+speed	leo	7.784	0.01	circular speed at 200 km altitude, km/s

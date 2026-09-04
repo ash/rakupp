@@ -1,0 +1,17 @@
+ok   FFT agrees with the DFT definition
+ok   the inverse transform gives the signal back
+ok   a pure tone of 6 cycles puts amplitude 1 in bin 6
+ok   and nothing anywhere else
+ok   Parseval for a square wave, 100 harmonics
+ok   Parseval for a square wave, 1000 harmonics
+ok   the closed-form coefficients of a square wave are its integrals
+ok   the closed-form coefficients of a sawtooth wave are its integrals
+ok   the closed-form coefficients of a triangle wave are its integrals
+ok   the closed-form coefficients of a pulse wave are its integrals
+ok   the closed-form coefficients of a rectified wave are its integrals
+ok   the Gibbs constant 2*Si(pi)/pi
+ok   the 201-harmonic peak sits on it
+ok   square coefficients fall off exactly as 1/n
+ok   triangle coefficients as 1/n^2
+
+all 15 checks passed

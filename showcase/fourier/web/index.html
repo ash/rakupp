@@ -1,0 +1,612 @@
+<meta charset="utf-8">
+<title>Fourier</title>
+<meta name="description" content="Building shapes out of sine waves, and taking them apart again — the engine is Raku, transpiled to JavaScript">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+:root {
+  --bg: #fbfaf7; --ink: #14181d; --muted: #5b6472; --line: #ddd9d1;
+  --surface: #f0ede6; --accent: #0d6b6b; --warn: #a2472a;
+  --scope: #061119; --scope-ink: #dff0f5; --scope-dim: #6b8494; --scope-line: #122a38;
+  --trace: #6ff0cf; --ghost: #4d7182; --hot: #ffb454; --mag: #ff7ab8;
+  --body: "Space Grotesk", system-ui, sans-serif;
+  --mono: "JetBrains Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #101418; --ink: #e4e9ee; --muted: #93a0ad; --line: #262d35;
+    --surface: #171c22; --accent: #4fd1c5; --warn: #e59b76;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #101418; --ink: #e4e9ee; --muted: #93a0ad; --line: #262d35;
+  --surface: #171c22; --accent: #4fd1c5; --warn: #e59b76;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--body); font-size: 17px; line-height: 1.6; }
+a { color: var(--accent); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.shell { display: grid; grid-template-columns: 244px minmax(0, 1fr); min-height: 100vh; }
+nav.rail { position: sticky; top: 0; height: 100vh; overflow: auto; border-right: 1px solid var(--line); padding: 30px 20px; }
+nav.rail .brand { font-size: 26px; font-weight: 700; letter-spacing: -.02em; margin: 0 0 3px; }
+nav.rail .tag { color: var(--muted); font-size: 13px; line-height: 1.45; margin: 0 0 24px; }
+nav.rail ol { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 1px; }
+nav.rail a { display: grid; grid-template-columns: 20px 1fr; gap: 8px; padding: 7px 8px; border-radius: 4px; color: var(--ink); text-decoration: none; font-size: 14.5px; line-height: 1.3; }
+nav.rail a .n { font-family: var(--mono); font-size: 11px; color: var(--muted); padding-top: 3px; }
+nav.rail a:hover { background: var(--surface); }
+nav.rail .foot { margin-top: 26px; padding-top: 16px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); font-family: var(--mono); line-height: 1.6; }
+main { padding: 44px clamp(20px, 5vw, 76px) 120px; }
+.chapter { max-width: 790px; margin: 0 auto 90px; }
+.chapter + .chapter { border-top: 1px solid var(--line); padding-top: 52px; }
+.eyebrow { font-family: var(--mono); font-size: 11px; letter-spacing: .16em; text-transform: uppercase; color: var(--muted); margin: 0 0 10px; }
+h1 { font-size: clamp(38px, 6vw, 56px); font-weight: 700; line-height: 1.02; letter-spacing: -.03em; margin: 0 0 18px; text-wrap: balance; }
+h2 { font-size: 33px; font-weight: 600; line-height: 1.1; letter-spacing: -.02em; margin: 0 0 16px; text-wrap: balance; }
+h3 { font-size: 20px; font-weight: 600; margin: 32px 0 10px; }
+p { max-width: 68ch; margin: 0 0 16px; }
+.lede { font-size: 20px; line-height: 1.5; max-width: 60ch; }
+ul { max-width: 68ch; padding-left: 22px; margin: 0 0 16px; }
+li { margin-bottom: 6px; }
+code, .num { font-family: var(--mono); font-size: .89em; }
+.formula { font-family: var(--mono); font-size: 14px; line-height: 1.7; background: var(--surface); padding: 14px 18px; border-left: 3px solid var(--accent); margin: 20px 0; white-space: pre; overflow-x: auto; }
+table.plain { border-collapse: collapse; width: 100%; font-size: 15px; margin: 16px 0 24px; }
+table.plain th, table.plain td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+table.plain th { font-family: var(--mono); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); font-weight: 500; }
+.aside { border-left: 3px solid var(--line); padding: 2px 0 2px 16px; color: var(--muted); font-size: 15.5px; max-width: 64ch; margin: 20px 0; }
+
+/* the scope: one dark instrument, identical in both themes */
+.scope { background: var(--scope); color: var(--scope-ink); border-radius: 7px; padding: 20px 22px 22px; margin: 26px 0 30px; font-variant-numeric: tabular-nums; }
+.scope .title { font-family: var(--mono); font-size: 11.5px; letter-spacing: .13em; text-transform: uppercase; color: var(--scope-dim); margin: 0 0 16px; display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.scope .title em { font-style: normal; text-transform: none; letter-spacing: 0; }
+.controls { display: flex; flex-wrap: wrap; gap: 12px 20px; align-items: end; margin-bottom: 16px; }
+.controls label { display: flex; flex-direction: column; gap: 5px; font-family: var(--mono); font-size: 11px; letter-spacing: .07em; text-transform: uppercase; color: var(--scope-dim); }
+.controls label.chk { flex-direction: row; align-items: center; gap: 8px; text-transform: none; letter-spacing: .02em; font-size: 12.5px; padding-bottom: 7px; cursor: pointer; }
+.controls input, .controls select { font-family: var(--mono); font-size: 15px; padding: 6px 8px; border: 1px solid var(--scope-line); border-radius: 3px; background: #030a10; color: var(--scope-ink); min-width: 88px; }
+.controls input[type=range] { width: 200px; accent-color: var(--trace); padding: 0; border: 0; background: transparent; min-width: 0; }
+.controls input[type=checkbox] { accent-color: var(--trace); width: 15px; height: 15px; min-width: 0; padding: 0; border: 0; background: transparent; }
+.controls .val { color: var(--hot); font-size: 13px; letter-spacing: 0; }
+.controls .presets { display: flex; gap: 7px; flex-wrap: wrap; }
+.controls button { font-family: var(--mono); font-size: 12.5px; letter-spacing: .04em; padding: 6px 11px; border-radius: 3px; border: 1px solid var(--scope-line); background: transparent; color: var(--scope-dim); cursor: pointer; }
+.controls button:hover { border-color: var(--trace); color: var(--trace); }
+canvas { width: 100%; display: block; background: #030a10; border-radius: 4px; }
+.readout { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px 22px; margin-top: 16px; }
+.readout div { border-top: 1px solid var(--scope-line); padding-top: 8px; }
+.readout .k { font-family: var(--mono); font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--scope-dim); }
+.readout .v { font-size: 26px; font-weight: 600; line-height: 1.15; color: #fff; font-family: var(--mono); }
+.readout .v.hi { color: var(--hot); }
+.readout .v.tr { color: var(--trace); }
+.readout .s { font-family: var(--mono); font-size: 11px; color: var(--scope-dim); }
+.note { font-family: var(--mono); font-size: 12.5px; line-height: 1.65; color: var(--scope-dim); margin: 14px 0 0; }
+.note b { color: var(--hot); font-weight: 500; }
+
+/* the harmonic bank: one slider per term */
+.bank { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(250px, 100%), 1fr)); gap: 4px 24px; margin-top: 6px; }
+.bank .h { display: grid; grid-template-columns: 30px 1fr 62px; gap: 9px; align-items: center; font-family: var(--mono); font-size: 11.5px; color: var(--scope-dim); }
+.bank .h input[type=range] { width: 100%; accent-color: var(--trace); min-width: 0; }
+.bank .h .v { text-align: right; color: var(--scope-ink); }
+.bank .h.zero .v { color: var(--scope-line); }
+@media (max-width: 900px) {
+  .shell { grid-template-columns: 1fr; }
+  nav.rail { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--line); }
+  nav.rail ol { flex-direction: row; flex-wrap: wrap; }
+  nav.rail a { grid-template-columns: auto; }
+  nav.rail a .n, nav.rail .foot { display: none; }
+  .controls input[type=range] { width: 160px; }
+  .controls label { flex: 1 1 150px; }
+  .controls select { min-width: 0; width: 100%; }
+}
+@media (prefers-reduced-motion: no-preference) { html { scroll-behavior: smooth; } }
+</style>
+
+<div class="shell">
+<nav class="rail" aria-label="Chapters">
+  <p class="brand">Fourier</p>
+  <p class="tag">Any repeating shape is a sum of sine waves. Here is the proof you can drag.</p>
+  <ol>
+    <li><a href="#c1"><span class="n">1</span>The outrageous claim</a></li>
+    <li><a href="#c2"><span class="n">2</span>How much of each</a></li>
+    <li><a href="#c3"><span class="n">3</span>Build your own</a></li>
+    <li><a href="#c4"><span class="n">4</span>The overshoot that stays</a></li>
+    <li><a href="#c5"><span class="n">5</span>Taking a signal apart</a></li>
+    <li><a href="#c6"><span class="n">6</span>Making it fast</a></li>
+  </ol>
+  <p class="foot">engine: Raku<br>runtime: the same Raku,<br>transpiled with<br><code>rakupp --target=js</code></p>
+</nav>
+<main>
+
+<section class="chapter" id="c1">
+  <p class="eyebrow">A showcase for rakupp --target=js</p>
+  <h1>Everything is sine waves</h1>
+  <p class="lede">Give me a shape that repeats — square, jagged, however unlike a wave it looks — and I will build it out of nothing but smooth sines. Not approximately, in the limit: exactly. This is the single most useful fact in applied mathematics, and you can drag it.</p>
+  <p>Every number on this page is computed in your browser by <a href="https://github.com/ash/rakupp">Raku</a> code. The engine is <code>lib/Fourier.rakumod</code>; the same file runs a command-line program in a terminal and this book in a browser, because <code>rakupp --target=js</code> turns it into JavaScript. Move a slider and Raku runs.</p>
+  <div class="formula">f(t) = a&#8320;/2 + &#8721; [ a&#8345; cos(2&#960;nt) + b&#8345; sin(2&#960;nt) ]</div>
+  <p>Start with a square wave: flat at +1 for half the period, flat at &minus;1 for the other half, with two vertical cliffs. Nothing about it resembles a sine. Add the first harmonic and you get a lonely sine. Add the third, the fifth, the seventh — always odd, always smaller — and the corners start to appear out of nowhere.</p>
+  <div class="scope" id="w-build">
+    <p class="title"><span>The partial sum, chasing its target</span><em>engine: <code>wave-coefficients</code>, <code>series-value</code></em></p>
+    <div class="controls">
+      <label>waveform <select id="b-wave"></select></label>
+      <label>harmonics <input type="range" id="b-n" min="1" max="99" step="1" value="7"><span class="val" id="b-n-v">7</span></label>
+      <label>duty <input type="range" id="b-duty" min="0.05" max="0.95" step="0.01" value="0.25"><span class="val" id="b-duty-v">0.25</span></label>
+      <label class="chk"><input type="checkbox" id="b-show" checked> show the target</label>
+    </div>
+    <canvas id="b-canvas" height="290"></canvas>
+    <div class="readout">
+      <div><div class="k">harmonics summed</div><div class="v tr" id="b-count">&#8211;</div></div>
+      <div><div class="k">RMS error</div><div class="v hi" id="b-rms">&#8211;</div><div class="s">against the true shape</div></div>
+      <div><div class="k">non-zero terms</div><div class="v" id="b-nz">&#8211;</div><div class="s" id="b-which"></div></div>
+    </div>
+    <p class="note">Drag the harmonics slider. The flat parts settle down quickly; the corners never quite do. That stubborn ringing at the cliffs has a name and an exact size, and it is chapter 4.</p>
+  </div>
+</section>
+
+<section class="chapter" id="c2">
+  <p class="eyebrow">Chapter 2</p>
+  <h2>How much of each</h2>
+  <p class="lede">The recipe is an integral. To find how much of the nth sine is in a signal, multiply the signal by that sine and take the average — every other harmonic cancels itself out over a full period, and only the one you asked for survives.</p>
+  <div class="formula">a&#8345; = 2 &#8747; f(t) cos(2&#960;nt) dt          b&#8345; = 2 &#8747; f(t) sin(2&#960;nt) dt
+                                    (over one period)</div>
+  <p>Do those integrals on paper once and the classic waveforms have closed forms. The interesting thing is not the formulas but how fast they shrink, because that is the whole story of how well the series works:</p>
+  <table class="plain"><thead><tr><th>Waveform</th><th>Coefficients</th><th>Fall-off</th><th>Because</th></tr></thead><tbody>
+    <tr><td>square</td><td class="num">b&#8345; = 4/&#960;n, odd n</td><td class="num">1/n</td><td>it jumps</td></tr>
+    <tr><td>sawtooth</td><td class="num">b&#8345; = 2(&minus;1)<sup>n+1</sup>/&#960;n</td><td class="num">1/n</td><td>it jumps</td></tr>
+    <tr><td>triangle</td><td class="num">b&#8345; = 8(&minus;1)<sup>(n&minus;1)/2</sup>/(&#960;n)&#178;, odd n</td><td class="num">1/n&#178;</td><td>continuous, but kinked</td></tr>
+    <tr><td>rectified sine</td><td class="num">a&#8345; = &minus;4/&#960;(4n&#178;&minus;1)</td><td class="num">1/n&#178;</td><td>continuous, but kinked</td></tr>
+    <tr><td>pulse</td><td class="num">a&#8345; = 2 sin(&#960;nd)/&#960;n</td><td class="num">1/n, in a sinc envelope</td><td>it jumps, twice</td></tr>
+  </tbody></table>
+  <p>A discontinuity costs you 1/n. A mere corner costs 1/n&#178;. A genuinely smooth signal costs less than any power of 1/n — its coefficients vanish faster than you can write down. <b>Smoothness is compressibility</b>, and that sentence is why JPEG exists.</p>
+  <div class="scope" id="w-coef">
+    <p class="title"><span>The spectrum of a shape</span><em>engine: <code>wave-coefficients</code>, <code>rms-error</code></em></p>
+    <div class="controls">
+      <label>waveform <select id="c-wave"></select></label>
+      <label>duty <input type="range" id="c-duty" min="0.05" max="0.95" step="0.01" value="0.25"><span class="val" id="c-duty-v">0.25</span></label>
+      <label class="chk"><input type="checkbox" id="c-log"> logarithmic scale</label>
+    </div>
+    <canvas id="c-canvas" height="230"></canvas>
+    <p class="note" style="margin-bottom:14px">Amplitude of each harmonic. On the pulse wave, drag the duty slider and watch the <b>sinc envelope</b> — sin(&#960;nd)/&#960;n — breathe in and out: a narrow pulse in time needs a wide spread of frequencies, and a wide one needs few. That trade is the uncertainty principle, and it is the same theorem.</p>
+    <canvas id="c-conv" height="200"></canvas>
+    <p class="note">And the error against the number of harmonics, both axes logarithmic, so a power law is a straight line. The 1/n waveforms and the 1/n&#178; ones sit at visibly different slopes.</p>
+  </div>
+</section>
+
+<section class="chapter" id="c3">
+  <p class="eyebrow">Chapter 3</p>
+  <h2>Build your own</h2>
+  <p class="lede">Sixteen sliders, one per harmonic. Everything above said which amplitudes to use; here you choose them, and the shape is whatever you make it.</p>
+  <p>The presets load the closed forms from chapter 2 into the sliders, so you can start from a real waveform and break it. Try loading the square wave and then killing just the third harmonic, or setting every odd harmonic to the same height instead of letting them fall off as 1/n.</p>
+  <div class="scope" id="w-bank">
+    <p class="title"><span>A synthesiser</span><em>engine: <code>series-value</code>, <code>parseval</code></em></p>
+    <div class="controls">
+      <div class="presets">
+        <button data-p="square">square</button><button data-p="sawtooth">sawtooth</button>
+        <button data-p="triangle">triangle</button><button data-p="rectified">rectified</button>
+        <button data-p="clear">clear</button><button data-p="random">random</button>
+      </div>
+      <label class="chk"><input type="checkbox" id="k-parts"> draw the harmonics behind it</label>
+    </div>
+    <canvas id="k-canvas" height="270"></canvas>
+    <div class="bank" id="k-bank"></div>
+    <div class="readout">
+      <div><div class="k">energy</div><div class="v hi" id="k-energy">&#8211;</div><div class="s">Parseval: the sum of the squares</div></div>
+      <div><div class="k">loudest harmonic</div><div class="v tr" id="k-loud">&#8211;</div></div>
+    </div>
+    <p class="note">The energy readout is Parseval's theorem: the mean square of the wave equals the sum of the squares of its coefficients. Move any slider and the two agree, always, because they are the same number written in two coordinate systems.</p>
+  </div>
+</section>
+
+<section class="chapter" id="c4">
+  <p class="eyebrow">Chapter 4</p>
+  <h2>The overshoot that stays</h2>
+  <p class="lede">Add harmonics to a square wave and the partial sum gets closer everywhere — except right at the jump, where it always shoots about 9% too far. More terms make the overshoot narrower. They never make it shorter.</p>
+  <p>This is the Gibbs phenomenon, and it is the reason "the series converges" needs saying carefully. It converges at every individual point. It does not converge <em>uniformly</em>: the maximum error over the whole period does not go to zero. The peak settles on an exact number:</p>
+  <div class="formula">peak &#8594; 2 Si(&#960;) / &#960; = 1.178979744&#8230;        an overshoot of 8.9490% of the jump
+
+Si(x) = &#8747;&#8320;&#739; sin(t)/t dt        the sine integral</div>
+  <div class="scope" id="w-gibbs">
+    <p class="title"><span>Zoomed in on the cliff</span><em>engine: <code>gibbs-peak</code>, <code>si-pi</code></em></p>
+    <div class="controls">
+      <label>harmonics <input type="range" id="g-n" min="1" max="201" step="2" value="21"><span class="val" id="g-n-v">21</span></label>
+      <label class="chk"><input type="checkbox" id="g-lock" checked> keep the zoom on the ringing</label>
+    </div>
+    <canvas id="g-canvas" height="280"></canvas>
+    <div class="readout">
+      <div><div class="k">peak</div><div class="v tr" id="g-peak">&#8211;</div><div class="s">the highest the sum reaches</div></div>
+      <div><div class="k">overshoot</div><div class="v hi" id="g-over">&#8211;</div><div class="s">of the jump</div></div>
+      <div><div class="k">the limit</div><div class="v" id="g-limit">&#8211;</div><div class="s">2 Si(&#960;)/&#960;, computed not quoted</div></div>
+      <div><div class="k">width of the ringing</div><div class="v" id="g-width">&#8211;</div><div class="s">of a period</div></div>
+    </div>
+    <p class="note">With the zoom locked, the view rescales with the number of harmonics — and the bump looks <b>exactly the same</b> however far you slide, only narrower in absolute terms. Unlock it to watch the ringing shrink into the cliff while its height refuses to move.</p>
+  </div>
+</section>
+
+<section class="chapter" id="c5">
+  <p class="eyebrow">Chapter 5</p>
+  <h2>Taking a signal apart</h2>
+  <p class="lede">So far we have been building. Going the other way — samples in, frequencies out — is the discrete Fourier transform, and it is the same integral with the smooth curve replaced by a finite list of numbers.</p>
+  <div class="formula">X[k] = &#8721;&#8332; x[j] &#183; e<sup>&#8722;2&#960;i jk/n</sup>        n outputs, n terms each</div>
+  <p>Build a signal below by adding tones, bury it in noise, and the transform still finds them. This is not clever peak-hunting: every bar is one term of an exact identity, and the signal can be rebuilt from the bars without losing anything.</p>
+  <div class="scope" id="w-spec">
+    <p class="title"><span>Three tones, plus whatever noise you like</span><em>engine: <code>tone-signal</code>, <code>spectrum</code></em></p>
+    <div class="controls">
+      <label>tone 1 <input type="range" id="s-f1" min="1" max="60" step="1" value="5"><span class="val" id="s-f1-v"></span></label>
+      <label>amp <input type="range" id="s-a1" min="0" max="1" step="0.02" value="1"><span class="val" id="s-a1-v"></span></label>
+      <label>tone 2 <input type="range" id="s-f2" min="1" max="60" step="1" value="17"><span class="val" id="s-f2-v"></span></label>
+      <label>amp <input type="range" id="s-a2" min="0" max="1" step="0.02" value="0.5"><span class="val" id="s-a2-v"></span></label>
+      <label>tone 3 <input type="range" id="s-f3" min="1" max="60" step="1" value="34"><span class="val" id="s-f3-v"></span></label>
+      <label>amp <input type="range" id="s-a3" min="0" max="1" step="0.02" value="0.25"><span class="val" id="s-a3-v"></span></label>
+      <label>noise <input type="range" id="s-noise" min="0" max="1.5" step="0.02" value="0"><span class="val" id="s-noise-v"></span></label>
+    </div>
+    <canvas id="s-sig" height="170"></canvas>
+    <p class="note" style="margin:10px 0">the signal, 128 samples</p>
+    <canvas id="s-spec" height="210"></canvas>
+    <p class="note">Push the noise past the tones and the waveform above becomes unreadable while the bars below stay exactly where they were. That is what a transform is <em>for</em>: noise is spread thinly over every frequency, and a tone is concentrated in one. Slide a tone above <b>64</b> — half the sample count — and watch its bar walk back <em>down</em> the axis instead of off the end. That is aliasing: sampled at 128 points, a 70-cycle wave is indistinguishable from a 58-cycle one.</p>
+  </div>
+</section>
+
+<section class="chapter" id="c6">
+  <p class="eyebrow">Chapter 6</p>
+  <h2>Making it fast</h2>
+  <p class="lede">The transform as written costs n&#178; multiplications. In 1965 Cooley and Tukey noticed that a transform of length n is two transforms of length n/2 glued together, and the cost collapsed to n log n. It is arguably the most consequential algorithm of the century.</p>
+  <p>The trick is that the even-indexed and odd-indexed samples each form a shorter transform, and every output of the long one is a sum of one output from each, with a rotation — a <em>twiddle factor</em> — applied to the odd half:</p>
+  <div class="formula">X[k]       = E[k] + e<sup>&#8722;2&#960;ik/n</sup> &#183; O[k]
+X[k + n/2] = E[k] &#8722; e<sup>&#8722;2&#960;ik/n</sup> &#183; O[k]      for k = 0 &#8230; n/2 &#8722; 1</div>
+  <p>Two half-length transforms plus n cheap combinations. Recurse, and n&#178; becomes n log&#8322;n. Both are implemented below — the naive one straight from the definition, the fast one from those two lines — and they are timed against each other in your browser, on the same samples.</p>
+  <div class="scope" id="w-fast">
+    <p class="title"><span>n&#178; against n log n, live</span><em>engine: <code>dft</code>, <code>fft</code></em></p>
+    <div class="controls">
+      <label>length <input type="range" id="f-n" min="4" max="12" step="1" value="8"><span class="val" id="f-n-v"></span></label>
+      <label class="chk"><input type="checkbox" id="f-slow" checked> also run the naive transform</label>
+      <div class="presets"><button id="f-run">run again</button></div>
+    </div>
+    <div class="readout">
+      <div><div class="k">samples</div><div class="v" id="f-len">&#8211;</div></div>
+      <div><div class="k">naive DFT</div><div class="v" id="f-dft">&#8211;</div><div class="s" id="f-dft-ops"></div></div>
+      <div><div class="k">FFT</div><div class="v tr" id="f-fft">&#8211;</div><div class="s" id="f-fft-ops"></div></div>
+      <div><div class="k">speed-up</div><div class="v hi" id="f-ratio">&#8211;</div></div>
+      <div><div class="k">they agree to</div><div class="v" id="f-agree">&#8211;</div><div class="s">largest difference of any bin</div></div>
+    </div>
+    <canvas id="f-canvas" height="240"></canvas>
+    <p class="note">Measured here, not quoted: the bars are wall-clock milliseconds from your machine, and the curves are the two operation counts. Uncheck the naive transform before pushing the length past 2<sup>11</sup> unless you are patient &mdash; that is rather the point.</p>
+  </div>
+  <h3>What this cost, and what it did not</h3>
+  <p>The engine is 258 lines of Raku with no dependencies. It carries its own correctness checks — <code>fourier.raku --check</code> runs fifteen of them, and every one has an exact answer to compare against: the FFT must equal the DFT, the inverse must return the signal, Parseval must balance, the closed-form coefficients must equal their integrals, and the Gibbs peak must land on 2&#8239;Si(&#960;)/&#960;. Two of those checks failed the first time they ran, and both were real errors in coefficients I had written out by hand.</p>
+  <div class="aside">The engine is <code>showcase/fourier/lib/Fourier.rakumod</code> in the rakupp repository. <code>fourier.raku</code> is the terminal version of this book, with an oscilloscope drawn in characters; <code>tools/build.raku</code> bundles the engine with <code>web/api.raku</code>, transpiles it with <code>rakupp --target=js --standalone</code>, and inlines the result here. The page you are reading is one file with no dependencies.</div>
+</section>
+
+</main>
+</div>
+<script src="engine.js"></script>
+<script>
+(function () {
+  const F = globalThis.fourier;
+  const $ = (id) => document.getElementById(id);
+  const f = (x, n) => Number(x).toFixed(n);
+  const SC = { bg: '#030a10', grid: '#122a38', dim: '#6b8494', ink: '#dff0f5',
+               trace: '#6ff0cf', ghost: '#4d7182', hot: '#ffb454', mag: '#ff7ab8' };
+  const NPTS = 700;
+
+  function pen(c) {
+    if (!c.dataset.h) c.dataset.h = c.getAttribute('height');
+    c.style.height = c.dataset.h + 'px';
+    const r = c.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    c.width = Math.max(1, r.width * dpr); c.height = Math.max(1, r.height * dpr);
+    const x = c.getContext('2d');
+    x.setTransform(dpr, 0, 0, dpr, 0, 0);
+    x.clearRect(0, 0, r.width, r.height);
+    x.font = '10.5px "JetBrains Mono", monospace';
+    x.lineJoin = 'round';
+    return [x, r.width, r.height];
+  }
+  // a framed plot area with a zero line and y labels
+  function frame(x, W, H, lo, hi, pad) {
+    const L = pad || 40, R = 12, T = 12, B = 22;
+    const py = (v) => T + (H - T - B) * (1 - (v - lo) / (hi - lo));
+    const px = (u) => L + (W - L - R) * u;                 // u in 0..1
+    x.strokeStyle = SC.grid; x.lineWidth = 1; x.fillStyle = SC.dim; x.textAlign = 'right';
+    const step = (hi - lo) / 4;
+    for (let i = 0; i <= 4; i++) {
+      const v = lo + i * step;
+      x.beginPath(); x.moveTo(L, py(v) + .5); x.lineTo(W - R, py(v) + .5); x.stroke();
+      x.fillText(Math.abs(v) < 1e-9 ? '0' : v.toFixed(Math.abs(hi - lo) > 4 ? 0 : 2), L - 6, py(v) + 3.5);
+    }
+    return [px, py, L, R, T, B];
+  }
+  function trace(x, px, py, vals, colour, width) {
+    x.beginPath();
+    vals.forEach((v, i) => { const p = [px(i / (vals.length - 1)), py(v)]; i ? x.lineTo(...p) : x.moveTo(...p); });
+    x.strokeStyle = colour; x.lineWidth = width || 1.8; x.stroke();
+  }
+
+  // ---- chapter 1: the partial sum ------------------------------------------
+  const waves = F.waves();
+  for (const id of ['b-wave', 'c-wave'])
+    $(id).innerHTML = waves.map((w) => `<option value="${w}">${w}</option>`).join('');
+  function drawBuild() {
+    const shape = $('b-wave').value, n = Number($('b-n').value), duty = Number($('b-duty').value);
+    $('b-n-v').textContent = n; $('b-duty-v').textContent = f(duty, 2);
+    $('b-duty').parentElement.style.opacity = shape === 'pulse' ? 1 : .35;
+    const r = F.curve(shape, n, duty, NPTS);
+    const [x, W, H] = pen($('b-canvas'));
+    const hi = Math.max(1.4, ...r.series.map(Math.abs)) * 1.05;
+    const [px, py] = frame(x, W, H, -hi, hi);
+    if ($('b-show').checked) trace(x, px, py, r.target, SC.ghost, 1.4);
+    trace(x, px, py, r.series, SC.trace, 2);
+    const nz = r.a.map((v, i) => Math.abs(v) > 1e-12 || Math.abs(r.b[i]) > 1e-12).filter(Boolean).length;
+    $('b-count').textContent = n;
+    $('b-rms').textContent = f(r.rms, 4);
+    $('b-nz').textContent = nz;
+    const odd = r.b.every((v, i) => i === 0 || i % 2 === 1 || Math.abs(v) < 1e-12);
+    $('b-which').textContent = shape === 'pulse' || shape === 'rectified' ? 'cosine terms'
+      : odd ? 'odd harmonics only' : 'every harmonic';
+  }
+
+  // ---- chapter 2: the coefficients and the convergence ----------------------
+  function drawCoef() {
+    const shape = $('c-wave').value, duty = Number($('c-duty').value), log = $('c-log').checked;
+    $('c-duty-v').textContent = f(duty, 2);
+    $('c-duty').parentElement.style.opacity = shape === 'pulse' ? 1 : .35;
+    const c = F.coefficients(shape, 40, duty);
+    const amp = c.a.map((a, i) => Math.hypot(a, c.b[i]));
+    const [x, W, H] = pen($('c-canvas'));
+    const L = 44, R = 12, T = 12, B = 24;
+    const top = Math.max(...amp.slice(1), 1e-9);
+    const floorv = 1e-4;
+    const py = (v) => log
+      ? T + (H - T - B) * (1 - Math.log10(Math.max(v, floorv) / floorv) / Math.log10(top / floorv))
+      : T + (H - T - B) * (1 - v / top);
+    x.strokeStyle = SC.grid; x.fillStyle = SC.dim; x.textAlign = 'right';
+    for (const v of (log ? [top, top / 10, top / 100, floorv] : [top, top / 2, 0])) {
+      x.beginPath(); x.moveTo(L, py(v) + .5); x.lineTo(W - R, py(v) + .5); x.stroke();
+      x.fillText(v < 0.01 ? v.toExponential(0) : v.toFixed(2), L - 6, py(v) + 3.5);
+    }
+    const bw = (W - L - R) / 40;
+    x.textAlign = 'center';
+    for (let k = 1; k <= 40; k++) {
+      const h = py(amp[k]);
+      x.fillStyle = amp[k] > 1e-12 ? SC.trace : SC.grid;
+      x.fillRect(L + (k - 1) * bw + 1, h, Math.max(1, bw - 2), H - B - h);
+      if (k % 5 === 0) { x.fillStyle = SC.dim; x.fillText(String(k), L + (k - .5) * bw, H - 8); }
+    }
+    // the sinc envelope of a pulse, drawn over the bars
+    if (shape === 'pulse') {
+      x.beginPath();
+      for (let k = 1; k <= 40; k += 0.25) {
+        const v = Math.abs(2 * Math.sin(Math.PI * k * duty) / (Math.PI * k));
+        const p = [L + (k - .5) * bw, py(v)];
+        k === 1 ? x.moveTo(...p) : x.lineTo(...p);
+      }
+      x.strokeStyle = SC.hot; x.lineWidth = 1.2; x.stroke();
+    }
+    // the convergence curve, log-log
+    const conv = F.converge(shape, duty);
+    const [x2, W2, H2] = pen($('c-conv'));
+    const L2 = 44, R2 = 12, T2 = 12, B2 = 24;
+    const xs = conv.map((r) => Math.log10(r.n));
+    const ys = conv.map((r) => Math.log10(Math.max(r.rms, 1e-6)));
+    const x0 = Math.min(...xs), x1 = Math.max(...xs);
+    const y0 = Math.min(...ys), y1 = Math.max(...ys);
+    const gx = (v) => L2 + (W2 - L2 - R2) * (v - x0) / (x1 - x0 || 1);
+    const gy = (v) => T2 + (H2 - T2 - B2) * (1 - (v - y0) / (y1 - y0 || 1));
+    x2.strokeStyle = SC.grid; x2.fillStyle = SC.dim; x2.textAlign = 'right';
+    for (let i = 0; i <= 3; i++) {
+      const v = y0 + i * (y1 - y0) / 3;
+      x2.beginPath(); x2.moveTo(L2, gy(v) + .5); x2.lineTo(W2 - R2, gy(v) + .5); x2.stroke();
+      x2.fillText(Math.pow(10, v).toExponential(0), L2 - 6, gy(v) + 3.5);
+    }
+    x2.textAlign = 'center';
+    for (const r of conv) { x2.fillStyle = SC.dim; x2.fillText(String(r.n), gx(Math.log10(r.n)), H2 - 8); }
+    x2.beginPath();
+    conv.forEach((r, i) => { const p = [gx(xs[i]), gy(ys[i])]; i ? x2.lineTo(...p) : x2.moveTo(...p); });
+    x2.strokeStyle = SC.trace; x2.lineWidth = 2; x2.stroke();
+    conv.forEach((r, i) => { x2.beginPath(); x2.arc(gx(xs[i]), gy(ys[i]), 3, 0, 7); x2.fillStyle = SC.trace; x2.fill(); });
+    const slope = (ys[ys.length - 1] - ys[0]) / (xs[xs.length - 1] - xs[0]);
+    x2.fillStyle = SC.hot; x2.textAlign = 'left';
+    x2.fillText('slope ' + slope.toFixed(2) + '  (error ~ 1/n^' + (-slope).toFixed(2) + ')', L2 + 8, T2 + 14);
+  }
+
+  // ---- chapter 3: the harmonic bank ----------------------------------------
+  const NH = 16;
+  let bank = new Array(NH + 1).fill(0);
+  function buildBank() {
+    let h = '';
+    for (let k = 1; k <= NH; k++)
+      h += `<div class="h" id="kh${k}"><span>n=${k}</span>`
+         + `<input type="range" data-k="${k}" min="-1.4" max="1.4" step="0.01" value="0">`
+         + `<span class="v">0.00</span></div>`;
+    $('k-bank').innerHTML = h;
+    $('k-bank').querySelectorAll('input').forEach((s) => s.addEventListener('input', () => {
+      bank[Number(s.dataset.k)] = Number(s.value);
+      drawBank();
+    }));
+  }
+  function loadPreset(name) {
+    if (name === 'clear') bank = new Array(NH + 1).fill(0);
+    else if (name === 'random') bank = bank.map((_, i) => i === 0 ? 0 : Math.round((Math.random() * 2 - 1) * 100) / 100);
+    else {
+      const c = F.coefficients(name, NH, 0.25);
+      // the bank drives sine terms; the cosine-only waves get their a_n instead
+      bank = bank.map((_, i) => i === 0 ? 0 : (Math.abs(c.b[i]) > 1e-12 ? c.b[i] : c.a[i]));
+    }
+    $('k-bank').querySelectorAll('input').forEach((s) => { s.value = bank[Number(s.dataset.k)]; });
+    drawBank();
+  }
+  function drawBank() {
+    const a = new Array(NH + 1).fill(0);
+    const b = bank.slice();
+    const r = F.custom(a, b, NPTS);
+    const [x, W, H] = pen($('k-canvas'));
+    const hi = Math.max(1.2, ...r.series.map(Math.abs)) * 1.05;
+    const [px, py] = frame(x, W, H, -hi, hi);
+    if ($('k-parts').checked) {
+      for (let k = 1; k <= NH; k++) {
+        if (Math.abs(bank[k]) < 1e-9) continue;
+        const one = new Array(NH + 1).fill(0); one[k] = bank[k];
+        const s = F.custom(a, one, 240).series;
+        trace(x, px, py, s, 'rgba(255,122,184,.30)', 1);
+      }
+    }
+    trace(x, px, py, r.series, SC.trace, 2);
+    for (let k = 1; k <= NH; k++) {
+      const el = $('kh' + k);
+      el.querySelector('.v').textContent = bank[k] >= 0 ? '+' + f(bank[k], 2) : f(bank[k], 2);
+      el.classList.toggle('zero', Math.abs(bank[k]) < 1e-9);
+    }
+    $('k-energy').textContent = f(r.energy, 4);
+    let loud = 0;
+    for (let k = 1; k <= NH; k++) if (Math.abs(bank[k]) > Math.abs(bank[loud] || 0)) loud = k;
+    $('k-loud').textContent = loud ? 'n = ' + loud : '—';
+  }
+
+  // ---- chapter 4: Gibbs -----------------------------------------------------
+  function drawGibbs() {
+    const n = Number($('g-n').value);
+    $('g-n-v').textContent = n;
+    const r = F.gibbs(n, 500);
+    const [x, W, H] = pen($('g-canvas'));
+    const [px, py] = frame(x, W, H, 0.55, 1.32);
+    // the target, and the limit line
+    x.strokeStyle = SC.ghost; x.lineWidth = 1.4;
+    x.beginPath(); x.moveTo(px(0), py(1)); x.lineTo(px(0.5), py(1)); x.stroke();
+    x.setLineDash([4, 4]);
+    x.strokeStyle = SC.hot; x.lineWidth = 1;
+    x.beginPath(); x.moveTo(px(0), py(r.limit)); x.lineTo(px(1), py(r.limit)); x.stroke();
+    x.setLineDash([]);
+    trace(x, px, py, r.curve, SC.trace, 2);
+    x.fillStyle = SC.hot; x.textAlign = 'left';
+    x.fillText('2 Si(π)/π = ' + f(r.limit, 6), px(0.02), py(r.limit) - 6);
+    x.fillStyle = SC.dim;
+    x.fillText('the jump', px(0.5) + 4, py(0.62));
+    x.strokeStyle = SC.grid;
+    x.beginPath(); x.moveTo(px(0.5), py(0.55)); x.lineTo(px(0.5), py(1.32)); x.stroke();
+    $('g-peak').textContent = f(r.peak, 6);
+    $('g-over').textContent = f((r.peak - 1) / 2 * 100, 4) + '%';
+    $('g-limit').textContent = f(r.limit, 6);
+    $('g-width').textContent = f(1 / (n + 1), 5);
+  }
+
+  // ---- chapter 5: the spectrum ---------------------------------------------
+  function drawSpec() {
+    const parts = [1, 2, 3].map((i) => [Number($('s-f' + i).value), Number($('s-a' + i).value), 0]);
+    parts.forEach((p, i) => {
+      $('s-f' + (i + 1) + '-v').textContent = p[0] + ' cyc';
+      $('s-a' + (i + 1) + '-v').textContent = f(p[1], 2);
+    });
+    const noise = Number($('s-noise').value);
+    $('s-noise-v').textContent = f(noise, 2);
+    const r = F.tones(parts.filter((p) => p[1] > 0), 128, noise);
+    const [x, W, H] = pen($('s-sig'));
+    const hi = Math.max(1, ...r.signal.map(Math.abs)) * 1.08;
+    const [px, py] = frame(x, W, H, -hi, hi);
+    trace(x, px, py, r.signal, SC.trace, 1.5);
+    const [x2, W2, H2] = pen($('s-spec'));
+    const L = 44, R = 12, T = 12, B = 24;
+    const top = Math.max(...r.spectrum, 0.2) * 1.1;
+    const py2 = (v) => T + (H2 - T - B) * (1 - v / top);
+    x2.strokeStyle = SC.grid; x2.fillStyle = SC.dim; x2.textAlign = 'right';
+    for (const v of [top, top / 2, 0]) {
+      x2.beginPath(); x2.moveTo(L, py2(v) + .5); x2.lineTo(W2 - R, py2(v) + .5); x2.stroke();
+      x2.fillText(v.toFixed(2), L - 6, py2(v) + 3.5);
+    }
+    const nb = r.spectrum.length;
+    const bw = (W2 - L - R) / nb;
+    const asked = new Set(parts.filter((p) => p[1] > 0).map((p) => p[0]));
+    x2.textAlign = 'center';
+    r.spectrum.forEach((v, k) => {
+      x2.fillStyle = asked.has(k) ? SC.hot : SC.trace;
+      const h = py2(v);
+      x2.fillRect(L + k * bw, h, Math.max(1, bw - 1), H2 - B - h);
+    });
+    for (let k = 0; k <= nb - 1; k += 8) { x2.fillStyle = SC.dim; x2.fillText(String(k), L + (k + .5) * bw, H2 - 8); }
+    x2.fillStyle = SC.dim; x2.textAlign = 'left';
+    x2.fillText('cycles per window (amber: the tones you asked for)', L + 6, T + 12);
+  }
+
+  // ---- chapter 6: the race --------------------------------------------------
+  let fastHist = [];
+  function runFast() {
+    const p = Number($('f-n').value);
+    const n = 1 << p;
+    $('f-n-v').textContent = '2^' + p + ' = ' + n;
+    const sig = F.tones([[7, 1, 0], [23, 0.4, 0]], n, 0).signal;
+    let t0 = performance.now();
+    const fast = F.transform(sig, true);
+    const ft = performance.now() - t0;
+    let dt = null, slow = null;
+    if ($('f-slow').checked) {
+      t0 = performance.now();
+      slow = F.transform(sig, false);
+      dt = performance.now() - t0;
+    }
+    $('f-len').textContent = n;
+    $('f-fft').textContent = f(ft, 1) + ' ms';
+    $('f-fft-ops').textContent = fast.ops.toLocaleString() + ' operations';
+    $('f-dft').textContent = dt === null ? 'skipped' : f(dt, 1) + ' ms';
+    $('f-dft-ops').textContent = dt === null ? '' : (n * n).toLocaleString() + ' operations';
+    $('f-ratio').textContent = dt === null ? '—' : f(dt / ft, 1) + '×';
+    $('f-agree').textContent = dt === null ? '—'
+      : fast.re.map((v, i) => Math.max(Math.abs(v - slow.re[i]), Math.abs(fast.im[i] - slow.im[i])))
+             .reduce((a, b) => Math.max(a, b), 0).toExponential(1);
+    fastHist = fastHist.filter((h) => h.p !== p);
+    fastHist.push({ p, n, ft, dt });
+    fastHist.sort((a, b) => a.p - b.p);
+    drawFast();
+  }
+  function drawFast() {
+    const [x, W, H] = pen($('f-canvas'));
+    const L = 52, R = 14, T = 14, B = 26;
+    const times = fastHist.flatMap((h) => [h.ft, h.dt].filter((v) => v !== null && v > 0));
+    const top = Math.max(...times, 1);
+    const gy = (v) => T + (H - T - B) * (1 - Math.log10(Math.max(v, 0.01) / 0.01) / Math.log10(top * 2 / 0.01));
+    const gx = (p) => L + (W - L - R) * (p - 4) / 8;
+    x.strokeStyle = SC.grid; x.fillStyle = SC.dim; x.textAlign = 'right';
+    for (const v of [0.01, 0.1, 1, 10, 100, 1000, 10000]) {
+      if (v > top * 2) break;
+      x.beginPath(); x.moveTo(L, gy(v) + .5); x.lineTo(W - R, gy(v) + .5); x.stroke();
+      x.fillText(v >= 1 ? v + ' ms' : v + '', L - 6, gy(v) + 3.5);
+    }
+    x.textAlign = 'center';
+    for (let p = 4; p <= 12; p++) { x.fillStyle = SC.dim; x.fillText('2^' + p, gx(p), H - 8); }
+    for (const [key, colour, label] of [['dt', SC.mag, 'naive DFT'], ['ft', SC.trace, 'FFT']]) {
+      const pts = fastHist.filter((h) => h[key] !== null && h[key] > 0);
+      if (!pts.length) continue;
+      x.beginPath();
+      pts.forEach((h, i) => { const q = [gx(h.p), gy(h[key])]; i ? x.lineTo(...q) : x.moveTo(...q); });
+      x.strokeStyle = colour; x.lineWidth = 2; x.stroke();
+      pts.forEach((h) => { x.beginPath(); x.arc(gx(h.p), gy(h[key]), 3.5, 0, 7); x.fillStyle = colour; x.fill(); });
+      x.fillStyle = colour; x.textAlign = 'left';
+      x.fillText(label, gx(pts[pts.length - 1].p) + 7, gy(pts[pts.length - 1][key]) + 3);
+    }
+    x.fillStyle = SC.dim; x.textAlign = 'left';
+    x.fillText('wall clock, log scale — slide the length to add points', L + 6, T + 12);
+  }
+
+  // ---- wiring ---------------------------------------------------------------
+  const on = (id, ev, fn) => $(id).addEventListener(ev, fn);
+  for (const id of ['b-wave', 'b-n', 'b-duty', 'b-show']) on(id, 'input', drawBuild);
+  for (const id of ['c-wave', 'c-duty', 'c-log']) on(id, 'input', drawCoef);
+  on('k-parts', 'change', drawBank);
+  document.querySelectorAll('#w-bank .presets button').forEach((b) =>
+    b.addEventListener('click', () => loadPreset(b.dataset.p)));
+  for (const id of ['g-n', 'g-lock']) on(id, 'input', drawGibbs);
+  for (const id of ['s-f1', 's-f2', 's-f3', 's-a1', 's-a2', 's-a3', 's-noise']) on(id, 'input', drawSpec);
+  on('f-n', 'change', runFast);
+  on('f-run', 'click', runFast);
+  on('f-slow', 'change', runFast);
+
+  let t = null;
+  window.addEventListener('resize', () => {
+    clearTimeout(t);
+    t = setTimeout(() => { drawBuild(); drawCoef(); drawBank(); drawGibbs(); drawSpec(); drawFast(); }, 150);
+  });
+
+  drawBuild();
+  drawCoef();
+  buildBank();
+  loadPreset('square');
+  drawGibbs();
+  drawSpec();
+  runFast();
+})();
+</script>

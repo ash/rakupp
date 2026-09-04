@@ -117,6 +117,8 @@ function buildObj(ty, ...args) {
         if (ty === T.Version) { const [pos] = splitArgs(args); return new RVersion(str(pos[0])); }
         if (ty === T['IO::Path'] || ty === T.IO) { const [pos] = splitArgs(args); return new RIOPath(str(pos[0])); }
         if (ty === T.FatRat || ty === T.Rat) { const [pos] = splitArgs(args); return mkRat(big(pos[0]), big(pos.length > 1 ? pos[1] : 1)); }
+        if (ty === T.Complex) { const [pos, named] = splitArgs(args); const re = named.get('re'), im = named.get('im');
+            return new RComplex(toFloat(re === undefined ? (pos.length ? pos[0] : 0) : re), toFloat(im === undefined ? (pos.length > 1 ? pos[1] : 0) : im)); }
         if (ty === T.Int || ty === T.Num || ty === T.Str || ty === T.Bool) { const [pos] = splitArgs(args); return pos.length ? coerce(ty, pos[0]) : (ty === T.Str ? '' : ty === T.Bool ? false : 0); }
         if (ty === T.Nil) return Nil;
         if (ty === T.Promise) return mkPromise();

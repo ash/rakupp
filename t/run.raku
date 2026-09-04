@@ -243,6 +243,68 @@ section('showcase/eclipse (eclipse prediction from periodic series)');
        "eclipse: the 2025-2026 season strip marks exactly four solar eclipses");
 }
 
+# ---- fourier showcase --------------------------------------------------
+# The engine carries its own proof obligations: every check in --check has an
+# exact answer (the FFT must equal the DFT, Parseval must balance, the closed
+# forms must equal their integrals, Gibbs must land on 2*Si(pi)/pi), so a
+# numeric regression anywhere in Complex/Num/sqrt shows up as a failed
+# identity rather than as changed output.
+section('showcase/fourier (Fourier series and the FFT)');
+{
+    my $fou = $ROOT.add('showcase/fourier/fourier.raku').Str;
+
+    for <check gibbs plot coef dft> -> $n {
+        my @args = $n eq 'check' ?? ($fou, '--check')
+                !! $n eq 'gibbs' ?? ($fou, '--gibbs')
+                !! $n eq 'plot'  ?? ($fou, '-n=7')
+                !! $n eq 'coef'  ?? ($fou, '--coefficients=square', '-n=9')
+                !! ($fou, '--dft=1,0,-1,0');
+        golden(@args, $EXP.add("fourier-$n.out").Str, "fourier: --$n");
+    }
+
+    # the fast transform really is faster, and really does agree
+    my ($b, $rc) = run-rakupp($fou, '--bench=256');
+    ok($rc == 0 && $b ~~ / 'they agree to' \s+ \d '.' \d+ 'e-1' \d /,
+       "fourier: DFT and FFT agree to better than 1e-10 at n = 256");
+
+    # a signal built from three tones is taken apart into exactly those three
+    my ($sp, $rc2) = run-rakupp($fou, '--spectrum=3,7,11');
+    ok($rc2 == 0 && $sp.lines.grep({ / ^ \s+ \d+ ' cycles' / }) == 3,
+       "fourier: the spectrum of three tones has exactly three lines");
+}
+
+# ---- orbits showcase ---------------------------------------------------
+# The goldens are answers from the almanacs, not just output shapes: the ten
+# opposition dates in reference/known.tsv have to land on the day. A drift in
+# trigonometry, iteration or Num formatting moves a planet rather than
+# crashing, which is what these are for.
+section('showcase/orbits (Kepler, the planets, and Hohmann transfers)');
+{
+    my $orb = $ROOT.add('showcase/orbits/orbits.raku').Str;
+
+    for <check kepler transfer planet table map events> -> $n {
+        my @args = $n eq 'check'    ?? ($orb, '--check')
+                !! $n eq 'kepler'   ?? ($orb, '--kepler=0.6')
+                !! $n eq 'transfer' ?? ($orb, '--transfer=Earth,Mars')
+                !! $n eq 'planet'   ?? ($orb, '--planet=Mars', '2026-09-04')
+                !! $n eq 'table'    ?? ($orb, '2026-09-04')
+                !! $n eq 'map'      ?? ($orb, '--map', '2026-09-04')
+                !! ($orb, '--events=Mars', '2020', '2035');
+        golden(@args, $EXP.add("orbits-$n.out").Str, "orbits: --$n");
+    }
+
+    # the 42 checks in --check are the real assertion; make its count explicit
+    # so a silently shrinking reference table cannot pass
+    my ($c, $rc) = run-rakupp($orb, '--check');
+    ok($rc == 0 && $c.contains('all 42 checks passed'),
+       "orbits: all 42 catalogued and internal checks pass");
+
+    # Kepler's equation must actually converge, at every eccentricity
+    my ($k, $rc2) = run-rakupp($orb, '--kepler=0.95');
+    ok($rc2 == 0 && $k.lines.grep({ / ^ \s* \d+ '°' \s+ \d+ \s / }) == 7,
+       "orbits: Newton converges at e = 0.95 for every mean anomaly tried");
+}
+
 # ---- server showcases (pastebin + chat) -------------------------------
 # The servers are long-lived accept loops. rakupp's Proc::Async deadlocks when
 # the same process then does blocking socket I/O, so we background them through
