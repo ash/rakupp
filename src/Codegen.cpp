@@ -470,14 +470,13 @@ struct Codegen {
             default: return nullptr;
         }
     }
-    // What a body falls off the end into. A body whose last statement is a LOOP
-    // is Nil, not an undefined Any — the same rule the interpreter applies
-    // (Interpreter.cpp, NK::WhileStmt), so `sub f { while 0 {} }` answers Nil
-    // whether it was interpreted or compiled. Everything else keeps Any: an
-    // empty body and a not-taken `if` are separate divergences from Rakudo, not
-    // this one. An asExpr loop never reaches here — it is a value already.
+    // What a body falls off the end into: Nil, both for an EMPTY body (execBlock's
+    // seed) and for one whose last statement is a LOOP — the same two rules the
+    // interpreter applies, so `sub f { }` and `sub f { while 0 {} }` answer Nil
+    // whether they were interpreted or compiled. An asExpr loop never reaches
+    // here: it is a value already. Everything else keeps Any.
     const char* tailFallback(const std::vector<StmtPtr>& body) {
-        if (body.empty()) return "Value::any()";
+        if (body.empty()) return "Value::nil()";
         Stmt* s = body.back().get();
         switch (s->kind) {
             case NK::ForStmt:   return static_cast<ForStmt*>(s)->asExpr   ? "Value::any()" : "Value::nil()";
@@ -728,7 +727,7 @@ struct Codegen {
                     line(0, "return " + exArg(static_cast<ExprStmt*>(st)->e.get()) + ";");
                 else if (i + 1 == d->body.size() && (st->kind == NK::IfStmt || st->kind == NK::GivenStmt)) {
                     std::string rv = gensym("__rv");
-                    line(0, "Value " + rv + " = Value::any();");
+                    line(0, "Value " + rv + " = Value::nil();");   // the seed IS the answer for an empty branch
                     stmtValue(st, 0, rv);
                     line(0, "return " + rv + ";");
                 }
@@ -776,7 +775,7 @@ struct Codegen {
                     // a block-final if/elsif/else (or given) is the block's value,
                     // exactly as in sub bodies
                     std::string rv = gensym("__rv");
-                    line(0, "Value " + rv + " = Value::any();");
+                    line(0, "Value " + rv + " = Value::nil();");   // the seed IS the answer for an empty branch
                     stmtValue(s, 0, rv);
                     line(0, "return " + rv + ";");
                 }
@@ -2550,7 +2549,7 @@ struct Codegen {
                     line(1, "return " + exArg(static_cast<ExprStmt*>(s)->e.get()) + ";");
                 else if (i + 1 == md->body.size() && (s->kind == NK::IfStmt || s->kind == NK::GivenStmt)) {
                     std::string rv = gensym("__rv");
-                    line(1, "Value " + rv + " = Value::any();");
+                    line(1, "Value " + rv + " = Value::nil();");   // as above
                     stmtValue(s, 1, rv);
                     line(1, "return " + rv + ";");
                 }
@@ -2703,7 +2702,7 @@ struct Codegen {
                 line(1, "return " + exArg(static_cast<ExprStmt*>(s)->e.get()) + ";");
             else if (i + 1 == body.size() && (s->kind == NK::IfStmt || s->kind == NK::GivenStmt)) {
                 std::string rv = gensym("__rv"); // trailing if/given: the matched branch's value
-                line(1, "Value " + rv + " = Value::any();");
+                line(1, "Value " + rv + " = Value::nil();");   // as above
                 stmtValue(s, 1, rv);
                 line(1, "return " + rv + ";");
             }

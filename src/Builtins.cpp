@@ -601,35 +601,74 @@ static void spawnCapture(const std::vector<std::string>& argv, double timeoutSec
     spawnChildFinish(sc, timeoutSec, out, errOut, exitCode, timedout, gil, sink, sinkErr);
 }
 
-// Spawn a child, feed `input` to its stdin, and capture its stdout. Uses poll on
-// both pipes so it won't deadlock when the child's output exceeds the pipe buffer
-// while we're still writing input (as pandoc can on a large page).
+// Spawn a child, feed `input` to its stdin, and collect its output. Uses poll on
+// every open pipe so it won't deadlock when the child's output exceeds the pipe
+// buffer while we're still writing input (as pandoc can on a large page).
+//
+// `outMode` and `errOut`/`errInherit` mean exactly what they mean in
+// spawnCapture: stdout is captured (1), discarded (0) or INHERITED (-1); stderr
+// is captured when `errOut` is non-null, otherwise inherited or discarded as
+// `errInherit` says. This path used to hardcode "capture stdout, send stderr to
+// /dev/null", so `run(cmd, :in, :out, :err)` came back with an empty `.err` and
+// `run(cmd, :in)` swallowed both streams — where Rakudo inherits both.
 void spawnWithInput(const std::vector<std::string>& argv, const std::string& input,
                            std::string& out, int& exitCode, Interpreter* gil,
-                           const std::vector<std::string>* envKV, const std::string& cwd) {
+                           const std::vector<std::string>* envKV, const std::string& cwd,
+                           std::string* errOut, bool errInherit, int outMode) {
     out.clear(); exitCode = -1;
+    if (errOut) errOut->clear();
     if (argv.empty()) return;
+    const bool capOut = outMode == 1, capErr = errOut != nullptr;
 #if defined(_WIN32)
     SECURITY_ATTRIBUTES sa; sa.nLength = sizeof(sa); sa.lpSecurityDescriptor = nullptr; sa.bInheritHandle = TRUE;
-    HANDLE inR = nullptr, inW = nullptr, outR = nullptr, outW = nullptr;
+    HANDLE inR = nullptr, inW = nullptr, outR = nullptr, outW = nullptr, errR = nullptr, errW = nullptr;
     if (!CreatePipe(&inR, &inW, &sa, 0)) return;
     SetHandleInformation(inW, HANDLE_FLAG_INHERIT, 0);
-    if (!CreatePipe(&outR, &outW, &sa, 0)) { CloseHandle(inR); CloseHandle(inW); return; }
-    SetHandleInformation(outR, HANDLE_FLAG_INHERIT, 0);
+    if (capOut) {
+        if (!CreatePipe(&outR, &outW, &sa, 0)) { CloseHandle(inR); CloseHandle(inW); return; }
+        SetHandleInformation(outR, HANDLE_FLAG_INHERIT, 0);
+    }
+    if (capErr) {
+        if (!CreatePipe(&errR, &errW, &sa, 0)) {
+            CloseHandle(inR); CloseHandle(inW);
+            if (outR) { CloseHandle(outR); CloseHandle(outW); }
+            return;
+        }
+        SetHandleInformation(errR, HANDLE_FLAG_INHERIT, 0);
+    }
     HANDLE nul = CreateFileA("NUL", GENERIC_WRITE, FILE_SHARE_WRITE, &sa, OPEN_EXISTING, 0, nullptr);
     std::string cmd;
     for (size_t i = 0; i < argv.size(); i++) { if (i) cmd += ' '; cmd += '"'; for (char c : argv[i]) { if (c == '"') cmd += '\\'; cmd += c; } cmd += '"'; }
     STARTUPINFOA si; ZeroMemory(&si, sizeof(si)); si.cb = sizeof(si); si.dwFlags = STARTF_USESTDHANDLES;
-    si.hStdInput = inR; si.hStdOutput = outW; si.hStdError = nul;
+    si.hStdInput = inR;
+    si.hStdOutput = capOut ? outW : (outMode == 0 ? nul : GetStdHandle(STD_OUTPUT_HANDLE));
+    si.hStdError  = capErr ? errW : (errInherit ? GetStdHandle(STD_ERROR_HANDLE) : nul);
     PROCESS_INFORMATION pi; ZeroMemory(&pi, sizeof(pi));
     std::vector<char> cmdbuf(cmd.begin(), cmd.end()); cmdbuf.push_back('\0');
     std::string envblk; if (envKV) envblk = winEnvBlock(*envKV);
     BOOL started = CreateProcessA(nullptr, cmdbuf.data(), nullptr, nullptr, TRUE, 0, envKV ? (LPVOID)envblk.data() : nullptr, cwd.empty() ? nullptr : cwd.c_str(), &si, &pi);
-    CloseHandle(inR); CloseHandle(outW); if (nul != INVALID_HANDLE_VALUE) CloseHandle(nul);
-    if (!started) { CloseHandle(inW); CloseHandle(outR); return; }
+    CloseHandle(inR);
+    if (outW) CloseHandle(outW);
+    if (errW) CloseHandle(errW);
+    if (nul != INVALID_HANDLE_VALUE) CloseHandle(nul);
+    if (!started) { CloseHandle(inW); if (outR) CloseHandle(outR); if (errR) CloseHandle(errR); return; }
     bool parked = gil ? gil->gilPark() : false;
-    size_t written = 0; char buf[8192]; bool wOpen = true, done = false;
-    while (!done) {
+    size_t written = 0; char buf[8192]; bool wOpen = true;
+    // Drain whatever is sitting in one pipe; false once it is closed or broken,
+    // so a stream that ends early stops being polled.
+    auto drain = [&buf](HANDLE h, std::string* into) -> bool {
+        DWORD avail = 0;
+        if (!PeekNamedPipe(h, nullptr, 0, nullptr, &avail, nullptr)) return false;
+        while (avail > 0) {
+            DWORD want = avail > sizeof buf ? (DWORD)sizeof buf : avail, rd = 0;
+            if (!ReadFile(h, buf, want, &rd, nullptr) || rd == 0) return false;
+            into->append(buf, rd);
+            if (!PeekNamedPipe(h, nullptr, 0, nullptr, &avail, nullptr)) return false;
+        }
+        return true;
+    };
+    bool oAlive = outR != nullptr, eAlive = errR != nullptr;
+    for (;;) {
         if (wOpen) {
             if (written < input.size()) {
                 DWORD want = (DWORD)((input.size() - written < sizeof buf) ? input.size() - written : sizeof buf), wn = 0;
@@ -637,22 +676,23 @@ void spawnWithInput(const std::vector<std::string>& argv, const std::string& inp
                 else { CloseHandle(inW); wOpen = false; }
             } else { CloseHandle(inW); wOpen = false; }
         }
-        DWORD avail = 0;
-        if (!PeekNamedPipe(outR, nullptr, 0, nullptr, &avail, nullptr)) break; // child's write end closed
-        while (avail > 0) {
-            DWORD want = avail > sizeof buf ? (DWORD)sizeof buf : avail, rd = 0;
-            if (!ReadFile(outR, buf, want, &rd, nullptr) || rd == 0) { avail = 0; break; }
-            out.append(buf, rd);
-            if (!PeekNamedPipe(outR, nullptr, 0, nullptr, &avail, nullptr)) { done = true; break; }
+        if (oAlive) oAlive = drain(outR, &out);
+        if (eAlive) eAlive = drain(errR, errOut);
+        if (!wOpen) {
+            if (WaitForSingleObject(pi.hProcess, 0) == WAIT_OBJECT_0) {
+                if (oAlive) drain(outR, &out);      // whatever the child left behind
+                if (eAlive) drain(errR, errOut);
+                break;
+            }
+            Sleep(2);
         }
-        if (!wOpen && !done && WaitForSingleObject(pi.hProcess, 0) == WAIT_OBJECT_0) {
-            DWORD a2 = 0; PeekNamedPipe(outR, nullptr, 0, nullptr, &a2, nullptr); if (a2 == 0) break;
-        } else if (!wOpen) Sleep(2);
     }
     if (wOpen) CloseHandle(inW);
     WaitForSingleObject(pi.hProcess, INFINITE);
     DWORD ec = 0; if (GetExitCodeProcess(pi.hProcess, &ec)) exitCode = (int)ec;
-    CloseHandle(outR); CloseHandle(pi.hProcess); CloseHandle(pi.hThread);
+    if (outR) CloseHandle(outR);
+    if (errR) CloseHandle(errR);
+    CloseHandle(pi.hProcess); CloseHandle(pi.hThread);
     if (parked) gil->gilUnpark(true);
     return;
 #else
@@ -666,42 +706,72 @@ void spawnWithInput(const std::vector<std::string>& argv, const std::string& inp
         for (auto& kv : *envKV) cenv.push_back(const_cast<char*>(kv.c_str()));
         cenv.push_back(nullptr);
     }
-    int inPipe[2], outPipe[2];
+    int inPipe[2], outPipe[2] = {-1, -1}, errPipe[2] = {-1, -1};
     if (pipe(inPipe) != 0) return;
-    if (pipe(outPipe) != 0) { close(inPipe[0]); close(inPipe[1]); return; }
+    if (capOut && pipe(outPipe) != 0) { close(inPipe[0]); close(inPipe[1]); return; }
+    if (capErr && pipe(errPipe) != 0) {
+        close(inPipe[0]); close(inPipe[1]);
+        if (capOut) { close(outPipe[0]); close(outPipe[1]); }
+        return;
+    }
     pid_t pid = fork();
-    if (pid < 0) { close(inPipe[0]); close(inPipe[1]); close(outPipe[0]); close(outPipe[1]); return; }
+    if (pid < 0) {
+        close(inPipe[0]); close(inPipe[1]);
+        if (capOut) { close(outPipe[0]); close(outPipe[1]); }
+        if (capErr) { close(errPipe[0]); close(errPipe[1]); }
+        return;
+    }
     if (pid == 0) { // child — async-signal-safe from here
         dup2(inPipe[0], STDIN_FILENO);
-        dup2(outPipe[1], STDOUT_FILENO);
-        int devnull = open("/dev/null", O_WRONLY);
-        if (devnull >= 0) dup2(devnull, STDERR_FILENO);
-        close(inPipe[0]); close(inPipe[1]); close(outPipe[0]); close(outPipe[1]);
+        // A stream that is neither captured nor discarded is left alone, so the
+        // child writes to OUR descriptor as it goes — Rakudo's default for an
+        // un-adverbed run, and the only mode that is live rather than buffered.
+        int devnull = -1;
+        if (!capOut && outMode == 0) { devnull = open("/dev/null", O_WRONLY); if (devnull >= 0) dup2(devnull, STDOUT_FILENO); }
+        if (!capErr && !errInherit) {
+            if (devnull < 0) devnull = open("/dev/null", O_WRONLY);
+            if (devnull >= 0) dup2(devnull, STDERR_FILENO);
+        }
+        if (capOut) dup2(outPipe[1], STDOUT_FILENO);   // capture and discard are exclusive
+        if (capErr) dup2(errPipe[1], STDERR_FILENO);
+        close(inPipe[0]); close(inPipe[1]);
+        if (capOut) { close(outPipe[0]); close(outPipe[1]); }
+        if (capErr) { close(errPipe[0]); close(errPipe[1]); }
+        if (devnull >= 0) close(devnull);
         if (!cwd.empty()) { if (::chdir(cwd.c_str()) != 0) _exit(126); }
         if (envKV) environ = cenv.data();
         execvp(cargv[0], cargv.data());
         _exit(127);
     }
-    close(inPipe[0]); close(outPipe[1]);
-    fcntl(inPipe[1], F_SETFD, FD_CLOEXEC); fcntl(outPipe[0], F_SETFD, FD_CLOEXEC);
-    int wfd = inPipe[1], rfd = outPipe[0];
+    close(inPipe[0]);
+    if (capOut) close(outPipe[1]);
+    if (capErr) close(errPipe[1]);
+    fcntl(inPipe[1], F_SETFD, FD_CLOEXEC);
+    int wfd = inPipe[1], rfd = capOut ? outPipe[0] : -1, efd = capErr ? errPipe[0] : -1;
     fcntl(wfd, F_SETFL, O_NONBLOCK);
-    fcntl(rfd, F_SETFL, O_NONBLOCK);
+    if (rfd >= 0) { fcntl(rfd, F_SETFD, FD_CLOEXEC); fcntl(rfd, F_SETFL, O_NONBLOCK); }
+    if (efd >= 0) { fcntl(efd, F_SETFD, FD_CLOEXEC); fcntl(efd, F_SETFL, O_NONBLOCK); }
     // (SIGPIPE is ignored process-wide at startup — Runtime.cpp)
     bool parked = gil ? gil->gilPark() : false; // drop the GIL for the feed/read wait below
     size_t written = 0;
     char buf[8192];
-    bool rOpen = true, wOpen = true;
-    while (rOpen || wOpen) {
-        struct pollfd pfds[2]; int nf = 0;
-        int ri = -1, wi = -1;
+    bool rOpen = rfd >= 0, eOpen = efd >= 0, wOpen = true;
+    while (rOpen || eOpen || wOpen) {
+        struct pollfd pfds[3]; int nf = 0;
+        int ri = -1, ei = -1, wi = -1;
         if (rOpen) { pfds[nf] = {rfd, POLLIN, 0}; ri = nf; nf++; }
+        if (eOpen) { pfds[nf] = {efd, POLLIN, 0}; ei = nf; nf++; }
         if (wOpen) { pfds[nf] = {wfd, POLLOUT, 0}; wi = nf; nf++; }
         poll(pfds, nf, 50);
         if (rOpen && ri >= 0 && (pfds[ri].revents & (POLLIN | POLLHUP))) {
             ssize_t n;
             while ((n = read(rfd, buf, sizeof buf)) > 0) out.append(buf, (size_t)n);
             if (n == 0) { rOpen = false; close(rfd); }
+        }
+        if (eOpen && ei >= 0 && (pfds[ei].revents & (POLLIN | POLLHUP))) {
+            ssize_t n;
+            while ((n = read(efd, buf, sizeof buf)) > 0) errOut->append(buf, (size_t)n);
+            if (n == 0) { eOpen = false; close(efd); }
         }
         if (wOpen && wi >= 0 && (pfds[wi].revents & POLLOUT)) {
             if (written < input.size()) {
@@ -9683,6 +9753,12 @@ void Interpreter::registerBuiltins() {
             (*p.hash())["deferred"] = Value::boolean(true);
             if (haveEnv) { Value ev = Value::array(); for (auto& kv : envKV) ev.arr()->push_back(Value::str(kv)); (*p.hash())["env-kv"] = ev; }
             if (!cwd.empty()) (*p.hash())["cwd"] = Value::str(cwd);
+            // The spawn happens later, in ProcIn's `print`/`close`, so what the
+            // adverbs asked for has to travel with the Proc. Without them that
+            // path captured stdout and sent stderr to /dev/null whatever was
+            // written, so `run(cmd, :in, :out, :err)` read back an empty `.err`.
+            (*p.hash())["out-mode"] = Value::integer(outMode);
+            (*p.hash())["err-mode"] = Value::integer(errMode);
             (*p.hash())["out-str"] = Value::str("");
             (*p.hash())["err-str"] = Value::str("");
             (*p.hash())["exitcode"] = Value::integer(0);

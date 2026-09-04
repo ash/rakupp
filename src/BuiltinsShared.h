@@ -158,10 +158,14 @@ const char* grammarShimSource();
 extern std::function<Value(const Value&)> g_deproxy; // reads a Proxy container
 std::string rakuRepr(const Value& v, int depth, std::set<const void*>& seen);
 std::string rakuRepr(const Value& v);
+// `errOut`/`errInherit`/`outMode` as in spawnCapture: capture, inherit ours, or
+// discard, per stream. The defaults are what a bare pipe-and-read wants.
 void spawnWithInput(const std::vector<std::string>& argv, const std::string& input,
                            std::string& out, int& exitCode, Interpreter* gil = nullptr,
                            const std::vector<std::string>* envKV = nullptr,
-                           const std::string& cwd = "");
+                           const std::string& cwd = "",
+                           std::string* errOut = nullptr, bool errInherit = false,
+                           int outMode = 1);
 
 bool isBuiltinRole(const std::string& n);
 

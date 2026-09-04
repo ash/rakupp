@@ -1231,8 +1231,12 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if (m == "pid") return Value::integer(0);
     }
     if (inv.t == VT::Hash && inv.hashKind == "ProcIn") { // $proc.in — feed stdin, which runs a deferred proc
-        if (m == "print" || m == "spurt" || m == "write" || m == "say") {
-            std::string input = args.empty() ? "" : args[0].toStr();
+        // Closing stdin without ever writing to it still runs the child — with no
+        // input. `run(cmd, :in, :out); $p.in.close` was a pair of no-ops, so the
+        // child never started and `.out` came back empty.
+        if (m == "print" || m == "spurt" || m == "write" || m == "say" ||
+            (m == "close" && !inv.hash()->count("ran"))) {
+            std::string input = (m == "close" || args.empty()) ? "" : args[0].toStr();
             if (m == "say") input += "\n";
             std::vector<std::string> argv;
             auto it = inv.hash()->find("argv");
@@ -1247,13 +1251,24 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             std::string cwd;
             auto ci = inv.hash()->find("cwd");
             if (ci != inv.hash()->end()) cwd = ci->second.toStr();
-            std::string out; int code;
-            spawnWithInput(argv, input, out, code, this, haveEnv ? &envKV : nullptr, cwd);
+            // …and which streams the run() adverbs asked for. -1 (no adverb)
+            // means the child writes to ours, which is what Rakudo does; only
+            // `:out`/`:err` capture and only `:!out`/`:!err` discard.
+            auto mode = [&](const char* k) {
+                auto it = inv.hash()->find(k);
+                return it != inv.hash()->end() ? (int)it->second.toInt() : 1;
+            };
+            int outMode = mode("out-mode"), errMode = mode("err-mode");
+            std::string out, err; int code;
+            spawnWithInput(argv, input, out, code, this, haveEnv ? &envKV : nullptr, cwd,
+                           errMode == 1 ? &err : nullptr, errMode == -1, outMode);
             (*inv.hash())["out-str"] = Value::str(out);      // shared hash: $proc.out.slurp sees this
+            (*inv.hash())["err-str"] = Value::str(err);
             (*inv.hash())["exitcode"] = Value::integer(code);
+            (*inv.hash())["ran"] = Value::boolean(true);
             return Value::boolean(true);
         }
-        if (m == "close") return Value::boolean(true);
+        if (m == "close") return Value::boolean(true);   // already ran on the first write
     }
     if (inv.t == VT::Hash && (inv.hashKind == "Promise" || inv.hashKind == "Vow")) {
         auto ps = inv.ext() ? std::static_pointer_cast<PromiseState>(inv.ext()) : nullptr;

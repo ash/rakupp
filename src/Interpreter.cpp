@@ -6380,7 +6380,7 @@ Value Interpreter::evalString(const std::string& src, bool mainlinePH, bool* inc
         for (auto& s : prog->stmts) collectInitsStmt(s.get(), inits, /*topLevel=*/true);
         for (auto* b : inits) runHoistedInit(b);
     }
-    Value last = Value::any();
+    Value last = Value::nil();   // an empty unit is Nil, as an empty block is
     for (auto& s : prog->stmts) {
         // a top-level INIT just ran above; running it again here would double it
         if (s->kind == NK::Block && static_cast<Block*>(s.get())->initHoisted) continue;
@@ -6613,7 +6613,14 @@ Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink) {
     const size_t tempMark = sharesScope ? SIZE_MAX
                           : blockEnv->ex ? blockEnv->ex->tempRestores.size() : 0;
     bool hasNestedSub = false;
-    Value last = Value::any();
+    // The seed is what a block with NO value evaluates to, and in Rakudo that is
+    // Nil, uniformly: an empty sub, `try {}`, a taken-but-empty `if`, an empty
+    // loop body collected by `do for`. (An undefined Any is what a `my $x;`
+    // DECLARATION yields — a different thing that happens to print similarly.)
+    // Assigning it to a scalar still lands on Any, because that is what Nil
+    // means in an assignment, which is why the divergence stayed invisible
+    // outside `.raku`/`.WHAT` and lists.
+    Value last = Value::nil();
     // index of the last statement whose value becomes the block's value; earlier
     // statements are always sink (their value is discarded either way).
     size_t lastIdx = b->stmts.size();
@@ -14754,7 +14761,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
         ExecContext& t; uint64_t ft, rf;
         ~FrameGuard() { t.frameTop = ft - 1; t.curRoutineFrame = rf; }
     } fguard{tcx, savedFrameTop, savedRoutineFrame};
-    Value last = Value::any();
+    Value last = Value::nil();   // a body with no value is Nil — see execBlock's seed
     if (c.body) hasNestedSub = hoistSubs(*c.body); // nested named subs are visible throughout the body
     if (c.body) hoistExprDecls(*c.body, tcx.cur.get(), &c.hoistNeed); // `my` buried in ternary/nqp branches → routine scope
     // an inline CATCH {} anywhere in the body handles exceptions from the whole block
@@ -15631,7 +15638,7 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
         ExecContext& t; uint64_t ft, rf;
         ~FrameGuard() { t.frameTop = ft - 1; t.curRoutineFrame = rf; }
     } fguard{tcx, savedFrameTop, savedRoutineFrame};
-    Value last = Value::any();
+    Value last = Value::nil();   // as in callCallableRaw
     // A method body is a routine scope like a sub's: a `my` buried in a
     // ternary/nqp branch — or under a statement modifier (`my $x = … if …`)
     // — declares HERE regardless of whether the branch runs. The sub path
