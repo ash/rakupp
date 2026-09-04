@@ -5618,6 +5618,16 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
                     int d = 1; var += raw[j++];
                     while (j < n && d > 0) { if (raw[j]=='[') d++; else if (raw[j]==']') d--; var += raw[j++]; }
                     commit();
+                } else if (j < n && raw[j] == '(') {
+                    // postcircumfix call: `"$c(3)"` invokes the Callable, the same
+                    // postfix as `.( )`. Rakudo applies it to every sigil — `"@a(0)"`
+                    // and `"%h(0)"` reach CALL-ME on an Array/Hash and die there — so
+                    // this commits like any other subscript. Content that is not an
+                    // argument list still fails to parse and falls back to literal
+                    // text, which is what keeps `"$name(see note)"` printing.
+                    int d = 1; var += raw[j++];
+                    while (j < n && d > 0) { if (raw[j]=='(') d++; else if (raw[j]==')') d--; var += raw[j++]; }
+                    commit();
                 } else if (j < n && raw[j] == '<') {
                     // angle-bracket hash subscript: %h<key>  @a<...>
                     var += raw[j++];
