@@ -194,6 +194,7 @@ function typeOf(v) {
             if (v instanceof RIOPath) return T['IO::Path'];
             if (v instanceof RSig) return T.Signature;
             if (v instanceof RJsObj) return JsObjectT;
+            if (v instanceof RPromise) return T.Promise;
             if (v instanceof RIOHandle) return T['IO::Handle'];
             if (v instanceof RVersion) return T.Version;
             if (v instanceof RDate) return v.ty;
@@ -248,6 +249,7 @@ function truthy(v) {
             if (v instanceof RSetty) return v.m.size !== 0;
             if (v instanceof RComplex) return v.re !== 0 || v.im !== 0;
             if (v instanceof RJsObj) return !!v.v;
+            if (v instanceof RPromise) return v.status === Kept;
             return true;
         default: return false;
     }

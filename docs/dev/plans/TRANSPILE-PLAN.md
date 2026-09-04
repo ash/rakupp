@@ -636,10 +636,19 @@ Where the code decided differently from the draft:
   inlines. The interpreter side is `rakulib/JS.rakumod`, a stub whose every
   call dies naming the mode. Gate 6 exists: `t/js/interop/*.raku` with
   goldens, run by `t/js/run.raku` under Node with `dom-stub.js` preloaded
-  (three programs: DOM, values both ways, callbacks). Not yet: async
-  colouring and `await`, `sleep` via Atomics in a Worker, source maps,
-  `.d.ts`, the npm recipe.
+  (three programs: DOM, values both ways, callbacks).
+- **P4, second slice (same day): `start`, `await`, Promise.** The colouring
+  pass is a prepass fixpoint over named subs and method names; a coloured
+  routine, closure, `do`/`try` block or mainline is emitted `async` and its
+  calls awaited (`R.awaitP` takes a Promise, a list of them, or a JS
+  thenable). `start` runs on the microtask queue via `R.start`; `RPromise`
+  wraps a JS Promise with Raku's status/keep/break/result/then/cause and the
+  type methods `in`/`kept`/`broken`/`allof`/`anyof`. `.result` on a planned
+  Promise dies — the host cannot block. A fourth golden, `async.raku`, pins
+  the deterministic ordering. Not yet: `sleep` via Atomics in a Worker (it
+  blocks the main thread today, timers included), source maps, `.d.ts`, the
+  npm recipe, `react`/`supply`/`Channel`.
 
-Next: the rest of P4 (Promise ↔ `await`, the colouring pass), then P3 (the
-regex tree + matcher), as decided above; the disagreement tail is worked
-down alongside, from the gate's list.
+Next: P3 (the regex tree + matcher) — the largest refusal bucket in the
+corpus and the last of the five example programs; the disagreement tail is
+worked down alongside, from the gate's list.

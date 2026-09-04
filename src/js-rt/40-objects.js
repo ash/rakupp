@@ -105,6 +105,7 @@ function construct(ty, ...args) {
         if (ty === T.FatRat || ty === T.Rat) { const [pos] = splitArgs(args); return mkRat(big(pos[0]), big(pos.length > 1 ? pos[1] : 1)); }
         if (ty === T.Int || ty === T.Num || ty === T.Str || ty === T.Bool) { const [pos] = splitArgs(args); return pos.length ? coerce(ty, pos[0]) : (ty === T.Str ? '' : ty === T.Bool ? false : 0); }
         if (ty === T.Nil) return Nil;
+        if (ty === T.Promise) return mkPromise();
         if (ty === T.Any || ty === T.Mu) return new RObj(defClass(null, { parents: [T.Any] }));
         if (ty === T.Capture) { const [pos, named] = splitArgs(args); return new RCapture(pos, new Map(named)); }
         if (ty === T.Date || ty === T.DateTime) return dateNew(ty, args);

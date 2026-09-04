@@ -172,8 +172,35 @@ every call dies naming `--target=js`, so such a program fails at its first
 interop call, not at compile time. The interpreter therefore cannot be the
 oracle for these programs: they have goldens instead, `t/js/interop/*.raku`
 with their `.out`, run by the gate under Node with the small DOM stand-in
-`t/js/interop/dom-stub.js` preloaded. Promises are `JS::Object`s for now;
-`await` and async colouring are the next slice of P4.
+`t/js/interop/dom-stub.js` preloaded.
+
+### `start`, `await`, Promise
+
+Raku's `await` blocks; JavaScript's cannot. The transpiler **colours**
+routines: a sub, method or block that contains `await` (or `.result`, or a
+call to a coloured sub, or a call to a method name some class colours)
+becomes an `async` function, every call to it is awaited, and the program's
+mainline is `async` when it awaits. `start { … }` runs its block once the
+current synchronous code yields — concurrency, not parallelism — and hands
+back a Promise; `await` takes a Promise, a list of them, or a JavaScript
+thenable (a `JS::Object` around a native Promise, `JS.fetch(…)` say).
+`Promise.new`/`.keep`/`.break`/`.result`/`.status`/`.then`/`.cause`,
+`Promise.in`, `.kept`, `.broken`, `.allof`, `.anyof` are there. `.result` on
+a still-planned Promise dies: the host cannot block. An `await` inside a
+block handed to the runtime (`.map({ await … })`) turns that block async and
+its results into Promises, which is not what the program meant; keep
+`await` in the routine that reads the value.
+
+```raku
+my $p = start { compute() };
+say await $p;                      # this routine is now async
+say await Promise.in(0.5);         # a timer
+say await JS.fetch($url).then(-> $r { $r.json });   # a native Promise, awaited
+```
+
+The interpreter runs `start` on real threads, so a program whose output
+depends on their interleaving is not judged by `--verify`; the golden
+`t/js/interop/async.raku` shows the deterministic ordering JavaScript gives.
 
 ## In a browser
 

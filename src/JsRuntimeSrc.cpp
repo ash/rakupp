@@ -358,6 +358,7 @@ function typeOf(v) {
             if (v instanceof RIOPath) return T['IO::Path'];
             if (v instanceof RSig) return T.Signature;
             if (v instanceof RJsObj) return JsObjectT;
+            if (v instanceof RPromise) return T.Promise;
             if (v instanceof RIOHandle) return T['IO::Handle'];
             if (v instanceof RVersion) return T.Version;
             if (v instanceof RDate) return v.ty;
@@ -412,6 +413,7 @@ function truthy(v) {
             if (v instanceof RSetty) return v.m.size !== 0;
             if (v instanceof RComplex) return v.re !== 0 || v.im !== 0;
             if (v instanceof RJsObj) return !!v.v;
+            if (v instanceof RPromise) return v.status === Kept;
             return true;
         default: return false;
     }
@@ -443,10 +445,10 @@ function toNumeric(v, op) {
                 throw new RakuError(`Cannot convert ${v.ty.name} to a number`);
             }
             if (v instanceof RDate) return v.numeric();
-            return 0;
-        case 'function': throw new RakuError('Cannot convert a Code object to a number');
 )RKJS",
-R"RKJS(        default: return 0;
+R"RKJS(            return 0;
+        case 'function': throw new RakuError('Cannot convert a Code object to a number');
+        default: return 0;
     }
 }
 // Rakudo's Str.Numeric: "42" → Int, "3.14" → Rat, "1e3" → Num, "Inf"/"NaN" → Num.
@@ -739,14 +741,14 @@ function numToStr(n) {
     if (Number.isInteger(n) && Math.abs(n) < 1e15) return String(n);
     for (let prec = 15; prec <= 17; prec++) {
         const s = fmtG(n, prec);
-        if (Number(s) === n) return s;
+)RKJS",
+R"RKJS(        if (Number(s) === n) return s;
     }
     return fmtG(n, 17);
 }
 // C's %.<prec>g
 function fmtG(n, prec) {
-)RKJS",
-R"RKJS(    if (n === 0) return '0';
+    if (n === 0) return '0';
     let e = Math.floor(Math.log10(Math.abs(n)));
     // toExponential gives the exact rounded mantissa; recompute the exponent from it
     let ex = n.toExponential(prec - 1);            // d.ddddde±x
@@ -1041,10 +1043,10 @@ function strPred(s) {
     if (s === '') return s;
     let end = s.length; while (end > 0 && !/[0-9A-Za-z]/.test(s[end - 1])) end--;
     if (end === 0) return s;
-    let start = end; while (start > 0 && /[0-9A-Za-z]/.test(s[start - 1])) start--;
-    const chars = s.slice(start, end).split('');
 )RKJS",
-R"RKJS(    let i = chars.length - 1, borrow = true;
+R"RKJS(    let start = end; while (start > 0 && /[0-9A-Za-z]/.test(s[start - 1])) start--;
+    const chars = s.slice(start, end).split('');
+    let i = chars.length - 1, borrow = true;
     while (i >= 0 && borrow) {
         const c = chars[i];
         if (c === 'a') { chars[i] = 'z'; } else if (c === 'A') { chars[i] = 'Z'; } else if (c === '0') { chars[i] = '9'; }
@@ -1332,9 +1334,9 @@ function sprintf(fmt, ...args) {
         while ('-+ 0#'.includes(fmt[i])) flags += fmt[i++];
         let width = '';
         if (fmt[i] === '*') { width = String(toInt(next())); i++; } else while (fmt[i] >= '0' && fmt[i] <= '9') width += fmt[i++];
-        let prec = null;
 )RKJS",
-R"RKJS(        if (fmt[i] === '.') { i++; prec = ''; if (fmt[i] === '*') { prec = String(toInt(next())); i++; } else while (fmt[i] >= '0' && fmt[i] <= '9') prec += fmt[i++]; if (prec === '') prec = '0'; }
+R"RKJS(        let prec = null;
+        if (fmt[i] === '.') { i++; prec = ''; if (fmt[i] === '*') { prec = String(toInt(next())); i++; } else while (fmt[i] >= '0' && fmt[i] <= '9') prec += fmt[i++]; if (prec === '') prec = '0'; }
         while ('hlqLV'.includes(fmt[i])) i++;
         const conv = fmt[i];
         let s;
@@ -2265,6 +2267,7 @@ function construct(ty, ...args) {
         if (ty === T.FatRat || ty === T.Rat) { const [pos] = splitArgs(args); return mkRat(big(pos[0]), big(pos.length > 1 ? pos[1] : 1)); }
         if (ty === T.Int || ty === T.Num || ty === T.Str || ty === T.Bool) { const [pos] = splitArgs(args); return pos.length ? coerce(ty, pos[0]) : (ty === T.Str ? '' : ty === T.Bool ? false : 0); }
         if (ty === T.Nil) return Nil;
+        if (ty === T.Promise) return mkPromise();
         if (ty === T.Any || ty === T.Mu) return new RObj(defClass(null, { parents: [T.Any] }));
         if (ty === T.Capture) { const [pos, named] = splitArgs(args); return new RCapture(pos, new Map(named)); }
         if (ty === T.Date || ty === T.DateTime) return dateNew(ty, args);
@@ -3219,19 +3222,19 @@ function main(body, opts) {
     ARGS = mkArray(host.argv.slice());
     ENV = new RHash(new Map(host.env));
     let code = 0;
-    try {
-        try {
-            const r = body();
-            if (typeof r === 'number' && Number.isInteger(r) && opts && opts.mainExit) code = r;
-        } finally {
-            for (let i = endBlocks.length - 1; i >= 0; i--) endBlocks[i]();
-        }
-    } catch (e) {
-        code = reportUncaught(e);
-    }
-    host.flush();
-    host.exit(code);
-    return code;
+    const finish = (r) => {
+        if (typeof r === 'number' && Number.isInteger(r) && opts && opts.mainExit) code = r;
+        try { for (let i = endBlocks.length - 1; i >= 0; i--) endBlocks[i](); } catch (e) { code = reportUncaught(e); }
+        host.flush();
+        host.exit(code);
+        return code;
+    };
+    let r;
+    try { r = body(); }
+    catch (e) { code = reportUncaught(e); return finish(undefined); }
+    // a coloured program (one that awaits) hands back a Promise: finish when it settles
+    if (r && typeof r.then === 'function') return r.then(v => finish(v), e => { code = reportUncaught(e); return finish(undefined); });
+    return finish(r);
 }
 function reportUncaught(e) {
     if (e instanceof ExitCtl) return e.code;
@@ -3343,11 +3346,11 @@ function isAny(v) { return v !== Mu && !(v instanceof RJunction); }
 // a minimal Signature object: what .signature.count / .arity / .params answer
 class RSig { constructor(f) { this.f = f; } }
 
-T.Signature.methods.count = s => s.f.count !== undefined ? s.f.count : (s.f.arity !== undefined ? s.f.arity : s.f.length);
+)RKJS",
+R"RKJS(T.Signature.methods.count = s => s.f.count !== undefined ? s.f.count : (s.f.arity !== undefined ? s.f.arity : s.f.length);
 T.Signature.methods.arity = s => s.f.arity !== undefined ? s.f.arity : s.f.length;
 T.Signature.methods.params = s => mkList([]);
-)RKJS",
-R"RKJS(T.Signature.methods.gist = s => '(' + Array.from({ length: T.Signature.methods.arity(s) }, (_, i) => '$' + String.fromCharCode(97 + i)).join(', ') + ')';
+T.Signature.methods.gist = s => '(' + Array.from({ length: T.Signature.methods.arity(s) }, (_, i) => '$' + String.fromCharCode(97 + i)).join(', ') + ')';
 T.Signature.methods.Str = T.Signature.methods.gist;
 T.Signature.methods.returns = s => T.Mu;
 Object.assign(R, { vivArray, withOf, isAny, RSig, blk, wc, callCode, rwBox, throwCtl, xxThunk, namedFromHash, kvAdverb, pAdverb, listAppendAssign, mcSet, meta, coerce, dynGet, dynSet, approxEq, rangeIter, subset, slurpyFlat, factorial, isaSubset });
@@ -3456,6 +3459,69 @@ M(JsObjectT, {
     'invoke': (s, ...a) => fromJs(s.v(...a.map(toJs))), 'call': (s, ...a) => fromJs(s.v(...a.map(toJs))),
 });
 Object.assign(R, { RJsObj, JsObjectT, toJs, fromJs, jsCall, jsGet, jsSet, jsNew, jsEval, JS });
+
+// ---- 86-async.js ----
+// `start`, `await` and Promise (TRANSPILE-PLAN P4): concurrency, not
+// parallelism. A Raku Promise is an RPromise over a JS Promise; `start` runs
+// its block on the microtask queue; the emitter colours every routine that
+// awaits as `async` and awaits its calls, so `await` here is JavaScript's.
+
+const PromiseStatusT = enumType('PromiseStatus', [['Planned', 0], ['Kept', 1], ['Broken', 2]]);
+const [Planned, Kept, Broken] = PromiseStatusT.enumValues;
+class RPromise {
+    constructor() {
+        this.status = Planned; this.value = undefined; this.cause = undefined;
+        this.p = new Promise((res, rej) => { this._res = res; this._rej = rej; });
+        this.p.catch(() => { });   // a broken promise nobody awaits is not an unhandled rejection
+    }
+    keep(v) { if (this.status !== Planned) throw new RakuError('Promise is already ' + this.status.key.toLowerCase(), 'X::Promise::Vowed'); this.status = Kept; this.value = v; this._res(v); return this; }
+    break_(e) { if (this.status !== Planned) throw new RakuError('Promise is already ' + this.status.key.toLowerCase(), 'X::Promise::Vowed'); this.status = Broken; this.cause = e instanceof RakuError ? e : exc(e); this._rej(this.cause); return this; }
+    // .result: the value once kept; the cause thrown once broken; otherwise it would block
+    result() {
+        if (this.status === Kept) return this.value;
+        if (this.status === Broken) throw this.cause;
+        throw new RakuError('Cannot get the result of a Promise that is still planned without awaiting it (the JavaScript host cannot block)', 'X::Promise::Planned');
+    }
+}
+function mkPromise() { return new RPromise(); }
+function promiseKept(v) { const p = new RPromise(); p.keep(v); return p; }
+function promiseBroken(e) { const p = new RPromise(); p.break_(e === undefined ? new RakuError('Died') : (e instanceof RakuError ? e : new RakuError(str(e)))); return p; }
+// start { … }: the block runs once the current synchronous code yields
+function start(fn) {
+    const p = new RPromise();
+    Promise.resolve().then(() => fn()).then(v => p.keep(v), e => { if (isControl(e)) e = new RakuError('control exception escaped a start block'); p.break_(e); });
+    return p;
+}
+// await X: a Promise's value (or its cause, thrown); a list of them → their values; a JS thenable → its value
+async function awaitP(x) {
+    if (x instanceof RPromise) return await x.p;
+    if (x instanceof RJsObj && x.v && typeof x.v.then === 'function') return fromJs(await x.v);
+    if (x && typeof x.then === 'function') return fromJs(await x);
+    if (x instanceof RList || x instanceof RSeq) return mkList(await Promise.all(arr(x).map(awaitP)));
+    return x;
+}
+function promiseIn(secs) { const p = new RPromise(); setTimeout(() => p.keep(true), Math.max(0, toFloat(secs) * 1000)); return p; }
+function promiseAllof(ps) { const p = new RPromise(); const list = arr(ps).map(x => x instanceof RPromise ? x.p : Promise.resolve(toJs(x))); Promise.allSettled(list).then(() => p.keep(true)); return p; }
+function promiseAnyof(ps) { const p = new RPromise(); const list = arr(ps).map(x => x instanceof RPromise ? x.p : Promise.resolve(toJs(x))); let done = false; for (const q of list) q.then(() => { if (!done) { done = true; p.keep(true); } }, () => { if (!done) { done = true; p.keep(true); } }); return p; }
+// .then(&cb): a new Promise kept with cb's value, cb receiving the settled original
+function promiseThen(p, cb) {
+    const out = new RPromise();
+    p.p.then(() => cb(p), () => cb(p)).then(v => out.keep(v), e => out.break_(e));
+    return out;
+}
+M(T.Promise, {
+    keep: (s, v) => s.keep(v === undefined ? true : v), 'break': (s, e) => s.break_(e), result: (s) => s.result(), status: (s) => s.status, cause: (s) => s.status === Broken ? s.cause : Nil,
+    then: (s, cb) => promiseThen(s, cb), Bool: (s) => s.status === Kept, so: (s) => s.status === Kept, gist: (s) => 'Promise.new', Str: (s) => 'Promise', raku: (s) => 'Promise.new',
+    'is-kept': (s) => s.status === Kept, 'is-broken': (s) => s.status === Broken, 'is-planned': (s) => s.status === Planned,
+    'await': (s) => s.result(), 'sink': (s) => Nil, 'WHAT': (s) => T.Promise, defined: (s) => true,
+});
+Object.assign(TYPE_METHODS, {
+    'in': (t, secs) => t === T.Promise ? promiseIn(secs) : Nil,
+    'kept': (t, v) => promiseKept(v === undefined ? true : v), 'broken': (t, e) => promiseBroken(e),
+    'allof': (t, ...ps) => promiseAllof(ps.length === 1 ? ps[0] : mkList(ps)), 'anyof': (t, ...ps) => promiseAnyof(ps.length === 1 ? ps[0] : mkList(ps)),
+    'start': (t, fn) => start(fn),
+});
+Object.assign(R, { RPromise, mkPromise, promiseKept, promiseBroken, start, awaitP, promiseIn, PromiseStatusT, Planned, Kept, Broken });
 )RKJS",
 };
 std::string jsRuntimeSource() {

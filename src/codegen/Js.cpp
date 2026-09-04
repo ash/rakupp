@@ -115,9 +115,9 @@ const std::set<string> kCoreTypes = {
     "Mu", "Any", "Cool", "Numeric", "Real", "Int", "Num", "Rational", "Rat", "FatRat", "Str", "Bool", "Nil", "Positional", "Iterable", "List", "Array", "Seq", "Slip",
     "Range", "Associative", "Map", "Hash", "Pair", "Callable", "Code", "Block", "Routine", "Sub", "Method", "Whatever", "WhateverCode", "Exception", "X::AdHoc",
     "Failure", "Junction", "Order", "Setty", "Set", "SetHash", "Baggy", "Bag", "BagHash", "Mixy", "Mix", "MixHash", "Complex", "IO", "IO::Path", "IO::Handle",
-    "Stringy", "Version", "Date", "DateTime", "Instant", "Match", "Regex", "Capture", "Signature", "IterationEnd", "Int:D", "Str:D",
+    "Stringy", "Version", "Date", "DateTime", "Instant", "Match", "Regex", "Capture", "Signature", "IterationEnd", "Int:D", "Str:D", "Promise", "PromiseStatus",
 };
-const std::set<string> kLaterTypes = { "Promise", "Supplier", "Supply", "Channel", "Lock", "Thread", "Proc", "Proc::Async", "IO::Socket::INET", "IO::Socket::Async", "Semaphore", "Lock::Async", "Scheduler", "ThreadPoolScheduler", "atomicint" };
+const std::set<string> kLaterTypes = { "Supplier", "Supply", "Channel", "Lock", "Thread", "Proc", "Proc::Async", "IO::Socket::INET", "IO::Socket::Async", "Semaphore", "Lock::Async", "Scheduler", "ThreadPoolScheduler", "atomicint" };
 const std::map<string, string> kBinOps = {
     {"+", "add"}, {"-", "sub"}, {"*", "mul"}, {"/", "div"}, {"%", "mod"}, {"**", "pow"}, {"div", "idiv"}, {"mod", "imod"}, {"gcd", "gcd"}, {"lcm", "lcm"},
     {"~", "concat"}, {"x", "xrepeat"}, {"==", "numeq"}, {"!=", "numne"}, {"<", "lt"}, {"<=", "le"}, {">", "gt"}, {">=", "ge"},
@@ -275,6 +275,18 @@ struct JsGen {
     std::vector<std::vector<string>> stateHoists;
     bool hasMain = false;
     std::vector<string> endBlocks;
+    // Async colouring (TRANSPILE-PLAN P4): a routine that awaits — `await`, `.result`,
+    // or a call to a coloured sub / a coloured method name — is `async`, and every
+    // call to it is awaited. Decided once in prepass, by fixpoint.
+    std::set<string> asyncSubs, asyncMethods;
+    bool awaitsIn(Node* n) {              // does this function body await (not counting nested routines)?
+        return contains(n, [&](Node* x) {
+            if (x->kind == NK::Call) { auto* c = static_cast<Call*>(x); return c->name == "await" || (!c->name.empty() && asyncSubs.count(c->name)); }
+            if (x->kind == NK::MethodCall) { auto* m = static_cast<MethodCall*>(x); return m->method == "result" || asyncMethods.count(m->method); }
+            return false;
+        }, true);
+    }
+    bool stmtsAwait(const std::vector<StmtPtr>& ss) { for (auto& s : ss) if (awaitsIn(s.get())) return true; return false; }
     string sinkVar;                      // value-collecting loop: tail values are pushed here, not returned
     bool jsInterop = false;              // `use JS` seen: the JS term and JS::Object are live
     string ret(const string& v) { return sinkVar.empty() ? "return " + v + ";" : sinkVar + ".push(" + v + ");"; }
@@ -851,9 +863,12 @@ struct JsGen {
         } else {
             body = fnBody(false, [&]() { line(2, "return " + exArg(x) + ";"); }, 2);
         }
-        if (!isTry) return "(() => {\n" + body + "    })()";
+        bool isAsync = x->kind == NK::BlockExpr ? stmtsAwait(static_cast<BlockExpr*>(x)->body) : awaitsIn(x);
+        string pre = isAsync ? "(await (async () => {" : "(() => {";
+        string post = isAsync ? "})())" : "})()";
+        if (!isTry) return pre + "\n" + body + "    " + post;
         fn().usesBang = true;
-        return "(() => { v__bang = R.Nil; try {\n" + body + "    } catch (_e) { if (R.isControl(_e)) throw _e; v__bang = R.exc(_e); return R.Nil; } })()";
+        return pre + " v__bang = R.Nil; try {\n" + body + "    } catch (_e) { if (R.isControl(_e)) throw _e; v__bang = R.exc(_e); return R.Nil; } " + post;
     }
     string gatherExpr(Expr* x, int lineNo) {
         if (x->kind != NK::BlockExpr) refuse("gather without a block", lineNo);
@@ -968,6 +983,13 @@ struct JsGen {
             return "R.callCode(" + callee + (c->args.empty() ? "" : ", " + args(c->args)) + ")";
         }
         const string& name = c->name;
+        if (name == "await") { if (c->args.size() != 1) refuse("await with " + std::to_string(c->args.size()) + " arguments", c->line); return "(await R.awaitP(" + exArg(c->args[0].get()) + "))"; }
+        if (name == "start") {
+            if (c->args.size() != 1) refuse("start with " + std::to_string(c->args.size()) + " arguments", c->line);
+            Expr* a = c->args[0].get();
+            if (a->kind == NK::BlockExpr) return "R.start(" + blockClosure(static_cast<BlockExpr*>(a)) + ")";
+            return "R.start(() => " + exArg(a) + ")";
+        }
         if (name == "take" || name == "take-rw") {
             if (c->args.size() != 1) refuse("take with " + std::to_string(c->args.size()) + " arguments", c->line);
             if (genFnDepth == fnDepth()) return "(yield " + exArg(c->args[0].get()) + ")";
@@ -991,8 +1013,9 @@ struct JsGen {
         auto si = subs.find(name);
         if (si != subs.end() && subVisible(name)) {
             SubInfo& info = si->second;
-            if (!info.isMulti && !info.rwIdx.empty()) return rwCall(name, info, c);
-            return mangleSub(name) + "(" + args(c->args) + ")";
+            string aw = asyncSubs.count(name) ? "await " : "";
+            if (!info.isMulti && !info.rwIdx.empty()) return "(" + aw + rwCall(name, info, c) + ")";
+            return "(" + aw + mangleSub(name) + "(" + args(c->args) + "))";
         }
         if (codeVars.count(name)) return "R.callCode(" + mangleVar("&" + name) + (c->args.empty() ? "" : ", " + args(c->args)) + ")";
         if (classNames.count(name) || subsetNames.count(name) || kCoreTypes.count(name)) {   // Int(…) coercion call
@@ -1060,7 +1083,10 @@ struct JsGen {
         string inv;
         if (m->inv->kind == NK::Whatever) { if (wcArity.empty()) refuse("a method call on a bare *", m->line); inv = "_w" + std::to_string(++wcArity.back()); }
         else inv = ex(m->inv.get());
-        return fnName + "(" + inv + ", " + jsStr(name) + (m->args.empty() ? "" : ", " + args(m->args)) + ")";
+        if (name == "result" && m->args.empty()) return "(await R.awaitP(" + inv + "))";
+        string call = fnName + "(" + inv + ", " + jsStr(name) + (m->args.empty() ? "" : ", " + args(m->args)) + ")";
+        if (asyncMethods.count(name)) return "(await " + call + ")";
+        return call;
     }
 
     // ------------------------------------------------------------- closures --
@@ -1108,7 +1134,8 @@ struct JsGen {
             topics.pop_back();
         }, 2);
         genFnDepth = savedGen;
-        string f = (isRoutine ? "function (" : "(") + paramList + (isRoutine ? ") {\n" : ") => {\n") + body + "    }";
+        bool isAsync = stmtsAwait(be->body);
+        string f = string(isAsync ? "async " : "") + (isRoutine ? "function (" : "(") + paramList + (isRoutine ? ") {\n" : ") => {\n") + body + "    }";
         int arity = implicitTopic ? 1 : (int)(placeholders.size() ? placeholders.size() : params.size());
         if (implicitTopic || (!params.empty() && !simpleSig(params))) {
             int count = 0; for (auto& p : params) if (!p.named && !p.slurpy) count++;
@@ -1748,6 +1775,7 @@ struct JsGen {
         if (simple) { for (auto& p : d->params) { if (!params.empty()) params += ", "; params += mangleVar(p.name); } }
         else params += (params.empty() ? "" : ", ") + string("..._args");
         string savedSelf = selfName; if (isMethod) selfName = "self";
+        bool isAsync = stmtsAwait(d->body);
         string body = fnBody(true, [&]() {
             scopes.emplace_back(); declareSigillessParams(d->params);
             struct ScopePop { std::vector<Scope>& v; ~ScopePop() { v.pop_back(); } } scopePop{ scopes };
@@ -1770,7 +1798,7 @@ struct JsGen {
             topics.pop_back();
         }, 2);
         selfName = savedSelf;
-        return "function " + jsName + "(" + params + ") {\n" + body + "    }";
+        return string(isAsync ? "async " : "") + "function " + jsName + "(" + params + ") {\n" + body + "    }";
     }
     static bool hasWhereOrType(const std::vector<Param>& ps) { for (auto& p : ps) if (!p.type.empty() || p.whereExpr || p.defConstraint || p.coerce) return true; return false; }
 
@@ -1834,7 +1862,8 @@ struct JsGen {
             emitFnText(routineFn(jsName, d, isMethod, name), ind);
             if (name == "MAIN" && !isMethod) { hasMain = true; mainCands.push_back({ jsName, &d->params }); }
         }
-        string disp = "function " + base + "(" + (isMethod ? "self, " : "") + "..._args) {\n";
+        bool anyAsync = false; for (auto* d : info.cands) if (stmtsAwait(d->body)) anyAsync = true;
+        string disp = string(anyAsync ? "async " : "") + "function " + base + "(" + (isMethod ? "self, " : "") + "..._args) {\n";
         disp += "        const [_pos, _named] = R.splitArgs(_args);\n";
         for (auto& oc : order) {
             SubDecl* d = oc.second;
@@ -1862,7 +1891,7 @@ struct JsGen {
             string fwd = simple ? "(" + (isMethod ? string("self") : "") : "(" + (isMethod ? string("self, ") : "") + "..._args";
             if (simple) { for (int i = 0; i < pi; i++) fwd += (isMethod || i ? ", " : "") + string("_pos[") + std::to_string(i) + "]"; }
             fwd += ")";
-            disp += "        if (" + guard + ") return " + base + "__" + std::to_string(k) + fwd + ";\n";
+            disp += "        if (" + guard + ") return " + (anyAsync ? "await " : "") + base + "__" + std::to_string(k) + fwd + ";\n";
         }
         disp += "        R.noMatch(" + jsStr(name) + ", _args);\n    }";
         emitFnText(disp, ind);
@@ -2001,9 +2030,20 @@ struct JsGen {
         };
         for (auto& s : prog.stmts) walk(s.get(), false);
         for (auto& kv : subs) if (kv.second.isMulti) { bool anyMulti = false; for (auto* d : kv.second.cands) if (d->isMulti) anyMulti = true; if (!anyMulti) kv.second.isMulti = false; }
+        // colouring, to a fixpoint: a routine awaits directly, or calls one that does
+        std::vector<SubDecl*> methods;
+        std::function<void(Node*)> collect = [&](Node* n) { if (!n) return; if (n->kind == NK::ClassDecl) for (auto& m : static_cast<ClassDecl*>(n)->methods) methods.push_back(m.get()); forEachChild(n, collect); };
+        for (auto& s : prog.stmts) collect(s.get());
+        for (bool changed = true; changed;) {
+            changed = false;
+            for (auto& kv : subs) if (!asyncSubs.count(kv.first)) for (auto* d : kv.second.cands) if (stmtsAwait(d->body)) { asyncSubs.insert(kv.first); changed = true; break; }
+            for (auto* m : methods) if (!asyncMethods.count(m->name) && stmtsAwait(m->body)) { asyncMethods.insert(m->name); changed = true; }
+        }
     }
+    bool mainAsync = false;
     string program() {
         prepass();
+        mainAsync = stmtsAwait(prog.stmts);
         fns.emplace_back();
         fn().isRoutine = false;
         string body = capture([&]() {
@@ -2074,14 +2114,14 @@ std::string transpileToJs(Program& prog, const JsOptions& opt) {
     o << jsManifestLine(opt, "js");
     if (opt.standalone) {
         o << "function __rakupp_program(R) {\n'use strict';\n";
-        o << "R.main(() => {\n" << body << "}, { mainExit: true });\n";
+        o << "R.main(" << (g.mainAsync ? "async " : "") << "() => {\n" << body << "}, { mainExit: true });\n";
         o << "}\n";
         o << "// ---- rakupp-rt.js (embedded by --standalone) ----\n";
         o << jsRuntimeSource();
         o << "\n__rakupp_program(R);\n";
     } else {
         o << "import R from " << jsStr(opt.rtPath) << ";\n";
-        o << "R.main(() => {\n" << body << "}, { mainExit: true });\n";
+        o << "R.main(" << (g.mainAsync ? "async " : "") << "() => {\n" << body << "}, { mainExit: true });\n";
     }
     return o.str();
 }

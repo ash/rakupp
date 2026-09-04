@@ -219,19 +219,19 @@ function main(body, opts) {
     ARGS = mkArray(host.argv.slice());
     ENV = new RHash(new Map(host.env));
     let code = 0;
-    try {
-        try {
-            const r = body();
-            if (typeof r === 'number' && Number.isInteger(r) && opts && opts.mainExit) code = r;
-        } finally {
-            for (let i = endBlocks.length - 1; i >= 0; i--) endBlocks[i]();
-        }
-    } catch (e) {
-        code = reportUncaught(e);
-    }
-    host.flush();
-    host.exit(code);
-    return code;
+    const finish = (r) => {
+        if (typeof r === 'number' && Number.isInteger(r) && opts && opts.mainExit) code = r;
+        try { for (let i = endBlocks.length - 1; i >= 0; i--) endBlocks[i](); } catch (e) { code = reportUncaught(e); }
+        host.flush();
+        host.exit(code);
+        return code;
+    };
+    let r;
+    try { r = body(); }
+    catch (e) { code = reportUncaught(e); return finish(undefined); }
+    // a coloured program (one that awaits) hands back a Promise: finish when it settles
+    if (r && typeof r.then === 'function') return r.then(v => finish(v), e => { code = reportUncaught(e); return finish(undefined); });
+    return finish(r);
 }
 function reportUncaught(e) {
     if (e instanceof ExitCtl) return e.code;
