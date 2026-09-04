@@ -20,6 +20,7 @@
 #include "Ast.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
@@ -584,6 +585,49 @@ void printResult(Interpreter& interp, const Value& v) {
     std::cout << "\x1b[90m" << g << "\x1b[0m\n";
 }
 
+// --------------------------------------------------------- output tracking ----
+// Rakudo's REPL echoes a statement's value UNLESS the statement already wrote
+// to stdout: `say 42` shows 42 and nothing more, `for 1..10 { say $_ }` shows
+// only the ten numbers. The rule is about intent rather than about the value —
+// you asked for output, so the return value was a by-product — and it is what
+// issue #66 was really reporting. It applies to the BYTES, not to the call: a
+// `print ""` wrote nothing, so its True is still echoed, exactly as in Rakudo.
+//
+// Counted at std::cout's streambuf rather than inside Interpreter::ioEmit,
+// because `say` is not the only thing that reaches the terminal — `$*OUT.print`
+// writes to the stream directly (MethodCallPart3), and so do the Test builtins
+// and MAIN's usage text. A count taken here is exactly "did a byte reach the
+// terminal", and cannot drift as output sites are added. Output that never gets
+// there correctly does not count: a rebound `$*OUT` returns from ioEmit before
+// the stream, and `note` goes to std::cerr.
+//
+// (A subprocess started by `run`/`shell` inherits the fd and writes past this
+// buffer, so its output does not suppress the echo. That is the one gap, and
+// Rakudo has it too — its own count lives in the $*OUT handle.)
+class OutCounter : public std::streambuf {
+public:
+    explicit OutCounter(std::streambuf* inner) : inner_(inner) {}
+    unsigned long long bytes() const { return bytes_.load(std::memory_order_relaxed); }
+protected:
+    // Bulk path: every `os << std::string` lands here. Atomic because a `start`
+    // block typed at the prompt can still be printing from another thread.
+    std::streamsize xsputn(const char* p, std::streamsize n) override {
+        std::streamsize w = inner_->sputn(p, n);
+        if (w > 0) bytes_.fetch_add((unsigned long long)w, std::memory_order_relaxed);
+        return w;
+    }
+    int overflow(int c) override {
+        if (c == traits_type::eof()) return traits_type::not_eof(c);
+        int r = inner_->sputc((char)c);
+        if (r != traits_type::eof()) bytes_.fetch_add(1, std::memory_order_relaxed);
+        return r;
+    }
+    int sync() override { return inner_->pubsync(); }
+private:
+    std::streambuf* inner_;
+    std::atomic<unsigned long long> bytes_{0};
+};
+
 struct ReplCtx {
     std::string exePath;
     std::vector<std::string> libPaths;
@@ -592,6 +636,15 @@ struct ReplCtx {
 
 int replMain(ReplCtx& ctx) {
     setConsoleUtf8();
+    // Wrapped for the whole session; put back before returning so a later
+    // std::cout (the exit path, an atexit) does not write through a dead buffer.
+    std::streambuf* rawOut = std::cout.rdbuf();
+    OutCounter outCounter(rawOut);
+    std::cout.rdbuf(&outCounter);
+    struct BufRestore {
+        std::streambuf* raw;
+        ~BufRestore() { std::cout.flush(); std::cout.rdbuf(raw); }
+    } bufRestore{rawOut};
     if (!ctx.quiet) std::cout << "Raku++ " << RAKUPP_VERSION << " — \\h for help, ^D to exit\n";
 
     auto fresh = [&]() {
@@ -652,10 +705,12 @@ int replMain(ReplCtx& ctx) {
         if (acc.find_first_not_of(" \t\r\n") == std::string::npos) { acc.clear(); continue; }
 
         bool incomplete = false;
+        const unsigned long long outBefore = outCounter.bytes();
         try {
             Value v = interp->evalString(acc, /*mainlinePH=*/true, &incomplete);
             if (incomplete) continue;                    // nothing ran; ask for more
-            printResult(*interp, v);
+            // The statement spoke for itself — see OutCounter.
+            if (outCounter.bytes() == outBefore) printResult(*interp, v);
         } catch (ExitEx& e) {
             exitCode = e.code;
             acc.clear();

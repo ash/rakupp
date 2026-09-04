@@ -470,6 +470,23 @@ struct Codegen {
             default: return nullptr;
         }
     }
+    // What a body falls off the end into. A body whose last statement is a LOOP
+    // is Nil, not an undefined Any — the same rule the interpreter applies
+    // (Interpreter.cpp, NK::WhileStmt), so `sub f { while 0 {} }` answers Nil
+    // whether it was interpreted or compiled. Everything else keeps Any: an
+    // empty body and a not-taken `if` are separate divergences from Rakudo, not
+    // this one. An asExpr loop never reaches here — it is a value already.
+    const char* tailFallback(const std::vector<StmtPtr>& body) {
+        if (body.empty()) return "Value::any()";
+        Stmt* s = body.back().get();
+        switch (s->kind) {
+            case NK::ForStmt:   return static_cast<ForStmt*>(s)->asExpr   ? "Value::any()" : "Value::nil()";
+            case NK::WhileStmt: return static_cast<WhileStmt*>(s)->asExpr ? "Value::any()" : "Value::nil()";
+            case NK::LoopStmt:  return static_cast<LoopStmt*>(s)->asExpr  ? "Value::any()" : "Value::nil()";
+            case NK::RepeatStmt: return "Value::nil()";
+            default: return "Value::any()";
+        }
+    }
     // bail if this closure body assigns to a captured (enclosing-local) variable
     // that was NOT promoted to a shared cell — [=] const-captures plain locals,
     // so the emitted C++ would not compile / would be wrong. Cell-promoted names
@@ -717,7 +734,7 @@ struct Codegen {
                 }
                 else stmt(st, 0);
             }
-            line(0, "return Value::any();");
+            line(0, std::string("return ") + tailFallback(d->body) + ";");
         });
         // a SUB body is a ReturnEx boundary (same rule as bodyDef): without the
         // catch, a `return`/`fail` in a lexical sub unwound into the CALLER's
@@ -765,7 +782,7 @@ struct Codegen {
                 }
                 else stmt(s, 0);
             }
-            line(0, "return Value::any();");
+            line(0, std::string("return ") + tailFallback(be->body) + ";");
         });
         if (pushed) topics.pop_back();
         // an anonymous `sub {…}` term is a ReturnEx boundary like any routine;
@@ -1065,7 +1082,7 @@ struct Codegen {
                                     stmt(s, 0);
                                 }
                             }
-                            line(0, "return Value::any();");
+                            line(0, std::string("return ") + tailFallback(be->body) + ";");
                         });
                     } else body = "return " + exArg(u->operand.get()) + ";\n";
                     if (u->op == "do") return "([&]()->Value{\n" + body + "}())";
@@ -2539,7 +2556,7 @@ struct Codegen {
                 }
                 else stmt(s, 1);
             }
-            line(1, "return Value::any();");
+            line(1, std::string("return ") + tailFallback(md->body) + ";");
             line(1, "} catch (ReturnEx& __r) { return __r.v; }");
             self_ = saved;
             line(0, "}");
@@ -2692,7 +2709,7 @@ struct Codegen {
             }
             else stmt(s, 1);
         }
-        line(1, "return Value::any();");
+        line(1, std::string("return ") + tailFallback(body) + ";");
     }
     // Emit a sub/candidate body given its C++ function name.
     void bodyDef(const std::string& fnName, const std::vector<Param>& ps, const std::vector<StmtPtr>& body, bool fast = false) {

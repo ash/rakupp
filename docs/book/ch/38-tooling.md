@@ -325,6 +325,28 @@ void replFinish();                              // run END phasers, once
 std::vector<std::string> replNames() const;     // for tab completion
 ```
 
+What a line evaluated to is echoed back, dimmed so it reads as the REPL talking
+rather than as program output — with one exception, taken from Rakudo: a
+statement that already wrote to stdout is not echoed at all. `say 42` prints
+`42` and stops there; `for 1..10 { say $_ }` prints the ten numbers and nothing
+under them. The rule is about intent rather than about the value — you asked for
+output, so the return value was a by-product. It counts *bytes*, so `print ""`
+wrote nothing and its `True` is still shown, and it counts *stdout*, so a `note`
+suppresses nothing.
+
+The count is taken at `std::cout`'s streambuf rather than inside `ioEmit`,
+because `say` is not the only thing that reaches the terminal — `$*OUT.print`,
+the Test builtins and MAIN's usage text write to the stream directly. Taken at
+the stream it is exactly "did a byte reach the terminal", and it cannot drift as
+output sites are added. The one gap is a subprocess, which inherits the
+descriptor and writes past the buffer; Rakudo has the same gap for the same
+reason, its own count living in the `$*OUT` handle.
+
+The value being echoed is the statement's, which is why a loop *statement* is
+`Nil` and not an undefined `Any` — the same answer `sub f { while 0 {} }` gives.
+Values survive only where the loop was written as an expression (`do for`,
+`(for …)`), which the AST marks with `asExpr`.
+
 The nicest detail is how an incomplete line is recognised. A parse that dies on
 end-of-input is a request for more input, not a syntax error:
 

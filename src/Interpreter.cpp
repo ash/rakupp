@@ -9164,7 +9164,13 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 if (!runLoopBody(ws->body.get(), scope, ws->label, firstIter, false, col)) break;
                 firstIter = false;
             }
-            return ws->asExpr ? Value::list(std::move(collected)) : Value::any();
+            // A loop STATEMENT is Nil, not an undefined Any: `sub f { while 0 {} }`
+            // returns Nil in Rakudo, and so does a bare `for` — the values only
+            // survive where the loop was written as an expression (`do for`,
+            // `(for …)`), which is what asExpr marks. Only the REPL and an EVAL
+            // can see the difference, and there it is the whole of issue #66:
+            // a dim `(Any)` under every loop typed at the prompt.
+            return ws->asExpr ? Value::list(std::move(collected)) : Value::nil();
         }
         case NK::ForStmt: {
             auto* fs = static_cast<ForStmt*>(s);
@@ -9172,7 +9178,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             if (fs->hasStateCache < 0)
                 fs->hasStateCache = (mayHaveStateDecl(fs->list.get()) || mayHaveStateDecl(fs->body.get())) ? 1 : 0;
             LoopStateFrame lsf{tctx_, !fs->modifier && fs->hasStateCache != 0}; // per-execution `state` reset, as in WhileStmt
-            auto forResult = [&]() { return fs->asExpr ? Value::list(std::move(collected)) : Value::any(); };
+            auto forResult = [&]() { return fs->asExpr ? Value::list(std::move(collected)) : Value::nil(); }; // Nil as in WhileStmt
             // for over .values/.kv/.pairs of a SetHash/BagHash/MixHash ALIASES the
             // weights: mutations through the loop variable write back into the
             // container, and a weight of 0 (BagHash also <0) removes the element
@@ -9900,7 +9906,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 }
             } catch (...) { tctx_.cur = saved; throw; }
             tctx_.cur = saved;
-            return ls->asExpr ? Value::list(std::move(collected)) : Value::any();
+            return ls->asExpr ? Value::list(std::move(collected)) : Value::nil(); // Nil as in WhileStmt
         }
         case NK::RepeatStmt: {
             auto* r = static_cast<RepeatStmt*>(s);
@@ -9922,7 +9928,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     break;
                 }
             }
-            return Value::any();
+            return Value::nil(); // as in WhileStmt
         }
         default:
             // expression-like fallthrough
