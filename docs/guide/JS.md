@@ -86,6 +86,7 @@ and a thrown control object only where it crosses a closure.
 | Rat | exact, BigInt numerator and denominator; `0.1 + 0.2 == 0.3` |
 | Str | a string; `.chars`, `.substr`, `.comb`, `.flip` count graphemes with the engine's own UAX #29 tables — `"e\x[301]".chars` is 1 under Node, Bun and a browser |
 | Bool | a boolean |
+| IntStr, NumStr, RatStr | an allomorph — `<42>`, `val("42")`, `MAIN`'s arguments: the number that is also its spelling, both halves in the type's MRO, `.WHICH` as the interpreter spells it |
 | Array / List / Seq | one class over a JS array; `Seq` lazy over a generator, memoized as pulled |
 | Hash | a `Map`, insertion-ordered like the native engine; `.gist` sorts keys as the interpreter does |
 | Nil, Any, type objects | runtime type objects — never `null`/`undefined` |

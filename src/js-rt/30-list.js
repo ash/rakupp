@@ -182,9 +182,9 @@ class RHash {
         if (ps.length > 100) parts.push('...');
         return '{' + parts.join(', ') + '}';
     }
-    raku() {
+    raku() {   // a hash's values live in scalar containers: an Array or Hash value renders as $[…] / ${…}
         const ps = this.sortedPairs();
-        return '{' + ps.map(pairRaku).join(', ') + '}';
+        return '{' + ps.map(p => ((p.v instanceof RList && p.v.ty !== T.Slip) || p.v instanceof RHash) ? pairRaku(new RPair(p.k, new RakuItem(p.v))) : pairRaku(p)).join(', ') + '}';
     }
     [Symbol.iterator]() { return this.pairs()[Symbol.iterator](); }
 }
@@ -210,6 +210,7 @@ function hget(h, k) {
 function hset(h, k, v) {
     if (h instanceof RHash) {
         if (v instanceof RSlip) v = mkArray(v.a.slice());
+        if (v === Nil || h.of) v = checkOf(h, v);
         if (typeof k !== 'string') {
             if (k instanceof RList || k instanceof RSeq) { const ks = k.arr(); const vs = arr(v); ks.forEach((kk, i) => h.m.set(hashKey(kk), vs[i] === undefined ? Any : vs[i])); return v; }
             k = hashKey(k);
@@ -333,11 +334,13 @@ function itemsOf(v) {
     return [v];
 }
 // `my @a = ...` / `@a = ...` : replace the container's contents
+// a typed container (`my Int @a`, `has Str @.d`) checks what enters it; Nil restores the default
+function checkOf(a, v) { if (v === Nil) return a.dflt !== undefined ? a.dflt : (a.of ? a.of : Any); if (a.of && !(v instanceof RType ? v.isa(a.of) : isa(v, a.of))) throw new RakuError(`Type check failed in assignment to ${a instanceof RHash ? '%' : '@'}container; expected ${a.of.name} but got ${typeName(v)} (${raku(v)})`, 'X::TypeCheck::Assignment'); return v; }
 function assignArray(a, src) {
     if (src instanceof RSeq && src.lazy) { a.a = []; a.src = src; return a; }
-    const items = itemsOf(src);
+    const items = src === Nil ? [Nil] : itemsOf(src);   // `my @a = Nil` is one (default) element
     const copy = items === a.a ? items.slice() : items.slice();
-    for (let i = 0; i < copy.length; i++) { const x = copy[i]; if (x instanceof RSlip) copy[i] = mkArray(x.a.slice()); }
+    for (let i = 0; i < copy.length; i++) { const x = copy[i]; if (x instanceof RSlip) copy[i] = mkArray(x.a.slice()); else if (a.of || x === Nil) copy[i] = checkOf(a, x); }
     a.a = copy;
     return a;
 }
@@ -356,7 +359,7 @@ function flat(v) {
     return mkSeq(out);
 }
 function slip(v) { return new RSlip(itemsOf(v).slice()); }
-function spreadArgs(v) { return itemsOf(v); }      // f(|@a)
+function spreadArgs(v) { if (v instanceof RCapture) return v.named.size ? v.pos.concat([new RNamed(new Map(v.named))]) : v.pos.slice(); return itemsOf(v); }      // f(|@a), f(|c)
 
 // --- indexing ------------------------------------------------------------
 function aget(a, i) {
@@ -366,6 +369,7 @@ function aget(a, i) {
         if (i instanceof RList || i instanceof RSeq || i instanceof RRange) return mkList(arr(i).map(j => a.pos(Number(toInt(j)))));
     }
     if (a instanceof RList) {
+        if (typeof i === 'number' && i < 0) throw new RakuError(`Index out of range. Is: ${i}, should be in 0..^Inf`, 'X::OutOfRange');
         if (typeof i === 'number') { if (a.src) a.reify(i); const v = a.a[i]; return v === undefined ? (a.dflt === undefined ? Any : a.dflt) : v; }
         if (typeof i === 'function') return aget(a, i(a.a.length));
         if (i instanceof RList || i instanceof RSeq || i instanceof RRange) return aslice(a, i);
@@ -390,6 +394,8 @@ function aget(a, i) {
 function aset(a, i, v) {
     if (a instanceof RList) {
         if (a.ty !== T.Array) throw new RakuError(`Cannot modify an immutable List`);
+        if (typeof i === 'number' && i < 0) throw new RakuError(`Index out of range. Is: ${i}, should be in 0..^Inf`, 'X::OutOfRange');
+        v = checkOf(a, v);   // Nil restores the default; a typed container checks the value
         if (typeof i === 'function') i = i(a.a.length);
         if (i instanceof RList || i instanceof RSeq || i instanceof RRange) { const is = arr(i), vs = arr(v); is.forEach((ix, k) => aset(a, ix, vs[k] === undefined ? Any : vs[k])); return v; }
         const k = Number(toInt(i));
@@ -466,7 +472,7 @@ function firstOf(v, f, named) {
 }
 function joinList(v, sep) { const out = []; for (const x of iter(v)) out.push(str(x)); return out.join(sep === undefined ? '' : str(sep)); }
 function reverseList(v) { return mkSeq(arr(v).slice().reverse()); }
-function sumList(v) { let s = 0; for (const x of iter(v)) s = add(s, x); return s; }
+function sumList(v) { let s = 0; for (const x of iter(v)) s = (x instanceof RJunction) ? junctionOp(j => add(s, j), x, null) : (s instanceof RJunction) ? junctionOp(j => add(j, x), s, null) : add(s, x); return s; }   // a junction element autothreads
 function orderNum(r) {
     if (r instanceof REnum) return r.val;
     if (typeof r === 'number') return r;
@@ -552,6 +558,7 @@ function antipairsOf(v) { return mkSeq(arr(pairsOf(v)).map(p => new RPair(p.v, p
 function invertOf(v) { const o = []; for (const p of arr(pairsOf(v))) { for (const x of (p.v instanceof RList ? p.v.a : itemsOf(p.v))) o.push(new RPair(x, p.k)); } return mkSeq(o); }   // an Iterable value gives one pair per element
 function pushTo(a, ...items) {
     items = items.filter(x => !(x instanceof RNamed));   // a named argument contributes nothing
+    if (a instanceof RList && a.ty === T.Array) items = items.map(x => (x === Nil || (a.of && !(x instanceof RSlip) && !(x instanceof RList))) ? checkOf(a, x) : x);
     if (a instanceof RHash) {
         const flat = []; for (const it of items) { if (it instanceof RSlip || it instanceof RList) flat.push(...itemsOf(it)); else flat.push(it); }
         for (let i = 0; i < flat.length; i++) {
@@ -568,16 +575,18 @@ function pushTo(a, ...items) {
     for (const it of items) { if (it instanceof RSlip) a.a.push(...it.a); else a.a.push(it); }
     return a;
 }
-function appendTo(a, ...items) { if (a instanceof RHash) return pushTo(a, ...items); for (const it of items) { if (it instanceof RNamed) continue; a.a.push(...itemsOf(it)); } return a; }
-function unshiftTo(a, ...items) { const add = []; for (const it of items) { if (it instanceof RSlip) add.push(...it.a); else add.push(it); } a.a.unshift(...add); return a; }
-function prependTo(a, ...items) { const add = []; for (const it of items) add.push(...itemsOf(it)); a.a.unshift(...add); return a; }
+function appendTo(a, ...items) { if (a instanceof RHash) return pushTo(a, ...items); if (a instanceof RList && a.ty === T.Array) items = items.map(x => (x === Nil || (a.of && !(x instanceof RSlip) && !(x instanceof RList))) ? checkOf(a, x) : x); for (const it of items) { if (it instanceof RNamed) continue; a.a.push(...itemsOf(it)); } return a; }
+function unshiftTo(a, ...items) { if (a instanceof RList && a.ty === T.Array) items = items.map(x => (x === Nil || (a.of && !(x instanceof RSlip) && !(x instanceof RList))) ? checkOf(a, x) : x); const add = []; for (const it of items) { if (it instanceof RSlip) add.push(...it.a); else add.push(it); } a.a.unshift(...add); return a; }
+function prependTo(a, ...items) { if (a instanceof RList && a.ty === T.Array) items = items.map(x => (x === Nil || (a.of && !(x instanceof RSlip) && !(x instanceof RList))) ? checkOf(a, x) : x); const add = []; for (const it of items) add.push(...itemsOf(it)); a.a.unshift(...add); return a; }
 function popFrom(a) { if (a instanceof RObj) { const m = a.ty.findUser('pop'); if (m) return m(a); } if (!(a instanceof RList) || !a.a.length) return failure(new RakuError('Cannot pop from an empty Array', 'X::Cannot::Empty')); return a.a.pop(); }
 function shiftFrom(a) { if (a instanceof RObj) { const m = a.ty.findUser('shift'); if (m) return m(a); } if (!(a instanceof RList) || !a.a.length) return failure(new RakuError('Cannot shift from an empty Array', 'X::Cannot::Empty')); return a.a.shift(); }
 function spliceArr(a, from, n, ...replArgs) {
-    const repl = replArgs.length === 0 ? undefined : replArgs.length === 1 ? replArgs[0] : mkList(spliceSlips(replArgs));
+    const repl = replArgs.length === 0 ? undefined : replArgs.length === 1 ? (replArgs[0] instanceof RHash ? mkList([replArgs[0]]) : replArgs[0]) : mkList(spliceSlips(replArgs.map(x => x instanceof RHash ? mkList([x]) : x)));   // a bare %h is ONE element
     const f = from === undefined ? 0 : Number(typeof from === 'function' ? from(a.a.length) : toInt(from));
     const k = n === undefined ? a.a.length - f : Number(typeof n === 'function' ? n(a.a.length - f) : toInt(n));   // a `*` count is relative to what is left
-    const removed = a.a.splice(f, k, ...(repl === undefined ? [] : itemsOf(repl)));
+    const ins = repl === undefined ? [] : itemsOf(repl);
+    if (a.of) for (const x of ins) if (!(x instanceof RType ? x.isa(a.of) : isa(x, a.of))) throw new RakuError(`Type check failed in splice; expected ${a.of.name} but got ${typeName(x)} (${raku(x)})`, 'X::TypeCheck::Splice');
+    const removed = a.a.splice(f, k, ...ins);
     return mkArray(removed);
 }
 function reduceList(f, v) {
@@ -674,14 +683,16 @@ function listRepeat(v, n) {        // infix:<xx>
 }
 function endOf(v) { return elemsOf(v) - 1; }
 function whichKey(v) {
+    if (v instanceof RAllo) return typeOf(v).name + '|' + whichKey(v.n) + '|' + whichKey(v.s);
     switch (typeof v) {
         case 'string': return 'Str|' + v;
         case 'number': return (Number.isInteger(v) ? 'Int|' : 'Num|') + v;
         case 'bigint': return 'Int|' + v;
-        case 'boolean': return 'Bool|' + v;
+        case 'boolean': return 'Bool|' + (v ? 1 : 0);
         default:
             if (v instanceof RNum) return 'Num|' + v.v;
             if (v instanceof RRat) return 'Rat|' + v.n + '/' + v.d;
+            if (v instanceof RComplex) return 'Complex|' + str(v.re) + '|' + str(v.im);
             if (v instanceof RType) return 'Type|' + v.name;
             if (v instanceof REnum) return v.ty.name + '|' + v.key;
             if (v instanceof RPair) return 'Pair|' + whichKey(v.k) + '|' + whichKey(v.v);
@@ -719,7 +730,8 @@ function junctionRaku(j) { return j.kind + '(' + j.items.map(raku).join(', ') + 
 
 // --- smartmatch ------------------------------------------------------------
 // X ~~ (… $_ …): the pattern is computed with X as the topic; a Junction on the left threads the whole test
-function withDefault(c, d) { c.dflt = d; return c; }   // `is default(v)` on an array or hash
+function withDefault(c, d) { c.dflt = d; return c; }
+class RakuItem { constructor(v) { this.v = v; } }   // a value rendered as an item: `$[…]`, `${…}` (raku() only)   // `is default(v)` on an array or hash
 function smartmatchWith(v, f) {
     if (v instanceof RJunction) return junctionBool(new RJunction(v.kind, v.items.map(x => truthy(smartmatch(x, f(x))))));
     return smartmatch(v, f(v));
@@ -741,8 +753,9 @@ function smartmatch(v, pat) {
         try { return numeq(v, pat); } catch (e) { return false; }
     }
     if (pat === Nil) return v === Nil;
+    if (pat instanceof RSlip && pat.a.length === 0) return (v instanceof RList || v instanceof RSeq || v instanceof RRange) && arr(v).length === 0;   // X ~~ Empty
     if (pat instanceof RList) {
-        if (!(v instanceof RList || v instanceof RSeq)) return false;
+        if (!(v instanceof RList || v instanceof RSeq || v instanceof RRange)) return false;
         const a = arr(v), b = pat.a; if (a.length !== b.length) return false;
         for (let i = 0; i < a.length; i++) if (!(b[i] instanceof RWhatever) && !smartmatch(a[i], b[i])) return false;
         return true;
@@ -754,7 +767,7 @@ function smartmatch(v, pat) {
     if (pat instanceof RWhatever) return true;
     if (pat instanceof RObj) { const m = pat.ty.findUser('ACCEPTS'); if (m) return truthy(m(pat, v)); return identical(v, pat); }
     if (pat instanceof RakuError) return v instanceof RakuError && v.type === pat.type;
-    if (pat instanceof RVersion) return v instanceof RVersion && v.cmp(pat) === 0;
+    if (pat instanceof RVersion) return v instanceof RVersion && v.accepts(pat);   // wildcards and `+`
     return eqv(v, pat);
 }
 

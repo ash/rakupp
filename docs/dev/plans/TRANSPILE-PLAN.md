@@ -804,5 +804,28 @@ Where the code decided differently from the draft:
   interpreter does. That closes P4 as planned: `use JS`, `start`/`await`,
   `sleep`, `--module` with `.d.ts`, the npm shape, source maps.
 
-Next: the design-level disagreements (itemization, allomorphs), then
-`react`/`supply`/`Channel` as their own sitting.
+- **Allomorphs and the cheap end of the disagreement list (2026-09-04).**
+  `RAllo` is the number that is also its spelling: `<42>` (the parser's
+  `AllomorphLit`, which the emitter had been flattening to its number),
+  `val()`, and now `MAIN`'s arguments, so `sub MAIN(Int $n)` sees an
+  `IntStr`. Its type is `IntStr`/`NumStr`/`RatStr`/`ComplexStr` with both
+  halves in the MRO; the numeric half answers arithmetic and `Int`'s
+  methods first, the string half `Str`'s; `.WHICH` is
+  `IntStr|Int|42|Str|42` as the interpreter spells it. Around it, the
+  static rules the corpus asked for: a bare `*` argument is the Whatever
+  (not a curry), `f(1; 2)` passes each segment as a List, a `|c` parameter
+  is a Capture (with its sub-signature), a class declaration is its
+  block's value, hash values render as `$[…]`/`${…}` in `.raku`, `%h`
+  splices as one element, `»` descends into Lists but not itemized Arrays,
+  `X ~~ Empty`, `(1..2) ~~ (1, 2)`, a junction element autothreads `.sum`,
+  typed containers check what enters them (`Any` and supertypes included,
+  `.splice` in its own words) and `Nil` restores the element type, `my @a
+  = Nil` is one element, negative indices are `X::OutOfRange`, `rotor`'s
+  sub form, `min`/`max` ties, `Range.rand`'s refusals message for message,
+  Version `+` and wildcards (ordering versus matching), `.out-buffer` with
+  real unbuffered writes, `X::Method::NotFound`'s `.method`/`.typename`/
+  `.private` and the "private method" wording, a private call outside its
+  class refused before lookup, `IO::Path.succ` on the stem. Gate 26: **137 in-core and agreeing of 444, 254 refused, 53 disagreeing** (from 119 / 252 / 71 at the last commit). The interpreter is inconsistent on one point met here: `@n>>.elems` answers a List and `[[1,2],]>>.Str` an Array; the runtime keeps the invocant's type, which is what the corpus checks.
+
+Next: `react`/`supply`/`Channel` as their own sitting; the container
+model (`$(…)` itemization, `given $x` topics, `=:=`) stays design-level.

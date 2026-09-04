@@ -105,7 +105,7 @@ string rt(const string& name) { return jsIdent(name) ? "R." + name : "R[" + jsSt
 // Builtins the runtime exports by Raku name (src/js-rt/50-builtins.js). A call
 // to a name outside this table is a refusal, so the histogram names the gap.
 const std::set<string> kBuiltins = {
-    "module", "exportFn", "exportType", "exportMain", "boolOf", "isMatch", "isRegex", "smartmatchWith", "attrSet", "isFailure", "substMutate", "withDefault", "__radix", "__radix-list",
+    "allo", "val", "module", "exportFn", "exportType", "exportMain", "boolOf", "isMatch", "isRegex", "smartmatchWith", "attrSet", "isFailure", "substMutate", "withDefault", "__radix", "__radix-list",
     "say", "print", "put", "note", "printf", "dd", "exit", "sqrt", "sin", "cos", "tan", "asin", "acos", "atan", "sinh", "cosh", "tanh", "exp", "cbrt",
     "log", "log2", "log10", "atan2", "floor", "ceiling", "truncate", "round", "sign", "is-prime", "expmod", "polymod", "rand", "srand", "min", "max", "sum",
     "elems", "end", "join", "reverse", "sort", "map", "grep", "first", "unique", "keys", "values", "kv", "pairs", "push", "append", "pop", "shift", "unshift",
@@ -395,6 +395,7 @@ struct JsGen {
     // an argument / list item: always its own closure scope (`.grep(* %% 3)`)
     string exCurry(Expr* e) {
         if (e->kind == NK::RegexLit) return regexObject(static_cast<RegexLit*>(e));   // an argument is the Regex, not a match
+        if (e->kind == NK::Whatever) return "R.Whatever";   // f(*): the Whatever itself, not a curry
         if (!hasWhatever(e)) return ex(e);
         wcArity.push_back(0);
         string body = ex(e);
@@ -445,6 +446,13 @@ struct JsGen {
                 if (op->kind == NK::VarExpr && static_cast<VarExpr*>(op)->name[0] == '%') { hashSpread = true; hashSpreadExpr = ex(op); continue; }
                 if (!pos.empty()) pos += ", ";
                 pos += "...R.spreadArgs(" + exCurry(op) + ")";
+                continue;
+            }
+            if (e->kind == NK::ListExpr && static_cast<ListExpr*>(e)->semicolon) {   // f(1; 2): each segment a List
+                for (auto& seg : static_cast<ListExpr*>(e)->items) {
+                    if (!pos.empty()) pos += ", ";
+                    pos += seg->kind == NK::ListExpr ? "R.mkList([" + listItems(static_cast<ListExpr*>(seg.get())->items) + "])" : "R.mkList([" + exCurry(seg.get()) + "])";
+                }
                 continue;
             }
             if (!pos.empty()) pos += ", ";
@@ -526,7 +534,7 @@ struct JsGen {
             }
             case NK::StrLit: return jsStr(static_cast<StrLit*>(e)->v);
             case NK::BoolLit: return static_cast<BoolLit*>(e)->v ? "true" : "false";
-            case NK::AllomorphLit: { auto* a = static_cast<AllomorphLit*>(e); return ex(a->num.get()); }
+            case NK::AllomorphLit: { auto* a = static_cast<AllomorphLit*>(e); return "R.allo(" + exArg(a->num.get()) + ", " + jsStr(a->str) + ")"; }   // <42>: the number that is also its spelling
             case NK::InterpStr: {
                 auto* s = static_cast<InterpStr*>(e);
                 if (s->parts.empty()) return "\"\"";
@@ -1271,6 +1279,7 @@ struct JsGen {
         }
         if (m->hyper) return "R.hyperMethod(" + ex(m->inv.get()) + ", " + jsStr(name) + (m->args.empty() ? "" : ", " + args(m->args)) + ")";
         if (m->meta) return "R.meta(" + ex(m->inv.get()) + ", " + jsStr(name) + (m->args.empty() ? "" : ", " + args(m->args)) + ")";
+        if (m->bang && curClass.empty()) return "R.die(" + jsStr("Private method call to '" + name + "' outside the defining class") + ")";   // refused before any lookup
         if (m->bang) name = "!" + name;
         string fnName = m->maybe ? "R.mcMaybe" : "R.mc";
         // autovivification through a subscript: %h{$k}.push(…)
@@ -1441,6 +1450,7 @@ struct JsGen {
         }
         if (hasWhen) { blkLabel = label("_blk"); line(bodyInd, blkLabel + ": {"); blocks.push_back({ blkLabel, fnDepth(), false, "" }); bodyInd++; }
         for (auto* s : classes) stmt(s, bodyInd, false);
+        bool tailIsClass = tail && !ss.empty() && ss.back()->kind == NK::ClassDecl && !static_cast<ClassDecl*>(ss.back().get())->isPackage;
         for (size_t i = 0; i < main.size(); i++) {
             bool last = i + 1 == main.size();
             // every `when` body is a possible last statement of the block
@@ -1449,7 +1459,8 @@ struct JsGen {
         // A body with no value is Nil — and in a value-collecting loop that Nil is
         // still one element per iteration, so it goes through ret() rather than
         // being dropped: `do for 1..2 { }` is (Nil, Nil), not ().
-        if (tail && (main.empty() || !yieldsValue(main.back()))) line(bodyInd, ret("R.Nil"));
+        if (tailIsClass && !lastClassJs.empty()) line(bodyInd, ret(lastClassJs));
+        else if (tail && (main.empty() || !yieldsValue(main.back()))) line(bodyInd, ret("R.Nil"));
         if (hasWhen) { bodyInd--; line(bodyInd, "}"); blocks.pop_back(); }
         if (wrapTry) {
             if (catchBlock) {
@@ -1937,9 +1948,10 @@ struct JsGen {
         for (auto& p : ps) if (p.name == "$/") fn().slashParam = true;
         line(ind, "const [_pos, _named] = R.splitArgs(_args);");
         int req = 0, opt = 0; bool slurpy = false;
-        for (auto& p : ps) { if (p.named || p.invocant) continue; if (p.slurpy) slurpy = true; else if (p.optional || p.defaultVal) opt++; else req++; }
+        for (auto& p : ps) { if (p.named || p.invocant) continue; if (p.slurpy || p.sigil == '|' || p.sigil == '\\') slurpy = true; else if (p.optional || p.defaultVal) opt++; else req++; }
         if (req) line(ind, "if (_pos.length < " + std::to_string(req) + ") R.tooFew(" + jsStr(who) + ", " + std::to_string(req) + ", _pos.length);");
-        if (!slurpy) line(ind, "if (_pos.length > " + std::to_string(req + opt) + ") R.tooMany(" + jsStr(who) + ", " + std::to_string(req + opt) + ", _pos.length);");
+        bool laxTail = false; for (auto it = ps.rbegin(); it != ps.rend(); ++it) { if (it->named || it->invocant) continue; laxTail = (it->sigil == '@' || it->sigil == '%') && !it->slurpy; break; }   // extras after a trailing @/% parameter are ignored, as the interpreter does
+        if (!slurpy && !laxTail) line(ind, "if (_pos.length > " + std::to_string(req + opt) + ") R.tooMany(" + jsStr(who) + ", " + std::to_string(req + opt) + ", _pos.length);");
         int pi = 0;
         std::vector<string> usedNamed;
         for (auto& p : ps) {
@@ -1947,6 +1959,11 @@ struct JsGen {
             if (p.typeCapture) refuse("a type capture (::T)", 0);
             string name = p.name.empty() ? "" : mangleVar(p.name);
             char sig = p.sigil;
+            if (sig == '|' || sig == '\\') {   // |c: the rest of the arguments as a Capture, named ones included
+                if (!name.empty()) line(ind, "let " + name + " = new R.RCapture(_pos.slice(" + std::to_string(pi) + "), _named);");
+                if (p.subSig) { string tmpn = name.empty() ? "_cap" + std::to_string(pi) : name; if (name.empty()) line(ind, "let " + tmpn + " = new R.RCapture(_pos.slice(" + std::to_string(pi) + "), _named);"); bindSubSig(*p.subSig, "R.mkList(" + tmpn + ".pos)", ind); }   // |c ($first, *@rest)
+                continue;
+            }
             if (p.named) {
                 std::vector<string> keys;
                 if (!p.namedKey.empty()) keys.push_back(p.namedKey); else if (!p.name.empty()) keys.push_back(p.name.substr(1));
@@ -2053,7 +2070,7 @@ struct JsGen {
             }
             else if (!simple) bindParams(d->params, 2, who, isMethod);
             else if (!d->params.empty()) {
-                line(2, "if (arguments.length !== " + std::to_string(d->params.size() + (isMethod ? 1 : 0)) + ") R.arityError(" + jsStr(who) + ", " + std::to_string(d->params.size()) + ", arguments.length" + (isMethod ? " - 1" : "") + ");");
+                line(2, "if (arguments.length " + string(!d->params.empty() && (d->params.back().sigil == '@' || d->params.back().sigil == '%') ? "<" : "!==") + " " + std::to_string(d->params.size() + (isMethod ? 1 : 0)) + ") R.arityError(" + jsStr(who) + ", " + std::to_string(d->params.size()) + ", arguments.length" + (isMethod ? " - 1" : "") + ");");
                 for (auto& p : d->params) line(2, "if (" + mangleVar(p.name) + " === R.Mu) R.notAny(" + jsStr(p.name) + ");");
             }
             bool bindsTopic = false; for (auto& p : d->params) if (p.name == "$_") bindsTopic = true;

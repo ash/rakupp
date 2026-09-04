@@ -30,7 +30,8 @@ const host = {
     handleSlurp(h) { if (h.kind === 'in') return this.stdinSlurp(); const rest = h.buf.slice(h.pos); h.pos = h.buf.length; return rest; },
     handleGetc(h) { if (h.kind === 'in') { const t = this.stdinAll(); if (this.stdinPos >= t.length) return Nil; return t[this.stdinPos++]; } if (h.pos >= h.buf.length) return Nil; return h.buf[h.pos++]; },
     handleEof(h) { if (h.kind === 'in') return this.stdinPos >= this.stdinAll().length; return h.pos >= h.buf.length; },
-    handlePrint(h, s) { if (h.kind === 'out') { this.stdout(s); return true; } if (h.kind === 'err') { this.stderr(s); return true; } h.out = (h.out || '') + s; if (h.out.length > 65536) { this.appendFile(h.path, h.out); h.out = ''; } return true; },
+    handlePrint(h, s) { if (h.kind === 'out') { this.stdout(s); if (h.outBuffer === 0) this.flush(); return true; } if (h.kind === 'err') { this.stderr(s); return true; } h.out = (h.out || '') + s; if (h.out.length >= (h.outBuffer === undefined ? 65536 : h.outBuffer)) { this.appendFile(h.path, h.out); h.out = ''; } return true; },   // out-buffer: the size at which writes land; 0 is every write
+    handleFlush(h) { if (h && h.kind !== 'out' && h.kind !== 'err' && h.out) { this.appendFile(h.path, h.out); h.out = ''; } if (h && h.kind === 'out') this.flush(); },
     isTTY(h) { return false; },
     appendFile() { return this.noFs('write'); },
 };
@@ -77,7 +78,7 @@ if (IS_NODE && nodeRequire) {
     host.copy = (a, b) => { fs.copyFileSync(a, b); return true; };
     host.rename = (a, b) => { fs.renameSync(a, b); return true; };
     host.chdir = p => { process.chdir(str(p)); host.cwd = nodeRequire('path').resolve(host.cwd, str(p)); return new RIOPath(host.cwd); };   // the logical path, not the realpath
-    host.open = (p, ...a) => { const named = nm(a); const path = str(p); const w = truthy(named.get('w')) || truthy(named.get('a')) || str(named.get('mode') || '') === 'wo'; const app = truthy(named.get('a')) || truthy(named.get('append')); const h = new RIOHandle(w ? 'file-w' : 'file-r', path); if (w) { if (!app) fs.writeFileSync(path, ''); h.out = ''; } else { try { h.buf = fs.readFileSync(path, 'utf8'); } catch (e) { throw new RakuError(`Failed to open file ${path}: ${e.code === 'ENOENT' ? 'No such file or directory' : e.message}`, 'X::IO::DoesNotExist'); } } return h; };
+    host.open = (p, ...a) => { const named = nm(a); const path = str(p); const w = truthy(named.get('w')) || truthy(named.get('a')) || str(named.get('mode') || '') === 'wo'; const app = truthy(named.get('a')) || truthy(named.get('append')); const h = new RIOHandle(w ? 'file-w' : 'file-r', path); if (named.has('out-buffer')) { const ob = named.get('out-buffer'); h.outBuffer = ob === false ? 0 : ob === true ? 8192 : Number(toInt(ob)); } if (w) { if (!app) fs.writeFileSync(path, ''); h.out = ''; } else { try { h.buf = fs.readFileSync(path, 'utf8'); } catch (e) { throw new RakuError(`Failed to open file ${path}: ${e.code === 'ENOENT' ? 'No such file or directory' : e.message}`, 'X::IO::DoesNotExist'); } } return h; };
     host.close = h => { if (h.kind === 'file-w' && h.out) { fs.appendFileSync(h.path, h.out); h.out = ''; } h.closed = true; return true; };
     host.isTTY = h => h.kind === 'in' ? !!process.stdin.isTTY : h.kind === 'out' ? !!process.stdout.isTTY : h.kind === 'err' ? !!process.stderr.isTTY : false;
     host.shell = (cmd, ...a) => { const cp = nodeRequire('child_process'); host.flush(); const r = cp.spawnSync('/bin/sh', ['-c', str(cmd)], { stdio: 'inherit' }); return mkProc(r.status); };
@@ -177,7 +178,7 @@ function runMain(cands, argv) {
     host.stderr(usage(cands) + '\n');
     return 2;
 }
-function argValue(s) { return s; }   // an IntStr-like allomorph is what Rakudo hands MAIN; strings numify on use here
+function argValue(s) { return val(s); }   // the IntStr-like allomorph Rakudo hands MAIN: `Int $n` accepts it, `say $n` prints the spelling
 function bindMain(c, pos, named) {
     const args = [];
     let pi = 0;
@@ -192,7 +193,7 @@ function bindMain(c, pos, named) {
         if (p.slurpy) { args.push(mkList(pos.slice(pi))); pi = pos.length; continue; }
         if (pi >= pos.length) { if (p.optional || p.hasDefault) continue; return null; }
         let v = pos[pi++];
-        if (p.type && (p.type === 'Int' || p.type === 'Num' || p.type === 'Numeric' || p.type === 'Real' || p.type === 'Rat')) { let n; try { n = strToNumeric(v); } catch (e) { return null; } if (p.type === 'Int' && !isIntVal(n)) return null; v = n; }
+        if (p.type && (p.type === 'Int' || p.type === 'Num' || p.type === 'Numeric' || p.type === 'Real' || p.type === 'Rat')) { let n; try { n = strToNumeric(str(v)); } catch (e) { return null; } if (p.type === 'Int' && !isIntVal(n)) return null; if (!(v instanceof RAllo)) v = n; }   // the allomorph stays: `Int $n` sees an IntStr
         else if (p.type === 'Bool') v = truthy(v);
         if (p.lit !== undefined && str(v) !== p.lit) return null;
         args.push(v);

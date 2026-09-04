@@ -141,6 +141,8 @@ function radix(base, sv) {
     return normBig(val);
 }
 function radixList(base, ...digits) { const bb = BigInt(Number(toInt(base))); let v = 0n; for (const d of digits) { if (d instanceof RNamed) continue; for (const x of itemsOf(d)) v = v * bb + BigInt(toInt(x)); } return normBig(v); }
+// val(Str): an allomorph when the string spells a number, else the string; MAIN's arguments come this way
+function val(s) { s = str(s); try { if (s.trim() === '') return s; const n = strToNumeric(s); return new RAllo(n, s); } catch (e) { return s; } }
 function pick(v, n) { return countFirst(v, n) ? pickFrom(n, v) : pickFrom(v, n); }
 function roll(v, n) { return countFirst(v, n) ? rollFrom(n, v) : rollFrom(v, n); }
 function categorize(f, v, ...a) { return categorizeList(v, f, nm(a).get("as")); }
@@ -309,12 +311,12 @@ Object.assign(R, {
     say, print, put, note, printf, dd, exit, sqrt, sin, cos, tan, asin, acos, atan, sinh, cosh, tanh, exp, cbrt, log, log2, log10, atan2,
     floor, ceiling, truncate, round, sign, 'is-prime': isPrime, expmod, polymod, factorial, rand, randNum, srand, min, max, sum, elems, end, join, reverse, sort, map, grep, first,
     unique, keys, values, kv, pairs, push, append, pop, shift, unshift, prepend, splice, zip, roundrobin, head, tail, defined: defd, item, flat: flatten, pick, roll,
-    categorize, classify, '__radix': radix, '__radix-list': radixList, reduce, produce, any: anyJ, all: allJ, none: noneJ, one: oneJ, set, bag, mix, chrs: chrsOf, ords: ordsOf, ucfirst, slurp: slurpB, spurt: spurtB,
+    categorize, classify, val, allo, '__radix': radix, '__radix-list': radixList, reduce, produce, any: anyJ, all: allJ, none: noneJ, one: oneJ, set, bag, mix, chrs: chrsOf, ords: ordsOf, ucfirst, slurp: slurpB, spurt: spurtB,
     lines: linesB, get, prompt, sleep, now, time, open, close, mkdir, rmdir, unlink, dir, chdir, shell, run, ioPath, EVAL, OPS, opFn, reduceOp, zipOp, crossOp, hyperOp, hyperPrefix,
     assumingCall, seqOp, lazyOf, eagerOf, cacheOf, chars, ord, chr, uc, lc, tc, tclc, flip, trim, chomp, chop, substr, index: strIndex, rindex: strRindex, split: (sep, s, ...a) => strSplit(s, sep, ...a), words, comb,
     sprintf, abs, gcd, lcm, not, so, gist, raku, str, numify, truncate, 'trim-leading': trimLeading, 'trim-trailing': trimTrailing, samecase, indent, fc, wordcase, minmax: minmaxOf, 'is-prime': isPrime, warn, die, fail, take,
     unival, exists: (v) => defined(v), squish: (...items) => squishList(items.length === 1 ? items[0] : mkList(items)),
-    'rotor': (v, ...specs) => rotorList(v, ...specs), 'batch': (v, n) => batchList(v, n), combinations: (v, n) => combinations(v, n), permutations: (v) => permutations(v),
+    'rotor': (v, ...specs) => { const nm_ = specs.filter(x => x instanceof RNamed), ps = specs.filter(x => !(x instanceof RNamed)); const isL = x => x instanceof RList || x instanceof RSeq || x instanceof RRange; return (ps.length && !isL(v) && isL(ps[ps.length - 1])) ? rotorList(ps[ps.length - 1], v, ...ps.slice(0, -1), ...nm_) : rotorList(v, ...specs); }, 'batch': (v, n) => batchList(v, n), combinations: (v, n) => combinations(v, n), permutations: (v) => permutations(v),
     hash: (...a) => hashLit(a), list: list, slip, elem, cross: (...l) => crossLists(l), 'roundrobin': roundrobin, antipairs: antipairsOf, invert: invertOf, 'succ': succ, 'pred': pred, chdir, 'lazy': lazyOf, 'eager': eagerOf, cache: cacheOf,
     'DateTime': T.DateTime, 'Date': T.Date, capture, 'infix': infix,
 });

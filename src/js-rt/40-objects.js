@@ -137,6 +137,7 @@ function buildObj(ty, ...args) {
         else v = a.sigil === '@' ? mkArray([]) : a.sigil === '%' ? mkHash() : (a.type && T[a.type] ? T[a.type] : Any);
         if (a.sigil === '@' && !(v instanceof RList && v.ty === T.Array)) v = newArray(v);
         else if (a.sigil === '%' && !(v instanceof RHash)) v = newHash(v);
+        if ((a.sigil === '@' || a.sigil === '%') && a.type && T[a.type] && v && v.of === undefined) withOf(v, T[a.type]);   // has Str @.d: an Array[Str]
         if (a.coerce && a.type && T[a.type] && v !== Any && !(v instanceof RType)) v = coerce(T[a.type], v);   // `has IO::Path() $.p`
         if (a.type && a.sigil === '$' && v !== Any && !(v instanceof RType) && !isa(v, a.type) && T[a.type]) {
             throw new RakuError(`Type check failed in assignment to ${a.sigil}!${a.name}; expected ${a.type} but got ${typeName(v)} (${raku(v)})`, 'X::TypeCheck::Assignment');
@@ -251,7 +252,7 @@ class RSetty {
     total() { let t = 0; for (const e of this.m.values()) t = this.isSet() ? t + 1 : add(t, e.n); return t; }
     elems() { return this.m.size; }
     sortedEntries() { return Array.from(this.m.values()).sort((a, b) => cmpNum(a.v, b.v)); }
-    Str() { return this.sortedEntries().map(e => this.isSet() ? str(e.v) : str(e.v) + '(' + str(e.n) + ')').join(' '); }
+    Str() { return this.sortedEntries().map(e => (this.isSet() || numeq(e.n, 1)) ? str(e.v) : str(e.v) + '(' + str(e.n) + ')').join(' '); }   // a weight of 1 is bare
     gist() {
         const ents = this.sortedEntries();
         const body = ents.map(e => this.isSet() ? gist(e.v) : gist(e.v) + '(' + gist(e.n) + ')').join(' ');
@@ -314,9 +315,33 @@ function elem(v, s) { if (s instanceof RSetty) return s.has(v); if (s instanceof
 
 // --- Version ---------------------------------------------------------------------
 class RVersion {
-    constructor(s) { this.s = str(s).replace(/^v/, ''); this.parts = this.s.split('.').map(p => /^\d+$/.test(p) ? Number(p) : p); }
+    constructor(s) { this.s = str(s).replace(/^v/, ''); this.plus = this.s.endsWith('+'); this.parts = this.s.replace(/\+$/, '').split('.').map(p => /^\d+$/.test(p) ? Number(p) : p); }
     Str() { return this.s; }
-    cmp(o) { const n = Math.max(this.parts.length, o.parts.length); for (let i = 0; i < n; i++) { const a = this.parts[i] ?? 0, b = o.parts[i] ?? 0; if (a === '*' || b === '*') continue; if (typeof a === 'number' && typeof b === 'number') { if (a !== b) return a < b ? -1 : 1; } else { const c = strCmp(String(a), String(b)); if (c) return c; } } return 0; }
+    cmp(o) { const c = this.cmpParts(o); return c !== 0 ? c : (this.plus ? 1 : 0) - (o.plus ? 1 : 0); }   // v1.0+ is later than v1.0
+    cmpParts(o) {   // ordering: a wildcard part sorts below any concrete part
+        const n = Math.max(this.parts.length, o.parts.length);
+        for (let i = 0; i < n; i++) {
+            const a = this.parts[i] ?? 0, b = o.parts[i] ?? 0;
+            if (a === '*' && b === '*') continue;
+            if (a === '*') return -1;
+            if (b === '*') return 1;
+            if (typeof a === 'number' && typeof b === 'number') { if (a !== b) return a < b ? -1 : 1; continue; }
+            const sa = String(a), sb = String(b); if (sa !== sb) return sa < sb ? -1 : 1;
+        }
+        return 0;
+    }
+    accepts(pat) {   // matching: the pattern's `*` matches any part, a trailing `*` the rest; `+` means this or later
+        if (pat.plus) return this.cmpParts(pat) >= 0;
+        const n = Math.max(this.parts.length, pat.parts.length);
+        for (let i = 0; i < n; i++) {
+            const pb = pat.parts[i];
+            if (pb === '*') { if (i === pat.parts.length - 1) return true; continue; }
+            const pa = this.parts[i] ?? 0;
+            if (pa === '*') continue;
+            if (String(pa) !== String(pb ?? 0)) return false;
+        }
+        return true;
+    }
 }
 // --- Date / DateTime (the small subset) -------------------------------------------
 class RDate {

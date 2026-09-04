@@ -62,6 +62,7 @@ mkType('Rational', [T.Real]);
 mkType('Rat', [T.Rational]);
 mkType('FatRat', [T.Rational]);
 mkType('Str', [T.Cool]);
+mkType('IntStr', [T.Int, T.Str]); mkType('NumStr', [T.Num, T.Str]); mkType('RatStr', [T.Rat, T.Str]);   // allomorphs: both halves (ComplexStr below Complex)
 mkType('Bool', [T.Int]);
 mkType('Nil', [T.Cool]);
 mkType('Positional', [T.Any]);
@@ -91,7 +92,7 @@ mkType('Order', [T.Int]);
 mkType('Setty', [T.Any]); mkType('Set', [T.Setty]); mkType('SetHash', [T.Setty]);
 mkType('Baggy', [T.Any]); mkType('Bag', [T.Baggy]); mkType('BagHash', [T.Baggy]);
 mkType('Mixy', [T.Baggy]); mkType('Mix', [T.Mixy]); mkType('MixHash', [T.Mixy]);
-mkType('Complex', [T.Numeric]);
+mkType('Complex', [T.Numeric]); mkType('ComplexStr', [T.Complex, T.Str]);
 mkType('IO', [T.Any]); mkType('IO::Path', [T.IO]); mkType('IO::Handle', [T.IO]);
 mkType('Stringy', [T.Cool]);
 mkType('Version', [T.Any]);
@@ -114,6 +115,9 @@ class RRat {                                              // exact; d > 0, gcd 1
 }
 class RPair { constructor(k, v) { this.k = k; this.v = v; } }
 class RSlip { constructor(a) { this.a = a; } }            // `|@x` / slip(...)
+// an allomorph: a number that is also the string it was spelled as — `<42>`, MAIN's arguments, val()
+class RAllo { constructor(n, s) { this.n = n; this.s = s; } toString() { return this.s; } }
+function allo(n, s) { return new RAllo(n, s); }
 class REnum { constructor(ty, key, val) { this.ty = ty; this.key = key; this.val = val; } toString() { return this.key; } valueOf() { return this.val; } }
 class RNamed { constructor(m) { this.m = m; } }           // named arguments, trailing
 class RObj { constructor(ty) { this.ty = ty; } }          // a user-class instance
@@ -187,6 +191,7 @@ function typeOf(v) {
             if (v instanceof RSlip) return T.Slip;
             if (v instanceof RakuError) return T[v.type] || mkExType(v.type);
             if (v instanceof RFailure) return T.Failure;
+            if (v instanceof RAllo) return v.n instanceof RRat ? T.RatStr : v.n instanceof RComplex ? T.ComplexStr : (v.n instanceof RNum || (typeof v.n === 'number' && !Number.isInteger(v.n))) ? T.NumStr : T.IntStr;
             if (v instanceof RMatch) return T.Match;
             if (v instanceof RRegex) return T.Regex;
             if (v instanceof RJunction) return T.Junction;
@@ -225,7 +230,7 @@ function isa(v, tname) {
 function isNumeric(v) {
     const ty = typeof v;
     return ty === 'number' || ty === 'bigint' || ty === 'boolean' || v instanceof RNum || v instanceof RRat ||
-        v instanceof REnum || v instanceof RComplex;
+        v instanceof REnum || v instanceof RComplex || v instanceof RAllo;
 }
 function isIntVal(v) { return (typeof v === 'number' && Number.isInteger(v)) || typeof v === 'bigint'; }
 
@@ -271,6 +276,7 @@ function toNumeric(v, op) {
         case 'string': return strToNumeric(v);
         case 'object':
             if (v instanceof RNum || v instanceof RRat || v instanceof RComplex) return v;
+            if (v instanceof RAllo) return v.n;
             if (v instanceof REnum) return v.val;
             if (v === null) return 0;
             if (v instanceof RType) return 0;                       // (Any) in numeric context: 0, no warning here
@@ -323,6 +329,7 @@ function strToNumeric(s) {
 }
 // A float view of any numeric.
 function toFloat(v) {
+    if (v instanceof RAllo) return toFloat(v.n);
     switch (typeof v) {
         case 'number': return v;
         case 'bigint': return Number(v);
@@ -350,6 +357,7 @@ function ratToFloat(r) {
 }
 // Int view (truncating), for Int-only operations; dies on a non-integral Num.
 function toInt(v) {
+    if (v instanceof RAllo) return toInt(v.n);
     switch (typeof v) {
         case 'number': return Number.isInteger(v) ? v : (Number.isFinite(v) ? Math.trunc(v) : intOfInf(v));
         case 'bigint': return v;
@@ -536,6 +544,7 @@ function numify(v) {           // prefix:<+>
 }
 // Numeric comparison: -1/0/1, or NaN when unordered.
 function numCmp(a, b) {
+    if (a instanceof RVersion && b instanceof RVersion) return a.cmp(b);   // == and <=> on Versions
     if (typeof a === 'number' && typeof b === 'number') return a < b ? -1 : a > b ? 1 : a === b ? 0 : NaN;
     const x = toNumeric(a), y = toNumeric(b);
     const rk = Math.max(rank(x), rank(y));
@@ -630,6 +639,7 @@ function ratToStr(r) {
 }
 // .Str
 function str(v) {
+    if (v instanceof RAllo) return v.s;
     switch (typeof v) {
         case 'string': return v;
         case 'number': return Number.isInteger(v) ? String(v) : numToStr(v);
@@ -677,6 +687,7 @@ function strLit(s) {              // .raku of a Str
 }
 // .gist
 function gist(v) {
+    if (v instanceof RAllo) return v.s;
     if (v instanceof RRegex) return 'rx/' + (v.src === undefined ? '…' : v.src) + '/';
     switch (typeof v) {
         case 'string': return v;
@@ -730,6 +741,8 @@ function objGist(o) {
 }
 // .raku
 function raku(v) {
+    if (v instanceof RakuItem) return '$' + raku(v.v);
+    if (v instanceof RAllo) return typeOf(v).name + '.new(' + raku(v.n) + ', ' + strLit(v.s) + ')';
     switch (typeof v) {
         case 'string': return strLit(v);
         case 'number': return Number.isInteger(v) ? String(v) : numRaku(v);
@@ -824,6 +837,7 @@ function identical(a, b) {
     return false;
 }
 function eqv(a, b) {
+    if (a instanceof RAllo || b instanceof RAllo) return a instanceof RAllo && b instanceof RAllo && a.s === b.s && numeq(a.n, b.n);
     if (identical(a, b)) return true;
     if (typeof a !== typeof b) return false;
     if (typeof a === 'number') return Number.isNaN(a) && Number.isNaN(b);

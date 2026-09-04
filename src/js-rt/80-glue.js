@@ -30,6 +30,8 @@ function listAppendAssign(cur, v) { const items = itemsOf(cur).slice(); items.pu
 // $obj.attr = v through an `is rw` accessor
 function mcSet(inv, name, v) {
     if (inv instanceof RObj) { const m = inv.ty.findUser(name); if (m && m.lvKey) { inv[m.lvKey] = v; return v; } if (m) { const r = m(inv); if (r instanceof RScalar) { r.v = v; return v; } } }
+    if (inv instanceof RIOHandle && name === 'out-buffer') { host.handleFlush(inv); inv.outBuffer = v === false ? 0 : v === true ? 8192 : Number(toInt(v)); return v; }   // False is unbuffered, True the default size; resizing flushes
+    if (inv instanceof RList && inv.ty === T.Array && (name === 'head' || name === 'tail')) { return aset(inv, name === 'head' ? 0 : Math.max(0, inv.a.length - 1), v); }   // @a.head = 9
     throw new RakuError(`Cannot modify an immutable value returned by .${name}`);
 }
 // $obj.^name / Foo.^methods
@@ -84,7 +86,7 @@ function isaSubset(v, t) {
 // *@args flattening: one level of iterables
 function slurpyFlat(items) { const out = []; for (const x of items) { if (x instanceof RList && x.ty !== T.Array || x instanceof RSeq || x instanceof RRange || x instanceof RSlip) out.push(...listItems(x)); else if (x instanceof RList) out.push(...x.a); else out.push(x); } return out; }
 function vivArray(v) { return (v instanceof RType || v === undefined) ? mkArray([]) : v; }
-function withOf(c, ty) { c.of = ty; return c; }
+function withOf(c, ty) { c.of = ty; if (c instanceof RList) c.a = c.a.map(x => x === Any ? ty : checkOf(c, x)); else if (c instanceof RHash) for (const [k, v] of c.m) c.m.set(k, v === Any ? ty : checkOf(c, v)); return c; }   // what is already inside must fit too; an empty slot is the element type
 function isAny(v) { return v !== Mu && !(v instanceof RJunction); }
 // a minimal Signature object: what .signature.count / .arity / .params answer
 class RSig { constructor(f) { this.f = f; } }
