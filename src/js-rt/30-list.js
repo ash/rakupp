@@ -3,7 +3,7 @@
 
 class RList {
     constructor(a, ty) { this.a = a; this.ty = ty || T.List; this.src = null; }   // src: a lazy RSeq still feeding `a`
-    reify(n) { const s = this.src; if (!s) return; while (this.a.length <= n) { if (!s.pull()) { this.src = null; return; } this.a.push(s.cache[s.cache.length - 1]); } }
+    reify(n) { const s = this.src; if (!s) return; while (this.a.length <= n) { if (!s.pull()) { this.src = null; return; } this.a.push(s.memo[s.memo.length - 1]); } }
     arr() { if (this.src) this.reify(Infinity); return this.a; }
     elems() { return this.arr().length; }
     gist() { return this.ty === T.Array ? listGistOf(this.a, '[', ']') : listGistOf(this.a, '(', ')'); }
@@ -29,18 +29,18 @@ function mkSlip(a) { return new RSlip(a); }
 // A lazy sequence over a JS iterator, memoized as it is pulled, so `.elems`,
 // indexing and a second iteration all see the same elements.
 class RSeq {
-    constructor(iter, lazy) { this.it = iter; this.cache = []; this.done = false; this.lazy = !!lazy; }
+    constructor(iter, lazy) { this.it = iter; this.memo = []; this.done = false; this.lazy = !!lazy; }
     pull() {                                  // fetch one more into the cache; false at the end
         if (this.done) return false;
         const r = this.it.next();
         if (r.done) { this.done = true; this.it = null; return false; }
-        this.cache.push(r.value);
+        this.memo.push(r.value);
         return true;
     }
-    at(i) { while (this.cache.length <= i && this.pull()) {} return i < this.cache.length ? this.cache[i] : undefined; }
-    arr() { while (this.pull()) {} return this.cache; }
+    at(i) { while (this.memo.length <= i && this.pull()) {} return i < this.memo.length ? this.memo[i] : undefined; }
+    arr() { while (this.pull()) {} return this.memo; }
     elems() { return this.arr().length; }
-    isEmpty() { return this.cache.length === 0 && !this.pull(); }
+    isEmpty() { return this.memo.length === 0 && !this.pull(); }
     isLazy() { return this.lazy; }
     list() { return mkList(this.arr()); }
     cache() { return mkSeq(this.arr()); }
@@ -55,7 +55,7 @@ class RSeq {
     *[Symbol.iterator]() {
         let i = 0;
         for (;;) {
-            if (i < this.cache.length) { yield this.cache[i++]; continue; }
+            if (i < this.memo.length) { yield this.memo[i++]; continue; }
             if (!this.pull()) return;
         }
     }
@@ -158,8 +158,13 @@ class RRange {
     reverse() { return mkSeq(this.arr().reverse()); }
 }
 function rangeEnd(v) { return (v instanceof RList || v instanceof RSeq || v instanceof RHash || v instanceof RSetty || v instanceof RRange) ? elemsOf(v) : (v instanceof RNum ? v : v); }
-function range(from, to, exFrom, exTo) { return new RRange(rangeEnd(from), rangeEnd(to), exFrom, exTo); }
-function upto(n) { return new RRange(0, rangeEnd(n), false, true); }           // ^n
+function range(from, to, exFrom, exTo) {
+    from = rangeEnd(from); to = rangeEnd(to);
+    if (typeof from === 'string' && isNumeric(to)) from = strToNumeric(from);
+    else if (typeof to === 'string' && isNumeric(from)) to = strToNumeric(to);
+    return new RRange(from, to, exFrom, exTo);
+}
+function upto(n) { const e = rangeEnd(n); return new RRange(0, typeof e === 'string' ? strToNumeric(e) : e, false, true); }           // ^n
 
 // Hash over a Map; keys are Str, insertion-ordered like the native engine.
 class RHash {
@@ -194,7 +199,7 @@ function hget(h, k) {
     if (h instanceof RHash) { if (typeof k !== 'string') { if (k instanceof RList || k instanceof RSeq || k instanceof RRange) return hslice(h, k); k = hashKey(k); } const v = h.m.get(k); return v === undefined ? Any : v; }
     if (h instanceof RSetty) return h.get(k);
     if (h instanceof RPair) return str(k) === str(h.k) ? h.v : Any;
-    if (h instanceof RObj) { const m = h.ty.find('AT-KEY'); if (m) return m(h, k); throw new RakuError(`Type ${h.ty.name} does not support associative indexing`); }
+    if (h instanceof RObj) { const m = h.ty.findUser('AT-KEY'); if (m) return m(h, k); throw new RakuError(`Type ${h.ty.name} does not support associative indexing`); }
     if (h instanceof RType) return Any;
     if (h instanceof RList) return aget(h, k);
     if (h instanceof RCapture) return h.named.get(str(k)) ?? Any;
@@ -211,11 +216,11 @@ function hset(h, k, v) {
         h.m.set(k, v); return v;
     }
     if (h instanceof RSetty) return h.set(k, v);
-    if (h instanceof RObj) { const m = h.ty.find('ASSIGN-KEY'); if (m) return m(h, k, v); const at = h.ty.find('AT-KEY'); if (at) { const c = at(h, k); if (c instanceof RScalar) { c.v = v; return v; } } throw new RakuError(`Type ${h.ty.name} does not support associative indexing`); }
+    if (h instanceof RObj) { const m = h.ty.findUser('ASSIGN-KEY'); if (m) return m(h, k, v); const at = h.ty.findUser('AT-KEY'); if (at) { const c = at(h, k); if (c instanceof RScalar) { c.v = v; return v; } } throw new RakuError(`Type ${h.ty.name} does not support associative indexing`); }
     throw new RakuError(`Cannot modify an immutable ${typeName(h)}`);
 }
-function hexists(h, k) { if (h instanceof RHash) return h.m.has(hashKey(k)); if (h instanceof RSetty) return h.m.has(whichKey(k)); if (h instanceof RObj) { const m = h.ty.find('EXISTS-KEY'); if (m) return truthy(m(h, k)); } if (h instanceof RPair) return str(k) === str(h.k); return false; }
-function hdelete(h, k) { if (h instanceof RHash) { const kk = hashKey(k); const v = h.m.get(kk); h.m.delete(kk); return v === undefined ? Any : v; } if (h instanceof RSetty) return h.delete(k); if (h instanceof RObj) { const m = h.ty.find('DELETE-KEY'); if (m) return m(h, k); } return Any; }
+function hexists(h, k) { if (h instanceof RHash) return h.m.has(hashKey(k)); if (h instanceof RSetty) return h.m.has(whichKey(k)); if (h instanceof RObj) { const m = h.ty.findUser('EXISTS-KEY'); if (m) return truthy(m(h, k)); } if (h instanceof RPair) return str(k) === str(h.k); return false; }
+function hdelete(h, k) { if (h instanceof RHash) { const kk = hashKey(k); const v = h.m.get(kk); h.m.delete(kk); return v === undefined ? Any : v; } if (h instanceof RSetty) return h.delete(k); if (h instanceof RObj) { const m = h.ty.findUser('DELETE-KEY'); if (m) return m(h, k); } return Any; }
 function hslice(h, ks) { return mkList(arr(ks).map(k => hget(h, k))); }
 // autovivify %h{k} as a container of the given sigil, then return it
 function hviv(h, k, sigil) {
@@ -238,7 +243,7 @@ function aviv(a, i, sigil) {
 }
 function assignHash(h, src) {
     const m = new Map();
-    const items = src instanceof RHash ? src.pairs() : listItems(src);
+    const items = src instanceof RHash ? src.pairs() : src instanceof RType ? [] : listItems(src);
     for (let i = 0; i < items.length; i++) {
         const it = items[i];
         if (it instanceof RPair) m.set(hashKey(it.k), it.v);
@@ -259,8 +264,10 @@ function pairValue(p) { return p.v; }
 
 // --- flattening and iteration ---------------------------------------------
 // The items a value contributes in list context (the single-argument rule).
+function objItems(v) { const m = v.ty.findUser('iterator'); if (!m) return null; const it = m(v); return Array.from(it && typeof it.next === 'function' ? { [Symbol.iterator]() { return it; } } : iter(it)); }
 function listItems(v) {
     if (v instanceof RList) return v.a;
+    if (v instanceof RObj) { const items = objItems(v); if (items) return items; }
     if (Array.isArray(v)) return v;                   // already an item list (the emitter's itemized form)
     if (v instanceof RSeq) return v.arr();
     if (v instanceof RRange) return v.arr();
@@ -281,6 +288,7 @@ function arr(v) {
 // `for` iteration: one pass, lazily where the source is lazy.
 function iter(v) {
     if (v instanceof RList) return v.a;
+    if (v instanceof RObj) { const items = objItems(v); if (items) return items; }
     if (Array.isArray(v)) return v;
     if (v instanceof RSeq) return v;
     if (v instanceof RRange) return v;
@@ -315,6 +323,7 @@ function arrayLit(items, single) {
 // The single-argument rule: an iterable's elements, an itemized value alone.
 function itemsOf(v) {
     if (v instanceof RList || v instanceof RSeq || v instanceof RRange || v instanceof RSlip || v instanceof RHash || v instanceof RSetty) return listItems(v);
+    if (v instanceof RObj) { const items = objItems(v); if (items) return items; }
     if (Array.isArray(v)) return v;
     if (v === Nil) return [];
     return [v];
@@ -358,7 +367,7 @@ function aget(a, i) {
     if (a instanceof RSeq) { if (typeof i === 'function') return aget(a.list(), i); if (i instanceof RList || i instanceof RSeq || i instanceof RRange) return aslice(a, i); const v = a.at(Number(toInt(i))); return v === undefined ? Any : v; }
     if (a instanceof RRange) { if (typeof i === 'function') return aget(mkList(a.arr()), i); if (i instanceof RList || i instanceof RSeq || i instanceof RRange) return aslice(a, i); const k = Number(toInt(i)); if (a.isIntRange()) { const lo = a.lo(); const v = add(lo, k); return a.isInfinite() || le(v, a.hi()) ? v : Any; } const v = a.arr()[k]; return v === undefined ? Any : v; }
     if (a instanceof RHash) return hget(a, i);
-    if (a instanceof RObj) { const m = a.ty.find('AT-POS'); if (m) return m(a, i); throw new RakuError(`Type ${a.ty.name} does not support positional indexing`); }
+    if (a instanceof RObj) { const m = a.ty.findUser('AT-POS'); if (m) return m(a, i); throw new RakuError(`Type ${a.ty.name} does not support positional indexing`); }
     if (a instanceof RType) return Any;
     if (a instanceof RPair) return Number(toInt(i)) === 0 ? a : Any;
     if (a instanceof RMatch) return a.pos(Number(toInt(i)));
@@ -380,15 +389,20 @@ function aset(a, i, v) {
         a.a[k] = v; return v;
     }
     if (a instanceof RHash) return hset(a, i, v);
-    if (a instanceof RObj) { const m = a.ty.find('ASSIGN-POS'); if (m) return m(a, i, v); const at = a.ty.find('AT-POS'); if (at) { const c = at(a, i); if (c instanceof RScalar) { c.v = v; return v; } } throw new RakuError(`Type ${a.ty.name} does not support positional indexing`); }
+    if (a instanceof RObj) { const m = a.ty.findUser('ASSIGN-POS'); if (m) return m(a, i, v); const at = a.ty.findUser('AT-POS'); if (at) { const c = at(a, i); if (c instanceof RScalar) { c.v = v; return v; } } throw new RakuError(`Type ${a.ty.name} does not support positional indexing`); }
     throw new RakuError(`Cannot modify an immutable ${typeName(a)}`);
 }
 function aslice(a, idxs) {
     // the element count is only needed for `*-1` style and open-ended indices, and forcing it would reify a lazy array
     const n = () => a instanceof RList ? a.elems() : a instanceof RSeq ? a.elems() : a.arr().length;
-    if (idxs instanceof RRange && idxs.isInfinite()) idxs = range(idxs.lo(), n() - 1);   /* @a[1..*] stops at the end */
+    if (idxs instanceof RRange && (typeof idxs.from === 'function' || typeof idxs.to === 'function' || idxs.to instanceof RWhatever || idxs.isInfinite())) {
+        const cnt = n();
+        const lo = typeof idxs.from === 'function' ? idxs.from(cnt) : idxs.from;
+        const hi = typeof idxs.to === 'function' ? idxs.to(cnt) : (idxs.to instanceof RWhatever || idxs.to === Infinity) ? cnt - 1 : idxs.to;
+        idxs = range(lo, hi, idxs.exFrom, idxs.exTo && !(idxs.to instanceof RWhatever));   /* @a[1..*] stops at the end */
+    }
     const out = []; for (const i of iter(idxs)) { if (i instanceof RWhatever) { out.push(...arr(a)); continue; } const k = typeof i === 'function' ? i(n()) : i; out.push(aget(a, k)); } return mkList(out); }
-function aexists(a, i) { if (a instanceof RList) { const k = typeof i === 'function' ? i(a.a.length) : Number(toInt(i)); return k >= 0 && k < a.a.length && a.a[k] !== undefined; } if (a instanceof RHash) return hexists(a, i); if (a instanceof RObj) { const m = a.ty.find('EXISTS-POS'); if (m) return truthy(m(a, i)); } return false; }
+function aexists(a, i) { if (a instanceof RList) { const k = typeof i === 'function' ? i(a.a.length) : Number(toInt(i)); return k >= 0 && k < a.a.length && a.a[k] !== undefined; } if (a instanceof RHash) return hexists(a, i); if (a instanceof RObj) { const m = a.ty.findUser('EXISTS-POS'); if (m) return truthy(m(a, i)); } return false; }
 function adelete(a, i) { if (a instanceof RList) { const k = typeof i === 'function' ? i(a.a.length) : Number(toInt(i)); const v = a.a[k]; if (k === a.a.length - 1) a.a.pop(); else if (k < a.a.length) a.a[k] = Any; return v === undefined ? Any : v; } if (a instanceof RHash) return hdelete(a, i); return Any; }
 function elemsOf(v) {
     if (v instanceof RList) return v.a.length;
@@ -398,7 +412,7 @@ function elemsOf(v) {
     if (v instanceof RSetty) return v.m.size;
     if (v instanceof RSlip) return v.a.length;
     if (v === Nil) return 0;
-    if (v instanceof RObj) { const m = v.ty.find('elems'); if (m) return m(v); return 1; }
+    if (v instanceof RObj) { const m = v.ty.findUser('elems'); if (m) return m(v); return 1; }
     if (v instanceof RCapture) return v.pos.length;
     return 1;
 }
@@ -458,8 +472,9 @@ function sortList(v, f) {
     keyed.sort((a, b) => cmpNum(a[0], b[0]));
     return mkSeq(keyed.map(p => p[1]));
 }
-function minOf(v, f) { let best; for (const x of iter(v)) { if (best === undefined || (f ? cmpNum(f(x), f(best)) < 0 : cmpNum(x, best) < 0)) best = x; } return best === undefined ? Infinity : best; }
-function maxOf(v, f) { let best; for (const x of iter(v)) { if (best === undefined || (f ? cmpNum(f(x), f(best)) > 0 : cmpNum(x, best) > 0)) best = x; } return best === undefined ? -Infinity : best; }
+// min/max skip undefined values, as the interpreter does
+function minOf(v, f) { let best; for (const x of iter(v)) { if (x instanceof RType) continue; if (best === undefined || (f ? cmpNum(f(x), f(best)) < 0 : cmpNum(x, best) < 0)) best = x; } return best === undefined ? Infinity : best; }
+function maxOf(v, f) { let best; for (const x of iter(v)) { if (x instanceof RType) continue; if (best === undefined || (f ? cmpNum(f(x), f(best)) > 0 : cmpNum(x, best) > 0)) best = x; } return best === undefined ? -Infinity : best; }
 function minmax(v) { const a = arr(v); if (!a.length) return range(Infinity, -Infinity); return range(minOf(a), maxOf(a)); }
 function uniqueList(v, f) {
     const seen = new Set(), out = [];
@@ -482,25 +497,29 @@ function tailOf(v, n) {
     const k = Number(toInt(n)); return mkSeq(k <= 0 ? [] : a.slice(-k));
 }
 function keysOf(v) {
+    if (v instanceof RType) return mkSeq([]);
     if (v instanceof RHash) return mkSeq(v.keys());
     if (v instanceof RPair) return mkSeq([v.k]);
     if (v instanceof RSetty) return mkSeq(v.keysList());
-    if (v instanceof RObj) { const m = v.ty.find('keys'); if (m) return m(v); }
+    if (v instanceof RObj) { const m = v.ty.findUser('keys'); if (m) return m(v); }
     const n = elemsOf(v); return mkSeq(Array.from({ length: n }, (_, i) => i));
 }
 function valuesOf(v) {
+    if (v instanceof RType) return mkSeq([]);
     if (v instanceof RHash) return mkSeq(v.values());
     if (v instanceof RPair) return mkSeq([v.v]);
     if (v instanceof RSetty) return mkSeq(v.valuesList());
     return mkSeq(arr(v).slice());
 }
 function kvOf(v) {
+    if (v instanceof RType) return mkSeq([]);
     if (v instanceof RHash) { const o = []; for (const [k, x] of v.m) o.push(k, x); return mkSeq(o); }
     if (v instanceof RPair) return mkSeq([v.k, v.v]);
     if (v instanceof RSetty) { const o = []; for (const p of v.pairsList()) o.push(p.k, p.v); return mkSeq(o); }
     const o = []; let i = 0; for (const x of iter(v)) o.push(i++, x); return mkSeq(o);
 }
 function pairsOf(v) {
+    if (v instanceof RType) return mkSeq([]);
     if (v instanceof RHash) return mkSeq(v.pairs());
     if (v instanceof RPair) return mkSeq([v]);
     if (v instanceof RSetty) return mkSeq(v.pairsList());
@@ -509,6 +528,7 @@ function pairsOf(v) {
 function antipairsOf(v) { return mkSeq(arr(pairsOf(v)).map(p => new RPair(p.v, p.k))); }
 function invertOf(v) { const o = []; for (const p of arr(pairsOf(v))) { for (const x of itemsOf(p.v)) o.push(new RPair(x, p.k)); } return mkSeq(o); }
 function pushTo(a, ...items) {
+    items = items.filter(x => !(x instanceof RNamed));   // a named argument contributes nothing
     if (a instanceof RHash) {
         const flat = []; for (const it of items) { if (it instanceof RSlip || it instanceof RList) flat.push(...itemsOf(it)); else flat.push(it); }
         for (let i = 0; i < flat.length; i++) {
@@ -520,30 +540,33 @@ function pushTo(a, ...items) {
         }
         return a;
     }
-    if (a instanceof RObj) { const m = a.ty.find('push'); if (m) return m(a, ...items); }
+    if (a instanceof RObj) { const m = a.ty.findUser('push'); if (m) return m(a, ...items); }
     if (!(a instanceof RList)) throw new RakuError(`Cannot call push on a ${typeName(a)}`);
     for (const it of items) { if (it instanceof RSlip) a.a.push(...it.a); else a.a.push(it); }
     return a;
 }
-function appendTo(a, ...items) { for (const it of items) a.a.push(...itemsOf(it)); return a; }
+function appendTo(a, ...items) { if (a instanceof RHash) return pushTo(a, ...items); for (const it of items) { if (it instanceof RNamed) continue; a.a.push(...itemsOf(it)); } return a; }
 function unshiftTo(a, ...items) { const add = []; for (const it of items) { if (it instanceof RSlip) add.push(...it.a); else add.push(it); } a.a.unshift(...add); return a; }
 function prependTo(a, ...items) { const add = []; for (const it of items) add.push(...itemsOf(it)); a.a.unshift(...add); return a; }
-function popFrom(a) { if (a instanceof RObj) { const m = a.ty.find('pop'); if (m) return m(a); } if (!(a instanceof RList) || !a.a.length) return failure(new RakuError('Cannot pop from an empty Array', 'X::Cannot::Empty')); return a.a.pop(); }
-function shiftFrom(a) { if (a instanceof RObj) { const m = a.ty.find('shift'); if (m) return m(a); } if (!(a instanceof RList) || !a.a.length) return failure(new RakuError('Cannot shift from an empty Array', 'X::Cannot::Empty')); return a.a.shift(); }
-function spliceArr(a, from, n, repl) {
+function popFrom(a) { if (a instanceof RObj) { const m = a.ty.findUser('pop'); if (m) return m(a); } if (!(a instanceof RList) || !a.a.length) return failure(new RakuError('Cannot pop from an empty Array', 'X::Cannot::Empty')); return a.a.pop(); }
+function shiftFrom(a) { if (a instanceof RObj) { const m = a.ty.findUser('shift'); if (m) return m(a); } if (!(a instanceof RList) || !a.a.length) return failure(new RakuError('Cannot shift from an empty Array', 'X::Cannot::Empty')); return a.a.shift(); }
+function spliceArr(a, from, n, ...replArgs) {
+    const repl = replArgs.length === 0 ? undefined : replArgs.length === 1 ? replArgs[0] : mkList(spliceSlips(replArgs));
     const f = from === undefined ? 0 : Number(typeof from === 'function' ? from(a.a.length) : toInt(from));
-    const k = n === undefined ? a.a.length - f : Number(typeof n === 'function' ? n(a.a.length) : toInt(n));
+    const k = n === undefined ? a.a.length - f : Number(typeof n === 'function' ? n(a.a.length - f) : toInt(n));   // a `*` count is relative to what is left
     const removed = a.a.splice(f, k, ...(repl === undefined ? [] : itemsOf(repl)));
     return mkArray(removed);
 }
 function reduceList(f, v) {
+    if (v instanceof RType) return Nil;
+    if (f.rightAssoc) return reduceOp(f.opName, v);   // .reduce(&[**]) folds from the right
     const it = iter(v)[Symbol.iterator]();
     let r = it.next(); if (r.done) return Nil;
     let acc = r.value;
     for (;;) { r = it.next(); if (r.done) break; acc = f(acc, r.value); }
     return acc;
 }
-function produceList(f, v) { const out = []; let acc; let first = true; for (const x of iter(v)) { acc = first ? x : f(acc, x); first = false; out.push(acc); } return mkSeq(out); }
+function produceList(f, v) { if (f.rightAssoc) return reduceOp(f.opName, v, true); const out = []; let acc; let first = true; for (const x of iter(v)) { acc = first ? x : f(acc, x); first = false; out.push(acc); } return mkSeq(out); }
 function zipLists(lists, f) {
     const as = lists.map(l => arr(l));
     const n = Math.min(...as.map(a => a.length));
@@ -591,8 +614,9 @@ function rollFrom(v, n) {
     for (let i = 0; i < k; i++) out.push(a[Math.floor(rand() * a.length)]);
     return mkSeq(out);
 }
-function classifyList(v, f) { const h = new RHash(); for (const x of iter(v)) { const k = hashKey(f(x)); let b = h.m.get(k); if (!b) { b = mkArray([]); h.m.set(k, b); } b.a.push(x); } return h; }
-function categorizeList(v, f) { const h = new RHash(); for (const x of iter(v)) for (const key of itemsOf(f(x))) { const k = hashKey(key); let b = h.m.get(k); if (!b) { b = mkArray([]); h.m.set(k, b); } b.a.push(x); } return h; }
+function classifyList(v, f, as) { const h = new RHash(); for (const x of iter(v)) { const k = hashKey(f(x)); let b = h.m.get(k); if (!b) { b = mkArray([]); h.m.set(k, b); } b.a.push(as ? as(x) : x); } return h; }
+function categorizeList(v, f, as) { const h = new RHash(); for (const x of iter(v)) for (const key of itemsOf(f(x))) { const k = hashKey(key); let b = h.m.get(k); if (!b) { b = mkArray([]); h.m.set(k, b); } b.a.push(as ? as(x) : x); } return h; }
+function repeatedList(v, f) { const seen = new Set(), out = []; for (const x of iter(v)) { const k = whichKey(f ? f(x) : x); if (seen.has(k)) out.push(x); else seen.add(k); } return mkSeq(out); }
 function combinations(v, n) {
     const a = arr(v);
     const sizes = n === undefined ? Array.from({ length: a.length + 1 }, (_, i) => i) : n instanceof RRange ? n.arr().map(Number) : [Number(toInt(n))];
@@ -636,7 +660,9 @@ function whichKey(v) {
             if (v instanceof REnum) return v.ty.name + '|' + v.key;
             if (v instanceof RPair) return 'Pair|' + whichKey(v.k) + '|' + whichKey(v.v);
             if (v instanceof RList) return v.ty.name + '|' + v.a.map(whichKey).join(',');
-            if (v instanceof RObj) { const m = v.ty.find('WHICH'); if (m) return str(m(v)); return v.ty.name + '|' + objId(v); }
+            if (v instanceof RObj) { const m = v.ty.findUser('WHICH'); if (m) return str(m(v)); return v.ty.name + '|' + objId(v); }
+            if (v instanceof RDate) return v.ty.name + '|' + v.d.getTime();
+            if (v instanceof RVersion) return 'Version|' + v.Str();
             return typeName(v) + '|' + objId(v);
     }
 }
@@ -690,7 +716,7 @@ function smartmatch(v, pat) {
     if (pat instanceof RSetty) return pat.has(v);
     if (pat instanceof REnum) return v instanceof REnum ? v === pat : (isNumeric(v) ? numeq(v, pat.val) : str(v) === pat.key);
     if (pat instanceof RWhatever) return true;
-    if (pat instanceof RObj) { const m = pat.ty.find('ACCEPTS'); if (m) return truthy(m(pat, v)); return identical(v, pat); }
+    if (pat instanceof RObj) { const m = pat.ty.findUser('ACCEPTS'); if (m) return truthy(m(pat, v)); return identical(v, pat); }
     if (pat instanceof RakuError) return v instanceof RakuError && v.type === pat.type;
     if (pat instanceof RVersion) return v instanceof RVersion && v.cmp(pat) === 0;
     return eqv(v, pat);
@@ -700,7 +726,7 @@ Object.assign(R, {
     RList, RSeq, RRange, RHash, mkList, mkArray, mkSeq, mkSlip, seqOf, range, upto, mkHash, hashKey, hget, hset, hexists, hdelete, hslice,
     hviv, aviv, assignHash, hashLit, hashFrom, pair, pairKey, pairValue, listItems, arr, iter, iterN, list, arrayLit, itemsOf,
     assignArray, newArray, newHash, flat, slip, spreadArgs, aget, aset, aslice, aexists, adelete, elemsOf,
-    mapList, grepList, matcherOf, firstOf, joinList, reverseList, sumList, sortList, orderNum, minOf, maxOf, minmax, uniqueList, squishList,
+    mapList, grepList, matcherOf, firstOf, repeatedList, joinList, reverseList, sumList, sortList, orderNum, minOf, maxOf, minmax, uniqueList, squishList,
     headOf, tailOf, keysOf, valuesOf, kvOf, pairsOf, antipairsOf, invertOf, pushTo, appendTo, unshiftTo, prependTo, popFrom, shiftFrom, spliceArr,
     reduceList, produceList, zipLists, crossLists, rotateList, rotorList, batchList, pickFrom, rollFrom, classifyList, categorizeList,
     combinations, permutations, listRepeat, endOf, whichKey, junction, junctionBool, junctionOp, smartmatch, spliceSlips,

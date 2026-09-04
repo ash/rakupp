@@ -34,6 +34,12 @@ class RType {
     }
     isa(t) { return this.mro.includes(t) || (t.isRole && this.doesRole(t)); }
     doesRole(t) { for (const m of this.mro) if (m.roles.includes(t) || m === t) return true; return false; }
+    // a method a USER type defines (never the core table's own implementation,
+    // which the helpers below would otherwise call back into)
+    findUser(name) {
+        for (const t of this.mro) if (t.isUser) { const m = t.methods[name]; if (m) return m; }
+        return null;
+    }
     find(name) {
         const c = this.cache[name];
         if (c !== undefined) return c;
@@ -186,6 +192,7 @@ function typeOf(v) {
             if (v instanceof RSetty) return v.ty;
             if (v instanceof RComplex) return T.Complex;
             if (v instanceof RIOPath) return T['IO::Path'];
+            if (v instanceof RSig) return T.Signature;
             if (v instanceof RIOHandle) return T['IO::Handle'];
             if (v instanceof RVersion) return T.Version;
             if (v instanceof RDate) return v.ty;
@@ -235,7 +242,7 @@ function truthy(v) {
             if (v instanceof RFailure) { v.handled = true; return false; }
             if (v instanceof REnum) return truthy(v.val);
             if (v instanceof RJunction) return junctionBool(v);
-            if (v instanceof RObj) { const m = v.ty.find('Bool'); if (m) return truthy(m(v)); return true; }
+            if (v instanceof RObj) { const m = v.ty.findUser('Bool'); if (m) return truthy(m(v)); return true; }
             if (v instanceof RSetty) return v.m.size !== 0;
             if (v instanceof RComplex) return v.re !== 0 || v.im !== 0;
             return true;
@@ -264,7 +271,7 @@ function toNumeric(v, op) {
             if (v instanceof RFailure) throw v.err;
             if (v instanceof RPair) return toNumeric(v.v);
             if (v instanceof RObj) {
-                const m = v.ty.find('Numeric') || v.ty.find('Int') || v.ty.find('Num');
+                const m = v.ty.findUser('Numeric') || v.ty.findUser('Int') || v.ty.findUser('Num');
                 if (m) return toNumeric(m(v));
                 throw new RakuError(`Cannot convert ${v.ty.name} to a number`);
             }
@@ -403,7 +410,7 @@ function arith(op, a, b) {
         case '*': return normBig(p * q);
         case '/': return q === 0n ? mkRat(p, 0n) : ratResult(p, q);
         case '%': {
-            if (q === 0n) throw new RakuError(`Attempt to divide ${str(a)} by zero using infix:<%>`, 'X::Numeric::DivideByZero');
+            if (q === 0n) return failure(new RakuError(`Attempt to divide ${str(a)} by zero using infix:<%>`, 'X::Numeric::DivideByZero'));
             let r = p % q; if (r !== 0n && ((r < 0n) !== (q < 0n))) r += q;
             return normBig(r);
         }
@@ -466,15 +473,17 @@ function neg(a) {
     if (x instanceof RComplex) return new RComplex(-x.re, -x.im);
     return neg(x);
 }
+// the divisor of div/mod decides first: a non-finite one has no Int and counts as zero
+function divisorInt(b) { const n = toNumeric(b); const f = (typeof n === 'number' || n instanceof RNum) ? toFloat(n) : null; if (f !== null && !Number.isFinite(f)) return 0n; return big(toIntStrict(n, 'div')); }
 function idiv(a, b) {          // infix:<div>
-    const p = big(toIntStrict(a, 'div')), q = big(toIntStrict(b, 'div'));
-    if (q === 0n) throw new RakuError(`Attempt to divide ${str(a)} by zero using div`, 'X::Numeric::DivideByZero');
+    const q = divisorInt(b), p = big(toIntStrict(a, 'div'));
+    if (q === 0n) return failure(new RakuError(`Attempt to divide ${str(a)} by zero using div`, 'X::Numeric::DivideByZero'));   // soft: a Failure that throws when used
     let r = p / q; if (p % q !== 0n && ((p < 0n) !== (q < 0n))) r -= 1n;
     return normBig(r);
 }
 function imod(a, b) {          // infix:<mod>
-    const p = big(toIntStrict(a, 'mod')), q = big(toIntStrict(b, 'mod'));
-    if (q === 0n) throw new RakuError(`Attempt to divide ${str(a)} by zero using mod`, 'X::Numeric::DivideByZero');
+    const q = divisorInt(b), p = big(toIntStrict(a, 'mod'));
+    if (q === 0n) throw new RakuError(`Attempt to divide ${str(a)} by zero using mod`, 'X::Numeric::DivideByZero');   // `mod` throws where `div` and `%` soft-fail
     let r = p % q; if (r !== 0n && ((r < 0n) !== (q < 0n))) r += q;
     return normBig(r);
 }
@@ -623,7 +632,7 @@ function str(v) {
             if (v instanceof RFailure) throw v.err;
             if (v instanceof RSlip) return v.a.map(str).join(' ');
             if (v instanceof RObj) {
-                const m = v.ty.find('Str'); if (m) return str(m(v));
+                const m = v.ty.findUser('Str'); if (m) return str(m(v));
                 return v.ty.name + '<' + objId(v) + '>';
             }
             if (v instanceof RJunction) return junctionStr(v);
@@ -665,7 +674,7 @@ function gist(v) {
             if (v instanceof RFailure) return '(HANDLED) ' + v.err.message;
             if (v instanceof RSlip) return listGistOf(v.a, '(', ')');
             if (v instanceof RObj) {
-                const m = v.ty.find('gist'); if (m) return str(m(v));
+                const m = v.ty.findUser('gist'); if (m) return str(m(v));
                 return objGist(v);
             }
             if (v instanceof RJunction) return junctionGist(v);
@@ -689,10 +698,11 @@ function listGistOf(items, open, close) {
     if (n > 100) parts.push('...');
     return open + parts.join(' ') + close;
 }
+// the default object gist is its .raku: derived class's attributes first, values as .raku
 function objGist(o) {
     const parts = [];
-    for (const a of o.ty.allAttrs()) if (a.pub) parts.push(a.name + ' => ' + gist(o['a_' + a.name]));
-    return o.ty.name + '.new(' + parts.join(', ') + ')';
+    for (const a of o.ty.allAttrs()) if (a.pub) parts.push(a.name + ' => ' + raku(o['a_' + a.name]));
+    return o.ty.name + '.new' + (parts.length ? '(' + parts.join(', ') + ')' : '');
 }
 // .raku
 function raku(v) {
@@ -716,7 +726,7 @@ function raku(v) {
             if (v instanceof RakuError) return v.type + '.new(message => ' + strLit(v.message) + ')';
             if (v instanceof RSlip) return 'slip(' + v.a.map(raku).join(', ') + ')';
             if (v instanceof RObj) {
-                const m = v.ty.find('raku'); if (m) return str(m(v));
+                const m = v.ty.findUser('raku'); if (m) return str(m(v));
                 const parts = [];
                 for (const a of v.ty.allAttrs()) if (a.pub) parts.push(a.name + ' => ' + raku(v['a_' + a.name]));
                 return v.ty.name + '.new(' + parts.join(', ') + ')';
@@ -815,6 +825,8 @@ function eqv(a, b) {
     }
     if (a instanceof RSetty && b instanceof RSetty) return a.eqv(b);
     if (a instanceof RComplex && b instanceof RComplex) return a.re === b.re && a.im === b.im;
+    if (a instanceof RDate && b instanceof RDate) return a.ty === b.ty && a.d.getTime() === b.d.getTime();
+    if (a instanceof RVersion && b instanceof RVersion) return a.cmp(b) === 0;
     return false;
 }
 

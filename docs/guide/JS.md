@@ -18,7 +18,9 @@ rakupp --target=js prog.raku -o prog.js --fallback=wasm   # accept anything, via
 node prog.js                                  # run it (bun, deno too)
 ```
 
-- **Without `-o`** the program goes to stdout, as `--cpp` does.
+- **Without `-o`** the program goes to stdout, as `--cpp` does; it still
+  imports `./rakupp-rt.js`, which `rakupp --target=js --runtime -o rakupp-rt.js`
+  writes on its own.
 - **With `-o prog.js`** the program is written as an ES module that imports the
   runtime from `./rakupp-rt.js`, which is written next to it from the copy
   embedded in the `rakupp` binary — the program always gets the runtime it was

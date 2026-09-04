@@ -591,10 +591,19 @@ What landed, measured on the benchmark machine (Darwin 24.6, arm64, Node
   generator or eagerly, `CATCH`/`LEAVE`/`END`, junctions, sets/bags/mixes,
   `MAIN` with the interpreter's usage shape, IO::Path under Node/Bun/Deno.
 - **Numbers.** The six kernels agree with the interpreter under `--verify`.
-  Examples: 16 of 21 in-core and agreeing; the other 5 are the four
+  Examples: 15 of 21 in-core and agreeing; the other 6 are the five
   regex/grammar programs (P3) and `life` (random seed, not judgeable).
-  Regression corpus (417 programs, the edge-case suite by design): **35
-  agree, 306 refused, 96 disagreeing**. The refusal histogram's head is
+  Regression corpus (418 programs, the edge-case suite by design): **60
+  agree, 307 refused, 71 disagreeing** (the first commit read 35/306/96;
+  the second sitting's batches — lexically scoped sub names, placeholders
+  in signature-less subs, user-method lookups that no longer recurse into
+  the core tables, modifier-form declarations, Iterable objects, the
+  evaluation order of compound assignment through a subscript, sink
+  context (a Failure throws, a lazy Seq runs), soft `div`/`%` by zero,
+  multi narrowness by type depth with untyped-is-Any, `--runtime` — moved
+  twenty-five). What is left is mostly design-level: container
+  itemization (`$(1, 2)`), binding through slots, allomorphs, DateTime
+  zones, Version wildcards, `.rw` accessors through `handles`. The refusal histogram's head is
   legitimate — names outside the core (Proc::Async, Buf, Supplier…), regex
   matches and literals, grammars, EVAL, NativeCall, nqp, programs that spawn
   `$*EXECUTABLE` — and the disagreements are a long tail of one-feature

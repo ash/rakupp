@@ -7,7 +7,7 @@ function blk(f, arity, count) { f.arity = arity; f.count = count === undefined ?
 function wc(f, arity) { f.arity = arity; f.count = arity; f.rtype = T.WhateverCode; return f; }
 function callCode(f, ...args) {
     if (typeof f === 'function') return f(...args);
-    if (f instanceof RObj) { const m = f.ty.find('CALL-ME'); if (m) return m(f, ...args); }
+    if (f instanceof RObj) { const m = f.ty.findUser('CALL-ME'); if (m) return m(f, ...args); }
     if (f instanceof RScalar) return callCode(f.v, ...args);
     if (f instanceof RType && f.isUser) return construct(f, ...args);
     throw new RakuError(`Cannot call a ${typeName(f)} (it is not a Callable)`);
@@ -29,7 +29,7 @@ function pAdverb(c, k, isHash) { const ex = isHash ? hexists(c, k) : aexists(c, 
 function listAppendAssign(cur, v) { const items = itemsOf(cur).slice(); items.push(...itemsOf(v)); return mkList(items); }
 // $obj.attr = v through an `is rw` accessor
 function mcSet(inv, name, v) {
-    if (inv instanceof RObj) { const m = inv.ty.find(name); if (m && m.lvKey) { inv[m.lvKey] = v; return v; } if (m) { const r = m(inv); if (r instanceof RScalar) { r.v = v; return v; } } }
+    if (inv instanceof RObj) { const m = inv.ty.findUser(name); if (m && m.lvKey) { inv[m.lvKey] = v; return v; } if (m) { const r = m(inv); if (r instanceof RScalar) { r.v = v; return v; } } }
     throw new RakuError(`Cannot modify an immutable value returned by .${name}`);
 }
 // $obj.^name / Foo.^methods
@@ -84,4 +84,15 @@ function isaSubset(v, t) {
 // *@args flattening: one level of iterables
 function slurpyFlat(items) { const out = []; for (const x of items) { if (x instanceof RList && x.ty !== T.Array || x instanceof RSeq || x instanceof RRange || x instanceof RSlip) out.push(...listItems(x)); else if (x instanceof RList) out.push(...x.a); else out.push(x); } return out; }
 function vivArray(v) { return (v instanceof RType || v === undefined) ? mkArray([]) : v; }
-Object.assign(R, { vivArray, blk, wc, callCode, rwBox, throwCtl, xxThunk, namedFromHash, kvAdverb, pAdverb, listAppendAssign, mcSet, meta, coerce, dynGet, dynSet, approxEq, rangeIter, subset, slurpyFlat, factorial, isaSubset });
+function withOf(c, ty) { c.of = ty; return c; }
+function isAny(v) { return v !== Mu && !(v instanceof RJunction); }
+// a minimal Signature object: what .signature.count / .arity / .params answer
+class RSig { constructor(f) { this.f = f; } }
+
+T.Signature.methods.count = s => s.f.count !== undefined ? s.f.count : (s.f.arity !== undefined ? s.f.arity : s.f.length);
+T.Signature.methods.arity = s => s.f.arity !== undefined ? s.f.arity : s.f.length;
+T.Signature.methods.params = s => mkList([]);
+T.Signature.methods.gist = s => '(' + Array.from({ length: T.Signature.methods.arity(s) }, (_, i) => '$' + String.fromCharCode(97 + i)).join(', ') + ')';
+T.Signature.methods.Str = T.Signature.methods.gist;
+T.Signature.methods.returns = s => T.Mu;
+Object.assign(R, { vivArray, withOf, isAny, RSig, blk, wc, callCode, rwBox, throwCtl, xxThunk, namedFromHash, kvAdverb, pAdverb, listAppendAssign, mcSet, meta, coerce, dynGet, dynSet, approxEq, rangeIter, subset, slurpyFlat, factorial, isaSubset });

@@ -930,6 +930,7 @@ static int declCheckGate(const std::string& src, const std::string& fileName,
 
 // ---- --target=js ------------------------------------------------------------
 static bool g_jsVerify = false;
+static bool g_jsRuntimeOnly = false;
 static std::string g_jsFallback;
 
 static std::string jsHostCommand() {
@@ -1635,6 +1636,7 @@ int main(int argc, char** argv) {
             // the interpreter and the JS host and emits only on agreement;
             // --fallback=wasm opts in to the WebAssembly-wrapper tier.
             if (a == "--verify") { g_jsVerify = true; continue; }
+            if (a == "--runtime") { g_jsRuntimeOnly = true; continue; }
             if (a.rfind("--fallback=", 0) == 0) {
                 std::string f = a.substr(11);
                 if (f != "wasm") { std::cerr << "Unknown --fallback '" << f << "' (supported: wasm)\n"; return 4; }
@@ -1798,7 +1800,7 @@ int main(int argc, char** argv) {
             }
         }
         if (!outPath.empty() && !isCompileMode(mode) && mode != Mode::Js) return illegalOpt("-o");
-        if ((g_jsVerify || !g_jsFallback.empty()) && mode != Mode::Js) return illegalOpt(g_jsVerify ? "--verify" : "--fallback");
+        if ((g_jsVerify || g_jsRuntimeOnly || !g_jsFallback.empty()) && mode != Mode::Js) return illegalOpt(g_jsVerify ? "--verify" : g_jsRuntimeOnly ? "--runtime" : "--fallback");
         if (optimize && !isCompileMode(mode) && mode != Mode::Cpp) return illegalOpt("-O");
         // --slim shapes the LINK of a compiled binary, so it means nothing to
         // the interpreter or to --cpp (which emits source and never links).
@@ -1954,7 +1956,8 @@ int main(int argc, char** argv) {
 "                               --standalone inlines the runtime). --verify runs the\n"
 "                               program under the interpreter and under node and\n"
 "                               emits only if they agree; --fallback=wasm accepts a\n"
-"                               program outside the JS core by wrapping the WASM engine\n"
+"                               program outside the JS core by wrapping the WASM engine;\n"
+"                               --runtime writes just the runtime module\n"
 "  rakupp --highlight [SRC]     Syntax-highlight Raku (--html [default] / --ansi;\n"
 "                               reads stdin if no SRC), e.g. as a pygmentize drop-in.\n"
 "                               Flags compose in any order; bare `rakupp --ansi SRC`\n"
@@ -2264,7 +2267,14 @@ int main(int argc, char** argv) {
 
     // --target=js : transpile to JavaScript (TRANSPILE-PLAN.md)
     if (mode == Mode::Js) {
-        if (!haveSrc) { std::cerr << "Usage: rakupp --target=js (FILE | -e CODE) [-o OUT.js] [--standalone] [--verify] [--fallback=wasm]\n"; return 4; }
+        if (g_jsRuntimeOnly) {   // --target=js --runtime [-o rakupp-rt.js]: the sidecar alone, for a program written to stdout
+            if (outPath.empty()) { std::cout << jsRuntimeModule(); return 0; }
+            std::ofstream f = openOut(outPath); if (!f) { std::cerr << "Cannot write " << outPath << "\n"; return 5; }
+            f << jsRuntimeModule();
+            if (!g_quiet) std::cerr << "Wrote the JavaScript runtime -> " << outPath << "\n";
+            return 0;
+        }
+        if (!haveSrc) { std::cerr << "Usage: rakupp --target=js (FILE | -e CODE) [-o OUT.js] [--standalone] [--verify] [--fallback=wasm]\n       rakupp --target=js --runtime [-o rakupp-rt.js]\n"; return 4; }
         return compileJs(src, fileName, outPath, exePath, libPaths);
     }
 

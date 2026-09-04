@@ -38,6 +38,7 @@ function round(v, scale) {
         // q = x/s = xn*sd / (xd*sn)
         const qn = xn * sd, qd = xd * sn;
         let n = qn * 2n + qd; let q = n / (2n * qd); if (n < 0n && n % (2n * qd) !== 0n) q -= 1n;
+        if (isIntVal(s)) return normBig(q * sn);   // the answer takes the SCALE's type: an Int scale gives an Int
         return ratResult(q * sn, sd);
     }
     const f = toFloat(x), sc = toFloat(s);
@@ -66,13 +67,25 @@ function millerRabin(n) {
     return true;
 }
 function expmod(b, e, m) { let base = big(b) % big(m), ex = big(e), mod = big(m), res = 1n; if (ex < 0n) throw new RakuError('expmod with negative exponent'); while (ex > 0n) { if (ex & 1n) res = res * base % mod; base = base * base % mod; ex >>= 1n; } return normBig(res); }
-function polymod(v, ...mods) { let n = big(v); const out = []; for (const m of mods) { const mm = big(m); if (mm === 0n) throw new RakuError('Attempt to divide by zero using polymod', 'X::Numeric::DivideByZero'); let r = n % mm; if (r < 0n) r += mm; out.push(normBig(r)); n = (n - r) / mm; } out.push(normBig(n)); return mkList(out); }
+function polymod(v, ...mods) {
+    let n = big(v); const out = [];
+    // the moduli may be a list, and a lazy one (`2**32 xx *`): stop when nothing is left
+    const src = mods.length === 1 && (mods[0] instanceof RList || mods[0] instanceof RSeq || mods[0] instanceof RRange) ? mods[0] : mods;
+    const lazy = src instanceof RSeq && src.lazy;
+    for (const m of iter(src)) {
+        if (lazy && n === 0n) break;
+        const mm = big(m); if (mm === 0n) throw new RakuError('Attempt to divide by zero using polymod', 'X::Numeric::DivideByZero');
+        let r = n % mm; if (r < 0n) r += mm; out.push(normBig(r)); n = (n - r) / mm;
+    }
+    if (!lazy || n !== 0n) out.push(normBig(n));
+    return mkList(out);
+}
 function factorial(v) { let n = big(v), r = 1n; for (let i = 2n; i <= n; i++) r *= i; return normBig(r); }
 function rand() { return host.random(); }
 function randNum(v) { return numResult(toFloat(v) * host.random()); }
 function srand(seed) { host.srand(Number(toInt(seed))); return seed; }
 function roundTo(v, n) { return round(v, n); }
-function minmaxOf(...v) { return minmax(mkList(v)); }
+function minmaxOf(...args) { const [pos, named] = splitArgs(args); const src = pos.length === 1 ? pos[0] : mkList(pos); const by = named.get('by'); return by ? range(minOf(src, by), maxOf(src, by)) : minmax(src); }
 function min(...args) { const [pos, named] = splitArgs(args); return minOf(pos.length === 1 ? pos[0] : mkList(pos), named.get('by')); }
 function max(...args) { const [pos, named] = splitArgs(args); return maxOf(pos.length === 1 ? pos[0] : mkList(pos), named.get('by')); }
 function sum(...args) { return sumList(args.length === 1 ? args[0] : mkList(args)); }
@@ -166,14 +179,14 @@ const OPS = {
     'Z': (a, b) => zipLists([a, b]), 'X': (a, b) => crossLists([a, b]),
     'but': (a, b) => a, 'does': (a, b) => a,
     'o': (f, g) => (...a) => f(g(...a)), '∘': (f, g) => (...a) => f(g(...a)),
-    'before': (a, b) => cmpNum(a, b) < 0, 'after': (a, b) => cmpNum(a, b) > 0, 'minmax': (a, b) => range(a, b), '!===': (a, b) => !identical(a, b),
+    'before': (a, b) => cmpNum(a, b) < 0, 'after': (a, b) => cmpNum(a, b) > 0, 'minmax': (a, b) => !defined(a) ? range(b, b) : !defined(b) ? range(a, a) : cmpNum(a, b) <= 0 ? range(a, b) : range(b, a), '!===': (a, b) => !identical(a, b),
     'unicmp': (a, b) => leg(a, b), 'coll': (a, b) => leg(a, b), '!eqv': (a, b) => !eqv(a, b), '!=:=': (a, b) => !identical(a, b),
     '!(elem)': (a, b) => !elem(a, b), '∉': (a, b) => !elem(a, b), '!(cont)': (a, b) => !elem(b, a), '∌': (a, b) => !elem(b, a),
     '~&': (a, b) => strBitOp(a, b, (x, y) => x & y), '~|': (a, b) => strBitOp(a, b, (x, y) => x | y), '~^': (a, b) => strBitOp(a, b, (x, y) => x ^ y),
 };
 function strBitOp(a, b, f) { const x = str(a), y = str(b); const n = Math.max(x.length, y.length); let o = ''; for (let i = 0; i < n; i++) o += String.fromCharCode(f(x.charCodeAt(i) || 0, y.charCodeAt(i) || 0)); return o; }
 const OP_IDENTITY = { '+': 0, '-': 0, '*': 1, '~': '', '&&': true, '||': false, 'and': true, 'or': false, 'min': Infinity, 'max': -Infinity, '+|': 0, '+&': -1, '+^': 0, 'gcd': 0, 'lcm': 1, '?|': false, '?&': true, '?^': false, 'xor': false, '**': 1, '(|)': undefined };
-function opFn(op) { const f = OPS[op]; if (!f) throw new RakuError(`operator ${op} is not in the JS core yet`); return f; }
+function opFn(op) { const f = OPS[op]; if (!f) throw new RakuError(`operator ${op} is not in the JS core yet`); f.opName = op; f.rightAssoc = RIGHT_OPS.has(op); return f; }
 // [op] LIST — the reduce metaoperator, with chaining for comparison ops
 const CHAIN_OPS = new Set(['==', '!=', '<', '<=', '>', '>=', 'eq', 'ne', 'lt', 'le', 'gt', 'ge', '===', 'eqv', '=:=', '~~']);
 const RIGHT_OPS = new Set(['**', '=>', 'xx', 'x']);
@@ -182,15 +195,16 @@ function reduceOp(op, v, triangle) {
     const f = opFn(op);
     if (triangle) {
         if (!items.length) return mkSeq([]);
-        if (RIGHT_OPS.has(op)) {   // [\**] 2,3,4 → (4 81 2**81): the folds from the right
-            const out = []; let acc = items[items.length - 1]; out.unshift(acc);
-            for (let i = items.length - 2; i >= 0; i--) { acc = f(items[i], acc); out.unshift(acc); }
+        if (RIGHT_OPS.has(op)) {   // [\**] 2,3,4 → (4 81 2**81): the folds from the right, in that order
+            const out = []; let acc = items[items.length - 1]; out.push(acc);
+            for (let i = items.length - 2; i >= 0; i--) { acc = f(items[i], acc); out.push(acc); }
             return mkSeq(out);
         }
         const out = []; let acc = items[0]; out.push(acc);
         for (let i = 1; i < items.length; i++) { acc = f(acc, items[i]); out.push(acc); }
         return mkSeq(out);
     }
+    if (v instanceof RRange && v.isInfinite()) { if (op === '+' || op === '*') return Infinity; throw new RakuError('Cannot reduce an infinite Range'); }
     if (!items.length) { if (op in OP_IDENTITY && OP_IDENTITY[op] !== undefined) return OP_IDENTITY[op]; return Nil; }
     if (CHAIN_OPS.has(op)) { for (let i = 0; i + 1 < items.length; i++) if (!truthy(f(items[i], items[i + 1]))) return false; return true; }
     if (op === '<=>' || op === 'cmp' || op === 'leg') { if (items.length === 1) return Nil; let acc = f(items[0], items[1]); for (let i = 2; i < items.length && (acc instanceof REnum && acc.val === 0); i++) acc = f(items[i - 1], items[i]); return acc; }

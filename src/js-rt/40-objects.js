@@ -17,6 +17,8 @@ function die(...args) {
     }
     throw new RakuError(args.length ? args.map(str).join('') : 'Died');
 }
+// sink context: a Failure throws, a lazy Seq is iterated (`@in.map({ … })` as a statement runs)
+function sink(v) { if (v instanceof RFailure && !v.handled) throw v.err; if (v instanceof RSeq && !v.done) v.arr(); return v; }
 function failure(err) { return new RFailure(err instanceof RakuError ? err : new RakuError(str(err))); }
 function fail(...args) {
     if (args.length === 1 && (args[0] instanceof RakuError)) return failure(args[0]);
@@ -31,7 +33,7 @@ function exc(e) {
     return new RakuError(String(e), 'X::AdHoc');
 }
 function isControl(e) { return e instanceof NextCtl || e instanceof LastCtl || e instanceof RedoCtl || e instanceof RetCtl || e instanceof ExitCtl || e instanceof SuccCtl || e instanceof TakeCtl; }
-function excMessage(e) { if (e instanceof RakuError) return e.message; if (e instanceof RObj) { const m = e.ty.find('message'); if (m) return str(m(e)); const a = e['a_message']; if (a !== undefined) return str(a); } return str(e); }
+function excMessage(e) { if (e instanceof RakuError) return e.message; if (e instanceof RObj) { const m = e.ty.findUser('message'); if (m) return str(m(e)); const a = e['a_message']; if (a !== undefined) return str(a); } return str(e); }
 function excType(e) { if (e instanceof RakuError) return T[e.type] || mkExType(e.type); if (e instanceof RObj) return e.ty; return T.Exception; }
 function mkExType(name) { if (!T[name]) { const t = mkType(name, [T.Exception]); return t; } return T[name]; }
 function rethrow(e) { throw e; }
@@ -79,9 +81,9 @@ function defClass(name, spec) {
         }
     }
     ty.ctor = function () { };
-    ty.allAttrs = function () {
+    ty.allAttrs = function () {         // derived class first, as the interpreter renders them
         const out = [];
-        for (let i = this.mro.length - 1; i >= 0; i--) { const t = this.mro[i]; if (t.attrs) for (const a of t.attrs) if (!out.some(x => x.name === a.name)) out.push(a); }
+        for (const t of this.mro) if (t.attrs) for (const a of t.attrs) if (!out.some(x => x.name === a.name)) out.push(a);
         return out;
     };
     if (name) T[name] = ty;
@@ -110,10 +112,10 @@ function construct(ty, ...args) {
     }
     if (ty.isRole) { const anon = defClass(null, { parents: [T.Any], roles: [ty] }); anon.name = ty.name; return construct(anon, ...args); }
     const [pos, named] = splitArgs(args);
-    if (pos.length && !ty.find('BUILD') && !ty.find('new')) throw new RakuError(`Default constructor for '${ty.name}' only takes named arguments`, 'X::Attribute::NoDefault');
+    if (pos.length && !ty.findUser('BUILD') && !ty.findUser('new')) throw new RakuError(`Default constructor for '${ty.name}' only takes named arguments`, 'X::Attribute::NoDefault');
     const o = new RObj(ty);
     const used = new Set();
-    const buildM = ty.find('BUILD');
+    const buildM = ty.findUser('BUILD');
     for (const a of ty.allAttrs()) {
         const key = 'a_' + a.name;
         let v;
@@ -129,7 +131,7 @@ function construct(ty, ...args) {
         o[key] = v;
     }
     if (buildM) buildM(o, new RNamed(named));
-    const tweak = ty.find('TWEAK');
+    const tweak = ty.findUser('TWEAK');
     if (tweak) tweak(o, new RNamed(named));
     return o;
 }
@@ -175,6 +177,7 @@ function namedHash(m, skip) {          // *%_ / %named
 function checkNamed(m, allowed, who) {
     for (const k of m.keys()) if (!allowed.includes(k)) throw new RakuError(`Unexpected named argument '${k}' passed${who ? ' to ' + who : ''}`, 'X::AdHoc');
 }
+function notAny(pname) { throw new RakuError(`Type check failed in binding to parameter '${pname}'; expected Any but got Mu (Mu)`, 'X::TypeCheck::Binding::Parameter'); }
 function arityError(who, expected, got) { if (got < expected) tooFew(who, expected, got); tooMany(who, expected, got); }
 function tooMany(who, expected, got) { throw new RakuError(`Too many positionals passed${who ? ' to ' + who : ''}; expected ${expected} argument${expected === 1 ? '' : 's'} but got ${got}`, 'X::AdHoc'); }
 function tooFew(who, expected, got) { throw new RakuError(`Too few positionals passed${who ? ' to ' + who : ''}; expected ${expected} argument${expected === 1 ? '' : 's'} but got ${got}`, 'X::AdHoc'); }
@@ -293,8 +296,9 @@ class RVersion {
 class RDate {
     constructor(ty, d) { this.ty = ty; this.d = d; }
     Str() { const d = this.d; const p = n => String(n).padStart(2, '0'); const ymd = d.getUTCFullYear() + '-' + p(d.getUTCMonth() + 1) + '-' + p(d.getUTCDate()); if (this.ty === T.Date) return ymd; return ymd + 'T' + p(d.getUTCHours()) + ':' + p(d.getUTCMinutes()) + ':' + p(d.getUTCSeconds()) + 'Z'; }
-    raku() { return this.ty.name + '.new(' + strLit(this.Str()) + ')'; }
-    numeric() { return this.d.getTime() / 1000; }
+    raku() { const d = this.d; if (this.ty === T.Date) return 'Date.new(' + d.getUTCFullYear() + ',' + (d.getUTCMonth() + 1) + ',' + d.getUTCDate() + ')'; return 'DateTime.new(' + [d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate(), d.getUTCHours(), d.getUTCMinutes(), d.getUTCSeconds()].join(',') + ')'; }
+    daycount() { return Math.floor(this.d.getTime() / 86400000) + 40587; }   // Modified Julian Day
+    numeric() { return this.ty === T.Date ? this.daycount() : this.d.getTime() / 1000; }
 }
 function dateNew(ty, args) {
     const [pos, named] = splitArgs(args);
@@ -314,8 +318,8 @@ function regexSplit() { throw new RakuError('regexes are not in the JS core yet 
 function regexComb() { throw new RakuError('regexes are not in the JS core yet (P3)'); }
 
 Object.assign(R, {
-    RScalar, die, failure, fail, exc, isControl, excMessage, excType, mkExType, rethrow, warn, TakeCtl, take, gather, gatherEager,
+    RScalar, die, failure, fail, sink, exc, isControl, excMessage, excType, mkExType, rethrow, warn, TakeCtl, take, gather, gatherEager,
     defClass, construct, cloneObj, enumType, enumFromKeys, enumFromValue, attrGet, named, splitArgs, namedArg, namedHash, checkNamed,
-    tooMany, tooFew, arityError, typeCheck, typeMatches, noMatch, RCapture, capture, RSetty, mkSetty, toSetty, setOp, setRel, elem,
+    tooMany, tooFew, arityError, notAny, typeCheck, typeMatches, noMatch, RCapture, capture, RSetty, mkSetty, toSetty, setOp, setRel, elem,
     RVersion, RDate, dateNew, RIOPath, RIOHandle, RRegex, RMatch, EMPTY_MAP,
 });
