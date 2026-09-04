@@ -8,7 +8,7 @@ class RList {
     elems() { return this.arr().length; }
     gist() { return this.ty === T.Array ? listGistOf(this.a, '[', ']') : listGistOf(this.a, '(', ')'); }
     raku() {
-        if (this.ty === T.Array) return '[' + this.a.map(raku).join(', ') + ']';
+        if (this.ty === T.Array) return '[' + this.a.map(raku).join(', ') + (this.a.length === 1 && this.a[0] instanceof RList ? ',' : '') + ']';   // [(1, 2),] — one list inside stays a list
         const seq = this.ty === T.Seq ? '.Seq' : '';
         if (this.a.length === 1 && this.ty !== T.Slip) return '(' + raku(this.a[0]) + ',)' + seq;
         const body = this.a.map(raku).join(', ');
@@ -140,7 +140,7 @@ class RRange {
     // `^5` however it was written; other endpoints render as .raku (0.5..<1/3>, "a".."z")
     gist() { if (this.from === 0 && this.exTo && !this.exFrom) return '^' + this.endStr(this.to); return this.endStr(this.from) + (this.exFrom ? '^' : '') + '..' + (this.exTo ? '^' : '') + this.endStr(this.to); }
     endStr(v) { return v instanceof RWhatever ? 'Inf' : raku(v); }
-    raku() { return this.gist(); }
+    raku() { if (this.from === 0 && !this.exFrom && this.exTo && (typeof this.to === 'number' && Number.isInteger(this.to) || typeof this.to === 'bigint')) return '^' + raku(this.to); return raku(this.from) + (this.exFrom ? '^' : '') + '..' + (this.exTo ? '^' : '') + raku(this.to); }
     contains(v) {
         if (!isNumeric(v) && !(typeof v === 'string' && !this.isNumeric())) return false;
         if (this.isNumeric()) {
@@ -196,16 +196,16 @@ function hashKey(k) {
 }
 // %h{k}
 function hget(h, k) {
-    if (h instanceof RHash) { if (typeof k !== 'string') { if (k instanceof RList || k instanceof RSeq || k instanceof RRange) return hslice(h, k); k = hashKey(k); } const v = h.m.get(k); return v === undefined ? Any : v; }
+    if (h instanceof RHash) { if (typeof k !== 'string') { if (k instanceof RList || k instanceof RSeq || k instanceof RRange) return hslice(h, k); k = hashKey(k); } const v = h.m.get(k); return v === undefined ? (h.dflt === undefined ? Any : h.dflt) : v; }
     if (h instanceof RSetty) return h.get(k);
-    if (h instanceof RPair) return str(k) === str(h.k) ? h.v : Any;
+    if (h instanceof RPair) return str(k) === str(h.k) ? h.v : Nil;
     if (h instanceof RObj) { const m = h.ty.findUser('AT-KEY'); if (m) return m(h, k); throw new RakuError(`Type ${h.ty.name} does not support associative indexing`); }
     if (h instanceof RType) return Any;
-    if (h instanceof RList) return aget(h, k);
+    if (h instanceof RList) { if (typeof k === 'string' && !/^\s*[+-]?\d/.test(k)) throw new RakuError(`Type ${h.ty.name} does not support associative indexing.`); return aget(h, k); }
     if (h instanceof RCapture) return h.named.get(str(k)) ?? Any;
-    if (h instanceof RMatch) return h.named(str(k));
+    if (h instanceof RMatch) return h.name(str(k));
     if (h instanceof RJsObj) return jsGet(h, k);
-    throw new RakuError(`Type ${typeName(h)} does not support associative indexing`);
+    throw new RakuError(`Type ${typeName(h)} does not support associative indexing.`);
 }
 function hset(h, k, v) {
     if (h instanceof RHash) {
@@ -360,8 +360,13 @@ function spreadArgs(v) { return itemsOf(v); }      // f(|@a)
 
 // --- indexing ------------------------------------------------------------
 function aget(a, i) {
+    if (a instanceof RMatch) {   // $m[0], $m[0,1], $m[0..1], $m[*]
+        if (typeof i === 'number') return a.pos(i);
+        if (i instanceof RWhatever || typeof i === 'function') return matchList(a);
+        if (i instanceof RList || i instanceof RSeq || i instanceof RRange) return mkList(arr(i).map(j => a.pos(Number(toInt(j)))));
+    }
     if (a instanceof RList) {
-        if (typeof i === 'number') { if (a.src) a.reify(i); const v = a.a[i]; return v === undefined ? Any : v; }
+        if (typeof i === 'number') { if (a.src) a.reify(i); const v = a.a[i]; return v === undefined ? (a.dflt === undefined ? Any : a.dflt) : v; }
         if (typeof i === 'function') return aget(a, i(a.a.length));
         if (i instanceof RList || i instanceof RSeq || i instanceof RRange) return aslice(a, i);
         if (i instanceof RWhatever) return mkList(a.a.slice());
@@ -479,6 +484,18 @@ function sortList(v, f) {
     return mkSeq(keyed.map(p => p[1]));
 }
 // min/max skip undefined values, as the interpreter does
+// .min/.max with :k / :v / :kv / :p answer the position, the value, both or the pair
+function minMaxAdv(v, f, isMax, named) {
+    if (f === undefined && named.has('by')) f = named.get('by');   // the :by spelling of the mapper
+    const a = arr(v); let bi = -1, bk, ties = [];   // every position attaining the extremum, in order
+    a.forEach((x, i) => { if (x instanceof RType) return; const k = f ? f(x) : x; const c = bi < 0 ? -1 : (isMax ? -cmpNum(k, bk) : cmpNum(k, bk)); if (c < 0) { bi = i; bk = k; ties = [i]; } else if (c === 0) ties.push(i); });
+    const has = (n) => truthy(named.get(n) ?? false);
+    if (has('k')) return mkList(ties);
+    if (has('kv')) return mkList(ties.flatMap(i => [i, a[i]]));
+    if (has('v')) return mkList(ties.map(i => a[i]));
+    if (has('p')) return mkList(ties.map(i => new RPair(i, a[i])));
+    return bi < 0 ? (isMax ? -Infinity : Infinity) : a[bi];
+}
 function minOf(v, f) { let best; for (const x of iter(v)) { if (x instanceof RType) continue; if (best === undefined || (f ? cmpNum(f(x), f(best)) < 0 : cmpNum(x, best) < 0)) best = x; } return best === undefined ? Infinity : best; }
 function maxOf(v, f) { let best; for (const x of iter(v)) { if (x instanceof RType) continue; if (best === undefined || (f ? cmpNum(f(x), f(best)) > 0 : cmpNum(x, best) > 0)) best = x; } return best === undefined ? -Infinity : best; }
 function minmax(v) { const a = arr(v); if (!a.length) return range(Infinity, -Infinity); return range(minOf(a), maxOf(a)); }
@@ -532,7 +549,7 @@ function pairsOf(v) {
     const o = []; let i = 0; for (const x of iter(v)) o.push(new RPair(i++, x)); return mkSeq(o);
 }
 function antipairsOf(v) { return mkSeq(arr(pairsOf(v)).map(p => new RPair(p.v, p.k))); }
-function invertOf(v) { const o = []; for (const p of arr(pairsOf(v))) { for (const x of itemsOf(p.v)) o.push(new RPair(x, p.k)); } return mkSeq(o); }
+function invertOf(v) { const o = []; for (const p of arr(pairsOf(v))) { for (const x of (p.v instanceof RList ? p.v.a : itemsOf(p.v))) o.push(new RPair(x, p.k)); } return mkSeq(o); }   // an Iterable value gives one pair per element
 function pushTo(a, ...items) {
     items = items.filter(x => !(x instanceof RNamed));   // a named argument contributes nothing
     if (a instanceof RHash) {
@@ -608,14 +625,17 @@ function batchList(v, n) { const a = arr(v), k = Number(toInt(n)), out = []; for
 function pickFrom(v, n) {
     const a = arr(v).slice();
     if (n === undefined) return a.length ? a[Math.floor(rand() * a.length)] : Nil;
-    const k = n instanceof RWhatever ? a.length : Math.min(a.length, Number(toInt(n)));
+    const k = wantAll(n) ? a.length : Math.min(a.length, Number(toInt(n)));
     const out = [];
     for (let i = 0; i < k; i++) { const j = i + Math.floor(rand() * (a.length - i)); [a[i], a[j]] = [a[j], a[i]]; out.push(a[i]); }
     return mkSeq(out);
 }
+// pick(*), pick(Whatever), roll(*): the `*` term is a curry here, the type object is Whatever
+const wantAll = (n) => n instanceof RWhatever || n === T.Whatever || typeof n === 'function' || n === Infinity;
 function rollFrom(v, n) {
     const a = arr(v);
     if (n === undefined) return a.length ? a[Math.floor(rand() * a.length)] : Nil;
+    if (wantAll(n)) return new RSeq((function* () { for (;;) yield a[Math.floor(rand() * a.length)]; })(), true);   // roll(*): lazy and endless
     const k = Number(toInt(n)); const out = [];
     for (let i = 0; i < k; i++) out.push(a[Math.floor(rand() * a.length)]);
     return mkSeq(out);
@@ -698,8 +718,18 @@ function junctionGist(j) { return j.kind + '(' + j.items.map(gist).join(', ') + 
 function junctionRaku(j) { return j.kind + '(' + j.items.map(raku).join(', ') + ')'; }
 
 // --- smartmatch ------------------------------------------------------------
+// X ~~ (… $_ …): the pattern is computed with X as the topic; a Junction on the left threads the whole test
+function withDefault(c, d) { c.dflt = d; return c; }   // `is default(v)` on an array or hash
+function smartmatchWith(v, f) {
+    if (v instanceof RJunction) return junctionBool(new RJunction(v.kind, v.items.map(x => truthy(smartmatch(x, f(x))))));
+    return smartmatch(v, f(v));
+}
 function smartmatch(v, pat) {
     if (typeof pat === 'boolean') return pat;
+    if (v instanceof RJunction) {   // a Junction topic: a regex answers a Junction of matches, a type or range collapses
+        if (pat instanceof RRegex) return new RJunction(v.kind, v.items.map(x => regexMatch(x, pat)));
+        if (pat instanceof RType || pat instanceof RRange) return junctionBool(new RJunction(v.kind, v.items.map(x => smartmatch(x, pat))));
+    }
     if (pat instanceof RType) return isa(v, pat) || (pat === Nil && v === Nil);
     if (typeof pat === 'function') { if (pat.rtype === T.WhateverCode) return truthy(pat(v)); return truthy(pat(v)); }
     if (pat instanceof RRegex) return regexMatch(v, pat);
@@ -718,7 +748,7 @@ function smartmatch(v, pat) {
         return true;
     }
     if (pat instanceof RHash) { return v instanceof RHash ? eqv(v, pat) : hexists(pat, v); }
-    if (pat instanceof RPair) { if (v instanceof RHash) return truthy(hget(v, pat.k)) === truthy(pat.v); return false; }
+    if (pat instanceof RPair) { if (v instanceof RHash) return truthy(hget(v, pat.k)) === truthy(pat.v); if (v instanceof RPair) return str(v.k) === str(pat.k) && smartmatch(v.v, pat.v); return truthy(mc(v, str(pat.k))) === truthy(pat.v); }   // 3 ~~ :is-prime calls the method; a Pair compares
     if (pat instanceof RSetty) return pat.has(v);
     if (pat instanceof REnum) return v instanceof REnum ? v === pat : (isNumeric(v) ? numeq(v, pat.val) : str(v) === pat.key);
     if (pat instanceof RWhatever) return true;
@@ -728,7 +758,7 @@ function smartmatch(v, pat) {
     return eqv(v, pat);
 }
 
-Object.assign(R, {
+Object.assign(R, { smartmatchWith, minMaxAdv, withDefault,
     RList, RSeq, RRange, RHash, mkList, mkArray, mkSeq, mkSlip, seqOf, range, upto, mkHash, hashKey, hget, hset, hexists, hdelete, hslice,
     hviv, aviv, assignHash, hashLit, hashFrom, pair, pairKey, pairValue, listItems, arr, iter, iterN, list, arrayLit, itemsOf,
     assignArray, newArray, newHash, flat, slip, spreadArgs, aget, aset, aslice, aexists, adelete, elemsOf,

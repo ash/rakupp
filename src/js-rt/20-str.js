@@ -106,7 +106,7 @@ function lc(s) { return str(s).toLowerCase(); }
 function tc(s) { s = str(s); if (s === '') return s; const g = graphemes(s); return g[0].toUpperCase() + g.slice(1).join(''); }
 function tclc(s) { return tc(lc(s)); }
 function wordcase(s) { return str(s).replace(/[^\s]+/g, w => tclc(w)); }
-function fc(s) { return str(s).toLowerCase(); }
+function fc(s) { return str(s).toUpperCase().toLowerCase(); }   // full folding: ß → ss, ς → σ
 function trim(s) { return str(s).replace(/^\s+|\s+$/g, ''); }
 function trimLeading(s) { return str(s).replace(/^\s+/, ''); }
 function trimTrailing(s) { return str(s).replace(/\s+$/, ''); }
@@ -135,6 +135,7 @@ function strRindex(s, needle, start) {
 }
 function contains(s, needle, start) {
     if (needle instanceof RJunction) return junctionOp(x => contains(s, x, start), needle, null);
+    if (needle instanceof RRegex) return !!runSearch(str(s), needle, null, start === undefined ? 0 : toInt(start));
     return str(s).indexOf(str(needle), start === undefined ? 0 : toInt(start)) >= 0;
 }
 function startsWith(s, p) { return str(s).startsWith(str(p)); }
@@ -143,34 +144,56 @@ function strSplit(s, sep, limit, named) {
     s = str(s);
     const skipEmpty = named && truthy(named.get('skip-empty'));
     let parts;
-    if (sep instanceof RRegex) parts = regexSplit(s, sep, limit);
-    else if (sep instanceof RList) {
-        const seps = sep.arr().map(str).filter(x => x !== '').sort((a, b) => b.length - a.length);
-        parts = []; let cur = '';
-        for (let i = 0; i < s.length;) {
-            let hit = null;
-            for (const sp of seps) if (s.startsWith(sp, i)) { hit = sp; break; }
-            if (hit) { parts.push(cur); cur = ''; i += hit.length; } else { cur += s[i]; i++; }
-        }
-        parts.push(cur);
-    } else {
+    const adverbed = named && ['v', 'k', 'kv', 'p'].some(k => truthy(named.get(k) ?? false));
+    if (sep instanceof RRegex) parts = regexSplit(s, sep, limit, named);
+    else if (sep instanceof RList) parts = splitPieces(s, sep.arr().map(x => x instanceof RRegex ? x : str(x)), limit, named);
+    else {
         const d = str(sep);
         if (d === '') parts = ['', ...graphemes(s), ''];
+        else if (adverbed) parts = splitPieces(s, [d], limit, named);
         else parts = s.split(d);
-        if (limit !== undefined && limit !== null && !(limit instanceof RWhatever)) {
-            const l = toInt(limit);
+        if (limOf(limit) !== Infinity) {
+            const l = limOf(limit);
             if (l > 0 && parts.length > l) { const head = parts.slice(0, l - 1); head.push(parts.slice(l - 1).join(d)); parts = head; }
         }
     }
     if (skipEmpty) parts = parts.filter(p => p !== '');
-    return mkList(parts);
+    return mkSeq(parts);   // split answers a Seq
 }
-function words(s) { s = str(s).trim(); return mkList(s === '' ? [] : s.split(/\s+/)); }
+// split on a LIST of separators (strings or regexes): at each position the longest wins, ties to the earlier one;
+// :v / :k / :kv / :p interleave the separator, its index in the list, both, or the pair
+const limOf = (l) => l === undefined || l === null || l instanceof RWhatever || typeof l === 'function' || l === T.Whatever || toFloat(l) === Infinity ? Infinity : Number(toInt(l));
+function splitPieces(s, seps, limit, named) {
+    const v = named && truthy(named.get('v') ?? false), kk = named && truthy(named.get('k') ?? false), kv = named && truthy(named.get('kv') ?? false), p = named && truthy(named.get('p') ?? false);
+    const lim = limOf(limit);
+    const out = []; let last = 0, pieces = 0, i = 0;
+    while (i < s.length && pieces < lim - 1) {
+        let best = -1, bestEnd = -1;
+        for (let j = 0; j < seps.length; j++) {
+            const sp = seps[j]; let e = -1;
+            if (sp instanceof RRegex) e = matchEndAt(s, sp, i); else if (sp !== '' && s.startsWith(sp, i)) e = i + sp.length;
+            if (e > bestEnd) { bestEnd = e; best = j; }
+        }
+        if (bestEnd > i) {
+            out.push(s.slice(last, i)); pieces++;
+            const val = seps[best] instanceof RRegex ? new RMatch(s, i, bestEnd) : s.slice(i, bestEnd);
+            if (v) out.push(val); else if (kk) out.push(best); else if (kv) out.push(best, val); else if (p) out.push(new RPair(best, val));
+            last = i = bestEnd;
+        } else i++;
+    }
+    out.push(s.slice(last));
+    return out;
+}
+function words(s, limit) { s = str(s).trim(); const w = s === '' ? [] : s.split(/\s+/); return mkList(limOf(limit) !== Infinity ? w.slice(0, limOf(limit)) : w); }
 function lines(s) { s = str(s); if (s === '') return mkList([]); const l = s.split('\n'); if (l[l.length - 1] === '') l.pop(); return mkList(l.map(x => x.endsWith('\r') ? x.slice(0, -1) : x)); }
-function comb(s, pat, limit) {
+function comb(s, pat, ...rest) {
     s = str(s);
-    if (pat === undefined) return mkList(graphemes(s));
-    if (pat instanceof RRegex) return regexComb(s, pat, limit);
+    const [cpos, cnamed] = splitArgs(rest); const limit = cpos[0];
+    if (pat === undefined || pat instanceof RNamed) return mkList(graphemes(s));
+    if (pat instanceof RRegex) {
+        if (truthy(cnamed.get('match') ?? false)) { const ms = allMatches(s, pat, null, false); return mkList(limit !== undefined ? ms.slice(0, Number(toInt(limit))) : ms); }   // :match — the Match objects
+        return regexComb(s, pat, limit);
+    }
     if (typeof pat === 'number' || typeof pat === 'bigint') {
         const n = Number(pat), g = graphemes(s), out = [];
         for (let i = 0; i < g.length; i += n) out.push(g.slice(i, i + n).join(''));
@@ -188,8 +211,18 @@ function indent(s, n) {
 }
 function strRepeatList(s, n) { return xrepeat(s, n); }
 function strJoin(l, sep) { return arr(l).map(str).join(sep === undefined ? '' : str(sep)); }
-function strEncode(s) { return mkList(Array.from(new TextEncoder().encode(str(s)))); }
-function unival(s) { return Nil; }
+function strEncode(s, ...a) {
+    const [pos, named] = splitArgs(a);
+    const enc = pos.length ? str(pos[0]).toLowerCase().replace(/[-_]/g, '') : 'utf8';
+    if (enc === 'ascii' || enc === 'latin1' || enc === 'iso88591') {   // one byte per code point, :replacement for the rest
+        const limit = enc === 'ascii' ? 128 : 256;
+        let rep = named.get('replacement'); rep = rep === undefined ? null : (rep === true ? '?' : str(rep));
+        const out = [];
+        for (const ch of str(s)) { const cp = ch.codePointAt(0); if (cp < limit) out.push(cp); else if (rep !== null) { for (const r of rep) out.push(r.codePointAt(0)); } else throw new RakuError(`Error encoding ${enc === 'ascii' ? 'ASCII' : 'Latin-1'} string: could not encode codepoint ${cp}`); }
+        return mkList(out);
+    }
+    return mkList(Array.from(new TextEncoder().encode(str(s))));
+}
 function isNumericStr(s) { try { strToNumeric(s); return true; } catch (e) { return false; } }
 function strParseNumeric(s, what) {
     const n = strToNumeric(str(s));
@@ -206,23 +239,54 @@ function samecase(s, pat) {
     const a = graphemes(str(s)), p = graphemes(str(pat));
     return a.map((c, i) => { const q = p[Math.min(i, p.length - 1)]; return q === q.toUpperCase() && q !== q.toLowerCase() ? c.toUpperCase() : q === q.toLowerCase() && q !== q.toUpperCase() ? c.toLowerCase() : c; }).join('');
 }
-function strTrans(s, pairs) {
+function strTrans(s, pairs, named) {
     s = str(s);
     const map = new Map();
     const ps = pairs instanceof RList ? pairs.arr() : [pairs];
+    const squash = named && truthy(named.get('s') ?? named.get('squash') ?? false), del = named && truthy(named.get('d') ?? named.get('delete') ?? false);
+    if (ps.some(p => p instanceof RPair && p.k instanceof RRegex)) return transRegex(s, ps, squash);
     for (const p of ps) {
         if (!(p instanceof RPair)) continue;
         const from = expandTrans(p.k), to = expandTrans(p.v);
-        for (let i = 0; i < from.length; i++) map.set(from[i], to.length ? to[Math.min(i, to.length - 1)] : '');
+        for (let i = 0; i < from.length; i++) map.set(from[i], del ? (i < to.length ? to[i] : '') : (to.length ? to[Math.min(i, to.length - 1)] : ''));
     }
-    let out = '';
-    for (const g of graphemes(s)) out += map.has(g) ? map.get(g) : g;
+    let out = '', prev = null;   // :squash — a run of characters mapping to the same replacement becomes one
+    for (const g of graphemes(s)) {
+        if (!map.has(g)) { out += g; prev = null; continue; }
+        const r = map.get(g);
+        if (squash && prev === r) continue;
+        out += r; prev = r;
+    }
+    return out;
+}
+// .trans with a regex key: at each position the longest match among all the pairs wins
+function transRegex(s, ps, squash) {
+    let out = ''; let i = 0, prev = null;
+    while (i < s.length) {
+        let bestEnd = -1, bestRep = '';
+        for (const p of ps) {
+            if (!(p instanceof RPair)) continue;
+            if (p.k instanceof RRegex) { const e = matchEndAt(s, p.k, i); if (e > bestEnd) { bestEnd = e; bestRep = typeof p.v === 'function' ? str(p.v(new RMatch(s, i, e))) : str(p.v); } }
+            else { const from = expandTrans(p.k), to = expandTrans(p.v); for (let j = 0; j < from.length; j++) if (s.startsWith(from[j], i) && i + from[j].length > bestEnd) { bestEnd = i + from[j].length; bestRep = to.length ? to[Math.min(j, to.length - 1)] : ''; } }
+        }
+        if (bestEnd > i) { if (!(squash && prev === bestRep)) out += bestRep; prev = bestRep; i = bestEnd; } else { const e = clusterEnd(s, i); out += s.slice(i, e); i = e; prev = null; }
+    }
     return out;
 }
 function expandTrans(v) {
     if (v instanceof RList) return v.arr().flatMap(expandTrans);
     if (v instanceof RRange) return arr(v).map(str);
-    return graphemes(str(v));
+    const s = str(v);
+    if (!s.includes('..')) return graphemes(s);
+    const out = []; const g = graphemes(s);
+    for (let i = 0; i < g.length; i++) {
+        if (i + 3 < g.length && g[i + 1] === '.' && g[i + 2] === '.') {   // a..z inside the string
+            const lo = g[i].codePointAt(0), hi = g[i + 3].codePointAt(0);
+            for (let c = lo; c <= hi; c++) out.push(String.fromCodePoint(c));
+            i += 3;
+        } else out.push(g[i]);
+    }
+    return out;
 }
 // sprintf — the subset the corpus uses: %s %d %i %u %f %e %g %x %X %o %b %c %% with flags, width, precision, `*`
 function sprintf(fmt, ...args) {

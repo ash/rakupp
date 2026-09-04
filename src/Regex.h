@@ -477,6 +477,11 @@ public:
     // Fast path for a rule whose whole body is a single character matcher (e.g.
     // `token space { <[\ \t]> }`): returns true if this regex is exactly that.
     bool rootIsSingleChar() const;
+    // The pattern tree as a JavaScript object literal, for the --target=js backend
+    // (src/codegen/Js.cpp): the runtime's matcher interprets it. Code / VarMatch /
+    // CondRef nodes carry Raku text the emitter has to compile; `embed` turns
+    // (kind, text) into the JS expression to splice in ("code", "var", "range").
+    std::string toJsTree(const std::function<std::string(const std::string&, const std::string&)>& embed) const;
     NodePtr parseSplice(); // compile a \x01-marked sub-pattern with its own front-end
     NodePtr parseSubSplice(); // …and the KIND 'S' form, which is CALLED, not pasted
     // Match an inline sub-pattern (`<$var>`) as a subrule: fresh capture frame,

@@ -649,6 +649,75 @@ Where the code decided differently from the draft:
   blocks the main thread today, timers included), source maps, `.d.ts`, the
   npm recipe, `react`/`supply`/`Channel`.
 
-Next: P3 (the regex tree + matcher) — the largest refusal bucket in the
-corpus and the last of the five example programs; the disagreement tail is
-worked down alongside, from the gate's list.
+- **P3, first slice (same day): regexes and grammars.** `Regex::toJsTree`
+  serializes the engine's own parse tree as a JS literal at transpile time;
+  `src/js-rt/90-regex.js` is the matcher — the native continuation-passing
+  design ported: captures pushed before the continuation and popped when it
+  fails, whole-grapheme `.` and classes over the same UAX #29 tables, the
+  iterative greedy path for single-character atoms, packrat memoization for
+  ratchet rules, `<( )>`, lookarounds, `~` and `%`/`%%` separators, named
+  and list captures with Rakudo's list-ness rules, `<ws>` and the builtin
+  rules, `$<x>`/`$0` backreferences, `:g`/`:ov`/`:ex`. Embedded `{…}`
+  blocks, `<?{…}>`, `$var` atoms and `<name(args)>` are closures over the
+  enclosing JavaScript scope with the cursor match as `$/` — the rows the
+  C++ backend refuses. Grammars: rules by name through the inheritance
+  chain, protos with `:sym<…>` candidates and `<sym>`, actions fired as
+  each rule completes, `make`/`made`, `.parse`/`.subparse`/`.parsefile`
+  with `:rule`/`:actions`, ordinary methods as subrules with the cursor as
+  `self`. `s///`, `S///`, `.subst`, `.match(:g)`, `.comb`, `.split`,
+  `.contains`, `.trans` with `a..z` ranges; Match's `.gist` in the
+  interpreter's `｢…｣` shape, `.raku`, `.caps`, `.chunks`, `.from`/`.to` in
+  graphemes. Alternation is first-match with a longest-literal-prefix
+  ordering — the LTM approximation the plan allowed for the first half;
+  `LtmNfa` is not ported yet. Also not yet: `:nth`/`:x`, `:P5`, `:m`
+  beyond base-character comparison, `:i` one-to-many folds, `<:InBlock>`
+  and character-name tables (JavaScript's `\p{…}` covers general
+  categories, scripts and binary properties). The five regex/grammar
+  examples agree; the regex bench kernel verifies.
+
+- **P3, second slice (2026-09-04): the disagreement tail the regexes
+  opened.** The first slice moved 34 programs from refused to judged and
+  most of them disagreed; this sitting worked through that list and the
+  next one. Regex side: `<$var>` / `<name=$var>` with a string parse it as a
+  pattern at run time (`rxFromString`, the subset a pattern string
+  carries), a bare `@array` is a literal alternation longest-first (the
+  emitter spells it `<@@name>`, the tree marks it `lit`), `:i` reaches an
+  interpolated assertion, `$¢` is the cursor only inside regex code, an
+  inline `{ make … }` lands on the match being built, `Match.Slip` is the
+  captures, `.values` flattens quantified captures, `.comb(:match)`,
+  `.split` with `:v`/`:k`/`:kv`/`:p` and mixed string/regex separator
+  lists, `.trans` with regex keys and `:squash`/`:d`, `.indices`,
+  `:ignoremark`/`:ignorecase` on the substring searches, full case folding
+  under `:i` (ß ~ ss), `<graph>`/`<punct>` per the Unicode categories,
+  `\w` without marks. A bare `/…/` is a Regex object and matches `$_` only
+  in boolean context (the interpreter's rule); `~~` with a Regex in a
+  variable, a `&regex` or a grammar sets `$/`; `X ~~ (… $_ …)` evaluates
+  the right side with X as the topic and threads a Junction; a `.subst`
+  replacement block sees the match as `$/`; `.subst-mutate`. Beyond
+  regexes, the same list surfaced engine gaps the emitter had: a
+  user-defined `new` was never called (`construct` built the object
+  directly), a method whose parameter is `$_` did not bind the topic,
+  class declarations are now emitted first in their block (compile-time
+  in Raku, so a sub above may call them), `given $var` and `for $var`
+  alias the variable so `s///` on `$_` writes through, `my @b := …` is an
+  alias, `my regex x` is also `&x`, a `where` clause sees the earlier
+  parameters and itself, `try { … }` returning a Failure sets `$!`,
+  `is default(v)` on arrays and hashes, coercion-type and subset-typed
+  attributes check what enters them, `Grammar.new.parse`, `self.rule`
+  inside a grammar method, `class X is Array`, `:by` and ties on
+  `min`/`max`, nested `classify-list` keys, `Date`/`DateTime` calendar
+  components, `dir(:test)` and its `.CWD`, Arabic-Indic digits in
+  numification, `+"12abc"` as a Failure. Gate 16: **113 in-core and
+  agreeing of 442 programs, 256 refused, 73 disagreeing** (from 83 / 253 /
+  103 after the first slice). What is left in the 73 is largely design-
+  level for a later sitting: allomorphs (`<1 8 A>` are Str in the
+  interpreter, numbers here), itemization of `$(…)`/scalar containers,
+  LTM ranking of alternatives (issue #64's `Ranked` grammar), `Proc` and
+  `$*OUT` redirection under `start`, `.^methods` introspection, `$*VM`,
+  Version wildcards, the iterator protocol (`skip-one`), `Complex` from
+  a string, `for @a { s/// }` writing back into the array.
+
+Next: the second half of P3 (LTM as a port of LtmNfa, `:nth`/`:x`/`:P5`),
+the showcase interpreters as the P3 gate (perl/js need parameterized
+rules, python/json need `__radix`), then the P4 remainder (`sleep` in a
+Worker, source maps, `.d.ts`, the npm recipe).

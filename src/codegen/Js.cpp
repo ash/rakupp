@@ -13,6 +13,9 @@
 // the two agree.
 #include "Js.h"
 #include "../AsciiCtype.h"
+#include "../Lexer.h"
+#include "../Parser.h"
+#include "../Regex.h"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -66,6 +69,8 @@ string mangleBody(const string& s) {
     return o;
 }
 string mangleVar(const string& name) {
+    if (name == "$/") return "v__slash";
+    if (name == "$!") return "v__bang";
     if (name.size() <= 1 || name.find('\x01') != string::npos) return "_anon";   // `my $;` — declared with `var` (redeclarable), never referenced
     char sigil = (!name.empty() && (name[0] == '$' || name[0] == '@' || name[0] == '%' || name[0] == '&')) ? name[0] : 0;
     string body = sigil ? name.substr(1) : name;
@@ -100,6 +105,7 @@ string rt(const string& name) { return jsIdent(name) ? "R." + name : "R[" + jsSt
 // Builtins the runtime exports by Raku name (src/js-rt/50-builtins.js). A call
 // to a name outside this table is a refusal, so the histogram names the gap.
 const std::set<string> kBuiltins = {
+    "isMatch", "isRegex", "smartmatchWith", "attrSet", "isFailure", "substMutate", "withDefault",
     "say", "print", "put", "note", "printf", "dd", "exit", "sqrt", "sin", "cos", "tan", "asin", "acos", "atan", "sinh", "cosh", "tanh", "exp", "cbrt",
     "log", "log2", "log10", "atan2", "floor", "ceiling", "truncate", "round", "sign", "is-prime", "expmod", "polymod", "rand", "srand", "min", "max", "sum",
     "elems", "end", "join", "reverse", "sort", "map", "grep", "first", "unique", "keys", "values", "kv", "pairs", "push", "append", "pop", "shift", "unshift",
@@ -229,6 +235,8 @@ struct FnCtx {                           // one per emitted JS function (routine
     bool isRoutine = false;              // owns `return`
     bool needsRetCatch = false;          // a nested closure threw a RetCtl at us
     bool usesBang = false;               // $! / try / CATCH in this function
+    bool usesSlash = false;              // $/ read or set in this function
+    bool slashParam = false;             // …but bound as a parameter (an action method's `$/`)
     std::set<string> boxed;              // JS names read through `.v` (is rw params)
     std::map<string, string> stateAlias; // `state $x` → its module-level slot
     std::vector<string> declared;        // hoisted lets to prepend
@@ -320,6 +328,7 @@ struct JsGen {
         string pre;
         if (!ctx.temps.empty()) { pre += string(ind * 4, ' ') + "let "; for (size_t i = 0; i < ctx.temps.size(); i++) pre += (i ? ", " : "") + ctx.temps[i]; pre += ";\n"; }
         if (ctx.usesBang) pre += string(ind * 4, ' ') + "let v__bang = R.Nil;\n";
+        if (ctx.usesSlash && !ctx.slashParam) pre += string(ind * 4, ' ') + "let v__slash = R.Nil;\n";
         for (auto& d : ctx.declared) pre += string(ind * 4, ' ') + d + "\n";
         if (ctx.needsRetCatch) {
             string s = pre + string(ind * 4, ' ') + "const _rt = {};\n" + string(ind * 4, ' ') + "try {\n" + inner +
@@ -335,8 +344,9 @@ struct JsGen {
         const string& n = v->name;
         if (n == "$_") return topic();
         if (n == "$!") { fn().usesBang = true; return "v__bang"; }
-        if (n == "$/") refuse("the match variable $/", v->line);
-        if (n.size() > 1 && n[0] == '$' && ascii::isdigit((unsigned char)n[1])) refuse("a regex capture variable " + n, v->line);
+        if (n == "$\xC2\xA2") { if (!fn().slashParam) return "R.Nil"; fn().usesSlash = true; return "v__slash"; }   // $¢: the cursor inside regex code, gone outside
+        if (n == "$/") { fn().usesSlash = true; return "v__slash"; }
+        if (n.size() > 1 && n[0] == '$' && ascii::isdigit((unsigned char)n[1])) { fn().usesSlash = true; return "R.matchAt(v__slash, " + n.substr(1) + ")"; }
         if (n.size() > 2 && (n[1] == '!' || n[1] == '.')) {
             if (selfName.empty()) refuse("attribute access outside a method", v->line);
             if (n[1] == '!') return selfName + ".a_" + mangleBody(v->attrBare);
@@ -380,6 +390,7 @@ struct JsGen {
     }
     // an argument / list item: always its own closure scope (`.grep(* %% 3)`)
     string exCurry(Expr* e) {
+        if (e->kind == NK::RegexLit) return regexObject(static_cast<RegexLit*>(e));   // an argument is the Regex, not a match
         if (!hasWhatever(e)) return ex(e);
         wcArity.push_back(0);
         string body = ex(e);
@@ -545,11 +556,11 @@ struct JsGen {
                 string to = r->to ? rangeEnd(r->to.get()) : "Infinity";
                 return "R.range(" + from + ", " + to + (r->exFrom || r->exTo ? string(", ") + (r->exFrom ? "true" : "false") + ", " + (r->exTo ? "true" : "false") : "") + ")";
             }
-            case NK::RegexLit: refuse("a regex literal", e->line);
-            case NK::SubstLit: refuse("a substitution (s///)", e->line);
+            case NK::RegexLit: return regexObject(static_cast<RegexLit*>(e));   // a Regex object; boolOperand() matches it against $_ in boolean context
+            case NK::SubstLit: return substExpr(static_cast<SubstLit*>(e), nullptr);
             case NK::Index: return indexExpr(static_cast<Index*>(e));
             case NK::NameTerm: return nameTerm(static_cast<NameTerm*>(e));
-            case NK::Ternary: { auto* t = static_cast<Ternary*>(e); return "(R.truthy(" + ex(t->cond.get()) + ") ? " + exArg(t->then.get()) + " : " + exArg(t->els.get()) + ")"; }
+            case NK::Ternary: { auto* t = static_cast<Ternary*>(e); return "(R.truthy(" + boolOperand(t->cond.get()) + ") ? " + exArg(t->then.get()) + " : " + exArg(t->els.get()) + ")"; }
             case NK::NqpOp: refuse("an nqp:: op", e->line);
             case NK::Unary: return unary(static_cast<Unary*>(e));
             case NK::Binary: return binary(static_cast<Binary*>(e));
@@ -670,7 +681,7 @@ struct JsGen {
         if (t->kind == NK::VarExpr) {
             auto* v = static_cast<VarExpr*>(t);
             const string& n = v->name;
-            if (n.size() > 2 && n[1] == '.') { if (selfName.empty()) refuse("attribute assignment outside a method", t->line); string k = selfName + ".a_" + mangleBody(v->attrBare); return { k, [k](const string& x) { return k + " = " + x; } }; }
+            if (n.size() > 2 && n[1] == '.') { if (selfName.empty()) refuse("attribute assignment outside a method", t->line); string k = selfName + ".a_" + mangleBody(v->attrBare); string nm = jsStr(v->attrBare), sn = selfName; return { k, [k, nm, sn](const string& x) { return "R.attrSet(" + sn + ", " + nm + ", " + x + ")"; } }; }
             if (n.size() > 2 && n[1] == '*' && !v->declare) {
                 static const std::set<string> core = { "$*OUT", "$*ERR", "$*IN", "@*ARGS", "%*ENV" };
                 if (!core.count(n)) { string k = jsStr(n); return { "R.dynGet(" + k + ")", [k](const string& x) { return "R.dynSet(" + k + ", " + x + ")"; } }; }
@@ -780,8 +791,9 @@ struct JsGen {
         return name + " = " + val;
     }
     string declDefault(VarExpr* v) {
-        if (v->declDefault) return exArg(v->declDefault.get());
         char sig = v->name[0];
+        if (v->declDefault && (sig == '@' || sig == '%')) return "R.withDefault(" + string(sig == '@' ? "R.mkArray([])" : "R.mkHash()") + ", " + exArg(v->declDefault.get()) + ")";
+        if (v->declDefault) return exArg(v->declDefault.get());
         if ((sig == '@' || sig == '%') && !v->declType.empty()) return "R.withOf(" + string(sig == '@' ? "R.mkArray([])" : "R.mkHash()") + ", " + typeObj(v->declType, v->line) + ")";
         if (sig == '@') return "R.mkArray([])";
         if (sig == '%') return "R.mkHash()";
@@ -821,8 +833,8 @@ struct JsGen {
         if (op == "eager") return "R.eagerOf(" + exArg(x) + ")";
         if (op == "sink") return "(" + exArg(x) + ", R.Nil)";
         if (op == "hyper" || op == "race") return exArg(x);
-        if (op == "not") return "R.not(" + exArg(x) + ")";
-        if (op == "so") return "R.so(" + exArg(x) + ")";
+        if (op == "not") return "R.not(" + boolOperand(x) + ")";
+        if (op == "so") return "R.so(" + boolOperand(x) + ")";
         if (op == "start" || op == "await") refuse("concurrency (" + op + ")", u->line);
         if (op == "temp" || op == "let") refuse("a temp/let variable", u->line);
         if (op == "postfix ...") refuse("a stub (...)", u->line);
@@ -836,9 +848,9 @@ struct JsGen {
             refuse("postfix " + op, u->line);
         }
         if (op == "++" || op == "--") { LV lv = lvalue(x); return lvExpr(lv, lv.set(string(op == "++" ? "R.inc(" : "R.dec(") + lv.get + ")")); }
+        if (op == "!") return "!R.truthy(" + boolOperand(x) + ")";
+        if (op == "?") return "R.truthy(" + boolOperand(x) + ")";
         string v = exArg(x);
-        if (op == "!") return "!R.truthy(" + v + ")";
-        if (op == "?") return "R.truthy(" + v + ")";
         if (op == "-") return "R.neg(" + v + ")";
         if (op == "+") return "R.numify(" + v + ")";
         if (op == "~") return "R.str(" + v + ")";
@@ -868,7 +880,8 @@ struct JsGen {
         string post = isAsync ? "})())" : "})()";
         if (!isTry) return pre + "\n" + body + "    " + post;
         fn().usesBang = true;
-        return pre + " v__bang = R.Nil; try {\n" + body + "    } catch (_e) { if (R.isControl(_e)) throw _e; v__bang = R.exc(_e); return R.Nil; } " + post;
+        string inner = (isAsync ? "await (async () => {\n" : "(() => {\n") + body + "    })()";
+        return pre + " v__bang = R.Nil; try { const _r = " + inner + "; if (R.isFailure(_r)) { v__bang = _r.err; return R.Nil; } return _r; } catch (_e) { if (R.isControl(_e)) throw _e; v__bang = R.exc(_e); return R.Nil; } " + post;
     }
     string gatherExpr(Expr* x, int lineNo) {
         if (x->kind != NK::BlockExpr) refuse("gather without a block", lineNo);
@@ -890,7 +903,26 @@ struct JsGen {
     // --------------------------------------------------------------- binary --
     string binary(Binary* b) {
         const string& op = b->op;
-        if ((op == "~~" || op == "!~~") && (b->rhs->kind == NK::RegexLit || b->rhs->kind == NK::SubstLit)) refuse("a regex match", b->line);
+        if ((op == "~~" || op == "!~~") && b->rhs->kind == NK::RegexLit) {
+            fn().usesSlash = true;
+            string m = "(v__slash = R.rxMatch(" + exArg(b->lhs.get()) + ", " + regexObject(static_cast<RegexLit*>(b->rhs.get())) + "))";
+            return op == "~~" ? m : "!R.truthy(" + m + ")";
+        }
+        if (op == "~~" && b->rhs->kind == NK::SubstLit) return substExpr(static_cast<SubstLit*>(b->rhs.get()), b->lhs.get());
+        if ((op == "~~" || op == "!~~") && b->rhs->kind != NK::NameTerm && b->rhs->kind != NK::StrLit && b->rhs->kind != NK::IntLit && b->rhs->kind != NK::NumLit) {
+            // a Regex on the right (a variable, &name, a grammar) sets $/ like a literal does
+            fn().usesSlash = true;
+            if (contains(b->rhs.get(), [](Node* n) { return isVarNamed(n, "$_"); }, false)) {   // the right side reads $_: it is the left side there
+                string nt = newTopic(); topics.push_back(nt);
+                string f = "(" + nt + ") => " + exArg(b->rhs.get());
+                topics.pop_back();
+                string m = "R.smartmatchWith(" + exArg(b->lhs.get()) + ", " + f + ")";
+                return op == "~~" ? m : "!R.truthy(" + m + ")";
+            }
+            string l = tmp(), r = tmp(), u = tmp();
+            string m = "(" + l + " = " + exArg(b->lhs.get()) + ", " + r + " = " + exArg(b->rhs.get()) + ", " + u + " = R.smartmatch(" + l + ", " + r + "), R.isRegex(" + r + ") ? (v__slash = " + u + ") : " + u + ")";
+            return op == "~~" ? m : "!R.truthy(" + m + ")";
+        }
         if (op == "xx") {
             string n = b->rhs->kind == NK::Whatever ? "R.Whatever" : exArg(b->rhs.get());
             Expr* l = b->lhs.get();
@@ -929,8 +961,8 @@ struct JsGen {
             }
             return "R.hyperOp(" + jsStr(t) + ", " + exArg(b->lhs.get()) + ", " + exArg(b->rhs.get()) + ", " + (dl ? "true" : "false") + ", " + (dr ? "true" : "false") + ")";
         }
-        if (op == "&&" || op == "and") { string t = tmp(); return "(R.truthy(" + t + " = " + exArg(b->lhs.get()) + ") ? " + exArg(b->rhs.get()) + " : " + t + ")"; }
-        if (op == "||" || op == "or") { string t = tmp(); return "(R.truthy(" + t + " = " + exArg(b->lhs.get()) + ") ? " + t + " : " + exArg(b->rhs.get()) + ")"; }
+        if (op == "&&" || op == "and") { string t = tmp(); return "(R.truthy(" + t + " = " + boolOperand(b->lhs.get()) + ") ? " + exArg(b->rhs.get()) + " : " + t + ")"; }
+        if (op == "||" || op == "or") { string t = tmp(); return "(R.truthy(" + t + " = " + boolOperand(b->lhs.get()) + ") ? " + t + " : " + exArg(b->rhs.get()) + ")"; }
         if (op == "//") { string t = tmp(); return "(R.defined(" + t + " = " + exArg(b->lhs.get()) + ") ? " + t + " : " + exArg(b->rhs.get()) + ")"; }
         if (op == "andthen") { string t = tmp(); return "(R.defined(" + t + " = " + exArg(b->lhs.get()) + ") ? " + withTopic(t, b->rhs.get()) + " : " + t + ")"; }
         if (op == "orelse") { string t = tmp(); return "(R.defined(" + t + " = " + exArg(b->lhs.get()) + ") ? " + t + " : " + withTopic(t, b->rhs.get()) + ")"; }
@@ -976,6 +1008,115 @@ struct JsGen {
         return r;
     }
 
+    // --------------------------------------------------------------- regexes --
+    // The pattern is parsed at transpile time with the engine's own parser; the
+    // tree goes into the output as a JS literal the runtime's matcher interprets.
+    // Embedded code, `$var` atoms and `<name(args)>` become closures over the
+    // enclosing JS scope, with the cursor match as `$/`.
+    bool substSlash = false;   // the next implicit-topic block is a .subst replacement: its $/ is the match
+    // `@array` bare in a pattern is an alternation of its elements: spell it as the <@array> assertion the tree carries
+    static string liftArrayAtoms(const string& p) {
+        string o; char q = 0; int cls = 0, code = 0, angle = 0;
+        for (size_t i = 0; i < p.size(); i++) {
+            char c = p[i];
+            if (q) { o += c; if (c == q) q = 0; else if (c == '\\' && i + 1 < p.size()) o += p[++i]; continue; }
+            if (c == '\\' && i + 1 < p.size()) { o += c; o += p[++i]; continue; }
+            if (c == '\'' || c == '"') { q = c; o += c; continue; }
+            if (c == '<' && i + 1 < p.size() && (p[i + 1] == '[' || (p[i + 1] == '-' && i + 2 < p.size() && p[i + 2] == '['))) cls++;
+            else if (c == '<' && !cls) angle++;
+            if (c == ']' && i + 1 < p.size() && p[i + 1] == '>' && cls) cls--;
+            else if (c == '>' && !cls && angle) angle--;
+            if (c == '{') code++; else if (c == '}' && code) code--;
+            if (c == '@' && !cls && !code && !angle && i + 1 < p.size() && (ascii::isalpha((unsigned char)p[i + 1]) || p[i + 1] == '_') && (i == 0 || p[i - 1] != '<')) {
+                size_t j = i + 1; while (j < p.size() && (ascii::isalnum((unsigned char)p[j]) || p[j] == '_' || (p[j] == '-' && j + 1 < p.size() && ascii::isalpha((unsigned char)p[j + 1])))) j++;
+                o += "<@" + p.substr(i, j - i) + ">"; i = j - 1; continue;   // <@@name>: the tree marks it a literal alternation
+            }
+            o += c;
+        }
+        return o;
+    }
+    string compileRegex(const string& pattern, const string& flags, int lineNo) {
+        string pat = liftArrayAtoms(pattern);
+        string adv;   // match-level adverbs the pattern carries as leading `:name ` tokens
+        auto strip = [&](const string& tok, const string& key) { size_t p = pat.find(tok); if (p != string::npos) { pat.erase(p, tok.size()); adv += (adv.empty() ? "" : ", ") + key; } };
+        strip(":g ", "g: 1"); strip(":global ", "g: 1"); strip(":ex ", "ex: 1"); strip(":exhaustive ", "ex: 1"); strip(":ov ", "ov: 1"); strip(":overlap ", "ov: 1");
+        for (const char* t : { ":nth(", ":x(", ":st ", ":nd ", ":rd ", ":th " }) if (pat.find(t) != string::npos) refuse("the regex adverb " + string(t).substr(0, 3), lineNo);
+        if (pat.find(":P5 ") != string::npos || pat.find(":Perl5 ") != string::npos) refuse("a Perl 5 regex (:P5)", lineNo);
+        if (pat.find('\x01') != string::npos) refuse("a regex with an interpolated sub-pattern", lineNo);
+        Regex re(pat, flags);
+        if (!re.ok()) refuse("a regex the engine could not parse: /" + pat + "/", lineNo);
+        if (!re.obsolete().empty()) refuse("an obsolete regex construct " + re.obsolete(), lineNo);
+        bool pure = true;
+        string tree = re.toJsTree([&](const string& kind, const string& text) -> string {
+            pure = false;
+            return embedRegexCode(kind, text, lineNo);
+        });
+        string obj = "R.rx(" + tree + ", " + (adv.empty() ? "null" : "{ " + adv + " }") + ", " + jsStr(pattern) + ")";   // the source text is the gist
+        return pure ? litConst(obj) : obj;
+    }
+    string regexObject(RegexLit* r) {
+        string flags = r->declKind == "token" ? "r" : r->declKind == "rule" ? "sr" : "";
+        return compileRegex(r->pattern, flags, r->line);
+    }
+    // Raku text inside a regex, as a closure. kind: "run" (a `{…}` block), "assert"
+    // (`<?{…}>`), "var" (`$x`), "args" (`<name(args)>`), "range" (`** {…}`).
+    string embedRegexCode(const string& kind, const string& text, int lineNo) {
+        if (kind == "var") {
+            if (text.size() > 2 && (text[1] == '<' || ascii::isdigit((unsigned char)text[1]))) return "null";   // a backreference: the matcher resolves it
+            if (text.size() < 2) refuse("a placeholder variable inside a regex", lineNo);
+            VarExpr v(text);
+            return "() => " + varRef(&v);
+        }
+        Program prog;
+        try {
+            Lexer lx(kind == "args" ? "(" + text + ",)" : text);
+            Parser ps(lx.tokenize());
+            prog = ps.parseProgram();
+        } catch (const ParseError& e) {
+            refuse("regex code the parser refused: " + text, lineNo);
+        }
+        if (kind == "run") {
+            string body = fnBody(false, [&]() { fn().slashParam = true; fn().usesSlash = true; emitStmts(prog.stmts, 2, false); }, 2);
+            return "(v__slash) => {\n" + body + "    }";
+        }
+        if (prog.stmts.size() != 1 || prog.stmts[0]->kind != NK::ExprStmt) refuse("regex code that is not one expression: " + text, lineNo);
+        Expr* e = static_cast<ExprStmt*>(prog.stmts[0].get())->e.get();
+        string body = fnBody(false, [&]() {
+            fn().slashParam = true; fn().usesSlash = true;
+            if (kind == "assert") line(2, "return R.truthy(" + exArg(e) + ");");
+            else if (kind == "args") line(2, "return R.arr(" + exArg(e) + ");");
+            else line(2, "return " + exArg(e) + ";");
+        }, 2);
+        return "(v__slash) => {\n" + body + "    }";
+    }
+    // s/pat/repl/ on `target` (null = $_): the replacement is an interpolating
+    // string evaluated with the match as $/; the result is the Match (or their
+    // list under :g), and the target is assigned the new string.
+    string substExpr(SubstLit* s, Expr* target) {
+        string rx = compileRegex(s->pattern, "", s->line);
+        Program prog;
+        try {
+            // a delimiter the replacement does not contain (`qq{{…}}` would read as the doubled-delimiter form)
+            string d = "/"; for (const char* c : { "/", "|", "!", "~", "^", "," }) if (s->repl.find(c) == string::npos) { d = c; break; }
+            Lexer lx("qq" + d + s->repl + d);
+            Parser ps(lx.tokenize());
+            prog = ps.parseProgram();
+        } catch (const ParseError& e) {
+            refuse("a substitution replacement the parser refused: " + s->repl, s->line);
+        }
+        if (prog.stmts.size() != 1 || prog.stmts[0]->kind != NK::ExprStmt) refuse("a substitution replacement of this form", s->line);
+        Expr* e = static_cast<ExprStmt*>(prog.stmts[0].get())->e.get();
+        string replFn = "(v__slash) => {\n" + fnBody(false, [&]() { fn().slashParam = true; fn().usesSlash = true; line(2, "return R.str(" + exArg(e) + ");"); }, 2) + "    }";
+        fn().usesSlash = true;
+        string t = tmp();
+        if (s->nonMut) return "(" + t + " = R.rxSubst(" + (target ? exArg(target) : topic()) + ", " + rx + ", " + replFn + "), v__slash = " + t + ".m, " + t + ".s)";
+        LV lv = target ? lvalue(target) : lvalue(topicLv());
+        return lvExpr(lv, t + " = R.rxSubst(" + lv.get + ", " + rx + ", " + replFn + "), " + lv.set(t + ".s") + ", v__slash = " + t + ".m");
+    }
+    // `$_` as an assignment target
+    VarExpr topicVar{"$_"};
+    Expr* topicLv() { return &topicVar; }
+
     // ----------------------------------------------------------------- calls --
     string call(Call* c) {
         if (c->callee) {
@@ -990,6 +1131,7 @@ struct JsGen {
             if (a->kind == NK::BlockExpr) return "R.start(" + blockClosure(static_cast<BlockExpr*>(a)) + ")";
             return "R.start(() => " + exArg(a) + ")";
         }
+        if (name == "make" && c->args.size() == 1) { fn().usesSlash = true; return "R.make(v__slash, " + exArg(c->args[0].get()) + ")"; }
         if (name == "take" || name == "take-rw") {
             if (c->args.size() != 1) refuse("take with " + std::to_string(c->args.size()) + " arguments", c->line);
             if (genFnDepth == fnDepth()) return "(yield " + exArg(c->args[0].get()) + ")";
@@ -1063,6 +1205,14 @@ struct JsGen {
             }
             return lvExpr(lv, t + " = " + lv.get + ", " + lv.set(callee));
         }
+        if (name == "subst-mutate" && !m->args.empty()) {
+            LV lv = lvalue(m->inv.get());
+            string t = tmp();
+            fn().usesSlash = true; substSlash = true;
+            string a = args(m->args);
+            substSlash = false;
+            return lvExpr(lv, "(" + t + " = R.substMutate(" + lv.get + ", " + a + "), " + lv.set(t + ".s") + ", v__slash = " + t + ".m)");
+        }
         if (m->hyper) return "R.hyperMethod(" + ex(m->inv.get()) + ", " + jsStr(name) + (m->args.empty() ? "" : ", " + args(m->args)) + ")";
         if (m->meta) return "R.meta(" + ex(m->inv.get()) + ", " + jsStr(name) + (m->args.empty() ? "" : ", " + args(m->args)) + ")";
         if (m->bang) name = "!" + name;
@@ -1084,7 +1234,11 @@ struct JsGen {
         if (m->inv->kind == NK::Whatever) { if (wcArity.empty()) refuse("a method call on a bare *", m->line); inv = "_w" + std::to_string(++wcArity.back()); }
         else inv = ex(m->inv.get());
         if (name == "result" && m->args.empty()) return "(await R.awaitP(" + inv + "))";
+        bool substBlock = (name == "subst" || name == "subst-mutate") && std::any_of(m->args.begin(), m->args.end(), [](const std::unique_ptr<Expr>& a) { return a->kind == NK::BlockExpr; });
+        if (substBlock) { fn().usesSlash = true; substSlash = true; }
         string call = fnName + "(" + inv + ", " + jsStr(name) + (m->args.empty() ? "" : ", " + args(m->args)) + ")";
+        substSlash = false;
+        if (name == "parse" || name == "subparse" || name == "parsefile" || name == "match") { fn().usesSlash = true; call = "(v__slash = " + call + ")"; }
         if (asyncMethods.count(name)) return "(await " + call + ")";
         return call;
     }
@@ -1092,6 +1246,14 @@ struct JsGen {
     // ------------------------------------------------------------- closures --
     // A block as a JS arrow function. Implicit `$_` blocks default their topic
     // to the enclosing one, which has a different JS name, so no self-reference.
+    // A bare /…/ as the operand of if/unless/while/?/!/so/&&/|| matches $_ (and sets $/); elsewhere it is a Regex object
+    string boolOperand(Expr* e) {
+        if (e->kind == NK::RegexLit) {
+            auto* r = static_cast<RegexLit*>(e);
+            if (!r->isRx && r->declKind.empty()) { fn().usesSlash = true; return "(v__slash = R.rxMatch(" + topic() + ", " + regexObject(r) + "))"; }
+        }
+        return exArg(e);
+    }
     string blockClosure(BlockExpr* be) {
         const std::vector<Param>& params = be->params;
         std::vector<string> placeholders;
@@ -1104,9 +1266,11 @@ struct JsGen {
         string paramList;
         std::vector<string> declNames;
         string bindPre;
+        bool slashFromTopic = false;
         if (implicitTopic) {
             newT = newTopic();
             paramList = newT + " = " + outerTopic;
+            if (substSlash) { substSlash = false; slashFromTopic = true; paramList += ", _sl = v__slash"; }
         } else if (!placeholders.empty()) {
             for (size_t i = 0; i < placeholders.size(); i++) paramList += (i ? ", " : "") + mangleVar(plainName(placeholders[i]));
         }
@@ -1115,7 +1279,9 @@ struct JsGen {
         string body = fnBody(isRoutine, [&]() {
             scopes.emplace_back(); declareSigillessParams(params);
             struct ScopePop { std::vector<Scope>& v; ~ScopePop() { v.pop_back(); } } scopePop{ scopes };
+            if (slashFromTopic) { fn().slashParam = true; fn().usesSlash = true; line(2, "let v__slash = R.isMatch(" + newT + ") ? " + newT + " : _sl;"); }
             bool bindsTopic = false;
+            for (auto& p : params) if (p.name == "$/") fn().slashParam = true;
             if (usesArgs) { paramList = "..._args"; line(2, "let " + mangleVar("@_") + " = R.mkArray(R.splitArgs(_args)[0]);"); }
             if (!params.empty()) {
                 // a pointy block's / anonymous sub's params: the same binder subs use
@@ -1171,7 +1337,7 @@ struct JsGen {
     // The statements of a block. tail = the last statement's value is returned.
     void emitStmts(const std::vector<StmtPtr>& ss, int ind, bool tail) {
         // phasers and CATCH first
-        std::vector<Stmt*> pre, main, post;
+        std::vector<Stmt*> pre, main, post, classes;
         Block* catchBlock = nullptr;
         bool hasWhen = false;
         scopes.emplace_back();
@@ -1191,6 +1357,7 @@ struct JsGen {
                 if (b->phaser == "QUIT" || b->phaser == "CLOSE" || b->phaser == "PRE" || b->phaser == "POST" || b->phaser == "COMPOSE" || b->phaser == "DOC") refuse("a " + b->phaser + " phaser", s->line);
             }
             if (s->kind == NK::WhenStmt) hasWhen = true;
+            if (s->kind == NK::ClassDecl) { classes.push_back(s); continue; }   // compile-time in Raku: a sub above may already call it
             main.push_back(s);
         }
         for (auto* s : pre) emitStmts(static_cast<Block*>(s)->stmts, ind, false);
@@ -1203,19 +1370,23 @@ struct JsGen {
             std::vector<string> names;
             for (auto* s : main) {
                 std::vector<VarExpr*> ds; collectExprDecls(s, ds);
-                for (auto* v : ds) if (v->declScope != "state" && v->declScope != "constant") names.push_back(mangleVar(v->name));
-                if (s->kind == NK::VarDecl) for (auto& nm : static_cast<VarDecl*>(s)->names) names.push_back(mangleVar(nm));
+                for (auto* v : ds) if (v->declScope != "state" && v->declScope != "constant" && mangleVar(v->name) != "_anon") names.push_back(mangleVar(v->name));
+                if (s->kind == NK::VarDecl) for (auto& nm : static_cast<VarDecl*>(s)->names) if (mangleVar(nm) != "_anon") names.push_back(mangleVar(nm));
             }
             if (!names.empty()) { string l = "let "; for (size_t i = 0; i < names.size(); i++) l += (i ? ", " : "") + names[i]; line(ind, l + ";"); for (auto& nm : names) predeclared.insert(nm); }
             line(ind, "try {"); bodyInd = ind + 1;
         }
         if (hasWhen) { blkLabel = label("_blk"); line(bodyInd, blkLabel + ": {"); blocks.push_back({ blkLabel, fnDepth(), false, "" }); bodyInd++; }
+        for (auto* s : classes) stmt(s, bodyInd, false);
         for (size_t i = 0; i < main.size(); i++) {
             bool last = i + 1 == main.size();
             // every `when` body is a possible last statement of the block
             stmt(main[i], bodyInd, tail && (last || main[i]->kind == NK::WhenStmt));
         }
-        if (tail && (main.empty() || !yieldsValue(main.back()))) { if (sinkVar.empty()) line(bodyInd, "return R.Nil;"); }
+        // A body with no value is Nil — and in a value-collecting loop that Nil is
+        // still one element per iteration, so it goes through ret() rather than
+        // being dropped: `do for 1..2 { }` is (Nil, Nil), not ().
+        if (tail && (main.empty() || !yieldsValue(main.back()))) line(bodyInd, ret("R.Nil"));
         if (hasWhen) { bodyInd--; line(bodyInd, "}"); blocks.pop_back(); }
         if (wrapTry) {
             if (catchBlock) {
@@ -1286,7 +1457,11 @@ struct JsGen {
             case NK::ClassDecl: classDecl(static_cast<ClassDecl*>(s), ind); if (tail && !lastClassJs.empty()) line(ind, ret(lastClassJs)); return;
             case NK::EnumDecl: enumDecl(static_cast<EnumDecl*>(s), ind); return;
             case NK::SubsetDecl: subsetDecl(static_cast<SubsetDecl*>(s), ind); return;
-            case NK::NamedRegexDecl: refuse("a named regex declaration", s->line);
+            case NK::NamedRegexDecl: {
+                auto* d = static_cast<NamedRegexDecl*>(s);
+                line(ind, "var " + mangleVar("&" + d->name) + " = R.namedRegex(" + jsStr(d->name) + ", " + compileRegex(d->pattern, d->kind == "token" ? "r" : d->kind == "rule" ? "sr" : "", d->line) + ");");
+                return;
+            }
             case NK::ExprStmt: exprStmt(static_cast<ExprStmt*>(s), ind, tail); return;
             case NK::VarDecl: varDecl(static_cast<VarDecl*>(s), ind, tail); return;
             case NK::ReturnStmt: {
@@ -1378,11 +1553,13 @@ struct JsGen {
                 if (v->name[0] != '$' && v->name[0] != '@' && v->name[0] != '%' && v->name[0] != '&') declareSigilless(v->name);
                 string init;
                 char sig = v->name[0];
-                if (sig == '@') init = "R.newArray(" + listSource(a->value.get()) + ")";
+                if ((sig == '@' || sig == '%') && a->op == ":=") init = exArg(a->value.get());   // binding: the object itself
+                else if (sig == '@') init = "R.newArray(" + listSource(a->value.get()) + ")";
                 else if (sig == '%') init = "R.newHash(" + listSource(a->value.get()) + ")";
                 else if (!v->declCoerce.empty()) init = "R.coerce(" + typeObj(v->declCoerce, v->line) + ", " + exArg(a->value.get()) + ")";
                 else init = exArg(a->value.get());
                 if ((sig == '@' || sig == '%') && !v->declType.empty()) init = "R.withOf(" + init + ", " + typeObj(v->declType, v->line) + ")";
+                if ((sig == '@' || sig == '%') && v->declDefault) init = "R.withDefault(" + init + ", " + exArg(v->declDefault.get()) + ")";   // `is default(v)`: what a missing element answers
                 line(ind, declKw(mangleVar(v->name), v->declScope == "constant" ? "const " : "let ") + mangleVar(v->name) + " = " + init + ";");
                 if (tail) line(ind, ret(mangleVar(v->name)));
                 return;
@@ -1440,7 +1617,7 @@ struct JsGen {
         if (!b) return;
         std::vector<VarExpr*> ds;
         for (auto& st : b->stmts) { collectExprDecls(st.get(), ds); if (st->kind == NK::VarDecl) for (auto& nm : static_cast<VarDecl*>(st.get())->names) { line(ind, "let " + mangleVar(nm) + emptyFor(nm) + ";"); predeclared.insert(mangleVar(nm)); } }
-        for (auto* v : ds) if (v->declScope != "state" && v->declScope != "constant") { line(ind, "let " + mangleVar(v->name) + emptyFor(v->name) + ";"); predeclared.insert(mangleVar(v->name)); }
+        for (auto* v : ds) if (v->declScope != "state" && v->declScope != "constant" && mangleVar(v->name) != "_anon") { line(ind, "let " + mangleVar(v->name) + emptyFor(v->name) + ";"); predeclared.insert(mangleVar(v->name)); }
     }
     void ifStmt(IfStmt* s, int ind, bool tail) {
         if (s->modifier) for (auto& br : s->branches) hoistModifierDecls(br.second.get(), ind);
@@ -1448,7 +1625,7 @@ struct JsGen {
         for (size_t i = 0; i < s->branchParams.size(); i++) if (!s->branchParams[i].empty()) refuse("if EXPR -> (…) destructuring binder", s->line);
         if (!s->elseParams.empty()) refuse("else -> (…) destructuring binder", s->line);
         for (size_t i = 0; i < s->branches.size(); i++) {
-            string cond = exArg(s->branches[i].first.get());
+            string cond = boolOperand(s->branches[i].first.get());
             string var = i == 0 ? s->thenVar : (i < s->branchVars.size() ? s->branchVars[i] : "");
             bool neg = i == 0 && s->isUnless;
             string t;
@@ -1456,7 +1633,7 @@ struct JsGen {
             string test = neg ? "!R.truthy(" + cond + ")" : "R.truthy(" + cond + ")";
             line(ind, (i ? "} else if (" : "if (") + test + ") {");
             if (!var.empty()) {
-                if (var == "$_") { string nt = newTopic(); line(ind + 1, "const " + nt + " = " + t + ";"); topics.push_back(nt); }
+                if (var == "$_") { string nt = newTopic(); line(ind + 1, "let " + nt + " = " + t + ";"); topics.push_back(nt); }
                 else line(ind + 1, "const " + mangleVar(var) + " = " + t + ";");
             }
             emitStmts(s->branches[i].second->stmts, ind + 1, tail);
@@ -1534,18 +1711,18 @@ struct JsGen {
         if (!w->var.empty()) {
             string t = tmp();
             loopBody(w, w->body.get(), ind, "for (;;)", [&]() {
-                line(ind + 1, "if (" + string(w->isUntil ? "" : "!") + "R.truthy(" + t + " = " + exArg(w->cond.get()) + ")) break;");
+                line(ind + 1, "if (" + string(w->isUntil ? "" : "!") + "R.truthy(" + t + " = " + boolOperand(w->cond.get()) + ")) break;");
                 line(ind + 1, "const " + mangleVar(w->var) + " = " + t + ";");
             }, tb);
             return;
         }
-        string cond = exArg(w->cond.get());
+        string cond = boolOperand(w->cond.get());
         loopBody(w, w->body.get(), ind, "while (" + string(w->isUntil ? "!" : "") + "R.truthy(" + cond + "))", []() {}, tb);
     }
     void repeatStmt(RepeatStmt* r, int ind) {
         string flag = tmp();
         line(ind, flag + " = true;");
-        string cond = exArg(r->cond.get());
+        string cond = boolOperand(r->cond.get());
         loopBody(r, r->body.get(), ind, "while (" + flag + " || " + string(r->isUntil ? "!" : "") + "R.truthy(" + cond + "))", [&]() { line(ind + 1, flag + " = false;"); });
     }
     void loopStmt(LoopStmt* l, int ind, bool tail) {
@@ -1556,7 +1733,7 @@ struct JsGen {
         if (l->init) hoistExprDecls(l->init.get(), ind + 1);
         if (l->cond) hoistExprDecls(l->cond.get(), ind + 1);
         string init = l->init ? exArg(l->init.get()) : "";
-        string cond = l->cond ? "R.truthy(" + exArg(l->cond.get()) + ")" : "";
+        string cond = l->cond ? "R.truthy(" + boolOperand(l->cond.get()) + ")" : "";
         string incr = l->incr ? exArg(l->incr.get()) : "";
         loopBody(l, l->body.get(), ind + 1, "for (" + init + "; " + cond + "; " + incr + ")", []() {}, tb);
         line(ind, "}");
@@ -1587,7 +1764,7 @@ struct JsGen {
                 for (size_t i = 0; i < f->vars.size(); i++) {
                     const string& v = f->vars[i];
                     if (v[0] == '@') { line(ind + 1, "const " + mangleVar(v) + " = R.mkArray(" + arr + ".slice(" + std::to_string(i) + "));"); break; }
-                    line(ind + 1, "const " + mangleVar(v) + " = " + arr + "[" + std::to_string(i) + "] ?? R.Any;");
+                    line(ind + 1, "let " + mangleVar(v) + " = " + arr + "[" + std::to_string(i) + "] ?? R.Any;");
                 }
             }, tb);
             return;
@@ -1595,6 +1772,17 @@ struct JsGen {
         // the loop variables live OUTSIDE the loop: a LAST phaser reads the last one
         string vars, decl;
         string nt;
+        if (f->vars.empty() && f->params.empty() && le->kind == NK::VarExpr && !static_cast<VarExpr*>(le)->declare) {
+            const string& vn = static_cast<VarExpr*>(le)->name;
+            if (vn.size() > 1 && vn[0] == '$' && vn[1] != '!' && vn[1] != '.' && vn[1] != '*' && vn != "$_" && vn != "$/") {
+                line(ind, "{"); ind++;
+                topics.push_back(varRef(static_cast<VarExpr*>(le)));
+                loopBody(f, f->body.get(), ind, "for (const _once of [0])", []() {}, tb);
+                topics.pop_back();
+                ind--; line(ind, "}");
+                return;
+            }
+        }
         if (f->vars.empty()) { nt = newTopic(); vars = nt; decl = nt; }
         else if (f->vars.size() == 1) { if (f->vars[0] == "$_") { nt = newTopic(); vars = nt; } else vars = mangleVar(f->vars[0]); decl = vars; }
         else { vars = "["; for (size_t i = 0; i < f->vars.size(); i++) { string vn = f->vars[i] == "$_" ? (nt = newTopic()) : mangleVar(f->vars[i]); vars += (i ? ", " : "") + vn; decl += (i ? ", " : "") + vn; } vars += "]"; }
@@ -1625,7 +1813,7 @@ struct JsGen {
             string test = string(g->defGuard == 1 ? "" : "!") + "R.defined(" + t + " = " + topicE + ")";
             line(ind, "if (" + test + ") {");
             string nt = g->var.empty() || g->var == "$_" ? newTopic() : mangleVar(g->var);
-            line(ind + 1, "const " + nt + " = " + t + ";");
+            line(ind + 1, "let " + nt + " = " + t + ";");
             if (g->var.empty() || g->var == "$_") topics.push_back(nt);
             emitStmts(g->body->stmts, ind + 1, tail);
             if (g->var.empty() || g->var == "$_") topics.pop_back();
@@ -1639,8 +1827,10 @@ struct JsGen {
         }
         string lbl = label("_given");
         line(ind, lbl + ": {");
-        string nt = newTopic();
-        line(ind + 1, "const " + nt + " = " + topicE + ";");
+        string nt;
+        if (g->topic && g->topic->kind == NK::VarExpr && !static_cast<VarExpr*>(g->topic.get())->declare && static_cast<VarExpr*>(g->topic.get())->name.size() > 1 && static_cast<VarExpr*>(g->topic.get())->name[0] == '$' && static_cast<VarExpr*>(g->topic.get())->name[1] != '!' && static_cast<VarExpr*>(g->topic.get())->name[1] != '.' && static_cast<VarExpr*>(g->topic.get())->name != "$_")
+            nt = varRef(static_cast<VarExpr*>(g->topic.get()));   // the variable itself: assignments to $_ reach it
+        else { nt = newTopic(); line(ind + 1, "let " + nt + " = " + topicE + ";"); }
         if (!g->var.empty() && g->var != "$_") line(ind + 1, "const " + mangleVar(g->var) + " = " + nt + ";");
         topics.push_back(nt);
         blocks.push_back({ lbl, fnDepth(), false, "" });
@@ -1662,7 +1852,7 @@ struct JsGen {
     }
     string smartmatchTest(Expr* cond) {
         if (cond->kind == NK::BlockExpr) return "R.truthy(" + blockClosure(static_cast<BlockExpr*>(cond)) + "(" + topic() + "))";
-        if (cond->kind == NK::RegexLit) refuse("a regex in when", cond->line);
+        if (cond->kind == NK::RegexLit) { fn().usesSlash = true; return "R.truthy(v__slash = R.rxMatch(" + topic() + ", " + regexObject(static_cast<RegexLit*>(cond)) + "))"; }
         return "R.smartmatch(" + topic() + ", " + exArg(cond) + ")";
     }
 
@@ -1674,6 +1864,7 @@ struct JsGen {
     // Bind a general signature from `_args` (positionals + a trailing R.named).
     void bindParams(const std::vector<Param>& ps, int ind, const string& who, bool isMethod) {
         declareSigillessParams(ps);
+        for (auto& p : ps) if (p.name == "$/") fn().slashParam = true;
         line(ind, "const [_pos, _named] = R.splitArgs(_args);");
         int req = 0, opt = 0; bool slurpy = false;
         for (auto& p : ps) { if (p.named || p.invocant) continue; if (p.slurpy) slurpy = true; else if (p.optional || p.defaultVal) opt++; else req++; }
@@ -1778,6 +1969,7 @@ struct JsGen {
         bool isAsync = stmtsAwait(d->body);
         string body = fnBody(true, [&]() {
             scopes.emplace_back(); declareSigillessParams(d->params);
+            for (auto& p : d->params) if (p.name == "$/") fn().slashParam = true;
             struct ScopePop { std::vector<Scope>& v; ~ScopePop() { v.pop_back(); } } scopePop{ scopes };
             if (usesArgs) line(2, "let " + mangleVar("@_") + " = R.mkArray(R.splitArgs(_args)[0]);");
             else if (!placeholders.empty()) {
@@ -1793,7 +1985,9 @@ struct JsGen {
                 line(2, "if (arguments.length !== " + std::to_string(d->params.size() + (isMethod ? 1 : 0)) + ") R.arityError(" + jsStr(who) + ", " + std::to_string(d->params.size()) + ", arguments.length" + (isMethod ? " - 1" : "") + ");");
                 for (auto& p : d->params) line(2, "if (" + mangleVar(p.name) + " === R.Mu) R.notAny(" + jsStr(p.name) + ");");
             }
-            string t = newTopic(); fn().declared.push_back("let " + t + " = R.Any;"); topics.push_back(t);
+            bool bindsTopic = false; for (auto& p : d->params) if (p.name == "$_") bindsTopic = true;
+            if (bindsTopic) topics.push_back(mangleVar("$_"));   // `method name($_)`: the parameter IS the topic
+            else { string t = newTopic(); fn().declared.push_back("let " + t + " = R.Any;"); topics.push_back(t); }
             emitStmts(d->body, 2, true);
             topics.pop_back();
         }, 2);
@@ -1881,7 +2075,15 @@ struct JsGen {
                 if (p.litVal) cond = "R.smartmatch(" + a + ", " + exArg(p.litVal.get()) + ")";
                 else if (!p.type.empty() || p.defConstraint) cond = "R.typeMatches(" + a + ", " + (p.type.empty() || p.type == "Any" || p.type == "Mu" ? "null" : typeObj(p.type, d->line)) + ", " + std::to_string(p.defConstraint) + ")" + ((p.type.empty() || p.type == "Any") && p.sigil == '$' ? " && R.isAny(" + a + ")" : "");
                 else if (p.sigil == '$' && !p.slurpy) cond = "R.isAny(" + a + ")";   // untyped: implicitly Any (a Junction is not)
-                if (p.whereExpr) { string w = "R.truthy(R.matcherOf(" + exArg(p.whereExpr.get()) + ")(" + a + "))"; cond = cond.empty() ? w : cond + " && " + w; }
+                if (p.whereExpr) {
+                    string w = "R.truthy(R.matcherOf(" + exArg(p.whereExpr.get()) + ")(" + a + "))";
+                    if (pi > 0) {   // a `where` may read the EARLIER parameters (`$n where * > $l`): bind them around the test
+                        string names, vals; int j = 0;
+                        for (auto& q : d->params) { if (q.invocant || q.named || q.slurpy) continue; if (j > pi) break; if (q.name.size() > 1 && q.sigil == '$') { names += (names.empty() ? "" : ", ") + mangleVar(q.name); vals += (vals.empty() ? "" : ", ") + string("_pos[") + std::to_string(j) + "]"; } j++; }
+                        if (!names.empty()) w = "((" + names + ") => " + w + ")(" + vals + ")";
+                    }
+                    cond = cond.empty() ? w : cond + " && " + w;
+                }
                 if (!cond.empty()) g.push_back((p.optional || p.defaultVal) ? "(_pos.length <= " + std::to_string(pi) + " || " + cond + ")" : cond);
                 pi++;
             }
@@ -1900,7 +2102,7 @@ struct JsGen {
     // -------------------------------------------------------------- classes --
     void classDecl(ClassDecl* c, int ind) {
         if (c->isPackage) refuse("a package/module declaration", c->line);
-        if (c->isGrammar || !c->rules.empty()) refuse("a grammar", c->line);
+        // a grammar: its rules are compiled patterns the runtime's matcher resolves by name
         if (c->isAugment) refuse("augment", c->line);
         if (c->nameExpr) refuse("a class with a computed name", c->line);
         if (c->parameterized || !c->roleParams.empty()) refuse("a parameterized role", c->line);
@@ -1958,11 +2160,19 @@ struct JsGen {
             string handles; for (size_t i = 0; i < a.handles.size(); i++) handles += (i ? ", " : "") + jsStr(a.handles[i]);
             string handlesTo; for (size_t i = 0; i < a.handlesTo.size(); i++) handlesTo += (i ? ", " : "") + jsStr(a.handlesTo[i]);
             attrs += (attrs.empty() ? "" : ", ") + string("{ name: ") + jsStr(a.name) + ", sigil: \"" + a.sigil + "\", pub: " + (a.pub ? "true" : "false") + ", rw: " + (a.rw || c->classRw ? "true" : "false") +
-                     ", required: " + (a.required ? "true" : "false") + ", built: " + (a.built ? "true" : "false") + (a.type.empty() ? "" : ", type: " + jsStr(a.type)) +
+                     ", required: " + (a.required ? "true" : "false") + ", built: " + (a.built ? "true" : "false") + (a.type.empty() ? "" : ", type: " + jsStr(a.type)) + (a.coerce ? ", coerce: true" : "") +
                      (def.empty() ? "" : ", def: " + def) + (handles.empty() ? "" : ", handles: [" + handles + "]") + (handlesTo.empty() ? "" : ", handlesTo: [" + handlesTo + "]") + " }";
+        }
+        string rules;
+        for (auto& r : c->rules) {
+            if (!r.params.empty()) refuse("a parameterized grammar rule (" + r.name + ")", c->line);
+            string body = r.pattern; while (!body.empty() && (body.back() == ' ' || body.back() == '\n')) body.pop_back(); while (!body.empty() && (body[0] == ' ' || body[0] == '\n')) body.erase(0, 1);
+            if (body == "*" || body == "{*}") { rules += (rules.empty() ? "" : ", ") + jsStr(r.name) + ": { kind: " + jsStr(r.kind) + ", proto: true }"; continue; }   // `proto token x {*}`
+            rules += (rules.empty() ? "" : ", ") + jsStr(r.name) + ": { kind: " + jsStr(r.kind) + ", rx: " + compileRegex(r.pattern, r.kind == "token" ? "r" : r.kind == "rule" ? "sr" : "", c->line) + " }";
         }
         selfName = savedSelf; curClass = savedClass;
         line(ind, "const " + jsName + " = R.defClass(" + jsStr(name) + ", { parents: [" + parents + "], roles: [" + roles + "], isRole: " + (c->isRole ? "true" : "false") +
+                  (c->isGrammar || !c->rules.empty() ? ", isGrammar: true, rules: { " + rules + " }" : "") +
                   ", attrs: [" + attrs + "], methods: { " + table + " } });");
         lastClassJs = jsName;
     }
@@ -2062,6 +2272,7 @@ struct JsGen {
         for (auto& p : prelude) o << "    " << p << "\n";
         if (!ctx.temps.empty()) { o << "    let "; for (size_t i = 0; i < ctx.temps.size(); i++) o << (i ? ", " : "") << ctx.temps[i]; o << ";\n"; }
         if (ctx.usesBang) o << "    let v__bang = R.Nil;\n";
+        if (ctx.usesSlash) o << "    let v__slash = R.Nil;\n";
         for (auto& d : ctx.declared) o << "    " << d << "\n";
         for (auto& e : endBlocks) o << reindentBlock(e, 1);
         o << body;

@@ -187,6 +187,8 @@ function typeOf(v) {
             if (v instanceof RSlip) return T.Slip;
             if (v instanceof RakuError) return T[v.type] || mkExType(v.type);
             if (v instanceof RFailure) return T.Failure;
+            if (v instanceof RMatch) return T.Match;
+            if (v instanceof RRegex) return T.Regex;
             if (v instanceof RJunction) return T.Junction;
             if (v instanceof RWhatever) return T.Whatever;
             if (v instanceof RSetty) return v.ty;
@@ -195,6 +197,8 @@ function typeOf(v) {
             if (v instanceof RSig) return T.Signature;
             if (v instanceof RJsObj) return JsObjectT;
             if (v instanceof RPromise) return T.Promise;
+            if (v instanceof RMatch) return T.Match;
+            if (v instanceof RRegex) return T.Regex;
             if (v instanceof RIOHandle) return T['IO::Handle'];
             if (v instanceof RVersion) return T.Version;
             if (v instanceof RDate) return v.ty;
@@ -227,6 +231,7 @@ function isIntVal(v) { return (typeof v === 'number' && Number.isInteger(v)) || 
 
 // ------------------------------------------------------------- truthiness --
 function truthy(v) {
+    if (v instanceof RPromise) return v.status !== Planned;   // kept or broken
     switch (typeof v) {
         case 'boolean': return v;
         case 'number': return v !== 0 && !Number.isNaN(v);
@@ -275,6 +280,7 @@ function toNumeric(v, op) {
             if (v instanceof RSeq) return v.elems();
             if (v instanceof RFailure) throw v.err;
             if (v instanceof RPair) return toNumeric(v.v);
+            if (v instanceof RMatch) return strToNumeric(v.Str());
             if (v instanceof RObj) {
                 const m = v.ty.findUser('Numeric') || v.ty.findUser('Int') || v.ty.findUser('Num');
                 if (m) return toNumeric(m(v));
@@ -287,7 +293,15 @@ function toNumeric(v, op) {
     }
 }
 // Rakudo's Str.Numeric: "42" → Int, "3.14" → Rat, "1e3" → Num, "Inf"/"NaN" → Num.
+// a non-ASCII decimal digit (:Nd) → its ASCII value: the Nd runs are ten wide and start at each zero
+function foldDigits(s) {
+    const nd = (cp) => cp >= 0 && /\p{Nd}/u.test(String.fromCodePoint(cp));
+    let o = '';
+    for (const ch of s) { const cp = ch.codePointAt(0); if (cp > 127 && nd(cp)) { let k = 0; while (k < 60 && nd(cp - k - 1)) k++; o += String(k % 10); } else o += ch; }
+    return o;
+}
 function strToNumeric(s) {
+    if (/[^\x00-\x7F]/.test(s) && /\p{Nd}/u.test(s)) s = foldDigits(s);
     const t = s.trim();
     if (t === '') return 0;
     if (/^[+-]?\d+$/.test(t)) { const n = Number(t); return Number.isSafeInteger(n) ? n : normBig(BigInt(t)); }
@@ -517,8 +531,8 @@ function abs(a) {
 }
 function numify(v) {           // prefix:<+>
     if (typeof v === 'number' || typeof v === 'bigint') return v;
-    const x = toNumeric(v);
-    return x;
+    try { return toNumeric(v); }
+    catch (e) { if (e instanceof RakuError && e.type === 'X::Str::Numeric') return new RFailure(e); throw e; }   // +"12abc" is a Failure, not a death
 }
 // Numeric comparison: -1/0/1, or NaN when unordered.
 function numCmp(a, b) {
@@ -649,6 +663,7 @@ function str(v) {
             if (v instanceof RDate) return v.Str();
             if (v instanceof RCapture) return v.Str();
             if (v instanceof RJsObj) return jsStr(v);
+            if (v instanceof RMatch) return v.Str();
             return String(v);
         default: return '';
     }
@@ -662,6 +677,7 @@ function strLit(s) {              // .raku of a Str
 }
 // .gist
 function gist(v) {
+    if (v instanceof RRegex) return 'rx/' + (v.src === undefined ? '…' : v.src) + '/';
     switch (typeof v) {
         case 'string': return v;
         case 'number': case 'bigint': case 'boolean': return str(v);
@@ -692,6 +708,7 @@ function gist(v) {
             if (v instanceof RDate) return v.Str();
             if (v instanceof RCapture) return v.gist();
             if (v instanceof RJsObj) return jsStr(v);
+            if (v instanceof RMatch) return matchGist(v, 0);
             return str(v);
         default: return str(v);
     }

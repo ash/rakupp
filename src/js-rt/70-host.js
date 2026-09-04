@@ -60,13 +60,23 @@ if (IS_NODE && nodeRequire) {
     host.size = p => { try { return fs.statSync(p).size; } catch (e) { return 0; } };
     host.modified = p => { try { return numResult(fs.statSync(p).mtimeMs / 1000); } catch (e) { return 0; } };
     host.absolute = p => pathMod.resolve(p);
-    host.dir = (p, ...a) => { const d = p === undefined ? '.' : str(p); const named = nm(a); const test = named.get('test'); let ents; try { ents = fs.readdirSync(d); } catch (e) { throw new RakuError(`Failed to get the directory contents of '${d}': ${e.message}`); } ents.sort(); const out = []; for (const e of ents) { if (test !== undefined && !truthy(smartmatch(e, test))) continue; if (test === undefined && (e === '.' || e === '..')) continue; out.push(new RIOPath(d === '.' ? e : d.replace(/\/+$/, '') + '/' + e)); } return mkSeq(out); };
+    // dir($path = '.', :test): `.` and `..` are candidates only when a test is given; every entry remembers the CWD of the call
+    host.dir = (p, ...a) => {
+        if (p instanceof RNamed) { a.unshift(p); p = undefined; }
+        const d = p === undefined ? '.' : str(p); const named = nm(a); const test = named.get('test');
+        let st; try { st = fs.statSync(d); } catch (e) { throw new RakuError(`Failed to get the directory contents of '${d}': ${e.code === 'ENOENT' ? 'no such file or directory' : e.message}`, 'X::IO::Dir'); }
+        if (!st.isDirectory()) throw new RakuError(`Failed to get the directory contents of '${d}': not a directory`, 'X::IO::Dir');
+        const ents = ['.', '..', ...fs.readdirSync(d).sort()];
+        const out = [];
+        for (const e of ents) { if (test !== undefined ? !truthy(smartmatch(e, test)) : (e === '.' || e === '..')) continue; out.push(new RIOPath(d === '.' ? e : d.replace(/\/+$/, '') + '/' + e, host.cwd)); }
+        return mkSeq(out);
+    };
     host.mkdir = p => { fs.mkdirSync(str(p), { recursive: true }); return new RIOPath(str(p)); };
     host.rmdir = p => { fs.rmdirSync(str(p)); return true; };
     host.unlink = p => { try { fs.unlinkSync(str(p)); return true; } catch (e) { return false; } };
     host.copy = (a, b) => { fs.copyFileSync(a, b); return true; };
     host.rename = (a, b) => { fs.renameSync(a, b); return true; };
-    host.chdir = p => { process.chdir(str(p)); host.cwd = process.cwd(); return new RIOPath(host.cwd); };
+    host.chdir = p => { process.chdir(str(p)); host.cwd = nodeRequire('path').resolve(host.cwd, str(p)); return new RIOPath(host.cwd); };   // the logical path, not the realpath
     host.open = (p, ...a) => { const named = nm(a); const path = str(p); const w = truthy(named.get('w')) || truthy(named.get('a')) || str(named.get('mode') || '') === 'wo'; const app = truthy(named.get('a')) || truthy(named.get('append')); const h = new RIOHandle(w ? 'file-w' : 'file-r', path); if (w) { if (!app) fs.writeFileSync(path, ''); h.out = ''; } else { try { h.buf = fs.readFileSync(path, 'utf8'); } catch (e) { throw new RakuError(`Failed to open file ${path}: ${e.code === 'ENOENT' ? 'No such file or directory' : e.message}`, 'X::IO::DoesNotExist'); } } return h; };
     host.close = h => { if (h.kind === 'file-w' && h.out) { fs.appendFileSync(h.path, h.out); h.out = ''; } h.closed = true; return true; };
     host.isTTY = h => h.kind === 'in' ? !!process.stdin.isTTY : h.kind === 'out' ? !!process.stdout.isTTY : h.kind === 'err' ? !!process.stderr.isTTY : false;

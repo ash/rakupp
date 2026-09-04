@@ -428,10 +428,10 @@ section('--target=js (JavaScript backend)');
             ok($p.exitcode == 0, "--target=js --verify: $k agrees with the interpreter");
             diag($p.err.slurp(:close)) if $p.exitcode != 0;
         }
-        my $r = run($*EXECUTABLE, '--target=js', '-e', 'say "a" ~~ /a/', :out, :err);
+        my $r = run($*EXECUTABLE, '--target=js', '-e', 'say EVAL "1 + 1"', :out, :err);
         my $err = $r.err.slurp(:close);
-        ok($r.exitcode == 5 && $err.starts-with('note: a regex'), 'a program outside the JS core is refused with exit 5');
-        my $w = run($*EXECUTABLE, '--target=js', '--fallback=wasm', '-q', '-e', 'say "a" ~~ /a/', :out, :err);
+        ok($r.exitcode == 5 && $err.starts-with('note: EVAL'), 'a program outside the JS core is refused with exit 5');
+        my $w = run($*EXECUTABLE, '--target=js', '--fallback=wasm', '-q', '-e', 'say EVAL "1 + 1"', :out, :err);
         ok($w.exitcode == 0 && $w.out.slurp(:close).contains('"mode":"js-wasm"'), '--fallback=wasm emits the WebAssembly wrapper with its manifest');
         my $i = run($*EXECUTABLE, '--exe-info', $js.Str, :out, :err);
         ok($i.out.slurp(:close).contains('"mode":"js"'), '--exe-info reads a .js manifest');

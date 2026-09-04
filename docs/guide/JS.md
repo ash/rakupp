@@ -104,10 +104,26 @@ the `...` sequence operator, `xx`, `MAIN` with the usage protocol, `@*ARGS`,
 `%*ENV`, `$*IN`/`$*OUT`/`$*ERR`, files through `IO::Path` (under Node, Bun
 and Deno).
 
-Outside (refused, or run through `--fallback=wasm`): regexes, grammars and
-`s///` (P3 of the plan), `EVAL` and `require` of computed names, `use` of a
-module, NativeCall, threads and `start`/`await`/`react`/`supply` (P4 makes
-`start` a Promise), `temp`/`let`, `Proc::Async`, the `Test` module.
+Regexes and grammars: the pattern is parsed at transpile time with the
+engine's own regex parser and emitted as a tree the runtime's matcher
+interprets, so embedded `{ … }` blocks, `<?{ … }>` assertions and `$var`
+atoms are plain closures over the surrounding code. Captures, named and
+list-valued, `$/`, `$0`, `$<name>`, `make`/`made`, action classes, protos
+with `:sym<…>`, `s///`, `.subst`, `.match(:g)`, `.comb`, `.split` and
+`.trans` behave as in the interpreter. `<$var>` and `<name=$var>` with a
+string in the variable parse that string as a pattern at run time (the
+subset a pattern string carries: literals, quotes, `\d\w\s`, classes,
+groups, quantifiers, alternation, `:i`); a bare `@array` is an alternation
+of its strings, longest first; `~~` with a Regex in a variable sets `$/`,
+and a `.subst` replacement block sees the match as `$/`. Alternation is
+first-match ordered by the longest literal prefix — an approximation of
+longest-token matching that the second half of the regex work replaces
+with a port of the native LTM ranker.
+
+Outside (refused, or run through `--fallback=wasm`): `:nth`/`:x` and `:P5`
+regex adverbs, `EVAL` and `require` of computed names, `use` of a module,
+NativeCall, threads and `react`/`supply`/`Channel`, `temp`/`let`,
+`Proc::Async`, the `Test` module.
 
 The corpus gate, `rakupp t/js/run.raku`, transpiles every program in
 `t/regression/` and `examples/` and compares each in-core one with the

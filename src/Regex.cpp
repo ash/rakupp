@@ -293,7 +293,7 @@ Regex::NodePtr Regex::parseSubSplice() {
     const Regex* sub = inlineSubs_.back().get();
     auto n = std::make_unique<Node>();
     if (!sub->ok() || !sub->root()) { n->k = K::Nop; return n; }
-    n->k = K::Subrule;
+    n->k = K::Subrule; n->icase = curIcase_;
     n->inlineRx = sub;
     n->ruleName = capName;              // the key the call records under ("" = no capture)
     n->ruleCapture = !capName.empty();
@@ -1409,7 +1409,7 @@ Regex::NodePtr Regex::parseAtom() {
             if (plusSubs.empty() && minusSubs.empty() && plusProps.empty() && minusProps.empty() && !negBracket && !posExtra) return node; // plain class (fast path)
             auto mkSub = [&](const std::string& rn) {
                 auto s = std::make_unique<Node>();
-                s->k = K::Subrule; s->ruleName = rn; s->ruleCapture = false;
+                s->k = K::Subrule; s->ruleName = rn; s->ruleCapture = false; s->icase = curIcase_;
                 return s;
             };
             auto mkNegLook = [&](std::unique_ptr<Node> inner) {
@@ -1470,7 +1470,7 @@ Regex::NodePtr Regex::parseAtom() {
             if (peek() == '>') pos_++;
             auto mkSubN = [&](const std::string& n, bool cap) {
                 auto s = std::make_unique<Node>();
-                s->k = K::Subrule; s->ruleName = n; s->ruleCapture = cap;
+                s->k = K::Subrule; s->ruleName = n; s->ruleCapture = cap; s->icase = curIcase_;
                 if (n == negs[0]) s->ruleArgs = args;
                 return s;
             };
@@ -1531,7 +1531,7 @@ Regex::NodePtr Regex::parseAtom() {
                 if (peek() == '(') { int d = 1; pos_++; while (!eof() && d > 0) { char x = pat_[pos_++]; if (x == '(') d++; else if (x == ')') { d--; if (!d) break; } args += x; } }
                 if (peek() == '>') pos_++;
                 auto sub = std::make_unique<Node>();
-                sub->k = K::Subrule; sub->ruleName = nm; sub->ruleArgs = args; sub->ruleCapture = false;
+                sub->k = K::Subrule; sub->ruleName = nm; sub->ruleArgs = args; sub->ruleCapture = false; sub->icase = curIcase_;
                 auto look = std::make_unique<Node>();
                 look->k = K::Look; look->negate = neg; look->behind = false;
                 look->kids.push_back(std::move(sub));
@@ -1683,7 +1683,7 @@ Regex::NodePtr Regex::parseAtom() {
                     sr->ruleArgs = nm.substr(lp + 1, nm.size() - lp - 2);
                     nm = nm.substr(0, lp);
                 }
-                sr->ruleName = nm;
+                sr->ruleName = nm; sr->icase = curIcase_;
                 return sr;
             }
         }
@@ -4059,4 +4059,93 @@ bool GrammarMatcher::parse(const std::string& input, const std::string& top, boo
     return true;
 }
 
+} // namespace rakupp
+
+// ---- the tree as a JavaScript literal (--target=js) ---------------------------
+#include <cstdio>
+namespace rakupp {
+namespace {
+std::string jsQ(const std::string& s) {
+    std::string o = "\"";
+    for (unsigned char c : s) {
+        switch (c) {
+            case '\\': o += "\\\\"; break;
+            case '"': o += "\\\""; break;
+            case '\n': o += "\\n"; break;
+            case '\r': o += "\\r"; break;
+            case '\t': o += "\\t"; break;
+            case 0: o += "\\0"; break;
+            default:
+                if (c < 0x20 || c == 0x7f) { char b[8]; std::snprintf(b, sizeof b, "\\x%02x", c); o += b; }
+                else o += (char)c;
+        }
+    }
+    return o + "\"";
+}
+}
+std::string Regex::toJsTree(const std::function<std::string(const std::string&, const std::string&)>& embed) const {
+    static const char* KNAME[] = { "Lit", "Any", "Class", "Seq", "Alt", "Conj", "Rep", "Group", "AnchorStart", "AnchorEnd",
+                                   "WBLeft", "WBRight", "Nop", "Subrule", "Look", "Code", "VarMatch", "CapStart", "CapEnd", "CondRef" };
+    std::function<std::string(const Node*)> walk = [&](const Node* n) -> std::string {
+        if (!n) return "null";
+        std::string o = "{k:\"" + std::string(KNAME[(int)n->k]) + "\"";
+        auto flag = [&](const char* name, bool v) { if (v) o += std::string(",") + name + ":1"; };
+        switch (n->k) {
+            case K::Lit: o += ",lit:" + jsQ(n->lit); flag("icase", n->icase); flag("imark", n->imark); break;
+            case K::Any: break;
+            case K::Class: {
+                if (!n->ranges.empty()) { o += ",ranges:["; bool f = true; for (auto& r : n->ranges) { o += (f ? "" : ",") + std::to_string(r.first) + "," + std::to_string(r.second); f = false; } o += "]"; }
+                if (!n->cpRanges.empty()) { o += ",cp:["; bool f = true; for (auto& r : n->cpRanges) { o += (f ? "" : ",") + std::to_string(r.first) + "," + std::to_string(r.second); f = false; } o += "]"; }
+                if (!n->clusterMembers.empty()) { o += ",clusters:["; bool f = true; for (auto& m : n->clusterMembers) { o += (f ? "" : ",") + jsQ(m); f = false; } o += "]"; }
+                if (!n->classFlags.empty()) o += ",flags:" + jsQ(n->classFlags);
+                if (!n->negClassFlags.empty()) o += ",negFlags:" + jsQ(n->negClassFlags);
+                if (!n->uprop.empty()) o += ",uprop:" + jsQ(n->uprop);
+                flag("negate", n->negate); flag("icase", n->icase);
+                break;
+            }
+            case K::Rep:
+                o += ",min:" + std::to_string(n->min) + ",max:" + std::to_string(n->max);
+                flag("frugal", !n->greedy); flag("possessive", n->possessive); flag("sepTrail", n->sepTrail);
+                if (n->sep) o += ",sep:" + walk(n->sep.get());
+                if (!n->repCode.empty()) o += ",repCode:" + embed("range", n->repCode);
+                break;
+            case K::Alt: flag("firstMatch", n->firstMatch); flag("classCombo", n->classCombo); break;
+            case K::Group:
+                if (n->capIndex >= 0) o += ",cap:" + std::to_string(n->capIndex);
+                if (!n->capName.empty()) o += ",capName:" + jsQ(n->capName);
+                flag("listCap", n->listCap); flag("nestNames", n->nestNames);
+                break;
+            case K::AnchorStart: flag("multiline", n->multiline); flag("p5Line", n->p5Line); break;
+            case K::AnchorEnd: flag("multiline", n->multiline); flag("absEnd", n->absEnd); break;
+            case K::Subrule:
+                {
+                    std::string rn = n->ruleName; bool litAlt = rn.size() > 1 && rn[0] == '@' && rn[1] == '@';
+                    if (litAlt) rn = rn.substr(1);
+                    o += ",name:" + jsQ(rn); flag("icase", n->icase); flag("lit", litAlt);
+                    if (!rn.empty() && (rn[0] == '$' || rn[0] == '@')) o += ",fn:" + embed("var", rn);   // <$var>: the value is the pattern; a bare @var (lit) is its strings
+                }
+                if (!n->ruleArgs.empty()) o += ",args:" + jsQ(n->ruleArgs) + ",argsFn:" + embed("args", n->ruleArgs);
+                if (!n->ruleAlias.empty()) o += ",alias:" + jsQ(n->ruleAlias);
+                flag("aliasDotted", n->aliasDotted); flag("noCapture", !n->ruleCapture);
+                if (n->inlineRx) o += ",inline:" + n->inlineRx->toJsTree(embed);
+                if (n->recTarget) o += ",rec:1";
+                break;
+            case K::Look: flag("negate", n->negate); flag("behind", n->behind); break;
+            case K::Code: o += ",code:" + jsQ(n->lit) + ",fn:" + embed(n->runOnly ? "run" : "assert", n->lit); flag("runOnly", n->runOnly); flag("ltmStop", n->ltmStop); break;
+            case K::VarMatch: o += ",name:" + jsQ(n->lit) + ",fn:" + embed("var", n->lit); break;
+            case K::CondRef: o += ",lit:" + jsQ(n->lit); break;
+            default: break;
+        }
+        if (!n->kids.empty()) { o += ",kids:["; bool f = true; for (auto& k : n->kids) { o += (f ? "" : ",") + walk(k.get()); f = false; } o += "]"; }
+        return o + "}";
+    };
+    std::string o = "{root:" + walk(root_.get()) + ",ncaps:" + std::to_string(ncaps_);
+    if (icase_) o += ",icase:1";
+    if (sigspace_) o += ",sigspace:1";
+    if (ratchet_) o += ",ratchet:1";
+    if (!listCaps_.empty()) { o += ",listCaps:["; bool f = true; for (int i : listCaps_) { o += (f ? "" : ",") + std::to_string(i); f = false; } o += "]"; }
+    if (listNames_ && !listNames_->empty()) { o += ",listNames:["; bool f = true; for (auto& nm : *listNames_) { o += (f ? "" : ",") + jsQ(nm); f = false; } o += "]"; }
+    if (hashNames_ && !hashNames_->empty()) { o += ",hashNames:["; bool f = true; for (auto& nm : *hashNames_) { o += (f ? "" : ",") + jsQ(nm); f = false; } o += "]"; }
+    return o + "}";
+}
 } // namespace rakupp

@@ -18,7 +18,7 @@ function die(...args) {
     throw new RakuError(args.length ? args.map(str).join('') : 'Died');
 }
 // sink context: a Failure throws, a lazy Seq is iterated (`@in.map({ … })` as a statement runs)
-function sink(v) { if (v instanceof RFailure && !v.handled) throw v.err; if (v instanceof RSeq && !v.done) v.arr(); return v; }
+function sink(v) { if (v instanceof RFailure && !v.handled) throw v.err; if (v instanceof RSeq && !v.done) v.arr(); if (v instanceof RObj) { const m = v.ty.findUser('sink'); if (m) m(v); } return v; }   // a statement-level object runs its .sink
 function failure(err) { return new RFailure(err instanceof RakuError ? err : new RakuError(str(err))); }
 function fail(...args) {
     if (args.length === 1 && (args[0] instanceof RakuError)) return failure(args[0]);
@@ -81,6 +81,7 @@ function defClass(name, spec) {
         }
     }
     ty.ctor = function () { };
+    if (spec.rules) { ty.rules = spec.rules; ty.isGrammar = true; }
     ty.allAttrs = function () {         // derived class first, as the interpreter renders them
         const out = [];
         for (const t of this.mro) if (t.attrs) for (const a of t.attrs) if (!out.some(x => x.name === a.name)) out.push(a);
@@ -92,7 +93,17 @@ function defClass(name, spec) {
 function accessorRw(key) { const f = function (self, ...args) { if (args.length && !(args[0] instanceof RNamed)) self[key] = args[0]; return self[key]; }; f.lvKey = key; return f; }
 RType.prototype.allAttrs = function () { return []; };
 // Mu.new: build an instance, fill attributes from named args, run BUILD/TWEAK
+// Type.new(...): a user-defined `new` runs (its `self.bless` builds the object); otherwise the default constructor
+const inUserNew = new Set();
 function construct(ty, ...args) {
+    if (ty instanceof RType && ty.isUser && !inUserNew.has(ty)) {
+        const un = ty.findUser('new');
+        if (un) { inUserNew.add(ty); try { return un(ty, ...args); } finally { inUserNew.delete(ty); } }
+    }
+    return buildObj(ty, ...args);
+}
+function buildObj(ty, ...args) {
+    if (ty.isUser && (ty.isa(T.Array) || ty.isa(T.List)) && !ty.mro.some(t => t.attrs && t.attrs.length)) { const a = mkArray(listItems(args.length && !(args[0] instanceof RNamed) ? args[0] : []).slice()); a.ty = ty; return a; }   // class X is Array
     if (!ty.isUser) {
         if (ty === T.Str) return ''; if (ty === T.Int) return 0; if (ty === T.Array) return mkArray(listItems(args.length && !(args[0] instanceof RNamed) ? args[0] : []).slice()); if (ty === T.Hash) return newHash(args.length ? mkList(args) : undefined); if (ty === T.List) return mkList(args.filter(a => !(a instanceof RNamed)));
         if (ty === T.Pair) { const [pos, named] = splitArgs(args); if (pos.length >= 2) return pair(pos[0], pos[1]); const k = named.get('key'), v = named.get('value'); return pair(k === undefined ? Any : k, v === undefined ? Any : v); }
@@ -126,6 +137,7 @@ function construct(ty, ...args) {
         else v = a.sigil === '@' ? mkArray([]) : a.sigil === '%' ? mkHash() : (a.type && T[a.type] ? T[a.type] : Any);
         if (a.sigil === '@' && !(v instanceof RList && v.ty === T.Array)) v = newArray(v);
         else if (a.sigil === '%' && !(v instanceof RHash)) v = newHash(v);
+        if (a.coerce && a.type && T[a.type] && v !== Any && !(v instanceof RType)) v = coerce(T[a.type], v);   // `has IO::Path() $.p`
         if (a.type && a.sigil === '$' && v !== Any && !(v instanceof RType) && !isa(v, a.type) && T[a.type]) {
             throw new RakuError(`Type check failed in assignment to ${a.sigil}!${a.name}; expected ${a.type} but got ${typeName(v)} (${raku(v)})`, 'X::TypeCheck::Assignment');
         }
@@ -158,6 +170,19 @@ function enumType(name, pairs, base) {
 function enumFromKeys(ty, key) { return ty.enumValues.find(e => e.key === key) || Nil; }
 function enumFromValue(ty, v) { return ty.enumValues.find(e => numeq(e.val, v)) || Nil; }
 function attrGet(o, key) { return o[key]; }
+// $!x = v / $.x = v: a typed (or coercion-typed) attribute checks what enters it
+function attrSpec(o, name) { if (!(o instanceof RObj)) return null; for (const t of o.ty.mro) if (t.attrs) for (const a of t.attrs) if (a.name === name) return a; return null; }
+function attrSet(o, name, v) {
+    const a = attrSpec(o, name);
+    if (a && a.sigil === '$' && a.type && T[a.type] && v !== Any && !(v instanceof RType)) {
+        if (a.coerce) v = coerce(T[a.type], v);
+        else if (!isa(v, a.type)) throw new RakuError(`Type check failed in assignment to $!${name}; expected ${a.type} but got ${typeName(v)} (${raku(v)})`, 'X::TypeCheck::Assignment');
+    }
+    o['a_' + mangleAttr(name)] = v;
+    return v;
+}
+// the emitter's key for an attribute name: `-` and other non-identifier bytes are escaped as _xx
+function mangleAttr(n) { let o = ''; for (const ch of n) o += /[A-Za-z0-9]/.test(ch) ? ch : Array.from(new TextEncoder().encode(ch), b => '_' + b.toString(16).padStart(2, '0')).join(''); return o; }
 
 // --- named arguments -----------------------------------------------------------
 function named(pairs) { return new RNamed(new Map(pairs)); }
@@ -303,24 +328,18 @@ class RDate {
 }
 function dateNew(ty, args) {
     const [pos, named] = splitArgs(args);
-    if (pos.length === 1) return new RDate(ty, new Date(typeof pos[0] === 'string' ? pos[0] + (ty === T.Date ? 'T00:00:00Z' : '') : toFloat(pos[0]) * 1000));
+    if (pos.length === 1) { if (typeof pos[0] === 'string' && !(ty === T.Date ? /^\d{4}-\d\d-\d\d$/ : /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d/).test(pos[0])) throw new RakuError(`Invalid ${ty.name} string '${pos[0]}'; use ${ty === T.Date ? 'yyyy-mm-dd' : 'yyyy-mm-ddThh:mm:ssZ or yyyy-mm-ddThh:mm:ss+01:00'} instead`, 'X::Temporal::InvalidFormat'); return new RDate(ty, new Date(typeof pos[0] === 'string' ? pos[0] + (ty === T.Date ? 'T00:00:00Z' : '') : toFloat(pos[0]) * 1000)); }
     if (pos.length >= 3) return new RDate(ty, new Date(Date.UTC(Number(pos[0]), Number(pos[1]) - 1, Number(pos[2]), Number(pos[3] || 0), Number(pos[4] || 0), Number(pos[5] || 0))));
     const g = k => named.has(k) ? Number(toInt(named.get(k))) : 0;
     return new RDate(ty, new Date(Date.UTC(g('year'), (named.has('month') ? g('month') : 1) - 1, named.has('day') ? g('day') : 1, g('hour'), g('minute'), g('second'))));
 }
 // --- IO shells; the host adapter (70-host.js) does the work ---------------------------
-class RIOPath { constructor(path) { this.path = path; } }
+class RIOPath { constructor(path, cwd) { this.path = path; this.cwd = cwd; } }
 class RIOHandle { constructor(kind, path) { this.kind = kind; this.path = path; this.buf = ''; this.pos = 0; this.eof = false; this.lines = null; } }
-// --- Regex shells (P3) ---------------------------------------------------------------
-class RRegex { constructor(tree, src) { this.tree = tree; this.src = src; } }
-class RMatch { constructor() { this.ok = false; } pos() { return Nil; } named() { return Nil; } }
-function regexMatch() { throw new RakuError('regexes are not in the JS core yet (P3)'); }
-function regexSplit() { throw new RakuError('regexes are not in the JS core yet (P3)'); }
-function regexComb() { throw new RakuError('regexes are not in the JS core yet (P3)'); }
 
 Object.assign(R, {
     RScalar, die, failure, fail, sink, exc, isControl, excMessage, excType, mkExType, rethrow, warn, TakeCtl, take, gather, gatherEager,
-    defClass, construct, cloneObj, enumType, enumFromKeys, enumFromValue, attrGet, named, splitArgs, namedArg, namedHash, checkNamed,
+    defClass, construct, buildObj, cloneObj, enumType, enumFromKeys, enumFromValue, attrGet, attrSet, named, splitArgs, namedArg, namedHash, checkNamed,
     tooMany, tooFew, arityError, notAny, typeCheck, typeMatches, noMatch, RCapture, capture, RSetty, mkSetty, toSetty, setOp, setRel, elem,
-    RVersion, RDate, dateNew, RIOPath, RIOHandle, RRegex, RMatch, EMPTY_MAP,
+    RVersion, RDate, dateNew, RIOPath, RIOHandle, EMPTY_MAP,
 });

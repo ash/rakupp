@@ -24,6 +24,7 @@ function truncate(v) { const x = toNumeric(v); if (isIntVal(x)) return x; if (x 
 function safeInt(f) { return Number.isSafeInteger(f) ? f : normBig(BigInt(f)); }
 function round(v, scale) {
     const x = toNumeric(v);
+    if (scale !== undefined && toFloat(scale) < 0) scale = neg(scale);   // a negative scale rounds like its magnitude
     if (scale === undefined) {
         if (isIntVal(x)) return x;
         if (x instanceof RRat) { // round half up, exactly
@@ -119,10 +120,12 @@ function tail(v, n) { return tailOf(v, n); }
 function defd(v) { return defined(v); }
 function item(v) { return v; }
 function flatten(...items) { return flat(items.length === 1 ? items[0] : mkList(items)); }
-function pick(v, n) { return pickFrom(v, n); }
-function roll(v, n) { return rollFrom(v, n); }
-function categorize(f, v) { return categorizeList(v, f); }
-function classify(f, v) { return classifyList(v, f); }
+// pick(N, @list) / roll(N, @list): the sub form takes the count first
+const countFirst = (v, n) => n !== undefined && (v instanceof RWhatever || v === T.Whatever || typeof v === 'number' || typeof v === 'bigint') && (n instanceof RList || n instanceof RSeq || n instanceof RRange);
+function pick(v, n) { return countFirst(v, n) ? pickFrom(n, v) : pickFrom(v, n); }
+function roll(v, n) { return countFirst(v, n) ? rollFrom(n, v) : rollFrom(v, n); }
+function categorize(f, v, ...a) { return categorizeList(v, f, nm(a).get("as")); }
+function classify(f, v, ...a) { return classifyList(v, f, nm(a).get("as")); }
 function reduce(f, ...items) { return reduceList(f, items.length === 1 ? items[0] : mkList(items)); }
 function produce(f, ...items) { return produceList(f, items.length === 1 ? items[0] : mkList(items)); }
 function anyJ(...items) { return junction('any', items.length === 1 ? items[0] : mkList(items)); }
@@ -289,7 +292,7 @@ Object.assign(R, {
     unique, keys, values, kv, pairs, push, append, pop, shift, unshift, prepend, splice, zip, roundrobin, head, tail, defined: defd, item, flat: flatten, pick, roll,
     categorize, classify, reduce, produce, any: anyJ, all: allJ, none: noneJ, one: oneJ, set, bag, mix, chrs: chrsOf, ords: ordsOf, ucfirst, slurp: slurpB, spurt: spurtB,
     lines: linesB, get, prompt, sleep, now, time, open, close, mkdir, rmdir, unlink, dir, chdir, shell, run, ioPath, EVAL, OPS, opFn, reduceOp, zipOp, crossOp, hyperOp, hyperPrefix,
-    assumingCall, seqOp, lazyOf, eagerOf, cacheOf, chars, ord, chr, uc, lc, tc, tclc, flip, trim, chomp, chop, substr, index: strIndex, rindex: strRindex, split: strSplit, words, comb,
+    assumingCall, seqOp, lazyOf, eagerOf, cacheOf, chars, ord, chr, uc, lc, tc, tclc, flip, trim, chomp, chop, substr, index: strIndex, rindex: strRindex, split: (sep, s, ...a) => strSplit(s, sep, ...a), words, comb,
     sprintf, abs, gcd, lcm, not, so, gist, raku, str, numify, truncate, 'trim-leading': trimLeading, 'trim-trailing': trimTrailing, samecase, indent, fc, wordcase, minmax: minmaxOf, 'is-prime': isPrime, warn, die, fail, take,
     unival, exists: (v) => defined(v), squish: (...items) => squishList(items.length === 1 ? items[0] : mkList(items)),
     'rotor': (v, ...specs) => rotorList(v, ...specs), 'batch': (v, n) => batchList(v, n), combinations: (v, n) => combinations(v, n), permutations: (v) => permutations(v),

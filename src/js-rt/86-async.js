@@ -48,7 +48,7 @@ function promiseThen(p, cb) {
 }
 M(T.Promise, {
     keep: (s, v) => s.keep(v === undefined ? true : v), 'break': (s, e) => s.break_(e), result: (s) => s.result(), status: (s) => s.status, cause: (s) => s.status === Broken ? s.cause : Nil,
-    then: (s, cb) => promiseThen(s, cb), Bool: (s) => s.status === Kept, so: (s) => s.status === Kept, gist: (s) => 'Promise.new', Str: (s) => 'Promise', raku: (s) => 'Promise.new',
+    then: (s, cb) => promiseThen(s, cb), Bool: (s) => s.status !== Planned, so: (s) => s.status !== Planned, gist: (s) => 'Promise.new', Str: (s) => 'Promise', raku: (s) => 'Promise.new',
     'is-kept': (s) => s.status === Kept, 'is-broken': (s) => s.status === Broken, 'is-planned': (s) => s.status === Planned,
     'await': (s) => s.result(), 'sink': (s) => Nil, 'WHAT': (s) => T.Promise, defined: (s) => true,
 });
