@@ -52,9 +52,10 @@ warnings or errors; it had existed for `--lint` alone.
   the hunt this shortens. Related small item: the `--profile=FILE.json`
   format is our own (no `traceEvents`, checked) — emitting Chrome-trace or
   speedscope format instead gets free viewers for zero UI work.
-- **Backtrace verbosity control** (`RUST_BACKTRACE=0|1|full`) — a
-  `--backtrace=short|full` flag or env knob. Timely: backtrace work is in
-  flight in the tree as this is written (`t/regression/backtrace-new.raku`).
+- ~~**Backtrace verbosity control** (`RUST_BACKTRACE=0|1|full`)~~ — DONE
+  2026-09-04 as `RAKUPP_BACKTRACE=0|short|full` plus Rakudo's
+  `--ll-exception`, alongside the tracer itself
+  ([BACKTRACE-PLAN.md](BACKTRACE-PLAN.md), issue #67).
 
 ## The developer loop
 

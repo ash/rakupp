@@ -513,7 +513,34 @@ struct LeaveEx { Value v; bool hasVal = false; };       // `leave` exits the enc
 struct ResumeEx {}; // `.resume` inside a CATCH — resume execution after the throw point
 struct StopGatherEx {}; // a lazy gather has produced enough — unwind the (possibly infinite) block
 struct ProceedEx {};    // `proceed` leaves a `when` block but keeps matching later ones
-struct RakuError { Value payload; std::string message; };
+// ONE frame of a throw-time call chain: the routine that was running and the
+// line executing in that activation (the innermost's current line; an outer
+// one's call-site line). `code` is null for the mainline frame. It is an
+// OWNING pointer, not the borrowed `const Value*` that ExecContext::callFrames
+// holds, because the record has to outlive the C++ unwind that destroys the
+// live stack — CFGuard pops callFrames on the way out, so by the time any
+// `catch` runs there is nothing left to walk.
+struct BtFrame { std::shared_ptr<Callable> code; int line = 0; };
+
+// The interpreter's Raku-level throw. Constructing one CAPTURES the live call
+// chain (issue #67): every `throw RakuError{payload, message}` in the tree —
+// `die`, and some 320 sites in the builtins — records where it happened, at
+// the cost of one refcount increment per frame and NOTHING on the path that
+// does not throw. The frames reach user code as `$!.backtrace` and the
+// uncaught-error printer (Interpreter::exceptionFor attaches them).
+struct RakuError {
+    Value payload; std::string message;
+    std::shared_ptr<std::vector<BtFrame>> frames; // innermost first; null = not captured
+    std::string originFile;                       // curDeclFile() at the throw
+    RakuError() = default;
+    RakuError(Value p, std::string m);            // captures (defined in Interpreter.cpp)
+    // …and the form that does NOT: a RakuError built only to be converted
+    // (failureException -> exceptionFor) never becomes a throw, so walking the
+    // stack for it would be pure waste.
+    struct NoCapture {};
+    RakuError(Value p, std::string m, NoCapture)
+        : payload(std::move(p)), message(std::move(m)) {}
+};
 
 // The `self` of a grammar method reached through a `<.method>` subrule call
 // (issue #64): a Match positioned at the call — `.pos`, `.target`, `.orig` —
@@ -569,6 +596,13 @@ extern thread_local long long t_gatherDeadline;
 extern std::atomic<int> g_stmtLine;          // the shared line, single-threaded runs
 extern std::atomic<bool> g_stmtLineThreaded; // …until a worker exists
 extern thread_local int t_stmtLine;          // …and then, one per thread
+// The line the current thread is executing — the read side of RelaxedLine,
+// reachable without an Interpreter instance (RakuError's constructor is a free
+// function as far as the class is concerned).
+inline int currentStmtLine() {
+    return g_stmtLineThreaded.load(std::memory_order_relaxed)
+               ? t_stmtLine : g_stmtLine.load(std::memory_order_relaxed);
+}
 inline void stmtLinesGoThreaded() {
     if (!g_stmtLineThreaded.load(std::memory_order_relaxed)) {
         // the spawning thread keeps the line it is on: it is the only writer so far
@@ -1829,6 +1863,31 @@ public:
              : (srcFileAbs_.empty() ? srcFile_ : srcFileAbs_);
     }
     Value captureBacktrace();         // innermost-first BacktraceFrame list (Exception.throw)
+    // --- backtrace rendering (issue #67) -----------------------------------
+    // How much of a captured chain to show. The uncaught-error printer asks for
+    // the readable form; `.gist` and `Backtrace.Str` ask for the plain Rakudo
+    // frame lines, because those are STRINGS that programs print and compare.
+    struct BtStyle {
+        bool excerpt  = false;  // source line under the origin frame
+        bool typeLine = false;  // `  (X::Type)` after the message
+        bool colour   = false;  // ANSI, only for a terminal
+        bool collapse = true;   // fold runs of identical frames, cap the total
+        bool full     = false;  // --ll-exception: hidden frames too, no cap
+        int  cap      = 40;
+    };
+    bool llException_ = false;        // --ll-exception: every frame, uncollapsed, uncapped
+    BtStyle btStyleForStderr();       // the style the uncaught printer uses (env + isatty)
+    // Rakudo-shaped frame lines ("  in sub f at FILE line N\n" each), for a
+    // captured chain. `originFile` names the file whose top level was running.
+    std::string renderFrames(const std::vector<BtFrame>& fr, const std::string& originFile,
+                             const BtStyle& st);
+    // …and for a materialized Backtrace list of BacktraceFrame hashes.
+    std::string renderBacktraceValue(const Value& bt, const BtStyle& st);
+    // The frames a caught exception object carries (`__bt`), materialized into
+    // a Backtrace list on first ask and cached back onto the object.
+    Value backtraceOf(const Value& exObj);
+    std::string srcLineOf(const std::string& file, int line); // one source line, cached ("" = unavailable)
+    std::map<std::string, std::vector<std::string>> srcLineCache_;
     // %?RESOURCES for the module currently being loaded (dist resource files);
     // a stack because module loads nest (a module can `use` another).
     ValueList resourceStack_;

@@ -8,6 +8,7 @@ struct Program;
 class Interpreter;
 
 void rakuppSetDocMode(bool on); // enable --doc (run DOC phasers + print rendered POD)
+void rakuppSetLLException(bool on); // enable --ll-exception (full, uncollapsed backtraces)
 
 // Parse and interpret `src`. Returns the process exit code.
 // This is the shared entry point used both by the `rakupp` CLI and by

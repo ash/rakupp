@@ -4543,7 +4543,7 @@ int Interpreter::run(Program& prog) {
         } else {
             // RAKU_EXCEPTIONS_HANDLER=JSON serializes an uncaught exception as JSON
             if (envStr("RAKU_EXCEPTIONS_HANDLER") == "JSON" && e.payload.t == VT::Object && e.payload.obj())
-                std::cerr << exceptionToJson(e.payload);
+                std::cerr << exceptionToJson(exceptionFor(e)); // exceptionFor attaches the frames
             else {
                 // a compile-time (X::Comp-style) exception carries filename+line
                 // attrs — print it with Rakudo's ===SORRY!=== banner and location
@@ -4556,7 +4556,27 @@ int Interpreter::run(Program& prog) {
                 if (!cf.empty())
                     std::cerr << "===SORRY!=== Error while compiling " << cf << "\n"
                               << e.message << "\nat " << cf << ":" << cl << "\n";
-                else std::cerr << e.message << "\n";
+                else {
+                    // A RUNTIME error: the message, then where it happened and
+                    // how the program got there (issue #67). The message stays
+                    // line 1 byte for byte — every golden and grep that reads
+                    // the first line keeps working.
+                    BtStyle st = btStyleForStderr();
+                    std::string frames = e.frames ? renderFrames(*e.frames, e.originFile, st)
+                                                  : std::string();
+                    std::string type;
+                    if (st.typeLine && !frames.empty() && e.payload.t == VT::Object &&
+                        e.payload.obj() && e.payload.obj()->cls) {
+                        // the type is what a reader needs to write a CATCH; the
+                        // ad-hoc one carries no information a message does not
+                        const std::string& tn = e.payload.obj()->cls->name;
+                        if (tn != "X::AdHoc" && !tn.empty())
+                            type = std::string("  ") + (st.colour ? "\033[2m" : "") + "(" + tn + ")" +
+                                   (st.colour ? "\033[0m" : "") + "\n";
+                    }
+                    std::cerr << (st.colour ? "\033[1m" : "") << e.message
+                              << (st.colour ? "\033[0m" : "") << "\n" << type << frames;
+                }
             }
             code = 1;
             crashed = true;
@@ -11934,6 +11954,7 @@ std::string Interpreter::exceptionToJson(const Value& ex) {
     bool first = true;
     if (ex.obj()) for (auto& kv : ex.obj()->attrs) {
         if (kv.first == "message") continue; // message emitted last (may be null)
+        if (kv.first == "__bt") continue;    // the frame handle is internal; `backtrace` below is its JSON
         o += (first ? "" : ",\n"); first = false;
         o += "    " + jstr(kv.first) + " : " + (kv.second.isNumeric() ? kv.second.toStr() : jstr(kv.second.toStr()));
     }
@@ -11941,6 +11962,26 @@ std::string Interpreter::exceptionToJson(const Value& ex) {
     std::string msg;
     bool hasMsg = ex.obj() && ex.obj()->attrs.count("message");
     if (hasMsg) msg = ex.obj()->attrs.at("message").toStr();
+    // …and the frames, for a consumer that wants the position too (issue #67)
+    if (ex.obj() && ex.obj()->attrs.count("__bt")) {
+        Value bt = backtraceOf(ex);
+        if (bt.t == VT::Array && bt.arr() && !bt.arr()->empty()) {
+            o += (first ? "" : ",\n"); first = false;
+            o += "    \"backtrace\" : [\n";
+            bool f2 = true;
+            for (auto& f : *bt.arr()) {
+                if (f.t != VT::Hash || !f.hash()) continue;
+                auto& h = *f.hash();
+                auto fi = h.find("file"), li = h.find("line"), ci = h.find("code");
+                std::string nm = ci != h.end() && ci->second.code() ? ci->second.code()->name : "<unit>";
+                o += (f2 ? "" : ",\n"); f2 = false;
+                o += "      { \"file\" : " + jstr(fi != h.end() ? fi->second.toStr() : "") +
+                     ", \"line\" : " + (li != h.end() ? li->second.toStr() : "0") +
+                     ", \"subname\" : " + jstr(nm) + " }";
+            }
+            o += "\n    ]";
+        }
+    }
     o += (first ? "" : ",\n");
     o += "    \"message\" : " + (hasMsg ? jstr(msg) : std::string("null")) + "\n";
     o += "  }\n}\n";
@@ -12808,13 +12849,221 @@ bool rtTypeMatch(const Value& v, const std::string& type) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Backtraces (issue #67). The chain is captured WHERE THE THROW HAPPENS,
+// in RakuError's constructor, because C++ unwinding runs CFGuard's destructor
+// for every frame on the way out: a `catch` sees an empty callFrames. The cost
+// is one refcount increment per live frame per throw, and zero on the path
+// that does not throw — the alternative (recording frames as they unwind) puts
+// a thread-local read on every routine return, which the perf gate would see.
+RakuError::RakuError(Value p, std::string m)
+    : payload(std::move(p)), message(std::move(m)) {
+    auto& fr = Interpreter::tctx_.callFrames;
+    frames = std::make_shared<std::vector<BtFrame>>();
+    frames->reserve(fr.size() + 1);
+    int line = currentStmtLine();
+    for (size_t idx = fr.size(); ; idx--) {
+        const Value* cv = idx > 0 ? fr[idx - 1].code : nullptr;
+        frames->push_back(BtFrame{cv ? cv->codeS() : nullptr, line});
+        if (idx == 0) break;
+        line = fr[idx - 1].line;   // the CALL SITE line inside the next frame out
+    }
+    if (g_cbInterp) originFile = g_cbInterp->curDeclFile();
+}
+
+// One source line of a file, for the excerpt under the origin frame. Read once
+// per file and cached; a file we cannot read (an --exe binary, a moved module,
+// an EVAL string) simply gets no excerpt.
+std::string Interpreter::srcLineOf(const std::string& file, int line) {
+    if (file.empty() || line <= 0) return "";
+    auto it = srcLineCache_.find(file);
+    if (it == srcLineCache_.end()) {
+        std::vector<std::string> lines;
+        std::ifstream in(file);
+        if (in) { std::string l; while (std::getline(in, l)) lines.push_back(l); }
+        it = srcLineCache_.emplace(file, std::move(lines)).first;
+    }
+    if ((size_t)line > it->second.size()) return "";
+    std::string l = it->second[line - 1];
+    // trim trailing whitespace and a stray CR from a CRLF source
+    while (!l.empty() && (l.back() == '\r' || l.back() == ' ' || l.back() == '\t')) l.pop_back();
+    return l;
+}
+
+// A path as the reader should see it: the program as it was invoked, a module
+// under the working directory relative to it, anything else absolute. (The
+// `.file` the API answers stays absolute — Log::Async and backtrace-new.raku
+// match on it by suffix.)
+static std::string btDisplayPath(const std::string& file, const std::string& srcAbs,
+                                 const std::string& srcAsGiven) {
+    if (file.empty()) return "<unknown>";
+    if (!srcAbs.empty() && file == srcAbs && !srcAsGiven.empty()) return srcAsGiven;
+    static std::string cwd = [] {
+        char buf[4096];
+        return getcwd(buf, sizeof buf) ? std::string(buf) + "/" : std::string();
+    }();
+    if (!cwd.empty() && file.rfind(cwd, 0) == 0 && file.size() > cwd.size())
+        return file.substr(cwd.size());
+    return file;
+}
+
+// What to call a frame's routine, Rakudo's spelling: `sub f`, `method m`,
+// `submethod BUILD`, `regex r`, `block <unit>` for the mainline, and a bare
+// `block ` (two spaces before `at`) for an anonymous one.
+static std::string btFrameName(const Callable* c, bool outermost) {
+    if (!c) return outermost ? "block <unit>" : "block ";
+    std::string kind = c->isSubmethod    ? "submethod"
+                     : c->isMethod       ? "method"
+                     : c->isRegexRoutine ? "regex"
+                     : c->isBlock        ? "block"
+                                         : "sub";
+    // A method's DECLARING package goes in the name: Rakudo prints a bare
+    // `in method new`, which in a program with six classes says nothing about
+    // which `new` ran. `Foo::new` costs four characters and answers it, and it
+    // stays inside the name part that consumers of `in X at FILE line N` skip.
+    std::string nm = c->name;
+    if (!c->pkg.empty() && c->pkg != "GLOBAL" && !nm.empty() &&
+        nm.find("::") == std::string::npos)
+        nm = c->pkg + "::" + nm;
+    return kind + " " + nm;
+}
+
+// A frame the short form hides: the callables the RUNTIME makes up — Whatever
+// currying, `.assuming` wrappers, `wrap` shims. They are Rakudo's `is-hidden`
+// frames: real activations, but not places the reader wrote code.
+static bool btFrameHidden(const Callable* c) {
+    return c && (c->isWhateverCode || (c->name.empty() && c->isBlock && c->langRev == -1));
+}
+
+Interpreter::BtStyle Interpreter::btStyleForStderr() {
+    BtStyle st;
+    std::string mode = envStr("RAKUPP_BACKTRACE");
+    if (mode.empty() && llException_) mode = "full";
+    st.excerpt = st.typeLine = true;
+    if (mode == "full") { st.full = true; st.collapse = false; st.excerpt = st.typeLine = true; }
+    else if (mode == "0" || mode == "none" || mode == "off") st.cap = 0; // message only
+    // colour only for a terminal, and never against NO_COLOR
+    std::string force = envStr("RAKUPP_COLOR");
+    bool tty = isatty(2) != 0;
+    st.colour = force == "1" ? true
+              : force == "0" ? false
+              : (tty && envStr("NO_COLOR").empty() && getenv("NO_COLOR") == nullptr);
+    return st;
+}
+
+std::string Interpreter::renderFrames(const std::vector<BtFrame>& fr, const std::string& originFile,
+                                      const BtStyle& st) {
+    if (st.cap == 0 && !st.full) return "";
+    const char* DIM = st.colour ? "\033[2m" : "";
+    const char* BLD = st.colour ? "\033[1m" : "";
+    const char* OFF = st.colour ? "\033[0m" : "";
+    // one pass to the printable form, then collapse runs of identical lines
+    struct Line { std::string what, where, file; int line; };
+    std::vector<Line> out;
+    for (size_t i = 0; i < fr.size(); i++) {
+        const Callable* c = fr[i].code.get();
+        if (!st.full && btFrameHidden(c)) continue;
+        std::string file = c && !c->declFile.empty() ? c->declFile : originFile;
+        out.push_back({btFrameName(c, i + 1 == fr.size()),
+                       btDisplayPath(file, srcFileAbs_, srcFile_), file, fr[i].line});
+    }
+    auto lineOf = [&](const Line& l) {
+        return std::string("  in ") + BLD + l.what + OFF + " at " + DIM + l.where + OFF +
+               " line " + std::to_string(l.line);
+    };
+    auto same = [](const Line& a, const Line& b) {
+        return a.what == b.what && a.file == b.file && a.line == b.line;
+    };
+    std::string s;
+    for (size_t i = 0; i < out.size(); ) {
+        size_t j = i;
+        while (j + 1 < out.size() && same(out[j + 1], out[i])) j++;
+        size_t run = j - i + 1;
+        // a recursion that died 200 frames deep is 200 identical lines; show a
+        // few and say how many more, rather than filling the terminal
+        size_t show = (st.collapse && run > 3) ? 3 : run;
+        for (size_t k = 0; k < show; k++) {
+            s += lineOf(out[i]) + "\n";
+            // the excerpt belongs to the ORIGIN frame only, and directly under
+            // it: a line of context per frame is four times the height for no
+            // more orientation
+            if (i == 0 && k == 0 && st.excerpt) {
+                std::string src = srcLineOf(out[i].file, out[i].line);
+                if (!src.empty())
+                    s += std::string("      ") + DIM + std::to_string(out[i].line) + " | " + OFF +
+                         src + "\n";
+            }
+        }
+        if (show < run)
+            s += std::string("  ") + DIM + "... " + std::to_string(run - show) +
+                 " more frames of " + out[i].what + OFF + "\n";
+        i = j + 1;
+    }
+    // …and a cap on the whole thing, with the knob that lifts it
+    if (!st.full && st.cap > 0) {
+        size_t nl = 0, pos = 0, keep = 0;
+        for (; pos < s.size(); pos++) if (s[pos] == '\n' && ++nl == (size_t)st.cap) { keep = pos + 1; break; }
+        if (keep && keep < s.size()) {
+            size_t rest = (size_t)std::count(s.begin() + keep, s.end(), '\n');
+            s = s.substr(0, keep) + "  " + DIM + "… " + std::to_string(rest) +
+                " more frames (RAKUPP_BACKTRACE=full for all)" + OFF + "\n";
+        }
+    }
+    return s;
+}
+
+// The same renderer over a MATERIALIZED Backtrace (a list of BacktraceFrame
+// hashes) — what `$!.backtrace.Str` and `Backtrace.new.Str` print.
+std::string Interpreter::renderBacktraceValue(const Value& bt, const BtStyle& st) {
+    std::vector<BtFrame> fr;
+    std::string origin;
+    if (bt.t == VT::Array && bt.arr())
+        for (auto& f : *bt.arr()) {
+            if (f.t != VT::Hash || !f.hash()) continue;
+            auto& h = *f.hash();
+            auto ci = h.find("code"), li = h.find("line"), fi = h.find("file");
+            fr.push_back(BtFrame{ci != h.end() ? ci->second.codeS() : nullptr,
+                                 li != h.end() ? (int)li->second.toInt() : 0});
+            // the frames with no declaring routine fall back to this; the
+            // OUTERMOST frame is the mainline, so its file is the right one
+            // (the first frame's may be a module's)
+            if (fi != h.end() && !fr.back().code) origin = fi->second.toStr();
+        }
+    return renderFrames(fr, origin, st);
+}
+
+// The frames a caught exception carries. exceptionFor stores them as an opaque
+// handle (one pointer store per catch); the Backtrace list of BacktraceFrame
+// hashes is built the first time a program actually asks, and cached back.
+Value Interpreter::backtraceOf(const Value& exObj) {
+    if (exObj.t != VT::Object || !exObj.obj()) return captureBacktrace();
+    auto& at = exObj.obj()->attrs;
+    auto it = at.find("__bt");
+    if (it == at.end()) return captureBacktrace();
+    if (it->second.t == VT::Array) return it->second;   // already materialized
+    auto raw = std::static_pointer_cast<std::vector<BtFrame>>(it->second.ext());
+    if (!raw) return captureBacktrace();
+    std::string origin = it->second.s.str();
+    Value bt = Value::array(); bt.isList = true; bt.s = "Backtrace";
+    for (auto& f : *raw) {
+        Value h = Value::makeHash(); h.hashKind = "BacktraceFrame";
+        const Callable* c = f.code.get();
+        (*h.hash())["file"] = Value::str(c && !c->declFile.empty() ? c->declFile : origin);
+        (*h.hash())["line"] = Value::integer(f.line);
+        if (f.code) { Value cv; cv.t = VT::Code; cv.setCode(f.code); (*h.hash())["code"] = cv; }
+        bt.arr()->push_back(std::move(h));
+    }
+    at["__bt"] = bt;   // cached: a program that walks it twice pays once
+    return bt;
+}
+
 // The call chain as a list of BacktraceFrame values, innermost first — what
 // Exception.throw records and .backtrace answers. Each frame carries the file
 // its routine was DECLARED in (declFile), so Log::Async's Context can walk
 // past its own module's frames by path, and the line executing in that
 // activation (the innermost's current line; an outer one's call-site line).
 Value Interpreter::captureBacktrace() {
-    Value bt = Value::array(); bt.isList = true;
+    Value bt = Value::array(); bt.isList = true; bt.s = "Backtrace";
     auto& fr = tctx_.callFrames;
     long long line = curLine_;
     for (size_t idx = fr.size(); ; idx--) {
@@ -26376,12 +26625,30 @@ bool Interpreter::runControlWarn(const std::string& msg) {
     return resumed;
 }
 
+// The opaque handle an exception object carries until something asks for its
+// backtrace: one shared_ptr, no BacktraceFrame hashes built. `s` doubles as the
+// origin file (the frame files that have no declaring routine).
+static void attachFrames(Value& ex, const RakuError& e) {
+    if (!e.frames || e.frames->empty()) return;
+    if (ex.t != VT::Object || !ex.obj()) return;
+    // never overwrite: a rethrow, a `.resume`, or `die $caught` keeps the
+    // position the exception was FIRST thrown from, as Rakudo's does
+    if (ex.obj()->attrs.count("__bt")) return;
+    Value h = Value::str(e.originFile);
+    h.extM() = e.frames;
+    ex.obj()->attrs["__bt"] = std::move(h);
+}
+
 Value Interpreter::exceptionFor(const RakuError& e) {
     // A Str payload NAMING an exception type ("X::Recursion", "X::Multi::NoMatch")
     // builds a real exception object like a type payload would — otherwise the
     // caught value is a bare Str and `.message` in CATCH dies, masking the error.
     bool strTypeName = e.payload.t == VT::Str && e.payload.s.rfind("X::", 0) == 0;
-    if (e.payload.t != VT::Type && !strTypeName) return e.payload; // die $obj / die "msg"
+    if (e.payload.t != VT::Type && !strTypeName) {
+        Value p = e.payload;
+        attachFrames(p, e);   // `die $obj` / the X::AdHoc `die "msg"` builds
+        return p;
+    }
     std::string tn = e.payload.s.empty() ? std::string("X::AdHoc") : e.payload.s.str();
     std::shared_ptr<ClassInfo> ci;
     auto it = classes_.find(tn);
@@ -26399,7 +26666,9 @@ Value Interpreter::exceptionFor(const RakuError& e) {
     // an X::AdHoc's .payload is whatever was passed to `die` — for `die "msg"`
     // that's the message itself
     if (tn == "X::AdHoc") od->attrs["payload"] = Value::str(e.message);
-    return Value::object(od);
+    Value out = Value::object(od);
+    attachFrames(out, e);
+    return out;
 }
 
 // A Failure carries `exception` as a bare type object and the diagnostic in a
@@ -26415,7 +26684,8 @@ Value Interpreter::failureException(const Value& failure) {
     Value ex = it != failure.hash()->end() ? it->second : Value::typeObj("X::AdHoc");
     if (ex.t != VT::Type) return ex; // already an instance (`fail $obj`)
     auto mm = failure.hash()->find("message");
-    return exceptionFor(RakuError{ex, mm != failure.hash()->end() ? mm->second.toStr() : ex.s.str()});
+    return exceptionFor(RakuError{ex, mm != failure.hash()->end() ? mm->second.toStr() : ex.s.str(),
+                                  RakuError::NoCapture{}});
 }
 
 // An UNHANDLED Failure detonates the moment its value is actually used —
@@ -26488,7 +26758,19 @@ std::string Interpreter::gistOf(const Value& v, bool skipUser) {
                 auto pl = v.obj()->attrs.find("payload");
                 if (pl != v.obj()->attrs.end() && rtIsDefined(pl->second)) return pl->second.toStr();
             }
-            if (it != v.obj()->attrs.end()) return it->second.toStr();
+            if (it != v.obj()->attrs.end()) {
+                // …plus the frames it was thrown from: `say $!` and `$!.gist`
+                // print the chain in Rakudo, and consumers parse those lines.
+                // PLAIN ones — no excerpt, no type line, no colour: a gist is a
+                // string programs compare, not terminal output.
+                std::string msg = it->second.toStr();
+                if (v.obj()->attrs.count("__bt")) {
+                    BtStyle plain; plain.excerpt = plain.typeLine = plain.colour = false;
+                    std::string fr = renderBacktraceValue(backtraceOf(v), plain);
+                    if (!fr.empty()) return msg + "\n" + fr;
+                }
+                return msg;
+            }
         }
     }
     // a `but VALUE` mixin boxes the base and adds a method named after VALUE's type

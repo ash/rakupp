@@ -2170,6 +2170,26 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     // methods be reached via `Str.new.themethod`.
     // A BacktraceFrame (from Exception.backtrace): file/line/code plus the
     // predicates Backtrace consumers grep by (Log::Async::Context)
+    // A Backtrace: the list of frames, tagged so its STRING forms are the frame
+    // lines rather than a joined list of hashes. `.list`/`.elems`/`.grep` and
+    // every other list method fall through to the Array surface untouched.
+    if (inv.t == VT::Array && inv.s == "Backtrace" && inv.arr()) {
+        if (m == "Str" || m == "gist" || m == "full" || m == "nice" || m == "concise") {
+            BtStyle st; st.excerpt = st.typeLine = st.colour = false;
+            if (m == "full") { st.full = true; st.collapse = false; }
+            return Value::str(renderBacktraceValue(inv, st));
+        }
+        if (m == "summary") {  // Rakudo: the frames a reader cares about
+            BtStyle st; st.excerpt = st.typeLine = st.colour = false;
+            return Value::str(renderBacktraceValue(inv, st));
+        }
+        if (m == "next-interesting-index") {
+            // ours records only user frames, so the next one is simply the next
+            long long from = args.empty() ? 0 : args[0].toInt();
+            long long n = (long long)inv.arr()->size();
+            return from + 1 < n ? Value::integer(from + 1) : Value::any();
+        }
+    }
     if (inv.t == VT::Hash && inv.hashKind == "BacktraceFrame" && inv.hash()) {
         if (m == "file" || m == "line" || m == "code") {
             auto it = inv.hash()->find(m.s);
@@ -2179,12 +2199,18 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             return Value::boolean(false);
         if (m == "subname") {
             auto it = inv.hash()->find("code");
-            return Value::str(it != inv.hash()->end() && it->second.code() ? it->second.code()->name : "");
+            // the mainline has no declaring routine: Rakudo names it <unit>,
+            // and a frame whose subname is "" is indistinguishable from a
+            // bare block to anything walking the list
+            if (it == inv.hash()->end() || !it->second.code()) return Value::str("<unit>");
+            return Value::str(it->second.code()->name);
         }
         if (m == "gist" || m == "Str") {
-            auto fl = inv.hash()->find("file"); auto ln = inv.hash()->find("line");
-            return Value::str("  in block at " + (fl != inv.hash()->end() ? fl->second.toStr() : "") +
-                              " line " + (ln != inv.hash()->end() ? ln->second.toStr() : "0"));
+            Value one = Value::array(); one.isList = true; one.arr()->push_back(inv);
+            BtStyle plain; plain.excerpt = plain.typeLine = plain.colour = false;
+            std::string r = renderBacktraceValue(one, plain);
+            if (!r.empty() && r.back() == '\n') r.pop_back();
+            return Value::str(r);
         }
     }
     // A CallFrame (from `callframe`): .file / .line / .code, and `<unit>` as the
@@ -3232,8 +3258,6 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // record the backtrace at THROW time on the object itself — the thrown
         // value is shared, so a caught `$exception.backtrace` reads it back
         // (Log::Async::Context throws a fresh Exception exactly for the walk)
-        if (m == "throw" && !inv.obj()->attrs.count("__bt"))
-            inv.obj()->attrs["__bt"] = captureBacktrace();
         std::string msg;
         if (Value* mm = inv.obj()->cls ? inv.obj()->cls->findMethod("message") : nullptr)
             { try { ValueList none; msg = invokeMethod(*mm, inv, none).toStr(); } catch (...) {} }
@@ -3248,8 +3272,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     // backtrace method still wins — this only fills the built-in gap.
     if (m == "backtrace" && inv.t == VT::Object && inv.obj() &&
         !(inv.obj()->cls && inv.obj()->cls->findMethod("backtrace"))) {
-        auto it = inv.obj()->attrs.find("__bt");
-        return it != inv.obj()->attrs.end() ? it->second : captureBacktrace();
+        return backtraceOf(inv);   // materializes the throw-time chain, once
     }
     // user object: dispatch to class methods / public accessors first
     if (inv.t == VT::Object && inv.obj() && inv.obj()->cls) {

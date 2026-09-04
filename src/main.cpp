@@ -1579,6 +1579,9 @@ int main(int argc, char** argv) {
             if (a == "--version" || a == "-V" || a == "-v") { mode = Mode::Version; break; }
             if (a == "--ffi-info")           { mode = Mode::FfiInfo; break; }
             if (a == "--doc") { rakupp::rakuppSetDocMode(true); continue; }
+            // Rakudo's flag: every frame of an uncaught error, uncollapsed and
+            // uncapped (issue #67). RAKUPP_BACKTRACE=0|short|full is the env knob.
+            if (a == "--ll-exception") { rakupp::rakuppSetLLException(true); continue; }
             if (a == "-I") { if (i + 1 < argc) libPaths.push_back(argv[++i]); continue; }
             if (a.rfind("-I", 0) == 0 && a.size() > 2) { libPaths.push_back(a.substr(2)); continue; }
             // -M <module> loads a module before the program runs (Rakudo/Perl;

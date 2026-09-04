@@ -1,6 +1,6 @@
 # Plan: backtraces — the default tracer (issue #67)
 
-**Status: DRAFT 2026-09-04 — code not started.** Probes run against
+**Status: P1 LANDED 2026-09-04; P2 partly landed with it. P3/P4 open.** Probes run against
 `build/rakupp` at e5db047; Rakudo 2025.x from `/usr/local/bin/raku` as the
 oracle. Prompted by [issue #67](https://github.com/ash/rakupp/issues/67)
 ("Stack trace wanted"); the verbosity knob was already on the wish list in
@@ -240,7 +240,7 @@ Each phase lands only after `t/run.raku` (regressions + examples), the
 Roast slices below, and `tools/perf-guard.raku --check` are green, per
 [rakupp-batch-loop] and [rakupp-perf-release-gate].
 
-**P1 — the chain exists and prints (closes the issue's core).**
+**P1 — the chain exists and prints (closes the issue's core). DONE 2026-09-04.**
 `RakuError` capture; `exceptionFor` transfer; renderer with Rakudo-exact
 frame lines; the uncaught printer; `.gist`; `Backtrace.Str`/`.list` and
 `BacktraceFrame.Str` fixed; `$!.backtrace` after `try` reports the throw
@@ -252,7 +252,9 @@ site. Regression cases: `t/regression/backtrace-uncaught.raku` (runs
 S29-context/evalfile.t, S04-exceptions/*.t — record the pass counts before
 and after in this file.
 
-**P2 — the readable layer.** Excerpt, type line, relative paths and
+**P2 — the readable layer.** *(Landed with P1: excerpt, type line, relative
+paths, collapse + cap, colour + `NO_COLOR`, `--ll-exception`,
+`RAKUPP_BACKTRACE`. Open: the guide section and the doc-sync pass.)* Excerpt, type line, relative paths and
 `(Module)`, collapse + cap, colour + `NO_COLOR`, `--ll-exception` and
 `RAKUPP_BACKTRACE`. Docs: a "When something dies" section in the guide,
 FEATURES/REFERENCE per [raku-pp-doc-sync]; the CLI-BORROW entry marked
@@ -321,3 +323,49 @@ not touched here.
    (Python 3.11 style; four times the height for no more orientation).
 3. Cap at 40 frames with collapse threshold 3 — numbers to tune on real
    traces from raku-corpus programs.
+
+All three were decided as recommended when P1 landed; 1 and 2 are settled by
+the code, 3 is still worth tuning against raku-corpus.
+
+## What P1 actually landed (2026-09-04)
+
+Measured against a control binary built from the same commit in the same
+configuration, because the machine was under load from a second session and
+the first `perf-guard --check` reported a `hash` regression that was not
+real.
+
+| check | result |
+|---|---|
+| `t/run.raku` | 660/660 |
+| Roast S32-exceptions + S04-exceptions + S29-context/evalfile | 337/428 both binaries, identical |
+| `hash` kernel, interleaved A/B | +0.4% median, -1.2% best — noise |
+| throw at depth 20, interleaved A/B | +3.3% median, -2.5% best — noise against ~780 µs/throw |
+
+Two departures from the design above, both deliberate:
+
+- **The `(Module)` annotation is not there.** Rakudo prints
+  `lib/Mod.rakumod (Mod)`, and nothing in the interpreter maps a file back to
+  the module name it was loaded as (`loadedModules_` is a set of names, not a
+  map). The module's own path is already in the frame, so the annotation
+  would add no information a reader does not have.
+- **A method frame carries its class in the NAME instead**:
+  `in method Foo::baz at t1.raku line 3`, where Rakudo prints a bare
+  `in method baz`. In a program with six classes that each declare `new`,
+  Rakudo's frame does not say which one ran. The package goes inside the name
+  part, so anything parsing `in X at FILE line N` is unaffected.
+
+The excerpt separator is an ASCII `|`, not the `│` this document first drew:
+the trace goes to a terminal whose encoding we do not control.
+
+## What P1 did NOT change (P3, unchanged from the plan above)
+
+Confirmed by probe after landing:
+
+- `warn` still prints its message alone. Rakudo adds the innermost frame.
+- `fail` reports the DETONATION site, not the `fail` site. Rakudo prints
+  both, under an `Actually thrown at:` heading.
+- An exception from inside `start {…}` reports the `await` site, not the
+  worker's own chain. The worker captures correctly — the frames are lost
+  where the Promise stores the exception.
+- Compile-time errors have no `------> …⏏…` source pointer yet, though they
+  do now get the excerpt line.

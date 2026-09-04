@@ -70,6 +70,8 @@ void bigStackClose(std::uintptr_t h) { ::CloseHandle((HANDLE)h); }
 
 static bool g_docMode = false;
 void rakuppSetDocMode(bool on) { g_docMode = on; } // set by main when --doc is passed
+static bool g_llException = false;
+void rakuppSetLLException(bool on) { g_llException = on; } // --ll-exception (issue #67)
 
 // The search path the PARSER will actually use, in order — which is what decides
 // the file a `use` resolves to when scanned for operators, and so belongs in the
@@ -133,6 +135,7 @@ int rakuppRunOn(Interpreter& interp, const std::string& src, std::vector<std::st
                 }
                 interp.podDom_ = parsePod(src);
                 interp.docMode_ = g_docMode;
+                interp.llException_ = g_llException;
                 interp.srcFile_ = fileName;
                 interp.srcFileAbs_ = absSrcPath(fileName);
                 interp.execPath_ = exePath;
@@ -173,6 +176,7 @@ int rakuppRunOn(Interpreter& interp, const std::string& src, std::vector<std::st
         interp.podData_ = pod;
         interp.podDom_ = parsePod(src);   // $=pod structured DOM
         interp.docMode_ = g_docMode;
+        interp.llException_ = g_llException;
         interp.srcFile_ = fileName;
         interp.srcFileAbs_ = absSrcPath(fileName);
         interp.execPath_ = exePath;
