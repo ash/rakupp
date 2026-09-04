@@ -193,6 +193,7 @@ function typeOf(v) {
             if (v instanceof RComplex) return T.Complex;
             if (v instanceof RIOPath) return T['IO::Path'];
             if (v instanceof RSig) return T.Signature;
+            if (v instanceof RJsObj) return JsObjectT;
             if (v instanceof RIOHandle) return T['IO::Handle'];
             if (v instanceof RVersion) return T.Version;
             if (v instanceof RDate) return v.ty;
@@ -206,6 +207,7 @@ function isType(v) { return v instanceof RType; }            // a type object (u
 function defined(v) {
     if (v instanceof RType) return false;
     if (v instanceof RFailure) return false;
+    if (v instanceof RJsObj) return v.v != null;
     return v !== undefined && v !== null;
 }
 function isa(v, tname) {
@@ -245,6 +247,7 @@ function truthy(v) {
             if (v instanceof RObj) { const m = v.ty.findUser('Bool'); if (m) return truthy(m(v)); return true; }
             if (v instanceof RSetty) return v.m.size !== 0;
             if (v instanceof RComplex) return v.re !== 0 || v.im !== 0;
+            if (v instanceof RJsObj) return !!v.v;
             return true;
         default: return false;
     }
@@ -643,6 +646,7 @@ function str(v) {
             if (v instanceof RVersion) return v.Str();
             if (v instanceof RDate) return v.Str();
             if (v instanceof RCapture) return v.Str();
+            if (v instanceof RJsObj) return jsStr(v);
             return String(v);
         default: return '';
     }
@@ -685,6 +689,7 @@ function gist(v) {
             if (v instanceof RVersion) return 'v' + v.Str();
             if (v instanceof RDate) return v.Str();
             if (v instanceof RCapture) return v.gist();
+            if (v instanceof RJsObj) return jsStr(v);
             return str(v);
         default: return str(v);
     }

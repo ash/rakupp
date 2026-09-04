@@ -137,6 +137,19 @@ const TYPE_METHODS = {
     'add_method': (t, n, f) => { t.methods[str(n)] = f; t.cache = Object.create(null); return f; }, 'compose': (t) => t, 'archetypes': (t) => t, 'is_composed': (t) => true,
 };
 function mc(inv, name, ...args) {
+    // a JS::Object: its own property or method first, then the handle's methods
+    if (inv instanceof RJsObj) {
+        const target = inv.v;
+        if (target != null && (name in Object(target))) return jsCall(inv, name, args);
+        const m = JsObjectT.methods[name]; if (m) return m(inv, ...args);
+        return jsCall(inv, name, args);
+    }
+    // a JavaScript function read as a property (`JS.Array`, `JS.Event`): its own
+    // properties and `.new` dispatch on the function itself
+    if (typeof inv === 'function' && inv.__js) {
+        if (name === 'new') return jsNew(inv.__js, args);
+        if (name in inv.__js) return jsCall(inv.__js, name, args);
+    }
     if (inv instanceof RJunction && name !== 'gist' && name !== 'Str' && name !== 'raku' && name !== 'Bool' && name !== 'so' && name !== 'not' && name !== 'defined' && name !== 'WHAT' && name !== 'eigenstates') {
         return new RJunction(inv.kind, inv.items.map(x => mc(x, name, ...args)));
     }

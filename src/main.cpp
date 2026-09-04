@@ -999,7 +999,7 @@ static int compileJs(const std::string& src, const std::string& srcName, std::st
         Program prog = parser.parseProgram();
         std::vector<ModuleSkip> skips; std::set<std::string> natives;
         auto mods = collectModuleGraph(prog, effectiveSearchPath(libPaths), &jo.moduleExports, &skips, &natives);
-        if (!mods.empty()) throw CodegenError{"a `use`d module (" + mods.front().name + ")"};
+        for (auto& m : mods) if (m.name != "JS") throw CodegenError{"a `use`d module (" + m.name + ")"};   // JS is the interop stub the emitter knows
         js = transpileToJs(prog, jo);
     } catch (const ParseError& e) {
         std::cerr << "===SORRY!=== Parse error at line " << e.line << ": " << e.what() << "\n";

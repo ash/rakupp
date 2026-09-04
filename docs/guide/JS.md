@@ -132,6 +132,49 @@ Deep recursion: a plain JavaScript function recurses about 10,000 deep on
 Node's default stack (`node --stack-size=65500` raises it); the interpreter
 runs on a 1 GiB stack. A program that overflows reports it as such and exits 1.
 
+## `use JS` — calling into JavaScript
+
+Under `use JS;` the term `JS` is the host's `globalThis`, and any JavaScript
+object that reaches Raku is a `JS::Object`, an opaque handle: identity, the
+prototype chain and the DOM survive the crossing. Values cross by copy:
+
+| Raku → JS | JS → Raku |
+|---|---|
+| Int → number (a BigInt past 2⁵³), Num → number, Str → string, Bool → boolean | number → Int when integral, else Num; string → Str; boolean → Bool |
+| Nil → `undefined`, a type object → `null` | `null`/`undefined` → Nil |
+| Array/List → a JS array (copy), Hash → a plain object (copy), Pair → `{key: value}` | an array → Array (copy); any other object → `JS::Object` |
+| a Raku closure → a JS function that marshals its arguments back | a JS function → a Raku Code that marshals both ways |
+
+On a `JS::Object` (and on `JS` itself):
+
+- `$o.name(args)` calls the property when it is a function; `$o.name` with no
+  arguments calls it when the name is lower-case (`$el.focus`, `JS.fetch`)
+  and reads it when the name is upper-case, which is how constructors and
+  namespaces are spelled (`JS.Math.PI`, `JS.Array.from(…)`, `JS.Date.new`).
+- `$o<name>` reads a property and `$o<name> = v` writes one; `$o[i]` indexes.
+- `.new(args)` constructs; `.Hash`, `.list`, `.keys`, `.elems` copy the
+  object's own view into Raku.
+- `EVAL 'code', :lang<JavaScript>` inlines a *literal* string verbatim.
+
+```raku
+use JS;
+my $doc = JS.document;
+my $div = $doc.createElement('div');
+$div<textContent> = 'hello';
+$div.addEventListener('click', -> $ev { say "clicked: {$ev<type>}" });
+$doc.body.appendChild($div);
+say JS.JSON.stringify({ a => 1, b => [1, 2] });
+say EVAL '[1,2,3].map(x => x * 2)', :lang<JavaScript>;   # [2 4 6]
+```
+
+Under the interpreter `use JS` loads a stub (`rakulib/JS.rakumod`) whose
+every call dies naming `--target=js`, so such a program fails at its first
+interop call, not at compile time. The interpreter therefore cannot be the
+oracle for these programs: they have goldens instead, `t/js/interop/*.raku`
+with their `.out`, run by the gate under Node with the small DOM stand-in
+`t/js/interop/dom-stub.js` preloaded. Promises are `JS::Object`s for now;
+`await` and async colouring are the next slice of P4.
+
 ## In a browser
 
 `--standalone` output is a plain script: `<script src="prog.js"></script>`.

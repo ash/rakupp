@@ -626,6 +626,20 @@ Where the code decided differently from the draft:
 - Value-collecting loops (`do for`) are in; `redo` is a labelled inner loop;
   loop variables are declared outside the loop so `LAST` sees the last one.
 
-Next, in the plan's order: the disagreement tail down to 0 for the examples
-and the kernels' neighbours (it is the gate's list), then P4 (`use JS`,
-async colouring) before P3 (the regex tree + matcher), as decided above.
+- **P4, first slice (same day).** `use JS`: the term `JS` is `globalThis`,
+  a `JS::Object` is an opaque handle, values cross by copy and objects by
+  identity as the table above says, `$o.name(args)` calls or reads (an
+  upper-case name with no arguments is read — constructors and namespaces:
+  `JS.Math`, `JS.Array.from`, `JS.Event.new`; the plan's rule alone could
+  not spell a constructor), `$o<k>` / `$o[i]` read and write, Raku closures
+  cross as JS functions and back, `EVAL 'literal', :lang<JavaScript>`
+  inlines. The interpreter side is `rakulib/JS.rakumod`, a stub whose every
+  call dies naming the mode. Gate 6 exists: `t/js/interop/*.raku` with
+  goldens, run by `t/js/run.raku` under Node with `dom-stub.js` preloaded
+  (three programs: DOM, values both ways, callbacks). Not yet: async
+  colouring and `await`, `sleep` via Atomics in a Worker, source maps,
+  `.d.ts`, the npm recipe.
+
+Next: the rest of P4 (Promise ↔ `await`, the colouring pass), then P3 (the
+regex tree + matcher), as decided above; the disagreement tail is worked
+down alongside, from the gate's list.

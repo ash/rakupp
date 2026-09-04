@@ -276,6 +276,7 @@ struct JsGen {
     bool hasMain = false;
     std::vector<string> endBlocks;
     string sinkVar;                      // value-collecting loop: tail values are pushed here, not returned
+    bool jsInterop = false;              // `use JS` seen: the JS term and JS::Object are live
     string ret(const string& v) { return sinkVar.empty() ? "return " + v + ";" : sinkVar + ".push(" + v + ");"; }
 
     JsGen(Program& p, const JsOptions& o) : opt(o), prog(p) {}
@@ -587,6 +588,8 @@ struct JsGen {
     string nameTerm(NameTerm* n) {
         const string& name = n->name;
         if (sigillessVisible(name)) return mangleVar(name);   // a `\x` variable shadows any term
+        if (jsInterop && name == "JS") return "R.JS";
+        if (jsInterop && name == "JS::Object") return "R.JsObjectT";
         if (name == "True") return "true";
         if (name == "False") return "false";
         if (name == "Nil") return "R.Nil";
@@ -972,6 +975,16 @@ struct JsGen {
         }
         if (name == "return" ) refuse("return as a call", c->line);
         if (name == "callsame" || name == "nextsame" || name == "callwith" || name == "nextwith" || name == "samewith") refuse(name, c->line);
+        if (name == "EVAL" && jsInterop && c->args.size() == 2 && c->args[0]->kind == NK::StrLit && isNamedArg(c->args[1].get())) {
+            auto* p = static_cast<PairExpr*>(c->args[1].get());
+            if (p->key == "lang" && p->value && p->value->kind == NK::StrLit && static_cast<StrLit*>(p->value.get())->v == "JavaScript")
+                return "R.jsEval((() => { return (" + static_cast<StrLit*>(c->args[0].get())->v + "); })())";   // the literal, verbatim
+            if (p->key == "lang" && p->value && p->value->kind == NK::ArrayLit) {
+                auto* al = static_cast<ArrayLit*>(p->value.get());
+                if (al->items.size() == 1 && al->items[0]->kind == NK::StrLit && static_cast<StrLit*>(al->items[0].get())->v == "JavaScript")
+                    return "R.jsEval((() => { return (" + static_cast<StrLit*>(c->args[0].get())->v + "); })())";
+            }
+        }
         if (name == "EVAL" || name == "EVALFILE" || name == "require") refuse("EVAL", c->line);
         if (name == "proceed" || name == "succeed") refuse(name, c->line);
         if (name == "sprintf" && !c->args.empty()) return "R.sprintf(" + args(c->args) + ")";
@@ -1300,7 +1313,7 @@ struct JsGen {
         }
         if (m.rfind("v6", 0) == 0 || m == "v6" || m.rfind("v6.", 0) == 0) return;
         if (m == "Test") refuse("the Test module", u->line);
-        if (m == "JS") refuse("use JS (P4)", u->line);
+        if (m == "JS") { jsInterop = true; return; }
         refuse("use " + m, u->line);
     }
     void exprStmt(ExprStmt* es, int ind, bool tail) {

@@ -11,9 +11,11 @@
 #   refused                with the histogram of reasons — the work queue
 #   disagreeing            must be 0
 #
-# Also checked: src/JsRuntimeSrc.cpp is current with src/js-rt/*.js, and
-# every builtin the emitter accepts (kBuiltins in src/codegen/Js.cpp) exists
-# in the runtime.
+# Also checked: src/JsRuntimeSrc.cpp is current with src/js-rt/*.js, every
+# builtin the emitter accepts (kBuiltins in src/codegen/Js.cpp) exists in the
+# runtime, and the `use JS` interop goldens (t/js/interop/*.raku, run under
+# node with the DOM stand-in dom-stub.js preloaded; the interpreter cannot be
+# the oracle there, so each has its .out) still hold.
 #
 #   rakupp t/js/run.raku                 # the whole corpus
 #   rakupp t/js/run.raku examples        # one directory (or files)
@@ -112,6 +114,26 @@ for @files -> $f {
         my $first = $ej.lines.first // '';
         @disagree.push("$rel: {@why.join('; ')}" ~ ($first ?? " — $first.substr(0, 100)" !! ''));
     }
+}
+
+# --- the interop goldens (gate 6) ---------------------------------------------
+my @interop-bad;
+if !@args {
+    my $dir = $ROOT.add('t/js/interop');
+    my $stub = $dir.add('dom-stub.js');
+    for $dir.dir.grep({ .extension eq 'raku' }).sort(*.Str) -> $f {
+        my $golden = $f.extension('out');
+        my $js = $tmp.add($f.basename.subst(/\.raku$/, '.js'));
+        my $tr = run $rakupp.Str, '--target=js', '--standalone', '-q', $f.Str, '-o', $js.Str, :out, :err;
+        if $tr.exitcode != 0 { @interop-bad.push("{$f.basename}: transpile failed — " ~ ($tr.err.slurp(:close).lines.first // '')); next }
+        my ($x, $o, $e) = run-capped($host, '-r', $stub.Str, $js.Str);
+        my $want = $golden.e ?? $golden.slurp !! '';
+        if $x != 0 || $o ne $want || $e ne '' {
+            @interop-bad.push("{$f.basename}: " ~ ($x != 0 ?? "exit $x; " !! '') ~ ($o ne $want ?? "stdout differs ({$want.chars} vs {$o.chars} chars); " !! '') ~ ($e ne '' ?? "stderr: {$e.lines.first // ''}" !! ''));
+        }
+    }
+    if @interop-bad { say "not ok - interop goldens: " ~ @interop-bad.join('; '); $bad++ }
+    else { say "ok - the use JS interop goldens hold under $host" }
 }
 
 my $n = @files.elems - @skipped.elems;

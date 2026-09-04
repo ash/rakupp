@@ -357,6 +357,7 @@ function typeOf(v) {
             if (v instanceof RComplex) return T.Complex;
             if (v instanceof RIOPath) return T['IO::Path'];
             if (v instanceof RSig) return T.Signature;
+            if (v instanceof RJsObj) return JsObjectT;
             if (v instanceof RIOHandle) return T['IO::Handle'];
             if (v instanceof RVersion) return T.Version;
             if (v instanceof RDate) return v.ty;
@@ -370,6 +371,7 @@ function isType(v) { return v instanceof RType; }            // a type object (u
 function defined(v) {
     if (v instanceof RType) return false;
     if (v instanceof RFailure) return false;
+    if (v instanceof RJsObj) return v.v != null;
     return v !== undefined && v !== null;
 }
 function isa(v, tname) {
@@ -409,6 +411,7 @@ function truthy(v) {
             if (v instanceof RObj) { const m = v.ty.findUser('Bool'); if (m) return truthy(m(v)); return true; }
             if (v instanceof RSetty) return v.m.size !== 0;
             if (v instanceof RComplex) return v.re !== 0 || v.im !== 0;
+            if (v instanceof RJsObj) return !!v.v;
             return true;
         default: return false;
     }
@@ -442,13 +445,13 @@ function toNumeric(v, op) {
             if (v instanceof RDate) return v.numeric();
             return 0;
         case 'function': throw new RakuError('Cannot convert a Code object to a number');
-        default: return 0;
+)RKJS",
+R"RKJS(        default: return 0;
     }
 }
 // Rakudo's Str.Numeric: "42" → Int, "3.14" → Rat, "1e3" → Num, "Inf"/"NaN" → Num.
 function strToNumeric(s) {
-)RKJS",
-R"RKJS(    const t = s.trim();
+    const t = s.trim();
     if (t === '') return 0;
     if (/^[+-]?\d+$/.test(t)) { const n = Number(t); return Number.isSafeInteger(n) ? n : normBig(BigInt(t)); }
     let m;
@@ -742,11 +745,11 @@ function numToStr(n) {
 }
 // C's %.<prec>g
 function fmtG(n, prec) {
-    if (n === 0) return '0';
+)RKJS",
+R"RKJS(    if (n === 0) return '0';
     let e = Math.floor(Math.log10(Math.abs(n)));
     // toExponential gives the exact rounded mantissa; recompute the exponent from it
-)RKJS",
-R"RKJS(    let ex = n.toExponential(prec - 1);            // d.ddddde±x
+    let ex = n.toExponential(prec - 1);            // d.ddddde±x
     let m = /^(-?\d(?:\.\d+)?)e([+-]\d+)$/.exec(ex);
     e = parseInt(m[2], 10);
     if (e < -4 || e >= prec) {
@@ -809,6 +812,7 @@ function str(v) {
             if (v instanceof RVersion) return v.Str();
             if (v instanceof RDate) return v.Str();
             if (v instanceof RCapture) return v.Str();
+            if (v instanceof RJsObj) return jsStr(v);
             return String(v);
         default: return '';
     }
@@ -851,6 +855,7 @@ function gist(v) {
             if (v instanceof RVersion) return 'v' + v.Str();
             if (v instanceof RDate) return v.Str();
             if (v instanceof RCapture) return v.gist();
+            if (v instanceof RJsObj) return jsStr(v);
             return str(v);
         default: return str(v);
     }
@@ -1038,12 +1043,12 @@ function strPred(s) {
     if (end === 0) return s;
     let start = end; while (start > 0 && /[0-9A-Za-z]/.test(s[start - 1])) start--;
     const chars = s.slice(start, end).split('');
-    let i = chars.length - 1, borrow = true;
+)RKJS",
+R"RKJS(    let i = chars.length - 1, borrow = true;
     while (i >= 0 && borrow) {
         const c = chars[i];
         if (c === 'a') { chars[i] = 'z'; } else if (c === 'A') { chars[i] = 'Z'; } else if (c === '0') { chars[i] = '9'; }
-)RKJS",
-R"RKJS(        else { chars[i] = String.fromCharCode(c.charCodeAt(0) - 1); borrow = false; }
+        else { chars[i] = String.fromCharCode(c.charCodeAt(0) - 1); borrow = false; }
         i--;
     }
     if (borrow) throw new RakuError('Decrement out of range');
@@ -1328,12 +1333,12 @@ function sprintf(fmt, ...args) {
         let width = '';
         if (fmt[i] === '*') { width = String(toInt(next())); i++; } else while (fmt[i] >= '0' && fmt[i] <= '9') width += fmt[i++];
         let prec = null;
-        if (fmt[i] === '.') { i++; prec = ''; if (fmt[i] === '*') { prec = String(toInt(next())); i++; } else while (fmt[i] >= '0' && fmt[i] <= '9') prec += fmt[i++]; if (prec === '') prec = '0'; }
+)RKJS",
+R"RKJS(        if (fmt[i] === '.') { i++; prec = ''; if (fmt[i] === '*') { prec = String(toInt(next())); i++; } else while (fmt[i] >= '0' && fmt[i] <= '9') prec += fmt[i++]; if (prec === '') prec = '0'; }
         while ('hlqLV'.includes(fmt[i])) i++;
         const conv = fmt[i];
         let s;
-)RKJS",
-R"RKJS(        const left = flags.includes('-'), zero = flags.includes('0') && !left, plus = flags.includes('+'), space = flags.includes(' '), alt = flags.includes('#');
+        const left = flags.includes('-'), zero = flags.includes('0') && !left, plus = flags.includes('+'), space = flags.includes(' '), alt = flags.includes('#');
         const signed = (neg, body) => neg ? '-' + body : plus ? '+' + body : space ? ' ' + body : body;
         const padNum = (sign, body) => {
             const w = width === '' ? 0 : parseInt(width, 10);
@@ -1588,15 +1593,15 @@ class RHash {
     pairs() { const o = []; for (const [k, v] of this.m) o.push(new RPair(k, v)); return o; }
     sortedPairs() { return this.pairs().sort((a, b) => strCmp(a.k, b.k)); }
     gist() {
-        const ps = this.sortedPairs(); const parts = [];
+)RKJS",
+R"RKJS(        const ps = this.sortedPairs(); const parts = [];
         for (let i = 0; i < ps.length && i < 100; i++) parts.push(pairGist(ps[i]));
         if (ps.length > 100) parts.push('...');
         return '{' + parts.join(', ') + '}';
     }
     raku() {
         const ps = this.sortedPairs();
-)RKJS",
-R"RKJS(        return '{' + ps.map(pairRaku).join(', ') + '}';
+        return '{' + ps.map(pairRaku).join(', ') + '}';
     }
     [Symbol.iterator]() { return this.pairs()[Symbol.iterator](); }
 }
@@ -1616,6 +1621,7 @@ function hget(h, k) {
     if (h instanceof RList) return aget(h, k);
     if (h instanceof RCapture) return h.named.get(str(k)) ?? Any;
     if (h instanceof RMatch) return h.named(str(k));
+    if (h instanceof RJsObj) return jsGet(h, k);
     throw new RakuError(`Type ${typeName(h)} does not support associative indexing`);
 }
 function hset(h, k, v) {
@@ -1628,6 +1634,7 @@ function hset(h, k, v) {
         h.m.set(k, v); return v;
     }
     if (h instanceof RSetty) return h.set(k, v);
+    if (h instanceof RJsObj) return jsSet(h, k, v);
     if (h instanceof RObj) { const m = h.ty.findUser('ASSIGN-KEY'); if (m) return m(h, k, v); const at = h.ty.findUser('AT-KEY'); if (at) { const c = at(h, k); if (c instanceof RScalar) { c.v = v; return v; } } throw new RakuError(`Type ${h.ty.name} does not support associative indexing`); }
     throw new RakuError(`Cannot modify an immutable ${typeName(h)}`);
 }
@@ -1679,6 +1686,7 @@ function pairValue(p) { return p.v; }
 function objItems(v) { const m = v.ty.findUser('iterator'); if (!m) return null; const it = m(v); return Array.from(it && typeof it.next === 'function' ? { [Symbol.iterator]() { return it; } } : iter(it)); }
 function listItems(v) {
     if (v instanceof RList) return v.a;
+    if (v instanceof RJsObj) return Array.from(v.v == null ? [] : v.v, fromJs);
     if (v instanceof RObj) { const items = objItems(v); if (items) return items; }
     if (Array.isArray(v)) return v;                   // already an item list (the emitter's itemized form)
     if (v instanceof RSeq) return v.arr();
@@ -1700,6 +1708,7 @@ function arr(v) {
 // `for` iteration: one pass, lazily where the source is lazy.
 function iter(v) {
     if (v instanceof RList) return v.a;
+    if (v instanceof RJsObj) return Array.from(v.v == null ? [] : v.v, fromJs);
     if (v instanceof RObj) { const items = objItems(v); if (items) return items; }
     if (Array.isArray(v)) return v;
     if (v instanceof RSeq) return v;
@@ -1785,6 +1794,7 @@ function aget(a, i) {
     if (a instanceof RMatch) return a.pos(Number(toInt(i)));
     if (a instanceof RCapture) { const v = a.pos[Number(toInt(i))]; return v === undefined ? Any : v; }
     if (a instanceof RSetty) return a.listItems()[Number(toInt(i))] ?? Any;
+    if (a instanceof RJsObj) return jsGet(a, Number(toInt(i)));
     // a scalar indexed as a one-element list
     if (typeof i === 'function') i = i(1);
     return Number(toInt(i)) === 0 ? a : Any;
@@ -1801,6 +1811,7 @@ function aset(a, i, v) {
         a.a[k] = v; return v;
     }
     if (a instanceof RHash) return hset(a, i, v);
+    if (a instanceof RJsObj) return jsSet(a, Number(toInt(i)), v);
     if (a instanceof RObj) { const m = a.ty.findUser('ASSIGN-POS'); if (m) return m(a, i, v); const at = a.ty.findUser('AT-POS'); if (at) { const c = at(a, i); if (c instanceof RScalar) { c.v = v; return v; } } throw new RakuError(`Type ${a.ty.name} does not support positional indexing`); }
     throw new RakuError(`Cannot modify an immutable ${typeName(a)}`);
 }
@@ -1834,7 +1845,8 @@ function callBlock(f, ...args) { return f(...args); }
 function mapList(v, f) {
     const src = iter(v);
     const arity = f.arity !== undefined ? f.arity : f.length;
-    const lazy = v instanceof RSeq ? v.lazy : v instanceof RRange ? v.isInfinite() : false;
+)RKJS",
+R"RKJS(    const lazy = v instanceof RSeq ? v.lazy : v instanceof RRange ? v.isInfinite() : false;
     return new RSeq((function* () {
         if (arity <= 1) {
             for (const x of src) { const r = f(x); if (r instanceof RSlip) yield* r.a; else yield r; }
@@ -1848,8 +1860,7 @@ function mapList(v, f) {
 function grepList(v, f) {
     const src = iter(v);
     const lazy = v instanceof RSeq ? v.lazy : v instanceof RRange ? v.isInfinite() : false;
-)RKJS",
-R"RKJS(    const test = matcherOf(f);
+    const test = matcherOf(f);
     return new RSeq((function* () { for (const x of src) if (test(x)) yield x; })(), lazy);
 }
 // The predicate a smartmatch-taking method uses: a Code is called, anything else is ~~'d
@@ -2083,7 +2094,8 @@ function whichKey(v) {
 // --- junctions -------------------------------------------------------------
 function junction(kind, v) {
     const items = [];
-    for (const x of itemsOf(v)) { if (x instanceof RJunction && x.kind === kind) items.push(...x.items); else items.push(x); }
+)RKJS",
+R"RKJS(    for (const x of itemsOf(v)) { if (x instanceof RJunction && x.kind === kind) items.push(...x.items); else items.push(x); }
     return new RJunction(kind, items);
 }
 function junctionBool(j) {
@@ -2101,8 +2113,7 @@ function junctionOp(fn, a, b) {
     return new RJunction(b.kind, b.items.map(y => fn(a, y)));
 }
 function junctionStr(j) { return j.kind + '(' + j.items.map(str).join(', ') + ')'; }
-)RKJS",
-R"RKJS(function junctionGist(j) { return j.kind + '(' + j.items.map(gist).join(', ') + ')'; }
+function junctionGist(j) { return j.kind + '(' + j.items.map(gist).join(', ') + ')'; }
 function junctionRaku(j) { return j.kind + '(' + j.items.map(raku).join(', ') + ')'; }
 
 // --- smartmatch ------------------------------------------------------------
@@ -2324,14 +2335,14 @@ function namedHash(m, skip) {          // *%_ / %named
     return h;
 }
 function checkNamed(m, allowed, who) {
-    for (const k of m.keys()) if (!allowed.includes(k)) throw new RakuError(`Unexpected named argument '${k}' passed${who ? ' to ' + who : ''}`, 'X::AdHoc');
+)RKJS",
+R"RKJS(    for (const k of m.keys()) if (!allowed.includes(k)) throw new RakuError(`Unexpected named argument '${k}' passed${who ? ' to ' + who : ''}`, 'X::AdHoc');
 }
 function notAny(pname) { throw new RakuError(`Type check failed in binding to parameter '${pname}'; expected Any but got Mu (Mu)`, 'X::TypeCheck::Binding::Parameter'); }
 function arityError(who, expected, got) { if (got < expected) tooFew(who, expected, got); tooMany(who, expected, got); }
 function tooMany(who, expected, got) { throw new RakuError(`Too many positionals passed${who ? ' to ' + who : ''}; expected ${expected} argument${expected === 1 ? '' : 's'} but got ${got}`, 'X::AdHoc'); }
 function tooFew(who, expected, got) { throw new RakuError(`Too few positionals passed${who ? ' to ' + who : ''}; expected ${expected} argument${expected === 1 ? '' : 's'} but got ${got}`, 'X::AdHoc'); }
-)RKJS",
-R"RKJS(function typeCheck(v, tname, pname, who) {
+function typeCheck(v, tname, pname, who) {
     if (v instanceof RJunction) return v;
     if (!isa(v, tname)) throw new RakuError(`Type check failed in binding to parameter '${pname}'; expected ${tname} but got ${typeName(v)} (${raku(v)})`, 'X::TypeCheck::Binding::Parameter');
     return v;
@@ -2511,7 +2522,8 @@ function round(v, scale) {
     const s = toNumeric(scale);
     if ((s instanceof RRat || isIntVal(s)) && Number.isFinite(toFloat(x)) && !(s instanceof RRat && s.d === 0n)) {
         const [sn, sd] = asRat(s);          // round(x / s) * s
-        const [xn, xd] = asRat(x instanceof RRat || isIntVal(x) ? x : mkRat(BigInt(Math.round(toFloat(x) * 1e12)), 1000000000000n));
+)RKJS",
+R"RKJS(        const [xn, xd] = asRat(x instanceof RRat || isIntVal(x) ? x : mkRat(BigInt(Math.round(toFloat(x) * 1e12)), 1000000000000n));
         // q = x/s = xn*sd / (xd*sn)
         const qn = xn * sd, qd = xd * sn;
         let n = qn * 2n + qd; let q = n / (2n * qd); if (n < 0n && n % (2n * qd) !== 0n) q -= 1n;
@@ -2527,8 +2539,7 @@ function isPrime(v) {
     if (!isIntVal(n)) return false;
     if (typeof n === 'bigint') { if (n < 2n) return false; return millerRabin(n); }
     if (n < 2) return false; if (n < 4) return true; if (n % 2 === 0 || n % 3 === 0) return false;
-)RKJS",
-R"RKJS(    for (let i = 5; i * i <= n; i += 6) if (n % i === 0 || n % (i + 2) === 0) return false;
+    for (let i = 5; i * i <= n; i += 6) if (n % i === 0 || n % (i + 2) === 0) return false;
     return true;
 }
 function millerRabin(n) {
@@ -2706,7 +2717,8 @@ function hyperOp(op, a, b, dwimL, dwimR) {
     if (la && lb) {
         const x = arr(a), y = arr(b);
         let n = Math.max(x.length, y.length);
-        if (!dwimL && !dwimR && x.length !== y.length) throw new RakuError(`Lists on either side of non-dwimmy hyperop of infix:<${op}> are not of the same length while recursing\nleft: ${x.length} elements, right: ${y.length} elements`, 'X::HyperOp::NonDWIM');
+)RKJS",
+R"RKJS(        if (!dwimL && !dwimR && x.length !== y.length) throw new RakuError(`Lists on either side of non-dwimmy hyperop of infix:<${op}> are not of the same length while recursing\nleft: ${x.length} elements, right: ${y.length} elements`, 'X::HyperOp::NonDWIM');
         if (dwimL && !dwimR) n = y.length; if (dwimR && !dwimL) n = x.length;
         const out = []; for (let i = 0; i < n; i++) out.push(hyperOp(op, x[i % x.length], y[i % y.length], dwimL, dwimR));
         return a.ty === T.Array || a instanceof RList ? mkList(out, a instanceof RList ? a.ty : T.List) : mkList(out);
@@ -2715,8 +2727,7 @@ function hyperOp(op, a, b, dwimL, dwimR) {
     if (lb) { const y = arr(b); return mkList(y.map(e => hyperOp(op, a, e, dwimL, dwimR)), b instanceof RList ? b.ty : T.List); }
     return f(a, b);
 }
-)RKJS",
-R"RKJS(function hyperPrefix(op, a) { const f = { '-': neg, '!': not, '?': so, '~': str, '+': numify, 'abs': abs }[op] || (x => x); if (a instanceof RList || a instanceof RSeq || a instanceof RRange) return mkList(arr(a).map(x => hyperPrefix(op, x)), a instanceof RList ? a.ty : T.List); return f(a); }
+function hyperPrefix(op, a) { const f = { '-': neg, '!': not, '?': so, '~': str, '+': numify, 'abs': abs }[op] || (x => x); if (a instanceof RList || a instanceof RSeq || a instanceof RRange) return mkList(arr(a).map(x => hyperPrefix(op, x)), a instanceof RList ? a.ty : T.List); return f(a); }
 function assumingCall(f, ...pre) { const g = (...rest) => f(...pre, ...rest); g.arity = Math.max(0, (f.arity ?? f.length) - pre.length); return g; }
 // the `...` sequence operator
 function seqOp(items, endv, exclusive) {
@@ -2832,11 +2843,11 @@ M(T.Mu, {
     'Order': (s) => order(toFloat(s)), 'Int-ish': (s) => isIntVal(s),
     'starts-with': (s, p) => startsWith(s, p), 'chars': (s) => chars(s), 'codes': (s) => codes(s), 'uniname': (s) => strUniname(s), 'parse-base': (s, b) => parseBase(s, b),
     'sprintf': (s, ...a) => sprintf(s, ...a), 'EVAL': () => EVAL(), 'grab': (s, n) => pickFrom(s, n), 'skip': (s, n) => { const k = n === undefined ? 1 : Number(toInt(n)); return mkSeq(arr(s).slice(k)); },
-    'toggle': (s, ...fs) => { const out = []; let on = true, fi = 0; for (const x of iter(s)) { if (fi < fs.length && truthy(fs[fi](x)) !== on) { fi++; on = !on; } if (on) out.push(x); } return mkSeq(out); },
+)RKJS",
+R"RKJS(    'toggle': (s, ...fs) => { const out = []; let on = true, fi = 0; for (const x of iter(s)) { if (fi < fs.length && truthy(fs[fi](x)) !== on) { fi++; on = !on; } if (on) out.push(x); } return mkSeq(out); },
     'deepmap': (s, f) => { const walk = x => (x instanceof RList) ? mkList(x.a.map(walk), x.ty) : f(x); return walk(s); }, 'duckmap': (s, f) => { const walk = x => { try { const r = f(x); if (r instanceof RFailure) throw 0; return r; } catch (e) { return x instanceof RList ? mkList(x.a.map(walk), x.ty) : x; } }; return walk(s); },
     'nodemap': (s, f) => mkList(arr(s).map(f)), 'sum': (s) => sumList(s), 'Bool': (s) => truthy(s), 'are': (s) => { const items = arr(s); if (!items.length) return T.Nil; let t = typeOf(items[0]); for (const x of items) { const u = typeOf(x); while (!u.isa(t)) t = t.parents[0] || T.Mu; } return t; },
-)RKJS",
-R"RKJS(    'chunks': (s, n) => batchList(s, n), 'tree': (s) => s, 'antipair': (s) => s instanceof RPair ? pair(s.v, s.k) : Any, 'SET-SELF': (s) => s, 'BUILDALL': (s) => s, 'bless': (s, ...a) => construct(s, ...a), 'CREATE': (s) => new RObj(s),
+    'chunks': (s, n) => batchList(s, n), 'tree': (s) => s, 'antipair': (s) => s instanceof RPair ? pair(s.v, s.k) : Any, 'SET-SELF': (s) => s, 'BUILDALL': (s) => s, 'bless': (s, ...a) => construct(s, ...a), 'CREATE': (s) => new RObj(s),
     'perl': (s) => raku(s), 'gistseen': (s) => gist(s), 'iterator-end': () => T.IterationEnd, 'DEFINITE': (s) => defined(s), 'REPR': (s) => 'P6opaque', 'HOW': (s) => typeOf(s), 'WHY': (s) => Nil, 'set': (s, v) => s,
     'seed': (s, v) => s, 'srand': (s) => srand(s), 'exit': (s) => exit(s), 'sleep': (s) => sleep(s), 'now': () => now(), 'time': () => time(),
     'is-integer': (s) => isIntVal(toNumeric(s)), 'msb': (s) => { const b = big(s); return b === 0n ? Nil : b.toString(2).length - 1; }, 'lsb': (s) => { const b = big(s); if (b === 0n) return Nil; let i = 0; let x = b; while ((x & 1n) === 0n) { x >>= 1n; i++; } return i; },
@@ -2887,9 +2898,9 @@ M(T.Junction, { gist: (s) => junctionGist(s), Str: (s) => junctionStr(s), raku: 
 M(T.Exception, { message: (s) => excMessage(s), Str: (s) => excMessage(s), gist: (s) => excMessage(s), throw: (s) => { throw s; }, rethrow: (s) => { throw s; }, resume: (s) => Nil, 'backtrace': (s) => mkList([]), 'payload': (s) => s.payload ? namedHash(s.payload) : mkHash(), 'Bool': (s) => true, 'defined': (s) => true, 'WHAT': (s) => excType(s), 'raku': (s) => raku(s), 'Failure': (s) => failure(s), 'fail': (s) => failure(s), 'name': (s) => excType(s).name });
 M(T.Failure, { Bool: (s) => { s.handled = true; return false; }, defined: (s) => { s.handled = true; return false; }, exception: (s) => s.err, message: (s) => s.err.message, handled: (s) => s.handled, Str: (s) => { throw s.err; }, gist: (s) => '(HANDLED) ' + s.err.message, throw: (s) => { throw s.err; }, 'so': (s) => { s.handled = true; return false; }, 'not': (s) => { s.handled = true; return true; }, 'sink': (s) => { throw s.err; }, 'Numeric': (s) => { throw s.err; }, 'Int': (s) => { throw s.err; }, 'self': (s) => { throw s.err; }, 'elems': (s) => { throw s.err; }, 'list': (s) => { throw s.err; }, 'Exception': (s) => s.err, 'WHAT': (s) => T.Failure, 'gistseen': (s) => gist(s), 'perl': (s) => raku(s.err), 'raku': (s) => raku(s.err), 'mess': (s) => s.err.message, 'payload': (s) => s.err.payload ? namedHash(s.err.payload) : mkHash() });
 M(T.Setty, { elems: (s) => s.m.size, total: (s) => s.total(), keys: (s) => mkSeq(s.keysList()), values: (s) => mkSeq(s.valuesList()), kv: (s) => kvOf(s), pairs: (s) => mkSeq(s.pairsList()), list: (s) => mkList(s.listItems()), List: (s) => mkList(s.listItems()), Str: (s) => s.Str(), gist: (s) => s.gist(), raku: (s) => s.raku(), Bool: (s) => s.m.size > 0,
-    'AT-KEY': (s, k) => s.get(k), 'EXISTS-KEY': (s, k) => s.has(k), 'ASSIGN-KEY': (s, k, v) => s.set(k, v), 'DELETE-KEY': (s, k) => s.delete(k), 'grab': (s, n) => { const r = pickFrom(mkList(s.keysList()), n); for (const x of (n === undefined ? [r] : arr(r))) s.delete(x); return r; }, 'grabpairs': (s, n) => { const ps = pickFrom(mkList(s.pairsList()), n); for (const p of (n === undefined ? [ps] : arr(ps))) s.delete(p.k); return ps; },
 )RKJS",
-R"RKJS(    'pick': (s, n) => pickFrom(mkList(s.keysList()), n), 'roll': (s, n) => rollFrom(mkList(s.keysList()), n), 'Set': (s) => toSetty(s, T.Set), 'Bag': (s) => toSetty(s, T.Bag), 'Mix': (s) => toSetty(s, T.Mix), 'SetHash': (s) => toSetty(s, T.SetHash), 'BagHash': (s) => toSetty(s, T.BagHash), 'MixHash': (s) => toSetty(s, T.MixHash), 'Hash': (s) => { const h = new RHash(); for (const e of s.m.values()) h.m.set(str(e.v), e.n); return h; }, 'hash': (s) => { const h = new RHash(); for (const e of s.m.values()) h.m.set(str(e.v), e.n); return h; },
+R"RKJS(    'AT-KEY': (s, k) => s.get(k), 'EXISTS-KEY': (s, k) => s.has(k), 'ASSIGN-KEY': (s, k, v) => s.set(k, v), 'DELETE-KEY': (s, k) => s.delete(k), 'grab': (s, n) => { const r = pickFrom(mkList(s.keysList()), n); for (const x of (n === undefined ? [r] : arr(r))) s.delete(x); return r; }, 'grabpairs': (s, n) => { const ps = pickFrom(mkList(s.pairsList()), n); for (const p of (n === undefined ? [ps] : arr(ps))) s.delete(p.k); return ps; },
+    'pick': (s, n) => pickFrom(mkList(s.keysList()), n), 'roll': (s, n) => rollFrom(mkList(s.keysList()), n), 'Set': (s) => toSetty(s, T.Set), 'Bag': (s) => toSetty(s, T.Bag), 'Mix': (s) => toSetty(s, T.Mix), 'SetHash': (s) => toSetty(s, T.SetHash), 'BagHash': (s) => toSetty(s, T.BagHash), 'MixHash': (s) => toSetty(s, T.MixHash), 'Hash': (s) => { const h = new RHash(); for (const e of s.m.values()) h.m.set(str(e.v), e.n); return h; }, 'hash': (s) => { const h = new RHash(); for (const e of s.m.values()) h.m.set(str(e.v), e.n); return h; },
     'clone': (s) => s.clone(), 'minpairs': (s) => { const ps = s.pairsList(); if (!ps.length) return mkSeq([]); const m = minOf(ps.map(p => p.v)); return mkSeq(ps.filter(p => cmpNum(p.v, m) === 0)); }, 'maxpairs': (s) => { const ps = s.pairsList(); if (!ps.length) return mkSeq([]); const m = maxOf(ps.map(p => p.v)); return mkSeq(ps.filter(p => cmpNum(p.v, m) === 0)); }, 'antipairs': (s) => mkSeq(s.pairsList().map(p => pair(p.v, p.k))), 'invert': (s) => mkSeq(s.pairsList().map(p => pair(p.v, p.k))), 'Int': (s) => s.m.size, 'Numeric': (s) => s.m.size, 'sort': (s, f) => sortList(mkList(s.listItems()), f), 'map': (s, f) => mapList(mkList(s.listItems()), f), 'grep': (s, f) => grepList(mkList(s.listItems()), f), 'iterator': (s) => s.listItems()[Symbol.iterator](), 'first': (s, ...a) => firstOf(mkList(s.listItems()), posArgs(a)[0], nm(a)), 'sum': (s) => sumList(mkList(s.listItems())), 'join': (s, sep) => joinList(mkList(s.listItems()), sep), 'elem': (s, v) => s.has(v), 'add': (s, ...v) => { for (const x of v) s.add(x); return s; } });
 M(T.Version, { Str: (s) => s.Str(), gist: (s) => 'v' + s.Str(), raku: (s) => 'v' + s.Str(), parts: (s) => mkList(s.parts), 'ACCEPTS': (s, v) => v instanceof RVersion && v.cmp(s) === 0, 'Bool': (s) => true });
 M(T.Capture, { list: (s) => mkList(s.pos), hash: (s) => namedHash(s.named), elems: (s) => s.pos.length, gist: (s) => s.gist(), raku: (s) => s.raku(), Str: (s) => s.Str(), 'AT-POS': (s, i) => aget(s, i), 'AT-KEY': (s, k) => hget(s, k), 'keys': (s) => mkList(Array.from({ length: s.pos.length }, (_, i) => i).concat(Array.from(s.named.keys()))), 'Capture': (s) => s, 'Bool': (s) => s.pos.length > 0 || s.named.size > 0 });
@@ -2918,6 +2929,19 @@ const TYPE_METHODS = {
     'add_method': (t, n, f) => { t.methods[str(n)] = f; t.cache = Object.create(null); return f; }, 'compose': (t) => t, 'archetypes': (t) => t, 'is_composed': (t) => true,
 };
 function mc(inv, name, ...args) {
+    // a JS::Object: its own property or method first, then the handle's methods
+    if (inv instanceof RJsObj) {
+        const target = inv.v;
+        if (target != null && (name in Object(target))) return jsCall(inv, name, args);
+        const m = JsObjectT.methods[name]; if (m) return m(inv, ...args);
+        return jsCall(inv, name, args);
+    }
+    // a JavaScript function read as a property (`JS.Array`, `JS.Event`): its own
+    // properties and `.new` dispatch on the function itself
+    if (typeof inv === 'function' && inv.__js) {
+        if (name === 'new') return jsNew(inv.__js, args);
+        if (name in inv.__js) return jsCall(inv.__js, name, args);
+    }
     if (inv instanceof RJunction && name !== 'gist' && name !== 'Str' && name !== 'raku' && name !== 'Bool' && name !== 'so' && name !== 'not' && name !== 'defined' && name !== 'WHAT' && name !== 'eigenstates') {
         return new RJunction(inv.kind, inv.items.map(x => mc(x, name, ...args)));
     }
@@ -2930,7 +2954,8 @@ function mc(inv, name, ...args) {
         const tm = TYPE_METHODS[name];
         if (tm) return tm(inv, ...args);
         if (inv === T.Any || inv === T.Mu) { const m = T.Mu.methods[name]; if (m) return m(inv, ...args); }
-        if (inv.isEnum && inv.enumValues) { const e = inv.enumValues.find(x => x.key === name); if (e) return e; }
+)RKJS",
+R"RKJS(        if (inv.isEnum && inv.enumValues) { const e = inv.enumValues.find(x => x.key === name); if (e) return e; }
         const cm = inv.find(name);
         if (cm) return cm(inv, ...args);
         throw new RakuError(`No such method '${name}' for invocant of type '${inv.name}'`, 'X::Method::NotFound');
@@ -2946,8 +2971,7 @@ function mc(inv, name, ...args) {
     throw new RakuError(`No such method '${name}' for invocant of type '${ty.name}'`, 'X::Method::NotFound');
 }
 // .?name
-)RKJS",
-R"RKJS(function mcMaybe(inv, name, ...args) {
+function mcMaybe(inv, name, ...args) {
     const ty = typeOf(inv);
     if (inv instanceof RType) { if (name === 'new' || TYPE_METHODS[name] || inv.find(name)) return mc(inv, name, ...args); return Nil; }
     if (ty.find(name) || (typeof inv === 'function' && CODE_METHODS[name]) || (inv instanceof REnum && ENUM_METHODS[name])) return mc(inv, name, ...args);
@@ -3068,7 +3092,8 @@ if (IS_NODE && nodeRequire) {
 }
 function concatBytes(chunks) { let n = 0; for (const c of chunks) n += c.length; const out = new Uint8Array(n); let o = 0; for (const c of chunks) { out.set(c, o); o += c.length; } return out; }
 const ProcT = mkType('Proc', [T.Any], { isUser: true, attrs: [{ name: 'exitcode', sigil: '$', pub: true }, { name: 'out', sigil: '$', pub: true }, { name: 'err', sigil: '$', pub: true }] });
-ProcT.methods.exitcode = s => s.a_exitcode; ProcT.methods.out = s => s.a_out; ProcT.methods.err = s => s.a_err; ProcT.methods.Bool = s => s.a_exitcode === 0; ProcT.methods.so = s => s.a_exitcode === 0; ProcT.methods.signal = s => 0; ProcT.methods.pid = s => 0;
+)RKJS",
+R"RKJS(ProcT.methods.exitcode = s => s.a_exitcode; ProcT.methods.out = s => s.a_out; ProcT.methods.err = s => s.a_err; ProcT.methods.Bool = s => s.a_exitcode === 0; ProcT.methods.so = s => s.a_exitcode === 0; ProcT.methods.signal = s => 0; ProcT.methods.pid = s => 0;
 function mkProc(code) { const p = new RObj(ProcT); p.a_exitcode = code === null ? 1 : code; p.a_out = Nil; p.a_err = Nil; return p; }
 const STDIN = new RIOHandle('in', ''), STDOUT = new RIOHandle('out', ''), STDERR = new RIOHandle('err', '');
 
@@ -3089,8 +3114,7 @@ function dynVar(name) {
         case '$*TMPDIR': return new RIOPath('/tmp');
         case '$*HOME': return new RIOPath(host.env.get('HOME') || '');
         case '$*USER': return host.env.get('USER') || '';
-)RKJS",
-R"RKJS(        case '$*RAKU': return hashFrom([['name', 'Raku'], ['version', new RVersion('6.d')]]);
+        case '$*RAKU': return hashFrom([['name', 'Raku'], ['version', new RVersion('6.d')]]);
         case '$*PERL': return hashFrom([['name', 'Raku']]);
         case '$*VM': return hashFrom([['name', 'js'], ['version', new RVersion('1')]]);
         case '$*KERNEL': return hashFrom([['name', 'js']]);
@@ -3322,10 +3346,116 @@ class RSig { constructor(f) { this.f = f; } }
 T.Signature.methods.count = s => s.f.count !== undefined ? s.f.count : (s.f.arity !== undefined ? s.f.arity : s.f.length);
 T.Signature.methods.arity = s => s.f.arity !== undefined ? s.f.arity : s.f.length;
 T.Signature.methods.params = s => mkList([]);
-T.Signature.methods.gist = s => '(' + Array.from({ length: T.Signature.methods.arity(s) }, (_, i) => '$' + String.fromCharCode(97 + i)).join(', ') + ')';
+)RKJS",
+R"RKJS(T.Signature.methods.gist = s => '(' + Array.from({ length: T.Signature.methods.arity(s) }, (_, i) => '$' + String.fromCharCode(97 + i)).join(', ') + ')';
 T.Signature.methods.Str = T.Signature.methods.gist;
 T.Signature.methods.returns = s => T.Mu;
 Object.assign(R, { vivArray, withOf, isAny, RSig, blk, wc, callCode, rwBox, throwCtl, xxThunk, namedFromHash, kvAdverb, pAdverb, listAppendAssign, mcSet, meta, coerce, dynGet, dynSet, approxEq, rangeIter, subset, slurpyFlat, factorial, isaSubset });
+
+// ---- 85-js.js ----
+// JavaScript interop (`use JS`, TRANSPILE-PLAN P4). Values cross by copy,
+// objects cross by identity: a JS::Object is an opaque handle (RJsObj) around
+// whatever the host handed us, so identity, prototype methods and the DOM
+// survive the crossing — deliberately not a Hash.
+
+const JsObjectT = mkType('JS::Object', [T.Any]);
+class RJsObj { constructor(v) { this.v = v; } }
+
+// Raku → JS: Int → number (BigInt past 2^53 stays BigInt), Num → number,
+// Str → string, Bool → boolean, Nil → undefined, a type object → null,
+// Array/List → a JS array (copy), Hash → a plain object (copy), Pair →
+// {key: value}, Code → a function whose arguments are marshalled back.
+function toJs(v) {
+    switch (typeof v) {
+        case 'number': case 'string': case 'boolean': case 'bigint': case 'undefined': return v;
+        case 'function': {
+            if (v.__js) return v.__js;
+            const f = (...a) => toJs(v(...a.map(fromJs)));
+            f.__raku = v;
+            return f;
+        }
+        case 'object':
+            if (v === null) return null;
+            if (v instanceof RJsObj) return v.v;
+            if (v === Nil) return undefined;
+            if (v instanceof RType) return null;
+            if (v instanceof RNum) return v.v;
+            if (v instanceof RRat) return ratToFloat(v);
+            if (v instanceof RList || v instanceof RSeq || v instanceof RRange) return arr(v).map(toJs);
+            if (v instanceof RSlip) return v.a.map(toJs);
+            if (v instanceof RHash) { const o = {}; for (const [k, x] of v.m) o[k] = toJs(x); return o; }
+            if (v instanceof RPair) { const o = {}; o[str(v.k)] = toJs(v.v); return o; }
+            if (v instanceof REnum) return toJs(v.val);
+            if (v instanceof RSetty) return v.keysList().map(toJs);
+            if (v instanceof RakuError) { const e = new Error(v.message); e.raku = v; return e; }
+            if (v instanceof RComplex) return { re: v.re, im: v.im };
+            if (v instanceof RDate) return new Date(v.d.getTime());
+            if (v instanceof RIOPath) return v.path;
+            if (v instanceof RVersion) return v.Str();
+            return v;   // a Raku object crosses as itself (identity)
+    }
+    return v;
+}
+// JS → Raku: number → Int if integral else Num, string → Str, boolean → Bool,
+// null/undefined → Nil, an array → Array, a function → Code, any other object → JS::Object.
+function fromJs(v) {
+    switch (typeof v) {
+        case 'number': return Number.isInteger(v) ? (Number.isSafeInteger(v) ? v : normBig(BigInt(v))) : v;
+        case 'string': case 'boolean': return v;
+        case 'bigint': return normBig(v);
+        case 'undefined': return Nil;
+        case 'function': {
+            if (v.__raku) return v.__raku;
+            const f = (...a) => fromJs(v(...a.map(toJs)));
+            f.__js = v; f.rtype = T.Sub;
+            return f;
+        }
+        case 'object':
+            if (v === null) return Nil;
+            if (Array.isArray(v)) return mkArray(v.map(fromJs));
+            if (v instanceof RObj || v instanceof RList || v instanceof RHash || v instanceof RType || v instanceof RJsObj) return v;   // ours, coming back
+            if (v instanceof Error && v.raku) return v.raku;
+            return new RJsObj(v);
+    }
+    return new RJsObj(v);
+}
+// $o.name(args) : call the property when it is a function, else read it
+function jsCall(o, name, args) {
+    const target = o instanceof RJsObj ? o.v : o;
+    const named = args.length && args[args.length - 1] instanceof RNamed ? args.pop().m : null;
+    const prop = target == null ? undefined : target[name];
+    // a function-valued property is CALLED when arguments are given or the name is
+    // lower-case (`JS.fetch(...)`, `$el.focus`); an upper-case name is a constructor
+    // or namespace and is READ (`JS.Math`, `JS.Array.from`, `JS.Event.new`)
+    const isUpper = name[0] >= 'A' && name[0] <= 'Z';
+    if (typeof prop === 'function' && (args.length || !isUpper)) {
+        const jsArgs = args.map(toJs);
+        if (named) jsArgs.push(Object.fromEntries(Array.from(named, ([k, x]) => [k, toJs(x)])));
+        return fromJs(prop.apply(target, jsArgs));
+    }
+    if (prop === undefined && args.length && name.startsWith('set-')) { target[name.slice(4)] = toJs(args[0]); return args[0]; }
+    if (args.length === 1 && !(target != null && name in target)) throw new RakuError(`JS::Object has no property or method '${name}'`, 'X::Method::NotFound');
+    return fromJs(prop);
+}
+function jsGet(o, k) { const target = o instanceof RJsObj ? o.v : o; return fromJs(target == null ? undefined : target[typeof k === 'number' ? k : str(k)]); }
+function jsSet(o, k, v) { const target = o instanceof RJsObj ? o.v : o; target[typeof k === 'number' ? k : str(k)] = toJs(v); return v; }
+function jsExists(o, k) { const target = o instanceof RJsObj ? o.v : o; return target != null && (str(k) in target); }
+function jsNew(ctor, args) { const C = ctor instanceof RJsObj ? ctor.v : ctor; return fromJs(new C(...args.map(toJs))); }
+function jsTruthy(o) { return !!o.v; }
+function jsStr(o) { try { return String(o.v); } catch (e) { return '[object]'; } }
+// EVAL 'literal', :lang<JavaScript>: the emitter inlines the code; this wraps its value
+function jsEval(v) { return fromJs(v); }
+const JS = new RJsObj(globalThis);
+
+M(JsObjectT, {
+    gist: (s) => jsStr(s), Str: (s) => jsStr(s), raku: (s) => 'JS::Object(' + jsStr(s) + ')', Bool: (s) => jsTruthy(s), so: (s) => jsTruthy(s), defined: (s) => s.v != null,
+    'AT-KEY': (s, k) => jsGet(s, k), 'ASSIGN-KEY': (s, k, v) => jsSet(s, k, v), 'EXISTS-KEY': (s, k) => jsExists(s, k), 'AT-POS': (s, i) => jsGet(s, Number(toInt(i))), 'ASSIGN-POS': (s, i, v) => jsSet(s, Number(toInt(i)), v),
+    'new': (s, ...a) => jsNew(s, a), 'keys': (s) => mkSeq(Object.keys(s.v)), 'elems': (s) => s.v != null && s.v.length !== undefined ? s.v.length : Object.keys(s.v).length,
+    'list': (s) => mkList(Array.from(s.v, fromJs)), 'List': (s) => mkList(Array.from(s.v, fromJs)), 'Array': (s) => mkArray(Array.from(s.v, fromJs)), 'Hash': (s) => { const h = new RHash(); for (const k of Object.keys(s.v)) h.m.set(k, fromJs(s.v[k])); return h; },
+    'Numeric': (s) => fromJs(Number(s.v)), 'Int': (s) => toInt(fromJs(Number(s.v))), 'Num': (s) => mkNum(Number(s.v)), 'WHAT': (s) => JsObjectT, 'js': (s) => s, 'typeof': (s) => typeof s.v, 'instanceof': (s, c) => s.v instanceof (c instanceof RJsObj ? c.v : c),
+    'invoke': (s, ...a) => fromJs(s.v(...a.map(toJs))), 'call': (s, ...a) => fromJs(s.v(...a.map(toJs))),
+});
+Object.assign(R, { RJsObj, JsObjectT, toJs, fromJs, jsCall, jsGet, jsSet, jsNew, jsEval, JS });
 )RKJS",
 };
 std::string jsRuntimeSource() {

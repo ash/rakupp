@@ -204,6 +204,7 @@ function hget(h, k) {
     if (h instanceof RList) return aget(h, k);
     if (h instanceof RCapture) return h.named.get(str(k)) ?? Any;
     if (h instanceof RMatch) return h.named(str(k));
+    if (h instanceof RJsObj) return jsGet(h, k);
     throw new RakuError(`Type ${typeName(h)} does not support associative indexing`);
 }
 function hset(h, k, v) {
@@ -216,6 +217,7 @@ function hset(h, k, v) {
         h.m.set(k, v); return v;
     }
     if (h instanceof RSetty) return h.set(k, v);
+    if (h instanceof RJsObj) return jsSet(h, k, v);
     if (h instanceof RObj) { const m = h.ty.findUser('ASSIGN-KEY'); if (m) return m(h, k, v); const at = h.ty.findUser('AT-KEY'); if (at) { const c = at(h, k); if (c instanceof RScalar) { c.v = v; return v; } } throw new RakuError(`Type ${h.ty.name} does not support associative indexing`); }
     throw new RakuError(`Cannot modify an immutable ${typeName(h)}`);
 }
@@ -267,6 +269,7 @@ function pairValue(p) { return p.v; }
 function objItems(v) { const m = v.ty.findUser('iterator'); if (!m) return null; const it = m(v); return Array.from(it && typeof it.next === 'function' ? { [Symbol.iterator]() { return it; } } : iter(it)); }
 function listItems(v) {
     if (v instanceof RList) return v.a;
+    if (v instanceof RJsObj) return Array.from(v.v == null ? [] : v.v, fromJs);
     if (v instanceof RObj) { const items = objItems(v); if (items) return items; }
     if (Array.isArray(v)) return v;                   // already an item list (the emitter's itemized form)
     if (v instanceof RSeq) return v.arr();
@@ -288,6 +291,7 @@ function arr(v) {
 // `for` iteration: one pass, lazily where the source is lazy.
 function iter(v) {
     if (v instanceof RList) return v.a;
+    if (v instanceof RJsObj) return Array.from(v.v == null ? [] : v.v, fromJs);
     if (v instanceof RObj) { const items = objItems(v); if (items) return items; }
     if (Array.isArray(v)) return v;
     if (v instanceof RSeq) return v;
@@ -373,6 +377,7 @@ function aget(a, i) {
     if (a instanceof RMatch) return a.pos(Number(toInt(i)));
     if (a instanceof RCapture) { const v = a.pos[Number(toInt(i))]; return v === undefined ? Any : v; }
     if (a instanceof RSetty) return a.listItems()[Number(toInt(i))] ?? Any;
+    if (a instanceof RJsObj) return jsGet(a, Number(toInt(i)));
     // a scalar indexed as a one-element list
     if (typeof i === 'function') i = i(1);
     return Number(toInt(i)) === 0 ? a : Any;
@@ -389,6 +394,7 @@ function aset(a, i, v) {
         a.a[k] = v; return v;
     }
     if (a instanceof RHash) return hset(a, i, v);
+    if (a instanceof RJsObj) return jsSet(a, Number(toInt(i)), v);
     if (a instanceof RObj) { const m = a.ty.findUser('ASSIGN-POS'); if (m) return m(a, i, v); const at = a.ty.findUser('AT-POS'); if (at) { const c = at(a, i); if (c instanceof RScalar) { c.v = v; return v; } } throw new RakuError(`Type ${a.ty.name} does not support positional indexing`); }
     throw new RakuError(`Cannot modify an immutable ${typeName(a)}`);
 }
