@@ -2,13 +2,13 @@
 // iteration, flattening, sorting, junctions.
 
 class RList {
-    constructor(a, ty) { this.a = a; this.ty = ty || T.List; this.src = null; }   // src: a lazy RSeq still feeding `a`
+    constructor(a, ty) { this.a = a; this.ty = ty || T.List; this.src = null; this.item = false; }   // src: a lazy RSeq still feeding `a`; item: an item view (see item())
     reify(n) { const s = this.src; if (!s) return; while (this.a.length <= n) { if (!s.pull()) { this.src = null; return; } this.a.push(s.memo[s.memo.length - 1]); } }
     arr() { if (this.src) this.reify(Infinity); return this.a; }
     elems() { return this.arr().length; }
     gist() { return this.ty === T.Array ? listGistOf(this.a, '[', ']') : listGistOf(this.a, '(', ')'); }
     raku() {
-        if (this.ty === T.Array) return '[' + this.a.map(raku).join(', ') + (this.a.length === 1 && this.a[0] instanceof RList ? ',' : '') + ']';   // [(1, 2),] — one list inside stays a list
+        if (this.ty === T.Array) return '[' + this.a.map(x => raku(decont(x))).join(', ') + (this.a.length === 1 && this.a[0] instanceof RList ? ',' : '') + ']';   // [(1, 2),] — one list inside stays a list; slots render without their $
         const seq = this.ty === T.Seq ? '.Seq' : '';
         if (this.a.length === 1 && this.ty !== T.Slip) return '(' + raku(this.a[0]) + ',)' + seq;
         const body = this.a.map(raku).join(', ');
@@ -168,7 +168,7 @@ function upto(n) { const e = rangeEnd(n); return new RRange(0, typeof e === 'str
 
 // Hash over a Map; keys are Str, insertion-ordered like the native engine.
 class RHash {
-    constructor(m, ty) { this.m = m || new Map(); this.ty = ty || T.Hash; }
+    constructor(m, ty) { this.m = m || new Map(); this.ty = ty || T.Hash; this.item = false; }
     get(k) { const v = this.m.get(k); return v === undefined ? Any : v; }
     set(k, v) { this.m.set(k, v); return v; }
     elems() { return this.m.size; }
@@ -269,6 +269,41 @@ function pairValue(p) { return p.v; }
 // --- flattening and iteration ---------------------------------------------
 // The items a value contributes in list context (the single-argument rule).
 function objItems(v) { const m = v.ty.findUser('iterator'); if (!m) return null; const it = m(v); return Array.from(it && typeof it.next === 'function' ? { [Symbol.iterator]() { return it; } } : iter(it)); }
+// An item view: a List or Hash as it sits in a scalar container — ONE element in
+// list context (`for $x`, `my @a = $x`), `$`-prefixed by .raku, a leaf to `flat`
+// and `»` — sharing the container's storage: `a`/`m` read through to the
+// original, so `@a = …` after `my $x = @a` reaches $x, as in Raku. Method calls
+// decont (mc), so the view is invisible to everything else. A lazy array is
+// reified first (the view cannot share a half-pulled source).
+function item(v) {
+    if (v === null || typeof v !== 'object' || v.item === true) return v;
+    if (v instanceof RList) {
+        if (v.src) v.arr();
+        const w = new RList(v.a, v.ty); Object.assign(w, v);
+        Object.defineProperty(w, 'a', { get() { return v.a; }, set(x) { v.a = x; } });
+        Object.defineProperty(w, 'src', { get() { return v.src; }, set(x) { v.src = x; } });
+        w.item = true; w.__t = v; return w;
+    }
+    if (v instanceof RHash) {
+        const w = new RHash(v.m, v.ty); Object.assign(w, v);
+        Object.defineProperty(w, 'm', { get() { return v.m; }, set(x) { v.m = x; } });
+        w.item = true; w.__t = v; return w;
+    }
+    return v;
+}
+function decont(v) { return v !== null && typeof v === 'object' && v.item === true ? v.__t : v; }
+// a bound `@` parameter: a List stays a List (its slots are bare), a Seq or Range binds as the List it is
+function bindArray(v) { return v instanceof RList ? (v.ty === T.Seq ? mkList(v.arr()) : v) : (v instanceof RSeq || v instanceof RRange) ? mkList(arr(v)) : newArray(v); }
+// `for @a { … }`: an Array's slots are scalar containers, so a list or hash
+// element reaches the bare topic as an item; a List's elements arrive bare
+function iterTopic(v) {
+    if (v instanceof RList && v.ty === T.Array && v.item !== true) {
+        const a = v.a;
+        for (let i = 0; i < a.length; i++) { const x = a[i]; if (x !== null && typeof x === 'object' && x.item !== true && (x instanceof RList || x instanceof RHash)) return a.map(y => item(y)); }
+        return a;
+    }
+    return iter(v);
+}
 function listItems(v) {
     if (v instanceof RList) return v.a;
     if (v instanceof RJsObj) return Array.from(v.v == null ? [] : v.v, fromJs);
@@ -292,13 +327,13 @@ function arr(v) {
 }
 // `for` iteration: one pass, lazily where the source is lazy.
 function iter(v) {
-    if (v instanceof RList) return v.a;
+    if (v instanceof RList) return v.item === true ? [v] : v.a;
     if (v instanceof RJsObj) return Array.from(v.v == null ? [] : v.v, fromJs);
     if (v instanceof RObj) { const items = objItems(v); if (items) return items; }
     if (Array.isArray(v)) return v;
     if (v instanceof RSeq) return v;
     if (v instanceof RRange) return v;
-    if (v instanceof RHash) return v.pairs();
+    if (v instanceof RHash) return v.item === true ? [v] : v.pairs();
     if (v instanceof RSlip) return v.a;
     if (v instanceof RSetty) return v.listItems();
     if (v === Nil) return [];
@@ -328,6 +363,7 @@ function arrayLit(items, single) {
 }
 // The single-argument rule: an iterable's elements, an itemized value alone.
 function itemsOf(v) {
+    if (v !== null && typeof v === 'object' && v.item === true) return [v];
     if (v instanceof RList || v instanceof RSeq || v instanceof RRange || v instanceof RSlip || v instanceof RHash || v instanceof RSetty) return listItems(v);
     if (v instanceof RObj) { const items = objItems(v); if (items) return items; }
     if (Array.isArray(v)) return v;
@@ -341,26 +377,31 @@ function assignArray(a, src) {
     if (src instanceof RSeq && src.lazy) { a.a = []; a.src = src; return a; }
     const items = src === Nil ? [Nil] : itemsOf(src);   // `my @a = Nil` is one (default) element
     const copy = items === a.a ? items.slice() : items.slice();
-    for (let i = 0; i < copy.length; i++) { const x = copy[i]; if (x instanceof RSlip) copy[i] = mkArray(x.a.slice()); else if (a.of || x === Nil) copy[i] = checkOf(a, x); }
+    for (let i = 0; i < copy.length; i++) { const x = copy[i]; if (x instanceof RSlip) copy[i] = mkArray(x.a.slice()); else if (a.of || x === Nil) copy[i] = checkOf(a, x); }   // an item view assigned in stays one: `my @b = $x, 3; @b.List.raku` shows the $
     a.a = copy;
     return a;
 }
 function newArray(src) { return assignArray(mkArray([]), src === undefined ? [] : src); }
 function newHash(src) { return src === undefined ? new RHash() : assignHash(new RHash(), src); }
-// flat: recursive flattening of non-itemized lists
+// flat: recursive flattening of what is not itemized. An Array's slots are
+// scalar containers, so they are pushed as they are (`flat [[1,2],[3,4]]` is two
+// items, `flat ((1,2),(3,4))` four); a List's elements descend unless they are items.
 function flat(v) {
+    if (v !== null && typeof v === 'object' && v.item === true) return mkSeq([v]);
     const out = [];
-    const walk = x => {
-        if (x instanceof RList && x.ty !== T.Array) for (const y of x.a) walk(y);
-        else if (x instanceof RList) for (const y of x.a) walk(y);
-        else if (x instanceof RSeq || x instanceof RRange || x instanceof RSlip) for (const y of iter(x)) walk(y);
+    const walk = (x, slot) => {
+        if (slot) out.push(item(x));   // an Array slot is a container: its list or hash stays an item
+        else if (x !== null && typeof x === 'object' && x.item === true) out.push(x);
+        else if (x instanceof RList) { const isArr = x.ty === T.Array; for (const y of x.arr()) walk(y, isArr); }
+        else if (x instanceof RSeq || x instanceof RRange || x instanceof RSlip) for (const y of iter(x)) walk(y, false);
         else out.push(x);
     };
-    for (const x of iter(v)) walk(x);
+    if (v instanceof RList || v instanceof RSeq || v instanceof RRange || v instanceof RSlip) walk(v, false);
+    else for (const x of iter(v)) walk(x, false);   // a Hash's pairs, an object's own iterator
     return mkSeq(out);
 }
-function slip(v) { return new RSlip(itemsOf(v).slice()); }
-function spreadArgs(v) { if (v instanceof RCapture) return v.named.size ? v.pos.concat([new RNamed(new Map(v.named))]) : v.pos.slice(); return itemsOf(v); }      // f(|@a), f(|c)
+function slip(v) { return new RSlip(itemsOf(decont(v)).slice()); }      // |$x slips the container's contents
+function spreadArgs(v) { if (v instanceof RCapture) return v.named.size ? v.pos.concat([new RNamed(new Map(v.named))]) : v.pos.slice(); return itemsOf(decont(v)); }      // f(|@a), f(|c)
 
 // --- indexing ------------------------------------------------------------
 function aget(a, i) {
@@ -774,7 +815,7 @@ function smartmatch(v, pat) {
     return eqv(v, pat);
 }
 
-Object.assign(R, { smartmatchWith, minMaxAdv, withDefault,
+Object.assign(R, { item, decont, bindArray, iterTopic, smartmatchWith, minMaxAdv, withDefault,
     RList, RSeq, RRange, RHash, mkList, mkArray, mkSeq, mkSlip, seqOf, range, upto, mkHash, hashKey, hget, hset, hexists, hdelete, hslice,
     hviv, aviv, assignHash, hashLit, hashFrom, pair, pairKey, pairValue, listItems, arr, iter, iterN, list, arrayLit, itemsOf,
     assignArray, newArray, newHash, flat, slip, spreadArgs, aget, aset, aslice, aexists, adelete, elemsOf,

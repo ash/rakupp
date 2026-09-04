@@ -118,7 +118,6 @@ function roundrobin(...lists) { const as = lists.map(arr); const n = Math.max(0,
 function head(v, n) { return headOf(v, n); }
 function tail(v, n) { return tailOf(v, n); }
 function defd(v) { return defined(v); }
-function item(v) { return v; }
 function flatten(...items) { return flat(items.length === 1 ? items[0] : mkList(items)); }
 // pick(N, @list) / roll(N, @list): the sub form takes the count first
 const countFirst = (v, n) => n !== undefined && (v instanceof RWhatever || v === T.Whatever || typeof v === 'number' || typeof v === 'bigint') && (n instanceof RList || n instanceof RSeq || n instanceof RRange);

@@ -105,6 +105,7 @@ string rt(const string& name) { return jsIdent(name) ? "R." + name : "R[" + jsSt
 // Builtins the runtime exports by Raku name (src/js-rt/50-builtins.js). A call
 // to a name outside this table is a refusal, so the histogram names the gap.
 const std::set<string> kBuiltins = {
+    "item", "decont", "bindArray", "iterTopic", "parametric",
     "opFn", "react", "supplyBlock", "whenever", "emit", "done", "sleepP", "allo", "val", "module", "exportFn", "exportType", "exportMain", "boolOf", "isMatch", "isRegex", "smartmatchWith", "attrSet", "isFailure", "substMutate", "withDefault", "__radix", "__radix-list",
     "say", "print", "put", "note", "printf", "dd", "exit", "sqrt", "sin", "cos", "tan", "asin", "acos", "atan", "sinh", "cosh", "tanh", "exp", "cbrt",
     "log", "log2", "log10", "atan2", "floor", "ceiling", "truncate", "round", "sign", "is-prime", "expmod", "polymod", "rand", "srand", "min", "max", "sum",
@@ -223,6 +224,14 @@ struct SubInfo {
 };
 
 // A signature's shape, decided once per routine.
+// A `$` parameter itemizes what it binds (`sub f($x) { $x.raku }; f((1,2))` is
+// `$(1, 2)`): the runtime's item view. Skipped for types no list can satisfy.
+static const std::set<std::string> kScalarOnly = { "Int", "UInt", "Str", "Num", "Rat", "Bool", "Numeric", "Real", "Complex", "Date", "DateTime", "Instant", "Duration", "Code", "Callable", "Block", "Sub", "Regex", "IntStr", "NumStr", "RatStr", "Version", "Pair", "Match", "Blob", "Buf", "Junction" };
+static bool itemParam(const Param& p) {
+    if (p.sigil != '$' || p.isRaw || p.isRw || p.name.empty()) return false;
+    std::string t = p.type; size_t c = t.find(':'); if (c != std::string::npos && t.compare(c, 2, "::") != 0) t = t.substr(0, c);
+    return !kScalarOnly.count(t);
+}
 bool simpleSig(const std::vector<Param>& ps) {
     for (auto& p : ps)
         if (p.named || p.slurpy || p.optional || p.defaultVal || p.invocant || p.subSig || p.isRw || p.litVal || p.sigil != '$' || p.name.empty() || p.whereExpr || p.typeCapture)
@@ -279,6 +288,8 @@ struct JsGen {
     std::vector<LoopCtx> loops;
     std::vector<BlockCtx> blocks;
     std::vector<string> topics;          // JS name of `$_` per topic scope
+    std::set<string> itemTopics;         // …those bound to an itemized value (`given $x`)
+    std::map<string, string> topicSlots; // topic JS name → the array slot it aliases (`for @a { $_ *= 2 }` writes back)
     std::vector<string> givens;          // JS labels of enclosing `given` blocks
     string selfName;                     // "self" inside a method, else empty
     string curClass;                     // class being emitted
@@ -459,12 +470,12 @@ struct JsGen {
             if (e->kind == NK::ListExpr && static_cast<ListExpr*>(e)->semicolon) {   // f(1; 2): each segment a List
                 for (auto& seg : static_cast<ListExpr*>(e)->items) {
                     if (!pos.empty()) pos += ", ";
-                    pos += seg->kind == NK::ListExpr ? "R.mkList([" + listItems(static_cast<ListExpr*>(seg.get())->items) + "])" : "R.mkList([" + exCurry(seg.get()) + "])";
+                    pos += seg->kind == NK::ListExpr ? "R.mkList([" + listItems(static_cast<ListExpr*>(seg.get())->items, true) + "])" : "R.mkList([" + exCurry(seg.get()) + "])";
                 }
                 continue;
             }
             if (!pos.empty()) pos += ", ";
-            pos += exCurry(e);
+            pos += isItemized(e) ? "R.item(" + exCurry(e) + ")" : exCurry(e);   // a scalar variable passes as its item: a slurpy keeps it whole
         }
         string tail;
         if (hashSpread) tail = "R.namedFromHash(" + hashSpreadExpr + (named.empty() ? "" : ", [" + named + "]") + ")";
@@ -472,12 +483,13 @@ struct JsGen {
         if (tail.empty()) return pos;
         return pos.empty() ? tail : pos + ", " + tail;
     }
-    string listItems(const std::vector<ExprPtr>& items) {   // items of a list literal, slips spliced by the runtime
+    string listItems(const std::vector<ExprPtr>& items, bool asList = false) {   // items of a list literal, slips spliced by the runtime; in a List an itemized element stays an item
         string s;
         for (size_t i = 0; i < items.size(); i++) {
             if (i) s += ", ";
             Expr* e = items[i].get();
             if (isSlip(e)) s += "R.slip(" + exCurry(static_cast<Unary*>(e)->operand.get()) + ")";
+            else if (asList && isItemized(e)) s += "R.item(" + exCurry(e) + ")";
             else s += exCurry(e);
         }
         return s;
@@ -485,7 +497,7 @@ struct JsGen {
     // an expression whose value is itemized (a scalar container's content): in list
     // assignment and `for` it contributes ONE element, however iterable it is
     bool isItemized(Expr* e) {
-        if (e->kind == NK::VarExpr) { auto* v = static_cast<VarExpr*>(e); return v->name[0] == '$' && v->name != "$_" && !fn().params.count(v->name); }
+        if (e->kind == NK::VarExpr) { auto* v = static_cast<VarExpr*>(e); if (v->name == "$_") return !topics.empty() && itemTopics.count(topics.back()); return v->name[0] == '$' && !fn().params.count(v->name); }
         if (e->kind == NK::MethodCall) { auto* m = static_cast<MethodCall*>(e); return !m->hyper && !m->methodExpr && (m->method == "made" || m->method == "ast"); }   // .made lives in a scalar container
         if (e->kind == NK::Index) {
             auto* ix = static_cast<Index*>(e);
@@ -614,12 +626,12 @@ struct JsGen {
             case NK::ListExpr: {
                 auto* l = static_cast<ListExpr*>(e);
                 if (l->semicolon) refuse("a semicolon list", e->line);
-                return "R.list(" + listItems(l->items) + ")";
+                return "R.list(" + listItems(l->items, true) + ")";
             }
             case NK::HashLit: return "R.hashLit([" + listItems(static_cast<HashLit*>(e)->items) + "])";
             case NK::ArrayLit: {
                 auto* a = static_cast<ArrayLit*>(e);
-                if (a->isList) return "R.mkList([" + listItems(a->items) + "])";
+                if (a->isList) return "R.mkList([" + listItems(a->items, true) + "])";
                 bool single = !a->fromCommaList && a->items.size() == 1 && !isSlip(a->items[0].get()) && !isItemized(a->items[0].get());
                 return "R.arrayLit([" + listItems(a->items) + "], " + (single ? "true" : "false") + ")";
             }
@@ -662,7 +674,7 @@ struct JsGen {
         if (classNames.count(name)) return mangleType(name);
         if (subsetNames.count(name)) return mangleType(name);
         if (kLaterTypes.count(name)) refuse("concurrency/process types (" + name + ") — P4 of the plan", n->line);
-        if (n->ofType.size()) { if (kCoreTypes.count(name)) return "R.T." + name; refuse("a parameterized type " + name, n->line); }
+        if (n->ofType.size()) { if (kCoreTypes.count(name)) return "R.parametric(R.T." + name + ", " + typeObj(n->ofType, n->line) + ")"; refuse("a parameterized type " + name, n->line); }   // Array[Int]: one type object per parameter
         if (subVisible(name)) return mangleSub(name) + "()";
         if (kBuiltins.count(name)) return rt(name) + "()";
         if (kCoreTypes.count(name)) return jsIdent(name) ? "R.T." + name : "R.T[" + jsStr(name) + "]";
@@ -713,6 +725,7 @@ struct JsGen {
                 if (!core.count(n)) { string k = jsStr(n); return { "R.dynGet(" + k + ")", [k](const string& x) { return "R.dynSet(" + k + ", " + x + ")"; } }; }
             }
             string r = varRef(v);
+            if (n == "$_") { auto sl = topicSlots.find(r); if (sl != topicSlots.end()) { string slot = sl->second; return { r, [r, slot](const string& x) { return "(" + r + " = " + x + ", " + slot + " = R.decont(" + r + "))"; } }; } }   // the topic aliases an array slot
             return { r, [r](const string& x) { return r + " = " + x; } };
         }
         if (t->kind == NK::Index) {
@@ -883,7 +896,7 @@ struct JsGen {
         if (op == "?^") return "!R.truthy(" + v + ")";
         if (op == "^") return "R.upto(" + v + ")";
         if (op == "ctx%") return "R.newHash(" + v + ")";
-        if (op == "ctx@") return "R.mkList(R.itemsOf(" + v + ").slice())";
+        if (op == "ctx@") return "R.mkList(R.itemsOf(R.decont(" + v + ")).slice())";
         if (op == "ctx$") return v;
         if (op == "decont") return v;
         if (op == "|") return "R.slip(" + v + ")";
@@ -928,6 +941,13 @@ struct JsGen {
     // --------------------------------------------------------------- binary --
     string binary(Binary* b) {
         const string& op = b->op;
+        if (op == "=:=") {   // container identity: a scalar is only ever =:= itself
+            Expr* l = b->lhs.get(); Expr* r = b->rhs.get();
+            bool lv = l->kind == NK::VarExpr, rv = r->kind == NK::VarExpr;
+            if (lv && rv && static_cast<VarExpr*>(l)->name == static_cast<VarExpr*>(r)->name) return "true";
+            auto scalar = [](Expr* e) { return e->kind == NK::VarExpr && static_cast<VarExpr*>(e)->name[0] == '$' && static_cast<VarExpr*>(e)->name != "$_"; };
+            if (scalar(l) || scalar(r)) return "false";
+        }
         if ((op == "~~" || op == "!~~") && b->rhs->kind == NK::RegexLit) {
             fn().usesSlash = true;
             string m = slashSet("R.rxMatch(" + exArg(b->lhs.get()) + ", " + regexObject(static_cast<RegexLit*>(b->rhs.get())) + ")");
@@ -1260,6 +1280,10 @@ struct JsGen {
             refuse("a coercion call " + name + "(…)", c->line);
         }
         if (kBuiltins.count(name)) {
+            if (name == "flat") {   // `flat $x`: the container's item is one element, as under the slurpy's single-argument rule
+                bool any = false; for (auto& a : c->args) if (isItemized(a.get())) any = true;
+                if (any) { string s; for (auto& a : c->args) { if (!s.empty()) s += ", "; s += isItemized(a.get()) ? "R.item(" + exArg(a.get()) + ")" : exArg(a.get()); } return "R.flat(" + s + ")"; }
+            }
             // first-argument blocks: `map { … }, @a`
             return rt(name) + "(" + args(c->args) + ")";
         }
@@ -1289,6 +1313,10 @@ struct JsGen {
         if (!m->methodQual.empty()) refuse("a qualified method call (.Class::method)", m->line);
         if (m->methodExpr) return "R.mcDyn(" + ex(m->inv.get()) + ", " + exArg(m->methodExpr.get()) + (m->args.empty() ? "" : ", " + args(m->args)) + ")";
         string name = m->method;
+        if (name == "raku" && !m->mutate && !m->hyper && m->args.empty()) {   // an itemized value renders as $(…)
+            Expr* iv = m->inv.get();
+            if (iv ? isItemized(iv) : (!topics.empty() && itemTopics.count(topics.back()))) return "R.mc(R.item(" + (iv ? exArg(iv) : topic()) + "), \"raku\")";
+        }
         if (m->mutate) {
             LV lv = lvalue(m->inv.get());
             string t = tmp();
@@ -1393,6 +1421,7 @@ struct JsGen {
                 if (simpleSig(params)) {
                     for (size_t i = 0; i < params.size(); i++) paramList += (i ? ", " : "") + mangleVar(params[i].name);
                     for (auto& p : params) if (p.sigil == '$' && (p.type.empty() ? isRoutine : (p.type == "Any" || p.type == "Any:D"))) line(2, "if (" + mangleVar(p.name) + " === R.Mu) R.notAny(" + jsStr(p.name) + ");");
+                    for (auto& p : params) if (itemParam(p)) line(2, mangleVar(p.name) + " = R.item(" + mangleVar(p.name) + ");");
                 }
                 else { paramList = "..._args"; bindParams(params, 2, "", false); }
                 for (auto& p : params) if (p.name == "$_") bindsTopic = true;
@@ -1661,7 +1690,7 @@ struct JsGen {
                 if (v->name.size() > 2 && v->name[1] == '*') { line(ind, "R.dynSet(" + jsStr(v->name) + ", " + (v->name[0] == '@' ? "R.newArray(" + listSource(a->value.get()) + ")" : v->name[0] == '%' ? "R.newHash(" + listSource(a->value.get()) + ")" : exArg(a->value.get())) + ");"); return; }
                 if (v->name[0] != '$' && v->name[0] != '@' && v->name[0] != '%' && v->name[0] != '&') declareSigilless(v->name);
                 string init;
-                char sig = v->name[0];
+                char sig = a->containerSigil ? a->containerSigil : v->name[0];   // `=@=` / `=%=`: the operator names the container
                 if ((sig == '@' || sig == '%') && a->op == ":=") init = exArg(a->value.get());   // binding: the object itself
                 else if (sig == '@') init = "R.newArray(" + listSource(a->value.get()) + ")";
                 else if (sig == '%') init = "R.newHash(" + listSource(a->value.get()) + ")";
@@ -1896,6 +1925,18 @@ struct JsGen {
                 ind--; line(ind, "}");
                 return;
             }
+            if (vn[0] == '@' && vn.size() > 1 && vn[1] != '*' && writesTopic()) {
+                // `for @a { $_ *= 2 }` / `for @a { s/o/0/ }`: the topic IS the slot — every write goes back into the array
+                string nt2 = newTopic(), arrN = label("_slots"), iN = label("_i");
+                line(ind, "{"); ind++;
+                line(ind, "const " + arrN + " = R.arr(" + varRef(static_cast<VarExpr*>(le)) + ");");
+                line(ind, "let " + nt2 + ";");
+                topics.push_back(nt2); topicSlots[nt2] = arrN + "[" + iN + "]";
+                loopBody(f, f->body.get(), ind, "for (let " + iN + " = 0; " + iN + " < " + arrN + ".length; " + iN + "++)", [&]() { line(ind + 1, nt2 + " = R.item(" + arrN + "[" + iN + "]);"); }, tb);
+                topicSlots.erase(nt2); topics.pop_back();
+                ind--; line(ind, "}");
+                return;
+            }
         }
         if (f->vars.empty()) { nt = newTopic(); vars = nt; decl = nt; }
         else if (f->vars.size() == 1) { if (f->vars[0] == "$_") { nt = newTopic(); vars = nt; } else vars = mangleVar(f->vars[0]); decl = vars; }
@@ -1904,7 +1945,7 @@ struct JsGen {
         ind++;
         for (auto& v : f->vars) if (v[0] != '$' && v[0] != '@' && v[0] != '%' && v[0] != '&') declareSigilless(v);
         line(ind, "let " + decl + ";");
-        string iterExpr = f->vars.size() > 1 ? "R.iterN(" + src + ", " + std::to_string(f->vars.size()) + ")" : "R.iter(" + src + ")";
+        string iterExpr = f->vars.size() > 1 ? "R.iterN(" + src + ", " + std::to_string(f->vars.size()) + ")" : (f->vars.empty() || f->vars[0] == "$_") ? "R.iterTopic(" + src + ")" : "R.iter(" + src + ")";   // the bare topic: an Array's slots arrive as items
         // a range: the runtime's counted iterator (no generator on the hot path)
         if (f->vars.size() <= 1 && le->kind == NK::Range) {
             auto* r = static_cast<RangeExpr*>(le);
@@ -1912,7 +1953,7 @@ struct JsGen {
                 iterExpr = "R.rangeIter(" + rangeEnd(r->from.get()) + ", " + rangeEnd(r->to.get()) + ", " + (r->exFrom ? "true" : "false") + ", " + (r->exTo ? "true" : "false") + ")";
         }
         if (!nt.empty()) topics.push_back(nt);
-        loopBody(f, f->body.get(), ind, "for (" + vars + " of " + iterExpr + ")", []() {}, tb);
+        loopBody(f, f->body.get(), ind, "for (" + vars + " of " + iterExpr + ")", [&]() { for (auto& v : f->vars) if (v[0] == '$' && v != "$_") line(ind + 1, mangleVar(v) + " = R.item(" + mangleVar(v) + ");"); }, tb);   // a named $ loop variable itemizes
         if (!nt.empty()) topics.pop_back();
         ind--;
         line(ind, "}");
@@ -1942,14 +1983,17 @@ struct JsGen {
         string lbl = label("_given");
         line(ind, lbl + ": {");
         string nt;
+        bool itemTopic = g->topic && isItemized(g->topic.get());   // `given $x`: the topic is the container's item
         if (g->topic && g->topic->kind == NK::VarExpr && !static_cast<VarExpr*>(g->topic.get())->declare && static_cast<VarExpr*>(g->topic.get())->name.size() > 1 && static_cast<VarExpr*>(g->topic.get())->name[0] == '$' && static_cast<VarExpr*>(g->topic.get())->name[1] != '!' && static_cast<VarExpr*>(g->topic.get())->name[1] != '.' && static_cast<VarExpr*>(g->topic.get())->name != "$_")
             nt = varRef(static_cast<VarExpr*>(g->topic.get()));   // the variable itself: assignments to $_ reach it
-        else { nt = newTopic(); line(ind + 1, "let " + nt + " = " + topicE + ";"); }
+        else { nt = newTopic(); line(ind + 1, "let " + nt + " = " + (itemTopic ? "R.item(" + topicE + ")" : topicE) + ";"); }
         if (!g->var.empty() && g->var != "$_") line(ind + 1, "const " + mangleVar(g->var) + " = " + nt + ";");
         topics.push_back(nt);
+        if (itemTopic) itemTopics.insert(nt);
         blocks.push_back({ lbl, fnDepth(), false, "" });
         emitStmts(g->body->stmts, ind + 1, tail);
         blocks.pop_back();
+        if (itemTopic) itemTopics.erase(nt);
         topics.pop_back();
         line(ind, "}");
     }
@@ -2010,6 +2054,7 @@ struct JsGen {
                 if (p.required) line(ind, "if (" + name + " === undefined) R.die(\"Required named parameter '" + keys[0] + "' not passed\");");
                 if (sig == '$' && p.type.empty()) line(ind, "if (" + name + " === R.Mu) R.notAny(" + jsStr(p.name) + ");");
                 if (sig == '@') line(ind, name + " = R.newArray(" + name + ");");
+                if (itemParam(p)) line(ind, name + " = R.item(" + name + ");");
                 if (p.subSig) bindSubSig(*p.subSig, name, ind);
                 continue;
             }
@@ -2037,8 +2082,9 @@ struct JsGen {
             }
             if (sig == '@' && p.isCopy) line(ind, "let " + name + " = R.newArray(" + val + ");");
             else if (sig == '%' && p.isCopy) line(ind, "let " + name + " = R.newHash(" + val + ");");
-            else line(ind, "let " + name + " = " + val + ";");
+            else line(ind, "let " + name + " = " + (sig == '@' ? "R.bindArray(" + val + ")" : val) + ";");   // a bound @ keeps a List a List
             if (sig == '$' && p.type.empty()) line(ind, "if (" + name + " === R.Mu) R.notAny(" + jsStr(p.name) + ");");
+            if (itemParam(p)) line(ind, name + " = R.item(" + name + ");");
             typeGuard(p, name, ind);
         }
     }
@@ -2057,7 +2103,8 @@ struct JsGen {
                 if (q.defaultVal) v = "(" + arr + ".length > " + std::to_string(i) + " ? " + v + " : " + exArg(q.defaultVal.get()) + ")";
                 else v += " ?? R.Any";
                 if (q.subSig) { line(ind, "let " + n + " = " + v + ";"); bindSubSig(*q.subSig, n, ind); }
-                else line(ind, "let " + n + " = " + (q.sigil == '@' ? "R.newArray(" + v + ")" : q.sigil == '%' ? "R.newHash(" + v + ")" : v) + ";");
+                else line(ind, "let " + n + " = " + (q.sigil == '@' ? (q.isCopy ? "R.newArray(" : "R.bindArray(") + v + ")" : q.sigil == '%' ? "R.newHash(" + v + ")" : v) + ";");
+                if (!q.subSig && itemParam(q)) line(ind, n + " = R.item(" + n + ");");
             }
             i++;
         }
@@ -2105,6 +2152,7 @@ struct JsGen {
             else if (!d->params.empty()) {
                 line(2, "if (arguments.length " + string(!d->params.empty() && (d->params.back().sigil == '@' || d->params.back().sigil == '%') ? "<" : "!==") + " " + std::to_string(d->params.size() + (isMethod ? 1 : 0)) + ") R.arityError(" + jsStr(who) + ", " + std::to_string(d->params.size()) + ", arguments.length" + (isMethod ? " - 1" : "") + ");");
                 for (auto& p : d->params) line(2, "if (" + mangleVar(p.name) + " === R.Mu) R.notAny(" + jsStr(p.name) + ");");
+                for (auto& p : d->params) if (itemParam(p)) line(2, mangleVar(p.name) + " = R.item(" + mangleVar(p.name) + ");");
             }
             bool bindsTopic = false; for (auto& p : d->params) if (p.name == "$_") bindsTopic = true;
             if (bindsTopic) topics.push_back(mangleVar("$_"));   // `method name($_)`: the parameter IS the topic

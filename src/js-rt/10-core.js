@@ -225,9 +225,18 @@ function defined(v) {
     if (v instanceof RJsObj) return v.v != null;
     return v !== undefined && v !== null;
 }
+// Array[Int] as a term: one type object per (base, parameter), so `===` and .^name tell them apart
+const parametrics = new Map();
+function parametric(base, of) {
+    const key = base.name + '[' + of.name + ']';
+    let t = parametrics.get(key);
+    if (!t) { t = new RType(key, [base]); t.paramOf = of; t.paramBase = base; parametrics.set(key, t); }
+    return t;
+}
 function isa(v, tname) {
     const t = typeof tname === 'string' ? T[tname] : tname;
     if (!t) return false;
+    if (t.paramOf) return typeOf(v).isa(t.paramBase) && v !== null && typeof v === 'object' && v.of === t.paramOf;   // an Array[Int] is an Array whose slots are typed Int
     if (v instanceof RJunction) return t === T.Junction || t === T.Mu;
     if (t.isSubset) return isaSubset(v, t);
     return typeOf(v).isa(t);
@@ -747,6 +756,7 @@ function objGist(o) {
 // .raku
 function raku(v) {
     if (v instanceof RakuItem) return '$' + raku(v.v);
+    if (v !== null && typeof v === 'object' && v.item === true) { const t = v.__t; return t instanceof RList && t.ty === T.Seq ? '$(' + raku(t) + ')' : '$' + raku(t); }   // an item view: $(…) / $[…] / ${…} / $((…).Seq)
     if (v instanceof RAllo) return typeOf(v).name + '.new(' + raku(v.n) + ', ' + strLit(v.s) + ')';
     switch (typeof v) {
         case 'string': return strLit(v);
@@ -832,6 +842,7 @@ function xrepeat(s, n) {         // infix:<x>
 }
 // ===  and eqv
 function identical(a, b) {
+    a = decont(a); b = decont(b);
     if (a === b) return true;
     if (typeof a !== typeof b) return false;
     if (typeof a === 'string' || typeof a === 'number' || typeof a === 'bigint' || typeof a === 'boolean') return a === b;
@@ -950,7 +961,7 @@ function complexArith(op, x, y) {
     throw new RakuError('Complex ' + op + ' not implemented');
 }
 
-Object.assign(R, {
+Object.assign(R, { parametric,
     T, RType, Nil, Any, Mu, RNum, RRat, RPair, RSlip, REnum, RNamed, RObj, RWhatever, Whatever, RJunction,
     RakuError, RFailure, NextCtl, LastCtl, RedoCtl, RetCtl, ExitCtl, SuccCtl, RComplex,
     typeOf, typeName, isType, defined, isa, truthy, so, not,

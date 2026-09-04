@@ -102,10 +102,13 @@ function construct(ty, ...args) {
     }
     return buildObj(ty, ...args);
 }
+// Array.new(*@values): the arguments flatten as a slurpy's do — Array.new((1, 2), (3, 4)) is [1, 2, 3, 4]
+function newArgsList(args) { return slurpyFlat(args.filter(a => !(a instanceof RNamed))); }
 function buildObj(ty, ...args) {
     if (ty.isUser && (ty.isa(T.Array) || ty.isa(T.List)) && !ty.mro.some(t => t.attrs && t.attrs.length)) { const a = mkArray(listItems(args.length && !(args[0] instanceof RNamed) ? args[0] : []).slice()); a.ty = ty; return a; }   // class X is Array
     if (!ty.isUser) {
-        if (ty === T.Str) return ''; if (ty === T.Int) return 0; if (ty === T.Array) return mkArray(listItems(args.length && !(args[0] instanceof RNamed) ? args[0] : []).slice()); if (ty === T.Hash) return newHash(args.length ? mkList(args) : undefined); if (ty === T.List) return mkList(args.filter(a => !(a instanceof RNamed)));
+        if (ty.paramOf) { if (ty.paramBase === T.Array) return withOf(mkArray(newArgsList(args)), ty.paramOf); if (ty.paramBase === T.Hash) return withOf(newHash(args.length ? mkList(args) : undefined), ty.paramOf); }   // Array[Int].new(…)
+        if (ty === T.Str) return ''; if (ty === T.Int) return 0; if (ty === T.Array) return mkArray(newArgsList(args)); if (ty === T.Hash) return newHash(args.length ? mkList(args) : undefined); if (ty === T.List) return mkList(args.filter(a => !(a instanceof RNamed)));
         if (ty === T.Pair) { const [pos, named] = splitArgs(args); if (pos.length >= 2) return pair(pos[0], pos[1]); const k = named.get('key'), v = named.get('value'); return pair(k === undefined ? Any : k, v === undefined ? Any : v); }
         if (ty === T.Set || ty === T.SetHash || ty === T.Bag || ty === T.BagHash || ty === T.Mix || ty === T.MixHash) return mkSetty(ty, args.filter(a => !(a instanceof RNamed)));
         if (ty === T.Range) { const [pos] = splitArgs(args); return range(pos[0], pos[1]); }

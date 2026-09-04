@@ -96,6 +96,36 @@ and a thrown control object only where it crosses a closure.
 rules match the interpreter byte for byte — that is what `--verify` and the
 corpus gate check.
 
+### Containers
+
+A scalar is a JavaScript `let`; there is no `Scalar` object. What a scalar
+container *does* to a List or Hash — one element in list context, `$(…)`
+under `.raku`, a leaf to `flat` and `»` — travels with the value instead,
+as an *item view*: a clone that shares the original's storage and carries
+an `item` flag. Method calls look through it, so the view is invisible to
+everything else. A value becomes an item where Raku would put it in a
+container:
+
+| where | example |
+|---|---|
+| a `$` parameter (sub, method, pointy block, `.map(-> $x {…})`) | `sub f($x) { $x.raku }; f((1,2))` is `$(1, 2)` |
+| a named `$` loop variable | `for @t -> $x { }` |
+| the bare topic over an **Array** — its slots are containers | `for @t { $_.raku }` is `$(1, 2)`; over a List it is `(1, 2)` |
+| a scalar variable, `@a[i]` or `.made` as a call argument or List element | `sub g(*@a) { @a.elems }; g($x)` is 1; `(1, $x, 2).raku` is `(1, $(1, 2), 2)` |
+| `given $x` | `for $_` inside runs once |
+
+`is raw` and `is rw` parameters are exempt, and so is a parameter whose
+type no list can satisfy (`Int $n`), which keeps the check off the hot
+path. `flat` follows the slots the same way: `flat [[1,2],[3,4]]` is two
+items and `flat ((1,2),(3,4))` four. A bound `@` parameter keeps a List a
+List, so its slots spread under `.flat`; `is copy` makes an Array. `=:=`
+between two scalar names is always False (two containers), and between a
+name and itself True. `for @a { $_ *= 2 }` and `for @a { s/o/0/ }` write
+back through the slot.
+
+Not modelled: binding a scalar to a slot (`my $x := %h<a>`) and the
+`Scalar` object itself (`.VAR`).
+
 ## The core, and what is outside it today
 
 Inside: scalars, arrays, hashes, pairs, ranges, junctions, sets/bags/mixes;

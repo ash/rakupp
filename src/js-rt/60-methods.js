@@ -18,7 +18,7 @@ M(T.Mu, {
     isa: (s, t) => isa(s, typeof t === 'string' ? t : t), does: (s, t) => isa(s, t), can: (s, n) => { const m = typeOf(s).find(str(n)); return m ? mkList([m]) : mkList([]); },
     new: (s, ...args) => construct(s instanceof RType ? s : typeOf(s), ...args),
     clone: (s, ...args) => cloneObj(s, ...args),
-    item: (s) => s, self: (s) => s, sink: (s) => Nil, return: (s) => s,
+    item: (s) => item(s), self: (s) => s, sink: (s) => Nil, return: (s) => s,
     ACCEPTS: (s, v) => smartmatch(v, s), 'ACCEPTS': (s, v) => smartmatch(v, s),
     elems: (s) => elemsOf(s), end: (s) => elemsOf(s) - 1, list: (s) => s instanceof RList && s.ty !== T.Seq ? s : mkList(itemsOf(s).slice()), List: (s) => mkList(itemsOf(s).slice()),
     Array: (s) => newArray(s), Seq: (s) => mkSeq(itemsOf(s).slice()), Slip: (s) => mkSlip(itemsOf(s).slice()), flat: (s) => flat(s), eager: (s) => eagerOf(s), lazy: (s) => lazyOf(s), cache: (s) => cacheOf(s),
@@ -145,6 +145,7 @@ function mc(inv, name, ...args) {
         const m = JsObjectT.methods[name]; if (m) return m(inv, ...args);
         return jsCall(inv, name, args);
     }
+    if (inv !== null && typeof inv === 'object' && inv.item === true) { if (name === 'raku') return raku(inv); inv = inv.__t; }   // an item view: methods see the value; .raku shows the $
     // a JavaScript function read as a property (`JS.Array`, `JS.Event`): its own
     // properties and `.new` dispatch on the function itself
     if (typeof inv === 'function' && inv.__js) {
@@ -212,7 +213,7 @@ function numFail(f) { try { return f(); } catch (e) { if (e instanceof RakuError
 const NODAL = new Set(['elems', 'end', 'keys', 'values', 'kv', 'pairs', 'antipairs', 'invert', 'join', 'sort', 'reverse', 'rotate', 'flat', 'list', 'List', 'Slip', 'Seq', 'Array', 'head', 'tail', 'first', 'unique', 'squish', 'sum', 'min', 'max', 'minmax', 'Bag', 'Set', 'Mix', 'BagHash', 'SetHash', 'MixHash', 'hash', 'Hash', 'Capture', 'pick', 'roll', 'classify', 'categorize', 'combinations', 'permutations', 'rotor', 'batch', 'produce', 'reduce', 'grep', 'map', 'is-lazy', 'eager', 'lazy', 'cache', 'iterator', 'Bool', 'so', 'not', 'defined', 'WHAT', 'WHICH']);
 function hyperMethod(inv, name, ...args) {
     if (inv instanceof RHash) { const h = new RHash(); for (const [k, v] of inv.m) h.m.set(k, mc(v, name, ...args)); return h; }
-    return mkList(spliceSlips(arr(inv).map(x => ((x instanceof RList || x instanceof RSeq) && !NODAL.has(name)) ? hyperMethod(x, name, ...args) : mc(x, name, ...args))), inv instanceof RList ? inv.ty : T.List);   // ».m descends into nested lists unless the method is nodal (elems, join, sort …); a Slip result splices
+    return mkList(spliceSlips(arr(inv).map(x => ((x instanceof RList || x instanceof RSeq) && x.item !== true && !NODAL.has(name)) ? hyperMethod(x, name, ...args) : mc(x, name, ...args))), inv instanceof RList ? inv.ty : T.List);   // ».m descends into nested lists unless the method is nodal (elems, join, sort …); a Slip result splices
 }
 const CODE_METHODS = {
     arity: (f) => f.arity !== undefined ? f.arity : f.length, count: (f) => f.count !== undefined ? f.count : (f.arity !== undefined ? f.arity : f.length),

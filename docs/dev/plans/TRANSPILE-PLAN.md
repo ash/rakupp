@@ -853,5 +853,34 @@ Where the code decided differently from the draft:
   `[R//]` metaops, `[op]=` with a bracketed infix, `Nil[…]`, an allomorph
   as a smartmatch pattern, `.defined` on a junction. Gate 29: **148 in-core and agreeing of 445, 242 refused, 55 disagreeing** (from 137 / 254 / 53 at the last commit; the newly judged disagreements — package-relative names, complex-number narrowing — were refused before).
 
-Next: the container model (`$(…)` itemization, `given $x` topics, `=:=`),
-still design-level, and whatever the next corpus sweep surfaces.
+- **The container model (2026-09-04, after commit bdc3c11).** Itemization
+  stays a property of the access path — the emitter already knew that
+  `$x`, `@a[i]` and `.made` are one element in list assignment and `for`
+  — and where a value crosses into a dynamic slot it now travels as an
+  *item view*: a List or Hash clone sharing the original's storage (its
+  `a`/`m` read through, so `@a = …` after `my $x = @a` reaches `$x`),
+  flagged so that `.raku` shows `$(…)`, `for`/`flat`/`»`/a slurpy keep it
+  whole, and method calls decont it. The sites: a `$` parameter (subs,
+  methods, pointy blocks, `.map(-> $x {…})`; `is raw`/`is rw` and
+  scalar-only types exempt), a named `$` loop variable, the bare topic
+  over an Array (`for @t { $_.raku }` is `$(1, 2)`, over a List bare), a
+  scalar variable as a call argument or a List-literal element, `given
+  $x`. `flat` follows the slots: an Array's are containers (`flat
+  [[1,2],[3,4]]` is two items), a List's descend. A bound `@` parameter
+  keeps a List a List (the Digest::RIPEMD shape), `Array.new` flattens as
+  its slurpy does, `Array[Int]` is one type object per parameter (`===`,
+  `.of`, `.new`), `=@=`/`=%=` name the container, `=:=` between two
+  scalar names is False, and `for @a { $_ *= 2 }` / `for @a { s/o/0/ }`
+  write back through the slot. Three places where the interpreter differs
+  from Rakudo were left alone and follow Rakudo here: `my ($p, $q) =
+  (1,2), (3,4)` flattens there, `%h<k>.raku` shows no `$` while `%h.raku`
+  shows `:k($(…))`, and `for %h.kv -> $k, $v` hands `$v` bare. Not done:
+  binding a scalar to a slot (`my $x := %h<a>`) and element type checks
+  through an `Array[Str]` declaration. The JSON workload agrees on all
+  four corpora; wall time under node 0.23 / 0.41 / 0.32 / 0.35 s
+  (numbers / strings / api / deep) against 0.36 / 0.52 / 0.67 / 0.81 s
+  for the interpreter, the same as before the views. Gate 31: **154 in-core
+  and agreeing of 445, 242 refused, 49 disagreeing** (from 148 / 242 / 55).
+
+Next: whatever the next corpus sweep surfaces; the slot-binding half of
+the container model is the one design item left.
