@@ -1,0 +1,73 @@
+# Catalogued eclipses, hand-entered from NASA's Five Millennium Canon of
+# Solar Eclipses and Canon of Lunar Eclipses (Espenak & Meeus). Nothing in
+# this file was produced by the engine: it is the independent answer that
+# `eclipse.raku --check` measures the engine against.
+#
+# date	kind	type	saros
+1919-05-29	solar	total	136
+1932-08-31	solar	total	124
+1936-06-19	solar	total	126
+1937-06-08	solar	total	136
+1954-06-30	solar	total	126
+1961-02-15	solar	total	120
+1970-03-07	solar	total	139
+1973-06-30	solar	total	136
+1976-10-23	solar	total	133
+1979-02-26	solar	total	120
+1980-02-16	solar	total	130
+1983-06-11	solar	total	127
+1991-07-11	solar	total	136
+1994-11-03	solar	total	133
+1995-10-24	solar	total	143
+1998-02-26	solar	total	130
+1999-08-11	solar	total	145
+2001-06-21	solar	total	127
+2002-12-04	solar	total	142
+2006-03-29	solar	total	139
+2008-08-01	solar	total	126
+2009-07-22	solar	total	136
+2010-07-11	solar	total	146
+2012-05-20	solar	annular	128
+2012-11-13	solar	total	133
+2013-11-03	solar	hybrid	143
+2015-03-20	solar	total	120
+2016-03-09	solar	total	130
+2017-08-21	solar	total	145
+2019-07-02	solar	total	127
+2020-06-21	solar	annular	137
+2020-12-14	solar	total	142
+2021-06-10	solar	annular	147
+2023-04-20	solar	hybrid	129
+2023-10-14	solar	annular	134
+2024-04-08	solar	total	139
+2024-10-02	solar	annular	144
+2026-08-12	solar	total	126
+2027-08-02	solar	total	136
+2028-07-22	solar	total	146
+2000-01-21	lunar	total	124
+2003-05-16	lunar	total	121
+2003-11-09	lunar	total	126
+2004-05-04	lunar	total	131
+2004-10-28	lunar	total	136
+2007-03-03	lunar	total	123
+2007-08-28	lunar	total	128
+2008-02-21	lunar	total	133
+2010-12-21	lunar	total	125
+2011-06-15	lunar	total	130
+2011-12-10	lunar	total	135
+2014-04-15	lunar	total	122
+2014-10-08	lunar	total	127
+2015-04-04	lunar	total	132	marginal
+2015-09-28	lunar	total	137
+2018-01-31	lunar	total	124
+2018-07-27	lunar	total	129
+2019-01-21	lunar	total	134
+2021-05-26	lunar	total	121
+2022-05-16	lunar	total	131
+2022-11-08	lunar	total	136
+2025-03-14	lunar	total	123
+2025-09-07	lunar	total	128
+2026-03-03	lunar	total	133
+#
+# A fifth column marks a case the truncated series is known to miss:
+# 2015-04-04 was total by 0.0006 of a magnitude and by 4m43s of totality.

@@ -1,0 +1,758 @@
+<meta charset="utf-8">
+<title>Eclipse</title>
+<meta name="description" content="Predicting solar and lunar eclipses from first principles — the engine is Raku, transpiled to JavaScript">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Spectral:ital,wght@0,300;0,400;0,600;0,700;1,400&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+:root {
+  --bg: #f6f4ef; --ink: #191c22; --muted: #5d6472; --line: #ddd8cd;
+  --surface: #edeae2; --accent: #2f4a86; --accent-ink: #ffffff; --warn: #9a4a20;
+  --sky: #0a0e1c; --sky-ink: #eef1fa; --sky-dim: #7f8bab; --sky-line: #1c2540;
+  --gold: #f0c060; --moon: #d7dcec;
+  --body: "Spectral", Georgia, "Times New Roman", serif;
+  --mono: "IBM Plex Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #14161c; --ink: #e6e8ee; --muted: #98a0b0; --line: #2a2f3a;
+    --surface: #1b1e26; --accent: #7fa0e8; --accent-ink: #0d1220; --warn: #e09b6d;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #14161c; --ink: #e6e8ee; --muted: #98a0b0; --line: #2a2f3a;
+  --surface: #1b1e26; --accent: #7fa0e8; --accent-ink: #0d1220; --warn: #e09b6d;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--body); font-size: 17.5px; line-height: 1.6; }
+a { color: var(--accent); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.shell { display: grid; grid-template-columns: 250px minmax(0, 1fr); min-height: 100vh; }
+nav.rail { position: sticky; top: 0; height: 100vh; overflow: auto; border-right: 1px solid var(--line); padding: 30px 20px; }
+nav.rail .brand { font-size: 27px; font-weight: 700; letter-spacing: -.01em; margin: 0 0 2px; }
+nav.rail .tag { color: var(--muted); font-size: 13.5px; line-height: 1.45; margin: 0 0 24px; }
+nav.rail ol { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 1px; }
+nav.rail a { display: grid; grid-template-columns: 22px 1fr; gap: 8px; padding: 7px 8px; border-radius: 4px; color: var(--ink); text-decoration: none; font-size: 14.5px; line-height: 1.3; }
+nav.rail a .n { font-family: var(--mono); font-size: 11.5px; color: var(--muted); padding-top: 3px; }
+nav.rail a:hover { background: var(--surface); }
+nav.rail .foot { margin-top: 26px; padding-top: 16px; border-top: 1px solid var(--line); font-size: 12.5px; color: var(--muted); font-family: var(--mono); line-height: 1.6; }
+main { padding: 44px clamp(20px, 5vw, 76px) 120px; }
+.chapter { max-width: 780px; margin: 0 auto 92px; }
+.chapter + .chapter { border-top: 1px solid var(--line); padding-top: 54px; }
+.eyebrow { font-family: var(--mono); font-size: 11.5px; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); margin: 0 0 10px; }
+h1 { font-size: clamp(38px, 6vw, 58px); font-weight: 700; line-height: 1.02; letter-spacing: -.02em; margin: 0 0 18px; text-wrap: balance; }
+h2 { font-size: 34px; font-weight: 600; line-height: 1.1; letter-spacing: -.01em; margin: 0 0 16px; text-wrap: balance; }
+h3 { font-size: 21px; font-weight: 600; margin: 34px 0 10px; }
+p { max-width: 68ch; margin: 0 0 16px; }
+.lede { font-size: 20.5px; line-height: 1.5; max-width: 62ch; color: var(--ink); }
+ul, ol.plain { max-width: 68ch; padding-left: 22px; margin: 0 0 16px; }
+li { margin-bottom: 7px; }
+code, .num { font-family: var(--mono); font-size: .9em; }
+.formula { font-family: var(--mono); font-size: 14.5px; line-height: 1.65; background: var(--surface); padding: 14px 18px; border-left: 3px solid var(--accent); margin: 20px 0; white-space: pre; overflow-x: auto; }
+table.plain { border-collapse: collapse; width: 100%; font-size: 15px; margin: 16px 0 24px; }
+table.plain th, table.plain td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+table.plain th { font-family: var(--mono); font-size: 11.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); font-weight: 500; }
+table.plain td.n { font-family: var(--mono); text-align: right; }
+.scroll { overflow-x: auto; }
+.aside { border-left: 3px solid var(--line); padding: 2px 0 2px 16px; color: var(--muted); font-size: 16px; max-width: 64ch; margin: 20px 0; }
+
+/* the sky: one dark instrument panel, identical in both themes */
+.sky { background: var(--sky); color: var(--sky-ink); border-radius: 7px; padding: 20px 22px 22px; margin: 26px 0 30px; font-variant-numeric: tabular-nums; }
+.sky .title { font-family: var(--mono); font-size: 12px; letter-spacing: .12em; text-transform: uppercase; color: var(--sky-dim); margin: 0 0 16px; display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.sky .title em { font-style: normal; text-transform: none; letter-spacing: 0; }
+.controls { display: flex; flex-wrap: wrap; gap: 12px 20px; align-items: end; margin-bottom: 16px; }
+.controls label { display: flex; flex-direction: column; gap: 5px; font-family: var(--mono); font-size: 11.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--sky-dim); }
+.controls input, .controls select { font-family: var(--mono); font-size: 15px; padding: 6px 8px; border: 1px solid var(--sky-line); border-radius: 3px; background: #060a15; color: var(--sky-ink); min-width: 92px; }
+.controls select { min-width: 220px; }
+.controls input[type=range] { width: 190px; accent-color: var(--gold); padding: 0; border: 0; background: transparent; }
+.controls .presets { display: flex; gap: 7px; flex-wrap: wrap; }
+.controls button { font-family: var(--mono); font-size: 12.5px; letter-spacing: .05em; padding: 6px 11px; border-radius: 3px; border: 1px solid var(--sky-line); background: transparent; color: var(--sky-dim); cursor: pointer; }
+.controls button:hover { border-color: var(--gold); color: var(--gold); }
+canvas { width: 100%; display: block; background: #060a15; border-radius: 4px; }
+svg.diagram { width: 100%; display: block; background: #060a15; border-radius: 4px; }
+.readout { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px 22px; margin-top: 16px; }
+.readout div { border-top: 1px solid var(--sky-line); padding-top: 8px; }
+.readout .k { font-family: var(--mono); font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--sky-dim); }
+.readout .v { font-size: 27px; font-weight: 600; line-height: 1.15; color: #fff; font-family: var(--mono); }
+.readout .v.hi { color: var(--gold); }
+.readout .s { font-family: var(--mono); font-size: 11.5px; color: var(--sky-dim); }
+.note { font-family: var(--mono); font-size: 12.5px; line-height: 1.6; color: var(--sky-dim); margin: 14px 0 0; }
+.note b { color: var(--gold); font-weight: 500; }
+table.data { border-collapse: collapse; width: 100%; font-family: var(--mono); font-size: 13.5px; color: var(--sky-ink); }
+table.data th { font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--sky-dim); font-weight: 500; text-align: right; padding: 4px 9px 8px; border-bottom: 1px solid var(--sky-line); white-space: nowrap; }
+table.data th:first-child, table.data td:first-child { text-align: left; }
+table.data td { text-align: right; padding: 5px 9px; border-bottom: 1px solid var(--sky-line); white-space: nowrap; }
+table.data tr:hover td { background: #101731; }
+table.data td.t-total { color: var(--gold); }
+table.data td.t-annular { color: #7fd3ff; }
+table.data td.t-hybrid { color: #ff9de0; }
+table.data .tall { max-height: 340px; }
+.tallbox { max-height: 360px; overflow: auto; }
+.bars { display: flex; flex-direction: column; gap: 5px; margin-top: 4px; }
+.bars .row { display: grid; grid-template-columns: 190px 1fr 92px; gap: 10px; align-items: center; font-family: var(--mono); font-size: 12.5px; color: var(--sky-dim); }
+.bars .track { height: 15px; background: #0d1425; border-radius: 2px; overflow: hidden; position: relative; }
+.bars .track i { position: absolute; top: 0; height: 100%; background: var(--gold); opacity: .85; }
+.bars .track u { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--sky-line); }
+.bars .row .v { text-align: right; color: var(--sky-ink); }
+.legend { font-family: var(--mono); font-size: 11.5px; color: var(--sky-dim); margin-top: 12px; display: flex; gap: 16px; flex-wrap: wrap; }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.legend i { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+.loading { font-family: var(--mono); color: var(--muted); font-size: 14px; }
+.hero { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 14px 26px; }
+@media (max-width: 900px) {
+  .shell { grid-template-columns: 1fr; }
+  nav.rail { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--line); }
+  nav.rail ol { flex-direction: row; flex-wrap: wrap; }
+  nav.rail a { grid-template-columns: auto; }
+  nav.rail a .n { display: none; }
+  nav.rail .foot { display: none; }
+  .bars .row { grid-template-columns: 130px 1fr 74px; font-size: 11.5px; }
+}
+@media (prefers-reduced-motion: no-preference) { html { scroll-behavior: smooth; } }
+</style>
+
+<div class="shell">
+<nav class="rail" aria-label="Chapters">
+  <p class="brand">Eclipse</p>
+  <p class="tag">How to know, from arithmetic alone, that the Sun will go out over Iceland on 12 August 2026.</p>
+  <ol>
+    <li><a href="#c1"><span class="n">1</span>Two clocks that almost agree</a></li>
+    <li><a href="#c2"><span class="n">2</span>Counting from one New Moon</a></li>
+    <li><a href="#c3"><span class="n">3</span>Gamma: where the shadow points</a></li>
+    <li><a href="#c4"><span class="n">4</span>Total, annular, hybrid</a></li>
+    <li><a href="#c5"><span class="n">5</span>The Moon in the Earth's shadow</a></li>
+    <li><a href="#c6"><span class="n">6</span>The saros</a></li>
+    <li><a href="#c7"><span class="n">7</span>Delta T, and the edge of prediction</a></li>
+  </ol>
+  <p class="foot">engine: Raku<br>runtime: the same Raku,<br>transpiled with<br><code>rakupp --target=js</code></p>
+</nav>
+<main>
+
+<section class="chapter" id="c0">
+  <p class="eyebrow">A showcase for rakupp --target=js</p>
+  <h1>Eclipses are arithmetic</h1>
+  <p class="lede">No telescope, no ephemeris file, no table of past eclipses. A few hundred sine terms, one integer — the number of New Moons since January 2000 — and every eclipse for four thousand years falls out, with its type, its magnitude and its 1,300-year family.</p>
+  <p>Everything on this page is computed in your browser by <a href="https://github.com/ash/rakupp">Raku</a> code. The engine is <code>lib/Eclipse.rakumod</code>; the same file drives a command-line program in a terminal and this book in a browser, because <code>rakupp --target=js</code> turns it into JavaScript. Nothing was precomputed and no server is involved: when you move a control below, Raku runs.</p>
+  <div class="sky" id="w-next">
+    <p class="title"><span>The next eclipses, from today</span><em id="n-today"></em></p>
+    <div class="scroll"><table class="data" id="n-table"></table></div>
+    <p class="note">Times are Universal Time, at the instant of greatest eclipse. A <b>solar</b> eclipse is visible only from the track its shadow draws; a <b>lunar</b> one from the whole night side of the Earth at once, which is why you have seen more of those.</p>
+  </div>
+</section>
+
+<section class="chapter" id="c1">
+  <p class="eyebrow">Chapter 1</p>
+  <h2>Two clocks that almost agree</h2>
+  <p class="lede">The Moon passes between us and the Sun every month. Almost every month, nothing happens. The reason is a five-degree tilt, and the whole of eclipse prediction is bookkeeping about it.</p>
+  <p>Two different months matter. The <b>synodic month</b> — New Moon to New Moon — is 29.530589 days. The <b>draconic month</b> — the Moon's return to the same crossing point of its tilted orbit, its <em>node</em> — is 27.212221 days. An eclipse needs both clocks to strike at once: the Moon must be new (or full) <em>and</em> near a node.</p>
+  <div class="formula">synodic month   29.530589 d   New Moon to New Moon
+draconic month  27.212221 d   node to node
+anomalistic     27.554550 d   perigee to perigee (this one sets total vs annular)</div>
+  <p>One number does the bookkeeping: <span class="num">F</span>, the Moon's angular distance from a node, and it enters every formula below as <span class="num">sin F</span>. The Sun is half a degree wide, the Moon likewise, the orbit is tilted 5.1°, so the shadows can still touch when the Moon is up to about 21° from the node. In sines: an eclipse is possible when <span class="num">|sin F| &lt; 0.36</span>, and impossible otherwise. That one line rejects five sixths of all New Moons in a single comparison.</p>
+  <div class="sky" id="w-seasons">
+    <p class="title"><span>sin F at every syzygy</span><em>engine: <code>moon-args</code>, <code>eclipse-at</code></em></p>
+    <div class="controls">
+      <label>from <input type="number" id="s-from" value="2024" min="-1000" max="3000" step="1"></label>
+      <label>to <input type="number" id="s-to" value="2031" min="-1000" max="3000" step="1"></label>
+      <label>syzygy
+        <select id="s-kind"><option value="0">New Moon (solar)</option><option value="1">Full Moon (lunar)</option></select>
+      </label>
+    </div>
+    <canvas id="s-canvas" height="300"></canvas>
+    <div class="legend">
+      <span><i style="background:#3a4568"></i>no eclipse</span>
+      <span><i style="background:#f0c060"></i>an eclipse</span>
+      <span><i style="background:#ffffff"></i>a total one</span>
+      <span>shaded band: |sin F| &lt; 0.36</span>
+    </div>
+    <p class="note">The curve is not a wave in time — it is one dot per month, and the months are 29.5 days apart while the nodes come round every 27.2. The band is entered twice a year, for about 34 days each time: an <b>eclipse season</b>. Because the nodes themselves drift backwards, a season arrives about 19 days earlier each year, and the whole pattern repeats after 18.6 years.</p>
+  </div>
+</section>
+
+<section class="chapter" id="c2">
+  <p class="eyebrow">Chapter 2</p>
+  <h2>Counting from one New Moon</h2>
+  <p class="lede">Fix an origin — the New Moon of 6 January 2000 — and number every New Moon after it. That integer, called <span class="num">k</span>, is the only input the rest of this book needs.</p>
+  <p>A first guess at the instant is a straight line: the origin plus <span class="num">k</span> synodic months. That guess is wrong by up to fourteen hours, because the Moon does not move at a constant speed — it is nearer and faster at perigee, further and slower at apogee, and the Sun's pull on the whole system varies through the year.</p>
+  <div class="formula">JDE = 2451550.09766 + 29.530588861 k + 0.00015437 T&#178; - ...      T = k / 1236.85
+
+   - 0.40720 sin M'      the Moon's own elliptical orbit  (up to +/-9.8 hours)
+   + 0.17241 E sin M     the Sun's                        (up to +/-4.1 hours)
+   + 0.01608 sin 2M'     the second harmonic of the first
+   + 0.01039 sin 2F      the tilt
+   + ... 20 more terms, then 14 planetary ones (Venus and Jupiter, ~30 seconds)</div>
+  <p>The pattern is worth recognising, because it is how almost all of classical celestial mechanics is written: a linear mean motion, plus a sum of sines of angles that are themselves linear in time. Each term is one physical effect, and you can switch them off one at a time and watch the answer get worse.</p>
+  <div class="sky" id="w-terms">
+    <p class="title"><span>One phase, term by term</span><em>engine: <code>mean-phase</code>, <code>phase-jde</code></em></p>
+    <div class="controls">
+      <label>date <input type="date" id="t-date" value="2026-08-12"></label>
+      <label>phase
+        <select id="t-phase"><option value="0">nearest New Moon</option><option value="1">nearest Full Moon</option></select>
+      </label>
+    </div>
+    <div class="readout">
+      <div><div class="k">lunation k</div><div class="v" id="t-k">&#8211;</div><div class="s" id="t-t"></div></div>
+      <div><div class="k">mean phase</div><div class="v" id="t-mean" style="font-size:19px">&#8211;</div><div class="s">the straight line alone</div></div>
+      <div><div class="k">corrected</div><div class="v hi" id="t-real" style="font-size:19px">&#8211;</div><div class="s" id="t-shift"></div></div>
+    </div>
+    <h3 style="color:var(--sky-dim);font-size:12px;font-family:var(--mono);letter-spacing:.12em;text-transform:uppercase;margin:26px 0 10px">the ten largest corrections, in minutes</h3>
+    <div class="bars" id="t-bars"></div>
+    <p class="note">The bar chart is signed: the tick in each track is zero, gold runs to the term's value. Two terms carry almost everything, and they are the two ellipses in the problem — the Moon's around the Earth and the Earth's around the Sun. <span id="t-ang"></span></p>
+  </div>
+</section>
+
+<section class="chapter" id="c3">
+  <p class="eyebrow">Chapter 3</p>
+  <h2>Gamma: where the shadow points</h2>
+  <p class="lede">One number decides everything about a solar eclipse: how far the Moon's shadow axis misses the centre of the Earth, measured in Earth radii. It is called gamma.</p>
+  <p>Picture the plane through the centre of the Earth, perpendicular to the shadow axis — the <em>fundamental plane</em>. The Earth projects onto it as a disc of radius 1. The axis of the Moon's shadow pierces that plane at some point, and sweeps across it as the Moon moves. Gamma is the closest that point ever comes to the centre.</p>
+  <div class="formula">gamma = (P cos F1 + Q sin F1) (1 - 0.0048 |cos F1|)
+
+|gamma| &lt; 0.9972            the axis lands on the Earth: an eclipse is central somewhere
+0.9972 .. 1.5433 + u        the axis misses, but the penumbra still catches a pole: partial
+&gt; 1.5433 + u                nothing at all — the Moon's shadow passes above or below us</div>
+  <p>The companion number is <span class="num">u</span>, the radius of the Moon's <em>umbral</em> cone where it crosses that same plane. The cone is the full shadow, and it is only just long enough to reach us: about 375,000 km, against a Moon that orbits between 356,000 and 407,000 km away. When the Moon is near, the cone still has length to spare and <span class="num">u</span> is negative — the shadow lands, and the eclipse is <b>total</b>. When the Moon is far, the cone runs out above our heads, <span class="num">u</span> is positive, and what reaches the ground is the widening cone <em>beyond</em> the tip: the Sun shows as a ring, an <b>annular</b> eclipse.</p>
+  <div class="sky" id="w-gamma">
+    <p class="title"><span>The fundamental plane</span><em>engine: <code>eclipse-at</code></em></p>
+    <div class="controls">
+      <label>eclipse <select id="g-pick"></select></label>
+      <label>years <input type="number" id="g-from" value="2020" step="1"> </label>
+      <label>&nbsp; <input type="number" id="g-to" value="2035" step="1"></label>
+    </div>
+    <svg class="diagram" id="g-svg" viewBox="-190 -125 380 250" role="img" aria-label="the Earth seen from the Sun, with the Moon's shadow axis"></svg>
+    <div class="readout">
+      <div><div class="k">gamma</div><div class="v hi" id="g-gamma">&#8211;</div><div class="s" id="g-km"></div></div>
+      <div><div class="k">u</div><div class="v" id="g-u">&#8211;</div><div class="s" id="g-ustate"></div></div>
+      <div><div class="k">verdict</div><div class="v" id="g-type" style="font-size:22px">&#8211;</div><div class="s" id="g-mag"></div></div>
+    </div>
+    <p class="note">The blue disc is the Earth as the Sun sees it; the dashed circle is the limit <b>1.5433 + u</b>, beyond which the penumbra misses us entirely. The gold line is the path of the shadow axis, and the gold dot the moment of greatest eclipse. Drag through the list: the dot walks from one edge of the disc to the other as you step along a saros series.</p>
+  </div>
+</section>
+
+<section class="chapter" id="c4">
+  <p class="eyebrow">Chapter 4</p>
+  <h2>Total, annular, hybrid</h2>
+  <p class="lede">Two numbers, one plane, four verdicts. Plot every eclipse of a century as a point and the taxonomy draws itself.</p>
+  <p>The horizontal axis is gamma, the vertical one is u. The vertical lines at &plusmn;0.9972 are the edge of the Earth; the horizontal line at u = 0 is the tip of the umbral cone landing exactly on the fundamental plane. That is the whole classification:</p>
+  <table class="plain"><thead><tr><th>Where the point lands</th><th>What you see</th><th>How often</th></tr></thead><tbody>
+    <tr><td class="num">|gamma| &lt; 0.9972, u &lt; 0</td><td><b>total</b> — the cone reaches the ground</td><td>~27%</td></tr>
+    <tr><td class="num">|gamma| &lt; 0.9972, u &gt; 0.0047</td><td><b>annular</b> — a ring of Sun around the Moon</td><td>~33%</td></tr>
+    <tr><td class="num">|gamma| &lt; 0.9972, 0 &lt; u &lt; 0.0047</td><td><b>hybrid</b> — annular at the ends of the track, total in the middle, because the Earth curves away under it</td><td>~5%</td></tr>
+    <tr><td class="num">|gamma| &gt; 0.9972</td><td><b>partial</b> — only the penumbra arrives</td><td>~35%</td></tr>
+  </tbody></table>
+  <p>The hybrid case is the prettiest piece of geometry in the subject. The cone's tip falls within a few kilometres of the surface; where the observer stands on the bulge of the Earth directly under it, the tip has already passed and the eclipse is total, and a thousand kilometres along the track, where the ground has curved away, the same cone falls short and the same eclipse is annular. Two or three per century.</p>
+  <div class="sky" id="w-solar">
+    <p class="title"><span>Every solar eclipse of a span</span><em>engine: <code>eclipses</code></em></p>
+    <div class="controls">
+      <label>from <input type="number" id="q-from" value="2001" step="1"></label>
+      <label>to <input type="number" id="q-to" value="2050" step="1"></label>
+      <div class="presets">
+        <button data-a="1901" data-b="2000">20th century</button>
+        <button data-a="2001" data-b="2100">21st century</button>
+        <button data-a="2024" data-b="2040">the next 16 years</button>
+      </div>
+    </div>
+    <canvas id="q-canvas" height="330"></canvas>
+    <div class="readout">
+      <div><div class="k">eclipses</div><div class="v" id="q-n">&#8211;</div></div>
+      <div><div class="k">total</div><div class="v hi" id="q-total">&#8211;</div></div>
+      <div><div class="k">annular</div><div class="v" id="q-ann" style="color:#7fd3ff">&#8211;</div></div>
+      <div><div class="k">hybrid</div><div class="v" id="q-hyb" style="color:#ff9de0">&#8211;</div></div>
+      <div><div class="k">partial</div><div class="v" id="q-par" style="color:#8f9bbd">&#8211;</div></div>
+    </div>
+    <div class="tallbox scroll" style="margin-top:18px"><table class="data" id="q-table"></table></div>
+  </div>
+</section>
+
+<section class="chapter" id="c5">
+  <p class="eyebrow">Chapter 5</p>
+  <h2>The Moon in the Earth's shadow</h2>
+  <p class="lede">Reverse the geometry and the arithmetic barely changes — but now the shadow is ours, it is enormous, and everyone on the night side sees the same thing at the same moment.</p>
+  <p>At the Moon's distance the Earth's umbra is about 4,600 km across — two and a half times the Moon's diameter — surrounded by a penumbra half again as wide. Meeus's numbers, in the same Earth-radius units as before:</p>
+  <div class="formula">umbra radius     0.7403 - u        penumbra radius  1.2848 + u
+Moon's radius    0.2725
+
+first contact with the penumbra   |gamma| = 1.5573 + u
+first contact with the umbra      |gamma| = 1.0128 - u
+totality begins                   |gamma| = 0.4678 - u
+
+umbral magnitude    = (1.0128 - u - |gamma|) / 0.5450     &gt;= 1  ->  total
+penumbral magnitude = (1.5573 + u - |gamma|) / 0.5450     &gt;  0  ->  something happens</div>
+  <p>The magnitude is the fraction of the Moon's diameter buried in the shadow. Duration follows from a chord: the Moon crosses at 0.5458 + 0.0400 cos M' Earth radii per hour, so each phase lasts twice the half-chord divided by that speed. A totality of 100 minutes means the Moon passed almost through the centre.</p>
+  <div class="sky" id="w-lunar">
+    <p class="title"><span>The Earth's shadow, and the Moon's path through it</span><em>engine: <code>eclipse-at</code></em></p>
+    <div class="controls">
+      <label>eclipse <select id="l-pick"></select></label>
+      <label>years <input type="number" id="l-from" value="2020" step="1"></label>
+      <label>&nbsp; <input type="number" id="l-to" value="2035" step="1"></label>
+    </div>
+    <svg class="diagram" id="l-svg" viewBox="-210 -105 420 210" role="img" aria-label="the Earth's umbra and penumbra with the Moon's path"></svg>
+    <div class="readout">
+      <div><div class="k">umbral magnitude</div><div class="v hi" id="l-mag">&#8211;</div><div class="s" id="l-type"></div></div>
+      <div><div class="k">gamma</div><div class="v" id="l-gamma">&#8211;</div></div>
+      <div><div class="k">totality</div><div class="v" id="l-tot">&#8211;</div><div class="s">minutes</div></div>
+      <div><div class="k">partial</div><div class="v" id="l-par">&#8211;</div><div class="s">minutes</div></div>
+      <div><div class="k">penumbral</div><div class="v" id="l-pen">&#8211;</div><div class="s">minutes</div></div>
+    </div>
+    <p class="note">Ghost discs mark the contacts: outer penumbra, umbra, totality, then the same in reverse. A path near the middle of the shadow gives the long, dark totalities; one that grazes the edge gives a <b>penumbral</b> eclipse, which is a slight dimming that most people looking straight at it fail to notice.</p>
+  </div>
+</section>
+
+<section class="chapter" id="c6">
+  <p class="eyebrow">Chapter 6</p>
+  <h2>The saros</h2>
+  <p class="lede">223 synodic months are 6585.3213 days. 242 draconic months are 6585.3575 days. 239 anomalistic months are 6585.5375 days. Three clocks, three different periods, and they land within a few hours of each other.</p>
+  <p>That coincidence is the oldest result in the subject — the Babylonians had it — and it is why eclipses repeat. Wait 6585 &#8531; days after any eclipse and you get another one: the Moon is new again (synodic), it is at the same distance from the node (draconic), and it is at nearly the same distance from the Earth (anomalistic), so the new eclipse is of nearly the same kind and depth. The family of eclipses at that spacing is a <b>saros series</b>.</p>
+  <div class="formula">223 synodic     = 6585.3213 d
+242 draconic    = 6585.3575 d      differs by 51 minutes
+239 anomalistic = 6585.5375 d      differs by 5.2 hours
+
+6585.32 d = 18 years 11 days 8 hours     (10 or 11 days, depending on leap years)</div>
+  <p>The extra eight hours matter: the Earth turns 120° in that time, so each eclipse of a series lands a third of the way round the world from the last. Three saroses — an <em>exeligmos</em>, 54 years and about 33 days — bring the track back to roughly the same longitude.</p>
+  <p>The 51-minute mismatch with the draconic month matters too. It means the Moon is not quite at the same place relative to the node each time, so gamma drifts steadily in one direction. A series begins with a glancing partial eclipse at one pole, deepens through central eclipses over some seven hundred years, and dies with a partial eclipse at the other pole, twelve or thirteen centuries after it started. About forty series are running at any moment, which is why the numbers below are in the hundreds.</p>
+  <div class="sky" id="w-saros">
+    <p class="title"><span>One family, beginning to end</span><em>engine: <code>saros-run</code></em></p>
+    <div class="controls">
+      <label>series <input type="number" id="r-num" value="139" min="1" max="223" step="1"></label>
+      <label>kind <select id="r-kind"><option value="0">solar</option><option value="1">lunar</option></select></label>
+      <div class="presets">
+        <button data-n="139" data-k="0">139 &#183; 2024 Apr 8</button>
+        <button data-n="145" data-k="0">145 &#183; 2017 Aug 21</button>
+        <button data-n="126" data-k="0">126 &#183; 2026 Aug 12</button>
+        <button data-n="136" data-k="1">136 &#183; 2022 Nov 8</button>
+      </div>
+    </div>
+    <canvas id="r-canvas" height="280"></canvas>
+    <div class="readout">
+      <div><div class="k">eclipses</div><div class="v" id="r-n">&#8211;</div></div>
+      <div><div class="k">first</div><div class="v" id="r-first" style="font-size:19px">&#8211;</div></div>
+      <div><div class="k">last</div><div class="v" id="r-last" style="font-size:19px">&#8211;</div></div>
+      <div><div class="k">span</div><div class="v hi" id="r-span" style="font-size:19px">&#8211;</div><div class="s">years</div></div>
+    </div>
+    <div class="tallbox scroll" style="margin-top:18px"><table class="data" id="r-table"></table></div>
+    <p class="note">Series numbers are not arbitrary and not random: consecutive numbers are one <b>inex</b> apart — 358 lunations, 28.9 years — so the engine recovers a series number from k with a single modular inverse: <b>38 &#215; (k &#8722; anchor) mod 223</b>. No lookup table anywhere in this book.</p>
+  </div>
+</section>
+
+<section class="chapter" id="c7">
+  <p class="eyebrow">Chapter 7</p>
+  <h2>Delta T, and the edge of prediction</h2>
+  <p class="lede">The theory of the Moon runs on a uniform clock. The Earth does not keep one. The gap between them is the only part of this calculation that cannot be computed at all.</p>
+  <p>Everything above produces an instant in <b>dynamical time</b> — the time coordinate the equations of motion use. To say what a clock on the ground read, you must subtract <span class="num">&Delta;T = TD &minus; UT</span>, and &Delta;T is a measurement, not a formula. Tidal friction is slowing the Earth's rotation by about 2.3 milliseconds per century, but the mantle and core exchange angular momentum on decade scales in ways nobody can predict, so &Delta;T wanders.</p>
+  <p>It was about +17 seconds in 1900, +64 in 2000, and is near +75 today. Run backwards, the drift accumulates quadratically: about three hours by 1000 BC. Ancient &Delta;T is not derived — it is <em>read off eclipses</em>, from records of which city saw totality, which is a pleasing circularity: the same observations that test the theory supply the one constant the theory cannot produce.</p>
+  <div class="sky" id="w-dt">
+    <p class="title"><span>TD &minus; UT across four millennia</span><em>engine: <code>delta-t</code></em></p>
+    <canvas id="d-canvas" height="270"></canvas>
+    <div class="controls" style="margin:16px 0 0">
+      <label>year <input type="range" id="d-year" min="-1000" max="2500" step="5" value="2026"></label>
+    </div>
+    <div class="readout">
+      <div><div class="k">year</div><div class="v" id="d-y">&#8211;</div></div>
+      <div><div class="k">Delta T</div><div class="v hi" id="d-v">&#8211;</div><div class="s" id="d-hm"></div></div>
+      <div><div class="k">Earth turns</div><div class="v" id="d-deg">&#8211;</div><div class="s">degrees of longitude in that time</div></div>
+    </div>
+    <p class="note">The last column is why &Delta;T is not an academic worry: an error of one hour in &Delta;T moves a totality track <b>15 degrees of longitude</b>. Predicting the <em>date</em> of an eclipse in 2000 BC is easy; predicting which valley it was total over is not.</p>
+  </div>
+  <h3>What this engine gets right, and where it stops</h3>
+  <p>Checked against NASA's <em>Five Millennium Canon</em>, the engine reproduces the date, type and saros number of all 64 catalogued eclipses in <code>reference/catalogue.tsv</code> but one, and the instant of greatest eclipse to about a minute across the modern era. The exception is instructive: the lunar eclipse of 4 April 2015 was total by 0.0006 of a magnitude, with a totality of four minutes and 43 seconds. The truncated series here calls it partial by 0.004 of a magnitude. A series with a stated precision of minutes cannot adjudicate a four-minute totality, and it is more honest to say so than to add digits that are not there.</p>
+  <p>What is genuinely out of reach without a full ephemeris is <em>where</em>: the path of totality needs Besselian elements — the shadow axis in Earth-fixed coordinates, sampled through the event, corrected for the observer's height and the flattening of the Earth. This book answers <em>when</em>, and what kind. That is most of the question, and it fits in five hundred lines.</p>
+  <div class="aside">The engine is <code>showcase/eclipse/lib/Eclipse.rakumod</code> in the rakupp repository — 550 lines of Raku. <code>eclipse.raku</code> is the terminal version of this book; <code>tools/build.raku</code> bundles the engine with <code>web/api.raku</code>, transpiles it with <code>rakupp --target=js --standalone</code>, and inlines the result here. The page you are reading is one file with no dependencies.</div>
+</section>
+
+</main>
+</div>
+<script src="engine.js"></script>
+<script>
+(function () {
+  const E = globalThis.eclipse;
+  const $ = (id) => document.getElementById(id);
+  const f = (x, n) => Number(x).toFixed(n);
+  const sgn = (x, n) => (x >= 0 ? '+' : '−') + Math.abs(x).toFixed(n);
+  const clampi = (x, lo, hi) => Math.min(hi, Math.max(lo, Math.round(x)));
+
+  // one shared visual language for the dark panels
+  const SKY = { bg: '#060a15', grid: '#1c2540', dim: '#7f8bab', ink: '#eef1fa',
+                gold: '#f0c060', blue: '#7fd3ff', pink: '#ff9de0', grey: '#3a4568',
+                moon: '#d7dcec', earth: '#2b4a86' };
+  const colourOf = (t) => t.indexOf('total') >= 0 ? '#ffffff'
+                        : t.indexOf('annular') >= 0 ? SKY.blue
+                        : t === 'hybrid' ? SKY.pink
+                        : t === 'penumbral' ? '#8f9bbd' : SKY.gold;
+
+  function pen(c) {                       // a crisp 2d context at device resolution
+    // pin the CSS height: assigning c.height changes the intrinsic ratio, and
+    // with width:100% and height:auto the box would grow on every redraw
+    if (!c.dataset.h) c.dataset.h = c.getAttribute('height');
+    c.style.height = c.dataset.h + 'px';
+    const r = c.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    c.width = Math.max(1, r.width * dpr); c.height = Math.max(1, r.height * dpr);
+    const x = c.getContext('2d');
+    x.setTransform(dpr, 0, 0, dpr, 0, 0);
+    x.clearRect(0, 0, r.width, r.height);
+    x.font = '11px "IBM Plex Mono", monospace';
+    return [x, r.width, r.height];
+  }
+  const svgEl = (n, a) => {
+    const e = document.createElementNS('http://www.w3.org/2000/svg', n);
+    for (const k in a) e.setAttribute(k, a[k]);
+    return e;
+  };
+
+  // ---- the hero: the next eclipses ----------------------------------------
+  function drawNext() {
+    const now = new Date();
+    const y = now.getUTCFullYear();
+    const stamp = now.toISOString().slice(0, 10);
+    $('n-today').textContent = 'today is ' + stamp;
+    const rows = E.list(y, y + 4, 'both').filter((e) => e.date >= stamp).slice(0, 8);
+    let h = '<thead><tr><th>date</th><th>UT</th><th>kind</th><th>type</th><th>magnitude</th><th>gamma</th><th>saros</th><th>in</th></tr></thead><tbody>';
+    for (const e of rows) {
+      const days = Math.round((Date.parse(e.date + 'T00:00:00Z') - Date.parse(stamp + 'T00:00:00Z')) / 86400000);
+      const mag = e.kind === 'lunar' && e.type === 'penumbral' ? e.penumbral : e.magnitude;
+      h += `<tr><td>${e.date}</td><td>${e.stamp.slice(11)}</td><td>${e.kind}</td>`
+         + `<td class="t-${e.type.split(' ').pop()}">${e.type}</td><td>${e.central ? '≥ 1' : f(mag, 3)}</td>`
+         + `<td>${sgn(e.gamma, 4)}</td><td>${e.saros}</td><td>${days} d</td></tr>`;
+    }
+    $('n-table').innerHTML = h + '</tbody>';
+  }
+
+  // ---- chapter 1: the eclipse seasons -------------------------------------
+  function drawSeasons() {
+    const a = clampi($('s-from').value, -1000, 2990), b = clampi($('s-to').value, a, a + 60);
+    const lunar = $('s-kind').value === '1';
+    const pts = E.seasons(a, b, lunar);
+    const [x, W, H] = pen($('s-canvas'));
+    const L = 42, R = 12, T = 14, B = 26;
+    const px = (i) => L + (W - L - R) * (i / Math.max(1, pts.length - 1));
+    const py = (v) => T + (H - T - B) * (1 - (v + 1) / 2);
+    x.fillStyle = 'rgba(240,192,96,.10)';
+    x.fillRect(L, py(0.36), W - L - R, py(-0.36) - py(0.36));
+    x.strokeStyle = SKY.grid; x.lineWidth = 1;
+    for (const v of [-1, -0.36, 0, 0.36, 1]) {
+      x.beginPath(); x.moveTo(L, py(v) + 0.5); x.lineTo(W - R, py(v) + 0.5); x.stroke();
+      x.fillStyle = SKY.dim; x.textAlign = 'right';
+      x.fillText(v.toFixed(2), L - 6, py(v) + 4);
+    }
+    x.textAlign = 'center';
+    let lastYear = null;
+    pts.forEach((p, i) => {
+      const yr = p.date.slice(0, 4);
+      if (yr !== lastYear && (Number(yr) % (b - a > 20 ? 5 : 1) === 0)) {
+        lastYear = yr;
+        x.strokeStyle = SKY.grid;
+        x.beginPath(); x.moveTo(px(i) + 0.5, T); x.lineTo(px(i) + 0.5, H - B); x.stroke();
+        x.fillStyle = SKY.dim; x.fillText(yr, px(i), H - 9);
+      }
+    });
+    pts.forEach((p, i) => {
+      const isE = p.type !== '';
+      x.beginPath();
+      x.arc(px(i), py(p.sinF), isE ? 3.6 : 1.9, 0, 7);
+      x.fillStyle = isE ? colourOf(p.type) : SKY.grey;
+      x.fill();
+    });
+  }
+
+  // ---- chapter 2: the correction terms ------------------------------------
+  function drawTerms() {
+    const d = $('t-date').value || '2026-08-12';
+    const [yy, mm, dd] = d.split('-').map(Number);
+    const full = $('t-phase').value === '1';
+    const k = E.nearest(yy, mm, dd, full);
+    const r = E.terms(k);
+    $('t-k').textContent = full ? (Math.floor(k) + ' + ½') : String(k);
+    $('t-t').textContent = 'T = ' + sgn(r.t, 5) + ' centuries';
+    $('t-mean').textContent = r.meanStamp;
+    $('t-real').textContent = r.stamp;
+    const shift = (r.jde - r.mean) * 24;
+    $('t-shift').textContent = 'moved by ' + sgn(shift, 2) + ' hours';
+    $('t-ang').innerHTML = `Here M = <b>${f(r.m, 2)}&deg;</b>, M' = <b>${f(r.mp, 2)}&deg;</b>, `
+      + `F = <b>${f(r.f, 2)}&deg;</b>, so sin F = <b>${sgn(r.sinF, 4)}</b> &mdash; `
+      + (Math.abs(r.sinF) < 0.36 ? 'inside the eclipse window.' : 'outside the eclipse window, so no eclipse this month.');
+    const max = Math.max(...r.terms.map((t) => Math.abs(t.minutes)), 1);
+    let h = '';
+    for (const t of r.terms) {
+      const w = 50 * Math.abs(t.minutes) / max;
+      const left = t.minutes >= 0 ? 50 : 50 - w;
+      h += `<div class="row"><span>${t.name.replace(/</g, '&lt;')}</span>`
+         + `<span class="track"><u style="left:50%"></u><i style="left:${left}%;width:${w}%"></i></span>`
+         + `<span class="v">${sgn(t.minutes, 1)}</span></div>`;
+    }
+    h += `<div class="row"><span>+ 14 planetary terms</span>`
+       + `<span class="track"><u style="left:50%"></u></span>`
+       + `<span class="v">${sgn(r.rest * 1440, 1)}</span></div>`;
+    $('t-bars').innerHTML = h;
+  }
+
+  // ---- chapter 3: the fundamental plane ------------------------------------
+  let solarList = [];
+  function fillGamma() {
+    const a = clampi($('g-from').value, -1000, 2990), b = clampi($('g-to').value, a, a + 120);
+    solarList = E.list(a, b, 'solar');
+    $('g-pick').innerHTML = solarList.map((e, i) =>
+      `<option value="${i}">${e.date} · ${e.type} · saros ${e.saros}</option>`).join('');
+    const pick = solarList.findIndex((e) => e.type === 'total');
+    $('g-pick').value = String(pick < 0 ? 0 : pick);
+    drawGamma();
+  }
+  function drawGamma() {
+    const e = solarList[Number($('g-pick').value) || 0];
+    if (!e) return;
+    const svg = $('g-svg');
+    svg.innerHTML = '';
+    const S = 62;                                   // pixels per Earth radius
+    const lim = 1.5433 + e.u;
+    svg.appendChild(svgEl('circle', { cx: 0, cy: 0, r: lim * S, fill: 'none',
+      stroke: SKY.grid, 'stroke-width': 1, 'stroke-dasharray': '4 4' }));
+    svg.appendChild(svgEl('circle', { cx: 0, cy: 0, r: 0.9972 * S, fill: SKY.earth,
+      'fill-opacity': .55, stroke: '#5c86d6', 'stroke-width': 1.2 }));
+    // the axis sweeps along a chord at perpendicular distance gamma
+    const gy = -e.gamma * S;
+    svg.appendChild(svgEl('line', { x1: -175, y1: gy, x2: 175, y2: gy,
+      stroke: SKY.gold, 'stroke-width': 1.2, 'stroke-opacity': .55 }));
+    svg.appendChild(svgEl('line', { x1: 0, y1: 0, x2: 0, y2: gy,
+      stroke: SKY.gold, 'stroke-width': 1, 'stroke-dasharray': '2 3' }));
+    svg.appendChild(svgEl('circle', { cx: 0, cy: 0, r: 2, fill: SKY.dim }));
+    const ur = Math.max(2.2, Math.abs(e.u) * S * 6);   // u is tiny: show it 6x
+    svg.appendChild(svgEl('circle', { cx: 0, cy: gy, r: ur, fill: colourOf(e.type),
+      'fill-opacity': .9 }));
+    const lab = (tx, ty, s, col, anchor) => {
+      const t = svgEl('text', { x: tx, y: ty, fill: col || SKY.dim,
+        'font-family': 'IBM Plex Mono, monospace', 'font-size': 9.5,
+        'text-anchor': anchor || 'start' });
+      t.textContent = s; svg.appendChild(t);
+    };
+    lab(6, gy - 7, 'gamma = ' + sgn(e.gamma, 4), SKY.gold);
+    lab(-176, -112, e.date + '  ·  ' + e.type, SKY.ink);
+    lab(-176, -100, 'umbral cone radius u = ' + sgn(e.u, 4) + ' (drawn ×6)');
+    lab(0.9972 * S + 5, 4, 'Earth', '#8fb0e8');
+    lab(lim * S - 4, -lim * S + 12, '1.5433 + u', SKY.dim, 'end');
+    $('g-gamma').textContent = sgn(e.gamma, 4);
+    $('g-km').textContent = f(Math.abs(e.gamma) * 6378, 0) + ' km from the centre';
+    $('g-u').textContent = sgn(e.u, 4);
+    $('g-ustate').textContent = e.u < 0 ? 'the cone reaches the ground' : 'the cone falls short';
+    $('g-type').textContent = e.type;
+    $('g-mag').textContent = e.central ? 'central: the axis lands on the Earth'
+      : 'magnitude ' + f(e.magnitude, 3);
+  }
+
+  // ---- chapter 4: the classification scatter --------------------------------
+  function drawSolar() {
+    const a = clampi($('q-from').value, -1000, 2990), b = clampi($('q-to').value, a, a + 200);
+    const all = E.list(a, b, 'solar');
+    const [x, W, H] = pen($('q-canvas'));
+    const L = 52, R = 14, T = 16, B = 32;
+    const gx = (g) => L + (W - L - R) * (g + 1.6) / 3.2;
+    const uy = (u) => T + (H - T - B) * (1 - (u + 0.03) / 0.09);
+    x.fillStyle = 'rgba(127,211,255,.07)';
+    x.fillRect(gx(-0.9972), T, gx(0.9972) - gx(-0.9972), uy(0) - T);
+    x.fillStyle = 'rgba(255,255,255,.06)';
+    x.fillRect(gx(-0.9972), uy(0), gx(0.9972) - gx(-0.9972), H - B - uy(0));
+    x.strokeStyle = SKY.grid;
+    for (const g of [-1.6, -0.9972, 0, 0.9972, 1.6]) {
+      x.beginPath(); x.moveTo(gx(g) + .5, T); x.lineTo(gx(g) + .5, H - B); x.stroke();
+      x.fillStyle = SKY.dim; x.textAlign = 'center';
+      x.fillText(g === 0 ? '0' : (g > 0 ? '+' : '−') + Math.abs(g).toFixed(g === 1.6 ? 1 : 4), gx(g), H - 16);
+    }
+    for (const u of [-0.03, 0, 0.03, 0.06]) {
+      x.beginPath(); x.moveTo(L, uy(u) + .5); x.lineTo(W - R, uy(u) + .5); x.stroke();
+      x.fillStyle = SKY.dim; x.textAlign = 'right';
+      x.fillText(u.toFixed(2), L - 6, uy(u) + 4);
+    }
+    x.fillStyle = SKY.dim; x.textAlign = 'center';
+    x.fillText('gamma', (L + W - R) / 2, H - 3);
+    x.save(); x.translate(12, (T + H - B) / 2); x.rotate(-Math.PI / 2);
+    x.fillText('u', 0, 0); x.restore();
+    x.textAlign = 'left';
+    x.fillStyle = 'rgba(127,211,255,.75)'; x.fillText('annular  (u > 0)', gx(-0.95), uy(0) - 8);
+    x.fillStyle = 'rgba(255,255,255,.6)'; x.fillText('total  (u < 0)', gx(-0.95), uy(0) + 16);
+    const count = { total: 0, annular: 0, hybrid: 0, partial: 0 };
+    for (const e of all) {
+      const key = e.type.split(' ').pop();
+      if (count[key] !== undefined) count[key]++;
+      x.beginPath(); x.arc(gx(e.gamma), uy(e.u), 2.6, 0, 7);
+      x.fillStyle = colourOf(e.type); x.globalAlpha = .85; x.fill(); x.globalAlpha = 1;
+    }
+    $('q-n').textContent = all.length;
+    $('q-total').textContent = count.total; $('q-ann').textContent = count.annular;
+    $('q-hyb').textContent = count.hybrid; $('q-par').textContent = count.partial;
+    let h = '<thead><tr><th>date</th><th>UT</th><th>type</th><th>gamma</th><th>u</th><th>magnitude</th><th>saros</th></tr></thead><tbody>';
+    for (const e of all) {
+      h += `<tr><td>${e.date}</td><td>${e.stamp.slice(11)}</td>`
+         + `<td class="t-${e.type.split(' ').pop()}">${e.type}</td><td>${sgn(e.gamma, 4)}</td>`
+         + `<td>${sgn(e.u, 4)}</td><td>${e.central ? '≥ 1' : f(e.magnitude, 3)}</td><td>${e.saros}</td></tr>`;
+    }
+    $('q-table').innerHTML = h + '</tbody>';
+  }
+
+  // ---- chapter 5: the Earth's shadow ----------------------------------------
+  let lunarList = [];
+  function fillLunar() {
+    const a = clampi($('l-from').value, -1000, 2990), b = clampi($('l-to').value, a, a + 120);
+    lunarList = E.list(a, b, 'lunar');
+    $('l-pick').innerHTML = lunarList.map((e, i) =>
+      `<option value="${i}">${e.date} · ${e.type} · saros ${e.saros}</option>`).join('');
+    const pick = lunarList.findIndex((e) => e.type === 'total');
+    $('l-pick').value = String(pick < 0 ? 0 : pick);
+    drawLunar();
+  }
+  function drawLunar() {
+    const e = lunarList[Number($('l-pick').value) || 0];
+    if (!e) return;
+    const svg = $('l-svg'); svg.innerHTML = '';
+    const S = 64;
+    const rU = (0.7403 - e.u) * S, rP = (1.2848 + e.u) * S, rM = 0.2725 * S;
+    svg.appendChild(svgEl('circle', { cx: 0, cy: 0, r: rP, fill: '#141c33', 'fill-opacity': .85,
+      stroke: SKY.grid, 'stroke-width': 1 }));
+    svg.appendChild(svgEl('circle', { cx: 0, cy: 0, r: rU, fill: '#05070f',
+      stroke: '#2f3d66', 'stroke-width': 1 }));
+    const gy = -e.gamma * S;
+    svg.appendChild(svgEl('line', { x1: -205, y1: gy, x2: 205, y2: gy,
+      stroke: SKY.gold, 'stroke-width': 1, 'stroke-dasharray': '3 4', 'stroke-opacity': .6 }));
+    const chord = (r) => { const d = r * r - (e.gamma * S) ** 2; return d > 0 ? Math.sqrt(d) : null; };
+    for (const r of [rP + rM, rU + rM, rU - rM]) {
+      const c = chord(r);
+      if (c === null) continue;
+      for (const sx of [-c, c])
+        svg.appendChild(svgEl('circle', { cx: sx, cy: gy, r: rM, fill: 'none',
+          stroke: SKY.moon, 'stroke-width': .8, 'stroke-opacity': .32 }));
+    }
+    svg.appendChild(svgEl('circle', { cx: 0, cy: gy, r: rM, fill: SKY.moon, 'fill-opacity': .92 }));
+    const lab = (tx, ty, s, col, anchor) => {
+      const t = svgEl('text', { x: tx, y: ty, fill: col || SKY.dim,
+        'font-family': 'IBM Plex Mono, monospace', 'font-size': 9.5,
+        'text-anchor': anchor || 'start' });
+      t.textContent = s; svg.appendChild(t);
+    };
+    lab(-204, -92, e.date + '  ·  ' + e.type + '  ·  saros ' + e.saros, SKY.ink);
+    lab(-204, -80, 'umbra 0.7403 − u = ' + f(0.7403 - e.u, 4) + '   penumbra 1.2848 + u = ' + f(1.2848 + e.u, 4));
+    lab(6, gy - rM - 6, 'gamma = ' + sgn(e.gamma, 4), SKY.gold);
+    lab(0, rP + 12, 'penumbra', SKY.dim, 'middle');
+    const mag = e.type === 'penumbral' ? e.penumbral : e.magnitude;
+    $('l-mag').textContent = f(mag, 3);
+    $('l-type').textContent = e.type === 'penumbral' ? 'penumbral magnitude' : 'of the Moon’s diameter';
+    $('l-gamma').textContent = sgn(e.gamma, 4);
+    $('l-tot').textContent = e.dtotal > 0 ? f(e.dtotal, 0) : '—';
+    $('l-par').textContent = e.dpartial > 0 ? f(e.dpartial, 0) : '—';
+    $('l-pen').textContent = e.dpenumbral > 0 ? f(e.dpenumbral, 0) : '—';
+  }
+
+  // ---- chapter 6: a saros series --------------------------------------------
+  function drawSaros() {
+    const n = clampi($('r-num').value, 1, 223);
+    const lunar = $('r-kind').value === '1';
+    const run = E.saros(n, lunar);
+    const [x, W, H] = pen($('r-canvas'));
+    if (!run.length) { $('r-n').textContent = '0'; return; }
+    const L = 46, R = 14, T = 16, B = 28;
+    const y0 = run[0].year, y1 = run[run.length - 1].year;
+    const px = (yr) => L + (W - L - R) * (yr - y0) / Math.max(1, y1 - y0);
+    const py = (g) => T + (H - T - B) * (1 - (g + 1.7) / 3.4);
+    x.fillStyle = 'rgba(43,74,134,.30)';
+    x.fillRect(L, py(0.9972), W - L - R, py(-0.9972) - py(0.9972));
+    x.strokeStyle = SKY.grid;
+    for (const g of [-1.7, -0.9972, 0, 0.9972, 1.7]) {
+      x.beginPath(); x.moveTo(L, py(g) + .5); x.lineTo(W - R, py(g) + .5); x.stroke();
+      x.fillStyle = SKY.dim; x.textAlign = 'right';
+      x.fillText(g.toFixed(2), L - 6, py(g) + 4);
+    }
+    x.textAlign = 'center';
+    const step = Math.max(100, Math.ceil((y1 - y0) / 6 / 100) * 100);
+    for (let yr = Math.ceil(y0 / step) * step; yr <= y1; yr += step) {
+      x.strokeStyle = SKY.grid;
+      x.beginPath(); x.moveTo(px(yr) + .5, T); x.lineTo(px(yr) + .5, H - B); x.stroke();
+      x.fillStyle = SKY.dim; x.fillText(String(yr), px(yr), H - 10);
+    }
+    x.fillStyle = SKY.dim; x.textAlign = 'left';
+    x.fillText('the axis hits the Earth', L + 6, py(0.9972) + 13);
+    x.beginPath();
+    run.forEach((e, i) => { const p = [px(e.year), py(e.gamma)]; i ? x.lineTo(...p) : x.moveTo(...p); });
+    x.strokeStyle = 'rgba(240,192,96,.35)'; x.lineWidth = 1; x.stroke();
+    for (const e of run) {
+      x.beginPath(); x.arc(px(e.year), py(e.gamma), 3, 0, 7);
+      x.fillStyle = colourOf(e.type); x.fill();
+    }
+    $('r-n').textContent = run.length;
+    $('r-first').textContent = run[0].date;
+    $('r-last').textContent = run[run.length - 1].date;
+    $('r-span').textContent = (y1 - y0);
+    let h = '<thead><tr><th>#</th><th>date</th><th>UT</th><th>type</th><th>gamma</th><th>magnitude</th></tr></thead><tbody>';
+    run.forEach((e, i) => {
+      const mag = e.kind === 'lunar' && e.type === 'penumbral' ? e.penumbral : e.magnitude;
+      h += `<tr><td>${i + 1}</td><td>${e.date}</td><td>${e.stamp.slice(11)}</td>`
+         + `<td class="t-${e.type.split(' ').pop()}">${e.type}</td><td>${sgn(e.gamma, 4)}</td>`
+         + `<td>${e.central ? '≥ 1' : f(mag, 3)}</td></tr>`;
+    });
+    $('r-table').innerHTML = h + '</tbody>';
+  }
+
+  // ---- chapter 7: Delta T ----------------------------------------------------
+  let dtSeries = null;
+  function drawDeltaT() {
+    if (!dtSeries) dtSeries = E.deltat(-1000, 2500, 10);
+    const [x, W, H] = pen($('d-canvas'));
+    const L = 58, R = 14, T = 16, B = 28;
+    const maxv = Math.max(...dtSeries.map((p) => p.dt));
+    const px = (yr) => L + (W - L - R) * (yr + 1000) / 3500;
+    const py = (v) => T + (H - T - B) * (1 - v / maxv);
+    x.strokeStyle = SKY.grid; x.textAlign = 'right'; x.fillStyle = SKY.dim;
+    for (let v = 0; v <= maxv; v += 5000) {
+      x.beginPath(); x.moveTo(L, py(v) + .5); x.lineTo(W - R, py(v) + .5); x.stroke();
+      x.fillStyle = SKY.dim; x.fillText((v / 3600).toFixed(0) + ' h', L - 6, py(v) + 4);
+    }
+    x.textAlign = 'center';
+    for (let yr = -1000; yr <= 2500; yr += 500) {
+      x.strokeStyle = SKY.grid;
+      x.beginPath(); x.moveTo(px(yr) + .5, T); x.lineTo(px(yr) + .5, H - B); x.stroke();
+      x.fillStyle = SKY.dim; x.fillText(yr < 0 ? Math.abs(yr) + ' BC' : String(yr), px(yr), H - 10);
+    }
+    x.fillStyle = 'rgba(240,192,96,.10)';
+    x.fillRect(px(1620), T, px(2030) - px(1620), H - B - T);
+    x.fillStyle = SKY.dim; x.textAlign = 'center';
+    x.fillText('measured', (px(1620) + px(2030)) / 2, T + 12);
+    x.beginPath();
+    dtSeries.forEach((p, i) => { const q = [px(p.year), py(p.dt)]; i ? x.lineTo(...q) : x.moveTo(...q); });
+    x.strokeStyle = SKY.gold; x.lineWidth = 1.6; x.stroke();
+    const yr = Number($('d-year').value);
+    const dt = E.deltat(yr, yr, 1)[0].dt;
+    x.beginPath(); x.arc(px(yr), py(dt), 4, 0, 7); x.fillStyle = '#fff'; x.fill();
+    $('d-y').textContent = yr < 0 ? Math.abs(yr) + ' BC' : yr;
+    $('d-v').textContent = Math.abs(dt) < 600 ? f(dt, 1) + ' s' : f(dt / 3600, 2) + ' h';
+    $('d-hm').textContent = f(dt, 0) + ' seconds';
+    $('d-deg').textContent = f(dt / 240, 1) + '°';
+  }
+
+  // ---- wiring ---------------------------------------------------------------
+  const on = (id, ev, fn) => $(id).addEventListener(ev, fn);
+  on('s-from', 'change', drawSeasons); on('s-to', 'change', drawSeasons);
+  on('s-kind', 'change', drawSeasons);
+  on('t-date', 'change', drawTerms); on('t-phase', 'change', drawTerms);
+  on('g-pick', 'change', drawGamma); on('g-from', 'change', fillGamma); on('g-to', 'change', fillGamma);
+  on('q-from', 'change', drawSolar); on('q-to', 'change', drawSolar);
+  document.querySelectorAll('#w-solar .presets button').forEach((b) =>
+    b.addEventListener('click', () => { $('q-from').value = b.dataset.a; $('q-to').value = b.dataset.b; drawSolar(); }));
+  on('l-pick', 'change', drawLunar); on('l-from', 'change', fillLunar); on('l-to', 'change', fillLunar);
+  on('r-num', 'change', drawSaros); on('r-kind', 'change', drawSaros);
+  document.querySelectorAll('#w-saros .presets button').forEach((b) =>
+    b.addEventListener('click', () => { $('r-num').value = b.dataset.n; $('r-kind').value = b.dataset.k; drawSaros(); }));
+  on('d-year', 'input', drawDeltaT);
+
+  let t = null;
+  window.addEventListener('resize', () => {
+    clearTimeout(t);
+    t = setTimeout(() => { drawSeasons(); drawSolar(); drawSaros(); drawDeltaT(); }, 150);
+  });
+
+  drawNext();
+  drawSeasons();
+  drawTerms();
+  fillGamma();
+  drawSolar();
+  fillLunar();
+  drawSaros();
+  drawDeltaT();
+})();
+</script>

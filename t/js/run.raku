@@ -126,7 +126,7 @@ if !@args {
         my $js = $tmp.add($f.basename.subst(/\.raku$/, '.js'));
         my $tr = run $rakupp.Str, '--target=js', '--standalone', '-q', $f.Str, '-o', $js.Str, :out, :err;
         if $tr.exitcode != 0 { @interop-bad.push("{$f.basename}: transpile failed — " ~ ($tr.err.slurp(:close).lines.first // '')); next }
-        my ($x, $o, $e) = run-capped($host, '-r', $stub.Str, $js.Str);
+        my ($x, $o, $e) = run-capped($host, '-r', $stub.absolute, $js.Str);   # node reads a BARE relative -r as a module name, not a path
         my $want = $golden.e ?? $golden.slurp !! '';
         if $x != 0 || $o ne $want || $e ne '' {
             @interop-bad.push("{$f.basename}: " ~ ($x != 0 ?? "exit $x; " !! '') ~ ($o ne $want ?? "stdout differs ({$want.chars} vs {$o.chars} chars); " !! '') ~ ($e ne '' ?? "stderr: {$e.lines.first // ''}" !! ''));

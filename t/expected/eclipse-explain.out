@@ -1,0 +1,37 @@
+2026-08-12 — a total solar eclipse
+
+1. the lunation number
+   k        = 329          lunations since the New Moon of 2000-01-06
+   T        = k/1236.85 = +0.265998 Julian centuries from 2000.0
+   E        = 0.999330       the Earth's orbital eccentricity factor
+
+2. the four angles (degrees)
+   M        =   218.2158   the Sun's mean anomaly
+   M'       =    55.3368   the Moon's mean anomaly
+   F        =   171.3061   the Moon's argument of latitude
+   Omega    =   330.2991   the ascending node
+   sin F    =   +0.1512    inside the window (the window is +/-0.36)
+
+3. the instant
+   mean phase                 JDE 2461265.66141  = 2026-08-13 03:52
+     -0.4075 sin M'          -0.33517 d  =  -482.6 minutes
+      0.1721 E sin M         -0.10639 d  =  -153.2 minutes
+      0.0161 sin 2M'         +0.01506 d  =   +21.7 minutes
+     -0.0097 sin 2F1         +0.00289 d  =    +4.2 minutes
+      0.0073 E sin(M'-M)     -0.00215 d  =    -3.1 minutes
+     -0.0050 E sin(M'+M)     +0.00499 d  =    +7.2 minutes
+     ... 10 smaller terms    +0.00061 d
+   greatest eclipse           JDE 2461265.24125  = 2026-08-12 17:47 TD
+   Delta T                    75.5 s
+   greatest eclipse           JD  2461265.24037  = 2026-08-12 17:46 UT
+
+4. the geometry
+   gamma    = +0.8989    the shadow axis misses the Earth's centre by
+                        5733 km (Earth radii x 6378)
+   u        = -0.0082    the umbral cone's radius on the fundamental plane
+
+5. the verdict
+   |gamma| = 0.8989 < 0.9972  -> the axis hits the Earth: central
+   u < 0  -> the cone still has length: TOTAL
+
+   saros 126: k = 329, and 38 x (k - anchor) mod 223 picks the family

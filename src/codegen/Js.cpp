@@ -511,7 +511,7 @@ struct JsGen {
     static bool isSliceIndex(Expr* i) {
         switch (i->kind) {
             case NK::ListExpr: case NK::Range: case NK::Whatever: return true;
-            case NK::ArrayLit: return static_cast<ArrayLit*>(i)->isList && static_cast<ArrayLit*>(i)->items.size() != 1;
+            case NK::ArrayLit: return static_cast<ArrayLit*>(i)->items.size() != 1;   // `%h<a b>` builds a plain ArrayLit, not a word-list one
             case NK::Unary: return static_cast<Unary*>(i)->op == "^";
             case NK::VarExpr: return static_cast<VarExpr*>(i)->name[0] == '@';
             default: return false;

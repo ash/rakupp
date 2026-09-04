@@ -23,6 +23,7 @@ README below.
 | [**jsonreq/**](jsonreq) | Ecosystem — our own modules composing | curl+jq for JSON APIs: request, query, pretty-print |
 | [**sqlite/**](sqlite) | C libraries — NativeCall and a raw-mode terminal | database client: query, browse, dump; the real libsqlite3 does the work |
 | [**gui/**](gui) | GUI — one program, three backends; `react`/`whenever` as the event loop | native desktop apps: the Counter and a Calculator, Cocoa or GTK |
+| [**eclipse/**](eclipse) | Transpiling — one engine, a terminal and a browser, through `--target=js` | predicts solar and lunar eclipses; builds an interactive textbook |
 
 All paths below are from the repository root, after building `rakupp` (see the
 top-level [README](../README.md)). Every program also compiles to a standalone
@@ -428,6 +429,44 @@ into a Raku closure through a runtime-minted Objective-C class. No NSRect ever
 crosses the FFI — only NSPoint/NSSize, two doubles, which both macOS ABIs pass
 like two `num64`s — so the identical module serves arm64 Raku++ and an x86-64
 Rosetta Rakudo. macOS only, by nature of the backend.
+
+## eclipse — the transpiling story
+
+Where **web/** puts the interpreter itself in a browser as WebAssembly,
+**eclipse** does the other thing: `rakupp --target=js` turns a Raku program
+into JavaScript, and the *same* engine file drives a terminal program and an
+interactive textbook.
+
+The subject is eclipse prediction from first principles — the periodic series
+of Meeus's *Astronomical Algorithms*. One integer, the number of New Moons
+since January 2000, yields the instant of any eclipse to about a minute, its
+type, its magnitude, its durations, and the 1,300-year saros family it belongs
+to. No ephemeris file and no table of past eclipses; the saros number comes out
+of a modular inverse rather than a lookup.
+
+```sh
+build/rakupp showcase/eclipse/eclipse.raku 2026          # a year
+build/rakupp showcase/eclipse/eclipse.raku --saros=139   # a family, 1501 to 2763
+build/rakupp showcase/eclipse/eclipse.raku --seasons 2025 2026
+build/rakupp showcase/eclipse/eclipse.raku --explain=2026-08-12
+build/rakupp showcase/eclipse/eclipse.raku --check        # against NASA's catalogue
+build/rakupp showcase/eclipse/tools/build.raku            # the book, as one HTML file
+```
+
+`--check` reproduces the date, type and saros number of 63 of the 64 eclipses
+hand-entered from NASA's *Five Millennium Canon* in `reference/catalogue.tsv`;
+the 64th was total by 0.0006 of a magnitude and is documented as the limit of a
+truncated series. `tools/build.raku` bundles the engine with `web/api.raku`,
+transpiles it, and inlines the result into a single dependency-free page whose
+seven chapters compute every number live.
+
+Writing it found a `--target=js` bug: a multi-word hash slice was emitted as one
+item instead of a list, so the transpiled engine silently predicted an eclipse
+every month with gamma exactly zero. Fixed in `src/codegen/Js.cpp` — and a good
+argument for showcases whose answers are independently known.
+
+See [`eclipse/README.md`](eclipse/README.md) for the derivation, chapter by
+chapter.
 
 ## In the browser — [`web/`](web)
 

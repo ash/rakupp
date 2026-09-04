@@ -214,6 +214,35 @@ section('showcase/raku (Raku parsed by a Raku grammar)');
        "raku: --tree nests multiplication under addition");
 }
 
+# ---- eclipse showcase --------------------------------------------------
+# The goldens here are answers, not just output shapes: the dates, types and
+# saros numbers below are NASA's, and reference/catalogue.tsv holds 64 more.
+# A regression in Rat/Num arithmetic, sprintf or sorting shows up as a wrong
+# eclipse rather than as a crash, which is exactly what a golden is for.
+section('showcase/eclipse (eclipse prediction from periodic series)');
+{
+    my $ecl = $ROOT.add('showcase/eclipse/eclipse.raku').Str;
+
+    for <2026 check explain phases> -> $n {
+        my @args = $n eq '2026' ?? ($ecl, '2026')
+                !! $n eq 'check' ?? ($ecl, '--check')
+                !! $n eq 'explain' ?? ($ecl, '--explain=2026-08-12')
+                !! ($ecl, '--phases=2026-08');
+        golden(@args, $EXP.add("eclipse-$n.out").Str, "eclipse: --$n");
+    }
+
+    # a whole saros family, walked 223 lunations at a time from one member:
+    # NASA's series 139 is 71 eclipses, 1501-05-17 to 2763-07-03
+    my ($saros, $rc) = run-rakupp($ecl, '--saros=139');
+    ok($rc == 0 && $saros.contains('71 solar eclipses, 1501-05-17 to 2763-07-03'),
+       "eclipse: saros 139 matches the catalogue end to end");
+
+    # the eclipse window: five New Moons in six are rejected on |sin F| > 0.36
+    my ($seasons, $rc2) = run-rakupp($ecl, '--seasons', '2025', '2026');
+    ok($rc2 == 0 && $seasons.lines.grep({ / ^ \d\d\d\d '-' / && (.contains('*') || .contains('#')) }) == 4,
+       "eclipse: the 2025-2026 season strip marks exactly four solar eclipses");
+}
+
 # ---- server showcases (pastebin + chat) -------------------------------
 # The servers are long-lived accept loops. rakupp's Proc::Async deadlocks when
 # the same process then does blocking socket I/O, so we background them through

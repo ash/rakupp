@@ -355,3 +355,13 @@ Output goes to `console.log`; a page can redirect it by replacing
 host adapter is one object, `R.host`, chosen at load: Node/Bun, Deno, a Web
 Worker or the main thread). Files and `%*ENV` do not exist there and say so
 when used. DOM access from Raku (`use JS`) is P4 of the plan.
+
+A worked example of the whole path is
+[`showcase/eclipse`](../../showcase/eclipse): one engine — 550 lines of Raku
+predicting solar and lunar eclipses — driving both a terminal program and an
+interactive book in a browser. Its `tools/build.raku` is the three steps in
+order: concatenate the module with the browser API into a single file (which
+is what `--target=js` takes), transpile with `--standalone`, and inline the
+result into the page. The browser API is a hash of closures published with
+`JS<eclipse> = %api`, so the page calls `eclipse.saros(139, false)` and gets
+plain arrays back.
