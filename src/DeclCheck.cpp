@@ -602,6 +602,20 @@ bool clearedByImports(std::vector<UndeclaredVar>& cands,
                       const std::set<std::string>& imports,
                       const std::vector<std::string>& searchPath, bool sixE) {
     for (auto& mod : imports) {
+        // A module the COMPILER answers has no source to scan: it hands out
+        // builtins directly, and the names it provides are known exactly. Ask
+        // for them rather than reading a file — the file may not even exist,
+        // and when it does exist (an installed copy this engine will not load)
+        // reading it is 10 ms for nothing.
+        if (rakuppCompilerAnswersModule(mod)) {
+            std::set<std::string> given;
+            rakuppCompilerAnsweredNames(mod, given);
+            cands.erase(std::remove_if(cands.begin(), cands.end(),
+                                       [&](const UndeclaredVar& c) { return given.count(c.name) != 0; }),
+                        cands.end());
+            if (cands.empty()) return true;
+            continue;
+        }
         std::string path, src;
         if (!rakuppFindModuleSource(mod, searchPath, path, src, sixE)) return false;
         if (src.find("sub EXPORT") != std::string::npos) return false;

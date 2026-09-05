@@ -1,6 +1,7 @@
 #include "CNumeric.h"
 #include "AsciiCtype.h"
 #include "Parser.h"
+#include <sys/stat.h>
 #include "IntOps.h"
 #include <cstdint>
 #include <memory>
@@ -513,6 +514,27 @@ static ExprPtr circumfixOperand(ExprPtr e) {
     return e;
 }
 
+// Directory-only existence check: does a plain `-I`/`use lib` entry hold this
+// module? A few stat() calls, and deliberately NOT a store lookup — reading the
+// store is the cost the caller is avoiding.
+bool moduleFileOnPath(const std::string& module,
+                      const std::vector<std::string>& paths, bool sixE) {
+    std::string rel = module;
+    for (size_t p = rel.find("::"); p != std::string::npos; p = rel.find("::")) rel.replace(p, 2, "/");
+    static const char* extsAll[] = {".rakumod", ".pm6", ".raku", ".pm"};
+    for (auto& base : paths) {
+        if (base.empty() || base[0] == '#') continue;      // a repo spec, not a directory
+        for (size_t e = 0; e < (sixE ? 3u : 4u); e++) {
+            struct ::stat st;
+            std::string cand = base + "/" + rel + extsAll[e];
+            if (::stat(cand.c_str(), &st) == 0) return true;
+            cand = base + "/lib/" + rel + extsAll[e];
+            if (::stat(cand.c_str(), &st) == 0) return true;
+        }
+    }
+    return false;
+}
+
 void Parser::scanModuleOps(const std::string& module) {
     if (module.empty() || module[0] == 'v' || !scannedMods_.insert(module).second) return;
     // A module compiled into this binary answers before the disk is consulted.
@@ -520,6 +542,14 @@ void Parser::scanModuleOps(const std::string& module) {
         scanOpsIn(*emb, "<embedded:" + module + ">");
         return;
     }
+    // A module the COMPILER answers is never loaded, so its operators can never
+    // be imported and scanning it is work for nothing — 10.2 ms when the name is
+    // installed, which is the case this exists to avoid. An explicit lib path
+    // still wins, exactly as it does in the loader, so a checkout under -I is
+    // scanned normally; the check below is directory-only on purpose, since
+    // consulting the store is the expense being skipped.
+    if (rakuppCompilerAnswersModule(module) &&
+        !moduleFileOnPath(module, libPaths_, langRev_ >= 2)) return;
     // The SAME resolution the loader performs: the lib search path first, then
     // the installed CompUnit repositories. Searching only lib paths here meant a
     // zef-INSTALLED module was never scanned, so the operators and the sigilless

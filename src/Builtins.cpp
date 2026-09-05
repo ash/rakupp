@@ -3796,8 +3796,14 @@ using JsonUncovered = std::function<Value(const char* why)>;
 
 // $*JSON_NAN_INF_SUPPORT, read once per call. Absent or false means the module's
 // default, which is to write `null`.
-static bool jsonNanInfWanted(Interpreter& I) {
-    Value* d = I.tctx_.cur ? I.tctx_.cur->find("$*JSON_NAN_INF_SUPPORT") : nullptr;
+static bool jsonNanInfWanted(Interpreter&) {
+    // findDynamicLenient, not a lexical find: $* variables are DYNAMICALLY
+    // scoped, so the binding lives in a caller's frame rather than in whatever
+    // scope this codec happens to be running in. A lexical lookup found it when
+    // the program set it beside the call and missed it the moment a module sat
+    // in between — which is every real use of the dynamic, and is what
+    // JSON::Native's own suite caught.
+    Value* d = Interpreter::findDynamicLenient("$*JSON_NAN_INF_SUPPORT");
     return d && d->truthy();
 }
 
@@ -8775,6 +8781,13 @@ void Interpreter::registerBuiltins() {
         return jsonToJsonBody(I, a, [](const char* why) -> Value {
             throw RakuError{Value::typeObj("X::AdHoc"), std::string("to-json: ") + why};
         });
+    };
+    // The tag's diagnostic sub. `core` is what it reports when the compiler
+    // answered the `use` — as against `native` for a distribution's compiled
+    // extension, or the name of the module it stood aside for. Registered under
+    // the same mechanical spelling as the rest so the tag table stays uniform.
+    B["rakupp-json-backend"] = [](Interpreter&, ValueList&) -> Value {
+        return Value::str("core");
     };
     B["rakupp-from-json"] = [](Interpreter& I, ValueList& a) -> Value {
         return jsonFromJsonBody(I, a, [](const char* why) -> Value {

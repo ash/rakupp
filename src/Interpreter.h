@@ -956,6 +956,11 @@ public:
     void ncStoreStructField(Value& inv, const std::string& field, const std::string& type, long long off, const Value& rhs);
     static std::string ncLibNameOf(const Value& r); // `is native(('cairo', v2))` → libcairo.2.dylib
     static bool isShadowedModule(const std::string& name); // rakulib/ names that beat an ecosystem copy
+    // DATA-PLAN P6: `use Data::Native` and the `**::Native` names are answered
+    // by the COMPILER, so a program on this engine loads nothing for them.
+    // Returns true when it answered, false to let the module load normally.
+    bool dataNativeUse(const std::string& name, const std::vector<std::string>& importArgs,
+                       bool doImport, const std::string& verReq);
     std::string shadowLibDir_;                             // the binary-relative rakulib/, once found
     std::shared_ptr<ClassInfo> howRoleClsInfo_;            // Metamodel::ParametricRoleGroupHOW, shared by every role
     std::string resolveAttrTypeAlias(const std::string& t, const std::string& pkg = ""); // `has GType $.x` with `constant GType = uint64`

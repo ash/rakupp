@@ -124,4 +124,46 @@ is pt({ b => 1, a => 2 }, :!pretty, :sorted-keys), '{"a":2,"b":1}',
 is pf("[1, 2] // trailing\n", :allow-jsonc), [1, 2],
    ':allow-jsonc is covered too';
 
+# ---- 5. the compiler answering a `use` must not pollute anything ----------
+#
+# The primitives are registered as builtins, so the risk is real: a bare
+# `to-json` must stay undeclared until a `use` asks for it, and a `use` must
+# reach no further than the scope it is written in. Separate processes, because
+# an undeclared routine is a COMPILE error and `try` cannot see one.
+
+my $exe = $*EXECUTABLE.absolute;
+sub compiles(Str $code) { run($exe, '-e', $code, :out, :err).exitcode == 0 }
+
+nok compiles('to-json(1)'),      'to-json is undeclared without a `use`';
+nok compiles('from-json("[]")'), 'and from-json';
+nok compiles('json-backend()'),  'and json-backend';
+nok compiles('say (&::("to-json")).defined || die "visible"'),
+    'and it is not reachable by runtime lookup either';
+
+# The rakupp-* spelling IS meant to be reachable — it is the documented hook an
+# engine adopts the contract through, and the only name this file registers.
+ok compiles('&::("rakupp-to-json")(1)'),
+   'the rakupp- primitive is reachable, which is the adoption mechanism';
+
+# A `use` is lexical. Neither of these may escape.
+ok compiles('{ use Data::Native <json>; to-json(1) }'),
+   'a `use` inside a block works there';
+nok compiles('{ use Data::Native <json>; to-json(1) }; to-json(1)'),
+    'and does not escape the block';
+nok compiles('sub f() { use Data::Native <json>; to-json(1) }; f(); to-json(1)'),
+    'nor escape a sub';
+
+# A tag that was not asked for brings nothing with it.
+nok compiles('use Data::Native <json>; from-csv("a,b")'),
+    'an unclaimed tag contributes no names';
+
+# ---- 6. the claim registry, so a **::Native module stands aside -----------
+
+ok compiles('use Data::Native <json>;
+             die "not claimed" unless (PROCESS::<%DATA-NATIVE-CLAIMED> // {})<json>;'),
+   'the compiler writes the claim registry, as a module\'s EXPORT would';
+ok compiles('use Data::Native <json>;
+             die "over-claimed" if (PROCESS::<%DATA-NATIVE-CLAIMED> // {})<digest>;'),
+   'and claims only the tags that were asked for — <digest> is untouched';
+
 done-testing;

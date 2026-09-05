@@ -5776,7 +5776,203 @@ static std::string metaProvidesPath(const std::string& distRoot, const std::stri
     return s.substr(q + 1, e2 - q - 1);
 }
 
+
+// ===========================================================================
+// DATA-PLAN P6: the compiler answers `use Data::Native`
+//
+// On this engine the tag families are BUILT IN, so a program that says
+// `use Data::Native` should load nothing at all — not the module, and not the
+// eight or nine reference distributions its portable copy depends on. Measured
+// before this existed: `use Data::Native` cost 26 ms, `use Digest::Native`
+// 20.6, `use JSON::Native` 17.0 — all of it loading fallbacks that never ran,
+// because the extension or the builtin answered every call.
+//
+// The COMPILER decides, never the module — so a distribution carries no
+// version logic and stays exactly what it is on Rakudo. It defers in three
+// cases, and this function is where all three live:
+//
+//   1. A search path names one. `-I` and `use lib` win, so a distribution is
+//      tested as an ordinary module — which is what `rakupp test <Dist>` does,
+//      running the suite with the dist's own lib in front. Without this the
+//      suite would silently exercise the engine instead of the code it was
+//      written for, which is the hole EXTENSIONS.md records from an early
+//      JSON::Native.
+//   2. A version was asked for. `use Data::Native:ver<0.3+>` is a request for
+//      a specific distribution; the compiler has one interface version and no
+//      business pretending to satisfy a range it was not told about.
+//   3. The family is not implemented here yet. Only what the engine can
+//      actually answer is claimed — see kDataNativeTags.
+//
+// The shape is `use Test`'s (rtUse, above), NOT isShadowedModule()'s: that one
+// puts rakulib AHEAD of -I on purpose, which is exactly wrong here.
+// ===========================================================================
+
+// One row per family the compiler can answer, with the primitive that backs
+// each name. Kept beside registerBuiltins' spelling — `rakupp-<function>` —
+// so adding a primitive and putting it in a tag is one edit, not two files.
+struct DataNativeTag {
+    const char* tag;
+    const char* names[8];      // NULL-terminated
+};
+static const DataNativeTag kDataNativeTags[] = {
+    // P1 landed the json primitives. csv, digest, zlib and random join this
+    // table as P2-P5 register theirs; until then the module is left to answer,
+    // which is why the check below is by PRIMITIVE and not by tag name.
+    { "json", { "from-json", "to-json", "json-backend", nullptr } },
+    { nullptr, { nullptr } }
+};
+
+// Which module names the compiler claims, and the tags each covers.
+struct DataNativeModule {
+    const char* module;
+    const char* tags[6];       // NULL-terminated
+};
+static const DataNativeModule kDataNativeModules[] = {
+    { "Data::Native",  { "json", "csv", "digest", "zlib", "random", nullptr } },
+    { "JSON::Native",  { "json", nullptr } },
+    { nullptr, { nullptr } }
+};
+
+// The PARSER needs the same answer, and cheaply. It scans a `use`d module's
+// source for exported operators and sigilless constants — which for a module
+// the compiler answers is pure waste, and not free: JSON::Native is installed
+// on this box, so the scan found it, read it, and cost 10.2 ms on a program
+// that then never loaded it.
+//
+// This is the table lookup only. The parser pairs it with its own on-disk
+// check, because a `-I` path naming a real distribution has to be scanned
+// normally — that is the same rule dataNativeUse applies, spelled where the
+// parser can afford it.
+bool rakuppCompilerAnswersModule(const std::string& name) {
+    for (const DataNativeModule* m = kDataNativeModules; m->module; m++) {
+        if (name != m->module) continue;
+        // Claimed only if at least one of its tags is actually implemented.
+        for (const char* const* t = m->tags; *t; t++)
+            for (const DataNativeTag* d = kDataNativeTags; d->tag; d++)
+                if (std::string(*t) == d->tag) return true;
+        return false;
+    }
+    return false;
+}
+
+// The names a compiler-answered `use` puts in scope. The declaration checker
+// needs them: without this it sees `to-json` with no `use` it can attribute it
+// to, treats it as a candidate, and goes looking for the module's source to
+// clear it — which costs 10 ms when the name happens to be installed, and would
+// REFUSE THE PROGRAM if it were not findable at all.
+void rakuppCompilerAnsweredNames(const std::string& module, std::set<std::string>& out) {
+    for (const DataNativeModule* m = kDataNativeModules; m->module; m++) {
+        if (module != m->module) continue;
+        for (const char* const* t = m->tags; *t; t++)
+            for (const DataNativeTag* d = kDataNativeTags; d->tag; d++)
+                if (std::string(*t) == d->tag)
+                    for (const char* const* n = d->names; *n; n++) out.insert(*n);
+        return;
+    }
+}
+
+bool Interpreter::dataNativeUse(const std::string& name,
+                                const std::vector<std::string>& importArgs,
+                                bool doImport, const std::string& verReq) {
+    const DataNativeModule* mod = nullptr;
+    for (const DataNativeModule* m = kDataNativeModules; m->module; m++)
+        if (name == m->module) { mod = m; break; }
+    if (!mod) return false;
+
+    // (2) a versioned request belongs to the store, not to us
+    if (!verReq.empty()) return false;
+
+    // (1) an explicit search path wins — this is what makes `rakupp test`
+    // exercise the distribution rather than the engine.
+    //
+    // DIRECTORY entries only, and that distinction is the whole rule. libPaths_
+    // also carries the installed repositories, so asking the full resolver here
+    // meant an INSTALLED copy beat the compiler — which is exactly backwards,
+    // and left `use JSON::Native` loading the distribution and its JSON::Fast
+    // dependency on a machine that had it installed.
+    if (moduleFileOnPath(name, libPaths_, sixE())) return false;
+
+    // Which of this module's tags the engine can actually answer. A tag whose
+    // primitives are not registered is not claimed, so `use Digest::Native`
+    // still reaches the distribution until P3 lands.
+    std::vector<const DataNativeTag*> answered;
+    for (const char* const* t = mod->tags; *t; t++) {
+        for (const DataNativeTag* d = kDataNativeTags; d->tag; d++) {
+            if (std::string(*t) != d->tag) continue;
+            bool all = true;
+            for (const char* const* n = d->names; *n && all; n++)
+                all = builtins_.count(std::string("rakupp-") + *n) != 0;
+            if (all) answered.push_back(d);
+        }
+    }
+    // (3) nothing here yet for this module — let it load
+    if (answered.empty()) return false;
+
+    // `use Data::Native <json csv>` names tags; a bare `use` takes them all.
+    // An unknown tag is an ERROR rather than a silent no-op: a typo'd <crytpo>
+    // exporting nothing is a bad afternoon.
+    std::vector<std::string> want(importArgs.begin(), importArgs.end());
+    bool all = want.empty();
+    for (auto& w : want) if (w == "all") all = true;
+    if (!all) {
+        for (auto& w : want) {
+            bool known = false;
+            for (const char* const* t = mod->tags; *t && !known; t++) known = (w == *t);
+            if (!known)
+                throw RakuError{Value::typeObj("X::AdHoc"),
+                    name + ": no such tag <" + w + ">"};
+        }
+    }
+
+    if (!doImport) return true;   // `need` loads nothing and imports nothing
+
+    // The claim registry, so a **::Native module loading later stands aside
+    // rather than colliding — on Rakudo two modules exporting one name is a
+    // hard compile error, and the protocol has to hold on both engines.
+    // `PROCESS::<%DATA-NATIVE-CLAIMED>` — which the engine resolves as the
+    // dynamic `%*DATA-NATIVE-CLAIMED`, not as a plain global of that name.
+    // Created here if the program has not made it, since the compiler is
+    // usually the first to claim anything.
+    Value* claimed = nullptr;
+    if (global_) {
+        auto it = global_->vars.find("%*DATA-NATIVE-CLAIMED");
+        if (it == global_->vars.end()) {
+            global_->define("%*DATA-NATIVE-CLAIMED", Value::makeHash());
+            it = global_->vars.find("%*DATA-NATIVE-CLAIMED");
+        }
+        if (it != global_->vars.end()) claimed = &it->second;
+    }
+    for (auto* d : answered) {
+        bool wanted = all;
+        for (auto& w : want) if (w == d->tag) wanted = true;
+        if (!wanted) continue;
+        if (claimed && claimed->hash()) (*claimed->hash())[d->tag] = Value::boolean(true);
+        // Hand out the PRIMITIVE ITSELF, never a Raku wrapper around it:
+        // measured, an exported builtin costs 0.948 us a call and one Raku
+        // frame of indirection would add 33%. This is the same Callable shape
+        // `&::('rakupp-from-json')` yields, cached per builtin the same way, so
+        // the two spellings are the identical object.
+        for (const char* const* n = d->names; *n; n++) {
+            std::string prim = std::string("rakupp-") + *n;
+            auto bit = builtins_.find(prim);
+            if (bit == builtins_.end() || !tctx_.cur) continue;
+            auto rit = builtinRefs_.find(prim);
+            if (rit == builtinRefs_.end()) {
+                Value code; code.t = VT::Code; code.setCode(std::make_shared<Callable>());
+                code.code()->name = *n;             // the name the CALLER sees
+                code.code()->builtin = bit->second;
+                rit = builtinRefs_.emplace(prim, code).first;
+            }
+            tctx_.cur->define(std::string("&") + *n, rit->second);
+        }
+    }
+    return true;
+}
+
 void Interpreter::loadModule(const std::string& name, const std::vector<std::string>& importArgs, bool doImport, bool quiet, const std::string& verReq) {
+    // DATA-PLAN P6. Before anything is looked for on disk: this engine may be
+    // able to answer the `use` itself, in which case nothing loads at all.
+    if (dataNativeUse(name, importArgs, doImport, verReq)) return;
     if (loadedModules_.count(name)) {
         // The module body ran once and stays run — but a repeat `use` still
         // IMPORTS into the new scope. Only the `sub EXPORT(*@_)` protocol needs

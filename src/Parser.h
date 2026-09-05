@@ -37,6 +37,17 @@ const std::string* rakuppEmbeddedModuleSource(const std::string& name);
 // the parser needs it to scan a `use`d module for operators and for the
 // sigilless constants it exports.
 // sixE: from 6.e the `.pm` extension is no longer looked for.
+// DATA-PLAN P6: true when this engine answers `use <name>` from its own
+// builtins, so the module is never loaded and scanning it is wasted work.
+bool rakuppCompilerAnswersModule(const std::string& name);
+// The names such a `use` provides, for the declaration checker.
+void rakuppCompilerAnsweredNames(const std::string& module, std::set<std::string>& out);
+// Is this module in a plain DIRECTORY on the search path (a `-I` or `use lib`
+// entry)? Deliberately not a store lookup: an explicit path beats the
+// compiler's own answer, an installed copy does not.
+bool moduleFileOnPath(const std::string& module,
+                      const std::vector<std::string>& paths, bool sixE);
+
 bool rakuppFindModuleSource(const std::string& name,
                             const std::vector<std::string>& searchPath,
                             std::string& pathOut, std::string& srcOut, bool sixE);
