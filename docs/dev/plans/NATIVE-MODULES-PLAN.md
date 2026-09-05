@@ -1,6 +1,10 @@
 # Plan: the `**::Native` distributions — our C, fastest on Raku++, portable everywhere
 
-**Status: DESIGN, not approved — code not started.** Companion to
+**Status: BUILT 2026-09-05.** `Digest::Native` and `Compress::Zlib::Native`
+exist in `/Users/ash/raku-modules`, and step 4 — the cooperation protocol in
+`JSON::Native` and `CSV::Native` — is done. What is left of the order of work
+is step 1, moving the conformance corpora into this repository beside the
+engine implementations that will read them. Companion to
 [DATA-PLAN.md](DATA-PLAN.md), which covers the engine primitives and
 `Data::Native`. This file covers the modules. Probes 2026-09-05,
 `build-arm64/rakupp` + Rakudo v2026.08.
@@ -231,11 +235,16 @@ depends on `Digest::SHA1::Native`.
 
 Replaces: `Compress::Zlib`. Exports the 6 names in the `zlib` tag.
 
-On rakupp it is the difference between working and not (`Compress::Zlib`
-self-fails there, taking `PDF`, `Image::PNG::Portable`, `Archive::SimpleZip`,
-`File::Zip`, `Avro`, `SAT`, `Sitemap` and `pack6` with it). On Rakudo its value
-is narrower: no system `libz` dependency, and no per-call NativeCall crossing
-into a library whose ABI varies.
+~~On rakupp it is the difference between working and not.~~ **Re-probed
+2026-09-05: half of that expired.** `Compress::Zlib`'s `compress`/`uncompress`
+now work on rakupp 3.25.0; what still fails is `gzslurp`/`gzspurt`, which go
+through a `Wrap` class calling `nqp::p6definite`. The honest case is what
+survives: the file wrappers, no system `libz` dependency, no per-call NativeCall
+crossing into a library whose ABI varies, and — the one that turned out to
+matter most — it is the only route that works inside an `--exe` binary and in
+the WASM playground, where there is no library to dlopen. See DATA-PLAN's
+`--exe` section: a program using this module *directly* cannot be shipped as a
+binary at all.
 
 **The caveat, stated up front: our inflate will not beat zlib.** zlib is thirty
 years of hand-tuned C with assembly fast paths; a clean-room RFC 1951
@@ -324,19 +333,36 @@ references are untouched.
 
 ## Order of work
 
-After DATA-PLAN's P1–P5, so each family's corpus and vectors exist before the
-module that must match them.
+~~After DATA-PLAN's P1–P5~~ — the modules were built first, and did not need
+the primitives: they resolve their own extension, then their fallback, and the
+engine rung is one the ladder simply has not reached yet.
 
 1. **The shared corpora and vector sets**, in the engine repo, with the
-   engine-side regression files that consume them. This is step one precisely
-   *because* the C is not shared — it is the only thing keeping the two
-   implementations aligned.
-2. **`Digest::Native`** — its own C, ext-ABI shim, `Digest` + `Digest::HMAC`
-   as the fallback, the shared vectors as its gate.
-3. **`Compress::Zlib::Native`** — inflate first (it is what unblocks the
-   dependents), then deflate; `Compress::Zlib` as the fallback.
-4. **The cooperation protocol**, retrofitted into `JSON::Native` and
-   `CSV::Native`, and both moved onto the shared corpora.
+   engine-side regression files that consume them. **The only step still
+   open**, and now a question of direction rather than of writing them: they
+   exist, in the distributions —
+   `Digest-Native/t/vectors/digest.vec`, 156 vectors generated from the system
+   `openssl`, and `Compress-Zlib-Native/t/vectors/zlib.vec`, 67 generated from
+   real libz and the system `gzip`, including eight malformed streams that must
+   be refused. Whether they move here or the engine's suite pulls them from
+   there should be settled before P3 and P4 write the engine's copies.
+2. ~~**`Digest::Native`**~~ **DONE.** ~450 lines of C, the composed fallback,
+   the vectors as its gate. Measured at 317 MB/s for MD5 against 0.08 for the
+   pure-Raku reference on rakupp.
+3. ~~**`Compress::Zlib::Native`**~~ **DONE**, and further than planned: inflate
+   *and* deflate, with dynamic Huffman rather than fixed. A fixed-Huffman
+   encoder was written first and produced output 34% larger than libz, which
+   was too visible a cost for the module's main use; with dynamic coding it is
+   within 4% and smaller than libz at level 1. Inflate is fuzzed under ASAN and
+   UBSAN, 360,000 streams, no report.
+4. ~~**The cooperation protocol**, retrofitted into `JSON::Native` and
+   `CSV::Native`~~ **DONE.** All four families now pass the order-independence
+   table in both orders on both engines. CSV needed a split to get there —
+   `CSV::Native::Core` holds the implementation with no export protocol, and
+   `CSV::Native` is the importable face — because `Data::Native` has to
+   delegate its `csv` tag to this distribution and a module that `use`s a
+   protocol participant poisons its own registry read. `need` runs no
+   `sub EXPORT` on either engine, which is what made the split work.
 
 ## Open decisions
 

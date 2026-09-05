@@ -1,6 +1,14 @@
 # Plan: `Data::Native` — one portable `use` for whatever the engine does natively
 
-**Status: DESIGN, not approved — code not started.** Probes run 2026-09-05
+**Status: the module half is BUILT (2026-09-05); the engine half, P1-P6, is
+not started.** `Data::Native`, `Digest::Native` and `Compress::Zlib::Native`
+exist in `/Users/ash/raku-modules` with `JSON::Native` and `CSV::Native`
+retrofitted alongside them — 1,058 assertions on rakupp, 1,063 on Rakudo.
+Extension ABI 3 landed here (`rk_blob`). What remains is P1 to P6: the
+`rakupp-*` primitives and `rakulib/Data/Native.rakumod`. Exactly one primitive
+exists today, `rakupp-sha1-hex`, and it fails the contract check below.
+
+Probes run 2026-09-05
 against `build-arm64/rakupp` and Rakudo v2026.08; every claim marked "probed"
 was checked on both. **Two claims in the first revision were wrong and are
 corrected below** (`sub EXPORT` scope, and the `:tag` spelling) — the design
@@ -406,6 +414,68 @@ sub EXPORT(*@tags) {
 `Nil` in the rakulib copy, and the `use`d reference module's sub in the
 distribution copy.
 
+#### `native($n) // fallback // stub` is the settled resolution order — measured
+
+Decided 2026-09-05 after the alternative was costed. The alternative was to
+have the engine RECOGNISE `use Data::Native` by name, the way it already
+recognises `use Test` and `use NativeCall` ([Interpreter.cpp:2060](../../../src/Interpreter.cpp#L2060)),
+and answer it with no file at all. That is not taken, because the ladder above
+already reaches every property it would have bought:
+
+| | this design | engine recognition |
+|---|---:|---:|
+| per call | **0.948 µs** | the same builtin under the same name |
+| the `use` itself | +0.1 ms | ~0 |
+| installs needed on rakupp | **none** | none |
+| other modules parsed | **none** | none |
+| `--exe` | **native-compiles, runs standalone** | same |
+
+Three measurements make that table, all on `build-arm64/rakupp`, arm64:
+
+- **The exported builtin is the fastest thing available.** `%e{"&$n"} = native($n)`
+  hands out the *primitive object itself*, so a call reaches it with no Raku
+  frame: **0.948 µs**, against 1.147 for the same builtin through a captured
+  `&::()` and 1.257 behind a one-frame wrapper. A wrapper would cost 33%.
+  Whatever else changes, `native()` must keep returning the sub rather than
+  something that calls it.
+- **The rakulib copy is already free**: a dependency-free module of this size
+  costs +0.1 ms to `use`, warm cache. The 26 ms that `use Data::Native` costs
+  today is entirely its *distribution* copy loading nine fallback modules —
+  which is exactly what the rakulib copy exists to avoid, and why it `use`s
+  nothing.
+- **`rakulib/` is searched before the install store.** It joins `libPaths_`
+  ([Interpreter.cpp:2684](../../../src/Interpreter.cpp#L2684)) and those are
+  phase 1 of the resolver, stores phase 2. So an installed `Data::Native` does
+  not shadow the engine's copy, and a program on rakupp needs nothing installed
+  — without any special-casing.
+
+Against that, recognition would move the tag table, the stub messages, the
+unknown-tag error, `<all>` and the claim-registry write into C++, where the
+equal-export-sets gate below gets *harder* rather than disappearing.
+
+**What the store-first ordering costs, and the escape.** Because rakulib wins,
+an installed newer `Data::Native` is not picked up — the same loss recognition
+would have had. The escape is a versioned `use`: `use Data::Native:ver<0.3+>`
+must skip rakulib and resolve against the store, so an update can be shipped
+without an engine release. That is P6's job and is the reason the `metaVersion`
+fallback is listed there.
+
+#### `native()` must probe FUNCTIONALLY, not by name
+
+`try &::("$p-$name")` finding a symbol is not enough, and this is not
+hypothetical: **`rakupp-sha1-hex` exists today and returns UPPERCASE hex**,
+where bduggan's dists, `OpenSSL::Digest` and this tag all return lowercase. A
+by-existence probe would silently change what the module answers the day it
+meets that engine.
+
+So a primitive is adopted only if it reproduces a known value — one hash of
+`"abc"`, one round trip, one published check string — **and returns the right
+type**, since a `-hex` primitive handing back a Blob is not the sub this tag
+promises. Lowercasing the answer before comparing is precisely how the
+uppercase one would slip through. The distribution copy implements this; the
+rakulib copy must too, and P1 should register `rakupp-sha1-hex`'s replacement
+in lowercase rather than leave the tag working around it.
+
 #### `Data::Native` wins for its claimed tags, in either order (probed)
 
 The rule: `use Data::Native` beats our `**::Native` modules for the tags it
@@ -654,13 +724,17 @@ duplicated implementation, and the RFC 4231 gate keeps covering it.
 `compress`, `uncompress`, `gzslurp`, `gzspurt`, `crc32`, `adler32`,
 `zlib-backend`.
 
-**The one family where rakupp has no capability at all.** `Compress::Zlib`
-(rank 83, 8 run-dependents) is NativeCall over `libz` and **self-fails** on
-rakupp, so today nothing here can inflate: no gzip HTTP bodies, no `.gz` file,
-and its dependents — `PDF`, `Image::PNG::Portable`, `Archive::SimpleZip`,
-`File::Zip`, `Avro`, `SAT`, `Sitemap`, `pack6` — are all blocked behind it.
-Every other tag in this plan is a speed-up; this one is the difference between
-working and not.
+**Re-probed 2026-09-05 against rakupp 3.25.0, and this section's premise has
+half expired.** `Compress::Zlib` (rank 83, 8 run-dependents) is NativeCall over
+`libz`, and its one-shot subs now **work** on rakupp — 105,000 B to 303 B and
+back, byte-identical. What still fails is its file wrappers: `gzslurp` and
+`gzspurt` go through a `Wrap` class that calls `nqp::p6definite` and die there.
+
+So this is not "the one family where rakupp has no capability at all" any more.
+What is left is still real — the file wrappers, no system `libz` dependency, and
+the `--exe` and WASM cases below — but the tag is a capability gap for part of
+the surface rather than all of it, and the docs should say so rather than repeat
+the older framing.
 
 The specs are closed and small: RFC 1951 (deflate), 1950 (zlib wrapper), 1952
 (gzip wrapper). Inflate ~300 lines, deflate ~300 more (LZ77 + fixed and
@@ -791,6 +865,9 @@ keeps behaving as the module in every uncovered case. Both call one `jfEncode`.
 
 ## Order of work
 
+P7 is done; P1 to P6 are not started. Nothing in P1-P6 is blocked by anything
+outside this repository.
+
 - **P1 — L1 JSON primitives.** Split the two wrapper functions into an
   argument-parsing half and an on-uncovered half; the wrapper passes a
   delegator, the primitive a thrower. Register `rakupp-from-json` /
@@ -816,12 +893,31 @@ keeps behaving as the module in every uncovered case. Both call one `jfEncode`.
   half is finished at this point; this is a Raku file and a search-path
   check. Includes the `metaVersion` fallback so a versioned `use` resolves
   against a rakulib module (see L3).
-- **P7 — the distributions** (in `/Users/ash/raku-modules`, after the engine
-  ships the primitives, never before): `CSV::Native` and `JSON::Native` gain
-  the `engine` backend and export the primitive raw; `Data::Native` as a
-  distribution, with `JSON::Native`, `CSV::Native`, `Digest::Native`,
-  `Compress::Zlib::Native` and `Crypt::Random` in its `depends` (each
-  `**::Native` carries its own fallback's dependencies).
+- **P7 — the distributions.** ~~After the engine ships the primitives, never
+  before.~~ **DONE 2026-09-05, ahead of the engine half**, because the modules
+  turned out not to need the primitives to be written or tested — they resolve
+  `native($n) // fallback // stub` and today take the middle rung. Two
+  departures from what this section assumed, both forced and both recorded in
+  `notes/Data-Native.md` in that repository:
+
+  1. **`Data::Native`'s `depends` are the REFERENCE modules, not our four.**
+     A module that `use`s a claim-protocol participant runs that participant's
+     `EXPORT` into its OWN scope, and the registry announcement it leaves
+     cannot be told apart from one the caller made — so `Data::Native` would
+     stand aside from every tag and export nothing. Three repairs were tried
+     and all three fail; the information needed (*whose* scope did the
+     announcement land in) is not observable from inside `sub EXPORT` on
+     either engine. So it depends on `JSON::Fast`, `Digest`, bduggan's two,
+     `Digest::HMAC`, `Compress::Zlib` and `Crypt::Random`, and composes the
+     digest and zlib tags itself — about sixty duplicated lines, which the
+     distributions' own conformance vectors keep honest.
+  2. **CSV needed a split**, being the one family whose reference is our own
+     module. `need` runs no `sub EXPORT` at all on either engine, so the
+     implementation moved to `CSV::Native::Core` — a plain `unit module` with
+     no export protocol — and `CSV::Native` became the thin importable face.
+     `Data::Native` reaches the Core by full name. That is the general shape
+     for any family where our own module is the reference.
+
   **Standing rule: nothing in that repo is published from here.**
 
 P1 is deliberately thin — the JSON codec already exists, so P1 plus the
@@ -870,6 +966,42 @@ first three tags are wanted sooner.
   table, so no `--slim` feature is proposed. SLIM budgets get **re-pinned with
   a measurement** after P4 (the largest piece), not estimated here.
 
+## `--exe`: the one place the choice stops being about speed
+
+Measured 2026-09-05. A program that will be shipped as a standalone binary
+**must reach these families through `Data::Native`, never through a `**::Native`
+module directly.**
+
+`--exe` embeds the Raku half of a module graph and nothing else. So a program
+that says `use Digest::Native` compiles to a binary that embeds six modules and
+then cannot run:
+
+```
+--exe: embedded 6 modules: Digest::HMAC Digest::SHA2 … Digest::Native
+--exe: native libraries the binary will dlopen at run time: <computed at run time>
+```
+
+Run beside the distribution it exits **139, a segfault**; run anywhere else it
+reports `Cannot locate symbol 'compute_sha256' in native library ''` — the
+empty name being `%?RESOURCES`, which does not exist inside an `--exe` binary.
+Neither our own extension nor the fallbacks' NativeCall libraries travel. (The
+crash is its own bug and is filed; a missing library should raise.)
+
+The primitive route has none of that, because there is nothing to find: the
+implementation is already inside the runtime `--exe` links. Verified — a program
+using a rakulib-shaped module native-compiled, then ran from `/` with its module
+directory deleted.
+
+One detail worth keeping: **a symbolic reference inside a MODULE does not defeat
+native compilation**, only one in the main program does. So `native()`'s
+`&::("$p-$name")` is free here — checked both ways.
+
+This is the sharpest statement of what the `**::Native` distributions are for,
+and it belongs beside the three reasons in
+[NATIVE-MODULES-PLAN.md](NATIVE-MODULES-PLAN.md): other engines, version skew,
+and families the core will not carry — **not** programs that get shipped as
+binaries.
+
 ## Not in this plan
 
 `--target=js`: there is no JSON in `src/js-rt/` today, so a transpiled program
@@ -914,14 +1046,43 @@ fast path on the loaded YAMLish, the `wrapJsonFastExports` pattern.
 
 ## Open decisions
 
-1. **A `Digest::Native` for naming symmetry only?** The recommendation is no
-   (see above); if yes, it is a one-file re-export of `Data::Native <digest>`.
-   The name is free on raku.land as of 2026-09-05.
-2. **Does `Data::Native` export the `*-backend()` subs?** Useful for
-   diagnostics (`say json-backend()`), but they are four more names in the
-   default import set.
-3. **Unknown tag — error or warning?** Error is the safer default (a typo'd
-   `<crytpo>` silently exporting nothing is a bad afternoon), but it makes
-   adding a tag a breaking change for anyone feature-probing.
-4. **`sha512` in the first cut**, or SHA-256 only? SHA-512 is the same code
-   with different constants and word size, so the marginal cost is small.
+All four are closed, three of them by the implementation rather than by
+argument.
+
+1. ~~**A `Digest::Native` for naming symmetry only?**~~ **Built, and not for
+   symmetry** — see [NATIVE-MODULES-PLAN.md](NATIVE-MODULES-PLAN.md). It covers
+   all six algorithms plus HMAC in one install, which the ecosystem did not
+   have; it is not a re-export of anything.
+2. ~~**Does `Data::Native` export the `*-backend()` subs?**~~ **Yes**, one per
+   tag, in the default set. They earn the five names: with three possible
+   answers per tag (`core`, the module, a stub) `say json-backend()` is the
+   only way to know which is running, and every suite in the campaign prints
+   them as a `diag` line.
+3. ~~**Unknown tag — error or warning?**~~ **Error**, naming the tag *and*
+   listing the ones that exist. The feature-probing worry is answered by the
+   spelling itself — `use Data::Native <json>` on an engine that has no json
+   tag is a bug in the program, not a capability probe, and a program that
+   wants to probe asks `json-backend()` after importing. Note the error is
+   *reported* rather than fatal: a dying `sub EXPORT` is swallowed by both
+   engines, so what the caller sees is a warning on rakupp, silence on Rakudo,
+   and an undeclared-routine failure at the first call. That is why the message
+   has to be worth reading.
+4. ~~**`sha512` in the first cut?**~~ **All six shipped**, with the `-hex`
+   twins and HMAC. The marginal cost was as small as expected: SHA-384/512 is
+   the SHA-256 core with 64-bit words and other constants, SHA-224 is SHA-256
+   truncated.
+
+### Still to decide
+
+1. **Does a versioned `use` reach the store?** `rakulib/` precedes the install
+   store, so an installed newer `Data::Native` is invisible. `use
+   Data::Native:ver<0.3+>` skipping rakulib is the escape that lets the module
+   be updated without an engine release — see the resolution-order section. P6
+   should settle it.
+2. **Where do the shared corpora live?** NATIVE-MODULES-PLAN says the engine
+   repository, with each distribution's `t/` pulling them. They were written
+   the other way round — `Digest-Native/t/vectors/digest.vec` (156 vectors,
+   from `openssl`) and `Compress-Zlib-Native/t/vectors/zlib.vec` (67, from real
+   libz and the system `gzip`) — because the distributions existed first. The
+   direction of ownership should be settled before P3 and P4 write the engine's
+   copies against them.
