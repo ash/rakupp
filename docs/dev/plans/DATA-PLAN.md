@@ -908,8 +908,12 @@ impossible for a primitive. Each case must be decided:
 - **`:sorted-keys` with a `Callable`** — support it. The wrapper punts because
   delegating is cheaper than calling back into Raku; the primitive has the
   `Interpreter&`.
-- **NaN / Inf `Num`** — read `$*JSON_NAN_INF_SUPPORT` and throw when unset, as
-  the module does.
+- **NaN / Inf `Num`** — read `$*JSON_NAN_INF_SUPPORT` and match the module,
+  which is **not** to throw: probed 2026-09-05, it writes `null` when the
+  dynamic is unset and bare `NaN` / `Inf` / `-Inf` when it is set — output its
+  own parser then refuses to read back. That is the module's business and not
+  ours to improve on; this line previously said "throw when unset", which was
+  wrong on both halves.
 - **`to-json(Mu)`** — JSON::Fast's parameter is `Any`, so its *binder* rejects
   it; the primitive must too, or this prints `null` here and dies there. The
   existing fast path carries the carve-out already
