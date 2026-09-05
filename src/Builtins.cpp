@@ -1,6 +1,7 @@
 #include "CNumeric.h"
 #include "AsciiCtype.h"
 #include "Interpreter.h"
+#include "DataCsv.h"
 #include "Lexer.h"
 #include "Parser.h"
 #if !defined(_WIN32)
@@ -8794,6 +8795,22 @@ void Interpreter::registerBuiltins() {
             throw RakuError{Value::typeObj("X::AdHoc"),
                             std::string("from-json: ") + why};
         });
+    };
+
+    // ---- the `csv` tag's primitives (DATA-PLAN P2) --------------------------
+    //
+    // A port of CSV::Native's csv.c, in src/DataCsv.cpp — and a port rather
+    // than a reimplementation on purpose: the extension is what that
+    // distribution's suite pins, and re-deriving the edge cases is how two
+    // implementations of one format come to disagree.
+    B["rakupp-csv-backend"] = [](Interpreter&, ValueList&) -> Value {
+        return Value::str("core");
+    };
+    B["rakupp-from-csv"] = [](Interpreter& I, ValueList& a) -> Value {
+        return dataCsvFromCsv(I, a);
+    };
+    B["rakupp-to-csv"] = [](Interpreter& I, ValueList& a) -> Value {
+        return dataCsvToCsv(I, a);
     };
     // repo.lock — the store is also zef's and Rakudo's, and a writer that
     // ignores the lock can corrupt it under a concurrent zef. IO::Handle

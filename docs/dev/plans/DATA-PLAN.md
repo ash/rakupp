@@ -1,12 +1,18 @@
 # Plan: `Data::Native` — one portable `use` for whatever the engine does natively
 
-**Status: the module half is BUILT (2026-09-05); the engine half, P1-P6, is
-not started.** `Data::Native`, `Digest::Native` and `Compress::Zlib::Native`
-exist in `/Users/ash/raku-modules` with `JSON::Native` and `CSV::Native`
-retrofitted alongside them — 1,058 assertions on rakupp, 1,063 on Rakudo.
-Extension ABI 3 landed here (`rk_blob`). What remains is P1 to P6: the
-`rakupp-*` primitives and `rakulib/Data/Native.rakumod`. Exactly one primitive
-exists today, `rakupp-sha1-hex`, and it fails the contract check below.
+**Status: the module half is BUILT (2026-09-05); the engine half is under way
+— P1, P2 and P6 have landed, P3 to P5 have not.** `Data::Native`,
+`Digest::Native` and `Compress::Zlib::Native` exist in
+`/Users/ash/raku-modules` with `JSON::Native` and `CSV::Native` retrofitted
+alongside them — 1,058 assertions on rakupp, 1,063 on Rakudo. Extension ABI 3
+landed here (`rk_blob`). On this side the compiler now answers
+`use Data::Native <json csv>`, `use JSON::Native` and `use CSV::Native` from
+its own builtins with nothing installed; `rakupp-from-json` / `rakupp-to-json`
+and `rakupp-from-csv` / `rakupp-to-csv` are registered, with the `*-backend`
+subs reporting `core`. What remains is P3 (digest), P4 (zlib) and P5 (random)
+— each of which adds primitives plus one row to `kDataNativeTags`, the
+mechanism itself being done. The line below about `rakupp-sha1-hex` still
+stands: it is P3's first job.
 
 Probes run 2026-09-05
 against `build-arm64/rakupp` and Rakudo v2026.08; every claim marked "probed"
@@ -656,6 +662,41 @@ measured table (arm64 Mac, Raku++ 3.24.0, 2026-09-02; 100,000 rows / 8.5 MB):
 
 The engine backend lands on the first row with no build step.
 
+**Landed 2026-09-05**, and it is faster than the extension it was ported from.
+Re-measured the same day on the same box, against
+`raku-modules/benchmarks/csv/corpus-100k.csv` with that directory's own
+`bench.raku` protocol (best of three), so all three rows are one engine build
+and one corpus — the table above is the module README's, recorded 2026-09-02,
+and the engine has moved under the extension since:
+
+| 100,000 rows, 8.5 MB | parse | parse `:headers` | write | write hashes |
+|---|---:|---:|---:|---:|
+| **engine primitive (`core`)** | **39 ms** | **70 ms** | **38 ms** | **31 ms** |
+| extension (`native`) | 53 ms | 87 ms | 42 ms | 79 ms |
+| Raku implementation | 926 ms | 1,388 ms | 2,586 ms | 2,900 ms |
+
+The gap is the ABI, not the algorithm — it is the same scanner. Every field the
+extension produces crosses `rk_*`, which allocates and copies it; the port
+writes a `Value` where it stands. `write hashes` is where that compounds
+(79 ms to 31 ms): the extension reads each row key by key through the boundary,
+the port walks the hash's own map.
+
+The port kept `csv.c`'s scanner intact and rewrote only
+its edges: the C's caller-supplied buffers became `std::string`, its name list
+became the three-way `:headers`, and the source became the module's
+`Str | IO::Path | IO::Handle | .Str` rather than the extension's `Str`. What
+the port did NOT do is re-derive any rule of the format — every decision about
+doubled quotes, a quoted field crossing lines, a lone `\r`, what may follow a
+closing quote, and what `:strict` counts, is the C's, transcribed. The
+conformance harness asks the distribution's pure-Raku half the same 193
+questions and gets the same 193 answers.
+
+Building the distribution's C extension into its checkout (it is gitignored,
+so this is a local act) makes the module's own suite run its two halves against
+each other, which turns the agreement three-way: the extension, the Raku
+implementation and this port. 2,227 assertions across the two engines, all
+passing.
+
 ### `digest` — reference: `Digest` + `Digest::HMAC`; no distribution of ours
 
 **The survey.** Reverse runtime-dependents over the REA snapshot of
@@ -924,16 +965,39 @@ keeps behaving as the module in every uncovered case. Both call one `jfEncode`.
 
 ## Order of work
 
-P7 is done; P1 to P6 are not started. Nothing in P1-P6 is blocked by anything
-outside this repository.
+P7, P1, P2 and P6 are done; P3 to P5 are not started. Nothing left is blocked
+by anything outside this repository.
 
-- **P1 — L1 JSON primitives.** Split the two wrapper functions into an
+- ~~**P1 — L1 JSON primitives.**~~ **DONE 2026-09-05** (`2c6f590`). Split the two wrapper functions into an
   argument-parsing half and an on-uncovered half; the wrapper passes a
   delegator, the primitive a thrower. Register `rakupp-from-json` /
   `rakupp-to-json`. New code: the `Callable :sorted-keys` path and the
-  `$*JSON_NAN_INF_SUPPORT` read. No new file, under ~200 lines.
-- **P2 — L1 CSV primitives.** `src/DataCsv.{h,cpp}`, the port of `csv.c`.
-  ~500 lines.
+  `$*JSON_NAN_INF_SUPPORT` read. No new file, under ~200 lines. Landed as
+  written, with two corrections this plan was wrong about — NaN/Inf (below),
+  and `$*JSON_NAN_INF_SUPPORT` needing a *lenient* dynamic lookup, because a
+  module can sit between the setter and the codec. The `Callable :sorted-keys`
+  path is the one piece not done; it is still refused, by both entry points.
+  Gate: `t/regression/data-native-json.raku`, 117 assertions.
+- ~~**P2 — L1 CSV primitives.**~~ **DONE 2026-09-05.** `src/DataCsv.{h,cpp}`,
+  the port of `csv.c`, 400 lines. Three things the port had to decide that the
+  C did not, all of them the MODULE's surface rather than the extension's:
+  `$src` accepts an `IO::Path` (a `Str` tagged `IO` here) and an `IO::Handle`
+  (a `Hash` tagged `FileHandle`) and falls back to `.Str` for anything else,
+  which is the module's own last arm and not an error; `:headers` is a
+  three-way — absent, a `Bool`, or a list of names — where the C had only a
+  name list, and conflating "names given" with "the Bool was true" reads a
+  header with zero columns; and `:quote` is checked in CHARACTERS, so
+  `:quote("«")` is legal and `:quote("xy")` is not, which a byte count gets
+  backwards in both directions. Gates: `t/regression/data-native-csv.raku`,
+  122 assertions, whose expectations were GENERATED from
+  `CSV::Native::Core::parse-raku` / `write-raku` — the distribution's pure-Raku
+  half, an oracle independent of both its C and this port — and baked in as
+  literals, since the plan's own rule is that the distribution is never a build
+  dependency here. Plus a conformance harness over the same two, run in two
+  rounds: 76 parse and 35 write cases of well-formed CSV, then 42 parse and 40
+  write cases of the MALFORMED shapes where two implementations of one format
+  actually part company — a quote where a quote may not be, a space after a
+  closing one, a record that ends in the wrong place. 193 cases, 0 differences.
 - **P3 — L1 digest primitives.** Lift `Sha256`/`hmacSha256Hex` to
   `src/Digest.{h,cpp}`; add MD5, SHA-512 and the 224/384 variants; register
   the bare and `-hex` names and `hmac`/`hmac-hex`. Gate: the six
@@ -948,7 +1012,8 @@ outside this repository.
   `BCryptGenRandom` behind one entry point; rejection sampling for
   `crypt_random_uniform`. Gate: a distribution check on the uniform sampler
   and a "never returns the same buffer twice" smoke.
-- **P6 — the compiler answers `use Data::Native` and `use <X>::Native`.**
+- ~~**P6 — the compiler answers `use Data::Native` and `use <X>::Native`.**~~
+  **DONE 2026-09-05** (`66a8f6c`, `json`; the `csv` row followed with P2).
   Not a `rakulib/` file — see "The compiler answers" above. Four pieces:
   (a) the tag table, beside `registerBuiltins()` so a new primitive and its tag
   membership are one edit; (b) the interception, in the `use Test` shape at
@@ -959,6 +1024,24 @@ outside this repository.
   claim-registry write per claimed tag, or `Digest::Native` will not stand
   aside when it does load. Gate: `Data-Native/t/` and each distribution's suite
   pass identically with and without `-I` pointing at the distribution.
+
+  Three things it had to settle that this bullet did not anticipate, each
+  found by a test that failed first:
+
+  - **`need` is not ours to answer.** It asks for the COMPUNIT, and the
+    compiler has builtins to offer, not a package — so `need CSV::Native`
+    falls through to the store, which is also what lets the distribution's
+    pure-Raku half serve as an independent oracle.
+  - **The `-I` check must be DIRECTORY-ONLY.** Using the full resolver made an
+    INSTALLED copy win over the compiler, which is exactly backwards: an
+    explicit search path is a deliberate act, an installed copy is not.
+  - **`PROCESS::<%X>` is the dynamic `%*X`,** not a global of that name. The
+    claim registry was being written where nothing could read it.
+  - **`--slim` cuts `Parser.cpp`,** so the interception could not call anything
+    defined there. `moduleFileOnPath` had to move to `Interpreter.cpp` beside
+    its two siblings; a slim binary that has given up EVAL still has to decide
+    whether an explicit `-I` beats the compiler. Caught by the slim gate, and
+    only there — every other gate was green with `--slim=auto` unlinkable.
 
 - **P7 — the distributions.** ~~After the engine ships the primitives, never
   before.~~ **DONE 2026-09-05, ahead of the engine half**, because the modules

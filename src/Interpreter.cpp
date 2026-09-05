@@ -5456,6 +5456,34 @@ static bool findModuleSourceFor(const std::string& name,
     return false;
 }
 
+// Directory-only existence check: does a plain `-I`/`use lib` entry hold this
+// module? A few stat() calls, and deliberately NOT a store lookup — reading the
+// store is the cost the caller is avoiding.
+//
+// It sits HERE rather than in Parser.cpp beside its one parser-side caller
+// because `--slim` cuts Parser.cpp, and dataNativeUse() below needs it in every
+// build: a slim binary that has given up EVAL still has to decide whether an
+// explicit -I beats the compiler's answer to `use Data::Native`. Its two
+// siblings, rakuppFindModuleSource and rakuppCompilerAnswersModule, are in this
+// file for the same reason and are declared from the same header.
+bool moduleFileOnPath(const std::string& module,
+                      const std::vector<std::string>& paths, bool sixE) {
+    std::string rel = module;
+    for (size_t p = rel.find("::"); p != std::string::npos; p = rel.find("::")) rel.replace(p, 2, "/");
+    static const char* extsAll[] = {".rakumod", ".pm6", ".raku", ".pm"};
+    for (auto& base : paths) {
+        if (base.empty() || base[0] == '#') continue;      // a repo spec, not a directory
+        for (size_t e = 0; e < (sixE ? 3u : 4u); e++) {
+            struct ::stat st;
+            std::string cand = base + "/" + rel + extsAll[e];
+            if (::stat(cand.c_str(), &st) == 0) return true;
+            cand = base + "/lib/" + rel + extsAll[e];
+            if (::stat(cand.c_str(), &st) == 0) return true;
+        }
+    }
+    return false;
+}
+
 // Same resolution the loader uses, exposed for the PARSER: a module that is
 // installed (zef) rather than sitting on a lib path must still be scanned at
 // parse time, or its exported operators and sigilless constants are invisible
@@ -5819,6 +5847,7 @@ static const DataNativeTag kDataNativeTags[] = {
     // table as P2-P5 register theirs; until then the module is left to answer,
     // which is why the check below is by PRIMITIVE and not by tag name.
     { "json", { "from-json", "to-json", "json-backend", nullptr } },
+    { "csv",  { "from-csv", "to-csv", "csv-backend", nullptr } },
     { nullptr, { nullptr } }
 };
 
@@ -5830,6 +5859,7 @@ struct DataNativeModule {
 static const DataNativeModule kDataNativeModules[] = {
     { "Data::Native",  { "json", "csv", "digest", "zlib", "random", nullptr } },
     { "JSON::Native",  { "json", nullptr } },
+    { "CSV::Native",   { "csv", nullptr } },
     { nullptr, { nullptr } }
 };
 
@@ -5924,7 +5954,12 @@ bool Interpreter::dataNativeUse(const std::string& name,
         }
     }
 
-    if (!doImport) return true;   // `need` loads nothing and imports nothing
+    // `need` is not ours to answer. It asks for the COMPUNIT — the caller wants
+    // to reach the package by name — and the compiler has builtins to offer, not
+    // a package. Falling through lets `need CSV::Native` load the distribution
+    // and `CSV::Native::parse-raku` resolve, which is also what makes the
+    // module's pure-Raku half usable as an independent oracle in the tests.
+    if (!doImport) return false;
 
     // The claim registry, so a **::Native module loading later stands aside
     // rather than colliding — on Rakudo two modules exporting one name is a
