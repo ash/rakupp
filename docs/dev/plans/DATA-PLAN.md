@@ -316,7 +316,7 @@ my &fast = try &::('rakupp-from-csv');   # Nil on Rakudo, sub here
 **These are the only names the engine knows.** Nothing else in this plan is
 compiler-visible.
 
-### L2 — the `**::Native` distributions: XS only
+### L2 — the `**::Native` distributions: XS only, and not loaded at all here
 
 **A `**::Native` module of ours binds its compiled extension and nothing
 else.** It never reaches for an engine primitive. Its backends are, in order:
@@ -334,6 +334,14 @@ it was written for.** A module that binds the primitive re-creates exactly
 that hole — its suite would stop testing its own C. Separate implementations
 mean each suite tests its own code, and the conformance gate is what proves
 they agree.
+
+**And on rakupp, the module is not loaded at all** — see "The compiler
+answers" below. The rule above is therefore about what the module does *when
+it runs*: on another engine, on a rakupp too old to answer, or under a `-I`
+that points at it, which is exactly what `rakupp test` does. Those three cases
+are also, precisely, the cases its suite covers, so the EXTENSIONS.md hole
+stays closed: a distribution under test is a distribution the search path
+named, and the engine stands aside for it.
 
 **Correction to an earlier line in this plan: the extension ABI is
 rakupp-only, so these modules do NOT accelerate Rakudo.** `rakupp_ext.h` is
@@ -354,6 +362,73 @@ That reframes what a `**::Native` module is for, and the honest list is short:
    is the genuine long-term niche for an extension.
 
 It is *not* "Rakudo users get C speed" — they do not, and under the settled decision they will not. A NativeCall path was designed and dropped: measured, it would make Raku++ *slower* (see [NATIVE-MODULES-PLAN.md](NATIVE-MODULES-PLAN.md#why-not-nativecall--measured)). Other engines get the module's fallback — the established module it stands in for — which works everywhere and is why the same program runs on any Raku.
+
+### The compiler answers, and the compiler decides (settled 2026-09-05)
+
+**On rakupp, `use Data::Native` and `use <X>::Native` are answered by the
+compiler.** An installed distribution does nothing. It comes back into play in
+exactly three cases, and the compiler decides all three:
+
+1. **A search path names one.** `-I` and `use lib` win, so a distribution is
+   tested as an ordinary module with nothing special about it — which is what
+   `rakupp test <Dist>` already does, running the suite with the dist's `lib`
+   in front.
+2. **The installed version is newer than the interface the compiler
+   implements.** rakupp declares a version per module name it can answer and
+   defers to anything higher in the store. Installed 0.0.1 against an engine
+   that implements 0.0.1: the engine answers. Installed 0.2.0: the engine
+   steps aside. That costs one store lookup, against loading the module and
+   its dependencies.
+3. **Another engine, or a rakupp too old to answer.** Nothing to decide; the
+   module is all there is.
+
+**The decision is the compiler's, never the module's.** No
+`$*RAKU.compiler.version` check, no floor constant, nothing engine-specific in
+the Raku source — the distribution stays exactly what it is on Rakudo. That is
+what makes case 3 work without the module knowing it is case 3.
+
+**What it costs to load a module that then does nothing** — the measurement
+this replaces, on rakupp where the extension answers every call:
+
+| | |
+|---|---:|
+| `use Digest::Native` | +20.6 ms |
+| `use JSON::Native` | +17.0 ms |
+| `use Compress::Zlib::Native` | +16.0 ms |
+
+All of it spent loading fallback modules that are never called. Under this rule
+it is zero, because nothing is loaded.
+
+**It also closes the `--exe` hole rather than papering over it.** A program
+that says `use Digest::Native` today compiles to a binary that embeds six
+modules and then segfaults, because neither our extension nor the fallbacks'
+NativeCall libraries travel (see the `--exe` section below). When the compiler
+answers, there is nothing to embed and nothing to find: the implementation is
+already inside the runtime `--exe` links.
+
+#### The risk, and what we do about it
+
+**The compiler's answer must match the module's interface exactly** — every
+superset behaviour included: `:initial-hash` refused, HMAC's block size, an
+`IO::Path` streamed, `:gzip`/`:raw`, the error text. Drift means a program
+behaves differently with and without `-I`, which is the worst shape a bug can
+take.
+
+Accepted deliberately (user, 2026-09-05), on two grounds. It is our job to keep
+the two consistent, and the shared conformance corpora are the mechanism —
+which makes them load-bearing rather than a nicety, and settles where they
+live: **in this repository**, with each distribution's `t/` pulling them.
+Second, these interfaces do not churn. MD5 and SHA-2 are closed specifications
+and the signatures are copied from modules that have been stable for years;
+there is no roadmap to keep in sync, only a surface not to break.
+
+#### `native()` still probes functionally
+
+The version comparison is the compiler's, and it asserts that a whole
+conformance suite passed at release time. The functional probe in the Raku half
+is a different and cheaper thing: a guard against a build that lies or
+regresses, checking one known value and the return type per name. Both stay.
+The probe is what already rejects `rakupp-sha1-hex` for returning uppercase hex.
 
 ### L3 — `Data::Native`: the core, and only the core
 
@@ -416,49 +491,29 @@ distribution copy.
 
 #### `native($n) // fallback // stub` is the settled resolution order — measured
 
-Decided 2026-09-05 after the alternative was costed. The alternative was to
-have the engine RECOGNISE `use Data::Native` by name, the way it already
-recognises `use Test` and `use NativeCall` ([Interpreter.cpp:2060](../../../src/Interpreter.cpp#L2060)),
-and answer it with no file at all. That is not taken, because the ladder above
-already reaches every property it would have bought:
+The ladder itself is settled: primitive, then fallback, then a stub that throws
+when called. What changed on 2026-09-05 is *who runs it* — the compiler answers
+`use Data::Native` directly rather than shipping a `rakulib/` file that does
+(see "The compiler answers" above). The measurements that decided it:
 
-| | this design | engine recognition |
-|---|---:|---:|
-| per call | **0.948 µs** | the same builtin under the same name |
-| the `use` itself | +0.1 ms | ~0 |
-| installs needed on rakupp | **none** | none |
-| other modules parsed | **none** | none |
-| `--exe` | **native-compiles, runs standalone** | same |
-
-Three measurements make that table, all on `build-arm64/rakupp`, arm64:
-
-- **The exported builtin is the fastest thing available.** `%e{"&$n"} = native($n)`
-  hands out the *primitive object itself*, so a call reaches it with no Raku
-  frame: **0.948 µs**, against 1.147 for the same builtin through a captured
-  `&::()` and 1.257 behind a one-frame wrapper. A wrapper would cost 33%.
-  Whatever else changes, `native()` must keep returning the sub rather than
-  something that calls it.
-- **The rakulib copy is already free**: a dependency-free module of this size
-  costs +0.1 ms to `use`, warm cache. The 26 ms that `use Data::Native` costs
-  today is entirely its *distribution* copy loading nine fallback modules —
-  which is exactly what the rakulib copy exists to avoid, and why it `use`s
-  nothing.
-- **`rakulib/` is searched before the install store.** It joins `libPaths_`
-  ([Interpreter.cpp:2684](../../../src/Interpreter.cpp#L2684)) and those are
-  phase 1 of the resolver, stores phase 2. So an installed `Data::Native` does
-  not shadow the engine's copy, and a program on rakupp needs nothing installed
-  — without any special-casing.
-
-Against that, recognition would move the tag table, the stub messages, the
-unknown-tag error, `<all>` and the claim-registry write into C++, where the
-equal-export-sets gate below gets *harder* rather than disappearing.
-
-**What the store-first ordering costs, and the escape.** Because rakulib wins,
-an installed newer `Data::Native` is not picked up — the same loss recognition
-would have had. The escape is a versioned `use`: `use Data::Native:ver<0.3+>`
-must skip rakulib and resolve against the store, so an update can be shipped
-without an engine release. That is P6's job and is the reason the `metaVersion`
-fallback is listed there.
+- **The exported primitive is the floor.** Handing out the *primitive object
+  itself* means a call reaches it with no Raku frame: **0.948 µs**, against
+  1.147 for the same builtin through a captured `&::()` and 1.257 behind a
+  one-frame wrapper. A wrapper costs 33%. Whatever else changes, the `native()`
+  rung must yield the sub rather than something that calls it — that holds for
+  a compiler-installed binding exactly as it did for a Raku one.
+- **A `rakulib/` file would have been nearly free too** — a dependency-free
+  module of this size costs +0.1 ms to `use`, warm cache — so speed is not what
+  decided against it. Three other things did: it is a third place the tag table
+  lives, after `registerBuiltins()` and the distribution; it is found by walking
+  `/../rakulib` and `/../libexec/rakupp/rakulib` relative to the binary and is
+  installed by `tools/install.raku` rather than CMake, so `use Data::Native`
+  depends on the install layout being right; and it does nothing for the four
+  `**::Native` names, which have the same problem and no rakulib copy to solve
+  it with.
+- **The 26 ms that `use Data::Native` costs today** is its *distribution* copy
+  loading nine fallback modules. Under the compiler-answers rule that is zero,
+  and so is the 16-21 ms each `**::Native` module costs.
 
 #### `native()` must probe FUNCTIONALLY, not by name
 
@@ -889,10 +944,18 @@ outside this repository.
   `BCryptGenRandom` behind one entry point; rejection sampling for
   `crypt_random_uniform`. Gate: a distribution check on the uniform sampler
   and a "never returns the same buffer twice" smoke.
-- **P6 — `rakulib/Data/Native.rakumod`** and its `t/` coverage. The engine
-  half is finished at this point; this is a Raku file and a search-path
-  check. Includes the `metaVersion` fallback so a versioned `use` resolves
-  against a rakulib module (see L3).
+- **P6 — the compiler answers `use Data::Native` and `use <X>::Native`.**
+  Not a `rakulib/` file — see "The compiler answers" above. Four pieces:
+  (a) the tag table, beside `registerBuiltins()` so a new primitive and its tag
+  membership are one edit; (b) the interception, in the `use Test` shape at
+  [Interpreter.cpp:2060](../../../src/Interpreter.cpp#L2060) and emphatically
+  *not* the `isShadowedModule()` shape — a search path must win, or a
+  distribution's own suite stops testing it; (c) a declared interface version
+  per module name, and a store lookup that defers to anything higher; (d) the
+  claim-registry write per claimed tag, or `Digest::Native` will not stand
+  aside when it does load. Gate: `Data-Native/t/` and each distribution's suite
+  pass identically with and without `-I` pointing at the distribution.
+
 - **P7 — the distributions.** ~~After the engine ships the primitives, never
   before.~~ **DONE 2026-09-05, ahead of the engine half**, because the modules
   turned out not to need the primitives to be written or tested — they resolve
@@ -1074,15 +1137,14 @@ argument.
 
 ### Still to decide
 
-1. **Does a versioned `use` reach the store?** `rakulib/` precedes the install
-   store, so an installed newer `Data::Native` is invisible. `use
-   Data::Native:ver<0.3+>` skipping rakulib is the escape that lets the module
-   be updated without an engine release — see the resolution-order section. P6
-   should settle it.
-2. **Where do the shared corpora live?** NATIVE-MODULES-PLAN says the engine
-   repository, with each distribution's `t/` pulling them. They were written
-   the other way round — `Digest-Native/t/vectors/digest.vec` (156 vectors,
-   from `openssl`) and `Compress-Zlib-Native/t/vectors/zlib.vec` (67, from real
-   libz and the system `gzip`) — because the distributions existed first. The
-   direction of ownership should be settled before P3 and P4 write the engine's
-   copies against them.
+Nothing structural. Two things P6 has to pin down as it is written:
+
+1. **What a versioned `use` does when the store has no such version.**
+   `use Data::Native:ver<9.9+>` with nothing that new installed should fail
+   rather than silently fall back to the compiler's older interface — the
+   caller asked for something specific.
+2. **Which module names the compiler claims.** `Data::Native` certainly, and
+   the four `**::Native` names on the same rule. Whether a family with no
+   engine primitives yet (none, once P1-P5 land) is claimed and stubbed or left
+   entirely to the module is a per-family call, and the honest default is to
+   claim only what the engine can actually answer.

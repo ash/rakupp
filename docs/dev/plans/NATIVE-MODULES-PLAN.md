@@ -138,6 +138,20 @@ are separate, and only the test suite holds them together. Nothing here makes
 that better; the decision is that a shared core would make the core worse by
 more than the drift costs.
 
+**The commitment now covers the INTERFACE, not just the codecs.** Since the
+compiler answers `use <X>::Native` on Raku++, a program gets the engine's
+implementation without `-I` and the distribution's with it — so the two must
+agree on every superset behaviour as well as every byte: `:initial-hash`
+refused, HMAC's block size, an `IO::Path` streamed, `:gzip`/`:raw`, the error
+text. Drift there is a bug that appears and disappears with a `-I` flag, which
+is the worst shape one can take.
+
+Accepted deliberately (user, 2026-09-05), on two grounds: keeping them
+consistent is our job and the corpora are how it is done, and these interfaces
+do not churn — MD5 and SHA-2 are closed specifications, and the signatures are
+copied from modules that have been stable for years. There is no roadmap to
+keep in sync, only a surface not to break.
+
 **What we do about it instead** — this is the standing commitment, not a
 nice-to-have:
 
@@ -145,7 +159,12 @@ nice-to-have:
    sets live in the engine repo and are run by *both* the engine's regression
    suite and each distribution's `t/`. Same inputs, same expected bytes. A
    divergence is a failing test on whichever side moved, even though the code
-   is not shared.
+   is not shared. **They exist** — `digest.vec`, 156 vectors from the system
+   `openssl`, and `zlib.vec`, 67 from real libz and the system `gzip` — but
+   currently in the distributions, because those were built first. Moving them
+   here is the one open item in the order of work below, and the compiler
+   answering `use <X>::Native` is what makes it the right direction: the engine
+   is now the primary implementation.
 2. **A pointer in each file's header.** The engine's codec and the module's C
    each name the other as its twin, so a fix in one prompts a look at the
    other. Cheap, and it is the thing that actually gets remembered.
@@ -165,23 +184,41 @@ are where to converge first, and json/csv are where not to.
 
 ## The backend ladder, and what each engine gets
 
-Every `**::Native` module resolves in this order:
+**On Raku++ the module is not loaded at all** — the compiler answers
+`use <X>::Native` itself, and defers only to a search path, a newer installed
+version, or its own inability to answer (DATA-PLAN, "The compiler answers").
+So this ladder describes what happens **when the module does run**: on another
+engine, on a rakupp too old to answer, or under a `-I` that names it — which is
+what `rakupp test <Dist>` does.
 
-| | Raku++ | other Rakus | `*-backend()` reports |
-|---|---|---|---|
-| 1. engine primitive, if `Data::Native` claimed this tag | ✓ | ✓ where that engine has one | `core` |
-| 2. our ext-ABI extension | ✓ | — | `native` |
-| 3. the ecosystem reference it stands in for | ✓ | ✓ | e.g. `JSON::Fast` |
+| | when the module runs | `*-backend()` reports |
+|---|---|---|
+| 1. our ext-ABI extension | Raku++ only | `native` |
+| 2. the ecosystem reference it stands in for | anywhere | e.g. `JSON::Fast` |
 
-**Rows 1 and 2 are both our C, and row 1 is expected to be at least as fast**,
-because a builtin skips the ABI boundary and the call arena. So on Raku++ the
-`**::Native` extension is not a speed win over `Data::Native` — its value is
-version skew (an engine predating the tag), independent release cadence, and
-families the core deliberately will not carry. Once both exist, measure and
-record which wins rather than assuming; JSON::Native's README currently has the
-extension at 5.0 ms against 7.7 ms for the engine path, but that engine path
-goes through a class method and module dispatch, not the direct builtin this
-plan adds.
+The engine-primitive row is gone from this table, and that is the point: it is
+not a rung the module reaches for, it is the compiler answering before the
+module exists. `*-backend()` still has a `core` value, reported by what the
+compiler installs.
+
+**What the distributions are for, then** — the honest list, now that the
+compiler answers on Raku++:
+
+1. **Other engines.** The whole reason a program using them runs anywhere.
+2. **Version skew, mechanised.** The compiler declares an interface version and
+   steps aside for anything higher in the store, so a distribution can ship a
+   new tag or a fix without an engine release. This used to be a hope; it is
+   now the mechanism.
+3. **Families the core deliberately will not carry**, for size or scope.
+4. **Being the thing under test.** `rakupp test <Dist>` puts the dist's `lib`
+   in front, the compiler stands aside, and the suite exercises the
+   distribution's own C. That is what keeps EXTENSIONS.md's old hole closed.
+
+**And one thing they are NOT for: programs that get shipped as binaries.** A
+program that says `use Digest::Native` *directly* and is built with `--exe`
+embeds the Raku halves and then segfaults — neither our extension nor the
+fallbacks' NativeCall libraries travel. Reaching the family through
+`Data::Native`, or simply letting the compiler answer, has nothing to find.
 
 ## The two new modules, and the one not built
 
@@ -339,13 +376,13 @@ engine rung is one the ladder simply has not reached yet.
 
 1. **The shared corpora and vector sets**, in the engine repo, with the
    engine-side regression files that consume them. **The only step still
-   open**, and now a question of direction rather than of writing them: they
-   exist, in the distributions —
-   `Digest-Native/t/vectors/digest.vec`, 156 vectors generated from the system
-   `openssl`, and `Compress-Zlib-Native/t/vectors/zlib.vec`, 67 generated from
+   open**, and the direction is now settled: they move HERE. They exist, in the
+   distributions — `Digest-Native/t/vectors/digest.vec`, 156 vectors from the
+   system `openssl`, and `Compress-Zlib-Native/t/vectors/zlib.vec`, 67 from
    real libz and the system `gzip`, including eight malformed streams that must
-   be refused. Whether they move here or the engine's suite pulls them from
-   there should be settled before P3 and P4 write the engine's copies.
+   be refused — and the compiler answering `use <X>::Native` is what decides
+   the direction: the engine is the primary implementation now, so the corpus
+   belongs beside it and each distribution's `t/` pulls it.
 2. ~~**`Digest::Native`**~~ **DONE.** ~450 lines of C, the composed fallback,
    the vectors as its gate. Measured at 317 MB/s for MD5 against 0.08 for the
    pure-Raku reference on rakupp.
