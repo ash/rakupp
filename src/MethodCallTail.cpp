@@ -967,6 +967,45 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
     // usual; the :degree/:batch tuning nameds arrive as ignored extras.
     // `.serial` unwraps a HyperSeq — on the plain-list stand-in it is the
     // identity. (Ecosystem and JSON::Fast::Hyper want exactly this surface.)
+    // `Iterable.hyper.configuration` — the TYPE OBJECT answers the parallel
+    // defaults, which is how a module reads them before hyperizing anything
+    // (hyperize's INIT, and Ecosystem/JSON::Fast::Hyper behind it). Serial here,
+    // so the numbers are Rakudo's documented defaults rather than a live pool's.
+    if ((m == "hyper" || m == "race") && inv.t == VT::Type &&
+        (inv.s == "Iterable" || inv.s == "Any" || inv.s == "List" ||
+         inv.s == "Array" || inv.s == "Seq" || inv.s == "HyperSeq")) {
+        unsigned hc = std::thread::hardware_concurrency();
+        Value cfg = Value::makeHash();
+        (*cfg.hash())["batch"]  = Value::integer(64);
+        (*cfg.hash())["degree"] = Value::integer(hc > 1 ? (long long)hc - 1 : 1);
+        cfg.hashKind = "HyperConfiguration";
+        Value o = Value::makeHash();
+        (*o.hash())["configuration"] = cfg;
+        o.hashKind = "HyperSeq";
+        return o;
+    }
+    if (inv.t == VT::Hash && inv.hash() &&
+        (inv.hashKind == "HyperSeq" || inv.hashKind == "HyperConfiguration") &&
+        (m == "configuration" || m == "batch" || m == "degree")) {
+        std::string key = m == "configuration" ? std::string("configuration") : std::string(m);
+        auto it = inv.hash()->find(key);
+        if (it != inv.hash()->end()) return it->second;
+        auto c = inv.hash()->find("configuration");
+        if (c != inv.hash()->end() && c->second.hash()) {
+            auto k = c->second.hash()->find(key);
+            if (k != c->second.hash()->end()) return k->second;
+        }
+    }
+    // `.hyper` here is the identity on a plain list, so `.configuration` has to
+    // answer on one too — that is what a hyperized sequence is asked for.
+    if (m == "configuration" && (inv.t == VT::Array || inv.t == VT::Range)) {
+        unsigned hc = std::thread::hardware_concurrency();
+        Value cfg = Value::makeHash();
+        (*cfg.hash())["batch"]  = Value::integer(64);
+        (*cfg.hash())["degree"] = Value::integer(hc > 1 ? (long long)hc - 1 : 1);
+        cfg.hashKind = "HyperConfiguration";
+        return cfg;
+    }
     if ((m == "hyper" || m == "race" || m == "serial") &&
         (inv.t == VT::Array || inv.t == VT::Range || (inv.t == VT::Hash && inv.hash()))) {
         if (inv.t == VT::Range) { Value r = inv; return methodCall(r, "list", {}, nullptr); }

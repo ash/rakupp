@@ -1649,6 +1649,11 @@ bool predAnswerTruthy(Interpreter& I, const Value& res, const Value& elem) {
 // per iteration (`-> $k,$v {…}` → 2; `{ $^a … $^b }` → 2; `{ $_ }` / builtin → 1).
 size_t codeArity(const Value& code) {
     if (code.t != VT::Code || !code.code()) return 1;
+    // A WhateverCode takes one argument per `*` it was written with, and that is
+    // how many elements `.map` hands it: `<1 2 3 4>.map(* + *)` is (3, 7), and
+    // `%h.kv.map($ns ~ * => *)` pairs each key with its value (YAMLish).
+    if (code.code()->isWhateverCode && code.code()->whateverArity > 1)
+        return (size_t)code.code()->whateverArity;
     if (code.code()->params) {
         size_t n = 0;
         for (auto& p : *code.code()->params) if (!p.named && !p.slurpy) n++;
@@ -10835,11 +10840,28 @@ void Interpreter::registerBuiltins() {
         return f;
     };
     // `MY::<&foo>:exists` — is that symbol declared in the current scope chain?
+    // A second argument counts OUTER hops: `OUTER::MY::<$x>:exists` asks the
+    // ENCLOSING scope, so the answer at unit scope is False however visible the
+    // name is here (Rakudo's, checked both ways).
     B["__sym-exists"] = [](Interpreter& I, ValueList& a) -> Value {
         if (a.empty()) return Value::boolean(false);
         const std::string n = a[0].toStr();
-        if (I.tctx_.cur && I.tctx_.cur->find(n)) return Value::boolean(true);
+        Env* e = I.tctx_.cur.get();
+        for (long long hops = a.size() > 1 ? a[1].toInt() : 0; hops > 0 && e; hops--)
+            e = e->parent.get();
+        if (e && e->find(n)) return Value::boolean(true);
         return Value::boolean(false);
+    };
+    // `OUTER::MY::<$x>` — the same lookup as `MY::<$x>`, started that many scopes
+    // out. A miss is Nil, as Rakudo's is; the no-hop forms resolve at parse time.
+    B["__sym-lookup"] = [](Interpreter& I, ValueList& a) -> Value {
+        if (a.empty()) return Value::nil();
+        const std::string n = a[0].toStr();
+        Env* e = I.tctx_.cur.get();
+        for (long long hops = a.size() > 1 ? a[1].toInt() : 0; hops > 0 && e; hops--)
+            e = e->parent.get();
+        if (e) if (Value* v = e->find(n)) return *v;
+        return Value::nil();
     };
     B["chrs"] = [](Interpreter&, ValueList& a) -> Value { std::string r; for (auto& x : flattenArgs(a)) r += cpToUtf8((uint32_t)x.toInt()); return Value::str(r); };
     B["sign"] = [](Interpreter& I, ValueList& a) -> Value { return rtBSign(I, a.empty() ? Value::any() : a[0]); };
@@ -12894,6 +12916,30 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
                 for (auto& e : *v[1].arr()) { if (!first) out += sep; out += e.toStr(); first = false; }
             }
             return Value::str(nfcNormalize(std::move(out))); // NFG: compose across the joins
+        }
+        // `nqp::indexic($h, $n, $pos)` — index, ignoring case; `indexim` ignores
+        // marks; `indexicim` ignores both. Positions are CHARACTER indices and both foldings
+        // preserve them (one codepoint in, one out), so the answer indexes the
+        // ORIGINAL string. has-word scans a whole haystack with these.
+        case O::Indexic:
+        case O::Indexim:
+        case O::Indexicim: {
+            std::string hs = S(0).str(), nds = S(1).str();
+            bool fold = op != O::Indexim;      // `indexim` keeps case, drops marks
+            if (op != O::Indexic) { hs = markFold(hs); nds = markFold(nds); }
+            std::vector<uint32_t> hc, nc;
+            for (uint32_t c : utf8cp(hs)) hc.push_back(fold ? toLowerCp(c) : c);
+            for (uint32_t c : utf8cp(nds)) nc.push_back(fold ? toLowerCp(c) : c);
+            long long from = v.size() > 2 ? I(2) : 0;
+            if (from < 0) from = 0;
+            if (nc.empty()) return Value::integer(from <= (long long)hc.size() ? from : -1);
+            for (long long i = from; i + (long long)nc.size() <= (long long)hc.size(); i++) {
+                bool hit = true;
+                for (size_t j = 0; j < nc.size(); j++)
+                    if (hc[i + j] != nc[j]) { hit = false; break; }
+                if (hit) return Value::integer(i);
+            }
+            return Value::integer(-1);
         }
         case O::Index: {
             const CowStr& hcs = S(0);

@@ -3267,6 +3267,23 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         }
         throw RakuError{inv, msg.empty() ? inv.typeName() : msg};
     }
+    // `$exception.Failure` — the exception wrapped in a Failure, unthrown, which
+    // is how a routine hands one back instead of raising it (Concurrent::Stack's
+    // `X::Concurrent::Stack::Empty.new.Failure`, under the whole DB constellation).
+    if (m == "Failure" && inv.t == VT::Object && inv.obj() &&
+        !(inv.obj()->cls && inv.obj()->cls->findMethod("Failure"))) {
+        std::string msg;
+        if (Value* mm = inv.obj()->cls ? inv.obj()->cls->findMethod("message") : nullptr)
+            { try { ValueList none; msg = invokeMethod(*mm, inv, none).toStr(); } catch (...) {} }
+        if (msg.empty()) {
+            auto ma = inv.obj()->attrs.find("message");
+            if (ma != inv.obj()->attrs.end() && rtIsDefined(ma->second)) msg = ma->second.toStr();
+        }
+        Value f = rakuppNewFailure();
+        (*f.hash())["exception"] = inv;
+        (*f.hash())["message"] = Value::str(msg.empty() ? inv.typeName() : msg);
+        return f;
+    }
     // `.backtrace` on an exception object: the frames its .throw recorded
     // (captured NOW for a never-thrown one). A class defining its own
     // backtrace method still wins — this only fills the built-in gap.
@@ -3835,6 +3852,15 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         for (ClassInfo* c = inv.obj()->cls.get(); c && nb.empty(); c = c->parent.get())
             nb = c->nativeParent;
         isUserHandle = nb == "IO::Handle";
+    }
+    // An IO::Handle-derived class inherits the line-ending accessors as real,
+    // WRITABLE state: `$io.nl-out = "\t\t"` then `self.nl-out` is what its own
+    // `.say` appends (IO::Blob, which 14 dists name, tests exactly that). The
+    // Any fallback answers the constant "\n", which no assignment can move.
+    if (isUserHandle && (m == "nl-out" || m == "nl-in") && inv.obj()) {
+        auto it = inv.obj()->attrs.find(m);
+        if (!args.empty()) { inv.obj()->attrs[m] = args[0]; return args[0]; }
+        return it != inv.obj()->attrs.end() ? it->second : Value::str("\n");
     }
     if (m == "say" && !isFH && !isUserHandle) return ioEmit(gistOf(inv) + "\n", "$*OUT", false);
     if (m == "print" && !isFH && !isUserHandle) return ioEmit(strOf(inv), "$*OUT", false);

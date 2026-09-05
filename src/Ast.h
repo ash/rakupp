@@ -434,6 +434,8 @@ enum class NqpOpc : uint16_t {
     // with (`unipropcode('East_Asian_Width')` then `getuniprop_str($ord, $code)`).
     Eqaddr, ObjPrimSpec, UniPropCode, GetUniPropStr, GetUniPropBool, GetUniPropInt,
     HllBool,   // nqp::hllbool($i) — a Raku Bool from a native truth value (Hash::int's EXISTS-KEY)
+    // appended: the case- (and mark-) insensitive searches has-word scans with
+    Indexic, Indexicim, Indexim,
 };
 struct NqpOp : Expr {
     NqpOpc op;
@@ -810,6 +812,8 @@ struct SubsetDecl : Stmt {
     std::string name;
     std::string baseType;  // "" = Any
     int defConstraint = 0; // the base type's smiley: 1 = :D, 2 = :U (0 = none)
+    bool coerceBase = false; // `subset CC of Str() where …`: the base is a COERCION —
+                             // a value is coerced to it before the where clause runs
     ExprPtr where;         // may be null (pure alias)
     SubsetDecl(): Stmt(NK::SubsetDecl) {}
 };

@@ -5935,19 +5935,47 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
                         }
                     }
                 }
-                // never clobber a routine the PROGRAM declared itself
-                if (mainlineSubNames_.count(k)) continue;
                 // a SELECTIVE `is export(:tag)` sub stays out of the importer's
                 // lexical scope unless its tag was requested — Rakudo's rule, and
                 // what `nok MY::<&prompt>:exists` after a plain `use Prompt` checks.
                 // Record it (with its tags) so a later `use Mod :tag` can import it
-                // without re-running the module body.
-                if (k.size() > 1 && k[0] == '&') {
+                // without re-running the module body. A PLAIN `is export` is
+                // recorded too, under DEFAULT: the module body runs once, and the
+                // second `use` inside a routine that is called twice has to import
+                // just as lexically as the first.
+                if (k.size() > 1 && k[0] == '&' && !name.empty()) {
                     auto tit = exportTagsByName.find(k.substr(1));
-                    if (tit != exportTagsByName.end() && !name.empty())
+                    if (tit != exportTagsByName.end())
                         moduleSelectiveExports_[name].push_back({k, kv.second, tit->second});
-                    if (tagWithheld(k.substr(1))) continue;
+                    else if (exported.count(k.substr(1)))
+                        moduleSelectiveExports_[name].push_back({k, kv.second, {"DEFAULT"}});
                 }
+                if (k.size() > 1 && k[0] == '&' && tagWithheld(k.substr(1))) continue;
+                // An import is LEXICAL. A `use` inside a block or a routine body
+                // shadows an outer routine of the same name for that scope, and
+                // publishing to global alone cannot: Time::gmtime's own
+                // `my sub gmtime` says `use P5localtime; populate(gmtime($time))`
+                // in its body and means the IMPORTED gmtime — it called itself,
+                // 41,367 frames deep. Exported routines only; the rest of a
+                // module's scope is its own business.
+                if (k.size() > 1 && k[0] == '&' && exported.count(k.substr(1)) &&
+                    doImport && saved && saved.get() != global_.get() &&
+                    // …but never over a routine the importing scope DECLARES
+                    // ITSELF. Compress::Zlib's `need Compress::Zlib::Raw` sits
+                    // in the module mainline beside its own `our sub uncompress`,
+                    // and replacing that with Raw's four-argument NATIVE of the
+                    // same name segfaulted on the first call.
+                    !saved->local(k)) {
+                    saved->define(k, kv.second);
+                    // …and a lexical import does not reach out and REPLACE a name
+                    // the program already has. Time::gmtime's own global `&gmtime`
+                    // is what its caller calls; P5localtime's overwrote it from
+                    // inside the body, so the caller's second call bypassed the
+                    // module altogether.
+                    if (global_->vars.count(k)) continue;
+                }
+                // never clobber a routine the PROGRAM declared itself
+                if (mainlineSubNames_.count(k)) continue;
                 global_->define(k, kv.second);
             }
         };
@@ -7005,7 +7033,7 @@ bool isKnownTypeName(const std::string& n) {
         // registered elsewhere, a methodCall-handled namespace, a sentinel) —
         // the old always-lenient fallback had been quietly covering them.
         "Dateish", "Format", "Formatter", "IterationEnd", "Lock::Async", "Signal",
-        "Systemic", "Endian", "Encoding", "ValueObjAt", "Telemetry", "RaceSeq",
+        "Systemic", "Endian", "SeekType", "Encoding", "ValueObjAt", "Telemetry", "RaceSeq",
         // REPL — Rakudo's read-eval-print object, which the sandbox pattern
         // drives directly (methodCallInner answers it; see the REPL block there)
         "REPL",
@@ -7433,6 +7461,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 SubsetInfo info{sd->baseType, sd->where.get()};
                 info.langRev = langRev_;   // `Even.^ver` answers with this
                 info.defConstraint = sd->defConstraint;   // `of Str:D`
+                info.coerce = sd->coerceBase;             // `of Str()`
                 info.declEnv = tctx_.cur;   // `where { LogLevels{$_}:exists }` reads its class's constant (Template::Mustache)
                 subsets_[sd->name] = info;
                 // …and under the PACKAGE-QUALIFIED name, the way a class registers.
@@ -7909,7 +7938,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     for (auto& md : cd->methods) addTo(ci->methods, md.get());
                     for (auto& a : cd->attrs) {
                         ClassAttr ca; ca.name = a.name; ca.sigil = a.sigil;
-                        ca.pub = a.pub; ca.rw = a.rw; ca.required = a.required; ca.def = a.def.get(); ca.where = a.whereExpr.get(); ca.type = resolveAttrTypeAlias(a.type); ca.requiredWhy = a.requiredWhy;
+                        ca.pub = a.pub; ca.rw = a.rw; ca.required = a.required; ca.def = a.def.get(); ca.where = a.whereExpr.get(); ca.type = resolveAttrTypeAlias(a.type, ci->name); ca.requiredWhy = a.requiredWhy;
                         ca.defConstraint = a.defConstraint;
                         ca.containerIs = a.containerIs;
                         ca.objKeyed = a.objKeyed;
@@ -8475,7 +8504,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                                     "Attribute '" + std::string(1, a.sigil) + "!" + a.name +
                                     "' conflicts in class '" + clsName +
                                     "' composition: also declared in role '" + role->name + "'"};
-                ClassAttr ca; ca.name = a.name; ca.sigil = a.sigil; ca.pub = a.pub; ca.rw = a.rw; ca.required = a.required; ca.type = resolveAttrTypeAlias(a.type); ca.requiredWhy = a.requiredWhy;
+                ClassAttr ca; ca.name = a.name; ca.sigil = a.sigil; ca.pub = a.pub; ca.rw = a.rw; ca.required = a.required; ca.type = resolveAttrTypeAlias(a.type, clsName); ca.requiredWhy = a.requiredWhy;
                 // `class Foo is rw` — every PUBLIC attribute is writable
                 // (Compress::Zstd's buffer structs)
                 if (cd->classRw && a.pub) ca.rw = true;
@@ -8942,6 +8971,17 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 tctx_.cur = saved;
                 tctx_.pkgPrefix = savedPrefix;
             }
+            // A NESTED class shadows an outer one of the same name for the types
+            // written in its parent's body — and it only exists NOW, because the
+            // body that declares it has just run, where the attributes were
+            // collected before it. `class Outer { class Inner {…}; has Inner
+            // @.xs }` means Outer::Inner; taking the outer `Inner` made every
+            // element the class built fail its own container's type check
+            // (JSON::Unmarshal's 080-trait, which declares both in one file).
+            for (auto& ca2 : ci->attrs)
+                if (!ca2.type.empty() && ca2.type.find("::") == std::string::npos &&
+                    classes_.count(clsName + "::" + ca2.type))
+                    ca2.type = clsName + "::" + ca2.type;
             // USER attribute traits evaluate now, in the EXECUTED class-body
             // scope: `is unmarshalled-by(&unmarsh-version)` (META6) names a
             // `my multi sub` declared inside the body, which exists only after
@@ -10232,6 +10272,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                 if (p.sigil != '$' || p.named || p.slurpy || p.optional || p.invocant ||
                     p.isCopy || p.defaultVal || p.subSig || p.litVal ||
                     p.whereExpr || p.defConstraint || p.coerce ||
+                    (!p.type.empty() && isCoercionSubset(p.type)) || // `subset CC of Str()`: binds coerced
                     (p.name.size() > 2 && (p.name[1] == '!' || p.name[1] == '.'))) // attributive: writes through to self
                     { simple = 0; break; }
             params[0].sigSimple = simple;
@@ -10483,6 +10524,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                 // arm has always done this; without it `:cwd("/tmp")` stayed a Str
                 // and every downstream `IO:D()` candidate refused it (TAP's
                 // SourceHandler chain recursed instead of dispatching)
+                if (!p.coerce && !p.type.empty()) bv = coerceViaSubset(bv, p.type);
                 if (p.coerce && !p.type.empty() && bv.typeName() != p.type)
                     bv = coerceToType(bv, p.type);
                 if (!p.name.empty() || !p.subSig) env->define(p.name, bv);
@@ -10490,6 +10532,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
             }
             else if (p.defaultVal) {
                 Value dv = evalDefault(p.defaultVal.get());
+                if (!p.coerce && !p.type.empty()) dv = coerceViaSubset(dv, p.type);
                 if (p.coerce && !p.type.empty() && dv.typeName() != p.type)
                     dv = coerceToType(dv, p.type); // `IO:D() :$cwd = $*CWD` coerces the DEFAULT too
                 env->define(p.name, dv);
@@ -10577,6 +10620,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
             }
             // coercion type `Int() \x` / `Str(Cool) $s`: coerce the bound value via
             // its .Type method — which FAILS where the method does (Int on <1/0>)
+            if (!p.coerce && !p.type.empty()) v = coerceViaSubset(v, p.type);
             if (p.coerce && !p.type.empty() && v.typeName() != p.type)
                 v = coerceToType(v, p.type);
             // Sigilless `\x` type-checks exactly like `$x` — `f(Int \x)` must
@@ -11072,20 +11116,32 @@ bool Interpreter::subsetMatches(const std::string& name, const Value& v, int dep
         return r;
     }
     const SubsetInfo& si = it->second;
-    if (!si.base.empty() && !subsetMatches(si.base, v, depth + 1)) {
+    // `subset CreditCard of Str() where …` — the base is a COERCION, so the
+    // question is not "is this a Str" but "can this become one": Business::
+    // CreditCard's suite asks about card numbers written as Int literals.
+    // Everything below (the smiley, the where clause) sees the COERCED value.
+    Value coerced;
+    const Value* vp = &v;
+    if (si.coerce && !si.base.empty() && isDefined(v) && v.typeName() != si.base) {
+        try { coerced = coerceToType(v, si.base); }
+        catch (...) { if (!cacheKey.empty()) typeSubsetCache[cacheKey] = false; return false; }
+        vp = &coerced;
+    }
+    const Value& sv = *vp;
+    if (!si.base.empty() && !subsetMatches(si.base, sv, depth + 1)) {
         if (!cacheKey.empty()) typeSubsetCache[cacheKey] = false;
         return false;
     }
     // the base type's smiley: `subset S of Str:D` accepts no type object,
     // `of Str:U` accepts nothing else
-    if ((si.defConstraint == 1 && !isDefined(v)) ||
-        (si.defConstraint == 2 && isDefined(v))) {
+    if ((si.defConstraint == 1 && !isDefined(sv)) ||
+        (si.defConstraint == 2 && isDefined(sv))) {
         if (!cacheKey.empty()) typeSubsetCache[cacheKey] = false;
         return false;
     }
     if (si.where) {
         auto env = std::make_shared<Env>(); env->parent = si.declEnv ? si.declEnv : tctx_.cur;
-        env->define("$_", v);
+        env->define("$_", sv);
         auto saved = tctx_.cur; tctx_.cur = env;
         bool ok = false;
         try {
@@ -11093,9 +11149,9 @@ bool Interpreter::subsetMatches(const std::string& name, const Value& v, int dep
             // `where EXPR` is a smartmatch: a Code/WhateverCode is called with
             // the value; anything else (a type, a junction like
             // `Cro::Message | Cro::Connection`) is smartmatched — NOT boolified
-            if (cv.t == VT::Code && cv.code()) ok = boolify(callCallable(cv, ValueList{v}));
-            else if (cv.t == VT::Regex) ok = boolify(regexMatch(rxSubject(v), cv.s, &cv));
-            else ok = boolify(smartmatchValue("~~", v, cv));
+            if (cv.t == VT::Code && cv.code()) ok = boolify(callCallable(cv, ValueList{sv}));
+            else if (cv.t == VT::Regex) ok = boolify(regexMatch(rxSubject(sv), cv.s, &cv));
+            else ok = boolify(smartmatchValue("~~", sv, cv));
         } catch (...) { tctx_.cur = saved; if (!cacheKey.empty()) typeSubsetCache[cacheKey] = false; return false; }
         tctx_.cur = saved;
         if (!cacheKey.empty()) typeSubsetCache[cacheKey] = ok;
@@ -11103,6 +11159,21 @@ bool Interpreter::subsetMatches(const std::string& name, const Value& v, int dep
     }
     if (!cacheKey.empty()) typeSubsetCache[cacheKey] = true;
     return true;
+}
+
+// A parameter typed by a COERCION SUBSET (`subset CC of Str() where …`) binds
+// the COERCED value, exactly as a plain `Str() $x` parameter does — the routine
+// then works on the Str, whatever the caller wrote.
+bool Interpreter::isCoercionSubset(const std::string& type) const {
+    auto it = subsets_.find(type);
+    return it != subsets_.end() && it->second.coerce && !it->second.base.empty();
+}
+
+Value Interpreter::coerceViaSubset(const Value& v, const std::string& type) {
+    auto it = subsets_.find(type);
+    if (it == subsets_.end() || !it->second.coerce || it->second.base.empty()) return v;
+    if (!isDefined(v) || v.typeName() == it->second.base) return v;
+    try { return coerceToType(v, it->second.base); } catch (...) { return v; }
 }
 
 bool Interpreter::typeOrSubsetMatches(const Value& v, const std::string& type) {
@@ -13568,8 +13639,16 @@ void Interpreter::ncStoreStructField(Value& inv, const std::string& field, const
 // CStruct layout) then sees the real name. Only a name that is not itself a
 // class or subset is looked up, so a type that merely shares its name with a
 // term keeps winning; and only a TYPE value counts.
-std::string Interpreter::resolveAttrTypeAlias(const std::string& t) {
-    if (t.empty() || classes_.count(t) || subsets_.count(t)) return t;
+std::string Interpreter::resolveAttrTypeAlias(const std::string& t, const std::string& pkg) {
+    if (t.empty()) return t;
+    // A NESTED class shadows an outer one of the same name for the names written
+    // in its parent's body: `class Outer { class Inner {…}; has Inner @.xs }`
+    // means Outer::Inner even where another `Inner` is in scope. JSON::Unmarshal's
+    // own suite declares both in one file, and the attribute took the outer one —
+    // so every element the custom unmarshaller built failed its own type check.
+    if (!pkg.empty() && t.find("::") == std::string::npos &&
+        classes_.count(pkg + "::" + t)) return pkg + "::" + t;
+    if (classes_.count(t) || subsets_.count(t)) return t;
     Value* v = tctx_.cur ? tctx_.cur->find(t) : nullptr;
     if (v && v->t == VT::Type && !v->s.empty() && v->s != t) return v->s;
     return t;
@@ -15270,6 +15349,11 @@ Value Interpreter::checkRetType(const Callable& c, Value v) {
             // values check nowhere below, so simply accept
             else if (cv->t == VT::Array && !cv->enumType.empty() && cv->enumName.empty())
                 return v;
+            // A definite VALUE as the return type is not a constraint but the
+            // ANSWER: `multi sub cardtype($, *% --> NotACreditCard) { }` returns
+            // that enum member, and Rakudo sinks whatever the body evaluated to
+            // (`--> 42` on a body returning 5 answers 42, with a sink warning).
+            else return *cv;
         }
     if (!kRet.count(retName) && !classes_.count(retName) &&
         !subsets_.count(retName) && !isKnownTypeName(retName) &&
@@ -16568,6 +16652,23 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                 }
             }
         }
+        // `$io.nl-out = "\t\t"` on an IO::Handle-derived object: the accessor is
+        // writable state on the instance (see the shim in MethodCallPart2).
+        if ((mc->method == "nl-out" || mc->method == "nl-in") && mc->args.empty() &&
+            !mc->meta && !mc->hyper) {
+            Value* base = nullptr;
+            try { base = lvalue(mc->inv.get()); } catch (RakuError&) {}
+            if (base && base->t == VT::Object && base->obj() && base->obj()->cls) {
+                std::string nb;
+                for (ClassInfo* c = base->obj()->cls.get(); c && nb.empty(); c = c->parent.get())
+                    nb = c->nativeParent;
+                if (nb == "IO::Handle") {
+                    auto& at = base->obj()->attrs;
+                    if (!at.count(mc->method)) at[mc->method] = Value::str("\n");
+                    return &at[mc->method];
+                }
+            }
+        }
         // container-access methods as l-values: `%h.AT-KEY("k") = v`,
         // `@a.AT-POS(i) = v`, and multidim `@a.AT-POS(i, j) = v`
         if ((mc->method == "AT-KEY" || mc->method == "AT-POS") && !mc->args.empty() && !mc->meta) {
@@ -17674,8 +17775,17 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                 // module-load republish never saw it (Date::Names keeps its
                 // language tables that way).
                 if (ve->declExport) {
-                    if (curPkgEnv_) curPkgEnv_->define(ve->name, *p);
-                    global_->define(ve->name, *p);
+                    Value copy = *p;
+                    // In a MODULE the exported `our` variable is one container,
+                    // shared with the importer: keep only the global slot and
+                    // give up the module-local one, or the module's own later
+                    // writes land where no importer can see them (the same rule
+                    // the bare declaration follows — see declInitial's branch).
+                    bool inModule = curPkgEnv_ && curPkgEnv_.get() != global_.get();
+                    if (inModule && tctx_.cur && tctx_.cur->vars.count(ve->name))
+                        tctx_.cur->vars.erase(ve->name);
+                    else if (curPkgEnv_) curPkgEnv_->define(ve->name, copy);
+                    global_->define(ve->name, copy);
                 }
             }
         }
@@ -29585,6 +29695,13 @@ Value Interpreter::eval(Expr* e) {
             // uid — P5getpwnam's suite leans on exactly that).
             if (ve->name == "$*USER" || ve->name == "$*GROUP") return dynVar(ve->name);
             if (ve->name == "$*TZ") return Value::integer(tzOffsetDyn());
+            // how many elements a `.Supply` reads per chunk — 65536 in Rakudo,
+            // and the default of every `:$size` a handle's Supply is written with
+            // (IO::Blob's, whose whole Supply emitted nothing without it)
+            if (ve->name == "$*DEFAULT-READ-ELEMS") {
+                if (tctx_.cur) if (Value* p = tctx_.cur->find("$*DEFAULT-READ-ELEMS")) return *p;
+                return Value::integer(65536);
+            }
             if (ve->name == "$*INIT-INSTANT") return initInstantVal();
             if (ve->name == "&?BLOCK" && tctx_.curBlockVal) return *tctx_.curBlockVal;
             if (ve->name == "&?ROUTINE" && tctx_.curRoutineVal) return *tctx_.curRoutineVal;
@@ -29606,6 +29723,18 @@ Value Interpreter::eval(Expr* e) {
                 // `&` sigil so scalar/array/hash `our` vars keep their assignable containers.
                 if (ve->declScope == "our" && sigil == '&' && curPkgEnv_ && curPkgEnv_ != tctx_.cur)
                     if (Value* g = curPkgEnv_->find(ve->name)) { de->define(ve->name, *g); return *g; }
+                // `our $x is export` in a MODULE is one container, not two. Declared
+                // in the module scope it was COPIED out at publish time, so every
+                // later write by the module landed in a slot no importer could see:
+                // Time::gmtime's `:FIELDS` variables read back undefined however
+                // many times gmtime() had filled them in. Declare it where both
+                // sides look — the global the importer's bare name resolves to.
+                if (ve->declScope == "our" && ve->declExport && sigil != '&' &&
+                    global_ && curPkgEnv_ && curPkgEnv_.get() != global_.get() &&
+                    !ve->declShape && !ve->declDefault && ve->containerIs.empty()) {
+                    if (Value* g = global_->find(ve->name)) return *g;
+                    return global_->define(ve->name, declInitial(ve, sigil));
+                }
                 // A bare untyped `my @a` re-evaluated in the SAME scope keeps its
                 // container — declarations initialize per scope entry, not per
                 // evaluation. So in `until $i.push-exactly(my @a, 3) =:= IterationEnd`,
@@ -30013,6 +30142,17 @@ Value Interpreter::eval(Expr* e) {
                 std::string key = n.rfind("Endian::", 0) == 0 ? n.substr(8) : n;
                 Value ev = Value::enumVal(key, key == "NativeEndian" ? 0 : key == "LittleEndian" ? 1 : 2);
                 ev.enumType = "Endian"; return ev;
+            }
+            // enum SeekType <SeekFromBeginning SeekFromCurrent SeekFromEnd> —
+            // what IO::Handle.seek's second argument is written with, and what a
+            // pure-Raku handle (IO::Blob, which 14 dists name) dispatches on.
+            if (n == "SeekType::SeekFromBeginning" || n == "SeekFromBeginning" ||
+                n == "SeekType::SeekFromCurrent"   || n == "SeekFromCurrent" ||
+                n == "SeekType::SeekFromEnd"       || n == "SeekFromEnd") {
+                std::string key = n.rfind("SeekType::", 0) == 0 ? n.substr(10) : n;
+                Value ev = Value::enumVal(key, key == "SeekFromBeginning" ? 0
+                                             : key == "SeekFromCurrent"   ? 1 : 2);
+                ev.enumType = "SeekType"; return ev;
             }
             // enum ProtocolType <PROTO_TCP PROTO_UDP> — CORE's IO::Socket
             // protocol selector, carrying the IPPROTO numbers. Cro::TCP::NoDelay
@@ -30938,7 +31078,51 @@ Value Interpreter::eval(Expr* e) {
             };
             if (p->keyExpr) {
                 Value kv = eval(p->keyExpr.get());
-                Value pr = Value::pair(kv.toStr(), pairValueOf(p->value.get()));
+                // `* => 1` and `"a" => *` are WhateverCodes, not Pairs: the `=>`
+                // is an infix like any other and a `*` on either side curries it.
+                // `.map(* => Discover)` builds one pair per element, which is how
+                // a constant Map is written from a word list (Business::
+                // CreditCard's country tables read back empty without this).
+                // The BAREWORD-key form (`a => *`) is a pair literal in Rakudo,
+                // not an infix, and stays a Pair — that is the `p->key` branch
+                // below, which never gets here.
+                auto curries = [](const Value& v) {
+                    return v.t == VT::Whatever ||
+                           (v.t == VT::Code && v.code() && v.code()->isWhateverCode);
+                };
+                Value vv0 = pairValueOf(p->value.get());
+                if (curries(kv) || curries(vv0)) {
+                    Value kc = kv, vc = vv0;
+                    Value code; code.t = VT::Code; code.setCode(std::make_shared<Callable>());
+                    code.code()->isWhateverCode = true;
+                    auto arityOf = [&](const Value& x) -> long long {
+                        if (x.t == VT::Whatever) return 1;
+                        if (x.t == VT::Code && x.code() && x.code()->isWhateverCode)
+                            return x.code()->whateverArity > 0 ? x.code()->whateverArity : 1;
+                        return 0;
+                    };
+                    code.code()->whateverArity = arityOf(kc) + arityOf(vc);
+                    code.code()->builtin = [kc, vc](Interpreter& I, ValueList& a) -> Value {
+                        size_t idx = 0;
+                        auto resolve = [&](const Value& x) -> Value {
+                            if (x.t == VT::Whatever) return idx < a.size() ? a[idx++] : Value::any();
+                            if (x.t == VT::Code && x.code() && x.code()->isWhateverCode) {
+                                long long ar = x.code()->whateverArity > 0 ? x.code()->whateverArity : 1;
+                                ValueList sub;
+                                for (long long k = 0; k < ar && idx < a.size(); k++) sub.push_back(a[idx++]);
+                                return I.callCallable(x, sub);
+                            }
+                            return x;
+                        };
+                        Value k = resolve(kc);   // key first — argument order matters
+                        Value v = resolve(vc);
+                        Value pr = Value::pair(k.toStr(), v);
+                        if (k.t != VT::Str) pr.pairKeyM() = std::make_shared<Value>(k);
+                        return pr;
+                    };
+                    return code;
+                }
+                Value pr = Value::pair(kv.toStr(), vv0);
                 // a non-string key (number, object, match, array, hash, code) is preserved
                 // so `.key` and `.raku` reflect its real type (e.g. `1 => 2`, not `"1" => 2`)
                 if (kv.t == VT::Int || kv.t == VT::Num || kv.t == VT::Rat || kv.t == VT::Bool ||

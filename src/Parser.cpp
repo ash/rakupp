@@ -2890,6 +2890,23 @@ static bool isPseudoPkg(const std::string& p) {
     };
     return ps.count(p) > 0;
 }
+// A CHAIN of pseudo-packages names the same scope-chain lookup as its last
+// component: `OUTER::MY::<$x>` is a lexical, `CALLER::DYNAMIC::<$*x>` a dynamic.
+// The P5 family's export tests ask `OUTER::MY::<<$name>>:exists` of every symbol
+// a module claims to export, so the chain form is not exotic.
+static bool isPseudoPkgPath(const std::string& p, std::string& effective) {
+    if (p.empty()) return false;
+    size_t start = 0;
+    while (true) {
+        size_t sep = p.find("::", start);
+        std::string comp = sep == std::string::npos ? p.substr(start)
+                                                    : p.substr(start, sep - start);
+        if (!isPseudoPkg(comp)) return false;
+        effective = comp;
+        if (sep == std::string::npos) return true;
+        start = sep + 2;
+    }
+}
 // "$MY::x" → "$x"; "$PROCESS::IN" → "$*IN"; unqualified / non-pseudo names unchanged.
 static std::string stripPseudoPkg(const std::string& name) {
     if (name.size() < 4 || !std::strchr("$@%&", name[0])) return name;
@@ -4794,35 +4811,97 @@ ExprPtr Parser::parsePrimary() {
                 auto w = readAngleWords(">");
                 name += ":<" + (w.empty() ? std::string() : w[0]) + ">";
             }
-            // pseudo-package angle access: `MY::<$x>` / `CORE::<&not>` / `PROCESS::<$IN>`
+            // pseudo-package access: `MY::<$x>` / `CORE::<&not>` / `PROCESS::<$IN>`
             // (the lexer folds the trailing `::` into the identifier) — the symbol is
-            // resolved through the ordinary scope chain.
+            // resolved through the ordinary scope chain. The key does not have to be
+            // written out: `MY::{$name}` computes it and `MY::<<$name>>` interpolates
+            // it, which is how a suite asks whether each of its imports arrived.
+            std::string pseudoPkg;
             if (name.size() > 2 && name.compare(name.size() - 2, 2, "::") == 0 &&
-                isPseudoPkg(name.substr(0, name.size() - 2)) &&
-                isOp("<") && !cur().spaceBefore) {
-                advance(); // <
-                std::vector<std::string> words = readAngleWords(">");
-                std::string pseudoPkg = name.substr(0, name.size() - 2);
-                std::string sym = pseudoAngleSymbol(pseudoPkg,
-                                                    words.empty() ? "" : words[0]);
-                // `MY::<&foo>:exists` asks whether the symbol is DECLARED, which is
-                // how a module's export list is usually tested (Test::Output's suite).
-                // MY:: only — `SETTING::<$x>` asks about the SETTING, where a
-                // program's own lexical is absent however visible it is here.
-                if (name.compare(0, 4, "MY::") == 0 &&
-                    isOp(":") && !cur().spaceBefore && peek().kind == Tok::Ident &&
-                    peek().text == "exists") {
-                    advance(); advance();
-                    auto c = std::make_unique<Call>();
-                    c->name = "__sym-exists";
-                    c->args.push_back(std::make_unique<StrLit>(sym));
-                    return c;
+                isPseudoPkgPath(name.substr(0, name.size() - 2), pseudoPkg) &&
+                !cur().spaceBefore &&
+                // PROCESS keeps its own computed-key path: its symbols are the
+                // `$*NAME` dynamics, not Env slots, and evalIndex reads them there
+                (isOp("<") ||
+                 ((isKind(Tok::LBrace) ||
+                   (cur().kind == Tok::Op &&
+                    (cur().text.compare(0, 2, "<<") == 0 || cur().text == "\xc2\xab"))) &&
+                  pseudoPkg != "PROCESS"))) {
+                std::string sym;      // the written-out key, when there is one
+                ExprPtr keyExpr;      // else the expression that names the symbol
+                if (isOp("<")) {
+                    advance(); // <
+                    std::vector<std::string> words = readAngleWords(">");
+                    sym = pseudoAngleSymbol(pseudoPkg, words.empty() ? "" : words[0]);
                 }
-                auto pv = std::make_unique<VarExpr>(sym);
-                pv->processScoped = (pseudoPkg == "PROCESS");
-                pv->viaPseudoPkg  = true;
-                pv->pseudoPkg     = pseudoPkg;
-                return pv;
+                else if (isKind(Tok::LBrace)) {
+                    advance(); // {
+                    keyExpr = parseExpression();
+                    expectKind(Tok::RBrace, "}");
+                }
+                else {
+                    // `<<…>>` interpolates. A one-word list lexes as a single op
+                    // token (`<<$name>>`); anything with a space in it comes through
+                    // as opener, words, closer, and only the one-word form of that
+                    // names a single symbol — leave the rest to the ordinary parse.
+                    const std::string& t = cur().text;
+                    if (t.size() >= 4 && t.compare(0, 2, "<<") == 0 &&
+                        t.compare(t.size() - 2, 2, ">>") == 0) {
+                        keyExpr = parseInterpString(t.substr(2, t.size() - 4));
+                        advance();
+                    }
+                    else {
+                        const char* close = t == "<<" ? ">>" : "\xc2\xbb";
+                        if (peek(2).kind == Tok::Op && peek(2).text == close) {
+                            advance();                       // << / «
+                            keyExpr = parseInterpString(advance().text);
+                            advance();                       // >> / »
+                        }
+                    }
+                }
+                if (!sym.empty() || keyExpr) {
+                    // `MY::<&foo>:exists` asks whether the symbol is DECLARED, which
+                    // is how a module's export list is usually tested (Test::Output's
+                    // suite, and every one of the P5 family's). Lexical lookups only —
+                    // `SETTING::<$x>` asks about the SETTING, where a program's own
+                    // lexical is absent however visible it is here.
+                    if ((pseudoPkg == "MY" || pseudoPkg == "LEXICAL") &&
+                        isOp(":") && !cur().spaceBefore && peek().kind == Tok::Ident &&
+                        peek().text == "exists") {
+                        advance(); advance();
+                        auto c = std::make_unique<Call>();
+                        c->name = "__sym-exists";
+                        if (keyExpr) c->args.push_back(std::move(keyExpr));
+                        else         c->args.push_back(std::make_unique<StrLit>(sym));
+                        // each OUTER in the chain steps one scope out before looking
+                        long long hops = 0;
+                        for (size_t k = 0; k + 7 <= name.size(); k++)
+                            if (name.compare(k, 7, "OUTER::") == 0) hops++;
+                        c->args.push_back(std::make_unique<IntLit>(hops));
+                        return c;
+                    }
+                    long long outerHops = 0;
+                    for (size_t k = 0; k + 7 <= name.size(); k++)
+                        if (name.compare(k, 7, "OUTER::") == 0) outerHops++;
+                    if (outerHops) {
+                        auto c = std::make_unique<Call>();
+                        c->name = "__sym-lookup";
+                        if (keyExpr) c->args.push_back(std::move(keyExpr));
+                        else         c->args.push_back(std::make_unique<StrLit>(sym));
+                        c->args.push_back(std::make_unique<IntLit>(outerHops));
+                        return c;
+                    }
+                    if (keyExpr) {
+                        auto sr = std::make_unique<SymbolicRef>();
+                        sr->nameExpr = std::move(keyExpr);
+                        return sr;
+                    }
+                    auto pv = std::make_unique<VarExpr>(sym);
+                    pv->processScoped = (pseudoPkg == "PROCESS");
+                    pv->viaPseudoPkg  = true;
+                    pv->pseudoPkg     = pseudoPkg;
+                    return pv;
+                }
             }
             // `Foo::<bar>` — a slot in a REAL package's symbol table, the same
             // syntax the pseudo-packages above use. Read and WRITTEN: roast's
@@ -4831,7 +4910,7 @@ ExprPtr Parser::parsePrimary() {
             // the module would not load. The slot is just the qualified global
             // `Foo::bar`, which is where `our`-scoped symbols already live.
             if (name.size() > 2 && name.compare(name.size() - 2, 2, "::") == 0 &&
-                !isPseudoPkg(name.substr(0, name.size() - 2)) &&
+                !isPseudoPkgPath(name.substr(0, name.size() - 2), pseudoPkg) &&
                 isOp("<") && !cur().spaceBefore) {
                 advance(); // <
                 std::vector<std::string> words = readAngleWords(">");
@@ -4849,7 +4928,7 @@ ExprPtr Parser::parsePrimary() {
             // globals, which WHO re-syncs in; stash writes are the angle READ
             // path's fallback).
             if (name.size() > 2 && name.compare(name.size() - 2, 2, "::") == 0 &&
-                !isPseudoPkg(name.substr(0, name.size() - 2)) &&
+                !isPseudoPkgPath(name.substr(0, name.size() - 2), pseudoPkg) &&
                 isKind(Tok::LBrace) && !cur().spaceBefore) {
                 advance(); // {
                 auto who = std::make_unique<MethodCall>();
@@ -5645,16 +5724,21 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
                     while (j < n && d > 0) { if (raw[j]==open) d++; else if (raw[j]==close) d--; var += raw[j++]; }
                     commit();
                 } else if (j + 1 < n && raw[j] == '.' &&
+                           // a method or routine name may be UNICODE: `"$n.&mööse()"`
+                           // truncated at the ö, left the call uncommitted, and the
+                           // `&name(` branch then compiled `mööse()` with NO invocant
                            (ascii::isalpha((unsigned char)raw[j+1]) || raw[j+1] == '_' ||
+                            (unsigned char)raw[j+1] >= 0x80 ||
                             ((raw[j+1] == '^' || raw[j+1] == '?' || raw[j+1] == '&') && j + 2 < n &&
-                             (ascii::isalpha((unsigned char)raw[j+2]) || raw[j+2] == '_')))) {
+                             (ascii::isalpha((unsigned char)raw[j+2]) || raw[j+2] == '_' ||
+                              (unsigned char)raw[j+2] >= 0x80)))) {
                     // bare .method — tentative; consume its name, commit only if parens follow.
                     // One META-SIGIL may sit between the dot and the name: `"$x.^name()"`
                     // is a meta-method call, `.?meth()` a maybe-call, `.&f()` a sub call.
                     // Without this the chain ended at `$x` and `.^name()` was literal text.
                     var += raw[j++]; // .
                     if (raw[j] == '^' || raw[j] == '?' || raw[j] == '&') var += raw[j++];
-                    while (j < n && isIdentCont(raw[j])) var += raw[j++];
+                    for (size_t l; j < n && identContAt(j, l); ) { var.append(raw, j, l); j += l; }
                     if (j < n && raw[j] == '(') {
                         int d = 1; var += raw[j++];
                         while (j < n && d > 0) { if (raw[j]=='(') d++; else if (raw[j]==')') d--; var += raw[j++]; }
@@ -6744,6 +6828,16 @@ StmtPtr Parser::parseSubset() {
                 advance();
                 std::string sm = advance().text;
                 sd->defConstraint = sm == "D" ? 1 : sm == "U" ? 2 : 0;
+            }
+            // …and a COERCION: `subset CreditCard of Str() where …` refines Str
+            // and says what may be coerced into it. Unconsumed, the `()` parsed
+            // as a CALL to the type and the `where` after it became a routine
+            // of its own ("Undefined routine 'where'").
+            if (isKind(Tok::LParen) && !cur().spaceBefore) {
+                sd->coerceBase = true;
+                int d = 0;
+                do { if (isKind(Tok::LParen)) d++; else if (isKind(Tok::RParen)) d--; advance(); }
+                while (d > 0 && !isKind(Tok::End));
             }
             continue;
         }
@@ -8191,8 +8285,13 @@ StmtPtr Parser::parseStatementImpl() {
             if (!u->isNo) scanModuleOps(u->module); // its operators must parse HERE
             if (!u->isNo && u->module.compare(0, 6, "MONKEY") == 0)
                 monkeyScopes_.back() = 1; // use MONKEY-TYPING / use MONKEY (lexical)
+            // `use lib` takes an expression unless it is the plain one-string form,
+            // whose path is kept as text (the native backends read it there). A
+            // COMMA LIST is not that form: `use lib 'lib', 't/lib'` kept the first
+            // path and silently dropped the rest.
             if (u->module == "lib" && !isKind(Tok::Semicolon) && !isKind(Tok::End) &&
-                !isKind(Tok::StrLit) && !isKind(Tok::StrInterp)) {
+                (!(isKind(Tok::StrLit) || isKind(Tok::StrInterp)) ||
+                 peek().kind == Tok::Comma)) {
                 u->argExpr = parseExpression(); // `use lib $?FILE.IO.parent`
             } else {
                 // capture first string argument, e.g. `use lib 'lib'`
@@ -8752,6 +8851,9 @@ ExprPtr Parser::makeNqpOp(const std::string& op, std::vector<ExprPtr>& args) {
         {"substr", NqpOpc::Substr},{"chars", NqpOpc::Chars},
         {"concat", NqpOpc::Concat},{"join", NqpOpc::Join},
         {"index", NqpOpc::Index},  {"chr", NqpOpc::Chr},
+        // case-insensitive index, and the ignore-mark variant beside it
+        {"indexic", NqpOpc::Indexic}, {"indexicim", NqpOpc::Indexicim},
+        {"indexim", NqpOpc::Indexim},
         {"strfromcodes", NqpOpc::StrFromCodes}, {"strtocodes", NqpOpc::StrToCodes},
         {"findnotcclass", NqpOpc::FindNotCClass}, {"iscclass", NqpOpc::IsCClass},
         {"list", NqpOpc::List}, {"list_i", NqpOpc::ListI}, {"list_s", NqpOpc::ListS},

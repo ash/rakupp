@@ -958,7 +958,7 @@ public:
     static bool isShadowedModule(const std::string& name); // rakulib/ names that beat an ecosystem copy
     std::string shadowLibDir_;                             // the binary-relative rakulib/, once found
     std::shared_ptr<ClassInfo> howRoleClsInfo_;            // Metamodel::ParametricRoleGroupHOW, shared by every role
-    std::string resolveAttrTypeAlias(const std::string& t); // `has GType $.x` with `constant GType = uint64`
+    std::string resolveAttrTypeAlias(const std::string& t, const std::string& pkg = ""); // `has GType $.x` with `constant GType = uint64`
     std::shared_ptr<ClassInfo> ncInlineClass(const std::string& type); // the struct a `HAS` member inlines
     // True once any class has declared a `HAS` member. The assignment path
     // consults it before looking for an inline-struct view, so a program with no
@@ -1156,6 +1156,8 @@ public:
     Value deproxy(Value v);
     // `T($v)` coercion — see the definition in Interpreter.cpp.
     Value coerceToType(const Value& v, const std::string& type);
+    Value coerceViaSubset(const Value& v, const std::string& type); // `subset CC of Str()` param
+    bool isCoercionSubset(const std::string& type) const;
     // Run a Proxy's STORE for `$proxy = v`. See the definition in Interpreter.cpp.
     Value proxyStore(const Value& proxy, const Value& v);
     // Proxies over the places a value can live — an Env variable slot (what
@@ -1292,6 +1294,7 @@ public:
     // not decoration — the metamodel keys type-check behaviour off it.
     struct SubsetInfo { std::string base; const Expr* where = nullptr; int langRev = 1;
                         int defConstraint = 0;             // the base type's :D / :U smiley
+                        bool coerce = false;               // `of Str()` — coerce, then check
                         std::shared_ptr<Env> declEnv; };   // the where-clause CLOSES over its declaration scope
     std::unordered_map<std::string, SubsetInfo> subsets_;
     // per-site `ff`/`fff` flip-flop latch + how many elements since it fired

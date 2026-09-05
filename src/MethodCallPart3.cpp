@@ -291,6 +291,54 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         while (u) { s = std::string(1, BD[u % b]) + s; u /= b; }
         return Value::str(neg ? "-" + s : s);
     }
+    // `.base` on a non-integer Real: the integer part in that base, then the
+    // fraction. With an explicit digit count the fraction is padded to it
+    // (`255.5.base(16,4)` is FF.8000); without one it runs until it terminates,
+    // and a non-terminating expansion stops at six digits — Rakudo's default,
+    // checked base by base ((1/3).base(2) is 0.010101, .base(3) is 0.1).
+    if (m == "base" && !args.empty() && (inv.t == VT::Num || inv.t == VT::Rat)) {
+        long long b = args[0].toInt(); if (b < 2) b = 2; if (b > 36) b = 36;
+        long long want = args.size() > 1 && args[1].isNumeric() ? args[1].toInt() : -1;
+        static const char* BD = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+        double x = inv.toNum();
+        bool neg = x < 0 || (inv.t == VT::Rat && inv.toNum() < 0);
+        if (neg) x = -x;
+        double ip = std::floor(x), fp = x - ip;
+        std::string istr;
+        { unsigned long long u = (unsigned long long)ip;
+          if (!u) istr = "0";
+          while (u) { istr = std::string(1, BD[u % (unsigned long long)b]) + istr; u /= (unsigned long long)b; } }
+        long long cap = want >= 0 ? want : (fp < 1e-12 ? 0 : 6);
+        std::string fstr;
+        double f = fp;
+        for (long long k = 0; k < cap; k++) {
+            f *= (double)b;
+            long long d = (long long)std::floor(f);
+            if (d < 0) d = 0; if (d >= b) d = b - 1;
+            fstr += BD[d];
+            f -= (double)d;
+            if (want < 0 && f < 1e-12) break;   // it terminated
+        }
+        // round the last digit when the expansion was cut short
+        if (!fstr.empty() && f >= 0.5) {
+            size_t k = fstr.size();
+            while (k-- > 0) {
+                const char* at = std::strchr(BD, fstr[k]);
+                long long d = at ? (long long)(at - BD) + 1 : b;
+                if (d < b) { fstr[k] = BD[d]; break; }
+                fstr[k] = '0';
+                if (k == 0) { // carry into the integer part
+                    unsigned long long u = (unsigned long long)ip + 1;
+                    istr.clear();
+                    if (!u) istr = "0";
+                    while (u) { istr = std::string(1, BD[u % (unsigned long long)b]) + istr; u /= (unsigned long long)b; }
+                }
+            }
+        }
+        std::string out = istr;
+        if (!fstr.empty()) out += "." + fstr;
+        return Value::str(neg ? "-" + out : out);
+    }
     if (m == "polymod" && (inv.t == VT::Num || inv.t == VT::Rat)) {
         // non-integer polymod stays in Value arithmetic (Rat exactness, Num):
         // v % d is pushed, v becomes (v - mod) / d; a lazy list stops at v == 0

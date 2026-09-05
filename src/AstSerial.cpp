@@ -365,7 +365,7 @@ template <class IO> void visit(IO& io, UseStmt& n)  { F(io, n.module); F(io, n.a
                                                                          // cache made run 2 load ANY version
                                                       ioExpr(io, n.ifCond); } // :if(EXPR) — same lesson
 template <class IO> void visit(IO&, EmptyStmt&)     {}
-template <class IO> void visit(IO& io, SubsetDecl& n) { F(io, n.name); F(io, n.baseType); F(io, n.defConstraint); ioExpr(io, n.where); }
+template <class IO> void visit(IO& io, SubsetDecl& n) { F(io, n.name); F(io, n.baseType); F(io, n.defConstraint); F(io, n.coerceBase); ioExpr(io, n.where); }
 template <class IO> void visit(IO& io, GivenStmt& n){ ioExpr(io, n.topic); F(io, n.var); F(io, n.modifier);
                                                       ioBlock(io, n.body); F(io, n.defGuard); F(io, n.hasElse);
                                                       ioBlock(io, n.elseBody); F(io, n.elseVar);
