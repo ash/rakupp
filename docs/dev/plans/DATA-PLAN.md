@@ -6,11 +6,97 @@ was checked on both. **Two claims in the first revision were wrong and are
 corrected below** (`sub EXPORT` scope, and the `:tag` spelling) — the design
 survives, the module's shape changed.
 
+## Synopsis
+
+```raku
+use Data::Native;
+
+my %rec  = name => 'Ada', langs => <Raku C>, score => 9.5;
+my $json = to-json(%rec);
+say from-json($json)<langs>[1];      # C
+say sha256-hex($json);
+say json-backend();                  # core       on Raku++
+                                     # JSON::Fast on Rakudo, or any other Raku
+```
+
+**This file runs, unchanged, on every Raku.** What differs is what answers:
+
+- On **Raku++**, every call above is the engine's own C. Nothing to install,
+  nothing to compile — the functions are in the `rakupp` binary, and
+  `use Data::Native` switches them on.
+- On **Rakudo, or any other implementation**, `zef install Data::Native` once;
+  the same calls then run through the `**::Native` distributions and the
+  established modules they stand in for — `JSON::Native` → `JSON::Fast`,
+  `Digest::Native` → bduggan's `Digest::SHA256::Native`, and so on. Slower, but
+  correct, and the same results byte for byte.
+
+Measured on the 278 KB diagnose corpus, same file, both engines:
+`from-json` is 7 ms on Raku++ and 61 ms on Rakudo. That is the whole idea —
+write it once, and it is fastest where the engine does it natively.
+
+`use Data::Native <json digest>` takes only those tags; bare `use` takes all.
+
+## The end state — every module, tag and function
+
+What exists when both plans are implemented. Three inventories: the
+distributions, the tags with their functions, and the engine primitives.
+
+### Distributions
+
+| distribution | status | interface it mirrors | fallback on other engines |
+|---|---|---|---|
+| `Data::Native` | **new** — shipped in `rakulib/` with the engine *and* on raku.land | the five tags below | the four `**::Native` modules below, plus `Crypt::Random` |
+| `JSON::Native` | exists | `JSON::Fast` | `JSON::Fast` |
+| `CSV::Native` | exists | its own (no usable reference existed) | its own pure-Raku `parse-raku`/`write-raku` |
+| `Digest::Native` | **new** | `Digest` + `Digest::HMAC`, with the `-hex` twins bduggan spells | `Digest::SHA1::Native` + `Digest::SHA256::Native` (bduggan, C) for SHA-1/256; `Digest` for MD5/224/384/512; `Digest::HMAC` |
+| `Compress::Zlib::Native` | **new** | `Compress::Zlib` | `Compress::Zlib` (NativeCall over system `libz`) |
+| ~~`Crypt::Random::Native`~~ | not built | — | — |
+
+Every `**::Native` module: our C on Raku++ (ext ABI, compiled at install),
+the fallback everywhere else. `Data::Native`: the engine's built-ins on
+Raku++, delegation to the row above elsewhere.
+
+### Tags and functions — 27 functions, 5 `*-backend` subs, 32 names
+
+`use Data::Native;` imports all of them; `use Data::Native <json csv>` the
+named tags. On Raku++ every name is an engine primitive; the last column is
+what answers on any other Raku.
+
+| tag | functions | returns | elsewhere |
+|---|---|---|---|
+| `json` | `from-json` `to-json` | data / `Str` | `JSON::Native` → `JSON::Fast` |
+| `csv` | `from-csv` `to-csv` | rows / `Str` | `CSV::Native` → its Raku implementation |
+| `digest` | `md5` `sha1` `sha224` `sha256` `sha384` `sha512` | `blob8` | `Digest::Native` → bduggan's for SHA-1/256, `Digest` for the rest |
+| | `md5-hex` `sha1-hex` `sha224-hex` `sha256-hex` `sha384-hex` `sha512-hex` | `Str` | same |
+| | `hmac` `hmac-hex` | `Blob` / `Str` | `Digest::Native` → `Digest::HMAC` |
+| `zlib` | `compress` `uncompress` (with `:gzip` / `:raw`) | `Buf` | `Compress::Zlib::Native` → `Compress::Zlib` |
+| | `gzslurp` `gzspurt` | file ↔ data | same |
+| | `crc32` `adler32` | `Int` | same (ours; the reference has none) |
+| `random` | `crypt_random_buf` `crypt_random` `crypt_random_uniform` | `Buf` / `Int` / `Int` | `Crypt::Random` directly |
+| each tag | `json-backend` `csv-backend` `digest-backend` `zlib-backend` `random-backend` | `Str`: `core`, `native`, or the fallback's name | — |
+
+The `*-backend` subs are exported with their tag by default (open decision 2
+below records the choice). Signatures are the reference's, character for
+character; where a tag exceeds its reference the difference is listed in that
+tag's section.
+
+### Engine primitives — 27, one per function
+
+Registered in `registerBuiltins()` under the mechanical spelling
+`rakupp-<function>` — `rakupp-from-json`, `rakupp-sha256-hex`,
+`rakupp-crypt_random_buf` — so the probe is `&::("rakupp-$name")` with no
+mapping table, and `rakupp-sha1-hex`, which already exists, fits the rule as
+is. These are the only names the engine knows; everything above is Raku on
+top of them. Another implementation adopts the contract by supplying any
+subset under its own prefix.
+
 Three pieces, with one job each:
 
-1. **`**::Native` distributions** (`JSON::Native`, `CSV::Native`) keep the
-   interface of the popular module they stand in for, and bind **their own XS
-   extension** — never an engine primitive. They serve every engine, Rakudo
+1. **`**::Native` distributions** (`JSON::Native`, `CSV::Native`, and the new
+   `Digest::Native` and `Compress::Zlib::Native` —
+   [NATIVE-MODULES-PLAN.md](NATIVE-MODULES-PLAN.md)) keep the interface of the
+   popular module they stand in for, and bind **their own XS extension** —
+   never an engine primitive. They serve every engine, Rakudo
    included.
 2. **The engine implements the functions in the core**, as `rakupp-*`
    primitives.
@@ -291,8 +377,8 @@ my constant @PREFIXES = <rakupp>;
 my %TAGS =
     json   => { names => <from-json to-json>,                  needs => 'JSON::Fast'    },
     csv    => { names => <from-csv to-csv>,                    needs => 'CSV::Native'   },
-    digest => { names => <md5 sha1 sha256 sha512 hmac …>,      needs => 'Digest'        },
-    zlib   => { names => <compress uncompress gzslurp gzspurt>, needs => 'Compress::Zlib' },
+    digest => { names => <md5 sha1 sha256 sha512 hmac …>,      needs => 'Digest::Native' },
+    zlib   => { names => <compress uncompress gzslurp gzspurt>, needs => 'Compress::Zlib::Native' },
     random => { names => <crypt_random_buf crypt_random …>,    needs => 'Crypt::Random' };
 
 sub native(Str $name) {
@@ -381,7 +467,7 @@ rakupp.**
 | exports | `md5` `sha1` `sha224` `sha256` `sha384` `sha512` → `blob8`; `md5-hex` … `sha512-hex` → `Str`; `hmac` `hmac-hex` |
 | reference | `Digest` (rank 22, 20) for the bare names — `Digest::MD5`/`SHA1`/`SHA2`; `Digest::HMAC` (rank 18, 22) for `hmac`/`hmac-hex` |
 | also drop-in for | `Digest::SHA256::Native` (rank 44, 12) and `Digest::SHA1::Native` (rank 51, 11) — the `-hex` twins are their spelling; `OpenSSL::Digest` — same full set |
-| our XS module | **none** — converged already, and Rakudo's fast path exists |
+| our XS module | `Digest::Native` — decided later the same day; see [NATIVE-MODULES-PLAN.md](NATIVE-MODULES-PLAN.md) |
 | engine state | SHA-1 in-tree ([Interpreter.cpp:102](../../../src/Interpreter.cpp#L102)); SHA-256 + HMAC in-tree but file-local to `JupyterKernel.cpp`; MD5 and SHA-512 to write |
 
 ### `zlib` — 6 names
@@ -391,7 +477,7 @@ rakupp.**
 | exports | `compress` `uncompress` (`:gzip`/`:raw` adverbs are ours) `gzslurp` `gzspurt` `crc32` `adler32` |
 | reference | `Compress::Zlib` (rank 83, 8) — `compress(Blob, Int $level?)`, `uncompress(Blob)`, `gzslurp`/`gzspurt` |
 | unblocks | `PDF` `Image::PNG::Portable` `Archive::SimpleZip` `File::Zip` `Avro` `SAT` `Sitemap` `pack6` — all dead on rakupp today |
-| our XS module | **none** — it is already NativeCall over `libz` |
+| our XS module | `Compress::Zlib::Native` — see [NATIVE-MODULES-PLAN.md](NATIVE-MODULES-PLAN.md) |
 | engine state | nothing. RFC 1950/1951/1952; inflate ~300 lines, deflate ~300 more. **The only tag that adds a capability rather than speed** |
 
 ### `random` — 3 names
@@ -405,9 +491,10 @@ rakupp.**
 
 ### Totals
 
-27 names, 5 tags, ~1,800 lines of new C++. Two `**::Native` distributions of
-ours (`JSON::Native`, `CSV::Native`) — both already published; **three tags owe
-no new module.**
+27 names, 5 tags, ~1,800 lines of new C++. Four `**::Native` distributions:
+`JSON::Native` and `CSV::Native` exist; `Digest::Native` and
+`Compress::Zlib::Native` are designed in
+[NATIVE-MODULES-PLAN.md](NATIVE-MODULES-PLAN.md); `random` is engine-only.
 
 
 ## The tags — detail per family
@@ -473,17 +560,14 @@ hmac($key, $message, &hash, $blocksize?)   → Blob
 hmac-hex(…)                                → Str
 ```
 
-**No `Digest::Native`, no `Crypto::Native`.** By the invariant, a
-distribution of ours exists to supply a reference the ecosystem lacks or to
-package an extension. Here the ecosystem has the reference (`Digest` +
-`Digest::HMAC`, pure Raku, 42 run-dependents between them) *and* the Rakudo
-fast path (bduggan's two dists). On Rakudo the tag `require`s those four
-modules and defines the six `-hex` twins itself — six one-liners. A
-`Digest::Native` would be a re-export with a second name to maintain; and
-`Crypto::` is not a Raku namespace (the Perl-heritage prefix is `Crypt::`, and
-its top-100 presence is one RNG). If naming symmetry is wanted anyway, a
-`Digest::Native` that is literally `use Data::Native <digest>` under another
-name costs nothing — but it should be a decision, not a default.
+**`Digest::Native`, not `Crypto::Native`.** `Crypto::` is not a Raku
+namespace (the Perl-heritage prefix is `Crypt::`, and its whole top-100
+presence is one RNG); `Digest::` is where every module in the table above
+lives. The distribution itself — our C on Raku++, bduggan's two native dists
+plus `Digest` and `Digest::HMAC` as its composed fallback elsewhere — is
+designed in [NATIVE-MODULES-PLAN.md](NATIVE-MODULES-PLAN.md). On other engines
+`Data::Native`'s distribution copy reaches this tag through it, the same way
+the `json` tag goes through `JSON::Native`.
 
 **Where the tag is a superset of the reference — written down:**
 
@@ -735,9 +819,9 @@ keeps behaving as the module in every uncovered case. Both call one `jfEncode`.
 - **P7 — the distributions** (in `/Users/ash/raku-modules`, after the engine
   ships the primitives, never before): `CSV::Native` and `JSON::Native` gain
   the `engine` backend and export the primitive raw; `Data::Native` as a
-  distribution, byte-identical to the rakulib copy, with `Digest`,
-  `Digest::HMAC`, `Compress::Zlib`, `Crypt::Random`, `JSON::Native` and
-  `CSV::Native` in its `depends`.
+  distribution, with `JSON::Native`, `CSV::Native`, `Digest::Native`,
+  `Compress::Zlib::Native` and `Crypt::Random` in its `depends` (each
+  `**::Native` carries its own fallback's dependencies).
   **Standing rule: nothing in that repo is published from here.**
 
 P1 is deliberately thin — the JSON codec already exists, so P1 plus the
@@ -802,57 +886,31 @@ order-independence rule, the throw-vs-delegate table).
 per name), `FEATURES.md`, `RECIPES.md`, `EXTENSIONS.md` (the invariant belongs
 beside the `Rakupp::` naming rule it extends), `CHANGELOG.md`, `README.md`.
 
-## Does every tag need a `**::Native` distribution of ours?
+## Which tags have a `**::Native` distribution of ours
 
-**No — and the invariant was written that way on purpose.** It says one tag ⇔
-one *reference interface*, not one tag ⇔ one distribution of ours. A
-`**::Native` of ours is warranted for exactly two reasons:
+Decided 2026-09-05, after this section was first written the other way: the
+invariant says one tag ⇔ one *reference interface*, and a distribution of ours
+is added on evidence, not symmetry. The evidence was then weighed per family in
+[NATIVE-MODULES-PLAN.md](NATIVE-MODULES-PLAN.md):
 
-1. **we had to write the reference** — `CSV::Native`, because `Text::CSV` is
-   15,245 ms where the extension is 107 ms *and* has a different API, so there
-   was nothing to be replaceable with;
-2. **we had to package an extension** — `JSON::Native`, so that a compiled
-   fast path exists at all.
-
-Applied to the five tags:
-
-| tag | reference | a `**::Native` of ours? |
+| tag | reference | ours |
 |---|---|---|
-| `json` | `JSON::Fast` | **yes, exists** — packages the extension |
-| `csv` | *none usable* | **yes, exists** — we wrote the reference |
-| `digest` | `Digest` + `Digest::HMAC`; `Digest::SHA*::Native` for C speed | **no** — converged, and Rakudo's fast path already exists |
-| `zlib` | `Compress::Zlib` | **no** — it is already NativeCall over `libz`; a `Zlib::Native` would re-package libz |
-| `random` | `Crypt::Random` | **no** — already native, and the OS call is the implementation |
+| `json` | `JSON::Fast` | `JSON::Native` — exists |
+| `csv` | *none usable* | `CSV::Native` — exists; we wrote the reference |
+| `digest` | `Digest` + `Digest::HMAC`; bduggan's two for native SHA-1/256 | `Digest::Native` — **new**: one dist covering all six algorithms + HMAC, our C on Raku++, bduggan's + `Digest` + `Digest::HMAC` as its composed fallback |
+| `zlib` | `Compress::Zlib` | `Compress::Zlib::Native` — **new**: the only family where rakupp has no capability at all; `Compress::Zlib` (NativeCall over `libz`) as its fallback |
+| `random` | `Crypt::Random` | **none** — the OS call is the implementation; the core primitive is the whole deliverable |
 
-So two of five, both pre-existing. Nothing new is owed.
+What each costs is in the companion plan (JSON::Native is 552 lines of C, 180
+of Raku, a 72-line `Build.rakumod`, plus extension ABI versioning), and so is
+what they are for now that the core carries the same families: version skew,
+independent release cadence, and families the core will not carry — **not**
+Rakudo speed, since the extension ABI is rakupp-only.
 
-**What one costs, measured:** `JSON::Native` is 552 lines of C, 180 of Raku and
-a 72-line `Build.rakumod`; `CSV::Native` is 498 + 403 + 73. Plus a per-platform
-build story, a suite held against the reference on both engines, and extension
-**ABI versioning** — JSON::Native's README already documents an ABI-1/ABI-2
-split where a library built against the older one silently loses `to-json`.
-That is the recurring cost of each one, and it is why they are added on
-evidence rather than for symmetry.
-
-**The strategic fork, stated plainly.** Shipping a `**::Native` per family is
-the *maximum-reach* option: it would give **Rakudo** users a compiled fast path
-too, not just rakupp. That is a real benefit and a real programme — five or six
-distributions to build, test and release. The plan takes the other branch:
-`Data::Native` gives rakupp the speed now and gives every engine the same
-source-compatible `use` line, and a `**::Native` is added per family only when
-that family's evidence says so.
-
-**Nothing is foreclosed.** Because a tag names an interface and not a supplier,
-adding (say) `YAML::Native` later changes only that tag's fallback chain — no
-caller's source changes, on either engine. That property is the reason the
-invariant is worded around interfaces.
-
-**On `YAML::Native` specifically:** it would be the wrong first one regardless
-of this question. YAML 1.2 is not a closed spec, which is why `yaml` is not a
-tag; and YAMLish currently *fails* on rakupp for a plain sequence of maps
-(spun off as its own task) — that bug is worth more than a distribution would
-be. If YAML ever becomes a tag, the lever is a fast path on the loaded
-YAMLish, the `wrapJsonFastExports` pattern, not a codec of our own.
+**On `YAML::Native` specifically:** not a tag, so not a module. YAML 1.2 is not
+a closed spec, and YAMLish currently *fails* on rakupp for a plain sequence of
+maps (spun off as its own task). If YAML ever becomes a tag, the lever is a
+fast path on the loaded YAMLish, the `wrapJsonFastExports` pattern.
 
 ## Open decisions
 

@@ -30,7 +30,8 @@
   that C is compiled and used — the fastest we can go.
 - **On any other Raku, the same module still works**, just without our C. It
   quietly uses the well-known module it stands in for (`JSON::Fast` for JSON,
-  `Digest` for hashes, and so on). Nothing breaks; it is only slower.
+  bduggan's `Digest::SHA1::Native` and `Digest::SHA256::Native` plus `Digest`
+  for hashes, and so on). Nothing breaks; it is only slower.
 - **So our C makes Raku++ fast. It does not make other Rakus fast.** We looked
   at whether it could, using NativeCall, and measured that it would make
   Raku++ *slower* — so we did not do it. That is a deliberate choice, not an
@@ -43,14 +44,18 @@
 - **If you load both, `Data::Native` wins** — but only for the tags you asked
   it for. `use Data::Native <csv>; use JSON::Native;` gives you the engine's
   CSV and `JSON::Native`'s JSON. Order does not matter.
-- **One piece of C, not two.** The same C files are used by the engine and by
-  the modules, so the two can never drift apart and give different answers.
+- **The engine's C and a module's C are separate**, on purpose. Sharing one
+  copy would force the engine's code into a shape that suits the modules, and
+  the engine's path is the one most people use. We accept two copies and put
+  the effort into stopping them from disagreeing: one shared set of test
+  inputs both must pass, and a written note whenever they differ deliberately.
 
-**What we are building:** three new modules — `Digest::Native` (hashes: MD5,
-SHA-1/224/256/384/512, HMAC), `Compress::Zlib::Native` (gzip and zlib), and
-possibly `Crypt::Random::Native` (secure random bytes, and probably not worth
-it). Plus moving the C that `JSON::Native` and `CSV::Native` already have into
-the shared place.
+**What we are building:** two new modules — `Digest::Native` (hashes: MD5,
+SHA-1/224/256/384/512, HMAC) and `Compress::Zlib::Native` (gzip and zlib).
+Secure random bytes stay engine-only (`Data::Native <random>`); a
+`Crypt::Random::Native` distribution was considered and is not built. Plus
+moving the C that `JSON::Native` and `CSV::Native` already have into the
+shared place.
 
 ## The decision (settled 2026-09-05)
 
@@ -100,7 +105,7 @@ pure-Raku implementation only where no reference exists.
 |---|---|---|
 | `JSON::Native` | `JSON::Fast` | no — tuned `nqp` |
 | `CSV::Native` | its own `parse-raku` (we wrote it; `Text::CSV` was 15,245 ms) | no |
-| `Digest::Native` | `Digest` + `Digest::HMAC` | no — pure Raku |
+| `Digest::Native` | `Digest::SHA1::Native` + `Digest::SHA256::Native` (bduggan) for SHA-1/256; `Digest` for MD5/224/384/512; `Digest::HMAC` | **partly** — the two most-used algorithms are C via NativeCall; the rest pure Raku |
 | `Compress::Zlib::Native` | `Compress::Zlib` | **yes** — NativeCall over system `libz` |
 
 The last row is the point: **we do not write a pure-Raku inflate.** On another
@@ -108,39 +113,51 @@ engine `Compress::Zlib::Native` delegates to `Compress::Zlib`, which is already
 C. A hand-written Raku inflate would be hundreds of lines that nothing would
 ever want to run.
 
-## The architecture: one C core, two consumers
+## The architecture: independent C, deliberately — and how it is kept honest
 
-The part of this design that survives NativeCall being dropped — and the part
-that matters most, because without it every family repeats the JSON situation:
-**`JSON::Native`'s C and the engine's C++ codec are today two independent
-implementations of one format**, held together only by a test suite.
+**Decided 2026-09-05: the engine's C and each module's C are independent
+implementations.** A shared `src/native/` core was designed and is not taken.
 
-```
-src/native/          ← canonical, in the engine repo, plain C99
-  md5.c sha1.c sha2.c hmac.c      bytes in, bytes out
-  inflate.c deflate.c crc32.c     bytes in, bytes out
-  json_core.c csv_core.c          algorithm; value construction via callbacks
-  (no C++, no RkValue, no engine headers)
-```
+**Why.** The `rk_*` value construction is not at the edge of a codec, it is at
+the leaves of its recursion — `csv.c` touches `rk_` on 59 of 498 lines, `json.c`
+on 35 of 552. Factoring one algorithm out for two consumers therefore means
+either a callback per constructed value (an indirect call at every leaf — 19,201
+of them on the 278 KB corpus, defeating inlining on the *engine's* hot path) or
+a token/offset intermediate that both sides then walk. Both put a tax on the
+core to serve the module, and the core is the path `Data::Native` gives
+everybody with no install. The engine implementation should be free to be the
+fastest thing we can write.
 
-Two consumers, each a thin wrapper:
+**The honest cost.** Two implementations of one format can drift, and today's
+`JSON::Native` already shows the shape of it: its C and the engine's C++ codec
+are separate, and only the test suite holds them together. Nothing here makes
+that better; the decision is that a shared core would make the core worse by
+more than the drift costs.
 
-1. **librakupp** — a C++ wrapper building `Value`. Gives the `rakupp-*`
-   primitives that [DATA-PLAN.md](DATA-PLAN.md) exposes and `Data::Native`
-   activates.
-2. **each module's ext-ABI shim** (`shim_ext.c`) — the same core, with `RkValue`
-   construction.
+**What we do about it instead** — this is the standing commitment, not a
+nice-to-have:
 
-Measured coupling in the C we ship today shows this is feasible: `json.c`
-touches `rk_` on 35 of 552 lines (6%), `csv.c` on 59 of 498 (12%). The value
-construction is at the boundary; the algorithm underneath is portable C. For
-the byte families (digest, zlib, random) the split is trivial — those have no
-value construction at all.
+1. **One corpus, both implementations.** The conformance corpora and vector
+   sets live in the engine repo and are run by *both* the engine's regression
+   suite and each distribution's `t/`. Same inputs, same expected bytes. A
+   divergence is a failing test on whichever side moved, even though the code
+   is not shared.
+2. **A pointer in each file's header.** The engine's codec and the module's C
+   each name the other as its twin, so a fix in one prompts a look at the
+   other. Cheap, and it is the thing that actually gets remembered.
+3. **Deliberate differences are written down**, in the plan and in both
+   headers — an adverb one supports and the other does not, an error the module
+   raises that the core cannot. Undocumented divergence is the failure mode;
+   documented divergence is a design.
+4. **A fix in one is not done until the other is checked.** Part of the
+   definition of done for any codec bug, on either side.
 
-Canonical copy lives in the engine repo because that one is gated by Roast, the
-regression suite and `perf-guard`. Each distribution vendors the C files, and
-CI asserts the vendored bytes hash equal. **One algorithm, one set of vectors,
-two ~80-line wrappers.**
+**Where converging later is free, if we ever want it.** The reasoning above is
+about *value-building* codecs. `digest` and `zlib` are bytes in, bytes out —
+they construct no Raku values, so `rk_` appears only in the entry/exit shim and
+a shared `sha256(const uint8_t*, size_t, uint8_t[32])` would cost the core
+nothing. If the two-copies discipline ever proves expensive, those two families
+are where to converge first, and json/csv are where not to.
 
 ## The backend ladder, and what each engine gets
 
@@ -162,7 +179,7 @@ extension at 5.0 ms against 7.7 ms for the engine path, but that engine path
 goes through a class method and module dispatch, not the direct builtin this
 plan adds.
 
-## The three missing modules
+## The two new modules, and the one not built
 
 Names probed free on raku.land, 2026-09-05. The naming rule is
 `<Reference>::Native` — the module you can swap in for `<Reference>` — which is
@@ -176,13 +193,39 @@ Exports the 14 names in DATA-PLAN's `digest` tag.
 The real gap it fills: bduggan's two dists cover **only SHA-1 and SHA-256**,
 each a separate install, and neither does MD5, SHA-512 or HMAC natively.
 `Digest::HMAC` is pure Raku on every engine. One distribution covering
-md5/sha1/224/256/384/512 + HMAC, native everywhere via NativeCall, is
-something the ecosystem does not have.
+md5/sha1/224/256/384/512 + HMAC — our C on Raku++, and on other engines as
+native as the ecosystem already gets — is something the ecosystem does not
+have.
 
-C: ~450 lines (`md5.c sha1.c sha2.c hmac.c`). Half already exists in-tree —
-`sha1hex` ([Interpreter.cpp:102](../../../src/Interpreter.cpp#L102)) and the
-Jupyter `Sha256`/`hmacSha256Hex` — and moving those to `src/native/` as C is
-the same lift DATA-PLAN's P3 already schedules.
+C: ~450 lines (`md5.c sha1.c sha2.c hmac.c`), the module's own copy. The
+engine grows its own in DATA-PLAN's P3, which lifts `sha1hex`
+([Interpreter.cpp:102](../../../src/Interpreter.cpp#L102)) and the Jupyter
+`Sha256`/`hmacSha256Hex` out of their current homes. Twins by the rule above:
+same vectors, headers naming each other.
+
+**Fallback on other engines: the established native modules, as hard
+dependencies — the `JSON::Fast` pattern** (decided 2026-09-05, revising an
+earlier pure-Raku-only choice). Per algorithm:
+
+| names | fallback | what it is |
+|---|---|---|
+| `sha1`, `sha1-hex` | `Digest::SHA1::Native` (zef:bduggan) | C via NativeCall, built at install with `LibraryMake` |
+| `sha256`, `sha256-hex` | `Digest::SHA256::Native` (zef:bduggan) | same |
+| `md5`, `sha224`, `sha384`, `sha512` and their `-hex` | `Digest` (zef:grondilu) | pure Raku — nothing native exists for these short of `OpenSSL::Digest`, which drags system OpenSSL |
+| `hmac`, `hmac-hex` | `Digest::HMAC` (zef:jjmerelo) | pure Raku padding around whichever `&hash` it is given — with bduggan's `&sha256` the two hash calls inside are native |
+
+All four are `depends`, not optional — one fallback path, composed, exactly as
+`JSON::Native` depends on `JSON::Fast` rather than probing for it. The earlier
+objection ("optional dependencies and a second path to test") was an objection
+to making them *optional*; as required dependencies there is nothing extra to
+test. bduggan's names and signatures are the tag's already, so delegation is
+name-for-name.
+
+Cost of the dependency, stated: bduggan's dists build their C at install
+(`depends: LibraryMake`, `build-depends: Shell::Command`), so a C compiler and
+`make` are needed — the same requirement `JSON::Native`'s own extension
+already has. They are well-trodden: `Cro::WebSocket` (via `Cro::HTTP`, rank 2)
+depends on `Digest::SHA1::Native`.
 
 ### `Compress::Zlib::Native` — moderate case, one honest caveat
 
@@ -203,7 +246,7 @@ benchmark table imply otherwise.
 C: ~600 lines (`inflate.c deflate.c crc32.c`). Inflate first — it is what
 unblocks the dependents.
 
-### `Crypt::Random::Native` — recommend NOT building it
+### `Crypt::Random::Native` — not built (decided 2026-09-05)
 
 Replaces: `Crypt::Random`. Exports the 3 names in the `random` tag.
 
@@ -214,9 +257,11 @@ Raku++ the same C with no install — so the distribution's *entire* remaining
 value is version skew on an engine too old to have the tag. That does not pay
 for a distribution.
 
-**Recommendation: build the core primitive (`Data::Native <random>`), skip the
-distribution.** Listed here so the decision is on the record rather than an
-omission.
+**Decided: the core primitive (`Data::Native <random>`) is the whole
+deliverable; no distribution.** Kept here so the reasoning is on the record
+rather than the name simply being absent. If version skew ever turns out to
+matter for this family, it is a ~30-line shim over the same `csprng.c` and can
+be added without changing anything else.
 
 ## `Data::Native` must win — the cooperation protocol
 
@@ -262,12 +307,13 @@ references are untouched.
 
 ## Gates
 
-- **The vendored C is byte-identical to the engine's** — a CI hash compare per
-  distribution. This is the gate that makes "one algorithm" true rather than
-  aspirational.
-- **The conformance suite runs every backend row**: core, ext-ABI, NativeCall,
-  and pure fallback, over one corpus per family, on both engines. All must
-  agree value for value; `to-json`/`to-csv` byte for byte.
+- **One corpus, run against every backend row** — core, ext-ABI, and the
+  fallback — on both engines, per family. All must agree value for value;
+  `to-json`/`to-csv` byte for byte. **With the C deliberately not shared, this
+  is the gate that keeps the two implementations honest**, so it is the one to
+  build first and the one that must never be skipped.
+- **The corpora live in the engine repo** and each distribution's `t/` pulls
+  them, so neither side can quietly test something easier than the other.
 - **Order-independence**, both orders × both engines × claimed and unclaimed
   tags — the four-cell table above, as a test.
 - **Inflate is fuzzed.** It is the one component here that parses
@@ -278,28 +324,26 @@ references are untouched.
 
 ## Order of work
 
-Strictly after DATA-PLAN's P1–P5 — the core primitives are the shared C's first
-consumer, and writing the modules first would mean writing the C twice.
+After DATA-PLAN's P1–P5, so each family's corpus and vectors exist before the
+module that must match them.
 
-1. **`src/native/` extraction.** Move the existing SHA-1
-   ([Interpreter.cpp:102](../../../src/Interpreter.cpp#L102)) and the Jupyter
-   `Sha256`/`hmacSha256Hex` into plain C there; librakupp consumes them. No
-   behaviour change; `jupyter-smoke` is the gate.
-2. **`Digest::Native`** — ext-ABI shim over that core, `Digest` +
-   `Digest::HMAC` as the fallback. The first module built the new way.
+1. **The shared corpora and vector sets**, in the engine repo, with the
+   engine-side regression files that consume them. This is step one precisely
+   *because* the C is not shared — it is the only thing keeping the two
+   implementations aligned.
+2. **`Digest::Native`** — its own C, ext-ABI shim, `Digest` + `Digest::HMAC`
+   as the fallback, the shared vectors as its gate.
 3. **`Compress::Zlib::Native`** — inflate first (it is what unblocks the
    dependents), then deflate; `Compress::Zlib` as the fallback.
 4. **The cooperation protocol**, retrofitted into `JSON::Native` and
-   `CSV::Native`, and their C moved into `src/native/` so each format stops
-   having two implementations.
-5. `Crypt::Random::Native` — only if someone asks.
+   `CSV::Native`, and both moved onto the shared corpora.
 
 ## Open decisions
 
-1. **Do `JSON::Native` and `CSV::Native` keep their ext-ABI extensions?** Yes
-   under this plan — row 2 stays the fastest path on rakupp for value-building
-   codecs, and version skew keeps it useful. But the C should move to
-   `src/native/` + shims so it stops being a second implementation.
+1. ~~Do `JSON::Native` and `CSV::Native` keep their ext-ABI extensions?~~
+   **Decided: yes.** Row 2 stays the fastest path on rakupp for value-building
+   codecs, and version skew keeps it useful. Their C stays their own, per the
+   architecture decision.
 2. **Is the JSON/CSV *scanner* over NativeCall worth building** (row 3 for the
    value-building families)? **Measured 2026-09-05, and the answer splits by
    engine.** The README's own 278 KB corpus (`tools/bench/diagnose/d800.json`:
@@ -322,12 +366,14 @@ consumer, and writing the modules first would mean writing the C twice.
    ~2× over JSON::Fast — but JSON::Fast is tuned `nqp` and the offset-decoding
    loop is not free, so the realistic ceiling is lower. Worth a prototype
    *after* the byte families ship the NativeCall path; not in this plan.
-3. **`Crypt::Random::Native` at all?**
-4. **Vendoring vs a shared C distribution.** Vendoring with a hash gate is
-   proposed; a single `Native::CSource` dist that the others depend on is the
-   alternative, and trades duplication for a dependency edge.
-5. **Does `Digest::Native` fall back to `Digest` (pure Raku, ~0.04 MB/s on
-   rakupp) or to bduggan's `Digest::SHA*::Native` where installed?** The
-   pure-Raku fallback is correct but very slow; preferring a native sibling
-   when present is faster but adds optional dependencies and a second code
-   path to test.
+3. ~~`Crypt::Random::Native` at all?~~ **Decided 2026-09-05: not built.**
+   The core primitive is the deliverable (see its section above).
+4. ~~Vendoring vs a shared C distribution.~~ **Decided 2026-09-05: neither —
+   independent implementations.** Sharing would pull the engine's codec toward
+   a shape that suits the modules; see the architecture section for the
+   reasoning and for the four things that keep divergence small instead.
+5. ~~Does `Digest::Native` fall back to `Digest` or to bduggan's
+   `Digest::SHA*::Native`?~~ **Decided 2026-09-05: bduggan's two dists as hard
+   dependencies for SHA-1/256, `Digest` for the rest, `Digest::HMAC` for HMAC**
+   — the `JSON::Fast` pattern, composed per algorithm. See the module's
+   section.
