@@ -1,17 +1,17 @@
 # Plan: `Data::Native` — one portable `use` for whatever the engine does natively
 
-**Status: the module half is BUILT (2026-09-05); the engine half is under way
-— P1, P2, P3, P4 and P6 have landed, only P5 has not.** `Data::Native`,
+**Status: BOTH HALVES ARE BUILT (2026-09-05). P1 to P7 have all landed.** `Data::Native`,
 `Digest::Native` and `Compress::Zlib::Native` exist in
 `/Users/ash/raku-modules` with `JSON::Native` and `CSV::Native` retrofitted
 alongside them — 1,058 assertions on rakupp, 1,063 on Rakudo. Extension ABI 3
 landed here (`rk_blob`). On this side the compiler now answers
 `use Data::Native <json csv>`, `use JSON::Native` and `use CSV::Native` from
 its own builtins with nothing installed; `rakupp-from-json` / `rakupp-to-json`
-`rakupp-from-csv` / `rakupp-to-csv`, the fourteen `digest` names and the seven
-`zlib` ones are registered, with the `*-backend` subs reporting `core`. What
-remains is P5 (random), which adds primitives plus one row to
-`kDataNativeTags`, the mechanism itself being done. `rakupp-sha1-hex` is now
+`rakupp-from-csv` / `rakupp-to-csv`, the fourteen `digest` names, the seven
+`zlib` ones and the four `random` ones are registered, with every `*-backend`
+sub reporting `core`. **A bare `use Data::Native` claims all five tags and
+exports all thirty-two names with nothing installed**, which is the line the
+synopsis has promised from the first draft and is now true. `rakupp-sha1-hex` is now
 the TAG's primitive and returns lower-case hex, which is what this plan asked
 for below rather than having the tag work around it; the installer, its only
 caller, uppercases the answer itself and always did.
@@ -959,6 +959,23 @@ modulus, so the distribution is flat.
 This is the only tag admitted on a missing-capability argument with no
 measured speed gap.
 
+**Landed 2026-09-05**, and two departures from the reference, both from
+arbitrary-precision arithmetic rather than from taste:
+
+- **`crypt_random($size)` is a real `Int` at any width.** `crypt_random(8)`
+  does not fit a machine word and `crypt_random(32)` is a 77-digit number; both
+  are built through `BigInt` and neither is truncated.
+- **`crypt_random_uniform` sizes its draw to the bound.** The reference
+  defaults `$size` to 4 and rejection-samples, so any bound above 2**32 never
+  terminates — `crypt_random_uniform(2**40)` HANGS there, probed. An explicit
+  `$size` is still honoured as written and refused only when it cannot reach
+  the bound at all, which is that same non-termination said out loud rather
+  than suffered.
+
+The `$size` cap is 4096 bytes and the `crypt_random_buf` cap is 16 MB. Neither
+is the OS's limit; they are there so a length that arrived from somewhere else
+is reported rather than allocated.
+
 ### What else was considered — measured, not guessed
 
 The question "what belongs in `Data::Native`" has a test: a **fixed, closed
@@ -1036,8 +1053,8 @@ keeps behaving as the module in every uncovered case. Both call one `jfEncode`.
 
 ## Order of work
 
-P7, P1, P2, P3, P4 and P6 are done; only P5 is not started. Nothing left is
-blocked by anything outside this repository.
+All of it is done. P7 landed first (the distributions, ahead of the engine
+half), then P1, P6, P2, P3, P4 and P5 in that order, all on 2026-09-05.
 
 - ~~**P1 — L1 JSON primitives.**~~ **DONE 2026-09-05** (`2c6f590`). Split the two wrapper functions into an
   argument-parsing half and an on-uncovered half; the wrapper passes a
@@ -1127,10 +1144,33 @@ blocked by anything outside this repository.
   4. **It does not crash on hostile input**, which is the one that matters for
      a decoder reachable from an HTTP header. 10,000 mutated and random streams
      under ASAN and UBSAN, no report.
-- **P5 — L1 random primitives.** `getrandom(2)` / `/dev/urandom` /
-  `BCryptGenRandom` behind one entry point; rejection sampling for
-  `crypt_random_uniform`. Gate: a distribution check on the uniform sampler
-  and a "never returns the same buffer twice" smoke.
+- ~~**P5 — L1 random primitives.**~~ **DONE 2026-09-05.**
+  `src/DataRandom.{h,cpp}` — ONE file rather than the two the other tags have,
+  because there is no algorithm to separate out: the whole of it is asking the
+  OS for bytes and shaping them, and a `src/Random.cpp` holding one function
+  would be a pattern rather than a reason. `getentropy(2)` on macOS and the
+  BSDs (which takes 256 bytes a call, so the loop is the interface and not a
+  retry), `getrandom(2)` on Linux, `BCryptGenRandom` on Windows,
+  `/dev/urandom` when none of those is there — and a REFUSAL if none answers,
+  never a software fallback, because a CSPRNG that quietly degrades to
+  something predictable is worse than one that stops.
+
+  Two things the reference cannot do, both from arbitrary-precision arithmetic
+  the engine already has: `crypt_random(32)` is a 77-digit `Int` rather than
+  something truncated to a machine word, and `crypt_random_uniform` sizes its
+  draw to the bound. **The reference hangs on `crypt_random_uniform(2**40)`** —
+  probed 2026-09-05 — because it draws four bytes and rejection-samples for a
+  value it can never produce; an explicit `$size` too small for the bound is
+  refused here, which is the same non-termination said out loud.
+
+  Gates: `t/regression/data-native-random.raku`, 41 assertions, and
+  `data-native-random-reference.raku`, 12 more against `Crypt::Random` (types,
+  defaults and range — values are the one thing that cannot be compared). The
+  distribution check is not decoration: it draws 12,000 samples of
+  `crypt_random_uniform(200, 1)`, where **`draw % 200` would make the values
+  0..55 exactly twice as likely as 56..199**, and asserts the two halves are
+  within 15% of each other. That is the assertion that says "rejection
+  sampling, not a modulus", and no sampling noise can fake it.
 - ~~**P6 — the compiler answers `use Data::Native` and `use <X>::Native`.**~~
   **DONE 2026-09-05** (`66a8f6c`, `json`; the `csv` row followed with P2).
   Not a `rakulib/` file — see "The compiler answers" above. Four pieces:

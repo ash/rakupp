@@ -5,6 +5,7 @@
 #include "Digest.h"
 #include "DataDigest.h"
 #include "DataZlib.h"
+#include "DataRandom.h"
 #include "Lexer.h"
 #include "Parser.h"
 #if !defined(_WIN32)
@@ -8853,6 +8854,19 @@ void Interpreter::registerBuiltins() {
     B["rakupp-gzspurt"]    = [](Interpreter& I, ValueList& a) -> Value { return dataZlibGzspurt(I, a); };
     B["rakupp-crc32"]      = [](Interpreter& I, ValueList& a) -> Value { return dataZlibChecksum(I, a, true); };
     B["rakupp-adler32"]    = [](Interpreter& I, ValueList& a) -> Value { return dataZlibChecksum(I, a, false); };
+
+    // ---- the `random` tag's primitives (DATA-PLAN P5) -----------------------
+    //
+    // The one tag where NOT using the OS primitive would be the error: a CSPRNG
+    // is not a thing to implement. src/DataRandom.cpp asks getentropy(2),
+    // getrandom(2), BCryptGenRandom or /dev/urandom, and refuses rather than
+    // degrading to anything predictable if none of them answers.
+    B["rakupp-random-backend"] = [](Interpreter&, ValueList&) -> Value {
+        return Value::str("core");
+    };
+    B["rakupp-crypt_random_buf"]     = [](Interpreter& I, ValueList& a) -> Value { return dataRandomBuf(I, a); };
+    B["rakupp-crypt_random"]         = [](Interpreter& I, ValueList& a) -> Value { return dataRandomInt(I, a); };
+    B["rakupp-crypt_random_uniform"] = [](Interpreter& I, ValueList& a) -> Value { return dataRandomUniform(I, a); };
     // repo.lock — the store is also zef's and Rakudo's, and a writer that
     // ignores the lock can corrupt it under a concurrent zef. IO::Handle
     // .lock is a stub here (buffered handles carry no live fd), so the

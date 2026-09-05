@@ -5828,6 +5828,8 @@ static const DataNativeTag kDataNativeTags[] = {
                   "hmac", "hmac-hex", "digest-backend", nullptr } },
     { "zlib", { "compress", "uncompress", "gzslurp", "gzspurt",
                 "crc32", "adler32", "zlib-backend", nullptr } },
+    { "random", { "crypt_random_buf", "crypt_random", "crypt_random_uniform",
+                  "random-backend", nullptr } },
     { nullptr, { nullptr } }
 };
 
