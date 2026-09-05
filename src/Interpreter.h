@@ -138,9 +138,6 @@ inline constexpr long long kDefaultOutBuffer = 8192;
 // size", and anything else is the size itself. Negative sizes clamp to 0.
 long long outBufferSize(const Value& v);
 
-// SHA-1 as UPPERCASE hex (Interpreter.cpp) — the CURI short-index / content-id scheme.
-std::string sha1hex(const std::string& msg);
-
 // The eight containers below are empty in the overwhelming majority of scopes —
 // they exist for `is rw` write-through, `temp`/`let` restoration, `is default`
 // and `is dynamic`. An Env is built for every routine call AND every block, so
@@ -1018,6 +1015,12 @@ public:
     // value and this wraps the consumer block with it. See the definition.
     Value wrapSupplyChain(const Value& supply, Value consumer);
     Value callBuiltin(const std::string& name, ValueList args); // invoke a named builtin (used by codegen)
+    // The ONE stable Callable for a builtin, minted on demand. Both
+    // `&::('rakupp-md5')` and the `&md5` that `use Data::Native <digest>`
+    // exports hand out this object, so comparing against it is how a primitive
+    // recognises one of its own siblings passed as `&hash` — by identity, never
+    // by name, or a user's own `sub sha256` would be mistaken for ours.
+    const Value* builtinRef(const std::string& name);
     // Same, but with the INTERPRETER's resolution order: a routine bound in the
     // environment wins over the built-in of that name (evalCall's
     // `find("&"+name)` before the builtin table). Codegen emits this for the

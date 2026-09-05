@@ -1,6 +1,7 @@
 #include "CNumeric.h"
 #include "AsciiCtype.h"
 #include "Interpreter.h"
+#include "Digest.h"
 #include <functional>
 #include <tuple>
 #include <memory>
@@ -98,36 +99,9 @@ double randDouble() {
     return erand48(g_rand_xs);
 }
 
-// SHA-1 (uppercase hex) — used to resolve module names against a Rakudo CURI `short/` index.
-std::string sha1hex(const std::string& msg) {
-    uint32_t h0 = 0x67452301, h1 = 0xEFCDAB89, h2 = 0x98BADCFE, h3 = 0x10325476, h4 = 0xC3D2E1F0;
-    std::string m = msg;
-    uint64_t ml = (uint64_t)m.size() * 8;
-    m += (char)0x80;
-    while (m.size() % 64 != 56) m += (char)0;
-    for (int i = 7; i >= 0; i--) m += (char)((ml >> (i * 8)) & 0xff);
-    for (size_t off = 0; off < m.size(); off += 64) {
-        uint32_t w[80];
-        for (int i = 0; i < 16; i++)
-            w[i] = ((unsigned char)m[off + i * 4] << 24) | ((unsigned char)m[off + i * 4 + 1] << 16) |
-                   ((unsigned char)m[off + i * 4 + 2] << 8) | ((unsigned char)m[off + i * 4 + 3]);
-        for (int i = 16; i < 80; i++) { uint32_t v = w[i-3]^w[i-8]^w[i-14]^w[i-16]; w[i] = (v << 1) | (v >> 31); }
-        uint32_t a = h0, b = h1, c = h2, d = h3, e = h4;
-        for (int i = 0; i < 80; i++) {
-            uint32_t f, k;
-            if (i < 20) { f = (b & c) | ((~b) & d); k = 0x5A827999; }
-            else if (i < 40) { f = b ^ c ^ d; k = 0x6ED9EBA1; }
-            else if (i < 60) { f = (b & c) | (b & d) | (c & d); k = 0x8F1BBCDC; }
-            else { f = b ^ c ^ d; k = 0xCA62C1D6; }
-            uint32_t t = ((a << 5) | (a >> 27)) + f + e + k + w[i];
-            e = d; d = c; c = (b << 30) | (b >> 2); b = a; a = t;
-        }
-        h0 += a; h1 += b; h2 += c; h3 += d; h4 += e;
-    }
-    char buf[41];
-    snprintf(buf, sizeof buf, "%08X%08X%08X%08X%08X", h0, h1, h2, h3, h4);
-    return buf;
-}
+// sha1hex — one line now; the implementation is src/Digest.cpp, shared with the
+// `digest` tag's primitives and the Jupyter kernel's message signatures. It was
+// a second copy of SHA-1 here until DATA-PLAN P3 lifted them all into one file.
 
 Value applyArith(const std::string& op, const Value& l, const Value& r);
 
@@ -5840,14 +5814,18 @@ static std::string metaProvidesPath(const std::string& distRoot, const std::stri
 // so adding a primitive and putting it in a tag is one edit, not two files.
 struct DataNativeTag {
     const char* tag;
-    const char* names[8];      // NULL-terminated
+    const char* names[20];     // NULL-terminated; `digest` alone is fifteen
 };
 static const DataNativeTag kDataNativeTags[] = {
-    // P1 landed the json primitives. csv, digest, zlib and random join this
-    // table as P2-P5 register theirs; until then the module is left to answer,
-    // which is why the check below is by PRIMITIVE and not by tag name.
+    // json (P1), csv (P2) and digest (P3) are here; zlib and random join the
+    // table as P4 and P5 register theirs. Until a tag's primitives all exist
+    // the module is left to answer it, which is why the check below is by
+    // PRIMITIVE and not by tag name.
     { "json", { "from-json", "to-json", "json-backend", nullptr } },
     { "csv",  { "from-csv", "to-csv", "csv-backend", nullptr } },
+    { "digest", { "md5", "sha1", "sha224", "sha256", "sha384", "sha512",
+                  "md5-hex", "sha1-hex", "sha224-hex", "sha256-hex", "sha384-hex", "sha512-hex",
+                  "hmac", "hmac-hex", "digest-backend", nullptr } },
     { nullptr, { nullptr } }
 };
 
@@ -5860,6 +5838,7 @@ static const DataNativeModule kDataNativeModules[] = {
     { "Data::Native",  { "json", "csv", "digest", "zlib", "random", nullptr } },
     { "JSON::Native",  { "json", nullptr } },
     { "CSV::Native",   { "csv", nullptr } },
+    { "Digest::Native", { "digest", nullptr } },
     { nullptr, { nullptr } }
 };
 
@@ -5991,17 +5970,34 @@ bool Interpreter::dataNativeUse(const std::string& name,
             std::string prim = std::string("rakupp-") + *n;
             auto bit = builtins_.find(prim);
             if (bit == builtins_.end() || !tctx_.cur) continue;
-            auto rit = builtinRefs_.find(prim);
-            if (rit == builtinRefs_.end()) {
-                Value code; code.t = VT::Code; code.setCode(std::make_shared<Callable>());
-                code.code()->name = *n;             // the name the CALLER sees
-                code.code()->builtin = bit->second;
-                rit = builtinRefs_.emplace(prim, code).first;
-            }
-            tctx_.cur->define(std::string("&") + *n, rit->second);
+            const Value* ref = builtinRef(prim);
+            if (!ref) continue;
+            tctx_.cur->define(std::string("&") + *n, *ref);
         }
     }
     return true;
+}
+
+const Value* Interpreter::builtinRef(const std::string& name) {
+    auto rit = builtinRefs_.find(name);
+    if (rit != builtinRefs_.end()) return &rit->second;
+    auto bit = builtins_.find(name);
+    if (bit == builtins_.end()) return nullptr;
+    Value code; code.t = VT::Code; code.setCode(std::make_shared<Callable>());
+    // A tag primitive answers to its EXPORTED name, whichever spelling reached
+    // it first. `rakupp-` is the adoption hook another engine would register
+    // under; `md5` is what the routine is called in the program that imported
+    // it, so that is what `&md5.name` and a backtrace should say. Without this
+    // the answer depended on whether `&::('rakupp-md5')` or a `use` ran first.
+    code.code()->name = name;
+    if (name.compare(0, 7, "rakupp-") == 0) {
+        std::string bare = name.substr(7);
+        for (const DataNativeTag* d = kDataNativeTags; d->tag; d++)
+            for (const char* const* n = d->names; *n; n++)
+                if (bare == *n) code.code()->name = bare;
+    }
+    code.code()->builtin = bit->second;
+    return &(builtinRefs_[name] = code);
 }
 
 void Interpreter::loadModule(const std::string& name, const std::vector<std::string>& importArgs, bool doImport, bool quiet, const std::string& verReq) {
@@ -30162,15 +30158,7 @@ Value Interpreter::eval(Expr* e) {
                     };
                     return code;
                 }
-                auto bit = builtins_.find(bare);
-                if (bit != builtins_.end()) {
-                    auto rit = builtinRefs_.find(bare);   // one stable Callable per builtin
-                    if (rit != builtinRefs_.end()) return rit->second;
-                    Value code; code.t = VT::Code; code.setCode(std::make_shared<Callable>()); code.code()->name = bare;
-                    code.code()->builtin = bit->second;
-                    builtinRefs_[bare] = code;
-                    return code;
-                }
+                if (const Value* ref = builtinRef(bare)) return *ref;  // one stable Callable per builtin
             }
             // $0, $1, … are aliases for $/[N]; fall back to $/ when not directly bound
             if (ve->name.size() >= 2 && ve->name[0] == '$' && ascii::isdigit((unsigned char)ve->name[1])) {

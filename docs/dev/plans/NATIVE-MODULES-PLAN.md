@@ -375,9 +375,23 @@ the primitives: they resolve their own extension, then their fallback, and the
 engine rung is one the ladder simply has not reached yet.
 
 1. **The shared corpora and vector sets**, in the engine repo, with the
-   engine-side regression files that consume them. **The only step still
-   open**, and the direction is now settled: they move HERE. They exist, in the
-   distributions — `Digest-Native/t/vectors/digest.vec`, 156 vectors from the
+   engine-side regression files that consume them. **HALF DONE 2026-09-05**,
+   with DATA-PLAN P3: `digest.vec` moved to `raku++/t/vectors/digest.vec`,
+   which is now the master. The distribution keeps a copy so a published
+   tarball stands alone, and `t/regression/data-native-digest.raku` asserts the
+   two are byte-identical whenever the sibling checkout is there — a vector
+   added on one side cannot quietly fail to reach the other. `zlib.vec` moves
+   the same way with P4, and until it does this step stays open.
+
+   The arrangement earned its keep the day it was made. P3 turned
+   `Digest::Native`'s exported names into dispatcher wrappers; its `hmac`
+   recognises the tag's own hashes by IDENTITY, stopped recognising them, and
+   guessed a block size of 64 where SHA-384 and SHA-512 want 128 — twelve
+   silently non-RFC MACs, from a change made entirely in the other repository,
+   caught by that distribution's own `t/02-hmac.t`.
+
+   The direction was settled before any of it: they move HERE. They exist, in
+   the distributions — `Digest-Native/t/vectors/digest.vec`, 156 vectors from the
    system `openssl`, and `Compress-Zlib-Native/t/vectors/zlib.vec`, 67 from
    real libz and the system `gzip`, including eight malformed streams that must
    be refused — and the compiler answering `use <X>::Native` is what decides

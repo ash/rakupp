@@ -102,7 +102,10 @@ check(("aéb".encode.decode('ascii', :replacement<->) ~~ Str), True, 'the fez ca
 {
     my $sha = try ::('&rakupp-sha1-hex');
     check($sha ~~ Callable, True, 'the engine exposes rakupp-sha1-hex to the installer');
-    check($sha('abc').lc, 'a9993e364706816aba3e25717850c26c9cd0d89d', '…and it is real SHA-1 (engine spells it uppercase)');
+    # Lower case since DATA-PLAN P3 made this the `digest` tag's primitive; the
+    # installer uppercases it itself, because the store's short/ directories are
+    # named in uppercase hex and a case-sensitive filesystem tells them apart.
+    check($sha('abc'), 'a9993e364706816aba3e25717850c26c9cd0d89d', '…and it is real SHA-1');
 }
 
 if @fail { note "FAILED:\n" ~ @fail.join("\n"); say 'FAIL' } else { say 'PASS' }

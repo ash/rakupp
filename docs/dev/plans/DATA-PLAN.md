@@ -1,18 +1,20 @@
 # Plan: `Data::Native` — one portable `use` for whatever the engine does natively
 
 **Status: the module half is BUILT (2026-09-05); the engine half is under way
-— P1, P2 and P6 have landed, P3 to P5 have not.** `Data::Native`,
+— P1, P2, P3 and P6 have landed, P4 and P5 have not.** `Data::Native`,
 `Digest::Native` and `Compress::Zlib::Native` exist in
 `/Users/ash/raku-modules` with `JSON::Native` and `CSV::Native` retrofitted
 alongside them — 1,058 assertions on rakupp, 1,063 on Rakudo. Extension ABI 3
 landed here (`rk_blob`). On this side the compiler now answers
 `use Data::Native <json csv>`, `use JSON::Native` and `use CSV::Native` from
 its own builtins with nothing installed; `rakupp-from-json` / `rakupp-to-json`
-and `rakupp-from-csv` / `rakupp-to-csv` are registered, with the `*-backend`
-subs reporting `core`. What remains is P3 (digest), P4 (zlib) and P5 (random)
-— each of which adds primitives plus one row to `kDataNativeTags`, the
-mechanism itself being done. The line below about `rakupp-sha1-hex` still
-stands: it is P3's first job.
+`rakupp-from-csv` / `rakupp-to-csv` and the fourteen `digest` names are
+registered, with the `*-backend` subs reporting `core`. What remains is P4
+(zlib) and P5 (random) — each of which adds primitives plus one row to
+`kDataNativeTags`, the mechanism itself being done. `rakupp-sha1-hex` is now
+the TAG's primitive and returns lower-case hex, which is what this plan asked
+for below rather than having the tag work around it; the installer, its only
+caller, uppercases the answer itself and always did.
 
 Probes run 2026-09-05
 against `build-arm64/rakupp` and Rakudo v2026.08; every claim marked "probed"
@@ -535,7 +537,11 @@ type**, since a `-hex` primitive handing back a Blob is not the sub this tag
 promises. Lowercasing the answer before comparing is precisely how the
 uppercase one would slip through. The distribution copy implements this; the
 rakulib copy must too, and P1 should register `rakupp-sha1-hex`'s replacement
-in lowercase rather than leave the tag working around it.
+in lowercase rather than leave the tag working around it. **Done in P3**, and
+it was more than cosmetic: the tag registers `rakupp-sha1-hex` under the same
+mechanical spelling, so for one build there were two registrations of that name
+and the later simply replaced the earlier — which SHA-1 a program got depended
+on the order of two blocks in `Builtins.cpp`. There is one now.
 
 #### `Data::Native` wins for its claimed tags, in either order (probed)
 
@@ -803,6 +809,29 @@ in-tree code is ~5,000× what a rakupp program gets from the pure-Raku
 reference today, and the gap to hardware-accelerated OpenSSL is ~10× — the
 first gap is the one a script notices.
 
+**After P3, on 16 MB, measured beside the distribution's C in the same
+minute** — which is the comparison that matters, because NATIVE-MODULES-PLAN's
+whole argument for independent implementations is that the engine's should be
+free to be the fastest thing we can write:
+
+| | engine (`core`) | extension (`native`) |
+|---|---:|---:|
+| md5 | **589 MB/s** | 544 MB/s |
+| sha1 | **1,105 MB/s** | 868 MB/s |
+| sha256 | 437 MB/s | 439 MB/s |
+| sha512 | 671 MB/s | 693 MB/s |
+
+The textbook forms were 347 / 437 / 360 / 532 — *slower than the module they
+replace*, which would have made the argument above false. Three changes fixed
+it, none of them clever: a ROLLING sixteen-word message schedule instead of the
+64- or 80-word array the standards are written with (w[i] never needs more than
+sixteen live words); the round loops split so the round function and constant
+are fixed inside each rather than selected per round; and SHA-1 unrolled five
+rounds at a time, which deletes the five-register shuffle entirely because the
+state comes back to its own roles after five rounds. `openssl` on this chip is
+still ~2-3× ahead on the SHA-2 family, and that is hardware SHA instructions,
+not better C.
+
 | | where | state |
 |---|---|---|
 | SHA-1 | [`sha1hex`, Interpreter.cpp:102](../../../src/Interpreter.cpp#L102) | shared already (`Interpreter.h:142`) |
@@ -814,6 +843,23 @@ into `src/Digest.{h,cpp}` and having the kernel call it — one refactor, no
 duplicated implementation, and the RFC 4231 gate keeps covering it.
 `JupyterKernel.cpp` is in `rakupp_rt`, not a `--slim` feature archive
 (CMakeLists.txt:162, 190), so nothing about the slim seam changes.
+
+**Landed 2026-09-05, and it took the SHA-1 with it.** Three copies of a hash
+function became one: `Interpreter.cpp`'s `sha1hex` was a second SHA-1 in the
+tree and is now a single line over the shared core, so the CURI content
+addressing and `sha1("abc")` cannot drift. `Digester` is one struct with one
+`block()` switching on the algorithm rather than four classes, because SHA-224
+is the SHA-256 core with a different IV and a truncated output and SHA-384
+stands in the same relation to SHA-512 — writing them as separate types is how
+`sha384` gets paired with SHA-512's output length. The two framing differences
+that are real are handled explicitly: MD5 counts its length little-endian where
+every SHA counts big-endian, and SHA-512's length field is 128 bits.
+
+Checked against the system `openssl` at every block boundary — 1, 55, 56, 63,
+64, 65, 111, 112, 119, 120, 127, 128, 129, 1,000 and 100,000 bytes, six
+algorithms and their HMACs, 180 comparisons, all equal — before a line of the
+Raku-facing half was written. That is a cheap gate to run from a 20-line C++
+main and it is where an off-by-one in padding actually lives.
 
 ### `zlib` — reference: `Compress::Zlib`
 
@@ -965,8 +1011,8 @@ keeps behaving as the module in every uncovered case. Both call one `jfEncode`.
 
 ## Order of work
 
-P7, P1, P2 and P6 are done; P3 to P5 are not started. Nothing left is blocked
-by anything outside this repository.
+P7, P1, P2, P3 and P6 are done; P4 and P5 are not started. Nothing left is
+blocked by anything outside this repository.
 
 - ~~**P1 — L1 JSON primitives.**~~ **DONE 2026-09-05** (`2c6f590`). Split the two wrapper functions into an
   argument-parsing half and an on-uncovered half; the wrapper passes a
@@ -998,11 +1044,39 @@ by anything outside this repository.
   write cases of the MALFORMED shapes where two implementations of one format
   actually part company — a quote where a quote may not be, a space after a
   closing one, a record that ends in the wrong place. 193 cases, 0 differences.
-- **P3 — L1 digest primitives.** Lift `Sha256`/`hmacSha256Hex` to
-  `src/Digest.{h,cpp}`; add MD5, SHA-512 and the 224/384 variants; register
-  the bare and `-hex` names and `hmac`/`hmac-hex`. Gate: the six
-  `Digest::SHA2`/`Digest::HMAC` test files, and the NIST/RFC vectors the pure
-  Raku modules already carry, run against the primitives.
+- ~~**P3 — L1 digest primitives.**~~ **DONE 2026-09-05.** `src/Digest.{h,cpp}`
+  holds the algorithms with no `Value` in them, so the two callers that need
+  bytes-to-bytes hashing share one implementation; `src/DataDigest.{h,cpp}` is
+  the Raku-facing half. THREE copies of a hash function became one: the
+  file-local `Sha256`/`hmacSha256Hex` in `JupyterKernel.cpp`, the SHA-1 in
+  `Interpreter.cpp`, and the MD5/SHA-512/224/384 that had to be written. Unlike
+  P2 this is **not a port** of the distribution's C — NATIVE-MODULES-PLAN calls
+  for independent implementations of `digest`, held together by the vector file
+  rather than by shared source, and `t/vectors/digest.vec` moved into this repo
+  as part of P3 (step 1 of that plan's order of work, for the `digest` half).
+
+  Gates: `t/regression/data-native-digest.raku`, 39 assertions, of which the
+  central one runs all **156 openssl-generated vectors** through the
+  primitives; `data-native-digest-reference.raku`, 20 more, comparing against
+  the pure-Raku `Digest`/`Digest::HMAC` **in one process** on sixteen inputs
+  chosen to straddle every block boundary — a separate file because it
+  `#?requires` those modules and the vectors must run without them.
+  `tools/jupyter-smoke.raku` stays green across the lift, which is what pins
+  the RFC 4231 half.
+
+  **It found a real bug in `Digest::Native`, which is the point of the
+  arrangement.** The moment the engine had `digest` primitives, that
+  distribution started exporting a *dispatcher wrapper* for each name — and its
+  own `hmac` recognises the tag's hashes by IDENTITY, so `&sha384` arrived as
+  something it did not know, the block size was guessed at 64 instead of read
+  as 128, and `hmac-sha384`/`hmac-sha512` went silently non-RFC. Its own suite
+  caught it (`t/02-hmac.t`, twelve failures); the fix is one wrapper per name
+  rather than one per import, plus an `algo-of` that recognises all three
+  things a hash may be — the implementation, the wrapper, or the engine's own
+  primitive. Two lessons, both recorded there: a `my` declared after its use
+  compiles on Raku++ and is a hard error on Rakudo, and a silent wrong MAC is
+  exactly the failure mode "the interface, not just the codecs" was written
+  about.
 - **P4 — L1 zlib primitives.** `src/DataZlib.{h,cpp}`: inflate first (it is
   what unblocks the dependents), then deflate, then the zlib/gzip/raw
   framings and CRC-32/Adler-32. Gate: round-trip against `gzip`/`gunzip` and

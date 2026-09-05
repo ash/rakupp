@@ -2,6 +2,8 @@
 #include "AsciiCtype.h"
 #include "Interpreter.h"
 #include "DataCsv.h"
+#include "Digest.h"
+#include "DataDigest.h"
 #include "Lexer.h"
 #include "Parser.h"
 #if !defined(_WIN32)
@@ -8757,15 +8759,17 @@ void Interpreter::registerBuiltins() {
     // the module degrades to its pure-Raku path everywhere else. Reachable via
     // `use Rakupp::Ext` too, which is the discoverable spelling for code that is
     // rakupp-only by design.
-    // MODULES-PLAN M6: REAL advisory locking on the shared CURI store's
-    // SHA-1 of a STRING, for the installer's short/ index keys. The tool used
-    // to spell this "write a temp file, spawn shasum, read a line" — one
-    // subprocess per provided module and file, which turned `rakupp uninstall
-    // fez` into forty seconds of spawning (~70 keys) and read as a hang.
-    // The engine's own sha1hex (the CURI content addressing) answers in place.
-    B["rakupp-sha1-hex"] = [](Interpreter&, ValueList& a) -> Value {
-        return Value::str(a.empty() ? sha1hex("") : sha1hex(a[0].toStr()));
-    };
+    // `rakupp-sha1-hex` USED to be registered here, uppercase, for the
+    // installer's short/ index keys — hashing a short string by spawning
+    // `shasum` cost a subprocess per key and made `rakupp uninstall fez` look
+    // hung. It is now the `digest` tag's primitive (DATA-PLAN P3), registered
+    // below and LOWERCASE like every other `-hex` name in the ecosystem, which
+    // is what DATA-PLAN asked for rather than having the tag work around it.
+    // tools/install.raku `.uc`s the answer itself and always did.
+    //
+    // Two registrations of one name was the real hazard: the later one simply
+    // replaced the earlier, so which SHA-1 a program got depended on the order
+    // of two blocks in this file.
 
     // ---- the `json` tag's primitives (DATA-PLAN P1) -------------------------
     //
@@ -8812,6 +8816,26 @@ void Interpreter::registerBuiltins() {
     B["rakupp-to-csv"] = [](Interpreter& I, ValueList& a) -> Value {
         return dataCsvToCsv(I, a);
     };
+
+    // ---- the `digest` tag's primitives (DATA-PLAN P3) -----------------------
+    //
+    // Fourteen names from one table, because a hand-written entry per algorithm
+    // is fourteen chances to pair `sha384` with SHA-512's core. The algorithms
+    // are src/Digest.cpp, shared with the Jupyter kernel; the Raku-facing half
+    // is src/DataDigest.cpp.
+    B["rakupp-digest-backend"] = [](Interpreter&, ValueList&) -> Value {
+        return Value::str("core");
+    };
+    for (const char* algo : {"md5", "sha1", "sha224", "sha256", "sha384", "sha512"}) {
+        B[std::string("rakupp-") + algo] = [algo](Interpreter& I, ValueList& a) -> Value {
+            return dataDigestHash(I, a, algo, false);
+        };
+        B[std::string("rakupp-") + algo + "-hex"] = [algo](Interpreter& I, ValueList& a) -> Value {
+            return dataDigestHash(I, a, algo, true);
+        };
+    }
+    B["rakupp-hmac"]     = [](Interpreter& I, ValueList& a) -> Value { return dataDigestHmac(I, a, false); };
+    B["rakupp-hmac-hex"] = [](Interpreter& I, ValueList& a) -> Value { return dataDigestHmac(I, a, true); };
     // repo.lock — the store is also zef's and Rakudo's, and a writer that
     // ignores the lock can corrupt it under a concurrent zef. IO::Handle
     // .lock is a stub here (buffered handles carry no live fd), so the
