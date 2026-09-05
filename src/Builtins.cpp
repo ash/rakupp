@@ -4,6 +4,7 @@
 #include "DataCsv.h"
 #include "Digest.h"
 #include "DataDigest.h"
+#include "DataZlib.h"
 #include "Lexer.h"
 #include "Parser.h"
 #if !defined(_WIN32)
@@ -8836,6 +8837,22 @@ void Interpreter::registerBuiltins() {
     }
     B["rakupp-hmac"]     = [](Interpreter& I, ValueList& a) -> Value { return dataDigestHmac(I, a, false); };
     B["rakupp-hmac-hex"] = [](Interpreter& I, ValueList& a) -> Value { return dataDigestHmac(I, a, true); };
+
+    // ---- the `zlib` tag's primitives (DATA-PLAN P4) -------------------------
+    //
+    // RFC 1951/1950/1952 in src/Zlib.cpp, with no libz behind it — which is the
+    // point: a dlopen'd system library is not there to be found inside an
+    // `--exe` binary or in the WASM playground, and those are exactly where
+    // Compress::Zlib's dependents are otherwise dead.
+    B["rakupp-zlib-backend"] = [](Interpreter&, ValueList&) -> Value {
+        return Value::str("core");
+    };
+    B["rakupp-compress"]   = [](Interpreter& I, ValueList& a) -> Value { return dataZlibCompress(I, a); };
+    B["rakupp-uncompress"] = [](Interpreter& I, ValueList& a) -> Value { return dataZlibUncompress(I, a); };
+    B["rakupp-gzslurp"]    = [](Interpreter& I, ValueList& a) -> Value { return dataZlibGzslurp(I, a); };
+    B["rakupp-gzspurt"]    = [](Interpreter& I, ValueList& a) -> Value { return dataZlibGzspurt(I, a); };
+    B["rakupp-crc32"]      = [](Interpreter& I, ValueList& a) -> Value { return dataZlibChecksum(I, a, true); };
+    B["rakupp-adler32"]    = [](Interpreter& I, ValueList& a) -> Value { return dataZlibChecksum(I, a, false); };
     // repo.lock — the store is also zef's and Rakudo's, and a writer that
     // ignores the lock can corrupt it under a concurrent zef. IO::Handle
     // .lock is a stub here (buffered handles carry no live fd), so the

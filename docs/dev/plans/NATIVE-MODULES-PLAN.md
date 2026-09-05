@@ -374,14 +374,14 @@ references are untouched.
 the primitives: they resolve their own extension, then their fallback, and the
 engine rung is one the ladder simply has not reached yet.
 
-1. **The shared corpora and vector sets**, in the engine repo, with the
-   engine-side regression files that consume them. **HALF DONE 2026-09-05**,
-   with DATA-PLAN P3: `digest.vec` moved to `raku++/t/vectors/digest.vec`,
-   which is now the master. The distribution keeps a copy so a published
-   tarball stands alone, and `t/regression/data-native-digest.raku` asserts the
-   two are byte-identical whenever the sibling checkout is there — a vector
-   added on one side cannot quietly fail to reach the other. `zlib.vec` moves
-   the same way with P4, and until it does this step stays open.
+1. ~~**The shared corpora and vector sets**, in the engine repo, with the
+   engine-side regression files that consume them.~~ **DONE 2026-09-05**, in
+   two halves: `digest.vec` moved with DATA-PLAN P3 and `zlib.vec` with P4,
+   both to `raku++/t/vectors/`, which is now the master for each. Every
+   distribution keeps a copy so a published tarball stands alone, and the
+   matching engine regression file asserts the two are byte-identical whenever
+   the sibling checkout is there — a vector added on one side cannot quietly
+   fail to reach the other.
 
    The arrangement earned its keep the day it was made. P3 turned
    `Digest::Native`'s exported names into dispatcher wrappers; its `hmac`
@@ -390,13 +390,11 @@ engine rung is one the ladder simply has not reached yet.
    silently non-RFC MACs, from a change made entirely in the other repository,
    caught by that distribution's own `t/02-hmac.t`.
 
-   The direction was settled before any of it: they move HERE. They exist, in
-   the distributions — `Digest-Native/t/vectors/digest.vec`, 156 vectors from the
-   system `openssl`, and `Compress-Zlib-Native/t/vectors/zlib.vec`, 67 from
-   real libz and the system `gzip`, including eight malformed streams that must
-   be refused — and the compiler answering `use <X>::Native` is what decides
-   the direction: the engine is the primary implementation now, so the corpus
-   belongs beside it and each distribution's `t/` pulls it.
+   The direction was settled before any of it, and by the compiler answering
+   `use <X>::Native`: the engine is the primary implementation now, so the
+   corpus belongs beside it. `digest.vec` is 156 vectors from the system
+   `openssl`; `zlib.vec` is 67 from real libz and the system `gzip`, eight of
+   them malformed streams that must be refused.
 2. ~~**`Digest::Native`**~~ **DONE.** ~450 lines of C, the composed fallback,
    the vectors as its gate. Measured at 317 MB/s for MD5 against 0.08 for the
    pure-Raku reference on rakupp.

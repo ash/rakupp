@@ -1,16 +1,16 @@
 # Plan: `Data::Native` — one portable `use` for whatever the engine does natively
 
 **Status: the module half is BUILT (2026-09-05); the engine half is under way
-— P1, P2, P3 and P6 have landed, P4 and P5 have not.** `Data::Native`,
+— P1, P2, P3, P4 and P6 have landed, only P5 has not.** `Data::Native`,
 `Digest::Native` and `Compress::Zlib::Native` exist in
 `/Users/ash/raku-modules` with `JSON::Native` and `CSV::Native` retrofitted
 alongside them — 1,058 assertions on rakupp, 1,063 on Rakudo. Extension ABI 3
 landed here (`rk_blob`). On this side the compiler now answers
 `use Data::Native <json csv>`, `use JSON::Native` and `use CSV::Native` from
 its own builtins with nothing installed; `rakupp-from-json` / `rakupp-to-json`
-`rakupp-from-csv` / `rakupp-to-csv` and the fourteen `digest` names are
-registered, with the `*-backend` subs reporting `core`. What remains is P4
-(zlib) and P5 (random) — each of which adds primitives plus one row to
+`rakupp-from-csv` / `rakupp-to-csv`, the fourteen `digest` names and the seven
+`zlib` ones are registered, with the `*-backend` subs reporting `core`. What
+remains is P5 (random), which adds primitives plus one row to
 `kDataNativeTags`, the mechanism itself being done. `rakupp-sha1-hex` is now
 the TAG's primitive and returns lower-case hex, which is what this plan asked
 for below rather than having the tag work around it; the installer, its only
@@ -909,6 +909,31 @@ one-shot subs are what the dependents call.
 > dependents above are otherwise dead. The installer keeps shelling out to
 > `curl` and `tar`; that rule is untouched.
 
+**Landed 2026-09-05, and the measured cost of not being libz.** The same 457 KB
+of real text, the same process, arm64 Mac:
+
+| | ratio | deflate | inflate |
+|---|---:|---:|---:|
+| engine L1 | **39.3%** | 44 MB/s | 107 MB/s |
+| libz L1 | 43.1% | 120 MB/s | 435 MB/s |
+| engine L6 | 37.1% | 29 MB/s | 116 MB/s |
+| libz L6 | **36.0%** | 39 MB/s | 651 MB/s |
+| engine L9 | 36.8% | 24 MB/s | 115 MB/s |
+| libz L9 | **35.9%** | 32 MB/s | 593 MB/s |
+
+The RATIO is the number that matters here and it is close to a wash: 1.1 points
+behind libz at levels 6 and 9, and *ahead* at level 1, where libz deliberately
+trades ratio for speed. Deflate runs at three quarters of libz's rate.
+
+Inflate is 5.6× slower, and that is a choice rather than an oversight. The
+decoder walks a canonical Huffman table one bit at a time, in the shape whose
+correctness can be read straight off RFC 1951, because inflate is the half that
+meets UNTRUSTED input — an HTTP `Content-Encoding` is the whole reason `:raw`
+and `:gzip` are in the surface — and being obviously right there is worth more
+than 500 MB/s. It was fuzzed accordingly: 10,000 mutated and random streams
+under ASAN and UBSAN, no report. 116 MB/s is not the limit on anything a Raku
+program is doing.
+
 ### `random` — reference: `Crypt::Random`
 
 `crypt_random_buf`, `crypt_random`, `crypt_random_uniform`, `random-backend`.
@@ -1011,7 +1036,7 @@ keeps behaving as the module in every uncovered case. Both call one `jfEncode`.
 
 ## Order of work
 
-P7, P1, P2, P3 and P6 are done; P4 and P5 are not started. Nothing left is
+P7, P1, P2, P3, P4 and P6 are done; only P5 is not started. Nothing left is
 blocked by anything outside this repository.
 
 - ~~**P1 — L1 JSON primitives.**~~ **DONE 2026-09-05** (`2c6f590`). Split the two wrapper functions into an
@@ -1077,11 +1102,31 @@ blocked by anything outside this repository.
   compiles on Raku++ and is a hard error on Rakudo, and a silent wrong MAC is
   exactly the failure mode "the interface, not just the codecs" was written
   about.
-- **P4 — L1 zlib primitives.** `src/DataZlib.{h,cpp}`: inflate first (it is
-  what unblocks the dependents), then deflate, then the zlib/gzip/raw
-  framings and CRC-32/Adler-32. Gate: round-trip against `gzip`/`gunzip` and
-  `openssl zlib` on the corpora, plus fixed vectors, plus `Compress::Zlib`'s
-  own suite on Rakudo as the oracle for the interface.
+- ~~**P4 — L1 zlib primitives.**~~ **DONE 2026-09-05.** `src/Zlib.{h,cpp}` is
+  the format with no `Value` in it, `src/DataZlib.{h,cpp}` the Raku surface —
+  the same split as P3, and for the same reason. It went in the order the
+  bullet asked for: inflate, deflate, the three framings, the two checksums.
+
+  Independent of the distribution's C, like `digest` and unlike `csv`, and
+  `t/vectors/zlib.vec` moved here as the master — which completes
+  NATIVE-MODULES-PLAN's order-of-work step 1, whose other half moved with P3.
+
+  Four gates, and they are worth distinguishing because compression is not a
+  function and only one direction of it can be pinned at all:
+
+  1. **A stream a third party produced must inflate to exactly the bytes they
+     compressed.** 67 vectors from real libz and the system `gzip`, including
+     **eight malformed streams that must be REFUSED**.
+  2. **What we produce must be readable by them.** The system `gunzip` in a
+     subprocess, both directions; and `Compress::Zlib` — real libz over
+     NativeCall — in the same process on nine bodies at four levels, in
+     `data-native-zlib-reference.raku`.
+  3. **Round trip**, the weakest of the four: an implementation can round-trip
+     its own private format perfectly and be useless. 105 combinations of body,
+     level and framing.
+  4. **It does not crash on hostile input**, which is the one that matters for
+     a decoder reachable from an HTTP header. 10,000 mutated and random streams
+     under ASAN and UBSAN, no report.
 - **P5 — L1 random primitives.** `getrandom(2)` / `/dev/urandom` /
   `BCryptGenRandom` behind one entry point; rejection sampling for
   `crypt_random_uniform`. Gate: a distribution check on the uniform sampler

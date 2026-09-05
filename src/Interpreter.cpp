@@ -5826,6 +5826,8 @@ static const DataNativeTag kDataNativeTags[] = {
     { "digest", { "md5", "sha1", "sha224", "sha256", "sha384", "sha512",
                   "md5-hex", "sha1-hex", "sha224-hex", "sha256-hex", "sha384-hex", "sha512-hex",
                   "hmac", "hmac-hex", "digest-backend", nullptr } },
+    { "zlib", { "compress", "uncompress", "gzslurp", "gzspurt",
+                "crc32", "adler32", "zlib-backend", nullptr } },
     { nullptr, { nullptr } }
 };
 
@@ -5839,6 +5841,7 @@ static const DataNativeModule kDataNativeModules[] = {
     { "JSON::Native",  { "json", nullptr } },
     { "CSV::Native",   { "csv", nullptr } },
     { "Digest::Native", { "digest", nullptr } },
+    { "Compress::Zlib::Native", { "zlib", nullptr } },
     { nullptr, { nullptr } }
 };
 
