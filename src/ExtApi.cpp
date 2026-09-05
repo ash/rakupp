@@ -60,6 +60,18 @@ RkValue rk_rat_s(RkCtx c, const char* n, const char* d) {
 RkValue rk_str(RkCtx c, const char* s, size_t len) {
     return C(c)->make(Value::str(std::string(s ? s : "", s ? len : 0)));
 }
+// A Buf is a Str carrying the bytes with hashKind "Buf" (Value.h:803), so the
+// only difference from rk_str above is the tag — and the tag is the whole
+// point. Without it the host DECODES the bytes as UTF-8 to build a Str, and a
+// digest or a compressed stream does not survive that. identify() gives it the
+// object identity every container value here carries.
+RkValue rk_blob(RkCtx c, const void* bytes, size_t len) {
+    const char* p = static_cast<const char*>(bytes);
+    Value b = Value::str(std::string(p ? p : "", p ? len : 0));
+    b.hashKind = "Buf";
+    identify(b);
+    return C(c)->make(std::move(b));
+}
 
 RkValue rk_array(RkCtx c) { return C(c)->make(Value::array()); }
 void rk_push(RkCtx, RkValue a, RkValue v) {
@@ -117,6 +129,27 @@ const char* rk_str_get(RkCtx c, RkValue v, size_t* len) {
     Value* x = V(v);
     if (!x) { if (len) *len = 0; return ""; }
     return borrow(C(c), x->toStr(), len);
+}
+// Every Blob-ish type names itself in hashKind — Buf, Blob, blob8, buf8, utf8
+// and the wider spellings — and all of them keep the bytes in `s`. A width
+// above 8 bits would be a lie here, so those are refused rather than handed
+// back a byte view of something that is not bytes.
+static bool isBlobKind(const Value& x) {
+    if (x.t != VT::Str) return false;
+    return x.hashKind == "Buf"   || x.hashKind == "Blob" ||
+           x.hashKind == "blob8" || x.hashKind == "buf8" || x.hashKind == "utf8";
+}
+int rk_is_blob(RkCtx, RkValue v) {
+    Value* x = V(v);
+    return x && isBlobKind(*x) ? 1 : 0;
+}
+const unsigned char* rk_blob_get(RkCtx c, RkValue v, size_t* len) {
+    Value* x = V(v);
+    if (!x || !isBlobKind(*x)) { if (len) *len = 0; return nullptr; }
+    // toStr() on a Buf-kinded Str is already its raw bytes — which is why
+    // rk_str_get has always worked for reading one, and why this is the same
+    // call under a name that says what it returns.
+    return reinterpret_cast<const unsigned char*>(borrow(C(c), x->toStr(), len));
 }
 
 size_t rk_elems(RkCtx, RkValue v) {

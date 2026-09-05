@@ -67,6 +67,7 @@ extern "C" {
  *
  *   1  the original surface: construct, inspect, arguments, rk_die
  *   2  rk_call/rk_call_value/rk_can (re-entering Raku), rk_error, rk_root
+ *   3  rk_blob/rk_blob_get/rk_is_blob — raw bytes, in both directions
  *
  * THE HANDSHAKE. The host calls rakupp_ext_init with its own ABI, and retries
  * downward if that returns NULL. So the `host_abi == RAKUPP_EXT_ABI` test that
@@ -80,7 +81,7 @@ extern "C" {
  * Undefined symbols are the failure mode this avoids. An extension calling
  * rk_call on a host that predates it would resolve nothing and abort at the
  * first call under lazy binding — a version check turns that into a sentence. */
-#define RAKUPP_EXT_ABI 2u
+#define RAKUPP_EXT_ABI 3u
 
 #if defined(_WIN32)
 #define RAKUPP_EXT_EXPORT __declspec(dllexport)
@@ -145,8 +146,21 @@ RK_API RkValue rk_num  (RkCtx c, double v);
 /* A Rat from decimal-string numerator and denominator, normalised by the host.
  * Strings rather than integers for the same reason as rk_int_s. */
 RK_API RkValue rk_rat_s(RkCtx c, const char* numer, const char* denom);
-/* UTF-8. `len` in bytes; the host copies, so the buffer need not outlive this. */
+/* UTF-8. `len` in bytes; the host copies, so the buffer need not outlive this.
+ *
+ * THIS IS A Str CONSTRUCTOR, NOT A BYTE PIPE. The host DECODES what it is given
+ * as UTF-8 to build the Str, so arbitrary bytes do not survive it: a raw MD5
+ * digest handed to rk_str came back as eleven characters, with 0xd2 0x4f
+ * collapsed into one. Bytes that must arrive as bytes want rk_blob. */
 RK_API RkValue rk_str  (RkCtx c, const char* utf8, size_t len);
+
+/* A Buf of raw bytes (ABI 3). The one thing this ABI could not express before:
+ * a codec that produces bytes — a digest, a compressed stream — had no way to
+ * hand them back, and the workaround was to send each byte as the UTF-8
+ * encoding of the codepoint of the same number and re-read it with
+ * .encode('latin-1') on the Raku side. That cost 46% of a two-megabyte inflate.
+ * The host copies, so the buffer need not outlive this call. */
+RK_API RkValue rk_blob (RkCtx c, const void* bytes, size_t len);
 
 RK_API RkValue rk_array(RkCtx c);
 RK_API void    rk_push (RkCtx c, RkValue array, RkValue v);
@@ -164,8 +178,24 @@ RK_API int         rk_truthy (RkCtx c, RkValue v);
 RK_API long long   rk_int_get(RkCtx c, RkValue v);
 RK_API double      rk_num_get(RkCtx c, RkValue v);
 /* Borrowed UTF-8, valid until the call returns. For a non-Str this is the
- * value's Str coercion, which is what a serializer wants. */
+ * value's Str coercion, which is what a serializer wants — and for a Buf or
+ * Blob that coercion is already its RAW BYTES, so this has always been the way
+ * to read one. rk_blob_get is the spelling that says so. */
 RK_API const char* rk_str_get(RkCtx c, RkValue v, size_t* len);
+
+/* Borrowed raw bytes of a Buf or Blob (ABI 3), valid until the call returns;
+ * NULL, with *len 0, for anything else. `len` may not be NULL. */
+RK_API const unsigned char* rk_blob_get(RkCtx c, RkValue v, size_t* len);
+
+/* Non-zero if rk_blob_get will answer for this value (ABI 3).
+ *
+ * rk_type still reports RK_OTHER for a Buf, deliberately: changing what an
+ * existing value answers would rewrite the behaviour of every extension
+ * already written against ABI 1 and 2 — JSON::Native's serializer reads
+ * RK_OTHER as "stringify it" and would start seeing a type it has no branch
+ * for. So the new capability is a predicate beside the enum, not a change to
+ * it. */
+RK_API int rk_is_blob(RkCtx c, RkValue v);
 
 RK_API size_t  rk_elems (RkCtx c, RkValue v);   /* array or hash */
 RK_API RkValue rk_at_pos(RkCtx c, RkValue array, size_t i);
