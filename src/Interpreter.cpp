@@ -7065,6 +7065,40 @@ void Interpreter::runLastPhasers(const std::vector<StmtPtr>& stmts) {
     for (auto& s : stmts) if (s->kind == NK::Block) { auto* b = static_cast<Block*>(s.get());
         if (b->phaser == "LAST") { auto sc = std::make_shared<Env>(); sc->parent = tctx_.cur; execBlock(b, sc); } }
 }
+// The `my` names a statement list declares at ITS OWN level (an inner block's
+// declarations belong to that block). Used to give a LEAVE/KEEP/UNDO body the
+// slots its block would have had in a compile-time pad — see runLeavePhasers.
+static void blockDeclNames(const std::vector<StmtPtr>& stmts, std::vector<std::string>& out) {
+    auto take = [&](Expr* e) {
+        if (!e) return;
+        if (e->kind == NK::Assign) e = static_cast<Assign*>(e)->target.get();
+        if (!e) return;
+        if (e->kind == NK::VarExpr) {
+            auto* v = static_cast<VarExpr*>(e);
+            if (v->declare && v->name.size() > 1 && v->name[1] != '*') out.push_back(v->name);
+        } else if (e->kind == NK::ListExpr) {
+            for (auto& it : static_cast<ListExpr*>(e)->items) {
+                Expr* x = it.get();
+                if (x && x->kind == NK::Assign) x = static_cast<Assign*>(x)->target.get();
+                if (x && x->kind == NK::VarExpr) {
+                    auto* v = static_cast<VarExpr*>(x);
+                    if (v->declare && v->name.size() > 1 && v->name[1] != '*') out.push_back(v->name);
+                }
+            }
+        }
+    };
+    for (auto& s : stmts) {
+        if (!s) continue;
+        if (s->kind == NK::ExprStmt) take(static_cast<ExprStmt*>(s.get())->e.get());
+        else if (s->kind == NK::VarDecl) {
+            auto* d = static_cast<VarDecl*>(s.get());
+            if (d->scope == "my")
+                for (auto& n : d->names)
+                    if (n.size() > 1 && n[1] != '*') out.push_back(n);
+        }
+    }
+}
+
 void Interpreter::runLeavePhasers(const std::vector<StmtPtr>& stmts, bool ok, size_t tempMark) {
     // reverse source order. KEEP runs only when the block is left SUCCESSFULLY,
     // UNDO only when it isn't; LEAVE always. (Firing both made zef log
@@ -7083,6 +7117,18 @@ void Interpreter::runLeavePhasers(const std::vector<StmtPtr>& stmts, bool ok, si
         int savedGC = tctx_.givenCtl; Value savedGV = tctx_.givenV;
         tctx_.returning = false; tctx_.loopCtl = 0; tctx_.givenCtl = 0;
         auto sc = std::make_shared<Env>(); sc->parent = tctx_.cur;
+        // A declaration this block never reached — an early `return` jumped over
+        // it — still has a slot in Raku, because the pad is built at compile
+        // time. Supply the missing ones as undefined, so a phaser naming one
+        // reads Any (as on Rakudo) instead of dying with X::Undeclared. Only
+        // names this block declares, and only those not already visible.
+        {
+            std::vector<std::string> declared;
+            blockDeclNames(stmts, declared);
+            for (auto& n : declared)
+                if (!tctx_.cur->find(n))
+                    sc->define(n, n[0] == '@' ? Value::array() : n[0] == '%' ? Value::makeHash() : Value::any());
+        }
         auto restoreFlags = [&] {
             tctx_.returning = savedRet; tctx_.returnV = std::move(savedRV); tctx_.loopCtl = savedLC;
             tctx_.givenCtl = savedGC; tctx_.givenV = std::move(savedGV);

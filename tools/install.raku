@@ -358,7 +358,10 @@ sub sha1-str(Str $s) {
     return $native($s).uc if $native ~~ Callable;
     my $t = $*TMPDIR.add("rakupp-install-sha-$*PID");
     $t.spurt($s);
-    LEAVE $t.unlink;
+    # guarded like the other cleanups in this file: the `return` above skips this
+    # declaration whenever the engine HAS a native sha1, and a phaser still runs
+    # for a block it is leaving — with $t undefined (Rakudo does the same)
+    LEAVE { .unlink with $t }
     # UPPERCASE: the engine names short/ index directories in uppercase hex,
     # and on a case-SENSITIVE filesystem a lowercase path is a different path
     # — the checker reported every provided module as broken on Linux, and
