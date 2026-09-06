@@ -33,11 +33,11 @@ await (^4).map: { start { run('sleep', '1', :out).out.slurp(:close) } };
 say "concurrent:  {(now - $t1).round(0.1)} s";       # → concurrent:  1 s
 ```
 
-This holds in the **default GIL mode** — no `RAKUPP_PARALLEL` needed — because the
+This holds in **either mode** — it does not depend on the default — because the
 work being overlapped is *waiting on subprocesses*, not running Raku. It's also why
 a subprocess-heavy pipeline (e.g. shelling out to `pandoc` per page) is already
-near-parallel under the GIL, and gains little from `RAKUPP_PARALLEL`; that flag
-helps when the bottleneck is Raku-level CPU (see below).
+near-parallel under `RAKUPP_GIL=1`, and gains little from the parallel default;
+parallelism helps when the bottleneck is Raku-level CPU (see below).
 
 Promises, Supplies, Channels, and `react` loops all behave as specified. For work
 that is genuinely CPU-bound, an **opt-in mode drops the GIL entirely** so worker
@@ -66,8 +66,8 @@ global-interpreter-lock mode — the pre-v3 default, kept as the escape hatch.
 Select the mode from the shell:
 
 ```sh
-rakupp myprogram.raku              # GIL mode (default)
-RAKUPP_PARALLEL=1 rakupp myprogram.raku   # true CPU parallelism
+rakupp myprogram.raku              # parallel mode (the default)
+RAKUPP_GIL=1 rakupp myprogram.raku # the cooperative GIL
 ```
 
 In parallel mode the runtime is safe because per-thread state (the current scope,
@@ -78,13 +78,13 @@ so worker threads read them without locking. What is *not* protected for you is
 without a `Lock` is a data race, exactly as it is under Rakudo.
 
 ```raku
-# CPU-parallel fan-out. Under RAKUPP_PARALLEL the workers run concurrently.
+# CPU-parallel fan-out. By default the workers run concurrently.
 sub work($n) { my $s = 0; $s += $_ for 1 .. 4_000_000; $s + $n }
 my @p = (^4).map(-> $n { start work($n) });
 say (await @p).elems;                     # → 4
-#   On an M3 (4P+4E): 3.5 s under RAKUPP_PARALLEL=1, against 7.4 s for the same
-#   four calls in a plain loop — 2.1×. Under the GIL: 8.3 s with `start`, 7.7 s
-#   without it — the thread setup, bought and not paid back.
+#   On an M3 (4P+4E): 3.5 s by default, against 7.4 s for the same four calls in
+#   a plain loop — 2.1×. Under `RAKUPP_GIL=1`: 8.3 s with `start`, 7.7 s without
+#   it — the thread setup, bought and not paid back.
 ```
 
 The number that means something is **7.4 s → 3.5 s**: the same work, same mode,
@@ -112,7 +112,8 @@ await (^8).map: { start { for ^10000 { $lock.protect({ $total++ }) } } };
 say $total;                               # → 80000   (no lost updates in either mode)
 ```
 
-`Semaphore` likewise becomes a real counting semaphore under `RAKUPP_PARALLEL`.
+`Semaphore` likewise is a real counting semaphore in parallel mode, and a no-op
+under `RAKUPP_GIL=1`.
 
 ### When it helps
 
@@ -170,12 +171,11 @@ itself (and Rakudo) takes.
   or count it atomically (`atomicint`).
 
 **The line the campaign is drawing:** a race in *your* data may garbage
-*your* values, but it must never crash or corrupt the *runtime*. In GIL
-mode that holds trivially (everything is serialized). In parallel mode,
-today, it does not yet fully hold — a sufficiently unlucky unguarded
-structural race can still abort the process — and closing exactly that gap
-(then flipping parallel on by default, with `RAKUPP_GIL=1` as the escape
-hatch) is what the campaign's phases deliver. The stress suite in
+*your* values, but it must never crash or corrupt the *runtime*. Under
+`RAKUPP_GIL=1` that holds trivially (everything is serialized). In parallel
+mode — the default since v3 — it does not yet fully hold: a sufficiently
+unlucky unguarded structural race can still abort the process, and closing
+exactly that gap is what the campaign's remaining phases deliver. The stress suite in
 `t/stress/` is the measurable edge of this contract: what it exercises is
 guaranteed; what sits on its known-bad list is the remaining work, and
 that list only shrinks.
@@ -210,9 +210,9 @@ say (try await $p) // "caught: {$!.message}";   # → caught: boom
 # Combinators and chaining
 my $all = Promise.allof(Promise.kept(1), Promise.kept(2));
 my $any = Promise.anyof(Promise.new, Promise.kept(1));
-await $all, $any;                       # without the await, Rakudo still reports
-say $all.status;                        # Planned here — Raku++ keeps eagerly
-say $any.status;                        # → Kept (both)
+await $all, $any;                       # the await is what settles them
+say $all.status;                        # → Kept
+say $any.status;                        # → Kept
 
 my $p = start { 10 };
 my $done = $p.then({ .result + 5 });      # runs once $p settles
@@ -359,6 +359,6 @@ interleave. `sleep` honors the full requested duration — `sleep 333` sleeps
 one when the program ends is woken and unwound at teardown, so a pending
 timer never delays exit.
 
-Under `RAKUPP_PARALLEL=1` sleep-sort still sorts — the workers now run on
-independent threads outright rather than being handed off one at a time — but the
-observable result is the same. See [The two modes](#the-two-modes-true-parallelism-default-and-the-gil).
+In parallel mode sleep-sort still sorts — the workers run on independent threads
+outright rather than being handed off one at a time — but the observable result is
+the same. See [The two modes](#the-two-modes-true-parallelism-default-and-the-gil).

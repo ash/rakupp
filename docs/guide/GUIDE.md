@@ -186,7 +186,7 @@ program `use`s are found and embedded, so the binary needs nothing at run time.
 | Environment variable | Meaning |
 |---|---|
 | `RAKULIB=dir1,dir2` | Extra module search dirs (like `-I`); separate with `,` or `:` |
-| `RAKUPP_PARALLEL=1` | True CPU parallelism for `start`/worker threads (default: GIL) — see [ASYNC.md](ASYNC.md#the-two-modes-gil-default-and-true-parallelism) |
+| `RAKUPP_GIL=1` | The cooperative GIL for `start`/worker threads; true CPU parallelism is the default — see [ASYNC.md](ASYNC.md#the-two-modes-true-parallelism-default-and-the-gil) |
 | `RAKUPP_DUMPTOKENS=1` | Dump the lexer token stream before running |
 | `RAKUPP_NO_PRECOMP=1` | Force both caches off for this run — see [CACHING.md](CACHING.md) |
 | `RAKUPP_PRECOMP_MODULES=1`, `RAKUPP_PRECOMP_FILES=1` | Turn a half on for this run only, without saving it |
@@ -263,14 +263,14 @@ trampoline for generic call sites. See [OPTIMIZATION.md](../internals/OPTIMIZATI
 full catalogue of what `-O` does.
 
 By default rakupp runs concurrency under a GIL (correct semantics, no CPU
-parallelism for pure-Raku work). Set `RAKUPP_PARALLEL=1` to let `start`/worker
+parallelism for pure-Raku work). Set `RAKUPP_GIL=1` to make `start`/worker
 threads run interpreter code on all cores — CPU-bound fan-out scales ~3× on 8
 cores, 0 Roast regressions. See [ASYNC.md](ASYNC.md#the-two-modes-gil-default-and-true-parallelism)
 for the trade-offs (chiefly: guard your own shared mutable data with a `Lock`).
 
 ```sh
-build/rakupp program.raku                 # GIL mode (default)
-RAKUPP_PARALLEL=1 build/rakupp program.raku   # true CPU parallelism
+build/rakupp program.raku              # parallel mode (the default)
+RAKUPP_GIL=1 build/rakupp program.raku # the cooperative GIL
 ```
 
 ## Four ways to run a program

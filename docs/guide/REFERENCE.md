@@ -94,10 +94,10 @@ say 2 ** 100;           # → 1267650600228229401496703205376
 say 0xFF;               # → 255      hex   (also 0o.. octal, 0b.. binary)
 say 1_000_000;          # → 1000000  underscore separators
 say 3.14;               # → 3.14     Rat (exact rational, not float!)
-say (0.1+0.2).raku;     # → <3/10>   decimals are Rat: no float error
+say (0.1+0.2).raku;     # → 0.3   decimals are Rat: no float error
 say 1.5e3;              # → 1500     Num (e-notation opts into float)
 say 3+4i;               # → 3+4i     Complex
-say 1/3;                # → 0.333333 Rat; (1/3).nude → [1 3]
+say 1/3;                # → 0.333333 Rat; (1/3).nude → (1 3)
 ```
 
 Constants: `pi` / `π`, `e`, `tau` / `τ`, `Inf` / `∞`, `-Inf`, `NaN`.
@@ -241,7 +241,7 @@ say 1 +< 4;   # → 16     left shift
 | Op | Meaning | Example → result |
 |---|---|---|
 | `x` | string repeat | `'ab' x 3` → `ababab` |
-| `xx` | list repeat | `(1,2) xx 2` → `([1 2] [1 2])` |
+| `xx` | list repeat | `(1,2) xx 2` → `((1 2) (1 2))` |
 
 ### 3.7 Concatenation
 
@@ -253,12 +253,13 @@ say 1 +< 4;   # → 16     left shift
 
 | Op | Meaning | Example → result |
 |---|---|---|
-| `\|` | *any* junction | `5 == (1\|5\|9)` → `True` |
+| `\|` | *any* junction | `5 == (1\|5\|9)` → `any(False, True, False)`, which is `True` in a boolean context |
 | `&` | *all* junction | `(1&2&3).so` → `True` |
 | `^` | *one* junction | `(1^2)` |
 
 ```raku
-say 3 == (1 | 3 | 5);    # → True   any-junction autothreads the comparison
+say 3 == (1 | 3 | 5);    # → any(False, True, False)   the comparison autothreads; it is True in a boolean context
+say so 3 == (1 | 3 | 5); # → True
 ```
 
 ### 3.9 Set / bag operators
@@ -269,10 +270,10 @@ relational ops return `Bool`.
 | ASCII | Unicode | Meaning | Example → result |
 |---|---|---|---|
 | `(\|)` | `∪` | union | `(<a b> (\|) <b c>).keys.sort` → `(a b c)` |
-| `(&)` | `∩` | intersection | `<a b c> (&) <b c d>` → `{b, c}` |
-| `(-)` | `∖` | difference | `<a b c> (-) <b>` → `{a, c}` |
-| `(^)` | `⊖` | symmetric diff | `<a b> (^) <b c>` → `{a, c}` |
-| `(+)` | `⊎` | baggy sum | `<a b> (+) <a c>` → bag `a=>2 b=>1 c=>1` |
+| `(&)` | `∩` | intersection | `<a b c> (&) <b c d>` → `Set(b c)` |
+| `(-)` | `∖` | difference | `<a b c> (-) <b>` → `Set(a c)` |
+| `(^)` | `⊖` | symmetric diff | `<a b> (^) <b c>` → `Set(a c)` |
+| `(+)` | `⊎` | baggy sum | `<a b> (+) <a c>` → `Bag(a(2) b c)` |
 | `(.)` | `⊍` | baggy multiply | |
 | `(elem)` | `∈` | membership | `'a' (elem) <a b c>` → `True` |
 | `(!elem)` | `∉` | non-membership | `'z' (!elem) <a b c>` → `True` |
@@ -290,10 +291,10 @@ relational ops return `Bool`.
 | Op | Meaning | Example → result |
 |---|---|---|
 | `..` | inclusive range | `1..5` → `1..5` |
-| `..^` | exclude top | `1..^5` → `1 2 3 4` |
-| `^..` | exclude bottom | `1^..5` → `2 3 4 5` |
-| `^..^` | exclude both | `1^..^5` → `2 3 4` |
-| `^N` | `0..^N` shorthand | `^3` → `0 1 2` |
+| `..^` | exclude top | `1..^5` → `1..^5`; `.list` → `(1 2 3 4)` |
+| `^..` | exclude bottom | `1^..5` → `1^..5`; `.list` → `(2 3 4 5)` |
+| `^..^` | exclude both | `1^..^5` → `1^..^5`; `.list` → `(2 3 4)` |
+| `^N` | `0..^N` shorthand | `^3` → `^3`; `.list` → `(0 1 2)` |
 | `but` / `does` | runtime mixin | `my $v = 5 but "t"; say $v+1` → `6` |
 
 ### 3.11 Chaining comparison
@@ -366,8 +367,8 @@ my $s = 'a'; $s ~= 'b'; say $s; # → ab
 |---|---|---|
 | `,` | list constructor | `1,2,3` |
 | `=>` | pair constructor | `a => 1` |
-| `Z` | zip | `(1,2,3) Z (4,5,6)` → `([1 4] [2 5] [3 6])` |
-| `X` | cross | `(1,2) X (3,4)` → `([1 3] [1 4] [2 3] [2 4])` |
+| `Z` | zip | `(1,2,3) Z (4,5,6)` → `((1 4) (2 5) (3 6))` |
+| `X` | cross | `(1,2) X (3,4)` → `((1 3) (1 4) (2 3) (2 4))` |
 | `...` | sequence (lazy) | `1, 3 ... 11` → `(1 3 5 7 9 11)` |
 | `...^` | sequence, exclude end | `1 ...^ 5` → `(1 2 3 4)` |
 | `and` `or` `not` `xor` | loose logic | `5 and 6` → `6` |
@@ -482,7 +483,7 @@ with verified examples, grouped by purpose. The complete alphabetical list is in
 | `sign` | `sign(-3)` → `-1` |
 | `sqrt` | `sqrt(2)` → `1.4142135623730951` |
 | `floor` `ceiling` `round` | `round(3.14159, 0.01)` → `3.14` |
-| `exp` `log` `log10` `log2` | `log10(1000)` → `3` |
+| `exp` `log` `log10` `log2` | `log10(1000)` → `2.9999999999999996` (binary floating point; `.round` for 3) |
 | `sin` `cos` `atan2` … | `atan2(1,1)` → `0.7853981633974483` |
 | `min` `max` `minmax` | `minmax(3,1,2)` → `1..3` |
 | `sum` | `sum(1..5)` → `15` |
@@ -497,7 +498,7 @@ with verified examples, grouped by purpose. The complete alphabetical list is in
 | `uc` `lc` `tc` | `tc('foo')` → `Foo` |
 | `chr` `ord` `chrs` `ords` | `chr(65)` → `A` |
 | `index` `rindex` | `index('abc','b')` → `1` |
-| `split` | `split(',', 'a,b,c')` → `[a b c]` |
+| `split` | `split(',', 'a,b,c')` → `(a b c)` |
 | `join` | `join('-', 1,2,3)` → `1-2-3` |
 | `words` `lines` | `words('a  b c')` → `(a b c)` |
 | `uniname` `uniprop` `unival` | Unicode property lookups |
@@ -507,10 +508,10 @@ with verified examples, grouped by purpose. The complete alphabetical list is in
 | Sub | Example → result |
 |---|---|
 | `elems` `end` | `elems(<a b c>)` → `3` |
-| `reverse` | `reverse(1,2,3)` → `[3 2 1]` |
-| `sort` | `sort(3,1,2)` → `[1 2 3]` |
+| `reverse` | `reverse(1,2,3)` → `(3 2 1)` |
+| `sort` | `sort(3,1,2)` → `(1 2 3)` |
 | `first` | `first(* > 2, 1,2,3,4)` → `3` |
-| `grep` | `grep(* %% 2, 1..6)` → `[2 4 6]` |
+| `grep` | `grep(* %% 2, 1..6)` → `(2 4 6)` |
 | `map` | `map(*+1, 1,2,3)` → `(2 3 4)` |
 | `reduce` | `reduce(&infix:<+>, 1..4)` → `10` |
 | `produce` | `produce(&infix:<+>, 1..4)` → `(1 3 6 10)` |
@@ -548,7 +549,7 @@ with verified examples, grouped by purpose. The complete alphabetical list is in
 
 ```raku
 say EVAL('1 + 2');        # → 3
-say (gather { take $_ for 1..3 });   # → [1 2 3]
+say (gather { take $_ for 1..3 });   # → (1 2 3)
 ```
 
 ---
@@ -570,7 +571,7 @@ say 'hello world'.tclc;          # → Hello world
 say 'hi there'.wordcase;         # → Hi There
 say 'Hello'.flip;                # → olleH
 say 'Hello'.substr(1,3);         # → ell
-say 'a,b,c'.split(',');          # → [a b c]
+say 'a,b,c'.split(',');          # → (a b c)
 say '  hi  '.trim;               # → hi
 say 'Hello'.contains('ell');     # → True
 say 'Hello'.starts-with('He');   # → True
@@ -578,9 +579,9 @@ say 'Hello'.ends-with('lo');     # → True
 say 'Hello'.index('l');          # → 2
 say 'foo'.comb;                  # → (f o o)
 say 'a1b2'.comb(/\d/);           # → (1 2)
-say 'abc'.trans('a-c' => 'A-C'); # → ABC
+say 'abc'.trans('a-c' => 'A-C'); # → AbC   ('a-c' is the three characters a, -, c — use 'a'..'c' for a range)
 say 'Hello'.subst('l','L',:g);   # → HeLLo
-say '2a'.parse-base(16) // 42.base(16);   # → 2A   (see note: parse-base absent)
+say '2a'.parse-base(16);                 # → 42   (and 42.base(16) → 2A)
 say 42.base(2);                  # → 101010
 ```
 
@@ -595,7 +596,7 @@ say 5.is-prime;                  # → True
 say 5.polymod(2, 2);             # → (1 0 1)
 say (1/3).numerator;             # → 1
 say (1/3).denominator;           # → 3
-say (1/3).nude;                  # → [1 3]
+say (1/3).nude;                  # → (1 3)
 say 3.14.floor;                  # → 3
 say 3.14.ceiling;                # → 4
 say (-3.7).truncate;             # → -3
@@ -654,8 +655,8 @@ say %h.map(*.value).sort;        # → (1 2)
 say 5.WHAT;                      # → (Int)
 say 5.^name;                     # → Int
 say 5.WHICH;                     # → Int|5      (value identity)
-say 5.HOW.^name;                 # → Metamodel::ClassHOW
-say 5.Str; say 5.Int; say 5.Num; say 5.Rat;   # → 5 5 5 5
+say 5.HOW.^name;                 # → Perl6::Metamodel::ClassHOW
+say 5.Str; say 5.Int; say 5.Num; say 5.Rat;   # → 5 5 5 5 (one per line)
 say 42.so;                       # → True
 say Int.defined;                 # → False    (type object is undefined)
 say 5.defined;                   # → True
@@ -980,8 +981,8 @@ Int → Rat → Num → Complex      (Num = 64-bit float, opt-in via 1e0 etc.)
 
 ```raku
 say 0.1 + 0.2 - 0.3;      # → 0        exact Rat arithmetic (no float error)
-say (0.1 + 0.2).raku;     # → <3/10>   it's a Rat
-say 0.1e0 + 0.2e0 - 0.3e0;# → 5.55e-17 opt into Num and the error returns
+say (0.1 + 0.2).raku;     # → 0.3   it's a Rat (`.nude` shows 3/10)
+say 0.1e0 + 0.2e0 - 0.3e0;# → 5.551115123125783e-17  opt into Num and the error returns
 ```
 
 ---

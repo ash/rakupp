@@ -73,9 +73,9 @@ runnable snippets in [RECIPES.md](RECIPES.md), complete programs in
   ZWJ and Indic conjuncts), UCA collation (`unicmp`), names and numeric values,
   category/script properties — from generated UCD/UCA 16.0–17.0 tables.
   (See [UNICODE.md](UNICODE.md).)
-- **Concurrency** — real `std::thread`s under a CPython-style GIL: promises,
-  `Supply`/`react`/`whenever`, `Channel`, `Thread`, `Lock`, `atomicint`. Opt into
-  true CPU parallelism with `RAKUPP_PARALLEL=1`. (See [ASYNC.md](ASYNC.md).)
+- **Concurrency** — real `std::thread`s: promises, `Supply`/`react`/`whenever`,
+  `Channel`, `Thread`, `Lock`, `atomicint`. True CPU parallelism is the default
+  since v3; `RAKUPP_GIL=1` selects the cooperative GIL. (See [ASYNC.md](ASYNC.md).)
 - **I/O & system** — files, `IO::Path`, `run`/`shell` subprocesses, and a
   **NativeCall** C FFI (`is native` via `dlsym`, marshalled by a `libffi` that
   is `dlopen`ed at runtime rather than linked): scalars at their declared width,

@@ -14,15 +14,24 @@
 # Run it from the repo root (or set RAKUPP_ROOT).
 #
 # Method, deliberately conservative — it reports only what it is sure about:
-#   * A block is checked only if EVERY annotated line is a `say`/`put`/`print`
-#     statement whose annotation is on the SAME line. Multi-line output, `# →`
-#     comments that continue a previous one, and annotations on non-printing
-#     lines are listed as SKIPPED, never as failures.
+#   * A block is checked only if EVERY annotated line is a SINGLE `say`/`put`/
+#     `print` statement whose annotation is on the same line. A line holding
+#     several statements (`say .Str; say .Int;  # → …`) prints several lines
+#     under one annotation and cannot be judged, so its block is SKIPPED — as
+#     are multi-line output, continued `# →` comments, and annotations on
+#     non-printing lines. Skipped is never failed.
 #   * The block runs whole; its stdout lines are matched IN ORDER against the
 #     annotations. A run that fails (a fragment, a module, a server) is SKIPPED.
-#   * An annotation with a trailing parenthetical remark (`# → 42   (why)`) is
-#     compared on the part before two-or-more spaces.
-#   * `…` in an annotation matches anything: it is the docs' own elision mark.
+#   * Annotations often carry a remark after the value (`# → 42  Int, exact`), so
+#     an annotation MATCHES when it equals the printed line or begins with it
+#     followed by whitespace. That is deliberately permissive about the remark
+#     and strict about the value, which is what the gate is for: it still catches
+#     `ABC` for `AbC`, `2A` for `42`, `True` for `any(False, True, False)`.
+#   * A block carrying an ELIDED annotation (one containing `…`) is skipped: an
+#     elision usually summarises several printed lines and cannot be judged.
+#   * An annotation whose value starts with `~` or `e.g.` is APPROXIMATE and is
+#     not compared — the convention for a timing, a machine-dependent number, or
+#     a random result (`.pick`, `.roll`), none of which a gate should pin.
 #
 # Exit code 0 always: this is a report, not a gate.
 
@@ -63,11 +72,12 @@ for @files -> $path {
             unless $l ~~ / ^ \s* [ 'say' | 'put' | 'print' ] » / || $l ~~ / [ '.say' | '.put' ] \s* ';'? \s* '#' / {
                 $usable = False;
             }
-            # strip a trailing parenthetical remark: two or more spaces then text
-            $ann = ~$0 if $ann ~~ / ^ (.*?) \s\s+ .* $/;
+            # several statements on one line print several lines under one annotation
+            $usable = False if +$l.comb(/ « [ 'say' | 'put' | 'print' ] » /) > 1;
             @want.push($ann.trim);
         }
         next unless @want;
+        $usable = False if @want.first(*.contains('…')).defined;  # an elision summarises; do not judge it
         unless $usable { $skipped++; next }
 
         my $file = $TMP.add("b{$checked}.raku");
@@ -84,10 +94,8 @@ for @files -> $path {
             for ^@want.elems -> $k {
                 my ($w, $g) = @want[$k], @got[$k];
                 next if $w eq $g;
-                if $w.contains('…') {
-                    my @parts = $w.split('…').grep(*.chars);
-                    next if @parts.all.defined && all(@parts.map({ $g.contains($_) }));
-                }
+                next if $w.starts-with('~') || $w.starts-with('e.g.');         # approximate by convention
+                next if $w.starts-with($g) && $w.substr($g.chars) ~~ /^ \s/;   # a remark after the value
                 $ok = False; last;
             }
         }
