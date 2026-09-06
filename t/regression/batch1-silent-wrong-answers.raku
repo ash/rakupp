@@ -128,7 +128,7 @@ check(Rakudo::Internals::JSON.to-json("x\x[1]"), '"x\\u0001"',
     check(slurp($tmp, :bin).elems, 4, 'and it keeps all four raw bytes');
     check(slurp($tmp).chars, 3, 'text slurp still translates CRLF');
     check($tmp.slurp(:bin).elems, 4, 'the method form agrees');
-    check($tmp.spurt("x", :createonly), False, 'method spurt :createonly refuses to clobber');
+    check($tmp.spurt("x", :createonly).^name, 'Failure', 'method spurt :createonly refuses to clobber (a Failure, as Rakudo answers)');
     check($tmp.slurp(:bin).elems, 4, 'and the file is untouched');
     $tmp.unlink;
 }

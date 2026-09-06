@@ -60,7 +60,7 @@ sub ck($got, $want, $l) { unless $got eqv $want { note "FAIL: $l — {$got.raku}
     my $pr = $p.start;
     sleep 0.2;
     $p.kill;
-    await $pr;
+    my $r = await $pr; # kept, not sunk: a killed Proc sunk here throws X::Proc::Unsuccessful (Rakudo too)
     ck(now - $t0 < 30, True, '.kill ends the process (await returns early)');
 }
 

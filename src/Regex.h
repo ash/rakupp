@@ -224,6 +224,7 @@ public:
     explicit Regex(const std::string& pattern, const std::string& flags = "");
     bool ok() const { return ok_; }
     const std::string& obsolete() const { return obsolete_; } // non-empty: retired P5 metachar
+    const std::string& badEscape() const { return badEscape_; } // non-empty: unknown backslash sequence
     // Find the first match whose start is >= startPos (unanchored search).
     bool search(const std::string& subject, long startPos, RxMatch& out) const;
     bool search(const std::string& subject, long startPos, RxMatch& out, const SubResolver& r,
@@ -338,6 +339,7 @@ private:
     static void countCaptureNames(const Node* n, std::map<std::string, int>& out);
     bool ok_ = true;
     std::string obsolete_;               // retired metachar seen (e.g. "\\A"), for X::Obsolete
+    std::string badEscape_;              // unknown backslash sequence seen (e.g. "\\y")
     bool icase_ = false;
     bool curIcase_ = false; // parse-time adverb state: :i/:!i scoped to the enclosing group
     bool curImark_ = false; // parse-time adverb state: :m/:ignoremark scoped to the enclosing group
@@ -379,6 +381,7 @@ private:
     static NodePtr wsWrap(NodePtr inner); // sigspace: Seq(inner, <.ws>)
     void parseClassBodyMember(Node* node);
     void skipWs();
+    void skipRegexComment(); // pos_ on a `#`: to the end of the line, or an embedded #`(…) to its closer
     char peek(size_t o = 0) const { return pos_ + o < pat_.size() ? pat_[pos_ + o] : '\0'; }
     bool eof() const { return pos_ >= pat_.size(); }
 
@@ -429,6 +432,7 @@ public:
     // Thrown by the parser on a retired Perl 5 metachar (\A \z \G \p \Q \1 …);
     // the ctor records it so callers can raise X::Obsolete instead of no-match.
     struct ObsoleteEscape { std::string seq; };
+    struct BadEscape { std::string seq; };      // an unknown `\x` letter escape — a compile error, not the letter
     bool matchNode(const Node* n, MState& st, long pos, const FnRef& k) const;
     // {min,max} byte width the pattern can match; max = -1 means unbounded/unknown.
     std::pair<long, long> nodeWidth(const Node* n, MState& st) const;

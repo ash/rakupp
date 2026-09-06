@@ -40,7 +40,7 @@ private:
     std::string podData_;    // rendered content of =begin pod blocks
     size_t pos_ = 0;
     std::vector<std::string> userOps_; // `sub infix:<…>` spellings declared in THIS file, longest first
-    size_t atomDropEnd_ = (size_t)-1; // pos right after a dropped ⚛ marker (not whitespace)
+    size_t unspaceEnd_ = (size_t)-1;  // pos right after an unspace (`\` + whitespace/comment): not whitespace
     int angleWords_ = 0; // depth inside a bare `< … >` word list: quote/regex lexing is off (content is words)
     int angleLine_ = 0;  // line the OUTERMOST `<` of that word list opened on
     int line_ = 1;
@@ -54,6 +54,7 @@ private:
     char advance();
     bool eof() const { return pos_ >= src_.size(); }
     bool match(char c);
+    void skipRegexComment(std::string& out); // `#` in a regex: to end of line, or an embedded #`(…) to its closer
     uint32_t codepointHere() const;     // decode UTF-8 codepoint at pos_ (0 at eof)
     bool unicodeLetterAt(size_t off) const; // is the codepoint `off` bytes ahead a letter?
     bool unicodeLetterHere() const;     // is the codepoint at pos_ an identifier letter

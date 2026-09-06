@@ -259,6 +259,38 @@ Lexer::Lexer(std::string src) : src_(applyRakudoFudge(std::move(src))) {
               [](const std::string& a, const std::string& b) { return a.size() > b.size(); });
 }
 
+// A `#` inside a regex opens a comment. `#`( … )` / `#`[ … ]` / `#`{ … }` /
+// `#`< … >` is an EMBEDDED comment that ends at the matching closer (pairs of
+// the same bracket nest, and a run of N openers wants a run of N closers:
+// `#`(( … ))`); any other `#` runs to the end of the line. Consumes from the
+// `#` on, appending what it ate to `out` so the pattern's raw text stays whole.
+void Lexer::skipRegexComment(std::string& out) {
+    out += advance(); // #
+    if (peek() == '`') {
+        char o = peek(1);
+        char c = o == '(' ? ')' : o == '[' ? ']' : o == '{' ? '}' : o == '<' ? '>' : 0;
+        if (c) {
+            out += advance(); // `
+            size_t reps = 0;
+            while (peek() == o) { out += advance(); reps++; }
+            size_t nest = 1;
+            while (!eof()) {
+                if (peek() == o || peek() == c) {
+                    char ch = peek(); size_t k = 0;
+                    while (peek(k) == ch) k++;
+                    if (k >= reps) { if (ch == o) nest++; else nest--; }
+                    for (size_t q = 0; q < k; q++) out += advance();
+                    if (nest == 0) return;
+                    continue;
+                }
+                out += advance();
+            }
+            return; // unterminated: the scanner's own runaway rule reports the pattern
+        }
+    }
+    while (!eof() && peek() != '\n') out += advance();
+}
+
 char Lexer::peek(size_t off) const {
     size_t p = pos_ + off;
     return p < src_.size() ? src_[p] : '\0';
@@ -495,7 +527,7 @@ void Lexer::skipWhitespaceAndComments() {
             // zero-width unspace before a postfix dot: `"xxxxxx"\.chars`
             if (peek(1) == '.' && !ascii::isdigit((unsigned char)peek(2))) {
                 advance(); // backslash only; the '.' stays tight
-                atomDropEnd_ = pos_;
+                unspaceEnd_ = pos_;
                 continue;
             }
             if (uwsAt(1) || embCommentAt(1)) {
@@ -514,7 +546,7 @@ void Lexer::skipWhitespaceAndComments() {
                     }
                     break;
                 }
-                atomDropEnd_ = pos_; // like the ⚛ drop: this movement is not whitespace
+                unspaceEnd_ = pos_; // this movement is not whitespace
                 continue;
             }
         }
@@ -768,6 +800,13 @@ Token Lexer::lexNumber() {
             for (int k = utf8Len((unsigned char)c); k > 0; k--) advance();
         }
         int b = base == 'x' ? 16 : base == 'o' ? 8 : base == 'd' ? 10 : 2;
+        // a digit past the base — `0b12`, `0o89`, `0xfg` — is malformed, as the
+        // `:2<12>` colon-pair form already says; strtoll used to stop silently
+        for (char dc : digits) {
+            int dv = ascii::isdigit((unsigned char)dc) ? dc - '0'
+                   : ascii::isalpha((unsigned char)dc) ? ascii::tolower((unsigned char)dc) - 'a' + 10 : -1;
+            if (dv < 0 || dv >= b) malformed = true;
+        }
         // No valid digit after the 0x/0o/0b prefix — e.g. an Nl/No numeral or a
         // non-radix script (`0b¹0`, `0xΓαfe`) — is a malformed literal.
         if (digits.empty() || malformed) throw ParseError("Malformed radix number", line_);
@@ -913,11 +952,19 @@ static size_t interpChainEnd(const std::string& src, size_t p) {
         // a LATER link in the chain still be protected.
         if (q + 1 < n && src[q] == '.' &&
             (ascii::isalpha((unsigned char)src[q + 1]) || src[q + 1] == '_' ||
+             (unsigned char)src[q + 1] >= 0x80 ||
              ((src[q + 1] == '^' || src[q + 1] == '?' || src[q + 1] == '&') && q + 2 < n &&
-              (ascii::isalpha((unsigned char)src[q + 2]) || src[q + 2] == '_')))) {
+              (ascii::isalpha((unsigned char)src[q + 2]) || src[q + 2] == '_' ||
+               (unsigned char)src[q + 2] >= 0x80)))) {
             size_t k = q + 1;
             if (src[k] == '^' || src[k] == '?' || src[k] == '&') k++;
-            while (k < n && rakuIdentCont(src[k])) k++;
+            // the same name rule as the variable above: Unicode letters, and
+            // `-`/`'` joins ("$n.is-prime()", "$n.mööse()")
+            while (k < n && (rakuIdentCont(src[k]) || (unsigned char)src[k] >= 0x80)) k++;
+            while (k + 1 < n && rakuIdentJoins(src[k], src[k + 1])) {
+                k++;
+                while (k < n && (rakuIdentCont(src[k]) || (unsigned char)src[k] >= 0x80)) k++;
+            }
             if (k < n && src[k] == '(') {
                 size_t e = balancedGroupEnd(src, k);
                 if (e == std::string::npos) break;
@@ -1118,6 +1165,7 @@ bool Lexer::tryQuoteForm(Token& out) {
         skipWsBeforeAdverb();
     }
     if (!shortAdv.empty()) adverbs = shortAdv + adverbs; // Qs → Q:s
+    const bool explicitAdverbs = !adverbs.empty(); // the implicit :samespace below is not one
     if (w == "ss" || w == "SS") adverbs = ":samespace " + adverbs; // ss/// == s:samespace///
     // whitespace is allowed before a bracketing delimiter: `s:g [ pat ] = repl`,
     // and before `/` too (`s :g /pat//`, `qw /a b/` — Rakudo accepts both)
@@ -1318,7 +1366,7 @@ bool Lexer::tryQuoteForm(Token& out) {
             // keyword plus underscore (SS_CENTER, m_A, q_x) lexed as a quote
             // and swallowed the rest of the line. Rakudo reads all of those as
             // undeclared routines, i.e. as plain identifiers.
-            if ((isRegex || isSubst || isTrans) && !adverbs.empty() &&
+            if ((isRegex || isSubst || isTrans) && explicitAdverbs &&
                 (unsigned char)d < 0x80 && ascii::ispunct((unsigned char)d) &&
                 d != ':' && d != '#' && d != '_' &&
                 // a CLOSING bracket never opens a quote: `self<ms>` is an angle
@@ -1410,9 +1458,16 @@ bool Lexer::tryQuoteForm(Token& out) {
                 if (ch == '[') { inClass = true; classOpen = true; raw += advance(); continue; }
                 if (ch == '\'' || ch == '"') { raw += advance(); continue; } // a literal character
             }
-            // quotes open only OUTSIDE [ ] — inside a char class a quote is a
-            // MEMBER (<-["]> = anything but a double quote), not a string opener
-            if (quoteAware && sd == 0 && (ch == '\'' || ch == '"')) { q = ch; raw += advance(); continue; }
+            // quotes open only outside a CHAR CLASS — there a quote is a MEMBER
+            // (<-["]> = anything but a double quote). Inside a plain GROUP they
+            // quote as usual, and must: `rx/ [ ']' ] /` read the `]` as the
+            // group's closer and the second quote opened a string to end of file.
+            // (The other two scanners — the bare `/…/` one and tryRuleDecl —
+            // already had this rule.)
+            if (quoteAware && !inClass && (ch == '\'' || ch == '"')) { q = ch; raw += advance(); continue; }
+            // a `#` comment runs to the end of the line: a delimiter inside it
+            // is commentary, not the end of the pattern
+            if (quoteAware && !p5 && !isRepl && !inClass && ch == '#') { skipRegexComment(raw); continue; }
             if (blocks && ch == '{') { bd++; raw += advance(); continue; } // enter code block
             // Raku regex/subst pattern: `[ ... ]` groups & char classes (incl. <-[/]>) shield the delimiter
             // Inside a CHARACTER CLASS a `[` is a literal member, not a nested
@@ -1875,6 +1930,8 @@ bool Lexer::tryRuleDecl(std::vector<Token>& out, bool spaced) {
         // reading it as the group's closer left a stray quote that ate the
         // statements after the regex without a word of complaint.
         if ((ch == '\'' || ch == '"') && !inClass) { q = ch; body += advance(); continue; }
+        // a `#` comment at regex level runs to the end of the line, braces and all
+        if (ch == '#' && !inClass) { skipRegexComment(body); continue; }
         // Inside a CHARACTER CLASS a `[` is a literal member, not a nested group:
         // `token pattern-character { <-[^$\\.*+?()[\]{}|]> }` (ECMA262Regex) left
         // the class open forever, so the scan ate the rest of the file and the
@@ -1931,6 +1988,27 @@ static bool quoteBlockedHere(const std::vector<Token>& out, bool spaced) {
     return false;
 }
 
+// Identifiers after which a TERM follows — keywords and the listops that take
+// matchers or lists — so a `/` starts a regex and a `<` a word list. ONE set:
+// regexContext and angleTermContext each kept their own, and `any <# x>`
+// treated the `#` as a comment while `any /x/` was a regex.
+static const std::set<std::string> kTermAfterIdent = {
+    "if", "unless", "while", "until", "when", "given", "return", "and", "or",
+    "not", "so", "say", "print", "put", "note", "grep", "map", "first",
+    "gather", "take", "ok", "nok", "is", "isnt", "like", "unlike", "split",
+    "comb", "join", "for", "elsif", "where", "die", "warn", "dd",
+    // a grammar action makes a matcher: `token term:sym<*> { <sym>
+    // { make /<-[\/]>*?/ } }` (Path::Finder's glob parser). Dividing
+    // what `make` returns is not a thing, so this cannot cost a division.
+    "make",
+    // junction constructors take matchers: `.grep(none /a/)`
+    "any", "all", "one", "none",
+    // both sides of a flip-flop are usually regexes:
+    // `if /^Start/ ff /^End/` (Font::AFM). All eight spellings, since
+    // the `^` marks lex as part of the operator token.
+    "ff", "fff", "ff^", "fff^", "^ff", "^fff", "^ff^", "^fff^",
+};
+
 bool Lexer::regexContext(const std::vector<Token>& out) {
     if (out.empty()) return true;
     const Token& pv = out.back();
@@ -1947,25 +2025,8 @@ bool Lexer::regexContext(const std::vector<Token>& out) {
         case Tok::LParen: case Tok::LBrace: case Tok::LBracket:
         case Tok::Comma: case Tok::Semicolon: case Tok::FatArrow:
             return true;
-        case Tok::Ident: {
-            static const std::set<std::string> kw = {
-                "if", "unless", "while", "until", "when", "given", "return", "and", "or",
-                "not", "so", "say", "print", "put", "note", "grep", "map", "first",
-                "gather", "take", "ok", "nok", "is", "isnt", "like", "unlike", "split",
-                "comb", "join", "for", "elsif", "where", "die", "warn", "dd",
-                // a grammar action makes a matcher: `token term:sym<*> { <sym>
-                // { make /<-[\/]>*?/ } }` (Path::Finder's glob parser). Dividing
-                // what `make` returns is not a thing, so this cannot cost a division.
-                "make",
-                // junction constructors take matchers: `.grep(none /a/)`
-                "any", "all", "one", "none",
-                // both sides of a flip-flop are usually regexes:
-                // `if /^Start/ ff /^End/` (Font::AFM). All eight spellings, since
-                // the `^` marks lex as part of the operator token.
-                "ff", "fff", "ff^", "fff^", "^ff", "^fff", "^ff^", "^fff^",
-            };
-            return kw.count(pv.text) > 0;
-        }
+        case Tok::Ident:
+            return kTermAfterIdent.count(pv.text) > 0;
         default:
             return false; // IntLit/NumLit/Var/RParen/RBracket/StrLit/RegexLit => division
     }
@@ -2176,7 +2237,7 @@ Token Lexer::lexOperator(bool termBefore) {
         "+&", "+|", "+^", "~&", "~|", "~^", "?&", "?|", "?^", "+>", "~>",
         "??", "!!", "**", "//", "||", "&&", "^^", "==", "!=", "<=", ">=", "~~", "=>",
         "-->", "<->", "->", "=:=", ":=", "++", "--", "+=", "-=", "*=", "/=", "~=", "%%", "%=",
-        "x=", "..", "::", "<<", ">>", "andthen", // (textual handled elsewhere)
+        "..", "::", "<<", ">>",
     };
     // `+<` / `~<` shifts: only when `<` clearly isn't opening a word list
     // (`+<a b>` stays prefix-plus on a QwList). Shift uses follow with space,
@@ -2228,7 +2289,6 @@ Token Lexer::lexOperator(bool termBefore) {
     // try longest first (skip the textual placeholder)
     for (const char* op : ops) {
         std::string s(op);
-        if (s == "andthen") continue;
         bool ok = true;
         for (size_t k = 0; k < s.size(); k++) {
             if (peek(k) != s[k]) { ok = false; break; }
@@ -2342,11 +2402,7 @@ static bool angleTermContext(const std::vector<Token>& out) {
                    pv.text != "\xE2\x88\x9E" && // ∞ is a TERM lexed as an Op: `∞ < 5` compares
                    pv.text != "\xC2\xAB" && pv.text != "\xC2\xBB";
         case Tok::Ident: {
-            static const std::set<std::string> kw = {
-                "for", "say", "print", "put", "note", "return", "take", "die",
-                "is", "ok", "nok", "isnt", "like", "unlike", "and", "or", "not", "so", "dd",
-            };
-            if (kw.count(pv.text) > 0) return true;
+            if (kTermAfterIdent.count(pv.text) > 0) return true;
             // `:name<#>` — a colonpair's angle VALUE: the key is an identifier
             // glued to a `:`, and what follows is a word list, never a
             // comparison. Without this the `#` inside started a comment that
@@ -2387,8 +2443,8 @@ std::vector<Token> Lexer::tokenize() {
         // been skipped: the skipper stops on that newline rather than consuming
         // it (see there), so this is where `q:to/A/;  # note` lands.
         if (!pendingHeredocs_.empty() && peek() == '\n') { processHeredocs(out); continue; }
-        // a dropped ⚛ marker isn't whitespace: `$x⚛++` keeps `++` tight-postfix
-        bool spaced = (pos_ > before && pos_ != atomDropEnd_) || before == 0;
+        // an unspace isn't whitespace: `"xxxxxx"\.chars` keeps `.chars` tight-postfix
+        bool spaced = (pos_ > before && pos_ != unspaceEnd_) || before == 0;
         if (eof()) break;
         char c = peek();
         Token t;
@@ -2700,6 +2756,9 @@ std::vector<Token> Lexer::tokenize() {
                 if (ch == '{') { brace++; raw += advance(); continue; }
                 if (ch == '}' && brace > 0) { brace--; raw += advance(); continue; }
                 if (brace > 0) { raw += advance(); continue; } // code block: consume raw
+                // a `#` comment runs to the end of the line — a `/` inside it is
+                // commentary, not the closing delimiter
+                if (ch == '#') { skipRegexComment(raw); continue; }
                 // `<(` and `)>` are the match-capture markers, not balanced <…> groups.
                 // `)>` only closes a marker that actually opened: in `<at(0)>` the
                 // `)>` is an argument list ending inside an assertion, and eating it
@@ -2790,6 +2849,13 @@ std::vector<Token> Lexer::tokenize() {
     // (A `;` is a legal WORD inside the list, so only end of file — or a brace,
     // handled above — can settle it.)
     if (angleWords_ > 0) runawayQuote("quote words", "'>'", angleLine_);
+    // a heredoc opened on the last line (no newline after its marker line)
+    // never got a body: say so instead of answering the empty string
+    if (!pendingHeredocs_.empty()) {
+        auto& [hm, hi, hx] = pendingHeredocs_.front();
+        (void)hi; (void)hx;
+        throw ParseError("Ending delimiter " + hm + " not found for heredoc", line_, true);
+    }
     out.push_back(make(Tok::End, ""));
     return out;
 }

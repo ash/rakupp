@@ -1170,7 +1170,14 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
 #endif
         if (m == "name" || m == "Str" || m == "gist" || m == "auth" || m == "desc") return Value::str(name);
         if (m == "is-win") return Value::boolean(false);
-        if (m == "version") return Value::str("0");
+        if (m == "version") { // a Version object (it was the Str "0"): the kernel's is uname -r
+            std::string ver = "0";
+#if !defined(_WIN32)
+            struct utsname u;
+            if (inv.hashKind == "Kernel" && uname(&u) == 0) ver = u.version; // Rakudo: Version.new(uname -v)
+#endif
+            Value v = Value::str(ver); v.hashKind = "Version"; return v;
+        }
         if (m == "signature") return Value::str("");
         if (m == "path-sep") return Value::str(":");
         if (m == "release") { // kernel release string (uname -r)
@@ -1181,7 +1188,16 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             return Value::str("0");
         }
         if (m == "cpu-cores") { unsigned n = std::thread::hardware_concurrency(); return Value::integer(n ? (long long)n : 1); }
-        if (m == "archname" || m == "cpu-arch") return Value::str("x86_64");
+        if (m == "archname" || m == "cpu-arch") { // was a hard-coded "x86_64" on every box
+#if !defined(_WIN32)
+            struct utsname u;
+            if (uname(&u) == 0) {
+                std::string sys = u.sysname; for (auto& ch : sys) ch = (char)ascii::tolower((unsigned char)ch);
+                return Value::str(m == "archname" ? std::string(u.machine) + "-" + sys : std::string(u.machine));
+            }
+#endif
+            return Value::str("x86_64");
+        }
         // $*VM.platform-library-name("…/lib/ssl".IO) → "…/lib/libssl.dylib":
         // prepend `lib` to the basename and append the platform extension. Used
         // by OpenSSL::NativeLib et al. to build the `is native` library name.
@@ -1222,13 +1238,16 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             auto it = inv.hash()->find("timedout");
             return it != inv.hash()->end() ? it->second : Value::boolean(false);
         }
-        if (m == "signal") return Value::integer(0);
-        if (m == "so" || m == "Bool") return Value::boolean((*inv.hash())["exitcode"].toInt() == 0);
+        if (m == "signal") { auto it = inv.hash()->find("signal"); return it != inv.hash()->end() ? it->second : Value::integer(0); }
+        if (m == "so" || m == "Bool") { // a signalled child is not a success either
+            auto sg = inv.hash()->find("signal");
+            return Value::boolean((*inv.hash())["exitcode"].toInt() == 0 && (sg == inv.hash()->end() || sg->second.toInt() == 0));
+        }
         if (m == "command") { auto it = inv.hash()->find("argv"); return it != inv.hash()->end() ? it->second : Value::array(); }
         if (m == "in") { Value h = inv; h.hashKind = "ProcIn"; return h; } // writable stdin handle (shares hash)
         if (m == "out" || m == "err") { Value h = Value::makeHash(); h.hashKind = "FileHandle"; (*h.hash())["buffer"] = (*inv.hash())[m == "out" ? "out-str" : "err-str"]; (*h.hash())["mode"] = Value::str("r"); (*h.hash())["captured"] = Value::boolean(true); return h; }
         if (m == "sink" || m == "self") return inv;
-        if (m == "pid") return Value::integer(0);
+        if (m == "pid") { auto it = inv.hash()->find("pid"); return it != inv.hash()->end() ? it->second : Value::integer(0); } // (was a hard-coded 0)
     }
     if (inv.t == VT::Hash && inv.hashKind == "ProcIn") { // $proc.in — feed stdin, which runs a deferred proc
         // Closing stdin without ever writing to it still runs the child — with no
@@ -1264,7 +1283,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                            errMode == 1 ? &err : nullptr, errMode == -1, outMode);
             (*inv.hash())["out-str"] = Value::str(out);      // shared hash: $proc.out.slurp sees this
             (*inv.hash())["err-str"] = Value::str(err);
-            (*inv.hash())["exitcode"] = Value::integer(code);
+            storeProcStatus(inv, code); // exitcode + signal
             (*inv.hash())["ran"] = Value::boolean(true);
             return Value::boolean(true);
         }
@@ -2320,7 +2339,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             else if (!given) given = &a;
         if (t == "Str" || t == "Cool") return Value::str(given ? given->toStr() : "");
         if (t == "Int") return given ? Value::integer(given->toInt()) : Value::integer(0);
-        if (t == "Num" || t == "Real" || t == "Numeric") return Value::number(0.0);
+        if (t == "Real" || t == "Numeric") return Value::number(0.0); // (`Num.new` has its own arm above)
         if (t == "Bool") return Value::boolean(false);
         // `Mu.new` / `Any.new` — an instance of the bare root type: defined (so
         // truthy), gisting as `Mu.new`. It carries no attributes of its own.
@@ -2429,6 +2448,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             }
             if (items[k].t == VT::Pair) (*v.hash())[items[k].s] = items[k].pairVal() ? *items[k].pairVal() : Value::any();
             else if (k + 1 < items.size()) { std::string key = items[k].toStr(); (*v.hash())[key] = items[k + 1]; k++; }
+            else throw RakuError{Value::typeObj("X::Hash::Store::OddNumber"),
+                                 "Odd number of elements found where hash initializer expected"}; // (it dropped the key)
         }
         return v;
     }
@@ -3767,9 +3788,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             }
             return out;
         }
-        if (m == "print" || m == "write" || m == "send" || m == "put") {
-            std::string data = args.empty() ? "" : args[0].toStr(); // Blob is a byte-Str
-            if (m == "put") data += "\n";
+        if (m == "print" || m == "write" || m == "send" || m == "put" || m == "say") {
+            std::string data = args.empty() ? "" : (m == "say" ? gistOf(args[0]) : args[0].toStr()); // Blob is a byte-Str
+            if (m == "put" || m == "say") data += "\n"; // `.say` used to fall to the universal arm and print the socket's gist to stdout
             size_t off = 0;
             bool p = gilPark();
             while (off < data.size()) { ssize_t n = ::send(fd, data.data() + off, data.size() - off, 0); if (n <= 0) break; off += (size_t)n; }
@@ -3864,7 +3885,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     }
     if (m == "say" && !isFH && !isUserHandle) return ioEmit(gistOf(inv) + "\n", "$*OUT", false);
     if (m == "print" && !isFH && !isUserHandle) return ioEmit(strOf(inv), "$*OUT", false);
-    if (m == "put" && !isUserHandle) return ioEmit(strOf(inv) + "\n", "$*OUT", false);
+    if (m == "put" && !isFH && !isUserHandle) return ioEmit(strOf(inv) + "\n", "$*OUT", false); // a FileHandle's put is Part3's (this arm printed the HANDLE)
     if (m == "note") return ioEmit(gistOf(inv) + "\n", "$*ERR", true);
     if (m == "Str" || (inv.t == VT::Type && m == "Stringy")) {
         // type objects stringify empty (with a warning in Rakudo) — but
@@ -3963,6 +3984,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // …and an Int that outgrew long long stays exact: toInt() saturates, so
         // `(2**64).Int` answered 9223372036854775807.
         if (inv.t == VT::Int && inv.big()) return Value::bigint(*inv.big());
+        if (inv.t == VT::Num) return numToIntExact(std::trunc(inv.n)); // exact past 2**63 (`1e19.Int` saturated) — L2 F13
         return Value::integer(inv.toInt());
     }
     if (m == "isNaN") {
@@ -3978,6 +4000,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if (inv.t == VT::Range) { ValueList none; return Value::number(methodCall(inv, "elems", none).toNum()); }
         return Value::number(inv.toNum());
     }
+    if (m == "Numeric" && inv.t == VT::Complex) return inv; // a Complex is Numeric already (this arm numified it to Num 0)
     if (m == "Numeric" || m == "Real") {
         // a string numifies via the type-preserving ladder ("1"->Int, "1.5"->Rat,
         // "1e0"->Num), like `+$str` — and a non-number is that same Failure.

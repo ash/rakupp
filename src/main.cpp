@@ -1563,6 +1563,7 @@ static const FlagDoc kFlagDocs[] = {
     {"--standalone", 0, nullptr, "a module that cannot be embedded is a build error"},
     {"--target", 1, "parse ast js", "parse, ast, or transpile to JavaScript"},
     {"--verify", 0, nullptr, "emit JavaScript only if it agrees with the interpreter"},
+    {"--watch", 0, nullptr, "re-run the program whenever it or a library file changes"},
     {"--module", 0, nullptr, "JavaScript export the subs, classes and MAIN"},
     {"--runtime", 0, nullptr, "write just the JavaScript runtime"},
     {"--fallback", 1, "wasm", "accept a program outside the JavaScript core"},
@@ -1667,6 +1668,11 @@ static int watchLoop(const std::string& exe, const std::vector<std::string>& chi
     std::string last = signature(nullptr);
     if (last.empty()) { std::cerr << "--watch: cannot read " << progFile << "\n"; return 4; }
     for (;;) {
+#if !defined(_WIN32)
+        setenv("RAKUPP_WATCH_CHILD", "1", 1); // see the option parser: the child must not watch
+#else
+        _putenv_s("RAKUPP_WATCH_CHILD", "1");
+#endif
         int rc = runChild(exe, childArgs);
         std::cerr << "[watch] exit " << rc << " — watching " << progFile
                   << (dirs.size() > 1 || fs::is_directory("lib") ? " and the module directories" : "")
@@ -1871,20 +1877,32 @@ int main(int argc, char** argv) {
     // a valid short-option cluster (`-exe` is NOT `-e xe`) — so accept them with
     // a gentle note. Real short options (-e, -c, -I, -o, -n, -p, -h, -V, -q)
     // are left exactly as they are.
-    static std::string s_normArg1;
-    if (argc >= 2 && argv[1][0] == '-' && argv[1][1] != '-' && argv[1][1] != '\0') {
+    // …at EVERY option position, `=VALUE` included — it used to look at argv[1]
+    // alone and compare the whole token, so `-I lib -exe f.raku` ran `-e xe` and
+    // `-env-file=x.env` ran `-e nv-file=x.env`. The scan stops where the options
+    // stop: at the program file, at `--`, and at `-e` (whose code and the program's
+    // own arguments follow).
+    static std::vector<std::string> s_normArgs; s_normArgs.reserve((size_t)argc);
+    {
         static const std::set<std::string> kLongNames = {
             "exe", "cpp", "emit-cpp", "bundle", "aot", "lint", "highlight",
             "ansi", "terminal", "ast", "dump-ast", "doc", "help", "version",
             "mcp", "lsp", "jupyter", "seed", "color", "colour", "env-file",
             "stack-size", "ll-exception", "json", "stagestats", "trace",
-            "repl-after", "completions",
+            "repl-after", "completions", "watch",
         };
-        std::string bare = argv[1] + 1;
-        if (kLongNames.count(bare)) {
-            std::cerr << "note: treating '" << argv[1] << "' as '--" << bare << "'\n";
-            s_normArg1 = "--" + bare;
-            argv[1] = &s_normArg1[0];
+        static const std::set<std::string> kValueShorts = {"-I", "-M", "-m", "-o"}; // their value is the next token
+        for (int ai = 1; ai < argc; ai++) {
+            const char* av = argv[ai];
+            if (av[0] != '-' || av[1] == '\0') break;            // the program file: options are over
+            if (av[1] == '-') { if (av[2] == '\0') break; continue; } // `--` ends the options; a long option is fine as it is
+            if (kValueShorts.count(av)) { ai++; continue; }
+            std::string tok = av + 1;
+            std::string bare = tok.substr(0, tok.find('='));
+            if (!kLongNames.count(bare)) { if (av[1] == 'e') break; continue; } // -e CODE: the rest is the program's (`-exe`/`-env-file` are long names first)
+            std::cerr << "note: treating '" << av << "' as '--" << tok << "'\n";
+            s_normArgs.push_back("--" + tok);
+            argv[ai] = &s_normArgs.back()[0];
         }
     }
 
@@ -2055,7 +2073,10 @@ int main(int argc, char** argv) {
             if (a == "--stagestats") { stageStats = true; continue; }
             if (a == "--trace") { traceStmts = true; continue; }
             if (a == "--repl-after") { replAfter = true; continue; }
-            if (a == "--watch") { watch = true; continue; }
+            // the watcher's CHILD carries a mark: it inherits RAKUPP_OPT, which put
+            // `--watch` back into every child — each became a watcher itself, an
+            // unbounded chain that never ran the program
+            if (a == "--watch") { watch = std::getenv("RAKUPP_WATCH_CHILD") == nullptr; continue; }
             // an information mode, like --help: it answers and stops
             if (a == "--completions" || a.rfind("--completions=", 0) == 0)
                 return printCompletions(a.size() > 13 ? a.substr(14) : "");

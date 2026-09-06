@@ -2,6 +2,8 @@
 #include "Ast.h"
 #include "BigInt.h"
 #include <atomic>
+#include <cstdio>
+#include <cmath>
 #include <cstring>
 #include <ostream>
 #include <functional>
@@ -658,6 +660,12 @@ struct Value {
     BigInt toBig() const {
         if (t == VT::Int) return big() ? *big() : BigInt(i);
         if (t == VT::Bool) return BigInt(b ? 1 : 0);
+        // a Num past ±2**63 is exact here (toInt saturates — right for indices,
+        // wrong for the exact tower: `1e19.Rat` answered 1)
+        if (t == VT::Num && std::isfinite(n) && (n >= 9223372036854775807.0 || n <= -9223372036854775808.0)) {
+            char buf[400]; std::snprintf(buf, sizeof buf, "%.0f", std::trunc(n));
+            return BigInt::fromString(buf);
+        }
         return BigInt((long long)toInt());
     }
     // toBig() WITHOUT the copy for the case that actually matters: an Int that

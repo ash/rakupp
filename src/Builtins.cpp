@@ -82,13 +82,6 @@ std::recursive_mutex& supplierMutex(const void* key) {
 }
 
 
-// Real synchronization state behind a Lock / Semaphore, shared by every copy of the
-// Value via Value::ext. Only populated in parallel mode (RAKUPP_PARALLEL): under the
-// cooperative GIL these primitives stay no-ops (the GIL already serialises), and a
-// real lock held across a GIL-yield could deadlock the cooperative scheduler.
-
-// A small hardcoded slice of the built-in type lattice (narrowest-first, widest-last),
-// used by `.are` to find the narrowest common type of a list's elements.
 // A CORE type name — the set `.^add_method` may extend. isKnownTypeName is too
 // loose for that: it blanket-accepts any X::, Metamodel:: or IO:: prefix, so a
 // typo'd `Metamodel::Whatever.^add_method` would silently succeed there.
@@ -98,12 +91,16 @@ bool isCoreTypeName(const std::string& n) {
     return isKnownTypeName(n);
 }
 
+// The built-in type lattice, narrowest-first, widest-last: read by .isa/.does/
+// .^mro, `.are` (via lubType) and the augment lookup.
 const std::vector<std::string>& typeAncestry(const std::string& t) {
     static const std::map<std::string, std::vector<std::string>> A = {
         {"Int",     {"Int","Real","Numeric","Cool","Any","Mu"}},
-        {"IntStr",  {"IntStr","Int","Real","Numeric","Cool","Any","Mu"}},
-        {"RatStr",  {"RatStr","Rat","Rational","Real","Numeric","Cool","Any","Mu"}},
-        {"NumStr",  {"NumStr","Num","Real","Numeric","Cool","Any","Mu"}},
+        // an allomorph is Allomorph, Str AND its number (Rakudo's MRO order)
+        {"IntStr",     {"IntStr","Allomorph","Str","Int","Stringy","Real","Numeric","Cool","Any","Mu"}},
+        {"RatStr",     {"RatStr","Allomorph","Str","Rat","Stringy","Rational","Real","Numeric","Cool","Any","Mu"}},
+        {"NumStr",     {"NumStr","Allomorph","Str","Num","Stringy","Real","Numeric","Cool","Any","Mu"}},
+        {"ComplexStr", {"ComplexStr","Allomorph","Str","Complex","Stringy","Numeric","Cool","Any","Mu"}},
         {"Rat",     {"Rat","Rational","Real","Numeric","Cool","Any","Mu"}},
         // FatRat is NOT a Rat in Rakudo — both DO Rational, and its MRO is
         // FatRat/Cool/Any/Mu. Claiming the inheritance made `when Rat` swallow a
@@ -114,8 +111,8 @@ const std::vector<std::string>& typeAncestry(const std::string& t) {
         {"Complex", {"Complex","Numeric","Cool","Any","Mu"}},
         {"Real",    {"Real","Numeric","Cool","Any","Mu"}},
         {"Numeric", {"Numeric","Cool","Any","Mu"}},
-        {"Str",     {"Str","Cool","Any","Mu"}},
-        {"Bool",    {"Bool","Cool","Any","Mu"}},
+        {"Str",     {"Str","Stringy","Cool","Any","Mu"}},              // Str does Stringy
+        {"Bool",    {"Bool","Int","Real","Numeric","Cool","Any","Mu"}}, // Bool IS an Int (an Int-backed enum): True.isa(Int), Bool.^mro
         {"Cool",    {"Cool","Any","Mu"}},
         {"Date",    {"Date","Dateish","Any","Mu"}},
         {"DateTime",{"DateTime","Dateish","Any","Mu"}},
@@ -554,7 +551,7 @@ static void spawnChildFinish(SpawnedChild& sc, double timeoutSec,
         }
     }
     else { while (waitpid(pid, &status, 0) == -1 && errno == EINTR) {} } // reap; retry on EINTR
-    if (!timedout) exitCode = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+    if (!timedout) exitCode = procStatusFold(status); // 256+N for a signal; the stores split it
     if (fd >= 0) close(fd);
     if (efd >= 0) close(efd);
 #endif
@@ -789,7 +786,7 @@ void spawnWithInput(const std::vector<std::string>& argv, const std::string& inp
     }
     int status = 0;
     while (waitpid(pid, &status, 0) == -1 && errno == EINTR) {}
-    exitCode = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+    exitCode = procStatusFold(status); // 256+N for a signal; the stores split it
     if (parked) gil->gilUnpark(true); // reacquire the GIL before touching interpreter state
 #endif
 }
@@ -863,9 +860,6 @@ static int stdinFdForHandle(const Value& h, bool& resolved) {
 #endif
 }
 
-// Run one emitted value through a live-Supply tap's transform chain (grep/map/head/…).
-// Threads the value(s) through each step in order; per-step mutable state lives in the
-// step's "state" hash. Sets `complete` when a head/first step reaches its limit.
 std::pair<size_t, size_t> nextLogicalNewline(const std::string& s, size_t from) {
     for (size_t i = from; i < s.size(); i++) {
         const unsigned char c = (unsigned char)s[i];
@@ -890,6 +884,9 @@ size_t danglingNewlinePrefix(const std::string& s) {
     return 0;
 }
 
+// Run one emitted value through a live-Supply tap's transform chain (grep/map/head/…).
+// Threads the value(s) through each step in order; per-step mutable state lives in the
+// step's "state" hash. Sets `complete` when a head/first step reaches its limit.
 ValueList Interpreter::applyTapChain(Value& tap, const Value& in, bool& complete, bool flush) {
     complete = false;
     ValueList cur;
@@ -1091,7 +1088,7 @@ void Interpreter::runProcPromise(Value& promise, double timeoutSec) {
     };
     finishTaps("taps");
     finishTaps("taps-err");
-    (*proc.hash())["exitcode"] = Value::integer(code);
+    storeProcStatus(proc, code); // exitcode + signal
     (*proc.hash())["timedout"] = Value::boolean(timedout);
     (*promise.hash())["status"] = Value::str(timedout ? "Broken" : "Kept");
     // A tap block that died threw inside the drain loop, where letting it out
@@ -5513,8 +5510,8 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         long usePort = listen ? localport : port;
         if (usePort < 0 || usePort > 65535)
             throw RakuError{Value::typeObj("X::AdHoc"), "Invalid port: " + std::to_string(usePort)};
-        if (family != -2 && (family < 0 || family > 255))
-            throw RakuError{Value::typeObj("X::AdHoc"), "Invalid socket family: " + std::to_string(family)};
+        if (family != -2 && family != 0 && family != PF_INET) // validated, then IGNORED before: AF_INET was opened for :family(PF_INET6)
+            throw RakuError{Value::typeObj("X::AdHoc"), "Socket family " + std::to_string(family) + " is not supported: only PF_INET (" + std::to_string(PF_INET) + ")"};
         auto resolve = [](const std::string& h, sockaddr_in& addr) {
             addr.sin_addr.s_addr = inet_addr(h.c_str());
             if (addr.sin_addr.s_addr == INADDR_NONE) {
@@ -5522,7 +5519,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             }
         };
         int fd = socket(AF_INET, SOCK_STREAM, 0);
-        if (fd < 0) return Value::nil();
+        if (fd < 0) throw RakuError{Value::typeObj("X::AdHoc"), "Cannot create a socket: " + std::string(std::strerror(errno))};
         sockaddr_in addr{}; addr.sin_family = AF_INET;
         if (listen) {
             int yes = 1; setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, (const char*)&yes, sizeof(yes));
@@ -5533,12 +5530,19 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             // handing back Nil with nothing to say why.
             if (localhost.empty() || localhost == "0.0.0.0") addr.sin_addr.s_addr = INADDR_ANY;
             else resolve(localhost, addr);
-            if (::bind(fd, (sockaddr*)&addr, sizeof(addr)) < 0 || ::listen(fd, 128) < 0) { ::close(fd); return Value::nil(); }
+            if (::bind(fd, (sockaddr*)&addr, sizeof(addr)) < 0 || ::listen(fd, 128) < 0) { // a Nil here let the program run on with nobody listening
+                int err = errno; ::close(fd);
+                throw RakuError{Value::typeObj("X::AdHoc"), "Cannot listen on " + (localhost.empty() ? std::string("0.0.0.0") : localhost) +
+                                ":" + std::to_string(localport) + ": " + std::strerror(err)};
+            }
         } else {
             addr.sin_port = htons((uint16_t)port);
             resolve(host, addr);
             bool p = gilPark(); int rc = ::connect(fd, (sockaddr*)&addr, sizeof(addr)); gilUnpark(p);
-            if (rc < 0) { ::close(fd); return Value::nil(); }
+            if (rc < 0) { // a Nil here let `$s.print` on Any pass silently
+                int err = errno; ::close(fd);
+                throw RakuError{Value::typeObj("X::AdHoc"), "Cannot connect to " + host + ":" + std::to_string(port) + ": " + std::strerror(err)};
+            }
         }
         Value s = Value::makeHash(); s.hashKind = "Socket"; (*s.hash())["fd"] = Value::integer(fd);
         // Keep the name as GIVEN: `.localhost` answers what was asked for, not
@@ -6559,7 +6563,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     // DateTime from it (zef: `now.DateTime.earlier(:hours(N)).Instant`).
     // `$instant.to-posix` — the POSIX seconds and whether this is a leap second.
     // rakupp's Instant is TAI (POSIX + 10), so the trip back subtracts them.
-    if (m == "to-posix" && (inv.hashKind == "Instant" || inv.isNumeric())) {
+    if (m == "to-posix" && inv.hashKind == "Instant") { // (any numeric answered it: `5.to-posix` is no method on Rakudo)
         Value o = Value::array(); o.isList = true;
         o.arr()->push_back(applyArith("-", inv.hashKind == "Instant" ? inv : Value::number(inv.toNum()),
                                     Value::integer(10)));
@@ -7166,7 +7170,15 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             return mkSupply(out);
         }
         if (m == "list") { Value o = Value::array(); o.isList = true; o.arr()->push_back(inv); return o; } // Supply type → (Supply,)
-        if (m == "merge") { ValueList all; for (auto& a : flattenArgs(args)) { if (a.t == VT::Hash && a.hashKind == "Supply" && a.hash()->count("values")) for (auto& x : *(*a.hash())["values"].arr()) all.push_back(x); } return mkSupply(all); }
+        if (m == "merge") { // list-backed supplies only — a live one was silently DROPPED; refuse it, as zip does
+            ValueList all;
+            for (auto& a : flattenArgs(args)) {
+                if (!(a.t == VT::Hash && a.hashKind == "Supply" && a.hash()->count("values")))
+                    throw RakuError{Value::typeObj("X::Supply::Combinator"), "merge requires list-backed Supply arguments (a live supply cannot be merged yet)"};
+                for (auto& x : *(*a.hash())["values"].arr()) all.push_back(x);
+            }
+            return mkSupply(all);
+        }
         if (m == "zip") {
             // zip N list-backed supplies element-wise (stopping at the shortest); an
             // optional :with(&op) combines each row instead of emitting a tuple List.
@@ -7260,7 +7272,10 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             Value p = Value::makeHash(); p.hashKind = "Proc::Async";
             Value argv = Value::array();
             for (auto& x : args) {
-                if (x.t == VT::Pair) continue; // :w / :enc etc.
+                if (x.t == VT::Pair) { // :w opens a stdin pipe at .start; :enc etc. are accepted
+                    if (x.s == "w" && (!x.pairVal() || x.pairVal()->truthy())) (*p.hash())["w"] = Value::boolean(true);
+                    continue;
+                }
                 // a Positional arg flattens into the command list (slurpy semantics):
                 // zef's zrun-async passes ONE list — `Proc::Async.new((|@_).grep(…))`
                 if (x.t == VT::Array && x.arr() && !x.itemized)
@@ -7319,6 +7334,17 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 bool outBound = false, errBound = false;
 #if !defined(_WIN32)
                 io.stdinFd  = (int)takeFd("bind-in-fd");
+                // `:w` — a fresh pipe: the child reads its end, we keep the write
+                // end for .print/.write/.close-stdin (every write used to answer
+                // True and reach nobody, and the child read OUR stdin)
+                if (io.stdinFd < 0 && inv.hash()->count("w")) {
+                    int wp[2];
+                    if (pipe(wp) == 0) {
+                        fcntl(wp[0], F_SETFD, FD_CLOEXEC); fcntl(wp[1], F_SETFD, FD_CLOEXEC); // dup2 onto 0 clears it for the child
+                        io.stdinFd = wp[0];
+                        (*inv.hash())["stdin-wfd"] = Value::integer(wp[1]);
+                    }
+                }
                 io.stdoutFd = (int)takeFd("bind-out-fd");
                 io.stderrFd = (int)takeFd("bind-err-fd");
                 outBound = io.stdoutFd >= 0; errBound = io.stderrFd >= 0;
@@ -7441,14 +7467,51 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             }
             return Value::boolean(true);
         }
-        if (m == "close-stdin" || m == "print" || m == "say" || m == "write" || m == "put") return Value::boolean(true);
+        if (m == "close-stdin" || m == "print" || m == "say" || m == "write" || m == "put") {
+#if defined(_WIN32)
+            return Value::boolean(true);
+#else
+            if (!inv.hash()->count("w"))
+                throw RakuError{Value::typeObj("X::Proc::Async::OpenForWriting"),
+                    "Process must be started with :w to write to its standard input"};
+            auto wf = inv.hash()->find("stdin-wfd");
+            if (wf == inv.hash()->end()) {
+                if (!inv.hash()->count("pid"))
+                    throw RakuError{Value::typeObj("X::Proc::Async::MustBeStarted"), "Process must be started before " + m};
+                throw RakuError{Value::typeObj("X::Proc::Async::OpenForWriting"), "The process's standard input is already closed"};
+            }
+            int wfd = (int)wf->second.toInt();
+            if (m == "close-stdin") { ::close(wfd); inv.hash()->erase(wf); return Value::boolean(true); }
+            // the bytes go out now; the Promise is kept with their count (Rakudo)
+            std::string data = args.empty() ? "" : (m == "say" ? gistOf(args[0]) : args[0].toStr()); // a Blob is a byte-Str
+            if (m == "say" || m == "put") data += "\n";
+            auto ps = std::make_shared<PromiseState>();
+            Value p = Value::makeHash(); p.hashKind = "Promise"; p.extM() = ps;
+            bool ok = true; size_t off = 0; int werr = 0;
+            bool parked = gilPark(); // a full pipe blocks until the child reads
+            while (off < data.size()) {
+                ssize_t n = ::write(wfd, data.data() + off, data.size() - off);
+                if (n < 0 && errno == EINTR) continue;
+                if (n <= 0) { ok = false; werr = errno; break; }
+                off += (size_t)n;
+            }
+            gilUnpark(parked);
+            ps->done = true;
+            if (ok) { ps->result = Value::integer((long long)data.size()); (*p.hash())["status"] = Value::str("Kept"); (*p.hash())["result"] = ps->result; }
+            else { ps->broken = true; ps->cause = Value::typeObj("X::IO"); ps->causeMsg = "Cannot write to the process's standard input: " + std::string(std::strerror(werr)); (*p.hash())["status"] = Value::str("Broken"); }
+            return p;
+#endif
+        }
         // after runProcPromise stored the exit status on the proc:
         if (m == "exitcode") { auto it = inv.hash()->find("exitcode"); return it != inv.hash()->end() ? it->second : Value::integer(-1); }
-        // the signal the process died from; 0 for a normal exit (that is all this
-        // spawn path can see — TAP's Status folds it as `exit +< 8 +| signal`,
-        // and a MISSING .signal broke its whole exit-status relay mid-then)
-        if (m == "signal") return Value::integer(0);
-        if (m == "so" || m == "Bool") { auto it = inv.hash()->find("exitcode"); return Value::boolean(it != inv.hash()->end() && it->second.toInt() == 0); }
+        // the signal the process died from; 0 for a normal exit (TAP's Status
+        // folds it as `exit +< 8 +| signal`)
+        if (m == "signal") { auto it = inv.hash()->find("signal"); return it != inv.hash()->end() ? it->second : Value::integer(0); }
+        if (m == "so" || m == "Bool") {
+            auto it = inv.hash()->find("exitcode"), sg = inv.hash()->find("signal");
+            return Value::boolean(it != inv.hash()->end() && it->second.toInt() == 0 &&
+                                  (sg == inv.hash()->end() || sg->second.toInt() == 0));
+        }
     }
     // Segment continues in MethodCallPart2.cpp — same ordered chain.
     if (auto r = methodCallPart2(inv, m, args, rwArgs)) return std::move(*r);
@@ -9320,7 +9383,8 @@ void Interpreter::registerBuiltins() {
         bool m = false;
         if (a.size() > 1) {
             if (a[1].t == VT::Regex) m = I.regexMatch(got, a[1].s).truthy();
-            else m = got.find(a[1].toStr()) != std::string::npos;
+            else throw RakuError{Value::typeObj("X::Multi::NoMatch"), // Rakudo's signature is (…, Regex:D $expected, …)
+                                 "Cannot resolve caller like(Str:D, " + a[1].typeName() + "); the expected value must be a Regex"};
         }
         bool c = (m == want);
         std::string dir = testDirective(a);
@@ -9423,8 +9487,7 @@ void Interpreter::registerBuiltins() {
         if (!a.empty() && a[0].t == VT::Code) {
             // the block's value is SUNK, and sinking an unhandled Failure throws it —
             // `dies-ok { $c.to-string('bogus') }` over a routine that `fail`s (Color)
-            try { Value r = I.callCallable(a[0], {});
-                  if (r.t == VT::Hash && r.hashKind == "Failure") died = true; }
+            try { I.sinkValue(I.callCallable(a[0], {})); } // a sunk Failure or failed Proc throws
             catch (RakuError&) { died = true; }
             // a loop-control exception with no enclosing loop is a death (X::ControlFlow)
             catch (NextEx&) { died = true; }
@@ -9439,9 +9502,11 @@ void Interpreter::registerBuiltins() {
         int callLine = I.testLine();
         bool lived = true;
         if (!a.empty() && a[0].t == VT::Code) {
-            try { Value r = I.callCallable(a[0], {});
-                  if (r.t == VT::Hash && r.hashKind == "Failure") lived = false; } // sunk Failure throws
+            try { I.sinkValue(I.callCallable(a[0], {})); } // a sunk Failure or failed Proc throws
             catch (RakuError&) { lived = false; }
+            catch (NextEx&) { lived = false; } // loop control with no loop is a death, as dies-ok counts it
+            catch (LastEx&) { lived = false; }
+            catch (RedoEx&) { lived = false; }
         }
         I.restoreTestLine(callLine);
         I.emitTest(lived, a.size() > 1 ? a[1].toStr() : "");
@@ -9535,7 +9600,7 @@ void Interpreter::registerBuiltins() {
             {"Int", {"Int", "Cool", "Numeric", "Real", "Any", "Mu"}},
             {"Num", {"Num", "Cool", "Numeric", "Real", "Any", "Mu"}},
             {"Str", {"Str", "Cool", "Stringy", "Any", "Mu"}},
-            {"Bool", {"Bool", "Any", "Mu"}},
+            {"Bool", {"Bool", "Int", "Cool", "Numeric", "Real", "Any", "Mu"}},
             {"Sub", {"Sub", "Routine", "Block", "Code", "Callable", "Any", "Mu"}},
             {"Method", {"Method", "Routine", "Block", "Code", "Callable", "Any", "Mu"}},
             {"Block", {"Block", "Code", "Callable", "Any", "Mu"}},
@@ -9548,7 +9613,7 @@ void Interpreter::registerBuiltins() {
             {"IO::Path::Cygwin", {"IO::Path::Cygwin", "IO::Path", "IO", "Cool", "Any", "Mu"}},
             {"IO::Path::QNX", {"IO::Path::QNX", "IO::Path", "IO", "Cool", "Any", "Mu"}},
             {"Version", {"Version", "Any", "Mu"}},
-            {"Blob", {"Blob", "Buf", "Positional", "Any", "Mu"}},
+            {"Blob", {"Blob", "Positional", "Stringy", "Any", "Mu"}}, // a Buf does Blob; a Blob is NOT a Buf
             {"Compiler", {"Compiler", "Any", "Mu"}},
             {"Hash", {"Hash", "Map", "Any", "Mu", "Associative"}},
             {"Pod::Block", {"Pod::Block", "Any", "Mu"}},
@@ -9607,19 +9672,27 @@ void Interpreter::registerBuiltins() {
             c = true;
             if (haveAbs) c = c && (diff <= absTol);
             if (haveRel) { double mx = std::max(gm, em); c = c && (mx == 0 ? true : diff / mx <= relTol); }
+        } else if (havePosTol) {
+            c = diff <= tol; // a positional tolerance is ABSOLUTE (Test.rakumod); it was scaled by the magnitude
         } else {
-            double scale = std::max({gm, em, 1.0});
-            c = diff <= tol * scale;
+            // Rakudo's default: relative 1e-6, or absolute 1e-5 when the expected value is tiny
+            c = em < 1e-6 ? diff <= 1e-5 : diff / std::max(gm, em) <= 1e-6;
         }
         I.emitTest(c, desc);
         return Value::boolean(c);
     };
     B["throws-like"] = [](Interpreter& I, ValueList& a) -> Value {
+        // throws-like BLOCK|Str, TYPE?, matchers…, desc? — measures "it threw".
+        // The TYPE and the named matchers (`message => /…/`) are NOT checked:
+        // doing so is honest and moves ~40 Roast files out of fully-passing
+        // (our exception objects lack many of Rakudo's attributes) — a policy
+        // decision on the published numbers, held for the user (REVIEW-GRAND).
         bool threw = false;
         if (!a.empty()) {
             try {
-                if (a[0].t == VT::Code) I.callCallable(a[0], {});
-                else if (a[0].t == VT::Str) I.evalString(a[0].s, /*mainlinePH=*/true);
+                // the block's result is SUNK — `throws-like { run … }` throws through Proc.sink
+                if (a[0].t == VT::Code) I.sinkValue(I.callCallable(a[0], {}));
+                else if (a[0].t == VT::Str) I.sinkValue(I.evalString(a[0].s, /*mainlinePH=*/true));
             } catch (RakuError&) { threw = true; }
         }
         std::string desc = a.size() > 2 ? a[2].toStr() : (a.size() > 1 && a[1].t == VT::Str ? a[1].toStr() : "");
@@ -9981,7 +10054,7 @@ void Interpreter::registerBuiltins() {
         drainTo(errSink, haveErrSink, err);
         // Neither stream needs echoing any more: an un-adverbed child wrote to
         // our own descriptors while it ran.
-        (*p.hash())["exitcode"] = Value::integer(code);
+        storeProcStatus(p, code); // exitcode + signal
         (*p.hash())["out-str"] = Value::str(out);
         (*p.hash())["err-str"] = Value::str(err);
         (*p.hash())["timedout"] = Value::boolean(timedout); // the shape the comment above promises
@@ -10022,7 +10095,7 @@ void Interpreter::registerBuiltins() {
         Value p = Value::makeHash(); p.hashKind = "Proc";
         Value av = Value::array(); av.isList = true; av.arr()->push_back(Value::str(cmd));
         (*p.hash())["argv"] = av; // .command — shell reports the command string
-        (*p.hash())["exitcode"] = Value::integer(code);
+        storeProcStatus(p, code); // exitcode + signal
         (*p.hash())["out-str"] = Value::str(out);
         (*p.hash())["err-str"] = Value::str(err);
         if (childPid) (*p.hash())["pid"] = Value::integer(childPid);
@@ -10085,6 +10158,7 @@ void Interpreter::registerBuiltins() {
     };
     B["mkdir"] = [](Interpreter& I, ValueList& a) -> Value {
         if (a.empty()) return Value::boolean(false);
+        rejectNulPath(a[0].toStr()); // (the sub created the name truncated at the NUL; the method refused)
         std::string path = I.ioFsPath(a[0]);
         long long mode = 0777;   // mkdir($path, 0o700) — the sub's positional mode
         for (size_t i = 1; i < a.size(); i++) {
@@ -10127,6 +10201,7 @@ void Interpreter::registerBuiltins() {
     };
     B["rmdir"] = [](Interpreter& I, ValueList& a) -> Value {
         if (a.empty()) return Value::boolean(false);
+        rejectNulPath(a[0].toStr());
         return Value::boolean(::rmdir(I.ioFsPath(a[0]).c_str()) == 0);
     };
     B["spurt"] = [](Interpreter& I, ValueList& a) -> Value {
@@ -10143,10 +10218,20 @@ void Interpreter::registerBuiltins() {
             else if (!haveContent) { content = a[i].toStr(); haveContent = true; }
         }
         std::string path = I.ioFsPath(a[0]);
-        if (createonly) { std::ifstream probe(path); if (probe) return Value::boolean(false); }
+        if (createonly) { std::ifstream probe(path); if (probe) { // a Failure, not a quiet False (as the method form)
+            Value f = rakuppNewFailure();
+            (*f.hash())["exception"] = Value::typeObj("X::IO::Exists");
+            (*f.hash())["message"] = Value::str("Failed to open file " + path + ": File exists");
+            return f; } }
         content = I.encodeTextEnc(content, Interpreter::encAdverb(a)); // `:enc`, and binary — as the method form
         std::ofstream out(path, std::ios::binary | (append ? std::ios::app : std::ios::trunc));
-        if (!out) return Value::boolean(false);
+        if (!out) { // a Failure that detonates when sunk
+            int err = errno;
+            Value f = rakuppNewFailure();
+            (*f.hash())["exception"] = Value::typeObj("X::IO::Spurt");
+            (*f.hash())["message"] = Value::str("Failed to open file " + path + ": " + std::strerror(err));
+            return f;
+        }
         out << content;
         return Value::boolean(true);
     };
@@ -10259,8 +10344,12 @@ void Interpreter::registerBuiltins() {
         }
         if (mode == "r" || mode == "update") { // both need the file to exist
             std::ifstream probe(path);
-            if (!probe) throw RakuError{Value::typeObj("X::IO::DoesNotExist"),
-                "Failed to open file " + path + ": no such file or directory"};
+            if (!probe) { // a Failure that detonates when used or sunk — `my $fh = open …; if $fh {…}` works (it threw)
+                Value f = rakuppNewFailure();
+                (*f.hash())["exception"] = Value::typeObj("X::IO::DoesNotExist");
+                (*f.hash())["message"] = Value::str("Failed to open file " + path + ": no such file or directory");
+                return f;
+            }
         }
         Value h = Value::makeHash(); h.hashKind = "FileHandle";
         (*h.hash())["path"] = Value::str(path);

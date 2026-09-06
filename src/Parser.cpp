@@ -57,12 +57,12 @@ enum {
 };
 
 static const std::unordered_set<std::string> kAssignOps = {
-    "=", "+=", "-=", "*=", "/=", "~=", "%=", "**=", "//=", "||=", "&&=", "^^=", "x=", ":=",
+    "=", "+=", "-=", "*=", "/=", "~=", "%=", "**=", "//=", "||=", "&&=", "^^=", ":=",
     // container-typed assignment: `=@=` assigns with ARRAY semantics whatever the
     // target's sigil, `=%=` with Hash, `=$=` with item (Color::Names spells its
     // exported constant `my constant \COLORS is export(:colors) =%= %( … )`)
     "=$=", "=@=", "=%=",
-    "div=", "mod=", "gcd=", "lcm=", "xx=", "min=", "max=",
+    "div=", "mod=", "gcd=", "lcm=", // (x= xx= min= max= arrive as Ident + `=` — the wordAssign path — never as one token)
     "\xE2\x9A\x9B=", "\xE2\x9A\x9B+=", "\xE2\x9A\x9B-=", // atomic assigns, lowered to atomic-* calls below
 };
 static const std::unordered_set<std::string> kBlockKeywords = {
@@ -2405,10 +2405,10 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
             auto u = std::make_unique<Unary>();
             u->op = "i"; u->postfix = true; u->operand = std::move(base);
             base = std::move(u);
-        } else if ((cur().kind == Tok::Op ||
-                    (cur().kind == Tok::Ident && !cur().spaceBefore)) &&
+        } else if ((cur().kind == Tok::Op || cur().kind == Tok::Ident) && !cur().spaceBefore &&
                    userPostfix_.count(cur().text)) {
-            // user-defined postfix operator:  5!  ==  postfix:<!>(5)
+            // user-defined postfix operator:  5!  ==  postfix:<!>(5) — and it must
+            // touch its operand: `3 !< 2` with a postfix:<!> in scope is `!<`
             // (a preceding private-method branch already claimed `!ident`, so we
             //  only reach here when the operator is a genuine postfix)
             std::string opname = advance().text;
@@ -3187,7 +3187,7 @@ ExprPtr Parser::parseColonPair() {
                 return std::make_unique<StrLit>(w);
             };
             if (words.size() == 1) pair->value = mkWord(words[0]);
-            else { auto al = std::make_unique<ArrayLit>(); for (auto& w : words) al->items.push_back(mkWord(w)); pair->value = std::move(al); }
+            else { auto al = std::make_unique<ArrayLit>(); al->isList = true; for (auto& w : words) al->items.push_back(mkWord(w)); pair->value = std::move(al); }
             return pair;
         }
         if (isKind(Tok::LBracket) && !cur().spaceBefore) {
@@ -3808,6 +3808,13 @@ ExprPtr Parser::parsePrimary() {
                 if (paren) expectKind(Tok::RParen, ")");
                 return mc;
             }
+            if (raw.size() > 1 && std::strchr("$@%&", raw[0]) &&
+                (raw.find("CALLER::") == 1 || raw.find("CALLER::") == 2)) { // `$CALLER::y` / `$*CALLER::y`: the caller's, see the angle form
+                auto sr = std::make_unique<SymbolicRef>();
+                sr->pkg = "CALLER";
+                sr->nameExpr = std::make_unique<StrLit>(stripPseudoPkg(raw));
+                sr->line = ln; return sr;
+            }
             auto e = std::make_unique<VarExpr>(stripPseudoPkg(raw));
             e->processScoped = raw.find("PROCESS::") != std::string::npos;
             e->line = ln; return e;
@@ -4166,116 +4173,7 @@ ExprPtr Parser::parsePrimary() {
             // Hash-literal vs block disambiguation (Raku rule): a {...} is a Hash
             // constructor when it's empty, or starts with a Pair (key => / :key),
             // or starts with a %-var followed by , or }.
-            bool isHash = false;
-            const Token& a = peek(1), &b = peek(2);
-            if (a.kind == Tok::RBrace) isHash = true; // {}
-            else if ((a.kind == Tok::Ident || a.kind == Tok::StrLit ||
-                      a.kind == Tok::StrInterp || a.kind == Tok::IntLit) &&
-                     b.kind == Tok::FatArrow)
-                isHash = true;
-            else if (a.kind == Tok::Op && a.text == ":" &&
-                     (b.kind == Tok::Ident || b.kind == Tok::IntLit || b.kind == Tok::Var ||
-                      (b.kind == Tok::Op && b.text == "!")) &&
-                     // `:16(...)` / `:16<...>` / `:256[...]` is a RADIX literal,
-                     // not a colon-pair — so `{ :16($_) }` / `{ :256[|@^a] }` is
-                     // a CODE block, not a hash
-                     !(b.kind == Tok::IntLit &&
-                       (peek(3).kind == Tok::LParen || peek(3).kind == Tok::LBracket ||
-                        (peek(3).kind == Tok::Op && peek(3).text == "<"))))
-                isHash = true; // starts with a colon-pair: :name / :1n / :$v / :!flag
-            else if (a.kind == Tok::Var && !a.text.empty() && a.text[0] == '%' &&
-                     (b.kind == Tok::RBrace || b.kind == Tok::Comma))
-                isHash = true;
-            // A key that is a COMPUTED term still composes a hash: `{ $d.name => 1 }`,
-            // `{ %h<k> => 1 }`. Only a plain postfix chain counts — a term followed by
-            // `.name`, a subscript or a call, and then the fat arrow. Anything else
-            // (a listop, an operator, a second statement) leaves it a block.
-            else if (a.kind == Tok::Var || a.kind == Tok::Ident) {
-                // Strictly a POSTFIX chain: `.name`, `!name`, or a bracket group,
-                // repeated, and then the arrow. Two terms in a row would be a
-                // listop call instead — `{ dt month => 0 }` is a block calling
-                // `dt`, not a hash — so the chain stops there.
-                size_t li = &t - &toks_[0];
-                size_t k = li + 2;                    // past `{` and the first term
-                while (k < toks_.size()) {
-                    const Token& tk = toks_[k];
-                    if (tk.kind == Tok::FatArrow) { isHash = true; break; }
-                    if (tk.kind == Tok::Op && (tk.text == "." || tk.text == "!")) {
-                        if (k + 1 >= toks_.size()) break;
-                        Tok nk = toks_[k + 1].kind;
-                        if (nk != Tok::Ident && nk != Tok::Var) break;
-                        k += 2;
-                        continue;
-                    }
-                    if (tk.kind == Tok::LParen || tk.kind == Tok::LBracket ||
-                        (tk.kind == Tok::Op && tk.text == "<")) {
-                        int d2 = 0;
-                        size_t j = k;
-                        for (; j < toks_.size(); j++) {
-                            Tok kk = toks_[j].kind;
-                            bool open = kk == Tok::LParen || kk == Tok::LBracket ||
-                                        (kk == Tok::Op && toks_[j].text == "<");
-                            bool close = kk == Tok::RParen || kk == Tok::RBracket ||
-                                         (kk == Tok::Op && toks_[j].text == ">");
-                            if (kk == Tok::End) break;
-                            if (open) d2++;
-                            else if (close && --d2 == 0) { j++; break; }
-                        }
-                        if (j <= k) break;
-                        k = j;
-                        continue;
-                    }
-                    break;
-                }
-            }
-            // …but a composer that USES THE TOPIC is a block after all: `{3 => 4, :b}`
-            // is a Hash while `{3 => 4, :b($_)}` and `{3 => 4, :b(.Num)}` are Blocks.
-            // Anything that reads `$_`, a placeholder parameter, or calls a method on
-            // the topic (a `.` in TERM position) can only be code.
-            if (isHash) {
-                size_t li = &t - &toks_[0];
-                int depth = 0;
-                for (size_t k = li; k < toks_.size(); k++) {
-                    const Token& tk = toks_[k];
-                    if (tk.kind == Tok::LBrace) { depth++; continue; }
-                    if (tk.kind == Tok::RBrace) { if (--depth == 0) break; continue; }
-                    if (tk.kind == Tok::End) break;
-                    // only THIS composer's own level: a nested block owns its topic,
-                    // so `{ :out{ .contains: … } }` is still a Hash of one Block
-                    if (depth > 1) continue;
-                    // `@_`/`%_` are implicit parameters exactly as `$_` is, so a
-                    // composer mentioning one is a block too: `.map: { @_[0] =>
-                    // @_[1] }` builds a Pair per element, and reading it as a Hash
-                    // literal made the whole map produce nothing.
-                    if (tk.kind == Tok::Var &&
-                        (tk.text == "$_" || tk.text == "@_" || tk.text == "%_" ||
-                         (tk.text.size() > 2 && tk.text[1] == '^'))) { isHash = false; break; }
-                    // `.method` with no invocant before it — the previous token cannot
-                    // end a term, so the dot's invocant is the topic
-                    if (tk.kind == Tok::Op && tk.text == "." && k > li) {
-                        const Token& pv = toks_[k - 1];
-                        bool termBefore = pv.kind == Tok::Var || pv.kind == Tok::Ident ||
-                                          pv.kind == Tok::IntLit || pv.kind == Tok::NumLit ||
-                                          pv.kind == Tok::StrLit || pv.kind == Tok::StrInterp ||
-                                          pv.kind == Tok::RParen || pv.kind == Tok::RBracket ||
-                                          pv.kind == Tok::RBrace ||
-                                          // …and the `>` closing an ANGLE SUBSCRIPT, which ends a
-                                          // term just as `]` does: `%h<k>.Int` and `$<cap>.ast` are
-                                          // method calls on the subscript, not on the topic. Missing
-                                          // it made a hash composer containing one parse as a BLOCK
-                                          // — Cro::Uri's `{ authority => …, $<host>.ast }` came back
-                                          // a Block, so `.<host>` on it failed and no URI parsed.
-                                          (pv.kind == Tok::Op && pv.text == ">") ||
-                                          // …and a HYPER marker: the dot in `>>.trim` calls on the
-                                          // term before the marker, not on the topic — HTTP::Header's
-                                          // `make { …, content => $x.split(',')>>.trim }` composer
-                                          (pv.kind == Tok::Op &&
-                                           (pv.text == ">>" || pv.text == "<<" ||
-                                            pv.text == "\xC2\xBB" || pv.text == "\xC2\xAB"));
-                        if (!termBefore) { isHash = false; break; }
-                    }
-                }
-            }
+            bool isHash = braceLooksHash(/*emptyIsHash=*/true);
             if (isHash) {
                 advance(); // {
                 auto h = std::make_unique<HashLit>();
@@ -4903,6 +4801,16 @@ ExprPtr Parser::parsePrimary() {
                         c->args.push_back(std::make_unique<IntLit>(outerHops));
                         return c;
                     }
+                    // `CALLER::<$y>` names the CALLER's `$y`, not ours: keep the head
+                    // on a symbolic ref, which the evaluator resolves through the
+                    // dynamic chain (the plain-name approximation read our own $y)
+                    if (pseudoPkg == "CALLER" || pseudoPkg == "CALLERS") {
+                        auto sr = std::make_unique<SymbolicRef>();
+                        sr->pkg = "CALLER";
+                        if (keyExpr) sr->nameExpr = std::move(keyExpr);
+                        else sr->nameExpr = std::make_unique<StrLit>(sym);
+                        return sr;
+                    }
                     if (keyExpr) {
                         auto sr = std::make_unique<SymbolicRef>();
                         sr->nameExpr = std::move(keyExpr);
@@ -5364,6 +5272,9 @@ std::vector<std::string> Parser::readAngleWords(const std::string& close) {
         else words.back() += wt;
         advance();
     }
+    // `%x<` at end of input (or `%x<a;` mid-file, where the rest of the statement
+    // was read as words) — a silent empty slice used to swallow the statement
+    if (isKind(Tok::End)) error("Unable to parse quote-words subscript; couldn't find '" + close + "'");
     matchOp(close);
     return words;
 }
@@ -5456,8 +5367,9 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
         if (fB && c == '\\' && i + 1 < n) {
             char e = raw[i + 1];
             // \x41 \x[263a] hex, \o77 \o[..] octal
-            if (e == 'x' || e == 'o') {
-                int base = (e == 'x') ? 16 : 8;
+            // \c65 is the DECIMAL codepoint form (\c[…] is handled below)
+            if (e == 'x' || e == 'o' || (e == 'c' && i + 2 < n && ascii::isdigit((unsigned char)raw[i + 2]))) {
+                int base = e == 'x' ? 16 : e == 'o' ? 8 : 10;
                 size_t j = i + 2;
                 auto emitCp = [&](long cp) {
                     if (cp < 0x80) lit += (char)cp;
@@ -5481,14 +5393,26 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
                     }
                 } else {
                     std::string digits;
-                    auto isd = [&](char ch) { return base == 16 ? ascii::isxdigit((unsigned char)ch) : (ch >= '0' && ch <= '7'); };
+                    auto isd = [&](char ch) { return base == 16 ? ascii::isxdigit((unsigned char)ch)
+                                                  : base == 8 ? (ch >= '0' && ch <= '7')
+                                                  : ascii::isdigit((unsigned char)ch); };
                     while (j < n && isd(raw[j])) digits += raw[j++];
+                    // `"\xZZ"` used to emit a silent NUL (strtol of "" is 0)
+                    if (digits.empty())
+                        throw ParseError("Unrecognized backslash sequence: '\\" + std::string(1, e) + "'",
+                                         cur().line, "X::Backslash::UnrecognizedSequence",
+                                         {{"sequence", std::string(1, e)}});
                     emitCp(strtol(digits.c_str(), nullptr, base));
                 }
                 i = j;
                 continue;
             }
             // \c[NAME] / \c[65] / \c[NAME1, NAME2] — named or numeric codepoints
+            if (e == 'c' && i + 2 < n && raw[i + 2] != '[' && !ascii::isdigit((unsigned char)raw[i + 2])) {
+                unsigned char cc = (unsigned char)raw[i + 2];
+                if ((cc >= '@' && cc <= '_') || cc == '?') { lit += (char)(cc == '?' ? 127 : cc - 0x40); i += 3; continue; }
+                throw ParseError(std::string("Unrecognized \\c character '") + (char)cc + "'", cur().line);
+            }
             if (e == 'c' && i + 2 < n && raw[i + 2] == '[') {
                 size_t j = i + 3; std::string body;
                 while (j < n && raw[j] != ']') body += raw[j++];
@@ -5517,7 +5441,16 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
                       tok = flat; }
                     if (!tok.empty()) {
                         if (ascii::isdigit((unsigned char)tok[0])) emitCp(strtol(tok.c_str(), nullptr, 10));
-                        else { int32_t cp = uniCharByName(tok); if (cp >= 0) emitCp(cp); }
+                        else {
+                            int32_t cp = uniCharByName(tok);
+                            if (cp < 0) { // names are case-insensitive: "\c[arabic number sign]"
+                                std::string up = tok;
+                                for (auto& ch : up) ch = (char)ascii::toupper((unsigned char)ch);
+                                cp = uniCharByName(up);
+                            }
+                            if (cp < 0) throw ParseError("Unrecognized character name [" + tok + "]", cur().line);
+                            emitCp(cp);
+                        }
                     }
                     if (comma == std::string::npos) break;
                     p = comma + 1;
@@ -5543,10 +5476,9 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
                 case '{': lit += '{'; break;
                 default:
                     // every unassigned alphabetic escape is reserved: `"\u"`.
-                    // c/x/o pass through — their bracketed forms are handled
-                    // above and the bare-digit forms (\c10, \x41) downstream.
-                    if (ascii::isalpha((unsigned char)e) &&
-                        e != 'c' && e != 'x' && e != 'o')
+                    // (\x \o \c with digits or brackets were handled above; a
+                    // bare `\c` with nothing usable after it is reserved too)
+                    if (ascii::isalpha((unsigned char)e))
                         throw ParseError("Unrecognized backslash sequence: '\\" +
                                          std::string(1, e) + "'", cur().line,
                                          "X::Backslash::UnrecognizedSequence",
@@ -5566,6 +5498,95 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
             i = j + 1;
             continue;
         }
+        // The postfix chain after an interpolated variable — ONE scanner for every
+        // sigil branch below (`$/`, `$!`, `$0`, `$<name>`, `$var`, `@arr`, `%h`);
+        // three private copies used to disagree on when a bare `.name` commits.
+        // Links: [..] {..} <..> (..) .name .[..] .{..} .(..)
+        // A method call interpolates only if it — or a later link in the
+        // chain — has parens: "$x.ord" stays literal, but "$x.ord.fmt('%d')"
+        // interpolates the whole chain up to the last parenthesised call
+        // ("$x.ord.fmt('%d').flip" leaves the trailing bare .flip literal).
+        // Subscripts always interpolate. Bare .method links are appended
+        // tentatively and only "committed" once a parenthesised call or a
+        // subscript follows; any uncommitted tail is dropped back to literal.
+        auto scanChain = [&](size_t& j, std::string& var) -> bool {
+        bool hadPostfix = false;
+        size_t committedLen = var.size();   // var length confirmed for interpolation
+        size_t committedJ = j;              // matching raw index
+        auto commit = [&]() { hadPostfix = true; committedLen = var.size(); committedJ = j; };
+        for (;;) {
+            // A subscript or call marker after an UNCOMMITTED bare `.name` does not
+            // commit it — only a parenthesised call does: "$s.uc().chars[0]" prints
+            // ABC.chars[0] and "$s.uc.chars()" prints 3 (Rakudo's rule, probed).
+            if (committedLen < var.size() && j < n &&
+                (raw[j] == '[' || raw[j] == '{' || raw[j] == '<' || raw[j] == '(' ||
+                 (raw[j] == '.' && j + 1 < n && (raw[j + 1] == '[' || raw[j + 1] == '{' || raw[j + 1] == '('))))
+                break;
+            if (j < n && raw[j] == '[') {
+                int d = 1; var += raw[j++];
+                while (j < n && d > 0) { if (raw[j]=='[') d++; else if (raw[j]==']') d--; var += raw[j++]; }
+                commit();
+            } else if (j < n && raw[j] == '(') {
+                // postcircumfix call: `"$c(3)"` invokes the Callable, the same
+                // postfix as `.( )`. Rakudo applies it to every sigil — `"@a(0)"`
+                // and `"%h(0)"` reach CALL-ME on an Array/Hash and die there — so
+                // this commits like any other subscript. Content that is not an
+                // argument list still fails to parse and falls back to literal
+                // text, which is what keeps `"$name(see note)"` printing.
+                int d = 1; var += raw[j++];
+                while (j < n && d > 0) { if (raw[j]=='(') d++; else if (raw[j]==')') d--; var += raw[j++]; }
+                commit();
+            } else if (j < n && raw[j] == '<') {
+                // angle-bracket hash subscript: %h<key>  @a<...>
+                var += raw[j++];
+                while (j < n && raw[j] != '>') var += raw[j++];
+                if (j < n) var += raw[j++]; // closing >
+                commit();
+            } else if (j < n && raw[j] == '{') {
+                int d = 1; var += raw[j++];
+                while (j < n && d > 0) { if (raw[j]=='{') d++; else if (raw[j]=='}') d--; var += raw[j++]; }
+                commit();
+            } else if (j + 1 < n && raw[j] == '.' && (raw[j+1] == '[' || raw[j+1] == '{' || raw[j+1] == '(')) {
+                var += raw[j++]; // .
+                char open = raw[j], close = open == '[' ? ']' : open == '{' ? '}' : ')';
+                int d = 1; var += raw[j++];
+                while (j < n && d > 0) { if (raw[j]==open) d++; else if (raw[j]==close) d--; var += raw[j++]; }
+                commit();
+            } else if (j + 1 < n && raw[j] == '.' &&
+                       // a method or routine name may be UNICODE: `"$n.&mööse()"`
+                       // truncated at the ö, left the call uncommitted, and the
+                       // `&name(` branch then compiled `mööse()` with NO invocant
+                       (ascii::isalpha((unsigned char)raw[j+1]) || raw[j+1] == '_' ||
+                        (unsigned char)raw[j+1] >= 0x80 ||
+                        ((raw[j+1] == '^' || raw[j+1] == '?' || raw[j+1] == '&') && j + 2 < n &&
+                         (ascii::isalpha((unsigned char)raw[j+2]) || raw[j+2] == '_' ||
+                          (unsigned char)raw[j+2] >= 0x80)))) {
+                // bare .method — tentative; consume its name, commit only if parens follow.
+                // One META-SIGIL may sit between the dot and the name: `"$x.^name()"`
+                // is a meta-method call, `.?meth()` a maybe-call, `.&f()` a sub call.
+                // Without this the chain ended at `$x` and `.^name()` was literal text.
+                var += raw[j++]; // .
+                if (raw[j] == '^' || raw[j] == '?' || raw[j] == '&') var += raw[j++];
+                for (size_t l; j < n && identContAt(j, l); ) { var.append(raw, j, l); j += l; }
+                // a method name joins on `-`/`'` exactly as a variable name does:
+                // "$n.is-prime()" — stopping at the hyphen left `.is` uncommitted
+                // and printed `7.is-prime()` (Gnome::Gtk4, Pakku, REPL, Air…)
+                while (j + 1 < n && rakuIdentJoins(raw[j], raw[j + 1])) {
+                    var += raw[j++];
+                    while (j < n && isIdentCont(raw[j])) var += raw[j++];
+                }
+                if (j < n && raw[j] == '(') {
+                    int d = 1; var += raw[j++];
+                    while (j < n && d > 0) { if (raw[j]=='(') d++; else if (raw[j]==')') d--; var += raw[j++]; }
+                    commit();
+                }
+                // else: leave uncommitted; a later link in the chain may still commit it
+            } else break;
+        }
+        // drop any uncommitted trailing bare-method links back to literal text
+        if (committedLen < var.size()) { var.resize(committedLen); j = committedJ; }
+        return hadPostfix;
+        };
         // `$/` (match) and `$!` (error) as standalone interpolated vars
         if (fS && c == '$' && (i + 1 < n) && (raw[i + 1] == '/' || raw[i + 1] == '!') &&
             !(i + 2 < n && (ascii::isalnum((unsigned char)raw[i + 2]) || raw[i + 2] == '_'))) {
@@ -5575,26 +5596,7 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
             // characters `$/[0]`.
             std::string var = std::string("$") + raw[i + 1];
             size_t j = i + 2;
-            for (;;) {
-                if (j < n && (raw[j] == '[' || raw[j] == '{' || raw[j] == '<')) {
-                    char open = raw[j], close = open == '[' ? ']' : open == '{' ? '}' : '>';
-                    int d = 1; var += raw[j++];
-                    while (j < n && d > 0) { if (raw[j] == open) d++; else if (raw[j] == close) d--; var += raw[j++]; }
-                }
-                else if (j + 1 < n && raw[j] == '.' &&
-                         (ascii::isalpha((unsigned char)raw[j + 1]) || raw[j + 1] == '_')) {
-                    size_t k2 = j + 1;
-                    while (k2 < n && (isIdentCont(raw[k2]) || raw[k2] == '-')) k2++;
-                    if (k2 < n && raw[k2] == '(') { // a CALL interpolates; a bare `.foo` too
-                        int d = 1; size_t k3 = k2 + 1;
-                        while (k3 < n && d > 0) { if (raw[k3] == '(') d++; else if (raw[k3] == ')') d--; k3++; }
-                        k2 = k3;
-                    }
-                    var.append(raw, j, k2 - j);
-                    j = k2;
-                }
-                else break;
-            }
+            scanChain(j, var); // a bare `.message` stays literal, as after any variable
             flush();
             if (var.size() == 2) result->parts.push_back(std::make_unique<VarExpr>(var));
             else try { result->parts.push_back(parseEmbeddedExpr(var)); } catch (...) { rethrowIfObsolete(); lit += var; }
@@ -5612,16 +5614,7 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
             } else {
                 while (j < n && ascii::isdigit((unsigned char)raw[j])) var += raw[j++];
             }
-            // optional postfix subscript on the capture: $0[1] $<k>{...}
-            for (;;) {
-                if (j < n && raw[j] == '[') {
-                    int d = 1; var += raw[j++];
-                    while (j < n && d > 0) { if (raw[j]=='[') d++; else if (raw[j]==']') d--; var += raw[j++]; }
-                } else if (j < n && raw[j] == '{') {
-                    int d = 1; var += raw[j++];
-                    while (j < n && d > 0) { if (raw[j]=='{') d++; else if (raw[j]=='}') d--; var += raw[j++]; }
-                } else break;
-            }
+            scanChain(j, var); // postfix chain on the capture: $0[1] $<k>{...} $0.uc()
             flush();
             try { result->parts.push_back(parseEmbeddedExpr(var)); } catch (...) { rethrowIfObsolete(); lit += var; }
             i = j;
@@ -5692,75 +5685,7 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
                 var += raw[j++];
                 while (j < n && isIdentCont(raw[j])) var += raw[j++];
             }
-            // postfix chain: [..] {..} <..> .name .[..] .{..} .(..)
-            // A method call interpolates only if it — or a later link in the
-            // chain — has parens: "$x.ord" stays literal, but "$x.ord.fmt('%d')"
-            // interpolates the whole chain up to the last parenthesised call
-            // ("$x.ord.fmt('%d').flip" leaves the trailing bare .flip literal).
-            // Subscripts always interpolate. Bare .method links are appended
-            // tentatively and only "committed" once a parenthesised call or a
-            // subscript follows; any uncommitted tail is dropped back to literal.
-            bool hadPostfix = false;
-            size_t committedLen = var.size();   // var length confirmed for interpolation
-            size_t committedJ = j;              // matching raw index
-            auto commit = [&]() { hadPostfix = true; committedLen = var.size(); committedJ = j; };
-            for (;;) {
-                if (j < n && raw[j] == '[') {
-                    int d = 1; var += raw[j++];
-                    while (j < n && d > 0) { if (raw[j]=='[') d++; else if (raw[j]==']') d--; var += raw[j++]; }
-                    commit();
-                } else if (j < n && raw[j] == '(') {
-                    // postcircumfix call: `"$c(3)"` invokes the Callable, the same
-                    // postfix as `.( )`. Rakudo applies it to every sigil — `"@a(0)"`
-                    // and `"%h(0)"` reach CALL-ME on an Array/Hash and die there — so
-                    // this commits like any other subscript. Content that is not an
-                    // argument list still fails to parse and falls back to literal
-                    // text, which is what keeps `"$name(see note)"` printing.
-                    int d = 1; var += raw[j++];
-                    while (j < n && d > 0) { if (raw[j]=='(') d++; else if (raw[j]==')') d--; var += raw[j++]; }
-                    commit();
-                } else if (j < n && raw[j] == '<') {
-                    // angle-bracket hash subscript: %h<key>  @a<...>
-                    var += raw[j++];
-                    while (j < n && raw[j] != '>') var += raw[j++];
-                    if (j < n) var += raw[j++]; // closing >
-                    commit();
-                } else if (j < n && raw[j] == '{') {
-                    int d = 1; var += raw[j++];
-                    while (j < n && d > 0) { if (raw[j]=='{') d++; else if (raw[j]=='}') d--; var += raw[j++]; }
-                    commit();
-                } else if (j + 1 < n && raw[j] == '.' && (raw[j+1] == '[' || raw[j+1] == '{' || raw[j+1] == '(')) {
-                    var += raw[j++]; // .
-                    char open = raw[j], close = open == '[' ? ']' : open == '{' ? '}' : ')';
-                    int d = 1; var += raw[j++];
-                    while (j < n && d > 0) { if (raw[j]==open) d++; else if (raw[j]==close) d--; var += raw[j++]; }
-                    commit();
-                } else if (j + 1 < n && raw[j] == '.' &&
-                           // a method or routine name may be UNICODE: `"$n.&mööse()"`
-                           // truncated at the ö, left the call uncommitted, and the
-                           // `&name(` branch then compiled `mööse()` with NO invocant
-                           (ascii::isalpha((unsigned char)raw[j+1]) || raw[j+1] == '_' ||
-                            (unsigned char)raw[j+1] >= 0x80 ||
-                            ((raw[j+1] == '^' || raw[j+1] == '?' || raw[j+1] == '&') && j + 2 < n &&
-                             (ascii::isalpha((unsigned char)raw[j+2]) || raw[j+2] == '_' ||
-                              (unsigned char)raw[j+2] >= 0x80)))) {
-                    // bare .method — tentative; consume its name, commit only if parens follow.
-                    // One META-SIGIL may sit between the dot and the name: `"$x.^name()"`
-                    // is a meta-method call, `.?meth()` a maybe-call, `.&f()` a sub call.
-                    // Without this the chain ended at `$x` and `.^name()` was literal text.
-                    var += raw[j++]; // .
-                    if (raw[j] == '^' || raw[j] == '?' || raw[j] == '&') var += raw[j++];
-                    for (size_t l; j < n && identContAt(j, l); ) { var.append(raw, j, l); j += l; }
-                    if (j < n && raw[j] == '(') {
-                        int d = 1; var += raw[j++];
-                        while (j < n && d > 0) { if (raw[j]=='(') d++; else if (raw[j]==')') d--; var += raw[j++]; }
-                        commit();
-                    }
-                    // else: leave uncommitted; a later link in the chain may still commit it
-                } else break;
-            }
-            // drop any uncommitted trailing bare-method links back to literal text
-            if (committedLen < var.size()) { var.resize(committedLen); j = committedJ; }
+            bool hadPostfix = scanChain(j, var);
             // @arr/%hash only interpolate when followed by a postcircumfix/method
             if ((sig == '@' || sig == '%') && !hadPostfix) { lit += var; i = j; continue; }
             flush();
@@ -5873,9 +5798,157 @@ void Parser::recordParamTrait(Param& p, const std::string& name) {
     p.userTraits.emplace_back(name, nullptr); // bare `is getopt`
 }
 
+// Is the `{` at the current token a HASH COMPOSER or a BLOCK? One rule for the
+// term position (parsePrimary) and the statement position (parseStatementImpl):
+// the statement copy used to lack the computed-key chain and the topic veto,
+// so `sub f { { $d.uc => 1 } }` returned a Pair where a Hash was meant.
+bool Parser::braceLooksHash(bool emptyIsHash) {
+    bool isHash = false;
+    const Token& a = peek(1), &b = peek(2);
+    if (a.kind == Tok::RBrace) isHash = emptyIsHash; // {}
+    else if ((a.kind == Tok::Ident || a.kind == Tok::StrLit ||
+              a.kind == Tok::StrInterp || a.kind == Tok::IntLit) &&
+             b.kind == Tok::FatArrow)
+        isHash = true;
+    else if (a.kind == Tok::Op && a.text == ":" &&
+             (b.kind == Tok::Ident || b.kind == Tok::IntLit || b.kind == Tok::Var ||
+              (b.kind == Tok::Op && b.text == "!")) &&
+             // `:16(...)` / `:16<...>` / `:256[...]` is a RADIX literal,
+             // not a colon-pair — so `{ :16($_) }` / `{ :256[|@^a] }` is
+             // a CODE block, not a hash
+             !(b.kind == Tok::IntLit &&
+               (peek(3).kind == Tok::LParen || peek(3).kind == Tok::LBracket ||
+                (peek(3).kind == Tok::Op && peek(3).text == "<"))))
+        isHash = true; // starts with a colon-pair: :name / :1n / :$v / :!flag
+    else if (a.kind == Tok::Var && !a.text.empty() && a.text[0] == '%' &&
+             (b.kind == Tok::RBrace || b.kind == Tok::Comma))
+        isHash = true;
+    // A key that is a COMPUTED term still composes a hash: `{ $d.name => 1 }`,
+    // `{ %h<k> => 1 }`. Only a plain postfix chain counts — a term followed by
+    // `.name`, a subscript or a call, and then the fat arrow. Anything else
+    // (a listop, an operator, a second statement) leaves it a block.
+    else if (a.kind == Tok::Var || a.kind == Tok::Ident) {
+        // Strictly a POSTFIX chain: `.name`, `!name`, or a bracket group,
+        // repeated, and then the arrow. Two terms in a row would be a
+        // listop call instead — `{ dt month => 0 }` is a block calling
+        // `dt`, not a hash — so the chain stops there.
+        size_t li = pos_;
+        size_t k = li + 2;                    // past `{` and the first term
+        while (k < toks_.size()) {
+            const Token& tk = toks_[k];
+            if (tk.kind == Tok::FatArrow) { isHash = true; break; }
+            if (tk.kind == Tok::Op && (tk.text == "." || tk.text == "!")) {
+                if (k + 1 >= toks_.size()) break;
+                Tok nk = toks_[k + 1].kind;
+                if (nk != Tok::Ident && nk != Tok::Var) break;
+                k += 2;
+                continue;
+            }
+            if (tk.kind == Tok::LParen || tk.kind == Tok::LBracket ||
+                (tk.kind == Tok::Op && tk.text == "<")) {
+                int d2 = 0;
+                size_t j = k;
+                for (; j < toks_.size(); j++) {
+                    Tok kk = toks_[j].kind;
+                    bool open = kk == Tok::LParen || kk == Tok::LBracket ||
+                                (kk == Tok::Op && toks_[j].text == "<");
+                    bool close = kk == Tok::RParen || kk == Tok::RBracket ||
+                                 (kk == Tok::Op && toks_[j].text == ">");
+                    if (kk == Tok::End) break;
+                    if (open) d2++;
+                    else if (close && --d2 == 0) { j++; break; }
+                }
+                if (j <= k) break;
+                k = j;
+                continue;
+            }
+            break;
+        }
+    }
+    // …but a composer that USES THE TOPIC is a block after all: `{3 => 4, :b}`
+    // is a Hash while `{3 => 4, :b($_)}` and `{3 => 4, :b(.Num)}` are Blocks.
+    // Anything that reads `$_`, a placeholder parameter, or calls a method on
+    // the topic (a `.` in TERM position) can only be code.
+    if (isHash) {
+        size_t li = pos_;
+        int depth = 0;
+        for (size_t k = li; k < toks_.size(); k++) {
+            const Token& tk = toks_[k];
+            if (tk.kind == Tok::LBrace) { depth++; continue; }
+            if (tk.kind == Tok::RBrace) { if (--depth == 0) break; continue; }
+            if (tk.kind == Tok::End) break;
+            // only THIS composer's own level: a nested block owns its topic,
+            // so `{ :out{ .contains: … } }` is still a Hash of one Block
+            if (depth > 1) continue;
+            // `@_`/`%_` are implicit parameters exactly as `$_` is, so a
+            // composer mentioning one is a block too: `.map: { @_[0] =>
+            // @_[1] }` builds a Pair per element, and reading it as a Hash
+            // literal made the whole map produce nothing.
+            if (tk.kind == Tok::Var &&
+                (tk.text == "$_" || tk.text == "@_" || tk.text == "%_" ||
+                 (tk.text.size() > 2 && tk.text[1] == '^'))) { isHash = false; break; }
+            // `.method` with no invocant before it — the previous token cannot
+            // end a term, so the dot's invocant is the topic
+            if (tk.kind == Tok::Op && tk.text == "." && k > li) {
+                const Token& pv = toks_[k - 1];
+                bool termBefore = pv.kind == Tok::Var || pv.kind == Tok::Ident ||
+                                  pv.kind == Tok::IntLit || pv.kind == Tok::NumLit ||
+                                  pv.kind == Tok::StrLit || pv.kind == Tok::StrInterp ||
+                                  pv.kind == Tok::RParen || pv.kind == Tok::RBracket ||
+                                  pv.kind == Tok::RBrace ||
+                                  // …and the `>` closing an ANGLE SUBSCRIPT, which ends a
+                                  // term just as `]` does: `%h<k>.Int` and `$<cap>.ast` are
+                                  // method calls on the subscript, not on the topic. Missing
+                                  // it made a hash composer containing one parse as a BLOCK
+                                  // — Cro::Uri's `{ authority => …, $<host>.ast }` came back
+                                  // a Block, so `.<host>` on it failed and no URI parsed.
+                                  (pv.kind == Tok::Op && pv.text == ">") ||
+                                  // …and a HYPER marker: the dot in `>>.trim` calls on the
+                                  // term before the marker, not on the topic — HTTP::Header's
+                                  // `make { …, content => $x.split(',')>>.trim }` composer
+                                  (pv.kind == Tok::Op &&
+                                   (pv.text == ">>" || pv.text == "<<" ||
+                                    pv.text == "\xC2\xBB" || pv.text == "\xC2\xAB"));
+                if (!termBefore) { isHash = false; break; }
+            }
+        }
+    }
+    return isHash;
+}
+
 std::vector<Param> Parser::parseSignature(Tok closeTok) {
     std::vector<Param> params;
     std::vector<std::pair<size_t, int>> podClaims; // (param index, `#=` line) — resolved at close
+    // The trait ladder after a parameter — `where … is rw is copy is raw is required
+    // is encoded('utf8') returns … of …`. One copy: the named-alias path
+    // (`:name($n) is required`) used to carry its own, without `is required`.
+    auto parseParamTraits = [&](Param& p) {
+        while (isIdent("where") || isIdent("is") || isIdent("returns") || isIdent("of")) {
+            std::string trait = advance().text;
+            if (trait == "where") p.whereExpr = parseExpr(BP_ASSIGN + 1); // stop before the `= default`
+            else if (!isKind(Tok::Comma) && !isKind(Tok::RParen) && !isKind(Tok::End) && !isOp("=")) {
+                bool builtinTrait = false;
+                if (trait == "is" && (isIdent("rw") || isIdent("copy") || isIdent("raw"))) {
+                    p.isRw   = cur().text == "rw";
+                    p.isCopy = cur().text == "copy";
+                    p.isRaw  = cur().text == "raw";
+                    builtinTrait = true;
+                }
+                // `is required` — same meaning as the `!` marker ($*USAGE
+                // prints such a named param without brackets; issue #17)
+                if (trait == "is" && isIdent("required")) { p.required = true; builtinTrait = true; }
+                std::string traitName = isKind(Tok::Ident) ? cur().text : std::string();
+                advance(); // the trait word (rw/copy/encoded/…)
+                if (trait == "is" && !builtinTrait && !traitName.empty())
+                    recordParamTrait(p, traitName);
+                // a parenthesised trait argument: `is encoded('utf8')` — skip it
+                else if (isKind(Tok::LParen)) {
+                    int d = 0;
+                    do { if (isKind(Tok::LParen)) d++; else if (isKind(Tok::RParen)) d--; advance(); } while (d > 0 && !isKind(Tok::End));
+                }
+            }
+        }
+    };
     while (!isKind(closeTok) && !isKind(Tok::End)) {
         if (matchKind(Tok::Semicolon)) continue; // multi-frame separator `;` / `;;` in signatures
         Param p;
@@ -6033,21 +6106,7 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
             if (!matchKind(Tok::RParen)) error("expected ')' in named-parameter alias");
             if (matchOp("?")) p.optional = true;
             else if (matchOp("!")) p.required = true;
-            while (isIdent("where") || isIdent("is") || isIdent("returns") || isIdent("of")) {
-                std::string trait = advance().text;
-                if (trait == "where") p.whereExpr = parseExpr(BP_ASSIGN + 1); // stop before the `= default`
-                else if (!isKind(Tok::Comma) && !isKind(Tok::RParen) && !isKind(Tok::End) && !isOp("=")) {
-                    bool builtinTrait = false;
-                    if (trait == "is" && (isIdent("rw") || isIdent("copy") || isIdent("raw"))) {
-                        p.isRw = cur().text == "rw"; p.isCopy = cur().text == "copy"; p.isRaw = cur().text == "raw";
-                        builtinTrait = true;
-                    }
-                    std::string traitName = isKind(Tok::Ident) ? cur().text : std::string();
-                    advance();
-                    if (trait == "is" && !builtinTrait && !traitName.empty())
-                        recordParamTrait(p, traitName);
-                }
-            }
+            parseParamTraits(p); // the same ladder as a plain parameter's (`is required`, `is encoded(…)`)
             if (matchOp("=")) p.defaultVal = parseExpr(BP_ASSIGN);
             params.push_back(std::move(p));
             if (!matchKind(Tok::Comma) && !matchKind(Tok::Semicolon)) break;
@@ -6284,32 +6343,7 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
         }
         // invocant marker:  method m ($self: $arg)  — ':' separates invocant from rest
         if (isOp(":")) { advance(); p.invocant = true; params.push_back(std::move(p)); continue; }
-        // where / is / returns / of trait clauses
-        while (isIdent("where") || isIdent("is") || isIdent("returns") || isIdent("of")) {
-            std::string trait = advance().text;
-            if (trait == "where") p.whereExpr = parseExpr(BP_ASSIGN + 1); // stop before the `= default`
-            else if (!isKind(Tok::Comma) && !isKind(Tok::RParen) && !isKind(Tok::End) && !isOp("=")) {
-                bool builtinTrait = false;
-                if (trait == "is" && (isIdent("rw") || isIdent("copy") || isIdent("raw"))) {
-                    p.isRw   = cur().text == "rw";
-                    p.isCopy = cur().text == "copy";
-                    p.isRaw  = cur().text == "raw";
-                    builtinTrait = true;
-                }
-                // `is required` — same meaning as the `!` marker ($*USAGE
-                // prints such a named param without brackets; issue #17)
-                if (trait == "is" && isIdent("required")) { p.required = true; builtinTrait = true; }
-                std::string traitName = isKind(Tok::Ident) ? cur().text : std::string();
-                advance(); // the trait word (rw/copy/encoded/…)
-                if (trait == "is" && !builtinTrait && !traitName.empty())
-                    recordParamTrait(p, traitName);
-                // a parenthesised trait argument: `is encoded('utf8')` — skip it
-                else if (isKind(Tok::LParen)) {
-                    int d = 0;
-                    do { if (isKind(Tok::LParen)) d++; else if (isKind(Tok::RParen)) d--; advance(); } while (d > 0 && !isKind(Tok::End));
-                }
-            }
-        }
+        parseParamTraits(p); // where / is / returns / of trait clauses
         // …the invocant marker may also sit AFTER the traits:
         // `(::?CLASS:U $_ is rw: **@values)` — BinaryHeap's writable
         // class-invocant form. The check above runs before the trait loop, so
@@ -6743,7 +6777,12 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
             }
         }
         if ((isIdent("of") || isIdent("returns")) && peek().kind == Tok::Ident) {
-            advance(); s->retType = cur().text;
+            // `returns Positional of Numeric`: the `of` after a `returns` names the
+            // ELEMENT type, not the return type — the last word used to win, so the
+            // return type of that spelling was recorded as `Numeric`
+            const bool elemOf = isIdent("of") && !s->retType.empty();
+            advance();
+            if (!elemOf) s->retType = cur().text;
         } else if (isOp("-->") && peek().kind == Tok::Ident) {
             advance(); s->retType = cur().text;
         } else if (isOp("-->") && (peek().kind == Tok::IntLit || peek().kind == Tok::NumLit ||
@@ -8613,19 +8652,7 @@ StmtPtr Parser::parseStatementImpl() {
     if (t.kind == Tok::LBrace) {
         // A statement-leading {...} is a hash literal if it starts with a Pair
         // (key=>/:key) or a %-var; otherwise it's a block. (Empty {} stays a block.)
-        const Token& a = peek(1), &b = peek(2);
-        bool looksHash =
-            ((a.kind == Tok::Ident || a.kind == Tok::StrLit || a.kind == Tok::StrInterp ||
-              a.kind == Tok::IntLit) && b.kind == Tok::FatArrow) ||
-            // colon-pair: :name / :$var / :1n / :!flag  (mirror parsePrimary's isHash)
-            (a.kind == Tok::Op && a.text == ":" &&
-             (b.kind == Tok::Ident || b.kind == Tok::Var || b.kind == Tok::IntLit ||
-              (b.kind == Tok::Op && b.text == "!")) &&
-             !(b.kind == Tok::IntLit && // `:16(...)`/`:16<...>`/`:256[...]` is a radix literal
-               (peek(3).kind == Tok::LParen || peek(3).kind == Tok::LBracket ||
-                (peek(3).kind == Tok::Op && peek(3).text == "<")))) ||
-            (a.kind == Tok::Var && !a.text.empty() && a.text[0] == '%' &&
-             (b.kind == Tok::RBrace || b.kind == Tok::Comma));
+        bool looksHash = braceLooksHash(/*emptyIsHash=*/false);
         if (!looksHash) {
             // If the matching } is immediately followed (no space) by a postfix,
             // the block is an expression term — `{...}()`, `{...}.method`,

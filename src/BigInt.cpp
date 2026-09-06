@@ -1,4 +1,5 @@
 #include "BigInt.h"
+#include "CNumeric.h"
 #include <cstdint>
 #include <cstdio>
 #include <algorithm>
@@ -396,7 +397,7 @@ long long BigInt::toLL() const {
     if (!fitsLL()) return sign < 0 ? INT64_MIN : INT64_MAX;
     unsigned long long r = 0;
     for (int i = (int)mag.size() - 1; i >= 0; i--) r = r * (unsigned long long)BASE + mag[i];
-    return sign < 0 ? -(long long)r : (long long)r; // r <= 2^63 here, so -(ll)r is well-defined at LLONG_MIN
+    return sign < 0 ? (long long)(0 - r) : (long long)r; // negate UNSIGNED, then convert: well-defined at LLONG_MIN (the signed negation was UB there)
 }
 
 unsigned long long BigInt::toU64Wrap() const {
@@ -406,9 +407,16 @@ unsigned long long BigInt::toU64Wrap() const {
 }
 
 double BigInt::toDouble() const {
-    double r = 0;
-    for (int i = (int)mag.size() - 1; i >= 0; i--) r = r * (double)BASE + mag[i];
-    return sign < 0 ? -r : r;
+    // up to two limbs (< 1e18) accumulate exactly in a double; beyond that a
+    // per-limb accumulation rounds at every step and lands an ulp off from
+    // 1e27 up ((2**200).Num), so let strtod round the decimal string ONCE —
+    // toString is the cheap direction in base 1e9
+    if (mag.size() <= 2) {
+        double r = 0;
+        for (int i = (int)mag.size() - 1; i >= 0; i--) r = r * (double)BASE + mag[i];
+        return sign < 0 ? -r : r;
+    }
+    return cnum::strtod(toString().c_str(), nullptr);
 }
 
 std::string BigInt::toString() const {

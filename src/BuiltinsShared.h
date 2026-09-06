@@ -4,6 +4,9 @@
 // that file is what forced them into a header. Internal to the implementation —
 // nothing outside src/ should include this.
 #include "Value.h"
+#if !defined(_WIN32)
+#include <sys/wait.h>
+#endif
 #include <chrono>
 #include <cstdint>
 #include <memory>
@@ -131,6 +134,10 @@ std::string objHashKeyType(const Value& h);
 
 std::string lubType(const std::string& a, const std::string& b);
 
+// Real synchronization state behind a Lock / Semaphore, shared by every copy of the
+// Value via Value::ext. Only populated in parallel mode (RAKUPP_PARALLEL): under the
+// cooperative GIL these primitives stay no-ops (the GIL already serialises), and a
+// real lock held across a GIL-yield could deadlock the cooperative scheduler.
 struct SemaphoreState { std::mutex m; std::condition_variable cv; long count = 0; };
 struct LockState { std::recursive_mutex m; };            // Raku Lock (used reentrantly by protect)
 Value coerceToSigil(Value v, char sigil);
@@ -166,6 +173,26 @@ void spawnWithInput(const std::vector<std::string>& argv, const std::string& inp
                            const std::string& cwd = "",
                            std::string* errOut = nullptr, bool errInherit = false,
                            int outMode = 1);
+
+// A child's wait status folded into ONE int, the shape every spawn caller
+// already stores: 0..255 a normal exit, 256+N death by signal N, −1 never ran
+// (or timed out). storeProcStatus() splits it the way Rakudo reports it —
+// exitcode 0 and signal N for a signalled child. Both spawn finishers fold,
+// every Proc store splits: `.signal` used to be a hard-coded 0 and a killed
+// child answered exitcode −1.
+inline int procStatusFold(int status) {
+#if defined(_WIN32)
+    return status;
+#else
+    if (WIFEXITED(status)) return WEXITSTATUS(status);
+    if (WIFSIGNALED(status)) return 256 + WTERMSIG(status);
+    return -1;
+#endif
+}
+inline void storeProcStatus(const Value& proc, int code) {
+    (*proc.hash())["exitcode"] = Value::integer(code >= 256 ? 0 : code);
+    (*proc.hash())["signal"]   = Value::integer(code >= 256 ? code - 256 : 0);
+}
 
 bool isBuiltinRole(const std::string& n);
 

@@ -101,6 +101,8 @@ Regex::Regex(const std::string& pattern, const std::string& flags) : pat_(patter
         }
     } catch (ObsoleteEscape& oe) {
         ok_ = false; obsolete_ = oe.seq;
+    } catch (BadEscape& be) {
+        ok_ = false; badEscape_ = be.seq;
     } catch (FeatureNotBuilt&) {
         // X::Feature::NotBuilt from a SLIM stub (a \c[NAME] needing the cut
         // name table, a <:Script<…>> needing the cut props table). Folding
@@ -780,10 +782,37 @@ Regex::NodePtr Regex::p5Class() {
     return conj;
 }
 
+// A `#` in a regex opens a comment. An EMBEDDED one — `#`( … )` / `#`[ … ]` /
+// `#`{ … }` / `#`< … >` — ends at its closer (pairs nest; a run of N openers
+// wants N closers); any other `#` runs to the end of the line. Called with
+// pos_ on the `#`; used between atoms (skipWs) and between the members of a
+// character class.
+void Regex::skipRegexComment() {
+    if (peek(1) == '`' && (peek(2) == '(' || peek(2) == '[' || peek(2) == '{' || peek(2) == '<')) {
+        char o = peek(2), c = o == '(' ? ')' : o == '[' ? ']' : o == '{' ? '}' : '>';
+        pos_ += 2;
+        size_t reps = 0; while (peek() == o) { pos_++; reps++; }
+        size_t nest = 1;
+        while (!eof()) {
+            if (peek() == o || peek() == c) {
+                char ch = peek(); size_t k = 0;
+                while (peek(k) == ch) k++;
+                if (k >= reps) { if (ch == o) nest++; else nest--; }
+                pos_ += k;
+                if (nest == 0) break;
+                continue;
+            }
+            pos_++;
+        }
+        return;
+    }
+    while (!eof() && peek() != '\n') pos_++;
+}
+
 void Regex::skipWs() {
     for (;;) {
         while (!eof() && ascii::isspace((unsigned char)peek())) pos_++;
-        if (peek() == '#') { while (!eof() && peek() != '\n') pos_++; continue; }
+        if (peek() == '#') { skipRegexComment(); continue; }
         // inline adverb :i :s :ignorecase — with an optional value: :!i, :0i/:1i, :i(0)/:i(1)
         if (peek() == ':' && (ascii::isalpha((unsigned char)peek(1)) || ascii::isdigit((unsigned char)peek(1)) ||
                               (peek(1) == '!' && ascii::isalpha((unsigned char)peek(2))))) {
@@ -809,7 +838,8 @@ void Regex::skipWs() {
             if (adv == "i" || adv == "ignorecase") curIcase_ = on;
             else if (adv == "s" || adv == "sigspace") sigspace_ = on;
             else if (adv == "m" || adv == "ignoremark" || adv == "mm" || adv == "samemark") curImark_ = on;
-            else if (adv == "g" || adv == "ratchet") {}
+            else if (adv == "r" || adv == "ratchet") ratchet_ = on; // (`:r` fell through and matched a literal `r`; `:ratchet` was accepted and ignored — scoped to the whole pattern here, Rakudo scopes it to the group)
+            else if (adv == "g") {}
             else { pos_ = save; break; } // not an adverb we consume; leave it
             continue;
         }
@@ -831,22 +861,37 @@ Regex::NodePtr Regex::parseAlt() {
     auto first = parseConj();
     if (peek() != '|') return first;
     capWidest = std::max(capWidest, ncaps_);
-    auto alt = std::make_unique<Node>();
-    alt->k = K::Alt;
-    if (!isEmpty(first)) alt->kids.push_back(std::move(first));
-    bool sawDouble = false;
+    // `|` binds tighter than `||`: `a | ab || c` is `[a | ab] || c` — each
+    // `||`-separated group is its own LTM alternation, and the groups are tried
+    // first-match in order. (One `||` used to make the WHOLE bracket first-match,
+    // so `a | ab || c` answered "a" for "ab".)
+    std::vector<std::unique_ptr<Node>> groups;
+    auto flush = [&](std::unique_ptr<Node> a) {
+        if (a->kids.empty()) return;
+        if (a->kids.size() == 1) groups.push_back(std::move(a->kids[0]));
+        else groups.push_back(std::move(a));
+    };
+    auto cur = std::make_unique<Node>();
+    cur->k = K::Alt; cur->firstMatch = false;
+    if (!isEmpty(first)) cur->kids.push_back(std::move(first));
     while (peek() == '|') {
         pos_++;
-        if (peek() == '|') { pos_++; sawDouble = true; } // `||` = sequential first-match
+        if (peek() == '|') { // `||` closes the LTM group
+            pos_++;
+            flush(std::move(cur));
+            cur = std::make_unique<Node>(); cur->k = K::Alt; cur->firstMatch = false;
+        }
         ncaps_ = capBase;
         auto branch = parseConj();
         capWidest = std::max(capWidest, ncaps_);
-        if (!isEmpty(branch)) alt->kids.push_back(std::move(branch));
+        if (!isEmpty(branch)) cur->kids.push_back(std::move(branch));
     }
+    flush(std::move(cur));
     ncaps_ = capWidest;
-    // pure `|` uses LTM (longest-token wins); any `||` present → first-match (conservative)
-    alt->firstMatch = sawDouble;
-    if (alt->kids.size() == 1) return std::move(alt->kids[0]);
+    if (groups.size() == 1) return std::move(groups[0]);
+    auto alt = std::make_unique<Node>();
+    alt->k = K::Alt; alt->firstMatch = true; // the `||` level: sequential
+    for (auto& g : groups) alt->kids.push_back(std::move(g));
     return alt;
 }
 
@@ -1342,7 +1387,8 @@ Regex::NodePtr Regex::parseAtom() {
                 return posExtra.get();
             };
             for (;;) {
-                while (peek() == ' ' || peek() == '\t') pos_++; // blanks between members / before '>'
+                while (peek() == ' ' || peek() == '\t' || peek() == '\n' || peek() == '\r') pos_++; // blanks between members / before '>'
+                if (peek() == '#') { skipRegexComment(); continue; } // `<[f] #`[why] + [o]>`: a comment between members
                 if (!(peek() == '[' || peek() == '+' || peek() == '-')) break;
                 char op = '+';
                 if (peek() == '+') { pos_++; op = '+'; }
@@ -1881,8 +1927,13 @@ Regex::NodePtr Regex::parseAtom() {
         if (e == 'D' || e == 'W' || e == 'S') { n->k = K::Class; n->icase = curIcase_; n->classFlags = std::string(1, (char)ascii::tolower(e)); n->negate = true; return n; }
         // \N — any char except a logical newline (\n, \r). \h/\v — horizontal/vertical
         // whitespace (and \H/\V their negations).
-        if (e == 'N') { n->k = K::Class; n->icase = curIcase_; n->negate = true; n->ranges.push_back({'\n','\n'}); n->ranges.push_back({'\r','\r'}); return n; }
-        if (e == 'h' || e == 'H') { n->k = K::Class; n->icase = curIcase_; n->negate = (e=='H'); n->ranges.push_back({' ',' '}); n->ranges.push_back({'\t','\t'}); return n; }
+        if (e == 'N') { n->k = K::Class; n->icase = curIcase_; n->negate = true; n->classFlags = "n"; return n; } // the complement of \n — the LOGICAL newline (this arm was LF/CR only and shadowed the flag form)
+        if (e == 'h' || e == 'H') { // horizontal whitespace is \t, space and Unicode Zs — NBSP and U+3000 included (they were \H)
+            n->k = K::Class; n->icase = curIcase_; n->negate = (e=='H'); n->ranges.push_back({' ',' '}); n->ranges.push_back({'\t','\t'});
+            n->cpRanges.push_back({0xA0, 0xA0}); n->cpRanges.push_back({0x1680, 0x1680}); n->cpRanges.push_back({0x2000, 0x200A});
+            n->cpRanges.push_back({0x202F, 0x202F}); n->cpRanges.push_back({0x205F, 0x205F}); n->cpRanges.push_back({0x3000, 0x3000});
+            return n;
+        }
         // \T \R \F \E — one char that is NOT a tab / return / formfeed / escape char
         if (e == 'T' || e == 'R' || e == 'F' || e == 'E') {
             char lc = e == 'T' ? '\t' : e == 'R' ? '\r' : e == 'F' ? '\f' : '\x1b';
@@ -1893,7 +1944,11 @@ Regex::NodePtr Regex::parseAtom() {
         if (e == 'A' || e == 'Z' || e == 'z' || e == 'G' || e == 'p' || e == 'P' ||
             e == 'L' || e == 'U' || e == 'Q' || (e >= '1' && e <= '9'))
             throw ObsoleteEscape{std::string("\\") + e};
-        if (e == 'v' || e == 'V') { n->k = K::Class; n->icase = curIcase_; n->negate = (e=='V'); n->ranges.push_back({'\n','\n'}); n->ranges.push_back({'\r','\r'}); n->ranges.push_back({'\f','\f'}); n->ranges.push_back({'\v','\v'}); return n; }
+        if (e == 'v' || e == 'V') { // vertical whitespace includes NEL, LS and PS
+            n->k = K::Class; n->icase = curIcase_; n->negate = (e=='V'); n->ranges.push_back({'\n','\n'}); n->ranges.push_back({'\r','\r'}); n->ranges.push_back({'\f','\f'}); n->ranges.push_back({'\v','\v'});
+            n->cpRanges.push_back({0x85, 0x85}); n->cpRanges.push_back({0x2028, 0x2029});
+            return n;
+        }
         // \X[HH] / \O[OO] / \C[NAME] — match ONE codepoint that is NOT the given one(s).
         if ((e == 'X' || e == 'O' || e == 'C') && (peek() == '[' || (e != 'C' && ascii::isalnum((unsigned char)peek())))) {
             char le = (char)ascii::tolower((unsigned char)e);
@@ -1950,7 +2005,11 @@ Regex::NodePtr Regex::parseAtom() {
             case 'e': n->lit = "\x1b"; break;
             case 'f': n->lit = "\f"; break;
             case '0': n->lit = std::string(1, '\0'); break;
-            default: n->lit = std::string(1, e); break;
+            default:
+                // Rakudo: a compile error ("Unrecognized backslash sequence") — this
+                // arm matched the LETTER, so `/\y/` matched "y" and `/\b/` "b"
+                if (ascii::isalnum((unsigned char)e)) throw BadEscape{std::string("\\") + e};
+                n->lit = std::string(1, e); break;
         }
         return n;
     }
@@ -1972,6 +2031,24 @@ void Regex::parseClassBodyMember(Node* node) {
             else if (e == 'n') node->ranges.push_back({'\n', '\n'});
             else if (e == 't') node->ranges.push_back({'\t', '\t'});
             else if (e == 'r') node->ranges.push_back({'\r', '\r'});
+            // the other single-letter escapes (they used to fall to the "escaped
+            // punctuation" arm and match the LETTER: `<-[\h\v]>` admitted a space)
+            else if (e == 'h') { // horizontal whitespace: \t, space, and Unicode Zs
+                node->ranges.push_back({' ', ' '}); node->ranges.push_back({'\t', '\t'});
+                node->cpRanges.push_back({0xA0, 0xA0}); node->cpRanges.push_back({0x1680, 0x1680});
+                node->cpRanges.push_back({0x2000, 0x200A}); node->cpRanges.push_back({0x202F, 0x202F});
+                node->cpRanges.push_back({0x205F, 0x205F}); node->cpRanges.push_back({0x3000, 0x3000});
+            }
+            else if (e == 'v') { // vertical whitespace: LF CR FF VT NEL LS PS
+                node->ranges.push_back({'\n', '\n'}); node->ranges.push_back({'\r', '\r'});
+                node->ranges.push_back({'\f', '\f'}); node->ranges.push_back({'\v', '\v'});
+                node->cpRanges.push_back({0x85, 0x85}); node->cpRanges.push_back({0x2028, 0x2029});
+            }
+            else if (e == 'e') node->ranges.push_back({0x1B, 0x1B});
+            else if (e == 'f') node->ranges.push_back({'\f', '\f'});
+            else if (e == 'a') node->ranges.push_back({0x07, 0x07});
+            else if (e == 'b') node->ranges.push_back({0x08, 0x08});
+            else if (e == '0') node->ranges.push_back({0, 0});
             else if (e == 'x' || e == 'X' || e == 'o' || e == 'O' || e == 'c' || e == 'C') {
                 // codepoint escapes in a class: \x[HH]/\xHH, \o[OO], \c[NAME,…]; uppercase
                 // (\X/\O/\C) negate the whole class. Codepoints go to cpRanges (any size).
@@ -2348,7 +2425,7 @@ long Regex::trySingleChar(const std::string& s, long pos) const {
     // the byte alone matched one third of an `ö` and left the grammar mid-character.
     if ((unsigned char)s[pos] >= 0x80) return -2;
     const Node* n = root_.get();
-    if (n->k == K::Any) return s[pos] == '\n' ? -1 : pos + 1;
+    if (n->k == K::Any) return s[pos] == '\r' ? -2 : pos + 1; // `.` matches a newline too; a CR may start a CRLF grapheme — the real arm decides
     if (n->k == K::Lit) return s[pos] == n->lit[0] ? pos + 1 : -1;
     // NFG: a CRLF is one grapheme, a class member exactly when LF is, and a
     // match takes both bytes (the K::Class arm's rule — this leaf path is what
@@ -2768,13 +2845,15 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
             // `^^` (multiline): start of any line. `^`: start of the string only.
             // p5Line — P5's (?m)^ — is `^^` minus the position after a FINAL newline.
             if (n->p5Line) return (pos == 0 || (pos < len && st.s[pos - 1] == '\n')) ? k(pos) : false;
-            if (n->multiline ? (pos == 0 || st.s[pos - 1] == '\n') : (pos == 0)) return k(pos);
+            // `^^` does not match in the void after a FINAL newline (Rakudo; the p5Line arm above had it)
+            if (n->multiline ? (pos == 0 || (pos < len && st.s[pos - 1] == '\n')) : (pos == 0)) return k(pos);
             return false;
         case K::AnchorEnd:
             // `$$` (multiline): end of any line. `$`: end of string (or just before a final
             // newline). P5 `\z` (absEnd): the absolute end, a trailing newline doesn't count.
             if (n->absEnd) return pos == len ? k(pos) : false;
-            if (n->multiline ? (pos == len || st.s[pos] == '\n')
+            // `$$` matches before every newline, and at the very end only when no newline precedes it
+            if (n->multiline ? ((pos < len && st.s[pos] == '\n') || (pos == len && (len == 0 || st.s[len - 1] != '\n')))
                              : (pos == len || (pos + 1 == len && st.s[pos] == '\n'))) return k(pos);
             return false;
         case K::WBLeft: {

@@ -24,7 +24,7 @@ check((-0.55).round(0.1),    '-0.5',   'a-negative-tenth');
 check((0.55).round(0.1),     '0.6',    'a-positive-tenth');
 check((7/3).round(1/3),      '2.333333', 'rounding-by-a-rat');
 check(9930972392403501.round(1).raku,       '9930972392403501', 'a-big-int-rounded-by-an-int-is-itself');
-check(9930972392403501.round(1e0).raku,     '9.9309723924035e+15', 'a-num-scale-still-floats');
+check(9930972392403501.round(1e0).raku,     '9930972392403500e0', 'a-num-scale-still-floats'); # Rakudo's rendering (integer form below 1e16); the old expectation froze rakupp's own
 check(9930972392403501.round(1e0).Int.raku, '9930972392403500',    'and-truncates-when-asked');
 check((-3.7).round,          '-4',     'a-negative-round');
 check(2.5.round,             '3',      'two-and-a-half');

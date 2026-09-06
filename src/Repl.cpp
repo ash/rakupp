@@ -581,6 +581,7 @@ void printHelp() {
 
 void printError(const std::string& msg) {
     std::string m = msg;
+    if (m.rfind("EVAL parse error: ", 0) == 0) m = m.substr(18); // the REPL user did not call EVAL
     while (!m.empty() && (m.back() == '\n' || m.back() == '\r')) m.pop_back();
     if (replColour()) std::cout << "\x1b[31m" << m << "\x1b[0m\n";
     else std::cout << m << "\n";

@@ -21,6 +21,7 @@
 #include <map>
 #include <memory>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -124,9 +125,27 @@ void dump(const Json& j, std::string& out) {
 std::string dump(const Json& j) { std::string s; dump(j, s); return s; }
 
 // -- parse ------------------------------------------------------------------
+// Four hex digits at `at`, or false — std::stoul threw std::invalid_argument on
+// `\uZZZZ` and nothing caught it (the MCP/Jupyter servers' JsonLite already
+// answers false here).
+static bool hex4(const std::string& s, size_t at, unsigned& out) {
+    if (at + 4 > s.size()) return false;
+    out = 0;
+    for (size_t k = 0; k < 4; k++) {
+        char c = s[at + k]; unsigned d;
+        if (c >= '0' && c <= '9') d = (unsigned)(c - '0');
+        else if (c >= 'a' && c <= 'f') d = (unsigned)(c - 'a' + 10);
+        else if (c >= 'A' && c <= 'F') d = (unsigned)(c - 'A' + 10);
+        else return false;
+        out = out * 16 + d;
+    }
+    return true;
+}
+
 struct JsonParser {
     const std::string& s;
     size_t i = 0;
+    int depth = 0; // nesting, capped as JsonLite caps it — 200k `[` was a stack overflow
     explicit JsonParser(const std::string& src) : s(src) {}
 
     void ws() { while (i < s.size() && (s[i] == ' ' || s[i] == '\t' || s[i] == '\n' || s[i] == '\r')) i++; }
@@ -137,8 +156,12 @@ struct JsonParser {
         ws();
         if (i >= s.size()) return Json();
         char c = s[i];
-        if (c == '{') return object();
-        if (c == '[') return array();
+        if (c == '{' || c == '[') {
+            if (++depth > 128) throw std::runtime_error("JSON nested too deeply");
+            Json r = c == '{' ? object() : array();
+            depth--;
+            return r;
+        }
         if (c == '"') { Json j; j.type = Json::Str; j.str = string(); return j; }
         if (c == 't') { i += 4; return Json::B(true); }
         if (c == 'f') { i += 5; return Json::B(false); }
@@ -164,14 +187,14 @@ struct JsonParser {
                     case '\\': out += '\\'; break;
                     case 'u': {
                         if (i + 4 <= s.size()) {
-                            unsigned cp = std::stoul(s.substr(i, 4), nullptr, 16);
+                            unsigned cp = 0;
+                            if (!hex4(s, i, cp)) { i += 4; break; } // not hex: drop the escape, keep parsing
                             i += 4;
                             // Surrogate pair -> astral code point.
                             if (cp >= 0xD800 && cp <= 0xDBFF && i + 6 <= s.size()
                                 && s[i] == '\\' && s[i + 1] == 'u') {
-                                unsigned lo = std::stoul(s.substr(i + 2, 4), nullptr, 16);
-                                i += 6;
-                                cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+                                unsigned lo = 0;
+                                if (hex4(s, i + 2, lo)) { i += 6; cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00); }
                             }
                             appendUtf8(cp, out);
                         }
@@ -343,8 +366,9 @@ public:
         std::ios::sync_with_stdio(false);
         std::string body;
         while (readMessage(body)) {
-            JsonParser p(body);
-            Json msg = p.parse();
+            Json msg;
+            try { JsonParser p(body); msg = p.parse(); }
+            catch (std::exception&) { continue; } // hostile input is dropped, never a crash
             if (!msg.isObj()) continue;
             const Json& method = msg["method"];
             bool hasId = msg.obj.count("id") != 0;
@@ -414,6 +438,7 @@ private:
                 }
             }
         }
+        if (contentLength > (64u << 20)) return false; // a bogus header must not detonate the allocation
         body.resize(contentLength);
         std::cin.read(&body[0], (std::streamsize)contentLength);
         return std::cin.gcount() == (std::streamsize)contentLength;

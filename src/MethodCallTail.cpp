@@ -187,11 +187,8 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         }
         Value out = Value::array(); out.isList = true;
         // the answers are CHARACTER positions, not byte offsets
-        auto charPos = [&](size_t byte) {
-            long long n = 0;
-            for (size_t k = 0; k < byte && k < s.size(); k++)
-                if ((static_cast<unsigned char>(s[k]) & 0xC0) != 0x80) n++;
-            return n;
+        auto charPos = [&](size_t byte) { // GRAPHEME positions, as .index answers (this counted codepoints)
+            return graphemeCount(s.substr(0, std::min(byte, s.size())));
         };
         if (!needle.empty() && from <= s.size())
             for (size_t p = s.find(needle, from); p != std::string::npos;
@@ -227,8 +224,11 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         auto cps = utf8cp(inv.toStr());
         long long n = args.empty() ? 1 : a0().toInt();
         if (n < 0) n = 0;
+        // by GRAPHEME, as .flip/.substr/.comb count: "x\x[301]".chop is "" (one cluster), not "x"
+        auto starts = uniGraphemeStarts(cps);
+        size_t keep = n == 0 ? cps.size() : (size_t)n >= starts.size() ? 0 : starts[starts.size() - (size_t)n];
         std::string r;
-        for (size_t k = 0; k + (size_t)n < cps.size(); k++) r += cpToUtf8(cps[k]);
+        for (size_t k = 0; k < keep; k++) r += cpToUtf8(cps[k]);
         return Value::str(r);
     }
     // numeric .narrow — smallest type that holds the value exactly
@@ -245,6 +245,13 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         if (inv.t == VT::Str || inv.t == VT::Match) {
             Value nv = numifyStrFailure(inv.toStr());
             if (nv.t == VT::Hash && nv.hashKind == "Failure") return nv;
+        }
+        // exact past int64: a big Int stays big, a large Num converts exactly
+        if ((inv.t == VT::Int && inv.big()) || (inv.t == VT::Num && std::fabs(inv.n) >= 9223372036854775807.0)) {
+            Value iv = inv.t == VT::Int ? inv : numToIntExact(std::trunc(inv.n));
+            if (iv.t == VT::Int && iv.big() ? iv.big()->sign < 0 : iv.toInt() < 0)
+                return armedFailure("X::OutOfRange", "Cannot coerce " + iv.toStr() + " to UInt: it is negative");
+            return iv;
         }
         long long v = inv.toInt();
         if (v < 0) return armedFailure("X::OutOfRange",
@@ -944,7 +951,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         if (m == "head") { long long n = std::max(0LL, args[0].toInt());
             Value o = Value::array(); o.isList = true; for (long long i = 0; i < n; i++) o.arr()->push_back(Value::integer(lo + i)); return o; }
         if (m == "skip") { long long n = args.empty() ? 1 : std::max(0LL, args[0].toInt()); return Value::range(lo + n, inv.rTo(), false, inv.rExTo()); }
-        if (m == "elems" || m == "Numeric" || m == "Int") return Value::number(INFINITY);
+        if (m == "elems") return Value::number(INFINITY); // (.Numeric/.Int are Part2's universal arms)
         if (m == "min") return inv.rFrom() <= -9000000000000000000LL
             ? Value::number(-INFINITY) : Value::integer(inv.rFrom());
         if (m == "max") return Value::number(INFINITY);                 // `1..*` .max is Inf, not an error
@@ -952,7 +959,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         if (m == "excludes-max") return Value::boolean(inv.rExTo());
         if (m == "bounds") { Value o = Value::array({Value::integer(inv.rFrom()), Value::number(INFINITY)}); o.isList = true; return o; }
         if (m == "list" || m == "List" || m == "Seq" || m == "cache" || m == "lazy" || m == "flat" ||
-            m == "map" || m == "grep" || m == "first" || m == "iterator" || m == "rotor" || m == "batch")
+            m == "map" || m == "grep" || m == "first" || m == "rotor" || m == "batch")
             return (m == "map" || m == "grep" || m == "first") ? methodCall(makeInfArray(lo), m, args, rwArgs) : makeInfArray(lo);
         if (m == "AT-POS" && !args.empty()) return Value::integer(lo + args[0].toInt()); // infRange[i]
         // (`Str` and `gist` are NOT here: an endless range renders as its endpoint
@@ -1038,7 +1045,6 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         const ValueList& live = *inv.arr();
         if (m == "elems") return Value::integer((long long)live.size());
         if (m == "end")   return Value::integer((long long)live.size() - 1);
-        if (m == "Bool")  return Value::boolean(!live.empty());
         // (AT-POS/EXISTS-POS answered in methodCallPart3 before this runs)
     }
     // A MATCH is Positional over its captures, so the list methods work on it:
@@ -1127,7 +1133,6 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         }
         if (m == "elems") return Value::integer((long long)items.size());
         if (m == "end") return Value::integer((long long)items.size() - 1);
-        if (m == "Bool") return Value::boolean(!items.empty());
         // `.Array` DECONTAINERIZES. A hash/scalar value sits in a container, so
         // an Array read out of one is itemized; returning it unchanged meant
         // `my @a = $v.Array` bound it as ONE element while `.Array.elems` said 3.
@@ -2015,7 +2020,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     if (!dup) { kept.push_back(k); out.arr()->push_back(v); } }
             } else {
                 std::set<std::string> seen;
-                for (auto& v : items) if (seen.insert(keyOf(v).toStr()).second) out.arr()->push_back(v);
+                for (auto& v : items) if (seen.insert(whichOf(keyOf(v))).second) out.arr()->push_back(v); // === identity: 1, "1", 1.0 are three
             }
             return out;
         }
@@ -2044,7 +2049,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 return out;
             }
             std::set<std::string> seen;
-            for (auto& v : items) if (!seen.insert(keyOf(v).toStr()).second) out.arr()->push_back(v);
+            for (auto& v : items) if (!seen.insert(whichOf(keyOf(v))).second) out.arr()->push_back(v); // === identity, as unique
             return out;
         }
         if (m == "toggle") { // gate values on/off, flipping at each condition boundary
@@ -2411,8 +2416,8 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     std::string key = items[k].toStr(); // sequenced explicitly: in `m[f(k)] = g(++k)`
                     (*h.hash())[key] = items[++k];        // the RHS would evaluate before the key!
                 }
-                else // odd trailing key (Rakudo dies; we stay lenient)
-                    (*h.hash())[items[k].toStr()] = Value::any();
+                else throw RakuError{Value::typeObj("X::Hash::Store::OddNumber"), // as Hash.new and Rakudo
+                                     "Odd number of elements found where hash initializer expected"};
             }
             return h;
         }
@@ -2837,15 +2842,6 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
 
     // an undefined scalar still reports as a 1-item list for .elems (Any.elems == 1)
     if ((inv.t == VT::Any || inv.t == VT::Nil) && m == "elems") return Value::integer(1);
-    // method form of EVAL: '1+2'.EVAL — dispatch to the builtin sub
-    if (m == "EVAL" && inv.t == VT::Str) {
-        auto it = builtins_.find("EVAL");
-        if (it != builtins_.end()) {
-            ValueList a; a.push_back(inv);
-            for (auto& x : args) a.push_back(x);
-            return it->second(*this, a);
-        }
-    }
     // Any.* single-item list semantics: a scalar answers the list-y methods
     // as a one-element list (Rakudo's Any fallbacks): 5.sum == 5, "x".join eq "x"
     if (inv.t == VT::Int || inv.t == VT::Num || inv.t == VT::Rat || inv.t == VT::Str ||

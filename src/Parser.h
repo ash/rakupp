@@ -235,6 +235,7 @@ private:
     bool matchKind(Tok k);
     void expectKind(Tok k, const char* what);
     [[noreturn]] void error(const std::string& msg);
+    bool braceLooksHash(bool emptyIsHash); // `{` at cur(): hash composer or block?
 
     // statements
     StmtPtr parseStatement();

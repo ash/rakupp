@@ -162,9 +162,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         if (m == "arg") return Value::number(std::arg(z));
         if (m == "Complex") return inv;
         if (m == "isNaN") return Value::boolean(std::isnan(inv.n) || std::isnan(inv.im()));
-        if (m == "Str" || m == "gist" || m == "Stringy") return Value::str(inv.toStr());
-        if (m == "raku") return Value::str("<" + inv.toStr() + ">");
-        if (m == "Num" || m == "Real" || m == "Int") { if (inv.im() != 0) throw RakuError{Value::typeObj("X::Numeric::Real"), "Can not convert Complex with nonzero imaginary part"}; return m == "Int" ? Value::integer((long long)inv.n) : Value::number(inv.n); }
+        // (.Str/.gist/.raku and the Complex→Real coercions are Part2's universal arms)
+        if (m == "Stringy") return Value::str(inv.toStr());
         // Complex.narrow is `self.im == 0 ?? self.re.narrow !! self` — it must RECURSE,
         // or (4.0+0i).narrow stops at the Num and never demotes to Int.
         if (m == "narrow") return inv.im() == 0 ? methodCall(Value::number(inv.n), "narrow", ValueList{}) : inv;
@@ -208,7 +207,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     // numeric
     if (m == "abs") {
         if (inv.t == VT::Int && inv.big()) return Value::bigint(inv.big()->abs());
-        if (inv.t == VT::Int) return Value::integer(std::llabs(inv.toInt()));
+        if (inv.t == VT::Int) return inv.toInt() == std::numeric_limits<long long>::min()
+            ? Value::bigint(-BigInt(inv.toInt())) : Value::integer(std::llabs(inv.toInt())); // llabs(LLONG_MIN) is UB (it wrapped)
         if (inv.t == VT::Rat) { Value r = Value::rat(inv.ratN()->abs(), *inv.ratD()); r.fatRatM() = inv.fatRat(); return r; }
         return Value::number(std::fabs(inv.toNum()));
     }
@@ -274,7 +274,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     }
     if (m == "rand") return Value::number(inv.toNum() * randDouble()); // $n.rand — Num in [0, $n)
     if (m == "base" && !args.empty() && (inv.t == VT::Int || inv.t == VT::Bool)) { // Int -> string in base 2..36
-        long long b = args[0].toInt(); if (b < 2) b = 2; if (b > 36) b = 36;
+        long long b = args[0].toInt();
+        if (b < 2 || b > 36) return armedFailure("X::OutOfRange", "base argument to base out of range. Is: " + std::to_string(b) + ", should be in 2..36"); // (it clamped)
         static const char* BD = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
         // a BIG integer digits out by repeated division — toInt() would truncate
         if (inv.big() && !inv.big()->fitsLL()) {
@@ -297,7 +298,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     // and a non-terminating expansion stops at six digits — Rakudo's default,
     // checked base by base ((1/3).base(2) is 0.010101, .base(3) is 0.1).
     if (m == "base" && !args.empty() && (inv.t == VT::Num || inv.t == VT::Rat)) {
-        long long b = args[0].toInt(); if (b < 2) b = 2; if (b > 36) b = 36;
+        long long b = args[0].toInt();
+        if (b < 2 || b > 36) return armedFailure("X::OutOfRange", "base argument to base out of range. Is: " + std::to_string(b) + ", should be in 2..36"); // (it clamped)
         long long want = args.size() > 1 && args[1].isNumeric() ? args[1].toInt() : -1;
         static const char* BD = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
         double x = inv.toNum();
@@ -616,8 +618,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             return Value::bigint(q); // truncate: q as-is
         }
     }
-    if (m == "floor") return Value::integer((long long)std::floor(inv.toNum()));
-    if (m == "ceiling") return Value::integer((long long)std::ceil(inv.toNum()));
+    if (m == "floor") return numToIntExact(std::floor(inv.toNum()));     // exact past 2**63 (the cast saturated)
+    if (m == "ceiling") return numToIntExact(std::ceil(inv.toNum()));
     if (m == "round") {
         double x = inv.toNum();
         if (!std::isfinite(x)) return Value::number(x); // NaN/±Inf round to themselves
@@ -637,7 +639,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         double scale = args.empty() ? 1.0 : scaleV.toNum();
         if (scale == 0) scale = 1.0;
         double q = std::floor(x / scale + 0.5);
-        if (args.empty()) return Value::integer((long long)q); // .round with no arg is an Int
+        if (args.empty()) return numToIntExact(q); // .round with no arg is an Int — exact past 2**63
         // Rakudo's last step is `.floor * $scale`, and the type of THAT multiply
         // is the type of the answer: an Int or Rat scale makes it exact, and only
         // a Num scale leaves it a Num. Doing the whole thing in doubles gave
@@ -651,7 +653,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             return applyArith("*", Value::integer((long long)q), scaleV);
         return Value::number(q * scale);
     }
-    if (m == "truncate") return Value::integer((long long)inv.toNum());
+    if (m == "truncate") return numToIntExact(std::trunc(inv.toNum())); // exact past 2**63
     if (m == "sign") {
         if (inv.t == VT::Type)
             throw RakuError{Value::typeObj("X::Multi::NoMatch"), "Cannot call sign on a type object"};
@@ -949,6 +951,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             double eps = args.size() > 0 ? args[0].toNum() : 1e-6;
             if (std::isnan(x)) r = Value::ratZ(BigInt(0), BigInt(0));
             else if (std::isinf(x)) r = Value::ratZ(BigInt(x > 0 ? 1 : -1), BigInt(0));
+            else if (std::fabs(x) >= 9007199254740992.0) // any double ≥ 2**53 is an integer: exact, no CF walk (`1e19.Rat` was 1)
+                r = Value::rat(numToIntExact(x).toBig(), BigInt(1));
             else {
                 bool neg = x < 0; double ax = neg ? -x : x, v = ax;
                 long long p0 = 0, q0 = 1, p1 = 1, q1 = 0; // CF convergents h/k
@@ -1061,10 +1065,10 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         return Value::boolean(true);
     }
 
-    // Str -> Date / DateTime / Version: the string coercions the types answer
-    // through their own .new (`"2024-06-01".Date`)
+    // Str -> Date / DateTime: the string coercions the types answer through
+    // their own .new (`"2024-06-01".Date`). `.Version` is the Cool arm's above.
     if (inv.t == VT::Str && inv.hashKind.empty() &&
-        (m == "Date" || m == "DateTime" || m == "Version")) {
+        (m == "Date" || m == "DateTime")) {
         ValueList one{inv};
         return methodCall(Value::typeObj(m), "new", one, nullptr);
     }
@@ -1115,7 +1119,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         if (bin) v.hashKind = "Blob";   // slurp(:bin) yields a Blob, not a decoded Str
         return v;
     }
-    if (m == "spurt" && !(inv.t == VT::Hash && inv.hashKind == "FileHandle")) {
+    if (m == "spurt" && inv.hashKind == "IO") { // an IO::Path only — a bare Str has no spurt (Rakudo)
         // path-spurt; an open IO::Handle's .spurt is handled in the FileHandle
         // block below (buffer + flush-on-close), not by stringifying the handle
         rejectNulPath(inv.toStr()); // the sub form always refused NUL; this copy did not
@@ -1130,12 +1134,22 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             else if (!haveContent) { content = a.toStr(); haveContent = true; }
         }
         // :createonly / :x — refuse to clobber, same answer as the sub form
-        if (createonly) { std::ifstream probe(ioFsPath(inv)); if (probe) return Value::boolean(false); }
+        if (createonly) { std::ifstream probe(ioFsPath(inv)); if (probe) { // a Failure, not a quiet False
+            Value f = rakuppNewFailure();
+            (*f.hash())["exception"] = Value::typeObj("X::IO::Exists");
+            (*f.hash())["message"] = Value::str("Failed to open file " + inv.toStr() + ": File exists");
+            return f; } }
         content = encodeTextEnc(content, encAdverb(args)); // `:enc` — write the file's own encoding
         // BINARY, as Rakudo writes: a text-mode stream would rewrite \n on
         // Windows, and in a wide encoding that byte is half of a character.
         std::ofstream out(ioFsPath(inv), std::ios::binary | (append ? std::ios::app : std::ios::trunc));
-        if (!out) return Value::boolean(false);
+        if (!out) { // a Failure that detonates when sunk (this answered False and the program ran on)
+            int err = errno;
+            Value f = rakuppNewFailure();
+            (*f.hash())["exception"] = Value::typeObj("X::IO::Spurt");
+            (*f.hash())["message"] = Value::str("Failed to open file " + inv.toStr() + ": " + std::strerror(err));
+            return f;
+        }
         out << content;
         return Value::boolean(true);
     }
@@ -1183,7 +1197,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         char buf[8]; snprintf(buf, sizeof buf, "0%03o", st.st_mode & 07777);
         return Value::str(buf);
     }
-    if (m == "mkdir") { // $path.IO.mkdir($mode) / (:$mode) — create the directory and parents
+    if (m == "mkdir" && inv.hashKind == "IO") { // $path.IO.mkdir($mode) / (:$mode) — create the directory and parents (a bare Str has no mkdir)
         std::string path = ioFsPath(inv); // the invocant's own :CWD decides where
         long long mode = 0777;
         for (auto& a : args) {
@@ -1226,11 +1240,18 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         if (!inv.ofType().empty()) p.ofTypeM() = inv.ofType(); // keep the invocant's :CWD
         return p;
     }
-    if (m == "unlink") { // $path.IO.unlink — remove the file; True on success
+    if (m == "unlink" && inv.hashKind == "IO") { // $path.IO.unlink — remove the file; True on success (a bare Str has no unlink)
         return Value::boolean(::unlink(ioFsPath(inv).c_str()) == 0);
     }
-    if (m == "rmdir") { // $path.IO.rmdir — remove the (empty) directory
-        return Value::boolean(::rmdir(ioFsPath(inv).c_str()) == 0);
+    if (m == "rmdir" && inv.hashKind == "IO") { // $path.IO.rmdir — remove the (empty) directory
+        if (::rmdir(ioFsPath(inv).c_str()) != 0) { // a Failure, as mkdir answers (this said a quiet False)
+            int err = errno;
+            Value f = rakuppNewFailure();
+            (*f.hash())["exception"] = Value::typeObj("X::IO::Rmdir");
+            (*f.hash())["message"] = Value::str("Failed to remove the directory '" + inv.toStr() + "': " + std::strerror(err));
+            return f;
+        }
+        return Value::boolean(true);
     }
     // `$target.IO.symlink($name)` / `.link($name)` — the METHOD forms: the
     // invocant is the TARGET, the argument the new name. (The sub forms live
@@ -1710,12 +1731,16 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         time_t t = (m == "accessed") ? st.st_atime : (m == "changed") ? st.st_ctime : st.st_mtime;
         secs = (double)t;
 #else
-  #if defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
-        const struct timespec& ats = st.st_atimespec, &cts = st.st_ctimespec, &mts = st.st_mtimespec;
+  #if defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__)
+        const struct timespec& ats = st.st_atimespec, &cts = st.st_ctimespec, &mts = st.st_mtimespec, &bts = st.st_birthtimespec;
+  #elif defined(__OpenBSD__)
+        const struct timespec& ats = st.st_atimespec, &cts = st.st_ctimespec, &mts = st.st_mtimespec, &bts = st.st_mtimespec;
   #else
-        const struct timespec& ats = st.st_atim, &cts = st.st_ctim, &mts = st.st_mtim;
+        const struct timespec& ats = st.st_atim, &cts = st.st_ctim, &mts = st.st_mtim, &bts = st.st_mtim; // Linux: no portable birth time
   #endif
-        const struct timespec& ts = (m == "accessed") ? ats : (m == "changed") ? cts : mts;
+        // `created` is the BIRTH time where the platform has one (nqp::stat's
+        // CREATETIME already read it; this arm shared modified's field)
+        const struct timespec& ts = (m == "accessed") ? ats : (m == "changed") ? cts : (m == "created") ? bts : mts;
         secs = (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
 #endif
         // an INSTANT, not a bare Num: `.modified.DateTime` must dispatch
@@ -1725,7 +1750,13 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         Value v = Value::number(secs); v.hashKind = "Instant"; return identify(v);
     }
     if (m == "chmod" && inv.hashKind == "IO") { // $path.IO.chmod(0o644)
-        ::chmod(ioFsPath(inv).c_str(), (mode_t)(args.empty() ? 0 : args[0].toInt()));
+        if (::chmod(ioFsPath(inv).c_str(), (mode_t)(args.empty() ? 0 : args[0].toInt())) != 0) { // (the syscall's result was never read)
+            int err = errno;
+            Value f = rakuppNewFailure();
+            (*f.hash())["exception"] = Value::typeObj("X::IO::Chmod");
+            (*f.hash())["message"] = Value::str("Failed to set the mode of '" + inv.toStr() + "': " + std::strerror(err));
+            return f;
+        }
         Value p = Value::str(inv.toStr()); p.hashKind = "IO";
         if (!inv.ofType().empty()) p.ofTypeM() = inv.ofType();
         return p;
@@ -2693,9 +2724,29 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         }
         return Value::str(s);
     }
-    if (m == "trim") { std::string s = inv.toStr(); size_t a = s.find_first_not_of(" \t\n\r"); size_t b = s.find_last_not_of(" \t\n\r"); return Value::str(a == std::string::npos ? "" : s.substr(a, b - a + 1)); }
-    if (m == "trim-leading") { std::string s = inv.toStr(); size_t a = s.find_first_not_of(" \t\n\r"); return Value::str(a == std::string::npos ? "" : s.substr(a)); }
-    if (m == "trim-trailing") { std::string s = inv.toStr(); size_t b = s.find_last_not_of(" \t\n\r"); return Value::str(b == std::string::npos ? "" : s.substr(0, b + 1)); }
+    if (m == "trim" || m == "trim-leading" || m == "trim-trailing") {
+        // Unicode White_Space, as `.words` splits on — the ASCII-only set left
+        // NBSP, form feed and vertical tab in place
+        std::string s = inv.toStr();
+        auto spaceLen = [&](size_t p) -> size_t { // 0 = not a space at p, else that character's byte length
+            unsigned char c = (unsigned char)s[p];
+            if (c < 0x80) return (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == 0x0B || c == 0x0C) ? 1 : 0;
+            size_t adv = (c >= 0xF0) ? 4 : (c >= 0xE0) ? 3 : (c >= 0xC0) ? 2 : 1;
+            return uniIsSpaceCp(cpAtByte(s, p)) ? adv : 0;
+        };
+        size_t a = 0, b = s.size();
+        if (m != "trim-trailing") { size_t l; while (a < b && (l = spaceLen(a)) > 0) a += l; }
+        if (m != "trim-leading") {
+            while (b > a) { // step back to the start of the last character, test it
+                size_t st = b - 1;
+                while (st > a && ((unsigned char)s[st] & 0xC0) == 0x80) st--;
+                size_t l = spaceLen(st);
+                if (l == 0 || st + l != b) break;
+                b = st;
+            }
+        }
+        return Value::str(s.substr(a, b - a));
+    }
     if (m == "substr" || m == "substr-rw") {
         // Raku indexes by GRAPHEME, so `n` counts clusters and every cut lands on a
         // cluster boundary. Indexing codepoints directly splits "ŕ̥" into its base
@@ -2749,9 +2800,10 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             const Value& rg = args[0];
             long long lo = rg.rFrom() + (rg.rExFrom() ? 1 : 0);
             long long hi = rg.rTo() - (rg.rExTo() ? 1 : 0);
-            if (lo < 0) lo += n;
-            if (hi < 0) hi += n;
-            if (lo < 0) lo = 0;
+            if (lo < 0 || hi < 0) // Rakudo: X::OutOfRange, with the *-N hint (this wrapped from the end)
+                return armedFailure("X::OutOfRange", "Start argument to substr out of range. Is: " +
+                    std::to_string(lo < 0 ? lo : hi) + ", should be in 0.." + std::to_string(n) +
+                    "; use *" + std::to_string(lo < 0 ? lo : hi) + " if you want to index relative to the end");
             if (hi >= n) hi = n - 1;
             return Value::str(slice(lo, hi + 1)); // the Range end is INCLUSIVE
         }
@@ -2762,8 +2814,10 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             ValueList wa{Value::integer(n)}; start = callCallable(args[0], wa).toInt();
         }
         else start = a0().toInt();
-        if (start < 0) start += n;
-        if (start < 0) start = 0;
+        if (start < 0) // Rakudo: X::OutOfRange, with the *-N hint (this wrapped from the end)
+            return armedFailure("X::OutOfRange", "Start argument to substr out of range. Is: " +
+                std::to_string(start) + ", should be in 0.." + std::to_string(n) +
+                "; use *" + std::to_string(start) + " if you want to index relative to the end");
         if (start > n) start = n;
         // The length may be a Whatever/WhateverCode: `*` means "to the end" and
         // `*-1` etc. is called with the max available length (n - start).
@@ -2776,8 +2830,10 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             ValueList wa{Value::integer(n)}; len = callCallable(args[1], wa).toInt() - start;
         }
         else len = args[1].toInt();
-        if (len < 0) len = n - start + len;
-        if (len < 0) len = 0;
+        if (len < 0) // Rakudo: X::OutOfRange (this counted back from the end)
+            return armedFailure("X::OutOfRange", "Length argument to substr out of range. Is: " +
+                std::to_string(len) + ", should be in 0.." + std::to_string(n - start) +
+                "; use *" + std::to_string(len) + " if you want to index relative to the end");
         if (start + len > n) len = n - start;
         return Value::str(slice(start, start + len));
     }

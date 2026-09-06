@@ -166,6 +166,10 @@ void load() {
         g.why = "disabled by RAKUPP_FFI";
         return;
     }
+    // "on" in any spelling is the DEFAULT search, not a library named "1"
+    // (which could not be loaded, so libffi was silently off)
+    if (env && (!std::strcmp(env, "1") || !std::strcmp(env, "on") || !std::strcmp(env, "yes") || !std::strcmp(env, "true")))
+        env = nullptr;
     if (env) {
         // An explicit path is a REQUEST, not a hint. Somebody who names a
         // libffi has a reason for that one — a newer build, a musl build, one

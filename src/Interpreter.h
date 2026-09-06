@@ -92,6 +92,9 @@ Value numifyStrOrThrow(const std::string& in);
 // The quiet form: a non-numeric string becomes an unthrown Failure (Rakudo's `+"a"`).
 Value numifyStrFailure(const std::string& in);
 // An ARMED Failure: payload type + diagnostic, throwing the moment it is used.
+// A negative subscript is out of range (see the definitions in Interpreter.cpp).
+Value negIndexFailure(long long i);            // reads: the armed X::OutOfRange Failure
+[[noreturn]] void negIndexThrow(long long i);   // writes: throw it
 // The bare Failure TYPE OBJECT is never the right return for a refusal — it
 // slid through arithmetic as 0 where Rakudo's Failure detonates.
 inline Value armedFailure(const char* type, const std::string& msg) {
@@ -1046,6 +1049,7 @@ public:
         return it == builtins_.end() ? nullptr : &it->second;
     }
     Value seqOp(Value l, Value r, bool exclusive); // the `...` sequence operator (also used by codegen)
+    void sinkValue(const Value& r);                 // sink a discarded value: Failure detonates, a failed Proc throws
     // `...` is list-associative: `1 ... 5 ... 1` and `'A'...'Z', 'a'...'z'` are ONE
     // operator over a list of lists. Each group's first element closes the previous
     // segment; the rest is emitted verbatim and seeds the next. Shared with codegen.
@@ -1341,7 +1345,7 @@ public:
     // says the signature belongs to a Block, whose untyped parameters are
     // Mu-constrained where a Routine's are Any-constrained.
     void typeCheckBind(const Param& p, const Value& v, bool blockParam = false);
-    std::string symRefName(SymbolicRef* sr); // effective name of a multi-segment symbolic ref
+    std::string symRefName(SymbolicRef* sr, bool* callerHead = nullptr); // effective name of a multi-segment symbolic ref (callerHead: it began with CALLER::)
     [[noreturn]] void throwTyped(const std::string& type,
                     std::vector<std::pair<std::string, std::string>> attrs,
                     const std::string& message); // typed exception OBJECT with attributes
@@ -1440,8 +1444,6 @@ public:
     static std::string encAdverb(const ValueList& args); // the `:enc` value, "" when absent
     std::string decodeTextEnc(const std::string& bytes, const std::string& enc); // file bytes -> Str
     std::string encodeTextEnc(const std::string& text, const std::string& enc);  // Str -> file bytes
-    Value regexSubst(const std::string& subject, const std::string& pattern,
-                     const std::string& repl, std::string& out, bool& changed);
     // .subst / s/// with occurrence-selection adverbs (:g/:x/:nth/:p/:c) and the
     // sameX adverbs (:samecase/:samespace/:samemark). Sets nsub = # replacements.
     std::string substSelect(const std::string& subj, const std::string& pat,
@@ -2265,8 +2267,8 @@ Value rtBAbsSlow(Interpreter& I, const Value& v);  // full abs (Builtins.cpp)
 Value rtBChr(Interpreter& I, const Value& v);      // chr: codepoint → Str (Builtins.cpp)
 Value rtBOrd(Interpreter& I, const Value& v);      // ord: Str → first codepoint (Builtins.cpp)
 inline Value rtBAbs(Interpreter& I, const Value& v) {
-    if (v.t == VT::Int && !v.big() && I.builtinExt_.empty())
-        return Value::integer(v.i < 0 ? -v.i : v.i);   // plain-Int hot path, inlined at the call site
+    if (v.t == VT::Int && !v.big() && I.builtinExt_.empty() && v.i != std::numeric_limits<long long>::min())
+        return Value::integer(v.i < 0 ? -v.i : v.i);   // plain-Int hot path, inlined at the call site (-2**63 takes the slow path: its abs is a BigInt)
     return rtBAbsSlow(I, v);
 }
 // The sweep: every named builtin mirrors its sub form EXACTLY (each body is the
@@ -2308,9 +2310,21 @@ inline Value rtBSign(Interpreter& I, const Value& v) {
 // Pure mirrors of the sub forms (deliberately including their double-precision
 // behavior — the SUB form is what call sites hit today, not the exact
 // bignum/Rat method forms).
-inline Value rtBFloor(Interpreter&, const Value& v)   { return Value::integer((long long)std::floor(v.toNum())); }
-inline Value rtBCeiling(Interpreter&, const Value& v) { return Value::integer((long long)std::ceil(v.toNum())); }
-inline Value rtBRound(Interpreter&, const Value& v)   { return Value::integer((long long)std::llround(v.toNum())); }
+// An INTEGRAL double as an Int — exact past ±2**63, where the (long long) cast
+// saturates (arm64) or gives INT64_MIN (x86): `1e19.floor` answered
+// 9223372036854775807. Callers floor/ceil/trunc first. Every rounding site —
+// the sub forms, the method forms, `.Int` on a Num, `.UInt`, `Num.Rat` — goes
+// through this one function.
+inline Value numToIntExact(double x) {
+    if (std::isnan(x)) return Value::integer(0);
+    if (std::isinf(x)) return Value::integer(x > 0 ? 9223372036854775807LL : -9223372036854775807LL - 1);
+    if (x < 9223372036854775807.0 && x > -9223372036854775808.0) return Value::integer((long long)x);
+    char buf[400]; std::snprintf(buf, sizeof buf, "%.0f", x);
+    return Value::bigint(BigInt::fromString(buf));
+}
+inline Value rtBFloor(Interpreter&, const Value& v)   { return v.t == VT::Int ? v : numToIntExact(std::floor(v.toNum())); }
+inline Value rtBCeiling(Interpreter&, const Value& v) { return v.t == VT::Int ? v : numToIntExact(std::ceil(v.toNum())); }
+inline Value rtBRound(Interpreter&, const Value& v)   { return v.t == VT::Int ? v : numToIntExact(std::floor(v.toNum() + 0.5)); }
 // log / log10 / log2 of a NEGATIVE real. Before 6.e the answer is NaN; from 6.e
 // on it is the complex logarithm, the same widening 6.e gave sqrt — ln|x| + iπ,
 // divided by ln(base) when there is one. Written once here because all three

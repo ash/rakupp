@@ -174,7 +174,18 @@ static bool caseFull(const uint32_t* t, size_t n, uint32_t cp, std::vector<uint3
 }
 uint32_t uniSimpleUpper(uint32_t cp) { return caseSimple(ucd::SUPPER, ucd::SUPPER_N, cp); }
 uint32_t uniSimpleLower(uint32_t cp) { return caseSimple(ucd::SLOWER, ucd::SLOWER_N, cp); }
-uint32_t uniSimpleTitle(uint32_t cp) { uint32_t t = caseSimple(ucd::STITLE, ucd::STITLE_N, cp); return t == cp ? uniSimpleUpper(cp) : t; }
+// does the SIMPLE table carry a row for cp at all? (caseSimple answers the input
+// for "absent" AND for "maps to itself", and the four Lt digraphs ǅ ǈ ǋ ǲ map
+// to themselves — they were uppercased instead)
+static bool caseSimpleHas(const uint32_t* t, size_t n, uint32_t cp) {
+    size_t lo = 0, hi = n;
+    while (lo < hi) { size_t mid = (lo + hi) / 2; uint32_t k = t[mid * 2];
+        if (cp < k) hi = mid; else if (cp > k) lo = mid + 1; else return true; }
+    return false;
+}
+uint32_t uniSimpleTitle(uint32_t cp) {
+    return caseSimpleHas(ucd::STITLE, ucd::STITLE_N, cp) ? caseSimple(ucd::STITLE, ucd::STITLE_N, cp) : uniSimpleUpper(cp);
+}
 std::vector<uint32_t> uniCaseMap(uint32_t cp, int kind) {
     std::vector<uint32_t> out;
     switch (kind) {

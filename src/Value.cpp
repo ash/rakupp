@@ -104,10 +104,12 @@ bool Value::truthy() const {
             }
             return arr() && !arr()->empty();
         case VT::Hash:
-            // A Proc / Proc::Async is true iff it exited successfully (exit code 0).
+            // A Proc / Proc::Async is true iff it exited successfully: exit code 0
+            // AND no signal (a SIGKILLed child has exitcode 0 — Rakudo's split).
             if ((hashKind == "Proc" || hashKind == "Proc::Async") && hash()) {
-                auto it = hash()->find("exitcode");
-                return it == hash()->end() || it->second.toInt() == 0;
+                auto it = hash()->find("exitcode"), sg = hash()->find("signal");
+                return (it == hash()->end() || it->second.toInt() == 0) &&
+                       (sg == hash()->end() || sg->second.toInt() == 0);
             }
             if (hashKind == "Failure") return false; // a Failure boolifies False (soft failure)
             // A Promise boolifies True only once it is Kept/Broken (a Planned
@@ -168,6 +170,14 @@ long long Value::toInt() const {
             if (n >= 9223372036854775807.0) return 9223372036854775807LL;
             if (n <= -9223372036854775808.0) return -9223372036854775807LL - 1;
             return (long long)n;
+        // a Complex with a zero imaginary part is its real part (`sprintf "%d",
+        // 3+0i` answered 0); a non-zero one has no integer — the method arm's error
+        case VT::Complex:
+            // (the primitive does not throw — `+(3i)` and `===` reach it and keep
+            // the Complex; the METHOD arms `.Int`/`.Num` raise X::Numeric::Real)
+            if (im() != 0) return 0;
+            return n >= 9223372036854775807.0 ? 9223372036854775807LL
+                 : n <= -9223372036854775808.0 ? -9223372036854775807LL - 1 : (long long)n;
         case VT::Rat:  { if (!ratN() || !ratD() || ratD()->isZero()) return 0; BigInt q, r; BigInt::divmod(*ratN(), *ratD(), q, r); return q.toLL(); }
         case VT::Str:  {
             // a Blob/Buf numifies to its ELEMENT COUNT (Rakudo: `8 * $msg` is
@@ -259,6 +269,9 @@ double Value::toNum() const {
         case VT::Bool: return b ? 1.0 : 0.0;
         case VT::Int:  return big() ? big()->toDouble() : (double)i;
         case VT::Num:  return n;
+        case VT::Complex: // (see toInt) — the primitive answered 0 for every Complex;
+            // a non-zero imaginary part has no Real value: NaN, never a silent 0
+            return im() != 0 ? std::numeric_limits<double>::quiet_NaN() : n;
         case VT::Rat:
             if (ratN() && ratD() && ratD()->isZero()) // zero-denominator Rat numifies to ±Inf / NaN
                 return ratN()->isZero() ? std::numeric_limits<double>::quiet_NaN()
@@ -313,7 +326,9 @@ static std::string numToStr(double n) {
     if (std::isinf(n)) return n < 0 ? "-Inf" : "Inf";
     if (std::isnan(n)) return "NaN";
     if (n == 0.0 && std::signbit(n)) return "-0"; // negative zero keeps its sign (Rakudo)
-    if (n == (long long)n && std::fabs(n) < 1e15) {
+    // Rakudo's integer-form boundary is 1e16 (`1e15` prints 1000000000000000);
+    // the range test runs FIRST — the cast is undefined past 2^63
+    if (std::fabs(n) < 1e16 && n == (long long)n) {
         return std::to_string((long long)n);
     }
     // shortest decimal that round-trips to the same double (matches Rakudo's
