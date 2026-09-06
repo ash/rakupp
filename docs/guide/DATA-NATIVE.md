@@ -11,11 +11,20 @@ say crypt_random_buf(32);               # bytes from the OS CSPRNG
 ```
 
 Nothing to install. On Raku++ the compiler answers that `use` from its own
-built-ins: no file is read, no module is loaded, no dependency is resolved. On
-any other engine the same line loads a distribution of the same name that
+built-ins: no file is read, no module is loaded, no dependency is resolved.
+
+On any other engine the same line loads a distribution of the same name that
 composes the ecosystem's usual modules, so the program is portable rather than
-Raku++-only — which is the point. A program written against this runs on Rakudo,
-it just runs slower there.
+Raku++-only — which is the point. There it needs installing like anything else:
+
+```sh
+zef install Data::Native      # not needed on Raku++, where the compiler answers
+```
+
+A program written against this then runs on Rakudo unchanged; it just runs
+slower there. The examples on this page are therefore Raku++-runnable as they
+stand and Rakudo-runnable after that install, which is why they show up under
+`RAKUDO-FAILS` in `tools/doc-examples-diff.raku` on a machine without it.
 
 ## The five tags, thirty-two names
 

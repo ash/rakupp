@@ -181,7 +181,8 @@ say crypt_random_buf(32);               # bytes from the OS CSPRNG
 Five tags, thirty-two names, every signature copied from the ecosystem module it
 stands in for — and **portable**: on any other engine the same line loads a
 distribution of that name that composes `JSON::Fast`, `Digest::SHA2`,
-`Compress::Zlib` and `Crypt::Random`, so the program runs on Rakudo unchanged.
+`Compress::Zlib` and `Crypt::Random`, so the program runs on Rakudo unchanged
+once `zef install Data::Native` has put it there.
 A program using it compiles to a standalone binary, because there is nothing
 left to find at run time.
 

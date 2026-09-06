@@ -249,7 +249,9 @@ from the ecosystem module it stands in for, so moving a program to or from
 **It is portable, which is the point.** On any other engine the same line loads
 a distribution of that name which composes the usual modules — `JSON::Fast`,
 `Digest::SHA2`, `Compress::Zlib`, `Crypt::Random` — so a program written against
-it runs on Rakudo too. Each tag exports a `*-backend()` sub that says which
+it runs on Rakudo too, once `zef install Data::Native` has put the distribution
+there. (That install is what Raku++ does *not* need, and the asymmetry is the
+whole feature.) Each tag exports a `*-backend()` sub that says which
 implementation answered:
 
 ```raku
