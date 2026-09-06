@@ -532,9 +532,41 @@ static int exeInfo(const std::string& path) {
 // Build the compile-and-link command for a generated source + the runtime
 // archive, in the dialect of the chosen compiler. `opt` is the Unix-style
 // optimization flag ("-O2", "-O0", …); it is translated for cl.
+// Does this program host a native extension? `rakupp-ext-load` is the only
+// door in (Builtins.cpp), and a program that opens it must NAME it — through
+// `&::('rakupp-ext-load')`, the portable spelling EXTENSIONS.md teaches, or as a
+// plain call. A text scan is enough to decide a LINK FLAG: a false positive
+// costs some bytes, and a false negative is caught at run time by the loader's
+// own check, which refuses rather than crashing.
+static bool programHostsExtension(const std::string& src) {
+    return src.find("rakupp-ext-load") != std::string::npos;
+}
+
+// Write the linker's export list for the `rk_*` ABI and answer the flag that
+// uses it, or "" where the platform needs none. Mach-O and ELF hide these
+// symbols from a dlopen'ed extension unless asked; Windows already carries them
+// through RK_API's dllexport, so there is nothing to do there.
+static std::string extExportFlag(const std::string& outPath, std::string& listPath) {
+#if defined(_WIN32)
+    (void)outPath; (void)listPath; return "";
+#else
+    listPath = outPath + ".rakupp.exports";
+    std::ofstream f = openOut(listPath);
+    if (!f) { listPath.clear(); return ""; }   // not fatal: the loader still refuses cleanly
+  #if defined(__APPLE__)
+    f << "_rk_*\n";
+    return " -Wl,-exported_symbols_list," + shq(listPath);
+  #else
+    f << "{ rk_*; };\n";
+    return " -Wl,--dynamic-list=" + shq(listPath);
+  #endif
+#endif
+}
+
 static std::string compileCmd(const std::string& cxx, const std::string& opt,
                               const std::string& inc, const std::string& in,
-                              const std::vector<std::string>& libs, const std::string& out) {
+                              const std::vector<std::string>& libs, const std::string& out,
+                              const std::string& extraLink = "") {
     if (msvcStyle(cxx)) {
         std::string o = opt == "-O0" ? "/Od" : opt == "-O1" ? "/O1" : "/O2";
         // /MT: static CRT, matching the /MT-built runtime archive (mixing
@@ -600,6 +632,7 @@ static std::string compileCmd(const std::string& cxx, const std::string& opt,
     if (g_slim.deadStrip) c += " -Wl,--gc-sections";
     if (g_slim.stripSyms) c += " -Wl,-s"; // ELF: no symbol table in the output
 #endif
+    c += extraLink;   // the rk_* export list, when this program hosts an extension
     return c;
 }
 
@@ -873,9 +906,12 @@ static int compileToExe(const std::string& src, const std::string& srcName, std:
                   << "\n(the archives ship together — rebuild rakupp: cmake --build build; or reinstall)\n";
         return 5;
     }
-    std::string cmd = compileCmd(nativeCxx(lib), "-O2", "", stubPath, rtLibs, outPath);
+    std::string expList, extra;
+    if (programHostsExtension(src)) extra = extExportFlag(outPath, expList);
+    std::string cmd = compileCmd(nativeCxx(lib), "-O2", "", stubPath, rtLibs, outPath, extra);
     int rc = runCommand(cmd);
-    removeFile(stubPath);
+    if (!std::getenv("RAKUPP_KEEPGEN")) removeFile(stubPath);  // as the other two paths honour it
+    if (!expList.empty()) removeFile(expList);
     if (rc != 0) {
         std::cerr << "Compilation failed (compiler exit " << rc << ")\n";
 #ifdef _WIN32
@@ -1126,9 +1162,12 @@ static int compileNative(const std::string& src, const std::string& srcName, std
                   << "\n(the archives ship together — rebuild rakupp: cmake --build build; or reinstall)\n";
         return 5;
     }
-    std::string cmd = compileCmd(nativeCxx(lib), ccOpt, inc, genPath, rtLibs, outPath);
+    std::string expList, extra;
+    if (programHostsExtension(src)) extra = extExportFlag(outPath, expList);
+    std::string cmd = compileCmd(nativeCxx(lib), ccOpt, inc, genPath, rtLibs, outPath, extra);
     int rc = runCommand(cmd);
     if (!std::getenv("RAKUPP_KEEPGEN")) removeFile(genPath);
+    if (!expList.empty()) removeFile(expList);
     if (rc != 0) {
         std::cerr << "Compilation failed (compiler exit " << rc << ")\n";
 #ifdef _WIN32
@@ -1196,9 +1235,12 @@ static int compileAotAst(const std::string& src, const std::string& srcName, std
                   << "\n(the archives ship together — rebuild rakupp: cmake --build build; or reinstall)\n";
         return 5;
     }
-    std::string cmd = compileCmd(nativeCxx(lib), "-O2", inc, genPath, rtLibs, outPath);
+    std::string expList, extra;
+    if (programHostsExtension(src)) extra = extExportFlag(outPath, expList);
+    std::string cmd = compileCmd(nativeCxx(lib), "-O2", inc, genPath, rtLibs, outPath, extra);
     int rc = runCommand(cmd);
     if (!std::getenv("RAKUPP_KEEPGEN")) removeFile(genPath);
+    if (!expList.empty()) removeFile(expList);
     if (rc != 0) {
         std::cerr << "Compilation failed (compiler exit " << rc << ")\n";
 #ifdef _WIN32

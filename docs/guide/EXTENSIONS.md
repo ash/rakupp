@@ -494,9 +494,18 @@ Worth knowing before you design around them.
   walk costs O(1) per key. Jumping about between two hashes, or writing to a
   hash while walking it, falls back to the O(i) positioning — correct either
   way, just slower.
-- **No `--exe` bundling.** A program using a native extension cannot be compiled
-  into a standalone binary — the shared library is loaded at run time and is not
-  part of the module graph the bundler walks.
+- **`--exe` works, and the shared library stays external.** The extension is
+  loaded at run time and is not part of the module graph the bundler walks, so
+  ship the `.dylib`/`.so`/`.dll` beside the binary as you would beside a script.
+  The compiler notices that the program names `rakupp-ext-load` and exports the
+  `rk_*` ABI from the binary, which an extension resolves against its host the
+  way a Python C extension resolves `Py_*`. That export costs roughly 580 KB, so
+  a program that hosts no extension does not pay it. If the loader's name is one
+  the compiler cannot see — built at run time, or reached through `EVAL` — the
+  binary carries no ABI and `rakupp-ext-load` refuses with a message saying so.
+  (Before v3.25.1 the export was missing entirely and the first call into an
+  extension died with SIGSEGV, after the load and the lookup had both reported
+  success.)
 - **One `RkCtx` per call, single-threaded within that call.** Handles are not
   safe to pass between threads.
 

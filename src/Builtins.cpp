@@ -1,6 +1,9 @@
 #include "CNumeric.h"
 #include "AsciiCtype.h"
 #include "Interpreter.h"
+#if !defined(_WIN32)
+#include <dlfcn.h>   // the extension-host check in rakupp-ext-load
+#endif
 #include "DataCsv.h"
 #include "Digest.h"
 #include "DataDigest.h"
@@ -8971,6 +8974,20 @@ void Interpreter::registerBuiltins() {
     };
     B["rakupp-ext-load"] = [](Interpreter& I, ValueList& a) -> Value {
         if (a.empty()) return Value::boolean(false);
+        // An extension resolves `rk_*` from its host. The rakupp executable
+        // exports them; a COMPILED program does so only when the compiler saw
+        // that it hosts an extension (main.cpp's programHostsExtension). Where
+        // it did not — a name built at run time, an EVAL, a module — the first
+        // call into the extension would jump through an unbound stub and die
+        // with SIGSEGV, after the load and the lookup had both reported
+        // success. Ask the host first, and refuse in words instead.
+#if !defined(_WIN32)
+        if (!dlsym(RTLD_DEFAULT, "rk_int"))
+            throw RakuError{Value::typeObj("X::AdHoc"),
+                "This program cannot host a native extension: its own binary does not export the "
+                "rk_* ABI. Compile it with the extension's loader visible in the source (a literal "
+                "`rakupp-ext-load`), or run it with the interpreter."};
+#endif
         std::string err;
         std::vector<std::pair<std::string, Value>> subs;
         Value ok = extLoadModule(a[0].toStr(), err, subs);
