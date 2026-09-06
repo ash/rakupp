@@ -19,10 +19,10 @@ faults under those rows fixed by cause, each named with the rule it restores.
 Seven issues closed; the list container stops being a `std::vector`. Every release is
 written up in the [CHANGELOG](CHANGELOG.md).
 
-**Current focus:** the ecosystem sweep — all 2,526 distributions of the Raku
+**Current focus:** the ecosystem sweep — all 2,530 distributions of the Raku
 ecosystem run against rakupp, and the engine gets fixed until real modules
-install and pass their own test suites. As of the 2026-08-30 re-sweep
-**746 of 2,526 pass**, with another 383 blocked by a failing
+install and pass their own test suites. As of the 2026-09-05 re-sweep
+**824 of 2,530 pass**, with another 274 blocked by a failing
 dependency before their own tests could run; what the sweep finds drives what
 gets built next ([the findings](docs/dev/findings/ECOSWEEP-2026-08.md), with
 the green list and per-dist results — and **every distribution with how it
@@ -65,8 +65,8 @@ v3.23.0's own source on the same machine and every kernel landed within 1-3% of
 its recorded number, so the drift did not recur and this release's figures are a
 comparison of code.
 
-Then the standing target: **1000 of 2,526** distributions passing their own test
-suites, up from 746, where the lever is the 383 that never ran their own tests at
+Then the standing target: **1000 of 2,530** distributions passing their own test
+suites, up from 824, where the lever is the 274 that never ran their own tests at
 all because a dependency failed first. The plans are in
 [docs/dev/plans/VERSIONS.md](docs/dev/plans/VERSIONS.md).
 
@@ -75,7 +75,7 @@ all because a dependency failed first. The plans are in
 | Roast, per individual test — of what the suite declares‡ | **199,980 of ~219,403 (91%)** | 197,090 of ~203,500 (97%) |
 | Roast, all-or-nothing — files fully passing, of 1,464 | **651 (44%)** | 594 |
 | Official documentation examples byte-identical on both engines | **953** | 952 |
-| Of the Raku ecosystem's [2,526 distributions](https://raku.online/modules/ecosystem/), passing their own test suites | **746** | — |
+| Of the Raku ecosystem's [2,530 distributions](https://raku.online/modules/ecosystem/), passing their own test suites | **824** | — |
 | Local regression suite | **637** | 312 |
 | `say "Hello"` compiled with `--exe --slim` | **6,455,800 B** | 9,830,680 B (no `--slim`) |
 
@@ -164,7 +164,7 @@ say to-json({ name => 'Ada' }, :!pretty);   # {"name":"Ada"}
 
 It also loads your own module files from `lib/` (and `-I` / `RAKULIB` / `use lib`
 paths), and a `use` that cannot be found or fails to compile is **fatal**.
-How much of the ecosystem runs today: all 2,526 distributions, each with its
+How much of the ecosystem runs today: all 2,530 distributions, each with its
 sweep verdict, are listed at
 [raku.online/modules/ecosystem](https://raku.online/modules/ecosystem/).
 Full guide: **[MODULES.md](docs/guide/MODULES.md)**.
