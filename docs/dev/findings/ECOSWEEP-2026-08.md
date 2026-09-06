@@ -59,6 +59,7 @@ the `- YYYY-MM-DD: N of M` shape in every sweep write-up):
 - 2026-08-23: 624 of 2,524
 - 2026-08-25: 637 of 2,524
 - 2026-08-30: 746 of 2,526
+- 2026-09-05: 824 of 2,530
 
 The modest conversion count is the honest shape of the terrain: each fix tends
 to move its cluster ONE RUNG — a dist that failed to parse now runs its suite
@@ -416,3 +417,125 @@ first with the 476 modules named by two or more dists (`rank-deps.raku` then
 `nice -n 10` rather than four, to keep the machine usable — the sweep is
 long, not urgent. Zero harness aborts and no watchdog firing across all
 2,525 shard dists.
+
+## Sitting six (2026-09-05, on v3.25.0-35-g83e66a6 + the batch below): 824 of 2,530
+
+The population measured again end to end, on a snapshot binary built for the
+run. Index of 2026-09-04: **2,530 dists**, four of them new since August.
+Per-dist results in [ecosweep/sweep-2530.tsv](ecosweep/sweep-2530.tsv), the
+green list in [ecosweep/green-2530.txt](ecosweep/green-2530.txt).
+
+| verdict | dists | 2026-08-30 |
+|---|---:|---:|
+| **pass** | **824** | 746 |
+| self-fail | 1,268 | 1,228 |
+| dep-fail | 224 | 337 |
+| other | 67 | 67 |
+| build-fail | 53 | 51 |
+| dep-build-fail | 50 | 46 |
+| timeout | 42 | 49 |
+| fetch-fail | 1 | 2 |
+
+Test::Selector stays quarantined and is the one dist of the 2,530 with no row
+(it recorded `self-fail` in August, measured last and alone).
+
+**746 → 824 decomposes as 94 conversions, 18 regressions, 4 new dists** (two of
+them passing: LeftistHeap and RealDentalCosts::API). The blocked cohort is down
+to **274** dists (was 383) and no single blocker holds more than eleven —
+Math::Libgsl::Complex 11, Font::FreeType 11, Inline::Perl5 9,
+as-cli-arguments 8, Implementation::Loader 7. The era of one dist gating dozens
+is over; what is left is a long tail.
+
+**The 18 regressions, each re-measured alone against a clean-HEAD baseline
+build.** Six do not reproduce at all — Cro-HTTP-Middleware-GoatCounter,
+IRC::Client, JSON::JWT, WWW--CloudHosting--Hetzner, LocalTime and Alma pass
+when run on their own, so the population figure is conservative by about that
+much. The other twelve reproduce IDENTICALLY on the baseline, which means they
+arrived between the August sweep engine (v3.23.0-8) and HEAD and are not this
+batch's doing: Statistics, Audio::Liquidsoap, Audio::Playlist::JSPF,
+DSL::English::ClassificationWorkflows, DSL::Entity::Foods, Pakku::RecMan::Client,
+Retry, Scheduler::DelayBetween, Test::Assertion, Text::Diff::Sift4,
+Usage::Utils, as-cli-arguments. Retry's `we can retry for *` and
+Text::Diff::Sift4's `Target is not assignable` are the two worth starting from.
+
+### The batch that moved it
+
+Fourteen engine fixes, each oracle-verified against Rakudo 2026.08 and pinned in
+`t/regression/ecosweep-2026-09.raku` (which passes byte-for-byte under Rakudo
+too, fixtures in `t/regression/eco-lib/`). Gates per batch: t/run 685/685, eight
+roast slices (S02/S03/S04/S05/S06/S11/S12/S32) file-identical against a
+clean-HEAD baseline build.
+
+- **A pseudo-package key may be COMPUTED or INTERPOLATED.** `MY::{$n}`,
+  `MY::<<$n>>` and the chain form `OUTER::MY::` — each OUTER steps one scope out,
+  for `:exists` and for the read. PROCESS keeps its own `evalIndex` path, where
+  its symbols are the `$*NAME` dynamics rather than Env slots.
+- **An import inside a block or routine is LEXICAL.** It shadows an outer routine
+  there, does not reach out and replace an existing global, and never lands on a
+  name the importing scope declares itself. Time::gmtime's own `my sub gmtime`
+  says `use P5localtime; populate(gmtime($time))` in its body and meant the
+  imported one — it called itself, 41,367 frames deep. A plain `is export` sub is
+  now recorded with its tags, so the second `use` in a routine called twice
+  imports as lexically as the first.
+- **`use lib 'lib', 't/lib'` kept the first path and dropped the rest.** The
+  one-string form still keeps its path as text (the native backends read it
+  there); a comma list parses as an expression.
+- **`our $x is export` in a module is ONE container.** It was copied out at
+  publish time, so every later write by the module landed where no importer could
+  see it — Time::gmtime's `:FIELDS` variables read back undefined however many
+  times gmtime() had filled them in.
+- **`subset CC of Str() where …`** — a coercion base type parses, matches by
+  coercing first, and BINDS the coerced value (which means excluding it from the
+  simple-signature fast path, or a plain `$` parameter never sees it).
+  Business::CreditCard's suite passes card numbers as Int literals.
+- **`--> CONSTANT` is a return VALUE, not a constraint.** An enum member or a
+  constant as the return type makes the routine answer it, and Rakudo sinks
+  whatever the body evaluated to.
+- **`* => 1` and `"a" => *` are WhateverCodes**, a bareword key (`a => *`) stays
+  a Pair, and `codeArity` now reports a WhateverCode's arity — so
+  `<1 2 3 4>.map(* + *)` is (3, 7) and `%h.kv.map($ns ~ * => *)` pairs each key
+  with its value. A constant Map written as `<US MX>.map(* => Discover)` read
+  back empty before this.
+- **A nested class shadows an outer one of the same name** for the types written
+  in its parent's body — re-resolved after the class body runs, which is when the
+  nested class exists. JSON::Unmarshal declares both in one file, and every
+  element its custom unmarshaller built failed its own container's type check.
+- **A Unicode routine name in string interpolation.** `"$n.&mööse()"` truncated
+  at the ö, left the call uncommitted, and the `&name(` branch then compiled
+  `mööse()` with NO invocant.
+- Missing surface: enum `SeekType`, `$*DEFAULT-READ-ELEMS` (65536),
+  `Exception.Failure`, `Real.base` on Num and Rat, `.nl-out` writable per
+  instance on an IO::Handle subclass, `nqp::indexic`/`indexim`/`indexicim`,
+  `Iterable.hyper.configuration`.
+
+**Neither regression this batch introduced was caught by the roast slices.**
+They were file-identical against baseline while (a) Compress::Zlib SEGFAULTED —
+the lexical import had replaced the module's own `our sub uncompress` with the
+four-argument NATIVE of that name from the module it `need`s; and (b) YAMLish
+built pairs with `*` values. Both were found by running real distributions. The
+slices are necessary and not sufficient: after any change to imports, dispatch or
+currying, run a handful of ecosystem suites before believing the gate.
+
+### What the sweep's own instrument got wrong, again
+
+**Stopping the sweep is the dangerous part.** `pkill -f sweep-fresh.raku` kills
+the shard drivers and orphans every `rakupp test` below them — including the
+perl whose alarm enforces the 120-second budget, so the children run forever.
+Two such stops (one to add `OPENSSL_PREFIX`, one to fix the YAMLish regression)
+left six orphans running over an hour and took the machine to **load 500**. At
+that load the sweep's own network fetches began failing and it wrote **614 bogus
+`fetch-fail` rows** — a verdict that means "the machine is sick", never "the dist
+is broken". Both out files were truncated at the first such row and the run
+resumed; the runner now traps EXIT/TERM/INT and kills the tree by the snapshot
+binary's name (macOS has no `setsid`, so it cannot lead its own process group).
+
+**`OPENSSL_PREFIX` has to be set when the store is SEEDED, not just when the
+sweep runs** — OpenSSL's build hook is what reads it, and the seeded store had
+`/usr/local`'s x86_64 libssl written into its `resources/libraries.json`. Forty
+rows across the TLS constellation recorded that as a failure; the stores were
+repaired mid-run and those rows re-measured.
+
+**A copied binary is killed on sight.** The sweep runs
+`build-arm64/rakupp-sweep` (a copy, so binary-relative `rakulib/` and `tools/`
+still resolve) and macOS SIGKILLs an unsigned copy with no message at all —
+`codesign -s - -f` it and check `--version` speaks before launching.
