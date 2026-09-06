@@ -2921,10 +2921,12 @@ int main(int argc, char** argv) {
             return rakupp::rakuppRepl(exePath, libPaths, g_quiet);
         }
         // Bare `rakupp` with stdin redirected — `echo … | rakupp`, `rakupp < f.raku`
-        // — is a whole program arriving on stdin, exactly as before.
+        // — is a whole program arriving on stdin, exactly as before. Its name
+        // is `-`, as under Rakudo ($*PROGRAM-NAME, $?FILE, `at - line N`).
         std::ostringstream ss;
         ss << std::cin.rdbuf();
         src = ss.str();
+        fileName = "-";
     }
     if (optN || optP) { // wrap the program in a record loop (files in @*ARGS, else $*IN)
         // emit a string as a double-quoted Raku literal with per-char escaping

@@ -6491,9 +6491,14 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
         // routines declared while this module's top level runs record ITS file
         // (backtrace .file — Log::Async walks frames by path); RAII because a
         // throwing module load is fatal-but-caught upstream
-        struct DFGuard { std::string& f; std::string s; ~DFGuard() { f = s; } }
-            dfG{curDeclFile_, curDeclFile_};
+        struct DFGuard { std::string& f; std::string s; size_t& d; size_t sd; ~DFGuard() { f = s; d = sd; } }
+            dfG{curDeclFile_, curDeclFile_, curDeclDepth_, curDeclDepth_};
         curDeclFile_ = srcPath;
+        curDeclDepth_ = tctx_.callFrames.size();
+        { // $?FILE inside the module answers as Rakudo spells it: "path (Name)"
+            std::unique_lock<std::mutex> kl(sharedMut_, std::defer_lock); if (parallelMode_) kl.lock();
+            unitNameOfFile_[srcPath] = name;
+        }
         loadParsed(prog, finish);
     };
 
@@ -6842,6 +6847,36 @@ void Interpreter::traceStmt(Stmt* s) {
     if (lead != std::string::npos) text = text.substr(lead);
     std::cerr << "[trace] " << btDisplayPath(file, srcFileAbs_, srcFile_) << ":" << ln
               << "  " << text << "\n";
+}
+
+// $?FILE — the file the executing code was WRITTEN in, a compile-time fact: a
+// block written in the program and called from a module's sub still says the
+// program, and a module's sub called from the program says the module. The
+// innermost live routine records its declaration file; when no routine has
+// been entered since a module's top level began (curDeclDepth_), the executing
+// unit's file is the answer. It used to answer the main program from anywhere
+// (found by --trace, 2026-09-06). A module answers as Rakudo spells it: the
+// absolute source path, then the name it was loaded as, in parens.
+std::string Interpreter::fileConstNow() {
+    std::string f;
+    auto& fr = tctx_.callFrames;
+    if (!fr.empty() && (curDeclFile_.empty() || fr.size() > curDeclDepth_))
+        if (const Value* cv = fr.back().code)
+            if (auto c = cv->codeS()) f = c->declFile;
+    if (f.empty()) f = curDeclFile();
+    // a program with no file — -e code, stdin — answers its plain name, as
+    // Rakudo does (the cwd-prefixed form is for backtrace .file lookups)
+    if (f == srcFileAbs_ && !srcFile_.empty() && srcFile_[0] == '-') return srcFile_;
+    std::string unit;
+    {
+        std::unique_lock<std::mutex> kl(sharedMut_, std::defer_lock); if (parallelMode_) kl.lock();
+        auto it = unitNameOfFile_.find(f);
+        if (it != unitNameOfFile_.end()) unit = it->second;
+    }
+    if (unit.empty()) return f;
+    std::error_code ec;
+    std::string abs = std::filesystem::absolute(f, ec).lexically_normal().string();
+    return (ec ? f : abs) + " (" + unit + ")";
 }
 
 void Interpreter::replStart(std::vector<std::string> args) {
@@ -12618,7 +12653,7 @@ Value Interpreter::dynVar(const std::string& name) {
 #endif
     }
     if (name == "$*RAKU" || name == "$*PERL" || name == "$?RAKU" || name == "$?PERL") return rakuIntrospection(false);
-    if (name == "$?FILE") return Value::str(srcFileAbs_.empty() ? srcFile_ : srcFileAbs_);
+    if (name == "$?FILE") return Value::str(fileConstNow());
     if (name == "$*PROGRAM") { Value p = Value::str(srcFile_); p.hashKind = "IO"; return p; }
     if (name == "$*PROGRAM-NAME") return Value::str(srcFile_);
     if (name == "$*USAGE") { std::string u = mainUsage(); if (!u.empty() && u.back() == '\n') u.pop_back(); return Value::str(u); }
@@ -30041,7 +30076,7 @@ Value Interpreter::eval(Expr* e) {
                 return distStack_.empty() ? Value::any() : distStack_.back();
             }
             if (ve->name == "$?LINE") return Value::integer(ve->line);
-            if (ve->name == "$?FILE") return Value::str(srcFileAbs_.empty() ? srcFile_ : srcFileAbs_);
+            if (ve->name == "$?FILE") return Value::str(fileConstNow());
             // Built-in magic dynamic vars ($*OUT, $*CWD, …). A user binding
             // (`my $*OUT = …`) or a fresh declaration takes precedence, so only
             // fall back to the built-in default when the name is neither being

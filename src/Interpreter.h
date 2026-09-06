@@ -1900,6 +1900,9 @@ public:
     std::string srcFile_;             // source file path as invoked ($*PROGRAM-NAME)
     std::string srcFileAbs_;          // absolute source file path ($?FILE)
     std::string curDeclFile_;         // file whose top level is executing (module load switches it)
+    size_t curDeclDepth_ = 0;         // callFrames depth when curDeclFile_ was set: a frame above it is a routine entered since
+    std::map<std::string, std::string> unitNameOfFile_; // module source path → the name it was loaded as ($?FILE's " (Name)")
+    std::string fileConstNow();       // $?FILE: the file the executing code was WRITTEN in
     // the file a routine declared NOW should record (backtrace .file)
     std::string curDeclFile() const {
         return !curDeclFile_.empty() ? curDeclFile_
