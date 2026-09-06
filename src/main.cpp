@@ -2570,20 +2570,22 @@ int main(int argc, char** argv) {
         }
     }
     // The first line keeps its shape: it is what a human greps for and what
-    // t/run.raku asserts. Everything a bug report needs follows it — which
-    // commit this binary came from, when, for what, and with which compiler.
+    // t/run.raku asserts. The }i{ between the version and the tagline is
+    // Camelia, in the three ASCII characters every terminal draws alike.
+    // Everything a bug report needs follows as an aligned label/value block —
+    // which commit this binary came from, when, for what, and with which
+    // compiler.
     if (mode == Mode::Version) {
         std::cout << "Raku++ (rakupp) " RAKUPP_VERSION
-                     " — a Raku interpreter and compiler in C++\n"
-                     // 6.e is no longer "some features": it is implemented and
-                     // gated, so a program gets 6.d unless it asks for 6.e. The
-                     // exceptions are named on the support page rather than in a
-                     // banner line nobody can fit them into.
-                     "Implements Raku 6.d, and 6.e under `use v6.e.PREVIEW`.\n"
-                  << "Build  " << rakupp::buildId() << " (" << rakupp::buildDate()
-                  << "), " << rakupp::platform() << ", " << rakupp::compilerId() << "\n"
-                  << "Home   https://raku.online — docs, a tour of the language, "
-                     "and a browser playground\n";
+                     " }i{ a Raku interpreter and compiler in C++\n"
+                     // 6.e is implemented and gated, so a program gets 6.d
+                     // unless it asks for 6.e. The exceptions are named on the
+                     // support page rather than in a banner line nobody can fit
+                     // them into.
+                     "Raku    6.d (6.e with `use v6.e.PREVIEW`)\n"
+                  << "Build   " << rakupp::buildId() << ", " << rakupp::buildDate() << "\n"
+                  << "Target  " << rakupp::platform() << ", " << rakupp::compilerId() << "\n"
+                  << "Home    https://raku.online\n";
         return 0;
     }
     // Which FFI backend NativeCall will use. The first question to ask of a

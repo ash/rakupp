@@ -969,8 +969,10 @@ section('the CLI surface (goldens for the v3 parser refactor)');
     # the LINE is there and let a stamped build assert the content.
     ok($vo.contains('Build ') && $vo.contains('Home ') && $vo.contains('raku.online'),
        '--version carries the build stamp and the project link');
-    ok($vo ~~ /^^ 'Build ' \s+ \S+ ' (' \d**4 '-' \d\d '-' \d\d '), ' \S+ ', '/,
-       '--version build line has commit, date, platform, compiler');
+    ok($vo ~~ /^^ 'Build ' \s+ \S+ ', ' \d**4 '-' \d\d '-' \d\d $$/,
+       '--version build line has commit and date');
+    ok($vo ~~ /^^ 'Target ' \s+ \S+ ', ' \S/,
+       '--version target line has platform and compiler');
     ok(run-rakupp('-V')[0] eq $vo, '-V is --version');
     ok(run-rakupp('-v')[0] eq $vo, '-v is --version');
     my ($fo, $fx) = run-rakupp('--ffi-info');
