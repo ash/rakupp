@@ -1,6 +1,8 @@
 # Plan: `Data::Native` — one portable `use` for whatever the engine does natively
 
-**Status: BOTH HALVES ARE BUILT (2026-09-05). P1 to P7 have all landed.** `Data::Native`,
+**Status: BOTH HALVES ARE BUILT. P1 to P7 landed 2026-09-05; the release
+polish — the version gate, `--exe --standalone`, and the user-facing page —
+landed 2026-09-06.** `Data::Native`,
 `Digest::Native` and `Compress::Zlib::Native` exist in
 `/Users/ash/raku-modules` with `JSON::Native` and `CSV::Native` retrofitted
 alongside them — 1,058 assertions on rakupp, 1,063 on Rakudo. Extension ABI 3
@@ -1182,7 +1184,20 @@ half), then P1, P6, P2, P3, P4 and P5 in that order, all on 2026-09-05.
   per module name, and a store lookup that defers to anything higher; (d) the
   claim-registry write per claimed tag, or `Digest::Native` will not stand
   aside when it does load. Gate: `Data-Native/t/` and each distribution's suite
-  pass identically with and without `-I` pointing at the distribution.
+  pass identically with and without `-I` pointing at the distribution, plus
+  `t/regression/data-native-precedence.raku`, which walks the whole ladder
+  against a scratch CURI store holding a fake distribution that announces
+  itself — the only way to tell "the engine answered" from "the module
+  answered" when both compute the same digest.
+
+  **(c) landed 2026-09-06**, after the other four: `kDataNativeModules` carries
+  an interface version per module name and one store lookup defers to anything
+  higher. Installed 0.0.1 against an engine implementing 0.0.1, the engine
+  answers; installed 0.2.0, it steps aside. That is the whole mechanism by
+  which the distributions ship on their own schedule, and until it existed an
+  updated distribution was dead code on this engine. The precedence file also
+  asserts the declared versions match the distributions' own META6, since a
+  drift there makes the gate answer the wrong question silently.
 
   Three things it had to settle that this bullet did not anticipate, each
   found by a test that failed first:

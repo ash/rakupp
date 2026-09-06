@@ -5641,6 +5641,15 @@ std::vector<BundledModule> collectModuleGraph(const Program& prog,
         const std::string name = queue[qi];
         if (name.empty() || !seen.insert(name).second) continue;
         if (isPragmaName(name)) continue;                 // no file behind it
+        // A module the COMPILER answers has no file to embed and needs none at
+        // run time — the binary carries the primitives already. Reporting it as
+        // a skip is not merely noisy: --standalone refuses to build when the
+        // skip list is non-empty, so `rakupp --exe --standalone` on a program
+        // using Data::Native was refused for needing a disk it does not touch.
+        // An explicit -I still wins here exactly as it does in the loader, so a
+        // checkout under -I is collected and embedded normally.
+        if (rakuppCompilerAnswersModule(name) &&
+            !moduleFileOnPath(name, searchPath, prog.langRev >= 2)) continue;
         std::string path, src;
         if (!findModuleSourceFor(name, searchPath, path, src, prog.langRev >= 2)) {
             // load from disk at run time — silently before MODULES-PLAN B1
@@ -5836,15 +5845,22 @@ static const DataNativeTag kDataNativeTags[] = {
 // Which module names the compiler claims, and the tags each covers.
 struct DataNativeModule {
     const char* module;
+    // The INTERFACE version this engine implements for that name. An installed
+    // distribution NEWER than this is one that knows something the compiler does
+    // not, so the compiler steps aside and lets it load — which is the whole
+    // mechanism by which the distributions can be updated on their own schedule
+    // without waiting for an engine release. Bump it here when a tag's surface
+    // changes, in step with the distribution's own META6 version.
+    const char* interfaceVer;
     const char* tags[6];       // NULL-terminated
 };
 static const DataNativeModule kDataNativeModules[] = {
-    { "Data::Native",  { "json", "csv", "digest", "zlib", "random", nullptr } },
-    { "JSON::Native",  { "json", nullptr } },
-    { "CSV::Native",   { "csv", nullptr } },
-    { "Digest::Native", { "digest", nullptr } },
-    { "Compress::Zlib::Native", { "zlib", nullptr } },
-    { nullptr, { nullptr } }
+    { "Data::Native",           "0.0.1", { "json", "csv", "digest", "zlib", "random", nullptr } },
+    { "JSON::Native",           "0.0.2", { "json", nullptr } },
+    { "CSV::Native",            "0.0.1", { "csv", nullptr } },
+    { "Digest::Native",         "0.0.1", { "digest", nullptr } },
+    { "Compress::Zlib::Native", "0.0.1", { "zlib", nullptr } },
+    { nullptr, nullptr, { nullptr } }
 };
 
 // The PARSER needs the same answer, and cheaply. It scans a `use`d module's
@@ -5893,7 +5909,9 @@ bool Interpreter::dataNativeUse(const std::string& name,
         if (name == m->module) { mod = m; break; }
     if (!mod) return false;
 
-    // (2) a versioned request belongs to the store, not to us
+    // (2) a versioned request belongs to the store, not to us. `use
+    // Data::Native:ver<0.2+>` asked for something specific; answering it from
+    // the compiler's own interface would be inventing a version.
     if (!verReq.empty()) return false;
 
     // (1) an explicit search path wins — this is what makes `rakupp test`
@@ -5906,9 +5924,28 @@ bool Interpreter::dataNativeUse(const std::string& name,
     // dependency on a machine that had it installed.
     if (moduleFileOnPath(name, libPaths_, sixE())) return false;
 
+    // (2b) an INSTALLED distribution newer than the interface this engine
+    // implements knows something the compiler does not, so the compiler steps
+    // aside. That is what lets the distributions be released on their own
+    // schedule: install 0.2.0 of one and it takes over on this engine with no
+    // engine release, exactly as it would on Rakudo.
+    //
+    // One store lookup, against loading the module and its whole dependency
+    // tree — which is the cost this interception exists to avoid. `entry` and
+    // `lines` are discarded; only the version in lines[0] is being asked about.
+    if (mod->interfaceVer && *mod->interfaceVer) {
+        std::string nameSha = sha1hex(name);
+        for (auto& repo : repoPrefixesFor(libPaths_)) {
+            std::string entry;
+            std::vector<std::string> lines;
+            if (!pickInstalledDist(repo + "/short/" + nameSha, "", entry, lines)) continue;
+            if (!lines.empty() && verCmp(lines[0], mod->interfaceVer) > 0) return false;
+        }
+    }
+
     // Which of this module's tags the engine can actually answer. A tag whose
-    // primitives are not registered is not claimed, so `use Digest::Native`
-    // still reaches the distribution until P3 lands.
+    // primitives are not registered is not claimed, so a family the engine has
+    // no primitives for is still left to its distribution.
     std::vector<const DataNativeTag*> answered;
     for (const char* const* t = mod->tags; *t; t++) {
         for (const DataNativeTag* d = kDataNativeTags; d->tag; d++) {
