@@ -16876,7 +16876,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                 if (node->t != VT::Array) *node = Value::array();
                 Value kv = eval(de.get());
                 if (kv.t == VT::Code && kv.code() && kv.code()->isWhateverCode) // @a[*-1;…] = v
-                    kv = callCallable(kv, ValueList{Value::integer((long long)node->arr()->size())});
+                    kv = whateverPos(kv, (long long)node->arr()->size());
                 long long i = kv.toInt();
                 if (i < 0) i += (long long)node->arr()->size();
                 // a shaped array's dimensions are FIXED — an out-of-range index dies
@@ -18235,6 +18235,52 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
 // read path (evalIndex) and the write path (evalAssignInner) both need the same
 // set, and each used to carry its own copy of this recursion — identical but for
 // a comment, which is the shape a divergence starts from.
+// The concrete indices a Range/list DIMENSION selects at an array level of `n`
+// elements. An endless range (`0..*`, `1..Inf`, `^Inf`) stops at the array's
+// last index, as Rakudo's postcircumfix does for `@a[0..*]`: Value::flatten()
+// answers its 10,000-element safety prefix for one, and every index past the
+// end became a trailing (Any) — issue #68, `@a[0..*; 0]`. A `lazy` range and a
+// lazy list (`@a[0, 2 ... *; 0]`) stop at the array's end too, where Rakudo
+// stops pulling them. A FINITE overrun (`@a[0..10]` on 4 elements) still
+// yields one (Any) per missing slot, the same as the single-dim slice.
+// A WhateverCode index resolves against the list's length, fed once PER
+// PARAMETER: `*-1` is called with elems, and `*-2..*-1` — a two-star curry —
+// with (elems, elems), which is Rakudo's WhateverCode.POSITIONS. Fed once, the
+// second star saw no argument at all and the slice was `2..-1`: empty.
+Value Interpreter::whateverPos(const Value& code, long long n) {
+    long long ar = code.code() ? std::max(1LL, code.code()->whateverArity) : 1;
+    ValueList as;
+    for (long long i = 0; i < ar; i++) as.push_back(Value::integer(n));
+    return callCallable(code, std::move(as));
+}
+
+ValueList Interpreter::dimKeysAt(const Value& dv, long long n) {
+    if (dv.t == VT::Range && !dv.rNum() && dv.ofType().empty()) { // an integer Range
+        long long lo = dv.rFrom() + (dv.rExFrom() ? 1 : 0);
+        long long hi = dv.rTo() - (dv.rExTo() ? 1 : 0);
+        if (dv.rTo() >= 9000000000000000000LL || dv.b) hi = std::min(hi, n - 1); // endless, or `lazy`
+        if (dv.rFrom() <= -9000000000000000000LL) lo = std::max(lo, 0LL);
+        ValueList out;
+        for (long long k = lo; k <= hi; k++) out.push_back(Value::integer(k));
+        return out;
+    }
+    if (dv.t == VT::Array && dv.ext() && dv.arr()) { // a lazy list: pull until it leaves the array
+        ValueList out;
+        for (size_t k = 0; ; k++) {
+            if (k >= dv.arr()->size()) {
+                materializeLazy(dv, k + 1);
+                if (k >= dv.arr()->size()) break; // the source ran dry
+            }
+            const Value& e = (*dv.arr())[k];
+            long long i = e.toInt();
+            if (i < 0 || i >= n) break;
+            out.push_back(e);
+        }
+        return out;
+    }
+    return dv.flatten();
+}
+
 std::vector<ValueList> Interpreter::expandDimTuples(const Value& root, const ValueList& keys) {
     std::vector<ValueList> tuples;
     std::function<void(const Value&, size_t, ValueList&)> expand =
@@ -18243,7 +18289,7 @@ std::vector<ValueList> Interpreter::expandDimTuples(const Value& root, const Val
         auto emit1 = [&](Value kk) {
             if (kk.t == VT::Code && kk.code())   // *-1 against this branch's size
                 kk = (node.t == VT::Array && node.arr())
-                   ? callCallable(kk, ValueList{Value::integer((long long)node.arr()->size())})
+                   ? whateverPos(kk, (long long)node.arr()->size())
                    : callCallable(kk, ValueList{node});
             Value child = Value::any();
             if (node.t == VT::Array && node.arr()) {
@@ -18267,7 +18313,10 @@ std::vector<ValueList> Interpreter::expandDimTuples(const Value& root, const Val
             return;
         }
         if (k.t == VT::Array || k.t == VT::Range) {
-            for (auto& e2 : k.flatten()) emit1(e2);
+            // against an array level an endless/lazy range stops at its end (issue #68)
+            ValueList ks = (node.t == VT::Array && node.arr())
+                         ? dimKeysAt(k, (long long)node.arr()->size()) : k.flatten();
+            for (auto& e2 : ks) emit1(e2);
             return;
         }
         emit1(k);
@@ -19043,7 +19092,8 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             if (sliceSubscript(ix)) {
                 Value keys = eval(ix->index.get());
                 if (keys.t == VT::Array || keys.t == VT::Range) {
-                    ValueList ks = keys.flatten();
+                    ValueList ks;
+                    if (keys.t != VT::Range) ks = keys.flatten(); // a Range waits for the target's size below
                     Value rv = evalValueOf(a->value.get());
                     ValueList vs;
                     // ONE level: each element of the RHS fills one key. A nested
@@ -19061,6 +19111,16 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                     if (bp) {
                         if (bp->t == VT::Any || bp->t == VT::Nil)
                             *bp = ix->isHash ? Value::makeHash() : Value::array();
+                        // `@a[0..*] = 1, 2, 3, 4` fills the EXISTING slots: Rakudo's
+                        // endless range stops at the array's end, so the 4th value
+                        // is dropped and the array does not grow (issue #68 — it grew
+                        // by 10,000). A finite `@a[0..9] = …` still extends it.
+                        if (keys.t == VT::Range) {
+                            long long n = bp->t == VT::Array && bp->arr() ? (long long)bp->arr()->size()
+                                        : bp->t == VT::Str && (bp->hashKind == "Buf" || bp->hashKind == "Blob") ? bp->blobElems()
+                                        : 0;
+                            ks = dimKeysAt(keys, n);
+                        }
                         // a Blob/Buf slice-assign writes the BYTES in place —
                         // `$new-state[$_ ..^ $_+8] = store64 $lane` is how
                         // Digest::SHA3 serialises each Keccak lane
@@ -28648,11 +28708,18 @@ Value Interpreter::evalIndex(Index* idx) {
                 // a Callable dim resolves against this level (arrays: called with elems)
                 if (dv.t == VT::Code && dv.code()) {
                     if (node.t == VT::Array && node.arr())
-                        dv = callCallable(dv, ValueList{Value::integer((long long)node.arr()->size())});
+                        dv = whateverPos(dv, (long long)node.arr()->size());
                     else dv = callCallable(dv, ValueList{node});
                 }
                 ValueList keys;
-                if (dv.t == VT::Range || (dv.t == VT::Array && dv.arr())) { keys = dv.flatten(); anyMulti = true; }
+                if (dv.t == VT::Range || (dv.t == VT::Array && dv.arr())) {
+                    anyMulti = true;
+                    // an endless/lazy dim stops at this level's last element
+                    // (`@a[0..*; 0]` — issue #68); flatten() answered its
+                    // 10,000-element safety prefix, one trailing (Any) per index
+                    keys = (node.t == VT::Array && node.arr())
+                         ? dimKeysAt(dv, (long long)node.arr()->size()) : dv.flatten();
+                }
                 else keys.push_back(dv);
                 for (auto& k : keys) {
                     if (node.t == VT::Array && node.arr()) {
@@ -28801,7 +28868,9 @@ Value Interpreter::evalIndex(Index* idx) {
     if (base.t == VT::Any && idx->index && !idx->multiDim && !idx->isHash) {
         Value k = eval(idx->index.get());
         if (k.t == VT::Range || (k.t == VT::Array && k.arr())) {
-            ValueList ks = k.flatten();
+            // an undefined scalar is a one-item list, so `$x[0..*]` is ((Any)):
+            // an endless range stops at that one element, as Rakudo's does
+            ValueList ks = dimKeysAt(k, 1);
             Value out = Value::array(); out.isList = true;
             for (size_t j = 0; j < ks.size(); j++) out.arr()->push_back(Value::any());
             return out;
@@ -29225,7 +29294,7 @@ Value Interpreter::evalIndex(Index* idx) {
                 auto resolveKey = [&](Value k, const Value& node) {
                     if (k.t == VT::Code && k.code()) {
                         if (node.t == VT::Array && node.arr())
-                            return callCallable(k, ValueList{Value::integer((long long)node.arr()->size())});
+                            return whateverPos(k, (long long)node.arr()->size());
                         return callCallable(k, ValueList{node});
                     }
                     return k;
@@ -29383,7 +29452,13 @@ Value Interpreter::evalIndex(Index* idx) {
                 for (long long i = 0; i < (long long)base.arr()->size(); i++)
                     sliceKeys.push_back(Value::integer(i));
         }
-        else if (slice) for (auto& k : iv.flatten()) sliceKeys.push_back(k);
+        else if (slice) {
+            // an endless Range index (`@a[0..*]:exists`) stops at the array's
+            // end instead of reporting 10,000 slots (issue #68)
+            ValueList ks = (!idx->isHash && base.t == VT::Array && base.arr())
+                         ? dimKeysAt(iv, (long long)base.arr()->size()) : iv.flatten();
+            for (auto& k : ks) sliceKeys.push_back(k);
+        }
         else sliceKeys.push_back(iv);
         bool lazySlice = slice && iv.b && (iv.t == VT::Range || iv.t == VT::Array); // @a[lazy …]:adv
         struct Hit { Value keyV; Value val; bool exists; };
@@ -29427,7 +29502,7 @@ Value Interpreter::evalIndex(Index* idx) {
                 long long asz = (base.t == VT::Array && base.arr()) ? (long long)base.arr()->size() : 0;
                 Value kres = kv;
                 if (kres.t == VT::Code && kres.code() && kres.code()->isWhateverCode)
-                    kres = callCallable(kres, ValueList{Value::integer(asz)});
+                    kres = whateverPos(kres, asz);
                 long long ai = (kres.t == VT::Whatever || std::isinf(kres.toNum())) ? asz - 1 : kres.toInt();
                 bool inBounds = false;
                 if (base.t == VT::Array && base.arr()) {
@@ -29610,7 +29685,7 @@ Value Interpreter::evalIndex(Index* idx) {
         // `*` / `*-1` resolve against the list length — for Range endpoints AND for
         // every element of a list subscript (`@a[*-1, *-2]`, `@a[@whatever-list]`).
         auto resolveWhat = [&](Value v) -> long long {
-            if (v.t == VT::Code && v.code() && v.code()->isWhateverCode) return callCallable(v, ValueList{Value::integer(n)}).toInt();
+            if (v.t == VT::Code && v.code() && v.code()->isWhateverCode) return whateverPos(v, n).toInt();
             if (v.t == VT::Whatever || std::isinf(v.toNum())) return n - 1;
             return v.toInt();
         };
@@ -29663,6 +29738,9 @@ Value Interpreter::evalIndex(Index* idx) {
                         indices.push_back(i);
                     }
                 }
+                // a Range VALUE (`my $r = 0..*; @a[$r]`) clamps its endless end to
+                // the array, like the syntactic `@a[0..*]` above does (issue #68)
+                else if (iv.t == VT::Range) for (auto& e : dimKeysAt(iv, n)) indices.push_back(resolveWhat(e));
                 else for (auto& e : iv.flatten()) indices.push_back(resolveWhat(e)); // @a[*-1, *-2]
             } else {
                 long long i = iv.toInt();
@@ -31401,7 +31479,13 @@ Value Interpreter::eval(Expr* e) {
                             return I.callCallable(side, std::move(sub));
                         };
                         Value lo = feed(f2), hi = feed(t2);
-                        Value rr = Value::range(lo.toInt(), hi.toInt(), exF, exT);
+                        // a bare `*` on the other side stays UNBOUNDED: `*-2..*` is
+                        // `{ $_ - 2 .. Inf }`, the LLONG extreme marking an endless
+                        // range as the plain `1..*` below does. .toInt() of a
+                        // Whatever was 0, so `@a[*-2..*; 0]` selected 2..0 — nothing.
+                        long long loI = lo.t == VT::Whatever ? (-9223372036854775807LL - 1) : lo.toInt();
+                        long long hiI = hi.t == VT::Whatever ? 9223372036854775807LL : hi.toInt();
+                        Value rr = Value::range(loI, hiI, exF, exT);
                         return rr;
                     };
                     return code;

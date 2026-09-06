@@ -613,8 +613,12 @@ struct Codegen {
         if (!ix->index || ix->index->kind != NK::ListExpr)
             unsupported("this multi-dimensional subscript");
         auto* dims = static_cast<ListExpr*>(ix->index.get());
-        for (auto& d : dims->items)
+        for (auto& d : dims->items) {
             if (hasWhatever(d.get())) unsupported("a Whatever in a multi-dimensional index");
+            // `@a[0..*; 0]` is a slice too; handed to AT-POS it answered the
+            // first element alone
+            if (d->kind == NK::Range) unsupported("a Range in a multi-dimensional index");
+        }
         return argList(dims->items);
     }
 

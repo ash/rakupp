@@ -1350,7 +1350,10 @@ ExprPtr Parser::parseExpr(int minbp) {
                 // itemized value.) URI::Query's `$q<foo> = '5', '6'` needs both
                 // items to reach ASSIGN-KEY.
                 auto* ix = static_cast<Index*>(lhs.get());
-                if (ix->index && !ix->multiDim) listAssign = true;
+                // A multidim target is no exception: `@a[0;1] = 7, 8` stores (7 8)
+                // and `@a[0..*;1] = 7, 8, 9, 10` distributes. Excluding it made
+                // those item assignments that kept the 7 and sank the rest.
+                if (ix->index) listAssign = true;
             }
         }
 

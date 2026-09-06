@@ -2140,6 +2140,8 @@ private:
     // Concrete index tuples for a multi-dimensional subscript — shared by the
     // read path (evalIndex) and the write path (evalAssignInner).
     std::vector<ValueList> expandDimTuples(const Value& root, const ValueList& keys);
+    ValueList dimKeysAt(const Value& dv, long long n); // the indices a Range/list dim selects at an n-element level
+    Value whateverPos(const Value& code, long long n); // a WhateverCode index against a length: elems once per star
     // Does a `{…}` subscript name MANY keys? See the definition in Interpreter.cpp.
     static bool keySubscriptIsSlice(const Expr* ixExpr, const Value& iv);
     Value evalInterp(InterpStr* s);
