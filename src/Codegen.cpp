@@ -355,13 +355,14 @@ struct Codegen {
     // in the runtime env, so calls (including self-recursive ones) resolve by name.
     struct BodyScope {
         Codegen* g;
-        std::set<std::string> savedHoisted, savedSpecials, savedEnvSubs, savedCells, savedCodeVars;
+        std::set<std::string> savedHoisted, savedSpecials, savedEnvSubs, savedCells, savedCodeVars, savedReads;
         std::vector<std::string> savedCellsLive;
         int savedDepth;
         BodyScope(Codegen* g_, bool closure) : g(g_),
             savedHoisted(g_->hoisted), savedSpecials(g_->boundSpecials),
             savedEnvSubs(g_->envSubs), savedCells(g_->cellVars_),
-            savedCodeVars(g_->codeVars), savedCellsLive(g_->cellsLive_), savedDepth(g_->loopDepth_) {
+            savedCodeVars(g_->codeVars), savedReads(g_->readCaptures_),
+            savedCellsLive(g_->cellsLive_), savedDepth(g_->loopDepth_) {
             g->loopDepth_ = 0;               // break/continue never cross a C++ function boundary
             if (!closure) { g->hoisted.clear(); g->boundSpecials.clear(); g->cellVars_.clear(); g->cellsLive_.clear(); }
             // a closure inherits the lexical sets (copy-in); additions are discarded on exit
@@ -373,6 +374,7 @@ struct Codegen {
             g->cellVars_ = std::move(savedCells);
             g->codeVars = std::move(savedCodeVars);
             g->cellsLive_ = std::move(savedCellsLive);
+            g->readCaptures_ = std::move(savedReads);
             g->loopDepth_ = savedDepth;
         }
     };
@@ -389,14 +391,74 @@ struct Codegen {
             if (programTop && (userSubs.count(d->name) || multiNames.count(d->name))) return nullptr; // pre-pass hoisted
             return d;
         };
+        bool anyLexical = false;
         for (auto& st : stmts)
             if (SubDecl* d = lexical(st.get())) {
                 if (d->isMulti) unsupported("a nested multi sub");
                 envSubs.insert(d->name);
+                anyLexical = true;
             }
+        // The closures below capture BY VALUE, where they are created — so a `my`
+        // of this block that one of them mentions must EXIST by then, even though
+        // its initialiser runs further down. Raku scopes a `my` to its block from
+        // entry, so declaring the slot here is what the language already says;
+        // the later `my $x = …` assigns into this same slot. Without it the
+        // generated C++ named a variable it had not declared yet, and a nested
+        // sub closing over an enclosing `my` would not compile at all.
+        if (anyLexical) predeclareBlockLocals(stmts, ind);
+
         for (auto& st : stmts)
             if (SubDecl* d = lexical(st.get()))
                 line(ind, "RT.dynVarRef(" + cesc("&" + d->name) + ") = " + subClosure(d) + ";");
+    }
+
+    // Declare this block's own `my` slots — the ones a nested closure READS
+    // (readCaptures_, from the cell analysis) — with the initialiser each
+    // declaration asked for, as shared cells so the closure sees what is written
+    // later. Only THIS level: an inner block's `my` is its own scope, and a
+    // dynamic (`my $*x`) lives in the runtime env rather than a C++ local.
+    void predeclareBlockLocals(const std::vector<StmtPtr>& stmts, int ind) {
+        auto want = [&](const std::string& nm) {
+            return nm.size() > 1 && nm[1] != '*' && nm[0] != '&' && !hoisted.count(nm) &&
+                   readCaptures_.count(nm) &&            // only what a nested closure reads
+                   !(atTopLevel_ && topVars_.count(nm));
+        };
+        auto declare = [&](const std::string& nm, const std::string& type) {
+            if (!want(nm) || !hoisted.insert(nm).second) return;
+            // shared, not copied: the closure is installed above the initialiser,
+            // so it has to see the value written afterwards
+            cellVars_.insert(nm);
+            line(ind, declVar(nm, declInit(type, nm[0])) + "; // slot for a lexical sub installed above");
+        };
+        for (auto& st : stmts) {
+            Stmt* s = st.get();
+            if (s->kind == NK::VarDecl) {
+                auto* d = static_cast<VarDecl*>(s);
+                if (d->scope != "my") continue;
+                for (auto& n : d->names) declare(n, "");
+            } else if (s->kind == NK::ExprStmt) {
+                Expr* e = static_cast<ExprStmt*>(s)->e.get();
+                if (e && e->kind == NK::Assign) e = static_cast<Assign*>(e)->target.get();
+                if (!e) continue;
+                if (e->kind == NK::VarExpr) {
+                    auto* v = static_cast<VarExpr*>(e);
+                    // a SHAPED declaration builds its dimensions where it is written,
+                    // so leave that one where it is
+                    if (v->declare && !v->declShape) declare(v->name, v->declType);
+                } else if (e->kind == NK::ListExpr) {
+                    // `my $lo = -1.35, my $hi = 1.35;` — a comma list of
+                    // declarations, so each item may be an assignment of its own
+                    for (auto& it : static_cast<ListExpr*>(e)->items) {
+                        Expr* x = it.get();
+                        if (x && x->kind == NK::Assign) x = static_cast<Assign*>(x)->target.get();
+                        if (x && x->kind == NK::VarExpr) {
+                            auto* v = static_cast<VarExpr*>(x);
+                            if (v->declare && !v->declShape) declare(v->name, v->declType);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     void collectClosureLocals(const std::vector<StmtPtr>& body, std::set<std::string>& out) {
@@ -507,6 +569,7 @@ struct Codegen {
     // *__c_X;`, so [=] captures the shared_ptr and all code (including the -O
     // int lanes) keeps using the plain name through the reference.
     std::set<std::string> cellVars_;   // names needing cells in the current function scope
+    std::set<std::string> readCaptures_; // names a nested closure merely READS from this scope
     std::vector<std::string> cellsLive_; // cells declared so far (emission order), Raku names
     // Collect names assigned inside any (transitively) nested closure, that are
     // not local to that closure — i.e. mutated captures.
@@ -533,7 +596,17 @@ struct Codegen {
         std::function<void(Expr*)> we = [&](Expr* e) {
             if (!e) return;
             switch (e->kind) {
-                case NK::VarExpr: if (static_cast<VarExpr*>(e)->declare) local.insert(static_cast<VarExpr*>(e)->name); break;
+                case NK::VarExpr: {
+                    auto* v = static_cast<VarExpr*>(e);
+                    if (v->declare) { local.insert(v->name); break; }
+                    // A closure that only READS an enclosing local still needs it
+                    // to be a shared cell when the closure is installed ABOVE the
+                    // declaration (a lexical sub is installed at block entry): a
+                    // by-value capture would freeze the slot as it was — undefined.
+                    if (inClosure && !local.count(v->name) && !topVars_.count(v->name) &&
+                        v->name.size() > 1 && (v->name[0] == '$' || v->name[0] == '@' || v->name[0] == '%'))
+                        readCaptures_.insert(v->name);
+                    break; }
                 case NK::Assign: { auto* a = static_cast<Assign*>(e);
                     if (a->op.size() && a->op.back() == '=' && a->op != "==" && a->op != "!=" && a->op != ">=" && a->op != "<=") record(a->target.get());
                     we(a->target.get()); we(a->value.get()); break; }
@@ -549,6 +622,9 @@ struct Codegen {
                     we(m->inv.get()); for (auto& x : m->args) we(x.get()); break; }
                 case NK::ListExpr: for (auto& x : static_cast<ListExpr*>(e)->items) we(x.get()); break;
                 case NK::ArrayLit: for (auto& x : static_cast<ArrayLit*>(e)->items) we(x.get()); break;
+                // `"$i:$t"` mentions two variables: a closure captures them as
+                // surely as `$i ~ ":" ~ $t` would
+                case NK::InterpStr: for (auto& x : static_cast<InterpStr*>(e)->parts) we(x.get()); break;
                 case NK::Index: { auto* ix = static_cast<Index*>(e); we(ix->base.get()); if (ix->index) we(ix->index.get()); break; }
                 case NK::Pair: { auto* p = static_cast<PairExpr*>(e); if (p->value) we(p->value.get()); break; }
                 case NK::Range: { auto* r = static_cast<RangeExpr*>(e); we(r->from.get()); we(r->to.get()); break; }
@@ -596,6 +672,7 @@ struct Codegen {
     // Run the analysis at a function-body boundary and install the result.
     void analyzeCells(const std::vector<StmtPtr>& body, const std::set<std::string>& params) {
         std::set<std::string> out;
+        readCaptures_.clear();
         collectMutatedCaptures(body, params, /*inClosure=*/false, out);
         for (auto& n : out) cellVars_.insert(n);
     }
@@ -634,6 +711,14 @@ struct Codegen {
         if (rhs.empty()) return mk;
         return "([&]()->Value{ Value __sh = " + mk + "; rtShapedStore(__sh, " + rhs
              + ", " + cesc(v->declType) + "); return __sh; }())";
+    }
+
+    // A declaration whose slot may already exist (hoistLexicalSubs pre-declares
+    // what a lexical sub captures; hoistExprDecls does the same for a `my` in
+    // expression position). Assign into it, or declare it here.
+    std::string declOrAssign(const std::string& rakuName, const std::string& init) {
+        if (hoisted.count(rakuName)) return mangleVar(rakuName) + " = " + init;
+        return declVar(rakuName, init);
     }
 
     std::string declVar(const std::string& rakuName, const std::string& init) {
@@ -1557,7 +1642,15 @@ struct Codegen {
         for (auto it = post.rbegin(); it != post.rend(); ++it) emitPhaserBody(*it, ind);
     }
 
-    void block(Block* b, int ind) { emitSeq(b->stmts, ind); }
+    // Cells declared inside a nested block leave scope with it: the emitted C++
+    // closes the brace, so a later closure must not re-alias them.
+    struct CellScope {
+        Codegen* g; size_t mark;
+        explicit CellScope(Codegen* c) : g(c), mark(c->cellsLive_.size()) {}
+        ~CellScope() { if (g->cellsLive_.size() > mark) g->cellsLive_.resize(mark); }
+    };
+
+    void block(Block* b, int ind) { CellScope __cs{this}; emitSeq(b->stmts, ind); }
 
     std::set<std::string> hoisted; // expression-position `my` names pre-declared in this body
     std::set<std::string> boundSpecials; // $/ or $! bound as a parameter in the current body (locals win over RT.dynVar)
@@ -1671,7 +1764,7 @@ struct Codegen {
                         line(ind, "Value " + tmp + " = rtArrayVal(" + exArg(a->value.get()) + ");");
                         for (size_t k = 0; k < lst->items.size(); k++) {
                             auto* v = static_cast<VarExpr*>(lst->items[k].get());
-                            line(ind, declVar(v->name, "rtIndexGet(" + tmp +
+                            line(ind, declOrAssign(v->name, "rtIndexGet(" + tmp +
                                       ", Value::integer(" + std::to_string(k) + "), false)") + ";");
                         }
                         return;
@@ -1693,6 +1786,10 @@ struct Codegen {
                         // file-scope initialiser has nowhere to evaluate them.
                         if (!sh.empty()) line(ind, mangleVar(nm) + " = " + sh + ";");
                         else             line(ind, "; // " + nm + " is a global");
+                        return;
+                    }
+                    if (hoisted.count(nm)) { // declared at block entry — see hoistLexicalSubs
+                        if (!sh.empty()) line(ind, mangleVar(nm) + " = " + sh + ";");
                         return;
                     }
                     line(ind, declVar(nm, sh.empty() ? declInit(dv->declType, sigil) : sh) + ";");
@@ -1725,7 +1822,7 @@ struct Codegen {
                     std::string tmp = gensym("__d");
                     line(ind, "Value " + tmp + " = rtArrayVal(" + exArg(d->init.get()) + ");");
                     for (size_t k = 0; k < d->names.size(); k++)
-                        line(ind, declVar(d->names[k], "rtIndexGet(" + tmp +
+                        line(ind, declOrAssign(d->names[k], "rtIndexGet(" + tmp +
                                   ", Value::integer(" + std::to_string(k) + "), false)") + ";");
                     return;
                 }
@@ -1733,6 +1830,10 @@ struct Codegen {
                 std::string init;
                 if (d->init) init = sigil == '@' ? "rtArrayVal(" + exArg(d->init.get()) + ")" : exArg(d->init.get());
                 else init = declInit("", sigil); // VarDecl carries no declared type
+                if (hoisted.count(d->names[0])) {                 // slot declared at block entry
+                    if (d->init) line(ind, mangleVar(d->names[0]) + " = " + init + ";");
+                    return;
+                }
                 line(ind, declVar(d->names[0], init) + ";");
                 return;
             }
@@ -1870,6 +1971,10 @@ struct Codegen {
             if (nm.size() > 1 && nm[0] == '&') codeVars.insert(nm.substr(1));
             if (atTopLevel_ && topVars_.count(nm)) // hoisted to a global: assign it
                 return mangleVar(nm) + " = " + coerceFor(tgt, exArg(a->value.get()));
+            // the slot already exists: a `my` in expression position, or one a
+            // lexical sub captured (see hoistLexicalSubs)
+            if (hoisted.count(nm))
+                return mangleVar(nm) + " = " + coerceFor(tgt, exArg(a->value.get()));
             return declVar(nm, coerceFor(tgt, exArg(a->value.get())));
         }
         // List-assignment target: `($a, $b) = …` / `my ($a, $b) = …` — RHS evaluates
@@ -1889,8 +1994,8 @@ struct Codegen {
                 if (allDecl) { // `my ($a, $b) = …` — statement position only
                     std::string o = "Value " + t + " = rtArrayVal(" + exArg(a->value.get()) + ")";
                     for (size_t i = 0; i < le->items.size(); i++)
-                        o += "; Value " + mangleVar(static_cast<VarExpr*>(le->items[i].get())->name)
-                           + " = rtIndexGet(" + t + ", Value::integer(" + std::to_string(i) + "LL), false)";
+                        o += "; " + declOrAssign(static_cast<VarExpr*>(le->items[i].get())->name,
+                                                 "rtIndexGet(" + t + ", Value::integer(" + std::to_string(i) + "LL), false)");
                     return o;
                 }
                 std::string o = "([&]()->Value{ Value " + t + " = rtArrayVal(" + exArg(a->value.get()) + ");";
@@ -2170,6 +2275,7 @@ struct Codegen {
     }
     void blockValue(Block* b, int ind, const std::string& dst) {
         if (b->stmts.empty()) return;
+        CellScope __cs{this};
         hoistLexicalSubs(b->stmts, ind);
         for (size_t i = 0; i + 1 < b->stmts.size(); i++) stmt(b->stmts[i].get(), ind);
         stmtValue(b->stmts.back().get(), ind, dst);
