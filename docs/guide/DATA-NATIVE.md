@@ -6,7 +6,7 @@ use Data::Native;
 say to-json({ ok => True });            # JSON
 say from-csv("a,b\n1,2\n", :headers);   # CSV
 say sha256-hex('abc');                  # digests and HMAC
-say uncompress(compress($blob));        # zlib / gzip / raw deflate
+say uncompress(compress('big'.encode));  # zlib / gzip / raw deflate
 say crypt_random_buf(32);               # bytes from the OS CSPRNG
 ```
 

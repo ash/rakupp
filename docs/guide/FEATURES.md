@@ -156,6 +156,7 @@ same-named enclosing package, which Rakudo's own warning calls legacy.
 ## Phasers, Modules, Exceptions, Special Vars, Testing
 - Phasers: `BEGIN CHECK INIT END` (top-level ordering), `ENTER/LEAVE` (block entry/exit), `FIRST` (once per loop), `CATCH`; `BEGIN`/`ENTER` usable in value position. `INIT` runs once before the mainline wherever it is written — nested in a loop, a sub that is never called, or a branch never taken — provided it names no variable from an enclosing scope; one that does still runs in place
 - `state` variables (persistent), modules `use`/`need`/`no`, `use lib <expr>`, sub hoisting, `EVAL`
+- **`use Data::Native`** — five tags (`json csv digest zlib random`), thirty-two names, answered by the compiler from its own built-ins with nothing installed and nothing loaded; the same line loads a portable distribution on any other engine, and `*-backend()` says which answered. See [DATA-NATIVE.md](DATA-NATIVE.md)
 - **POD DOM**: `$=pod` / `@=pod` as `Pod::Block` objects (`Pod::Block::Named`/`::Para`/`::Code`/`::Comment`, `Pod::Heading`, `Pod::Item`) with `.name`/`.contents`/`.level` — delimited/paragraph/abbreviated blocks, nesting, indent-based code blocks; plus `$=finish`
 - Exceptions: `die`/`try`/`CATCH`, `throws-like`, `X::*` (partial), resumable via `.resume` inside a `CATCH`; `fail`/`Failure.new` carry an exception (`.exception`), report undefined for `//`
 - Special vars: `$_ $/ $! @*ARGS $?LINE $?FILE`

@@ -224,6 +224,52 @@ suites pass under Raku++ exactly as they do under Rakudo (820 assertions across
 
 ---
 
+## Built in: `Data::Native`
+
+The mirror image of a shim. A shim is a Raku file that stands in front of a
+module name; `Data::Native` is a module name the **compiler answers itself**,
+from its own built-ins:
+
+```raku
+use Data::Native;
+
+say to-json({ ok => True });            # JSON
+say from-csv("a,b\n1,2\n", :headers);   # CSV
+say sha256-hex('abc');                  # digests and HMAC
+say uncompress(compress('big'.encode));  # zlib / gzip / raw deflate
+say crypt_random_buf(32);               # bytes from the OS CSPRNG
+```
+
+Nothing to install, and nothing is loaded: no file is read, no dependency is
+resolved, so the `use` is not on the program's start-up path at all. Five tags —
+`json csv digest zlib random` — and thirty-two names, every signature copied
+from the ecosystem module it stands in for, so moving a program to or from
+`use JSON::Fast` is a one-line edit.
+
+**It is portable, which is the point.** On any other engine the same line loads
+a distribution of that name which composes the usual modules — `JSON::Fast`,
+`Digest::SHA2`, `Compress::Zlib`, `Crypt::Random` — so a program written against
+it runs on Rakudo too. Each tag exports a `*-backend()` sub that says which
+implementation answered:
+
+```raku
+say json-backend();     # 'core' on Raku++; 'JSON::Fast' on Rakudo
+```
+
+A program using it also **compiles to a standalone binary**: there is nothing to
+embed and nothing to find at run time, so `--exe --standalone` builds it.
+
+The compiler stands aside — and the installed distribution wins — when the `use`
+is versioned, when a search path names it (`-I`, `use lib`, which is what makes
+`rakupp test <Dist>` test the distribution), or when the installed version is
+**newer than the interface this engine implements**. That last rule is how the
+distributions get released on their own schedule; installing them otherwise is
+harmless and changes nothing.
+
+Full guide: **[DATA-NATIVE.md](DATA-NATIVE.md)**.
+
+---
+
 ## Current status and limits
 
 Reading the zef store and running real modules is the focus of the

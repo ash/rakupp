@@ -163,6 +163,30 @@ sweep verdict, are listed at
 [raku.online/modules/ecosystem](https://raku.online/modules/ecosystem/).
 Full guide: **[MODULES.md](docs/guide/MODULES.md)**.
 
+### …and the batteries, with nothing installed
+
+`use Data::Native` is answered by the **compiler itself** — no file is read, no
+module is loaded, no dependency is resolved:
+
+```raku
+use Data::Native;
+
+say to-json({ ok => True });            # JSON
+say from-csv("a,b\n1,2\n", :headers);   # CSV
+say sha256-hex('abc');                  # digests and HMAC
+say uncompress(compress('big'.encode));  # zlib / gzip / raw deflate
+say crypt_random_buf(32);               # bytes from the OS CSPRNG
+```
+
+Five tags, thirty-two names, every signature copied from the ecosystem module it
+stands in for — and **portable**: on any other engine the same line loads a
+distribution of that name that composes `JSON::Fast`, `Digest::SHA2`,
+`Compress::Zlib` and `Crypt::Random`, so the program runs on Rakudo unchanged.
+A program using it compiles to a standalone binary, because there is nothing
+left to find at run time.
+
+Guide: **[DATA-NATIVE.md](docs/guide/DATA-NATIVE.md)**.
+
 ## Code to read and run
 
 Three directories of runnable programs — as much for exploring Raku as for
