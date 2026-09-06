@@ -2,7 +2,10 @@
 
 Everything `rakupp` accepts on the command line: running programs, the
 perl-style one-liner family (including in-place editing), module preloading,
-the profiler, and the inspection/compile modes. Flags are
+the environment and reproducibility knobs (`--env-file`, `RAKUPP_OPT`,
+`--seed`, `--stack-size`), what a run did as it did it (`--stagestats`,
+`--trace`, `--repl-after`), the developer loop (`--watch`, `rakupp doc`,
+shell completion), the profiler, and the inspection/compile modes. Flags are
 position-independent and composable — `rakupp -I lib --lint prog.raku` and
 `rakupp --lint -I lib prog.raku` are the same command — and everything after
 the program token belongs to the program:
@@ -30,6 +33,27 @@ compatibility.
   `-MFoo` glued and `-m` both work — `-m` is a Perl-ism Rakudo rejects).
   The program behaves as if it began with `use Foo;` *on its own first
   line*, so error line numbers do not shift.
+- `-x` — perl's flag: the program starts at the first line that begins
+  with `#!` and names `raku`; whatever precedes it (a mail header, the prose
+  of a document the script is embedded in) is not code. A file with no such
+  line is refused (`No Raku script found in input`, exit 2), and so is `-x`
+  with `-e`. One divergence from perl: the skipped lines are blanked, not
+  removed, so an error's line number still matches the file as an editor
+  shows it (perl counts from the `#!` line). Clusters like the rest of the
+  perl family (`-nx`), and composes with `-c` and the other source modes.
+- `--env-file=FILE` — load `KEY=VALUE` lines into the environment before
+  anything runs; see [The environment](#the-environment) below.
+- `--seed[=N]`, `--stack-size=N` — pin the random generator, size the
+  recursion ceiling; see [Pinning a run](#pinning-a-run-seed-and-stack-size).
+- `--color=auto|always|never` — ANSI colour on stderr and in the REPL; see
+  [When something dies](#when-something-dies).
+- `--stagestats`, `--trace`, `--repl-after` — what a run did, as it did it;
+  see [Inside a run](#inside-a-run-stagestats-trace-and-repl-after).
+- `--completions=bash|zsh|fish` — a completion script for the shell; see
+  [Shell completion](#shell-completion).
+- `--watch` — rerun on change; see [The developer loop](#the-developer-loop-watch).
+- `rakupp doc SYMBOL` — look a builtin, method or operator up offline; see
+  [Looking things up](#looking-things-up-rakupp-doc).
 - `--doc` — after the run, render the program's POD to stdout.
 - `-q` / `--quiet` — drop what a mode says about itself; see
   [Quiet](#quiet-mode) below.
@@ -130,6 +154,153 @@ rakupp -ni -e 'say $*ARGV.IO.basename ~ ": " ~ $_' *.conf
   error (perl silently ignores it); a file that cannot be opened is
   reported, skipped — and the exit code is 1 (perl exits 0).
 
+## Pinning a run: `--seed` and `--stack-size`
+
+**`--seed=N`** pins `rand`, `pick`, `roll` and everything else the random
+generator feeds, so a run reproduces: the same seed gives the same
+sequence, on the program's thread and on every `start` block's thread (each
+thread draws its own sequence, seeded from `N` plus the order in which the
+threads first asked). An explicit `srand` in the program still wins after
+it, as it always did. The seed only covers the random generator — hash
+iteration order is insertion order here and never varied, so there is
+nothing else to pin.
+
+A bare **`--seed`** picks a seed, announces it on stderr, and runs with it —
+which is how a flaky test gets a number to rerun with:
+
+```
+$ rakupp --seed t/flaky.raku
+rakupp: --seed=64757666
+…
+$ rakupp --seed=64757666 t/flaky.raku      # the same run
+```
+
+The seed is not Rakudo's: rakupp's generator is `erand48`, so `--seed=42`
+here and `srand(42)` under Rakudo produce different numbers.
+
+**`--stack-size=N[K|M|G]`** sizes the stack of the thread the program runs
+on, which is the recursion ceiling: the interpreter stops a runaway
+recursion with `X::Recursion` while a margin of stack remains, and the
+depth it allows is a function of this size. The default is 1 GiB — about
+30,000 nested Raku calls on this engine — and a bare number is MiB
+(`--stack-size=64` is 64 MiB, about 1,800 calls), from `1M` upwards. It
+shapes a *run*: a program, the REPL, an `--mcp` or `--jupyter` session. A
+size the OS refuses is reported and the program runs on the default
+instead. (`RAKUPP_MAIN_THREAD=1`, the knob Cocoa GUI programs use, runs the
+program on the process's own stack, and this flag does not apply.)
+
+## The environment
+
+**`--env-file=FILE`** loads `KEY=VALUE` lines into the environment before
+anything runs — the option is applied where it is read, so a `RAKULIB` from
+the file is seen by the module loader, and a later option sees the
+variables too. The grammar is dotenv's, the useful subset: blank lines and
+`#` comments are skipped, an `export ` prefix is allowed, a value may be
+single-quoted (taken raw) or double-quoted (`\n`, `\t`, `\r` and `\\`
+apply), and an unquoted value runs to the end of the line with a trailing
+` # comment` dropped. **A variable the shell already has is kept** — the
+file supplies defaults, it does not override the environment (node's rule
+too). A file that cannot be opened is an error, as is a line that is not
+`KEY=VALUE` (reported with its line number). Repeatable; later files do not
+override earlier ones either, for the same reason.
+
+```
+$ cat .env
+DATABASE_URL=sqlite://dev.db
+export DEBUG=1
+$ rakupp --env-file=.env app.raku
+```
+
+**`RAKUPP_OPT`** holds standing options, prepended to every `rakupp`
+command line — `PERL5OPT`, `NODE_OPTIONS` and `GOFLAGS` are the same idea.
+Tokens are whitespace-separated; a single- or double-quoted token keeps its
+spaces. The variable may hold *options only*: a token that would start the
+program (`-e`, `-`, `--`, a file name, a `-ne`-style cluster) is refused
+with the token named, so an environment can shape how programs run but
+never replace what runs. The command line's own options come after the
+variable's, so they win where order matters (a later `-I` outranks an
+earlier one); a mode from the variable and another from the command line
+is the usual `Cannot combine` error.
+
+```
+$ export RAKUPP_OPT='-I lib -M Test::Helpers'
+$ rakupp t/thing.raku        # runs as rakupp -I lib -M Test::Helpers t/thing.raku
+```
+
+Output buffering needs no flag: `$*OUT` is unbuffered, as under Rakudo, so
+a `say` reaches a pipe as it is written (python's `-u` is the default
+here). An output-heavy program can buy the block buffer back with
+`$*OUT.out-buffer = 65536`.
+
+## Inside a run: `--stagestats`, `--trace` and `--repl-after`
+
+**`--stagestats`** (Rakudo's flag) prints, on stderr once the run is over,
+how long each phase took and how long every module load inside the run
+took — nested where a module's own `use` loads another:
+
+```
+$ rakupp --stagestats -I lib app.raku
+…the program's output…
+Stage precomp (miss):     0.32 ms
+Stage lex     :     0.03 ms
+Stage parse   :     0.15 ms
+Stage check   :     0.09 ms
+Stage run     :    99.80 ms
+  use Outer                         97.18 ms
+    use Inner                       40.22 ms
+  use JSON::Native                   2.26 ms
+```
+
+`precomp` is the parsed-program cache lookup ([CACHING.md](CACHING.md)):
+a hit replaces `lex` and `parse` outright, which is the number the cache
+exists to show you. `check` is the undeclared-variable pass. Module loads
+happen inside `run` (a `use` executes when the program starts), so their
+times are part of that line, not extra to it; a module already loaded is
+not listed again. The program's own output is untouched.
+
+**`--trace`** (bash `-x`) prints every statement to stderr as it runs — the
+file, the line and the source line, following calls into subs and into
+modules:
+
+```
+$ rakupp --trace -I lib prog.raku
+[trace] prog.raku:2  sub f($n) {
+[trace] prog.raku:6  for 1..2 -> $i {
+[trace] prog.raku:7  say f($i);
+[trace] prog.raku:3  my $k = $n + 1;
+2
+[trace] prog.raku:7  say f($i);
+[trace] prog.raku:3  my $k = $n + 1;
+3
+[trace] lib/Outer.rakumod:1  unit module Outer; use Inner; sub outer() is export { inner() }
+```
+
+Declarations come first — a `sub` is hoisted before the mainline starts,
+which is why line 2 is traced before line 6 — and a loop body is traced
+once per iteration. A `use` is traced once, when it loads. A statement
+that is one of several on a line is traced by its line, so the line text
+repeats. Values are not shown; the line is.
+
+**`--repl-after`** (python's `-i`) runs the program, then opens a session on
+whatever it left behind: its variables, subs and classes are live at the
+prompt, `\v` lists them, `\q` leaves. Arguments after the file are the
+program's `@*ARGS`, a `sub MAIN` is dispatched the way it would be in a
+plain run, and the program's `END` blocks run when the session ends, as
+the session's own do. An `exit` in the program is reported, not obeyed —
+the point of the flag is what comes after — and so is an uncaught error,
+whose backtrace prints and whose state is then there to inspect:
+
+```
+$ rakupp --repl-after app.raku data.csv
+…app.raku's output…
+(app.raku finished; its declarations are live — \v lists them, \q quits)
+> say %totals
+```
+
+The session opens whether or not stdin is a terminal — the flag is the
+request — so a script can pipe questions into it. `-q` drops the banner
+and the "declarations are live" line.
+
 ## `--profile`
 
 `--profile` prints a routine-level wall-time profile to stderr after the
@@ -177,6 +348,30 @@ disabled hooks cost nothing measurable, so there is no separate
 | `--precomp-*` | the parsed-module cache (see [CACHING.md](CACHING.md)) |
 | `--ffi-info` | which FFI backend NativeCall will use (see [FFI.md](FFI.md)) |
 | `--exe-info BIN` | a compiled binary's embedded build manifest (version, mode, `--slim` cuts) |
+
+### Diagnostics as data: `--json`
+
+`-c --json` and `--lint --json` print the findings as one JSON array on
+stdout, one object per finding, and nothing else there:
+
+```
+$ rakupp --lint --json prog.raku
+[
+{"file": "prog.raku", "line": 1, "severity": "warning", "rule": "unused-variable", "message": "'$x' is declared but never used"},
+{"file": "prog.raku", "line": 4, "severity": "error", "rule": "undeclared-variable", "message": "'$y' is not declared"}
+]
+```
+
+`severity` is `error`, `warning` or `note`; `rule` is the stable id
+([LINT.md](LINT.md) lists them), with `parse-error` and
+`undeclared-variable` for the two compile failures; `line` is 1-based and
+there is no column — the parser records lines. A clean `-c --json` prints
+`[]` (no `Syntax OK`). Exit codes are unchanged: `-c` exits 2 on a parse
+error and 1 on an undeclared variable, `--lint` 2 / 1 / 0 for errors /
+warnings / clean. The `--lint` summary line still goes to stderr, where a
+consumer reading stdout never sees it (`-q` drops it). This is the
+editor-integration surface for a tool that does not speak LSP; the one
+that does is `--lsp`.
 
 ### Undeclared variables are refused before the program runs
 
@@ -237,11 +432,82 @@ line of the frame the error came from.
 | `--ll-exception` | every frame, nothing folded, no limit (Rakudo's flag) |
 | `RAKUPP_BACKTRACE=full` | the same, as an environment variable |
 | `RAKUPP_BACKTRACE=0` | the message alone, no frames |
-| `NO_COLOR` | no ANSI colour (colour is off already when stderr is not a terminal) |
+| `--color=auto\|always\|never` | ANSI colour: `auto` (the default) means a terminal, unless `NO_COLOR` is set; `always` colours even into a pipe; `never` never. The same switch governs the REPL's prompt, echo and error colour. `--colour` is accepted too |
+| `NO_COLOR` | no ANSI colour, by the no-color.org convention (present and non-empty) |
+| `RAKUPP_COLOR=0` / `=1` | what `--color=never` / `always` set; the environment form |
 
 The whole story — errors with two positions (`fail`, `await`), how `warn` and
 syntax errors report, and the `$!.backtrace` API — is
 [TRACER.md](TRACER.md).
+
+## The developer loop: `--watch`
+
+`--watch` runs the command, then reruns it whenever the program file
+changes — or any `.raku`/`.rakumod` under the `-I` directories, `lib/` or
+`RAKULIB`. It composes with `-c` and `--lint`, which makes a live check
+loop:
+
+```
+$ rakupp --watch --lint prog.raku
+prog.raku:3: warning: '$x' is declared but never used [unused-variable]
+[watch] exit 1 — watching prog.raku and the module directories (^C stops)
+[watch] prog.raku changed; rerunning
+rakupp --lint: no issues found in prog.raku
+[watch] exit 0 — watching prog.raku and the module directories (^C stops)
+```
+
+Each run is a fresh process with the same command line (minus `--watch`),
+so nothing leaks between runs; the program's stdin, stdout and stderr are
+the terminal's. Changes are found by polling every 300 ms — the program
+file by content, the library trees by modification time and size — with
+no kernel watcher to set up. The loop needs a program *file*: `-e` code
+and a stdin program have nothing to watch. `^C` stops it, and so does the
+program file disappearing, which is reported.
+
+## Looking things up: `rakupp doc`
+
+`rakupp doc SYMBOL` looks a builtin, method, operator or syntax form up in
+the language reference, offline — `go doc`, `perldoc -f`, `pydoc`:
+
+```
+$ rakupp doc trim
+REFERENCE.md › 6. Methods by receiver › On `Str`
+    say '  hi  '.trim;               # → hi
+
+REFERENCE.md › Appendix B — all methods
+    to to-json to-posix today toggle total trans tree trim trim-leading
+    …
+```
+
+The content is [REFERENCE.md](REFERENCE.md), every example of which was
+executed on rakupp and shows its real output, with [FEATURES.md](FEATURES.md)
+as the second source; each hit is shown under its heading trail. Table
+rows come first (they carry the meaning column), then code examples, then
+prose. `.trim` and `trim` are the same question; a symbol made of
+punctuation (`<=>`, `»`, `Z`) is matched as a substring, a name as a whole
+word. `--code` keeps only the examples, `--all` shows every hit instead of
+the first dozen; several symbols at once are answered one after another.
+An unknown symbol exits 1. The two files are read at each lookup, from
+`docs/guide` of a checkout or `share/rakupp/docs` of an install
+(`RAKUPP_DOCS=DIR` overrides), so the answer is always what the docs say
+today. Like the installer, the command is a Raku program shipped beside
+the binary (`tools/doc.raku`) and dispatched by it.
+
+## Shell completion
+
+`--completions=bash`, `=zsh` or `=fish` prints a completion script for the
+shell, generated from the same option table the parser uses, so it cannot
+drift from what the binary accepts. Flags complete with their descriptions
+(zsh, fish), a `=` option completes its values (`--color=` offers `auto`,
+`always`, `never`), the first word completes to a file or an installer
+command (`install`, `uninstall`, `reinstall`, `test`), and everything else
+completes to files.
+
+```bash
+eval "$(rakupp --completions=bash)"                     # bash, in ~/.bashrc
+eval "$(rakupp --completions=zsh)"                      # zsh, in ~/.zshrc (after compinit)
+rakupp --completions=fish > ~/.config/fish/completions/rakupp.fish
+```
 
 ## Serving
 

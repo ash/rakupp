@@ -18,6 +18,15 @@ namespace rakupp {
 int rakuppRepl(const std::string& exePath, const std::vector<std::string>& libPaths,
                bool quiet = false);
 
+// --repl-after (python -i): run `src` — as `fileName`, with `args` as @*ARGS —
+// in the session's own interpreter, then hand the prompt over with everything
+// the program declared still live. The program's END blocks run when the
+// session ends, like its own. Opens the session whether or not stdin is a
+// terminal: the flag is the request.
+int rakuppReplAfter(const std::string& exePath, const std::vector<std::string>& libPaths,
+                    bool quiet, const std::string& src, const std::string& fileName,
+                    std::vector<std::string> args);
+
 // Is stdin a terminal? This is the whole of the REPL-vs-program decision, so it
 // lives next to the REPL rather than behind another platform #ifdef in main().
 bool stdinIsTerminal();

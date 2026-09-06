@@ -2,6 +2,9 @@
 #include "BuildInfo.h"
 #include "Runtime.h"
 #include "Profiler.h"
+#include <cerrno>
+#include <chrono>
+#include <thread>
 #include <cstdint>
 #include <cstdio>
 #include "Codegen.h"
@@ -1424,6 +1427,380 @@ static int slimVerify(char modeCh, const std::string& src, const std::string& sr
 
 // ---------------------------------------------------------------------------
 
+// --env-file=FILE (node, deno): KEY=VALUE lines into the environment before
+// anything runs. dotenv's grammar, the useful subset: blank lines and `#`
+// comments skipped, an optional `export ` prefix, single- or double-quoted
+// values (double quotes take \n \t \r \\ \"), an unquoted value running to
+// the end of the line with a trailing ` # comment` dropped. A variable the
+// environment already has is KEPT — the file supplies defaults, it does not
+// override the shell (node's rule too). Returns an error message, or "".
+static void putEnv(const std::string& key, const std::string& val, bool overwrite) {
+#if defined(_WIN32)
+    if (overwrite || !std::getenv(key.c_str())) _putenv_s(key.c_str(), val.c_str());
+#else
+    setenv(key.c_str(), val.c_str(), overwrite ? 1 : 0);
+#endif
+}
+static void dropEnv(const std::string& key) {
+#if defined(_WIN32)
+    _putenv_s(key.c_str(), "");
+#else
+    unsetenv(key.c_str());
+#endif
+}
+static std::string loadEnvFile(const std::string& path) {
+    std::ifstream in(path);
+    if (!in) return "--env-file: cannot open " + path;
+    auto trim = [](const std::string& s) {
+        size_t b = s.find_first_not_of(" \t\r"), e = s.find_last_not_of(" \t\r");
+        return b == std::string::npos ? std::string() : s.substr(b, e - b + 1);
+    };
+    std::string line; int no = 0;
+    auto at = [&] { return "--env-file: " + path + ":" + std::to_string(no) + ": "; };
+    while (std::getline(in, line)) {
+        no++;
+        std::string t = trim(line);
+        if (t.empty() || t[0] == '#') continue;
+        if (t.rfind("export ", 0) == 0) t = trim(t.substr(7));
+        size_t eq = t.find('=');
+        if (eq == std::string::npos) return at() + "expected KEY=VALUE";
+        std::string key = trim(t.substr(0, eq)), val = trim(t.substr(eq + 1));
+        bool okKey = !key.empty() && (std::isalpha((unsigned char)key[0]) || key[0] == '_');
+        for (char c : key) if (!(std::isalnum((unsigned char)c) || c == '_')) okKey = false;
+        if (!okKey) return at() + "'" + key + "' is not a variable name";
+        if (!val.empty() && (val[0] == '"' || val[0] == '\'')) {
+            char q = val[0]; std::string v; size_t k = 1;
+            for (; k < val.size() && val[k] != q; k++) {
+                if (q == '"' && val[k] == '\\' && k + 1 < val.size()) {
+                    char n = val[++k];
+                    v += n == 'n' ? '\n' : n == 't' ? '\t' : n == 'r' ? '\r' : n;
+                }
+                else v += val[k];
+            }
+            if (k >= val.size()) return at() + "unterminated quote";
+            val = v;
+        }
+        else {
+            size_t h = val.find(" #");
+            if (h == std::string::npos) h = val.find("\t#");
+            if (h != std::string::npos) val = trim(val.substr(0, h));
+        }
+        putEnv(key, val, /*overwrite*/ false);
+    }
+    return "";
+}
+
+// --json (rustc --error-format=json, gcc -fdiagnostics-format=json): the -c and
+// --lint findings as one JSON array, one object per finding — file, line,
+// severity, rule, message — for editors and CI to read without parsing prose.
+// Column is not carried: the parser records lines only.
+static std::string jsonQ(const std::string& s) {
+    std::string o = "\"";
+    for (unsigned char c : s) {
+        if (c == '"') o += "\\\"";
+        else if (c == '\\') o += "\\\\";
+        else if (c == '\n') o += "\\n";
+        else if (c == '\t') o += "\\t";
+        else if (c == '\r') o += "\\r";
+        else if (c < 0x20) { char b[8]; snprintf(b, sizeof b, "\\u%04x", c); o += b; }
+        else o += (char)c;
+    }
+    return o + "\"";
+}
+static std::string jsonFinding(const std::string& file, int line, const char* severity,
+                               const std::string& rule, const std::string& message) {
+    return "{\"file\": " + jsonQ(file) + ", \"line\": " + std::to_string(line)
+         + ", \"severity\": \"" + severity + "\", \"rule\": " + jsonQ(rule)
+         + ", \"message\": " + jsonQ(message) + "}";
+}
+static void printJsonFindings(const std::vector<std::string>& items) {
+    if (items.empty()) { std::cout << "[]\n"; return; }
+    std::cout << "[\n";
+    for (size_t i = 0; i < items.size(); i++) std::cout << items[i] << (i + 1 < items.size() ? ",\n" : "\n");
+    std::cout << "]\n";
+}
+
+// --completions=SHELL (rustup, deno, pip): a completion script for bash, zsh
+// or fish, generated from this one table so it cannot drift from the parser
+// above it. `arg`: 0 = a bare flag, 1 = takes `=VALUE` (optional where the
+// parser allows), 2 = takes the next word. `values`: the words a value
+// completes to, "FILE" / "DIR" for paths, nullptr for free text.
+struct FlagDoc { const char* flag; int arg; const char* values; const char* help; };
+static const FlagDoc kFlagDocs[] = {
+    {"-e", 2, nullptr, "run CODE"},
+    {"-I", 2, "DIR", "add a module search directory"},
+    {"-M", 2, nullptr, "load a module before the program"},
+    {"-n", 0, nullptr, "run the program once per input line"},
+    {"-p", 0, nullptr, "like -n, and print the line after each pass"},
+    {"-a", 0, nullptr, "autosplit each record into @F"},
+    {"-F", 2, nullptr, "the autosplit separator"},
+    {"-l", 0, nullptr, "accepted, lines already arrive chomped"},
+    {"-0", 0, nullptr, "NUL-separated records"},
+    {"-0777", 0, nullptr, "slurp mode, one record per file"},
+    {"-i", 0, nullptr, "edit the argument files in place"},
+    {"-x", 0, nullptr, "skip everything before the #! line"},
+    {"-c", 0, nullptr, "compile-check only"},
+    {"-q", 0, nullptr, "quiet, drop what a mode says about itself"},
+    {"--quiet", 0, nullptr, "quiet, drop what a mode says about itself"},
+    {"-o", 2, "FILE", "output file (compile modes, --target=js)"},
+    {"-O", 0, nullptr, "optimize (compile modes)"},
+    {"-h", 0, nullptr, "help"},
+    {"--help", 0, nullptr, "help"},
+    {"-v", 0, nullptr, "version"},
+    {"-V", 0, nullptr, "version"},
+    {"--version", 0, nullptr, "version"},
+    {"--doc", 0, nullptr, "render the Pod of the program after the run"},
+    {"--lint", 0, nullptr, "static analysis, no run"},
+    {"--json", 0, nullptr, "machine-readable -c and --lint findings"},
+    {"--ast", 0, nullptr, "print the parsed AST"},
+    {"--dump-ast", 0, nullptr, "print the parsed AST"},
+    {"--ast-roundtrip", 0, nullptr, "check the AST survives the precomp cache"},
+    {"--cpp", 0, nullptr, "print the C++ --exe would compile"},
+    {"--bundle", 0, nullptr, "compile, embedding source and interpreter"},
+    {"--aot", 0, nullptr, "compile, embedding the parsed AST"},
+    {"--exe", 0, nullptr, "compile natively to C++"},
+    {"--slim", 1, "safe auto max none help list verify", "cut unused runtime subsystems from the binary"},
+    {"--standalone", 0, nullptr, "a module that cannot be embedded is a build error"},
+    {"--target", 1, "parse ast js", "parse, ast, or transpile to JavaScript"},
+    {"--verify", 0, nullptr, "emit JavaScript only if it agrees with the interpreter"},
+    {"--module", 0, nullptr, "JavaScript export the subs, classes and MAIN"},
+    {"--runtime", 0, nullptr, "write just the JavaScript runtime"},
+    {"--fallback", 1, "wasm", "accept a program outside the JavaScript core"},
+    {"--profile", 1, "FILE", "routine-level wall-time profile"},
+    {"--seed", 1, nullptr, "pin the random generator"},
+    {"--stack-size", 1, nullptr, "the stack of the program thread, the recursion ceiling"},
+    {"--env-file", 1, "FILE", "load KEY=VALUE lines into the environment"},
+    {"--color", 1, "auto always never", "ANSI colour on stderr and in the REPL"},
+    {"--stagestats", 0, nullptr, "phase timings and module loads on stderr"},
+    {"--trace", 0, nullptr, "print each statement as it runs"},
+    {"--repl-after", 0, nullptr, "run the program, then open a session on its state"},
+    {"--completions", 1, "bash zsh fish", "print a shell completion script"},
+    {"--highlight", 0, nullptr, "syntax-highlight to HTML"},
+    {"--ansi", 0, nullptr, "syntax-highlight for a terminal"},
+    {"--html", 0, nullptr, "syntax-highlight to HTML"},
+    {"--precomp-info", 0, nullptr, "where the parsed-module cache is"},
+    {"--precomp-clean", 0, nullptr, "empty the parsed-module cache"},
+    {"--precomp-modules", 1, "on off", "cache the parse of used modules"},
+    {"--precomp-files", 1, "on off", "cache the parse of the main program itself"},
+    {"--mcp", 0, nullptr, "serve the interpreter over the Model Context Protocol"},
+    {"--timeout", 1, nullptr, "seconds a stuck --mcp call gets"},
+    {"--lsp", 0, nullptr, "run the Language Server"},
+    {"--jupyter", 2, "FILE", "run as a Jupyter kernel against a connection file"},
+    {"--jupyter-install", 0, nullptr, "register this binary as the raku kernel"},
+    {"--name", 1, nullptr, "kernel name (--jupyter-install)"},
+    {"--prefix", 1, "DIR", "kernel location (--jupyter-install)"},
+    {"--exe-info", 2, "FILE", "the build manifest embedded in a compiled binary"},
+    {"--ffi-info", 0, nullptr, "which FFI backend NativeCall will use"},
+    {"--ll-exception", 0, nullptr, "every frame of an uncaught error"},
+};
+static const char* kSubcommandDocs[][2] = {
+    {"install", "fetch, test and install modules"},
+    {"uninstall", "remove installed modules"},
+    {"reinstall", "uninstall and install fresh"},
+    {"test", "run a module test suite, installing nothing"},
+    {"doc", "look a builtin, method or operator up in the reference"},
+};
+
+// --watch (node --watch, cargo watch): run the command, then rerun it whenever
+// the program file — or a .raku/.rakumod under the -I directories, lib/ or
+// RAKULIB — changes. A poll, not kqueue/inotify: portable, and 300 ms is
+// below what a hand notices. The program file's CONTENT is hashed (an
+// edit that keeps the size within the same second is still a change); the
+// library trees go by mtime and size. The watched program disappearing ends
+// the loop, which is also how a test stops it.
+#if !defined(_WIN32)
+#include <sys/wait.h>
+#endif
+static int runChild(const std::string& exe, const std::vector<std::string>& args) {
+    std::vector<char*> av;
+    av.push_back(const_cast<char*>(exe.c_str()));
+    for (auto& a : args) av.push_back(const_cast<char*>(a.c_str()));
+    av.push_back(nullptr);
+#if defined(_WIN32)
+    return (int)_spawnv(_P_WAIT, exe.c_str(), av.data());
+#else
+    std::cout.flush(); std::cerr.flush();
+    pid_t pid = fork();
+    if (pid < 0) return -1;
+    if (pid == 0) { execv(exe.c_str(), av.data()); _exit(127); }
+    int st = 0;
+    while (waitpid(pid, &st, 0) < 0) { if (errno != EINTR) return -1; }
+    return WIFEXITED(st) ? WEXITSTATUS(st) : WIFSIGNALED(st) ? 128 + WTERMSIG(st) : -1;
+#endif
+}
+static int watchLoop(const std::string& exe, const std::vector<std::string>& childArgs,
+                     const std::string& progFile, const std::vector<std::string>& libPaths) {
+    namespace fs = std::filesystem;
+    std::vector<std::string> dirs = libPaths;
+    dirs.push_back("lib");
+    if (const char* rl = std::getenv("RAKULIB"))
+        for (auto& d : splitSearchPath(rl)) dirs.push_back(d);
+    // one signature per pass: the program's content, every library file's stamp
+    auto signature = [&](std::string* changed) {
+        std::string sig;
+        {
+            std::ifstream in(progFile, std::ios::binary);
+            if (!in) return std::string();        // gone
+            std::ostringstream ss; ss << in.rdbuf();
+            sig += std::to_string(std::hash<std::string>{}(ss.str())) + "\n";
+        }
+        size_t seen = 0;
+        for (auto& d : dirs) {
+            std::error_code ec;
+            if (!fs::is_directory(d, ec)) continue;
+            for (auto it = fs::recursive_directory_iterator(d, fs::directory_options::skip_permission_denied, ec);
+                 !ec && it != fs::recursive_directory_iterator(); it.increment(ec)) {
+                if (++seen > 20000) break;
+                const auto& p = it->path();
+                std::string ext = p.extension().string();
+                if (ext != ".raku" && ext != ".rakumod" && ext != ".pm6" && ext != ".p6") continue;
+                std::error_code e2;
+                auto t = fs::last_write_time(p, e2).time_since_epoch().count();
+                auto sz = fs::file_size(p, e2);
+                std::string line = p.string() + " " + std::to_string((long long)t) + " " + std::to_string((unsigned long long)sz) + "\n";
+                if (changed && !changed->empty()) { /* already know */ }
+                sig += line;
+            }
+        }
+        return sig;
+    };
+    std::string last = signature(nullptr);
+    if (last.empty()) { std::cerr << "--watch: cannot read " << progFile << "\n"; return 4; }
+    for (;;) {
+        int rc = runChild(exe, childArgs);
+        std::cerr << "[watch] exit " << rc << " — watching " << progFile
+                  << (dirs.size() > 1 || fs::is_directory("lib") ? " and the module directories" : "")
+                  << " (^C stops)\n";
+        for (;;) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(300));
+            std::string now = signature(nullptr);
+            if (now.empty()) { std::cerr << "[watch] " << progFile << " is gone; stopping\n"; return rc; }
+            if (now != last) {
+                // name what changed: the first differing line is a library
+                // file's stamp, or the program's hash
+                std::string what = progFile;
+                std::istringstream a(last), b(now); std::string la, lb;
+                while (std::getline(a, la) && std::getline(b, lb)) {
+                    if (la != lb) { size_t sp = lb.rfind(' '); size_t sp2 = lb.rfind(' ', sp ? sp - 1 : 0);
+                                    what = sp2 != std::string::npos && lb.find('/') != std::string::npos ? lb.substr(0, sp2) : progFile; break; }
+                }
+                std::cerr << "[watch] " << what << " changed; rerunning\n";
+                last = now;
+                break;
+            }
+        }
+    }
+}
+static int printCompletions(const std::string& shell) {
+    std::ostream& o = std::cout;
+    // every description lands inside a single-quoted shell string
+    for (auto& f : kFlagDocs) if (std::string(f.help).find('\'') != std::string::npos) { std::cerr << "completions: apostrophe in help for " << f.flag << "\n"; return 4; }
+    if (shell == "bash") {
+        o << "# rakupp bash completion — generated by `rakupp --completions=bash`\n"
+             "# Load with:  eval \"$(rakupp --completions=bash)\"\n"
+             "_rakupp() {\n"
+             "    local cur=${COMP_WORDS[COMP_CWORD]}\n"
+             "    local flags=\"";
+        for (auto& f : kFlagDocs) o << f.flag << " ";
+        o << "\"\n"
+             "    if [[ $COMP_CWORD -eq 1 && $cur != -* ]]; then\n"
+             "        COMPREPLY=( $(compgen -W \"";
+        for (auto& s : kSubcommandDocs) o << s[0] << " ";
+        o << "\" -- \"$cur\") $(compgen -f -- \"$cur\") )\n"
+             "    elif [[ $cur == -* ]]; then\n"
+             "        COMPREPLY=( $(compgen -W \"$flags\" -- \"$cur\") )\n"
+             "    else\n"
+             "        COMPREPLY=( $(compgen -f -- \"$cur\") )\n"
+             "    fi\n"
+             "}\n"
+             "complete -o filenames -F _rakupp rakupp\n";
+        return 0;
+    }
+    if (shell == "zsh") {
+        o << "#compdef rakupp\n"
+             "# rakupp zsh completion — generated by `rakupp --completions=zsh`\n"
+             "# Save as _rakupp in a directory on $fpath, or:  eval \"$(rakupp --completions=zsh)\"\n"
+             "_rakupp() {\n"
+             "  local -a specs\n"
+             "  specs=(\n";
+        for (auto& f : kFlagDocs) {
+            std::string spec = std::string(f.flag == std::string("-I") || f.flag == std::string("-M") ? "*" : "") + f.flag;
+            if (f.arg == 1) spec += "=";
+            spec += "[" + std::string(f.help) + "]";
+            if (f.arg != 0) {
+                spec += ":value:";
+                if (f.values && std::string(f.values) == "FILE") spec += "_files";
+                else if (f.values && std::string(f.values) == "DIR") spec += "_files -/";
+                else if (f.values) spec += std::string("(") + f.values + ")";
+            }
+            o << "    '" << spec << "'\n";
+        }
+        o << "  )\n"
+             "  _arguments -s -S $specs '1:program or command:->first' '*:argument:_files'\n"
+             "  case $state in\n"
+             "    first) _alternative 'commands:command:((";
+        for (auto& s : kSubcommandDocs) o << s[0] << "\\:\"" << s[1] << "\" ";
+        o << "))' 'files:program:_files' ;;\n"
+             "  esac\n"
+             "}\n"
+             "compdef _rakupp rakupp\n";
+        return 0;
+    }
+    if (shell == "fish") {
+        o << "# rakupp fish completion — generated by `rakupp --completions=fish`\n"
+             "# Save as ~/.config/fish/completions/rakupp.fish\n";
+        for (auto& s : kSubcommandDocs)
+            o << "complete -c rakupp -n '__fish_use_subcommand' -a " << s[0] << " -d '" << s[1] << "'\n";
+        for (auto& f : kFlagDocs) {
+            std::string fl = f.flag;
+            o << "complete -c rakupp ";
+            if (fl.rfind("--", 0) == 0) o << "-l " << fl.substr(2);
+            else if (fl.size() == 2) o << "-s " << fl.substr(1);
+            else o << "-o " << fl.substr(1);   // -0777: an old-style single-dash word
+            if (f.arg == 2) o << " -r";
+            if (f.arg == 1 && f.values && std::string(f.values) != "FILE" && std::string(f.values) != "DIR")
+                o << " -x -a '" << f.values << "'";
+            else if (f.arg != 0 && f.values && std::string(f.values) == "DIR") o << " -x -a '(__fish_complete_directories)'";
+            o << " -d '" << f.help << "'\n";
+        }
+        return 0;
+    }
+    std::cerr << "--completions wants bash, zsh or fish\n";
+    return 4;
+}
+
+// RAKUPP_OPT (PERL5OPT, NODE_OPTIONS, GOFLAGS): options from the environment,
+// prepended to every command line. Whitespace-separated; a single- or
+// double-quoted token keeps its spaces. Options ONLY: a token that would start
+// the program (-e, -, --, a file) is refused, so the variable can shape a run
+// but never replace what runs.
+static std::vector<std::string> splitEnvOpts(const std::string& s) {
+    std::vector<std::string> out; std::string cur; char q = 0; bool have = false;
+    for (char c : s) {
+        if (q) { if (c == q) q = 0; else cur += c; }
+        else if (c == '\'' || c == '"') { q = c; have = true; }
+        else if (c == ' ' || c == '\t' || c == '\n') { if (have) { out.push_back(cur); cur.clear(); have = false; } }
+        else { cur += c; have = true; }
+    }
+    if (have) out.push_back(cur);
+    return out;
+}
+static std::string envOptRefused(const std::vector<std::string>& toks) {
+    auto takesArg = [](const std::string& p) {
+        return p == "-I" || p == "-M" || p == "-m" || p == "-F" || p == "-o"
+            || p == "--timeout" || p == "--env-file";
+    };
+    for (size_t k = 0; k < toks.size(); k++) {
+        const std::string& t = toks[k];
+        bool program = t == "-" || t == "--" || t.rfind("-e", 0) == 0
+            || (t.size() > 1 && t[0] == '-' && t[1] != '-' && t.find('e') != std::string::npos
+                && t.find_first_not_of("nplaxie01234567", 1) == std::string::npos) // a -ne cluster
+            || (t[0] != '-' && !(k > 0 && takesArg(toks[k - 1])));
+        if (program) return t;
+    }
+    return "";
+}
+
 int main(int argc, char** argv) {
     rakupp::setConsoleUtf8();  // Windows: render UTF-8 output instead of mojibake (no-op elsewhere)
     std::string exePath = selfExePath(argv[0]); // resolve the real binary (argv[0] may be a bare PATH name)
@@ -1454,15 +1831,17 @@ int main(int argc, char** argv) {
     bool isUninstall = cmdWord == "uninstall";
     bool isReinstall = cmdWord == "reinstall";
     bool isTestCmd   = cmdWord == "test";
-    if (cmdWord == "install" || isUninstall || isReinstall || isTestCmd) {
+    bool isDocCmd    = cmdWord == "doc";   // `rakupp doc SYMBOL` — the same dispatch, another script
+    if (cmdWord == "install" || isUninstall || isReinstall || isTestCmd || isDocCmd) {
         std::string exeDir = exePath.substr(0, exePath.find_last_of("/\\"));
         std::string script;
-        for (const char* rel : {"/../libexec/rakupp/install.raku", "/../tools/install.raku"}) {
-            std::string cand = exeDir + rel;
+        const char* tool = isDocCmd ? "doc.raku" : "install.raku";
+        for (const char* rel : {"/../libexec/rakupp/", "/../tools/"}) {
+            std::string cand = exeDir + rel + tool;
             if (std::ifstream(cand).good()) { script = cand; break; }
         }
         if (script.empty()) {
-            std::cerr << "rakupp install: cannot find install.raku beside this binary\n"
+            std::cerr << "rakupp " << cmdWord << ": cannot find " << tool << " beside this binary\n"
                       << "  (expected in libexec/rakupp/ of an installed layout, or tools/ of a checkout)\n";
             return 4;
         }
@@ -1480,7 +1859,7 @@ int main(int argc, char** argv) {
         // --quiet goes BEFORE the module names: a named argument that follows a
         // positional is filed under MAIN's slurpy (measured: `Foo -q Bar` puts
         // -q in @modules, under this engine and under Rakudo alike)
-        if (quietCmd) installArgs.push_back("--quiet");
+        if (quietCmd && !isDocCmd) installArgs.push_back("--quiet");
         for (auto& r : rest) installArgs.push_back(r);
         for (auto& s : installArgs) installArgv.push_back(const_cast<char*>(s.c_str()));
         argv = installArgv.data();
@@ -1497,7 +1876,9 @@ int main(int argc, char** argv) {
         static const std::set<std::string> kLongNames = {
             "exe", "cpp", "emit-cpp", "bundle", "aot", "lint", "highlight",
             "ansi", "terminal", "ast", "dump-ast", "doc", "help", "version",
-            "mcp", "lsp", "jupyter",
+            "mcp", "lsp", "jupyter", "seed", "color", "colour", "env-file",
+            "stack-size", "ll-exception", "json", "stagestats", "trace",
+            "repl-after", "completions",
         };
         std::string bare = argv[1] + 1;
         if (kLongNames.count(bare)) {
@@ -1505,6 +1886,26 @@ int main(int argc, char** argv) {
             s_normArg1 = "--" + bare;
             argv[1] = &s_normArg1[0];
         }
+    }
+
+    // RAKUPP_OPT: the environment's standing options go first, so anything on
+    // the real command line can still override them (a later -I outranks an
+    // earlier one; a mode flag from the environment plus another here is the
+    // usual "cannot combine" error, naming both).
+    static std::vector<std::string> envOptStore;
+    static std::vector<char*> envArgv;
+    if (const char* eo = std::getenv("RAKUPP_OPT"); eo && *eo) {
+        std::vector<std::string> toks = splitEnvOpts(eo);
+        std::string bad = envOptRefused(toks);
+        if (!bad.empty()) {
+            std::cerr << "RAKUPP_OPT holds options only, never a program: '" << bad << "'\n";
+            return 4;
+        }
+        envOptStore.push_back(argv[0]);
+        for (auto& t : toks) envOptStore.push_back(t);
+        for (int i = 1; i < argc; i++) envOptStore.push_back(argv[i]);
+        for (auto& s : envOptStore) envArgv.push_back(const_cast<char*>(s.c_str()));
+        argv = envArgv.data(); argc = (int)envArgv.size();
     }
 
     // ---- the option parser (v3 CLI plan, step 1) ---------------------------
@@ -1541,6 +1942,15 @@ int main(int argc, char** argv) {
     bool haveF = false, fieldSepRegex = false;
     long recMode = -1;                    // -0[octal]: 0 = NUL records, 0777 = slurp
     bool quiet = false;                   // -q / --quiet: any mode (see g_quiet)
+    bool optX = false;                    // -x: skip leading text up to the #! line (perl)
+    bool seedSet = false, seedAnnounce = false; // --seed[=N]: pin the RNG (bare: pick and say)
+    long long seedVal = 0;
+    size_t stackBytes = 0;                // --stack-size=N[K|M|G]: the program thread (0 = 1 GiB)
+    bool jsonOut = false;                 // --json: -c/--lint findings as JSON
+    bool stageStats = false;              // --stagestats: phase timings on stderr
+    bool traceStmts = false;              // --trace: every statement, as it runs
+    bool replAfter = false;               // --repl-after: run, then a session on the result
+    bool watch = false;                   // --watch: rerun on change (run, -c, --lint)
     bool optimize = false;                // -O (compile modes and --cpp)
     bool sawHtml = false;                 // --html is only legal under --highlight
     long mcpTimeout = -1;                 // --timeout=SECS, only legal under --mcp
@@ -1582,6 +1992,73 @@ int main(int argc, char** argv) {
             // Rakudo's flag: every frame of an uncaught error, uncollapsed and
             // uncapped (issue #67). RAKUPP_BACKTRACE=0|short|full is the env knob.
             if (a == "--ll-exception") { rakupp::rakuppSetLLException(true); continue; }
+            // ---- the CLI-BORROW-PLAN flags ----
+            // --env-file=FILE: applied right here, so a later option — or the
+            // run — already sees the variables (RAKULIB from a .env works).
+            if (a == "--env-file" || a.rfind("--env-file=", 0) == 0) {
+                std::string p = a.size() > 10 && a[10] == '=' ? a.substr(11)
+                              : i + 1 < argc ? std::string(argv[++i]) : std::string();
+                if (p.empty()) { std::cerr << "--env-file wants a file\n"; return 4; }
+                if (std::string err = loadEnvFile(p); !err.empty()) { std::cerr << err << "\n"; return 4; }
+                continue;
+            }
+            // --color=WHEN (gcc, cargo): it sets the same knob the environment
+            // has (RAKUPP_COLOR=0|1), so every colour site — the backtrace, the
+            // REPL — reads one answer. `auto` is the default: a terminal,
+            // unless NO_COLOR is set. A bare --color means always.
+            if (a == "--color" || a == "--colour") { putEnv("RAKUPP_COLOR", "1", true); continue; }
+            if (a.rfind("--color=", 0) == 0 || a.rfind("--colour=", 0) == 0) {
+                std::string v = a.substr(a.find('=') + 1);
+                if (v == "always") putEnv("RAKUPP_COLOR", "1", true);
+                else if (v == "never") putEnv("RAKUPP_COLOR", "0", true);
+                else if (v == "auto") dropEnv("RAKUPP_COLOR");
+                else { std::cerr << "--color wants auto, always or never\n"; return 4; }
+                continue;
+            }
+            // --seed[=N] (rspec --seed, PYTHONHASHSEED): pin rand/pick/roll/
+            // shuffle for the run. Bare --seed picks one and announces it on
+            // stderr, which is how a flaky run gets a number to rerun with.
+            if (a == "--seed") {
+                seedSet = seedAnnounce = true;
+                seedVal = (long long)(std::chrono::high_resolution_clock::now().time_since_epoch().count() % 1000000000LL);
+                if (seedVal < 0) seedVal = -seedVal;
+                continue;
+            }
+            if (a.rfind("--seed=", 0) == 0) {
+                std::string v = a.substr(7); char* rest = nullptr;
+                seedVal = std::strtoll(v.c_str(), &rest, 10);
+                if (v.empty() || !rest || *rest) { std::cerr << "--seed wants a whole number\n"; return 4; }
+                seedSet = true; continue;
+            }
+            // --stack-size=N[K|M|G] (node): the program thread's stack, which is
+            // the recursion ceiling. A bare number is MiB — the default is 1G,
+            // and node's KB convention would make `--stack-size=64` a 64 KB
+            // stack that cannot run anything.
+            if (a.rfind("--stack-size=", 0) == 0) {
+                std::string v = a.substr(13); char* rest = nullptr;
+                unsigned long long n = std::strtoull(v.c_str(), &rest, 10);
+                std::string suf = rest ? rest : "";
+                unsigned long long mult = suf.empty() || suf == "M" || suf == "m" ? (1ull << 20)
+                                        : suf == "K" || suf == "k" ? (1ull << 10)
+                                        : suf == "G" || suf == "g" ? (1ull << 30) : 0;
+                if (v.empty() || !std::isdigit((unsigned char)v[0]) || !mult || n == 0
+                    || n > (1ull << 40) / mult || n * mult < (1ull << 20)) {
+                    std::cerr << "--stack-size wants a size with an optional K, M or G suffix"
+                                 " (a bare number is MiB; from 1M up to 1T)\n";
+                    return 4;
+                }
+                stackBytes = (size_t)(n * mult);
+                continue;
+            }
+            if (a == "-x") { optX = true; continue; }
+            if (a == "--json") { jsonOut = true; continue; }
+            if (a == "--stagestats") { stageStats = true; continue; }
+            if (a == "--trace") { traceStmts = true; continue; }
+            if (a == "--repl-after") { replAfter = true; continue; }
+            if (a == "--watch") { watch = true; continue; }
+            // an information mode, like --help: it answers and stops
+            if (a == "--completions" || a.rfind("--completions=", 0) == 0)
+                return printCompletions(a.size() > 13 ? a.substr(14) : "");
             if (a == "-I") { if (i + 1 < argc) libPaths.push_back(argv[++i]); continue; }
             if (a.rfind("-I", 0) == 0 && a.size() > 2) { libPaths.push_back(a.substr(2)); continue; }
             // -M <module> loads a module before the program runs (Rakudo/Perl;
@@ -1717,7 +2194,7 @@ int main(int argc, char** argv) {
             // the quotes).
             if (mode == Mode::Run && !haveSrc) {
                 size_t j = 1;
-                bool sawN = false, sawP = false, sawE = false, sawA = false, sawL = false, ok = true;
+                bool sawN = false, sawP = false, sawE = false, sawA = false, sawL = false, sawX = false, ok = true;
                 long saw0 = -1;
                 while (j < a.size()) {
                     char c = a[j];
@@ -1725,6 +2202,7 @@ int main(int argc, char** argv) {
                     else if (c == 'p') { sawP = true; j++; }
                     else if (c == 'a') { sawA = true; j++; }
                     else if (c == 'l') { sawL = true; j++; }
+                    else if (c == 'x') { sawX = true; j++; }
                     else if (c == '0') { // -0[octal]: value in octal, like perl
                         j++; long v = 0;
                         while (j < a.size() && a[j] >= '0' && a[j] <= '7') { v = v * 8 + (a[j] - '0'); j++; }
@@ -1739,8 +2217,8 @@ int main(int argc, char** argv) {
                     else if (c == 'e') { sawE = true; j++; break; }
                     else { ok = false; break; } // -nfoo is not a flag cluster at all
                 }
-                if (ok && (sawN || sawP || sawA || sawL || sawE || saw0 >= 0 || optI)) {
-                    optN |= sawN; optP |= sawP; optA |= sawA; optL |= sawL;
+                if (ok && (sawN || sawP || sawA || sawL || sawX || sawE || saw0 >= 0 || optI)) {
+                    optN |= sawN; optP |= sawP; optA |= sawA; optL |= sawL; optX |= sawX;
                     if (saw0 >= 0) recMode = saw0;
                     if (sawE) {
                         if (j < a.size()) { src = a.substr(j); }
@@ -1836,6 +2314,52 @@ int main(int argc, char** argv) {
         // --profile is for interpreted runs; a compiled binary has no
         // interpreter inside — use the OS profiler there (see CLI-PLAN.md)
         if (!profileDest.empty() && mode != Mode::Run) return illegalOpt("--profile");
+        // --seed and --stack-size shape a RUN (a program, a REPL, a served
+        // session); the source tools and the compilers have nothing to shape
+        bool runsCode = mode == Mode::Run || mode == Mode::Mcp || mode == Mode::Jupyter;
+        if (seedSet && !runsCode) return illegalOpt("--seed");
+        if (stackBytes && !runsCode) return illegalOpt("--stack-size");
+        if (jsonOut && mode != Mode::Check && mode != Mode::Lint) return illegalOpt("--json");
+        if (stageStats && mode != Mode::Run) return illegalOpt("--stagestats");
+        if (traceStmts && mode != Mode::Run) return illegalOpt("--trace");
+        if (replAfter && mode != Mode::Run) return illegalOpt("--repl-after");
+        if (watch && mode != Mode::Run && mode != Mode::Check && mode != Mode::Lint) return illegalOpt("--watch");
+    }
+    if (watch) {
+        // the loop runs THIS command line, minus --watch, as a child per change
+        if (!haveSrc || fileName == "-e" || fileName == "-") {
+            std::cerr << "--watch needs a program file to watch (not -e code or stdin)\n";
+            return 4;
+        }
+        std::vector<std::string> childArgs;
+        for (int i = 1; i < argc; i++) if (std::string(argv[i]) != "--watch") childArgs.push_back(argv[i]);
+        return watchLoop(exePath, childArgs, fileName, libPaths);
+    }
+    if (stageStats) rakupp::rakuppSetStageStats(true);
+    if (traceStmts) rakupp::rakuppSetTrace(true);
+    if (seedSet) {
+        rakupp::rakuppSetSeed(seedVal);
+        if (seedAnnounce) std::cerr << "rakupp: --seed=" << seedVal << "\n";
+    }
+    if (stackBytes) rakupp::rakuppSetStackBytes(stackBytes);
+    // -x: the program starts at the first line that begins with `#!` and names
+    // raku; whatever precedes it (a mail header, a document) is not code.
+    // Perl's flag, with one divergence: the skipped lines are blanked, not
+    // removed, so an error's line number still matches the file as an editor
+    // shows it (perl counts from the #! line).
+    if (optX && haveSrc) {
+        if (fileName == "-e") { std::cerr << "-x looks for a #! line in a program file, not in -e code\n"; return 4; }
+        size_t pos = 0; int skipped = 0; bool found = false;
+        while (pos < src.size()) {
+            size_t eol = src.find('\n', pos);
+            std::string ln = src.substr(pos, eol == std::string::npos ? std::string::npos : eol - pos);
+            if (ln.rfind("#!", 0) == 0 && ln.find("raku") != std::string::npos) { found = true; break; }
+            skipped++;
+            if (eol == std::string::npos) { pos = src.size(); break; }
+            pos = eol + 1;
+        }
+        if (!found) { std::cerr << "No Raku script found in input (-x looks for a #! line naming raku)\n"; return 2; }
+        src = std::string((size_t)skipped, '\n') + src.substr(pos);
     }
     if (!profileDest.empty()) rakupp::prof::setDest(profileDest);
     // the perl-family implications (perl 5.20+): -F implies -a, -a implies -n
@@ -1917,6 +2441,26 @@ int main(int argc, char** argv) {
 "                               progress and `already installed:`, the REPL banner.\n"
 "                               A mode's output, warnings and errors stay. Taken by\n"
 "                               every mode, before or after its command\n"
+"  -x                           Skip everything before the #! line that names raku\n"
+"                               (a program embedded in a mail or a document)\n"
+"  --seed[=N]                   Pin rand, pick and roll for the run; a bare\n"
+"                               --seed picks one and prints it, to rerun with\n"
+"  --stack-size=N[K|M|G]        The program thread's stack (default 1G; a bare\n"
+"                               number is MiB) — the recursion ceiling\n"
+"  --env-file=FILE              Load KEY=VALUE lines into the environment first\n"
+"                               (repeatable; a variable already set is kept)\n"
+"  --color=auto|always|never    ANSI colour on stderr and in the REPL (auto: a\n"
+"                               terminal, unless NO_COLOR is set)\n"
+"  --stagestats                 Phase timings (precomp, lex, parse, check, run) and\n"
+"                               every module load, on stderr when the run ends\n"
+"  --trace                      Print each statement to stderr as it runs\n"
+"                               (file:line and the source line)\n"
+"  --repl-after                 Run the program, then open a session on its state:\n"
+"                               its variables, subs and classes are live (python -i)\n"
+"  --completions=bash|zsh|fish  Print a completion script for the shell\n"
+"  --watch                      Rerun the command whenever the program file, or a\n"
+"                               module under -I, lib/ or RAKULIB, changes; with -c\n"
+"                               or --lint, a live check loop\n"
 "\n"
 "Compile to a standalone binary (each takes FILE or -e CODE, plus -o OUT):\n"
 "  rakupp --bundle SRC -o OUT   Embed source + interpreter (whole language)\n"
@@ -1944,6 +2488,8 @@ int main(int argc, char** argv) {
 "                               report; --refresh: refetch the cached index(es)\n"
 "  rakupp install -q MODULE     Only warnings and failures; nothing on success\n"
 "                               (-q goes with every command here, in any position)\n"
+"  rakupp doc SYMBOL ...        Look a builtin, method, operator or syntax form up\n"
+"                               in the language reference, offline (--all, --code)\n"
 "\n"
 "Serve:\n"
 "  rakupp --mcp                 Serve the interpreter over the Model Context\n"
@@ -1963,6 +2509,8 @@ int main(int argc, char** argv) {
 "  rakupp --lint SRC [-q]       Static-analyze without running: warn about unused\n"
 "                               variables, unreachable code, redeclarations, etc.\n"
 "                               (exit 1 if any warning; -q suppresses the summary)\n"
+"  rakupp --lint --json SRC     The findings as a JSON array (file, line, severity,\n"
+"                               rule, message); -c --json the same, [] when clean\n"
 "  rakupp --ast SRC             Print the parsed AST as an indented tree\n"
 "  rakupp --ast-roundtrip SRC   Check the AST survives the precomp cache format\n"
 "  rakupp --precomp-info        Where the parsed-module cache is, and how big\n"
@@ -2009,6 +2557,10 @@ int main(int argc, char** argv) {
 "  RAKUPP_FFI=0 | /path/to/lib  Disable NativeCall's libffi backend, or point at a\n"
 "                               specific libffi (default: found at runtime, see --ffi-info)\n"
 "  RAKUPP_FFI_TRACE=1           Log every NativeCall crossing to stderr as it happens\n"
+"  RAKUPP_OPT='-I lib -M Foo'   Options prepended to every command line (options\n"
+"                               only, never a program — PERL5OPT's rule)\n"
+"  NO_COLOR=1, RAKUPP_COLOR=0|1 Colour off by convention; forced off or on\n"
+"  RAKUPP_BACKTRACE=0|short|full  How much of an uncaught error's backtrace prints\n"
 "\n"
 "Run the spec-test harness (self-hosted, in Raku):\n"
 "  ROAST=/path/to/roast rakupp tools/run-roast.raku [PATH-SUBSTRING]\n"
@@ -2221,6 +2773,7 @@ int main(int argc, char** argv) {
             parser.srcFile_ = fileName;
             prog = parser.parseProgram();
         } catch (const ParseError& e) {
+            if (jsonOut) { printJsonFindings({jsonFinding(fileName, e.line, "error", "parse-error", e.what())}); return 2; }
             std::cerr << "===SORRY!=== Parse error at line " << e.line << ": " << e.what() << "\n";
             return 2;
         }
@@ -2229,8 +2782,17 @@ int main(int argc, char** argv) {
         // third line was the other half of issue #32.
         if (declCheckEnabled()) {
             auto us = findUndeclaredVars(prog, src, effectiveSearchPath(libPaths));
-            if (!us.empty()) return reportUndeclaredVars(us, fileName, src);
+            if (!us.empty()) {
+                if (!jsonOut) return reportUndeclaredVars(us, fileName, src);
+                std::vector<std::string> items;
+                for (auto& u : us)
+                    items.push_back(jsonFinding(fileName, u.line, "error", "undeclared-variable",
+                                                "Variable '" + u.name + "' is not declared"));
+                printJsonFindings(items);
+                return 1;   // the exit code reportUndeclaredVars answers
+            }
         }
+        if (jsonOut) { std::cout << "[]\n"; return 0; }  // the empty list IS the verdict
         if (!g_quiet) std::cout << "Syntax OK\n";   // -q: the exit code is the verdict
         return 0;
     }
@@ -2249,6 +2811,7 @@ int main(int argc, char** argv) {
             parser.srcFile_ = fileName;
             prog = parser.parseProgram();
         } catch (const ParseError& e) {
+            if (jsonOut) { printJsonFindings({jsonFinding(fileName, e.line, "error", "parse-error", e.what())}); return 2; }
             std::cerr << "===SORRY!=== Parse error at line " << e.line << ": " << e.what() << "\n";
             return 2;
         }
@@ -2267,12 +2830,14 @@ int main(int argc, char** argv) {
                              return a.rule < b.rule;
                          });
         int errs = 0, warns = 0, notes = 0;
+        std::vector<std::string> jsonItems;
         for (auto& f : findings) {
             (f.severity == 'E' ? errs : f.severity == 'W' ? warns : notes)++;
-            std::cout << fileName << ":" << f.line << ": "
-                      << (f.severity == 'E' ? "error" : f.severity == 'W' ? "warning" : "note")
-                      << ": " << f.message << " [" << f.rule << "]\n";
+            const char* sev = f.severity == 'E' ? "error" : f.severity == 'W' ? "warning" : "note";
+            if (jsonOut) { jsonItems.push_back(jsonFinding(fileName, f.line, sev, f.rule, f.message)); continue; }
+            std::cout << fileName << ":" << f.line << ": " << sev << ": " << f.message << " [" << f.rule << "]\n";
         }
+        if (jsonOut) printJsonFindings(jsonItems);
         if (!quiet) {
             if (findings.empty()) std::cerr << "rakupp --lint: no issues found in " << fileName << "\n";
             else {
@@ -2446,6 +3011,13 @@ int main(int argc, char** argv) {
         }
     }
     if (!usePrefix.empty()) src = usePrefix + src; // -M: outside the -n/-p loop
+    if (replAfter) {
+        // python -i: the program runs in the session's own interpreter, and the
+        // prompt opens on whatever it left behind (see Repl.cpp)
+        int rc = rakupp::rakuppReplAfter(exePath, libPaths, g_quiet, src, fileName, std::move(progArgs));
+        rakupp::prof::report();
+        return rc;
+    }
     int rc = rakuppRunBigStack(src, std::move(progArgs), fileName, exePath, libPaths);
     rakupp::prof::report(); // no-op unless --profile was given
     return rc;

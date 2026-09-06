@@ -93,9 +93,25 @@ int strWidth(const std::string& s, size_t from = 0, size_t to = std::string::npo
 }
 
 // ------------------------------------------------------------- prompts -----
-const char* kPrompt     = "\x1b[1;32m>\x1b[0m ";  // primary
-const char* kPromptCont = "\x1b[1;33m*\x1b[0m ";  // continuation: input is unfinished
-const int   kPromptCols = 2;                      // both are "X " once rendered
+// Colour: on at a terminal (the only place the REPL runs), off under NO_COLOR
+// (no-color.org: present and non-empty), and RAKUPP_COLOR=0|1 — which is what
+// --color=never|always sets — overrides both. Decided once; the environment
+// does not change mid-session.
+bool replColour() {
+    static const bool on = [] {
+        const char* f = std::getenv("RAKUPP_COLOR");
+        if (f && *f) return std::strcmp(f, "0") != 0;
+        const char* n = std::getenv("NO_COLOR");
+        return !(n && *n);
+    }();
+    return on;
+}
+// primary `> `; continuation `* ` (the input is unfinished)
+std::string promptFor(bool cont) {
+    if (!replColour()) return cont ? "* " : "> ";
+    return cont ? "\x1b[1;33m*\x1b[0m " : "\x1b[1;32m>\x1b[0m ";
+}
+const int kPromptCols = 2;                        // both are "X " once rendered
 
 // Names worth completing that are not in any scope table — the core types and
 // the routines people actually reach for at a prompt.
@@ -259,7 +275,7 @@ private:
     // byte↔column mapping a scroll window needs. So: colour when the line fits on
     // screen (nearly always), and render plain when it has to scroll.
     std::string highlightOf(const std::string& s) const {
-        if (s.size() > 4096) return s;
+        if (s.size() > 4096 || !replColour()) return s;
         try { return highlight(s, "ansi") + "\x1b[0m"; }
         catch (...) { return s; }   // a half-typed literal may not tokenize yet
     }
@@ -566,7 +582,8 @@ void printHelp() {
 void printError(const std::string& msg) {
     std::string m = msg;
     while (!m.empty() && (m.back() == '\n' || m.back() == '\r')) m.pop_back();
-    std::cout << "\x1b[31m" << m << "\x1b[0m\n";
+    if (replColour()) std::cout << "\x1b[31m" << m << "\x1b[0m\n";
+    else std::cout << m << "\n";
 }
 
 // Result echo is dimmed so it reads as the REPL talking, not as program output:
@@ -582,7 +599,8 @@ void printResult(Interpreter& interp, const Value& v) {
     catch (RakuError& e) { printError(e.message); return; }
     catch (std::exception& e) { printError(e.what()); return; }
     catch (...) { return; }
-    std::cout << "\x1b[90m" << g << "\x1b[0m\n";
+    if (replColour()) std::cout << "\x1b[90m" << g << "\x1b[0m\n";
+    else std::cout << g << "\n";
 }
 
 // --------------------------------------------------------- output tracking ----
@@ -632,6 +650,8 @@ struct ReplCtx {
     std::string exePath;
     std::vector<std::string> libPaths;
     bool quiet = false;   // -q: no banner
+    std::string preSrc, preFile;      // --repl-after: the program to run first…
+    std::vector<std::string> args;    // …and its @*ARGS
 };
 
 int replMain(ReplCtx& ctx) {
@@ -649,13 +669,35 @@ int replMain(ReplCtx& ctx) {
 
     auto fresh = [&]() {
         auto interp = std::make_unique<Interpreter>();
-        interp->replStart({});
+        interp->replStart(ctx.args);
         interp->srcFile_ = "<repl>";
         interp->execPath_ = ctx.exePath;
         interp->libPaths_.insert(interp->libPaths_.begin(), ctx.libPaths.begin(), ctx.libPaths.end());
         return interp;
     };
     auto interp = fresh();
+    if (!ctx.preSrc.empty()) {
+        // --repl-after: the program runs through the same path a typed
+        // statement takes, so its declarations land in the session scope and
+        // its AST stays alive behind them. MAIN is dispatched as run() would;
+        // END blocks wait for the session's end. An `exit` is reported, not
+        // obeyed — the point of the flag is what comes after.
+        interp->srcFile_ = ctx.preFile;
+        interp->seedSrcLines(ctx.preFile, ctx.preSrc);
+        int rc = 0;
+        try {
+            interp->evalString(ctx.preSrc, /*mainlinePH=*/true);
+            int m = interp->replRunMain();
+            if (m > 0) rc = m;
+        } catch (ExitEx& e) { rc = e.code; }
+        catch (RakuError& e) { printError(interp->renderError(e, interp->btStyleForStderr())); rc = 1; }
+        catch (ParseError& e) { printError(std::string("Parse error at line ") + std::to_string(e.line) + ": " + e.what()); rc = 1; }
+        catch (std::exception& e) { printError(std::string("Internal error: ") + e.what()); rc = 1; }
+        interp->srcFile_ = "<repl>";
+        if (!ctx.quiet)
+            std::cout << "(" << ctx.preFile << (rc ? " exited " + std::to_string(rc) : " finished")
+                      << "; its declarations are live — \\v lists them, \\q quits)\n";
+    }
     LineEditor ed(*interp);
 
     std::string acc;          // the statement being accumulated across lines
@@ -663,7 +705,7 @@ int replMain(ReplCtx& ctx) {
     for (;;) {
         std::string line;
         bool cont = !acc.empty();
-        if (!ed.readLine(cont ? kPromptCont : kPrompt, kPromptCols, line)) break;
+        if (!ed.readLine(promptFor(cont), kPromptCols, line)) break;
         if (line == "\x03") { acc.clear(); continue; }              // ^C abandons the buffer
 
         std::string cmd, rest;
@@ -751,6 +793,16 @@ int rakuppRepl(const std::string& exePath, const std::vector<std::string>& libPa
     ReplCtx ctx{exePath, libPaths, quiet};
     // Same 1 GiB stack a script gets: recursion typed at the prompt should reach
     // as deep as recursion in a file.
+    return rakuppMainOnBigStack([](void* p) { return replMain(*static_cast<ReplCtx*>(p)); }, &ctx);
+}
+
+int rakuppReplAfter(const std::string& exePath, const std::vector<std::string>& libPaths,
+                    bool quiet, const std::string& src, const std::string& fileName,
+                    std::vector<std::string> args) {
+    ReplCtx ctx{exePath, libPaths, quiet};
+    ctx.preSrc = src.empty() ? std::string("\n") : src;   // an empty program still opens the session
+    ctx.preFile = fileName;
+    ctx.args = std::move(args);
     return rakuppMainOnBigStack([](void* p) { return replMain(*static_cast<ReplCtx*>(p)); }, &ctx);
 }
 

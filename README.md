@@ -136,6 +136,12 @@ rakupp --exe app.raku -o app     # compile it
 | `--lint SRC` | Static-analyze without running: unused variables, unreachable code, etc. |
 | `-c` / `--ast SRC` | Compile-check only (parse + every variable declared) / print the parsed AST |
 | `-q` / `--quiet` | Drop what a mode says about itself (`Syntax OK`, `Compiled …`, the installer's `already installed:`); output, warnings and errors stay. Any mode |
+| `--watch` | Rerun on change — the program file, or a module under `-I`/`lib/`; with `-c` or `--lint`, a live check loop |
+| `--repl-after` / `--trace` / `--stagestats` | Run, then a session on the program's live state (python `-i`) / print each statement as it runs / phase timings and module-load times |
+| `--json` | `-c` and `--lint` findings as a JSON array (file, line, severity, rule, message) |
+| `--seed[=N]` / `--stack-size=N` | Pin the random generator (bare `--seed` picks and prints one) / size the recursion ceiling (default 1G, a bare number is MiB) |
+| `--env-file=FILE` / `RAKUPP_OPT` / `--color=WHEN` / `-x` | Load a `.env` first / standing options from the environment (options only) / colour `auto`, `always`, `never` (`NO_COLOR` honoured) / skip to the `#!` line |
+| `rakupp doc SYMBOL` / `--completions=SHELL` | Look a builtin, method or operator up offline / a completion script for bash, zsh or fish |
 
 Flags are position-independent and cluster like Perl's (`rakupp -pi.bak -e
 '$_ = $_.subst("a", "b")' *.txt` works as you'd hope). Full reference:

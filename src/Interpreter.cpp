@@ -86,9 +86,60 @@ void srandSeed(long long s) {
     g_rand_seeded = true;
     g_rand_xs[0] = (unsigned short)s; g_rand_xs[1] = (unsigned short)(s >> 16); g_rand_xs[2] = (unsigned short)(s >> 32);
 }
+// --seed=N (the CLI): a thread's FIRST use of the generator seeds from N
+// instead of time+pid+thread, so a run reproduces. The program's thread comes
+// first and gets N itself (so `--seed=7` is `srand(7)` on line 0); each later
+// thread gets the next number, so workers draw distinct sequences rather than
+// one shared one. An explicit srand() still wins after it, as it always did.
+static std::atomic<long long> g_seedOverride{0};
+static std::atomic<long long> g_seedUsers{0};
+static std::atomic<bool> g_seedOverrideSet{false};
+void rakuppSetSeed(long long s) { g_seedOverride.store(s); g_seedOverrideSet.store(true); }
+// --trace (bash -x): a plain global read on every statement — the same cost
+// the profiler's hooks were measured at, nothing.
+static bool g_traceStmts = false;
+void rakuppSetTrace(bool on) { g_traceStmts = on; }
+
+// --stagestats: the module-load collector. Loads can nest (a module's own
+// `use`) and can happen on a worker thread, so a mutex and a per-thread depth.
+static bool g_stageStats = false;
+static std::mutex g_stageMu;
+static std::vector<StageModuleLoad> g_stageLoads;
+static thread_local int t_stageDepth = 0;
+void stageStatsEnable(bool on) { g_stageStats = on; }
+bool stageStatsOn() { return g_stageStats; }
+std::vector<StageModuleLoad> stageModuleLoads() {
+    std::lock_guard<std::mutex> lk(g_stageMu);
+    return g_stageLoads;
+}
+namespace {
+struct StageLoadTimer {
+    size_t idx = (size_t)-1;
+    std::chrono::steady_clock::time_point t0;
+    StageLoadTimer(const std::string& name, bool fresh) {
+        if (!g_stageStats || !fresh) return;
+        std::lock_guard<std::mutex> lk(g_stageMu);
+        g_stageLoads.push_back({name, t_stageDepth++, 0.0});
+        idx = g_stageLoads.size() - 1;
+        t0 = std::chrono::steady_clock::now();
+    }
+    ~StageLoadTimer() {
+        if (idx == (size_t)-1) return;
+        double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        std::lock_guard<std::mutex> lk(g_stageMu);
+        g_stageLoads[idx].ms = ms;
+        t_stageDepth--;
+    }
+};
+} // namespace
+
 // Uniform random double in [0, 1). Seeded once from time+pid if srand wasn't called.
 double randDouble() {
     if (!g_rand_seeded) {
+        if (g_seedOverrideSet.load(std::memory_order_relaxed)) {
+            srandSeed(g_seedOverride.load(std::memory_order_relaxed) + g_seedUsers.fetch_add(1));
+            return erand48(g_rand_xs);
+        }
         g_rand_seeded = true;
         // 64-bit on purpose: unsigned long is 32 bits on LLP64 (Windows) and
         // wasm32, where a `>> 32` would be undefined.
@@ -6043,6 +6094,7 @@ const Value* Interpreter::builtinRef(const std::string& name) {
 }
 
 void Interpreter::loadModule(const std::string& name, const std::vector<std::string>& importArgs, bool doImport, bool quiet, const std::string& verReq) {
+    StageLoadTimer stageTimer(name, !loadedModules_.count(name)); // --stagestats: a first load, timed
     // DATA-PLAN P6. Before anything is looked for on disk: this engine may be
     // able to answer the `use` itself, in which case nothing loads at all.
     if (dataNativeUse(name, importArgs, doImport, verReq)) return;
@@ -6730,6 +6782,67 @@ Value Interpreter::evalString(const std::string& src, bool mainlinePH, bool* inc
 // evalString into the SAME global scope, which is what makes `my $x` on line 1
 // still there on line 9. These three supply the little that run() would have
 // done around the mainline — and nothing here is reachable from a script run.
+
+// --repl-after: the program's statements ran through evalString, which does
+// not auto-invoke MAIN; this is the dispatch run() would have done, so a
+// program that lives in its MAIN runs the same way before the prompt opens.
+int Interpreter::replRunMain() {
+    Value* mainSub = tctx_.cur ? tctx_.cur->find("&MAIN") : nullptr;
+    if (!mainSub && global_) mainSub = global_->find("&MAIN");
+    if (!mainSub || mainSub == inheritedMainBarrier_) return -1;
+    ValueList margs;
+    int rc = mainProtocol(*mainSub, margs);
+    if (rc < 0) { callCallable(*mainSub, margs); return 0; }
+    return rc;
+}
+
+// A program that is not on disk (-e, stdin) still has lines to show: seed the
+// excerpt cache from the source itself, under both names it may be asked for.
+void Interpreter::seedSrcLines(const std::string& file, const std::string& src) {
+    std::vector<std::string> lines;
+    size_t p = 0;
+    while (p <= src.size()) {
+        size_t e = src.find('\n', p);
+        lines.push_back(src.substr(p, e == std::string::npos ? std::string::npos : e - p));
+        if (e == std::string::npos) break;
+        p = e + 1;
+    }
+    srcLineCache_[file] = lines;
+    if (!srcFileAbs_.empty() && srcFileAbs_ != file) srcLineCache_[srcFileAbs_] = lines;
+}
+
+static std::string btDisplayPath(const std::string& file, const std::string& srcAbs,
+                                 const std::string& srcAsGiven); // defined with the backtrace renderer below
+// --trace: `[trace] file:line  source` per statement. The file is the
+// innermost live routine's declaration file — a statement inside a module
+// names the module — else the program's own.
+void Interpreter::traceStmt(Stmt* s) {
+    int ln = s->line;
+    if (ln <= 0 && s->kind == NK::ExprStmt) {
+        Expr* e = static_cast<ExprStmt*>(s)->e.get();
+        if (e) ln = e->line;
+    }
+    if (ln <= 0) return;
+    // A `use` is executed by the hoisting passes before the mainline and again
+    // at its own position; only the one that loads does anything, so only that
+    // one is traced (a loaded module makes every later `use` of it a no-op).
+    if (s->kind == NK::UseStmt) {
+        auto* u = static_cast<UseStmt*>(s);
+        if (u->isNo || loadedModules_.count(u->module)) return;
+    }
+    std::string file;
+    auto& fr = tctx_.callFrames;
+    if (!fr.empty() && fr.back().code) {
+        auto c = fr.back().code->codeS();
+        if (c) file = c->declFile;
+    }
+    if (file.empty()) file = curDeclFile();   // a module body while it loads, else the program
+    std::string text = srcLineOf(file, ln);
+    size_t lead = text.find_first_not_of(" \t");
+    if (lead != std::string::npos) text = text.substr(lead);
+    std::cerr << "[trace] " << btDisplayPath(file, srcFileAbs_, srcFile_) << ":" << ln
+              << "  " << text << "\n";
+}
 
 void Interpreter::replStart(std::vector<std::string> args) {
     argv_ = std::move(args);
@@ -7650,6 +7763,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
     ++g_execStmts;
 #endif
     if (s->line > 0) curLine_ = s->line; // track for test-failure diagnostics
+    if (g_traceStmts) traceStmt(s);      // --trace (measured free: see CLI-BORROW-PLAN)
     switch (s->kind) {
         case NK::ExprStmt: {
             Expr* e = static_cast<ExprStmt*>(s)->e.get();
@@ -15479,6 +15593,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                 // routine (or is an error without one) — it must take the throw path.
                 if (i + 1 == nst && s->kind == NK::ReturnStmt && isRoutine) {
                     auto* r = static_cast<ReturnStmt*>(s);
+                    if (g_traceStmts) traceStmt(s);   // --trace: this return never reaches exec()
                     last = r->value ? eval(r->value.get()) : Value::any();
                 } else
                     last = exec(s, i != lastReal); // non-final statements sink
@@ -16359,6 +16474,7 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
                 if (s->kind == NK::Block && static_cast<Block*>(s)->isCatch) continue;
                 if (i + 1 == nst && s->kind == NK::ReturnStmt) { // tail return: no unwind
                     auto* r = static_cast<ReturnStmt*>(s);
+                    if (g_traceStmts) traceStmt(s);   // --trace: this return never reaches exec()
                     // `return-rw` in lvalue mode: surface the container (same
                     // rule as the exec-site ReturnStmt arm)
                     if (r->isRw && r->value && tcx.wantLvalue &&

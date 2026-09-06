@@ -6,6 +6,7 @@
 #include "Pod.h"
 #include <cstdlib>
 #include <csignal>
+#include <chrono>
 #include <functional>
 #include <iostream>
 #if defined(_WIN32)
@@ -72,6 +73,49 @@ static bool g_docMode = false;
 void rakuppSetDocMode(bool on) { g_docMode = on; } // set by main when --doc is passed
 static bool g_llException = false;
 void rakuppSetLLException(bool on) { g_llException = on; } // --ll-exception (issue #67)
+// --stack-size=N: the big-stack thread's size. 1 GiB unless the CLI says
+// otherwise; `explicit` is what earns a note when the OS refuses the ask.
+static size_t g_stackBytes = (size_t)1 << 30;
+static bool g_stackExplicit = false;
+void rakuppSetStackBytes(size_t bytes) { g_stackBytes = bytes; g_stackExplicit = true; }
+// --stagestats (Rakudo's flag): how long each phase took, and each module load
+// inside the run, on stderr once the run is over. Collected in rakuppRunOn;
+// the module loads come from the interpreter's own collector (Interpreter.h).
+static bool g_stageStats = false;
+void rakuppSetStageStats(bool on) { g_stageStats = on; stageStatsEnable(on); }
+namespace {
+struct StageClock {
+    using clk = std::chrono::steady_clock;
+    clk::time_point t0 = clk::now();
+    std::vector<std::pair<std::string, double>> stages;
+    void lap(const std::string& name) {
+        auto t = clk::now();
+        stages.emplace_back(name, std::chrono::duration<double, std::milli>(t - t0).count());
+        t0 = t;
+    }
+    ~StageClock() {
+        if (!g_stageStats) return;
+        std::cout.flush();
+        char buf[64];
+        for (auto& s : stages) {
+            snprintf(buf, sizeof buf, "%9.2f ms", s.second);
+            std::cerr << "Stage " << s.first << std::string(s.first.size() < 8 ? 8 - s.first.size() : 0, ' ')
+                      << ":" << buf << "\n";
+        }
+        for (auto& m : stageModuleLoads()) {
+            snprintf(buf, sizeof buf, "%9.2f ms", m.ms);
+            std::cerr << "  " << std::string((size_t)m.depth * 2, ' ') << "use " << m.name
+                      << std::string(m.name.size() + (size_t)m.depth * 2 < 26 ? 26 - m.name.size() - (size_t)m.depth * 2 : 1, ' ')
+                      << buf << "\n";
+        }
+    }
+};
+} // namespace
+static void stackRefusedNote() {
+    if (g_stackExplicit)
+        std::cerr << "rakupp: could not give the program a " << (g_stackBytes >> 20)
+                  << " MiB stack; running on the default one\n";
+}
 
 // The search path the PARSER will actually use, in order — which is what decides
 // the file a `use` resolves to when scanned for operators, and so belongs in the
@@ -115,6 +159,7 @@ int rakuppRunOn(Interpreter& interp, const std::string& src, std::vector<std::st
         auto us = findUndeclaredVars(prog, src, effectiveSearchPath(libPaths));
         return us.empty() ? -1 : reportUndeclaredVars(us, fileName, src);
     };
+    StageClock stage;   // --stagestats: reports from its destructor, whichever way this returns
     try {
         // The main program gets the same precompiled-AST cache its modules do —
         // keyed on this file's path, validated against its contents. A cache hit
@@ -127,6 +172,7 @@ int rakuppRunOn(Interpreter& interp, const std::string& src, std::vector<std::st
             std::string cachedFinish;
             if (fileName != "-e" && !fileName.empty() &&
                 precompLoadProgram(fileName, src, sp, cachedProg, cachedFinish)) {
+                stage.lap("precomp (hit)");
                 interp.setArgs(std::move(args));
                 interp.finishData_ = cachedFinish;
                 if (g_docMode) { // pod comes from tokenize(); a fresh Lexer's podData() is empty
@@ -140,12 +186,18 @@ int rakuppRunOn(Interpreter& interp, const std::string& src, std::vector<std::st
                 interp.srcFileAbs_ = absSrcPath(fileName);
                 interp.execPath_ = exePath;
                 interp.libPaths_.insert(interp.libPaths_.begin(), libPaths.begin(), libPaths.end());
+                interp.seedSrcLines(fileName, src);
                 if (int rc = declCheckRc(cachedProg); rc >= 0) return rc;
-                return interp.run(cachedProg);
+                stage.lap("check");
+                int rc = interp.run(cachedProg);
+                stage.lap("run");
+                return rc;
             }
+            if (fileName != "-e" && !fileName.empty()) stage.lap("precomp (miss)");
         }
         Lexer lexer(src);
         auto tokens = lexer.tokenize();
+        stage.lap("lex");
         if (std::getenv("RAKUPP_DUMPTOKENS")) {
             for (auto& t : tokens) {
                 std::string txt = t.text;
@@ -171,6 +223,7 @@ int rakuppRunOn(Interpreter& interp, const std::string& src, std::vector<std::st
             if (fileName != "-e" && !fileName.empty())
                 precompStoreProgram(fileName, src, sp, prog, finish, parser.opScanned_);
         }
+        stage.lap("parse");
         interp.setArgs(std::move(args));
         interp.finishData_ = finish;
         interp.podData_ = pod;
@@ -182,8 +235,12 @@ int rakuppRunOn(Interpreter& interp, const std::string& src, std::vector<std::st
         interp.execPath_ = exePath;
         // -I <path> lib dirs take priority over the built-in / env-derived ones.
         interp.libPaths_.insert(interp.libPaths_.begin(), libPaths.begin(), libPaths.end());
+        interp.seedSrcLines(fileName, src);   // --trace and the parse-error excerpt for -e code
         if (int rc = declCheckRc(prog); rc >= 0) return rc;
-        return interp.run(prog);
+        stage.lap("check");
+        int rc = interp.run(prog);
+        stage.lap("run");
+        return rc;
     } catch (const ParseError& e) {
         std::cerr << "===SORRY!=== Parse error at line " << e.line << ": " << e.what() << "\n";
         // …and the line itself. A syntax error names a position the reader has
@@ -252,13 +309,13 @@ static int onBigStack(const std::function<int()>& fn) {
         c->rc = (*c->fn)();
         std::cout.flush(); std::cerr.flush();
     };
-    std::uintptr_t th = bigStackCreate(body, &ctx, (size_t)1 << 30); // 1 GiB
+    std::uintptr_t th = bigStackCreate(body, &ctx, g_stackBytes); // 1 GiB, or --stack-size
     if (th) { bigStackJoin(th); bigStackClose(th); }
-    else ctx.rc = fn(); // creation failed: run inline
+    else { stackRefusedNote(); ctx.rc = fn(); } // creation failed: run inline
 #else
     pthread_attr_t attr;
     pthread_attr_init(&attr);
-    pthread_attr_setstacksize(&attr, (size_t)1 << 30); // 1 GiB
+    bool sized = pthread_attr_setstacksize(&attr, g_stackBytes) == 0; // 1 GiB, or --stack-size
     pthread_t th;
     auto entry = [](void* p) -> void* {
         auto* c = static_cast<Ctx*>(p);
@@ -266,7 +323,8 @@ static int onBigStack(const std::function<int()>& fn) {
         std::cout.flush(); std::cerr.flush();
         return nullptr;
     };
-    if (pthread_create(&th, &attr, entry, &ctx) != 0) ctx.rc = fn(); // fallback: run inline
+    if (!sized) stackRefusedNote(); // the attr keeps its default; the thread still runs
+    if (pthread_create(&th, &attr, entry, &ctx) != 0) { stackRefusedNote(); ctx.rc = fn(); } // fallback: run inline
     else pthread_join(th, nullptr);
     pthread_attr_destroy(&attr);
 #endif

@@ -58,6 +58,14 @@ bool isNativeTypeName(const std::string& n);
 const std::vector<std::string>& rakuRepoPrefixes();
 int signalNumberOfName(const std::string& n); // Signal-enum name → OS number ("SIGINT"→2), -1 if unknown
 void srandSeed(long long s); // reseed the RNG (srand)
+void rakuppSetSeed(long long s); // --seed=N: what every thread's FIRST rand() seeds from, instead of time+pid
+void rakuppSetTrace(bool on);    // --trace: print every statement to stderr as it runs
+// --stagestats: the module loads inside a run, in the order they began, with
+// nesting depth and inclusive wall time (a `use` inside a module is deeper).
+struct StageModuleLoad { std::string name; int depth; double ms; };
+void stageStatsEnable(bool on);
+bool stageStatsOn();
+std::vector<StageModuleLoad> stageModuleLoads();
 
 #if defined(_WIN32)
 // Big-stack worker threads on Windows (_beginthreadex with a reserved stack).
@@ -1378,6 +1386,9 @@ public:
     // evalString per line, so the mainline scope IS the session. These two cover
     // what run() would otherwise have done at either end.
     void replStart(std::vector<std::string> args); // define @*ARGS, arm mainline `state`
+    int replRunMain();                             // --repl-after: dispatch the program's MAIN as run() would; -1 if none
+    void seedSrcLines(const std::string& file, const std::string& src); // source lines for a file that is not on disk (-e)
+    void traceStmt(Stmt* s);                       // --trace: one line per statement, to stderr
     void replFinish();                             // run END/deferred-END phasers, once, at exit
     // Every name visible from the current scope, for tab completion.
     std::vector<std::string> replNames() const;

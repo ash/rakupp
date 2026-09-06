@@ -1198,6 +1198,259 @@ section('the CLI surface (goldens for the v3 parser refactor)');
         ok($xx == 0 && $xe.contains('Illegal option --profile'),
            '--profile outside run mode is illegal');
     }
+
+    # ---- the borrowed flags (docs/dev/plans/CLI-BORROW-PLAN.md, batch 1) ----
+    # -x: perl's "skip until the #! line", for a program embedded in a mail
+    {
+        my $mail = $work.add('mail.txt');
+        $mail.spurt("From: someone\nSubject: a script\n\n#!/usr/bin/env raku\nsay 'from-mail';\nsay \$?LINE;\n");
+        is(run-rakupp('-x', $mail.Str)[0], "from-mail\n6\n",
+           '-x skips to the #! line, and line numbers still match the file');
+        my ($o, $e, $x) = run-rakupp-err('-x', $lines.Str);
+        ok($x == 2 && $e.contains('No Raku script found'), '-x with no #! line is refused');
+        ($o, $e, $x) = run-rakupp-err('-x', '-e', 'say 1');
+        ok($x == 4 && $e.contains('-x'), '-x with -e is refused');
+        is(run-rakupp('-c', '-x', $mail.Str)[0], "Syntax OK\n", '-x composes with -c');
+    }
+
+    # --seed: a pinned run reproduces; a bare --seed says what it picked
+    {
+        my @rp = '-e', 'say rand; say (1..1000).pick(3); say (1..20).roll(3)';
+        my $a = run-rakupp('--seed=42', |@rp)[0];
+        ok($a eq run-rakupp('--seed=42', |@rp)[0], '--seed=N reproduces rand, pick and roll');
+        ok($a ne run-rakupp('--seed=43', |@rp)[0], 'a different seed differs');
+        my ($o, $e, $x) = run-rakupp-err('--seed', |@rp);
+        ok($x == 0 && $e ~~ /'--seed=' \d+/, 'bare --seed announces the seed it picked');
+        $e ~~ /'--seed=' (\d+)/;
+        my $picked = ~$0;
+        ok($o eq run-rakupp("--seed=$picked", |@rp)[0], 'and rerunning with it reproduces the run');
+        ok(run-rakupp('--seed=1', '-e', 'srand(7); say rand')[0] eq run-rakupp('-e', 'srand(7); say rand')[0],
+           'an explicit srand still wins');
+        is(run-rakupp('--seed=5', '-e', 'my @p = (^3).map({ start { rand } }); my @v = await @p; say @v.unique.elems')[0],
+           "3\n", 'worker threads draw distinct sequences under one seed');
+        ok(run-rakupp-err('--seed=x', '-e', '1')[2] == 4, '--seed wants a number');
+        ok(run-rakupp-err('--lint', '--seed=1', '-e', '1')[1].contains('Illegal option --seed'),
+           '--seed outside a run is illegal');
+    }
+
+    # --stack-size: the recursion ceiling, exposed
+    {
+        my @deep = '-e', 'sub f($n) { $n == 0 ?? 0 !! 1 + f($n-1) }; say f(+@*ARGS[0])';
+        is(run-rakupp('--stack-size=64M', |@deep, '1000')[0], "1000\n", '--stack-size=64M: 1000 frames fit');
+        my ($o, $e, $x) = run-rakupp-err('--stack-size=64', |@deep, '8000');
+        ok($x == 1 && $e.contains('Too many levels of recursion'),
+           '--stack-size=64 (MiB): 8000 frames do not, and the guard fires rather than SIGSEGV');
+        is(run-rakupp(|@deep, '8000')[0], "8000\n", 'the default 1 GiB takes them');
+        ok(run-rakupp-err('--stack-size=abc', '-e', '1')[2] == 4, '--stack-size wants a size');
+        ok(run-rakupp-err('--stack-size=100K', '-e', '1')[2] == 4, 'and at least 1M of it');
+        ok(run-rakupp-err('--exe', '--stack-size=64M', '-e', '1')[1].contains('Illegal option --stack-size'),
+           '--stack-size outside a run is illegal');
+    }
+
+    # --env-file: defaults into the environment; the shell's own values win
+    {
+        my $envf = $work.add('t.env');
+        $envf.spurt(q:to/END/);
+            # a comment
+            PLAIN=hello world
+            QUOTED="a\\tb"
+            export SINGLE='keep $this'
+            TRAIL=value # trailing comment
+            CLI_KEEP=from-file
+            END
+        my %e = %*ENV; %e<CLI_KEEP> = 'from-shell';
+        my $p = run($*EXECUTABLE, '--env-file=' ~ $envf.Str, '-e',
+                    'say %*ENV<PLAIN QUOTED SINGLE TRAIL CLI_KEEP>.join("|")', :out, :!err, :env(%e));
+        is($p.out.slurp(:close), "hello world|a\tb|keep \$this|value|from-shell\n",
+           '--env-file: plain, quoted, export, trailing comment; the shell wins');
+        my ($o, $e, $x) = run-rakupp-err('--env-file=' ~ $work.add('nope.env').Str, '-e', '1');
+        ok($x == 4 && $e.contains('cannot open'), 'a missing env file is an error');
+        $envf.spurt("1BAD=x\n");
+        ($o, $e, $x) = run-rakupp-err('--env-file', $envf.Str, '-e', '1');
+        ok($x == 4 && $e.contains(':1:'), 'a bad line is reported with its number');
+        # RAKULIB from the file reaches the module loader (with no RAKULIB in
+        # the shell, since the shell's would win)
+        $envf.spurt("RAKULIB={$mlib.Str}\n");
+        my %noLib = %*ENV; %noLib<RAKULIB>:delete;
+        $p = run($*EXECUTABLE, '--env-file=' ~ $envf.Str, '-e', 'use CliM; say cli-m()',
+                 :out, :!err, :env(%noLib));
+        is($p.out.slurp(:close), "from-module\n", 'RAKULIB set from the file is seen by the loader');
+    }
+
+    # RAKUPP_OPT: standing options from the environment — options only
+    {
+        my %e = %*ENV; %e<RAKUPP_OPT> = "-I {$mlib.Str} -M CliM";
+        my $p = run($*EXECUTABLE, '-e', 'say cli-m()', :out, :!err, :env(%e));
+        is($p.out.slurp(:close), "from-module\n", 'RAKUPP_OPT prepends -I and -M');
+        %e<RAKUPP_OPT> = '-e "say 1"';
+        $p = run($*EXECUTABLE, '-e', 'say 2', :out, :err, :env(%e));
+        my $po = $p.out.slurp(:close);
+        my $pe = $p.err.slurp(:close);
+        ok($p.exitcode == 4 && $pe.contains('RAKUPP_OPT') && $pe.contains("'-e'"),
+           'RAKUPP_OPT may not carry a program');
+        %e<RAKUPP_OPT> = '-I "a dir with spaces" -q';
+        $p = run($*EXECUTABLE, '-c', '-e', 'say 2', :out, :!err, :env(%e));
+        is($p.out.slurp(:close), '', 'a quoted token keeps its spaces; -q from the environment is honoured');
+    }
+
+    # --color / NO_COLOR: an uncaught error's frames, and the REPL
+    {
+        my $prog = 'sub f { die "boom" }; f';
+        ok(run-rakupp-err('--color=always', '-e', $prog)[1].contains(27.chr),
+           '--color=always colours the backtrace even into a pipe');
+        my $plain = run-rakupp-err('--color=never', '-e', $prog)[1];
+        ok(!$plain.contains(27.chr) && $plain.contains('boom'), '--color=never: no escapes');
+        ok(run-rakupp-err('--color=sometimes', '-e', '1')[2] == 4, '--color wants auto, always or never');
+        # the REPL, driven through RAKUPP_REPL=1: colour is its default
+        my %e = %*ENV; %e<RAKUPP_REPL> = '1'; %e<RAKUPP_HISTORY> = '';
+        %e<NO_COLOR>:delete; %e<RAKUPP_COLOR>:delete;
+        sub repl-out(@args, %env) {
+            my $p = run($*EXECUTABLE, '-q', |@args, :in, :out, :!err, :env(%env));
+            $p.in.print("1 + 1\n"); $p.in.close;
+            $p.out.slurp(:close)
+        }
+        my $c = repl-out([], %e);
+        ok($c.contains('2') && $c.contains(27.chr), 'the REPL colours its prompt and echo by default');
+        %e<NO_COLOR> = '1';
+        my $n = repl-out([], %e);
+        ok($n.contains('2') && !$n.contains(27.chr), 'NO_COLOR: the REPL prompts and answers without escapes');
+        %e<NO_COLOR>:delete;
+        my $v = repl-out(['--color=never'], %e);
+        ok($v.contains('2') && !$v.contains(27.chr), '--color=never reaches the REPL');
+    }
+
+    # ---- the borrowed flags, batch 2 ----
+    # --json: -c and --lint findings as data
+    {
+        is(run-rakupp('-c', '--json', '-e', 'say 1')[0], "[]\n", '-c --json: the empty list is the verdict');
+        my ($o, $e, $x) = run-rakupp-err('-c', '--json', '-e', 'my $x = ;');
+        ok($x == 2 && $o.contains('"rule": "parse-error"') && $o.contains('"severity": "error"') && $e eq '',
+           '-c --json: a parse error is a finding on stdout, nothing on stderr');
+        ($o, $e, $x) = run-rakupp-err('-c', '--json', '-e', 'say $nope');
+        ok($x == 1 && $o.contains('"rule": "undeclared-variable"') && $o.contains('$nope'),
+           '-c --json: an undeclared variable is a finding');
+        my $lf = $work.add('lint.raku');
+        $lf.spurt("my \$x = 1;\nmy \$y = 2;\nsay 1;\n");
+        ($o, $e, $x) = run-rakupp-err('--lint', '--json', $lf.Str);
+        ok($x == 1 && $o.starts-with('[') && $o.contains('"line": 1') && $o.contains('"line": 2')
+                   && $o.contains('"rule": "unused-variable"'),
+           '--lint --json: one object per finding, the exit code as before');
+        ok($o.contains('"file": "' ~ $lf.Str ~ '"'), 'each finding names its file');
+        ok(run-rakupp-err('--json', '-e', '1')[1].contains('Illegal option --json'),
+           '--json outside -c and --lint is illegal');
+    }
+
+    # --stagestats: the phases, and every module load
+    {
+        my ($o, $e, $x) = run-rakupp-err('--stagestats', '-I', $mlib.Str, '-e', 'use CliM; say cli-m()');
+        ok($x == 0 && $o eq "from-module\n" && $e ~~ /'Stage lex'/ && $e ~~ /'Stage parse'/ && $e ~~ /'Stage run'/,
+           '--stagestats: phases on stderr, the program untouched');
+        ok($e ~~ /'use CliM' \s+ \d+ '.' \d\d ' ms'/, 'and each module load, timed');
+        ok(run-rakupp-err('-c', '--stagestats', '-e', '1')[1].contains('Illegal option --stagestats'),
+           '--stagestats outside a run is illegal');
+    }
+
+    # --trace: every statement as it runs
+    {
+        my $tf = $work.add('trace.raku');
+        $tf.spurt("sub f(\$n) \{\n    return \$n + 1;\n\}\nfor 1..2 -> \$i \{\n    say f(\$i);\n\}\n");
+        my ($o, $e, $x) = run-rakupp-err('--trace', $tf.Str);
+        is($o, "2\n3\n", '--trace leaves the program\'s output alone');
+        my @t = $e.lines.grep(*.starts-with('[trace]'));
+        ok(@t.grep(/':5  say f($i);'/).elems == 2, 'the loop body is traced once per iteration');
+        ok(@t.grep(/':2  return $n + 1;'/).elems == 2, 'and so is the sub body, with its own line');
+        ok(@t[0] ~~ /':1  sub f'/, 'the sub declaration comes first: it is hoisted');
+        # (the `use` on a line of its own: a trace names a statement by its
+        # line, so two statements on one line would show the text twice)
+        my $uf = $work.add('usetrace.raku');
+        $uf.spurt("use CliM;\nsay cli-m();\n");
+        ($o, $e, $x) = run-rakupp-err('--trace', '-I', $mlib.Str, $uf.Str);
+        ok($e ~~ /'CliM.rakumod:2'/, 'a statement inside a module names the module file');
+        ok($e.lines.grep(/':1  use CliM;'/).elems == 1, 'a use is traced once, when it loads');
+        ok(run-rakupp-err('--lint', '--trace', '-e', '1')[1].contains('Illegal option --trace'),
+           '--trace outside a run is illegal');
+    }
+
+    # --repl-after: the program, then a session on what it left behind
+    {
+        my $rf = $work.add('after.raku');
+        $rf.spurt("my \$x = 5;\nsub f \{ \$x * 2 \}\nclass Foo \{ method hi \{ 'hi' \} \}\nsay 'ran';\nsay \@*ARGS.join(',');\n");
+        my %e = %*ENV; %e<RAKUPP_HISTORY> = ''; %e<NO_COLOR> = '1';
+        my $p = run($*EXECUTABLE, '-q', '--repl-after', $rf.Str, 'a', 'b', :in, :out, :!err, :env(%e));
+        $p.in.print("say f()\nsay Foo.new.hi\n"); $p.in.close;
+        my $out = $p.out.slurp(:close);
+        ok($out.contains("ran\na,b\n") && $out.contains("10\n") && $out.contains("hi\n"),
+           '--repl-after: the program runs with its args, then its subs and classes answer at the prompt');
+        my $mf = $work.add('main.raku');
+        $mf.spurt("sub MAIN(\$name) \{ say \"hello \$name\" \}\n");
+        $p = run($*EXECUTABLE, '-q', '--repl-after', $mf.Str, 'World', :in, :out, :!err, :env(%e));
+        $p.in.print("say 'after'\n"); $p.in.close;
+        $out = $p.out.slurp(:close);
+        ok($out.contains("hello World\n") && $out.contains("after\n"), 'MAIN is dispatched before the prompt opens');
+        $p = run($*EXECUTABLE, '--repl-after', '-e', 'say 1; exit 3', :in, :out, :!err, :env(%e));
+        $p.in.print("say 2\n"); $p.in.close;
+        $out = $p.out.slurp(:close);
+        ok($out.contains("1\n") && $out.contains('exited 3') && $out.contains("2\n"),
+           'an exit is reported, and the session still opens');
+        ok(run-rakupp-err('-c', '--repl-after', '-e', '1')[1].contains('Illegal option --repl-after'),
+           '--repl-after outside a run is illegal');
+    }
+
+    # --completions: a script per shell, from the option table
+    {
+        sub have-shell(Str $sh) { (try run($sh, '-c', 'true', :!out, :!err).exitcode == 0) // False }
+        my ($b, $bx) = run-rakupp('--completions=bash');
+        ok($bx == 0 && $b.contains('--lint') && $b.contains('--seed') && $b.contains('install'),
+           '--completions=bash covers the flags and the commands');
+        my $bf = $work.add('c.bash'); $bf.spurt($b);
+        if have-shell('bash') { ok(run('bash', '-n', $bf.Str, :!out, :!err).exitcode == 0, 'and bash parses it') }
+        else { skip('bash parses the completion script (no bash here)') }
+        my ($z, $zx) = run-rakupp('--completions=zsh');
+        my $zf = $work.add('c.zsh'); $zf.spurt($z);
+        ok($zx == 0 && $z.starts-with('#compdef rakupp') && $z.contains('_arguments'), '--completions=zsh is a compdef file');
+        if have-shell('zsh') { ok(run('zsh', '-n', $zf.Str, :!out, :!err).exitcode == 0, 'and zsh parses it') }
+        else { skip('zsh parses the completion script (no zsh here)') }
+        my ($f, $fx) = run-rakupp('--completions=fish');
+        ok($fx == 0 && $f.contains('complete -c rakupp -l lint') && $f.contains("-a 'auto always never'"),
+           '--completions=fish: one complete per flag, with the value words');
+        ok(run-rakupp-err('--completions=ksh')[2] == 4, '--completions wants bash, zsh or fish');
+    }
+
+    # ---- the borrowed flags, batch 3 ----
+    # rakupp doc SYMBOL: the reference, offline
+    {
+        my ($o, $x) = run-rakupp('doc', 'trim');
+        ok($x == 0 && $o.contains('REFERENCE.md') && $o.contains('.trim') && $o.contains('# → hi'),
+           'rakupp doc trim: the reference entry, with its verified example');
+        ($o, $x) = run-rakupp('doc', '<=>');
+        ok($x == 0 && $o.contains('three-way'), 'an operator made of punctuation is looked up as a substring');
+        ($o, $x) = run-rakupp('doc', 'zzzqqq');
+        ok($x == 1 && $o.contains('nothing in REFERENCE.md'), 'an unknown symbol says so, exit 1');
+        ok(run-rakupp-err('doc')[2] == 2, 'no symbol: usage, exit 2');
+        ($o, $x) = run-rakupp('doc', '--code', '.comb');
+        ok($x == 0 && $o.contains("'foo'.comb") && !$o.contains('|'),
+           '--code: examples only; a leading dot is the method spelling');
+    }
+
+    # --watch: rerun on change. Driven through Proc::Async; its taps deliver at
+    # the await, so the script is timed rather than polled (the poll is 300 ms).
+    {
+        my $wf = $work.add('watch-me.raku'); $wf.spurt("say 'v1';\n");
+        my $p = Proc::Async.new($*EXECUTABLE, '--watch', $wf.Str);
+        my @out; my @err;
+        $p.stdout.tap({ @out.push($_) }); $p.stderr.tap({ @err.push($_) });
+        my $done = $p.start;
+        sleep 1.5; $wf.spurt("say 'v2';\n");
+        sleep 1.5; unlink $wf;
+        await Promise.anyof($done, Promise.in(20));
+        my $o = @out.join; my $e = @err.join;
+        ok($done.status ~~ Kept, '--watch ends when the watched file goes');
+        ok($o.contains("v1\n") && $o.contains("v2\n"), 'it ran once at start and once more on the change');
+        ok($e.contains('changed; rerunning') && $e.contains('is gone; stopping'), 'and narrated both on stderr');
+        ok(run-rakupp-err('--watch', '-e', '1')[2] == 4, '--watch needs a program file');
+        ok(run-rakupp-err('--exe', '--watch', $lines.Str)[1].contains('Illegal option --watch'),
+           '--watch outside run, -c and --lint is illegal');
+    }
 }
 
 # ---- --slim: every level, feature and directive (SLIM-PLAN P5 gate) ----

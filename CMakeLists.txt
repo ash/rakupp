@@ -314,4 +314,10 @@ install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/src/"
 # the module installer `rakupp install` dispatches to (MODULES-PLAN Part A) —
 # shipped beside the binary, never compiled into it
 install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/tools/install.raku"
+              "${CMAKE_CURRENT_SOURCE_DIR}/tools/doc.raku"
         DESTINATION libexec/rakupp)
+# `rakupp doc SYMBOL` reads these two guides (CLI-BORROW-PLAN); doc.raku looks
+# for them here, or in docs/guide of a checkout
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/docs/guide/REFERENCE.md"
+              "${CMAKE_CURRENT_SOURCE_DIR}/docs/guide/FEATURES.md"
+        DESTINATION share/rakupp/docs)
