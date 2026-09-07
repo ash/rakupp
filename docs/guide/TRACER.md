@@ -52,6 +52,8 @@ need in order to write a `CATCH`:
 No such method 'nonexistent-method' for invocant of type 'Int'
   (X::Method::NotFound)
   in sub g at t3.raku line 1
+      1 | sub g() { 1.nonexistent-method }
+  in block <unit> at t3.raku line 2
 ```
 
 `X::AdHoc` — what a plain `die "message"` raises — is not printed, since it says
@@ -132,6 +134,13 @@ Frame 2 is the `try` block and frame 3 the program's mainline; the renderer
 spells those `in block ` and `in block <unit>`. Note that `.file` answers the
 full path even where the printed frame line shortened it.
 
+**Frame 0 is not the same frame on both engines.** Raku++ starts the list at
+the frame that raised, which is what the numbering above shows. Rakudo starts
+it inside its own setting — frame 0 is `throw` in `Exception.rakumod`, frame 1
+is `die` in `control.rakumod`, and your code begins at frame 2. Code that must
+run on both should not index 0: use
+`.list.first(*.file.ends-with('.raku'))`, or match on `.subname`.
+
 ### Recursion does not fill the screen
 
 A run of identical frames folds:
@@ -176,6 +185,7 @@ the worker's, and the label marks the `await` that collected it:
 ```
 in worker
   in sub work at aw.raku line 1
+      1 | sub work() { die "in worker" }
   in block  at aw.raku line 2
 
 Awaited at:
@@ -255,9 +265,12 @@ adds the frames the short form hides.
 shows: no excerpt, no type line, no colour. They are strings that programs
 print and compare, so the extras belong to the uncaught-error printer alone.
 
-A `rethrow` keeps the original position. So does catching an exception and
-throwing it again yourself: the first throw wins, and nothing later overwrites
-it.
+A rethrown exception keeps its original `.backtrace`: the object you catch
+reports where it was first thrown, before and after `.rethrow`. The *printed*
+trace of an uncaught rethrow is a different question, and the two engines
+answer it differently — Raku++ prints the rethrow site, Rakudo prints the
+original chain. Catching an exception and `die`ing it again is not a rethrow at
+all: that reports the new throw site, on either engine.
 
 ## What it costs
 

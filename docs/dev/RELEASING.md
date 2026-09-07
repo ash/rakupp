@@ -240,7 +240,7 @@ by measurement: the code, load, OS and toolchain, power and thermal state, the
 kernels themselves, a different machine, build nondeterminism (two builds of one
 commit are byte-identical), binary layout (deliberate perturbation buys ≤3.5%),
 the macOS nano allocator, and the min-of-3 metric (twenty runs span 5%). The
-write-up is in [findings/GATES-3.22.md](../findings/GATES-3.22.md).
+write-up is in [findings/GATES-3.22.md](findings/GATES-3.22.md).
 
 Two consequences for reading this gate:
 
@@ -392,7 +392,7 @@ and recorded in raku.online's `src/data/history.jsonl`. It is NOT
 different, much smaller corpus (223 of 299 blocks matching, measured
 2026-08-29). Do not quote one for the other; that mistake was made during the
 v3.23.0 review and is written up in
-[findings/TOOLS-3.23.md](../findings/TOOLS-3.23.md).
+[findings/TOOLS-3.23.md](findings/TOOLS-3.23.md).
 
 **This is the one entry on this list that cannot fail** — which means that
 headline figure is produced by the only release check with no red path. None of the four tools

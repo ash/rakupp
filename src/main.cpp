@@ -2822,7 +2822,11 @@ int main(int argc, char** argv) {
                       << (nOrphan == 1 ? "it is" : "they are")
                       << " never read or rewritten again. rakupp drops them as it goes; "
                          "--precomp-clean removes them now.\n";
-        std::cout << "(one entry per source file; --precomp-clean empties it)\n";
+        // NOT "one entry per source file": an entry's identity is (source, search
+        // path), so a file reached through two different -I sets is two parses and
+        // two entries. The old wording contradicted the rule three lines of
+        // docs/guide/CACHING.md later, and hid a real reason a cache looks large.
+        std::cout << "(one entry per source file and search path; --precomp-clean empties it)\n";
         return 0;
     }
 

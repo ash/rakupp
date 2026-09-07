@@ -45,6 +45,22 @@ Check what you got: `file build/rakupp` should say `arm64`, and
 `build/rakupp --version` should start instantly. If a build feels ~2× slow for
 no reason, it's almost always an accidental x86_64/Rosetta build.
 
+One more arch trap, this one on the `--exe` side: the C++ compiler `rakupp`
+shells out to inherits the architecture of **the process that launched rakupp**,
+not rakupp's own. Run an arm64 `rakupp` from an x86_64 parent — a Rosetta shell,
+an x86_64 Homebrew `perl` or `make`, an IDE that starts translated — and the
+link fails against the arm64 runtime archive with an error that names no cause:
+
+```sh
+$ arch -x86_64 /bin/sh -c 'rakupp --exe hello.raku -o hello'
+ld: symbol(s) not found for architecture x86_64
+Compilation failed (compiler exit 256)            # rakupp exits 5
+```
+
+`arch -arm64` in front of the command, or an arm64 build tool, fixes it. The
+tell is the word `x86_64` in an error from a machine where everything you
+installed is arm64.
+
 **Compiler:** Apple Clang (the default `clang++`/`c++`, no separate install) is
 the recommendation and what `--exe` uses automatically. Homebrew GCC works and
 builds cleanly, but it is ~1.3–2× slower on this codebase and is only used here
@@ -117,13 +133,17 @@ cmake -S . -B build -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=Release \
 cmake --build build -j
 ```
 
-If `cl` isn't present, `--exe` uses `g++` (then `clang-cl`, then `clang++`)
-from `PATH`.
+A rakupp built this way links a GNU `librakupp_rt.a`, which `cl` cannot link at
+all, so its `--exe` looks for `g++` and then `clang++` and never considers `cl`
+— even from a Visual Studio prompt with `cl` on `PATH`.
 
 ## How `--exe` picks its compiler
 
-At run time, in order: **`$CXX`** if set → on Windows `cl`, then `g++`,
-`clang-cl`, `clang++` (first found on `PATH`) → everywhere else `c++`. So:
+At run time, in order: **`$CXX`** if set → on Windows `cl`, `clang-cl`, `g++`,
+`clang++` (first found on `PATH`) → everywhere else `c++`. The Windows list has
+one exception: a static archive is toolchain-specific, so when the runtime
+rakupp found is a GNU `librakupp_rt.a` (a MinGW build) the search is `g++` then
+`clang++`, and `cl` is skipped. So:
 
 ```sh
 # force a specific compiler for the transpiled program

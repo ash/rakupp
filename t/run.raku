@@ -886,6 +886,33 @@ section('module loading and the precompiled-AST cache');
     ok($x1 eq 'X' && $y1 eq 'Y' && $x2 eq 'X',
        "the same script keeps its own meaning per directory (got $x1/$y1/$x2)");
 
+    # An entry's identity is (source, search path), not the source alone: one
+    # file reached through two different `-I` sets is two parses and two
+    # entries. `--precomp-info`'s footer used to say "one entry per source
+    # file", which is what this proves wrong, and which made a legitimately
+    # large cache look like a leak.
+    my $two = $work.add('two');
+    mkdir $two; mkdir $two.add('lib'); mkdir $two.add('alt');
+    $two.add('lib/Twice.rakumod').spurt: q:to/END/;
+        unit module Twice;
+        sub twice() is export { 'twice' }
+        END
+    $two.add('alt/Twice.rakumod').spurt($two.add('lib/Twice.rakumod').slurp);
+    my $tprog = $two.add('t.raku');
+    $tprog.spurt("use Twice;\nsay twice();\n");
+    run($*EXECUTABLE, '--precomp-clean', :!out, :!err, :env(env-with({})));
+    run($*EXECUTABLE, '-I', $two.add('lib').Str, $tprog.Str,
+        :!out, :!err, :env(env-with({})));
+    run($*EXECUTABLE, '-I', $two.add('lib').Str, '-I', $two.add('alt').Str, $tprog.Str,
+        :!out, :!err, :env(env-with({})));
+    my $two-info = run($*EXECUTABLE, '--precomp-info', :out, :!err,
+                       :env(env-with({}))).out.slurp(:close);
+    my $twice-entries = +$two-info.lines.grep(*.contains('lib/Twice.rakumod'));
+    ok($twice-entries == 2,
+       "one source under two search paths is two entries (got $twice-entries)");
+    ok($two-info.contains('one entry per source file and search path'),
+       "--precomp-info's footer names the search path as part of an entry's identity");
+
     # the serializer itself, over a file with a bit of everything
     my $rt = run-rakupp('--ast-roundtrip', $ROOT.add('t/fixtures/native-parity.raku').Str);
     ok($rt[1] == 0, 'the AST survives a serialize/deserialize round trip');

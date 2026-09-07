@@ -265,7 +265,7 @@ full catalogue of what `-O` does.
 By default rakupp runs concurrency under a GIL (correct semantics, no CPU
 parallelism for pure-Raku work). Set `RAKUPP_GIL=1` to make `start`/worker
 threads run interpreter code on all cores — CPU-bound fan-out scales ~3× on 8
-cores, 0 Roast regressions. See [ASYNC.md](ASYNC.md#the-two-modes-gil-default-and-true-parallelism)
+cores, 0 Roast regressions. See [ASYNC.md](ASYNC.md#the-two-modes-true-parallelism-default-and-the-gil)
 for the trade-offs (chiefly: guard your own shared mutable data with a `Lock`).
 
 ```sh

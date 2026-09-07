@@ -60,14 +60,14 @@ compatibility.
 - `--env-file=FILE` — load `KEY=VALUE` lines into the environment before
   anything runs; see [The environment](#the-environment) below.
 - `--seed[=N]`, `--stack-size=N` — pin the random generator, size the
-  recursion ceiling; see [Pinning a run](#pinning-a-run-seed-and-stack-size).
+  recursion ceiling; see [Pinning a run](#pinning-a-run---seed-and---stack-size).
 - `--color=auto|always|never` — ANSI colour on stderr and in the REPL; see
   [When something dies](#when-something-dies).
 - `--stagestats`, `--trace`, `--repl-after` — what a run did, as it did it;
-  see [Inside a run](#inside-a-run-stagestats-trace-and-repl-after).
+  see [Inside a run](#inside-a-run---stagestats---trace-and---repl-after).
 - `--completions=bash|zsh|fish` — a completion script for the shell; see
   [Shell completion](#shell-completion).
-- `--watch` — rerun on change; see [The developer loop](#the-developer-loop-watch).
+- `--watch` — rerun on change; see [The developer loop](#the-developer-loop---watch).
 - `rakupp doc SYMBOL` — look a builtin, method or operator up offline; see
   [Looking things up](#looking-things-up-rakupp-doc).
 - `--doc` — after the run, render the program's POD to stdout.
@@ -168,7 +168,8 @@ rakupp -ni -e 'say $*ARGV.IO.basename ~ ": " ~ $_' *.conf
 - **`-i` refuses loudly where perl is silent**: no file arguments is an
   error (perl edits *stdin* with a warning); `-i` without `-n`/`-p` is an
   error (perl silently ignores it); a file that cannot be opened is
-  reported, skipped — and the exit code is 1 (perl exits 0).
+  reported, skipped — and the exit code is 1 (perl exits 0). `-0` (NUL
+  records) does not combine with `-i` at all; use line mode or `-0777`.
 
 ## Pinning a run: `--seed` and `--stack-size`
 
@@ -315,10 +316,14 @@ whose backtrace prints and whose state is then there to inspect:
 
 ```
 $ rakupp --repl-after app.raku data.csv
+Raku++ 3.25.0 — \h for help, ^D to exit
 …app.raku's output…
 (app.raku finished; its declarations are live — \v lists them, \q quits)
 > say %totals
 ```
+
+The banner comes first, before the program's own output: the session is
+announced when the run starts, not when the prompt appears.
 
 The session opens whether or not stdin is a terminal — the flag is the
 request — so a script can pipe questions into it. `-q` drops the banner
@@ -490,12 +495,18 @@ loop:
 
 ```
 $ rakupp --watch --lint prog.raku
-prog.raku:3: warning: '$x' is declared but never used [unused-variable]
-[watch] exit 1 — watching prog.raku and the module directories (^C stops)
+prog.raku:1: warning: '$x' is declared but never used [unused-variable]
+rakupp --lint: 1 warning, 0 notes in prog.raku
+[watch] exit 1 — watching prog.raku (^C stops)
 [watch] prog.raku changed; rerunning
 rakupp --lint: no issues found in prog.raku
-[watch] exit 0 — watching prog.raku and the module directories (^C stops)
+[watch] exit 0 — watching prog.raku (^C stops)
+[watch] prog.raku is gone; stopping
 ```
+
+That is a directory with no `lib/`. The line reads "watching prog.raku **and
+the module directories**" only when there is something else to watch: a `-I`
+path, a `RAKULIB` entry, or a `lib/` beside the program.
 
 Each run is a fresh process with the same command line (minus `--watch`),
 so nothing leaks between runs; the program's stdin, stdout and stderr are

@@ -304,7 +304,7 @@ objection is gone; the motive is still absent. Full numbers in
 
 `sv.c`'s arena-and-free-list discipline, applied to the per-call argument
 `ValueList` — which two separate investigations had already named as the
-thing to remove. `RVec` ([src/ValueVec.h](../../../src/ValueVec.h)) keeps a
+thing to remove. `RVec` ([src/ValueVec.h](../../../../src/ValueVec.h)) keeps a
 thread-local free list of blocks per exact capacity for capacities 1-4:
 allocation is a pop, release is a push. The one-argument-call shape goes
 **32.35 ns -> 9.48 ns**; in the engine, `fib` +8.8% instructions, a

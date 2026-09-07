@@ -2,7 +2,7 @@
 
 How to show, with numbers you can defend, that a program runs faster *because*
 of `start`. This is the measurement companion to
-[ASYNC.md](ASYNC.md#the-two-modes-gil-default-and-true-parallelism), which
+[ASYNC.md](ASYNC.md#the-two-modes-true-parallelism-default-and-the-gil), which
 describes the two execution modes; here we only care about proving the
 difference.
 

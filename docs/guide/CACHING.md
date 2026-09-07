@@ -23,39 +23,46 @@ one, make it `modules` — the numbers are below.
 ## Which switch is worth turning on
 
 Measured with `min` of 15 runs on an otherwise idle machine, comparing a run with
-nothing cached against a run with a warm cache.
+nothing cached against a run with a warm cache. Re-run them yourself with
+[`tools/bench/precomp-table.raku`](../../tools/bench/precomp-table.raku), which
+generates the programs, prints these tables, and touches neither your cache nor
+your config; the figures below are from three passes of it on an 8-core arm64
+machine against rakupp 3.25.0.
 
 **`--precomp-modules`** — worth it as soon as a program `use`s anything. A
 dependency tree is a lot of source, and none of it changes between runs:
 
 | | no cache | cached |
 |---|---:|---:|
-| `use XML` (10 files, 1110 lines) | 16.0 ms | **5.7 ms** |
+| `use XML` (10 files, 1110 lines) | 6.0 ms | **4.8 ms** |
 
 **`--precomp-files`** — worth it only for *large* single files. A script's own
-parse is already sub-millisecond, and the ~4 ms floor of a small program is
+parse is already sub-millisecond, and the ~2.2 ms floor of a small program is
 process startup, not parsing:
 
 | bare file, no modules | no cache | cached | saved |
 |---|---:|---:|---:|
-| 50 lines | 2.8 ms | 2.4 ms | 0.4 ms |
-| 200 lines | 3.8 ms | 2.8 ms | 1.0 ms |
-| 1 000 lines | 10.0 ms | 5.1 ms | 4.9 ms |
-| 5 000 lines | 40.3 ms | 17.8 ms | 22.5 ms |
-| 20 000 lines | 158.8 ms | 66.5 ms | **92.3 ms** |
+| 50 lines | 2.4 ms | 2.3 ms | 0.1 ms |
+| 200 lines | 2.7 ms | 2.4 ms | 0.3 ms |
+| 1 000 lines | 5.0 ms | 3.5 ms | 1.5 ms |
+| 5 000 lines | 17.5 ms | 9.4 ms | 8.1 ms |
+| 20 000 lines | 66.7 ms | 34.4 ms | **32.3 ms** |
 
 Across the 22 fastest programs in [`examples/`](../../examples) — 12 to 106 lines
 each — turning `files` on made **no measurable difference at all** (−1%, inside
 the noise). Those programs are dominated by process startup.
 
-There is also a cost on the run that *writes* an entry: +0.6 ms at 50 lines,
-+1.5 ms at 1 000, +22 ms at 20 000. So for a script you run once, `files`
+There is also a cost on the run that *writes* an entry: +0.3 ms at 50 lines,
++0.5 ms at 1 000, +4 ms at 20 000. So for a script you run once, `files`
 caching is a small net loss; for one you run repeatedly, it pays from about a
-thousand lines up.
+thousand lines up, where the saving first exceeds a third of the run.
 
-So if you enable one, enable **`modules`**. That difference is why these are two
-switches rather than one, and `modules` is the one likely to become a default in
-a later release.
+So if you enable one, enable **`modules`**: most programs `use` something, and
+few are a thousand lines in one file. The margin is narrower than it once was —
+this page's first sitting measured the `use XML` saving at 10.3 ms and it is
+1.2 ms now — so treat it as the better default rather than a landslide, and
+measure your own program if the difference matters to you. `modules` is the one
+likely to become a default in a later release.
 
 ---
 
@@ -102,15 +109,23 @@ For one invocation, without touching the saved settings:
 
 ```bash
 RAKUPP_PRECOMP_MODULES=1 rakupp app.raku     # this run only
+RAKUPP_PRECOMP_FILES=1   rakupp app.raku     # this run only
 RAKUPP_NO_PRECOMP=1      rakupp app.raku     # force both off
 ```
+
+Either variable overrides the saved setting for that one run; `RAKUPP_NO_PRECOMP`
+beats both. `RAKUPP_PRECOMP_DIR` moves the entries somewhere else for the run,
+which is what a test suite wants so it never touches your cache.
 
 ---
 
 ## When an entry is discarded
 
-**One entry per source file.** Editing a file replaces its entry — it does not
-add another. Twenty edits of one module leave one entry.
+**Editing a file replaces its entry — it does not add another.** Twenty edits of
+one module leave one entry. What an entry is keyed by is the pair *(source,
+search path)*, not the source alone, so one file reached through two different
+`-I` sets is two parses and two entries — see **The search path is the same**
+below. A cache with several entries for one path is doing that, not leaking.
 
 An entry is used only when *all* of these still hold:
 
@@ -149,6 +164,10 @@ rakupp --precomp-info
 
 ```
 /Users/you/.cache/rakupp/precomp
+  modules: on   (config)
+  files:   off  (default)
+  config:  /Users/you/.config/rakupp/rakupp.config
+
     /Users/you/proj/lib/My/Shapes.rakumod  (7 KB)
     /Users/you/proj/app.raku  (2 KB)
   ! /Users/you/proj/lib/My/Util.rakumod  (3 KB)
@@ -159,9 +178,11 @@ rakupp --precomp-info
 since. Each is rewritten in place on next use.
 1 marked x is orphaned (1 KB): the source file is gone, so it is never read or
 rewritten again. rakupp drops them as it goes; --precomp-clean removes them now.
+(one entry per source file and search path; --precomp-clean empties it)
 ```
 
-Entries are listed by the file they were built from. `!` marks one that will not
+It opens with what is on and where it lives, which is the answer to the question
+most people run it for. Entries are listed by the file they were built from. `!` marks one that will not
 be used as-is but is still wanted — the next run rewrites it in place. `x` marks
 an **orphan**: the source file no longer exists, so nothing will ever ask for
 that entry again. An entry this rakupp cannot parse at all shows as

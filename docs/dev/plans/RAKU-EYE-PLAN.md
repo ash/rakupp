@@ -134,7 +134,7 @@ Methodology, because CI hardware is noisy and heterogeneous:
 - **Rakudo policy:** the latest prebuilt release (linux-x86_64 archive from
   the rakudo/rakudo releases), cached by version. No compiling Rakudo, no
   tracking its main.
-- **[BENCHMARKS.md](../status/BENCHMARKS.md) is unaffected.** It remains the
+- **[BENCHMARKS.md](../../status/BENCHMARKS.md) is unaffected.** It remains the
   curated, on-one-Mac document with its own numbers. The Eye's series is a
   different machine and says so; the two are not expected to agree in absolute
   terms, and the ratios are the bridge.

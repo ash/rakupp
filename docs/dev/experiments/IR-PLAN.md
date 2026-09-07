@@ -289,7 +289,7 @@ is the precedent.
 ### I5 — the flip (only if I2 ever happens)
 
 `RAKUPP_IR` default on with `RAKUPP_IR=0` as the escape hatch, exactly the
-shape [PARALLEL-PLAN.md](PARALLEL-PLAN.md) uses for `RAKUPP_GIL`. The flag is
+shape [PARALLEL-PLAN.md](../plans/PARALLEL-PLAN.md) uses for `RAKUPP_GIL`. The flag is
 removed no earlier than one release later. I1 and I3 need no flag of their own:
 they change representation, not semantics, and are gated on Roast like any
 other batch.
@@ -353,7 +353,7 @@ Every batch (and, if I2 ever runs, in both `RAKUPP_IR=0` and `RAKUPP_IR=1`):
 - A JIT, or any native code generation. `--exe` already occupies that role.
 - Replacing `--exe`, `--aot` or `--bundle`.
 - Changing `Value`'s layout or the object model.
-- RakuAST compatibility — that has its own plan ([RAKUAST-PLAN.md](RAKUAST-PLAN.md)).
+- RakuAST compatibility — that has its own plan ([RAKUAST-PLAN.md](../plans/RAKUAST-PLAN.md)).
 - Beating Rakudo on `arrayops`/`bigint`/`regex`. Their time is inside the
   runtime; an IR is the wrong tool and the `vs interp` column says so.
 
