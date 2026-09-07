@@ -1950,14 +1950,16 @@ long long graphemeCount(const std::string& s) {
 }
 
 // Rakudo dies opening a missing file for reading ("Failed to open file
-// /abs/path: No such file or directory") — match it, absolute path included.
+// /abs/path: No such file or directory") — match it, absolute path included,
+// X::AdHoc included. The type used to be X::IO::Open, which is not a Rakudo
+// type at all: a `when X::AdHoc` written against Rakudo missed it in silence.
 [[noreturn]] void throwFailedOpen(const std::string& path) {
     std::string abs = path;
     if (abs.empty() || (abs[0] != '/' && !(abs.size() > 1 && abs[1] == ':'))) {
         char buf[4096];
         if (getcwd(buf, sizeof buf)) abs = std::string(buf) + "/" + path;
     }
-    throw RakuError{Value::typeObj("X::IO::Open"),
+    throw RakuError{Value::typeObj("X::AdHoc"),
                     "Failed to open file " + abs + ": No such file or directory"};
 }
 
@@ -10237,7 +10239,7 @@ void Interpreter::registerBuiltins() {
         std::string path = I.ioFsPath(a[0]);
         if (createonly) { std::ifstream probe(path); if (probe) { // a Failure, not a quiet False (as the method form)
             Value f = rakuppNewFailure();
-            (*f.hash())["exception"] = Value::typeObj("X::IO::Exists");
+            (*f.hash())["exception"] = Value::typeObj("X::AdHoc");
             (*f.hash())["message"] = Value::str("Failed to open file " + path + ": File exists");
             return f; } }
         content = I.encodeTextEnc(content, Interpreter::encAdverb(a)); // `:enc`, and binary — as the method form
@@ -10245,7 +10247,7 @@ void Interpreter::registerBuiltins() {
         if (!out) { // a Failure that detonates when sunk
             int err = errno;
             Value f = rakuppNewFailure();
-            (*f.hash())["exception"] = Value::typeObj("X::IO::Spurt");
+            (*f.hash())["exception"] = Value::typeObj("X::AdHoc");
             (*f.hash())["message"] = Value::str("Failed to open file " + path + ": " + std::strerror(err));
             return f;
         }
@@ -10355,16 +10357,48 @@ void Interpreter::registerBuiltins() {
         for (auto& x : a) if (x.t == VT::Pair && x.s == "nl-in" && x.pairVal()) nlIn = *x.pairVal();
         if (excl) { // File::Temp opens `:rw, :exclusive` to claim a fresh name
             std::ifstream probe(path);
-            if (probe) throw RakuError{Value::typeObj("X::IO::Exclusive"),
-                "Failed to open file " + path + ": file already exists"};
+            if (probe) throw RakuError{Value::typeObj("X::AdHoc"),
+                "Failed to open file " + path + ": File exists"};
             if (mode == "r") mode = "w"; // bare :x implies write-create (Rakudo's :x)
         }
-        if (mode == "r" || mode == "update") { // both need the file to exist
-            std::ifstream probe(path);
-            if (!probe) { // a Failure that detonates when used or sunk — `my $fh = open …; if $fh {…}` works (it threw)
+        // TRY the open, do not assume it. The handle carries no OS descriptor —
+        // every read and write reopens the path — so nothing later in the program
+        // is in a position to notice that the file could never be opened at all.
+        // Without this, `open("/no/such/dir/f", :w)` handed back a live handle,
+        // every write through it was dropped, and the program heard about it at
+        // some unrelated slurp much later (issue #71). The errno is the message:
+        // answering "no such file or directory" for a permission error names the
+        // wrong cause, which is the confusion the whole check exists to prevent.
+        //
+        // X::AdHoc, deliberately — as every failed open here does, and as Rakudo
+        // does. The docs name no type for this ("Fails with appropriate exception
+        // if the open fails"), so the only thing a program can be written against
+        // is what Rakudo throws, and `CATCH { when X::AdHoc {…} }` is what code in
+        // the wild contains. A more precise name (this file once had X::IO::Spurt,
+        // X::IO::Exists, X::IO::Exclusive, X::IO::Open — none of which exist in
+        // Rakudo at all) reads better and silently escapes every such CATCH.
+        // A DIRECTORY is the one exception: Rakudo has a real type for it.
+        {
+            struct stat st;
+            if (::stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) { // Rakudo's own type and wording
                 Value f = rakuppNewFailure();
-                (*f.hash())["exception"] = Value::typeObj("X::IO::DoesNotExist");
-                (*f.hash())["message"] = Value::str("Failed to open file " + path + ": no such file or directory");
+                (*f.hash())["exception"] = Value::typeObj("X::IO::Directory");
+                (*f.hash())["message"] = Value::str("'" + path + "' is a directory, cannot do '.open' on a directory");
+                return f;
+            }
+            int err = 0;
+            if (mode == "r" || mode == "update") { // both need the file to exist
+                std::ifstream probe(path);
+                if (!probe) err = errno;
+            }
+            if (!err && mode != "r") { // :w truncates; :a, :rw and :update keep what is there
+                std::ofstream create(path, mode == "w" ? std::ios::trunc : std::ios::app);
+                if (!create) err = errno;                  // and the file exists from here on, as Rakudo's does
+            }
+            if (err) { // a Failure that detonates when used or sunk — `my $fh = open …; if $fh {…}` works (it threw)
+                Value f = rakuppNewFailure();
+                (*f.hash())["exception"] = Value::typeObj("X::AdHoc");
+                (*f.hash())["message"] = Value::str("Failed to open file " + path + ": " + std::strerror(err));
                 return f;
             }
         }
@@ -10384,8 +10418,6 @@ void Interpreter::registerBuiltins() {
         for (auto& x : a) if (x.t == VT::Pair && x.s == "out-buffer")
             (*h.hash())["out-buffer"] =
                 Value::integer(outBufferSize(x.pairVal() ? *x.pairVal() : Value::boolean(true)));
-        if (mode == "w") { std::ofstream create(path, std::ios::trunc); } // the file exists immediately
-        if (mode == "rw") { std::ofstream create(path, std::ios::app); }  // exists immediately, kept intact
         if (mode != "r") I.registerWriteHandle(h.hashS()); // flush at exit if not closed
         return h;
     };

@@ -3456,8 +3456,13 @@ if (IS_NODE && nodeRequire) {
     host.writeErr = s => { try { fs.writeSync(2, s); } catch (e) { if (e.code !== 'EPIPE') throw e; } };
     host.readStdin = () => { try { return fs.readFileSync(0, 'utf8'); } catch (e) { return ''; } };
     host.exit = code => { host.flush(); process.exit(code); };   // the program is over: a live interval or a poll must not keep the process alive
-    host.slurp = (p, ...a) => { try { return fs.readFileSync(str(p), 'utf8'); } catch (e) { throw new RakuError(`Failed to open file ${str(p)}: ${e.code === 'ENOENT' ? 'No such file or directory' : e.message}`, 'X::IO::DoesNotExist'); } };
-    host.spurt = (p, content, ...a) => { const named = nm(a); const opts = truthy(named.get('append')) ? { flag: 'a' } : truthy(named.get('createonly')) ? { flag: 'wx' } : {}; fs.writeFileSync(str(p), str(content), opts); return true; };
+    // errno text the way strerror spells it, so a JS-hosted program's message is
+    // the interpreter's message. Anything unmapped keeps node's own wording.
+    const errText = (e) => ({ ENOENT: 'No such file or directory', EACCES: 'Permission denied', EISDIR: 'Is a directory', ENOTDIR: 'Not a directory', EEXIST: 'File exists', EROFS: 'Read-only file system' })[e.code] || e.message;
+    const openFailed = (path, e) => new RakuError(`Failed to open file ${path}: ${errText(e)}`, 'X::AdHoc');
+    host.slurp = (p, ...a) => { try { return fs.readFileSync(str(p), 'utf8'); } catch (e) { throw openFailed(str(p), e); } };
+    // a write that cannot land answers a Failure, never a quiet true (issue #71)
+    host.spurt = (p, content, ...a) => { const named = nm(a); const opts = truthy(named.get('append')) ? { flag: 'a' } : truthy(named.get('createonly')) ? { flag: 'wx' } : {}; try { fs.writeFileSync(str(p), str(content), opts); } catch (e) { return failure(openFailed(str(p), e)); } return true; };
     host.appendFile = (p, s) => { fs.appendFileSync(p, s); };
     host.exists = p => fs.existsSync(p);
     host.isFile = p => { try { return fs.statSync(p).isFile(); } catch (e) { return false; } };
@@ -3482,7 +3487,7 @@ if (IS_NODE && nodeRequire) {
     host.copy = (a, b) => { fs.copyFileSync(a, b); return true; };
     host.rename = (a, b) => { fs.renameSync(a, b); return true; };
     host.chdir = p => { process.chdir(str(p)); host.cwd = nodeRequire('path').resolve(host.cwd, str(p)); return new RIOPath(host.cwd); };   // the logical path, not the realpath
-    host.open = (p, ...a) => { const named = nm(a); const path = str(p); const w = truthy(named.get('w')) || truthy(named.get('a')) || str(named.get('mode') || '') === 'wo'; const app = truthy(named.get('a')) || truthy(named.get('append')); const h = new RIOHandle(w ? 'file-w' : 'file-r', path); if (named.has('out-buffer')) { const ob = named.get('out-buffer'); h.outBuffer = ob === false ? 0 : ob === true ? 8192 : Number(toInt(ob)); } if (w) { if (!app) fs.writeFileSync(path, ''); h.out = ''; } else { try { h.buf = fs.readFileSync(path, 'utf8'); } catch (e) { throw new RakuError(`Failed to open file ${path}: ${e.code === 'ENOENT' ? 'No such file or directory' : e.message}`, 'X::IO::DoesNotExist'); } } return h; };
+    host.open = (p, ...a) => { const named = nm(a); const path = str(p); const w = truthy(named.get('w')) || truthy(named.get('a')) || str(named.get('mode') || '') === 'wo'; const app = truthy(named.get('a')) || truthy(named.get('append')); const h = new RIOHandle(w ? 'file-w' : 'file-r', path); if (named.has('out-buffer')) { const ob = named.get('out-buffer'); h.outBuffer = ob === false ? 0 : ob === true ? 8192 : Number(toInt(ob)); } try { if (fs.statSync(path).isDirectory()) return failure(new RakuError(`'${path}' is a directory, cannot do '.open' on a directory`, 'X::IO::Directory')); } catch (e) { /* absent is not an answer yet: :w may still create it */ } if (w) { try { if (!app) fs.writeFileSync(path, ''); else fs.appendFileSync(path, ''); } catch (e) { return failure(openFailed(path, e)); } h.out = ''; } else { try { h.buf = fs.readFileSync(path, 'utf8'); } catch (e) { return failure(openFailed(path, e)); } } return h; };
     host.close = h => { if (h.kind === 'file-w' && h.out) { fs.appendFileSync(h.path, h.out); h.out = ''; } h.closed = true; return true; };
     host.isTTY = h => h.kind === 'in' ? !!process.stdin.isTTY : h.kind === 'out' ? !!process.stdout.isTTY : h.kind === 'err' ? !!process.stderr.isTTY : false;
     host.shell = (cmd, ...a) => { const cp = nodeRequire('child_process'); host.flush(); const r = cp.spawnSync('/bin/sh', ['-c', str(cmd)], { stdio: 'inherit' }); return mkProc(r.status); };
@@ -3534,7 +3539,8 @@ function dynVar(name) {
         case '$*VM': return hashFrom([['name', 'js'], ['version', new RVersion('1')]]);
         case '$*KERNEL': return hashFrom([['name', 'js']]);
         case '$*DISTRO': return hashFrom([['name', host.name]]);
-        case '$*COLLATION': return Nil;
+)RKJS",
+R"RKJS(        case '$*COLLATION': return Nil;
         case '$*RAKUDO_MODULE_DEBUG': return false;
         case '$*USAGE': return usageText || '';
         case '$*SCHEDULER': return Nil;
@@ -3551,8 +3557,7 @@ let endBlocks = [];
 function atEnd(f) { endBlocks.push(f); }
 
 // The MAIN protocol: pos/named from @*ARGS, then dispatch. `sig` describes
-)RKJS",
-R"RKJS(// the candidates: [{fn, params:[{name, named, slurpy, optional, hasDefault, type, isBool}]}]
+// the candidates: [{fn, params:[{name, named, slurpy, optional, hasDefault, type, isBool}]}]
 function runMain(cands, argv) {
     const pos = [], named = new Map();
     let onlyPos = false;
@@ -3788,7 +3793,8 @@ function coerce(ty, v) {
     if (ty === T.Set || ty === T.Bag || ty === T.Mix) return toSetty(v, ty);
     if (ty === T.Complex) return new RComplex(toFloat(v), 0);
     if (ty === T.Version) return new RVersion(str(v));
-    if (ty['IO::Path'] || ty === T['IO::Path'] || ty === T.IO) return ioPath(v);
+)RKJS",
+R"RKJS(    if (ty['IO::Path'] || ty === T['IO::Path'] || ty === T.IO) return ioPath(v);
     if (ty === T.Date || ty === T.DateTime) return dateNew(ty, [v]);
     if (ty.isUser) { const m = ty.find(ty.name); if (m) return m(v); if (isa(v, ty)) return v; throw new RakuError(`Impossible coercion from '${typeName(v)}' into '${ty.name}': no acceptable coercion method found`, 'X::Coerce::Impossible'); }
     if (ty.check) { if (isa(v, ty)) return v; throw new RakuError(`Type check failed in coercion; expected ${ty.name} but got ${typeName(v)}`); }
@@ -3796,8 +3802,7 @@ function coerce(ty, v) {
 }
 // user dynamic variables: one process-wide table (dynamic scoping approximated)
 const dynTable = new Map();
-)RKJS",
-R"RKJS(function dynGet(name) { if (dynTable.has(name)) return dynTable.get(name); try { return dynVar(name); } catch (e) { throw new RakuError(`Dynamic variable ${name} not found`, 'X::Dynamic::NotFound'); } }
+function dynGet(name) { if (dynTable.has(name)) return dynTable.get(name); try { return dynVar(name); } catch (e) { throw new RakuError(`Dynamic variable ${name} not found`, 'X::Dynamic::NotFound'); } }
 function dynSet(name, v) { dynTable.set(name, v); return v; }
 function approxEq(a, b) { const x = toFloat(a), y = toFloat(b); if (x === y) return true; const tol = 1e-15; return Math.abs(x - y) <= tol * Math.max(Math.abs(x), Math.abs(y)); }
 // `for 1..$n`: a counted iterator on the Int fast path, the generic range otherwise
@@ -3998,7 +4003,8 @@ M(T.Promise, {
     'is-kept': (s) => s.status === Kept, 'is-broken': (s) => s.status === Broken, 'is-planned': (s) => s.status === Planned,
     'await': (s) => s.result(), 'sink': (s) => Nil, 'WHAT': (s) => T.Promise, defined: (s) => true,
 });
-Object.assign(TYPE_METHODS, {
+)RKJS",
+R"RKJS(Object.assign(TYPE_METHODS, {
     'in': (t, secs) => t === T.Promise ? promiseIn(secs) : Nil,
     'kept': (t, v) => promiseKept(v === undefined ? true : v), 'broken': (t, e) => promiseBroken(e),
     'allof': (t, ...ps) => promiseAllof(ps.length === 1 ? ps[0] : mkList(ps)), 'anyof': (t, ...ps) => promiseAnyof(ps.length === 1 ? ps[0] : mkList(ps)),
@@ -4008,8 +4014,7 @@ Object.assign(R, { RPromise, mkPromise, promiseKept, promiseBroken, start, await
 
 // ---- 87-supply.js ----
 // Supplies, Suppliers, Channels and react/whenever (TRANSPILE-PLAN P4). One
-)RKJS",
-R"RKJS(// thread, cooperative: the event loop runs at the await points — `await`,
+// thread, cooperative: the event loop runs at the await points — `await`,
 // `sleep`, `.receive`, `react`, a Channel's or live Supply's `.list` — and a
 // `start` block is a microtask. Taps run synchronously on emit. A `supply {}`
 // block runs once per tap with `emit`/`done` bound to that tap through a
@@ -4215,14 +4220,14 @@ class RChannel {
 }
 
 // ---- sleep: the event loop runs while we wait ----------------------------------
-function sleepP(secs) { const ms = secs === undefined ? 1e9 : Math.max(0, toFloat(secs) * 1000); activeTimers++; return new Promise(res => setTimeout(() => { activeTimers--; res(true); }, ms)); }
+)RKJS",
+R"RKJS(function sleepP(secs) { const ms = secs === undefined ? 1e9 : Math.max(0, toFloat(secs) * 1000); activeTimers++; return new Promise(res => setTimeout(() => { activeTimers--; res(true); }, ms)); }
 const startCounted = (fn) => { activeStarts++; const p = start(fn); p.p.then(() => { activeStarts--; }, () => { activeStarts--; }); return p; };
 
 // ---- methods ----------------------------------------------------------------
 M(SupplyT, {
     tap: (s, ...a) => { const [pos, named] = splitArgs(a); const dn = named.get('done'), qt = named.get('quit'); return s.tap(pos[0] || (() => { }), dn ? () => dn() : null, qt ? (e) => qt(e) : null); },
-)RKJS",
-R"RKJS(    act: (s, f) => s.tap(f), emit: (s, v) => { s.emit(v); return v; }, done: (s) => { s.done(); return true; }, quit: (s, e) => { s.quit(e instanceof RakuError ? e : new RakuError(str(e))); return true; },
+    act: (s, f) => s.tap(f), emit: (s, v) => { s.emit(v); return v; }, done: (s) => { s.done(); return true; }, quit: (s, e) => { s.quit(e instanceof RakuError ? e : new RakuError(str(e))); return true; },
     map: (s, f) => derived(s, (v, t) => safeEmit(t, f(v))), grep: (s, f) => derived(s, (v, t) => { if (truthy(matcherOf(f)(v))) safeEmit(t, v); }),
     'do': (s, f) => derived(s, (v, t) => { f(v); safeEmit(t, v); }), head: (s, n) => supplyHead(s, n), first: (s) => supplyHead(s, 1),
     skip: (s, n) => { let k = n === undefined ? 1 : Number(toInt(n)); return derived(s, (v, t) => { if (k > 0) k--; else safeEmit(t, v); }); },
@@ -4401,7 +4406,8 @@ function ltmReach(n, from, ctx, depth) {
         case 'WBRight': for (const [p, l] of from) if (!isWordAt(s, p) && isWordAt(s, p - 1)) add(p, l); return { pos: out, gap: false };
         case 'Seq': {
             let cur = from;
-            for (const kid of n.kids || []) { const r = ltmReach(kid, cur, ctx, depth); cur = r.pos; if (r.gap) return { pos: cur, gap: true }; if (!cur.size) return { pos: cur, gap: false }; }
+)RKJS",
+R"RKJS(            for (const kid of n.kids || []) { const r = ltmReach(kid, cur, ctx, depth); cur = r.pos; if (r.gap) return { pos: cur, gap: true }; if (!cur.size) return { pos: cur, gap: false }; }
             return { pos: cur, gap: false };
         }
         case 'Alt': { let gap = false; for (const kid of n.kids || []) { const r = ltmReach(kid, from, ctx, depth); for (const [p, l] of r.pos) add(p, l); if (r.gap) gap = true; } return { pos: out, gap }; }
@@ -4411,8 +4417,7 @@ function ltmReach(n, from, ctx, depth) {
             const kid = n.kids[0], min = n.min, max = n.max;
             let cur = from, gap = false;
             if (min === 0) for (const [p, l] of from) add(p, l);
-)RKJS",
-R"RKJS(            let i = 0;
+            let i = 0;
             for (; (max < 0 || i < max) && i < 100; i++) {
                 const r = ltmReach(kid, cur, ctx, depth + 1);
                 if (r.gap) { gap = true; for (const [p, l] of r.pos) add(p, l); break; }
@@ -4678,7 +4683,8 @@ function findRule(ty, name) {
     for (const t of ty.mro) if (t.rules && t.rules[name]) return t.rules[name];
     return null;
 }
-// the candidates of a proto: `name:sym<x>` / `name:x` rules, most-derived class first, declaration order
+)RKJS",
+R"RKJS(// the candidates of a proto: `name:sym<x>` / `name:x` rules, most-derived class first, declaration order
 function protoCandidates(ty, name) {
     const out = [], seen = new Set();
     for (const t of ty.mro) {
@@ -4699,8 +4705,7 @@ function subrule(n, st, pos, k) {
     const name = n.name;
     const capKey = n.alias || name;
     const capture = !n.noCapture;
-)RKJS",
-R"RKJS(    const record = (sub, q) => {
+    const record = (sub, q) => {
         if (!capture) return k(q);
         const undo = addNamed(st, capKey, sub);
         let undo2 = null;
@@ -4928,7 +4933,8 @@ function parseRxString(src, ic) {
             return lit(e);
         }
         if (c === '.') { i++; return { k: 'Any' }; }
-        if (c === '^') { i++; if (src[i] === '^') { i++; return { k: 'AnchorStart', multiline: 1 }; } return { k: 'AnchorStart' }; }
+)RKJS",
+R"RKJS(        if (c === '^') { i++; if (src[i] === '^') { i++; return { k: 'AnchorStart', multiline: 1 }; } return { k: 'AnchorStart' }; }
         if (c === '$') { i++; if (src[i] === '$') { i++; return { k: 'AnchorEnd', multiline: 1 }; } if (/[\w<]/.test(src[i] || '')) bad('a variable'); return { k: 'AnchorEnd' }; }
         if (src.startsWith('>>', i)) { i += 2; return { k: 'WBRight' }; }
         if (c === '«') { i++; return { k: 'WBLeft' }; }
@@ -4943,8 +4949,7 @@ function parseRxString(src, ic) {
         let node = null;
         if (src.startsWith('**', i)) {
             i += 2; ws();
-)RKJS",
-R"RKJS(            const mm = /^(\d+)(?:\s*(\.\.)\s*(\d+|\*))?/.exec(src.slice(i)); if (!mm) bad('a ** quantifier of this form'); i += mm[0].length;
+            const mm = /^(\d+)(?:\s*(\.\.)\s*(\d+|\*))?/.exec(src.slice(i)); if (!mm) bad('a ** quantifier of this form'); i += mm[0].length;
             node = { k: 'Rep', min: Number(mm[1]), max: mm[2] ? (mm[3] === '*' ? -1 : Number(mm[3])) : Number(mm[1]), kids: [a] };
         } else if (c === '*' || c === '+' || c === '?') { i++; node = { k: 'Rep', min: c === '+' ? 1 : 0, max: c === '?' ? 1 : -1, kids: [a] }; }
         if (!node) return a;

@@ -1136,7 +1136,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // :createonly / :x — refuse to clobber, same answer as the sub form
         if (createonly) { std::ifstream probe(ioFsPath(inv)); if (probe) { // a Failure, not a quiet False
             Value f = rakuppNewFailure();
-            (*f.hash())["exception"] = Value::typeObj("X::IO::Exists");
+            (*f.hash())["exception"] = Value::typeObj("X::AdHoc");
             (*f.hash())["message"] = Value::str("Failed to open file " + inv.toStr() + ": File exists");
             return f; } }
         content = encodeTextEnc(content, encAdverb(args)); // `:enc` — write the file's own encoding
@@ -1146,7 +1146,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         if (!out) { // a Failure that detonates when sunk (this answered False and the program ran on)
             int err = errno;
             Value f = rakuppNewFailure();
-            (*f.hash())["exception"] = Value::typeObj("X::IO::Spurt");
+            (*f.hash())["exception"] = Value::typeObj("X::AdHoc");
             (*f.hash())["message"] = Value::str("Failed to open file " + inv.toStr() + ": " + std::strerror(err));
             return f;
         }
@@ -1302,34 +1302,54 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 return f;
             }
         }
+        // Every refusal here is a FAILURE, not a throw — Rakudo `fail`s from all
+        // three, so `my $ok = copy(…); if $ok {…}` is a program that works. The
+        // same-file check above already answered one; these used to throw past it.
+        const std::string verb = m == "copy" ? "copy" : m == "move" ? "move" : "rename";
+        auto ioFail = [&](const char* type, const std::string& why) {
+            Value f = rakuppNewFailure();
+            (*f.hash())["exception"] = Value::typeObj(type);
+            (*f.hash())["message"] = Value::str(
+                "Failed to " + verb + " '" + from + "' to '" + to + "': " + why);
+            return f;
+        };
+        const char* failType = m == "move" ? "X::IO::Move" : m == "rename" ? "X::IO::Rename" : "X::IO::Copy";
+        // A DIRECTORY is not a file to be read. `copy` opened one, read nothing
+        // from it, and wrote a zero-byte file over the target — reporting True
+        // for a copy that never happened; `move` handed the whole tree to
+        // rename(2), which takes directories happily. Rakudo refuses both, and
+        // the docs say so outright: move "does not" work with directories, and
+        // point at rename, which does — so rename alone still gets through here.
+        if (m != "rename") {
+            struct stat sd{};
+            if (::stat(from.c_str(), &sd) == 0 && S_ISDIR(sd.st_mode))
+                return ioFail(failType, "source is a directory");
+        }
         if (createonly && std::ifstream(to).good())
-            throw RakuError{Value::typeObj("X::IO::Copy"),
-                "Failed to copy '" + from + "' to '" + to + "': target already exists"};
-        auto copyFile = [&]() -> bool {
+            return ioFail("X::IO::Copy", "target already exists");
+        int cerr = 0;                       // the errno the copy died of, captured
+        auto copyFile = [&]() -> bool {     // before a destructor can overwrite it
+            cerr = 0;
             std::ifstream in(from, std::ios::binary);
-            if (!in) return false;
+            if (!in) { cerr = errno; return false; }
             std::ostringstream buf; buf << in.rdbuf();
             std::ofstream out(to, std::ios::binary | std::ios::trunc);
-            if (!out) return false;
+            if (!out) { cerr = errno; return false; }
             // NB: read the source into memory rather than `out << in.rdbuf()` —
             // inserting an EMPTY streambuf sets failbit, so copying a zero-length
             // file reported failure while having done exactly the right thing.
             const std::string& data = buf.str();
             if (!data.empty()) out.write(data.data(), (std::streamsize)data.size());
             out.flush();
-            return out.good();
+            if (!out.good()) { cerr = errno; return false; }
+            return true;
         };
         if (m == "copy") {
-            if (!copyFile())
-                throw RakuError{Value::typeObj("X::IO::Copy"),
-                    "Failed to copy '" + from + "' to '" + to + "': " + std::strerror(errno)};
+            if (!copyFile()) return ioFail("X::IO::Copy", std::strerror(cerr));
             return Value::boolean(true);
         }
         if (::rename(from.c_str(), to.c_str()) == 0) return Value::boolean(true);
-        if (!copyFile())
-            throw RakuError{Value::typeObj(m == "move" ? "X::IO::Move" : "X::IO::Rename"),
-                "Failed to " + std::string(m == "move" ? "move" : "rename") + " '" + from +
-                "' to '" + to + "': " + std::strerror(errno)};
+        if (!copyFile()) return ioFail(failType, std::strerror(cerr));
         ::unlink(from.c_str());
         return Value::boolean(true);
     }

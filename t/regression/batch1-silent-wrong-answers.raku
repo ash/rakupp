@@ -105,13 +105,12 @@ check(Rakudo::Internals::JSON.to-json("x\x[1]"), '"x\\u0001"',
 }
 
 # -- .IO.open agrees with open() ----------------------------------------------
-# (The TYPE is rakupp's established X::IO::DoesNotExist — Rakudo says X::AdHoc
-#  here, and its spurt :createonly answers a Failure where ours answers False;
-#  those two conventions predate this batch. Everything else in this file is
-#  engine-neutral: 28 of 30 checks pass verbatim under Rakudo.)
+# (The TYPE was rakupp's own X::IO::DoesNotExist when this batch landed; issue
+#  #71 moved every failed open to Rakudo's X::AdHoc, so this now asserts what
+#  Rakudo asserts. The whole file is engine-neutral again.)
 {
     try { "/nonexistent-batch1-$*PID".IO.open }
-    check($!.^name, 'X::IO::DoesNotExist', '.IO.open on a missing file throws like open()');
+    check($!.^name, 'X::AdHoc', '.IO.open on a missing file throws like open()');
     my $tmp = $*TMPDIR.add("batch1-open-$*PID.txt");
     $tmp.spurt("hi");
     my $fh = $tmp.IO.open;

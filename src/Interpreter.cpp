@@ -2852,6 +2852,10 @@ Interpreter::Interpreter() {
         for (const char* n : {"X::IO::Mkdir", "X::IO::Chmod"})
             reg(n, {"path", "mode", "os-error", "message"});
         reg("X::IO::DoesNotExist", {"path", "trying", "message"});
+        // `.open` (and every other file operation) on a directory answers this,
+        // not the errno the syscall would have given: EISDIR is a description of
+        // the mistake, "is a directory, cannot do '.open'" is the mistake itself.
+        reg("X::IO::Directory", {"path", "trying", "message"});
     }
     // CompUnit::Repository — a role a repository class must fully implement, and the
     // $*REPO instance that does it.
