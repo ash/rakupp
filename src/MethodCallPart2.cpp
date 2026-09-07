@@ -4001,7 +4001,10 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if (inv.t == VT::Range) { ValueList none; return Value::number(methodCall(inv, "elems", none).toNum()); }
         return Value::number(inv.toNum());
     }
-    if (m == "Numeric" && inv.t == VT::Complex) return inv; // a Complex is Numeric already (this arm numified it to Num 0)
+    if (m == "Numeric" && inv.t == VT::Complex) { // a Complex is Numeric already (this arm numified it to Num 0)
+        if (inv.isAllomorph()) { Value n = inv; n.hashKind.clear(); n.s.clear(); return n; } // ComplexStr sheds — see below
+        return inv;
+    }
     if (m == "Numeric" || m == "Real") {
         // a string numifies via the type-preserving ladder ("1"->Int, "1.5"->Rat,
         // "1e0"->Num), like `+$str` — and a non-number is that same Failure.
@@ -4016,6 +4019,17 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             // right — the same value answering three ways.
             if (!inv.enumName.empty()) {
                 Value n = inv; n.enumName.clear(); n.enumType.clear();
+                return n;
+            }
+            // …and an ALLOMORPH numifies to its NUMERIC half, exactly as `.Rat`
+            // on a RatStr already sheds the Str side. Returning it whole kept
+            // that side, and the VALUE was right, so arithmetic hid it
+            // completely — it showed only in string context, where the result
+            // still carried its original text: `~ <0o755>.Numeric` answered
+            // "0o755" where Rakudo answers 493. Same shape as the enum case
+            // directly above, which this arm already knew to strip.
+            if (inv.isAllomorph()) {
+                Value n = inv; n.hashKind.clear(); n.s.clear();
                 return n;
             }
             return inv;

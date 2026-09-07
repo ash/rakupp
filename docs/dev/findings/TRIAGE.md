@@ -245,3 +245,60 @@ the `if $n == 1` case above answers 1 there where the interpreter answers 2.
 
 `--exe` needs nothing: it refuses to compile a nested `END` natively and bundles
 the interpreter, which now gets all of this right.
+
+## An allomorph is kept or shed the other way round by `floor`/`round`/`abs` (2026-09-07)
+
+Rakudo KEEPS the allomorph where rakupp builds a fresh number, on exactly the
+methods whose Rakudo implementation returns `self`:
+
+```raku
+my $i = IntStr.new(493, "0o755");   my $r = RatStr.new(1.5, "1.50");
+say $i.floor.WHAT.^name, " ", $i.ceiling.WHAT.^name, " ", $i.round.WHAT.^name, " ", $r.abs.WHAT.^name;
+```
+
+Rakudo `IntStr IntStr IntStr RatStr` (`Int.floor` and `Real.abs` hand back
+`self`, and for an allomorph `self` is the allomorph); rakupp `Int Int Int Rat`.
+
+The opposite direction from the `.Numeric` gap fixed alongside this entry, and
+the reason it is recorded rather than fixed with it: there it was clear which
+answer is right, because the shed value is what `.Numeric` is FOR and the kept
+one silently stringified as its original text. Here the divergence is an
+artifact of Rakudo returning `self` from an identity operation, and rakupp's
+fresh number is arguably the better answer — matching it would mean
+reproducing an implementation detail, not a decision.
+
+Roast pins the neighbouring case and rakupp already passes it: `S32-num/
+rounders.t` asserts with `is-deeply` that the ARGUMENT form sheds —
+`IntStr.new(42,"42").round(42)` is a plain `42`, and `.round(42e0)` a `42e0` —
+which is what rakupp answers. It is the NO-argument identity form measured
+above that nothing asserts, on either side. (That file's own six failures here
+are `floor(NaN)`, `ceiling(Inf)` and their kin, unrelated to allomorphs and
+unmoved by the `.Numeric` fix — 6 before, 6 after.)
+
+Not a regression: identical on the v3.25.0 release build.
+
+## A radix-prefixed string `mode` renders as `0o000` in the X::IO messages (2026-09-07)
+
+`X::IO::Mkdir` and `X::IO::Chmod` compose their `.message` from their attributes
+(the X::IO table in `src/MethodCallPart2.cpp`). The `mode` attribute goes through
+`toInt()`, which does not parse a radix prefix, so a Str mode written `0o755`
+numifies to 0:
+
+```raku
+X::IO::Mkdir.new(path => 'P', mode => "0o755", os-error => 'e').throw
+```
+
+    mode => 0o755   (Int)   Rakudo 0o755    rakupp 0o755     agree
+    mode => "755"   (Str)   Rakudo 0o1363   rakupp 0o1363    agree
+    mode => "0o755" (Str)   Rakudo 0o755    rakupp 0o000     diverge
+
+Only the third row diverges, and the engine itself always passes an Int, so
+nothing in live code reaches it — it needs a program that constructs an X::IO
+exception by hand with a string mode, which in practice means a suite mocking
+one. Recorded rather than fixed for that reason; the three rows above are the
+whole of the measurement, so the next person need not repeat it.
+
+Not a regression: identical on the v3.25.0 release build. Traced to e1679c3.
+Surfaced when the END-exception report (issue #70) began printing exceptions
+that had previously been swallowed, which made a hand-constructed X::IO::Mkdir
+visible for the first time.
