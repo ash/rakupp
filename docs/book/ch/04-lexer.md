@@ -53,12 +53,16 @@ call; `f ()` is `f` applied to a parenthesised list. `%h<k>` is a subscript;
 // src/Lexer.cpp — the tokenize loop
 size_t before = pos_;
 skipWhitespaceAndComments();
-bool spaced = (pos_ > before && pos_ != atomDropEnd_) || before == 0;
+// an unspace isn't whitespace: `"xxxxxx"\.chars` keeps `.chars` tight-postfix
+bool spaced = (pos_ > before && pos_ != unspaceEnd_) || before == 0;
 // … lex the token …
 t.spaceBefore = spaced;
 ```
 
-The flag is true exactly when skipping advanced the cursor. The parser then
+The flag is true when skipping advanced the cursor — unless the cursor landed
+exactly after an *unspace*, a backslash followed by whitespace, which is written
+to be invisible and so does not count as space — and always for the very first
+token. The parser then
 leans on it constantly: to tell a postcircumfix from a list, a call from an
 application, a postfix operator from a fresh term.
 
@@ -169,14 +173,29 @@ longer entries are placed before their prefixes, and the first full match wins.
 Adding a built-in operator means inserting it at the right position — a real
 maintenance hazard, and named as one.
 
-The fall-through matters more than the table: anything unmatched becomes a
-**single-character `Tok::Op`**. That is why a novel user-defined operator still
-arrives as a token the parser can pick up, even though the lexer has never
-heard of it.
+The fall-through matters: anything unmatched becomes a **single-character
+`Tok::Op`**, so a novel user-defined operator arrives as *something* the parser
+can pick up.
+
+For a while that was the whole answer, and it was not enough. A spelling like
+`sub infix:<%%%>` gets lexed a character at a time, and the built-in table
+swallows a prefix of it first — `%%%` came out as `%%` then `%`, so `5 %%% 2`
+divided by an empty hash. So the lexer's constructor now pre-scans the file for
+its own symbolic operator declarations and tries them, longest first, ahead of
+the table:
+
+```cpp
+// src/Lexer.cpp — the constructor
+for (const char* cat : {"infix:<", "prefix:<", "postfix:<"}) { … }
+```
+
+Only *this* file's declarations are visible that way; an imported symbolic
+operator still needs its module's own parse, which is a real limitation and one
+worth knowing before writing a module that exports one.
 
 The vocabulary also covers Unicode aliases (`≤` for `<=`), hyper metaoperators
-(`»op«`), and the set operators (`(elem)`, `∈`) — but it is *static*. It tracks
-no user declarations whatsoever.
+(`»op«`), and the set operators (`(elem)`, `∈`). That part is static — but "the
+lexer tracks no user declarations" is no longer true of it as a whole.
 
 ## Rule bodies are not tokenized
 

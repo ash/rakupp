@@ -204,9 +204,14 @@ This is a real divergence from Rakudo and it shapes what Raku++ can support.
   not executed during parsing; the interpreter schedules it after the parse.
 - **`constant`** is not folded. It becomes a declaring `VarExpr` that the
   interpreter binds.
-- **`use` and `no`** become `UseStmt` nodes. No module is loaded, no pragma
-  takes effect, and even `no strict` is handled at run time rather than by
-  toggling a parser mode.
+- **`use` and `no`** become `UseStmt` nodes. No module is loaded, and even
+  `no strict` is handled at run time rather than by toggling a parser mode.
+  There is one exception, and it has to be one: `use v6.X` sets `Parser::langRev_`
+  as it is parsed, because a language revision changes what the *rest of the
+  file* means. `langRev_ >= 2` is what makes prefix `//` a defined-check rather
+  than an empty regex, and what the module search consults for 6.e resolution
+  rules. A pragma that decides how the following tokens parse cannot wait for
+  run time.
 - **Named subs are hoisted** — but by the *interpreter*, not the parser.
   `hoistSubs` pre-registers every named `SubDecl` in a scope before running its
   statements, which is why subs need not be declared before use.

@@ -91,7 +91,7 @@ Mirrored at [raku.online/cookbook/](https://raku.online/cookbook/).
 
 - **[internals/ARCHITECTURE.md](internals/ARCHITECTURE.md)** — how it's built, and what happens to a program in each run mode.
 - **[internals/CLASSIFICATION.md](internals/CLASSIFICATION.md)** — where Raku++ sits in the compiler taxonomy: recursive descent with a Pratt core over an operator table that changes mid-parse (so neither LL nor LR applies), a backtracking regex engine that borrows a Thompson NFA for one question only, and a back end with no IR at all — plus what each classification costs.
-- **[internals/PARSING.md](internals/PARSING.md)** — the front end: from source text to AST — the lexer, the Pratt parser, and how user-defined operators (and other in-program grammar tweaks) are handled in a single pass.
+- **[book/ch/04-lexer.md](book/ch/04-lexer.md) and the three chapters after it** — the front end: from source text to AST — the lexer, the Pratt parser, and how user-defined operators (and other in-program grammar tweaks) are handled in a single pass. (`internals/PARSING.md` is a stub pointing there.)
 - **[internals/RUNTIME.md](internals/RUNTIME.md)** — the runtime model: how statically-typed C++ runs dynamic Raku — what a `Value` is, how variables and containers relate, calls and dispatch, and lazy/infinite sequences.
 - **[internals/METAPROGRAMMING.md](internals/METAPROGRAMMING.md)** — language-mutation coverage: custom operators, precedence traits, phasers, MOP, macros/slangs.
 - **[internals/NQP.md](internals/NQP.md)** — the `use nqp` compatibility subset that lets ecosystem modules (JSON::Fast, …) run: what it covers, how it compiles, and why it's zero-cost when unused.
