@@ -49,9 +49,15 @@ my @interesting;
 
 sub run-with-timeout($bin, $file, $secs) {
     my $proc = Proc::Async.new($bin, $file);
+    # Cap what we keep. CLI.md and LINT.md each carry an example whose own
+    # comment says it prints "… forever", and `$out ~= $c` on an endless stream
+    # copies the whole buffer per chunk: this tool spent minutes at 100% CPU on
+    # a snippet it had already decided to kill, and left the child running.
+    # 64 KB is far more than any documented output; the excess is dropped.
+    my constant CAP = 65536;
     my ($out, $err) = '', '';
-    $proc.stdout.tap(-> $c { $out ~= $c });
-    $proc.stderr.tap(-> $c { $err ~= $c });
+    $proc.stdout.tap(-> $c { $out ~= $c if $out.chars < CAP });
+    $proc.stderr.tap(-> $c { $err ~= $c if $err.chars < CAP });
     my $done = $proc.start;
     await Promise.anyof($done, Promise.in($secs));
     # string compare, as tools/run-roast.raku does — smartmatching the enum is unreliable

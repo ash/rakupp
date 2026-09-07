@@ -21,7 +21,7 @@ rakupp prog.raku --lint      # --lint is in prog.raku's @*ARGS, not ours
 ```
 
 A bare `--` ends option parsing early (`rakupp -- -strange-name.raku`).
-Unknown options print the same banner Rakudo prints, and exit 0, for
+Unknown options print `Illegal option …` and Rakudo's usage line, and exit 0, for
 compatibility.
 
 ## Running programs
@@ -31,12 +31,21 @@ compatibility.
 | `rakupp FILE ARGS…` | run a file; `ARGS` land in `@*ARGS` |
 | `rakupp -e 'CODE' ARGS…` | one-liner (`-e'CODE'` glued also works) |
 | `rakupp - ARGS…` | program text from stdin |
-| `… \| rakupp` | same, implicit |
+| `… \| rakupp` | same, implicit — for *running*: `-c` and `--lint` want the input named (`rakupp -c -`), and a bare `… \| rakupp -c` is a usage error, exit 4 |
 | `rakupp` | the REPL, at a terminal |
 
+- **A single-dash long option is accepted as a typo.** `-lint`, `-exe`,
+  `-color=never`, `-env-file=x.env` and the other long names are unambiguous —
+  none is a valid short cluster — so rakupp takes them, at any option position
+  and with a `=VALUE`, and says so on stderr:
+  `note: treating '-lint' as '--lint'`. The courtesy stops where the options
+  stop: at the program file, at `--`, and at `-e`, after which the tokens are
+  the program's.
 - `-I <path>` — add a module search directory (repeatable, `-Ipath` works).
 - `-M <module>` — load a module before the program runs (repeatable;
   `-MFoo` glued and `-m` both work — `-m` is a Perl-ism Rakudo rejects).
+  It is not applied to a REPL session: `rakupp -M Foo` at a terminal opens a
+  session without Foo. `--mcp` and `--jupyter` do preload.
   The program behaves as if it began with `use Foo;` *on its own first
   line*, so error line numbers do not shift.
 - `-x` — perl's flag: the program starts at the first line that begins
@@ -236,6 +245,11 @@ $ export RAKUPP_OPT='-I lib -M Test::Helpers'
 $ rakupp t/thing.raku        # runs as rakupp -I lib -M Test::Helpers t/thing.raku
 ```
 
+`--watch` is accepted here too, and then applies to every run, which is rarely
+what a shell profile wants. The watch loop's own child carries
+`RAKUPP_WATCH_CHILD=1` and ignores the inherited flag, so a `--watch` in
+`RAKUPP_OPT` re-runs your program rather than spawning watchers of watchers.
+
 Output buffering needs no flag: `$*OUT` is unbuffered, as under Rakudo, so
 a `say` reaches a pipe as it is written (python's `-u` is the default
 here). An output-heavy program can buy the block buffer back with
@@ -321,8 +335,11 @@ $ rakupp --profile tools/bench/fib.raku
 514229
 Profile — wall time; builtins are attributed to their caller
   excl(ms)   incl(ms)      calls  routine
-   777.582    777.582    1664079  fib (fib.raku)
+   340.598    340.598    1664079  fib (/Users/ash/raku++/tools/bench/fib.raku)
 ```
+
+(The routine's file is printed as the path the run resolved, never a bare
+basename; the milliseconds are one machine's and will differ on yours.)
 
 Reading it:
 
@@ -381,6 +398,21 @@ warnings / clean. The `--lint` summary line still goes to stderr, where a
 consumer reading stdout never sees it (`-q` drops it). This is the
 editor-integration surface for a tool that does not speak LSP; the one
 that does is `--lsp`.
+
+### `--lsp`: the language server
+
+`rakupp --lsp` speaks the Language Server Protocol on stdin/stdout, for an
+editor that talks to a server rather than shelling out per file. It is a
+**diagnostics** server: it parses what the editor sends and answers with the
+same findings `-c` and `--lint` produce, so the errors an editor underlines are
+the errors a build would report. It has no completion, hover or
+go-to-definition, and it answers nothing else.
+
+Start it the way the editor wants — a command of `rakupp --lsp`, no arguments —
+and it runs until the editor closes the connection. Malformed or hostile input
+is dropped rather than fatal: the framing rejects an impossible
+`Content-Length`, the parser caps nesting depth, and a bad `\u` escape ends
+the string instead of the process.
 
 ### Undeclared variables are refused before the program runs
 
@@ -789,9 +821,14 @@ in order — ask for it before asking anything else.
 ## MAIN: how a program's own arguments parse
 
 A program with a `sub MAIN` gets Rakudo-compatible argument parsing —
-byte-identical on a 36-case oracle matrix
+byte-identical on a 46-case oracle matrix
 (`t/regression/main-args-conventions.raku`, which passes under both
-engines). The conventions, which are also the ordinary Unix ones:
+engines). The generated **usage text** follows Rakudo's with two known
+differences: named parameters are listed in declaration order where Rakudo
+hoists the required ones to the front, and a named parameter whose type is not
+`Str` renders as `-n=<Int>` where Rakudo writes `-n[=Int]`. Do not diff a usage
+line against Rakudo's in a golden-file test. The conventions, which are also
+the ordinary Unix ones:
 
 - **`--key=value` and `--key value` both work — the space form for
   `Str`-typed named parameters.** `sub MAIN(Str :$foo, Bool :$verbose)`

@@ -14,7 +14,7 @@ rakupp --lint FILE -q       # suppress the trailing summary line
 Each finding is printed to stdout as
 
 ```
-FILE:LINE: warning|note: message [rule-id]
+FILE:LINE: error|warning|note: message [rule-id]
 ```
 
 and a one-line summary goes to stderr. Runnable, one-rule-per-file demos are in
@@ -58,7 +58,7 @@ build on the high-confidence findings; the two failing codes let a hook tell
 | `unreachable-code` | warning | A statement that follows an unconditional `return`/`last`/`next`/`redo`, or a bare `die`/`exit`, in the same block. |
 | `self-assignment` | warning | `$x = $x` — assigning a variable to itself, usually a typo for a nearby name. |
 | `constant-condition` | warning | An `if`/`unless` whose condition is a literal (`if False`, `unless 0`, `if True`), so the branch is dead or unconditional. |
-| `numeric-cmp-of-string` | warning | A numeric comparison (`==` `!=` `<` `<=` `>` `>=`) with a non-numeric string literal, e.g. `$s == "yes"` — almost certainly meant `eq`/`lt`/`gt`. |
+| `numeric-cmp-of-string` | warning | A numeric comparison (`==` `!=` `<` `<=` `>` `>=`) with a string literal that is not a plain decimal or exponent number, e.g. `$s == "yes"` — almost certainly meant `eq`/`lt`/`gt`. Radix (`"0x10"`), Rat (`"1/2"`), `"Inf"` and leading-whitespace forms all numify in Raku and are still flagged; see Known limitations. |
 | `new-arg-matches-no-attribute` | warning | A literal named argument to `LocalClass.new(...)` that matches no public attribute — the default constructor binds nameds to public attributes and **silently ignores** the rest, so a typo'd name (`name => …` for `has $.na`) is invisible at runtime. Fires only when construction is fully understood from the file: the class and its whole in-file ancestry (parents *and* roles) declare no custom `new`/`BUILD`/`TWEAK`, and every ancestor is itself declared in the file. Private-only attributes count as no match (they are not settable from the default `new` either). |
 | `unused-parameter` | note | A signature parameter that the body never uses. Advisory, because uniform callback/dispatch signatures and interface conformance routinely carry parameters a given routine ignores. Skips slurpies, the invocant, and `$_`. |
 | `redundant-return` | note | An explicit `return` as the final statement of a routine — a block already yields its last expression. |
@@ -104,7 +104,15 @@ Two exotic, rarely-used constructs can produce a spurious finding: adverbial
 variable names (`my $x:foo<a b>`, whose adverbs the parser drops) can look like a
 `redeclaration`, and the deprecated `will`-phaser trait syntax
 (`my $x will next { … }`) can look like `unreachable-code`. Both are essentially
-absent from real code. Reaching a routine purely through a runtime dispatch
-table (`%handlers{$op}()`) is invisible to `unused-routine`; if that pattern is
-central to a program, expect a false positive there and rely on the `&`-value
-and by-name call detection for everything else.
+absent from real code.
+
+Four ordinary ones are open, and they are worth knowing because the page's own
+rule is that a false finding is not acceptable:
+
+- `numeric-cmp-of-string` reads only plain decimal and exponent literals as
+  numbers, so `"0x10" == 16`, `"1/2" == 0.5`, `"Inf" == Inf` and `" 16" == 16`
+  are all flagged although each numifies exactly as written, on both engines.
+- `unused-routine` does not see a routine reached only through a runtime
+  dispatch table (`%handlers{$op}()`), only from inside a regex code block
+  (`<?{ f() }>`), or — for a `sub prefix:<…>`/`postfix:<…>` — called in operator
+  position. Rely on the `&`-value and by-name call detection for the rest.
