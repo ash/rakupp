@@ -28,7 +28,7 @@ good deal of what follows is the story of doing exactly that.
                                    (parses and walks at run time)
 ```
 
-A single front end feeds four back ends. The front end is a hand-written
+A single front end feeds five back ends. The front end is a hand-written
 character-level lexer and a recursive-descent parser with a precedence-climbing
 core for expressions; it produces a `Program`, which is a vector of statement
 nodes. Everything downstream consumes that one artifact.
@@ -140,6 +140,6 @@ genuine bugs in Raku++; several fixes in later chapters were found that way.
 | IV | the tree walk, calls, control flow, dispatch, objects, laziness |
 | V | the regex engine, the grammar engine, longest-token matching |
 | VI | Unicode: graphemes, normalization, collation |
-| VII | the four run modes, the code generator, `-O`, what a binary keeps, serialization, the browser |
+| VII | the five run modes, the two code generators, `-O`, what a binary keeps, serialization, the browser |
 | VIII | modules, `use nqp`, NativeCall, the extension ABI, concurrency |
 | IX | tooling built on the AST, and how any of this is proved |

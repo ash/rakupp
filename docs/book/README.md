@@ -1,11 +1,11 @@
 # Raku++ Internals — the compiler book
 
 A book-length walk through the inside of Raku++: the lexer, the parser, the
-AST, `Value`, the interpreter, the regex and grammar engine, Unicode, the four
-run modes, the native code generator and its optimizer, module loading,
+AST, `Value`, the interpreter, the regex and grammar engine, Unicode, the five
+run modes, the two code generators and the optimizer, module loading,
 NativeCall, the extension ABI, and the concurrency runtime.
 
-**[Raku++-Internals.pdf](Raku++-Internals.pdf)** — 386 pages, 42 chapters in
+**[Raku++-Internals.pdf](Raku++-Internals.pdf)** — 392 pages, 43 chapters in
 ten parts, plus four appendices.
 
 ## Building it

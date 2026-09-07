@@ -229,7 +229,7 @@ classification above, and worth reading as a consequence rather than a bug list:
   rewrite during emission.
 
 The other side of the ledger is the reason the design holds. One AST serves all
-four run modes with no lowering step between them, so a language feature is
+five run modes with no lowering step between them, so a language feature is
 implemented once (Chapter 25). A parse error can point straight at a token,
 because there is no table-driven state to translate back into source. And there
 is exactly one implementation of the semantics — `librakupp_rt.a` — shared by the

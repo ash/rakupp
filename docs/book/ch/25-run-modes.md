@@ -8,8 +8,11 @@ someone a program that needs no interpreter installed, one for cutting start-up
 time, one for throughput. They share the entire front end and diverge
 completely after it.
 
-One front end, four back ends. This chapter takes one small program through all
-four and shows exactly what each produces.
+One front end, five back ends. This chapter takes one small program through the
+four that produce a runnable artefact from C++ — interpret, `--bundle`, `--aot`
+and `--exe` — and shows exactly what each produces. The fifth, `--target=js`,
+does not go through C++ at all and has its own chapter; it is the one case where
+the shared-runtime principle everything here rests on had to be given up.
 
 ```raku
 # demo.raku
