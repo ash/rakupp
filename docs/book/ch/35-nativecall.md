@@ -114,9 +114,11 @@ than computing a wrong answer:
 | more than 8 integer or 8 float arguments | the prototype is that wide and no wider |
 | more than 64 distinct callbacks | the trampoline pool holds 64 |
 
-`RAKUPP_FFI=0` forces this path, which is how the test suite exercises it: the
-whole suite runs twice, once each way. WebAssembly takes it by construction —
-there is no shared library to open.
+`RAKUPP_FFI=0` forces this path, which is how the fallback is tested:
+`t/regression/nativecall-libffi.raku` re-runs the cases only libffi can do in a
+child process with the backend switched off, and checks each one throws rather
+than answering. WebAssembly takes the fallback by construction — there is no
+shared library to open.
 
 ## How a call is made
 

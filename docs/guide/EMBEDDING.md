@@ -82,6 +82,15 @@ Two different jobs, and picking the wrong one is the most likely early mistake.
 | `MAIN`, `exit`, phasers | no | yes |
 | Use it for | Raku as a scripting/rules language | hosting Raku *as* Raku |
 
+`rk_eval_file` is `rk_eval` given a path instead of a string, and it is what most
+embedders actually want: the path also becomes the interpreter's idea of the
+running file, so `$?FILE` and a relative `use lib` resolve the way they would
+from the command line. `rk_version` answers the engine's version string. There
+are three statuses, not two — `RK_FATAL` is the third, for a failure the session
+cannot continue past. And the header carries its own `RAKUPP_ABI`, currently 2,
+which is the number a host checks; it is independent of the `RAKUPP_EXT_ABI` an
+*extension* checks.
+
 The playground uses `rk_run`; a game embedding Raku for its rules wants
 `rk_eval`.
 
@@ -154,14 +163,14 @@ created, and by more than one at once. Make those re-entrant.
 ## Bindings
 
 You may not need the C surface directly. [bindings/](../../bindings/README.md)
-holds five hosts over it — Python (ctypes; ships as a platform wheel with
+holds six hosts over it — Python (ctypes; ships as a platform wheel with
 librakupp bundled), JS/TS (bun:ffi), Go (cgo), Rust (zero-dependency crate),
-and C++ (`<rakupp/raku.hpp>` and `<rakupp/grammar.hpp>`, header-only, in the
-install layout). Each gives you the same two things this header gives you,
+C++ (`<rakupp/raku.hpp>` and `<rakupp/grammar.hpp>`, header-only, in the
+install layout), and the Wolfram Language (`ForeignFunctionLoad`, 13.3+). Each gives you the same two things this header gives you,
 in its own idiom: **run Raku** (evaluate source, call routines with host
 values, read results back) and **parse with Raku grammars**
 ([GRAMMAR-PLAN](../dev/plans/GRAMMAR-PLAN.md)) — the workload embedding was
-named for. All five drive the same Raku shim, which lives INSIDE the library
+named for. All six drive the same Raku shim, which lives INSIDE the library
 (`rk_grammar_shim`) so a binding can never skew against its engine; all five
 are byte-compared against plain `rakupp` by `tools/grammar-smoke.raku`, and
 their worked examples are checked by `tools/bindings-smoke.raku`, both in CI.

@@ -83,6 +83,8 @@ from.
 ```
 $ rakupp -e 'say [+] (1, 2, 3 ... *)'
 Cannot reduce a lazy list
+  in block <unit> at -e line 1
+      1 | say [+] (1, 2, 3 ... *)
 ```
 
 ## Which doors this covers

@@ -91,9 +91,13 @@ than computing the wrong answer:
 ```
 $ RAKUPP_FFI=0 rakupp ldexpf.raku
 NativeCall: a num32 argument needs libffi, which is not available (disabled by RAKUPP_FFI)
+  in block <unit> at ldexpf.raku line 3
+      3 | say ldexpf(3e0, 2);
 
 $ RAKUPP_FFI=0 rakupp printf.raku
 NativeCall: a variadic native call needs libffi, which is not available (disabled by RAKUPP_FFI)
+  in block <unit> at printf.raku line 3
+      3 | printf("%d\n", 42);
 ```
 
 The failure is a normal Raku exception, so it is catchable — a module that wants
@@ -216,10 +220,11 @@ a mode, and `ioctl` reachable at all.
    sign-extended to its declared width, `is rw` out-parameters and mutated
    buffers are copied back to the caller's variables.
 
-The cost of going through libffi rather than calling blind is about **23 ns per
-crossing** (157 ms vs 150 ms for 300 000 calls of `abs`, best of three, arm64).
-On a crossing that costs ~490 ns end to end, that is under 5%, which is why
-there is one code path rather than a fast one and a general one.
+The cost of going through libffi rather than calling blind is about **20 ns per
+crossing** — 106 ms against 100 ms for 300 000 calls of `abs`, best of ten on
+arm64, 2026-09-07, where the bare loop is 24 ms. A crossing costs about 275 ns
+end to end, so libffi is under a tenth of it, which is why there is one code
+path rather than a fast one and a general one.
 
 ### Type map
 
@@ -398,13 +403,34 @@ ignored with a warning on stderr, rather than run anyway.
 
 ---
 
+### Where Raku++ is more permissive
+
+Rakudo checks a native signature at compile time and refuses what it cannot map;
+Raku++ accepts more and converts at the call. Five differences reproduce on
+these two lines apiece:
+
+| declaration | Raku++ | Rakudo |
+|---|---|---|
+| `sub isalpha(int32 --> bool)` | returns a `Bool` | returns an `Int` |
+| `sub toupper(char --> char)` | runs | `Invalid typename 'char'` |
+| `sub abs(Int --> Int)` | runs | `Not an accepted NativeCall type` |
+| `abs(-3.7e0)` against an `int32` parameter | coerces, answers 3 | `Calling abs(Num) will never work` |
+| `strlen(12345)` against a `Str` parameter | coerces, answers 5 | `Calling strlen(Int) will never work` |
+
+`char`, `long32`, `longlong`, `ulong`, `ulonglong`, `uint`, `Int`, `Num` and
+`Bool` are all accepted as native spellings here. Raku++ also does not require
+`use NativeCall` for `is native` to work, where Rakudo does. Code that must run
+on both engines should stay inside the type map above, write the `use` line, and
+not rely on an argument being coerced.
+
 ## Diagnostics
 
 | | |
 |---|---|
 | `rakupp --ffi-info` | which backend is live, or why none is |
-| `RAKUPP_FFI=0` | force the no-libffi fallback |
-| `RAKUPP_FFI=/path/to/lib` | use a specific libffi — and *only* that one. If it cannot be loaded, Raku++ reports it and runs on the fallback rather than silently substituting whatever the system ships, because naming a library is a request, not a hint |
+| `RAKUPP_FFI=0` | force the no-libffi fallback (`off`, `no` and an empty value do the same) |
+| `RAKUPP_FFI=1` `on` `yes` `true` | the default search — the same as not setting it at all. Before v3.26 these were read as a library *named* `1`, which cannot be loaded, so they silently disabled libffi: the opposite of what they look like |
+| `RAKUPP_FFI=/path/to/lib` | any value that is not one of the spellings above names a specific libffi — and *only* that one. If it cannot be loaded, Raku++ reports it and runs on the fallback rather than silently substituting whatever the system ships, because naming a library is a request, not a hint |
 | `RAKUPP_FFI_TRACE=1` | log every crossing to stderr as it happens (see below) |
 
 When reporting a NativeCall bug, `--ffi-info` is the first line to include: the

@@ -104,7 +104,7 @@ The next section is what happens when you do not.
 | **regression tests** | one file per fixed bug |
 | **stress tests** | concurrency and memory, also under TSan and ASan |
 | **compiler agreement** | every deterministic example must produce identical output interpreted, `--exe`, and `--exe -O` |
-| **the second FFI leg** | the whole suite run again with `RAKUPP_FFI=0` |
+| **the libffi fallback** | `t/regression/nativecall-libffi.raku`, which re-runs the libffi-only cases in a child with `RAKUPP_FFI=0` and checks each throws |
 
 Compiler agreement is the one that catches the most. Three execution paths must
 produce **byte-identical** output for the same program; a divergence is a bug in

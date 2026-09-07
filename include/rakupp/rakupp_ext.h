@@ -11,8 +11,8 @@
  * opaque `RkValue` handle.
  *
  * That is not fastidiousness. `sizeof(Value)` went 392 -> 376 -> 344 in a single
- * afternoon of docs/dev/plans/REPRESENTATION-PLAN.md, and phase 1 intends ~204
- * next. Any ABI that exposed the struct would have to freeze that work, or
+ * afternoon of docs/dev/plans/REPRESENTATION-PLAN.md, and 344 -> 208 -> 128
+ * since. Any ABI that exposed the struct would have to freeze that work, or
  * silently miscompile every extension built against an older header. Handles
  * mean the layout stays free to move.
  *

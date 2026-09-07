@@ -28,6 +28,35 @@ build/rakupp --exe -o mandel examples/mandel.raku
 `--bundle` and `--aot` also produce standalone binaries but tree-walk the
 program, so they run at interp speed; `--exe` is the mode measured here.
 
+### What `--exe` does not compile
+
+Two things a reader meets early and this page used not to prepare them for.
+
+**It falls back silently, to bundling.** Four NativeCall shapes are not
+transpiled yet, and `--exe` bundles the whole program with the interpreter
+instead — which is correct, and runs at interpreter speed, so none of the
+numbers below apply to it. It says so on stderr as it happens:
+
+```
+note: a NativeCall sub with an `is rw` out-parameter — not yet natively compiled; bundling the whole program with the interpreter instead.
+note: a NativeCall sub whose library name is an expression — …
+note: a NativeCall sub with a buffer/CArray parameter (needs copy-back) — …
+note: a NativeCall sub with `is native(&sub)` — …
+```
+
+The same four are listed from the NativeCall side in
+[FFI.md](FFI.md#what-happens-when-there-is-no-libffi); this is the same list, not a second one.
+
+**And it can fail to build.** A program that reads a `use`d module's `our`
+variable (`$Mod::thing`) does not survive the C++ compile step: the generated
+code names an identifier it never declared, and you get exit 5 and no binary.
+Interpreted, the same program is fine.
+
+The `examples/` claim above still holds byte for byte. Outside it, the two modes
+are not twins in every corner — a compiled `>>op<<` can answer where both the
+interpreter and Rakudo throw — so a program that must behave identically in both
+should be tested in both.
+
 ## Numbers
 
 User CPU time, best of 3, arm64 build on an M3 (macOS). Measured 2026-07-12.

@@ -394,7 +394,7 @@ struct ClassDecl; // defined in Ast.h; ClassInfo keeps a program-lifetime view f
 // they live behind ONE lazily-allocated shared block instead of inline: a plain
 // Int/Str/Array Value stops carrying — and every copy stops constructing,
 // copying and destroying — a Rat, a Complex, a Range, a shaped-array header and
-// a type annotation it does not have. sizeof(Value) 344 → 208.
+// a type annotation it does not have. sizeof(Value) 344 → 208 → 128.
 //
 // The block is COPY-ON-WRITE: copying a Value shares it (one shared_ptr copy,
 // where these fields used to cost ~148 inline bytes), and every write goes

@@ -706,7 +706,7 @@ bare C++ `long long`? **No.** The generated code keeps one uniform
 representation — everything is a `Value`, at every optimization level. A
 `Value` is a tagged union carrying the int64 inline in its `.i` field, next to
 slots for `Num`/`Complex`/`Str`/`Array`/`Hash`/`BigInt`/`Rat` and their
-`shared_ptr`s; on this build **`sizeof(Value)` is 376 bytes** (versus 8 for a
+`shared_ptr`s; on this build **`sizeof(Value)` is 128 bytes** (versus 8 for a
 `long long`). `my int $s` compiles to `Value v_ss`, not `long long s`.
 
 What the passes remove is per-*operation* overhead, not the box:

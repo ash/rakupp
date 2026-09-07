@@ -1,8 +1,9 @@
 # Native extension modules — the C ABI, and the `Rakupp::` convention
 
-Raku++ walks an AST. It does not JIT, so a tight loop written in Raku costs it
-roughly an order of magnitude more than it costs Rakudo — and some jobs, like
-tokenizing a 300 KB JSON document, are nothing *but* a tight loop.
+Raku++ walks an AST. It does not JIT, so a hot loop written in Raku pays
+interpretation on every node — and some jobs, like tokenizing a 300 KB JSON
+document, are nothing *but* a hot loop. Rewriting that loop in C is the only
+thing that removes the interpretation.
 
 An extension module is the escape hatch: a distribution ships C source alongside
 its Raku, the build step compiles it against this ABI at install time, and the
@@ -12,8 +13,10 @@ a C extension. The point is the same, and so is the most important property —
 should not require a new release of Raku++.
 
 - **Reference implementation:** `JSON::Native` in
-  [github.com/ash/raku-modules](https://github.com/ash/raku-modules) — 5.7 ms on
-  a 278 KB document where the same module's Raku fallback takes ~440 ms.
+  [github.com/ash/raku-modules](https://github.com/ash/raku-modules), whose
+  Raku fallback is hundreds of times slower than its C path. On Raku++ it now
+  reports `json-backend()` as `core` and delegates to the engine's own parser
+  instead, so its published numbers measure that rather than the extension.
 - **The header:** [`include/rakupp/rakupp_ext.h`](../../include/rakupp/rakupp_ext.h), installed to
   `<prefix>/include/rakupp/rakupp_ext.h`.
 
@@ -37,8 +40,8 @@ extension can. If you need to call `curl_easy_perform`, use NativeCall.
 opaque `RkValue` handle.
 
 This is not fastidiousness. `sizeof(Value)` moved 392 → 376 → 344 bytes in a
-single afternoon of ordinary optimisation work, and it is expected to move
-again. An ABI that exposed the struct would have to freeze the interpreter's
+single afternoon of ordinary optimisation work, and 344 → 208 → **128** since.
+It is expected to move again. An ABI that exposed the struct would have to freeze the interpreter's
 internals forever, or silently miscompile every extension built against an older
 header — the failure mode where your module reads a `Str` out of a field that is
 now an `Int` and nothing crashes until much later.
@@ -90,9 +93,12 @@ From a git checkout there is no `<prefix>`; point at the source tree, which has
 the header at `include/rakupp/rakupp_ext.h`:
 
 ```bash
-mkdir -p /tmp/inc/rakupp && cp /path/to/raku++/include/rakupp/rakupp_ext.h /tmp/inc/rakupp/
-cc -shared -fPIC -I/tmp/inc -Wl,-undefined,dynamic_lookup hello.c -o libhello.dylib
+cc -shared -fPIC -I/path/to/raku++/include -Wl,-undefined,dynamic_lookup hello.c -o libhello.dylib
 ```
+
+Point at the checkout's `include/`, not at a copy of the header: a copy stops
+tracking the ABI the moment you upgrade rakupp, and the mismatch shows up as a
+refused load rather than as a build error.
 
 Use it:
 
@@ -104,7 +110,9 @@ say answer();      # 42
 
 `rakupp-ext-load` installs each of the extension's subs into the **calling
 scope**, so inside a module they land exactly where an `our sub` would and that
-module's `is export` carries them onward.
+module's `is export` carries them onward. (On Raku++ today a module's imports
+reach its own importer even without `is export`, so an unexported extension sub
+is callable there too. That is a known bug, not a feature — do not build on it.)
 
 ## The ABI
 
@@ -120,7 +128,8 @@ RkValue rk_int  (RkCtx c, long long v);
 RkValue rk_int_s(RkCtx c, const char* decimal);  /* arbitrary precision */
 RkValue rk_num  (RkCtx c, double v);
 RkValue rk_rat_s(RkCtx c, const char* n, const char* d);   /* a Rat, normalised */
-RkValue rk_str  (RkCtx c, const char* utf8, size_t len);   /* copied */
+RkValue rk_str  (RkCtx c, const char* utf8, size_t len);   /* copied, DECODED as UTF-8 */
+RkValue rk_blob (RkCtx c, const void* bytes, size_t len);  /* a Buf of raw bytes (ABI 3) */
 
 RkValue rk_array(RkCtx c);
 void    rk_push (RkCtx c, RkValue array, RkValue v);
@@ -130,6 +139,12 @@ RkValue rk_hash (RkCtx c);
 void    rk_set  (RkCtx c, RkValue hash, const char* key, size_t keylen, RkValue v);
 void    rk_map  (RkCtx c, RkValue hash);         /* mark it a Map, not a Hash */
 ```
+
+`rk_str` builds a **Str**: the host decodes what you hand it as UTF-8, so
+arbitrary bytes do not survive the trip. The four bytes `d2 4f 00 ff` come back
+as a three-character string — `d2 4f` is decoded into one codepoint — which is
+exactly how a raw digest arrives shorter and wrong. Bytes that must arrive as
+bytes want `rk_blob`, which returns them as a `Buf` unchanged.
 
 `rk_int_s` and `rk_rat_s` take **decimal strings** rather than integers on
 purpose: Raku's `Int` has no width, and a document may carry a 40-digit number
@@ -144,6 +159,8 @@ int         rk_truthy (RkCtx c, RkValue v);
 long long   rk_int_get(RkCtx c, RkValue v);
 double      rk_num_get(RkCtx c, RkValue v);
 const char* rk_str_get(RkCtx c, RkValue v, size_t* len);   /* borrowed */
+const unsigned char* rk_blob_get(RkCtx c, RkValue v, size_t* len);  /* Buf/Blob bytes (ABI 3); NULL otherwise */
+int         rk_is_blob(RkCtx c, RkValue v);                /* ABI 3 */
 
 size_t      rk_elems  (RkCtx c, RkValue v);                /* array or hash */
 RkValue     rk_at_pos (RkCtx c, RkValue array, size_t i);
@@ -152,7 +169,9 @@ RkValue     rk_val_at (RkCtx c, RkValue hash, size_t i);
 ```
 
 `rk_str_get` on a non-`Str` gives you its `Str` coercion, which is usually what a
-serializer wants.
+serializer wants. `rk_type` still answers `RK_OTHER` for a `Buf`, deliberately:
+an ABI-1 serializer written before `rk_blob` existed keeps behaving as it did,
+and `rk_is_blob` is how ABI-3 code asks the question instead.
 
 `RkType` is deliberately coarse — it tells you what you can *do* with a value,
 not where it sits in Raku's type hierarchy. Anything the ABI has no vocabulary
@@ -278,7 +297,11 @@ sub returns; the single value you return is copied out first. So:
   C — not in handles.
 
 Borrowed pointers from `rk_str_get` and `rk_key_at` are valid until the call
-returns, which is long enough to copy out of them and no longer.
+returns, which is long enough to copy out of them and no longer. So is the
+handle from `rk_at_pos`: it points into the array's own storage, and any
+`rk_push` on that array may move it — read it before you grow the array, or copy
+the value out. (`rk_val_at`'s handle is stable, because the hash keeps node
+addresses.)
 
 ## Building
 
@@ -349,7 +372,8 @@ discoverable spelling for code that is Raku++-only by design — but it is a `us
 statement, so writing it makes the file uncompilable on Rakudo. Use the
 symbolic form in anything portable.
 
-Put together:
+Put together — `libraries()` is the finder defined under **Packaging** below,
+and `pure-raku-version()` is your own fallback:
 
 ```raku
 unit module My::Thing;
@@ -420,10 +444,11 @@ sub libraries() {
 }
 ```
 
-**Do not derive the path from `$?FILE`.** Under Raku++ a module's `$?FILE` is the
-*main program's* path, not the module's file, so anything computed from it lands
-somewhere unrelated (recorded in
-[dev/findings/BUGS.md](../dev/findings/BUGS.md)).
+**Do not derive the path from `$?FILE`.** Interpreted, a module's `$?FILE` is
+its own file on both engines. Inside a compiled binary (`--exe`, `--bundle`,
+`--aot`) Raku++ records the *main program's* path for an embedded module, so
+anything computed from it lands somewhere unrelated. `%?RESOURCES` is correct
+everywhere.
 
 ## Naming: the `Rakupp::` convention
 
@@ -447,8 +472,8 @@ Two rules that follow:
 
 `RAKUPP_EXT_ABI` is a single integer, bumped when the header gains capability
 you cannot detect any other way, or when the meaning or order of anything in it
-changes. It is **2** today; 1 was the original surface, and 2 added calling back
-into Raku.
+changes. It is **3** today: 1 was the original surface, 2 added calling back
+into Raku, and 3 added raw bytes in both directions.
 
 The host passes its own value to your `rakupp_ext_init` **and retries downward
 if you return NULL** — so the `host_abi == RAKUPP_EXT_ABI` test extensions were
@@ -467,10 +492,11 @@ rebuilds. Going the other way, an extension that reports a version newer than
 the host is refused outright — it was built against entry points that host does
 not have.
 
-All three failure modes report themselves and none corrupt:
+All four failure modes report themselves and none corrupt:
 
 ```
-'…/thing.dylib' was built for a different extension ABI (host is 1)
+'…/thing.dylib' was built for a different extension ABI (host is 3)
+'…/thing.dylib' reports ABI 99, host is 3 (rebuild it, or upgrade rakupp)
 cannot load extension '/nope.dylib'
 '/bin/ls' is not a rakupp extension (no rakupp_ext_init)
 ```
@@ -485,10 +511,11 @@ Worth knowing before you design around them.
 
 - **There is a per-value cost.** Each value crosses as an arena-allocated handle
   and is then copied into its container — roughly one extra `Value` copy per
-  node. Measured on `JSON::Native`, that is 5.7 ms against 2.7 ms for the same
-  parser compiled into the interpreter. Still 6.6× faster than Rakudo on that
-  workload, but it means an extension is worth it for *bulk* work, not for a
-  routine called once with two integers.
+  node, so an extension is worth it for *bulk* work and not for a routine called
+  once with two integers. The same parser compiled into the interpreter avoids
+  that copy and is correspondingly faster; how much depends on the shape of the
+  data, and any figure quoted here would be a figure for one document on one
+  machine.
 - **Hash iteration is still index-based**, but no longer quadratic: the host
   remembers where it was between `rk_key_at`/`rk_val_at` calls, so a sequential
   walk costs O(1) per key. Jumping about between two hashes, or writing to a
