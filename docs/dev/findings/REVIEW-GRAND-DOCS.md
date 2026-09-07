@@ -8,9 +8,8 @@ across 45 files — and verified each claim against the engine as it is today
 Rakudo 2026.08. Every example was run on both engines; every number was measured
 or counted from the repo; every link and anchor was resolved.
 
-**This document records what the review FOUND. No documentation has been edited
-yet** — the fix batches wait on three decisions, listed at the end. The working
-ledger (every finding, its batch, every verification) is
+**This document records what the review FOUND.** The fixes have since landed —
+see *What was fixed* at the end. The working ledger (every finding, its batch, every verification) is
 `rc-work/review-grand/TRIAGE-2.md`; the lane reports are
 `rc-work/review-grand/findings-2/D1..D9.md`, indexed one line per finding in
 `findings-2/INDEX.md`.
@@ -188,3 +187,45 @@ the extension ABI version, the concurrency default); the book needs a
 `--target=js` chapter (phase 1's JS lane wrote the outline); and the two appendices
 in the reference guide are generated and stale, which is the same generator
 question the book's appendices raise.
+
+## What was fixed (2026-09-07)
+
+All nine lanes are closed. Twelve batches landed, each gated the same way: the
+page's blocks re-run on both engines, the annotation checker, the link and anchor
+checker, and `check-figures` wherever a figure moved.
+
+Three engine bugs the review found were fixed with full gates rather than
+documented as limitations: a compiled program could no longer host a native
+extension (it segfaulted, because the binary stopped exporting the `rk_*` ABI);
+`--exe` emitted a nested `my sub` before the variables it closes over, which is
+why three showcases would not compile; and a `LEAVE` phaser naming a variable
+whose declaration an early `return` skipped threw where Rakudo runs the phaser
+with an undefined slot, which broke `rakupp install --check` on any populated
+store. `rakupp install --gc` was added in the same pass, out of the same finding.
+`rakupp doc :i` printed the usage instead of the entry and now answers.
+
+Three new gates came out of the review:
+
+- `tools/check-doc-links.raku` — every relative link **and heading anchor**
+  (1,294 resolve). GitHub keeps the hyphens of a `--flag` in a slug, so three
+  links in the command-line guide had never worked.
+- `tools/check-figures.raku` gained two rules: the headline written as prose
+  inside a sentence, which is how three of its eight files state it and how none
+  of its rules could reach it; and every percentage against its own numerator,
+  which is how `~90%` came to stand beside a figure that is 91.2%.
+- `tools/bench/precomp-table.raku` regenerates the caching page's two tables from
+  scratch, so the next review re-measures instead of re-guessing.
+- `tools/doc-examples-diff.raku` now caps what it keeps from a child at 64 KB per
+  stream: an example whose own comment says it prints forever used to make the
+  sweep burn a core and orphan its child.
+
+Deferred by decision rather than omission: publishing `Data::Native`; the 6.e
+support matrix, which is generated in the site repository; the four showcase
+projects that are 404 on the site, which is a republish and not an edit; and two
+figures that need repositories not on this box.
+
+Four more engine divergences the review turned up are recorded but not fixed: a
+worker thread's own loop costs about 15% more than the main thread's in parallel
+mode, which caps every published speed-up; `ms//` silently ignores `:sigspace`
+where Rakudo applies it; `/\cA/` is refused inside a regex where Rakudo matches;
+and a user-defined `ARGS-TO-CAPTURE` is ignored where Rakudo honours it.

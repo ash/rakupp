@@ -1453,6 +1453,12 @@ section('the CLI surface (goldens for the v3 parser refactor)');
            'rakupp doc trim: the reference entry, with its verified example');
         ($o, $x) = run-rakupp('doc', '<=>');
         ok($x == 0 && $o.contains('three-way'), 'an operator made of punctuation is looked up as a substring');
+        # An adverb is exactly what a reader asks `doc` about, and a leading
+        # colon used to read as a NAMED argument: `rakupp doc :i` printed the
+        # usage and exited 2 instead of finding the entry.
+        ($o, $x) = run-rakupp('doc', ':i');
+        ok($x == 0 && $o.contains('ignorecase'),
+           'rakupp doc :i finds the adverb rather than printing the usage');
         ($o, $x) = run-rakupp('doc', 'zzzqqq');
         ok($x == 1 && $o.contains('nothing in REFERENCE.md'), 'an unknown symbol says so, exit 1');
         ok(run-rakupp-err('doc')[2] == 2, 'no symbol: usage, exit 2');
