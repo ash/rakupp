@@ -261,8 +261,10 @@ function with a flag, so there is one implementation of the anchoring rules.
 
 ## Where grammars appear in this book again
 
-Grammars are the one construct the native code generator refuses (Chapter 26),
-so a program containing one is compiled by bundling rather than transpiling.
+Grammars were for a long time the one construct the native code generator
+refused, so a program containing one was compiled by bundling rather than
+transpiling. That is no longer so: `src/Codegen.cpp` emits the rule table, and
+`--exe` on a grammar reports `Compiled (native)` (Chapter 26).
 They are also the heaviest exercise in the test suite: the showcase interpreters
 for JavaScript, Perl 5, Python 3 and Lisp are grammar-driven, and each of them,
 when first written, produced a list of genuine bugs in this engine — the

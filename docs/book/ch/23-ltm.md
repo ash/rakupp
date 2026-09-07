@@ -14,20 +14,30 @@ say ("abcd" ~~ / [ ab { } cd ] | abc /).Str;   # abc
 The first branch *could* match four characters, but its declarative prefix ends
 at the code block, at length 2. `abc`'s prefix is 3, so `abc` wins.
 
+That annotation is also the shortest proof of which ranker is running. Ask for
+the old one and the answer changes:
+
+```
+$ rakupp        -e 'say ("abcd" ~~ / [ ab { } cd ] | abc /).Str'   abc
+$ RAKUPP_LTM=0  rakupp -e '…the same program…'                     abcd
+```
+
 Two properties of that example matter and pull in opposite directions. The
 ranking is by **prefix** length, not by greedy match length. And ranking must
 run **no user code** — the `{ }` above must not fire for a branch that loses.
 
 ## Two rankers
 
-**The probe** (the default) runs each branch once for its greedy full-match end,
-snapshotting and rolling back side effects through the `saveState`/`restoreState`
-hooks, and commits branches in longest-end-first order.
+**The probe** (`RAKUPP_LTM=0`, and still the fallback) runs each branch once for
+its greedy full-match end, snapshotting and rolling back side effects through
+the `saveState`/`restoreState` hooks, and commits branches in longest-end-first
+order.
 
 It is cheap and it is wrong twice: it ranks by the wrong length, and it descends
-into user-code paths that true longest-token matching never visits.
+into user-code paths that true longest-token matching never visits. That is why
+it is no longer what runs.
 
-**The NFA** (`RAKUPP_LTM=1`) builds a Thompson automaton per alternation, lazily,
+**The NFA** (the default since v3.0.0) builds a Thompson automaton per alternation, lazily,
 from the compiled node tree, and answers "how far could each branch's
 declarative prefix reach?" in one linear scan of the input. No code execution, no
 backtracking. The commit phase then runs the real engine on the ranked branches,
@@ -62,7 +72,7 @@ ranked branch.
 
 ## The gap-aware hybrid contract
 
-`RAKUPP_LTM=1` must never be *less* correct than the default. So:
+The NFA must never be *less* correct than the probe it replaced. So:
 
 > The NFA decides an alternation only when **every** branch's prefix ended for a
 > spec reason. If any branch hit a model gap, that alternation falls back to the
@@ -252,29 +262,40 @@ would otherwise have been guessed wrong:
 
 | Variable | Effect |
 |---|---|
-| `RAKUPP_LTM=1` | use the NFA ranker where it is gap-free |
+| `RAKUPP_LTM=0` | fall back to the legacy probe ranker everywhere |
 | `RAKUPP_LTM_DEBUG=1` | rank both ways and print disagreements |
 | `RAKUPP_LTM_RANKDUMP=1` | print each NFA-decided alternation's ranking |
 
-The debug flag works *without* the feature flag, and it was the phase-1 harness:
-before anything consulted the automaton's answer, the probe path computed both
-rankings and printed every disagreement with its pattern context, for
-classification against Rakudo. It is still the fastest way to classify a
-suspected ranking bug.
+`RANKDUMP` needs no other flag, which makes it the one-command answer to "which
+ranker am I getting?" — if it prints, the automaton decided.
 
-Same binary, same machine, full Roast:
+`RAKUPP_LTM_DEBUG` was the phase-1 harness: before anything consulted the
+automaton's answer, the probe path computed both rankings and printed every
+disagreement with its pattern context, for classification against Rakudo. Its
+block still sits in that fall-through, *after* the NFA branch, so on today's
+default it only fires for alternations that fall back. Pair it with
+`RAKUPP_LTM=0` to get the both-ways comparison back.
 
-| setting | assertions | `longest-alternative.t` | `proto-token-ltm.t` |
+Same binary, same machine, full Roast, measured while the flip was being decided
+(v3.0.0; the engine's standing has moved a long way since, so read these as the
+comparison they were, not as today's count):
+
+| ranker | assertions | `longest-alternative.t` | `proto-token-ltm.t` |
 |---|---|---|---|
-| default (probe) | 197,116 | 45/62 | 10/10 |
-| `RAKUPP_LTM=1` | 197,117 | 47/62 | 10/10 |
+| probe (`RAKUPP_LTM=0`) | 197,116 | 45/62 | 10/10 |
+| NFA (now the default) | 197,117 | 47/62 | 10/10 |
 
-The flag's failure set on the alternation file is a strict subset of the
-default's. A grammar benchmark — twenty compiles of a JSON grammar corpus — runs
+The NFA's failure set on the alternation file is a strict subset of the
+probe's, which is what made the flip safe. A grammar benchmark — twenty compiles of a JSON grammar corpus — runs
 in 28 to 34 milliseconds in both settings, so automaton construction is fully
 amortised by the node cache. The twenty-eight grammar showcase runs are
 byte-identical across settings.
 
-The plan keeps the flag available for one release after the default changes,
-which is the general policy for a switch that changes behaviour rather than
-speed.
+The default changed in v3.0.0 and `RAKUPP_LTM=0` is kept for one release after
+it, which is the general policy for a switch that changes behaviour rather than
+speed: an escape hatch and a bisection tool, then the probe path retires.
+
+Two details that live in the resolver rather than the automaton: `namedRule` and
+`ltmResolve` are what a protoregex dispatch goes through, and a lexically scoped
+`<ws>` is resolved at the call rather than the declaration, so a grammar that
+redefines it gets its own.
