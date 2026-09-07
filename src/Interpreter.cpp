@@ -4516,9 +4516,32 @@ int Interpreter::run(Program& prog) {
             if (from >= endPhasers_.size()) return std::vector<EndPhaser>{};
             return std::vector<EndPhaser>(endPhasers_.begin() + from, endPhasers_.end());
         };
+        // What an END THREW is reported rather than lost. Rakudo runs every END
+        // whatever the ones before it did — a dying phaser does not stop the
+        // chain — and prints the exceptions together at the end, in the order
+        // they were thrown. Measured against Rakudo 2026.07, and three things
+        // about that report are deliberate: it goes to STDERR only, so nothing
+        // reading stdout moves; it does NOT touch the exit status, which stays
+        // whatever the mainline (or an `exit` in a phaser) made it, 0 included;
+        // and the banner is plural even for one exception.
+        std::vector<std::string> endErrors;
         auto runOne = [&](const EndPhaser& e) {
             try { runEndBody(e); }
-            catch (ExitEx& ex) { code = ex.code; }  // `exit` in an END block sets the exit status
+            catch (ExitEx& ex) {
+                code = ex.code;      // `exit` in an END block sets the exit status
+                // …and DISCARDS what the ENDs before it threw. Measured, not
+                // assumed: `END exit 3; END die "C"` runs C first and Rakudo
+                // reports nothing, while `END die "A"; END exit 3` runs the exit
+                // first and still reports A. This is the one place where copying
+                // Rakudo LOSES a diagnostic rather than gaining one; it is copied
+                // anyway, because a report that appears on one engine and not the
+                // other is worse than one that is consistently absent.
+                endErrors.clear();
+            }
+            catch (RakuError& err) { endErrors.push_back(renderEndError(err)); }
+            // Control flow (a `return`/`last` with nothing to leave) is still
+            // swallowed: it is not an exception a program can catch, and
+            // reporting it as one would invent a diagnostic Rakudo never gives.
             catch (...) {}
         };
         // Deferred ENDs (modules, EVAL) first, newest registration first — then
@@ -4538,6 +4561,10 @@ int Interpreter::run(Program& prog) {
             seen += more.size();
             bySource(more);
             for (size_t i = more.size(); i-- > 0; ) runOne(more[i]);
+        }
+        if (!endErrors.empty()) {
+            std::cerr << "Some exceptions were thrown in END blocks:\n";
+            for (auto& s2 : endErrors) std::cerr << s2;
         }
         // A nested run() (an installed `bin/` script) hands the process back to
         // its caller: take this unit's registrations off so the outer run does
@@ -7198,11 +7225,34 @@ void Interpreter::captureBodyEnds(Callable& c) {
     }
     if (c.endsScan.get() == 1) for (Block* b : *c.endsWithin) captureEndScope(b);
 }
+// One entry of the report an END's exception earns: the type and message on the
+// first line, its frames indented under it. Rakudo's shape, because that report
+// is what a reader greps for and half of it existing in a different layout helps
+// nobody. No source excerpt and no `(X::Type)` line — the type is already on
+// line 1, and the excerpt belongs to the uncaught printer.
+std::string Interpreter::renderEndError(const RakuError& e) {
+    std::string tn = "X::AdHoc";
+    if (e.payload.t == VT::Object && e.payload.obj() && e.payload.obj()->cls &&
+        !e.payload.obj()->cls->name.empty())
+        tn = e.payload.obj()->cls->name;
+    std::string out = "  " + tn + ": " + e.message + "\n";
+    if (e.bt) {
+        BtStyle st; st.excerpt = false; st.typeLine = false; st.colour = false;
+        std::istringstream in(renderFrames(*e.bt, st));
+        std::string l;
+        while (std::getline(in, l)) if (!l.empty()) out += "    " + l + "\n"; // 2 + 4 = Rakudo's six
+    }
+    return out + "\n";
+}
 // One END phaser's body, in the scope it captured.
 void Interpreter::runEndBody(const EndPhaser& e) {
     // stmtForm (`END rm-rf($dir);`) runs IN that scope, as `INIT my $x = …`
     // declares in the enclosing one; a braced END gets its own scope under it.
-    if (e.entered && e.blk->stmtForm) { execBlock(e.blk, e.env); return; }
+    // SINK: an END's value goes nowhere, so a Failure that is the body's last
+    // expression detonates here rather than being dropped undetonated —
+    // `END { $dir.IO.spurt("x") }` on a directory that has been removed is the
+    // whole shape issue #71 was reported for, and it said nothing at all.
+    if (e.entered && e.blk->stmtForm) { execBlock(e.blk, e.env, /*sink=*/true); return; }
     auto sc = std::make_shared<Env>(); sc->parent = e.env;
     // NEVER ENTERED: the block holding this phaser did not run, so the
     // containers Rakudo's compile-time pad would have carried never came to
@@ -7212,7 +7262,7 @@ void Interpreter::runEndBody(const EndPhaser& e) {
     // unresolved name reads as Any) rather than dying with X::Undeclared and
     // being swallowed whole by the catch-all every END body runs under.
     if (!e.entered) sc->strictPragma = 1;
-    execBlock(e.blk, sc);
+    execBlock(e.blk, sc, /*sink=*/true);
 }
 // A unit loaded by another hangs off the loader's key at the position of the
 // statement that loaded it: after the loader's ENDs written above that `use`,

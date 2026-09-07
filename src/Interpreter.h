@@ -2057,6 +2057,7 @@ private:
     void captureEndScope(Block* b);  // reaching/entering a registered END: remember the scope
     void captureBodyEnds(Callable& c);  // …every END inside a routine body, on the call
     void runEndBody(const EndPhaser& e);   // one END phaser, in the scope it captured
+    std::string renderEndError(const RakuError& e);  // one entry of the END-block report
     const Value* envLookup(const std::string& name); // %*ENV<name>, or null
     bool envFlag(const std::string& name); // truthiness of %*ENV<name>
     std::string envStr(const std::string& name); // %*ENV<name> as a string

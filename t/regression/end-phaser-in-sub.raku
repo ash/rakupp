@@ -131,6 +131,59 @@ check 'an EVAL END outranks a mainline END written after it',
     $dir.add('lib/EndAtUse.rakumod').unlink;
 }
 
+# --- what an END THREW is reported, not lost (Rakudo's shape, all measured) ---
+sub err(Str $prog --> Str) {
+    my $r = run($*EXECUTABLE.absolute, '-e', $prog, :out, :err);
+    my $e = $r.err.slurp(:close);
+    $r.out.slurp(:close);
+    $e
+}
+sub reported(Str $prog) { err($prog).match(/'X::' \w+ '::'? \w* ': ' \N+/, :g)».Str.join(',') }
+
+# 16. the report exists at all, and the banner is plural even for ONE exception
+{
+    my $e = err('say "m"; END die "only-one"');
+    @fail.push("no END report: '$e'") unless $e.contains('Some exceptions were thrown in END blocks:');
+    @fail.push("END report lost the message: '$e'") unless $e.contains('X::AdHoc: only-one');
+}
+
+# 17. a dying END does NOT stop the ones after it, and the report is in THROW
+#     order — which is run order, i.e. reverse source order
+{
+    my $r = run($*EXECUTABLE.absolute, '-e',
+                'say "m"; END say "A-last"; END die "B"; END say "C-first"', :out, :err);
+    my $o = $r.out.slurp(:close); my $e = $r.err.slurp(:close);
+    @fail.push("a dying END stopped the chain: '$o'") unless $o eq "m\nC-first\nA-last\n";
+    @fail.push("the survivor was not reported") unless $e.contains('X::AdHoc: B');
+}
+@fail.push('the report is not in throw order')
+    unless reported('END die "A"; END die "C"').starts-with('X::AdHoc: C');
+
+# 18. exit status is NOT touched by a failing END — 0 here, with two of them
+{
+    my $r = run($*EXECUTABLE.absolute, '-e', 'END die "A"; END die "C"', :out, :err);
+    $r.out.slurp(:close); $r.err.slurp(:close);
+    @fail.push("a failing END changed the exit status: {$r.exitcode}") unless $r.exitcode == 0;
+}
+
+# 19. …and an `exit` in the chain DISCARDS what the ENDs before it threw, while
+#     one thrown after it is still reported. Rakudo's rule, measured both ways.
+@fail.push('an exit did not discard the earlier report')
+    unless reported('END exit 3; END die "C"') eq '';
+@fail.push('an exit swallowed a LATER exception too')
+    unless reported('END die "A"; END exit 3').contains('X::AdHoc: A');
+
+# 20. an END's value is SINK, so a Failure that is its last expression detonates
+#     and is reported — the shape issue #71 was reported for: a cleanup END
+#     writing into a directory that is already gone said nothing at all
+@fail.push('a Failure in an END went unreported')
+    unless err('my $d = "/tmp/rakupp-gone-{$*PID}"; END { $d.IO.add("f").spurt("x") }')
+           .contains('Failed to open file');
+
+# 21. a clean END stays silent — no banner when nothing threw
+@fail.push('a clean END printed a report')
+    if err('say "m"; END say "bye"').contains('END blocks');
+
 if @fail {
     note "FAIL: $_" for @fail;
     die "end-phaser-in-sub: {+@fail} failure(s)";
