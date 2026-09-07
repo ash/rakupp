@@ -1,8 +1,8 @@
 # Examples
 
-Self-contained Raku programs that run under `rakupp`. Each is a single file of
-roughly the same size, with a header comment explaining what it does and which
-language features it leans on. None of them need arguments, a network
+Self-contained Raku programs that run under `rakupp`. Each is a single file — a
+dozen lines to a hundred — with a header comment explaining what it does and
+which language features it leans on. None of them need arguments, a network
 connection, or any setup — run one with:
 
 ```sh
@@ -10,7 +10,13 @@ connection, or any setup — run one with:
 ```
 
 (from the repository root, after building — see the top-level [README](../README.md)).
-Every output shown below is what the program actually prints.
+Every output shown below is what the program actually prints; a `...` line
+marks a cut, and `life.raku` seeds itself from `rand`, so its numbers change
+every run.
+
+[`lint/`](lint) is a different kind of gallery beside these: twelve programs
+written to trip one `rakupp --lint` diagnostic each — see
+[LINT.md](../docs/guide/LINT.md).
 
 Every program here is also a page at
 [raku.online/examples](https://raku.online/examples/) — the same source in a
@@ -69,14 +75,15 @@ automaton — Wolfram's Rule 90. Each cell in the next row is the exclusive-or
 cells trace out the Sierpinski gasket (equivalently, Pascal's triangle mod 2).
 
 ```
-               #
-              # #
-             #   #
-            # # # #
-           #       #
-          # #     # #
-         #   #   #   #
-        # # # # # # # #
+                               #
+                              # #
+                             #   #
+                            # # # #
+                           #       #
+                          # #     # #
+                         #   #   #   #
+                        # # # # # # # #
+...
 ```
 
 ### `life.raku`
@@ -221,17 +228,19 @@ directly, and redraws the triangle keeping only the odd entries, which trace out
 the Sierpinski fractal.
 
 ```
-                   1
-                 1   1
-               1   2   1
-             1   3   3   1
-           1   4   6   4   1
+Pascal's triangle:
+                         1
+                       1   1
+                     1   2   1
+                   1   3   3   1
+                 1   4   6   4   1
 ...
 Odd entries only (the Sierpinski triangle):
-    #
-   # #
-  #   #
- # # # #
+           #
+          # #
+         #   #
+        # # # #
+...
 ```
 
 ### `matrix.raku`

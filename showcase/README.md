@@ -26,10 +26,16 @@ README below.
 | [**eclipse/**](eclipse) | Transpiling — one engine, a terminal and a browser, through `--target=js` | predicts solar and lunar eclipses; builds an interactive textbook |
 | [**fourier/**](fourier) | Numerics — complex arithmetic and a recursive FFT, checked against exact identities | Fourier series and transforms; an oscilloscope in characters |
 | [**orbits/**](orbits) | Numerics — iteration to convergence, checked against the almanacs | where the planets are, and what a transfer to one costs |
+| [**web/**](web) | In the browser — the pure showcases compiled to WebAssembly | three apps that open from a `file://` URL, no server |
 
 All paths below are from the repository root, after building `rakupp` (see the
-top-level [README](../README.md)). Every program also compiles to a standalone
-native binary with `rakupp --exe`.
+top-level [README](../README.md)). Every program also builds a standalone
+binary with `rakupp --exe`, and eleven of the twenty-one entry points compile
+to native code. Where a program uses
+something the native path does not cover yet — a NativeCall shape, a GUI
+binding — `--exe` falls back to bundling the interpreter with the program and
+says so on stderr; the result still runs anywhere, at interpreter speed. See
+[NATIVE.md](../docs/guide/NATIVE.md).
 
 ## raku — the self-hosting story
 
@@ -245,7 +251,7 @@ right `Content-Type` (text and binary), `index.html` or an auto directory listin
 `HEAD`, `301`/`403`/`404`, one thread per connection.
 
 ```sh
-build/rakupp showcase/rakus/rakus.raku              # serves ./public on :8080
+build/rakupp showcase/rakus/rakus.raku              # serves the bundled public/ on :8080
 build/rakupp showcase/rakus/rakus.raku 9000 ~/site  # choose the port and root
 ```
 
@@ -337,7 +343,9 @@ paths are exercised on every run:
 RAKUPP=build/rakupp sh showcase/modinfo/compare.sh
 ```
 
-runs all thirteen commands under Rakudo and under Raku++ and diffs STDOUT —
+runs fifteen invocations covering nine of modinfo's ten commands under Rakudo
+and under Raku++ and diffs STDOUT (`about` is left out on purpose: it reports
+the engine it is running under, so the two runs are supposed to differ) —
 byte-identical, and byte-identical again over the 61 real distributions of the
 module battery. See [`modinfo/README.md`](modinfo/README.md) for the module map
 and what each fixture is for.
@@ -529,7 +537,7 @@ six steps exhaust a double even at e = 0.95. `--kepler` prints the error after
 each step so the digit-doubling is visible, and the book puts it on a log
 scale where it becomes a staircase.
 
-`reference/known.tsv` holds thirty values from the almanacs — the sidereal and
+`reference/known.tsv` holds twenty-seven values from the almanacs — the sidereal and
 synodic periods, ten opposition dates, the textbook Hohmann figures, escape
 and low-orbit speeds — none of them produced by this engine. All ten opposition
 dates land on the day.
