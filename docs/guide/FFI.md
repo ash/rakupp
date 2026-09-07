@@ -103,8 +103,10 @@ so a program that only hits the path on an unusual branch will only fail there.
 If your program needs any of the four, treat libffi as a requirement and check
 `rakupp --ffi-info` in your install steps.
 
-`RAKUPP_FFI=0` forces this path on purpose, which is how the test suite
-exercises it: the whole suite is run twice, once each way.
+`RAKUPP_FFI=0` forces this path on purpose, which is how to exercise it
+locally: `RAKUPP_FFI=0 rakupp t/run.raku` runs the suite on the fallback. CI
+runs the suite once, with libffi as it finds it, so the fallback is not covered
+there — worth knowing if you are changing the marshalling.
 
 ---
 
@@ -401,7 +403,7 @@ ignored with a warning on stderr, rather than run anyway.
 | | |
 |---|---|
 | `rakupp --ffi-info` | which backend is live, or why none is |
-| `RAKUPP_FFI=0` | force the no-libffi fallback (used by the second CI leg) |
+| `RAKUPP_FFI=0` | force the no-libffi fallback |
 | `RAKUPP_FFI=/path/to/lib` | use a specific libffi — and *only* that one. If it cannot be loaded, Raku++ reports it and runs on the fallback rather than silently substituting whatever the system ships, because naming a library is a request, not a hint |
 | `RAKUPP_FFI_TRACE=1` | log every crossing to stderr as it happens (see below) |
 

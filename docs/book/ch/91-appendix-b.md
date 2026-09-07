@@ -66,7 +66,7 @@ Flags are position-independent, and the perl-compatible one-liner family
 
 | Variable | Effect |
 |---|---|
-| `RAKUPP_FFI=0` | force the no-libffi fallback path — the second CI leg |
+| `RAKUPP_FFI=0` | force the no-libffi fallback path |
 | `RAKUPP_FFI=/path` | use *only* that library; if it fails to load, report and fall back rather than silently substituting the system copy |
 | `RAKUPP_FFI_TRACE=1` | log every crossing, with marshalled arguments and raw returns |
 

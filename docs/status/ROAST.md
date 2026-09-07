@@ -31,8 +31,8 @@ gauge of how much of the language actually works).
 The exact definition of every figure below — and how the harness computes it — is
 in [COUNTING.md](COUNTING.md); that file is authoritative if anything here drifts.
 
-**Headline: ~90% of all declared Roast tests pass** (199,980 / 219,403); on the
-stricter file bar, ~44% of files fully pass (651 / 1,464). The per-file breakdown
+**Headline: ~91% of all declared Roast tests pass** (199,980 / 219,294); on the
+stricter file bar, ~45% of files fully pass (660 / 1,464). The per-file breakdown
 comes first below, then the per-test figures. That assertion figure is the
 **shielded** one, as every implementation's is: it counts `ok … # skip` and
 `not ok … # todo` lines as passes. Net of both it is 90.5% rather than 91.1% —
@@ -47,10 +47,10 @@ Full suite — **1,464 files**:
 
 | Files | Count | Share of suite |
 |---|---:|---:|
-| **Fully passing** | **651** | **44%** |
-| Partially passing | 683 | 47% |
+| **Fully passing** | **660** | **45%** |
+| Partially passing | 672 | 46% |
 | No TAP output | 117 | 8% |
-| Timeouts | 13 | 0.9% |
+| Timeouts | 15 | 1.0% |
 
 (Both files that once wedged the harness with unkillable children are measured
 in-run now: `S04-statements/try.t` scores as an ordinary partial, and
@@ -65,7 +65,7 @@ territory, not "passing" and not "failing."
 ### The assertion count
 
 Measured per individual test rather than per file, the honest figure is
-**199,980 of ~219,403 declared tests — 91.1%**. "Declared" means every test the
+**199,980 of ~219,294 declared tests — 91.2%**. "Declared" means every test the
 suite intends to run: for files that ran, their emitted plan; for files that
 abort before emitting any TAP, the `plan N` count read straight from their
 source. Counting those aborting files (all their tests failing) is what keeps the
@@ -74,9 +74,9 @@ three denominators, widest-to-strictest:
 
 | Denominator | Ratio | What it includes |
 |---|---|---|
-| tests that **ran** | 199,980 / 206,378 (~97%) | only assertions files actually emitted — flatters, ignores aborts |
-| tests **planned** (files that emitted a plan) | 199,980 / 216,356 (~92%) | + tests lost when a file aborts mid-plan |
-| **all declared** tests | 199,980 / 219,403 (91.1%) | + tests in parse-error files, recovered from source. This denominator grows as parse fixes land — files that died before announcing a plan now declare their real (often larger, dynamic) plans, so the percentage can dip while absolute passes rise |
+| tests that **ran** | 199,980 / 206,123 (~97%) | only assertions files actually emitted — flatters, ignores aborts |
+| tests **planned** (files that emitted a plan) | 199,980 / 216,223 (~92%) | + tests lost when a file aborts mid-plan |
+| **all declared** tests | 199,980 / 219,294 (91.2%) | + tests in parse-error files, recovered from source. This denominator grows as parse fixes land — files that died before announcing a plan now declare their real (often larger, dynamic) plans, so the percentage can dip while absolute passes rise |
 
 The 90% is the per-test analog of the ~43% file coverage. Three notes on scope:
 
@@ -166,7 +166,7 @@ timeout, and the same counting rules:
 | | files fully passing | assertions, all declared |
 |---|---:|---:|
 | **mutsu** 0.23.0 | **1,419 / 1,464 (96.9%)** | **216,807 / 218,173 (99.4%)** |
-| **Raku++** 3.25.0 | 651 / 1,464 (44.5%) | 199,980 / 219,403 (91.1%) |
+| **Raku++** 3.25.0 | 660 / 1,464 (45.1%) | 199,980 / 219,294 (91.2%) |
 
 Both runs are on the **fudged bar** — Raku++ honours Roast's `#?rakudo`
 directives unconditionally, and mutsu's equivalent was switched on with
@@ -217,6 +217,17 @@ substring: `build/rakupp tools/run-roast.raku S05`.
 the GIL while a worker waits on its child process, so the children genuinely
 overlap. Output and totals are identical to a sequential run — results are
 tallied and printed in file order regardless of N.
+
+_Snapshot 2026-09-07, main at `35c9691` (`--workers=4`, five passes): 660 /
+1,464 files fully passing (~45% coverage); 672 partial, 117 no-TAP, 15 timeout.
+COUNTING's rule is to quote the repeating profile, and the first three passes did
+not repeat — the band was 661 / 660 / 658 / 662 / 660 with 13 / 14 / 22 / 12 / 15
+timing out, on a box carrying another session's build load. 660 repeats, so every
+figure above is from that pass; the union of the five is 662 files. Not a release
+run: the standing figures were re-measured after the Grand Review's phase-1 fixes
+(REVIEW-GRAND.md) and the three engine bugs its phase 2 turned up. The
+documentation-example and ecosystem figures in README's table were NOT
+re-measured here and still carry their v3.25.0 values._
 
 _Snapshot 2026-09-03, the v3.25.0 release run (`--workers=4`, three passes):
 651 / 1,464 files fully passing (~44% coverage); 683 partial, 117 no-TAP,

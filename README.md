@@ -72,12 +72,12 @@ all because a dependency failed first. The plans are in
 
 | | v3.25.0 | at v2.0.0 |
 |---|---:|---:|
-| Roast, per individual test — of what the suite declares‡ | **199,980 of ~219,403 (91%)** | 197,090 of ~203,500 (97%) |
-| Roast, all-or-nothing — files fully passing, of 1,464 | **651 (44%)** | 594 |
+| Roast, per individual test — of what the suite declares‡ | **199,980 of ~219,294 (91%)** | 197,090 of ~203,500 (97%) |
+| Roast, all-or-nothing — files fully passing, of 1,464 | **660 (45%)** | 594 |
 | Official documentation examples byte-identical on both engines | **953** | 952 |
 | Of the Raku ecosystem's [2,530 distributions](https://raku.online/modules/ecosystem/), passing their own test suites | **824** | — |
-| Local regression suite | **637** | 312 |
-| `say "Hello"` compiled with `--exe --slim` | **6,455,800 B** | 9,830,680 B (no `--slim`) |
+| Local regression suite | **778** | 312 |
+| `say "Hello"` compiled with `--exe --slim` | **6,795,224 B** | 9,830,680 B (no `--slim`) |
 
 ‡ Counted against each file's declared `plan N`, so a file that aborts is
 charged for every test it failed to run; on the all-or-nothing bar a file
