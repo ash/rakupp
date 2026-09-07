@@ -6815,11 +6815,21 @@ Value Interpreter::evalString(const std::string& src, bool mainlinePH, bool* inc
             deferredEnds_.push_back({static_cast<Block*>(s.get()), tctx_.cur});
             continue;
         }
-        // loop control with no loop in the EVAL is a CATCHABLE error, not a crash
+        // Loop control inside the EVAL, with a loop OUTSIDE it, belongs to that
+        // loop: `for ^3 { EVAL q[last] }` ends the for — as Rakudo does, and as
+        // `EVAL q[return …]` already returns from an enclosing routine below.
+        // With no loop anywhere on this thread's stack it stays a CATCHABLE
+        // error, not a crash. Only a USER-level EVAL (what mainlinePH already
+        // marks) hands the word onward: an internal reparse — a regex `{ … }`
+        // block, an interpolated `$( … )` — still absorbs it, because the
+        // enclosing loop cannot see through the regex engine yet (the ledger
+        // entry in dev/findings/SPEC-DIVERGENCES.md, and regexBlockErrorStaysQuiet
+        // reads this very message to keep such a block quiet).
+        const bool ownedOutside = mainlinePH && tctx_.curLoopFrame != ExecContext::kNoFrame;
         try { last = exec(s.get()); }
-        catch (RedoEx&) { throw RakuError{Value::typeObj("X::ControlFlow"), "redo without a supporting loop construct"}; }
-        catch (NextEx&) { throw RakuError{Value::typeObj("X::ControlFlow"), "next without a supporting loop construct"}; }
-        catch (LastEx&) { throw RakuError{Value::typeObj("X::ControlFlow"), "last without a supporting loop construct"}; }
+        catch (RedoEx&) { if (ownedOutside) throw; throw RakuError{Value::typeObj("X::ControlFlow"), "redo without a supporting loop construct"}; }
+        catch (NextEx&) { if (ownedOutside) throw; throw RakuError{Value::typeObj("X::ControlFlow"), "next without a supporting loop construct"}; }
+        catch (LastEx&) { if (ownedOutside) throw; throw RakuError{Value::typeObj("X::ControlFlow"), "last without a supporting loop construct"}; }
         catch (ReturnEx&) {
             // with an enclosing routine, `return` in the EVAL returns from IT;
             // top-level it is the spec'd control-flow error
@@ -6836,6 +6846,15 @@ Value Interpreter::evalString(const std::string& src, bool mainlinePH, bool* inc
         if (tctx_.givenCtl) return last;  // enclosing given/loop consumes the flag
         if (tctx_.loopCtl) {
             int c = tctx_.loopCtl; tctx_.loopCtl = 0;
+            // An outside loop gets the EXCEPTION form, never the flag. The flag is
+            // only safe where the control word IS the statement; an EVAL is an
+            // expression, so `my $x = EVAL q[last] + 1` would finish the statement
+            // first — the operand trap already documented at evalUnary.
+            if (ownedOutside) {
+                if (c == 1) throw NextEx{};
+                if (c == 2) throw LastEx{};
+                throw RedoEx{};
+            }
             throw RakuError{Value::typeObj("X::ControlFlow"),
                             std::string(c == 1 ? "next" : c == 2 ? "last" : "redo") +
                             " without a supporting loop construct"};

@@ -144,3 +144,48 @@ Not a regression: v3.23.0 answers `-2.011` too. Found while writing
 at the top of the file for exactly this reason — Roast's
 `S28-named-variables/init-instant.t` never sees it because its `INIT` is on
 line 7 with nothing slow above it.
+
+## Loop control inside a regex `{ … }` block cannot reach the enclosing loop (2026-09-07)
+
+A `{ … }` block in a regex is an internal reparse: it runs through `evalString`
+with `mainlinePH` false, so a `last` in it becomes an X::ControlFlow error, and
+`regexBlockErrorStaysQuiet` (Interpreter.cpp) then swallows that error on
+purpose so the match can continue. The enclosing loop never learns anything
+happened.
+
+```raku
+my $n = 0;
+for ^3 { "abc" ~~ / a { last } /; $n++ }
+say $n;      # rakupp 3 · Rakudo 0
+```
+
+The EVAL half of the same divergence was fixed on 2026-09-06 — a user-level
+`EVAL q[last]` now hands the word to an enclosing loop instead of erroring
+(`t/regression/eval-loop-control.raku`) — and the fix was deliberately scoped to
+exclude this path. The gate for changing it is the CPS regex engine, not
+`evalString`: letting a `LastEx` unwind out of a regex block means unwinding
+through the matcher's cursor and memo state mid-match, and nothing today shows
+that path is exception-safe — every exit from it returns. That is the work this
+entry is holding, and `regexBlockErrorStaysQuiet` matches the exact message
+`evalString` produces, so both halves of the decision sit in one place.
+
+### The same word inside a `--exe` binary (2026-09-07)
+
+The EVAL fix is interpreter-only, and not because of `evalString`: a compiled
+program never arms `curLoopFrame`, because the codegen emits native C++ loops
+rather than going through the interpreter's loop runner. So `ownedOutside` reads
+false and the error comes back.
+
+```raku
+my $n = 0;
+for ^3 { EVAL q[last]; $n++ }
+say "n=$n";     # interpreted n=0 · --exe: dies "last without a supporting loop construct"
+```
+
+What is already in place: a compiled loop **does** catch a `LastEx` thrown from
+a called routine — `sub g() { last }; for ^3 { g(); $n++ }` answers `n=0` both
+interpreted and compiled — so the generated loop has the handler, and the one
+missing piece is arming (and restoring) `curLoopFrame` around an emitted loop
+body. That would reach only interpreter-executed code inside the loop, which is
+precisely EVAL and regex blocks: the codegen turns a statically visible
+`next`/`last` into C++ `break`/`continue` and never consults the sentinel.
