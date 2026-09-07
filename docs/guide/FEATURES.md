@@ -13,11 +13,15 @@ Roast standing: measured per individual test, **~91% of all declared tests pass*
 Raku++ **defaults to Raku 6.d**, matching Rakudo. The version pragma selects a
 revision, and `$*RAKU.version` reflects it:
 
-```raku
-say $*RAKU.version;                       # 6.d   (the default)
-use v6.e.PREVIEW;  say $*RAKU.version;    # 6.e
-use v6.c;          say $*RAKU.version;    # 6.c
+```sh
+rakupp -e 'say $*RAKU.version'                     # v6.d — the default
+rakupp -e 'use v6.e.PREVIEW; say $*RAKU.version'   # v6.e
+rakupp -e 'use v6.c;         say $*RAKU.version'   # v6.c
 ```
+
+Three separate runs, deliberately: a version pragma is file-scoped, so all three
+in one file would give that file one version — the last one — and Rakudo refuses
+such a file outright (`Too late to switch language version`).
 
 **6.e is implemented and gated.** A program without the pragma gets 6.d
 behaviour, including for everything 6.e changed: `snip`, `snitch`, `nano`,
@@ -51,7 +55,6 @@ same-named enclosing package, which Rakudo's own warning calls legacy.
 - Unicode string quotes `‘’ “” ｢｣`, qw `<…>` and guillemet `«…»`
 - Escapes `\n \t \x[…] \o[…]` and `\c[NAME]` (Unicode character names)
 - Unicode identifiers (combining marks, Latin-Extended, Greek, fullwidth, letterlike)
-- **Gaps:** Unicode digit literals (`໑໐`)
 
 ## Operators
 - Arithmetic `+ - * / % %% div mod ** gcd lcm`; prefix `- + ~ ? !`
@@ -69,7 +72,7 @@ same-named enclosing package, which Rakudo's own warning calls legacy.
 - Meta-operators over user-defined operators: `[myop]` reduce, `>>myop<<` hyper, `Z§`/`X§` zip/cross, `$x myop= y` meta-assignment
 - Whatever-currying: infix `* + 1`, prefix `~* -* +*`, postcircumfix `*.<key>` `*[i]`, subscript `@a[*-1]` `@a[*]`
 - Precedence/associativity traits on custom operators: `is tighter(&infix:<+>)` / `is looser(…)` / `is equiv(…)` / `is assoc<left|right|non>`
-- **Gaps:** other negated metaops; word-form of a user op in a meta-op (`Zpl`)
+- **Gaps:** the word form of a user-defined operator inside a meta-operator (`Zpl`)
 
 ## Control Flow
 - `if/elsif/else`, `unless`, `while/until`, `for`, C-style `loop`, `repeat`
@@ -77,7 +80,6 @@ same-named enclosing package, which Rakudo's own warning calls legacy.
 - Statement modifiers (`if unless while until for given when with`), including chained (`X if A for B`)
 - `last/next/redo` (incl. labeled: `LABEL: for … { last LABEL }`), `gather/take` (lazy — an infinite `gather { loop { take … } }` yields on demand; `take-rw` takes the writable container, so mutating the gathered sequence writes back to where the values came from), `do`
 - `FIRST` loop phaser (runs once, before the first iteration; `last` inside it breaks the loop)
-- **Gaps:** `NEXT`/`LAST` loop phaser ordering vs `LEAVE`
 
 ## Subs, Signatures & Dispatch
 - `sub`, `multi`/`proto` dispatch (by type, arity, `where`, literal, `:D`/`:U` smileys)
@@ -87,7 +89,7 @@ same-named enclosing package, which Rakudo's own warning calls legacy.
 - Coercion-type containers: `my Int(Str) $n = '42'` coerces the value to the target type
 - Anonymous subs, closures, placeholder params `$^a`, sub/block as argument
 - Redispatch: `callsame`/`callwith`/`nextsame`/`nextwith`/`samewith`; routine `.wrap`/`.unwrap` (wrapper `callsame`s to the original)
-- **Gaps:** `is rw` inside a sub-signature, `-> [$a,$b]` pointy destructure
+- **Gaps:** `is rw` inside a sub-signature — `sub f(@a [$x is rw, $y])` does not write through
 
 ## Objects, Classes, Roles
 - `class`/`role`/`grammar`, attributes `has $.x`/`$!x` (+ defaults), accessors
@@ -96,12 +98,11 @@ same-named enclosing package, which Rakudo's own warning calls legacy.
 - Metamodel: `.^name .^methods .^method_names .^mro .^parents .^roles .^add_method .^find_method .^parameterize` (`Set.^parameterize(Str)` is `Set[Str]`), `.WHAT .WHICH .HOW`
 - `augment`/`supersede` reopen a type — user classes **and** built-ins (`augment class Int {…}` reaches `3.method`); `does`/`but` runtime role mixins
 - Inheritance errors: `class A is A` (self), `class B is Undeclared` → compile-time throws
-- **Gaps:** `Metamodel::*` construction, submethod-not-inherited
 
 ## Regexes & Grammars
 - `/…/`, `m//`, `s///`; char classes `\d \w \s`, `<[…]> <-[…]> <+[…]>`, and **composed** classes that add and subtract members: `<+alpha-[b]>`, `<-space-[\"]>`, `<-[ab]+[b]>` (a `-member` subtracts from the final set, so it applies after a leading `-` negates)
-- Unicode property classes: general category short + long (`<:Nd>`/`<:L>`/`<:UppercaseLetter>`), `<:LC>`/`<:Assigned>`, **blocks** `<:InArabic>` (real 16.0 table), and **binary props** `<:Math>`/`<:Alphabetic>`/`<:Soft_Dotted>`/`<:White_Space>`/`<:Other_*>` (DerivedCoreProperties + PropList); negated `<:!…>` and inverted `<-:…>`
-- Script classes `<:Latin> <:Syriac> <:Canadian_Aboriginal> …` (real 16.0 Scripts.txt) and `Bidi_Class` `<:bc<L>>`/`<:bc<EN>>`; zero-width property assertions `<?:prop>`/`<!:prop>`
+- Unicode property classes: general category short + long (`<:Nd>`/`<:L>`/`<:UppercaseLetter>`), `<:LC>`/`<:Assigned>`, **blocks** `<:InArabic>` (real 17.0 table), and **binary props** `<:Math>`/`<:Alphabetic>`/`<:Soft_Dotted>`/`<:White_Space>`/`<:Other_*>` (DerivedCoreProperties + PropList); negated `<:!…>` and inverted `<-:…>`
+- Script classes `<:Latin> <:Syriac> <:Canadian_Aboriginal> …` (real 17.0 Scripts.txt) and `Bidi_Class` `<:bc<L>>`/`<:bc<EN>>`; zero-width property assertions `<?:prop>`/`<!:prop>`
 - Anchors `^ $ ^^`, word boundaries `<< >>` / `« »` and either-edge `<|w>`, quantifiers `* + ? ** {n..m}`, alternation `|`/`||` (`|` ranks by longest declarative prefix — true NFA-based LTM under `RAKUPP_LTM=1`, see [internals/REGEX-LTM.md](../internals/REGEX-LTM.md); `||` is sequential), **conjunction `A & B` / `A && B`** (all terms match at the same position; the match spans the last term), groups, named captures
 - Repeated named captures under a quantifier collate into a list (`@<content>`, `$<x>[1]`)
 - **Capture aliases**: numbered `$7=(…)` (sets the capture index, auto-numbering resumes at N+1), named `$<x>=(…)`, list-valued `@<x>=(…)` (each occurrence → an Array element), hash-valued `%<x>=(…)` (matched strings become Hash keys)
@@ -110,15 +111,14 @@ same-named enclosing package, which Rakudo's own warning calls legacy.
 - Capture interpolation `"$0/$1"`, callable `.subst` (`.subst(/…/, *.uc)`), non-mutating `S///`
 - `Match` accessors: `.from`/`.to`, `.orig`, `.prematch`/`.postmatch`, `.made`/`.ast`
 - Match adverbs `:g(lobal) :ex(haustive)` (every match at every position and length) `:x :nth :p :c :i :samecase/:ii :sigspace :samespace/:ss :ignoremark/:m :samemark/:mm`, ordinals `:2nd`, assignment forms `s[…] = … / OP= …`, `$var`/`$^a`/`@a` interpolation in pattern & replacement
-- **Gaps:** backtracking control, `:ratchet`; `<:Block(…)>` block-by-name; an alias on a BUILT-IN class captures under the alias only (`<a=digit>` fills `$<a>`, where Rakudo also fills `$<digit>` — an alias on a user rule does fill both); subtraction directly after a bare property class is read as part of the property NAME, so `<:L-[b]>` matches anything — write `<+:L-[b]>`, which is correct
+- **Gaps:** subtraction directly after a bare property class is read as part of the property NAME, so `<:L-[b]>` matches anything — write `<+:L-[b]>`, which is correct. Backtracking control (`::`) parses but does not cut; Rakudo refuses it outright (`:: not yet implemented`), so neither engine has it
 
 ## Unicode (generated from UCD/UCA 17.0 — see [UNICODE.md](UNICODE.md))
 - Normalization **NFC / NFD / NFKC / NFKD** (+ Hangul), `Uni`/`NFC`/`NFD` types; `Uni.new(…).Str` is NFC (NFG semantics) — all `nf*-*.t` + `mass-equality.t` pass
-- Grapheme clusters (full UAX #29 incl. **GB9c** Indic conjuncts, emoji ZWJ/skin-tones, flags 🇦🇧): `.chars`/`.comb`/`.flip` — `GraphemeBreakTest-*` and `emoji-test.t` (3,825) fully pass
+- Grapheme clusters (full UAX #29, from the UCD **16.0** grapheme-break table — the one table not yet regenerated at 17.0 — incl. **GB9c** Indic conjuncts, emoji ZWJ/skin-tones, flags 🇦🇧): `.chars`/`.comb`/`.flip` — `GraphemeBreakTest-*` and `emoji-test.t` (3,825) fully pass
 - **UCA collation** — `unicmp`/`coll` from DUCET 17.0 (contractions incl. discontiguous matching, implicit weights): all 8,271 conformance tests pass
 - Character names both directions — `\c[NAME]`, `uniname` — incl. control aliases and algorithmic CJK/Tangut/Nushu/**Hangul syllable** names; numeric values `unival`/`univals` as exact Rats, incl. Unihan numerals (`千` = 1000)
 - Regex properties: general category (short `<:L>`/`<:Nd>` and long forms), **scripts** `<:Latin>`/`<:Script<Greek>>` (real Scripts.txt), **blocks** `<:InArabic>`, **bidi** `<:bc<L>>`, binary props (`<:Math>`, `<:Soft_Dotted>`, …); negated/inverted `<:!P>`/`<-:P>`
-- **Gaps:** full case folding (`ß.fc`, final sigma), `:ignorecase`/`:ignoremark` on non-ASCII, `samemark`, `.collate`/`.sort` not yet UCA-routed
 
 ## Data Types & Built-ins
 - Array, List/Seq, Hash, Map, Pair, Range, Set/Bag/Mix (+Hash variants), Junction, IO::Path, Proc, Promise
@@ -143,7 +143,7 @@ same-named enclosing package, which Rakudo's own warning calls legacy.
   - `Supply` (`from-list` — args are values, `[..]` items stay unflattened / `tap`/`act`/`map`/`grep`/`first`/`do`/`grab`/`unique`/`squish` (incl. `:as`/`:with`)/`head`/`tail`/`skip`/`reverse`/`rotate`/`sort`/`min`/`max` (running extremes, `&mapper`)/`minmax` (running Range)/`produce` (scan)/`reduce`/`zip` (`:with`)/`merge`/`list`/`wait`/…), `Tap.close`, live `Supplier` (`.emit`/`.done`/`.quit`) with combinators as a per-value transform tap-chain (`grep`/`map`/`head`/`first`/`skip`/`unique`/`squish`), a real `react` event loop / `whenever` (incl. `react whenever …`) / `supply { emit … }`
   - Containers: `Proxy.new(:FETCH/:STORE)` (reads/writes run your code), `is rw` / `return-rw`, `$_` rw-aliased to array elements in `for` loops
   - `Channel` (`send`/`receive`/`poll`/`close`/`fail`/`closed`, `X::Channel::*`), `Thread` (`.start`/`.join`, `is-initial-thread`, `$*THREAD`), `Lock`/`Semaphore` (`.protect`/`.acquire`/`.release`), `sleep`
-  - `atomicint` containers and the `⚛` operators (`$x⚛++`, `⚛$x`, `$x ⚛= v`) + `atomic-fetch`/`-fetch-inc`/`-fetch-dec`/`-fetch-add`/`atomic-assign` (correct under the GIL; true lock-free atomics only under `RAKUPP_PARALLEL`)
+  - `atomicint` containers and the `⚛` operators (`$x⚛++`, `⚛$x`, `$x ⚛= v`) + `atomic-fetch`/`-fetch-inc`/`-fetch-dec`/`-fetch-add`/`atomic-assign` (lock-free by default; correct, and serialised, under `RAKUPP_GIL=1`)
 - **NativeCall** ([FFI.md](FFI.md) is the full guide): `sub … is native {*}` / `is native('lib')` / `is native(&lib-sub)` / `is symbol('n')` calls a C function via `dlsym`, marshalled by **`libffi`** — loaded at runtime with `dlopen`, never linked, so the binary keeps no new dependency (`--ffi-info` says what it found; `RAKUPP_FFI=0` turns it off). Arguments and returns are passed at their declared width, so `num32` is a real C `float` and there is no cap on argument count; variadic C functions work by marking where `...` begins with a slurpy (`sub snprintf(Buf, size_t, Str, *@args --> int32)`); callbacks are `ffi_closure`s, so they take typed and floating-point parameters, any arity, and any number of distinct callbacks. The resolved symbol and the prepared call interface are both cached per sub. Where no `libffi` can be loaded, calls fall back to a fixed 8-integer/8-float prototype and anything it cannot express throws rather than computing garbage
   - Scalars: integer/pointer args (`Str`→`char*`, the `int`/`uint`/`size_t`/`bool`/`Pointer` family), floating-point args (`num`/`num32`/`num64`), **and mixed int+float argument lists**, with an integer/pointer/`Str`/float/`void` return. Arguments coerce to their declared type (`sqrt(4)` works); a narrow return (`int32`/`uint16`/…) is truncated and sign/zero-extended to its declared width. Covers all of libc's integer functions and the whole `<math.h>` surface (`strlen`, `getenv`, `sqrt`, `pow`, …)
   - Aggregates: `CArray` (element read/write; in-place mutation copied back), `Buf`/`Blob` buffers filled in place (`recv`/`SSL_read`), `is repr('CStruct')` / `CPointer` classes as arguments and as returns (fields read/written against native memory), `Pointer`/`CArray`/CStruct returns boxed as live handles, `is rw` out-params marshalled as `T*` with copy-back (including the `sqlite3**` shape), plus `nativecast` and `cglobal`
@@ -151,7 +151,6 @@ same-named enclosing package, which Rakudo's own warning calls legacy.
   - Variadics: a slurpy marks where C's `...` begins — `sub snprintf(Buf, size_t, Str, *@args --> int32) is native {*}` — and each variadic argument is typed from its runtime value under C's default argument promotions. The spelling matches Rakudo's, which reads a trailing slurpy the same way; without it a variadic call is silently wrong on every ABI that passes `...` on the stack, Apple ARM64 included
   - **Gaps**: C structs passed or returned **by value** are unsupported (an 8-byte return can be taken as `int64` and unpacked by hand); callbacks that C stores and fires later from its own thread are detected and ignored, not run; a `CStruct` field that is itself a struct is a pointer, not embedded (no `HAS`). Where no `libffi` can be loaded, `num32`, variadics and more than 8 integer or 8 float arguments all throw `X::NYI` rather than being computed wrongly
 - `$*CWD $*EXECUTABLE $*ARGS $*RAKU/$*PERL` (`.compiler.name` = "Raku++", backend "cpp"; `.compiler.version` deliberately reports the **Rakudo era tracked**, `v2026.08`, since modules gate features on it — the Raku++ release is `.release`/`.id`), `$*DISTRO $*KERNEL $*VM $*THREAD $*SCHEDULER`
-- **Gaps:** true CPU parallelism is opt-in (`RAKUPP_PARALLEL`), off by default; `cas`, stream-retokenizing Supply combinators (`split`/`comb`/`words`/`lines`)
 
 ## Phasers, Modules, Exceptions, Special Vars, Testing
 - Phasers: `BEGIN CHECK` (top-level ordering), `INIT END` (program-wide), `ENTER/LEAVE` (block entry/exit), `FIRST` (once per loop), `CATCH`; `BEGIN`/`ENTER` usable in value position. `INIT` runs once before the mainline wherever it is written — nested in a loop, a sub that is never called, or a branch never taken — provided it names no variable from an enclosing scope; one that does still runs in place. `END` is registered where it is written and runs once at program exit, in reverse source order, whatever its depth: in a sub called ten times it still runs once, in the scope of the last entry into the block that holds it, and in a sub that is never called it runs anyway. A module's ENDs take their place at the `use` that loaded it, an EVAL's at the moment it ran

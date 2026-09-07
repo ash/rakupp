@@ -71,8 +71,8 @@ cmake --build build --config Release      # → build/Release/rakupp.exe
 ## GNU Guix (Linux)
 
 The repository is also a Guix channel
-([PR #6](https://github.com/ash/rakupp/pull/6), contributed by
-[@4zv4l](https://github.com/4zv4l)). Build directly from a checkout:
+([PR #6](https://github.com/ash/rakupp/pull/6), contributed from outside the
+project). Build directly from a checkout:
 
 ```sh
 guix build -f .guix/modules/rakupp-package.scm

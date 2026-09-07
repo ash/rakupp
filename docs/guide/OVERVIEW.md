@@ -32,7 +32,7 @@ official specification test suite. The guiding motto:
 | **Size** | a hand-written front end + a `Value`-based runtime, all in `src/` |
 | **Runs as** | an interpreter **and** an ahead-of-time / native compiler — and in the browser via WebAssembly (**[Raku.js](../../rakujs)**) |
 | **Startup** | ~2 ms cold |
-| **Correctness target** | the Roast suite — ~90% of all individual tests pass; ~43% of files fully pass |
+| **Correctness target** | the Roast suite — ~91% of all individual tests pass; ~45% of files fully pass |
 | **Not** | a Rakudo fork, a transpiler-to-something-else, or feature-complete |
 
 ## Goals & philosophy
@@ -86,8 +86,8 @@ runnable snippets in [RECIPES.md](RECIPES.md), complete programs in
   a self-hosted Roast harness written in Raku and run *by* Raku++.
 
 **Not there yet:** macros / `RakuAST` / slangs, C structs passed or returned
-by value, callbacks fired from a thread the C library owns, some `IO`/`POD`
-corners, and true lock-free parallel atomics.
+by value, callbacks fired from a thread the C library owns, and some `IO`/`POD`
+corners.
 
 ## Four ways to run a program
 
@@ -113,13 +113,13 @@ embed anywhere to make Raku examples runnable — see [rakujs/](../../rakujs).
 ## How it relates to Rakudo
 
 [Rakudo](https://rakudo.org) is the mature, complete reference implementation of
-Raku (on MoarVM/JVM). Raku++ is **one of the very few independent implementations
-of the language, and the only one that both interprets Raku and compiles it to
-native binaries** — a full engine built from scratch in dependency-free C++17.
-That's an uncommon thing to exist at all, and it gives Raku++ a distinctive
-profile: it starts in a few milliseconds, produces small self-contained native
+Raku (on MoarVM/JVM). Raku++ is an independent from-scratch engine that both
+interprets Raku and compiles it to native binaries, written in dependency-free
+C++17. It starts in a few milliseconds, produces small self-contained native
 executables, and is compact enough to read and embed. The two projects share a
-north star — Roast, the spec suite that defines what "being Raku" means.
+north star — Roast, the spec suite that defines what "being Raku" means. Raku++
+is not the only independent engine: [COUNTING.md](../status/COUNTING.md)
+measures [mutsu](https://github.com/tokuhirom/mutsu) beside it.
 
 Raku++ was built without reading Rakudo's code. Since 2026-08 the project
 does study Rakudo and MoarVM at the design level — the
@@ -133,7 +133,7 @@ They make different trade-offs:
 |---|---|---|
 | Role | independent, from-scratch engine — interpreter **+ native compiler** | the reference implementation |
 | Implementation | C++17, zero dependencies | VM-based (MoarVM/JVM), NQP/Raku |
-| Coverage | a growing subset (~43% of Roast) | complete |
+| Coverage | a growing subset (~45% of Roast) | complete |
 | Compilation | compiles to a standalone native binary (`--exe`) | JITs at run time |
 | Grammar-mutation (macros/slangs) | not yet | full |
 

@@ -79,7 +79,7 @@ three denominators, widest-to-strictest:
 | tests **planned** (files that emitted a plan) | 199,980 / 216,223 (~92%) | + tests lost when a file aborts mid-plan |
 | **all declared** tests | 199,980 / 219,294 (91.2%) | + tests in parse-error files, recovered from source. This denominator grows as parse fixes land — files that died before announcing a plan now declare their real (often larger, dynamic) plans, so the percentage can dip while absolute passes rise |
 
-The 90% is the per-test analog of the ~43% file coverage. Three notes on scope:
+The 91% is the per-test analog of the ~45% file coverage. Three notes on scope:
 
 1. **~3.0k of the denominator comes from no-TAP files** (75 of them, read from
    source); 3 more no-TAP files use a dynamic `plan *` / `done-testing` and are
@@ -93,8 +93,8 @@ The 90% is the per-test analog of the ~43% file coverage. Three notes on scope:
    fully-passing files. Do not compare pre-v2.0.0 Roast numbers against these
    without that correction (see the [CHANGELOG](../../CHANGELOG.md)).
 
-Coverage is the ~43% of files; per-test correctness across the whole suite is the
-90%. They are different measurements, quoted for different purposes.
+Coverage is the ~45% of files; per-test correctness across the whole suite is the
+91%. They are different measurements, quoted for different purposes.
 
 ## By synopsis
 

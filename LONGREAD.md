@@ -108,12 +108,13 @@ do," and conflating them flatters you.
 
 **File coverage** — *how many whole Roast files pass every assertion* — is the
 harsh one. One stray failure in a 200-assertion file zeroes the whole file. This
-number sat around 17% early on and is ~43% now (**625 of 1,462 files**). It is a
+number sat around 17% early on and is around 45% now; the current figure lives
+in [docs/status/COUNTING.md](docs/status/COUNTING.md). It is a
 coverage figure: how much of the suite is *completely* conquered.
 
 **Per-test rate** — *of every individual test the suite declares, how many pass* —
-is the fair one for "correctness on what runs." This is the headline: **90%**,
-or roughly **198,600 of ~218,600** declared tests. One whole synopsis — S15,
+is the fair one for "correctness on what runs." This is the headline: **91%**,
+or roughly **200,000 of ~219,300** declared tests. One whole synopsis — S15,
 Unicode — is at **100%** of its assertions.
 
 The subtlety we documented in [docs/status/COUNTING.md](docs/status/COUNTING.md) is that the
@@ -121,7 +122,7 @@ denominator is not fixed. "Declared" means every test any file *tries* to run,
 including files that abort before emitting a single result — we recover their
 planned count from the source and count all of it as failing. The better the
 compiler gets, the more files run far enough to *declare* more tests, so the
-denominator **grows with coverage**. Our passing count reads as 90% against the
+denominator **grows with coverage**. Our passing count reads as 91% against the
 all-declared denominator — the strictest of the three the harness prints.
 We chose to headline the number that is, if anything, slightly *un*flattering. In
 the docs the rule is fixed: report raw numbers, quote both figures, never boast.

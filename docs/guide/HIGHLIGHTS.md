@@ -16,7 +16,7 @@
 - Both an **interpreter and a compiler**: the same binary tree-walks a script
   or compiles it to a standalone native executable.
 - Measured against **[Roast](https://github.com/Raku/roast)**, the official
-  Raku specification suite: **~90% of all declared tests pass**
+  Raku specification suite: **~91% of all declared tests pass**
   (199,980 / 219,294); **~45% of files fully pass** (660 / 1,464).
   Definitions and caveats: [ROAST.md](../status/ROAST.md), [COUNTING.md](../status/COUNTING.md).
 
@@ -44,7 +44,7 @@
   v3, with `RAKUPP_GIL=1` as the escape hatch ([ASYNC.md](ASYNC.md)).
 - **Unicode** — grapheme-correct strings (UAX #29 incl. emoji ZWJ), NFC/NFD/
   NFKC/NFKD, UCA collation (`unicmp`), names, properties — generated
-  UCD/UCA 17.0 tables ([UNICODE.md](UNICODE.md)).
+  UCD/UCA 17.0 tables, grapheme breaks 16.0 ([UNICODE.md](UNICODE.md)).
 - **Phasers & control** — `BEGIN` / `END` / `ENTER` / `LEAVE` / `FIRST` /
   `NEXT` / `LAST` / `CATCH` / `CONTROL`, labeled loops, `temp` / `let`.
 - **Language revisions** — 6.d by default and 6.e under `use v6.e.PREVIEW`,
@@ -101,14 +101,19 @@ no server, with an embeddable in-page playground.
   Life, a JSON grammar, a calculator, an echo server, a quine, …); every one
   also compiles natively with `--exe`, with byte-identical output
   ([NATIVE.md](NATIVE.md)).
-- **[showcase/](../../showcase)** — twelve mid-size programs, each leaning on a
+- **[showcase/](../../showcase)** — nineteen mid-size programs, each leaning on a
   different part of the language: interpreters for **Scheme**, **Forth**,
   **JavaScript/TypeScript**, **Perl 5** and **Python 3**, all on Raku grammars;
   a **Markdown→HTML** converter and a **JSON** parser/formatter; four servers on
   raw sockets — a **pastebin**, a concurrent **chat** server, a **key-value**
   store with its own protocol, and a static-file HTTP server (`rakus`); and
   **modinfo**, a distribution inspector built on **17 zef distributions** from
-  the ecosystem's most-depended-on list, byte-identical under Rakudo and Raku++.
+  the ecosystem's most-depended-on list, byte-identical under Rakudo and Raku++;
+  a **grammar of Raku** that parse-checks Raku source with rakupp itself;
+  **jsonreq**, a curl-plus-jq for JSON APIs built on our own modules; a
+  **SQLite** client on NativeCall and a raw-mode terminal; **GUI** desktop apps
+  on Cocoa or GTK with `react`/`whenever` as the event loop; and three
+  `--target=js` programs — **eclipse**, **fourier** and **orbits**.
   The Markdown and JSON showcases also run **in the browser** (with a
   regex/grammar explorer) via WebAssembly ([showcase/web/](../../showcase/web)).
 - Real applications run **unmodified**: the
@@ -123,5 +128,5 @@ no server, with an embeddable in-page playground.
 
 - Macros / `RakuAST` / slangs; C structs passed or returned by value;
   callbacks a C library fires from its own thread;
-  some `IO` / POD corners; lock-free parallel atomics. The plan:
+  some `IO` / POD corners. The plan:
   [ROADMAP.md](../status/ROADMAP.md).
