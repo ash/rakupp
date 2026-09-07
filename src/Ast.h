@@ -735,6 +735,18 @@ struct Block : Stmt {
     // reaching it only CAPTURES the scope the body will run in at exit. Like
     // initHoisted, a property of one run rather than of the AST — not serialized.
     int endSlot = -1;
+    // Where the phaser keyword sat in the token stream — a source order finer
+    // than `line`, which cannot separate two phasers written on one line (a
+    // `-e` one-liner has only one). Set by the parser for phaser blocks only,
+    // and read by the JS backend, which meets a sub's body after the mainline
+    // that calls it and so cannot use its own emission order. Not serialized.
+    int srcPos = 0;
+    // The registered ENDs nested anywhere inside this block. Entering it
+    // re-captures every one of them, because Rakudo's compiler flattens the
+    // blocks between a phaser and its routine into a single frame. Filled once,
+    // when the unit registers — which is before any of its blocks can run, so
+    // reading it needs no lock. A property of one run; not serialized.
+    std::vector<Block*> endsWithin;
     Block(): Stmt(NK::Block) {}
 };
 

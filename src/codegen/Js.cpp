@@ -283,7 +283,7 @@ struct JsGen {
     void declareSigilless(const string& n) { if (!scopes.empty()) scopes.back().sigilless.insert(n); }
     void declareSigillessParams(const std::vector<Param>& ps) { for (auto& p : ps) if (!p.name.empty() && p.name[0] != '$' && p.name[0] != '@' && p.name[0] != '%' && p.name[0] != '&') declareSigilless(p.name); }
     std::vector<string> prelude;         // literal consts, state slots (top of the program function)
-    int litN = 0, labelN = 0, stateN = 0, fnCounter = 0;
+    int litN = 0, labelN = 0, stateN = 0, fnCounter = 0, endSlotN = 0;
     std::vector<FnCtx> fns;
     std::vector<LoopCtx> loops;
     std::vector<BlockCtx> blocks;
@@ -295,7 +295,12 @@ struct JsGen {
     string curClass;                     // class being emitted
     std::vector<std::vector<string>> stateHoists;
     bool hasMain = false;
-    std::vector<string> endBlocks;
+    // END exit hooks, paired with the phaser's position in the source: the
+    // runtime runs them in reverse REGISTRATION order, and these are emitted in
+    // the order the codegen met them — which is not source order, because a
+    // sub's body is emitted after the mainline that calls it. Sorted before
+    // emission, so `END a; sub f { END b }; END c` still runs c, b, a.
+    std::vector<std::pair<int, string>> endBlocks;
     // Async colouring (TRANSPILE-PLAN P4): a routine that awaits — `await`, `.result`,
     // or a call to a coloured sub / a coloured method name — is `async`, and every
     // call to it is awaited. Decided once in prepass, by fixpoint.
@@ -1477,6 +1482,7 @@ struct JsGen {
     void emitStmts(const std::vector<StmtPtr>& ss, int ind, bool tail) {
         // phasers and CATCH first
         std::vector<Stmt*> pre, main, post, classes;
+        std::vector<std::pair<Block*, int>> endCaptures;   // END phaser -> its slot
         Block* catchBlock = nullptr;
         bool hasWhen = false;
         scopes.emplace_back();
@@ -1490,7 +1496,33 @@ struct JsGen {
                 if (b->phaser == "LEAVE" || b->phaser == "KEEP" || b->phaser == "UNDO") { post.push_back(s); continue; }
                 if (b->phaser == "ENTER" || b->phaser == "BEGIN" || b->phaser == "CHECK") { pre.push_back(s); continue; }
                 if (b->phaser == "INIT") { pre.push_back(s); continue; }
-                if (b->phaser == "END") { endBlocks.push_back(capture([&]() { line(0, "R.atEnd(() => {"); emitStmts(b->stmts, 1, false); line(0, "});"); })); continue; }
+                if (b->phaser == "END") {
+                    // An END runs at program exit in the scope of the LAST entry
+                    // into the block that holds it — so the body goes in a slot
+                    // that block entry assigns (below), and the exit hook calls
+                    // whatever is in it. Hoisting the body to top level, as this
+                    // did, took it OUT of the scope it was written in: an END in
+                    // a sub naming that sub's own `$n` emitted a free `v_n` and
+                    // died at exit with a ReferenceError.
+                    int n = endSlotN++;
+                    prelude.push_back("let _end" + std::to_string(n) + " = null;");
+                    endCaptures.push_back({ b, n });
+                    endBlocks.push_back({ b->srcPos, capture([&]() {
+                        line(0, "R.atEnd(() => {");
+                        // The block never ran: no slot, so the body runs where it
+                        // was hoisted to, which is what an uncalled sub's END has
+                        // always done. A name from the scope that never ran is
+                        // undeclared there (and a `let` the block never reached is
+                        // in its dead zone) — the interpreter's END swallows that
+                        // too rather than taking the program down at exit.
+                        line(1, "try {");
+                        line(2, "if (_end" + std::to_string(n) + ") { _end" + std::to_string(n) + "(); return; }");
+                        emitStmts(b->stmts, 2, false);
+                        line(1, "} catch (_e) { if (!(_e instanceof ReferenceError)) throw _e; }");
+                        line(0, "});");
+                    }) });
+                    continue;
+                }
                 if (b->phaser == "FIRST" || b->phaser == "NEXT" || b->phaser == "LAST") continue;   // handled by the loop
                 if (b->phaser == "CONTROL") refuse("a CONTROL phaser", s->line);
                 if (b->phaser == "QUIT" || b->phaser == "CLOSE" || b->phaser == "PRE" || b->phaser == "POST" || b->phaser == "COMPOSE" || b->phaser == "DOC") refuse("a " + b->phaser + " phaser", s->line);
@@ -1500,6 +1532,13 @@ struct JsGen {
             main.push_back(s);
         }
         for (auto* s : pre) emitStmts(static_cast<Block*>(s)->stmts, ind, false);
+        // …and the END slots, at block ENTRY: `for 1..3 -> $i { END say $i }`
+        // says 3 because each entry overwrites the closure the one before left.
+        for (auto& ec : endCaptures) {
+            line(ind, "_end" + std::to_string(ec.second) + " = () => {");
+            emitStmts(ec.first->stmts, ind + 1, false);
+            line(ind, "};");
+        }
         int bodyInd = ind;
         string blkLabel;
         bool wrapTry = catchBlock || !post.empty();
@@ -2532,7 +2571,9 @@ struct JsGen {
         if (ctx.usesBang) o << "    let v__bang = R.Nil;\n";
         if (ctx.usesSlash) o << "    let v__slash = R.Nil;\n";
         for (auto& d : ctx.declared) o << "    " << d << "\n";
-        for (auto& e : endBlocks) o << reindentBlock(e, 1);
+        std::stable_sort(endBlocks.begin(), endBlocks.end(),
+                         [](const std::pair<int, string>& a, const std::pair<int, string>& b) { return a.first < b.first; });
+        for (auto& e : endBlocks) o << reindentBlock(e.second, 1);
         o << body;
         return o.str();
     }

@@ -277,6 +277,13 @@ struct Callable {
     std::shared_ptr<const PadLayout> padLayout;
     PublishedOnce<signed char> catchScan{-1};      // 1 = body holds an inline CATCH block
     PublishedOnce<signed char> phaserScan{-1};     // 1 = body holds an ENTER/LEAVE/… phaser block
+    // The registered END phasers nested anywhere in this body (issue #70): every
+    // call re-captures them, so they run at exit in the scope of the LAST call.
+    // Decided at first call — the registry that knows them is shared, this
+    // answer is not — and published the way padLayout is: the payload is
+    // written under the interpreter's END mutex, the flag releases it.
+    PublishedOnce<signed char> endsScan{-1};       // 1 = endsWithin is set
+    std::shared_ptr<const std::vector<Block*>> endsWithin;
     DecidedOnce<Stmt*> catchBlkCache{nullptr};     // …which one (valid when catchScan == 1)
     std::string declFile;                          // source file the routine was declared in (backtrace .file)
     // Language revision this routine was DECLARED under (0=6.c, 1=6.d, 2=6.e),

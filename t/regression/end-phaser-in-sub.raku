@@ -87,6 +87,50 @@ check 'an EVAL END inside a sub defers',
       'sub f { EVAL q[END print "eval-end "]; print "f " }; f; print "main "',
       'f main eval-end ';
 
+# 12. The scope is captured on entry of EVERY block that holds the phaser, not
+#     just its own: Rakudo flattens an `if` body into its routine's frame, so
+#     the call that never entered the branch still supplies the scope.
+check 'a skipped inner block does not pin the scope',
+      'sub f($n) { if $n == 1 { END print "n=$n " } }; f(1); f(2); print "main "',
+      'main n=2 ';
+
+# 13. A block that never ran at all has none of the containers Rakudo's
+#     compile-time pad would carry — the phaser reads them as undefined rather
+#     than dying with X::Undeclared and being swallowed
+check 'an END in an unentered block reads its lexicals as undefined',
+      'sub f($n) { my $x = $n * 2; END print "[$x] " }; print "main "',
+      'main [] ';
+
+# 14. EVAL is not compile time: its ENDs register when it RUNS, after every
+#     compiled one, so they run before them
+check 'an EVAL END outranks a mainline END written after it',
+      'sub f { EVAL q[END print "e "] }; f; print "main "; END print "m "',
+      'main e m ';
+
+# 15. A module's ENDs sort at the `use` that loaded it — so with `use` at the
+#     top (the usual layout) the mainline's own END runs FIRST, and the
+#     module's after it. The opposite shape, `use` below the mainline END, is
+#     pinned by t/regression/open-modes-bind-end-shift.raku; both are Rakudo's.
+{
+    my $dir = $*TMPDIR.add("rakupp-end70-{$*PID}");
+    $dir.add('lib').mkdir;
+    $dir.add('lib/EndAtUse.rakumod').spurt(q:to/M/);
+        unit module EndAtUse;
+        our sub helper() is export { END print "mod-sub " }
+        END print "mod-top ";
+        M
+    my $prog = 'use EndAtUse; helper(); print "main "; END print "mine "';
+    my $r = run($*EXECUTABLE.absolute, "-I{$dir.add('lib')}", '-e', $prog, :out, :err);
+    my $got = $r.out.slurp(:close);
+    $r.err.slurp(:close);
+    @fail.push("module END order: got '$got', want 'main mine mod-top mod-sub '")
+        unless $got eq 'main mine mod-top mod-sub ';
+    # the module file goes: a per-PID path that never exists again still
+    # strands a precomp entry keyed on it. The directory stays — Rakudo leaves
+    # its own precomp store inside, and rmdir on a non-empty one throws.
+    $dir.add('lib/EndAtUse.rakumod').unlink;
+}
+
 if @fail {
     note "FAIL: $_" for @fail;
     die "end-phaser-in-sub: {+@fail} failure(s)";

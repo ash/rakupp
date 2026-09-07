@@ -6,6 +6,7 @@
 #include <tuple>
 #include <memory>
 #include <cstring>
+#include <limits>
 #include "Platform.h"
 #include <sys/stat.h>
 #ifndef _WIN32
@@ -1097,8 +1098,22 @@ static bool initIsSelfContained(Block* b) {
 // a gap degrades to the old behaviour, never to a phaser that vanishes.
 static void collectPhasersStmt(Stmt* s, const char* want, std::vector<Block*>& out, bool topLevel = false);
 static void collectPhasersExpr(Expr* e, const char* want, std::vector<Block*>& out);
+// The statement lists an END walk is currently inside, and the (list, END) edges
+// it has found. An END is re-captured by the entry of EVERY block that lexically
+// holds it, not just its own — Rakudo's compiler flattens the blocks between a
+// phaser and its routine into one frame, so `sub f($n) { if $n == 1 { END say $n } }`
+// called f(1), f(2) says 2 there even though the `if` body never ran a second
+// time. Kept beside the walk rather than threaded through its forty call sites;
+// thread-local because an EVAL on a worker registers its own unit. Only an END
+// walk fills them, and registerEnds empties them.
+static thread_local std::vector<const std::vector<StmtPtr>*> g_endChain;
+static thread_local std::vector<Block*> g_endBlockChain;
+static thread_local std::vector<std::pair<const std::vector<StmtPtr>*, Block*>> g_endEdges;
 static void collectPhasersBody(const std::vector<StmtPtr>& b, const char* want, std::vector<Block*>& out) {
+    const bool ends = std::strcmp(want, "END") == 0;
+    if (ends) g_endChain.push_back(&b);
     for (auto& s : b) collectPhasersStmt(s.get(), want, out);
+    if (ends) g_endChain.pop_back();
 }
 static void collectPhasersExpr(Expr* e, const char* want, std::vector<Block*>& out) {
     if (!e) return;
@@ -1140,10 +1155,23 @@ static void collectPhasersStmt(Stmt* s, const char* want, std::vector<Block*>& o
             // inside it belongs to that one execution, not to a second hoist
             // that would run it twice
             if (b->phaser == want) {
-                if (b->phaser == "END") { out.push_back(b); return; } // END: always, wherever it is
+                if (b->phaser == "END") { // always, wherever it is
+                    out.push_back(b);
+                    // …and every scope that holds it: a Block takes the list on
+                    // its own node, a routine body through the interpreter's map.
+                    for (auto* blk : g_endBlockChain) blk->endsWithin.push_back(b);
+                    for (auto* body : g_endChain) g_endEdges.push_back({body, b});
+                    return;
+                }
                 // top level: always (its containers are pre-declared).
                 // nested: only if it reaches no scope that has yet to exist.
                 if (topLevel || initIsSelfContained(b)) { b->initHoisted = true; out.push_back(b); }
+                return;
+            }
+            if (std::strcmp(want, "END") == 0) {
+                g_endBlockChain.push_back(b);
+                collectPhasersBody(b->stmts, want, out);
+                g_endBlockChain.pop_back();
                 return;
             }
             collectPhasersBody(b->stmts, want, out); return; }
@@ -4459,14 +4487,16 @@ int Interpreter::run(Program& prog) {
     // reverse. A nested run() (an installed `bin/` script) registers on top of
     // its caller's, and takes only its own back off at the end.
     const size_t endMark = endPhasers_.size();
-    registerEnds(prog, /*deferred=*/false);
+    EndUnitScope endUnit{*this};   // a nested run() (an installed `bin/` script) is a unit of its own
+    registerEnds(prog);
     auto runPhaser = [&](Block* b) {
         if (b->stmtForm) { execBlock(b, tctx_.cur); return; } // `INIT my $x = …` declares in the mainline scope
         auto sc = std::make_shared<Env>(); sc->parent = tctx_.cur; execBlock(b, sc);
     };
-    // END phasers run in REVERSE registration order, on any exit path — and
-    // registration is source order, so a nested END takes its place among the
-    // mainline's: `END a; sub f { END b }; END c` runs c, b, a.
+    // END phasers run in REVERSE SOURCE order, on any exit path — one order for
+    // the whole compilation, so a nested END takes its place among the
+    // mainline's (`END a; sub f { END b }; END c` runs c, b, a) and a module's
+    // takes its place at the `use` that loaded it.
     auto runEnds = [&]() {
         // Dropped objects get their DESTROY before the ENDs, so an END block
         // observes destructor effects; objects an END itself releases wait for
@@ -4483,27 +4513,26 @@ int Interpreter::run(Program& prog) {
             return std::vector<EndPhaser>(endPhasers_.begin() + from, endPhasers_.end());
         };
         auto runOne = [&](const EndPhaser& e) {
-            // stmtForm (`END rm-rf($dir);`) runs IN the captured scope, as
-            // `INIT my $x = …` declares in the enclosing one; a braced END gets
-            // its own scope under it.
-            try {
-                if (e.blk->stmtForm) execBlock(e.blk, e.env);
-                else { auto sc = std::make_shared<Env>(); sc->parent = e.env; execBlock(e.blk, sc); }
-            }
+            try { runEndBody(e); }
             catch (ExitEx& ex) { code = ex.code; }  // `exit` in an END block sets the exit status
             catch (...) {}
         };
         // Deferred ENDs (modules, EVAL) first, newest registration first — then
         // this unit's own, reverse source order. A later-loaded module's
         // cleanup precedes the mainline END that inspects its results.
+        auto bySource = [](std::vector<EndPhaser>& v) {
+            std::stable_sort(v.begin(), v.end(),
+                             [](const EndPhaser& a, const EndPhaser& b) { return a.key < b.key; });
+        };
         auto batch = snapshotFrom(endMark);
         size_t seen = endMark + batch.size();
-        for (size_t i = batch.size(); i-- > 0; ) if (batch[i].deferred)  runOne(batch[i]);
-        for (size_t i = batch.size(); i-- > 0; ) if (!batch[i].deferred) runOne(batch[i]);
+        bySource(batch);
+        for (size_t i = batch.size(); i-- > 0; ) runOne(batch[i]);
         // `END { EVAL q[END …] }` registers while the loop above runs: those are
         // ends of the program too, newest first, until no more appear.
         for (auto more = snapshotFrom(seen); !more.empty(); more = snapshotFrom(seen)) {
             seen += more.size();
+            bySource(more);
             for (size_t i = more.size(); i-- > 0; ) runOne(more[i]);
         }
         // A nested run() (an installed `bin/` script) hands the process back to
@@ -4612,6 +4641,7 @@ int Interpreter::run(Program& prog) {
         // a mainline CONTROL {} is the outermost warn handler for the run
         if (topControl) tctx_.controlHandlers.push_back({topControl, tctx_.cur});
         for (auto* s : mainline) {
+            tctx_.endCurTopStmt = s;   // a `use` in it places the module's ENDs (see EndUnitScope)
             if (s->kind == NK::SubDecl && !static_cast<SubDecl*>(s)->name.empty() &&
                 !static_cast<SubDecl*>(s)->isMethod) { applySubTraits(static_cast<SubDecl*>(s)); continue; } // hoisted
             // a bare `my $x;` (no init) must not clobber a value a phaser already set
@@ -6451,10 +6481,9 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
             for (auto& st : prog->stmts) collectPhasersStmt(st.get(), "INIT", inits, /*topLevel=*/false);
             // A module's END runs at PROCESS end, not at load (File::Temp
             // registers its tempfile cleanup this way), capturing the module
-            // scope. Deferred ENDs run before the mainline's own — a module
-            // loaded LATER cleans up EARLIER (LIFO), which is what a test that
-            // checks the module's cleanup from its own END relies on.
-            registerEnds(*prog, /*deferred=*/true);
+            // scope, and sorts at the position of the `use` that loaded it.
+            EndUnitScope endUnit{*this};
+            registerEnds(*prog);
             bool initsDone = inits.empty();
             auto runInitsOnce = [&] {
                 if (initsDone) return;
@@ -6471,6 +6500,7 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
                 return false;
             };
             for (auto& st : prog->stmts) {
+                tctx_.endCurTopStmt = st.get();           // for a nested `use` in it
                 if (!isPrologue(st.get())) runInitsOnce(); // every `use` above us has run
                 if (st->kind == NK::Block && static_cast<Block*>(st.get())->initHoisted)
                     continue; // ran in runInitsOnce, ahead of this mainline
@@ -6847,10 +6877,13 @@ Value Interpreter::evalString(const std::string& src, bool mainlinePH, bool* inc
         for (auto* b : inits) runHoistedInit(b);
     }
     // An END in EVAL'd code runs at the END of the whole program (not here),
-    // capturing the EVAL scope so it still sees this EVAL's lexicals.
-    registerEnds(*prog, /*deferred=*/true);
+    // capturing the EVAL scope so it still sees this EVAL's lexicals, and
+    // sorting where the EVAL itself sits in its unit.
+    EndUnitScope endUnit{*this, /*atSourcePosition=*/false};
+    registerEnds(*prog);
     Value last = Value::nil();   // an empty unit is Nil, as an empty block is
     for (auto& s : prog->stmts) {
+        tctx_.endCurTopStmt = s.get();   // for a `use` in it
         // a top-level INIT just ran above; running it again here would double it
         if (s->kind == NK::Block && static_cast<Block*>(s.get())->initHoisted) continue;
         // Loop control inside the EVAL, with a loop OUTSIDE it, belongs to that
@@ -7011,13 +7044,11 @@ void Interpreter::replFinish() {
     // the session, so they run once, newest first, as the session ends.
     std::vector<EndPhaser> all;
     { std::lock_guard<std::mutex> g(endPhaserMut_); all.swap(endPhasers_); }
+    std::stable_sort(all.begin(), all.end(),
+                     [](const EndPhaser& a, const EndPhaser& b) { return a.key < b.key; });
     for (size_t i = all.size(); i-- > 0; ) {
-        const EndPhaser& e = all[i];
-        try {
-            if (e.blk->stmtForm) execBlock(e.blk, e.env);
-            else { auto sc = std::make_shared<Env>(); sc->parent = e.env; execBlock(e.blk, sc); }
-        } catch (...) {}
-        e.blk->endSlot = -1;
+        try { runEndBody(all[i]); } catch (...) {}
+        all[i].blk->endSlot = -1;
     }
 }
 
@@ -7122,12 +7153,7 @@ void Interpreter::runEnterPhasers(const std::vector<StmtPtr>& stmts) {
         // ENTER fires on every block entry; FIRST fires once — in a loop body the loop
         // drives FIRST (suppressLoopFirst_), elsewhere FIRST behaves like a one-shot ENTER.
         if (b->phaser == "ENTER" || (b->phaser == "FIRST" && !suppressLoopFirst_)) {
-            auto sc = std::make_shared<Env>(); sc->parent = tctx_.cur; execBlock(b, sc); }
-        // An END here runs at exit, in THIS entry's scope — which is why the
-        // capture is at block ENTRY and not at the phaser's own position:
-        // `sub f($n) { return if $n == 2; END say $n }` called f(1), f(2) says 2
-        // in Rakudo, though the second call never reached the phaser.
-        else if (b->endSlot >= 0) captureEndScope(b); }
+            auto sc = std::make_shared<Env>(); sc->parent = tctx_.cur; execBlock(b, sc); } }
 }
 // The scope a registered END will run in: the most recent entry of the block
 // that holds it. `for 1..3 -> $i { END say $i }` therefore says 3 — one run,
@@ -7145,23 +7171,105 @@ void Interpreter::captureEndScope(Block* b) {
                 tctx_.cur->define(n, n[0] == '@' ? Value::array() : n[0] == '%' ? Value::makeHash() : Value::any());
     }
     std::lock_guard<std::mutex> g(endPhaserMut_); // any thread may enter the block
-    if (b->endSlot >= 0 && (size_t)b->endSlot < endPhasers_.size())
+    if (b->endSlot >= 0 && (size_t)b->endSlot < endPhasers_.size()) {
         endPhasers_[b->endSlot].env = tctx_.cur;
+        endPhasers_[b->endSlot].entered = true;
+    }
 }
+// Every END nested anywhere in a routine's body runs at exit in THIS call's
+// scope — which is why the capture is at ENTRY and not at the phaser's own
+// position: `sub f($n) { return if $n == 2; END say $n }` called f(1), f(2)
+// says 2 in Rakudo, though the second call never reached the phaser. An inner
+// block's own entry then overrides it (Block::endsWithin), so the innermost
+// scope that actually ran is the one the body sees.
+void Interpreter::captureBodyEnds(Callable& c) {
+    if (!c.body || !endsUnderAny_.load(std::memory_order_relaxed)) return;
+    if (c.endsScan.get() < 0) {
+        std::lock_guard<std::mutex> g(endPhaserMut_);
+        if (c.endsScan.get() < 0) {   // the map is shared; this answer is not
+            auto it = endsUnder_.find(c.body);
+            c.endsWithin = it == endsUnder_.end() ? nullptr : it->second;
+            c.endsScan = c.endsWithin ? 1 : 0;   // …and this release publishes it
+        }
+    }
+    if (c.endsScan.get() == 1) for (Block* b : *c.endsWithin) captureEndScope(b);
+}
+// One END phaser's body, in the scope it captured.
+void Interpreter::runEndBody(const EndPhaser& e) {
+    // stmtForm (`END rm-rf($dir);`) runs IN that scope, as `INIT my $x = …`
+    // declares in the enclosing one; a braced END gets its own scope under it.
+    if (e.entered && e.blk->stmtForm) { execBlock(e.blk, e.env); return; }
+    auto sc = std::make_shared<Env>(); sc->parent = e.env;
+    // NEVER ENTERED: the block holding this phaser did not run, so the
+    // containers Rakudo's compile-time pad would have carried never came to
+    // exist. A name the body reads is then not a typo but a scope that was
+    // skipped — `sub f($n) { my $x = $n * 2; END say "x=$x" }`, uncalled, says
+    // "x=" on Rakudo — so the body runs with `no strict`'s leniency (an
+    // unresolved name reads as Any) rather than dying with X::Undeclared and
+    // being swallowed whole by the catch-all every END body runs under.
+    if (!e.entered) sc->strictPragma = 1;
+    execBlock(e.blk, sc);
+}
+// A unit loaded by another hangs off the loader's key at the position of the
+// statement that loaded it: after the loader's ENDs written above that `use`,
+// before the ones written below it. The second component separates two units
+// loaded at the SAME position (`use A; use B;` with no END between them), in
+// load order — which is compile order, so B's ENDs still run before A's.
+Interpreter::EndUnitScope::EndUnitScope(Interpreter& i, bool atSourcePosition)
+    : I(i), key(i.tctx_.endUnitKey), before(i.tctx_.endsBeforeStmt), cur(i.tctx_.endCurTopStmt) {
+    auto& K = I.tctx_.endUnitKey;
+    if (!atSourcePosition) {   // an EVAL: registered when it runs, after everything compiled
+        K.clear();
+        K.push_back(std::numeric_limits<int>::max());
+    }
+    else {
+        int c = 0;   // how many of the loader's own ENDs are written above the statement loading us
+        if (I.tctx_.endCurTopStmt) {
+            auto it = I.tctx_.endsBeforeStmt.find(I.tctx_.endCurTopStmt);
+            if (it != I.tctx_.endsBeforeStmt.end()) c = it->second;
+        }
+        K.push_back(c - 1);      // -1: loaded above the loader's first END
+    }
+    K.push_back(I.endUnitSeq_.fetch_add(1, std::memory_order_relaxed));
+    I.tctx_.endsBeforeStmt.clear();
+    I.tctx_.endCurTopStmt = nullptr;
+}
+Interpreter::EndUnitScope::~EndUnitScope() {
+    I.tctx_.endUnitKey = std::move(key); I.tctx_.endsBeforeStmt = std::move(before);
+    I.tctx_.endCurTopStmt = cur;
+}
+
 // Every END of a unit, at any depth, in source order. Registration is what
 // Rakudo does at COMPILE time, so the phaser's textual position no longer runs
 // it — see isBlockPhaser — and an END in a never-called sub still runs at exit,
 // in the unit scope captured here.
-void Interpreter::registerEnds(const Program& prog, bool deferred) {
+void Interpreter::registerEnds(const Program& prog) {
     if (!prog.mayHaveEnd) return;   // the parser saw none: no walk at all
     std::vector<Block*> ends;
-    for (auto& s : prog.stmts) collectPhasersStmt(s.get(), "END", ends);
-    std::lock_guard<std::mutex> g(endPhaserMut_);
-    for (auto* b : ends) {
-        if (b->endSlot >= 0) continue;   // already registered (this unit is being re-entered)
-        b->endSlot = (int)endPhasers_.size();
-        endPhasers_.push_back({b, tctx_.cur, deferred});
+    g_endChain.clear(); g_endBlockChain.clear(); g_endEdges.clear();
+    // …and, per top-level statement, how many of this unit's ENDs are written
+    // ABOVE it — what a `use` in that statement needs to place its module.
+    for (auto& s : prog.stmts) {
+        tctx_.endsBeforeStmt[s.get()] = (int)ends.size();
+        collectPhasersStmt(s.get(), "END", ends);
     }
+    std::lock_guard<std::mutex> g(endPhaserMut_);
+    for (size_t i = 0; i < ends.size(); i++) {
+        Block* b = ends[i];
+        if (b->endSlot >= 0) continue;   // already registered (this unit is being re-entered)
+        std::vector<int> key = tctx_.endUnitKey;
+        key.push_back((int)i);
+        b->endSlot = (int)endPhasers_.size();
+        endPhasers_.push_back({b, tctx_.cur, std::move(key), /*entered=*/false});
+    }
+    for (auto& e : g_endEdges) {
+        if (e.second->endSlot < 0) continue;
+        auto& list = endsUnder_[e.first];
+        if (!list) list = std::make_shared<std::vector<Block*>>();
+        const_cast<std::vector<Block*>&>(*list).push_back(e.second);
+    }
+    if (!endsUnder_.empty()) endsUnderAny_.store(true, std::memory_order_relaxed);
+    g_endChain.clear(); g_endBlockChain.clear(); g_endEdges.clear();
 }
 void Interpreter::runFirstPhasers(const std::vector<StmtPtr>& stmts) {
     for (auto& s : stmts) if (s->kind == NK::Block) { auto* b = static_cast<Block*>(s.get());
@@ -7329,6 +7437,9 @@ Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink) {
     } controlReg{tcx, controlBlk, tcx.cur}; // tctx_.cur IS the block env here
     hasNestedSub = hoistSubs(b->stmts);
     hoistExprDecls(b->stmts, blockEnv, &b->hoistNeed); // `my` buried in ternary/nqp branches → block scope
+    // The ENDs this block holds bind to THIS entry — the innermost scope that
+    // actually ran wins, so `for 1..3 -> $i { END say $i }` says 3.
+    for (Block* e : b->endsWithin) captureEndScope(e);
     runEnterPhasers(b->stmts);
     // Run the block's CATCH handler; returns true if `.resume` was called (so the
     // block should carry on after the throwing statement).
@@ -15855,6 +15966,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
         // FIRST/NEXT/LAST): FIRST fires only on the first iteration (and must not
         // be re-run as an ENTER-alike), NEXT after each body, LAST after the final
         // one — all in THIS invocation's env, so block params ($c) are visible.
+        captureBodyEnds(c);   // an END anywhere in the body binds to THIS call's scope
         if (c.body && lpc) {
             bool savedSF = suppressLoopFirst_; suppressLoopFirst_ = true;
             runEnterPhasers(*c.body); // ENTER only; FIRST suppressed
@@ -16776,12 +16888,11 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
     // the hottest call shape there is (see catchScan above, same idiom).
     if (c.phaserScan < 0) {
         bool found = false;
-        if (c.body) for (auto& s : *c.body)
-            if (isBlockPhaser(s.get()) ||
-                (s->kind == NK::Block && static_cast<Block*>(s.get())->endSlot >= 0)) { found = true; break; }
+        if (c.body) for (auto& s : *c.body) if (isBlockPhaser(s.get())) { found = true; break; }
         c.phaserScan = found ? 1 : 0;
     }
     const bool hasPhasers = c.phaserScan == 1;
+    captureBodyEnds(c);   // …and a method's, which phaserScan does not cover
     if (hasPhasers && c.body) runEnterPhasers(*c.body);
     bool phasersDone = false;
     auto runLeaves = [&](bool ok) {

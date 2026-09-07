@@ -190,72 +190,58 @@ body. That would reach only interpreter-executed code inside the loop, which is
 precisely EVAL and regex blocks: the codegen turns a statically visible
 `next`/`last` into C++ `break`/`continue` and never consults the sentinel.
 
-## What an `END` phaser still cannot see (2026-09-07)
+## `END` phasers: what the fix reaches, and what it does not (2026-09-07)
 
 `END` is registered where it is written and runs at program exit (issue #70,
-`t/regression/end-phaser-in-sub.raku`). The scope its body runs in is captured
-when the block holding it is **entered**, which is one step coarser than
-Rakudo's, whose frames the compiler flattens. Two shapes are left over.
+`t/regression/end-phaser-in-sub.raku`). Four follow-ups closed the gaps this
+entry used to hold open, in the same session:
 
-A block that is entered on some calls and not on the last one keeps the scope
-of the last entry it *did* get, where Rakudo — having flattened that `if` body
-into the routine's own frame — reads the routine's latest:
+- the scope a phaser runs in is captured on entry of **every** block that holds
+  it, not only its own, so `sub f($n) { if $n == 1 { END say $n } }` called
+  f(1), f(2) says 2 as Rakudo does — Rakudo flattens that `if` body into the
+  routine's frame, and re-capturing at each enclosing entry is the same answer;
+- an `END` in a block that never ran now runs **leniently** (`no strict`'s rule:
+  a name that resolves nowhere reads as Any), because the containers Rakudo's
+  compile-time pad would have carried never came to exist. It used to die with
+  X::Undeclared and be swallowed whole by the catch-all every END body runs
+  under, so `sub f($n) { my $x = $n * 2; END say "x=$x" }`, uncalled, printed
+  nothing where Rakudo prints `x=`;
+- a module's ENDs sort at the position of the `use` that loaded it, so they run
+  **after** the mainline ENDs written below that `use` and before those written
+  above it (`EndPhaser::key`). Both orders now agree with Rakudo: `use` at the
+  top with an `END` below it — the usual layout — and File::Temp's `t/03` shape,
+  where the `use` follows the file's own END and which
+  `t/regression/open-modes-bind-end-shift.raku` pins;
+- an EVAL's ENDs are keyed as registered when the EVAL **runs**, after every
+  compiled one, because EVAL is not compile time: `sub f { EVAL q[END …] }`
+  ends before a mainline `END` written after it.
 
-```raku
-sub f($n) { if $n == 1 { END say "n=$n" } }
-f(1); f(2);          # rakupp n=1 · Rakudo n=2
-```
+The thread-safety lesson is worth keeping: the first cut of the last two kept
+the per-unit ordering context on the interpreter. A `{ … }` block in a regex is
+an EVAL, so `await ^30 .map: { start { S/.+/{$/.chars.print}/ … } }` had thirty
+workers mutating one `std::unordered_map` — `t/regression/concurrent-match-scoping.raku`
+aborted, silently and every time. That context lives in the thread-local
+`ExecContext` now, and the shared registry is read either under its mutex or
+through a per-`Callable` `PublishedOnce` cache.
 
-And an `END` in a block that is **never** entered runs against the enclosing
-unit scope, so a lexical of that block is not merely undefined but undeclared;
-the exception every `END` body's failure is caught by then swallows the phaser
-whole:
+### The same phasers under `--target=js` (2026-09-07)
 
-```raku
-sub f($n) { my $x = $n * 2; END say "x=$x" }
-say "not called";    # rakupp prints nothing · Rakudo prints "x="
-```
+The JS backend used to hoist an `END` body to the top level wherever it was
+written, so a nested one was emitted OUT of the scope it was written in and a
+reference to an enclosing lexical became a free variable:
+`sub f($n) { END say "end-$n" }` died at exit with
+`ReferenceError: v_n is not defined`. It now emits the body into a slot that
+block entry assigns — the interpreter's shape — with the hoisted copy kept as
+the fallback for a block that never ran, and sorts the exit hooks by the
+phaser's source position (`Block::srcPos`), which its own emission order does
+not give: a sub's body is emitted after the mainline that calls it.
 
-Rakudo builds the pad at compile time, so the container exists before any call.
-The same repair `runLeavePhasers` makes for a declaration an early `return`
-jumped over would fix this one — supply the enclosing block's declared names as
-undefined — and it needs the names of every scope between the phaser and the
-unit, not just the phaser's own, which is why it is not done here.
+Two residues, both smaller than the crash they replace. A body that reaches a
+scope which never ran prints nothing where the interpreter (and Rakudo) print
+the undefined value — JS has no lenient lookup to fall back on, and the guard
+that keeps the ReferenceError from taking the program down at exit swallows the
+body with it. And the capture is per block rather than per enclosing frame, so
+the `if $n == 1` case above answers 1 there where the interpreter answers 2.
 
-Separately, and older than issue #70: a module's `END` runs **before** the
-mainline's own, because rakupp registers every mainline `END` before the first
-`use` executes, while Rakudo registers a module's at the textual position of the
-`use` that loads it. The orders agree when the `use` comes after the mainline's
-`END` (File::Temp's `t/03` is that shape, and
-`t/regression/open-modes-bind-end-shift.raku` pins it) and disagree when it
-comes first, which is the usual layout:
-
-```raku
-use SomeModule;      # its END registers here in Rakudo, and at `use` time in rakupp
-END say "mine";      # Rakudo: mine, then the module's · rakupp: the module's, then mine
-```
-
-### The same phaser under `--target=js` (2026-09-07)
-
-The JS backend hoists an `END` body to the top level wherever it is written
-(`endBlocks` in `src/codegen/Js.cpp`, emitted as `R.atEnd(() => {…})`), so a
-nested one is emitted OUT of the scope it was written in. With no free
-variables that lands on the right answer — `sub f { END say "cleanup" }` defers
-correctly, uncalled sub included — but naming a lexical of the enclosing routine
-emits a reference to a variable that does not exist at top level:
-
-```raku
-sub f($n) { END say "end-$n" }
-f(1); f(2); f(3);
-say "main";
-# interpreted (and Rakudo): main / end-3
-# --target=js: main, then `Internal error: ReferenceError: v_n is not defined`
-```
-
-Pre-existing, and untouched by the issue #70 fix (verified identical on the
-binary before it). The interpreter's shape is the one to copy: a slot per
-phaser, assigned the closure where the block runs, called once at exit — which
-here means a top-level `let _endN = …` holding the hoisted body (so an uncalled
-sub still runs it), re-assigned in the inner scope at the phaser's position, and
-one `R.atEnd` per slot. `--exe` needs nothing: it already refuses to compile a
-nested `END` natively and bundles the interpreter, which now gets it right.
+`--exe` needs nothing: it refuses to compile a nested `END` natively and bundles
+the interpreter, which now gets all of this right.

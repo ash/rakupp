@@ -8643,6 +8643,7 @@ StmtPtr Parser::parseStatementImpl() {
             advance();
             auto b = std::make_unique<Block>();
             b->phaser = kw; // run-timing handled by the interpreter
+            b->srcPos = (int)pos_;                 // source order, finer than the line
             if (kw == "END") sawEndPhaser_ = true; // the unit needs the END walk
             if (isKind(Tok::LBrace)) { auto blk = parseBlock(); b->stmts = std::move(blk->stmts); }
             else { b->stmts.push_back(parseStatement()); b->stmtForm = true; } // PHASER statement; — declarations belong to the enclosing scope

@@ -682,6 +682,14 @@ struct ExecContext {
     // setupRwLinks. Consumed and cleared the moment a matching parameter uses
     // it, so a nested call cannot inherit it.
     Expr* rwInvocantExpr = nullptr;
+    // Where this thread stands in the END-ordering tree (see EndPhaser::key):
+    // the key prefix of the unit it is running, that unit's per-statement END
+    // counts, and which of its statements is executing — all read when the
+    // statement loads a unit of its own. Per-thread because a `{ … }` block in a
+    // regex is an EVAL, and thirty workers can be reparsing one at once.
+    std::vector<int> endUnitKey;
+    std::unordered_map<const Stmt*, int> endsBeforeStmt;
+    const Stmt* endCurTopStmt = nullptr;
     std::vector<Env*> dynStack;
     int callDepth = 0;
     // Reusable argument buffers for evalNqpOp, one per nesting depth. Every nqp
@@ -2002,19 +2010,53 @@ private:
     // exactly this way). Populated lazily; empty for programs that never take a
     // builtin reference, which keeps the call path's check free.
     std::map<std::string, Value> builtinRefs_;
-    // Every END phaser of every unit loaded so far, in collection order (source
-    // order within a unit). Rakudo REGISTERS an END where it is written and runs
-    // it at exit — once, wherever it sits: an END in a sub that is never called
-    // still runs, and one in a sub called three times still runs once. `env` is
-    // the scope its body will run in; entering the block that holds it captures
-    // the scope again, so the LAST entry wins, as Rakudo's closure clone does.
-    // `deferred` marks a module's or an EVAL's, which run before the mainline's.
-    struct EndPhaser { Block* blk; std::shared_ptr<Env> env; bool deferred; };
+    // Every END phaser of every unit loaded so far. Rakudo REGISTERS an END
+    // where it is written and runs it at exit — once, wherever it sits: an END
+    // in a sub that is never called still runs, and one in a sub called three
+    // times still runs once. `env` is the scope its body will run in; entering
+    // a block that holds it captures the scope again, so the LAST entry wins,
+    // as Rakudo's closure clone does.
+    // `key` is its SOURCE POSITION in the whole compilation, and the ENDs run in
+    // reverse key order. A unit loaded by another (a module, an EVAL) hangs off
+    // the loader's key at the position of the `use` that pulled it in, so a
+    // module's ENDs sort after the loader's ENDs written above that `use` and
+    // before those written below it — which is where Rakudo, compiling the
+    // module at that point, registers them.
+    // `entered` is false while `env` is still the unit scope the registration
+    // gave it — the block holding the phaser never ran, so the containers
+    // Rakudo's compile-time pad would have do not exist and the body has to be
+    // run leniently rather than die on a name that is merely unreachable.
+    struct EndPhaser { Block* blk; std::shared_ptr<Env> env; std::vector<int> key; bool entered; };
     std::vector<EndPhaser> endPhasers_;
+    // Every ROUTINE body that lexically holds an END, and which ENDs — so
+    // calling it re-captures the phasers nested anywhere inside, not only its
+    // own children. Read under endPhaserMut_ and only until a Callable has
+    // cached the answer (Callable::endsScan); a Block reads the same list off
+    // its own AST node instead (Block::endsWithin), which no lock guards
+    // because a block cannot run before its unit registers. The shared_ptr is
+    // what makes the cached answer safe: a later unit rehashing this map must
+    // not move a vector a Callable is holding.
+    std::unordered_map<const std::vector<StmtPtr>*, std::shared_ptr<const std::vector<Block*>>> endsUnder_;
+    std::atomic<bool> endsUnderAny_{false};   // …anything in it at all: the check every call makes
     std::mutex endPhaserMut_;  // the capture may run on any thread (a sub with an END, called from a `start`)
     // Register a unit's ENDs (any depth, source order) and skip them in place.
-    void registerEnds(const Program& prog, bool deferred);
+    void registerEnds(const Program& prog);
+    std::atomic<int> endUnitSeq_{0};   // separates two units loaded at one position
+    // Save/restore that context around a nested unit — a module or an EVAL —
+    // installing the child prefix. Restores on every exit path, throws included.
+    struct EndUnitScope {
+        Interpreter& I;
+        std::vector<int> key; std::unordered_map<const Stmt*, int> before; const Stmt* cur;
+        // atSourcePosition: a module, whose ENDs Rakudo registers where the `use`
+        // that loads it is compiled. False for an EVAL, which is not compile
+        // time at all: its ENDs register when it RUNS, after every compiled one,
+        // so they run before them.
+        explicit EndUnitScope(Interpreter& i, bool atSourcePosition = true);
+        ~EndUnitScope();
+    };
     void captureEndScope(Block* b);  // reaching/entering a registered END: remember the scope
+    void captureBodyEnds(Callable& c);  // …every END inside a routine body, on the call
+    void runEndBody(const EndPhaser& e);   // one END phaser, in the scope it captured
     const Value* envLookup(const std::string& name); // %*ENV<name>, or null
     bool envFlag(const std::string& name); // truthiness of %*ENV<name>
     std::string envStr(const std::string& name); // %*ENV<name> as a string
