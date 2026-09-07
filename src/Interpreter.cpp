@@ -7231,10 +7231,14 @@ void Interpreter::captureBodyEnds(Callable& c) {
 // nobody. No source excerpt and no `(X::Type)` line — the type is already on
 // line 1, and the excerpt belongs to the uncaught printer.
 std::string Interpreter::renderEndError(const RakuError& e) {
-    std::string tn = "X::AdHoc";
-    if (e.payload.t == VT::Object && e.payload.obj() && e.payload.obj()->cls &&
-        !e.payload.obj()->cls->name.empty())
-        tn = e.payload.obj()->cls->name;
+    // The payload is a constructed object only when the PROGRAM threw one
+    // (`X::IO::Mkdir.new(…).throw`). Every exception the engine raises carries a
+    // bare type object instead, so reading the name off the object path alone
+    // labelled all of them X::AdHoc — the least informative answer available,
+    // and one that tells a reader the engine did a plain `die` when it did not.
+    // `$!.^name` on the same exception says X::IO::Rmdir; so does this now.
+    std::string tn = e.payload.t == VT::Type ? e.payload.s : e.payload.typeName();
+    if (tn.empty() || tn == "Any" || tn == "Mu") tn = "X::AdHoc";
     std::string out = "  " + tn + ": " + e.message + "\n";
     if (e.bt) {
         BtStyle st; st.excerpt = false; st.typeLine = false; st.colour = false;

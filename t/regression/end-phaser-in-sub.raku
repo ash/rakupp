@@ -180,7 +180,28 @@ sub reported(Str $prog) { err($prog).match(/'X::' \w+ '::'? \w* ': ' \N+/, :g)»
     unless err('my $d = "/tmp/rakupp-gone-{$*PID}"; END { $d.IO.add("f").spurt("x") }')
            .contains('Failed to open file');
 
-# 21. a clean END stays silent — no banner when nothing threw
+# 21. the report NAMES THE TYPE, engine-thrown as well as user-constructed. The
+#     engine raises with a bare type object where a program throws a constructed
+#     one, and reading only the object path labelled every engine exception
+#     X::AdHoc — the least informative answer there is, and wrong: `$!.^name` on
+#     the same exception says X::IO::Rmdir.
+{
+    my $dir = $*TMPDIR.add("rakupp-endtype-{$*PID}");
+    $dir.mkdir;
+    $dir.add("keeps-it-non-empty").spurt("x");
+    my $e = err("END \{ '{$dir}'.IO.rmdir \}");
+    @fail.push("engine-thrown END exception mislabelled: '$e'")
+        unless $e.contains('X::IO::Rmdir:');
+    @fail.push('a user-constructed exception lost its type')
+        unless err('END { X::IO::Mkdir.new(path=>"P", mode=>"0o777", os-error=>"n").throw }')
+               .contains('X::IO::Mkdir:');
+    @fail.push('a plain die is not X::AdHoc')
+        unless err('END { die "plain" }').contains('X::AdHoc: plain');
+    $dir.add("keeps-it-non-empty").unlink;
+    $dir.rmdir;
+}
+
+# 22. a clean END stays silent — no banner when nothing threw
 @fail.push('a clean END printed a report')
     if err('say "m"; END say "bye"').contains('END blocks');
 
