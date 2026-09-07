@@ -72,7 +72,8 @@ found *by these tools themselves* while building Raku++:
   ([dev/findings/SPEC-DIVERGENCES.md](../dev/findings/SPEC-DIVERGENCES.md)).
 - Writing `rakujs/gen-examples.raku` surfaced a missing `IO::Path.relative` —
   the generator wanted it for a status line and hit `No such method`. A small
-  gap Roast hadn't flagged, now queued to implement.
+  gap Roast hadn't flagged; implemented since (`src/MethodCallPart3.cpp`), and
+  it answers what Rakudo answers.
 
 **It proves the claims.** "Raku++ runs real Raku" is easy to say; a
 1,400-line harness, a UCD parser chewing a 40k-line data file, and a benchmark

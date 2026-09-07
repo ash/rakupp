@@ -197,10 +197,11 @@ published from the `ash/raku.online` repo**, whose own Pages workflow serves
 publish itself is that repo's push, not anything in this one.
 
 1. **Build native rakupp first** (Step A already did this) — `build.sh` uses it
-   to regenerate `examples.js` from `examples/*.raku`. **Check which binary it
-   picks**: it searches `build/rakupp`, then `build-arm64/rakupp`, then
-   `./rakupp`, and takes the first that exists — so a stale `build/` shadows the
-   one you just built. Either pass it explicitly or verify the line it prints:
+   to regenerate `examples.js` from `examples/*.raku`. It searches
+   `build/rakupp`, `build-arm64/rakupp` and `./rakupp`, and now prefers the
+   first whose architecture matches the host, falling back to the first that
+   exists — so a stale x86_64 `build/` beside a native `build-arm64/` no longer
+   shadows it. Pass the binary explicitly anyway, or verify the line it prints:
    ```sh
    RAKUPP=build-arm64/rakupp rakujs/build.sh     # or: check "==> generating examples.js with …"
    ```
@@ -210,18 +211,21 @@ publish itself is that repo's push, not anything in this one.
    ```
    (Bootstraps Emscripten into `rakujs/emsdk/` on first run; `-Oz` release build.
    The version string is baked from `CMakeLists.txt`, so Step A.1 must precede this.)
-3. **Copy the built artifacts into the site** — into the `raku.online` checkout's
-   `www/`: `rakujs.js`, `rakujs.wasm`, `examples.js` (always), plus
-   `worker.js`/`index.html` **only if** they changed upstream in
-   `rakujs/playground/` (raku.online keeps its own branded `index.html`).
+3. **Copy the built artifacts into the site** — into the `raku.online`
+   checkout: `rakujs.js` and `rakujs.wasm` into `www/`, `examples.js` into
+   `www/play/` (always), plus `worker.js` into `www/play/` **only if** it
+   changed upstream in `rakujs/playground/` (raku.online keeps its own branded
+   `www/play/index.html`).
 4. **Stamp the cache tag** — from the `raku.online` checkout:
    ```sh
-   ./deploy.sh
+   ./build.sh
    ```
-   Its job that still matters is the **content-hash `?v=` tag** it writes into
-   `index.html`/`raku.js`, so browsers refetch the new wasm. (It also rsyncs to
-   an sshfs mount, which is a leftover from when the site was served from that
-   server — see below.)
+   Its `stamp_cache_tag` writes the **content-hash `?v=` tag** over every
+   versioned engine asset, so browsers refetch the new wasm instead of serving
+   the old one from cache. It runs on every build, so what is committed is
+   already what gets served. (An earlier `deploy.sh` did this and also rsynced
+   to an sshfs mount; it is gone, and the mount never published anything — see
+   below.)
 5. **Commit and push** the `raku.online` repo. **This is the publish**: the site
    is served by **GitHub Pages** from `www/`, via
    [`.github/workflows/pages.yml`](https://github.com/ash/raku.online/blob/main/.github/workflows/pages.yml),
@@ -229,7 +233,7 @@ publish itself is that repo's push, not anything in this one.
    update the live site — `curl -sI https://raku.online/` answers
    `server: GitHub.com`. Verify after the Pages run finishes:
    ```sh
-   curl -s https://raku.online/ | grep -o '?v=[0-9a-f]\{8\}' | head -1   # matches the tag deploy.sh printed
+   curl -s https://raku.online/ | grep -o '?v=[0-9a-f]\{8\}' | head -1   # matches the tag build.sh stamped
    ```
 
 ### C. Update the spec for the new feature list
@@ -246,7 +250,7 @@ schedules — worth keeping straight:
 What remains for you here is **content** — documenting features the release
 newly supports. The *data* behind the graphs and listings (conformance,
 divergences, the Roast map, the dashboard timeline) is a separate step, and it
-runs after the tag: see step 5 of [dev/RELEASING.md](../dev/RELEASING.md).
+runs after the tag: see step 6 of [dev/RELEASING.md](../dev/RELEASING.md).
 
 1. **Author/update feature pages** — one Markdown-ish file per feature under
    the spec site's `sites/spec/src/pages/<category>/<slug>.md` (categories: `literals`,
@@ -379,10 +383,11 @@ before adding a point; the two traps it records are worth repeating:
   anything inside a ~40-assertion band as unchanged and gate on the **per-file**
   diff, not on that column.
 
-The file's header calls itself the series behind a spec dashboard chart; that
-chart is **not wired yet** — nothing under `raku.online` reads the TSV today.
-Keep appending anyway: the series is the point, and the rows have to exist
-before anything can plot them.
+The file's header calls itself the series behind a spec dashboard chart. It is
+wired: `sites/grid/src/site.raku` reads this very path at build time and the
+[/grid](https://raku.online/grid/) home charts it, so a row appended here
+reaches the site at the next build. Keep appending: the series is the point, and
+a gap in the rows is a gap in the chart.
 
 ---
 
@@ -403,4 +408,4 @@ before anything can plot them.
 | a Rakugrid atom, generator or ruling | regenerate with rakupp in the rakugrid checkout, commit there; the next `ran` step makes the history rows either side non-comparable (**E**) |
 | anything, and you want to know what it broke in the wild | read [eye.raku.online](https://eye.raku.online/) — the week's regressions and the ranked mismatch clusters are the fix-session worklist (**D**) |
 | the interpreter, at release time | re-run both benchmark harnesses and update BENCHMARKS.md — every release, not just when a kernel looks moved (**A.5**) |
-| cut a new version tag | bump the three pins in the Homebrew formula once CI has published the assets (**A.7**); rebuild the tour so its lessons re-verify on the new binary (**C**); republish the site data (**[RELEASING.md](../dev/RELEASING.md) step 5**) |
+| cut a new version tag | bump the three pins in the Homebrew formula once CI has published the assets (**A.7**); rebuild the tour so its lessons re-verify on the new binary (**C**); republish the site data (**[RELEASING.md](../dev/RELEASING.md) step 6**) |

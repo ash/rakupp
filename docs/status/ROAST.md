@@ -40,8 +40,9 @@ comes first below, then the per-test figures. That assertion figure is the
 (0.66%), so it is a wash between the two; the measured breakdown is in
 [COUNTING.md](COUNTING.md#the-assertion-figures-net-of-skip-and-todo). (S15 — Unicode / strings / NFG —
 is now at 100% of assertions: full UCD case tables, grapheme-level regex, and
-complete `uniprop` coverage landed for v1.1; its lone non-passing file is a
-performance timeout, not a correctness gap. See [ROAST-GAPS](../dev/findings/ROAST-GAPS.md).)
+complete `uniprop` coverage landed for v1.1; its one non-passing file,
+`S15-unicode-information/uniprop.t`, fails 2 of its 203 assertions — a
+correctness gap, not a timeout. See [ROAST-GAPS](../dev/findings/ROAST-GAPS.md).)
 
 Full suite — **1,464 files**:
 

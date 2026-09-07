@@ -366,8 +366,9 @@ Assertions passed:    194901 / 212964  (91.5%)  of tests planned by files that e
 Assertions passed:    194901 / 216222  (90.0%)  of ALL declared tests (+3258 from 93 no-TAP files read from source; 4 more have no static plan)
 ```
 
-(No `ROAST` env var is required — the tests' own `use lib` resolves the
-Test-Helpers now. Setting `ROAST=<checkout>` is still harmless.)
+(The harness reads the Roast checkout from `$ROAST`, defaulting to
+`/Users/ash/roast` — set `ROAST=<checkout>` anywhere else. Nothing more is
+needed: the tests' own `use lib` resolves the Test-Helpers.)
 
 ## Timeout-partial sensitivity (found 2026-08-09)
 

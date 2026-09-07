@@ -130,36 +130,25 @@ Landed in the 1.0 campaign + pre-1.0 hardening (2026-07, 400 → 433 files):
   Clang everywhere it applies (measured 1.2–2.0× faster than GCC on the
   bench suite).
 
+- **The v3.0.0 campaign (shipped 2026-08-08)** — three pillars, each with a
+  written plan and each gated the usual way (zero Roast regressions, battery
+  unchanged, `perf-guard --check`): **the command line**, one option parser in
+  place of the position-sensitive mode cascade, with the Perl one-liner family,
+  `-i` in-place editing, borrowed flags (`-M`, `-v`, `--target`) and
+  `--profile` ([CLI-PLAN.md](../dev/plans/CLI-PLAN.md)); **real multicore
+  parallelism, on by default** — `start` and worker threads run on all cores
+  with no flag, and the cooperative GIL survives as `RAKUPP_GIL=1`
+  ([PARALLEL-PLAN.md](../dev/plans/PARALLEL-PLAN.md)); and **true
+  longest-token matching**, a side-effect-free declarative-prefix NFA for `|`
+  and protoregex dispatch in place of the probe-and-rank approximation
+  ([LTM-PLAN.md](../dev/plans/LTM-PLAN.md)).
+
 ## Next
 
-**The v3.0.0 campaign (2026-08-07).** Rakudo remains the reference — every
-divergence is still judged against it — but the next major is not framed as
-parity. Three pillars, each with a written plan gated the usual way (zero
-Roast regressions, battery unchanged, `perf-guard --check`); the
+Rakudo remains the reference: every divergence is still judged against it. The
 per-version overview lives in
-[dev/plans/VERSIONS.md](../dev/plans/VERSIONS.md):
-
-1. **The command line, with a first profiler**
-   ([dev/plans/CLI-PLAN.md](../dev/plans/CLI-PLAN.md))
-   — one option parser instead of the position-sensitive mode cascade, the
-   completed Perl one-liner family with `-i` in-place editing, flags
-   borrowed from other compilers (`-M`, `-v`, `--target`), and `--profile`
-   (routine-level instrumented profiling; the disabled hooks measured at
-   zero cost). The small pillar; can land in v2.x minors ahead of the tag.
-2. **Real multicore parallelism, on by default**
-   ([dev/plans/PARALLEL-PLAN.md](../dev/plans/PARALLEL-PLAN.md)) — execute
-   the GIL-removal design: harden the runtime so a user data race can never
-   crash it, fix the measured contention, pool the workers, then flip
-   `RAKUPP_PARALLEL` from opt-in to default with `RAKUPP_GIL=1` as the
-   escape hatch.
-3. **True Longest-Token Matching**
-   ([dev/plans/LTM-PLAN.md](../dev/plans/LTM-PLAN.md)) — replace the regex
-   engine's probe-and-rank approximation with a side-effect-free
-   declarative-prefix NFA for `|` and protoregex dispatch, fixing the
-   oracle-verified divergences without giving back the engine's speed.
-
-As with 1.x → 2.0.0, finished work ships in v2.x minor releases along the
-way; v3.0.0 tags when all three pillars hold their gates at once.
+[dev/plans/VERSIONS.md](../dev/plans/VERSIONS.md), and what has a written plan
+but no tag is below.
 
 **The v2.0.0 campaign — ecosystem modules — shipped** (see
 [dev/ecosystem/V2-MODULES-PLAN.md](../dev/ecosystem/V2-MODULES-PLAN.md) for the plan and
@@ -239,24 +228,15 @@ junctions, `do`/`try`/`gather`/`EVAL`, **phasers** (`BEGIN`/`INIT`/`ENTER`/
 bundling** for the rest (mainly grammars), so it never refuses a program.
 
 **Next:** grammars are best left bundled (they are the grammar engine).
-Performance-wise native `--exe` now beats Rakudo on every benchmark in the set,
-`fib` included (5.3× as of 2026-08-22 — see [BENCHMARKS.md](BENCHMARKS.md)) — a
-small-int fast path for `%`/`mod`/`%%` (they had gone through `BigInt::divmod`)
-closed the last collection/hash gaps, and shrinking `Value` to 128 bytes moved
-the recursion-heavy rows again. The *interpreter* has since taken the last two
-as well: lexical pads put slot-indexed variable access under the tree-walker
-and carried `fib`, and the TARG plan's first slice — a plain `$padvar = EXPR`
-skipping the assignment ceremony — carried `streq`. Interpreted, Raku++ now
-leads Rakudo on fourteen of the fifteen kernels, though `fib` (1.2×) and
-`streq` (1.1×) are level rather than led. Five kernels were added on
-2026-08-22 to cover classes the set had never measured — `rats`, `objects`,
-`arraypush`, `sortby`, `textsplit` — and one is a clear loss: `objects`
-(200k `.new` plus 300k method calls) is **1.8× behind Rakudo** interpreted on
-the benchmarks machine, with `--exe` only level with Rakudo's interpreter. The
-first sitting read 2.2× on a different box and estimated ~1.5× after
-correction; the direct re-measure landed between the two, so the loss is the
-code and not the machine. Method dispatch is the measured weak spot; see
-BENCHMARKS.md.
+
+Where the two engines stand is measured in [BENCHMARKS.md](BENCHMARKS.md) and
+re-measured every release. The numbers live there and are deliberately not
+copied here: a ratio quoted in two files goes stale in one of them, which is
+exactly what this paragraph used to demonstrate. The shape of the result, as of
+the 2026-09-03 sitting against a native arm64 Rakudo: `--exe` leads on most of
+the fifteen kernels, and `objects` — 200k `.new` plus 300k method calls — is
+the one it does not, which makes **method dispatch the measured weak spot**.
+Read the tables for the current split and the per-kernel ratios.
 
 ## How to make progress efficiently
 
