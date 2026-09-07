@@ -103,8 +103,7 @@ Raku defines strings as sequences of *graphemes*, and getting that right is one
 of Raku++'s strongest areas — the Unicode synopsis (S15) is its highest
 assertion coverage, and it passes 100% of the assertions that run (91,805 of
 91,807; see [ROAST.md](../status/ROAST.md)). Everything here is driven by tables
-generated from **Unicode 17.0** — with one exception, the grapheme-break table,
-which is still UCD 16.0:
+generated from **Unicode 17.0**:
 
 - **Normalization** — NFC / NFD / NFKC / NFKD (canonical and compatibility,
   including algorithmic Hangul composition), plus the `Uni` type.

@@ -44,7 +44,7 @@
   v3, with `RAKUPP_GIL=1` as the escape hatch ([ASYNC.md](ASYNC.md)).
 - **Unicode** — grapheme-correct strings (UAX #29 incl. emoji ZWJ), NFC/NFD/
   NFKC/NFKD, UCA collation (`unicmp`), names, properties — generated
-  UCD/UCA 17.0 tables, grapheme breaks 16.0 ([UNICODE.md](UNICODE.md)).
+  UCD/UCA 17.0 tables ([UNICODE.md](UNICODE.md)).
 - **Phasers & control** — `BEGIN` / `END` / `ENTER` / `LEAVE` / `FIRST` /
   `NEXT` / `LAST` / `CATCH` / `CONTROL`, labeled loops, `temp` / `let`.
 - **Language revisions** — 6.d by default and 6.e under `use v6.e.PREVIEW`,

@@ -71,7 +71,7 @@ runnable snippets in [RECIPES.md](RECIPES.md), complete programs in
   sub-signature destructuring, `callsame`/`nextsame`, coercion-type params.
 - **Unicode** — NFC/NFD/NFKC/NFKD, grapheme-correct `.chars` (UAX #29 incl. emoji
   ZWJ and Indic conjuncts), UCA collation (`unicmp`), names and numeric values,
-  category/script properties — from generated UCD/UCA 16.0–17.0 tables.
+  category/script properties — from generated UCD/UCA 17.0 tables.
   (See [UNICODE.md](UNICODE.md).)
 - **Concurrency** — real `std::thread`s: promises, `Supply`/`react`/`whenever`,
   `Channel`, `Thread`, `Lock`, `atomicint`. True CPU parallelism is the default
