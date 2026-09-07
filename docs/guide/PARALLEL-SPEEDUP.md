@@ -10,9 +10,12 @@ The two runnable programs referenced below live in
 [`tools/bench/parallel/`](../../tools/bench/parallel).
 
 All numbers on this page: **Apple M3 (4 performance + 4 efficiency cores),
-`build/rakupp`, best wall-clock of 9 interleaved runs** (see
-[the method](#the-method) for why interleaved). Absolute times will differ on
-your machine; the ratios are the point.
+`build-arm64/rakupp` 3.25.0, best wall-clock of 15 interleaved runs, measured
+2026-09-07** (see [the method](#the-method) for why interleaved). Absolute times
+will differ on your machine; the ratios are the point — and they move with the
+engine, so the date matters as much as the machine. Between the first sitting
+and this one the *serial* baseline got about four times faster while the
+threading did not, and every ratio here shrank accordingly.
 
 ---
 
@@ -29,8 +32,8 @@ numbers were measured then. Today the same runs need no env var at all, and
 RAKUPP_GIL=1 ./build/rakupp myprogram.raku # the pre-v3 GIL mode
 ```
 
-Under the default GIL, a CPU-bound fan-out measures at **0.95×–0.99×** at every
-thread count — very slightly *slower* with `start` than without, which is the
+Under the GIL (`RAKUPP_GIL=1`), a CPU-bound fan-out measures at **0.98×–0.99×**
+at every thread count — very slightly *slower* with `start` than without, which is the
 thread setup you paid for and did not get back. No amount of tuning changes
 that; the flag is the whole difference.
 
@@ -101,36 +104,41 @@ say sprintf '%-8s N=%d M=%d  %.3fs  sum=%d', $mode, $N, $M, $dt, @r.sum;
 ```
 
 ```sh
-RAKUPP_PARALLEL=1 ./build/rakupp tools/bench/parallel/cpu-fanout.raku 4 300000 serial
-RAKUPP_PARALLEL=1 ./build/rakupp tools/bench/parallel/cpu-fanout.raku 4 300000 parallel
+./build/rakupp tools/bench/parallel/cpu-fanout.raku 4 300000 serial
+./build/rakupp tools/bench/parallel/cpu-fanout.raku 4 300000 parallel
 ```
 
 M=300 000, both modes:
 
-| N | | plain loop | with `start` | speed-up |
+| N | mode | plain loop | with `start` | speed-up |
 |---|---|---|---|---|
-| 1 | `RAKUPP_PARALLEL=1` | 0.253s | 0.252s | 1.00× |
-| 2 | `RAKUPP_PARALLEL=1` | 0.482s | 0.247s | 1.95× |
-| 4 | `RAKUPP_PARALLEL=1` | 0.982s | 0.264s | **3.72×** |
-| 8 | `RAKUPP_PARALLEL=1` | 1.948s | 0.462s | 4.22× |
-| 1 | GIL (default) | 0.241s | 0.250s | 0.96× |
-| 2 | GIL (default) | 0.485s | 0.504s | 0.96× |
-| 4 | GIL (default) | 0.979s | 0.986s | 0.99× |
-| 8 | GIL (default) | 1.907s | 2.005s | 0.95× |
+| 1 | parallel (default) | 0.059s | 0.069s | 0.85× |
+| 2 | parallel (default) | 0.114s | 0.071s | 1.62× |
+| 4 | parallel (default) | 0.227s | 0.078s | **2.93×** |
+| 8 | parallel (default) | 0.450s | 0.163s | 2.76× |
+| 1 | GIL (`RAKUPP_GIL=1`) | 0.059s | 0.059s | 0.99× |
+| 2 | GIL (`RAKUPP_GIL=1`) | 0.115s | 0.116s | 0.99× |
+| 4 | GIL (`RAKUPP_GIL=1`) | 0.227s | 0.231s | 0.98× |
+| 8 | GIL (`RAKUPP_GIL=1`) | 0.452s | 0.457s | 0.99× |
 
 Reading the table:
 
-- **The whole GIL half sits at 0.95×–0.99×.** Four threads, eight threads, it
-  makes no difference: the flag is the difference, not the fan-out.
-- **N=1 at 1.00×** is the control on the control. One `start` block is not
-  faster than no `start` block, so the harness is not measuring itself.
+- **The whole GIL half sits at 0.98×–0.99×.** Four threads, eight threads, it
+  makes no difference: the mode is the difference, not the fan-out.
+- **N=1 at 0.85× is the control, and it is not 1.00×.** One `start` block with
+  nothing to contend with is *slower* than no `start` block. That is not thread
+  setup: the gap grows with the work (at M=2,000,000 it is 0.374s against
+  0.439s), and under `RAKUPP_GIL=1` the same single `start` runs at serial
+  speed. A worker thread's own loop costs about 15% more than the main
+  thread's, and every ratio below is quoted against that tax.
 - **Identical `sum=3595657` in every row**, serial and parallel, both modes.
-- **N=4 → 3.72× on 4 performance cores.** The missing 0.28 is thread setup plus
-  the `await` join.
-- **N=8 → 4.22×, not 7×.** This machine has four full-speed cores and four
-  efficiency cores at roughly a third of the speed. Size the fan-out to the
-  performance cores; `$*KERNEL.cpu-cores` reports the logical count (8 here),
-  which is the wrong number to fan out to.
+- **N=4 → 2.93× on 4 performance cores.** The missing 1.07 is the worker tax
+  above plus thread setup and the `await` join.
+- **N=8 → 2.76×, less than N=4.** This machine has four full-speed cores and
+  four efficiency cores at roughly a third of the speed, so the extra four
+  workers slow the batch down rather than speeding it up. Size the fan-out to
+  the performance cores; `$*KERNEL.cpu-cores` reports the logical count (8
+  here), which is the wrong number to fan out to.
 
 ---
 
@@ -195,23 +203,29 @@ All three compute the same total and the program checks it in both modes — a
 speed-up that loses increments is not a speed-up.
 
 ```sh
-RAKUPP_PARALLEL=1 ./build/rakupp tools/bench/parallel/atomic-counter.raku 4 300000 contended parallel
-RAKUPP_PARALLEL=1 ./build/rakupp tools/bench/parallel/atomic-counter.raku 4 300000 sharded   parallel
-RAKUPP_PARALLEL=1 ./build/rakupp tools/bench/parallel/atomic-counter.raku 4 300000 counters  parallel
+./build/rakupp tools/bench/parallel/atomic-counter.raku 4 300000 contended parallel
+./build/rakupp tools/bench/parallel/atomic-counter.raku 4 300000 sharded   parallel
+./build/rakupp tools/bench/parallel/atomic-counter.raku 4 300000 counters  parallel
 ```
 
 N=4, M=300 000:
 
 | strategy | mode | plain loop | with `start` | speed-up |
 |---|---|---|---|---|
-| contended | GIL | 1.181s | 1.160s | 1.02× |
-| contended | `RAKUPP_PARALLEL=1` | 1.167s | 0.398s | 2.93× |
-| sharded | GIL | 0.872s | 0.878s | 0.99× |
-| sharded | `RAKUPP_PARALLEL=1` | 0.863s | 0.254s | 3.40× |
-| counters | GIL | 0.944s | 0.958s | 0.99× |
-| counters | `RAKUPP_PARALLEL=1` | 0.948s | 0.270s | **3.51×** |
+| contended | GIL | 0.394s | 0.397s | 0.99× |
+| contended | parallel | 0.393s | 0.500s | **0.79×** |
+| sharded | GIL | 0.194s | 0.198s | 0.98× |
+| sharded | parallel | 0.194s | 0.116s | 1.68× |
+| counters | GIL | 0.284s | 0.288s | 0.98× |
+| counters | parallel | 0.285s | 0.125s | **2.27×** |
 
 Every row `PASS`es its `total == N*M` check.
+
+**The contended row is now a loss, not a small win.** Four threads updating one
+`atomicint` finish 27% *slower* than one thread doing all the work — the cache
+line is passed between cores faster than any of them can make progress. That is
+the strongest form of this page's point: contention does not merely fail to
+scale, it costs. Shard the counter, or keep one per worker.
 
 Two separate costs are visible, and it is worth keeping them apart:
 
@@ -271,19 +285,18 @@ A bare `$a⚛++` with no other work per iteration — the shortest possible
 atomic-counter loop — at N=4, M=500 000:
 
 ```sh
-RAKUPP_PARALLEL=1 ./build/rakupp -e 'my atomicint $a = 0; my $t = now; await (^4).map: { start { $a⚛++ for ^500_000 } }; say "{ (now - $t).round(0.001) }s $a";'
-RAKUPP_PARALLEL=1 ./build/rakupp -e 'my atomicint $a = 0; my $t = now; for ^4 { $a⚛++ for ^500_000 }; say "{ (now - $t).round(0.001) }s $a";'
+./build/rakupp -e 'my atomicint $a = 0; my $t = now; await (^4).map: { start { $a⚛++ for ^500_000 } }; say "{ (now - $t).round(0.001) }s $a";'
+./build/rakupp -e 'my atomicint $a = 0; my $t = now; for ^4 { $a⚛++ for ^500_000 }; say "{ (now - $t).round(0.001) }s $a";'
 ```
 
 | mode | plain loop | with `start` | speed-up |
 |---|---|---|---|
-| GIL | 1.298s | 1.439s | 0.90× |
-| `RAKUPP_PARALLEL=1` | 1.292s | 0.894s | **1.45×** |
+| GIL | 0.340s | 0.501s | 0.68× |
+| parallel | 0.337s | 0.802s | **0.42×** |
 
-1.45×, from a program that is nominally four-way parallel — and 2.93× for the
-same atomic increment once there is a little real work beside it in the loop.
-`sys` time triples, which is the tell: the process is in the kernel arbitrating,
-not computing. A loop like this is a *correctness* test for `atomicint` — a good
+0.42×, from a program that is nominally four-way parallel: fanning it out makes
+it two and a half times slower. `sys` time triples, which is the tell — the
+process is in the kernel arbitrating, not computing. A loop like this is a *correctness* test for `atomicint` — a good
 one, and both lines above print the exact 2000000 — but it is not a scaling
 benchmark. Do not expect one to demonstrate the other.
 
@@ -293,7 +306,10 @@ benchmark. Do not expect one to demonstrate the other.
 
 Before believing a parallel speed-up number:
 
-- [ ] `RAKUPP_PARALLEL=1` is actually set (it is read once at startup)
+- [ ] you are in parallel mode — the default; check that `RAKUPP_GIL=1` is
+      *not* set, and note `RAKUPP_PARALLEL=1` is not a switch (only
+      `RAKUPP_PARALLEL=0` is read, as a synonym for the GIL). The mode is read
+      once at startup
 - [ ] both sides do the same total work, and print the same checksum
 - [ ] N=1 measures 1.00× — the harness is not measuring itself
 - [ ] best of several runs, **interleaved** across configurations, and N is

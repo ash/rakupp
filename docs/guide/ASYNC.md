@@ -61,7 +61,7 @@ global-interpreter-lock mode — the pre-v3 default, kept as the escape hatch.
 | `sleep`/`await`/subprocess waits | overlap (GIL released) | overlap |
 | `Lock` / `Semaphore` | no-ops (the GIL already serialises) | real mutual exclusion |
 | Unsynchronised shared mutation | safe (serialised) | **your race** — guard it with a `Lock`, as in Rakudo |
-| Roast suite | 280 pass | 280 pass (0 regressions) |
+| Roast, S17 concurrency | 45 of 99 files | 44 of 99 — the gap is which timeout-prone files finished, not behaviour |
 
 Select the mode from the shell:
 
@@ -82,12 +82,12 @@ without a `Lock` is a data race, exactly as it is under Rakudo.
 sub work($n) { my $s = 0; $s += $_ for 1 .. 4_000_000; $s + $n }
 my @p = (^4).map(-> $n { start work($n) });
 say (await @p).elems;                     # → 4
-#   On an M3 (4P+4E): 3.5 s by default, against 7.4 s for the same four calls in
-#   a plain loop — 2.1×. Under `RAKUPP_GIL=1`: 8.3 s with `start`, 7.7 s without
-#   it — the thread setup, bought and not paid back.
+#   On an M3 (4P+4E), 2026-09-07: 0.82 s by default, against 1.99 s for the same
+#   four calls in a plain loop — 2.4×. Under `RAKUPP_GIL=1`: 2.01 s with
+#   `start`, 1.97 s without it — the thread setup, bought and not paid back.
 ```
 
-The number that means something is **7.4 s → 3.5 s**: the same work, same mode,
+The number that means something is **1.99 s → 0.82 s**: the same work, same mode,
 with and without `start`. Comparing parallel mode against GIL mode instead
 folds two different changes into one ratio.
 
@@ -98,7 +98,7 @@ on the spawning thread), so `start work($n)` parallelises just like `start { wor
 at the number of full-speed cores, not the logical-CPU count. On the 4P+4E
 machine above, eight `start` blocks do *not* reach ~5×: the extra work spills
 onto the efficiency cores (~⅓ the speed) and scheduling contention grows, so
-eight land at 1.6× (15.6 s → 9.9 s) against four at 2.1× — more total threads,
+eight land at 1.4× (3.94 s → 2.84 s) against four at 2.4× — more total threads,
 *less* speed-up. `$*KERNEL.cpu-cores` reports the logical count (8 on this
 machine); size the fan-out to the performance cores you actually have.
 
@@ -120,9 +120,12 @@ under `RAKUPP_GIL=1`.
 CPU-bound fan-out (parsing, transforms, number crunching across `start` blocks)
 scales with the number of **full-speed cores**, but *how close to that ceiling
 you get is a property of the loop, not of the machine*. Four `start` blocks on
-the four performance cores above measure anywhere from **2.1× to 3.7×** depending
-on what is inside them — 2.1× for the `$s += $_ for 1 .. 4_000_000` above, 3.7×
-for the same fan-out over native `int` arithmetic. Quote a speed-up for your
+the four performance cores above measure anywhere from **2.4× to 2.9×** depending
+on what is inside them — 2.4× for the `$s += $_ for 1 .. 4_000_000` above, 2.9×
+for the same fan-out over native `int` arithmetic. A worker thread also runs its
+own loop about 15% slower than the main thread does in parallel mode, which is
+part of why four cores do not buy four times: see
+[PARALLEL-SPEEDUP.md](PARALLEL-SPEEDUP.md). Quote a speed-up for your
 workload, not a number from a page like this one.
 
 Three things decide whether you see it: keep the fan-out at or below the
@@ -218,6 +221,40 @@ my $p = start { 10 };
 my $done = $p.then({ .result + 5 });      # runs once $p settles
 say $done.result;                         # → 15
 ```
+
+## Proc::Async — a child process as a Supply
+
+`Proc::Async.new(:w, …)` gives the child a stdin pipe. `.print`, `.say`, `.put`
+and `.write` each return a Promise kept once the bytes are handed over, and
+`.close-stdin` sends EOF. Without `:w` any of them throws
+`X::Proc::Async::OpenForWriting`.
+
+```raku
+my $p = Proc::Async.new(:w, 'sort');
+my @out;
+$p.stdout.tap(-> $chunk { @out.push($chunk.chomp) });
+my $done = $p.start;
+await $p.say("pear");
+await $p.say("apple");
+$p.close-stdin;
+say (await $done).exitcode;               # → 0
+say @out;                                 # → [apple\npear]
+```
+
+`.kill($signal)` signals the child. **A killed child still keeps its promise,
+and its `exitcode` is 0** — the kill is reported in `.signal`, so test `.so` or
+`.signal` rather than `.exitcode`:
+
+```raku
+my $p = Proc::Async.new('sleep', '30');
+my $done = $p.start;
+sleep 0.3;
+$p.kill(SIGTERM);
+my $res = await $done;
+say $res.exitcode, ' ', $res.signal, ' ', $res.so;   # → 0 15 False
+```
+
+Both behave as they do under Rakudo.
 
 ## Supplies
 
