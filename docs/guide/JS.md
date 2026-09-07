@@ -64,9 +64,12 @@ R.main(() => {
     let v___0 = R.Any;
     function u_fib(v_n) {
         let v___2_1 = R.Any;
-        return (R.truthy(R.lt(v_n, 2)) ? v_n : R.add(u_fib(R.sub(v_n, 1)), u_fib(R.sub(v_n, 2))));
+        if (arguments.length !== 1) R.arityError("fib", 1, arguments.length);
+        if (v_n === R.Mu) R.notAny("$n");
+        v_n = R.item(v_n);
+        return (R.truthy(R.lt(v_n, 2)) ? v_n : R.add((u_fib(R.sub(v_n, 1))), (u_fib(R.sub(v_n, 2)))));
     }
-    R.say(u_fib(29));
+    R.sink(R.say((u_fib(29))));
 }, { mainExit: true });
 ```
 
@@ -81,7 +84,7 @@ and a thrown control object only where it crosses a closure.
 
 | Raku | JavaScript |
 |---|---|
-| Int | a number while it is a safe integer, a BigInt past 2⁵³ — arithmetic promotes on overflow |
+| Int | a number while it is a safe integer, a BigInt past 2⁵³ — arithmetic promotes on overflow, though `Num.Int` above 2⁵³ stays a float |
 | Num | a number when not integral; a small box when integral, so `2e0` stays a Num |
 | Rat | exact, BigInt numerator and denominator; `0.1 + 0.2 == 0.3` |
 | Str | a string; `.chars`, `.substr`, `.comb`, `.flip` count graphemes with the engine's own UAX #29 tables — `"e\x[301]".chars` is 1 under Node, Bun and a browser |
@@ -92,9 +95,23 @@ and a thrown control object only where it crosses a closure.
 | Nil, Any, type objects | runtime type objects — never `null`/`undefined` |
 | classes, roles, enums, subsets | built at run time from the declaration; accessors, `BUILD`/`TWEAK`, multi methods |
 
-`say`, `print`, `note`, `put`, `printf`/`sprintf` and the gist/Str/raku
-rules match the interpreter byte for byte — that is what `--verify` and the
-corpus gate check.
+`say`, `print`, `note`, `put`, `printf`/`sprintf` and the gist/Str/raku rules
+follow the interpreter's, and `--verify` and the corpus gate compare a
+program's output against it byte for byte — the program's, not the rule's.
+Known divergences today:
+
+- `%.Nf` rounds ties the way JavaScript does: `%.2f` of `0.125` is `0.13`, not
+  `0.12`.
+- `Num.Rat` is longer than the interpreter's shortest round-trip Rat
+  (`(0.1e0).Rat` is `0.100000000000000006`, not `0.1`).
+- `Num.Int` past 2⁵³ stays a float: `(2e60).Int` prints `2e+60`.
+- `\r\n` counts as two characters on the ASCII fast path, so `"a\r\nb".chars`
+  is 4 rather than 3.
+- String comparison — `lt`, `leg`, `cmp`, `sort`, and hash `.gist` key order —
+  is UTF-16 code-unit order, not codepoint order, so a character above the BMP
+  sorts as its surrogate pair.
+- `say` of an unhandled `Failure` prints `(HANDLED) …` and carries on, where
+  the interpreter throws and exits 1.
 
 ### Containers
 
@@ -124,13 +141,18 @@ name and itself True. `for @a { $_ *= 2 }` and `for @a { s/o/0/ }` write
 back through the slot.
 
 Not modelled: binding a scalar to a slot (`my $x := %h<a>`) and the
-`Scalar` object itself (`.VAR`).
+`Scalar` object itself (`.VAR`). A scalar's **type constraint is not enforced**
+— `my Int $x = 'no'` is accepted where the interpreter throws
+`X::TypeCheck::Assignment` — and assigning `Nil` leaves `Nil` rather than the
+declared type's default.
 
 ## The core, and what is outside it today
 
 Inside: scalars, arrays, hashes, pairs, ranges, junctions, sets/bags/mixes;
 subs with full signatures (named, slurpy, optional, defaults, `is rw`,
-`where`, destructuring), multi dispatch by arity, type, literal and `where`;
+`where`, destructuring), multi dispatch by arity, type, literal and `where`
+(but **not** by sigil — an untyped `@` candidate does not beat an untyped `$`
+one);
 `if`/`unless`/`with`/`without`, `for` (with labels, `FIRST`/`NEXT`/`LAST`),
 `while`/`until`/`loop`/`repeat`, `given`/`when`, `last`/`next`/`redo`,
 `gather`/`take` (a generator when every `take` is lexically inside, eager
@@ -158,8 +180,9 @@ they call, up to the first code block, lookaround or variable) is scanned
 against the input and the branches are tried furthest-reach first, ties by
 literal count, then source order — the same ranking the engine's NFA
 answers. Rules with parameters (`token kw($k) { $k … }`, called as
-`<kw('if')>`) build their pattern per call; `:nth(n)`, `:x(n)` and `:3rd`
-are match-level adverbs; `:16<ff>`, `:16("ff")` and `:256[…]` radix forms
+`<kw('if')>`) build their pattern per call; `:3rd` and the other ordinal
+adverbs are match-level, while **`:nth(n)` is off by one and `:x(n)` is
+ignored**; `:16<ff>`, `:16("ff")` and `:256[…]` radix forms
 are numbers.
 
 `:P5` patterns are parsed by the engine's Perl 5 parser into the same tree,
@@ -235,20 +258,22 @@ and `--verify` (a module has nothing to run); `END` blocks do not run.
 
 ## Speed
 
-Node's startup is about 40 ms, so a small program is slower under JavaScript
+Node's startup is about 20 ms, so a small program is slower under JavaScript
 than under the interpreter; a program that computes is faster. On the
-benchmark machine (Darwin 24.6, arm64, Node 20.11), wall-clock including
-startup:
+benchmark machine (Darwin 24.6, arm64, Node v24.20.0, 2026-09-07), wall-clock
+including startup:
 
 | kernel | interpreter | `--target=js` under Node |
 |---|---:|---:|
-| fib(29) | 297 ms | 65 ms |
-| streq (1M `eq`) | 238 ms | 82 ms |
-| loopsum (1M) | 90 ms | 41 ms |
+| fib(29) | 298 ms | 82 ms |
+| streq (1M `eq`) | 233 ms | 69 ms |
+| loopsum (1M) | 86 ms | 36 ms |
 
-Deep recursion: a plain JavaScript function recurses about 10,000 deep on
-Node's default stack (`node --stack-size=65500` raises it); the interpreter
-runs on a 1 GiB stack. A program that overflows reports it as such and exits 1.
+Deep recursion: a plain JavaScript function recurses about 10,400 deep on
+Node's default stack, and a transpiled Raku sub about **8,900** — the emitted
+guard lines and the runtime call cost stack frames too. (`node
+--stack-size=65500` raises it.) The interpreter runs the same sub past 100,000.
+A program that overflows reports it as such and exits 1.
 
 ## `use JS` — calling into JavaScript
 
@@ -343,9 +368,10 @@ emitter awaits (the routines around them are coloured `async`, as for
   are its done/quit. `whenever` inside `supply { }` too. `Promise.in`,
   `$p.vow`, `Promise(supply { … })`.
 
-Outside: `signal`, `Proc::Async`, `Lock`, threads, `hyper`/`race`, and any
-program that needs true parallelism — a busy `start` block runs only when
-the main line yields.
+Refused at transpile time, with exit 5 and a message naming the construct:
+`signal`, `Proc::Async`, threads. Compiles and then fails at *run* time:
+`hyper`, `race`, `Lock`. And any program that needs true parallelism will not
+get it — a busy `start` block runs only when the main line yields.
 
 ## In a browser
 

@@ -117,8 +117,13 @@ the system OpenSSL and streams the decrypted response like any other socket.
 > *"No such method"* because the module never loaded. Fix it by matching the two:
 > run an x86_64 `rakupp` against the x86_64 OpenSSL —
 > `cmake -S . -B build-x64 -DCMAKE_OSX_ARCHITECTURES=x86_64 && cmake --build build-x64`,
-> then `./build-x64/rakupp your-program.raku` — or install an arm64 OpenSSL
-> (`/opt/homebrew`) and use the arm64 build. See [COMPILERS.md](COMPILERS.md).
+> then `./build-x64/rakupp your-program.raku`. Installing an arm64 OpenSSL is
+> **not** enough on its own: the failing path is an absolute one recorded in the
+> installed `OpenSSL` distribution's own `libraries.json` when zef built it, so
+> the distribution has to be reinstalled against the arm64 library
+> (`PKG_CONFIG_PATH=/opt/homebrew/opt/openssl@3/lib/pkgconfig zef install
+> --force-install OpenSSL`) before the arm64 build can find it. See
+> [COMPILERS.md](COMPILERS.md).
 
 ```raku
 use IO::Socket::Async::SSL;
@@ -168,5 +173,7 @@ Notes and current limits:
 | `IO::Socket::Async.connect` / `.listen` | works (client + server) |
 | `$sock.Supply(:bin)` reads, `.write` / `.print` | works |
 | `signal(SIGINT, …)` for shutdown | works |
+| `IO::Socket::INET` (synchronous client and server) | works; the constructor **throws** `X::AdHoc` on a refused connect or a failed bind, where it used to answer `Nil` |
+| IPv6 | **not supported** — every socket path is IPv4-only |
 | `IO::Socket::Async::SSL` (TLS, `:insecure`) | works on an arch-matched build |
-| TLS certificate verification | not yet |
+| TLS certificate verification (chain + hostname) | works, and is on by default; `:insecure` skips it |

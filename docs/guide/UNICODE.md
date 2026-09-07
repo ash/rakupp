@@ -6,9 +6,9 @@ the language, and Roast tests them hard (S15 alone is ~91k assertions). This
 document describes how Raku++ implements that: what works, where the data
 comes from, and what is still missing.
 
-**Measured standing (S15, Unicode / strings / NFG):** 72 of 82 files fully
-pass; of the assertions that run, 91,380 / 91,519 pass (99.8%), with one file
-(`S15-nfg/concat-stable.t`) timing out. The UCA collation conformance suite
+**Measured standing (S15, Unicode / strings / NFG):** 80 of 81 files fully
+pass, one partial; of the assertions that run, 91,805 / 91,807 pass (100%), and
+nothing times out. The UCA collation conformance suite
 (S32-str, 8,271 tests) passes 8,271 / 8,271 (verified). _(Measured with the
 current build against the pinned Unicode-17.0 Roast files.)_
 
@@ -20,8 +20,10 @@ Raku strings are sequences of *graphemes*, not codepoints: `"e\x[301]"` (e +
 combining acute) is one character, and so is `👨‍👩‍👧` (a ZWJ sequence).
 `src/Unicode.cpp` implements the full UAX #29 extended-grapheme-cluster rules:
 
-- `.chars`, `.comb`, `.substr`, `.flip`, `.uc`/`.lc`/`.tc` count and segment
-  by cluster (`uniGraphemeStarts()` is the single shared segmentation routine).
+- `.chars`, `.comb`, `.substr`, `.chop`, `.flip`, `.index`/`.rindex`/`.indices`
+  and `.uc`/`.lc`/`.tc` count and segment by cluster (`uniGraphemeStarts()` is
+  the single shared segmentation routine), and `\N` in a regex consumes a
+  whole grapheme.
 - All rules GB1–GB999 including Hangul syllables (GB6–8), emoji ZWJ sequences
   (GB11), regional-indicator pairs (GB12/13), and **GB9c** — Indic conjunct
   breaks (Devanagari विराम chains; Unicode 17 extends this to Myanmar, Khmer
@@ -100,8 +102,11 @@ say "café" unicmp "cafz";    # Less   (é sorts right after e, not past z)
 ### 4. Character knowledge
 
 - `uniname`/`.uniname` and `\c[NAME]` — names in both directions, including
-  control-character aliases from `NameAliases.txt`; out-of-range/unassigned
-  codepoints answer `<unassigned>`.
+  control-character aliases from `NameAliases.txt`. An unassigned codepoint
+  answers `<reserved-XXXX>`, a noncharacter `<noncharacter-XXXX>`, and one out
+  of range `<unassigned>` — as Rakudo does. `uniparse` is lenient about the
+  numeric tail of an algorithmic name: `CJK UNIFIED IDEOGRAPH-ZZZZ` answers a
+  character here where Rakudo throws `X::Str::InvalidCharName`.
 - `unival`/`univals` — numeric values as exact `Rat`s (`"½".unival` is the Rat `0.5`, `"↉".unival` is `0`).
 - `uniprop`/`uniprops` — general category, Script, Block, Age, Line_Break,
   Word_Break, East_Asian_Width, Numeric_Type, Joining_Type, the case-mapping and
@@ -110,7 +115,11 @@ say "café" unicmp "cafz";    # Less   (é sorts right after e, not past z)
 - Regex property classes: `<:Lu>`, `<:Latin>`, `<:Script<Greek>>`,
   `<:bc<L>>` (bidi class), `<:InBasicLatin>` (blocks), and the binary
   properties from `PropList.txt`/`DerivedCoreProperties.txt`
-  (`<:Math>`, `<:Soft_Dotted>`, …). They compose with the ordinary class
+  (`<:Math>`, `<:Soft_Dotted>`, …). **Caveat:** the derived properties that
+  follow from case — `<:Upper>`, `<:Lower>` and `<:Alpha>` — are answered by
+  general category today, so a character that is `Uppercase` without being `Lu`
+  (Roman numeral `Ⅹ`, general category `Nl`) does not match; `<:Lu>` and the
+  PropList binaries are exact. They compose with the ordinary class
   operators when the class is written in `+`/`-` form — `<+:L-[b]>` is every
   letter but `b`. **Caveat:** subtraction written straight after a *bare*
   property (`<:L-[b]>`) is currently swallowed into the property name and
@@ -181,15 +190,13 @@ landed. What remains is a short tail, mostly outside S15:
   mappings are complete, but the *conditional* SpecialCasing rules are skipped,
   so `.lc` does not yet produce Greek **final sigma** (`"ΟΔΥΣΣΕΥΣ".lc` ends in
   `σ`, should be `ς`). Language-tailored (`lt`/`tr`/`az`) rules are likewise
-  language-neutral. (Non-conditional folding is complete: `"ß".fc` → `ss`,
+  language-neutral. Rakudo does the same here — `"ΟΔΥΣΣΕΥΣ".lc` ends in `σ` on
+  both engines — so this is a shared departure from SpecialCasing, not a Raku++
+  divergence. (Non-conditional folding is complete: `"ß".fc` → `ss`,
   `"ﬆ".fc` → `st`.)
-- **`:ignorecase` / `:ignoremark`** on `contains`/`starts-with`/`index` handle
-  ASCII but miss some non-ASCII foldings (`"FOÖ"`); `samemark` is not implemented.
-- **`.collate` / `.sort`** do not route through the UCA yet — only the
-  `unicmp`/`coll` infixes do (`.collate` isn't a method at all). No locale
-  tailorings (CLDR) for collation.
-- **`S15-nfg/concat-stable.t` times out** — a *performance* limit, not a
-  correctness one: its O(n²) concat loop meets an O(n) `Array.shift`, so it runs
-  ~90 s over the harness's 10 s budget. Every assertion in it passes when it
-  finishes. Closing it needs an amortized-O(1) `shift` (see
-  [ROAST-GAPS](../dev/findings/ROAST-GAPS.md)).
+- **`Str.collate`** is missing. `.collate` on a list works and routes through
+  the UCA (`("resume", "résumé", "resumes").collate` orders as Rakudo does,
+  putting `résumé` in the middle where `.sort` puts it last), but
+  `"abc".collate` throws `X::Method::NotFound`. There are no locale tailorings
+  (CLDR) on either path. `.sort` is codepoint order, as it is under Rakudo, so
+  that is not a gap.
