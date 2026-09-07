@@ -283,7 +283,9 @@ void BigInt::divmod(const BigInt& a, const BigInt& b, BigInt& q, BigInt& r) {
     if (b.sign == 0) return; // div by zero -> 0,0 (caller guards)
     if (cmpMag(a, b) < 0) { r = a; return; }
     // Fast path: one hardware divide instead of the base-1e9 long division
-    // below, whose per-limb BINARY SEARCH costs ~30 BigInt multiplications.
+    // below. (That loop was a per-limb BINARY SEARCH costing ~30 BigInt
+    // multiplications when these numbers were taken; it is Knuth's algorithm D
+    // now — see the comment there — so the ratio below is better than stated.)
     // Measured on values that fit in 64 bits, divmod was 2.1 us and gcd — which
     // is Euclid over divmod — was 15.8 us, so every Rat construction (gcd plus
     // two divmods, i.e. every decimal literal and every p/q in Raku) cost ~10 us

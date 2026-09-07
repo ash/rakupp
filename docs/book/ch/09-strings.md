@@ -171,7 +171,7 @@ keeps it, an element stored into a list.
 
 **None of the reasons copy-on-write was banned apply to `CowStr`,** because it
 is not trying to be a `std::string`. Its `operator[]`, `data()`, `begin()` and
-`substr` are `const`-only; the single mutation door is `mut()`, which detaches
+`substr` are `const`-only; the mutation door for text is `mut()`, which detaches
 explicitly and hands back a real `std::string&`. What C++11 outlawed was
 copy-on-write *hiding behind* an interface that promises O(1) non-`const`
 element access. `CowStr` promises no such thing.
@@ -215,11 +215,12 @@ earlier, for a type that gets something out of the body besides sharing.
 | `std::string` (libc++) | 24 |
 | `std::shared_ptr` | 16 |
 | **`CowStr`** | **40** |
-| `StrBody` | 40 |
+| `StrBody` | 56 |
 
 Both arms are stored side by side even though only one is ever live, so
-`CowStr` is the sum rather than the maximum. That is a 16-byte, 4% growth of
-`Value`, paid on every `Value` everywhere. The performance gate passed and
+`CowStr` is the sum rather than the maximum. That was a 16-byte, 4% growth of
+`Value` when this was written and `Value` was 392 bytes; `Value` is 128 now, so
+the same 16 bytes are an eighth of it. Paid on every `Value` everywhere. The performance gate passed and
 Roast came out marginally up, so it is bought and paid for — but it is a real
 tax and should be named as one. On libstdc++ the same layout is 48 bytes,
 because `sizeof(std::string)` is 32 there.
@@ -228,14 +229,24 @@ A promoted string also costs **two** allocations: `make_shared` fuses the
 control block with `StrBody`, but `StrBody::text` heap-allocates its own buffer
 for anything past the small-buffer capacity.
 
+`StrBody` grew to 56 bytes for a reason worth knowing, because it is the other
+half of the string-scan story. Beside the cheap scanning flags it carries two
+lazily built byte-offset tables — `cpIndex`, the byte offset of codepoint *i*,
+and `gIndex`, the byte offset of grapheme *g*, each with an end sentinel. They
+are what makes a positional operation on a non-ASCII string O(1) instead of a
+rescan from the start, which is the non-ASCII half of the quadratic the ASCII
+fast path had already closed. They are installed by compare-and-swap rather than
+by the idempotent store the flags use: two threads may both build one, and the
+loser deletes its own copy.
+
 ## Rules for working with it
 
 The type forwards about 1,100 read sites unchanged, which is the point. The
 places where it does not behave like a `std::string` are worth knowing.
 
-- **`mut()` is the only write door, and it detaches.** After `mut()` the string
-  is inline again and stays inline until it is next *assigned*, which is where
-  promotion happens. A long string mutated in a loop is therefore unpromoted for
+- **`mut()` is the write door for text, and it detaches.** After `mut()` the
+  string is inline again and stays inline until it is next *assigned*, which is
+  where promotion happens. A long string mutated in a loop is therefore unpromoted for
   the whole loop; if that ever shows up in a profile, build into a local
   `std::string` and assign once at the end.
 - **References from `str()` do not survive an assignment.** The same rule as

@@ -295,8 +295,11 @@ extern RakuReprFn g_rakuRepr;
 A raw pointer is zero-initialised before any dynamic initialisation runs, so
 installing it from another translation unit is order-safe — unlike a
 `std::function`, which would have its own construction order. There are a
-handful of these hooks in the runtime (`g_objListItems`, `g_deproxy`), each
-solving the same layering problem the same way.
+handful of these hooks in the runtime (`g_forceLazy`, `g_endlessLazy`), each
+solving the same layering problem the same way. Not every hook is one: `g_objListItems` and `g_deproxy` are
+`std::function`s, which is the alternative this paragraph argues against — they
+are installed early enough that it has not mattered, which is the sort of thing
+that is true until it is not.
 
 ## What it costs
 

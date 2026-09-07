@@ -60,10 +60,20 @@ Multiplication is schoolbook, O(n·m). There is no Karatsuba and no FFT: the
 sizes that appear in practice are small, and the workloads where they are not
 are dominated by other costs.
 
-Division is base-10^9 long division, and it has one wart worth naming: the
-per-limb quotient digit is found by **binary search** over `[0, BASE)`, costing
-about thirty `BigInt` multiplications per limb. That is expensive, which is why
-the fast path below matters so much.
+Division is base-10^9 long division — Knuth's algorithm D. The per-limb quotient
+digit is **estimated** from the leading limbs and then corrected, which is what
+normalising the divisor so its top limb is at least `BASE/2` buys: it bounds the
+estimate's error to 2, where without it a small leading limb can make the
+estimate wrong by a factor of `BASE`.
+
+It did not always work that way, and the reason it changed is a good example of
+a wart that was only theoretical until it was not. The quotient digit used to be
+found by **binary search** over `[0, BASE)`, at about thirty `BigInt`
+multiplications per limb. That made `gcd` — Euclid over `divmod`, which every
+`Rat` construction calls — take 865 ms on a 1,437-digit over 812-digit pair
+where Rakudo takes 3. And it was not a corner case: `Math::NumberTheory`'s
+`FatRat` digit expansions reduce `Rat`s with ~600-digit parts on every step, so
+that file simply never finished.
 
 ### The 64-bit fast path
 
@@ -259,8 +269,10 @@ of the input, and costs nothing:
 static double strToNumOr0(const std::string& s) {
     if (s.empty()) return 0.0;
     const char* p = s.c_str(); char* end = nullptr;
-    double d = std::strtod(p, &end);
-    return end == p ? 0.0 : d;      // stod would have thrown here
+    errno = 0;
+    double d = cnum::strtod(p, &end);
+    if (end == p) return 0.0;   // nothing numeric at the front — stod would throw
+    return d;
 }
 ```
 
