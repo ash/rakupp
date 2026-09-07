@@ -142,17 +142,9 @@ say $result.so;         # False
 
 ## Where Raku++ and Rakudo differ
 
-**A failed process throws in Rakudo when you discard it.** The `Proc` a
-`.start` promise is kept with throws when *sunk* — so a bare
-`await $proc.start;` statement dies under Rakudo if the process exited
-non-zero ("The spawned command … exited unsuccessfully"), which is why the
-snippets above assign the result. Raku++ does not sink-throw here: the await
-returns and you check `.so` or `.exitcode` yourself. (Rakudo's own docs flag
-this trap; their suggested spelling is `try sink await $p.start;`.)
-
-**Signal reporting.** A killed process under Rakudo reports `exitcode 0` with
-`.signal` set (`1` for SIGHUP); Raku++ has no `.signal` and reports
-`exitcode -1` for any signal death. `.so` is `False` on both, so test that.
+Three divergences that used to live here have closed: a sunk failed process
+throws on both engines, a signal death reports `exitcode 0` with `.signal` set
+on both, and `:w` with `.print`/`.say`/`.close-stdin` feeds the child here.
 
 **Tapping after `.start`.** Rakudo dies with "To avoid data races, you must
 tap stdout before running the process". Raku++ accepts the tap silently and it
@@ -169,13 +161,8 @@ leave unawaited is not being read at all under Raku++: its taps stay quiet, and
 once it has printed more than the OS pipe buffer (64 KB is common) it blocks
 until you await.
 
-**Writing to stdin is not implemented.** `Proc::Async.new(…, :w)` with
-`.print`/`.say`/`.write`/`.close-stdin` is a working feature in Rakudo; in
-Raku++ these methods are accepted and do nothing. `bind-stdin` (above) covers
-the process-to-process case; for feeding your own data to a command, use
-`run(…, :in)` from [shell.md](shell.md). Not implemented either: `.started`,
-`:ENV` on `.start` (`:cwd` works). `bind-stdin` is POSIX-only — on Windows it
-is accepted and does nothing.
+**Not implemented:** `.started`, and `:ENV` on `.start` (`:cwd` works).
+`bind-stdin` is POSIX-only — on Windows it is accepted and does nothing.
 
 **Ctrl-C at the terminal.** Raku++ puts each spawned process in its own
 process group, so an interactive Ctrl-C that stops your program does not

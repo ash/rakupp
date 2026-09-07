@@ -156,10 +156,14 @@ dedicated box.
 
 | running `say 1` | Raku++ | mutsu | Rakudo |
 |---|---:|---:|---:|
-| wall clock | 4.1 ms | 6.0 ms | 102.8 ms |
-| peak memory footprint | 1.5 MB | 4.3 MB | 91.1 MB |
-| max RSS | 4.2 MB | 10.4 MB | 129.8 MB |
-| installed size | 11.9 MB (one binary) | 32.6 MB (one binary) | 74 MB + MoarVM |
+| wall clock | 2.2 ms | 6.0 ms | 78 ms |
+| peak memory footprint | 1.2 MB | 4.3 MB | 92.1 MB |
+| max RSS | 4.2 MB | 10.4 MB | 130.7 MB |
+| installed size | 13.7 MB (one binary) | 32.6 MB (one binary) | 74 MB + MoarVM |
+
+The Raku++ and Rakudo columns were re-measured on 2026-09-07 (min of fifteen
+runs for wall clock); the mutsu column is carried forward from the 2026-08-31
+sitting, since mutsu is not installed on the box that took the new figures.
 
 The two-orders-of-magnitude startup gap is not an efficiency difference so much
 as an architectural one: Rakudo loads a large precompiled `CORE.setting` on every

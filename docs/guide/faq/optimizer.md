@@ -2,7 +2,7 @@
 
 `--exe` compiles a program to C++ and links it against the runtime; adding
 `-O` turns on the optimising code generator, and on the right program it is
-worth an order of magnitude — the prime sieve in `tools/optbench/` runs 40×
+worth an order of magnitude — the prime sieve in `tools/optbench/` runs 48×
 faster with it. So the question is fair: if it is that good, why do you have
 to ask for it?
 
@@ -37,7 +37,7 @@ under `-O`.
 
 | benchmark | `--exe` | `--exe -O` | speed-up |
 |---|---:|---:|---:|
-| sieve | 1029.3 ms | 25.4 ms | **40.6×** |
+| sieve | 971.4 ms | 20.2 ms | **48.1×** |
 | fib | 166.5 ms | 47.0 ms | 3.5× |
 | loopsum | 27.1 ms | 8.6 ms | 3.2× |
 | regex | 61.9 ms | 60.3 ms | 1.0× |
@@ -90,7 +90,7 @@ Until then, `-O` is where speculation lives — one flag away, never assumed.
 ## So when do I reach for it?
 
 When the hot code is *your* code: tight integer or scalar arithmetic, hot
-user-sub calls, loop-heavy kernels. That is where the 3× to 40× lives. Skip
+user-sub calls, loop-heavy kernels. That is where the 3× to 48× lives. Skip
 it when the time is in strings, IO, regexes, sorting or hashes — the
 runtime already owns those paths at full speed. Since it costs nothing at
 compile time, the practical answer is to build both and time them; the

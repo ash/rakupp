@@ -60,6 +60,8 @@ At the standard zef locations, and you never have to configure them:
 - every `~/.rakubrew/versions/*/install/share/perl6/{site,vendor}`
 - every Homebrew `Cellar/rakudo/*/share/perl6/{site,vendor}`
 - `lib`, `.` and `rakulib`, for the program's own files
+- the `rakulib` beside the `rakupp` binary itself, which is how a checkout's
+  bundled shims are found without an `-I`
 
 **The failure message is the list.** When a `use` fails, Raku++ prints every
 place it looked, in order:
@@ -70,6 +72,7 @@ Could not find Nope in:
     lib
     .
     rakulib
+    /path/to/rakupp/../rakulib
     /Users/ada/.raku
     /usr/local/Cellar/rakudo/2026.08/share/perl6/site
     /usr/local/Cellar/rakudo/2026.08/share/perl6/vendor
@@ -141,6 +144,6 @@ That is worth reporting — a parse error or a missing method *after* the module
 is located is an engine gap, not a path problem. Of the 35 distributions in one
 real store, 33 load unchanged; what usually fails is compile-time
 metaprogramming, slangs, or NativeCall bindings Raku++ does not model, and
-`use Foo:ver<…>` adverbs are accepted but not honoured. The list of known edges
+`use Foo:ver<…>` is honoured — the newest installed version that satisfies it wins — while `:auth<…>` is accepted and ignored. The list of known edges
 is in [MODULES.md](../MODULES.md#current-status-and-limits); new ones belong at
 <https://github.com/ash/rakupp/issues> with the module name.

@@ -24,13 +24,13 @@ statement, `say 1`, measured whole-process from launch to exit:
 
 | running `say 1` | peak footprint | max RSS |
 |---|---:|---:|
-| rakupp | 1.4 MB | 4.2 MB |
-| Rakudo | 91.5 MB | 125.2 MB |
+| rakupp | 1.2 MB | 4.2 MB |
+| Rakudo | 92.1 MB | 130.7 MB |
 
 Both columns because the two metrics count differently: *peak memory footprint*
 is what macOS charges the process, *maximum resident set size* also counts the
 clean pages mapped in from the binary and the shared libraries. Each wobbles a
-few MB between runs — Rakudo's RSS came out anywhere from 113 to 125 MB — and
+few MB between runs — Rakudo's RSS came out anywhere from 113 to 131 MB — and
 the gap does not.
 
 **No stop-the-world phase.** Freeing happens inline, at the drop, on the thread
@@ -59,19 +59,21 @@ Six consecutive runs of it per engine, on an otherwise idle machine:
 
 | run | rakupp — >1 ms / >5 ms / worst | Rakudo — >1 ms / >5 ms / worst |
 |---|---|---|
-| 1 | 0 / 0 / 0.4 ms | 19 / 13 / 21.0 ms |
-| 2 | 0 / 0 / 0.6 ms | 20 / 15 / 35.2 ms |
-| 3 | 0 / 0 / 0.5 ms | 19 / 15 / 18.1 ms |
-| 4 | 0 / 0 / 0.5 ms | 23 / 18 / 10.9 ms |
-| 5 | 3 / 0 / 1.8 ms | 17 / 13 / 18.6 ms |
-| 6 | 0 / 0 / 0.7 ms | 19 / 12 / 13.8 ms |
+| 1 | 0 / 0 / 0.1 ms | 22 / 3 / 7.4 ms |
+| 2 | 0 / 0 / 0.1 ms | 20 / 0 / 4.9 ms |
+| 3 | 0 / 0 / 0.0 ms | 24 / 0 / 4.9 ms |
+| 4 | 0 / 0 / 0.1 ms | 24 / 1 / 5.9 ms |
+| 5 | 0 / 0 / 0.1 ms | 21 / 3 / 7.7 ms |
+| 6 | 0 / 0 / 0.1 ms | 18 / 2 / 7.9 ms |
 
 The middle column is the one to read, and machine load is the reason to be
 careful with the other two: run the same program while a compile is going and
 rakupp's row moves too — one such run gave 30 / 8 / 30.1 ms. What does not move
-is Rakudo's twelve-to-eighteen iterations over 5 ms in *every* run, idle or not.
-Those are the collector; rakupp's occasional millisecond is the operating
-system.
+is Rakudo's twenty-odd iterations over 1 ms in *every* run, idle or not, against
+rakupp's zero. Those are the collector; rakupp's occasional millisecond, when it
+appears at all, is the operating system. (An earlier sitting of this table put
+Rakudo's over-5-ms column at twelve to eighteen; on this Rakudo it is nought to
+three, so the over-1-ms column is the one to read.)
 
 If you are writing something latency-sensitive — a request handler, an audio
 callback, a game loop — that is the property you are buying.
@@ -93,10 +95,12 @@ printf "build %.0f ms, free %.0f ms\n", $built * 1000, $freed * 1000;
 
 | | build | free |
 |---|---:|---:|
-| rakupp | 3357 ms | **485 ms** |
-| Rakudo | 17205 ms | **2 ms** |
+| rakupp | 1005 ms | **218 ms** |
+| Rakudo | 2685 ms | **0 ms** |
 
-The build column moves by a second between runs; the free column does not.
+(Three runs per engine, 2026-09-07; both columns repeated to within 25 ms.)
+Rakudo's free column is zero because the work has not happened yet, not because
+it was cheap.
 Rakudo's 2 ms is not free memory, it is postponed work — but if a half-second
 lands in the wrong place, move the drop somewhere it does not matter, or let
 the structure die with the process.

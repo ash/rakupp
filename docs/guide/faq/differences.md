@@ -2,7 +2,7 @@
 
 Raku++ targets the same language as Rakudo and is measured against it: every
 runnable example in the official documentation is executed on both, and every
-Roast assertion is scored. **943 of 1,451 documentation examples produce
+Roast assertion is scored. **953 of 1,451 documentation examples produce
 byte-identical output on both engines**, and ~90% of Roast's declared tests pass.
 
 The two are not the same program, though, and this page is the honest list of
@@ -83,11 +83,10 @@ descriptor behind it, so writing through costs an open/write/close per `print`.
 The same knob goes the other way on the standard handles — `$*OUT.out-buffer =
 65536` buys back the block for an output-heavy program, which Rakudo cannot do.
 
-**`Proc::Async`: sunk failures, `.signal`, stdin.** Rakudo throws when a failed
-process's `Proc` result is sunk (`await $p.start;` as a bare statement) and
-reports a signal death as `exitcode 0` plus `.signal`; Raku++ keeps going —
-check `.so` — and reports `exitcode -1` with no `.signal`. Writing to the
-child's stdin (`:w`, `.print`, `.close-stdin`) is not implemented. See
+**`Proc::Async` matches Rakudo now.** Sinking a failed process's `Proc` throws
+the same message on both engines, a signal death reports `exitcode 0` with
+`.signal` set on both, and `:w` with `.print`/`.say`/`.close-stdin` feeds the
+child. All three used to diverge and no longer do. See
 [background-processes.md](background-processes.md).
 
 **`.out` on a `run` you did not capture.** Rakudo hands back a bare `IO::Pipe`

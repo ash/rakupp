@@ -36,6 +36,7 @@ The message, then where it happened and how the program got there:
 $ rakupp -e 'sub f($x) { die "boom: $x" }; f(3)'
 boom: 3
   in sub f at -e line 1
+      1 | sub f($x) { die "boom: $x" }; f(3)
   in block <unit> at -e line 1
 ```
 
@@ -53,6 +54,9 @@ rather than where you asked:
 sub risky($x) { die "boom: $x" }
 try { risky(3) }
 with $! { say .message, " thrown in ", .backtrace.list[0].subname }
+# Raku++: boom: 3 thrown in risky      Rakudo: boom: 3 thrown in throw
+# Rakudo's innermost frame is its own `throw` routine, so frame 0 is not your
+# code there. Match on .subname, or take the first frame whose .file is yours.
 ```
 
 The whole story — errors with two positions, and the `$!.backtrace` API — is
@@ -91,9 +95,10 @@ than Rakudo's about statements running together across lines, so a program Rakud
 rejects may run here. If a program behaves oddly and you suspect a typo, running
 it under Rakudo is a quick way to have the syntax checked strictly.
 
-**Output appears all at once from a child process.** `shell('long-command')`
-without `:out` buffers and echoes at exit rather than streaming — see
-[shell.md](shell.md).
+**Output from a child process is not where you expect it.** `shell('…')`
+without `:out` streams straight to your terminal as the child writes, which
+means it is *not* captured — reach for `:out` when you want the text, and see
+[shell.md](shell.md) for which form gives you what.
 
 **A one-element list where you expected three.** Almost always itemisation, not a
 bug — see [containers.md](containers.md).

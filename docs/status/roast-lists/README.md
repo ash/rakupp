@@ -29,13 +29,21 @@ files per run silently lost their path and read as regressions. (Fixed in
 v3.22.0 by tapping the children's stderr; the list exists so the gate no longer
 depends on that output's framing at all.)
 
-## Two files per release, and which one to diff
+## The files per release, and which one to diff
+
+Since v3.24.0 a release leaves eight files here, not two:
 
 - `vX.Y.Z.list` — **one run**, the one whose file count is the repeating profile.
   This is the release's measurement, and it is what the CHANGELOG's figure comes
   from.
 - `vX.Y.Z-union.list` — every file that fully passed in **any** of the release's
   runs.
+- `vX.Y.Z-run1.list`, `-run2.list`, `-run3.list` — the individual passes the
+  union is built from, so the union can be rebuilt and checked rather than
+  trusted.
+- a `.meta` sidecar beside each list — gate 0's record of *what was measured*:
+  the binary, the Roast revision and the harness settings that produced it. A
+  list without its meta file is a count with no provenance.
 
 **Diff against the UNION.** A handful of concurrency and scheduler tests
 (`S17-*`, mostly) sit near the 10-second per-file timeout and flap between runs

@@ -8,7 +8,8 @@ runnable one-liners by topic; [REFERENCE.md](../REFERENCE.md) has every operator
 sub and method. This is for the questions in between, where the answer is a
 paragraph and a caveat rather than a signature.
 
-**Every snippet is run on both Raku++ and Rakudo and produces identical output.**
+**Every snippet is run on both Raku++ and Rakudo; where their output differs,
+the page says so and shows both.**
 Where the two genuinely differ, the page says so and explains why — those
 differences are the most useful thing here, since they are what a Rakudo user
 trips over.
