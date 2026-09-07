@@ -16,7 +16,7 @@ Reproduce any of them with:
 Scope note: this reflects the current build, defaulting to **Raku 6.d**. Where
 `rakupp` differs from Rakudo or omits something, it is called out inline and
 collected in [§14 rakupp-specific notes](#14-rakupp-specific-notes--caveats). The
-full machine-extracted inventories (221 subroutines, 736 methods) are in the
+full machine-extracted inventories (253 subroutines, 736 methods) are in the
 [appendices](#appendix-a--all-built-in-subroutines).
 
 ---
@@ -118,8 +118,9 @@ say pi;  say e;  say tau;  say Inf;  say NaN;   # → 3.14159… 2.71828… 6.28
 | `q:to/END/` | heredoc | see below | multi-line |
 
 ```raku
+my @a = 1, 2, 3;
 say "sum is {1+2}";      # → sum is 3        block interpolation
-say "arr @a[]";          # interpolate an array with []
+say "arr @a[]";          # → arr 1 2 3       interpolate an array with []
 my $s = q:to/END/;
     indented heredoc
     second line
@@ -216,7 +217,7 @@ say ?1, ' ', !1, ' ', +"42", ' ', ~42, ' ', -5;   # → True False 42 42 -5
 | `gcd` | greatest common divisor | `12 gcd 18` → `6` |
 | `lcm` | least common multiple | `4 lcm 6` → `12` |
 | `+&` `~&` `?&` | bitwise / buffer / bool AND | `5 +& 6` → `4` |
-| `+<` `~<` | bit / string shift-left | `1 +< 4` → `16`… see note |
+| `+<` `+>` | bitwise shift left / right | `1 +< 4` → `16`, `255 +> 4` → `15` |
 | `o` / `∘` | function composition | `(&a ∘ &b)(x)` |
 
 ```raku
@@ -224,8 +225,9 @@ say 6 +& 3;   # → 2      bitwise AND
 say 1 +< 4;   # → 16     left shift
 ```
 
-> **Note:** the *right*-shift forms `+>` / `~>` are **deliberately not lexed** in
-> `rakupp` (the `>` collides with other syntax). Left-shift `+<` / `~<` work.
+> **Note:** `+<` and `+>` are the integer shifts and both work. The buffer and
+> string forms `~<` / `~>` are not implemented here — nor in Rakudo, which
+> answers `infix:«~<» not yet implemented` for them.
 
 ### 3.5 Additive
 
@@ -281,10 +283,6 @@ relational ops return `Bool`.
 | `(<=)` | `⊆` | subset-or-equal | `<a b> (<=) <a b c>` → `True` |
 | `(<)` | `⊂` | strict subset | |
 | `(>=)` `(>)` | `⊇` `⊃` | superset / strict | `<a b c> (>) <a b>` → `True` |
-
-> `say` of a `Set`/`Bag` in `rakupp` prints one `element⏎True`/count line per
-> member rather than Rakudo's `Set(a b c)`. Use `.keys.sort` / `.raku` for a
-> stable rendering.
 
 ### 3.10 Ranges (non-chaining binary)
 
@@ -426,9 +424,8 @@ say (1,2) »+« (10,20);    # → (11 22)     element-wise
 say (1,2,3).map(-*);      # → (-1 -2 -3)  (prefer .map for prefix ops)
 ```
 
-Hyper method calls: `(1,2,3)>>.abs` calls `.abs` on each element. (Avoid the
-`<a b c>>>.meth` spelling — the `>>` collides with the `<…>` closer; use a
-parenthesised list.)
+Hyper method calls: `(1,2,3)>>.abs` calls `.abs` on each element, and
+`<a b c>>>.uc` works on a word list too.
 
 ### Zip `Z` / Cross `X` with an operator
 
@@ -453,10 +450,10 @@ say (1,2) X* (3,4);       # → (3 4 6 8)       cross-with-*
 with verified examples, grouped by purpose. The complete alphabetical list is in
 [Appendix A](#appendix-a--all-built-in-subroutines).
 
-> **Call-form caveat:** the *method* forms (`@list.map(…)`, `@list.grep(…)`,
-> `@list.sort(…)`) are the reliable spelling. The bare-sub form with a **block as
-> the first argument** — `map({…}, @list)` — is unreliable in the current build;
-> the Whatever-star form `map(*+1, @list)` and all method forms work correctly.
+> **Call-form caveat:** `map({…}, @list)` and `grep({…}, @list)` work here and
+> match Rakudo. `sort({…}, @list)` is the one to avoid: it works here and Rakudo
+> rejects that spelling as an ambiguous call, so write `@list.sort({…})` for code
+> that must run on both.
 
 ### Output & I/O
 
@@ -670,10 +667,14 @@ say Int.^mro;                    # method-resolution order
 ### Conditionals
 
 ```raku
+my $maybe = 5;
+my $x;
 if 5 > 3      { say 'a' } elsif 5 > 4 { say 'b' } else { say 'c' }
 unless 0      { say 'runs' }
 with   $maybe { say "defined: $_" }          # runs if defined, topicalises
-without $x    { say 'undef' } else { .say }  # inverse of with
+without $x    { say 'undef' }                # inverse of with
+# `without … else` compiles here and Rakudo refuses it outright
+# ("without does not take else, please rewrite using with") — see §14.
 ```
 
 ### Loops
@@ -708,9 +709,11 @@ my @sq = do for 1..3 { $_ * $_ };  say @sq;                          # → [1 4 
 ### Statement modifiers (postfix forms)
 
 ```raku
+my @list = 1, 2, 3;
+my $n = 0;
 say $_ for 1..3;
 say 'yes' if 5 > 3;
-$_++ while $_ < 10;
+$n++ while $n < 10;
 .say for @list;
 ```
 
@@ -835,17 +838,20 @@ try { die "boom" };  say $!.message; # → boom
 | `m:i/ … /` | `:ignorecase` match |
 | `m:s/ … /` | `:sigspace` match (whitespace in the pattern must match whitespace) |
 | `m:g/ … /` | `:global` — all matches |
+| `m:r/ … /` | `:r`/`:ratchet` — no backtracking; each atom keeps its first match |
+| `m:m/ … /` | `:m`/`:ignoremark` — compare base characters, ignoring marks |
 | `m:P5/ … /` | `:P5`/`:Perl5` — the pattern is Perl 5 syntax (`( )` groups, `[ ]` classes, `\1` backrefs, `(?i)`/`(?m)`/`(?s)`/`(?x)`, lookaround, `(?<name>…)`, `(?(N)yes\|no)`); works on `s:P5///` and `rx:P5//` too |
 | `s/ … / … /` | substitute (in place, on an lvalue) |
 | `tr/ … / … /` | transliterate |
 | `~~` / `!~~` | apply against a string |
 
-> **Not spec, and inert:** the two-letter forms `mm//` and `ms//` are **not**
-> official Raku (the language spells these `m:m//`/`m:ignoremark//` and
-> `m:s//`/`m:sigspace//`). `rakupp`'s lexer accepts `mm`/`ms` as match keywords but
-> attaches no adverb, so they currently behave like a plain `m//`. Use the
-> adverbial forms. (`:sigspace` works via `m:s//`; `:ignoremark` is not yet
-> implemented.)
+> **The two-letter forms.** `mm//` is a lexer alias this build accepts and
+> Rakudo rejects; it attaches no adverb, so it behaves like a plain `m//`.
+> **`ms//` is different and worth care: it is Rakudo's `:sigspace` match, and
+> this build accepts it without applying `:sigspace`** — the same program
+> answers differently on the two engines with no error either side. Write
+> `m:s//`, which is correct on both. (`:ignoremark` likewise has its adverbial
+> form, `m:m//`, which works here.)
 
 ```raku
 say 'foo123' ~~ / (\d+) /;    # → ｢123｣      $0 captures the group
@@ -858,10 +864,15 @@ my $t = 'Hello World'; $t ~~ s/World/Raku/;  say $t;   # → Hello Raku
 say 'a1b2c3' ~~ m:g/ \d /;     # → (｢1｣ ｢2｣ ｢3｣)   :g = global
 ```
 
-Common regex atoms: `\d \w \s` (+ negated `\D \W \S`), `.` any, `<[abc]>` char
-class, `<-[abc]>` negated, `+ * ? **N **N..M` quantifiers, `|` alternation, `( )`
-capture, `[ ]` non-capture group, `<name>` subrule, `<?before>`/`<?after>`
-look-around, anchors `^ $ « »`.
+Common regex atoms: `\d \w \s` (+ negated `\D \W \S`), `\h` horizontal and `\v`
+vertical whitespace, `\N` any character except a newline, `\c[NAME]` a named or
+numbered codepoint, `.` any, `<[abc]>` char class, `<-[abc]>` negated,
+`+ * ? **N **N..M` quantifiers, `|` alternation, `( )` capture, `[ ]`
+non-capture group, `<name>` subrule, `<?before>`/`<?after>` look-around, anchors
+`^ $ « »` and the line anchors `^^` / `$$`. The escapes work inside a character
+class too — `<[\w\-]>`, `<[\h]>`. The short control spelling `\cA` is the one
+exception: it works in a string literal and is refused inside a regex here,
+where Rakudo accepts it (§14).
 
 `|` is not first-match: branches are ranked by longest **declarative prefix**
 (the leading literals/classes/quantifiers, up to the first code block or
@@ -929,8 +940,9 @@ string, `.subparse` allows a partial match. Add an actions class with
 | `$*CWD` | current directory | |
 | `$?FILE $?LINE` | compile-time file/line | |
 
-> `$*OS` is **not** populated in `rakupp` (returns `(Any)`); use `$*KERNEL` /
-> `$*DISTRO` instead.
+> `$*OS` does not exist in either engine: `rakupp` answers `(Any)` (see §14),
+> Rakudo dies with "Dynamic variable $*OS not found". Use `$*KERNEL` /
+> `$*DISTRO`.
 
 > `$*RAKU.compiler.version` reports the **Rakudo era Raku++ is verified
 > against** (`v2026.08`), not the Raku++ release — modules gate on
@@ -997,9 +1009,28 @@ while writing this sheet:
 - **An undeclared dynamic variable answers `(Any)`** instead of raising —
   `say $*NO-SUCH-DYN` prints `(Any)` where Rakudo dies with "Dynamic variable
   … not found". A typo in a `$*` name therefore reads as an undefined value.
-- **`mm//` / `ms//`** are non-spec lexer aliases this build accepts and Rakudo
-  rejects (official Raku spells them `m:m//` / `m:s//`, both of which work here
-  too).
+- **`mm//`** is a non-spec lexer alias this build accepts and Rakudo rejects.
+  **`ms//` is worse than that**: Rakudo reads it as the `:sigspace` match and
+  this build ignores the adverb, so `'a b' ~~ ms/a b/` matches there and not
+  here, silently. Write `m:s//`.
+- **`sprintf` accepts an invalid directive.** `sprintf('%y', 1)` prints `%y`
+  here; Rakudo dies with "Directive y is not valid in sprintf format".
+- **`shell` ignores `:cwd` and `:env`** (`run` honours both), so a `shell`
+  given a working directory runs in the caller's instead.
+- **`open(:bin)` drops the adverb**: `.slurp` off such a handle answers a `Str`
+  here and a `Buf[uint8]` under Rakudo.
+- **`throws-like` does not check the exception type**, so a test naming a type
+  that does not exist still passes here.
+- **An unexpected named argument is accepted.** `sub f($x) {…}; f(1, :nope)`
+  runs here; Rakudo dies with "Unexpected named argument 'nope' passed".
+- **An unknown subrule matches the empty string.** `<nosuchrule>` and `<same>`
+  succeed here without consuming anything; Rakudo raises "No such method".
+  `<{ code }>` and `<&name>` are likewise zero-width no-ops here.
+- **`\cA` inside a regex is refused** — "Unrecognized backslash sequence" —
+  where Rakudo matches. The bracket forms `\c[1]` and `\c[NAME]` work here, and
+  `"\cA"` in a string literal works too; it is only the short form in a regex.
+- **`without … else`** (and `without … orwith`) compiles here. Rakudo refuses
+  it: "without does not take else, please rewrite using with".
 
 ---
 

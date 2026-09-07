@@ -63,9 +63,9 @@ Two numbers describe where Raku++ stands, and they measure different things:
   (199,980 / 206,123) — that variant counts only assertions in files that produce
   TAP, so it flatters by ignoring the ~25k tests in aborting files.
 - **Coverage — 660 / 1,464 files fully pass (~45%).** The stricter all-or-nothing
-  bar: a file counts only if every assertion passes. A sixth of the suite
-  produces no TAP at all yet (a parse error or unimplemented construct aborts the
-  file before any assertion runs).
+  bar: a file counts only if every assertion passes. Eight per cent of the suite
+  produces no TAP at all yet — 117 files where a parse error or an unimplemented
+  construct aborts before any assertion runs.
 
 Run the harness (below) for live numbers as features land. See
 [ROADMAP.md](../status/ROADMAP.md) for what's done and what's next,
@@ -88,10 +88,11 @@ Current results:
 - **The database layer works** — the `generate` subcommand runs through all the
   `DBIish` + MySQL queries (`get-countries`, `get-per-day-stats`,
   `get-vaccinations`, …) without error.
-- **It reaches HTML/chart generation** and currently stops at the first missing
-  built-in string method (`.trans`). Each such gap is a small, well-scoped
-  addition; getting here already exercised `now`, `qw//` word lists, `flatmap`,
-  and cross-module symbol resolution across a large codebase.
+- **It reaches HTML/chart generation.** Getting there exercised `now`, `qw//`
+  word lists, `flatmap`, and cross-module symbol resolution across a large
+  codebase. (This list is a v1.x-era snapshot and the run has not been repeated
+  since: the method it named as the stopping point, `.trans`, has worked in both
+  its spellings for many releases, so where it stops today is unmeasured.)
 
 This is a moving target tracked as features land — it is not passing end-to-end
 yet, but it drives real-world hardening that Roast alone doesn't.
@@ -100,8 +101,10 @@ yet, but it drives real-world hardening that Roast alone doesn't.
 
 Raku defines strings as sequences of *graphemes*, and getting that right is one
 of Raku++'s strongest areas — the Unicode synopsis (S15) is its highest
-assertion coverage, ~95% passing. Everything here is driven by tables generated
-from **Unicode 16.0**:
+assertion coverage, and it passes 100% of the assertions that run (91,805 of
+91,807; see [ROAST.md](../status/ROAST.md)). Everything here is driven by tables
+generated from **Unicode 17.0** — with one exception, the grapheme-break table,
+which is still UCD 16.0:
 
 - **Normalization** — NFC / NFD / NFKC / NFKD (canonical and compatibility,
   including algorithmic Hangul composition), plus the `Uni` type.
@@ -162,7 +165,8 @@ build/rakupp -I lib program.raku      # add lib dirs to the module search path
 |---|---|
 | `FILE [ARGS…]` | Run a program from a file (extra args become `@*ARGS`) |
 | `-e 'CODE' [ARGS…]` | Run a one-liner |
-| *(no file)* | Read the program from standard input |
+| *(no file, at a terminal)* | Start an interactive session (REPL) |
+| *(no file, stdin redirected)* | Read the program from standard input; `rakupp -` is the explicit spelling, and it passes any further arguments to `@*ARGS` |
 | `-I <path>`, `-I<path>` | Add a directory to the module search path (repeatable) |
 | `--bundle SRC -o OUT` | Compile to a standalone binary: embed source + interpreter |
 | `--aot SRC -o OUT` | Compile: parse ahead of time, embed the AST |
@@ -193,7 +197,7 @@ program `use`s are found and embedded, so the binary needs nothing at run time.
 | `RAKUPP_PRECOMP_DIR=…` | Put the cache somewhere other than `~/.cache/rakupp/precomp` |
 | `RAKUPP_CONFIG=…` | Use a different settings file than `~/.config/rakupp/rakupp.config` |
 | `RAKUPP_TRACE=1` | Report every module as it loads: where it came from, and whether it parsed or came from the cache |
-| `RAKUPP_NO_DECLCHECK=1` | Skip the before-the-run undeclared-variable check (see below) |
+| `RAKUPP_NO_DECLCHECK=1` | Skip the check that refuses a program naming an undeclared variable before it starts — see [CLI.md](CLI.md) |
 
 `-I <path>` (or `-I<path>`, repeatable) prepends directories to the module
 search path, so `use Foo` finds `<path>/Foo.rakumod` — the same as Rakudo's
@@ -234,7 +238,7 @@ rakupp --ast-roundtrip t/fixtures/native-parity.raku
 ```
 
 ```
-ok t/fixtures/native-parity.raku  (905 bytes)
+ok t/fixtures/native-parity.raku  (2151 bytes)
 ```
 
 It asserts two things, which fail differently and are both needed: re-serializing
@@ -383,7 +387,9 @@ src/
   Unicode.* / unicode_*_gen.cpp Graphemes (UAX #29), normalization, UCA collation, names/properties (UCD/UCA 17.0 — see UNICODE.md).
   Runtime.*              Shared entry point (parse + interpret); the static library.
   Codegen.*              Native backend: transpiles the AST to C++ (`--exe`).
-  main.cpp               CLI entry point (interpret, `-e`, `--aot`, `--exe`).
+  codegen/Js.* / js-rt/  JavaScript backend: AST to JS, plus its runtime (`--target=js`).
+  MethodCall*.cpp        The method-dispatch table, split across three files.
+  main.cpp               CLI entry point: the run modes, the compile modes and the tooling subcommands.
 ```
 
 The runtime (everything except `main.cpp`) builds into a static library,

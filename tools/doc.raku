@@ -74,6 +74,16 @@ sub show(@hits, Int $max) {
     if @hits > $max { say "\n… {@hits - $max} more (--all shows every hit)" }
 }
 
+# `rakupp doc :i` used to print the usage instead of the entry. A Raku adverb is
+# exactly the kind of thing a reader reaches for `doc` to explain, but MAIN's
+# argument parser reads a leading colon as a NAMED argument, finds no `:i`
+# parameter, and gives up on the whole dispatch. Protecting the token here and
+# unwrapping it in MAIN costs two lines and keeps every other spelling as it was.
+# (A user-defined `ARGS-TO-CAPTURE` would be the tidy way; Rakudo honours one and
+# Raku++ ignores it, so this survives both.)
+constant ADVERB = "\0adverb\0";
+@*ARGS = @*ARGS.map({ .starts-with(':') ?? ADVERB ~ $_ !! $_ });
+
 #| Look a Raku symbol up in the language reference: a builtin, a method, an operator, a syntax form
 sub MAIN(
     *@symbols,          #= what to look up: trim, .comb, Z, <=>, gather, MAIN …
@@ -87,7 +97,7 @@ sub MAIN(
         exit 1;
     }
     my $missing = 0;
-    for @symbols -> $raw {
+    for @symbols.map(*.subst(/^ $(ADVERB) /, '')) -> $raw {
         my $sym = $raw.subst(/^ '.' /, '');          # `.trim` is the method spelling of `trim`
         my @hits;
         for 'REFERENCE.md', 'FEATURES.md' -> $name {
