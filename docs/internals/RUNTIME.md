@@ -827,20 +827,27 @@ The `owner` out-param reports which class the method was found in, so
 **Roles.** A role is a `ClassInfo` with `isRole = true`, a set of
 `requiredMethods`, and `doneRoles`. Composition copies the role's methods and
 attributes into the class and records membership; **required methods are checked
-at class declaration** (using the very `findMethod` above), throwing
-`X::Role::Unimplemented` if unmet:
+at class declaration**, throwing `X::Comp::AdHoc` if unmet — and the check is
+more generous than a lookup, because a requirement is satisfied four ways:
 
 ```cpp
-for (ClassInfo* role : composed)
-    for (const std::string& req : role->requiredMethods)
-        if (!ci->findMethod(req))
-            throw RakuError{Value::typeObj("X::Role::Unimplemented"), ...};
+// src/Interpreter.cpp — for each name a role requires
+ok = hasImpl(ci, rq, nullptr)      // a non-stub implementation anywhere in the type
+  || classOwn.count(rq);           // …or the class's own stub: a deliberate promise
+if (!ok && attrCovers(ci, rq)) ok = true;   // …or a public attribute's accessor,
+                                            //    or an attribute `handles` delegation
+if (!ok)
+    throw RakuError{Value::typeObj("X::Comp::AdHoc"),
+        "Method '" + rq + "' must be implemented by " + clsName +
+        " because it is required by roles: " + rl + "."};
 ```
 
+A stubbed *multi* is checked per candidate signature rather than by name.
+
 `.does` / `~~` consult `doesRole`, which returns true for the class itself,
-directly or transitively composed roles, and roles done by parents. (Role method
-composition is a copy-into-table — last writer wins, with no conflict
-diagnostic.)
+directly or transitively composed roles, and roles done by parents. Two roles
+providing the same method is a conflict, not a race: composition raises
+`X::Role::Unresolved::Method` unless the class resolves the name itself.
 
 ## How built-in types get methods
 

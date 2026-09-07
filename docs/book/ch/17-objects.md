@@ -2,7 +2,7 @@
 
 Raku's object surface is one of the largest in the language: classes with
 inheritance, roles, runtime mixins, a meta-object protocol, `augment` and
-`supersede`, package stashes. A reader arriving from C++ or the JVM would
+package stashes. A reader arriving from C++ or the JVM would
 expect a subsystem to match. There is not one — the whole of it is two
 structs and the operations that read them, and most of this chapter follows
 from how little those structs hold.
@@ -162,15 +162,24 @@ A role is a `ClassInfo` with `isRole` set, a set of `requiredMethods`, and a set
 of `doneRoles`. Composition copies the role's methods and attributes into the
 class and records membership.
 
-Required methods are checked **at class declaration**, using the same
-`findMethod` that dispatch uses:
+Required methods are checked **at class declaration**, and the check is more
+generous than a lookup, because there are four honest ways to satisfy a
+requirement:
 
 ```cpp
-for (ClassInfo* role : composed)
-    for (const std::string& req : role->requiredMethods)
-        if (!ci->findMethod(req))
-            throw RakuError{Value::typeObj("X::Role::Unimplemented"), …};
+// src/Interpreter.cpp — for each name a role requires
+ok = hasImpl(ci, rq, nullptr)      // a non-stub implementation anywhere in the type
+  || classOwn.count(rq);           // …or the class's own stub: a deliberate promise
+if (!ok && attrCovers(ci, rq)) ok = true;   // …or a public attribute's accessor,
+                                            //    or an attribute `handles` delegation
+if (!ok)
+    throw RakuError{Value::typeObj("X::Comp::AdHoc"),
+        "Method '" + rq + "' must be implemented by " + clsName +
+        " because it is required by roles: " + rl + "."};
 ```
+
+A *stubbed multi* is checked per candidate signature rather than by name, so a
+class that implements one of two required signatures is still incomplete.
 
 `.does` and `~~` consult `doesRole`, which is true for the role itself, for
 directly or transitively composed roles, and for roles done by parents:
@@ -204,9 +213,10 @@ the role's body sees `%phase-defaults` in `does Cro::Policy::Timeout[%h]`.
 `makeRolePun` handles the anonymous case, `R[Int].new`, by building a punned
 class on the spot.
 
-Role composition is **last-writer-wins**: two roles defining the same method
-both copy into the table, with no conflict diagnostic. That is a known
-divergence.
+Two roles defining the same method is a **conflict**, not a race: composition
+raises `X::Role::Unresolved::Method` — "Method 'r' must be resolved by class E
+because it exists in multiple roles (R1, R2)" — unless the class declares the
+name itself. Rakudo says the same sentence with the roles in the other order.
 
 ## Mixins: `but` and `does`
 
@@ -245,7 +255,7 @@ questions that must be answered *about the mixin* rather than about the box.
 `$x but Pair` mixes an attribute rather than a role, using the same machinery
 with a synthesised anonymous role — which is what `anonMixinSeq_` names.
 
-## `augment` and `supersede`
+## `augment`, and the `supersede` that is not there
 
 `augment class Foo { … }` on a user class merges methods into the existing
 `ClassInfo`. On a **built-in type** there is no `ClassInfo`, so the methods go
@@ -258,7 +268,16 @@ std::unordered_map<std::string,
 ```
 
 keyed by type name then method name, and searched along the native ancestry so
-augmenting `Cool` reaches `Int` and `Str`. Chapter 16 covers the dispatch side;
+augmenting `Cool` reaches `Int` and `Str`. Both forms need `use MONKEY-TYPING`,
+as they do in Rakudo — without it the parser refuses `augment` outright.
+
+`supersede` is a different matter: it is **not implemented in any form**. The
+word is in the syntax highlighter's keyword list, which is the only place it
+appears, so `supersede class S { … }` reaches the ordinary declaration path and
+dies with `X::Redeclaration`. Replacing a method on a live class is
+`.^add_method`.
+
+Chapter 16 covers the dispatch side;
 Chapter 28 covers why two compiled fast paths have to check whether this map is
 empty.
 

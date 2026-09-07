@@ -299,7 +299,9 @@ recover has been reduced twice by changes that needed no audit at all.
   can resolve differently from Rakudo.
 - **No `X::Multi::Ambiguous`.** Equal-specificity candidates resolve silently to
   the first declared.
-- **Role composition is last-writer-wins.** Composing two roles that define the
-  same method copies both into the table with no conflict diagnostic.
+- **Role conflicts are diagnosed**, so this is no longer a limitation: composing
+  two roles that define the same method raises
+  `X::Role::Unresolved::Method` unless the class resolves it, as in Rakudo. Only
+  the order the roles are listed in inside the message differs.
 - **The ladder's order is load-bearing and undocumented in the code beyond a
   warning.** An arm moved for readability is a behaviour change.

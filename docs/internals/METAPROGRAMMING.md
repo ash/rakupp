@@ -66,7 +66,7 @@ Built-in operators that *transform* another operator.
 | Feature | Status | Example | Notes |
 |---|:---:|---|---|
 | `augment class Foo {…}` | ✓ | reopens a type and adds methods | ✓ user types (merged into the class) **and** built-ins — `augment class Int {…}` reaches `3.method`, walking the native ancestry so `augment class Cool` also covers Int/Str |
-| `supersede class Foo {…}` | ✓ | replaces a method on a user class | |
+| `supersede class Foo {…}` | ✗ | — | Not implemented in any form: the word is in the syntax highlighter's keyword list and nowhere else, so `supersede class S {…}` dies with `X::Redeclaration`. Use `augment`, or `.^add_method` to replace |
 | `.^add_method($name,$code)` | ✓ | inject a method at runtime | |
 | `$x does Role` / `$x but Role` | ✓ | runtime role mixin into a value | |
 | `.^methods` / `.^roles` / `.does` | ✓ | introspection (see [FEATURES.md](../guide/FEATURES.md)) | |
@@ -99,9 +99,9 @@ Raku++ covers most of what everyday syntax-extending Raku uses:
   hyper, `Z§`/`X§` zip/cross, and `$x userop= y` meta-assignment.
 - **The whole phaser/`BEGIN`/`constant`/`EVAL` staging story**, including `EVAL`
   of code that uses locally-defined operators.
-- **Runtime MOP mutation** — `augment`/`supersede` on user classes *and*
-  `augment` on built-in types, `.^add_method`, `does`/`but` mixins,
-  routine `.wrap`/`.unwrap`, `.^`-introspection.
+- **Runtime MOP mutation** — `augment` on user classes *and* on built-in
+  types, `.^add_method`, `does`/`but` mixins, routine `.wrap`/`.unwrap`,
+  `.^`-introspection. (`supersede` is not implemented.)
 - **Built-in meta-operators** — reduce, hyper, cross, zip, reverse.
 
 The remaining gaps:

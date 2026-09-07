@@ -96,7 +96,7 @@ same-named enclosing package, which Rakudo's own warning calls legacy.
 - `method`/`multi method`/`submethod`, `self`, single inheritance `is`, `does`
 - `BUILD`, default `.new`, `bless`, enums
 - Metamodel: `.^name .^methods .^method_names .^mro .^parents .^roles .^add_method .^find_method .^parameterize` (`Set.^parameterize(Str)` is `Set[Str]`), `.WHAT .WHICH .HOW`
-- `augment`/`supersede` reopen a type — user classes **and** built-ins (`augment class Int {…}` reaches `3.method`); `does`/`but` runtime role mixins
+- `augment` reopens a type — user classes **and** built-ins (`augment class Int {…}` reaches `3.method`, and needs `use MONKEY-TYPING` as in Rakudo); `does`/`but` runtime role mixins. `supersede` is not implemented
 - Inheritance errors: `class A is A` (self), `class B is Undeclared` → compile-time throws
 
 ## Regexes & Grammars

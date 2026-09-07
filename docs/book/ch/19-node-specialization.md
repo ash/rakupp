@@ -235,6 +235,31 @@ What this change really did was close part of the gap between the interpreter
 and what the code generator had been doing all along — which is why the win was
 large.
 
+Two residual costs do remain in **non-`-O`** codegen, and they were measured
+rather than guessed. Taking the generated C++ for a 3M-iteration literal-heavy
+loop, hand-editing one temporary at a time, compiling each variant with
+identical flags and interleaving the runs (medians of 7, outputs verified
+identical):
+
+| variant | time | delta |
+|---|---:|---:|
+| as generated | 640.5 ms | — |
+| op name hoisted to a `static const std::string` | 636.1 | −0.7% |
+| **literal hoisted to a `static const Value`** | **598.1** | **−6.6%** |
+| both | 602.0 | −6.0% |
+
+So the op-string temporary is free — it is a one-character SSO string, and
+hoisting it is within noise. The whole win is `Value::integer(1LL)` being
+rebuilt every iteration: an object constructed and destroyed three million times
+to hold the number 1. (`Value` was 376 bytes when that was measured and is 128
+now, so the ratio has moved; the shape of the finding has not.)
+
+That is the same finding as on the interpreter side in a different costume, and
+it suggests the same fix: emit each distinct literal once at file scope and
+reference it. Not implemented — it only affects `--exe` *without* `-O`, since
+with `-O` the int lane never builds the `Value` at all, and it needs its own
+pass through the `--exe` golden tests and `run-optbench`.
+
 ## Extending it
 
 The same treatment fits other shapes, in rough order of expected value:
