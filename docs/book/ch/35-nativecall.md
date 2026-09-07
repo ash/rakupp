@@ -142,14 +142,19 @@ std::string nativeLib, nativeSym, nativeLibSub;
 const Expr* nativeLibExpr = nullptr;
 void* nativeSymCache = nullptr;   // dlopen/dlsym once, not per call:
                                   // 5 dlopen candidates cost a flat ~67 µs
-void* nativeCifCache = nullptr;   // ffi_prep_cif is ~80 ns — 20% of a whole
-                                  // crossing — so it must not run per call
+CifSlot nativeCifCache;           // ffi_prep_cif is ~80 ns — 20% of a whole
+                                  // crossing — so it must not run per call.
+                                  // A struct, not a bare pointer: its copy
+                                  // constructor is deliberately empty, so a
+                                  // copied Value starts with no cif rather
+                                  // than a second owner of the same one.
 ```
 
-The cost of going through libffi rather than calling blind is about **23
-nanoseconds per crossing** — 157 milliseconds against 150 for 300,000 calls of
-`abs`. On a crossing that costs about 490 nanoseconds end to end, that is under
-5%, which is why there is one code path rather than a fast one and a general one.
+The cost of going through libffi rather than calling blind is about **20
+nanoseconds per crossing** — 106 milliseconds against 100 for 300,000 calls of
+`abs`, where the bare loop is 24. On a crossing that costs about 275 nanoseconds
+end to end, that is under a tenth, which is why there is one code path rather
+than a fast one and a general one.
 
 `nativeLibExpr` handles a genuinely awkward case: `is native(EXPR)` where the
 expression could not be evaluated at declaration time. It is retried once at the

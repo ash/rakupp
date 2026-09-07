@@ -1568,14 +1568,19 @@ public:
     bool gilMainlineEnter();               // outermost embed entry? (locks if engaged)
     void gilMainlineLeave(bool outermost); // release re-checks gilHeld_: the body may have engaged
     int embedGilDepth_ = 0;
-    // GIL-removal step 3: opt-in true parallelism (RAKUPP_PARALLEL). When true, worker
-    // threads run interpreter compute concurrently instead of serialising on the GIL —
-    // safe now that registers/stacks are thread_local (steps 1/3a) and the symbol tables
-    // freeze once concurrency engages (step 2). The few genuinely-shared interpreter
-    // internals that a parallel worker can still touch (test counters + TAP output,
-    // workers_/keptPrograms_ vectors) are guarded by sharedMut_. User data mutated
-    // without a Lock is the user's race, as in Rakudo. Default false ⇒ the GIL path is
-    // byte-for-byte unchanged.
+    // True parallelism: worker threads run interpreter compute concurrently instead
+    // of serialising on the GIL — safe now that registers/stacks are thread_local
+    // (steps 1/3a) and the symbol tables freeze once concurrency engages (step 2).
+    // The few genuinely-shared interpreter internals that a parallel worker can
+    // still touch (test counters + TAP output, workers_/keptPrograms_ vectors) are
+    // guarded by sharedMut_. User data mutated without a Lock is the user's race,
+    // as in Rakudo.
+    //
+    // THIS INITIALISER IS NOT THE DEFAULT. Since v3 the constructor sets
+    // parallelMode_ = !gilWanted, so parallel is on unless RAKUPP_GIL=1 (or the
+    // synonym RAKUPP_PARALLEL=0) asks for the cooperative GIL. The `= false` below
+    // only covers the window before the constructor runs. The book's concurrency
+    // chapter was written from the older wording here and inherited the error.
     bool parallelMode_ = false;
     int loadingModuleDepth_ = 0; // >0 while a `use`d module file executes (export surfacing)
     bool moduleDoImport_ = true; // false while a `need`ed module loads (no symbol import)

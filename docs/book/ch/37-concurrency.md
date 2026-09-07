@@ -2,8 +2,8 @@
 
 Raku has a full concurrency surface: `start`, `await`, `Promise`, `Channel`,
 `Supply`, `react`/`whenever`, `Lock`, atomics, and a scheduler. Raku++
-implements it on real OS threads with a **global interpreter lock**, plus an
-opt-in mode that switches the lock off.
+implements it on real OS threads, running interpreter compute on all cores by
+default, with a **global interpreter lock** still there as an opt-in mode.
 
 This chapter is the story of getting there in stages, because the stages are
 still visible in the code and each solved a specific class of bug.
@@ -178,19 +178,30 @@ a `RakuError` — so a user's `CATCH` cannot swallow a shutdown.
 The main-thread early return means the check is one predicted branch on a
 thread-local bool for every loop that is not in a worker.
 
-## Stage 3a: true parallelism, opt in
+## Stage 3a: true parallelism, and then the flip
+
+Worker threads run interpreter compute concurrently instead of serialising on
+the GIL — safe once the registers are thread-local and the symbol tables freeze.
+That arrived as an opt-in, and v3.0.0 made it the default:
 
 ```cpp
-// src/Interpreter.h
-bool parallelMode_ = false;   // RAKUPP_PARALLEL
-std::mutex sharedMut_;
-std::atomic<int> liveWorkers_{0};
+// src/Interpreter.cpp — the constructor decides the mode
+const char* g = std::getenv("RAKUPP_GIL");
+const char* p = std::getenv("RAKUPP_PARALLEL");
+bool gilWanted = (g && *g && std::string(g) != "0") ||
+                 (p && std::string(p) == "0");
+parallelMode_ = !gilWanted;
 ```
 
-With `RAKUPP_PARALLEL`, worker threads run interpreter compute concurrently
-instead of serialising on the GIL — safe now that the registers are thread-local
-and the symbol tables freeze. The default is off, so **the GIL path is
-byte-for-byte unchanged**.
+`RAKUPP_GIL=1` selects the cooperative GIL — the escape hatch, the bisection
+tool and a CI leg — and `RAKUPP_PARALLEL=0` is honoured as a synonym for
+symmetry with the old opt-in spelling. `RAKUPP_PARALLEL=1` does nothing: it asks
+for what is already true.
+
+The member's own initialiser still reads `bool parallelMode_ = false;`, which is
+a default the constructor overwrites on the next line. It is worth knowing
+because it is exactly the sort of line a reader — or a chapter — quotes as if it
+settled the question.
 
 The few genuinely shared internals a parallel worker can still touch — the test
 counters and TAP output, the worker vectors — are guarded by one mutex. User
@@ -213,8 +224,8 @@ struct ParStripe {
 
 Two conditions, not one. Parallel mode **and** live workers — because before the
 first spawn and after the last join, a single thread cannot race itself. A
-single-threaded program under `RAKUPP_PARALLEL` therefore pays two predicted
-branches and nothing else.
+single-threaded program therefore pays two predicted branches and nothing else,
+default mode or not.
 
 That second condition was not an optimisation for its own sake: the unconditional
 stripe tax was pushing compute-heavy Roast files past the timeout, in files with
@@ -346,8 +357,14 @@ chapter:
 
 ## Honest limitations
 
-- **The GIL is the default.** Parallel mode is opt-in and, while the stress
-  suite passes under it, it is newer.
+- **A worker thread's own loop is slower than the main thread's.** Measured on
+  the reference machine, one `start` block with nothing to contend with runs at
+  0.85× — the gap grows with the work, and under `RAKUPP_GIL=1` the same single
+  `start` runs at serial speed, so it is a per-operation cost inside a worker
+  rather than thread setup. It caps every ratio below: a four-way CPU fan-out is
+  2.9×, eight-way 2.8×, and four threads updating one `atomicint` are 0.79× — a
+  net loss, because the cache line moves between cores faster than any of them
+  makes progress.
 - **User data races are the user's.** As in Rakudo, mutating shared data without
   a `Lock` is undefined; the striped locks protect the interpreter's own
   structural invariants, not the user's semantics.

@@ -143,7 +143,8 @@ RkValue rk_int  (RkCtx c, long long v);
 RkValue rk_int_s(RkCtx c, const char* decimal);       /* arbitrary precision */
 RkValue rk_num  (RkCtx c, double v);
 RkValue rk_rat_s(RkCtx c, const char* n, const char* d); /* a Rat, normalised */
-RkValue rk_str  (RkCtx c, const char* utf8, size_t len); /* copied */
+RkValue rk_str  (RkCtx c, const char* utf8, size_t len); /* copied, DECODED as UTF-8 */
+RkValue rk_blob (RkCtx c, const void* bytes, size_t len); /* raw bytes, ABI 3 */
 RkValue rk_array(RkCtx c);   void rk_push(RkCtx c, RkValue a, RkValue v);
 RkValue rk_hash (RkCtx c);   void rk_set (RkCtx c, RkValue h,
                                           const char* k, size_t kl, RkValue v);
@@ -270,7 +271,11 @@ used on the next call is dangling.** There is no reference counting to save you.
 State that must persist across calls belongs in C, not in handles.
 
 Borrowed pointers from `rk_str_get` and `rk_key_at` are valid until the call
-returns, which is long enough to copy out of them and no longer.
+returns, which is long enough to copy out of them and no longer. `rk_at_pos` is
+sharper than that: its handle points into the array's own storage, so a later
+`rk_push` on the same array can move it *within a single call*. Read it before
+you grow the array, or copy the value out. (`rk_val_at`'s handle is stable,
+because the hash keeps node addresses.)
 
 The arena is what makes the boundary safe in both directions: the host cannot be
 made to leak by a careless extension, and an extension cannot hold a reference
@@ -292,14 +297,18 @@ extension's code and cannot catch it.
 ## Versioning
 
 ```c
-#define RAKUPP_EXT_ABI 2u
+#define RAKUPP_EXT_ABI 3u
 typedef const RkModule* (*RkInitFn)(unsigned host_abi);
 ```
 
 One integer, bumped when the header gains capability an extension cannot detect
 any other way, or when the meaning or order of anything in it changes. Version 1
 was the original surface — construct, inspect, arguments, `rk_die`. Version 2
-added re-entering Raku, the pending-error calls, and rooted handles.
+added re-entering Raku, the pending-error calls, and rooted handles. Version 3
+added raw bytes in both directions: `rk_blob` builds a `Buf` from bytes,
+`rk_blob_get` reads one back, and `rk_is_blob` asks. Before it, a digest or a
+compressed stream had no way home — see the note under `rk_str` above for why
+the string constructor is not that way.
 
 The host looks up one symbol, `rakupp_ext_init`, and passes its own version.
 **Return `NULL` if you cannot serve it** rather than guessing; the host then
@@ -330,10 +339,11 @@ The failure this avoids is undefined symbols. An extension calling `rk_call` on
 a host that predates it would resolve nothing and abort at the first call under
 lazy binding; a version check turns a crash into a diagnostic.
 
-All three failure modes report themselves and none corrupt:
+All four failure modes report themselves and none corrupt:
 
 ```
-'…/thing.dylib' was built for a different extension ABI (host is 1)
+'…/thing.dylib' was built for a different extension ABI (host is 3)
+'…/thing.dylib' reports ABI 99, host is 3 (rebuild it, or upgrade rakupp)
 cannot load extension '/nope.dylib'
 '/bin/ls' is not a rakupp extension (no rakupp_ext_init)
 ```
