@@ -5,10 +5,16 @@ perl-style one-liner family (including in-place editing), module preloading,
 the environment and reproducibility knobs (`--env-file`, `RAKUPP_OPT`,
 `--seed`, `--stack-size`), what a run did as it did it (`--stagestats`,
 `--trace`, `--repl-after`), the developer loop (`--watch`, `rakupp doc`,
-shell completion), the profiler, and the inspection/compile modes. Flags are
+shell completion), the profiler, and the inspection/compile modes. Mode flags
+(`-c`, `--lint`, `--exe`, …), `-I`, `-M` and the run knobs are
 position-independent and composable — `rakupp -I lib --lint prog.raku` and
 `rakupp --lint -I lib prog.raku` are the same command — and everything after
-the program token belongs to the program:
+the program token belongs to the program. The perl line-loop family
+(`-n -p -a -l -0 -i -F`) is the exception: it is recognized only *before* a
+mode flag, so `rakupp -n -c prog.raku` works while `rakupp -c -n prog.raku`
+answers `Illegal option -n`. The refusal exits 0 and does nothing, so a
+scripted `rakupp --lint -a f.raku` passes while analysing nothing — put the
+family first. `-x` composes in either order.
 
 ```
 rakupp prog.raku --lint      # --lint is in prog.raku's @*ARGS, not ours
@@ -40,7 +46,8 @@ compatibility.
   with `-e`. One divergence from perl: the skipped lines are blanked, not
   removed, so an error's line number still matches the file as an editor
   shows it (perl counts from the `#!` line). Clusters like the rest of the
-  perl family (`-nx`), and composes with `-c` and the other source modes.
+  perl family (`-nx`). `-x` itself composes with `-c` and the other source
+  modes in either order; the rest of the family must precede them (see above).
 - `--env-file=FILE` — load `KEY=VALUE` lines into the environment before
   anything runs; see [The environment](#the-environment) below.
 - `--seed[=N]`, `--stack-size=N` — pin the random generator, size the
@@ -182,8 +189,10 @@ here and `srand(42)` under Rakudo produce different numbers.
 on, which is the recursion ceiling: the interpreter stops a runaway
 recursion with `X::Recursion` while a margin of stack remains, and the
 depth it allows is a function of this size. The default is 1 GiB — about
-30,000 nested Raku calls on this engine — and a bare number is MiB
-(`--stack-size=64` is 64 MiB, about 1,800 calls), from `1M` upwards. It
+50,000 nested Raku calls on this engine — and a bare number is MiB
+(`--stack-size=64` is 64 MiB, about 3,000 calls), from `1M` upwards. The
+depths for every mode live in one place,
+[MEMORY.md](MEMORY.md#recursion-depth-in-practice). It
 shapes a *run*: a program, the REPL, an `--mcp` or `--jupyter` session. A
 size the OS refuses is reported and the program runs on the default
 instead. (`RAKUPP_MAIN_THREAD=1`, the knob Cocoa GUI programs use, runs the
@@ -496,12 +505,15 @@ the binary (`tools/doc.raku`) and dispatched by it.
 ## Shell completion
 
 `--completions=bash`, `=zsh` or `=fish` prints a completion script for the
-shell, generated from the same option table the parser uses, so it cannot
-drift from what the binary accepts. Flags complete with their descriptions
-(zsh, fish), a `=` option completes its values (`--color=` offers `auto`,
-`always`, `never`), the first word completes to a file or an installer
-command (`install`, `uninstall`, `reinstall`, `test`), and everything else
-completes to files.
+shell, generated from the binary's own flag table — so it travels with the
+binary rather than with a copy in this page. That table is maintained beside
+the option parser rather than derived from it, so an accepted alias can be
+missing from it: `-m`, `--colour`, `--terminal` and `--emit-cpp` all work and
+are deliberately not offered. Flags complete with their descriptions (zsh,
+fish), a `=` option completes its values (`--color=` offers `auto`, `always`,
+`never`), the first word completes to a file or a subcommand (`install`,
+`uninstall`, `reinstall`, `test`, `doc`), and everything else completes to
+files.
 
 ```bash
 eval "$(rakupp --completions=bash)"                     # bash, in ~/.bashrc
@@ -550,7 +562,7 @@ reported, because the binary will need the disk for it.
 Compiled binaries are **dead-stripped and symbol-stripped by default** (level
 `safe`): the linker drops unreferenced sections and local symbols stay out of
 the symbol table. That removes no Raku feature and runs no analysis — `say
-"Hello"` goes from 9.9 MB to 8.1 MB and behaves byte-identically. Two escapes:
+"Hello"` goes from 12.4 MB to 10.1 MB and behaves byte-identically. Two escapes:
 
 ```
 rakupp --exe --slim=none      prog.raku   # the old output, bit for bit
@@ -574,7 +586,7 @@ binary, build it `--slim=safe,+symbols`.
 A SPEC that names no level means `auto` — so `--slim=+eval` is "automatic
 pruning, but keep eval".
 
-`say "Hello"` under bare `--slim`: 8.1 → 4.6 MB, all four features cut,
+`say "Hello"` under bare `--slim`: 10.1 → 6.8 MB, all four features cut,
 because hello provably uses none of them.
 
 **The force-full triggers.** Under `auto`, any of these means the program can

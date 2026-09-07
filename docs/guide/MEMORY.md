@@ -55,10 +55,10 @@ footprint. See rakujs/build.sh for why `-fwasm-exceptions` is not usable yet
 
 | mode | measured limit (probe above) | ≈ per frame | failure mode |
 |---|---|---|---|
-| interpreter, mainline | ~22,400 levels | ~47 KB | catchable `X::Recursion` |
-| interpreter, inside `start` | ~5,500 levels | ~47 KB | catchable `X::Recursion` |
-| `--exe`, interpreter-dispatched calls | as interpreter | ~47 KB | catchable `X::Recursion` |
-| `--exe`, direct native sub calls | ~460,000 levels | ~2.3 KB | **process death (SIGBUS), not catchable** |
+| interpreter, mainline | ~50,500 levels | ~21 KB | catchable `X::Recursion` |
+| interpreter, inside `start` | ~12,700 levels | ~20 KB | catchable `X::Recursion` |
+| `--exe`, interpreter-dispatched calls | as interpreter | ~21 KB | catchable `X::Recursion` |
+| `--exe`, direct native sub calls | ~1,270,000 levels | ~0.83 KB | **process death (SIGBUS), not catchable** |
 | wasm | ~200 levels | JS-engine frames | host `RangeError`, caught by the playground |
 
 The interpreter's guard (`DepthGuard`, src/Interpreter.cpp) fires while
@@ -74,7 +74,7 @@ SIGBUS at stack exhaustion (~460k levels of the probe) instead of a
 catchable `X::Recursion`. Native code that recurses through interpreter
 dispatch — closures in variables, dynamic dispatch, `&`-vars — passes
 through the guard and gets the catchable error. Bounded recursion of any
-realistic depth is unaffected; the interpreter reaches only ~5% of the
+realistic depth is unaffected; the interpreter reaches only ~4% of the
 native limit before its own guard fires.
 
 Foreign threads (not created by rakupp) get the scaled-down guard reserve
@@ -107,9 +107,9 @@ and whatever stack their creator gave them.
 
 | artifact | size |
 |---|---|
-| `rakupp` binary (interpreter + compiler) | 7.4 MB |
-| `librakupp_rt.a` (runtime archive `--exe` links) | 11 MB |
-| a typical `--exe` output binary | ~7 MB (static runtime included) |
+| `rakupp` binary (interpreter + compiler) | 14.4 MB |
+| `librakupp_rt.a` (runtime archive `--exe` links) | 14.7 MB |
+| a typical `--exe` output binary | ~10 MB, or ~6.8 MB under bare `--slim` (static runtime included) |
 | wasm bundle (raku.online) | see rakujs/INTERNALS.md |
 
 `--exe` binaries are self-contained: the size is almost entirely the linked
@@ -117,7 +117,7 @@ runtime, so it stays flat as the program grows.
 
 ## Practical guidance
 
-- Deep recursion on purpose? The interpreter gives ~22k levels of a simple
+- Deep recursion on purpose? The interpreter gives ~50k levels of a simple
   sub; convert to iteration or `gather`/lazy sequences beyond that, or
   compile with `--exe` where direct native recursion reaches hundreds of
   thousands of levels (but overflow there is fatal, not catchable).
