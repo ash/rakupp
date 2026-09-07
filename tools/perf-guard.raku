@@ -139,12 +139,33 @@ my %kernels =
                   while $n < 400_000 { $t = $k.m(1); $n = $n + 1 }; say $t;',
     objnew    => 'class K { has $.a; has $.b }
                   my $t; my int $n = 0;
-                  while $n < 200_000 { $t = K.new(a => 1, b => 2); $n = $n + 1 }; say $t.a;';
+                  while $n < 200_000 { $t = K.new(a => 1, b => 2); $n = $n + 1 }; say $t.a;',
+    # mainnext/mainwhen were added 2026-09-06 (NATIVE-MATH-PLAN §1), after the
+    # cooperative next/last/redo and when/default paths turned out to have been
+    # OFF AT THE MAINLINE since the day they were written: "no frame is armed"
+    # was spelled 0, which is also the mainline's own frameTop, so an unlabelled
+    # `next` and a `when` outside a routine threw a C++ exception instead — ~80
+    # us each on macOS, plus ~30 us more per block between the word and its loop.
+    # `next if …` and `given`/`when` are everyday Raku and the whole class was
+    # invisible here: the kernels above that ARE mainline (asg, loopsum, hash,
+    # rats) carry no loop control, and every kernel that carries control flow
+    # runs inside a sub — which is the path that always worked. Both must stay
+    # written AT THE MAINLINE; moved into a sub they measure something else.
+    mainnext  => 'my $n = 0; for ^200_000 { next if $_ % 2; $n = $n + 1 }; say $n;',
+    mainwhen  => 'my $n = 0;
+                  for ^200_000 -> $i {
+                      given $i % 3 {
+                          when 0 { $n = $n + 1 }
+                          when 1 { $n = $n + 2 }
+                          default { $n = $n + 3 }
+                      }
+                  }
+                  say $n;';
 
 # The kernel list, in one place: the run loop and the gate loop must agree, and
 # they used to carry two hardcoded copies of it.
 my @KERNELS = <fib asg loopsum hash strscan strpass subcall rats regexloop
-                method attrread privmeth multimeth objnew>;
+                method attrread privmeth multimeth objnew mainnext mainwhen>;
 
 # …and it must stay in step with %kernels. A kernel added to the hash but not to
 # this list is never measured and never gated, silently — the same shape as

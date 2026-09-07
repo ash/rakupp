@@ -5,6 +5,17 @@ attached to it: "we should somehow switch to native types automatically — assu
 a variable that started as an integer stays numeric, and in the AST or the
 optimisation step stop using our massive `Value` until something forces us to."*
 
+> **Revisited 2026-09-06 — phase 1 is landed, and it was all of §1.** The
+> sentinel was flipped and the page re-measured. The diagnosis held exactly:
+> `for ^200000 { next if $_ % 2 }` went 4.60 s → **0.03 s**, landing on the
+> 0.03 s of the `unless` rewrite this section used as its floor, and the
+> neighbour §1 predicted — `given`/`when` — carried the identical defect, 4.70 s
+> → **0.10 s**. Phases 2, 3 and 4 remain open and the numbers that order them
+> have moved; see *The revisit* below, which re-prices every section of this
+> plan. Everything in that section was measured on the benchmark machine of
+> record (Darwin 24.6, arm64, `build-arm64`), which is **not** the box the
+> tables above were taken on — compare the ratios, never the seconds.
+
 The idea is well founded, and this repository predicted it.
 [IR-EXPERIMENT.md](../experiments/IR-EXPERIMENT.md) closes by naming exactly one
 thing that would revive a register IR — *"unboxed typed registers: a slot known
@@ -27,6 +38,10 @@ percent. Every number below is a factor.
 ---
 
 ## 1. Every unlabelled `next`/`last` in a MAINLINE loop throws
+
+**Fixed 2026-09-06 — this section is history, not a live defect.** The tables
+below are what it cost; the sentinel and what removing it bought are in
+*The revisit* and phase 1 below.
 
 | | rakupp | Rakudo |
 |---|---:|---:|
@@ -176,34 +191,175 @@ register file loses.
 
 ---
 
+## The revisit, 2026-09-06 — what the numbers say now
+
+Measured on the benchmark machine of record (Darwin 24.6, arm64, Release/clang,
+`build-arm64`), best-of-3 `/usr/bin/time -p`, against Rakudo 2025.x from
+`/usr/local/bin/raku`. **Before** is `build/rakupp` at v3.25.0-55-gabd3d11 —
+five commits behind the fix and otherwise the same tree; **after** is that tree
+plus the phase-1 patch. The tables earlier in this plan came from a different
+box, so their ratios carry over here and their seconds do not.
+
+### §1 — the sentinel, before and after
+
+| kernel | before | after | Rakudo |
+|---|---:|---:|---:|
+| `for ^200000 { next if $_ % 2; $n = $n + 1 }` | 4.60 s | **0.03 s** | 0.18 s |
+| the same written `unless` — §1's floor | 0.02 s | 0.03 s | 0.18 s |
+| `next` behind one `if` | 6.61 s | **0.05 s** | 0.19 s |
+| `next` behind two `if`s | 8.66 s | **0.07 s** | 0.19 s |
+| `for ^20000 { while True { …; last } }` | 0.57 s | **0.00 s** | 0.16 s |
+| the same body inside a `sub` — always worked | 0.01 s | 0.01 s | 0.16 s |
+| mainline `given`/`when`, 100k rows | 4.70 s | **0.10 s** | 0.15 s |
+| the same inside a `sub` — always worked | 0.11 s | 0.11 s | 0.14 s |
+
+Three things to read off it. The everyday idiom is now **6× faster than
+Rakudo** where it was 25× slower. The per-block surcharge went with the throw:
+one `if` between the `next` and its loop cost 2.01 s before and 0.02 s now.
+And the two in-routine rows do not move, which is the control — the patch
+changes which frames the cooperative path accepts, not what that path does.
+
+### §2 — re-profiled, and the order inside it has changed
+
+The same 5M-iteration boxed loop, `sample`, leaf attribution, 3,123 non-idle
+samples (the parked worker's `__ulock_wait` excluded):
+
+| | 2026-08-31 | today |
+|---|---:|---:|
+| `_tlv_get_addr` + `__tls_init` — thread-local access | 36% | **20.4%** |
+| `execBlock` + `runLoopBody` + the phaser and hoist re-scans | 16% | **28.0%** |
+| `exec` + `eval` + `evalAssign` | ~19% | 17.4% |
+| `applyArith` + `Value::operator=` — the arithmetic and the box | 7% | 7.7% |
+
+The thread-local campaign since 2026-08-31 took that share from 36% to 20%, and
+in doing so promoted the other half of phase 2: **the per-iteration re-scan of a
+statement list is now the largest single item on this page** — nearly four times
+what a perfect native-math pass could win on the same loop. What it re-decides
+every iteration (which phasers exist, which subs to hoist, whether a statement
+is a phaser) is a static property of the block.
+
+### §3 — unchanged, and now the biggest declared gap
+
+| 5M-iteration loop | rakupp | Rakudo |
+|---|---:|---:|
+| `my $s` / `my $i` | 0.63 s | 0.65 s |
+| `my int $s` / `my int $i` | 0.64 s | **0.18 s** |
+
+Boxed, parity. Declared native, Rakudo is 3.6× ahead — the same inversion §3
+recorded, with nothing yet done about it.
+
+### §4 — re-priced, and the prize is smaller than the bound
+
+§4 estimated its prize by subtracting §1 from a Mandelbrot: *"with the throw
+removed, float-dense numeric code is ~1.5× off Rakudo, and that 1.5× is what
+native math is competing for."* With the throw actually removed it can be
+measured instead. The kernel is 130×150, `Num` literals throughout (`2e0`, not
+`2.0` — see the trap below), written at the mainline; both variants print the
+same 262608 on all three engines:
+
+| | before | after | Rakudo |
+|---|---:|---:|---:|
+| escape tested with `last` | 1.14 s | **0.31 s** | 0.27 s |
+| escape folded into the loop condition, no `last` | 0.33 s | 0.35 s | 0.32 s |
+
+The two programs, in full — `mandel-cond` subtracts the one extra iteration the
+fold costs, which is why both print 262608:
+
+```raku
+# mandel-last.raku                          | # mandel-cond.raku (differences only)
+my $w = 150; my $h = 130; my $sum = 0;
+loop (my $y = 0; $y < $h; $y++) {
+    my $ci = $y * 4e0 / $h - 2e0;
+    loop (my $x = 0; $x < $w; $x++) {
+        my $cr = $x * 4e0 / $w - 2e0;
+        my $zr = 0e0; my $zi = 0e0; my $k = 0;    # + my $esc = 0;
+        loop (; $k < 112; $k++) {                 # loop (; $k < 112 && $esc == 0; $k++) {
+            my $t = $zr*$zr - $zi*$zi + $cr;
+            $zi = 2e0*$zr*$zi + $ci;
+            $zr = $t;
+            last if $zr*$zr + $zi*$zi > 1e1;      # $esc = 1 if $zr*$zr + $zi*$zi > 1e1;
+        }
+        $sum = $sum + $k;                         # $sum = $sum + ($esc == 1 ?? $k - 1 !! $k);
+    }
+}
+say $sum;
+```
+
+Float-dense numeric code is at **1.15× Rakudo**, not the ~1.5× the estimate
+bounded it at — and `last`, which used to cost 3.5× the whole program, is now
+the *faster* way to write the loop, as it always should have been. Phase 4 does
+not become worthless: 15% of the arithmetic-densest shape in the language is
+real. But it is now the smallest of the four items here, and it stays last.
+
+### What the revisit changes about the order
+
+Phase 1 is done. The three that remain keep their order, and the reason is
+firmer than it was: phase 2 is now 48% of the §2 loop between its two halves
+(with the block re-scan the larger), phase 3 is a declared 3.6× that needs no
+analysis and no deopt, and phase 4 competes for the 15% left over after both.
+
+---
+
 ## The phases
 
 Ordered by measured value, which is not the order the question arrived in.
 
-### Phase 1 — the mainline loop-control sentinel
+### Phase 1 — the mainline loop-control sentinel — **DONE 2026-09-06**
 
-Give "no native loop is active" a value that is not also a real frame id: a
-separate `bool`/depth counter, or `curLoopFrame` initialised to `UINT64_MAX`
-with the five guards testing that instead of `!= 0`. Five call sites and one
-arming site.
+Give "no native loop is active" a value that is not also a real frame id.
+Landed as `ExecContext::kNoFrame` (`~uint64_t(0)`,
+[Interpreter.h:738](../../../src/Interpreter.h)): `curLoopFrame` and
+`curGivenFrame` start there, the two sites that disarm a `given` by hand set it
+instead of 0, and the six guards drop their `!= 0` half to test
+`frameTop == cur*Frame` alone. `frameTop` is a depth that `FrameGuard` restores,
+so no real frame can ever hold the sentinel.
 
-**Not yet verified by a patch.** The diagnosis is a code read plus the
-mainline-vs-routine A/B above, and it should be falsified before it is built:
-flip the sentinel, re-run `for ^200000 { next if $_ % 2 }`, and require it to
-land near the 0.07 s of the `unless` rewrite. If it does not, the cause is
-elsewhere and this section is wrong.
+**The falsification this section asked for.** The requirement was that
+`for ^200000 { next if $_ % 2 }` land near the `unless` rewrite, or the
+diagnosis be wrong. It lands on it: 4.60 s → 0.03 s, against the rewrite's
+0.03 s. Full table in *The revisit* above.
 
-Then check the neighbours, which are armed from the same two lines and so are
-likely to share the defect exactly: `givenCtl`/`curGivenFrame` (a mainline
-`given`/`when` — the header comment at Interpreter.h:614 calls this "the
-hot-path shape"), and `returning`/`curRoutineFrame`, which is gated on a routine
-boundary and so may be sound by construction. A mainline `when` costing 80 µs
-per match would be the same defect wearing a different name.
+**The neighbours, as predicted.** `givenCtl`/`curGivenFrame` had the identical
+defect — a mainline `when` cost 4.70 s where the same code inside a routine cost
+0.11 s — and the same sentinel fixes it. `returning`/`curRoutineFrame` is sound
+by construction and was left alone: a routine activation always has
+`frameTop >= 1`, so 0 cannot collide with one, and a `return` at the mainline is
+an error whose throw is on no hot path.
 
-Gate: `t/run.raku`, and a `perf-guard` kernel that puts a `next` in a **mainline**
-loop — there is currently none, which is why this lasted.
+**What it cost elsewhere: nothing.** The guards now do one comparison where they
+did two, and the two "inside a sub" rows in the revisit table do not move.
+
+**Gates run.** `t/run.raku` **776/776**. Roast **657 files** in the 8-worker
+run, with all five files that the recorded v3.25.0 list has and this run does
+not — `S17-scheduler/basic.t`, `S17-scheduler/times.t`, `S29-context/exit.t`,
+`S32-io/note.t`, `integration/99problems-31-to-40.t` — passing when re-run
+alone, against 11 newly passing: the parallel run's usual timing flappers, and
+the reason the release procedure runs a gate alone. `t/stress` **26 / 26, 0 new
+failures**. And a 35-case control-flow differential against Rakudo — mainline
+and in-routine `next`/`last`/`redo`/`when`, nested loops, labels, `EVAL`,
+`gather`, `react`, `try`, `LEAVE`/`NEXT`/`FIRST`/`LAST` phasers — whose
+disagreements are **the same before the patch and after it**. (Four are the
+probe's own missing semicolons, which rakupp accepts and Rakudo does not. One is
+worth its own entry and is not this batch's: `EVAL q[last]` inside a loop breaks
+the loop under Rakudo and dies here with "last without a supporting loop
+construct", before and after.)
+
+**Gate added**, because the absence of one is why this lasted: `mainnext` and
+`mainwhen` in `tools/perf-guard.raku` — a `next` and a `when` in a **mainline**
+loop, 200k iterations each. Every existing perf-guard kernel that carries
+control flow runs inside a `sub`, where this path always worked, and the four
+that are mainline (`asg`, `loopsum`, `hash`, `rats`) carry no control flow at
+all, so the whole class was invisible. Both are ungated until
+`perf-guard --record` runs on the idle machine `perf-baseline.raku` names;
+today's readings are `mainnext` 31.4 ms and `mainwhen` 206.0 ms, taken on a box
+the gate itself declined to record on (load 2.3).
 
 ### Phase 2 — the 36% and the 16%
+
+**Re-measured 2026-09-06: 20.4% and 28.0%, and the two have swapped places** —
+the thread-local campaign since spent most of the first, and the block re-scan
+is now the largest single item in the profile. The name of this phase is kept
+as it was written; the numbers are in *The revisit* above.
 
 Thread-local access, and the per-iteration re-scan of a block's statement list.
 Both are work *removal*, the only category this codebase's history says has ever
@@ -292,3 +448,23 @@ sample <pid> 4 1 -f /tmp/prof.txt && awk '/^Sort by top of stack/,0' /tmp/prof.t
 
 Re-measure on a quiet machine before trusting any of this to a percent; the
 `sample` shares are leaf attribution and over-credit very hot small leaves.
+
+## Reproducing the revisit
+
+```sh
+# §1, before and after. `build/rakupp` is the pre-patch binary in the tables above.
+for b in build/rakupp build-arm64/rakupp; do
+  /usr/bin/time -p $b -e 'my $n = 0; for ^200000 { next if $_ % 2; $n = $n + 1 }; say $n'
+  /usr/bin/time -p $b -e 'my $n=0; for ^100000 -> $i { given $i % 3 { when 0 { $n++ } when 1 { $n += 2 } default { $n += 3 } } }; say $n'
+done
+
+# §2 — the profile. Scale to 50M so there is something to sample, and drop the
+# parked worker's __ulock_wait: it is not the main thread.
+build-arm64/rakupp -e 'my $s = 0; my $i = 0; while $i < 50_000_000 { $s = $s + $i; $i = $i + 1 }; say $s' & \
+  sample $! 4 1 -f /tmp/prof.txt >/dev/null; awk '/^Sort by top of stack/,0' /tmp/prof.txt
+
+# §4 — the float-dense kernel, 130x150, Num literals, AT THE MAINLINE. Both
+# variants must print 262608; if they do not, the fold changed the algorithm.
+```
+
+Both §4 programs are printed in full in the revisit's §4 above.

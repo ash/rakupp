@@ -731,6 +731,11 @@ struct ExecContext {
     // throws (exact old semantics), so intermediate C++ loops stay correct.
     bool returning = false;
     Value returnV;
+    // "No frame is armed" — a sentinel that cannot collide with a real frameTop.
+    // This was 0, which is also the MAINLINE's own frame number, so every
+    // mainline loop and given fell out of the cooperative paths below and threw
+    // instead (~80 us per throw on macOS): NATIVE-MATH-PLAN §1.
+    static constexpr uint64_t kNoFrame = ~uint64_t(0);
     uint64_t frameTop = 0;        // incremented per callCallableRaw activation
     size_t redispatchFloor = 0;   // frames below this index are another routine's (callsame/nextsame can't see them)
     uint64_t curRoutineFrame = 0; // frameTop at the nearest enclosing ROUTINE entry
@@ -754,7 +759,7 @@ struct ExecContext {
     // labelled or cross-frame control still throws NextEx/LastEx/RedoEx.
     int loopCtl = 0;              // 0 none, 1 next, 2 last, 3 redo
     const Expr* curStmtExpr = nullptr; // the expression the current ExprStmt is evaluating — a bare `next`/`last`/`redo` may go cooperative only when it IS this
-    uint64_t curLoopFrame = 0;    // frameTop when the innermost native loop body runs
+    uint64_t curLoopFrame = kNoFrame; // frameTop when the innermost native loop body runs
     // Cooperative `when`/`default`/`succeed`: a match in the SAME callable frame
     // as its enclosing given (or loop) body sets givenCtl instead of throwing
     // BreakGivenEx — the block executors break out and the given/loop consumes
@@ -763,7 +768,7 @@ struct ExecContext {
     // C++ throw walks dyld unwind info under a lock, ~tens of µs each.
     int givenCtl = 0;             // 0 none, 1 when matched (break the given)
     Value givenV;                 // the matched when-block's value
-    uint64_t curGivenFrame = 0;   // frameTop when a consuming given/loop body runs
+    uint64_t curGivenFrame = kNoFrame; // frameTop when a consuming given/loop body runs
     // current callable/routine for the &?BLOCK / &?ROUTINE magicals — raw pointers
     // into the live callCallableRaw frame (resolved lazily at lookup, zero per-call cost)
     const Value* curBlockVal = nullptr;

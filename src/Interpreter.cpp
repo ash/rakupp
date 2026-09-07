@@ -7231,7 +7231,7 @@ Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink) {
         tcx.cur->define("$_", exceptionFor(e));
         tcx.cur->define("$!", exceptionFor(e));
         bool matched = false;
-        uint64_t savedGF = tcx.curGivenFrame; tcx.curGivenFrame = 0; // when here must THROW (the loop below detects it by catch)
+        uint64_t savedGF = tcx.curGivenFrame; tcx.curGivenFrame = ExecContext::kNoFrame; // when here must THROW (the loop below detects it by catch)
         struct GFRestore { ExecContext& t; uint64_t f; ~GFRestore() { t.curGivenFrame = f; } } gfr{tcx, savedGF};
         try {
             struct G { int& d; G(int& x) : d(x) { d++; } ~G() { d--; } } g{catchDepth_};
@@ -9627,21 +9627,21 @@ Value Interpreter::exec(Stmt* s, bool sink) {
         }
         case NK::LastStmt: {
             const std::string& t = static_cast<LastStmt*>(s)->target;
-            if (t.empty() && tctx_.curLoopFrame != 0 && tctx_.frameTop == tctx_.curLoopFrame) {
+            if (t.empty() && tctx_.frameTop == tctx_.curLoopFrame) {
                 tctx_.loopCtl = 2; return Value::any(); // cooperative last
             }
             throw LastEx{t};
         }
         case NK::NextStmt: {
             const std::string& t = static_cast<NextStmt*>(s)->target;
-            if (t.empty() && tctx_.curLoopFrame != 0 && tctx_.frameTop == tctx_.curLoopFrame) {
+            if (t.empty() && tctx_.frameTop == tctx_.curLoopFrame) {
                 tctx_.loopCtl = 1; return Value::any(); // cooperative next
             }
             throw NextEx{t};
         }
         case NK::RedoStmt: {
             const std::string& t = static_cast<RedoStmt*>(s)->target;
-            if (t.empty() && tctx_.curLoopFrame != 0 && tctx_.frameTop == tctx_.curLoopFrame) {
+            if (t.empty() && tctx_.frameTop == tctx_.curLoopFrame) {
                 tctx_.loopCtl = 3; return Value::any(); // cooperative redo
             }
             throw RedoEx{t};
@@ -10457,7 +10457,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 // Same callable frame as the consuming given/loop body → set the
                 // cooperative flag instead of throwing (the throw walks macOS
                 // unwind info under a lock — ruinous per-row inside a bind loop)
-                if (tctx_.curGivenFrame != 0 && tctx_.frameTop == tctx_.curGivenFrame) {
+                if (tctx_.frameTop == tctx_.curGivenFrame) {
                     tctx_.givenCtl = 1; tctx_.givenV = bv; return bv;
                 }
                 throw BreakGivenEx{bv, true}; // matched `when` exits the given, carrying its value
@@ -26503,7 +26503,7 @@ Value Interpreter::evalUnary(Unary* u) {
         // the value it returns would finish the statement first: the typed
         // assignment saw Any and died. So an operand throws, and the loop
         // catches the exception exactly as it does from a nested block.
-        if (tctx_.curLoopFrame != 0 && tctx_.frameTop == tctx_.curLoopFrame &&
+        if (tctx_.frameTop == tctx_.curLoopFrame &&
             u == tctx_.curStmtExpr) {
             tctx_.loopCtl = u->op == "next" ? 1 : u->op == "last" ? 2 : 3; // cooperative
             return Value::any();
@@ -27360,7 +27360,7 @@ bool Interpreter::runControlWarn(const std::string& msg) {
     auto saved = tctx_.cur;
     tctx_.cur = env;
     uint64_t savedGF = tctx_.curGivenFrame;
-    tctx_.curGivenFrame = 0;              // `when` inside the handler must THROW to be seen
+    tctx_.curGivenFrame = ExecContext::kNoFrame; // `when` inside the handler must THROW to be seen
     struct Restore {
         Interpreter& I; std::shared_ptr<Env> e; uint64_t gf;
         ~Restore() { I.tctx_.cur = e; I.tctx_.curGivenFrame = gf; }
@@ -30692,7 +30692,7 @@ Value Interpreter::eval(Expr* e) {
             // constraint survives into .^name, smartmatch and .^base_type
             if (nt->defConstraint) { Value ty = Value::typeObj(n); ty.i = nt->defConstraint; return ty; }
             if (n == "next" || n == "last" || n == "redo") {
-                if (tctx_.curLoopFrame != 0 && tctx_.frameTop == tctx_.curLoopFrame) {
+                if (tctx_.frameTop == tctx_.curLoopFrame) {
                     tctx_.loopCtl = n == "next" ? 1 : n == "last" ? 2 : 3; // cooperative
                     return Value::any();
                 }
@@ -30702,7 +30702,7 @@ Value Interpreter::eval(Expr* e) {
             }
             if (n == "proceed") throw ProceedEx{};   // leave when, keep matching
             if (n == "succeed") { // exit the enclosing given
-                if (tctx_.curGivenFrame != 0 && tctx_.frameTop == tctx_.curGivenFrame) {
+                if (tctx_.frameTop == tctx_.curGivenFrame) {
                     tctx_.givenCtl = 1; tctx_.givenV = Value::any(); return Value::any(); // cooperative
                 }
                 throw BreakGivenEx{};
