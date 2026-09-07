@@ -705,6 +705,11 @@ while it works, and a store it cannot read in full — an unreadable `dist/`
 record — makes it refuse and remove nothing, since an incomplete live set is
 how a collector would eat an installation.
 
+`--list`, `--check` and `--gc` each answer on their own: a run that asks for
+two is refused rather than silently answering as one of them, and all three
+belong to `rakupp install` — asking `uninstall`, `reinstall` or `test` for one
+is refused the same way, naming where it belongs.
+
 A distribution that ships commands in `bin/` gets a named, executable
 wrapper per script — `~/.raku/bin/s6` for Sparrow6's `s6` — the same
 dispatch stub Rakudo writes, so the command runs by name under either
