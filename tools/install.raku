@@ -1052,6 +1052,30 @@ sub install-one(%e, Str $prefix, Bool :$no-test, Bool :$force, Bool :$test-only,
     True
 }
 
+# Which blobs under sources/, resources/ and bin/ nothing points at any more.
+# ONE routine, so `--check`'s count and `--gc`'s deletions can never disagree:
+# a blob the report calls live is a blob the collector keeps.
+sub unreferenced-blobs(IO::Path $p, %dists, %referenced) {
+    my @out;
+    for <sources resources bin> -> $sub {
+        next unless $p.add($sub).d;
+        for $p.add($sub).dir.grep(*.f) -> $b {
+            next if %referenced{$b.basename};
+            # bin/ holds NAMED wrappers beside (legacy) blobs. A wrapper is not
+            # content-addressed: it is live while any dist carries bin/<name>,
+            # and BROKEN-adjacent only in the sense of wasted disk otherwise.
+            # The `raku` name is store infrastructure (ensure-raku-name wrote
+            # it for the wrappers' shebang), owned by no dist and never stale.
+            next if $sub eq 'bin' && $b.basename eq 'raku';
+            if $sub eq 'bin' && $b.basename !~~ / ^ <[0..9 a..f A..F]> ** 40 $ / {
+                next if %dists.values.first({ (.<files> // {}){"bin/" ~ $b.basename}:exists });
+            }
+            @out.push($b);
+        }
+    }
+    @out
+}
+
 # ---- the store checker (M6, written BEFORE the delete path) -----------------
 # Reports; fixes nothing. Exit 1 on BROKEN (a dangling index entry or a
 # missing blob behind a live entry — a `use` that will fail); unreferenced
@@ -1111,27 +1135,79 @@ sub store-check(Str $prefix) {
         }
     }
 
-    my $unref = 0;
-    for <sources resources bin> -> $sub {
-        next unless $p.add($sub).d;
-        for $p.add($sub).dir.grep(*.f) -> $b {
-            next if %referenced{$b.basename};
-            # bin/ holds NAMED wrappers beside (legacy) blobs. A wrapper is not
-            # content-addressed: it is live while any dist carries bin/<name>,
-            # and BROKEN-adjacent only in the sense of wasted disk otherwise.
-            # The `raku` name is store infrastructure (ensure-raku-name wrote
-            # it for the wrappers' shebang), owned by no dist and never stale.
-            next if $sub eq 'bin' && $b.basename eq 'raku';
-            if $sub eq 'bin' && $b.basename !~~ / ^ <[0..9 a..f A..F]> ** 40 $ / {
-                next if %dists.values.first({ (.<files> // {}){"bin/" ~ $b.basename}:exists });
-            }
-            $unref++;
-        }
-    }
+    my @unref = unreferenced-blobs($p, %dists, %referenced);
+    my $unref = @unref.elems;
     say "store check: {%dists.elems} distribution{%dists.elems == 1 ?? '' !! 's'}, "
         ~ "$broken broken, $unref unreferenced blob{$unref == 1 ?? '' !! 's'}"
         ~ ($unref ?? ' (wasted disk, not damage)' !! '');
     $broken ?? 1 !! 0
+}
+
+# ---- reclaiming what nothing references ------------------------------------
+# `--check` names the waste; this removes it. The live picture is built exactly
+# as the checker builds it — same dist files, same short/ entries, same sweep —
+# and a store that does not typecheck is left ALONE: an unreadable dist file
+# means the live set is incomplete, and deleting against an incomplete live set
+# is how a collector eats someone's installation.
+sub store-gc(Str $prefix, Bool :$dry) {
+    my $p = $prefix.IO;
+    say "store: {$p.absolute}";
+    unless $p.add('dist').d {
+        say "store gc: no dist/ — nothing installed, nothing to reclaim";
+        return 0;
+    }
+    my %dists; my %referenced; my $unreadable = 0;
+    for $p.add('dist').dir.grep(*.f) -> $f {
+        my %m = try json-decode($f.slurp);
+        unless %m { $unreadable++; next }
+        %dists{$f.basename} = %m;
+        %referenced{$_} = True for (%m<files> // {}).values.grep(* ne '');
+    }
+    if $unreadable {
+        note "store gc: $unreadable unreadable dist file{$unreadable == 1 ?? '' !! 's'} — "
+           ~ "refusing to sweep against an incomplete picture (`rakupp install --check` names them)";
+        return 1;
+    }
+    if $p.add('short').d {
+        for $p.add('short').dir.grep(*.d) -> $sdir {
+            for $sdir.dir.grep(*.f) -> $entry {
+                my $sha = ($entry.lines)[3] // '';
+                %referenced{$sha} = True if $sha;
+            }
+        }
+    }
+
+    my @unref = unreferenced-blobs($p, %dists, %referenced);
+    unless @unref {
+        say "store gc: nothing to reclaim";
+        return 0;
+    }
+    my $bytes = @unref.map({ (try .s) // 0 }).sum;
+    if $dry {
+        say "  {.parent.basename}/{.basename}  {human-bytes((try .s) // 0)}" for @unref;
+        say "store gc: {@unref.elems} blob{@unref.elems == 1 ?? '' !! 's'}, "
+            ~ "{human-bytes($bytes)} would be reclaimed (--dry-run: nothing removed)";
+        return 0;
+    }
+    my $freed = 0; my $failed = 0;
+    for @unref -> $b {
+        my $size = (try $b.s) // 0;
+        if (try $b.unlink) { $freed += $size }
+        else { $failed++; note "store gc: cannot remove {$b.absolute}" }
+    }
+    trace("gc: removed {@unref.elems - $failed} blobs, {$freed} bytes");
+    say "store gc: reclaimed {human-bytes($freed)} from "
+        ~ "{@unref.elems - $failed} blob{@unref.elems - $failed == 1 ?? '' !! 's'}"
+        ~ ($failed ?? " ($failed could not be removed)" !! '');
+    $failed ?? 1 !! 0
+}
+
+# Bytes as a person reads them; the store's blobs run from a few hundred bytes
+# to a few hundred KB, so one decimal is enough and MB is as far as it goes.
+sub human-bytes(Int() $n) {
+    return "$n B"                              if $n < 1024;
+    return "{($n / 1024).round(0.1)} KB"       if $n < 1024 * 1024;
+    "{($n / (1024 * 1024)).round(0.1)} MB"
 }
 
 # ---- one distribution out of the store -------------------------------------
@@ -1425,6 +1501,7 @@ sub MAIN(
     Bool :$dry-run,            #= resolve and print the plan; write nothing
     Bool :$list,               #= list what is installed in the target store (identity, installer, files, bin; -q: identities only)
     Bool :$check,              #= check the store's integrity; fix nothing
+    Bool :$gc,                 #= remove blobs nothing references (--dry-run lists them)
     Bool :$uninstall,          #= remove distributions (rakupp uninstall Foo)
     Bool :$reinstall,          #= uninstall then install fresh (rakupp reinstall Foo)
     Bool :$no-test,            #= skip the per-distribution test suites
@@ -1437,9 +1514,14 @@ sub MAIN(
     $QUIET = ?$quiet;
     # `rakupp uninstall --list` is a mode mix, not a synonym for install
     # --list — refuse it rather than silently answering as a different command
-    if ($uninstall || $reinstall || $test-only) && ($list || $check) {
+    if ($uninstall || $reinstall || $test-only) && ($list || $check || $gc) {
         note "rakupp {$uninstall ?? 'uninstall' !! $reinstall ?? 'reinstall' !! 'test'} "
-           ~ "--{$list ?? 'list' !! 'check'}: --list/--check belong to `rakupp install` — pick one";
+           ~ "--{$list ?? 'list' !! $check ?? 'check' !! 'gc'}: --list/--check/--gc belong to "
+           ~ "`rakupp install` — pick one";
+        exit 2;
+    }
+    if 1 < ($list, $check, $gc).grep(?*).elems {
+        note "rakupp install: --list, --check and --gc each answer on their own — pick one";
         exit 2;
     }
     if $test-only && !@modules {
@@ -1467,6 +1549,12 @@ sub MAIN(
     }
     if $check {
         exit store-check($to);
+    }
+    if $gc {
+        # the lock, because this REMOVES files another process may be about to
+        # reference; --dry-run still takes it, so what it lists is what a real
+        # run would have found
+        exit with-repo-lock($to, { store-gc($to, :dry($dry-run)) });
     }
     # `rakupp uninstall .` / `reinstall .` — the store knows dists by NAME,
     # so a path argument stands for whatever its directory's META6 names
@@ -1508,7 +1596,7 @@ sub MAIN(
         note q:to/END/.trim;
             usage: rakupp install [options] Module|Path ...
                    rakupp install .            this directory's dist (a Path starts with . or /)
-                   rakupp install --list | --check | --refresh
+                   rakupp install --list | --check | --gc | --refresh
                    rakupp test Module|Path ... run the dists' own suites; installs only their deps
                    rakupp uninstall [--force] Module|Path ...
                    rakupp reinstall [--no-test] [--force] Module|Path ...
@@ -1517,6 +1605,8 @@ sub MAIN(
               --list           what is installed in the target store: identity,
                                installer, module files, bin wrappers (-q: identities only)
               --check          store integrity report (exit 1 on damage); fixes nothing
+              --gc             remove the blobs --check counts as unreferenced;
+                               with --dry-run, list them and remove nothing
               --no-test        skip the per-distribution test suites
               --force          reinstall / uninstall despite refusals
               --refresh        refetch the ecosystem index(es) (else cached 24h);

@@ -660,6 +660,8 @@ rakupp reinstall Foo             # uninstall + install fresh, one command
 rakupp install --list            # what is installed: identity, installer,
                                  # module files, bin wrappers (-q: identities)
 rakupp install --check           # store integrity report; fixes nothing
+rakupp install --gc              # remove the blobs --check calls unreferenced
+                                 # (--dry-run lists them and removes nothing)
 rakupp install --refresh         # refetch the cached ecosystem index(es)
 rakupp install --to=PATH Foo     # another store prefix (default ~/.raku)
 rakupp install -q Foo            # only warnings and failures; nothing on
@@ -682,6 +684,26 @@ HTTP::Tiny:ver<0.2.6>:auth<zef:jjatria>  (HTTP::Tiny)
 
 A blob or wrapper the record names but the disk lacks is flagged beside its
 path; `--check` is the full audit. With `-q` only the identity lines print.
+
+`--check` also counts blobs that nothing references — an orphan left by an
+interrupted install, or by a file some later version replaced. They are wasted
+disk rather than damage, so they do not fail the check, and `--gc` is what
+removes them:
+
+```console
+$ rakupp install --gc --dry-run
+store: ~/.raku
+  sources/9426E1FB2DABFEF01CCE4403DB08A6A816F32B87  2.9 KB
+  resources/libB2AECA0D0203E5AB9680EA5F9EA463F0B5B458B1.dylib  49.1 KB
+store gc: 5 blobs, 144.8 KB would be reclaimed (--dry-run: nothing removed)
+```
+
+Without `--dry-run` it removes them and reports what it recovered. The
+collector and the checker compute the live set with the same routine, so a
+blob one calls live is never a blob the other deletes; it takes the store lock
+while it works, and a store it cannot read in full — an unreadable `dist/`
+record — makes it refuse and remove nothing, since an incomplete live set is
+how a collector would eat an installation.
 
 A distribution that ships commands in `bin/` gets a named, executable
 wrapper per script — `~/.raku/bin/s6` for Sparrow6's `s6` — the same
