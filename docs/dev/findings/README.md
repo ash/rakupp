@@ -54,8 +54,8 @@ logs and the reviews. This page is the complete list.
 - **[TRIAGE.md](TRIAGE.md)** *(living; 2026-07-11, 07-12, 08-20, 08-31, 09-01, 09-07)* —
   behavioural gaps hit while writing real programs *outside* the harness: array
   assignment aliasing, `next` inside `.map`, `return` in `CATCH`, native `--exe`
-  multi-method dispatch, role-body lexicals shared across composers, each with a
-  minimal repro.
+  multi-method dispatch, role-body lexicals shared across composers, the scope an
+  `END` phaser cannot see, each with a minimal repro.
 
 ## Ecosystem campaigns
 

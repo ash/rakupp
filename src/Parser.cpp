@@ -8643,6 +8643,7 @@ StmtPtr Parser::parseStatementImpl() {
             advance();
             auto b = std::make_unique<Block>();
             b->phaser = kw; // run-timing handled by the interpreter
+            if (kw == "END") sawEndPhaser_ = true; // the unit needs the END walk
             if (isKind(Tok::LBrace)) { auto blk = parseBlock(); b->stmts = std::move(blk->stmts); }
             else { b->stmts.push_back(parseStatement()); b->stmtForm = true; } // PHASER statement; — declarations belong to the enclosing scope
             return b;
@@ -8792,6 +8793,7 @@ Program Parser::parseProgram() {
     checkRedeclarations(prog.stmts);
     prog.declaredTypeNames = std::move(declTypeNames_);
     prog.typeNamesOpaque = declTypesOpaque_;
+    prog.mayHaveEnd = sawEndPhaser_;
     prog.langRev = langRev_;
     return prog;
 }

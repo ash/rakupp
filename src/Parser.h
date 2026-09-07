@@ -124,6 +124,7 @@ private:
     // Program at the end of parseProgram.
     std::set<std::string> declTypeNames_;
     bool declTypesOpaque_ = false;
+    bool sawEndPhaser_ = false;   // an END anywhere in the unit (Program::mayHaveEnd)
     // (pendingStmts_), flushed after the current statement by the block loops
     std::string lastWillPhaser_;
     ExprPtr lastWillBlock_;

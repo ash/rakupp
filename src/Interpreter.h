@@ -2002,7 +2002,19 @@ private:
     // exactly this way). Populated lazily; empty for programs that never take a
     // builtin reference, which keeps the call path's check free.
     std::map<std::string, Value> builtinRefs_;
-    std::vector<std::pair<Block*, std::shared_ptr<Env>>> deferredEnds_; // END blocks from EVAL, run at program end
+    // Every END phaser of every unit loaded so far, in collection order (source
+    // order within a unit). Rakudo REGISTERS an END where it is written and runs
+    // it at exit — once, wherever it sits: an END in a sub that is never called
+    // still runs, and one in a sub called three times still runs once. `env` is
+    // the scope its body will run in; entering the block that holds it captures
+    // the scope again, so the LAST entry wins, as Rakudo's closure clone does.
+    // `deferred` marks a module's or an EVAL's, which run before the mainline's.
+    struct EndPhaser { Block* blk; std::shared_ptr<Env> env; bool deferred; };
+    std::vector<EndPhaser> endPhasers_;
+    std::mutex endPhaserMut_;  // the capture may run on any thread (a sub with an END, called from a `start`)
+    // Register a unit's ENDs (any depth, source order) and skip them in place.
+    void registerEnds(const Program& prog, bool deferred);
+    void captureEndScope(Block* b);  // reaching/entering a registered END: remember the scope
     const Value* envLookup(const std::string& name); // %*ENV<name>, or null
     bool envFlag(const std::string& name); // truthiness of %*ENV<name>
     std::string envStr(const std::string& name); // %*ENV<name> as a string

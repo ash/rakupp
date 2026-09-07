@@ -1088,88 +1088,96 @@ static bool initIsSelfContained(Block* b) {
     return true;
 }
 
-static void collectInitsStmt(Stmt* s, std::vector<Block*>& out, bool topLevel = false);
-static void collectInitsExpr(Expr* e, std::vector<Block*>& out);
-static void collectInitsBody(const std::vector<StmtPtr>& b, std::vector<Block*>& out) {
-    for (auto& s : b) collectInitsStmt(s.get(), out);
+// One walk serves both hoisted phasers: `want` names the one being collected,
+// INIT (run once before the mainline) or END (run once at program exit). Both
+// leave their textual position behind, so both need the SAME whole-unit walk —
+// statements and expressions alike, because a phaser can be buried under
+// `say(gather(for … ))`. A node kind the walk does not model leaves its phaser
+// uncollected, and an uncollected phaser keeps running where it is written:
+// a gap degrades to the old behaviour, never to a phaser that vanishes.
+static void collectPhasersStmt(Stmt* s, const char* want, std::vector<Block*>& out, bool topLevel = false);
+static void collectPhasersExpr(Expr* e, const char* want, std::vector<Block*>& out);
+static void collectPhasersBody(const std::vector<StmtPtr>& b, const char* want, std::vector<Block*>& out) {
+    for (auto& s : b) collectPhasersStmt(s.get(), want, out);
 }
-static void collectInitsExpr(Expr* e, std::vector<Block*>& out) {
+static void collectPhasersExpr(Expr* e, const char* want, std::vector<Block*>& out) {
     if (!e) return;
     switch (e->kind) {
-        case NK::BlockExpr: collectInitsBody(static_cast<BlockExpr*>(e)->body, out); return;
+        case NK::BlockExpr: collectPhasersBody(static_cast<BlockExpr*>(e)->body, want, out); return;
         case NK::Assign: { auto* a = static_cast<Assign*>(e);
-            collectInitsExpr(a->target.get(), out); collectInitsExpr(a->value.get(), out); return; }
+            collectPhasersExpr(a->target.get(), want, out); collectPhasersExpr(a->value.get(), want, out); return; }
         case NK::Binary: { auto* b = static_cast<Binary*>(e);
-            collectInitsExpr(b->lhs.get(), out); collectInitsExpr(b->rhs.get(), out); return; }
-        case NK::Unary: collectInitsExpr(static_cast<Unary*>(e)->operand.get(), out); return;
+            collectPhasersExpr(b->lhs.get(), want, out); collectPhasersExpr(b->rhs.get(), want, out); return; }
+        case NK::Unary: collectPhasersExpr(static_cast<Unary*>(e)->operand.get(), want, out); return;
         case NK::Call: { auto* c = static_cast<Call*>(e);
-            collectInitsExpr(c->callee.get(), out);
-            for (auto& a : c->args) collectInitsExpr(a.get(), out); return; }
+            collectPhasersExpr(c->callee.get(), want, out);
+            for (auto& a : c->args) collectPhasersExpr(a.get(), want, out); return; }
         case NK::MethodCall: { auto* m = static_cast<MethodCall*>(e);
-            collectInitsExpr(m->inv.get(), out); collectInitsExpr(m->methodExpr.get(), out);
-            for (auto& a : m->args) collectInitsExpr(a.get(), out); return; }
+            collectPhasersExpr(m->inv.get(), want, out); collectPhasersExpr(m->methodExpr.get(), want, out);
+            for (auto& a : m->args) collectPhasersExpr(a.get(), want, out); return; }
         case NK::Index: { auto* i = static_cast<Index*>(e);
-            collectInitsExpr(i->base.get(), out); collectInitsExpr(i->index.get(), out); return; }
+            collectPhasersExpr(i->base.get(), want, out); collectPhasersExpr(i->index.get(), want, out); return; }
         case NK::Ternary: { auto* t = static_cast<Ternary*>(e);
-            collectInitsExpr(t->cond.get(), out); collectInitsExpr(t->then.get(), out);
-            collectInitsExpr(t->els.get(), out); return; }
+            collectPhasersExpr(t->cond.get(), want, out); collectPhasersExpr(t->then.get(), want, out);
+            collectPhasersExpr(t->els.get(), want, out); return; }
         case NK::Range: { auto* r = static_cast<RangeExpr*>(e);
-            collectInitsExpr(r->from.get(), out); collectInitsExpr(r->to.get(), out); return; }
+            collectPhasersExpr(r->from.get(), want, out); collectPhasersExpr(r->to.get(), want, out); return; }
         case NK::Pair: { auto* p = static_cast<PairExpr*>(e);
-            collectInitsExpr(p->keyExpr.get(), out); collectInitsExpr(p->value.get(), out); return; }
-        case NK::ChainExpr: for (auto& o : static_cast<ChainExpr*>(e)->operands) collectInitsExpr(o.get(), out); return;
-        case NK::ListExpr:  for (auto& i : static_cast<ListExpr*>(e)->items)  collectInitsExpr(i.get(), out); return;
-        case NK::ArrayLit:  for (auto& i : static_cast<ArrayLit*>(e)->items)  collectInitsExpr(i.get(), out); return;
-        case NK::HashLit:   for (auto& i : static_cast<HashLit*>(e)->items)   collectInitsExpr(i.get(), out); return;
-        case NK::InterpStr: for (auto& p : static_cast<InterpStr*>(e)->parts) collectInitsExpr(p.get(), out); return;
+            collectPhasersExpr(p->keyExpr.get(), want, out); collectPhasersExpr(p->value.get(), want, out); return; }
+        case NK::ChainExpr: for (auto& o : static_cast<ChainExpr*>(e)->operands) collectPhasersExpr(o.get(), want, out); return;
+        case NK::ListExpr:  for (auto& i : static_cast<ListExpr*>(e)->items)  collectPhasersExpr(i.get(), want, out); return;
+        case NK::ArrayLit:  for (auto& i : static_cast<ArrayLit*>(e)->items)  collectPhasersExpr(i.get(), want, out); return;
+        case NK::HashLit:   for (auto& i : static_cast<HashLit*>(e)->items)   collectPhasersExpr(i.get(), want, out); return;
+        case NK::InterpStr: for (auto& p : static_cast<InterpStr*>(e)->parts) collectPhasersExpr(p.get(), want, out); return;
         default: return;
     }
 }
-static void collectInitsStmt(Stmt* s, std::vector<Block*>& out, bool topLevel) {
+static void collectPhasersStmt(Stmt* s, const char* want, std::vector<Block*>& out, bool topLevel) {
     if (!s) return;
     switch (s->kind) {
         case NK::Block: { auto* b = static_cast<Block*>(s);
-            // an INIT is collected, and its own body is NOT re-walked: a phaser
-            // nested inside it belongs to that one execution, not to a second
-            // hoist that would run it twice
-            if (b->phaser == "INIT") {
+            // a collected phaser's own body is NOT re-walked: a phaser nested
+            // inside it belongs to that one execution, not to a second hoist
+            // that would run it twice
+            if (b->phaser == want) {
+                if (b->phaser == "END") { out.push_back(b); return; } // END: always, wherever it is
                 // top level: always (its containers are pre-declared).
                 // nested: only if it reaches no scope that has yet to exist.
                 if (topLevel || initIsSelfContained(b)) { b->initHoisted = true; out.push_back(b); }
                 return;
             }
-            collectInitsBody(b->stmts, out); return; }
-        case NK::ExprStmt: collectInitsExpr(static_cast<ExprStmt*>(s)->e.get(), out); return;
-        case NK::VarDecl:  collectInitsExpr(static_cast<VarDecl*>(s)->init.get(), out); return;
-        case NK::ReturnStmt: collectInitsExpr(static_cast<ReturnStmt*>(s)->value.get(), out); return;
-        case NK::SubDecl:  collectInitsBody(static_cast<SubDecl*>(s)->body, out); return;
+            collectPhasersBody(b->stmts, want, out); return; }
+        case NK::ExprStmt: collectPhasersExpr(static_cast<ExprStmt*>(s)->e.get(), want, out); return;
+        case NK::VarDecl:  collectPhasersExpr(static_cast<VarDecl*>(s)->init.get(), want, out); return;
+        case NK::ReturnStmt: collectPhasersExpr(static_cast<ReturnStmt*>(s)->value.get(), want, out); return;
+        case NK::SubDecl:  collectPhasersBody(static_cast<SubDecl*>(s)->body, want, out); return;
         case NK::IfStmt: { auto* f = static_cast<IfStmt*>(s);
-            for (auto& br : f->branches) { collectInitsExpr(br.first.get(), out);
-                if (br.second) collectInitsBody(br.second->stmts, out); }
-            if (f->elseBlock) collectInitsBody(f->elseBlock->stmts, out); return; }
+            for (auto& br : f->branches) { collectPhasersExpr(br.first.get(), want, out);
+                if (br.second) collectPhasersBody(br.second->stmts, want, out); }
+            if (f->elseBlock) collectPhasersBody(f->elseBlock->stmts, want, out); return; }
         case NK::WhileStmt: { auto* w = static_cast<WhileStmt*>(s);
-            collectInitsExpr(w->cond.get(), out);
-            if (w->body) collectInitsBody(w->body->stmts, out); return; }
+            collectPhasersExpr(w->cond.get(), want, out);
+            if (w->body) collectPhasersBody(w->body->stmts, want, out); return; }
         case NK::RepeatStmt: { auto* r = static_cast<RepeatStmt*>(s);
-            if (r->body) collectInitsBody(r->body->stmts, out);
-            collectInitsExpr(r->cond.get(), out); return; }
+            if (r->body) collectPhasersBody(r->body->stmts, want, out);
+            collectPhasersExpr(r->cond.get(), want, out); return; }
         case NK::ForStmt: { auto* f = static_cast<ForStmt*>(s);
-            collectInitsExpr(f->list.get(), out);
-            if (f->body) collectInitsBody(f->body->stmts, out); return; }
+            collectPhasersExpr(f->list.get(), want, out);
+            if (f->body) collectPhasersBody(f->body->stmts, want, out); return; }
         case NK::LoopStmt: { auto* l = static_cast<LoopStmt*>(s);
-            collectInitsExpr(l->init.get(), out); collectInitsExpr(l->cond.get(), out);
-            collectInitsExpr(l->incr.get(), out);
-            if (l->body) collectInitsBody(l->body->stmts, out); return; }
+            collectPhasersExpr(l->init.get(), want, out); collectPhasersExpr(l->cond.get(), want, out);
+            collectPhasersExpr(l->incr.get(), want, out);
+            if (l->body) collectPhasersBody(l->body->stmts, want, out); return; }
         case NK::GivenStmt: { auto* g = static_cast<GivenStmt*>(s);
-            collectInitsExpr(g->topic.get(), out);
-            if (g->body) collectInitsBody(g->body->stmts, out); return; }
+            collectPhasersExpr(g->topic.get(), want, out);
+            if (g->body) collectPhasersBody(g->body->stmts, want, out); return; }
         case NK::WhenStmt: { auto* w = static_cast<WhenStmt*>(s);
-            collectInitsExpr(w->cond.get(), out);
-            if (w->body) collectInitsBody(w->body->stmts, out); return; }
+            collectPhasersExpr(w->cond.get(), want, out);
+            if (w->body) collectPhasersBody(w->body->stmts, want, out); return; }
         case NK::ClassDecl: { auto* c = static_cast<ClassDecl*>(s);
-            for (auto& m : c->methods) collectInitsStmt(m.get(), out);
-            collectInitsBody(c->body, out); return; }
-        case NK::EnumDecl: collectInitsExpr(static_cast<EnumDecl*>(s)->values.get(), out); return;
+            for (auto& m : c->methods) collectPhasersStmt(m.get(), want, out);
+            collectPhasersBody(c->body, want, out); return; }
+        case NK::EnumDecl: collectPhasersExpr(static_cast<EnumDecl*>(s)->values.get(), want, out); return;
         default: return;
     }
 }
@@ -4413,10 +4421,12 @@ int Interpreter::run(Program& prog) {
         for (auto& s : argv_) args.arr()->push_back(Value::str(s));
         tctx_.cur->define("@*ARGS", args);
     }
-    // Partition top-level phasers (BEGIN/CHECK/INIT run before mainline; END after).
+    // Partition top-level phasers (BEGIN/CHECK/INIT run before the mainline).
     // LEAVE/KEEP/UNDO of the compilation unit run when the mainline exits, so they
-    // are deferred here too rather than executed at their textual position.
-    std::vector<Block*> beginP, checkP, initP, endP, leaveP, enterP;
+    // are deferred here too rather than executed at their textual position. END
+    // is not partitioned at all: it is registered by the whole-unit walk below,
+    // wherever in the program it sits.
+    std::vector<Block*> beginP, checkP, initP, leaveP, enterP;
     std::vector<Stmt*> mainline;
     Block* topCatch = nullptr; // a CATCH in the mainline (the UNIT block) guards it
     Block* topControl = nullptr; // …and a mainline CONTROL is the outermost warn handler
@@ -4433,7 +4443,8 @@ int Interpreter::run(Program& prog) {
             if (b->phaser == "BEGIN") { beginP.push_back(b); continue; }
             if (b->phaser == "CHECK") { checkP.push_back(b); continue; }
             if (b->phaser == "INIT")  { continue; }  // collected by the whole-program walk below
-            if (b->phaser == "END")   { endP.push_back(b);   continue; }
+            // END: left in the mainline. The walk below registers it like any
+            // other, and reaching it only captures the mainline scope.
             if (b->phaser == "ENTER") { enterP.push_back(b); continue; } // file scope: before the mainline body
             if (b->phaser == "LEAVE" || b->phaser == "KEEP" || b->phaser == "UNDO")
                                       { leaveP.push_back(b); continue; }
@@ -4441,33 +4452,66 @@ int Interpreter::run(Program& prog) {
         mainline.push_back(s.get());
     }
     // Every INIT in the program, at any depth, in source order — including the
-    // top-level ones just skipped. See collectInitsStmt: they run before the
+    // top-level ones just skipped. See collectPhasersStmt: they run before the
     // mainline, and their textual positions are then skipped.
-    for (auto& s : prog.stmts) collectInitsStmt(s.get(), initP, /*topLevel=*/true);
+    for (auto& s : prog.stmts) collectPhasersStmt(s.get(), "INIT", initP, /*topLevel=*/true);
+    // …and every END, at any depth, in source order: they run at exit, in
+    // reverse. A nested run() (an installed `bin/` script) registers on top of
+    // its caller's, and takes only its own back off at the end.
+    const size_t endMark = endPhasers_.size();
+    registerEnds(prog, /*deferred=*/false);
     auto runPhaser = [&](Block* b) {
         if (b->stmtForm) { execBlock(b, tctx_.cur); return; } // `INIT my $x = …` declares in the mainline scope
         auto sc = std::make_shared<Env>(); sc->parent = tctx_.cur; execBlock(b, sc);
     };
-    // END phasers run in REVERSE source order, on any exit path.
+    // END phasers run in REVERSE registration order, on any exit path — and
+    // registration is source order, so a nested END takes its place among the
+    // mainline's: `END a; sub f { END b }; END c` runs c, b, a.
     auto runEnds = [&]() {
         // Dropped objects get their DESTROY before the ENDs, so an END block
         // observes destructor effects; objects an END itself releases wait for
         // a real process exit, like Rakudo's unguaranteed finalization.
         try { runPendingDestroys(); } catch (...) {}
+        // Snapshot before running: ENDs run with the workers still alive (below),
+        // and both an EVAL on a worker and an END that EVALs an END of its own
+        // register into endPhasers_ while this runs — a reference into it would
+        // not survive the reallocation. The lock is never held across a phaser
+        // body, which would deadlock on the capture the body's own blocks make.
+        auto snapshotFrom = [&](size_t from) {
+            std::lock_guard<std::mutex> g(endPhaserMut_);
+            if (from >= endPhasers_.size()) return std::vector<EndPhaser>{};
+            return std::vector<EndPhaser>(endPhasers_.begin() + from, endPhasers_.end());
+        };
+        auto runOne = [&](const EndPhaser& e) {
+            // stmtForm (`END rm-rf($dir);`) runs IN the captured scope, as
+            // `INIT my $x = …` declares in the enclosing one; a braced END gets
+            // its own scope under it.
+            try {
+                if (e.blk->stmtForm) execBlock(e.blk, e.env);
+                else { auto sc = std::make_shared<Env>(); sc->parent = e.env; execBlock(e.blk, sc); }
+            }
+            catch (ExitEx& ex) { code = ex.code; }  // `exit` in an END block sets the exit status
+            catch (...) {}
+        };
         // Deferred ENDs (modules, EVAL) first, newest registration first — then
-        // the mainline's own, reverse source order. A later-loaded module's
+        // this unit's own, reverse source order. A later-loaded module's
         // cleanup precedes the mainline END that inspects its results.
-        for (auto it = deferredEnds_.rbegin(); it != deferredEnds_.rend(); ++it) {
-            auto sc = std::make_shared<Env>(); sc->parent = it->second;
-            try { execBlock(it->first, sc); }
-            catch (ExitEx& e) { code = e.code; }
-            catch (...) {}
+        auto batch = snapshotFrom(endMark);
+        size_t seen = endMark + batch.size();
+        for (size_t i = batch.size(); i-- > 0; ) if (batch[i].deferred)  runOne(batch[i]);
+        for (size_t i = batch.size(); i-- > 0; ) if (!batch[i].deferred) runOne(batch[i]);
+        // `END { EVAL q[END …] }` registers while the loop above runs: those are
+        // ends of the program too, newest first, until no more appear.
+        for (auto more = snapshotFrom(seen); !more.empty(); more = snapshotFrom(seen)) {
+            seen += more.size();
+            for (size_t i = more.size(); i-- > 0; ) runOne(more[i]);
         }
-        for (auto it = endP.rbegin(); it != endP.rend(); ++it) {
-            try { runPhaser(*it); }
-            catch (ExitEx& e) { code = e.code; }  // `exit` in an END block sets the exit status
-            catch (...) {}
-        }
+        // A nested run() (an installed `bin/` script) hands the process back to
+        // its caller: take this unit's registrations off so the outer run does
+        // not fire them a second time, and let its blocks register again.
+        std::lock_guard<std::mutex> g(endPhaserMut_);
+        for (size_t i = endMark; i < endPhasers_.size(); i++) endPhasers_[i].blk->endSlot = -1;
+        endPhasers_.resize(endMark);
     };
     // Extract a single top-level lexical declaration (name + whether it has an initializer).
     auto topDecl = [](Stmt* s, bool& hasInit) -> std::string {
@@ -6378,7 +6422,7 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
             // called, and runs it exactly once; without this walk each one fired
             // at its textual position, so an INIT inside `our sub greet` ran on
             // every call. Same collection and same self-contained rule as the
-            // program mainline and EVAL (see collectInitsStmt); after hoistSubs,
+            // program mainline and EVAL (see collectPhasersStmt); after hoistSubs,
             // so an INIT may call the module's own subs. A module loaded from
             // the precomp cache gets a fresh AST with initHoisted clear — the
             // flag is per-run and deliberately not serialized — so it collects
@@ -6404,7 +6448,13 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
             // INIT { $stash = … }` hoisted above its own declaration and died
             // with "Variable '$stash' is not declared".
             std::vector<Block*> inits;
-            for (auto& st : prog->stmts) collectInitsStmt(st.get(), inits, /*topLevel=*/false);
+            for (auto& st : prog->stmts) collectPhasersStmt(st.get(), "INIT", inits, /*topLevel=*/false);
+            // A module's END runs at PROCESS end, not at load (File::Temp
+            // registers its tempfile cleanup this way), capturing the module
+            // scope. Deferred ENDs run before the mainline's own — a module
+            // loaded LATER cleans up EARLIER (LIFO), which is what a test that
+            // checks the module's cleanup from its own END relies on.
+            registerEnds(*prog, /*deferred=*/true);
             bool initsDone = inits.empty();
             auto runInitsOnce = [&] {
                 if (initsDone) return;
@@ -6435,15 +6485,6 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
                         if (Value* c = tctx_.cur->find("&" + sd->name))
                             global_->define("&" + tctx_.pkgPrefix + sd->name, *c);
                     continue; // hoisted
-                }
-                // A module's END runs at PROCESS end, not at load (File::Temp
-                // registers its tempfile cleanup this way), capturing the module
-                // scope. Deferred ENDs run before the mainline's own — a module
-                // loaded LATER cleans up EARLIER (LIFO), which is what a test
-                // that checks the module's cleanup from its own END relies on.
-                if (st->kind == NK::Block && static_cast<Block*>(st.get())->phaser == "END") {
-                    deferredEnds_.push_back({static_cast<Block*>(st.get()), tctx_.cur});
-                    continue;
                 }
                 exec(st.get());
             }
@@ -6802,19 +6843,16 @@ Value Interpreter::evalString(const std::string& src, bool mainlinePH, bool* inc
     // to happen with no gather on the stack, and only hoisting puts it there.
     {
         std::vector<Block*> inits;
-        for (auto& s : prog->stmts) collectInitsStmt(s.get(), inits, /*topLevel=*/true);
+        for (auto& s : prog->stmts) collectPhasersStmt(s.get(), "INIT", inits, /*topLevel=*/true);
         for (auto* b : inits) runHoistedInit(b);
     }
+    // An END in EVAL'd code runs at the END of the whole program (not here),
+    // capturing the EVAL scope so it still sees this EVAL's lexicals.
+    registerEnds(*prog, /*deferred=*/true);
     Value last = Value::nil();   // an empty unit is Nil, as an empty block is
     for (auto& s : prog->stmts) {
         // a top-level INIT just ran above; running it again here would double it
         if (s->kind == NK::Block && static_cast<Block*>(s.get())->initHoisted) continue;
-        // An END block in EVAL'd code runs at the END of the whole program (not here),
-        // capturing the EVAL scope so it still sees this EVAL's lexicals.
-        if (s->kind == NK::Block && static_cast<Block*>(s.get())->phaser == "END") {
-            deferredEnds_.push_back({static_cast<Block*>(s.get()), tctx_.cur});
-            continue;
-        }
         // Loop control inside the EVAL, with a loop OUTSIDE it, belongs to that
         // loop: `for ^3 { EVAL q[last] }` ends the for — as Rakudo does, and as
         // `EVAL q[return …]` already returns from an enclosing routine below.
@@ -6971,11 +7009,16 @@ void Interpreter::replStart(std::vector<std::string> args) {
 void Interpreter::replFinish() {
     // END blocks typed at the prompt were deferred by evalString; they belong to
     // the session, so they run once, newest first, as the session ends.
-    for (auto it = deferredEnds_.rbegin(); it != deferredEnds_.rend(); ++it) {
-        auto sc = std::make_shared<Env>(); sc->parent = it->second;
-        try { execBlock(it->first, sc); } catch (...) {}
+    std::vector<EndPhaser> all;
+    { std::lock_guard<std::mutex> g(endPhaserMut_); all.swap(endPhasers_); }
+    for (size_t i = all.size(); i-- > 0; ) {
+        const EndPhaser& e = all[i];
+        try {
+            if (e.blk->stmtForm) execBlock(e.blk, e.env);
+            else { auto sc = std::make_shared<Env>(); sc->parent = e.env; execBlock(e.blk, sc); }
+        } catch (...) {}
+        e.blk->endSlot = -1;
     }
-    deferredEnds_.clear();
 }
 
 std::vector<std::string> Interpreter::replNames() const {
@@ -7060,6 +7103,10 @@ static bool isBlockPhaser(Stmt* s) {
     // A HOISTED INIT already ran, before the mainline — skip it here. One the
     // program-init walk did not reach keeps running in place, as it always did.
     if (p == "INIT") return b->initHoisted;
+    // END is deliberately NOT here. A registered one still runs as a statement —
+    // exec captures its scope and yields Nil — because Rakudo's block value comes
+    // from the phaser when it is written last: `sub f { 42; END … }` returns Nil,
+    // and 42 is warned about as sink context.
     return p == "ENTER" || p == "LEAVE" || p == "KEEP" || p == "UNDO" || p == "FIRST" ||
            p == "NEXT" || p == "LAST" || p == "QUIT" || p == "CLOSE";
 }
@@ -7069,12 +7116,52 @@ void Interpreter::runNextPhasers(const std::vector<StmtPtr>& stmts, std::shared_
         auto* b = static_cast<Block*>(it->get());
         if (b->phaser == "NEXT") { auto sc = std::make_shared<Env>(); sc->parent = scope; execBlock(b, sc); } }
 }
+static void blockDeclNames(const std::vector<StmtPtr>& stmts, std::vector<std::string>& out);
 void Interpreter::runEnterPhasers(const std::vector<StmtPtr>& stmts) {
     for (auto& s : stmts) if (s->kind == NK::Block) { auto* b = static_cast<Block*>(s.get());
         // ENTER fires on every block entry; FIRST fires once — in a loop body the loop
         // drives FIRST (suppressLoopFirst_), elsewhere FIRST behaves like a one-shot ENTER.
         if (b->phaser == "ENTER" || (b->phaser == "FIRST" && !suppressLoopFirst_)) {
-            auto sc = std::make_shared<Env>(); sc->parent = tctx_.cur; execBlock(b, sc); } }
+            auto sc = std::make_shared<Env>(); sc->parent = tctx_.cur; execBlock(b, sc); }
+        // An END here runs at exit, in THIS entry's scope — which is why the
+        // capture is at block ENTRY and not at the phaser's own position:
+        // `sub f($n) { return if $n == 2; END say $n }` called f(1), f(2) says 2
+        // in Rakudo, though the second call never reached the phaser.
+        else if (b->endSlot >= 0) captureEndScope(b); }
+}
+// The scope a registered END will run in: the most recent entry of the block
+// that holds it. `for 1..3 -> $i { END say $i }` therefore says 3 — one run,
+// the last iteration's $i — exactly as Rakudo's per-entry closure clone does.
+void Interpreter::captureEndScope(Block* b) {
+    // `END my $x = …` DECLARES in the ENCLOSING scope, and Rakudo's pad carries
+    // that slot from compile time — so code around the phaser can name $x
+    // (undefined) although the body only runs at exit. The same repair
+    // runLeavePhasers makes for a declaration an early `return` jumped over.
+    if (b->stmtForm) {
+        std::vector<std::string> declared;
+        blockDeclNames(b->stmts, declared);
+        for (auto& n : declared)
+            if (!tctx_.cur->find(n))
+                tctx_.cur->define(n, n[0] == '@' ? Value::array() : n[0] == '%' ? Value::makeHash() : Value::any());
+    }
+    std::lock_guard<std::mutex> g(endPhaserMut_); // any thread may enter the block
+    if (b->endSlot >= 0 && (size_t)b->endSlot < endPhasers_.size())
+        endPhasers_[b->endSlot].env = tctx_.cur;
+}
+// Every END of a unit, at any depth, in source order. Registration is what
+// Rakudo does at COMPILE time, so the phaser's textual position no longer runs
+// it — see isBlockPhaser — and an END in a never-called sub still runs at exit,
+// in the unit scope captured here.
+void Interpreter::registerEnds(const Program& prog, bool deferred) {
+    if (!prog.mayHaveEnd) return;   // the parser saw none: no walk at all
+    std::vector<Block*> ends;
+    for (auto& s : prog.stmts) collectPhasersStmt(s.get(), "END", ends);
+    std::lock_guard<std::mutex> g(endPhaserMut_);
+    for (auto* b : ends) {
+        if (b->endSlot >= 0) continue;   // already registered (this unit is being re-entered)
+        b->endSlot = (int)endPhasers_.size();
+        endPhasers_.push_back({b, tctx_.cur, deferred});
+    }
 }
 void Interpreter::runFirstPhasers(const std::vector<StmtPtr>& stmts) {
     for (auto& s : stmts) if (s->kind == NK::Block) { auto* b = static_cast<Block*>(s.get());
@@ -8136,6 +8223,11 @@ Value Interpreter::exec(Stmt* s, bool sink) {
         }
         case NK::Block: {
             auto* b = static_cast<Block*>(s);
+            // A registered END belongs to program exit. The statement runners
+            // skip it (isBlockPhaser), so this is the UNIT-level path — a
+            // module's or an EVAL's mainline, which walks its statements
+            // itself — and all that happens here is the scope capture.
+            if (b->endSlot >= 0) { captureEndScope(b); return Value::nil(); }
             // `{*}` inside a `proto` body: THE dispatch point. It hands the proto's
             // own arguments to the best candidate (S06). Outside a proto it is just a
             // block evaluating to `*`, which is what it stays.
@@ -16684,7 +16776,9 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
     // the hottest call shape there is (see catchScan above, same idiom).
     if (c.phaserScan < 0) {
         bool found = false;
-        if (c.body) for (auto& s : *c.body) if (isBlockPhaser(s.get())) { found = true; break; }
+        if (c.body) for (auto& s : *c.body)
+            if (isBlockPhaser(s.get()) ||
+                (s->kind == NK::Block && static_cast<Block*>(s.get())->endSlot >= 0)) { found = true; break; }
         c.phaserScan = found ? 1 : 0;
     }
     const bool hasPhasers = c.phaserScan == 1;

@@ -729,6 +729,12 @@ struct Block : Stmt {
     // the mainline (hence before any user thread), then only read. Not
     // serialized — it is a property of one run, not of the AST.
     bool initHoisted = false;
+    // END only: this block's index in the interpreter's END registry, or -1 for
+    // one the whole-unit walk did not reach (which runs where it is written, as
+    // it always did). A registered END does NOT run at its textual position:
+    // reaching it only CAPTURES the scope the body will run in at exit. Like
+    // initHoisted, a property of one run rather than of the AST — not serialized.
+    int endSlot = -1;
     Block(): Stmt(NK::Block) {}
 };
 
@@ -871,6 +877,11 @@ struct Program {
     // rule.
     std::set<std::string> declaredTypeNames;
     bool typeNamesOpaque = true;
+    // Did the parser see an END phaser anywhere in this unit? False lets the
+    // interpreter skip the whole-unit END walk, which is nearly every program.
+    // A DESERIALIZED (cached/embedded) Program keeps the conservative default
+    // and is walked — one traversal per unit, and never a lost phaser.
+    bool mayHaveEnd = true;
     // Language revision this unit was written in (0=6.c, 1=6.d, 2=6.e), from
     // its `use v6.X` pragma. A unit has exactly one — the pragma has to be the
     // first statement — so it lives here rather than on every routine node.
