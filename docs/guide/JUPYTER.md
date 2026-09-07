@@ -45,7 +45,8 @@ by hand — this is all one is:
   "argv": ["/absolute/path/to/rakupp", "--jupyter", "{connection_file}"],
   "display_name": "Raku++",
   "language": "raku",
-  "interrupt_mode": "message"
+  "interrupt_mode": "message",
+  "metadata": {"debugger": false}
 }
 ```
 

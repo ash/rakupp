@@ -18,7 +18,7 @@ Run any of them with:
 say 2 ** 100;             # → 1267650600228229401496703205376  (bignum)
 say 0xFF + 0b1010;        # → 265                                (radix literals)
 say 3 + 4i;               # → 3+4i                               (Complex)
-say (1/3).nude;           # → [1 3]                              (Rat numerator/denominator)
+say (1/3).nude;           # → (1 3)                              (Rat numerator/denominator)
 say "café".chars;         # → 4                                  (grapheme count)
 say ∞;                    # → Inf
 ```
@@ -28,7 +28,7 @@ Decimal literals are exact rationals (`Rat`), not floating-point — so the clas
 
 ```raku
 say 0.1 + 0.2 - 0.3;      # → 0        (exact Rat arithmetic, not 5.55e-17)
-say (0.1 + 0.2).raku;     # → <3/10>   (a Rat, not a Num)
+say (0.1 + 0.2).raku;     # → 0.3   (a Rat, not a Num)
 say 0.1e0 + 0.2e0 - 0.3e0;  # → 5.551115123125783e-17   (opt into Num with e-notation)
 ```
 
@@ -38,10 +38,10 @@ say 0.1e0 + 0.2e0 - 0.3e0;  # → 5.551115123125783e-17   (opt into Num with e-n
 say 12 %% 3;              # → True     (divisible by)
 say 12 !%% 5;             # → True     (NOT divisible by)
 say [+] 1 .. 10;          # → 55       (reduce)
-say (1,2,3) Z (4,5,6);    # → ([1 4] [2 5] [3 6])   (zip)
-say (1,2) X (3,4);        # → ([1 3] [1 4] [2 3] [2 4])  (cross)
+say (1,2,3) Z (4,5,6);    # → ((1 4) (2 5) (3 6))   (zip)
+say (1,2) X (3,4);        # → ((1 3) (1 4) (2 3) (2 4))  (cross)
 my @a = 1, 2, 3;
-say @a >>*>> 2;           # → (2 4 6)  (hyper)
+say @a >>*>> 2;           # → [2 4 6]  (hyper)
 say 5 <=> 3;              # → More     (spaceship)
 ```
 
@@ -185,6 +185,7 @@ say green.value;                          # → 1
 
 say 42.^name;                             # → Int         (metamodel)
 
+use MONKEY-TYPING;                        # augment needs the pragma, on both engines
 augment class Int { method double { self * 2 } }
 say 21.double;                            # → 42          (augment a built-in type)
 
@@ -271,7 +272,7 @@ say $p.out.slurp(:close).chomp;           # → hi          (capture subprocess 
 
 say $*RAKU.compiler.name;                 # → Raku++
 say $*RAKU.compiler.backend;              # → cpp
-say $*RAKU.compiler.release;              # → 3.6.0    (the Raku++ version)
+say $*RAKU.compiler.release;              # → 3.25.0    (the Raku++ version)
 say $*RAKU.compiler.version;              # → v2026.08 (the Rakudo era tracked)
 ```
 
@@ -288,6 +289,17 @@ sub strlen(Str is encoded('utf8') --> size_t) is native {*}
 sub pow(num64, num64 --> num64) is native {*}
 say strlen("hello");                      # → 5      (libc's strlen, via dlsym)
 say pow(2e0, 10e0);                       # → 1024   (math.h; floats)
+```
+
+```raku
+my $p = Proc::Async.new("cat", :w);       # :w opens the child's stdin
+my @got;
+$p.stdout.tap({ @got.push($_) });
+my $done = $p.start;
+await $p.print("hello\n");
+$p.close-stdin;
+await $done;
+say @got.join.chomp;                      # → hello    (write to a child, read it back)
 ```
 
 ## Concurrency & Async

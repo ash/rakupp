@@ -109,15 +109,27 @@ sub hello($name) is export { "Hello, $name!" }
 ```
 
 ```raku
+use lib 'lib';
 use Greet;
 say hello("world");     # Hello, world!  — imported by bare name
 ```
 
+(Raku++ searches `lib/` by default and Rakudo does not, so the `use lib` line is
+what makes the example run on both. The search path is in full below.)
+
 A few more forms you'll see:
 
-- `use Foo <a b c>;` / `use Foo :tag;` — pass an import list to the module, so it
-  exports only the selected names (each module decides what the tags mean).
-- `need Foo;` — loads the module.
+- `use Foo :tag;` — import only the names the module marked `is export(:tag)`.
+  A plain `is export` is the `:DEFAULT` tag, so a bare `use Foo` brings it and
+  `use Foo :tag` does **not**; write `use Foo :DEFAULT :tag` for both.
+  `is export(:MANDATORY)` names always come. This matches Rakudo exactly.
+- `use Foo <a b c>;` — a positional list, which Raku hands to the module's own
+  `sub EXPORT` to interpret. Rakudo refuses the form when the module has no
+  `EXPORT` sub; Raku++ then reads the words as tag names instead, which is a
+  convenience that does not travel.
+- `need Foo;` — loads the module without importing, so you call `Foo::bar` by
+  its full name. (Raku++ imports on `need` as well, so a program that calls the
+  short name after a `need` runs here and fails under Rakudo.)
 - Pragmas like `use strict;`, `use fatal;`, `use lib …;`, `use experimental :…;`
   are recognised directly and need no file on disk.
 
@@ -148,7 +160,7 @@ lowest:
 | Source | Example | Notes |
 |---|---|---|
 | `use lib` in the program | `use lib 'my/libs';` | added to the front, wins over everything |
-| `-I` on the command line | `rakupp -I lib app.raku` | Rakudo-compatible |
+| `-I` on the command line | `rakupp -I lib app.raku` | Rakudo-compatible, including the repo spellings — `-I file#/dir` for a plain directory of module files, `-I inst#/path` for an installation store |
 | `RAKULIB` environment variable | `RAKULIB=libs,more rakupp app.raku` | paths separated by `,` or `:` — both accepted |
 | the current directory | `lib/`, `.`, `rakulib/` | the defaults, relative to where you run from |
 | installed modules | `~/.raku`, Homebrew Rakudo | the shared store described above |
@@ -213,14 +225,21 @@ installed copy of one of these names does not shadow the shadow. Running from a
 Raku++ checkout picks them up automatically; elsewhere, add the directory with
 `-I /path/to/rakupp/rakulib`.
 
+(The directory's other file, `JS.rakumod`, is not a shadow: it is the
+interpreter's stub for the `use JS` surface of [`--target=js`](JS.md).)
+
 A dist whose own name is shadowed is skipped by `rakupp install`, with a note —
-its ecosystem original could not run here anyway, and installing it would only
-put a broken copy behind the shadow.
+its ecosystem original cannot run under Raku++, and installing it would only put
+a broken copy behind the shadow. **This is the one place the shared store is not
+shared**: a Rakudo reading the same store does not find the skipped dependency
+and must `zef install` it itself, or `use DBIish` there compiles and then fails
+at `connect` with *Could not find NativeHelpers::Blob*.
 
 Everything else is the real distribution: `DBIish` and its `DBDish::SQLite`,
 `DBDish::mysql` and `DBDish::Pg` drivers run unmodified, and their own test
 suites pass under Raku++ exactly as they do under Rakudo (820 assertions across
-28 files, no difference).
+28 files, no difference — measured at DBIish 0.6.8 with all three servers
+running).
 
 ---
 
@@ -255,6 +274,7 @@ whole feature.) Each tag exports a `*-backend()` sub that says which
 implementation answered:
 
 ```raku
+use Data::Native;
 say json-backend();     # 'core' on Raku++; 'JSON::Fast' on Rakudo
 ```
 
@@ -279,15 +299,22 @@ Reading the zef store and running real modules is the focus of the
 modules pass, tiered by how thoroughly. The load path is deliberately practical
 rather than complete; the notable gaps today:
 
-- **Version/auth selection** (`use Foo:ver<1.2>:auth<…>`) isn't honoured yet —
-  the adverbs are accepted and discarded, and Raku++ loads the first matching
-  install of a name.
+- **`:auth` is not honoured.** `use Foo:ver<1.2+>` does work: it selects the
+  newest installed version that satisfies the request and fails the `use` when
+  none does, as in Rakudo. `:auth<…>` is accepted and ignored, so two installs
+  of one name that differ only by author are not told apart, and a request
+  Rakudo would refuse loads here. (A `:ver` on a module found as a plain file
+  under `-I`/`use lib` also fails here, where Rakudo loads the file regardless.)
 - **Importing is coarser than Rakudo's.** A module's whole scope is published to
   the importing program, so its `my` subs, its non-exported `our` subs and its
   classes are all reachable by their bare names — not just what it marked
   `is export`. Code that works here may need real `is export` markings to work
   under Rakudo. (One carve-out: a non-exported sub whose name collides with a
-  built-in stays module-private, so it can't shadow the built-in for you.)
+  built-in stays module-private, so it can't shadow the built-in for you.) The
+  same publication carries a module's own **imports** onward: what `Aye` got
+  from its `use Bee` is callable in a program that only says `use Aye`. Rakudo
+  keeps a module's imports to itself, so a program leaning on that needs its own
+  `use Bee` to run there.
 - **A module's `BEGIN` blocks and top-level code run on every run.** The *parse*
   can be cached ([CACHING.md](CACHING.md)), which is most of the cost, but Rakudo
   additionally serialises what its compile-time code produced and Raku++ does

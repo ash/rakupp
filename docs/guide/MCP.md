@@ -105,7 +105,7 @@ Kebab-case, as the language itself spells identifiers.
 | `text` | the input to parse |
 | `name` | the grammar's name in the source; may be omitted only when the grammar declaration is the source's **last statement** |
 | `actions` | an actions class named in the same source (needs `name`); a fresh instance per parse, and the top-level `.made` comes back as `made` |
-| `rule` | parse a fragment with this one rule instead of anchoring `TOP` to the whole input |
+| `rule` | parse the **whole** input with this rule instead of `TOP` — for a fragment such as a single expression. The end anchor stays |
 
 The answer is JSON. A match:
 
@@ -167,8 +167,8 @@ drives a real server over stdio exactly as a client does and pins the
 answers: the handshake, both tools, session persistence, output capture,
 25!, exact Rats, a die that the session survives, the tree and the
 diagnosis, both protocol error codes, and the watchdog's answer-then-exit
-contract. It runs in CI on every push, beside the embed, grammar, and
-bindings gates.
+contract. It runs in CI on every push to `main` and every pull request, beside the
+embed, grammar, and bindings gates.
 
 ## Design notes
 
@@ -180,5 +180,6 @@ directly — `rk_set_input` redirects `std::cin` by design, and the server
 must not starve with it. It creates the interpreter lazily at the first tool
 call (`initialize` answers instantly), with `own_stack` on, so deep
 recursion in evaluated code meets the engine's own guard exactly as it does
-under the CLI. The JSON layer is ~300 lines of this file rather than a
-dependency, for the same reason the engine has no other dependencies.
+under the CLI. The JSON layer is [src/JsonLite.h](../../src/JsonLite.h) — about 300
+lines, shared with the Jupyter kernel — rather than a dependency, for the same
+reason the engine has no other dependencies.
