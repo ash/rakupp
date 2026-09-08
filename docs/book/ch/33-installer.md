@@ -102,7 +102,14 @@ same method-dispatch code that serves every other built-in class:
 // resources/, bin/). rakupp reads exactly this to resolve `use`.
 ```
 
-It computes the dist-id as `sha1(name \0 ver \0 auth \0 api)`, writes each
+It computes the dist-id as `sha1hex(name + "\0" + ver + "\0" + auth + "\0" + api)`,
+which is **not** what that line looks like it does. `std::string + const char*`
+stops at the terminator, so each `"\0"` appends nothing at all and the id is the
+four fields simply concatenated. That is a bug frozen into a format: every
+dist-id on every store on disk was computed this way, so adding the separators
+would rename every record and orphan every installed distribution. The source
+carries a comment saying exactly that, because it is the kind of line a reader
+tidies up. It then writes each
 provided module's source as a content-addressed blob, writes one short entry
 per provided name, copies `resources/` and `bin/` payloads, and writes the
 `dist/` record with a `files` map — relative path → blob id — which is what
@@ -156,7 +163,12 @@ in C++" is the default instinct and it is wrong here:
 - It is dogfood: the project's own tooling running on the interpreter it
   ships, which is the policy everywhere else in `tools/`.
 
-The program is ~600 lines and its shape is a pipeline:
+The program is about 1,700 lines and its shape is a pipeline. It has roughly
+tripled since this chapter's first draft, and the additions are worth naming
+because none of them is in the pipeline below: `--list` and `--check` and
+`--gc`, `reinstall` and `test`, installing from a local path, the REA archive
+fallback when a name is not in the fez index, build hooks, and the `rakulib`
+shadowing rule that skips a distribution whose name a bundled shim answers.
 
 **Index.** `https://360.zef.pm/index.json` — the fez ecosystem's index, one
 JSON array of every distribution's META plus an archive path. Cached in
@@ -331,7 +343,7 @@ engine's cache is private state layered over shared truth — which the
 File::Temp story shows is exactly where the seams are: the store stayed
 consistent between engines, and it was a *cache* that made them disagree.
 
-The suite behind all of this is `t/install/run.raku` — 22 checks, fully
+The suite behind all of this is `t/install/run.raku` — 113 checks, fully
 offline (a fixture index, local archives, a scratch `HOME`), covering the
 plan, the checksum refusal, the test gate, additive updates, every uninstall
 refusal, the deletion ordering, shared-blob survival, and `--check` clean

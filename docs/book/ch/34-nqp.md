@@ -190,8 +190,10 @@ references to `rtNqpOp` or any nqp machinery.
 
 ## What is covered
 
-Around fifty operations, chosen from the actual inventory of the modules in the
-ecosystem compatibility battery:
+Ninety-nine opcodes, reached under 112 spellings, chosen from the actual
+inventory of the modules in the ecosystem compatibility battery. The tables
+below are the shape of the coverage rather than the whole list — read
+`NqpOpc` in `src/Ast.h` for that:
 
 | Group | Ops |
 |---|---|
@@ -229,6 +231,6 @@ model to keep in step with the first — for a feature whose entire purpose is t
 let a handful of modules load.
 
 Recognising that `nqp::foo(…)` is *already* valid syntax in the host language
-turned a compiler project into about 250 lines of parser branch and evaluator
+turned a compiler project into about a thousand lines of parser branch and evaluator
 arm. The general principle generalises: **before implementing a foreign
 language, check whether its surface syntax is already legal in yours.**
