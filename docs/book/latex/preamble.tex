@@ -8,11 +8,21 @@
 % ---------------------------------------------------------------- glyph fallbacks
 % Charter is the text face; it does not carry arrows, box drawing, or the
 % mathematical and typographic marks the source excerpts use. Two fallback
-% families cover them: STIX for symbols and Greek, Menlo for box drawing.
-\newfontfamily\symfont{STIX Two Text}
+% families cover most of them: STIX for symbols and Greek, Menlo for box drawing.
+%
+% The symbol face is STIX Two *Math*, not STIX Two Text. Probing the installed
+% faces character by character, the text face carries none of the four
+% relations, neither ballot mark, nor the half-filled circle -- seven of the
+% marks mapped below -- and a character it does not carry is dropped from the
+% page silently, with only a log line to say so. The maths face has all of them
+% but the ballot X, which Menlo has. A third family covers the CJK brackets,
+% which none of the other three carry.
+\newfontfamily\symfont{STIX Two Math}
 \newfontfamily\boxfont{Menlo}
+\newfontfamily\cjkfont{Hiragino Sans}
 \newcommand{\fbs}[1]{{\symfont #1}}
 \newcommand{\fbb}[1]{{\boxfont #1}}
+\newcommand{\fbc}[1]{{\cjkfont #1}}
 \newunicodechar{→}{\fbb{→}}
 \newunicodechar{←}{\fbb{←}}
 \newunicodechar{↦}{\fbb{↦}}
@@ -42,7 +52,7 @@
 \newunicodechar{⁸}{\fbs{⁸}}
 \newunicodechar{⁹}{\fbs{⁹}}
 \newunicodechar{✓}{\fbs{✓}}
-\newunicodechar{✗}{\fbs{✗}}
+\newunicodechar{✗}{\fbb{✗}}   % Menlo: STIX Two Math has no U+2717
 \newunicodechar{◑}{\fbs{◑}}
 \newunicodechar{…}{\fbs{…}}
 \newunicodechar{—}{\fbs{—}}
@@ -56,6 +66,14 @@
 \newunicodechar{┼}{\fbb{┼}}
 \newunicodechar{►}{\fbb{►}}
 \newunicodechar{▸}{\fbb{▸}}
+
+% Unmapped until a print pass found them blank on the page.
+\newunicodechar{ﬀ}{\fbs{ﬀ}}   % U+FB00 LATIN SMALL LIGATURE FF
+\newunicodechar{𝕏}{\fbs{𝕏}}   % U+1D54F MATHEMATICAL DOUBLE-STRUCK X
+\newunicodechar{⟦}{\fbs{⟦}}   % U+27E6 MATHEMATICAL LEFT WHITE SQUARE BRACKET
+\newunicodechar{⟧}{\fbs{⟧}}   % U+27E7 MATHEMATICAL RIGHT WHITE SQUARE BRACKET
+\newunicodechar{「}{\fbc{「}}   % U+300C LEFT CORNER BRACKET
+\newunicodechar{」}{\fbc{」}}   % U+300D RIGHT CORNER BRACKET
 
 % ---------------------------------------------------------------- diagrams
 % The fallbacks above are declared at the surrounding text size, which is what
@@ -79,11 +97,13 @@
 % \baselineskip from the size it just chose, so it is appended to that macro
 % rather than run at the start of the environment.
 \newfontfamily\boxfontmono{Menlo}[Scale=0.80]
-\newfontfamily\symfontmono{STIX Two Text}[Scale=0.80]
+\newfontfamily\symfontmono{STIX Two Math}[Scale=0.80]
+\newfontfamily\cjkfontmono{Hiragino Sans}[Scale=0.80]
 \makeatletter
 \g@addto@macro\verbatim@font{%
   \renewcommand{\fbb}[1]{{\boxfontmono #1}}%
   \renewcommand{\fbs}[1]{{\symfontmono #1}}%
+  \renewcommand{\fbc}[1]{{\cjkfontmono #1}}%
   \baselineskip=11.04pt\relax
   \lineskip=\z@ \lineskiplimit=\z@}
 \makeatother

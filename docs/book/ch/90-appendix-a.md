@@ -1,3 +1,6 @@
+\cleardoublepage
+\addcontentsline{toc}{part}{Appendices}
+\part*{Appendices}
 \appendix
 
 # The Tag Sets

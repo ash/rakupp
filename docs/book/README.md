@@ -5,8 +5,8 @@ AST, `Value`, the interpreter, the regex and grammar engine, Unicode, the five
 run modes, the two code generators and the optimizer, module loading,
 NativeCall, the extension ABI, and the concurrency runtime.
 
-**[Raku++-Internals.pdf](Raku++-Internals.pdf)** — 397 pages, 43 chapters in
-ten parts, plus four appendices.
+**[Raku++-Internals.pdf](Raku++-Internals.pdf)** — 398 pages, 43 chapters in
+ten parts, plus four appendices under a divider of their own.
 
 ## Building it
 
@@ -25,10 +25,18 @@ Two things must be on the machine:
 | **pandoc** | `brew install pandoc` |
 | **tectonic** | `brew install tectonic` — a self-contained TeX that fetches only the packages the preamble asks for, so there is no full TeX installation to maintain |
 
-The fonts (Charter, Helvetica Neue, Menlo, STIX Two Text) all ship with macOS.
-On another platform, change `mainfont`/`sansfont`/`monofont` in
-[meta.yaml](meta.yaml) to whatever is installed; the only real requirement is
-that the mono face carries box-drawing characters, since the diagrams use them.
+The fonts (Charter, Helvetica Neue, Menlo, STIX Two Math, Hiragino Sans) all
+ship with macOS. On another platform, change `mainfont`/`sansfont`/`monofont`
+in [meta.yaml](meta.yaml) to whatever is installed, and the fallback families
+at the top of [latex/preamble.tex](latex/preamble.tex) with them.
+
+Two requirements are real, and both are about characters rather than about
+looks. The mono face has to carry box drawing, since the diagrams are built
+out of it. And the fallback faces have to carry every character the preamble
+maps to them — check that rather than assuming, because a face that lacks one
+does not fail the build: the character is dropped from the page and the only
+trace is a `Missing character` line in a log nobody reads. STIX Two *Text* was
+the symbol face until a print pass caught it dropping seven of them.
 
 ## Layout
 
@@ -77,11 +85,12 @@ pdfinfo docs/book/Raku++-Internals.pdf | grep '^Pages'   # poppler
 ```
 
 Rebuilding the LaTeX by hand and reading tectonic's `Output written on …` line
-measures a different book. The recipe this file used to give reports **402**;
-adding back the `--from …+smart` and `--highlight-style tango` that
-`build.raku` passes brings it to **400**; the shipped PDF has **397**, which
-`pdfinfo` and macOS CoreGraphics both read and past which `pdftotext` refuses a
-page. If you do run the LaTeX by hand anyway, use the merged `.book.md` the
+measures a different book. Measured against an earlier build, the recipe this
+file used to give reported **402**, and adding back the `--from …+smart` and
+`--highlight-style tango` that `build.raku` passes brought it to **400**,
+against a shipped **397** — three counts for one book. The number to trust is
+the one `pdfinfo` reads from the shipped file, which is now **398**, and past
+which `pdftotext` refuses a page. If you do run the LaTeX by hand anyway, use the merged `.book.md` the
 builder leaves behind under `--keep`, not `cat ch/*.md`: `cat` puts no blank
 line between files, so each chapter's `#` heading becomes a lazy continuation
 of the previous chapter's last paragraph, the chapters run together, and the
