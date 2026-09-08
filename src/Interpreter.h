@@ -809,6 +809,10 @@ struct ExecContext {
     // swallowed by `return-rw`'s not-an-lvalue fallback.
     std::string lvalueImmutable;      // "" mutable; else the type name to report
     std::string lvalueImmutableGist;  // the value's gist, for the message's "(…)" tail
+    // lvalueOut points into the frame that is ABOUT TO DIE — a `return-rw` of a
+    // routine-local with nothing linking it to the caller. The caller must copy
+    // the value out rather than hand the pointer on.
+    bool lvalueOutLocal = false;
     Value* lvalueOut = nullptr;
     // mirror of protoStack_.size(), kept here so the per-block-statement
     // "inside a proto body?" probe reads the ALREADY-LOADED tctx_ instead of

@@ -17231,7 +17231,9 @@ Value* Interpreter::lvalueThroughRw(Expr* e) {
     // itself to follow the chain, and a nested clear would drop the hops the
     // outer call had already recorded.
     struct DepthG { int& d; ~DepthG() { --d; } };
-    if (rwThroughDepth_ == 0) { tctx_.rwMirror.clear(); tctx_.rwMirrorSigil = 0; }
+    if (rwThroughDepth_ == 0) {
+        tctx_.rwMirror.clear(); tctx_.rwMirrorSigil = 0; tctx_.lvalueOutLocal = false;
+    }
     ++rwThroughDepth_;
     DepthG dg{rwThroughDepth_};
     if (e && (e->kind == NK::NameTerm || e->kind == NK::VarExpr)) {
@@ -17274,6 +17276,24 @@ Value* Interpreter::lvalueThroughRw(Expr* e) {
                 return out;
             }
             break;                                  // the caller's arg is no lvalue
+        }
+        // A local BOUND TO AN ELEMENT holds a Proxy, and its slot dies with the
+        // frame the moment `return-rw` returns — so the pointer must not leave.
+        // Crane's `at` is exactly that shape (`my $root := $container; $root :=
+        // $root{$step}; return-rw $root`), and the caller wrote through the
+        // dangling pointer into reused memory, then crashed reading the hash
+        // back out of it. Flag it so the caller copies the VALUE instead: a
+        // Proxy carries its own FETCH/STORE closures, so writing to the copy
+        // still reaches the real container. Only a Proxy is treated this way —
+        // every other slot keeps handing back its pointer, which is what an
+        // outer lexical and an attribute need.
+        for (Env* en = tctx_.cur.get(); en; en = en->parent.get()) {
+            Value* slot = en->local(nm);
+            if (!slot) continue;
+            if (slot->t == VT::Hash && slot->hashKind == "Proxy" &&
+                (!en->ex || !en->ex->rwLinks.count(nm)))
+                tctx_.lvalueOutLocal = true;
+            break;
         }
     }
     return lvalue(e);
@@ -17509,7 +17529,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             size_t d = 0;
             for (auto& de : dims->items) {
                 if (hashy || node->t == VT::Hash) {
-                    if (node->t != VT::Hash) *node = Value::makeHash();
+                    if (node->t != VT::Hash || !node->hash()) *node = Value::makeHash();
                     std::string key = eval(de.get()).toStr();
                     node = &(*node->hash())[key];
                     continue;
@@ -17577,7 +17597,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                         for (auto& h2 : at2.handles)
                             if (h2 == "AT-KEY" || h2 == "*") {
                                 Value& slot = base->obj()->attrs[at2.name];
-                                if (slot.t != VT::Hash) slot = Value::makeHash();
+                                if (slot.t != VT::Hash || !slot.hash()) slot = Value::makeHash();
                                 Value kv2 = eval(idx->index.get());
                                 // type-object keys use the same keying as the
                                 // delegated Hash protocol reads
@@ -17609,7 +17629,10 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                 pairMiss = Value::any();
                 return &pairMiss;
             }
-            if (base->t != VT::Hash) *base = Value::makeHash();
+            // …and a Hash TAG with no map behind it is not a hash either: the
+            // tag-only test walked into ValueHash::operator[] on nothing. A
+            // `return-rw` that resolves to no container hands back exactly that.
+            if (base->t != VT::Hash || !base->hash()) *base = Value::makeHash();
             std::string key = hashSubKey(eval(idx->index.get()), base); // key eval BEFORE the stripe (user code)
             // P3: the find-or-insert itself under the hash's stripe — a
             // concurrent insert can no longer corrupt the tree. The returned
@@ -17753,7 +17776,10 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                     // link to reach past this frame — `method m(\c) is rw {
                     // return-rw c }` wrote into its own frame copy otherwise.
                     rwHold = methodCall(invv, mc->method, args, &mc->args);
-                    if (Value* out = tcx.lvalueOut) return out;
+                    if (Value* out = tcx.lvalueOut) {
+                        if (tcx.lvalueOutLocal) { rwHold = *out; return &rwHold; }
+                        return out;
+                    }
                     return &rwHold;
                 }
             }
@@ -17780,7 +17806,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
         if ((mc->method == "AT-KEY" || mc->method == "AT-POS") && !mc->args.empty() && !mc->meta) {
             Value* base = lvalue(mc->inv.get());
             if (mc->method == "AT-KEY") {
-                if (base->t != VT::Hash) *base = Value::makeHash();
+                if (base->t != VT::Hash || !base->hash()) *base = Value::makeHash();
                 return &(*base->hash())[eval(mc->args[0].get()).toStr()];
             }
             Value* cur = base;
@@ -18057,7 +18083,10 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             tcx.wantLvalue = (int)tcx.callFrames.size() + 1;
             tcx.lvalueOut = nullptr;
             callRwHold = evalCall(c);
-            if (Value* out = tcx.lvalueOut) return out;
+            if (Value* out = tcx.lvalueOut) {
+                if (tcx.lvalueOutLocal) { callRwHold = *out; return &callRwHold; }
+                return out;
+            }
             return &callRwHold;
         }
     }
