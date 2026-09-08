@@ -7902,13 +7902,44 @@ static std::vector<std::string> libCandidates(const std::string& l) {
     // another `lib…dylib` produced nothing that exists.
     if (l.find(".dylib") != std::string::npos || l.find(".so") != std::string::npos ||
         l.find(".dll") != std::string::npos) {
-        cands.push_back(l);
+        size_t slash = l.find_last_of('/');
+        std::string dir  = slash == std::string::npos ? std::string() : l.substr(0, slash + 1);
+        std::string base = slash == std::string::npos ? l : l.substr(slash + 1);
 #if defined(__APPLE__)
-        cands.push_back("/opt/homebrew/lib/" + l);
-        cands.push_back("/usr/local/lib/" + l);
-        cands.push_back("/opt/local/lib/" + l);
+        // The versioned-first rule below has to cover the DECORATED spelling as
+        // well: `$*VM.platform-library-name('ssl'.IO)` answers `libssl.dylib`,
+        // and that is how OpenSSL::NativeLib — so every TLS dist — names the
+        // library. Unversioned, that name IS the /usr/lib compat stub, and the
+        // stub does not merely warn: it aborts the process (SIGABRT, no
+        // catchable error). The versioned file is what the unversioned name
+        // symlinks to anyway.
+        if (base == "libssl.dylib" || base == "libcrypto.dylib") {
+            std::string stem = base.substr(0, base.size() - 6); // libssl / libcrypto
+            for (const char* v : {"3", "1.1"}) {
+                std::string f = stem + "." + v + ".dylib";
+                // A DIRECTORY the caller named is a deliberate choice of OpenSSL
+                // (openssl@1.1 installed beside openssl@3), so look only inside
+                // it — no prefix below may answer with the other version.
+                if (!dir.empty()) { cands.push_back(dir + f); continue; }
+                cands.push_back("/opt/homebrew/lib/" + f);
+                cands.push_back("/usr/local/lib/" + f);
+                cands.push_back("/opt/local/lib/" + f);
+            }
+        }
+#endif
+        cands.push_back(l);
+        // A baked-in absolute path that does not open — a stale prefix, or the
+        // wrong architecture (`zef install OpenSSL` under an Intel toolchain
+        // writes /usr/local/opt/openssl@3 into its resources/libraries.json,
+        // which an arm64 build cannot load) — still names a FILE that may exist
+        // under a prefix dyld does not search. Try the basename there before
+        // giving up on the whole library.
+#if defined(__APPLE__)
+        cands.push_back("/opt/homebrew/lib/" + base);
+        cands.push_back("/usr/local/lib/" + base);
+        cands.push_back("/opt/local/lib/" + base);
 #else
-        cands.push_back("/usr/local/lib/" + l);
+        cands.push_back("/usr/local/lib/" + base);
 #endif
         return cands;
     }
@@ -15040,6 +15071,16 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
             // SSL_get1_peer_certificate.
             static const std::map<std::string, std::string> aliases = {
                 {"SSL_get_peer_certificate", "SSL_get1_peer_certificate"},
+                // The same rename read the other way. A dist picks the spelling
+                // from a VERSION probe (OpenSSL::Version::version_num, asked of
+                // whichever libcrypto answered first) and then binds against
+                // whichever libssl its own name resolved to — the two need not
+                // be the same OpenSSL, and a 1.1 or LibreSSL libssl carries only
+                // the old name. Both spellings are one function, and both hand
+                // back a reference the caller frees, so either may stand in for
+                // the other. (SSL_get0_peer_certificate must NOT: it does not
+                // take the reference, and the caller's X509_free would over-free.)
+                {"SSL_get1_peer_certificate", "SSL_get_peer_certificate"},
             };
             auto it = aliases.find(c.nativeSym);
             if (it != aliases.end()) sym = dlsym(handle, it->second.c_str());
