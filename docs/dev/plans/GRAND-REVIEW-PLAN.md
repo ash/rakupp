@@ -109,3 +109,10 @@ the review itself. Chapter 8 already shows the pattern (the struct that
 exists beside the one it was written against). `docs/internals` gets a
 decision: merge into the book, or keep as the short form with cross-links.
 The PDF is rebuilt at the end.
+
+**Done, 2026-09-08.** Ten lanes, 247 findings, result in
+[findings/REVIEW-GRAND-BOOK.md](../findings/REVIEW-GRAND-BOOK.md). The
+`docs/internals` decision was taken on the lanes' overlap tables: eight of the
+twelve pages merged into the chapters and left as stubs, four kept. The book
+gained a `--target=js` chapter and two gates —
+`tools/check-book-symbols.raku` and `tools/check-book-appendix.raku`.
