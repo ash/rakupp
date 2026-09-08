@@ -129,7 +129,19 @@ int LtmNfa::buildNode(const void* nv, int from, int branch, int litDepth, int de
         states_[s1].eps.push_back({join, 0});
         return join;
     };
-    if (depth > 200 || states_.size() > 4000) return acceptGap(from); // bound blown: unfair, not wrong
+    // Budget spent: the prefix ENDS here — an `accept`, not a gap. Two things
+    // were wrong when this was a gap. The budget was CUMULATIVE over the whole
+    // alternation, so a bushy early branch spent it all and every later branch
+    // truncated at its first node; and the gap then demoted the WHOLE
+    // alternation to the greedy full-match probe, which ranks by a different
+    // rule entirely (longest MATCH, not longest declarative prefix) and so
+    // takes the earliest-declared branch on every tie. LaTeX::Grammar (issue
+    // #61) needs 22k states to model its `comp` in full: under the old rule its
+    // `<atom>` branch — the one whose `'\log'` literal should win — was
+    // truncated to nothing and `<func>` took every tie. Truncating is a
+    // conservative UNDER-estimate of a prefix: it can demote a branch, but the
+    // ranking still tries every candidate and the commit engine still decides.
+    if (depth > 200 || states_.size() - branchStart_ > 4000) return accept(from);
     if (!nv) return from;
     auto* n = static_cast<const Regex::Node*>(nv);
     switch (n->k) {
@@ -343,7 +355,19 @@ int LtmNfa::buildNode(const void* nv, int from, int branch, int litDepth, int de
             owned_.push_back(std::move(callee)); // the NFA borrows its Nodes: keep it alive
             return e; // -1 propagates: the callee's own prefix end was recorded
         }
-        case K::Look:     // conservative (Rakudo is subtler); a gap for now
+        case K::Look:
+            // A lookaround IS the spec's prefix end — it does NOT continue the
+            // prefix the way a zero-width `<?{…}>` does (K::Code above), and it
+            // is NOT a model gap: the branch stays a ranking candidate at the
+            // length reached here. Oracle (LaTeX::Grammar, issue #61): on
+            // "r1abcdefgh", `'r1ab' <?before 'c'> 'cdefgh' | 'r1ab' 'cdefgh'`
+            // picks the SECOND branch in Rakudo — continuing the prefix would
+            // tie at 10 and take the first. Same for `<!before>`; a branch whose
+            // prefix ends at a leading lookaround is still tried (ranked last),
+            // it is never pruned. Marking this a gap instead degraded the WHOLE
+            // alternation to the greedy probe, which ranks by full-match end and
+            // so picked the earlier-declared branch on every tie.
+            return accept(from);
         default:
             return acceptGap(from);
     }
@@ -366,10 +390,12 @@ std::unique_ptr<LtmNfa> LtmNfa::buildForAlt(const Regex& re, const void* altNode
         // a prefix end of 3)
         int entry = nfa->addState();
         nfa->states_[0].eps.push_back({entry, 0});
+        nfa->branchStart_ = nfa->states_.size(); // each branch gets its own size budget
         int e = nfa->buildNode(alt->kids[b].get(), entry, b, 0, 0);
         if (e >= 0) nfa->states_[e].acceptBranch = b; // fully declarative: accept at the end
     }
     nfa->buildCtx_ = nullptr; // build-time only; rank() never resolves anything
+    nfa->branchStart_ = 0;
     return nfa;
 }
 
@@ -386,11 +412,13 @@ std::unique_ptr<LtmNfa> LtmNfa::buildForBranches(const std::vector<const void*>&
         int entry = nfa->addState();
         nfa->states_[0].eps.push_back({entry, 0});
         nfa->curSym_ = b < (int)syms.size() ? syms[b] : std::string();
+        nfa->branchStart_ = nfa->states_.size(); // each branch gets its own size budget
         int e = nfa->buildNode(re->root_.get(), entry, b, 0, 0);
         if (e >= 0) nfa->states_[e].acceptBranch = b;
     }
     nfa->curSym_.clear();
     nfa->buildCtx_ = nullptr;
+    nfa->branchStart_ = 0;
     return nfa;
 }
 

@@ -131,6 +131,40 @@ check('sep-quantifier: empty list still matches',
       ltm-run('t18.raku', q{grammar G { token value { <array> | <jx> }; token array { '[' <number>* % ',' ']' }; token number { \d+ }; token jx { 'x' } }; say G.parse('[]', :rule<value>) ?? 'ok' !! 'nil';}),
       "ok\n");
 
-unlink $work.add($_) for <t1.raku t2.raku t3.raku t4.raku t5.raku t6.raku t7.raku t8.raku t9.raku t10.raku t11.raku t12.raku t13.raku t14.raku t15.raku t16.raku t17.raku t18.raku>;
+# 10. a LOOKAROUND ends the declarative prefix. It does NOT continue it the way
+#     a zero-width `<?{…}>` does, and it does not disable ranking either: here
+#     the first branch's prefix stops at the assertion (4 chars) while the
+#     second's runs the whole 10, so the SECOND branch wins even though both
+#     match the full string and the first is declared earlier. Modelling the
+#     lookaround as a gap instead demoted the whole alternation to the
+#     greedy full-match ranker, which ties at 10 and takes the first
+#     (LaTeX::Grammar, issue #61).
+check('<?before> ends the prefix, so the rival branch outranks it',
+      ltm-run('t19.raku', q{grammar G { token TOP { <p> | <q> }; token p { 'r1ab' <?before 'c'> 'cdefgh' }; token q { 'r1ab' 'cdefgh' } }; my $m = G.parse('r1abcdefgh'); say $m ?? $m.hash.keys.grep(*.chars).sort.join(',') !! 'FAIL';}),
+      "q\n");
+check('<!before> ends the prefix the same way',
+      ltm-run('t20.raku', q{grammar G { token TOP { <p> | <q> }; token p { 'r5ab' <!before 'z'> 'cdefgh' }; token q { 'r5ab' 'cdefgh' } }; my $m = G.parse('r5abcdefgh'); say $m ?? $m.hash.keys.grep(*.chars).sort.join(',') !! 'FAIL';}),
+      "q\n");
+#     …demoted, never pruned: with the rival unable to match, a branch whose
+#     prefix ends at a LEADING lookaround still wins
+check('a lookaround-led branch is still a candidate',
+      ltm-run('t21.raku', q{grammar G { token TOP { <p> | <q> }; token p { <?before 'r3'> 'r3xy' }; token q { 'r3xyZZZ' } }; my $m = G.parse('r3xy'); say $m ?? $m.hash.keys.grep(*.chars).sort.join(',') !! 'FAIL';}),
+      "p\n");
+
+# 11. the NFA build budget is PER BRANCH. `bushy` alone overruns it; when the
+#     budget was shared and cumulative, it left nothing for `plain`, whose
+#     'zzzz' prefix (4) is the reason `plain` should win over bushy's 'zz' (2).
+#     Both branches match the whole input, so a ranker that gives up here ties
+#     them and takes the earlier-declared `bushy`.
+my $bushy-alts = (^200).map({ "'zq{$_}xxxxxxxxxxxxxxxxxxxxxxxx'" }).join(' | ');
+check('an oversized branch does not starve the branches after it',
+      ltm-run('t22.raku',
+              'grammar B { token TOP { <bushy> | <plain> }; token bushy { '
+              ~ $bushy-alts ~ ' | ' ~ "'zz' \\w+" ~ ' }; token plain { '
+              ~ "'zzzz' \\w+" ~ ' } }' ~ "\n"
+              ~ 'my $m = B.parse("zzzzABC"); say $m ?? $m.hash.keys.grep(*.chars).sort.join(",") !! "FAIL";'),
+      "plain\n");
+
+unlink $work.add($_) for <t1.raku t2.raku t3.raku t4.raku t5.raku t6.raku t7.raku t8.raku t9.raku t10.raku t11.raku t12.raku t13.raku t14.raku t15.raku t16.raku t17.raku t18.raku t19.raku t20.raku t21.raku t22.raku>;
 say $fails == 0 ?? 'PASS' !! 'FAIL';
 exit($fails ?? 1 !! 0);

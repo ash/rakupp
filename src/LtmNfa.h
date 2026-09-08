@@ -118,6 +118,8 @@ private:
     std::vector<State> states_;
     int nBranches_ = 0;
     bool anyGap_ = false;
+    size_t branchStart_ = 0;                          // state count when the current branch began
+                                                      // (build-time): the size budget is PER BRANCH
     const Regex* owner_ = nullptr;
     const LtmExpand* buildCtx_ = nullptr;             // build-time only
     std::string curSym_;                              // current branch's <sym> literal (build-time)

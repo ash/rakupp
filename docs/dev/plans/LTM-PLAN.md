@@ -285,7 +285,7 @@ the interpreter hook hands the body over with the match path's exact
 as the same \s* loop the grammar route uses (the match path hardcodes
 `<ws>` for lexical regexes, so the model is universal there — a
 grammar's custom `ws` still resolves through `ltmResolve` first).
-Remaining model gaps, deliberately parked: lookarounds, non-ASCII `:i`
+Remaining model gaps, deliberately parked: non-ASCII `:i`
 folding, uprop/cluster classes, `&` conjunction, `Class`-node `:m`.
 Regression file at 15 checks. Next: the phase-4 flip gates.
 The full-Roast gate caught one more real divergence, in the
@@ -439,6 +439,57 @@ the baseline predates the tree's WIP).
   engines).
 - Perf: perf-guard baseline + the grammar bench, no regression outside the
   noise band.
+
+## 2026-09-08 — lookarounds off the gap list, and the budget made per-branch
+
+Two changes, both found through issue #61 (LaTeX::Grammar's `\log (x + 1)`
+came out as `log[Plus[x,1]]` where Rakudo gives `Log[Plus[x,1]]`).
+
+The grammar's `rule comp { | <group> | <abs-group> | <func> | <atom> | <frac> }`
+was picking `<func>` where Rakudo picks `<atom>`. Both match the same 12
+characters, so the choice is entirely the ranking's — and the alternation was
+not reaching the ranker at all. Any model gap anywhere in the NFA demotes the
+WHOLE alternation to the greedy probe, and the probe ranks by longest FULL
+MATCH, which ties here and takes the earlier-declared `<func>`.
+
+1. **A lookaround is a prefix end, not a gap.** The risk this plan names —
+   "the exact Rakudo rule for lookarounds and zero-width assertions inside
+   prefixes is folklore-level documented" — resolves as: the prefix STOPS at
+   the lookaround, and the branch stays a ranking candidate at the length
+   reached. It does *not* continue the way `<?{…}>` does (that one is ε, per
+   protoregex.t 23-24). Oracle rows, all against Rakudo 2026.08:
+
+   | probe | input | Rakudo | rakupp before |
+   |---|---|---|---|
+   | `'r1ab' <?before 'c'> 'cdefgh'` \| `'r1ab' 'cdefgh'` | `r1abcdefgh` | 2nd | 1st |
+   | `'r4' <?before 'a'> 'abcd'` \| `'r4ab' 'cd'` | `r4abcd` | 2nd | 1st |
+   | `'r5ab' <!before 'z'> 'cdefgh'` \| `'r5ab' 'cdefgh'` | `r5abcdefgh` | 2nd | 1st |
+   | `<?before 'r3'> 'r3xy'` \| `'r3xyZZZ'` | `r3xy` | 1st | 1st |
+
+   The last row is the control: a lookaround-led branch is demoted, never
+   pruned, so it still wins when the rival cannot match.
+
+2. **The build budget is per branch.** It was 4000 states cumulative across
+   the whole alternation, so a bushy early branch spent it and every later
+   branch truncated at its first node — the ranking then compared a full
+   prefix against nothing. `comp` needs 22,421 states to model in full and
+   another alternation in the same grammar needs 233,489, so raising the cap
+   is not the fix (`rank()` is O(states x input) per call, at every position
+   the alternation is tried). Truncation now ends the prefix with an `accept`
+   rather than a gap: it is a conservative UNDER-estimate, so it can demote a
+   branch, but every candidate is still tried in rank order and the commit
+   engine still decides.
+
+Gates: Roast 661 files vs 662 on clean HEAD — `S03-operators/scalar-assign.t`
+and `S29-conversions/ord_and_chr.t` pass 3/3 in isolation (that run had 16
+timeouts), `S17-promise/stress.t` newly passing; `longest-alternative.t`
+56/72 and `proto-token-ltm.t` 10/10, both unchanged; t/run 787/787;
+perf-guard OK; the JSON grammar bench neutral (api best-of-15 354 -> 347 ms,
+deep 482 -> 483 ms). Regression file at 19 checks — the four new ones fail on
+the pre-change binary and pass under Rakudo.
+
+Still parked: non-ASCII `:i` folding, uprop/cluster classes, `&`, `Class`-node
+`:m`.
 
 ## Risks, named
 
