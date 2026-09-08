@@ -1386,8 +1386,24 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 std::string nm = st->second.toStr() == "err" ? "<STDERR>" : st->second.toStr() == "in" ? "<STDIN>" : "<STDOUT>";
                 Value sp = Value::str(nm); sp.hashKind = "IO::Special"; return sp;
             }
+            // An IO::Handle's `.path` is an IO::PATH; the Str is what IO::Path's
+            // OWN `.path` answers, one level down (the `return` below). We handed
+            // back the stored string, so every IO::Path method on `$fh.path` was a
+            // missing method — File::Temp's AutoUnlink::DESTROY does
+            // `given self.path { $_.unlink }` and died with "No such method
+            // 'unlink' for invocant of type 'Str'", taking the dist 3/3 -> 1/3.
+            // (`.Str` on the handle is unaffected: it reads the field directly.)
+            // There is a SECOND copy of this arm further down, reached for `.IO`;
+            // it carries the same conversion. This one is the one that runs.
             auto pt = inv.hash()->find("path");
-            if (pt != inv.hash()->end()) return pt->second;
+            if (pt != inv.hash()->end()) {
+                Value p = pt->second;
+                if (p.t == VT::Str && p.hashKind.empty()) {
+                    p.hashKind = "IO";
+                    p.ofTypeM() = cwdName(); // :CWD captured, as `.IO` does
+                }
+                return p;
+            }
         }
         return Value::str(inv.toStr());
     }
@@ -1899,7 +1915,20 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 std::string nm = st->second.toStr() == "err" ? "<STDERR>" : st->second.toStr() == "in" ? "<STDIN>" : "<STDOUT>";
                 Value sp = Value::str(nm); sp.hashKind = "IO::Special"; return sp;
             }
-            return (*inv.hash())["path"];
+            // An IO::Handle's `.path`/`.IO` is an IO::PATH, not the bare string —
+            // the Str is what IO::Path's OWN `.path` answers, one level down. We
+            // returned the stored string, so `$fh.path` was a Str and every
+            // IO::Path method on it was a missing method: File::Temp's
+            // AutoUnlink::DESTROY does `given self.path { $_.unlink }` and died
+            // with "No such method 'unlink' for invocant of type 'Str'", taking
+            // the dist from 3/3 to 1/3. `.Str` on the handle is unaffected — it
+            // reads the stored field directly and still answers the path.
+            Value p = (*inv.hash())["path"];
+            if (p.t == VT::Str && p.hashKind.empty()) {
+                p.hashKind = "IO";
+                p.ofTypeM() = cwdName(); // :CWD captured, as `.IO` does above
+            }
+            return p;
         }
         if (m == "say" || m == "print" || m == "put" || m == "printf") {
             std::string s;

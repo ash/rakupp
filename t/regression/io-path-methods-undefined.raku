@@ -1,40 +1,57 @@
-# The IO::Path path-string methods do not answer for an undefined invocant.
+# The IO::Path path methods, on invocants that are not paths.
 #
-# They read the invocant as a path string, and an undefined one satisfied that
-# as "" — so `Any.basename` was "/", `Any.is-absolute` False, and
-# `Any.contents` LISTED THE CURRENT DIRECTORY. Rakudo has none of them on Any.
+# They read the invocant as a path STRING, and an undefined one satisfied that
+# as "": `Any.basename` was "/", `Any.is-absolute` False, and `Any.contents`
+# LISTED THE CURRENT DIRECTORY. Rakudo has none of the six on Any.
 #
 # `dir`/`contents` are what made it visible: once an unlistable path became an
 # honest X::IO::Dir (#62) the empty path started throwing, and four Roast files
 # that had been walking past a hole died mid-run (S26-documentation/04-code.t
-# and 08-formattingcodes.t, S02-literals/pod.t, integration/advent2011-day10.t)
-# — each on `.contents` of something undefined, reported as
-# "Failed to get the directory contents of '<cwd>': No such file or directory".
-my $fails = 0;
-for <contents dir is-absolute is-relative basename extension> -> $m {
-    my $undef = (my @a = 1, 2)[5];      # out of range: an undefined Any
-    my $r = try { $undef."$m"() };
-    unless $! && $!.^name eq 'X::Method::NotFound' {
-        say "NOT OK: Any.$m answered { $! ?? $!.^name !! $r.gist } instead of X::Method::NotFound";
-        $fails++;
-    }
+# and 08-formattingcodes.t, S02-literals/pod.t, integration/advent2011-day10.t).
+#
+# Separately: an IO::Handle's `.path` is an IO::PATH, and the Str is what
+# IO::Path's OWN `.path` answers one level down. We returned the stored string,
+# so `$fh.path.unlink` was a missing method — File::Temp's AutoUnlink::DESTROY
+# does exactly that and the dist went 3/3 -> 1/3 in the module battery.
+my @fail;
+sub check($got, $want, $desc) {
+    @fail.push("$desc: got «{$got.raku}», wanted «{$want.raku}»") unless $got eqv $want;
 }
-say $fails == 0 ?? 'ok undefined invocant has no path methods' !! "NOT OK: $fails";
 
-# Nil ABSORBS rather than throwing, the rule `.IO` follows too
-my $n = try { Nil.basename };
-say $! ?? "NOT OK: Nil.basename threw {$!.^name}" !! 'ok Nil absorbs';
+# --- an undefined invocant has none of the six ---
+for <contents dir is-absolute is-relative basename extension> -> $m {
+    my $undef = (my @a = 1, 2)[5];           # out of range: an undefined Any
+    my $thrown = '';
+    try { $undef."$m"(); CATCH { default { $thrown = .^name } } }
+    check($thrown, 'X::Method::NotFound', "Any.$m is a missing method");
+}
 
-# a real path still answers, and .dir still lists a real directory. `.dir` is
-# the method both engines have: Rakudo's IO::Path has no `.contents` at all, so
-# only the undefined-invocant loop above can name it on both.
-say '/tmp/x.tar.gz'.IO.basename eq 'x.tar.gz' ?? 'ok real path basename' !! 'NOT OK basename';
-say '/'.IO.is-absolute ?? 'ok real path is-absolute' !! 'NOT OK is-absolute';
-say '.'.IO.dir.elems > 0 ?? 'ok real dir listing' !! 'NOT OK dir';
+# Nil ABSORBS rather than throwing — the rule `.IO` follows too
+my $nil-threw = '';
+try { Nil.basename; CATCH { default { $nil-threw = .^name } } }
+check($nil-threw, '', 'Nil.basename absorbs instead of throwing');
 
-# an unlistable path is still an honest X::IO::Dir, not a silent empty list (#62)
-my $missing = try { '/nonexistent-rakupp-probe-dir'.IO.dir };
-say $! && $!.^name eq 'X::IO::Dir'
-    ?? 'ok missing dir throws X::IO::Dir' !! "NOT OK: { $! ?? $!.^name !! $missing.gist }";
+# --- a real path still answers ---
+check('/tmp/x.tar.gz'.IO.basename,  'x.tar.gz', 'a real path still has .basename');
+check('/tmp/x.tar.gz'.IO.extension, 'gz',       '…and .extension');
+check('/'.IO.is-absolute,           True,       '…and .is-absolute');
+check('.'.IO.dir.elems > 0,         True,       '…and .dir lists a real directory');
 
-say 'PASS';
+# an unlistable path is still an honest X::IO::Dir, not a silent empty list (#62).
+# `.dir` is the method both engines have: Rakudo's IO::Path has no `.contents`.
+my $missing = '';
+try { '/nonexistent-rakupp-probe-dir'.IO.dir; CATCH { default { $missing = .^name } } }
+check($missing, 'X::IO::Dir', 'a missing directory throws X::IO::Dir');
+
+# --- IO::Handle.path is an IO::Path ---
+my $probe = $*TMPDIR.add('rakupp-handle-path-probe').Str;
+my $fh = open $probe, :w;
+check($fh.path.^name,      'IO::Path', "an IO::Handle's .path is an IO::Path");
+check($fh.path.path.^name, 'Str',      "…and IO::Path's own .path is the Str");
+check($fh.path.Str,        $probe,     '…naming the file it opened');
+check($fh.Str,             $probe,     'the handle still Strs as its path');
+check($fh.path.basename.chars > 0, True, '…and answers IO::Path methods');
+$fh.close;
+check($probe.IO.unlink, True, 'the probe file unlinks');
+
+if @fail { note "FAILED:\n" ~ @fail.join("\n"); say 'FAIL' } else { say 'PASS' }

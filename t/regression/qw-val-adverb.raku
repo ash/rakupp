@@ -5,28 +5,20 @@
 # index and built a 10-element Array instead of nesting three hash keys). That
 # is right for every implicit spelling and wrong for the one EXPLICIT one:
 # Rakudo honours `:v`/`:val`, and S02-literals/allomorphic.t asserts it word by
-# word. The form travelled from lexer to parser as "qw"/"qww"/"qqw"/"qqww",
-# which had nowhere to record the adverb, so it was dropped.
-my @v = qw:v[1 2/3 4.5 abc];
-say @v.map(*.^name).join(' ') eq 'IntStr RatStr RatStr Str'
-    ?? 'ok qw:v allomorphs' !! "NOT OK: {@v.map(*.^name).join(' ')}";
+# word. The form travelled lexer -> parser as "qw"/"qww"/"qqw"/"qqww", naming
+# the split and the interpolation with nowhere to record an adverb, so `:v` was
+# dropped on the way. allomorphic.t went 87 -> 108 of 119 when it stopped being.
+my @fail;
+sub check($got, $want, $desc) {
+    @fail.push("$desc: got «{$got.raku}», wanted «{$want.raku}»") unless $got eqv $want;
+}
 
-# :val spells the same adverb
-my @w = qw:val[7 x];
-say @w.map(*.^name).join(' ') eq 'IntStr Str'
-    ?? 'ok qw:val allomorphs' !! "NOT OK: {@w.map(*.^name).join(' ')}";
+check(qw:v[1 2/3 4.5 abc].map(*.^name).join(' '), 'IntStr RatStr RatStr Str', 'qw:v allomorphs');
+check(qw:val[7 x].map(*.^name).join(' '),         'IntStr Str',               'qw:val is the same adverb');
+check(qw[1 2/3].map(*.^name).join(' '),           'Str Str',                  'plain qw stays Str (#69 stands)');
+check(qww[1 2].map(*.^name).join(' '),            'Str Str',                  'plain qww stays Str');
+check(<1>.^name,                                  'IntStr',                   'a bare angle list still allomorphs');
+check(qqww:v[1 'a b'].map(*.^name).join(' '),     'IntStr Str',               ':v composes with ww protection');
+check(qqww:v[1 'a b'][1],                         'a b',                      '…and ww still groups the quoted span');
 
-# …and the plain forms still do NOT allomorph — the #69 fix stands
-my @p = qw[1 2/3];
-say @p.map(*.^name).join(' ') eq 'Str Str'
-    ?? 'ok plain qw stays Str' !! "NOT OK: {@p.map(*.^name).join(' ')}";
-
-# a bare angle list is unaffected either way
-say <1>.^name eq 'IntStr' ?? 'ok <> still allomorphs' !! "NOT OK: {<1>.^name}";
-
-# :v composes with the ww quote-protection form
-my @q = qqww:v[1 'a b'];
-say @q.map(*.^name).join(' ') eq 'IntStr Str' && @q[1] eq 'a b'
-    ?? 'ok qqww:v protects and allomorphs' !! "NOT OK: {@q.map(*.^name).join(' ')} / {@q[1]}";
-
-say 'PASS';
+if @fail { note "FAILED:\n" ~ @fail.join("\n"); say 'FAIL' } else { say 'PASS' }

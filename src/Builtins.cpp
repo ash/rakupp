@@ -11158,14 +11158,40 @@ void Interpreter::registerBuiltins() {
     // A second argument counts OUTER hops: `OUTER::MY::<$x>:exists` asks the
     // ENCLOSING scope, so the answer at unit scope is False however visible the
     // name is here (Rakudo's, checked both ways).
-    B["__sym-exists"] = [](Interpreter& I, ValueList& a) -> Value {
+    // A third argument names the pseudo-package. `UNIT::` asks the COMPILATION
+    // UNIT's own scope rather than the current one, so it is the outermost frame
+    // of the chain we are standing in, not an OUTER hop count — which is what a
+    // module's `EXPORT` sub needs: it runs inside its own routine frame and asks
+    // about the file's symbols. Test::Output builds its whole export list that
+    // way (`UNIT::{"&$_"}:exists`), and rakupp answered "Undefined routine
+    // 'exists'" because only MY:: and LEXICAL:: ever reached here.
+    auto symEnv = [](Interpreter& I, ValueList& a, size_t hopIdx) -> Env* {
+        Env* e = I.tctx_.cur.get();
+        if (a.size() > hopIdx + 1 && a[hopIdx + 1].toStr() == "UNIT") {
+            while (e && e->parent) e = e->parent.get();
+            return e;
+        }
+        for (long long hops = a.size() > hopIdx ? a[hopIdx].toInt() : 0; hops > 0 && e; hops--)
+            e = e->parent.get();
+        return e;
+    };
+    B["__sym-exists"] = [symEnv](Interpreter& I, ValueList& a) -> Value {
         if (a.empty()) return Value::boolean(false);
         const std::string n = a[0].toStr();
-        Env* e = I.tctx_.cur.get();
-        for (long long hops = a.size() > 1 ? a[1].toInt() : 0; hops > 0 && e; hops--)
-            e = e->parent.get();
+        Env* e = symEnv(I, a, 1);
         if (e && e->find(n)) return Value::boolean(true);
         return Value::boolean(false);
+    };
+    // `UNIT::<&foo>:p` is the KEY => VALUE pair when the symbol is there, and
+    // NOTHING (an empty list, which flattens away) when it is not — that is what
+    // makes `@names.map: { UNIT::{"&$_"}:p }` build a Map of just the symbols
+    // that exist.
+    B["__sym-pair"] = [symEnv](Interpreter& I, ValueList& a) -> Value {
+        if (a.empty()) return Value::list({});
+        const std::string n = a[0].toStr();
+        Env* e = symEnv(I, a, 1);
+        if (e) if (Value* v = e->find(n)) return Value::pair(n, *v);
+        return Value::list({});
     };
     // `OUTER::MY::<$x>` — the same lookup as `MY::<$x>`, started that many scopes
     // out. A miss is Nil, as Rakudo's is; the no-hop forms resolve at parse time.

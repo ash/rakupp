@@ -4794,12 +4794,20 @@ ExprPtr Parser::parsePrimary() {
                     // suite, and every one of the P5 family's). Lexical lookups only —
                     // `SETTING::<$x>` asks about the SETTING, where a program's own
                     // lexical is absent however visible it is here.
-                    if ((pseudoPkg == "MY" || pseudoPkg == "LEXICAL") &&
+                    // UNIT:: answers here too, and `:p` alongside `:exists`. Only
+                    // MY::/LEXICAL:: and only `:exists` used to, so
+                    // `UNIT::{"&$_"}:exists` fell out of this branch and the
+                    // adverb was read as a routine call — "Undefined routine
+                    // 'exists'" — while the same thing in an `if` condition or in
+                    // parens was an outright parse error. Test::Output's EXPORT is
+                    // written that way and went 2/2 -> 0/2 on it.
+                    if ((pseudoPkg == "MY" || pseudoPkg == "LEXICAL" || pseudoPkg == "UNIT") &&
                         isOp(":") && !cur().spaceBefore && peek().kind == Tok::Ident &&
-                        peek().text == "exists") {
-                        advance(); advance();
+                        (peek().text == "exists" || peek().text == "p")) {
+                        advance();                              // ':'
+                        const std::string adv = advance().text; // exists | p
                         auto c = std::make_unique<Call>();
-                        c->name = "__sym-exists";
+                        c->name = adv == "p" ? "__sym-pair" : "__sym-exists";
                         if (keyExpr) c->args.push_back(std::move(keyExpr));
                         else         c->args.push_back(std::make_unique<StrLit>(sym));
                         // each OUTER in the chain steps one scope out before looking
@@ -4807,6 +4815,7 @@ ExprPtr Parser::parsePrimary() {
                         for (size_t k = 0; k + 7 <= name.size(); k++)
                             if (name.compare(k, 7, "OUTER::") == 0) hops++;
                         c->args.push_back(std::make_unique<IntLit>(hops));
+                        c->args.push_back(std::make_unique<StrLit>(pseudoPkg));
                         return c;
                     }
                     long long outerHops = 0;
