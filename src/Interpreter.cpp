@@ -6723,6 +6723,20 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
                 else if (dr.size() > 4 && dr.compare(dr.size() - 4, 4, "/lib") == 0)
                     dr = dr.substr(0, dr.size() - 4);
                 std::string pf = metaProvidesPath(dr, name);
+                // A `provides` entry resolves the NAME; it is not a waiver of the
+                // VERSION. Gated exactly as the name-derived paths below are, or a
+                // dist that maps its module explicitly defeats every `:ver` — and
+                // silently, since the fast path returns before the constraint is
+                // ever read. `use Foo:ver<9.9+>` loaded a 1.2.3 dist that way.
+                if (!pf.empty() && !verReq.empty()) {
+                    std::string mv = metaVersion(dr);
+                    if (!verSatisfies(mv, verReq)) {
+                        if (traceLoad)
+                            std::cerr << "[Load] " << name << " skip META6 provides " << dr << "/" << pf
+                                      << " (ver " << (mv.empty() ? "?" : mv) << " !~ " << verReq << ")\n";
+                        pf.clear();   // fall through: name-derived paths, then the stores
+                    }
+                }
                 if (!pf.empty()) {
                     std::string full = dr + "/" + pf;
                     std::ifstream mv(full);
