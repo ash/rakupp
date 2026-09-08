@@ -802,6 +802,13 @@ struct ExecContext {
     // into the slot skips the sigil's de-itemize rule, so `%h` came back as an
     // itemized `${…}` and `@a` as `$( … )` rather than an Array.
     char rwMirrorSigil = 0;   // '%' or '@' when it did; 0 otherwise
+    // The lvalue just resolved names an IMMUTABLE place — a Pair's value
+    // reached through a subscript. The pointer is real (a bind must reach it),
+    // but an assignment through it is X::Assignment::RO. Set by lvalue()'s Pair
+    // arm and read by the assignment right after; a throw there instead is
+    // swallowed by `return-rw`'s not-an-lvalue fallback.
+    std::string lvalueImmutable;      // "" mutable; else the type name to report
+    std::string lvalueImmutableGist;  // the value's gist, for the message's "(…)" tail
     Value* lvalueOut = nullptr;
     // mirror of protoStack_.size(), kept here so the per-block-statement
     // "inside a proto body?" probe reads the ALREADY-LOADED tctx_ instead of
@@ -1444,7 +1451,8 @@ public:
     // Bake regex-valued variables into an `rx//` source at construction time.
     std::string spliceRegexVars(const std::string& pat);
     Value regexMatch(const std::string& subject, const std::string& pattern,
-                     const Value* rxVal = nullptr);
+                     const Value* rxVal = nullptr,
+                     const std::string& declKind = std::string());
     // The `<NAME>` subrule resolver over the lexical `my regex/token/rule`
     // table, shared by `~~` and by the occurrence scanner behind
     // subst/comb/split/match. `lexNames` and `useHooks` belong to the caller

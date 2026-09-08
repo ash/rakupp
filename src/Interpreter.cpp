@@ -8280,11 +8280,13 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             // the `&name` form: a Callable running the regex against its argument
             // (unanchored), so `'port = 443' ~~ &pair` and &pair($str) work
             std::string pat = nr->pattern;
+            std::string kind = nr->kind;          // regex / token / rule — decides the flags
             Value code; code.t = VT::Code; code.setCode(std::make_shared<Callable>());
             code.code()->name = nr->name;
             code.code()->isRegexRoutine = true;   // `&R.^name` is Regex, not Sub
-            code.code()->builtin = [pat](Interpreter& I, ValueList& a) -> Value {
-                return a.empty() ? Value::nil() : I.regexMatch(I.rxSubject(a[0]), pat);
+            code.code()->builtin = [pat, kind](Interpreter& I, ValueList& a) -> Value {
+                return a.empty() ? Value::nil()
+                                 : I.regexMatch(I.rxSubject(a[0]), pat, nullptr, kind);
             };
             tctx_.cur->define("&" + nr->name, code);
             return Value::any();
@@ -11656,6 +11658,7 @@ static bool typeNameConforms(const std::string& lnIn, const std::string& rn,
         {"BagHash", {"BagHash", "Baggy", "QuantHash", "Associative"}},
         {"Mix",   {"Mix", "Mixy", "Baggy", "QuantHash", "Associative"}},
         {"MixHash", {"MixHash", "Mixy", "Baggy", "QuantHash", "Associative"}},
+        {"Pair",  {"Pair", "Associative"}},
         {"Date",     {"Date", "Dateish"}},
         {"DateTime", {"DateTime", "Dateish"}},
         {"IO::Path",   {"IO::Path", "IO", "Cool"}},
@@ -11902,7 +11905,11 @@ static bool typeMatchesArg(const Value& arg, const std::string& type) {
             if (arg.hashKind == type) return true;
             if (!hashKindIsAssociative(arg.hashKind)) return false;
             return type == "Hash" || type == "Map" || type == "Associative";
-        case VT::Pair: return type == "Pair";
+        // a Pair DOES Associative in Raku: `(a => 1) ~~ Associative` is True,
+        // and Crane's traversal dispatches its whole `at`/`in` family on
+        // `Associative:D`, so a Pair in a path missed every candidate and came
+        // back X::Multi::NoMatch (issue #69)
+        case VT::Pair: return type == "Pair" || type == "Associative";
         case VT::Code: return type == "Code" || type == "Callable" || type == "Routine" || type == "Block" || type == "Sub" ||
                               (type == "Method" && arg.code() && arg.code()->isMethod) || // a method is a Method, not just a Sub
                               // …and a curried `*-1` is a WhateverCode, which this
@@ -13244,6 +13251,18 @@ Value rtIndexAdverb(Value& base, const Value& keyIn, bool isHash, const std::str
         }
     }
     Value keyV = isHash ? Value::str(key) : Value::integer(ai);
+    // A Pair and a List are immutable: `:delete` on either is an error, not a
+    // no-op. `base.hash()` is null for a Pair, so the erase below dereferenced
+    // nothing and took the process with it — Crane's remove tests segfaulted
+    // once the Pair stopped being silently promoted to a Hash (issue #69).
+    // The WORDING is asserted, not decoration: Crane matches the payload with
+    // `Can not remove [values|elements] from a (\w+)` and rethrows as its own
+    // X::Crane::Remove::RO.
+    if (wantDelete && base.t == VT::Pair)
+        throw RakuError{Value::typeObj("X::AdHoc"), "Can not remove values from a Pair"};
+    if (wantDelete && base.t == VT::Array && base.isList && base.s != "Seq" &&
+        base.enumName.empty())
+        throw RakuError{Value::typeObj("X::AdHoc"), "Can not remove elements from a List"};
     if (wantDelete && exists) {
         if (isHash) base.hash()->erase(key);
         else {
@@ -17261,6 +17280,13 @@ Value* Interpreter::lvalueThroughRw(Expr* e) {
 }
 
 Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
+    // set only by the arms that resolve an immutable place, which is rare —
+    // test before clearing so the common lvalue() pays one length compare
+    // rather than two string stores on the assignment hot path
+    if (!tctx_.lvalueImmutable.empty()) {
+        tctx_.lvalueImmutable.clear();
+        tctx_.lvalueImmutableGist.clear();
+    }
     ExecContext& tcx = tctx_;   // one thread-local resolution — see execBlock
     if (e->kind == NK::VarExpr) {
         auto* ve = static_cast<VarExpr*>(e);
@@ -17559,6 +17585,30 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                                 return &(*slot.hash())[key2];
                             }
             }
+            // A Pair is not a mutable Associative. `(a => 1)<a> = 9` is
+            // X::Assignment::RO in Rakudo; here the line below REPLACED the Pair
+            // with a fresh Hash, which both lost the Pair and accepted a write
+            // that should not happen — Crane's immutability tests, which set
+            // into a nested colonpair structure and expect the failure, passed
+            // straight through instead (issue #69). Reading `$p<a>` is fine and
+            // is not on this path.
+            // A Pair is Associative but not a mutable Hash. Replacing it with a
+            // fresh Hash below both lost the Pair and ACCEPTED a write Rakudo
+            // refuses — `(a => 1)<a> = 9` is X::Assignment::RO there whether the
+            // pair holds a literal or a container. The pointer still has to be
+            // real, because `my $r := $p<key>` binds through this same path; so
+            // hand back the pair's value and mark the place immutable for the
+            // assignment to refuse. Throwing here instead is swallowed whole by
+            // `return-rw`'s not-an-lvalue fallback, and Crane's `set` then wrote
+            // into a copy and reported success (issue #69).
+            if (base->t == VT::Pair && base->pairVal()) {
+                std::string pk = hashSubKey(eval(idx->index.get()), base);
+                tcx.lvalueImmutable = "Pair";
+                if (base->s == pk) return base->pairVal();
+                static thread_local Value pairMiss;   // a key the pair does not have
+                pairMiss = Value::any();
+                return &pairMiss;
+            }
             if (base->t != VT::Hash) *base = Value::makeHash();
             std::string key = hashSubKey(eval(idx->index.get()), base); // key eval BEFORE the stripe (user code)
             // P3: the find-or-insert itself under the hash's stripe — a
@@ -17609,10 +17659,25 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                                 return &(*slot.arr())[j];
                             }
             }
-            // a List ((1,3,5) held in a scalar) is immutable — element assignment dies
-            if (base->t == VT::Array && base->isList && base->s != "Seq" && base->enumName.empty())
-                throw RakuError{Value::typeObj("X::Assignment::RO"),
-                    "Cannot modify an immutable List (" + base->gist() + ")"};
+            // A List ((1,3,5) held in a scalar) is immutable — element assignment
+            // dies. Reported through the flag rather than thrown, for the same
+            // reason as the Pair arm above: `return-rw c[$i]` swallows a throw
+            // here and falls back to a copy, so Crane's `set` into an immutable
+            // List wrote nothing and reported success (issue #69). Reads and
+            // binds still get the real element.
+            if (base->t == VT::Array && base->isList && base->s != "Seq" && base->enumName.empty()) {
+                tcx.lvalueImmutable = "List";
+                tcx.lvalueImmutableGist = base->gist();
+                Value kv0 = eval(idx->index.get());
+                if (kv0.t == VT::Code && kv0.code() && kv0.code()->isWhateverCode)
+                    kv0 = callCallable(kv0, ValueList{Value::integer((long long)base->arr()->size())});
+                long long li = kv0.toInt();
+                if (base->arr() && li >= 0 && li < (long long)base->arr()->size())
+                    return &(*base->arr())[li];
+                static thread_local Value listMiss;
+                listMiss = Value::any();
+                return &listMiss;
+            }
             if (base->t != VT::Array) *base = Value::array();
             // `@a[*-1] = v` / `@a[*-1]++`: a WhateverCode index resolves against the
             // current length (like the read path), not eagerly to 0.
@@ -19900,17 +19965,36 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                     Value fetched;
                     if (base->t == VT::Hash && base->hashKind == "Proxy" && base->hash()) {
                         fetched = deproxy(*base);
-                        if (fetched.t != VT::Hash || !fetched.hash() || fetched.hashKind == "Proxy") {
+                        // …unless what the binding holds is a PAIR, which is
+                        // Associative and must not be autovivified over: this
+                        // wrote an empty Hash back THROUGH the binding, so
+                        // `my $c := $p; my $t := $c<pair>` emptied $p and read
+                        // Any. Crane walks exactly that way — `my $root :=
+                        // $container; $root := $root{@steps[0]}` — and lost the
+                        // structure it was reading (issue #69).
+                        if (fetched.t != VT::Pair &&
+                            (fetched.t != VT::Hash || !fetched.hash() || fetched.hashKind == "Proxy")) {
                             fetched = Value::makeHash();
                             proxyStore(*base, fetched);      // autovivify through the binding
                         }
                         real = &fetched;
                     }
+                    // A Pair is Associative but NOT a mutable Hash. Replacing it
+                    // with a fresh Hash here lost the Pair and bound a slot of
+                    // the wrong container: `my $r := $p<pair>` read Any and left
+                    // $p as `{:pair(Any)}`, which is how Crane's walk over a
+                    // nested colonpair structure died X::Multi::NoMatch on a
+                    // container it had itself emptied (issue #69). Leave it be
+                    // and fall through to the ordinary bind, which reads the
+                    // pair's value.
                     if (real->t != VT::Hash || !real->hash()) {
-                        if (real == base) *base = Value::makeHash();
-                        real = base;
+                        if (real->t == VT::Pair) real = nullptr;
+                        else {
+                            if (real == base) *base = Value::makeHash();
+                            real = base;
+                        }
                     }
-                    if (real->t == VT::Hash && real->hashKind.empty()) h = real->hashS();
+                    if (real && real->t == VT::Hash && real->hashKind.empty()) h = real->hashS();
                 }
                 if (h) {
                     std::string key = hashSubKey(eval(ix->index.get()));
@@ -20045,6 +20129,15 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         // rakupp that no other implementation will run.
         // …but a BIND to an ELEMENT replaces what is bound there, so rebinding a
         // slot that a previous bind made immutable is not an assignment to it.
+        if (!tctx_.lvalueImmutable.empty() && a->op != ":=") {
+            std::string ty = tctx_.lvalueImmutable, gi = tctx_.lvalueImmutableGist;
+            tctx_.lvalueImmutable.clear(); tctx_.lvalueImmutableGist.clear();
+            // `typename` is part of the exception, not decoration: Crane rethrows
+            // as `X::Crane::OpSet::RO.new(:typename(.typename))`, and without the
+            // attribute its CATCH block dies instead of reporting the refusal
+            throwTyped("X::Assignment::RO", {{"typename", ty}},
+                       "Cannot modify an immutable " + ty + (gi.empty() ? "" : " (" + gi + ")"));
+        }
         if (lv->readonly && !(a->op == ":=" && a->target->kind == NK::Index))
             throw RakuError{Value::typeObj("X::Assignment::RO"),
                             "Cannot assign to a readonly variable or a value"};
@@ -20548,6 +20641,12 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
     // with "Cannot assign to a readonly variable". Accepting it silently is
     // the worst direction for a divergence: it lets code be written against
     // rakupp that no other implementation will run.
+    if (!tctx_.lvalueImmutable.empty()) {
+        std::string ty = tctx_.lvalueImmutable, gi = tctx_.lvalueImmutableGist;
+        tctx_.lvalueImmutable.clear(); tctx_.lvalueImmutableGist.clear();
+        throwTyped("X::Assignment::RO", {{"typename", ty}},
+                   "Cannot modify an immutable " + ty + (gi.empty() ? "" : " (" + gi + ")"));
+    }
     if (lv->readonly)
         throw RakuError{Value::typeObj("X::Assignment::RO"),
                         "Cannot assign to a readonly variable or a value"};
@@ -23238,7 +23337,7 @@ void Interpreter::lexSubResolver(SubResolver& resolver, std::set<std::string>& l
 }
 
 Value Interpreter::regexMatch(const std::string& subject, const std::string& pattern,
-                              const Value* rxVal) {
+                              const Value* rxVal, const std::string& declKind) {
     // wired mode: an anonymous `regex {…}` value — its code blocks and
     // assertions execute for real, in a per-match child of the scope the
     // regex closed over (`:my`/`$cap` persist across blocks within a match)
@@ -23362,6 +23461,16 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
     // flavor flags for anonymous declarators: token = ratchet, rule = ratchet+sigspace
     std::string reFlags = wired ? (rxVal->hashKind == "token" ? "r"
                                  : rxVal->hashKind == "rule" ? "sr" : "") : "";
+    // …and the same for a NAMED one reached through its `&name` Callable. The
+    // `<name>` subrule path has always mapped the declarator's kind to these
+    // flags; the Callable ran the bare pattern, so `my rule u { ab cd }` matched
+    // "abcd" through `$s ~~ &u` and refused "ab cd" — the exact inverse of what
+    // it does as `<u>`. Crane's CATCH tests its X::AdHoc payload against
+    // `my rule can-not-remove { Can not remove [values|elements] from a (\w+) }`
+    // that way, so every immutability refusal was swallowed by the handler and
+    // reported as success (issue #69).
+    if (reFlags.empty() && !declKind.empty())
+        reFlags = declKind == "token" ? "r" : declKind == "rule" ? "sr" : "";
     std::shared_ptr<const Regex> reP = compileRegexCached(pat, reFlags);
     const Regex& re = *reP;
     // Hooks for THIS call — never stored on the shared object (see Regex::runHooks).
@@ -30114,6 +30223,17 @@ Value Interpreter::evalIndex(Index* idx) {
         if (wantDelete && base.t == VT::Hash &&
             (base.hashKind == "Set" || base.hashKind == "Bag" || base.hashKind == "Mix"))
             throwImmutable(base);
+        // …and so are a Pair and a List. `base.hash()` is null for a Pair, so
+        // the erase below dereferenced nothing and took the process with it once
+        // the Pair stopped being silently promoted to a Hash (issue #69). The
+        // WORDING is asserted, not decoration: Crane matches the payload with
+        // `Can not remove [values|elements] from a (\w+)` and rethrows it as its
+        // own X::Crane::Remove::RO.
+        if (wantDelete && base.t == VT::Pair)
+            throw RakuError{Value::typeObj("X::AdHoc"), "Can not remove values from a Pair"};
+        if (wantDelete && base.t == VT::Array && base.isList && base.s != "Seq" &&
+            base.enumName.empty())
+            throw RakuError{Value::typeObj("X::AdHoc"), "Can not remove elements from a List"};
         if (wantDelete) for (auto& h : hits) if (h.exists) {
             if (idx->isHash) base.hash()->erase(h.keyV.toStr());
             else { long long ai = h.keyV.toInt();
