@@ -213,6 +213,31 @@ sub sha1-file(Str $path) {
     die "no SHA-1 tool found (need shasum, sha1sum or openssl) — refusing to install unverified archives";
 }
 
+# The SHA-1 of a FILE's bytes, uppercase, for the store's content-addressed
+# blobs. Hashed in-process: the store check runs this over every blob of every
+# distribution it verifies (623 blobs, 12.8 MB, 0.17s here), and sha1-file
+# spawns a subprocess per call — 623 of those is the forty seconds sha1-str
+# already documents. The subprocess path stays as the fallback for running
+# this tool under Rakudo. '' when the file cannot be read, which the callers
+# treat as "not the bytes it was named for".
+sub sha1-blob(IO::Path $f --> Str) {
+    my $native = try ::('&rakupp-sha1-hex');
+    if $native ~~ Callable {
+        my $bytes = try $f.slurp(:bin);
+        return '' without $bytes;
+        return ~$native($bytes).uc;
+    }
+    my $hex = try sha1-file($f.absolute);
+    $hex.defined ?? ~$hex.uc !! ''
+}
+
+# Where a blob id lives, or Nil. sources/ holds modules, resources/ the rest,
+# and bin/ is where an older layout put bin scripts (the named wrappers beside
+# them are not content-addressed and no record names them).
+sub blob-path(IO::Path $p, Str $sha) {
+    <sources resources bin>.map({ $p.add($_).add($sha) }).first(*.e)
+}
+
 sub cache-dir {
     my $d = %*ENV<HOME>.IO.add('.raku').add('rakupp-install');
     $d.mkdir unless $d.d;
@@ -1007,8 +1032,8 @@ sub install-one(%e, Str $prefix, Bool :$no-test, Bool :$force, Bool :$test-only,
     my $repair = ?%broken{identity-key(%meta<name>, %meta<version> // %meta<ver>,
                                        %meta<auth>, %meta<api>)};
     if $repair {
-        progress("repairing {%e<dist> // %e<name>}: the store has its record but not its files");
-        trace("repair: {%e<dist> // %e<name>} — the store's record is missing blobs; overwriting");
+        progress("repairing {%e<dist> // %e<name>}: the store has its record, but its files are missing or damaged");
+        trace("repair: {%e<dist> // %e<name>} — the store's blobs are missing or do not match their names; overwriting");
     }
 
     # repository-for-spec, not .new: it is the constructor that carries the
@@ -1090,6 +1115,8 @@ sub store-check(Str $prefix) {
     my $broken = 0;
     my %dists;          # dist-id -> meta hash
     my %referenced;     # blob sha -> True (from dist files maps and short entries)
+    my %said-missing;   # blob sha -> True, so one absent blob is reported once
+    my %owned = owned-set($p.absolute);   # the records this tool wrote
 
     for $p.add('dist').dir.grep(*.f) -> $f {
         my %m = try json-decode($f.slurp);
@@ -1115,12 +1142,44 @@ sub store-check(Str $prefix) {
                     say "BROKEN: short/{$sdir.basename}/{$entry.basename} points at missing dist $dist-id";
                     $broken++;
                 }
-                if $src-sha && !<sources resources bin>.first({ $p.add($_).add($src-sha).e }) {
+                if $src-sha && !blob-path($p, $src-sha) {
                     say "BROKEN: short/{$sdir.basename}/{$entry.basename} needs a missing blob ($src-sha in sources/, resources/ or bin/)";
+                    %said-missing{$src-sha} = True;
                     $broken++;
                 }
                 %referenced{$src-sha} = True if $src-sha;
             }
+        }
+    }
+
+    # Every blob each record names: on disk, and — for the records this tool
+    # wrote — still hashing to its own name. The store is content-addressed, so
+    # that second question has an exact answer and needs nothing recorded
+    # alongside; a blob whose bytes changed under it (a truncated write, a full
+    # disk, an interrupted install) is provably not what the record points at.
+    #
+    # zef and Rakudo name their blobs by something other than the content, so
+    # theirs are checked for presence only. The summary says how many, rather
+    # than letting "0 broken" imply more than was asked.
+    for %dists.kv -> $dist-id, %m {
+        my $verify = ?%owned{$dist-id};
+        for (%m<files> // {}).kv -> $rel, $sha {
+            next if (~$sha) eq '';
+            my $blob = blob-path($p, ~$sha);
+            without $blob {
+                unless %said-missing{~$sha} {
+                    say "BROKEN: {%m<name>} ($dist-id) needs $rel but no blob $sha is in sources/, resources/ or bin/";
+                    %said-missing{~$sha} = True;
+                    $broken++;
+                }
+                next;
+            }
+            next unless $verify;
+            my $got = sha1-blob($blob);
+            next if $got eq (~$sha).uc;
+            say "BROKEN: {%m<name>} ($dist-id) $rel: {$blob.parent.basename}/$sha holds different bytes"
+                ~ ($got ?? " (SHA-1 $got)" !! " (unreadable)");
+            $broken++;
         }
     }
 
@@ -1134,6 +1193,10 @@ sub store-check(Str $prefix) {
             }
         }
     }
+
+    my $foreign = %dists.keys.grep({ !%owned{$_} }).elems;
+    say "  $foreign distribution{$foreign == 1 ?? '' !! 's'} not installed by rakupp: "
+        ~ "blobs checked for presence, not content" if $foreign;
 
     my @unref = unreferenced-blobs($p, %dists, %referenced);
     my $unref = @unref.elems;
@@ -1461,30 +1524,55 @@ sub identity-key($name, $ver, $auth, $api) {
 # `rakupp install Sparrow6` a listing instead of seventeen fetch-build-test
 # cycles that all end in "already installed".
 #
-# …and DAMAGED, in the same pass: a record whose blobs are gone. It is not an
-# installation — `use` fails on it with "Could not find" — so it must not
-# answer "already installed" to the plan, and install-one overwrites it rather
-# than letting the engine refuse. (--check reports the same condition as
-# BROKEN; this is what makes install the cure for what --check names.)
-sub store-state(Str $prefix) {
+# …and DAMAGED, in the same pass: a record whose blobs are gone, or whose blobs
+# no longer hold what they were named for. Neither is an installation — one
+# fails `use` with "Could not find", the other loads an empty module — so
+# neither may answer "already installed" to the plan, and install-one overwrites
+# it rather than letting the engine refuse. (--check reports the same two
+# conditions as BROKEN; this is what makes install the cure for what it names.)
+#
+# %verify names the identities to check by CONTENT, and the caller passes the
+# plan: reading every blob of every installed distribution would put the whole
+# store through SHA-1 on each install, while the only records whose damage
+# changes this run are the ones about to be installed. Presence is still checked
+# for all of them, and it is free.
+sub store-state(Str $prefix, %verify = {}) {
     my (%have, %broken);
     my $dist-dir = $prefix.IO.add('dist');
     return { have => %have, broken => %broken } unless $dist-dir.d;
+    my %owned = owned-set($prefix);
     for $dist-dir.dir.grep(*.f) -> $f {
         my %m = try json-decode($f.slurp);
         next unless %m;
         my $key = identity-key(%m<name>, %m<version> // %m<ver>, %m<auth>, %m<api>);
-        (store-blobs-present($prefix, %m) ?? %have !! %broken){$key} = True;
+        my $verify = ?%verify{$key} && ?%owned{$f.basename};
+        (store-blobs-intact($prefix, %m, :$verify) ?? %have !! %broken){$key} = True;
     }
     { have => %have, broken => %broken }
 }
 
-# Every blob a dist record names, still on disk? (the same three directories
-# store-check looks in — sources/ for modules, resources/ and bin/ for the rest)
-sub store-blobs-present(Str $prefix, %m --> Bool) {
+# Every blob a dist record names, still on disk — and, with :verify, still the
+# bytes it was named for. The store is content-addressed: a blob's FILE NAME is
+# the SHA-1 of its content, so an intact copy proves itself and a damaged one
+# cannot.
+#
+# Presence alone was not enough. A blob truncated to nothing stat()s fine, so
+# the record answered "already installed" for ever; the module it holds compiles
+# to an empty unit, so `use` SUCCEEDS and imports nothing. That is issue #72:
+# fez's installed script is one `use Fez::CLI`, an empty Fez::CLI left the
+# program with no MAIN, and every fez subcommand answered with silence and
+# exit 0 — no error to go on, and no reinstall allowed.
+#
+# :verify only for records THIS TOOL wrote. zef and Rakudo name their blobs by
+# something other than the content, so hashing theirs reports every one of them
+# damaged — and what the caller does about damage is overwrite the distribution.
+sub store-blobs-intact(Str $prefix, %m, Bool :$verify --> Bool) {
     my $p = $prefix.IO;
     for (%m<files> // {}).values.grep(* ne '') -> $sha {
-        return False unless <sources resources bin>.first({ $p.add($_).add(~$sha).e });
+        my $want = (~$sha).uc;
+        my $blob = blob-path($p, ~$sha);
+        return False without $blob;
+        return False if $verify && sha1-blob($blob) ne $want;
     }
     True
 }
@@ -1663,7 +1751,9 @@ sub MAIN(
     # took out are gone from dist/ and install fresh.
     my (%have, %broken);
     unless $force {
-        my %state = store-state($to);
+        my %planned;
+        %planned{identity-key(.<name>, .<version>, .<auth>, .<api>)} = True for @plan;
+        my %state = store-state($to, %planned);
         %have   = %state<have>;
         %broken = %state<broken>;
     }

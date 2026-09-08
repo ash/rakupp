@@ -289,8 +289,33 @@ store check: 3 distributions, 0 broken, 0 unreferenced blobs
 
 It distinguishes two severities. **Broken** — an unreadable `dist/` record, a
 short entry pointing at a missing dist record, a missing blob behind a live
-entry, a provided module with no index entry — each is a `use` that will fail
-or a record that cannot be trusted, and any of them makes the exit code 1.
+entry, a blob that no longer holds the bytes it was named for, a provided
+module with no index entry — each is a `use` that will fail or a record that
+cannot be trusted, and any of them makes the exit code 1.
+
+That fourth one is why the store being content-addressed is worth the
+indirection it costs: a blob's file name IS the SHA-1 of its content, so
+"still the right bytes" is a question with an exact answer and nothing to
+record alongside. It is asked only of the records this installer wrote — zef
+and Rakudo name their blobs by something else, so hashing theirs would report
+every one of them damaged, and the summary says how many were checked for
+presence only rather than letting `0 broken` imply more than was asked:
+
+```
+$ rakupp install --check
+store: /Users/ash/.raku
+BROKEN: fez (43BE78BF…) lib/Fez/CLI.rakumod: sources/70C8E494… holds different bytes (SHA-1 DA39A3EE…)
+  4 distributions not installed by rakupp: blobs checked for presence, not content
+store check: 135 distributions, 1 broken, 0 unreferenced blobs
+```
+
+A blob truncated to nothing was the case that made presence alone
+insufficient, and it is worse than an absent one: `stat` is satisfied, so the
+record still answers "already installed" to every attempt to repair it, and an
+empty module compiles, so `use` SUCCEEDS and imports nothing. An installed
+`fez` in that state answered every subcommand with silence and exit 0 — its
+script is one `use Fez::CLI`, and an empty `Fez::CLI` left the program with no
+`MAIN` to run. No error anywhere to go on (issue #72).
 **Unreferenced blobs** are wasted disk, reported and exempt: in a shared
 store, a blob this engine cannot account for might be another writer's, and a
 checker that "cleans" what it does not understand is how shared state gets

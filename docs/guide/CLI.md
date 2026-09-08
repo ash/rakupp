@@ -740,6 +740,16 @@ HTTP::Tiny:ver<0.2.6>:auth<zef:jjatria>  (HTTP::Tiny)
 A blob or wrapper the record names but the disk lacks is flagged beside its
 path; `--check` is the full audit. With `-q` only the identity lines print.
 
+`--check` reports a blob that is present but no longer holds what it should,
+too. The store is content-addressed — a blob's file name is the SHA-1 of its
+content — so a truncated or overwritten copy is provable, and it is the damage
+worth naming: an absent blob fails `use` loudly, while an empty one compiles to
+a module that exports nothing and leaves the program silently doing less than
+it should. Only distributions this installer wrote are checked that way (zef
+names its blobs by something other than the content); the summary says how many
+were checked for presence alone. `rakupp install <name>` repairs either kind
+rather than answering "already installed".
+
 `--check` also counts blobs that nothing references — an orphan left by an
 interrupted install, or by a file some later version replaced. They are wasted
 disk rather than damage, so they do not fail the check, and `--gc` is what

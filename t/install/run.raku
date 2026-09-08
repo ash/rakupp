@@ -410,6 +410,34 @@ my $ruse = run 'env', "HOME={$home}", 'RAKULIB=', $EXE, '-e',
 check $ruse.out.slurp(:close) eq '0.4.2', 'repair: the module loads once more';
 $ruse.err.slurp(:close);
 
+# ---- a store whose blob was TRUNCATED repairs itself too (issue #72) --------
+# The harder half of the same damage: the blob is still THERE, so stat() is
+# happy and "already installed" stands — and an empty module compiles, so `use`
+# SUCCEEDS and imports nothing. That is how an installed `fez` came to answer
+# every subcommand with silence and exit 0: its script is one `use Fez::CLI`,
+# and an empty Fez::CLI left the program with no MAIN to run.
+#
+# The store is content-addressed, so the damage is provable without recording
+# anything alongside: a blob's name IS the SHA-1 of what it must hold.
+my $blob2 = $home.add('.raku/sources').dir.first({ .f && .slurp.contains('unit module Gate::Demo') });
+check $blob2.defined, 'truncated: the module blob is in the store';
+check $blob2 && sha1-of($blob2.absolute).uc eq $blob2.basename,
+      'truncated: …and an intact blob hashes to its own name';
+$blob2.spurt('') if $blob2;
+my %trunc = installer('--check');
+check %trunc<exit> != 0 && %trunc<out>.contains('holds different bytes'),
+      'truncated: --check sees the blob is not the bytes it was named for';
+my %fix = installer('Gate::Demo');
+check %fix<exit> == 0 && %fix<err>.contains('installed Gate::Demo'),
+      'truncated: a plain install rewrites it, rather than answering "already installed"';
+my %rechk2 = installer('--check');
+check %rechk2<exit> == 0 && %rechk2<out>.contains('0 broken'),
+      'truncated: …and the store is whole again';
+my $tuse = run 'env', "HOME={$home}", 'RAKULIB=', $EXE, '-e',
+                'use Gate::Demo; print which-version()', :out, :err;
+check $tuse.out.slurp(:close) eq '0.4.2', 'truncated: the module loads once more';
+$tuse.err.slurp(:close);
+
 # ---- the trace log: every run leaves an attachable account ------------------
 # The support loop this closes: "install did not work on my machine" arrives
 # with ~/.raku/rakupp-install/trace.log attached, which opens with the engine
