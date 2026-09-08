@@ -107,7 +107,7 @@ This is the heart. Key pieces:
 |---|---|
 | `Value.{h,cpp}` | The universal runtime value (see below), coercions, gist/Str. |
 | `BigInt.{h,cpp}` | Arbitrary-precision integers (base-1e9) for the exact number tower. |
-| `Interpreter.{h,cpp}` | Tree-walking evaluator: `eval`/`exec`, scopes, calls, dispatch, `applyArith`, codegen helpers — plus module loading (`loadModule`: each `use`d module is lexed, parsed to its own AST and executed once, in every mode including `--exe`; see [MODULE-LOADING.md](MODULE-LOADING.md)) and the concurrency runtime (a CPython-style GIL, thread-local execution registers, and opt-in true parallelism via `RAKUPP_PARALLEL`; see [ASYNC.md](../guide/ASYNC.md)). |
+| `Interpreter.{h,cpp}` | Tree-walking evaluator: `eval`/`exec`, scopes, calls, dispatch, `applyArith`, codegen helpers — plus module loading (`loadModule`: each `use`d module is lexed, parsed to its own AST and executed once, in every mode including `--exe`; see [MODULE-LOADING.md](MODULE-LOADING.md)) and the concurrency runtime (thread-local execution registers, interpreter compute on all cores by default since v3, and a CPython-style GIL kept as the `RAKUPP_GIL=1` escape hatch; see [ASYNC.md](../guide/ASYNC.md)). |
 | `Builtins.cpp` | Named built-ins, the `Test` module (TAP), and the head of the method dispatcher `methodCallInner`. |
 | `MethodCallPart2/3/Tail.cpp` | The rest of that dispatch chain. **Ordered segments, not categories** — the chain is order-sensitive, so an arm belongs where its priority is, not where it reads nicely. Each returns `std::optional<Value>`; `nullopt` means "not handled here". |
 | `MethodCallSegment.h` | The common include prologue those segments share, so one cannot drift from its siblings. |
@@ -119,229 +119,56 @@ This is the heart. Key pieces:
 | `Highlight.{h,cpp}` | The parse-aware syntax highlighter behind `--highlight` (HTML + ANSI). |
 | `Runtime.{h,cpp}` | Shared entry points: `rakuppRun` (lex+parse+interpret) and `rakuppRunProgram` (interpret a prebuilt AST, for `--aot`). |
 | `Codegen.*` | `--exe` back end: transpiles the AST to native C++ (with an optional `-O` optimizer — see [OPTIMIZATION.md](OPTIMIZATION.md)). |
-| `AstEmit.cpp` | `--aot` back end: emits C++ that rebuilds the AST. |
+| `codegen/Js.*`, `js-rt/` | `--target=js` back end: transpiles to JavaScript over a hand-written runtime. |
+| `AstEmit.cpp` | `--aot` back end: serializes the AST and emits C++ carrying the bytes. |
 | `AstDump.cpp` | `--ast` AST printer. |
-| `main.cpp` | CLI: interpret, `-e`, `--ast`, `--cpp`, `--highlight`, `--bundle`, `--aot`, `--exe`. |
+| `main.cpp` | CLI: the run modes, the compile drivers (`--bundle`, `--aot`, `--exe`, `--target=js`) and the tooling subcommands. |
 
-### The `Value` type
+### The value model, and where it is described
 
-Every Raku value at runtime is one `Value` struct with a `VT` tag:
+Every Raku value at runtime is one `Value` struct with a `VT` tag; a lexical
+scope is an `Env`; a class is a `ClassInfo` and a routine a `Callable`. Those
+four types are the runtime, and describing them is a chapter's work rather than
+a paragraph's:
 
-```
-Nil Any Bool Int Num Str Array Hash Code Range Pair Type Whatever Object Rat Regex Match Complex
-```
+- **[Chapter 8, `Value`](../book/ch/08-value.md)** — the tag, the payload slot,
+  and why the struct's size is a recurring subject.
+- **[Chapter 12, Containers](../book/ch/12-containers.md)** and
+  **[Chapter 14, Calls](../book/ch/14-calls.md)** — `Env`, lexical pads and the
+  frame pool.
+- **[Chapter 17, Objects](../book/ch/17-objects.md)** — `ClassInfo`, roles and
+  the metamodel.
 
-It holds scalars inline (`i`, `n`, `b`) and shares heavy payloads via
-`shared_ptr` (`arr` for arrays, `hash` for hashes/objects-attrs, `code` for
-callables, `obj` for objects, `big`/`ratN`/`ratD` for the number tower). Copying
-a `Value` is cheap and shares the payload — which is why, e.g., mutating an
-object attribute through a copied `self` handle works.
-
-> For the full runtime model — how this one struct represents every dynamic
-> value, how variables and containers relate, how calls/dispatch work, and how
-> lazy/infinite sequences are implemented — see **[RUNTIME.md](RUNTIME.md)**.
-
-### Environments, classes, callables
-
-- `Env` — a lexical scope: `unordered_map<string,Value>` plus a parent pointer.
-- `ClassInfo` — a class: name, parent, `attrs` (with defaults), and `methods`
-  (a `map<string,Value>` of `Code` closures). Objects are `Value`+`ObjectData`
-  (a `ClassInfo` + an attribute map).
-- `Callable` — a sub/block/method. Either an AST body + closure `Env`, or a
-  C++ `builtin` (`std::function`). This dual nature is what lets the native
-  compiler represent compiled closures/methods as ordinary `Value`s.
+This file used to carry a miniature of all four. It is gone for the same reason
+§4's walk-through is: the miniature described `Value` as it was before the
+payload slots collapsed into one tagged member, and `Env` as it was before
+lexical pads, and neither was visible from here as wrong.
 
 ---
 
 ## 4. What happens to a program — by mode
 
-Consider this program (`demo.raku`):
+The same program through each of the five back ends — interpret, `--bundle`,
+`--aot`, `--exe` and `--target=js` — with the generated code for each, is the
+Internals book's Part VII. It is not repeated here:
 
-```raku
-sub square($n) { $n * $n }
-my $total = 0;
-for 1..5 { $total += square($_) }
-say $total;
-```
+- **[Chapter 25, Four Ways to Run a Program](../book/ch/25-run-modes.md)** —
+  the walk-through, and what each mode produces.
+- **[Chapter 26, The Code Generator](../book/ch/26-codegen.md)** and
+  **[Chapter 27](../book/ch/27-optimizer.md)** — `--exe` and `-O`.
+- **[Chapter 30b, The JavaScript Back End](../book/ch/30b-codegen-js.md)** —
+  `--target=js`.
 
-The CLI ([`src/main.cpp`](../../src/main.cpp)) picks a mode from the flags, then:
-
-### Mode 1 — interpret (default): `rakupp demo.raku`
-
-```
-demo.raku ─► Lexer ─► Parser ─► Program (AST)
-          ─► Interpreter.run(Program)  ─► walks the tree, node by node
-```
-
-`main` reads the source and calls `rakuppRunBigStack` (in `Runtime.cpp`, on a
-large-stack thread so deep recursion is safe — [MEMORY.md](../guide/MEMORY.md) has the
-sizes and measured depths per mode). That lexes, parses, and hands the
-`Program` to `Interpreter::run`, which `exec`s each statement. Evaluation is a
-recursive `eval(Expr*)` / `exec(Stmt*)` over the AST: a `for` loop iterates and
-re-`exec`s its body block; `square($_)` looks the sub up in the `Env` chain and
-`callCallable`s it; `$total += …` re-dispatches through `applyArith("+", …)`.
-
-Nothing is cached or compiled — the same AST nodes are re-interpreted on every
-iteration. Startup is instant (~2 ms); throughput pays the tree-walking tax.
-
-### Mode 2 — bundle: `rakupp --bundle demo.raku -o demo`
-
-```
-demo.raku ─► (embedded verbatim as bytes) ─► generated stub.cpp
-          ─► cc stub.cpp librakupp_rt.a ─► ./demo   (self-contained)
-```
-
-`compileToExe` does **not** parse the program at build time. It emits a tiny C++
-stub that embeds the source as a byte array and calls the runtime:
-
-```cpp
-static const unsigned char SRC[] = { 115,117,98,32,... };
-int main(int argc, char** argv) {
-    std::string src(reinterpret_cast<const char*>(SRC), SRC_LEN);
-    /* … collect argv … */
-    return rakupp::rakuppRunBigStack(src, args, "demo.raku", exe);
-}
-```
-
-then compiles it and links against `librakupp_rt.a`. The result is a standalone native
-binary (no `rakupp` needed on the target), but at run time it still **lexes,
-parses, and tree-walks** the embedded source — it *is* the interpreter in a box.
-So its run time equals interpreting; the win is distribution and a ~10 ms start.
-
-### Mode 3 — AOT (embed the parsed tree): `rakupp --aot demo.raku -o demo`
-
-```
-demo.raku ─► Lexer ─► Parser ─► Program (AST)   ← parsed at BUILD time
-          ─► AstEmit.emitAstProgram(Program) ─► C++ that rebuilds the AST
-          ─► cc gen.cpp librakupp_rt.a ─► ./demo
-```
-
-This is genuine ahead-of-time work: `compileAotAst` **parses the program at build
-time** (so parse errors are reported *then*, not at run time), and
-[`AstEmit`](../../src/AstEmit.cpp) emits one small builder function per AST node. The
-generated `main` reconstructs the identical `Program` and hands it to
-`rakuppRunProgram` — which interprets it with **no lexing or parsing at run time**:
-
-```cpp
-static ExprPtr e0() { auto n = std::make_unique<IntLit>(1LL); return n; }
-static StmtPtr s3() { auto n = std::make_unique<ExprStmt>(); n->e = e2(); return n; }
-// … one builder per node …
-int main(int argc, char** argv) {
-    Program prog;
-    prog.stmts.push_back(s3());  /* … */
-    return rakupp::rakuppRunProgramBigStack(prog, args, "demo.raku", exe, /*$=finish*/ "");
-}
-```
-
-It still tree-walks the reconstructed tree, so it runs at the same speed as
-`--bundle`. Because the interpreter runs the embedded tree, `--aot` handles the
-**whole language, grammars included** — if `AstEmit` ever meets a node it can't
-rebuild, it falls back to Mode 2 bundling.
-
-Trade-off: it emits one builder function per AST node, so the generated C++ (and
-the compiler's work) grows with program size — a few hundred lines of Raku
-becomes tens of thousands of lines of C++, and builds ~10× slower than
-`--bundle`. Since both tree-walk at the same runtime speed, `--bundle` is the
-practical bundler; `--aot`'s only edge is catching parse errors at build time.
-
-### Mode 4 — native compile: `rakupp --exe demo.raku -o demo`
-
-```
-demo.raku ─► Lexer ─► Parser ─► Program (AST)
-          ─► Codegen.transpileToCpp(Program) ─► C++ source
-          ─► cc gen.cpp librakupp_rt.a ─► ./demo   (no interpreter inside)
-```
-
-`compileNative` parses the program to an AST and then
-[`Codegen`](../../src/Codegen.cpp) walks it, emitting **C++ that implements the program
-directly** — native control flow, native calls — calling the runtime only for
-`Value` operations. For `demo.raku` it produces (abridged — the real output adds
-`#include`s and a fuller exit/phaser `catch` chain in `main`):
-
-```cpp
-#include "Interpreter.h"
-#include "Value.h"
-using namespace rakupp;
-static Interpreter RT;                     // builtins, method dispatch, coercions
-static Value v_stotal = Value::any();      // top-level `my $total` → a static global ($ encoded as 's')
-static const BuiltinFn* __bfp0 = nullptr;   // say — resolved once at startup, called directly
-
-static Value u_square(ValueList __a) {     // subs take a ValueList of args…
-    Value v_sn = rtPos(__a, 0);            // …and pull positionals out by index
-    return applyArith("*", v_sn, v_sn);    // Raku `$n * $n`
-}
-static void __rakupp_register() {
-    __bfp0 = RT.builtinPtr("say");          // cache the builtin's function pointer
-}
-
-int main(int argc, char** argv) {
-    /* … RT.setArgs(...) … */
-    __rakupp_register();
-    try {
-        v_stotal = Value::integer(0LL);
-        {                                  // for 1..5 { … }  — a real C++ loop
-            long long __lo = Value::integer(1LL).toInt();
-            long long __hi = Value::integer(5LL).toInt();
-            for (long long __i = __lo; __i <= __hi; __i++) {
-                Value v__t0 = Value::integer(__i);              // $_
-                try { v_stotal = applyArith("+", v_stotal, u_square(ValueList{v__t0})); }
-                catch (const NextEx&) { continue; } catch (const LastEx&) { break; }
-            }
-        }
-        rtCallB(RT, __bfp0, "say", ValueList{v_stotal});  // direct call; by-name fallback if null
-    } catch (const RakuError& e) { std::cerr << e.message << "\n"; return 1; }
-    return 0;
-}
-```
-
-That's then compiled with the system C++ compiler and linked against the
-runtime. The loop is a native `for`, the sub call is a direct C++ call (its args
-passed as a `ValueList`), and only `Value` semantics (`applyArith`,
-`callBuiltin`) dip into the runtime. This is why
-loops and recursion run several times faster than interpreted — compiling `fib`
-turns the interpreter's one loss to Rakudo into a ~2.8× win (see
-[BENCHMARKS.md](../status/BENCHMARKS.md)).
-
-Passing **`-O`** (`--exe -O`, also `-O2`/`-O3`/`-Os`) turns on `Codegen`'s own
-optimizer *before* the C++ compiler sees the source: direct-arity calls (no
-per-call `ValueList`), inline `int64` fast paths for arithmetic/comparison
-(skipping the string-dispatch and re-boxing `applyArith` would do), and
-native-bool conditions. Values stay boxed — the fast paths just avoid the slow
-machinery — and anything unrecognized falls back to `applyArith`, so results are
-identical. What each pass does and how much it buys (fib ~168 → 49 ms) is in
-[OPTIMIZATION.md](OPTIMIZATION.md); [NATIVE.md](../guide/NATIVE.md) compares compiled vs.
-interpreted (byte-identical) across the example programs. (The `-O…` suffix also selects the backend
-C++ compiler's own optimization level.)
-
-#### How codegen reuses the runtime instead of reimplementing it
-
-The generator never rebuilds the object system or the built-ins in C++. It maps
-Raku constructs onto a handful of runtime hooks:
-
-| Raku | Generated C++ |
-|---|---|
-| `$a + $b`, `$a eqv $b`, … | `applyArith("op", a, b)` (string comparisons `eq`/`lt`/… inline via `rtEqS…` in conditions and under `-O`) |
-| `say`, any named builtin | `rtCallB(RT, __bfpN, "say", …)` — a per-name pointer resolved once at startup (see [DISPATCH.md](DISPATCH.md)) |
-| `.map`, `.sort`, any method | `RT.methodCall(inv, "map", …)` |
-| a block / `-> $x {…}` / `* + 1` | `Value::closure([=](ValueList& a){ … })` |
-| `@a[i]` / `%h{k}` (read / write) | `rtIndexGet(...)` / `rtIndexRef(...)` (autoviv) |
-| `[+] …` | `rtReduce("+", …)` |
-| `class` | register a `ClassInfo` at startup; methods → `Value::closure`; `$!x` → `rtAttrGet`/`rtAttrRef` |
-| `multi` | one C++ fn per candidate + a dispatcher using `rtTypeMatch` |
-| `enum` | global `Value::enumVal` constants |
-| `gather`/`take` | push a collector onto `RT.tctx_.gatherStack`; `take` routes through `callBuiltin` |
-| phasers, `CATCH` | reordered emission / a C++ `try`+`when`-chain |
-
-#### The fallback that makes `--exe` total
-
-`Codegen` throws `CodegenError` on any construct it can't yet transpile (mainly
-grammars). `compileNative` catches it and **transparently falls back to Mode 2 (`--bundle`)
-bundling for that whole program** — so `--exe` never refuses a program: it
-native-compiles what it can and bundles the rest, always producing a correct
-binary.
+This file used to carry its own copy of that walk-through, and it is worth
+recording why it does not any more: the copy went stale in a way that was
+invisible from here. It described `--aot` as emitting one builder function per
+AST node — a design deleted in August 2026 for silently dropping fields — and its
+`--exe` sample emitted a helper the generator had stopped calling. Both were
+correct when written and neither was ever going to be found beside a chapter
+saying the same thing. What follows from §5 is the material this file is *for*:
+why the split exists, and what the build produces.
 
 ---
-
 ## 5. Why interpreter-first, and the compile split
 
 Raku has genuinely dynamic features (`EVAL`, runtime grammars, `BEGIN`-time

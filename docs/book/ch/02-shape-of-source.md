@@ -5,28 +5,32 @@ later chapter names a file and you want to know what else lives near it.
 
 ## The numbers
 
-`src/` holds about **147,000 lines** of C++. That figure is misleading on its
-own, because **79,400 of them are generated Unicode tables** — character names,
-properties, collation weights, normalization data — emitted from the pinned UCD
-and UCA 17.0 files in `tools/ucd/`. Nobody reads those, and nobody edits them.
+`src/` holds about **194,000 lines** of C++. That figure is misleading on its
+own, because **88,000 of them are generated**: the Unicode tables — character
+names, properties, collation weights, normalization data, emitted from the
+pinned UCD and UCA 17.0 files in `tools/ucd/` — and the JavaScript runtime,
+which is written as JavaScript in `src/js-rt/` and baked into one C++ file so a
+binary carries the runtime it was built with. Nobody reads those, and nobody
+edits them where they land.
 
-The hand-written implementation is about **67,700 lines**, and it is very
+The hand-written implementation is about **106,000 lines**, and it is very
 unevenly distributed:
 
 | File | Lines | What it is |
 |---|---:|---|
-| `Interpreter.cpp` | 20,787 | the tree walk, calls, dispatch, modules, concurrency |
-| `Builtins.cpp` | 9,887 | named built-ins, `Test`, the head of the method chain |
-| `Parser.cpp` | 7,210 | statements, expressions, declarations, interpolation |
-| `MethodCallPart2.cpp` | 3,549 | the method chain, continued |
-| `Regex.cpp` | 2,785 | the regex and grammar engine |
-| `MethodCallPart3.cpp` | 2,652 | the method chain, continued |
-| `Codegen.cpp` | 2,586 | the `--exe` transpiler |
-| `Lexer.cpp` | 2,351 | tokenizer |
-| `MethodCallTail.cpp` | 2,277 | the method chain, the end of it |
-| `Interpreter.h` | 1,363 | the interpreter's own interface, plus the `rt*` helpers |
-| `main.cpp` | 1,281 | the CLI and the four compile drivers |
-| `Value.cpp` | 1,093 | coercions, comparison, `gist`, `flatten` |
+| `Interpreter.cpp` | 32,036 | the tree walk, calls, dispatch, modules, concurrency |
+| `Builtins.cpp` | 13,655 | named built-ins, `Test`, the head of the method chain |
+| `Parser.cpp` | 8,950 | statements, expressions, declarations, interpolation |
+| `MethodCallPart2.cpp` | 4,857 | the method chain, continued |
+| `Regex.cpp` | 4,230 | the regex and grammar engine |
+| `MethodCallPart3.cpp` | 3,740 | the method chain, continued |
+| `Codegen.cpp` | 3,229 | the `--exe` transpiler |
+| `main.cpp` | 3,095 | the CLI, the compile drivers and the tooling subcommands |
+| `MethodCallTail.cpp` | 3,034 | the method chain, the end of it |
+| `Lexer.cpp` | 2,927 | tokenizer |
+| `codegen/Js.cpp` | 2,759 | the `--target=js` transpiler |
+| `Interpreter.h` | 2,531 | the interpreter's own interface, plus the `rt*` helpers |
+| `Value.cpp` | 1,270 | coercions, comparison, `gist`, `flatten` |
 
 Two shapes stand out and both are deliberate.
 

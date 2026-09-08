@@ -10,11 +10,12 @@ compiles it to a native binary. It carries its own regular-expression and
 grammar engine, its own Unicode subsystem built from the pinned UCD tables, its
 own arbitrary-precision arithmetic, a foreign-function interface that loads
 libffi at run time rather than linking it, a C ABI for native extension
-modules, and a concurrency runtime with a global interpreter lock that can be
-switched off.
+modules, and a concurrency runtime that runs interpreter compute on all cores by
+default, with a global interpreter lock kept as the opt-in escape hatch.
 
 None of that is unusual for a language implementation. What is unusual is that
-all of it fits in about fifty thousand lines of source that one person can read,
+all of it fits in about a hundred thousand hand-written lines that one person
+can read,
 and that almost every non-obvious decision in it was made against a
 measurement. This book is an attempt to write down both: the mechanisms, and
 the reasons.
