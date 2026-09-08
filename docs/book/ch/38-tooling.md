@@ -231,13 +231,23 @@ disagreeing with the compiler about whether a program is valid, in the direction
 that tells you to go ahead. Whatever else a linter does, it must never say less
 than running the program would.
 
-That rule has a live exception, and it is worth naming here rather than leaving
-for someone to discover in an editor. `rakupp --lsp` speaks the Language Server
-Protocol and publishes the lint findings — but `src/Lsp.cpp` includes `Lint.h`
-and not `DeclCheck.h`, so it never reports an undeclared variable. On the file
-above, `--lint` prints an error and exits 2 while the language server publishes
-only the unused-variable warning. An editor showing a clean file that will not
-run is the same failure this section is about, one layer further out.
+The rule reaches further than `--lint`, and for a while it did not. `rakupp
+--lsp` speaks the Language Server Protocol and publishes these findings to an
+editor — but `src/Lsp.cpp` included `Lint.h` and not `DeclCheck.h`, so for its
+first release it never reported an undeclared variable: on the file above,
+`--lint` printed an error and exited 2 while the language server published only
+the unused-variable warning. An editor showing a clean file that will not run is
+this same failure one layer further out, and it is worse, because nobody
+consults a linter they believe has already run.
+
+Both now build the same list — `lintProgram` plus `findUndeclaredVars`, sorted
+by line and rule — and the server maps `'E'` to LSP severity Error. Two details
+belong to the server rather than the check. A long-running process may not die
+of an internal error, so a throw out of the declaration check publishes an
+informational diagnostic saying the check did not run, rather than either
+crashing or silently dropping it — a missing error being exactly what this
+paragraph is about. And `RAKUPP_NO_DECLCHECK=1` switches it off in both tools,
+so they cannot disagree about being switched off.
 
 ### What it costs
 

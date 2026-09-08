@@ -95,7 +95,7 @@ this phase despite being 2,759 lines of emitter, 5,070 hand-written lines of
 runtime, five flags and its own corpus gate. It is placed at the end of Part VII
 and its spine is the principle chapter 26 rests on — the generator never
 reimplements the runtime — and the fact that this back end had to give it up.
-43 chapters, 392 pages.
+43 chapters, 397 pages.
 
 ## Engine findings, not documentation
 
@@ -106,12 +106,16 @@ Four came out of the review and are tracked separately:
   unanchored scan spends it before matching. `~~`, an anchored match and
   `.subst` all answer "no match"; Rakudo matches at any size. Found by the
   symbol checker grepping a 10 MB corpus.
-- **`use Foo:ver<9.9+>` loads a distribution that does not satisfy it** when its
-  META6 `provides` maps the module: the fast path resolves without consulting
-  `verReq`.
-- **`--lsp` never reports an undeclared variable.** `src/Lsp.cpp` includes
-  `Lint.h` and not `DeclCheck.h`, so the language server publishes strictly less
-  than `--lint` — breaking a rule chapter 38 itself states.
+- **`use Foo:ver<9.9+>` loaded a distribution that does not satisfy it** when its
+  META6 `provides` maps the module: the fast path resolved without consulting
+  `verReq`. **Fixed** — the mapping is gated exactly as the name-derived paths
+  beside it are, with `t/regression/use-ver-meta-provides.raku` pinning both
+  answers on both engines.
+- **`--lsp` never reported an undeclared variable.** `src/Lsp.cpp` included
+  `Lint.h` and not `DeclCheck.h`, so the language server published strictly less
+  than `--lint` — breaking a rule chapter 38 itself states. **Fixed** — both now
+  build the same finding list, pinned by
+  `t/regression/lsp-reports-undeclared.raku`.
 - **A worker thread's own loop costs ~15% more than the main thread's**, which
   caps every parallel ratio the project publishes.
 

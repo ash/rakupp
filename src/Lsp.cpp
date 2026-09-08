@@ -1,8 +1,8 @@
 // Raku++ Language Server (LSP v1 — diagnostics).
 //
 // A self-contained JSON-RPC server over stdin/stdout. It wraps the *same*
-// pipeline as `--lint` (Lexer -> Parser -> lintProgram) and reports parse
-// errors, publishing both as LSP diagnostics. It is deliberately read-only
+// pipeline as `--lint` (Lexer -> Parser -> lintProgram + findUndeclaredVars)
+// and reports parse errors, publishing all of them as LSP diagnostics. It is deliberately read-only
 // against the engine: no interpreter, no codegen, nothing mutated. That keeps
 // it decoupled from grammar/runtime churn — every parser improvement simply
 // makes the diagnostics sharper for free.
@@ -12,9 +12,13 @@
 // protocol uses: framed `Content-Length` headers wrapping a JSON body.
 
 #include "Lsp.h"
+#include "DeclCheck.h"
 #include "Lexer.h"
-#include "Parser.h"
 #include "Lint.h"
+#include "Parser.h"
+#include "Runtime.h"
+
+#include <algorithm>
 
 #include <cstdint>
 #include <iostream>
@@ -349,9 +353,40 @@ Json computeDiagnostics(const std::string& src) {
         return diags;
     }
 
-    for (const auto& f : lintProgram(prog)) {
-        // Lint severity: 'W' -> Warning(2), anything else (notes) -> Info(3).
-        int sev = f.severity == 'W' ? 2 : 3;
+    // The SAME list `--lint` builds, assembled the same way: the linter only
+    // ever advises, so on its own it reports "no issues" for a file the compiler
+    // refuses outright. An editor showing a clean file that will not run is that
+    // failure one layer further out, and it is the one this server existed with
+    // for its first release.
+    std::vector<LintFinding> findings = lintProgram(prog);
+    if (declCheckEnabled()) {
+        // The relative defaults (`lib`, `.`, `rakulib`) resolve against the
+        // server's working directory, which is the editor's project root — the
+        // same answer `--lint` gives when run there with no -I.
+        try {
+            for (const auto& u : findUndeclaredVars(prog, src, effectiveSearchPath({})))
+                findings.push_back({u.line, 'E', "undeclared-variable",
+                                    "'" + u.name + "' is not declared"});
+        } catch (const std::exception& e) {
+            // A long-running server may not die of this. Say so rather than
+            // silently dropping the check: a missing error is what this whole
+            // paragraph is about.
+            addDiag(1, 3 /*Info*/, "declcheck-unavailable",
+                    std::string("the undeclared-variable check did not run: ") + e.what());
+        } catch (...) {
+            addDiag(1, 3, "declcheck-unavailable",
+                    "the undeclared-variable check did not run");
+        }
+    }
+    std::stable_sort(findings.begin(), findings.end(),
+                     [](const LintFinding& a, const LintFinding& b) {
+                         if (a.line != b.line) return a.line < b.line;
+                         return a.rule < b.rule;
+                     });
+    for (const auto& f : findings) {
+        // 'E' -> Error(1): the program will not run. 'W' -> Warning(2),
+        // anything else (notes) -> Info(3).
+        int sev = f.severity == 'E' ? 1 : f.severity == 'W' ? 2 : 3;
         addDiag(f.line, sev, f.rule, f.message);
     }
     return diags;
