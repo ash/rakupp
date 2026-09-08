@@ -16071,8 +16071,32 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                 if (i + 1 == nst && s->kind == NK::ReturnStmt && isRoutine) {
                     auto* r = static_cast<ReturnStmt*>(s);
                     if (g_traceStmts) traceStmt(s);   // --trace: this return never reaches exec()
-                    last = r->value ? eval(r->value.get()) : Value::any();
-                } else
+                    // `return-rw` under an lvalue-mode call: surface the
+                    // CONTAINER. The method runner has done this for a while;
+                    // this one — the routine path a plain `sub` takes — did not,
+                    // so an `is rw` sub handed back a copy and the write went
+                    // nowhere. It never reached the exec-site ReturnStmt arm
+                    // either, because this tail-return fast path evaluates the
+                    // return in place instead of throwing (issue #69).
+                    if (r->isRw && r->value && tcx.wantLvalue &&
+                        tcx.wantLvalue == (int)tcx.callFrames.size()) {
+                        try { tcx.lvalueOut = lvalue(r->value.get()); } catch (RakuError&) {}
+                    }
+                    last = tcx.lvalueOut && r->isRw ? *tcx.lvalueOut
+                         : r->value ? eval(r->value.get()) : Value::any();
+                }
+                // …and the same for an `is rw` routine with an IMPLICIT return:
+                // the caller asked for a container and the final expression
+                // names one, so hand THAT back rather than a copy.
+                else if (i + 1 == nst && s->kind == NK::ExprStmt && isRoutine && c.retRw &&
+                         tcx.wantLvalue &&
+                         tcx.wantLvalue == (int)tcx.callFrames.size()) {
+                    Expr* fe = static_cast<ExprStmt*>(s)->e.get();
+                    try { tcx.lvalueOut = lvalue(fe); }
+                    catch (RakuError&) { tcx.lvalueOut = nullptr; }
+                    last = tcx.lvalueOut ? *tcx.lvalueOut : exec(s);
+                }
+                else
                     last = exec(s, i != lastReal); // non-final statements sink
                 if (tcx.returning) { // cooperative return reached this routine
                     if (isRoutine) { tcx.returning = false; last = std::move(tcx.returnV); }
@@ -17828,6 +17852,40 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                 global_->define(sym, Value::any());
                 return global_->find(sym);
             }
+        }
+    }
+    // `f(...) = v` where `f` is an `is rw` SUB: the routine's result IS the
+    // container its final expression names. The MethodCall arm above does this
+    // for `$obj.m(...) = v`, but a plain sub call fell through to the throw
+    // below — so EVERY `is rw` sub was unassignable, explicit `return-rw` and
+    // all: `sub f($x is rw) is rw { return-rw $x }; my $v = 1; f($v) = 7` died
+    // "Target is not assignable". Crane's whole API reaches its containers that
+    // way (`Crane.in(%h, 'a') = 'Sea'` is an `is rw` method delegating to an
+    // `is rw` multi sub), which is 12 of its 15 test files (issue #69).
+    if (e->kind == NK::Call) {
+        auto* c = static_cast<Call*>(e);
+        Value* fp = c->name.empty() ? nullptr : tcx.cur->find(callAmpName(c));
+        bool rw = false;
+        if (fp && fp->t == VT::Code && fp->code()) {
+            rw = fp->code()->retRw;
+            // a multi dispatches on the arguments, so the candidate that will
+            // run is not known here: take the lvalue path when ANY of them is
+            // `is rw` and let a non-rw winner fall back to the held value,
+            // exactly as the method arm does
+            if (!rw)
+                for (auto& cand : fp->code()->candidates)
+                    if (cand.t == VT::Code && cand.code() && cand.code()->retRw) { rw = true; break; }
+        }
+        if (rw) {
+            static thread_local Value callRwHold;
+            struct WantG { ExecContext& t; int w; Value* o;
+                ~WantG() { t.wantLvalue = w; t.lvalueOut = o; }
+            } wg{tcx, tcx.wantLvalue, tcx.lvalueOut};
+            tcx.wantLvalue = (int)tcx.callFrames.size() + 1;
+            tcx.lvalueOut = nullptr;
+            callRwHold = evalCall(c);
+            if (Value* out = tcx.lvalueOut) return out;
+            return &callRwHold;
         }
     }
     throw RakuError{Value::typeObj("X::Assignment::RO"), "Target is not assignable"};
