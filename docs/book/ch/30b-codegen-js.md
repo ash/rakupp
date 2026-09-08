@@ -156,12 +156,12 @@ records what the output was, and an oracle records what it should be. The report
 has three numbers — in core and agreeing, refused with a histogram of reasons,
 and disagreeing, which must be zero. The refusal histogram is the work queue.
 
-The gate also checks two things that are not about any program: that
-`src/JsRuntimeSrc.cpp` is current with `src/js-rt/`, and that every builtin the
-emitter is willing to call exists in the runtime. Four interop goldens under
-`t/js/interop/` cover `use JS`, where the interpreter cannot be the oracle
-because there is no DOM on this side — they run against a stand-in and carry
-their own expected output.
+The gate also checks two things that are not about any program: that the
+generated `src/JsRuntimeSrc.cpp` is current with `src/js-rt/`, and that every
+builtin the emitter is willing to call exists in the runtime. Four interop
+goldens under `t/js/interop/` cover `use JS`, where the interpreter cannot be
+the oracle because there is no DOM on this side — they run against a stand-in
+and carry their own expected output.
 
 ## Where it diverges
 

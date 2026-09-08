@@ -129,14 +129,18 @@ my $repo = CompUnit::RepositoryRegistry.repository-for-spec("inst#$prefix");
 my $dist-id = $repo.install($dist, :force($force));
 ```
 
-**What went wrong.** The first version constructed the repository as
-`CompUnit::Repository::Installation.new(prefix => $to)` — which parses, runs,
-and installs nothing, silently. `.new` does not thread the prefix through to
-the writer, so every file operation targeted `"/sources"` and failed into the
-void. The fix is twofold: `repository-for-spec` is the constructor that
-carries the prefix, and the writer now *refuses loudly* when its prefix is
-empty rather than failing file-by-file in silence. A writer aimed at a shared
-store does not get to guess.
+**What went wrong.** The first version constructed the repository by hand:
+
+```
+CompUnit::Repository::Installation.new(prefix => $to)
+```
+
+which parses, runs, and installs nothing, silently. `.new` does not thread the
+prefix through to the writer, so every file operation targeted `"/sources"` and
+failed into the void. The fix is twofold: `repository-for-spec` is the
+constructor that carries the prefix, and the writer now *refuses loudly* when
+its prefix is empty rather than failing file-by-file in silence. A writer aimed
+at a shared store does not get to guess.
 
 ## The installer is a shipped Raku program
 
@@ -183,7 +187,7 @@ reversed at the end so dependencies install before their dependents:
 ```
 $ rakupp install --dry-run JSON::Class
 plan (6 distributions, dependencies first):
-  JSON::Fast:ver<0.20.1>:auth<zef:timo>   https://360.zef.pm/J/SO/JSON_FAST/d5c8426f…be8b.tar.gz
+  JSON::Fast:ver<0.20.1>:auth<zef:timo>   https://360.zef.pm/J/SO/JSON_FAST/…
   JSON::Name:ver<0.0.7>:auth<zef:jonathanstowe>   …
   JSON::OptIn:ver<0.0.2>:auth<zef:jonathanstowe>   …
   JSON::Unmarshal:ver<0.18>:auth<zef:raku-community-modules>   …

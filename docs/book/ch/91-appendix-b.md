@@ -53,9 +53,9 @@ reference for the internals; the user-facing command line is documented in
 |---|---|
 | `-o FILE` | output file (compile modes, `--target=js`) |
 | `-I DIR` | add a module search directory |
-| `--slim[=safe\|auto\|max\|none\|help\|list\|verify]` | cut unused runtime subsystems from the binary |
+| `--slim[=MODE]` | cut unused runtime subsystems from the binary; MODE is `safe`, `auto`, `max`, `none`, `help`, `list` or `verify` |
 | `--standalone` | a module that cannot be embedded is a build error |
-| `--target=js` | transpile to JavaScript (Chapter 30b) |
+| `--target=js` | transpile to JavaScript (Chapter 31) |
 | `--verify` | emit JavaScript only if it agrees with the interpreter |
 | `--module` | JavaScript: export the subs, classes and `MAIN` instead of running |
 | `--runtime` | write just the JavaScript runtime |

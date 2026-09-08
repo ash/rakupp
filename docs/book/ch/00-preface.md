@@ -56,7 +56,7 @@ a particular design was chosen over the obvious alternative.
 
 ## How to read it {-}
 
-The nine parts are ordered the way a program flows through the system: source
+The ten parts are ordered the way a program flows through the system: source
 text, then the tree, then the values, then execution, then the specialised
 engines, then the back ends, then the boundaries with the outside world. Read
 straight through and it is a narrative. Read a single part and it should still

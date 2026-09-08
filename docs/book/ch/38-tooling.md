@@ -544,11 +544,12 @@ silent debugging session to notice, which is why it is written here.
 
 ### What it does not do, out loud
 
-The engine has no interrupt point inside an evaluation, so ■ answers, says so
-on iopub, and *exits* — the frontend restarts the kernel and the session is
-gone. `get` reads EOF, because a frontend may have no way to answer a prompt
-and a kernel blocked on one is a hung notebook. `is_complete_request` answers
-`unknown` rather than guessing at what the parser would say. All three are the
+The engine has no interrupt point inside an evaluation, so `interrupt_request`
+answers, says so on iopub, and *exits* — the frontend restarts the kernel and
+the session is gone. `get` reads EOF, because a frontend may have no way to
+answer a prompt and a kernel blocked on one is a hung notebook.
+`is_complete_request` answers `unknown` rather than guessing at what the parser
+would say. All three are the
 same choice: a visible gap beats a convincing lie.
 
 `tools/jupyter-smoke.raku` is a **Jupyter client written in Raku** — it opens
