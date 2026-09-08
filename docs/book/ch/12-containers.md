@@ -174,9 +174,17 @@ in Chapter 19 decline any value with a non-empty `hashKind`.
 ```cpp
 // src/Interpreter.cpp — @a := @b
 if (a->op == ":=" && rhs.t == VT::Array) {
-    Value b = rhs; b.isList = false; *lv = b;
+    Value b = rhs; b.itemized = false; *lv = b;
 }
 ```
+
+The cleared flag is `itemized`, not `isList`, and the difference is two bugs
+rather than a detail. Clearing `isList` would make a bound `List` become an
+`Array`, which is wrong — `my @a := @b` where `@b` is a `List` must stay a
+`List`, and `URI::Path` is where that surfaced. What has to be cleared is the
+*itemization*: `$(1,2,3)` is one scalar item that does not flatten, and binding
+it to an `@` variable that then flattens it is how `DBDish::Pg` overflowed its
+stack.
 
 `Value b = rhs` copies the struct and shares `rhs.arr`. This is the deliberate
 opposite of `@a = @b` above. `constant` reuses the binding path — a constant is

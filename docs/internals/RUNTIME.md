@@ -452,7 +452,7 @@ buffer is exactly what a `shared_ptr` copy already does:
 
 ```cpp
 // @a := @b  —  src/Interpreter.cpp
-if (a->op == ":=" && rhs.t == VT::Array) { Value b = rhs; b.isList = false; *lv = b; }
+if (a->op == ":=" && rhs.t == VT::Array) { Value b = rhs; b.itemized = false; *lv = b; }
 ```
 
 `Value b = rhs` copies the struct but *shares* `rhs.arr`, so `@a` and `@b` point
