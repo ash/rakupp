@@ -9900,7 +9900,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             // the one the subscript-assign path invoked): surface the container
             if (r->isRw && r->value && tctx_.wantLvalue &&
                 tctx_.wantLvalue == (int)tctx_.callFrames.size()) {
-                try { tctx_.lvalueOut = lvalue(r->value.get()); } catch (RakuError&) {}
+                try { tctx_.lvalueOut = lvalueThroughRw(r->value.get()); } catch (RakuError&) {}
                 if (tctx_.lvalueOut) {
                     Value v = *tctx_.lvalueOut;
                     if (tctx_.curRoutineFrame != 0 && tctx_.frameTop == tctx_.curRoutineFrame) {
@@ -16119,7 +16119,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                     // return in place instead of throwing (issue #69).
                     if (r->isRw && r->value && tcx.wantLvalue &&
                         tcx.wantLvalue == (int)tcx.callFrames.size()) {
-                        try { tcx.lvalueOut = lvalue(r->value.get()); } catch (RakuError&) {}
+                        try { tcx.lvalueOut = lvalueThroughRw(r->value.get()); } catch (RakuError&) {}
                     }
                     last = tcx.lvalueOut && r->isRw ? *tcx.lvalueOut
                          : r->value ? eval(r->value.get()) : Value::any();
@@ -16131,7 +16131,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                          tcx.wantLvalue &&
                          tcx.wantLvalue == (int)tcx.callFrames.size()) {
                     Expr* fe = static_cast<ExprStmt*>(s)->e.get();
-                    try { tcx.lvalueOut = lvalue(fe); }
+                    try { tcx.lvalueOut = lvalueThroughRw(fe); }
                     catch (RakuError&) { tcx.lvalueOut = nullptr; }
                     last = tcx.lvalueOut ? *tcx.lvalueOut : exec(s);
                 }
@@ -17061,7 +17061,7 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
                     // rule as the exec-site ReturnStmt arm)
                     if (r->isRw && r->value && tcx.wantLvalue &&
                         tcx.wantLvalue == (int)tcx.callFrames.size()) {
-                        try { tcx.lvalueOut = lvalue(r->value.get()); } catch (RakuError&) {}
+                        try { tcx.lvalueOut = lvalueThroughRw(r->value.get()); } catch (RakuError&) {}
                     }
                     last = tcx.lvalueOut && r->isRw ? *tcx.lvalueOut
                          : r->value ? eval(r->value.get()) : Value::any();
@@ -17074,7 +17074,7 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
                          tcx.wantLvalue &&
                          tcx.wantLvalue == (int)tcx.callFrames.size()) {
                     Expr* fe = static_cast<ExprStmt*>(s)->e.get();
-                    try { tcx.lvalueOut = lvalue(fe); }
+                    try { tcx.lvalueOut = lvalueThroughRw(fe); }
                     catch (RakuError&) { tcx.lvalueOut = nullptr; }
                     last = tcx.lvalueOut ? *tcx.lvalueOut : exec(s);
                 }
@@ -17195,6 +17195,69 @@ Value Interpreter::evalInterp(InterpStr* s) {
     std::string out;
     for (auto& v : vals) out += strOf(v); // honour user `method Str`/`gist`
     return Value::str(nfcNormalize(out)); // NFG: combining marks compose across part boundaries
+}
+
+// A `return-rw` hands a container OUT of the routine, so a parameter that is
+// rw-LINKED to the caller — `is rw`, `is raw`, or a sigilless `\c` — has to
+// resolve to the CALLER's slot rather than this frame's copy. The frame's
+// copy-out runs AT RETURN, before the caller's assignment ever happens, so a
+// write to the local slot went nowhere: `sub f(\c) is rw { return-rw c }; my $a
+// = 0; f($a) = 1` left $a at 0 while `c = 5` INSIDE f wrote through fine.
+// Only this path resolves that way — inside the routine `lvalue()` must keep
+// answering the local slot, or a read after a write would see a stale value.
+// The link carries the caller's argument EXPRESSION and scope, which is the
+// same pair the return-time write-back re-evaluates.
+Value* Interpreter::lvalueThroughRw(Expr* e) {
+    // Only the OUTERMOST entry clears the mirror list — the walk below calls
+    // itself to follow the chain, and a nested clear would drop the hops the
+    // outer call had already recorded.
+    struct DepthG { int& d; ~DepthG() { --d; } };
+    if (rwThroughDepth_ == 0) { tctx_.rwMirror.clear(); tctx_.rwMirrorSigil = 0; }
+    ++rwThroughDepth_;
+    DepthG dg{rwThroughDepth_};
+    if (e && (e->kind == NK::NameTerm || e->kind == NK::VarExpr)) {
+        const std::string& nm = e->kind == NK::NameTerm
+                              ? static_cast<NameTerm*>(e)->name
+                              : static_cast<VarExpr*>(e)->name;
+        for (Env* en = tctx_.cur.get(); en; en = en->parent.get()) {
+            if (!en->local(nm)) continue;          // not this scope's variable
+            if (!en->ex) break;
+            auto it = en->ex->rwLinks.find(nm);
+            if (it == en->ex->rwLinks.end()) break; // declared here, not rw-linked
+            auto saved = tctx_.cur;
+            tctx_.cur = it->second.second;          // the caller's scope
+            Value* out = nullptr;
+            // …and TRANSITIVELY: `h(\c) { return-rw g(c) }` links h's `c` to the
+            // caller's argument, which may itself be a linked parameter one
+            // frame further up. The chain is bounded by the live frames, and
+            // unlike the return-time write-back — which walks one hop on
+            // purpose, because chaining there is quadratic under a recursion
+            // threading an `is rw` cursor — this runs once per `return-rw`.
+            try { out = lvalueThroughRw(it->second.first); } catch (...) {}
+            tctx_.cur = saved;
+            if (out) {
+                // the sigil of the CALLER's argument decides whether the slot is
+                // a container: `Crane.set(%i, …)` must leave %i a Hash
+                Expr* ce = it->second.first;
+                if (ce && ce->kind == NK::VarExpr) {
+                    const std::string& cn = static_cast<VarExpr*>(ce)->name;
+                    if (!cn.empty() && (cn[0] == '%' || cn[0] == '@'))
+                        tctx_.rwMirrorSigil = cn[0];
+                }
+                // The write now goes straight to the caller's container, which
+                // leaves THIS frame's copy of the parameter behind: Crane's
+                // `set` does `Crane::In.in(container, @path) = $value; container`
+                // and returned the pre-assignment `{}`. Mirror the write into
+                // the copies it travelled past — they are still live, and their
+                // own return-time write-back would otherwise carry the stale
+                // value back down over it.
+                tctx_.rwMirror.push_back(en->local(nm));
+                return out;
+            }
+            break;                                  // the caller's arg is no lvalue
+        }
+    }
+    return lvalue(e);
 }
 
 Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
@@ -17618,7 +17681,13 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                     } wg{tcx, tcx.wantLvalue, tcx.lvalueOut};
                     tcx.wantLvalue = (int)tcx.callFrames.size() + 1;
                     tcx.lvalueOut = nullptr;
-                    rwHold = methodCall(invv, mc->method, args);
+                    // pass the ARGUMENT EXPRESSIONS: an `is rw` / `is raw` /
+                    // sigilless parameter is only linked to the caller's
+                    // container when the callee can see the expression it came
+                    // from, and a `return-rw` of such a parameter needs that
+                    // link to reach past this frame — `method m(\c) is rw {
+                    // return-rw c }` wrote into its own frame copy otherwise.
+                    rwHold = methodCall(invv, mc->method, args, &mc->args);
                     if (Value* out = tcx.lvalueOut) return out;
                     return &rwHold;
                 }
@@ -19933,6 +20002,29 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         tctx_.lastLvalueAttrType.clear();
         tctx_.lastLvalueElemType.clear();
         Value* lv = lvalue(a->target.get());
+        // Whatever this assignment writes must ALSO land in the rw-linked
+        // parameter copies the lvalue travelled past on its way to the caller's
+        // container (see lvalueThroughRw). An RAII guard covers every branch
+        // and every return below — Crane's `set` writes through
+        // `Crane::In.in(container, @path) = $value` and then RETURNS
+        // `container`, which without this was still the pre-assignment value.
+        struct MirrorG {
+            Value* lv; std::vector<Value*> slots; char sigil;
+            ~MirrorG() {
+                // The `%`/`@` sigil owns its container: the slot stays one
+                // rather than becoming an itemized copy of the value, and an
+                // `@` one takes the assignment as LIST assignment, which is
+                // what `sub id(\c) is rw {…}; my @b = 1,2; id(@b) = ('x','y')`
+                // does in Rakudo — @b is ["x","y"], not the List as one item.
+                if (sigil && lv && (lv->t == VT::Array || lv->t == VT::Hash)) {
+                    lv->itemized = false;
+                    if (sigil == '@' && lv->t == VT::Array) { lv->isList = false; lv->s.clear(); }
+                }
+                for (auto* s : slots) if (s && s != lv) *s = *lv;
+            }
+        };
+        MirrorG mirrorG{lv, std::move(tctx_.rwMirror), tctx_.rwMirrorSigil};
+        tctx_.rwMirror.clear(); tctx_.rwMirrorSigil = 0;
         // `@a[0] = v` into a TYPED container enforces the element type, the
         // same rule a typed scalar's assignment follows (`my Int @a; @a[1] =
         // $*ERR` throws — roast S02-types/array.t). The Index lvalue arm left
@@ -20438,6 +20530,18 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         }
     }
     Value* lv = lvalue(a->target.get());
+    // …and the same mirror for the OP= path (see the `=` arm above)
+    struct MirrorG2 {
+        Value* lv; std::vector<Value*> slots; char sigil;
+        ~MirrorG2() {
+            if (sigil && lv && (lv->t == VT::Array || lv->t == VT::Hash)) {
+                lv->itemized = false;
+                if (sigil == '@' && lv->t == VT::Array) { lv->isList = false; lv->s.clear(); }
+            }
+            for (auto* s : slots) if (s && s != lv) *s = *lv;
+        }
+    } mirrorG2{lv, std::move(tctx_.rwMirror), tctx_.rwMirrorSigil};
+    tctx_.rwMirror.clear(); tctx_.rwMirrorSigil = 0;
     // A plain scalar parameter is READONLY in Raku — `is copy` is what makes
     // it writable. Ours bound every parameter as if `is copy` were always
     // on, so `sub f($s) { $s ~~ s/a/b/ }` worked here and died on Rakudo
@@ -26872,7 +26976,7 @@ Value Interpreter::evalUnary(Unary* u) {
         // expression-position `return-rw` in lvalue mode: surface the container
         if (u->op == "return-rw" && u->operand && tctx_.wantLvalue &&
             tctx_.wantLvalue == (int)tctx_.callFrames.size()) {
-            try { tctx_.lvalueOut = lvalue(u->operand.get()); } catch (RakuError&) {}
+            try { tctx_.lvalueOut = lvalueThroughRw(u->operand.get()); } catch (RakuError&) {}
             if (tctx_.lvalueOut) {
                 Value v = *tctx_.lvalueOut;
                 if (tctx_.curRoutineFrame != 0 && tctx_.frameTop == tctx_.curRoutineFrame) {

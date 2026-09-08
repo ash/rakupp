@@ -91,6 +91,55 @@ try { plain(%i, 'k') = 'nope'; CATCH { default { $died = True } } }
 check $died, True, 'a sub without `is rw` is still not assignable';
 check %i, {k => 1}, '…and the non-rw call left the container alone';
 
+# --- a SIGILLESS parameter is the caller's container --------------------------
+# `\c` binds the caller's container, so returning it rw must reach the caller's
+# variable. rakupp models the binding as a frame copy plus a write-back that
+# runs AT RETURN — before the caller's assignment — so the write went nowhere,
+# even though `c = 5` INSIDE the routine wrote through fine.
+sub raw-id(\c) is rw { return-rw c }
+my $r1 = 0;
+raw-id($r1) = 1;
+check $r1, 1, 'return-rw of a sigilless parameter reaches the caller';
+
+class RawM { method m(\c) is rw { return-rw c } }
+my $r2 = 0;
+RawM.m($r2) = 1;
+check $r2, 1, '…through a method too';
+
+sub raw-hop(\c) is rw { return-rw raw-id(c) }
+sub raw-hop2(\c) is rw { return-rw raw-hop(c) }
+my $r3 = 0;
+raw-hop2($r3) = 1;
+check $r3, 1, '…and transitively, three frames up';
+
+# an `is rw` scalar parameter is the same shape
+sub rw-id($x is rw) is rw { return-rw $x }
+my $r4 = 0;
+rw-id($r4) = 7;
+check $r4, 7, 'return-rw of an `is rw` parameter reaches the caller';
+
+# the write must not leave the routine's own view of the parameter behind:
+# Crane's `set` assigns through the container and then RETURNS it
+sub set-and-read(\c, $v) { raw-id(c) = $v; c }
+my $r5 = 0;
+check set-and-read($r5, 3), 3, 'the routine sees its own write through the parameter';
+check $r5, 3, '…and so does the caller';
+
+# …and the `%`/`@` sigil still owns the list: the slot stays a container
+sub set-container(\c, $v) { raw-id(c) = $v; c }
+my %rh;
+set-container(%rh, { :a(1) });
+check %rh, { :a(1) }, 'a %-slot written through a parameter stays a Hash';
+check %rh.WHAT.gist, '(Hash)', '…with the Hash type, not an itemized copy';
+# …and an `@`-slot takes it as LIST assignment, one hop out. (Rakudo's answer
+# changes with the number of raw-binding hops between the slot and the
+# assignment — two hops keep the List as a single element — so only the direct
+# shape, where both engines agree, is asserted here.)
+my @ra = 1, 2;
+raw-id(@ra) = ('x', 'y');
+check @ra, ['x', 'y'], 'an @-slot written through a parameter stays an Array';
+check @ra.WHAT.gist, '(Array)', '…with the Array type';
+
 if @fail {
     note $_ for @fail;
     die "{+@fail} check(s) failed";

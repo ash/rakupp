@@ -793,6 +793,15 @@ struct ExecContext {
     // depth fills lvalueOut with lvalue(operand) — its target lives in the
     // object's shared containers, so the pointer survives the frame.
     int wantLvalue = 0;      // 0 off; else the callFrames depth being served
+    // Slots that must receive whatever is written through the lvalue a
+    // `return-rw` just handed out: the rw-linked parameter copies the write
+    // travelled PAST on its way to the caller's container. Filled by
+    // lvalueThroughRw, applied and cleared by the assignment that consumes it.
+    std::vector<Value*> rwMirror;
+    // …and whether that lvalue resolved to a `%`/`@` VARIABLE. Writing straight
+    // into the slot skips the sigil's de-itemize rule, so `%h` came back as an
+    // itemized `${…}` and `@a` as `$( … )` rather than an Array.
+    char rwMirrorSigil = 0;   // '%' or '@' when it did; 0 otherwise
     Value* lvalueOut = nullptr;
     // mirror of protoStack_.size(), kept here so the per-block-statement
     // "inside a proto body?" probe reads the ALREADY-LOADED tctx_ instead of
@@ -2134,6 +2143,8 @@ private:
     // subscript base), not to overwrite it — so a read-only attribute is fine
     // (`$obj.ro-attr.inner = v` mutates what ro-attr points at; `$obj.ro-attr = v` still dies).
     Value* lvalue(Expr* e, bool asInvocant = false);
+    Value* lvalueThroughRw(Expr* e);   // lvalue() for a container leaving the routine
+    int rwThroughDepth_ = 0;           // recursion guard for lvalueThroughRw's chain walk
     ValueList evalArgs(const std::vector<ExprPtr>& exprs); // spreads `|@a`
     Value evalAssign(Assign* a, bool sink = false);
     Value evalValueOf(Expr* e); // like eval(), but a bare regex literal is a Regex object (value context)
