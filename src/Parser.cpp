@@ -3659,6 +3659,18 @@ ExprPtr Parser::parsePrimary() {
             const std::string form = cur().text2;
             const bool protect = form == "qww" || form == "qqww";
             const bool interp  = form == "qqw" || form == "qqww";
+            // Only the ANGLE forms val() their words into allomorphs. `<8 9>`,
+            // `«8 9»` and `<<8 9>>` give IntStr; every q-family spelling —
+            // qw, qww, qqw, qqww and any `q:w`/`Q:w`/`:words` adverb — gives
+            // plain Str, and Rakudo is firm about it: `qw<1.5>` is a Str where
+            // `<1.5>` is a RatStr. rakupp allomorphed them all, and since
+            // `IntStr ~~ Int` is True that silently changed DISPATCH:
+            // Crane's `in` reads a step as a positional index when it is an
+            // Int, so `Crane.in(%j, …, qw<8 9 10>, …)` built a 10-element
+            // ARRAY where Rakudo nests three hash keys (issue #69).
+            // The lexer sets text2 for the q-family only; the bare-angle
+            // producers of this token leave it empty and keep the val().
+            const bool allomorph = form.empty();
             std::string raw = advance().text;
             auto arr = std::make_unique<ArrayLit>();
             arr->isList = true;
@@ -3697,10 +3709,10 @@ ExprPtr Parser::parsePrimary() {
                     std::string word = raw.substr(start, i - start);
                     // a numeric word is an allomorph (<42> IntStr, <1/3> RatStr, …) —
                     // in a multi-word list too: <1 2 3>[0].WHAT is IntStr
-                    ExprPtr cp;
+                    ExprPtr cp, num;
                     if (protect && (cp = angleColonPair(word))) // `:name(…)` word → Pair
                         arr->items.push_back(std::move(cp));
-                    else if (ExprPtr num = angleWordNumeric(word)) {
+                    else if (allomorph && (num = angleWordNumeric(word))) {
                         auto al = std::make_unique<AllomorphLit>();
                         al->num = std::move(num); al->str = word;
                         arr->items.push_back(std::move(al));

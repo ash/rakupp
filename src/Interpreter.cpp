@@ -11193,14 +11193,43 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
         Value v; try { v = eval(e); } catch (...) { tctx_.cur = saved; throw; }
         tctx_.cur = saved; return v;
     };
+    // Every ANONYMOUS parameter is spelled as the bare sigil, so one signature
+    // can hold several called `$`: `sub f($ where .so, $)`, or the `:k($) :v($)
+    // :p($)` trio Crane builds its signatures from. They all bound the SAME env
+    // slot and whichever bound last owned the name. That is invisible while
+    // nothing reads an anonymous parameter — the body cannot name one — except
+    // that the `where` enforcement and the native-int wrap below look the value
+    // up BY NAME, so a `where` on the first `$` tested the LAST `$`'s value:
+    // `f(:k(True), :v(False))` died on :k's own `where .so` while
+    // `f(:k(True), :v(True))` passed it, neither having anything to do with :k
+    // (issue #69). Give each anonymous parameter its own key — it only has to be
+    // unique and unspeakable, and p.name itself is untouched, so introspection
+    // still reports the empty name.
+    // Anonymous means the name IS a bare sigil. A SIGILLESS parameter carries no
+    // sigil at all, so `\c`, `\n`, `\v` are one character too and mangling them
+    // hid the caller's value: Test::Util's `sub TEST-ITER-OPT (\iter, \data, \n,
+    // $desc)` and roast's `sub test-cap (\c, \v, $desc)` both broke that way.
+    // Returns a REFERENCE: every ordinary parameter hands back its own name with
+    // no copy, and only the rare anonymous one builds a string (into a scratch
+    // buffer the caller uses immediately). Returning by value put a std::string
+    // construction on every bind of every parameter.
+    std::string slotBuf;
+    auto slotName = [&slotBuf](const Param& pp, size_t idx) -> const std::string& {
+        if (pp.name.size() != 1) return pp.name;      // named, or the empty name
+        char c = pp.name[0];
+        if (c != '$' && c != '@' && c != '%' && c != '&') return pp.name; // sigilless
+        slotBuf = pp.name; slotBuf += ' '; slotBuf += std::to_string(idx);
+        return slotBuf;                               // no Raku identifier has a space
+    };
     size_t pi = 0;
-    for (auto& p : params) {
+    for (size_t pidx = 0; pidx < params.size(); pidx++) {
+        const Param& p = params[pidx];
         // An explicit invocant (`$self:` / `Type:D:`) binds to `self` (already in
         // the method env) and does NOT consume a positional argument — the dispatch
         // matched it. Consuming one here would shift every following parameter.
         if (p.invocant) {
             if (!p.name.empty())
-                if (Value* sp = env->find("self")) env->define(p.name, *sp);
+                if (Value* sp = env->find("self")) env->define(slotName(p, pidx), *sp);
             continue;
         }
         std::string bareName = !p.namedKey.empty() ? p.namedKey
@@ -11226,7 +11255,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
             if (p.sigil == '%') {
                 Value h = Value::makeHash();
                 for (auto& kv : named) if (!explicitNamed.count(kv.first)) (*h.hash())[kv.first] = kv.second;
-                env->define(p.name, h);
+                env->define(slotName(p, pidx), h);
             } else {
                 Value a = Value::array();
                 // a capture doesn't CONSUME its args — it sees the whole
@@ -11279,7 +11308,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                 // a `|c` param binds a real CAPTURE: `$c<name>` reaches its named
                 // parts and it round-trips as \(…) (Log::Async's wrap tests)
                 if (capture && !p.name.empty()) { a.hashKind = "Capture"; a.itemized = true; }
-                env->define(p.name, a);
+                env->define(slotName(p, pidx), a);
                 // capture sub-signature `|c($x, :$y!)` — unpack the slurped
                 // positionals AND the call's named args into the inner params
                 if (p.subSig) {
@@ -11367,7 +11396,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                 if (!p.coerce && !p.type.empty()) bv = coerceViaSubset(bv, p.type);
                 if (p.coerce && !p.type.empty() && bv.typeName() != p.type)
                     bv = coerceToType(bv, p.type);
-                if (!p.name.empty() || !p.subSig) env->define(p.name, bv);
+                if (!p.name.empty() || !p.subSig) env->define(slotName(p, pidx), bv);
                 attrWrite(bv);
             }
             else if (p.defaultVal) {
@@ -11375,13 +11404,13 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                 if (!p.coerce && !p.type.empty()) dv = coerceViaSubset(dv, p.type);
                 if (p.coerce && !p.type.empty() && dv.typeName() != p.type)
                     dv = coerceToType(dv, p.type); // `IO:D() :$cwd = $*CWD` coerces the DEFAULT too
-                env->define(p.name, dv);
+                env->define(slotName(p, pidx), dv);
                 attrWrite(dv); // `:$!x = 42` with no arg still initializes the attr
             }
             else if (p.required)
                 throw RakuError{Value::typeObj("X::Parameter::RequiredNamed"),
                                 "Required named parameter '" + bareName + "' not passed"};
-            else env->define(p.name, typedDefault(p.type, p.sigil));
+            else env->define(slotName(p, pidx), typedDefault(p.type, p.sigil));
             continue;
         }
         if (pi < positional.size()) {
@@ -11399,7 +11428,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                         else if (bound.s == "Seq") bound.s.clear();
                     }
                     else if (p.sigil == '%') bound = coerceHash(bound);
-                    env->define(p.name, bound);
+                    env->define(slotName(p, pidx), bound);
                 }
                 continue;
             }
@@ -11483,7 +11512,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
             if (p.sigil == '$' && !p.isRaw && !p.invocant && !p.slurpy &&
                 (v.t == VT::Array) && !v.itemized)
                 v.itemized = true;
-            env->define(p.name, v);
+            env->define(slotName(p, pidx), v);
             // POSITIONAL attributive param `method set-body($!body)`: the bound
             // value writes through to the invocant's attribute (Cro's
             // MessageWithBody sets bodies this way)
@@ -11500,9 +11529,9 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
         } else if (p.subSig) {
             bindParams(*p.subSig, positional, env); // no arg → bind inner to (), fills defaults
         } else if (p.defaultVal) {
-            env->define(p.name, evalDefault(p.defaultVal.get()));
+            env->define(slotName(p, pidx), evalDefault(p.defaultVal.get()));
         } else {
-            env->define(p.name, typedDefault(p.type, p.sigil));
+            env->define(slotName(p, pidx), typedDefault(p.type, p.sigil));
         }
     }
 
@@ -11535,18 +11564,20 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
     // rotl leans on exactly this — without the wrap its accumulator grew a few
     // bits every round and the digest was garbage by round three. The wrap also
     // marks the slot natBits, so assignments inside keep wrapping.
-    for (auto& p : params) {
+    for (size_t i = 0; i < params.size(); i++) {
+        const Param& p = params[i];
         if (p.name.empty() || p.slurpy || p.named || p.sigil != '$') continue;
         bool sign; int bits = Value::natWidthOfType(p.type, sign);
         if (!bits) continue;
-        if (Value* bound = env->find(p.name))
+        if (Value* bound = env->find(slotName(p, i)))
             wrapNative(*bound, bits, sign);
     }
     // enforce `where` constraints on the bound values (a single sub isn't dispatched,
     // so scoreCandidate never ran — `sub p(Int $n where * > 0)` must reject p(-1))
-    for (auto& p : params) {
+    for (size_t i = 0; i < params.size(); i++) {
+        const Param& p = params[i];
         if (!p.whereExpr || p.slurpy || p.name.empty()) continue;
-        Value* bound = env->find(p.name);
+        Value* bound = env->find(slotName(p, i));
         if (!bound) continue;
         Value val = *bound;
         auto wenv = std::make_shared<Env>(); wenv->parent = env;
@@ -11873,7 +11904,15 @@ static bool typeMatchesArg(const Value& arg, const std::string& type) {
             return type == "Hash" || type == "Map" || type == "Associative";
         case VT::Pair: return type == "Pair";
         case VT::Code: return type == "Code" || type == "Callable" || type == "Routine" || type == "Block" || type == "Sub" ||
-                              (type == "Method" && arg.code() && arg.code()->isMethod); // a method is a Method, not just a Sub
+                              (type == "Method" && arg.code() && arg.code()->isMethod) || // a method is a Method, not just a Sub
+                              // …and a curried `*-1` is a WhateverCode, which this
+                              // list did not name at all: `sub f(WhateverCode:D $x)`
+                              // called with `*-0` failed its own bind with "expected
+                              // WhateverCode but got WhateverCode", because `~~`
+                              // answers this from somewhere else and the two paths
+                              // disagreed. Crane dispatches its "append here" step on
+                              // exactly that signature (issue #69).
+                              (type == "WhateverCode" && arg.code() && arg.code()->isWhateverCode);
         case VT::Regex: return type == "Regex";
         // a Match IS a Capture and IS Cool (Rakudo: Match ~~ Capture/Cool both True)
         case VT::Match: return type == "Match" || type == "Capture" || type == "Cool";
@@ -31325,6 +31364,41 @@ Value Interpreter::eval(Expr* e) {
                 else if (v.t == VT::Range && l->items.size() == 1 && !l->fromCommaList &&
                          !v.rExFrom() && v.rTo() - v.rFrom() < 1000000) {
                     for (auto& x : v.flatten()) a.arr()->push_back(x);
+                }
+                // …and a single HASH spreads into its PAIRS, by that same one-arg
+                // rule: `[%h]` is `[:a(1), :b(2)]` and `[{}]` is the EMPTY array,
+                // while `[%h, %g]` stays two Hashes and `[%h,]` one. A typed hash
+                // (Set/Bag/Mix/Map) keeps its identity, as in the HashLit arm
+                // below, and an itemized `$%h` is one element like any item.
+                // Crane's TOML shape `:hello([{}])` is an empty array in Rakudo,
+                // so its walk stops at "hello"; here the array had one element
+                // and the walk descended a level that does not exist (issue #69).
+                // …and a single HASH spreads into its PAIRS under that same
+                // one-arg rule: `[%h]` is `[:a(1), :b(2)]` and `[{}]` is the
+                // EMPTY array, while `[%h, %g]` stays two Hashes and `[%h,]`
+                // one. Crane's TOML shape `:hello([{}])` is an empty array in
+                // Rakudo, so its walk stops at "hello"; here the array had one
+                // element and the walk descended a level that does not exist
+                // (issue #69).
+                //
+                // Rakudo decides this by ITEMIZATION — `[$x]` and `[@r[0]]`
+                // keep the Hash whole because both are Scalar containers — but
+                // rakupp only marks a `$`-held hash itemized, not one fetched
+                // out of a container element or returned from a call. Rather
+                // than spread on a flag that does not model enough, spread only
+                // the two SYNTACTIC forms that cannot be itemized: a hash
+                // literal and a bare `%`-variable. That is the same shape as
+                // the `bareAtVar` rule above. `[f()]` returning a hash still
+                // does not spread where Rakudo would — unchanged from before,
+                // and much narrower than trusting the flag, which spread
+                // `[@r[0]]` and took apart the Perl showcase's frame stack.
+                else if (v.t == VT::Hash && v.hash() && v.hashKind.empty() &&
+                         !v.itemized && l->items.size() == 1 && !l->fromCommaList &&
+                         (it->kind == NK::HashLit ||
+                          (it->kind == NK::VarExpr &&
+                           !static_cast<VarExpr*>(it.get())->name.empty() &&
+                           static_cast<VarExpr*>(it.get())->name[0] == '%'))) {
+                    for (auto& kv : *v.hash()) a.arr()->push_back(Value::pair(kv.first, kv.second));
                 }
                 else {
                     // a hyper result kept as one element is itemized, so it stays nested

@@ -2391,7 +2391,15 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 if (a.pairVal()) for (auto& d : a.pairVal()->flatten()) dims.push_back(d.toInt());
                 continue;
             }
-            for (auto& x : toList(a)) seed.push_back(x);
+            // `List.new` takes its arguments AS ELEMENTS: `List.new([1,2])` is a
+            // ONE-element list holding the Array and `List.new({:a(1)})` one
+            // holding the Hash. Only `Array.new` flattens — Rakudo agrees there,
+            // `Array.new([1,2])` has two. Crane's list leaf is
+            // `List.new({:path(…), :value(…)})`, which came back as two loose
+            // Pairs; the caller then sorted a flat pair soup and every path in
+            // the answer was separated from its value (issue #69).
+            if (inv.s == "List") seed.push_back(a);
+            else for (auto& x : toList(a)) seed.push_back(x);
         }
         if (!dims.empty()) { // shaped array — pre-sized, row-major, tagged with .shape()
             std::string et = v.ofType() == "Any" || v.ofType() == "Mu" ? "" : v.ofType();

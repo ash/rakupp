@@ -154,8 +154,11 @@ is pt([["a,b"]], :sep(';')), "a,b\n", 'and quotes for the separator in force, no
 is pt([["a;b"]], :sep(';')), "\"a;b\"\n", '— which it does quote';
 is pt([["a","b"]], :quote("'"), :always-quote), "'a','b'\n", 'and :quote';
 is pt([["a"], ["b"]], :headers(<h>)), "h\na\nb\n", 'a list :headers writes a header line';
-is pt([{ a => 1 }], :headers(<b a>)), "b,a\n,1\n", 'and orders and fills the hash rows by it';
-is pt([{ a => 1, b => 2 }], :!headers), "1,2\n", 'an explicit :!headers suppresses the line';
+# The trailing comma is load-bearing: `[{ a => 1 }]` is a single Hash under the
+# one-arg rule, so the literal is its PAIRS — `[:a(1)]` — not a one-row table.
+# These two read as one hash row, and say so.
+is pt([{ a => 1 },], :headers(<b a>)), "b,a\n,1\n", 'and orders and fills the hash rows by it';
+is pt([{ a => 1, b => 2 },], :!headers), "1,2\n", 'an explicit :!headers suppresses the line';
 
 # ---- 3. the IO surfaces --------------------------------------------------
 #
