@@ -3,6 +3,162 @@
 Release notes for tagged releases. Numbers are measured, not projected;
 methodology for all Roast figures is in [docs/status/COUNTING.md](docs/status/COUNTING.md).
 
+## v3.26.0 (2026-09-08) — the Grand Review, and what the gates found after it
+
+Three phases of review — the whole of `src/`, then every user-facing document,
+then the Internals book — and 118 commits, most of them naming a rule the engine
+had stopped keeping. The source phase alone moved Roast 649 → 660 fully passing
+across 21 gated batches; the docs phase closed 204 findings over ~16,000 lines
+and spun off three engine bugs it would have been easier to write down as
+limitations; the book phase found that `docs/book` and `docs/internals` were
+frequently the *same document*, and eight internals pages are now stubs pointing
+at the chapters that absorbed them.
+
+Between the review and this release the release gates found four more faults,
+three of them fixed here. That is the part worth reading: the review improved the
+engine, and the gates then caught what the review's own runs did not.
+
+| | v3.25.0 | v3.26.0 |
+|---|---:|---:|
+| Roast assertions (all declared) | 199,980 | **200,220** |
+| Roast files fully passing | 651 / 1,464 | **661 / 1,464** |
+| Local regression suite (`t/run.raku`) | 637 | **798** |
+| Module battery (vs each dist's own reference run) | 50 / 59 | **49 / 59** |
+| Documentation examples byte-identical on both engines | 953 | **956** |
+| Operator divergences | 23 | **21** |
+| Of the ecosystem's 2,530 distributions, passing their own suites | 746 | 824 (carried forward) |
+| `say "Hello"` compiled with `--exe` | 9,753,480 B | **10,143,928 B** |
+| …compiled with `--exe --slim` | 6,455,800 B | **6,845,704 B** |
+
+Roast is the conservative reading of four runs (661 / 661 / 662 / 662) on
+`v3.25.0-118-gf05584b` against Roast `b2cbe8a42` — the same revision v3.25.0
+measured, so the file-list diff is an engine comparison and nothing else. The
+union of the four gains **13 files** against v3.25.0's union and loses one,
+`S17-scheduler/basic.t`, which is a timeout artifact rather than a change: it
+passes 34/34 in 0.02 s standalone, and under an S17-only run at the same worker
+count the current binary and the pre-review binary give identical results (46 of
+99 fully passing, the same six timeouts). It sits close enough to the 10-second
+cap that the full 1,464-file suite tips it over; it passed one run in three
+before these fixes and none in four after, with no measurable difference between
+the binaries.
+
+These runs used `--workers=2` where v3.25.0 used `--workers=4`. Less contention
+strengthens the *regression* direction — a file that fails with more headroom is
+really failing — and weakens the *gains* direction, since some of the 13 may be
+files that only ever wanted a quieter box. The worker count is recorded in the
+`.meta` sidecar beside the archived list for exactly this reason.
+
+### What the gates found that the review did not
+
+Gate 1 formally passed on the file list and was wrong to. The per-file
+**denominator** join — comparing what each file emitted, not just which files
+fully passed — found four faults behind a green gate, because a file that dies
+early leaves both lists and a file that merely loses assertions never enters
+them.
+
+- **`qw:v[…]` had stopped allomorphing.** Issue #69 correctly stopped the
+  q-family from allomorphing (`qw<8 9 10>` was handing Crane's `in` Ints where
+  Rakudo hands it Strs, so a step read as a positional index and built a
+  10-element Array instead of nesting three hash keys). That is right for every
+  *implicit* spelling and wrong for the one explicit one: Rakudo honours
+  `:v`/`:val`. The form travelled lexer → parser as `"qw"`/`"qww"`/`"qqw"`/`"qqww"`,
+  naming the split and the interpolation with nowhere to record an adverb, so
+  `:v` was dropped in transit. `S02-literals/allomorphic.t` went 87 → **108** of
+  119 — better than the 98 it had *before* the review, because the broken adverb
+  had been masking work that had already landed.
+- **The IO path methods answered for invocants that are not paths.** `contents`,
+  `dir`, `is-absolute`, `is-relative`, `basename` and `extension` read the
+  invocant as a path string, and an undefined one satisfied that as `""`: so
+  `Any.basename` was `"/"`, `Any.is-absolute` was `False`, and `Any.contents`
+  **listed the current directory**. Rakudo has none of the six on `Any`. This was
+  invisible until #62 made an unlistable path an honest `X::IO::Dir`; the empty
+  path then started throwing, and four Roast files that had been walking past a
+  hole died mid-run. They still die, on `X::Method::NotFound` now — their root
+  cause is that rakupp merges consecutive indented Pod blocks into one
+  `Pod::Block::Code` where Rakudo makes three, which is **not** fixed here and is
+  the honest reason those ~40 assertions are gone. `Nil` still absorbs, as `.IO`
+  does; a *defined* `Str` is left alone, which is a separate divergence.
+
+Gate 6, the distribution battery, went 50 → 47 and is the reason this release is
+49 rather than 50. All three dists broke in the 55 commits between the v3.25.0
+tag and the review — none came from the review itself; each fails identically on
+the commit before it. Two are fixed:
+
+- **Test::Output** (2/2 → 0/2) builds its export list from
+  `UNIT::{"&$_"}:exists`. Only `MY::` and `LEXICAL::` ever reached the
+  pseudo-package adverb branch, and only for `:exists`, so `UNIT::` fell out of
+  it and the adverb was read as a routine call — *"Undefined routine 'exists'"* —
+  while the same thing in an `if` condition or inside parens was an outright
+  parse error. `UNIT::` now answers, and so does `:p`.
+- **File::Temp** (3/3 → 1/3) does `given self.path { $_.unlink }` in
+  `AutoUnlink::DESTROY`. An `IO::Handle`'s `.path` is an **IO::Path** — the `Str`
+  is what `IO::Path`'s own `.path` answers, one level down — and we returned the
+  stored string, so every `IO::Path` method on it was a missing method. There
+  were two copies of that arm and the earlier shadowed the later, so patching the
+  one that reads like the implementation changed nothing.
+
+**Cro::HTTP** (4/29 → 2/29) is not fixed, and the release ships with it. All four
+failing rows are DATA frames — the only frame type that consumes the HTTP/2
+flow-control window — and all four end at the suite's five-second `flunk` rather
+than at a wrong value. Instrumenting a copy of Cro's own library puts it on one
+statement: in `send-message`, the `await` on the promise handed to
+`remote-window-change` never resolves when the serializer's supply was set up off
+the main thread. Everything up to that point behaves identically in the working
+and failing cases. Six attempts to reduce it to a synthetic supply/whenever/await
+case all pass, so it needs Cro's real pipeline to reproduce; the diagnosis and
+the dead ends are recorded rather than guessed at.
+
+### The gates themselves
+
+Every gate ran one at a time, which is now the rule rather than a preference:
+Roast, the slim differential and the battery all spawn per-file children under
+wall-clock caps, and at v3.25.0 running them together produced a Digest verdict
+that could not be reproduced afterwards.
+
+- **Local suite 798 of 798**, up from 637 — the review's own regression files
+  plus three added here.
+- **optbench**: the interpreter, `--exe`, `--exe -O` and Rakudo produce identical
+  output on all nine kernels.
+- **Slim**: the negative suite passes and the differential is **465 identical of
+  492** programs. `--slim`'s cut list has not been revisited across a release that
+  added a JavaScript back end and Data::Native, and both binaries grew ~390 KB;
+  a refresh round is owed.
+- **GCC 16** builds clean.
+- **Performance: no regression, and the gate's red was interference.** `--check`
+  reported `hash` +8.1%, and the reading could not support it: the worst kernel's
+  own runs spanned 15.7% against a ~1.7% quiet-machine floor, with a browser
+  process holding 136% of a core. Run against a binary built *before* the review,
+  same box, same session, the gate failed too — on a *different* kernel
+  (`loopsum` +6.7%). A red that names a different kernel on each binary is
+  ambient interference, not a code change.
+
+  Settled by measurement rather than argument. Four further full runs on a quiet
+  box (daemon noise 0%, load ~1.8–2.1) put the per-kernel minima within 5% of
+  each other on 12 of 16 kernels, and against the standing baseline **12 of the
+  14 gated kernels are faster**: `multimeth` **−20.1%**, `strscan` **−19.9%**,
+  `fib` **−15.2%**, `privmeth` **−14.2%**, `subcall` −11.1%, `method` and
+  `attrread` −9.8%, `objnew` −9.3%. Only `asg` (+2.5%) and `loopsum` (+2.7%) are
+  slower, both well inside tolerance. **`hash` — the kernel that failed the gate —
+  is −0.6%.**
+
+  **The baseline is still v3.24.0's, un-re-recorded for a third release, and this
+  time the refusal is documented rather than inferred.** `--record --for=v3.26.0`
+  was attempted five times: once refused because the binary was `-modified` (a
+  baseline naming no commit could never be re-measured), then four times on its
+  own noise check — `attrread` 34.6%, then `loopsum` 5.4%, then `mainnext` 5.6%,
+  then `hash` 5.1%, a different kernel every run with the daemons idle. Three of
+  those four missed by half a point: with sixteen kernels each needing to land
+  inside 5%, and a per-kernel floor of ~1.7% plus occasional preemption, this box
+  does not offer a window where all sixteen do so at once while the desktop app
+  it is being driven from is running. It was **not forced** — forcing here has
+  been measured to produce a baseline that then red-lines against the very build
+  it was recorded from, which is worse than an old baseline honestly labelled.
+  The numbers above are what a record would have written.
+
+The ecosystem figure is **carried forward, not measured** — the 824 comes from
+the 2026-09-05 sweep, after v3.25.0 shipped. No whole-ecosystem sweep ran this
+cycle.
+
 ## v3.25.0 (2026-09-03) — the roots under the top hundred
 
 v3.24.0 followed what other people's code asked for. This release keeps the

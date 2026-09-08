@@ -11,13 +11,13 @@ WebAssembly, no server required. It is not a fork of Rakudo and shares no code
 with it; it targets the *language*, measured against
 [**Roast**](https://github.com/Raku/roast), the official Raku test suite.
 
-**Status:** current release **v3.25.0** (2026-09-03) — *the roots under the top
-hundred*: the hundred most depended-on distributions and the 69 underneath them,
-measured as one battery and worked by cause rather than by dist — 62 → 67 of 100
-passing their own suites, 58 → 60 end to end, 95 → 103 of the 169 — the engine
-faults under those rows fixed by cause, each named with the rule it restores.
-Seven issues closed; the list container stops being a `std::vector`. Every release is
-written up in the [CHANGELOG](CHANGELOG.md).
+**Status:** current release **v3.26.0** (2026-09-08) — *the Grand Review, and
+what the gates found after it*: three phases of review over `src/`, the
+user-facing docs and the Internals book, and then four faults the release gates
+caught that the review's own runs did not — a `qw:v[…]` that had stopped
+allomorphing, six IO path methods answering for invocants that are not paths, and
+two distributions the battery lost. Every release is written up in the
+[CHANGELOG](CHANGELOG.md).
 
 **Current focus:** the ecosystem sweep — all 2,530 distributions of the Raku
 ecosystem run against rakupp, and the engine gets fixed until real modules
@@ -58,6 +58,11 @@ was — so these three added nothing new.
   its 169-dist closure, worked by cause: 62 → 67 own suite, 58 → 60 end to end.
   A refresh found two rows that had quietly broken since the pinned sweep, which
   is what a refresh is for. `ValueList` grows in one pass off a free list.
+- **v3.26.0** — *the Grand Review, and what the gates found after it.* ✅ Three
+  review phases over the source, the docs and the book. Then the gates earned
+  their keep: the per-file **denominator** join found four faults behind a green
+  file list, and the battery found three more that the review had not caused.
+  Roast **661 / 1,464**; local suite 637 → **798**.
 
 Left open by the arc: the source review is **three files of eighty-three**. The
 performance baseline had moved twice with no cause found; v3.24.0 rebuilt
@@ -70,18 +75,19 @@ suites, up from 824, where the lever is the 274 that never ran their own tests a
 all because a dependency failed first. The plans are in
 [docs/dev/plans/VERSIONS.md](docs/dev/plans/VERSIONS.md).
 
-| | v3.25.0 | at v2.0.0 |
+| | v3.26.0 | at v2.0.0 |
 |---|---:|---:|
-| Roast, per individual test — of what the suite declares‡ | **199,980 of ~219,294 (91%)** | 197,090 of ~203,500 (97%) |
-| Roast, all-or-nothing — files fully passing, of 1,464 | **660 (45%)** | 594 |
-| Official documentation examples byte-identical on both engines | **953** | 952 |
+| Roast, per individual test — of what the suite declares‡ | **200,220 of ~219,429 (91%)** | 197,090 of ~203,500 (97%) |
+| Roast, all-or-nothing — files fully passing, of 1,464 | **661 (45%)** | 594 |
+| Official documentation examples byte-identical on both engines | **956** | 952 |
 | Of the Raku ecosystem's [2,530 distributions](https://raku.online/modules/ecosystem/), passing their own test suites§ | **824** | — |
-| Local regression suite | **778** | 312 |
-| `say "Hello"` compiled with `--exe --slim` | **6,795,224 B** | 9,830,680 B (no `--slim`) |
+| Local regression suite | **798** | 312 |
+| `say "Hello"` compiled with `--exe --slim` | **6,845,704 B** | 9,830,680 B (no `--slim`) |
 
-§ Measured by the 2026-09-05 re-sweep, after the v3.25.0 release: that release
-carried 746 / 2,526 forward without running a whole-ecosystem sweep, as its
-[CHANGELOG](CHANGELOG.md) entry says.
+§ Measured by the 2026-09-05 re-sweep, between the v3.25.0 and v3.26.0
+releases. v3.25.0 carried 746 / 2,526 forward, and v3.26.0 carries this 824
+forward in turn: no whole-ecosystem sweep ran in either cycle, as their
+[CHANGELOG](CHANGELOG.md) entries say.
 
 ‡ Counted against each file's declared `plan N`, so a file that aborts is
 charged for every test it failed to run; on the all-or-nothing bar a file

@@ -31,8 +31,8 @@ gauge of how much of the language actually works).
 The exact definition of every figure below — and how the harness computes it — is
 in [COUNTING.md](COUNTING.md); that file is authoritative if anything here drifts.
 
-**Headline: ~91% of all declared Roast tests pass** (199,980 / 219,294); on the
-stricter file bar, ~45% of files fully pass (660 / 1,464). The per-file breakdown
+**Headline: ~91% of all declared Roast tests pass** (200,220 / 219,429); on the
+stricter file bar, ~45% of files fully pass (661 / 1,464). The per-file breakdown
 comes first below, then the per-test figures. That assertion figure is the
 **shielded** one, as every implementation's is: it counts `ok … # skip` and
 `not ok … # todo` lines as passes. Net of both it is 90.5% rather than 91.1% —
@@ -48,7 +48,7 @@ Full suite — **1,464 files**:
 
 | Files | Count | Share of suite |
 |---|---:|---:|
-| **Fully passing** | **660** | **45%** |
+| **Fully passing** | **661** | **45%** |
 | Partially passing | 672 | 46% |
 | No TAP output | 117 | 8% |
 | Timeouts | 15 | 1.0% |
@@ -66,7 +66,7 @@ territory, not "passing" and not "failing."
 ### The assertion count
 
 Measured per individual test rather than per file, the honest figure is
-**199,980 of ~219,294 declared tests — 91.2%**. "Declared" means every test the
+**200,220 of ~219,429 declared tests — 91.2%**. "Declared" means every test the
 suite intends to run: for files that ran, their emitted plan; for files that
 abort before emitting any TAP, the `plan N` count read straight from their
 source. Counting those aborting files (all their tests failing) is what keeps the
@@ -75,9 +75,9 @@ three denominators, widest-to-strictest:
 
 | Denominator | Ratio | What it includes |
 |---|---|---|
-| tests that **ran** | 199,980 / 206,123 (~97%) | only assertions files actually emitted — flatters, ignores aborts |
-| tests **planned** (files that emitted a plan) | 199,980 / 216,223 (~92%) | + tests lost when a file aborts mid-plan |
-| **all declared** tests | 199,980 / 219,294 (91.2%) | + tests in parse-error files, recovered from source. This denominator grows as parse fixes land — files that died before announcing a plan now declare their real (often larger, dynamic) plans, so the percentage can dip while absolute passes rise |
+| tests that **ran** | 200,220 / 206,347 (~97%) | only assertions files actually emitted — flatters, ignores aborts |
+| tests **planned** (files that emitted a plan) | 200,220 / 216,358 (~92%) | + tests lost when a file aborts mid-plan |
+| **all declared** tests | 200,220 / 219,429 (91.2%) | + tests in parse-error files, recovered from source. This denominator grows as parse fixes land — files that died before announcing a plan now declare their real (often larger, dynamic) plans, so the percentage can dip while absolute passes rise |
 
 The 91% is the per-test analog of the ~45% file coverage. Three notes on scope:
 
@@ -167,7 +167,7 @@ timeout, and the same counting rules:
 | | files fully passing | assertions, all declared |
 |---|---:|---:|
 | **mutsu** 0.23.0 | **1,419 / 1,464 (96.9%)** | **216,807 / 218,173 (99.4%)** |
-| **Raku++** 3.25.0 | 660 / 1,464 (45.1%) | 199,980 / 219,294 (91.2%) |
+| **Raku++** 3.26.0 | 661 / 1,464 (45.2%) | 200,220 / 219,429 (91.2%) |
 
 Both runs are on the **fudged bar** — Raku++ honours Roast's `#?rakudo`
 directives unconditionally, and mutsu's equivalent was switched on with
