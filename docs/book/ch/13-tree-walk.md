@@ -51,8 +51,8 @@ struct ExecContext {
 
     bool returning = false;  Value returnV;      // cooperative return
     uint64_t frameTop = 0, curRoutineFrame = 0;
-    int loopCtl = 0;         uint64_t curLoopFrame = 0;
-    int givenCtl = 0;        Value givenV;  uint64_t curGivenFrame = 0;
+    int loopCtl = 0;         uint64_t curLoopFrame = kNoFrame;
+    int givenCtl = 0;        Value givenV;  uint64_t curGivenFrame = kNoFrame;
 
     struct CallSite { int line; const Value* code; };
     std::vector<CallSite> callFrames;            // for callframe(N), backtraces

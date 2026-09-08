@@ -106,7 +106,7 @@ the first evaluation fills in:
 // src/Ast.h — Binary
 mutable DecidedOnce<signed char> simpleOp{-1};
 mutable DecidedOnce<signed char> fastShape{-1};
-mutable DecidedOnce<const void*> litVal{nullptr};
+mutable PublishedOnce<const void*> litVal{nullptr};
 ```
 
 ```cpp
@@ -119,10 +119,31 @@ and similarly:
 
 ```
 Block::hoistNeed          ForStmt::hasStateCache
-StrLit::nfcDone           NumLit::cacheN, cacheD
-Param::sigSimple, natSpec, typeKnown
+NumLit::ratCache          Param::sigSimple, natSpec, typeKnown
 Callable::arityShape, catchScan
 ```
+
+**Two templates, and the difference between them is a real bug.** `DecidedOnce`
+is fine when the cached thing *is* the value: two threads compute the same
+`signed char`, either store wins, and a reader that sees either is correct. A
+*pointer* is different. The writer does two things — build the payload, then
+publish the pointer — and under relaxed ordering a reader may see the pointer
+without seeing the bytes it points at. On x86 the store buffer usually hides
+that; arm64 is weakly ordered and does not, and this project ships arm64
+binaries. ThreadSanitizer reported it as a read of a `Value`'s type tag racing
+that `Value`'s constructor.
+
+So the pointer-valued fields — `Binary::litVal`, `NumLit::ratCache`,
+`Callable::arityShape` and `catchScan` — are `PublishedOnce`: release on
+publish, acquire on read, and the publish is a compare-exchange, so a racing
+double-build has one winner and the loser frees its copy instead of leaking it.
+The template deliberately has the same drop-in shape as `DecidedOnce`, so a
+field can be upgraded without touching a use site; only the ordering changes.
+
+One field in that list is now vestigial rather than decided: `StrLit::nfcDone`
+is permanently `true` and kept only so the precomp cache format is unchanged.
+Normalization used to happen lazily on first evaluation, in place — and the AST
+is shared by every thread, so it moved into the constructor.
 
 
 What they hold is a **fact about the program text**, not a cached result. "Is

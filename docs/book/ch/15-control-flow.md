@@ -62,18 +62,27 @@ and frame counter:
 
 ```cpp
 // src/Interpreter.h — ExecContext
-int loopCtl = 0;              // 0 none, 1 next, 2 last, 3 redo
-uint64_t curLoopFrame = 0;    // frameTop of the innermost native loop
+static constexpr uint64_t kNoFrame = ~uint64_t(0);  // "no frame is armed"
+int loopCtl = 0;                     // 0 none, 1 next, 2 last, 3 redo
+uint64_t curLoopFrame = kNoFrame;    // frameTop of the innermost native loop
 ```
 
 ```cpp
 // src/Interpreter.cpp — LastStmt
-if (t.empty() && tctx_.curLoopFrame != 0 &&
-    tctx_.frameTop == tctx_.curLoopFrame) {
+if (t.empty() && tctx_.frameTop == tctx_.curLoopFrame) {
     tctx_.loopCtl = 2; return Value::any();
 }
 throw LastEx{t};              // labelled, or across a frame: unwind
 ```
+
+That sentinel is worth a paragraph, because the obvious spelling was wrong in a
+way that hid for a long time. `curLoopFrame` was initialised to `0` and the
+guard read `curLoopFrame != 0 && frameTop == curLoopFrame` — but `0` is also the
+**mainline's own frame number**. So every loop and every `given` written at the
+top level of a program failed that guard, fell out of the cooperative path, and
+threw: about eighty microseconds per iteration on macOS, in exactly the programs
+a beginner writes. One sentinel that cannot collide with a real frame number
+fixed it, and the guard collapsed to a single comparison.
 
 `when`, `default` and `succeed` got the same treatment, and for a specific
 measured reason. `given $v { when Int {…} when Str {…} … }` executed per row of

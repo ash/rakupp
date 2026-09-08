@@ -88,11 +88,25 @@ return callCallableRaw(codeVal, std::move(args), rwArgs);
 activates a user routine:
 
 ```cpp
-auto env = std::make_shared<Env>();                    // fresh per-call frame
-c.stateEnv->parent = c.closure ? c.closure : global_;  // once
-env->parent = c.stateEnv;         // frame → stateEnv → closure → … → global
+PooledFrame frame;                                     // a per-call frame, reused
+auto& env = frame.env;
+c.state.env->parent = c.closure ? c.closure : global_; // once
+env->parent = c.state.env;        // frame → state env → closure → … → global
 tctx_.dynStack.push_back(caller_scope);                // the OTHER chain
 ```
+
+The frame is *pooled*, not freshly allocated, and the reason is one of the
+sharper measurements in this book. A call frame is a `shared_ptr<Env>`: a
+control block, an `Env`, and the hash buckets inside it, allocated and destroyed
+per call. A thread-local pool of up to thirty-two hands one back instead,
+clearing the map but keeping its bucket array — the same trick the pad vector
+plays with its capacity. A frame that anything captured (a closure, an `rwLink`,
+a state chain) fails a `use_count` test on release and is simply dropped rather
+than reused, which is what makes the reuse safe.
+
+For a while only `callCallableRaw` had it, and `invokeMethod` did not. That
+asymmetry alone was the difference between a sub call at about twice Rakudo's
+cost and a method call at 5.8 times it.
 
 Two facts are established here and everything else depends on them.
 
@@ -209,26 +223,31 @@ std::string pkg, name;
 const std::vector<Param>* params;      // borrowed from the AST
 const std::vector<StmtPtr>* body;      // borrowed from the AST
 std::shared_ptr<Env> closure;
-std::shared_ptr<Env> stateEnv;         // persistent `state` storage
-std::once_flag stateInit;
+StateSlot state;                       // { shared_ptr<Env> env; once_flag init; }
 BuiltinFn builtin;                     // set ⇒ this is a builtin
 ValueList candidates;                  // multi-dispatch candidates
 ValueList wrappers;                    // .wrap stack, outermost last
-DecidedOnce<signed char> hoistNeed{-1};
-DecidedOnce<signed char> arityShape{-1};
+PublishedOnce<signed char> hoistNeed{-1};
+PublishedOnce<signed char> arityShape{-1};
 int arityMaxPos = 0, arityReqPos = 0; bool arityUnbounded = false;
-DecidedOnce<signed char> catchScan{-1};
+PublishedOnce<signed char> catchScan{-1};
 Stmt* catchBlkCache = nullptr;
 ```
 
-The four decided-once fields are all static properties of the routine's AST
+The `state` env and its `once_flag` are wrapped in a `StateSlot` for a reason
+worth knowing: `std::once_flag` is not copyable, so a bare pair of members would
+make `Callable` uncopyable. The holder's copy constructor is empty, which also
+gets the semantics right — a cloned routine starts with fresh `state` slots
+rather than sharing the origin's, as it does in Rakudo.
+
+The four published-once fields are all static properties of the routine's AST
 that `callCallableRaw` used to recompute **on every call**: whether anything
 needs hoisting, whether an arity pre-check applies and what its bounds are, and
 whether the body contains an inline `CATCH` block. Each is cheap once and
 worthless repeated — a parse that calls a routine 73,603 times paid for them
 73,603 times.
 
-`stateEnv` is created exactly once, under a `std::once_flag`, and chained
+`state.env` is created exactly once, under that `once_flag`, and chained
 between the per-call frame and the closure. That is the whole implementation of
 `state`: the variable lives in a scope that is created once per routine rather
 than once per call.

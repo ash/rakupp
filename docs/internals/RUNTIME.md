@@ -312,11 +312,11 @@ return &tctx_.cur->vars[ve->name];
 So `my` is a `define` in the current scope, a read is a `find` + copy, and a
 write is a `find` + overwrite — lexical scoping is entirely the `parent`-chain
 walk in `Env::find`. `state` is the one exception: its slot lives in the
-`Callable`'s persistent `stateEnv` rather than the per-call frame, so it survives
+`Callable`'s persistent `state.env` rather than the per-call frame, so it survives
 across calls:
 
 ```cpp
-// state $n — lvalue(): the slot lives in the once-created stateEnv
+// state $n — lvalue(): the slot lives in the once-created state.env
 if (!tctx_.curStateEnv->vars.count(ve->name))
     tctx_.curStateEnv->define(ve->name, typedDefault(ve->declType, sigil));
 return &tctx_.curStateEnv->vars[ve->name];
@@ -328,7 +328,7 @@ The three declarators differ only in *which* `Env` holds the slot:
 |---|---|---|
 | `my` | the current lexical `Env` (`tctx_.cur`) | ordinary lexical |
 | `our` | the package env (`curPkgEnv_`, ultimately `global_`) | on package-block exit, `our`-vars are also republished under a package-qualified name (`src/Interpreter.cpp`) |
-| `state` | a per-`Callable` `stateEnv`, created **once** | `std::once_flag stateInit` (`src/Value.h`); persists across calls, initialized on first call only (`src/Interpreter.cpp`) |
+| `state` | a per-`Callable` `state.env`, created **once** | a `StateSlot` holding the env and its `std::once_flag` (`src/Value.h:303`), whose copy constructor is empty so a cloned `Callable` starts with no state of its own; persists across calls, initialized on first call only |
 
 `our` additionally republishes its variables under a package-qualified global
 name when the package block closes (a `my` package var is skipped):
@@ -568,11 +568,17 @@ variadics, callbacks, and what happens on a machine with no libffi — is
 [guide/FFI.md](../guide/FFI.md).)
 
 ```cpp
-auto env = std::make_shared<Env>();                 // fresh per-call frame
-c.stateEnv->parent = c.closure ? c.closure : global_;  // (once) state env -> closure
-env->parent = c.stateEnv;                           // frame -> stateEnv -> closure -> ... -> global
+PooledFrame frame; auto& env = frame.env;           // a per-call frame, REUSED
+c.state.env->parent = c.closure ? c.closure : global_;  // (once) state env -> closure
+env->parent = c.state.env;                          // frame -> state env -> closure -> ... -> global
 tctx_.dynStack.push_back(caller_scope);             // dynamic ($*var) chain, kept SEPARATE
 ```
+
+Frames come off a thread-local pool of up to thirty-two rather than being
+allocated per call; a frame that anything captured fails a `use_count` test and
+is dropped instead of reused. See the book's [Chapter 14](../book/ch/14-calls.md)
+for why: the method path lacking this pool was the whole difference between a sub
+call at ~2× Rakudo and a method call at 5.8×.
 
 Two things matter here:
 
@@ -683,7 +689,7 @@ if (tctx_.returning) {                       // cooperative return reached this 
 
 ```cpp
 // src/Interpreter.cpp — LastStmt (Next/Redo mirror it)
-if (t.empty() && tctx_.curLoopFrame != 0 && tctx_.frameTop == tctx_.curLoopFrame) {
+if (t.empty() && tctx_.frameTop == tctx_.curLoopFrame) {   // curLoopFrame defaults to kNoFrame
     tctx_.loopCtl = 2; return Value::any();  // cooperative last (runLoopBody consumes it)
 }
 throw LastEx{t};                             // labelled or cross-frame: unwind
@@ -907,7 +913,7 @@ code.code->closure = tctx_.cur;     // captured: the scope where the block was w
 Only the environment is *owned* (a `shared_ptr<Env>` copy); the parameter list
 and body are borrowed pointers into the AST, which outlives execution. At call
 time the fresh per-call `Env`'s parent chain runs
-`env → stateEnv → closure → … → global` (`src/Interpreter.cpp`), so a
+`env → state.env → closure → … → global` (`src/Interpreter.cpp`), so a
 free variable in the body resolves through the captured `closure` scope. Because
 the capture is the live `Env` (not a copy of its values), a closure sees and
 mutates the *same* container as its defining scope — real closures, e.g. a
