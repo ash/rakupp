@@ -22946,6 +22946,43 @@ static std::string quoteMetaRx(const std::string& s) {
     return out;
 }
 
+// End of a Raku-CODE region inside a regex pattern: given the `{` at `i`, the
+// index just past its matching `}`, counting nesting and stepping over quoted
+// spans. 0 when the brace never closes — the caller then treats it as the
+// literal character it must be (`<[{]>`), rather than swallowing the rest.
+static size_t rxCodeBraceEnd(const std::string& p, size_t i) {
+    int depth = 0;
+    for (; i < p.size(); i++) {
+        char c = p[i];
+        if (c == '\\') { i++; continue; }
+        if (c == '\'' || c == '"') {
+            char q = c;
+            for (i++; i < p.size(); i++) { if (p[i] == '\\') { i++; continue; } if (p[i] == q) break; }
+            continue;
+        }
+        if (c == '{') depth++;
+        else if (c == '}' && --depth == 0) return i + 1;
+    }
+    return 0;
+}
+
+// …and of a `:my …;` / `:temp …;` / `:let …;` declaration, which is code with a
+// `;` for a terminator instead of braces. 0 when it never terminates.
+static size_t rxDeclEnd(const std::string& p, size_t i) {
+    for (; i < p.size(); i++) {
+        char c = p[i];
+        if (c == '\\') { i++; continue; }
+        if (c == '\'' || c == '"') {
+            char q = c;
+            for (i++; i < p.size(); i++) { if (p[i] == '\\') { i++; continue; } if (p[i] == q) break; }
+            continue;
+        }
+        if (c == '{') { size_t e = rxCodeBraceEnd(p, i); if (!e) return 0; i = e - 1; continue; }
+        if (c == ';') return i + 1;
+    }
+    return 0;
+}
+
 // Interpolate @array variables into a regex as an LTM `|` alternation of the
 // elements' literal (quotemeta'd) text, LONGEST-FIRST — `/@alpha/` matches any
 // element, as in Rakudo.
@@ -22960,6 +22997,33 @@ std::string Interpreter::rxInterpArrays(const std::string& pat) {
         if (pat[i] == '\\' && i + 1 < pat.size()) { out += pat[i]; out += pat[i + 1]; i++; continue; }
         if (pat[i] == '\'') { inSq = !inSq; out += pat[i]; continue; }
         if (inSq) { out += pat[i]; continue; }
+        // A character class is copied through whole, so that a literal `{`
+        // inside it cannot open a false code span and swallow the pattern after
+        // it. (The scalar pass a few functions down has always done this; the
+        // two are the same scan and should read the same.)
+        if (pat[i] == '<' && i + 1 < pat.size() && (pat[i + 1] == '[' || pat[i + 1] == '-')) {
+            size_t j = i;
+            while (j + 1 < pat.size() && !(pat[j] == ']' && pat[j + 1] == '>')) out += pat[j++];
+            while (j < pat.size() && pat[j] != '>') out += pat[j++];
+            if (j < pat.size()) out += pat[j];
+            i = j;
+            continue;
+        }
+        // A brace region is Raku CODE, not pattern — a `{…}` block, a `<?{…}>`
+        // or `<!{…}>` assertion, an interpolated `<{…}>`, a `**{…}` bound — and
+        // `@a` in code is the ARRAY the code reads, not an alternation to
+        // splice. Rewriting it there handed the block `[ 'x' | 'y' ]`, which as
+        // Raku code is an array of ONE junction: Cro's route matcher asked its
+        // bind check for `@handlers[1]`, got Nil off that one-element array,
+        // and every route with a captured segment answered 404.
+        if (pat[i] == '{') {
+            if (size_t e = rxCodeBraceEnd(pat, i)) { out += pat.substr(i, e - i); i = e - 1; continue; }
+        }
+        // Same for a declaration: `:my @segs = @outer;` is code to the `;`.
+        if (pat[i] == ':' && (pat.compare(i, 4, ":my ") == 0 || pat.compare(i, 6, ":temp ") == 0 ||
+                              pat.compare(i, 5, ":let ") == 0)) {
+            if (size_t e = rxDeclEnd(pat, i)) { out += pat.substr(i, e - i); i = e - 1; continue; }
+        }
         if (pat[i] == '@' && i + 1 < pat.size() &&
             (ascii::isalpha((unsigned char)pat[i + 1]) || pat[i + 1] == '_')) {
             size_t j = i + 1;
