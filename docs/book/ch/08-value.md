@@ -65,7 +65,7 @@ indefensible. It is not, and the case for it is the most important argument in
 this book.
 
 **Read the field names below as the original's, because they still work.** The
-three campaigns that took 392 to 128 (Chapter 40) moved fields; they did not
+three campaigns that took 392 to 128 (Chapter 41) moved fields; they did not
 rename anything a reader or a caller uses. `arr`, `hash`, `code`, `pairVal` and
 `obj` became one kind-tagged slot, and `big`, `ratN`, `ratD`, `pairKey`, `ext`,
 `shape`, `ofType`, `im` and the `Range` ends went behind a lazily-allocated
@@ -328,7 +328,7 @@ argument was made against, and because the ratio it produces — fifty times a
 bytes the same ratio is sixteen. The design did not change; the tax did.
 
 That instability is also the single most important input to the extension ABI
-in Chapter 36, which is why an extension module never sees this struct at all.
+in Chapter 37, which is why an extension module never sees this struct at all.
 
 ## The struct, version by version
 
@@ -393,7 +393,7 @@ segfaulted within minutes of the change. The default now lives in the cold
 block, where rare-per-value belongs.
 
 **What the shrinking bought that nobody planned.** Two consequences arrived
-from outside the campaign's own goals. The first is in Chapter 41: the cost of
+from outside the campaign's own goals. The first is in Chapter 42: the cost of
 parking a `Value` in long-lived addressable storage, which had made a partially
 lowered bytecode IR structurally impossible, is a function of how much struct
 there is to construct and destroy — 11.2 nanoseconds per node at 376 bytes,

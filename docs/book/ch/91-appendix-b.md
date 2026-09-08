@@ -134,7 +134,7 @@ sixty-six flags the binary accepts, including a whole run mode.
 |---|---|
 | `RAKUPP_TRACE=1` | the module search path and every resolution |
 | `RAKUPP_DUMPTOKENS=1` | the token stream |
-| `RAKUPP_NO_DECLCHECK=1` | skip the undeclared-variable gate (Chapter 38) |
+| `RAKUPP_NO_DECLCHECK=1` | skip the undeclared-variable gate (Chapter 39) |
 | `RAKUPP_ACTTRACE=1` | grammar action firing |
 | `RAKUPP_TAP_TRACE=1` | the test harness's own emission |
 | `RAKUPP_KEEPGEN=1` | keep the generated C++ from a compiling mode |

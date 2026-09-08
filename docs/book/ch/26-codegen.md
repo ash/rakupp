@@ -190,7 +190,7 @@ because transpiling them would mean duplicating an engine:
   produced (with the invocant first) or dispatches the name it stringifies
   to, through the one method dispatcher;
 - **`nqp::` ops** — `rtNqpOp`, the same function the interpreter calls
-  (Chapter 34).
+  (Chapter 35).
 
 Each of those is a place where "call the runtime" is not a compromise but the
 correct answer: there is one implementation, so there is one behaviour.
@@ -257,7 +257,7 @@ nostrict.rakupp.gen.cpp:35:9: error: use of undeclared identifier 'v_szz'
 
 Not a `CodegenError`, so not a fallback either — `--exe` simply could not build
 these programs. The reason to believe the promise now comes from the pass that
-already answers this exact question, `DeclCheck` (Chapter 38): `findLaxVars`
+already answers this exact question, `DeclCheck` (Chapter 39): `findLaxVars`
 returns the names a lexically lax region auto-vivifies, and those compile to
 `RT.laxVarRef("$x")` — a slot in the live environment — instead of a local.
 

@@ -38,7 +38,7 @@ typedef struct RkCtxOpaque*   RkCtx;
 
 This is not fastidiousness. `sizeof(Value)` moved from 392 to 376 to 344 bytes in a
 single afternoon of ordinary optimisation work, and the representation
-campaign later halved it twice more — 208, then 128 (Chapter 40). An ABI that
+campaign later halved it twice more — 208, then 128 (Chapter 41). An ABI that
 exposed the struct would have to freeze
 the interpreter's internals forever, or silently miscompile every extension
 built against an older header — the failure mode where a module reads a `Str`
@@ -532,11 +532,11 @@ host owns — all three are correct for a program that *is* the interpreter and
 presumptuous for one that merely contains it. `size` is how a host compiled
 against an older header keeps working when the struct grows.
 
-The same restraint decides `declCheck` in Chapter 38's gate: an embedding host's
+The same restraint decides `declCheck` in Chapter 39's gate: an embedding host's
 interpreter may already hold globals it installed with `rk_register`, so no
 static pass over the source it hands in could be trusted to judge it.
 
-One interpreter per process is the standing limit, and `--mcp` (Chapter 38) is
+One interpreter per process is the standing limit, and `--mcp` (Chapter 39) is
 the largest host of this ABI in the tree: a thousand lines that include
 `rakupp.h` and never `Interpreter.h`, despite being compiled into the same
 binary as the interpreter it serves.

@@ -182,7 +182,7 @@ as a finding.
 - **a flat threaded execution loop** — perl's `run.c` in one line, and the most
   frequently proposed change to any tree-walker. Measured twice, a month apart:
   the opcode `switch` is worth 0.32 ns against a node visit costing 46 to 85.
-  Under one per cent. Chapter 41.
+  Under one per cent. Chapter 42.
 
 The generalisation: **on this codebase, removing an allocation has always paid
 and removing a branch almost never has.** That is a property of a tree-walker
@@ -247,7 +247,7 @@ known when this was written: pass the invocant and argument list by reference
 rather than by value, and shrink `Value` — both to be approached carefully
 rather than quickly, because the first trades away an accidental safety
 property and the second is a representation change that the extension ABI was
-specifically designed to survive (Chapter 36).
+specifically designed to survive (Chapter 37).
 
 Half of that came true and half did not, which is the interesting part.
 `Value` was shrunk twice, 344 to 208 to 128, and the ABI did survive it exactly

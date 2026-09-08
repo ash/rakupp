@@ -1,12 +1,12 @@
 # The Carry Chain
 
-Chapter 41 closed with a prediction: the shelf will still be there when the
+Chapter 42 closed with a prediction: the shelf will still be there when the
 profiles point back. They pointed back ten days later, and this chapter is
 what happened — the campaign's method run once more, end to end, against a
-different competitor and a different kind of cost. Chapter 40's batches were
+different competitor and a different kind of cost. Chapter 41's batches were
 about copying and lookup; this episode's first half is about *latency*, a
 cost no instruction count names. Its second half is the copies again, because
-it is always the copies. And its centrepiece decision is one Chapter 41
+it is always the copies. And its centrepiece decision is one Chapter 42
 prepared: the competitor's fastest design, measured, priced, and declined.
 
 ## The trigger
@@ -17,11 +17,11 @@ kernels. The interpreter won eleven, drew two and lost two. `bigint` was the
 clear loss, and it came with the one detail that made it actionable:
 `bigint` was the only kernel mutsu led *even against `--exe`*. Compiling the
 program bought nothing, so the time was not in the loop around the multiply —
-dispatch, scopes, assignment, everything Chapter 40 worked on — it was inside
+dispatch, scopes, assignment, everything Chapter 41 worked on — it was inside
 the runtime's own multiply routine, which the interpreter and the native
 binary share.
 
-Chapter 40's trigger was a number without a place. This one named the row and
+Chapter 41's trigger was a number without a place. This one named the row and
 not the reason, which is nearly as blank: *slower at big integers* covers the
 representation, the algorithm, the loop, and everything either side of it.
 
@@ -117,7 +117,7 @@ the loop saves. Below 32 limbs a single chain wins outright, and that is what
 runs.
 
 An optimisation that was correct becomes overhead when the constraint it
-served disappears — Chapter 40's batches never hit that shape, because
+served disappears — Chapter 41's batches never hit that shape, because
 removing a cost there never changed what the remaining code was *for*.
 Removing the latency did.
 
@@ -186,7 +186,7 @@ Base 10¹⁸ was measured too and is the worst of the three: the same total
 rewrite for 1.16×, because dividing a 128-bit product by 10¹⁸ exactly costs
 three multiplies where base 2⁶⁴ costs none.
 
-This is Chapter 41's discipline pointed at a tenth engine: read the design,
+This is Chapter 42's discipline pointed at a tenth engine: read the design,
 ground the comparison in measured local numbers, and say what does not
 transfer and why. mutsu's base is the right choice for a library and was
 priced as the wrong one here — so the speedup had to come from inside the
@@ -197,7 +197,7 @@ existing representation, and it did.
 Measured through `tools/run-bench.raku` against a purpose-built binary of
 the commit before, one interleaved sitting at load average 2.3 — on the M1
 development machine, so the milliseconds are not comparable with Chapter
-40's tables, only the ratios are:
+41's tables, only the ratios are:
 
 | lane | before | after | mutsu |
 |---|---:|---:|---:|
@@ -206,7 +206,7 @@ development machine, so the milliseconds are not comparable with Chapter
 
 Five control kernels — `loopsum`, `fib`, `hash`, `streq`, `rats`, both lanes
 each — all landed within ±2%, which is that box's run-to-run spread. Roast
-gated the change as Chapter 39 requires; the five files that differed from
+gated the change as Chapter 40 requires; the five files that differed from
 the baseline run behaved identically on a binary built from the prior
 commit, so all five were the machine's evening load, not the change.
 
@@ -240,7 +240,7 @@ each episode was that nothing in the harness could see the workload until
 someone outside pointed at it, and the permanent fix for that is a kernel,
 not a recollection.
 
-What remains open is the same list Chapter 40 ended on, one item longer.
+What remains open is the same list Chapter 41 ended on, one item longer.
 The eight-chain technique is applied in exactly one place — a magnitude
 times a single limb; addition and subtraction have the same strictly serial
 chain and would take the same treatment, and nothing measured has needed it

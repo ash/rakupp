@@ -419,7 +419,7 @@ Two tools, and the interesting thing is that neither is new engine work:
 
 ### It is a host, not a private door
 
-The whole server reaches the engine through the public C ABI of Chapter 36 —
+The whole server reaches the engine through the public C ABI of Chapter 37 —
 `rk_new`, `rk_eval`, `rk_set_output`, and for grammars the same
 `rk_grammar_shim()` source every language binding loads. Nothing in
 `McpServer.cpp` includes `Interpreter.h`.
@@ -484,7 +484,7 @@ the tree and the diagnosis, and the watchdog's answer-then-exit contract.
 The `raku` tool runs arbitrary Raku with the privileges of the process. There is
 no sandbox, and registering the server grants an agent the trust that handing it
 a shell does. Saying so is the whole of the mitigation here; a sandboxed variant
-is separate work, and the WebAssembly build of Chapter 31 is the natural cage
+is separate work, and the WebAssembly build of Chapter 32 is the natural cage
 for it.
 
 ## `--jupyter`: the same session, in a notebook

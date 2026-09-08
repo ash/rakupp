@@ -310,7 +310,7 @@ per-capacity lists are what give both of them what they want.
 
 This is Perl 5's arena-and-free-list discipline (`sv.c`) applied to the one
 allocation two separate investigations had already named as the thing to
-remove — see Chapter 40.
+remove — see Chapter 41.
 
 ## Shaped arrays and typed containers
 

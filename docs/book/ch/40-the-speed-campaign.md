@@ -9,7 +9,7 @@ on the same program. Two days later the interpreter led Rakudo on all ten
 benchmark kernels, the native binary led `perl` 2.8× on the kernel that started
 it, and `sizeof(Value)` had fallen from 344 bytes to 128. This chapter is the
 story of those two days: four batches of work, each one an application of the
-same few decisions, and each one measured under Chapter 39's rules before it
+same few decisions, and each one measured under Chapter 40's rules before it
 was believed. A fifth batch arrived ten days later, from the same probe and a
 different direction, and it is here too — partly for what it bought, and partly
 because it produced the campaign's cleanest example of a measurement that was
@@ -62,7 +62,7 @@ The response was not to guess. It was to read the Perl 5 sources — five files:
 `hv.h`, `pad.h`, `run.c`, `pp_hot.c` — and write down what thirty years of
 interpreter maintenance had settled on, as a ranked findings document —
 `docs/dev/findings/engines/PERL5-TECHNIQUES.md` in the repository.
-Chapter 41 tells how that one document grew into a nine-engine survey. This
+Chapter 42 tells how that one document grew into a nine-engine survey. This
 chapter follows the items that got applied, in the order they landed.
 
 The loop each batch ran:
@@ -81,7 +81,7 @@ The loop each batch ran:
 ## The recurring kernels
 
 Two harnesses supply the names this chapter keeps using. `perf-guard`
-(Chapter 39's regression gate) times interpreter-only one-liners; the
+(Chapter 40's regression gate) times interpreter-only one-liners; the
 `tools/bench` set times full programs in every mode, against Rakudo and — for
 `hashfill` — against `perl`. Four of the guard kernels are short enough to
 show whole:
@@ -502,7 +502,7 @@ lowering impossible — the escape-analysis tax on parking an intermediate in
 addressable storage, +11.2 ns per un-lowered node when it was first measured
 and −0.02 ns now, because it was a property of a 376-byte `Value` and this
 campaign shrank it. The structural barrier fell; the motive never arrived.
-Chapter 41 carries the numbers.
+Chapter 42 carries the numbers.
 
 The campaign stopped where the next step stopped being a constant factor and
 started being an architecture.

@@ -73,9 +73,9 @@ If you are here for one thing in particular:
 | how a Raku call actually happens | Chapters 14 to 16 |
 | regexes and grammars | Part V |
 | the native compiler | Part VII |
-| Raku in a browser | Chapter 31 |
-| installing modules, and the store zef shares | Chapter 33 |
-| calling C, or being called from it | Chapters 35 and 36 |
+| Raku in a browser | Chapter 32 |
+| installing modules, and the store zef shares | Chapter 34 |
+| calling C, or being called from it | Chapters 36 and 37 |
 | a term you have not met before | Appendix D, the glossary |
 
 ## Conventions {-}

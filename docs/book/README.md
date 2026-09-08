@@ -5,7 +5,7 @@ AST, `Value`, the interpreter, the regex and grammar engine, Unicode, the five
 run modes, the two code generators and the optimizer, module loading,
 NativeCall, the extension ABI, and the concurrency runtime.
 
-**[Raku++-Internals.pdf](Raku++-Internals.pdf)** — 392 pages, 43 chapters in
+**[Raku++-Internals.pdf](Raku++-Internals.pdf)** — 397 pages, 43 chapters in
 ten parts, plus four appendices.
 
 ## Building it
@@ -66,23 +66,26 @@ Two that matter, because breaking either shows up in the PDF:
 The build prints any `Overfull \hbox` the typesetter reports; a clean build has
 none over a couple of points.
 
-**The page count is not derivable from the PDF** — it carries no `/Linearized`
-dictionary, and its page tree is inside a compressed object stream, so grepping
-for `/N` or `/Count` finds nothing (or, worse, finds an unrelated `/N` and
-reports it confidently). Get it from the typesetter instead:
+**Do not grep the PDF for the page count**, and do not typeset it a second time
+to ask. Grepping fails because the file carries no `/Linearized` dictionary and
+its page tree is inside a compressed object stream, so `/N` or `/Count` finds
+nothing — or, worse, finds an unrelated `/N` and reports it confidently. Ask a
+reader that parses the file, which is the artifact readers will actually hold:
 
 ```sh
-rakupp docs/book/build.raku --keep
-pandoc docs/book/meta.yaml docs/book/.book.md --to latex --standalone \
-  --include-in-header docs/book/latex/preamble.tex --toc --toc-depth=2 \
-  --number-sections --top-level-division=chapter -o /tmp/bk.tex
-cd /tmp && tectonic bk.tex --keep-logs && grep "Output written" bk.log
+pdfinfo docs/book/Raku++-Internals.pdf | grep '^Pages'   # poppler
 ```
 
-Use the merged `.book.md` the builder leaves behind, not `cat ch/*.md`: `cat`
-puts no blank line between files, so each chapter's `#` heading becomes a lazy
-continuation of the previous chapter's last paragraph, the chapters run
-together, and the count comes out short.
+Rebuilding the LaTeX by hand and reading tectonic's `Output written on …` line
+measures a different book. The recipe this file used to give reports **402**;
+adding back the `--from …+smart` and `--highlight-style tango` that
+`build.raku` passes brings it to **400**; the shipped PDF has **397**, which
+`pdfinfo` and macOS CoreGraphics both read and past which `pdftotext` refuses a
+page. If you do run the LaTeX by hand anyway, use the merged `.book.md` the
+builder leaves behind under `--keep`, not `cat ch/*.md`: `cat` puts no blank
+line between files, so each chapter's `#` heading becomes a lazy continuation
+of the previous chapter's last paragraph, the chapters run together, and the
+count comes out shorter still.
 
 ## What it is not
 

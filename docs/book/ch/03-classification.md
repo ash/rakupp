@@ -117,7 +117,7 @@ The extension mechanism is deliberately narrow, and Chapter 6 is about exactly
 how narrow. `use Foo` does not parse the module at compile time: the parser
 *text-scans* the module source for declarations of `infix:<…>` and its
 relatives, and registers those names so the importing file can parse them. That
-is lexical bookkeeping, not execution — the distinction Chapter 32 returns to.
+is lexical bookkeeping, not execution — the distinction Chapter 33 returns to.
 
 ## The regex engine, classified separately
 

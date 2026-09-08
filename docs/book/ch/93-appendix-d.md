@@ -38,12 +38,12 @@ Everything else in this glossary hangs off those eight.
 separately compiled pieces of code agree on: how arguments are passed in
 registers and on the stack, how a struct is laid out, what a symbol is called.
 An API says what you write; an ABI says what the bytes must be. Raku++ defines
-one of its own for extension modules (Chapter 36) and restates libffi's by hand
-in order to call C (Chapter 35).
+one of its own for extension modules (Chapter 37) and restates libffi's by hand
+in order to call C (Chapter 36).
 
 **A/B interleaving** — the benchmark discipline of alternating the two versions
 under test within a single run, rather than measuring one and then the other,
-so that any drift in the machine hits both equally (Chapter 39).
+so that any drift in the machine hits both equally (Chapter 40).
 
 **Abstract syntax tree (AST)** — the tree a parser builds: one node per
 construct, with the punctuation that guided the parse discarded. `2 + 3 * 4`
@@ -75,7 +75,7 @@ walk (Chapter 25).
 **Arena** — a region of memory whose contents are all released together when
 the region dies, so nothing inside needs its own free. Everything an extension
 creates is allocated in the arena belonging to the call, which is what makes
-the extension ABI difficult to leak through (Chapter 36).
+the extension ABI difficult to leak through (Chapter 37).
 
 **Arity** — how many arguments a routine takes. A *direct-arity call* in the
 C++ emitter is one whose count is known at emit time, so the generic
@@ -120,7 +120,7 @@ binary that lexes, parses and interprets them at startup (Chapter 25).
 **Bytecode** — a compact instruction set invented for one language and executed
 by a loop that switches on an opcode. CPython, the JVM and MoarVM all have one.
 Raku++ deliberately has none; Chapter 13 says what the tree walk costs instead,
-and Chapter 41 reports the measurement behind the decision.
+and Chapter 42 reports the measurement behind the decision.
 
 **Byteset** — a 256-bit bitmap cached on a regex character-class node, which
 answers "does this byte match?" without re-deriving the class (Chapter 20).
@@ -165,7 +165,7 @@ the lexer, from the lexer's own one-token history (Chapters 3 and 4).
 
 **Control kernel** — in a benchmark, a workload that the change under test
 cannot possibly affect, run alongside the one it should. If the control moves
-too, the machine moved and not the code (Chapter 39).
+too, the machine moved and not the code (Chapter 40).
 
 **Cooperative control flow** — implementing `return`, `next`, `last` and `when`
 with a flag and a frame counter rather than a C++ exception, in the common case
@@ -225,7 +225,7 @@ the `*` twigil: `$*OUT`. Contrast lexical scope (Chapter 12).
 
 **Emscripten** — the toolchain that compiles C and C++ to WebAssembly. Its
 `-fexceptions` mode routes C++ throws through JavaScript, which is what bounds
-recursion depth in the browser build (Chapter 31).
+recursion depth in the browser build (Chapter 32).
 
 **Environment** — the run-time structure holding one scope's variables, with a
 pointer to its parent; resolving a name means walking that chain. Raku++ has no
@@ -244,7 +244,7 @@ than a class hierarchy or a variant. Chapter 8 is the entire argument.
 **FFI (foreign function interface)** — the machinery for calling a function
 written in another language, here C. Raku spells it `is native`; Raku++
 implements it by loading libffi at run time rather than linking against it
-(Chapter 35).
+(Chapter 36).
 
 **Flip-flop** — Raku's `ff`/`fff` operator, which is off until its left side is
 true and then stays on until its right side is. It needs one bit of state per
@@ -270,11 +270,11 @@ cycles (Chapter 1).
 eyeballed. The book uses the word for the correctness gates (Roast, the example
 suite, compiler agreement between the run modes) and for the performance gate,
 which fails a build on a regression against a recorded baseline (Chapters 1
-and 39).
+and 40).
 
 **GIL (global interpreter lock)** — a single lock that only one thread may hold
 while touching interpreter state. Raku++'s is engaged lazily, on first
-concurrent use, and can be switched off (Chapter 37).
+concurrent use, and can be switched off (Chapter 38).
 
 **GLR, Earley** — parsing algorithms that pursue every possible reading at once
 and produce a parse forest, leaving ambiguity to be resolved afterwards.
@@ -309,7 +309,7 @@ its own operator table in the middle of a parse and point an error at an exact
 token (Chapter 3).
 
 **Handle** — an opaque `RkValue` in the extension ABI: a token the extension
-passes back to the runtime, so that it never sees a `Value` (Chapter 36).
+passes back to the runtime, so that it never sees a `Value` (Chapter 37).
 
 **Heredoc** — a quoting form whose terminator is a word the programmer chooses
 and whose body runs to the line bearing it. It is a lexer problem, because the
@@ -341,7 +341,7 @@ runtime value (Chapter 10).
 **Intermediate representation (IR)** — a form between the tree and the machine,
 invented so that optimisation passes have something regular to rewrite:
 three-address code, SSA, a control-flow graph. Raku++ has none of them, which
-Chapter 3 states as a classification and Chapter 41 revisits as a trade.
+Chapter 3 states as a classification and Chapter 42 revisits as a trade.
 
 **Interpreter** — a program that executes another program directly, rather than
 translating it into something else first. See *tree-walking interpreter*.
@@ -449,13 +449,13 @@ A fast path on a tree walk, not a compilation step (Chapter 19).
 
 **NQP (Not Quite Perl)** — the small Raku subset Rakudo is written in. Raku++
 implements a subset of its `nqp::` ops, so that code written against them runs
-(Chapter 34).
+(Chapter 35).
 
 \glossletter{O}
 
 **Opcode dispatch loop** — the `switch` at the heart of a bytecode VM. Measured
 here at 0.32 ns, against a tree-node visit costing 46 to 85 ns; that ratio is
-the number behind the decision not to build one (Chapters 39 and 41).
+the number behind the decision not to build one (Chapters 40 and 42).
 
 **Operator table** — the parser's map from an operator's spelling to its
 precedence, its associativity and the node it builds. Raku++'s is mutated
@@ -463,7 +463,7 @@ during the parse and rolls back at scope exit (Chapters 5 and 6).
 
 **Oracle** — a trusted implementation whose output a test is checked against.
 Rakudo is this book's principal oracle, and a file verified against it records
-which version it was verified with (Chapter 39).
+which version it was verified with (Chapter 40).
 
 \glossletter{P}
 
@@ -475,7 +475,7 @@ reasons it is not a PEG parser.
 
 **Pad** — the storage for one scope's variables, laid out once per scope rather
 than looked up by name on every access. The term is Perl 5's, and so is much of
-the design (Chapter 40).
+the design (Chapter 41).
 
 **Parse forest** — the set of all valid trees for an ambiguous input, which is
 what GLR and Earley parsers produce. Raku++ produces one tree (Chapter 3).
@@ -514,7 +514,7 @@ ordinary-looking variable can compute its value on access (Chapters 8 and 12).
 
 **Publish** — the step at the end of module loading that copies a module's
 environment into the global one. Raku specifies exporting selected symbols;
-this publishes all of them, and Chapter 32 says so.
+this publishes all of them, and Chapter 33 says so.
 
 \glossletter{R}
 
@@ -537,14 +537,14 @@ compiler do it (Chapters 3 and 26).
 
 **Regression** — a change that makes something that used to work stop working,
 or something that used to be fast stop being fast. The performance gate exists
-to fail the build on the second kind (Chapter 39).
+to fail the build on the second kind (Chapter 40).
 
 **REPL** — read–eval–print loop. Raku++'s shares its session machinery with the
-MCP server and the Jupyter kernel (Chapter 38).
+MCP server and the Jupyter kernel (Chapter 39).
 
 **Roast** — the official Raku test suite, and the specification in practice.
 Results against it are reported two ways, because either number alone misleads
-(Preface, Chapter 39).
+(Preface, Chapter 40).
 
 **Role** — a bundle of methods composed into a class at compile time, or into a
 single object at run time as a mixin. Raku's answer to multiple inheritance
@@ -599,10 +599,10 @@ is assigned exactly once, which makes many optimisations easy to state.
 LLVM's IR is in SSA form. Raku++ has no IR, and therefore no SSA (Chapter 3).
 
 **Stash** — Raku's package symbol table, reachable through `.WHO`. There is no
-per-module stash object here (Chapters 17 and 32).
+per-module stash object here (Chapters 17 and 33).
 
 **Static analysis** — inspecting a program without running it. `--lint` and the
-undeclared-variable gate are the two instances in this book (Chapter 38).
+undeclared-variable gate are the two instances in this book (Chapter 39).
 
 **Superinstruction** — a fused node kind standing for a common pattern of
 several. The approach node specialisation deliberately did not take
@@ -684,7 +684,7 @@ Rakudo's. Raku++ has none (Chapter 3).
 \glossletter{W}
 
 **WebAssembly (Wasm)** — the portable binary instruction format browsers
-execute. The whole runtime is compiled to it with Emscripten (Chapter 31).
+execute. The whole runtime is compiled to it with Emscripten (Chapter 32).
 
 **Whatever** — Raku's `*` in term position, which turns the expression around
 it into a closure: `*.is-prime` is a one-argument block (Chapter 18).

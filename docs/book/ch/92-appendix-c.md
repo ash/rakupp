@@ -31,17 +31,18 @@ own — is in Appendix D.
 | the native compiler | `Codegen.cpp`, the `rt*` helpers in `Interpreter.h` | Chapters 26 to 28 |
 | what a binary keeps | `SlimScan.cpp`, `ucd_seam.h`, `src/stubs/` | Chapter 29 |
 | the parse cache | `AstSerial.cpp` | Chapter 30 |
-| the browser build | `rakujs/rakupp_web.cpp`, `rakujs/build.sh`, `raku.js` | Chapter 31 |
-| module loading | `Interpreter.cpp` `loadModule`, `Parser.cpp` `scanModuleOps` | Chapter 32 |
-| the installer and the store | `tools/install.raku`, `Builtins.cpp` `.install` | Chapter 33 |
-| `nqp::` ops | `Parser::makeNqpOp`, `Interpreter::evalNqpOp` | Chapter 34 |
-| NativeCall | `Ffi.cpp`, `Interpreter::callNative` | Chapter 35 |
-| the extension ABI | `rakupp_ext.h`, `ExtApi.cpp` | Chapter 36 |
-| embedding — Raku inside a host | `rakupp.h`, `EmbedApi.cpp` | Chapter 36 |
-| threads, the GIL, supplies | `Interpreter.h`'s concurrency section | Chapter 37 |
-| lint, highlight, profile, REPL | `Lint.cpp`, `Highlight.cpp`, `Profiler.cpp`, `Repl.cpp` | Chapter 38 |
-| the undeclared-variable gate | `DeclCheck.cpp`, `isSpecialVar` in `Interpreter.cpp` | Chapter 38 |
-| the MCP server | `McpServer.cpp` | Chapter 38 |
+| the JavaScript back end | `src/codegen/Js.cpp`, `JsRuntimeSrc.cpp`, `src/js-rt/` | Chapter 31 |
+| the browser build | `rakujs/rakupp_web.cpp`, `rakujs/build.sh`, `raku.js` | Chapter 32 |
+| module loading | `Interpreter.cpp` `loadModule`, `Parser.cpp` `scanModuleOps` | Chapter 33 |
+| the installer and the store | `tools/install.raku`, `Builtins.cpp` `.install` | Chapter 34 |
+| `nqp::` ops | `Parser::makeNqpOp`, `Interpreter::evalNqpOp` | Chapter 35 |
+| NativeCall | `Ffi.cpp`, `Interpreter::callNative` | Chapter 36 |
+| the extension ABI | `rakupp_ext.h`, `ExtApi.cpp` | Chapter 37 |
+| embedding — Raku inside a host | `rakupp.h`, `EmbedApi.cpp` | Chapter 37 |
+| threads, the GIL, supplies | `Interpreter.h`'s concurrency section | Chapter 38 |
+| lint, highlight, profile, REPL | `Lint.cpp`, `Highlight.cpp`, `Profiler.cpp`, `Repl.cpp` | Chapter 39 |
+| the undeclared-variable gate | `DeclCheck.cpp`, `isSpecialVar` in `Interpreter.cpp` | Chapter 39 |
+| the MCP server | `McpServer.cpp` | Chapter 39 |
 
 ## Rules that are easy to break by accident
 

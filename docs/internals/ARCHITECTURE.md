@@ -94,7 +94,7 @@ hands the names it covered to the native backend, which has no local to emit for
 them. The exemption list is not re-implemented: it calls
 `isSpecialVar` in `Interpreter.cpp`, the same predicate the throw sites use, so
 the static answer cannot drift from the runtime one. The full account is in the
-book, [Chapter 38](../book/ch/38-tooling.md); the user-facing description is in
+book, [Chapter 39](../book/ch/38-tooling.md); the user-facing description is in
 [../guide/CLI.md](../guide/CLI.md).
 
 ---

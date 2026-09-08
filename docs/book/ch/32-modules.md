@@ -106,7 +106,7 @@ mirrors a real installation repository: SHA-1 the module name, read the short-na
 index entry, take its content id, and read the source by that id. So Raku++
 loads zef-installed modules directly out of Rakudo's own install tree. That
 store — its layout, the installer that writes it, and how the engines share
-it — is Chapter 33.
+it — is Chapter 34.
 
 ```sh
 RAKUPP_TRACE=1 rakupp myprogram.raku

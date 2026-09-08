@@ -27,7 +27,7 @@ order is the whole rule, and it has three consequences worth spelling out.
 for free.
 
 **A module's exported sub also shadows a builtin**, because the loader copies it
-into the global environment, which is the last link of the chain (Chapter 32).
+into the global environment, which is the last link of the chain (Chapter 33).
 
 **A compiled program must reproduce this order**, which it cannot do by resolving
 names against the builtin table at compile time. That is a real bug that
@@ -280,7 +280,7 @@ call copies a `Value` and allocates a `ValueList`.
 
 Two of the three costs in that sentence have since shrunk without the by-value
 signatures changing at all. A `Value` carried eleven `shared_ptr` members then
-and carries two now (Chapter 40), so the copy is a fraction of what it was; and
+and carries two now (Chapter 41), so the copy is a fraction of what it was; and
 the `ValueList` for a short argument list no longer reaches the allocator,
 because small blocks come off a free list (Chapter 12). What is left is the
 copy itself, which is smaller, on a path that is otherwise unchanged.

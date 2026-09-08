@@ -212,5 +212,5 @@ optimisation and `-mcpu=native` were both measured and both did nothing.
 | the showcase interpreters | JavaScript, Perl, Python and Lisp, written in Raku |
 
 The release checklist in `docs/dev/RELEASING.md` gates on all of them. Chapter
-38 is about why the performance gate is there and what happens when it is
+40 is about why the performance gate is there and what happens when it is
 skipped.

@@ -63,7 +63,7 @@ static thread_local ExecContext tctx_;
 ```
 
 It is `static thread_local`, so each real worker thread owns its own set. That
-is the foundation of the concurrency model in Chapter 37 — with per-thread
+is the foundation of the concurrency model in Chapter 38 — with per-thread
 registers, running Raku on a second thread does not need a register swap at
 every handover.
 
@@ -106,7 +106,7 @@ shape of the operands. Chapter 19 is entirely about those.
 parsed into sub-expressions by the front end, so there is no string scanning
 here at all.
 
-**`NqpOp`** exists only under `use nqp` (Chapter 34).
+**`NqpOp`** exists only under `use nqp` (Chapter 35).
 
 ## Evaluating a statement
 
@@ -247,7 +247,7 @@ int rakuppMainOnBigStack(int (*body)(void*), void* ctx);
 
 and worker threads get the same treatment through `BigStackThread`, which
 reserves 256 MiB of *virtual* address space — committed only as used
-(Chapter 37). A compiled `--exe` binary calls `rakuppMainOnBigStack` for its own
+(Chapter 38). A compiled `--exe` binary calls `rakuppMainOnBigStack` for its own
 main body, so the recursion budget is the same in every mode.
 
 The interpreter also keeps a `callDepth` register and raises a clean Raku error
@@ -260,7 +260,7 @@ Re-dispatching every AST node on every execution is inherently slower than
 bytecode or a JIT — but by how much is a question with an answer, and the
 answer is smaller than the sentence suggests. Counted directly: the dispatch
 `switch` costs **0.32 ns**, and a node visit costs **46 to 85 ns**. The
-re-dispatch is under one per cent of what visiting a node costs. Chapter 41
+re-dispatch is under one per cent of what visiting a node costs. Chapter 42
 has the measurement and what follows from it.
 
 Where the rest goes is the profile of a method-heavy loop, after the fixes in

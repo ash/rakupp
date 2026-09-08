@@ -223,12 +223,12 @@ lines of output, and `--exe` reports it itself instead of emitting C++ that name
 an identifier it never declared. `--aot` and `--bundle` inherit it at build time;
 a `--bundle` binary, which parses its embedded source at run time, is checked
 again then, since that is the interpreter path. The pass, and why it is careful
-to the point of standing down, is in Chapter 38.
+to the point of standing down, is in Chapter 39.
 
 **Modules are always interpreted.** `Codegen` emits a call to
 `Interpreter::rtUse`, a thin mirror of the interpreter's `use` handling, which
 calls the same `loadModule`. Only the *main program* is compiled; a compiled
-binary still loads and interprets its modules (Chapter 32) — though it can
+binary still loads and interprets its modules (Chapter 33) — though it can
 carry their serialised ASTs inside itself, which is the next section.
 
 ## Carrying modules inside a binary
@@ -270,10 +270,10 @@ const std::string* rakuppEmbeddedModuleSource(const std::string& name);
 
 `--exe` and `--aot` parse at build time and never need it.
 
-## A fifth target
+## Mode 1 in a browser
 
 The same runtime compiled to **WebAssembly** is Raku.js: the interpreter running
 in a browser tab, with the same `Value` semantics and no server. It is mode 1
 with a different host — but the host removes the filesystem, the threads and the
 dynamic loader, which changes enough to be worth its own chapter. That is
-Chapter 31, at the end of this part.
+Chapter 32, at the end of this part.

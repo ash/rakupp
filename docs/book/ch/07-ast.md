@@ -182,7 +182,7 @@ struct NqpOp : Expr {
 
 A program that never says `use nqp` builds no such node, so the interpreter's
 `NqpOp` arm is never reached and the implementation is dead code for that run.
-Chapter 34 is about why that zero-cost property is structural rather than an
+Chapter 35 is about why that zero-cost property is structural rather than an
 optimisation.
 
 **`AllomorphLit`** exists because a numeric word inside a `<…>` list is
@@ -216,7 +216,7 @@ std::vector<std::shared_ptr<Program>> keptPrograms_;   // EVAL'd ASTs
 ```
 
 and `loadModule` pushes each module's `Program` onto the same vector
-(Chapter 32). Nothing is ever released from it. That is a deliberate, bounded
+(Chapter 33). Nothing is ever released from it. That is a deliberate, bounded
 leak: the number of distinct compilation units a process loads is small, and
 the alternative — refcounting subtrees — would cost on every call.
 

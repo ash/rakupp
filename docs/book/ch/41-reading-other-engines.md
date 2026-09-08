@@ -41,7 +41,7 @@ keeping:
 
 ## Nine engines, one line of inheritance each
 
-**Perl 5** contributed the applied playbook of Chapter 40 — pads, result
+**Perl 5** contributed the applied playbook of Chapter 41 — pads, result
 slots, the stored-hash table, arenas and free lists, the head/body diagnosis —
 and the framing sentence the whole shelf keeps confirming: pay per compile, not
 per use; don't carry per value what only some values need. Its arena discipline
@@ -187,7 +187,7 @@ ns** — `fib` 46, `asg` 61, `call` 65, `loopsum` 72, `method` 85, counted with 
 `-DRAKUPP_NODE_COUNT` build and divided into wall clock. Flat dispatch is
 between four and seven tenths of one per cent of a node visit. The interpreter
 is not slow because it walks a tree; it is slow because of what it does at each
-node, which is what every batch of Chapter 40 attacked instead.
+node, which is what every batch of Chapter 41 attacked instead.
 
 The second measurement did change one thing, and it is worth recording because
 it inverts an argument this book used to make. A partial lowering — an IR that

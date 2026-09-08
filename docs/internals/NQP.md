@@ -1,7 +1,7 @@
 # `use nqp` — see the book
 
 This was a short-form companion to the Internals book's nqp chapter. It has been
-merged into **[Chapter 34, `use nqp`](../book/ch/34-nqp.md)**, which is now the
+merged into **[Chapter 35, `use nqp`](../book/ch/34-nqp.md)**, which is now the
 single account.
 
 Both described the supported op set as "around fifty"; it is 58 opcodes reached
