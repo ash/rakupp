@@ -71,7 +71,8 @@ false warning is an annoyance, a false *refusal* means a working program will
 not start.
 
 The problem it solves is one of timing. An undeclared variable was always an
-error — the interpreter throws `X::Undeclared` from `lvalueOf`/`evalVarExpr` —
+error — the interpreter throws `X::Undeclared` from `Interpreter::lvalue` and
+from `eval`'s `VarExpr` arm —
 but only when execution *reached* the reference. So
 
 ```raku
@@ -229,6 +230,14 @@ compiler refuses outright, which is not merely unhelpful: it is the tool
 disagreeing with the compiler about whether a program is valid, in the direction
 that tells you to go ahead. Whatever else a linter does, it must never say less
 than running the program would.
+
+That rule has a live exception, and it is worth naming here rather than leaving
+for someone to discover in an editor. `rakupp --lsp` speaks the Language Server
+Protocol and publishes the lint findings — but `src/Lsp.cpp` includes `Lint.h`
+and not `DeclCheck.h`, so it never reports an undeclared variable. On the file
+above, `--lint` prints an error and exits 2 while the language server publishes
+only the unused-variable warning. An editor showing a clean file that will not
+run is the same failure this section is about, one layer further out.
 
 ### What it costs
 
@@ -509,8 +518,9 @@ peer on the older subscription form and off ZMTP heartbeats — less protocol on
 a link that carries one client — while the code still honours the 3.1
 `SUBSCRIBE` command and answers `PING` with `PONG`, so a libzmq that changes
 its mind does not break it. And every message is signed with HMAC-SHA256 over
-its four JSON parts, written out in the same file (about 120 lines of FIPS
-180-4) for the same reason as the JSON: one that does not verify is *dropped*,
+its four JSON parts, using the SHA-256 in `src/Digest.h` (about 120 lines of
+FIPS 180-4, shared with the digest builtins; the kernel keeps a five-line
+wrapper) for the same reason as the JSON: one that does not verify is *dropped*,
 not answered.
 
 ### The bug the capture mechanism sets

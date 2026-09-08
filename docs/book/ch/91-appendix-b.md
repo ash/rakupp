@@ -14,7 +14,7 @@ reference for the internals; the user-facing command line is documented in
 | `--aot` | parse at build time, emit C++ that rebuilds the AST |
 | `--exe` | transpile to C++ and compile natively |
 | `--cpp`, `--emit-cpp` | print the generated C++ instead of compiling it |
-| `-O`, `-O2`, `-O3`, `-Os`, `-O0` | run the codegen optimizer; the level is forwarded to the C++ compiler |
+| `-O` | run the codegen optimizer. Any suffix (`-O2`, `-Ofast`, `-Os`, …) turns it on too and is forwarded to the C++ compiler; there is one flag here, not five |
 
 ## Inspection and tooling flags
 
@@ -36,10 +36,52 @@ reference for the internals; the user-facing command line is documented in
 | `--precomp-info` | what the parse cache holds |
 | `--precomp-clean` | empty it |
 | `--precomp-modules=on\|off`, `--precomp-files=on\|off` | the two cache switches |
-| `--version`, `--help`, `--quiet` | as expected |
+| `--version`, `-V`, `-v`, `--help`, `-h`, `--quiet`, `-q` | as expected |
+| `-x` | skip everything before the `#!` line |
+| `--json` | machine-readable `-c` and `--lint` findings |
+| `--ll-exception` | every frame of an uncaught error |
+| `--exe-info FILE` | the build manifest embedded in a compiled binary |
+| `--stagestats` | phase timings and module loads on stderr |
+| `--trace` | print each statement as it runs |
+| `--repl-after` | run the program, then open a session on its state |
+| `--completions=bash\|zsh\|fish` | print a shell completion script |
+| `--lsp` | run the Language Server |
+
+## Flags that shape a build
+
+| Flag | Effect |
+|---|---|
+| `-o FILE` | output file (compile modes, `--target=js`) |
+| `-I DIR` | add a module search directory |
+| `--slim[=safe\|auto\|max\|none\|help\|list\|verify]` | cut unused runtime subsystems from the binary |
+| `--standalone` | a module that cannot be embedded is a build error |
+| `--target=js` | transpile to JavaScript (Chapter 30b) |
+| `--verify` | emit JavaScript only if it agrees with the interpreter |
+| `--module` | JavaScript: export the subs, classes and `MAIN` instead of running |
+| `--runtime` | write just the JavaScript runtime |
+| `--fallback=wasm` | accept a program outside the JavaScript core, on the WebAssembly engine |
+
+## Flags that change how a run behaves
+
+| Flag | Effect |
+|---|---|
+| `--seed` | pin the random generator |
+| `--stack-size` | the stack of the program thread, and so the recursion ceiling |
+| `--env-file FILE` | load `KEY=VALUE` lines into the environment |
+| `--color=auto\|always\|never` | ANSI colour on stderr and in the REPL |
+| `--watch` | re-run the program whenever it or a library file changes |
+| `-l` | accepted; lines already arrive chomped |
+| `-0` | NUL-separated records |
+| `--name`, `--prefix DIR` | kernel name and location for `--jupyter-install` |
 
 Flags are position-independent, and the perl-compatible one-liner family
 (`-n`, `-p`, `-a`, `-F`, `-i`, `-0777`, `-M`) is documented in the CLI guide.
+
+This list is checked against the binary rather than maintained by hand:
+`tools/check-book-appendix.raku` reads `kFlagDocs` out of `src/main.cpp` — the
+same table `--help` prints from — and fails if a flag is in one and not the
+other. It was written because this appendix was missing twenty-seven of the
+sixty-six flags the binary accepts, including a whole run mode.
 
 ## Environment variables
 
