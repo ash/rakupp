@@ -577,7 +577,7 @@ static std::string compileCmd(const std::string& cxx, const std::string& opt,
         // link.exe resolves symbols across libraries iteratively, so the
         // rt<->parse cycle needs no grouping here.
         for (const auto& l : libs) c += " " + shq(l);
-        c += " /Fe:" + shq(out) + " ws2_32.lib";
+        c += " /Fe:" + shq(out) + " ws2_32.lib bcrypt.lib";
         // 256 MiB main-thread stack: Windows defaults to 1 MB, which is under
         // the recursion guard's 2 MiB headroom reserve — the first guarded
         // call in a natively-compiled program threw X::Recursion immediately
@@ -614,7 +614,8 @@ static std::string compileCmd(const std::string& cxx, const std::string& opt,
 #endif
     c += " -o " + shq(out);
 #ifdef _WIN32
-    c += " -lws2_32";                 // MinGW: the runtime's sockets need Winsock
+    c += " -lws2_32 -lbcrypt";        // MinGW: Winsock for sockets, bcrypt for
+                                      // the runtime's BCryptGenRandom
     c += " -Wl,--stack,268435456";    // and the same 256 MiB main stack as MSVC
     if (g_slim.deadStrip) c += " -Wl,--gc-sections";
     if (g_slim.stripSyms) c += " -s"; // GNU ld on PE: strip at link

@@ -16,8 +16,13 @@
 #  include <sys/syscall.h>
 #  include <unistd.h>
 #else
-#  include <sys/random.h>
 #  include <unistd.h>
+// getentropy(2) is declared in <sys/random.h> on macOS and FreeBSD, but OpenBSD
+// puts it in <unistd.h> and ships no <sys/random.h> at all — including that
+// header unconditionally is a fatal error there, not a warning.
+#  if __has_include(<sys/random.h>)
+#    include <sys/random.h>
+#  endif
 #endif
 
 namespace rakupp {

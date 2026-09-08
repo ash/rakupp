@@ -177,7 +177,8 @@ target_link_libraries(rakupp_rt PUBLIC Threads::Threads)
 target_compile_definitions(rakupp_rt PRIVATE RAKUPP_BUILDING)
 
 if(WIN32)
-  target_link_libraries(rakupp_rt PUBLIC ws2_32)   # Winsock (sockets, WSAPoll)
+  target_link_libraries(rakupp_rt PUBLIC ws2_32   # Winsock (sockets, WSAPoll)
+                                         bcrypt)  # BCryptGenRandom (Data::Native)
   # Target Windows 8+ APIs (GetCurrentThreadStackLimits; WSAPoll needs Vista+).
   # MSVC's SDK headers default new enough, but MinGW's default _WIN32_WINNT can
   # be Windows 7 — which hides the declaration and breaks the build.
@@ -256,7 +257,7 @@ if(RAKUPP_BUILD_SHARED OR RAKUPP_LINK_SHARED)
       # the "lib". (The test artifact keeps its rakupp_testrt name everywhere.)
       set_target_properties(rakupp_shared PROPERTIES OUTPUT_NAME librakupp PREFIX "")
     endif()
-    target_link_libraries(rakupp_shared PUBLIC ws2_32)
+    target_link_libraries(rakupp_shared PUBLIC ws2_32 bcrypt)
     target_compile_definitions(rakupp_shared PUBLIC _WIN32_WINNT=0x0602)
   endif()
   # Only the shipping artifact installs; a test-configuration librakupp_testrt

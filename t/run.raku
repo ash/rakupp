@@ -324,7 +324,18 @@ sub start-server(Str $script, Int $port) {
 # invalid pattern that matches nothing, so servers leaked and piled up across
 # runs (a zombie on a colliding port answered INCR with a stale count). Kill by
 # basename instead.
-sub stop-server(Str $script) { try shell("pkill -f '{$script.IO.basename}' 2>/dev/null || true"); }
+sub stop-server(Str $script) {
+    my $b = $script.IO.basename;
+    # The leading character goes in a character class so the pattern cannot
+    # match the `sh -c` process running it: on Linux pkill -f reads that shell's
+    # own command line and SIGTERMs it, so the suite died at the stop-server
+    # call. macOS never matched the shell, so only the Linux leg ever failed.
+    my $pat = '[' ~ $b.substr(0, 1) ~ ']' ~ $b.substr(1);
+    # Bound and never sunk: a Proc checks its exit status when it is sunk, and
+    # no enclosing `try` catches that — the throw lands at whoever sinks it.
+    my $ignored = shell("pkill -f '$pat' 2>/dev/null || true");
+    True;
+}
 
 sub recv-all($sock --> Str) {              # read until the peer closes
     my $r = '';
