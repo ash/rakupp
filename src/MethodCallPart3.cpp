@@ -1748,20 +1748,33 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // carries second precision.
         double secs;
 #if defined(_WIN32)
-        time_t t = (m == "accessed") ? st.st_atime : (m == "changed") ? st.st_ctime : st.st_mtime;
-        secs = (double)t;
+        if (m == "created") {
+            double b = 0;
+            secs = fileBirthSecs(ioFsPath(inv), st, b) ? b : 0.0;
+        }
+        else {
+            time_t t = (m == "accessed") ? st.st_atime : (m == "changed") ? st.st_ctime : st.st_mtime;
+            secs = (double)t;
+        }
 #else
-  #if defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__)
-        const struct timespec& ats = st.st_atimespec, &cts = st.st_ctimespec, &mts = st.st_mtimespec, &bts = st.st_birthtimespec;
-  #elif defined(__OpenBSD__)
-        const struct timespec& ats = st.st_atimespec, &cts = st.st_ctimespec, &mts = st.st_mtimespec, &bts = st.st_mtimespec;
+  #if defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
+        const struct timespec& ats = st.st_atimespec, &cts = st.st_ctimespec, &mts = st.st_mtimespec;
   #else
-        const struct timespec& ats = st.st_atim, &cts = st.st_ctim, &mts = st.st_mtim, &bts = st.st_mtim; // Linux: no portable birth time
+        const struct timespec& ats = st.st_atim, &cts = st.st_ctim, &mts = st.st_mtim;
   #endif
-        // `created` is the BIRTH time where the platform has one (nqp::stat's
-        // CREATETIME already read it; this arm shared modified's field)
-        const struct timespec& ts = (m == "accessed") ? ats : (m == "changed") ? cts : (m == "created") ? bts : mts;
-        secs = (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
+        // `created` is the BIRTH time, which is not a field of `st` everywhere —
+        // fileBirthSecs knows where each platform keeps it. This arm used to
+        // alias modified's field on Linux, so `.created` moved with every write;
+        // where there is genuinely no birth time it is 0, the same answer
+        // nqp::stat's CREATETIME gives, not a neighbouring timestamp in disguise.
+        if (m == "created") {
+            double b = 0;
+            secs = fileBirthSecs(ioFsPath(inv), st, b) ? b : 0.0;
+        }
+        else {
+            const struct timespec& ts = (m == "accessed") ? ats : (m == "changed") ? cts : mts;
+            secs = (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
+        }
 #endif
         // an INSTANT, not a bare Num: `.modified.DateTime` must dispatch
         // (HTTP::Tiny's mirror builds if-modified-since from it)

@@ -6,7 +6,9 @@
 #include "Value.h"
 #if !defined(_WIN32)
 #include <sys/wait.h>
+#include <fcntl.h>   // AT_FDCWD, for the statx(2) birth time below
 #endif
+#include <sys/stat.h>
 #include <chrono>
 #include <cstdint>
 #include <memory>
@@ -62,6 +64,60 @@ inline double timerRemainingSecs(const Value& p) {
     if (f != p.hash()->end()) return f->second.toNum() - epochNowSecs();
     auto s = p.hash()->find("seconds");
     return s != p.hash()->end() ? s->second.toNum() : 0.0;
+}
+
+// A file's BIRTH time in raw POSIX seconds, or false where there is none to
+// read. `struct stat` has no field for it on Linux — only statx(2) carries it —
+// and the `.created` method papered over that by reading st_mtim, which made
+// `.created` a second name for `.modified`: it moved every time the file was
+// written. nqp::stat's CREATETIME answered 0 on that same platform, so the two
+// spellings of one question disagreed with each other. Both read this now.
+// `st` is the caller's already-taken stat, used where the birth time rides in it
+// — a template because Windows hands us a `struct ::_stat64` and POSIX a
+// `struct stat`, and this is called with both.
+template <class StatT>
+inline bool fileBirthSecs(const std::string& path, const StatT& st, double& out) {
+#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__)
+    (void)path;
+    if (st.st_birthtimespec.tv_sec <= 0) return false; // a filesystem that keeps none
+    out = (double)st.st_birthtimespec.tv_sec + (double)st.st_birthtimespec.tv_nsec / 1e9;
+    return true;
+#elif defined(__OpenBSD__)
+    // OpenBSD keeps it in the reserved namespace: __st_birthtime is the one alias
+    // its headers define under EVERY feature-test combination (plain st_birthtime
+    // does not exist there), and it carries seconds only.
+    (void)path;
+    if (st.__st_birthtime <= 0) return false;
+    out = (double)st.__st_birthtime;
+    return true;
+#elif defined(__linux__) && !defined(__EMSCRIPTEN__) && defined(STATX_BTIME)
+    (void)st;
+    struct statx stx;
+    if (::statx(AT_FDCWD, path.c_str(), AT_STATX_SYNC_AS_STAT, STATX_BTIME, &stx) != 0) return false;
+    // ext4/xfs/btrfs keep a birth time; older filesystems and NFS do not, and say
+    // so by leaving the bit out of the answered mask rather than by failing.
+    if (!(stx.stx_mask & STATX_BTIME)) return false;
+    out = (double)stx.stx_btime.tv_sec + (double)stx.stx_btime.tv_nsec / 1e9;
+    return true;
+#elif defined(_WIN32)
+    // The CRT spells the creation time st_ctime on Windows — there is no change
+    // time there — so unlike Linux the birth time does ride in the caller's stat.
+    (void)path;
+    if (st.st_ctime <= 0) return false;
+    out = (double)st.st_ctime;
+    return true;
+#else
+  #if defined(__linux__) && !defined(__EMSCRIPTEN__)
+    // Reaching here on Linux means <sys/stat.h> offered no STATX_BTIME, so
+    // `.created` degrades to 0 everywhere on this build. That is a legal answer,
+    // which is exactly why it needs saying out loud: the regression case for the
+    // birth time accepts 0 (a filesystem may genuinely keep none), so a build
+    // that lost statx would go green while testing nothing.
+    #warning "no statx(2) STATX_BTIME here: IO::Path.created will answer 0 on this build"
+  #endif
+    (void)path; (void)st; (void)out;
+    return false;
+#endif
 }
 
 // The next LOGICAL NEWLINE in a UTF-8 string at or after `from`, as (offset,

@@ -12916,23 +12916,20 @@ Value Interpreter::evalNqpOp(NqpOp* n) {
                 default: break;
             }
 #ifndef _WIN32
-            // st_blksize / st_blocks are POSIX-only, and BSD/macOS spells the
-            // creation time st_birthtimespec where Linux has no portable one
+            // st_blksize / st_blocks are POSIX-only
             if (field == -6) return Value::integer((long long)st.st_blksize); // PLATFORM_BLOCKSIZE
             if (field == -7) return Value::integer((long long)st.st_blocks);  // PLATFORM_BLOCKS
-#if defined(__OpenBSD__)
-            // OpenBSD keeps birthtime in the reserved namespace: the member is
-            // __st_birthtim and the one alias its headers define under EVERY
-            // feature-test combination is __st_birthtime — plain st_birthtime
-            // does not exist there.
-            if (field == 5) return Value::integer((long long)st.__st_birthtime); // CREATETIME
-#elif defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__)
-            if (field == 5) return Value::integer((long long)st.st_birthtime); // CREATETIME
 #endif
-#endif
+            // CREATETIME: wherever the platform keeps the birth time, which is
+            // not `st` on Linux — the `.created` method reads the same helper, so
+            // the two spellings of this question cannot answer differently again.
+            if (field == 5) {
+                double b = 0;
+                return Value::integer(fileBirthSecs(path, st, b) ? (long long)b : 0LL);
+            }
             // CREATETIME where the platform has none, and BACKUPTIME everywhere:
             // MoarVM answers 0 rather than failing
-            if (field == 5 || field == 9) return Value::integer(0);
+            if (field == 9) return Value::integer(0);
             return Value::integer(-1); // an unknown field number
         }
         case O::CloseFh: {

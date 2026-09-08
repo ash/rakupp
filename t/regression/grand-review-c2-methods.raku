@@ -59,8 +59,19 @@ check(dies({ 5.to-posix }),               True,   '5.to-posix is no method');
     check(abs($f.modified.Int - time) < 5,   True, '.modified.Int is raw POSIX, as Rakudo answers');
     sleep 1.2;
     $f.spurt("y", :append);
-    check($f.created < $f.modified,          True, '.created stays put when the file is appended to');
-    check(abs($f.created - $f.accessed) < 5, True, '.created is a time of this file');
+    # Not every filesystem keeps a birth time (Linux reads it through statx, and
+    # older filesystems and NFS have none). Where there is one it must stay put
+    # across the append; where there is none the answer is 0 — the same as
+    # nqp::stat's CREATETIME — and NOT a neighbouring timestamp wearing the name,
+    # which is how this check first failed: `.created` was `.modified` on Linux
+    # and so moved with the append.
+    if $f.created.Int > 0 {
+        check($f.created < $f.modified,          True, '.created stays put when the file is appended to');
+        check(abs($f.created - $f.accessed) < 5, True, '.created is a time of this file');
+    }
+    else {
+        check($f.created.Int,                    0,    '.created is 0 where the filesystem keeps no birth time');
+    }
     $f.unlink;
 }
 
