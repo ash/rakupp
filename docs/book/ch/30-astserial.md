@@ -14,7 +14,7 @@ must be indistinguishable from a freshly parsed one.
 
 ```cpp
 // src/AstSerial.h
-inline constexpr uint32_t kAstSerialVersion = 5;
+inline constexpr uint32_t kAstSerialVersion = 17;
 struct AstSerialError { std::string msg; };
 std::string serializeAst(const Program& prog);
 void deserializeAst(const std::string& blob, Program& out);
@@ -189,10 +189,10 @@ table before the disk.
 That the cache format and the embedding format are the *same* format is not a
 coincidence — it is why a bug in either is found twice as fast.
 
-## The AOT emitter, and where it differs
+## The AOT emitter, and what it adds
 
-`--aot` solves a similar problem in a completely different way: instead of a
-byte encoding, it emits **C++ source that rebuilds the tree**.
+`--aot` is the other consumer of this format, and it is worth being clear that
+it *is* this format:
 
 ```cpp
 // src/Ast.h
@@ -202,14 +202,22 @@ void emitAstProgram(const Program& prog, std::ostream& out,
                     const std::vector<BundledModule>& mods);
 ```
 
-The trade-offs are opposite. The serialiser is compact and fast to read but
-needs its own reader; the emitter needs no reader at all — the C++ compiler is
-the reader — but produces one function per node, so a few hundred lines of Raku
-become tens of thousands of lines of C++.
+What `emitAstProgram` adds is the wrapper: it calls `serializeAst`, writes the
+blob out as a `kAst` byte array, and generates a `main` that calls
+`deserializeAst` at startup. One encoding, two consumers — the cache reads it
+from disk and the binary carries it inside itself.
+
+It used to be genuinely different: C++ source with one builder function per
+node, no reader needed because the compiler was the reader. That is the version
+this section used to contrast with, and it was replaced because listing each
+node's fields by hand meant a field nobody listed silently did not survive.
+Chapter 25 tells that story. The lesson it leaves here is the argument for the
+visitor: a writer and a reader that are the same source line cannot disagree
+about what a node contains, and two hand-written lists always eventually can.
 
 Both fail *soft*. An unserialisable module is left out of the binary and loaded
-from disk; an unemittable node makes `--aot` fall back to bundling. Neither
-produces a wrong tree.
+from disk; a tree the format cannot carry makes `--aot` fall back to bundling.
+Neither produces a wrong tree.
 
 That shared property is the design rule worth taking away: **a derived-data
 mechanism should degrade to recomputation, never to a guess.** Every failure

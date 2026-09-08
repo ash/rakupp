@@ -712,17 +712,17 @@ slots for `Num`/`Complex`/`Str`/`Array`/`Hash`/`BigInt`/`Rat` and their
 What the passes remove is per-*operation* overhead, not the box:
 
 - **Default `--exe`:** `$s = $s + $i` is `v_ss = rtAdd(v_ss, v_si)` — a runtime
-  dispatch that also **constructs a fresh 376-byte `Value`** for the result.
+  dispatch that also **constructs a fresh 128-byte `Value`** for the result.
 - **`-O` (pass 3):** the arithmetic runs as raw `int64` in registers and the
   result is written **into `v_ss`'s existing `.i` slot in place** — no `Value`
   is constructed per operation (this is the "zero boxing" behind `intsum`'s
-  7.9×). But `v_ss` is *still* a 376-byte `Value`; the storage is unchanged, and
+  7.9×). But `v_ss` is *still* a 128-byte `Value`; the storage is unchanged, and
   a guard miss (non-int operand, overflow to bignum) falls back to the boxed
   path.
 
 So `-O` makes hot integer *work* native without allocation, but it does **not**
 shrink the variables, and loops still copy full `Value`s (e.g. the loop topic
-each iteration — cheap when the `shared_ptr`s are null, but 376 bytes moved).
+each iteration — cheap when the `shared_ptr`s are null, but 128 bytes moved).
 
 Why keep the box? Because the transpile is uniform: any expression must be able
 to flow anywhere — into a runtime function, an array element, `say()`, an
@@ -748,7 +748,7 @@ conditions; the remaining levers, in rough order of expected payoff:
 - **native int locals** — the big one for both memory and speed: prove a typed
   local (`my int $x`) never escapes into a `Value` context and never leaves
   `Int`, then emit a raw `long long` with **no box at all** — eliminating the
-  376-byte storage and the per-iteration `Value` copies, not just the per-op
+  128-byte storage and the per-iteration `Value` copies, not just the per-op
   construction. This is a genuine escape-analysis / type-flow pass, the natural
   successor to pass 3;
 - devirtualizing monomorphic method calls (measuring stick: `methodcalls`),
