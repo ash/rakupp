@@ -1074,6 +1074,32 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     }
 
     // ---- IO::Path (string-as-path) ----
+    // The path methods here and below read the invocant as a path STRING, and an
+    // undefined one satisfies that silently as "" — so `Any.basename` answered
+    // "/", `Any.is-absolute` False, and `Any.contents` listed the CWD. Rakudo has
+    // none of them on Any: they are IO::Path methods, and an undefined invocant is
+    // a missing method, exactly as `.IO` and `.slurp` just below already say.
+    //
+    // `dir`/`contents` are what made it visible. Once an unlistable path became an
+    // honest X::IO::Dir (#62) the empty path started THROWING, and four Roast files
+    // that had been walking past a hole died mid-run — `S26-documentation/04-code.t`
+    // and `08-formattingcodes.t`, `S02-literals/pod.t` and
+    // `integration/advent2011-day10.t`, each on `.contents` of something undefined.
+    // The other four answered nonsense quietly and still do everywhere else.
+    //
+    // Nil ABSORBS instead of throwing (`Nil.basename` is `(Any)` in Rakudo), which
+    // is the same rule `.IO` follows two lines down. A DEFINED Str is left alone:
+    // Rakudo refuses `"x".basename` too, but rakupp accepts a string as a path in
+    // many places on purpose, and that is a separate divergence from this one.
+    if ((inv.t == VT::Any || inv.t == VT::Type || inv.t == VT::Nil) && inv.hashKind.empty() &&
+        (m == "contents" || m == "dir" || m == "is-absolute" || m == "is-relative" ||
+         m == "basename" || m == "extension")) {
+        if (inv.t == VT::Nil) return Value::nil();
+        throw RakuError{Value::typeObj("X::Method::NotFound"),
+                        "No such method '" + (const std::string&)m +
+                        "' for invocant of type '" +
+                        (inv.t == VT::Type ? inv.s : std::string("Any")) + "'"};
+    }
     if (m == "IO") {
         // Any has no .IO (Cool does): an undefined invocant dies rather than
         // silently becoming the "" path; Nil keeps its absorb-everything rule.

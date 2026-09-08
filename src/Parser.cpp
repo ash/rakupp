@@ -3656,7 +3656,11 @@ ExprPtr Parser::parsePrimary() {
             // interpolation+escapes for the qq forms ("\n" is a newline,
             // "$x" the variable's value). Empty text2 (other producers of
             // QwList tokens) keeps the plain whitespace split.
-            const std::string form = cur().text2;
+            std::string form = cur().text2;
+            // An explicit `:v`/`:val` adverb rides on the form as a `:v` suffix
+            // (see the lexer): it re-enables the allomorphing the q-family drops.
+            bool valAdverb = form.size() > 2 && form.compare(form.size() - 2, 2, ":v") == 0;
+            if (valAdverb) form.resize(form.size() - 2);
             const bool protect = form == "qww" || form == "qqww";
             const bool interp  = form == "qqw" || form == "qqww";
             // Only the ANGLE forms val() their words into allomorphs. `<8 9>`,
@@ -3670,7 +3674,10 @@ ExprPtr Parser::parsePrimary() {
             // ARRAY where Rakudo nests three hash keys (issue #69).
             // The lexer sets text2 for the q-family only; the bare-angle
             // producers of this token leave it empty and keep the val().
-            const bool allomorph = form.empty();
+            // An explicit `:v`/`:val` is the one q-family spelling that DOES
+            // allomorph — Rakudo honours it, and S02-literals/allomorphic.t
+            // asserts it element for element on `qw:v[1 2/3 4.5 6e7 8+9i]`.
+            const bool allomorph = form.empty() || valAdverb;
             std::string raw = advance().text;
             auto arr = std::make_unique<ArrayLit>();
             arr->isList = true;

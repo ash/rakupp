@@ -1208,6 +1208,13 @@ bool Lexer::tryQuoteForm(Token& out) {
                              adverbs.find(":ww ") != std::string::npos);
             out.text2 = protectF ? (interpF ? "qqww" : "qww")
                                  : (interpF ? "qqw"  : "qw");
+            // An EXPLICIT `:v`/`:val` asks for allomorphs, which the q-family
+            // does not give on its own: `qw:v[1 2/3]` is IntStr RatStr in
+            // Rakudo where `qw[1 2/3]` is two Strs. The form names the split
+            // and the interpolation, so it cannot carry this as well — the
+            // adverb rides along as a `:v` suffix the parser strips off.
+            if (adverbs.find(":v ") != std::string::npos ||
+                adverbs.find(":val ") != std::string::npos) out.text2 += ":v";
             return true;
         }
         // heredoc: q:to/MARKER/ — the delimited text is the terminator; body follows at line end
