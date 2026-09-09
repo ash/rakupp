@@ -8965,14 +8965,10 @@ static bool readHiddenLine(std::string& line, bool& echoed) {
 
 // `prompt` proper, shared by the builtin and by the `rakupp-prompt-hidden`
 // probe so the two cannot drift apart. `forceHidden` is the probe's entry.
-static Value promptImpl(ValueList& a, bool forceHidden) {
-    bool hidden = forceHidden;
+static Value promptImpl(ValueList& a, bool hidden) {
     const Value* msg = nullptr;
     for (const Value& v : a) {
-        if (v.t == VT::Pair && v.namedArg) {
-            if (v.s == "hidden") hidden = !v.pairVal() || v.pairVal()->truthy();
-            continue; // any other named keeps its old meaning: ignored
-        }
+        if (v.t == VT::Pair && v.namedArg) continue; // the callers rule on these
         if (!msg) msg = &v;
     }
     if (msg) { std::cout << msg->toStr(); std::cout.flush(); }
@@ -9422,11 +9418,30 @@ void Interpreter::registerBuiltins() {
     // would come back an IntStr, and an IntStr serialises through JSON::Fast
     // as the NUMBER 1234 — a secret silently retyped, with any leading zero
     // gone. A secret is a string.
-    B["prompt"] = [](Interpreter&, ValueList& a) -> Value { return promptImpl(a, false); };
-    // The probe a portable module looks for. `Password::Native` asks
-    // `try &::('rakupp-prompt-hidden')` and, finding it, hands the read to the
-    // engine instead of shelling out to `stty`. Same contract as
-    // `prompt(:hidden)`: optional message, plain Str back, Nil at EOF.
+    // `prompt($message?)` — and NOTHING else. Rakudo's prompt has two
+    // signatures, `()` and `($msg)`, so every named argument is a caller error
+    // there; this used to accept and silently discard them.
+    //
+    // `:hidden` in particular is NOT spelled here on purpose. The engine can
+    // read a line without echoing it — that is `rakupp-prompt-hidden` below —
+    // but putting the adverb on `prompt` itself would mint a dialect: the
+    // program would run here and die on every other Raku, and the divergence
+    // would only surface on the day it was ported. A module that probes for
+    // the primitive and falls back to `stty` gives the same source one meaning
+    // everywhere, so the adverb belongs to the module and the capability to
+    // the engine.
+    B["prompt"] = [](Interpreter&, ValueList& a) -> Value {
+        for (const Value& v : a)
+            if (v.t == VT::Pair && v.namedArg)
+                throw RakuError{Value::typeObj("X::Multi::NoMatch"),
+                                "prompt takes no named arguments (got :" + v.s + ")"};
+        return promptImpl(a, false);
+    };
+    // The capability, as a primitive rather than an adverb — this is what a
+    // portable module probes for with `try &::('rakupp-prompt-hidden')`,
+    // taking the engine's echo suppression when it is there and `stty` when it
+    // is not. Optional message, plain Str back (never the allomorph `prompt`
+    // returns — a numeric secret is not a number), Nil at end of input.
     B["rakupp-prompt-hidden"] = [](Interpreter&, ValueList& a) -> Value { return promptImpl(a, true); };
     B["__qx__"] = [](Interpreter&, ValueList& a) -> Value { // qx// / qqx// shell capture
         std::string cmd = a.empty() ? "" : a[0].toStr();

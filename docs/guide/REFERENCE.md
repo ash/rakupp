@@ -466,8 +466,7 @@ with verified examples, grouped by purpose. The complete alphabetical list is in
 | `printf` / `sprintf` | C-style format | `sprintf('%05.2f', 3.14159)` → `03.14` |
 | `warn` | resumable warning | |
 | `die` | throw exception | `die "boom"` |
-| `prompt` | read a line with a prompt | `prompt("? ")` |
-| `prompt` `:hidden` | …without echoing it — a password | `prompt("pw: ", :hidden)` |
+| `prompt` | read a line with a prompt (no named arguments, as in Rakudo) | `prompt("? ")` |
 | `slurp` / `spurt` | read / write whole file | `spurt('f', 'data')` |
 | `open` / `close` | file handle | `open('f', :r)` |
 | `dir` | directory listing | `dir('.')` |
