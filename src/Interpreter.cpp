@@ -9676,7 +9676,20 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                                    "Redeclaration of symbol '" + clsName + "'");
                 }
             }
-            classes_[clsName] = ci;
+            // A stub DECLARES a name; it never redefines one. `class Gen::Tab
+            // { ... }` written inside a method body re-runs on every call of that
+            // method, and overwriting the completed class with the empty stub is
+            // how Terminal::Table's generator handed back an object that had none
+            // of the methods it was supposed to have. The parse-time half of this
+            // is in checkRedeclarations: a stub is a promise to the compilation
+            // unit, not to the block it stands in.
+            bool stubOverCompleted = false;
+            if (cd->isStubDecl) {
+                auto ex = classes_.find(clsName);
+                stubOverCompleted = ex != classes_.end() && ex->second &&
+                                    !(ex->second->decl && ex->second->decl->isStubDecl);
+            }
+            if (!stubOverCompleted) classes_[clsName] = ci;
             // now the type resolves, dispatch the collected non-type `is` names to a
             // user trait_mod:<is>. Only NO-CANDIDATE means "not a trait"; a trait
             // body that ran and DIED propagates, or its real error would be replaced

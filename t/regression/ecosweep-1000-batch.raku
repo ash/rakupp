@@ -124,5 +124,62 @@ ck (try { X::NYI.new(feature => 'F-92', message => 'IGNORED-93').message }),
 ck Compiler.new.name.chars > 0, True, 'Compiler.new answers a named compiler';
 ck VM.new.name.chars > 0,       True, 'VM.new answers a named VM';
 
+# ---- a statement modifier inside the ARRAY composer ---------------------
+# `(EXPR for LIST)` was already accepted; the bracket form was the only one that
+# refused it, and it is the one people reach for when the result should be an
+# Array. Terminal::Table builds its `.lines` that way, across lines.
+ck [ $_ * 2 for 1..3 ], [2, 4, 6],        'a for modifier inside [ ]';
+ck [
+       $_ * 3
+           for 1..3
+   ], [3, 6, 9],                          '…spanning lines, as it was written';
+ck [ $_ if $_ %% 2 for 1..4 ], [2, 4],    '…and the modifiers still chain';
+
+# ---- a stub is a promise to the COMPILATION UNIT ------------------------
+# `class X { ... }` written inside a method is completed by a file-scope
+# definition further down. Checking it at the end of the enclosing BLOCK
+# rejected that at the method's closing brace; and executing the stub — which
+# happens on every call of that method — must not replace the finished class
+# with the empty one.
+class StubOuter {
+    method make() {
+        class StubOuter::Inner { ... };
+        StubOuter::Inner.new
+    }
+}
+class StubOuter::Inner { method who() { 'INNER-111' } }
+ck StubOuter::Inner.new.who,   'INNER-111', 'a stubbed class is completed at file scope';
+ck StubOuter.new.make.who,     'INNER-111', '…and running the stub does not empty it';
+ck StubOuter.new.make.who,     'INNER-111', '…however many times it runs';
+
+# ---- a prefix operator on a twigilled `&` term --------------------------
+# `?&!cb` is the boolean prefix on a private attribute. The lexer already split
+# `?&` when a letter followed; a twigil did not count, so it stayed the infix
+# operator of that name and died with nothing on its left.
+class Amp {
+    has &!cb;
+    has &.pub;
+    submethod BUILD(:&!cb, :&!pub) {}
+    method got-priv() { ?&!cb }
+    method got-pub()  { ?&!pub }
+}
+my $amp = Amp.new(cb => sub { 1 }, pub => sub { 2 });
+ck $amp.got-priv, True, 'a prefix operator on a PRIVATE & attribute';
+ck $amp.got-pub,  True, '…and on a public one';
+ck (1 ?& 2),      True, '…while the infix of the same spelling still works';
+
+# ---- a class deriving a built-in scalar keeps the parent's value --------
+# Rakudo's Str carries a `value` attribute, so a subclass constructed with
+# `value => …` answers it. A subclass that also declares attributes of its own
+# is an ordinary object here, and the argument was dropped: it stringified as
+# its own gist instead of its text.
+class DerStr is Str { has $.extra }
+my $der = DerStr.new(value => 'TEXT-121', extra => 9);
+# `eq`, not eqv: on Rakudo the result is still a DerStr, so comparing types too
+# would fail on the type rather than on the text this row is about.
+ck (~$der eq 'TEXT-121'),           True, 'a Str subclass with attributes keeps its text';
+ck ($der.Str::Str() eq 'TEXT-121'), True, '…and a qualified call reaches it';
+ck $der.extra,        9,          '…without losing its own attribute';
+
 say $fails ?? "\n$fails FAILED" !! "\nPASS";
 exit $fails ?? 1 !! 0;

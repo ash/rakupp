@@ -2288,8 +2288,14 @@ Token Lexer::lexOperator(bool termBefore) {
     // object (`~&infix:<+>`), not the stringwise-AND infix — that needs a left
     // operand. Same for `+&` / `?&`. Emit only the prefix and let the `&` be
     // lexed as a code sigil on the next pass.
+    // …and the name may carry a TWIGIL: `?&!callback` is the boolean prefix on a
+    // private attribute, `&.foo` on a public one, `&*bar` on a dynamic. Only a
+    // bare letter counted here, so `?&!callback` — how Terminal::Table asks
+    // whether it was given a callback — still lexed as the infix `?&` and died
+    // as an operator with nothing on its left.
     if (!termBefore && (peek() == '~' || peek() == '+' || peek() == '?') &&
-        peek(1) == '&' && (ascii::isalpha((unsigned char)peek(2)) || peek(2) == '_')) {
+        peek(1) == '&' && (ascii::isalpha((unsigned char)peek(2)) || peek(2) == '_' ||
+                           peek(2) == '!' || peek(2) == '.' || peek(2) == '*')) {
         std::string pfx(1, advance());
         return make(Tok::Op, pfx);
     }

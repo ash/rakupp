@@ -4177,6 +4177,13 @@ ExprPtr Parser::parsePrimary() {
             auto arr = std::make_unique<ArrayLit>();
             if (!isKind(Tok::RBracket)) {
                 ExprPtr e = parseExpression();
+                // `[EXPR for LIST]` — a statement modifier inside the composer,
+                // exactly as `(EXPR for LIST)` already allowed. The bracket form
+                // was the only one that refused it, and it is the one people
+                // reach for when the result should be an Array:
+                // Terminal::Table builds its `.lines` that way. `if`/`unless`/
+                // `with`/`while`/`given` come along, since it is the same chain.
+                e = applyExprModifiers(std::move(e));
                 if (e->kind == NK::ListExpr) {
                     auto* l = static_cast<ListExpr*>(e.get());
                     for (auto& it : l->items) arr->items.push_back(std::move(it));
@@ -8722,7 +8729,7 @@ StmtPtr Parser::parseStatementImpl() {
 // mix, or a duplicated type name (class/role/grammar/subset in any mix) is
 // X::Redeclaration, checked per parsed statement list (parse-level, so sub
 // hoisting and EVAL scoping cannot confuse it).
-void Parser::checkRedeclarations(const std::vector<StmtPtr>& stmts) {
+void Parser::checkRedeclarations(const std::vector<StmtPtr>& stmts, bool unitScope) {
     std::map<std::string, int> subs;  // 1=non-multi seen, 2=multi seen, 3=both
     std::map<std::string, int> types;
     std::vector<std::string> stubbed; // `class Foo {...}` stubs not yet completed
@@ -8794,7 +8801,12 @@ void Parser::checkRedeclarations(const std::vector<StmtPtr>& stmts) {
                                  "X::Redeclaration", {{"symbol", su->name}});
         }
     }
-    if (!stubbed.empty()) {
+    // A stub is a promise to the COMPILATION UNIT, not to the block it stands in:
+    // `class Gen::Tab { ... }` written inside a method is completed by the
+    // file-scope `class Gen::Tab` further down, which is how Terminal::Table
+    // forward-declares the class its generator returns. Checking it at the end of
+    // every block rejected that at the closing brace of the method.
+    if (!stubbed.empty() && unitScope) {
         // a stub naming a `use`d module is a redeclaration hint, not a promise
         std::set<std::string> used;
         for (auto& s : stmts)
@@ -8819,7 +8831,7 @@ Program Parser::parseProgram() {
         pendingStmts_.clear();
         if (!matchKind(Tok::Semicolon)) enforceStmtSep();
     }
-    checkRedeclarations(prog.stmts);
+    checkRedeclarations(prog.stmts, /*unitScope=*/true);
     prog.declaredTypeNames = std::move(declTypeNames_);
     prog.typeNamesOpaque = declTypesOpaque_;
     prog.mayHaveEnd = sawEndPhaser_;

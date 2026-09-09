@@ -56,7 +56,10 @@ class Parser {
 public:
     explicit Parser(std::vector<Token> toks);
     Program parseProgram();
-    void checkRedeclarations(const std::vector<StmtPtr>& stmts); // same-scope dup subs/types
+    // same-scope dup subs/types. `unitScope` also demands that every package
+    // STUBBED here was defined: a stub is a promise to the compilation unit, not
+    // to the block it was written in, so only the unit may hold anyone to it.
+    void checkRedeclarations(const std::vector<StmtPtr>& stmts, bool unitScope = false);
     ExprPtr parseExpressionPublic() { return parseExpression(); }
     // Module search path, for finding the operators a `use`d module declares —
     // filled by the runtime from -I/RAKULIB before parsing. See scanModuleOps.

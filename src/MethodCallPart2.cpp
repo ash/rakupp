@@ -3273,6 +3273,29 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 auto od = std::make_shared<ObjectData>();
                 od->cls = ci;
                 runAttrDefaults(od, ci, args);
+                // A class deriving a built-in SCALAR inherits that type's storage:
+                // Rakudo's Str carries a `value` attribute, so `class S is Str`
+                // constructed with `value => …` answers it from `~$s` and from a
+                // qualified `self.Str::Str()`. The branch above boxes such a class
+                // only when it adds NOTHING of its own; one that also declares
+                // attributes or methods is an ordinary object here, and the
+                // `value` argument — naming no attribute it declares — was
+                // silently dropped, leaving it to stringify as its own gist.
+                // Terminal::Table's `String is Str` is exactly that shape.
+                //
+                // A class declaring its OWN `value` keeps it (roast's
+                // `class DifferentReal is Real { has $.value }`), and with no
+                // `value` argument nothing changes.
+                if (!nb.empty() && !ci->findAttr("value") &&
+                    (nb == "Int" || nb == "Num" || nb == "Rat" || nb == "FatRat" ||
+                     nb == "Str" || nb == "Cool" || nb == "Real" || nb == "Numeric" ||
+                     nb == "Complex" || nb == "Bool"))
+                    for (auto& a : args)
+                        if (a.t == VT::Pair && a.s == "value" && a.pairVal()) {
+                            od->hasBoxed = true;
+                            od->boxed = *a.pairVal();
+                            break;
+                        }
                 // the checks below walk it too — on the stack, since it is one or
                 // two pointers on any ordinary hierarchy and this ran per construction
                 ClassInfo* chainBuf[8];
