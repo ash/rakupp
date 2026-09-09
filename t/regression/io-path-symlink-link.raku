@@ -3,7 +3,7 @@
 # The sub forms (`symlink($target, $name)`, `link($target, $name)`) existed —
 # File::Find's suite builds its fixture tree with them — but the methods Rakudo
 # documents, `$target.IO.symlink($name)` and `$target.IO.link($name)`, answered
-# X::Method::NotFound. tools/install.raku's ensure-raku-name dates from that
+# X::Method::NotFound. The installer's ensure-raku-name dates from that
 # gap and shells out to `ln -s`; with the method in place under both engines
 # it may switch to .symlink whenever convenient.
 #

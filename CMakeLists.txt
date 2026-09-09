@@ -127,11 +127,14 @@ list(REMOVE_ITEM RAKUPP_SOURCES "${RAKUPP_REPL}")
 set(RAKUPP_JS "${CMAKE_CURRENT_SOURCE_DIR}/src/codegen/Js.cpp"
               "${CMAKE_CURRENT_SOURCE_DIR}/src/JsRuntimeSrc.cpp")
 list(REMOVE_ITEM RAKUPP_SOURCES ${RAKUPP_JS})
-# `rakupp install` and `rakupp doc` are Raku programs baked into the CLI
-# (tools/gen-embedded-tools.raku writes the blob). Same reasoning again: the
-# command words exist only in main.cpp, no `--exe` binary can reach either
-# tool, and the 160 KB of text would otherwise ride along in every one of them.
-set(RAKUPP_TOOLS "${CMAKE_CURRENT_SOURCE_DIR}/src/EmbeddedTools.cpp")
+# `rakupp install` and `rakupp doc` are Raku programs baked into the CLI. Same
+# reasoning again: the command words exist only in main.cpp, no `--exe` binary
+# can reach either tool, and the 160 KB of text would otherwise ride along in
+# every one of them. InstallerSrc.cpp is hand-maintained — that text is the
+# installer's only copy; DocToolSrc.cpp is written by
+# tools/gen-doc-tool-src.raku, because its blob carries the two guides.
+set(RAKUPP_TOOLS "${CMAKE_CURRENT_SOURCE_DIR}/src/InstallerSrc.cpp"
+                 "${CMAKE_CURRENT_SOURCE_DIR}/src/DocToolSrc.cpp")
 list(REMOVE_ITEM RAKUPP_SOURCES ${RAKUPP_TOOLS})
 
 # ---- the SLIM archive split (SLIM-PLAN P2) ----------------------------------

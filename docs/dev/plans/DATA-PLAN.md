@@ -517,7 +517,7 @@ when called. What changed on 2026-09-05 is *who runs it* — the compiler answer
   decided against it. Three other things did: it is a third place the tag table
   lives, after `registerBuiltins()` and the distribution; it is found by walking
   `/../rakulib` and `/../libexec/rakupp/rakulib` relative to the binary and is
-  installed by `tools/install.raku` rather than CMake, so `use Data::Native`
+  installed by the installer rather than CMake, so `use Data::Native`
   depends on the install layout being right; and it does nothing for the four
   `**::Native` names, which have the same problem and no rakulib copy to solve
   it with.
@@ -902,8 +902,11 @@ handle-wrapping — streaming inflate/deflate is a second phase, and the
 one-shot subs are what the dependents call.
 
 > **This reinterprets a standing rule, deliberately, and the decision is
-> recorded here** (user, 2026-09-05). [install.raku:5](../../../tools/install.raku#L5)
-> says librakupp "must not carry an HTTP client, an index parser or a tar
+> recorded here** (user, 2026-09-05). The installer's header — then
+> `tools/install.raku:5`, now the top of
+> [`src/InstallerSrc.cpp`](../../../src/InstallerSrc.cpp), and reworded on
+> 2026-09-09 because the `--exe` framing was a non sequitur — said librakupp
+> "must not carry an HTTP client, an index parser or a tar
 > reader", and the plan there sketches a *dlopen'd* zlib as the
 > self-containment refinement. An in-tree inflate is none of those three
 > things, is smaller than the CSV codec, and unlike a dlopen'd libz it works

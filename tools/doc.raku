@@ -12,7 +12,7 @@
 # so a writer can point the tool at a working copy), then the copy baked into
 # the binary, then disk. The baked copy is why `rakupp doc` answers from a lone
 # executable; %DOCS below is empty in a checkout and filled by
-# tools/gen-embedded-tools.raku on the way into src/EmbeddedTools.cpp.
+# tools/gen-doc-tool-src.raku on the way into src/DocToolSrc.cpp.
 # On disk: a checkout keeps the guides in docs/guide beside tools/, an
 # installed layout in share/rakupp/docs.
 

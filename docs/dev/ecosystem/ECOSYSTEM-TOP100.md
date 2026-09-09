@@ -240,7 +240,7 @@ three:
   `Log::NDC`… (its own 0.4.1 corrected the typo), and candidates were ordered by
   version alone, so 0.4.0 outranked the dist actually named `Log` at 0.3.2. A
   dist NAMED for what was asked now outranks one that merely lists the module in
-  `provides`. Nothing in the engine: `tools/install.raku`.
+  `provides`. Nothing in the engine: the installer (`src/InstallerSrc.cpp`).
 - **Log::Async (#31)** — its `t/14-frame` failed 7 runs in 20. The line of the
   statement now executing is one process-wide slot (a thread_local costs a TLV
   lookup per statement, measured +6% on loopsum), and the moment a worker exists

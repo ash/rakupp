@@ -16,7 +16,7 @@ sub field($line, $key) {
     $line ~~ /'"' $key '":"' (<-["]>+) '"'/ ?? ~$0 !! ''
 }
 
-# The engine's own JSON parser, same spelling as tools/install.raku: the
+# The engine's own JSON parser, same spelling as the installer uses: the
 # native Rakupp::Internals::JSON when this is rakupp, Rakudo's otherwise.
 my $have-own-json = ?(try { ::('Rakupp::Internals::JSON').from-json('1') === 1 });
 sub json-decode(Str $text) {

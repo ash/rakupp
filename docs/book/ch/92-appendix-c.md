@@ -34,7 +34,7 @@ own — is in Appendix D.
 | the JavaScript back end | `src/codegen/Js.cpp`, `JsRuntimeSrc.cpp`, `src/js-rt/` | Chapter 31 |
 | the browser build | `rakujs/rakupp_web.cpp`, `rakujs/build.sh`, `raku.js` | Chapter 32 |
 | module loading | `Interpreter.cpp` `loadModule`, `Parser.cpp` `scanModuleOps` | Chapter 33 |
-| the installer and the store | `tools/install.raku`, `Builtins.cpp` `.install` | Chapter 34 |
+| the installer and the store | `src/InstallerSrc.cpp`, `Builtins.cpp` `.install` | Chapter 34 |
 | `nqp::` ops | `Parser::makeNqpOp`, `Interpreter::evalNqpOp` | Chapter 35 |
 | NativeCall | `Ffi.cpp`, `Interpreter::callNative` | Chapter 36 |
 | the extension ABI | `rakupp_ext.h`, `ExtApi.cpp` | Chapter 37 |

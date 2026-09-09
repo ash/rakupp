@@ -1864,18 +1864,18 @@ int main(int argc, char** argv) {
 #endif // Windows: GetModuleFileNameW is already absolute; _fullpath would ANSI-mangle the UTF-8
 
     // `rakupp install ...` — the module installer (MODULES-PLAN Part A): a
-    // Raku program carried INSIDE the binary (EmbeddedTools.cpp, generated
-    // from tools/install.raku). Dispatch = rewrite the command line to run
-    // that program; everything after `install` is its arguments.
+    // Raku program carried INSIDE the binary, as the raw string literals of
+    // src/InstallerSrc.cpp. Dispatch = rewrite the command line to run that
+    // program; everything after `install` is its arguments.
     //
     // It used to be looked up beside the executable — an installed layout's
     // libexec/, or a checkout's tools/ — and a binary on its own had no
     // installer at all: a `COPY rakupp` into a container, a bare rakupp.exe
     // lifted out of the release ZIP, a package that shipped bin/ without
     // libexec/. Nothing is looked up now, so there is no path to get wrong
-    // and no sidecar to keep in step with the engine. Editing the script
-    // still means editing tools/install.raku — and regenerating, which
-    // t/install/run.raku checks.
+    // and no sidecar to keep in step with the engine. There is no
+    // install.raku on disk either: that text IS the source, edited in
+    // InstallerSrc.cpp, and t/install/run.raku lints it before running it.
     static std::vector<std::string> installArgs;
     static std::vector<char*> installArgv;
     // -q / --quiet may come before the command word (`rakupp -q install Foo`)

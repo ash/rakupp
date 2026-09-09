@@ -9008,7 +9008,7 @@ void Interpreter::registerBuiltins() {
     // hung. It is now the `digest` tag's primitive (DATA-PLAN P3), registered
     // below and LOWERCASE like every other `-hex` name in the ecosystem, which
     // is what DATA-PLAN asked for rather than having the tag work around it.
-    // tools/install.raku `.uc`s the answer itself and always did.
+    // the installer `.uc`s the answer itself and always did.
     //
     // Two registrations of one name was the real hazard: the later one simply
     // replaced the earlier, so which SHA-1 a program got depended on the order

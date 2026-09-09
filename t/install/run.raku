@@ -859,13 +859,41 @@ check %fl3<out>.contains('nothing at 3.0+')
 # `rakupp install` used to run a script found beside the executable, so a lone
 # binary — a COPY into a container, a bare rakupp.exe, a package that shipped
 # bin/ without libexec/ — had no installer at all. It is baked in now, which
-# costs a staleness gate: everything above tested the EMBEDDED copy, and an
-# edit to tools/install.raku that never reached src/EmbeddedTools.cpp would
-# have sailed through every check in this file.
-my $gen = run $EXE, $ROOT.add('tools/gen-embedded-tools.raku').Str, '--check', :out, :err;
+# costs these checks: everything above tested the EMBEDDED copies, so nothing
+# above would notice a blob that had stopped matching what it was made from.
+my $gen = run $EXE, $ROOT.add('tools/gen-doc-tool-src.raku').Str, '--check', :out, :err;
 check $gen.exitcode == 0,
-      'src/EmbeddedTools.cpp is current (regenerate: rakupp tools/gen-embedded-tools.raku)';
+      'src/DocToolSrc.cpp is current (regenerate: rakupp tools/gen-doc-tool-src.raku)';
 note $gen.err.slurp(:close) if $gen.exitcode != 0;
+
+# The INSTALLER's blob is not generated — src/InstallerSrc.cpp is that
+# program's only copy, hand-edited inside raw string literals. So the two
+# things `rakupp --lint tools/install.raku` used to catch are checked here
+# instead: that the chunks still reconstruct a whole program, and that the
+# program still parses and lints. Everything below this point runs the
+# EMBEDDED copy, which is the same text — but a syntax error would fail those
+# as a pile of unrelated symptoms rather than as one sentence.
+my $isrc = $ROOT.add('src/InstallerSrc.cpp');
+my $itext = '';
+my $inside = False;
+for $isrc.lines -> $l {
+    if !$inside && $l.starts-with('R"RKINST(') { $inside = True; $itext ~= $l.substr(9) ~ "\n"; next }
+    if $inside && $l eq ')RKINST",' { $inside = False; next }
+    $itext ~= $l ~ "\n" if $inside;
+}
+# `!$itext.contains('RKINST')` is the one that catches a DROPPED closing
+# delimiter: without it the scan simply keeps going and swallows the next
+# `R"RKINST(` line as if it were Raku, and the count still looks plausible.
+check !$inside && !$itext.contains('RKINST')
+      && $itext.chars > 50_000 && $itext.contains('sub MAIN'),
+      "InstallerSrc.cpp's raw-string chunks reconstruct the whole installer ({$itext.chars} chars)";
+my $blob-file = $tmp.add('installer-blob.raku');
+$blob-file.spurt($itext);
+my $lint = run $EXE, '--lint', $blob-file.Str, :out, :err;
+my $lint-out = $lint.out.slurp(:close) ~ $lint.err.slurp(:close);
+check $lint.exitcode == 0 && !$lint-out.contains('SORRY') && !$lint-out.contains('warning:'),
+      'the installer text in InstallerSrc.cpp parses and lints clean';
+note $lint-out if $lint-out.contains('SORRY') || $lint-out.contains('warning:');
 
 # …and the point of it: the binary ALONE, in a directory with nothing beside
 # it, answers both commands. Copied rather than symlinked — a symlink resolves

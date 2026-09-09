@@ -124,7 +124,7 @@ installer, the choice was already made: use the engine's writer through the
 same public spelling zef uses —
 
 ```raku
-# tools/install.raku
+# the installer, in src/InstallerSrc.cpp
 my $repo = CompUnit::RepositoryRegistry.repository-for-spec("inst#$prefix");
 my $dist-id = $repo.install($dist, :force($force));
 ```
@@ -155,19 +155,52 @@ g_embeddedTool = tool;
 g_embeddedSrc  = isDocCmd ? rakupp::docToolSource() : rakupp::installerSource();
 ```
 
-Those two functions return the program's text from `src/EmbeddedTools.cpp`,
-which `tools/gen-embedded-tools.raku` writes from `tools/install.raku` — the
-same generate-a-blob scheme as the JavaScript runtime in Chapter 32. The
-argument scan recognises the name and takes the source from the blob instead of
-opening a file. The reasons for Raku-not-C++ are worth spelling out, because
-"write the package tool in C++" is the default instinct and it is wrong here:
+Those two functions return the program's text, and the argument scan
+recognises the name and takes the source from the blob instead of opening a
+file. Where the text comes from differs between the two, and the difference is
+the interesting part:
 
-- A compiled `--exe` binary and an embedded `librakupp` must not carry an
-  HTTP client, an ecosystem-index parser and a tar reader (Chapter 29 is an
-  entire chapter about removing things from the binary). The blob is in the
-  CLI's own translation-unit group, which neither of them links.
+`installerSource()` reads `src/InstallerSrc.cpp`, whose raw string literals
+**are** the installer. There is no `install.raku` anywhere; that file is the
+program's only copy, and editing the installer means editing Raku inside a
+`.cpp`. It is split across seven literals because MSVC caps one at 16 KB, with
+the cuts falling between top-level definitions so no chunk holds half a sub.
+`docToolSource()` is the opposite — generated, by `tools/gen-doc-tool-src.raku`
+from `tools/doc.raku`, in the same generate-a-blob scheme as the JavaScript
+runtime in Chapter 32.
+
+The asymmetry is deliberate. Carrying a `.raku` *and* a generated `.cpp` puts
+two copies of one program in git and a diff in both for every edit; one of them
+had to go. For the installer the blob won, because it is self-contained. For
+the doc tool it could not: its blob has `REFERENCE.md` and `FEATURES.md` spliced
+into it, and those are living documents with their own source in
+`docs/guide/` — a hand-kept copy would drift the moment either was edited, and
+silently. So one is source and one is artifact, and a gate enforces each in its
+own way: the doc blob is checked for staleness, the installer text is
+reconstructed from its chunks and linted.
+
+The reasons for Raku-not-C++ are worth spelling out either way, because "write
+the package tool in C++" is the default instinct and it is wrong here:
+
 - It is dogfood: the project's own tooling running on the interpreter it
-  ships, which is the policy everywhere else in `tools/`.
+  ships, which is the policy everywhere else in the repo. What an installer
+  actually does — parse index JSON, compare version ranges, join paths, run
+  subprocesses, write a store — is the work Raku is short for and C++ is long
+  for.
+- It stays readable as a *program*, which matters for a tool whose failures
+  are all about somebody else's distribution.
+
+What is **not** a reason, though it reads like one: "so that `--exe` binaries
+do not carry an HTTP client". An `--exe` binary is a compiled user program; it
+can never be invoked as `rakupp install`, so its payload has nothing to say
+about how the installer is written. And the size question is settled by where
+the translation unit is linked, not by its language — `InstallerSrc.cpp` sits
+in the CLI-only group beside `Js.cpp`, and a C++ installer in `main.cpp` would
+have sat there just as well. The engine carries no network code for a
+different and better reason: fetching is `curl` and unpacking is `tar`, both in
+a subprocess, so no HTTP client, TLS stack, tar reader or index parser exists
+in rakupp in *any* language. That is a property of this design, not a
+consequence of choosing Raku.
 
 ### It used to be a *sidecar*, and that was the bug
 
