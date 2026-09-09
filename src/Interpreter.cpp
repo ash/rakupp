@@ -6416,8 +6416,21 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
             if (wantAll) return false;
             auto it = exportTagsByName.find(bare);
             if (it == exportTagsByName.end()) return selectiveOnly && exported.count(bare) != 0; // plain `is export` = :DEFAULT; not exported = untouched
-            for (const std::string& tag : it->second)
-                if (tag == "DEFAULT" || tag == "MANDATORY" || requestedTags.count(tag)) return false;
+            for (const std::string& tag : it->second) {
+                // `:MANDATORY` is exported whatever the importer asked for —
+                // that is what the tag means.
+                if (tag == "MANDATORY") return false;
+                // `:DEFAULT` is NOT a free pass. Naming any tag REPLACES the
+                // default set rather than adding to it, so `use Mod :beta`
+                // leaves `is export(:DEFAULT)` undeclared in the importer, and
+                // `is export(:DEFAULT, :beta)` comes in on the strength of
+                // `:beta` alone. Treating DEFAULT as always-publishing handed
+                // a selective importer the whole default set — which is most
+                // of a module's surface, and the reason its author reached for
+                // tags in the first place.
+                if (tag == "DEFAULT") { if (!selectiveOnly) return false; continue; }
+                if (requestedTags.count(tag)) return false;
+            }
             return true; // every tag is selective and none was requested
         };
         tctx_.cur = moduleEnv;
