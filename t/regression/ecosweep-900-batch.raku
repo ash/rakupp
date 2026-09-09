@@ -361,5 +361,21 @@ ck ((1, 2, 3) ==> plot9), 'PL9:3', 'a feed target written without its parens is 
     ck $ind9,   1, '…and the scope exit restores it';
 }
 
+# ---- a `where` clause stops at the attribute's DEFAULT --------------------
+# `has Str $.a where { … } = 'en'` was parsing `{ … } = 'en'` as ONE constraint
+# expression, which lost the default and left the attribute unwritable.
+sub okv9($v) { $v.defined && $v.chars > 0 }
+class Wd9 {
+    has Str $.a is rw where { okv9($_) } = 'w9';
+    method set($v) { $!a = $v }
+}
+{
+    ck Wd9.new.a, 'w9', 'a where-constrained attribute still gets its default';
+    my $w = Wd9.new;
+    $w.set('w9b');
+    ck $w.a, 'w9b', '…and is writable from inside the class';
+    ck Wd9.new(a => 'w9c').a, 'w9c', '…and takes a value at construction';
+}
+
 say $fails ?? "\n$fails FAILED" !! "\nPASS";
 exit $fails ?? 1 !! 0;

@@ -7508,7 +7508,13 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
                 // traits before the default: is rw / is readonly / of Type / does Role / where EXPR / handles <...>
                 while (isIdent("is") || isIdent("of") || isIdent("does") || isIdent("where") || isIdent("handles")) {
                     std::string tr = advance().text;
-                    if (tr == "where") { a.whereExpr = parseExpr(BP_ASSIGN); continue; }
+                    // BP_ASSIGN + 1: the `=` that follows a where clause is the
+                    // attribute's DEFAULT, not part of the constraint.
+                    // `has Str $.locale is rw where { … } = 'en'` was parsing the
+                    // whole `{ … } = 'en'` as the constraint, which lost the
+                    // default and left the attribute unwritable
+                    // (Date::Calendar::Gregorian declares two of them).
+                    if (tr == "where") { a.whereExpr = parseExpr(BP_ASSIGN + 1); continue; }
                     if (tr == "handles") { // handles <m1 m2> / handles "m" / handles 'm'
                         // …and the RENAMING forms, `handles(:local<remote>, …)` /
                         // `handles(local => 'remote')`: the class exposes the KEY and
