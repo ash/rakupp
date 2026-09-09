@@ -855,5 +855,39 @@ check %fl3<out>.contains('nothing at 3.0+')
       && !%fl3<out>.contains('Gate::Twin:ver<2.0>'),
       'floor: …and with nothing to satisfy it, reported rather than downgraded';
 
+# ---- the installer travels INSIDE the binary -------------------------------
+# `rakupp install` used to run a script found beside the executable, so a lone
+# binary — a COPY into a container, a bare rakupp.exe, a package that shipped
+# bin/ without libexec/ — had no installer at all. It is baked in now, which
+# costs a staleness gate: everything above tested the EMBEDDED copy, and an
+# edit to tools/install.raku that never reached src/EmbeddedTools.cpp would
+# have sailed through every check in this file.
+my $gen = run $EXE, $ROOT.add('tools/gen-embedded-tools.raku').Str, '--check', :out, :err;
+check $gen.exitcode == 0,
+      'src/EmbeddedTools.cpp is current (regenerate: rakupp tools/gen-embedded-tools.raku)';
+note $gen.err.slurp(:close) if $gen.exitcode != 0;
+
+# …and the point of it: the binary ALONE, in a directory with nothing beside
+# it, answers both commands. Copied rather than symlinked — a symlink resolves
+# back to the build tree, which is exactly the lookup being removed.
+my $lone = $tmp.add('lone');
+$lone.mkdir;
+my $lone-exe = $lone.add($EXE.IO.basename);
+$EXE.IO.copy($lone-exe);
+$lone-exe.chmod(0o755);
+my %envL = HOME => $tmp.add('home-lone').Str,
+           RAKUPP_INSTALL_INDEX => $tmp.add('index.json').Str;
+my $li = run 'env', |%envL.map({ "{.key}={.value}" }), $lone-exe.Str,
+             'install', '--dry-run', 'Gate::Demo', :out, :err, :cwd($lone.Str);
+my $li-err = $li.err.slurp(:close);
+$li.out.slurp(:close);
+check $li.exitcode == 0 && !$li-err.contains('cannot find install.raku'),
+      'a binary with nothing beside it still resolves an install plan';
+my $ld = run $lone-exe.Str, 'doc', 'trim', :out, :err, :cwd($lone.Str);
+my $ld-out = $ld.out.slurp(:close);
+$ld.err.slurp(:close);
+check $ld.exitcode == 0 && $ld-out.contains('REFERENCE.md'),
+      'a binary with nothing beside it answers `rakupp doc` from its baked guides';
+
 say "install gate: $ok ok, $bad failed";
 exit 1 if $bad;

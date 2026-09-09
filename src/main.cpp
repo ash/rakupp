@@ -38,6 +38,7 @@
 #include <string>
 #include <vector>
 #include "Platform.h"
+#include "EmbeddedTools.h"
 #include <sys/stat.h>
 #ifdef __APPLE__
 #include <mach-o/dyld.h>
@@ -265,6 +266,11 @@ static bool g_standalone = false;       // --standalone: an unembeddable module 
 // A mode with nothing informational to say accepts the flag and changes
 // nothing, the way -l does.
 static bool g_quiet = false;
+// `rakupp install` / `rakupp doc`: the sub-program's name as it appears in argv
+// after the rewrite, and the source the binary carries for it. Both are cleared
+// the moment the argument scan consumes them.
+static std::string g_embeddedTool;
+static std::string g_embeddedSrc;
 
 // MODULES-PLAN B1: every compile mode says what it embedded and — one line
 // each, with the reason — what it could NOT. B2: under --standalone the
@@ -1858,11 +1864,18 @@ int main(int argc, char** argv) {
 #endif // Windows: GetModuleFileNameW is already absolute; _fullpath would ANSI-mangle the UTF-8
 
     // `rakupp install ...` — the module installer (MODULES-PLAN Part A): a
-    // Raku program shipped BESIDE the binary, never inside it. Dispatch =
-    // rewrite the command line to run that program; everything after
-    // `install` is its arguments. Looked up relative to the real binary:
-    // an installed layout's libexec/, or the checkout's tools/ from a build
-    // directory.
+    // Raku program carried INSIDE the binary (EmbeddedTools.cpp, generated
+    // from tools/install.raku). Dispatch = rewrite the command line to run
+    // that program; everything after `install` is its arguments.
+    //
+    // It used to be looked up beside the executable — an installed layout's
+    // libexec/, or a checkout's tools/ — and a binary on its own had no
+    // installer at all: a `COPY rakupp` into a container, a bare rakupp.exe
+    // lifted out of the release ZIP, a package that shipped bin/ without
+    // libexec/. Nothing is looked up now, so there is no path to get wrong
+    // and no sidecar to keep in step with the engine. Editing the script
+    // still means editing tools/install.raku — and regenerating, which
+    // t/install/run.raku checks.
     static std::vector<std::string> installArgs;
     static std::vector<char*> installArgv;
     // -q / --quiet may come before the command word (`rakupp -q install Foo`)
@@ -1882,20 +1895,14 @@ int main(int argc, char** argv) {
     bool isTestCmd   = cmdWord == "test";
     bool isDocCmd    = cmdWord == "doc";   // `rakupp doc SYMBOL` — the same dispatch, another script
     if (cmdWord == "install" || isUninstall || isReinstall || isTestCmd || isDocCmd) {
-        std::string exeDir = exePath.substr(0, exePath.find_last_of("/\\"));
-        std::string script;
+        // The tool's name stands in for a path: it is what $*PROGRAM and any
+        // backtrace report, and the argument scan below recognises it and
+        // takes the source from the blob instead of opening a file.
         const char* tool = isDocCmd ? "doc.raku" : "install.raku";
-        for (const char* rel : {"/../libexec/rakupp/", "/../tools/"}) {
-            std::string cand = exeDir + rel + tool;
-            if (std::ifstream(cand).good()) { script = cand; break; }
-        }
-        if (script.empty()) {
-            std::cerr << "rakupp " << cmdWord << ": cannot find " << tool << " beside this binary\n"
-                      << "  (expected in libexec/rakupp/ of an installed layout, or tools/ of a checkout)\n";
-            return 4;
-        }
+        g_embeddedTool = tool;
+        g_embeddedSrc  = isDocCmd ? rakupp::docToolSource() : rakupp::installerSource();
         installArgs.push_back(argv[0]);
-        installArgs.push_back(script);
+        installArgs.push_back(tool);
         if (isUninstall) installArgs.push_back("--uninstall");
         if (isReinstall) installArgs.push_back("--reinstall");
         if (isTestCmd)   installArgs.push_back("--test-only");
@@ -2304,6 +2311,15 @@ int main(int argc, char** argv) {
             continue;
         }
         if (!haveSrc) {
+            // `rakupp install` / `rakupp doc` rewrote argv to name an embedded
+            // tool; its source comes from the binary, not from disk. Consumed
+            // once, so a later argument that happens to share the name is a
+            // plain file again.
+            if (!g_embeddedTool.empty() && a == g_embeddedTool) {
+                src = g_embeddedSrc; fileName = a; haveSrc = true;
+                g_embeddedTool.clear(); g_embeddedSrc.clear();
+                continue;
+            }
             if (mode == Mode::Run) {
                 struct stat st;
                 if (stat(a.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) {

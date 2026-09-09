@@ -365,6 +365,49 @@ jobs:
           echo "got: [$out]"
           test "$out" = "42"
 
+      # THE BINARY ON ITS OWN. `rakupp install` and `rakupp doc` used to run a
+      # Raku script found beside the executable, so a rakupp lifted out of the
+      # archive by itself — the Windows case that prompted the change, and the
+      # `COPY rakupp` container case — had no installer at all. Both programs
+      # are baked in now; this is the step that keeps them that way. Copied
+      # into an empty directory, not symlinked: a symlink resolves back to the
+      # layout and would pass either way.
+      - name: Smoke test a lone binary (POSIX)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p lone && cp dist/rakupp/bin/rakupp lone/
+          cd lone
+          ./rakupp install 2>&1 | tee out.txt
+          grep -q "usage: rakupp install" out.txt
+          ./rakupp doc trim | tee doc.txt
+          grep -q "REFERENCE.md" doc.txt
+
+      - name: Smoke test a lone binary (Windows, MSVC)
+        if: runner.os == 'Windows' && matrix.mingw != true
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force lone | Out-Null
+          Copy-Item dist\rakupp\bin\rakupp.exe lone\
+          Push-Location lone
+          $out = .\rakupp.exe install 2>&1 | Out-String
+          Write-Host $out
+          if ($out -notmatch "usage: rakupp install") { exit 1 }
+          $doc = .\rakupp.exe doc trim 2>&1 | Out-String
+          Write-Host $doc
+          if ($doc -notmatch "REFERENCE.md") { exit 1 }
+          Pop-Location
+
+      - name: Smoke test a lone binary (Windows, MinGW-w64)
+        if: matrix.mingw == true
+        shell: msys2 {0}
+        run: |
+          mkdir -p lone && cp dist/rakupp/bin/rakupp.exe lone/
+          cd lone
+          ./rakupp.exe install 2>&1 | tee out.txt
+          grep -q "usage: rakupp install" out.txt
+          ./rakupp.exe doc trim | tee doc.txt
+          grep -q "REFERENCE.md" doc.txt
+
       # The Python platform wheel: bindings/python with librakupp bundled
       # inside, so `pip install <wheel>` works on a machine with no rakupp at
       # all (macOS wheel carries the universal library). Publishing to PyPI

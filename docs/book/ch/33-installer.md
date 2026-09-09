@@ -142,30 +142,55 @@ constructor that carries the prefix, and the writer now *refuses loudly* when
 its prefix is empty rather than failing file-by-file in silence. A writer aimed
 at a shared store does not get to guess.
 
-## The installer is a shipped Raku program
+## The installer is a Raku program the binary carries
 
-`rakupp install` and `rakupp uninstall` are not implemented in the binary.
-`main.cpp` recognises the two words and rewrites its own argument vector:
+`rakupp install` and `rakupp uninstall` are not implemented in the binary — not
+in C++, anyway. `main.cpp` recognises the command words and rewrites its own
+argument vector so the command becomes `rakupp install.raku …`:
 
 ```cpp
 // src/main.cpp — the same trick `python -m pip` pulls, with a nicer spelling
+const char* tool = isDocCmd ? "doc.raku" : "install.raku";
+g_embeddedTool = tool;
+g_embeddedSrc  = isDocCmd ? rakupp::docToolSource() : rakupp::installerSource();
+```
+
+Those two functions return the program's text from `src/EmbeddedTools.cpp`,
+which `tools/gen-embedded-tools.raku` writes from `tools/install.raku` — the
+same generate-a-blob scheme as the JavaScript runtime in Chapter 32. The
+argument scan recognises the name and takes the source from the blob instead of
+opening a file. The reasons for Raku-not-C++ are worth spelling out, because
+"write the package tool in C++" is the default instinct and it is wrong here:
+
+- A compiled `--exe` binary and an embedded `librakupp` must not carry an
+  HTTP client, an ecosystem-index parser and a tar reader (Chapter 29 is an
+  entire chapter about removing things from the binary). The blob is in the
+  CLI's own translation-unit group, which neither of them links.
+- It is dogfood: the project's own tooling running on the interpreter it
+  ships, which is the policy everywhere else in `tools/`.
+
+### It used to be a *sidecar*, and that was the bug
+
+The rewrite above once produced a **path**, looked up beside the executable:
+
+```cpp
 for (const char* rel : {"/../libexec/rakupp/install.raku", "/../tools/install.raku"}) {
     std::string cand = exeDir + rel;
     if (std::ifstream(cand).good()) { script = cand; break; }
 }
 ```
 
-so the command becomes `rakupp <path>/install.raku …` — a Raku program shipped
-with the release (`libexec/rakupp/` in an installed layout, `tools/` in a
-checkout). The reasons are worth spelling out, because "write the package tool
-in C++" is the default instinct and it is wrong here:
+The argument for shipping the file separately was that the installer changes at
+ecosystem speed and the engine at engine speed, so decoupling them would let one
+be fixed without rebuilding the other. In practice they shipped in the same
+release every time, and the decoupling only ever produced its failure mode: a
+binary with no installer. `COPY rakupp` into a container, a bare `rakupp.exe`
+dragged out of the Windows ZIP, a package that installed `bin/` and skipped
+`libexec/` — each one earned "cannot find install.raku beside this binary", and
+the fix was always for the *user* to reassemble a pair the project had split.
 
-- A compiled `--exe` binary and an embedded `librakupp` must not carry an
-  HTTP client, an ecosystem-index parser and a tar reader (Chapter 29 is an
-  entire chapter about removing things from the binary).
-- The installer changes at ecosystem speed, not engine speed.
-- It is dogfood: the project's own tooling running on the interpreter it
-  ships, which is the policy everywhere else in `tools/`.
+A cadence that never materialised is not worth a path the user has to get
+right. Nothing is looked up now, so there is no wrong path to have.
 
 The program is about 1,700 lines and its shape is a pipeline. It has roughly
 tripled since this chapter's first draft, and the additions are worth naming

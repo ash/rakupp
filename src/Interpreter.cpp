@@ -2784,8 +2784,10 @@ Interpreter::Interpreter() {
     // The BINARY-relative rakulib/ — the engine's shadow modules
     // (NativeHelpers::Blob first among them). The cwd-relative "rakulib" entry
     // only exists when a program runs from the checkout root; a dist suite
-    // runs from its own extract dir and must still find the shadows, exactly
-    // as `rakupp install` finds install.raku beside the binary.
+    // runs from its own extract dir and must still find the shadows, so the
+    // search is anchored to the executable rather than to the cwd. (The
+    // installer itself no longer looks anything up beside the binary — it is
+    // baked into the CLI; these shadow modules are the remaining case.)
     {
         char buf[4096];
         std::string self;

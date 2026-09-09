@@ -549,11 +549,11 @@ prose. `.trim` and `trim` are the same question; a symbol made of
 punctuation (`<=>`, `»`, `Z`) is matched as a substring, a name as a whole
 word. `--code` keeps only the examples, `--all` shows every hit instead of
 the first dozen; several symbols at once are answered one after another.
-An unknown symbol exits 1. The two files are read at each lookup, from
-`docs/guide` of a checkout or `share/rakupp/docs` of an install
-(`RAKUPP_DOCS=DIR` overrides), so the answer is always what the docs say
-today. Like the installer, the command is a Raku program shipped beside
-the binary (`tools/doc.raku`) and dispatched by it.
+An unknown symbol exits 1. Like the installer, the command is a Raku program
+(`tools/doc.raku`) that the binary carries and dispatches to — and it carries
+the two guides with it, so `rakupp doc` answers from an executable with
+nothing beside it. `RAKUPP_DOCS=DIR` reads them from that directory instead,
+which is how you check an edit to `REFERENCE.md` before rebuilding.
 
 ## Shell completion
 

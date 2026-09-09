@@ -30,23 +30,25 @@ so it works from any directory whether run out of `build/` or from an install
 prefix. If you copy the binary somewhere on its own, point it back with
 `RAKUPP_HOME=<prefix>`.
 
-`rakupp install` is a Raku program, `install.raku`, shipped **beside** the
-binary rather than inside it: an install layout has it at
-`libexec/rakupp/install.raku` (every release archive and `cmake --install`
-include it), a checkout at `tools/install.raku`. The binary looks in exactly
-those two places relative to itself and nowhere else — `RAKUPP_HOME` does not
-cover it — and without the file `rakupp install` stops with "cannot find
-install.raku beside this binary". So when you ship the binary alone, into a
-container say, put the script from the **same release** back beside it:
+`rakupp install` is a Raku program, `install.raku`, and it travels **inside**
+the binary. So does `rakupp doc`, together with the two guides it reads. There
+is no script to place, no path to get right, and no version of the installer
+that can drift from the engine that dispatches to it:
 
 ```dockerfile
-COPY bin/rakupp                  /usr/local/bin/rakupp
-COPY libexec/rakupp/install.raku /usr/local/libexec/rakupp/install.raku
+COPY bin/rakupp /usr/local/bin/rakupp
+# that is the whole installer — `rakupp install Foo` works from here
 ```
 
-Homebrew's prebuilt-binary route (macOS) currently drops `libexec/` too, so a
-`brew install rakupp` has no `rakupp install` until the tap ships that
-directory; the formula's source build (`cmake --install`) is unaffected.
+The same goes for a lone `rakupp.exe` lifted out of the Windows ZIP, and for
+any packaging route that ships `bin/` without `libexec/` — Homebrew's prebuilt
+macOS binary does, and it no longer matters.
+
+Up to and including v3.26.0 the script was shipped beside the binary in
+`libexec/rakupp/install.raku`, and a binary on its own answered "cannot find
+install.raku beside this binary". Nothing is written to `libexec/rakupp/` any
+more; a copy left there by an older install is read by nothing, and can be
+deleted.
 
 ## Build from source
 

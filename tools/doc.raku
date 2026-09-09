@@ -1,24 +1,43 @@
 #!/usr/bin/env raku
 # `rakupp doc SYMBOL ...` — offline lookup of a builtin, method, operator or
 # syntax form from the terminal (go doc, perldoc -f, pydoc). A Raku program
-# shipped beside the binary and dispatched by it, like install.raku.
+# carried INSIDE the binary and dispatched by it, like install.raku.
 #
 # The content is guide/REFERENCE.md — every entry there was executed on rakupp
 # and shows its real output — with FEATURES.md as the second source. Nothing is
 # indexed ahead of time: the files are small, and a scan per lookup keeps the
 # tool honest about what the docs say TODAY.
 #
-# Where the docs are: a checkout keeps them in docs/guide beside tools/; an
-# installed layout puts this script in libexec/rakupp and the two files in
-# share/rakupp/docs. RAKUPP_DOCS=DIR overrides both.
+# Where the docs come from, in order: RAKUPP_DOCS=DIR (an explicit override,
+# so a writer can point the tool at a working copy), then the copy baked into
+# the binary, then disk. The baked copy is why `rakupp doc` answers from a lone
+# executable; %DOCS below is empty in a checkout and filled by
+# tools/gen-embedded-tools.raku on the way into src/EmbeddedTools.cpp.
+# On disk: a checkout keeps the guides in docs/guide beside tools/, an
+# installed layout in share/rakupp/docs.
 
+my %DOCS;
+
+# The on-disk search, used only by a build with no baked copy.
 sub docs-dir() {
-    return %*ENV<RAKUPP_DOCS>.IO if %*ENV<RAKUPP_DOCS>;
     my $here = $*PROGRAM.IO.resolve.parent;
     for $here.parent.add('docs/guide'), $here.parent.parent.add('share/rakupp/docs') -> $d {
         return $d if $d.add('REFERENCE.md').e;
     }
     return IO::Path;
+}
+
+# One guide's text, or Nil if this build has neither a baked copy nor a file.
+sub doc-text(Str $name) {
+    if %*ENV<RAKUPP_DOCS> -> $over {        # set and non-empty: it decides alone
+        my $f = $over.IO.add($name);
+        return $f.e ?? $f.slurp !! Nil;
+    }
+    return %DOCS{$name} if %DOCS{$name}:exists;
+    my $dir = docs-dir();
+    return Nil unless $dir.defined;
+    my $f = $dir.add($name);
+    $f.e ?? $f.slurp !! Nil
 }
 
 # One hit: where it is (heading trail), and the line itself.
@@ -28,13 +47,13 @@ class Hit { has $.file; has @.trail; has $.line; has $.kind }
 # FIRST cell names it (those carry the meaning column), lines of code blocks,
 # and prose lines with it in inline code. Word-bounded for identifiers; a
 # symbol made of punctuation (`»`, `<=>`, `Z`) matches as a substring.
-sub scan(IO::Path $f, Str $sym) {
+sub scan(Str $name, Str $text, Str $sym) {
     my @hits;
     my @trail;            # the current ## / ### heading path
     my $in-code = False;
     my $wordy = so $sym ~~ /^ <[\w\-]>+ $/;
     my $re = $wordy ?? rx/ <|w> $sym <|w> / !! rx/ $sym /;
-    for $f.lines.kv -> $n, $l {
+    for $text.lines.kv -> $n, $l {
         if $l ~~ /^ '```' / { $in-code = !$in-code; next }
         if !$in-code && $l ~~ /^ ('#'+) \s+ (.*) $/ {
             my $level = $0.chars;
@@ -56,7 +75,7 @@ sub scan(IO::Path $f, Str $sym) {
         elsif $in-code { $kind = 'code' }
         elsif $l ~~ / '`' <-[`]>* $sym <-[`]>* '`' / { $kind = 'prose' }
         else { next }
-        @hits.push: Hit.new(:file($f.basename), :trail(@trail.grep(*.defined).Array), :line($l.trim), :$kind);
+        @hits.push: Hit.new(:file($name), :trail(@trail.grep(*.defined).Array), :line($l.trim), :$kind);
     }
     @hits
 }
@@ -91,9 +110,9 @@ sub MAIN(
     Bool :$code,        #= code examples only (skip the tables and the prose)
 ) {
     unless @symbols { note "Usage: rakupp doc SYMBOL ...   (e.g. rakupp doc trim, rakupp doc '<=>', rakupp doc gather)"; exit 2 }
-    my $dir = docs-dir();
-    unless $dir.defined {
-        note "rakupp doc: cannot find REFERENCE.md (looked beside this checkout and in share/rakupp/docs; RAKUPP_DOCS=DIR overrides)";
+    my %text = ('REFERENCE.md', 'FEATURES.md').map({ $_ => doc-text($_) }).grep(*.value.defined).Hash;
+    unless %text {
+        note "rakupp doc: cannot find REFERENCE.md (this binary carries no baked copy, and none is on disk; RAKUPP_DOCS=DIR overrides)";
         exit 1;
     }
     my $missing = 0;
@@ -101,9 +120,8 @@ sub MAIN(
         my $sym = $raw.subst(/^ '.' /, '');          # `.trim` is the method spelling of `trim`
         my @hits;
         for 'REFERENCE.md', 'FEATURES.md' -> $name {
-            my $f = $dir.add($name);
-            next unless $f.e;
-            @hits.append: scan($f, $sym);
+            next unless %text{$name}:exists;
+            @hits.append: scan($name, %text{$name}, $sym);
         }
         @hits .= grep(*.kind eq 'code') if $code;
         # tables first (they carry the meaning), then code, then prose —

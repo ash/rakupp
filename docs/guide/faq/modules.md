@@ -40,16 +40,17 @@ want zef itself on such a machine, zef runs under Raku++ too — `rakupp
 
 ## `rakupp install` says it cannot find install.raku
 
-The installer is a Raku program shipped beside the binary, not inside it —
-`libexec/rakupp/install.raku` in an installed layout, `tools/install.raku` in
-a checkout — and the binary looks only there. A `rakupp` copied on its own
-into a container, or installed by a route that dropped `libexec/` (Homebrew's
-prebuilt macOS binary does, today), has no installer. Put the file from the
-same release back beside it, as
-[INSTALL.md](../INSTALL.md#prebuilt-binaries-macos-linux-windows) shows, and
-`rakupp install` is back; nothing else needs to be there. Everything on this
-page about *finding* modules is unaffected — that is the engine, not the
-installer.
+That message comes from v3.26.0 or earlier. The installer used to be a Raku program
+shipped beside the binary — `libexec/rakupp/install.raku` in an installed
+layout, `tools/install.raku` in a checkout — and the binary looked only there,
+so a `rakupp` copied on its own into a container, or installed by a route that
+dropped `libexec/` (Homebrew's prebuilt macOS binary did), had no installer at
+all. Either upgrade, or put the file from the **same release** back beside the
+binary.
+
+Since then the installer is carried inside the binary and the message cannot
+appear: `rakupp install` works from a lone executable, wherever it sits. So
+does `rakupp doc`, which carries its two guides the same way.
 
 ## Where does it look?
 

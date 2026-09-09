@@ -127,6 +127,12 @@ list(REMOVE_ITEM RAKUPP_SOURCES "${RAKUPP_REPL}")
 set(RAKUPP_JS "${CMAKE_CURRENT_SOURCE_DIR}/src/codegen/Js.cpp"
               "${CMAKE_CURRENT_SOURCE_DIR}/src/JsRuntimeSrc.cpp")
 list(REMOVE_ITEM RAKUPP_SOURCES ${RAKUPP_JS})
+# `rakupp install` and `rakupp doc` are Raku programs baked into the CLI
+# (tools/gen-embedded-tools.raku writes the blob). Same reasoning again: the
+# command words exist only in main.cpp, no `--exe` binary can reach either
+# tool, and the 160 KB of text would otherwise ride along in every one of them.
+set(RAKUPP_TOOLS "${CMAKE_CURRENT_SOURCE_DIR}/src/EmbeddedTools.cpp")
+list(REMOVE_ITEM RAKUPP_SOURCES ${RAKUPP_TOOLS})
 
 # ---- the SLIM archive split (SLIM-PLAN P2) ----------------------------------
 # The four cuttable feature groups live in their own archives, so `--exe` can
@@ -268,7 +274,7 @@ if(RAKUPP_BUILD_SHARED OR RAKUPP_LINK_SHARED)
   endif()
 endif()
 
-add_executable(rakupp "${RAKUPP_MAIN}" "${RAKUPP_REPL}" ${RAKUPP_JS})
+add_executable(rakupp "${RAKUPP_MAIN}" "${RAKUPP_REPL}" ${RAKUPP_JS} ${RAKUPP_TOOLS})
 if(RAKUPP_LINK_SHARED)
   target_link_libraries(rakupp PRIVATE rakupp_shared)
 else()
@@ -312,13 +318,12 @@ install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/include/rakupp/"
 install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/src/"
         DESTINATION include/rakupp
         FILES_MATCHING PATTERN "*.h" PATTERN "*.hpp")
-# the module installer `rakupp install` dispatches to (MODULES-PLAN Part A) —
-# shipped beside the binary, never compiled into it
-install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/tools/install.raku"
-              "${CMAKE_CURRENT_SOURCE_DIR}/tools/doc.raku"
-        DESTINATION libexec/rakupp)
-# `rakupp doc SYMBOL` reads these two guides (CLI-BORROW-PLAN); doc.raku looks
-# for them here, or in docs/guide of a checkout
+# `rakupp install` and `rakupp doc` need nothing installed: both programs, and
+# the two guides `doc` reads, travel inside the binary (src/EmbeddedTools.cpp).
+# libexec/rakupp/ is deliberately no longer written — a copy there would be
+# read by nothing, and a stale one would be worse than nothing.
+# The guides still install as documentation in their own right, and RAKUPP_DOCS
+# still points `rakupp doc` at a working copy.
 install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/docs/guide/REFERENCE.md"
               "${CMAKE_CURRENT_SOURCE_DIR}/docs/guide/FEATURES.md"
         DESTINATION share/rakupp/docs)
