@@ -19448,6 +19448,25 @@ void Interpreter::assignListTarget(ListExpr* lst, const Value& rhs) {
 }
 
 Value Interpreter::evalAssignInner(Assign* a, bool sink) {
+    // `(temp $indent) += 2` — `temp` yields the CONTAINER it just snapshotted,
+    // so a compound assignment writes through it. Only the `temp $x = …`
+    // spelling was handled, and the parenthesised one died "Target is not
+    // assignable" (XHTML::Writer indents every nested tag this way).
+    if (a->target && a->target->kind == NK::Call) {
+        auto* tc = static_cast<Call*>(a->target.get());
+        if ((tc->name == "temp" || tc->name == "let") && tc->args.size() == 1 &&
+            !tctx_.cur->find(callAmpName(tc))) {
+            evalTempLet(tc);                  // snapshot + register the restore
+            Value* lv = nullptr;
+            try { lv = lvalue(tc->args[0].get()); } catch (RakuError&) {}
+            if (lv) {
+                Value rhs = eval(a->value.get());
+                std::string bin = a->op.substr(0, a->op.size() - 1);   // "+=" -> "+"
+                *lv = a->op == "=" ? rhs : applyBinOp(bin, *lv, rhs);
+                return sink ? Value::any() : *lv;
+            }
+        }
+    }
     // `@($R) = @temp` / `%($H) = …` — a CONTEXTUALISER as the assignment target.
     // It decontainerises whatever `$R` holds and the assignment replaces that
     // thing's ELEMENTS, so `$R` still holds the same Array afterwards. There was
@@ -26673,6 +26692,17 @@ Value Interpreter::evalBinary(Binary* b) {
         Expr* srcE = op == "==>" ? b->lhs.get() : b->rhs.get();
         Expr* dstE = op == "==>" ? b->rhs.get() : b->lhs.get();
         Value src = eval(srcE);
+        // `… ==> plot` — the target written as a BARE NAME, with no argument
+        // list of its own. It is the same call as `==> plot()`, and without
+        // this it fell through to the container arm and died "Target is not
+        // assignable" (Text::Plot feeds `text-list-plot` exactly this way).
+        if (dstE->kind == NK::NameTerm) {
+            const std::string& fname = static_cast<NameTerm*>(dstE)->name;
+            ValueList one{src};
+            if (Value* f = tctx_.cur->find("&" + fname)) return callCallable(*f, std::move(one));
+            auto bit = builtins_.find(fname);
+            if (bit != builtins_.end() && builtinVisible(fname)) return bit->second(*this, one);
+        }
         if (dstE->kind == NK::Call) { // append the fed value as the trailing argument
             auto* c = static_cast<Call*>(dstE);
             ValueList args = evalArgs(c->args);

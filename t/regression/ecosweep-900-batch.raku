@@ -351,5 +351,15 @@ class Cell9 { has int $.c is built(:bind); has int $.n is rw }
     ck $H<k9>, 'c5', '…and %($x) for a hash';
 }
 
+# ---- a feed into a BARE NAME, and `temp` as a write target ---------------
+sub plot9(@x) { 'PL9:' ~ @x.elems }
+ck ((1, 2, 3) ==> plot9), 'PL9:3', 'a feed target written without its parens is still a call';
+{
+    my $ind9 = 1;
+    sub bump9() { (temp $ind9) += 2; $ind9 }
+    ck bump9(), 3, '`temp` yields the container, so a compound assignment writes it';
+    ck $ind9,   1, '…and the scope exit restores it';
+}
+
 say $fails ?? "\n$fails FAILED" !! "\nPASS";
 exit $fails ?? 1 !! 0;
