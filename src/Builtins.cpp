@@ -46,6 +46,13 @@
 #include <dirent.h>
 #endif
 #include <csignal>
+#if defined(_WIN32)
+#include <conio.h>   // _getch for prompt(:hidden), where there is no termios
+#include <io.h>
+#else
+#include <termios.h> // prompt(:hidden) clears ECHO for the duration of one line
+#include <unistd.h>
+#endif
 #include <sys/stat.h>
 #if !defined(_WIN32)
 #include <fcntl.h>
@@ -7613,6 +7620,21 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         for (ClassInfo* c = inv.obj()->cls.get(); c && nb.empty(); c = c->parent.get())
             nb = c->nativeParent;
         if (nb == "IO::Handle") {
+            // `.chomp` / `.nl-in` / `.nl-out` are handle STATE with defaults, and
+            // a derived class inherits them. Without this they fell through to
+            // Str.chomp on the object's own stringification, so Text::CSV's
+            // `my Bool $chomped = $io.chomp` type-checked a Str against Bool.
+            if ((m == "chomp" || m == "nl-in" || m == "nl-out") && args.empty()) {
+                auto it = inv.obj()->attrs.find(m);
+                if (it != inv.obj()->attrs.end() && it->second.t != VT::Any) return it->second;
+                if (m == "chomp") return Value::boolean(true);
+                if (m == "nl-out") return Value::str("\n");
+                Value d = Value::array();               // nl-in: Rakudo's default pair
+                d.arr()->push_back(Value::str("\n"));
+                d.arr()->push_back(Value::str("\r\n"));
+                d.itemized = true;
+                return d;
+            }
             if (m == "encoding") {
                 if (!args.empty() && args[0].t != VT::Pair) {
                     inv.obj()->attrs["__io-encoding"] = args[0];
@@ -8838,6 +8860,138 @@ std::string Interpreter::ioFsPath(const Value& v) {
     return logicalJoin(base, p);
 }
 
+// ------------------------------------------------------- hidden line read ---
+// `prompt(:hidden)`: read a line the terminal never echoes, for a password or
+// any other secret typed at an interactive shell.
+//
+// ECHO is the ONLY flag cleared. ICANON stays on, so the kernel's line
+// discipline still gives the typist backspace, ^U and ^W — the same deal
+// `stty -echo` makes, and the reason this is not the REPL's raw mode.
+//
+// The saved settings go back on every exit path, including an exception out of
+// the read, because a terminal left with echo off is a wrecked session: the
+// shell keeps working but shows nothing typed into it.
+//
+// Not a tty — a pipe, a file, a here-doc, a test harness — is NOT an error and
+// NOT silently refused: there is no echo to suppress, so the line is read
+// plainly. That is what makes `:hidden` testable at all.
+#if !defined(_WIN32)
+// ^C at a password prompt must not wreck the shell. A destructor does not run
+// when a signal's default action kills the process, so the terminal would be
+// left with echo off and the user's next shell would show nothing they typed —
+// measured, and exactly what naive `stty -echo` does. So the settings and a
+// flag live at file scope, where a handler (which takes no context) can reach
+// them. `tcsetattr` and `raise` are both async-signal-safe.
+namespace {
+termios g_echoSaved{};
+volatile sig_atomic_t g_echoOff = 0;
+const int g_echoSigs[] = { SIGINT, SIGTERM, SIGHUP, SIGQUIT };
+const int g_echoNSigs = (int)(sizeof g_echoSigs / sizeof g_echoSigs[0]);
+struct sigaction g_echoPrev[4];
+
+extern "C" void echoRestoreHandler(int sig) {
+    if (g_echoOff) {
+        g_echoOff = 0;
+        ::tcsetattr(STDIN_FILENO, TCSAFLUSH, &g_echoSaved);
+    }
+    // Put the previous disposition back and re-raise: this handler exists only
+    // to unwreck the terminal, never to change what the signal means. If rakupp
+    // (or the embedder) had a handler of its own, it still runs.
+    for (int i = 0; i < g_echoNSigs; i++)
+        if (g_echoSigs[i] == sig) ::sigaction(sig, &g_echoPrev[i], nullptr);
+    ::raise(sig);
+}
+} // namespace
+
+struct EchoOff {
+    bool on = false;
+    EchoOff() {
+        if (!::isatty(STDIN_FILENO)) return;
+        if (::tcgetattr(STDIN_FILENO, &g_echoSaved) == -1) return;
+        termios quiet = g_echoSaved;
+        quiet.c_lflag &= ~(unsigned long)ECHO;
+        // TCSAFLUSH, unlike the REPL's TCSADRAIN: anything typed AHEAD of the
+        // prompt was typed while echo was still on, so it is already on the
+        // screen. Draining it into the password would put that visible text in
+        // the secret; discarding it is what getpass(3) does, and why.
+        if (::tcsetattr(STDIN_FILENO, TCSAFLUSH, &quiet) == -1) return;
+        on = true;
+        g_echoOff = 1;
+        struct sigaction sa;
+        std::memset(&sa, 0, sizeof sa);
+        sa.sa_handler = echoRestoreHandler;
+        sigemptyset(&sa.sa_mask);
+        for (int i = 0; i < g_echoNSigs; i++)
+            ::sigaction(g_echoSigs[i], &sa, &g_echoPrev[i]);
+    }
+    ~EchoOff() {
+        if (!on) return;
+        for (int i = 0; i < g_echoNSigs; i++)
+            ::sigaction(g_echoSigs[i], &g_echoPrev[i], nullptr);
+        g_echoOff = 0;
+        ::tcsetattr(STDIN_FILENO, TCSAFLUSH, &g_echoSaved);
+    }
+};
+#endif
+
+// True if a line was read; false at EOF. `echoed` says whether the terminal
+// showed the keystrokes, which decides who has to supply the newline.
+static bool readHiddenLine(std::string& line, bool& echoed) {
+    line.clear();
+    echoed = true;
+#if defined(_WIN32)
+    // No termios. _getch reads a key without echoing it; the line discipline
+    // goes with it, so backspace is ours to honour.
+    if (_isatty(_fileno(stdin))) {
+        echoed = false;
+        for (;;) {
+            int ch = _getch();
+            if (ch == '\r' || ch == '\n') return true;
+            if (ch == 3) { std::exit(130); }               // ^C
+            if (ch == 26 || ch == EOF) return !line.empty(); // ^Z
+            if (ch == '\b' || ch == 127) { if (!line.empty()) line.pop_back(); continue; }
+            if (ch == 0 || ch == 0xE0) { _getch(); continue; } // a function key's second byte
+            line += (char)ch;
+        }
+    }
+#else
+    EchoOff off;
+    echoed = !off.on;
+#endif
+    if (!std::getline(std::cin, line)) return false;
+    if (!line.empty() && line.back() == '\r') line.pop_back();
+    return true;
+}
+
+// `prompt` proper, shared by the builtin and by the `rakupp-prompt-hidden`
+// probe so the two cannot drift apart. `forceHidden` is the probe's entry.
+static Value promptImpl(ValueList& a, bool forceHidden) {
+    bool hidden = forceHidden;
+    const Value* msg = nullptr;
+    for (const Value& v : a) {
+        if (v.t == VT::Pair && v.namedArg) {
+            if (v.s == "hidden") hidden = !v.pairVal() || v.pairVal()->truthy();
+            continue; // any other named keeps its old meaning: ignored
+        }
+        if (!msg) msg = &v;
+    }
+    if (msg) { std::cout << msg->toStr(); std::cout.flush(); }
+    std::string line;
+    if (!hidden) {
+        if (!std::getline(std::cin, line)) return Value::nil(); // EOF -> Nil
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        // Raku returns Str-with-val: numeric input is an allomorph
+        return rakupp::valAllomorph(Value::str(line));
+    }
+    bool echoed = true;
+    if (!readHiddenLine(line, echoed)) return Value::nil();
+    // The Enter that ended the line was not echoed either, so the cursor is
+    // still sitting after the prompt. Without this the next line of output is
+    // written onto it.
+    if (!echoed) { std::cout << "\n"; std::cout.flush(); }
+    return Value::str(line);
+}
+
 void Interpreter::registerBuiltins() {
     auto& B = builtins_;
 
@@ -9255,13 +9409,25 @@ void Interpreter::registerBuiltins() {
     B["val"] = [valAllomorph](Interpreter&, ValueList& a) -> Value {
         return a.empty() ? Value::nil() : valAllomorph(a[0]);
     };
-    B["prompt"] = [valAllomorph](Interpreter&, ValueList& a) -> Value {
-        if (!a.empty()) { std::cout << a[0].toStr(); std::cout.flush(); }
-        std::string line;
-        if (!std::getline(std::cin, line)) return Value::nil(); // EOF -> Nil
-        if (!line.empty() && line.back() == '\r') line.pop_back();
-        return valAllomorph(Value::str(line)); // Raku returns Str-with-val: numeric input is an allomorph
-    };
+    // `prompt($message?, :hidden)`.
+    //
+    // The nameds are PARTITIONED OFF FIRST, and that is a fix rather than
+    // bookkeeping: this took `a[0]` as the message unconditionally, so
+    // `prompt(:hidden)` with no message printed the pair — "hidden\tTrue" —
+    // as the prompt string.
+    //
+    // `:hidden` is an extension; Rakudo's prompt has no nameds at all and dies
+    // on any of them. It returns a plain Str, NOT the allomorph an ordinary
+    // prompt returns, and the difference is not cosmetic: a numeric password
+    // would come back an IntStr, and an IntStr serialises through JSON::Fast
+    // as the NUMBER 1234 — a secret silently retyped, with any leading zero
+    // gone. A secret is a string.
+    B["prompt"] = [](Interpreter&, ValueList& a) -> Value { return promptImpl(a, false); };
+    // The probe a portable module looks for. `Password::Native` asks
+    // `try &::('rakupp-prompt-hidden')` and, finding it, hands the read to the
+    // engine instead of shelling out to `stty`. Same contract as
+    // `prompt(:hidden)`: optional message, plain Str back, Nil at EOF.
+    B["rakupp-prompt-hidden"] = [](Interpreter&, ValueList& a) -> Value { return promptImpl(a, true); };
     B["__qx__"] = [](Interpreter&, ValueList& a) -> Value { // qx// / qqx// shell capture
         std::string cmd = a.empty() ? "" : a[0].toStr();
         std::string outp; char buf[4096]; size_t n;

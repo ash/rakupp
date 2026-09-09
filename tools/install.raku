@@ -503,8 +503,14 @@ sub rea-index() {
 # Names the ENGINE provides — never fetched, however a dist spells the dep.
 # (The REA archive even carries a `Rakudo` pseudo-dist that claims to provide
 # them, with no archive behind it — candidates() refuses it below.)
+# Slang::Tuxic is on the list because the ENGINE applies it: it is a grammar
+# mutation two rules wide (a call's argument list may stand off from the name),
+# and rakupp recognises the name in its own parser rather than running a slang
+# it has no grammar to mix into. Fetching it would drag in Slangify, whose own
+# suite does not pass here, and block Text::CSV and everything above it.
 my constant @CORE-NAMES = <Test NativeCall lib strict v6 v6.c v6.d v6.e perl6 Perl6
-                           experimental newline MONKEY MONKEY-TYPING nqp>;
+                           experimental newline MONKEY MONKEY-TYPING nqp
+                           Slang::Tuxic>;
 
 # Every index entry providing `name` (as dist name or module), constraints
 # applied, newest version first.

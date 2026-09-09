@@ -1405,6 +1405,20 @@ ExprPtr Parser::parseExpr(int minbp) {
 }
 
 ExprPtr Parser::parsePrefix(bool tight) {
+    // `anon` is a SCOPE declarator, like `my` — it says the declaration goes
+    // into no namespace at all, and the value it evaluates to is the whole
+    // point. Everything after it parses as the term it already was; only the
+    // installation would differ, and an anonymous routine installs nothing
+    // anyway. (Text::CSV builds its test helpers as `anon sub (…) {…}`.)
+    if (isKind(Tok::Ident) && cur().text == "anon" && peek().kind == Tok::Ident &&
+        (peek().text == "sub" || peek().text == "method" || peek().text == "submethod" ||
+         peek().text == "class" || peek().text == "role" || peek().text == "grammar" ||
+         peek().text == "package" || peek().text == "module" ||
+         peek().text == "token" || peek().text == "rule" || peek().text == "regex" ||
+         peek().text == "multi" || peek().text == "state" || peek().text == "my")) {
+        advance();
+        return parsePrefix(tight);
+    }
     if (cur().kind == Tok::Op) {
         const std::string& o = cur().text;
         // hyper prefix: -«(1,2) / -<<@a / --<<%h — apply the prefix op to every
@@ -2339,7 +2353,7 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
             // `$x.'foo'()` is legal, bare `$x.'foo'` is not (S12).
             if (indirectName && !isKind(Tok::LParen))
                 error("indirect method call requires parentheses: $obj.'name'()");
-            if (isKind(Tok::LParen) && !cur().spaceBefore) { advance(); mc->args = parseCallArgs(); takeTrailingAdverbs(mc->args); } // .method(args) — tight only; `.doit ()` is Confused (use unspace)
+            if (isKind(Tok::LParen) && (!cur().spaceBefore || tuxicSlang_)) { advance(); mc->args = parseCallArgs(); takeTrailingAdverbs(mc->args); } // .method(args) — tight only; `.doit ()` is Confused (use unspace) — unless Slang::Tuxic said otherwise
             // a DETACHED adverb — `$sth.row :hash` — the colonpair (ident TIGHT
             // after the colon) is the call's named argument. It must be decided
             // BEFORE the colon-args form below, which was swallowing
@@ -4974,7 +4988,14 @@ ExprPtr Parser::parsePrimary() {
                     if (ExprPtr n = makeNqpOp(name.substr(5), none)) return n;
                 }
             }
-            if (isKind(Tok::LParen) && !cur().spaceBefore) {
+            // Under Slang::Tuxic a detached argument list is a call here too —
+            // but only for a lower-case name. The slang itself exempts type
+            // names (`$*R.is-identifier-type`), because `Str (…)` in a
+            // signature or a declaration is not a call; the initial-case test
+            // is the same exemption without a symbol table to ask.
+            bool tuxicArgs = tuxicSlang_ && isKind(Tok::LParen) && cur().spaceBefore &&
+                             !name.empty() && ascii::islower((unsigned char)name[0]);
+            if (isKind(Tok::LParen) && (!cur().spaceBefore || tuxicArgs)) {
                 advance();
                 ExprPtr invocant;
                 auto callArgs = parseCallArgs(&invocant);
@@ -5237,6 +5258,7 @@ ExprPtr Parser::parseEmbeddedExpr(const std::string& src) {
     p.userInfix_ = userInfix_;
     p.userPrefix_ = userPrefix_;
     p.useNqp_ = useNqp_; // `"{ nqp::chr($o) }"` in a `use nqp` unit sees the subset
+    p.tuxicSlang_ = tuxicSlang_; // …and `"{ .meth (1) }"` in a Slang::Tuxic unit
     p.userPostfix_ = userPostfix_;
     p.userCircumfix_ = userCircumfix_;
     p.userPostcircumfix_ = userPostcircumfix_;
@@ -5837,6 +5859,51 @@ void Parser::recordParamTrait(Param& p, const std::string& name) {
 // term position (parsePrimary) and the statement position (parseStatementImpl):
 // the statement copy used to lack the computed-key chain and the topic veto,
 // so `sub f { { $d.uc => 1 } }` returned a Pair where a Hash was meant.
+// Does an interpolating string interpolate the TOPIC? `{ "a$_" => 1 }` is a
+// BLOCK on Rakudo, not a one-key Hash, and the token scan below never looked
+// inside a string — so `.map({ "&$_" => %impl{$_} })`, which is what building
+// an export map looks like, composed a Hash, mapped with it, and produced an
+// EMPTY Seq. Silently: the module compiled and exported nothing.
+//
+// An embedded `{ … }` code block owns its own topic, so it is skipped whole
+// rather than descended into: `{ "a{ @y.map({ $_ }) }" => 1 }` really is a
+// Hash on Rakudo. Both halves measured against Rakudo v2026.08.
+static bool strInterpUsesTopic(const std::string& s) {
+    size_t i = 0;
+    // a `\x02feats\x02` prefix records the quote's adverbs — not string body
+    if (!s.empty() && s[0] == '\x02') {
+        size_t e = s.find('\x02', 1);
+        i = (e == std::string::npos) ? s.size() : e + 1;
+    }
+    auto identChar = [](unsigned char c) { return std::isalnum(c) || c == '_'; };
+    for (; i < s.size(); i++) {
+        const char c = s[i];
+        if (c == '\\') { i++; continue; }   // `"\$_"` interpolates nothing
+        if (c == '{') {                     // embedded code: its own topic
+            int d = 1;
+            while (++i < s.size() && d) {
+                if (s[i] == '\\') { i++; continue; }
+                if (s[i] == '{') d++;
+                else if (s[i] == '}') d--;
+            }
+            i--;
+            continue;
+        }
+        if (c != '$' && c != '@' && c != '%') continue;
+        if (i + 1 < s.size() && s[i + 1] == '^') { // `$^a` placeholder
+            if (i + 2 < s.size() && (std::isalpha((unsigned char)s[i + 2]) || s[i + 2] == '_'))
+                return true;
+            continue;
+        }
+        // `$_`, `@_`, `%_` — but `$_b` is a variable in its own right, so the
+        // character after the underscore must not continue the identifier
+        if (i + 1 < s.size() && s[i + 1] == '_' &&
+            !(i + 2 < s.size() && identChar((unsigned char)s[i + 2])))
+            return true;
+    }
+    return false;
+}
+
 bool Parser::braceLooksHash(bool emptyIsHash) {
     bool isHash = false;
     const Token& a = peek(1), &b = peek(2);
@@ -5922,6 +5989,9 @@ bool Parser::braceLooksHash(bool emptyIsHash) {
             if (tk.kind == Tok::Var &&
                 (tk.text == "$_" || tk.text == "@_" || tk.text == "%_" ||
                  (tk.text.size() > 2 && tk.text[1] == '^'))) { isHash = false; break; }
+            // …and the same variables reached through a STRING INTERPOLATION,
+            // which is a token the scan cannot see into from the outside
+            if (tk.kind == Tok::StrInterp && strInterpUsesTopic(tk.text)) { isHash = false; break; }
             // `.method` with no invocant before it — the previous token cannot
             // end a term, so the dot's invocant is the topic
             if (tk.kind == Tok::Op && tk.text == "." && k > li) {
@@ -8266,6 +8336,7 @@ StmtPtr Parser::parseStatementImpl() {
             advance();
             if (isKind(Tok::Ident)) {
                 auto u = std::make_unique<UseStmt>();
+                u->isRequire = true;
                 u->module = advance().text;
                 // Skip the name adverbs (`:ver(v0.3.3+)`, `:auth<…>`) and any
                 // `<…>` import list — both accepted and ignored, since
@@ -8371,6 +8442,13 @@ StmtPtr Parser::parseStatementImpl() {
             if (!u->isNo) scanModuleOps(u->module); // its operators must parse HERE
             if (!u->isNo && u->module.compare(0, 6, "MONKEY") == 0)
                 monkeyScopes_.back() = 1; // use MONKEY-TYPING / use MONKEY (lexical)
+            // A slang is a grammar mutation, and rakupp has no grammar to mutate.
+            // Slang::Tuxic's mutation is two rules wide — whitespace may stand
+            // between a call's name and its parenthesised arguments — so the
+            // parser recognises the NAME and applies them itself. Only files
+            // that ask for it are affected; everywhere else `f (1)` stays two
+            // terms in a row, which is what Rakudo says without the slang.
+            if (!u->isNo && u->module == "Slang::Tuxic") tuxicSlang_ = true;
             // `use lib` takes an expression unless it is the plain one-string form,
             // whose path is kept as text (the native backends read it there). A
             // COMMA LIST is not that form: `use lib 'lib', 't/lib'` kept the first
@@ -8438,6 +8516,21 @@ StmtPtr Parser::parseStatementImpl() {
             return applyModifiers(std::move(es));
         }
         if (kw == "sub") { advance(); return parseSub(false); }
+        // …and the same declarator at STATEMENT level: `anon sub foo {…}` is a
+        // routine nothing can name afterwards. Recognised only where a
+        // declaration can follow, so a sub or variable called `anon` still
+        // parses as a call.
+        if (kw == "anon" && peek().kind == Tok::Ident &&
+            (peek().text == "sub" || peek().text == "method" || peek().text == "submethod" ||
+             peek().text == "class" || peek().text == "role" || peek().text == "grammar" ||
+             peek().text == "package" || peek().text == "module" ||
+             peek().text == "token" || peek().text == "rule" || peek().text == "regex" ||
+             peek().text == "multi" || peek().text == "state" || peek().text == "my")) {
+            advance();
+            auto es = std::make_unique<ExprStmt>();
+            es->e = parseExpression();
+            return applyModifiers(std::move(es));
+        }
         // `only` is the third multiness declarator — it says this routine has
         // exactly one candidate, which is what a plain `sub` already is here.
         // Recognised only where a routine can actually follow, so a sub or

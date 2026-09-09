@@ -1907,7 +1907,20 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 (*inv.hash())["encoding"] = Value::str(args[0].toStr());
             }
             auto it = inv.hash()->find("encoding"); return it != inv.hash()->end() ? it->second : Value::str("utf8"); }
-        if (m == "nl-in")  { auto it = inv.hash()->find("nl-in");  return it != inv.hash()->end() ? it->second : Value::str("\n"); }
+        // The DEFAULT nl-in is the two-element list Rakudo uses, not a bare
+        // "\n": a handle that has not been told otherwise ends a line at either
+        // "\n" or "\r\n". Text::CSV's own in-memory handle seeds itself with
+        // `$*IN.nl-in` and then splits on it, so answering a bare "\n" made it
+        // keep the CR as text.
+        if (m == "nl-in")  {
+            auto it = inv.hash()->find("nl-in");
+            if (it != inv.hash()->end()) return it->second;
+            Value d = Value::array();
+            d.arr()->push_back(Value::str("\n"));
+            d.arr()->push_back(Value::str("\r\n"));
+            d.itemized = true;   // Rakudo shows it as $["\n", "\r\n"]
+            return d;
+        }
         if (m == "nl-out") { auto it = inv.hash()->find("nl-out"); return it != inv.hash()->end() ? it->second : Value::str("\n"); }
         if (m == "path" || m == "IO") {
             auto st = inv.hash()->find("std"); // standard streams: an IO::Special
@@ -2143,18 +2156,41 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         }
         // reading: lazily load the file into lines, track a cursor in "pos"
         bool isStdin = inv.hash()->find("std") != inv.hash()->end() && (*inv.hash())["std"].toStr() == "in";
-        if (m == "get" || m == "getline" || m == "lines" || m == "eof" || m == "words" || m == "slurp-rest") {
+        if (m == "get" || m == "getline" || m == "lines" || m == "eof" || m == "words" ||
+            m == "slurp-rest" || m == "seek" || m == "tell") {
             if (inv.hash()->find("lines") == inv.hash()->end()) {
                 // a custom line separator (`.nl-in = "+"`) splits on that instead of \n
                 std::string sep;
                 auto nit = inv.hash()->find("nl-in");
                 if (nit != inv.hash()->end()) {
                     if (nit->second.t == VT::Str) sep = nit->second.s;
-                    else if (nit->second.t == VT::Array && nit->second.arr() && !nit->second.arr()->empty())
-                        sep = (*nit->second.arr())[0].toStr(); // Array nl-in: first separator
+                    else if (nit->second.t == VT::Array && nit->second.arr() && !nit->second.arr()->empty()) {
+                        // A LIST nl-in that still offers "\r\n" alongside "\n" is
+                        // the default set, however it was spelled — take the
+                        // CRLF-tolerant path rather than splitting on the first
+                        // entry alone and leaving a CR at the end of every line.
+                        bool hasLf = false, hasCrLf = false;
+                        for (auto& e : *nit->second.arr()) {
+                            if (e.toStr() == "\n") hasLf = true;
+                            if (e.toStr() == "\r\n") hasCrLf = true;
+                        }
+                        if (!(hasLf && hasCrLf)) sep = (*nit->second.arr())[0].toStr();
+                    }
                 }
                 Value lines = Value::array();
-                if (!sep.empty() && sep != "\n") {
+                // Each line's own terminator, kept beside it: `.chomp = False`
+                // asks for the line AS IT WAS, and the split cannot be undone
+                // afterwards (the last line may have none, and "\r\n" is not
+                // "\n"). Text::CSV reads its input that way — the CSV parser
+                // needs the line ending to diagnose an unterminated field.
+                Value eols = Value::array();
+                // An EXPLICIT nl-in splits on exactly that string — including a
+                // plain "\n", which is not the default. The default (no key at
+                // all) is Rakudo's ["\n", "\r\n"], where a CR before the LF
+                // belongs to the terminator; once the program has named "\n"
+                // alone, a lone "\r" is DATA. Text::CSV sets nl-in from its
+                // `eol` option and diagnoses stray carriage returns (error 2031).
+                if (!sep.empty()) {
                     std::string content;
                     if (isStdin) { std::ostringstream ss; ss << std::cin.rdbuf(); content = ss.str(); }
                     else { std::ifstream in((*inv.hash())["path"].toStr(), std::ios::binary); std::ostringstream ss; ss << in.rdbuf(); content = ss.str(); }
@@ -2162,9 +2198,13 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                     size_t start = 0, p;
                     while ((p = content.find(sep, start)) != std::string::npos) {
                         lines.arr()->push_back(Value::str(content.substr(start, p - start)));
+                        eols.arr()->push_back(Value::str(sep));
                         start = p + sep.size();
                     }
-                    if (start < content.size()) lines.arr()->push_back(Value::str(content.substr(start)));
+                    if (start < content.size()) {
+                        lines.arr()->push_back(Value::str(content.substr(start)));
+                        eols.arr()->push_back(Value::str(""));
+                    }
                 } else {
                     std::string line;
                     // an IN-MEMORY handle ($*ARGFILES, Proc.out/.err) has its
@@ -2176,32 +2216,87 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                         while (start <= content.size()) {
                             size_t nl = content.find('\n', start);
                             if (nl == std::string::npos) {
-                                if (start < content.size()) lines.arr()->push_back(Value::str(content.substr(start)));
+                                if (start < content.size()) {
+                                    lines.arr()->push_back(Value::str(content.substr(start)));
+                                    eols.arr()->push_back(Value::str(""));
+                                }
                                 break;
                             }
                             std::string l = content.substr(start, nl - start);
-                            if (!l.empty() && l.back() == '\r') l.pop_back();
+                            bool crlf = !l.empty() && l.back() == '\r';
+                            if (crlf) l.pop_back();
                             lines.arr()->push_back(Value::str(l));
+                            // Rakudo normalises: a CRLF line read back with
+                            // `chomp = False` ends "\n", not "\r\n".
+                            (void)crlf; eols.arr()->push_back(Value::str("\n"));
                             start = nl + 1;
                         }
                     }
                     else if (isStdin) { // $*IN — read standard input
                         while (std::getline(std::cin, line)) {
-                            if (!line.empty() && line.back() == '\r') line.pop_back();
+                            bool crlf = !line.empty() && line.back() == '\r';
+                            if (crlf) line.pop_back();
                             lines.arr()->push_back(Value::str(line));
+                            (void)crlf; eols.arr()->push_back(Value::str(std::cin.eof() ? "" : "\n"));
                         }
                     } else {
                         std::ifstream in((*inv.hash())["path"].toStr(), std::ios::binary);
                         std::ostringstream raw; raw << in.rdbuf();
-                        std::istringstream src(decodeTextEnc(raw.str(), handleEnc(inv)));
+                        std::string decoded = decodeTextEnc(raw.str(), handleEnc(inv));
+                        std::istringstream src(decoded);
+                        // getline() cannot say whether the LAST line ended in a
+                        // newline; the decoded text can.
+                        bool endsNl = !decoded.empty() && decoded.back() == '\n';
                         while (std::getline(src, line)) {
-                            if (!line.empty() && line.back() == '\r') line.pop_back();
+                            bool crlf = !line.empty() && line.back() == '\r';
+                            if (crlf) line.pop_back();
                             lines.arr()->push_back(Value::str(line));
+                            bool last = src.eof();
+                            (void)crlf; eols.arr()->push_back(Value::str((last && !endsNl) ? "" : "\n"));
                         }
                     }
                 }
                 (*inv.hash())["lines"] = lines;
+                (*inv.hash())["line-eols"] = eols;
                 (*inv.hash())["pos"] = Value::integer(0);
+            }
+            // `.seek` / `.tell` — a byte offset over the same line cache the rest
+            // of this block reads. Text::CSV's suite rewinds a handle between
+            // passes with `$fh.seek(0, SeekFromBeginning)`, and there was no
+            // seek at all. The offset is measured in the bytes each line
+            // occupied, terminator included, so `tell` after N lines is where
+            // line N+1 starts and a seek to that number lands on it.
+            if (m == "seek" || m == "tell") {
+                auto& ln = *(*inv.hash())["lines"].arr();
+                auto eolIt2 = inv.hash()->find("line-eols");
+                auto lineBytes = [&](size_t i) {
+                    size_t n2 = ln[i].toStr().size();
+                    if (eolIt2 != inv.hash()->end() && eolIt2->second.arr() &&
+                        i < eolIt2->second.arr()->size())
+                        n2 += (*eolIt2->second.arr())[i].toStr().size();
+                    return n2;
+                };
+                long long pos0 = (*inv.hash())["pos"].toInt();
+                if (m == "tell") {
+                    long long off = 0;
+                    for (long long i = 0; i < pos0 && i < (long long)ln.size(); i++) off += (long long)lineBytes((size_t)i);
+                    return Value::integer(off);
+                }
+                long long want = args.empty() ? 0 : args[0].toInt();
+                long long whence = 0;                        // SeekFromBeginning
+                for (size_t i = 1; i < args.size(); i++)
+                    if (args[i].t != VT::Pair) { whence = args[i].toInt(); break; }
+                if (whence == 2) {                           // SeekFromEnd
+                    long long total = 0;
+                    for (size_t i = 0; i < ln.size(); i++) total += (long long)lineBytes(i);
+                    want += total;
+                } else if (whence == 1) {                    // SeekFromCurrent
+                    for (long long i = 0; i < pos0 && i < (long long)ln.size(); i++) want += (long long)lineBytes((size_t)i);
+                }
+                long long off = 0, idx = 0;
+                while (idx < (long long)ln.size() && off < want) { off += (long long)lineBytes((size_t)idx); idx++; }
+                (*inv.hash())["pos"] = Value::integer(idx);
+                return Value::boolean(true);
             }
             if (m == "words") { // remaining input split on whitespace
                 auto& ln = *(*inv.hash())["lines"].arr();
@@ -2225,16 +2320,27 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             auto& lines = *(*inv.hash())["lines"].arr();
             long long pos = (*inv.hash())["pos"].toInt();
             if (m == "eof") return Value::boolean(pos >= (long long)lines.size());
+            // `$fh.chomp = False` — the handle hands back each line WITH the
+            // terminator it was read with. The attribute defaults to True.
+            auto chIt = inv.hash()->find("chomp");
+            bool keepEol = chIt != inv.hash()->end() && !chIt->second.truthy();
+            auto eolIt = inv.hash()->find("line-eols");
+            auto withEol = [&](long long i) {
+                if (!keepEol || eolIt == inv.hash()->end() || !eolIt->second.arr()) return lines[i];
+                auto& es = *eolIt->second.arr();
+                if (i >= (long long)es.size()) return lines[i];
+                return Value::str(lines[i].toStr() + es[i].toStr());
+            };
             if (m == "lines") {
                 Value out = Value::array(); out.isList = true;
-                for (long long i = pos; i < (long long)lines.size(); i++) out.arr()->push_back(lines[i]);
+                for (long long i = pos; i < (long long)lines.size(); i++) out.arr()->push_back(withEol(i));
                 (*inv.hash())["pos"] = Value::integer((long long)lines.size());
                 return out;
             }
             // get / getline: next line or Nil at EOF
             if (pos >= (long long)lines.size()) return Value::nil();
             (*inv.hash())["pos"] = Value::integer(pos + 1);
-            return lines[pos];
+            return withEol(pos);
         }
     }
     if (m == "lines" && inv.hashKind == "IO") {

@@ -143,6 +143,12 @@ private:
     // to whoever has to fix the code.
     size_t infixRhsPos_ = (size_t)-1;
     bool useNqp_ = false;         // saw `use nqp` — enables the nqp:: op subset
+    // Saw `use Slang::Tuxic` — Tux's slang, which lets a call's argument list
+    // stand off from the name: `$obj.meth (args)` and `foo (args)`. Text::CSV
+    // and Git::Index are written in it, and eight dists in the ecosystem load
+    // one of those. The real slang mutates the grammar; rakupp cannot run a
+    // slang, so it recognises this one by name and flips the same two rules.
+    bool tuxicSlang_ = false;
     // Language revision of the unit being parsed: 0=6.c, 1=6.d (the default),
     // 2=6.e. Set when `use v6.X` is parsed — which the language guarantees is
     // the first statement — so syntax that only exists from 6.e can be gated

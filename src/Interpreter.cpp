@@ -156,6 +156,11 @@ double randDouble() {
 // a second copy of SHA-1 here until DATA-PLAN P3 lifted them all into one file.
 
 Value applyArith(const std::string& op, const Value& l, const Value& r);
+// The operators that compare their operands AS STRINGS.
+static bool isStringCmpOp(const std::string& op) {
+    return op == "eq" || op == "ne" || op == "lt" || op == "gt" ||
+           op == "le" || op == "ge" || op == "leg";
+}
 
 void collectPubAttrs(ClassInfo* c, std::vector<const ClassAttr*>& out) {
     if (!c) return;
@@ -6259,7 +6264,7 @@ const Value* Interpreter::builtinRef(const std::string& name) {
     return &(builtinRefs_[name] = code);
 }
 
-void Interpreter::loadModule(const std::string& name, const std::vector<std::string>& importArgs, bool doImport, bool quiet, const std::string& verReq) {
+void Interpreter::loadModule(const std::string& name, const std::vector<std::string>& importArgs, bool doImport, bool quiet, const std::string& verReq, bool requireForm) {
     StageLoadTimer stageTimer(name, !loadedModules_.count(name)); // --stagestats: a first load, timed
     // DATA-PLAN P6. Before anything is looked for on disk: this engine may be
     // able to answer the `use` itself, in which case nothing loads at all.
@@ -6297,10 +6302,26 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
                 if (res.t == VT::Hash && res.hash())
                     for (auto& kv : *res.hash()) tctx_.cur->define(kv.first, kv.second);
             } catch (RakuError& e) {
-                // the `if` dist's EXPORT necessarily fails here — both of its
-                // implementations patch Rakudo compiler internals; rakupp
-                // supplies the `:if` adverb natively instead, so the noise
-                // would only pollute every dependent's test log
+                // For `use`/`need` a failing EXPORT is the `use` failing, and it
+                // propagates — Rakudo aborts compilation and exits 1. This used
+                // to warn and carry on at exit 0, which made a module's
+                // export-time validation advisory: `use M <typo>` imported
+                // nothing and said so only on stderr, then ran the program.
+                //
+                // TWO exceptions, and neither is a matter of taste:
+                //
+                // `if` — its EXPORT necessarily fails here. Both implementations
+                // of that dist patch Rakudo compiler internals; rakupp supplies
+                // the `:if` adverb natively instead, so the noise would only
+                // pollute every dependent's test log.
+                //
+                // `require` (the quiet caller) — Rakudo does not run a module's
+                // EXPORT for `require` AT ALL, in any of its three forms;
+                // measured. rakupp does, so a throw here would fail a load that
+                // Rakudo completes. Keeping the old warn-and-continue leaves
+                // `require` exactly as it was rather than making it stricter
+                // than the engine being matched.
+                if (name != "if" && !quiet && !requireForm) throw;
                 if (name != "if")
                     std::cerr << "===WARNING=== Module " << name
                               << " EXPORT failed: " << e.message << "\n";
@@ -6616,7 +6637,9 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
                             tctx_.cur->define(kv.first, kv.second);
                         }
                 } catch (RakuError& e) {
-                    if (name != "if") // see the replay site: rakupp implements :if natively
+                    // see the replay site above for why `if` and `require` differ
+                    if (name != "if" && !quiet && !requireForm) throw;
+                    if (name != "if")
                         std::cerr << "===WARNING=== Module " << name
                                   << " EXPORT failed: " << e.message << "\n";
                 }
@@ -8368,6 +8391,12 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 if (tctx_.cur) tctx_.cur->strictPragma = u->isNo ? 1 : -1;
                 return Value::any();
             }
+            // `use Slang::Tuxic` is a PRAGMA here: the parser already applied
+            // the slang's two rules to this file (Parser::tuxicSlang_), so
+            // there is nothing left for a module to do. Loading it would only
+            // parse a file of grammar mixins rakupp cannot use — and requiring
+            // it to be installed would refuse programs it can now run.
+            if (u->module == "Slang::Tuxic") return Value::any();
             // `use NativeCall` is a pragma here — the FFI is native to the compiler,
             // so no module file declares the PACKAGE or its EXPORT stash. Suites
             // introspect both (NativeLibs' 01-basic walks
@@ -8434,7 +8463,8 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             // compile. Accepting the `use` keeps it from looking like a typo.
             else if (u->module == "Rakupp::Ext") { /* loader is always available */ }
             else if (!u->module.empty()) {
-                loadModule(u->module, u->importArgs, !u->isNeed, /*quiet=*/false, u->verReq);
+                loadModule(u->module, u->importArgs, !u->isNeed, /*quiet=*/false, u->verReq,
+                           /*requireForm=*/u->isRequire);
                 // `use Mod <name:alias>` — import that routine under a second name.
                 // (rakupp imports a module's whole export set; the alias is the part
                 // that has to be honoured, or the name simply is not there.)
@@ -11327,10 +11357,32 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                 size_t remaining = positional.size() - pi;
                 if (p.slurpyKind == 'f') {
                     // *@a — flatten: dissolve every Iterable arg into the slurpy.
+                    //
+                    // …but only as far as Rakudo does. Flattening walks THROUGH
+                    // lists and stops at ARRAYS, because an Array's elements each
+                    // sit in their own Scalar container: `f([[1,2],[3,4]])` binds
+                    // two Arrays, not four Ints, while `f((1,(2,3)))` binds three
+                    // Ints. Flattening everything made a test helper taking
+                    // `*@exp` compare a flat list of strings against the rows it
+                    // was handed (Text::CSV's 67_emptrow).
+                    auto walksThrough = [](const Value& e) {
+                        return !e.itemized &&
+                               (e.t == VT::Range ||
+                                (e.t == VT::Array && e.arr() && (e.isList || e.s == "Slip")));
+                    };
+                    std::function<void(const Value&)> spread = [&](const Value& v) {
+                        if (v.t != VT::Array || !v.arr()) {          // a Range: expand it whole
+                            for (auto& e : v.flatten()) a.arr()->push_back(e);
+                            return;
+                        }
+                        for (auto& e : *v.arr()) {                   // one level, then decide
+                            if (walksThrough(e)) spread(e);
+                            else a.arr()->push_back(e);
+                        }
+                    };
                     for (; pi < positional.size(); pi++) {
                         auto& x = positional[pi];
-                        if (!x.itemized && (x.t == VT::Array || x.t == VT::Range))
-                            for (auto& e : x.flatten()) a.arr()->push_back(e);
+                        if (!x.itemized && (x.t == VT::Array || x.t == VT::Range)) spread(x);
                         else a.arr()->push_back(x);
                     }
                 } else if (p.slurpyKind == 'n' || capture) {
@@ -15820,6 +15872,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                 bool seen = false; for (auto* v : *visited) if (v == &cand) { seen = true; break; }
                 if (seen) continue;
                 int s = scoreCandidate(cand, as);
+                if (s >= 0 && visited->empty() && rwCandidateRejects(cand, as.size(), rwArgs)) s = -1;
                 if (s > bestScore) { bestScore = s; best = &cand; }
             }
             if (!best || bestScore < 0) {
@@ -16502,6 +16555,64 @@ static bool argIsNeverContainer(const Expr* e) {
     }
 }
 
+// An `is rw` parameter is part of the SIGNATURE, so a candidate that wants one
+// does not match an argument that can never be a container: `H.new("")` must
+// reach `multi new(Str $s)` and not die inside `multi new(Str $s is rw)`.
+// Text::CSV's in-memory handle is declared with exactly that pair, and the
+// throw left `Text::IO::String.new(…)` answering a plain FileHandle.
+//
+// Only the first dispatch of a call is judged: a callwith/nextwith replaces the
+// argument VALUES, and the expressions no longer describe them.
+bool Interpreter::methodMayYieldContainer(const std::string& name) {
+    // the engine's own container accessors
+    if (name == "AT-POS" || name == "AT-KEY" || name == "VAR" ||
+        name == "BIND-POS" || name == "BIND-KEY" || name == "nl-in" || name == "nl-out")
+        return true;
+    for (auto& kv : classes_) {
+        if (!kv.second) continue;
+        for (auto& a : kv.second->attrs)
+            if (a.pub && a.rw && a.name == name) return true;   // `has $.v is rw`
+        auto mit = kv.second->methods.find(name);
+        if (mit != kv.second->methods.end() && mit->second.code() && mit->second.code()->retRw)
+            return true;                                        // `method m() is rw`
+    }
+    return false;
+}
+
+bool Interpreter::rwCandidateRejects(const Value& cand, size_t nargs,
+                                     const std::vector<ExprPtr>* rwArgs) {
+    (void)nargs;
+    if (!rwArgs || !cand.code() || !cand.code()->params) return false;
+    size_t pi = 0;
+    for (auto& p : *cand.code()->params) {
+        if (p.invocant) continue;
+        if (p.slurpy) break;      // mirrors setupRwLinks' positional indexing
+        if (p.named) continue;
+        if (pi >= rwArgs->size()) break;
+        // Positional index and expression index agree only up to the first
+        // argument that is not a plain positional: `|%init` flattens and
+        // `:k(v)` is named, and after either one the two stop lining up.
+        // (`self.new($s.Str, |%init)` is exactly that call.)
+        if (const Expr* a0 = (*rwArgs)[pi].get()) {
+            if (a0->kind == NK::Pair) break;
+            if (a0->kind == NK::Unary && static_cast<const Unary*>(a0)->op == "|") break;
+        }
+        Expr* ae = (*rwArgs)[pi].get();
+        // …and a METHOD CALL whose name cannot name a container is a value too.
+        // Rakudo decides this on the thing actually passed: `f($obj.rwattr)`
+        // reaches an `is rw` candidate and `f($str.Str)` does not.
+        bool neverCont = argIsNeverContainer(ae) ||
+                         (ae && ae->kind == NK::MethodCall &&
+                          !static_cast<MethodCall*>(ae)->meta &&
+                          !static_cast<MethodCall*>(ae)->methodExpr &&
+                          !static_cast<MethodCall*>(ae)->hyper &&
+                          !methodMayYieldContainer(static_cast<MethodCall*>(ae)->method));
+        if (p.isRw && neverCont) return true;
+        pi++;
+    }
+    return false;
+}
+
 // Record write-through links for rw/raw params at bind time (mirrors copyOutRw's
 // positional indexing). Called while tctx_.cur is still the CALLER's scope.
 void Interpreter::setupRwLinks(const std::vector<Param>* params, std::shared_ptr<Env>& env,
@@ -16829,6 +16940,7 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
                 bool seen = false; for (auto* v : *visited) if (v == &cand) { seen = true; break; }
                 if (seen) continue;
                 int s = scoreCandidate(cand, as);
+                if (s >= 0 && visited->empty() && rwCandidateRejects(cand, as.size(), rwArgs)) s = -1;
                 // the invocant's definedness smiley (`D:U:` / `::?CLASS:D:`): a
                 // constrained invocant REJECTS on mismatch and outranks an
                 // unconstrained candidate on match — this is how a proto splits
@@ -17870,8 +17982,8 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
         }
         // `$io.nl-out = "\t\t"` on an IO::Handle-derived object: the accessor is
         // writable state on the instance (see the shim in MethodCallPart2).
-        if ((mc->method == "nl-out" || mc->method == "nl-in") && mc->args.empty() &&
-            !mc->meta && !mc->hyper) {
+        if ((mc->method == "nl-out" || mc->method == "nl-in" || mc->method == "chomp") &&
+            mc->args.empty() && !mc->meta && !mc->hyper) {
             Value* base = nullptr;
             try { base = lvalue(mc->inv.get()); } catch (RakuError&) {}
             if (base && base->t == VT::Object && base->obj() && base->obj()->cls) {
@@ -17880,7 +17992,9 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                     nb = c->nativeParent;
                 if (nb == "IO::Handle") {
                     auto& at = base->obj()->attrs;
-                    if (!at.count(mc->method)) at[mc->method] = Value::str("\n");
+                    if (!at.count(mc->method))
+                        at[mc->method] = mc->method == "chomp" ? Value::boolean(true)
+                                                               : Value::str("\n");
                     return &at[mc->method];
                 }
             }
@@ -18745,7 +18859,15 @@ Value Interpreter::gatherTake(const ValueList& items, const Value& ret) {
     // whose list expression is `samewith …` fails outright: by then the
     // dispatcher whose scope it needs is gone.
     const bool hadSome = !coll.empty();
-    for (auto& x : items) coll.push_back(x);
+    // A SLIP splices — that is the whole point of the operator, and `take` is no
+    // exception: `take (($from..$to).Slip)` contributes the numbers, not one
+    // Slip object. Kept whole, it reached a typed `my Int @` as a Slip and
+    // failed the element type check (Text::CSV's column ranges).
+    for (auto& x : items) {
+        if (x.t == VT::Array && x.arr() && x.s == "Slip" && !x.itemized)
+            for (auto& e : *x.arr()) coll.push_back(e);
+        else coll.push_back(x);
+    }
     // a lazy gather stops the block once it has produced enough elements
     size_t lim = tctx_.gatherLimits.empty() ? 0 : tctx_.gatherLimits.back();
     if (lim && coll.size() >= lim) throw StopGatherEx{};
@@ -20095,14 +20217,36 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         if (a->op == ":=" && a->target->kind == NK::VarExpr && a->value->kind == NK::VarExpr) {
             auto* tv = static_cast<VarExpr*>(a->target.get());
             auto* sv = static_cast<VarExpr*>(a->value.get());
+            // A PRIVATE ATTRIBUTE is a legal target: `$!str := $s` aliases the
+            // attribute to the caller's variable for the object's whole life.
             if (tv->name.size() > 1 && tv->name[0] == '$' && sv->name.size() > 1 && sv->name[0] == '$' &&
                 (ascii::isalpha((unsigned char)sv->name[1]) || sv->name[1] == '_') &&
-                (ascii::isalpha((unsigned char)tv->name[1]) || tv->name[1] == '_')) {
+                (ascii::isalpha((unsigned char)tv->name[1]) || tv->name[1] == '_' ||
+                 tv->name[1] == '!')) {
                 std::shared_ptr<Env> owner;
                 for (std::shared_ptr<Env> en = tctx_.cur; en; en = en->parent)
                     if (en->local(sv->name)) { owner = en; break; }
                 if (owner) {
                     Value* srcSlot = owner->local(sv->name);
+                    // …and when the source is an `is rw` PARAMETER, the container
+                    // to share is the CALLER's, not the callee's copy of it. The
+                    // alias outlives the call — Text::CSV's in-memory handle does
+                    // `method bind-str(Str $s is rw) { $!str := $s }` and writes
+                    // through the attribute much later, from `close` — so a link
+                    // that only settles on return cannot carry it.
+                    bool throughRw = false;
+                    if (owner->ex && owner->ex->rwLinks.count(sv->name))
+                        if (Value* through = lvalueThroughRw(a->value.get()))
+                            { srcSlot = through; throughRw = true; }
+                    // lvalueThroughRw also leaves the MIRROR list — the slots a
+                    // `return-rw` write has to be copied back into — for the
+                    // assignment that consumes the lvalue. This binding consumes
+                    // the container itself and never writes through it, so the
+                    // list is ours to drop: left standing it holds pointers into
+                    // a frame that is about to go, and the next assignment writes
+                    // through them.
+                    tctx_.rwMirror.clear();
+                    tctx_.rwMirrorSigil = 0;
                     // Share the source's CONTAINER. Promote it on first alias:
                     // its value moves into a cell, and the source's own slot
                     // becomes a proxy to it, so assignment through either name
@@ -20115,7 +20259,9 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                         *srcSlot = makeSharedCellProxy(cell);
                     }
                     Value* blv = lvalue(a->target.get());
-                    *blv = cell ? makeSharedCellProxy(cell) : makeEnvSlotProxy(owner, sv->name);
+                    *blv = cell ? makeSharedCellProxy(cell)
+                                : (throughRw ? makeSharedCellProxy(std::make_shared<Value>(*srcSlot))
+                                             : makeEnvSlotProxy(owner, sv->name));
                     return sink ? Value::any() : eval(a->value.get());
                 }
             }
@@ -25804,6 +25950,10 @@ Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value
     // standalone `R-` binary does (evalBinary strips it; applyBinOp must too).
     if (op.size() > 1 && op[0] == 'R' && (!ascii::isalnum((unsigned char)op[1]) || reverseWordOp(op)))
         return applyBinOp(op.substr(1), r, l);
+    // see isStringCmpOp: an object compares by its own `method Str`
+    if ((l.t == VT::Object || r.t == VT::Object) && isStringCmpOp(op))
+        return applyBinOp(op, l.t == VT::Object ? Value::str(strOf(l)) : l,
+                              r.t == VT::Object ? Value::str(strOf(r)) : r);
     // short-circuit ops applied to already-evaluated VALUES ([//] reduce, sort &[||]):
     // no thunking here, just the selection semantics
     if (op == "//") return isDefined(l) ? l : r;
@@ -26257,6 +26407,16 @@ Value Interpreter::evalBinary(Binary* b) {
         // brings this path the endless-Z lazy view it used to lack
         if (op.size() > 1 && (op[0] == 'Z' || op[0] == 'X')) {
             return zxOp(op, l, r);
+        }
+        // A STRING operator compares an object by its own `method Str`:
+        // `$field eq ""` asks what the field says it is, not what its default
+        // gist looks like. applyArith is a free function with no interpreter to
+        // call back into, so it compared the repr and every such test came out
+        // backwards — Text::CSV's `not_empty` filter kept the empty rows and
+        // dropped the rest.
+        if ((l.t == VT::Object || r.t == VT::Object) && isStringCmpOp(op)) {
+            if (l.t == VT::Object) l = Value::str(strOf(l));
+            if (r.t == VT::Object) r = Value::str(strOf(r));
         }
         Value res = applyArith(op, l, r);
         tagTemporal(op, l, r, res);
@@ -26933,6 +27093,15 @@ Value Interpreter::evalBinary(Binary* b) {
                 std::string en = e.payload.t == VT::Type ? e.payload.s : e.payload.typeName();
                 if (en != "X::Multi::NoMatch" && en != "X::Multi::Ambiguous") throw;
             }
+    // A string operator stringifies its operands, and for an OBJECT that means
+    // its own `method Str`: `$field eq ""` asks what the field says it is, not
+    // what its default gist looks like. applyArith is a free function with no
+    // interpreter to call back into, so it compared the repr and every such
+    // test came out backwards — Text::CSV's `not_empty` filter kept the empty
+    // rows and dropped the rest.
+    if ((l.t == VT::Object || r.t == VT::Object) && isStringCmpOp(op))
+        return applyArith(op, l.t == VT::Object ? Value::str(strOf(l)) : l,
+                              r.t == VT::Object ? Value::str(strOf(r)) : r);
     return applyArith(op, l, r);
 }
 
@@ -27227,6 +27396,22 @@ Value Interpreter::hyperPostfixApply(const std::string& op, Value v) {
 // and in the order it ran them, each keeping its own — now redundant — check of
 // which of the two it serves, so that an arm stays readable and movable on its
 // own. The last two always return, so this is total for both operators.
+// prefix `~` on one value. A user `method Str` that answers a TYPE OBJECT is
+// answering "no string" — `~$field` is `Str`, not "" — and strOf() cannot say
+// so, because it has to flatten everything to a std::string. Text::CSV's
+// :blank-is-undef fields are exactly this shape; `».Str`, which never goes
+// through strOf, was already right about them.
+Value Interpreter::prefixStringify(const Value& v) {
+    if (v.t == VT::Object && v.obj() && v.obj()->cls)
+        if (Value* m = v.obj()->cls->findMethod("Str")) {
+            ValueList none;
+            Value r = invokeMethod(*m, v, none);
+            if (!isDefined(r)) return r;
+            return Value::str(strOf(r));
+        }
+    return Value::str(strOf(v));
+}
+
 Value Interpreter::prefixNumeric(const std::string& op, const Value& v) {
     // numeric prefix on an object uses its .Numeric (or .Bridge/.Int): `+$o`, `-$o`
     if ((op == "+" || op == "-") && v.t == VT::Object && v.obj() && v.obj()->cls) {
@@ -28007,11 +28192,16 @@ Value Interpreter::evalUnary(Unary* u) {
             Value arg = a.empty() ? Value::any() : a[0];
             Value b = arg;
             if (inner.t == VT::Code && inner.code() && inner.code()->isWhateverCode) b = I.callCallable(inner, ValueList{arg});
-            if (op == "~") return Value::str(b.toStr());
+            // strOf / boolify, not the raw conversions: the curried form must
+            // do what `~$x` and `?$x` do, which is honour a user `method Str`
+            // and a user `method Bool`. `.map(~*)` over Text::CSV's CSV::Field
+            // was answering the default `Field<0x…>` gist while `~$field` on
+            // the very same object answered its text.
+            if (op == "~") return I.prefixStringify(b);
             // …and `+`/`-` are the SAME implementation the direct path runs, not
             // a second one that drifts (prefixNumeric).
             if (op == "+" || op == "-") return I.prefixNumeric(op, b);
-            if (op == "?" || op == "so") return Value::boolean(b.truthy());
+            if (op == "?" || op == "so") return Value::boolean(I.boolify(b));
             if (op == "^") return Value::range(0, strictInt(b), false, true);
             if (op == "+^") { // bitwise NOT: -(x+1), exact at any width
                 if (b.big()) {
@@ -28020,7 +28210,7 @@ Value Interpreter::evalUnary(Unary* u) {
                 }
                 return Value::integer(~b.toInt());
             }
-            return Value::boolean(!b.truthy()); // ! / not
+            return Value::boolean(!I.boolify(b)); // ! / not
         };
         return code;
     }
@@ -28064,7 +28254,7 @@ Value Interpreter::evalUnary(Unary* u) {
             };
             return thread(v);
         }
-        return Value::str(strOf(v)); // honour a user Str/gist / Exception .message
+        return prefixStringify(v); // honour a user Str/gist / Exception .message
     }
     if (u->op == "!") return Value::boolean(!boolify(v));
     if (u->op == "?") return Value::boolean(boolify(v));
@@ -28384,7 +28574,10 @@ std::string Interpreter::gistOf(const Value& v, bool skipUser) {
         // own-declared-method-first recovers them. The audit finding is real; the
         // fix needs to understand how the built-in X:: classes are synthesised
         // first, which is its own piece of work.
-        if (v.obj()->cls->name.rfind("X::", 0) == 0) {
+        // CX:: too — a control exception gists like any other (CX::Warn is the
+        // one a CONTROL block reads).
+        if (v.obj()->cls->name.rfind("X::", 0) == 0 ||
+            v.obj()->cls->name.rfind("CX::", 0) == 0) {
             auto it = v.obj()->attrs.find("message");
             // a hand-built `X::AdHoc.new(payload => …)` has no message attribute:
             // its message IS the payload (see the .message accessor)
@@ -30723,6 +30916,19 @@ Value Interpreter::evalIndex(Index* idx) {
                 // a Range VALUE (`my $r = 0..*; @a[$r]`) clamps its endless end to
                 // the array, like the syntactic `@a[0..*]` above does (issue #68)
                 else if (iv.t == VT::Range) for (auto& e : dimKeysAt(iv, n)) indices.push_back(resolveWhat(e));
+                // …and a Range INSIDE an index list clamps the same way:
+                // `@a[1, 3..Inf]` is "element 1, then the rest", not element 1
+                // and ten thousand (Any)s. flatten() expands a Range whole, so
+                // the members are walked one level and each Range clamped
+                // itself (Text::CSV's column fragments read `@exp[1,4..6,8..Inf]`).
+                else if (iv.arr()) {
+                    for (auto& e : *iv.arr()) {
+                        if (e.t == VT::Range) { for (auto& k : dimKeysAt(e, n)) indices.push_back(resolveWhat(k)); }
+                        else if (e.t == VT::Array && e.arr() && !e.itemized)
+                            for (auto& f : e.flatten()) indices.push_back(resolveWhat(f));
+                        else indices.push_back(resolveWhat(e));
+                    }
+                }
                 else for (auto& e : iv.flatten()) indices.push_back(resolveWhat(e)); // @a[*-1, *-2]
             } else {
                 long long i = iv.toInt();
@@ -30966,6 +31172,18 @@ Value Interpreter::eval(Expr* e) {
                 ve->name.size() > 1 && ve->name[1] == '*')
                 throw RakuError{Value::typeObj("X::Bind::Slice"),
                     "Cannot access '" + ve->name + "' through LEXICAL, because it is not declared as lexical"};
+            // `CORE::<&name>` means the CORE one, past whatever shadows it.
+            // Approximating it as a plain `&name` lookup was fine until a
+            // program shadowed the builtin — and shadowing is exactly when the
+            // form gets written. A `sub EXPORT` module that exports its own
+            // `&prompt` and delegates the ordinary case to `CORE::<&prompt>`
+            // reached ITSELF, so `prompt` recursed until the stack gave out.
+            // Rakudo answers the builtin there; now so does this.
+            if (ve->viaPseudoPkg && ve->pseudoPkg == "CORE" && sigil == '&' &&
+                ve->name.size() > 1 && !ve->declare) {
+                if (const Value* bref = builtinRef(ve->name.substr(1))) return *bref;
+                // not a builtin at all: fall through to the ordinary lookup
+            }
             // Pads (PADS-PLAN.md): an annotated reference indexes the current
             // pad frame directly — one load, no hashing, no chain walk — after
             // re-proving the annotation belongs to THIS frame's layout (the
@@ -31827,6 +32045,32 @@ Value Interpreter::eval(Expr* e) {
                 // [(11, 1),]` — the single-pair-of-factors shape.)
                 bool oneArgSpread = l->items.size() == 1 && !l->fromCommaList &&
                                     v.t == VT::Array && v.isList && !v.itemized;
+                // …and a CALL's Array result spreads under that same one-arg rule.
+                // Rakudo decides it by itemization: a returned Array sits in no
+                // Scalar container, so `[f()]`, `[$csv.strings]` and
+                // `[(1,2).Array]` are its ELEMENTS, while `[$s]`, `[@nest[0]]`
+                // and `[%h<k>]` keep it whole because those are containers.
+                // rakupp's itemized flag does not model container-derived values
+                // (see the hash note below), so this keys on the syntax that
+                // cannot BE a container — a call. Text::CSV's `is-deeply
+                // [$csv.strings], [","]` is exactly this shape, and it was
+                // comparing a one-element array-of-array against a flat one.
+                bool callSpread = l->items.size() == 1 && !l->fromCommaList && !isHyper &&
+                                  v.t == VT::Array && !v.itemized &&
+                                  (it->kind == NK::Call || it->kind == NK::MethodCall);
+                // …and an ITERABLE OBJECT spreads through its own iterator, which
+                // is what makes it Iterable: `[$csv.error_diag]` is the six
+                // fields the Diag yields, not one object. Only under the same
+                // one-arg rule, and only for a class that says it is Iterable.
+                if (!callSpread && l->items.size() == 1 && !l->fromCommaList && !isHyper &&
+                    v.t == VT::Object && v.obj() && v.obj()->cls &&
+                    v.obj()->cls->findMethod("iterator")) {
+                    Value src = iterationSourceOf(v);
+                    if (src.t == VT::Array && src.arr() && !src.itemized) {
+                        for (auto& x : *src.arr()) a.arr()->push_back(x);
+                        continue;
+                    }
+                }
                 // A `|` slip splices whatever the surrounding list looks like —
                 // that is the whole point of the operator. `[|@a, @a[0]]` was
                 // keeping the slip whole because the enclosing comma list
@@ -31841,7 +32085,7 @@ Value Interpreter::eval(Expr* e) {
                 bool bareAtVar = it->kind == NK::VarExpr &&
                                  !static_cast<VarExpr*>(it.get())->name.empty() &&
                                  static_cast<VarExpr*>(it.get())->name[0] == '@';
-                bool flatten = oneArgSpread || isSlip ||
+                bool flatten = oneArgSpread || callSpread || isSlip ||
                                (!isHyper &&
                                ((bareAtVar && l->items.size() == 1 && !l->fromCommaList) ||
                                 (v.t == VT::Array && v.isList && !l->fromCommaList)));
@@ -31964,6 +32208,11 @@ Value Interpreter::eval(Expr* e) {
                 Value pc = prev, nc = next;
                 if ((pc.t == VT::Object || nc.t == VT::Object) && isNumOp(ch->ops[k])) {
                     pc = bridgeReal(*this, pc); nc = bridgeReal(*this, nc);
+                }
+                // …and a STRING op compares an object by its own `method Str`
+                else if ((pc.t == VT::Object || nc.t == VT::Object) && isStringCmpOp(ch->ops[k])) {
+                    if (pc.t == VT::Object) pc = Value::str(strOf(pc));
+                    if (nc.t == VT::Object) nc = Value::str(strOf(nc));
                 }
                 if (!applyArith(ch->ops[k], pc, nc).truthy()) return Value::boolean(false);
                 prev = next;
@@ -32289,7 +32538,14 @@ Value Interpreter::eval(Expr* e) {
                 if (lv) {
                     ValueList sargs = evalArgs(mc->args);
                     std::string pat; bool literal = false;
-                    if (!sargs.empty() && sargs[0].t == VT::Regex) pat = rxInterpArrays(sargs[0].s);
+                    // interpRegexPattern FIRST: a regex argument arrives as its raw
+                    // SOURCE, so `$q` and `@alpha` atoms in it are still text. The
+                    // `.subst` path has always run both passes; this one ran only
+                    // the array pass, so `$t.subst-mutate(/( $q | $e )/, …)`
+                    // matched the literal characters "$q" and changed nothing —
+                    // Text::CSV escapes its quotes exactly that way.
+                    if (!sargs.empty() && sargs[0].t == VT::Regex)
+                        pat = rxInterpArrays(interpRegexPattern(sargs[0].s));
                     else if (!sargs.empty()) { pat = sargs[0].toStr(); literal = true; }
                     Value replArg = sargs.size() > 1 ? sargs[1] : Value::str("");
                     ValueList adv;

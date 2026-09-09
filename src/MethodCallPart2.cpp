@@ -1600,7 +1600,14 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         else if (v.ratD() && !v.ratD()->fitsU64()) return Value::number(v.toNum());
         return v;
     }
-    if (inv.t == VT::Type && (inv.s == "IO::String" || inv.s == "Text::IO::String")) {
+    // A stand-in for the ecosystem's in-memory read handle — and only while the
+    // real thing is absent. Text::CSV ships Text::IO::String as a Raku class of
+    // its own; once that class is loaded, its `new` must win, or every handle
+    // the module makes comes back as a plain FileHandle with none of the class's
+    // state (its whole eol test file reads and writes through one).
+    if (inv.t == VT::Type && (inv.s == "IO::String" || inv.s == "Text::IO::String") &&
+        [&]{ auto it = classes_.find(inv.s);
+             return it == classes_.end() || !it->second || !it->second->findMethod("new"); }()) {
         if (m == "new") {
             std::string data = args.empty() ? "" : args[0].toStr();
             Value h = Value::makeHash(); h.hashKind = "FileHandle";
@@ -3471,6 +3478,21 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         (*f.hash())["message"] = Value::str(msg.empty() ? inv.typeName() : msg);
         return f;
     }
+    // `.Str` / `.gist` on an exception object is its MESSAGE (Raku:
+    // Exception.Str is .message) — strOf and gistOf already know how to read
+    // one, whether it is a method or a plain attribute, and gistOf adds the
+    // frames. A class with its own Str/gist still wins. CONTROL blocks read
+    // `$_.Str` off a CX::Warn to collect warnings, and got the default gist.
+    if ((m == "Str" || m == "gist") && args.empty() &&
+        inv.t == VT::Object && inv.obj() && inv.obj()->cls &&
+        !inv.obj()->cls->findMethod(m)) {
+        bool exc = inv.obj()->cls->name.rfind("X::", 0) == 0 ||
+                   inv.obj()->cls->name.rfind("CX::", 0) == 0;
+        for (ClassInfo* c = inv.obj()->cls.get(); c && !exc; c = c->parent.get())
+            if (c->name == "Exception") exc = true;
+        if (exc && (inv.obj()->attrs.count("message") || inv.obj()->cls->findMethod("message")))
+            return Value::str(m == "Str" ? strOf(inv) : gistOf(inv));
+    }
     // `.backtrace` on an exception object: the frames its .throw recorded
     // (captured NOW for a never-thrown one). A class defining its own
     // backtrace method still wins — this only fills the built-in gap.
@@ -4047,7 +4069,22 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     if (isUserHandle && (m == "nl-out" || m == "nl-in") && inv.obj()) {
         auto it = inv.obj()->attrs.find(m);
         if (!args.empty()) { inv.obj()->attrs[m] = args[0]; return args[0]; }
-        return it != inv.obj()->attrs.end() ? it->second : Value::str("\n");
+        if (it != inv.obj()->attrs.end()) return it->second;
+        if (m == "nl-out") return Value::str("\n");
+        Value d = Value::array();                 // nl-in: Rakudo's default pair
+        d.arr()->push_back(Value::str("\n"));
+        d.arr()->push_back(Value::str("\r\n"));
+        d.itemized = true;
+        return d;
+    }
+    // …and `.chomp` is handle state too, defaulting to True. Without this it
+    // reached Str.chomp, which stringifies the HANDLE and trims a newline off
+    // its gist — Text::CSV's `my Bool $chomped = $io.chomp` then type-checked
+    // a Str against Bool.
+    if (isUserHandle && m == "chomp" && inv.obj()) {
+        auto it = inv.obj()->attrs.find(m);
+        if (!args.empty()) { inv.obj()->attrs[m] = args[0]; return args[0]; }
+        return it != inv.obj()->attrs.end() ? it->second : Value::boolean(true);
     }
     if (m == "say" && !isFH && !isUserHandle) return ioEmit(gistOf(inv) + "\n", "$*OUT", false);
     if (m == "print" && !isFH && !isUserHandle) return ioEmit(strOf(inv), "$*OUT", false);
@@ -4109,10 +4146,19 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         return Value::complex(f(inv.n), f(inv.im()));
     }
     if (m == "Int") {
-        // ±Inf / NaN cannot convert to Int (X::Numeric::CannotConvert)
-        if (inv.t == VT::Num && !std::isfinite(inv.n))
-            throw RakuError{Value::typeObj("X::Numeric::CannotConvert"),
-                            "Cannot convert " + inv.toStr() + " to Int"};
+        // ±Inf / NaN cannot convert to Int — a FAILURE, not a throw, exactly
+        // like the zero-denominator Rat below it. Rakudo hands back an
+        // undefined X::Numeric::CannotConvert that only detonates when someone
+        // uses it, so `my $n = NaN.Int` is a live statement and `$n.defined` is
+        // False. Throwing killed the program instead: Text::CSV's `method
+        // Numeric` coerces `.unival` (NaN for anything but a numeral) and
+        // reports the Failure as the field's numeric value.
+        if (inv.t == VT::Num && !std::isfinite(inv.n)) {
+            Value f = rakuppNewFailure();
+            (*f.hash())["exception"] = Value::typeObj("X::Numeric::CannotConvert");
+            (*f.hash())["message"]   = Value::str("Cannot convert " + inv.toStr() + " to Int");
+            return f;
+        }
         // a zero-denominator Rat FAILS on Int coercion (a Failure, not a throw —
         // fails-like requires the returned unhandled Failure)
         if (inv.t == VT::Rat && inv.ratD() && inv.ratD()->isZero()) {

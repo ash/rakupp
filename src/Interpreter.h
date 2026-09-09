@@ -1191,6 +1191,22 @@ public:
     // user methods; public because the `+*` / `-*` WhateverCode closure runs it
     // too, rather than carrying the second, thinner copy it used to.
     Value prefixNumeric(const std::string& op, const Value& v);
+    // prefix `~` on ONE value — shared by the direct path and the `~*`
+    // WhateverCode, so a user `method Str` (including one that answers a type
+    // object) means the same thing in both.
+    Value prefixStringify(const Value& v);
+    // Does this multi candidate's `is rw` REJECT the call? Rakudo decides an
+    // `is rw` parameter in the signature, so `multi f($x is rw)` beside
+    // `multi f($x)` sends a literal to the second rather than throwing.
+    // scoreCandidate sees only argument VALUES; the argument EXPRESSIONS are
+    // known at the dispatch site, so the test belongs there.
+    bool rwCandidateRejects(const Value& cand, size_t nargs,
+                            const std::vector<ExprPtr>* rwArgs);
+    // Could a method call by this NAME hand back a CONTAINER? Only if some type
+    // declares an `is rw` public attribute of that name, or a routine of that
+    // name returns `is rw`/`is raw`, or the engine itself answers a container
+    // there. Used only when an `is rw` candidate is being judged.
+    bool methodMayYieldContainer(const std::string& name);
     // The string a regex matches AGAINST. An object matches on its Str form:
     // `$path ~~ /…/` where $path is a URI::Path must see "/a/b", as in Rakudo.
     std::string rxSubject(const Value& v) { return v.t == VT::Object ? strOf(v) : v.toStr(); }
@@ -1432,7 +1448,10 @@ public:
     // `use Foo::Bar` -> compile lib file into global scope. `quiet` suppresses the
     // not-found warning: a runtime `require` reports failure by THROWING instead
     // (so `try require ::($m)` is silent, as in Rakudo).
-    void loadModule(const std::string& name, const std::vector<std::string>& importArgs = {}, bool doImport = true, bool quiet = false, const std::string& verReq = "");
+    // `requireForm` marks the `require` spellings: Rakudo runs no `sub EXPORT`
+    // for them, so a failing EXPORT stays a warning there instead of failing
+    // the load as it does for `use`/`need`.
+    void loadModule(const std::string& name, const std::vector<std::string>& importArgs = {}, bool doImport = true, bool quiet = false, const std::string& verReq = "", bool requireForm = false);
     std::vector<std::string> libPaths_{"lib", ".", "rakulib"}; // + env-derived paths, filled in the ctor
     std::set<std::string> loadedModules_;
     // each loaded module's `sub EXPORT(*@_)`, kept so a REPEAT `use` can run the

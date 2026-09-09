@@ -2751,6 +2751,11 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     return shapedLeaves(args[0]);   // a shaped array appends its leaves
                 if (args.size() == 1 && args[0].t == VT::Array && args[0].arr())
                     return *args[0].arr();   // one-level: the sole list's own elements
+                // …and a sole RANGE contributes its VALUES, by the same
+                // single-argument rule. `my Int @x; @x.append: $from .. $to` is
+                // how Text::CSV builds a column range, and appending the Range
+                // itself failed the element type check.
+                if (args.size() == 1 && args[0].t == VT::Range) return args[0].flatten();
                 return args;               // 2+ args: each as-is
             };
             if (m == "append") { for (auto& a : appendValues(args)) { elemCheck(a); inv.arr()->push_back(elemDef(a)); } return inv; }
