@@ -22,6 +22,39 @@ builder and the [raku-course](https://github.com/ash/raku-course) static-site
 generator (with the real zef-installed `YAMLish` module) are run unmodified
 under rakupp — each surfaced gaps that Roast never would have.
 
+## Two Raku programs live *inside* the binary
+
+The tools above run beside the interpreter. Two run inside it: `rakupp install`
+and `rakupp doc` are not C++ subcommands, they are Raku programs compiled into
+the executable, which loads the text out of itself and interprets it.
+
+| Tool | What it does | Reached as |
+|---|---|---|
+| [`tools/install.raku`](../../tools/install.raku) | The module installer, ~1,840 lines: fetches the fez ecosystem index, resolves names to versions to distribution URLs, checks archives against their content-addressed hashes, unpacks, runs each distribution's own test suite, and writes the `CompUnit` store — plus `--list`, `--check`, `--gc`, `reinstall`, `uninstall`, installing from a local path, and the REA archive fallback. | `rakupp install Foo::Bar` |
+| [`tools/doc.raku`](../../tools/doc.raku) | Offline symbol lookup (`go doc`, `perldoc -f`): scans [REFERENCE.md](../guide/REFERENCE.md) and [FEATURES.md](../guide/FEATURES.md) for a builtin, method, operator or syntax form and prints the entry with its heading trail. Both guides are compiled in with it, so the answer needs no files on disk. | `rakupp doc trim` |
+
+`cmake/EmbedTools.cmake` turns those two files — and the two guides — into byte
+arrays at build time, listed as the custom command's `DEPENDS`, so editing
+`install.raku` rebuilds one translation unit and nothing generated is ever
+committed. They stay ordinary files: `rakupp --lint tools/install.raku` works,
+and so does running one directly.
+
+This is the sharpest form the principle takes in the project. The engine's own
+package manager is written in the language the engine implements, so
+`rakupp install` cannot work unless the interpreter is correct about JSON
+parsing, version-range comparison, `run` with captured output, path handling
+and its own `CompUnit` API — and every user who installs a module exercises all
+of it. It is also the most demanding shape: a bug here is not a failing test,
+it is a user unable to install anything.
+
+There is a real constraint behind the choice, and it is worth stating precisely
+because the obvious version of it is wrong. The engine carries **no** HTTP
+client, TLS stack, tar reader or ecosystem-index parser, in any language:
+fetching is `curl` and unpacking is `tar`, both in a subprocess. That is a
+property of the installer's design, not of it being Raku — a C++ installer
+shelling out the same way would carry no network code either. What being Raku
+buys is dogfooding, and an 1,840-line program that reads as a program.
+
 ## Serving the ecosystem
 
 The project's own public face is Raku all the way down. Every page on
@@ -86,7 +119,8 @@ is spent (and a ready-made profiling workload).
 ## What is *not* dogfooded (yet)
 
 - The compiler itself is C++ — Raku++ does not compile Raku++. The generated
-  Unicode tables are the only part of `src/` produced by Raku.
+  Unicode tables are the only part of `src/` produced by Raku (the installer
+  and doc tool are Raku *carried by* the binary, not C++ generated from Raku).
 - The other Unicode generators (`tools/gen_unicode_gb.py`, `_norm`, `_coll`,
   `_props`, `_scripts`, `_blocks`, `_bidi`) are still Python — straightforward
   candidates for porting the same way `gen_unicode.py` was replaced by

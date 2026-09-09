@@ -1,33 +1,9 @@
-// The `rakupp install` program — its ONLY copy. This is source, not a
-// generated artifact: there is no install.raku on disk to regenerate it from,
-// and editing the installer means editing the Raku text below.
-//
-// Two rules when you do. The text is inside raw string literals, so nothing
-// needs escaping — but a literal `)RKINST"` would end one, and MSVC caps a
-// single literal at 16 KB, which is why the program is split across several.
-// The cuts fall between top-level definitions, never inside one; keep each
-// chunk under about 15 KB and start a new one at a blank line rather than
-// letting a chunk grow past it.
-//
-// It is Raku because the project's own tooling runs on the interpreter it
-// ships. The engine gains no network code either way: fetching is curl and
-// unpacking is tar, both in a subprocess, so no HTTP client, TLS stack, tar
-// reader or index parser exists in rakupp in any language.
-//
-// t/install/run.raku parses this text before it runs it, so a syntax error
-// introduced by hand is caught by the gate rather than by a user.
-//
-// CLI-ONLY (CMakeLists.txt): main.cpp is the sole caller, so no `--exe`
-// binary and no embedder carries a byte of it.
-#include "EmbeddedTools.h"
-namespace rakupp {
-static const char* const kInstallParts[] = {
-R"RKINST(# rakupp install — the module installer (docs/dev/plans/MODULES-PLAN.md, Part A).
+# rakupp install — the module installer (docs/dev/plans/MODULES-PLAN.md, Part A).
 #
-# THIS TEXT IS THE PROGRAM. It lives in the raw string literals of
-# src/InstallerSrc.cpp and nowhere else — there is no install.raku on disk, and
-# nothing generates this file. Edit it here; the notes at the top of the .cpp
-# say how the literals are split.
+# A Raku program compiled INTO the binary: cmake/EmbedTools.cmake turns this
+# file into a byte array at build time, and `rakupp install` runs it from
+# there. Nothing is looked up beside the executable, and nothing generated is
+# checked in — edit this file, rebuild, done.
 #
 # It is Raku because the project's own tooling runs on the interpreter it
 # ships — an installer is index JSON, version ranges, paths and subprocesses,
@@ -289,8 +265,7 @@ sub cache-dir {
 # whole thing off rather than adding a failure mode of its own.
 my $TRACE-PATH = '';
 
-)RKINST",
-R"RKINST(sub trace(Str $msg) {
+sub trace(Str $msg) {
     return unless $TRACE-PATH;
     try $TRACE-PATH.IO.spurt("{DateTime.now.Str.substr(11, 8)} $msg\n", :append);
 }
@@ -540,8 +515,7 @@ sub rea-index() {
 my constant @CORE-NAMES = <Test NativeCall lib strict v6 v6.c v6.d v6.e perl6 Perl6
                            experimental newline MONKEY MONKEY-TYPING nqp>;
 
-)RKINST",
-R"RKINST(# Every index entry providing `name` (as dist name or module), constraints
+# Every index entry providing `name` (as dist name or module), constraints
 # applied, newest version first.
 sub candidates(@index, %want) {
     my @c = @index.grep(-> %e {
@@ -823,8 +797,7 @@ sub vm-toolchain-shim(--> Str) {
         SHIM
 }
 
-)RKINST",
-R"RKINST(sub run-build-hook(%e, $root, Str $prefix --> Bool) {
+sub run-build-hook(%e, $root, Str $prefix --> Bool) {
     my $meta-file = $root.IO.add('META6.json');
     my %m = $meta-file.e ?? ((try json-decode($meta-file.slurp)) // {}) !! {};
     if %m<builder> {
@@ -1108,8 +1081,7 @@ sub install-one(%e, Str $prefix, Bool :$no-test, Bool :$force, Bool :$test-only,
         }
         ensure-raku-name($prefix) if %files.keys.first(*.starts-with('bin/'));
     }
-)RKINST",
-R"RKINST(    progress("installed {%e<dist> // %e<name>}");
+    progress("installed {%e<dist> // %e<name>}");
     trace("installed: {%e<dist> // %e<name>}");
     True
 }
@@ -1411,8 +1383,7 @@ sub remove-one(Str $prefix, Str $dist-id, %meta, %dists,
     True
 }
 
-)RKINST",
-R"RKINST(# ---- uninstall (M6): mark-and-sweep over a shared, content-addressed store --
+# ---- uninstall (M6): mark-and-sweep over a shared, content-addressed store --
 # :for-reinstall relaxes three refusals, because the dist is coming right
 # back: "not installed" becomes a fresh install (note, skip the removal),
 # installed DEPENDENTS do not block (a removal would strand them; a reinstall
@@ -1714,8 +1685,7 @@ sub MAIN(
         if cache-dir.add('rea-meta.json').e {
             $REA-REFRESH = True;
             my @rea = rea-index();
-)RKINST",
-R"RKINST(            inform("REA archive index refreshed: {@rea.elems} archived releases");
+            inform("REA archive index refreshed: {@rea.elems} archived releases");
         }
         return;
     }
@@ -1864,11 +1834,3 @@ R"RKINST(            inform("REA archive index refreshed: {@rea.elems} archived 
     inform("done: {@plan.elems} distribution{@plan.elems == 1 ?? '' !! 's'} processed into $to");
     trace("done: {@plan.elems} distribution{@plan.elems == 1 ?? '' !! 's'} processed into $to");
 }
-)RKINST",
-};
-std::string installerSource() {
-    std::string s;
-    for (const char* p : kInstallParts) s += p;
-    return s;
-}
-} // namespace rakupp

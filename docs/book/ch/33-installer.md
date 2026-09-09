@@ -124,7 +124,7 @@ installer, the choice was already made: use the engine's writer through the
 same public spelling zef uses —
 
 ```raku
-# the installer, in src/InstallerSrc.cpp
+# tools/install.raku
 my $repo = CompUnit::RepositoryRegistry.repository-for-spec("inst#$prefix");
 my $dist-id = $repo.install($dist, :force($force));
 ```
@@ -156,28 +156,43 @@ g_embeddedSrc  = isDocCmd ? rakupp::docToolSource() : rakupp::installerSource();
 ```
 
 Those two functions return the program's text, and the argument scan
-recognises the name and takes the source from the blob instead of opening a
-file. Where the text comes from differs between the two, and the difference is
-the interesting part:
+recognises the name and takes the source from there instead of opening a file.
+The text is a byte array in a translation unit that does not exist in the
+repository: `cmake/EmbedTools.cmake` writes it into the **build** tree at build
+time, from `tools/install.raku`, `tools/doc.raku` and the two guides `doc`
+reads, listed as the custom command's `DEPENDS` so editing any of them rebuilds
+exactly that one file.
 
-`installerSource()` reads `src/InstallerSrc.cpp`, whose raw string literals
-**are** the installer. There is no `install.raku` anywhere; that file is the
-program's only copy, and editing the installer means editing Raku inside a
-`.cpp`. It is split across seven literals because MSVC caps one at 16 KB, with
-the cuts falling between top-level definitions so no chunk holds half a sub.
-`docToolSource()` is the opposite — generated, by `tools/gen-doc-tool-src.raku`
-from `tools/doc.raku`, in the same generate-a-blob scheme as the JavaScript
-runtime in Chapter 32.
+Three decisions are packed into that sentence, and each one was arrived at the
+long way.
 
-The asymmetry is deliberate. Carrying a `.raku` *and* a generated `.cpp` puts
-two copies of one program in git and a diff in both for every edit; one of them
-had to go. For the installer the blob won, because it is self-contained. For
-the doc tool it could not: its blob has `REFERENCE.md` and `FEATURES.md` spliced
-into it, and those are living documents with their own source in
-`docs/guide/` — a hand-kept copy would drift the moment either was edited, and
-silently. So one is source and one is artifact, and a gate enforces each in its
-own way: the doc blob is checked for staleness, the installer text is
-reconstructed from its chunks and linted.
+**Bytes, not string literals.** MSVC caps a single string literal at 16 KB, and
+the installer is 85 KB, so a literal would have to be split into chunks — and a
+chunk boundary is a thing to get wrong. `file(READ … HEX)` has no cap, needs no
+escaping, and has no delimiter the content could accidentally contain. It is
+what `src/AstEmit.cpp` has always done with serialized ASTs, for exactly this
+reason.
+
+**CMake, not Raku.** The obvious generator is a Raku program, since everything
+else in `tools/` is one. But generating the blob would then require a working
+`rakupp` — which is the thing being built. That forces the generated file to be
+*committed*, and a committed generated file is a second copy of the installer in
+git: one diff in the `.raku` and one in the `.cpp` for every edit. CMake needs
+nothing but CMake, so the output can live in the build tree and the duplication
+never arises.
+
+**Compiled in, not shipped beside.** Which is the subject of the rest of this
+chapter.
+
+The guides are the one part that is not a straight copy. `docToolSource()`
+splices them into `doc.raku`'s `my %DOCS;` declaration as `Q:to/…/` heredocs —
+`Q` interpolates nothing and unescapes nothing, so Markdown goes in as it is.
+`doc.raku` reads that hash before it goes looking on disk, so a checkout leaves
+it empty and reads files, and a shipped binary answers from itself. The one
+thing that could break it is a line in a guide spelled exactly like the heredoc
+terminator, which would end the heredoc early and produce a doc tool that fails
+to *parse* — at run time, in a binary that compiled perfectly. CMake is in no
+position to check that, so the gate does.
 
 The reasons for Raku-not-C++ are worth spelling out either way, because "write
 the package tool in C++" is the default instinct and it is wrong here:
@@ -194,7 +209,7 @@ What is **not** a reason, though it reads like one: "so that `--exe` binaries
 do not carry an HTTP client". An `--exe` binary is a compiled user program; it
 can never be invoked as `rakupp install`, so its payload has nothing to say
 about how the installer is written. And the size question is settled by where
-the translation unit is linked, not by its language — `InstallerSrc.cpp` sits
+the translation unit is linked, not by its language — the generated blob sits
 in the CLI-only group beside `Js.cpp`, and a C++ installer in `main.cpp` would
 have sat there just as well. The engine carries no network code for a
 different and better reason: fetching is `curl` and unpacking is `tar`, both in

@@ -138,15 +138,47 @@ list(REMOVE_ITEM RAKUPP_SOURCES "${RAKUPP_REPL}")
 set(RAKUPP_JS "${CMAKE_CURRENT_SOURCE_DIR}/src/codegen/Js.cpp"
               "${CMAKE_CURRENT_SOURCE_DIR}/src/JsRuntimeSrc.cpp")
 list(REMOVE_ITEM RAKUPP_SOURCES ${RAKUPP_JS})
-# `rakupp install` and `rakupp doc` are Raku programs baked into the CLI. Same
-# reasoning again: the command words exist only in main.cpp, no `--exe` binary
-# can reach either tool, and the 160 KB of text would otherwise ride along in
-# every one of them. InstallerSrc.cpp is hand-maintained — that text is the
-# installer's only copy; DocToolSrc.cpp is written by
-# tools/gen-doc-tool-src.raku, because its blob carries the two guides.
-set(RAKUPP_TOOLS "${CMAKE_CURRENT_SOURCE_DIR}/src/InstallerSrc.cpp"
-                 "${CMAKE_CURRENT_SOURCE_DIR}/src/DocToolSrc.cpp")
-list(REMOVE_ITEM RAKUPP_SOURCES ${RAKUPP_TOOLS})
+# `rakupp install` and `rakupp doc` are Raku programs compiled into the CLI:
+# cmake/EmbedTools.cmake turns tools/install.raku, tools/doc.raku and the two
+# guides `doc` reads into byte arrays, HERE, at build time. Nothing generated
+# is checked in — those four files stay the only copy of their own contents —
+# and nothing is looked up beside the executable at run time, so a binary on
+# its own has a working installer.
+#
+# It is CLI-only for the same reason as the JS backend above: the command words
+# exist only in main.cpp, no `--exe` binary can reach either tool, and the
+# 160 KB of text would otherwise ride along in every one of them.
+#
+# The custom command lists all four inputs, so editing a guide regenerates and
+# rebuilds exactly this one translation unit; EmbedTools.cmake writes through
+# copy_if_different, so touching one without changing it rebuilds nothing.
+set(RAKUPP_TOOLS "${CMAKE_CURRENT_BINARY_DIR}/EmbeddedTools.cpp")
+# Same shape as rakupp_build_info above, and for the same reason. EmbedTools.cmake
+# writes the .cpp through copy_if_different, so an input that was touched but not
+# changed leaves its timestamp alone and the 800 KB translation unit does not
+# recompile. That only works if the .cpp is NOT the rule's output: a custom
+# command whose output keeps an old timestamp is re-run on every build forever,
+# and listing a stamp alongside it makes Make chain the two and recompile
+# instead. So the stamp is the output, a target wraps it, and the .cpp is an
+# ordinary GENERATED source that the target is merely ordered before.
+set(RAKUPP_TOOLS_STAMP "${CMAKE_CURRENT_BINARY_DIR}/EmbeddedTools.stamp")
+add_custom_command(
+  OUTPUT "${RAKUPP_TOOLS_STAMP}"
+  # No inner quotes: VERBATIM passes each argument through as written.
+  COMMAND "${CMAKE_COMMAND}"
+          -DSRC_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+          -DOUT_FILE=${RAKUPP_TOOLS}
+          -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/EmbedTools.cmake"
+  COMMAND "${CMAKE_COMMAND}" -E touch "${RAKUPP_TOOLS_STAMP}"
+  DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tools/install.raku"
+          "${CMAKE_CURRENT_SOURCE_DIR}/tools/doc.raku"
+          "${CMAKE_CURRENT_SOURCE_DIR}/docs/guide/REFERENCE.md"
+          "${CMAKE_CURRENT_SOURCE_DIR}/docs/guide/FEATURES.md"
+          "${CMAKE_CURRENT_SOURCE_DIR}/cmake/EmbedTools.cmake"
+  COMMENT "Embedding the install and doc tools"
+  VERBATIM)
+add_custom_target(rakupp_embed_tools DEPENDS "${RAKUPP_TOOLS_STAMP}")
+set_source_files_properties("${RAKUPP_TOOLS}" PROPERTIES GENERATED TRUE)
 
 # ---- the SLIM archive split (SLIM-PLAN P2) ----------------------------------
 # The four cuttable feature groups live in their own archives, so `--exe` can
@@ -289,6 +321,9 @@ if(RAKUPP_BUILD_SHARED OR RAKUPP_LINK_SHARED)
 endif()
 
 add_executable(rakupp "${RAKUPP_MAIN}" "${RAKUPP_REPL}" ${RAKUPP_JS} ${RAKUPP_TOOLS})
+# The blob is a GENERATED source, so the generator has to have run before this
+# target compiles; nothing else links it.
+add_dependencies(rakupp rakupp_embed_tools)
 if(RAKUPP_LINK_SHARED)
   target_link_libraries(rakupp PRIVATE rakupp_shared)
 else()
@@ -333,7 +368,7 @@ install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/src/"
         DESTINATION include/rakupp
         FILES_MATCHING PATTERN "*.h" PATTERN "*.hpp")
 # `rakupp install` and `rakupp doc` need nothing installed: both programs, and
-# the two guides `doc` reads, travel inside the binary (src/EmbeddedTools.cpp).
+# the two guides `doc` reads, are compiled into the binary (EmbedTools.cmake).
 # libexec/rakupp/ is deliberately no longer written — a copy there would be
 # read by nothing, and a stale one would be worse than nothing.
 # The guides still install as documentation in their own right, and RAKUPP_DOCS

@@ -902,11 +902,10 @@ handle-wrapping — streaming inflate/deflate is a second phase, and the
 one-shot subs are what the dependents call.
 
 > **This reinterprets a standing rule, deliberately, and the decision is
-> recorded here** (user, 2026-09-05). The installer's header — then
-> `tools/install.raku:5`, now the top of
-> [`src/InstallerSrc.cpp`](../../../src/InstallerSrc.cpp), and reworded on
-> 2026-09-09 because the `--exe` framing was a non sequitur — said librakupp
-> "must not carry an HTTP client, an index parser or a tar
+> recorded here** (user, 2026-09-05).
+> [`tools/install.raku:5`](../../../tools/install.raku#L5) — reworded on
+> 2026-09-09, because the `--exe` framing it used was a non sequitur — said
+> librakupp "must not carry an HTTP client, an index parser or a tar
 > reader", and the plan there sketches a *dlopen'd* zlib as the
 > self-containment refinement. An in-tree inflate is none of those three
 > things, is smaller than the CSV codec, and unlike a dlopen'd libz it works

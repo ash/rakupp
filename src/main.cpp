@@ -1869,17 +1869,19 @@ int main(int argc, char** argv) {
 
     // `rakupp install ...` — the module installer (MODULES-PLAN Part A): a
     // Raku program carried INSIDE the binary, as the raw string literals of
-    // src/InstallerSrc.cpp. Dispatch = rewrite the command line to run that
-    // program; everything after `install` is its arguments.
+    // a byte array cmake/EmbedTools.cmake compiles from tools/install.raku.
+    // Dispatch = rewrite the command line to run that program; everything
+    // after `install` is its arguments.
     //
     // It used to be looked up beside the executable — an installed layout's
     // libexec/, or a checkout's tools/ — and a binary on its own had no
     // installer at all: a `COPY rakupp` into a container, a bare rakupp.exe
     // lifted out of the release ZIP, a package that shipped bin/ without
     // libexec/. Nothing is looked up now, so there is no path to get wrong
-    // and no sidecar to keep in step with the engine. There is no
-    // install.raku on disk either: that text IS the source, edited in
-    // InstallerSrc.cpp, and t/install/run.raku lints it before running it.
+    // and no sidecar to keep in step with the engine. tools/install.raku is
+    // still an ordinary file you can edit, lint and run directly — it is
+    // compiled in at build time rather than shipped, so nothing generated is
+    // checked in and there is never a second copy to keep in step.
     static std::vector<std::string> installArgs;
     static std::vector<char*> installArgv;
     // -q / --quiet may come before the command word (`rakupp -q install Foo`)

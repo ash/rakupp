@@ -54,7 +54,7 @@ to the terse mode harmlessly.
 ## The two-name policy
 
 The codec's **first-party name is `Rakupp::Internals::JSON`** — what
-rakupp's own tooling (the installer in `src/InstallerSrc.cpp`, JSON::Native's engine backend)
+rakupp's own tooling (`tools/install.raku`, JSON::Native's engine backend)
 calls. `Rakudo::Internals::JSON` is the **compatibility alias**: answered
 so real code runs, and nothing more. Only `Rakupp::Internals::*` is
 whitelisted for the first-party spelling — a typo'd `Rakupp::` name is

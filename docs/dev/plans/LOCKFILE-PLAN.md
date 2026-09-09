@@ -31,9 +31,8 @@ visible, but hermetic native builds are a later campaign.
 
 ## Where we are
 
-The installer is a Raku program that lives inside the CLI as the raw string
-literals of [`src/InstallerSrc.cpp`](../../../src/InstallerSrc.cpp) — that text
-is its only copy — dispatched by `rakupp install`. The useful pieces already exist:
+The installer is a Raku program in [`tools/install.raku`](../../../tools/install.raku),
+compiled into the CLI at build time and dispatched by `rakupp install`. The useful pieces already exist:
 
 - zef-index-first resolution with REA fallback;
 - dependency-first plans over `depends`, `build-depends` and `test-depends`;
@@ -496,7 +495,7 @@ nodes would break the meaning of frozen.
 
 ## Implementation map
 
-### `src/InstallerSrc.cpp` (the installer text)
+### `tools/install.raku`
 
 This remains the implementation home. Add small, testable layers rather than a
 second installer:

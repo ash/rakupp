@@ -136,24 +136,44 @@ installed on this machine.
 >   CI. **M6 (uninstall + `--check`) remains open, deliberately** — the plan
 >   below still governs it, checker first.
 
-### The shape, and why it is not C++
+### The shape, and why it is Raku
 
-`rakupp install Foo` is a thin front-end that runs a **Raku program shipped with
-the release** — the `python -m pip` arrangement, with a nicer spelling. `pip`
-ships with CPython and `CPAN.pm` is core perl; neither makes you install a
-different interpreter. That is the property worth copying, and it does not
-require the code to live in the binary.
+`rakupp install Foo` is a thin front-end that runs a **Raku program** — the
+`python -m pip` arrangement, with a nicer spelling. `pip` ships with CPython and
+`CPAN.pm` is core perl; neither makes you install a different interpreter. That
+is the property worth copying.
 
-Three reasons it must not:
+Why Raku and not C++:
 
-- **The compile modes and the embedding story.** A binary produced by `--exe`,
-  or a `rakupp` linked into someone's C++ application, must not carry an HTTP
-  client, an ecosystem-index parser and a tar reader. That is size, attack
-  surface, and it is exactly the objection that shaped this design.
-- **Cadence.** An installer tracks a moving ecosystem API; the interpreter
-  should not have to ship for it.
 - **It is a Raku program**, which makes it another real dogfooding target
-  alongside the Unicode generators and the Roast harness.
+  alongside the Unicode generators and the Roast harness. And what an installer
+  does — parse index JSON, compare version ranges, join paths, run
+  subprocesses, write a store — is work Raku is short for.
+- **The engine gains no network code.** Fetching is `curl` and unpacking is
+  `tar`, both in a subprocess, so no HTTP client, TLS stack, tar reader or
+  ecosystem-index parser exists in rakupp in *any* language. That is a property
+  of this design, and it holds however the installer is compiled.
+
+> **This section used to say "and why it is not C++", and gave three reasons the
+> code "must not live in the binary". Two of them did not survive** (rewritten
+> 2026-09-09/10; the two revisited notes below are the record).
+>
+> - *"`--exe` binaries and embedders must not carry an HTTP client."* A non
+>   sequitur, as the user pointed out: an `--exe` binary is a compiled user
+>   program and can never be invoked as `rakupp install`, so its payload says
+>   nothing about how the installer is written. The size question is settled by
+>   which translation-unit group the file is linked into — the installer's blob
+>   sits in the CLI-only group beside `Js.cpp`, and a C++ installer in
+>   `main.cpp` would have sat there just as well. The real no-network-code
+>   guarantee is the curl-and-tar one above.
+> - *"Cadence: an installer tracks a moving ecosystem API; the interpreter
+>   should not have to ship for it."* True in principle, never true in
+>   practice — the two shipped in one release every time. What the separation
+>   actually delivered was a binary with no installer at all.
+>
+> The third reason is the one that held, and it is now the first above. The
+> program does live in the binary, compiled in at build time from
+> `tools/install.raku`; it is still Raku, and still dogfood.
 
 Both native dependencies are already `dlopen`ed on demand, so they cost an
 unused binary nothing: TLS through the system libssl (the existing HTTPS
@@ -213,26 +233,34 @@ mechanism) and zlib the same way, via NativeCall.
 > **Decision: recommended, not done.** The workarounds are documented; the
 > embed waits for a sitting of its own.
 
-> **Done 2026-09-09 — and the lookup went away entirely.** The sitting
-> happened, and it went one step further than the sketch: **there is no
-> `tools/install.raku` any more.** The installer lives in the raw string
-> literals of `src/InstallerSrc.cpp` and nowhere else — that text is the
-> source, hand-edited, split across seven chunks because MSVC caps a literal at
-> 16 KB, with the cuts between top-level definitions. Keeping a `.raku` beside
-> a generated `.cpp` meant two copies of one program in git and a diff in both
-> for every edit; the user asked for one, and chose the blob (2026-09-09).
+> **Done 2026-09-09/10 — and the lookup went away entirely.** The sitting
+> happened. `cmake/EmbedTools.cmake` reads `tools/install.raku`,
+> `tools/doc.raku` and `docs/guide/{REFERENCE,FEATURES}.md` and writes one
+> translation unit of byte arrays into the **build** tree, at build time, from
+> an `add_custom_command` that lists all four as `DEPENDS`. `main.cpp` runs the
+> installer from that array instead of opening a file, and `docToolSource()`
+> splices the two guides into `doc.raku`'s `%DOCS` declaration so `rakupp doc`
+> answers from a lone binary too.
 >
-> `rakupp doc` is NOT the same: `tools/gen-doc-tool-src.raku` writes
-> `src/DocToolSrc.cpp` from `tools/doc.raku` with
-> `docs/guide/{REFERENCE,FEATURES}.md` spliced into its `%DOCS` declaration.
-> That one has to stay generated, because those guides are living documents
-> with their own source of truth — a hand-kept copy would drift the moment one
-> is edited. It is checked in rather than generated by CMake: generating it
-> needs a working rakupp, which is the thing being built.
+> Nothing generated is checked in, and the four inputs stay ordinary files —
+> editable, lintable, directly runnable. It joins `Js.cpp` and
+> `JsRuntimeSrc.cpp` in the CLI-only group, so `librakupp_rt.a` carries none of
+> it and no `--exe` binary does either; `t/slim/run.raku`'s budgets are measured
+> on `--exe` output and are untouched.
 >
-> Both join `Js.cpp` and `JsRuntimeSrc.cpp` in the CLI-only group, so
-> `librakupp_rt.a` carries neither and no `--exe` binary does either;
-> `t/slim/run.raku`'s budgets are measured on `--exe` output and are untouched.
+> *Two shapes were tried and discarded first, and both are worth knowing.* A
+> Raku generator (`tools/gen-embedded-tools.raku`) writing a checked-in
+> `src/EmbeddedTools.cpp` had to commit its output, because generating it needs
+> a working rakupp — which put the installer in git twice, once as Raku and once
+> as the same text in C++, with a diff in both for every edit. Deleting the
+> `.raku` and keeping the blob as the source fixed the duplication and cost
+> more than it saved: an 85 KB Raku program hand-edited inside raw string
+> literals, split at 16 KB by MSVC's literal cap, with no `--lint` and no way to
+> run it. **Bytes emitted by CMake need no Raku, no chunking, no escaping and no
+> delimiter** — `file(READ … HEX)`, the way `src/AstEmit.cpp` has always emitted
+> ASTs — so the generated file can live in the build tree and the duplication
+> never arises. That was available from the start; the first two rounds simply
+> did not look for it.
 >
 > The one deviation from the shape above: **the beside-the-binary lookup is
 > gone, not demoted.** The cadence argument for keeping the file ahead of the
@@ -241,12 +269,13 @@ mechanism) and zlib the same way, via NativeCall.
 > could actually deliver was a *stale* `libexec/install.raku` quietly shadowing
 > a newer engine, which is the same class of bug as the missing one. So:
 > nothing is looked up, `cmake --install` no longer writes `libexec/rakupp/`,
-> and editing the doc tool means regenerating. `t/install/run.raku` runs
-> `--check` and fails on a stale doc blob; for the installer, which cannot be
-> stale because nothing generates it, it instead reconstructs the text from the
-> chunks and lints it — the two things `rakupp --lint tools/install.raku` used
-> to catch. Then it copies the binary into an empty directory and runs
-> `install` and `doc` there, the case that used to exit 4.
+> and there is no staleness to gate: the blob is rebuilt from the four files
+> whenever one of them changes, so it cannot lag them. `t/install/run.raku`
+> lints both tools instead, and checks that neither guide contains a line
+> spelled like the heredoc terminator `docToolSource()` wraps them in — which
+> would end the heredoc early and break `rakupp doc` at run time, in a binary
+> that compiled perfectly. Then it copies the binary into an empty directory
+> and runs `install` and `doc` there, the case that used to exit 4.
 > (`RAKUPP_DOCS=DIR` still overrides the baked guides for `rakupp doc`; it is
 > an explicit act, not a file lying around.)
 
