@@ -97,12 +97,20 @@ int strWidth(const std::string& s, size_t from = 0, size_t to = std::string::npo
 // (no-color.org: present and non-empty), and RAKUPP_COLOR=0|1 — which is what
 // --color=never|always sets — overrides both. Decided once; the environment
 // does not change mid-session.
+//
+// The terminal part is only a question on Windows, where a console that cannot
+// be put into VT mode PRINTS an escape sequence instead of obeying it: the
+// prompt arrived as `ESC[1;32m>ESC[0m ` on cmd.exe. consoleAnsi() answers for
+// the console setupConsole() actually got, and is unconditionally true
+// elsewhere. RAKUPP_COLOR=1 still wins over it, so a user piping the session
+// into something that does render escapes can ask for them.
 bool replColour() {
     static const bool on = [] {
         const char* f = std::getenv("RAKUPP_COLOR");
         if (f && *f) return std::strcmp(f, "0") != 0;
         const char* n = std::getenv("NO_COLOR");
-        return !(n && *n);
+        if (n && *n) return false;
+        return consoleAnsi(1);
     }();
     return on;
 }
@@ -565,18 +573,37 @@ bool isMetaCommand(const std::string& line, std::string& cmd, std::string& rest)
     return true;
 }
 
+// End of input is a different key on Windows: the console's EOF is ^Z on an
+// empty line, followed by Enter — ^D there is an ordinary character and does
+// nothing. Naming the wrong one leaves a Windows user with the window's close
+// button as their way out.
+#if defined(_WIN32)
+const char* const kEofKey = "^Z Enter";
+#else
+const char* const kEofKey = "^D";
+#endif
+
 void printHelp() {
     std::cout <<
         "  \\h            this help\n"
-        "  \\q            quit (also: ^D, or `exit`)\n"
+        "  \\q            quit (also: " << kEofKey << ", or `exit`)\n"
         "  \\t EXPR       show the type of EXPR\n"
         "  \\a EXPR       dump the AST of EXPR\n"
         "  \\v            list the names in scope\n"
         "  \\l            clear the screen\n"
         "  \\r            reset the session (drops all declarations)\n"
         "\n"
+// The editing keys are this file's line editor, which Windows does not get:
+// there the loop reads through the console's own cooked mode, so Tab, ^R and
+// the ^A/^E/^K/^U/^W set are not bound to anything. Promising them is how the
+// help earns a bug report.
+#if defined(_WIN32)
+        "  The console's own line editing and history. An unfinished line\n"
+        "  prompts with `*`.\n";
+#else
         "  Tab completes, ^R searches history, ^A/^E/^K/^U/^W edit,\n"
         "  arrows move and recall. An unfinished line prompts with `*`.\n";
+#endif
 }
 
 void printError(const std::string& msg) {
@@ -656,7 +683,7 @@ struct ReplCtx {
 };
 
 int replMain(ReplCtx& ctx) {
-    setConsoleUtf8();
+    setupConsole();
     // Wrapped for the whole session; put back before returning so a later
     // std::cout (the exit path, an atexit) does not write through a dead buffer.
     std::streambuf* rawOut = std::cout.rdbuf();
@@ -666,7 +693,8 @@ int replMain(ReplCtx& ctx) {
         std::streambuf* raw;
         ~BufRestore() { std::cout.flush(); std::cout.rdbuf(raw); }
     } bufRestore{rawOut};
-    if (!ctx.quiet) std::cout << "Raku++ " << RAKUPP_VERSION << " — \\h for help, ^D to exit\n";
+    if (!ctx.quiet)
+        std::cout << "Raku++ " << RAKUPP_VERSION << " — \\h for help, " << kEofKey << " to exit\n";
 
     auto fresh = [&]() {
         auto interp = std::make_unique<Interpreter>();
@@ -713,7 +741,13 @@ int replMain(ReplCtx& ctx) {
         if (acc.empty() && isMetaCommand(line, cmd, rest)) {
             if (cmd == "q" || cmd == "quit" || cmd == "exit") break;
             else if (cmd == "h" || cmd == "help") printHelp();
-            else if (cmd == "l" || cmd == "clear") std::cout << "\x1b[H\x1b[2J" << std::flush;
+            // Guarded like the colour is: on a console that does not obey escape
+            // sequences this would PRINT `ESC[H ESC[2J` instead of clearing, which
+            // is worse than the command doing nothing. Off Windows, and on any
+            // console setupConsole() reached, the answer is yes and it clears.
+            else if (cmd == "l" || cmd == "clear") {
+                if (consoleAnsi(1)) std::cout << "\x1b[H\x1b[2J" << std::flush;
+            }
             else if (cmd == "r" || cmd == "reset") {
                 interp->replFinish();
                 interp = fresh();

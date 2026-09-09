@@ -34,13 +34,51 @@ static std::string absSrcPath(const std::string& f) {
     return f;
 }
 
-void setConsoleUtf8() {
+#if defined(_WIN32)
+// Older MinGW-w64 headers predate the flag; its value is fixed in the ABI.
+#ifndef ENABLE_VIRTUAL_TERMINAL_PROCESSING
+#define ENABLE_VIRTUAL_TERMINAL_PROCESSING 0x0004
+#endif
+
+namespace {
+// Decided once, by setupConsole(); read afterwards by consoleAnsi().
+bool g_vtOut = false, g_vtErr = false;
+
+bool enableVt(DWORD which) {
+    HANDLE h = ::GetStdHandle(which);
+    if (h == nullptr || h == INVALID_HANDLE_VALUE) return false;
+    DWORD mode = 0;
+    // Fails outright when the handle is a pipe or a file rather than a console,
+    // which is the answer we want: nothing there interprets escapes.
+    if (!::GetConsoleMode(h, &mode)) return false;
+    if (mode & ENABLE_VIRTUAL_TERMINAL_PROCESSING) return true;   // ConPTY already did it
+    return ::SetConsoleMode(h, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING) != 0;
+}
+}
+#endif
+
+void setupConsole() {
 #if defined(_WIN32)
     // Console defaults to a legacy OEM codepage; rakupp emits UTF-8 everywhere.
     // Redirected output bypasses the console codepage, so files/pipes are
     // unaffected — this only changes what an interactive console renders.
     ::SetConsoleOutputCP(CP_UTF8);
     ::SetConsoleCP(CP_UTF8);
+    // Ask the console to ACT on escape sequences rather than echo them. Windows
+    // 10 1511 and later can; on anything older SetConsoleMode fails and the
+    // answer sticks as false, which is what turns colour off instead of leaving
+    // the prompt reading `ESC[1;32m>ESC[0m`.
+    g_vtOut = enableVt(STD_OUTPUT_HANDLE);
+    g_vtErr = enableVt(STD_ERROR_HANDLE);
+#endif
+}
+
+bool consoleAnsi(int fd) {
+#if defined(_WIN32)
+    return fd == 2 ? g_vtErr : g_vtOut;
+#else
+    (void)fd;
+    return true;
 #endif
 }
 

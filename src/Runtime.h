@@ -63,10 +63,24 @@ int rakuppRunProgramBigStack(Program& prog, std::vector<std::string> args,
 // about which file a `use` resolves to.
 std::vector<std::string> effectiveSearchPath(const std::vector<std::string>& dashI);
 
-// Put the Windows console into UTF-8 mode so rakupp's UTF-8 output (the version
-// banner's em-dash, and any Unicode a program prints) renders correctly instead
-// of mojibake. No-op on non-Windows. Call once at the top of an entry point's
-// main(); the <windows.h> call is kept in Runtime.cpp.
-void setConsoleUtf8();
+// Prepare the Windows console for rakupp's output. Two settings, both of which
+// a console gets wrong for us by default:
+//   * UTF-8, so rakupp's UTF-8 output (the version banner's em-dash, and any
+//     Unicode a program prints) renders instead of mojibake;
+//   * virtual terminal processing, so an escape sequence is COLOUR rather than
+//     the literal `ESC[1;32m` a legacy console echoes. Windows Terminal's
+//     pseudoconsole turns this on for us; conhost — what cmd.exe opens — does
+//     not, which is where the REPL prompt was arriving as line noise.
+// No-op on non-Windows. Call once at the top of an entry point's main(); the
+// <windows.h> calls are kept in Runtime.cpp.
+void setupConsole();
+
+// Whether an escape sequence written to this fd (1 or 2) will be acted on
+// rather than printed. Always true off Windows, where whether the fd is a
+// terminal at all is the caller's business. On Windows it is false until
+// setupConsole() has turned VT on for that handle — which it cannot do on a
+// pre-2016 console, and does not do for a redirected one, a pipe and a file
+// not being consoles at all.
+bool consoleAnsi(int fd);
 
 }

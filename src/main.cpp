@@ -853,7 +853,7 @@ static int compileToExe(const std::string& src, const std::string& srcName, std:
                 "#define RAKUPP_REALPATH(p, r) realpath((p), (r))\n"
                 "#endif\n"
                 "namespace rakupp { int rakuppRunBigStack(const std::string&, std::vector<std::string>,"
-                " const std::string&, const std::string&, const std::vector<std::string>&); void setConsoleUtf8();"
+                " const std::string&, const std::string&, const std::vector<std::string>&); void setupConsole();"
                 " int rakuppRefuseInterpreterEval(int, char**); }\n";
         stub << "static const unsigned char SRC[] = {";
         for (size_t i = 0; i < src.size(); i++) { if (i) stub << ","; stub << (int)(unsigned char)src[i]; }
@@ -891,7 +891,7 @@ static int compileToExe(const std::string& src, const std::string& srcName, std:
              // a bundled binary embeds ONE program: `-e` has nothing to eval here
              << "  if (int rc = rakupp::rakuppRefuseInterpreterEval(argc, argv)) return rc;\n"
              << bundleModuleCalls
-             << "  rakupp::setConsoleUtf8();\n"
+             << "  rakupp::setupConsole();\n"
                 "  std::string src(reinterpret_cast<const char*>(SRC), SRC_LEN);\n"
                 "  std::vector<std::string> args; for (int i = 1; i < argc; i++) args.push_back(argv[i]);\n"
                 "  std::string exe = argc > 0 ? argv[0] : \"program\";\n"
@@ -1851,7 +1851,7 @@ static std::string envOptRefused(const std::vector<std::string>& toks) {
 }
 
 int main(int argc, char** argv) {
-    rakupp::setConsoleUtf8();  // Windows: render UTF-8 output instead of mojibake (no-op elsewhere)
+    rakupp::setupConsole();  // Windows: UTF-8 output and live escape sequences (no-op elsewhere)
     std::string exePath = selfExePath(argv[0]); // resolve the real binary (argv[0] may be a bare PATH name)
 #ifndef _WIN32
     { char rp[4096]; if (realpath(exePath.c_str(), rp)) exePath = rp; }

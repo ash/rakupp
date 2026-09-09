@@ -2,6 +2,7 @@
 #include "AsciiCtype.h"
 #include "Interpreter.h"
 #include "Digest.h"
+#include "Runtime.h"           // consoleAnsi: does an escape sequence reach a terminal that obeys it
 #include <functional>
 #include <tuple>
 #include <memory>
@@ -14086,9 +14087,12 @@ Interpreter::BtStyle Interpreter::btStyleForStderr() {
     st.excerpt = st.typeLine = true;
     if (mode == "full") { st.full = true; st.collapse = false; st.excerpt = st.typeLine = true; }
     else if (mode == "0" || mode == "none" || mode == "off") st.cap = 0; // message only
-    // colour only for a terminal, and never against NO_COLOR
+    // colour only for a terminal, and never against NO_COLOR. On Windows a
+    // console is a tty but does not necessarily ACT on escapes — consoleAnsi()
+    // reports what setupConsole() managed to turn on there, so a legacy console
+    // gets a plain backtrace rather than one wrapped in visible `ESC[31m`.
     std::string force = envStr("RAKUPP_COLOR");
-    bool tty = isatty(2) != 0;
+    bool tty = isatty(2) != 0 && consoleAnsi(2);
     st.colour = force == "1" ? true
               : force == "0" ? false
               : (tty && envStr("NO_COLOR").empty() && getenv("NO_COLOR") == nullptr);

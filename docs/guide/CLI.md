@@ -329,6 +329,10 @@ The session opens whether or not stdin is a terminal — the flag is the
 request — so a script can pipe questions into it. `-q` drops the banner
 and the "declarations are live" line.
 
+The key that ends a session is the console's, not rakupp's: `^D` on Unix,
+`^Z` on an empty line followed by Enter on Windows. The banner and `\h` name
+whichever one applies where they are printed. `\q` and `exit` work everywhere.
+
 ## `--profile`
 
 `--profile` prints a routine-level wall-time profile to stderr after the
@@ -481,6 +485,12 @@ line of the frame the error came from.
 | `--color=auto\|always\|never` | ANSI colour: `auto` (the default) means a terminal, unless `NO_COLOR` is set; `always` colours even into a pipe; `never` never. The same switch governs the REPL's prompt, echo and error colour. `--colour` is accepted too |
 | `NO_COLOR` | no ANSI colour, by the no-color.org convention (present and non-empty) |
 | `RAKUPP_COLOR=0` / `=1` | what `--color=never` / `always` set; the environment form |
+
+On Windows `auto` asks one more question: a console only *renders* an escape
+sequence once virtual-terminal processing is on, and rakupp turns it on at
+startup. Where that fails — a console older than Windows 10 1511 — `auto` gives
+you plain text rather than a prompt reading `<-[1;32m>`. `--color=always` still
+overrides, for a session piped into something that does render escapes.
 
 The whole story — errors with two positions (`fail`, `await`), how `warn` and
 syntax errors report, and the `$!.backtrace` API — is

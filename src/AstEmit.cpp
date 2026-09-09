@@ -106,7 +106,7 @@ void emitAstProgram(const Program& prog, std::ostream& out,
         << moduleCalls
         << "  Program prog;\n"
            "  deserializeAst(std::string(reinterpret_cast<const char*>(kAst), sizeof kAst), prog);\n"
-           "  rakupp::setConsoleUtf8();\n"
+           "  rakupp::setupConsole();\n"
            "  std::vector<std::string> args; for (int i = 1; i < argc; i++) args.push_back(argv[i]);\n"
            "  std::string exe = argc > 0 ? argv[0] : \"program\"; char rp[4096]; if (RAKUPP_REALPATH(exe.c_str(), rp)) exe = rp;\n"
            "  return rakupp::rakuppRunProgramBigStack(prog, args, " << S(fileName) << ", exe, " << S(finish) << ");\n"

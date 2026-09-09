@@ -144,6 +144,24 @@ jobs:
           type out.txt
           findstr /x 42 out.txt
 
+      # The REPL's prompt and result echo are ANSI-coloured. On Windows an escape
+      # sequence is only colour once the console has virtual-terminal processing —
+      # without it conhost PRINTS the bytes, and the prompt reads `<-[1;32m>`.
+      # setupConsole() turns VT on and consoleAnsi() reports whether it took; a
+      # runner's stdout is a pipe, where the answer is no, so a session driven
+      # here must come back with a result and not one byte of ESC. The build that
+      # shipped the bug fails this: it coloured unconditionally.
+      - name: Smoke test REPL escapes (Windows)
+        if: runner.os == 'Windows' && matrix.mingw != true
+        shell: pwsh
+        env:
+          RAKUPP_REPL: '1'
+        run: |
+          $out = "1 + 1" | build\Release\rakupp.exe -q | Out-String
+          Write-Host "got: [$out]"
+          if ($out -notmatch '2') { Write-Error "the REPL echoed no result"; exit 1 }
+          if ($out.Contains([char]27)) { Write-Error "escapes reached a handle that cannot render them"; exit 1 }
+
       - name: Smoke test -e (Windows, MinGW-w64)
         if: matrix.mingw == true
         shell: msys2 {0}
