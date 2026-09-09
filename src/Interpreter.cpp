@@ -18467,6 +18467,46 @@ static void slotProxyPair(Value& proxy, std::function<Value(Interpreter&, ValueL
     (*proxy.hash())["STORE"] = store;
 }
 
+// `$a := $b` binds $a to the CONTAINER $b holds, not to the slot named $b —
+// which is the whole difference between the two operators. Assignment writes
+// through a shared container, so `$b = 5` is visible as `$a`; REBINDING does
+// not, because `$b := 5` gives the name $b a different container and leaves $a
+// holding the one it was bound to.
+//
+// A slot-name alias cannot express that: it follows the NAME, so a rebound
+// source dragged every alias along with it. `my $prev := $pulled` inside a loop
+// that rebinds `$pulled` each turn therefore saw the CURRENT item as its
+// "previous" one, which is Hash::int's push (and the PDF family behind it)
+// reporting `expected int but got Str`.
+//
+// So the source's slot is PROMOTED on first alias: its value moves into a cell
+// both names then proxy. A later `$b := …` overwrites $b's slot outright,
+// dropping its proxy and leaving the cell — and $a — exactly as they were.
+static const char* kCellKey = "\x01" "cell";   // \x eats hex digits: keep the tag separate
+static Value makeSharedCellProxy(std::shared_ptr<Value> cell) {
+    Value proxy = Value::makeHash(); proxy.hashKind = "Proxy";
+    Value handle = Value::any(); handle.extM() = std::static_pointer_cast<void>(cell);
+    (*proxy.hash())[kCellKey] = handle;
+    slotProxyPair(proxy,
+        [cell](Interpreter&, ValueList&) -> Value { return *cell; },
+        [cell](Interpreter&, ValueList& sa) -> Value {
+            *cell = sa.empty() ? Value::any() : sa[0];
+            return *cell;
+        });
+    return proxy;
+}
+
+// The cell a slot ALREADY shares, or nothing when it holds an ordinary value.
+// `my $a := $b; my $c := $b` must reach one container, not two, so the cell is
+// parked on the proxy itself under a hidden key — in the opaque `ext` handle,
+// which is what that field is for.
+static std::shared_ptr<Value> cellOfProxy(const Value* slot) {
+    if (!slot || slot->t != VT::Hash || slot->hashKind != "Proxy" || !slot->hash()) return nullptr;
+    auto c = slot->hash()->find(kCellKey);
+    if (c == slot->hash()->end()) return nullptr;
+    return std::static_pointer_cast<Value>(c->second.ext());
+}
+
 Value Interpreter::makeEnvSlotProxy(std::shared_ptr<Env> owner, const std::string& src) {
     Value proxy = Value::makeHash(); proxy.hashKind = "Proxy";
     slotProxyPair(proxy,
@@ -19993,8 +20033,20 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 for (std::shared_ptr<Env> en = tctx_.cur; en; en = en->parent)
                     if (en->local(sv->name)) { owner = en; break; }
                 if (owner) {
+                    Value* srcSlot = owner->local(sv->name);
+                    // Share the source's CONTAINER. Promote it on first alias:
+                    // its value moves into a cell, and the source's own slot
+                    // becomes a proxy to it, so assignment through either name
+                    // is seen by both — while a later `:=` on the source
+                    // replaces that slot outright and detaches it from the cell.
+                    std::shared_ptr<Value> cell = cellOfProxy(srcSlot);
+                    if (!cell && srcSlot &&
+                        !(srcSlot->t == VT::Hash && srcSlot->hashKind == "Proxy")) {
+                        cell = std::make_shared<Value>(*srcSlot);
+                        *srcSlot = makeSharedCellProxy(cell);
+                    }
                     Value* blv = lvalue(a->target.get());
-                    *blv = makeEnvSlotProxy(owner, sv->name);
+                    *blv = cell ? makeSharedCellProxy(cell) : makeEnvSlotProxy(owner, sv->name);
                     return sink ? Value::any() : eval(a->value.get());
                 }
             }

@@ -74,5 +74,40 @@ ck $said, 'whole=WHOLE-22-OK broken=no threw=yes alive=STILL-RUNNING-23',
 sub sweep($d) { for $d.dir { $_.d ?? sweep($_) !! .unlink }; $d.rmdir }
 sweep($dir);
 
+# ---- `$a := $b` binds the CONTAINER, not the name -----------------------
+# Assignment through either name is seen by both, because they share one
+# container; REBINDING the source is not, because `:=` gives that NAME a
+# different container and leaves the alias holding the one it was bound to.
+# Aliasing a slot BY NAME cannot express the difference, and a rebound source
+# dragged its aliases along — which is Hash::int's `push` reading the current
+# item as its own "previous" one, and the PDF family sitting behind it.
+my $src = 'CELL-71';
+my $alias := $src;
+ck $alias, 'CELL-71', 'an alias starts out holding what the source holds';
+$src = 'CELL-72';
+ck $alias, 'CELL-72', 'assigning to the source writes through the shared container';
+$alias = 'CELL-73';
+ck $src, 'CELL-73', '…and so does assigning to the alias';
+$src := 'CELL-74';
+ck $alias, 'CELL-73', 'REBINDING the source leaves the alias on the old container';
+ck $src,   'CELL-74', '…and gives the source name the new one';
+
+my $bound := 'BOUND-75';
+my $kept := $bound;
+$bound := 'BOUND-76';
+ck $kept, 'BOUND-75', 'a bound source rebound does not drag its alias either';
+
+# The loop shape the whole thing was found in: a value pulled each turn, and
+# the previous one kept beside it.
+my @pairs;
+my $prev;
+for <P-81 P-82 P-83> -> $item {
+    my $pulled := $item;
+    @pairs.push: "{$prev // 'none'}/{$pulled}";
+    $prev := $pulled;
+}
+ck @pairs.join('|'), 'none/P-81|P-81/P-82|P-82/P-83',
+   'a kept alias holds the PREVIOUS pull, not the current one';
+
 say $fails ?? "\n$fails FAILED" !! "\nPASS";
 exit $fails ?? 1 !! 0;
