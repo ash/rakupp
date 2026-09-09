@@ -467,6 +467,7 @@ with verified examples, grouped by purpose. The complete alphabetical list is in
 | `warn` | resumable warning | |
 | `die` | throw exception | `die "boom"` |
 | `prompt` | read a line with a prompt | `prompt("? ")` |
+| `prompt` `:hidden` | …without echoing it — a password | `prompt("pw: ", :hidden)` |
 | `slurp` / `spurt` | read / write whole file | `spurt('f', 'data')` |
 | `open` / `close` | file handle | `open('f', :r)` |
 | `dir` | directory listing | `dir('.')` |
@@ -1036,7 +1037,7 @@ while writing this sheet:
 
 ## Appendix A — all built-in subroutines
 
-The 253 subroutines registered by `Interpreter::registerBuiltins()`
+The 254 subroutines registered by `Interpreter::registerBuiltins()`
 (`src/Builtins.cpp`), alphabetically:
 
 ```
@@ -1060,18 +1061,19 @@ rakupp-crypt_random_buf rakupp-crypt_random_uniform rakupp-csv-backend
 rakupp-digest-backend rakupp-ext-load rakupp-from-csv rakupp-from-json
 rakupp-gzslurp rakupp-gzspurt rakupp-hmac rakupp-hmac-hex
 rakupp-json-backend rakupp-md5 rakupp-md5-hex rakupp-parse-diagnosis
-rakupp-random-backend rakupp-repo-lock rakupp-repo-unlock rakupp-sha1
-rakupp-sha1-hex rakupp-sha224 rakupp-sha224-hex rakupp-sha256
-rakupp-sha256-hex rakupp-sha384 rakupp-sha384-hex rakupp-sha512
-rakupp-sha512-hex rakupp-to-csv rakupp-to-json rakupp-uncompress
-rakupp-zlib-backend react refresh rename reverse rindex rmdir roots
-rotor round roundrobin run samemark samewith say sec sech set shell
-shift sign signal sink skip skip-rest sleep sleep-timer sleep-until
-slip slurp snip snitch so sort splice split sprintf spurt sqrt srand
-start subtest succeed sum supply symlink take take-rw tc throws-like
-times todo trait_mod:<of> trans truncate uc unimatch uniname uninames
-uniparse uniprop uniprops unival univals unlike unlink unpolar unshift
-use-ok val values warn whenever words zip
+rakupp-prompt-hidden rakupp-random-backend rakupp-repo-lock
+rakupp-repo-unlock rakupp-sha1 rakupp-sha1-hex rakupp-sha224
+rakupp-sha224-hex rakupp-sha256 rakupp-sha256-hex rakupp-sha384
+rakupp-sha384-hex rakupp-sha512 rakupp-sha512-hex rakupp-to-csv
+rakupp-to-json rakupp-uncompress rakupp-zlib-backend react refresh
+rename reverse rindex rmdir roots rotor round roundrobin run samemark
+samewith say sec sech set shell shift sign signal sink skip skip-rest
+sleep sleep-timer sleep-until slip slurp snip snitch so sort splice
+split sprintf spurt sqrt srand start subtest succeed sum supply
+symlink take take-rw tc throws-like times todo trait_mod:<of> trans
+truncate uc unimatch uniname uninames uniparse uniprop uniprops unival
+univals unlike unlink unpolar unshift use-ok val values warn whenever
+words zip
 ```
 
 ## Appendix B — all methods
