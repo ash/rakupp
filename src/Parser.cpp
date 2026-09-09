@@ -2353,7 +2353,7 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
             // `$x.'foo'()` is legal, bare `$x.'foo'` is not (S12).
             if (indirectName && !isKind(Tok::LParen))
                 error("indirect method call requires parentheses: $obj.'name'()");
-            if (isKind(Tok::LParen) && (!cur().spaceBefore || tuxicSlang_)) { advance(); mc->args = parseCallArgs(); takeTrailingAdverbs(mc->args); } // .method(args) — tight only; `.doit ()` is Confused (use unspace) — unless Slang::Tuxic said otherwise
+            if (isKind(Tok::LParen) && !cur().spaceBefore) { advance(); mc->args = parseCallArgs(); takeTrailingAdverbs(mc->args); } // .method(args) — tight only; `.doit ()` is Confused (use unspace)
             // a DETACHED adverb — `$sth.row :hash` — the colonpair (ident TIGHT
             // after the colon) is the call's named argument. It must be decided
             // BEFORE the colon-args form below, which was swallowing
@@ -4988,14 +4988,7 @@ ExprPtr Parser::parsePrimary() {
                     if (ExprPtr n = makeNqpOp(name.substr(5), none)) return n;
                 }
             }
-            // Under Slang::Tuxic a detached argument list is a call here too —
-            // but only for a lower-case name. The slang itself exempts type
-            // names (`$*R.is-identifier-type`), because `Str (…)` in a
-            // signature or a declaration is not a call; the initial-case test
-            // is the same exemption without a symbol table to ask.
-            bool tuxicArgs = tuxicSlang_ && isKind(Tok::LParen) && cur().spaceBefore &&
-                             !name.empty() && ascii::islower((unsigned char)name[0]);
-            if (isKind(Tok::LParen) && (!cur().spaceBefore || tuxicArgs)) {
+            if (isKind(Tok::LParen) && !cur().spaceBefore) {
                 advance();
                 ExprPtr invocant;
                 auto callArgs = parseCallArgs(&invocant);
@@ -5258,7 +5251,6 @@ ExprPtr Parser::parseEmbeddedExpr(const std::string& src) {
     p.userInfix_ = userInfix_;
     p.userPrefix_ = userPrefix_;
     p.useNqp_ = useNqp_; // `"{ nqp::chr($o) }"` in a `use nqp` unit sees the subset
-    p.tuxicSlang_ = tuxicSlang_; // …and `"{ .meth (1) }"` in a Slang::Tuxic unit
     p.userPostfix_ = userPostfix_;
     p.userCircumfix_ = userCircumfix_;
     p.userPostcircumfix_ = userPostcircumfix_;
@@ -8442,13 +8434,6 @@ StmtPtr Parser::parseStatementImpl() {
             if (!u->isNo) scanModuleOps(u->module); // its operators must parse HERE
             if (!u->isNo && u->module.compare(0, 6, "MONKEY") == 0)
                 monkeyScopes_.back() = 1; // use MONKEY-TYPING / use MONKEY (lexical)
-            // A slang is a grammar mutation, and rakupp has no grammar to mutate.
-            // Slang::Tuxic's mutation is two rules wide — whitespace may stand
-            // between a call's name and its parenthesised arguments — so the
-            // parser recognises the NAME and applies them itself. Only files
-            // that ask for it are affected; everywhere else `f (1)` stays two
-            // terms in a row, which is what Rakudo says without the slang.
-            if (!u->isNo && u->module == "Slang::Tuxic") tuxicSlang_ = true;
             // `use lib` takes an expression unless it is the plain one-string form,
             // whose path is kept as text (the native backends read it there). A
             // COMMA LIST is not that form: `use lib 'lib', 't/lib'` kept the first

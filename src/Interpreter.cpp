@@ -8391,12 +8391,6 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 if (tctx_.cur) tctx_.cur->strictPragma = u->isNo ? 1 : -1;
                 return Value::any();
             }
-            // `use Slang::Tuxic` is a PRAGMA here: the parser already applied
-            // the slang's two rules to this file (Parser::tuxicSlang_), so
-            // there is nothing left for a module to do. Loading it would only
-            // parse a file of grammar mixins rakupp cannot use — and requiring
-            // it to be installed would refuse programs it can now run.
-            if (u->module == "Slang::Tuxic") return Value::any();
             // `use NativeCall` is a pragma here — the FFI is native to the compiler,
             // so no module file declares the PACKAGE or its EXPORT stash. Suites
             // introspect both (NativeLibs' 01-basic walks

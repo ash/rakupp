@@ -1,9 +1,8 @@
 # Regression: the ecosystem batch toward 900 green distributions. Every row here
-# is an engine bug that Text::CSV — the dist eight others in the sweep wait on —
-# walked into, one test file at a time. None of them is about CSV.
+# is an engine bug that Text::CSV walked into, one test file at a time. None of
+# them is about CSV, and none of them is about the slang it is written in — that
+# is its own piece of work (docs/dev/SLANG-PLAN.md).
 #
-#   * Slang::Tuxic is applied by the ENGINE (a call's argument list may stand
-#     off from its name); rakupp has no grammar to mix a slang into
 #   * `.subst-mutate` never interpolated `$var` atoms in its pattern
 #   * `[ f() ]` spreads a call's Array result, and an Iterable object's iterator
 #   * `$fh.chomp = False`, an explicit `nl-in`, the default `nl-in` pair, `.seek`
