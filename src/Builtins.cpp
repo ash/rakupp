@@ -237,6 +237,7 @@ struct SpawnedChild {
     int outFd = -1, errFd = -1;            // pipe read ends (-1: not captured)
     bool reaped = false;                   // the zombie sweep already waitpid()ed it…
     int rawStatus = 0;                     // …and this is the status it collected
+    bool ownPgroup = false;                // setpgid'd, so -pid names its group (see below)
 #endif
 };
 
@@ -251,8 +252,17 @@ static int signalNumberOf(const Value& v); // Proc::Async.kill's argument; table
 
 // First half: spawn the child and return at once. The fork happens with the GIL
 // held, so forks serialise (safe in a multithreaded process).
+//
+// `ownPgroup` puts the child in a process group of its own so a timeout can kill
+// its grandchildren along with it. It must stay OFF otherwise: a child in a group
+// that is not the terminal's foreground group is a BACKGROUND job, and the kernel
+// stops it with SIGTTOU the moment it calls tcsetattr, or SIGTTIN the moment it
+// reads the terminal. `run 'stty', '-echo'` hung there forever — which is how
+// `fez login` came to echo the password and then wedge (issue #72) — and so did
+// every interactive child, `less` and `vi` and a `sudo` password prompt included.
 static SpawnedChild spawnChildStart(const std::vector<std::string>& argv, const std::string& cwd,
-                                    const std::vector<std::string>* envKV, const SpawnStdio& io) {
+                                    const std::vector<std::string>* envKV, const SpawnStdio& io,
+                                    bool ownPgroup = false) {
     SpawnedChild sc;
     if (argv.empty()) return sc;
     // Anything we have written but not yet handed to the OS must go out BEFORE
@@ -265,6 +275,7 @@ static SpawnedChild spawnChildStart(const std::vector<std::string>& argv, const 
         std::cout.flush(); std::cerr.flush();
     }
 #if defined(_WIN32)
+    (void)ownPgroup; // no POSIX process groups here; a timeout kills the pid
     // Windows: CreateProcess with inherited pipes; the finish half polls the
     // read ends via PeekNamedPipe. Compile-verified under mingw g++; behaviour
     // mirrors the POSIX path below.
@@ -402,7 +413,7 @@ static SpawnedChild spawnChildStart(const std::vector<std::string>& argv, const 
         return sc;
     }
     if (pid == 0) { // child — async-signal-safe only from here
-        setpgid(0, 0); // own process group, so a timeout can kill grandchildren too
+        if (ownPgroup) setpgid(0, 0); // only when a timeout may have to kill the group
         if (io.stdinFd >= 0) dup2(io.stdinFd, STDIN_FILENO);
         if (io.captureOut) dup2(pipefd[1], STDOUT_FILENO);
         else if (io.stdoutFd >= 0) dup2(io.stdoutFd, STDOUT_FILENO);
@@ -437,6 +448,7 @@ static SpawnedChild spawnChildStart(const std::vector<std::string>& argv, const 
         fcntl(errfd[0], F_SETFL, O_NONBLOCK);
         sc.errFd = errfd[0];
     }
+    sc.ownPgroup = ownPgroup;
     return sc;
 #endif
 }
@@ -445,9 +457,9 @@ static SpawnedChild spawnChildStart(const std::vector<std::string>& argv, const 
 // exit, is the only reliable "all output captured" signal: reaping with waitpid
 // does not guarantee the final buffered write has been drained, and grandchildren
 // may still hold the write end. `timeoutSec` bounds the whole wait; on expiry the
-// child and its process group are killed. `gil` (if non-null) is the interpreter:
-// the GIL is parked for the wait so sibling worker threads run — and spawn their
-// own children — concurrently.
+// child is killed, and its process group with it when it was given one.
+// `gil` (if non-null) is the interpreter: the GIL is parked for the wait so
+// sibling worker threads run — and spawn their own children — concurrently.
 static void spawnChildFinish(SpawnedChild& sc, double timeoutSec,
                              std::string& out, std::string* errOut,
                              int& exitCode, bool& timedout, Interpreter* gil,
@@ -539,7 +551,7 @@ static void spawnChildFinish(SpawnedChild& sc, double timeoutSec,
                 // a child the zombie sweep already reaped must NOT be signalled:
                 // the pid may have been recycled (only its grandchildren still
                 // hold the pipe, and those we leave be)
-                if (!sc.reaped) { kill(-pid, SIGKILL); kill(pid, SIGKILL); }
+                if (!sc.reaped) { if (sc.ownPgroup) kill(-pid, SIGKILL); kill(pid, SIGKILL); }
                 timedout = true; break;
             }
         }
@@ -555,7 +567,8 @@ static void spawnChildFinish(SpawnedChild& sc, double timeoutSec,
             if (r != 0) break;
             double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
             if (elapsed > timeoutSec) {
-                kill(-pid, SIGKILL); kill(pid, SIGKILL); timedout = true;
+                if (sc.ownPgroup) kill(-pid, SIGKILL);
+                kill(pid, SIGKILL); timedout = true;
                 while (waitpid(pid, &status, 0) == -1 && errno == EINTR) {}
                 break;
             }
@@ -603,7 +616,7 @@ static void spawnCapture(const std::vector<std::string>& argv, double timeoutSec
     io.captureErr = errOut != nullptr;
     io.errToNull = !errOut && !errInherit;
     io.mergeErr = mergeErr;
-    SpawnedChild sc = spawnChildStart(argv, cwd, envKV, io);
+    SpawnedChild sc = spawnChildStart(argv, cwd, envKV, io, timeoutSec > 0);
     if (!sc.pid) {
 #if defined(_WIN32)
         if (!sc.spawnErr.empty()) {
