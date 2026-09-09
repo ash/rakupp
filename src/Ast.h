@@ -820,6 +820,11 @@ struct UseStmt : Stmt {
     ExprPtr argExpr; // computed argument, e.g. `use lib $?FILE.IO.parent`
     bool isNo = false; // `no strict` / `no worries` — the negated pragma form
     bool isNeed = false; // `need Mod` — compiles/loads but imports NOTHING
+    // `require Mod` — the bareword runtime form, which the parser also builds a
+    // UseStmt for. It differs from `use` in one way that matters downstream:
+    // Rakudo does not run a module's `sub EXPORT` for `require` at all, so a
+    // failing EXPORT must not fail the load the way it does for `use`.
+    bool isRequire = false;
     UseStmt(): Stmt(NK::UseStmt) {}
 };
 

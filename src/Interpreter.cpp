@@ -6302,26 +6302,39 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
                 if (res.t == VT::Hash && res.hash())
                     for (auto& kv : *res.hash()) tctx_.cur->define(kv.first, kv.second);
             } catch (RakuError& e) {
-                // For `use`/`need` a failing EXPORT is the `use` failing, and it
-                // propagates — Rakudo aborts compilation and exits 1. This used
-                // to warn and carry on at exit 0, which made a module's
+                // For `use`/`need` a module's own refusal is the `use` failing,
+                // and it propagates — Rakudo aborts compilation and exits 1.
+                // This used to warn and carry on at exit 0, which made
                 // export-time validation advisory: `use M <typo>` imported
                 // nothing and said so only on stderr, then ran the program.
                 //
-                // TWO exceptions, and neither is a matter of taste:
+                // THREE things stay a warning, and none is a matter of taste:
                 //
-                // `if` — its EXPORT necessarily fails here. Both implementations
-                // of that dist patch Rakudo compiler internals; rakupp supplies
-                // the `:if` adverb natively instead, so the noise would only
-                // pollute every dependent's test log.
-                //
-                // `require` (the quiet caller) — Rakudo does not run a module's
-                // EXPORT for `require` AT ALL, in any of its three forms;
-                // measured. rakupp does, so a throw here would fail a load that
-                // Rakudo completes. Keeping the old warn-and-continue leaves
-                // `require` exactly as it was rather than making it stricter
-                // than the engine being matched.
-                if (name != "if" && !quiet && !requireForm) throw;
+                // 1. Anything the module did not raise ITSELF. A module
+                //    refusing an import writes `die "..."`, which arrives here
+                //    as X::AdHoc; an ENGINE GAP arrives as a typed exception —
+                //    X::CompUnit::UnsatisfiedDependency for something rakupp
+                //    cannot supply, X::Method::NotFound for a hook it does not
+                //    implement. Propagating those turns a gap into a broken
+                //    dist: a 148-dist ecosystem shard measured exactly that,
+                //    and Polyglot::Regexen (whose EXPORT wants QAST) went from
+                //    `pass` to `self-fail` on the strength of it. Its tests do
+                //    not need the export that failed; today's warning lets it
+                //    keep working, and this must not take that away.
+                // 2. `if` — its EXPORT necessarily fails here. Both
+                //    implementations of that dist patch Rakudo compiler
+                //    internals; rakupp supplies the `:if` adverb natively, so
+                //    the noise would only pollute every dependent's test log.
+                // 3. `require` (the quiet caller, and the bareword form) —
+                //    Rakudo does not run a module's EXPORT for `require` AT
+                //    ALL, in any of its three spellings; measured. rakupp does,
+                //    so a throw here would fail a load Rakudo completes.
+                const std::string exType =
+                    e.payload.t == VT::Type ? e.payload.s
+                  : (e.payload.t == VT::Object && e.payload.obj() && e.payload.obj()->cls)
+                        ? e.payload.obj()->cls->name : std::string();
+                const bool moduleRaised = exType == "X::AdHoc";
+                if (name != "if" && !quiet && !requireForm && moduleRaised) throw;
                 if (name != "if")
                     std::cerr << "===WARNING=== Module " << name
                               << " EXPORT failed: " << e.message << "\n";
@@ -6637,8 +6650,12 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
                             tctx_.cur->define(kv.first, kv.second);
                         }
                 } catch (RakuError& e) {
-                    // see the replay site above for why `if` and `require` differ
-                    if (name != "if" && !quiet && !requireForm) throw;
+                    // see the replay site above for all three halves of this
+                    const std::string exType =
+                        e.payload.t == VT::Type ? e.payload.s
+                      : (e.payload.t == VT::Object && e.payload.obj() && e.payload.obj()->cls)
+                            ? e.payload.obj()->cls->name : std::string();
+                    if (name != "if" && !quiet && !requireForm && exType == "X::AdHoc") throw;
                     if (name != "if")
                         std::cerr << "===WARNING=== Module " << name
                                   << " EXPORT failed: " << e.message << "\n";
