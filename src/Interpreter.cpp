@@ -2835,6 +2835,11 @@ Interpreter::Interpreter() {
         // `...` with seeds that are neither arithmetic nor geometric throws this
         // (the sequence builder constructs it with `from` = the seed list)
         reg("X::Sequence::Deduction", {"from", "message"});
+        // X::NYI — the engine already THROWS it as a bare type object; registering
+        // it lets a program CONSTRUCT one, which is the whole of what the NYI
+        // distribution does (`Failure.new: X::NYI.new: :$feature`). Its message is
+        // composed from `feature` at construction, like the X::IO family below.
+        reg("X::NYI", {"feature", "message"});
         reg("Exception", {"message"}); // base class: Exception.new is instantiable
         // The X::IO family. rakupp's own IO builtins already THROW these (as bare
         // type objects with a hand-written message); registering them as classes

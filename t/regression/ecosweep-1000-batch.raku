@@ -109,5 +109,20 @@ for <P-81 P-82 P-83> -> $item {
 ck @pairs.join('|'), 'none/P-81|P-81/P-82|P-82/P-83',
    'a kept alias holds the PREVIOUS pull, not the current one';
 
+# ---- constructible introspection types ----------------------------------
+# The engine already THREW X::NYI and already answered $*RAKU.compiler / $*VM;
+# what was missing was CONSTRUCTING one, which is all these distributions do.
+my $nyi = X::NYI.new(feature => 'FEAT-91');
+ck $nyi.feature, 'FEAT-91',                            'X::NYI.new keeps its feature';
+ck $nyi.message, 'FEAT-91 not yet implemented. Sorry.', '…and composes its message from it';
+# Rakudo spells `message` as a METHOD on X::NYI, so one passed as an argument
+# is ignored rather than honoured — checked here because the first version of
+# this fix honoured it, and only the cross-engine run said otherwise.
+ck (try { X::NYI.new(feature => 'F-92', message => 'IGNORED-93').message }),
+   'F-92 not yet implemented. Sorry.',
+   '…and a passed message does not override it';
+ck Compiler.new.name.chars > 0, True, 'Compiler.new answers a named compiler';
+ck VM.new.name.chars > 0,       True, 'VM.new answers a named VM';
+
 say $fails ?? "\n$fails FAILED" !! "\nPASS";
 exit $fails ?? 1 !! 0;

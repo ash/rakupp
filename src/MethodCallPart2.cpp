@@ -2424,6 +2424,13 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if (t == "Mu" || t == "Any") {
             Value v = Value::makeHash(); v.hashKind = t; return v;
         }
+        // `Compiler.new` — the same object `$*RAKU.compiler` answers. META::
+        // constants builds one in its EXPORT sub to read the compiler's name and
+        // version, and got X::Method::NotFound for a type that already exists.
+        if (t == "Compiler") return rakuIntrospection(true);
+        // …and `VM.new`, the same object `$*VM` answers, for the same reason:
+        // META::constants reads both in its EXPORT sub.
+        if (t == "VM") { Value h = Value::makeHash(); h.hashKind = "VM"; (*h.hash())["name"] = Value::str("moar"); return h; }
     }
     // `List.from-iterator($it)` — and the Array/Seq/Slip spellings. Drains the
     // iterator into the named container, whether it is a user object doing
@@ -3093,6 +3100,21 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 // An X::IO exception composes its .message from its attributes,
                 // as Rakudo does — the class carries no method of its own, so the
                 // text is built here, once, at construction.
+                // X::NYI composes its message from `feature`, the way Rakudo's
+                // does — an exception whose entire purpose is that sentence is
+                // useless without it.
+                if (ci->name == "X::NYI") {
+                    std::string feature;
+                    for (auto& g : args)
+                        if (g.t == VT::Pair && g.s == "feature")
+                            feature = g.pairVal() ? g.pairVal()->toStr() : "";
+                    // Rakudo spells this as a `method message`, not an attribute,
+                    // so a `message` the caller passes is IGNORED — the sentence
+                    // is always composed from `feature`. Pushed last, because a
+                    // duplicate named argument binds the last one.
+                    args.push_back(Value::pair("message",
+                        Value::str(feature + " not yet implemented. Sorry.")));
+                }
                 if (ci->name.compare(0, 6, "X::IO:") == 0) {
                     bool haveMsg = false;
                     std::map<std::string, std::string> a;
