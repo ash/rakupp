@@ -27598,7 +27598,19 @@ Value Interpreter::evalUnary(Unary* u) {
         if (name.empty())
             throw RakuError{Value::typeObj("X::CompUnit::UnsatisfiedDependency"),
                             "require: empty module name"};
-        loadModule(name, {}, /*doImport=*/true, /*quiet=*/true);
+        // A module that will not PARSE is fatal to a `use`, which is a
+        // compile-time declaration — but `require` is a runtime call, and
+        // Rakudo raises a catchable exception for it. Loaders are built on
+        // exactly that: Implementation::Loader wraps `require ::($name)` in a
+        // `try` and files the module under "failed" when it throws, so a
+        // ParseError escaping as a compile-time abort killed the whole program
+        // over a module the caller had already said it could do without. The
+        // exception type matches what Rakudo throws here.
+        try {
+            loadModule(name, {}, /*doImport=*/true, /*quiet=*/true);
+        } catch (ParseError& pe) {
+            throw RakuError{Value::typeObj("X::AdHoc"), pe.what()};
+        }
         // success = the name now resolves to a class/module type. (loadedModules_
         // is registered unconditionally at loadModule entry, so it can't signal
         // success; requiring the type covers zef's plugins and typical modules,

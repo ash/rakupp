@@ -209,6 +209,12 @@ struct SpawnStdio {
     bool captureOut = false, captureErr = false;
     bool outToNull = false; // when !captureOut: /dev/null instead of inheriting (`:!out`)
     bool errToNull = false; // when !captureErr: /dev/null instead of inheriting
+    // `run(:merge)`: the child's stderr IS its stdout — the same pipe, so the
+    // two streams interleave in the order the child wrote them rather than
+    // arriving as two strings someone has to concatenate and guess about.
+    // Requires captureOut; captureErr must be off, since there is no second
+    // stream left to capture.
+    bool mergeErr = false;
 #if !defined(_WIN32)
     int stdinFd = -1, stdoutFd = -1, stderrFd = -1; // bind-* pipe ends
 #endif
@@ -328,7 +334,9 @@ static SpawnedChild spawnChildStart(const std::vector<std::string>& argv, const 
         }
         else SetHandleInformation(errH, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
     }
-    si.hStdError = io.captureErr ? errW : (io.errToNull ? nul : errH);
+    si.hStdError = io.captureErr ? errW
+                 : (io.mergeErr && io.captureOut) ? outW   // :merge — one handle for both
+                 : (io.errToNull ? nul : errH);
     PROCESS_INFORMATION pi; ZeroMemory(&pi, sizeof(pi));
     std::vector<char> cmdbuf(cmd.begin(), cmd.end()); cmdbuf.push_back('\0');
     std::string envblk; if (envKV) envblk = winEnvBlock(*envKV);
@@ -401,6 +409,7 @@ static SpawnedChild spawnChildStart(const std::vector<std::string>& argv, const 
         else if (io.outToNull) { int devnull = open("/dev/null", O_WRONLY); if (devnull >= 0) dup2(devnull, STDOUT_FILENO); }
         // none of those: STDOUT_FILENO is left exactly as we got it (inherited)
         if (io.captureErr) dup2(errfd[1], STDERR_FILENO);
+        else if (io.mergeErr && io.captureOut) dup2(pipefd[1], STDERR_FILENO); // :merge — one pipe for both
         else if (io.stderrFd >= 0) dup2(io.stderrFd, STDERR_FILENO);
         else if (io.errToNull) { int devnull = open("/dev/null", O_WRONLY); if (devnull >= 0) dup2(devnull, STDERR_FILENO); }
         close(pipefd[0]); close(pipefd[1]);
@@ -579,7 +588,7 @@ static void spawnCapture(const std::vector<std::string>& argv, double timeoutSec
                          bool errInherit = false, int outMode = 1,
                          const ChildChunkSink* sink = nullptr,
                          std::exception_ptr* sinkErr = nullptr,
-                         int stdinFd = -1) {
+                         int stdinFd = -1, bool mergeErr = false) {
     out.clear(); exitCode = -1; timedout = false;
     if (errOut) errOut->clear();
     if (argv.empty()) return;
@@ -593,6 +602,7 @@ static void spawnCapture(const std::vector<std::string>& argv, double timeoutSec
     io.outToNull  = outMode == 0;
     io.captureErr = errOut != nullptr;
     io.errToNull = !errOut && !errInherit;
+    io.mergeErr = mergeErr;
     SpawnedChild sc = spawnChildStart(argv, cwd, envKV, io);
     if (!sc.pid) {
 #if defined(_WIN32)
@@ -9984,6 +9994,13 @@ void Interpreter::registerBuiltins() {
         // output and dropped it on the floor, which is how HTTP::Tinyish::Curl
         // (`run |@cmd, :out($out-fh)`, then slurp the file) fetched every page
         // as an empty body while its headers arrived intact.
+        // `:merge` — stdout and stderr as ONE captured stream, read back through
+        // `.out`. It was not parsed at all, so it fell through as an unknown
+        // named argument: nothing was captured, the child wrote straight to our
+        // own descriptors, and `.out.slurp` came back EMPTY. Every suite that
+        // checks a script's combined output this way saw "" against whatever it
+        // expected (as-cli-arguments' twelve tests, and the eight dists behind it).
+        bool merge = false;
         Value outSink, errSink;
         // A default-constructed Value is Any, not Nil — "was a sink given?" needs
         // its own flag, and testing `.t == VT::Nil` for it (as this did) answered
@@ -10022,9 +10039,16 @@ void Interpreter::registerBuiltins() {
                     std::sort(envKV.begin(), envKV.end()); // deterministic; Windows wants sorted blocks
                 }
                 else if (v.s == "cwd" && v.pairVal()) cwd = v.pairVal()->toStr(); // was silently ignored too
+                else if (v.s == "merge") merge = v.pairVal() ? v.pairVal()->truthy() : true;
             }
             else argv.push_back(v.toStr());
         }
+        // `:merge` implies capture — the merged stream is delivered through
+        // `.out`, so there is nothing to merge into unless stdout is captured —
+        // and it WINS over an explicit `:err`. Rakudo sends both streams to
+        // `.out` for `run(:merge, :err)`; keeping them apart there was this
+        // implementation's own invention, and the cross-engine probe caught it.
+        if (merge) { if (outMode == -1) { outMode = 1; wantOut = true; } errMode = -1; }
         Value av = Value::array(); av.isList = true; for (auto& s : argv) av.arr()->push_back(Value::str(s));
         Value p = Value::makeHash(); p.hashKind = "Proc"; // standard Proc object
         (*p.hash())["argv"] = av; // for .command
@@ -10056,7 +10080,8 @@ void Interpreter::registerBuiltins() {
         // finished (issue #51: a runner relaying a build's progress).
         int outSpawn = (outMode == -1 && !haveOutSink) ? -1 : (outMode == 0 ? 0 : 1);
         spawnCapture(argv, timeoutSec, out, code, timedout, &I, errMode != -1 ? &err : nullptr, cwd, &childPid,
-                     haveEnv ? &envKV : nullptr, errMode == -1, outSpawn, nullptr, nullptr, inFd);
+                     haveEnv ? &envKV : nullptr, errMode == -1, outSpawn, nullptr, nullptr, inFd,
+                     merge);
 #if !defined(_WIN32)
         if (inFd >= 0) ::close(inFd); // the child holds its own copy
 #endif
@@ -10083,7 +10108,7 @@ void Interpreter::registerBuiltins() {
     // shell(CMD, :out, :err) — run CMD through the system shell (`/bin/sh -c CMD`),
     // so redirections/pipes in CMD work. Returns a Proc; +$proc is the exit status.
     B["shell"] = [](Interpreter& I, ValueList& a) -> Value {
-        std::string cmd; bool wantOut = false, wantErr = false;
+        std::string cmd; bool wantOut = false, wantErr = false, merge = false;
         int outMode = -1, errMode = -1; // -1 unspecified, 0 :!x discard, 1 :x capture
         int inFd = -1; // `:in($handle)`: the child's stdin itself (a Bool `:in` is not a shell() mode)
         for (auto& v : flattenArgs(a)) {
@@ -10091,6 +10116,7 @@ void Interpreter::registerBuiltins() {
                 if (v.s == "out") { wantOut = v.pairVal() ? v.pairVal()->truthy() : true; outMode = wantOut ? 1 : 0; }
                 else if (v.s == "err") { wantErr = v.pairVal() ? v.pairVal()->truthy() : true; errMode = wantErr ? 1 : 0; }
                 else if (v.s == "in" && v.pairVal()) { bool resolved = false; int fd = stdinFdForHandle(*v.pairVal(), resolved); if (resolved) inFd = fd; }
+                else if (v.s == "merge") merge = v.pairVal() ? v.pairVal()->truthy() : true; // as in run(), above
             }
             else if (cmd.empty()) cmd = v.toStr();
         }
@@ -10106,8 +10132,10 @@ void Interpreter::registerBuiltins() {
         I.syncEnvToProcess(); // child inherits any %*ENV changes the program made
         std::string out, err; int code = 0; bool timedout = false;
         long long childPid = 0;
+        if (merge) { if (outMode == -1) { outMode = 1; wantOut = true; } errMode = -1; } // as in run(), above
         spawnCapture(argv, 0, out, code, timedout, &I, errMode != -1 ? &err : nullptr, "", &childPid,
-                     nullptr, errMode == -1, outMode, nullptr, nullptr, inFd);  // no `:out`: the child writes to ours, live
+                     nullptr, errMode == -1, outMode, nullptr, nullptr, inFd,
+                     merge);  // no `:out`: the child writes to ours, live
 #if !defined(_WIN32)
         if (inFd >= 0) ::close(inFd);
 #endif
