@@ -6469,6 +6469,15 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
                 }
                 // never clobber a routine the PROGRAM declared itself
                 if (mainlineSubNames_.count(k)) continue;
+                // …and never replace a live VIEW with a copy. An `our` variable
+                // publishes a proxy onto the module's own slot (see the
+                // our-declaration publish), so that a write through the published
+                // name reaches the variable the module itself reads. Copying the
+                // value over it restores exactly the two-container split that
+                // proxy exists to remove — `$TABSTOP = 4` in the caller, and the
+                // module's `tabstop()` still answering 8.
+                if (Value* g = global_->local(k))
+                    if (g->t == VT::Hash && g->hashKind == "Proxy") continue;
                 global_->define(k, kv.second);
             }
         };
@@ -17396,6 +17405,22 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             // in a while COND stays visible after the loop
             Env* de = tcx.cur.get();
             while (de->loopFrame && de->parent) de = de->parent.get();
+            // Redeclaring a name in the SAME scope is the same variable, not a
+            // second one — Rakudo warns and reuses the lexical. That is invisible
+            // while the slot holds a plain value, since every reader finds it by
+            // name, and it only starts to matter once something has bound to the
+            // CONTAINER: `my $x = 2; my $y := $x; my $x = 3` must leave $y seeing
+            // 3 (S04-declarations/multiple.t). Defining over the slot dropped the
+            // shared cell $y was proxying and left it holding the old value, so a
+            // container the name already has is kept and the initialiser stores
+            // THROUGH it. `:=` still overwrites the slot outright, which is what
+            // detaches a rebound source from its aliases. A plain value is left
+            // to make a fresh container as before — nothing can be watching it,
+            // and a loop body's `my` must stay one variable per turn.
+            if (ve->declScope == "my") {
+                Value* have = de->local(ve->name);
+                if (have && have->t == VT::Hash && have->hashKind == "Proxy") return have;
+            }
             Value init = declInitial(ve, sigil);
             if (ve->declShape && sigil == '@') // shaped array `my @a[2;3]`
                 init = makeShapedContainer(evalShapeDims(ve->declShape.get()), ve->declType);
@@ -19037,7 +19062,33 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
             if (Value* p = tctx_.cur->find(ve->name)) {
                 std::string qual = ve->name.substr(0, 1) + tctx_.pkgPrefix + ve->name.substr(1);
                 noteSymbolMutation("our-declaration publish");
-                global_->define(qual, *p);
+                // The qualified name and the module's own name are ONE container:
+                // `$Pkg::VAR = 4` written outside is a write to the very variable
+                // the module reads. Publishing a COPY gave them two, so
+                // Terminal::Table's `$TABSTOP = 4` landed in a slot its own
+                // `tabstop()` never looked at, and the module went on reporting 8.
+                //
+                // The GLOBAL side becomes the view: the module keeps a plain slot
+                // and reads it as directly as before, while the qualified name
+                // fetches and stores through it. (The exported case is already
+                // one container under the BARE name — see just below — so it is
+                // left alone.)
+                // A module with no `unit module` of its own publishes under the
+                // BARE name, which is how Terminal::Table::Settings does it — so
+                // the test's `$TABSTOP = 4` and the module's `$TABSTOP` are the
+                // same variable, and were two.
+                //
+                // The owning scope must not BE the global one: a proxy from a
+                // slot to itself would fetch through itself forever.
+                std::shared_ptr<Env> ourOwner;
+                if (!ve->declExport && ve->name[0] != '&' && global_)
+                    for (std::shared_ptr<Env> en = tctx_.cur; en; en = en->parent)
+                        if (en->local(ve->name)) {
+                            if (en.get() != global_.get()) ourOwner = en;
+                            break;
+                        }
+                if (ourOwner) global_->define(qual, makeEnvSlotProxy(ourOwner, ve->name));
+                else global_->define(qual, *p);
                 // `our %x is export` — the importer sees the BARE name too. In a
                 // `unit class` the declaration lives in the CLASS body, so the
                 // module-load republish never saw it (Date::Names keeps its

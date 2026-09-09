@@ -181,5 +181,40 @@ ck (~$der eq 'TEXT-121'),           True, 'a Str subclass with attributes keeps 
 ck ($der.Str::Str() eq 'TEXT-121'), True, '…and a qualified call reaches it';
 ck $der.extra,        9,          '…without losing its own attribute';
 
+# ---- an `our` variable is ONE container, both ways -----------------------
+# A caller writing `$Mod::VAR` — or the bare name, for a module that declares no
+# package of its own — is writing the very variable the module reads. Publishing
+# a COPY gave them two, so Terminal::Table::Settings' `$TABSTOP = 4` landed in a
+# slot its own `tabstop()` never looked at and the module went on answering 8.
+# Run in a child, since `use` is compile time and these modules are written now.
+my $odir = $*TMPDIR.add("rakupp-our-probe-{$*PID}");
+$odir.mkdir;
+$odir.add('OurPkg131.rakumod').spurt: q:to/MOD/;
+unit module OurPkg131;
+our $SETTING = 8;
+sub reader() is export { $SETTING }
+MOD
+$odir.add('OurBare132.rakumod').spurt: q:to/MOD/;
+use v6;
+our $LEVEL = 8;
+sub level() is export { $LEVEL }
+MOD
+my $oprobe = $odir.add('our-probe.raku');
+$oprobe.spurt: q:to/PROBE/;
+use OurPkg131;
+use OurBare132;
+$OurPkg131::SETTING = 4;
+$LEVEL = 5;
+say "qualified={reader()} bare={level()} readback={$OurPkg131::SETTING}/{$LEVEL}";
+PROBE
+
+my $op = run $*EXECUTABLE.absolute, '-I' ~ $odir.absolute, $oprobe.absolute, :out, :err;
+my $oline = $op.out.slurp(:close).trim.lines.first({ .starts-with('qualified=') }) // '';
+$op.err.slurp(:close);
+ck $oline, 'qualified=4 bare=5 readback=4/5',
+   'a write through the published name reaches the variable the module reads';
+
+sweep($odir);
+
 say $fails ?? "\n$fails FAILED" !! "\nPASS";
 exit $fails ?? 1 !! 0;
