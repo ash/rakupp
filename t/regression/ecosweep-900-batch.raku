@@ -256,5 +256,38 @@ ck slurp9($['SH', 'SI']).elems, 1, 'an itemized array stays one element';
     ck @pu9.elems, 1, 'and .push still flattens nothing';
 }
 
+# ---- reaching PAST an override: the qualifier means what it says ---------
+# A class deriving a BUILT-IN registers a ClassInfo for the parent that carries
+# none of its methods, so "is the qualifier known?" was not enough — the
+# question is whether that class DEFINES the method. `new` had its own dispatch
+# arm and ignored skipOwn entirely, so each of these called itself forever.
+class VPair9 is Pair {
+    proto method new(|) {*}
+    multi method new(Pair:D $p)     { self.Pair::new($p.key, $p.value) }
+    multi method new($key, $value)  { self.Pair::new($key, $value) }
+    multi method new(:$key!, :$value!) { self.Pair::new($key, $value) }
+}
+{
+    my $p = VPair9.new('PK1', 41);
+    ck $p.key,     'PK1',     'a class deriving Pair is backed by a real Pair';
+    ck $p.value,   41,        '…and answers .value from it';
+    ck $p.^name,   'VPair9',  '…while .WHAT keeps saying the user type';
+    ck VPair9.new(key => 'PK2', value => 42).value, 42, '…for the named spelling too';
+    ck VPair9.new(('PK3' => 43)).key, 'PK3', '…and for a Pair argument';
+}
+
+# ---- CORE:: names the built-in, past whatever shadows it ------------------
+# Only ever written when something IS shadowing, so resolving it by the bare
+# name reached the shadow — lizmat's Perl-builtin ports are all this shape.
+proto sub uc9(|) {*}
+multi sub uc9(Str() $s) { 'U9:' ~ &CORE::uc($s) }
+ck uc9('ab'), 'U9:AB', '&CORE::name reaches the builtin, not the shadow';
+{
+    my $viaAngle = CORE::<&lc>('AB');
+    ck $viaAngle, 'ab', '…and so does the angle spelling';
+}
+sub round9($x) { &CORE::round($x) }
+ck round9(2.6), 3, '…for a builtin nothing is shadowing, unchanged';
+
 say $fails ?? "\n$fails FAILED" !! "\nPASS";
 exit $fails ?? 1 !! 0;

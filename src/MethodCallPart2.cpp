@@ -3076,7 +3076,13 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             // `new`: a user-defined `new` (often a multi) coexists with the default
             // Mu.new. Use a custom candidate only if one matches the args; otherwise
             // fall back to default construction (named args / no args).
-            if (m == "new") {
+            //
+            // …unless the caller asked to reach PAST the invocant's own methods.
+            // `self.Pair::new($k, $v)` inside `class ValuePair is Pair` means the
+            // built-in Pair's constructor; finding the user's `new` here called
+            // it again, forever. Every other method already honoured skipOwn;
+            // `new` had its own arm and did not.
+            if (m == "new" && !m.skipOwn) {
                 Value* um = ci->findMethod("new");
                 bool useCustom = um != nullptr;
                 if (um && um->code() && um->code()->isMultiDispatcher) {
@@ -3237,6 +3243,26 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         // the stripped copy here had no `self` in scope and no
                         // provided-args-during-walk, so `has $.b = $!a * 2` died
                         od->boxed = methodCall(Value::typeObj(nb), "new", builtinArgs);
+                        runAttrDefaults(od, ci, args);
+                        Value self = Value::object(od);
+                        if (Value* build = ci->findMethod("BUILD")) sinkBuildResult(invokeMethod(*build, self, args));
+                        if (Value* tweak = ci->findMethod("TWEAK")) sinkBuildResult(invokeMethod(*tweak, self, args));
+                        maybeRegisterDestroy(self);
+                        return self;
+                    }
+                    // `class ValuePair is Pair`: back the instance with a real Pair,
+                    // so `.key`/`.value` and everything the type answers dispatch to
+                    // it while `.WHAT` keeps saying the user type. Both spellings the
+                    // built-in takes reach it — two positionals, or :key/:value — and
+                    // a POSITIONAL Pair argument (`ValuePair.new( (a => 42) )`) is
+                    // not mistaken for a named one.
+                    if (nb == "Pair" || nb == "Enum") {
+                        auto od = std::make_shared<ObjectData>(); od->cls = ci; od->hasBoxed = true;
+                        ValueList builtinArgs;   // attribute pairs stay with the object
+                        for (auto& a : args)
+                            if (!(a.t == VT::Pair && a.namedArg && ci->findAttr(a.s)))
+                                builtinArgs.push_back(a);
+                        od->boxed = methodCall(Value::typeObj("Pair"), "new", builtinArgs);
                         runAttrDefaults(od, ci, args);
                         Value self = Value::object(od);
                         if (Value* build = ci->findMethod("BUILD")) sinkBuildResult(invokeMethod(*build, self, args));

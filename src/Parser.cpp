@@ -3850,6 +3850,18 @@ ExprPtr Parser::parsePrimary() {
             }
             auto e = std::make_unique<VarExpr>(stripPseudoPkg(raw));
             e->processScoped = raw.find("PROCESS::") != std::string::npos;
+            // `&CORE::chdir` names the BUILT-IN, and stripping the qualifier
+            // loses exactly that: the bare `&chdir` then finds whatever the
+            // program has put in scope — which, since the form is only written
+            // when something IS shadowing, is the shadow itself. Marked the
+            // same way the angle spelling `CORE::<&chdir>` already is, so the
+            // interpreter can answer the builtin. (lizmat's Perl-builtin ports
+            // are all this shape and each one called itself forever.)
+            if (raw.size() > 1 && raw[0] == '&' &&
+                (raw.compare(1, 6, "CORE::") == 0 || raw.compare(1, 9, "SETTING::") == 0)) {
+                e->viaPseudoPkg = true;
+                e->pseudoPkg    = "CORE";
+            }
             e->line = ln; return e;
         }
         case Tok::LParen: {

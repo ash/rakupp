@@ -28891,6 +28891,18 @@ void Interpreter::requirePrivateCallScope(const std::string& name) {
 }
 
 Value Interpreter::evalCall(Call* c) {
+    // `CORE::name(…)` / `&CORE::name(…)` names the BUILT-IN, past whatever the
+    // program has put in scope under that name — and shadowing is exactly when
+    // the form gets written. lizmat's Perl-builtin ports are all this shape
+    // (`multi sub chdir(Str() $s) { so &CORE::chdir($s) }`), and resolving it
+    // by the bare name reached the shadow, so each one called itself until the
+    // stack gave out. The angle spelling `CORE::<&chdir>` was already handled;
+    // this is the qualified one.
+    if (c->name.compare(0, 6, "CORE::") == 0 && c->name.size() > 6)
+        if (const Value* bref = builtinRef(c->name.substr(6))) {
+            ValueList as = evalArgs(c->args);
+            return callCallable(*bref, std::move(as), &c->args);
+        }
     // temp/let take their argument by EXPRESSION — the generic args pre-eval
     // would run a `temp $a = 23` assignment before the snapshot is taken
     if ((c->name == "temp" || c->name == "let") && c->args.size() == 1 &&
@@ -31195,6 +31207,14 @@ Value Interpreter::eval(Expr* e) {
                 if (const Value* bref = builtinRef(ve->name.substr(1))) return *bref;
                 // not a builtin at all: fall through to the ordinary lookup
             }
+            // …and the QUALIFIED spelling of the same thing, `&CORE::uc`, which
+            // is the one the P5* family writes: `multi sub chdir(Str() $s) { so
+            // &CORE::chdir($s) }` delegates to the builtin it is shadowing, and
+            // without this it called itself until the stack gave out.
+            if (sigil == '&' && !ve->declare &&
+                ve->name.compare(0, 7, "&CORE::") == 0 && ve->name.size() > 7) {
+                if (const Value* bref = builtinRef(ve->name.substr(7))) return *bref;
+            }
             // Pads (PADS-PLAN.md): an annotated reference indexes the current
             // pad frame directly — one load, no hashing, no chain walk — after
             // re-proving the annotation belongs to THIS frame's layout (the
@@ -32386,7 +32406,16 @@ Value Interpreter::eval(Expr* e) {
                 // dispatch past the invocant's own methods. Plain fall-through
                 // re-entered the override that asked, and Hash::Agnostic's
                 // `multi method Str(::?ROLE:U:) { self.Mu::Str }` recursed away.
-                if (cit == classes_.end() && isKnownTypeName(mc->methodQual)) {
+                //
+                // A ClassInfo may EXIST for such a name without carrying the
+                // method: deriving a built-in registers the parent, and the
+                // engine's own `Pair.new` is not in any method table. Asking
+                // whether the class DEFINES the method — not merely whether it
+                // is known — is what tells the two apart; without it
+                // `class ValuePair is Pair { multi method new($k,$v) {
+                // self.Pair::new($k,$v) } }` called itself forever.
+                if (isKnownTypeName(mc->methodQual) &&
+                    (cit == classes_.end() || !cit->second->findMethod(mc->method))) {
                     ValueList ma = evalArgs(mc->args);
                     return methodCall(inv, mc->method, std::move(ma), &mc->args, /*skipOwn=*/true);
                 }
