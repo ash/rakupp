@@ -576,8 +576,12 @@ static std::string compileCmd(const std::string& cxx, const std::string& opt,
     if (msvcStyle(cxx)) {
         std::string o = opt == "-O0" ? "/Od" : opt == "-O1" ? "/O1" : "/O2";
         // /MT: static CRT, matching the /MT-built runtime archive (mixing
-        // /MD stub objects with an /MT library is a link error)
-        std::string c = cxx + " /nologo /std:c++17 /EHsc /MT /w " + o;
+        // /MD stub objects with an /MT library is a link error).
+        // /bigobj for the same reason the engine's own build sets it: a large
+        // program transpiles to a large TU, and the section cap is per object,
+        // not per project. Free to set, so it is not worth waiting for someone
+        // to hit C1128 with a big --exe program.
+        std::string c = cxx + " /nologo /std:c++17 /EHsc /MT /w /bigobj " + o;
         if (!inc.empty()) c += " /I " + shq(inc);
         c += " " + shq(in);
         // link.exe resolves symbols across libraries iteratively, so the

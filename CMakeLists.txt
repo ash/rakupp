@@ -65,7 +65,18 @@ if(MSVC)
   # codepage and corrupts them. /EHsc = standard C++ exceptions; /Zc:__cplusplus
   # reports the real value; /permissive- for conformance. The /wd disables silence
   # the pervasive intentional 64<->32 narrowing in the numeric tower.
-  add_compile_options(/W3 /EHsc /permissive- /Zc:__cplusplus /utf-8
+  #
+  # /bigobj raises the per-object section cap from 2^16-1 to 2^32. Release
+  # implies /Gy, so every function is its own COMDAT section, and Interpreter.cpp
+  # — 33,000 lines, the largest hand-written TU — grew past the limit and failed
+  # with "C1128: number of sections exceeded object file format limit". Nothing
+  # is lost by setting it: the flag only widens a header field, link.exe has
+  # understood the format since VS2005, and it costs no run time and no binary
+  # size. It is directory-scope so the next TU to grow does not repeat the
+  # lesson. (The MinGW leg is left alone deliberately — gas has its own
+  # -Wa,-mbig-obj, but that build is green and this is not the moment to change
+  # its object format on a hunch.)
+  add_compile_options(/W3 /EHsc /permissive- /Zc:__cplusplus /utf-8 /bigobj
                       /wd4244 /wd4267 /wd4146 /wd4018 /wd4996)
   add_compile_definitions(_USE_MATH_DEFINES _CRT_SECURE_NO_WARNINGS
                           NOMINMAX WIN32_LEAN_AND_MEAN)
