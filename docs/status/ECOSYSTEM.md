@@ -409,8 +409,8 @@ as a replayable dossier. A dossier is evidence, not a ruling: confirm the
 language requirement before turning it into a Raku++ regression or Rakugrid
 atom.
 
-RakuMap itself must run under Raku++. From its checkout
-(`/Users/ash/rakumap`), use the new binary as both host and candidate while
+RakuMap itself must run under Raku++. From its checkout,
+use the new binary as both host and candidate while
 Rakudo remains only the observed oracle child:
 
 ```sh
