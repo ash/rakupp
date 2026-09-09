@@ -141,6 +141,42 @@ exactly the shape pads solved for lexicals:
 
 Measured target: attribute read from 4x toward parity.
 
+> **The storage was not the problem, and neither was dispatch (2026-09-09).**
+> Phase 4 was approached a second time, from construction rather than from
+> attribute reads, and the slot vector was again not what paid. `objects` went
+> 0.48 → 0.35 s and the `objnew` kernel 0.35 → 0.23, which puts pure
+> construction LEVEL with Rakudo (1.00x) and `objects` at 1.21x, from 1.66x.
+> Every bit of it came from one place: `runAttrDefaults` and the default
+> constructor rebuilt PER-CLASS CONSTANTS on every single construction. A
+> `map<string,set<char>>` of attribute sigils, built per construction and read
+> only for a non-`$` attribute. An `Env` allocated per inheritance level purely
+> to hold `self`, even for a class with no attributes. The named arguments in a
+> `std::map` with copied string keys. The ancestor chain heap-allocated twice.
+> Twenty-six `std::string` comparisons against built-in parent names for classes
+> that have no built-in parent. And every provided attribute bound TWICE — the
+> level walk wrote the slot, then a final pass redid the same coercion and hash
+> write over the same arguments.
+>
+> **Three hypotheses were measured and rejected, one build each.** The ladder's
+> string comparisons: `CowStr == const char*` does call strlen per comparison and
+> was the top profile leaf, but halving it moved wall time ~2%. The ladder WALK:
+> rejected, which agrees with 4e0dae9's own finding that hoisting BIND-POS out of
+> the full ladder measured neutral. And `ValueHash`'s deque — libc++ sizes a
+> block at ~4 KB, so the first insert into any hash allocates 4,040 bytes
+> (verified standalone); replacing it with small-first chunks gained nothing and
+> cost the `hash` kernel 17.3%, confirmed on re-measure. Reverted.
+>
+> **One trap is worth carrying forward:** a change can measure neutral because a
+> bigger cost is hiding it. The literal-length comparison above was reverted at
+> the end for measuring neutral, and `objects` immediately went 0.35 → 0.40 —
+> it had started paying once the allocations were gone. Re-test a "neutral" perf
+> change after the dominant cost is removed, before discarding it.
+>
+> What remains here is the ~4 `findMethod` walks a construction still makes
+> (`new`, `BUILD`, `TWEAK`, `DESTROY`), which wants a per-class cached
+> construction plan; the invalidation is the hard part, since roughly fifteen
+> sites mutate a class's method table.
+
 ### 5. Call-site inline cache — BUILT, MEASURED NEUTRAL, REVERTED (2026-08-30)
 
 The design was: annotate each `MethodCall` node with the last `(ClassInfo*,

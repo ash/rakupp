@@ -248,35 +248,80 @@ void Interpreter::runAttrDefaults(const std::shared_ptr<ObjectData>& od,
                                   ValueList& args) {
     // attr defaults evaluate with `self` in scope, so a default
     // CLOSURE (`has $.cl = { self.foo }`) captures the new object
-    Value selfEarly = Value::object(od);
+    // Built only when a default has to be evaluated — see ensureEnv below. It
+    // is a Value wrapping the new object, and the vast majority of
+    // constructions never open a scope to put it in.
+    Value selfEarly;
+    bool selfEarlyMade = false;
     auto savedDenv = tctx_.cur;
     struct EnvRestore {
         Interpreter& I; std::shared_ptr<Env> e;
         ~EnvRestore() { I.tctx_.cur = e; }
     } envRestore{*this, savedDenv};
-    std::vector<ClassInfo*> chain;
-    for (ClassInfo* c = ci.get(); c; c = c->parent.get()) chain.push_back(c);
+    // The ancestor chain is rebuilt on EVERY construction, and allocated a
+    // vector to hold what is almost always one or two pointers. A stack buffer
+    // covers any hierarchy short of eight deep; deeper ones spill to the heap.
+    ClassInfo* chainBuf[8];
+    std::vector<ClassInfo*> chainSpill;
+    size_t nChain = 0;
+    for (ClassInfo* c = ci.get(); c; c = c->parent.get()) {
+        if (nChain < 8) chainBuf[nChain] = c; else chainSpill.push_back(c);
+        nChain++;
+    }
+    auto chainAt = [&](size_t i) -> ClassInfo* { return i < 8 ? chainBuf[i] : chainSpill[i - 8]; };
     // Named args bind DURING the walk, not after it — Rakudo's
     // BUILDALL takes the caller's value for an attribute when one
     // was passed and only otherwise runs the default, so a LATER
     // default that reads an earlier attribute sees the constructed
     // value (`has Code:D $.converter = get-converter($!type)` in
     // Getopt::Long read the declared Str, never the Int passed).
-    std::map<std::string, const Value*> providedArgs;
+    // A std::map here allocated a red-black node and COPIED the key string for
+    // every named argument, on every construction. The list is tiny — the named
+    // arguments of one call — so a flat vector searched linearly is smaller and
+    // faster, and it borrows each key instead of copying it. `args` outlives
+    // this function, so the pointers stay valid. Duplicate names overwrite, as
+    // the map's `operator[]` assignment did.
+    // It also carries the attribute it resolved to, so the binding pass at the
+    // end of this function does not repeat the findAttr, and a `bound` flag so
+    // it does not repeat the BINDING either.
+    struct ProvidedArg {
+        const std::string* name;
+        const Value* val;
+        const ClassAttr* at;
+        bool bound = false;
+    };
+    std::vector<ProvidedArg> providedArgs;
     for (auto& arg : args)
         if (arg.t == VT::Pair) {
             const ClassAttr* pat = ci->findAttr(arg.s);
-            if (pat && (pat->pub || pat->built))
-                providedArgs[arg.s] = arg.pairVal();
+            if (pat && (pat->pub || pat->built)) {
+                const std::string& k = arg.s;
+                bool seen = false;
+                for (auto& pv : providedArgs)
+                    if (*pv.name == k) { pv.val = arg.pairVal(); pv.at = pat; seen = true; break; }
+                if (!seen) providedArgs.push_back(ProvidedArg{&k, arg.pairVal(), pat, false});
+            }
         }
     // `has Digest $.digest` beside `has &!digest`: same bare name,
     // different sigils. attrs is keyed by bare name, so the twins
     // clobbered each other (Auth::SCRAM's callable ended up holding
     // the enum). A non-$ twin stores under "&name"/"@name"/"%name";
     // the read/write paths try that spelling first.
+    // Only a NON-$ attribute can need the sigil-prefixed spelling, and most
+    // classes have none — yet this map was built on every construction, one
+    // red-black node plus a std::set allocation per attribute per ancestor.
+    // Build it on first demand instead; a class of plain `$` attributes, which
+    // is the common one, never touches it.
     std::map<std::string, std::set<char>> nameSigils;
-    for (ClassInfo* c = ci.get(); c; c = c->parent.get())
-        for (auto& at : c->attrs) nameSigils[at.name].insert(at.sigil);
+    bool sigilsBuilt = false;
+    auto sigilCount = [&](const std::string& nm) -> size_t {
+        if (!sigilsBuilt) {
+            sigilsBuilt = true;
+            for (ClassInfo* c = ci.get(); c; c = c->parent.get())
+                for (auto& a2 : c->attrs) nameSigils[a2.name].insert(a2.sigil);
+        }
+        return nameSigils[nm].size();
+    };
     // A value the CALLER passed for a typed container attribute keeps the
     // attribute's element type — the coercion below builds a fresh Array/Hash
     // that knows nothing of the declaration — and every element it brings has
@@ -294,26 +339,50 @@ void Interpreter::runAttrDefaults(const std::shared_ptr<ObjectData>& od,
         }
         return v;
     };
-    for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
+    for (size_t lvlIx = nChain; lvlIx-- > 0;) {
+        ClassInfo* lvl = chainAt(lvlIx);
+        if (lvl->attrs.empty()) continue;   // nothing to seed at this level
         // each level's defaults close over ITS declaration scope
         // (class-body constants/lexicals — `constant %Glyphs` in
         // Font::AFM must resolve from another module's `.new`),
         // not over whatever scope the CALLER happens to be in
-        auto denv = std::make_shared<Env>();
-        denv->parent = (*it)->declEnv ? (*it)->declEnv : savedDenv;
-        denv->define("self", selfEarly);
-        tctx_.cur = denv;
-        for (auto& at : (*it)->attrs) {
+        // The scope is built only when a default actually has to be EVALUATED.
+        // It costs an Env — a hash and a pad vector — plus a `self` definition,
+        // and a class whose attributes all take a seed or a passed value
+        // evaluates nothing at all. Reset to the caller's scope first, so a
+        // level that builds none does not inherit the previous level's.
+        tctx_.cur = savedDenv;
+        std::shared_ptr<Env> denv;
+        auto ensureEnv = [&] {
+            if (denv) return;
+            denv = std::make_shared<Env>();
+            denv->parent = lvl->declEnv ? lvl->declEnv : savedDenv;
+            if (!selfEarlyMade) { selfEarly = Value::object(od); selfEarlyMade = true; }
+            denv->define("self", selfEarly);
+            tctx_.cur = denv;
+        };
+        for (auto& at : lvl->attrs) {
             // storage slot: bare name, unless a same-named twin of
             // another sigil exists — then the non-$ one keys by
             // "&name"/"@name"/"%name"
-            std::string slot = at.name;
-            if (at.sigil != '$' && nameSigils[at.name].size() > 1)
-                slot = std::string(1, at.sigil) + at.name;
-            auto pit = providedArgs.find(at.name);
-            if (pit != providedArgs.end() && slot == at.name) {
+            // The slot name is the attribute's own name except for a sigil twin,
+            // so point at it rather than copying a std::string per attribute per
+            // construction.
+            std::string slotBuf;
+            const std::string* slotp = &at.name;
+            if (at.sigil != '$' && sigilCount(at.name) > 1) {
+                slotBuf = std::string(1, at.sigil) + at.name;
+                slotp = &slotBuf;
+            }
+            const std::string& slot = *slotp;
+            const bool slotIsName = (slotp == &at.name);
+            ProvidedArg* provided = nullptr;
+            for (auto& pv : providedArgs)
+                if (*pv.name == at.name) { provided = &pv; break; }
+            if (provided && slotIsName) {
                 od->attrs[slot] = typedContainer(coerceToSigil(
-                    nilResetForAttr(pit->second ? *pit->second : Value::any(), at), at.sigil), at);
+                    nilResetForAttr(provided->val ? *provided->val : Value::any(), at), at.sigil), at);
+                provided->bound = true;
                 continue;
             }
             // The value the slot holds when it has no explicit default.
@@ -351,12 +420,17 @@ void Interpreter::runAttrDefaults(const std::shared_ptr<ObjectData>& od,
                     // calls `.convert` on it; as a plain Hash there was no
                     // such method and nothing said which line was at fault.
                     ValueList none;
+                    ensureEnv();
                     seed = methodCall(Value::typeObj(at.containerIs), "new", none);
                 }
             }
             // Pre-seed the slot so a self-referential default (`.= new`,
             // or one reading $!this-attr) sees the seed, not an unset Any.
-            od->attrs[slot] = seed;
+            // …but only when there IS such a default. With none, the seed is
+            // exactly what the final assignment below writes, so the pre-seed
+            // was a second hash of the same name storing the same value.
+            if (at.def || userContainer) od->attrs[slot] = seed;
+            if (at.def && !at.hasDefVal) ensureEnv();
             Value dv = at.hasDefVal ? at.defVal
                      : at.def ? eval(const_cast<Expr*>(at.def))
                               : seed;
@@ -377,16 +451,20 @@ void Interpreter::runAttrDefaults(const std::shared_ptr<ObjectData>& od,
     // only; anything else is silently ignored (Rakudo semantics — an
     // unknown name must NOT enter the attr store, or `$.name` inside a
     // method would see it instead of dying with X::Method::NotFound)
-    for (auto& arg : args)
-        if (arg.t == VT::Pair) {
-            const ClassAttr* at = ci->findAttr(arg.s);
-            // `is built` opts a PRIVATE attr into construction-by-name —
-            // that is the trait's whole purpose (JSON::Class binds its
-            // $!declarant this way)
-            if (at && (at->pub || at->built))
-                od->attrs[arg.s] = typedContainer(coerceToSigil(
-                    nilResetForAttr(arg.pairVal() ? *arg.pairVal() : Value::any(), *at), at->sigil), *at);
-        }
+    // (`is built` opts a PRIVATE attr into construction-by-name — that is the
+    // trait's whole purpose, and JSON::Class binds its $!declarant this way.)
+    //
+    // An argument the walk above ALREADY bound is not bound again. It wrote the
+    // same slot, from the same argument, through the same coercion, so a second
+    // pass over every named argument re-hashed the name and re-ran
+    // typedContainer/coerceToSigil to store what was already there. What is left
+    // for this pass is what the walk cannot reach: a sigil twin, whose slot is
+    // "&name" rather than the bare name the caller passed, and an attribute
+    // inherited through a SECOND parent, since the walk follows `parent` alone.
+    for (auto& pv : providedArgs)
+        if (!pv.bound)
+            od->attrs[*pv.name] = typedContainer(coerceToSigil(
+                nilResetForAttr(pv.val ? *pv.val : Value::any(), *pv.at), pv.at->sigil), *pv.at);
 }
 
 #if defined(__APPLE__)
@@ -3049,7 +3127,10 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 }
                 // NativeCall CStruct: allocate zeroed native memory and set fields
                 // from named args, so the instance can be passed to / read from C.
-                if (ci->repr == "CStruct" || ci->repr == "CPPStruct" || ci->repr == "CUnion") {
+                // `repr` is empty on every ordinary class, and an empty std::string
+                // still costs three strlen'd comparisons here without the guard.
+                if (!ci->repr.empty() &&
+                    (ci->repr == "CStruct" || ci->repr == "CPPStruct" || ci->repr == "CUnion")) {
                     long long size = Interpreter::ncStructSize(ci.get());
                     void* mem = calloc(1, size ? (size_t)size : 1);
                     auto od = std::make_shared<ObjectData>();
@@ -3071,96 +3152,115 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 // so it indexes/pushes natively while .WHAT answers the user type.
                 std::string nb;
                 for (ClassInfo* c = ci.get(); c && nb.empty(); c = c->parent.get()) nb = c->nativeParent;
-                if (nb == "Set" || nb == "SetHash" || nb == "Bag" || nb == "BagHash" ||
-                    nb == "Mix" || nb == "MixHash") {
-                    // `class MySet is Set`: back the instance with a real quanthash
-                    // built from the args, so .elems/.keys/{k} dispatch to it
-                    auto od = std::make_shared<ObjectData>();
-                    od->cls = ci; od->hasBoxed = true;
-                    od->boxed = methodCall(Value::typeObj(nb), "new", args);
-                    Value self = Value::object(od);
-                    if (Value* build = ci->findMethod("BUILD")) sinkBuildResult(invokeMethod(*build, self, args));
-                    if (Value* tweak = ci->findMethod("TWEAK")) sinkBuildResult(invokeMethod(*tweak, self, args));
-                    maybeRegisterDestroy(self);
-                    return self;
-                }
-                if (nb == "Array" || nb == "List" || nb == "Hash" || nb == "Map") {
-                    auto od = std::make_shared<ObjectData>();
-                    od->cls = ci; od->hasBoxed = true;
-                    if (nb == "Hash" || nb == "Map") od->boxed = Value::makeHash();
-                    else { od->boxed = Value::array(); od->boxed.isList = (nb == "List"); }
-                    od->boxed.ofTypeM() = inv.ofType(); // A[Int] -> element type on the box
-                    for (auto& arg : args)
-                        if (arg.t == VT::Pair) {
-                            const ClassAttr* at = ci->findAttr(arg.s);
-                            if (at && at->pub)
-                                od->attrs[arg.s] = arg.pairVal() ? *arg.pairVal() : Value::any();
-                        }
-                    Value self = Value::object(od);
-                    if (Value* build = ci->findMethod("BUILD")) sinkBuildResult(invokeMethod(*build, self, args));
-                    if (Value* tweak = ci->findMethod("TWEAK")) sinkBuildResult(invokeMethod(*tweak, self, args)); // post-BUILD hook
-                    maybeRegisterDestroy(self);
-                    return self;
-                }
-                // A class subclassing a scalar built-in with its own `.new` (DateTime,
-                // Date): box the built-in and keep the user object's identity/attrs.
-                if (nb == "DateTime" || nb == "Date") {
-                    auto od = std::make_shared<ObjectData>(); od->cls = ci; od->hasBoxed = true;
-                    // args that are not attribute pairs feed the BUILT-IN's own
-                    // constructor (`D.new(:2000year, a => 5)`: :year boxes the
-                    // DateTime, a => 5 binds the attribute)
-                    ValueList builtinArgs;
-                    for (auto& a : args)
-                        if (!(a.t == VT::Pair && ci->findAttr(a.s))) builtinArgs.push_back(a);
-                    // box FIRST (the parent constructs before subclass defaults,
-                    // as in Rakudo's BUILDPLAN), then the ONE attribute walk —
-                    // the stripped copy here had no `self` in scope and no
-                    // provided-args-during-walk, so `has $.b = $!a * 2` died
-                    od->boxed = methodCall(Value::typeObj(nb), "new", builtinArgs);
-                    runAttrDefaults(od, ci, args);
-                    Value self = Value::object(od);
-                    if (Value* build = ci->findMethod("BUILD")) sinkBuildResult(invokeMethod(*build, self, args));
-                    if (Value* tweak = ci->findMethod("TWEAK")) sinkBuildResult(invokeMethod(*tweak, self, args));
-                    maybeRegisterDestroy(self);
-                    return self;
-                }
-                // A class subclassing a SCALAR built-in (`class Int64 is Int`,
-                // `class Symbol is Str`): box the value its parent's constructor
-                // makes, so the instance numifies, stringifies and compares as
-                // that value while .WHAT keeps answering the user type. Without
-                // the box `Int64.new(-42)` was an attribute-less object whose
-                // numeric value was its address.
-                // …but only for a class that adds NOTHING of its own — no
-                // attributes and no methods, just a name for the built-in's
-                // values (`class Int64 is Int does Special {}`). A class that adds
-                // either is an ordinary object that merely INHERITS the built-in's
-                // type: roast's `class NotComplex is Cool { method Numeric {…} }`
-                // decides its own numification, and `class DifferentReal is Real {
-                // has $.value }` keeps state the box would throw away.
-                bool addsOwn = false;
-                for (ClassInfo* c2 = ci.get(); c2 && !addsOwn; c2 = c2->parent.get())
-                    if (!c2->attrs.empty() || !c2->methods.empty()) addsOwn = true;
-                if (!addsOwn &&
-                    (nb == "Int" || nb == "Num" || nb == "Rat" || nb == "FatRat" ||
-                     nb == "Str" || nb == "Cool" || nb == "Real" || nb == "Numeric" ||
-                     nb == "Complex" || nb == "Bool")) {
-                    auto od = std::make_shared<ObjectData>(); od->cls = ci; od->hasBoxed = true;
-                    ValueList builtinArgs;   // attribute pairs stay with the object
-                    for (auto& a : args)
-                        if (!(a.t == VT::Pair && ci->findAttr(a.s))) builtinArgs.push_back(a);
-                    od->boxed = methodCall(Value::typeObj(nb), "new", builtinArgs);
-                    runAttrDefaults(od, ci, args);
-                    Value self = Value::object(od);
-                    if (Value* build = ci->findMethod("BUILD")) sinkBuildResult(invokeMethod(*build, self, args));
-                    if (Value* tweak = ci->findMethod("TWEAK")) sinkBuildResult(invokeMethod(*tweak, self, args));
-                    maybeRegisterDestroy(self);
-                    return self;
+                // Every arm below tests `nb` — the nearest BUILT-IN ancestor — against
+                // a name, and a plain user class has no built-in ancestor at all: `nb`
+                // is empty, and all twenty-three comparisons are a std::string against
+                // a literal that cannot match. They are not free. The literal arrives
+                // as a `const char*`, so its length is not a constant and each
+                // comparison calls strlen — which put strlen at the TOP of the leaf
+                // table when profiling `class K { }` construction, a class with
+                // nothing whatever to build. One emptiness test skips the lot, and
+                // every arm inside still sees exactly what it saw before.
+                if (!nb.empty()) {
+                    if (nb == "Set" || nb == "SetHash" || nb == "Bag" || nb == "BagHash" ||
+                        nb == "Mix" || nb == "MixHash") {
+                        // `class MySet is Set`: back the instance with a real quanthash
+                        // built from the args, so .elems/.keys/{k} dispatch to it
+                        auto od = std::make_shared<ObjectData>();
+                        od->cls = ci; od->hasBoxed = true;
+                        od->boxed = methodCall(Value::typeObj(nb), "new", args);
+                        Value self = Value::object(od);
+                        if (Value* build = ci->findMethod("BUILD")) sinkBuildResult(invokeMethod(*build, self, args));
+                        if (Value* tweak = ci->findMethod("TWEAK")) sinkBuildResult(invokeMethod(*tweak, self, args));
+                        maybeRegisterDestroy(self);
+                        return self;
+                    }
+                    if (nb == "Array" || nb == "List" || nb == "Hash" || nb == "Map") {
+                        auto od = std::make_shared<ObjectData>();
+                        od->cls = ci; od->hasBoxed = true;
+                        if (nb == "Hash" || nb == "Map") od->boxed = Value::makeHash();
+                        else { od->boxed = Value::array(); od->boxed.isList = (nb == "List"); }
+                        od->boxed.ofTypeM() = inv.ofType(); // A[Int] -> element type on the box
+                        for (auto& arg : args)
+                            if (arg.t == VT::Pair) {
+                                const ClassAttr* at = ci->findAttr(arg.s);
+                                if (at && at->pub)
+                                    od->attrs[arg.s] = arg.pairVal() ? *arg.pairVal() : Value::any();
+                            }
+                        Value self = Value::object(od);
+                        if (Value* build = ci->findMethod("BUILD")) sinkBuildResult(invokeMethod(*build, self, args));
+                        if (Value* tweak = ci->findMethod("TWEAK")) sinkBuildResult(invokeMethod(*tweak, self, args)); // post-BUILD hook
+                        maybeRegisterDestroy(self);
+                        return self;
+                    }
+                    // A class subclassing a scalar built-in with its own `.new` (DateTime,
+                    // Date): box the built-in and keep the user object's identity/attrs.
+                    if (nb == "DateTime" || nb == "Date") {
+                        auto od = std::make_shared<ObjectData>(); od->cls = ci; od->hasBoxed = true;
+                        // args that are not attribute pairs feed the BUILT-IN's own
+                        // constructor (`D.new(:2000year, a => 5)`: :year boxes the
+                        // DateTime, a => 5 binds the attribute)
+                        ValueList builtinArgs;
+                        for (auto& a : args)
+                            if (!(a.t == VT::Pair && ci->findAttr(a.s))) builtinArgs.push_back(a);
+                        // box FIRST (the parent constructs before subclass defaults,
+                        // as in Rakudo's BUILDPLAN), then the ONE attribute walk —
+                        // the stripped copy here had no `self` in scope and no
+                        // provided-args-during-walk, so `has $.b = $!a * 2` died
+                        od->boxed = methodCall(Value::typeObj(nb), "new", builtinArgs);
+                        runAttrDefaults(od, ci, args);
+                        Value self = Value::object(od);
+                        if (Value* build = ci->findMethod("BUILD")) sinkBuildResult(invokeMethod(*build, self, args));
+                        if (Value* tweak = ci->findMethod("TWEAK")) sinkBuildResult(invokeMethod(*tweak, self, args));
+                        maybeRegisterDestroy(self);
+                        return self;
+                    }
+                    // A class subclassing a SCALAR built-in (`class Int64 is Int`,
+                    // `class Symbol is Str`): box the value its parent's constructor
+                    // makes, so the instance numifies, stringifies and compares as
+                    // that value while .WHAT keeps answering the user type. Without
+                    // the box `Int64.new(-42)` was an attribute-less object whose
+                    // numeric value was its address.
+                    // …but only for a class that adds NOTHING of its own — no
+                    // attributes and no methods, just a name for the built-in's
+                    // values (`class Int64 is Int does Special {}`). A class that adds
+                    // either is an ordinary object that merely INHERITS the built-in's
+                    // type: roast's `class NotComplex is Cool { method Numeric {…} }`
+                    // decides its own numification, and `class DifferentReal is Real {
+                    // has $.value }` keeps state the box would throw away.
+                    bool addsOwn = false;
+                    for (ClassInfo* c2 = ci.get(); c2 && !addsOwn; c2 = c2->parent.get())
+                        if (!c2->attrs.empty() || !c2->methods.empty()) addsOwn = true;
+                    if (!addsOwn &&
+                        (nb == "Int" || nb == "Num" || nb == "Rat" || nb == "FatRat" ||
+                         nb == "Str" || nb == "Cool" || nb == "Real" || nb == "Numeric" ||
+                         nb == "Complex" || nb == "Bool")) {
+                        auto od = std::make_shared<ObjectData>(); od->cls = ci; od->hasBoxed = true;
+                        ValueList builtinArgs;   // attribute pairs stay with the object
+                        for (auto& a : args)
+                            if (!(a.t == VT::Pair && ci->findAttr(a.s))) builtinArgs.push_back(a);
+                        od->boxed = methodCall(Value::typeObj(nb), "new", builtinArgs);
+                        runAttrDefaults(od, ci, args);
+                        Value self = Value::object(od);
+                        if (Value* build = ci->findMethod("BUILD")) sinkBuildResult(invokeMethod(*build, self, args));
+                        if (Value* tweak = ci->findMethod("TWEAK")) sinkBuildResult(invokeMethod(*tweak, self, args));
+                        maybeRegisterDestroy(self);
+                        return self;
+                    }
                 }
                 auto od = std::make_shared<ObjectData>();
                 od->cls = ci;
                 runAttrDefaults(od, ci, args);
-                std::vector<ClassInfo*> chain; // the checks below walk it too
-                for (ClassInfo* c = ci.get(); c; c = c->parent.get()) chain.push_back(c);
+                // the checks below walk it too — on the stack, since it is one or
+                // two pointers on any ordinary hierarchy and this ran per construction
+                ClassInfo* chainBuf[8];
+                std::vector<ClassInfo*> chainSpill;
+                size_t nChain = 0;
+                for (ClassInfo* c = ci.get(); c; c = c->parent.get()) {
+                    if (nChain < 8) chainBuf[nChain] = c; else chainSpill.push_back(c);
+                    nChain++;
+                }
+                auto chainAt = [&](size_t i) -> ClassInfo* { return i < 8 ? chainBuf[i] : chainSpill[i - 8]; };
                 // enforce an attribute type smiley (`has Int:D $.a` / `has Int:U $.a`)
                 // on the FINAL slot value, matching Rakudo's X::TypeCheck::Attribute::Default.
                 // Only when the attr actually received a value (an explicit default or a
@@ -3170,12 +3270,24 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 // that wants positionals writes its own .new or a BUILD
                 // …but a class deriving a BUILT-IN (`is Num`, `is Str`) inherits
                 // that type's constructor, which does take a positional
+                // `nb` empty means NO ancestor carries a nativeParent at all, so the
+                // walk below cannot find one either — skip it rather than re-walking
+                // the whole chain to prove what the search above already established.
                 bool nativeBased = false;
-                for (ClassInfo* c2 = ci.get(); c2; c2 = c2->parent.get())
-                    // the implicit Grammar ancestor brings no positional
-                    // constructor — Rakudo's G.new(42) refuses like any class
-                    if (!c2->nativeParent.empty() && c2->nativeParent != "Grammar") { nativeBased = true; break; }
-                if (!nativeBased && !ci->findMethod("new") && !ci->findMethod("BUILD"))
+                if (!nb.empty())
+                    for (ClassInfo* c2 = ci.get(); c2; c2 = c2->parent.get())
+                        // the implicit Grammar ancestor brings no positional
+                        // constructor — Rakudo's G.new(42) refuses like any class
+                        if (!c2->nativeParent.empty() && c2->nativeParent != "Grammar") { nativeBased = true; break; }
+                // The two lookups are ordered LAST on purpose: they hash a name and
+                // walk the inheritance chain, while the thing they guard only
+                // matters when a positional argument is actually present — which,
+                // for the default constructor, is the error case and not the
+                // common one.
+                bool anyPositional = false;
+                for (auto& arg : args)
+                    if (arg.t != VT::Pair) { anyPositional = true; break; }
+                if (anyPositional && !nativeBased && !ci->findMethod("new") && !ci->findMethod("BUILD"))
                     for (auto& arg : args)
                         if (arg.t != VT::Pair)
                             throwTypedV("X::Constructor::Positional",
@@ -3187,8 +3299,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 // attribute itself satisfies it (DBDish::Pg's DBError::Pg reads
                 // every one of its `is required` fields off the PGresult).
                 auto checkRequired = [&] {
-                    for (auto cit = chain.rbegin(); cit != chain.rend(); ++cit)
-                        for (auto& at : (*cit)->attrs) {
+                    for (size_t ci2 = nChain; ci2-- > 0;)
+                        for (auto& at : chainAt(ci2)->attrs) {
                             if (!at.required) continue;
                             // `is required` means SUPPLIED AT CONSTRUCTION — a default
                             // of its own does not excuse it
@@ -3214,8 +3326,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                                         "but you did not provide a value for it.");
                         }
                 };
-                for (auto cit = chain.rbegin(); cit != chain.rend(); ++cit)
-                    for (auto& at : (*cit)->attrs) {
+                for (size_t ci2 = nChain; ci2-- > 0;)
+                    for (auto& at : chainAt(ci2)->attrs) {
                         if (!at.defConstraint) continue;
                         bool gotArg = false;
                         for (auto& arg : args)
@@ -3234,8 +3346,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 // `where {…}` attribute constraints hold at construction too:
                 // a DEFINED slot value (arg-provided or defaulted) must satisfy
                 // its attr's constraint (Date::Event's lat/lon bounds)
-                for (auto cit = chain.rbegin(); cit != chain.rend(); ++cit)
-                    for (auto& at : (*cit)->attrs) {
+                for (size_t ci2 = nChain; ci2-- > 0;)
+                    for (auto& at : chainAt(ci2)->attrs) {
                         if (!at.where) continue;
                         auto wit = od->attrs.find(at.name);
                         if (wit == od->attrs.end() || !defined(wit->second)) continue;

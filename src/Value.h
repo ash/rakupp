@@ -12,6 +12,7 @@
 #include <mutex>
 #include <set>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 #include "IStr.h"
@@ -195,13 +196,74 @@ inline std::string operator+(const CowStr& a, char b) { return a.str() + b; }
     inline bool operator OP(const char* a, const CowStr& b)        { return a OP b.str(); }    \
     inline bool operator OP(const CowStr& a, const std::string& b) { return a.str() OP b; }    \
     inline bool operator OP(const std::string& a, const CowStr& b) { return a OP b.str(); }
-RAKUPP_COWSTR_CMP(==)
-RAKUPP_COWSTR_CMP(!=)
 RAKUPP_COWSTR_CMP(<)
 RAKUPP_COWSTR_CMP(>)
 RAKUPP_COWSTR_CMP(<=)
 RAKUPP_COWSTR_CMP(>=)
 #undef RAKUPP_COWSTR_CMP
+// `==` and `!=` are spelled out rather than generated, because a comparison
+// against a STRING LITERAL should not cost a strlen and the generated
+// `const char*` form makes one unavoidable. The literal's length is known at
+// compile time; passed as a pointer it is not, so `operator==(const string&,
+// const char*)` calls strlen on EVERY comparison. That is not a detail here:
+// the built-in method ladder guards several hundred of its arms with
+// `inv.t == VT::Type && inv.s == "SomeType"`, so one `Point.new` compares the
+// invocant's type name against most of them, and a construction profile put
+// 565 of 3,396 main-thread samples in strlen alone. With the length as a
+// template parameter the usual case — a literal of a different length — is one
+// integer compare and no call at all. MName plays the same trick for the
+// method name (see MethodName.h); this is its half for the invocant's.
+//
+// The pointer forms have to be TEMPLATES for that to work. As plain
+// non-template functions they win outright: an array-to-pointer conversion
+// ranks as an exact match, and a non-template beats a template on the
+// tiebreak — so the literal overload below sat unused, and measured as
+// nothing. Deducing `const P&` instead makes a literal deduce P as an ARRAY
+// type, which the enable_if rejects, leaving the array overload as the only
+// candidate. (Verified both ways: without the constraint the pointer form is
+// selected for `c == "literal"`.)
+//
+// The `char (&)[N]` forms are the safety half. A mutable buffer (`char
+// buf[64]`) also binds to an array reference, and its CONTENT is shorter than
+// its extent, so the compile-time length would be the wrong length for it. A
+// non-const array prefers those overloads by exact match and is sent to the
+// strlen path, where it belongs; string literals are `const char[N]` and take
+// the fast one.
+inline bool operator==(const CowStr& a, const std::string& b) { return a.str() == b; }
+inline bool operator==(const std::string& a, const CowStr& b) { return a == b.str(); }
+inline bool operator!=(const CowStr& a, const std::string& b) { return a.str() != b; }
+inline bool operator!=(const std::string& a, const CowStr& b) { return a != b.str(); }
+template <class P>
+inline std::enable_if_t<std::is_same_v<P, const char*> || std::is_same_v<P, char*>, bool>
+operator==(const CowStr& a, const P& b) { return a.str() == b; }
+template <class P>
+inline std::enable_if_t<std::is_same_v<P, const char*> || std::is_same_v<P, char*>, bool>
+operator==(const P& a, const CowStr& b) { return a == b.str(); }
+template <class P>
+inline std::enable_if_t<std::is_same_v<P, const char*> || std::is_same_v<P, char*>, bool>
+operator!=(const CowStr& a, const P& b) { return a.str() != b; }
+template <class P>
+inline std::enable_if_t<std::is_same_v<P, const char*> || std::is_same_v<P, char*>, bool>
+operator!=(const P& a, const CowStr& b) { return a != b.str(); }
+template <std::size_t N>
+inline bool operator==(const CowStr& a, const char (&lit)[N]) {
+    const std::string& s = a.str();
+    return s.size() == N - 1 && std::memcmp(s.data(), lit, N - 1) == 0;
+}
+template <std::size_t N>
+inline bool operator==(const char (&lit)[N], const CowStr& a) { return a == lit; }
+template <std::size_t N>
+inline bool operator!=(const CowStr& a, const char (&lit)[N]) { return !(a == lit); }
+template <std::size_t N>
+inline bool operator!=(const char (&lit)[N], const CowStr& a) { return !(a == lit); }
+template <std::size_t N>
+inline bool operator==(const CowStr& a, char (&buf)[N]) { return a.str() == static_cast<const char*>(buf); }
+template <std::size_t N>
+inline bool operator==(char (&buf)[N], const CowStr& a) { return a.str() == static_cast<const char*>(buf); }
+template <std::size_t N>
+inline bool operator!=(const CowStr& a, char (&buf)[N]) { return a.str() != static_cast<const char*>(buf); }
+template <std::size_t N>
+inline bool operator!=(char (&buf)[N], const CowStr& a) { return a.str() != static_cast<const char*>(buf); }
 inline std::ostream& operator<<(std::ostream& o, const CowStr& x) { return o << x.str(); }
 
 // codepoint -> UTF-8 (shared: Str-Range endpoints derive their text from rFrom/rTo)
