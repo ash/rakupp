@@ -289,5 +289,67 @@ ck uc9('ab'), 'U9:AB', '&CORE::name reaches the builtin, not the shadow';
 sub round9($x) { &CORE::round($x) }
 ck round9(2.6), 3, '…for a builtin nothing is shadowing, unchanged';
 
+# ---- a bare `return` under a with/without modifier -----------------------
+# `with`/`without` start a TERM elsewhere, so they are not block keywords, and
+# `return` took `without $path` as the value it was returning — a call to a
+# routine of that name. The loop controls already consulted the modifier list.
+sub ret9($p) { return without $p; "R9:$p" }
+ck (ret9(Any) // '<undef>'), '<undef>', 'return under a `without` modifier returns';
+ck ret9('v9'), 'R9:v9', '…and falls through when the value IS defined';
+sub retw9($p) { return with $p; 'NO9' }
+ck (retw9(1) // '<undef>'), '<undef>', '…the `with` spelling too';
+sub retv9($p) { return 7 with $p; 9 }
+ck (retv9(1), retv9(Any)), (7, 9), '…and a return that carries a value still does';
+
+# ---- writing through a BOUND array element -------------------------------
+# `my $o := @a[0]` binds an array-slot alias, so the invocant's slot holds a
+# Proxy and not the object. Every attribute-write arm expected the object, and
+# `$o.trans = 1` died "Target is not assignable" — eleven dists in the sweep.
+class Cell9 { has int $.c is built(:bind); has int $.n is rw }
+{
+    my @cells = Cell9.new(c => 1), Cell9.new(c => 2);
+    my Cell9 $bound;
+    $bound := @cells[0];
+    ck $bound.c, 1, 'a bound array element reads through';
+    $bound.n = 11;
+    ck @cells[0].n, 11, '…and an `is rw` attribute written through it lands in the array';
+    my $inline := @cells[1];
+    $inline.n = 22;
+    ck @cells[1].n, 22, '…for the declare-and-bind spelling as well';
+    my $copy = @cells[0];
+    $copy.n = 33;
+    ck @cells[0].n, 33, '…and a plain copy still shares the object, as before';
+}
+
+# ---- a FEED's other side is a call, not the statement's block -------------
+# `for @x ==> map { … } -> $p { … }`: the map's block was read as the LOOP's
+# body, leaving `map` a bare name and the pointy block a statement of its own.
+{
+    my @fed;
+    my @src = ' f1 ', ' f2 ';
+    for @src ==> map { .trim } -> $p { @fed.push($p) }
+    ck @fed, ['f1', 'f2'], 'a feed inside a for header keeps its block argument';
+    ck ((1, 2, 3) ==> grep { $_ > 1 } ==> map { $_ * 10 }).List, (20, 30),
+       '…and a feed chain in expression position still works';
+    sub total9(@x) { @x.sum }
+    ck ((4, 5) ==> total9()), 9, '…feeding a named sub as its last argument';
+}
+
+# ---- a CONTEXTUALISER as an assignment target ----------------------------
+# `@($R) = @temp` replaces the ELEMENTS of what $R holds; $R keeps holding the
+# same Array. There was no lvalue for the shape at all.
+{
+    my $R = [1, 2, 3];
+    my @temp = 'c1', 'c2';
+    @($R) = @temp;
+    ck $R.List, ('c1', 'c2'), '@($x) = … assigns through the contextualiser';
+    my $S = [0];
+    @$S = ('c3', 'c4');   # parens: `=` binds tighter than the comma here
+    ck $S.List, ('c3', 'c4'), '…and the sigil-less spelling @$x';
+    my $H = {};
+    %($H) = (k9 => 'c5');
+    ck $H<k9>, 'c5', '…and %($x) for a hash';
+}
+
 say $fails ?? "\n$fails FAILED" !! "\nPASS";
 exit $fails ?? 1 !! 0;

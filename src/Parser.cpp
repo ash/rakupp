@@ -1359,6 +1359,16 @@ ExprPtr Parser::parseExpr(int minbp) {
 
         int nextMin = listAssign ? BP_ZIP : (in.rightAssoc ? in.lbp : in.lbp + 1); // list assign includes Z/X (looser than comma)
         infixRhsPos_ = pos_;   // a term is REQUIRED here (see parsePrimary's default)
+        // The other side of a FEED is a call, and a `{ … }` there is that call's
+        // block argument — never the control block of the statement the feed sits
+        // in. `for @pairs ==> map { .trim } -> $p { … }` was reading the map's
+        // block as the loop's body, leaving `map` a bare name and the pointy
+        // block a statement of its own. Same reasoning as the parenthesised case.
+        bool feedOp = (in.op == "==>" || in.op == "<==");
+        bool svFeedCond = stmtCond_;
+        if (feedOp) stmtCond_ = false;
+        struct FeedRestore { bool* f; bool v; bool on; ~FeedRestore() { if (on) *f = v; } }
+            fr{&stmtCond_, svFeedCond, feedOp};
         ExprPtr rhs = parseExpr(nextMin);
 
         if (in.isAssign) {
@@ -8700,7 +8710,13 @@ StmtPtr Parser::parseStatementImpl() {
             if (!isKind(Tok::Semicolon) && !isKind(Tok::End) && !isKind(Tok::RBrace) &&
                 cur().kind != Tok::Ident) {
                 r->value = parseExpression();
-            } else if ((startsTermToken(cur()) && !kBlockKeywords.count(cur().text)) ||
+            // `return without $path;` — a bare return under a MODIFIER, not a
+            // return whose value is a call to `without`. `with`/`without` start
+            // a term elsewhere, so they are deliberately absent from
+            // kBlockKeywords and need the modifier list here, exactly as the
+            // loop controls already do for `next without $x`.
+            } else if ((startsTermToken(cur()) && !kBlockKeywords.count(cur().text) &&
+                        !kStmtModifiers.count(cur().text)) ||
                        isIdent("sub") || isIdent("method") || isIdent("do") || isIdent("start") ||
                        ((isIdent("role") || isIdent("class") || isIdent("grammar")) &&
                         (peek().kind == Tok::LBrace || (peek().kind == Tok::Op && peek().text == "::")))) {

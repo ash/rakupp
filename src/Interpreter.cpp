@@ -18069,6 +18069,19 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                 throw;
             base = &invHold;
         }
+        // The invocant's slot may hold a PROXY rather than the value: `my $r :=
+        // @a[1]` binds an array-slot alias, and every arm below expects the
+        // object itself. Reading through it gives that object, and an Object's
+        // attrs live behind a shared_ptr — so writing through the value the
+        // FETCH hands back writes the real one, exactly as the note above says.
+        // Without this `$r.trans = 1` died "Target is not assignable", which is
+        // how eleven dists in the sweep failed.
+        static thread_local Value proxyInvHold;
+        if (base->t == VT::Hash && base->hashKind == "Proxy" && base->hash()) {
+            proxyInvHold = deproxy(*base);
+            if (proxyInvHold.t == VT::Object || (proxyInvHold.t == VT::Hash && proxyInvHold.hash()))
+                base = &proxyInvHold;
+        }
         // `$failure.handled = True` marks it inert — the one writable accessor
         // a Failure has
         if (base->t == VT::Hash && base->hashKind == "Failure" && mc->method == "handled") {
@@ -19435,6 +19448,32 @@ void Interpreter::assignListTarget(ListExpr* lst, const Value& rhs) {
 }
 
 Value Interpreter::evalAssignInner(Assign* a, bool sink) {
+    // `@($R) = @temp` / `%($H) = …` — a CONTEXTUALISER as the assignment target.
+    // It decontainerises whatever `$R` holds and the assignment replaces that
+    // thing's ELEMENTS, so `$R` still holds the same Array afterwards. There was
+    // no lvalue for the shape at all: it died "Target is not assignable", which
+    // is how LCS::All rebuilds a row (`@($R) = @temp`).
+    if (a->op == "=" && a->target && a->target->kind == NK::Unary) {
+        auto* cu = static_cast<Unary*>(a->target.get());
+        if ((cu->op == "ctx@" || cu->op == "ctx%") && cu->operand) {
+            Value* lv = nullptr;
+            try { lv = lvalue(cu->operand.get()); } catch (RakuError&) {}
+            if (lv) {
+                Value rhs = eval(a->value.get());
+                if (cu->op == "ctx@") {
+                    Value arr = coerceArray(rhs);
+                    // keep the container the operand already holds, if it holds one
+                    if (lv->t == VT::Array && lv->arr()) { *lv->arr() = *arr.arr(); }
+                    else *lv = arr;
+                } else {
+                    Value h = coerceHash(rhs, /*store=*/true);
+                    if (lv->t == VT::Hash && lv->hash()) { *lv->hash() = *h.hash(); }
+                    else *lv = h;
+                }
+                return sink ? Value::any() : *lv;
+            }
+        }
+    }
 
     // A `my` DYNAMIC declaration is visible WHILE its own initializer runs —
     // Raku declares at compile time. Test::META's internals test does
