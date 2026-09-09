@@ -18076,11 +18076,22 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
         // FETCH hands back writes the real one, exactly as the note above says.
         // Without this `$r.trans = 1` died "Target is not assignable", which is
         // how eleven dists in the sweep failed.
+        // …and NARROWLY: only when the object behind it actually owns the name
+        // being written. Deproxying every proxied invocant ran the FETCH on
+        // containers that were never meant to be read here — `cas($!head, …)`
+        // spun forever against one — so the fetch happens only for a proxy whose
+        // value is an Object declaring this attribute or method.
         static thread_local Value proxyInvHold;
-        if (base->t == VT::Hash && base->hashKind == "Proxy" && base->hash()) {
-            proxyInvHold = deproxy(*base);
-            if (proxyInvHold.t == VT::Object || (proxyInvHold.t == VT::Hash && proxyInvHold.hash()))
+        if (base->t == VT::Hash && base->hashKind == "Proxy" && base->hash() &&
+            !mc->meta && !mc->hyper && !mc->methodExpr && !mc->method.empty()) {
+            Value fetched = deproxy(*base);
+            if (fetched.t == VT::Object && fetched.obj() && fetched.obj()->cls &&
+                (fetched.obj()->attrs.count(mc->method) ||
+                 fetched.obj()->cls->findAttr(mc->method) ||
+                 fetched.obj()->cls->findMethod(mc->method))) {
+                proxyInvHold = std::move(fetched);
                 base = &proxyInvHold;
+            }
         }
         // `$failure.handled = True` marks it inert — the one writable accessor
         // a Failure has
