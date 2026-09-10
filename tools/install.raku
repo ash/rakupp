@@ -745,8 +745,21 @@ sub archive-url(%e) {
 # checksum for the dist itself (there is no archive to hash — the directory
 # is the source of truth, and the test gate still stands between it and the
 # store).
+# Is this argument a PATH to a distribution, rather than a name to resolve?
+#
+# It used to be `.` or `/` and nothing else, which misread two shapes and
+# misread them expensively — anything not a path becomes a name, a name goes to
+# the zef index, and a zef miss is what lazily pulls REA's ~18 MB.
+#
+#   C:\dist, C:/dist   a Windows absolute path. So `rakupp install C:\…` was a
+#                      name lookup, and an absolute path could not be installed
+#                      from on Windows at all; only `.\dist` worked.
+#   \\server\share      a UNC path, same story.
 sub is-path-arg(Str $arg) {
-    $arg.starts-with('.') || $arg.starts-with('/')
+    return True if $arg.starts-with('.') || $arg.starts-with('/');
+    return True if $arg.starts-with('\\');                      # UNC, or a rooted Windows path
+    return True if $arg ~~ /^ <[A..Za..z]> ':' <[\\ /]> /;        # C:\dist or C:/dist
+    False
 }
 
 sub local-dist-entry(Str $arg) {
