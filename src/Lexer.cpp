@@ -1973,6 +1973,29 @@ bool Lexer::tryRuleDecl(std::vector<Token>& out, bool spaced) {
 
 // A quote form (m// s/// q// ...) is NOT a quote when the previous token is a
 // method/sub call dot or a declarator keyword — there the word is a name.
+// Is the token stream sitting inside a declaration's header — after the
+// declarator that opens it and before the `{` (or `;`) that ends it? Used to
+// tell the `is` TRAIT from Test's `is` sub, which are spelled the same and take
+// opposite things next. A header is short by construction, so the walk back is
+// bounded rather than running to the top of the file.
+static bool inDeclHeader(const std::vector<Token>& out) {
+    static const std::set<std::string> declarator = {
+        "class", "role", "grammar", "module", "package", "subset", "enum",
+        "sub", "method", "submethod", "multi", "proto", "macro",
+        "token", "rule", "regex", "my", "our", "has", "state", "anon", "constant",
+    };
+    size_t lim = out.size() > 48 ? out.size() - 48 : 0;
+    for (size_t i = out.size(); i-- > lim;) {
+        const Token& t = out[i];
+        // a statement boundary means the declarator (if any) was a previous
+        // statement's: `sub f is export { }; is q{a}, 'a';` must keep its quote
+        if (t.kind == Tok::Semicolon || t.kind == Tok::LBrace || t.kind == Tok::RBrace)
+            return false;
+        if (t.kind == Tok::Ident && declarator.count(t.text)) return true;
+    }
+    return false;
+}
+
 static bool quoteBlockedHere(const std::vector<Token>& out, bool spaced) {
     if (out.empty()) return false;
     const Token& pv = out.back();
@@ -1989,8 +2012,22 @@ static bool quoteBlockedHere(const std::vector<Token>& out, bool spaced) {
             "method", "submethod", "sub", "multi", "proto", "token", "rule",
             "regex", "macro", "my", "our", "has", "anon", "state", "class", "role",
             "grammar", // `grammar Q { … }` — Q is a name here, not the Q{…} quote op
+            // …and the rest of the declarators that NAME a thing, for the same
+            // reason: `module Q { … }` and `package Q { … }` lost the block to a
+            // Q{…} quote, and `enum Q <a b c>` lost the value list to a Q<…> one.
+            "module", "package", "subset", "enum", "constant",
         };
-        return decl.count(pv.text) > 0;
+        if (decl.count(pv.text)) return true;
+        // A TYPE follows these, never a quote. `class R does Q { … }` and
+        // `sub f() returns Q { … }` both read `Q {` as a quote and swallowed the
+        // block — the class silently lost its role, the sub its body.
+        if (pv.text == "does" || pv.text == "returns") return true;
+        // `is` is two different words: the trait, which is followed by a type or
+        // a trait name, and Test's `is $got, $expected`, which is followed by a
+        // term — and `is q{abc}, 'abc'` is a real thing in a test file. Only the
+        // trait appears inside a declaration's HEADER, so that is the question to
+        // ask; `class R is Q { … }` had been losing its parent to a Q{…} quote.
+        if (pv.text == "is") return inDeclHeader(out);
     }
     return false;
 }
