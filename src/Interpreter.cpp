@@ -11138,7 +11138,7 @@ void Interpreter::typeCheckBind(const Param& p, const Value& v, bool blockParam)
     // so `(-> $x {…})(Mu)` is legal while `sub f($x) {…}; f(Mu)` is not — and
     // `for (Mu) -> $x` and `.map(-> $x {…})` depend on that being so.
     if (isMuTypeObject(v) && (p.type == "Any" || (p.type.empty() && !blockParam)))
-        throw RakuError{Value::typeObj("X::TypeCheck::Binding"),
+        throw RakuError{Value::typeObj("X::TypeCheck::Binding::Parameter"),
             "Type check failed in binding to parameter '" + p.name +
             "'; expected Any but got Mu (Mu)"};
     if (v.t == VT::Type || v.t == VT::Nil || v.t == VT::Any) return;
@@ -11184,7 +11184,7 @@ void Interpreter::typeCheckBind(const Param& p, const Value& v, bool blockParam)
         }
     }
     if (typeOrSubsetMatches(v, p.type)) return;
-    throw RakuError{Value::typeObj("X::TypeCheck::Binding"),
+    throw RakuError{Value::typeObj("X::TypeCheck::Binding::Parameter"),
         "Type check failed in binding to parameter '" + p.name + "'; expected " +
         p.type + " but got " + v.typeName() + " (" + typeCheckRepr(v) + ")"};
 }
@@ -11495,7 +11495,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
             if (it != named.end()) {
                 // a bare `:j` (Bool True) cannot bind a %- or @-sigil named param
                 if ((p.sigil == '%' || p.sigil == '@') && it->second.t == VT::Bool)
-                    throw RakuError{Value::typeObj("X::TypeCheck::Binding"),
+                    throw RakuError{Value::typeObj("X::TypeCheck::Binding::Parameter"),
                         "Type check failed in binding to parameter '" + p.name + "'"};
                 if (p.subSig) destructure(p, it->second); // :value((Str :key($d), …))
                 if (!p.subSig && p.sigil == '$' && !p.coerce &&
@@ -11732,7 +11732,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
         } catch (...) { tctx_.cur = saved; throw; }
         tctx_.cur = saved;
         if (!ok)
-            throw RakuError{Value::typeObj("X::TypeCheck::Binding"),
+            throw RakuError{Value::typeObj("X::TypeCheck::Binding::Parameter"),
                 "Constraint type check failed in binding to parameter '" + p.name + "'"};
     }
 }
@@ -20802,7 +20802,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                     for (auto& kv : *nh.hash()) {
                         Value orig = kv.second.pairKey() ? *kv.second.pairKey() : Value::str(kv.first);
                         if (!typeOrSubsetMatches(orig, keyT))
-                            throw RakuError{Value::typeObj("X::TypeCheck::Binding"),
+                            throw RakuError{Value::typeObj("X::TypeCheck::Binding::Parameter"),
                                 "Type check failed for " + lv->hashKind + " key; expected " +
                                 keyT + " but got " + orig.gist()};
                     }

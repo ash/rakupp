@@ -3858,7 +3858,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                             auto tb = typeBind.find(p.type); // a bound `::T` checks as its type
                             const std::string& want = tb != typeBind.end() ? tb->second : p.type;
                             if (!typeOrSubsetMatches(av, want))
-                                bindErr = makeTypedEx("X::TypeCheck::Binding",
+                                bindErr = makeTypedEx("X::TypeCheck::Binding::Parameter",
                                     {{"expected", Value::typeObj(want)}, {"got", Value::typeObj(av.typeName())},
                                      {"symbol", Value::str(p.name)}},
                                     "Type check failed in binding " + p.name + "; expected " + want +
