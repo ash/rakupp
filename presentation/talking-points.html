@@ -1,0 +1,1170 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Raku++ Talking Points</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Serif:wght@400;500;600&display=swap">
+<style>
+:root {
+  color-scheme: light;
+  --ground:   #F1F3F5;
+  --surface:  #FFFFFF;
+  --sunken:   #E7EBEE;
+  --ink:      #14181D;
+  --ink-soft: #37414C;
+  --muted:    #5A6572;
+  --rule:     #D8DEE4;
+  --rule-soft:#E6EAEE;
+  --accent:   #A61F55;
+  --accent-bg:#F7E6ED;
+  --measure:  #0E6B6E;
+  --measure-bg:#E0EEEE;
+  --warn:     #8A5A10;
+  --warn-bg:  #F6EEDF;
+
+  --serif: "IBM Plex Serif", Georgia, "Times New Roman", serif;
+  --sans:  "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  --mono:  "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  --col: 74ch;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --ground:   #111419;
+    --surface:  #181C22;
+    --sunken:   #1E232A;
+    --ink:      #E4E8ED;
+    --ink-soft: #C3CBD4;
+    --muted:    #939DA9;
+    --rule:     #2A3138;
+    --rule-soft:#222831;
+    --accent:   #E8598C;
+    --accent-bg:#2C1922;
+    --measure:  #4FBFB8;
+    --measure-bg:#132524;
+    --warn:     #D6A24A;
+    --warn-bg:  #2A2317;
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --ground:   #111419;
+  --surface:  #181C22;
+  --sunken:   #1E232A;
+  --ink:      #E4E8ED;
+  --ink-soft: #C3CBD4;
+  --muted:    #939DA9;
+  --rule:     #2A3138;
+  --rule-soft:#222831;
+  --accent:   #E8598C;
+  --accent-bg:#2C1922;
+  --measure:  #4FBFB8;
+  --measure-bg:#132524;
+  --warn:     #D6A24A;
+  --warn-bg:  #2A2317;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 16px;
+  line-height: 1.62;
+  -webkit-font-smoothing: antialiased;
+}
+
+.page {
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 56px 28px 96px;
+}
+
+/* ---------- masthead ---------- */
+
+.masthead {
+  border-bottom: 2px solid var(--ink);
+  padding-bottom: 26px;
+  margin-bottom: 40px;
+}
+
+.kicker {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin: 0 0 14px;
+}
+
+h1 {
+  font-family: var(--serif);
+  font-weight: 600;
+  font-size: clamp(34px, 6vw, 52px);
+  line-height: 1.08;
+  letter-spacing: -0.015em;
+  margin: 0 0 16px;
+  text-wrap: balance;
+}
+
+.standfirst {
+  font-family: var(--serif);
+  font-size: 18px;
+  line-height: 1.6;
+  color: var(--ink-soft);
+  max-width: var(--col);
+  margin: 0 0 22px;
+}
+
+.masthead-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.masthead-meta b { color: var(--ink-soft); font-weight: 500; }
+
+/* ---------- headline figures ---------- */
+
+.figures {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(168px, 1fr));
+  gap: 1px;
+  background: var(--rule);
+  border: 1px solid var(--rule);
+  margin-bottom: 52px;
+}
+
+.figure {
+  background: var(--surface);
+  padding: 18px 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.figure .val {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 25px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+  color: var(--ink);
+}
+.figure .val small { font-size: 15px; font-weight: 500; color: var(--muted); }
+.figure .lab {
+  font-size: 13px;
+  line-height: 1.42;
+  color: var(--muted);
+}
+
+/* ---------- sections ---------- */
+
+section { margin-bottom: 54px; scroll-margin-top: 20px; }
+
+.sec-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px 20px;
+  border-bottom: 1px solid var(--rule);
+  padding-bottom: 9px;
+  margin-bottom: 24px;
+}
+
+h2 {
+  font-family: var(--serif);
+  font-weight: 600;
+  font-size: 25px;
+  letter-spacing: -0.01em;
+  line-height: 1.2;
+  margin: 0;
+  text-wrap: balance;
+}
+
+.source {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.lede {
+  max-width: var(--col);
+  color: var(--ink-soft);
+  margin: -6px 0 22px;
+}
+
+/* ---------- entry rows ---------- */
+
+.entries { display: flex; flex-direction: column; gap: 0; }
+
+.entry {
+  display: grid;
+  grid-template-columns: 210px 1fr;
+  gap: 4px 26px;
+  padding: 15px 0;
+  border-bottom: 1px solid var(--rule-soft);
+  align-items: start;
+}
+.entry:last-child { border-bottom: 0; }
+
+.entry .term {
+  font-weight: 600;
+  font-size: 15px;
+  line-height: 1.45;
+  color: var(--ink);
+  padding-top: 1px;
+}
+.entry .term code { font-size: 13.5px; }
+
+.entry .body { font-size: 15px; line-height: 1.6; color: var(--ink-soft); }
+.entry .body p { margin: 0 0 8px; }
+.entry .body p:last-child { margin-bottom: 0; }
+
+@media (max-width: 660px) {
+  .entry { grid-template-columns: 1fr; gap: 5px; }
+}
+
+/* ---------- inline bits ---------- */
+
+code, .m {
+  font-family: var(--mono);
+  font-size: 0.875em;
+  background: var(--sunken);
+  padding: 0.1em 0.34em;
+  border-radius: 2px;
+  color: var(--ink);
+}
+
+.num {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.875em;
+  font-weight: 500;
+  color: var(--measure);
+  background: var(--measure-bg);
+  padding: 0.1em 0.38em;
+  border-radius: 2px;
+  white-space: nowrap;
+}
+
+.tag {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--warn);
+  background: var(--warn-bg);
+  border: 1px solid color-mix(in srgb, var(--warn) 30%, transparent);
+  padding: 1px 6px;
+  border-radius: 2px;
+  vertical-align: 2px;
+  white-space: nowrap;
+}
+
+/* ---------- code block ---------- */
+
+pre {
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.7;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--accent);
+  padding: 14px 16px;
+  margin: 4px 0 0;
+  overflow-x: auto;
+}
+pre code { background: none; padding: 0; font-size: inherit; }
+.cmt { color: var(--muted); }
+
+/* ---------- table ---------- */
+
+.table-wrap { overflow-x: auto; border: 1px solid var(--rule); background: var(--surface); }
+
+table { border-collapse: collapse; width: 100%; min-width: 520px; font-size: 14px; }
+
+thead th {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  text-align: right;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--rule);
+  white-space: nowrap;
+}
+thead th:first-child { text-align: left; }
+
+tbody td {
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--rule-soft);
+  text-align: right;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+  color: var(--ink-soft);
+}
+tbody td:first-child { text-align: left; color: var(--ink); }
+tbody tr:last-child td { border-bottom: 0; }
+tbody td.win { color: var(--measure); font-weight: 600; }
+tbody td.loss { color: var(--accent); font-weight: 600; }
+.table-note { font-size: 13px; color: var(--muted); margin: 10px 0 0; max-width: var(--col); }
+
+/* ---------- caveats panel ---------- */
+
+.caveats {
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-top: 3px solid var(--warn);
+  padding: 26px 28px 22px;
+}
+.caveats h2 { margin-bottom: 6px; }
+.caveats .lede { margin-top: 8px; }
+.caveats ul { margin: 0; padding-left: 20px; max-width: var(--col); }
+.caveats li { margin-bottom: 9px; color: var(--ink-soft); font-size: 15px; }
+.caveats li:last-child { margin-bottom: 0; }
+.caveats li b { color: var(--ink); font-weight: 600; }
+
+/* ---------- footer ---------- */
+
+footer {
+  margin-top: 60px;
+  padding-top: 20px;
+  border-top: 1px solid var(--rule);
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.7;
+}
+
+a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+ul.plain { margin: 0; padding-left: 19px; }
+ul.plain li { margin-bottom: 6px; }
+ul.plain li:last-child { margin-bottom: 0; }
+</style>
+</head>
+<body>
+
+<div class="page">
+
+  <header class="masthead">
+    <p class="kicker">Presenting Raku++ · what there is to talk about</p>
+    <h1>Raku++ Talking Points</h1>
+    <p class="standfirst">Everything the documentation currently claims, gathered in one place and grouped
+    the way a talk would use it. Every figure below is the one the repository records — no rounding up,
+    and the losses are here too, because a room of Raku people will ask about them.</p>
+    <div class="masthead-meta">
+      <span>release <b>v3.26.0</b></span>
+      <span>2026-09-08</span>
+      <span>C++17, zero dependencies</span>
+      <span>Artistic License 2.0</span>
+    </div>
+  </header>
+
+  <div class="figures">
+    <div class="figure">
+      <div class="val">91<small>%</small></div>
+      <div class="lab">of all declared Roast tests — 200,220 of ~219,429</div>
+    </div>
+    <div class="figure">
+      <div class="val">661<small> / 1,464</small></div>
+      <div class="lab">Roast files where <em>every</em> assertion passes</div>
+    </div>
+    <div class="figure">
+      <div class="val">824<small> / 2,530</small></div>
+      <div class="lab">ecosystem distributions passing their own test suites</div>
+    </div>
+    <div class="figure">
+      <div class="val">2.5<small> ms</small></div>
+      <div class="lab">cold start, native — Rakudo is 75.6 ms on the same box</div>
+    </div>
+    <div class="figure">
+      <div class="val">6.8<small> MB</small></div>
+      <div class="lab"><code>say "Hello"</code> compiled with <code>--exe --slim</code></div>
+    </div>
+    <div class="figure">
+      <div class="val">956</div>
+      <div class="lab">official Raku doc examples byte-identical on both engines</div>
+    </div>
+  </div>
+
+  <!-- ============ POSITIONING ============ -->
+  <section>
+    <div class="sec-head">
+      <h2>What it is — the opening claim</h2>
+      <span class="source">README.md · OVERVIEW.md</span>
+    </div>
+    <div class="entries">
+      <div class="entry">
+        <div class="term">From scratch, not a fork</div>
+        <div class="body">A complete implementation of the Raku language in <b>C++17 with no third-party
+        dependencies</b>: hand-written lexer, Pratt parser, tree-walking evaluator, bignum, Unicode
+        tables and regex engine. It shares no code with Rakudo and was built without reading Rakudo's
+        source. Since 2026-08 it studies Rakudo and MoarVM at the <em>design</em> level and ports nothing.</div>
+      </div>
+      <div class="entry">
+        <div class="term">Interpreter <em>and</em> compiler, one binary</div>
+        <div class="body">The same executable tree-walks a script or compiles it to a standalone native
+        binary — and, transpiled a second way, to JavaScript, or compiled to WebAssembly to run in a browser.</div>
+      </div>
+      <div class="entry">
+        <div class="term">Measured against Roast</div>
+        <div class="body">The official Raku specification suite is the target and the scoreboard.
+        The motto: <em>any compiler that can run Roast can be officially called a Raku compiler.</em>
+        The harness is itself written in Raku and run by Raku++.</div>
+      </div>
+      <div class="entry">
+        <div class="term">Two revisions, gated</div>
+        <div class="body">6.d by default, 6.e under <code>use v6.e.PREVIEW</code> — <span class="num">50 of 51</span>
+        tracked 6.e changes match Rakudo, 46 of them properly gated on the pragma. The revision belongs
+        to the <em>code</em>: a 6.e module keeps its semantics inside a 6.d program without changing that
+        program's own. Rakudo differs here — <code>use</code>-ing a 6.e module loads <code>CORE.e</code> process-wide.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ NUMBERS ============ -->
+  <section>
+    <div class="sec-head">
+      <h2>Exact numbers</h2>
+      <span class="source">FEATURES.md · BENCHMARKS.md</span>
+    </div>
+    <p class="lede">The demo that lands in every room, and the one that is genuinely fast here.</p>
+    <div class="entries">
+      <div class="entry">
+        <div class="term">The whole tower, exact</div>
+        <div class="body">
+          <p>Arbitrary-precision <code>Int</code> (a hand-rolled bignum, base 1e9), exact <code>Rat</code>
+          on BigInt numerator and denominator, <code>Num</code>, <code>Complex</code>, and allomorphs.
+          <code>/</code> yields a <code>Rat</code>; <code>**</code>, <code>%</code>, <code>div</code>,
+          <code>mod</code>, <code>%%</code> and every comparison are exact.</p>
+          <pre><code>say 0.1 + 0.2 - 0.3;      <span class="cmt"># 0     — exactly</span>
+say 2 ** 1000;            <span class="cmt"># all 302 digits</span>
+say (1/3 + 1/6).nude;     <span class="cmt"># (1 2)</span></code></pre>
+        </div>
+      </div>
+      <div class="entry">
+        <div class="term">And it is quick</div>
+        <div class="body">The <code>bigint</code> kernel runs at <span class="num">4.6 ms</span> compiled
+        against Rakudo's <span class="num">160.9 ms</span> — a <b>35×</b> lead — and beats mutsu's
+        <code>num-bigint</code> by 2.0× despite being hand-rolled to keep the zero-dependency rule.
+        (It was a 3.5× <em>loss</em> until an eight-carry-chain multiply landed in v3.24.0. Good story for a talk.)</div>
+      </div>
+      <div class="entry">
+        <div class="term">Literal surface</div>
+        <div class="body">Radix <code>0x 0o 0b 0d</code> and <code>:16&lt;ff&gt;</code> / <code>:36&lt;aZ&gt;</code>,
+        <code>_</code> separators, exponents, leading-dot fractions, imaginary <code>4i</code>,
+        <code>∞</code>/<code>Inf</code>/<code>NaN</code>, superscripts <code>²</code>, and string→number
+        coercion that parses all of it including Complex and the Unicode minus <code>−</code>.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ BATTERIES ============ -->
+  <section>
+    <div class="sec-head">
+      <h2>Batteries in the compiler — JSON, CSV, digests, zlib, CSPRNG</h2>
+      <span class="source">DATA-NATIVE.md</span>
+    </div>
+    <p class="lede">The strongest "you can't do this elsewhere" slide: <code>use Data::Native</code> is answered
+    by the compiler itself. No file is read, no module is loaded, no dependency is resolved.</p>
+    <div class="entries">
+      <div class="entry">
+        <div class="term">Five tags, thirty-two names</div>
+        <div class="body">
+          <pre><code>use Data::Native;
+
+say to-json({ ok =&gt; True });            <span class="cmt"># JSON</span>
+say from-csv("a,b\n1,2\n", :headers);   <span class="cmt"># CSV</span>
+say sha256-hex('abc');                  <span class="cmt"># digests and HMAC</span>
+say uncompress(compress('big'.encode)); <span class="cmt"># zlib / gzip / raw deflate</span>
+say crypt_random_buf(32);               <span class="cmt"># the OS CSPRNG</span></code></pre>
+          <p style="margin-top:10px"><code>json</code> · <code>csv</code> · <code>digest</code>
+          (MD5, SHA-1, SHA-224/256/384/512, their <code>-hex</code> twins, HMAC) ·
+          <code>zlib</code> (compress, uncompress, gzslurp, gzspurt, crc32, adler32) ·
+          <code>random</code>.</p>
+        </div>
+      </div>
+      <div class="entry">
+        <div class="term">Portable, not proprietary</div>
+        <div class="body">Every signature is copied <b>character for character</b> from the ecosystem module
+        it stands in for — <code>JSON::Fast</code>, <code>CSV::Native</code>, <code>Digest::*</code>,
+        <code>Compress::Zlib</code>, <code>Crypt::Random</code>. The same line loads a real distribution
+        of that name on Rakudo, so the program runs unchanged there. <code>*-backend()</code> says which
+        answered.</div>
+      </div>
+      <div class="entry">
+        <div class="term">The consequence worth stating</div>
+        <div class="body">A program using <code>Data::Native</code> <b>compiles to a standalone binary</b>,
+        because there is nothing left to find at run time. A program that reaches for the installed
+        distribution directly does not.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ SPEED ============ -->
+  <section>
+    <div class="sec-head">
+      <h2>Speed — startup, then throughput</h2>
+      <span class="source">BENCHMARKS.md</span>
+    </div>
+    <p class="lede">Fifteen kernels, one machine (Apple M3, Darwin 24.6), three engines interleaved in the same
+    sitting so a load spike lands on every lane instead of one column.</p>
+    <div class="entries">
+      <div class="entry">
+        <div class="term">Cold start</div>
+        <div class="body"><span class="num">3.0 ms</span> interpreting, <span class="num">2.5 ms</span> native —
+        a small binary with no VM to spin up. mutsu starts in 4.4 ms; Rakudo in <span class="num">75.6 ms</span>.
+        Fast enough to shell out to in a loop, which is what makes the CLI and one-liner story credible.</div>
+      </div>
+      <div class="entry">
+        <div class="term">Against Rakudo</div>
+        <div class="body"><code>--exe</code> wins <b>fourteen of fifteen</b> kernels; the tree-walking
+        interpreter wins <b>eleven</b> and is level on three. Against mutsu the interpreter wins 14/15 and
+        <code>--exe</code> sweeps all 15.</div>
+      </div>
+      <div class="entry">
+        <div class="term">The one that goes the other way</div>
+        <div class="body"><code>objects</code> — <code>class</code>/<code>has</code>/method dispatch, the shape
+        most real Raku is written in. Rakudo leads it by <b>1.6× compiled</b> and <b>2.3× interpreted</b>.
+        Neither from-scratch engine is close to <code>spesh</code> there. Say it before someone else does;
+        it also leads mutsu on that kernel by 7.7×.</div>
+      </div>
+      <div class="entry">
+        <div class="term">Why <code>strcat</code> is so lopsided</div>
+        <div class="body">String building with <code>~=</code> appends <b>in place</b> in every mode, so it is
+        O(n) rather than O(n²) — 10.8× ahead of Rakudo even interpreted, 29.1× compiled.</div>
+      </div>
+    </div>
+
+    <div class="table-wrap" style="margin-top:24px">
+      <table>
+        <thead>
+          <tr><th>Kernel</th><th>Raku++ <code>--exe</code></th><th>mutsu</th><th>Rakudo</th><th>vs Rakudo</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>bigint</td><td>4.6 ms</td><td>9.1 ms</td><td>160.9 ms</td><td class="win">35.0×</td></tr>
+          <tr><td>strcat</td><td>3.0 ms</td><td>106.9 ms</td><td>87.4 ms</td><td class="win">29.1×</td></tr>
+          <tr><td>loopsum</td><td>12.4 ms</td><td>123.6 ms</td><td>230.4 ms</td><td class="win">18.6×</td></tr>
+          <tr><td>hash</td><td>7.4 ms</td><td>42.0 ms</td><td>123.8 ms</td><td class="win">16.7×</td></tr>
+          <tr><td>sortnums</td><td>14.3 ms</td><td>30.4 ms</td><td>189.4 ms</td><td class="win">13.2×</td></tr>
+          <tr><td>streq</td><td>19.4 ms</td><td>609.3 ms</td><td>231.6 ms</td><td class="win">11.9×</td></tr>
+          <tr><td>regex</td><td>26.5 ms</td><td>238.5 ms</td><td>182.2 ms</td><td class="win">6.9×</td></tr>
+          <tr><td>fib</td><td>51.3 ms</td><td>245.6 ms</td><td>311.4 ms</td><td class="win">6.1×</td></tr>
+          <tr><td>arraypush</td><td>53.0 ms</td><td>383.3 ms</td><td>262.5 ms</td><td class="win">5.0×</td></tr>
+          <tr><td>rats</td><td>154.5 ms</td><td>367.6 ms</td><td>236.6 ms</td><td class="win">1.5×</td></tr>
+          <tr><td>objects</td><td>324.6 ms</td><td>1585.1 ms</td><td>207.2 ms</td><td class="loss">Rakudo 1.6×</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="table-note">Eleven of the fifteen kernels; <code>sortby</code>, <code>hashfill</code>,
+    <code>textsplit</code> and <code>arrayops</code> sit between 8.5× and 3.9×. Rows are not comparable
+    across doc revisions — the Rakudo column, re-measured every sitting, is the fixed yardstick.</p>
+  </section>
+
+  <!-- ============ FOOTPRINT ============ -->
+  <section>
+    <div class="sec-head">
+      <h2>Footprint — disk, memory, stack</h2>
+      <span class="source">MEMORY.md · CLI.md</span>
+    </div>
+    <div class="entries">
+      <div class="entry">
+        <div class="term">On disk</div>
+        <div class="body">The <code>rakupp</code> binary — interpreter <em>and</em> compiler — is
+        <span class="num">14.4 MB</span>. A typical <code>--exe</code> output is ~10 MB, or
+        <span class="num">6.8 MB</span> under bare <code>--slim</code>. Size is almost entirely the linked
+        runtime, so it stays flat as the program grows.</div>
+      </div>
+      <div class="entry">
+        <div class="term"><code>--slim</code>, and what it proves</div>
+        <div class="body">Compiled binaries are dead-stripped by default. Bare <code>--slim</code> runs a scan
+        that <em>proves</em> a feature unreachable before cutting it; anything it cannot decide is kept, and a
+        force-full trigger (<code>EVAL</code>, symbolic reference, indirect method call, interpolated subregex)
+        keeps everything and says so. A wrong cut throws a typed, catchable
+        <code>X::Feature::NotBuilt</code> — never a crash, never a wrong answer.</div>
+      </div>
+      <div class="entry">
+        <div class="term">Resident memory</div>
+        <div class="body">A hello-world costs <span class="num">2.7 MB</span> resident interpreted,
+        <span class="num">5 MB</span> native. The gigabyte of main stack is <em>address space</em>, not RAM —
+        committed page by page as recursion deepens.</div>
+      </div>
+      <div class="entry">
+        <div class="term">Recursion depth</div>
+        <div class="body"><span class="num">~50,500</span> levels interpreted, with a guard that fires while
+        2 MiB of headroom remains so you get a catchable <code>X::Recursion</code> rather than a signal.
+        Direct native calls under <code>--exe</code> reach <span class="num">~1,270,000</span> — but overflow
+        there is fatal, not catchable, and that limitation is documented rather than hidden.</div>
+      </div>
+      <div class="entry">
+        <div class="term">Guardrails, stated</div>
+        <div class="body">An 8-million-step regex budget so a pathological pattern degrades to a fast failure;
+        <code>sprintf</code> width and precision capped at 10,000,000; infinite ranges never materialize;
+        env→closure cycles collected at frame teardown (a 300k-call loop went from retaining ~425 MB of dead
+        frames to ~3 MB).</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ RUN MODES ============ -->
+  <section>
+    <div class="sec-head">
+      <h2>Six ways to run the same program</h2>
+      <span class="source">ARCHITECTURE.md · NATIVE.md · JS.md · rakujs/</span>
+    </div>
+    <p class="lede">One front end, several back ends — and the tagline that goes on the slide:
+    <b>write it, run it, compile it.</b></p>
+    <div class="entries">
+      <div class="entry">
+        <div class="term">Interpret</div>
+        <div class="body"><code>rakupp prog.raku</code> — the default, and the only mode that covers the whole language.</div>
+      </div>
+      <div class="entry">
+        <div class="term">Bundle / AOT</div>
+        <div class="body"><code>--bundle</code> embeds the source and re-parses at startup; <code>--aot</code>
+        embeds the parsed AST. Both are standalone binaries that tree-walk, so they run at interpreter speed.</div>
+      </div>
+      <div class="entry">
+        <div class="term">Native</div>
+        <div class="body"><code>--exe</code> transpiles the AST to C++ and compiles it — no interpreter inside.
+        Anything it cannot yet transpile (mainly grammars) falls back to bundling automatically and says so,
+        so <code>--exe</code> never refuses a program. <code>-O</code> turns on the code generator's optimizer.</div>
+      </div>
+      <div class="entry">
+        <div class="term">JavaScript</div>
+        <div class="body"><code>--target=js</code> emits an ES module that runs under Node, Bun, Deno or a
+        browser, with <code>prog.js.map</code> mapping every generated line back to its Raku line.
+        <code>--standalone</code> inlines the runtime into one file; <code>--verify</code> runs the program
+        under both the interpreter and the JS host and <b>emits nothing unless stdout, stderr and the exit
+        status match byte for byte</b>. Rats stay exact, <code>.chars</code> counts graphemes with the
+        engine's own UAX #29 tables.</div>
+      </div>
+      <div class="entry">
+        <div class="term">The browser — Raku.js</div>
+        <div class="body">The <em>same</em> interpreter compiled to WebAssembly, running client-side with no
+        server. A live editor on any static page is one script tag:
+        <pre><code>&lt;script src="https://raku.online/raku.js"&gt;&lt;/script&gt;
+&lt;pre data-raku&gt;say "Hello from an embedded editor!";&lt;/pre&gt;</code></pre>
+        <p style="margin-top:8px">Three files copied into your own site is a complete install — nothing has
+        to be loaded from raku.online. It also powers <a href="https://raku.online/play">raku.online/play</a>
+        and an 18-lesson interactive tour.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ LANGUAGE ============ -->
+  <section>
+    <div class="sec-head">
+      <h2>The language it actually runs</h2>
+      <span class="source">FEATURES.md · REFERENCE.md</span>
+    </div>
+    <div class="entries">
+      <div class="entry">
+        <div class="term">Objects &amp; the metamodel</div>
+        <div class="body"><code>class</code> / <code>role</code> / <code>grammar</code>, multi-method dispatch,
+        <code>BUILD</code>/<code>TWEAK</code>, enums, <code>does</code>/<code>but</code> runtime mixins,
+        <code>.^name</code>/<code>.^methods</code>/<code>.^mro</code>/<code>.^add_method</code>/<code>.^parameterize</code>,
+        routine <code>.wrap</code>, and <code>augment</code> that reopens <em>built-in</em> types
+        (<code>augment class Int</code> reaches <code>3.method</code>).</div>
+      </div>
+      <div class="entry">
+        <div class="term">Signatures &amp; dispatch</div>
+        <div class="body"><code>multi</code>/<code>proto</code>, type / literal / <code>where</code> constraints,
+        <code>:D</code>/<code>:U</code> smileys, named and slurpy parameters, sub-signature destructuring
+        (with multi dispatch <em>on</em> the destructured arity), coercion types <code>Str(Cool)</code>,
+        <code>callsame</code>/<code>nextsame</code>/<code>samewith</code>.</div>
+      </div>
+      <div class="entry">
+        <div class="term">Metaprogramming</div>
+        <div class="body">User-defined operators in <b>all six categories</b> — <code>infix</code>,
+        <code>prefix</code>, <code>postfix</code>, <code>term</code>, <code>circumfix</code>,
+        <code>postcircumfix</code> — with working precedence traits (<code>is tighter</code>,
+        <code>is looser</code>, <code>is equiv</code>, <code>is assoc</code>), and meta-operators that
+        compose over user ops: <code>[myop]</code>, <code>&gt;&gt;myop&lt;&lt;</code>, <code>Z§</code>,
+        <code>$x myop= y</code>. The operator table changes mid-parse, in one pass.</div>
+      </div>
+      <div class="entry">
+        <div class="term">Functional &amp; lazy</div>
+        <div class="body">Closures, <code>*</code>-currying (WhateverCode), junctions
+        (<code>any</code>/<code>all</code>/<code>one</code>), lazy sequences
+        (<code>1, 2, * + * ... Inf</code>), <code>gather</code>/<code>take</code> (and
+        <code>take-rw</code>, which writes back), feeds <code>==&gt;</code>, composition <code>∘</code>,
+        and the full S07 iterator protocol with the <code>IterationEnd</code> sentinel.</div>
+      </div>
+      <div class="entry">
+        <div class="term">Phasers &amp; control</div>
+        <div class="body"><code>BEGIN CHECK INIT END ENTER LEAVE FIRST NEXT LAST CATCH CONTROL</code>,
+        labeled loops, <code>temp</code>/<code>let</code>, <code>given</code>/<code>when</code>,
+        <code>with</code>/<code>without</code>, statement modifiers including chained ones.</div>
+      </div>
+      <div class="entry">
+        <div class="term">Also in the box</div>
+        <div class="body">Shaped arrays (<code>my @a[2;2]</code>) with structural validation, Set/Bag/Mix,
+        <code>Proxy</code>, a POD DOM as real <code>Pod::Block</code> objects, resumable exceptions,
+        <code>Failure</code>, and the full <code>Test</code> API — which is why the Roast harness can be
+        self-hosted at all.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ UNICODE ============ -->
+  <section>
+    <div class="sec-head">
+      <h2>Unicode — the part that is genuinely complete</h2>
+      <span class="source">UNICODE.md</span>
+    </div>
+    <p class="lede">Tables generated from UCD/UCA <b>17.0</b> by a Raku program that Raku++ runs — the engine
+    generates part of its own C++ source.</p>
+    <div class="entries">
+      <div class="entry">
+        <div class="term">Graphemes</div>
+        <div class="body">Full UAX&nbsp;#29 including GB9c Indic conjuncts, emoji ZWJ sequences, skin tones and
+        flags. <code>GraphemeBreakTest-*</code> and <code>emoji-test.t</code> (<span class="num">3,825</span> tests)
+        <b>fully pass</b>. <code>.chars</code>, <code>.comb</code> and <code>.flip</code> all count clusters.</div>
+      </div>
+      <div class="entry">
+        <div class="term">Collation</div>
+        <div class="body"><code>unicmp</code>/<code>coll</code> from DUCET 17.0, with contractions including
+        discontiguous matching and implicit weights: <b>all <span class="num">8,271</span> conformance tests pass.</b></div>
+      </div>
+      <div class="entry">
+        <div class="term">Normalization &amp; names</div>
+        <div class="body">NFC / NFD / NFKC / NFKD including Hangul; every <code>nf*-*.t</code> and
+        <code>mass-equality.t</code> passes. Character names in both directions, including algorithmic
+        CJK / Tangut / Nushu / Hangul-syllable names. Numeric values as exact <code>Rat</code>s, Unihan
+        included — <code>unival('千')</code> is 1000.</div>
+      </div>
+      <div class="entry">
+        <div class="term">In regexes</div>
+        <div class="body">General category short and long, real <code>Scripts.txt</code> scripts, blocks
+        (<code>&lt;:InArabic&gt;</code>), bidi classes (<code>&lt;:bc&lt;L&gt;&gt;</code>), and binary
+        properties from DerivedCoreProperties + PropList — negated and inverted forms too.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ GRAMMARS ============ -->
+  <section>
+    <div class="sec-head">
+      <h2>Regexes &amp; grammars</h2>
+      <span class="source">FEATURES.md · book/ch/23-ltm.md</span>
+    </div>
+    <div class="entries">
+      <div class="entry">
+        <div class="term">True LTM</div>
+        <div class="body">Longest-Token Matching by a real NFA ranker — the default since v3.0.0, replacing a
+        probe-based approximation. <code>|</code> ranks by longest declarative prefix as the spec says;
+        <code>||</code> is sequential.</div>
+      </div>
+      <div class="entry">
+        <div class="term">The grammar surface</div>
+        <div class="body"><code>token</code>/<code>rule</code>/<code>regex</code>,
+        <code>.parse</code>/<code>.subparse</code>/<code>.parsefile</code>, action classes with
+        <code>make</code>/<code>.made</code>, subrules and subrule aliases, and capture aliases in all four
+        flavours — numbered <code>$7=(…)</code>, named, list-valued <code>@&lt;x&gt;=</code>, hash-valued
+        <code>%&lt;x&gt;=</code>.</div>
+      </div>
+      <div class="entry">
+        <div class="term">Beyond the common set</div>
+        <div class="body">Conjunction <code>A &amp; B</code>, composed character classes that add
+        <em>and subtract</em> members (<code>&lt;+alpha-[b]&gt;</code>), the full adverb set
+        (<code>:g :ex :x :nth :i :ignoremark :samecase :sigspace</code>), non-mutating <code>S///</code>,
+        callable <code>.subst</code>.</div>
+      </div>
+      <div class="entry">
+        <div class="term">The demo that sells it</div>
+        <div class="body">Five language interpreters in <code>showcase/</code> — <b>Scheme, Forth,
+        JavaScript/TypeScript, Perl 5 and Python 3</b> — each built on a Raku grammar. Plus a
+        <b>grammar of Raku</b> that parse-checks Raku source with rakupp itself, restating the fifteen
+        precedence levels of <code>src/Parser.cpp</code> as grammar rules.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ CONCURRENCY ============ -->
+  <section>
+    <div class="sec-head">
+      <h2>Concurrency &amp; real parallelism</h2>
+      <span class="source">ASYNC.md · PARALLEL-SPEEDUP.md</span>
+    </div>
+    <div class="entries">
+      <div class="entry">
+        <div class="term">Real OS threads, parallel by default</div>
+        <div class="body">True CPU parallelism has been the default since v3 — <code>RAKUPP_GIL=1</code> is the
+        escape hatch back to the cooperative mode. Worker threads run interpreter compute concurrently;
+        registers and stacks are thread-local, symbol tables freeze once concurrency engages, and
+        <code>Lock</code>/<code>Semaphore</code> become real. ThreadSanitizer-clean, zero Roast regressions.</div>
+      </div>
+      <div class="entry">
+        <div class="term">The measured number</div>
+        <div class="body"><span class="num">2.93×</span> on four performance cores (N=4), against
+        <span class="num">0.98–0.99×</span> for the same program under the GIL at every thread count. The
+        honest control is there too: N=1 measures 0.85× — the thread setup you paid for and did not get back.</div>
+      </div>
+      <div class="entry">
+        <div class="term">The full async surface</div>
+        <div class="body"><code>Promise</code>/<code>start</code>/<code>await</code>,
+        <code>Supply</code>/<code>react</code>/<code>whenever</code>/<code>supply</code> with a long
+        combinator list, live <code>Supplier</code>, <code>Channel</code>, <code>Thread</code>,
+        <code>Proc::Async</code> with <code>bind-stdin</code> pipelines and a real <code>.kill</code>,
+        and <code>atomicint</code> with the <code>⚛</code> operators.</div>
+      </div>
+      <div class="entry">
+        <div class="term">Networking</div>
+        <div class="body"><code>IO::Socket::Async</code> for clients and servers, <code>signal()</code> for
+        graceful shutdown, and <code>IO::Socket::Async::SSL</code> over the system OpenSSL through Raku++'s
+        own NativeCall. Four servers on raw sockets ship as showcases: a pastebin, a concurrent chat server,
+        a key-value store with its own protocol, and <code>rakus</code>, a static-file HTTP server.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ FFI ============ -->
+  <section>
+    <div class="sec-head">
+      <h2>Talking to C — NativeCall</h2>
+      <span class="source">FFI.md · HTTPS.md</span>
+    </div>
+    <div class="entries">
+      <div class="entry">
+        <div class="term">libffi, but no dependency</div>
+        <div class="body"><code>is native</code> calls a C function via <code>dlsym</code>, marshalled by
+        <b>libffi that is <code>dlopen</code>ed at run time and never linked</b> — so the binary keeps the
+        zero-dependency promise. <code>--ffi-info</code> reports what it found. Where no libffi can be loaded,
+        calls fall back to a fixed prototype and anything it cannot express <em>throws</em> rather than
+        computing garbage.</div>
+      </div>
+      <div class="entry">
+        <div class="term">What it covers</div>
+        <div class="body">Arguments and returns at their declared width (<code>num32</code> is a real C
+        <code>float</code>), no cap on argument count, mixed int+float lists, <code>CArray</code>,
+        <code>CStruct</code>, <code>CUnion</code>, <code>Buf</code>/<code>Blob</code> filled in place,
+        <code>is rw</code> out-params with copy-back, <code>nativecast</code>, <code>cglobal</code>,
+        variadics (a slurpy marks where <code>...</code> begins — same spelling as Rakudo), and typed
+        synchronous callbacks as real <code>ffi_closure</code>s, so <code>qsort</code> works.</div>
+      </div>
+      <div class="entry">
+        <div class="term">The HTTPS story</div>
+        <div class="body">A ready-made narrative: getting one real <code>HTTP/1.1 200 OK</code> over TLS was
+        never one feature — it was a chain of independent bugs, each hidden behind the last, and nearly every
+        one turned out to be a <em>general</em> correctness bug. Roast numbers went up the whole way.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ MODULES ============ -->
+  <section>
+    <div class="sec-head">
+      <h2>Modules &amp; the ecosystem</h2>
+      <span class="source">MODULES.md · CLI.md · ECOSYSTEM.md</span>
+    </div>
+    <div class="entries">
+      <div class="entry">
+        <div class="term">Its own installer, sharing zef's store</div>
+        <div class="body">
+          <p><code>rakupp install</code> writes the same CURI store zef and Rakudo share, so a module installed
+          by either tool is picked up by <code>use</code> under either engine. It is a
+          <b>~1,840-line Raku program compiled into the binary</b> — as is <code>rakupp doc</code>.</p>
+          <pre><code>rakupp install JSON::Fast
+rakupp install ./my-dist
+rakupp install https://github.com/ash/raku-modules/tree/main/Prompt-Hidden
+rakupp test Foo          <span class="cmt"># build + run Foo's own suite, never install Foo</span></code></pre>
+        </div>
+      </div>
+      <div class="entry">
+        <div class="term">A real package manager</div>
+        <div class="body">Version pinning, additive installs, install from a name, a path, a GitHub
+        <code>/tree/</code> subdirectory (monorepos), a tarball or <code>file://</code>;
+        <code>uninstall</code>, <code>reinstall</code>, <code>--list</code>, <code>--check</code> (a
+        content-addressed integrity audit that catches a <em>truncated</em> blob, not just a missing one),
+        <code>--gc</code>, <code>--refresh</code>, <code>--to</code>.</div>
+      </div>
+      <div class="entry">
+        <div class="term">The sweep</div>
+        <div class="body"><b>All 2,530 distributions</b> of the Raku ecosystem are run against rakupp and the
+        engine is fixed until they install and pass their own suites. <span class="num">824</span> pass today;
+        another <span class="num">274</span> never reached their own tests because a dependency failed first —
+        that cohort is the current lever. Every distribution, with how it ran, is browsable at
+        <a href="https://raku.online/modules/ecosystem/">raku.online/modules/ecosystem</a>.</div>
+      </div>
+      <div class="entry">
+        <div class="term">Real applications, unmodified</div>
+        <div class="body">The <code>raku-course</code> static-site generator regenerates the entire ~1,500-page
+        Raku course <b>byte-for-byte identically to Rakudo</b>, including the real zef-installed
+        <code>YAMLish</code>. The covid.observer site builder runs end to end. <code>modinfo</code> does its
+        work through <b>17 zef distributions</b> and produces identical output under both engines.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ INTEGRATIONS ============ -->
+  <section>
+    <div class="sec-head">
+      <h2>Integrations — Raku inside other things</h2>
+      <span class="source">bindings/ · EMBEDDING.md · EXTENSIONS.md · MCP.md · JUPYTER.md</span>
+    </div>
+    <div class="entries">
+      <div class="entry">
+        <div class="term">Six host languages <span class="tag">not announced yet</span></div>
+        <div class="body"><code>librakupp</code> is the interpreter behind a small C ABI, wrapped for
+        <b>Python, JavaScript (Bun), Go, Rust, C++ and the Wolfram Language</b>. Each gives the same two
+        things in its own idiom: <em>run Raku</em> — evaluate source, call Raku routines with host values,
+        read results back as native types — and <em>parse with Raku grammars</em>, where the grammar stays a
+        <code>.raku</code> file and <code>.made</code> values are computed by Raku actions during the parse.
+        Two smoke gates re-run everything the guides claim, on every push.</div>
+      </div>
+      <div class="entry">
+        <div class="term">Embedding, in C</div>
+        <div class="body"><code>rk_new</code> / <code>rk_eval</code> / <code>rk_eval_file</code> /
+        <code>rk_call</code> / <code>rk_run</code>. An interpreter is a <em>session</em>: define a sub in one
+        <code>rk_eval</code>, call it in the next. A Raku exception never unwinds through your frames.
+        Raku.js and <code>rakupp --mcp</code> are both written against this same API.</div>
+      </div>
+      <div class="entry">
+        <div class="term">Native extensions — the XS analogue</div>
+        <div class="body">A distribution ships C alongside its Raku, the build step compiles it against the ABI
+        at install time, and the routines become ordinary Raku subs. The point: <b>the module versions
+        independently of the compiler</b>. An extension never sees <code>Value</code> — every Raku value crosses
+        as an opaque handle, because <code>sizeof(Value)</code> went 392 → 376 → 344 → 208 → 128 bytes and will
+        move again.</div>
+      </div>
+      <div class="entry">
+        <div class="term">AI agents — MCP <span class="tag">not announced yet</span></div>
+        <div class="body"><code>rakupp --mcp</code> serves the interpreter over the Model Context Protocol on
+        stdio, giving clients two tools: <code>raku</code>, one persistent session per conversation with exact
+        Rat and big-integer arithmetic, and <code>raku-parse</code>, grammars as deterministic text extraction
+        with line/column/rule diagnosis when a parse fails. One line to register:
+        <code>claude mcp add raku -- /path/to/rakupp --mcp</code>.</div>
+      </div>
+      <div class="entry">
+        <div class="term">Jupyter</div>
+        <div class="body"><code>rakupp --jupyter-install</code> registers the binary as a kernel. One
+        interpreter serves the whole notebook, output streams as it is produced, a dying cell leaves the
+        session intact, and <code>jupyter-display</code> hands the frontend HTML or SVG. <b>No ZeroMQ, no
+        Python module, no shared library</b> — the binary speaks ZMTP and signs its own messages, because this
+        project links no third-party libraries. The gate is a Jupyter client written in Raku with its own
+        HMAC-SHA256 pinned to the RFC 4231 vectors.</div>
+      </div>
+      <div class="entry">
+        <div class="term">Editors</div>
+        <div class="body"><code>rakupp --lsp</code> speaks the Language Server Protocol — diagnostics only, from
+        the same lex→parse→lint pipeline that runs your code, so the squiggles can never disagree with the
+        interpreter. <span class="tag">needs review</span> For an editor that does not speak LSP,
+        <code>-c --json</code> and <code>--lint --json</code> emit findings as a JSON array.</div>
+      </div>
+      <div class="entry">
+        <div class="term">Other people's software</div>
+        <div class="body">Worth naming on a slide, because none of it is ours: <b>RakuppLink</b> in Wolfram's
+        official Paclet Repository (Anton Antonov); the <b>Raku Playground</b> offering rakupp as one of four
+        browser runtimes (Fernando Correa de Oliveira); <b>rakupp-dsci</b>, the release matrix ported to
+        another CI (Alexey Melezhik); and a personal <b>Guix channel</b> (4zv4l).</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ GUI ============ -->
+  <section>
+    <div class="sec-head">
+      <h2>A desktop GUI, with <code>react</code> as the event loop</h2>
+      <span class="source">showcase/gui</span>
+    </div>
+    <div class="entries">
+      <div class="entry">
+        <div class="term">Real windows, no glue code</div>
+        <div class="body">The same NativeCall machinery that talks to libsqlite3 is pointed at the Objective-C
+        runtime and gets a real desktop app: NSWindow, NSTextField, NSButton, reached through
+        <code>objc_msgSend</code>. The framework on top is the <code>GUI::Wings</code> module; the backends
+        are Cocoa and GTK.</div>
+      </div>
+      <div class="entry">
+        <div class="term">The idea worth showing</div>
+        <div class="body">The event loop is <b>not a callback registry</b> — it is <code>react</code>, with a
+        button's clicks, a one-second clock and SIGINT as three <code>whenever</code> streams. A click crosses
+        from AppKit into a Raku closure through a runtime-minted Objective-C class.</div>
+      </div>
+      <div class="entry">
+        <div class="term">And it runs on Rakudo too</div>
+        <div class="body">No NSRect ever crosses the FFI — only NSPoint/NSSize, two doubles, which both macOS
+        ABIs pass like two <code>num64</code>s — so the identical module serves arm64 Raku++ and an x86-64
+        Rosetta Rakudo, unchanged.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ TOOLING ============ -->
+  <section>
+    <div class="sec-head">
+      <h2>The command line and the developer loop</h2>
+      <span class="source">CLI.md · LINT.md · TRACER.md · CACHING.md</span>
+    </div>
+    <div class="entries">
+      <div class="entry">
+        <div class="term">Undeclared variables are refused</div>
+        <div class="body">Before a program starts — and under <code>-c</code>, <code>--cpp</code>,
+        <code>--bundle</code>, <code>--aot</code> and <code>--exe</code> — rakupp walks the whole unit and
+        refuses it if a variable is used that nothing declares. A typo on line 90 no longer shows up after
+        89 lines of side effects.</div>
+      </div>
+      <div class="entry">
+        <div class="term">Errors that tell you where you are</div>
+        <div class="body">The call chain innermost-first with file, routine and line for every frame; the
+        source line of the one it came from; folded recursion; and <b>two-position errors</b> —
+        <code>fail</code> reports where the Failure was made <em>and</em> where it went off, <code>await</code>
+        reports the worker's frames <em>and</em> the line that collected them.</div>
+      </div>
+      <div class="entry">
+        <div class="term">Analysis without running</div>
+        <div class="body"><code>--lint</code> carries eleven rules over the AST, several of which are about
+        silent bugs rather than style — <code>new-arg-matches-no-attribute</code> catches a typo'd named
+        argument that the default constructor would silently ignore. <code>--json</code> emits findings as data.</div>
+      </div>
+      <div class="entry">
+        <div class="term">Profiling</div>
+        <div class="body"><code>--profile</code> prints a routine-level wall-time profile after the run, exact
+        call counts included, with recursion counted once. The program's own stdout is byte-identical to an
+        unprofiled run, and the disabled hooks cost nothing — there is no separate profiling build.</div>
+      </div>
+      <div class="entry">
+        <div class="term">The perl one-liner family</div>
+        <div class="body"><code>-n</code>, <code>-p</code>, <code>-a</code>, <code>-F</code>, in-place
+        <code>-i.bak</code>, and they cluster the way perl's do:
+        <code>rakupp -pi.bak -e '$_ = $_.subst("a","b")' *.txt</code>. Flags are position-independent.</div>
+      </div>
+      <div class="entry">
+        <div class="term">Everything else on the CLI</div>
+        <div class="body"><code>--watch</code> (rerun on change, including modules under <code>lib/</code>),
+        <code>--highlight</code> (parse-aware, HTML and ANSI), <code>rakupp doc</code> (offline symbol lookup
+        with the guides compiled into the binary), <code>--completions</code> for bash/zsh/fish,
+        <code>--repl-after</code> (a session on the program's live state, like python <code>-i</code>),
+        <code>--trace</code>, <code>--stagestats</code>, <code>--seed</code>, <code>--stack-size</code>,
+        <code>--env-file</code>, <code>RAKUPP_OPT</code>, <code>NO_COLOR</code>.</div>
+      </div>
+      <div class="entry">
+        <div class="term">Opt-in parse cache</div>
+        <div class="body">Off by default — nothing is written to your disk until you ask.
+        <code>--precomp-modules</code> caches the parse of everything a program <code>use</code>s
+        (<code>use XML</code>: <span class="num">6.0 → 4.8 ms</span>); <code>--precomp-files</code> pays from
+        about a thousand lines up. What is stored is the <b>AST</b>, not bytecode, because the tree already
+        <em>is</em> the compiled form.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ PLATFORMS ============ -->
+  <section>
+    <div class="sec-head">
+      <h2>Platforms &amp; install</h2>
+      <span class="source">INSTALL.md · COMPILERS.md</span>
+    </div>
+    <div class="entries">
+      <div class="entry">
+        <div class="term">Three platforms, no runtime deps</div>
+        <div class="body">macOS as <b>one universal binary</b> (Apple Silicon + Intel), Linux x86_64 with
+        static libstdc++, Windows x64 with a static CRT — no redistributable needed. CI builds and
+        smoke-tests all three on every push.</div>
+      </div>
+      <div class="entry">
+        <div class="term">Ways in</div>
+        <div class="body">
+          <pre><code>brew tap ash/rakupp &amp;&amp; brew install rakupp</code></pre>
+          <p style="margin-top:8px">Plus a no-admin PowerShell one-liner and an Inno Setup wizard with an
+          Add/Remove Programs entry on Windows, prebuilt archives on GitHub Releases, a GNU Guix channel,
+          and a Nix flake. Building from source is CMake and a C++17 compiler, and nothing else.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ DOGFOODING ============ -->
+  <section>
+    <div class="sec-head">
+      <h2>The engine builds itself with Raku</h2>
+      <span class="source">DOGFOODING.md</span>
+    </div>
+    <p class="lede">A theme rather than a feature, and a good closing one: every run of the toolchain is a
+    real workout for the interpreter.</p>
+    <div class="entries">
+      <div class="entry">
+        <div class="term">The Roast harness is Raku</div>
+        <div class="body">The entire coverage figure is measured <em>by</em> Raku++ — and thanks to the ~2 ms
+        startup, all <span class="num">1,464</span> spec-test files run in about <b>3½ minutes</b>. Refreshing
+        the numbers is a coffee break, not an overnight job.</div>
+      </div>
+      <div class="entry">
+        <div class="term">It generates its own source</div>
+        <div class="body"><code>tools/gen-unicode.raku</code> reads 40k+ lines of UCD data and emits the C++
+        character-name, category and numeric-value tables in <code>src/</code>.</div>
+      </div>
+      <div class="entry">
+        <div class="term">Two Raku programs live inside the binary</div>
+        <div class="body"><code>rakupp install</code> and <code>rakupp doc</code> are not C++ subcommands —
+        they are Raku programs compiled in as byte arrays, which the binary loads out of itself and
+        interprets. The package manager is written in the language the engine implements, so it cannot work
+        unless the interpreter is right about JSON, version ranges, <code>run</code> with captured output,
+        path handling and its own <code>CompUnit</code> API.</div>
+      </div>
+      <div class="entry">
+        <div class="term">Even the benchmark harness</div>
+        <div class="body">It also runs under Rakudo, so the harness language cannot bias the results.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ CAVEATS ============ -->
+  <section class="caveats">
+    <div class="sec-head" style="border-color: color-mix(in srgb, var(--warn) 35%, transparent)">
+      <h2>Have these ready</h2>
+      <span class="source">ROADMAP.md · HIGHLIGHTS.md</span>
+    </div>
+    <p class="lede">The project's own documentation states its limits plainly. Saying them first is stronger
+    than being asked.</p>
+    <ul>
+      <li><b>No RakuAST, no macros, no slangs.</b> Grammar mutation at that level is deliberately not
+      implemented — it is its own campaign, not an oversight.</li>
+      <li><b>45% of Roast files, not 91% of them.</b> The 91% figure is per individual test. Both are quoted
+      because the file bar is the stricter, more honest one, and the methodology is written down.</li>
+      <li><b><code>objects</code> is Rakudo's kernel.</b> Method dispatch and attribute access — the shape most
+      real Raku is written in — is where <code>spesh</code> still wins, by 1.6× compiled.</li>
+      <li><b>C structs by value</b> are unsupported in NativeCall, and callbacks a C library stores and fires
+      later from its own thread are detected and ignored rather than run.</li>
+      <li><b>The bindings and the MCP server are committed but not announced.</b> They are gated on every push;
+      the surface may still move.</li>
+      <li><b>The LSP server is diagnostics only</b> and flagged as needing review; the VS Code extension has
+      never been published.</li>
+      <li><b>Rakudo is the complete one.</b> The documentation says so on every comparison page — Raku++ is a
+      young implementation growing toward the same language, and the two share a north star in Roast.</li>
+    </ul>
+  </section>
+
+  <footer>
+    Compiled from the Raku++ documentation at v3.26.0 (2026-09-08) — README, HIGHLIGHTS, FEATURES, OVERVIEW,
+    BENCHMARKS, MEMORY, CACHING, CLI, LINT, TRACER, JS, FFI, HTTPS, NETWORKING, EXTENSIONS, EMBEDDING, MCP,
+    JUPYTER, MODULES, DATA-NATIVE, PARALLEL-SPEEDUP, DOGFOODING, ECOSYSTEM, ROADMAP, bindings/ and showcase/.<br>
+    Timings are one machine's: Apple M3, Darwin 24.6, <code>build-arm64</code>.
+  </footer>
+
+</div>
+</body>
+</html>

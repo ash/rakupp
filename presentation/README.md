@@ -42,6 +42,20 @@ figure is drawn from the docs in [`../docs`](../docs) (ROAST, BENCHMARKS,
 ECOSYSTEM, MODULES, MILESTONES) and from [`../CHANGELOG.md`](../CHANGELOG.md) —
 when a release moves a number there, move it here too.
 
+## Talking points
+
+[`talking-points.html`](talking-points.html) is the raw material the deck is cut
+from: every feature the documentation currently claims, grouped the way a talk
+uses them, with the figure the repository records beside each one and the source
+file named per section — so a claim on a slide can be traced back to the page it
+came from. It is much longer than thirteen slides on purpose. No build step;
+open it in a browser, same light/dark handling as `index.html`.
+
+It carries the limitations too — no RakuAST, the `objects` kernel, the bindings
+and MCP server that are committed but not announced — because those are the
+questions a room asks. Same rule as the deck: when a release moves a number in
+[`../docs`](../docs), move it here too.
+
 ## Write-ups
 
 Longer-form articles about Raku++:
