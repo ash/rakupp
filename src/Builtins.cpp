@@ -101,6 +101,43 @@ bool isCoreTypeName(const std::string& n) {
     return isKnownTypeName(n);
 }
 
+// The handful of exception classes rakupp throws that Raku does not have. Each
+// one is here because the situation it names has no Raku type of its own and
+// the name says more than Rakudo's answer does — but a program written against
+// Rakudo catches Rakudo's answer, so each is given that answer as its PARENT.
+// `when X::AdHoc` then matches on both engines while `$e.^name` still says
+// which operation failed. The parent is not a guess: it is what Rakudo throws
+// for the same code, probed and recorded beside each row.
+//
+// A name that Raku DOES have never belongs here — it belongs in the generated
+// table, which is Rakudo's own hierarchy. This list existing at all is a cost;
+// keep it short, and prefer deleting a row (by throwing Rakudo's class) to
+// adding one. Two came off it that way rather than going on it:
+// X::DateTime::InvalidFormat, which had one stray throw site where every other
+// spelled it X::Temporal::InvalidFormat as Rakudo does, and X::Buf::RO, whose
+// honest parent would be X::Method::NotFound — Rakudo gives Blob no
+// `write-int8` at all, so the divergence there is the METHOD existing, and no
+// ancestry can paper over that.
+static const char* rakuppOnlyExceptionParent(const std::string& n) {
+    static const std::map<std::string, const char*> only = {
+        // "Too few positionals passed; expected 2 arguments but got 1"
+        {"X::Signature::ArityMismatch", "X::AdHoc"},
+        // "Required named parameter 'b' not passed"
+        {"X::Parameter::RequiredNamed", "X::AdHoc"},
+        // "Cannot specify :at and :in at the same time"
+        {"X::Scheduler::Cue",           "X::AdHoc"},
+        // No Rakudo counterpart at all: this is a --slim cut answering for a
+        // feature that was not built in. X::AdHoc is where an unclassified
+        // engine failure belongs.
+        {"X::Feature::NotBuilt",        "X::AdHoc"},
+        // …and rakupp's recursion cap, which Rakudo does not have — it grows
+        // the stack until the OS stops it, with no exception to copy.
+        {"X::Recursion",                "X::AdHoc"},
+    };
+    auto it = only.find(n);
+    return it == only.end() ? nullptr : it->second;
+}
+
 // An X:: name's ancestry: itself, whatever the generated table says it derives
 // from or does, then Exception, Any, Mu. Those last three are implied for every
 // X:: name, table or no table — a `class X::Mine` a user writes IS an Exception,
@@ -113,14 +150,22 @@ static const std::vector<std::string>& exceptionAncestry(const std::string& t) {
     thread_local std::map<std::string, std::vector<std::string>> cache;
     auto it = cache.find(t);
     if (it != cache.end()) return it->second;
-    std::vector<std::string> v{t};
-    if (const char* extras = exceptionExtraAncestry(t))
+    auto split = [](std::vector<std::string>& out, const char* extras) {
         for (const char* p = extras; *p; ) {
             const char* c = std::strchr(p, ',');
-            v.emplace_back(p, c ? (size_t)(c - p) : std::strlen(p));
+            out.emplace_back(p, c ? (size_t)(c - p) : std::strlen(p));
             if (!c) break;
             p = c + 1;
         }
+    };
+    std::vector<std::string> v{t};
+    if (const char* extras = exceptionExtraAncestry(t)) split(v, extras);
+    else if (const char* parent = rakuppOnlyExceptionParent(t)) {
+        // the parent, and then the parent's OWN chain — the generated table
+        // holds the transitive closure, so one lookup finishes the walk
+        v.emplace_back(parent);
+        if (const char* up = exceptionExtraAncestry(parent)) split(v, up);
+    }
     v.insert(v.end(), {"Exception", "Any", "Mu"});
     return cache.emplace(t, std::move(v)).first->second;
 }

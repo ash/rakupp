@@ -1951,8 +1951,16 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                                           (off.size() == 4 && dig(off[0]) && dig(off[1]) && dig(off[2]) && dig(off[3])) || // ±HHMM
                                           (off.size() == 5 && off[2] == ':' && dig(off[0]) && dig(off[1]) && dig(off[3]) && dig(off[4])); // ±HH:MM
                                 if (!ok)
-                                    throw RakuError{Value::typeObj("X::DateTime::InvalidFormat"),
-                                        "Invalid DateTime string '" + is + "'"};
+                                    // the same fault the non-ISO branch above
+                                    // reports, and it gets the same class and
+                                    // wording: X::DateTime::InvalidFormat is not
+                                    // a Raku type, and this was the only site
+                                    // that used it
+                                    throwTyped("X::Temporal::InvalidFormat",
+                                        {{"invalid-str", is},
+                                         {"format", "an ISO 8601 timestamp"}},
+                                        "Invalid DateTime string '" + is +
+                                        "'; use an ISO 8601 timestamp instead");
                                 long long oh = (off[0] - '0') * 10 + (off[1] - '0');
                                 long long om = off.size() == 4 ? (off[2] - '0') * 10 + (off[3] - '0')
                                              : off.size() == 5 ? (off[3] - '0') * 10 + (off[4] - '0') : 0;

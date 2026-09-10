@@ -79,5 +79,47 @@ my $v = thrown { my Int $x := $s };
 @fail.push("var-bind ({$v ?? $v.^name !! 'no throw'})")
     if $v && $v.^name ne 'X::TypeCheck::Binding';
 
+# ---- 5. the classes Raku does not have are caught by what Rakudo throws -----
+# rakupp names a few situations Raku has no type for. Each keeps its own name
+# AND answers to what Rakudo throws for the same code, so `when X::AdHoc` —
+# which is what a program written against Rakudo contains — fires on both.
+# The parent is not decoration: it is the class Rakudo was probed for.
+sub caught-as(&code, $want) {
+    my $branch = 'none';
+    {
+        code();
+        CATCH {
+            when $want { $branch = 'matched' }
+            default    { $branch = .^name }
+        }
+    }
+    $branch
+}
+my $one = 1;
+@fail.push('arity~~AdHoc')
+    unless caught-as({ sub f($a, $b) { $a }; my &g = &f; g($one) }, X::AdHoc) eq 'matched';
+@fail.push('reqnamed~~AdHoc')
+    unless caught-as({ sub f($a?, :$b!) { $a }; my &g = &f; g() }, X::AdHoc) eq 'matched';
+# …and here they keep the name that says more than X::AdHoc does. Rakudo throws
+# the bare X::AdHoc, so this half is the one thing in the file that is ours
+# alone — the `when` above is what has to agree, and does.
+if $*RAKU.compiler.name eq 'rakupp' {
+    my $a = thrown({ sub f($a, $b) { $a }; my &g = &f; g($one) });
+    @fail.push("arity-keeps-name ({$a ?? $a.^name !! 'no throw'})")
+        unless $a && $a.^name eq 'X::Signature::ArityMismatch';
+}
+
+# A bad temporal string is X::Temporal::InvalidFormat — Rakudo's own class, not
+# the X::DateTime::InvalidFormat one throw site here used to invent. Both the
+# non-ISO form and a malformed timezone offset reach it.
+for '2012/04', 'not-a-datetime', '2012-04-01T12:00:00+1' -> $bad {
+    my $e = thrown({ DateTime.new($bad) });
+    @fail.push("temporal ($bad -> {$e ?? $e.^name !! 'no throw'})")
+        unless $e && $e.^name eq 'X::Temporal::InvalidFormat';
+}
+# …which does the X::Temporal role, so `when X::Temporal` catches the family
+@fail.push('temporal~~role')
+    unless caught-as({ DateTime.new('not-a-datetime') }, X::Temporal) eq 'matched';
+
 die "FAILED: {@fail.join(', ')}" if @fail;
 say 'PASS';
