@@ -855,6 +855,65 @@ check %fl3<out>.contains('nothing at 3.0+')
       && !%fl3<out>.contains('Gate::Twin:ver<2.0>'),
       'floor: …and with nothing to satisfy it, reported rather than downgraded';
 
+# ---- installing from a URL (rakupp install https://…) ----------------------
+# The URL path is fetch, unpack, find the dist, then the ordinary local-dist
+# machinery. file:// exercises every step of that except the network, so the
+# whole thing is gated here rather than only by somebody trying it.
+{
+    # a dist archived exactly as a release tarball is: one top-level directory
+    my $urlsrc = $tmp.add('url-src');
+    $urlsrc.mkdir;
+    my $dd = $urlsrc.add('Gate-Url-1.0');
+    $dd.add('lib').mkdir;
+    # single quotes: no closure interpolation, so the braces need no escaping —
+    # and a `\{` here would have put a literal backslash into the JSON
+    $dd.add('META6.json').spurt(
+        '{"name":"Gate::Url","version":"1.0","auth":"test:gate",'
+        ~ '"provides":{"Gate::Url":"lib/Gate/Url.rakumod"},"depends":[]}');
+    $dd.add('lib').add('Gate').mkdir;
+    $dd.add('lib/Gate/Url.rakumod').spurt("unit module Gate::Url;\nsub url-ok() is export \{ 'from a URL' }\n");
+    my $arc = $tmp.add('gate-url.tar.gz');
+    run 'tar', '-czf', $arc.Str, '-C', $urlsrc.Str, 'Gate-Url-1.0', :err;
+
+    my $uhome = $tmp.add('home-url');
+    $uhome.mkdir;
+    my %envU = HOME => $uhome.Str, RAKUPP_INSTALL_INDEX => $tmp.add('index.json').Str;
+    sub inst-url(*@a) {
+        my $p = run 'env', |%envU.map({ "{.key}={.value}" }), $EXE, 'install', |@a, :out, :err;
+        my %r = out => $p.out.slurp(:close), err => $p.err.slurp(:close), exit => $p.exitcode;
+        %r
+    }
+
+    my %u1 = inst-url('file://' ~ $arc.Str);
+    # progress lines go to stderr; the plan goes to stdout. Check both, so this
+    # asserts what happened rather than which stream it happened on.
+    check %u1<exit> == 0 && (%u1<out> ~ %u1<err>).contains('installed Gate::Url:ver<1.0>'),
+          'url: a file:// archive fetches, unpacks and installs';
+    check %u1<err>.contains('no checksum'),
+          'url: …and says out loud that TLS/none is the only integrity a URL has';
+
+    my $p = run 'env', |%envU.map({ "{.key}={.value}" }), $EXE,
+                '-I', "inst#{$uhome.add('.raku')}", '-e',
+                'use Gate::Url; print url-ok()', :out, :err;
+    my $loaded = $p.out.slurp(:close); $p.err.slurp(:close);
+    check $loaded eq 'from a URL', 'url: …and the module LOADS from the store afterwards';
+
+    # a github page URL is rewritten to the tarball github serves for it —
+    # pure string work, so it is checked without touching the network
+    my %u2 = inst-url('--dry-run', 'https://example.invalid/nope.html');
+    check %u2<exit> != 0 && %u2<err>.contains('not a distribution URL'),
+          'url: a URL that is neither an archive nor a github page is refused';
+
+    my %u3 = inst-url('file://' ~ $tmp.add('does-not-exist.tar.gz').Str);
+    check %u3<exit> != 0, 'url: a missing archive fails rather than installing nothing quietly';
+
+    my $un = run 'env', |%envU.map({ "{.key}={.value}" }), $EXE, 'uninstall',
+                 'https://github.com/o/r', :out, :err;
+    my $unerr = $un.err.slurp(:close); $un.out.slurp(:close);
+    check $un.exitcode != 0 && $unerr.contains('knows distributions by NAME'),
+          'url: uninstall by URL is refused instead of downloading to learn a name';
+}
+
 # ---- the installer travels INSIDE the binary -------------------------------
 # `rakupp install` used to run a script found beside the executable, so a lone
 # binary — a COPY into a container, a bare rakupp.exe, a package that shipped

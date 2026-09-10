@@ -200,14 +200,20 @@ sub fetch-text(Str $url) {
 }
 
 sub fetch-file(Str $url, Str $to) {
+    # file:// is a real URL that names a real local file, so `rakupp install
+    # file:///…/Foo.tar.gz` works and the installer gate can exercise the whole
+    # URL path — fetch, unpack, find the dist, test, install — without a network.
+    my $src = $url.starts-with('file://')
+        ?? $url.subst(/^ 'file://' ['localhost']? /, '')
+        !! $url;
     # a local-file index (RAKUPP_INSTALL_INDEX=/path) yields local archive
     # paths — the t/install suite and offline mirrors
-    if !$url.starts-with('http') {
-        die "no such archive: $url" unless $url.IO.f;
-        $to.IO.spurt($url.IO.slurp(:bin), :bin);
+    if !$src.starts-with('http') {
+        die "no such archive: $src" unless $src.IO.f;
+        $to.IO.spurt($src.IO.slurp(:bin), :bin);
         return;
     }
-    my $p = run 'curl', '-sSL', '--fail', '--max-time', '600', '-o', $to, $url, :out, :err;
+    my $p = run 'curl', '-sSL', '--fail', '--max-time', '600', '-o', $to, $src, :out, :err;
     my $err = $p.err.slurp(:close);
     die "fetch failed: $url\n$err" if $p.exitcode != 0;
 }
@@ -755,11 +761,111 @@ sub archive-url(%e) {
 #                      name lookup, and an absolute path could not be installed
 #                      from on Windows at all; only `.\dist` worked.
 #   \\server\share      a UNC path, same story.
+#
+# A URL is not a path either, but it is not a name — it is a third thing the
+# installer does not do, and it should say so instead of spending two index
+# downloads finding out. url-arg() below is that check.
 sub is-path-arg(Str $arg) {
     return True if $arg.starts-with('.') || $arg.starts-with('/');
     return True if $arg.starts-with('\\');                      # UNC, or a rooted Windows path
     return True if $arg ~~ /^ <[A..Za..z]> ':' <[\\ /]> /;        # C:\dist or C:/dist
     False
+}
+
+# `rakupp install https://…` used to look the whole URL up as a distribution
+# NAME: the zef index, a miss, REA's ~18 MB, another miss, and a "cannot
+# resolve" that described the URL as if it were a module nobody had published.
+sub url-arg(Str $arg --> Bool) {
+    so $arg ~~ /^ <[A..Za..z]> <[A..Za..z 0..9 + . -]>* '://' /
+}
+
+# A URL that names a distribution, turned into (tarball-url, subdirectory).
+#
+# Two shapes are understood. A tarball URL is taken as it is. A GitHub page URL
+# is rewritten to the tarball GitHub already serves for it — because the URL a
+# person has in their hand is the one from the address bar, not one they would
+# have to construct:
+#
+#   …/O/R                          the default branch (main, then master)
+#   …/O/R/tree/REF                 that branch or tag
+#   …/O/R/tree/REF/sub/dir         …and the distribution inside it, which is
+#                                  how a monorepo of modules is laid out
+#
+# /archive/REF.tar.gz rather than codeload: it resolves branches AND tags
+# through one spelling, and curl -sSL is already following redirects.
+sub github-tarball(Str $url) {
+    my $u = $url.subst(/ '/' + $ /, '').subst(/ '.git' $ /, '');
+    return Nil unless $u ~~ m{ ^ 'https://' ['www.']? 'github.com/'
+                               $<owner>=<-[/]>+ '/' $<repo>=<-[/]>+
+                               [ '/tree/' $<ref>=<-[/]>+ [ '/' $<sub>=(.+) ]? ]? $ };
+    my $owner = ~$<owner>;
+    my $repo  = ~$<repo>;
+    my $sub   = $<sub>.defined ?? ~$<sub> !! '';
+    # No ref in the URL: GitHub does not say which branch is default without an
+    # API call, so try the two names that are it in practice. HEAD.tar.gz would
+    # be one request, but GitHub does not serve it.
+    my @refs = $<ref>.defined ?? (~$<ref>,) !! <main master>;
+    # A HASH, not a two-element list: `my ($u, $s) = f()` flattens the list of
+    # candidate URLs into the first variable and slides $sub into the second,
+    # which is a quiet wrong answer rather than an error.
+    %( urls => [@refs.map({ "https://github.com/$owner/$repo/archive/$_.tar.gz" })],
+       sub  => $sub )
+}
+
+sub archive-url-arg(Str $url) {
+    with github-tarball($url) -> %gh { return %gh }
+    return %( urls => [$url], sub => '' ) if $url ~~ / [ '.tar.gz' | '.tgz' ] $ /;
+    die "$url: not a distribution URL\n"
+      ~ "  understood: a .tar.gz archive, or a github.com repo/tree page\n"
+      ~ "  (a name resolves through the ecosystem index: rakupp install Prompt::Hidden)";
+}
+
+# Fetch a URL, unpack it, and hand back the same entry shape a directory on
+# disk produces — everything after this point (dependencies, the build hook,
+# the test gate, the store write) is then the local-directory path exactly.
+#
+# No checksum is possible: nothing in the URL names the bytes it should
+# deliver, which is the REA situation, and it earns the same note rather than
+# a quieter one.
+sub url-dist-entry(Str $url) {
+    my %spec = archive-url-arg($url);
+    my @urls = @(%spec<urls>);
+    my $sub  = %spec<sub>;
+    my $tmp = $*TMPDIR.add("rakupp-install-url-{$*PID}-{$url.subst(/<-alnum>/, '-', :g).substr(*-40)}");
+    $tmp.mkdir;
+    my $tarball = $tmp.add('dist.tar.gz').Str;
+
+    my $err = '';
+    my $got = @urls.first({
+        progress("fetching $_");
+        trace("url: fetching $_");
+        my $ok = try { fetch-file($_, $tarball); True };
+        $err = ~$! unless $ok;
+        $ok
+    });
+    die "$url: could not fetch it\n  $err" without $got;
+    note "note: a URL carries no checksum — TLS is the only integrity here";
+    trace("url: fetched {$tarball.IO.s} bytes from $got");
+
+    my $p = run 'tar', '-xzf', $tarball, '-C', $tmp.Str, :err;
+    die "$url: tar failed: {$p.err.slurp(:close)}" if $p.exitcode != 0;
+
+    # A GitHub archive unpacks under one directory named <repo>-<ref>, and a
+    # ref with a slash in it is not spelled the way the URL spells it. So find
+    # the directory rather than predicting its name.
+    my $top = $tmp.add('META6.json').e
+        ?? $tmp
+        !! ($tmp.dir.grep({ .d && .basename ne 'dist.tar.gz' }).first
+            // die "$url: the archive unpacked to nothing");
+    my $root = $sub ?? $top.add($sub) !! $top;
+    die "$url: no META6.json in {$sub || 'the archive'}\n"
+      ~ "  (a subdirectory of a monorepo needs the path to the dist itself:\n"
+      ~ "   …/tree/main/Prompt-Hidden, not …/tree/main)"
+        unless $root.add('META6.json').e;
+
+    my %e = local-dist-entry($root.Str);
+    %e<source-url> = $url;      # the plan line should print what was ASKED for
+    %e
 }
 
 sub local-dist-entry(Str $arg) {
@@ -1697,6 +1803,15 @@ sub MAIN(
     }
     # `rakupp uninstall .` / `reinstall .` — the store knows dists by NAME,
     # so a path argument stands for whatever its directory's META6 names
+    if $uninstall {
+        with @modules.first({ url-arg($_) }) -> $u {
+            note "rakupp uninstall: $u";
+            note "  the store knows distributions by NAME, and finding the name behind";
+            note "  a URL would mean downloading it. Give the name:  rakupp uninstall Foo::Bar";
+            note "  (`rakupp install --list` prints what is installed)";
+            exit 2;
+        }
+    }
     my @removal-names = @modules.map(-> $a {
         is-path-arg($a) && $a.IO.add('META6.json').e
             ?? ((try json-decode($a.IO.add('META6.json').slurp))<name> // $a)
@@ -1733,8 +1848,10 @@ sub MAIN(
     }
     unless @modules {
         note q:to/END/.trim;
-            usage: rakupp install [options] Module|Path ...
-                   rakupp install .            this directory's dist (a Path starts with . or /)
+            usage: rakupp install [options] Module|Path|URL ...
+                   rakupp install .            this directory's dist (a Path starts with . or /, or is C:\… )
+                   rakupp install https://github.com/OWNER/REPO[/tree/REF[/SUBDIR]]
+                   rakupp install https://host/Foo-1.0.tar.gz
                    rakupp install --list | --check | --gc | --refresh
                    rakupp test Module|Path ... run the dists' own suites; installs only their deps
                    rakupp uninstall [--force] Module|Path ...
@@ -1759,12 +1876,18 @@ sub MAIN(
 
     $REA-REFRESH = $refresh // False;
     # zef's path rule, learned verbatim: `.`- and `/`-prefixed arguments are
-    # directories to install from; everything else resolves in the ecosystem.
+    # directories to install from (as are Windows drive and UNC paths);
+    # everything else resolves in the ecosystem.
     # A path dist contributes its DEPENDENCIES to the resolver — they install
     # first, like any plan's — while the dist itself installs from its
     # directory, never from the index's copy of the same name.
+    #
+    # A URL is fetched and unpacked into a directory FIRST, and is a local dist
+    # from there on: same dependency handling, same build hook, same test gate,
+    # same store write. Nothing downstream knows the difference.
     my @local-entries = @modules.grep({ is-path-arg($_) }).map({ local-dist-entry($_) });
-    my @names = @modules.grep({ !is-path-arg($_) });
+    @local-entries.append(@modules.grep({ url-arg($_) }).map({ url-dist-entry($_) }));
+    my @names = @modules.grep({ !is-path-arg($_) && !url-arg($_) });
     my %notes;
     my @wants = @names;
     for @local-entries -> %e {

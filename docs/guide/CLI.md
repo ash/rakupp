@@ -716,7 +716,10 @@ loadable by either engine.
 rakupp install Foo::Bar          # newest satisfying, plus dependencies
 rakupp install Foo:ver<1.2.3>    # a specific version (installs are additive)
 rakupp install .                 # this directory's dist; deps from the index
-rakupp install ./my-dist         # any path — an argument starting with . or /
+rakupp install ./my-dist         # any path — . or / (and C:\… or \\host\… )
+rakupp install https://github.com/ash/raku-modules/tree/main/Prompt-Hidden
+                                 # a github page URL, subdirectory and all
+rakupp install https://host/Foo-1.0.tar.gz     # or a release tarball
 rakupp test Foo                  # build + run Foo's own suite; installs its
                                  # deps, never Foo — the measurement command
 rakupp uninstall Foo             # remove what THIS installer put there —
@@ -732,6 +735,22 @@ rakupp install --to=PATH Foo     # another store prefix (default ~/.raku)
 rakupp install -q Foo            # only warnings and failures; nothing on
                                  # success (-q goes with every command here)
 ```
+
+A **URL** is fetched, unpacked and then treated exactly as a directory on disk
+would be — same dependency resolution, same build hook, same test gate, same
+store write. Two shapes are understood: a `.tar.gz`/`.tgz` archive, and a
+github.com repo or `/tree/` page, which is rewritten to the tarball GitHub
+already serves for it. A `/tree/REF/SUBDIR` URL installs the distribution in
+that subdirectory, which is how a monorepo of modules is laid out; without a
+`/tree/`, `main` is tried and then `master`. `file://` works too, which is what
+lets the installer gate exercise the whole path offline.
+
+Nothing in a URL names the bytes it should deliver, so there is no checksum to
+check and `install` says so — the same note the REA archive path prints. That
+is a real difference from an index install, where a fez archive's own URL
+carries the SHA-1 and a mismatch is refused. `uninstall` does **not** take a
+URL: the store knows distributions by name, and finding the name behind a URL
+would mean downloading it first.
 
 `--list` prints one identity line per installed distribution and, under
 it, who installed the dist — `rakupp`, or `zef` for one this installer did
