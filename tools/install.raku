@@ -212,7 +212,25 @@ sub fetch-file(Str $url, Str $to) {
     die "fetch failed: $url\n$err" if $p.exitcode != 0;
 }
 
+# LOWERCASE, because it is compared against the hash in a fez archive's own URL.
+#
+# The engine's own SHA-1 first. The three command-line tools below are a POSIX
+# assumption that Windows does not meet: it ships curl.exe and tar.exe (both in
+# System32 since Windows 10 1803), but no shasum, no sha1sum and no openssl —
+# so `rakupp install` on Windows reached the M2 checksum gate and died there
+# with "no SHA-1 tool found", having already fetched the archive. Nothing in CI
+# noticed, because the installer gate is POSIX-only.
+#
+# The primitive was there the whole time: sha1-blob has used it since the
+# store check made 623 subprocesses too slow to bear. This one just never got
+# it. The subprocess chain stays as the fallback, for running this program
+# under Rakudo, where `::('&rakupp-sha1-hex')` is Nil.
 sub sha1-file(Str $path) {
+    my $native = try ::('&rakupp-sha1-hex');
+    if $native ~~ Callable {
+        my $bytes = try $path.IO.slurp(:bin);
+        return ~$native($bytes).lc with $bytes;
+    }
     for ('shasum', '-a', '1'), ('sha1sum',), ('openssl', 'sha1', '-r') -> @tool {
         my $p = try run |@tool, $path, :out, :err;
         next unless $p && $p.exitcode == 0;
