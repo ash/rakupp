@@ -4211,7 +4211,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     if (kTrace) std::cerr << "[M] ." << m << " on type=" << (int)inv.t << " s=[" << inv.s << "]" << (inv.t==VT::Object && inv.obj() && inv.obj()->cls ? " ("+inv.obj()->cls->name+")" : "") << "\n";
     // ---- CompUnit repository machinery (what zef drives to query/install dists) ----
     {
-        auto homeDir = []() -> std::string { const char* h = getenv("HOME"); return h ? h : ""; };
+        auto homeDir = []() -> std::string { return platHomeDir(); };
         auto mkCURI = [&](const std::string& name, const std::string& prefix) -> Value {
             auto od = std::make_shared<ObjectData>();
             od->cls = classes_["CompUnit::Repository::Installation"];
@@ -4340,8 +4340,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 // ~/.raku) saw one repository and missed everything zef installed
                 // system-wide.
                 Value e = Value::array(); e.isList = true; e.s = "Seq";
-                const char* home = getenv("HOME");
-                std::string homeRepo = std::string(home ? home : "") + "/.raku";
+                std::string homeRepo = platHomeDir() + "/.raku";
                 for (const std::string& pre : rakuRepoPrefixes()) {
                     auto od = std::make_shared<ObjectData>();
                     od->cls = inv.obj()->cls;   // the Installation class, already in hand

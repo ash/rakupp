@@ -2921,9 +2921,8 @@ Interpreter::Interpreter() {
         // $*REPO is the head of the repo chain — an Installation over ~/.raku, which is
         // exactly the prefix rakupp resolves `use` from. Methods handled in methodCall.
         auto od = std::make_shared<ObjectData>(); od->cls = inst;
-        const char* h = getenv("HOME");
         od->attrs["name"] = Value::str("home");
-        Value pfx = Value::str(std::string(h ? h : "") + "/.raku"); pfx.hashKind = "IO";
+        Value pfx = Value::str(platHomeDir() + "/.raku"); pfx.hashKind = "IO";
         od->attrs["prefix"] = pfx;
         global_->define("$*REPO", Value::object(od));
     }
@@ -4824,7 +4823,7 @@ const std::vector<std::string>& rakuRepoPrefixes() {
     if (init) return cached;
     init = true;
     std::vector<std::string>& repos = cached;
-    if (const char* home = getenv("HOME")) repos.push_back(std::string(home) + "/.raku");
+    if (std::string home = platHomeDir(); !home.empty()) repos.push_back(home + "/.raku");
     // Every per-version Rakudo install we know how to find, each contributing its
     // site and vendor stores:
     //   /usr/local/Cellar/rakudo/<ver>/share/perl6/…      Homebrew (Intel)
@@ -4836,8 +4835,8 @@ const std::vector<std::string>& rakuRepoPrefixes() {
         {"/usr/local/Cellar/rakudo", "/share/perl6/"},
         {"/opt/homebrew/Cellar/rakudo", "/share/perl6/"},
     };
-    if (const char* home = getenv("HOME"))
-        roots.push_back({std::string(home) + "/.rakubrew/versions", "/install/share/perl6/"});
+    if (std::string home = platHomeDir(); !home.empty())
+        roots.push_back({home + "/.rakubrew/versions", "/install/share/perl6/"});
     for (auto& [root, tail] : roots) {
         if (DIR* d = opendir(root.c_str())) {
             while (struct dirent* e = readdir(d)) {
@@ -5051,7 +5050,7 @@ static std::string precompDir() {
     if (const char* d = std::getenv("RAKUPP_PRECOMP_DIR")) return d;
     std::string base;
     if (const char* x = std::getenv("XDG_CACHE_HOME")) base = x;
-    else if (const char* h = std::getenv("HOME")) base = std::string(h) + "/.cache";
+    else if (std::string h = platHomeDir(); !h.empty()) base = h + "/.cache";
     else return "";
     return base + "/rakupp/precomp";
 }
@@ -5074,7 +5073,7 @@ static std::string configPath() {
     if (const char* c = std::getenv("RAKUPP_CONFIG")) return c;
     std::string base;
     if (const char* x = std::getenv("XDG_CONFIG_HOME")) base = x;
-    else if (const char* h = std::getenv("HOME")) base = std::string(h) + "/.config";
+    else if (std::string h = platHomeDir(); !h.empty()) base = h + "/.config";
     else return "";
     return base + "/rakupp/rakupp.config";
 }
@@ -13319,8 +13318,8 @@ Value Interpreter::dynVar(const std::string& name) {
     // $*HOME — the user's home directory as an IO::Path (Any when the environment
     // does not say, which is Rakudo's rule). zef reaches its config through it.
     if (name == "$*HOME") {
-        const char* h = std::getenv("HOME");
-        if (!h || !*h) h = std::getenv("USERPROFILE"); // Windows
+        std::string hs = platHomeDir();
+        const char* h = hs.empty() ? nullptr : hs.c_str();
         if (!h || !*h) return Value::any();
         std::string d = h;
         while (d.size() > 1 && d.back() == '/') d.pop_back();

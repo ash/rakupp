@@ -11,6 +11,7 @@
 // output does not carry any of it.
 
 #include "AsciiCtype.h"
+#include "Platform.h"   // platHomeDir(): the history file has no home on Windows without it
 #include "Repl.h"
 #include "Interpreter.h"
 #include "Runtime.h"
@@ -442,9 +443,9 @@ private:
         if (env && !*env) return;                 // RAKUPP_HISTORY= (empty) disables it
         if (env) histPath_ = env;
         else {
-            const char* home = std::getenv("HOME");
-            if (!home) return;
-            histPath_ = std::string(home) + "/.rakupp_history";
+            std::string home = platHomeDir();
+            if (home.empty()) return;
+            histPath_ = home + "/.rakupp_history";
         }
         std::ifstream f(histPath_);
         std::string line;

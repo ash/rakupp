@@ -5,6 +5,29 @@
 // (Winsock, LoadLibrary, GetModuleFileName, …) so the same code compiles.
 
 #include <string>
+#include <cstdlib>
+
+// The user's home directory, or "" when there is no answer.
+//
+// Every `getenv("HOME")` in this tree used to read the variable directly, which
+// is the POSIX answer and only that. Windows does not set HOME: it sets
+// USERPROFILE always, and HOMEDRIVE+HOMEPATH on a domain-joined machine. So on
+// Windows the module store resolved to a bare "/.raku" at the drive root, the
+// REPL kept no history, and the config file had nowhere to live — each of them
+// failing quietly, in its own way, for one missing fallback.
+//
+// The order is Rakudo's for $*HOME, and USERPROFILE is checked on every
+// platform rather than under _WIN32, so that $*HOME and this function can never
+// disagree — and so the Windows shape can be reproduced on a POSIX box with
+// `env -u HOME USERPROFILE=…`, which is how this is tested.
+inline std::string platHomeDir() {
+    if (const char* h = std::getenv("HOME")) { if (*h) return h; }
+    if (const char* u = std::getenv("USERPROFILE")) { if (*u) return u; }
+    const char* d = std::getenv("HOMEDRIVE");
+    const char* p = std::getenv("HOMEPATH");
+    if (d && *d && p && *p) return std::string(d) + p;
+    return "";
+}
 
 // The host platform's identity, as Raku code sees it ($*KERNEL.name /
 // $*DISTRO.name). These were hardcoded to "darwin"/"macos" from the mac-only

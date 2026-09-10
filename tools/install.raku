@@ -265,8 +265,19 @@ sub blob-path(IO::Path $p, Str $sha) {
     <sources resources bin>.map({ $p.add($_).add($sha) }).first(*.e)
 }
 
+# $*HOME, not %*ENV<HOME>. Windows does not set HOME, so `%*ENV<HOME>.IO` was
+# a method call on Any there and `rakupp install Foo` died with
+# "No such method 'IO' for invocant of type 'Any'" before it fetched anything.
+# $*HOME falls back to USERPROFILE and HOMEDRIVE+HOMEPATH, as Rakudo's does.
+sub home-dir(--> IO::Path) {
+    my $h = $*HOME;
+    die "cannot find your home directory (no HOME, USERPROFILE or HOMEDRIVE+HOMEPATH)"
+        without $h;
+    $h
+}
+
 sub cache-dir {
-    my $d = %*ENV<HOME>.IO.add('.raku').add('rakupp-install');
+    my $d = home-dir().add('.raku').add('rakupp-install');
     $d.mkdir unless $d.d;
     $d
 }
@@ -1624,7 +1635,7 @@ sub MAIN(
     Bool :$force,              #= reinstall / uninstall despite refusals
     Bool :$refresh,            #= refetch the ecosystem index (else cached 24h)
     Bool :q(:$quiet),          #= only warnings and failures; nothing on success
-    Str  :$to = %*ENV<HOME> ~ '/.raku',  #= the CURI store prefix to write
+    Str  :$to = home-dir().add('.raku').Str,  #= the CURI store prefix to write
 ) {
     $QUIET = ?$quiet;
     # `rakupp uninstall --list` is a mode mix, not a synonym for install
