@@ -1411,7 +1411,10 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         }
         if (m == "command") { auto it = inv.hash()->find("argv"); return it != inv.hash()->end() ? it->second : Value::array(); }
         if (m == "in") { Value h = inv; h.hashKind = "ProcIn"; return h; } // writable stdin handle (shares hash)
-        if (m == "out" || m == "err") { Value h = Value::makeHash(); h.hashKind = "FileHandle"; (*h.hash())["buffer"] = (*inv.hash())[m == "out" ? "out-str" : "err-str"]; (*h.hash())["mode"] = Value::str("r"); (*h.hash())["captured"] = Value::boolean(true); return h; }
+        // `$proc.out` / `$proc.err` — a read handle over what the child wrote. It
+        // keeps the Proc it came from: Rakudo's IO::Pipe.close answers that Proc,
+        // and sinking an unsuccessful one is what reports a failed child.
+        if (m == "out" || m == "err") { Value h = Value::makeHash(); h.hashKind = "FileHandle"; (*h.hash())["buffer"] = (*inv.hash())[m == "out" ? "out-str" : "err-str"]; (*h.hash())["mode"] = Value::str("r"); (*h.hash())["captured"] = Value::boolean(true); (*h.hash())["proc-owner"] = inv; return h; }
         if (m == "sink" || m == "self") return inv;
         if (m == "pid") { auto it = inv.hash()->find("pid"); return it != inv.hash()->end() ? it->second : Value::integer(0); } // (was a hard-coded 0)
     }

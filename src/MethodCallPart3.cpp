@@ -2101,6 +2101,14 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 if (out) out << buf;
             }
             (*inv.hash())["flushed"] = Value::boolean(true); // exit-flush skips it now
+            // A `$proc.out`/`$proc.err` pipe answers its Proc, not True (Rakudo's
+            // IO::Pipe.close). A bare `$p.err.close;` statement then SINKS that
+            // Proc, and the sink is what raises X::Proc::Unsuccessful for a child
+            // that failed — closing the pipes was the one path that stayed silent,
+            // so a build script that closed instead of sinking saw a failed spawn
+            // as success. A plain file handle still answers True.
+            auto powner = inv.hash()->find("proc-owner");
+            if (powner != inv.hash()->end()) return powner->second;
             return Value::boolean(true);
         }
         if (m == "spurt") { // IO::Handle.spurt($content, :close) — write through the open handle
