@@ -544,6 +544,92 @@ check (try $poff.exitcode) == 0 && !$poff-err.contains('fetching ecosystem index
 check $home6.add('.raku/bin/gate-hello').e,
       'path: ...and writes the bin wrapper like any install';
 
+# ---- path arguments people actually type ------------------------------------
+# zef's rule is `.`- or `/`-prefixed and nothing else, and it was copied here
+# verbatim — so `rakupp install Foo` beside a Foo/ checkout was a NAME, went to
+# the ecosystem index, missed, pulled REA's ~18 MB, missed again, and reported
+# a checkout on the caller's own disk as a module nobody had published. Every
+# row below is a spelling that failed that way; each has its OWN dist, so a
+# row can only pass by installing the directory it names.
+my $paths = $tmp.add('paths');
+$paths.mkdir;
+sub path-dist(IO::Path $root, Str $name, Str $version = '1.0') {
+    my $mod = $name.subst('::', '/', :g);
+    $root.mkdir;
+    $root.add("lib/$mod".IO.dirname).mkdir;
+    $root.add("lib/$mod.rakumod").spurt("unit module $name;\n");
+    $root.add('META6.json').spurt(qq:to/END/);
+        \{ "name": "$name", "version": "$version", "auth": "test:gate",
+          "description": "a path-argument fixture",
+          "provides": \{ "$name": "lib/$mod.rakumod" \}, "depends": [] \}
+        END
+    $root
+}
+my $phome = $paths.add('home');
+$phome.mkdir;
+# No index override by default, and no network with it: these dists have no
+# dependencies, so a path install never reaches the ecosystem at all. A row
+# that means to resolve a NAME passes :index and gets the fixture one.
+sub installer-p(*@args, :$cwd, :$home = $phome, :$index) {
+    my $p = run 'env', "HOME={$home}",
+                |($index ?? ("RAKUPP_INSTALL_INDEX={$index}",) !! ()),
+                $EXE, 'install', |@args, :out, :err,
+                |($cwd ?? (:cwd($cwd),) !! ());
+    my $out = $p.out.slurp(:close);
+    my $err = $p.err.slurp(:close);
+    { exit => (try $p.exitcode) // 1, out => $out, err => $err }
+}
+my $ws = $paths.add('ws');
+$ws.add('nest').mkdir;
+path-dist($ws.add('Bare-Demo'), 'Bare::Demo');
+path-dist($ws.add('nest/Nest-Demo'), 'Nest::Demo');
+
+my %bare = installer-p('Bare-Demo', :cwd($ws.Str));
+check %bare<exit> == 0 && installer-p('--list')<out>.contains('Bare::Demo:ver<1.0>'),
+      'path: a bare directory name is a path — `install Foo` beside a Foo/ checkout';
+my %nest = installer-p('nest/Nest-Demo', :cwd($ws.Str));
+check %nest<exit> == 0 && installer-p('--list')<out>.contains('Nest::Demo:ver<1.0>'),
+      'path: a relative path that holds a separator without starting with one';
+# the file that MAKES a directory a distribution root — what tab completion
+# hands over, and what used to answer "not a directory"
+path-dist($ws.add('Meta-Demo'), 'Meta::Demo');
+my %meta = installer-p('Meta-Demo/META6.json', :cwd($ws.Str));
+check %meta<exit> == 0 && installer-p('--list')<out>.contains('Meta::Demo:ver<1.0>'),
+      'path: a path to the META6.json stands for the directory holding it';
+
+# A directory that is not a distribution root stays a NAME — otherwise
+# `rakupp install Test` in a tree with a Test/ directory would stop meaning
+# the module. It says which of the two it could not find.
+$ws.add('Gate-Loose').mkdir;
+my %loose = installer-p('Gate-Loose', :cwd($ws.Str));
+check %loose<exit> == 1 && %loose<err>.contains('cannot resolve: Gate-Loose')
+      && %loose<err>.contains('no META6.json'),
+      'path: a bare name whose directory is not a dist root resolves as a name, and says so';
+
+# An IDENTITY is never a path, whatever is sitting next to it: a directory
+# named for the module wins nothing. (Only where the filesystem will hold
+# such a name — Windows will not, and there the case cannot arise.)
+my $shadow = $ws.add('Gate::Demo');
+if (try { $shadow.mkdir; $shadow.d }) {
+    path-dist($shadow, 'Wrong::Answer', '9.9');
+    my %ident = installer-p('--dry-run', 'Gate::Demo', :cwd($ws.Str),
+                            :home($paths.add('home-ident')),
+                            :index($tmp.add('index.json')));
+    check %ident<exit> == 0 && %ident<out>.contains('Gate::Demo')
+          && !%ident<out>.contains('Wrong::Answer'),
+          'path: `install Gate::Demo` is the module, not the Gate::Demo/ directory beside it';
+}
+
+# `~/dist` from a shell that does not expand tilde — which on Windows is
+# every shell, and on POSIX is any quoted argument.
+my $thome = $paths.add('tilde-home');
+$thome.mkdir;
+path-dist($thome.add('Tilde-Demo'), 'Tilde::Demo');
+my %tilde = installer-p('~/Tilde-Demo', :home($thome), :cwd($tmp.Str));
+check %tilde<exit> == 0
+      && installer-p('--list', :home($thome))<out>.contains('Tilde::Demo:ver<1.0>'),
+      'path: a leading ~ is expanded by the installer, not left to the shell';
+
 # ---- the build hook, and `rakupp test` --------------------------------------
 # Gate::Built is the OpenSSL shape: Build.rakumod imports a build-dep from
 # the target store and generates a file its own suite requires. Driven

@@ -49,7 +49,8 @@ distribution's own test suite before marking it installed. It also takes a
 ecosystem — or not in it yet:
 
 ```sh
-rakupp install ./my-dist          # a checkout: the directory with META6.json
+rakupp install my-dist            # a checkout: the directory with META6.json
+                                  # (./my-dist, ~/src/my-dist, C:\… all work)
 rakupp install https://github.com/ash/raku-modules/tree/main/Prompt-Hidden
                                   # a github page URL, monorepo subdirectory
                                   # and all — the URL from the address bar

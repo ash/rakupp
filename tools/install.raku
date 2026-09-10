@@ -744,39 +744,96 @@ sub archive-url(%e) {
     %e<source-url> // (base-url() ~ '/' ~ (%e<path> // ''))
 }
 
-# A PATH identity — zef's rule, learned verbatim: an argument starting with
-# `.` or `/` names a directory holding a distribution (META6.json at its
-# root), never an ecosystem module. `rakupp install .` is the development
-# loop: THIS dist, its ecosystem dependencies first, no fetch and no
-# checksum for the dist itself (there is no archive to hash — the directory
-# is the source of truth, and the test gate still stands between it and the
-# store).
+# A PATH identity — an argument that names a directory holding a distribution
+# (META6.json at its root), never an ecosystem module. `rakupp install .` is
+# the development loop: THIS dist, its ecosystem dependencies first, no fetch
+# and no checksum for the dist itself (there is no archive to hash — the
+# directory is the source of truth, and the test gate still stands between it
+# and the store).
+#
+# zef's rule is `.`- or `/`-prefixed and nothing else, and it was copied here
+# verbatim. It is a rule about SPELLING, and people do not spell a directory
+# that way when it is sitting in front of them: they type its name. So this
+# went further than zef's — see is-path-arg() below for the shapes and the one
+# filesystem question it asks.
+#
+# A URL is not a path either, but it is not a name — it is a third thing the
+# installer does not do, and it should say so instead of spending two index
+# downloads finding out. url-arg() below is that check.
+#
+# `rakupp install https://…` used to look the whole URL up as a distribution
+# NAME: the zef index, a miss, REA's ~18 MB, another miss, and a "cannot
+# resolve" that described the URL as if it were a module nobody had published.
+sub url-arg(Str $arg --> Bool) {
+    so $arg ~~ /^ <[A..Za..z]> <[A..Za..z 0..9 + . -]>* '://' /
+}
+
+# An IDENTITY, and therefore never a path however the filesystem is arranged:
+# `Foo::Bar`, or anything carrying a version/auth/api/from adverb. This is the
+# guard that lets the shape rules below be generous — whatever a directory in
+# the way happens to be called, `Foo::Bar` and `Foo:ver<1.2>` still resolve in
+# the ecosystem.
+sub identity-arg(Str $arg --> Bool) {
+    so $arg.contains('::') || $arg ~~ / ':' <[a..z]>+ '<' /
+}
+
+# `~/dists/Foo` from a shell that does not expand tilde — which on Windows is
+# every shell, and on POSIX is any quoted argument. The expansion is this
+# program's, so it is the same everywhere: only a leading `~` alone or a
+# leading `~/` (`~\` on Windows), never `~user`, whose home only the system
+# knows.
+sub expand-tilde(Str $arg --> Str) {
+    return $arg unless $arg eq '~' || $arg.starts-with('~/') || $arg.starts-with('~\\');
+    my $home = try home-dir();
+    return $arg without $home;
+    $arg eq '~' ?? $home.Str !! $home.add($arg.substr(2)).Str
+}
+
 # Is this argument a PATH to a distribution, rather than a name to resolve?
 #
-# It used to be `.` or `/` and nothing else, which misread two shapes and
+# It used to be `.` or `/` and nothing else, which misread five shapes and
 # misread them expensively — anything not a path becomes a name, a name goes to
 # the zef index, and a zef miss is what lazily pulls REA's ~18 MB.
 #
 #   C:\dist, C:/dist   a Windows absolute path. So `rakupp install C:\…` was a
 #                      name lookup, and an absolute path could not be installed
 #                      from on Windows at all; only `.\dist` worked.
-#   \\server\share      a UNC path, same story.
+#   \\server\share     a UNC path, same story.
+#   dists/Foo          a relative path that does not START with a separator but
+#                      plainly contains one. No distribution name holds `/` or
+#                      `\` — identity-arg() above has already taken the two
+#                      spellings that could — so a separator anywhere is a path.
+#   Foo                the bare directory name, `rakupp install Foo` beside a
+#                      Foo/ checkout, which is what a person types before they
+#                      type `./Foo`. This one is decided by the filesystem
+#                      rather than by shape: a path only when the directory
+#                      exists AND holds the META6.json that makes it a
+#                      distribution root. A bare word that is not that stays a
+#                      name, so `rakupp install Test` still means the module
+#                      even in a tree with a Test/ directory in it.
+#   META6.json         the file that MAKES a directory a distribution root, so
+#                      a path to it is a path to the distribution — tab
+#                      completion hands it over, and it was "not a directory".
 #
-# A URL is not a path either, but it is not a name — it is a third thing the
-# installer does not do, and it should say so instead of spending two index
-# downloads finding out. url-arg() below is that check.
-sub is-path-arg(Str $arg) {
+# The shape rules do NOT consult the filesystem, on purpose: `./nope` must fail
+# as a missing directory, not travel to the ecosystem index as a module name.
+sub is-path-arg(Str $arg is copy) {
+    return False if url-arg($arg) || identity-arg($arg);
+    $arg = expand-tilde($arg);
     return True if $arg.starts-with('.') || $arg.starts-with('/');
     return True if $arg.starts-with('\\');                      # UNC, or a rooted Windows path
     return True if $arg ~~ /^ <[A..Za..z]> ':' <[\\ /]> /;        # C:\dist or C:/dist
-    False
+    return True if $arg.contains('/') || $arg.contains('\\');   # dists/Foo, dists\Foo
+    so (try ($arg.IO.d && $arg.IO.add('META6.json').e)
+            || ($arg eq 'META6.json' && $arg.IO.f))
 }
 
-# `rakupp install https://…` used to look the whole URL up as a distribution
-# NAME: the zef index, a miss, REA's ~18 MB, another miss, and a "cannot
-# resolve" that described the URL as if it were a module nobody had published.
-sub url-arg(Str $arg --> Bool) {
-    so $arg ~~ /^ <[A..Za..z]> <[A..Za..z 0..9 + . -]>* '://' /
+# The distribution directory a path argument names. Tilde-expanded, so every
+# reader of a path argument gets the same answer as is-path-arg() did, and a
+# path to the META6.json stands for the directory holding it.
+sub arg-path(Str $arg --> IO::Path) {
+    my $p = expand-tilde($arg).IO;
+    $p.basename eq 'META6.json' && $p.f ?? $p.parent !! $p
 }
 
 # A URL that names a distribution, turned into (tarball-url, subdirectory).
@@ -869,7 +926,7 @@ sub url-dist-entry(Str $url) {
 }
 
 sub local-dist-entry(Str $arg) {
-    my $root = $arg.IO.absolute.IO.cleanup;   # `.` spells the cwd, not a path segment to keep
+    my $root = arg-path($arg).absolute.IO.cleanup;   # `.` spells the cwd, not a path segment to keep
     die "$arg: not a directory" unless $root.d;
     die "$arg: no META6.json at {$root} — not a distribution root"
         unless $root.add('META6.json').e;
@@ -1813,8 +1870,9 @@ sub MAIN(
         }
     }
     my @removal-names = @modules.map(-> $a {
-        is-path-arg($a) && $a.IO.add('META6.json').e
-            ?? ((try json-decode($a.IO.add('META6.json').slurp))<name> // $a)
+        my $meta = is-path-arg($a) ?? arg-path($a).add('META6.json') !! Nil;
+        $meta && $meta.e
+            ?? ((try json-decode($meta.slurp))<name> // $a)
             !! $a
     });
     if $uninstall {
@@ -1849,7 +1907,9 @@ sub MAIN(
     unless @modules {
         note q:to/END/.trim;
             usage: rakupp install [options] Module|Path|URL ...
-                   rakupp install .            this directory's dist (a Path starts with . or /, or is C:\… )
+                   rakupp install .            this directory's dist
+                   rakupp install my-dist      a Path: a directory holding a META6.json, however
+                                               spelled — my-dist, ./x, ~/x, /x, dists/x, C:\x, \\\\host\x
                    rakupp install https://github.com/OWNER/REPO[/tree/REF[/SUBDIR]]
                    rakupp install https://host/Foo-1.0.tar.gz
                    rakupp install --list | --check | --gc | --refresh
@@ -1875,9 +1935,9 @@ sub MAIN(
     }
 
     $REA-REFRESH = $refresh // False;
-    # zef's path rule, learned verbatim: `.`- and `/`-prefixed arguments are
-    # directories to install from (as are Windows drive and UNC paths);
-    # everything else resolves in the ecosystem.
+    # is-path-arg(): an argument that spells a path, or bare-names a directory
+    # with a META6.json in it, is a directory to install from; everything else
+    # resolves in the ecosystem.
     # A path dist contributes its DEPENDENCIES to the resolver — they install
     # first, like any plan's — while the dist itself installs from its
     # directory, never from the index's copy of the same name.
@@ -1913,6 +1973,17 @@ sub MAIN(
 
     if !@plan && %notes {
         note "cannot resolve: {%notes.map({ "{.key} ({.value})" }).join('; ')}";
+        # A bare name that is ALSO a directory here is a path the caller meant
+        # as one, and the only reason it came this far is the missing
+        # META6.json — is-path-arg() would have taken it otherwise. Say that,
+        # rather than leaving "not in the ecosystem index" to describe a
+        # checkout on their disk. (An identity is never a path, whatever the
+        # directory beside it is called, so it earns no such note.)
+        for %notes.keys.sort.grep({ !identity-arg($_) && (try .IO.d)
+                                    && !(try .IO.add('META6.json').e) }) -> $d {
+            note "  $d is a directory here, but has no META6.json — a distribution root needs one";
+            trace("cannot resolve: $d is a META6-less directory");
+        }
         trace("cannot resolve: {%notes.map({ "{.key} ({.value})" }).join('; ')}");
         trace-pointer();
         exit 1;

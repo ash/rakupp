@@ -716,7 +716,8 @@ loadable by either engine.
 rakupp install Foo::Bar          # newest satisfying, plus dependencies
 rakupp install Foo:ver<1.2.3>    # a specific version (installs are additive)
 rakupp install .                 # this directory's dist; deps from the index
-rakupp install ./my-dist         # any path — . or / (and C:\… or \\host\… )
+rakupp install my-dist           # any path: a directory name, ./x, ~/x, /x,
+                                 # dists/x, C:\x, \\host\share\x
 rakupp install https://github.com/ash/raku-modules/tree/main/Prompt-Hidden
                                  # a github page URL, subdirectory and all
 rakupp install https://host/Foo-1.0.tar.gz     # or a release tarball
@@ -850,11 +851,20 @@ With `-q` that re-run prints nothing at all: the plan, the progress lines,
 the `--check` and `--dry-run` reports stay, as do `--list`'s identity lines
 (only the detail under each goes).
 
-An argument that starts with `.` or `/` is a PATH — zef's own rule,
-adopted verbatim — naming a directory whose `META6.json` is the dist. It
+An argument naming a directory whose `META6.json` is the dist is a PATH. It
 installs from disk: no fetch and no checksum (the directory is the source
 of truth), while the build hook and the test gate stand unchanged, and its
 dependencies still resolve from the ecosystem and install first.
+
+zef's rule for which arguments are paths is a leading `.` or `/` and
+nothing else. That is a rule about spelling, and people do not spell a
+directory that way when it is in front of them — they type its name. So a
+path here is any of: a leading `.`, `/`, `~`, `C:\`/`C:/` or `\\host\share`;
+a `/` or `\` anywhere in the argument (`dists/Foo`); or a bare word that
+names a directory holding a `META6.json`, which is `rakupp install Foo`
+beside a `Foo/` checkout. A bare word that is not such a directory stays a
+module name, and an identity — anything with `::` or a `:ver<…>`-style
+adverb — is always a name, whatever directory happens to sit beside it.
 `rakupp install .` is the development loop; `rakupp test .` measures the
 suite without installing; `uninstall` and `reinstall` accept the same
 spelling and act on whatever dist the directory names. A path install

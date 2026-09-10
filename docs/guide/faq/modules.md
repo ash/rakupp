@@ -38,10 +38,15 @@ rakupp uninstall Foo            # remove what THIS installer put there
 Yes — give a path or a URL where a name would go.
 
 ```sh
-rakupp install ./my-dist        # a checkout: the directory with META6.json
+rakupp install my-dist          # a checkout: the directory with META6.json
+rakupp install ~/src/my-dist    # ./x, /x, ~/x, dists/x, C:\x all work too
 rakupp install https://github.com/ash/raku-modules/tree/main/Prompt-Hidden
 rakupp install https://host/Foo-1.0.tar.gz
 ```
+
+A bare word is a path when it names a directory with a `META6.json` in it,
+and a module name otherwise, so `rakupp install Foo` does the obvious thing
+from either side of a checkout.
 
 The github form takes the URL from your address bar, including the
 `/tree/BRANCH/SUBDIR` shape a monorepo of modules produces; without a `/tree/`
