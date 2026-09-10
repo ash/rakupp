@@ -66,6 +66,24 @@ static void collectMroChain(ClassInfo* c, ClassInfo** buf,
     for (auto& p : c->extraParents) collectMroChain(p.get(), buf, spill, n);
 }
 
+// A class's OWN hook, or the one it COMPOSED. Role composition FLATTENS a
+// role's methods into the composing class: the class's own declaration wins
+// and the role's copy is discarded, exactly as it does for any other method.
+// So a role's BUILD/TWEAK belongs to the COMPOSER's turn in the walk below,
+// never to a turn of the role's own. The first `does` arrives as the parent
+// and the rest as extra parents, so both have to be looked through — and only
+// through ROLES: a real ancestor class runs its own hook on its own turn.
+static Value* composedHook(ClassInfo* c, const char* which) {
+    auto it = c->methods.find(which);
+    if (it != c->methods.end()) return it->second.t == VT::Code ? &it->second : nullptr;
+    if (c->parent && c->parent->isRole)
+        if (Value* r = composedHook(c->parent.get(), which)) return r;
+    for (auto& p : c->extraParents)
+        if (p && p->isRole)
+            if (Value* r = composedHook(p.get(), which)) return r;
+    return nullptr;
+}
+
 // Rakudo's BUILDALL walks the MRO least-derived first and, for EACH class in
 // turn, runs that class's BUILD and then that class's TWEAK. `findMethod`
 // answers only the MOST-derived one, so a parent that initialises its own
@@ -109,15 +127,24 @@ void Interpreter::runBuildChain(ClassInfo* ci, const Value& self, const ValueLis
     // "nextsame is not in the dynamic scope of a dispatcher", and so it cannot
     // re-run an ancestor this walk is already running exactly once.
     auto runHook = [&](ClassInfo* c, const char* which) {
-        auto it = c->methods.find(which);
-        // Only a class's OWN declaration: an inherited one belongs to the
-        // ancestor that declared it, and runs on that ancestor's turn here.
-        if (it == c->methods.end() || it->second.t != VT::Code) return;
+        // A composed ROLE is not an ancestor, so it gets no hook of its own: it
+        // is in this chain only for the per-class step, and `composedHook` picks
+        // its declaration up on the composer's turn instead. Giving it a turn
+        // ran BOTH a class's TWEAK and the one it had overridden — Sparrow6's
+        // Range context declares a TWEAK that splits stdout into streams and
+        // composes a role whose TWEAK builds the flat unsplit one, so every
+        // check saw one extra stream holding the whole document (issue #75).
+        // A role PUNNED into a class by constructing it is still its own class.
+        if (c->isRole && c != ci) return;
+        // Only what this class declares or composed: an INHERITED hook belongs
+        // to the ancestor that declared it, and runs on that ancestor's turn.
+        Value* hook = composedHook(c, which);
+        if (!hook) return;
         RedispatchCtx rc;
         rc.sameArgs = args;
         rc.next = [](ValueList) { return Value::nil(); };
         redispatchStack_.push_back(std::move(rc));
-        try { sinkBuildResult(invokeMethod(it->second, self, args, nullptr, /*ownFrame=*/true)); }
+        try { sinkBuildResult(invokeMethod(*hook, self, args, nullptr, /*ownFrame=*/true)); }
         catch (...) { redispatchStack_.pop_back(); throw; }
         redispatchStack_.pop_back();
     };
