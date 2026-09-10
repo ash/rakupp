@@ -377,7 +377,12 @@ jobs:
         run: |
           mkdir -p lone && cp dist/rakupp/bin/rakupp lone/
           cd lone
-          ./rakupp install 2>&1 | tee out.txt
+          # `install` with no arguments PRINTS USAGE and exits 2 by design, and
+          # this shell runs under `set -eo pipefail` — so take the code rather
+          # than trip over it, and assert it: a crash is not a usage message.
+          rc=0; ./rakupp install > out.txt 2>&1 || rc=$?
+          cat out.txt
+          test "$rc" -eq 2
           grep -q "usage: rakupp install" out.txt
           ./rakupp doc trim | tee doc.txt
           grep -q "REFERENCE.md" doc.txt
@@ -403,7 +408,12 @@ jobs:
         run: |
           mkdir -p lone && cp dist/rakupp/bin/rakupp.exe lone/
           cd lone
-          ./rakupp.exe install 2>&1 | tee out.txt
+          # `install` with no arguments PRINTS USAGE and exits 2 by design, and
+          # this shell runs under `set -eo pipefail` — so take the code rather
+          # than trip over it, and assert it: a crash is not a usage message.
+          rc=0; ./rakupp.exe install > out.txt 2>&1 || rc=$?
+          cat out.txt
+          test "$rc" -eq 2
           grep -q "usage: rakupp install" out.txt
           ./rakupp.exe doc trim | tee doc.txt
           grep -q "REFERENCE.md" doc.txt
