@@ -445,12 +445,80 @@ jobs:
           Compress-Archive -Path dist\rakupp\* -DestinationPath rakupp-${{ matrix.name }}.zip
           (Get-FileHash rakupp-${{ matrix.name }}.zip -Algorithm SHA256).Hash | Out-File -Encoding ascii rakupp-${{ matrix.name }}.zip.sha256
 
+      # The Windows ENGINE installer (tools/install-windows.ps1), end to end
+      # against the zip just packaged: t\windows\install.ps1 unpacks it into a
+      # temporary prefix and asserts what came of it — the engine RUNS under
+      # both names, the user PATH gained exactly one entry and lost nothing
+      # (a %VAR% entry planted by the gate has to come back unexpanded), and
+      # -Uninstall puts the machine back byte for byte. This script edits
+      # HKCU\Environment on a user's machine; it does not get to go untested.
+      #
+      # Under BOTH shells, deliberately: Windows PowerShell 5.1 is what a user
+      # double-clicks and it is a different language runtime from pwsh 7 (no
+      # ternary, no ??, its own New-Item link support), so a script that works
+      # in one can fail in the other.
+      - name: Smoke test install-windows.ps1 (PowerShell 5.1)
+        if: runner.os == 'Windows' && matrix.mingw != true
+        shell: powershell
+        run: |
+          Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
+          .\t\windows\install.ps1 -Archive rakupp-${{ matrix.name }}.zip
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Smoke test install-windows.ps1 (PowerShell 7)
+        if: runner.os == 'Windows' && matrix.mingw != true
+        shell: pwsh
+        run: |
+          Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
+          .\t\windows\install.ps1 -Archive rakupp-${{ matrix.name }}.zip
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      # The GUI installer: an Inno Setup wizard around the very layout the .zip
+      # is packaged from. InnoSetup 6.7.1 ships on the windows runner image, so
+      # this is a compile step and not a new dependency.
+      - name: GUI installer (Inno Setup)
+        if: runner.os == 'Windows' && matrix.mingw != true
+        shell: pwsh
+        run: |
+          # The version comes from the BINARY, never from the tag: a tag has
+          # been cut against an unbumped project(VERSION) before (v3.20.0), and
+          # the wizard must not become the second place that says so.
+          $out  = (dist\rakupp\bin\rakupp.exe --version | Out-String)
+          $line = ($out -split "`r?`n")[0]
+          if (-not ($line -match '(\d+\.\d+\.\d+)')) { Write-Error "no version in [$line]"; exit 1 }
+          $ver = $Matches[1]
+          Write-Host "installer version: $ver"
+          $iscc = (Get-Command iscc -ErrorAction SilentlyContinue).Source
+          if (-not $iscc) { $iscc = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe' }
+          if (-not (Test-Path -LiteralPath $iscc)) { Write-Error 'no Inno Setup compiler on this runner'; exit 1 }
+          & $iscc "/DAppVersion=$ver" "/DLayout=$((Resolve-Path dist\rakupp).Path)" tools\windows\rakupp.iss
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          (Get-FileHash rakupp-setup-windows-x64.exe -Algorithm SHA256).Hash | Out-File -Encoding ascii rakupp-setup-windows-x64.exe.sha256
+          Get-Item rakupp-setup-windows-x64.exe | Select-Object Name, Length | Format-List
+
+      # The wizard, driven silently end to end: it must install a RUNNING
+      # engine, let the raku checkbox decide whether raku.exe exists, show the
+      # engine's own version in Add/Remove Programs, add exactly one PATH entry
+      # without expanding the rest, and take all three back on uninstall.
+      - name: Smoke test the GUI installer (Inno Setup)
+        if: runner.os == 'Windows' && matrix.mingw != true
+        shell: pwsh
+        run: |
+          Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
+          .\t\windows\setup.ps1 -Setup rakupp-setup-windows-x64.exe
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      # rakupp-setup-windows-x64.* exists on the windows-x64 leg alone, the way
+      # rakulang-*.whl exists only on the POSIX ones: a pattern that matches
+      # nothing here is a warning, and if-no-files-found fires only when the
+      # whole set comes up empty.
       - name: Upload build artifact
         uses: actions/upload-artifact@v7
         with:
           name: rakupp-${{ matrix.name }}
           path: |
             rakupp-${{ matrix.name }}.*
+            rakupp-setup-windows-x64.*
             rakulang-*.whl
           if-no-files-found: error
 
@@ -460,6 +528,7 @@ jobs:
         with:
           files: |
             rakupp-${{ matrix.name }}.*
+            rakupp-setup-windows-x64.*
             rakulang-*.whl
 
   # Raku.js: the interpreter compiled to WebAssembly (rakujs/build.sh). Ships two

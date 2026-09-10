@@ -101,6 +101,17 @@ runs are profiled and gated: [COUNTING.md](docs/status/COUNTING.md).
 brew tap ash/rakupp && brew install rakupp    # macOS (Apple Silicon: prebuilt binary)
 ```
 
+```powershell
+irm https://raw.githubusercontent.com/ash/rakupp/main/tools/install-windows.ps1 | iex
+```
+
+The Windows one-liner needs no admin: it unpacks the latest release under
+`%LOCALAPPDATA%`, asks whether you also want the engine under the name `raku`,
+and puts it on your `PATH`. There is a wizard as well —
+`rakupp-setup-windows-x64.exe` on the
+[Releases page](https://github.com/ash/rakupp/releases/latest), with the same
+two questions as checkboxes and an Add/Remove Programs entry.
+
 Or unpack a **prebuilt archive** — macOS universal, Linux x86_64 (static
 libstdc++), Windows x64 — from the
 [Releases page](https://github.com/ash/rakupp/releases/latest) and put its
