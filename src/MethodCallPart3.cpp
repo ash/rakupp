@@ -2511,7 +2511,15 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     //
     // `.decode` is deliberately NOT included: Rakudo rejects it on a List
     // ("Did you mean 'encode'?"), because decoding a stringified list is nonsense.
-    if (m == "encode" && (inv.t == VT::Array || inv.t == VT::Range) && inv.hashKind.empty()) {
+    // …and every other Cool the same way. An Int, a Rat, a Num and an allomorph
+    // all stringify before encoding under Rakudo (`42.encode` is "42".encode,
+    // `<1/2>.encode` is "1/2".encode — the STRING side, not 0.5), and here they
+    // fell past the Str guard below into "No such method 'encode' for invocant
+    // of type 'IntStr'". `<7 8 9 ÷>` is a list of IntStr, so a Win32 GUI turning
+    // button titles into wide strings threw on three buttons out of four.
+    if (m == "encode" && inv.t != VT::Str &&
+        (((inv.t == VT::Array || inv.t == VT::Range) && inv.hashKind.empty()) ||
+         inv.isAllomorph() || inv.t == VT::Int || inv.t == VT::Rat || inv.t == VT::Num)) {
         ValueList a2 = args;
         return methodCall(Value::str(inv.toStr()), "encode", a2, nullptr);
     }
