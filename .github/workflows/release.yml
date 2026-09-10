@@ -119,6 +119,20 @@ jobs:
         shell: msys2 {0}
         run: build/rakupp.exe tools/smoke.raku
 
+      # The Windows platform gate: the identity Raku code branches on
+      # ($*DISTRO.is-win and friends) and the FFI properties the Win32 API
+      # needs from the fallback path, which on Windows is the path everyone
+      # takes. The suites below are POSIX-only, so this is the only look these
+      # legs get at either — and both were wrong here until 3.26.
+      - name: Platform + FFI gate (Windows)
+        if: runner.os == 'Windows' && matrix.mingw != true
+        run: build\Release\rakupp.exe t\windows\platform.raku
+
+      - name: Platform + FFI gate (Windows, MinGW-w64)
+        if: matrix.mingw == true
+        shell: msys2 {0}
+        run: build/rakupp.exe t/windows/platform.raku
+
       # -e one-liners, OUTPUT-verified (exit codes alone would miss swallowed
       # stdout — a user report had `-e` printing nothing on Windows).
       - name: Smoke test -e (POSIX)

@@ -12800,6 +12800,17 @@ void Interpreter::registerBuiltins() {
     B["nativecast"] = [ncTypeName](Interpreter& I, ValueList& a) -> Value {
         if (a.size() < 2) return Value::any();
         std::string t = ncTypeName(a[0]);
+        // A Callable has no address to take. This used to fall through to the
+        // generic "nothing else matched" 0, so `nativecast(Pointer, &wndproc)`
+        // handed C a NULL function pointer and the failure surfaced somewhere
+        // else entirely — a window class that registered with no procedure.
+        // Rakudo refuses the same cast; say instead where a callback DOES
+        // become a C function pointer.
+        if (a[1].t == VT::Code)
+            throw RakuError{Value::typeObj("X::AdHoc"),
+                "nativecast: a routine has no address to cast. A callback becomes a C function pointer "
+                "where one is DECLARED — `sub f(&cb (Pointer, uint32 --> int64)) is native(...)` — so pass "
+                "the routine as that argument instead"};
         long long addr = Interpreter::ncRawAddr(a[1]);
         if (t == "Pointer" || t.rfind("Pointer[", 0) == 0) return I.ncMakePointer(t, (void*)(intptr_t)addr);
         if (t == "CArray"  || t.rfind("CArray[", 0)  == 0) return I.ncMakeLiveCArray(t, (void*)(intptr_t)addr);

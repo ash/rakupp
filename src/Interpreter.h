@@ -1022,7 +1022,10 @@ public:
     static long long ncRawAddr(const Value& v); // extract a raw pointer from a native value (0 if none)
     Value cglobal(const std::string& lib, const std::string& sym, const std::string& type); // C global variable
     std::string ncGuessLibraryName(const std::string& lib); // the file `is native(lib)` would dlopen
-    long runCallback(int slot, long a0, long a1, long a2, long a3, long a4, long a5); // NativeCall callback dispatch
+    // Machine words, not `long`: on Windows `long` is 32 bits, which truncated
+    // every pointer argument a C library handed a Raku callback.
+    long long runCallback(int slot, long long a0, long long a1, long long a2,
+                          long long a3, long long a4, long long a5); // NativeCall callback dispatch
     void runFfiClosure(void* closure, void* ret, void** args); // NativeCall ffi_closure dispatch
     // False on a thread the interpreter never entered — i.e. one the C library
     // made for itself. Such a thread has no lexical scope to run Raku in.

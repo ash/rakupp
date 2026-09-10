@@ -14577,17 +14577,32 @@ static bool ncIsFloatType(const std::string& t) {
            t == "Rat" || t == "Real" || t == "double" || t == "Numeric";
 }
 
+// The machine word the blind path passes. NOT `long`: that is 32 bits on
+// Windows (LLP64, MSVC and MinGW-w64 alike), so every pointer argument, every
+// `is rw` slot and every callback argument lost its top half there — an HWND
+// or an HMODULE, which on x64 lives above 4 GB, arrived as garbage.
+using NcWord = long long;
+
 // Over-wide fixed signatures for the FFI call. On the SysV-AMD64 and AArch64
 // ABIs the integer and float register banks are independent and a callee simply
-// ignores the argument registers it doesn't declare, so ONE 8-int + 8-float
+// ignores the argument registers it doesn't declare, so ONE 16-int + 8-float
 // signature dispatches every call whose arguments fit in registers — including
 // MIXED int/float, which the old per-arity dispatch rejected. Unused slots are
 // padded with zero; args reorder into their bank in declaration order, which is
 // exactly how the callee reads them.
-typedef long   (*NcFnI)(long,long,long,long,long,long,long,long,
-                        double,double,double,double,double,double,double,double);
-typedef double (*NcFnD)(long,long,long,long,long,long,long,long,
-                        double,double,double,double,double,double,double,double);
+//
+// Sixteen integers rather than eight: a caller may always pass MORE arguments
+// than the callee declares (every ABI this builds for is caller-cleaned — the
+// extras land in registers or stack slots the callee never reads), and the
+// Win32 API routinely goes past eight — CreateWindowExW takes twelve,
+// CreateFontW fourteen. Eight made those calls throw on any host without
+// libffi, which on Windows is the normal case.
+typedef long long (*NcFnI)(NcWord,NcWord,NcWord,NcWord,NcWord,NcWord,NcWord,NcWord,
+                           NcWord,NcWord,NcWord,NcWord,NcWord,NcWord,NcWord,NcWord,
+                           double,double,double,double,double,double,double,double);
+typedef double    (*NcFnD)(NcWord,NcWord,NcWord,NcWord,NcWord,NcWord,NcWord,NcWord,
+                           NcWord,NcWord,NcWord,NcWord,NcWord,NcWord,NcWord,NcWord,
+                           double,double,double,double,double,double,double,double);
 // native scalar type → byte width and signedness (for is-rw copy-back, cglobal,
 // Pointer.deref). 0 ⇒ not a plain native scalar.
 static int ncScalarWidth(const std::string& t, bool& sign, bool& isFloat) {
@@ -14958,11 +14973,12 @@ static const bool g_ncTrace = [] {
     return e && *e && std::strcmp(e, "0") != 0;
 }();
 
-long Interpreter::runCallback(int slot, long a0, long a1, long a2, long a3, long a4, long a5) {
+long long Interpreter::runCallback(int slot, long long a0, long long a1, long long a2,
+                                  long long a3, long long a4, long long a5) {
     if (slot < 0 || slot >= (int)g_cbSlots.size()) return 0;
     Value cb = g_cbSlots[slot];
     if (cb.t != VT::Code) return 0;
-    long raw[6] = {a0, a1, a2, a3, a4, a5};
+    NcWord raw[6] = {a0, a1, a2, a3, a4, a5};
     size_t arity = (cb.code() && cb.code()->params) ? cb.code()->params->size() : 2;
     if (arity > 6) arity = 6;
     ValueList as;
@@ -14974,10 +14990,14 @@ long Interpreter::runCallback(int slot, long a0, long a1, long a2, long a3, long
     }
     Value r;
     try { r = callCallable(cb, as); } catch (...) { return 0; }
-    return (long)r.toInt();
+    return (NcWord)r.toInt();
 }
 
-template<int N> static long cbTramp(long a, long b, long c, long d, long e, long f) {
+// The trampoline is a plain C function, so the platform's own ABI hands it the
+// arguments — but its parameters must be pointer-wide or a 64-bit LPARAM (and
+// the LRESULT going back) is truncated on Windows. A WNDPROC is exactly this
+// shape, and its lParam carries pointers.
+template<int N> static NcWord cbTramp(NcWord a, NcWord b, NcWord c, NcWord d, NcWord e, NcWord f) {
     return g_cbInterp ? g_cbInterp->runCallback(N, a, b, c, d, e, f) : 0;
 }
 template<int... Is> static void cbFill(void** t, std::integer_sequence<int, Is...>) {
@@ -15287,9 +15307,9 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
     }
     std::vector<std::string> keep; keep.reserve(args.size()); // keep Str buffers alive across the call
     // is-rw out-params: backing slots (stable addresses via deque) + copy-back list
-    std::deque<long>   rwI;
+    std::deque<NcWord> rwI;
     std::deque<double> rwD;
-    struct RwBack { size_t arg; const long* i; const double* d; std::string ptrType;
+    struct RwBack { size_t arg; const NcWord* i; const double* d; std::string ptrType;
                     std::shared_ptr<ClassInfo> cls; };
     std::vector<RwBack> rwbacks;
 
@@ -15334,7 +15354,7 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
     struct NcSlot {
         alignas(8) unsigned char raw[16] = {};
         ffi::Type* type = nullptr;
-        long   fbInt   = 0;
+        NcWord fbInt   = 0;
         double fbNum   = 0;
         bool   fbFloat = false;
         bool   fbPtr   = false;   // for the trace: render as an address
@@ -15359,7 +15379,7 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
         void* q = const_cast<void*>(p);
         std::memcpy(s.raw, &q, sizeof q);
         s.type  = F.t_pointer;
-        s.fbInt = (long)(intptr_t)q;
+        s.fbInt = (NcWord)(intptr_t)q;
         s.fbPtr = true;
     };
     auto putInt = [](NcSlot& s, long long v, int w, bool sgn) {
@@ -15371,7 +15391,7 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
             default:{ std::memcpy(s.raw, &v, 8); break; }
         }
         s.type  = ffi::scalar(w, sgn, false);
-        s.fbInt = (long)v;
+        s.fbInt = (NcWord)v;
     };
     auto putNum = [&F, &needFfi](NcSlot& s, double v, int w) {
         if (w == 4) { // a real 32-bit float: the fallback would pass a double
@@ -15407,10 +15427,10 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
             // slot holding the current value — not the value itself, which for a
             // fresh Pointer is NULL and reads as "ppDb was NULL" (SQLITE_MISUSE).
             // Copy-back rebuilds a live Pointer from what the callee stored.
-            long cur = 0;
-            if (v.t == VT::Hash && v.hash() && v.hash()->count("addr")) cur = (long)(*v.hash())["addr"].toInt();
+            NcWord cur = 0;
+            if (v.t == VT::Hash && v.hash() && v.hash()->count("addr")) cur = (NcWord)(*v.hash())["addr"].toInt();
             else if (v.t == VT::Object && v.obj() && v.obj()->attrs.count("__native_ptr"))
-                cur = (long)v.obj()->attrs["__native_ptr"].toInt();
+                cur = (NcWord)v.obj()->attrs["__native_ptr"].toInt();
             rwI.push_back(cur); putPtr(s, &rwI.back());
             rwbacks.push_back({i, &rwI.back(), nullptr, rwCls ? std::string() : pt, rwCls});
         }
@@ -15487,7 +15507,7 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
     bool retF32 = (rt == "num32");
     if (retF32 && needFfi.empty()) needFfi = "a num32 return value";
     ffi::Type* rtype = ncFfiRetType(rt);
-    long ri = 0; double rd = 0;
+    NcWord ri = 0; double rd = 0;
 
     bool useFfi = F.ok && rtype;
     if (useFfi) for (auto& s : slots) if (!s.type) { useFfi = false; break; }
@@ -15556,7 +15576,7 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
         else if (rtype != F.t_void) {
             unsigned long long u = 0;
             std::memcpy(&u, rbuf, sizeof(void*) >= 8 ? 8 : 4);
-            ri = (long)u;
+            ri = (NcWord)u;
         }
     }
     else {
@@ -15565,16 +15585,30 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
         if (!needFfi.empty())
             throw RakuError{Value::typeObj("X::NYI"),
                 "NativeCall: " + needFfi + " needs libffi, which is not available (" + F.why + ")"};
-        std::vector<long>   g;  // integer/pointer args, in declaration order
+        std::vector<NcWord> g;  // integer/pointer args, in declaration order
         std::vector<double> f;  // float args, in declaration order
         for (auto& s : slots) { if (s.fbFloat) f.push_back(s.fbNum); else g.push_back(s.fbInt); }
-        if (g.size() > 8 || f.size() > 8)
+        if (g.size() > 16 || f.size() > 8)
             throw RakuError{Value::typeObj("X::NYI"),
-                "NativeCall: too many register arguments (max 8 integer + 8 float) — more needs libffi, which is not available (" + F.why + ")"};
-        long G[8] = {0}; for (size_t k = 0; k < g.size(); k++) G[k] = g[k];
-        double D[8] = {0}; for (size_t k = 0; k < f.size(); k++) D[k] = f[k];
-        if (retFP) rd = ((NcFnD)sym)(G[0],G[1],G[2],G[3],G[4],G[5],G[6],G[7], D[0],D[1],D[2],D[3],D[4],D[5],D[6],D[7]);
-        else       ri = ((NcFnI)sym)(G[0],G[1],G[2],G[3],G[4],G[5],G[6],G[7], D[0],D[1],D[2],D[3],D[4],D[5],D[6],D[7]);
+                "NativeCall: too many register arguments (max 16 integer + 8 float) — more needs libffi, which is not available (" + F.why + ")"};
+#if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
+        // Win64 assigns argument registers by POSITION, not by bank: a double is
+        // read from XMM2 only if it is the THIRD argument. This prototype can
+        // only place floats after its integers, so a mixed or float signature
+        // would be called with the value in the wrong place — a wrong answer,
+        // silently. SysV-AMD64 and AArch64 have independent banks and are fine.
+        if (!f.empty())
+            throw RakuError{Value::typeObj("X::NYI"),
+                "NativeCall: a floating-point argument on Windows x64 needs libffi, which is not available (" + F.why + ")"};
+#endif
+        NcWord G[16] = {0}; for (size_t k = 0; k < g.size(); k++) G[k] = g[k];
+        double D[8]  = {0}; for (size_t k = 0; k < f.size(); k++) D[k] = f[k];
+        if (retFP) rd = ((NcFnD)sym)(G[0],G[1],G[2],G[3],G[4],G[5],G[6],G[7],
+                                     G[8],G[9],G[10],G[11],G[12],G[13],G[14],G[15],
+                                     D[0],D[1],D[2],D[3],D[4],D[5],D[6],D[7]);
+        else       ri = ((NcFnI)sym)(G[0],G[1],G[2],G[3],G[4],G[5],G[6],G[7],
+                                     G[8],G[9],G[10],G[11],G[12],G[13],G[14],G[15],
+                                     D[0],D[1],D[2],D[3],D[4],D[5],D[6],D[7]);
     }
 
     if (g_ncTrace) {
@@ -15712,8 +15746,8 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
         if (rw > 0 && rw < 8 && !rflt) {
             unsigned long long mask = (1ULL << (rw * 8)) - 1;
             unsigned long long u = (unsigned long long)ri & mask;
-            if (rsgn && (u & (1ULL << (rw * 8 - 1)))) ri = (long)(long long)(u | ~mask);
-            else ri = (long)u;
+            if (rsgn && (u & (1ULL << (rw * 8 - 1)))) ri = (NcWord)(u | ~mask);
+            else ri = (NcWord)u;
         }
     }
     return Value::integer(ri);

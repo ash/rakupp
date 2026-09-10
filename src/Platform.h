@@ -49,7 +49,11 @@ inline const char* platKernelName() {
 }
 inline const char* platDistroName() {
 #if defined(_WIN32)
-    return "windows";
+    // 'mswin32', not 'windows': Rakudo's $*DISTRO.name is $*VM.config<osname>
+    // lowercased, which on Windows is MSWin32 — and `.is-win` is DEFINED as
+    // that name being one of mswin32/mingw/msys/cygwin. A name of our own
+    // invention made every `$*DISTRO.is-win` on the platform answer False.
+    return "mswin32";
 #elif defined(__APPLE__)
     return "macos";
 #elif defined(__OpenBSD__)

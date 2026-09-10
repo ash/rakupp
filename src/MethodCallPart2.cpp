@@ -1344,7 +1344,11 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             // `$*VM.config<osname>` is 'darwin'/'linux'/'mswin32', and modules
             // dispatch on it (NativeLibs' cannon-name test does). Answering the
             // VM's own name matched no branch anywhere.
+#if defined(_WIN32)
+            ch["osname"]   = Value::str("MSWin32");   // MoarVM's own spelling, capitals and all
+#else
             ch["osname"]   = Value::str(platKernelName());
+#endif
             return c;
         }
         // `$*VM.request-garbage-collection` — the one hook Raku offers to ask
@@ -1362,7 +1366,16 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         }
 #endif
         if (m == "name" || m == "Str" || m == "gist" || m == "auth" || m == "desc") return Value::str(name);
-        if (m == "is-win") return Value::boolean(false);
+        // Rakudo's rule, verbatim (Distro.rakumod TWEAK): the NAME decides.
+        // This was a hard-coded False, so on Windows every `$*DISTRO.is-win`
+        // branch took the POSIX arm — a GUI module picked its GTK backend and
+        // asked the loader for libgtk-3.so.0, `rakupp install` looked for a
+        // native extension under lib*.so, and this engine's own suite and
+        // tooling (t/run.raku, tools/install.raku, tools/lib/Gate.rakumod)
+        // believed they were on POSIX.
+        if (m == "is-win")
+            return Value::boolean(name == "mswin32" || name == "mingw" ||
+                                  name == "msys"    || name == "cygwin");
         if (m == "version") { // a Version object (it was the Str "0"): the kernel's is uname -r
             std::string ver = "0";
 #if !defined(_WIN32)
@@ -1372,7 +1385,11 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             Value v = Value::str(ver); v.hashKind = "Version"; return v;
         }
         if (m == "signature") return Value::str("");
-        if (m == "path-sep") return Value::str(":");
+        // The PATH separator, which is ';' on Windows — Rakudo picks it the
+        // same way, off the name.
+        if (m == "path-sep")
+            return Value::str(name == "mswin32" || name == "mingw" ||
+                              name == "msys"    || name == "cygwin" ? ";" : ":");
         if (m == "release") { // kernel release string (uname -r)
 #if !defined(_WIN32)
             struct utsname u;

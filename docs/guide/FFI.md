@@ -54,7 +54,7 @@ In practice it is already on the machine:
 |---|---|
 | macOS | `/usr/lib/libffi.dylib`, part of the OS |
 | Linux | `libffi.so.8`, pulled in by glib/GTK, Python, and much else — present on essentially every desktop and server image |
-| Windows | usually **absent**; NativeCall runs on the fallback path below |
+| Windows | usually **absent**; NativeCall runs on the fallback path below, so its limits are Windows' everyday limits |
 | WebAssembly ([rakujs](../../rakujs)) | absent by construction — there is no shared library to open |
 
 If you are on a stripped container and want the full FFI, install the runtime
@@ -71,21 +71,22 @@ RAKUPP_FFI=/opt/lib/libffi.so.8 rakupp myprogram.raku
 **Not everything keeps working — be clear-eyed about this.** The fallback is a
 narrower FFI, not a transparent substitute.
 
-Calls go through a fixed prototype that hands eight integer and eight
+Calls go through a fixed prototype that hands sixteen integer and eight
 floating-point arguments to the platform ABI and lets it place them. That is
 correct for a large majority of real C signatures: pointers, `Str`, integers of
 every width, `num64`, `CArray`, `CStruct` and `CUnion` handles, `is rw`
 out-parameters, `nativecast`, `cglobal` and synchronous callbacks all behave
 exactly as they do with libffi. Most programs genuinely will not notice.
 
-Four things it cannot do, and each **throws at the point of the call** rather
+Five things it cannot do, and each **throws at the point of the call** rather
 than computing the wrong answer:
 
 | | |
 |---|---|
 | a `num32` argument or return | a real C `float` cannot be placed by the fixed prototype |
 | a variadic signature (`*@args`) | needs `ffi_prep_cif_var` to tell the ABI where `...` begins |
-| more than 8 integer or 8 float arguments | the prototype is that wide and no wider |
+| more than 16 integer or 8 float arguments | the prototype is that wide and no wider. Sixteen because the Win32 API goes past eight — `CreateWindowExW` takes twelve, `CreateFontW` fourteen |
+| any floating-point argument, on Windows x64 | that ABI assigns argument registers by *position*, not by bank: a `double` is read from `XMM2` only if it is the third argument. The fixed prototype can only place floats after its integers, so it would call with the value in the wrong place. SysV-AMD64 and AArch64 have independent banks, and are fine |
 | more than 64 **distinct** callbacks in one program | the trampoline pool holds 64 |
 
 ```
@@ -104,7 +105,7 @@ The failure is a normal Raku exception, so it is catchable — a module that wan
 to adapt can `try` the fast path and pick another route. But it is a *runtime*
 failure at the first such call, not something the compiler warns about up front,
 so a program that only hits the path on an unusual branch will only fail there.
-If your program needs any of the four, treat libffi as a requirement and check
+If your program needs any of the five, treat libffi as a requirement and check
 `rakupp --ffi-info` in your install steps.
 
 `RAKUPP_FFI=0` forces this path on purpose, which is how to exercise it
