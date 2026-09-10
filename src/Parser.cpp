@@ -7946,6 +7946,17 @@ StmtPtr Parser::parseWhile(bool isUntil) {
     return s;
 }
 
+// A pointy parameter carrying anything the plain-name path would DROP needs
+// real signature binding. That path keeps only the NAME, so a type, a coercion,
+// a `:D`/`:U` smiley or a `where` silently stopped existing: `for @f -> IO() $x`
+// bound a Str and `.e` was then "no such method", and `for ("x",) -> Int $n`
+// bound it without a murmur where Rakudo fails the type check. `is copy` was
+// already fixed here once, one trait at a time; this asks the question once.
+static bool pointyParamNeedsBinding(const Param& p) {
+    return p.subSig || p.isCopy || p.coerce || !p.type.empty() ||
+           p.defConstraint != 0 || p.whereExpr || p.hadWhere;
+}
+
 StmtPtr Parser::parseFor() {
     // Perl 5 loop forms: `for my $x (...)` and C-style `for (a; b; c)`
     if (isKind(Tok::Ident) && cur().text == "my" && peek().kind == Tok::Var &&
@@ -7973,13 +7984,12 @@ StmtPtr Parser::parseFor() {
         if (doubly) s->rwVars = true; // `<->`: params alias the source elements
         if (isKind(Tok::LParen)) s->destructure = true; // `-> ($a,$b)`: unpack each element
         std::vector<Param> ps = parsePointyParams();
-        bool anySub = false, anyCopy = false;
-        for (auto& p : ps) { anySub = anySub || (bool)p.subSig; anyCopy = anyCopy || p.isCopy;
+        bool needsBinding = false;
+        for (auto& p : ps) { needsBinding = needsBinding || pointyParamNeedsBinding(p);
                              if (p.isRw) s->rwVars = true; }
-        // `is copy` needs real signature binding too — the plain-name path drops
-        // every trait, so `for %h.kv -> $k, @v is copy` bound the hash value as
-        // it stood (a List) instead of the fresh Array the trait asks for.
-        if (anySub || anyCopy) s->params = std::move(ps); // real signature binding
+        // The plain-name path keeps only the name, so anything else a parameter
+        // carries has to send it to real binding — see pointyParamNeedsBinding.
+        if (needsBinding) s->params = std::move(ps);
         else for (auto& p : ps) s->vars.push_back(p.name);
     }
     s->body = parseBlock();
@@ -8110,11 +8120,11 @@ StmtPtr Parser::applyModifiers(StmtPtr s) {
                 if (es->e && es->e->kind == NK::BlockExpr) {
                     auto* be = static_cast<BlockExpr*>(es->e.get());
                     if (!be->params.empty()) {
-                        bool anySub = false, anyCopy = false;
+                        bool anySub = false, needsBinding = false;
                         for (auto& p : be->params) { anySub = anySub || (bool)p.subSig;
-                                                     anyCopy = anyCopy || p.isCopy; }
+                                                     needsBinding = needsBinding || pointyParamNeedsBinding(p); }
                         if (anySub) { fs->destructure = true; fs->params = std::move(be->params); }
-                        else if (anyCopy) fs->params = std::move(be->params); // traits need real binding
+                        else if (needsBinding) fs->params = std::move(be->params);
                         else for (auto& p : be->params) fs->vars.push_back(p.name);
                         auto blk = std::make_unique<Block>();
                         blk->stmts = std::move(be->body);
