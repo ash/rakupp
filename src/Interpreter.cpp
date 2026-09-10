@@ -8994,7 +8994,21 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                         qual = std::string(1, sym[0]) + tctx_.pkgPrefix + sym.substr(1);
                     else qual = tctx_.pkgPrefix + sym;
                     noteSymbolMutation("package-qualified global (our)");
-                    global_->define(qual, kv.second);
+                    // A COPY here gives `module M { our $v }` two containers —
+                    // the one M's own subs read, and the one `$M::v = 4` writes.
+                    // That is the split the our-declaration publish removes by
+                    // installing a VIEW onto the package's slot, and this loop
+                    // ran afterwards and copied the value straight back over it:
+                    // the same trap the module-load republish already knows to
+                    // step around. A `class` never hit it, because a class body
+                    // has no republish of its own — which is why the very fix
+                    // that made `$CK::v` one container left `$MK::v` two.
+                    // The view is installed here rather than merely preserved,
+                    // so a BARE `our $v;` — which never reaches the publish in
+                    // evalAssign, having no initialiser to assign — is one
+                    // container too.
+                    if (sigilVar) global_->define(qual, makeEnvSlotProxy(pkgEnv, sym));
+                    else global_->define(qual, kv.second);
                 }
                 // During a `use` load, `is export` subs of a braced module also
                 // surface BARE to the importer (same-file code still sees only
@@ -17773,6 +17787,28 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             base = &callBaseHold;
         }
         else base = lvalue(idx->base.get(), /*asInvocant=*/true); // subscript base: reaching in, not overwriting
+        // A published `our @a` / `our %h` is a VIEW onto the package's own slot
+        // (see the our-declaration publish), and a subscript has to reach the
+        // container that view names — not the Proxy standing in for it.
+        // Indexing the Proxy itself filed `%Cfg::OPT<width> = 120` among that
+        // Proxy's own FETCH and STORE keys, where nobody could read it back,
+        // not even the line that wrote it; and `@Cfg::LIST[0] = 'omega'` found
+        // a Hash where an Array belonged, so it REPLACED the view with a fresh
+        // empty array and dropped everything the package had put there.
+        // FETCH hands back a Value sharing its arr/hash with the real
+        // container, so writing through it writes the original — the same
+        // property the call-result base above is built on. Only a fetch that
+        // yields a container is taken: deproxying every proxied base is what
+        // once made `cas($!head, …)` spin forever, and a scalar Proxy keeps the
+        // path it had.
+        static thread_local Value idxProxyHold;
+        if (base && base->t == VT::Hash && base->hashKind == "Proxy" && base->hash()) {
+            Value fetched = deproxy(*base);
+            if (fetched.t == VT::Array || (fetched.t == VT::Hash && fetched.hashKind != "Proxy")) {
+                idxProxyHold = std::move(fetched);
+                base = &idxProxyHold;
+            }
+        }
         // A TYPED container constrains what its elements may hold; the
         // assignment that follows this lvalue is the only place that knows the
         // value, so hand it the constraint here (the twin of
@@ -31601,6 +31637,23 @@ Value Interpreter::eval(Expr* e) {
                     !ve->declShape && !ve->declDefault && ve->containerIs.empty()) {
                     if (Value* g = global_->find(ve->name)) return *g;
                     return global_->define(ve->name, declInitial(ve, sigil));
+                }
+                // `our %h;` with NO initialiser. The declaration publish lives in
+                // evalAssign, so a declaration with nothing to assign published
+                // nothing at all, and the qualified name was whatever the first
+                // writer autovivified — `%C::h<k> = 1` outside made its own hash
+                // and the class went on reading the empty one it declared.
+                // Same VIEW onto the same slot as the initialised form gets, and
+                // the same rule about the owning scope: not the global one, or
+                // the view would fetch through itself forever.
+                if (ve->declScope == "our" && sigil != '&' && !ve->declExport &&
+                    global_ && deh.get() != global_.get() && ve->name.size() > 1) {
+                    if (!de->local(ve->name)) de->define(ve->name, declInitial(ve, sigil));
+                    noteSymbolMutation("our-declaration publish (no initialiser)");
+                    global_->define(ve->name.substr(0, 1) + tctx_.pkgPrefix + ve->name.substr(1),
+                                    makeEnvSlotProxy(deh, ve->name));
+                    Value* dp = de->local(ve->name);
+                    return dp ? *dp : Value::any();
                 }
                 // A bare untyped `my @a` re-evaluated in the SAME scope keeps its
                 // container — declarations initialize per scope entry, not per
