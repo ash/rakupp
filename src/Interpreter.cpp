@@ -1326,6 +1326,28 @@ std::vector<std::string> collectAttrRefs(const std::vector<StmtPtr>& body) {
     return out;
 }
 
+// Does this class DECLARE an attribute of this bare name — its own, or one it
+// composed from a role? A composed role's attributes belong to the composer:
+// `does R` flattens them into ci->attrs, except for the FIRST `does`, which
+// arrives as the PARENT instead and so has to be looked through here.
+//
+// A real ancestor CLASS is deliberately NOT walked. A private attribute is
+// per-class and is never inherited — only the public accessor (`self.attr`)
+// crosses the boundary — so a `$!x` in a child naming a PARENT's attribute is
+// undeclared, exactly as Rakudo has it. Walking the whole parent chain let that
+// through: it compiled code here that Rakudo refuses (silent, and in the
+// direction that produces non-portable source), and it meant any mistyped `$!x`
+// in a subclass bound quietly to an ancestor's attribute of that name instead
+// of being reported.
+static bool declaresAttrHere(const ClassInfo* c, const std::string& bare) {
+    if (!c) return false;
+    for (auto& at : c->attrs) if (at.name == bare) return true;
+    if (c->parent && c->parent->isRole && declaresAttrHere(c->parent.get(), bare)) return true;
+    for (auto& p : c->extraParents)
+        if (p && p->isRole && declaresAttrHere(p.get(), bare)) return true;
+    return false;
+}
+
 Value listToArray(const ValueList& items) {
     // Post-GLR: a comma list keeps every member as-is — nested Lists, Ranges,
     // and word lists stay single elements. Only Slips splice (`|x`, slip(),
@@ -9535,11 +9557,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 if (!cd->isRole)
                     for (auto& ar : collectAttrRefs(md->body)) {
                         std::string bare = ar.substr(2);
-                        bool known = false;
-                        for (ClassInfo* cc = ci.get(); cc && !known; cc = cc->parent.get())
-                            for (auto& at : cc->attrs)
-                                if (at.name == bare) { known = true; break; }
-                        if (!known)
+                        if (!declaresAttrHere(ci.get(), bare))
                             // filename+line mark it a compile-time (X::Comp) error —
                             // the top-level printer adds the ===SORRY!=== banner
                             throwTyped("X::Attribute::Undeclared",
