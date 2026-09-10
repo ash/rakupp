@@ -2561,7 +2561,7 @@ struct JsGen {
             } else if (hasMain) {
                 string cands;
                 for (auto& mc : mainCands) cands += (cands.empty() ? "" : ", ") + string("{ fn: ") + mc.fn + ", params: [" + mainParams(*mc.params) + "] }";
-                line(1, "return R.runMain([" + cands + "], R.host.argv);");
+                line(1, "return R.runMain([" + cands + "], R.host.argv, true);"); // true: sink MAIN's own value (#73)
             }
         });
         FnCtx ctx = fns.back(); fns.pop_back();

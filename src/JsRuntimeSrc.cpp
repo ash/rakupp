@@ -3522,8 +3522,8 @@ if (IS_NODE && nodeRequire) {
     host.open = (p, ...a) => { const named = nm(a); const path = str(p); const w = truthy(named.get('w')) || truthy(named.get('a')) || str(named.get('mode') || '') === 'wo'; const app = truthy(named.get('a')) || truthy(named.get('append')); const h = new RIOHandle(w ? 'file-w' : 'file-r', path); if (named.has('out-buffer')) { const ob = named.get('out-buffer'); h.outBuffer = ob === false ? 0 : ob === true ? 8192 : Number(toInt(ob)); } try { if (fs.statSync(path).isDirectory()) return failure(new RakuError(`'${path}' is a directory, cannot do '.open' on a directory`, 'X::IO::Directory')); } catch (e) { /* absent is not an answer yet: :w may still create it */ } if (w) { try { if (!app) fs.writeFileSync(path, ''); else fs.appendFileSync(path, ''); } catch (e) { return failure(openFailed(path, e)); } h.out = ''; } else { try { h.buf = fs.readFileSync(path, 'utf8'); } catch (e) { return failure(openFailed(path, e)); } } return h; };
     host.close = h => { if (h.kind === 'file-w' && h.out) { fs.appendFileSync(h.path, h.out); h.out = ''; } h.closed = true; return true; };
     host.isTTY = h => h.kind === 'in' ? !!process.stdin.isTTY : h.kind === 'out' ? !!process.stdout.isTTY : h.kind === 'err' ? !!process.stderr.isTTY : false;
-    host.shell = (cmd, ...a) => { const cp = nodeRequire('child_process'); host.flush(); const r = cp.spawnSync('/bin/sh', ['-c', str(cmd)], { stdio: 'inherit' }); return mkProc(r.status); };
-    host.run = (...args) => { const cp = nodeRequire('child_process'); const [pos, named] = splitArgs(args); host.flush(); const r = cp.spawnSync(str(pos[0]), pos.slice(1).map(str), { stdio: [truthy(named.get('in')) ? 'pipe' : 'inherit', truthy(named.get('out')) ? 'pipe' : 'inherit', truthy(named.get('err')) ? 'pipe' : 'inherit'], encoding: 'utf8' }); const p = mkProc(r.status); p.a_out = new RIOHandle('str'); p.a_out.buf = r.stdout || ''; p.a_err = new RIOHandle('str'); p.a_err.buf = r.stderr || ''; return p; };
+    host.shell = (cmd, ...a) => { const cp = nodeRequire('child_process'); host.flush(); const r = cp.spawnSync('/bin/sh', ['-c', str(cmd)], { stdio: 'inherit' }); return mkProc(r.status, str(cmd)); };
+    host.run = (...args) => { const cp = nodeRequire('child_process'); const [pos, named] = splitArgs(args); host.flush(); const r = cp.spawnSync(str(pos[0]), pos.slice(1).map(str), { stdio: [truthy(named.get('in')) ? 'pipe' : 'inherit', truthy(named.get('out')) ? 'pipe' : 'inherit', truthy(named.get('err')) ? 'pipe' : 'inherit'], encoding: 'utf8' }); const p = mkProc(r.status, str(pos[0])); p.a_out = new RIOHandle('str'); p.a_out.buf = r.stdout || ''; p.a_err = new RIOHandle('str'); p.a_err.buf = r.stderr || ''; return p; };
 } else if (IS_DENO) {
     host.name = 'deno';
     host.argv = Deno.args.slice();
@@ -3547,7 +3547,12 @@ function concatBytes(chunks) { let n = 0; for (const c of chunks) n += c.length;
 )RKJS",
 R"RKJS(const ProcT = mkType('Proc', [T.Any], { isUser: true, attrs: [{ name: 'exitcode', sigil: '$', pub: true }, { name: 'out', sigil: '$', pub: true }, { name: 'err', sigil: '$', pub: true }] });
 ProcT.methods.exitcode = s => s.a_exitcode; ProcT.methods.out = s => s.a_out; ProcT.methods.err = s => s.a_err; ProcT.methods.Bool = s => s.a_exitcode === 0; ProcT.methods.so = s => s.a_exitcode === 0; ProcT.methods.signal = s => 0; ProcT.methods.pid = s => 0;
-function mkProc(code) { const p = new RObj(ProcT); p.a_exitcode = code === null ? 1 : code; p.a_out = Nil; p.a_err = Nil; return p; }
+// Proc.sink — a command that exited unsuccessfully throws when nobody keeps its
+// Proc, which is what makes `run @cmd` as a program's last act exit non-zero
+// (issue #73). A Proc the caller DOES keep is never sunk, so `my $p = run …;
+// $p.exitcode` still reads the code back.
+ProcT.methods.sink = s => { if (s.a_exitcode === 0) return Nil; throw new RakuError(`The spawned command '${s.procCmd}' exited unsuccessfully (exit code: ${s.a_exitcode}, signal: 0)`, 'X::Proc::Unsuccessful'); };
+function mkProc(code, cmd) { const p = new RObj(ProcT); p.a_exitcode = code === null ? 1 : code; p.a_out = Nil; p.a_err = Nil; p.procCmd = cmd === undefined ? '' : cmd; return p; }
 const STDIN = new RIOHandle('in', ''), STDOUT = new RIOHandle('out', ''), STDERR = new RIOHandle('err', '');
 
 // Dynamic variables the core provides
@@ -3590,7 +3595,7 @@ function atEnd(f) { endBlocks.push(f); }
 
 // The MAIN protocol: pos/named from @*ARGS, then dispatch. `sig` describes
 // the candidates: [{fn, params:[{name, named, slurpy, optional, hasDefault, type, isBool}]}]
-function runMain(cands, argv) {
+function runMain(cands, argv, sinkResult) {
     const pos = [], named = new Map();
     let onlyPos = false;
     for (const a of argv) {
@@ -3614,7 +3619,18 @@ function runMain(cands, argv) {
     }
     for (const c of cands) {
         const r = bindMain(c, pos, named);
-        if (r) return r.fn(...r.args);
+        if (!r) continue;
+        const v = r.fn(...r.args);
+        // The PROGRAM's MAIN has its value SUNK (Rakudo): a Failure detonates, a
+        // Proc that exited unsuccessfully throws (issue #73), and an Int MAIN
+        // happens to return is NOT the exit code — only the protocol's own 0/2
+        // leaves here as a number. A coloured MAIN hands back a Promise, which
+        // main() is already waiting on: sink what it settles to. Called as a
+        // MODULE export (exportMain) there is a caller, so the value flows out.
+        if (!sinkResult) return v;
+        if (v && typeof v.then === 'function') return v.then(x => { sink(x); return null; });
+        sink(v);
+        return null;
     }
     if (named.has('help') && cands.length) { host.stdout(usage(cands) + '\n'); return 0; }
     host.stderr(usage(cands) + '\n');
@@ -3788,7 +3804,8 @@ function callCode(f, ...args) {
 }
 // `is rw` parameters: a box with a `.v` accessor. Call sites hand in a
 // getter/setter pair for a variable or a subscript; anything else is wrapped.
-function rwBox(x) { if (x instanceof RScalar) return x; if (x && typeof x === 'object' && Object.getOwnPropertyDescriptor(x, 'v') && Object.getOwnPropertyDescriptor(x, 'v').get) return x; return new RScalar(x); }
+)RKJS",
+R"RKJS(function rwBox(x) { if (x instanceof RScalar) return x; if (x && typeof x === 'object' && Object.getOwnPropertyDescriptor(x, 'v') && Object.getOwnPropertyDescriptor(x, 'v').get) return x; return new RScalar(x); }
 function throwCtl(op, label) { throw op === 'next' ? new NextCtl(label) : op === 'last' ? new LastCtl(label) : new RedoCtl(label); }
 // EXPR xx N with the left side re-evaluated per copy
 function xxThunk(thunk, n) {
@@ -3800,8 +3817,7 @@ function xxThunk(thunk, n) {
 function namedFromHash(h, extra) { const m = new Map(); if (h instanceof RHash) for (const [k, v] of h.m) m.set(k, v); if (extra) for (const [k, v] of extra) m.set(k, v); return new RNamed(m); }
 function kvAdverb(c, k, isHash) { const ex = isHash ? hexists(c, k) : aexists(c, k); return ex ? mkList([k, isHash ? hget(c, k) : aget(c, k)]) : mkSlip([]); }
 function pAdverb(c, k, isHash) { const ex = isHash ? hexists(c, k) : aexists(c, k); return ex ? pair(k, isHash ? hget(c, k) : aget(c, k)) : mkSlip([]); }
-)RKJS",
-R"RKJS(function listAppendAssign(cur, v) { const items = itemsOf(cur).slice(); items.push(...itemsOf(v)); return mkList(items); }
+function listAppendAssign(cur, v) { const items = itemsOf(cur).slice(); items.push(...itemsOf(v)); return mkList(items); }
 // $obj.attr = v through an `is rw` accessor
 function mcSet(inv, name, v) {
     if (inv instanceof RObj) { const m = inv.ty.findUser(name); if (m && m.lvKey) { inv[m.lvKey] = v; return v; } if (m) { const r = m(inv); if (r instanceof RScalar) { r.v = v; return v; } } }
@@ -3995,7 +4011,8 @@ class RPromise {
         this.p.catch(() => { });   // a broken promise nobody awaits is not an unhandled rejection
     }
     keep(v) { if (this.status !== Planned) throw new RakuError('Promise is already ' + this.status.key.toLowerCase(), 'X::Promise::Vowed'); this.status = Kept; this.value = v; this._res(v); return this; }
-    break_(e) { if (this.status !== Planned) throw new RakuError('Promise is already ' + this.status.key.toLowerCase(), 'X::Promise::Vowed'); this.status = Broken; this.cause = e instanceof RakuError ? e : exc(e); this._rej(this.cause); return this; }
+)RKJS",
+R"RKJS(    break_(e) { if (this.status !== Planned) throw new RakuError('Promise is already ' + this.status.key.toLowerCase(), 'X::Promise::Vowed'); this.status = Broken; this.cause = e instanceof RakuError ? e : exc(e); this._rej(this.cause); return this; }
     // .result: the value once kept; the cause thrown once broken; otherwise it would block
     result() {
         if (this.status === Kept) return this.value;
@@ -4014,8 +4031,7 @@ function start(fn) {
 }
 // await X: a Promise's value (or its cause, thrown); a list of them → their values; a JS thenable → its value
 async function awaitP(x) {
-)RKJS",
-R"RKJS(    if (x instanceof RPromise) return await x.p;
+    if (x instanceof RPromise) return await x.p;
     if (x instanceof RJsObj && x.v && typeof x.v.then === 'function') return fromJs(await x.v);
     if (x && typeof x.then === 'function') return fromJs(await x);
     if (x instanceof RList || x instanceof RSeq) return mkList(await Promise.all(arr(x).map(awaitP)));
@@ -4209,7 +4225,8 @@ function supplyList(s) {
     const p = new RPromise();
     tap.closeFn2 = null;
     s.tap(v => { }, () => { }, () => { });   // (no-op: the first tap already collects)
-    const check = () => { if (finished) { if (err) p.break_(err); else p.keep(mkList(out)); return; } setTimeout(check, 5); };
+)RKJS",
+R"RKJS(    const check = () => { if (finished) { if (err) p.break_(err); else p.keep(mkList(out)); return; } setTimeout(check, 5); };
     check();
     return p;
 }
@@ -4229,8 +4246,7 @@ class RChannel {
         if (this.q.length) return promiseKept(this.q.shift());
         if (this.closedFlag) return promiseBroken(this.err || new RakuError('Cannot receive a message on a closed channel', 'X::Channel::ReceiveOnClosed'));
         const p = new RPromise();
-)RKJS",
-R"RKJS(        const w = { res: v => p.keep(v), rej: e => p.break_(e) };
+        const w = { res: v => p.keep(v), rej: e => p.break_(e) };
         this.waiters.push(w);
         // is anyone still going to send? Decided a macrotask later, once the microtasks of a
         // start block that just finished have run; while timers or start blocks are live we wait
@@ -4400,7 +4416,8 @@ function classMatchAt(n, s, pos) {          // → end of the consumed grapheme,
     let hit = false;
     if (n.clusters) for (const m of n.clusters) if (m === g) { hit = true; break; }
     if (!hit && n.ranges) { const c = n.icase ? cp : cp; for (let i = 0; i < n.ranges.length; i += 2) { if (cp >= n.ranges[i] && cp <= n.ranges[i + 1]) { hit = true; break; } if (n.icase) { const lc = String.fromCodePoint(cp).toLowerCase().codePointAt(0), uc = String.fromCodePoint(cp).toUpperCase().codePointAt(0); if ((lc >= n.ranges[i] && lc <= n.ranges[i + 1]) || (uc >= n.ranges[i] && uc <= n.ranges[i + 1])) { hit = true; break; } } } }
-    if (!hit && n.cp) for (let i = 0; i < n.cp.length; i += 2) if (cp >= n.cp[i] && cp <= n.cp[i + 1]) { hit = true; break; }
+)RKJS",
+R"RKJS(    if (!hit && n.cp) for (let i = 0; i < n.cp.length; i += 2) if (cp >= n.cp[i] && cp <= n.cp[i + 1]) { hit = true; break; }
     if (!hit && n.flags) hit = classFlagsMatch(n.flags, cp, String.fromCodePoint(cp));
     if (!hit && n.uprop) {
         let name = n.uprop, neg = false;
@@ -4421,8 +4438,7 @@ function isWordAt(s, i) { if (i < 0 || i >= s.length) return false; const cp = s
 // backtracking). A branch is tried in order of the furthest position its prefix
 // reaches, then the number of literal characters on that path, then source
 // order; a branch whose prefix cannot match is not a candidate; a prefix that
-)RKJS",
-R"RKJS(// ends at once (code, a lookaround, a variable) ranks last but is tried.
+// ends at once (code, a lookaround, a variable) ranks last but is tried.
 function ltmReach(n, from, ctx, depth) {
     const s = ctx.s, out = new Map();
     const add = (p, l) => { const c = out.get(p); if (c === undefined || l > c) out.set(p, l); };
@@ -4654,7 +4670,8 @@ function rep(n, st, pos, k) {
         if (mx < 0 || count < mx) return matchOne(p, count, (q) => lazy(q, count + 1));
         return false;
     };
-    return lazy(pos, 0);
+)RKJS",
+R"RKJS(    return lazy(pos, 0);
 }
 function group(n, st, pos, k) {
     const kid = n.kids[0];
@@ -4687,8 +4704,7 @@ function addNamed(st, name, match) {
     list.push(match);
     return () => { list.pop(); if (!list.length) st.named.delete(name); };
 }
-)RKJS",
-R"RKJS(// the match so far, for code blocks and assertions ($/ inside a regex)
+// the match so far, for code blocks and assertions ($/ inside a regex)
 function cursorMatch(st, pos) {
     const cur = new RMatch(st.s, st.startPos, pos);
     cur.st = st;
@@ -4919,7 +4935,8 @@ function parseRxString(src, ic) {
             if (src[i] === ']' && src[i + 1] === '>') { i += 2; break; }
             if (/\s/.test(src[i])) { i++; continue; }
             let cp;
-            if (src[i] === '\\') { const e = src[i + 1]; i += 2; if ('dwsn'.includes(e)) { node.flags += e; continue; } if (e === 't') cp = 9; else if (e === 'x') cp = hexEsc(); else cp = e.codePointAt(0); }
+)RKJS",
+R"RKJS(            if (src[i] === '\\') { const e = src[i + 1]; i += 2; if ('dwsn'.includes(e)) { node.flags += e; continue; } if (e === 't') cp = 9; else if (e === 'x') cp = hexEsc(); else cp = e.codePointAt(0); }
             else { cp = src.codePointAt(i); i += cp > 0xFFFF ? 2 : 1; }
             let hi = cp;
             if (src[i] === '.' && src[i + 1] === '.') { i += 2; while (/\s/.test(src[i] || '')) i++; hi = src.codePointAt(i); i += hi > 0xFFFF ? 2 : 1; }
@@ -4940,8 +4957,7 @@ function parseRxString(src, ic) {
             if (src.startsWith('<<', i)) { i += 2; return { k: 'WBLeft' }; }
             const close = src.indexOf('>', i); if (close < 0) bad('an unterminated <…> assertion');
             let body = src.slice(i + 1, close); i = close + 1;
-)RKJS",
-R"RKJS(            if (body[0] === '?' || body[0] === '!') {
+            if (body[0] === '?' || body[0] === '!') {
                 const look = { k: 'Look' }; if (body[0] === '!') look.negate = 1; body = body.slice(1);
                 if (body.startsWith('before ')) look.kids = [parseRxString(body.slice(7)).root];
                 else if (body.startsWith('after ')) { look.behind = 1; look.kids = [parseRxString(body.slice(6)).root]; }
@@ -5143,15 +5159,15 @@ M(T.Match, {
     Str: (s) => s.Str(), gist: (s) => matchGist(s, 0), raku: (s) => matchRaku(s), Bool: (s) => true, so: (s) => true, defined: (s) => true,
     from: (s) => gOff(s.orig, s.from), to: (s) => gOff(s.orig, s.to), pos: (s) => gOff(s.orig, s.to), orig: (s) => s.orig, target: (s) => s.orig,
     prematch: (s) => s.orig.slice(0, s.from), postmatch: (s) => s.orig.slice(s.to), made: (s) => s.made === undefined ? Nil : s.made, ast: (s) => s.made === undefined ? Nil : s.made, make: (s, v) => make(s, v),
-    list: (s) => matchList(s), List: (s) => matchList(s), Slip: (s) => mkSlip(matchList(s).a.slice()), hash: (s) => matchHash(s), Hash: (s) => matchHash(s), elems: (s) => s.caps.length,
+)RKJS",
+R"RKJS(    list: (s) => matchList(s), List: (s) => matchList(s), Slip: (s) => mkSlip(matchList(s).a.slice()), hash: (s) => matchHash(s), Hash: (s) => matchHash(s), elems: (s) => s.caps.length,
     keys: (s) => mkSeq(s.caps.map((_, i) => i).concat(Array.from(s.named.keys()))), values: (s) => mkSeq(s.caps.concat(Array.from(s.named.values())).flatMap(c => c instanceof RList ? c.a : [c])),   // a quantified capture contributes each sub-match
     kv: (s) => { const o = []; s.caps.forEach((c, i) => o.push(i, c)); for (const [k, v] of s.named) o.push(k, v); return mkSeq(o); },
     pairs: (s) => { const o = []; s.caps.forEach((c, i) => o.push(pair(i, c))); for (const [k, v] of s.named) o.push(pair(k, v)); return mkSeq(o); },
     caps: (s) => { const o = []; s.caps.forEach((c, i) => { if (c instanceof RList) for (const x of c.a) o.push(pair(i, x)); else if (c instanceof RMatch) o.push(pair(i, c)); }); for (const [k, v] of s.named) { if (v instanceof RList) for (const x of v.a) o.push(pair(k, x)); else if (v instanceof RMatch) o.push(pair(k, v)); } return mkSeq(o.sort((a, b) => a.v.from - b.v.from)); },
     chunks: (s) => { const o = []; let last = s.from; const caps = arr(mc(s, 'caps')); for (const p of caps) { if (p.v.from > last) o.push(pair('~', new RMatch(s.orig, last, p.v.from))); o.push(p); last = p.v.to; } if (last < s.to) o.push(pair('~', new RMatch(s.orig, last, s.to))); return mkSeq(o); },
     'AT-POS': (s, i) => s.pos(Number(toInt(i))), 'AT-KEY': (s, k) => s.name(str(k)), 'EXISTS-KEY': (s, k) => s.named.has(str(k)), 'EXISTS-POS': (s, i) => Number(toInt(i)) < s.caps.length,
-)RKJS",
-R"RKJS(    Int: (s) => toInt(strToNumeric(s.Str())), Numeric: (s) => strToNumeric(s.Str()), Num: (s) => mkNum(toFloat(strToNumeric(s.Str()))), chars: (s) => chars(s.Str()), 'Match': (s) => s, 'WHAT': (s) => T.Match, 'rule': (s) => s.rule || Nil, 'succeeded': (s) => true,
+    Int: (s) => toInt(strToNumeric(s.Str())), Numeric: (s) => strToNumeric(s.Str()), Num: (s) => mkNum(toFloat(strToNumeric(s.Str()))), chars: (s) => chars(s.Str()), 'Match': (s) => s, 'WHAT': (s) => T.Match, 'rule': (s) => s.rule || Nil, 'succeeded': (s) => true,
     'iterator': (s) => s.caps[Symbol.iterator](), 'join': (s, sep) => joinList(mkList(s.caps), sep), 'map': (s, f) => mapList(mkList(s.caps), f), 'first': (s, ...a) => firstOf(mkList(s.caps), posArgs(a)[0], nm(a)), 'sort': (s, f) => sortList(mkList(s.caps), f), 'grep': (s, f) => grepList(mkList(s.caps), f),
 });
 const regexGist = (s) => 'rx/' + (s.src === undefined ? '…' : s.src) + '/';

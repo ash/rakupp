@@ -91,8 +91,8 @@ if (IS_NODE && nodeRequire) {
     host.open = (p, ...a) => { const named = nm(a); const path = str(p); const w = truthy(named.get('w')) || truthy(named.get('a')) || str(named.get('mode') || '') === 'wo'; const app = truthy(named.get('a')) || truthy(named.get('append')); const h = new RIOHandle(w ? 'file-w' : 'file-r', path); if (named.has('out-buffer')) { const ob = named.get('out-buffer'); h.outBuffer = ob === false ? 0 : ob === true ? 8192 : Number(toInt(ob)); } try { if (fs.statSync(path).isDirectory()) return failure(new RakuError(`'${path}' is a directory, cannot do '.open' on a directory`, 'X::IO::Directory')); } catch (e) { /* absent is not an answer yet: :w may still create it */ } if (w) { try { if (!app) fs.writeFileSync(path, ''); else fs.appendFileSync(path, ''); } catch (e) { return failure(openFailed(path, e)); } h.out = ''; } else { try { h.buf = fs.readFileSync(path, 'utf8'); } catch (e) { return failure(openFailed(path, e)); } } return h; };
     host.close = h => { if (h.kind === 'file-w' && h.out) { fs.appendFileSync(h.path, h.out); h.out = ''; } h.closed = true; return true; };
     host.isTTY = h => h.kind === 'in' ? !!process.stdin.isTTY : h.kind === 'out' ? !!process.stdout.isTTY : h.kind === 'err' ? !!process.stderr.isTTY : false;
-    host.shell = (cmd, ...a) => { const cp = nodeRequire('child_process'); host.flush(); const r = cp.spawnSync('/bin/sh', ['-c', str(cmd)], { stdio: 'inherit' }); return mkProc(r.status); };
-    host.run = (...args) => { const cp = nodeRequire('child_process'); const [pos, named] = splitArgs(args); host.flush(); const r = cp.spawnSync(str(pos[0]), pos.slice(1).map(str), { stdio: [truthy(named.get('in')) ? 'pipe' : 'inherit', truthy(named.get('out')) ? 'pipe' : 'inherit', truthy(named.get('err')) ? 'pipe' : 'inherit'], encoding: 'utf8' }); const p = mkProc(r.status); p.a_out = new RIOHandle('str'); p.a_out.buf = r.stdout || ''; p.a_err = new RIOHandle('str'); p.a_err.buf = r.stderr || ''; return p; };
+    host.shell = (cmd, ...a) => { const cp = nodeRequire('child_process'); host.flush(); const r = cp.spawnSync('/bin/sh', ['-c', str(cmd)], { stdio: 'inherit' }); return mkProc(r.status, str(cmd)); };
+    host.run = (...args) => { const cp = nodeRequire('child_process'); const [pos, named] = splitArgs(args); host.flush(); const r = cp.spawnSync(str(pos[0]), pos.slice(1).map(str), { stdio: [truthy(named.get('in')) ? 'pipe' : 'inherit', truthy(named.get('out')) ? 'pipe' : 'inherit', truthy(named.get('err')) ? 'pipe' : 'inherit'], encoding: 'utf8' }); const p = mkProc(r.status, str(pos[0])); p.a_out = new RIOHandle('str'); p.a_out.buf = r.stdout || ''; p.a_err = new RIOHandle('str'); p.a_err.buf = r.stderr || ''; return p; };
 } else if (IS_DENO) {
     host.name = 'deno';
     host.argv = Deno.args.slice();
@@ -115,7 +115,12 @@ if (IS_NODE && nodeRequire) {
 function concatBytes(chunks) { let n = 0; for (const c of chunks) n += c.length; const out = new Uint8Array(n); let o = 0; for (const c of chunks) { out.set(c, o); o += c.length; } return out; }
 const ProcT = mkType('Proc', [T.Any], { isUser: true, attrs: [{ name: 'exitcode', sigil: '$', pub: true }, { name: 'out', sigil: '$', pub: true }, { name: 'err', sigil: '$', pub: true }] });
 ProcT.methods.exitcode = s => s.a_exitcode; ProcT.methods.out = s => s.a_out; ProcT.methods.err = s => s.a_err; ProcT.methods.Bool = s => s.a_exitcode === 0; ProcT.methods.so = s => s.a_exitcode === 0; ProcT.methods.signal = s => 0; ProcT.methods.pid = s => 0;
-function mkProc(code) { const p = new RObj(ProcT); p.a_exitcode = code === null ? 1 : code; p.a_out = Nil; p.a_err = Nil; return p; }
+// Proc.sink — a command that exited unsuccessfully throws when nobody keeps its
+// Proc, which is what makes `run @cmd` as a program's last act exit non-zero
+// (issue #73). A Proc the caller DOES keep is never sunk, so `my $p = run …;
+// $p.exitcode` still reads the code back.
+ProcT.methods.sink = s => { if (s.a_exitcode === 0) return Nil; throw new RakuError(`The spawned command '${s.procCmd}' exited unsuccessfully (exit code: ${s.a_exitcode}, signal: 0)`, 'X::Proc::Unsuccessful'); };
+function mkProc(code, cmd) { const p = new RObj(ProcT); p.a_exitcode = code === null ? 1 : code; p.a_out = Nil; p.a_err = Nil; p.procCmd = cmd === undefined ? '' : cmd; return p; }
 const STDIN = new RIOHandle('in', ''), STDOUT = new RIOHandle('out', ''), STDERR = new RIOHandle('err', '');
 
 // Dynamic variables the core provides
@@ -158,7 +163,7 @@ function atEnd(f) { endBlocks.push(f); }
 
 // The MAIN protocol: pos/named from @*ARGS, then dispatch. `sig` describes
 // the candidates: [{fn, params:[{name, named, slurpy, optional, hasDefault, type, isBool}]}]
-function runMain(cands, argv) {
+function runMain(cands, argv, sinkResult) {
     const pos = [], named = new Map();
     let onlyPos = false;
     for (const a of argv) {
@@ -182,7 +187,18 @@ function runMain(cands, argv) {
     }
     for (const c of cands) {
         const r = bindMain(c, pos, named);
-        if (r) return r.fn(...r.args);
+        if (!r) continue;
+        const v = r.fn(...r.args);
+        // The PROGRAM's MAIN has its value SUNK (Rakudo): a Failure detonates, a
+        // Proc that exited unsuccessfully throws (issue #73), and an Int MAIN
+        // happens to return is NOT the exit code — only the protocol's own 0/2
+        // leaves here as a number. A coloured MAIN hands back a Promise, which
+        // main() is already waiting on: sink what it settles to. Called as a
+        // MODULE export (exportMain) there is a caller, so the value flows out.
+        if (!sinkResult) return v;
+        if (v && typeof v.then === 'function') return v.then(x => { sink(x); return null; });
+        sink(v);
+        return null;
     }
     if (named.has('help') && cands.length) { host.stdout(usage(cands) + '\n'); return 0; }
     host.stderr(usage(cands) + '\n');

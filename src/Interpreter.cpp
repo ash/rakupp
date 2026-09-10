@@ -1246,6 +1246,16 @@ void Interpreter::sinkValue(const Value& r) {
     }
 }
 
+// Sink a ROUTINE's RETURNED value — MAIN's, which nobody looks at (Rakudo runs
+// `sub MAIN` in sink context). A return value is already decontainerized, so
+// unlike the statement path this needs no "fresh object" test before running a
+// user `sink` method; the rest is the one rule above.
+void Interpreter::sinkReturnedValue(const Value& r) {
+    if (r.t == VT::Object && r.obj() && r.obj()->cls && r.obj()->cls->findMethod("sink"))
+        methodCall(r, "sink", ValueList{});
+    sinkValue(r);
+}
+
 // A structural copy for the snapshot: an Array/Hash Value shares its payload,
 // so a plain copy would still alias the block's mutations.
 static Value gatherDeepCopy(const Value& v, int depth = 0) {
@@ -4737,7 +4747,10 @@ int Interpreter::run(Program& prog) {
         if (mainSub && mainSub != inheritedMainBarrier_) {
             ValueList margs;
             int rc = mainProtocol(*mainSub, margs);
-            if (rc < 0) callCallable(*mainSub, margs);
+            // MAIN's own value is sunk (Rakudo): a Failure it returns detonates
+            // and a Proc that exited unsuccessfully throws, which is how a
+            // program whose last act is `run @cmd` still exits non-zero (#73).
+            if (rc < 0) sinkReturnedValue(callCallable(*mainSub, margs));
             else code = rc;
         }
         if (docMode_) std::cout << podData_; // --doc: print the rendered POD after the program runs
@@ -7071,7 +7084,7 @@ int Interpreter::replRunMain() {
     if (!mainSub || mainSub == inheritedMainBarrier_) return -1;
     ValueList margs;
     int rc = mainProtocol(*mainSub, margs);
-    if (rc < 0) { callCallable(*mainSub, margs); return 0; }
+    if (rc < 0) { sinkReturnedValue(callCallable(*mainSub, margs)); return 0; }
     return rc;
 }
 
@@ -13755,13 +13768,13 @@ int Interpreter::runCompiledMain(Value (*fn)(ValueList&)) {
         (!mainSub->code()->params && !mainSub->code()->isMultiDispatcher)) {
         refreshArgvFromLiveArgs();
         ValueList margs = rtMainArgs(argv_, mainNamedAnywhere());
-        fn(margs);
+        sinkReturnedValue(fn(margs));
         return 0;
     }
     ValueList margs;
     int rc = mainProtocol(*mainSub, margs);
     if (rc >= 0) return rc;
-    fn(margs);
+    sinkReturnedValue(fn(margs));   // as in the interpreter: MAIN's value is sunk (#73)
     return 0;
 }
 
