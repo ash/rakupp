@@ -16,7 +16,7 @@ Reproduce any of them with:
 Scope note: this reflects the current build, defaulting to **Raku 6.d**. Where
 `rakupp` differs from Rakudo or omits something, it is called out inline and
 collected in [§14 rakupp-specific notes](#14-rakupp-specific-notes--caveats). The
-full machine-extracted inventories (253 subroutines, 736 methods) are in the
+full machine-extracted inventories (253 subroutines, 738 methods) are in the
 [appendices](#appendix-a--all-built-in-subroutines).
 
 ---
@@ -1077,7 +1077,7 @@ words zip
 
 ## Appendix B — all methods
 
-The 736 method names dispatched in `Interpreter::methodCall()`
+The 738 method names dispatched in `Interpreter::methodCall()`
 (`src/Builtins.cpp`), alphabetically. Names in `TitleCase` are coercion/type
 methods (`.Int`, `.Str`, `.Bag`, `.NFC`); `UPPER-CASE` are introspection/protocol
 methods (`.WHAT`, `.AT-POS`, `.BIND-POS`); the rest are ordinary methods.
@@ -1116,7 +1116,7 @@ EXISTS-POS exitcode exp expmod extension f fail Failure FatRat fc file
 files find find_method find_method_qualified finish first
 first-date-in-month first-index flat flatmap flip floor flush fmt
 formatter freeze from from-json from-list from-posix get get_value
-getc getline gist grab grabpairs grep grep-index handled hardware
+getc getline gist grab grabpairs grep grep-index group handled hardware
 has_accessor Hash hash head hh-mm-ss hostname hour HOW hyper id im in
 in-range in-timezone indent index indices infinite install installed
 Instant Int int int-bounds interval invalidate_method_caches invert
@@ -1166,7 +1166,8 @@ to to-json to-posix today toggle total trans tree trim trim-leading
 trim-trailing truncate truncate-to truncated-to try-acquire
 try_acquire type uc UInt uint unimatch uniname uninames uniparse
 uniprop uniprops unique unival univals unlink unlock unmarshal unpack
-unpolar unset unshift unwrap usage-name usascii utc utf16 utf32 utf8c8
+unpolar unset unshift unwrap usage-name usascii user utc utf16 utf32
+utf8c8
 value values VAR ver Version version version-matcher VMnames volume
 vow w wait week week-number week-year weekday-of-month WHAT what
 whatever WHERE WHICH WHO whole-second WHY windows1252 wordcase words

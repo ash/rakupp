@@ -70,6 +70,18 @@ static bool succPredExact(const Value& v) {
     return v.t == VT::Int || v.t == VT::Rat || v.t == VT::Num || v.t == VT::Complex;
 }
 
+// stat() for the IO methods that report a file's metadata. True (with `st`
+// filled) when the path is there; otherwise `out` carries the soft Failure
+// Rakudo hands back for .s/.z/.mode/.user/.group on a path that is not.
+static bool statOrFailure(const std::string& path, const std::string& shown,
+                          struct stat& st, Value& out) {
+    if (::stat(path.c_str(), &st) == 0) return true;
+    out = rakuppNewFailure();
+    (*out.hash())["exception"] = Value::typeObj("X::IO::DoesNotExist");
+    (*out.hash())["message"] = Value::str("Failed to stat '" + shown + "': no such file or directory");
+    return false;
+}
+
 std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName& m, ValueList& args,
                                      const std::vector<ExprPtr>* rwArgs) {
     auto a0 = [&]() -> Value { return args.empty() ? Value::any() : args[0]; };
@@ -1202,26 +1214,34 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
 #endif
     }
     if ((m == "s" || m == "z") && inv.hashKind == "IO") { // size / zero-length; both FAIL (softly) if absent
-        struct stat st;
-        if (stat(ioFsPath(inv).c_str(), &st) != 0) {
-            Value f = rakuppNewFailure();
-            (*f.hash())["exception"] = Value::typeObj("X::IO::DoesNotExist");
-            (*f.hash())["message"] = Value::str("Failed to stat '" + inv.toStr() + "': no such file or directory");
-            return f;
-        }
+        struct stat st; Value fail;
+        if (!statOrFailure(ioFsPath(inv), inv.toStr(), st, fail)) return fail;
         if (m == "z") return Value::boolean(st.st_size == 0);
         return Value::integer((long long)st.st_size);
     }
-    if (m == "mode" && inv.hashKind == "IO") { // permission bits as a 4-digit octal string
-        struct stat st;
-        if (stat(ioFsPath(inv).c_str(), &st) != 0) {
-            Value f = rakuppNewFailure();
-            (*f.hash())["exception"] = Value::typeObj("X::IO::DoesNotExist");
-            (*f.hash())["message"] = Value::str("Failed to stat '" + inv.toStr() + "': no such file or directory");
-            return f;
-        }
-        char buf[8]; snprintf(buf, sizeof buf, "0%03o", st.st_mode & 07777);
-        return Value::str(buf);
+    if (m == "mode" && inv.hashKind == "IO") { // permission bits, as an IntStr: 0o644 numerically, "0644" as a string
+        struct stat st; Value fail;
+        if (!statOrFailure(ioFsPath(inv), inv.toStr(), st, fail)) return fail;
+        // BOTH faces of Rakudo's allomorph are load-bearing, and a plain Str
+        // only carried one. fez's tar writer packs `sprintf("%07o", $f.mode)`:
+        // a "0644" string numifies to DECIMAL 644, so every file in a bundle
+        // went out with mode 0o1204 — no error, just the wrong permissions.
+        unsigned bits = (unsigned)(st.st_mode & 07777);
+        // four octal digits, so setuid and sticky are in the string face too
+        // ("1777" for /tmp, where the old "0%03o" ran to five and said "01777")
+        char buf[8]; snprintf(buf, sizeof buf, "%04o", bits);
+        Value v = Value::integer((long long)bits);
+        v.s = buf;
+        v.hashKind = "IntStr";
+        return v;
+    }
+    // the owner's ids. Rakudo answers plain Ints here — the NAMES are $*USER
+    // and $*GROUP, which are the allomorphs — and fez reads both for every
+    // file it packs, so their absence stopped `fez upload` outright.
+    if ((m == "user" || m == "group") && inv.hashKind == "IO") {
+        struct stat st; Value fail;
+        if (!statOrFailure(ioFsPath(inv), inv.toStr(), st, fail)) return fail;
+        return Value::integer((long long)(m == "user" ? st.st_uid : st.st_gid));
     }
     if (m == "mkdir" && inv.hashKind == "IO") { // $path.IO.mkdir($mode) / (:$mode) — create the directory and parents (a bare Str has no mkdir)
         std::string path = ioFsPath(inv); // the invocant's own :CWD decides where

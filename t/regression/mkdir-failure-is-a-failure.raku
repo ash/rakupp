@@ -9,7 +9,8 @@
 # Semantics pinned against Rakudo 2026.08: parents are created as needed; an
 # already-existing DIRECTORY is success; success answers the IO::Path from
 # both forms; mode rides positionally on the sub and as $mode / :mode on the
-# method, and appears in the failure message. Failure is SOFT — X::IO::Mkdir
+# method, and appears in the failure message. `.mode` answers an IntStr, so
+# the rows below read its string face. Failure is SOFT — X::IO::Mkdir
 # with "Failed to create directory '<path>' with mode '0oNNN': ..." — False
 # when boolified, deadly when sunk. Failure probes here go through paths
 # shadowed by a regular FILE (EEXIST / ENOTDIR), so they fail for root too.
@@ -33,11 +34,11 @@ check $dir.add('p/q/r').d, True, '...and exist';
 
 # --- mode rides through — onto the directory and into the message -------------
 $dir.add('m1').mkdir(:mode(0o700));
-check $dir.add('m1').mode, '0700', 'method :mode(0o700) is honored';
+check $dir.add('m1').mode.Str, '0700', 'method :mode(0o700) is honored';
 $dir.add('m2').mkdir(0o700);
-check $dir.add('m2').mode, '0700', 'method positional mode is honored';
+check $dir.add('m2').mode.Str, '0700', 'method positional mode is honored';
 check mkdir($dir.add('m3').Str, 0o700).^name, 'IO::Path', 'the sub takes positional mode';
-check $dir.add('m3').mode, '0700', '...and honors it';
+check $dir.add('m3').mode.Str, '0700', '...and honors it';
 
 # --- failure is a soft Failure, typed and worded like Rakudo's ----------------
 my $file = $dir.add('afile');
