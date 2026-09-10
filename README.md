@@ -102,6 +102,7 @@ brew tap ash/rakupp && brew install rakupp    # macOS (Apple Silicon: prebuilt b
 ```
 
 ```powershell
+# Windows, in a PowerShell window — irm and iex are PowerShell's own aliases
 irm https://raw.githubusercontent.com/ash/rakupp/main/tools/install-windows.ps1 | iex
 ```
 

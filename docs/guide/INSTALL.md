@@ -49,6 +49,11 @@ the machine `PATH` instead of yours.
 irm https://raw.githubusercontent.com/ash/rakupp/main/tools/install-windows.ps1 | iex
 ```
 
+In a **PowerShell** window — Start menu → "PowerShell", or the PowerShell tab of
+Windows Terminal. `irm` and `iex` are PowerShell's own aliases for
+`Invoke-RestMethod` and `Invoke-Expression`, so the line means nothing to
+`cmd.exe` or to a Unix shell, which answer that there is no such command.
+
 It downloads the latest `rakupp-windows-x64.zip`, checks it against the
 published SHA-256, unpacks it into `%LOCALAPPDATA%\Programs\rakupp`, asks
 whether you want the engine under the second name `raku` as well, and puts
