@@ -36,6 +36,11 @@ sub is(Mu $got, Mu $want, Str $desc) {
     ok($got eq $want, $desc);
     diag("got '$got', expected '$want'") unless $got eq $want;
 }
+# Windows runs this suite too (the CI leg was POSIX-only until it wasn't), and
+# a handful of checks below shell out in ways that have no portable spelling.
+# Each one is named at its site rather than quietly dropped.
+my $WIN = $*DISTRO.is-win;
+
 sub skip(Str $desc) {   # counts as a pass, but SAYS it did not run
     $count++;
     say "ok $count - $desc # SKIP";
@@ -310,6 +315,16 @@ section('showcase/orbits (Kepler, the planets, and Hohmann transfers)');
 # the same process then does blocking socket I/O, so we background them through
 # the shell (proven to work), poll until they accept, drive them over real
 # sockets, then pkill by script name.
+# `command -v NAME`, portably. Returns the path or ''.
+sub which(Str $name --> Str) {
+    my $p = $WIN
+        ?? (try run('where', $name, :out, :!err))
+        !! (try run('/bin/sh', '-c', "command -v $name", :out, :!err));
+    return '' without $p;
+    # `where` prints every match, one per line; take the first.
+    ($p.out.slurp(:close).lines[0] // '').trim
+}
+
 sub start-server(Str $script, Int $port) {
     shell("$*EXECUTABLE $script $port >/dev/null 2>&1 &");
     for ^40 {                                    # up to ~8 s to bind
@@ -325,6 +340,7 @@ sub start-server(Str $script, Int $port) {
 # runs (a zombie on a colliding port answered INCR with a stale count). Kill by
 # basename instead.
 sub stop-server(Str $script) {
+    return True if $WIN;          # nothing was started there
     my $b = $script.IO.basename;
     # The leading character goes in a character class so the pattern cannot
     # match the `sh -c` process running it: on Linux pkill -f reads that shell's
@@ -350,11 +366,20 @@ sub http(Int $port, Str $req --> Str) {
     $resp;
 }
 
+# The four server showcases below background a process through the shell and
+# then kill it by name. Both halves are POSIX — `… &` and `pkill -f` — and the
+# Windows equivalents (`start /b`, taskkill matched on a command line) are not
+# something to write without a Windows box to watch them on: a server that
+# fails to die poisons the next section's port or hangs the runner outright.
+# Skipped there, out loud, so the gap is visible rather than assumed covered.
 section('showcase/pastebin (HTTP on raw sockets)');
 {
     my $script = $ROOT.add('showcase/pastebin/pastebin.raku').Str;
     my $port = 8391;
-    if start-server($script, $port) {
+    if $WIN {
+        skip('showcase/pastebin: server showcases are POSIX-only in this gate');
+    }
+    elsif start-server($script, $port) {
         my $home = http($port, "GET / HTTP/1.0\r\nHost: x\r\n\r\n");
         ok($home.contains('200') && $home.contains('rakupp pastebin'), "pastebin: GET / serves the form");
 
@@ -377,7 +402,10 @@ section('showcase/chat (concurrent TCP)');
 {
     my $script = $ROOT.add('showcase/chat/chat.raku').Str;
     my $port = 6691;
-    if start-server($script, $port) {
+    if $WIN {
+        skip('showcase/chat: server showcases are POSIX-only in this gate');
+    }
+    elsif start-server($script, $port) {
         # The two-client interaction runs in its own process (see the fixture).
         my ($out, $) = run-rakupp($ROOT.add('t/fixtures/chat-client.raku').Str, ~$port);
         ok($out.contains('CHAT-OK'), "chat: nick, join, broadcast, and /who across two clients");
@@ -392,7 +420,10 @@ section('showcase/kvstore (a key-value protocol)');
     my $script = $ROOT.add('showcase/kvstore/kvstore.raku').Str;
     my $port = 6300 + $*PID % 200; # per-run port: a leaked server from a
                                    # previous run can't poison this run's INCR
-    if start-server($script, $port) {
+    if $WIN {
+        skip('showcase/kvstore: server showcases are POSIX-only in this gate');
+    }
+    elsif start-server($script, $port) {
         # one connection, a sequence of commands, each reply read in turn.
         # NB replies are read per LINE through a buffer — two back-to-back
         # commands can coalesce into one recv, and a raw recv here would eat
@@ -431,7 +462,10 @@ section('showcase/rakus (a static HTTP file server)');
 {
     my $script = $ROOT.add('showcase/rakus/rakus.raku').Str;
     my $port = 8493;
-    if start-server($script, $port) {
+    if $WIN {
+        skip('showcase/rakus: server showcases are POSIX-only in this gate');
+    }
+    elsif start-server($script, $port) {
         my $home = http($port, "GET / HTTP/1.0\r\nHost: x\r\n\r\n");
         ok($home.contains('200') && $home.contains('rakus is serving'), "rakus: serves index.html at /");
 
@@ -1143,13 +1177,17 @@ section('the CLI surface (goldens for the v3 parser refactor)');
            '-0777: one record per file');
         is(run-rakupp('-0777', '-pe', '$_ = $_.subst("\n", ".", :g)', $s1.Str, $s2.Str)[0], "x.y.z.",
            '-0777 -p prints records raw');
-        {   # NUL records in, one per line out (records arrive chomped)
-            my $p = run('/bin/sh', '-c',
-                        "printf 'aa\\0bb\\0' | " ~ $*EXECUTABLE ~ " -0ne 'say \"[\$_]\"'", :out, :!err);
+        {   # NUL records in, one per line out (records arrive chomped).
+            # Written straight to the child's stdin rather than through a
+            # `printf | rakupp` pipeline: no shell means no quoting of a NUL
+            # through two layers, and it works where /bin/sh does not.
+            my $p = run($*EXECUTABLE.absolute, '-0ne', 'say "[$_]"', :in, :out, :!err);
+            $p.in.write("aa\0bb\0".encode('latin-1'));
+            $p.in.close;
             is($p.out.slurp(:close), "[aa]\n[bb]\n", '-0: NUL-separated records');
         }
         # the perl differentials, where perl is present (the plan's own gate)
-        my $perl = run('/bin/sh', '-c', 'command -v perl', :out, :!err).out.slurp(:close).trim;
+        my $perl = which('perl');
         if $perl {
             my $pl = run($perl, '-lane', 'print $F[1]', $ab.Str, :out, :!err).out.slurp(:close);
             is(run-rakupp('-lane', 'say @F[1]', $ab.Str)[0], $pl, 'differential: -lane matches perl');
@@ -1199,7 +1237,7 @@ section('the CLI surface (goldens for the v3 parser refactor)');
         run-rakupp('-ni', '-e', 'say $*ARGV.IO.basename ~ ":" ~ $_', $v5.Str);
         ok($v5.IO.slurp eq "v5.txt:z\n", '$*ARGV names the file being edited');
         # differential: same edit under perl, byte-identical files and backups
-        my $perl5 = run('/bin/sh', '-c', 'command -v perl', :out, :!err).out.slurp(:close).trim;
+        my $perl5 = which('perl');
         if $perl5 {
             my $q1 = $work.add('q1.txt'); $q1.spurt("aa\nba\n");
             my $q2 = $work.add('q2.txt'); $q2.spurt("aa\nba\n");
