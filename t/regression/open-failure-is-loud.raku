@@ -11,12 +11,17 @@
 # Sibling of the same bug in spurt, fixed earlier: that one answered a quiet
 # False. Both are Failures now.
 #
-# The TYPE is X::AdHoc, as Rakudo throws for every failed open. The docs name
-# none ("Fails with appropriate exception if the open fails"), so what a program
-# can be written against is what Rakudo does, and `when X::AdHoc` is what code
-# in the wild contains. rakupp used to answer X::IO::DoesNotExist / X::IO::Open /
-# X::IO::Spurt / X::IO::Exists / X::IO::Exclusive here — the last four are not
-# Rakudo types at all, so every such CATCH missed them in silence.
+# The exception IS an X::AdHoc, which is what a program can be written against:
+# the docs name no type ("Fails with appropriate exception if the open fails"),
+# Rakudo answers X::AdHoc, and `when X::AdHoc` is what code in the wild contains.
+# So that is what these check — the SMARTMATCH, not the name.
+#
+# The name is X::IO::Open, and checking `.^name eq 'X::AdHoc'` is what this file
+# used to do, because at the time an X:: name had no parents and the two were
+# the same question. They are not any more: X::IO::Open IS-A X::AdHoc, every
+# such CATCH fires, `.payload` is the message as Rakudo's is, and the name says
+# which call failed where Rakudo's cannot — its message is "Failed to open file"
+# for a slurp and a spurt alike.
 # A directory is the one exception: X::IO::Directory is Rakudo's own type.
 # Contract: exit 0 + last line PASS.
 my @fail;
@@ -33,7 +38,9 @@ my $f    = $gone.add('F');
 for <w a rw update> -> $m {
     my $r = open($f.Str, |($m => True));
     check($r.^name, 'Failure', "open :$m into a missing directory answers a Failure");
-    check($r.exception.^name, 'X::AdHoc', "…armed with X::AdHoc, as Rakudo throws (:$m)");
+    check($r.exception ~~ X::AdHoc, True, "…armed with an X::AdHoc, as Rakudo throws (:$m)");
+    check($r.exception.^name, 'X::IO::Open', "…and the name says which call failed (:$m)");
+    check($r.exception.payload.Str.contains('No such file'), True, "…with X::AdHoc's payload (:$m)");
     check($r.exception.Str.contains('No such file or directory'), True, "…and says why (:$m)");
     check($f.e, False, "…and created nothing (:$m)");
     check(?$r, False, "…and is false, so an `if open(...)` guard sees it (:$m)");
@@ -43,13 +50,15 @@ for <w a rw update> -> $m {
 {
     my $r = $f.open(:w);
     check($r.^name, 'Failure', '.IO.open(:w) agrees with open(:w)');
-    check($r.exception.^name, 'X::AdHoc', '…same type');
+    check($r.exception ~~ X::AdHoc, True, '…same type');
+    check($r.exception.^name, 'X::IO::Open', '…same name');
 }
 
 # -- read mode keeps the contract it already had ------------------------------
 {
     try open($f.Str);
-    check($!.^name, 'X::AdHoc', 'read-mode open on a missing file still refuses');
+    check($! ~~ X::AdHoc, True, 'read-mode open on a missing file still refuses');
+    check($!.^name, 'X::IO::Open', '…and names the call');
 }
 
 # -- a directory is a directory, in either direction --------------------------
@@ -99,7 +108,7 @@ for <w r> -> $m {
         my $inside = $dir.add('F');
         my $r = open($inside.Str, :w);
         if $r.^name eq 'Failure' {          # false when the process writes anyway
-            check($r.exception.^name, 'X::AdHoc', 'an unwritable directory refuses too');
+            check($r.exception ~~ X::AdHoc, True, 'an unwritable directory refuses too');
             check($r.exception.Str.contains('Permission denied'), True, '…it names the permission');
         }
         try $dir.chmod(0o700);

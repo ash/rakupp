@@ -55,10 +55,15 @@ if (IS_NODE && nodeRequire) {
     // errno text the way strerror spells it, so a JS-hosted program's message is
     // the interpreter's message. Anything unmapped keeps node's own wording.
     const errText = (e) => ({ ENOENT: 'No such file or directory', EACCES: 'Permission denied', EISDIR: 'Is a directory', ENOTDIR: 'Not a directory', EEXIST: 'File exists', EROFS: 'Read-only file system' })[e.code] || e.message;
-    const openFailed = (path, e) => new RakuError(`Failed to open file ${path}: ${errText(e)}`, 'X::AdHoc');
+    // Named per operation, as the interpreter names them — X::IO::Open and the
+    // rest are engine names parented to X::AdHoc (see EX_PARENT), so `when
+    // X::AdHoc` still fires while .^name says which call failed. EEXIST picks
+    // its own name the way the interpreter's :createonly / :x arms do.
+    const openFailed = (path, e, ty) => new RakuError(`Failed to open file ${path}: ${errText(e)}`,
+        e && e.code === 'EEXIST' ? (ty === 'X::IO::Spurt' ? 'X::IO::Exists' : 'X::IO::Exclusive') : (ty || 'X::IO::Open'));
     host.slurp = (p, ...a) => { try { return fs.readFileSync(str(p), 'utf8'); } catch (e) { throw openFailed(str(p), e); } };
     // a write that cannot land answers a Failure, never a quiet true (issue #71)
-    host.spurt = (p, content, ...a) => { const named = nm(a); const opts = truthy(named.get('append')) ? { flag: 'a' } : truthy(named.get('createonly')) ? { flag: 'wx' } : {}; try { fs.writeFileSync(str(p), str(content), opts); } catch (e) { return failure(openFailed(str(p), e)); } return true; };
+    host.spurt = (p, content, ...a) => { const named = nm(a); const opts = truthy(named.get('append')) ? { flag: 'a' } : truthy(named.get('createonly')) ? { flag: 'wx' } : {}; try { fs.writeFileSync(str(p), str(content), opts); } catch (e) { return failure(openFailed(str(p), e, 'X::IO::Spurt')); } return true; };
     host.appendFile = (p, s) => { fs.appendFileSync(p, s); };
     host.exists = p => fs.existsSync(p);
     host.isFile = p => { try { return fs.statSync(p).isFile(); } catch (e) { return false; } };

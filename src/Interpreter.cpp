@@ -2832,9 +2832,17 @@ Interpreter::Interpreter() {
     // X::AdHoc — the exception `die "message"` produces (so $_/$! in CATCH answer .message/.^name)
     // — plus the handful of typed exceptions roast constructs with .new.
     {
+        // Registering an exception makes it CONSTRUCTIBLE — but it also takes it
+        // out of the X:: ancestry, because a registered name answers `.^mro` and
+        // `.^parents` from its ClassInfo and not from typeAncestry. Without the
+        // parent below, `X::AdHoc.^mro` was `X::AdHoc, Any, Mu` — no Exception in
+        // it at all — while every UNregistered X:: name got the full chain. Every
+        // one of these is an Exception; the roles and any deeper ancestry still
+        // come from the generated table, which `~~` consults by name.
         auto reg = [&](const char* name, std::initializer_list<const char*> attrs) {
             auto ci = std::make_shared<ClassInfo>();
             ci->name = name;
+            ci->nativeParent = "Exception";
             for (const char* an : attrs) { ClassAttr a; a.name = an; a.sigil = '$'; a.pub = true; ci->attrs.push_back(a); }
             classes_[name] = ci;
         };
@@ -10981,6 +10989,17 @@ static inline bool isNamedArg(const Value& v) { return v.t == VT::Pair && v.name
 // Throw a typed exception as a real OBJECT carrying attributes, so
 // throws-like matchers (`symbol => '$!bar'`) can introspect it. The class is
 // registered on first use with exactly the attributes passed.
+// An exception that IS an X::AdHoc — the class itself, or one of the engine's
+// own names parented to it. X::AdHoc's whole content is `.payload`, so a handler
+// written against Rakudo reads it: `CATCH { when X::AdHoc { note .payload } }`.
+// Claiming the ancestry without carrying the attribute would make the claim a
+// lie at exactly the point a program acts on it.
+static bool isAdHocKind(const std::string& tn) {
+    if (tn == "X::AdHoc") return true;
+    for (auto& a : typeAncestry(tn)) if (a == "X::AdHoc") return true;
+    return false;
+}
+
 Value Interpreter::makeTypedEx(const std::string& type,
                                std::vector<std::pair<std::string, Value>> attrs,
                                const std::string& message) {
@@ -11009,7 +11028,7 @@ Value Interpreter::makeTypedEx(const std::string& type,
     ex.obj()->cls = it->second;
     for (auto& kv : attrs) ex.obj()->attrs[kv.first] = kv.second;
     ex.obj()->attrs["message"] = Value::str(message);
-    if (type == "X::AdHoc" && !ex.obj()->attrs.count("payload"))
+    if (isAdHocKind(type) && !ex.obj()->attrs.count("payload"))
         ex.obj()->attrs["payload"] = Value::str(message);
     return ex;
 }
@@ -28578,16 +28597,21 @@ Value Interpreter::exceptionFor(const RakuError& e) {
     else {
         ci = std::make_shared<ClassInfo>();
         ci->name = tn;
+        ci->nativeParent = "Exception";   // as the registered ones are
         ClassAttr a; a.name = "message"; a.sigil = '$'; a.pub = true;
         ci->attrs.push_back(a);
+        // …and an X::AdHoc kind needs the accessor as well as the value: the
+        // attribute below is set on the object either way, but `.payload` is a
+        // missing METHOD without a declaration to generate it from.
+        if (isAdHocKind(tn)) { ClassAttr pa; pa.name = "payload"; pa.sigil = '$'; pa.pub = true; ci->attrs.push_back(pa); }
         classes_[tn] = ci;
     }
     auto od = std::make_shared<ObjectData>();
     od->cls = ci;
     od->attrs["message"] = Value::str(e.message);
     // an X::AdHoc's .payload is whatever was passed to `die` — for `die "msg"`
-    // that's the message itself
-    if (tn == "X::AdHoc") od->attrs["payload"] = Value::str(e.message);
+    // that's the message itself, and the same holds for anything parented to it
+    if (isAdHocKind(tn)) od->attrs["payload"] = Value::str(e.message);
     Value out = Value::object(od);
     attachFrames(out, e);
     return out;

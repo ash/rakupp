@@ -121,5 +121,40 @@ for '2012/04', 'not-a-datetime', '2012-04-01T12:00:00+1' -> $bad {
 @fail.push('temporal~~role')
     unless caught-as({ DateTime.new('not-a-datetime') }, X::Temporal) eq 'matched';
 
+# ---- 6. the IO family: a better name, and Rakudo's behaviour underneath -----
+# Rakudo answers a failed open, slurp and spurt with X::AdHoc — not a decision
+# it made, but the shape of a `die` with a plain string: X::AdHoc's whole
+# content is .payload, and there .payload IS the message. Its message does not
+# classify the failure either ("Failed to open file …" for all three), so these
+# keep their own names. What the name must NOT cost is the `when X::AdHoc` such
+# code is written against, or the .payload that handler reads.
+my $gone = $*TMPDIR.add('rakupp-no-such-dir-xyz').add('f').Str;
+sub io-probe(&code) {
+    my %r = branch => 'none', name => '', payload => '';
+    {
+        code();
+        CATCH {
+            %r<name>    = .^name;
+            %r<payload> = (try .payload.Str) // '';
+            when X::AdHoc { %r<branch> = 'X::AdHoc' }
+            default       { %r<branch> = 'MISSED' }
+        }
+    }
+    %r
+}
+for 'slurp' => { slurp($gone) }, 'spurt' => { spurt($gone, 'x') } -> $case {
+    my %r = io-probe($case.value);
+    @fail.push("io-{$case.key}-when (%r<branch>)")    unless %r<branch> eq 'X::AdHoc';
+    @fail.push("io-{$case.key}-payload")              unless %r<payload>.contains('Failed to open file');
+}
+# …and here the name says WHICH call failed, which is the whole reason to have
+# one. Rakudo cannot: it answers X::AdHoc to both.
+if $*RAKU.compiler.name eq 'rakupp' {
+    my %s = io-probe({ slurp($gone) });
+    my %p = io-probe({ spurt($gone, 'x') });
+    @fail.push("io-slurp-name (%s<name>)") unless %s<name> eq 'X::IO::Open';
+    @fail.push("io-spurt-name (%p<name>)") unless %p<name> eq 'X::IO::Spurt';
+}
+
 die "FAILED: {@fail.join(', ')}" if @fail;
 say 'PASS';

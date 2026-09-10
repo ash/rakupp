@@ -106,11 +106,12 @@ check(Rakudo::Internals::JSON.to-json("x\x[1]"), '"x\\u0001"',
 
 # -- .IO.open agrees with open() ----------------------------------------------
 # (The TYPE was rakupp's own X::IO::DoesNotExist when this batch landed; issue
-#  #71 moved every failed open to Rakudo's X::AdHoc, so this now asserts what
+#  #71 moved every failed open to an X::AdHoc — the SMARTMATCH, which is what a
+#  program does; the name is X::IO::Open and says which call failed. This asserts what
 #  Rakudo asserts. The whole file is engine-neutral again.)
 {
     try { "/nonexistent-batch1-$*PID".IO.open }
-    check($!.^name, 'X::AdHoc', '.IO.open on a missing file throws like open()');
+    check($! ~~ X::AdHoc, True, '.IO.open on a missing file throws like open()');
     my $tmp = $*TMPDIR.add("batch1-open-$*PID.txt");
     $tmp.spurt("hi");
     my $fh = $tmp.IO.open;

@@ -35,7 +35,34 @@ function exc(e) {
 function isControl(e) { return e instanceof DoneCtl || e instanceof NextCtl || e instanceof LastCtl || e instanceof RedoCtl || e instanceof RetCtl || e instanceof ExitCtl || e instanceof SuccCtl || e instanceof TakeCtl; }
 function excMessage(e) { if (e instanceof RakuError) return e.message; if (e instanceof RObj) { const m = e.ty.findUser('message'); if (m) return str(m(e)); const a = e['a_message']; if (a !== undefined) return str(a); } return str(e); }
 function excType(e) { if (e instanceof RakuError) return T[e.type] || mkExType(e.type); if (e instanceof RObj) return e.ty; return T.Exception; }
-function mkExType(name) { if (!T[name]) { const t = mkType(name, [T.Exception]); return t; } return T[name]; }
+// The engine's own exception names, and the Raku class each answers to. Same
+// list as rakuppOnlyExceptionParent in the interpreter, and it has to stay the
+// same list: a program that catches `when X::AdHoc` must catch these on BOTH
+// backends, and the corpus gate compares the two.
+const EX_PARENT = {
+    'X::IO::Open': 'X::AdHoc', 'X::IO::Spurt': 'X::AdHoc',
+    'X::IO::Exists': 'X::AdHoc', 'X::IO::Exclusive': 'X::AdHoc',
+    'X::Signature::ArityMismatch': 'X::AdHoc', 'X::Parameter::RequiredNamed': 'X::AdHoc',
+    'X::Scheduler::Cue': 'X::AdHoc', 'X::Recursion': 'X::AdHoc',
+    'X::Feature::NotBuilt': 'X::AdHoc',
+};
+function mkExType(name) {
+    if (!T[name]) {
+        const p = EX_PARENT[name];
+        return mkType(name, [p ? (T[p] || mkExType(p)) : T.Exception]);
+    }
+    return T[name];
+}
+// X::AdHoc is what a `die` with a plain value is wrapped in, and its whole
+// content is `.payload` — the die argument, which for `die "msg"` is the
+// message. `payload` on a RakuError means something else here (the named
+// fields an exception carries: .method, .typename, …), so an AdHoc kind has to
+// answer .payload from the message instead, as the interpreter does.
+function isAdHocKind(t) { return t === 'X::AdHoc' || EX_PARENT[t] === 'X::AdHoc'; }
+function excPayload(e) {
+    if (e instanceof RakuError && isAdHocKind(e.type)) return e.message;
+    return e && e.payload ? namedHash(e.payload) : mkHash();
+}
 function rethrow(e) { throw e; }
 function warn(...args) { host.stderr(args.map(str).join('') + '\n'); return true; }
 
@@ -373,7 +400,7 @@ class RIOPath { constructor(path, cwd) { this.path = path; this.cwd = cwd; } }
 class RIOHandle { constructor(kind, path) { this.kind = kind; this.path = path; this.buf = ''; this.pos = 0; this.eof = false; this.lines = null; } }
 
 Object.assign(R, {
-    RScalar, die, failure, fail, sink, exc, isControl, excMessage, excType, mkExType, rethrow, warn, TakeCtl, take, gather, gatherEager,
+    RScalar, die, failure, fail, sink, exc, isControl, excMessage, excType, excPayload, mkExType, rethrow, warn, TakeCtl, take, gather, gatherEager,
     defClass, construct, buildObj, cloneObj, enumType, enumFromKeys, enumFromValue, attrGet, attrSet, named, splitArgs, namedArg, namedHash, checkNamed,
     tooMany, tooFew, arityError, notAny, typeCheck, typeMatches, noMatch, RCapture, capture, RSetty, mkSetty, toSetty, setOp, setRel, elem,
     RVersion, RDate, dateNew, RIOPath, RIOHandle, EMPTY_MAP,

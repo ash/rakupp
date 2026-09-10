@@ -126,6 +126,18 @@ static const char* rakuppOnlyExceptionParent(const std::string& n) {
         {"X::Parameter::RequiredNamed", "X::AdHoc"},
         // "Cannot specify :at and :in at the same time"
         {"X::Scheduler::Cue",           "X::AdHoc"},
+        // The IO family. Rakudo answers every one of these X::AdHoc, which is
+        // not a decision it made: X::AdHoc is what a `die` with a plain value is
+        // wrapped in, and its .payload here is the message string — so Rakudo's
+        // core simply dies with a string and never classifies the failure. The
+        // cost of copying that is real, because the message does not classify it
+        // either: "Failed to open file /gone/f" is what a failed slurp, spurt
+        // and open all say. These names say which; the parent keeps the
+        // `when X::AdHoc` such code is written against firing.
+        {"X::IO::Open",                 "X::AdHoc"},
+        {"X::IO::Spurt",                "X::AdHoc"},
+        {"X::IO::Exists",               "X::AdHoc"},
+        {"X::IO::Exclusive",            "X::AdHoc"},
         // No Rakudo counterpart at all: this is a --slim cut answering for a
         // feature that was not built in. X::AdHoc is where an unclassified
         // engine failure belongs.
@@ -2054,16 +2066,19 @@ long long graphemeCount(const std::string& s) {
 }
 
 // Rakudo dies opening a missing file for reading ("Failed to open file
-// /abs/path: No such file or directory") — match it, absolute path included,
-// X::AdHoc included. The type used to be X::IO::Open, which is not a Rakudo
-// type at all: a `when X::AdHoc` written against Rakudo missed it in silence.
+// /abs/path: No such file or directory") — match it, absolute path included.
+// The TYPE is X::IO::Open, which Rakudo does not have: Rakudo answers X::AdHoc
+// and so cannot tell a failed slurp from a failed spurt from a failed open —
+// its message says "Failed to open file" for all three. Keeping the name costs
+// nothing now that X::IO::Open IS-A X::AdHoc (rakuppOnlyExceptionParent), so
+// the `when X::AdHoc` that code in the wild contains still fires.
 [[noreturn]] void throwFailedOpen(const std::string& path) {
     std::string abs = path;
     if (abs.empty() || (abs[0] != '/' && !(abs.size() > 1 && abs[1] == ':'))) {
         char buf[4096];
         if (getcwd(buf, sizeof buf)) abs = std::string(buf) + "/" + path;
     }
-    throw RakuError{Value::typeObj("X::AdHoc"),
+    throw RakuError{Value::typeObj("X::IO::Open"),
                     "Failed to open file " + abs + ": No such file or directory"};
 }
 
@@ -10541,7 +10556,7 @@ void Interpreter::registerBuiltins() {
         std::string path = I.ioFsPath(a[0]);
         if (createonly) { std::ifstream probe(path); if (probe) { // a Failure, not a quiet False (as the method form)
             Value f = rakuppNewFailure();
-            (*f.hash())["exception"] = Value::typeObj("X::AdHoc");
+            (*f.hash())["exception"] = Value::typeObj("X::IO::Exists");
             (*f.hash())["message"] = Value::str("Failed to open file " + path + ": File exists");
             return f; } }
         content = I.encodeTextEnc(content, Interpreter::encAdverb(a)); // `:enc`, and binary — as the method form
@@ -10549,7 +10564,7 @@ void Interpreter::registerBuiltins() {
         if (!out) { // a Failure that detonates when sunk
             int err = errno;
             Value f = rakuppNewFailure();
-            (*f.hash())["exception"] = Value::typeObj("X::AdHoc");
+            (*f.hash())["exception"] = Value::typeObj("X::IO::Spurt");
             (*f.hash())["message"] = Value::str("Failed to open file " + path + ": " + std::strerror(err));
             return f;
         }
@@ -10659,7 +10674,7 @@ void Interpreter::registerBuiltins() {
         for (auto& x : a) if (x.t == VT::Pair && x.s == "nl-in" && x.pairVal()) nlIn = *x.pairVal();
         if (excl) { // File::Temp opens `:rw, :exclusive` to claim a fresh name
             std::ifstream probe(path);
-            if (probe) throw RakuError{Value::typeObj("X::AdHoc"),
+            if (probe) throw RakuError{Value::typeObj("X::IO::Exclusive"),
                 "Failed to open file " + path + ": File exists"};
             if (mode == "r") mode = "w"; // bare :x implies write-create (Rakudo's :x)
         }
@@ -10699,7 +10714,7 @@ void Interpreter::registerBuiltins() {
             }
             if (err) { // a Failure that detonates when used or sunk — `my $fh = open …; if $fh {…}` works (it threw)
                 Value f = rakuppNewFailure();
-                (*f.hash())["exception"] = Value::typeObj("X::AdHoc");
+                (*f.hash())["exception"] = Value::typeObj("X::IO::Open");
                 (*f.hash())["message"] = Value::str("Failed to open file " + path + ": " + std::strerror(err));
                 return f;
             }
