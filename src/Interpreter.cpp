@@ -11420,6 +11420,11 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                             for (auto& e : v.flatten()) a.arr()->push_back(e);
                             return;
                         }
+                        // A SHAPED array's elements are its LEAVES, not its rows
+                        // (see isMultiDimShaped): `my @m[3;2]` binds six values
+                        // to `*@a`, the same six `my @flat = @m` stores. Stopping
+                        // at the rows here handed the slurpy three.
+                        if (isMultiDimShaped(v)) { shapedLeaves(v, *a.arr()); return; }
                         for (auto& e : *v.arr()) {                   // one level, then decide
                             if (walksThrough(e)) spread(e);
                             else a.arr()->push_back(e);
