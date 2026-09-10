@@ -44,6 +44,94 @@ static void sinkBuildResult(const rakupp::Value& r) {
 
 namespace rakupp {
 
+// The per-class step alone, least-derived first down the primary parent chain
+// — what the construction protocol reduces to when no class in the ancestry
+// declares a BUILD or a TWEAK. Recursive so the order costs no list.
+static void stepDownChain(ClassInfo* c, Interpreter::BuildStep step) {
+    if (!c) return;
+    stepDownChain(c->parent.get(), step);
+    step.fn(step.ctx, c);
+}
+
+// Depth-first over the primary and the additional (multiple-inheritance)
+// parents, most-derived first, into a stack buffer that spills past eight.
+// A plain recursive function and not a recursive std::function: this runs on
+// every construction, and the std::function it replaced allocated on each one.
+static void collectMroChain(ClassInfo* c, ClassInfo** buf,
+                            std::vector<ClassInfo*>& spill, size_t& n) {
+    if (!c) return;
+    if (n < 8) buf[n] = c; else spill.push_back(c);
+    n++;
+    collectMroChain(c->parent.get(), buf, spill, n);
+    for (auto& p : c->extraParents) collectMroChain(p.get(), buf, spill, n);
+}
+
+// Rakudo's BUILDALL walks the MRO least-derived first and, for EACH class in
+// turn, runs that class's BUILD and then that class's TWEAK. `findMethod`
+// answers only the MOST-derived one, so a parent that initialises its own
+// attributes never ran at all. fez's Fez::Types is the shape that exposes it:
+// `class auth-response is api-response` sets $!key in its own BUILD and leaves
+// $!success to api-response's, so with the parent BUILD skipped every API
+// response read back as unsuccessful and `fez login` reported "unknown error"
+// on a login that had in fact succeeded (issue #72).
+//
+// The two hooks INTERLEAVE per class — an ancestor's TWEAK runs before a
+// descendant's BUILD, not after every BUILD in the chain — which is why this
+// is one walk and not two. `afterBuild`, when set, runs between a class's own
+// BUILD and its own TWEAK: that is where the `is required` check belongs, so
+// an attribute a class's own BUILD filled counts as supplied while one only
+// its TWEAK would fill still does not.
+void Interpreter::runBuildChain(ClassInfo* ci, const Value& self, const ValueList& args,
+                                BuildStep afterBuild) {
+    if (!ci) return;
+    // Neither hook anywhere in the ancestry: `class K { has $.a; has $.b }`, and
+    // nearly every other construction there is. Nothing has to interleave, so
+    // the per-class step (the `is required` check) runs straight down the parent
+    // chain the way it did before this walk existed, and the MRO collection
+    // below — which every single constructed object would otherwise pay for —
+    // never happens. Skipping it here is worth ~4% of `K.new`.
+    if (!ci->findMethod("BUILD") && !ci->findMethod("TWEAK")) {
+        if (afterBuild.fn) stepDownChain(ci, afterBuild);
+        return;
+    }
+    // MRO, most-derived first: depth-first over the primary and the additional
+    // (multiple-inheritance) parents, keeping the LAST occurrence of a class
+    // reached twice. That is the linearisation `.^mro` itself reports, so the
+    // order a diamond builds in cannot drift from the order it reports.
+    ClassInfo* linBuf[8];
+    std::vector<ClassInfo*> linSpill;
+    size_t nLin = 0;
+    auto at = [&](size_t i) -> ClassInfo* { return i < 8 ? linBuf[i] : linSpill[i - 8]; };
+    collectMroChain(ci, linBuf, linSpill, nLin);
+    // One activation of one hook, under a dispatcher frame that has no next
+    // candidate — so a `nextsame` inside a BUILD is the benign no-op it is in
+    // Rakudo (Fez::Types ends both of its BUILDs with one) instead of
+    // "nextsame is not in the dynamic scope of a dispatcher", and so it cannot
+    // re-run an ancestor this walk is already running exactly once.
+    auto runHook = [&](ClassInfo* c, const char* which) {
+        auto it = c->methods.find(which);
+        // Only a class's OWN declaration: an inherited one belongs to the
+        // ancestor that declared it, and runs on that ancestor's turn here.
+        if (it == c->methods.end() || it->second.t != VT::Code) return;
+        RedispatchCtx rc;
+        rc.sameArgs = args;
+        rc.next = [](ValueList) { return Value::nil(); };
+        redispatchStack_.push_back(std::move(rc));
+        try { sinkBuildResult(invokeMethod(it->second, self, args, nullptr, /*ownFrame=*/true)); }
+        catch (...) { redispatchStack_.pop_back(); throw; }
+        redispatchStack_.pop_back();
+    };
+    for (size_t i = nLin; i-- > 0;) {
+        ClassInfo* c = at(i);
+        bool later = false;              // dedup keeping the LAST occurrence
+        for (size_t j = i + 1; j < nLin; j++) if (at(j) == c) { later = true; break; }
+        if (later) continue;
+        runHook(c, "BUILD");
+        if (afterBuild.fn) afterBuild.fn(afterBuild.ctx, c);
+        runHook(c, "TWEAK");
+    }
+}
+
 // An attribute's .type carries the CONTAINER shape, as in Rakudo:
 // `has License @.licenses` answers Positional[License] (and %-attrs
 // Associative[T]) — JSON::Unmarshal's array multi dispatches on exactly
@@ -3177,8 +3265,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         std::string type; long long off = Interpreter::ncFieldOffset(ci.get(), arg.s, type);
                         if (off >= 0) Interpreter::ncWriteElem((long long)(intptr_t)mem + off, type, 0, *arg.pairVal());
                     }
-                    if (Value* build = ci->findMethod("BUILD")) sinkBuildResult(invokeMethod(*build, self, args));
-                    if (Value* tweak = ci->findMethod("TWEAK")) sinkBuildResult(invokeMethod(*tweak, self, args));
+                    runBuildChain(ci.get(), self, args);
                     maybeRegisterDestroy(self);
                     return self;
                 }
@@ -3205,8 +3292,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         od->cls = ci; od->hasBoxed = true;
                         od->boxed = methodCall(Value::typeObj(nb), "new", args);
                         Value self = Value::object(od);
-                        if (Value* build = ci->findMethod("BUILD")) sinkBuildResult(invokeMethod(*build, self, args));
-                        if (Value* tweak = ci->findMethod("TWEAK")) sinkBuildResult(invokeMethod(*tweak, self, args));
+                        runBuildChain(ci.get(), self, args);
                         maybeRegisterDestroy(self);
                         return self;
                     }
@@ -3223,8 +3309,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                                     od->attrs[arg.s] = arg.pairVal() ? *arg.pairVal() : Value::any();
                             }
                         Value self = Value::object(od);
-                        if (Value* build = ci->findMethod("BUILD")) sinkBuildResult(invokeMethod(*build, self, args));
-                        if (Value* tweak = ci->findMethod("TWEAK")) sinkBuildResult(invokeMethod(*tweak, self, args)); // post-BUILD hook
+                        runBuildChain(ci.get(), self, args);
                         maybeRegisterDestroy(self);
                         return self;
                     }
@@ -3245,8 +3330,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         od->boxed = methodCall(Value::typeObj(nb), "new", builtinArgs);
                         runAttrDefaults(od, ci, args);
                         Value self = Value::object(od);
-                        if (Value* build = ci->findMethod("BUILD")) sinkBuildResult(invokeMethod(*build, self, args));
-                        if (Value* tweak = ci->findMethod("TWEAK")) sinkBuildResult(invokeMethod(*tweak, self, args));
+                        runBuildChain(ci.get(), self, args);
                         maybeRegisterDestroy(self);
                         return self;
                     }
@@ -3265,8 +3349,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         od->boxed = methodCall(Value::typeObj("Pair"), "new", builtinArgs);
                         runAttrDefaults(od, ci, args);
                         Value self = Value::object(od);
-                        if (Value* build = ci->findMethod("BUILD")) sinkBuildResult(invokeMethod(*build, self, args));
-                        if (Value* tweak = ci->findMethod("TWEAK")) sinkBuildResult(invokeMethod(*tweak, self, args));
+                        runBuildChain(ci.get(), self, args);
                         maybeRegisterDestroy(self);
                         return self;
                     }
@@ -3297,8 +3380,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         od->boxed = methodCall(Value::typeObj(nb), "new", builtinArgs);
                         runAttrDefaults(od, ci, args);
                         Value self = Value::object(od);
-                        if (Value* build = ci->findMethod("BUILD")) sinkBuildResult(invokeMethod(*build, self, args));
-                        if (Value* tweak = ci->findMethod("TWEAK")) sinkBuildResult(invokeMethod(*tweak, self, args));
+                        runBuildChain(ci.get(), self, args);
                         maybeRegisterDestroy(self);
                         return self;
                     }
@@ -3372,37 +3454,38 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                                         {{"type", Value::typeObj(ci->name)}},
                                         "Default constructor for '" + ci->name +
                                         "' only takes named arguments");
-                // `is required` is checked BELOW, after BUILD — Rakudo raises it
+                // `is required` is checked DURING the construction walk below, after
+                // a class's own BUILD and before its own TWEAK — Rakudo raises it
                 // from BUILDALL, so a custom `submethod BUILD` that fills the
                 // attribute itself satisfies it (DBDish::Pg's DBError::Pg reads
-                // every one of its `is required` fields off the PGresult).
-                auto checkRequired = [&] {
-                    for (size_t ci2 = nChain; ci2-- > 0;)
-                        for (auto& at : chainAt(ci2)->attrs) {
-                            if (!at.required) continue;
-                            // `is required` means SUPPLIED AT CONSTRUCTION — a default
-                            // of its own does not excuse it
-                            bool gotArg = false;
-                            for (auto& arg : args)
-                                if (arg.t == VT::Pair && arg.s == at.name) { gotArg = true; break; }
-                            if (gotArg) continue;
-                            // …or filled by a custom BUILD. A default of the
-                            // attribute's OWN does not excuse it (Rakudo: `has $.d
-                            // is required = 7` still demands the argument), so only
-                            // an attribute with no default can be satisfied this way.
-                            if (!at.def && !at.hasDefVal) {
-                                auto ait = od->attrs.find(at.name);
-                                if (ait != od->attrs.end() && defined(ait->second)) continue;
-                            }
-                            throwTypedV("X::Attribute::Required",
-                                        {{"name", Value::str("$!" + at.name)},
-                                         {"why", Value::str(at.requiredWhy)}},
-                                        "The attribute '$!" + at.name + "' is required" +
-                                        (at.requiredWhy.empty()
-                                             ? std::string(", ")
-                                             : " because " + at.requiredWhy + ",\n") +
-                                        "but you did not provide a value for it.");
+                // every one of its `is required` fields off the PGresult) while a
+                // TWEAK that would fill it comes too late and still throws.
+                auto checkRequiredFor = [&](ClassInfo* rc) {
+                    for (auto& at : rc->attrs) {
+                        if (!at.required) continue;
+                        // `is required` means SUPPLIED AT CONSTRUCTION — a default
+                        // of its own does not excuse it
+                        bool gotArg = false;
+                        for (auto& arg : args)
+                            if (arg.t == VT::Pair && arg.s == at.name) { gotArg = true; break; }
+                        if (gotArg) continue;
+                        // …or filled by a custom BUILD. A default of the
+                        // attribute's OWN does not excuse it (Rakudo: `has $.d
+                        // is required = 7` still demands the argument), so only
+                        // an attribute with no default can be satisfied this way.
+                        if (!at.def && !at.hasDefVal) {
+                            auto ait = od->attrs.find(at.name);
+                            if (ait != od->attrs.end() && defined(ait->second)) continue;
                         }
+                        throwTypedV("X::Attribute::Required",
+                                    {{"name", Value::str("$!" + at.name)},
+                                     {"why", Value::str(at.requiredWhy)}},
+                                    "The attribute '$!" + at.name + "' is required" +
+                                    (at.requiredWhy.empty()
+                                         ? std::string(", ")
+                                         : " because " + at.requiredWhy + ",\n") +
+                                    "but you did not provide a value for it.");
+                    }
                 };
                 for (size_t ci2 = nChain; ci2-- > 0;)
                     for (auto& at : chainAt(ci2)->attrs) {
@@ -3437,9 +3520,13 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 Value self = Value::object(od);
                 // bless does not re-run BUILD-from-new args the same way, but running
                 // BUILD here matches the common `self.bless(:attr(...))` usage.
-                if (Value* build = ci->findMethod("BUILD")) sinkBuildResult(invokeMethod(*build, self, args));
-                checkRequired();   // after BUILD, as Rakudo's BUILDALL does
-                if (Value* tweak = ci->findMethod("TWEAK")) sinkBuildResult(invokeMethod(*tweak, self, args)); // post-BUILD hook
+                // the lambda is passed as a pointer pair, not wrapped in a
+                // std::function — see BuildStep
+                BuildStep reqStep{[](void* p, ClassInfo* rc) {
+                                      (*static_cast<decltype(checkRequiredFor)*>(p))(rc);
+                                  },
+                                  &checkRequiredFor};
+                runBuildChain(ci.get(), self, args, reqStep);
                 maybeRegisterDestroy(self);
                 return self;
             }

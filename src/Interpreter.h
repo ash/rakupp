@@ -1216,6 +1216,20 @@ public:
                        // the built-in behind this method, for callsame/nextsame: filled in by
                        // the caller, stamped with this activation's frame and installed here
                        ExecContext::BuiltinFallback* fallback = nullptr);
+    // A per-class step for runBuildChain, as a function pointer and its context
+    // rather than a std::function: this is on the object-construction path, and
+    // a std::function parameter cost an allocation per constructed object.
+    struct BuildStep { void (*fn)(void*, ClassInfo*); void* ctx; };
+    // Run the object-construction protocol over the invocant's MRO, least-derived
+    // first: each class's own BUILD, then `afterBuild` for that class (the
+    // `is required` check), then that class's own TWEAK. As Rakudo's BUILDALL
+    // does. See the definition in MethodCallPart2.cpp.
+    void runBuildChain(ClassInfo* ci, const Value& self, const ValueList& args,
+                       BuildStep afterBuild);
+    // …and the six construction paths with no `is required` check to interleave
+    void runBuildChain(ClassInfo* ci, const Value& self, const ValueList& args) {
+        runBuildChain(ci, self, args, BuildStep{nullptr, nullptr});
+    }
     // A method `augment`-ed onto a BUILT-IN type, if there is one for this invocant.
     Value* builtinExtMethod(const Value& inv, const std::string& m);
     // What an object contributes when assigned to a `%` container: its own
