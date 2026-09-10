@@ -33,6 +33,33 @@ rakupp install --list           # what is installed: identity, installer,
 rakupp uninstall Foo            # remove what THIS installer put there
 ```
 
+## Can I install something that is not in the ecosystem?
+
+Yes — give a path or a URL where a name would go.
+
+```sh
+rakupp install ./my-dist        # a checkout: the directory with META6.json
+rakupp install https://github.com/ash/raku-modules/tree/main/Prompt-Hidden
+rakupp install https://host/Foo-1.0.tar.gz
+```
+
+The github form takes the URL from your address bar, including the
+`/tree/BRANCH/SUBDIR` shape a monorepo of modules produces; without a `/tree/`
+it tries `main` and then `master`. Either way the archive is fetched, unpacked
+and installed exactly as a directory would be — dependencies from the index,
+the distribution's own test suite, the same `~/.raku`.
+
+One thing is genuinely weaker than an index install, and it is worth knowing
+rather than discovering: **a URL has no checksum.** A fez archive's URL carries
+the SHA-1 of its contents, and `rakupp install Foo` refuses an archive that does
+not hash to it. Nothing in an arbitrary URL names the bytes it should deliver,
+so there is nothing to check and TLS is the only integrity — which the installer
+prints, every time, rather than leaving you to assume otherwise.
+
+`uninstall` does not take a URL: the store knows distributions by name, and
+finding the name behind a URL would mean downloading it first. Use the name, or
+`rakupp install --list` to see what is there.
+
 Each command prints its own full usage when you give it no arguments. If you
 want zef itself on such a machine, zef runs under Raku++ too — `rakupp
 /path/to/zef install Foo` — with the caveats in

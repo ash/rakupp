@@ -165,6 +165,8 @@ either tool is picked up by `use` under either engine:
 
 ```sh
 rakupp install JSON::Fast        # or: zef install JSON::Fast   (via Rakudo)
+rakupp install ./my-dist         # a checkout, or a URL:
+rakupp install https://github.com/ash/raku-modules/tree/main/Prompt-Hidden
 ```
 
 ```raku

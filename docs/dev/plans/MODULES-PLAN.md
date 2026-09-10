@@ -284,6 +284,9 @@ mechanism) and zlib the same way, via NativeCall.
 1. Fetch the ecosystem index (fez/360; REA as a second source).
 2. Resolve name → version → distribution URL. Newest satisfying version, no
    SAT solver.
+   *(Steps 1-2 are for a NAME. An argument that is a directory skips to step 5,
+   and a URL — added 2026-09-10 — skips to step 3 with the URL it was given;
+   both then rejoin the same path. See "Not only a name" below.)*
 3. Fetch the tarball over HTTPS **with certificate verification** (see Risks).
 4. Inflate and untar via `dlopen`ed zlib.
 5. Read `META6.json`, walk `depends`, recurse.
@@ -291,6 +294,28 @@ mechanism) and zlib the same way, via NativeCall.
    installed — the standard set in v1.5.2.
 7. Write the CURI store rakupp already reads: `sources/`, `dist/`,
    `short/<sha>/`.
+
+### Not only a name
+
+An argument that is a **path** installs the distribution in that directory, and
+one that is a **URL** is fetched and unpacked into a directory first. Both then
+produce the same entry shape a resolved name does, so steps 5-7 — META6,
+dependencies, the build hook, the test gate, the store write — are one code
+path with three ways in.
+
+The URL forms are a `.tar.gz`/`.tgz` archive and a github.com repo or `/tree/`
+page, the latter rewritten to `/archive/REF.tar.gz`. `/tree/REF/SUBDIR` installs
+the distribution in that subdirectory, which is the monorepo shape; with no
+`/tree/`, `main` then `master`, because github will not name the default branch
+without an API call. `file://` is supported so `t/install/run.raku` can gate the
+whole path without a network.
+
+**The checksum is the difference, and it is not glossed over.** Step 3 for a fez
+archive verifies the SHA-1 the URL itself carries and refuses a mismatch (M2).
+Nothing in an arbitrary URL names its own contents, so a URL install has no
+checksum at all and prints the TLS-only note the REA path prints. `uninstall`
+therefore takes no URL either: the store is keyed by name, and learning the name
+behind a URL would mean fetching it.
 
 Step 7 is the design point. **Install is the writer for a reader that already
 exists.** No parallel module universe: what rakupp installs, Rakudo sees, and

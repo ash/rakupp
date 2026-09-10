@@ -44,9 +44,26 @@ nothing at all. The workflow is:
    ```
 
 `rakupp install` resolves against the same ecosystem index zef uses and runs a
-distribution's own test suite before marking it installed. Its full option list —
-version pins, `--dry-run`, `--list`, `uninstall`, `reinstall`, `test` — is in
-[CLI.md](CLI.md#installing-modules). How much of the ecosystem runs today:
+distribution's own test suite before marking it installed. It also takes a
+**directory** or a **URL** instead of a name, for a module that is not in the
+ecosystem — or not in it yet:
+
+```sh
+rakupp install ./my-dist          # a checkout: the directory with META6.json
+rakupp install https://github.com/ash/raku-modules/tree/main/Prompt-Hidden
+                                  # a github page URL, monorepo subdirectory
+                                  # and all — the URL from the address bar
+rakupp install https://host/Foo-1.0.tar.gz         # or a release tarball
+```
+
+A URL is fetched and unpacked and then treated exactly as a directory would be:
+same dependency resolution, same build hook, same test suite, same store. What
+differs is integrity — nothing in a URL names the bytes it should deliver, so
+there is no checksum to verify and the installer says so. An index install does
+verify: a fez archive's URL carries its SHA-1 and a mismatch is refused.
+
+Its full option list — version pins, `--dry-run`, `--list`, `uninstall`,
+`reinstall`, `test` — is in [CLI.md](CLI.md#installing-modules). How much of the ecosystem runs today:
 all 2,530 distributions, each with its sweep verdict, are listed at
 [raku.online/modules/ecosystem](https://raku.online/modules/ecosystem/).
 

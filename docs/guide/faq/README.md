@@ -30,10 +30,11 @@ trips over.
   itemisation, `$(…)` vs `[…]`, when you need `@(…)`, and passing a list to a
   routine.
 - **[modules.md](modules.md)** — installing and finding modules: `zef install`
-  or `rakupp install` and then just `use` it, the places searched (the failure
-  message is the list), pointing `-I` at a store somewhere else, what the
-  SHA-named files are, why "Could not find Foo" is usually a distribution name,
-  and running a module you are still writing.
+  or `rakupp install` and then just `use` it, installing something the ecosystem
+  does not carry (a directory or a URL, and why a URL has no checksum), the
+  places searched (the failure message is the list), pointing `-I` at a store
+  somewhere else, what the SHA-named files are, why "Could not find Foo" is
+  usually a distribution name, and running a module you are still writing.
 - **[compiling.md](compiling.md)** — turning a program into a binary: `--exe`
   vs `--aot` vs `--bundle`, what `-O` buys, and why `--exe` needs a C++ compiler
   on the machine that runs it.

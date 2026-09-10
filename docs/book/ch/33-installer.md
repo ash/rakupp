@@ -278,6 +278,26 @@ or a truncated download cannot become an installed module. When an index
 entry carries no checksum in its path, the installer says so out loud rather
 than pretending the gate applied.
 
+**Three ways in, one path out.** Everything above is what a *name* goes
+through. A directory argument skips resolution entirely — it already is a
+distribution — and a URL is fetched and unpacked into a directory first. All
+three then produce the same entry, so Test and Write below have no idea which
+one they are serving. That is the whole reason `url-dist-entry` ends by calling
+`local-dist-entry` on what it unpacked rather than building an entry itself: a
+second construction of the same thing is a second thing to keep correct.
+
+The URL forms are a `.tar.gz` archive and a github.com repo or `/tree/` page,
+rewritten to the tarball github already serves. `/tree/REF/SUBDIR` reaches a
+distribution inside a monorepo, which is the shape that prompted it — the URL
+someone has is the one from their address bar, not one they would have to
+construct. And the fetch-and-verify paragraph above is exactly where the three
+stop being equivalent: **a URL cannot be verified.** A fez archive's URL carries
+the SHA-1 of its own contents; an arbitrary URL names nothing about the bytes it
+will deliver. So a URL install prints the TLS-only note rather than quietly
+skipping a gate the reader has just been told about. `uninstall` refuses a URL
+for a related reason: the store is keyed by name, and learning the name behind a
+URL would mean fetching it first, which is not a thing an uninstall should do.
+
 **Test.** Before a distribution is installed, its own `t/` suite runs under
 rakupp — dependencies were installed first, so the tests see them. This gate
 earned its keep on its very first live run: JSON::Unmarshal 0.18's suite
