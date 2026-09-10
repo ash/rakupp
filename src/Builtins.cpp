@@ -9938,14 +9938,21 @@ void Interpreter::registerBuiltins() {
         // doing so is honest and moves ~40 Roast files out of fully-passing
         // (our exception objects lack many of Rakudo's attributes) — a policy
         // decision on the published numbers, held for the user (REVIEW-GRAND).
+        // …and RAKUPP_STRICT_THROWS_LIKE turns the type check ON, so a run can
+        // SAY what that policy costs instead of leaving it to be guessed. Read
+        // once: off, the shipped path does not even build the exception value.
+        static const bool strict = std::getenv("RAKUPP_STRICT_THROWS_LIKE") != nullptr;
         bool threw = false;
+        Value thrown;
         if (!a.empty()) {
             try {
                 // the block's result is SUNK — `throws-like { run … }` throws through Proc.sink
                 if (a[0].t == VT::Code) I.sinkValue(I.callCallable(a[0], {}));
                 else if (a[0].t == VT::Str) I.sinkValue(I.evalString(a[0].s, /*mainlinePH=*/true));
-            } catch (RakuError&) { threw = true; }
+            } catch (RakuError& e) { threw = true; if (strict) thrown = I.exceptionFor(e); }
         }
+        if (strict && threw && a.size() > 1 && a[1].t == VT::Type && a[1].s != "Exception")
+            threw = applyArith("~~", thrown, a[1]).truthy();
         std::string desc = a.size() > 2 ? a[2].toStr() : (a.size() > 1 && a[1].t == VT::Str ? a[1].toStr() : "");
         I.emitTest(threw, desc);
         return Value::boolean(threw);
