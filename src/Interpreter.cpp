@@ -27536,9 +27536,13 @@ Value Interpreter::hyperPostfixApply(const std::string& op, Value v) {
 // through strOf, was already right about them.
 Value Interpreter::prefixStringify(const Value& v) {
     if (v.t == VT::Object && v.obj() && v.obj()->cls)
-        if (Value* m = v.obj()->cls->findMethod("Str")) {
+        if (v.obj()->cls->findMethod("Str")) {
+            // Dispatch it, rather than calling the resolved method: a `method Str`
+            // that defers with `nextsame` needs the dispatcher frame `$o.Str` gets,
+            // and calling the body straight died "not in the dynamic scope of a
+            // dispatcher" for `~$o` alone (CSS::Writer's Str over Any.Str).
             ValueList none;
-            Value r = invokeMethod(*m, v, none);
+            Value r = methodCall(v, "Str", none);
             if (!isDefined(r)) return r;
             return Value::str(strOf(r));
         }
