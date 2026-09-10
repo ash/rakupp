@@ -19133,6 +19133,20 @@ bool Interpreter::objListItems(const Value& v, ValueList& out) {
     return false;
 }
 
+// The name an `our` declaration PUBLISHES. A name written QUALIFIED is
+// absolute: `our $Bar::v` inside `class Foo` declares $Bar::v, and
+// `our $Foo::v` there declares $Foo::v — not $Foo::Bar::v or $Foo::Foo::v
+// (Rakudo). Prefixing an already-qualified name again published the DOUBLED
+// name and left the one every reader asks for empty, so a package could set a
+// variable that nothing outside it — including its own test suite — could see.
+// `$::x` names no package and still takes the prefix, so the `::` has to have
+// a real package name in front of it.
+static std::string ourPublishedName(const std::string& name, const std::string& pkgPrefix) {
+    size_t q = name.find("::");
+    if (q != std::string::npos && q > 1) return name;
+    return name.substr(0, 1) + pkgPrefix + name.substr(1);
+}
+
 Value Interpreter::evalAssign(Assign* a, bool sink) {
     // TARG lever A (TARG-PLAN.md): the simple-assign lane. A plain
     // `$padvar = EXPR` pays ~108 ns of ceremony on the full path — the
@@ -19308,7 +19322,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
         }
         if (ve->declare && ve->declScope == "our" && ve->name.size() > 1) {
             if (Value* p = tctx_.cur->find(ve->name)) {
-                std::string qual = ve->name.substr(0, 1) + tctx_.pkgPrefix + ve->name.substr(1);
+                std::string qual = ourPublishedName(ve->name, tctx_.pkgPrefix);
                 noteSymbolMutation("our-declaration publish");
                 // The qualified name and the module's own name are ONE container:
                 // `$Pkg::VAR = 4` written outside is a write to the very variable
@@ -31650,7 +31664,7 @@ Value Interpreter::eval(Expr* e) {
                     global_ && deh.get() != global_.get() && ve->name.size() > 1) {
                     if (!de->local(ve->name)) de->define(ve->name, declInitial(ve, sigil));
                     noteSymbolMutation("our-declaration publish (no initialiser)");
-                    global_->define(ve->name.substr(0, 1) + tctx_.pkgPrefix + ve->name.substr(1),
+                    global_->define(ourPublishedName(ve->name, tctx_.pkgPrefix),
                                     makeEnvSlotProxy(deh, ve->name));
                     Value* dp = de->local(ve->name);
                     return dp ? *dp : Value::any();
