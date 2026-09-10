@@ -73,10 +73,20 @@ function Count-Entry ([string] $raw, [string] $dir) {
 # The installer exits with an explicit code; a sentinel first, so a stale
 # $LASTEXITCODE from an earlier command cannot stand in for a run that
 # never happened.
-function Invoke-Installer ([string[]] $arguments, [string] $scriptPath = '') {
+#
+# A HASHTABLE, not an array. Splatting an array feeds the elements to the
+# POSITIONAL parameters -- the "-Dir" in it is a value, not a name -- so
+# @('-Archive', $zip, '-Dir', $prefix, ...) put "-Archive" in $Version, the zip
+# in $Dir, "-Dir" in $Archive, and then ran out of positions:
+#
+#   A positional parameter cannot be found that accepts argument '...rakupp-gate-...'
+#
+# which is how this gate failed on the day it landed. Only a hashtable splat
+# binds by name.
+function Invoke-Installer ([hashtable] $parameters, [string] $scriptPath = '') {
     if (-not $scriptPath) { $scriptPath = $Installer }
     $global:LASTEXITCODE = 99
-    & $scriptPath @arguments
+    & $scriptPath @parameters
     return $global:LASTEXITCODE
 }
 function Answer ([string] $exe) {
@@ -101,7 +111,7 @@ Write-Host "# prefix $prefix"
 
 try {
     # ---- install, without the second name ----------------------------------
-    $rc = Invoke-Installer @('-Archive', $Archive, '-Dir', $prefix, '-NoRakuAlias', '-Yes')
+    $rc = Invoke-Installer @{ Archive = $Archive; Dir = $prefix; NoRakuAlias = $true; Yes = $true }
     ok ($rc -eq 0) 'installer exits 0' "exit $rc"
     ok (Test-Path -LiteralPath $exe) 'bin\rakupp.exe is there'
     ok ((Answer $exe) -eq '42') 'the installed rakupp runs' (Answer $exe)
@@ -112,14 +122,14 @@ try {
     ok ($after.Contains($probe)) 'the rest of the user PATH is unexpanded' $after
 
     # ---- upgrade, asking for the second name -------------------------------
-    $rc = Invoke-Installer @('-Archive', $Archive, '-Dir', $prefix, '-RakuAlias', '-Yes')
+    $rc = Invoke-Installer @{ Archive = $Archive; Dir = $prefix; RakuAlias = $true; Yes = $true }
     ok ($rc -eq 0) 'a re-run over an existing install exits 0' "exit $rc"
     ok ((Answer $alias) -eq '42') 'raku.exe runs, and finds the runtime beside it' (Answer $alias)
     $after = Get-RawUserPath
     ok ((Count-Entry $after $bin) -eq 1) 'the re-run did not add a second PATH entry' $after
 
     # ---- upgrade with no say either way keeps the name it had ---------------
-    $rc = Invoke-Installer @('-Archive', $Archive, '-Dir', $prefix, '-Yes')
+    $rc = Invoke-Installer @{ Archive = $Archive; Dir = $prefix; Yes = $true }
     ok ($rc -eq 0) 'a third run exits 0' "exit $rc"
     ok ((Answer $alias) -eq '42') 'an upgrade keeps the raku name it had' (Answer $alias)
 
@@ -132,7 +142,7 @@ try {
     ok $haveCopy 'the install left a copy of itself in the prefix'
     $undo = $Installer
     if ($haveCopy) { $undo = $copy }
-    $rc = Invoke-Installer @('-Dir', $prefix, '-Uninstall', '-Yes') $undo
+    $rc = Invoke-Installer @{ Dir = $prefix; Uninstall = $true; Yes = $true } $undo
     ok ($rc -eq 0) 'uninstall exits 0' "exit $rc"
     ok (-not (Test-Path -LiteralPath $prefix)) 'uninstall removed the prefix'
     $final = Get-RawUserPath
