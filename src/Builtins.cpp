@@ -101,6 +101,30 @@ bool isCoreTypeName(const std::string& n) {
     return isKnownTypeName(n);
 }
 
+// An X:: name's ancestry: itself, whatever the generated table says it derives
+// from or does, then Exception, Any, Mu. Those last three are implied for every
+// X:: name, table or no table — a `class X::Mine` a user writes IS an Exception,
+// and so is a name rakupp invents at a throw site.
+//
+// Cached because the return is a REFERENCE and the chain is built per name;
+// thread_local because a `start` block asks the same questions on its own
+// thread. std::map nodes are stable, so the reference outlives later inserts.
+static const std::vector<std::string>& exceptionAncestry(const std::string& t) {
+    thread_local std::map<std::string, std::vector<std::string>> cache;
+    auto it = cache.find(t);
+    if (it != cache.end()) return it->second;
+    std::vector<std::string> v{t};
+    if (const char* extras = exceptionExtraAncestry(t))
+        for (const char* p = extras; *p; ) {
+            const char* c = std::strchr(p, ',');
+            v.emplace_back(p, c ? (size_t)(c - p) : std::strlen(p));
+            if (!c) break;
+            p = c + 1;
+        }
+    v.insert(v.end(), {"Exception", "Any", "Mu"});
+    return cache.emplace(t, std::move(v)).first->second;
+}
+
 // The built-in type lattice, narrowest-first, widest-last: read by .isa/.does/
 // .^mro, `.are` (via lubType) and the augment lookup.
 const std::vector<std::string>& typeAncestry(const std::string& t) {
@@ -131,6 +155,8 @@ const std::vector<std::string>& typeAncestry(const std::string& t) {
         {"Grammar", {"Grammar","Match","Capture","Cool","Any","Mu"}},
         {"Match",   {"Match","Capture","Cool","Any","Mu"}},
         {"Capture", {"Capture","Any","Mu"}},
+        // the root of the X:: tree, which is not itself an X:: name
+        {"Exception", {"Exception","Any","Mu"}},
         // IO::Socket is the ROLE a synchronous socket does — every wrapper
         // declares its parameter as that (IO::Socket::SSL takes an IO::Socket).
         // It is not an IO, and IO::Socket::Async does not do it either.
@@ -162,7 +188,9 @@ const std::vector<std::string>& typeAncestry(const std::string& t) {
     };
     static const std::vector<std::string> fallback = {"Any","Mu"};
     auto it = A.find(t);
-    return it != A.end() ? it->second : fallback;
+    if (it != A.end()) return it->second;
+    if (t.rfind("X::", 0) == 0) return exceptionAncestry(t);
+    return fallback;
 }
 // The names in the ancestry table that are ROLES, not classes. `.does` counts
 // them; `.isa` and `.^mro` do not (Rakudo: `Date.isa(Dateish)` is False).
@@ -171,7 +199,9 @@ bool isBuiltinRole(const std::string& n) {
         "Real", "Numeric", "Stringy", "Dateish", "Rational", "Callable",
         "Positional", "Associative", "Iterable", "Baggy", "Setty", "Mixy",
         "IO::Socket"};
-    return roles.count(n) > 0;
+    // …and the X:: exception roles (X::Comp, X::Syntax, X::IO, …), which the
+    // generated table owns because Rakudo's hierarchy is what defines them.
+    return roles.count(n) > 0 || isExceptionRole(n);
 }
 std::string typeOfVal(const Value& v) { return v.t == VT::Type ? v.s : v.typeName(); }
 std::string lubType(const std::string& a, const std::string& b) {
