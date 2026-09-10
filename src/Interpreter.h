@@ -107,6 +107,9 @@ inline Value armedFailure(const char* type, const std::string& msg) {
 // NumStr/ComplexStr — the number AND its source spelling); anything else passes
 // through unchanged. Shared by the `val` builtin, prompt(), and MAIN's argv.
 Value valAllomorph(const Value& v);
+// $TMPDIR, then TEMP, then TMP — Rakudo's order, and the only one that answers
+// on Windows, which sets the latter two and never the first.
+std::string tmpDirPath();
 // Build a shaped array (`my @a[2;3]` / `Array.new(:shape(2;3))`): a fixed row-major
 // structure, optionally filled from a flat list, tagged with its dimensions.
 Value makeShapedContainer(const std::vector<long long>& dims, const std::string& declType,

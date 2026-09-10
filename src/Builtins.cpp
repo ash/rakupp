@@ -862,8 +862,7 @@ static int stdinFdForHandle(const Value& h, bool& resolved) {
             return fd;
         }
         if (const Value* buf = field("buffer")) {
-            const char* td = std::getenv("TMPDIR");
-            std::string tmpl = td && *td ? td : "/tmp";
+            std::string tmpl = tmpDirPath();
             if (tmpl.back() != '/') tmpl += '/';
             tmpl += "rakupp-stdin-XXXXXX";
             std::vector<char> name(tmpl.begin(), tmpl.end()); name.push_back('\0');

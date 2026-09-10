@@ -13314,7 +13314,7 @@ Value Interpreter::dynVar(const std::string& name) {
         if (tctx_.cur) if (Value* p = tctx_.cur->find("$*SCHEDULER")) return *p; // user-assigned wins
         return defaultScheduler_; // shared .hash(): attr writes (uncaught_handler) persist
     }
-    if (name == "$*TMPDIR") { const char* t = std::getenv("TMPDIR"); std::string d = (t && *t) ? t : "/tmp"; while (d.size() > 1 && d.back() == '/') d.pop_back(); Value p = Value::str(d); p.hashKind = "IO"; return p; }
+    if (name == "$*TMPDIR") { Value p = Value::str(tmpDirPath()); p.hashKind = "IO"; return p; }
     // $*HOME — the user's home directory as an IO::Path (Any when the environment
     // does not say, which is Rakudo's rule). zef reaches its config through it.
     if (name == "$*HOME") {
@@ -31526,7 +31526,7 @@ Value Interpreter::eval(Expr* e) {
             if (ve->name == "$*INIT-INSTANT") return initInstantVal();
             if (ve->name == "&?BLOCK" && tctx_.curBlockVal) return *tctx_.curBlockVal;
             if (ve->name == "&?ROUTINE" && tctx_.curRoutineVal) return *tctx_.curRoutineVal;
-            if (ve->name == "$*TMPDIR") { const char* t = std::getenv("TMPDIR"); std::string d = (t && *t) ? t : "/tmp"; while (d.size() > 1 && d.back() == '/') d.pop_back(); Value p = Value::str(d); p.hashKind = "IO"; return p; }
+            if (ve->name == "$*TMPDIR") { Value p = Value::str(tmpDirPath()); p.hashKind = "IO"; return p; }
             if (ve->name == "$*HOME") return dynVar("$*HOME");
             }
             if (ve->declare) {

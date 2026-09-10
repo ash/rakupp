@@ -13,6 +13,37 @@
 
 namespace rakupp {
 
+// The temporary directory, trailing separators trimmed — the ONE place this is
+// decided. Four copies of a `TMPDIR`-or-"/tmp" line had drifted apart across
+// IOSpec, Interpreter (twice) and Builtins.
+//
+// TMPDIR, then TEMP, then TMP, which is the order Rakudo asks in. Reading only
+// TMPDIR was fine on Unix and answered nothing anywhere else: WINDOWS DOES NOT
+// SET IT — it sets TEMP and TMP — so `$*TMPDIR` there was the literal "/tmp",
+// which is drive-relative and not where anything belongs. Anything that unpacks
+// into `$*TMPDIR` and then runs a child there inherits that, and `rakupp
+// install` does exactly that.
+//
+// Defined ABOVE the anonymous namespace below on purpose: inside it the symbol
+// has internal linkage and the other three call sites will not link.
+std::string tmpDirPath() {
+    const char* t = getenv("TMPDIR");
+#if defined(_WIN32)
+    // TEMP and TMP are consulted on WINDOWS ONLY. Rakudo's Unix spec reads
+    // TMPDIR and nothing else — measured — so honouring TEMP there as well
+    // would be a divergence invented on the way past, in the one place a
+    // program is most likely to notice.
+    if (!t || !*t) t = getenv("TEMP");
+    if (!t || !*t) t = getenv("TMP");
+    std::string d = (t && *t) ? t : "C:\\Windows\\Temp";
+    while (d.size() > 1 && (d.back() == '/' || d.back() == '\\')) d.pop_back();
+#else
+    std::string d = (t && *t) ? t : "/tmp";
+    while (d.size() > 1 && d.back() == '/') d.pop_back();
+#endif
+    return d;
+}
+
 namespace {
 
 // split on `sep`, keeping empty fields (so "a//b" -> ["a","","b"], "" -> [""]).
@@ -30,12 +61,8 @@ std::vector<std::string> segs(const std::string& s) {
 }
 bool isAbs(const std::string& p) { return !p.empty() && p[0] == '/'; }
 
-// $TMPDIR (trailing slashes trimmed) or /tmp — one answer for both dispatch
-// tables below; this lived as two byte-identical copies.
 static Value tmpdirValue() {
-    const char* t = getenv("TMPDIR"); std::string d = (t && *t) ? t : "/tmp";
-    while (d.size() > 1 && d.back() == '/') d.pop_back();
-    Value v = Value::str(d); v.hashKind = "IO"; return v;
+    Value v = Value::str(tmpDirPath()); v.hashKind = "IO"; return v;
 }
 
 // canonpath. Without :parent, "." and redundant "/" collapse but ".." is kept
