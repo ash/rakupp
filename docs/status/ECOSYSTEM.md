@@ -425,9 +425,9 @@ Rakudo remains only the observed oracle child:
 Bulk output stays in the ignored `out/` directory. Preserve only useful,
 stable findings in RakuMap's `fixtures/findings/`; confirmed cases then move to
 the permanent suite that owns the result. RakuMap currently implements the
-`numeric` and `containers` domains, and `--generator=all` means all generators
-available in that checkout—not every Raku language domain promised by its
-roadmap.
+`numeric`, `containers`, `signatures`, `unicode`, and `regex` domains, and
+`--generator=all` means all generators available in that checkout—not every
+Raku language domain promised by its roadmap.
 
 ---
 
