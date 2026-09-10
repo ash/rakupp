@@ -1691,7 +1691,32 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         }
         if (m == "absolute" || m == "canonpath" || m == "cleanup") {
             std::string s = inv.toStr();
-            if (m == "absolute" && !s.empty() && s[0] != '/') {
+            // Already absolute? On Unix that is a leading `/` and nothing else —
+            // `C:foo` is an ordinary relative filename there, so the drive-letter
+            // test below must not apply. On WINDOWS a path is also absolute with
+            // a leading `\`, a `X:` drive prefix, or a UNC `\\server\share`.
+            //
+            // Testing only for `/` prepended the current directory to paths that
+            // were already absolute: `$*EXECUTABLE.absolute` came back as
+            // `C:\Users\me\proj/C:\Users\me\proj\build\rakupp.exe`, and a
+            // colon in the middle of a path is ERROR_INVALID_NAME — "the
+            // filename, directory name, or volume label syntax is incorrect".
+            // `rakupp install` runs every distribution's tests through
+            // `run $*EXECUTABLE.absolute, …`, so on Windows NO distribution could
+            // install: the child could never be started, and the failure was
+            // reported as the first test file failing.
+            auto alreadyAbsolute = [](const std::string& x) {
+                if (x.empty()) return false;
+                if (x[0] == '/') return true;
+#if defined(_WIN32)
+                if (x[0] == '\\') return true;                    // root-relative, and UNC
+                if (x.size() > 1 && x[1] == ':' &&
+                    ((x[0] >= 'A' && x[0] <= 'Z') || (x[0] >= 'a' && x[0] <= 'z')))
+                    return true;                                  // C: / c:
+#endif
+                return false;
+            };
+            if (m == "absolute" && !alreadyAbsolute(s)) {
                 // `.absolute($base)` resolves against $base; otherwise against
                 // the path's own :CWD — captured at creation, as Rakudo does —
                 // not whatever the process directory happens to be at call time
