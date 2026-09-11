@@ -2649,6 +2649,20 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if (inv.s == "array" && inv.ofType().empty()) // native arrays need a type parameter
             throw RakuError{Value::typeObj("X::MustBeParametric"),
                             "Must first parameterize the vector type, e.g.: array[int32]"};
+        // Seq.new(one of OUR iterators) — `Seq.new(Rakudo::Iterator.OneValue($path))`
+        // is paths' answer for a lone file — drains it by pull-one as well; it
+        // used to be read as a plain hash of its `items`/`pos` slots
+        if (inv.s == "Seq" && args.size() == 1 && args[0].t == VT::Hash &&
+            args[0].hashKind == "Iterator" && args[0].hash()) {
+            Value v = Value::array(); v.isList = true; v.s = "Seq";
+            for (;;) {
+                ValueList none;
+                Value x = methodCall(args[0], "pull-one", none);
+                if (x.t == VT::Type && x.s == "IterationEnd") break;
+                v.arr()->push_back(std::move(x));
+            }
+            return v;
+        }
         // Seq.new(iterator-object): a user object doing Iterator drains by pull-one
         if (inv.s == "Seq" && args.size() == 1 && args[0].t == VT::Object && args[0].obj() &&
             args[0].obj()->cls && args[0].obj()->cls->findMethod("pull-one")) {
@@ -2740,7 +2754,10 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         }
         return v;
     }
-    if (inv.t == VT::Type && inv.s == "IterationBuffer" && m == "new") {
+    // …and `.CREATE` builds the same empty buffer: the generic CREATE below
+    // allocates a bare user object, which has no `.push` — Backtrace::Files
+    // gathers its context lines into `IterationBuffer.CREATE`.
+    if (inv.t == VT::Type && inv.s == "IterationBuffer" && (m == "new" || m == "CREATE")) {
         Value v = Value::makeHash(); v.hashKind = "IterationBuffer";
         Value items = Value::array();
         for (auto& a : args) for (auto& x : toList(a)) items.arr()->push_back(x);
@@ -2800,6 +2817,22 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             if (inv.s == "DateTime") for (auto* n : dtA) one(n);
             else                     for (auto* n : dA)  one(n);
             return out;
+        }
+        // `.^pun` — a role's punned class. Roles are types here already, so the
+        // pun is the type itself (`nqp::create(buf8.^pun)` is how path-utils
+        // allocates its sniffing buffer).
+        if (m == "pun") return inv;
+        // `Pair.ACCEPTS($x)` / `Regex.ACCEPTS($needle)` — a built-in TYPE
+        // OBJECT accepts by type check, exactly what `$x ~~ Type` asks
+        // (highlighter sorts its needles this way). A user class's own
+        // ACCEPTS was dispatched before this point.
+        // …and so does a user ROLE or class with no ACCEPTS of its own: highlighter
+        // asks `Type.ACCEPTS($needle)` of its role to see whether the needle was
+        // tagged with it (Rakudo checks the type there too, never the role's method).
+        if (m == "ACCEPTS" && !args.empty()) {
+            auto uc = classes_.find(inv.s);
+            if (uc == classes_.end() || !uc->second || uc->second->isRole || !uc->second->findMethod("ACCEPTS"))
+                return smartmatchValue("~~", args[0], inv);
         }
         // .^mro / .mro on a built-in type → the class-only linearisation (roles like
         // Real/Numeric are excluded, matching Rakudo's Int.^mro == (Int Cool Any Mu)).
@@ -3452,6 +3485,26 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     }
                     // A class subclassing a scalar built-in with its own `.new` (DateTime,
                     // Date): box the built-in and keep the user object's identity/attrs.
+                    // `class IO::Path::AutoDecompress is IO::Path`: back the
+                    // instance with a real IO::Path built from the non-attribute
+                    // args, so `.slurp`/`.lines`/`.e`/`.Str` reach the built-in
+                    // while `.WHAT` keeps the user type. A mixin over it (`self
+                    // but Proccer`) copies the box along, and a qualified
+                    // `self.IO::Path::slurp` goes straight to it (the skipOwn
+                    // forward in methodCallInner). Without the box the instance
+                    // was a bare object: "No such method 'slurp'".
+                    if (nb == "IO::Path") {
+                        auto od = std::make_shared<ObjectData>(); od->cls = ci; od->hasBoxed = true;
+                        ValueList builtinArgs;
+                        for (auto& a : args)
+                            if (!(a.t == VT::Pair && a.namedArg && ci->findAttr(a.s))) builtinArgs.push_back(a);
+                        od->boxed = methodCall(Value::typeObj("IO::Path"), "new", builtinArgs);
+                        runAttrDefaults(od, ci, args);
+                        Value self = Value::object(od);
+                        runBuildChain(ci.get(), self, args);
+                        maybeRegisterDestroy(self);
+                        return self;
+                    }
                     if (nb == "DateTime" || nb == "Date") {
                         auto od = std::make_shared<ObjectData>(); od->cls = ci; od->hasBoxed = true;
                         // args that are not attribute pairs feed the BUILT-IN's own
@@ -4043,15 +4096,82 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             return slurpy ? Value::number(std::numeric_limits<double>::infinity()) : Value::integer(n);
         }
         if (m == "name") return Value::str(inv.code()->name);
+        // `&code.has-loop-phasers` / `&code.callable_for_phaser('FIRST')` — rak
+        // runs a pattern's FIRST/NEXT/LAST phasers itself, around its own loop:
+        // the phaser block becomes a Callable closing over the pattern's scope
+        if (m == "has-loop-phasers" || m == "callable_for_phaser") {
+            const std::vector<StmtPtr>* body = inv.code()->body;
+            const std::string want = (m == "callable_for_phaser" && !args.empty()) ? args[0].toStr() : "";
+            Block* found = nullptr; bool any = false;
+            if (body)
+                for (auto& s : *body)
+                    if (s && s->kind == NK::Block) {
+                        auto* b = static_cast<Block*>(s.get());
+                        if (b->phaser == "FIRST" || b->phaser == "NEXT" || b->phaser == "LAST") {
+                            any = true;
+                            if (!found && b->phaser == want) found = b;
+                        }
+                    }
+            if (m == "has-loop-phasers") return Value::boolean(any);
+            if (!found) return Value::nil();
+            static std::vector<Param> noParams;
+            Value code; code.t = VT::Code; code.setCode(std::make_shared<Callable>());
+            code.code()->params = &noParams;
+            code.code()->body = &found->stmts;
+            code.code()->closure = inv.code()->closure;
+            code.code()->langRev = inv.code()->langRev;
+            code.code()->declFile = inv.code()->declFile;
+            code.code()->isBlock = true;
+            return code;
+        }
         if (m == "returns" || m == "of")
             return inv.code()->retType.empty() ? Value::typeObj("Mu")
                                               : Value::typeObj(retTypeName(inv.code()->retType));
         if (m == "signature") return makeSignature(inv.code());
         if (m == "yada") return Value::boolean(inv.code()->isStub);   // a `{ ... }` / `{ !!! }` body
         if (m == "multi" || m == "is_dispatcher") return Value::boolean(inv.code()->isMultiDispatcher);
+        // `$block.ACCEPTS($x)` is `$block($x)` — a Callable used as a matcher
+        // (paths' `$!dir-matcher.ACCEPTS($name)` is how every directory is
+        // filtered, and the default matcher is a pointy block)
+        if (m == "ACCEPTS" && !args.empty()) {
+            ValueList one{args[0]};
+            return callCallable(inv, std::move(one));
+        }
+        // `&proto.add_dispatchee(&candidate)` — hang one more candidate on a
+        // dispatch group at run time. The Callable is shared with every name
+        // that holds it, so a `MAIN` proto in the caller's scope sees the
+        // candidate at once; CLI::Version adds its `--version` handler this way.
+        // A one-candidate group (what `my multi sub MAIN(…) {…}` in expression
+        // position evaluates to) contributes its candidates.
+        if (m == "add_dispatchee" && !args.empty() && args[0].t == VT::Code && args[0].code()) {
+            auto disp = inv.code();
+            disp->isMultiDispatcher = true;
+            auto add = [&](const Value& c) {
+                if (!c.code()) return;
+                // already in the group — a multi that attached itself at its
+                // declaration, possibly reaching here as a CLONE of that
+                // Callable, so the declaration (body + signature) is the identity
+                for (auto& have : disp->candidates)
+                    if (have.code() && (have.code() == c.code() ||
+                                        (have.code()->body && have.code()->body == c.code()->body &&
+                                         have.code()->params == c.code()->params)))
+                        return;
+                c.code()->isMultiCandidate = true;
+                disp->candidates.push_back(c);
+            };
+            if (args[0].code()->isMultiDispatcher) for (auto& c : args[0].code()->candidates) add(c);
+            else add(args[0]);
+            return inv;
+        }
         if (m == "candidates") {
             Value out = Value::array(); out.isList = true;
-            if (inv.code()->isMultiDispatcher) for (auto& c : inv.code()->candidates) out.arr()->push_back(c);
+            if (inv.code()->isMultiDispatcher) {
+                for (auto& c : inv.code()->candidates)
+                    // the group's own `proto … {*}` is the dispatcher, not a
+                    // candidate: Rakudo lists the multis only
+                    if (!(c.code() && c.code()->isProto && !c.code()->isProtoBody))
+                        out.arr()->push_back(c);
+            }
             else out.arr()->push_back(inv);
             return out;
         }
@@ -4767,6 +4887,11 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         return v;
     }
     // Bool is an enum (False => 0, True => 1): .key is the name, .value the ordinal.
+    // `True.ACCEPTS($x)` is True and `False.ACCEPTS($x)` False, whatever $x —
+    // a Bool matcher answers itself (Rakudo: `multi method ACCEPTS(Bool:D:
+    // Mu \topic) { self }`). paths' default file matcher is `True`, and its
+    // `$!file-matcher.ACCEPTS($entry)` used to die with no such method.
+    if (inv.t == VT::Bool && m == "ACCEPTS") return inv;
     if (inv.t == VT::Bool && m == "key")   return Value::str(inv.b ? "True" : "False");
     if (inv.t == VT::Bool && m == "value") return Value::integer(inv.b ? 1 : 0);
     // .VAR.name on an anonymous container is "element" in Rakudo; some code (Text::CSV)
@@ -4949,6 +5074,48 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             Value ty = Value::typeObj(inv.obj()->cls->name); ty.ofTypeM() = inv.obj()->boxed.ofType(); return ty;
         }
         return Value::typeObj(inv.typeName());
+    }
+    // `Match!cursor_init($target, :c($n))` — reached through
+    // `Match.^lookup("!cursor_init")`, the cursor String::Utils' replace starts
+    // from: a Match over $target that has matched nothing yet (pos -3, as
+    // MoarVM spells it) at position $n. A Regex called on it matches from
+    // there (see callCallable).
+    if (inv.t == VT::Type && inv.s == "Match" && m == "!cursor_init") {
+        std::string target; long long c = 0; bool haveTarget = false;
+        for (auto& a : args) {
+            if (a.t == VT::Pair && a.s == "c") c = a.pairVal() ? a.pairVal()->toInt() : 0;
+            else if (a.t != VT::Pair && !haveTarget) { target = a.toStr(); haveTarget = true; }
+        }
+        Value cur = Value::matchVal("", c, -3);   // -3: MoarVM's "matched nothing" pos
+        cur.extM() = std::make_shared<std::string>(target);
+        return cur;
+    }
+    // `$cursor.CURSOR_MORE` (via `Match.^lookup("CURSOR_MORE")`) — the next
+    // match of the same regex after this one; an empty match steps one on
+    if (inv.t == VT::Match && m == "CURSOR_MORE") {
+        Value rx;
+        if (inv.md() && inv.md()->named) {
+            auto it = inv.md()->named->find("\x01rx");
+            if (it != inv.md()->named->end()) rx = it->second;
+        }
+        long long next = inv.rTo() < 0 ? inv.rFrom()
+                       : inv.rTo() == inv.rFrom() ? inv.rTo() + 1 : inv.rTo();
+        Value cur = Value::matchVal("", next, -3);
+        cur.extM() = inv.ext();
+        if (rx.t != VT::Regex) return cur;
+        ValueList one{cur};
+        return callCallable(rx, std::move(one));
+    }
+    // `Rakudo::Iterator.OneValue($x)` / `.Empty` — the two ready-made iterators
+    // paths hands back for a lone file and for nothing (Rakudo's internal
+    // factory; the names are what the module spells)
+    if (inv.t == VT::Type && inv.s == "Rakudo::Iterator" && (m == "OneValue" || m == "Empty")) {
+        Value it = Value::makeHash(); it.hashKind = "Iterator";
+        Value items = Value::array();
+        if (m == "OneValue" && !args.empty()) items.arr()->push_back(args[0]);
+        (*it.hash())["items"] = items;
+        (*it.hash())["pos"] = Value::integer(0);
+        return it;
     }
     if (m == "iterator") { // S07: make an Iterator over this value's elements
         Value it = Value::makeHash(); it.hashKind = "Iterator";

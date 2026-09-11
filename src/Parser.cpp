@@ -811,6 +811,16 @@ bool Parser::startsTermToken(const Token& t) const {
                    // `not` is a loose PREFIX, so it starts a term: `say not 0` says True
                    // (it is in the keyword set only because it is also an infix-ish word)
                    t.text == "not" ||
+                   // control flow is a TERM in expression position — the comma
+                   // list `nqp::if(cond, (return 'x'), return '')` (paths' directory
+                   // walker) has `return` as its last element, and the list stopped
+                   // at it: "expected ) (got 'return')"
+                   t.text == "return" || t.text == "return-rw" ||
+                   t.text == "last" || t.text == "next" || t.text == "redo" ||
+                   // `proto sub NAME(|) {*}` / `multi sub NAME(…) {…}` are terms too
+                   // (see the routine-declaration term in parsePrefix)
+                   ((t.text == "proto" || t.text == "multi") && &t == &cur() &&
+                    peek().kind == Tok::Ident && (peek().text == "sub" || peek().text == "method")) ||
                    // an ANONYMOUS class/role/grammar is an expression: `is class :: {…}.new.x, …`
                    ((t.text == "class" || t.text == "role" || t.text == "grammar") && &t == &cur() &&
                     (peek().kind == Tok::LBrace || (peek().kind == Tok::Op && peek().text == "::")));
@@ -2633,6 +2643,13 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
         if (lastIsExport_) { ve->declExport = true; lastIsExport_ = false; }
         return ve;
     }
+    // `my multi sub NAME(…) {…}` / `my proto sub NAME(|) {*}` in expression
+    // position — the routine-declaration term (parsePrefix) declares it and
+    // yields the routine; the `my` adds nothing a do-block does not already give.
+    if (isKind(Tok::Ident) && (cur().text == "multi" || cur().text == "proto") &&
+        peek().kind == Tok::Ident && (peek().text == "sub" || peek().text == "method") &&
+        peek(2).kind == Tok::Ident)
+        return parsePrefix();
     // `my sub {42}()` — an anonymous sub expression under `my` is just the sub
     // term; `my $p = my package X {}` routes type declarations the same way
     if (isKind(Tok::Ident) &&
@@ -2792,10 +2809,18 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
                 if (!matchKind(Tok::Comma)) break;
                 continue;
             }
-            std::string t2;
+            std::string t2, coerce2;
+            // A COERCION type on one slot — `my ($before, Int() $linenr) = …`
+            // (Backtrace::Files reads a line number out of a backtrace this
+            // way). The `Type()` / `Type(Src)` spelling is Ident-then-LParen,
+            // which this branch took for "not a type", and the declaration died
+            // "expected variable in declaration".
             if (isKind(Tok::Ident) &&
                 (peek().kind == Tok::Var ||
                  peek().kind == Tok::LBracket || // parameterized: Array[UInt] $x
+                 (peek().kind == Tok::LParen &&
+                  (peek(2).kind == Tok::RParen ||
+                   (peek(2).kind == Tok::Ident && peek(3).kind == Tok::RParen))) ||
                  (peek().kind == Tok::Op && peek().text == ":" && peek(2).kind == Tok::Ident &&
                   peek(3).kind == Tok::Var))) {
                 t2 = advance().text;
@@ -2811,6 +2836,14 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
                     t2 += ptxt;
                 }
                 if (isOp(":") && peek().kind == Tok::Ident) { advance(); advance(); } // :D/:U smiley
+                if (isKind(Tok::LParen) && peek().kind == Tok::RParen) {
+                    advance(); advance();                        // ( )
+                    coerce2 = t2;
+                }
+                else if (isKind(Tok::LParen) && peek().kind == Tok::Ident && peek(2).kind == Tok::RParen) {
+                    advance(); advance(); advance();             // ( SourceType )
+                    coerce2 = t2;
+                }
             }
             // named destructuring element `:@positional` / `:$x` / `:%h` — binds
             // the RHS hash's value under the bare key name (Cro::HTTP::Router:
@@ -2845,6 +2878,7 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
             // untyped scalars: Digest::SHA2's `my uint32 ($T1, $T2) = …` never
             // truncated, and every SHA-256 digest came out wrong.
             ve->declType = t2.empty() ? type : t2;
+            ve->declCoerce = coerce2.empty() ? coerceTo : coerce2;  // `my Int() ($a, $b)` / `my ($a, Int() $b)`
             if (isIdent("where")) { advance(); parseExpr(BP_COMMA + 1); } // constraint parsed, not yet enforced here
             if (isOp("=") ) { // per-item initializer: `my Int:D ($x = 5)`
                 advance();
@@ -4585,6 +4619,38 @@ ExprPtr Parser::parsePrimary() {
                 advance(); // consume INIT
                 return parseExpr(BP_ASSIGN);
             }
+            // `proto sub NAME(|) {*}` / `multi sub NAME(…) {…}` as a TERM: the
+            // declaration runs in a do-block of its own, and the block's value is
+            // `&NAME` there — the routine, or the one-candidate dispatch group.
+            // CLI::Version's suite hands `proto sub MAIN(|) {*}` to `use`, and its
+            // EXPORT gives `&proto.add_dispatchee` a `my multi sub MAIN(…) {…}`;
+            // both used to be "expected variable after declarator".
+            if ((name == "proto" || name == "multi") && peek().kind == Tok::Ident &&
+                (peek().text == "sub" || peek().text == "method") && peek(2).kind == Tok::Ident) {
+                advance();                                   // proto / multi
+                bool isM = isIdent("method");
+                advance();                                   // sub / method
+                auto decl = parseSub(true, name == "proto", isM);
+                std::string rn = static_cast<SubDecl*>(decl.get())->name;
+                auto be = std::make_unique<BlockExpr>();
+                be->body.push_back(std::move(decl));
+                auto es = std::make_unique<ExprStmt>();
+                ExprPtr val = std::make_unique<VarExpr>("&" + rn);
+                if (name == "multi") {
+                    // the CANDIDATE just declared, not the group it joined — a
+                    // multi here may attach to an outer proto of the same name,
+                    // and the group is what `&NAME` would answer
+                    auto cands = std::make_unique<MethodCall>();
+                    cands->inv = std::move(val); cands->method = "candidates";
+                    auto tail = std::make_unique<MethodCall>();
+                    tail->inv = std::move(cands); tail->method = "tail";
+                    val = std::move(tail);
+                }
+                es->e = std::move(val);
+                be->body.push_back(std::move(es));
+                auto u = std::make_unique<Unary>(); u->op = "do"; u->operand = std::move(be);
+                return u;
+            }
             if (name == "sub" || name == "method") {
                 advance();
                 auto be = std::make_unique<BlockExpr>();
@@ -5003,6 +5069,27 @@ ExprPtr Parser::parsePrimary() {
                     name.substr(0, name.size() - 2) + "::" + (words.empty() ? "" : words[0]));
                 ve->pkgSymbol = true; // assignment autovivifies the slot
                 return ve;
+            }
+            // A bare pseudo-package used as a VALUE — `UNIT::.grep: {…}`,
+            // `MY::.keys` — is that scope's symbol table. String::Utils builds
+            // its whole export list from `UNIT::.grep: { .key.starts-with('&') }`,
+            // and the name fell through to an empty Stash, so nothing was
+            // exported and every call landed on a built-in of the same name
+            // (`after` answered the infix's True). The call answers a Hash of the
+            // scope's symbols; the `:exists`/`:p` subscripts above keep their own path.
+            if (name.size() > 2 && name.compare(name.size() - 2, 2, "::") == 0 &&
+                isPseudoPkgPath(name.substr(0, name.size() - 2), pseudoPkg) &&
+                (pseudoPkg == "UNIT" || pseudoPkg == "MY" || pseudoPkg == "LEXICAL" ||
+                 pseudoPkg == "OUTER") &&
+                !isOp("<") && !isKind(Tok::LBrace) && !isKind(Tok::LParen)) {
+                auto c = std::make_unique<Call>();
+                c->name = "__sym-stash";
+                long long hops = 0;
+                for (size_t k = 0; k + 7 <= name.size(); k++)
+                    if (name.compare(k, 7, "OUTER::") == 0) hops++;
+                c->args.push_back(std::make_unique<IntLit>(hops));
+                c->args.push_back(std::make_unique<StrLit>(pseudoPkg));
+                return c;
             }
             // `Foo::{EXPR}` — the same package-stash slot with a RUNTIME key.
             // Sparrow6 builds its export list this way:
@@ -8668,6 +8755,20 @@ StmtPtr Parser::parseStatementImpl() {
                         if (!valued) u->importArgs.push_back(tag);
                         continue;                        // already advanced past the pair
                     }
+                    // Anything else is an EXPRESSION list for sub EXPORT:
+                    // `use META::constants $?DISTRIBUTION`, `use CLI::Version
+                    // $?DISTRIBUTION, &MAIN, 'long'`, and the suite's
+                    // `use CLI::Version Distribution, proto sub MAIN(|) {*}`. The
+                    // tokens used to be skipped one by one, so EXPORT ran with no
+                    // arguments — and a `use` that is the last statement of a
+                    // block lost the block's closing brace to the skip.
+                    if (!(isKind(Tok::StrLit) || isKind(Tok::StrInterp) || isKind(Tok::QwList)) &&
+                        !(isOp(":") && peek().kind == Tok::Ident) && !isOp("<") &&
+                        startsTermToken(cur())) {
+                        u->argExpr = parseExpression();
+                        break;
+                    }
+                    if (isKind(Tok::RBrace)) break;   // `{ use Mod args }` — the block's own brace
                     if ((isKind(Tok::StrLit) || isKind(Tok::StrInterp)) && u->arg.empty()) u->arg = cur().text;
                     // `use Mod "use-args"` — a STRING argument reaches sub EXPORT
                     // exactly like the angle form (`use lib 'x'` keeps u->arg only)
@@ -9075,6 +9176,7 @@ void Parser::checkRedeclarations(const std::vector<StmtPtr>& stmts, bool unitSco
             }
             stubbed.erase(std::remove(stubbed.begin(), stubbed.end(), cd->name),
                           stubbed.end());
+            completedPkgs_.insert(cd->name);  // …wherever the body stands (see the unit check)
             // A bare `package`/`module` is a WEAK namespace declaration: it only
             // opens the name to hold `our`-scoped symbols and may coexist with a
             // later `class`/`role`/`grammar` of the same name that refines it
@@ -9105,8 +9207,13 @@ void Parser::checkRedeclarations(const std::vector<StmtPtr>& stmts, bool unitSco
             if (s && s->kind == NK::UseStmt)
                 used.insert(static_cast<const UseStmt*>(s.get())->module);
         std::string names;
+        // …and the body may stand in a NESTED block: a package declaration is
+        // `our`-scoped wherever it is written, so `class Rak { … }` inside the
+        // `rak` sub completes the file-scope `our class Rak { ... }` (that is how
+        // rak keeps its result class beside the code that builds it). Nested
+        // blocks are checked before the unit, so the set is complete here.
         for (auto& n : stubbed)
-            if (!used.count(n)) { if (!names.empty()) names += " "; names += n; }
+            if (!used.count(n) && !completedPkgs_.count(n)) { if (!names.empty()) names += " "; names += n; }
         if (!names.empty())
             throw ParseError("The following packages were stubbed but not defined: " +
                              names, stmts.empty() ? 0 : stmts.back()->line,
@@ -9163,6 +9270,9 @@ bool Parser::nqpConstValue(const std::string& name, long long& out) {
         // Native 0 / Little 1 / Big 2), bits 2+ = size code (1<<(flag>>2) bytes).
         {"BINARY_SIZE_8_BIT", 0},  {"BINARY_SIZE_16_BIT", 4},
         {"BINARY_SIZE_32_BIT", 8}, {"BINARY_SIZE_64_BIT", 12},
+        // …and the endian half of the same flag word (path-utils ORs
+        // BINARY_ENDIAN_LITTLE into every size it reads)
+        {"BINARY_ENDIAN_NATIVE", 0}, {"BINARY_ENDIAN_LITTLE", 1}, {"BINARY_ENDIAN_BIG", 2},
         // `nqp::stat`/`nqp::lstat` field selectors, as MoarVM numbers them.
         // Path::Finder asks for the inode to detect directory loops.
         {"STAT_EXISTS", 0}, {"STAT_FILESIZE", 1}, {"STAT_ISDIR", 2},
@@ -9250,7 +9360,7 @@ ExprPtr Parser::makeNqpOp(const std::string& op, std::vector<ExprPtr>& args) {
         {"p6bindattrinvres", NqpOpc::P6BindAttrInvRes},
         {"p6scalarwithvalue", NqpOpc::P6ScalarWithValue},
         {"null", NqpOpc::Null}, {"isnanorinf", NqpOpc::IsNanOrInf},
-        {"isnull", NqpOpc::IsNull}, {"isnull_s", NqpOpc::IsNull},
+        {"isnull", NqpOpc::IsNull}, {"isnull_s", NqpOpc::IsNullS},
         {"eqaddr", NqpOpc::Eqaddr}, {"objprimspec", NqpOpc::ObjPrimSpec},
         {"unipropcode", NqpOpc::UniPropCode}, {"getuniprop_str", NqpOpc::GetUniPropStr},
         {"getuniprop_bool", NqpOpc::GetUniPropBool}, {"getuniprop_int", NqpOpc::GetUniPropInt},
@@ -9267,11 +9377,27 @@ ExprPtr Parser::makeNqpOp(const std::string& op, std::vector<ExprPtr>& args) {
         // known; this is the op that reads them. Path::Finder matches on inode,
         // device, uid, gid, nlinks, blocks, blocksize, devtype and is-dev, and
         // keys its symlink-loop guard on inode+device.
-        {"stat", NqpOpc::Stat}, {"stat_time", NqpOpc::Stat},
-        {"lstat", NqpOpc::Lstat}, {"lstat_time", NqpOpc::Lstat},
+        {"stat", NqpOpc::Stat}, {"stat_time", NqpOpc::StatTime},     // the _time forms answer a Num
+        {"lstat", NqpOpc::Lstat}, {"lstat_time", NqpOpc::LstatTime}, // (path-utils' isa-ok Num)
         // the running compiler, for the REPL-sandbox pattern (see REPL below)
         {"getcomp", NqpOpc::GetComp},
         {"sha1", NqpOpc::Sha1},
+        // the directory walk `paths` is written against, and the file tests
+        // `path-utils` asks beside it
+        {"opendir", NqpOpc::OpenDir}, {"nextfiledir", NqpOpc::NextFileDir},
+        {"closedir", NqpOpc::CloseDir},
+        {"filereadable", NqpOpc::FileReadable}, {"filewritable", NqpOpc::FileWritable},
+        {"fileexecutable", NqpOpc::FileExecutable}, {"fileislink", NqpOpc::FileIsLink},
+        {"handle", NqpOpc::Handle},
+        // small leaves: String::Utils spells `ne`, `!`, `%` and the positive
+        // character-class scan this way, and the `_s` spellings of the list and
+        // attribute ops are the same ops on strings
+        {"isne_s", NqpOpc::IsneS}, {"not_i", NqpOpc::NotI}, {"mod_i", NqpOpc::ModI},
+        {"findcclass", NqpOpc::FindCClass},
+        {"null_s", NqpOpc::Null}, {"atpos_s", NqpOpc::Atpos}, {"bindpos_s", NqpOpc::Bindpos},
+        {"bindattr_i", NqpOpc::Bindattr}, {"bindattr_s", NqpOpc::Bindattr},
+        {"rindex", NqpOpc::Rindex}, {"flip", NqpOpc::Flip}, {"split", NqpOpc::Split},
+        {"x", NqpOpc::X},
     };
     auto it = k.find(op);
     if (it == k.end()) return nullptr;

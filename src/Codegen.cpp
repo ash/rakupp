@@ -1139,6 +1139,15 @@ struct Codegen {
                         return "([&]()->Value{ Value __v = (" + ex(a[0].get()) +
                                "); return (__v.t==VT::Nil||__v.t==VT::Any) ? (" + alt + ") : __v; }())";
                     }
+                    case NqpOpc::Handle: {                // try expr; a CATCH handler's value on throw
+                        if (a.empty()) return "Value::nil()";
+                        std::string o = "([&]()->Value{ try { return (" + ex(a[0].get()) +
+                                        "); } catch (RakuError&) {";
+                        for (size_t i = 1; i + 1 < a.size(); i += 2)
+                            o += " if ((" + ex(a[i].get()) + ").toStr() == \"CATCH\") return (" +
+                                 ex(a[i + 1].get()) + ");";
+                        return o + " } return Value::nil(); }())";
+                    }
                     default:                              // eager leaf op
                         // rtNqpOp takes ValueList& (push/bindpos mutate the array
                         // arg in place) — bind a named local to hand it an lvalue

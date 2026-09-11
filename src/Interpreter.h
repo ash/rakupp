@@ -1485,6 +1485,8 @@ public:
     // each loaded module's `sub EXPORT(*@_)`, kept so a REPEAT `use` can run the
     // import protocol again in the new scope (JSON::Fast's per-scope defaults)
     std::map<std::string, Value> moduleExportSubs_;
+    ValueList useExprArgs_;  // `use Mod EXPR, …` — the evaluated non-string arguments, handed to EXPORT after the string ones
+    std::unordered_map<const void*, std::pair<long long, long long>> hyperCfg_; // `.hyper(:batch, :degree)` per list (keyed by its storage): what `.configuration` answers
     // each loaded module's SELECTIVE `is export(:tag)` subs (key, value, tags),
     // kept so a REPEAT `use Mod :tag` can import the ones its tag now selects —
     // they are withheld on a plain `use`, so the module body's one run does not

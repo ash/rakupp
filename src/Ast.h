@@ -439,6 +439,17 @@ enum class NqpOpc : uint16_t {
     // appended: nqp::sha1($str) — App::RaCoCo keys its coverage cache on it,
     // and reads the digest back as MoarVM writes it, in UPPERCASE hex
     Sha1,
+    // appended: the directory-walk and file-test surface `paths` and
+    // `path-utils` (lizmat's, under App::Rak) are written against, plus the
+    // small integer/string leaves they and String::Utils reach for
+    OpenDir, NextFileDir, CloseDir,           // nqp::opendir / nextfiledir / closedir
+    FileReadable, FileWritable, FileExecutable, FileIsLink,
+    Handle,                                    // nqp::handle(expr, 'CATCH', handler) — lazy
+    IsneS, NotI, ModI, FindCClass,
+    StatTime, LstatTime,                       // nqp::stat_time / lstat_time — a Num, not an Int
+    Rindex, Flip, Split,                       // string leaves paths / String::Utils reach for
+    IsNullS,                                   // nqp::isnull_s — a native str holds no null, so "" stands in
+    X,                                         // nqp::x(str, count) — string repetition
 };
 struct NqpOp : Expr {
     NqpOpc op;

@@ -2069,8 +2069,43 @@ bool Lexer::regexContext(const std::vector<Token>& out) {
         case Tok::LParen: case Tok::LBrace: case Tok::LBracket:
         case Tok::Comma: case Tok::Semicolon: case Tok::FatArrow:
             return true;
-        case Tok::Ident:
-            return kTermAfterIdent.count(pv.text) > 0;
+        case Tok::Ident: {
+            if (kTermAfterIdent.count(pv.text) > 0) return true;
+            // Rakudo: a bare NAME, whitespace, `/` opens a REGEX — the name is a
+            // listop and the regex its first argument. highlighter's suite writes
+            // `test-hi / << b.r >> /, \("<em>", "</em>"), …`, and the slash was a
+            // division: "Missing required term after infix". Tight `w/2` stays a
+            // division, as does a name that ENDS a term: a method name, a
+            // term-word (`pi / 2`), a constant or sigilless declared in this
+            // file. Narrower than Rakudo on one point — the regex has to close on
+            // the same line — so a sub used as a constant (`width / 2`) keeps
+            // dividing here, where Rakudo would refuse it.
+            if (out.size() >= 2) {
+                const Token& pp = out[out.size() - 2];
+                if (pp.kind == Tok::Op && (pp.text == "." || pp.text == ".^" || pp.text == ".?" ||
+                                           pp.text == ".=" || pp.text == ".&" || pp.text == "!"))
+                    return false;
+            }
+            static const std::set<std::string> termWords = {
+                "True", "False", "Nil", "Inf", "NaN", "self", "now", "time", "rand",
+                "pi", "e", "tau", "\xCF\x80", "\xCF\x84"};
+            if (pv.text.empty() || termWords.count(pv.text)) return false;
+            if (!(pv.text[0] >= 'a' && pv.text[0] <= 'z')) return false;
+            if (pos_ == 0 || !(src_[pos_ - 1] == ' ' || src_[pos_ - 1] == '\t')) return false;
+            // names this file declares as TERMS: `constant NAME`, `my \name`
+            for (; termScan_ + 1 < out.size(); termScan_++) {
+                const Token& d = out[termScan_];
+                const Token& nm = out[termScan_ + 1];
+                if (nm.kind != Tok::Ident) continue;
+                if ((d.kind == Tok::Ident && d.text == "constant") ||
+                    (d.kind == Tok::Op && d.text == "\\"))
+                    termNames_.insert(nm.text);
+            }
+            if (termNames_.count(pv.text)) return false;
+            size_t nl = src_.find('\n', pos_ + 1);
+            size_t close = src_.find('/', pos_ + 1);
+            return close != std::string::npos && (nl == std::string::npos || close < nl);
+        }
         default:
             return false; // IntLit/NumLit/Var/RParen/RBracket/StrLit/RegexLit => division
     }
@@ -2635,7 +2670,11 @@ std::vector<Token> Lexer::tokenize() {
         long long nvN, nvD;
         // Unicode ellipsis … (U+2026) is an alias for the sequence/yada operator `...`
         // (checked before the Unicode-letter dispatch, which would otherwise eat it).
-        if ((unsigned char)c == 0xE2 && (unsigned char)peek(1) == 0x80 && (unsigned char)peek(2) == 0xA6) {
+        // …but not inside a `< … >` word list, where it is the character
+        // (String::Utils' suite spells its shortened strings `<f…z fo…az>`
+        // and asks their `.chars`; the alias made them three dots longer)
+        if (!inAngle &&
+            (unsigned char)c == 0xE2 && (unsigned char)peek(1) == 0x80 && (unsigned char)peek(2) == 0xA6) {
             advance(); advance(); advance();
             // …and it carries the exclusion markers exactly as `...` does:
             // `5^…0` is `5^...0`. A trailing `^` had been left for the term
@@ -2867,8 +2906,16 @@ std::vector<Token> Lexer::tokenize() {
                     (angleTermContext(out) ||
                      // `self<key>` — a postcircumfix on the term `self`, never a
                      // comparison (Intl::LanguageTag's `method x (--> Type) { self<ms> }`)
-                     (!t.spaceBefore && !out.empty() && out.back().kind == Tok::Ident &&
-                      out.back().text == "self")))
+                     // (`spaced` is the flag: t.spaceBefore is only stamped once
+                     // the token is finished, further down)
+                     (!spaced && !out.empty() && out.back().kind == Tok::Ident &&
+                      out.back().text == "self") ||
+                     // …and a subscript TIGHT on a variable is a word list too:
+                     // `%exts<#csv>` (App::Rak's extension table) is the one key
+                     // "#csv". Lexed as code, the `#` opened a comment that ran to
+                     // the end of the line and took the closing `>` with it.
+                     // `$between < 31` (a space) stays the comparison it is.
+                     (!spaced && !out.empty() && out.back().kind == Tok::Var)))
                     { angleWords_++; angleLine_ = t.line; }
             } else {
                 // inside a list: an exact `<` nests; a token LEADING with `>`

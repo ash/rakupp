@@ -725,6 +725,8 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         }
     }
 
+    // a Regex is a Callable with no phasers of its own (rak asks before running one)
+    if (inv.t == VT::Regex && m == "has-loop-phasers") return Value::boolean(false);
     if (inv.t == VT::Regex && m == "ACCEPTS") // returns the Match (or Nil), sets $/
         return regexMatch(args.empty() ? std::string() : args[0].toStr(), inv.s);
 
@@ -1007,9 +1009,17 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
     // answer on one too — that is what a hyperized sequence is asked for.
     if (m == "configuration" && (inv.t == VT::Array || inv.t == VT::Range)) {
         unsigned hc = std::thread::hardware_concurrency();
+        long long batch = 64, degree = hc > 1 ? (long long)hc - 1 : 1;
+        if (inv.t == VT::Array && inv.arr()) { // what `.hyper(:batch, :degree)` asked for
+            auto it = hyperCfg_.find((const void*)inv.arr());
+            if (it != hyperCfg_.end()) {
+                if (it->second.first >= 0)  batch  = it->second.first;
+                if (it->second.second >= 0) degree = it->second.second;
+            }
+        }
         Value cfg = Value::makeHash();
-        (*cfg.hash())["batch"]  = Value::integer(64);
-        (*cfg.hash())["degree"] = Value::integer(hc > 1 ? (long long)hc - 1 : 1);
+        (*cfg.hash())["batch"]  = Value::integer(batch);
+        (*cfg.hash())["degree"] = Value::integer(degree);
         cfg.hashKind = "HyperConfiguration";
         return cfg;
     }
@@ -1022,6 +1032,23 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             return o;
         }
         Value o = inv; o.isList = true; o.itemized = false;
+        // `.hyper(:batch(42), :degree(16))` — the parallel stand-in is serial,
+        // but what it was ASKED is what `.configuration` has to answer (hyperize
+        // reads it straight back: `@a.&hyperize(42).configuration.batch`). The
+        // list gets storage of its own so the answer keys on it alone.
+        if (m != "serial" && inv.t == VT::Array && inv.arr()) {
+            long long batch = -1, degree = -1;
+            for (auto& a : args)
+                if (a.t == VT::Pair && a.pairVal()) {
+                    if (a.s == "batch") batch = a.pairVal()->toInt();
+                    else if (a.s == "degree") degree = a.pairVal()->toInt();
+                }
+            if (batch >= 0 || degree >= 0) {
+                o = Value::array(); o.isList = true;
+                *o.arr() = *inv.arr();
+                hyperCfg_[(const void*)o.arr()] = {batch, degree};
+            }
+        }
         return o;
     }
     // `.all`/`.any`/`.one`/`.none` on a single (non-container) value → a one-element
@@ -2668,7 +2695,11 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 bool isNat = bt == "str" || bt == "byte" || bt.compare(0, 3, "int") == 0 ||
                              bt.compare(0, 4, "uint") == 0 || bt.compare(0, 3, "num") == 0;
                 if (!isNat) return; // boxed-type arrays keep their existing behaviour
-                bool ok = bt == "str" ? (v.t == VT::Str || v.isAllomorph()) // an allomorph's Str side
+                // …and a mixin over a Str (`"bar" but Type<words>`, highlighter's
+                // tagged needle) is a Str with a role on it: its box is the string
+                bool ok = bt == "str" ? (v.t == VT::Str || v.isAllomorph() || // an allomorph's Str side
+                                         (v.t == VT::Object && v.obj() && v.obj()->hasBoxed &&
+                                          v.obj()->boxed.t == VT::Str))
                         : bt.compare(0, 3, "num") == 0 ? v.isNumeric()
                         : (v.t == VT::Int || v.t == VT::Bool);
                 if (!ok) throw RakuError{Value::typeObj("X::TypeCheck::Binding"),

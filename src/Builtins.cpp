@@ -5237,8 +5237,18 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         auto iterEnd = [] { return Value::typeObj("IterationEnd"); };
         auto pushInto = [&](const Value& tgt, long long count) -> long long {
             long long pushed = 0;
-            if (tgt.t == VT::Array && tgt.arr())
-                while (posV.i < n && pushed < count) { tgt.arr()->push_back(items[posV.i++]); pushed++; }
+            // the target is an Array, or an IterationBuffer — its own list of
+            // items (highlighter drains `columns(…).iterator.push-all(my $ib :=
+            // IterationBuffer.new)`; a buffer target was silently ignored)
+            ValueList* dst = nullptr;
+            if (tgt.t == VT::Array && tgt.arr()) dst = tgt.arr();
+            else if (tgt.t == VT::Hash && tgt.hashKind == "IterationBuffer" && tgt.hash()) {
+                Value& iv = (*tgt.hash())["items"];
+                if (iv.t != VT::Array || !iv.arr()) iv = Value::array();
+                dst = iv.arr();
+            }
+            if (dst)
+                while (posV.i < n && pushed < count) { dst->push_back(items[posV.i++]); pushed++; }
             return pushed;
         };
         if (m == "pull-one") { ensure(posV.i + 1); return posV.i < n ? items[posV.i++] : iterEnd(); }
@@ -5623,8 +5633,12 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     // A `but`/`does` mixin over a non-object base: a composed role/class method wins,
     // object-identity/introspection methods stay on the object, and every other
     // method (coercions, arithmetic-ish, base-type methods) delegates to the box.
+    // …and a QUALIFIED call past the object's own method (`self.IO::Path::slurp`
+    // from inside a `slurp` override, or from a role mixed in over it —
+    // IO::Path::AutoDecompress's Proccer) goes to the box whatever the class
+    // defines: skipOwn is exactly "not mine, the built-in's".
     if (inv.t == VT::Object && inv.obj() && inv.obj()->hasBoxed && inv.obj()->cls &&
-        !inv.obj()->cls->findMethod(m) && !inv.obj()->cls->findAttr(m)) {
+        (m.skipOwn || (!inv.obj()->cls->findMethod(m) && !inv.obj()->cls->findAttr(m)))) {
         static const std::set<std::string> keepOnObj = {
             // `.can` must see the MIXIN's methods — forwarding it to the boxed
             // value hides them (`(Any but $failure).can('Failure')`)
@@ -10051,28 +10065,48 @@ void Interpreter::registerBuiltins() {
             if (a[i].t == VT::Pair && a[i].namedArg) matchers.push_back(a[i]);
             else if (a[i].t == VT::Str && desc.empty()) desc = a[i].s;
         }
+        // Judge a returned Failure: its exception matches TYPE, and every named
+        // matcher matches the exception's attribute — or, when the exception is
+        // only a TYPE (`"msg".Failure` carries message/payload beside a bare
+        // X::AdHoc; String::Utils' shorten answers that), the Failure's own slot.
+        auto judge = [&](const Value& fh) -> bool {
+            if (!(fh.t == VT::Hash && fh.hashKind == "Failure" && fh.hash())) return false;
+            if (fh.hash()->count("handled") && (*fh.hash())["handled"].truthy()) return false;
+            Value ex = fh.hash()->count("exception") ? (*fh.hash())["exception"] : Value::any();
+            bool ok = true;
+            if (a.size() > 1 && a[1].t == VT::Type && a[1].s != "Exception")
+                ok = applyArith("~~", ex, a[1]).truthy();
+            for (auto& mp : matchers) {
+                if (!ok) break;
+                Value want = mp.pairVal() ? *mp.pairVal() : Value::boolean(true);
+                if (want.t == VT::Bool)
+                    throw RakuError{Value::typeObj("X::Match::Bool"),
+                        "Cannot use Bool as matcher for '" + mp.s + "'; did you mean to smartmatch the attribute?"};
+                Value got; bool have = false;
+                if (ex.t != VT::Object && fh.hash()->count(mp.s)) { got = (*fh.hash())[mp.s]; have = true; }
+                if (!have) {
+                    try { got = I.methodCall(ex, mp.s, ValueList{}); have = true; }
+                    catch (RakuError&) { have = false; }
+                }
+                if (!have) { ok = false; break; }
+                ok = want.t == VT::Code ? I.callCallable(want, ValueList{got}).truthy()
+                                        : applyArith("~~", got, want).truthy();
+            }
+            return ok;
+        };
         if (!a.empty()) {
             try {
                 Value r;
                 if (a[0].t == VT::Code) r = I.callCallable(a[0], {});
                 else if (a[0].t == VT::Str) r = I.evalString(a[0].s, /*mainlinePH=*/true);
-                if (r.t == VT::Hash && r.hashKind == "Failure" &&
-                    !(r.hash()->count("handled") && (*r.hash())["handled"].truthy())) {
-                    Value ex = r.hash()->count("exception") ? (*r.hash())["exception"] : Value::any();
-                    failed = true;
-                    if (a.size() > 1 && a[1].t == VT::Type && a[1].s != "Exception")
-                        failed = applyArith("~~", ex, a[1]).truthy();
-                    for (auto& mp : matchers) {
-                        if (!failed) break;
-                        Value want = mp.pairVal() ? *mp.pairVal() : Value::boolean(true);
-                        if (want.t == VT::Bool)
-                            throw RakuError{Value::typeObj("X::Match::Bool"),
-                                "Cannot use Bool as matcher for '" + mp.s + "'; did you mean to smartmatch the attribute?"};
-                        Value got = I.methodCall(ex, mp.s, ValueList{});
-                        failed = want.t == VT::Code ? I.callCallable(want, ValueList{got}).truthy()
-                                                    : applyArith("~~", got, want).truthy();
-                    }
-                }
+                failed = judge(r);
+            } catch (ReturnEx&) {
+                // `fail` in a bare block unwinds as the return of the enclosing
+                // routine — there is none inside the block, so it lands here.
+                // Rakudo's verdict for that is "expected code to fail but it
+                // threw": not a pass. (Left to propagate, it unwound the test
+                // file's own mainline.)
+                failed = false;
             } catch (RakuError& e) {
                 if (e.payload.t == VT::Type && e.payload.s == "X::Match::Bool") throw; // matcher misuse propagates
                 failed = false; // thrown exception: fails-like does not pass
@@ -10879,7 +10913,24 @@ void Interpreter::registerBuiltins() {
         if (todod) I.todoSubtestDepth_++;
         I.subtestFailed_ = false;
         I.planned_ = -1; I.testNum_ = 0;
-        if (code.t == VT::Code) { try { I.callCallable(code, {}); } catch (RakuError&) { I.subtestFailed_ = true; } }
+        if (code.t == VT::Code) {
+            try { I.callCallable(code, {}); }
+            catch (RakuError& e) {
+                // the exception is the subtest's failure — but it must be SEEN:
+                // silently marking the subtest failed hid a "No such private
+                // method '!cursor_init'" for a whole String::Utils run
+                I.subtestFailed_ = true;
+                std::cerr << std::string(4 * I.subtestDepth_, ' ') << "# " << e.message << "\n";
+            }
+        }
+        // …and a plan that was not met fails the subtest, as Test.pm6's does
+        // ("planned 3 tests, but ran 0" is how a loop that never ran shows)
+        if (I.planned_ >= 0 && I.testNum_ != I.planned_) {
+            std::cerr << std::string(4 * I.subtestDepth_, ' ') << "# Looks like you planned "
+                      << I.planned_ << " test" << (I.planned_ == 1 ? "" : "s") << ", but ran "
+                      << I.testNum_ << "\n";
+            I.subtestFailed_ = true;
+        }
         bool ok = !I.subtestFailed_;
         // no plan declared inside: the subtest's own trailing plan line closes
         // its block ("    1..N"), exactly as done-testing would have printed it
@@ -11134,6 +11185,12 @@ void Interpreter::registerBuiltins() {
         if (a.empty()) return Value::nil();
         ValueList rest(a.begin() + 1, a.end());
         return I.methodCall(a[0], "rindex", rest); };
+    // …and `indices` has the same sub form (String::Utils' stem splits a
+    // basename on every dot with it)
+    B["indices"] = [](Interpreter& I, ValueList& a) -> Value {
+        if (a.empty()) return Value::nil();
+        ValueList rest(a.begin() + 1, a.end());
+        return I.methodCall(a[0], "indices", rest); };
     // `min`/`max` as SUBS delegate to the method, so `:by`/`:k`/`:v`/`:kv`/`:p`
     // behave identically. A lone Positional/Associative argument IS the list;
     // several arguments are the list themselves — and they are NOT flattened, so
@@ -11517,7 +11574,15 @@ void Interpreter::registerBuiltins() {
     auto symEnv = [](Interpreter& I, ValueList& a, size_t hopIdx) -> Env* {
         Env* e = I.tctx_.cur.get();
         if (a.size() > hopIdx + 1 && a[hopIdx + 1].toStr() == "UNIT") {
-            while (e && e->parent) e = e->parent.get();
+            // The compilation unit's scope is the OUTERMOST frame below the
+            // process-wide global one: a module's file scope hangs off the
+            // global frame, and walking all the way up answered the global
+            // frame instead — where a module sub that shadows an operator
+            // (String::Utils' `after`/`before`) is never published, so
+            // `UNIT::.grep: { .key.starts-with('&') }` could not export it.
+            // The mainline's own unit is that global frame, and stays so.
+            Env* g = I.global_.get();
+            while (e && e->parent && e->parent.get() != g) e = e->parent.get();
             return e;
         }
         for (long long hops = a.size() > hopIdx ? a[hopIdx].toInt() : 0; hops > 0 && e; hops--)
@@ -11541,6 +11606,23 @@ void Interpreter::registerBuiltins() {
         Env* e = symEnv(I, a, 1);
         if (e) if (Value* v = e->find(n)) return Value::pair(n, *v);
         return Value::list({});
+    };
+    // A bare pseudo-package as a VALUE — `UNIT::.grep: {…}`, `MY::.keys` — is
+    // the scope's symbol table, as a Hash of name => value. `UNIT::` is the
+    // compilation unit's own frame (the outermost one, as above), `MY::` the
+    // current scope, `LEXICAL::` the whole chain with inner names shadowing
+    // outer ones. String::Utils exports everything `&`-named this way.
+    B["__sym-stash"] = [symEnv](Interpreter& I, ValueList& a) -> Value {
+        Value h = Value::makeHash();
+        Env* e = symEnv(I, a, 0);
+        const std::string pk = a.size() > 1 ? a[1].toStr() : std::string("MY");
+        if (pk == "LEXICAL") {
+            for (Env* x = e; x; x = x->parent.get())
+                for (auto& kv : x->vars)
+                    if (!h.hash()->count(kv.first)) (*h.hash())[kv.first] = kv.second;
+        }
+        else if (e) for (auto& kv : e->vars) (*h.hash())[kv.first] = kv.second;
+        return h;
     };
     // `OUTER::MY::<$x>` — the same lookup as `MY::<$x>`, started that many scopes
     // out. A miss is Nil, as Rakudo's is; the no-hop forms resolve at parse time.
@@ -13171,6 +13253,18 @@ Value Interpreter::evalNqpOp(NqpOp* n) {
             if (v.t == VT::Nil || v.t == VT::Any) return a.size() > 1 ? eval(a[1].get()) : Value::nil();
             return v;
         }
+        // nqp::handle(expr, 'CATCH', handler, …) — run expr; an exception runs
+        // the matching handler, whose value is the op's. `paths` guards its
+        // opendir with it: `nqp::handle(($!handle := nqp::opendir($p)), 'CATCH', 0)`.
+        case O::Handle: {
+            if (a.empty()) return Value::nil();
+            try { return eval(a[0].get()); }
+            catch (RakuError&) {
+                for (size_t i = 1; i + 1 < a.size(); i += 2)
+                    if (eval(a[i].get()).toStr() == "CATCH") return eval(a[i + 1].get());
+                return Value::nil();
+            }
+        }
         // nqp::bindattr(@container, T, '$!reified'/'$!storage', $buffer) rebinds
         // the container's BACKING STORE to the buffer — they must then SHARE it
         // (pushes to the buffer show through the container). Needs the caller's
@@ -13258,10 +13352,15 @@ Value Interpreter::evalNqpOp(NqpOp* n) {
         // caller in the wild reaches for a field IO::Path does not expose:
         // Path::Finder matches on inode/device/uid/gid/nlinks/blocks/blocksize/
         // devtype and keys its symlink-loop guard on inode+device.
-        case O::Stat: case O::Lstat: {
+        case O::Stat: case O::Lstat: case O::StatTime: case O::LstatTime: {
             if (a.size() < 2) return Value::integer(-1);
             const std::string path = eval(a[0].get()).toStr();
             const long long field = eval(a[1].get()).toInt();
+            const bool viaLink = n->op == O::Lstat || n->op == O::LstatTime;
+            // the `_time` spellings answer a Num (MoarVM's are fractional
+            // seconds); path-utils' accessors are typed on it
+            const bool asNum = n->op == O::StatTime || n->op == O::LstatTime;
+            auto timeVal = [&](long long secs) { return asNum ? Value::number((double)secs) : Value::integer(secs); };
 #ifdef _WIN32
             struct ::_stat64 st;
             const bool ok = ::_stat64(path.c_str(), &st) == 0;
@@ -13272,8 +13371,8 @@ Value Interpreter::evalNqpOp(NqpOp* n) {
             // ISLNK always needs the link's OWN inode, whichever op was called;
             // everything else follows the link unless this is nqp::lstat
             const bool lok = ::lstat(path.c_str(), &lst) == 0;
-            const bool ok = n->op == O::Lstat ? lok : ::stat(path.c_str(), &st) == 0;
-            if (n->op == O::Lstat) st = lst;
+            const bool ok = viaLink ? lok : ::stat(path.c_str(), &st) == 0;
+            if (viaLink) st = lst;
 #endif
             // STAT_EXISTS answers the question rather than failing it. Every other
             // field on an unstattable path THROWS, as Rakudo does — a silent -1
@@ -13289,9 +13388,9 @@ Value Interpreter::evalNqpOp(NqpOp* n) {
                 case  3: return Value::integer(S_ISREG(st.st_mode) ? 1 : 0); // ISREG
                 case  4: return Value::integer(S_ISCHR(st.st_mode) ||        // ISDEV
                                                S_ISBLK(st.st_mode) ? 1 : 0);
-                case  6: return Value::integer((long long)st.st_atime);     // ACCESSTIME
-                case  7: return Value::integer((long long)st.st_mtime);     // MODIFYTIME
-                case  8: return Value::integer((long long)st.st_ctime);     // CHANGETIME
+                case  6: return timeVal((long long)st.st_atime);            // ACCESSTIME
+                case  7: return timeVal((long long)st.st_mtime);            // MODIFYTIME
+                case  8: return timeVal((long long)st.st_ctime);            // CHANGETIME
                 case 10: return Value::integer((long long)st.st_uid);       // UID
                 case 11: return Value::integer((long long)st.st_gid);       // GID
                 case -1: return Value::integer((long long)st.st_dev);       // PLATFORM_DEV
@@ -13311,11 +13410,11 @@ Value Interpreter::evalNqpOp(NqpOp* n) {
             // the two spellings of this question cannot answer differently again.
             if (field == 5) {
                 double b = 0;
-                return Value::integer(fileBirthSecs(path, st, b) ? (long long)b : 0LL);
+                return timeVal(fileBirthSecs(path, st, b) ? (long long)b : 0LL);
             }
             // CREATETIME where the platform has none, and BACKUPTIME everywhere:
             // MoarVM answers 0 rather than failing
-            if (field == 9) return Value::integer(0);
+            if (field == 9) return timeVal(0);
             return Value::integer(-1); // an unknown field number
         }
         case O::CloseFh: {
@@ -13352,6 +13451,13 @@ Value Interpreter::evalNqpOp(NqpOp* n) {
             if (a.size() >= 2) {
                 Value* lv = nullptr;
                 try { lv = lvalue(a[0].get()); } catch (RakuError&) {}
+                // …and a VALUE operand — `nqp::setelems(nqp::create(array[uint32]),
+                // $n)` (String::Utils' nomark sizes its scratch buffer this way,
+                // nested twice) — is resized through its shared storage and
+                // handed back; it used to come back as Nil, and everything pushed
+                // into the "buffer" afterwards was lost
+                Value held;
+                if (!lv) { held = eval(a[0].get()); lv = &held; }
                 long long nn = eval(a[1].get()).toInt();
                 if (nn < 0) nn = 0;
                 if (lv) {
@@ -13441,6 +13547,19 @@ Value Interpreter::evalNqpOp(NqpOp* n) {
         Value r = methodCall(Value::integer(v[0].toInt()), "uniprop", pa);
         if (n->op == NqpOpc::GetUniPropStr) return Value::str(r.toStr());
         if (n->op == NqpOpc::GetUniPropBool) return Value::integer(r.truthy() ? 1 : 0);
+        // `_int` of General_Category is MoarVM's NUMBER for the category, not
+        // the two-letter name: String::Utils' nomark drops every codepoint whose
+        // category is 6 (Mn). Read off Rakudo 2026.07, one codepoint per value.
+        if (r.t == VT::Str) {
+            static const std::map<std::string, long long> gcCode = {
+                {"Cn", 0},  {"Lu", 1},  {"Ll", 2},  {"Lt", 3},  {"Lm", 4},  {"Lo", 5},
+                {"Mn", 6},  {"Me", 7},  {"Mc", 8},  {"Nd", 9},  {"Nl", 10}, {"No", 11},
+                {"Zs", 12}, {"Zl", 13}, {"Zp", 14}, {"Cc", 15}, {"Cf", 16}, {"Co", 17},
+                {"Cs", 18}, {"Pd", 19}, {"Ps", 20}, {"Pe", 21}, {"Pc", 22}, {"Po", 23},
+                {"Sm", 24}, {"Sc", 25}, {"Sk", 26}, {"So", 27}, {"Pi", 28}, {"Pf", 29}};
+            auto g = gcCode.find(r.toStr());
+            if (g != gcCode.end()) return Value::integer(g->second);
+        }
         return Value::integer(r.t == VT::Bool ? (r.truthy() ? 1 : 0) : r.toInt());
     }
     if (n->op == NqpOpc::Create && v.size() == 1 && v[0].t == VT::Type) {
@@ -13469,7 +13588,16 @@ Value Interpreter::evalNqpOp(NqpOp* n) {
 // nqp::if/unless are Ternaries, so only these leaf ops need a runtime entry.
 Value rtNqpOp(NqpOpc op, ValueList& v) {
     using O = NqpOpc;
-    auto I = [&](size_t i) -> long long { return i < v.size() ? v[i].toInt() : 0; };
+    // An argument may arrive as the CONTAINER a `:=`-bound attribute holds (the
+    // argument loop keeps containers for the ops that ask about them); a
+    // number or string read looks through it. paths' `nqp::iseq_i(
+    // $!readable-files, nqp::filereadable($path))` compared the Proxy — 0 —
+    // and its walker produced no file at all.
+    auto held = [&](size_t i) -> Value {
+        return (v[i].t == VT::Hash && v[i].hashKind == "Proxy" && v[i].hash() && g_deproxy)
+               ? g_deproxy(v[i]) : v[i];
+    };
+    auto I = [&](size_t i) -> long long { return i < v.size() ? held(i).toInt() : 0; };
     // By reference: a Str argument is returned as-is, so the scanning ops below
     // don't copy the whole haystack once per character examined.
     static const CowStr kEmptyStr;
@@ -13482,8 +13610,8 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
     auto S = [&](size_t i) -> const CowStr& {
         if (i >= v.size()) return kEmptyStr;
         if (v[i].t == VT::Str) return v[i].s;
-        if (i >= 8) { sTmp[7] = v[i].toStr(); return sTmp[7]; }
-        sTmp[i] = v[i].toStr();
+        if (i >= 8) { sTmp[7] = held(i).toStr(); return sTmp[7]; }
+        sTmp[i] = held(i).toStr();
         return sTmp[i];
     };
     auto cclassHas = [](long long mask, uint32_t cp) -> bool {
@@ -13493,6 +13621,8 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
         bool alpha = !cat.empty() && cat[0] == 'L';
         bool space = cp == ' ' || cp == '\t' || cp == '\n' || cp == '\r' ||
                      cat == "Zs" || cat == "Zl" || cat == "Zp";
+        if ((mask & 1) && cat == "Lu") return true;                // UPPERCASE (String::Utils' is-uppercase)
+        if ((mask & 2) && cat == "Ll") return true;                // LOWERCASE (…and is-lowercase, behind :smartcase)
         if ((mask & 8) && digit) return true;                      // NUMERIC
         if ((mask & 4) && alpha) return true;                      // ALPHABETIC
         if ((mask & 32) && space) return true;                     // WHITESPACE
@@ -13765,6 +13895,10 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
                                  : v[0].t == VT::Hash && v[0].hash() ? (long long)v[0].hash()->size() : 0);
         case O::Atpos: case O::AtposI: {
             long long i = I(1);
+            // a NEGATIVE index counts from the end, as MoarVM's does:
+            // String::Utils' is-sha1 walks past the string, `nqp::ordat` says
+            // -1 there, and `nqp::atpos_i(@map, -1)` has to read the last slot
+            if (v[0].t == VT::Array && v[0].arr() && i < 0) i += (long long)v[0].arr()->size();
             if (v[0].t == VT::Array && v[0].arr() && i >= 0 && i < (long long)v[0].arr()->size())
                 return (*v[0].arr())[i];
             if (v[0].t == VT::Str && i >= 0 && i < v[0].blobElems())  // Buf/Blob byte
@@ -13816,6 +13950,15 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
         case O::Bindkey:
             if (v[0].t == VT::Hash && v[0].hash()) (*v[0].hash())[S(1)] = v[2];
             return v.size() > 2 ? v[2] : Value::nil();
+        // nqp::isnull_s — the string null. A native `str` here cannot hold one:
+        // `my str $entry = nqp::nextfiledir($h)` stores "" for the null the op
+        // answers at the end of a directory, and paths' `nqp::until(…
+        // nqp::isnull_s($entry) …)` spun forever. An empty string stands in
+        // for the null (a directory entry is never empty; String::Utils'
+        // Paragraphs keeps `$!next` as null_s the same way).
+        case O::IsNullS:
+            return Value::integer(v.empty() || v[0].t == VT::Nil || v[0].t == VT::Any ||
+                                  (v[0].t == VT::Str && v[0].s.empty()) ? 1 : 0);
         case O::IsNull:
             // VM-level null, which is NOT Raku's undefined: Rakudo answers 0 for
             // both Nil and Any. Our nqp hash ops return Value::nil() for a missing
@@ -13842,6 +13985,11 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
             if (tn == "Map") { Value m = Value::makeHash(); m.hashKind = "Map"; return m; } // keeps Map identity through p6bindattrinvres
             if (tn == "Hash" || tn == "IterationMap") return Value::makeHash();
             if (tn == "List") { Value r = Value::array(); r.isList = true; return r; }
+            // `nqp::create(buf8.^pun)` — path-utils's sniffing reads a file's
+            // first 4K into one (nqp::readfh fills a Buf in place)
+            if (tn == "buf8" || tn == "Buf" || tn == "Blob" || tn == "blob8" || tn == "utf8") {
+                Value b = Value::str(""); b.hashKind = "Buf"; return b;
+            }
             // the Uni family keeps its NAME: `nqp::create(NFD)` must answer a
             // value that binds `Uni:D \codes` (JSON::Fast's unjsonify-string)
             if (tn == "Uni" || tn == "NFC" || tn == "NFD" || tn == "NFKC" || tn == "NFKD") {
@@ -13914,6 +14062,13 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
                 if (nm == "$!key" || nm == "key") return Value::str(v[0].s);
                 if (nm == "$!value" || nm == "value") return v[0].pairVal() ? *v[0].pairVal() : Value::any();
             }
+            // a Match's two positions, as Rakudo's cursor protocol reads them
+            // (`nqp::getattr_i($cursor, Match, '$!pos')` in String::Utils'
+            // replace); pos is -3 when the cursor matched nothing (MoarVM's value)
+            if (v[0].t == VT::Match) {
+                if (nm == "$!from" || nm == "from") return Value::integer(v[0].rFrom());
+                if (nm == "$!pos"  || nm == "pos")  return Value::integer(v[0].rTo());
+            }
             if (v[0].t == VT::Object && v[0].obj()) {
                 std::string bare = nm.size() > 2 ? nm.substr(2) : nm;
                 auto it = v[0].obj()->attrs.find(bare);
@@ -13932,7 +14087,13 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
                 *v[0].hash() = *v[3].hash();           // (hashKind stays the invocant's: a Map keeps being a Map)
             } else if (v[0].t == VT::Object && v[0].obj()) {
                 std::string bare = nm.size() > 2 ? nm.substr(2) : nm;
-                v[0].obj()->attrs[bare] = v[3];
+                // the readonly flag marks the CONTAINER the value came from (a
+                // parameter, here `$iterator` in String::Utils' Paragraphs.new);
+                // the attribute is a fresh slot, or its later `$!iterator :=
+                // nqp::null` is "Cannot assign to a readonly variable"
+                Value bound = v[3];
+                bound.readonly = false;
+                v[0].obj()->attrs[bare] = std::move(bound);
             }
             return op == O::P6BindAttrInvRes ? v[0] : v[3];
         }
@@ -13973,6 +14134,127 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
             // nqp::lock/unlock guard concurrent lazy builds; under the GIL the
             // build is already atomic, so the guard is a no-op here
             return Value::nil();
+        // The directory walk `paths` is written against. A handle reads its
+        // directory ONCE on open — `.` and `..` first, as readdir(3) lists them
+        // and as paths expects to skip — and nextfiledir hands the names out
+        // one at a time; nqp's null (Nil here) says the directory is done.
+        // Failure to open THROWS: the caller wraps the op in nqp::handle.
+        case O::OpenDir: {
+            const std::string path = S(0).str();
+            DIR* d = ::opendir(path.c_str());
+            if (!d) throw RakuError{Value::typeObj("X::AdHoc"),
+                                    "Failed to open dir: " + path + ": " + std::strerror(errno)};
+            Value entries = Value::array();
+            entries.arr()->push_back(Value::str("."));
+            entries.arr()->push_back(Value::str(".."));
+            while (dirent* de = ::readdir(d)) {
+                const std::string nm = de->d_name;
+                if (nm == "." || nm == "..") continue;
+                entries.arr()->push_back(Value::str(nm));
+            }
+            ::closedir(d);
+            Value h = Value::makeHash(); h.hashKind = "NqpDir";
+            (*h.hash())["entries"] = entries;
+            (*h.hash())["pos"] = Value::integer(0);
+            return h;
+        }
+        case O::NextFileDir: {
+            if (v.empty() || v[0].t != VT::Hash || !v[0].hash()) return Value::nil();
+            auto& H = *v[0].hash();
+            long long p = H["pos"].toInt();
+            Value& ents = H["entries"];
+            if (ents.t != VT::Array || !ents.arr() || p >= (long long)ents.arr()->size()) return Value::nil();
+            H["pos"] = Value::integer(p + 1);
+            return (*ents.arr())[(size_t)p];
+        }
+        case O::CloseDir: return Value::nil();
+        // the file tests path-utils asks of the OS directly
+        case O::FileReadable: case O::FileWritable: case O::FileExecutable: {
+            int mode = op == O::FileReadable ? R_OK : op == O::FileWritable ? W_OK : X_OK;
+            return Value::integer(::access(S(0).str().c_str(), mode) == 0 ? 1 : 0);
+        }
+        case O::FileIsLink: {
+            struct stat st;
+            return Value::integer(::lstat(S(0).str().c_str(), &st) == 0 && S_ISLNK(st.st_mode) ? 1 : 0);
+        }
+        // nqp::rindex(haystack, needle, ?from) — the LAST occurrence at or
+        // before `from` (codepoint positions, as nqp::index counts); paths
+        // splits a path at its last separator with it
+        case O::Rindex: {
+            const CowStr& hcs = S(0);
+            const std::string& hs = hcs.str();
+            const std::string& nd = S(1).str();
+            if (cowAllAscii(hcs) && cowAllAscii(S(1))) {
+                size_t from = v.size() > 2 ? (size_t)std::max<long long>(I(2), 0) : std::string::npos;
+                auto at = hs.rfind(nd, from);
+                return Value::integer(at == std::string::npos ? -1 : (long long)at);
+            }
+            auto h = utf8cp(hs), n = utf8cp(nd);
+            long long last = v.size() > 2 ? I(2) : (long long)h.size();
+            if (last > (long long)h.size() - (long long)n.size()) last = (long long)h.size() - (long long)n.size();
+            for (long long k = last; k >= 0; k--) {
+                bool hit = true;
+                for (size_t j = 0; j < n.size() && hit; j++) hit = h[(size_t)k + j] == n[j];
+                if (hit) return Value::integer(k);
+            }
+            return Value::integer(-1);
+        }
+        case O::X: { // nqp::x(str, count) — the string that many times (String::Utils pads with it)
+            long long cnt = I(1);
+            std::string out;
+            if (cnt > 0) { const std::string& s = S(0).str(); out.reserve(s.size() * (size_t)cnt); for (long long k = 0; k < cnt; k++) out += s; }
+            return Value::str(std::move(out));
+        }
+        case O::Flip: { // nqp::flip(str) — reversed by codepoint
+            auto cps = utf8cp(S(0).str());
+            std::string out;
+            for (size_t k = cps.size(); k-- > 0; ) out += cpToU8(cps[k]);
+            return Value::str(std::move(out));
+        }
+        case O::Split: { // nqp::split(separator, string) — note the order
+            const std::string& sep = S(0).str();
+            const std::string& s = S(1).str();
+            Value out = Value::array();
+            if (sep.empty()) { for (uint32_t cp : utf8cp(s)) out.arr()->push_back(Value::str(cpToU8(cp))); return out; }
+            size_t at = 0;
+            while (true) {
+                size_t nx = s.find(sep, at);
+                if (nx == std::string::npos) { out.arr()->push_back(Value::str(s.substr(at))); break; }
+                out.arr()->push_back(Value::str(s.substr(at, nx - at)));
+                at = nx + sep.size();
+            }
+            return out;
+        }
+        case O::IsneS: return Value::integer(S(0).str() != S(1).str() ? 1 : 0);
+        case O::NotI:  return Value::integer(I(0) ? 0 : 1);
+        case O::ModI: { // floored, as MoarVM's mod_i (and Raku's `%`) is
+            long long x = I(0), y = I(1);
+            if (!y) return Value::integer(0);
+            long long r = x % y;
+            if (r && ((r ^ y) < 0)) r += y;
+            return Value::integer(r);
+        }
+        // nqp::findcclass(class, str, start, count) — the FIRST position in the
+        // window whose character IS of the class, or the window's end (the
+        // mirror image of findnotcclass above)
+        case O::FindCClass: {
+            const CowStr& cs = S(1);
+            const std::string& s = cs.str();
+            long long mask = I(0), start = I(2), len = I(3);
+            long long from = std::max<long long>(start, 0);
+            long long want = start + len;
+            if (cowAllAscii(cs)) {
+                long long end = std::min<long long>(want, (long long)s.size());
+                for (long long k = from; k < end; k++)
+                    if (cclassHas(mask, (uint32_t)(unsigned char)s[k])) return Value::integer(k);
+                return Value::integer(end);
+            }
+            auto cps = utf8cp(s);
+            long long end = std::min<long long>(want, (long long)cps.size());
+            for (long long k = from; k < end; k++)
+                if (cclassHas(mask, cps[k])) return Value::integer(k);
+            return Value::integer(end);
+        }
         case O::Null: return Value::nil();
         case O::IsNanOrInf: {
             double d = v.empty() ? 0 : v[0].toNum();

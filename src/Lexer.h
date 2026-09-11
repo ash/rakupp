@@ -41,6 +41,8 @@ private:
     size_t pos_ = 0;
     std::vector<std::string> userOps_; // `sub infix:<…>` spellings declared in THIS file, longest first
     size_t unspaceEnd_ = (size_t)-1;  // pos right after an unspace (`\` + whitespace/comment): not whitespace
+    std::set<std::string> termNames_; // names this file declares as TERMS (`constant X`, `my \x`): a `/` after one divides
+    size_t termScan_ = 0;             // how far `out` has been scanned for those declarations
     int angleWords_ = 0; // depth inside a bare `< … >` word list: quote/regex lexing is off (content is words)
     int angleLine_ = 0;  // line the OUTERMOST `<` of that word list opened on
     int line_ = 1;
@@ -77,7 +79,7 @@ private:
     Token lexQuoted(char quote);
     bool tryQuoteForm(Token& out); // q// qq// Q// with bracketing/char delimiters
     bool trySetOp(Token& out);     // (|) (&) (elem) ... ASCII set operators
-    static bool regexContext(const std::vector<Token>& out); // is a bare / a regex here?
+    bool regexContext(const std::vector<Token>& out); // is a bare / a regex here?
     bool tryRuleDecl(std::vector<Token>& out, bool spaced); // token/rule/regex NAME { ... }
     void processHeredocs(std::vector<Token>& out);          // fill q:to/MARKER/ bodies at line end
     // pending heredocs: (marker, token index in out, interpolating?)

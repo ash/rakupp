@@ -6354,6 +6354,10 @@ const Value* Interpreter::builtinRef(const std::string& name) {
 }
 
 void Interpreter::loadModule(const std::string& name, const std::vector<std::string>& importArgs, bool doImport, bool quiet, const std::string& verReq, bool requireForm) {
+    // the evaluated `use Mod EXPR, …` arguments belong to THIS load — take them
+    // now, before the module's own `use` statements run through here again
+    const ValueList useExtra = std::move(useExprArgs_);
+    useExprArgs_.clear();
     StageLoadTimer stageTimer(name, !loadedModules_.count(name)); // --stagestats: a first load, timed
     // DATA-PLAN P6. Before anything is looked for on disk: this engine may be
     // able to answer the `use` itself, in which case nothing loads at all.
@@ -6386,6 +6390,7 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
         if (doImport && it != moduleExportSubs_.end()) {
             ValueList eargs;
             for (auto& s : importArgs) eargs.push_back(Value::str(s));
+            for (auto& v : useExtra) eargs.push_back(v);
             try {
                 Value res = callCallable(it->second, eargs);
                 if (res.t == VT::Hash && res.hash())
@@ -6735,6 +6740,7 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
             if (doImport && it != moduleEnv->vars.end() && it->second.t == VT::Code) {
                 ValueList eargs;
                 for (auto& s : importArgs) eargs.push_back(Value::str(s));
+                for (auto& v : useExtra) eargs.push_back(v);
                 try {
                     Value res = callCallable(it->second, eargs);
                     if (res.t == VT::Hash && res.hash())
@@ -8623,6 +8629,17 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             // compile. Accepting the `use` keeps it from looking like a typo.
             else if (u->module == "Rakupp::Ext") { /* loader is always available */ }
             else if (!u->module.empty()) {
+                // `use Mod EXPR, …` — the non-string arguments, evaluated here and
+                // handed to the module's EXPORT after any string ones (`use
+                // META::constants $?DISTRIBUTION`, `use CLI::Version
+                // $?DISTRIBUTION, &MAIN, 'long'`)
+                useExprArgs_.clear();
+                if (u->argExpr) {
+                    Value av = eval(u->argExpr.get());
+                    if (av.t == VT::Array && av.arr() && av.isList && !av.itemized)
+                        for (auto& e : *av.arr()) useExprArgs_.push_back(e);
+                    else useExprArgs_.push_back(av);
+                }
                 loadModule(u->module, u->importArgs, !u->isNeed, /*quiet=*/false, u->verReq,
                            /*requireForm=*/u->isRequire);
                 // `use Mod <name:alias>` — import that routine under a second name.
@@ -8875,9 +8892,22 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                         disp = dispVal.code();
                         tctx_.cur->define(key, dispVal);
                     }
-                    if (code.code()) code.code()->isMultiCandidate = true;
-                    disp->candidates.push_back(code);
-                    for (auto& c : altCands) disp->candidates.push_back(c);
+                    // A declaration inside a block runs twice — hoisted at the
+                    // block's entry, then again in sequence — and used to join
+                    // the group both times: `do { proto sub f(|) {*}; &f }` and
+                    // a proto in a sub body listed two `(|)` candidates. The
+                    // declaration (its body) is the identity; a repeat is a no-op.
+                    auto joins = [&](const Value& c) {
+                        if (!c.code()) return;
+                        for (auto& have : disp->candidates)
+                            if (have.code() && have.code()->body && have.code()->body == c.code()->body &&
+                                have.code()->params == c.code()->params)
+                                return;
+                        c.code()->isMultiCandidate = true;
+                        disp->candidates.push_back(c);
+                    };
+                    joins(code);
+                    for (auto& c : altCands) joins(c);
                     return dispVal;
                 }
                 tctx_.cur->define("&" + sname, code);
@@ -12245,7 +12275,8 @@ static bool typeMatchesArg(const Value& arg, const std::string& type) {
             if ((type == "Uni" || type == arg.s) &&
                 (arg.s == "Uni" || arg.s == "NFC" || arg.s == "NFD" ||
                  arg.s == "NFKC" || arg.s == "NFKD")) return true;
-            return type == "Array" || type == "List" || type == "Positional" || type == "Iterable" || (arg.isList && arg.s == "Seq" && type == "Seq");
+            return type == "Array" || type == "List" || type == "Positional" || type == "Iterable" || (arg.isList && arg.s == "Seq" && type == "Seq") ||
+                   (type == "Slip" && arg.s == "Slip");   // `--> Slip` (highlighter's matches)
         case VT::Hash:
             if (arg.hashKind == "FileHandle" && (type == "IO::Handle" || type == "IO" || type == "Handle")) return true;
             // A synchronous socket IS an IO::Socket — that is the type every
@@ -12271,7 +12302,10 @@ static bool typeMatchesArg(const Value& arg, const std::string& type) {
                               // disagreed. Crane dispatches its "append here" step on
                               // exactly that signature (issue #69).
                               (type == "WhateverCode" && arg.code() && arg.code()->isWhateverCode);
-        case VT::Regex: return type == "Regex";
+        // a Regex is a Method, so it is a Routine, a Block, a Code and a
+        // Callable: highlighter's regex needle binds to `Callable:D $needle`
+        case VT::Regex: return type == "Regex" || type == "Method" || type == "Routine" ||
+                               type == "Block" || type == "Code" || type == "Callable";
         // a Match IS a Capture and IS Cool (Rakudo: Match ~~ Capture/Cool both True)
         case VT::Match: return type == "Match" || type == "Capture" || type == "Cool";
         case VT::Range: return type == "Range" || type == "Iterable";
@@ -12714,7 +12748,9 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args) {
             // log(&task,*%data) dispatch depends on this). A typed `Int &x`
             // constrains the routine's RETURN type — not modeled; any Code binds
             // (return-type dispatch logged as a gap).
-            if (pos[i].t != VT::Code && !isCallableTypeObj(pos[i])) return -1;
+            // (a Regex is a Callable too: `rak(/ pattern /, :paths(…))` binds
+            // `&pattern` in rak's multis)
+            if (pos[i].t != VT::Code && pos[i].t != VT::Regex && !isCallableTypeObj(pos[i])) return -1;
         }
         else if (p->coerce && !p->type.empty()) {
             // coercion type `Str(Cool)`: any coercible argument matches — the
@@ -12871,7 +12907,7 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args) {
             // spells a type — `(:&content)` must NOT bind `content => "text"`.
             // HTTP::Tiny chains Str → Blob → Callable content multis, and the
             // Callable one was swallowing the very first (string) call.
-            if (p.sigil == '&' && isDefined(sval) && sval.t != VT::Code &&
+            if (p.sigil == '&' && isDefined(sval) && sval.t != VT::Code && sval.t != VT::Regex &&
                 !(sval.t == VT::Object && sval.obj() && sval.obj()->cls &&
                   sval.obj()->cls->findMethod("CALL-ME"))) return -1;
             // …and an `@`/`%`-sigil named carries the same implicit Positional /
@@ -13155,6 +13191,10 @@ bool Interpreter::exprHasWhateverLit(const Expr* e) {
 }
 
 bool Interpreter::boolify(const Value& v) {
+    // A `:=`-bound slot is read through its container: `$!recurse || $!dir-accepts-files`
+    // in paths' walker is a bound (undefined) attribute, and the Proxy that
+    // holds it was true as a Hash, so every rejected directory was descended
+    if (v.t == VT::Hash && v.hashKind == "Proxy" && v.hash()) return boolify(deproxy(v));
     // From 6.e a Range is true when it CONTAINS something: `so (5..1)` is False,
     // and so is `so ("b".."a")`. Before that a Range is simply always true —
     // having endpoints was enough — which is why `if $range` never told you
@@ -14158,10 +14198,16 @@ bool rtTypeMatch(const Value& v, const std::string& type) {
             // a NATIVE array (`array[uint8]`, `my num32 @a`) is an `array`, which
             // CBOR::Simple tests before Positional to emit a typed-array tag
             if (type == "array") return !v.isList && isNativeScalarName(v.ofType());
+            // …and a Slip is the Slip it says it is: `--> Slip` on highlighter's
+            // `matches` failed its own return ("expected Slip but got Slip")
+            if (type == "Slip") return v.s == "Slip";
             return type == "Array" || type == "List" || type == "Positional" || type == "Iterable";
         case VT::Hash:    return hashKindIsAssociative(v.hashKind) &&
                                  (type == "Hash" || type == "Associative" || type == "Map");
         case VT::Code:    return type == "Code" || type == "Callable" || type == "Routine" || type == "Block";
+        // a Regex is a Method: `/a/ ~~ Callable` (and Code, Block, Routine, Method)
+        case VT::Regex:   return type == "Regex" || type == "Method" || type == "Routine" ||
+                                 type == "Block" || type == "Code" || type == "Callable";
         case VT::Object: {
             for (ClassInfo* c = v.obj() && v.obj()->cls ? v.obj()->cls.get() : nullptr; c; c = c->parent.get()) {
                 if (c->name == type) return true;
@@ -16120,6 +16166,29 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
         // `Fez::CLI::<&MAIN>('checkbuild')` finds no &MAIN there (the multis
         // are my-scoped) and Rakudo happily coerces instead (issue #37).
         if (codeVal.t == VT::Any && !args.empty()) return args[0];
+        // A Regex is Callable: `$rx($str)` is `$str ~~ $rx`. Called on a CURSOR
+        // — the Match that `Match!cursor_init($str, :c($n))` hands out, which is
+        // how String::Utils' replace/replace-all walk a haystack — it matches
+        // from the cursor's position and answers a Match whose pos is -3 when
+        // nothing matched (MoarVM's value, Rakudo-verified); the regex rides
+        // along (named slot "\x01rx") so CURSOR_MORE can continue it.
+        if (codeVal.t == VT::Regex && !args.empty()) {
+            const Value& a0 = args[0];
+            if (a0.t == VT::Match) {
+                std::string orig = a0.ext() ? *std::static_pointer_cast<std::string>(a0.ext()) : a0.s.str();
+                long long start = a0.rFrom() < 0 ? 0 : a0.rFrom();
+                if (start > (long long)orig.size()) start = (long long)orig.size();
+                Value m = regexMatch(orig.substr((size_t)start), codeVal.s, &codeVal);
+                // (no match is a FALSE Match here, not Nil — test the truth of it)
+                Value cur = m.t == VT::Match && m.truthy()
+                    ? Value::matchVal(m.s.str(), start + m.rFrom(), start + m.rTo())
+                    : Value::matchVal("", start, -3);   // -3: MoarVM's "matched nothing" pos (Rakudo-verified)
+                cur.extM() = std::make_shared<std::string>(orig);
+                if (cur.md() && cur.md()->named) (*cur.md()->named)["\x01rx"] = codeVal;
+                return cur;
+            }
+            return regexMatch(rxSubject(a0), codeVal.s, &codeVal);
+        }
         throw RakuError{Value::typeObj("X::Method::NotFound"), "Cannot invoke non-Callable value of type " + codeVal.typeName()};
     }
     DepthGuard guard(tcx.callDepth);
@@ -17865,6 +17934,11 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                     ValueList none;
                     init = methodCall(Value::typeObj(ve->containerIs), "new", none);
                 }
+                // `my @list is List = 1, 2, 3` — the variable holds a List, not
+                // an Array: `.^name` says List and it compares equal to one
+                // (JSON::Fast::Hyper's suite round-trips such a list through
+                // from-json's `.List` and asks is-deeply)
+                else if (sigil == '@' && ve->containerIs == "List") init.isList = true;
             }
             if (ve->declDefault) { // `is default(v)`: initial AND reset value
                 Value dv = eval(ve->declDefault.get());
@@ -19798,6 +19872,13 @@ void Interpreter::assignListTarget(ListExpr* lst, const Value& rhs, bool isBindi
             vi++;
             if (tgt->kind == NK::ListExpr) bind(static_cast<ListExpr*>(tgt), v);
             else {
+                // A coercion-typed slot converts what it is handed, as the scalar
+                // path does for `my Int() $x = "42"`: `my ($before, Int() $linenr)
+                // = $line.split(…)` (Backtrace::Files) wants the number, not the Str.
+                if (!isBinding && tgt->kind == NK::VarExpr) {
+                    const std::string& ct = static_cast<VarExpr*>(tgt)->declCoerce;
+                    if (!ct.empty()) v = coerceToType(v, ct);
+                }
                 Value* lv = lvalue(tgt);
                 // A native container keeps its width across the store, exactly as
                 // the scalar path does: `my uint32 ($a, $b) = …` has to wrap at 32
@@ -21107,6 +21188,13 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             }
             if (!keepType.empty() && lv->ofType().empty()) lv->ofTypeM() = keepType;
             if (keepDefault && !lv->elemDefault()) lv->elemDefaultM() = keepDefault;
+            // `my @list is List = …` — the declaration made a List (see the
+            // container-trait initialiser); the refill above stores an Array's
+            // flags, so put the trait back
+            if (a->op == "=" && a->target->kind == NK::VarExpr && lv->t == VT::Array) {
+                auto* tv = static_cast<VarExpr*>(a->target.get());
+                if (tv->declare && tv->containerIs == "List") lv->isList = true;
+            }
         }
         else if (sigil == '%') {
             // `%a := %b` BINDS: both names are the same hash from then on, so a
@@ -22038,7 +22126,17 @@ bool rtMulAssignBig(Value& dst, const Value& r) {
 // non-variable arm fell through to valueEq and answered by CONTENTS: both
 // `[1,2] =:= @a` and `@a.clone =:= @a` came out True.
 static bool identicalRef(const Value& l, const Value& r) {
-    return l.t == r.t && l.isList == r.isList && l.pk_ == r.pk_ && l.p_ && l.p_ == r.p_;
+    // The same storage IS the same object, whatever flags the two handles
+    // carry: `my $h := @a; $h =:= @a` is True (hyperize's suite checks that a
+    // degree-1 hyperize hands back its invocant), and the bound scalar's copy
+    // differed from `@a` only in its list flag.
+    if (l.t == r.t && l.pk_ == r.pk_ && l.p_ && l.p_ == r.p_) return true;
+    // `Empty` is ONE object in Rakudo, and a routine that answers `Empty` is
+    // asked `$slip =:= Empty` by its caller (highlighter's needle loop). Here
+    // every `Empty` term builds its own empty Slip, so two of them are the
+    // same thing.
+    return l.t == VT::Array && r.t == VT::Array && l.s == "Slip" && r.s == "Slip" &&
+           l.arr() && r.arr() && l.arr()->empty() && r.arr()->empty();
 }
 static bool isRefValue(const Value& v) {
     switch (v.t) {
@@ -23421,6 +23519,9 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                    (r.s == "Str" || r.s == "Stringy")) ||
                   (l.t == VT::Code && (r.s == "Code" || r.s == "Callable" ||
                    (r.s == "WhateverCode" && l.code() && l.code()->isWhateverCode))) ||
+                  // a Regex is a Method: Routine, Block, Code, Callable
+                  (l.t == VT::Regex && (r.s == "Code" || r.s == "Callable" || r.s == "Method" ||
+                                        r.s == "Routine" || r.s == "Block")) ||
                   (r.s == "Numeric" && l.isNumeric()) ||
                   // Cool is broad but not universal: Version, IO::Special and
                   // IO::Handle descend from Any, not Cool (Rakudo-verified)
@@ -26873,7 +26974,13 @@ Value Interpreter::evalBinary(Binary* b) {
                 static_cast<VarExpr*>(b->lhs.get())->name[0] == '&' &&
                 static_cast<VarExpr*>(b->rhs.get())->name[0] == '&')
                 same = lp->code() == rp->code();
-            else same = lp && rp && lp == rp;
+            // …and a slot BOUND to an array or hash names that object: `my $h
+            // := @a; $h =:= @a` is True. The two slots share the storage and
+            // differ only in their flags; an ASSIGNED `my $x = @a` itemizes,
+            // so it stays a different container, as in Rakudo.
+            else same = lp && rp && (lp == rp ||
+                                     (isRefValue(*lp) && lp->t == rp->t && lp->itemized == rp->itemized &&
+                                      identicalRef(*lp, *rp)));
         }
         else {
             Value l = eval(b->lhs.get()), r = eval(b->rhs.get());
@@ -26915,8 +27022,23 @@ Value Interpreter::evalBinary(Binary* b) {
         // only, so the whole form died — and with it every `is constraint(…)`
         // trait, which is how Path::Finder tags its matcher methods.
         Value preset; std::string presetAttr;
-        if (b->rhs->kind == NK::Call) {
-            auto* rc = static_cast<Call*>(b->rhs.get());
+        // `X but R<v>` is the angle spelling of `X but R(v)` — Rakudo reads the
+        // word as the one attribute's value (Needle::Compile tags its needles
+        // `"foo" but Type<words>`), while `R<v>` on its own is an ordinary
+        // subscript answering Any. Rewrite it into the call form and take that
+        // path; the evaluated word stands in for the argument.
+        std::unique_ptr<Call> angleCall;
+        if (b->rhs->kind == NK::Index) {
+            auto* ix = static_cast<Index*>(b->rhs.get());
+            if (ix->isHash && ix->base && ix->base->kind == NK::NameTerm && ix->index) {
+                angleCall = std::make_unique<Call>();
+                angleCall->name = static_cast<NameTerm*>(ix->base.get())->name;
+                angleCall->line = b->line;
+                angleCall->args.push_back(std::make_unique<StrLit>(eval(ix->index.get()).toStr()));
+            }
+        }
+        if (b->rhs->kind == NK::Call || angleCall) {
+            auto* rc = angleCall ? angleCall.get() : static_cast<Call*>(b->rhs.get());
             // resolve the role name the way every other site does: as written, then
             // under the enclosing package (a role declared inside `unit class
             // Path::Finder` registers as Path::Finder::Constraint while its own
@@ -27984,7 +28106,45 @@ Value Interpreter::evalUnary(Unary* u) {
             }
         }
         Value v = u->operand ? eval(u->operand.get()) : Value::any();
-        if (tctx_.curRoutineFrame != 0 && tctx_.frameTop == tctx_.curRoutineFrame) {
+        // The cooperative form — set a flag, hand back Any, let the statement
+        // loop see it — is only right when nothing between this `return` and the
+        // statement does further work with that Any: the statement itself, or a
+        // short-circuit operator / ternary branch on the way to it (`… or return
+        // X`). As a CALL ARGUMENT (`g(1, return 'r')`, or paths' `nqp::if(…,
+        // return '')` inside an nqp::stmts) the call ran with the flag set and
+        // the callee's frame reset it, so the routine carried on to its end.
+        // Anything else unwinds, exactly as a return from a nested block does.
+        auto onStmtPath = [&]() -> bool {
+            const Expr* e = tctx_.curStmtExpr;
+            for (int depth = 0; e && depth < 64; depth++) {
+                if (e == u) return true;
+                if (e->kind == NK::Binary) {
+                    auto* b = static_cast<const Binary*>(e);
+                    static const std::set<std::string> shortCircuit = {
+                        "or", "and", "||", "&&", "//", "andthen", "orelse", "notandthen", "xor", "^^"};
+                    if (!shortCircuit.count(b->op)) return false;
+                    e = b->rhs.get() == u || b->lhs.get() != u ? b->rhs.get() : b->lhs.get();
+                    if (e == u) return true;
+                    // the operand may itself be a chain: only the RHS can hold us
+                    e = b->rhs.get();
+                    continue;
+                }
+                if (e->kind == NK::Ternary) {
+                    auto* t = static_cast<const Ternary*>(e);
+                    if (t->then.get() == u || t->els.get() == u) return true;
+                    // descend into whichever branch is a candidate (both are
+                    // tried by kind; a `return` sits at most a few levels down)
+                    const Expr* nxt = nullptr;
+                    for (const Expr* br : {t->then.get(), t->els.get()})
+                        if (br && (br->kind == NK::Binary || br->kind == NK::Ternary)) { nxt = br; break; }
+                    e = nxt;
+                    continue;
+                }
+                return false;
+            }
+            return false;
+        };
+        if (tctx_.curRoutineFrame != 0 && tctx_.frameTop == tctx_.curRoutineFrame && onStmtPath()) {
             tctx_.returning = true; tctx_.returnV = std::move(v); // cooperative return
             return Value::any();
         }

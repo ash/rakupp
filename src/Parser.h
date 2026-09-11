@@ -203,6 +203,7 @@ private:
     bool inReactBlock_ = false; // true while parsing a react/supply block (whenever must be inside one)
     bool unitDecl_ = false;     // true while dispatching a `unit …` declaration (allows a bodyless `unit sub foo;`)
     std::vector<std::string> typeStack_; // enclosing class/role/grammar names (for ::?CLASS)
+    std::set<std::string> completedPkgs_; // package names given a body ANYWHERE in this unit (a nested block counts): a file-scope stub is satisfied by one
     std::vector<bool> typeIsRole_;       // parallel: is that enclosing type a ROLE?
                                          // (::?CLASS in a role is GENERIC — resolved
                                          // per-invocant at runtime, not baked here)

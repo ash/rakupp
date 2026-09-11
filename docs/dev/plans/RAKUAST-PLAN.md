@@ -832,6 +832,62 @@ tool reclassifies them on the next sweep. `Slangify` itself is never flagged: it
 is the migration interface, and its failure here is our own sink-context bug,
 shared with `Air` and `Slang::Tuxic`.
 
+### App::Rak (2026-09-11) — the first demand that costs, and the smallest
+
+`rakupp install App::Rak` (18 dists, all lizmat's) now installs 16 of them and
+stops at **Needle::Compile**, the needle compiler App::Rak calls for every
+pattern; `rak` itself installs and runs. Needle::Compile is RakuAST from the
+first line: it BUILDS a tree (99 `RakuAST::` references) and calls `.EVAL` on
+it. Unlike the twenty above, this one is reachable and wanted — `rak` is the
+tool people install — so it is the first entry here that costs something to
+postpone.
+
+What it needs is narrower than the plan: **the construction half only.** It
+never asks `.AST` of existing code (P1), never walks a tree it did not build,
+and never deparses one back for comparison. So P1 and the 1:1 harness are not
+on its path; P2's renderer and P3's `.EVAL` are, over exactly these 28 classes
+(counted in `lib/Needle/Compile.rakumod`, 0.0.12):
+
+- names and calls: `Name` (17 uses, incl. `Name.from-identifier`),
+  `Call::Method` (7), `Call::Name` (4), `ArgList` (6), `ColonPair::True` (2),
+  `Term::TopicCall` (3), `Term::Name` (2)
+- values and operators: `StrLiteral` (4), `Var::Lexical` (5), `Infix` (4),
+  `ApplyInfix` (4), `ApplyPostfix` (4), `Prefix` (1), `ApplyPrefix` (1),
+  `Ternary` (1), `Type::Simple` (1)
+- declarations and blocks: `VarDeclaration::Simple` (3), `Initializer::Bind`
+  (2), `Signature` (2), `Parameter` (2), `ParameterTarget::Var` (2),
+  `PointyBlock` (2), `Block` (2), `Blockoid` (2), `Statement::Expression` (6),
+  `StatementList` (4), `CompUnit` (1), and the `Node` role as a type
+  constraint (5)
+
+Three facts about how it uses them, read off the code, not assumed:
+
+1. **`.EVAL` is the production path** (`$AST ?? $ast !! $ast.EVAL` at the end
+   of `compile-needle`); `.DEPARSE` is printed only under
+   `NEEDLE_COMPILE_DEBUG`. Its suite never compares deparsed text, so the
+   renderer's spelling is not pinned to Rakudo's — the P2 property gate
+   (deparse → parse → same behaviour) is the whole requirement.
+2. The suite checks **`$ast.^name eq "RakuAST::PointyBlock"`** (t/01, line
+   49): the registry's class names are observable, the rest of the tree is not.
+3. Two constructor spellings beyond plain `.new`: `RakuAST::Name.from-identifier($str)`
+   and `RakuAST::ColonPair::True.new($name)`. Everything else is keyword
+   arguments (`RakuAST::ApplyInfix.new(left => …, infix => …, right => …)`).
+
+Because nothing here reads rakupp's own tree, this subset could even be
+delivered ahead of P1 as a plain Raku module shipped with the engine (the way
+`Data::Native` answers a `use` with nothing installed): 28 classes holding
+their children, one `DEPARSE` per class, `EVAL` = `self.DEPARSE.EVAL` in the
+caller's scope (P3's side table applies only to spliced runtime values, which
+Needle::Compile does not do — its trees are built from strings and names).
+Whether that shortcut or the full P0-P3 is taken is a decision, not a finding;
+the size either way is bounded by the list above.
+
+The other 17 dists of the chain are engine work that is DONE (commit of
+2026-09-11: ~55 fixes, 18 regression files), including Rakudo's private
+regex-cursor protocol that String::Utils' `replace` drives — that one was
+mistaken for a second RakuAST-class wall until read closely, and shimmed in
+~60 lines.
+
 ## Deferred, with reasons
 
 - **`CHECK { $*CU }`** — the same deparse/re-parse trick works in principle,
