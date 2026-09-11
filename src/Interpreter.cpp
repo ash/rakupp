@@ -27456,12 +27456,23 @@ Value Interpreter::evalBinary(Binary* b) {
         Value lTopic = eval(b->lhs.get());
         // $_ may live in an OUTER scope (a when-block's topic while we evaluate an
         // if-condition): restore must then ERASE our local shadow, not leave a
-        // stray `$_ = Any` that hides the outer topic for the rest of the scope
-        bool hadLocalTopic = tctx_.cur->vars.count("$_") > 0;
-        Value savedTopic = hadLocalTopic ? tctx_.cur->vars["$_"] : Value::any();
+        // stray `$_ = Any` that hides the outer topic for the rest of the scope.
+        //
+        // `local()`, not `vars` — a `$_` that is a ROUTINE PARAMETER lives in the
+        // frame's PAD, and `define` writes the pad and erases the map twin. Asking
+        // `vars` alone said "no local topic", so the save read nothing, the define
+        // clobbered the parameter, and the restore erased a map entry that was
+        // never there: the match's LHS stayed the topic for the rest of the sub.
+        // That is what made `sub handle(Pair:D $_, %_)` in Needle::Compile call
+        // `.key` on a Str one line after a `~~`.
+        Value* topicSlot = tctx_.cur->local("$_");
+        bool hadLocalTopic = topicSlot != nullptr;
+        Value savedTopic = hadLocalTopic ? *topicSlot : Value::any();
         tctx_.cur->define("$_", lTopic);
         auto restoreTopic = [&] {
-            if (hadLocalTopic) tctx_.cur->vars["$_"] = savedTopic;
+            // define() may have moved the name into the pad, so re-ask rather
+            // than reusing the pointer from before it ran.
+            if (hadLocalTopic) { if (Value* s = tctx_.cur->local("$_")) *s = savedTopic; }
             else tctx_.cur->vars.erase("$_");
         };
         Value r;
