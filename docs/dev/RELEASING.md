@@ -674,6 +674,7 @@ look at, and it is the wrong one to have a two-release-old ecosystem table on.
 |---|---|---|
 | **The Raku.js WASM engine** | **always** | it *is* the engine; `/play/` and every run button on the site execute it |
 | **Front page + install page figures** | **always** | hand-written, no generator, no check |
+| **`www/install.sh`** | **always** | a byte copy of `tools/install.sh`, and the URL every doc prints; CI checks the two match, so a drift is a red build rather than a broken one-liner |
 | **`snapshot.raku` → `gen-dashboard.raku`** | **always** | the timeline gains a point per tag; skip one and it is missing forever |
 | **`gen-roast-map.raku`** | **always** | gate 1 produced a new `roast.txt`; it is the release's own measurement |
 | **`spec` + `spec/rules`** | on demand — **always on a major** | only meaningful if gate 7's sweep was actually run this cycle |
@@ -920,6 +921,13 @@ The cost is named so the list stays a record rather than a ritual.
 - [ ] **Edit the hand-written figures on `www/index.html` and
       `www/install/index.html`.** Nothing generates them and no check compares
       them. *(Two releases stale.)*
+- [ ] **Copy `tools/install.sh` to the site repo's `www/install.sh`** if it
+      changed this cycle. `curl -fsSL https://raku.online/install.sh | sh` is
+      the headline install command in the README, INSTALL.md and on the front
+      page, and it is served from that copy — a stale one installs an older
+      engine for everybody and nothing on the rakupp side can show it. The
+      rakupp-side CI job compares the two, so a drift is caught, but only once
+      the site repo has been pushed.
 - [ ] **Commit `www/` together with `sites/spec/src/data/` and push.** Pages
       publishes `www/` verbatim — there is no build step in CI.
 
