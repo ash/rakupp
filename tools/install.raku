@@ -728,6 +728,41 @@ sub plan-order(@plan --> List) {
     @order.List
 }
 
+# Which plan entries are RUNTIME infrastructure, and which are here only so
+# that somebody's test suite can run? Everything reachable from the dists the
+# user named through `depends`/`build-depends` is the first kind; the rest —
+# a target's test-depends, and whatever those drag in — is the second.
+#
+# The distinction earns its keep when a test-only dist cannot pass its own
+# suite on this engine. App::RaCoCo is a coverage tool: it precompiles to
+# MoarVM bytecode (`raku --target=mbc`) and reads the line tables back out, so
+# it cannot work here at all — and Red lists it under test-depends without a
+# single test file importing it. Aborting the whole install for that reports
+# the wrong thing about Red.
+sub test-only-entries(@plan, @targets --> Set) {
+    my %at;   # every module or dist name a plan entry answers to -> its index
+    for @plan.kv -> $i, %e {
+        %at{%e<name>} //= $i;
+        %at{$_} //= $i for (%e<provides> // {}).keys;
+    }
+    my @hard = False xx @plan.elems;
+    sub visit(Int $i) {
+        return if @hard[$i];
+        @hard[$i] = True;
+        for <depends build-depends> -> $field {
+            for dep-identities(@plan[$i]{$field}) -> $id {
+                my $j = %at{parse-identity(~$id)<name>};
+                visit($j) if $j.defined && $j != $i;
+            }
+        }
+    }
+    for @targets -> $name {
+        my $i = %at{$name};
+        visit($i) if $i.defined;
+    }
+    (^@plan.elems).grep({ !@hard[$_] }).map({ @plan[$_]<name> }).Set
+}
+
 sub base-url {
     my $override = %*ENV<RAKUPP_INSTALL_INDEX> // '';
     if $override ne '' {
@@ -1048,7 +1083,7 @@ sub run-build-hook(%e, $root, Str $prefix --> Bool) {
     my $p = run $*EXECUTABLE.absolute, '-I', "inst#$prefix", '-I', $root.IO.Str, '-e',
                 vm-toolchain-shim()
                   ~ 'use Build; my $r = Build.new.build($*CWD.Str); exit(($r === False) ?? 1 !! 0)',
-                :out, :err, :cwd($root);
+                :out, :err, :cwd($root), :env(child-env());
     my $out = $p.out.slurp(:close);
     my $err = $p.err.slurp(:close);
     if $p.exitcode != 0 {
@@ -1059,6 +1094,43 @@ sub run-build-hook(%e, $root, Str $prefix --> Bool) {
     }
     trace("build: {$hook.basename} ok");
     True
+}
+
+# A dist's test suite that shells out to `raku` must reach THE ENGINE THAT IS
+# INSTALLING IT. On a machine that also has Rakudo — this one — `raku` resolves
+# to Rakudo, so App::RaCoCo's suite compared rakupp's in-process
+# `$*RAKU.compiler.id` against Rakudo's and failed a test about neither engine.
+# The store's `raku` symlink deliberately does NOT claim the name when Rakudo
+# already holds it (see ensure-raku-name); this shim is narrower — it lives only
+# in the PATH handed to a test/build child, for the length of one install.
+# POSIX only: a Windows child would need a .bat forwarder, and nothing here can
+# test one.
+my $TEST-SHIM = '';
+sub test-shim-dir(--> Str) {
+    return $TEST-SHIM if $TEST-SHIM;
+    return '' if $*KERNEL.name.starts-with('win');
+    my $d = $*TMPDIR.add("rakupp-install-shim-$*PID");
+    my $link = $d.add('raku');
+    unless $link.e {
+        try mkdir $d;
+        return '' unless $d.d;
+        my $p = try run 'ln', '-s', $*EXECUTABLE.absolute.Str, $link.Str, :out, :err;
+        unless $p && $p.exitcode == 0 && $link.e {
+            trace("env: could not put a `raku` shim in {$d} — a suite that shells out to raku gets the machine's");
+            return '';
+        }
+        trace("env: test children see `raku` -> {$*EXECUTABLE.absolute}");
+    }
+    $TEST-SHIM = $d.Str
+}
+
+# The environment a build hook or a test file runs in: this engine's own `raku`
+# first on PATH, everything else inherited.
+sub child-env(--> Hash) {
+    my $d = test-shim-dir();
+    my %env = %*ENV;
+    %env<PATH> = $d ~ ':' ~ (%env<PATH> // '') if $d;
+    %env
 }
 
 sub run-dist-tests(%e, $root, Str $prefix) {
@@ -1076,7 +1148,7 @@ sub run-dist-tests(%e, $root, Str $prefix) {
         # installed into the TARGET store, wherever --to pointed it
         my $p = run $*EXECUTABLE.absolute, '-I', $root.IO.add('lib').Str,
                     '-I', "inst#$prefix", $t.Str,
-                    :out, :err, :cwd($root);
+                    :out, :err, :cwd($root), :env(child-env());
         my $out = $p.out.slurp(:close);
         my $err = $p.err.slurp(:close);
         if $p.exitcode != 0 {
@@ -1814,6 +1886,8 @@ sub MAIN(
     Str  :$to = home-dir().add('.raku').Str,  #= the CURI store prefix to write
 ) {
     $QUIET = ?$quiet;
+    # the one-symlink PATH shim the test/build children see, if one was made
+    LEAVE { run 'rm', '-rf', $TEST-SHIM if $TEST-SHIM }
     # `rakupp uninstall --list` is a mode mix, not a synonym for install
     # --list — refuse it rather than silently answering as a different command
     if ($uninstall || $reinstall || $test-only) && ($list || $check || $gc) {
@@ -2030,6 +2104,8 @@ sub MAIN(
         %target{parse-identity($_)<name>} = True for @names;
         %target{.<name>} = True for @local-entries;   # `rakupp test .` targets the dist the dir names
     }
+    my @named = |@names.map({ parse-identity($_)<name> }), |@local-entries.map(*.<name>);
+    my $test-only-deps = test-only-entries(@plan, @named);
     for @plan -> %e {
         my $is-target = $test-only
             && ?(%target{%e<name>} || (%e<provides> // {}).keys.first({ %target{$_} }));
@@ -2057,6 +2133,16 @@ sub MAIN(
             if $!.Str.contains('already installed') {
                 inform("already installed: {%e<dist> // %e<name>} (use --force to reinstall)");
                 trace("already installed: {%e<dist> // %e<name>} — the engine refused");
+                next;
+            }
+            # A dist nothing will IMPORT at runtime, whose own suite is what
+            # failed: say so and carry on. If the suite that wanted it really
+            # needed it, that suite now fails with "Could not find …", which
+            # names the real problem instead of this one.
+            if $test-only-deps{%e<name>} && $!.Str.contains('its own test suite fails') {
+                note "{%e<name>}: its own test suite fails under rakupp — skipped "
+                   ~ "(a test dependency; nothing depends on it at runtime)";
+                trace("test-dependency skipped: {%e<dist> // %e<name>} — suite fails here");
                 next;
             }
             trace("FAILED: {%e<dist> // %e<name>} — {$!.Str}");
