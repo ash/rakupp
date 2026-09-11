@@ -36,8 +36,8 @@ per platform, and how to undo any of it.
 
 ## macOS
 
-The one-liner above works with nothing installed. So does Homebrew, if you
-already have it:
+The one-liner above needs nothing on the machine first — no package manager,
+no Xcode. Homebrew is the other route, if you already have it:
 
 ```sh
 brew tap ash/rakupp
