@@ -140,6 +140,15 @@ const Registry* build() {
         if (Value* v = attrOf(a[0], "statement-list")) return *v;
         return a[0];   // a StatementList IS its own statement list
     });
+    // `.replace-statement-list($sl)` — Needle::Compile's CompUnit path swaps the
+    // whole list rather than unshifting into it. (The plan's summary named three
+    // accessors; grepping the tarball for what it calls on an AST object named
+    // the fourth, which is why that grep is the tool and not the summary.)
+    node->methods["replace-statement-list"] = method([](Interpreter&, ValueList& a) -> Value {
+        if (a.size() < 2 || a[0].t != VT::Object || !a[0].obj()) return Value::any();
+        a[0].obj()->attrs["statement-list"] = a[1];
+        return a[0];
+    });
     node->methods["unshift-statement"] = method([attrOf](Interpreter&, ValueList& a) -> Value {
         if (a.size() < 2) return Value::any();
         Value target = a[0];

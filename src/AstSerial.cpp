@@ -543,11 +543,25 @@ void deserializeAst(const std::string& blob, Program& out) {
     // the first run works. Recovered from the statements themselves, where the
     // pragma is an ordinary `use`, so a deserialized Program answers exactly as
     // a freshly parsed one does without a format bump.
+    // …and `langRev`, which has exactly the same hole and a wider blast radius:
+    // a module whose header says `use v6.e.PREVIEW` (or `use v6.*`) was hoisted
+    // under the IMPORTER's revision once it came from the cache, so every 6.e
+    // routine in it silently ran with 6.d semantics from the second run onward.
+    // Needle::Compile is where that surfaced — `use v6.*; # Until 6.e is default`
+    // at the top, and `.AST` inside refused as experimental on run 2 and never
+    // on run 1. The rule below is the parser's, character for character.
     for (auto& s : out.stmts) {
         if (!s || s->kind != NK::UseStmt) continue;
         auto* u = static_cast<UseStmt*>(s.get());
-        if (u->module != "experimental" || u->isNo) continue;
-        for (auto& tag : u->importArgs) if (tag == "rakuast") out.usesRakuAst = true;
+        if (u->isNo) continue;
+        if (u->module == "experimental")
+            for (auto& tag : u->importArgs) { if (tag == "rakuast") out.usesRakuAst = true; }
+        else if (u->module.size() >= 2 && u->module[0] == 'v' && u->module[1] >= '0' && u->module[1] <= '9') {
+            if (u->module.find("6.c") != std::string::npos)      out.langRev = 0;
+            else if (u->module.find("6.d") != std::string::npos) out.langRev = 1;
+            else if (u->module.find('.') == std::string::npos)   out.langRev = 1;  // bare `v6`
+            else                                                 out.langRev = 2;  // 6.e and later
+        }
     }
 }
 
