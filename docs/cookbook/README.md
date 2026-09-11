@@ -25,6 +25,35 @@ where a recipe needs one, and the output shown is what it printed.
   an architecture mismatch between the interpreter and the library.
   Programs: [dbiish/](dbiish/).
 
+- **[cli.md](cli.md)** — a word-frequency counter grown from a `sub MAIN` into
+  a tool with options, a free usage message, a standard-input mode, subcommands
+  by `multi MAIN`, and a single binary at the end. What bites: a named option
+  after a positional is not seen, `--top 3` is not `--top=3`, a wrong type is a
+  usage message rather than an error, and a `#|` that does not touch the routine
+  documents nothing. Programs: [cli/](cli/).
+
+- **[grammar.md](grammar.md)** — an nginx-shaped configuration file, nested
+  blocks and all, parsed into data by a nine-line grammar and an actions class,
+  and then three ways to tell the writer of a bad file which line is wrong —
+  `.subparse`, a high-water mark in `ws`, and `|| <.panic(…)>` where the grammar
+  is committed. What bites: `rule TOP` skipping nothing before its first atom, a
+  panic in a candidate that was only being tried, `|` against `||`, and a token
+  that never gives back what it ate. Programs: [grammar/](grammar/).
+
+- **[http.md](http.md)** — a JSON API, with the server to talk to shipped
+  alongside: GET and decode, POST and read back, and the four ways a call fails
+  (no answer, 5xx, 4xx, a 200 that is not JSON) handled in one retry loop with a
+  deadline. Plus HTTPS, and the two things to know about it here. What bites: 599
+  is not a status a server sent, `HTTP::Tiny.new(:timeout(1))` does nothing, and
+  a deadline does not cancel the request. Programs: [http/](http/).
+
+- **[parallel.md](parallel.md)** — four requests in 2021 ms instead of 8020,
+  primes 4.5× faster over eight promises, results in the order they arrive, a
+  `Channel` worker pool, and eight threads sharing one `Array` — with what each
+  one measured. What bites: `await` inside the loop, `race`/`hyper` not fanning
+  out on this engine today, `$*THREAD.id` answering 1 everywhere, and an
+  exception in a `start` block that waits for you. Programs: [parallel/](parallel/).
+
 ## Adding one
 
 A recipe is a Markdown file here plus a directory of the programs it shows.

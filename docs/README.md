@@ -66,6 +66,10 @@ than [guide/RECIPES.md](guide/RECIPES.md), which is one-liners, and than
 [guide/faq/](guide/faq/), which is a paragraph and a caveat.
 
 - **[cookbook/dbiish.md](cookbook/dbiish.md)** — reading and writing a table with DBIish, the same program against SQLite, MySQL and PostgreSQL: the two things that differ between the engines, the placeholder that does not, and the five traps (`:database<$file>` silently not interpolating, `$sth.rows` answering 0 for a SELECT on SQLite, values interpolated into SQL, an architecture mismatch between interpreter and client library, and a driver whose missing library is named only on the second line).
+- **[cookbook/cli.md](cookbook/cli.md)** — a command-line tool from a `sub MAIN` to a single binary: options and their types, the usage message Raku assembles from the signature, standard input, subcommands as `multi MAIN` candidates, `--exe`, and four traps (a named option after a positional is not seen, `--top 3` is not `--top=3`, a wrong type is a usage message, a `#|` that does not touch the routine documents nothing).
+- **[cookbook/grammar.md](cookbook/grammar.md)** — a nested configuration file parsed into data by a grammar plus an actions class, and three levels of "which line is wrong": `.subparse`, a high-water mark recorded in `ws`, and `|| <.panic(…)>` placed where the grammar is committed.
+- **[cookbook/http.md](cookbook/http.md)** — talking to a JSON API, with the Cro server it talks to shipped beside it: GET, POST, the four ways a call fails and one retry loop that tells them apart, and what HTTPS needs here.
+- **[cookbook/parallel.md](cookbook/parallel.md)** — `start`/`await`, `react`/`whenever`, a `Channel` worker pool and eight threads sharing one `Array`, each with the milliseconds it produced on one box — including where `race`/`hyper` currently stand.
 
 Mirrored at [raku.online/cookbook/](https://raku.online/cookbook/).
 
