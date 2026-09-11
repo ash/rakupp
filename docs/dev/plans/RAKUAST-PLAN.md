@@ -40,16 +40,29 @@ no module could safely touch them. RakuAST replaces them with a documented,
 roast-tested hierarchy — about 150 names directly under `RakuAST::`, more with
 the nested namespaces, against ~40 node kinds in the whole of our `src/Ast.h`.
 
-Upstream status, re-checked 2026-08-18: **unchanged**. 2026.07 is still the
-latest release; RakuAST is still opt-in (`RAKUDO_RAKUAST=1`), and `$*RAKU.version`
-is still `v6.d` by default — both confirmed by probing the local Rakudo, not by
-reading release notes. The 2026.07 announcement records "a *lot* of work on
-performance optimizations, and feature parity with the legacy compiler for
-ecosystem modules", and the bootstrapped build reached 1228 of 1345 spectest
-files at the time of the grant report. Converging, not arrived — and it has not
-arrived in the year since either.
+Upstream status, re-checked 2026-08-18 against 2026.07: unchanged then —
+RakuAST opt-in (`RAKUDO_RAKUAST=1`), `$*RAKU.version` `v6.d`, the 2026.07
+announcement recording "a *lot* of work on performance optimizations, and
+feature parity with the legacy compiler for ecosystem modules", the
+bootstrapped build at 1228 of 1345 spectest files at the grant report.
+**Superseded 2026-09-11.** Rakudo 2026.08 (release #196) shipped 2026-08-21;
+its announcement says most of the release's work went into the RakuAST
+frontend — "several dozen fixes, largely found by testing modules from the
+ecosystem" — plus code-generation speedups, and names the next release for
+2026-09-26. The default did **not** flip in 2026.08: measured on the installed
+2026.08, a `macro` (removed under RakuAST) still compiles stock and under
+`RAKUDO_LEGACY=1`, and only `RAKUDO_RAKUAST=1` rejects it; `$*RAKU.version` is
+still `v6.d`. The flip is the mainstreaming post of 2026-08-31 (cited at the
+top): 2026.09 is the first release to use RakuAST by default, the legacy
+frontend stays reachable behind `RAKUDO_LEGACY=1` until 6.e, and "if you are on
+2026.08 you only need `RAKUDO_RAKUAST=1`" is the migration advice. So
+"converging, not arrived" is no longer the state — it arrives on a date, and
+this plan runs against that clock, not an open-ended one.
 
 ## Why it is worth doing at all — and why it is not urgent
+
+(The urgency half was re-judged 2026-09-11 — Part III, *The decision*. The
+weighing below is kept as it was written.)
 
 Against: on our declared-Roast metric this is worth close to nothing.
 `docs/internals/METAPROGRAMMING.md` records that roast contains **one**
