@@ -119,3 +119,44 @@ Three conventions the table pins, all of them measured rather than assumed:
   while `"foo".fc` keeps its invocant. That is normalization, not loss — `.fc`
   *means* `$_.fc` — but a renderer that does not do it produces a tree of a
   different shape on the way back.
+
+## `t12-2026.08.tsv` — Rakudo's own construction tests, run here
+
+P2c's requirement over `.new`-built trees is **throw clearly or render, never
+crash**, and the corpus for it is Rakudo's `t/12-rakuast`: trees built with
+`.new`, optional children unset, defaults in play, with expectations already
+oracled upstream. Produced by
+[tools/rakuast-t12.raku](../../../../tools/rakuast-t12.raku).
+
+**Nothing is vendored.** The repo carries the pin
+(`00fca760bb90c69b66a7229d60d61606728b5b71`, rakudo/rakudo main, 2026-09-11),
+the file list and these counts — facts about upstream, not upstream's code. The
+files are fetched once into the gitignored `rc-cache/` and reused forever, which
+is what `tools/rc-compare.raku` already does for RosettaCode; the other existing
+shape, an external checkout behind an env var, is how Roast is referenced. This
+repo references upstream suites, it does not copy them.
+
+**16 files, zero crashes.** The requirement is met. The assertion counts —
+**5 ok of 328 planned** — are a published baseline, not a gate: each file's
+`ast-ok` helper checks four things per case (`.DEPARSE`, `EVAL($ast)`,
+`EVAL($deparsed)`, and an `EVAL(EVAL $ast.raku)` round trip), and only the first
+is in P2c's scope. P3 (`.EVAL`) moves two of the four; `.raku` on a node is not
+on any step's list yet.
+
+The `first-error` column is the demand list for P4's widening, read off real
+upstream tests rather than guessed:
+
+| what is missing | where it shows |
+|---|---|
+| classes not in the table — `Var::Compiler::File`, `Statement::Empty`, `Class`, `Postfix::Power` | var, statement, terms, postfix |
+| renderer cases — `QuotedString`, `FatArrow` | strings, pair |
+| methods beyond the four — `Name.is-identifier` | name |
+| a positional constructor — `Circumfix::Parentheses.new` | circumfix |
+
+One correction to the plan's file list, found by reading rather than by name and
+size: **`eval.rakutest` is not a construction test.** It drives rakudo's own
+precompilation harness (`use lib <t/packages/Test-Helpers>`, `is-run`,
+`RAKUDO_RAKUAST` in the environment) and tests `Str.AST` inside a precompiling
+module, so it cannot run outside a rakudo checkout whatever this engine does. It
+is left out rather than counted as a failure it can never stop being — 16 files,
+not the plan's 17.

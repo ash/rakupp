@@ -1238,9 +1238,22 @@ files are literals (1.8 KB), name (6.1), operators (15.4), call-name (7.1),
 call-method (10.2), var (50.7), block (6.4), sub (17.0), signature (30.0),
 statement (45.2), statement-mods (16.0), strings (8.8), terms (8.3),
 circumfix (5.8), postfix (22.6), pair (4.9), eval (2.3) — 17 files, ~259 KB.
-Fetch them at a pinned rakudo commit into `t/rakuast/upstream/` with Rakudo's
-LICENSE (Artistic-2.0) beside them, run raw pass/fail per file, and publish
-the counts; at P2c the requirement is throw-clearly-or-render, never crash.
+Run raw pass/fail per file and publish the counts; at P2c the requirement is
+throw-clearly-or-render, never crash.
+
+**How they get here — superseded 2026-09-11, do NOT vendor.** This paragraph
+used to say "fetch them at a pinned rakudo commit into `t/rakuast/upstream/`
+with Rakudo's LICENSE (Artistic-2.0) beside them". That would have been the
+first third-party code in the tree, and it cuts against both shapes the repo
+already uses for an upstream suite: **Roast is an external checkout** behind
+`ROAST=` with zero files tracked, and **RosettaCode programs are fetched** into
+the gitignored `rc-cache/` and reused forever (`tools/rc-compare.raku`,
+`.gitignore:31`). This repo references upstream suites; it does not copy them.
+The slice takes the second shape — `tools/rakuast-t12.raku` holds the pin and
+the file list, the counts are published under findings, and the files are never
+tracked. Reading the files also corrected the list: `eval.rakutest` is not a
+construction test (it drives rakudo's own precompilation harness), so it is
+**16 files, not 17**.
 
 **DEPARSE whitespace, for parity where it is free**: 2026.08 renders a
 `PointyBlock` as `-> $_ {\n    "bar"\n}` — four-space indent, newline after
@@ -1685,3 +1698,72 @@ lists; run 3 lost `S17-scheduler/basic.t`, which the union keeps.
 
 Lists and per-file output are under `rc-work/rakuast-p0/` (scratch, not a
 release measurement — `docs/status/roast-lists/` is one file per release).
+
+## P2c — the renderer over constructed trees (landed 2026-09-11)
+
+`.DEPARSE` answers, and `RakuAST::IntLiteral.new(42).DEPARSE` is `42` — the
+probe the live 6.e matrix runs. **57 of 57 spec cases render byte-for-byte as
+Rakudo 2026.08 does**, including the whole tree App::Rak's commonest invocation
+builds.
+
+**Files.** New: `src/RakuAstDeparse.cpp` (construction + renderer),
+`tools/rakuast-deparse-spec.raku`, `tools/rakuast-t12.raku`,
+`t/regression/rakuast-deparse.raku`, and two findings TSVs. Touched:
+`RakuAstClasses.{h,cpp}` (the builtin methods), the generated table, the stubs,
+CMakeLists.
+
+### One spec file, two engines, and the diff is the gate
+
+`tools/rakuast-deparse-spec.raku` is engine-neutral. Run under Rakudo it
+produced `docs/dev/findings/rakuast/deparse-2026.08.tsv`; the regression case
+runs the same file here and compares row by row, both directions. Two copies of
+57 constructions would drift, and the gate would then be comparing this engine
+against a memory of the oracle rather than the oracle — the same shape Part III
+specifies for `--rakuast`.
+
+### Reading the tarballs found 17 classes the plan's summary did not
+
+The vocabulary is a grep of Needle::Compile 0.0.12, Intl::Format::Number 0.2.0
+and RakuAST::Utils 0.0.3 — **52 distinct classes, of which the P0 registry
+carried 35**. The table is now 136. Noted on the way: the REA index on this
+machine tops out at Needle::Compile **0.0.9** while Part III cites 0.0.12, which
+fetched fine by URL — the local index is behind fez, which matters for any
+future "read it from the tarball" step.
+
+### Three conventions, measured rather than assumed
+
+- four-space indent, and no trailing newline after a closing brace;
+- a statement list `;`-separates all but the last statement and newline-
+  terminates every one — one statement is `42\n`, two are `42;\n"foo"\n`;
+- **an explicit `$_` invocant elides**: `ApplyPostfix(Var::Lexical('$_'),
+  Call::Method('fc'))` renders `.fc`, the same text `Term::TopicCall` gives.
+  `.fc` *means* `$_.fc`, so nothing is lost — but a renderer that keeps the `$_`
+  hands back a differently shaped tree, which is the thing P1's round trip is
+  about to measure. (This was briefly mistaken here for an upstream bug; `"A".fc`
+  and `(1,2).elems` keep their invocants, which is what settles it.)
+
+An uncovered class throws `X::NYI` naming itself. The renderer's contract is
+correct Raku first and Rakudo's spelling second, because P3's `.EVAL` runs over
+the text it produces.
+
+### The t/12 slice: 16 files, zero crashes
+
+P2c's requirement over `.new`-built trees is met. **5 of 328 assertions pass**,
+which is the honest baseline: each `ast-ok` checks four things per case and only
+`.DEPARSE` is in scope — P3 moves two more, and `.raku` on a node is on no
+step's list. The `first-error` column is P4's widening list read off real
+upstream tests: `Var::Compiler::File`, `Statement::Empty`, `Class`,
+`Postfix::Power` (classes), `QuotedString`, `FatArrow` (renderer cases),
+`Name.is-identifier` (a method), `Circumfix::Parentheses.new` (a positional
+constructor).
+
+### Gates
+
+`t/run.raku` 857 of 858 — the one failure is `example: echo-server`, which
+cannot bind 127.0.0.1:8099 because a concurrent session's `rakupp
+api-server.raku` holds it; the pre-P2c binary fails identically, so it is a
+collision, not a regression. `t/slim/run.raku` green, and `--slim=auto` on hello
+still cuts all four features. Perf and Roast were not re-run for this step: the
+perf re-measure is already parked for a quiet machine, and the renderer adds no
+path a Roast file reaches (no Roast file at the pin constructs a `RakuAST::`
+node — the one that names a class asserts `~~ RakuAST::Node`, which P0 settled).

@@ -1,0 +1,17 @@
+file	status	plan	ok	not-ok	first-error
+literals.rakutest	threw	9	0	2	# 42
+name.rakutest	threw	9	0	9	# No such method 'is-identifier' for invocant of type 'RakuAST::Name'
+operators.rakutest	threw	33	0	33	# 44 + 22
+call-name.rakutest	threw	10	0	10	# no-args()
+call-method.rakutest	threw	17	0	17	# TestTarget.route
+var.rakutest	threw	66	5	61	# Undeclared name 'RakuAST::Var::Compiler::File'
+block.rakutest	threw	5	0	5	# -> {
+sub.rakutest	threw	14	0	14	# sub a {
+signature.rakutest	threw	21	0	21	# sub ($param) {
+statement.rakutest	threw	40	0	24	# Undeclared name 'RakuAST::Statement::Empty'
+statement-mods.rakutest	threw	20	0	20	# 42 if 666
+strings.rakutest	threw	18	0	18	# RakuAST::QuotedString cannot be deparsed yet
+terms.rakutest	threw	14	0	14	# Undeclared name 'RakuAST::Class'
+circumfix.rakutest	threw	9	0	9	# Default constructor for 'RakuAST::Circumfix::Parentheses' only takes named arguments
+postfix.rakutest	threw	32	0	32	# Undeclared name 'RakuAST::Postfix::Power'
+pair.rakutest	threw	11	0	11	# RakuAST::FatArrow cannot be deparsed yet
