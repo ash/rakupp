@@ -1991,7 +1991,10 @@ public:
     size_t curDeclDepth_ = 0;         // callFrames depth when curDeclFile_ was set: a frame above it is a routine entered since
     std::map<std::string, std::string> unitNameOfFile_; // module source path → the name it was loaded as ($?FILE's " (Name)")
     std::string fileConstNow();       // $?FILE: the file the executing code was WRITTEN in
-    // the file a routine declared NOW should record (backtrace .file)
+    std::string declFileNow();        // the file a routine declared NOW was WRITTEN in
+    // the file whose top level is executing — the program, or a module/EVALFILE
+    // that switched it underneath. NOT what a routine declared at RUNTIME should
+    // record: see declFileNow().
     std::string curDeclFile() const {
         return !curDeclFile_.empty() ? curDeclFile_
              : (srcFileAbs_.empty() ? srcFile_ : srcFileAbs_);

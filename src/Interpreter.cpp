@@ -7210,6 +7210,31 @@ void Interpreter::traceStmt(Stmt* s) {
 // unit's file is the answer. It used to answer the main program from anywhere
 // (found by --trace, 2026-09-06). A module answers as Rakudo spells it: the
 // absolute source path, then the name it was loaded as, in parens.
+// The file a routine being declared right now was WRITTEN in — what its
+// backtrace frames (and the source excerpt under them) will name.
+//
+// While a file's TOP LEVEL runs, that file is the answer: a module's subs and
+// methods belong to the module, and EVALFILE switches it the same way. But a
+// routine declared INSIDE a running routine belongs to the file that routine
+// was written in, which curDeclFile() cannot know — by then the module's top
+// level is long finished and the program's is running. So a `my sub` nested in
+// a module's method recorded the PROGRAM's path with the module's line number,
+// and the frame named a line that need not exist in the file it named:
+//
+//     in sub inner at main.raku line 3        # written in lib/BtProbe.rakumod
+//
+// Same rule as $?FILE (fileConstNow), and deliberately without its " (Unit)"
+// spelling: that is for $?FILE, while this path gets OPENED to print the
+// excerpt under the frame.
+std::string Interpreter::declFileNow() {
+    auto& fr = tctx_.callFrames;
+    if (!fr.empty() && (curDeclFile_.empty() || fr.size() > curDeclDepth_))
+        if (const Value* cv = fr.back().code)
+            if (auto c = cv->codeS())
+                if (!c->declFile.empty()) return c->declFile;
+    return curDeclFile();
+}
+
 std::string Interpreter::fileConstNow() {
     std::string f;
     auto& fr = tctx_.callFrames;
@@ -8665,7 +8690,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 c.code()->closure = tctx_.cur;
                 c.code()->retType = sd->retType;
                 c.code()->retRw = sd->retRw;
-                c.code()->declFile = curDeclFile();
+                c.code()->declFile = declFileNow();
                 c.code()->pod = sd->pod;
                 // a statement-level `my method m {…}` is a SubDecl with isMethod set;
                 // dropping the flag here meant callCallable never bound `self`
@@ -8950,7 +8975,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     code.code()->langRev = langRev_;
                     code.code()->closure = tctx_.cur;
                     code.code()->isMethod = true;
-                    code.code()->declFile = curDeclFile();
+                    code.code()->declFile = declFileNow();
                     if (md->params.empty()) code.code()->placeholders = computePlaceholders(md->body);
                     return code;
                 };
@@ -9616,7 +9641,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 code.code()->langRev = langRev_;
                 code.code()->closure = bodyEnv;
                 code.code()->isMethod = true; // invoked via .() binds the 1st arg as self
-                code.code()->declFile = curDeclFile();
+                code.code()->declFile = declFileNow();
                 code.code()->isStub = stmtIsStub(md->body);
                 // an undeclared `$!attr` reference in a method body is a compile
                 // error in a CLASS (roles get their attrs from consumers)
@@ -11133,7 +11158,7 @@ Value Interpreter::makeClosure(BlockExpr* be) {
     // `my $m = method ($inv: $p) {…}` — an anonymous METHOD takes its invocant as the
     // first argument and binds `self`, exactly as a declared one does.
     code.code()->isMethod = be->isMethodTerm;
-    code.code()->declFile = curDeclFile();
+    code.code()->declFile = declFileNow();
     code.code()->isStub = stmtIsStub(be->body);   // `(sub f() { ... }).yada`
     // a POINTY block wrote its signature, even when it is empty — so `-> {;}` is
     // `()` and only a bare `{;}` gets the implicit `$_`
