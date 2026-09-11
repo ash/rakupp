@@ -32135,6 +32135,10 @@ Value Interpreter::eval(Expr* e) {
             // From 6.e, LEXICAL:: is about LEXICALS: a dynamic is not one, and
             // asking for it through that package is an error rather than a
             // fall-through to the caller chain.
+            // A SYMBOL-TABLE slot nobody has filled reads as the sigil's empty
+            // value, the way `%Foo::Bar` already does — asking a package what it
+            // holds is a question, not a declaration.
+            if (ve->pkgSymbol) return rtTypedDefault("", ve->name[0]);
             if (!isSpecialVar(ve->name) && !noStrictHere())
                 throwTyped("X::Undeclared", {{"symbol", ve->name}},
                            "Variable '" + ve->name + "' is not declared");

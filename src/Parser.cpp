@@ -3947,6 +3947,13 @@ ExprPtr Parser::parsePrimary() {
             }
             auto e = std::make_unique<VarExpr>(stripPseudoPkg(raw));
             e->processScoped = raw.find("PROCESS::") != std::string::npos;
+            // `%GLOBAL::X` names a slot in the ROOT package. The strip above is
+            // right — a file-scope `our $x` lives there, so `$GLOBAL::x` has to
+            // find it (roast S02-names/our.t) — but when NOTHING has been put
+            // there it is still a symbol-table slot: empty on read, created on
+            // write, never "Variable '%X' is not declared". Red keeps its whole
+            // connection registry in one, declared nowhere.
+            if (raw.find("GLOBAL::") == 1 || raw.find("GLOBAL::") == 2) e->pkgSymbol = true;
             // `&CORE::chdir` names the BUILT-IN, and stripping the qualifier
             // loses exactly that: the bare `&chdir` then finds whatever the
             // program has put in scope — which, since the form is only written
