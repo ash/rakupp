@@ -409,7 +409,11 @@ struct Callable {
     bool isSubmethod = false;                       // `submethod` — NOT inherited by subclasses
     bool isBlock = false;                            // a bare { } block (no `return`), not a Sub/Routine
     bool isRegexRoutine = false;                     // `my regex R {…}` / token / rule — .^name is Regex, not Sub
-    std::string retType;                             // declared return type (`of`/`returns`/`-->`), "" = none
+    // Declared return type (`of`/`returns`/`-->`), "" = none. A COERCING one
+    // keeps its parens — `Map()` — because that is the whole difference between
+    // checking the returned value and converting it; retTypeName() below hands
+    // out the plain type name for everyone who only wants that.
+    std::string retType;
     bool retRw = false;                              // `is rw`/`is raw` on the routine: its result IS a container
     ValueList wrappers;                              // &routine.wrap({…}) stack (outermost last); .unwrap pops
     bool isNative = false;                            // `is native` — a C FFI call
@@ -888,6 +892,16 @@ inline ValueMap& Value::hashRef() {
 // and carried along by a plain Value copy, which is exactly what "the same
 // object" means for these. `whichOf` reads it; `===` compares that.
 // Blob stays out: it is immutable and compares by value in Rakudo too.
+// The type NAMED by a declared return type: `Map()` (a coercion) and `Map` (a
+// check) both name Map. Coercing-ness is retTypeCoerces() below.
+inline std::string retTypeName(const std::string& rt) {
+    return rt.size() > 2 && rt.compare(rt.size() - 2, 2, "()") == 0
+         ? rt.substr(0, rt.size() - 2) : rt;
+}
+inline bool retTypeCoerces(const std::string& rt) {
+    return rt.size() > 2 && rt.compare(rt.size() - 2, 2, "()") == 0;
+}
+
 inline bool identityScalar(const Value& v) {
     return (v.t == VT::Str && v.hashKind == "Buf") ||
            (v.t == VT::Num && (v.hashKind == "Instant" || v.hashKind == "Duration"));

@@ -3066,7 +3066,7 @@ Value makeSignature(const Callable* c) {
     // `.returns` / `.of` — the DECLARED return type. DBDish's TypeConverter keys
     // its conversion table by it (`%!Conversions{$_.signature.returns} = $_`), so
     // without this the whole table was built under one key.
-    if (c && !c->retType.empty()) (*s.hash())["returns"] = Value::typeObj(c->retType);
+    if (c && !c->retType.empty()) (*s.hash())["returns"] = Value::typeObj(retTypeName(c->retType));
     (*s.hash())["arity"] = Value::integer(arity);
     (*s.hash())["count"] = slurpy ? Value::number(std::numeric_limits<double>::infinity()) : Value::integer(count);
     Value params = Value::array(); params.isList = true;
@@ -10272,17 +10272,36 @@ void Interpreter::registerBuiltins() {
     B["..."] = [](Interpreter&, ValueList& a) -> Value { throw RakuError{Value::typeObj("X::StubCode"), a.empty() ? "Stub code executed" : a[0].toStr()}; };
     B["???"] = [](Interpreter&, ValueList& a) -> Value { std::cerr << (a.empty() ? "Stub code executed" : a[0].toStr()) << "\n"; return Value::nil(); };
     // run(prog, *@args, :timeout(N)) -> { out => Str, exitcode => Int, timedout => Bool }
+    // `:out($fh)` / `:err($fh)` on run() and shell() alike: the adverb is not a
+    // flag but a SINK. Read as a mere boolean it captures the stream and drops
+    // it, which is how HTTP::Tinyish::Curl fetched every page as an empty body,
+    // and how App::RaCoCo's `shell(…, :out($fh))` wrote an empty file.
+    static const auto asSink = [](const Value* pv) {
+        return pv && ((pv->t == VT::Hash && pv->hashKind == "FileHandle") || pv->t == VT::Object);
+    };
+    // The child has already finished, so this is a copy rather than a live
+    // redirection — the handle sees the whole stream at once, in order, which is
+    // what a caller that closes and reads the file afterwards wants.
+    static const auto drainTo = [](Interpreter& I, Value& sink, bool have, const std::string& text) {
+        if (!have || text.empty()) return;
+        ValueList pa{Value::str(text)};
+        I.methodCall(sink, "print", pa);
+        // …and FLUSH it. Rakudo hands the child the handle's own descriptor, so
+        // the bytes are in the file the moment the child exits; a buffered
+        // `print` here is not on disk until the handle closes. App::RaCoCo
+        // slurps the file with the handle still open (`will leave { .close }`)
+        // and read an empty one.
+        if (sink.t == VT::Hash && sink.hashKind == "FileHandle") {
+            ValueList none;
+            I.methodCall(sink, "flush", none);
+        }
+    };
     B["run"] = [](Interpreter& I, ValueList& a) -> Value {
         std::vector<std::string> argv; bool wantOut = false, wantIn = false, wantErr = false;
         int outMode = -1, errMode = -1; // -1 unspecified (inherit/echo), 0 :!x (discard), 1 :x (capture)
         int inFd = -1; bool haveInHandle = false; // `:in($handle)`: the child's stdin itself
         std::vector<std::string> envKV; bool haveEnv = false; std::string cwd;
         double timeoutSec = 0;
-        // `:out($fh)` / `:err($fh)` — not a flag but a SINK: Rakudo sends the
-        // child's stream to that handle. Read as a mere boolean it captured the
-        // output and dropped it on the floor, which is how HTTP::Tinyish::Curl
-        // (`run |@cmd, :out($out-fh)`, then slurp the file) fetched every page
-        // as an empty body while its headers arrived intact.
         // `:merge` — stdout and stderr as ONE captured stream, read back through
         // `.out`. It was not parsed at all, so it fell through as an unknown
         // named argument: nothing was captured, the child wrote straight to our
@@ -10295,9 +10314,6 @@ void Interpreter::registerBuiltins() {
         // its own flag, and testing `.t == VT::Nil` for it (as this did) answered
         // "yes" for every un-adverbed run.
         bool haveOutSink = false, haveErrSink = false;
-        auto asSink = [](const Value* pv) {
-            return pv && ((pv->t == VT::Hash && pv->hashKind == "FileHandle") || pv->t == VT::Object);
-        };
         for (auto& v : flattenArgs(a)) {
             if (v.t == VT::Pair) {
                 if (v.s == "out") { wantOut = v.pairVal() ? v.pairVal()->truthy() : true; outMode = wantOut ? 1 : 0;
@@ -10374,17 +10390,9 @@ void Interpreter::registerBuiltins() {
 #if !defined(_WIN32)
         if (inFd >= 0) ::close(inFd); // the child holds its own copy
 #endif
-        // Deliver a redirected stream to its handle. The child has already
-        // finished, so this is a copy rather than a live redirection — the
-        // handle sees the whole stream at once, in order, which is what a
-        // caller that closes and reads the file afterwards wants.
-        auto drainTo = [&I](Value& sink, bool have, const std::string& text) {
-            if (!have || text.empty()) return;
-            ValueList pa{Value::str(text)};
-            I.methodCall(sink, "print", pa);
-        };
-        drainTo(outSink, haveOutSink, out);
-        drainTo(errSink, haveErrSink, err);
+        // Deliver a redirected stream to its handle.
+        drainTo(I, outSink, haveOutSink, out);
+        drainTo(I, errSink, haveErrSink, err);
         // Neither stream needs echoing any more: an un-adverbed child wrote to
         // our own descriptors while it ran.
         storeProcStatus(p, code); // exitcode + signal
@@ -10400,10 +10408,13 @@ void Interpreter::registerBuiltins() {
         std::string cmd; bool wantOut = false, wantErr = false, merge = false;
         int outMode = -1, errMode = -1; // -1 unspecified, 0 :!x discard, 1 :x capture
         int inFd = -1; // `:in($handle)`: the child's stdin itself (a Bool `:in` is not a shell() mode)
+        Value outSink, errSink; bool haveOutSink = false, haveErrSink = false;
         for (auto& v : flattenArgs(a)) {
             if (v.t == VT::Pair) {
-                if (v.s == "out") { wantOut = v.pairVal() ? v.pairVal()->truthy() : true; outMode = wantOut ? 1 : 0; }
-                else if (v.s == "err") { wantErr = v.pairVal() ? v.pairVal()->truthy() : true; errMode = wantErr ? 1 : 0; }
+                if (v.s == "out") { wantOut = v.pairVal() ? v.pairVal()->truthy() : true; outMode = wantOut ? 1 : 0;
+                                    if (asSink(v.pairVal())) { outSink = *v.pairVal(); haveOutSink = true; } }
+                else if (v.s == "err") { wantErr = v.pairVal() ? v.pairVal()->truthy() : true; errMode = wantErr ? 1 : 0;
+                                    if (asSink(v.pairVal())) { errSink = *v.pairVal(); haveErrSink = true; } }
                 else if (v.s == "in" && v.pairVal()) { bool resolved = false; int fd = stdinFdForHandle(*v.pairVal(), resolved); if (resolved) inFd = fd; }
                 else if (v.s == "merge") merge = v.pairVal() ? v.pairVal()->truthy() : true; // as in run(), above
             }
@@ -10422,12 +10433,15 @@ void Interpreter::registerBuiltins() {
         std::string out, err; int code = 0; bool timedout = false;
         long long childPid = 0;
         if (merge) { if (outMode == -1) { outMode = 1; wantOut = true; } errMode = -1; } // as in run(), above
+        int outSpawn = (outMode == -1 && !haveOutSink) ? -1 : (outMode == 0 ? 0 : 1);
         spawnCapture(argv, 0, out, code, timedout, &I, errMode != -1 ? &err : nullptr, "", &childPid,
-                     nullptr, errMode == -1, outMode, nullptr, nullptr, inFd,
+                     nullptr, errMode == -1, outSpawn, nullptr, nullptr, inFd,
                      merge);  // no `:out`: the child writes to ours, live
 #if !defined(_WIN32)
         if (inFd >= 0) ::close(inFd);
 #endif
+        drainTo(I, outSink, haveOutSink, out);
+        drainTo(I, errSink, haveErrSink, err);
         Value p = Value::makeHash(); p.hashKind = "Proc";
         Value av = Value::array(); av.isList = true; av.arr()->push_back(Value::str(cmd));
         (*p.hash())["argv"] = av; // .command — shell reports the command string
@@ -13575,6 +13589,9 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
         // NFC-composed, as Rakudo's NFG strings are: chaining nqp::concat with a
         // combining char must yield the composed grapheme (JSON::Fast's \u parser)
         case O::Concat: return Value::str(nfcNormalize(S(0) + S(1)));
+        // The digest of the string's UTF-8 bytes, in UPPERCASE hex — the
+        // spelling MoarVM answers with, which App::RaCoCo asserts literally.
+        case O::Sha1: return Value::str(sha1hex(S(0).str()));
         case O::Join: {
             std::string sep = S(0), out;
             if (v.size() > 1 && v[1].t == VT::Array && v[1].arr()) {

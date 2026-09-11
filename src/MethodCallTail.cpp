@@ -2419,6 +2419,13 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 else throw RakuError{Value::typeObj("X::Hash::Store::OddNumber"), // as Hash.new and Rakudo
                                      "Odd number of elements found where hash initializer expected"};
             }
+            // `.Map` asks for a MAP: `(a => 1, b => 2).Map` is immutable and
+            // reports Map, where `.Hash`/`.hash` answer a mutable Hash. All
+            // three shared this one builder and every one of them came back a
+            // Hash — which is also what `--> Map()` on a routine coerces
+            // through, so Red's `method exports(--> Map())` handed `use` the
+            // wrong kind of thing.
+            if (m == "Map") h.hashKind = "Map";
             return h;
         }
         if ((m == "push" || m == "append") && inv.t == VT::Hash) { // %h.push(:a(1)) accumulates into a list

@@ -8072,6 +8072,16 @@ static std::vector<std::string> libCandidates(const std::string& l) {
     // (Compress::Zstd). Last, so a system or rpath copy still wins.
     cands.push_back("/opt/homebrew/lib/lib" + l + ".dylib");
     cands.push_back("/usr/local/lib/lib" + l + ".dylib");
+    // A handful of libraries that stand on their own everywhere else are FOLDED
+    // INTO libSystem on macOS: there is no libuuid.dylib to open, on disk or in
+    // the dyld cache, yet uuid_generate is in every process. A dist written on
+    // Linux says `is native('uuid')` (LibUUID does, and DB::Pg — so Red —
+    // depends on it), and the only thing wrong with that here is the file name.
+    // Named ONE BY ONE rather than by falling back to the global namespace for
+    // any missing library: that would answer a wrong `is native('mylib')` with
+    // libc's `open` or `read` instead of saying the library is not there.
+    for (const char* sys : {"uuid", "c", "m", "pthread", "dl", "resolv", "util", "info"})
+        if (l == sys) { cands.push_back("libSystem.B.dylib"); break; }
 #endif
 #if !defined(__APPLE__)
     // glibc ships libm/libc/libdl at the unversioned name only as linker
@@ -15132,7 +15142,7 @@ static void* ncCallbackPtr(const Value& v, const std::vector<Param>* declSig = n
             cl->ptypes.push_back(pt);
             cl->atypes.push_back(ncFfiCbParamType(pt));
         }
-        cl->rtype = ncFfiCbRetType(v.code()->retType);
+        cl->rtype = ncFfiCbRetType(retTypeName(v.code()->retType));
         cl->writable = F.closure_alloc(512, &cl->code);
         if (cl->writable && cl->code && cl->rtype &&
             F.prep(cl->cif.buf, F.abi, (unsigned)cl->atypes.size(), cl->rtype,
@@ -15497,12 +15507,12 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
     // matched no arm and `malloc` handed back a bare Int instead of a Pointer.
     // (`--> PwStruct` already resolved, but only in the class arm, via ncClass.)
     std::string rtAlias;
-    if (!c.retType.empty() && c.closure && !ncKnownRetSpelling(c.retType))
-        if (Value* cv = c.closure->find(c.retType))
+    if (!c.retType.empty() && c.closure && !ncKnownRetSpelling(retTypeName(c.retType)))
+        if (Value* cv = c.closure->find(retTypeName(c.retType)))
             if (cv->t == VT::Type && !cv->s.empty())
                 rtAlias = (!cv->ofType().empty() && cv->s.find('[') == std::string::npos)
                         ? cv->s.str() + "[" + std::string(cv->ofType()) + "]" : cv->s.str();
-    const std::string& rt = rtAlias.empty() ? c.retType : rtAlias;
+    const std::string rt = rtAlias.empty() ? retTypeName(c.retType) : rtAlias;
     bool retFP  = ncIsFloatType(rt);
     bool retF32 = (rt == "num32");
     if (retF32 && needFfi.empty()) needFfi = "a num32 return value";
@@ -16506,6 +16516,13 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
 // Enforce a routine's declared nominal return type on its result value.
 Value Interpreter::checkRetType(const Callable& c, Value v) {
     if (c.retType.empty()) return v;
+    // `--> Map()` CONVERTS rather than constrains: `method exports(--> Map())`
+    // returning a list of pairs is how Red hands its export set to `use`, and
+    // reading the coercion as a plain `--> Map` failed the whole module.
+    if (retTypeCoerces(c.retType)) {
+        if (v.t == VT::Hash && v.hashKind == "Failure") return v;   // as below
+        return coerceToType(v, resolveClassAlias(retTypeName(c.retType)));
+    }
     // a FAILURE passes through ANY return typecheck untouched (roast
     // S06-advanced/return.t: "Can return Failure through Int typecheck") —
     // it detonates when USED or SUNK, never at the return boundary
@@ -19544,7 +19561,7 @@ std::vector<ValueList> Interpreter::expandDimTuples(const Value& root, const Val
 // target happens to be that list (Text::Levenshtein::Damerau swaps its two
 // strings that way, and the generic lvalue path could only say "Target is
 // not assignable"). Nested list targets destructure recursively.
-void Interpreter::assignListTarget(ListExpr* lst, const Value& rhs) {
+void Interpreter::assignListTarget(ListExpr* lst, const Value& rhs, bool isBinding) {
     // one-level list flattening (Raku): a List/Range spreads, but an itemized
     // `[...]` Array stays one element — so `my ($a,$b) = M, [7,8]` gives $b = [7,8].
     auto spread = [](const Value& r) -> ValueList {
@@ -19586,6 +19603,23 @@ void Interpreter::assignListTarget(ListExpr* lst, const Value& rhs) {
             if (tgt->kind == NK::VarExpr) {
                 const std::string& nm = static_cast<VarExpr*>(tgt)->name;
                 if (nm.size() >= 1 && (nm[0] == '@' || nm[0] == '%')) {
+                    // A BINDING target list is a SIGNATURE, and `@x` in one is an
+                    // ordinary positional parameter constrained to Positional —
+                    // it takes ONE argument and binds to it, where the same shape
+                    // under `=` slurps the rest. `my ($sql, @bind) := do given
+                    // $pair { .key, .value }` is how Red reads a prepared
+                    // statement, and slurping gave it a one-element list holding
+                    // the array, whose only member then became a phantom bind
+                    // parameter. (A value that is NOT Positional/Associative is
+                    // a hard type error in Rakudo; here it keeps the old slurp
+                    // rather than becoming a new way to fail.)
+                    if (isBinding && vi < vals.size() &&
+                        ((nm[0] == '@' && vals[vi].t == VT::Array) ||
+                         (nm[0] == '%' && vals[vi].t == VT::Hash))) {
+                        *lvalue(tgt) = vals[vi];
+                        vi++;
+                        continue;
+                    }
                     // an @/% target slurps every remaining value; later targets get Any
                     Value rest = Value::array();
                     for (size_t j = vi; j < vals.size(); j++) rest.arr()->push_back(vals[j]);
@@ -19836,7 +19870,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
     // sigilless ); File::Temp's t/03 does `my (&tempfile, &tempdir) := ...`
     if ((a->op == "=" || a->op == ":=") && a->target->kind == NK::ListExpr) {
         Value rhs = eval(a->value.get());
-        assignListTarget(static_cast<ListExpr*>(a->target.get()), rhs);
+        assignListTarget(static_cast<ListExpr*>(a->target.get()), rhs, a->op == ":=");
         return rhs;
     }
 

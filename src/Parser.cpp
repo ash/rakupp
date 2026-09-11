@@ -681,6 +681,23 @@ void Parser::checkRegexBoundaries(const std::string& pattern, int line) const {
     }
 }
 
+// Nothing can follow an infix operator except a term, so a token that CLOSES
+// the construct settles a `foo *` / `foo **` ambiguity in favour of the bare
+// Whatever being the listop's argument.
+static bool closesTerm(Tok k) {
+    return k == Tok::Semicolon || k == Tok::Comma || k == Tok::End ||
+           k == Tok::RParen || k == Tok::RBracket || k == Tok::RBrace;
+}
+
+// `--> Map()` is a COERCION, not a check: the value is coerced to Map on the
+// way out, and `(a => 1, b => 2)` — a List — is a perfectly good return from
+// `method exports(--> Map())`, which is how Red hands its export set over. The
+// parens are kept on the recorded name; retTypeName() takes them off for
+// everyone who wants the plain type.
+static std::string retCoercionMark(const Token& next) {
+    return (next.kind == Tok::LParen && !next.spaceBefore) ? "()" : "";
+}
+
 bool Parser::startsTermToken(const Token& t) const {
     switch (t.kind) {
         case Tok::IntLit: case Tok::NumLit: case Tok::StrLit: case Tok::VersionLit: case Tok::StrInterp: case Tok::RegexLit: case Tok::SubstLit:
@@ -794,17 +811,14 @@ bool Parser::startsListopArg(const Token& t, const std::string& lhsName) const {
                        peek().text == "min" || peek().text == "max" || peek().text == "gcd" ||
                        peek().text == "lcm" || peek().text == "div" || peek().text == "mod")))) || // `*..1` / `* quack 5` / `* min 2`
                    // `plan *;` — a bare Whatever argument. Infix `*` would need a
-                   // term after it, and the statement ends instead.
-                   (t.text == "*" && &t == &cur() &&
-                    (peek().kind == Tok::Semicolon || peek().kind == Tok::RParen ||
-                     peek().kind == Tok::Comma || peek().kind == Tok::End)) ||
+                   // term after it, and what follows closes the construct
+                   // instead: `[ast-value *]` and `{ av * }` are as much an
+                   // argument as `(av *)` and `av *;` are.
+                   (t.text == "*" && &t == &cur() && closesTerm(peek().kind)) ||
                    t.text == "^" || // prefix `^N` (upto) as a listop arg: `flat ^15, 49`
-                   // `foo **` — a bare HyperWhatever argument. Infix `**` would
-                   // need a term after it, and the statement ends instead.
-                   (t.text == "**" && (peek().kind == Tok::Semicolon ||
-                                       peek().kind == Tok::RParen ||
-                                       peek().kind == Tok::Comma ||
-                                       peek().kind == Tok::End)) ||
+                   // `foo **` — a bare HyperWhatever argument, on the same
+                   // reasoning as the bare `*` above.
+                   (t.text == "**" && closesTerm(peek().kind)) ||
                    (t.text == "|" && t.spaceBefore) || // slip first arg `run |@cmd` (space before |) — NOT infix junction `Any|Blob`
                    t.text == "!!" || // prefix boolify `say !!$x` (`!!` never starts a bare term otherwise)
                    // 6.e prefix `//`: `say //$x`. Infix `//` cannot appear here —
@@ -5844,6 +5858,15 @@ void Parser::parseSigillessTail(Param& p) {
 // p.name.substr(1), which here yields the twigil-carrying `!x` and matches
 // nothing, so record the bare name as an alias key instead (Statistics::
 // Distributions' `submethod BUILD(:a(:$!shape) = 1, …)` needs `:shape` to bind).
+// A bare sigil where a parameter variable is expected is an ANONYMOUS
+// parameter: `sub f($, @)` positionally, and `:filter(&)` / `:h(:help($))`
+// under an external name, which accepts the key and binds its value to
+// nothing. Red declares an unused callable option exactly that way.
+static bool anonSigilTok(const Token& t) {
+    return t.kind == Tok::Op && t.text.size() == 1 &&
+           (t.text[0] == '$' || t.text[0] == '@' || t.text[0] == '%' || t.text[0] == '&');
+}
+
 static void aliasAttrName(Param& p) {
     if (!p.aliasBoth || p.name.size() <= 2) return;
     if (p.name[1] != '!' && p.name[1] != '.') return;
@@ -6075,9 +6098,10 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
         // end of the signature so smileys (IO::Path:D) and parametrised types
         // (Positional[Int], (Int, Str)) don't trip the `)`-expectation.
         if (matchOp("-->")) {
-            if (isKind(Tok::Ident) && (cur().text == "True" || cur().text == "False" || cur().text == "Nil"))
+            if (isKind(Tok::Ident) && (cur().text == "True" || cur().text == "False" || cur().text == "Nil" ||
+                                          cur().text == "Empty"))
                 sigRetLiteral_ = parsePrimary(); // `--> True` : a literal Bool/Nil return value
-            else if (isKind(Tok::Ident)) sigRetType_ = cur().text; // remember the return type
+            else if (isKind(Tok::Ident)) sigRetType_ = cur().text + retCoercionMark(peek()); // remember the return type
             else if (isKind(Tok::IntLit) || isKind(Tok::NumLit) || isKind(Tok::StrLit) || isKind(Tok::StrInterp))
                 sigRetLiteral_ = parsePrimary(); // `(… --> 1)`: literal return value
             int depth = 0;
@@ -6213,6 +6237,7 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
             }
             p.aliasBoth = matchOp(":"); // :name(:$var) answers BOTH names
             if (isKind(Tok::Var)) { p.name = cur().text; p.sigil = cur().text[0]; advance(); }
+            else if (anonSigilTok(cur())) { p.sigil = cur().text[0]; p.name = ""; advance(); }
             else error("expected variable in named-parameter alias");
             aliasAttrName(p);
             // `:in(:$in)` — the alias and the variable name collide
@@ -6364,6 +6389,7 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
                 }
                 p.aliasBoth = matchOp(":"); // :name(:$var) answers BOTH names
                 if (isKind(Tok::Var)) { p.name = cur().text; p.sigil = cur().text[0]; advance(); }
+                else if (anonSigilTok(cur())) { p.sigil = cur().text[0]; p.name = ""; advance(); }
                 else error("expected variable in named-parameter alias");
                 aliasAttrName(p);
                 for (; aliasDepth > 0; aliasDepth--)
@@ -6406,8 +6432,7 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
             }
             p.name = cur().text; p.sigil = cur().text[0]; advance();
             p.named = named;
-        } else if (isKind(Tok::Op) && cur().text.size() == 1 &&
-                   (cur().text[0]=='%'||cur().text[0]=='@'||cur().text[0]=='&'||cur().text[0]=='$')) {
+        } else if (anonSigilTok(cur())) {
             // anonymous sigil-only parameter, e.g. method concretize($, $, %, %)
             p.sigil = cur().text[0]; p.name = ""; advance();
             p.named = named;
@@ -6490,9 +6515,10 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
         }
         params.push_back(std::move(p));
         if (matchOp("-->")) { // return type — remember the name; skip the rest to end of signature
-            if (isKind(Tok::Ident) && (cur().text == "True" || cur().text == "False" || cur().text == "Nil"))
+            if (isKind(Tok::Ident) && (cur().text == "True" || cur().text == "False" || cur().text == "Nil" ||
+                                          cur().text == "Empty"))
                 sigRetLiteral_ = parsePrimary(); // `--> True` : a literal Bool/Nil return value
-            else if (isKind(Tok::Ident)) sigRetType_ = cur().text;
+            else if (isKind(Tok::Ident)) sigRetType_ = cur().text + retCoercionMark(peek());
             else if (isKind(Tok::IntLit) || isKind(Tok::NumLit) ||
                      isKind(Tok::StrLit) || isKind(Tok::StrInterp))
                 sigRetLiteral_ = parsePrimary(); // `($n --> 99)`: literal return value
@@ -6512,9 +6538,10 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
     // some param branches break out before the in-loop handler sees a trailing
     // `--> Type` (e.g. `-> \x --> Int { }`) — catch it here
     if (matchOp("-->")) {
-        if (isKind(Tok::Ident) && (cur().text == "True" || cur().text == "False" || cur().text == "Nil"))
+        if (isKind(Tok::Ident) && (cur().text == "True" || cur().text == "False" || cur().text == "Nil" ||
+                                          cur().text == "Empty"))
                 sigRetLiteral_ = parsePrimary(); // `--> True` : a literal Bool/Nil return value
-            else if (isKind(Tok::Ident)) sigRetType_ = cur().text;
+            else if (isKind(Tok::Ident)) sigRetType_ = cur().text + retCoercionMark(peek());
         else if (isKind(Tok::IntLit) || isKind(Tok::NumLit) ||
                  isKind(Tok::StrLit) || isKind(Tok::StrInterp))
             sigRetLiteral_ = parsePrimary();
@@ -6600,10 +6627,14 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
     // an unknown extension category (`sub twigil:<@>`) cannot be added
     static const std::set<std::string> kCats = {
         "infix", "prefix", "postfix", "circumfix", "postcircumfix", "trait_mod", "term"};
-    // `method dispatch:<.?>` / `dispatch:<.=>` — the metamodel's dispatch hooks.
-    // Rakudo accepts the `dispatch` category on a METHOD (and rejects it on a
-    // sub), so keep the name whole and let it be an ordinary named method.
-    if (asMethod && s->name == "dispatch" && isOp(":") && !peek().spaceBefore &&
+    // A METHOD may carry a CATEGORICAL name — `method dispatch:<.?>` (the
+    // metamodel's dispatch hooks) and, the general case, the action method for
+    // a `proto rule mod {*}` alternative: `multi rule mod:<null>` in the
+    // grammar is answered by `method mod:<null>` in the actions class, which is
+    // how Red reads a CREATE TABLE statement. Rakudo refuses an unknown
+    // category on a SUB and accepts it on a method, so keep the name whole.
+    if (asMethod && !s->name.empty() && !kCats.count(s->name) &&
+        isOp(":") && !peek().spaceBefore &&
         peek().kind == Tok::Op && peek().text == "<") {
         advance(); advance(); // : <
         std::vector<std::string> w = readAngleWords(">");
@@ -6708,9 +6739,10 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
         sigOwnerLine_ = 0;
         // a `--> T` that follows a parameter (not comma-separated) is left for us
         if (isOp("-->")) { advance();
-                           if (isKind(Tok::Ident) && (cur().text == "True" || cur().text == "False" || cur().text == "Nil"))
+                           if (isKind(Tok::Ident) && (cur().text == "True" || cur().text == "False" || cur().text == "Nil" ||
+                                          cur().text == "Empty"))
                 sigRetLiteral_ = parsePrimary(); // `--> True` : a literal Bool/Nil return value
-            else if (isKind(Tok::Ident)) sigRetType_ = cur().text;
+            else if (isKind(Tok::Ident)) sigRetType_ = cur().text + retCoercionMark(peek());
                            else if (isKind(Tok::IntLit) || isKind(Tok::NumLit) ||
                                     isKind(Tok::StrLit) || isKind(Tok::StrInterp))
                                sigRetLiteral_ = parsePrimary(); // `(2 --> 1)`: literal return
@@ -7627,6 +7659,19 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
                         static const std::set<std::string> builtinAttrTraits =
                             {"rw", "readonly", "required", "built", "default", "DEPRECATED"};
                         bool known = builtinAttrTraits.count(utn) != 0;
+                        // A trait argument does not have to be parenthesised:
+                        // `is column{ :name<x>, :!nullable }` hands a HASH and
+                        // `is column<rootpage>` a word — the two spellings Red
+                        // writes every model with. Only `(…)` was read, so the
+                        // brace was left in the stream and the trait arrived as
+                        // a bare True, matching no candidate and silently doing
+                        // nothing: every Red model came out with no columns.
+                        if (!known && !cur().spaceBefore &&
+                            (isKind(Tok::LBrace) || isKind(Tok::QwList) ||
+                             (isKind(Tok::Op) && cur().text == "<"))) {
+                            a.userTraits.emplace_back(utn, parsePrimary());
+                            continue;
+                        }
                         if (isKind(Tok::LParen) && !cur().spaceBefore) {
                             advance();
                             ExprPtr arg = isKind(Tok::RParen) ? nullptr : parseExpression();
@@ -9101,6 +9146,7 @@ ExprPtr Parser::makeNqpOp(const std::string& op, std::vector<ExprPtr>& args) {
         {"lstat", NqpOpc::Lstat}, {"lstat_time", NqpOpc::Lstat},
         // the running compiler, for the REPL-sandbox pattern (see REPL below)
         {"getcomp", NqpOpc::GetComp},
+        {"sha1", NqpOpc::Sha1},
     };
     auto it = k.find(op);
     if (it == k.end()) return nullptr;

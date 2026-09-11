@@ -3966,7 +3966,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         }
         if (m == "name") return Value::str(inv.code()->name);
         if (m == "returns" || m == "of")
-            return inv.code()->retType.empty() ? Value::typeObj("Mu") : Value::typeObj(inv.code()->retType);
+            return inv.code()->retType.empty() ? Value::typeObj("Mu")
+                                              : Value::typeObj(retTypeName(inv.code()->retType));
         if (m == "signature") return makeSignature(inv.code());
         if (m == "yada") return Value::boolean(inv.code()->isStub);   // a `{ ... }` / `{ !!! }` body
         if (m == "multi" || m == "is_dispatcher") return Value::boolean(inv.code()->isMultiDispatcher);

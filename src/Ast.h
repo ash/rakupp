@@ -436,6 +436,9 @@ enum class NqpOpc : uint16_t {
     HllBool,   // nqp::hllbool($i) — a Raku Bool from a native truth value (Hash::int's EXISTS-KEY)
     // appended: the case- (and mark-) insensitive searches has-word scans with
     Indexic, Indexicim, Indexim,
+    // appended: nqp::sha1($str) — App::RaCoCo keys its coverage cache on it,
+    // and reads the digest back as MoarVM writes it, in UPPERCASE hex
+    Sha1,
 };
 struct NqpOp : Expr {
     NqpOpc op;

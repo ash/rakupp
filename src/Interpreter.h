@@ -1157,7 +1157,7 @@ public:
     // the `.=` write-backs, which do not go through the assignment operator and
     // so never met its guard.
     Value assignChecked(struct Expr* target, Value v);
-    void assignListTarget(struct ListExpr* lst, const Value& rhs);
+    void assignListTarget(struct ListExpr* lst, const Value& rhs, bool isBinding = false);
     // A code assertion (`<?{…}>` / `<!{…}>`) only evaluates when the engine is
     // handed a hook; with none it defaults to PASS. Every site that builds its
     // own Regex needs this, or one pattern answers differently in each of them.
