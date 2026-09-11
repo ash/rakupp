@@ -120,7 +120,7 @@ for ('as found', {}), ('fallback', { RAKUPP_FFI => '0' }) -> ($label, %extra) {
         when 1  { note "$label: EnumSystemLocalesW called back ONCE, so the callback's `return 1`"
                      ~ " did not reach C — every callback that answers C by its return value is"
                      ~ " broken here (WM_CTLCOLORSTATIC is one)" }
-        default { }
+        default { note "$label: a callback's return value reaches C ($_ locales enumerated)" }
     }
     check(%g<defwindowproc>  // '<none>', 'found',  "$label: that handle still works as one");
     # The callback fires for the system UI language on any Windows; if a runner
