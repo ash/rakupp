@@ -1010,6 +1010,11 @@ struct ClassAttr {
     const Expr* where = nullptr; // `where {…}` constraint, borrowed from AST
     Value defVal;              // native codegen: precomputed default value
     bool hasDefVal = false;    // use defVal instead of `def`
+    // `$attr.set_build(&closure)` on an Attribute built at RUNTIME: the code that
+    // produces this attribute's initial value, per instance. There is no AST
+    // `def` for such an attribute — the metaclass made it — and Red's dirty
+    // tracking gives each model three of them (a fresh `{}` / SetHash each).
+    Value buildFn;
     std::vector<std::string> handles; // `has $.b handles <m1 m2>` — methods delegated to this attr
     std::vector<std::string> handlesTo; // parallel to `handles`: the name called ON the attr
                                         // when the delegation RENAMES (`handles(:terminal<t>)`);

@@ -99,6 +99,22 @@ static Value* composedHook(ClassInfo* c, const char* which) {
 // BUILD and its own TWEAK: that is where the `is required` check belongs, so
 // an attribute a class's own BUILD filled counts as supplied while one only
 // its TWEAK would fill still does not.
+// The diagnostic an exception object carries: its `message` method if it has
+// one, else a plain `has $.message` attribute, else the type's own name. Three
+// call sites want it — .throw, .Failure and the .Str/.gist fallback — and one
+// of them must NOT go through the object's own Str/gist, which is why it is
+// read here rather than left to gistOf.
+static std::string excMessageOf(Interpreter& I, const Value& inv) {
+    std::string msg;
+    if (Value* mm = inv.obj() && inv.obj()->cls ? inv.obj()->cls->findMethod("message") : nullptr)
+        { try { ValueList none; msg = I.invokeMethod(*mm, inv, none).toStr(); } catch (...) {} }
+    if (msg.empty() && inv.obj()) {
+        auto ma = inv.obj()->attrs.find("message");
+        if (ma != inv.obj()->attrs.end() && rtIsDefined(ma->second)) msg = ma->second.toStr();
+    }
+    return msg.empty() ? inv.typeName() : msg;
+}
+
 void Interpreter::runBuildChain(ClassInfo* ci, const Value& self, const ValueList& args,
                                 BuildStep afterBuild) {
     if (!ci) return;
@@ -548,7 +564,9 @@ void Interpreter::runAttrDefaults(const std::shared_ptr<ObjectData>& od,
             if (at.def && !at.hasDefVal) ensureEnv();
             Value dv = at.hasDefVal ? at.defVal
                      : at.def ? eval(const_cast<Expr*>(at.def))
-                              : seed;
+                     : at.buildFn.t == VT::Code
+                              ? (ensureEnv(), callCallable(at.buildFn, ValueList{selfEarly}))
+                              : seed;   // `.set_build(&closure)`, added at runtime
             // the SIGIL is a container type: `has @.a = (1,2)` holds an
             // Array and `has %.h = (a=>1)` a Hash, so `.WHAT` answers
             // (Array)/(Hash) and the default renderer shows [1, 2] /
@@ -1102,6 +1120,26 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     }
     if (inv.t == VT::Hash && inv.hashKind == "Attribute") {
         auto& h = *inv.hash();
+        // A role MIXED INTO this meta-object brings its methods with it, and in
+        // Rakudo a mixin wins over what it is mixed into — so ask it first.
+        // `$attr does Red::Attr::Column(%args)` is how every Red column is
+        // declared, and `$attr.column` / `.args` are read straight back off the
+        // Attribute afterwards. (`~~` already consults the same list.)
+        {
+            auto rit = h.find(ATTR_ROLES_KEY);
+            if (rit != h.end() && rit->second.t == VT::Array && rit->second.arr())
+                for (auto& rn : *rit->second.arr()) {
+                    auto cit = classes_.find(rn.s);
+                    if (cit == classes_.end() || !cit->second) continue;
+                    // A public ATTRIBUTE of the role is served by the slot the
+                    // mixin seeded in this very map, not by its generated
+                    // accessor: that accessor would read `%!args` off a `self`
+                    // that is this Hash, and find nothing.
+                    if (args.empty() && cit->second->findAttr(m) && h.count(m)) return h[m];
+                    if (Value* rm = cit->second->findMethod(m))
+                        return invokeMethod(*rm, inv, args, rwArgs);
+                }
+        }
         if (m == "name") return h.count("name") ? h["name"] : Value::str("");
         if (m == "type" || m == "of" || m == "returns") return h.count("type") ? h["type"] : Value::typeObj("Mu");
         if (m == "package") return h.count("package") ? h["package"] : Value::any();
@@ -1140,6 +1178,12 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             }
             return args[0]; // no custom (un)marshaller: identity
         }
+        // `.set_build(&closure)` — the code that produces this attribute's initial
+        // value, which a metaclass adding an attribute at runtime uses in place
+        // of the `= default` a declaration would have written.
+        if (m == "set_build" && !args.empty()) { h["build"] = args[0]; return args[0]; }
+        if (m == "build") return h.count("build") ? h["build"] : Value::any();
+        if (m == "has_build") return Value::boolean(h.count("build") && h["build"].t == VT::Code);
         if (m == "readonly") return h.count("readonly") ? h["readonly"] : Value::boolean(true);
         if (m == "rw") return Value::boolean(h.count("readonly") && !h["readonly"].truthy());
         if (m == "has_accessor") return h.count("has_accessor") ? h["has_accessor"] : Value::boolean(false);
@@ -2983,6 +3027,16 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 std::string rn = args[0].t == VT::Type ? args[0].s : args[0].typeName();
                 auto rit = classes_.find(rn);
                 if (rit == classes_.end()) rit = classes_.find(resolveClassAlias(rn));
+                // A BUILT-IN role — Iterable, Positional, Associative — has no
+                // ClassInfo to merge methods from: what composing it means here
+                // is that the type ANSWERS to it, which is what a `~~ Iterable`
+                // check asks. Red's per-model ResultSeq class is built at
+                // runtime and composes Iterable exactly this way.
+                if ((rit == classes_.end() || !rit->second->isRole) && isBuiltinRole(rn)) {
+                    noteSymbolMutation("runtime .^add_role (built-in)");
+                    ci->doneRoles.insert(rn);
+                    return inv;
+                }
                 if (rit == classes_.end() || !rit->second->isRole)
                     throw RakuError{Value::typeObj("X::AdHoc"),
                         rn + " is not a known role, so " + ci->name + " cannot .^add_role it"};
@@ -3060,6 +3114,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     a.type = av.hash()->count("type") && (*av.hash())["type"].t == VT::Type ? (*av.hash())["type"].s.str() : std::string();
                     a.rw = av.hash()->count("readonly") ? !(*av.hash())["readonly"].truthy() : false;
                     a.pub = av.hash()->count("has_accessor") ? (*av.hash())["has_accessor"].truthy() : false;
+                    if (av.hash()->count("build") && (*av.hash())["build"].t == VT::Code)
+                        a.buildFn = (*av.hash())["build"];
                     noteSymbolMutation("runtime .^add_attribute");
                     ci->attrs.push_back(a);
                 }
@@ -3143,7 +3199,10 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 }
                 return out;
             }
-            if (m == "roles" || m == "role_typecheck_list") { // composed roles
+            // `roles_to_compose` is Rakudo's "queued for composition" list; by the
+            // time a user metaclass's `compose` asks, those roles are exactly the
+            // ones the declaration named — which is what `roles` answers here.
+            if (m == "roles" || m == "role_typecheck_list" || m == "roles_to_compose") { // composed roles
                 Value out = Value::array(); out.isList = true;
                 for (auto& rn : ci->doneRoles) out.arr()->push_back(Value::typeObj(rn));
                 return out;
@@ -3172,9 +3231,13 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 // then dedup keeping the LAST occurrence — the C3 order for simple diamonds
                 // (D is B is C, B/C is A → D, B, C, A).
                 std::vector<std::string> lin;
+                // A composed ROLE is not an ancestor: Rakudo answers `A,Any,Mu`
+                // for `class A does R`, and a module walking the MRO to find
+                // ancestors must not meet R there. (`does` records the role in
+                // the parent slot here, which is why it showed up at all.)
                 std::function<void(ClassInfo*)> visit = [&](ClassInfo* c) {
                     if (!c) return;
-                    lin.push_back(c->name);
+                    if (!c->isRole) lin.push_back(c->name);
                     if (c->parent) visit(c->parent.get());
                     for (auto& p : c->extraParents) visit(p.get());
                 };
@@ -3197,9 +3260,28 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                                 out.arr()->push_back(Value::typeObj(a));
                         break;
                     }
+                // A BUILT-IN parent can arrive twice — once as the ClassInfo the
+                // `is` named, once from the nativeParent ancestry — and
+                // `class A is Exception` reported `A,Exception,Exception,Any,Mu`.
+                {
+                    std::set<std::string> seen;
+                    ValueList uniq;
+                    for (auto& t : *out.arr())
+                        if (seen.insert(t.t == VT::Type ? t.s : t.typeName()).second) uniq.push_back(t);
+                    *out.arr() = std::move(uniq);
+                }
                 out.arr()->push_back(Value::typeObj("Any"));
                 out.arr()->push_back(Value::typeObj("Mu"));
                 return out;
+            }
+            // `.^declares_method('name')` — does THIS class define it, rather
+            // than inherit or compose it? Red asks before installing its own
+            // TWEAK, so as not to shadow a model's.
+            if (m == "declares_method" && !args.empty()) {
+                std::string mn = args[0].t == VT::Code && args[0].code()
+                               ? args[0].code()->name : args[0].toStr();
+                auto dm = ci->methods.find(mn);   // Rakudo hands back the METHOD
+                return dm != ci->methods.end() ? dm->second : Value::boolean(false);
             }
             if (m == "attributes") { // Attribute objects: .name ($!x), .type, .readonly
                 bool local = false;
@@ -3615,35 +3697,26 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     // never reached the user's code and threw the invocant itself, so whatever
     // the method meant to raise was lost and CATCH received the object. Same
     // guard the `.backtrace` fallback below already uses.
+    // …unless the caller asked to reach PAST the invocant's own methods, which
+    // is what a `nextsame`/`nextwith` inside that very method means: Red's
+    // `method throw is hidden-from-backtrace { nextwith $!orig-backtrace }`
+    // redispatched onto ITSELF, 22,456 frames deep, and took every Red
+    // transaction with it. (`new` learned the same lesson above.)
     if ((m == "throw" || m == "rethrow" || m == "fail") && inv.t == VT::Object && inv.obj() &&
-        !(inv.obj()->cls && inv.obj()->cls->findMethod(m))) {
+        !(!m.skipOwn && inv.obj()->cls && inv.obj()->cls->findMethod(m))) {
         // record the backtrace at THROW time on the object itself — the thrown
         // value is shared, so a caught `$exception.backtrace` reads it back
         // (Log::Async::Context throws a fresh Exception exactly for the walk)
-        std::string msg;
-        if (Value* mm = inv.obj()->cls ? inv.obj()->cls->findMethod("message") : nullptr)
-            { try { ValueList none; msg = invokeMethod(*mm, inv, none).toStr(); } catch (...) {} }
-        if (msg.empty()) { // no method — a plain `has $.message` attribute still speaks
-            auto ma = inv.obj()->attrs.find("message");
-            if (ma != inv.obj()->attrs.end() && rtIsDefined(ma->second)) msg = ma->second.toStr();
-        }
-        throw RakuError{inv, msg.empty() ? inv.typeName() : msg};
+        throw RakuError{inv, excMessageOf(*this, inv)};
     }
     // `$exception.Failure` — the exception wrapped in a Failure, unthrown, which
     // is how a routine hands one back instead of raising it (Concurrent::Stack's
     // `X::Concurrent::Stack::Empty.new.Failure`, under the whole DB constellation).
     if (m == "Failure" && inv.t == VT::Object && inv.obj() &&
         !(inv.obj()->cls && inv.obj()->cls->findMethod("Failure"))) {
-        std::string msg;
-        if (Value* mm = inv.obj()->cls ? inv.obj()->cls->findMethod("message") : nullptr)
-            { try { ValueList none; msg = invokeMethod(*mm, inv, none).toStr(); } catch (...) {} }
-        if (msg.empty()) {
-            auto ma = inv.obj()->attrs.find("message");
-            if (ma != inv.obj()->attrs.end() && rtIsDefined(ma->second)) msg = ma->second.toStr();
-        }
         Value f = rakuppNewFailure();
         (*f.hash())["exception"] = inv;
-        (*f.hash())["message"] = Value::str(msg.empty() ? inv.typeName() : msg);
+        (*f.hash())["message"] = Value::str(excMessageOf(*this, inv));
         return f;
     }
     // `.Str` / `.gist` on an exception object is its MESSAGE (Raku:
@@ -3653,19 +3726,24 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     // `$_.Str` off a CX::Warn to collect warnings, and got the default gist.
     if ((m == "Str" || m == "gist") && args.empty() &&
         inv.t == VT::Object && inv.obj() && inv.obj()->cls &&
-        !inv.obj()->cls->findMethod(m)) {
+        !(!m.skipOwn && inv.obj()->cls->findMethod(m))) {
         bool exc = inv.obj()->cls->name.rfind("X::", 0) == 0 ||
                    inv.obj()->cls->name.rfind("CX::", 0) == 0;
         for (ClassInfo* c = inv.obj()->cls.get(); c && !exc; c = c->parent.get())
             if (c->name == "Exception") exc = true;
-        if (exc && (inv.obj()->attrs.count("message") || inv.obj()->cls->findMethod("message")))
+        if (exc && (inv.obj()->attrs.count("message") || inv.obj()->cls->findMethod("message"))) {
+            // A REDISPATCH (`method gist { nextsame }`) must not go back through
+            // the object's own Str/gist, which is exactly what gistOf/strOf
+            // would do — read the message directly instead.
+            if (m.skipOwn) return Value::str(excMessageOf(*this, inv));
             return Value::str(m == "Str" ? strOf(inv) : gistOf(inv));
+        }
     }
     // `.backtrace` on an exception object: the frames its .throw recorded
     // (captured NOW for a never-thrown one). A class defining its own
     // backtrace method still wins — this only fills the built-in gap.
     if (m == "backtrace" && inv.t == VT::Object && inv.obj() &&
-        !(inv.obj()->cls && inv.obj()->cls->findMethod("backtrace"))) {
+        !(!m.skipOwn && inv.obj()->cls && inv.obj()->cls->findMethod("backtrace"))) {
         return backtraceOf(inv);   // materializes the throw-time chain, once
     }
     // user object: dispatch to class methods / public accessors first
@@ -4968,18 +5046,42 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     // `$t.HOW.add_method($t, …)` — where the `.^` spelling passes it implicitly
     // as the invocant. Named explicitly: a metaclass also answers ORDINARY
     // methods (`.isa`, `.gist`), which must not be forwarded to their argument.
+    // …and the walk has to see a BUILT-IN ancestor too: `class MetamodelX::Red::Model
+    // is Metamodel::ClassHOW` has no ClassInfo parent — the base is recorded as
+    // the native parent — so a HOW written that way found none of these
+    // operations, and `self.add_role(type, Red::Model)` inside its `compose` was
+    // a silent no-op. Every Red model then failed `~~ Red::Model`.
     if (((inv.t == VT::Type && inv.s == "Metamodel::ClassHOW") ||
          (inv.t == VT::Object && inv.obj() && inv.obj()->cls &&
           [&]{ for (ClassInfo* c = inv.obj()->cls.get(); c; c = c->parent.get())
-                   if (c->name == "Metamodel::ClassHOW") return true; return false; }())) &&
+                   if (c->name == "Metamodel::ClassHOW" ||
+                       c->nativeParent == "Metamodel::ClassHOW") return true;
+               return false; }())) &&
         !args.empty() && args[0].t == VT::Type) {
         static const std::set<std::string> howOps = {
             "add_method", "add_attribute", "add_parent", "add_role", "add_fallback",
             "compose", "compose_repr", "compose_attributes", "set_name", "set_shortname",
             "set_ver", "set_auth", "set_api", "set_rw",
-            "publish_method_cache", "publish_type_cache", "invalidate_method_caches"};
+            "publish_method_cache", "publish_type_cache", "invalidate_method_caches",
+            // …and the one READ this list needs: a metaclass's own `compose` asks
+            // for the roles it is about to compose (Red looks through them for
+            // columns). The rest of the read side is NOT forwarded here — a name
+            // neither side answers would bounce between this forward and the
+            // .HOW fallback in the `^` ladder forever.
+            "roles_to_compose", "attributes", "methods", "parents", "roles", "mro", "name",
+            "declares_method", "method_table", "attribute_table", "lookup", "find_method"};
         if (howOps.count(m)) {
+            // `HOW.foo(type)` IS `type.^foo` — but the `^` ladder's last resort is
+            // to ask the .HOW back, so a name the metaclass INHERITS rather than
+            // answers itself bounces between the two forever (Red's `compose`
+            // asking `self.attributes(type)` re-ran its own compose, endlessly).
+            // Mark the name in flight; the fallback steps aside while it is.
             ValueList rest(args.begin() + 1, args.end());
+            struct Mark {
+                std::set<std::string>& s; std::string n; bool mine;
+                Mark(std::set<std::string>& S, const std::string& N) : s(S), n(N), mine(s.insert(N).second) {}
+                ~Mark() { if (mine) s.erase(n); }
+            } mark{tctx_.metaForwarding, m};
             return methodCall(args[0], "^" + m, rest, rwArgs);
         }
     }

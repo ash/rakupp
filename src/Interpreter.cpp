@@ -10112,6 +10112,48 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 }
                 tctx_.cur = saved;
             }
+            // CLASS-LEVEL user traits: `unit model Foo is table<sqlite_master>`
+            // calls `trait_mod:<is>(Foo, :table('sqlite_master'))`, the same
+            // dispatch the attribute traits above take. Before the composition
+            // hook below, because that is where a metaclass reads what the
+            // traits set (Red's compose builds the table from :table).
+            if (!cd->userTraits.empty()) {
+                if (Value* tm = tctx_.cur ? tctx_.cur->find("&trait_mod:<is>") : nullptr) {
+                    if (tm->t == VT::Code) {
+                        Value tobj = Value::typeObj(clsName);
+                        for (auto& ut : cd->userTraits) {
+                            Value tv = Value::boolean(true);   // a bare trait: `is temp`
+                            if (ut.second) { try { tv = eval(ut.second.get()); } catch (...) { continue; } }
+                            Value p = Value::pair(ut.first, tv);
+                            p.namedArg = true;
+                            ValueList ta; ta.push_back(tobj); ta.push_back(p);
+                            try { callCallable(*tm, ta); }
+                            catch (RakuError& te) {
+                                // no candidate = not a user trait at all; anything
+                                // else is the trait body's own error
+                                if (te.message.rfind("Cannot resolve caller", 0) != 0) throw;
+                            }
+                        }
+                    }
+                }
+            }
+            // A MODULE-SUPPLIED DECLARATOR (`model Foo { … }`) says what the
+            // type's metaobject is: an instance of the HOW its EXPORTHOW::DECLARE
+            // named, instead of rakupp's own Metamodel::ClassHOW. Everything the
+            // declaration built is already in place, so all this does is put the
+            // right object in .HOW — and the composition hook right below then
+            // runs that HOW's `compose`, which is where such a metaclass does its
+            // work (Red's MetamodelX::Red::Model turns the attributes into
+            // columns there).
+            if (!cd->howName.empty() && ci->howObj.t != VT::Object) {
+                auto hcit = classes_.find(resolveClassAlias(cd->howName));
+                if (hcit != classes_.end() && hcit->second) {
+                    Value h; h.t = VT::Object; h.setObj(std::make_shared<ObjectData>());
+                    h.obj()->cls = hcit->second;
+                    h.obj()->attrs["__type"] = Value::typeObj(clsName);
+                    ci->howObj = std::move(h);
+                }
+            }
             // Composition hook: a role mixed into the class's persistent .HOW (via a
             // method trait — Method::Also's AliasableClassHOW) may define `compose`;
             // Rakudo's metamodel calls it when the class finishes composing, and the
@@ -10123,7 +10165,17 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 if (userCompose) {
                     ValueList ca; ca.push_back(Value::typeObj(clsName));
                     try { methodCall(ci->howObj, "compose", ca); }
-                    catch (RakuError&) {} // `nextsame` past the mixin has no next candidate here
+                    catch (RakuError& ce) {
+                        // A `nextsame` past the mixin has no next candidate here,
+                        // and that one is expected. ANYTHING else is the metaclass's
+                        // own error and must be heard: swallowing it left Red's
+                        // compose dying on its first statement and every model
+                        // silently half-built (no columns, no Red::Model role).
+                        const std::string& cm = ce.message;
+                        if (cm.find("to redispatch to") == std::string::npos &&
+                            cm.find("not in the dynamic scope of a dispatcher") == std::string::npos)
+                            throw;
+                    }
                 }
             }
             // evaluate to the type object, so `my class Foo {…}` / anon `role {…}` work as expressions
@@ -17023,7 +17075,13 @@ Value Interpreter::invokeMethodChain(const std::string& name, ClassInfo* startCl
             if (binv.t == VT::Type) binv = Value::typeObj(nb); // AttrProxy.new → Proxy.new
             else if (binv.t == VT::Object && binv.obj() && binv.obj()->hasBoxed)
                 binv = binv.obj()->boxed;                        // instance → its builtin box
-            Value r = methodCall(binv, name, std::move(na));
+            // A user object with no builtin box is redispatched ON ITSELF, so the
+            // invocant's OWN methods have to be stepped over or the redispatch
+            // lands back on the method that asked for it. `class E is Exception {
+            // method throw { nextwith $bt } }` — Red's mapped-driver exceptions —
+            // recursed 22,456 frames deep instead of reaching Exception.throw.
+            bool ownObj = binv.t == VT::Object && binv.obj() && binv.obj()->cls;
+            Value r = methodCall(binv, name, std::move(na), nullptr, /*skipOwn=*/ownObj);
             // a constructor's builtin result keeps the SUBCLASS identity: Rakudo's
             // callwith in AttrProxy.new makes an AttrProxy, not a bare Proxy
             if (name == "new" && r.t == VT::Hash && r.hash() && r.hashKind == nb && !clsName.empty())

@@ -325,6 +325,14 @@ template <class IO> void visit(IO& io, ClassDecl& n) {
     F(io, n.isPackage); ioStmtVec(io, n.body);
     F(io, n.isMonitor);
     F(io, n.classRw);
+    F(io, n.howName);
+    if constexpr (IO::reading) {
+        size_t k = io.count(); n.userTraits.clear(); n.userTraits.resize(k);
+        for (auto& ut : n.userTraits) { F(io, ut.first); ioExpr(io, ut.second); }
+    } else {
+        io.uvar(n.userTraits.size());
+        for (auto& ut : n.userTraits) { F(io, ut.first); ioExpr(io, ut.second); }
+    }
 }
 template <class IO> void visit(IO& io, Block& n)    { ioStmtVec(io, n.stmts); F(io, n.isCatch);
                                                       F(io, n.phaser); F(io, n.stmtForm); }

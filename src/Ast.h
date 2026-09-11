@@ -699,6 +699,15 @@ struct ClassDecl : Stmt {
     std::string repr;              // `is repr("CStruct")` — native memory layout (NativeCall)
     std::vector<Param> roleParams; // `role R[$x, Bool :$opt]` — value/type parameters
     std::vector<std::pair<std::string, std::vector<ExprPtr>>> roleArgs; // `does R[args]` per composed role
+    // `unit model Foo is table<sqlite_master>` — a CLASS-level user trait:
+    // `is <lowercase name>`, which Raku's capitalisation convention keeps clear
+    // of a superclass. Dispatched to `trait_mod:<is>(TheType, :name(arg))` once
+    // the declaration is built.
+    std::vector<std::pair<std::string, ExprPtr>> userTraits;
+    // A module-supplied declarator (`model Foo { … }`, from Red's
+    // EXPORTHOW::DECLARE): the name of the HOW this type's metaobject is an
+    // instance of. Empty for `class`/`role`/`grammar`, which use rakupp's own.
+    std::string howName;
     bool isPackage = false;        // package / module: body runs in a namespace
     std::vector<StmtPtr> body;     // package/module body statements
     ClassDecl(): Stmt(NK::ClassDecl) {}

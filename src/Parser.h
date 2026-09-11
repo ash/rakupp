@@ -116,6 +116,11 @@ private:
     std::map<std::string, int> userInfix_;   // user infix name → left binding power (from is tighter/looser/equiv)
     std::set<std::string> userInfixRight_;   // user infixes declared `is assoc<right>`
     std::set<std::string> userPrefix_, userPostfix_; // user-declared operators (sub prefix:<…> / postfix:<…>)
+    // Package DECLARATORS a used module supplies through EXPORTHOW::DECLARE:
+    // the keyword → the name of the HOW that declaration's type gets. Red
+    // exports `model` this way, so `model Foo { … }` is a class declaration
+    // whose metaobject is a MetamodelX::Red::Model.
+    std::map<std::string, std::string> userDeclarators_;
     std::set<std::string> sigilless_; // names declared sigilless (my \x, \a params, -> \d) — parse as terms, not listops
     bool stmtCond_ = false; // parsing a block-statement condition: `{` is the control block, not a listop arg
     std::string lastContainerIs_; // `is Set`-style container trait captured by skipTraits
@@ -157,6 +162,7 @@ private:
     void checkRegexBoundaries(const std::string& pattern, int line) const;
     static bool nqpConstValue(const std::string& name, long long& out);
     ExprPtr makeNqpOp(const std::string& op, std::vector<ExprPtr>& args);
+    void scanDeclaratorsIn(const std::string& src);
     std::map<std::string, std::string> userCircumfix_, userPostcircumfix_; // open-bracket -> close-bracket
     // Lexical scoping for user-declared operators: every registration is logged
     // and parseBlock rolls back to its entry mark, so `sub postfix:<!!>` inside

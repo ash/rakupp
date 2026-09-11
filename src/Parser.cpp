@@ -541,6 +541,78 @@ void Parser::scanModuleOps(const std::string& module) {
     scanOpsIn(src, srcPath);
 }
 
+// A module can add a PACKAGE DECLARATOR — its own spelling of `class` — by
+// putting the HOW in `EXPORTHOW::DECLARE::<name>`:
+//
+//     my package EXPORTHOW { package DECLARE { constant model = MetamodelX::Red::Model } }
+//
+// after which `model Foo { … }` declares a class whose metaobject is that HOW.
+// The keyword has to be known while the importing file is PARSED, so it is read
+// off the module's source the same way its operators are — see scanOpsIn, whose
+// `sub infix:<…>` scan this sits beside. The alternative spelling assigns the
+// stash slot directly (`EXPORTHOW::DECLARE::<model> = …`), and both are read.
+void Parser::scanDeclaratorsIn(const std::string& src) {
+    auto ident = [&](size_t& i) {
+        size_t b = i;
+        while (i < src.size() && (ascii::isalnum((unsigned char)src[i]) || src[i] == '_' ||
+                                  src[i] == '-' || (src[i] == ':' && i + 1 < src.size() && src[i+1] == ':')))
+            i += src[i] == ':' ? 2 : 1;
+        return src.substr(b, i - b);
+    };
+    auto skipSpace = [&](size_t& i) { while (i < src.size() && ascii::isspace((unsigned char)src[i])) i++; };
+    for (size_t pos = src.find("EXPORTHOW"); pos != std::string::npos;
+         pos = src.find("EXPORTHOW", pos + 9)) {
+        // `EXPORTHOW::DECLARE::<name>` / `EXPORTHOW::DECLARE::{'name'}` — the
+        // stash-slot spelling. The HOW is whatever the assignment names.
+        size_t i = pos + 9;
+        if (src.compare(i, 11, "::DECLARE::") == 0) {
+            i += 11;
+            if (i < src.size() && src[i] == '<') {
+                size_t close = src.find('>', i);
+                if (close == std::string::npos) continue;
+                std::string name = src.substr(i + 1, close - i - 1);
+                size_t eq = src.find_first_not_of(" \t", close + 1);
+                if (eq == std::string::npos || (src[eq] != '=' && src[eq] != ':')) continue;
+                eq = src.find_first_of("=", eq);                  // `=` or `:=`
+                if (eq == std::string::npos) continue;
+                size_t vs = eq + 1; skipSpace(vs);
+                std::string how = ident(vs);
+                if (!name.empty() && !how.empty()) userDeclarators_[name] = how;
+            }
+            continue;
+        }
+        // `package DECLARE { constant name = HOW; … }` — the block spelling.
+        size_t decl = src.find("DECLARE", pos);
+        if (decl == std::string::npos) continue;
+        size_t open = src.find('{', decl);
+        if (open == std::string::npos) continue;
+        int depth = 0; size_t end = open;
+        for (; end < src.size(); end++) {
+            if (src[end] == '{') depth++;
+            else if (src[end] == '}' && --depth == 0) break;
+        }
+        std::string body = src.substr(open + 1, end > open ? end - open - 1 : 0);
+        for (size_t c = body.find("constant"); c != std::string::npos; c = body.find("constant", c + 8)) {
+            size_t j = c + 8;
+            while (j < body.size() && ascii::isspace((unsigned char)body[j])) j++;
+            size_t nb = j;
+            while (j < body.size() && (ascii::isalnum((unsigned char)body[j]) || body[j] == '_' || body[j] == '-')) j++;
+            std::string name = body.substr(nb, j - nb);
+            while (j < body.size() && ascii::isspace((unsigned char)body[j])) j++;
+            if (j >= body.size() || body[j] != '=') continue;
+            j++;
+            while (j < body.size() && ascii::isspace((unsigned char)body[j])) j++;
+            size_t hb = j;
+            while (j < body.size() && (ascii::isalnum((unsigned char)body[j]) || body[j] == '_' ||
+                                       body[j] == '-' ||
+                                       (body[j] == ':' && j + 1 < body.size() && body[j+1] == ':')))
+                j += body[j] == ':' ? 2 : 1;
+            std::string how = body.substr(hb, j - hb);
+            if (!name.empty() && !how.empty()) userDeclarators_[name] = how;
+        }
+    }
+}
+
 void Parser::scanOpsIn(const std::string& src, const std::string& srcPath) {
     opScanned_.push_back({srcPath, src});
     // an operator spelled only in ASCII operator characters is almost certainly a
@@ -613,6 +685,7 @@ void Parser::scanOpsIn(const std::string& src, const std::string& srcPath) {
             else regSet('P', userPostfix_, name);
         }
     }
+    scanDeclaratorsIn(src);
 
     // A SIGILLESS `constant` the module exports is a TERM here, not a listop:
     // `SPACE ~ $word` is a concatenation, and without this it parsed as a call to
@@ -5290,6 +5363,7 @@ ExprPtr Parser::parseEmbeddedExpr(const std::string& src) {
     p.userPostfix_ = userPostfix_;
     p.userCircumfix_ = userCircumfix_;
     p.userPostcircumfix_ = userPostcircumfix_;
+    p.userDeclarators_ = userDeclarators_;
     Program prog = p.parseProgram();
     // a single bare expression interpolates directly
     if (prog.stmts.size() == 1 && prog.stmts[0]->kind == NK::ExprStmt)
@@ -7379,6 +7453,29 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
             }
             continue;
         }
+        // `is <lowercase name>` WITH A TIGHT ARGUMENT is a USER TRAIT, not a
+        // superclass: `unit model Foo is table<sqlite_master>` is how every Red
+        // model names its table, and read as inheritance it died with "cannot
+        // inherit from 'table'". A superclass never carries `<…>`/`{…}`, and the
+        // parenthesised form is a trait too (`is repr("CStruct")` above is the
+        // built-in of exactly that shape).
+        //
+        // A BARE `is name` stays a parent here whatever its case — fez's own
+        // `class auth-response is api-response` is lowercase, and taking that
+        // for a trait cost the child every inherited method. When the name turns
+        // out to name no type, the DECLARATION offers it to `trait_mod:<is>`
+        // before it complains (see the ClassDecl executor), which is where a
+        // bare `is temp` lands.
+        if (!isDoes && isKind(Tok::Ident) && !cur().text.empty() &&
+            ascii::islower((unsigned char)cur().text[0]) &&
+            !peek().spaceBefore &&
+            (peek().kind == Tok::LParen || peek().kind == Tok::LBrace ||
+             peek().kind == Tok::QwList ||
+             (peek().kind == Tok::Op && peek().text == "<"))) {
+            std::string utn = advance().text;
+            cd->userTraits.emplace_back(utn, parsePrimary());
+            continue;
+        }
         if (isKind(Tok::Ident) || isKind(Tok::Var)) {
             std::string t = advance().text;
             if (cd->parent.empty()) { cd->parent = t; cd->parentIsDoes = isDoes; }
@@ -8294,6 +8391,15 @@ StmtPtr Parser::parseStatementImpl() {
             std::string what = advance().text; // class/role/grammar/monitor
             return parseClass(what == "role", what == "grammar", false, /*isUnit=*/true, what);
         }
+        // …and the same for a module-supplied declarator: `unit model Foo;` is
+        // how every one of Red's own models is written.
+        if (kw == "unit" && peek().kind == Tok::Ident && userDeclarators_.count(peek().text)) {
+            advance();                                  // unit
+            std::string what = advance().text;          // the declarator
+            StmtPtr decl = parseClass(false, false, false, /*isUnit=*/true, "class");
+            static_cast<ClassDecl*>(decl.get())->howName = userDeclarators_[what];
+            return decl;
+        }
         // `has` reaches plain statement parsing either outside any class body
         // (an error) or nested in a block within one, e.g. `has` inside a
         // class-body sub, which Rakudo allows (parseClass consumes plain
@@ -8802,6 +8908,18 @@ StmtPtr Parser::parseStatementImpl() {
             else if (kw == "next") { auto c = std::make_unique<NextStmt>(); c->target = tgt; cs = std::move(c); }
             else { auto c = std::make_unique<RedoStmt>(); c->target = tgt; cs = std::move(c); }
             return applyModifiers(std::move(cs));
+        }
+        // A module-supplied package declarator (`model Foo { … }`) declares a
+        // class like any other; only its metaobject differs. Guarded to a shape
+        // that can only be a declaration — a NAME, an anonymous `::`, or a bare
+        // block — so a sub or a method of the same name is untouched.
+        if (userDeclarators_.count(kw) &&
+            (peek().kind == Tok::Ident || peek().kind == Tok::LBrace ||
+             (peek().kind == Tok::Op && peek().text == "::"))) {
+            advance();
+            StmtPtr decl = parseClass(false, false, false, false, "class");
+            static_cast<ClassDecl*>(decl.get())->howName = userDeclarators_[kw];
+            return decl;
         }
         if (kw == "class" || kw == "role" || kw == "monitor" ||
             kw == "grammar" || kw == "module" || kw == "package") {

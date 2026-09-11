@@ -5187,6 +5187,24 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
               (tobj.s == "DateTime" || tobj.s == "Date"))) {
             Value o = Value::array(); o.isList = true; return o;
         }
+        // `T.^foo(…)` IS `T.HOW.foo(T, …)`, and nothing above answered — so ask
+        // the metaobject itself. It matters once the .HOW is more than rakupp's
+        // own: a role mixed into it (`Target.HOW does Extra`, Method::Also's
+        // AliasableClassHOW) or a class declared under a module-supplied HOW put
+        // their methods there and nowhere else. Last, so every built-in
+        // meta-method above keeps its answer.
+        if (tobj.t == VT::Type && !tctx_.metaForwarding.count(mm)) {
+            auto hit = classes_.find(tobj.s);
+            if (hit != classes_.end() && hit->second &&
+                hit->second->howObj.t == VT::Object && hit->second->howObj.obj() &&
+                hit->second->howObj.obj()->cls &&
+                hit->second->howObj.obj()->cls->findMethod(mm)) {
+                ValueList ha; ha.reserve(args.size() + 1);
+                ha.push_back(tobj);
+                for (auto& a : args) ha.push_back(a);
+                return methodCall(hit->second->howObj, mm, ha, rwArgs);
+            }
+        }
         return methodCall(tobj, mm, args, rwArgs);
     }
 

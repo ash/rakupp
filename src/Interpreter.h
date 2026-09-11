@@ -774,6 +774,9 @@ struct ExecContext {
     // CONTAINER? Rakudo's sink does not descend a Scalar to sink its contents,
     // so a statement whose value is one is not sunk at all — see sinkValue.
     bool valContained = false;
+    // Meta-method names currently being forwarded from a metaobject to
+    // `type.^name`: the `^` ladder's .HOW fallback must not send them back.
+    std::set<std::string> metaForwarding;
     uint64_t curLoopFrame = kNoFrame; // frameTop when the innermost native loop body runs
     // Cooperative `when`/`default`/`succeed`: a match in the SAME callable frame
     // as its enclosing given (or loop) body sets givenCtl instead of throwing
