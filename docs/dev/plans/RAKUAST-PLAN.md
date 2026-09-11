@@ -1,6 +1,6 @@
 # RakuAST in rakupp — design note and implementation plan
 
-**Status: scheduled.** Part I (below) is the design note settled 2026-07-31 and
+**Status: approved for implementation (2026-09-11) — Part III has the decision, the refreshed evidence, and the order.** Part I (below) is the design note settled 2026-07-31 and
 re-verified 2026-08-18 — nothing in it is reopened. Part II (second half of this
 document, added 2026-09-01) phases the implementation; the trigger is the
 mainstreaming announcement
@@ -17,7 +17,7 @@ Part I written 2026-07-31 (rakupp v1.5.2+); every measurement and probe below
 re-verified 2026-08-18 against **Rakudo 2026.07** — the newest release at the time —
 and **rakupp 3.14.0**. Nothing in the design changed; the drift in the numbers
 is noted where it happened. (`grep -rn RakuAST src/` was empty then; as of
-2026-09-01 it finds two comment lines, Builtins.cpp:6225-6227, and nothing else.)
+2026-09-01 it finds two comment lines, Builtins.cpp:6866-6868 as of 2026-09-11, and nothing else.)
 
 # Part I — the design note
 
@@ -424,7 +424,7 @@ costs and why the diff has to be run on the tree rather than on `.DEPARSE`.
 # Part II — the implementation plan (2026-09-01)
 
 Phases for the option-B view. This part phases the design above; it does not
-reopen it. Drafted against the sources at v3.23.0+, with every file:line below
+reopen it. Drafted against the sources at v3.23.0+ (Part III re-anchors every citation to v3.26.0 — the numbers in Part II are the 2026-09-01 ones), with every file:line below
 read in the current tree; the plan was then adversarially reviewed on three
 axes (speed, coverage, completeness) and the findings folded in — the build
 seam, the parallel-mode registry, the two-period oracle, and the refusal spec
@@ -566,7 +566,7 @@ that dies; existence and a surface that answers must land together.
 - **Fudge-shield inventory**: rakupp rides Roast's `#?rakudo todo "fixed in
   RakuAST"` shields today (verified: S02-literals/pairs.t:84 is a genuine
   rakupp fail counted as shielded; S09-typed-arrays/hashes.t's `%h{Int}.of`
-  wants Mu, gets Any). Run the ten RakuAST-marked files once with the todo
+  wants Mu, gets Any). Run the eight RakuAST-marked files (13 lines at the pin) once with the todo
   directives stripped and archive which union memberships depend on which
   shields — when the pin advances past 2026.09 and upstream deletes those
   todos, the diff is then pre-explained instead of looking like RakuAST
@@ -590,7 +590,7 @@ that dies; existence and a surface that answers must land together.
 class names exist — constructible, `~~ RakuAST::Node` works, MRO walks — with
 no `.AST` yet. (Not publicly released before P2; see the release-train rule.)
 
-- Parser: capture the `:rakuast` adverb. Today it vanishes both ways — the
+- Parser: capture the `:rakuast` adverb. **Re-checked 2026-09-11: the spaced form already lands in `UseStmt::importArgs` (Parser.cpp:8749-8757 — the `:tag` capture that `use Prompt :prompt` needed), so what remains is the tight `experimental:rakuast` spelling and the lexical scope tracking.** As drafted — the
   spaced form falls through the arg-capture loop (Parser.cpp:7905-7927), the
   tight form is consumed but only `ver` kept (:7897). Push the pair into
   `UseStmt::importArgs` when the module is `experimental`; lexical parse-time
@@ -650,7 +650,7 @@ parse-time surface facts the oracle needs.
   execution cannot contaminate the match run — same filter for P2's output
   comparison.
 - The four surface facts, one constant store each on parse paths already
-  taken, batched into **one** `kAstSerialVersion` bump (15→16, one-time cache
+  taken, batched into **one** `kAstSerialVersion` bump (18→19 as of 2026-09-11 — it was 15 when drafted; one-time cache
   reparse, noted in release notes):
   - `Call::parenned` (sites Parser.cpp:4789/2311 true, 4904 false). The one
     field that cannot hide in padding: sizeof 80→88, nano-malloc bucket
@@ -660,7 +660,7 @@ parse-time surface facts the oracle needs.
   - `Index::angleKey` (angle sites 1924-1994, 2063-2090, 1697-1715) — hole
     @35, sizeof stays 80.
   - `SubDecl::retTypeSpell` ('o'/'r'/'a') at the trait sites 6435-6438 and
-    the sigRetType_ merge at 6278 — hole @191, sizeof stays 368.
+    the sigRetType_ merge at 6278 — hole @191, sizeof stays 400 (re-measured 2026-09-11: the struct grew from 368 since the draft, the hole did not move).
   - Matching `F(io,…)` lines in AstSerial.cpp. While the version bumps anyway,
     verify (and fix if real) the two suspected pre-existing serializer gaps —
     `VarExpr::viaPseudoPkg`/`pseudoPkg` and `Param::userTraits` — so users pay
@@ -797,7 +797,7 @@ P1 answers the `.AST` shape, P2 the rest. Twenty dists, measured against the
 
 - **13 × `L10N::*`** (AF, Complete, CY, DE, EN, FR, HU, IT, JA, NL, PT, TLH,
   ZH) — every one on `No such method 'AST' for invocant of type 'Str'`. One
-  shape, one fix. `L10N::EO` is NOT among them: a heredoc bug, ordinary work.
+  shape, one fix — **corrected 2026-09-11 (Part III, *The L10N family*)**: only `L10N::EN` is a plain parse; the other twelve are localized-keyword parses. `L10N::EO`'s heredoc bug is fixed and it now fails on `.AST` too, making it 14 sweep rows: 13 language dists plus the `L10N::Complete` bundle.
 - **`ASTQuery`** (`lib/ASTQuery/Match.rakumod:36` types on `RakuAST::Node`) and
   **`Acme::Overreact`** behind it.
 - **`RakuAST::Utils`**, **`Rakuast::RakuDoc::Render`**, and the two dists that
@@ -842,9 +842,9 @@ it. Unlike the twenty above, this one is reachable and wanted — `rak` is the
 tool people install — so it is the first entry here that costs something to
 postpone.
 
-What it needs is narrower than the plan: **the construction half only.** It
-never asks `.AST` of existing code (P1), never walks a tree it did not build,
-and never deparses one back for comparison. So P1 and the 1:1 harness are not
+What it needs is narrower than the plan: **mostly the construction half.** It
+asks `.AST` of existing text only for `{ code }` and `/regex/` needles (Part III splits the three needle kinds), never walks a tree it did not build,
+and never deparses one back for comparison. So the 1:1 harness is never
 on its path; P2's renderer and P3's `.EVAL` are, over exactly these 28 classes
 (counted in `lib/Needle/Compile.rakumod`, 0.0.12):
 
@@ -873,7 +873,7 @@ Three facts about how it uses them, read off the code, not assumed:
    and `RakuAST::ColonPair::True.new($name)`. Everything else is keyword
    arguments (`RakuAST::ApplyInfix.new(left => …, infix => …, right => …)`).
 
-Because nothing here reads rakupp's own tree, this subset could even be
+Because string needles never read rakupp's own tree, that subset could even be
 delivered ahead of P1 as a plain Raku module shipped with the engine (the way
 `Data::Native` answers a `use` with nothing installed): 28 classes holding
 their children, one `DEPARSE` per class, `EVAL` = `self.DEPARSE.EVAL` in the
@@ -966,3 +966,392 @@ mistaken for a second RakuAST-class wall until read closely, and shimmed in
 Total first cut (P0-P3): roughly 2,300-3,700 lines, all in parse-archive TUs
 except ~150 lines of gate/capture/arm touches and four bytes of AST fields
 (one of which grows Call 80→88 — the P1 A/B owns proving that neutral).
+
+---
+
+# Part III — the 2026-09-11 review: decision, evidence refreshed, order
+
+Part II phased the work and was left scheduled. This part records the decision
+to build it, refreshes every number Part II leaned on, re-anchors its file:line
+citations to v3.26.0, and — because the tarballs of every blocked dist were
+read for the first time — replaces two claims that turned out to be wrong (the
+L10N family is not "one shape, one fix", and Needle::Compile does ask `.AST`).
+Nothing in Part I's design is reopened; the view-on-demand shape, the DEPARSE
+bridge and the side table stand.
+
+## The decision
+
+**Build it.** The user's call, 2026-09-11, with "too many modules depend on it"
+as the reason. The measurement that goes next to that reason, so nobody later
+mistakes the one for the other:
+
+- By the plan's own ranking (reverse *runtime* dependents over the REA index of
+  2026-09-10, 2,544 dists, latest version per dist) **no blocked dist is in the
+  top 100** — the boundary sits at 7 dependents and the largest count in the
+  blocked closure is **2** (App::Rak, Rakuast::RakuDoc::Render). The top-100
+  battery of 2026-09-03 still carries zero `needs-AST` rows; its only RakuAST
+  column entries are the two `legacy` ones (Text::CSV, Slang::Tuxic).
+- What does hold: `rak` is the one end-user tool whose `rakupp install`
+  reached this wall (Part II, *App::Rak*); Rakuast::RakuDoc::Render is in the
+  fresh-100 (FRESH100-2026-08-20, row 2026-07-29); the blocked authors are the
+  most active cluster in the ecosystem (lizmat: Needle::Compile, RakuAST::Utils,
+  FINALIZER, all 13 L10N dists), and 2026.09 makes RakuAST the default frontend
+  they write against; and the `needs-AST` flag undercounts by construction —
+  the sweep records the *first* error only, so a dist that dies earlier for an
+  ordinary reason is never counted (Rakuast::RakuDoc::Render is exactly that
+  case, below).
+
+So the case is *reachability of tools and of what is coming*, not present
+dependency counts. The release-train rule (P0 never ships without a DEPARSE
+that answers) is unchanged.
+
+## Evidence refreshed
+
+**The sweep** (`docs/dev/findings/ecosweep/sweep-2530.tsv`, 2,530 dists):
+18 rows whose first error names `.AST` or a `RakuAST::` class —
+14 × `L10N::*` (AF, CY, Complete, DE, EN, EO, FR, HU, IT, JA, NL, PT, TLH, ZH;
+all `No such method 'AST' for invocant of type 'Str'`), `Intl::Format::Number`
+(`Undeclared name 'RakuAST::Infix'`), `FINALIZER` (`cannot inherit from
+'RakuAST::StatementPrefix::Phaser::Leave'`), `RakuAST::Utils` (parse error
+inside the module), `Rakuast::RakuDoc::Render`. Two changes against Part II:
+`Intl::Format::Number` joins, and `L10N::EO` joins (its heredoc bug is fixed;
+the next rung is `.AST`). `ASTQuery` (and `Acme::Overreact` behind it) is
+source-verified in raku.online's `rakuast-fallout.raku`, not error-fingerprinted:
+its first error is `Cannot add tokens` in ASTQuery::Actions — ordinary engine
+work sits in front of its RakuAST need.
+
+**The reverse-dependency closure** of the non-L10N seeds, over the same index
+(a scratch script; the phase-hash shape below is handled):
+
+| dist | depth | runtime dependents |
+|---|---|--:|
+| Rakuast::RakuDoc::Render | seed | 2 (Air-Plugin-RakuDoc, Elucid8::Build) |
+| Needle::Compile | seed | 1 (App::Rak) |
+| ASTQuery | seed | 1 (Acme::Overreact) |
+| RakuAST::Utils, FINALIZER, Intl::Format::Number | seed | 0 |
+| App::Rak | 1 | 2 (App::Rak::Markdown, App::Rak::Complete) |
+| Air-Plugin-RakuDoc, Elucid8::Build, Acme::Overreact | 1 | 0 |
+| App::Rak::Markdown | 2 | 1 (IRC::Client::Plugin::Rakkable) |
+| App::Rak::Complete | 2 | 0 |
+| IRC::Client::Plugin::Rakkable | 3 | 0 |
+
+13 dists, plus the 14 L10N rows (`L10N::Complete` is the bundle of the other
+13): **27 dists** wait on this plan. Not "none" — Part II's App::Rak entry was
+already the correction — but not the top lists either.
+
+**A blind spot in the ranking tools, found on the way.** Both rankers
+(raku.online's `sites/modules/tools/rank-runtime.raku`, which produced
+ECOSYSTEM-TOP100.md, and `tools/eco-fresh/rank-deps.raku`) descend a phase
+hash as `{"runtime": [...]}` and never see the other spelling,
+`{"runtime": {"requires": [...]}}` — the shape every lizmat dist uses. Measured
+on the 2026-09-10 index: **94 dists' runtime dependencies are invisible** to
+them. Corrected counts move five dists across the top-100 boundary
+(String::Utils 4→10, Identity::Utils 3→8, PSGI 5→8, paths 3→7,
+Array::Sorted::Util 4→7; JSON::Fast 240→254 at the top) and **none of them is
+a RakuAST user** — the decision above does not change. The fix is a
+one-line descent into `requires`/`recommends` in each tool, filed separately;
+the next ECOSYSTEM-TOP100 refresh should re-rank with it.
+
+## What each blocked dist needs, read from its tarball
+
+Every row below was read from the REA archive tarball (version named), not
+inferred from the sweep's first error.
+
+### Needle::Compile 0.0.12 → App::Rak (three needle kinds, three surfaces)
+
+`compile-needle` dispatches on `implicit2explicit`: a plain string becomes
+`"equal"`, `/…/` becomes `"regex"`, `{…}` / `*.…` becomes `"code"`; there is
+also `"json-path"` (a plain-string `EVAL` of a `use` line — no RakuAST) and
+`"file"`. Everything ends in `wrap-in-block` and `.EVAL` (`$AST ?? $ast !!
+$ast.EVAL`); t/01-basic.rakutest:49 asserts
+`compile-needle("bar", :AST).^name eq "RakuAST::PointyBlock"`.
+
+| needle kind | what it builds or parses | surface |
+|---|---|---|
+| `"equal"` (the default: `rak foo`) | `Var::Lexical('$_')`, `StrLiteral`, `Infix('eq')`, `ApplyInfix`; `Call::Name(nomark)`/`Term::TopicCall(fc)` under `:ignoremark`/`:ignorecase`; `with-matches` | construction + DEPARSE + EVAL — **P2c/P3 only** |
+| `"regex"` (`rak '/ foo /'`) | `"/$i$m $spec /".AST.statements.head.expression` — a **`RakuAST::QuotedRegex`** — then `Ternary`/`ApplyPostfix`/`Call::Method(match)` around it | `.AST` of a regex literal (P1, but a *source-slice* node: its DEPARSE is the literal text, so no regex tree is needed) |
+| `"code"` (`rak '{ .contains("x") }'`) | `$spec.AST(:compunit)` → `RakuAST::CompUnit`; `.statement-list.unshift-statement(...)` | `.AST` of a whole program (P1) + the `StatementList` mutation API |
+| all kinds | `wrap-in-block`: `StatementList.unshift-statement`, `PointyBlock`/`Signature`/`Parameter`/`ParameterTarget::Var`/`Blockoid` | construction |
+
+Rakudo 2026.08 confirms the spellings: `q[/ foo /].AST.statements.head.expression.^name`
+is `RakuAST::QuotedRegex`; `q[say 1].AST(:compunit).statement-list` is a
+`RakuAST::StatementList` that `.^can("unshift-statement")` and answers
+`.statements`. So **string needles — the common case — go green at P2c+P3;
+regex and code needles wait for P1**, and P1 must include `:compunit`, the
+three `StatementList` accessors, and a `QuotedRegex` node that carries its
+source slice.
+
+### The 13 L10N dists: `.AST($lang)` is a localized-keyword parse
+
+Each dist has one test (`plan 1`), and it is not a plain `.AST`. L10N::DE's:
+
+```raku
+my $ast := Q:to/CODE/.AST("DE");
+mein $a = 42;
+wenn $a == 42 {
+    sag "The answer"
+}
+CODE
+$ast.EVAL;
+```
+
+`mein`/`wenn`/`sag` are `my`/`if`/`say`. Only `L10N::EN` is the identity
+translation; the other twelve need the source translated before our parser
+sees it. What a dist ships (generated by Raku/L10N's `update-localization.raku`,
+in a fixed "PLEASE DON'T CHANGE" block): a `role L10N::DE` of **tokens whose
+bodies are single literal words** — in DE, 18 categories: 41 `infix-`,
+18 `phaser-`, 16 `enum-`, 16 `block-`, 13 `stmt-`, 10 `quote-`, 9 `scope-`,
+9 `modifier-`, 7 `traitmod-`, 7 `term-`, 6 `routine-`, 5 `use-`, 5 `package-`,
+3 `multi-`, 3 `meta-`, 2 `typer-`, 2 `prefix-`, 1 `constraint-` — plus
+`core2ast`/`trait-is2ast` methods returning `RakuAST::Name.from-identifier`,
+and a `role RakuAST::Deparse::L10N::DE` whose `xsyn` maps `core-say → sag`
+(that one serves `DEPARSE(:L10N)`, which no test exercises — out of scope,
+recorded). The role **loads under rakupp today**: the sweep's first error is
+the test's `.AST`, not the module.
+
+Design, in Part I's spirit (no grammar hook, no slang — the L10N roles touch
+none):
+
+1. `Str.AST(Str $lang)`: `require L10N::$lang`, then read the table straight
+   out of the role's `ClassInfo::rules` (Value.h:1063 — a token's pattern text
+   is stored as a string, `rules{"block-if"}` is ` wenn`, trim it). No source
+   scan, no new parser: the role is already parsed by the engine.
+2. Invert it into translated→English per category and hand the Lexer a
+   translation table. One lookup where `Tok::Ident` is produced, active only
+   while a table is installed (null-pointer check; zero cost on every path
+   without one). Rakudo's slang tries the localized token first and falls back
+   to English, so both spellings parse — mirror that: translate when the map
+   has the word, otherwise leave it.
+3. Positions that need the map: statement keywords (`block-`, `stmt-prefix-`,
+   `modifier-`, `phaser-`), declarators (`scope-`, `package-`, `routine-`,
+   `typer-`, `multi-`), `use-`, word infixes/prefixes/metas
+   (`infix-`, `prefix-`, `meta-`), traits (`traitmod-`, `trait-is-`),
+   `constraint-where`, terms (`term-now/self/rand/time`), `enum-` names,
+   `core-` routine names in call position, `named-` argument names, `adverb-`
+   names on quotes/regexes/subscripts. Every DE value is a single identifier
+   (hyphens allowed: `hack-linieende`), so the mapping is token-for-token.
+4. `.EVAL` on the result runs the translated program in the caller's scope —
+   P3's path unchanged.
+
+**Gate** (per the probe rule: a probe must be able to fail): `L10N::EN` proves
+nothing — it is the identity. The regression case is DE or NL source covering
+at least `scope-`, `block-`, `core-`, `infix-` and a phaser, asserting the
+program's output; and a deliberately misspelled keyword must **fail** to parse.
+Size ≈150-250 lines (the `.AST($lang)` arm, the table build, the lexer hook);
+sequenced after P1 because it is P1's `.AST` with a pre-pass.
+
+### Intl::Format::Number 0.2.0
+
+Builds formatter trees at run time (67 `ApplyInfix`, 47 `Statement::Expression`,
+46 `Var::Lexical`, 44 `Infix`, 20 `IntLiteral`, 18 `StrLiteral`, …) and runs
+them with **the `EVAL` sub form on a node** — `EVAL format-number-rakuast |c`
+(lib/Intl/Format/Number.rakumod:184) under `MONKEY-SEE-NO-EVAL`. Verified on
+2026.08: `EVAL RakuAST::IntLiteral.new(42)` answers 42. So P3 adds the sub
+form (the `EVAL` builtin accepting a `RakuAST::Node` argument routes to the
+tree path) beside the method. Vocabulary beyond Needle::Compile's 28:
+`Var::Lexical::Constant`, `Initializer::Assign`, `Statement::If`,
+`Statement::For`, `StatementModifier::If`, `IntLiteral`, `Prefix`/`ApplyPrefix`,
+`Type::Simple` — construction-side, into P2c's table.
+
+### RakuAST::Utils 0.0.3
+
+Signature vocabulary only: `Type::{Simple,Parameterized,Definedness,Coercion,Capture}`,
+`Parameter::Slurpy::{Flattened,Unflattened,SingleArgument,Capture}`,
+`ParameterTarget::{Var,Term}`, `Trait::Is`, `Literal`, `Signature`,
+`Parameter`, `ArgList`, `Name` — 17 classes, no `.AST`/`.EVAL`. P4 widening;
+its sweep error is a parse error *inside the module* (line 98), which must be
+diagnosed first — it may be ordinary parser work.
+
+### FINALIZER 0.0.10
+
+`class LeavePhaser is RakuAST::StatementPrefix::Phaser::Leave` plus
+`RakuAST::Block`. Needs the registry classes to be **inheritable** by user
+classes — open item 4 — decided at P0: registry ClassInfos serve as `parent`
+exactly like user ClassInfos (the `is` path at Interpreter.cpp:9268 consults
+`classes_` then `resolveClassAlias`; the registry is the third lookup, after
+both miss).
+
+### ASTQuery 0.0.7 (+ Acme::Overreact)
+
+`.AST` ×6, `.DEPARSE` ×2, `.EVAL`, `visit-children`, `@*LINEAGE` ×5 — P4 —
+**and** `CHECK { my $ast = $*CU.AST; …; $*CU.AST = $ast }`
+(t/12-doc-examples.rakutest:82-98): the mutable compilation unit. That is the
+deferred item, and this is the first module that needs it; it stays deferred
+until ASTQuery's own `Cannot add tokens` failure is out of the way, so the
+question can be asked against a running suite.
+
+### Rakuast::RakuDoc::Render 1.0.18 (+ Air-Plugin-RakuDoc, Elucid8::Build)
+
+A different subtree: `RakuAST::Doc::{Block,Paragraph,Markup,DeclaratorTarget,LegacyRow}`,
+`.rakudoc` on `StatementList`/`Node`, `.paragraphs`/`.set-paragraphs`,
+`.DEPARSE` ×17, `.AST` ×8 — pod represented as RakuAST nodes. Part I's
+vocabulary count (125 classes over 24k nodes) never saw a `Doc::` class because
+the corpus has no pod, so this is unpriced. Its first failure today is
+`use-ok "RakuDoc::Numeration"` — a file with no RakuAST in it (one comment) —
+so RakuAST is **not this dist's first wall**. Price it as its own phase (P5)
+once the ordinary failure is fixed; it is not on the App::Rak or L10N path.
+
+## The order, demand-driven
+
+Part II's phases stand; their order and one split change so that the first
+green arrives earliest:
+
+| step | lands | who goes green |
+|---|---|---|
+| **P0** | pragma gate + registry (with the real ancestor chain, below) | — (never released alone) |
+| **P2c** | the renderer over **constructed** trees — the ~40-class union of Needle::Compile, Intl::Format::Number and RakuAST::Utils — plus the t/12-rakuast slice | — |
+| **P3** | `.EVAL` method + `EVAL $node` sub form + the side table | **App::Rak (string needles), Intl::Format::Number** |
+| **P1** | the `.AST` view, incl. `:compunit`, `statements`/`statement-list`/`unshift-statement`, `QuotedRegex` as a source slice; the round-trip property gate (Part II's P2 harness) joins here, now that there is a view to round-trip | **App::Rak (regex + code needles)** |
+| **P1-L10N** | `.AST($lang)` per *The 13 L10N dists* | **13 L10N dists + L10N::Complete** |
+| **P4** | `visit-children`, `@*LINEAGE`, widening | RakuAST::Utils, FINALIZER, ASTQuery minus CHECK |
+| P5 | the `Doc::` subtree | Rakuast::RakuDoc::Render and its two dependents — priced when reached |
+
+P2c is Part II's P2 without the round-trip harness (which needs P1's view);
+the harness moves to P1. The release-train rule is satisfied at P2c: names
+exist together with a DEPARSE that answers.
+
+**The registry must carry Rakudo's ancestor chain, not a flat parent.**
+`.^mro` is observable, and 2026.08 answers for `IntLiteral`:
+`IntLiteral Literal Term Termish Expression MayCreateBlock Sinkable CheckTime
+CaptureSource CompileTimeValue Node Any Mu`. `~~ RakuAST::Term` and
+`~~ RakuAST::Expression` are the kind of checks a walker writes, so the
+table's `parent` column is the real chain and the intermediate names
+(~20 beyond the head 39) exist as classes with no attributes.
+
+**The t/12-rakuast slice** (rakudo `main`, 47 files, listed 2026-09-11 — the
+local rakudo checkout is from 2020 and has none of it): the construction-side
+files are literals (1.8 KB), name (6.1), operators (15.4), call-name (7.1),
+call-method (10.2), var (50.7), block (6.4), sub (17.0), signature (30.0),
+statement (45.2), statement-mods (16.0), strings (8.8), terms (8.3),
+circumfix (5.8), postfix (22.6), pair (4.9), eval (2.3) — 17 files, ~259 KB.
+Fetch them at a pinned rakudo commit into `t/rakuast/upstream/` with Rakudo's
+LICENSE (Artistic-2.0) beside them, run raw pass/fail per file, and publish
+the counts; at P2c the requirement is throw-clearly-or-render, never crash.
+
+**DEPARSE whitespace, for parity where it is free**: 2026.08 renders a
+`PointyBlock` as `-> $_ {\n    "bar"\n}` — four-space indent, newline after
+the brace. The renderer follows that convention from the start so the
+constructed-tree suite's inline expectations compare byte-for-byte where they
+can.
+
+## Rakudo 2026.08 facts, re-verified 2026-09-11
+
+Rakudo 2026.09 has not shipped (installed: 2026.08; the two-period oracle
+rule applies unchanged). Re-probed today, all as Part II states, plus the new
+ones:
+
+- refusal under 6.d without the pragma is `===SORRY!===` with the verbatim
+  message; `::('RakuAST::IntLiteral')` answers a `Failure`
+- `42.AST`, `<42>.AST` → `RakuAST::StatementList`; `.AST(:compunit)` →
+  `RakuAST::CompUnit`
+- `RakuAST::Name.from-identifier("foo").DEPARSE` → `foo`;
+  `RakuAST::ColonPair::True.new("x").DEPARSE` → `:x`
+- `EVAL RakuAST::IntLiteral.new(42)` (sub form) → 42; the method form and a
+  constructed `$x + 1` against an outer `my $x = 41` → 42
+- `RakuAST::IntLiteral.new(42).raku` → `RakuAST::IntLiteral.new(42)`
+- `RakuAST::Literal.from-value([1,2]).DEPARSE` → `[1, 2]` (the lossy case,
+  unchanged)
+
+rakupp 3.26.0 today: `use experimental :rakuast` is a silent no-op, `.AST` is
+`X::Method::NotFound`, every `RakuAST::` name is `Undeclared name`,
+`try ::("RakuAST::Node")` falls through to the fallback branch, and
+`class RakuAST::Mine {}` works — the exact starting state P0 assumes.
+
+## Re-anchoring Part II to v3.26.0
+
+Every Part II citation, with where it is now. The structural claims were
+re-read at the new sites; where a claim changed, it says so.
+
+| Part II cites | now (2026-09-11) |
+|---|---|
+| Ast.h:45-71 `PublishedOnce` | Ast.h:46-71, unchanged |
+| Ast.h:829-832 `Program::langRev` | Ast.h:928 |
+| Ast.h:124 `Binary::simpleOp` | Ast.h:296 |
+| Ast.h:354 `nameEvalsCode` | Ast.h:354, unchanged |
+| `UseStmt::importArgs` | Ast.h:842 |
+| `VarExpr::viaPseudoPkg`/`pseudoPkg` serializer gap | Ast.h:200-201 exist; no `F()` in AstSerial.cpp — **gap confirmed, still open** |
+| `Param::userTraits` serializer gap | AstSerial.cpp:191-195 — **closed** since the draft |
+| `kAstSerialVersion` 15 | AstSerial.h:23 = **18** (bump to 19) |
+| Interpreter.h:1604 `langRev_` | beside `sixE()` at Interpreter.h:1922 |
+| Interpreter.cpp:4233 `langRev_ = prog.langRev` | 4529 |
+| Interpreter.cpp:5810/5893 module-load save/restore | 6540 (save), 6632 (module's own), 6712/6723/6732 (restore) |
+| Interpreter.cpp:3484 `engageGil` | 3772 |
+| Interpreter.cpp:8613-8621 `use v6.x` in the UseStmt case | `case NK::UseStmt` 8564; revision 8619-8622 — the `:rakuast` flag is set here, from `importArgs` |
+| tail-alias suppressor | 9226-9236 (comment) |
+| `classes_.find` + `resolveClassAlias` miss sites | 9053, 9268 (`is` parent), 9295, 9346, 9419, 10217 (`howName`), 15047 — the registry is consulted after each |
+| Interpreter.cpp:28459-28496 NameTerm known-check | 32596-32650; the X::NoSuchSymbol Failure at 32597-32601 and the **Format/Formatter 6.e gate at 32606-32608 are the two patterns the RakuAST gate copies** |
+| `isKnownTypeName` | 8007 (do not add the prefix there — unchanged rule) |
+| `isPragmaName` | 5601 (`experimental` listed); use sites 5954, 7003 |
+| Builtins.cpp:7075 method-call miss path | MethodCallPart3.cpp:1111 (`X::Method::NotFound`); the Failure form Builtins.cpp:4967 |
+| Builtins.cpp:6225-6227 | 6866-6868 |
+| MethodCallPart3.cpp:430 Cool `EVAL` arm | 492 |
+| Parser.cpp:7905-7927 / 7897 use-arg capture | 8725-8780; the `:tag` capture at 8749-8757 **already stores the spaced `:rakuast`** |
+| Parser.h:244-246 `monkeyScopes_`; push/pop 5517/5527 | Parser.h:272-274; Parser.cpp:5971/5981; set at 8719 |
+| experimental-adverb precedent | Parser.cpp:7214 (`will complain`, parse-only) |
+| Parser.cpp:4789/2311/4904 `Call` sites for `parenned` | `make_unique<Call>` at 1028, 1227, 1267, 1473, 1547, 1559, 1845, 1934, 2004, 2382, 2391, 2423 — **twelve** sites, each decides parens |
+| Parser.cpp:4170 bare-`.` topic synthesis | `VarExpr("$_")` synthesized at 1906, 1949, 1960, 2021, 2300, 2316, 2383 — seven; `synthTopic` goes on the method-call one |
+| Parser.cpp:1924-1994 / 2063-2090 / 1697-1715 angle subscripts | `readAngleWords` in subscript context at 1651, 1914, 2168, 2280 (3153, 3321, 3501, 4451 are other contexts) |
+| Parser.cpp:6435-6438 trait sites, 6278 merge | `sigRetType_` stores 6272, 6689, 6712, 6913; merge 6919; block forms 4497, 4663 |
+| SlimScan.cpp:44-47 | `F_EVAL` enum :46, `Scan::use` :53 |
+| CMakeLists.txt:139 `RAKUPP_PARSE_SOURCES` | 197 (list), 212 (archive) |
+| `src/stubs/stub_eval.cpp` | four throwing doubles (Lexer ctor/`tokenize`, Parser ctor/`parseProgram`); the RakuAst TUs add theirs beside them |
+| `rakujs/build.sh` sweep | :58, `src/*.cpp` minus `main.cpp` and `stubs/` |
+| `Callable::builtin` | Value.h:309 (`BuiltinFn`), :372 (the field), `Value::closure` :763-769; `ClassInfo` 1056 (`methods` 1062, `rules` 1063, `isRole` 1068), `ObjectData` 1186 |
+| gen-6e.raku:48-50 | sites/spec/tools/gen-6e.raku:48-50, unchanged; `rakuast-fallout.raku` at sites/modules/tools/ |
+| Roast pin b2cbe8a42, "ten files" | 13 lines in **8** files; the one real test is S32-str/format.t:52-53 |
+
+Struct sizes, measured with `-fdump-record-layouts` on the v3.26.0 headers
+(arm64, libc++): `Call` 80 (no hole — `parenned` grows it to 88, bucket
+80→96, as Part II says); `VarExpr` 296 (hole @41-47 after `declare`);
+`Index` 80 (hole @35-39 after `semicolonSub`); `SubDecl` **400** (was 368;
+hole @191 after `isPrivate` still there); `MethodCall` 112 (`dsize` 109 —
+the @109-111 tail room for the deferred fifth fact still there).
+
+## Doc-sync anchors, moved
+
+FEATURES.md:38-41 → :45. faq/6e.md is `docs/guide/faq/6e.md`: the gating table
+:139-149 and the `macro` row :389 are where Part II says; the "separate
+campaign" line is :481 (Part II: 475-481); :79, :130 and :515 also mention
+RakuAST. OVERVIEW.md:88 unchanged; HIGHLIGHTS.md:124 → :129;
+ARCHITECTURE.md:352 → :179; PARSING.md no longer mentions RakuAST (drop it
+from the list); METAPROGRAMMING.md:80/85/111 unchanged; dev/README.md:79-86 →
+:87-94, plus :109 (the top-100 flag line); 6E-PLAN.md:104-107 → :7 and :105.
+
+## Open items, refreshed
+
+1. Module-battery checkout / ecosystem source list: the top-100 battery ran on
+   2026-09-03, so a checkout existed then — confirm it is still on this
+   machine before P0's gate 6, rather than re-establishing blind.
+2. The pre-campaign same-arch binary for the A/B leg — unchanged.
+3. Rakudo 2026.09: the four gating probes + oracle re-pin — unchanged (not
+   shipped as of today).
+4. Inheritable registry — **decided above** (FINALIZER): registry ClassInfos
+   are ordinary parents.
+5. AstSerial gaps: `userTraits` closed; `pseudoPkg` open — goes into P1's
+   18→19 bump.
+6. Advancing the Roast pin — unchanged.
+7. No `.AST` perf kernel unless a hook lands — unchanged.
+8. **New**: the rankers' `requires` blind spot — fix both tools, re-rank, and
+   re-read ECOSYSTEM-TOP100's boundary before the next battery.
+9. **New**: `.^mro` parity — the registry carries the real chain; regression
+   case asserts `IntLiteral.^mro` against the 2026.08 list.
+10. **New**: `EVAL $node` sub form (Intl::Format::Number) — P3 scope.
+11. **New**: the `Doc::` subtree — a decision when Rakuast::RakuDoc::Render's
+    ordinary failure is out of the way; unpriced until then.
+12. **New**: `DEPARSE(:L10N)` — no test needs it; recorded, not scheduled.
+
+## Size summary, refreshed
+
+| step | new/changed code | notes |
+|---|---:|---|
+| P0 | ~300-500 lines | as Part II; parser capture already exists, the tight spelling and scope tracking remain; table carries the ancestor chain |
+| P2c | ~900-1,300 lines | renderer over ~40 constructed classes + registry table + the 17-file t/12 slice harness |
+| P3 | ~170-270 lines | Part II's P3 + the `EVAL $node` sub form |
+| P1 | ~950-1,650 lines | Part II's P1 + `:compunit`, the three `StatementList` accessors, `QuotedRegex` as a source slice, and the round-trip harness moved in from P2 |
+| P1-L10N | ~150-250 lines | `.AST($lang)`, table from `ClassInfo::rules`, lexer hook |
+| P4 | ~150 + demand-driven | unchanged |
+| P5 | unpriced | the `Doc::` subtree |
+
+First green (App::Rak string needles, Intl::Format::Number) after
+P0+P2c+P3 ≈ 1,400-2,100 lines; the 13 L10N dists after a further
+≈1,100-1,900.
