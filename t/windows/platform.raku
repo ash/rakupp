@@ -55,6 +55,7 @@ my $child = q:to/END/;
     sub EnumUILanguagesW(&cb (Pointer, int64 --> int32), uint32, int64 --> int32)
         is native('kernel32') { * }
     sub LoadLibraryW(CArray[uint16] --> Pointer) is native('kernel32') { * }
+    sub EnumSystemLocalesW(&cb (Pointer --> int32), uint32 --> int32) is native('kernel32') { * }
     sub GetProcAddress(Pointer, Str --> Pointer) is native('kernel32') { * }
 
     my $font = CreateFontW(-12, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 0, 0, wstr('Segoe UI'));
@@ -77,6 +78,17 @@ my $child = q:to/END/;
     my $u32 = LoadLibraryW(wstr('user32.dll'));
     say "user32=", ($u32.defined && +$u32 != 0) ?? 'loaded' !! 'null';
     say "defwindowproc=", (GetProcAddress($u32, 'DefWindowProcW') andthen (+$_ != 0)) ?? 'found' !! 'null';
+
+    # Does a callback's RETURN value cross back into C? Every check above is
+    # about what goes IN; this is the other direction, and it is invisible
+    # until something acts on it. EnumSystemLocalesW stops the moment its
+    # callback answers false, and a Windows box has dozens of locales — so one
+    # call means the answer never arrived (or arrived as zero), and many means
+    # it did. GUI::Wings needs this: WM_CTLCOLORSTATIC gives a control its
+    # colour through the window procedure's return value alone.
+    my $seen-locales = 0;
+    EnumSystemLocalesW(-> Pointer $name --> int32 { $seen-locales++; 1 }, 2);   # LCID_SUPPORTED
+    say "locale-callbacks=", $seen-locales;
 
     # The lParam we hand in must reach the callback with all 64 bits: 0x1234500000
     # arrives as 0x34500000 through a 32-bit `long`.
@@ -101,6 +113,15 @@ for ('as found', {}), ('fallback', { RAKUPP_FFI => '0' }) -> ($label, %extra) {
     check(%g<font>          // '<none>', 'made', "$label: CreateFontW (14 arguments)");
     check(%g<handle-usable> // '<none>', 'yes',  "$label: a module handle survives the crossing");
     check(%g<user32>         // '<none>', 'loaded', "$label: LoadLibraryW answers a handle");
+    given (%g<locale-callbacks> // '0').Int {
+        when 0  { note "$label: EnumSystemLocalesW never called back — the return path is untested here" }
+        # Reported, not failed, until it has been SEEN once: this gate has to
+        # be able to tell us the answer without turning main red on a guess.
+        when 1  { note "$label: EnumSystemLocalesW called back ONCE, so the callback's `return 1`"
+                     ~ " did not reach C — every callback that answers C by its return value is"
+                     ~ " broken here (WM_CTLCOLORSTATIC is one)" }
+        default { }
+    }
     check(%g<defwindowproc>  // '<none>', 'found',  "$label: that handle still works as one");
     # The callback fires for the system UI language on any Windows; if a runner
     # ever has none, say so rather than passing quietly.
