@@ -75,14 +75,17 @@ Built-in operators that *transform* another operator.
 ## Grammar & AST — the not-yet frontier
 
 The deep end, where a program rewrites its own parser or manipulates the syntax
-tree. This is genuine compiler-internals work and is essentially unimplemented —
-and, notably, the Roast suite barely exercises it (no real `macro` declarations,
-one incidental `RakuAST::` reference), so it is very low-yield to pursue.
+tree. This is genuine compiler-internals work, and the Roast suite barely
+exercises it (no real `macro` declarations, one incidental `RakuAST::`
+reference) — so the reason to build it is ecosystem reach, not test counts: a
+module that uses RakuAST does not degrade here, it hard-fails. The `RakuAST::`
+class hierarchy is in (the names, the ancestry, construction); the four
+operations over it — `.AST`, `.DEPARSE`, `.EVAL`, `visit-children` — are not.
 
 | Feature | Status | Notes |
 |---|:---:|---|
 | `macro` / `quasi { … }` | ✗ | AST macros (`use experimental :macros`) |
-| `RakuAST::…`            | ✗ | programmatic AST construction / introspection |
+| `RakuAST::…`            | ◑ | the classes exist behind `use experimental :rakuast` (or 6.e) — constructible, with Rakudo's own `.^mro`/`.^parents`/`~~`/`.does`; `.AST`, `.DEPARSE` and `.EVAL` do not yet answer ([RAKUAST-PLAN](../dev/plans/RAKUAST-PLAN.md)) |
 | slangs — `$~MAIN`, grammar derivation | ◑ | the slang language-objects (`$~MAIN`/`$~Quote`/`$~Regex`/`$~P5Regex`) exist as defined `Grammar` objects; the grammar can't actually be swapped mid-parse |
 | `no strict` / relaxing pragmas | ◑ | `strict` is lexical and both directions work (`no strict` auto-vivifies undeclared variables, `use strict` turns the check back on); the other relaxing pragmas are accepted and ignored |
 | `use experimental :…`  | ◑ | accepted syntactically; the feature itself is usually a no-op |
@@ -108,8 +111,9 @@ The remaining gaps:
 
 - **Small, self-contained**: the word-form of a user op inside a meta-operator
   (`Zpl`, which lexes as one identifier).
-- **Large frontier** (compiler internals): `macro`/`quasi`, `RakuAST`, and slangs
-  — the mechanisms by which a Raku program rewrites its own grammar.
+- **Large frontier** (compiler internals): `macro`/`quasi`, the four RakuAST
+  operations, and slangs — the mechanisms by which a Raku program rewrites its
+  own grammar. The RakuAST *classes* are the part that exists.
 
 _Snapshot taken against the current build on Darwin 25.5; statuses verified by
 one-liner._

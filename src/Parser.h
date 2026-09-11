@@ -155,6 +155,12 @@ private:
     // interpreter has its own copy for runtime behaviour; this one exists
     // because by the time that one is set, parsing is long over.
     int langRev_ = 1;
+    // `use experimental :rakuast` — recorded at PARSE time, like the revision
+    // above and for the same reason: a module's subs are hoisted before its
+    // mainline runs, so by the time the pragma statement executes the routines
+    // it governs already exist. The interpreter reads this off the Program
+    // before it hoists anything.
+    bool usesRakuAst_ = false;
     // `<|w>` (word) and `<|c>` (codepoint) are the only regex boundaries. Any
     // other name is a typo that 6.c/6.d compile to a silent no-op and 6.e
     // refuses; checked on the pattern source because the regex engine is

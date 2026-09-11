@@ -8713,6 +8713,14 @@ StmtPtr Parser::parseStatementImpl() {
                     if (!literalish) val.clear();
                 }
                 if (adv == "ver") u->verReq = val;
+                // `use experimental:rakuast` — the TIGHT spelling of a pragma
+                // argument lands in THIS loop (the spaced `use experimental
+                // :rakuast` is caught by the `:tag` capture further down), and
+                // only `ver` was ever kept, so the argument was dropped
+                // silently. Valued forms (`:x<1>`) are not a plain request, the
+                // same rule the spaced capture applies.
+                else if (u->module == "experimental" && val.empty())
+                    u->importArgs.push_back(adv);
             }
             if (!u->isNo) scanModuleOps(u->module); // its operators must parse HERE
             if (!u->isNo && u->module.compare(0, 6, "MONKEY") == 0)
@@ -8787,6 +8795,14 @@ StmtPtr Parser::parseStatementImpl() {
                 for (auto& path : paths)
                     if (!path.empty()) libPaths_.insert(libPaths_.begin(), path);
             }
+            // `use experimental :rakuast` — both spellings land in importArgs by
+            // now (the tight one above, the spaced one in the :tag capture), and
+            // the flag has to be on the PROGRAM: a module's subs are hoisted
+            // before its mainline runs, so the pragma statement would execute
+            // too late to govern the routines it is written for.
+            if (u->module == "experimental" && !u->isNo)
+                for (auto& tag : u->importArgs)
+                    if (tag == "rakuast") usesRakuAst_ = true;
             matchKind(Tok::Semicolon);
             return u;
         }
@@ -9235,6 +9251,7 @@ Program Parser::parseProgram() {
     prog.typeNamesOpaque = declTypesOpaque_;
     prog.mayHaveEnd = sawEndPhaser_;
     prog.langRev = langRev_;
+    prog.usesRakuAst = usesRakuAst_;
     return prog;
 }
 

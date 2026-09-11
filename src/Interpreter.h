@@ -1148,7 +1148,11 @@ public:
     Value& accessorRef(Value& base, const std::string& name); // $obj.accessor lvalue (used by codegen)
     Value postfixIPub(Value v) { return postfixI(std::move(v)); } // postfix:<i> (used by codegen)
     void rtUse(const std::string& module, const std::string& arg = "",
-               bool isNo = false); // `use`/`no MODULE` (used by codegen)
+               bool isNo = false,
+               // the `:tag` import arguments — a pragma whose MEANING is in its
+               // tags (`use experimental :rakuast`) is otherwise indistinguishable
+               // from the bare pragma once codegen has emitted the call
+               const std::vector<std::string>& importArgs = {}); // `use`/`no MODULE` (used by codegen)
     Value* lexInfixLookup(const std::string& op);    // the lexical &infix:<op>, name lookup only
     Value* lexShadowedInfix(const std::string& op, const Value& l, const Value& r); // lexical &infix:<op> shadowing a built-in
     Value declInitial(const VarExpr* ve, char sigil); // a declaration's starting value (parameterized types included)
@@ -1925,6 +1929,17 @@ public:
     // per-call revision switch has nothing to do — this lets the call path skip
     // it on a single bool instead of reaching into the callee.
     bool anyRevSwitch_ = false;
+    // `use experimental :rakuast` — whether the RakuAST:: namespace is visible to
+    // the unit being executed. Per compilation unit, like langRev_ below, and
+    // save/restored around a module load beside it: a module that wants the
+    // names says so itself, exactly as Rakudo requires.
+    //
+    // Declared HERE, in the three bytes of padding after anyRevSwitch_, and not
+    // beside langRev_ where it reads better: put after the int it shifts every
+    // later member of Interpreter by eight bytes, and an A/B measured that
+    // re-layout at about +1% across the perf kernels — a cost with no feature
+    // behind it.
+    bool rakuAstPragma_ = false;
     // Subs that 6.e adds to CORE. Under 6.d they must not exist at all — a
     // program that calls one gets "Undefined routine", as it does in Rakudo,
     // where these live in CORE.e and a 6.d unit never loads it.
@@ -1935,6 +1950,17 @@ public:
     // resolves a builtin name unless this revision is not supposed to see it.
     bool builtinVisible(const std::string& n) const { return sixE() || !sixEOnlySub(n); }
     int langRev_ = 1; // language revision: 0=6.c, 1=6.d (default, matches Rakudo), 2=6.e (via `use v6.e.PREVIEW`). Affects e.g. sqrt/roots of negatives -> Complex
+    // Rakudo 2026.08, measured: the pragma is the gate under 6.d, and 6.e sees
+    // the namespace without it. Both spellings are honoured here.
+    bool rakuAstVisible() const { return rakuAstPragma_ || sixE(); }
+    // The refusal, pinned to that same measurement: class X::Experimental, the
+    // message verbatim. Rakudo refuses at COMPILE time (===SORRY!===) and we
+    // refuse at first mention during the walk — the same timing divergence
+    // every evalString-shaped check here has.
+    [[noreturn]] void refuseRakuAst() const {
+        throw RakuError{Value::typeObj("X::Experimental"),
+                        "Use of RakuAST is experimental; please 'use experimental :rakuast;'"};
+    }
     // Redispatch chain for callsame/callwith/nextsame/nextwith: each entry knows how to
     // invoke the NEXT candidate (e.g. a built-in shadowed by a user method) and the
     // current routine's args (for the *same variants).

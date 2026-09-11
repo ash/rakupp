@@ -1,6 +1,7 @@
 # RakuAST in rakupp — design note and implementation plan
 
-**Status: approved for implementation (2026-09-11) — Part III has the decision, the refreshed evidence, and the order.** Part I (below) is the design note settled 2026-07-31 and
+**Status: under implementation — P0 is in the tree (2026-09-11); Part IV is the
+log, Part III has the decision, the refreshed evidence, and the order.** Part I (below) is the design note settled 2026-07-31 and
 re-verified 2026-08-18 — nothing in it is reopened. Part II (second half of this
 document, added 2026-09-01) phases the implementation; the trigger is the
 mainstreaming announcement
@@ -1352,6 +1353,11 @@ from the list); METAPROGRAMMING.md:80/85/111 unchanged; dev/README.md:79-86 →
 11. **New**: the `Doc::` subtree — a decision when Rakuast::RakuDoc::Render's
     ordinary failure is out of the way; unpriced until then.
 12. **New**: `DEPARSE(:L10N)` — no test needs it; recorded, not scheduled.
+13. **New (P0)**: `Program::langRev` has the same cache hole `usesRakuAst` had
+    — the blob carries statements, not the Program's scalar fields, so a
+    module loaded from the precomp cache is hoisted under the IMPORTER's
+    revision rather than its own. Predates this campaign and blocks nothing in
+    it; the same one-line recovery in `deserializeAst` would close it.
 
 ## Size summary, refreshed
 
@@ -1458,3 +1464,219 @@ caveats are in
   round-trip); trees built with `.new` — the App::Rak / Intl::Format::Number
   side — are covered by the t/12-rakuast slice and the modules themselves,
   not by any corpus of source.
+
+---
+
+# Part IV — the implementation log
+
+One section per step as it lands: what is in the tree, where it deviates from
+the plan above and why, and what the work found that the plan did not know.
+
+## P0 — pragma gating + the RakuAST:: registry (landed 2026-09-11)
+
+`use experimental :rakuast` is real, and the `RakuAST::` classes exist:
+constructible, carrying Rakudo's own ancestry, so `~~ RakuAST::Expression`,
+`.^mro`, `.^parents`, `.isa` and `.does` all answer as they do there. No `.AST`,
+no `.DEPARSE`, no `.EVAL` — per the release-train rule this does not ship alone.
+
+**Files.** New: `src/RakuAstClasses.{h,cpp}` (the registry), the generated
+`src/rakuast-classes.inc`, `tools/rakuast-class-table.raku` (the generator),
+`t/regression/rakuast-registry.raku` (30 checks). Touched: Parser.{cpp,h},
+Interpreter.{cpp,h}, Builtins.cpp, MethodCallPart2.cpp, Codegen.cpp,
+AstSerial.cpp, Ast.h, Value.h, SlimScan.cpp, stubs/stub_eval.cpp,
+CMakeLists.txt. ≈540 engine lines against the ~300-500 estimate; the overrun is
+the ancestor closure (below) and the per-routine pragma (below).
+
+### The table is 113 classes, not ~59
+
+The plan budgeted the 39-class head plus ~20 intermediates. Built from the
+measured head instead — the 44 classes covering 95% of raku-corpus's nodes,
+plus every class the blocked dists name, plus **the ancestor closure of both** —
+it comes to 113. The closure is the whole of the overrun and it is not
+optional: `~~ RakuAST::Expression` is what a walker writes, and `Expression` is
+only ever an ancestor.
+
+**The chains cannot be derived, and that was measured, not assumed.** For 44 of
+the 113 classes the linearization is *not* its first parent's chain with a head
+in front — Rakudo's are C3 over roles that each class composes for itself.
+`RakuAST::Literal`'s first parent is `Termish`, while `RakuAST::IntLiteral`,
+which inherits from `Literal`, has `Term` before `Termish`. So the table stores
+each class's whole list, generated from the installed Rakudo, and rakupp
+reproduces rather than recomputes. `.^mro` is the row plus `Any` and `Mu`;
+`.^parents` is the row minus the class itself — both verified byte-for-byte
+against 2026.08 (`MayCreateBlock` and `Node` answer the empty parent list on
+both engines, and `ApplyInfix` keeps `Node` in the *middle* of its mro, ahead of
+`WhateverApplicable`).
+
+**One hook carries all of it.** `typeAncestry()` (Builtins.cpp) already
+delegates the `X::` tree to a generated table for exactly this reason; RakuAST::
+is a second delegation on the same line, after the map miss, so nothing else
+pays for it and `.isa`, `.does`, `~~` on type objects and `lubType` are all
+right without a second table to keep in step. `parent` is the first ancestor and
+`extraParents` the rest, so `findMethod` reaches `RakuAST::Node` (where P2c's
+`.DEPARSE` will live) and an instance type-check finds any ancestor in one
+level. `.does` was the one path that climbed only `parent` and needed the
+ancestry explicitly.
+
+### The pragma is a fact about a ROUTINE, not only about a unit
+
+Part II put a flag beside `langRev_` and save/restored it around module load.
+That is necessary and not sufficient: **a module's subs are hoisted before its
+mainline runs**, so by the time the `use experimental :rakuast;` statement
+executes, the routines it was written to govern already exist — and every
+`RakuAST::` name inside them then refused when the importer called them. Which
+is the entire case the namespace exists to serve (App::Rak calls
+Needle::Compile's `compile-needle`; the RakuAST names are inside *its* body).
+
+So the pragma rides `langRev`'s three existing seams, in all three places:
+
+- `Program::usesRakuAst`, set by the parser — this is Part II's flag, and this
+  is its real reason. Read before `hoistSubs`, at `exec` and at module load.
+- `Callable::rakuAst`, stamped at the four sites that stamp `Callable::langRev`.
+  It lives in the padding after that `int`: `sizeof(Callable)` is 568 before and
+  after, measured.
+- the `anyRevSwitch_`-guarded swap in `callCallableRaw` and `invokeMethod`,
+  which now restores both. The pragma arms `anyRevSwitch_`, so a process that
+  uses neither 6.e nor RakuAST never takes the branch at all.
+
+### The precomp cache silently dropped it — first run green, second run red
+
+`serializeAst` writes a Program's **statements** and none of its scalar fields.
+A cached module therefore came back with `usesRakuAst` false, hoisted its own
+subs as if the pragma were absent, and refused its own names — on the second run
+and every run after, while the first run was green. `deserializeAst` now
+recovers the flag from the statements (the pragma is an ordinary `use`), so a
+deserialized Program answers exactly as a freshly parsed one and no format bump
+was needed.
+
+**The same shape is still open for `Program::langRev`**: a cached module is
+hoisted under the *importer's* revision rather than its own. Nothing in this
+campaign depends on it and it is not a RakuAST regression — it predates this
+work — but it is the same trap one field over. Filed as open item 13.
+
+### Two divergences, pinned by the regression case rather than fixed
+
+- **`--exe` does not refuse an un-pragma'd name.** The native codegen runs no
+  undeclared-name check at all: `say Nonexistent` prints `(Nonexistent)` from a
+  compiled binary today. RakuAST inherits that leniency and nothing about this
+  step should change a general property of that backend. The case asserts both
+  halves, so the day the native backend grows the check it says so instead of
+  going quietly green. What a module's feature probe actually asks — `try
+  ::('RakuAST::Node')` — *is* identical in both, because codegen does not
+  compile `::()` and the unit falls back to the interpreter.
+- **`class RakuAST::Mine {}` keeps working under bare 6.d**, where Rakudo
+  refuses to let a program so much as mention the name. Deliberate, and it is
+  what makes the registry-not-`classes_` decision pay: a user class is found
+  before the gate is ever reached, and shadows a registry class of the same name.
+
+### Smaller findings
+
+- `rtUse` never received a `use` statement's `:tag` arguments — codegen dropped
+  them on the floor, so a compiled program's runtime pragma state could not
+  match the interpreter's. It takes them now.
+- No `experimentalScopes_` in the parser. Nothing at P0 gates at parse time, and
+  unused lexical state is worse than state added when its consumer arrives;
+  it belongs with `.AST`.
+- Four threads each `require`-ing the same module race inside rakupp's
+  module-load publish, RakuAST or no RakuAST. The acceptance case is therefore
+  one worker doing the `require`, plus — for what this step actually needs to
+  prove — eight threads racing the lazy materialization under 6.e, where
+  nothing publishes the registry up front.
+- **Oracle quirk, for the generator:** `::("RakuAST::WhateverCode::Argument")`
+  answers a `Failure` on 2026.08 while the literal name resolves. Nested names
+  do not come out of the symbolic lookup; the generator walks the package stash
+  (`::("RakuAST::WhateverCode").WHO<Argument>`) for anything qualified.
+- SlimScan counts a `RakuAST::` name and the pragma as `eval` uses. Measured:
+  `--slim=auto` on hello still cuts all four features; the same on a
+  two-line RakuAST program cuts three and keeps the parser, and the binary runs.
+
+### The gates, and what the perf leg actually measured
+
+`t/run.raku` 857/857, `t/slim/run.raku` all green (arm64; the x86_64 slice and
+the WASM row are deferred to the end of P2c by decision, since P0 never ships
+alone), `tools/run-optbench.raku` — all nine rows agreeing across interp,
+`--exe`, `--exe -O` and Rakudo. Startup is unchanged (80 interleaved runs:
+best 2.39 → 2.30 ms, median 2.65 → 2.50 ms — the new build measures *faster*,
+which is the size of the noise). Sizes: the CLI 14,788,408 → 14,808,360 bytes
+(+19,952, +0.13%), a non-slim `--exe` hello 10,295,040 → 10,295,472 (+432).
+
+**`perf-guard --check` fails — and fails identically on unmodified HEAD.** On
+this machine today (load 3.4 of 8 cores, the user's own applications) it reports
+`loopsum` and `hash` over tolerance for the P0 build *and* for the clean
+baseline binary built from 95be351. The recorded baseline is `2026-09-01
+(v3.24.0)` — v3.27.0 shipped without re-recording it, and shipped
+[#79](https://github.com/ash/rakupp/issues/79), the unlocated ~10% call-path
+regression, beside it. So the gate's own answer here is standing debt, not an
+answer about this change; the A/B is what resolves it.
+
+**The A/B, and its controls.** `tools/perf-guard.raku` timings, nine interleaved
+rounds per pair (a scratch driver alternates the two binaries inside each round,
+so drift lands on both sides), medians compared:
+
+| pair | mean | worst kernel |
+|---|--:|--:|
+| a binary against ITSELF (the floor) | +0.07% | ±1.5% |
+| baseline + one unused byte in `Callable` (pure recompile) | +0.23% | +1.5% |
+| baseline + the registry TU linked and one never-taken call (**no behaviour**) | **+0.62%** | +1.7% |
+| baseline vs P0 | **+1.24%** | +2 to +5%, varying by sitting |
+
+So about half of P0's measured cost is carried by a control that runs no new
+code at all; the residual is ~0.6% spread across every kernel, with no kernel
+carrying it consistently, against a harness whose floor on the mean is ±0.2%.
+(Read the +0.62% row against what #79's own investigation found — displacing
+107 lines of never-called code WITHIN a translation unit moved `fib` by 0.4%.
+That control moved code inside a TU; this one adds a TU to the link, which is
+a different perturbation, and neither says the effect is imaginary.)
+That is the 6E campaign's result over again ("about 1% uniform, at the noise
+floor"), and it is as far as this machine can resolve it. **Open: re-run
+`--check` and the A/B on an idle machine before the phase that ships this.**
+
+**Three localized hypotheses, each killed by measurement** — worth recording
+because each was plausible and each was wrong:
+
+1. *The widened `RevGuard`* (it now restores the pragma beside the revision, so
+   it is two words bigger and is constructed on every call). Isolated A/B of the
+   two builds that differ only in it: **−0.14% mean**, signs both ways. Free.
+2. *A `shared_ptr` local in the type-invocant method arm.* Rewritten to a raw
+   pointer into the registry (which is the better code and was kept): the mean
+   did not move. Not it either.
+3. *The new `Interpreter` field.* This one was half right — declared after
+   `int langRev_` it did not fit the padding and pushed every later member of a
+   2,336-byte object along by eight, and `sizeof(Interpreter)` said so. Moved
+   into the three bytes after `anyRevSwitch_`, the size is identical to baseline
+   again and `objnew` came back from +4.2% to +2.1%. The declaration reads worse
+   where it now sits, which is why the comment there says why.
+
+### Doc sync, and what was deliberately NOT flipped
+
+Synced: METAPROGRAMMING.md (the `RakuAST::…` row is now ◑ and says which half
+is in), ARCHITECTURE.md (the grammar-mutating-layer sentence names the four
+operations rather than the whole namespace), dev/README.md (the plan's entry
+says "under construction", with the order), faq/6e.md (the `RakuAST` section
+says what rakupp answers today, and the "deliberately not done" bullet says the
+campaign is under way and why the live matrix row has not moved).
+
+**Not flipped, on purpose:** guide/OVERVIEW.md and guide/HIGHLIGHTS.md keep
+`RakuAST` in their "not there yet" lists. Those lists answer *what can a reader
+do*, and at P0 the answer is still nothing: no `.AST`, no `.DEPARSE`, no
+`.EVAL`. They move when the renderer answers. Same for the live 6.e matrix,
+whose probe is `RakuAST::IntLiteral.new(42).DEPARSE`.
+
+### Roast, three runs at the pin
+
+`b2cbe8a42`, `--workers=2` (what the v3.27.0 lists were taken at), 1,464 files:
+**670 / 670 / 669** fully passing. Runs 1 and 2 produced byte-identical file
+lists; run 3 lost `S17-scheduler/basic.t`, which the union keeps.
+
+- `comm -23 v3.27.0-union p0-union` — **empty**, and so is the other direction.
+  The union is the same 670 files v3.27.0's four runs produced.
+- Per-file pass counts against the best of v3.27.0's four archived runs
+  (`rc-work/release-3.27/roast-run*.txt`): **zero files dropped**. One file is
+  in the older runs and not in these — `S17-lowlevel/cas.t`, which timed out in
+  two of those four runs as well.
+- The canary holds: `S32-str/format.t` still reads `1/1` — it aborts at test 2,
+  exactly as the entry criteria recorded, so no phase has leaked behaviour into
+  the one Roast file that executes a `RakuAST::` name.
+
+Lists and per-file output are under `rc-work/rakuast-p0/` (scratch, not a
+release measurement — `docs/status/roast-lists/` is one file per release).

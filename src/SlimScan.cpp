@@ -33,6 +33,7 @@
 #include "Lexer.h"
 #include "Parser.h"
 #include "Unicode.h"
+#include "RakuAstClasses.h"
 
 #include <set>
 
@@ -78,6 +79,11 @@ struct Scan {
         if (n == "infix:<unicmp>" || n == "infix:<coll>" ||
             n == "[unicmp]" || n == "[coll]") use(F_COLL, "a " + n + " reference");
         if (nameEvalsCode(n)) { use(F_EVAL, n); trigger("EVAL"); }
+        // A `RakuAST::` name reaches the class registry, which rides the parse
+        // archive because `.AST` IS the parser. Naming one is therefore an eval
+        // use — a slim hello binary contains none of it, and a program that
+        // touches the namespace keeps its parser instead of finding the stub.
+        if (isRakuAstName(n)) use(F_EVAL, n);
         // The builtin Test module's dynamic loaders: use-ok requires a module
         // AT RUN TIME (a require in sub's clothing — found by the battery leg
         // of the differential: a slim'd 01-load.t threw where full passed),
@@ -445,6 +451,11 @@ struct Scan {
             case NK::UseStmt: {
                 auto* u = static_cast<UseStmt*>(s);
                 if (!u->module.empty() && !u->isNo) useNames.insert(u->module);
+                // `use experimental :rakuast` asks for the class registry, which
+                // lives in the parse archive — same reason as a RakuAST:: name.
+                if (u->module == "experimental" && !u->isNo)
+                    for (auto& tag : u->importArgs)
+                        if (tag == "rakuast") use(F_EVAL, "use experimental :rakuast");
                 walkE(u->argExpr.get());
                 break;
             }

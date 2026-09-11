@@ -197,7 +197,10 @@ set(RAKUPP_UCD_PROPS_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/unicode_scripts_ge
                              "${CMAKE_CURRENT_SOURCE_DIR}/src/unicode_blocks_gen.cpp"
                              "${CMAKE_CURRENT_SOURCE_DIR}/src/unicode_bidi_gen.cpp")
 set(RAKUPP_PARSE_SOURCES     "${CMAKE_CURRENT_SOURCE_DIR}/src/Lexer.cpp"
-                             "${CMAKE_CURRENT_SOURCE_DIR}/src/Parser.cpp")
+                             "${CMAKE_CURRENT_SOURCE_DIR}/src/Parser.cpp"
+                             # `.AST` IS the parser, so the RakuAST:: registry
+                             # rides the same archive and the same stub seam.
+                             "${CMAKE_CURRENT_SOURCE_DIR}/src/RakuAstClasses.cpp")
 # The stubs (P3) are the OTHER half of the seam — throwing doubles linked in
 # place of a feature's real archive when --slim cuts it. They must never sit
 # in the same link as the real thing (an ODR violation waiting for a

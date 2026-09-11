@@ -91,8 +91,9 @@ Earlier plans:
   compiler, and the one case where that text bridge is lossy — plus what a
   node-for-node 1:1 match with Rakudo's own `.AST` would cost, and why that diff
   has to run on the tree (Rakudo's `.DEPARSE` and `.raku` both die on
-  `RakuAST::Regex::Nested`). Numbers re-verified 2026-08-18; deferred, not built,
-  and postponed again the same day.
+  `RakuAST::Regex::Nested`). Approved 2026-09-11 and under construction: P0 (the
+  pragma gate and the class registry) is in; the order after it is P2c → P3 → P1
+  → P1-L10N → P4, and Part III says which dist each step unblocks.
 - **[plans/LIBFFI-PLAN.md](plans/LIBFFI-PLAN.md)** — moving NativeCall onto
   `libffi`: where NativeCall was, what libffi bought, and the measurements behind
   each decision (why `dlopen` rather than link or vendor, why one marshaller

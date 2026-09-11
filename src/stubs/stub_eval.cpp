@@ -12,6 +12,7 @@
 #include "../ucd_seam.h"
 #include "../Lexer.h"
 #include "../Parser.h"
+#include "../RakuAstClasses.h"
 
 namespace rakupp {
 
@@ -27,5 +28,21 @@ Parser::Parser(std::vector<Token>) {
 Program Parser::parseProgram() {
     featureMissing("eval", "EVAL/require/runtime-compiled regexes (the parser)");
 }
+
+// The RakuAST:: registry (RAKUAST-PLAN P0) rides the same archive, for the same
+// reason: `.AST` IS the parser, so a cut binary that meets a RakuAST name fails
+// exactly where it would have failed on an EVAL. SlimScan counts a `RakuAST::`
+// name as an eval use, so a program that needs these keeps its parser and never
+// links this file.
+const std::shared_ptr<ClassInfo>* rakuAstClass(const std::string&) {
+    featureMissing("eval", "the RakuAST:: classes");
+}
+const std::vector<std::string>& rakuAstAncestry(const std::string&) {
+    featureMissing("eval", "the RakuAST:: classes");
+}
+// …but materializing is an OPTIMISATION (the unit said it will need them, so
+// build on this thread rather than in a worker). A cut binary simply skips it
+// and lets the refusal land on the name itself, where the message belongs.
+void rakuAstMaterialize() {}
 
 }

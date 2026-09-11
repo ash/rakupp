@@ -33,6 +33,7 @@ static char** rakupp_environ() { return environ; }
 #include "Parser.h"
 #include "Unicode.h"
 #include "BuiltinsShared.h"
+#include "RakuAstClasses.h"
 #include <algorithm>
 #include <climits>
 #include <cctype>
@@ -2253,8 +2254,20 @@ size_t rtPosCount(const ValueList& a, size_t from) {
 
 // `use MODULE` for native codegen: mirror exec(UseStmt) — Test flag, language
 // pragma, lib paths, real module loading into the runtime env.
-void Interpreter::rtUse(const std::string& module, const std::string& arg, bool isNo) {
+void Interpreter::rtUse(const std::string& module, const std::string& arg, bool isNo,
+                        const std::vector<std::string>& importArgs) {
     if (module == "Test") { usedTest_ = true; return; }
+    // `use experimental :rakuast`, as the interpreter's UseStmt arm does it.
+    // The parse-time flag on the Program governs hoisted routines; this one is
+    // the running unit's own state, which an EVAL inside compiled code reads.
+    if (module == "experimental" && !isNo) {
+        for (auto& tag : importArgs)
+            if (tag == "rakuast") {
+                rakuAstPragma_ = true; anyRevSwitch_ = true; rakuAstMaterialize();
+            }
+        // …and then takes its ordinary road, as the interpreter arm does:
+        // `experimental` has no file behind it and the load below knows that.
+    }
     // `no strict` / `use strict`, as the interpreter's own UseStmt arm does it.
     // Compiled code resolves an auto-vivified NAME statically (codegen emits
     // laxVarRef for it), so this flag is here for what compiled code hands back
@@ -4527,6 +4540,10 @@ int Interpreter::run(Program& prog) {
     // was too late for anything hoisted — every sub in the unit is created
     // before the mainline starts, and was being stamped 6.d.
     langRev_ = prog.langRev;
+    // …and the pragma the parser recorded, BEFORE the subs below are hoisted:
+    // each one is stamped with it, and a routine declared under the pragma
+    // keeps the namespace open in its own body wherever it is called from.
+    if (prog.usesRakuAst) { rakuAstPragma_ = true; anyRevSwitch_ = true; rakuAstMaterialize(); }
     if (prog.langRev != 1) anyRevSwitch_ = true;
     unitPush(&prog);
     struct UnitGuard { Interpreter& I; ~UnitGuard() { I.unitPop(); } } unitG{*this};
@@ -6538,6 +6555,9 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
         // running at that revision — Test::Util's own `use v6;` was silently
         // re-versioning every Roast file that loads it.
         int savedLangRev = langRev_;
+        // …and so is the RakuAST pragma: a module that wants the names has to
+        // ask for them itself, and must not leak them back to its importer.
+        bool savedRakuAst = rakuAstPragma_;
         auto publish = [&] {
             // The EXPORT packages themselves must NAME something, or
             // `::('Mod::EXPORT::ALL')` finds no symbol to ask .WHO of.
@@ -6630,6 +6650,10 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
         bool savedDoImport = moduleDoImport_; moduleDoImport_ = doImport;
         try {
             langRev_ = prog->langRev;   // the module's own revision, not the importer's
+            // …and its own pragmas, not the importer's. The parser recorded the
+            // pragma, so it is in force before hoistSubs stamps the routines.
+            rakuAstPragma_ = prog->usesRakuAst;
+            if (rakuAstPragma_) { anyRevSwitch_ = true; rakuAstMaterialize(); }
             if (prog->langRev != 1) anyRevSwitch_ = true;
             hoistSubs(prog->stmts);
             // A module is a compilation unit too, so its INIT phasers run ONCE,
@@ -6709,7 +6733,7 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
         catch (RakuError& e) {
             loadingModuleDepth_--; moduleDoImport_ = savedDoImport;
             publish();
-            tctx_.cur = saved; curPkgEnv_ = savedPkg; finishData_ = savedFinish; tctx_.pkgPrefix = savedModPrefix; langRev_ = savedLangRev;
+            tctx_.cur = saved; curPkgEnv_ = savedPkg; finishData_ = savedFinish; tctx_.pkgPrefix = savedModPrefix; langRev_ = savedLangRev; rakuAstPragma_ = savedRakuAst;
             // A module that THROWS while loading is fatal, for the same reason a
             // missing or unparseable one is: its remaining BEGIN blocks and exports
             // never happen, so what the importer gets is a half-built module that
@@ -6720,7 +6744,7 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
             // that nothing exploded.
             throw;
         }
-        catch (...) { loadingModuleDepth_--; moduleDoImport_ = savedDoImport; tctx_.cur = saved; curPkgEnv_ = savedPkg; finishData_ = savedFinish; tctx_.pkgPrefix = savedModPrefix; langRev_ = savedLangRev; throw; }
+        catch (...) { loadingModuleDepth_--; moduleDoImport_ = savedDoImport; tctx_.cur = saved; curPkgEnv_ = savedPkg; finishData_ = savedFinish; tctx_.pkgPrefix = savedModPrefix; langRev_ = savedLangRev; rakuAstPragma_ = savedRakuAst; throw; }
         loadingModuleDepth_--; moduleDoImport_ = savedDoImport;
         // JSON::Fast's to-json/from-json get a native fast path (Builtins.cpp:
         // wrapJsonFastExports) — wrapped in the MODULE env before publishing,
@@ -6729,7 +6753,7 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
         // publishes whatever it managed, and wrapping half a module helps nobody.
         if (name == "JSON::Fast") wrapJsonFastExports(*moduleEnv);
         publish();
-        tctx_.cur = saved; curPkgEnv_ = savedPkg; finishData_ = savedFinish; tctx_.pkgPrefix = savedModPrefix; langRev_ = savedLangRev;
+        tctx_.cur = saved; curPkgEnv_ = savedPkg; finishData_ = savedFinish; tctx_.pkgPrefix = savedModPrefix; langRev_ = savedLangRev; rakuAstPragma_ = savedRakuAst;
         // `sub EXPORT(*@_)` protocol: call it with the use-statement's <...>
         // args; its returned Map ('&name' => &code, ...) defines the imports
         // in the USING scope.
@@ -8576,6 +8600,31 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 if (tctx_.cur) tctx_.cur->strictPragma = u->isNo ? 1 : -1;
                 return Value::any();
             }
+            // `use experimental :rakuast` — the one experimental feature rakupp
+            // acts on. Every other `:tag` stays the silent no-op it has always
+            // been (`:cached`, `:pack`, …), so the capture the parser now makes
+            // for this module changes nothing else.
+            //
+            // Building the registry HERE, rather than at the first name, is
+            // deliberate: the pragma sits at the top of its unit, so the single
+            // atomic publish happens on the thread that asked for it instead of
+            // in whichever worker first misses. It is only an optimisation —
+            // the publish is a compare-exchange and is safe from any thread.
+            if (u->module == "experimental" && !u->isNo) {
+                for (auto& tag : u->importArgs)
+                    if (tag == "rakuast") {
+                        rakuAstPragma_ = true;
+                        // The per-call switch that carries the pragma into a
+                        // module's own routines rides anyRevSwitch_, so opening
+                        // the namespace arms it exactly as `use v6.e.PREVIEW`
+                        // does. A process that opens neither never pays it.
+                        anyRevSwitch_ = true;
+                        rakuAstMaterialize();
+                    }
+                // …and the statement then takes its ordinary road: `experimental`
+                // is a name loadModule already knows has no file behind it, so
+                // nothing else about the pragma changes.
+            }
             // `use NativeCall` is a pragma here — the FFI is native to the compiler,
             // so no module file declares the PACKAGE or its EXPORT stash. Suites
             // introspect both (NativeLibs' 01-basic walks
@@ -8717,6 +8766,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 c.code()->params = prms;
                 c.code()->body = &sd->body;
                 c.code()->langRev = langRev_;
+                c.code()->rakuAst = rakuAstPragma_;
                 c.code()->closure = tctx_.cur;
                 c.code()->retType = sd->retType;
                 c.code()->retRw = sd->retRw;
@@ -9016,6 +9066,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     code.code()->pod = md->pod;
                     code.code()->body = &md->body;
                     code.code()->langRev = langRev_;
+                    code.code()->rakuAst = rakuAstPragma_;
                     code.code()->closure = tctx_.cur;
                     code.code()->isMethod = true;
                     code.code()->declFile = declFileNow();
@@ -9682,6 +9733,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 code.code()->retRw = md->retRw;
                 code.code()->body = &md->body;
                 code.code()->langRev = langRev_;
+                code.code()->rakuAst = rakuAstPragma_;
                 code.code()->closure = bodyEnv;
                 code.code()->isMethod = true; // invoked via .() binds the 1st arg as self
                 code.code()->declFile = declFileNow();
@@ -11196,6 +11248,7 @@ Value Interpreter::makeClosure(BlockExpr* be) {
     code.code()->params = &be->params;
     code.code()->body = &be->body;
     code.code()->langRev = langRev_;
+    code.code()->rakuAst = rakuAstPragma_;
     code.code()->closure = tctx_.cur;
     code.code()->isBlock = !be->isSub; // a bare { } / pointy block is a Block; `sub {…}` stays a Sub
     // `my $m = method ($inv: $p) {…}` — an anonymous METHOD takes its invocant as the
@@ -16078,14 +16131,20 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     // module case that makes gating the 6.e additions safe at all. Runtime-made
     // callables (langRev < 0) keep the ambient revision, which is what they
     // want: a WhateverCode built in 6.e code is 6.e code.
+    // The RakuAST pragma rides the same guard and the same anyRevSwitch_ latch
+    // (the pragma sets it), so a program that uses neither never takes this
+    // branch at all.
     struct RevGuard {
         int& slot; int saved; bool active;
-        ~RevGuard() { if (active) slot = saved; }
-    } revG{langRev_, langRev_, false};
+        bool& ast; bool savedAst;
+        ~RevGuard() { if (active) { slot = saved; ast = savedAst; } }
+    } revG{langRev_, langRev_, false, rakuAstPragma_, rakuAstPragma_};
     if (anyRevSwitch_ && codeVal.t == VT::Code && codeVal.code() &&
-        codeVal.code()->langRev >= 0 && codeVal.code()->langRev != langRev_) {
+        codeVal.code()->langRev >= 0 &&
+        (codeVal.code()->langRev != langRev_ || codeVal.code()->rakuAst != rakuAstPragma_)) {
         revG.active = true;
         langRev_ = codeVal.code()->langRev;
+        rakuAstPragma_ = codeVal.code()->rakuAst;
     }
     Value* topicWB = topicWriteback_; topicWriteback_ = nullptr; // one-shot, consumed here
     const std::vector<Value*>* rwSlots = pendingRwSlots_; pendingRwSlots_ = nullptr; // one-shot too
@@ -17254,13 +17313,19 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
     // The revision the callee was COMPILED under governs its body — the sub
     // path's rule (callCallableRaw); a 6.e module's METHODS ran under the
     // caller's revision while its subs ran under 6.e.
+    // The RakuAST pragma rides the same guard and the same anyRevSwitch_ latch
+    // (the pragma sets it), so a program that uses neither never takes this
+    // branch at all.
     struct RevGuard {
         int& slot; int saved; bool active;
-        ~RevGuard() { if (active) slot = saved; }
-    } revG{langRev_, langRev_, false};
-    if (anyRevSwitch_ && codeVal.code()->langRev >= 0 && codeVal.code()->langRev != langRev_) {
+        bool& ast; bool savedAst;
+        ~RevGuard() { if (active) { slot = saved; ast = savedAst; } }
+    } revG{langRev_, langRev_, false, rakuAstPragma_, rakuAstPragma_};
+    if (anyRevSwitch_ && codeVal.code()->langRev >= 0 &&
+        (codeVal.code()->langRev != langRev_ || codeVal.code()->rakuAst != rakuAstPragma_)) {
         revG.active = true;
         langRev_ = codeVal.code()->langRev;
+        rakuAstPragma_ = codeVal.code()->rakuAst;
     }
     // A wrapped method runs its wrapper stack first, exactly as callCallable
     // does for subs (`K.^find_method('add-tap').wrap: -> \s, |q {…}` —
@@ -32586,6 +32651,36 @@ Value Interpreter::eval(Expr* e) {
                 // (`G.parse($s, :actions(actions))`) — build it now, as a method
                 // call on it already does
                 if (!known && materializePendingType(rn)) known = true;
+                // The RakuAST:: namespace, after every ordinary way of knowing
+                // the name has failed — so a user's own `class RakuAST::Mine`
+                // is never gated, whether it was declared above this line
+                // (`classes_`) or below it (the pending-type build just above,
+                // which reads the unit's statements and therefore answers the
+                // same from the AST cache as from a fresh parse). What is left
+                // is Rakudo's own tree classes.
+                //
+                // The gate runs BEFORE the registry is consulted, on both the
+                // plain and the symbolic path, so the refusal never depends on
+                // whether the table happens to carry the name.
+                if (!known && isRakuAstName(rn)) {
+                    if (!rakuAstVisible()) {
+                        // …and the symbolic form answers a Failure carrying the
+                        // same exception, exactly as Rakudo's does — `try
+                        // ::('RakuAST::Node')` is how a module asks whether the
+                        // namespace is there at all, and a control jump would
+                        // break the probe it is written as.
+                        if (nt->symbolicStrict) {
+                            Value f = rakuppNewFailure();
+                            (*f.hash())["exception"] = Value::typeObj("X::Experimental");
+                            (*f.hash())["message"] =
+                                Value::str("Use of RakuAST is experimental; "
+                                           "please 'use experimental :rakuast;'");
+                            return f;
+                        }
+                        refuseRakuAst();
+                    }
+                    if (rakuAstClass(rn)) return Value::typeObj(rn);
+                }
                 if (!known && nt->symbolicStrict) {
                     // …and the refusal is a Failure, not a throw: Rakudo's
                     // ::('NoSuch') hands back a broken Failure whose

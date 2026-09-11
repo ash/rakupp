@@ -1,6 +1,7 @@
 #include "CNumeric.h"
 #include "AsciiCtype.h"
 #include "BuiltinsShared.h" // timerRemainingSecs — Promise.in/.at state is time-derived
+#include "RakuAstClasses.h"
 #include "MethodCallSegment.h"
 #include <chrono> // DateTime.now subsecond stamp (portable — MSVC has no sys/time.h)
 #if !defined(_WIN32)
@@ -2844,6 +2845,17 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         }
         if (m == "parents" && !classes_.count(inv.s)) { // built-in type: () by default, full chain with :all
             Value out = Value::array(); out.isList = true;
+            // …but a RakuAST:: class answers its whole chain unadorned, the way
+            // Rakudo does — `RakuAST::IntLiteral.^parents` is ten names, and the
+            // `.^mro` arm above is that list with the class in front. A class
+            // with no ancestors (RakuAST::Node, the punned roots) answers the
+            // empty list there too, so nothing special is needed for it.
+            if (isRakuAstName(inv.s)) {
+                const auto& anc = rakuAstAncestry(inv.s);
+                for (size_t i = 1; i + 2 < anc.size(); i++)   // minus self, minus Any/Mu
+                    out.arr()->push_back(Value::typeObj(anc[i]));
+                return out;
+            }
             bool all = false;
             for (auto& a : args) if (a.t == VT::Pair && a.s == "all" && (!a.pairVal() || a.pairVal()->truthy())) all = true;
             if (all) { bool self = true;
@@ -2894,8 +2906,18 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             }
         }
         auto cit = classes_.find(inv.s);
-        if (cit != classes_.end()) {
-            auto ci = cit->second;
+        // …and, only once `classes_` has missed, the RakuAST:: registry: its
+        // ClassInfos are ordinary classes, so `.new`, `.^mro`, `.^parents` and
+        // method dispatch all come out of this same arm rather than needing a
+        // parallel one. (A user's own `class RakuAST::Mine` was found above.)
+        // (A POINTER into the registry, not a shared_ptr local: this arm is on
+        // the ordinary method-call path, and a local shared_ptr here — built and
+        // torn down whether or not it is ever used — measured as ~4% on object
+        // construction.)
+        const std::shared_ptr<ClassInfo>* astCi =
+            cit == classes_.end() && isRakuAstName(inv.s) ? rakuAstClass(inv.s) : nullptr;
+        if (cit != classes_.end() || astCi) {
+            auto ci = cit != classes_.end() ? cit->second : *astCi;
             // A user-declared META-METHOD — `method ^parameterize(Mu:U \obj, **@pos)`
             // — answers the `.^name(…)` call on its type. Rakudo hands the type in
             // as the first positional (the invocant is the HOW), which is the
@@ -5437,6 +5459,11 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         else for (auto& a : typeAncestry(c->nativeParent))
                             if (a == rn) { res = true; break; }
                     }
+            // …and a RakuAST:: node does every name in the linearization the
+            // registry carries. Those ancestors are extraParents, which this
+            // walk does not climb, and `.does` is half of Test's isa-ok.
+            if (!res && isRakuAstName(ci->name))
+                for (auto& a : rakuAstAncestry(ci->name)) if (a == rn) { res = true; break; }
         }
         // a BUILT-IN value does the roles its ancestry lists (`Date.does(Dateish)`)
         if (!res && !ci)

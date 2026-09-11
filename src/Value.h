@@ -356,6 +356,13 @@ struct Callable {
     // calls it, and a 6.d module must not acquire 6.e ones by being `use`d
     // from a 6.e program.
     int langRev = -1;
+    // …and, in the four bytes the int above leaves padded, whether the routine
+    // was declared under `use experimental :rakuast`. Same rule, same reason:
+    // a module that opened the RakuAST:: namespace keeps it open inside its own
+    // routines when a program that never asked for it calls them — which is the
+    // whole case the namespace exists to serve. Swapped in beside langRev, on
+    // the same guard, so a process where neither feature appears pays nothing.
+    bool rakuAst = false;
     std::shared_ptr<Env> closure;
     // `state` storage and the flag that publishes it, held together so that a
     // COPY of a routine starts with neither. `&f.clone` is a new routine and

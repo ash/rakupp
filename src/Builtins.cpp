@@ -26,6 +26,7 @@
 #include "Regex.h"
 #include "MethodName.h"
 #include "BuiltinsShared.h"
+#include "RakuAstClasses.h"
 #include "BuildInfo.h"
 #include <algorithm>
 #include <atomic>
@@ -247,6 +248,12 @@ const std::vector<std::string>& typeAncestry(const std::string& t) {
     auto it = A.find(t);
     if (it != A.end()) return it->second;
     if (t.rfind("X::", 0) == 0) return exceptionAncestry(t);
+    // Rakudo's own tree classes, from the registry's measured table — the same
+    // delegation the X:: tree gets, and for the same reason: the hierarchy is
+    // defined elsewhere and reproduced, not invented. Everything that reads an
+    // ancestry (`.isa`, `.does`, `~~` on type objects, lubType) is then right
+    // about RakuAST:: without a second table to keep in step.
+    if (isRakuAstName(t)) { const auto& anc = rakuAstAncestry(t); if (!anc.empty()) return anc; }
     return fallback;
 }
 // The names in the ancestry table that are ROLES, not classes. `.does` counts

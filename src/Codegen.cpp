@@ -1732,8 +1732,20 @@ struct Codegen {
                 // trusted, so hand the whole unit to the interpreter instead.
                 if (u->isNo && u->module == "strict" && !laxKnown_)
                     unsupported("`no strict` in a unit the declaration check could not finish");
+                // …and the `:tag` arguments, for the pragmas whose meaning is in
+                // them (`use experimental :rakuast`): dropping them made the
+                // compiled program's runtime state disagree with the
+                // interpreter's about which pragmas were in force.
+                std::string tags;
+                if (!u->importArgs.empty()) {
+                    tags = ", {";
+                    for (size_t i = 0; i < u->importArgs.size(); i++)
+                        tags += (i ? ", " : "") + cesc(u->importArgs[i]);
+                    tags += "}";
+                }
                 line(ind, "RT.rtUse(" + cesc(u->module) + ", " + arg +
-                          (u->isNo ? ", true" : "") + ");");
+                          (u->isNo || !tags.empty() ? (u->isNo ? ", true" : ", false") : "") +
+                          tags + ");");
                 return;
             }
             case NK::SubDecl: return; // registered by hoistLexicalSubs at block entry

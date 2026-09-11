@@ -525,6 +525,20 @@ void deserializeAst(const std::string& blob, Program& out) {
     out.stmts.clear();
     ioStmtVec(r, out.stmts);
     if (r.p != r.end) throw AstSerialError{"trailing bytes in AST cache"};
+    // The blob carries the STATEMENTS, not the Program's own scalar fields, and
+    // `usesRakuAst` is the one a cached unit cannot do without: it is read
+    // before the unit's subs are hoisted, so losing it stamps every routine of
+    // a cached RakuAST module as though the pragma were absent — the module
+    // then refuses its own names on the second run and every run after, while
+    // the first run works. Recovered from the statements themselves, where the
+    // pragma is an ordinary `use`, so a deserialized Program answers exactly as
+    // a freshly parsed one does without a format bump.
+    for (auto& s : out.stmts) {
+        if (!s || s->kind != NK::UseStmt) continue;
+        auto* u = static_cast<UseStmt*>(s.get());
+        if (u->module != "experimental" || u->isNo) continue;
+        for (auto& tag : u->importArgs) if (tag == "rakuast") out.usesRakuAst = true;
+    }
 }
 
 } // namespace rakupp

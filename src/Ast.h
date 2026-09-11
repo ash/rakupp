@@ -926,6 +926,15 @@ struct Program {
     // its `use v6.X` pragma. A unit has exactly one — the pragma has to be the
     // first statement — so it lives here rather than on every routine node.
     int langRev = 1;
+    // Did this unit say `use experimental :rakuast`? Recorded by the parser,
+    // beside the revision and for the same reason: the interpreter reads it
+    // before it hoists the unit's subs, so a routine declared under the pragma
+    // is stamped with it — and keeps the RakuAST:: namespace open in its own
+    // body when a program that never asked for it calls it. The blob carries no
+    // Program field, so `deserializeAst` recovers this one from the statements:
+    // a cached or AOT-embedded unit (both go through it) hoists exactly as a
+    // freshly parsed one does.
+    bool usesRakuAst = false;
 };
 
 // Print a program's AST as an indented plain-text tree (for --dump-ast).
