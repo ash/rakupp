@@ -1926,3 +1926,36 @@ regression cases still green, and `ast-cache-publication` green across the
 version bump. Roast and the perf A/B are owed for this step and are deferred
 with the ones P3 named: the perf leg wants a quiet machine and this step adds
 8 bytes to `Call`, which the plan says is the one thing that could show.
+
+### P1 widening, round one (2026-09-11)
+
+**27 → 45 of 59 programs round-trip completely**, 13 named `view` misses, 0
+reparse. The registry is 175 classes. Added: package declarations
+(`class`/`role`/`grammar`/`module` — four classes upstream, told apart by the
+declarator), `given`/`when`/`default`, the C-style `loop`, and the loop
+controls, which are CALLS upstream rather than statements of their own
+(measured: `for … { last }` puts a `Call::Name::WithoutParentheses` in the body).
+
+The harness caught four more renderings that were valid-looking and wrong — the
+same shape of find as the first round, and the reason the reparse leg is the
+gate rather than the counts:
+
+1. **A named parameter lost its colon.** `(*@a, :$solar)` rendered
+   `(*@a, $solar)`, which does not merely read differently — it moves the
+   parameter into the positional list, and the parser refuses it outright
+   ("required parameter after variadic"). Two corpus programs.
+2. **A sigilless binding lost its backslash.** `my \NULL = …` rendered
+   `my NULL = …`, a different declaration that does not parse.
+3. **The contextualizers leaked an internal name.** `@($x)` rendered `ctx@ $x` —
+   our own spelling of the op, in what is supposed to be Raku. They are
+   `Contextualizer::{List,Hash,Item}` upstream, not prefix operators.
+4. `is copy` and the other parameter traits are still dropped; that one only
+   reads wrong, so it is a miss rather than a failure.
+
+**The 13 that remain**: phaser blocks (7), `s///` (3), a pair with a computed
+key (3), and one `Call::MetaMethod` the renderer has no case for.
+
+One test moved with the code: `t/regression/rakuast-view.raku` asserted that
+`class C { }` throws X::NYI, which was true when it was written and is not now.
+The assertion is the FRONTIER, not that particular construct, so it points at a
+phaser block instead — and it will move again.

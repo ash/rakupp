@@ -342,6 +342,9 @@ struct Deparser {
             return "(" + opt(attr(node, "semilist"), indent) + ")";
         if (c == "Circumfix::ArrayComposer")
             return "[" + opt(attr(node, "semilist"), indent) + "]";
+        if (c == "Contextualizer::List") return "@(" + opt(attr(node, "target"), indent) + ")";
+        if (c == "Contextualizer::Hash") return "%(" + opt(attr(node, "target"), indent) + ")";
+        if (c == "Contextualizer::Item") return "$(" + opt(attr(node, "target"), indent) + ")";
         if (c == "Circumfix::HashComposer")
             return "{" + opt(attr(node, "semilist"), indent) + "}";
         if (c == "Postcircumfix::LiteralHashIndex")
@@ -442,6 +445,36 @@ struct Deparser {
         if (c == "Statement::For")
             return "for " + opt(attr(node, "source"), indent) + " " +
                    opt(attr(node, "body"), indent);
+        if (c == "Statement::Given")
+            return "given " + opt(attr(node, "source"), indent) + " " +
+                   opt(attr(node, "body"), indent) + "\n";
+        if (c == "Statement::When")
+            return "when " + opt(attr(node, "condition"), indent) + " " +
+                   opt(attr(node, "body"), indent) + "\n";
+        if (c == "Statement::Default")
+            return "default " + opt(attr(node, "body"), indent) + "\n";
+        if (c == "Statement::Loop") {
+            // `loop (setup; condition; increment) BLOCK`, and the bare `loop`
+            // when it has none of the three.
+            std::string setup = opt(attr(node, "setup"), indent);
+            std::string cond  = opt(attr(node, "condition"), indent);
+            std::string incr  = opt(attr(node, "increment"), indent);
+            std::string head  = "loop ";
+            if (!setup.empty() || !cond.empty() || !incr.empty())
+                head += "(" + setup + "; " + cond + "; " + incr + ") ";
+            return head + opt(attr(node, "body"), indent) + "\n";
+        }
+        // `class` / `role` / `grammar` / `module` — four classes upstream, and
+        // the declarator is the class name lowercased.
+        if (c == "Class" || c == "Role" || c == "Grammar" || c == "Module" || c == "Package") {
+            std::string kw;
+            for (char ch : c) kw += (char)ascii::tolower((unsigned char)ch);
+            std::string sc;
+            if (const Value* s = attr(node, "scope"))
+                if (s->toStr() == "my") sc = "my ";
+            return sc + kw + " " + opt(attr(node, "name"), indent) + " " +
+                   opt(attr(node, "body"), indent) + "\n";
+        }
         if (c == "Statement::While")
             return "while " + opt(attr(node, "condition"), indent) + " " +
                    opt(attr(node, "body"), indent);
@@ -476,7 +509,21 @@ struct Deparser {
                 else if (sn == "Parameter::Slurpy::SingleArgument") out += "+";
                 else if (sn == "Parameter::Slurpy::Capture")        out += "|";
             }
-            out += opt(attr(node, "target"), indent);
+            // `names` is what makes a parameter NAMED, and it is not decoration:
+            // without the colon `(*@a, :$solar)` renders `(*@a, $solar)`, which
+            // the parser refuses as a required parameter after a variadic one.
+            // An alias keeps both halves: `:key($var)`.
+            const Value* names = attr(node, "names");
+            std::string target = opt(attr(node, "target"), indent);
+            if (names && names->t == VT::Array && names->arr() && !names->arr()->empty()) {
+                std::string key = (*names->arr())[0].toStr();
+                std::string bare = target.size() > 1 ? target.substr(1) : target;
+                out += (key == bare) ? ":" + target : ":" + key + "(" + target + ")";
+            } else {
+                out += target;
+            }
+            if (const Value* o = attr(node, "optional")) if (o->truthy()) out += "?";
+            if (const Value* r = attr(node, "required")) if (r->truthy()) out += "!";
             if (const Value* d = attr(node, "default"))
                 if (isNode(*d)) out += " = " + render(*d, indent);
             return out;

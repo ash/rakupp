@@ -138,6 +138,19 @@ struct Builder {
             }
             case NK::Unary: {
                 auto* u = static_cast<Unary*>(e);
+                // The CONTEXTUALIZERS `@(…)`, `%(…)`, `$(…)` are their own
+                // classes upstream, not prefix operators. Ours spells them
+                // `ctx@`/`ctx%`/`ctx$`, and rendering that as a prefix put the
+                // internal name into the source: `@($x)` came back `ctx@ $x`,
+                // which is not Raku.
+                if (u->op.size() == 4 && u->op.compare(0, 3, "ctx") == 0) {
+                    const char* cls = u->op[3] == '@' ? "Contextualizer::List"
+                                    : u->op[3] == '%' ? "Contextualizer::Hash"
+                                                      : "Contextualizer::Item";
+                    return node(cls, {{"target", node("SemiList", {{"statements",
+                        list({node("Statement::Expression",
+                                   {{"expression", buildExpr(u->operand.get())}})})}})}});
+                }
                 if (u->postfix)
                     return node("ApplyPostfix", {{"operand", buildExpr(u->operand.get())},
                                                  {"postfix", node("Postfix", {{"operator", Value::str(u->op)}})}});
@@ -291,8 +304,15 @@ struct Builder {
     // `my $x = 1` written as an EXPRESSION (our parser's usual shape for a
     // declaration with an initializer).
     Value declaration(VarExpr* v) {
-        std::string sigil = v->name.empty() ? "$" : v->name.substr(0, 1);
-        std::string bare  = v->name.size() > 1 ? v->name.substr(1) : std::string();
+        // A SIGILLESS binding — `my \NULL = …` — has no sigil to split off, and
+        // splitting one off anyway dropped the `\`: `my NULL = 1` is a different
+        // declaration and does not parse. Rakudo keeps the backslash as the
+        // sigil, so the round trip does too.
+        char first = v->name.empty() ? '$' : v->name[0];
+        bool sigilless = !(first == '$' || first == '@' || first == '%' || first == '&');
+        std::string sigil = sigilless ? "\\" : std::string(1, first);
+        std::string bare  = sigilless ? v->name
+                          : (v->name.size() > 1 ? v->name.substr(1) : std::string());
         std::initializer_list<std::pair<const char*, Value>> attrs = {
             {"scope", Value::str(v->declScope.empty() ? "my" : v->declScope)},
             {"sigil", Value::str(sigil)},
@@ -315,6 +335,15 @@ struct Builder {
         return node(isSub ? "Sub" : "PointyBlock", {{"signature", sig}, {"body", bd}});
     }
 
+    // `last` / `next` / `redo`, with an optional label.
+    Value loopControl(const char* kw, const std::string& target) {
+        ValueList args;
+        if (!target.empty()) args.push_back(node("Term::Name", {{"name", name(target)}}));
+        return node("Statement::Expression", {{"expression",
+            node("Call::Name::WithoutParentheses",
+                 {{"name", name(kw)}, {"args", node("ArgList", {{"args", list(args)}})}})}});
+    }
+
     Value parameter(const Param& p) {
         Value target = node("ParameterTarget::Var", {{"name", Value::str(p.name)}});
         Value n = node("Parameter", {{"target", target}});
@@ -329,7 +358,19 @@ struct Builder {
                                                   : "Parameter::Slurpy::Flattened";
             n.obj()->attrs["slurpy"] = Value::typeObj(std::string(kRakuAstPrefix) + sl);
         }
+        // A NAMED parameter is `:$x`, and losing the colon does not merely read
+        // wrong — it moves the parameter into the positional list, so a
+        // signature like `(*@a, :$solar)` came back as `(*@a, $solar)` and the
+        // parser refused it outright ("required parameter after variadic").
+        if (p.named) {
+            ValueList keys;
+            keys.push_back(Value::str(p.namedKey.empty()
+                ? (p.name.size() > 1 ? p.name.substr(1) : p.name) : p.namedKey));
+            n.obj()->attrs["names"] = list(keys);
+        }
         if (p.optional) n.obj()->attrs["optional"] = Value::boolean(true);
+        if (p.required) n.obj()->attrs["required"] = Value::boolean(true);
+        if (p.defaultVal) n.obj()->attrs["default"] = buildExpr(p.defaultVal.get());
         return n;
     }
 
@@ -422,17 +463,57 @@ struct Builder {
                 auto* u = static_cast<UseStmt*>(s);
                 return node("Statement::Use", {{"module-name", name(u->module)}});
             }
-            case NK::ClassDecl:      unmapped("a package declaration");
+            case NK::ClassDecl: {
+                // `class` / `role` / `grammar` / `module` / `package` — four
+                // classes upstream, told apart by the declarator the parser saw.
+                // Twelve of the corpus's fifty-nine programs stop here, which is
+                // why it is the first widening and not the tidiest.
+                auto* cd = static_cast<ClassDecl*>(s);
+                const char* cls = cd->isRole    ? "Role"
+                                : cd->isGrammar ? "Grammar"
+                                : cd->isPackage ? "Module" : "Class";
+                Value pkg = node(cls, {{"name", name(cd->name)},
+                                       {"scope", Value::str(cd->isMy ? "my" : "our")},
+                                       {"body", node("Block", {{"body", blockoid(cd->body)}})}});
+                return node("Statement::Expression", {{"expression", pkg}});
+            }
             case NK::EnumDecl:       unmapped("an enum declaration");
             case NK::SubsetDecl:     unmapped("a subset declaration");
             case NK::NamedRegexDecl: unmapped("a named regex declaration");
-            case NK::GivenStmt:      unmapped("a `given` statement");
-            case NK::WhenStmt:       unmapped("a `when` statement");
-            case NK::LoopStmt:       unmapped("a C-style `loop`");
+            case NK::GivenStmt: {
+                auto* g = static_cast<GivenStmt*>(s);
+                Value n = node("Statement::Given",
+                    {{"source", buildExpr(g->topic.get())},
+                     {"body", node("Block", {{"body", g->body ? blockoid(g->body->stmts) : blockoid({})}})}});
+                return n;
+            }
+            case NK::WhenStmt: {
+                auto* w = static_cast<WhenStmt*>(s);
+                // `default` is its own class upstream, not a `when` with no
+                // condition — a walker dispatches on the difference.
+                if (!w->cond)
+                    return node("Statement::Default",
+                        {{"body", node("Block", {{"body", w->body ? blockoid(w->body->stmts) : blockoid({})}})}});
+                return node("Statement::When",
+                    {{"condition", buildExpr(w->cond.get())},
+                     {"body", node("Block", {{"body", w->body ? blockoid(w->body->stmts) : blockoid({})}})}});
+            }
+            case NK::LoopStmt: {
+                auto* l = static_cast<LoopStmt*>(s);
+                Value n = node("Statement::Loop",
+                    {{"body", node("Block", {{"body", l->body ? blockoid(l->body->stmts) : blockoid({})}})}});
+                if (l->init)  n.obj()->attrs["setup"]     = buildExpr(l->init.get());
+                if (l->cond)  n.obj()->attrs["condition"] = buildExpr(l->cond.get());
+                if (l->incr)  n.obj()->attrs["increment"] = buildExpr(l->incr.get());
+                return n;
+            }
+            // `last` / `next` / `redo` are CALLS upstream, not statements of
+            // their own — measured: `for … { last }` puts a
+            // Call::Name::WithoutParentheses in the body, and it deparses `last`.
+            case NK::LastStmt: return loopControl("last", static_cast<LastStmt*>(s)->target);
+            case NK::NextStmt: return loopControl("next", static_cast<NextStmt*>(s)->target);
+            case NK::RedoStmt: return loopControl("redo", static_cast<RedoStmt*>(s)->target);
             case NK::RepeatStmt:     unmapped("a `repeat` loop");
-            case NK::LastStmt:       unmapped("`last`");
-            case NK::NextStmt:       unmapped("`next`");
-            case NK::RedoStmt:       unmapped("`redo`");
             default: break;
         }
         unmapped("this statement");

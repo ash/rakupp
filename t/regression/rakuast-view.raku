@@ -58,8 +58,9 @@ check ($p.out.slurp(:close) ~ $p.err.slurp(:close)).contains(
 # A Buf is not Cool and never reaches the arm.
 check (try Buf.new(1,2).AST).defined, False, 'a Buf invocant refuses';
 # A construct the builder has no faithful mapping for SAYS so — it never
-# answers a wrong tree.
-check (try q[class C { }].AST).defined, False, 'an unmapped construct throws';
+# answers a wrong tree. (`class` used to be the example here and is mapped now;
+# a phaser block is the current frontier, and this line moves with it.)
+check (try q[BEGIN { say 1 }].AST).defined, False, 'an unmapped construct throws';
 check ($! ~~ X::NYI).so, True, '…as X::NYI';
 # And a parse error is a Raku exception, not a `===SORRY!===` that takes the
 # program with it past every `try` — the round-trip harness found that one.

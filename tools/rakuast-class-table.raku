@@ -63,6 +63,10 @@ my @demand = <
     Sub Term::Name Term::TopicCall Ternary Trait::Is Type::Capture
     Type::Coercion Type::Definedness Type::Parameterized Type::Simple
     Var::Dynamic Var::Lexical Var::Lexical::Constant VarDeclaration::Simple
+    Class Module Role Grammar Package Statement::Given Statement::When
+    Statement::Default Statement::Loop Statement::Unless Statement::Until
+    StatementPrefix::Phaser::Begin StatementPrefix::Phaser::End
+    Contextualizer::List Contextualizer::Hash Contextualizer::Item
     ApplyInfix::Chaining Call::Term Call::MaybeMethod Call::PrivateMethod
     Call::MetaMethod Call::Name::WithoutParentheses Circumfix::ArrayComposer
     Circumfix::HashComposer Circumfix::Parentheses ColonPair::Value ColonPair::False

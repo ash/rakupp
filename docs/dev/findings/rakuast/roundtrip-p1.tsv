@@ -1,18 +1,18 @@
 file	status	reason
-anagrams.raku	view	`.AST` does not yet build a view for `next`
+anagrams.raku	ok	
 brainfuck.raku	ok	
-calculator.raku	view	`.AST` does not yet build a view for a package declaration
+calculator.raku	ok	
 cipher.raku	view	`.AST` does not yet build a view for a pair with a computed key
-echo-server.raku	view	`.AST` does not yet build a view for `last`
+echo-server.raku	ok	
 factorize.raku	ok	
 fibonacci.raku	ok	
 hanoi.raku	ok	
-json.raku	view	`.AST` does not yet build a view for a package declaration
-life.raku	view	`.AST` does not yet build a view for `next`
+json.raku	deparse	RakuAST::Call::MetaMethod cannot be deparsed yet
+life.raku	view	`.AST` does not yet build a view for a phaser block
 clean.raku	ok	
 constant-condition.raku	ok	
 kitchen-sink.raku	ok	
-new-arg-matches-no-attribute.raku	view	`.AST` does not yet build a view for a package declaration
+new-arg-matches-no-attribute.raku	ok	
 numeric-cmp-of-string.raku	ok	
 redeclaration.raku	ok	
 redundant-return.raku	ok	
@@ -21,7 +21,7 @@ unreachable-code.raku	ok
 unused-parameter.raku	ok	
 unused-routine.raku	ok	
 unused-variable.raku	ok	
-mandel.raku	view	`.AST` does not yet build a view for a C-style `loop`
+mandel.raku	ok	
 matrix.raku	ok	
 nqueens.raku	ok	
 parallel.raku	ok	
@@ -29,32 +29,32 @@ pascal.raku	ok
 primes.raku	ok	
 quicksort.raku	ok	
 quine.raku	ok	
-rationals.raku	view	`.AST` does not yet build a view for `last`
+rationals.raku	ok	
 roman.raku	view	`.AST` does not yet build a view for a pair with a computed key
-rpn.raku	view	`.AST` does not yet build a view for a `given` statement
+rpn.raku	ok	
 sierpinski.raku	ok	
 sleep-sort.raku	ok	
 wordcount.raku	ok	
-chat.raku	view	`.AST` does not yet build a view for `last`
-eclipse.raku	view	`.AST` does not yet build a view for `next`
+chat.raku	ok	
+eclipse.raku	ok	
 forth.raku	view	`.AST` does not yet build a view for a substitution (s///)
-fourier.raku	view	`.AST` does not yet build a view for `next`
-calculator.raku	view	`.AST` does not yet build a view for a `given` statement
+fourier.raku	ok	
+calculator.raku	ok	
 counter.raku	ok	
 raw-cocoa.raku	ok	
-js.raku	view	`.AST` does not yet build a view for a package declaration
-json.raku	view	`.AST` does not yet build a view for a package declaration
+js.raku	view	`.AST` does not yet build a view for a phaser block
+json.raku	ok	
 jsonreq.raku	view	`.AST` does not yet build a view for a phaser block
-kvstore.raku	view	`.AST` does not yet build a view for `next`
-lisp.raku	view	`.AST` does not yet build a view for a package declaration
-md2html.raku	view	`.AST` does not yet build a view for a package declaration
-modinfo.raku	view	`.AST` does not yet build a view for a package declaration
-orbits.raku	view	`.AST` does not yet build a view for `next`
+kvstore.raku	ok	
+lisp.raku	ok	
+md2html.raku	ok	
+modinfo.raku	view	`.AST` does not yet build a view for a phaser block
+orbits.raku	ok	
 pastebin.raku	view	`.AST` does not yet build a view for a substitution (s///)
-perl.raku	view	`.AST` does not yet build a view for a package declaration
-python.raku	view	`.AST` does not yet build a view for `last`
-raku-grammar.raku	view	`.AST` does not yet build a view for a package declaration
+perl.raku	view	`.AST` does not yet build a view for a phaser block
+python.raku	view	`.AST` does not yet build a view for a phaser block
+raku-grammar.raku	view	`.AST` does not yet build a view for a pair with a computed key
 rakus.raku	view	`.AST` does not yet build a view for a substitution (s///)
-raytrace-fast.raku	view	`.AST` does not yet build a view for `last`
-raytrace.raku	view	`.AST` does not yet build a view for a package declaration
-sqlite.raku	view	`.AST` does not yet build a view for a package declaration
+raytrace-fast.raku	ok	
+raytrace.raku	ok	
+sqlite.raku	view	`.AST` does not yet build a view for a phaser block
