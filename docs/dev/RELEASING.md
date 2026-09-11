@@ -346,7 +346,30 @@ pushed** — the MinGW cross-compiler is on the build machine, and it answers in
 seconds without a build:
 
 ```bash
-x86_64-w64-mingw32-g++ -std=c++17 -fsyntax-only -Isrc -D_WIN32 src/Builtins.cpp
+x86_64-w64-mingw32-g++ -std=c++17 -fsyntax-only -Isrc -D_WIN32 \
+    -DRAKUPP_VERSION='"X.Y.Z"' src/Builtins.cpp
+```
+
+`-DRAKUPP_VERSION` is not optional, and leaving it off manufactures a failure
+that looks like the thing this check exists to find. CMake supplies it
+(`add_compile_definitions(RAKUPP_VERSION="${PROJECT_VERSION}")`), so a bare
+invocation fails in `src/Repl.cpp` with `'RAKUPP_VERSION' was not declared in
+this scope` — a real compiler error, in a real file, that has nothing to do with
+Windows. The tell is that it reproduces **without** `-D_WIN32` too; check that
+before believing any failure this command reports. (Found during the v3.27.0
+gates, chasing it through a file the batch had genuinely touched.)
+
+To sweep everything a batch changed, one file at a time — note the `while read`
+rather than `for f in $(…)`, because zsh does not word-split an unquoted
+parameter and the loop would otherwise run once with the whole list:
+
+```bash
+git diff --name-only vPREV..HEAD -- 'src/*.cpp' | while read -r f; do
+    printf '%-32s ' "$f"
+    x86_64-w64-mingw32-g++ -std=c++17 -fsyntax-only -Isrc -D_WIN32 \
+        -DRAKUPP_VERSION='"X.Y.Z"' "$f" 2>/tmp/mingw.err && echo OK \
+        || { echo FAIL; head -5 /tmp/mingw.err; }
+done
 ```
 
 A macOS or Linux build cannot catch this class at all: the Windows branch of an

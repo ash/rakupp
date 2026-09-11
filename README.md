@@ -11,12 +11,13 @@ WebAssembly, no server required. It is not a fork of Rakudo and shares no code
 with it; it targets the *language*, measured against
 [**Roast**](https://github.com/Raku/roast), the official Raku test suite.
 
-**Status:** current release **v3.26.0** (2026-09-08) — *the Grand Review, and
-what the gates found after it*: three phases of review over `src/`, the
-user-facing docs and the Internals book, and then four faults the release gates
-caught that the review's own runs did not — a `qw:v[…]` that had stopped
-allomorphing, six IO path methods answering for invocants that are not paths, and
-two distributions the battery lost. Every release is written up in the
+**Status:** current release **v3.27.0** (2026-09-11) — *Windows becomes a
+platform, and the code other people wrote*: thirteen commits turn Windows from a
+build target into a platform — `$*DISTRO.is-win` was hard-coded False on every
+host, the blind FFI path truncated every handle to 32 bits, and there is an
+installer now — while the rest came from running App::Rak, Red, Sparrow6 and fez
+and fixing what they stopped on. It ships two known regressions, both found by
+the gates and both named in the notes. Every release is written up in the
 [CHANGELOG](CHANGELOG.md).
 
 **Current focus:** the ecosystem sweep — all 2,530 distributions of the Raku
@@ -63,6 +64,14 @@ was — so these three added nothing new.
   their keep: the per-file **denominator** join found four faults behind a green
   file list, and the battery found three more that the review had not caused.
   Roast **661 / 1,464**; local suite 637 → **798**.
+- **v3.27.0** — *Windows becomes a platform, and the code other people wrote.* ✅
+  Windows stops being a build target: `is-win` answered False everywhere, the
+  blind FFI path held eight arguments and passed them as 32-bit `long`, and an
+  installer landed. `rakupp install App::Rak` reaches Needle::Compile (16 of 18
+  dists). ⚠️ Ships two regressions the gates found: `OO::Monitors` no longer
+  excludes (bisected to `7f09744`), and the call path is ~10% slower than
+  v3.26.0 — which the perf gate could not see, because its baseline is four
+  releases stale. Roast **669 / 1,464**; local suite **855**.
 
 Left open by the arc: the source review is **three files of eighty-three**. The
 performance baseline had moved twice with no cause found; v3.24.0 rebuilt
@@ -75,11 +84,11 @@ suites, up from 824, where the lever is the 274 that never ran their own tests a
 all because a dependency failed first. The plans are in
 [docs/dev/plans/VERSIONS.md](docs/dev/plans/VERSIONS.md).
 
-| | v3.26.0 | at v2.0.0 |
+| | v3.27.0 | at v2.0.0 |
 |---|---:|---:|
-| Roast, per individual test — of what the suite declares‡ | **200,220 of ~219,429 (91%)** | 197,090 of ~203,500 (97%) |
-| Roast, all-or-nothing — files fully passing, of 1,464 | **661 (45%)** | 594 |
-| Official documentation examples byte-identical on both engines | **956** | 952 |
+| Roast, per individual test — of what the suite declares‡ | **200,432 of ~219,558 (91%)** | 197,090 of ~203,500 (97%) |
+| Roast, all-or-nothing — files fully passing, of 1,464 | **669 (46%)** | 594 |
+| Official documentation examples byte-identical on both engines | **955** | 952 |
 | Of the Raku ecosystem's [2,530 distributions](https://raku.online/modules/ecosystem/), passing their own test suites§ | **824** | — |
 | Local regression suite | **798** | 312 |
 | `say "Hello"` compiled with `--exe --slim` | **6,845,704 B** | 9,830,680 B (no `--slim`) |

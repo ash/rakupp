@@ -3,6 +3,217 @@
 Release notes for tagged releases. Numbers are measured, not projected;
 methodology for all Roast figures is in [docs/status/COUNTING.md](docs/status/COUNTING.md).
 
+## v3.27.0 (2026-09-11) — Windows becomes a platform, and the code other people wrote
+
+Seventy-four commits over two days, and they divide cleanly. Thirteen are
+Windows, which until now was a build target rather than a platform anyone could
+use. Most of the rest came from running code nobody here had run before —
+lizmat's App::Rak chain, Red's ORM, Sparrow6, fez, Terminal::Table — and fixing
+what it stopped on.
+
+**This release ships two known regressions, both found by the gates, both named
+below.** They are documented rather than fixed because the release was cut
+deliberately with them in it; issues are open for each.
+
+| | v3.26.0 | v3.27.0 |
+|---|---:|---:|
+| Roast assertions (all declared) | 200,220 | **200,432** |
+| Roast files fully passing | 661 / 1,464 | **669 / 1,464** |
+| Local regression suite (`t/run.raku`) | 798 | **855** |
+| Module battery (vs each dist's own reference run) | 49 / 59 | **48 / 59** |
+| Documentation examples byte-identical on both engines | 956 | **955** |
+| Operator divergences | 21 | **21** |
+| Of the ecosystem's 2,530 distributions, passing their own suites | 824 | 824 (carried forward) |
+| `say "Hello"` compiled with `--exe` | 10,143,928 B | **10,294,936 B** |
+| …compiled with `--exe --slim` | 6,845,704 B | **6,963,352 B** |
+
+Roast is the repeating profile of four runs (669 / 669 / 668 / 670) on
+`v3.26.0-74-ga7a3721` against Roast `b2cbe8a42` — the same revision v3.26.0
+measured, so the file-list diff is an engine comparison and nothing else. Runs 1
+and 2 produced byte-identical file lists. The union of the four gains **nine**
+files against v3.26.0's union (663 → 670) and loses two; both losses are
+explained below and neither is an engine regression.
+
+### The two regressions this release ships
+
+**`OO::Monitors` no longer excludes.** The battery fell 49 → 48 on one dist, and
+it is the one whose entire purpose is mutual exclusion: four threads incrementing
+a monitor's attribute 1,000 times each yield **3,931 instead of 4,000**. It fails
+6 runs of 6 here and passes 6 of 6 on v3.26.0, so it is not a flaky race — it is
+deterministic lost updates, which is the worst shape a concurrency bug can take
+because nothing throws and the number is merely wrong.
+
+Bisected to **`7f09744`** — "A module can supply its own package declarator, and
+the metaobject behind it" — with a deterministic test and a rebuild at every
+step. The irony is exact: that commit added `EXPORTHOW::DECLARE` support so Red's
+`model` would work, and it broke the other module built on the same mechanism,
+`monitor`. `MetamodelX::MonitorHOW` wraps every method it adds to take a lock;
+through the new declarator path that wrapping does not take effect.
+
+**The call path is ~10% slower than v3.26.0, and the gate could not see it.**
+Measured four times against v3.26.0's source built locally with identical cmake
+configuration and the same Clang 17:
+
+| kernel | v3.26.0 | v3.27.0 | delta |
+|---|---:|---:|---:|
+| `objnew` | 386.5 | 246.8 | **−36.1%** |
+| `fib` | 302.3 | 332.8 | **+10.1%** (+11.6% on a second run) |
+| `subcall` | 155.1 | 163.7 | **+5.5%** (+7.6%) |
+| `strpass` | 67.8 | 71.8 | **+5.9%** (+4.7%) |
+
+`objnew`'s −36% is `720a311` landing as designed. The call-path cluster is real
+and reproducible, and **the cause is not located**: a first bisect named a commit
+that an interleaved re-measurement then refuted — single-shot timings on this box
+drift more than the per-commit effect — and code layout is ruled out, because
+displacing 107 lines of never-called code at the same point in the same
+translation unit moves `fib` by 0.4%, not 6.5%.
+
+The part worth keeping is why gate 3 stayed green through all of it. Against the
+standing baseline `fib` reads **−1.6%**, comfortably inside tolerance, while
+against the release it actually replaces it is +10%. The baseline is v3.24.0's,
+recorded 2026-09-01, and it had drifted far enough to absorb the whole
+regression. This is the blind spot RELEASING.md has warned about since v3.0.1 —
+*"the 'no regression since last release' claim quietly stops meaning that"* —
+observed doing exactly that for the first time.
+
+**The baseline was not re-recorded, for the third release running.**
+`--record --for=v3.27.0` was attempted three times on an idle box and refused its
+own noise check every time, naming a different kernel each run: `rats` 19.7% and
+`multimeth` 5.8%, then `strpass` 35.9% and `method` 21.8%, then `mainwhen` 10.2%.
+It was **not forced** — a forced baseline has been measured to red-line against
+the very build it was recorded from, which is worse than an old one honestly
+labelled. The A/B table above is what a record would have written.
+
+### The two files the list gate lost, and why they are not regressions
+
+Both were files that had been **dying early while every assertion they emitted
+passed**, which the harness scores as a full pass on a tiny denominator. This is
+the inverse of the case COUNTING.md works through, and the gate reads green
+either way.
+
+- **`S32-str/indices.t`** was `[PASS] 3/3` and is `[part] 14/18`. It died at line
+  11 on `Undefined routine 'indices'` — there was no `indices` *sub*, only the
+  method. The sub exists now, so the file runs fifteen more tests and fails four.
+  Verified against the released v3.26.0 artifact rather than inferred: the
+  `indices` implementation is byte-identical between the two tags.
+- **`S11-modules/rakulib.t`** was `[PASS] 1/1` and is `[part] 0/1`. Its single
+  assertion runs a one-liner through `is_run` expecting empty output and a
+  non-zero exit; v3.26.0 could not *parse* that one-liner — nested braces inside
+  `q{…}` — so `===SORRY!===` satisfied both conditions and it passed for the
+  wrong reason.
+
+Two real divergences sit behind those, both pre-existing and both left open:
+`indices` ignores an empty needle and will not coerce Cool (`"foo".indices("")`
+answers `()` where Rakudo answers `(0,1,2,3)`; `422.indices(2)` throws), and an
+empty `RAKULIB` still finds a module in the current directory where Rakudo
+refuses.
+
+### Windows
+
+`$*DISTRO.is-win` was a hard-coded **False**, on every host. Rakudo defines it as
+the distro name being one of mswin32/mingw/msys/cygwin, and this engine answered
+"windows", a name of its own invention, so the rule could never fire. The reach
+went well past user modules: `tools/install.raku`, `t/run.raku`,
+`tools/perf-guard.raku` and `tools/lib/Gate.rakumod` all believed they were on
+POSIX. `path-sep` said `:` there and `$*VM.config<osname>` said `win32` where
+MoarVM says `MSWin32`.
+
+The blind FFI path — the one Windows always takes, since it ships no libffi —
+held **eight** integer arguments where `CreateWindowExW` takes twelve and
+`CreateFontW` fourteen; it is sixteen now. It also passed every value as C
+`long`, 32 bits under LLP64, so a real `HMODULE` (`0x00007ff888990000`) reached
+its caller as `-2003238912` and `GetProcAddress` then found nothing in it.
+Argument slots, `is rw` slots, the return register and the callback trampolines
+are all machine words now, and `nativecast(Pointer, &some-sub)` — which answered
+a Pointer to address 0 — says where a callback does become a C function pointer.
+
+Around that: eight places read `HOME`, which Windows does not set; `$*TMPDIR` was
+`/tmp`; `.absolute` prepended the current directory to paths that already were
+absolute, so nothing installed; Windows has `curl` and `tar` but no `shasum`,
+`sha1sum` or `openssl`; four POSIX-isms kept `t/run.raku` off the platform; the
+REPL printed its own colour codes to the console; and `Interpreter.cpp` had grown
+past MSVC's section limit with `/bigobj` never set.
+
+**Windows gets an installer** — a one-liner and an Inno Setup wizard, both
+CI-gated, both asking whether to install the `raku` alias. PATH is read and
+written through `HKCU\Environment` directly, keeping the value's `REG_EXPAND_SZ`
+kind, because `[Environment]::GetEnvironmentVariable(…,'User')` expands
+`%USERPROFILE%`-style entries and writing that back bakes today's expansion into
+the machine for good.
+
+### The code other people wrote
+
+**`rakupp install App::Rak` reaches Needle::Compile.** Sixteen of its eighteen
+dists install and `rak` runs. Every dist's own suite ran under rakupp first, in
+dependency order, and this is what those suites found.
+
+**Red asks for a language, not a library.** Red does not write `class`; it writes
+`model`, through `my package EXPORTHOW { package DECLARE { constant model = … } }`.
+That declarator works now, metaobject and all — at the cost named above. Getting
+far enough to find it meant fixing ten separate spellings the engine refused or
+misread.
+
+**Object construction was wrong twice, the second time because of the first.**
+`fez login` reported failure on a login that had succeeded (#72): only the
+most-derived `BUILD` ran, so a parent never initialised its own state. The fix
+made `BUILDALL` walk the MRO — and rakupp keeps a composed role in the composing
+class's *parent slots*, so every role then took a turn of its own and a class ran
+the `TWEAK` it had overridden (#75, ten of Sparrow6's 160 CI tests). Composition
+flattens; the walk knows the difference now.
+
+**Every `X::` exception was its own root.** Of the 383 ancestry and role relations
+Rakudo declares across its `X::` tree, this engine answered none — `.^mro` on any
+of them gave `Any, Mu`, without even itself or `Exception` in it — so
+`when X::TypeCheck` never fired and a handler written for a family caught nothing.
+`src/exception_ancestry_gen.cpp` is that hierarchy, generated from a live walk of
+Rakudo's own tree.
+
+**A private attribute is per-class.** `class C is P { method m { @!l.push: 'x' } }`
+compiled here and resolved to the parent's storage; Rakudo refuses it. The
+direction is what bites: source written against rakupp failed to compile on
+Rakudo, and a mistyped `$!x` in a subclass bound quietly to an ancestor's
+attribute of that name instead of being reported.
+
+**`MAIN`'s own value was never sunk**, so a program ending in `run @cmd` exited 0
+on a failed command (#73, sparrowdo). It regressed *because* it was fixed: up to
+v3.25.0 the last statement of any sub was sunk.
+
+### Deliberately not done
+
+**Slangs are planned, not emulated.** Text::CSV is written in one and eight dists
+wait behind it. Native emulation was considered and rejected; the plan names nine
+seams and 28 distributions, and RakuAST is not the blocker.
+
+**A UUID distribution is specified, not written** — every RFC 9562 version from
+one pure-Raku module, with the native question settled by measurement.
+
+### The gates
+
+Every gate ran one at a time, which is the rule.
+
+- **Roast** — 669 fully passing, four runs, union 663 → 670.
+- **Local suite 855 of 855**, up from 798.
+- **optbench**: the interpreter, `--exe`, `--exe -O` and Rakudo produce identical
+  output on all nine kernels.
+- **Slim**: the negative suite passes and the differential is **519 identical of
+  550** programs (23 do not compile, 7 nondeterministic, 1 timed out). `--slim`
+  hello is 6,963,352 B against the 7.25 MB budget; both binaries grew ~1.6%, and
+  the cut-list refresh owed since v3.26.0 is still owed.
+- **GCC 16** builds clean.
+- **Windows syntax check**: all seventeen changed `src/*.cpp` files pass
+  `x86_64-w64-mingw32-g++ -fsyntax-only -D_WIN32`. RELEASING.md's documented form
+  of that command was missing `-DRAKUPP_VERSION`, which manufactures a compiler
+  error in `src/Repl.cpp` having nothing to do with Windows; fixed in the runbook.
+- **Battery 48 of 59** — one regression, `OO::Monitors`, above. `Cro::HTTP`
+  (2/29), `AttrX::Mooish` (1/35) and `NativeHelpers::Blob` (3/4) remain DIFF and
+  are not new.
+- **Conformance** — 955 documentation examples byte-identical (−1, inside the
+  documented ±5 flap band) and 21 operator divergences in 4 clusters, unchanged.
+- **Performance** — the open question above.
+
+The ecosystem figure is **carried forward, not measured**: the 824 comes from the
+2026-09-05 sweep. No whole-ecosystem sweep ran this cycle.
+
 ## v3.26.0 (2026-09-08) — the Grand Review, and what the gates found after it
 
 Three phases of review — the whole of `src/`, then every user-facing document,
