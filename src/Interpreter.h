@@ -770,6 +770,10 @@ struct ExecContext {
     // labelled or cross-frame control still throws NextEx/LastEx/RedoEx.
     int loopCtl = 0;              // 0 none, 1 next, 2 last, 3 redo
     const Expr* curStmtExpr = nullptr; // the expression the current ExprStmt is evaluating — a bare `next`/`last`/`redo` may go cooperative only when it IS this
+    // Did the value that just came out of a routine or block arrive in a
+    // CONTAINER? Rakudo's sink does not descend a Scalar to sink its contents,
+    // so a statement whose value is one is not sunk at all — see sinkValue.
+    bool valContained = false;
     uint64_t curLoopFrame = kNoFrame; // frameTop when the innermost native loop body runs
     // Cooperative `when`/`default`/`succeed`: a match in the SAME callable frame
     // as its enclosing given (or loop) body sets givenCtl instead of throwing

@@ -1226,6 +1226,50 @@ static bool regexBlockErrorStaysQuiet(const RakuError& e) {
     return e.message.rfind("EVAL parse error", 0) == 0 ||
            e.message.find(" without a supporting loop construct") != std::string::npos;
 }
+// Does this expression hand its value over IN A CONTAINER? Rakudo's sink does
+// not descend a Scalar to sink what is inside it, so a statement whose value
+// arrives contained is not sunk at all: `$p;`, `$q = failing-proc();` and
+// `@a[0];` are quiet where `failing-proc();` and `($p)<>` throw. Verified
+// shape by shape against Rakudo — the ones that keep the container are a
+// variable read, an assignment, a subscript, and whatever those reach through.
+static bool exprYieldsContainer(const Expr* e) {
+    if (!e) return false;
+    switch (e->kind) {
+        case NK::VarExpr: case NK::Assign: case NK::Index: return true;
+        // A short-circuit operator hands back the OPERAND it chose, container
+        // and all; an arithmetic infix is a routine call and does not. WHICH
+        // operand won is a runtime fact, so either one being a container counts:
+        // the mixed spelling (`1 ?? failing() !! $p`) stays quiet where Rakudo
+        // throws, which is the safe direction to be wrong in.
+        case NK::Binary: {
+            auto* b = static_cast<const Binary*>(e);
+            if (b->op != "//" && b->op != "||" && b->op != "&&" &&
+                b->op != "or" && b->op != "and" &&
+                b->op != "orelse" && b->op != "andthen" && b->op != "notandthen")
+                return false;
+            return exprYieldsContainer(b->lhs.get()) || exprYieldsContainer(b->rhs.get());
+        }
+        case NK::Ternary: {
+            auto* t = static_cast<const Ternary*>(e);
+            return exprYieldsContainer(t->then.get()) || exprYieldsContainer(t->els.get());
+        }
+        case NK::Unary: {   // `do { … }` is a Unary wrapped around the block
+            auto* u = static_cast<const Unary*>(e);
+            return u->op == "do" && exprYieldsContainer(u->operand.get());
+        }
+        // `do { $p }` / a bare block statement: the tail statement's value is
+        // the block's, container and all — a Block does not decontainerize.
+        case NK::BlockExpr: {
+            auto* be = static_cast<const BlockExpr*>(e);
+            if (be->isSub || be->body.empty()) return false;
+            const Stmt* last = be->body.back().get();
+            return last->kind == NK::ExprStmt &&
+                   exprYieldsContainer(static_cast<const ExprStmt*>(last)->e.get());
+        }
+        default: return false;
+    }
+}
+
 // Sink a VALUE: what happens to a statement's result nobody looks at, and to
 // a block's result a caller discards (throws-like/dies-ok/lives-ok). An
 // unhandled Failure detonates; a Proc that exited unsuccessfully throws
@@ -8421,7 +8465,19 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             // Proc the caller wants must flow out (`sub run-it { run |@cmd }; my $p
             // = run-it; if $p.exitcode …` died here). The same rule serves the
             // test helpers that discard a block's result — see sinkValue.
-            if (sink) sinkValue(r);
+            //
+            // …and only when the value is not still IN a container. A statement
+            // that reads a variable or writes one hands the sink a Scalar, which
+            // Rakudo does not descend, and neither does a BLOCK's tail value:
+            // `silently({ $actual = RunProc.new.run('not-exists') })` is how
+            // App::RaCoCo checks a failing command, and sinking through the
+            // container killed the test instead.
+            bool contained = exprYieldsContainer(e) ||
+                             ((e->kind == NK::Call || e->kind == NK::MethodCall) && tctx_.valContained);
+            // Whatever this statement produced is now the most recent value a
+            // caller could sink — record how it arrived for the frame above.
+            tctx_.valContained = contained;
+            if (sink && !contained) sinkValue(r);
             return r;
         }
         case NK::EmptyStmt: return Value::any();
@@ -10090,6 +10146,9 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 }
             }
             Value v = r->value ? eval(r->value.get()) : Value::any();
+            // An EXPLICIT `return $p` hands the container on; only a routine's
+            // implicit tail value is decontainerized (below, at the tail exit).
+            tctx_.valContained = exprYieldsContainer(r->value.get());
             // cooperative return when no callable boundary sits between here and
             // the routine (native loops/blocks only) — else the exception path
             if (tctx_.curRoutineFrame != 0 && tctx_.frameTop == tctx_.curRoutineFrame) {
@@ -16380,6 +16439,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                 if (s->kind == NK::Block && static_cast<Block*>(s)->isCatch) continue;
                 lastReal = k; break;
             }
+            bool explicitTailReturn = false;   // the tail-return fast path below took it
             for (size_t i = 0; i < nst; i++) {
                 auto* s = (*c.body)[i].get();
                 if (isBlockPhaser(s)) continue;
@@ -16405,6 +16465,12 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                     }
                     last = tcx.lvalueOut && r->isRw ? *tcx.lvalueOut
                          : r->value ? eval(r->value.get()) : Value::any();
+                    // …and, as at the exec-site `return` arm, an explicit
+                    // `return $p` hands the CONTAINER on. This fast path is the
+                    // routine's last statement, so the tail-decontainerizing
+                    // line below must not see it as an implicit return.
+                    tcx.valContained = exprYieldsContainer(r->value.get());
+                    explicitTailReturn = true;
                 }
                 // …and the same for an `is rw` routine with an IMPLICIT return:
                 // the caller asked for a container and the final expression
@@ -16423,6 +16489,11 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                     if (isRoutine) { tcx.returning = false; last = std::move(tcx.returnV); }
                     break; // a bare block propagates the flag to its routine
                 }
+                // A ROUTINE's implicit tail return decontainerizes; a bare
+                // block's does not. So `sub f { my $p = …; $p }; f();` sinks the
+                // Proc and `{ my $p = …; $p }()` does not — Rakudo draws exactly
+                // that line, and `return $p` (above) sits on the block's side.
+                if (i == lastReal && isRoutine && !c.retRw && !explicitTailReturn) tcx.valContained = false;
             }
             if (lpc && !tcx.returning) { // driver-run loop phasers, in this invocation's env
                 if (lpc & 4) runNextPhasers(*c.body, env);
@@ -17394,6 +17465,7 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
                 if (s->kind == NK::Block && static_cast<Block*>(s)->isCatch) continue;
                 lastReal = k; break;
             }
+            bool explicitTailReturn = false;   // the tail-return fast path below took it
             for (size_t i = 0; i < nst; i++) {
                 auto* s = (*c.body)[i].get();
                 if (isBlockPhaser(s)) continue;
@@ -17413,6 +17485,12 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
                     }
                     last = tcx.lvalueOut && r->isRw ? *tcx.lvalueOut
                          : r->value ? eval(r->value.get()) : Value::any();
+                    // …and, as at the exec-site `return` arm, an explicit
+                    // `return $p` hands the CONTAINER on. This fast path is the
+                    // routine's last statement, so the tail-decontainerizing
+                    // line below must not see it as an implicit return.
+                    tcx.valContained = exprYieldsContainer(r->value.get());
+                    explicitTailReturn = true;
                 }
                 // …and an `is rw` / `is raw` routine with an IMPLICIT return: the
                 // caller asked for a container and the final expression names one,
@@ -17432,6 +17510,7 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
                     tcx.returning = false; last = std::move(tcx.returnV);
                     break;
                 }
+                if (i == lastReal && !c.retRw && !explicitTailReturn) tcx.valContained = false; // a method's tail decontainerizes too
             }
         }
     } catch (ReturnEx& r) { runLeaves(true); tcx.cur = saved; copyOutRw(c.params, env, rwArgs);
