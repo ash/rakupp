@@ -13364,7 +13364,8 @@ Value Interpreter::evalNqpOp(NqpOp* n) {
 #ifdef _WIN32
             struct ::_stat64 st;
             const bool ok = ::_stat64(path.c_str(), &st) == 0;
-            const bool lok = ok;                       // no lstat on Windows
+            const bool lok = ok;                       // no lstat on Windows,
+            (void)viaLink;                             // so the link/follow choice is moot
             auto& lst = st;
 #else
             struct ::stat st, lst;
@@ -14174,8 +14175,14 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
             return Value::integer(::access(S(0).str().c_str(), mode) == 0 ? 1 : 0);
         }
         case O::FileIsLink: {
-            struct stat st;
+#ifdef _WIN32
+            // no lstat on Windows — the same answer the Stat case gives there,
+            // where S_ISLNK is a no-op macro and a symlink cannot be told apart
+            return Value::integer(0);
+#else
+            struct ::stat st;
             return Value::integer(::lstat(S(0).str().c_str(), &st) == 0 && S_ISLNK(st.st_mode) ? 1 : 0);
+#endif
         }
         // nqp::rindex(haystack, needle, ?from) — the LAST occurrence at or
         // before `from` (codepoint positions, as nqp::index counts); paths

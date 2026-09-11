@@ -341,6 +341,22 @@ while the MinGW job (GCC) stayed green. Building GCC locally costs minutes and
 catches the divergences that are not MSVC-specific; MSVC itself only exists in
 CI, which is why the pre-tag CI check in step 4 below is not optional.
 
+**A file that calls a platform API gets a Windows syntax check before it is
+pushed** — the MinGW cross-compiler is on the build machine, and it answers in
+seconds without a build:
+
+```bash
+x86_64-w64-mingw32-g++ -std=c++17 -fsyntax-only -Isrc -D_WIN32 src/Builtins.cpp
+```
+
+A macOS or Linux build cannot catch this class at all: the Windows branch of an
+`#ifdef` is never compiled there, and a skipped preprocessor block is not even
+parsed. An `nqp::fileislink` written as a bare `::lstat` — which Windows does
+not have, and `src/Platform.h` does not shim — therefore passed every local gate
+and failed the MinGW job alone (2026-09-11). Check every file the change
+touched, not just the one that looks platform-specific: the build stops at the
+first bad translation unit, so one error hides the rest.
+
 ### 6. The distribution bar
 
 ```bash

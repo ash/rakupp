@@ -8163,7 +8163,20 @@ static std::vector<std::string> libCandidates(const std::string& l) {
     // SCRIPTS (dlopen refuses those), and only when the -dev package is
     // installed; the loadable object is the soname, .so.6 for the whole
     // glibc family. `is native('m')` must work on a bare Linux.
-    cands.push_back("lib" + l + ".so.6");
+    //
+    // …and that is not a glibc peculiarity, it is how Linux packaging works
+    // for every library: the unversioned `libfoo.so` is a symlink shipped by
+    // `foo-dev`, while the loadable object in the runtime package is the
+    // SONAME. libuuid is the one that reported it — `libuuid.so` comes from
+    // uuid-dev, `libuuid.so.1` from libuuid1, which is installed everywhere —
+    // and a dist that says `is native('uuid')` (LibUUID, so DB::Pg, so Red)
+    // must load on a box that never installed a -dev package. Descending, as
+    // the libffi probe already does: the -dev symlink points at the newest
+    // version installed, so trying the newest first answers the same file.
+    // Only reached once per sub (callNative caches the resolved symbol) and
+    // only when every unversioned spelling above has already missed.
+    for (const char* v : {".8", ".7", ".6", ".5", ".4", ".3", ".2", ".1", ".0"})
+        cands.push_back("lib" + l + ".so" + v);
 #endif
     return cands;
 }

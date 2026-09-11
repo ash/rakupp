@@ -530,6 +530,12 @@ for dir($ROOT.add('t/regression')).grep(*.Str.ends-with('.raku')).sort -> $f {
     ok($green, "regression: {$f.basename}");
     unless $green {
         diag("exit=$exit last-line='$last'");
+        # …and the house pattern reports on STDOUT (`ck` says "FAIL: <desc> — got
+        # vs want"), so stderr alone leaves a CI log saying only "FAIL (2)" —
+        # which is what sent the libuuid case to a log dive. Echo the failing
+        # lines themselves, both shapes, capped so a file that fails every check
+        # cannot bury the rest of the run.
+        diag("stdout: $_") for $out.lines.grep({ .starts-with('FAIL') || .starts-with('not ok') }).head(20);
         diag("stderr: $_") for $err.lines;
     }
 }
