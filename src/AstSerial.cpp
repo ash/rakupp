@@ -231,6 +231,13 @@ template <class IO> void visit(IO& io, VarExpr& n)  { F(io, n.name); F(io, n.dec
                                                       F(io, n.containerIs); F(io, n.containerOf);
                                                       ioExpr(io, n.declShape); F(io, n.namedBind);
                                                       F(io, n.processScoped);
+                                                      F(io, n.synthTopic);      // P1 surface fact
+                                                      // …and the two that were never written at all: a cached
+                                                      // unit came back with `$::($n)` reading as an ordinary
+                                                      // lexical, which is a different program. Found while the
+                                                      // version was bumping anyway, so users pay ONE cache
+                                                      // invalidation rather than two.
+                                                      F(io, n.viaPseudoPkg); F(io, n.pseudoPkg);
                                                       ioExpr(io, n.declTypeExpr);
                                                       n.syncAttrCache(); }  // derived from `name`, not stored
 template <class IO> void visit(IO& io, NameTerm& n) { F(io, n.name); F(io, n.ofType); F(io, n.defConstraint); }
@@ -242,13 +249,15 @@ template <class IO> void visit(IO& io, HashLit& n)  { ioExprVec(io, n.items); }
 template <class IO> void visit(IO& io, Assign& n)   { ioExpr(io, n.target); F(io, n.op); ioExpr(io, n.value); F(io, n.containerSigil); }
 template <class IO> void visit(IO& io, Binary& n)   { F(io, n.op); ioExpr(io, n.lhs); ioExpr(io, n.rhs); }
 template <class IO> void visit(IO& io, Unary& n)    { F(io, n.op); F(io, n.postfix); ioExpr(io, n.operand); }
-template <class IO> void visit(IO& io, Call& n)     { F(io, n.name); ioExpr(io, n.callee); ioExprVec(io, n.args); }
+template <class IO> void visit(IO& io, Call& n)     { F(io, n.name); ioExpr(io, n.callee); ioExprVec(io, n.args);
+                                                      F(io, n.parenned); }  // P1 surface fact
 template <class IO> void visit(IO& io, MethodCall& n) { ioExpr(io, n.inv); F(io, n.method); F(io, n.methodQual);
                                                         ioExpr(io, n.methodExpr); ioExprVec(io, n.args);
                                                         F(io, n.maybe); F(io, n.bang); F(io, n.mutate);
                                                         F(io, n.hyper); F(io, n.meta); }
 template <class IO> void visit(IO& io, Index& n)    { ioExpr(io, n.base); ioExpr(io, n.index); F(io, n.isHash);
-                                                      F(io, n.multiDim); F(io, n.semicolonSub); F(io, n.adverb); }
+                                                      F(io, n.multiDim); F(io, n.semicolonSub); F(io, n.adverb);
+                                                      F(io, n.angleKey); }  // P1 surface fact
 template <class IO> void visit(IO& io, Ternary& n)  { ioExpr(io, n.cond); ioExpr(io, n.then); ioExpr(io, n.els); }
 template <class IO> void visit(IO& io, NqpOp& n)    { F(io, n.op); ioExprVec(io, n.args); }
 template <class IO> void visit(IO& io, RangeExpr& n){ ioExpr(io, n.from); ioExpr(io, n.to); F(io, n.exFrom); F(io, n.exTo); }
@@ -284,6 +293,7 @@ template <class IO> void visit(IO& io, SubDecl& n)  {
     ioExpr(io, n.retLiteral); F(io, n.retLiteralPresent);
     F(io, n.isMulti); F(io, n.isProto); F(io, n.hadSig); F(io, n.isMethod);
     F(io, n.isSubmethod); F(io, n.isPrivate);
+    F(io, n.retTypeSpell);   // P1 surface fact
     ioExprVec(io, n.immediateArgs); F(io, n.immediateCall);
     F(io, n.isExport); ioVec(io, n.exportTags); F(io, n.isOur); F(io, n.retType); F(io, n.pod);
     F(io, n.isNative); F(io, n.nativeLib); F(io, n.nativeLibSub);

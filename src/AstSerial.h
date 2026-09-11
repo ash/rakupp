@@ -20,7 +20,7 @@ namespace rakupp {
 
 // Bumped whenever the encoding or the AST changes shape. A cache entry carrying
 // a different version is ignored, never reinterpreted.
-inline constexpr uint32_t kAstSerialVersion = 18; // v18: ClassDecl.howName + .userTraits (module-supplied declarators and class traits)
+inline constexpr uint32_t kAstSerialVersion = 19; // v19: the four RakuAST surface facts (Call.parenned, VarExpr.synthTopic, Index.angleKey, SubDecl.retTypeSpell) + the VarExpr pseudo-package pair that was never written
 
 struct AstSerialError { std::string msg; };
 

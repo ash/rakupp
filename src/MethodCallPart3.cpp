@@ -4,6 +4,7 @@
 #endif
 #include "AsciiCtype.h"
 #include "MethodCallSegment.h"
+#include "RakuAstClasses.h"
 #include "BuiltinsShared.h"
 
 // Segment 3 of the method-dispatch chain, split out of methodCallInner.
@@ -492,6 +493,19 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         if (m == "EVAL") {
             auto it = builtins_.find("EVAL");
             if (it != builtins_.end()) { ValueList ea{Value::str(strOf(inv))}; return it->second(*this, ea); }
+        }
+        // `.AST` is COOL, not Str: `42.AST` and `<42>.AST` both answer a
+        // StatementList on Rakudo 2026.08, so it sits here beside the Cool
+        // `EVAL` arm — late, after the hot Str arms — and takes its invocant
+        // through the same `strOf`. A Buf still refuses, because Buf is not
+        // Cool and never reaches this arm.
+        if (m == "AST") {
+            if (!rakuAstVisible()) refuseRakuAst();
+            bool compUnit = false;
+            for (auto& a : args)
+                if (a.t == VT::Pair && a.s == "compunit" && (!a.pairVal() || a.pairVal()->truthy()))
+                    compUnit = true;
+            return rakuAstView(*this, strOf(inv), compUnit);
         }
         if (m == "conj" && !inv.isNumeric()) { // Cool.conj — the conjugate of .Numeric
             ValueList none; Value nv = methodCall(inv, "Numeric", none);

@@ -1847,3 +1847,82 @@ this is recorded as a sanity check: the only path a Roast file can reach in this
 step is one guarded branch in the `EVAL` builtin, inert unless its argument is a
 RakuAST node, and no Roast file at the pin constructs one. The three-run gate
 runs with the phase that ships this.
+
+## P1 — the `.AST` view (landed 2026-09-11, `--rakuast` still open)
+
+`'source'.AST` builds the RakuAST view over our own parse, and `parse → view →
+DEPARSE` returns byte-identical text to Rakudo on the shapes both cover.
+`.AST(:compunit)`, the three `StatementList` accessors and `QuotedRegex` as a
+source slice are in, which is App::Rak's regex and code needles.
+
+**Files**: `src/RakuAstView.cpp` (new), the four surface facts in Ast.h + Parser,
+AstSerial (**bumped 18 → 19**), MethodCallPart3 (the `.AST` arm),
+MethodCallPart2 (node attribute accessors), the registry and its generator,
+`tools/rakuast-roundtrip.raku`, `t/regression/rakuast-view.raku`.
+
+### The four surface facts cost exactly what the plan predicted
+
+Measured with the same headers before and after: `Call` **80 → 88** (the one
+that cannot hide, nano-malloc bucket 80→96, paid once per Call at PARSE time and
+never read at eval), and `VarExpr` 296, `Index` 80, `SubDecl` 400 all
+**unchanged** — `synthTopic`, `angleKey` and `retTypeSpell` each landed in an
+existing hole. The bump also closes the `VarExpr::viaPseudoPkg`/`pseudoPkg`
+serializer gap, which was never written at all: a cached unit came back with
+`$::($n)` reading as an ordinary lexical. One invalidation, not two.
+
+`retTypeSpell` has no reader yet. It is recorded now because the alternative is
+a second cache invalidation when the signature view wants it.
+
+### The round-trip harness is the gate, and it found four real bugs
+
+`tools/rakuast-roundtrip.raku` renders every examples/ and showcase/ program
+through the view and **parses the result again**. Three outcomes, and only one
+of them is a failure: `view` and `deparse` are named MISSES, while `reparse` —
+both ran and the text will not parse — is something WRONG. The tool fails on
+`reparse` and nothing else.
+
+It went 7 reparse failures → **0**, and each was a rendering that was valid-
+looking and incorrect:
+
+1. **A bare `;` on its own line after every closing brace.** A block statement
+   already ends in a newline and takes neither a `;` nor a second one.
+2. **`say [+]@a`** — a reduction metaop needs the space the parser demands of
+   it, and four corpus programs use one.
+3. **`multi` dropped from the declarator**, so two candidates rendered as two
+   `sub`s of one name — a redeclaration error rather than a program. The slurpy
+   marker went the same way: `($p, *@rest)` rendered `($p, @rest)`.
+4. **`Statement::Unless` read the wrong attribute**, so the body vanished and
+   the `if` inside it became a separate statement.
+
+And one defect that was not a rendering at all: **a parse error inside `.AST`
+escaped as a top-level `===SORRY!===`**, past every `try` and `CATCH`, taking
+the program with it. It is a Raku exception now. The harness found it because
+re-parsing rendered text is precisely the call most likely to meet bad source.
+
+**Where it stands**: 59 files, **27 round-trip completely**, 32 stop at a named
+`view` miss (package declarations 12, `given`/`when`, the loop controls, `s///`),
+0 reparse. Those 32 are the widening list, read off real programs.
+
+### Two measured spellings that no amount of reasoning would have given
+
+- **A CompUnit terminates every statement; a bare StatementList omits the last.**
+  `q[say 1].AST.DEPARSE` is `say 1\n` and `.AST(:compunit).DEPARSE` is `say 1;\n`
+  — structural, so no per-statement state reproduces it.
+- **`RakuAST::CompUnit` has no `.statements`**, only `.statement-list`. Reaching
+  through would have been a leniency a module's `.^can` probe could read as a
+  different API, so it does not.
+
+### Still open in P1
+
+`--rakuast` (the CLI flag, the dump serialization, `tools/rakuast-diff.raku`)
+and the published tree-oracle match percentage. The view has to cover more of
+the corpus before that number means anything — the 32 `view` misses would
+dominate it — so the widening comes first and the number after.
+
+### Gates
+
+`t/run.raku` **860 of 860**, `t/slim/run.raku` green, the three earlier RakuAST
+regression cases still green, and `ast-cache-publication` green across the
+version bump. Roast and the perf A/B are owed for this step and are deferred
+with the ones P3 named: the perf leg wants a quiet machine and this step adds
+8 bytes to `Call`, which the plan says is the one thing that could show.

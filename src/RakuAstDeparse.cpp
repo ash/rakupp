@@ -106,10 +106,18 @@ std::string quoted(const std::string& s) {
     return out + "\"";
 }
 
-// An operator that is a WORD takes a trailing space of its own, which is how
+// A prefix operator that needs a space before its argument, which is how
 // `Prefix.new("not")` renders `not ` and `not $_` comes out right.
-bool wordOperator(const std::string& op) {
-    return !op.empty() && (ascii::isalpha((unsigned char)op[0]) || op[0] == '_');
+//
+// Two kinds need it. A WORD, because `not$_` is one identifier — and a
+// REDUCTION metaop `[+]`, because the parser refuses `[+]@a` outright
+// ("whitespace required before a reduction metaop's argument"). The second was
+// found by the round-trip harness: `say [+] @a` rendered `say [+]@a`, which is
+// not Raku, on four of the corpus's programs.
+bool prefixNeedsSpace(const std::string& op) {
+    if (op.empty()) return false;
+    if (ascii::isalpha((unsigned char)op[0]) || op[0] == '_') return true;
+    return op.front() == '[' && op.back() == ']';
 }
 
 struct Deparser {
@@ -153,15 +161,26 @@ struct Deparser {
     // A statement list: each statement on its own line, `;` after all but the
     // last, a newline after every one. Measured: one statement is "42\n", two
     // are "42;\n\"foo\"\n".
-    std::string statements(const Value& list, int indent) {
+    // `terminateLast` is a COMPUNIT thing, and it is measured rather than
+    // guessed: a CompUnit terminates every statement (`say 1;\n`) while a bare
+    // StatementList omits the last (`say 1\n`) — whether the tree was parsed or
+    // constructed. Structural, so no per-statement state reproduces it.
+    std::string statements(const Value& list, int indent, bool terminateLast = false) {
         const Value* ss = attr(list, "statements");
         std::string out;
         if (!ss || ss->t != VT::Array || !ss->arr()) return out;
         size_t n = ss->arr()->size();
         for (size_t i = 0; i < n; i++) {
             const Value& s = (*ss->arr())[i];
-            out += pad(indent) + (isNode(s) ? render(s, indent) : s.toStr());
-            if (i + 1 < n) out += ";";
+            std::string one = isNode(s) ? render(s, indent) : s.toStr();
+            out += pad(indent) + one;
+            // A BLOCK statement — `if`, `for`, a `sub` declaration — already
+            // ends in its own newline, and Rakudo puts neither a `;` nor a
+            // second newline after it. Getting this wrong put a bare `;` on a
+            // line of its own after every closing brace, which does not parse;
+            // the round-trip harness is what showed it.
+            if (!one.empty() && one.back() == '\n') continue;
+            if (i + 1 < n || terminateLast) out += ";";
             out += "\n";
         }
         return out;
@@ -223,8 +242,40 @@ struct Deparser {
             return v ? v->toStr() : "";
         }
         if (c == "Term::Name") return opt(attr(node, "name"), indent);
+        if (c == "Term::Self")     return "self";
+        if (c == "Term::Whatever") return "*";
+        if (c == "QuotedString") {
+            // A parsed interpolating string: literal segments go in as they
+            // were, and every other segment is a `{…}` block, which is the one
+            // spelling that can carry any expression back through the parser.
+            std::string out = "\"";
+            if (const Value* segs = attr(node, "segments"))
+                if (segs->t == VT::Array && segs->arr())
+                    for (auto& s : *segs->arr()) {
+                        if (isNode(s) && shortName(s) == "StrLiteral") {
+                            const Value* v = attr(s, "value");
+                            std::string lit = v ? v->toStr() : "";
+                            for (char ch : lit) {
+                                if (ch == '"' || ch == '\\' || ch == '$' || ch == '@' || ch == '{')
+                                    out += '\\';
+                                out += ch;
+                            }
+                        } else if (isNode(s)) {
+                            out += "{" + render(s, indent) + "}";
+                        }
+                    }
+            return out + "\"";
+        }
         if (c == "ColonPair::True")  { const Value* k = attr(node, "key"); return ":" + (k ? k->toStr() : ""); }
         if (c == "ColonPair::False") { const Value* k = attr(node, "key"); return ":!" + (k ? k->toStr() : ""); }
+        if (c == "ColonPair::Value") {
+            const Value* k = attr(node, "key");
+            return ":" + (k ? k->toStr() : "") + "(" + opt(attr(node, "value"), indent) + ")";
+        }
+        if (c == "FatArrow") {
+            const Value* k = attr(node, "key");
+            return (k ? k->toStr() : "") + " => " + opt(attr(node, "value"), indent);
+        }
 
         // ---- operators ---------------------------------------------------
         if (c == "Infix" || c == "Prefix" || c == "Postfix") {
@@ -232,7 +283,7 @@ struct Deparser {
             std::string op = o ? o->toStr() : "";
             // A word prefix carries its own separating space; an infix gets
             // spaces from its application, so only the prefix does it here.
-            if (c == "Prefix" && wordOperator(op)) op += " ";
+            if (c == "Prefix" && prefixNeedsSpace(op)) op += " ";
             return op;
         }
         if (c == "ApplyInfix") {
@@ -289,6 +340,32 @@ struct Deparser {
             return "{" + opt(attr(node, "index"), indent) + "}";
         if (c == "Circumfix::Parentheses")
             return "(" + opt(attr(node, "semilist"), indent) + ")";
+        if (c == "Circumfix::ArrayComposer")
+            return "[" + opt(attr(node, "semilist"), indent) + "]";
+        if (c == "Circumfix::HashComposer")
+            return "{" + opt(attr(node, "semilist"), indent) + "}";
+        if (c == "Postcircumfix::LiteralHashIndex")
+            return "<" + opt(attr(node, "index"), indent) + ">";
+        if (c == "Call::Term")
+            return "(" + opt(attr(node, "args"), indent) + ")";
+        if (c == "ApplyInfix::Chaining") {
+            // `1 < $x < 10` — operands and infixes interleaved, which is the one
+            // shape our tree and Rakudo's both keep whole rather than nesting.
+            const Value* ops = attr(node, "operands");
+            const Value* ixs = attr(node, "infixes");
+            std::string out;
+            if (ops && ops->t == VT::Array && ops->arr())
+                for (size_t i = 0; i < ops->arr()->size(); i++) {
+                    if (i) {
+                        out += " ";
+                        if (ixs && ixs->t == VT::Array && ixs->arr() && i - 1 < ixs->arr()->size())
+                            out += render((*ixs->arr())[i - 1], indent);
+                        out += " ";
+                    }
+                    out += render((*ops->arr())[i], indent);
+                }
+            return out;
+        }
 
         // ---- statements and blocks ---------------------------------------
         if (c == "SemiList") {
@@ -296,8 +373,21 @@ struct Deparser {
             return joinList(ss, "; ", indent);
         }
         if (c == "StatementList") return statements(node, indent);
+        if (c == "Statement::Empty") return "";
+        if (c == "Statement::Use")   return "use " + opt(attr(node, "module-name"), indent);
         if (c == "Statement::Expression") {
             std::string out = opt(attr(node, "expression"), indent);
+            // A statement whose expression IS a block — a routine declaration,
+            // a bare block — ends in its own newline and takes no `;`, which is
+            // what Rakudo renders and what the statement list reads back off
+            // the trailing character. Without it two `multi` candidates came
+            // out separated by `};`, which does not parse.
+            if (const Value* x = attr(node, "expression"))
+                if (isNode(*x)) {
+                    const std::string xc = shortName(*x);
+                    if (xc == "Sub" || xc == "Method" || xc == "Submethod" || xc == "Block")
+                        out += "\n";
+                }
             if (const Value* m = attr(node, "condition-modifier"))
                 if (isNode(*m)) out += " " + render(*m, indent);
             if (const Value* m = attr(node, "loop-modifier"))
@@ -321,16 +411,21 @@ struct Deparser {
         }
         if (c == "Sub" || c == "Method" || c == "Submethod") {
             std::string kw = c == "Sub" ? "sub " : c == "Method" ? "method " : "submethod ";
+            // `multi` is part of the declarator, not decoration: dropping it made
+            // two `multi` candidates render as two `sub`s of the same name, which
+            // is a redeclaration error rather than a program.
+            if (const Value* mn = attr(node, "multiness"))
+                if (!mn->toStr().empty()) kw = mn->toStr() + " " + kw;
             std::string nm = opt(attr(node, "name"), indent);
             std::string sig = opt(attr(node, "signature"), indent);
             return kw + nm + (sig.empty() ? "" : "(" + sig + ")") + " " +
                    blockoid(attr(node, "body"), indent);
         }
-        if (c == "Statement::If" || c == "Statement::Elsif") {
+        if (c == "Statement::If" || c == "Statement::Elsif" || c == "Statement::Unless") {
             // `opt`, never `*attr(...)`: a node built by `.new` with a required
             // child left unset is a real shape — `.raku` round-trip tests
             // construct exactly that — and dereferencing the miss segfaulted.
-            std::string out = (c == "Statement::If" ? "if " : "elsif ") +
+            std::string out = (c == "Statement::If" ? "if " : c == "Statement::Unless" ? "unless " : "elsif ") +
                               opt(attr(node, "condition"), indent) + " " +
                               opt(attr(node, "then"), indent);
             // The elsif CHAIN. Dropping it rendered valid Raku that means
@@ -342,11 +437,8 @@ struct Deparser {
                         if (isNode(e)) out += "\n" + pad(indent) + render(e, indent);
             if (const Value* e = attr(node, "else"))
                 if (isNode(*e)) out += "\n" + pad(indent) + "else " + render(*e, indent);
-            return c == "Statement::If" ? out + "\n" : out;
+            return c == "Statement::Elsif" ? out : out + "\n";
         }
-        if (c == "Statement::Unless")
-            return "unless " + opt(attr(node, "condition"), indent) + " " +
-                   opt(attr(node, "body"), indent) + "\n";
         if (c == "Statement::For")
             return "for " + opt(attr(node, "source"), indent) + " " +
                    opt(attr(node, "body"), indent);
@@ -412,7 +504,8 @@ struct Deparser {
         // ---- whole units --------------------------------------------------
         if (c == "CompUnit") {
             const Value* sl = attr(node, "statement-list");
-            return (sl && isNode(*sl)) ? statements(*sl, indent) : std::string();
+            return (sl && isNode(*sl)) ? statements(*sl, indent, /*terminateLast=*/true)
+                                       : std::string();
         }
         // A source-slice node keeps its own text — a regex literal's DEPARSE is
         // the literal, which is why no regex tree is needed to render one.

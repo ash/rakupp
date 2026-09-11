@@ -116,6 +116,39 @@ const Registry* build() {
     node->methods["EVAL"] = method([](Interpreter& I, ValueList& a) -> Value {
         return a.empty() ? Value::any() : rakuAstEval(I, a[0]);
     });
+    // The three `StatementList` accessors Needle::Compile drives: `.statements`
+    // reads the list, `.statement-list` reaches it through a CompUnit, and
+    // `.unshift-statement` puts one in front — which is how a needle gets its
+    // `my $/;` declaration. Plain attribute reads, and a mutation that writes
+    // the node it was called on, so the caller sees it.
+    auto attrOf = [](const Value& self, const char* key) -> Value* {
+        if (self.t != VT::Object || !self.obj()) return nullptr;
+        auto it = self.obj()->attrs.find(key);
+        return it == self.obj()->attrs.end() ? nullptr : &it->second;
+    };
+    node->methods["statements"] = method([attrOf](Interpreter&, ValueList& a) -> Value {
+        if (a.empty()) return Value::array();
+        if (Value* v = attrOf(a[0], "statements")) return *v;
+        // …and NOT through a CompUnit. Measured: Rakudo's CompUnit has no
+        // `.statements`, only `.statement-list`, and reaching through would be
+        // a leniency a module's `.^can` probe could read as a different API.
+        Value empty = Value::array(); empty.isList = true;
+        return empty;
+    });
+    node->methods["statement-list"] = method([attrOf](Interpreter&, ValueList& a) -> Value {
+        if (a.empty()) return Value::any();
+        if (Value* v = attrOf(a[0], "statement-list")) return *v;
+        return a[0];   // a StatementList IS its own statement list
+    });
+    node->methods["unshift-statement"] = method([attrOf](Interpreter&, ValueList& a) -> Value {
+        if (a.size() < 2) return Value::any();
+        Value target = a[0];
+        if (Value* sl = attrOf(target, "statement-list")) target = *sl;   // reach through a CompUnit
+        Value* ss = attrOf(target, "statements");
+        if (!ss || ss->t != VT::Array || !ss->arr()) return Value::any();
+        ss->arr()->insert(ss->arr()->begin(), a[1]);
+        return a[0];
+    });
     // `.from-identifier("foo")` and `.from-identifier-parts("Foo","Bar")` both
     // make a Name out of plain strings — the spelling every dist uses.
     for (const char* m : {"from-identifier", "from-identifier-parts"})

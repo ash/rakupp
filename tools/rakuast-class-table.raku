@@ -47,8 +47,9 @@ for @rows -> $r {
 # What the blocked dists name directly — the grep of their sources, not a
 # summary of them: Needle::Compile 0.0.12, Intl::Format::Number 0.2.0 and
 # RakuAST::Utils 0.0.3, REA tarballs, 52 distinct names between them. Plus the
-# roots a walker tests against, and `QuotedRegex`, which P1 needs as a source
-# slice and which no constructed tree mentions.
+# roots a walker tests against, `QuotedRegex`, which P1 needs as a source slice,
+# and everything `src/RakuAstView.cpp` can EMIT — the view is the other half of
+# the demand, and a name it builds that the table lacks is a throw on real code.
 my @demand = <
     Node Statement Expression Literal Term QuotedRegex
     ApplyInfix ApplyListInfix ApplyPostfix ApplyPrefix ArgList Block Blockoid
@@ -62,6 +63,12 @@ my @demand = <
     Sub Term::Name Term::TopicCall Ternary Trait::Is Type::Capture
     Type::Coercion Type::Definedness Type::Parameterized Type::Simple
     Var::Dynamic Var::Lexical Var::Lexical::Constant VarDeclaration::Simple
+    ApplyInfix::Chaining Call::Term Call::MaybeMethod Call::PrivateMethod
+    Call::MetaMethod Call::Name::WithoutParentheses Circumfix::ArrayComposer
+    Circumfix::HashComposer Circumfix::Parentheses ColonPair::Value ColonPair::False
+    FatArrow NumLiteral Postcircumfix::HashIndex Postcircumfix::LiteralHashIndex
+    QuotedString RatLiteral Statement::Empty Statement::Unless Statement::Until
+    Statement::Use Statement::While Term::Self Term::Whatever Type::Setting
 >;
 
 # `::("RakuAST::A::B")` answers a Failure for a NESTED name (measured on

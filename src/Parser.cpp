@@ -2176,6 +2176,7 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
                     zi->base = std::move(base);
                     zi->index = std::make_unique<WhateverExpr>();
                     zi->isHash = true;
+                    zi->angleKey = true;   // `%h<>:k`, the ANGLE zen slice
                     base = std::move(zi);
                 }
                 else base = zenDecont(std::move(base));
@@ -2286,6 +2287,7 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
                 auto keyIndex = [&](ExprPtr b) {
                     auto idx = std::make_unique<Index>();
                     idx->base = std::move(b); idx->isHash = true;
+                    idx->angleKey = true;   // `%h<a>`, not `%h{'a'}` — see Index::angleKey
                     if (words.size() == 1) idx->index = std::make_unique<StrLit>(words[0]);
                     else { auto al = std::make_unique<ArrayLit>(); for (auto& w : words) al->items.push_back(std::make_unique<StrLit>(w)); idx->index = std::move(al); }
                     return idx;
@@ -4427,7 +4429,16 @@ ExprPtr Parser::parsePrimary() {
                 advance(); auto u = std::make_unique<Unary>(); u->op = "dimslip"; u->operand = parseExpr(BP_COMMA + 1); return u;
             }
             if (t.text == "\xE2\x88\x9E") { advance(); auto inf = std::make_unique<NumLit>(std::numeric_limits<double>::infinity()); inf->raw = "\xE2\x88\x9E"; return inf; } // ∞
-            if (t.text == ".") return std::make_unique<VarExpr>("$_"); // .method => $_.method
+            if (t.text == ".") {   // .method => $_.method
+                // Flagged as SYNTHESIZED: Rakudo spells a bare `.method`
+                // `Term::TopicCall` and a written-out `$_.method` an
+                // `ApplyPostfix`, and the two deparse to the same text — so
+                // without the bit `.AST` would answer a different tree for the
+                // same program depending on which spelling it was written in.
+                auto topic = std::make_unique<VarExpr>("$_");
+                topic->synthTopic = true;
+                return topic;
+            }
             if (t.text == "\\") { // capture: \(…) builds a Capture (assoc-indexable); bare \x itemizes
                 advance();
                 if (isKind(Tok::LParen) && !cur().spaceBefore) {
@@ -5207,6 +5218,7 @@ ExprPtr Parser::parsePrimary() {
                         return n;
                 auto c = std::make_unique<Call>();
                 c->name = name;
+                c->parenned = true;   // `f(…)`, against the listop form just below
                 c->args = std::move(callArgs);
                 takeTrailingAdverbs(c->args); // `f($x):12size`
                 return c;

@@ -3892,6 +3892,16 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // of its class (Cro::Uri's add(): `(self ?? $!create !! Cro::Uri).bless(|%parts)`)
         if (m == "bless" || m == "new")
             return methodCall(Value::typeObj(ci->name), m, std::move(args), rwArgs);
+        // A RakuAST:: node answers its OWN attributes by name, which is how
+        // Rakudo's classes are written — `$stmt.expression`, `$call.name`,
+        // `$block.body` — and it is how a module walks a tree it was handed
+        // (`.AST.statements.head.expression` is Needle::Compile's regex needle).
+        // The registry carries no ClassAttr list, so the lookup is the node's
+        // own attribute map, which only ever holds syntax-bearing keys.
+        if (args.empty() && isRakuAstName(ci->name)) {
+            auto it = inv.obj()->attrs.find(m);
+            if (it != inv.obj()->attrs.end()) return it->second;
+        }
         const ClassAttr* at = ci->findAttr(m);
         if (at && at->pub) {
             auto it = inv.obj()->attrs.find(m);

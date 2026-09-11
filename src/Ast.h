@@ -177,6 +177,13 @@ struct InterpStr : Expr {
 struct VarExpr : Expr {
     std::string name; // includes sigil
     bool declare = false;        // `my $x` style declaration
+    // Was this `$_` SYNTHESIZED by the parser for a bare `.method`? Rakudo
+    // spells that `Term::TopicCall` and a written-out `$_.method` an
+    // `ApplyPostfix`, and the two DEPARSE identically — so a view that guessed
+    // would answer a different tree for the same program depending on how it
+    // happened to be written. Rides the padding beside `declare`; sizeof is
+    // unchanged.
+    bool synthTopic = false;
     std::string declScope;       // my / our / state / constant
     std::string declType;        // optional type constraint (ignored at runtime for now)
     std::string declCoerce;      // coercion-type target: `my Int(Str) $x` coerces assigned values to Int
@@ -328,6 +335,13 @@ struct Call : Expr { // sub call by name: foo(args)  or  foo args
     std::string name;
     ExprPtr callee;     // when invoking a code expression: $code(...)
     std::vector<ExprPtr> args;
+    // Was it written WITH parentheses? Rakudo keeps two classes apart on
+    // exactly this — `Call::Name` and `Call::Name::WithoutParentheses` — so
+    // `.AST` cannot answer without the bit, and the listop spelling is the
+    // commoner one: 1,571 of raku-corpus's 1,870 programs contain it. Never
+    // read at eval. It is the one of P1's four surface facts that does not fit
+    // in existing padding, and it is paid once per Call at PARSE time.
+    bool parenned = false;
     // The LEXICAL LOOKUP KEY for `name` — "&" + name. evalCall resolves every
     // named call through `find("&" + c->name)`, so the concatenation ran on
     // each of fib's 1.6M calls only to produce the same four bytes again.
@@ -374,6 +388,11 @@ struct Index : Expr { // base[idx] or base{key}
     bool isHash = false;
     bool multiDim = false; // @a[X;Y]: index is a ListExpr of dims, sliced level-by-level
     bool semicolonSub = false; // %h{a;b;c}: a `{; }` multidim brace subscript (parsed as nested Index)
+    // `%h<a>` against `%h{'a'}` — Rakudo keeps them apart
+    // (`Postcircumfix::LiteralHashIndex` against `HashIndex`) and the two mean
+    // the same thing, so only the spelling the parser saw can tell the view
+    // which to build. Rides the hole after `semicolonSub`; sizeof unchanged.
+    bool angleKey = false;
     std::string adverb; // :exists / :delete / :k / :v / :kv / :p  (may start with '!')
     // Fast-path shape for `@arr[$i]` / `@arr[0]`, decided once from the syntax:
     // -1 not yet looked at, 0 none, 1 plain lexical base with a plain lexical
@@ -626,6 +645,13 @@ struct SubDecl : Stmt {
     bool isMethod = false;
     bool isSubmethod = false;
     bool isPrivate = false; // `method !name` — private method, called only via self!name
+    // How the return type was SPELLED: 'o' for `of Int`, 'r' for `returns Int`,
+    // 'a' for `--> Int`, 0 for none. The three mean the same thing at run time
+    // and this is never read there — it is the fourth of P1's surface facts,
+    // recorded now so the one AST-cache bump covers all four rather than the
+    // signature view costing users a second invalidation later. Rides the hole
+    // after `isPrivate`; sizeof unchanged.
+    char retTypeSpell = 0;
     std::vector<ExprPtr> immediateArgs; // `sub f($n) {…}(1)` — declare, then call at once
     bool immediateCall = false;
     bool isExport = false; // `is export` — visible to importers of the enclosing module
