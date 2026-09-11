@@ -1,9 +1,10 @@
-# The Raku programs `rakupp install` and `rakupp doc` dispatch to, compiled
-# into the CLI as byte arrays. A binary on its own — copied into a container,
-# unpacked as a bare rakupp.exe, installed by a route that dropped libexec/ —
-# runs the same tools as a checkout, because it carries them.
+# The Raku programs `rakupp install`, `rakupp doc` and `rakupp upgrade`
+# dispatch to, compiled into the CLI as byte arrays. A binary on its own —
+# copied into a container, unpacked as a bare rakupp.exe, installed by a route
+# that dropped libexec/ — runs the same tools as a checkout, because it carries
+# them.
 #
-# Run as a SCRIPT (cmake -P) from a custom command, with the four inputs as
+# Run as a SCRIPT (cmake -P) from a custom command, with the five inputs as
 # DEPENDS, so editing tools/install.raku or a guide regenerates and rebuilds
 # exactly one translation unit. Nothing generated is checked in: the sources
 # stay ordinary .raku and .md files, editable, lintable and directly runnable,
@@ -41,6 +42,7 @@ endfunction()
 
 embed_file(BLOB_INSTALL  kInstall "${SRC_DIR}/tools/install.raku")
 embed_file(BLOB_DOC      kDoc     "${SRC_DIR}/tools/doc.raku")
+embed_file(BLOB_UPGRADE  kUpgrade "${SRC_DIR}/tools/upgrade.raku")
 embed_file(BLOB_REFERENCE kRef    "${SRC_DIR}/docs/guide/REFERENCE.md")
 embed_file(BLOB_FEATURES kFeat    "${SRC_DIR}/docs/guide/FEATURES.md")
 
@@ -54,6 +56,10 @@ embed_file(BLOB_FEATURES kFeat    "${SRC_DIR}/docs/guide/FEATURES.md")
 set(EPILOGUE "
 std::string installerSource() {
     return std::string(reinterpret_cast<const char*>(kInstall), kInstallLen);
+}
+
+std::string upgradeToolSource() {
+    return std::string(reinterpret_cast<const char*>(kUpgrade), kUpgradeLen);
 }
 
 // A guide as a Raku heredoc body. Q:to/…/ interpolates nothing and unescapes
@@ -83,14 +89,15 @@ std::string docToolSource() {
 
 set(GENERATED "\
 // GENERATED at build time by cmake/EmbedTools.cmake from tools/install.raku,
-// tools/doc.raku and docs/guide/{REFERENCE,FEATURES}.md — DO NOT EDIT, and do
-// not commit: this file lives in the build tree so those four stay the only
-// copy of their own contents.
+// tools/doc.raku, tools/upgrade.raku and docs/guide/{REFERENCE,FEATURES}.md —
+// DO NOT EDIT, and do not commit: this file lives in the build tree so those
+// five stay the only copy of their own contents.
 #include \"EmbeddedTools.h\"
 #include <cstddef>
 namespace rakupp {
 ${BLOB_INSTALL}
 ${BLOB_DOC}
+${BLOB_UPGRADE}
 ${BLOB_REFERENCE}
 ${BLOB_FEATURES}
 ${EPILOGUE}")

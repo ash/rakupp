@@ -1653,6 +1653,7 @@ static const char* kSubcommandDocs[][2] = {
     {"reinstall", "uninstall and install fresh"},
     {"test", "run a module test suite, installing nothing"},
     {"doc", "look a builtin, method or operator up in the reference"},
+    {"upgrade", "replace this engine with a newer release"},
 };
 
 // --watch (node --watch, cargo watch): run the command, then rerun it whenever
@@ -1900,13 +1901,21 @@ int main(int argc, char** argv) {
     bool isReinstall = cmdWord == "reinstall";
     bool isTestCmd   = cmdWord == "test";
     bool isDocCmd    = cmdWord == "doc";   // `rakupp doc SYMBOL` — the same dispatch, another script
-    if (cmdWord == "install" || isUninstall || isReinstall || isTestCmd || isDocCmd) {
+    // `rakupp upgrade` — the ENGINE updater, and nothing to do with the module
+    // installer above: it replaces the prefix tools/install.sh (or
+    // tools/install-windows.ps1) put there, and refuses any prefix a package
+    // manager owns. Carried inside the binary for the same reason they are —
+    // so it works from a lone rakupp.exe with no script anywhere on disk.
+    bool isUpgrade   = cmdWord == "upgrade";
+    if (cmdWord == "install" || isUninstall || isReinstall || isTestCmd || isDocCmd || isUpgrade) {
         // The tool's name stands in for a path: it is what $*PROGRAM and any
         // backtrace report, and the argument scan below recognises it and
         // takes the source from the blob instead of opening a file.
-        const char* tool = isDocCmd ? "doc.raku" : "install.raku";
+        const char* tool = isDocCmd ? "doc.raku" : isUpgrade ? "upgrade.raku" : "install.raku";
         g_embeddedTool = tool;
-        g_embeddedSrc  = isDocCmd ? rakupp::docToolSource() : rakupp::installerSource();
+        g_embeddedSrc  = isDocCmd  ? rakupp::docToolSource()
+                       : isUpgrade ? rakupp::upgradeToolSource()
+                                   : rakupp::installerSource();
         installArgs.push_back(argv[0]);
         installArgs.push_back(tool);
         if (isUninstall) installArgs.push_back("--uninstall");
@@ -2576,6 +2585,15 @@ int main(int argc, char** argv) {
 "                               (-q goes with every command here, in any position)\n"
 "  rakupp doc SYMBOL ...        Look a builtin, method, operator or syntax form up\n"
 "                               in the language reference, offline (--all, --code)\n"
+"\n"
+"The engine itself:\n"
+"  rakupp upgrade               Replace this binary with the latest release, in\n"
+"                               place: same prefix, same PATH entry, same `raku`\n"
+"                               name. --check reports without installing;\n"
+"                               --version=vX.Y.Z takes a particular release.\n"
+"                               Only for an install the rakupp installer made —\n"
+"                               a Homebrew, Nix, Guix or distribution copy is\n"
+"                               named and left to its own package manager\n"
 "\n"
 "Serve:\n"
 "  rakupp --mcp                 Serve the interpreter over the Model Context\n"

@@ -138,10 +138,11 @@ list(REMOVE_ITEM RAKUPP_SOURCES "${RAKUPP_REPL}")
 set(RAKUPP_JS "${CMAKE_CURRENT_SOURCE_DIR}/src/codegen/Js.cpp"
               "${CMAKE_CURRENT_SOURCE_DIR}/src/JsRuntimeSrc.cpp")
 list(REMOVE_ITEM RAKUPP_SOURCES ${RAKUPP_JS})
-# `rakupp install` and `rakupp doc` are Raku programs compiled into the CLI:
-# cmake/EmbedTools.cmake turns tools/install.raku, tools/doc.raku and the two
-# guides `doc` reads into byte arrays, HERE, at build time. Nothing generated
-# is checked in — those four files stay the only copy of their own contents —
+# `rakupp install`, `rakupp doc` and `rakupp upgrade` are Raku programs
+# compiled into the CLI: cmake/EmbedTools.cmake turns tools/install.raku,
+# tools/doc.raku, tools/upgrade.raku and the two guides `doc` reads into byte
+# arrays, HERE, at build time. Nothing generated is checked in — those five
+# files stay the only copy of their own contents —
 # and nothing is looked up beside the executable at run time, so a binary on
 # its own has a working installer.
 #
@@ -172,10 +173,11 @@ add_custom_command(
   COMMAND "${CMAKE_COMMAND}" -E touch "${RAKUPP_TOOLS_STAMP}"
   DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tools/install.raku"
           "${CMAKE_CURRENT_SOURCE_DIR}/tools/doc.raku"
+          "${CMAKE_CURRENT_SOURCE_DIR}/tools/upgrade.raku"
           "${CMAKE_CURRENT_SOURCE_DIR}/docs/guide/REFERENCE.md"
           "${CMAKE_CURRENT_SOURCE_DIR}/docs/guide/FEATURES.md"
           "${CMAKE_CURRENT_SOURCE_DIR}/cmake/EmbedTools.cmake"
-  COMMENT "Embedding the install and doc tools"
+  COMMENT "Embedding the install, doc and upgrade tools"
   VERBATIM)
 add_custom_target(rakupp_embed_tools DEPENDS "${RAKUPP_TOOLS_STAMP}")
 set_source_files_properties("${RAKUPP_TOOLS}" PROPERTIES GENERATED TRUE)
