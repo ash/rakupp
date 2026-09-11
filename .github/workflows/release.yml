@@ -36,6 +36,14 @@ jobs:
         include:
           - { os: macos-latest,   name: macos-universal }
           - { os: ubuntu-latest,  name: linux-x86_64 }
+          # ARM Linux: a Raspberry Pi, a Graviton or Ampere VM, and Docker on
+          # an Apple Silicon Mac, all of which had no archive at all and were
+          # sent to build from source. GitHub's ubuntu-*-arm runners are free
+          # for public repositories, and every step below keys on runner.os or
+          # matrix.name rather than on the architecture -- so the Clang +
+          # static-libstdc++ configure, the packaging, the checksum and both
+          # smoke tests pick this up unchanged.
+          - { os: ubuntu-24.04-arm, name: linux-aarch64 }
           - { os: windows-latest, name: windows-x64 }
           - { os: windows-latest, name: windows-x64-mingw, mingw: true }
     steps:
@@ -459,6 +467,30 @@ jobs:
           Compress-Archive -Path dist\rakupp\* -DestinationPath rakupp-${{ matrix.name }}.zip
           (Get-FileHash rakupp-${{ matrix.name }}.zip -Algorithm SHA256).Hash | Out-File -Encoding ascii rakupp-${{ matrix.name }}.zip.sha256
 
+      # The POSIX ENGINE installer (tools/install.sh), end to end against the
+      # tarball just packaged: t/unix/install.sh installs it into a temporary
+      # HOME and asserts what came of it — the engine RUNS under both names,
+      # `raku --exe` compiles through the second one, the `raku` link is
+      # RELATIVE so the prefix can be moved, exactly one line was added to one
+      # shell startup file, the piped `curl | sh` form works (under it the
+      # script IS stdin, so a prompt that read stdin would eat the rest of the
+      # installer), and --uninstall puts the startup file back byte for byte.
+      #
+      # This script edits a user's dotfiles; it does not get to go untested.
+      # Unlike the Windows gate it needs no machine-level change of its own —
+      # the temporary HOME is the whole fixture.
+      #
+      # `sh`, not bash: the installer has to run under dash on Debian and ash
+      # on Alpine, and a gate driven by bash would not notice a bashism.
+      #
+      # NOT `run: sh t/unix/install.sh …` alone — this job's shell runs under
+      # `set -eo pipefail`, and the gate deliberately runs an installer that
+      # exits non-zero (the unsupported-platform case). It handles that itself
+      # and reports through its own exit code, which is the one to read.
+      - name: Smoke test install.sh (POSIX)
+        if: runner.os != 'Windows'
+        run: sh t/unix/install.sh rakupp-${{ matrix.name }}.tar.gz
+
       # The Windows ENGINE installer (tools/install-windows.ps1), end to end
       # against the zip just packaged: t\windows\install.ps1 unpacks it into a
       # temporary prefix and asserts what came of it — the engine RUNS under
@@ -750,3 +782,36 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           files: rakupp-openbsd-x86_64.tar.gz*
+
+  # `curl -fsSL https://raku.online/install.sh | sh` is the headline install
+  # command in the README, in docs/guide/INSTALL.md and on the front page — and
+  # it is served from a COPY of tools/install.sh in the raku.online repo, which
+  # nothing in this repository can see. A copy that falls behind installs an
+  # older engine for everybody, silently, and forever.
+  #
+  # So compare them. A real difference is a red build with the fix in the log:
+  # push the site repo. A site that cannot be reached is NOT a failure — that
+  # is the network's problem, not the tree's, and a check that goes red when
+  # DNS hiccups is a check people learn to ignore.
+  installer-copy:
+    name: install.sh matches the one raku.online serves
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Compare tools/install.sh with https://raku.online/install.sh
+        run: |
+          if ! curl -fsSL --max-time 30 -o served.sh https://raku.online/install.sh; then
+            echo "::notice::raku.online/install.sh could not be fetched; nothing compared"
+            exit 0
+          fi
+          if diff -u tools/install.sh served.sh; then
+            echo "identical — the published one-liner installs this engine"
+            exit 0
+          fi
+          echo "::error::raku.online/install.sh differs from tools/install.sh."
+          echo "The published one-liner is stale. Copy tools/install.sh to the"
+          echo "raku.online repo as www/install.sh, commit and push it — GitHub"
+          echo "Pages serves www/ verbatim. See docs/dev/RELEASING.md."
+          exit 1
