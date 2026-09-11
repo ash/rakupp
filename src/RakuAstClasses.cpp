@@ -74,6 +74,51 @@ const Registry* build() {
         while (*p) p++;
         p++;
     }
+    // The four operations live on `RakuAST::Node` as builtin Code values and
+    // are inherited by every node class through the ordinary parent walk, so
+    // they cost nothing on any path that never materializes the registry, and
+    // instance dispatch finds them on its own fast path rather than needing a
+    // ladder arm. A builtin method receives `self` as its first argument.
+    auto method = [](BuiltinFn fn) {
+        Value v; v.t = VT::Code;
+        auto c = std::make_shared<Callable>();
+        c->builtin = std::move(fn);
+        c->isMethod = true;
+        v.setCode(std::move(c));
+        return v;
+    };
+    auto rest = [](ValueList& a) {
+        ValueList out;
+        for (size_t i = 1; i < a.size(); i++) out.push_back(a[i]);
+        return out;
+    };
+    ClassInfo* node = reg->byName["RakuAST::Node"].get();
+    node->methods["DEPARSE"] = method([](Interpreter& I, ValueList& a) -> Value {
+        return Value::str(a.empty() ? std::string() : rakuAstDeparse(I, a[0]));
+    });
+    node->methods["new"] = method([rest](Interpreter& I, ValueList& a) -> Value {
+        std::string cls = (!a.empty() && a[0].t == VT::Type) ? a[0].s
+                        : (!a.empty() && a[0].t == VT::Object && a[0].obj() && a[0].obj()->cls)
+                          ? a[0].obj()->cls->name : std::string();
+        ValueList args = rest(a);
+        return rakuAstNew(I, cls, args);
+    });
+    // `.from-identifier("foo")` and `.from-identifier-parts("Foo","Bar")` both
+    // make a Name out of plain strings — the spelling every dist uses.
+    for (const char* m : {"from-identifier", "from-identifier-parts"})
+        node->methods[m] = method([rest](Interpreter& I, ValueList& a) -> Value {
+            ValueList args = rest(a);
+            return rakuAstNameFrom(I, args);
+        });
+    // `RakuAST::Literal.from-value($x)` — a literal holding a live value, which
+    // renders as that value's own `.raku`.
+    node->methods["from-value"] = method([rest](Interpreter& I, ValueList& a) -> Value {
+        ValueList args = rest(a);
+        std::string cls = "RakuAST::Literal";
+        if (!a.empty() && a[0].t == VT::Type) cls = a[0].s;
+        return rakuAstNew(I, cls, args);
+    });
+
     const Registry* won = g_registry.publish(reg);
     if (won != reg) delete reg;
     return won;

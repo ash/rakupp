@@ -1628,8 +1628,13 @@ carrying it consistently, against a harness whose floor on the mean is ±0.2%.
 That control moved code inside a TU; this one adds a TU to the link, which is
 a different perturbation, and neither says the effect is imaginary.)
 That is the 6E campaign's result over again ("about 1% uniform, at the noise
-floor"), and it is as far as this machine can resolve it. **Open: re-run
-`--check` and the A/B on an idle machine before the phase that ships this.**
+floor"), and it is as far as this machine can resolve it.
+
+**Accepted as noise for now — the user's call, 2026-09-11.** The re-measure is
+not waived, it is moved: `--check` and the A/B run again on a quiet machine
+before the phase that ships this, and the baseline binary and the interleaved
+driver are kept at `rc-work/rakuast-p0/` (`rakupp-95be351`, `ab.raku`) so it is
+a re-run rather than a rebuild.
 
 **Three localized hypotheses, each killed by measurement** — worth recording
 because each was plausible and each was wrong:

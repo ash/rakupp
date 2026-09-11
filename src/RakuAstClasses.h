@@ -32,6 +32,8 @@
 #include <string>
 #include <vector>
 
+#include "Value.h"
+
 namespace rakupp {
 
 struct ClassInfo;
@@ -60,6 +62,23 @@ const std::shared_ptr<ClassInfo>* rakuAstClass(const std::string& qualifiedName)
 // name. The list is REPRODUCED rather than derived: the chains are C3 over
 // roles, and a subclass's tail is not its parent's chain.
 const std::vector<std::string>& rakuAstAncestry(const std::string& qualifiedName);
+
+// Construct a node: `RakuAST::Foo.new(…)`. Positional arguments land in the
+// slot Rakudo gives that class a positional for; every named argument keeps its
+// own key. Throws X::Constructor::Positional for a class with no positional
+// constructor, exactly as the default `new` does.
+Value rakuAstNew(Interpreter& I, const std::string& qualifiedName, ValueList& args);
+
+// Render a node back to Raku source. This is the bridge P3's `.EVAL` runs over,
+// so its contract is correct Raku first and Rakudo's exact spelling second; the
+// measured spellings are in docs/dev/findings/rakuast/deparse-2026.08.tsv.
+// Throws X::NYI, naming the class, for anything not covered — never a wrong
+// rendering.
+std::string rakuAstDeparse(Interpreter& I, const Value& node);
+
+// `RakuAST::Name.from-identifier(…)` and `.from-identifier-parts(…)`, the
+// spelling every dist uses to make a name.
+Value rakuAstNameFrom(Interpreter& I, const ValueList& parts);
 
 // Build the registry now. Called when the parser has flagged a unit as using
 // RakuAST, so the single publish happens on the thread that runs the unit

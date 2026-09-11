@@ -86,3 +86,36 @@ Three things in the histogram the plan did not know:
 - `.AST` is the compiler, not the parser: the 7 compile-time-check failures
   above are the concrete form of the plan's trap — every corpus program
   must be self-contained and compilable under the oracle Rakudo.
+
+## `deparse-2026.08.tsv` — the renderer's specification
+
+What `.DEPARSE` answers on Rakudo 2026.08 for 57 constructed nodes, one row per
+case (`label`, then the text with newlines escaped). Produced by
+[tools/rakuast-deparse-spec.raku](../../../../tools/rakuast-deparse-spec.raku),
+which runs under Rakudo because it measures Rakudo; re-run it when the oracle
+version moves, and the diff is the work.
+
+The vocabulary is the union of what **Needle::Compile 0.0.12**,
+**Intl::Format::Number 0.2.0** and **RakuAST::Utils 0.0.3** name — a grep of
+their REA tarballs, 52 distinct classes, 17 of which the P0 registry did not
+carry (it now does, at 135 classes). The last row, `needle.equal`, is the whole
+tree App::Rak's commonest invocation builds: `handle("equal", …)` and
+`wrap-in-block` from Needle::Compile, verbatim, which renders
+
+    -> $_ {
+        my $/;
+        $_ eq "foo"
+    }
+
+Three conventions the table pins, all of them measured rather than assumed:
+
+- **four-space indent, and no trailing newline after a closing brace** — a
+  `Blockoid` is `{\n    42\n}`, and a `PointyBlock` the same with its signature
+  in front;
+- **a statement list ends each statement with a newline**, and separates all but
+  the last with `;` — one statement is `42\n`, two are `42;\n"foo"\n`;
+- **an explicit `$_` invocant elides.** `ApplyPostfix(Var::Lexical('$_'),
+  Call::Method('fc'))` renders `.fc`, the same text `Term::TopicCall` gives,
+  while `"foo".fc` keeps its invocant. That is normalization, not loss — `.fc`
+  *means* `$_.fc` — but a renderer that does not do it produces a tree of a
+  different shape on the way back.

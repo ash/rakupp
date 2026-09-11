@@ -1,0 +1,57 @@
+IntLiteral	42
+StrLiteral	"foo"
+Literal.from-value	[1, 2]
+Var::Lexical	$x
+Var::Dynamic	$*OUT
+Var::Lexical::Constant	&infix:<+>
+Name.from-identifier	foo
+Name.from-identifier-parts	Foo::Bar
+Term::Name	foo
+ColonPair::True	:x
+Infix	eq
+Prefix	not 
+ApplyInfix	$_ eq "foo"
+ApplyListInfix	42, "foo"
+ApplyPrefix	not $_
+ApplyPostfix.postfix	$x++
+ApplyPostfix.topic	.fc
+ApplyPostfix.invocant	"foo".fc
+Ternary	$_ ?? 42 !! "foo"
+Call::Name	foo($_)
+Call::Name.noargs	foo()
+Call::Method	.fc
+Call::Method.args	.match("foo")
+ArgList	$_, "foo"
+Term::TopicCall	.fc
+Postcircumfix::ArrayIndex	@a[0]
+SemiList	42
+StatementList	42\n
+StatementList.two	42;\n"foo"\n
+Statement::Expression	42
+Blockoid	{\n    42\n}
+Block	{\n    42\n}
+PointyBlock	-> $_ {\n    "foo"\n}
+Sub	sub foo {\n    42\n}
+Statement::If	if $_ {\n    42\n}\n
+Statement::For	for $_ -> {\n    42\n}
+StatementModifier::If	42 if $_
+StatementModifier::Unless	42 unless $_
+VarDeclaration::Simple	my $x
+VarDeclaration.assign	my $x = 42
+Initializer::Assign	 = 42
+Initializer::Bind	 := 42
+Signature	$a
+Parameter	$a
+ParameterTarget::Var	$a
+ParameterTarget::Term	foo
+Parameter::Slurpy::Flattened	*@a
+Parameter::Slurpy::Unflattened	**@a
+Parameter::Slurpy::SingleArgument	+@a
+Parameter::Slurpy::Capture	|$c
+Type::Simple	Int
+Type::Definedness	Int:D
+Type::Coercion	Int(Str)
+Type::Capture	::foo
+Type::Parameterized	Array[Int]
+Trait::Is	is rw
+needle.equal	-> $_ {\n    my $/;\n    $_ eq "foo"\n}

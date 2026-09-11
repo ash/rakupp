@@ -44,14 +44,24 @@ for @rows -> $r {
     last if $seen / $total >= 0.95;
 }
 
-# What the blocked dists name directly (Needle::Compile, Intl::Format::Number,
-# RakuAST::Utils) plus the two roots a walker tests against.
+# What the blocked dists name directly — the grep of their sources, not a
+# summary of them: Needle::Compile 0.0.12, Intl::Format::Number 0.2.0 and
+# RakuAST::Utils 0.0.3, REA tarballs, 52 distinct names between them. Plus the
+# roots a walker tests against, and `QuotedRegex`, which P1 needs as a source
+# slice and which no constructed tree mentions.
 my @demand = <
-    Node Statement Expression Literal Term
-    Var::Lexical StrLiteral Infix ApplyInfix Call::Name Term::TopicCall
-    PointyBlock Signature Parameter ParameterTarget::Var Blockoid
-    StatementList CompUnit QuotedRegex Ternary ApplyPostfix Call::Method
-    Name ArgList ColonPair::True IntLiteral
+    Node Statement Expression Literal Term QuotedRegex
+    ApplyInfix ApplyListInfix ApplyPostfix ApplyPrefix ArgList Block Blockoid
+    Call::Method Call::Name ColonPair::True CompUnit Infix Initializer::Assign
+    Initializer::Bind IntLiteral Name Parameter ParameterTarget::Term
+    ParameterTarget::Var Parameter::Slurpy::Capture Parameter::Slurpy::Flattened
+    Parameter::Slurpy::SingleArgument Parameter::Slurpy::Unflattened
+    PointyBlock Postcircumfix::ArrayIndex Postfix Prefix SemiList Signature
+    Statement::Elsif Statement::Expression Statement::For Statement::If
+    StatementList StatementModifier::If StatementModifier::Unless StrLiteral
+    Sub Term::Name Term::TopicCall Ternary Trait::Is Type::Capture
+    Type::Coercion Type::Definedness Type::Parameterized Type::Simple
+    Var::Dynamic Var::Lexical Var::Lexical::Constant VarDeclaration::Simple
 >;
 
 # `::("RakuAST::A::B")` answers a Failure for a NESTED name (measured on
