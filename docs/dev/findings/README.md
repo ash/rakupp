@@ -65,6 +65,9 @@ logs and the reviews. This page is the complete list.
   sittings: 624 of 2,524 green at the first pass, 746 of 2,526 after the fix
   campaigns, with 18 reproducible regressions and 383 distributions still
   dependency-blocked. Data in [`ecosweep/`](ecosweep/).
+- **[rakuast/README.md](rakuast/README.md)** *(2026-09-11, Rakudo 2026.08)* — the
+  RakuAST tree-oracle baseline over raku-corpus: 1,858 of 1,870 programs
+  tree, 162,992 nodes, 213 classes; the 12 that do not, and the harness traps.
 - **[FRESH100-2026-08-20.md](FRESH100-2026-08-20.md)** *(2026-08-20)* — the 100
   newest REA distributions under `rakupp test`: 16 pass, 49 are blocked by a
   dependency before their own suite runs, five parse gaps proved ours against

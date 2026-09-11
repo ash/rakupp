@@ -1368,3 +1368,93 @@ from the list); METAPROGRAMMING.md:80/85/111 unchanged; dev/README.md:79-86 →
 First green (App::Rak string needles, Intl::Format::Number) after
 P0+P2c+P3 ≈ 1,400-2,100 lines; the 13 L10N dists after a further
 ≈1,100-1,900.
+
+## `--rakuast` — the view on the command line (added 2026-09-11)
+
+Not in Parts I/II; the user's ask. `--ast` prints our tree (main.cpp:1608 the
+flag table, :2192 `Mode::Ast`, :2618 the usage line, :2749 `dumpAst`;
+`--ast-roundtrip` at :2193 and :2761-2787 is the precedent for a mode that
+dumps two trees and compares them). **`rakupp --rakuast SRC` is a P1
+deliverable**: it prints the RakuAST view of the whole program — the
+`:compunit` shape, what `slurp($f).AST(:compunit)` answers on Rakudo — in the
+oracle serialization below, and the Rakudo-side dumper prints the same
+serialization, so the per-file measurement of Part I's *Could the view be 1:1*
+question is a shell `diff`, and polishing the view is: pick a corpus file,
+diff, fix the first differing line, repeat.
+
+**The serialization** — one spec, two implementations, each proven against
+the other by the diff being empty on files the view already handles:
+
+- one node per line, two spaces of indent per depth, children in the node's
+  own `visit-children` order (measured on 2026.08: `Call::Name` visits `Name`
+  then `ArgList`; our builder emits in the same order per class);
+- the class name without the `RakuAST::` prefix;
+- then the node's *syntax-bearing scalar attributes* as ` key=value`, sorted by
+  key — strings `.raku`-quoted, Ints plain, Bools `True`/`False`, type objects
+  by name. An attribute whose value is a node or a list of nodes is a child
+  line, not a value.
+- **Which attributes count.** Measured on 2026.08, `.^attributes` on a RakuAST
+  node exposes compiler state beside syntax: `IntLiteral` carries `$!value`
+  next to `$!origin`, `$!sorries`, `$!worries`, `$!thunks`, `$!sunk`,
+  `$!okifnil`; `Call::Name` adds `$!resolution`, `$!parse-performed`,
+  `$!begin-performed`, `$!callstatic`, `$!ct-inline-candidate`;
+  `VarDeclaration::Simple` has `$!sigil`/`$!twigil` (syntax) beside
+  `$!initializer-method`, `$!attribute-package`, `$!accessor` (state). None of
+  the state is syntax and a view must not reproduce it. The rule is testable
+  rather than a hand-kept list: an attribute is in the dump iff its value is
+  a Str/Int/Bool/Num/type object **and it passes the two-position test** —
+  the same statement dumped from a different line and column dumps
+  identically (which excludes `origin` mechanically, and anything else that
+  encodes where the source was). The Rakudo dumper applies the rule; the
+  per-class attribute list it yields is written down once as the spec and
+  re-derived per oracle version.
+- the number: `1 − changed-lines ÷ oracle-lines` from a line diff, per file,
+  published as raw counts per corpus (files, oracle lines, matching lines),
+  pinned to the oracle version.
+
+**Files**: main.cpp (flag, mode, usage), `RakuAstView.cpp` (the builder,
+P1), a new `RakuAstDump.cpp` beside `AstDump.cpp` (the serializer, parse
+archive), `tools/rakuast-oracle.raku` (the Rakudo side — installed 2026-09-11, first
+version: a child process per file because `.AST`
+runs `BEGIN` and `use`; no per-file cap yet — the accepted corpus has one BEGIN block, and Proc::Async's broken promise escaped `try` twice, so the seed uses synchronous `run` — and a `visit-children` walk),
+`tools/rakuast-diff.raku` (runs both sides, computes the percentages, writes
+the TSV under docs/dev/findings/), and the `--ast` row at
+docs/guide/CLI.md:379 gains a sibling. `--slim` is not involved: the flag
+lives in the CLI binary, which always carries the parser. Optional at P2:
+`--rakuast=deparse` printing the DEPARSE text, so the round-trip gate is
+`rakupp --rakuast=deparse f | rakupp -` on the shell — decide when the
+renderer exists. Size ≈150-250 lines across the four pieces; the builder
+itself is P1's.
+
+### The corpus, measured (2026-09-11)
+
+The question behind `--rakuast` was whether raku-corpus plus every program we
+can run gives a big enough target to polish the view against. Measured
+before any rakupp side exists — the full table, the failure list and the
+caveats are in
+[findings/rakuast/README.md](../findings/rakuast/README.md):
+
+- raku-corpus (4bede39): **1,870 programs**, of which Rakudo 2026.08 produces
+  a tree for **1,858** (99.4%) — 162,992 nodes, 213 distinct classes,
+  44 covering 95% of nodes, 51 appearing three times or fewer. Against Part I's
+  44-file measurement (24,442 nodes, 125 classes, 39 for 95%): 6.7× the nodes
+  and a slightly wider head.
+- The 12 without a tree are not the corpus's fault: 4 crash inside the
+  2026.08 RakuAST frontend (`NQPMu`; a user-defined `postfix:<!>` is one
+  trigger), 7 are book examples of deliberately wrong calls that `.AST`'s
+  compile-time check refuses — the trap Part I records, now with a count —
+  and 1 is pod-table strictness.
+- Two more synthesized nodes for the 1:1 list: every `CompUnit` carries
+  `VarDeclaration::Implicit::Doc::{Data,Finish,Pod,Rakudoc}` with no source
+  token. And `Call::Name::WithoutParentheses` occurs in 1,571 of the
+  programs, so P1's `parenned` bit is exercised almost everywhere.
+- What "executable" means here: the oracle set is *what the pinned Rakudo
+  compiles*, not what rakupp runs — `BEGIN` executes at `.AST` time (four
+  corpus programs print during it), `use` resolves against the child's
+  include path (21 programs need `-I` for a sibling module), and compile-time
+  checks apply. The archived per-file TSV is the 2026.08 baseline; re-run
+  and re-pin when 2026.09 ships.
+- The corpus polishes the **view** (P1) and the **deparser** (P2's
+  round-trip); trees built with `.new` — the App::Rak / Intl::Format::Number
+  side — are covered by the t/12-rakuast slice and the modules themselves,
+  not by any corpus of source.
