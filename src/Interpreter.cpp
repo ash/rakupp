@@ -22139,11 +22139,7 @@ bool rtMulAssignBig(Value& dst, const Value& r) {
 // non-variable arm fell through to valueEq and answered by CONTENTS: both
 // `[1,2] =:= @a` and `@a.clone =:= @a` came out True.
 static bool identicalRef(const Value& l, const Value& r) {
-    // The same storage IS the same object, whatever flags the two handles
-    // carry: `my $h := @a; $h =:= @a` is True (hyperize's suite checks that a
-    // degree-1 hyperize hands back its invocant), and the bound scalar's copy
-    // differed from `@a` only in its list flag.
-    if (l.t == r.t && l.pk_ == r.pk_ && l.p_ && l.p_ == r.p_) return true;
+    if (l.t == r.t && l.isList == r.isList && l.pk_ == r.pk_ && l.p_ && l.p_ == r.p_) return true;
     // `Empty` is ONE object in Rakudo, and a routine that answers `Empty` is
     // asked `$slip =:= Empty` by its caller (highlighter's needle loop). Here
     // every `Empty` term builds its own empty Slip, so two of them are the
@@ -26991,9 +26987,22 @@ Value Interpreter::evalBinary(Binary* b) {
             // := @a; $h =:= @a` is True. The two slots share the storage and
             // differ only in their flags; an ASSIGNED `my $x = @a` itemizes,
             // so it stays a different container, as in Rakudo.
+            // …and a slot BOUND to an array or hash names that object: `my $h
+            // := @a; $h =:= @a` is True (hyperize's suite checks that a
+            // degree-1 hyperize hands back its invocant). The two slots share
+            // the storage and differ only in their flags.
+            //
+            // ONLY `@`/`%` storage, because only there does shared storage
+            // prove a BIND: `my @b = @a` and `my $d = @a` both copy, so two
+            // arrays that share a buffer were bound. A Code or an Object is
+            // handed around by its handle, so an ASSIGNED copy shares it too —
+            // `my $held = &f; $held =:= &f` must stay False (it compares
+            // containers, and the copy is its own), and reading identity off
+            // the payload there made it True.
             else same = lp && rp && (lp == rp ||
-                                     (isRefValue(*lp) && lp->t == rp->t && lp->itemized == rp->itemized &&
-                                      identicalRef(*lp, *rp)));
+                                     ((lp->t == VT::Array || lp->t == VT::Hash) && lp->t == rp->t &&
+                                      lp->itemized == rp->itemized && lp->pk_ == rp->pk_ &&
+                                      lp->p_ && lp->p_ == rp->p_));
         }
         else {
             Value l = eval(b->lhs.get()), r = eval(b->rhs.get());

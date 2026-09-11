@@ -29,5 +29,24 @@ ck(@b =:= @a, False, 'equal contents are not identity');
 my %h; my $hh := %h;
 ck($hh =:= %h, True, 'the same for a hash');
 
+# --- and ASSIGNMENT is never identity, whatever the two slots end up sharing --
+# The engine cannot tell a bind from an assignment by looking at the values:
+# both leave two slots over one payload. For `@`/`%` an assignment copies, so
+# shared storage does prove a bind — but a Code or an Object travels by its
+# handle, and reading identity off the payload made an assigned copy identical
+# to its source. That is what broke `run-main-protocol.raku`.
+sub ident-target() { }
+my $held = &ident-target;
+ck($held =:= &ident-target, False, 'a scalar holding a routine is its own container');
+class C { }
+my $o = C.new;
+my $p = $o;
+ck($p =:= $o, False, 'two scalars holding one object are two containers');
+ck($o =:= $o, True, '…while a slot is itself');
+my $d = @a;
+ck($d =:= @a, False, 'assigning an array to a scalar is not binding it');
+my $e = %h;
+ck($e =:= %h, False, 'nor a hash');
+
 say $fails ?? "FAIL ($fails)" !! "PASS";
 exit $fails ?? 1 !! 0;
