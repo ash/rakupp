@@ -29,9 +29,9 @@ what changed and what it cost.
 
 Raku++ has two other standalone-binary modes — `--bundle` and `--aot` — but both
 *tree-walk* the program, so they run at **`interp` speed** and aren't shown
-separately (`--aot` fib runs at interp's ~770 ms). `--exe` is the only
-mode that changes runtime performance, so it's the one the `native` column
-tracks.
+separately (`--aot` fib runs at the `interp` row's speed, not the compiled
+one's). `--exe` is the only mode that changes runtime performance, so it's the
+one the `native` column tracks.
 
 (A fourth environment — **[Raku.js](../../rakujs)**, the interpreter compiled to
 WebAssembly — is measured against `interp` on these same kernels under Node,
@@ -48,9 +48,9 @@ there.)
   small programs it is instant. mutsu starts in 4.4 ms; Rakudo in 75.6. The
   two newer engines are on one side of that gap and the reference on the other.
 - **Native (`--exe`) beats Rakudo on fourteen of the fifteen kernels** — from
-  3.9× on `arrayops` to 18.6× on `loopsum`, 16.7× on `hash`, and 29.1× on
-  `strcat`. On the fifteenth it falls 1.6× short. Compiling removes interpreter
-  overhead.
+  1.5× on `rats` and 3.9× on `arrayops` to 18.6× on `loopsum`, 29.1× on
+  `strcat` and 35.0× on `bigint`. On the fifteenth it falls 1.6× short.
+  Compiling removes interpreter overhead.
 - **The interpreter beats Rakudo on eleven of the fifteen**, is level on three
   (`fib`, `streq`, `rats` — within 5% either way against a native arm64
   Rakudo), and loses one, `objects`. `fib` and `streq` had been Rakudo's for
@@ -147,9 +147,10 @@ there.)
 - **Rakudo:** `raku` v2026.08 (MoarVM backend), the oracle era this release
   verifies against. The previous revision of this file measured v2026.07; the
   reference column moved a few percent in both directions across the upgrade
-  (`strcat` 179.9 → 166.3 ms, `loopsum` 261.7 → 276.4 ms), which is within
-  ordinary sitting-to-sitting spread, so read the change as noise rather than
-  as Rakudo getting faster or slower.
+  (`strcat` 179.9 → 166.3 ms, `loopsum` 261.7 → 276.4 ms — **translated-era
+  figures**, roughly twice the native column below, and not comparable with
+  it), which is within ordinary sitting-to-sitting spread, so read the change
+  as noise rather than as Rakudo getting faster or slower.
 - **The Rakudo column is measured against a native arm64 build**, as of the
   2026-08-31 re-measurement. Every revision of this file *before* that one
   measured Rakudo with the Intel Homebrew build (`/usr/local`), an **x86_64**
@@ -473,77 +474,88 @@ program.
 
 ### What mutsu is faster at
 
-Three rows go the other way, and they are worth more than the twelve that do
-not, because each one names something specific.
+One row goes the other way, and it is worth more than the fourteen that do not,
+because it names something specific. Two more used to be here and have since
+been reversed; they are kept below, because what they were losing to has not
+stopped being true.
 
-**`bigint` — 9.1 ms against our 31.4 interpreted and 30.2 compiled, so 3.5× and
-3.3×.** This is the cleanest result in the sitting and the least surprising:
-mutsu links [`num-bigint`](https://crates.io/crates/num-bigint), a mature,
-widely-used, well-tuned arbitrary-precision library, and Raku++ uses the BigInt
-it hand-rolled in-tree because it takes no third-party dependencies. The
-[implementations FAQ](../guide/faq/implementations.md) predicted exactly this
-trade before it was measured — "`bigint` is a kernel where a well-tuned
-external library is simply faster than what we hand-rolled" — and here is the
-number. Note the shape of it: `--exe` does not help (1.0× over interp), because
-the time is inside the runtime's own multiply, not in interpreting the loop
-around it. That is the same reason `arrayops` is flat under compilation, and it
-is the honest limit of the `--exe` answer to performance.
-
-*This row has since been reversed.* Two passes on that same multiply landed on
-the day of this sitting, and because the time really was inside the runtime's
-multiply, that is all it took: on the M1 box, through this harness against a
-binary of the commit before them, `bigint` reads 7.4 ms interpreted and 6.2
-compiled against mutsu's 11.2. The predicted trade was real, and it was a
-statement about the code we had rather than about hand-rolling as such — a
-base-1e9 magnitude times one limb, eight carry chains deep and written back over
-the accumulator, is not slower than `num-bigint` on this shape. What it does not
-touch is the *general* n×n product, where `num-bigint`'s base-2^64 limbs are
-still measured 10× ahead of our base-1e9 ones; base 1e9 is what makes decimal
-output O(n) instead of O(n²), and that trade is
-[kept deliberately](../internals/OPTIMIZATION.md). The numbers are under
-"Pending re-measurement"; the tables here stand as this sitting measured them.
-
-**`fib` — 245.6 ms against our 352.7 interpreted, so 1.4×.** This is the
+**`fib` — 245.6 ms against our 299.4 interpreted, so 1.2×.** This is the
 Cranelift JIT doing the thing a JIT is for: tiny-body recursion, the same
 function entered 1.66 million times, and by the end it is running compiled
 machine code where we are still walking a tree. It is also the row where our
 two answers to performance separate most clearly — `--exe` compiles the same
-program to 85.4 ms, which is 2.9× *faster than mutsu's JIT*. Ahead-of-time
+program to 51.3 ms, which is 4.8× *faster than mutsu's JIT*. Ahead-of-time
 beats just-in-time here because the C++ compiler has unlimited time to optimise
-and the program is small enough to hand it whole.
+and the program is small enough to hand it whole. The interpreted margin is
+closing from our side rather than mutsu's: it was 1.4× at the 2026-08-31
+sitting, against 352.7 ms interpreted.
 
-**`sortnums` — 30.4 ms against our 33.7 interpreted, so 1.1×.** Level, in
-practice: both are calling a library sort on 50,000 integers, and the row is
-mostly a measure of the two sorts. `--exe` takes it back at 19.1 ms.
+**`bigint` was the clearest of the three, and it is now a 1.6× lead.** At the
+2026-08-31 sitting it read 9.1 ms against our 31.4 interpreted and 30.2
+compiled, so 3.5× and 3.3×, and it was the least surprising number in the file:
+mutsu links [`num-bigint`](https://crates.io/crates/num-bigint), a mature,
+widely-used, well-tuned arbitrary-precision library, and Raku++ uses the BigInt
+it hand-rolled in-tree because it takes no third-party dependencies. The
+[implementations FAQ](../guide/faq/implementations.md) predicted exactly that
+trade before it was measured — "`bigint` is a kernel where a well-tuned
+external library is simply faster than what we hand-rolled".
+
+Two passes on that multiply reversed it, and the tables above carry them:
+**5.7 ms interpreted and 4.6 compiled against mutsu's 9.1.** The prediction was
+a statement about the code we had rather than about hand-rolling as such — a
+base-1e9 magnitude times one limb, eight carry chains deep and written back
+over the accumulator, is not slower than `num-bigint` on this shape. What it
+does not touch is the *general* n×n product, where `num-bigint`'s base-2^64
+limbs are still measured 10× ahead of our base-1e9 ones; base 1e9 is what makes
+decimal output O(n) instead of O(n²), and that trade is
+[kept deliberately](../internals/OPTIMIZATION.md). The before/after A/B is under
+"Pending re-measurement" above.
+
+Note the shape of the row, which did not change when the lead did: `--exe`
+gains only 1.2× over interpreting, because the time is inside the runtime's own
+multiply and not in interpreting the loop around it. That is the same reason
+`arrayops` is flat under compilation, it is the honest limit of the `--exe`
+answer to performance, and it is why this row was fixable without touching the
+code generator at all.
+
+**`sortnums` was the third, and it is now a 1.2× lead the other way** — 30.4 ms
+against our 25.7 interpreted, where the previous sitting had mutsu 1.1× ahead
+at 33.7. Both engines are calling a library sort on 50,000 integers, so the row
+is mostly a measure of the two sorts; the list container's one-pass growth,
+which is where a sort's temporaries live, is what moved it. `--exe` reads
+14.3 ms.
 
 The pattern in the other direction is just as consistent. mutsu's weakest rows
-here are `objects` (1585.1 ms, 3.2× behind our interpreter and 5.3× behind
-Rakudo), `streq` (609.3 ms, 2.6× behind), `hashfill` and `arraypush` (~3×), and
-`strcat` (106.9 ms against our 8.6 — 12.4×, the widest gap in the table, and
-the row where our in-place `~=` append turns an O(n²) into an O(n)). A bytecode
-VM removes dispatch overhead; it does not by itself make the string, hash and
-object *runtimes* underneath fast, and that is where these five kernels spend
-their time.
+here are `strcat` (106.9 ms against our 8.1 — 13.2×, the widest gap in the
+table, and the row where our in-place `~=` append turns an O(n²) into an O(n)),
+`regex` (238.5 ms, 6.3×), `textsplit` (246.3 ms, 4.2×), `hashfill` (392.9 ms,
+3.8×), `objects` (1585.1 ms — its slowest row in the sitting, 3.3× behind our
+interpreter and 7.7× behind Rakudo), `arraypush` (3.0×) and `streq` (609.3 ms,
+2.7×). A bytecode VM removes dispatch overhead; it does not by itself make the
+string, hash, regex and object *runtimes* underneath fast, and that is where
+those kernels spend their time.
 
 **Reading the `vs interp` column:** compiling helps most where a tree-walker
-hurts — `streq` 12.6× (per-node walking around what is, after the fast path, a
-trivial byte-compare — see [internals/DISPATCH.md](../internals/DISPATCH.md)), `loopsum` 7.1×,
-`fib` 4.4× (both re-dispatch a tiny body a huge number of times). Every one of
-those margins has been NARROWING since lexical pads and the TARG slice landed —
-`streq` was 18.1× three sittings ago and `fib` 5.4×. The compiler already kept
-variables in C++ locals, so this is the gap closing from the interpreter's
-side, not codegen slowing down.
+hurts — `streq` 11.8× (per-node walking around what is, after the fast path, a
+trivial byte-compare — see [internals/DISPATCH.md](../internals/DISPATCH.md)),
+`loopsum` 6.9×, `fib` 5.8× (both re-dispatch a tiny body a huge number of
+times). `streq`'s margin has been NARROWING since lexical pads and the TARG
+slice landed — 18.1× three sittings ago, 12.6× at the last one — and that is
+the gap closing from the interpreter's side, not codegen slowing down. `fib`
+moved the other way this sitting, 4.4× → 5.8×, for the opposite reason: the
+compiled row is what changed, 85.2 → 51.3 ms with the argument-list free list
+under a kernel that is nothing but calls.
 It's a near no-op (1.0–1.8×) for the workloads whose time is spent *inside* runtime
 methods — `arrayops`/`sortnums` (`.grep`/`.map`/`.sort`) and especially
 `bigint`, which lives almost entirely in `BigInt` multiply. There the driving
 loop is trivial, so removing interpreter overhead changes little. `objects` at
-1.7× is the interesting one in this column: compiling a method call gains about
-as much as compiling a `Rat` loop, which is to say the cost is in the
+1.5× is the interesting one in this column: compiling a method call gains about
+as much as compiling a `Rat` loop at 1.6×, which is to say the cost is in the
 dispatcher both modes share, not in the tree-walk around it.
 
 `fib` — a tiny function called 1.6M times, the case a JIT specializes best — used
 to be the one place Rakudo led even the default `--exe`; hot-pathing integer
-arithmetic in the runtime (`applyArith`) closed that gap and put native ~5.3×
+arithmetic in the runtime (`applyArith`) closed that gap and put native 6.1×
 ahead. `streq` got the same treatment on 2026-07-17: string comparisons used to
 walk `applyArith`'s full dispatch chain (~118 ns per `eq`). Compiled code now
 emits inline plain-`Str` byte-compares and calls builtins through pointers
@@ -568,7 +580,7 @@ Four of the five are wins. `objects` is not, and it was the reason to add them:
 |---|---:|---:|---:|---:|---|
 | M1 / Darwin 25.5, first sitting | 568.5 ms | 314.4 ms | — | 254.4 ms | Rakudo 2.2× |
 | M3 / Darwin 24.6, 2026-08-24    | 518.8 ms | 285.1 ms | — | 285.6 ms | Rakudo 1.8× |
-| M3 / Darwin 24.6, these tables  | 498.0 ms | 336.7 ms | 1585.1 ms | 207.2 ms | Rakudo 2.4× |
+| M3 / Darwin 24.6, these tables  | 479.5 ms | 324.6 ms | 1585.1 ms | 207.2 ms | Rakudo 2.3× |
 
 The first two Rakudo cells were measured under Rosetta 2 and the third against
 a native arm64 build, so only the Raku++ columns are comparable down the table;
@@ -576,24 +588,24 @@ the Rakudo column changes scale at the last row.
 
 **The machine was not the explanation.** The first sitting's note estimated
 that correcting for the box would narrow the gap to "roughly 1.5×"; measured
-against a native arm64 Rakudo it is **2.4×**, so the loss is real and larger
+against a native arm64 Rakudo it is **2.3×**, so the loss is real and larger
 than the correction predicted — and larger than this file reported while the
 reference was translated. Compiling does not rescue it either: `--exe` at
-336.7 ms does not reach Rakudo's *interpreter* at 207.2, the only row in these
+324.6 ms does not reach Rakudo's *interpreter* at 207.2, the only row in these
 tables where that is true. The compiled side agrees independently — `methodcalls`
 under `-O` gains 1.0×, i.e. the optimizer has nothing to give a monomorphic
 method call yet, because it is not devirtualized.
 
 **mutsu makes the shape of this much clearer, and it is less a Raku++ defect
 than a Rakudo achievement.** The second from-scratch engine does not merely
-lose this kernel — it loses it by **5.3×** against Rakudo and by 3.2× against
-our tree-walker, its single worst row in the sitting, with the Cranelift JIT
+lose this kernel — it loses it by **7.7×** against Rakudo and by 3.3× against
+our tree-walker, its slowest row in the sitting, with the Cranelift JIT
 switched on. So the ranking on the one kernel that measures `class`/`has`/
 method dispatch is Rakudo, then Raku++, then mutsu: both engines built from
 scratch in the last year are a long way behind the mature one. That is a good
 argument that what Rakudo has here is not a small implementation advantage but
 `spesh` — type-specialising dispatch on observed types and inlining through it,
-precisely the optimisation neither newer engine has. It also means our 1.7× is
+precisely the optimisation neither newer engine has. It also means our 1.6× is
 the *closest* any from-scratch implementation currently gets, which is worth
 knowing before reading the row as a straightforward deficiency.
 
@@ -604,18 +616,18 @@ never covered by a kernel is the one that turns out to be slow. `objects` is
 behind Rakudo on all of that.
 
 **`textsplit` is where `perl` still wins**, though by less than the first
-sitting suggested: interpreted it is 1.9× behind `perl` here (the M1 sitting
-read 3.7× raw and estimated 2.3× corrected), and compiled it is within 14% of
-it. Set against `hashfill`, whose interpreted row is also within 10% of `perl`,
+sitting suggested: interpreted it is 1.7× behind `perl` here (the M1 sitting
+read 3.7× raw and estimated 2.3× corrected), and compiled it is level with it.
+Set against `hashfill`, whose interpreted row is level with `perl` too,
 text munging rather than hashing is where the perl comparison is closest.
 
 **`rats` answers the question the value census left open.** Moving the `Rat`
 numerator/denominator pair behind the lazily-allocated cold block could have
 taxed a program that mass-creates short-lived `Rat`s and reads each once. That
 shape now has a kernel, in `tools/bench` and in the release gate both, and it
-runs 1.4× ahead of Rakudo and 1.5× ahead of mutsu. The exposure was real and is small.
+runs level with Rakudo and 1.5× ahead of mutsu. The exposure was real and is small.
 
-`sortby` and `arraypush` are wins (9.2× and 2.8× over Rakudo interpreted).
+`sortby` and `arraypush` are wins (5.8× and 2.1× over Rakudo interpreted).
 `sortby` exists to keep a win won: `.sort` with a **1-ary key extractor** is
 contractually one key call per element, and calling it inside the comparator
 instead is O(n log n) — an 18.09 s → 0.68 s fix
@@ -691,16 +703,19 @@ much faster here and we leak cycles; they collect cycles and pay for it here.
 
 `textsplit` is the second kernel with a `.pl` twin, and it is the one perl
 still wins: 34.1 ms against Raku++'s 64.7 interpreted (1.9× behind) and 38.7
-compiled (1.1× behind). mutsu runs it in 246.3 ms — 7.2× behind perl, and the
-only engine here that Rakudo (184.5 ms, 5.4× behind) is within hailing distance
-of. Two twins now disagree about where the perl comparison stands, which is
-more informative than one agreeing with itself — hashing is level, text
-munging is not.
+compiled (1.1× behind) at this sitting, and against the 58.0 and 34.6 of the
+2026-09-03 tables above it is 1.7× behind interpreted and level compiled.
+mutsu runs it in 246.3 ms — 7.2× behind perl, and the only engine here that
+Rakudo (184.5 ms, 5.4× behind) is within hailing distance of. Two twins now
+disagree about where the perl comparison stands, which is more informative
+than one agreeing with itself — hashing is level, text munging is not.
 
 The interpreted row is the one to watch: it was 1.6× slower than perl on
-2026-08-21, within 10% on 2026-08-24, and 6% off it now, on a kernel built out
-of exactly the things a scripting language is asked to do — interpolated hash
-keys, a values sweep, and 50k string appends.
+2026-08-21, within 10% on 2026-08-24, and 6% off it at this sitting; the
+2026-09-03 tables above take it to level — 103.2 ms against the 103.2 measured
+for `perl` here, which that later sitting reproduced within 2%. It is a kernel
+built out of exactly the things a scripting language is asked to do —
+interpolated hash keys, a values sweep, and 50k string appends.
 
 Replacing the hash payload's `std::map` with `ValueHash` — an insertion-ordered
 open hash with the key's hash stored, in the perl mold
@@ -711,10 +726,10 @@ kernels are unchanged within noise.
 The harness's `native` column compiles with plain `--exe`; the `-O` codegen
 passes widen the margin further. The full mode ladder below is from the
 2026-08-21 sitting, taken before the `Value` shrink — its absolute rows are
-superseded by the table above (plain `--exe` is 38.0 ms now, not 51.5), so
-read it for the ordering between the modes, not for the milliseconds (best of
-5, spawn-inclusive, same machine state throughout, every mode byte-identical
-with perl before timing):
+superseded by the 2026-09-03 kernel tables (plain `--exe` is 35.6 ms there, not
+51.5), so read it for the ordering between the modes, not for the milliseconds
+(best of 5, spawn-inclusive, same machine state throughout, every mode
+byte-identical with perl before timing):
 
 | mode | hashfill | vs perl |
 |---|---:|---:|
@@ -782,17 +797,17 @@ kernel tables — the optimizer has nothing to give a method call, which is
 exactly why that kernel is slow.
 
 _Against the previous sitting of this table (Rakudo v2026.06), plain `--exe`
-improved on every row and by a lot on three — `stringbuild` 24.0 → 5.5 ms,
-`intsum` 298.7 → 127.0, `fibcalls` 670.6 → 347.5 — which is the general
+improved on every row and by a lot on three — `stringbuild` 24.0 → 5.9 ms,
+`intsum` 298.7 → 109.5, `fibcalls` 670.6 → 344.4 — which is the general
 compiled-path work of the last weeks arriving here. `-O` improved further on
-top, so the `-O` gain column moved both ways: `powmod` went 10.7× → 24.0× (its
-`-O` row more than halved) while `intsum` fell 9.4× → 7.9× and `fibcalls`
-4.0× → 5.7×. A gain column shrinking is not a regression when both of its
+top, so the `-O` gain column moved both ways: `powmod` went 10.7× → 32.8× (its
+`-O` row more than halved) while `intsum` fell 9.4× → 6.6× and `fibcalls`
+4.0× → 5.3×. A gain column shrinking is not a regression when both of its
 columns got faster — read the milliseconds first._
 
 The lanes (pass 3) dominate this table: `sieve`'s inner loop — `while $d * $d
-<= $n`, `if $n %% $d`, `$d++` — runs as raw `int64`, taking it from a tie with
-Rakudo at plain `--exe` (1007.4 against 1007.8 ms) to **52×** ahead, and
+<= $n`, `if $n %% $d`, `$d++` — runs as raw `int64`, taking it from a 1.2× lead
+at plain `--exe` (817.0 against Rakudo's 1020.8 ms) to **43×** ahead, and
 `intsum` shed its four per-iteration `Value` constructions. The figures for
 `-O` on the main kernels above — fib 27.3 ms, loopsum 7.1 ms, streq 14.5 ms
 (the `$c++`/`$c--` counters lane on top of the inline `eq`/`lt`) — are from an
