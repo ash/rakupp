@@ -13,7 +13,10 @@ what it stopped on.
 
 **This release ships two known regressions, both found by the gates, both named
 below.** They are documented rather than fixed because the release was cut
-deliberately with them in it; issues are open for each.
+deliberately with them in it:
+[#78](https://github.com/ash/rakupp/issues/78) (`OO::Monitors` no longer
+excludes) and [#79](https://github.com/ash/rakupp/issues/79) (the call path, and
+the stale baseline that hid it).
 
 | | v3.26.0 | v3.27.0 |
 |---|---:|---:|
@@ -36,7 +39,7 @@ explained below and neither is an engine regression.
 
 ### The two regressions this release ships
 
-**`OO::Monitors` no longer excludes.** The battery fell 49 → 48 on one dist, and
+**`OO::Monitors` no longer excludes** ([#78](https://github.com/ash/rakupp/issues/78)). The battery fell 49 → 48 on one dist, and
 it is the one whose entire purpose is mutual exclusion: four threads incrementing
 a monitor's attribute 1,000 times each yield **3,931 instead of 4,000**. It fails
 6 runs of 6 here and passes 6 of 6 on v3.26.0, so it is not a flaky race — it is
@@ -50,7 +53,8 @@ step. The irony is exact: that commit added `EXPORTHOW::DECLARE` support so Red'
 `monitor`. `MetamodelX::MonitorHOW` wraps every method it adds to take a lock;
 through the new declarator path that wrapping does not take effect.
 
-**The call path is ~10% slower than v3.26.0, and the gate could not see it.**
+**The call path is ~10% slower than v3.26.0, and the gate could not see it**
+([#79](https://github.com/ash/rakupp/issues/79)).
 Measured four times against v3.26.0's source built locally with identical cmake
 configuration and the same Clang 17:
 
