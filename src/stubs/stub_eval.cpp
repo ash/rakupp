@@ -44,6 +44,9 @@ const std::vector<std::string>& rakuAstAncestry(const std::string&) {
 // build on this thread rather than in a worker). A cut binary simply skips it
 // and lets the refusal land on the name itself, where the message belongs.
 void rakuAstMaterialize() {}
+Value rakuAstEval(Interpreter&, const Value&) {
+    featureMissing("eval", "RakuAST .EVAL");
+}
 Value rakuAstNew(Interpreter&, const std::string&, ValueList&) {
     featureMissing("eval", "constructing a RakuAST:: node");
 }

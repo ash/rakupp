@@ -1767,3 +1767,83 @@ still cuts all four features. Perf and Roast were not re-run for this step: the
 perf re-measure is already parked for a quiet machine, and the renderer adds no
 path a Roast file reaches (no Roast file at the pin constructs a `RakuAST::`
 node — the one that names a class asserts `~~ RakuAST::Node`, which P0 settled).
+
+## P3 — `.EVAL` on a tree, and the side table (landed 2026-09-11)
+
+The bridge closes. A constructed tree runs, in the caller's lexical scope, by
+both spellings — the `.EVAL` method on a node and the `EVAL $node` sub form
+Intl::Format::Number writes — and a live value the text cannot carry survives
+the trip with its identity intact.
+
+**Files**: `src/RakuAstDeparse.cpp` (the side table and `rakuAstEval`),
+`RakuAstClasses.{h,cpp}`, `src/Builtins.cpp` (the sub form), the stubs,
+`tools/rakuast-eval-spec.raku` and `t/regression/rakuast-eval.raku`.
+≈120 lines against the 170-270 estimate — the small figure is the point: the
+text bridge means there is no compiler here, only a renderer and `evalString`.
+
+### The nine cases, and what they actually prove
+
+`tools/rakuast-eval-spec.raku` is engine-neutral like the deparse spec, and
+**both engines produce the same nine rows**. The first four are Part I's scope
+probes rewritten from `EVAL q[…]` to `.EVAL` on a tree — 42 / 42 / 99 / 21 —
+and each answer is reachable only if the fragment saw the enclosing scope.
+Case 3 is the one that carries it: the `say` runs OUTSIDE the EVAL and still
+sees 99, so the fragment wrote to the real container rather than a copy. Case 5
+is the other half — a live object comes back `===` itself on both engines,
+which is free for Rakudo (it compiles the tree) and is the side table here.
+
+### The side table, and the one place this beats the oracle
+
+A `Literal` holding a closure or an object has no source behind it. Rakudo
+renders those as an address comment and the value is gone. Here they render as
+`$RAKUAST-LITn` and `.EVAL` binds the name back to the value in a CHILD scope —
+the parent link keeps every name the caller had reachable, and the synthetic
+names are gone the moment it returns. The counter runs whether or not anyone is
+collecting, so a bare user-called `.DEPARSE` and the one `.EVAL` makes produce
+the same text.
+
+`nameEvalsCode` needed no change: SlimScan already sees `.EVAL` by name, and a
+program that calls it on a node cuts nothing and runs compiled (verified).
+
+### What the t/12 slice caught, which nothing else would have
+
+Re-running it after P3 turned one file from `threw` to **CRASH** —
+`statement.rakutest`, SIGSEGV. Two defects, both mine, both in the P2c
+renderer and neither reachable from the 57-case spec:
+
+1. **An unguarded dereference.** `Statement::If` did `render(*attr(node,
+   "then"), …)` where every other case uses the null-safe `opt`. A node built
+   by `.new` with a required child unset is a real shape — the `.raku`
+   round-trip leg of upstream's own helper constructs exactly that — and the
+   miss segfaulted. There was exactly one `*attr(` in the file; there are none
+   now.
+2. **A silently wrong rendering, which is worse.** `Statement::If` dropped its
+   `elsifs`, so a three-branch statement came back as `if … else …` — valid
+   Raku that means something else, the one thing this renderer must never
+   produce. The chain renders now, byte-identical to upstream's expected text,
+   and the case is pinned in the spec (58 cases, still all matching).
+
+That is the argument for the slice in one paragraph: a 57-case spec written by
+the same person who wrote the renderer tests the shapes that person thought of.
+
+**After P3**: 16 files, no crashes, **7 of 328 assertions** (from 5). The
+remaining gap is `.raku` on a node — upstream's helper checks four things per
+case and that leg is on no step's list.
+
+### Gates
+
+`t/run.raku` **859 of 859** — and the `example: echo-server` failure reported
+under P2c is gone with the port, confirming it was a collision with a
+concurrent session and not a regression. `t/slim/run.raku` green.
+
+**Roast: one run, not three, and here is exactly what that bought.** 668
+fully-passing against P0's 670/670/669. The two files the P0 union has and this
+run does not are `S17-scheduler/basic.t` and `S32-io/io-special.t`, and both are
+`[TIME]`, not a failure — each has timed out in some earlier run of unmodified
+code and passed in others, and run alone right afterwards they pass **34/34**
+and **48/48**. The machine carried 17 timeouts this run against 13-16 before,
+which is the difference. One run cannot do what three plus a union diff do, so
+this is recorded as a sanity check: the only path a Roast file can reach in this
+step is one guarded branch in the `EVAL` builtin, inert unless its argument is a
+RakuAST node, and no Roast file at the pin constructs one. The three-run gate
+runs with the phase that ships this.

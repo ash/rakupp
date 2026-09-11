@@ -80,6 +80,13 @@ std::string rakuAstDeparse(Interpreter& I, const Value& node);
 // spelling every dist uses to make a name.
 Value rakuAstNameFrom(Interpreter& I, const ValueList& parts);
 
+// Run a tree: render it and hand the text to the ordinary parser, in the
+// CALLER's lexical scope. Live values the text cannot carry ride a side table
+// bound into a child scope, so a closure or an object survives the trip with
+// its identity intact. Both spellings route here — the `.EVAL` method on a node
+// and the `EVAL $node` sub form.
+Value rakuAstEval(Interpreter& I, const Value& node);
+
 // Build the registry now. Called when the parser has flagged a unit as using
 // RakuAST, so the single publish happens on the thread that runs the unit
 // rather than in whichever worker first misses.

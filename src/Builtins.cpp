@@ -10148,6 +10148,14 @@ void Interpreter::registerBuiltins() {
             } else if (v.t != VT::Pair && !haveCode) { code = v; haveCode = true; }
         }
         if (!haveCode) return Value::any();
+        // `EVAL $node` — the SUB form over a RakuAST tree, which is how
+        // Intl::Format::Number runs the formatters it builds
+        // (`EVAL format-number-rakuast |c`). Rakudo takes a node here as
+        // readily as a string; without this arm the node would be stringified
+        // and its gist compiled, which is a different program or none at all.
+        if (code.t == VT::Object && code.obj() && code.obj()->cls &&
+            isRakuAstName(code.obj()->cls->name))
+            return rakuAstEval(I, code);
         // control flow may not escape an EVAL: a top-level `return`/`next`/… in
         // the string is X::ControlFlow, not a silent unwind of the whole program
         // evalString itself converts escaping control flow (routine-aware)

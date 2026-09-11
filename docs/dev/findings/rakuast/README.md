@@ -120,6 +120,24 @@ Three conventions the table pins, all of them measured rather than assumed:
   *means* `$_.fc` — but a renderer that does not do it produces a tree of a
   different shape on the way back.
 
+## `eval-2026.08.tsv` — what a tree ANSWERS, on both engines
+
+Nine rows from [tools/rakuast-eval-spec.raku](../../../../tools/rakuast-eval-spec.raku),
+which is engine-neutral like the deparse spec: Rakudo produced this file and
+rakupp has to reproduce it, and `t/regression/rakuast-eval.raku` is that diff.
+
+The first four are Part I's scope probes rewritten from `EVAL q[…]` to `.EVAL`
+on a constructed tree — **42 / 42 / 99 / 21** — and each answer is reachable
+only if the fragment saw the enclosing scope. A deparsed tree is mostly names
+from wherever it came from, so an EVAL compiling in a fresh scope could carry
+nothing but literals; these rows are what holds the design up. Case 3 is the
+strong one: the `say` runs OUTSIDE and still sees 99, so the fragment wrote to
+the real container rather than a copy.
+
+Case 5 is the other half. A live object has no source behind it, and comes back
+`===` itself on BOTH engines — free for Rakudo, which compiles the tree, and
+the side table here (`$RAKUAST-LITn` bound in a child scope).
+
 ## `t12-2026.08.tsv` — Rakudo's own construction tests, run here
 
 P2c's requirement over `.new`-built trees is **throw clearly or render, never
@@ -137,7 +155,7 @@ shape, an external checkout behind an env var, is how Roast is referenced. This
 repo references upstream suites, it does not copy them.
 
 **16 files, zero crashes.** The requirement is met. The assertion counts —
-**5 ok of 328 planned** — are a published baseline, not a gate: each file's
+**7 ok of 328 planned** after P3 (5 before it) — are a published baseline, not a gate: each file's
 `ast-ok` helper checks four things per case (`.DEPARSE`, `EVAL($ast)`,
 `EVAL($deparsed)`, and an `EVAL(EVAL $ast.raku)` round trip), and only the first
 is in P2c's scope. P3 (`.EVAL`) moves two of the four; `.raku` on a node is not

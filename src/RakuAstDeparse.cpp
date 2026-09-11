@@ -114,6 +114,12 @@ bool wordOperator(const std::string& op) {
 
 struct Deparser {
     Interpreter& I;
+    // The side table: a live value with no source behind it renders as a
+    // synthetic NAME, and `.EVAL` binds that name back to the value. The
+    // counter runs whether or not anyone is collecting, so a bare user-called
+    // `.DEPARSE` and the one `.EVAL` makes produce the same text.
+    ValueList* side = nullptr;
+    int litCount = 0;
     explicit Deparser(Interpreter& i) : I(i) {}
 
     [[noreturn]] void notImplemented(const std::string& cls) {
@@ -184,10 +190,22 @@ struct Deparser {
             return quoted(v ? v->toStr() : "");
         }
         if (c == "Literal") {
-            // `.from-value` holds a live value with no source behind it; the
-            // faithful rendering is its own `.raku`, which is what Rakudo does.
+            // `.from-value` holds a live value with no source behind it.
+            // Numbers, strings and the ordinary containers round-trip through
+            // their own `.raku`; a CLOSURE or an OBJECT does not — Rakudo
+            // renders those as an address comment and the value is gone. Here
+            // they render as a synthetic name that `.EVAL` binds back to the
+            // value itself, so identity survives the trip (`===` afterwards).
+            // That is the one place this renderer deliberately says something
+            // Rakudo does not, and it is what makes the text bridge carry more
+            // than literals.
             const Value* v = attr(node, "value");
             if (!v) return "Nil";
+            if (v->t == VT::Code || v->t == VT::Object) {
+                std::string nm = "$RAKUAST-LIT" + std::to_string(litCount++);
+                if (side) side->push_back(*v);
+                return nm;
+            }
             ValueList none;
             return I.methodCall(*v, "raku", none).toStr();
         }
@@ -308,12 +326,23 @@ struct Deparser {
             return kw + nm + (sig.empty() ? "" : "(" + sig + ")") + " " +
                    blockoid(attr(node, "body"), indent);
         }
-        if (c == "Statement::If") {
-            std::string out = "if " + opt(attr(node, "condition"), indent) + " " +
-                              render(*attr(node, "then"), indent);
+        if (c == "Statement::If" || c == "Statement::Elsif") {
+            // `opt`, never `*attr(...)`: a node built by `.new` with a required
+            // child left unset is a real shape — `.raku` round-trip tests
+            // construct exactly that — and dereferencing the miss segfaulted.
+            std::string out = (c == "Statement::If" ? "if " : "elsif ") +
+                              opt(attr(node, "condition"), indent) + " " +
+                              opt(attr(node, "then"), indent);
+            // The elsif CHAIN. Dropping it rendered valid Raku that means
+            // something else — `if a {1} else {4}` for a three-branch
+            // statement — which is the one thing this renderer must never do.
+            if (const Value* es = attr(node, "elsifs"))
+                if (es->t == VT::Array && es->arr())
+                    for (auto& e : *es->arr())
+                        if (isNode(e)) out += "\n" + pad(indent) + render(e, indent);
             if (const Value* e = attr(node, "else"))
                 if (isNode(*e)) out += "\n" + pad(indent) + "else " + render(*e, indent);
-            return out + "\n";
+            return c == "Statement::If" ? out + "\n" : out;
         }
         if (c == "Statement::Unless")
             return "unless " + opt(attr(node, "condition"), indent) + " " +
@@ -434,6 +463,32 @@ Value rakuAstNew(Interpreter& I, const std::string& qualifiedName, ValueList& ar
 std::string rakuAstDeparse(Interpreter& I, const Value& node) {
     Deparser d{I};
     return d.render(node, 0);
+}
+
+Value rakuAstEval(Interpreter& I, const Value& node) {
+    Deparser d{I};
+    ValueList side;
+    d.side = &side;
+    std::string src = d.render(node, 0);
+    // The caller's scope has to be visible, and it already is: EVAL of TEXT
+    // compiles in the current lexical scope here exactly as it does in Rakudo —
+    // Part I's four probes measured that on both engines before any of this was
+    // designed, which is why the bridge needs no compiler of its own.
+    if (side.empty()) return I.evalString(src, /*mainlinePH=*/true);
+    // …and when the tree carried live values, the only thing added is their
+    // synthetic names. They go in a CHILD scope: the parent link keeps every
+    // name the caller had reachable, and the synthetic ones are gone the moment
+    // this returns rather than leaking into the scope that asked.
+    auto sc = std::make_shared<Env>();
+    sc->parent = Interpreter::tctx_.cur;
+    for (size_t i = 0; i < side.size(); i++)
+        sc->define("$RAKUAST-LIT" + std::to_string(i), side[i]);
+    struct ScopeSwap {
+        std::shared_ptr<Env>& slot; std::shared_ptr<Env> saved;
+        ~ScopeSwap() { slot = std::move(saved); }
+    } swap{Interpreter::tctx_.cur, Interpreter::tctx_.cur};
+    Interpreter::tctx_.cur = sc;
+    return I.evalString(src, /*mainlinePH=*/true);
 }
 
 // `RakuAST::Name.from-identifier("foo")` / `.from-identifier-parts("Foo","Bar")`

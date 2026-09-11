@@ -33,6 +33,7 @@ Block	{\n    42\n}
 PointyBlock	-> $_ {\n    "foo"\n}
 Sub	sub foo {\n    42\n}
 Statement::If	if $_ {\n    42\n}\n
+Statement::If.elsifs	if $a {\n    1\n}\nelsif $b {\n    2\n}\nelsif $c {\n    3\n}\nelse {\n    4\n}\n
 Statement::For	for $_ -> {\n    42\n}
 StatementModifier::If	42 if $_
 StatementModifier::Unless	42 unless $_

@@ -83,6 +83,19 @@ d 'Block',                  { RakuAST::Block.new(body => blockoid($int)) };
 d 'PointyBlock',            { RakuAST::PointyBlock.new(signature => topicsig(), body => blockoid($str)) };
 d 'Sub',                    { RakuAST::Sub.new(name => $name, body => blockoid($int)) };
 d 'Statement::If',          { RakuAST::Statement::If.new(condition => $topic, then => RakuAST::Block.new(body => blockoid($int))) };
+# The elsif CHAIN, which upstream's statement.rakutest is what caught: dropping
+# it renders valid Raku that means something else, and a three-branch statement
+# came back as two.
+d 'Statement::If.elsifs', {
+    my &blk = -> $n { RakuAST::Block.new(body => blockoid(RakuAST::IntLiteral.new($n))) };
+    RakuAST::Statement::If.new(
+      condition => RakuAST::Var::Lexical.new('$a'), then => blk(1),
+      elsifs => [
+        RakuAST::Statement::Elsif.new(condition => RakuAST::Var::Lexical.new('$b'), then => blk(2)),
+        RakuAST::Statement::Elsif.new(condition => RakuAST::Var::Lexical.new('$c'), then => blk(3)),
+      ],
+      else => blk(4))
+};
 d 'Statement::For',         { RakuAST::Statement::For.new(source => $topic,
       body => RakuAST::PointyBlock.new(signature => RakuAST::Signature.new(parameters => ()), body => blockoid($int))) };
 d 'StatementModifier::If',     { RakuAST::Statement::Expression.new(expression => $int, condition-modifier => RakuAST::StatementModifier::If.new($topic)) };

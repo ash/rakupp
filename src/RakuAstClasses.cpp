@@ -92,16 +92,29 @@ const Registry* build() {
         for (size_t i = 1; i < a.size(); i++) out.push_back(a[i]);
         return out;
     };
+    // `new` goes on EVERY class, not just Node. A handful of them have no
+    // ancestors at all — `RakuAST::Statement::Elsif` is the one that taught
+    // this, and `.^mro` says the same upstream — so they never reach Node's
+    // methods, and inheriting the constructor from there silently gave them the
+    // DEFAULT one instead: `Statement::Elsif.new(condition => …, then => …)`
+    // built a node with nothing in it, and the `if` around it then rendered
+    // `elsif` with no condition and no block. Valid Raku, different program.
+    Value newMethod = method([rest](Interpreter& I, ValueList& a) -> Value {
+        std::string cls;
+        if (!a.empty() && a[0].t == VT::Type) cls = a[0].s;
+        else if (!a.empty() && a[0].t == VT::Object && a[0].obj() && a[0].obj()->cls)
+            cls = a[0].obj()->cls->name;
+        ValueList args = rest(a);
+        return rakuAstNew(I, cls, args);
+    });
+    for (auto& kv : reg->byName) kv.second->methods["new"] = newMethod;
+
     ClassInfo* node = reg->byName["RakuAST::Node"].get();
     node->methods["DEPARSE"] = method([](Interpreter& I, ValueList& a) -> Value {
         return Value::str(a.empty() ? std::string() : rakuAstDeparse(I, a[0]));
     });
-    node->methods["new"] = method([rest](Interpreter& I, ValueList& a) -> Value {
-        std::string cls = (!a.empty() && a[0].t == VT::Type) ? a[0].s
-                        : (!a.empty() && a[0].t == VT::Object && a[0].obj() && a[0].obj()->cls)
-                          ? a[0].obj()->cls->name : std::string();
-        ValueList args = rest(a);
-        return rakuAstNew(I, cls, args);
+    node->methods["EVAL"] = method([](Interpreter& I, ValueList& a) -> Value {
+        return a.empty() ? Value::any() : rakuAstEval(I, a[0]);
     });
     // `.from-identifier("foo")` and `.from-identifier-parts("Foo","Bar")` both
     // make a Name out of plain strings — the spelling every dist uses.

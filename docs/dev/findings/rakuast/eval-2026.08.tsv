@@ -1,0 +1,9 @@
+outer-lexical	42
+outer-routine	42
+writes-real-container	99
+parameter-at-depth	21
+identity-survives	True
+and-still-works	hi
+sub-form	42
+needle-matches	True
+needle-rejects	False
