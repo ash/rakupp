@@ -170,43 +170,40 @@ side is where to look next.
    expansion ends in an exact tie (every power of two) has printf break the tie to
    even and hand back the one neighbour that does not round-trip.
 
-   The last assertion needs a representation change and is NOT started: an
-   **object hash gives `.keys` back STRINGIFIED**. `my %h{Mu}; my $k = [7,8,9];
+   The last assertion needs a representation change and is NOT started — and it
+   is the SAME blocker Log::Timeline now stops on, so it is the highest-value
+   single fix on this board: an **object hash gives `.keys` back STRINGIFIED**. `my %h{Mu}; my $k = [7,8,9];
    %h{$k} = "v"` stores and fetches correctly, but `%h.keys.head` is `"7 8 9"`
    where Rakudo answers `[7, 8, 9]`, so the dist's
    `keys.first(* eqv [1,2,3])` finds nothing. rakupp's hash is `std::string →
-   Value` by construction, so the original key needs a side table — confined to
-   object-keyed hashes, but touching store, `.keys`, `.kv`, `.pairs` and
-   iteration. Also still open: `Blob[n]` out of range answers empty where Rakudo
+   Value` by construction, so the original key needs somewhere to live. The
+   mechanism already exists and is the place to start: `hashEntryKey()` returns
+   `stored.pairKey()` when the stored value carries one, which is how Set/Bag/Mix
+   recover their elements' original types. What is missing is the STORE side
+   recording it for an object-keyed hash — the lvalue path (`Interpreter.cpp`,
+   the `hashSubKey(eval(idx->index.get()), base)` site) hands back a slot
+   POINTER that the caller then overwrites, so the stamp cannot simply go there. Also still open: `Blob[n]` out of range answers empty where Rakudo
    throws `Index out of range` (probe row R7).
-2. **The async-socket hangs are the wall, and Log::Timeline is ONE FILE from
-   green.** Measured 2026-09-12 with every fix in: Log::Timeline (95 downstream),
-   Cro::HTTP (92), LWP::Simple (21) and Cro::WebSocket all still time out at
-   200 s; HTTP::Supply fails with `operation timed out`. Bisecting Log::Timeline
-   the way CBOR was bisected: **four of its five test files pass, 141 assertions
-   green**, and only `t/output-socket.rakutest` hangs.
+2. **The async plumbing: three bugs fixed, one blocker left, and Cro is a
+   campaign not a fix.** Fixed 2026-09-12 (commit `b4675bc`, Roast 670 clean):
+   `whenever $chan` in a `supply {}` bound the CHANNEL instead of its values;
+   closing a TAP shut down the SOCKET; and a react never closed the tap it made,
+   so its reader outlived it and ate bytes meant for the next tap.
 
-   **Root-caused, and it is one bug: `whenever $channel` inside a `supply {}`
-   block emits the CHANNEL ITSELF instead of the values sent to it.** The server
-   writes the right bytes — an instrumented copy shows `handshake-json` is
-   exactly `{"ver":1}` — but the client reads `closed\tFalse`,
-   `closedPromise\tstatus\tPlanned`, `queue\t{...}`: a rakupp **Channel**
-   stringified onto the wire. Log::Timeline's reactor is
-   `supply { … whenever $!events -> $event-json { .print("$event-json\n") … } }`
-   and `$!events` is a Channel, so `$event-json` was bound to the Channel.
+   **Log::Timeline** — four of five files green, and `output-socket` went from
+   hanging on a stringified Channel to **27 passing assertions**. It now stops
+   on the SAME thing CBOR::Simple's last assertion does: an **object hash hands
+   `.keys` back stringified**. Its reactor writes
+   `.print(…) for %connections.keys` where `%connections{IO::Socket::Async}` is
+   keyed by the connection, so `.print` is called on a stringified socket —
+   `socket-port\t19893` reaches the wire. **One fix, two dists.**
 
-   Localized to four rows, each its own Channel (`scratchpad/probe-chan3.raku`):
+   **Cro::HTTP is not one bug.** Measured over all 31 test files: **12 green,
+   4 hang, 906 assertions passing to 102 failing** (the request parser alone is
+   307/36). It needs its own batch, worked the way any dist is — not a single
+   unblock. LWP::Simple, Cro::WebSocket and HTTP::Supply still time out and have
+   not been bisected.
 
-   | | Rakudo | rakupp |
-   |---|---|---|
-   | `whenever $chan` in **react**, closed | value | value |
-   | `whenever $chan` in **react**, open | value | value |
-   | `whenever $chan` in **supply**, closed | value | **the Channel** |
-   | `whenever $chan` in **supply**, open | value | **the Channel** |
-
-   So `react` is right and `supply {}` is wrong; open-vs-closed is irrelevant.
-   This is the long-deferred "Channel in a react/supply" gap, now pinned. It
-   plausibly stands behind much of the async cluster — the largest lever left.
 3. **The four named gaps** — `.shape`, `Regex.cache`, LibraryCheck,
    `add_attribute`. 137 downstream between them, and each is a small,
    self-contained piece of work.
