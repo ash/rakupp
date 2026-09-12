@@ -52,15 +52,26 @@ check q[/ foo /].AST.statements.head.expression.^name, 'RakuAST::QuotedRegex',
       'a regex literal is a QuotedRegex';
 
 # ---- the gate, and the shapes that refuse ------------------------------
+# `.AST` itself is NOT behind the pragma — measured on 2026.08, where
+# `Q[say 1].AST` answers a StatementList with no `use experimental` in sight.
+# The `RakuAST::` NAMES are what upstream gates, and that is asserted below.
+# Gating the method as well was stricter than the thing being matched, and it
+# failed every L10N dist's own test, each of which opens with a bare `.AST`.
 my $p = run($*EXECUTABLE, '-e', 'say q[say 1].AST.^name', :out, :err);
+check ($p.out.slurp(:close) ~ $p.err.slurp(:close)).trim,
+      'RakuAST::StatementList', '.AST needs no pragma, as upstream';
+$p = run($*EXECUTABLE, '-e', 'say RakuAST::IntLiteral.new(1).DEPARSE', :out, :err);
 check ($p.out.slurp(:close) ~ $p.err.slurp(:close)).contains(
-          "Use of RakuAST is experimental"), True, '.AST is gated under bare 6.d';
+          "Use of RakuAST is experimental"), True, '…but a RakuAST:: NAME still is';
 # A Buf is not Cool and never reaches the arm.
 check (try Buf.new(1,2).AST).defined, False, 'a Buf invocant refuses';
 # A construct the builder has no faithful mapping for SAYS so — it never
-# answers a wrong tree. (`class` used to be the example here and is mapped now;
-# a phaser block is the current frontier, and this line moves with it.)
-check (try q[BEGIN { say 1 }].AST).defined, False, 'an unmapped construct throws';
+# answers a wrong tree. (`class` was the example here first and is mapped now,
+# then a phaser block, which is mapped now too. An `enum` is the current
+# frontier — our parse drops the `<a b c>` spelling, and Rakudo refuses the
+# array form we would have to render instead — and this line moves with it.)
+check (try q[enum Colour <red green blue>].AST).defined, False,
+      'an unmapped construct throws';
 check ($! ~~ X::NYI).so, True, '…as X::NYI';
 # And a parse error is a Raku exception, not a `===SORRY!===` that takes the
 # program with it past every `try` — the round-trip harness found that one.

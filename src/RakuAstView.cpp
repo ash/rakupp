@@ -473,9 +473,25 @@ struct Builder {
     Value buildStmt(Stmt* s) {
         if (!s) return Value::any();
         switch (s->kind) {
-            case NK::ExprStmt:
-                return node("Statement::Expression",
-                            {{"expression", buildExpr(static_cast<ExprStmt*>(s)->e.get())}});
+            case NK::ExprStmt: {
+                Expr* e = static_cast<ExprStmt*>(s)->e.get();
+                // `whenever $chan -> $v { … }` is a STATEMENT upstream, and a
+                // two-argument call here (the trigger and a block). Rendering
+                // it as the call put a COMMA between them — `whenever $chan,
+                // -> $v { … }` — which is valid Raku that hands `react` two
+                // arguments instead of a handler, so the block never ran. The
+                // round trip cannot see that; L10N::ZH's concurrency test can,
+                // and did.
+                if (e && e->kind == NK::Call) {
+                    auto* c = static_cast<Call*>(e);
+                    if (c->name == "whenever" && c->args.size() == 2 &&
+                        c->args[1] && c->args[1]->kind == NK::BlockExpr)
+                        return node("Statement::Whenever",
+                            {{"trigger", buildExpr(c->args[0].get())},
+                             {"body",    buildExpr(c->args[1].get())}});
+                }
+                return node("Statement::Expression", {{"expression", buildExpr(e)}});
+            }
             case NK::EmptyStmt: return node("Statement::Empty");
             case NK::VarDecl: {
                 auto* d = static_cast<VarDecl*>(s);
@@ -494,9 +510,20 @@ struct Builder {
             }
             case NK::Block: {
                 auto* b = static_cast<Block*>(s);
-                if (!b->phaser.empty()) unmapped("a phaser block");
-                return node("Statement::Expression",
-                            {{"expression", node("Block", {{"body", blockoid(b->stmts)}})}});
+                Value blk = node("Block", {{"body", blockoid(b->stmts)}});
+                // `BEGIN { … }` is a STATEMENT PREFIX upstream, one class per
+                // phaser, named for the keyword title-cased — measured over all
+                // seventeen. The block hangs off `blorst` (block-or-statement),
+                // which is also the `PHASER statement;` form's slot.
+                if (!b->phaser.empty()) {
+                    std::string cls = "StatementPrefix::Phaser::";
+                    cls += (char)ascii::toupper((unsigned char)b->phaser[0]);
+                    for (size_t i = 1; i < b->phaser.size(); i++)
+                        cls += (char)ascii::tolower((unsigned char)b->phaser[i]);
+                    return node("Statement::Expression",
+                                {{"expression", node(cls.c_str(), {{"blorst", blk}})}});
+                }
+                return node("Statement::Expression", {{"expression", blk}});
             }
             case NK::IfStmt: {
                 auto* i = static_cast<IfStmt*>(s);
@@ -541,9 +568,17 @@ struct Builder {
                 for (auto& v : f->vars)
                     ps.push_back(node("Parameter",
                         {{"target", node("ParameterTarget::Var", {{"name", Value::str(v)}})}}));
-                Value body = node("PointyBlock",
-                    {{"signature", node("Signature", {{"parameters", list(ps)}})},
-                     {"body", f->body ? blockoid(f->body->stmts) : blockoid({})}});
+                // A TOPIC-LESS `for` has a plain Block upstream, not a pointy
+                // one with an empty signature — measured. Building the pointy
+                // block anyway rendered `for 1, 2 -> { … }`, which takes no
+                // parameter at all, so the body saw the OUTER `$_`. It parses,
+                // so the round trip called it stable; it is a different program.
+                Value bd = f->body ? blockoid(f->body->stmts) : blockoid({});
+                Value body = ps.empty()
+                    ? node("Block", {{"body", bd}})
+                    : node("PointyBlock",
+                           {{"signature", node("Signature", {{"parameters", list(ps)}})},
+                            {"body", bd}});
                 return node("Statement::For", {{"source", buildExpr(f->list.get())}, {"body", body}});
             }
             case NK::ReturnStmt: {
@@ -608,9 +643,26 @@ struct Builder {
                                           : g->defGuard == 2 ? "StatementModifier::Without"
                                                              : "StatementModifier::Given",
                                             g->defGuard == 0, g->topic.get(), b);
-                Value n = node("Statement::Given",
-                    {{"source", buildExpr(g->topic.get())},
-                     {"body", node("Block", {{"body", g->body ? blockoid(g->body->stmts) : blockoid({})}})}});
+                Value body = node("Block", {{"body",
+                    g->body ? blockoid(g->body->stmts) : blockoid({})}});
+                // `given`, `with` and `without` share one node in OUR tree and
+                // are three classes upstream — and the two defined-guards are
+                // shaped like the `if` family (`condition`/`then`), not like
+                // `given` (`source`/`body`). Building all three as
+                // `Statement::Given` also dropped the `else` on the floor, so
+                // `with $x { } orwith $y { }` — which our parser rewrites to
+                // `with $x { } else { with $y { } }` — presented as a `given`
+                // with one branch and no alternative. L10N::ZH's block suite is
+                // what caught it; nothing else in the corpus writes `orwith`.
+                if (g->defGuard == 0)
+                    return node("Statement::Given",
+                                {{"source", buildExpr(g->topic.get())}, {"body", body}});
+                Value n = node(g->defGuard == 1 ? "Statement::With" : "Statement::Without",
+                    {{"condition", buildExpr(g->topic.get())},
+                     {g->defGuard == 1 ? "then" : "body", body}});
+                if (g->elseBody)
+                    n.obj()->attrs["else"] =
+                        node("Block", {{"body", blockoid(g->elseBody->stmts)}});
                 return n;
             }
             case NK::WhenStmt: {
@@ -639,7 +691,14 @@ struct Builder {
             case NK::LastStmt: return loopControl("last", static_cast<LastStmt*>(s)->target);
             case NK::NextStmt: return loopControl("next", static_cast<NextStmt*>(s)->target);
             case NK::RedoStmt: return loopControl("redo", static_cast<RedoStmt*>(s)->target);
-            case NK::RepeatStmt:     unmapped("a `repeat` loop");
+            case NK::RepeatStmt: {
+                auto* r = static_cast<RepeatStmt*>(s);
+                return node(r->isUntil ? "Statement::Loop::RepeatUntil"
+                                       : "Statement::Loop::RepeatWhile",
+                    {{"condition", buildExpr(r->cond.get())},
+                     {"body", node("Block", {{"body",
+                         r->body ? blockoid(r->body->stmts) : blockoid({})}})}});
+            }
             default: break;
         }
         unmapped("this statement");
@@ -648,7 +707,8 @@ struct Builder {
 
 } // namespace
 
-Value rakuAstView(Interpreter& I, const std::string& source, bool compUnit) {
+Value rakuAstView(Interpreter& I, const std::string& source, bool compUnit,
+                  const TokenXform* xform) {
     // Lexer + Parser only. No BEGIN runs, nothing is executed — which is one of
     // the two recorded divergences from Rakudo, whose `.AST` compiles far
     // enough to run BEGIN blocks and to refuse undeclared variables.
@@ -660,7 +720,11 @@ Value rakuAstView(Interpreter& I, const std::string& source, bool compUnit) {
     Program prog;
     try {
         Lexer lexer(source);
-        Parser parser(lexer.tokenize());
+        std::vector<Token> toks = lexer.tokenize();
+        // The one place a LOCALIZED parse differs (P1-L10N): the keywords are
+        // German, and by here they are ordinary identifier tokens.
+        if (xform) (*xform)(toks);
+        Parser parser(std::move(toks));
         prog = parser.parseProgram();
     } catch (ParseError& e) {
         throw RakuError{Value::typeObj("X::Syntax::Confused"),

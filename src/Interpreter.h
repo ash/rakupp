@@ -1,5 +1,6 @@
 #pragma once
 #include "Ast.h"
+#include "Token.h"   // TokenXform — P1-L10N's `.AST($lang)` seam
 #include "Value.h"
 #include "IntOps.h"
 #include <algorithm>
@@ -1484,6 +1485,10 @@ public:
     // for them, so a failing EXPORT stays a warning there instead of failing
     // the load as it does for `use`/`need`.
     void loadModule(const std::string& name, const std::vector<std::string>& importArgs = {}, bool doImport = true, bool quiet = false, const std::string& verReq = "", bool requireForm = false);
+    // `.AST("DE")` — the localized parse (RAKUAST-PLAN P1-L10N). Loads
+    // `L10N::<lang>` and turns the role it ships into a rewrite over the token
+    // stream. Defined beside the `.AST` arm in MethodCallPart3.cpp.
+    TokenXform l10nTokenXform(const std::string& lang);
     std::vector<std::string> libPaths_{"lib", ".", "rakulib"}; // + env-derived paths, filled in the ctor
     std::set<std::string> loadedModules_;
     // each loaded module's `sub EXPORT(*@_)`, kept so a REPEAT `use` can run the

@@ -48,7 +48,7 @@ void rakuAstMaterialize() {}
 void dumpRakuAst(Interpreter&, const std::string&, std::ostream&, bool, bool) {
     featureMissing("eval", "`--rakuast`");
 }
-Value rakuAstView(Interpreter&, const std::string&, bool) {
+Value rakuAstView(Interpreter&, const std::string&, bool, const TokenXform*) {
     featureMissing("eval", "`.AST` (it IS the parser)");
 }
 Value rakuAstEval(Interpreter&, const Value&) {

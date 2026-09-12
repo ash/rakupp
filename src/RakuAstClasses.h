@@ -28,11 +28,13 @@
 // that file for what the class set is and why.
 #pragma once
 
+#include <functional>
 #include <iosfwd>
 #include <memory>
 #include <string>
 #include <vector>
 
+#include "Token.h"
 #include "Value.h"
 
 namespace rakupp {
@@ -81,8 +83,10 @@ std::string rakuAstDeparse(Interpreter& I, const Value& node);
 // `compUnit` it is wrapped in a `RakuAST::CompUnit`, which is what
 // `.AST(:compunit)` answers and what Needle::Compile unshifts a statement into.
 // Lexer and Parser only: no BEGIN runs and no undeclared-name check fires, both
-// recorded divergences from Rakudo.
-Value rakuAstView(Interpreter& I, const std::string& source, bool compUnit);
+// recorded divergences from Rakudo. `xform` is P1-L10N's seam — null for an
+// ordinary `.AST`, and the German keyword rewrite for `.AST("DE")`.
+Value rakuAstView(Interpreter& I, const std::string& source, bool compUnit,
+                  const TokenXform* xform = nullptr);
 
 // `RakuAST::Name.from-identifier(…)` and `.from-identifier-parts(…)`, the
 // spelling every dist uses to make a name.

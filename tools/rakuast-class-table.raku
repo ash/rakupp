@@ -77,6 +77,16 @@ my @demand = <
     StatementModifier::For StatementModifier::While StatementModifier::Until
     StatementModifier::Given StatementModifier::With StatementModifier::Without
     Method Submethod Var::Attribute
+    Statement::With Statement::Without
+    Statement::Loop::RepeatWhile Statement::Loop::RepeatUntil Statement::Whenever
+    StatementPrefix::Phaser::Check StatementPrefix::Phaser::Init
+    StatementPrefix::Phaser::Enter StatementPrefix::Phaser::Leave
+    StatementPrefix::Phaser::First StatementPrefix::Phaser::Next
+    StatementPrefix::Phaser::Last StatementPrefix::Phaser::Keep
+    StatementPrefix::Phaser::Undo StatementPrefix::Phaser::Pre
+    StatementPrefix::Phaser::Post StatementPrefix::Phaser::Close
+    StatementPrefix::Phaser::Quit StatementPrefix::Phaser::Catch
+    StatementPrefix::Phaser::Control StatementPrefix::Phaser::Doc
 >;
 
 # `::("RakuAST::A::B")` answers a Failure for a NESTED name (measured on

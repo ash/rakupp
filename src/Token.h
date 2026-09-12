@@ -1,5 +1,7 @@
 #pragma once
+#include <functional>
 #include <string>
+#include <vector>
 
 namespace rakupp {
 
@@ -41,5 +43,13 @@ struct Token {
     bool spaceBefore = false; // whitespace/comment preceded this token
     bool flag = false;        // SubstLit: non-mutating S/// (returns new string, leaves $_ intact)
 };
+
+// A pass over the token stream between the Lexer and the Parser. Its one user
+// is P1-L10N's localized parse (`.AST("DE")` reads GERMAN keywords), and it
+// lives here rather than beside that code because this is the only place the
+// shape means anything: our lexer returns every keyword as a plain `Tok::Ident`
+// and lets the parser decide, which is exactly why a whole localized language
+// is a rewrite of some token texts and nothing else.
+using TokenXform = std::function<void(std::vector<Token>&)>;
 
 } // namespace rakupp

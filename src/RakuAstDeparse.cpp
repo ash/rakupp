@@ -90,11 +90,18 @@ const Value* attr(const Value& node, const char* key) {
     return it == node.obj()->attrs.end() ? nullptr : &it->second;
 }
 
-// A Raku double-quoted string literal for `s`. Rakudo renders StrLiteral in
-// canonical double quotes whatever the source spelling was (all four quote
-// forms are one QuotedString upstream), so there is nothing to preserve.
-std::string quoted(const std::string& s) {
-    std::string out = "\"";
+// What has to be escaped inside a double-quoted Raku string, in ONE place.
+// It was in two: `quoted()` escaped the newline and the tab but not the brace,
+// and the QuotedString arm's own inline loop escaped the brace but not the
+// newline — so a literal segment carrying a `\n` came back out as an actual
+// line break in the middle of a string. That is legal Raku on its own, which is
+// why it survived the round trip for as long as it did; it stopped being legal
+// the moment the same string also held a `{`, and the round-trip harness only
+// reached the file at all once phaser blocks had a view.
+//
+// `$`/`@` or the text interpolates on the way back; `{` or it becomes a code
+// block. Rakudo escapes all of these — measured against `StrLiteral.DEPARSE`.
+void escapeDq(std::string& out, const std::string& s) {
     for (char c : s) {
         switch (c) {
             case '"':  out += "\\\""; break;
@@ -102,11 +109,20 @@ std::string quoted(const std::string& s) {
             case '\n': out += "\\n";  break;
             case '\t': out += "\\t";  break;
             case '\r': out += "\\r";  break;
-            case '$':  out += "\\$";  break;   // or it interpolates on the way back
+            case '$':  out += "\\$";  break;
             case '@':  out += "\\@";  break;
+            case '{':  out += "\\{";  break;
             default:   out += c;
         }
     }
+}
+
+// A Raku double-quoted string literal for `s`. Rakudo renders StrLiteral in
+// canonical double quotes whatever the source spelling was (all four quote
+// forms are one QuotedString upstream), so there is nothing to preserve.
+std::string quoted(const std::string& s) {
+    std::string out = "\"";
+    escapeDq(out, s);
     return out + "\"";
 }
 
@@ -184,6 +200,15 @@ struct Deparser {
             // line of its own after every closing brace, which does not parse;
             // the round-trip harness is what showed it.
             if (!one.empty() && one.back() == '\n') continue;
+            // …and a statement that ends in `}` WITHOUT its own newline gets a
+            // bare newline, not `;`. That is the rule upstream and it is not
+            // per-class: `Statement::If` renders its own trailing newline and
+            // `Statement::For` does not (both measured on a lone constructed
+            // node), yet a list separates them identically — and so does it for
+            // `my $c = -> { 1 }`, which is no kind of block statement at all.
+            // Answering this per class instead gets one of those three wrong
+            // whichever way it is written.
+            if (!one.empty() && one.back() == '}') { out += "\n"; continue; }
             if (i + 1 < n || terminateLast) out += ";";
             out += "\n";
         }
@@ -258,12 +283,7 @@ struct Deparser {
                     for (auto& s : *segs->arr()) {
                         if (isNode(s) && shortName(s) == "StrLiteral") {
                             const Value* v = attr(s, "value");
-                            std::string lit = v ? v->toStr() : "";
-                            for (char ch : lit) {
-                                if (ch == '"' || ch == '\\' || ch == '$' || ch == '@' || ch == '{')
-                                    out += '\\';
-                                out += ch;
-                            }
+                            escapeDq(out, v ? v->toStr() : "");
                         } else if (isNode(s)) {
                             out += "{" + render(s, indent) + "}";
                         }
@@ -461,9 +481,39 @@ struct Deparser {
                 if (isNode(*e)) out += "\n" + pad(indent) + "else " + render(*e, indent);
             return c == "Statement::Elsif" ? out : out + "\n";
         }
+        // No trailing newline on `for` or `while`: measured on a lone
+        // constructed node, Rakudo's `Statement::If` renders one and these do
+        // not. The statement list is what separates them — see `statements()`.
         if (c == "Statement::For")
             return "for " + opt(attr(node, "source"), indent) + " " +
                    opt(attr(node, "body"), indent);
+        // `with`/`without` are the `if` family's shape with their own keyword;
+        // `repeat` puts its condition AFTER the block and takes no `;`.
+        if (c == "Statement::With" || c == "Statement::Without") {
+            std::string out = (c == "Statement::With" ? "with " : "without ") +
+                              opt(attr(node, "condition"), indent) + " " +
+                              opt(attr(node, c == "Statement::With" ? "then" : "body"), indent);
+            if (const Value* e = attr(node, "else"))
+                if (isNode(*e)) out += "\n" + pad(indent) + "else " + render(*e, indent);
+            return out + "\n";
+        }
+        // …and NO trailing newline on `repeat`: it does not end in `}`, it ends
+        // in the condition, so it is an ordinary statement and takes the `;`
+        // the statement list gives it. Measured on both engines.
+        if (c == "Statement::Loop::RepeatWhile" || c == "Statement::Loop::RepeatUntil")
+            return "repeat " + opt(attr(node, "body"), indent) +
+                   (c == "Statement::Loop::RepeatWhile" ? " while " : " until ") +
+                   opt(attr(node, "condition"), indent);
+        // `BEGIN { … }` — the class name IS the keyword, title-cased, so the
+        // renderer upper-cases it back rather than carrying a second table.
+        if (c.compare(0, 25, "StatementPrefix::Phaser::") == 0) {
+            std::string kw = c.substr(25);
+            for (char& ch : kw) ch = (char)ascii::toupper((unsigned char)ch);
+            return kw + " " + opt(attr(node, "blorst"), indent) + "\n";
+        }
+        if (c == "Statement::Whenever")
+            return "whenever " + opt(attr(node, "trigger"), indent) + " " +
+                   opt(attr(node, "body"), indent) + "\n";
         if (c == "Statement::Given")
             return "given " + opt(attr(node, "source"), indent) + " " +
                    opt(attr(node, "body"), indent) + "\n";
@@ -494,8 +544,9 @@ struct Deparser {
             return sc + kw + " " + opt(attr(node, "name"), indent) + " " +
                    opt(attr(node, "body"), indent) + "\n";
         }
-        if (c == "Statement::While")
-            return "while " + opt(attr(node, "condition"), indent) + " " +
+        if (c == "Statement::While" || c == "Statement::Until")
+            return (c == "Statement::While" ? "while " : "until ") +
+                   opt(attr(node, "condition"), indent) + " " +
                    opt(attr(node, "body"), indent);
 
         // ---- declarations, signatures, types -----------------------------

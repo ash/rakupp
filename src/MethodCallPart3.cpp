@@ -500,12 +500,25 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // through the same `strOf`. A Buf still refuses, because Buf is not
         // Cool and never reaches this arm.
         if (m == "AST") {
-            if (!rakuAstVisible()) refuseRakuAst();
+            // NOT behind the pragma. Measured on 2026.08: Rakudo gates the
+            // `RakuAST::` NAMES (`RakuAST::IntLiteral.new` without the pragma
+            // is a compile-time refusal, and Interpreter.cpp's resolution arm
+            // reproduces that) but not this METHOD — `Q[say 1].AST` answers a
+            // StatementList with no pragma in sight. Gating it here as well
+            // was stricter than the thing being matched, and it failed a real
+            // dist on the wrong grounds: every L10N dist's own test opens with
+            // `Q:to/CODE/.AST("DE")` and no `use experimental`.
             bool compUnit = false;
-            for (auto& a : args)
+            std::string lang;
+            for (auto& a : args) {
                 if (a.t == VT::Pair && a.s == "compunit" && (!a.pairVal() || a.pairVal()->truthy()))
                     compUnit = true;
-            return rakuAstView(*this, strOf(inv), compUnit);
+                // `.AST("DE")` — the LANGUAGE, positional and a plain string.
+                else if (a.t != VT::Pair && a.t == VT::Str) lang = a.toStr();
+            }
+            if (lang.empty()) return rakuAstView(*this, strOf(inv), compUnit);
+            TokenXform x = l10nTokenXform(lang);
+            return rakuAstView(*this, strOf(inv), compUnit, &x);
         }
         if (m == "conj" && !inv.isNumeric()) { // Cool.conj — the conjugate of .Numeric
             ValueList none; Value nv = methodCall(inv, "Numeric", none);
@@ -3984,6 +3997,118 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     // this same ordered chain, split out to get this function under control. It
     // must run here, after everything above and before the fallthrough below.
     return std::nullopt;   // not handled here — fall through to the next segment
+}
+
+// `.AST("DE")` — the LOCALIZED parse (RAKUAST-PLAN P1-L10N).
+//
+// A dist like L10N::DE ships one generated role that IS the whole translation:
+// ~185 `token <category>-<english> { <localized> }` declarations, plus a
+// handful of `core2ast` / `trait-is2ast` methods holding the routine and trait
+// names as constant hashes. Rakudo mixes that role into its own MAIN grammar
+// as a slang. We have no slang and Part I says we will not grow one for this,
+// so this reads the SAME role and turns it into a rewrite of the token stream
+// — which works only because our lexer hands every keyword to the parser as a
+// plain `Tok::Ident` and lets the parser decide what it meant.
+//
+// Two halves, because the dist stores the translation two ways:
+//
+//   * the TOKENS are already in the role's `ClassInfo::rules` (name -> pattern
+//     text), so the map falls out of what the engine parsed when it loaded the
+//     module. The English keyword is the name's LAST hyphen-separated segment
+//     — measured against all 185 names, and the only three-segment ones
+//     (`stmt-prefix-*`, `quote-lang-*`) put the keyword last as well, so no
+//     table of categories has to be kept in step here;
+//   * the ROUTINE names (`sag` -> `say`) are not tokens at all. They live in a
+//     `constant %mapping` inside `core2ast`, which nothing outside the method
+//     can enumerate — so they are looked up by CALLING it, one word at a time
+//     and cached. The invocant is a Match, which is what the method is written
+//     for (`self.ast` is Nil, `self.Str` is the word) and how the slang calls
+//     it, so this cannot drift from what the dist ships.
+TokenXform Interpreter::l10nTokenXform(const std::string& lang) {
+    const std::string mod = "L10N::" + lang;
+    // NO import: the dist's `sub EXPORT` installs the slang into `$*LANG`,
+    // which is Rakudo's frontend and not ours — it fails with a warning, and
+    // what it would have done is the thing we are replacing. The role is what
+    // we came for, and loading the module is enough to have it.
+    loadModule(mod, {}, /*doImport=*/false, /*quiet=*/true);
+    auto it = classes_.find(mod);
+    if (it == classes_.end() || !it->second)
+        throw RakuError{Value::typeObj("X::NYI"),
+            "`.AST(\"" + lang + "\")`: " + mod + " loaded but declares no `role " + mod + "`"};
+    ClassInfo* role = it->second.get();
+
+    // The token body, as the keyword it stands for. The generator quotes
+    // anything that is not a SIMPLE bare word, which is two different things at
+    // once — operator spellings (`"^ff"`, `"(enthält)"`) and perfectly ordinary
+    // keywords that merely contain a hyphen (Italian's `scope-my` is
+    // `"il-mio"`) — so the quote cannot be read as "not a keyword". Both
+    // earlier attempts at a filter here were wrong in opposite directions: an
+    // ASCII identifier test dropped every German keyword with an umlaut
+    // (`füralle`, i.e. `for`), and skipping every quoted body dropped Italian's
+    // `my`.
+    //
+    // So there is no filter. Unquote, and put it in. A spelling that our lexer
+    // can never produce as a single `Tok::Ident` — `^ff`, `(enthält)` — is a
+    // key nothing will ever look up: dead weight, eight entries of it, and it
+    // cannot be wrong. Deciding which bodies are identifiers would mean
+    // re-deriving the lexer's own rule beside it, which is the bug this file
+    // has already had twice.
+    auto unquote = [](std::string w) {
+        size_t b = w.find_first_not_of(" \t");
+        size_t e = w.find_last_not_of(" \t");
+        w = b == std::string::npos ? std::string() : w.substr(b, e - b + 1);
+        if (w.size() >= 2 && (w.front() == '"' || w.front() == '\'') && w.back() == w.front())
+            w = w.substr(1, w.size() - 2);
+        return w;
+    };
+
+    auto map = std::make_shared<std::map<std::string, std::string>>();
+    for (auto& kv : role->rules) {
+        const std::string& name = kv.first;
+        // A METAOPERATOR letter (`meta-Z { R}`) never reaches this rewrite —
+        // our lexer reads `R-` as a single operator token — and mapping the
+        // bare letters anyway would rename a variable rather than an operator.
+        // Three entries, skipped on purpose.
+        if (name.rfind("meta-", 0) == 0) continue;
+        size_t dash = name.rfind('-');
+        if (dash == std::string::npos || dash + 1 >= name.size()) continue;
+        std::string english = name.substr(dash + 1);
+        std::string local = unquote(kv.second);
+        if (local.empty() || english.empty()) continue;
+        if (local == english) continue;                 // L10N::EN is the identity
+        (*map)[local] = english;
+    }
+
+    Value core2ast, traitIs2ast;
+    if (auto mi = role->methods.find("core2ast");     mi != role->methods.end()) core2ast   = mi->second;
+    if (auto mi = role->methods.find("trait-is2ast"); mi != role->methods.end()) traitIs2ast = mi->second;
+
+    auto cache = std::make_shared<std::map<std::string, std::string>>();
+    Interpreter* I = this;
+    return [map, cache, core2ast, traitIs2ast, I](std::vector<Token>& toks) {
+        for (Token& t : toks) {
+            if (t.kind != Tok::Ident || t.text.empty()) continue;
+            auto k = map->find(t.text);
+            if (k != map->end()) { t.text = k->second; continue; }
+            auto c = cache->find(t.text);
+            if (c == cache->end()) {
+                std::string out = t.text;
+                for (const Value* meth : {&core2ast, &traitIs2ast}) {
+                    if (meth->t != VT::Code) continue;
+                    ValueList a{Value::matchVal(t.text, 0, (long)t.text.size())};
+                    try {
+                        Value r = I->callCallable(*meth, a);
+                        if (r.t == VT::Object) {
+                            std::string nm = rakuAstDeparse(*I, r);
+                            if (!nm.empty() && nm != t.text) { out = nm; break; }
+                        }
+                    } catch (...) { /* a word this language does not translate */ }
+                }
+                c = cache->emplace(t.text, out).first;
+            }
+            t.text = c->second;
+        }
+    };
 }
 
 } // namespace rakupp

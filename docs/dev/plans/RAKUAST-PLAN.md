@@ -1,9 +1,8 @@
 # RakuAST in rakupp — design note and implementation plan
 
 **Status: under implementation — P0, P2c, P3 and P1 are in the tree, with
-`--rakuast` and the tree oracle as of 2026-09-12; P1-L10N and P4 are open. Part
-IV is the log, Part III has the decision, the refreshed evidence, and the
-order.** Part I (below) is the design note settled 2026-07-31 and
+`--rakuast`, the tree oracle and P1-L10N as of 2026-09-12; P4 is open. Part IV
+is the log, Part III has the decision, the refreshed evidence, and the order.** Part I (below) is the design note settled 2026-07-31 and
 re-verified 2026-08-18 — nothing in it is reopened. Part II (second half of this
 document, added 2026-09-01) phases the implementation; the trigger is the
 mainstreaming announcement
@@ -1220,6 +1219,7 @@ green arrives earliest:
 | **P1** | the `.AST` view, incl. `:compunit`, `statements`/`statement-list`/`unshift-statement`, `QuotedRegex` as a source slice; the round-trip property gate (Part II's P2 harness) joins here, now that there is a view to round-trip | **App::Rak (regex + code needles)** |
 | **P1-L10N** | `.AST($lang)` per *The 13 L10N dists* | **13 L10N dists + L10N::Complete** |
 | **P4** | `visit-children`, `@*LINEAGE`, widening | RakuAST::Utils, FINALIZER, ASTQuery minus CHECK |
+| | *(measured 2026-09-12: `.parent` is NOT the API to build. `RakuAST::Node` does expose `parent(int $generation?)` publicly, but it answers `Nil` for every tree a Raku program can obtain on 2026.08 — plain `.AST`, `.AST(:compunit)`, and after the tree has been compiled and run — there is no `set-parent`, and `origin.nestings` is unset too. Nothing populates it. Reaching an enclosing node is `@*LINEAGE`, which the WALKER maintains: Rakudo does not set it during `visit-children` either. That also happens to be the only option that is free for us — our nodes are refcounted `shared_ptr` with no weak reference in the value model, so a stored parent pointer is a cycle and a leak, which a GC'd Rakudo does not pay. What IS live and we do not build: `.origin`, whose `.from`/`.to` carry real source offsets on every node.)* | |
 | P5 | the `Doc::` subtree | Rakuast::RakuDoc::Render and its two dependents — priced when reached |
 
 P2c is Part II's P2 without the round-trip harness (which needs P1's view);
@@ -1969,11 +1969,18 @@ sibling of `--ast`. `tools/rakuast-oracle-dump.raku` prints the same
 serialization from Rakudo, so comparing the two engines is a `diff`, and
 `tools/rakuast-diff.raku` sweeps a corpus and scores it.
 
-**The published number: 72.0% — 11,097 of Rakudo's 15,409 nodes, over the 36 of
-59 corpus programs both engines can tree** (8 Rakudo itself refuses, 15 the view
-refuses by name). The view also builds 3,507 nodes Rakudo's tree has not; that
+**The published number: 70.1% — 17,162 of Rakudo's 24,499 nodes, over the 39 of
+59 corpus programs both engines can tree** (8 Rakudo itself refuses, 12 the view
+refuses by name). The view also builds 5,565 nodes Rakudo's tree has not; that
 count is published beside the percentage because the plan's formula is recall
 and recall alone can be gamed by adding nodes.
+
+(It read 72.0% over 36 files when this section was first written. P1-L10N's
+widening admitted three more programs and grew the denominator by 9,090 nodes,
+and the three are harder than the average of the thirty-six — so the coverage
+went up and the percentage went very slightly down. Both halves are the
+measurement; neither is the measurement on its own, which is why the file count
+is published with the number.)
 
 **Files**: `src/RakuAstDump.cpp` (new), `--rakuast` in main.cpp + CLI.md,
 `tools/rakuast-oracle-dump.raku` and `tools/rakuast-diff.raku` (new), the
@@ -2125,3 +2132,143 @@ From `--tally` over the corpus, the largest remaining blocks:
 cases (which run the deparse and eval spec files under both engines and diff),
 and the round-trip harness: **0 files rendered unparseable text** — every gap is
 a named `view` or `deparse` miss.
+
+## P1-L10N — `.AST($lang)`, the localized parse (landed 2026-09-12)
+
+`'mein $a = 42; wenn … { sag … }'.AST("DE")` parses German keywords and answers
+the tree the English source would. **12 of the 14 L10N rows' own test suites are
+green under rakupp** (AF, CY, DE, EN, EO, FR, HU, IT, JA, NL, PT, TLH); ZH and
+the `L10N::Complete` bundle that depends on it are held by two things that are
+not L10N — see *What holds the last two* below.
+
+**Files**: `TokenXform` in Token.h, the seam in `rakuAstView`,
+`Interpreter::l10nTokenXform` beside the `.AST` arm in MethodCallPart3.cpp, and
+`t/regression/rakuast-l10n.raku`.
+
+### No slang, and no second parser: it is a pass over the token stream
+
+Part I rules out a grammar hook, and the L10N roles need none. Our lexer returns
+**every keyword as a plain `Tok::Ident` and lets the parser decide** — that one
+property is what makes a whole localized language a rewrite of some token texts
+and nothing else. `TokenXform` is a `std::function<void(std::vector<Token>&)>`
+applied between `lexer.tokenize()` and the `Parser` constructor; without a
+language it is null and no path changes.
+
+### The translation is the dist's, read two ways because it is stored two ways
+
+A dist ships one generated role — ~185 `token <category>-<english> { <localized> }`
+declarations plus a few `core2ast`/`trait-is2ast` methods.
+
+* **The tokens** are already in the role's `ClassInfo::rules` once the module
+  loads, so the map falls out of what the engine parsed. The English keyword is
+  the name's **last** hyphen-separated segment: measured over all 185 names, and
+  the only three-segment ones (`stmt-prefix-*`, `quote-lang-*`) put the keyword
+  last too, so no table of categories has to be kept in step. DE and NL declare
+  an identical name set, which is what makes the rule safe to generalize.
+* **The routine names** (`sag` → `say`) are not tokens. They sit in a
+  `constant %mapping` inside `core2ast`, which nothing outside the method can
+  enumerate — so they are looked up by **calling it**, one word at a time and
+  cached, with a **Match** as the invocant. That is exactly what the method is
+  written for (`self.ast` is Nil, `self.Str` is the word) and how the slang calls
+  it, so it cannot drift from what the dist ships.
+
+The module is loaded with **no import**: the dist's `sub EXPORT` installs the
+slang into `$*LANG`, which is Rakudo's frontend and not ours, and what it would
+have done is the thing being replaced.
+
+### Three filters, two of them wrong, both silently
+
+Deciding which token bodies are keywords went wrong twice in opposite
+directions, and each time the result was a language that looked translated:
+
+1. An **ASCII identifier test** (`rakuIdentStart`, which is ASCII by design)
+   dropped every German keyword with an umlaut — `füralle`, i.e. `for`. The
+   program still parsed, because `füralle @list -> $x { }` is a call.
+2. **Skipping every quoted body** then dropped Italian's `my`: the generator
+   quotes anything that is not a *simple* bare word, which is two different
+   things at once — operator spellings (`"^ff"`, `"(enthält)"`) and ordinary
+   keywords containing a hyphen (`scope-my` is `"il-mio"`).
+
+There is no filter now. Unquote and insert: a spelling our lexer can never
+produce as one `Tok::Ident` is a key nothing will ever look up — eight entries of
+dead weight, and it cannot be wrong. Deciding otherwise means re-deriving the
+lexer's own rule beside it, which is what both bugs were.
+
+The one deliberate skip is `meta-` (three entries: `meta-Z` is `R`). A
+metaoperator reaches our lexer as a single operator token, never as an
+identifier, so mapping the bare letters would rename a *variable* instead.
+
+### `.AST` is not behind the pragma, and gating it failed every dist
+
+Measured on 2026.08: `Q[say 1].AST` answers a StatementList with no `use
+experimental :rakuast` in sight, while `RakuAST::IntLiteral.new(1)` is a
+compile-time refusal. Rakudo gates the **names**, not the method. We gated both —
+stricter than the thing being matched, and every L10N dist's own test opens with
+`Q:to/CODE/.AST("DE")` and no pragma, so all fourteen failed on the wrong
+grounds. The name gate (Interpreter.cpp) is unchanged; the method gate is gone.
+
+### What the L10N suites found in the VIEW, which is most of this change
+
+L10N::ZH ships ten test files where every other dist ships one, and it is the
+best gate in the family. What it and the German probe turned up:
+
+1. **`whenever $chan -> $v { … }` rendered `whenever $chan, -> $v { … }`** —
+   a two-argument call instead of a handler, so the block never ran. It is
+   `Statement::Whenever` upstream, and now here.
+2. **`with`/`without` were built as `Statement::Given`** — three classes upstream,
+   and the two defined-guards are shaped like the `if` family
+   (`condition`/`then`), not like `given` (`source`/`body`). Worse, the `else`
+   was dropped, so `with $x { } orwith $y { }` presented as a `given` with one
+   branch and no alternative.
+3. **`repeat` had no view** — `Statement::Loop::RepeatWhile` / `RepeatUntil`.
+4. **Phaser blocks had no view**, the largest single gap left in P1:
+   `StatementPrefix::Phaser::<Keyword title-cased>` over a `blorst`, measured
+   over all seventeen keywords. This alone took the round trip from 41 to 44.
+5. **A topic-less `for` was built as a pointy block with an empty signature**,
+   rendering `for 1, 2 -> { … }` — which takes no parameter, so the body saw the
+   OUTER `$_`. Upstream it is a plain `Block`.
+6. **The string escaper existed twice**, each copy missing what the other had:
+   `quoted()` escaped the newline and the tab but not the brace, and the
+   QuotedString arm's own inline loop escaped the brace but not the newline. A
+   literal segment holding a `\n` came back as an actual line break inside a
+   string — legal Raku on its own, which is why it survived so long, and not
+   legal the moment the same string also held a `{`. One escaper now.
+7. **The statement-list separator was answered per class.** Measured on lone
+   constructed nodes: Rakudo's `Statement::If` renders its own trailing newline
+   and `Statement::For` does not, yet a list separates them identically — and so
+   does it for `my $c = -> { 1 }`, which is no kind of block statement. The rule
+   is on the LIST: a statement whose text ends in `}` gets a bare newline, never
+   a `;`. Writing it per class gets one of those three wrong whichever way it is
+   written.
+
+Items 1, 2, 5 and 6 were **wrong renderings** — valid Raku meaning a different
+program — so the round-trip harness could not see any of them.
+
+### The gate is a fixture language, and it can fail
+
+`t/regression/rakuast-l10n.raku` builds its own `role L10N::ZZ` in a temp
+directory rather than depending on an installed dist: offline, and able to fail.
+It carries the three shapes that were got wrong — a bare word, a quoted
+hyphenated body (`"il-mio"`), and a body outside ASCII (`füralle`) — plus a
+`core2ast`, and it asserts the translated program's OUTPUT, that the program's
+own names (`Punkt`, `zeige`) survive untranslated, that a misspelled keyword is
+left alone, and that without the language argument the source is *not* that
+program. Verified to fail three separate ways when the fixture is broken.
+
+### What holds the last two
+
+* **`import Foo;` is not implemented in the engine** (`Undefined routine
+  'import'`; Rakudo runs it). Nothing to do with RakuAST — L10N::ZH's
+  `11-use-import` is simply the only test in the corpus that writes it.
+* **`enum` has no view.** Our parser normalises `<red green blue>` to an array of
+  string literals, losing the word-list spelling — and Rakudo *refuses*
+  `enum Colour ["red", "green", "blue"]`, so rendering what our tree holds would
+  produce text upstream cannot parse. The honest fix is to keep the `qw` spelling
+  at parse time (a surface fact in Ast.h and a serializer bump, the same shape as
+  P1's four), not to reconstruct it in the renderer.
+
+### Gates
+
+`t/run.raku`, `t/slim/run.raku`, the seven RakuAST regression cases, the
+round-trip harness (**44 of 59, 0 files rendering unparseable text**), and the
+fourteen L10N dists' own suites through `rakupp test`.
