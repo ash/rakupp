@@ -3,7 +3,7 @@ anagrams.raku	ok	194	148	62	76.3
 brainfuck.raku	ok	346	107	237	30.9
 calculator.raku	view-fail	472	0	0	0.0
 cipher.raku	view-fail	481	0	0	0.0
-echo-server.raku	ok	231	123	89	53.2
+echo-server.raku	ok	231	124	86	53.7
 factorize.raku	ok	424	334	60	78.8
 fibonacci.raku	ok	369	281	74	76.2
 hanoi.raku	ok	170	143	21	84.1
@@ -35,7 +35,7 @@ rpn.raku	ok	303	218	36	71.9
 sierpinski.raku	ok	142	120	30	84.5
 sleep-sort.raku	ok	125	88	34	70.4
 wordcount.raku	ok	151	121	11	80.1
-chat.raku	ok	678	464	191	68.4
+chat.raku	ok	678	465	188	68.6
 eclipse.raku	oracle-fail	0	0	0	0.0
 forth.raku	view-fail	2471	0	0	0.0
 fourier.raku	oracle-fail	0	0	0	0.0
@@ -44,8 +44,8 @@ counter.raku	oracle-fail	0	0	0	0.0
 raw-cocoa.raku	ok	1212	815	157	67.2
 js.raku	view-fail	27852	0	0	0.0
 json.raku	view-fail	1809	0	0	0.0
-jsonreq.raku	ok	1283	963	214	75.1
-kvstore.raku	ok	1105	793	282	71.8
+jsonreq.raku	ok	1283	965	222	75.2
+kvstore.raku	ok	1105	794	279	71.9
 lisp.raku	oracle-fail	0	0	0	0.0
 md2html.raku	view-fail	1677	0	0	0.0
 modinfo.raku	oracle-fail	0	0	0	0.0
@@ -57,4 +57,4 @@ raku-grammar.raku	view-fail	8969	0	0	0.0
 rakus.raku	view-fail	1562	0	0	0.0
 raytrace-fast.raku	ok	3464	2682	773	77.4
 raytrace.raku	ok	2700	2152	371	79.7
-sqlite.raku	ok	7387	5151	1540	69.7
+sqlite.raku	ok	7387	5151	1536	69.7
