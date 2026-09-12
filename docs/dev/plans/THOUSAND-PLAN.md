@@ -184,25 +184,36 @@ side is where to look next.
    the `hashSubKey(eval(idx->index.get()), base)` site) hands back a slot
    POINTER that the caller then overwrites, so the stamp cannot simply go there. Also still open: `Blob[n]` out of range answers empty where Rakudo
    throws `Index out of range` (probe row R7).
-2. **The async plumbing: three bugs fixed, one blocker left, and Cro is a
-   campaign not a fix.** Fixed 2026-09-12 (commit `b4675bc`, Roast 670 clean):
+2. **CBOR::Simple is GREEN; Log::Timeline is one thread from it; Cro is a
+   campaign.** Five more engine fixes landed 2026-09-12 (`b4675bc`, `6105460`),
+   each Roast-gated at 670 with zero regressions.
+
+   **CBOR::Simple — converted.** All seven files, 342 assertions, the same counts
+   Rakudo gets; the sweep verdict went from a **200 s timeout to a 1.0 s pass**.
+   That is the largest single blocker on this board cleared: **98 not-yet-green
+   dists sit transitively downstream of it.** Four bugs did it — `nqp::readuint`
+   past a Blob's end, `nqp::istype` of a type object against its own type,
+   `Num.Str` printing 17 digits where Rakudo prints 16, and an **object-keyed
+   hash handing `.keys` back stringified**.
+
+   **Log::Timeline — four of five files green**, and `output-socket` went from
+   hanging while writing a stringified Channel onto the wire to **35 assertions**
+   and a 41.9 s self-fail (was a 180 s timeout). Three async bugs got it there:
    `whenever $chan` in a `supply {}` bound the CHANNEL instead of its values;
    closing a TAP shut down the SOCKET; and a react never closed the tap it made,
-   so its reader outlived it and ate bytes meant for the next tap.
+   so its reader outlived it and ate bytes meant for the next tap. What is left
+   is one thread: the server answers a bad handshake and closes, and `done`
+   inside the client's `LAST` does not end its react — the done has to cross the
+   `.lines` transform first. `done` in a LAST now works for a plain supply
+   (that fix is in); the transform chain is the remaining layer.
 
-   **Log::Timeline** — four of five files green, and `output-socket` went from
-   hanging on a stringified Channel to **27 passing assertions**. It now stops
-   on the SAME thing CBOR::Simple's last assertion does: an **object hash hands
-   `.keys` back stringified**. Its reactor writes
-   `.print(…) for %connections.keys` where `%connections{IO::Socket::Async}` is
-   keyed by the connection, so `.print` is called on a stringified socket —
-   `socket-port\t19893` reaches the wire. **One fix, two dists.**
-
-   **Cro::HTTP is not one bug.** Measured over all 31 test files: **12 green,
+   **Cro::HTTP is NOT one bug.** Measured over all 31 test files: **12 green,
    4 hang, 906 assertions passing to 102 failing** (the request parser alone is
-   307/36). It needs its own batch, worked the way any dist is — not a single
-   unblock. LWP::Simple, Cro::WebSocket and HTTP::Supply still time out and have
-   not been bisected.
+   307/36). It needs its own batch, worked the way any dist is. LWP::Simple,
+   Cro::WebSocket, Cro::SSL and HTTP::Supply still time out and have not been
+   bisected. **IO::Socket::Async::SSL is the one to look at first** — 101
+   downstream, the top of the whole leverage board, and it fails FAST (3.2 s,
+   `The socket was closed during negotiation`) rather than hanging.
 
 3. **The four named gaps** — `.shape`, `Regex.cache`, LibraryCheck,
    `add_attribute`. 137 downstream between them, and each is a small,
