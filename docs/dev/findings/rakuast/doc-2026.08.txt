@@ -1,0 +1,21 @@
+blocks: 1
+Doc::Block type="rakudoc" level=""
+  Doc::Block type="TITLE" level=""
+    Str
+  Doc::Block type="head" level="1"
+    Str
+  Doc::Paragraph
+    Str
+    Doc::Markup letter="I"
+      Str
+    Str
+    Doc::Markup letter="B"
+      Str
+    Str
+  Doc::Block type="head" level="2"
+    Str
+  Doc::Block type="item" level=""
+    Str
+  Doc::Block type="item" level=""
+    Str
+mixed rakudoc: rakudoc

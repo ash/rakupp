@@ -190,6 +190,22 @@ const Registry* build() {
         for (auto& k : kids) { ValueList one{k}; I.callCallable(cb, one); }
         return Value::any();
     });
+    // `$node.rakudoc` — the `Doc::Block`s this unit carries (RAKUAST-PLAN P5).
+    // Upstream they ARE statements, so this is a filter over the statement list
+    // rather than a separate store; `Rakuast::RakuDoc::Render` opens with
+    // exactly `$source.AST.rakudoc` and renders what comes back.
+    node->methods["rakudoc"] = method([attrOf](Interpreter&, ValueList& a) -> Value {
+        Value out = Value::array(); out.isList = true;
+        if (a.empty()) return out;
+        Value target = a[0];
+        if (Value* sl = attrOf(target, "statement-list")) target = *sl;   // reach through a CompUnit
+        Value* ss = attrOf(target, "statements");
+        if (!ss || ss->t != VT::Array || !ss->arr()) return out;
+        for (auto& st : *ss->arr())
+            if (isRakuAstNode(st) && st.obj()->cls->name == "RakuAST::Doc::Block")
+                out.arr()->push_back(st);
+        return out;
+    });
     // `.from-identifier("foo")` and `.from-identifier-parts("Foo","Bar")` both
     // make a Name out of plain strings — the spelling every dist uses.
     for (const char* m : {"from-identifier", "from-identifier-parts"})

@@ -1,8 +1,8 @@
 # RakuAST in rakupp — design note and implementation plan
 
 **Status: under implementation — P0, P2c, P3 and P1 are in the tree, with
-`--rakuast`, the tree oracle, P1-L10N and P4 as of 2026-09-12 — every phase of
-Part III has landed. Part IV is the log, Part III has the decision, the
+`--rakuast`, the tree oracle, P1-L10N, P4 and P5 as of 2026-09-12 — every
+phase of Part III has landed. Part IV is the log, Part III has the decision, the
 refreshed evidence, and the order.** Part I (below) is the design note settled 2026-07-31 and
 re-verified 2026-08-18 — nothing in it is reopened. Part II (second half of this
 document, added 2026-09-01) phases the implementation; the trigger is the
@@ -2471,3 +2471,91 @@ is a Str, a `Doc::Block` or a `Doc::Paragraph`; `Doc::Paragraph` carries
 `t/run.raku` 864/864, `t/slim/run.raku`, the six RakuAST regression cases, the
 round-trip harness (44 of 59, nothing unparseable), and the new parse case on
 BOTH engines.
+
+## P5 — the `Doc::` view (landed 2026-09-12)
+
+`'…'.AST.rakudoc` answers the `Doc::Block`s a unit carries, and the subtree
+under them — `Doc::Block`, `Doc::Paragraph`, `Doc::Markup` — is **structurally
+identical to Rakudo's**, proven by a spec run on both engines.
+
+**Files**: the `Doc::` mapping in RakuAstView.cpp, `.rakudoc` in
+RakuAstClasses.cpp, the pod arm in RakuAstDeparse.cpp, `.tail` in
+MethodCallTail.cpp, `tools/rakuast-doc-spec.raku` +
+`docs/dev/findings/rakuast/doc-2026.08.txt` + `t/regression/rakuast-doc.raku`.
+
+### A view over a pod DOM we already had
+
+The cheap part, and the reason P5 came in at the size of a widening round: pod
+is the one thing we do NOT parse twice. rakupp has always built a structured
+DOM for `$=pod`, and for a document it answers the same classes in the same
+order Rakudo's does. So the mapping is a view over that, exactly as P1 is a
+view over the parse:
+
+| our pod DOM | RakuAST |
+|---|---|
+| `Pod::Block::Named` | `Doc::Block`, `type` = the name |
+| `Pod::Heading` | `Doc::Block`, `type` `head`, `level` |
+| `Pod::Item` | `Doc::Block`, `type` `item` |
+| `Pod::Block::Para` | `Doc::Paragraph` with `atoms` |
+| `Pod::FormattingCode` | `Doc::Markup` with `letter` |
+
+Three things measurement settled that reasoning would have got wrong:
+
+1. **A heading, a title or an item holds its text DIRECTLY.** `paragraphs` is a
+   list of Str there, while our pod wraps the text in a `Pod::Block::Para`. So
+   those flatten, and only a standalone paragraph becomes a `Doc::Paragraph`.
+2. **`level` is a Str, not an Int** — and EMPTY for everything that is not a
+   heading, `=item` included, which our pod DOM does give a level.
+3. **The blocks are STATEMENTS.** `say 1; =begin rakudoc … =end rakudoc; say 2`
+   visits `Statement::Expression, Doc::Block, Statement::Expression`, so
+   `.rakudoc` is a filter over the statement list rather than a separate store.
+
+### Two divergences, named rather than hidden
+
+* **Trailing whitespace.** Rakudo keeps a block's raw source — `"Heading\n\n"`,
+  `"first\n"` — and our pod DOM trims it. That is a difference in the pod
+  parser, which predates this and which `$=pod` answers from, not in the view
+  over it. The spec compares shape for exactly that reason: asserting the text
+  here would pin the wrong file.
+* **Position among code.** Our lexer strips pod before the parser sees it, so
+  the blocks are appended rather than interleaved. For a document — all pod,
+  which is what `.rakudoc` is called on — that is exact; for a mixed file the
+  blocks are present and in their own order but sit after the code. Splicing
+  them needs a line stamp on each pod block, which nothing asks for yet.
+
+### Pod deparses back to pod
+
+A `Doc::Block` with no renderer arm was a named `deparse` miss on every file
+carrying pod (the round trip went 44 → 39 the moment the blocks joined the
+statement list). The arm rebuilds the block from the tree rather than
+re-emitting source, and the property it is held to is that it **re-parses to
+the same tree**: `=TITLE T / =head1 H / para / =item one` comes back as
+`Doc::Block(TITLE), Doc::Block(head), Doc::Paragraph, Doc::Block(item)`,
+before and after. One blank line between pieces is load-bearing — without it
+the paragraph after a `=head1` was absorbed into the heading on the way back.
+
+### `.tail` on an empty list is Nil, not Any
+
+Found by running the renderer, not by reading it. `has CounterTracker @!ct;
+@!ct.push: @!ct.tail.clone` is how RakuDoc::ScopedData opens every scope, and
+it works upstream because Nil assigned into a TYPED container resets it to the
+type object where Any type-fails. `.first` already answered Nil here and
+`.tail` did not.
+
+### Where RakuDoc::Render actually gets to
+
+The renderer now walks the document: `render` → `gen-rakudoc` → `contents` →
+`handle`, through the block tree and into `CounterTracker`. It stops at
+`%!type-counters{ $base } .= new` answering Any where upstream gives the
+element type object — one more ordinary container divergence of the same
+family as `.tail`, with nothing RakuAST about it. Rakudo reaches further on
+this machine but not to the end either: it dies in `para-target` on a native
+library the dist's `Digest::SHA1::Native` cannot load here, which is an
+environment fault rather than an engine one, so **there is no full-render
+oracle on this box** and the honest gate is the tree comparison above.
+
+### Gates
+
+`t/run.raku`, `t/slim/run.raku`, the seven RakuAST regression cases, the
+round-trip harness back at **44 of 59** with nothing unparseable, and the new
+`Doc::` spec run on BOTH engines.

@@ -28,6 +28,7 @@
 #include "Interpreter.h"
 #include "Lexer.h"
 #include "Parser.h"
+#include "Pod.h"      // parsePod — the raw material for the `Doc::` view (P5)
 #include "Value.h"
 
 namespace rakupp {
@@ -451,6 +452,112 @@ struct Builder {
         return node("SemiList", {{"statements", list(sts)}});
     }
 
+    // ---- the `Doc::` view (RAKUAST-PLAN P5) ------------------------------
+    //
+    // Pod is the one part of the tree we do NOT have to parse twice: rakupp
+    // already builds a structured DOM for `$=pod`, and for a document it
+    // answers exactly what Rakudo's does — `Pod::Block::Named`, then
+    // `Pod::Block::Named, Pod::Heading, Pod::Block::Para, Pod::Item, Pod::Item`
+    // — so this is a view over that, the same way the rest of the file is a
+    // view over the parse. The mapping is measured against `.AST.rakudoc` on
+    // 2026.08 and recorded in the plan.
+    //
+    // The shapes differ in one way worth naming: a heading, a title or an item
+    // holds its text DIRECTLY upstream (`paragraphs` is a list of Str), while
+    // our Pod wraps it in a `Pod::Block::Para`. So those three flatten, and
+    // only a standalone paragraph becomes a `Doc::Paragraph`.
+    const Value* podKey(const Value& p, const char* k) {
+        if (p.t != VT::Hash || !p.hash()) return nullptr;
+        auto it = p.hash()->find(k);
+        return it == p.hash()->end() ? nullptr : &it->second;
+    }
+    std::string podClass(const Value& p) {
+        const Value* c = podKey(p, "podclass");
+        return c ? c->toStr() : std::string();
+    }
+    // The text of a pod subtree, with the formatting codes kept as Markup —
+    // i.e. the `atoms` of a paragraph.
+    ValueList docAtoms(const Value& pod) {
+        ValueList out;
+        const Value* c = podKey(pod, "contents");
+        if (!c || c->t != VT::Array || !c->arr()) return out;
+        for (auto& e : *c->arr()) {
+            if (e.t == VT::Str) { out.push_back(e); continue; }
+            const std::string cls = podClass(e);
+            if (cls == "Pod::FormattingCode") {
+                const Value* ty = podKey(e, "type");
+                out.push_back(node("Doc::Markup",
+                    {{"letter", Value::str(ty ? ty->toStr() : std::string())},
+                     {"atoms",  list(docAtoms(e))},
+                     {"meta",   Value::array()}}));
+            }
+            // A nested block inside a paragraph flattens to its own atoms:
+            // upstream a paragraph's atoms are Str or Markup and nothing else.
+            else for (auto& a : docAtoms(e)) out.push_back(a);
+        }
+        return out;
+    }
+    // …and the same subtree as the `paragraphs` of a block: a `Pod::Block::Para`
+    // that is the SOLE content of a heading/title/item is its text, not a
+    // paragraph of its own.
+    ValueList docParagraphs(const Value& pod, bool flatten) {
+        ValueList out;
+        const Value* c = podKey(pod, "contents");
+        if (!c || c->t != VT::Array || !c->arr()) return out;
+        for (auto& e : *c->arr()) {
+            if (e.t == VT::Str) { out.push_back(e); continue; }
+            const std::string cls = podClass(e);
+            if (cls == "Pod::Block::Para") {
+                if (flatten) { for (auto& a : docAtoms(e)) out.push_back(a); continue; }
+                out.push_back(node("Doc::Paragraph", {{"atoms", list(docAtoms(e))}}));
+                continue;
+            }
+            if (Value b = docBlock(e); b.t == VT::Object) out.push_back(b);
+        }
+        return out;
+    }
+    // One pod block as a `Doc::Block`. An empty Value for anything with no
+    // block shape (a bare formatting code cannot stand here).
+    Value docBlock(const Value& pod) {
+        const std::string cls = podClass(pod);
+        std::string type;
+        long long level = 0;
+        bool flatten = false;
+        if (cls == "Pod::Block::Named") {
+            const Value* n = podKey(pod, "name");
+            type = n ? n->toStr() : "pod";
+            // `=TITLE`, `=SUBTITLE` and friends hold their text directly.
+            flatten = !type.empty() && ascii::isupper((unsigned char)type[0]);
+        }
+        else if (cls == "Pod::Heading")      { type = "head"; flatten = true; }
+        else if (cls == "Pod::Item")         { type = "item"; flatten = true; }
+        else if (cls == "Pod::Block::Code")  { type = "code"; flatten = true; }
+        else if (cls == "Pod::Block::Comment") { type = "comment"; flatten = true; }
+        else if (cls == "Pod::Block::Declarator") { type = "declarator"; flatten = true; }
+        else if (cls == "Pod::Block::Para")  { type = "para"; flatten = true; }
+        else return Value();
+        if (const Value* lv = podKey(pod, "level")) level = lv->toInt();
+        // `level` is a STR upstream, not an Int, and it is EMPTY for everything
+        // that is not a heading — `=item` included, which our pod DOM does give
+        // a level. Measured: `.level.raku` answers `""` for a `rakudoc`, a
+        // `TITLE` and an `item`, and `1` for `=head1`.
+        std::string lvl = type == "head" ? std::to_string(level) : std::string();
+        // `config` and `resolved-config` are Maps upstream and a renderer reads
+        // both before it reads anything else — RakuDoc::Render asks
+        // `$ast.config` on the very first block it handles. Our pod DOM does
+        // not carry block adverbs yet, so they are EMPTY rather than absent:
+        // an absent one is a missing method, which is a different failure from
+        // a block that simply configures nothing.
+        Value cfg = Value::makeHash(); cfg.hashKind = "Map";
+        Value rcfg = Value::makeHash(); rcfg.hashKind = "Map";
+        return node("Doc::Block", {{"margin",          Value::str("")},
+                                   {"type",            Value::str(type)},
+                                   {"level",           Value::str(lvl)},
+                                   {"config",          cfg},
+                                   {"resolved-config", rcfg},
+                                   {"paragraphs",      list(docParagraphs(pod, flatten))}});
+    }
+
     // `last` / `next` / `redo`, with an optional label.
     Value loopControl(const char* kw, const std::string& target) {
         ValueList args;
@@ -758,6 +865,23 @@ Value rakuAstView(Interpreter& I, const std::string& source, bool compUnit,
     }
     Builder b{I};
     Value sl = b.statementList(prog.stmts);
+    // The `Doc::` blocks are STATEMENTS upstream — measured: `say 1; =begin
+    // rakudoc … =end rakudoc; say 2` gives `Statement::Expression, Doc::Block,
+    // Statement::Expression` from `visit-children`. Our lexer strips pod before
+    // the parser ever sees it, so they are appended rather than interleaved:
+    // for a document (all pod, which is what `.rakudoc` is called on) that is
+    // exact, and for a mixed file the blocks are present and in their own order
+    // but sit after the code. Splicing them would need a line stamp on each pod
+    // block, which nothing asks for yet — recorded rather than half-done.
+    if (Value* ss = [&]() -> Value* {
+            auto it = sl.obj()->attrs.find("statements");
+            return it == sl.obj()->attrs.end() ? nullptr : &it->second;
+        }()) {
+        for (auto& pod : parsePod(source)) {
+            Value d = b.docBlock(pod);
+            if (d.t == VT::Object && ss->arr()) ss->arr()->push_back(d);
+        }
+    }
     if (!compUnit) return sl;
     // `.AST(:compunit)` — what Needle::Compile asks for when the needle is a
     // whole program, so it can unshift a statement into the list.

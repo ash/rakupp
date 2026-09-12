@@ -231,6 +231,16 @@ struct Deparser {
         return attr(st, "expression");
     }
 
+    // The text of a `Doc::Paragraph`/`Doc::Markup` — its atoms in order, a Str
+    // as itself and a nested markup through the renderer.
+    std::string docAtoms(const Value& node) {
+        std::string out;
+        if (const Value* as = attr(node, "atoms"))
+            if (as->t == VT::Array && as->arr())
+                for (auto& e : *as->arr()) out += isNode(e) ? render(e, 0) : e.toStr();
+        return out;
+    }
+
     std::string blockoid(const Value* body, int indent) {
         if (!body || !isNode(*body)) return "{\n" + pad(indent) + "}";
         const Value* sl = attr(*body, "statement-list");
@@ -531,6 +541,42 @@ struct Deparser {
             std::string kw = c.substr(25);
             for (char& ch : kw) ch = (char)ascii::toupper((unsigned char)ch);
             return kw + " " + opt(attr(node, "blorst"), indent) + "\n";
+        }
+        // ---- the `Doc::` subtree (P5) -----------------------------------
+        // Pod renders back as pod. Rakudo re-emits the block's own source; we
+        // rebuild it from the tree, which is the same thing for everything the
+        // view carries and differs only in the trailing whitespace our pod DOM
+        // does not keep. What matters here is that it RE-PARSES to the same
+        // tree — the round-trip harness is the gate, and a `Doc::Block` with no
+        // arm at all was a named `deparse` miss on every file with pod in it.
+        if (c == "Doc::Markup") {
+            const Value* l = attr(node, "letter");
+            return (l ? l->toStr() : std::string()) + "<" + docAtoms(node) + ">";
+        }
+        if (c == "Doc::Paragraph") return docAtoms(node);
+        if (c == "Doc::Block") {
+            const Value* t = attr(node, "type");
+            const std::string type = t ? t->toStr() : "pod";
+            const Value* lv = attr(node, "level");
+            const std::string level = lv ? lv->toStr() : "";
+            std::string body;
+            if (const Value* ps = attr(node, "paragraphs"))
+                if (ps->t == VT::Array && ps->arr())
+                    for (auto& e : *ps->arr()) {
+                        std::string one = isNode(e) ? render(e, indent) : e.toStr();
+                        if (one.empty()) continue;
+                        // A BLANK LINE between pieces, always: a `=head1 H`
+                        // one-liner already ends in its newline, and without a
+                        // second one the paragraph after it was absorbed into
+                        // the heading when the text was read back.
+                        if (!body.empty()) { if (body.back() != '\n') body += "\n"; body += "\n"; }
+                        body += one;
+                    }
+            // `=head1 TEXT` / `=item TEXT` are one-liners; a named block is the
+            // `=begin`/`=end` pair. The blank line after `=begin` is Rakudo's.
+            if (type == "head" || type == "item" || type == "para")
+                return "=" + (type == "para" ? std::string("para") : type + level) + " " + body + "\n";
+            return "=begin " + type + "\n\n" + body + "\n=end " + type + "\n";
         }
         if (c == "Statement::Whenever")
             return "whenever " + opt(attr(node, "trigger"), indent) + " " +

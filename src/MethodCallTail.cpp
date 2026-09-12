@@ -1739,7 +1739,13 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             return o;
         }
         if (m == "tail") {
-            if (args.empty()) return items.empty() ? Value::any() : items.back();
+            // NIL, not Any, when there is nothing to take — `.first` already
+            // answers Nil and `.tail` did not. The difference is not cosmetic:
+            // Nil assigned into a TYPED container resets it to the type object,
+            // where Any type-fails, so `has CounterTracker @!ct; @!ct.push:
+            // @!ct.tail.clone` works upstream and threw here (RakuDoc::Render's
+            // ScopedData opens every scope that way).
+            if (args.empty()) return items.empty() ? Value::nil() : items.back();
             long long n = resolveCount(a0(), (long long)items.size());
             if (n < 0) n = 0;
             Value o = Value::array(); o.isList = true;
