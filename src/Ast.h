@@ -424,7 +424,7 @@ enum class NqpOpc : uint16_t {
     ReadUInt, ReadInt, ReadNum, WriteUInt, WriteInt, WriteNum,
     Slice, Decode, SetElems, BindposN, AddBigI,
     // identity/box helpers
-    Decont, P6BoxS,
+    Decont, P6BoxS, Can,
     // string ops
     Ordat, Eqat, Substr, Chars, Concat, Join, Index, Chr,
     StrFromCodes, StrToCodes, FindNotCClass, IsCClass,

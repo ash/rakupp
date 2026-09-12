@@ -224,6 +224,9 @@ private:
     // refuse the literal `@a[-1]` spelling. Defined in Parser.cpp.
     void rejectNegativeIndex(size_t from) const;
     // token classifiers (member fns so they can recognise user-declared operators)
+    // `class`/`role`/`grammar` standing where a DECLARATION cannot follow — it
+    // is being used as a bareword there, not as a declarator. See Parser.cpp.
+    bool typeWordAsTerm(const Token& t) const;
     bool startsTermToken(const Token& t) const;
     bool startsListopArg(const Token& t, const std::string& lhsName = "") const;
     int infixBpOf(const std::string& op) const;    // binding power of a named infix (builtin or user)

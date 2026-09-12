@@ -13595,6 +13595,19 @@ Value Interpreter::evalNqpOp(NqpOp* n) {
             }
         }
     }
+    // `nqp::can($obj, "name")` stays HERE rather than in rtNqpOp: the answer is
+    // a method lookup, and it is usually asked of a META-OBJECT
+    // (`nqp::can($type.HOW, "roles")` — RakuAST::Utils gates a parameterized
+    // type that way), whose methods are built in rather than declared. Routing
+    // it through `.can` reuses whatever that already knows; the free function
+    // has no interpreter to ask.
+    if (n->op == O::Can) {
+        if (v.size() < 2) return Value::integer(0);
+        ValueList ca{v[1]};
+        Value r;
+        try { r = methodCall(v[0], "can", ca); } catch (...) { return Value::integer(0); }
+        return Value::integer(r.truthy() ? 1 : 0);
+    }
     return rtNqpOp(n->op, v); // eager leaf ops — shared with native codegen
 }
 

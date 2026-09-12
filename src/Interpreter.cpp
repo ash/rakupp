@@ -9330,7 +9330,18 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                             cd->parent + " is not composable, so " + clsName +
                             " cannot compose it");
                 }
+                // …and the RakuAST registry, which lives outside `classes_` on
+                // purpose (see RakuAstClasses.h) and so was reachable from every
+                // name position EXCEPT this one. FINALIZER subclasses a phaser
+                // node — `my class LeavePhaser is
+                // RakuAST::StatementPrefix::Phaser::Leave` — and got "cannot
+                // inherit from … because it is unknown" for a name that
+                // resolves fine one line earlier.
+                const std::shared_ptr<ClassInfo>* rakuAstParent =
+                    (it == classes_.end() && rakuAstVisible() && isRakuAstName(cd->parent))
+                        ? rakuAstClass(cd->parent) : nullptr;
                 if (it != classes_.end()) ci->parent = it->second;
+                else if (rakuAstParent) ci->parent = *rakuAstParent;
                 else if (isKnownTypeName(cd->parent)) ci->nativeParent = cd->parent; // is Str / is Cool / …
                 else if (!cd->isRole && !cd->parentIsDoes)
                     pendingIsTraits.push_back(cd->parent);
@@ -9344,7 +9355,11 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 if (it == classes_.end() && !tctx_.pkgPrefix.empty())
                     it = classes_.find(tctx_.pkgPrefix + pn);
                 if (it == classes_.end()) it = classes_.find(resolveClassAlias(pn));
+                const std::shared_ptr<ClassInfo>* rakuAstExtra =
+                    (it == classes_.end() && rakuAstVisible() && isRakuAstName(pn))
+                        ? rakuAstClass(pn) : nullptr;
                 if (it != classes_.end()) ci->extraParents.push_back(it->second);
+                else if (rakuAstExtra) ci->extraParents.push_back(*rakuAstExtra);
                 else if (!isKnownTypeName(pn))
                     pendingIsTraits.push_back(pn);
             }

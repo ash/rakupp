@@ -10,6 +10,7 @@
 #include "RakuAstClasses.h"
 
 #include "Ast.h"     // PublishedOnce
+#include "Interpreter.h"   // callCallable — `visit-children` runs user code
 #include "Value.h"   // ClassInfo
 
 #include <unordered_map>
@@ -157,6 +158,37 @@ const Registry* build() {
         if (!ss || ss->t != VT::Array || !ss->arr()) return Value::any();
         ss->arr()->insert(ss->arr()->begin(), a[1]);
         return a[0];
+    });
+    // `$node.visit-children(&cb)` — the callback once per SYNTACTIC child, in
+    // source order (RAKUAST-PLAN P4). Upstream this is a per-class method with
+    // a hand-written body; here it is one walk over the node's own attribute
+    // map, which is insertion-ordered (see ValueHash.h), so the order is the
+    // order the view SET the children — the same order `--rakuast` prints and
+    // the same order the oracle's `visit-children` walk produces.
+    //
+    // This is the whole of what a query engine needs. ASTQuery's walker is this
+    // method plus `@*LINEAGE`, and the lineage is the WALKER's: Rakudo does not
+    // populate it during `visit-children` either (measured), it is an ordinary
+    // dynamic the visitor re-declares as it descends. `.parent` exists upstream
+    // and answers Nil for every tree a program can get hold of, so there is
+    // nothing to reproduce there.
+    node->methods["visit-children"] = method([](Interpreter& I, ValueList& a) -> Value {
+        if (a.size() < 2 || a[0].t != VT::Object || !a[0].obj()) return Value::any();
+        // The children are COLLECTED before any of them is visited. The
+        // callback is user code and may replace an attribute — a rewriter
+        // would — and mutating the map while iterating it is the
+        // rehash-under-reader crash `noteSymbolMutation` exists to police.
+        ValueList kids;
+        for (auto& kv : a[0].obj()->attrs) {
+            const Value& v = kv.second;
+            if (isRakuAstNode(v)) { kids.push_back(v); continue; }
+            if (v.t == VT::Array && v.arr())
+                for (auto& e : *v.arr())
+                    if (isRakuAstNode(e)) kids.push_back(e);
+        }
+        Value cb = a[1];
+        for (auto& k : kids) { ValueList one{k}; I.callCallable(cb, one); }
+        return Value::any();
     });
     // `.from-identifier("foo")` and `.from-identifier-parts("Foo","Bar")` both
     // make a Name out of plain strings — the spelling every dist uses.

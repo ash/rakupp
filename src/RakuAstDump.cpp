@@ -35,10 +35,6 @@ namespace rakupp {
 
 namespace {
 
-bool isNodeV(const Value& v) {
-    return v.t == VT::Object && v.obj() && v.obj()->cls && isRakuAstName(v.obj()->cls->name);
-}
-
 // A scalar attribute rendered the way the oracle side renders it: a string
 // .raku-quoted, an Int plain, a Bool True/False.
 std::string scalarOf(const Value& v) {
@@ -59,7 +55,7 @@ std::string scalarOf(const Value& v) {
 }
 
 void dumpNode(const Value& node, int depth, bool withAttrs, std::ostream& out) {
-    if (!isNodeV(node) || depth > 60) return;
+    if (!isRakuAstNode(node) || depth > 60) return;
     const std::string& full = node.obj()->cls->name;
     out << std::string(depth * 2, ' ') << full.substr(9);
 
@@ -67,7 +63,7 @@ void dumpNode(const Value& node, int depth, bool withAttrs, std::ostream& out) {
     // insertion order.
     if (withAttrs)
         for (auto& kv : node.obj()->attrs) {
-            if (isNodeV(kv.second) || kv.second.t == VT::Array) continue;
+            if (isRakuAstNode(kv.second) || kv.second.t == VT::Array) continue;
             std::string s = scalarOf(kv.second);
             if (!s.empty()) out << " " << kv.first << "=" << s;
         }
@@ -75,10 +71,10 @@ void dumpNode(const Value& node, int depth, bool withAttrs, std::ostream& out) {
 
     for (auto& kv : node.obj()->attrs) {
         const Value& v = kv.second;
-        if (isNodeV(v)) { dumpNode(v, depth + 1, withAttrs, out); continue; }
+        if (isRakuAstNode(v)) { dumpNode(v, depth + 1, withAttrs, out); continue; }
         if (v.t == VT::Array && v.arr())
             for (auto& e : *v.arr())
-                if (isNodeV(e)) dumpNode(e, depth + 1, withAttrs, out);
+                if (isRakuAstNode(e)) dumpNode(e, depth + 1, withAttrs, out);
     }
 }
 

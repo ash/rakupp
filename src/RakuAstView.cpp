@@ -194,9 +194,7 @@ struct Builder {
                     const char* cls = u->op[3] == '@' ? "Contextualizer::List"
                                     : u->op[3] == '%' ? "Contextualizer::Hash"
                                                       : "Contextualizer::Item";
-                    return node(cls, {{"target", node("SemiList", {{"statements",
-                        list({node("Statement::Expression",
-                                   {{"expression", buildExpr(u->operand.get())}})})}})}});
+                    return node(cls, {{"target", semiList({buildExpr(u->operand.get())})}});
                 }
                 if (u->postfix)
                     return node("ApplyPostfix", {{"operand", buildExpr(u->operand.get())},
@@ -257,8 +255,7 @@ struct Builder {
             }
             case NK::Index: {
                 auto* ix = static_cast<Index*>(e);
-                Value inner = node("SemiList", {{"statements",
-                    list({node("Statement::Expression", {{"expression", buildExpr(ix->index.get())}})})}});
+                Value inner = semiList({buildExpr(ix->index.get())});
                 // `%h<a>` is a different class from `%h{'a'}` upstream, and the
                 // parser records which spelling it saw (`angleKey`).
                 const char* cls = ix->isHash ? (ix->angleKey ? "Postcircumfix::LiteralHashIndex"
@@ -271,12 +268,12 @@ struct Builder {
                 auto* l = static_cast<ListExpr*>(e);
                 ValueList items;
                 for (auto& i : l->items) items.push_back(buildExpr(i.get()));
-                if (l->semicolon) return node("SemiList", {{"statements", list(items)}});
+                if (l->semicolon) return semiList(items);
                 Value applied = node("ApplyListInfix",
                     {{"infix", node("Infix", {{"operator", Value::str(",")}})},
                      {"operands", list(items)}});
                 return l->parenned ? node("Circumfix::Parentheses",
-                                          {{"semilist", node("SemiList", {{"statements", list({applied})}})}})
+                                          {{"semilist", semiList({applied})}})
                                    : applied;
             }
             case NK::ArrayLit: {
@@ -287,7 +284,7 @@ struct Builder {
                     {{"infix", node("Infix", {{"operator", Value::str(",")}})},
                      {"operands", list(items)}});
                 return node("Circumfix::ArrayComposer",
-                            {{"semilist", node("SemiList", {{"statements", list({inner})}})}});
+                            {{"semilist", semiList({inner})}});
             }
             case NK::HashLit: {
                 auto* h = static_cast<HashLit*>(e);
@@ -297,7 +294,7 @@ struct Builder {
                     {{"infix", node("Infix", {{"operator", Value::str(",")}})},
                      {"operands", list(items)}});
                 return node("Circumfix::HashComposer",
-                            {{"semilist", node("SemiList", {{"statements", list({inner})}})}});
+                            {{"semilist", semiList({inner})}});
             }
             case NK::Range: {
                 auto* r = static_cast<RangeExpr*>(e);
@@ -318,7 +315,19 @@ struct Builder {
             case NK::InterpStr: {
                 auto* s = static_cast<InterpStr*>(e);
                 ValueList segs;
-                for (auto& p : s->parts) segs.push_back(buildExpr(p.get()));
+                for (auto& p : s->parts) {
+                    Value seg = buildExpr(p.get());
+                    // A literal run stays a StrLiteral; anything else is `{…}`
+                    // in the source, and `{…}` is a BLOCK — upstream the
+                    // segment is a whole `Block → Blockoid → StatementList`,
+                    // not the bare expression. A simple `$x` interpolation is
+                    // the exception: it is the variable itself.
+                    if (p->kind != NK::StrLit && p->kind != NK::VarExpr)
+                        seg = node("Block", {{"body", node("Blockoid", {{"statement-list",
+                                  node("StatementList", {{"statements", list({
+                                      node("Statement::Expression", {{"expression", seg}})})}})}})}});
+                    segs.push_back(seg);
+                }
                 return node("QuotedString", {{"segments", list(segs)}});
             }
             case NK::RegexLit: {
@@ -428,6 +437,18 @@ struct Builder {
             n.obj()->attrs["initializer"] =
                 node("Initializer::Assign", {{"expression", buildExpr(a.def.get())}});
         return n;
+    }
+
+    // A `SemiList`'s elements are STATEMENTS upstream, not bare expressions —
+    // it is a `;`-separated statement list that happens to sit inside `[ ]`,
+    // `( )` or a subscript. Putting the expression straight in dropped a
+    // `Statement::Expression` per composer, which `visit-children` then made
+    // visible as a missing level of nesting.
+    Value semiList(ValueList exprs) {
+        ValueList sts;
+        for (auto& e : exprs)
+            sts.push_back(node("Statement::Expression", {{"expression", e}}));
+        return node("SemiList", {{"statements", list(sts)}});
     }
 
     // `last` / `next` / `redo`, with an optional label.
@@ -555,7 +576,12 @@ struct Builder {
                         return modifierStmt(w->isUntil ? "StatementModifier::Until"
                                                        : "StatementModifier::While",
                                             true, w->cond.get(), b);
-                return node(w->isUntil ? "Statement::Until" : "Statement::While",
+                // `while`/`until` are `Statement::Loop::While` / `::Until`
+                // upstream. We had invented `Statement::While` — a name Rakudo
+                // has no class for, which the table generator then emitted an
+                // ancestry-less row for instead of saying so, so the node could
+                // not even reach `RakuAST::Node`'s methods.
+                return node(w->isUntil ? "Statement::Loop::Until" : "Statement::Loop::While",
                     {{"condition", buildExpr(w->cond.get())},
                      {"body", node("Block", {{"body", w->body ? blockoid(w->body->stmts) : blockoid({})}})}});
             }

@@ -217,6 +217,20 @@ struct Deparser {
 
     // `{ … }` around a statement list, indented one level. The closing brace
     // carries NO trailing newline — its enclosing statement adds one.
+    // The one statement inside a single-statement Block, or null. An
+    // interpolation segment is a Block upstream and renders as what it holds.
+    const Value* soleStatement(const Value& blk) {
+        const Value* body = attr(blk, "body");
+        if (!body || !isNode(*body)) return nullptr;
+        const Value* sl = attr(*body, "statement-list");
+        if (!sl || !isNode(*sl)) return nullptr;
+        const Value* ss = attr(*sl, "statements");
+        if (!ss || ss->t != VT::Array || !ss->arr() || ss->arr()->size() != 1) return nullptr;
+        const Value& st = (*ss->arr())[0];
+        if (!isNode(st) || shortName(st) != "Statement::Expression") return nullptr;
+        return attr(st, "expression");
+    }
+
     std::string blockoid(const Value* body, int indent) {
         if (!body || !isNode(*body)) return "{\n" + pad(indent) + "}";
         const Value* sl = attr(*body, "statement-list");
@@ -285,7 +299,14 @@ struct Deparser {
                             const Value* v = attr(s, "value");
                             escapeDq(out, v ? v->toStr() : "");
                         } else if (isNode(s)) {
-                            out += "{" + render(s, indent) + "}";
+                            // The segment is a BLOCK upstream (`{…}` in a
+                            // string is one), and it renders as its single
+                            // statement rather than as a braced block — the
+                            // braces are the interpolation's own.
+                            const Value* inner = &s;
+                            if (shortName(s) == "Block")
+                                if (const Value* only = soleStatement(s)) inner = only;
+                            out += "{" + render(*inner, indent) + "}";
                         }
                     }
             return out + "\"";
@@ -544,8 +565,8 @@ struct Deparser {
             return sc + kw + " " + opt(attr(node, "name"), indent) + " " +
                    opt(attr(node, "body"), indent) + "\n";
         }
-        if (c == "Statement::While" || c == "Statement::Until")
-            return (c == "Statement::While" ? "while " : "until ") +
+        if (c == "Statement::Loop::While" || c == "Statement::Loop::Until")
+            return (c == "Statement::Loop::While" ? "while " : "until ") +
                    opt(attr(node, "condition"), indent) + " " +
                    opt(attr(node, "body"), indent);
 

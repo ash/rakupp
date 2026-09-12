@@ -771,6 +771,24 @@ static std::string retCoercionMark(const Token& next) {
     return (next.kind == Tok::LParen && !next.spaceBefore) ? "()" : "";
 }
 
+// `class` / `role` / `grammar` in a position where a DECLARATION cannot follow
+// is an ordinary bareword — a sigilless variable, or a call. A declaration has
+// to be followed by a name, a `{` or a `::`; anything else (a `)`, a comma, an
+// infix, the end of the statement) means the word is being USED.
+//
+// RakuAST::Utils is where this surfaced: `nqp::eqaddr(type, role)` stopped the
+// argument list dead — "expected ) (got 'role')" — because the word was a
+// keyword wherever it stood. The quieter half is that `say role` had been
+// parsing as an ANONYMOUS ROLE DECLARATION and printing a blank line.
+bool Parser::typeWordAsTerm(const Token& t) const {
+    if (t.text != "class" && t.text != "role" && t.text != "grammar") return false;
+    if (&t != &cur()) return false;              // peek() only speaks for the current token
+    const Token& n = peek();
+    if (n.kind == Tok::Ident || n.kind == Tok::LBrace) return false;
+    if (n.kind == Tok::Op && n.text == "::") return false;
+    return true;
+}
+
 bool Parser::startsTermToken(const Token& t) const {
     switch (t.kind) {
         case Tok::IntLit: case Tok::NumLit: case Tok::StrLit: case Tok::VersionLit: case Tok::StrInterp: case Tok::RegexLit: case Tok::SubstLit:
@@ -823,7 +841,8 @@ bool Parser::startsTermToken(const Token& t) const {
                     peek().kind == Tok::Ident && (peek().text == "sub" || peek().text == "method")) ||
                    // an ANONYMOUS class/role/grammar is an expression: `is class :: {…}.new.x, …`
                    ((t.text == "class" || t.text == "role" || t.text == "grammar") && &t == &cur() &&
-                    (peek().kind == Tok::LBrace || (peek().kind == Tok::Op && peek().text == "::")));
+                    (peek().kind == Tok::LBrace || (peek().kind == Tok::Op && peek().text == "::"))) ||
+                   typeWordAsTerm(t);
         default:
             return false;
     }
@@ -968,6 +987,7 @@ bool Parser::startsListopArg(const Token& t, const std::string& lhsName) const {
                 return &t == &cur() && peek().kind == Tok::LParen && !peek().spaceBefore;
             // sub/method/do/start begin an expression (anonymous routine / do-block); my/our/state/has/
             // constant begin a declaration expression that is a valid list-op argument (`ok my $x = 5, "d"`)
+            if (typeWordAsTerm(t)) return true;
             return !kBlockKeywords.count(t.text) ||
                    t.text == "sub" || t.text == "method" || t.text == "do" || t.text == "start" ||
                    t.text == "my" || t.text == "our" || t.text == "state" || t.text == "has" || t.text == "constant" ||
@@ -9398,6 +9418,9 @@ ExprPtr Parser::makeNqpOp(const std::string& op, std::vector<ExprPtr>& args) {
         {"what", NqpOpc::What}, {"islist", NqpOpc::IsList},
         {"iscont", NqpOpc::IsCont}, {"istrue", NqpOpc::IsTrue},
         {"isconcrete", NqpOpc::IsConcrete}, {"isconcrete_nd", NqpOpc::IsConcrete},
+        // `nqp::can($type.HOW, "roles")` — RakuAST::Utils asks a META-OBJECT
+        // whether it answers a method before calling it.
+        {"can", NqpOpc::Can},
         {"clone", NqpOpc::CloneOp}, {"clone_nd", NqpOpc::CloneOp},
         {"shift", NqpOpc::Shift},
         {"lock", NqpOpc::LockOp}, {"unlock", NqpOpc::UnlockOp},

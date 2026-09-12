@@ -1,0 +1,134 @@
+### say 1
+  children: Call::Name::WithoutParentheses
+StatementList
+  Statement::Expression
+    Call::Name::WithoutParentheses
+      Name
+      ArgList
+        IntLiteral
+### say 1 + 2 * 3
+  children: Call::Name::WithoutParentheses
+StatementList
+  Statement::Expression
+    Call::Name::WithoutParentheses
+      Name
+      ArgList
+        ApplyInfix
+          Infix
+          ArgList
+            IntLiteral
+            ApplyInfix
+              Infix
+              ArgList
+                IntLiteral
+                IntLiteral
+### if 1 { say 2 } else { say 3 }
+  children: IntLiteral, Block, Block
+StatementList
+  Statement::If
+    IntLiteral
+    Block
+      Blockoid
+        StatementList
+          Statement::Expression
+            Call::Name::WithoutParentheses
+              Name
+              ArgList
+                IntLiteral
+    Block
+      Blockoid
+        StatementList
+          Statement::Expression
+            Call::Name::WithoutParentheses
+              Name
+              ArgList
+                IntLiteral
+### for 1, 2 { say $_ }
+  children: ApplyListInfix, Block
+StatementList
+  Statement::For
+    ApplyListInfix
+      Infix
+      IntLiteral
+      IntLiteral
+    Block
+      Blockoid
+        StatementList
+          Statement::Expression
+            Call::Name::WithoutParentheses
+              Name
+              ArgList
+                Var::Lexical
+### say "a{1+1}b"
+  children: Call::Name::WithoutParentheses
+StatementList
+  Statement::Expression
+    Call::Name::WithoutParentheses
+      Name
+      ArgList
+        QuotedString
+          StrLiteral
+          Block
+            Blockoid
+              StatementList
+                Statement::Expression
+                  ApplyInfix
+                    Infix
+                    ArgList
+                      IntLiteral
+                      IntLiteral
+          StrLiteral
+### 1 ?? 2 !! 3
+  children: Ternary
+StatementList
+  Statement::Expression
+    Ternary
+      IntLiteral
+      IntLiteral
+      IntLiteral
+### BEGIN { 1 }
+  children: StatementPrefix::Phaser::Begin
+StatementList
+  Statement::Expression
+    StatementPrefix::Phaser::Begin
+      Block
+        Blockoid
+          StatementList
+            Statement::Expression
+              IntLiteral
+### while 0 { say 1 }
+  children: IntLiteral, Block
+StatementList
+  Statement::Loop::While
+    IntLiteral
+    Block
+      Blockoid
+        StatementList
+          Statement::Expression
+            Call::Name::WithoutParentheses
+              Name
+              ArgList
+                IntLiteral
+### say [1, 2].map({ $_ })
+  children: Call::Name::WithoutParentheses
+StatementList
+  Statement::Expression
+    Call::Name::WithoutParentheses
+      Name
+      ArgList
+        ApplyPostfix
+          Circumfix::ArrayComposer
+            SemiList
+              Statement::Expression
+                ApplyListInfix
+                  Infix
+                  IntLiteral
+                  IntLiteral
+          Call::Method
+            Name
+            ArgList
+              Block
+                Blockoid
+                  StatementList
+                    Statement::Expression
+                      Var::Lexical

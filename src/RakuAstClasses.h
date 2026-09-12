@@ -48,6 +48,12 @@ inline constexpr const char* kRakuAstPrefix = "RakuAST::";
 inline bool isRakuAstName(const std::string& n) {
     return n.size() > 9 && n.compare(0, 9, kRakuAstPrefix) == 0;
 }
+// …and the same question of a VALUE: is this an instance of one of them? The
+// dump, the deparser and `visit-children` all have to ask, and each had spelled
+// it out for itself.
+inline bool isRakuAstNode(const Value& v) {
+    return v.t == VT::Object && v.obj() && v.obj()->cls && isRakuAstName(v.obj()->cls->name);
+}
 
 // The registry's ClassInfo for a fully qualified `RakuAST::…` name, or null
 // when the registry does not carry it. Materializes on first call.
