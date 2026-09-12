@@ -793,8 +793,24 @@ jobs:
   # push the site repo. A site that cannot be reached is NOT a failure — that
   # is the network's problem, not the tree's, and a check that goes red when
   # DNS hiccups is a check people learn to ignore.
+  #
+  # ON A TAG, not on every push. What the site serves has to match what the
+  # release ships, not whatever main holds this minute: `curl | sh` installs
+  # released engines, so a tools/install.sh edited mid-cycle is ahead of the
+  # site on purpose, for the rest of the cycle. On every push that ordinary
+  # state reads as a broken one-liner — it did, the first time install.sh
+  # changed after this job existed, while the served copy was still byte-for-
+  # byte v3.28.0's and installing v3.28.0 perfectly.
+  #
+  # So a red here is a to-do and not a break: RELEASING.md republishes
+  # raku.online in step 6, AFTER the tag, so the site is still the previous
+  # release's while this runs. Do step 6, then re-run this one job.
+  #
+  # workflow_dispatch runs it too, from any branch — otherwise the only way to
+  # find out whether the job still works would be to cut a release.
   installer-copy:
     name: install.sh matches the one raku.online serves
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
