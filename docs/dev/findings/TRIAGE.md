@@ -303,26 +303,36 @@ Surfaced when the END-exception report (issue #70) began printing exceptions
 that had previously been swallowed, which made a hand-constructed X::IO::Mkdir
 visible for the first time.
 
-## `run(:env(%hash, k => v))` silently drops the pairs (2026-09-12)
+## `run`/`shell` took `:env` only as a bare Hash — FIXED
 
-`:env` takes one Associative. Written with a hash *and* trailing pairs, the
-named argument is a `List` of `(Hash, Pair …)`, and Rakudo still applies every
-pair; rakupp keeps the hash and drops them, with no warning and no error. The
-child runs with the variable unset, which is indistinguishable from a child that
-ignored it.
+Found 2026-09-12, fixed the same day; `t/regression/run-env-adverb-shapes.raku`
+holds the matrix. Rakudo takes `.hash` of whatever `:env` holds, so a Hash, a
+Pair, a list of pairs and a hash followed by pairs are all legal spellings.
+Only the bare Hash was read here. Every other shape fell past the branch that
+reads it and was dropped in SILENCE — and a dropped `:env` is not an empty
+environment, it is the parent's, so the child inherited everything.
 
 ```raku
-# both engines, marker per engine so neither can pass by printing the other's
-my $code = 'print (%*ENV<PROBE_KEY> // "<unset>")';
-run($*EXECUTABLE, '-e', $code, :out, :env(%*ENV, PROBE_KEY => 'M')).out.slurp(:close);
+# the child reports the probe and whether anything else came with it
+my $code = 'print (%*ENV<PROBE> // "-") ~ "/" ~ (%*ENV<PATH>:exists ?? "inherited" !! "clean")';
+run($*EXECUTABLE, '-e', $code, :out, :env(%*ENV, PROBE => 'M')).out.slurp(:close);
 ```
 
-    :env(%*ENV, PROBE_KEY => 'M')   Rakudo "M"   rakupp "<unset>"   diverge
-    :env(%merged-hash)              Rakudo "M"   rakupp "M"         agree
+                                     Rakudo          rakupp was
+    no :env                          -/inherited     -/inherited     agree
+    :env(%h)                         M/clean         M/clean         agree
+    :env(%*ENV, PROBE => 'M')        M/inherited     -/inherited     diverge
+    :env(('PROBE', 'M'))             M/clean         -/inherited     diverge
+    :env(PROBE => 'M')               M/clean         -/inherited     diverge
+    shell(…, :env(%h))               M               none            diverge
 
-The merged-hash spelling is the one to write either way, and is what
-`t/run.raku` uses for the `RAKUPP_UNICODE` check — but a program that uses the
-first spelling to add one variable to the environment loses it here in silence.
+The last row is the sharpest: `shell` did not parse `:env` at any shape. And the
+third-from-last is the one that matters most — `:env(PROBE => 'M')` asks for a
+clean environment holding one variable, and got the parent's whole environment
+instead. A child meant to run isolated was not isolated, and nothing said so.
+
 Found while testing that `-V`'s Camelia falls back to ASCII through a pipe: the
-first version of that test set the variable this way and the forced butterfly
-never appeared.
+first version of that test added one variable with the `%*ENV, k => v` spelling
+and the forced butterfly never appeared. `shell`'s `:cwd` is the same shape of
+gap and is still open — it is accepted and ignored, so the child runs in this
+process's directory.

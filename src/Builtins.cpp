@@ -10525,6 +10525,39 @@ void Interpreter::registerBuiltins() {
             I.methodCall(sink, "flush", none);
         }
     };
+    // `:env` as Rakudo takes it — `.hash` of whatever was passed, not only a
+    // bare Hash. A Hash contributes its pairs, a Pair itself, and a list folds
+    // left to right with later keys winning, which is what makes
+    // `:env(%*ENV, K => V)` "the parent's environment plus one". Loose elements
+    // pair up consecutively, as `.hash` does everywhere else (the general
+    // coercion is the list -> Hash branch in MethodCallTail.cpp).
+    //
+    // False means "no environment can be read out of this", and the caller then
+    // leaves the child inheriting — which is what no :env at all does.
+    static const std::function<bool(const Value&, std::map<std::string, std::string>&)> envPairsFrom =
+        [](const Value& v, std::map<std::string, std::string>& out) -> bool {
+        if (v.t == VT::Hash && v.hash()) {
+            for (auto& kv : *v.hash()) out[kv.first] = kv.second.toStr();
+            return true;
+        }
+        if (v.t == VT::Pair) {
+            out[v.s] = v.pairVal() ? v.pairVal()->toStr() : "";
+            return true;
+        }
+        if (v.t == VT::Array && v.arr()) {
+            const ValueList& items = *v.arr();
+            for (size_t i = 0; i < items.size(); i++) {
+                if (envPairsFrom(items[i], out)) continue;      // a Hash, a Pair or a nested list
+                if (i + 1 >= items.size())
+                    throw RakuError{Value::typeObj("X::Hash::Store::OddNumber"),
+                                    "Odd number of elements found where hash initializer expected"};
+                std::string key = items[i].toStr();             // sequenced: ++i must not run before the key
+                out[key] = items[++i].toStr();
+            }
+            return true;
+        }
+        return false;
+    };
     B["run"] = [](Interpreter& I, ValueList& a) -> Value {
         std::vector<std::string> argv; bool wantOut = false, wantIn = false, wantErr = false;
         int outMode = -1, errMode = -1; // -1 unspecified (inherit/echo), 0 :!x (discard), 1 :x (capture)
@@ -10564,13 +10597,20 @@ void Interpreter::registerBuiltins() {
                 // ran unbounded, which the stress suite discovered when a
                 // livelocked child pinned the machine for 25 minutes.
                 else if (v.s == "timeout" && v.pairVal()) timeoutSec = v.pairVal()->toNum();
-                else if (v.s == "env" && v.pairVal() && v.pairVal()->t == VT::Hash && v.pairVal()->hash()) {
-                    // :env(%h) — the child's ENTIRE environment (Rakudo semantics).
-                    // Silently ignored before: run(..., :env(%(%*ENV, RAKULIB =>
-                    // ...))) inherited the parent env unchanged.
-                    haveEnv = true;
-                    for (auto& kv : *v.pairVal()->hash()) envKV.push_back(kv.first + "=" + kv.second.toStr());
-                    std::sort(envKV.begin(), envKV.end()); // deterministic; Windows wants sorted blocks
+                else if (v.s == "env" && v.pairVal()) {
+                    // :env(...) — the child's ENTIRE environment (Rakudo
+                    // semantics). Only a bare Hash was accepted here; every
+                    // other spelling fell past this branch and was dropped in
+                    // SILENCE, so `:env(PROBE => 'M')` — one variable and
+                    // nothing else, in Rakudo — handed the child the parent's
+                    // whole environment instead. A child meant to run isolated
+                    // was not isolated, and nothing said so.
+                    std::map<std::string, std::string> env;  // ordered: later keys win, and the block wants sorting anyway
+                    if (envPairsFrom(*v.pairVal(), env)) {
+                        haveEnv = true;
+                        envKV.clear();
+                        for (auto& kv : env) envKV.push_back(kv.first + "=" + kv.second);
+                    }
                 }
                 else if (v.s == "cwd" && v.pairVal()) cwd = v.pairVal()->toStr(); // was silently ignored too
                 else if (v.s == "merge") merge = v.pairVal() ? v.pairVal()->truthy() : true;
@@ -10637,6 +10677,7 @@ void Interpreter::registerBuiltins() {
         std::string cmd; bool wantOut = false, wantErr = false, merge = false;
         int outMode = -1, errMode = -1; // -1 unspecified, 0 :!x discard, 1 :x capture
         int inFd = -1; // `:in($handle)`: the child's stdin itself (a Bool `:in` is not a shell() mode)
+        std::vector<std::string> envKV; bool haveEnv = false;
         Value outSink, errSink; bool haveOutSink = false, haveErrSink = false;
         for (auto& v : flattenArgs(a)) {
             if (v.t == VT::Pair) {
@@ -10646,6 +10687,17 @@ void Interpreter::registerBuiltins() {
                                     if (asSink(v.pairVal())) { errSink = *v.pairVal(); haveErrSink = true; } }
                 else if (v.s == "in" && v.pairVal()) { bool resolved = false; int fd = stdinFdForHandle(*v.pairVal(), resolved); if (resolved) inFd = fd; }
                 else if (v.s == "merge") merge = v.pairVal() ? v.pairVal()->truthy() : true; // as in run(), above
+                // :env — the same adverb run() takes, and the same silence when
+                // it was missing: shell() did not parse it at all, so a command
+                // handed a deliberate environment got this process's instead.
+                else if (v.s == "env" && v.pairVal()) {
+                    std::map<std::string, std::string> env;
+                    if (envPairsFrom(*v.pairVal(), env)) {
+                        haveEnv = true;
+                        envKV.clear();
+                        for (auto& kv : env) envKV.push_back(kv.first + "=" + kv.second);
+                    }
+                }
             }
             else if (cmd.empty()) cmd = v.toStr();
         }
@@ -10664,7 +10716,7 @@ void Interpreter::registerBuiltins() {
         if (merge) { if (outMode == -1) { outMode = 1; wantOut = true; } errMode = -1; } // as in run(), above
         int outSpawn = (outMode == -1 && !haveOutSink) ? -1 : (outMode == 0 ? 0 : 1);
         spawnCapture(argv, 0, out, code, timedout, &I, errMode != -1 ? &err : nullptr, "", &childPid,
-                     nullptr, errMode == -1, outSpawn, nullptr, nullptr, inFd,
+                     haveEnv ? &envKV : nullptr, errMode == -1, outSpawn, nullptr, nullptr, inFd,
                      merge);  // no `:out`: the child writes to ours, live
 #if !defined(_WIN32)
         if (inFd >= 0) ::close(inFd);
