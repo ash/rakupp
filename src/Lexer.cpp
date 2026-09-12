@@ -393,6 +393,16 @@ void Lexer::consumeIdentChars(std::string& name) {
         if (rakuIdentJoins(peek(), peek(1))) {
             name += advance(); name += advance(); continue;
         }
+        // …and the same join when the letter after the `-`/`'` is NOT ASCII.
+        // `rakuIdentJoins` is a BYTE test and cannot see a whole codepoint, so
+        // this case is decided here — take only the separator and let the
+        // Unicode-letter branch below consume the character properly.
+        // `markup-Δ` was lexing as `markup`, `-`, `Δ`, and RakuDoc::Render keys
+        // its whole template table on names of exactly that shape.
+        if ((peek() == '-' || peek() == '\'') && unicodeLetterAt(1)) {
+            name += advance();
+            continue;
+        }
         if (unicodeLetterHere() || ((unsigned char)peek() >= 0x80 && isIdentMarkCP(codepointHere()))) {
             int n = utf8Len((unsigned char)peek());
             for (int i = 0; i < n && !eof(); i++) name += advance();
@@ -425,6 +435,13 @@ static int utf8Len(unsigned char b) {
 // Whitelist of Unicode codepoint ranges usable in identifiers (letters only).
 // Deliberately excludes math operators (∪∩∈⊆≅ U+22xx), guillemets «» , superscripts
 // (U+00B2/B3/B9, U+2070–209F) and other symbols, which must remain operators.
+// The UCD's own answer, for the codepoints the range list does not name.
+// Out of line so the hot path above stays a chain of integer compares.
+static bool isUcdLetter(uint32_t cp) {
+    const std::string gc = uniGeneralCategory(cp);
+    return gc.size() == 2 && (gc[0] == 'L' || gc == "Nl");
+}
+
 static bool isLetterCP(uint32_t cp) {
     // U+00D7 MULTIPLICATION SIGN and U+00F7 DIVISION SIGN are the two MATH
     // SYMBOLS embedded inside the Latin-1 letter block — Unicode classes them Sm,
@@ -457,7 +474,22 @@ static bool isLetterCP(uint32_t cp) {
            (cp >= 0xFB00 && cp <= 0xFB4F) ||   // alphabetic presentation forms (ﬁ ﬂ …)
            (cp >= 0xFF21 && cp <= 0xFF3A) || (cp >= 0xFF41 && cp <= 0xFF5A) || // fullwidth A-Z a-z (ｆｏｏ)
            (cp >= 0xFF66 && cp <= 0xFFDC) ||   // halfwidth katakana/hangul letters
-           (cp >= 0x10000);                     // astral letters (emoji/rare scripts, best effort)
+           (cp >= 0x10000) ||                   // astral letters (emoji/rare scripts, best effort)
+           // …and ANYTHING ELSE the list above does not name, asked of the UCD
+           // rather than added to it. The ranges stay as a no-allocation fast
+           // path for the scripts that actually turn up; this is the backstop,
+           // and it is the difference between a table that is nearly right and
+           // one that is right.
+           //
+           // What it was missing: the whole U+0900-U+1CFF span — Devanagari,
+           // Bengali, every Indic and South-East Asian script, Georgian,
+           // Ethiopic, Cherokee. `RakuDoc::Numeration` keys a hash on
+           // `:ह<hi>` and `:ব<bn>` beside `:大<zh>`, and the CJK ones parsed
+           // while the Indic ones did not.
+           //
+           // `L*` is Lu/Ll/Lt/Lm/Lo; `Nl` is the letter-numbers (Roman
+           // numerals, U+2160…), which Raku also accepts in a name.
+           isUcdLetter(cp);
 }
 // Combining marks are valid identifier-CONTINUE characters (e.g. $ẛ̣).
 static bool isIdentMarkCP(uint32_t c) {

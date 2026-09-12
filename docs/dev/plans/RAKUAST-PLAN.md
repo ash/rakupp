@@ -2382,3 +2382,92 @@ another subsystem entirely.
 (deparse, eval, l10n, registry, view, visit — each a spec run against the
 oracle's own output), and the round-trip harness at 44 of 59 with no file
 rendering unparseable text.
+
+## P5, step one — the ordinary failures, and the now-measured price (2026-09-12)
+
+The plan deferred P5 with a condition attached: *"Its first failure today is
+`use-ok "RakuDoc::Numeration"` — a file with no RakuAST in it — so RakuAST is
+**not** this dist's first wall. Price it as its own phase once the ordinary
+failure is fixed."* That was right, and there were **five** of them, not one.
+All five are cleared; the dist's own sanity suite is **21 of 21**, and the
+RakuAST wall is now reachable and priced.
+
+**Files**: the UCD backstop in Lexer.cpp, `Parser::typeWordAsTerm`'s neighbours
+in Parser.cpp (four separate arms), and
+`t/regression/parse-unicode-and-shapes.raku` — which **passes under Rakudo too**,
+so every expectation in it is the oracle's answer rather than ours.
+
+### The five, none of them RakuAST
+
+1. **A letter outside the hand-written range table.** `isLetterCP` listed
+   Latin, Greek, Cyrillic, Armenian, Hebrew, Arabic, CJK and Hangul and skipped
+   the whole U+0900–U+1CFF span — every Indic and South-East Asian script, plus
+   Georgian, Ethiopic, Cherokee. `RakuDoc::Numeration` keys a hash on `:ह<hi>`
+   and `:ব<bn>` beside `:大<zh>`, so the CJK entries parsed and the Indic ones
+   did not. The list stays as a no-allocation fast path; anything it does not
+   name is now asked of the UCD (`L*` or `Nl`) rather than added to it.
+2. **A `-` joining to a non-ASCII letter.** `rakuIdentJoins` is a BYTE test, so
+   `markup-Δ` lexed as three tokens and the `Δ` became an undefined routine —
+   and RakuDoc::Render keys its entire template table on names of that shape.
+   Fixed in the lexer AND in the parser's interpolation scanner, because
+   Lexer.h's own comment records what happens when those two disagree; without
+   the second half, `"$markup-Δ"` would have interpolated differently from the
+   bare name.
+3. **`require` with a symbolic name and an import list.** The named form took
+   the `<…>`; the symbolic one parsed a FULL expression, so the space before
+   `<` made it the less-than operator and swallowed the statement. What follows
+   `require` is a name, so it parses tighter than a comparison now — in both the
+   statement and the expression arm, since `try require …` reaches the latter.
+4. **A topicalizer as an expression.** `( given %prm<type> { when … } )` is how
+   RakuDoc::Render builds a string; `if` in the same position already worked,
+   which is what made the gap look like a syntax error rather than a missing
+   case. `given`/`with`/`without` reach that arm as statements only when they
+   come FIRST — `(EXPR with X)` is the modifier form — so position tells the
+   two apart with nothing to guess.
+5. **A signature literal in parameter position.** `-> :(Int $pretty, $ds) {…}`
+   is how PrettyDump writes every handler. Rakudo reads it as a named parameter
+   with no name whose target destructures with that signature, and what makes it
+   matter beyond parsing is that the sub-signature's variables are the ones the
+   BODY refers to. The colon is eaten by `named = matchOp(":")` before any of
+   the parameter shapes are tried, which is why the case has to sit there.
+
+…and a sixth that came with them: **the double-angle colonpair value**.
+`:author<<Richard Hainsworth, aka finanalyst>>` is the Hilite plugin's own
+metadata; only the single-angle spelling was accepted. It INTERPOLATES where the
+single angle does not, so a word carrying a sigil goes through the string
+scanner — measured, because getting that half wrong would have been a wrong
+answer rather than a refusal.
+
+### What P5 itself costs, now that it can be measured
+
+`.rakudoc` is a VIEW over a Pod DOM we already build, which is the same shape as
+P1 and much cheaper than the plan feared ("Part I's vocabulary count never saw a
+`Doc::` class because the corpus has no pod, so this is unpriced").
+
+The raw material is already right. For the sample document, `$=pod` answers
+**identically on both engines** — `Pod::Block::Named`, then
+`Pod::Block::Named, Pod::Heading, Pod::Block::Para, Pod::Item, Pod::Item` — and
+`parsePod(src)` is a free function over the source, so the view can call it from
+the same place it lexes.
+
+The mapping, measured against `"…".AST.rakudoc` on 2026.08:
+
+| our Pod DOM | RakuAST |
+|---|---|
+| `Pod::Block::Named` | `Doc::Block`, `type` = the name |
+| `Pod::Heading` | `Doc::Block`, `type` `head`, `level` |
+| `Pod::Item` | `Doc::Block`, `type` `item` |
+| `Pod::Block::Para` | `Doc::Paragraph` with `atoms` |
+| `Pod::FormattingCode` | `Doc::Markup`, `letter`, `atoms`, `meta` |
+
+`Doc::Block` carries `margin`/`type`/`level`/`paragraphs`; a `paragraphs` entry
+is a Str, a `Doc::Block` or a `Doc::Paragraph`; `Doc::Paragraph` carries
+`atoms`, each a Str or a `Doc::Markup`. All five classes are already in the
+489-row registry. So P5 proper is one mapping function plus `.rakudoc` on
+`RakuAST::Node` — of the order of a P1 widening round, not a new subsystem.
+
+### Gates
+
+`t/run.raku` 864/864, `t/slim/run.raku`, the six RakuAST regression cases, the
+round-trip harness (44 of 59, nothing unparseable), and the new parse case on
+BOTH engines.

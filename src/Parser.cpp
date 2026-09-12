@@ -3338,12 +3338,23 @@ ExprPtr Parser::parseColonPair() {
             else pair->value = std::make_unique<StrLit>(middle);
             return pair;
         }
-        if (isOp("<") && !cur().spaceBefore) {
+        // …and the DOUBLE-angle form beside it: `:author<<Richard Hainsworth,
+        // aka finanalyst>>` is a pair whose value is the word quote, and only
+        // the single-angle spelling was accepted, so RakuDoc's Hilite plugin
+        // died on its own `=begin pod` metadata.
+        if ((isOp("<") || isOp("<<")) && !cur().spaceBefore) {
+            const bool dbl = cur().text == "<<";
+            const char* closer = dbl ? ">>" : ">";
             advance();
-            std::vector<std::string> words = readAngleWords(">");
+            std::vector<std::string> words = readAngleWords(closer);
             // a single numeric word is an allomorph, same as the term form:
             // :chmod<0o777> passes IntStr 511, not the string "0o777"
-            auto mkWord = [](const std::string& w) -> ExprPtr {
+            // …and the DOUBLE-angle form INTERPOLATES (it is the `qqw` quote),
+            // which the single-angle one does not — so a word carrying a sigil
+            // goes through the string scanner rather than in as a literal.
+            auto mkWord = [&](const std::string& w) -> ExprPtr {
+                if (dbl && w.find_first_of("$@%&") != std::string::npos)
+                    return parseInterpString(w);
                 if (ExprPtr num = angleWordNumeric(w)) {
                     if (w.find('/') != std::string::npos || num->kind == NK::Binary)
                         return num;
@@ -4067,6 +4078,23 @@ ExprPtr Parser::parsePrimary() {
                 bool isUnless = cur().text == "unless";
                 advance();
                 auto st = parseIf(isUnless);
+                auto be = std::make_unique<BlockExpr>();
+                be->body.push_back(std::move(st));
+                auto u = std::make_unique<Unary>(); u->op = "do"; u->operand = std::move(be);
+                ExprPtr e = std::move(u);
+                expectKind(Tok::RParen, ")");
+                return e;
+            }
+            // …and the TOPICALIZERS. They reach here as statements only when
+            // they come FIRST — `(EXPR with X)` is the modifier form and is
+            // handled below, after the expression — so position tells the two
+            // apart with nothing to guess. RakuDoc::Render builds a string out
+            // of `'[' ~ ( given %prm<type> { when 'internal' {…} } ) ~ …`, and
+            // `if` in the same position already worked, which is what made the
+            // gap look like a syntax error rather than a missing case.
+            if ((isIdent("given") || isIdent("with") || isIdent("without")) &&
+                peek().kind != Tok::FatArrow && peek().kind != Tok::Comma) {
+                auto st = parseStatement();
                 auto be = std::make_unique<BlockExpr>();
                 be->body.push_back(std::move(st));
                 auto u = std::make_unique<Unary>(); u->op = "do"; u->operand = std::move(be);
@@ -4859,7 +4887,24 @@ ExprPtr Parser::parsePrimary() {
                 advance();
                 auto u = std::make_unique<Unary>();
                 u->op = "require";
-                u->operand = parseExpr(BP_ASSIGN);
+                // TIGHTER than a comparison, for the reason the statement form
+                // records below.
+                u->operand = parseExpr(BP_COMPARE + 1);
+                // The optional IMPORT LIST, as the statement form takes it.
+                // `try require ::('Data::Dump::Tree') <&ddt>` is how a module
+                // makes a dependency optional, and `try` is what brings it
+                // here rather than to the statement arm — so the `<…>` had to
+                // be skipped in both places or neither (RakuDoc::Templates).
+                {
+                    int depth = 0;
+                    while (!isKind(Tok::End)) {
+                        if (depth == 0 && (isKind(Tok::Semicolon) || isKind(Tok::RBrace) ||
+                                           isKind(Tok::Comma) || isKind(Tok::RParen))) break;
+                        if (isKind(Tok::LParen) || isKind(Tok::LBracket)) depth++;
+                        else if (isKind(Tok::RParen) || isKind(Tok::RBracket)) depth--;
+                        advance();
+                    }
+                }
                 return u;
             }
             if (name == "start" && peek().kind != Tok::FatArrow) {
@@ -5645,6 +5690,16 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
         uint32_t cp = cpAtRaw(p, len);
         return uniBinaryProp(cp, "ID_Continue") == 1;
     };
+    // The `-`/`'` join, with a possibly NON-ASCII letter after it.
+    // `rakuIdentJoins` is a byte test, so it answers no for `markup-Δ` — and
+    // this scanner has to agree with the LEXER about where a name ends or
+    // `"$markup-Δ"` interpolates differently from the bare name, which is the
+    // exact failure the rule's own comment in Lexer.h records.
+    auto identJoinsAt = [&](size_t p) -> bool {
+        if (p + 1 >= raw.size() || (raw[p] != '-' && raw[p] != '\'')) return false;
+        if ((unsigned char)raw[p + 1] < 0x80) return rakuIdentStart(raw[p + 1]);
+        size_t l; return identContAt(p + 1, l);
+    };
 
     size_t i = 0, n = raw.size();
     while (i < n) {
@@ -5856,9 +5911,9 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
                 // a method name joins on `-`/`'` exactly as a variable name does:
                 // "$n.is-prime()" — stopping at the hyphen left `.is` uncommitted
                 // and printed `7.is-prime()` (Gnome::Gtk4, Pakku, REPL, Air…)
-                while (j + 1 < n && rakuIdentJoins(raw[j], raw[j + 1])) {
+                while (identJoinsAt(j)) {
                     var += raw[j++];
-                    while (j < n && isIdentCont(raw[j])) var += raw[j++];
+                    for (size_t l; j < n && identContAt(j, l); ) { var.append(raw, j, l); j += l; }
                 }
                 if (j < n && raw[j] == '(') {
                     int d = 1; var += raw[j++];
@@ -5912,9 +5967,9 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
             size_t j = i + 1;
             std::string fname;
             for (size_t l; j < n && identContAt(j, l); ) { fname.append(raw, j, l); j += l; }
-            while (j + 1 < n && rakuIdentJoins(raw[j], raw[j + 1])) {
+            while (identJoinsAt(j)) {
                 fname += raw[j++];
-                while (j < n && isIdentCont(raw[j])) fname += raw[j++];
+                for (size_t l; j < n && identContAt(j, l); ) { fname.append(raw, j, l); j += l; }
             }
             if (j < n && raw[j] == '(') {
                 int depth = 1; size_t k2 = j + 1; std::string argsrc;
@@ -5966,9 +6021,9 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
                 raw[j] == '?' || (raw[j] == ':' && colonPh)) var += raw[j++];
             for (size_t l; j < n && identContAt(j, l); ) { var.append(raw, j, l); j += l; }
             // hyphen/apostrophe continue the name when followed by an alphanumeric ($foo-bar)
-            while (j + 1 < n && rakuIdentJoins(raw[j], raw[j + 1])) {
+            while (identJoinsAt(j)) {
                 var += raw[j++];
-                while (j < n && isIdentCont(raw[j])) var += raw[j++];
+                for (size_t l; j < n && identContAt(j, l); ) { var.append(raw, j, l); j += l; }
             }
             bool hadPostfix = scanChain(j, var);
             // @arr/%hash only interpolate when followed by a postcircumfix/method
@@ -6411,6 +6466,24 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
             continue;
         }
         bool named = matchOp(":");
+        // `-> :($a, $b) { … }` — a signature LITERAL in parameter position, and
+        // the colon has just been eaten by the line above, which is why this
+        // has to sit here rather than beside the other parameter shapes.
+        // Rakudo reads it as `:(:$ ($a, $b))`: a NAMED parameter with no name
+        // whose target destructures with that signature. What makes it matter
+        // beyond parsing is that the sub-signature's variables are the ones the
+        // BODY refers to — PrettyDump writes every handler this way, and
+        // RakuDoc::Render reaches it through RakuDoc::Processed.
+        if (named && isKind(Tok::LParen) && !cur().spaceBefore) {
+            advance();                  // '('
+            p.subSig = std::make_shared<std::vector<Param>>(parseSignature(Tok::RParen));
+            if (!matchKind(Tok::RParen)) error("expected ')' in signature-literal parameter");
+            p.name = ""; p.sigil = '$'; p.named = true;
+            if (matchOp("=")) p.defaultVal = parseExpr(BP_ASSIGN);
+            params.push_back(std::move(p));
+            if (!matchKind(Tok::Comma) && !matchKind(Tok::Semicolon)) break;
+            continue;
+        }
         // named alias:  :name($var)  — external key `name`, binds `$var` (optional inner type)
         if (named && isKind(Tok::Ident) && peek().kind == Tok::LParen) {
             p.namedKey = advance().text;
@@ -8668,7 +8741,28 @@ StmtPtr Parser::parseStatementImpl() {
             // yield the loaded type (zef's plugin loader). Expression form.
             auto u = std::make_unique<Unary>();
             u->op = "require";
-            u->operand = parseExpr(BP_ASSIGN);
+            // TIGHTER than a comparison: what follows `require` is a NAME, and
+            // an import list written with a space before it — `require
+            // ::('Data::Dump::Tree') <&ddt>` — otherwise reads as `<` the
+            // less-than operator and swallows the rest of the statement. The
+            // named form never met this because it never parses an expression.
+            u->operand = parseExpr(BP_COMPARE + 1);
+            // …and the SAME optional import list the named form above accepts:
+            // `try require ::('Data::Dump::Tree') <&ddt>` is how a module makes
+            // a dependency optional, and only the named form took it, so the
+            // symbolic one died on the `<…>` (RakuDoc::Templates).
+            // Syntactically accepted and ignored, exactly as above — loadModule
+            // publishes the module's subs globally either way.
+            {
+                int depth = 0;
+                while (!isKind(Tok::End)) {
+                    if (depth == 0 && (isKind(Tok::Semicolon) || isKind(Tok::RBrace) ||
+                                       isKind(Tok::Comma) || isKind(Tok::RParen))) break;
+                    if (isKind(Tok::LParen) || isKind(Tok::LBracket)) depth++;
+                    else if (isKind(Tok::RParen) || isKind(Tok::RBracket)) depth--;
+                    advance();
+                }
+            }
             auto es = std::make_unique<ExprStmt>();
             es->e = std::move(u);
             matchKind(Tok::Semicolon);
