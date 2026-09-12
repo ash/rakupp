@@ -246,7 +246,7 @@ gate
   cost   => '~5 min (subset)',
   slow   => True,
   run    => sub {
-      my $roast = (%*ENV<ROAST> // '/Users/ash/roast').IO;
+      my $roast = (%*ENV<ROAST> // ((%*ENV<HOME> // '.') ~ '/roast')).IO;
       return (False, 'no Roast checkout — set ROAST=') unless $roast.d;
       my $tmp = $*TMPDIR.add("prove-gates-{$*PID}");
       $tmp.mkdir;

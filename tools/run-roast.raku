@@ -16,7 +16,7 @@
 # human-readable output makes the gate only as reliable as that output's framing.
 # It was not reliable: see the stderr note in run-with-timeout.
 
-my $ROOT    = (%*ENV<ROAST> // '/Users/ash/roast').IO.absolute;  # set $ROAST to your Roast checkout
+my $ROOT    = (%*ENV<ROAST> // ((%*ENV<HOME> // '.') ~ '/roast')).IO.absolute;  # set $ROAST to your Roast checkout
 use lib $?FILE.IO.parent.add('lib').Str;
 use Gate;
 my $BIN     = $*EXECUTABLE.absolute;   # test whichever compiler is running this harness

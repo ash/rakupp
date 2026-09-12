@@ -367,7 +367,7 @@ Assertions passed:    194901 / 216222  (90.0%)  of ALL declared tests (+3258 fro
 ```
 
 (The harness reads the Roast checkout from `$ROAST`, defaulting to
-`/Users/ash/roast` — set `ROAST=<checkout>` anywhere else. Nothing more is
+`$HOME/roast` — set `ROAST=<checkout>` anywhere else. Nothing more is
 needed: the tests' own `use lib` resolves the Test-Helpers.)
 
 ## Timeout-partial sensitivity (found 2026-08-09)

@@ -344,7 +344,7 @@ $ rakupp --profile tools/bench/fib.raku
 514229
 Profile — wall time; builtins are attributed to their caller
   excl(ms)   incl(ms)      calls  routine
-   340.598    340.598    1664079  fib (/Users/ash/raku++/tools/bench/fib.raku)
+   340.598    340.598    1664079  fib (/home/me/rakupp/tools/bench/fib.raku)
 ```
 
 (The routine's file is printed as the path the run resolved, never a bare

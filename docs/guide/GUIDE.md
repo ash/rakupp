@@ -359,7 +359,7 @@ self-hosting milestone: the compiler is complete enough to run its own
 spec-suite runner.
 
 Point it at a [Roast](https://github.com/Raku/roast) checkout with the `ROAST`
-environment variable (it defaults to `/Users/ash/roast` if unset):
+environment variable (it defaults to `$HOME/roast` if unset):
 
 ```sh
 export ROAST=/path/to/roast

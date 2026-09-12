@@ -369,7 +369,7 @@ Two facts about it drive how a release uses it:
   produced by the interpreter this repo builds, so regenerating is itself a
   test of the new binary — on a workload that is nothing like Roast.
 
-From the Rakugrid checkout (`/Users/ash/rakugrid`):
+From a [Rakugrid](https://github.com/ash/rakugrid) checkout:
 
 ```sh
 rakupp bin/rakugrid stats                                   # atoms / tests / rulings
