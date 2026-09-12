@@ -56,8 +56,18 @@ sub scan(@lines --> Hash) {
     my %n = nodes => 0, const-fold => 0, half-literal => 0,
             self-update => 0, const-cond => 0;
 
-    # (indent, text) for every line, so a node can look at its own children
-    my @rows = @lines.map: { my $t = .subst(/^ \s+ /, ''); ($_.chars - $t.chars) / 2 => $t };
+    # (indent, text) for every line, so a node can look at its own children.
+    #
+    # `--ast` aligns the node name and its detail into two columns with a `│`
+    # gutter between them, so collapse that back to one space first: every test
+    # below is `starts-with('Binary ')` or `.words[1]`, and against the columned
+    # form the first still matches (the padding is spaces) while the second
+    # answers `│`. That is the bad shape of breakage — wrong counts, no error.
+    my @rows = @lines.map: {
+        my $l = .subst(/ \s+ '│' \s+ /, ' ');
+        my $t = $l.subst(/^ \s+ /, '');
+        ($l.chars - $t.chars) / 2 => $t
+    };
     %n<nodes> = @rows.elems;
 
     sub literal($t) { so $t.starts-with(any 'IntLit', 'NumLit', 'StrLit', 'BoolLit') }

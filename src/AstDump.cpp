@@ -2,6 +2,7 @@
 #include "Ast.h"
 #include <ostream>
 #include <string>
+#include <vector>
 
 namespace rakupp {
 namespace {
@@ -11,9 +12,39 @@ std::string trunc(std::string s, size_t n = 48) {
     return s.size() > n ? s.substr(0, n) + "…" : s;
 }
 
+// One row, buffered: the columns cannot be aligned until the widest is known,
+// and that is not known until the walk is over. Same shape as `--rakuast`'s
+// dumper, deliberately — the two dumps are read side by side often enough that
+// looking alike is worth a buffer.
+struct DumpRow { int ind; std::string text; };
+
 struct Dumper {
     std::ostream& o;
-    void line(int ind, const std::string& s) { o << std::string(ind * 2, ' ') << s << "\n"; }
+    std::vector<DumpRow> rows;
+    void line(int ind, const std::string& s) { rows.push_back({ind, s}); }
+
+    // Every call site writes the node's name and its detail as one string
+    // ("IntLit 1", "VarExpr $x [decl my]", "Call fib"), so the split is the
+    // first space rather than a change to a hundred call sites. A row with no
+    // space is a label — `Program`, `cond:`, `then:` — and keeps the left
+    // column to itself.
+    void flush() {
+        size_t w = 0;
+        for (auto& r : rows) {
+            const size_t sp = r.text.find(' ');
+            if (sp != std::string::npos) w = std::max(w, r.ind * 2 + sp);
+        }
+        for (auto& r : rows) {
+            const size_t sp = r.text.find(' ');
+            const std::string pad(r.ind * 2, ' ');
+            if (sp == std::string::npos) { o << pad << r.text << "\n"; continue; }
+            const std::string name = r.text.substr(0, sp), detail = r.text.substr(sp + 1);
+            o << pad << name << std::string(w - r.ind * 2 - name.size() + 2, ' ')
+              // …and the detail is indented by depth too, so the right half is
+              // a staircase mirroring the left, as `--rakuast`'s source column is.
+              << "\xE2\x94\x82 " << std::string(r.ind, ' ') << detail << "\n";
+        }
+    }
 
     void params(const std::vector<Param>& ps, int ind) {
         for (auto& p : ps) {
@@ -156,6 +187,7 @@ void dumpAst(const Program& prog, std::ostream& out) {
     Dumper d{out};
     d.line(0, "Program");
     for (auto& s : prog.stmts) d.stmt(s.get(), 1);
+    d.flush();
 }
 
 } // namespace rakupp

@@ -30,7 +30,12 @@ for @files -> $f {
     my $ast = $p.out.slurp(:close);
     next if $p.exitcode != 0;
     my (%s, %m);
-    for $ast.lines {
+    # `--ast` puts the node name and its detail in two columns with a `│`
+    # gutter, so `Call` and the name it calls are no longer one space apart.
+    # Collapse it before matching — otherwise `(<-[\s(]>+)` finds only spaces
+    # after `Call `, every line fails, and the ranking comes back empty rather
+    # than wrong-looking.
+    for $ast.lines.map(*.subst(/ \s+ '│' \s+ /, ' ')) {
         if / ^ \s* 'Call ' (<-[\s(]>+) / { %s{~$0} = 1 }
         elsif / ^ \s* 'MethodCall ' <[.!?]>? (<-[\s(]>+) / { %m{~$0} = 1 }
     }

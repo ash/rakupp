@@ -66,7 +66,7 @@ std::string scalarOf(const Value& v) {
 // One line's worth: the indented class name, and the Raku that node renders
 // back to. Collected before anything is printed so the source column can be
 // aligned — the tree's width is not known until the walk is over.
-struct DumpLine { std::string tree, src; };
+struct DumpLine { std::string tree, src; int depth = 0; };
 
 // A node's own source, on ONE line. A block renders over several and its
 // braces would swamp the column, so the text is flattened and cut; a node the
@@ -108,7 +108,7 @@ void dumpNode(Interpreter& I, const Value& node, int depth, bool withAttrs,
             if (!s.empty()) out << " " << kv.first << "=" << s;
         }
 
-    lines.push_back({out.str(), withSource ? oneLineSource(I, node) : std::string()});
+    lines.push_back({out.str(), withSource ? oneLineSource(I, node) : std::string(), depth});
 
     for (auto& kv : node.obj()->attrs) {
         const Value& v = kv.second;
@@ -130,7 +130,15 @@ void dumpRakuAst(Interpreter& I, const std::string& source, std::ostream& out,
         for (auto& l : lines) if (!l.src.empty()) w = std::max(w, l.tree.size());
     for (auto& l : lines) {
         out << l.tree;
-        if (withSource && !l.src.empty()) out << std::string(w - l.tree.size() + 2, ' ') << "\xE2\x94\x82 " << l.src;
+        if (withSource && !l.src.empty())
+            out << std::string(w - l.tree.size() + 2, ' ') << "\xE2\x94\x82 "
+                // The source column is indented by DEPTH as well, so the right
+                // half is a staircase mirroring the left. A parent and a child
+                // that cover the same span then read as one — which is most of
+                // this tree: `Statement::Expression` over `Sub` over its
+                // `Blockoid` are four renderings of one line of source, and
+                // flush-left they looked like four unrelated repetitions.
+                << std::string(l.depth, ' ') << l.src;
         out << "\n";
     }
 }
