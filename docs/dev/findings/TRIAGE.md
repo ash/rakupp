@@ -333,6 +333,36 @@ instead. A child meant to run isolated was not isolated, and nothing said so.
 
 Found while testing that `-V`'s Camelia falls back to ASCII through a pipe: the
 first version of that test added one variable with the `%*ENV, k => v` spelling
-and the forced butterfly never appeared. `shell`'s `:cwd` is the same shape of
-gap and is still open — it is accepted and ignored, so the child runs in this
-process's directory.
+and the forced butterfly never appeared. `shell`'s `:cwd` was the same shape of
+gap — accepted and ignored — and is fixed with it; see the next entry.
+
+## `shell` accepted `:cwd` and ignored it — FIXED
+
+Found and fixed 2026-09-12; `t/regression/shell-cwd-adverb.raku` holds the
+rows. `run` has parsed `:cwd` since it was first reported, `shell` never did,
+so the command ran in the calling process's directory — and a `:cwd` naming a
+directory that does not exist ran it there anyway and exited 0. `spawnCapture`
+already took the directory; `shell` passed the empty string.
+
+                              Rakudo        rakupp was      now
+    shell :cwd('/tmp')        /private/tmp  the caller's    /private/tmp
+    shell :cwd('tools')       …/tools       the caller's    …/tools
+    shell :cwd('/no/such')    did not run   RAN, exit 0     did not run
+
+## A `:cwd` that does not exist: exit 126 here, -1 on Rakudo — open
+
+Surfaced by the row above, and it is the same in `run`, so it is not something
+`shell` acquired. Both engines refuse to run the command; they disagree on what
+the Proc then reports.
+
+```raku
+run('pwd', :out, :cwd('/no/such/dir/here')).exitcode    # Rakudo -1, rakupp 126
+```
+
+Rakudo reports -1, its convention for a child that never started. rakupp lets
+the child's own 126 through — the shell's "found but could not execute" — which
+is a true statement about the child and a different statement from Rakudo's.
+Telling them apart means distinguishing "the spawn failed" from "the child
+exited 126" in the parent, which is why this is recorded rather than folded
+into the `:cwd` fix. `t/regression/shell-cwd-adverb.raku` deliberately asserts
+only that the command did not run, so it passes under both engines.

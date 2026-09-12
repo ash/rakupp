@@ -10677,7 +10677,7 @@ void Interpreter::registerBuiltins() {
         std::string cmd; bool wantOut = false, wantErr = false, merge = false;
         int outMode = -1, errMode = -1; // -1 unspecified, 0 :!x discard, 1 :x capture
         int inFd = -1; // `:in($handle)`: the child's stdin itself (a Bool `:in` is not a shell() mode)
-        std::vector<std::string> envKV; bool haveEnv = false;
+        std::vector<std::string> envKV; bool haveEnv = false; std::string cwd;
         Value outSink, errSink; bool haveOutSink = false, haveErrSink = false;
         for (auto& v : flattenArgs(a)) {
             if (v.t == VT::Pair) {
@@ -10687,6 +10687,13 @@ void Interpreter::registerBuiltins() {
                                     if (asSink(v.pairVal())) { errSink = *v.pairVal(); haveErrSink = true; } }
                 else if (v.s == "in" && v.pairVal()) { bool resolved = false; int fd = stdinFdForHandle(*v.pairVal(), resolved); if (resolved) inFd = fd; }
                 else if (v.s == "merge") merge = v.pairVal() ? v.pairVal()->truthy() : true; // as in run(), above
+                // :cwd — where the command runs. Parsed by run() since it was
+                // first reported and never here, so it was accepted and
+                // ignored: the command ran in THIS process's directory, and
+                // a :cwd naming a directory that does not exist ran it anyway
+                // and exited 0, which is the answer a caller is least able to
+                // notice.
+                else if (v.s == "cwd" && v.pairVal()) cwd = v.pairVal()->toStr();
                 // :env — the same adverb run() takes, and the same silence when
                 // it was missing: shell() did not parse it at all, so a command
                 // handed a deliberate environment got this process's instead.
@@ -10715,7 +10722,7 @@ void Interpreter::registerBuiltins() {
         long long childPid = 0;
         if (merge) { if (outMode == -1) { outMode = 1; wantOut = true; } errMode = -1; } // as in run(), above
         int outSpawn = (outMode == -1 && !haveOutSink) ? -1 : (outMode == 0 ? 0 : 1);
-        spawnCapture(argv, 0, out, code, timedout, &I, errMode != -1 ? &err : nullptr, "", &childPid,
+        spawnCapture(argv, 0, out, code, timedout, &I, errMode != -1 ? &err : nullptr, cwd, &childPid,
                      haveEnv ? &envKV : nullptr, errMode == -1, outSpawn, nullptr, nullptr, inFd,
                      merge);  // no `:out`: the child writes to ours, live
 #if !defined(_WIN32)
