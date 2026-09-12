@@ -8,6 +8,15 @@ methodology for all Roast figures is in [docs/status/COUNTING.md](docs/status/CO
 Thirty-three commits. The headline is that **RakuAST is in, end to end** — and
 that it cost the ordinary path nothing, which was the whole design argument.
 
+| | v3.27.0 | v3.28.0 |
+|---|---:|---:|
+| Roast assertions (all declared) | 200,432 | **200,504** |
+| Roast files fully passing | 669 / 1,464 | **670 / 1,464** |
+| Local regression suite (`t/run.raku`) | 855 | **868** |
+| Module battery (vs each dist's own reference run) | 48 / 59 | **48 / 59** |
+| Documentation examples byte-identical on both engines | 955 | **957** |
+| Operator divergences | 21 | **21** |
+
 **RakuAST.** The 489-class hierarchy, plus all four operations over it and one
 more: `.AST` builds the tree, `.DEPARSE` renders it back to Raku, `.EVAL` runs
 it, `visit-children` walks it, `.rakudoc` answers a unit's documentation blocks,
