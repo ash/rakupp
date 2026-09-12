@@ -52,10 +52,10 @@ my $rakupp = $*EXECUTABLE.Str;
 my $oracle = $root.add('tools/rakuast-oracle-dump.raku').Str;
 
 sub dumps($file) {
-    # `-q` for the TREE ALONE: a bare `--rakuast` now puts the Raku each node
+    # `=tree` for the TREE ALONE: a bare `--rakuast` puts the Raku each node
     # renders back to in a second column, which is a reading aid and not what
     # the oracle compares.
-    my $a = run($rakupp, '--rakuast', '-q', $file, :out, :err);
+    my $a = run($rakupp, '--rakuast=tree', $file, :out, :err);
     my $ours = $a.out.slurp(:close); $a.err.slurp(:close);
     # The oracle is a child process for the same reason the tree oracle's is:
     # `.AST` is Rakudo's compiler, so a BEGIN runs and a `use` loads.

@@ -19,10 +19,10 @@
 // in the same order.
 //
 // Each line also carries the RAKU that node renders back to, in a second
-// column, and `-q` drops it. That reading of `-q` is narrower than the flag's
-// general contract (which drops a mode's progress and success lines, never its
-// PRODUCT): here the TREE is the product and the source column is a reading
-// aid, so a quiet run still prints everything the mode is for.
+// column, and `--rakuast=tree` drops it. NOT `-q`: that flag's contract is to
+// drop a mode's progress and success lines and never to change its product,
+// and `--ast` shows what it means for a dump mode — nothing at all. A mode
+// that has knobs spells them in its own value list, the way `--slim` does.
 //
 // Shape by default, attributes on request, and that is a deliberate narrowing of
 // what the plan specified — see the note in RAKUAST-PLAN Part IV: the

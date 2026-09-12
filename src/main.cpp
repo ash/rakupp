@@ -1607,7 +1607,7 @@ static const FlagDoc kFlagDocs[] = {
     {"--lint", 0, nullptr, "static analysis, no run"},
     {"--json", 0, nullptr, "machine-readable -c and --lint findings"},
     {"--ast", 0, nullptr, "print the parsed AST"},
-    {"--rakuast", 0, nullptr, "print the RakuAST VIEW of the program (--rakuast=attrs adds attributes)"},
+    {"--rakuast", 0, nullptr, "print the RakuAST VIEW of the program, with the Raku each node renders back to (--rakuast=tree drops that column, =attrs adds attributes, =compunit wraps it)"},
     {"--dump-ast", 0, nullptr, "print the parsed AST"},
     {"--ast-roundtrip", 0, nullptr, "check the AST survives the precomp cache"},
     {"--cpp", 0, nullptr, "print the C++ --exe would compile"},
@@ -2009,7 +2009,9 @@ int main(int argc, char** argv) {
                       PrecompSetting, PrecompInfo, PrecompClean, Check, Lint,
                       Cpp, Bundle, Aot, Exe, Mcp, Lsp, Jupyter, JupyterInstall, Js };
     Mode mode = Mode::Run;
-    bool rakuAstAttrs = false, rakuAstCompUnit = false;   // --rakuast=attrs / =compunit
+    // --rakuast=tree drops the source column; =attrs adds the scalar
+    // attributes; =compunit wraps the tree the way `.AST(:compunit)` does.
+    bool rakuAstAttrs = false, rakuAstCompUnit = false, rakuAstSource = true;
     std::string modeTok;                  // the spelling that selected the mode (for messages)
     std::vector<std::string> libPaths;    // -I, both spellings, any position
     std::vector<std::string> preloadModules; // -M/-m modules, in order
@@ -2193,10 +2195,31 @@ int main(int argc, char** argv) {
             }
             if (a == "--html") { sawHtml = true; hlFmt = "html"; continue; }
             if (a == "--ast" || a == "--dump-ast") { if (!setMode(Mode::Ast, "--ast")) return 4; continue; }
+            // `--rakuast[=tok,tok…]`. A COMMA LIST, like --slim's, rather than
+            // one exact spelling: the values compose (`--rakuast=tree,compunit`
+            // is a thing to want) and a typo is an error instead of a silent
+            // fallback to the default. `-q` is deliberately NOT one of the
+            // knobs — its documented contract is to drop a mode's progress and
+            // success lines and never to change its product, and `--ast`
+            // already shows what that means for a dump mode: nothing.
             if (a == "--rakuast" || a.rfind("--rakuast=", 0) == 0) {
                 if (!setMode(Mode::RakuAst, "--rakuast")) return 4;
-                rakuAstAttrs = (a == "--rakuast=attrs");
-                rakuAstCompUnit = (a == "--rakuast=compunit");
+                std::string spec = a.size() > 9 ? a.substr(10) : "";
+                for (size_t pos = 0; pos <= spec.size(); ) {
+                    size_t comma = spec.find(',', pos);
+                    std::string tok = spec.substr(pos, comma == std::string::npos
+                                                          ? std::string::npos : comma - pos);
+                    pos = comma == std::string::npos ? spec.size() + 1 : comma + 1;
+                    if (tok.empty()) continue;
+                    if (tok == "tree")          rakuAstSource = false;
+                    else if (tok == "attrs")    rakuAstAttrs = true;
+                    else if (tok == "compunit") rakuAstCompUnit = true;
+                    else {
+                        std::cerr << "--rakuast: unknown '" << tok
+                                  << "' (expected tree, attrs or compunit)\n";
+                        return 4;
+                    }
+                }
                 continue;
             }
             if (a == "--ast-roundtrip") { if (!setMode(Mode::AstRoundtrip, a)) return 4; continue; }
@@ -2755,9 +2778,7 @@ int main(int argc, char** argv) {
         if (!haveSrc) { std::cerr << "Usage: rakupp --rakuast FILE | --rakuast -e CODE\n"; return 4; }
         Interpreter interp;
         try {
-            // …and the SOURCE column unless `-q`: the tree is the product,
-            // the Raku each node renders back to is the reading aid.
-            dumpRakuAst(interp, src, std::cout, rakuAstCompUnit, rakuAstAttrs, !g_quiet);
+            dumpRakuAst(interp, src, std::cout, rakuAstCompUnit, rakuAstAttrs, rakuAstSource);
         } catch (RakuError& e) {
             std::cerr << "===SORRY!=== " << e.message << "\n";
             return 2;
