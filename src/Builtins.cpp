@@ -60,6 +60,8 @@
 #include <sys/file.h>   // flock (rakupp-repo-lock)
 #include <sys/utsname.h>
 #include <sys/socket.h>
+#include <poll.h>       // the async-read loop waits with a timeout so closing a
+                        // TAP can stop it without touching the socket
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <netdb.h>
@@ -8212,6 +8214,92 @@ Value Interpreter::wrapSupplyChain(const Value& supply, Value consumer) {
 // body's emits reach the downstream tap. Stops on `done`, on the activation's
 // tap closing (.tap.close — the CLOSE-phaser stress in S17 syntax.t spawns and
 // closes thousands of these), or at interpreter shutdown.
+// `whenever $channel { … }` inside a `supply {}` block — the values sent to the
+// channel, one run each, completing when the channel closes.
+//
+// The drain loop is spawnChannelWhenever's: polled and popped under the
+// channel's own stripe, the same lock send/receive take, because an unlocked
+// read of queue/closed tore under RAKUPP_PARALLEL. The WIRING is
+// spawnSupplyInterval's: a live source holds the activation open with
+// ctx->pending and fires through ctxCallable so the body's emits reach the
+// downstream tap, then releases the hold so the supply can finish.
+Value Interpreter::spawnSupplyChannel(Value chan, Value blk, std::shared_ptr<SupplyTapCtx> ctx) {
+    engageGil();
+    ctx->pending++;
+    liveWorkers_++;
+    auto fin = std::make_shared<std::atomic<bool>>(false);
+    auto spawnScope = tctx_.cur ? tctx_.cur : global_;
+    Interpreter* self = this;
+    ValueList lastP, quitP;
+    scanSupplyPhasers(blk, &lastP, &quitP, nullptr);
+    Value fireW = ctxCallable(ctx, [blk, ctx, quitP](Interpreter& I2, ValueList& args) -> Value {
+        if (ctx->done || ctx->doneFired) return Value::any();
+        ValueList one = args;
+        try { I2.callCallable(blk, one); }
+        catch (NextEx&) {} catch (LastEx&) { ctx->done = true; } catch (DoneEx&) { ctx->done = true; }
+        catch (RakuError& e) {
+            // same rule as every other whenever arm: the body's own QUIT phasers
+            // see it first, otherwise it goes downstream and closes the activation
+            Value ex = I2.exceptionFor(e);
+            bool handled = false;
+            for (auto& q : quitP) { ValueList o2{ex}; try { I2.callCallable(q, o2); handled = true; } catch (...) {} }
+            if (!handled && ctx->quitCb.t == VT::Code) { ValueList o2{ex}; try { I2.callCallable(ctx->quitCb, o2); } catch (...) {} }
+            ctx->done = true;
+            if (ctx->tap) I2.closeTapHandle(ctx->tap);
+        }
+        return Value::any();
+    });
+    throttleSpawn();
+    addWorker(BigStackThread([self, chan, fireW, lastP, ctx, fin, spawnScope]() mutable {
+        t_isWorker = true;
+        // Parallel mode has no GIL discipline; under the GIL this holds the lock
+        // and yieldToWorkerFor cycles it (see spawnChannelWhenever — taking it
+        // and never releasing made the first channel worker the accidental owner).
+        if (!self->parallelMode_) self->gil_.lock();
+        ExecContext wctx; self->loadCtx(wctx);
+        tctx_.cur = spawnScope;
+        tctx_.dynStack.push_back(spawnScope.get());
+        auto stop = [&] {
+            if (self->workerAbort_.load(std::memory_order_relaxed)) return true;
+            if (ctx->done || ctx->doneFired) return true;
+            if (ctx->tap) { std::lock_guard<std::mutex> lk(ctx->tap->m); if (ctx->tap->closed) return true; }
+            return false;
+        };
+        for (;;) {
+            if (stop()) break;
+            Value v; bool got = false, drained = false;
+            {   std::lock_guard<std::recursive_mutex> lk(Interpreter::atomicStripe(chan.hash()));
+                auto qi = chan.hash() ? chan.hash()->find("queue") : ValueMap::iterator{};
+                ValueList* q = chan.hash() && qi != chan.hash()->end() && qi->second.arr()
+                             ? qi->second.arr() : nullptr;
+                if (!q) drained = true;
+                else if (!q->empty()) { v = q->front(); q->erase(q->begin()); got = true; }
+                else {
+                    auto ci = chan.hash()->find("closed");
+                    drained = ci != chan.hash()->end() && ci->second.truthy();
+                }
+            }
+            if (drained) break;
+            if (!got) {
+                if (self->parallelMode_) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                else self->yieldToWorkerFor(0.02);
+                continue;
+            }
+            ValueList one{v};
+            try { self->callCallable(fireW, one); } catch (...) {}
+        }
+        // the channel closed (or the activation went away): LAST phasers, then
+        // release the hold so an otherwise-finished supply can complete
+        for (auto& ph : lastP) { ValueList na; try { self->callCallable(ph, na); } catch (...) {} }
+        ctx->pending--;
+        try { self->maybeFinishSupply(ctx); } catch (...) {}
+        if (!self->parallelMode_) self->gilYieldNotify(); // unlocks the GIL — parallel never took it
+        self->liveWorkers_--;
+        fin->store(true, std::memory_order_release);
+    }), fin);
+    Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
+}
+
 Value Interpreter::spawnSupplyInterval(double interval, double delay, Value blk,
                                        std::shared_ptr<SupplyTapCtx> ctx) {
     engageGil();
@@ -8804,7 +8892,13 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
         int fd = (sock.t == VT::Hash && sock.hash()->count("fd")) ? (int)(*sock.hash())["fd"].toInt() : -1;
         engageGil();
         auto handle = std::make_shared<TapHandle>();
-        handle->closers.push_back([fd] { if (fd >= 0) ::shutdown(fd, SHUT_RD); });
+        // Closing a TAP must not touch the SOCKET. This used to
+        // `shutdown(fd, SHUT_RD)` so the blocked recv() below would return, but
+        // that shut the read half down for everyone: a program that taps
+        // `$conn.Supply`, lets that tap go and taps it again got nothing the
+        // second time — and the reader then closed the fd on its way out. The
+        // loop polls with a timeout instead and notices handle->closed itself.
+        // Log::Timeline's socket test is exactly this shape.
         liveWorkers_++;
         auto fin = std::make_shared<std::atomic<bool>>(false);
         auto spawnScope = tctx_.cur ? tctx_.cur : global_;
@@ -8814,8 +8908,27 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
         addWorker(BigStackThread([self, fd, emitCb, doneCb, handle, fin, spawnScope, bin]() mutable {
             t_isWorker = true;
             std::vector<char> buf(65536);
+            bool tapClosed = false;
             for (;;) {
-                ssize_t n = fd >= 0 ? ::recv(fd, buf.data(), buf.size(), 0) : -1;   // GIL not held
+                if (fd < 0) break;
+                {   std::lock_guard<std::mutex> lk(handle->m);
+                    if (handle->closed) { tapClosed = true; break; }
+                }
+                if (self->workerAbort_.load(std::memory_order_relaxed)) { tapClosed = true; break; }
+                struct pollfd pfd { fd, POLLIN, 0 };
+                int pr = ::poll(&pfd, 1, 20);                        // GIL not held
+                if (pr == 0) continue;                               // nothing yet; re-check the tap
+                if (pr < 0) { if (errno == EINTR) continue; break; }
+                // Re-check between "readable" and the read. A closed tap must not
+                // CONSUME: these bytes belong to whoever taps next, and a worker
+                // that read them would emit into a dead tap and drop them. That
+                // is how Log::Timeline lost the first of its queued events — the
+                // client's first tap had gone, its worker had not yet noticed.
+                {   std::lock_guard<std::mutex> lk(handle->m);
+                    if (handle->closed) { tapClosed = true; break; }
+                }
+                ssize_t n = ::recv(fd, buf.data(), buf.size(), 0);    // ready, so this will not block
+                if (n < 0 && (errno == EINTR || errno == EAGAIN)) continue;
                 if (n <= 0) break;
                 self->gil_.lock();
                 ExecContext wctx; self->loadCtx(wctx);
@@ -8835,12 +8948,27 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
             ExecContext wctx; self->loadCtx(wctx);
             tctx_.cur = spawnScope;
             tctx_.dynStack.push_back(spawnScope.get());
-            if (doneCb.t == VT::Code) { ValueList na; try { self->callCallable(doneCb, na); } catch (...) {} }
+            // A tap that was merely CLOSED leaves the socket alone — it is still
+            // open, may still be written to, and may be tapped again. Only a
+            // real EOF or read error ends the connection, and then the worker
+            // still owns the fd's lifetime.
+            if (!tapClosed && doneCb.t == VT::Code) { ValueList na; try { self->callCallable(doneCb, na); } catch (...) {} }
             self->gilYieldNotify();
-            if (fd >= 0) ::close(fd);   // the read worker owns the fd's lifetime
+            if (!tapClosed && fd >= 0) ::close(fd);
             self->liveWorkers_--;
             fin->store(true, std::memory_order_release);
         }), fin);
+        // A tap made INSIDE a react dies with the react — the same reason the
+        // signal tap registers itself (see tapSignal). Without this the reader
+        // worker outlived the block that made it and went on CONSUMING the
+        // socket: bytes meant for whoever tapped next were read and delivered
+        // into a react that had already finished, so a second tap on the same
+        // connection saw nothing at all.
+        if (!reactStack_.empty()) {
+            auto rctx = reactStack_.back();
+            std::lock_guard<std::mutex> lk(rctx->m);
+            rctx->extTaps.push_back(handle);
+        }
         Value t = Value::makeHash(); t.hashKind = "Tap"; t.extM() = handle;
         (*t.hash())["wired"] = Value::boolean(true);
         return t;
@@ -11881,6 +12009,13 @@ void Interpreter::registerBuiltins() {
                 double dl = src.hash()->count("delay") ? (*src.hash())["delay"].toNum() : 0;
                 return I.spawnSupplyInterval(iv, dl, I.wrapSupplyChain(src, blk), ctx);
             }
+            // whenever $channel in a supply block: a live source, one run per
+            // value sent. Without this the Channel fell through to tapSupply()
+            // below, which cannot tap one — so the block ran ONCE with the
+            // Channel itself as its argument, and Log::Timeline printed a
+            // stringified Channel onto its socket.
+            if (src.t == VT::Hash && src.hashKind == "Channel")
+                return I.spawnSupplyChannel(src, blk, ctx);
             // whenever over a Promise: register an ASYNC one-shot — the block runs
             // once, with the promise's RESULT, when the promise settles. Must NOT
             // block the supply-block setup: an unkept Promise stays dormant (Cro's

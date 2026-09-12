@@ -1054,6 +1054,12 @@ public:
     Value spawnChannelWhenever(Value chan, Value blk, std::shared_ptr<ReactCtx> ctx); // `whenever $channel`
     Value spawnSupplyTimer(double secs, Value blk, std::shared_ptr<SupplyTapCtx> ctx); // same, inside a supply {} block
     void spawnDelayedNative(double secs, std::function<void()> fn); // run fn on a worker after a real delay (Promise.in(N).then)
+    // `whenever $channel { … }` inside a `supply {}` block. The REACT path has
+    // had this for a while (spawnChannelWhenever); the supply path fell through
+    // to tapSupply(), which cannot tap a Channel and so emitted the Channel
+    // ITSELF, once. Log::Timeline's reactor is exactly this shape and printed a
+    // stringified Channel onto its socket.
+    Value spawnSupplyChannel(Value chan, Value blk, std::shared_ptr<SupplyTapCtx> ctx);
     Value spawnSupplyInterval(double interval, double delay, Value blk,
                               std::shared_ptr<SupplyTapCtx> ctx); // Supply.interval inside a supply {} block
     // anonymous pun of a parameterized role with `[...]` args bound (P[%h].new / Q[Int].mk)
