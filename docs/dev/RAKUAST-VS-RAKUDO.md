@@ -65,14 +65,29 @@ one renderer to keep correct instead of a second compiler.
 
 ### The tree is a tree here and a graph there
 
-A Rakudo RakuAST node links **upward and sideways** — declaration to containing
-block, statement list to comp unit, unit to resolver. Walking node-valued
-attributes there drags the whole graph in: 45 nodes for a 12-line program in one
-measurement, and a 40-line program that took 20 minutes.
+A Rakudo RakuAST node links **upward and sideways**: a declaration knows its
+containing block, a statement list knows its comp unit, a resolver hangs off the
+unit. So enumerating a node's node-valued **attributes** is not a walk down a
+tree — it is a walk over a graph, and it keeps climbing back up into parts of
+the program it has already been.
 
-`visit-children` is the syntactic-children-in-source-order view, and it is the
-only walk that means the same thing on both engines. Use it. A tool that
-enumerates attributes instead will behave differently here, and worse there.
+The first version of our dumper did exactly that, on the reasoning that
+attribute order is deterministic on both engines. What that cost, measured:
+
+| twelve-line program | nodes reported |
+|---|---:|
+| walking attributes | **45** — of which **19** were the same handful of blocks, reached again from underneath |
+| walking `visit-children` | **26** |
+
+Nearly half of that first figure was the walk meeting itself. And it is not only
+duplication: one **40-line** program ran for **twenty minutes** before a
+`.WHICH`-keyed visited set bounded it, because on a graph there is no reason for
+a descent to terminate.
+
+`visit-children` is the syntactic children in source order, and it is the only
+walk that means the same thing on both engines — it is also what made the two
+engines' dumps comparable at all. Use it. A tool that enumerates attributes
+instead will behave differently here, and on Rakudo may not finish.
 
 ### `.parent` answers `Nil` — and now says so
 
