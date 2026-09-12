@@ -20,12 +20,6 @@ my $base = 20000 + ($*PID % 900) * 5;
 # It bound the block's parameter to the CHANNEL rather than to each value sent:
 # one run, with the Channel itself. `react` was right all along, which is what
 # made it look like a Channel bug rather than a supply-block one.
-sub chan-shape(&wire) {
-    my $c = Channel.new;
-    my @got;
-    wire($c, @got);
-    @got
-}
 {
     my $c = Channel.new; my @got;
     my $t = (supply { whenever $c -> $v { @got.push($v.^name) } }).tap: -> $x { };
@@ -117,6 +111,46 @@ ck(with-echo(-> $conn {
     }
     ck(@got, ["A", "B", "C"], 'separate async writes arrive in order and none is lost');
     $conn.close; $tap.close;
+}
+
+
+# --- an OBJECT-KEYED hash hands `.keys` back as the OBJECT ----------------
+# The payload is keyed by strings, so `.keys` used to answer the
+# stringification and the original was gone: `.print(…) for %connections.keys`
+# called .print on a stringified socket (Log::Timeline), and
+# `keys.first(* eqv [1,2,3])` matched nothing (CBOR::Simple).
+{
+    my %h{Mu}; my $k = [7, 8, 9];
+    %h{$k} = "sub-v";
+    ck(%h.keys.head, [7, 8, 9], 'a subscript store keeps the key object');
+    ck(%h{$k}, "sub-v", '…and still fetches by it');
+}
+{
+    my %h{Mu}; my $k = [1, 2];
+    %h.AT-KEY($k) = "atkey-v";                       # CBOR::Simple's spelling
+    my $found = %h.keys.first(* eqv [1, 2]);
+    ck(%h.AT-KEY($found), "atkey-v", 'an AT-KEY store round-trips through .keys');
+}
+{
+    my %h{Mu}; my $k = [3, 4];
+    %h.ASSIGN-KEY($k, "assign-v");
+    ck(%h.keys.head, [3, 4], 'and so does ASSIGN-KEY');
+}
+{   # the control: a plain string-keyed hash is untouched by any of this
+    my %p; %p<a> = 1; %p<b> = 2;
+    ck(%p.keys.sort.List, ("a", "b"), 'a plain hash still answers Str keys');
+}
+
+# --- `done` inside a LAST phaser closes the react -------------------------
+# It ran on the source's worker, where nothing had pushed the react, so `done`
+# quietly did nothing and the react waited on its other sources.
+{
+    my $fired = False; my $timed = False;
+    react {
+        whenever Supply.from-list(1, 2) { LAST { $fired = True; done } }
+        whenever Promise.in(3) { $timed = True; done }
+    }
+    ck(($fired, $timed), (True, False), 'done inside LAST ends the react');
 }
 
 say $fails ?? "FAIL ($fails)" !! "PASS";

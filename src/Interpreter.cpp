@@ -18434,7 +18434,17 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             // tag-only test walked into ValueHash::operator[] on nothing. A
             // `return-rw` that resolves to no container hands back exactly that.
             if (base->t != VT::Hash || !base->hash()) *base = Value::makeHash();
-            std::string key = hashSubKey(eval(idx->index.get()), base); // key eval BEFORE the stripe (user code)
+            Value subKey = eval(idx->index.get());                      // key eval BEFORE the stripe (user code)
+            std::string key = hashSubKey(subKey, base);
+            // On an OBJECT-KEYED hash keep the object the subscript named, so
+            // `.keys` can hand it back instead of its stringification. Costs a
+            // plain string-keyed hash nothing: the test is the key type.
+            if (subKey.t != VT::Str && base->hash() && !objHashKeyType(*base).empty()) {
+                // DECONTAINERIZED: `my $k = [1,2]` is an itemized Array, and
+                // Rakudo's `.keys` answers the Array, not the item holding it.
+                Value stored = subKey; stored.itemized = false;
+                base->hash()->setObjKey(key, stored);
+            }
             // P3: the find-or-insert itself under the hash's stripe — a
             // concurrent insert can no longer corrupt the tree. The returned
             // node pointer is STABLE under later inserts (std::map), so the
@@ -18610,7 +18620,15 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             Value* base = lvalue(mc->inv.get());
             if (mc->method == "AT-KEY") {
                 if (base->t != VT::Hash || !base->hash()) *base = Value::makeHash();
-                return &(*base->hash())[eval(mc->args[0].get()).toStr()];
+                Value k = eval(mc->args[0].get());
+                // `%h.AT-KEY($k) = v` is the same store as `%h{$k} = v` and has
+                // to remember the object too — CBOR::Simple's object-keyed map
+                // is built entirely through this spelling.
+                if (k.t != VT::Str && !objHashKeyType(*base).empty()) {
+                    Value stored = k; stored.itemized = false;
+                    base->hash()->setObjKey(k.toStr(), stored);
+                }
+                return &(*base->hash())[k.toStr()];
             }
             Value* cur = base;
             for (auto& a : mc->args) {

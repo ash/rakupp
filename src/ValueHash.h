@@ -61,8 +61,29 @@ private:
     std::vector<int32_t> index_;   // power-of-two probe table of entry numbers
     size_t live_ = 0;              // entries not dead
     size_t used_ = 0;              // index slots not EMPTY (live + tombstones)
+    // An OBJECT-KEYED hash (`my %h{Mu}`) subscripts by an object, and the
+    // payload is keyed by strings — so `%h.keys` handed back the STRINGIFICATION
+    // and the original was gone. `.print(…) for %connections.keys` then called
+    // .print on a stringified socket (Log::Timeline), and
+    // `keys.first(* eqv [1,2,3])` matched nothing (CBOR::Simple). The originals
+    // live HERE rather than on the stored value, because the lvalue path hands
+    // back a slot pointer the caller overwrites — and here they travel with the
+    // payload's shared_ptr, so every copy of the Value sees them. Empty, and
+    // never touched, for an ordinary string-keyed hash.
+    std::map<std::string, Value> objKeys_;
 
     static uint64_t hashKey(const std::string& k) { return std::hash<std::string>{}(k); }
+
+public:
+    // The object a key was subscripted with, when this hash is object-keyed.
+    void setObjKey(const std::string& k, const Value& v) { objKeys_[k] = v; }
+    const Value* objKey(const std::string& k) const {
+        auto it = objKeys_.find(k);
+        return it == objKeys_.end() ? nullptr : &it->second;
+    }
+    bool hasObjKeys() const { return !objKeys_.empty(); }
+
+private:
 
     size_t mask() const { return index_.size() - 1; }
 

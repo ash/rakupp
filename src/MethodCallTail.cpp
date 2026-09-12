@@ -334,7 +334,12 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             Value v = it->second; inv.hash()->erase(it); return v;
         }
         if ((m == "ASSIGN-KEY" || m == "BIND-KEY") && args.size() >= 2) {
-            (*inv.hash())[kkey(args[0])] = args[1]; return args[1];
+            const std::string k = kkey(args[0]);
+            if (args[0].t != VT::Str && !objHashKeyType(inv).empty()) {
+                Value stored = args[0]; stored.itemized = false;   // as the subscript path does
+                inv.hash()->setObjKey(k, stored);
+            }
+            (*inv.hash())[k] = args[1]; return args[1];
         }
     }
     // `@a.BIND-POS($i, $container)` — the positional twin of BIND-KEY. The value

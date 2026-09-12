@@ -1060,6 +1060,11 @@ public:
     // ITSELF, once. Log::Timeline's reactor is exactly this shape and printed a
     // stringified Channel onto its socket.
     Value spawnSupplyChannel(Value chan, Value blk, std::shared_ptr<SupplyTapCtx> ctx);
+    // Run a whenever block's LAST phasers. A `done` INSIDE one closes the react:
+    // it used to hit the catch-all beside these loops and vanish, so `LAST done`
+    // ran and the react went on waiting for its other sources. Log::Timeline's
+    // client sat out its ten-second timeout after the server hung up.
+    void runLastPhasers(const ValueList& lastP, std::shared_ptr<ReactCtx> rctx);
     Value spawnSupplyInterval(double interval, double delay, Value blk,
                               std::shared_ptr<SupplyTapCtx> ctx); // Supply.interval inside a supply {} block
     // anonymous pun of a parameterized role with `[...]` args bound (P[%h].new / Q[Int].mk)

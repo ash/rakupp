@@ -1306,6 +1306,10 @@ std::string objHashKeyType(const Value& h) {
 // where it actually bites rather than papered over with a guess.
 Value hashEntryKey(const Value& h, const std::string& k, const Value& stored) {
     if (stored.pairKey()) return *stored.pairKey();
+    // An object-keyed hash remembers what the subscript actually named (see
+    // ValueHash::objKeys_) — the string is only how the payload indexes it.
+    if (h.t == VT::Hash && h.hash())
+        if (const Value* ok = h.hash()->objKey(k)) return *ok;
     const std::string kt = objHashKeyType(h);
     if (kt.empty()) return Value::str(k);
     static const std::set<std::string> numericKey = {
@@ -8223,6 +8227,30 @@ Value Interpreter::wrapSupplyChain(const Value& supply, Value consumer) {
 // spawnSupplyInterval's: a live source holds the activation open with
 // ctx->pending and fires through ctxCallable so the body's emits reach the
 // downstream tap, then releases the hold so the supply can finish.
+void Interpreter::runLastPhasers(const ValueList& lastP, std::shared_ptr<ReactCtx> rctx) {
+    if (lastP.empty()) return;
+    if (!rctx && !reactStack_.empty()) rctx = reactStack_.back();
+    // `done` looks for its react on reactStack_, and these phasers run on the
+    // source's WORKER, where nothing had pushed it — so `done` inside a LAST
+    // quietly did nothing and the react waited for its other sources. Push it
+    // for the duration, the way the QUIT path already does.
+    const bool pushed = rctx && (reactStack_.empty() || reactStack_.back() != rctx);
+    if (pushed) reactStack_.push_back(rctx);
+    for (auto& p : lastP) {
+        ValueList na;
+        try { callCallable(p, na); }
+        catch (DoneEx&) {
+            if (rctx) {
+                std::lock_guard<std::mutex> lk(rctx->m);
+                rctx->closed = true;
+                rctx->cv.notify_all();
+            }
+        }
+        catch (...) {}
+    }
+    if (pushed && !reactStack_.empty()) reactStack_.pop_back();
+}
+
 Value Interpreter::spawnSupplyChannel(Value chan, Value blk, std::shared_ptr<SupplyTapCtx> ctx) {
     engageGil();
     ctx->pending++;
@@ -12044,7 +12072,7 @@ void Interpreter::registerBuiltins() {
                     } else {
                         ValueList one{ ps->result };
                         try { I2.callCallable(blk, one); } catch (NextEx&) {} catch (LastEx&) {} catch (DoneEx&) {}
-                        for (auto& p : lastP) { ValueList na; try { I2.callCallable(p, na); } catch (...) {} }
+                        I2.runLastPhasers(lastP, nullptr);
                     }
                     ctx->pending--;
                     I2.maybeFinishSupply(ctx);
@@ -12076,7 +12104,7 @@ void Interpreter::registerBuiltins() {
             // done hook runs LAST phasers, then releases this activation's hold
             ctx->pending++;
             Value doneW = ctxCallable(ctx, [lastP, ctx](Interpreter& I2, ValueList&) -> Value {
-                for (auto& p : lastP) { ValueList na; try { I2.callCallable(p, na); } catch (...) {} }
+                I2.runLastPhasers(lastP, nullptr);
                 ctx->pending--;
                 I2.maybeFinishSupply(ctx);
                 return Value::any();
@@ -12221,7 +12249,7 @@ void Interpreter::registerBuiltins() {
                     if (!lastP.empty()) {
                         Value doneW; doneW.t = VT::Code; doneW.setCode(std::make_shared<Callable>());
                         doneW.code()->builtin = [lastP](Interpreter& I2, ValueList&) -> Value {
-                            for (auto& p : lastP) { ValueList na; try { I2.callCallable(p, na); } catch (...) {} }
+                            I2.runLastPhasers(lastP, nullptr);
                             return Value::any();
                         };
                         (*tapRec.hash())["done"] = doneW;
@@ -12316,8 +12344,12 @@ void Interpreter::registerBuiltins() {
                         return Value::any();
                     };
                     Value doneW; doneW.t = VT::Code; doneW.setCode(std::make_shared<Callable>());
-                    doneW.code()->builtin = [lastP, release](Interpreter& I2, ValueList&) -> Value {
-                        for (auto& p : lastP) { ValueList na; try { I2.callCallable(p, na); } catch (...) {} }
+                    // rctx captured so a `done` inside a LAST phaser finds its
+                    // react: this runs on the source's worker, where nothing has
+                    // pushed it. (Log::Timeline's client waits on `LAST done`
+                    // after the server hangs up, not on its timeout.)
+                    doneW.code()->builtin = [lastP, release, rctx](Interpreter& I2, ValueList&) -> Value {
+                        I2.runLastPhasers(lastP, rctx);
                         release();
                         return Value::any();
                     };
@@ -12355,7 +12387,7 @@ void Interpreter::registerBuiltins() {
                         try { Value sv = sCopy; ValueList ta{blkCopy}; self->methodCall(sv, "tap", ta); }
                         catch (...) { if (rctx) self->reactStack_.pop_back(); throw; }
                         if (rctx) self->reactStack_.pop_back();
-                        for (auto& p : lastP) { ValueList na; try { self->callCallable(p, na); } catch (...) {} }
+                        self->runLastPhasers(lastP, rctx);
                     };
                     // A Proc::Async stream registers EAGERLY. Tapping it only records
                     // the callback — nothing is emitted until the process runs — and
