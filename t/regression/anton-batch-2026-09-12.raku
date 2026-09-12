@@ -60,5 +60,36 @@ sub ck($got, $want, $desc) {
     ck(('abc' ~~ 'abd'), False, '…and not a different one');
 }
 
+
+# --- a leading `||` is a PREFIX that slips its operand ---------------------
+# Data::Translators writes its HTML detector as a leading-`||` chain:
+#     my $isHTML =
+#             || $_.starts-with('<math')  && $_.ends-with('</math>')
+#             || $_.starts-with('<table') && $_.ends-with('</table>');
+# `||` in term position was only ever the subscript-navigation marker here, so
+# the chain died with "Unsupported prefix 'dimslip'". Upstream it is an ordinary
+# prefix taking ONE term — which is what makes the chain and `@a[|| @dims]`
+# both fall out of one rule.
+{
+    my $x =
+            || 1 == 2
+            || 3 == 3;
+    ck($x, True, 'a leading-`||` chain evaluates as the logical chain');
+}
+{
+    my $y =
+            || 1 == 2
+            || 2 == 3;
+    ck($y, False, '…and answers False when nothing matches');
+}
+{   # the subscript form keeps its meaning
+    my @a = [[1, 2], [3, 4]];
+    my @d = 1, 0;
+    ck(@a[|| @d].elems, 2, '`@a[|| @dims]` still slices');
+    my %h = a => { b => 7 };
+    my @k = <a b>;
+    ck(%h{|| @k}.elems, 2, '…and the hash form too');
+}
+
 say $fails ?? "FAIL ($fails)" !! "PASS";
 exit $fails ?? 1 !! 0;

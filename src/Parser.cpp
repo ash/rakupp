@@ -4474,7 +4474,11 @@ ExprPtr Parser::parsePrimary() {
             // of indices/keys — but NOT `||(EXPR)` glued to a paren, which is the
             // orphaned-infix term handled further down (TOML::NQP).
             if (t.text == "||" && !(peek().kind == Tok::LParen && !peek().spaceBefore)) {
-                advance(); auto u = std::make_unique<Unary>(); u->op = "dimslip"; u->operand = parseExpr(BP_COMMA + 1); return u;
+                // BP_PREFIX, not BP_COMMA: `|| 1 == 2 || 3 == 3` is
+                // `(||1) == 2 || 3 == 3` upstream, so the prefix takes ONE term.
+                // Binding loosely swallowed the rest of the chain and the
+                // leading-`||` idiom answered a Slip where Rakudo answers a Bool.
+                advance(); auto u = std::make_unique<Unary>(); u->op = "dimslip"; u->operand = parseExpr(BP_PREFIX); return u;
             }
             if (t.text == "\xE2\x88\x9E") { advance(); auto inf = std::make_unique<NumLit>(std::numeric_limits<double>::infinity()); inf->raw = "\xE2\x88\x9E"; return inf; } // ∞
             if (t.text == ".") {   // .method => $_.method

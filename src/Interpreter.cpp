@@ -29234,6 +29234,24 @@ Value Interpreter::evalUnary(Unary* u) {
     // user-defined prefix operator: `sub prefix:<§>($x) { … }`
     if (Value* f = tctx_.cur->find("&prefix:<" + u->op + ">"))
         return callCallable(*f, ValueList{v});
+    // A leading `||` is an ordinary PREFIX that slips its operand — it is only
+    // the subscript paths (see the dimslip branches in evalIndex) that give it a
+    // navigation meaning. Everywhere else it had no evaluator at all, so the
+    // leading-`||` chain idiom
+    //     my $x = || cond1
+    //             || cond2;
+    // died with "Unsupported prefix 'dimslip'". Rakudo answers a Slip of the
+    // operand, which is what makes both the chain and `@a[|| @dims]` work off
+    // one rule. Data::Translators writes its HTML detector this way.
+    if (u->op == "dimslip") {
+        Value v = eval(u->operand.get());
+        Value out = Value::array();
+        if (v.t == VT::Array && v.arr()) *out.arr() = *v.arr();
+        else out.arr()->push_back(v);
+        out.isList = true;
+        out.s = "Slip";
+        return out;
+    }
     throw RakuError{Value::typeObj("X::NYI"), "Unsupported prefix '" + u->op + "'"};
 }
 
