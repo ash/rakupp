@@ -1286,10 +1286,11 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 throw RakuError{Value::typeObj("X::TypeCheck::Binding::Parameter"),
                     "Type check failed in binding to parameter '$separator'; expected Str but got " +
                     a0().typeName() + " (" + a0().gist() + ")"};
-            // each element through ITS OWN .Str, so a user `method Str` is honoured
+            // each element through ITS OWN .Str, so a user `method Str` is honoured —
+            // except a Str-ish one, which contributes its VALUE (Str:D candidate)
             const std::string sep = args.empty() ? "" : a0().toStr();
             std::string out;
-            for (size_t k = 0; k < items.size(); k++) { if (k) out += sep; out += strOf(items[k]); }
+            for (size_t k = 0; k < items.size(); k++) { if (k) out += sep; out += strInStrContext(items[k]); }
             return Value::str(nfcNormalize(std::move(out))); // NFG: compose across the joins
         }
         if (m == "fmt") {
@@ -3033,7 +3034,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             throw RakuError{Value::typeObj("X::TypeCheck::Binding::Parameter"),
                 "Type check failed in binding to parameter '$separator'; expected Str but got " +
                 args[0].typeName() + " (" + args[0].gist() + ")"};
-        return Value::str(strOf(inv));
+        return Value::str(strInStrContext(inv));
     }
     // `Any.Capture` unpacks a value into its parts: an undefined one has none,
     // a Complex is its :re/:im, a Blob its bytes, an object its public

@@ -150,6 +150,34 @@ const Registry* build() {
         a[0].obj()->attrs["statement-list"] = a[1];
         return a[0];
     });
+    // `.push($node)` on a LIST-shaped node — an ArgList, a Name, a StatementList.
+    // Needle::Compile builds an ArgList and then pushes each adverb onto it
+    // (`$args.push(RakuAST::ColonPair::True.new($_))`) rather than passing them
+    // all to `.new`. The slot is the same one `.new`'s positionals land in.
+    node->methods["push"] = method([](Interpreter&, ValueList& a) -> Value {
+        if (a.size() < 2 || a[0].t != VT::Object || !a[0].obj() || !a[0].obj()->cls)
+            return Value::any();
+        const std::string& n = a[0].obj()->cls->name;
+        std::string cls = isRakuAstName(n) ? n.substr(9) : n;
+        auto plus = cls.find("+{");            // `$node but Role`, as shortName does
+        if (plus != std::string::npos) cls.resize(plus);
+        const char* slot = rakuAstListSlot(cls);
+        if (!slot) return Value::any();
+        Value& lst = a[0].obj()->attrs[slot];
+        if (lst.t != VT::Array || !lst.arr()) { lst = Value::array(); }
+        lst.arr()->push_back(a[1]);
+        return a[0];
+    });
+    // `.set-expression($e)` — the mutator beside `.expression`, which a statement
+    // uses to rewrite what it evaluates in place. Needle::Compile's `not` needle
+    // negates the LAST statement of a compiled unit this way. Named one by one
+    // rather than served by a generic `set-*`: a `.^can` probe must not be told
+    // this node can set an attribute Rakudo gives it no setter for.
+    node->methods["set-expression"] = method([](Interpreter&, ValueList& a) -> Value {
+        if (a.size() < 2 || a[0].t != VT::Object || !a[0].obj()) return Value::any();
+        a[0].obj()->attrs["expression"] = a[1];
+        return a[0];
+    });
     node->methods["unshift-statement"] = method([attrOf](Interpreter&, ValueList& a) -> Value {
         if (a.size() < 2) return Value::any();
         Value target = a[0];

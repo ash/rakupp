@@ -1206,6 +1206,14 @@ public:
     // user method and recurses forever).
     std::string gistOf(const Value& v, bool skipUser = false);
     std::string strOf(const Value& v);  // .Str,  honouring user `method Str`/`gist` (for print/put/interpolation)
+    // An object that IS-A Str (a `Str but Role` mixin, or a class `is Str`) is a
+    // Str:D, so Rakudo's Str:D candidates bind it and operate on its VALUE — its
+    // own `method Str` is only reached where the Any candidate runs. Concat,
+    // string comparison, print, join and interpolation take the value; `put`,
+    // prefix `~` and an explicit `.Str` still dispatch. Without the split a
+    // `method Str` spelt `self ~ ""` recurses forever (Needle::Compile's Type).
+    bool strishValue(const Value& v, std::string& out);
+    std::string strInStrContext(const Value& v); // the Str:D-candidate string: value if Str-ish, else strOf
     // prefix `+` / `-` on a value, in full. A member because the object arms call
     // user methods; public because the `+*` / `-*` WhateverCode closure runs it
     // too, rather than carrying the second, thinner copy it used to.
@@ -1322,7 +1330,15 @@ public:
     static thread_local const std::vector<Value*>* pendingRwSlots_;
     Value evalAssignInner(Assign* a, bool sink);
     bool anyRwLinks_ = false; // sticky: some frame created an rw link (guards the per-assignment hook)
-    int scoreCandidate(const Value& cand, const ValueList& args); // -1 = no match, else specificity
+    // -1 = no match, else specificity. `perParam`, when given, also collects each
+    // POSITIONAL parameter's own narrowness — Rakudo compares candidates per
+    // parameter and only prefers one that is narrower on some parameter and no
+    // wider on any; two that each win a different parameter are in the same band,
+    // where declaration order decides. The summed int cannot express that: two
+    // `Str:D` params outscored one literal, so Needle::Compile's
+    // `handle(Str:D, Str:D, %_)` stole every call meant for `handle("not", Any:D, %_)`.
+    int scoreCandidate(const Value& cand, const ValueList& args,
+                       std::vector<int>* perParam = nullptr);
     bool methodTakesJunction(const Value& inv, const std::string& m, size_t ai); // param `ai` accepts a Junction whole
     bool boolify(const Value& v); // boolean context: honours a custom .Bool method on objects
     // TARG lever B: a condition of a chapter-19-specialized comparison shape
@@ -1421,6 +1437,16 @@ public:
         std::string w = elemTypeOf(container);
         if (!w.empty()) checkElemType(w, v, symbol);
     }
+    // A parameter may be typed by a CONSTANT holding a type object — Needle::
+    // Compile's `my constant StrType = Str but Type` is the case that found it.
+    // The signature carries the CONSTANT's name, which names no class, so the
+    // check fell through to the lenient unknown-type default and the candidate
+    // never outranked its plainer sibling. Answers the type's own name, or the
+    // name unchanged. Only consulted for names the class and subset tables do
+    // not know, and memoized: such names are otherwise the lenient path, so the
+    // lookup must not run per dispatch.
+    const std::string& typeAliasTarget(const std::string& name);
+    std::unordered_map<std::string, std::string> typeAliasCache_;
     bool typeMatchesResolved(const Value& v, const std::string& type); // type objects only: subset names resolve to their base chain, and UInt tolerates undefined (Rakudo's core UInt guards definedness in its where)
     Value evalNqpOp(NqpOp* n); // the `use nqp` compatibility subset (zero-cost when unused)
     // lone-candidate bind: throw X::TypeCheck::Binding on mismatch. blockParam

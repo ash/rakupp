@@ -12663,6 +12663,20 @@ void Interpreter::checkElemType(const std::string& want, const Value& v, const s
 // `method port(--> Port)` returns exactly this when neither the URI nor its
 // scheme carries a port, and its whole suite died at that boundary. A
 // hash-miss Any still fails an Int-based constraint — nominal first.
+const std::string& Interpreter::typeAliasTarget(const std::string& name) {
+    auto hit = typeAliasCache_.find(name);
+    if (hit != typeAliasCache_.end()) return hit->second;
+    std::string target = name;
+    // Only a name nothing else claims: a real class, a subset or a built-in
+    // resolves itself, and asking the scope about those would cost a lookup on
+    // every dispatch for no answer.
+    if (!name.empty() && !classes_.count(name) && !subsets_.count(name) &&
+        name.find("+{") == std::string::npos)
+        if (Value* v = tctx_.cur ? tctx_.cur->find(name) : nullptr)
+            if (v->t == VT::Type && !v->s.empty()) target = v->s;
+    return typeAliasCache_.emplace(name, std::move(target)).first->second;
+}
+
 bool Interpreter::typeMatchesResolved(const Value& v, const std::string& type) {
     if (v.t != VT::Type) return typeMatchesArg(v, type);
     auto resolve = [&](std::string n) {
@@ -12697,7 +12711,8 @@ static bool isCallableTypeObj(const Value& v) {
     return kCallableTypes.count(v.s) > 0;
 }
 
-int Interpreter::scoreCandidate(const Value& cand, const ValueList& args) {
+int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
+                                std::vector<int>* perParam) {
     if (cand.t != VT::Code || !cand.code() || !cand.code()->params) return 0; // no signature: lowest specificity
     const auto& params = *cand.code()->params;
     ValueList pos; for (auto& a : args) if (!isNamedArg(a)) pos.push_back(a);
@@ -12819,6 +12834,14 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args) {
     }
     for (size_t i = 0; i < positional.size() && i < pos.size(); i++) {
         const Param* p = positional[i];
+        // Each parameter's own contribution, recorded for the per-parameter
+        // comparison. Every path below either `continue`s or falls through to the
+        // bottom of the loop, so the delta is taken by a guard that runs on both.
+        const int scoreBefore = score;
+        struct ParamDelta {
+            std::vector<int>* out; const int& now; const int& was;
+            ~ParamDelta() { if (out) out->push_back(now - was); }
+        } paramDelta{perParam, score, scoreBefore};
         // A JUNCTION is Mu but NOT Any, so it does not bind to an `Any` — or
         // unconstrained, which means the same — parameter at all: in Rakudo no
         // such candidate matches and the call AUTOTHREADS instead. Scoring it as
@@ -12909,7 +12932,7 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args) {
             // convertible: `read(@paths)` must beat `read(IO() $path)` for a list.
             score += 6;
         }
-        else if (!typeMatchesArg(pos[i], p->type)) return -1;
+        else if (!typeMatchesArg(pos[i], typeAliasTarget(p->type))) return -1;
         // type smiley: :D requires a defined arg, :U requires an undefined one
         if (p->defConstraint == 1 && !isDefined(pos[i])) return -1;
         if (p->defConstraint == 2 && isDefined(pos[i])) return -1;
@@ -12944,7 +12967,9 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args) {
                                                        // that) and, transitively, a where-only param
                                                        // (2, so a NOMINAL type still outranks the
                                                        // `Any`-beats-`Mu` point given just above)
-            if (p->type == pos[i].typeName()) score += 2; // exact type is more specific than a supertype
+            // …through the alias too, so a `constant` naming a mixin type
+            // (`Str but Type`) is as specific as spelling `Str+{Type}` out.
+            if (typeAliasTarget(p->type) == pos[i].typeName()) score += 2; // exact type beats a supertype
                                                        // (so multi f(Int) beats multi f(Numeric) for an Int)
         }
         if (p->whereExpr) {
@@ -13108,6 +13133,27 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args) {
     // but a more-constrained slurpy still beats a plainer fixed one. Encode that as
     // the low bit so it only decides otherwise-equal scores; matches stay >= 0.
     return score * 2 + (slurpy ? 0 : 1);
+}
+
+// Rakudo compares candidates PER PARAMETER: one is preferred only when it is no
+// wider anywhere and narrower somewhere. Two that each win a DIFFERENT parameter
+// sit in the same band, and declaration order settles it — so this answers false
+// for them and the caller keeps the candidate it already has. The summed score
+// cannot express that: two `Str:D` params outscored one literal, and every call
+// meant for `handle("not", Any:D, %_)` went to `handle(Str:D, Str:D, %_)`.
+// Different arities compare by the summed score, which is what the candidate-level
+// bands (unfilled subsets, declared nameds, the slurpy bit) were tuned against.
+static bool betterCandidate(const std::vector<int>& cand, int candScore,
+                            const std::vector<int>& best, int bestScore) {
+    if (cand.size() != best.size()) return candScore > bestScore;
+    bool narrower = false, wider = false;
+    for (size_t i = 0; i < cand.size(); i++) {
+        if (cand[i] > best[i]) narrower = true;
+        else if (cand[i] < best[i]) wider = true;
+    }
+    if (narrower != wider) return narrower;  // one of them dominates
+    if (narrower) return false;              // same band — the earlier declaration stays
+    return candScore > bestScore;            // identical per parameter: the bands decide
 }
 
 // Per-thread stack accounting for the recursion guard. `t_stackTop` is a byte
@@ -14340,6 +14386,14 @@ bool rtTypeMatch(const Value& v, const std::string& type) {
                     if (c->name == q) return true;
             return false;
         }
+        // A TYPE OBJECT conforms to its own type and its ancestors, which is the
+        // same question `~~` asks — and typeMatchesArg already answers it by name
+        // (coercion types and parameterisations included). Falling through to the
+        // default said `nqp::istype(Str, Str)` was FALSE, so every nqp-level test
+        // against a type object failed: CBOR::Simple asks
+        // `nqp::istype(%map.keyof, Str)` to tell a string-keyed map from an
+        // object-keyed one, and answered "object-keyed" for both.
+        case VT::Type: return typeMatchesArg(v, type);
         default: return false;
     }
 }
@@ -16338,15 +16392,17 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
         // across the chain) picks the next-less-specific candidate and prevents loops.
         auto visited = std::make_shared<std::vector<const Value*>>();
         std::function<Value(ValueList)> dispatch = [this, &c, &codeVal, rwArgs, visited, &dispatch](ValueList as) -> Value {
-            const Value* best = nullptr; int bestScore = -1;
+            const Value* best = nullptr; int bestScore = -1; std::vector<int> bestVec;
             for (auto& cand : c.candidates) {
                 if (cand.code() && (cand.code()->isProto || cand.code()->isProtoBody))
                     continue; // the proto defines the group; it is not a candidate
                 bool seen = false; for (auto* v : *visited) if (v == &cand) { seen = true; break; }
                 if (seen) continue;
-                int s = scoreCandidate(cand, as);
+                std::vector<int> vec;
+                int s = scoreCandidate(cand, as, &vec);
                 if (s >= 0 && visited->empty() && rwCandidateRejects(cand, as.size(), rwArgs)) s = -1;
-                if (s > bestScore) { bestScore = s; best = &cand; }
+                if (s >= 0 && (!best || betterCandidate(vec, s, bestVec, bestScore)))
+                    { bestScore = s; best = &cand; bestVec = std::move(vec); }
             }
             if (!best || bestScore < 0) {
                 // A redispatch (callsame/nextsame) that runs past the last same-class
@@ -17437,28 +17493,36 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
         }
         std::function<Value(ValueList)> dispatch =
             [this, &c, dispatcherVal, selfCopy, rwArgs, visited, parentNext, parentFrame, &dispatch](ValueList as) -> Value {
-            const Value* best = nullptr; int bestScore = -1;
+            const Value* best = nullptr; int bestScore = -1; std::vector<int> bestVec;
             for (auto& cand : c.candidates) {
                 if (cand.code() && (cand.code()->isProto || cand.code()->isProtoBody))
                     continue; // the proto defines the group; it is not a candidate
                 bool seen = false; for (auto* v : *visited) if (v == &cand) { seen = true; break; }
                 if (seen) continue;
-                int s = scoreCandidate(cand, as);
+                std::vector<int> vec;
+                int s = scoreCandidate(cand, as, &vec);
                 if (s >= 0 && visited->empty() && rwCandidateRejects(cand, as.size(), rwArgs)) s = -1;
                 // the invocant's definedness smiley (`D:U:` / `::?CLASS:D:`): a
                 // constrained invocant REJECTS on mismatch and outranks an
                 // unconstrained candidate on match — this is how a proto splits
                 // its type-object and instance behaviours (JSON::Class everywhere)
+                // The invocant is a parameter too, so it takes the FRONT slot of the
+                // comparison vector rather than a bonus on the sum — otherwise a
+                // candidate that dominates on a positional would win over the one
+                // whose `:D` invocant actually matched.
+                int invocantSlot = 0;
                 if (s >= 0 && cand.code() && cand.code()->params)
                     for (auto& ip : *cand.code()->params) {
                         if (!ip.invocant || !ip.defConstraint) continue;
                         bool selfDef = isDefined(selfCopy);
                         if ((ip.defConstraint == 1 && !selfDef) ||
                             (ip.defConstraint == 2 && selfDef)) s = -1;
-                        else s += 1000;
+                        else { s += 1000; invocantSlot = 1; }
                         break;
                     }
-                if (s > bestScore) { bestScore = s; best = &cand; }
+                vec.insert(vec.begin(), invocantSlot);
+                if (s >= 0 && (!best || betterCandidate(vec, s, bestVec, bestScore)))
+                    { bestScore = s; best = &cand; bestVec = std::move(vec); }
             }
             if (!best || bestScore < 0) {
                 if (!visited->empty()) {                     // ran past the last same-class candidate
@@ -17881,7 +17945,7 @@ Value Interpreter::evalInterp(InterpStr* s) {
             }
             if (idx == parts.size()) {
                 std::string acc;
-                for (auto& v : parts) acc += strOf(v);
+                for (auto& v : parts) acc += strInStrContext(v);
                 return Value::str(nfcNormalize(acc));
             }
             Value out = Value::array(); out.isList = true; out.enumName = parts[idx].enumName;
@@ -17904,7 +17968,9 @@ Value Interpreter::evalInterp(InterpStr* s) {
         return expand(parts);
     }
     std::string out;
-    for (auto& v : vals) out += strOf(v); // honour user `method Str`/`gist`
+    // interpolation is a Str:D context too: "[$m]" with $m a `Str but R` is the
+    // VALUE, not the role's .Str (an explicit $m.Str still dispatches)
+    for (auto& v : vals) out += strInStrContext(v);
     return Value::str(nfcNormalize(out)); // NFG: combining marks compose across part boundaries
 }
 
@@ -21679,7 +21745,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
     // `$s ~= $obj` honours a user-defined Str method, exactly like binary `~`
     // (XML::Document.Str appends its root element object this way)
     if (!overloaded && binop == "~" && (lv->t == VT::Object || rhs.t == VT::Object)) {
-        *lv = Value::str(strOf(*lv) + strOf(rhs));
+        *lv = Value::str(strInStrContext(*lv) + strInStrContext(rhs));
         return sink ? Value::any() : *lv;
     }
     // `$s ~= …` appends into the existing buffer instead of rebuilding the whole
@@ -26614,8 +26680,8 @@ Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value
         return applyBinOp(op.substr(1), r, l);
     // see isStringCmpOp: an object compares by its own `method Str`
     if ((l.t == VT::Object || r.t == VT::Object) && isStringCmpOp(op))
-        return applyBinOp(op, l.t == VT::Object ? Value::str(strOf(l)) : l,
-                              r.t == VT::Object ? Value::str(strOf(r)) : r);
+        return applyBinOp(op, l.t == VT::Object ? Value::str(strInStrContext(l)) : l,
+                              r.t == VT::Object ? Value::str(strInStrContext(r)) : r);
     // short-circuit ops applied to already-evaluated VALUES ([//] reduce, sort &[||]):
     // no thunking here, just the selection semantics
     if (op == "//") return isDefined(l) ? l : r;
@@ -27077,8 +27143,8 @@ Value Interpreter::evalBinary(Binary* b) {
         // backwards — Text::CSV's `not_empty` filter kept the empty rows and
         // dropped the rest.
         if ((l.t == VT::Object || r.t == VT::Object) && isStringCmpOp(op)) {
-            if (l.t == VT::Object) l = Value::str(strOf(l));
-            if (r.t == VT::Object) r = Value::str(strOf(r));
+            if (l.t == VT::Object) l = Value::str(strInStrContext(l));
+            if (r.t == VT::Object) r = Value::str(strInStrContext(r));
         }
         Value res = applyArith(op, l, r);
         tagTemporal(op, l, r, res);
@@ -27151,7 +27217,12 @@ Value Interpreter::evalBinary(Binary* b) {
         Value l = eval(b->lhs.get()), r = eval(b->rhs.get());
         if (l.hashKind == "Proxy") l = deproxy(l);
         if (r.hashKind == "Proxy") r = deproxy(r);
-        if (l.t == VT::Object || r.t == VT::Object) return Value::str(strOf(l) + strOf(r));
+        // …but an operand that IS-A Str is a Str:D, so Rakudo binds the Str:D
+        // candidate and concatenates its VALUE — per operand, even when the
+        // other side is a plain object. `("bb" but R) ~ Plain.new` is "bbplain",
+        // not "R's-Str" ~ "plain".
+        if (l.t == VT::Object || r.t == VT::Object)
+            return Value::str(strInStrContext(l) + strInStrContext(r));
         return applyArith("~", l, r);
     }
     if (op == "does" || op == "but") {
@@ -27818,8 +27889,8 @@ Value Interpreter::evalBinary(Binary* b) {
     // test came out backwards — Text::CSV's `not_empty` filter kept the empty
     // rows and dropped the rest.
     if ((l.t == VT::Object || r.t == VT::Object) && isStringCmpOp(op))
-        return applyArith(op, l.t == VT::Object ? Value::str(strOf(l)) : l,
-                              r.t == VT::Object ? Value::str(strOf(r)) : r);
+        return applyArith(op, l.t == VT::Object ? Value::str(strInStrContext(l)) : l,
+                              r.t == VT::Object ? Value::str(strInStrContext(r)) : r);
     return applyArith(op, l, r);
 }
 
@@ -27949,6 +28020,15 @@ Value Interpreter::mixinValue(Value base, const Value& rhs, bool copy) {
             bc->name = base.typeName();
             bc->nativeParent = base.typeName();
             obj->cls = bc;
+            // A BUILT-IN type object mixes in to a type object just as a user
+            // class does — `Str but R` is the type `Str+{R}`, undefined, and
+            // usable as a constraint. Only the known-class branch said so, so
+            // `my constant StrType = Str but Type` was an INSTANCE: it was not
+            // .defined the way Rakudo has it, nothing smartmatched against it,
+            // and a `StrType:D` candidate could never bind. That is the whole of
+            // Needle::Compile's mixed-in-type path (`implicit2explicit` read
+            // every tagged needle as a plain string and lost its type).
+            baseWasType = base.t == VT::Type;
         }
     }
     // A new anonymous class derived from the current one, composing the role(s).
@@ -29367,7 +29447,12 @@ std::string Interpreter::gistOf(const Value& v, bool skipUser) {
     }
     // a `but VALUE` mixin boxes the base and adds a method named after VALUE's type
     // (`42 but 'x'` → a Str method): its .gist is that mixed string, not the box's.
-    if (v.t == VT::Object && v.obj() && v.obj()->hasBoxed && v.obj()->cls)
+    // A boxed NON-Str gists through .Str — that is what `Int.gist` does, so
+    // `say (41 but R)` is R's Str. A boxed STR does not: `Str.gist` is the
+    // string itself, so `say ("v" but R)` is "v" and the role's Str is only
+    // reached by asking for it. The two differ upstream and were one branch here.
+    if (v.t == VT::Object && v.obj() && v.obj()->hasBoxed && v.obj()->cls &&
+        v.obj()->boxed.t != VT::Str)
         if (Value* m = v.obj()->cls->findMethod("Str")) { ValueList none; return invokeMethod(*m, v, none).toStr(); }
     if (v.t == VT::Object && v.obj() && v.obj()->hasBoxed) return gistOf(v.obj()->boxed);
     // Rakudo's default gist for a hookless object IS its .raku — the same string,
@@ -29381,6 +29466,22 @@ std::string Interpreter::gistOf(const Value& v, bool skipUser) {
     if (v.t == VT::Object && v.obj() && v.obj()->cls && g_rakuRepr) return g_rakuRepr(v);
     return v.gist();
 }
+// A `Str but Role` mixin and a class `is Str` both box the underlying string;
+// that box is what the Str:D candidates see. A NON-Str object (or one boxing a
+// number) is not one and must keep going through `.Str`.
+bool Interpreter::strishValue(const Value& v, std::string& out) {
+    if (v.t != VT::Object || !v.obj() || !v.obj()->hasBoxed) return false;
+    const Value& b = v.obj()->boxed;
+    if (b.t != VT::Str) return false;
+    out = b.s;
+    return true;
+}
+
+std::string Interpreter::strInStrContext(const Value& v) {
+    std::string s;
+    return strishValue(v, s) ? s : strOf(v);
+}
+
 std::string Interpreter::strOf(const Value& v) {
     failureDetonate(v);
     // A Code has no string form: Rakudo warns and yields "". Handing back

@@ -8910,7 +8910,7 @@ Value rtBOrd(Interpreter&, const Value& v) {
     return c.empty() ? Value::nil() : Value::integer(c[0]);
 }
 Value rtBSay(Interpreter& I, const Value& v)   { std::string out = I.gistOf(v); out += "\n"; return I.ioEmit(out, "$*OUT", false); }
-Value rtBPrint(Interpreter& I, const Value& v) { return I.ioEmit(I.strOf(v), "$*OUT", false); }
+Value rtBPrint(Interpreter& I, const Value& v) { return I.ioEmit(I.strInStrContext(v), "$*OUT", false); }
 Value rtBPut(Interpreter& I, const Value& v)   { std::string out = I.strOf(v); out += "\n"; return I.ioEmit(out, "$*OUT", false); }
 Value rtBNote(Interpreter& I, const Value& v)  { std::string out = I.gistOf(v); out += "\n"; return I.ioEmit(out, "$*ERR", true); }
 Value rtBUc(Interpreter&, const Value& v)    { return Value::str(mapCase(v.toStr(), 1, 0)); }
@@ -9321,7 +9321,7 @@ void Interpreter::registerBuiltins() {
         out += "\n"; return I.ioEmit(out, "$*OUT", false);
     };
     B["print"] = [](Interpreter& I, ValueList& a) -> Value {
-        std::string out; for (auto& v : a) out += I.strOf(v);
+        std::string out; for (auto& v : a) out += I.strInStrContext(v);
         return I.ioEmit(out, "$*OUT", false);
     };
     B["put"] = [](Interpreter& I, ValueList& a) -> Value {
@@ -13208,6 +13208,20 @@ static void nqpBufWrite(std::string& bytes, long long off, const Value& val,
 }
 static Value nqpBufRead(const std::string& bytes, long long off,
                         int nbytes, int endian, char kind) {
+    // Reading past the end THROWS; it does not answer zero. A decoder driving
+    // itself off a buffer relies on that to stop — CBOR::Simple catches this
+    // very message by name (`when /^ 'MVMArray: read_buf out of bounds' /`), and
+    // without it `cbor-decode` got an endless supply of 0 bytes and never
+    // terminated: 278,159 loop iterations in five seconds where Rakudo makes
+    // one. The wording is MoarVM's because the dist matches on it — the one case
+    // where copying upstream's prose is the requirement, not a habit.
+    // `elems` counts this buffer's bytes, which is exact for the blob8 every
+    // caller here uses and approximate for wider element types.
+    if (off < 0 || off + nbytes > (long long)bytes.size())
+        throw RakuError{Value::typeObj("X::AdHoc"),
+            "MVMArray: read_buf out of bounds offset " + std::to_string(off) +
+            " start 0 elems " + std::to_string(bytes.size()) +
+            " count " + std::to_string(nbytes)};
     unsigned char raw[8] = {0};
     for (int i = 0; i < nbytes; i++) {
         long long p = off + i;

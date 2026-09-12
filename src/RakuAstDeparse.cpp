@@ -36,7 +36,14 @@ namespace {
 std::string shortName(const Value& node) {
     if (node.t != VT::Object || !node.obj() || !node.obj()->cls) return "";
     const std::string& n = node.obj()->cls->name;
-    return isRakuAstName(n) ? n.substr(9) : n;
+    std::string s = isRakuAstName(n) ? n.substr(9) : n;
+    // `$node but Role` names its anonymous subclass `…::TopicCall+{Role}`, which
+    // matches no table key. A mixin does not change what a node DEPARSES as —
+    // Rakudo dispatches by method and never sees the name — so cut it off.
+    // Needle::Compile tags every needle it builds this way (`… but Type<and>`).
+    auto plus = s.find("+{");
+    if (plus != std::string::npos) s.resize(plus);
+    return s;
 }
 
 // Where a class's POSITIONAL `.new` arguments land. Everything else arrives as
@@ -70,15 +77,6 @@ const std::map<std::string, const char*>& positionalSlot() {
     return t;
 }
 
-// …and the classes whose positionals are a LIST: every positional goes into one
-// array slot. `RakuAST::ArgList.new($a, $b)`, `RakuAST::StatementList.new(…)`.
-const std::map<std::string, const char*>& slurpySlot() {
-    static const std::map<std::string, const char*> t = {
-        {"ArgList", "args"}, {"Name", "parts"},
-        {"StatementList", "statements"}, {"SemiList", "statements"},
-    };
-    return t;
-}
 
 bool isNode(const Value& v) {
     return v.t == VT::Object && v.obj() && v.obj()->cls && isRakuAstName(v.obj()->cls->name);
@@ -816,11 +814,11 @@ Value rakuAstNew(Interpreter& I, const std::string& qualifiedName, ValueList& ar
         else positionals.push_back(a);
     }
     if (!positionals.empty()) {
-        auto sl = slurpySlot().find(cls);
-        if (sl != slurpySlot().end()) {
+        const char* slot = rakuAstListSlot(cls);
+        if (slot) {
             Value list = Value::array();
             for (auto& p : positionals) list.arr()->push_back(p);
-            od->attrs[sl->second] = std::move(list);
+            od->attrs[slot] = std::move(list);
         } else {
             auto ps = positionalSlot().find(cls);
             if (ps == positionalSlot().end())

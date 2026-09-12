@@ -1,5 +1,7 @@
 #include "CNumeric.h"
 #include "Value.h"
+
+#include <cstring>
 #include "Interpreter.h" // RakuError (zero-denominator Rat Str-coercion throws)
 #include "BuiltinsShared.h" // g_deproxy — a container gists as what it holds
 
@@ -322,6 +324,22 @@ double Value::toNum() const {
     }
 }
 
+// The last significant digit rounded UP, with carry — the tie candidate printf
+// does not produce, since it breaks ties to even. Answers false when the carry
+// would run past the leading digit (9.99… → 10.0), which needs an exponent
+// change; the caller then simply tries a longer precision, as it did before.
+static bool bumpLastDigit(char* s) {
+    char* e = std::strchr(s, 'e');
+    char* p = e ? e - 1 : s + std::strlen(s) - 1;
+    for (; p >= s; p--) {
+        if (*p == '.') continue;
+        if (*p >= '0' && *p <= '8') { (*p)++; return true; }
+        if (*p == '9') { *p = '0'; continue; }
+        return false;                       // a sign, or something unexpected
+    }
+    return false;                           // carried off the front
+}
+
 static std::string numToStr(double n) {
     if (std::isinf(n)) return n < 0 ? "-Inf" : "Inf";
     if (std::isnan(n)) return "NaN";
@@ -339,6 +357,18 @@ static std::string numToStr(double n) {
     for (int prec = 15; prec <= 17; prec++) {
         cnum::snprintf(buf, sizeof buf, "%.*g", prec, n);
         if (cnum::strtod(buf, nullptr) == n) return buf;
+        // A value whose decimal expansion ENDS exactly halfway — every power of
+        // two does, 2**-24 among them — is a tie, and printf breaks ties to
+        // even. That can hand back the one neighbour which does NOT round-trip,
+        // and this loop then went to a longer precision than Rakudo needs:
+        // 5.9604644775390625e-08 where Rakudo prints 5.960464477539063e-08
+        // (CBOR::Simple's half-float diagnostic asserts the shorter one).
+        // The other tie candidate is the same digits with the last one rounded
+        // UP instead of to even. It is accepted only if it round-trips, so this
+        // can never widen the error — it only shortens the string.
+        char alt[40];
+        std::memcpy(alt, buf, sizeof alt);
+        if (bumpLastDigit(alt) && cnum::strtod(alt, nullptr) == n) return alt;
     }
     cnum::snprintf(buf, sizeof buf, "%.17g", n);
     return buf;

@@ -55,6 +55,17 @@ inline bool isRakuAstNode(const Value& v) {
     return v.t == VT::Object && v.obj() && v.obj()->cls && isRakuAstName(v.obj()->cls->name);
 }
 
+// The classes whose positionals are a LIST — every positional goes into one
+// array slot (`RakuAST::ArgList.new($a, $b)`). Header-inline because both the
+// deparser and the node methods need it and either TU can be cut from a
+// `--slim` build; a cross-TU call would only show up in the slim gate.
+inline const char* rakuAstListSlot(const std::string& shortCls) {
+    if (shortCls == "ArgList") return "args";
+    if (shortCls == "Name")    return "parts";
+    if (shortCls == "StatementList" || shortCls == "SemiList") return "statements";
+    return nullptr;
+}
+
 // The registry's ClassInfo for a fully qualified `RakuAST::…` name, or null
 // when the registry does not carry it. Materializes on first call.
 //

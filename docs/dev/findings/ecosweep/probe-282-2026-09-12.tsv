@@ -1,0 +1,283 @@
+name	version	released	verdict	detail	seconds	exit	first-error
+ADT	0.5	2017-11-21	self-fail		0.7	1	FAILED: 01-tree.t | Undefined routine 'trait_mod:<handles>'
+ASN::META	0.5.3	2021-08-22	dep-fail	ASN::Grammar	1	1	FAILED: 00-sanity.t | # Failed test 'LDAP spec is parsed' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-20591-ASN--Grammar/t/00-sanity.t line 370
+Acme::DSON	0.2.1	2016-10-28	other	trace: /Users/ash/.raku/rakupp-install/trace.log — attach this file when reporting the problem	0.8	1	
+Algorithm::Kruskal	0.0.1	2024-08-08	dep-fail	Algorithm::MinMaxHeap	1.2	1	FAILED: 02-insert.t | # Type check failed for an element of the container; expected Type but got Int (0)
+Algorithm::SpiralMatrix	0.6.0	2021-09-04	self-fail		1.5	1	FAILED: line.rakutest | # Failed test 'distance:clockwise line 11x3' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-20673-Algorithm--SpiralMatrix/Algorithm-SpiralMatrix-master/t/line.rakutest line 14
+App::ByWord	0.0.5	2026-02-02	dep-fail	Terminal-API	1	1	FAILED: basic.rakutest | No such method 'native-descriptor' for invocant of type 'FileHandle'
+App::Rak	0.3.20	2026-05-28	dep-fail	Needle::Compile	2	1	FAILED: 02-single.rakutest | # Too many levels of recursion
+App::Rak::Markdown	0.0.5	2026-05-28	dep-fail	Needle::Compile	1.9	1	FAILED: 02-single.rakutest | # Too many levels of recursion
+App::RakuCron	0.0.1	2024-02-03	dep-fail	Lumberjack	0.9	1	FAILED: 07-errors.t | No such method 'new' for invocant of type 'IO::Handle'
+ArrayHash	1.0.0	2020-04-07	self-fail		1	1	FAILED: array-hash.t | ===SORRY!=== Parse error at line 18: Error while compiling module ArrayHash (line 18): unexpected operator in term position (got '&')
+Asserter	0.1.0	2024-02-22	self-fail		0.2	1	FAILED: 01.rakutest | Could not find QAST in:
+Auth::SCRAM::Async	0.0.1	2022-02-10	pass		1.4	0	
+Backtrace::Files	0.0.4	2024-07-29	pass		0.8	0	
+Bailador::Plugin::NamedQueries	0.1001	2018-04-25	dep-fail	HTTP::MultiPartParser	1.8	1	FAILED: 035_headers.t | # Failed test 'parts (--xxx\x0DFoo:\x20Foo\x0DBar:\x20Bar\x0D\x0D\x0D--xxx--\x0D)' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-21031-HTTP--MultiPartParser/p6-HTTP-MultiPartParser-master/t/035_headers.t line 57
+BitEnum	0.5	2020-04-23	self-fail		0.5	1	FAILED: 01-simple.t | Variable '$prefix' is not declared
+BreakDancer	*	2016-10-28	other	trace: /Users/ash/.raku/rakupp-install/trace.log — attach this file when reporting the problem	0.6	1	
+CLI::Ecosystem	0.0.7	2025-02-04	dep-fail	Rakudo::CORE::META	0.4	1	FAILED: 01-basic.rakutest | Undefined routine 'nqp::gethllsym'
+CRDT	0.0.16	2026-02-10	self-fail		0.6	1	FAILED: 02-g-counter.rakutest | # Failed test 'X++' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-21169-CRDT/CRDT-0.0.16/t/02-g-counter.rakutest line 28
+CheckedSQL	0.1	2020-02-07	self-fail		0.5	1	FAILED: 01-sigils.t | ===WARNING=== Module CheckedSQL EXPORT failed: Type check failed on attribute '$!return'; expected AST::Return:D but got AST::Return
+Chinese	0.0.3	2025-06-15	self-fail		0.3	1	FAILED: 01-operators.t | ===SORRY!=== Parse error at line 10: expected ) (got '加')
+CodeUnit	0.0.11	2026-08-10	self-fail		0.3	1	FAILED: 01-basic.rakutest | # Failed test 'Could we eval' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-21256-CodeUnit/CodeUnit-0.0.11/t/01-basic.rakutest line 8
+Command::Despatch	0.2	2021-01-19	self-fail		0.5	1	FAILED: test.t | "test default with args" does not start with a recognised command
+Compress::Zstd	0.0.3	2019-09-12	self-fail		0.7	1	FAILED: 01-basic.t | Type check failed in binding to parameter '$retcode'; expected size_t but got Int (0)
+Control::Bail	v0.0.1	2017-04-25	self-fail		0.6	1	FAILED: bail.t | Could not find QAST in:
+Cro::HTTP::Session::Red	0.0.2	2019-05-15	dep-fail	Red	2.3	1	FAILED: 04-precomp-supplier.rakutest | Fail execute: raku -I/private/var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-21306-App--RaCoCo/dist/t-resources/exam/lib --target=mbc --output=/private/var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-21306-App--RaCoCo/dist/t-resou …
+Crypt::RC4	0.0.6	2024-09-18	self-fail		0.3	1	FAILED: 00basic.t | No such method 'new' for invocant of type 'Any'
+DSL::English::QuantileRegressionWorkflows	0.8.3	2024-08-28	dep-fail	Clipboard	1.2	1	FAILED: 02-from-clipboard.t | /bin/sh: xclip: command not found
+Date::Calendar::Julian	0.1.0	2024-12-19	dep-fail	List::MoreUtils	0.9	1	FAILED: 01-basic.rakutest | # Failed test 'is &after externally accessible?' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-21391-List--MoreUtils/List-MoreUtils-0.0.10/t/01-basic.rakutest line 23
+Dice::Roller	0.1.2	2024-12-14	self-fail		0.3	1	FAILED: 00-basics.t | # Failed test 'Initial state is 1d20' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-21410-Dice--Roller/Dice-Roller-0.1.2/t/00-basics.t line 12
+Directory	0.0.10	2023-01-28	dep-fail	IO::Dir	0.7	1	FAILED: 01-is.t | No such method 'cache' for invocant of type 'Regex'
+DispatchMap	0.2.3	2020-11-27	self-fail		0.5	1	FAILED: 01-basic.t | ===SORRY!=== Parse error at line 114: Error while compiling module DispatchMap (line 114): expected variable after declarator (got 'proto')
+Distribution::Resources::Menu	0.0.4	2022-06-27	dep-fail	Menu::Simple	0.3	1	FAILED: 00-sanity.rakutest | # Failed test 'has display method' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-21456-Menu--Simple/Menu-Simple-0.17/t/00-sanity.rakutest line 11
+Ecosystem	0.0.33	2026-06-13	dep-fail	Rakudo::CORE::META	0.4	1	FAILED: 01-basic.rakutest | Undefined routine 'nqp::gethllsym'
+EcosystemMakerFaker	0.1.1	2025-01-15	dep-fail	shorten-sub-commands	0.6	1	FAILED: 01-basic.rakutest | # Failed test 'does foo give foozle?' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-21593-shorten-sub-commands/shorten-sub-commands-0.0.8/t/01-basic.rakutest line 11
+Ethelia	0.0.154	2026-06-30	dep-fail	Crypt::LibGcrypt	2.4	1	FAILED: 01-basic.t | Cannot locate native library 'gcrypt': dlopen(/usr/local/lib/libgcrypt.dylib, 0x0009): tried: '/usr/local/lib/libgcrypt.dylib' (mach-o file, but is an incompatible architecture (have 'x86_64', need 'arm64e' or 'arm64')), '/System/Volumes/Preboot/Cryptexes/OS/usr/local/lib/libgcr …
+FINALIZER	0.0.10	2026-08-09	self-fail		0.2	1	FAILED: 01-basic.rakutest | ===WARNING=== Module FINALIZER EXPORT failed: No such method 'find-attach-target' for invocant of type 'Any'
+File-Path-Copy	0.1.18	2025-07-13	self-fail		0.5	1	FAILED: 001-Meta-test.rakutest | ===SORRY!=== Parse error at line 7: expected ) (got '«')
+File::Tudo	0.03	2025-01-31	pass		0.5	0	
+FileSystem::Parent	0.4.3	2020-01-21	dep-fail	FindBin	0.5	1	FAILED: 02-export.rakutest | # FindBin
+Functional::Queue	0.0.2	2024-07-07	dep-fail	ValueList	0.4	1	FAILED: 01-basic.rakutest | No such method 'new' for invocant of type 'X::Assignment::RO'
+Future	0.1	2018-07-25	self-fail		0.9	1	FAILED: 00-basic.t | # Undefined routine 'new-future'
+GeoIP2	1.1.4	2024-12-29	timeout		120	142	
+GitHub::Actions	0.0.1	2022-01-04	self-fail		4.3	1	FAILED: 01-is.t | No such method 'cache' for invocant of type 'Regex'
+Gnome::Gsk4	0.2.0	2025-07-27	dep-fail	Gnome::N	2.3	1	FAILED: NativeLib.rakutest | # Undefined routine 'gdk-lib'
+GnomeTools	0.8.2	2026-06-22	dep-fail	Cairo	2.8	1	FAILED: matrix.t | Cannot locate native library 'libcairo.2.dylib': dlopen(/usr/local/lib/libcairo.2.dylib, 0x0009): tried: '/usr/local/lib/libcairo.2.dylib' (mach-o file, but is an incompatible architecture (have 'x86_64', need 'arm64e' or 'arm64')), '/System/Volumes/Preboot/Cryptexes/OS/usr/local/ …
+Grammar::Message	0.0.2	2022-12-20	self-fail		1	1	FAILED: 00-basic.t | # Failed test 'Pointer created' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-23401-Grammar--Message/raku-grammar-message/t/00-basic.t line 32
+HarfBuzz	0.1.7	2025-04-18	self-fail		1.4	1	FAILED: 10_basic.t | Variable '$HB' is not declared
+Hash-with	0.0.6	2025-01-10	self-fail		0.9	1	FAILED: 01-basic.rakutest | # Failed test 'does lower case give right answer' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-23429-Hash-with/Hash-with-0.0.6/t/01-basic.rakutest line 7
+Humming-Bird	4.1.0	2026-07-11	dep-fail	ULID	4.6	1	FAILED: basic.t | # Failed test 'non-random ULID looks okay' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-23442-ULID/ULID-0.1.0/t/basic.t line 54
+IO-Compress	2.094	2020-07-13	other	trace: /Users/ash/.raku/rakupp-install/trace.log — attach this file when reporting the problem	1.5	1	
+IO-Socket-TLSViaAsync	1.0.0	2024-07-19	dep-fail	IO::Socket::Async::SSL	8.2	1	FAILED: client-server.t | The socket was closed during negotiation
+IO::MiddleMan	1.001004	2022-03-13	self-fail		1.7	1	FAILED: 07-errors.t | No such method 'new' for invocant of type 'IO::Handle'
+IO::Socket::Async::SSL	0.8.2	2025-06-03	self-fail		8	1	FAILED: client-server.rakutest | The socket was closed during negotiation
+IRC::Client::Plugin::Rakkable	0.0.3	2026-05-28	dep-fail	Needle::Compile	7.2	1	FAILED: 02-single.rakutest | # Too many levels of recursion
+Inline::Ruby	0.4.1	2018-10-12	build-fail		2.9	1	
+Intl::Format::DateTime	0.3.0	2023-04-16	dep-build-fail	Timezones::ZoneInfo	1.8	1	
+JSON-CSV	0.0.1	2022-07-11	dep-fail	Slangify	1.9	1	FAILED: 01-basic.rakutest | Useless use of constant string ?"Successfully slanged" in sink context (line 11)
+JSON::Fast::Hyper	0.0.11	2026-06-09	pass		0.8	0	
+JSON::Stream	0.0.5	2021-06-23	self-fail		2.3	1	FAILED: export.t | # Failed test 'With import, function is available' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-24143-Module--Pod/Module-Pod-master/t/export.t line 17
+L10N::AF	0.0.4	2026-01-04	pass		0.7	0	
+L10N::Complete	0.0.3	2025-07-25	pass		0.9	0	
+L10N::EN	0.0.4	2025-06-27	pass		0.7	0	
+L10N::FR	0.0.3	2025-06-27	pass		0.7	0	
+L10N::IT	0.0.3	2025-06-27	pass		0.8	0	
+L10N::NL	0.0.6	2025-06-28	pass		0.7	0	
+L10N::TLH	0.0.3	2024-01-14	pass		0.8	0	
+LLM::Chat	0.10.0	2026-08-21	dep-fail	Template::Jinja2	2.2	1	FAILED: 01-lexer.rakutest | # Failed test 'Equals operator' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-24377-Template--Jinja2/Template-Jinja2-0.3.0/t/01-lexer.rakutest line 95
+LaTeX::Grammar	0.0.5	2026-03-29	pass		1.6	0	
+Lingua::EN::Stem::Porter	1.2	2022-05-25	self-fail		2.1	1	FAILED: 01-wordlist.rakutest | # Failed test 'The stem of cyme, cym, should be cyme' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-24412-Lingua--EN--Stem--Porter/Lingua-EN-Stem-Porter-1.2/t/01-wordlist.rakutest line 18
+Linux::Fuser	0.0.16	2026-01-06	dep-fail	System::Passwd	0.8	1	FAILED: Passwd.rakutest | This module is not compatible with the operating system macos
+Lumberjack::Application	0.0.11	2026-01-07	dep-fail	Lumberjack	3	1	FAILED: 07-errors.t | No such method 'new' for invocant of type 'IO::Handle'
+Lumberjack::Dispatcher::Syslog	0.0.6	2026-01-06	dep-fail	Lumberjack	0.7	1	FAILED: 07-errors.t | No such method 'new' for invocant of type 'IO::Handle'
+META::constants	0.0.6	2026-05-28	pass		0.7	0	
+MPD::Client	0.1.3	2017-10-14	self-fail		1	1	FAILED: 00-client.t | Cannot connect to localhost:6600: Connection refused
+Math::Libgsl::DigitalFiltering	0.0.2	2022-12-07	dep-fail	Math::Libgsl::Constants	1.8	1	FAILED: 00-use.rakutest | # Failed test 'The module can be use-d ok: Math::Libgsl::Constants' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-24645-Math--Libgsl--Constants/Math-Libgsl-Constants-0.0.13/t/00-use.rakutest line 6
+Math::Root	0.0.4	2023-02-26	self-fail		0.9	1	FAILED: 01-integer.t | Type check failed in binding to parameter '$integer'; expected Int but got Num (3.814697265625e+20)
+Matrix::Bot	0.2.0	2019-07-16	dep-fail	LogP6	2	1	FAILED: 00-bad-config-file.t | Undeclared name 'Level::trace'
+Matrix::Client	0.7.0	2021-08-26	dep-fail	HTTP::UserAgent	3.1	1	FAILED: capture.t | # Failed test 'OH HAI! in captured string' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-24690-IO--Capture--Simple/raku-io-capture-simple/t/capture.t line 10
+Method::Protected	0.0.4	2025-03-27	self-fail		31.9	1	FAILED: 01-basic.rakutest | No such method 'add_attribute' for invocant of type 'GLOBAL'
+NCurses	0.6.3	2017-10-12	self-fail		2.2	1	FAILED: 010-basic.t | # Failed test 'not ok for a bogus one' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-25492-LibraryCheck/LibraryCheck-0.0.12/t/010-basic.t line 11
+Needle::Compile	0.0.12	2026-06-24	self-fail		2.1	1	FAILED: 02-single.rakutest | # Too many levels of recursion
+Net::Jupyter	0.1.3	2020-05-17	dep-fail	Net::ZMQ	1.6	1	FAILED: 00.t | # Failed test 'The module can be use-d ok: Net::ZMQ::Version' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-25758-Net--ZMQ/perl6-zmq-master/t/00.t line 15
+Net::Postgres	0.0.4	2023-07-10	dep-fail	Protocol::Postgres	1.5	1	FAILED: 02-roundtrip.rakutest | ===SORRY!=== Parse error at line 733: Error while compiling module Protocol::Postgres (line 733): expected ) (got '}')
+Net::ZMQ	0.8	2018-08-03	self-fail		0.7	1	FAILED: 00-basic.t | Cannot locate native library 'zmq': dlopen(/usr/local/lib/libzmq.dylib, 0x0009): tried: '/usr/local/lib/libzmq.dylib' (mach-o file, but is an incompatible architecture (have 'x86_64', need 'arm64e' or 'arm64')), '/System/Volumes/Preboot/Cryptexes/OS/usr/local/lib/libzmq.dylib' ( …
+Object::Trampoline	0.0.12	2023-12-17	dep-fail	InterceptAllMethods	0.7	1	FAILED: 01-basic.rakutest | No such method 'foo' for invocant of type 'Foo'
+P5__FILE__	0.0.6	2021-09-09	self-fail		0.7	1	FAILED: 01-basic.t | # Failed test 'is __PACKAGE__ imported?' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-25884-P5__FILE__/P5__FILE__-0.0.6/t/01-basic.t line 7
+PDF::Native	0.1.14	2026-08-10	dep-fail	PDF::Grammar	1.5	1	FAILED: 00objects.t | # Failed test 'ws: ws parse:  ' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-25899-PDF--Grammar/PDF-Grammar-0.3.6/t/00objects.t line 52
+PURL	0.0.15	2026-06-09	dep-fail	Identity::Utils	1	1	FAILED: 01-basic.rakutest | ===WARNING=== Module Identity::Utils EXPORT failed: No such method 'file' for invocant of type 'Sub'
+Pakku::Meta	0.0.4	2021-03-07	dep-fail	Pakku	1	1	FAILED: cmd.rakutest | # Failed test 'add Spec' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-26041-Pakku/dist/t/cmd.rakutest line 238
+Pakku::Spec	0.0.6	2021-03-07	dep-fail	Pakku	0.4	1	FAILED: cmd.rakutest | # Failed test 'add Spec' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-26073-Pakku/dist/t/cmd.rakutest line 238
+Perl6::Documentable	3.0.3	2019-08-29	dep-fail	Template::Mustache	4.1	1	FAILED: 01-basic.t | # Testing strings
+Pheix	1.1.3	2026-01-07	timeout		120	142	
+Pod::Load	0.7.2	2022-11-19	pass		1.5	0	
+Pod::Utils	0.0.2	2022-12-30	self-fail		1.5	1	FAILED: 03-first-.t | # Failed test 'Basic test' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-29311-Pod--Utils/raku-pod-utils/t/03-first-.t line 11
+Point	1.2.1	2022-02-09	self-fail		0.8	1	FAILED: 01-basic.t | Undefined routine 'nqp::add_n'
+PostCocoon::Url	1.1	2024-12-12	self-fail		1	1	FAILED: 00-url.rakutest | # Failed test 'Encode null-char' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-29380-PostCocoon--Url/PostCocoon-Url-1.1/t/00-url.rakutest line 7
+Protocol::Postgres	0.0.13	2025-06-06	self-fail		1.5	1	FAILED: 02-roundtrip.rakutest | ===SORRY!=== Parse error at line 733: Error while compiling module Protocol::Postgres (line 733): expected ) (got '}')
+Qwiratry--Location--HTTP	0.0.2	2026-07-02	dep-fail	Slangify	1	1	FAILED: 01-basic.rakutest | Useless use of constant string ?"Successfully slanged" in sink context (line 11)
+Qwiratry::Format::XML	0.0.1	2026-07-21	dep-fail	Slangify	0.4	1	FAILED: 01-basic.rakutest | Useless use of constant string ?"Successfully slanged" in sink context (line 11)
+Qwiratry::Location::HTTP	0.0.3	2026-07-21	dep-fail	Slangify	0.6	1	FAILED: 01-basic.rakutest | Useless use of constant string ?"Successfully slanged" in sink context (line 11)
+RSV	0.0.1	2024-02-07	self-fail		0.9	1	FAILED: simple-cases.rakutest | ===SORRY!=== Parse error at line 65: Error while compiling module RSV (line 65): Unable to parse quote-words subscript; couldn't find '>>' (got '')
+RakuAST::Utils	0.0.3	2025-03-09	self-fail		0.8	1	FAILED: 01-basic.rakutest | No such method 'roles' for invocant of type 'Array[Int]'
+Rakudo::Cache	0.0.4	2025-02-13	pass		0.8	0	
+Rat::Power	0.0.2	2024-01-31	self-fail		0.9	1	FAILED: 01-basic.rakutest | # Failed test 'Int' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-29674-Rat--Power/dist/t/01-basic.rakutest line 4
+Red	0.2.5	2026-08-23	self-fail		4.7	1	FAILED: 04-precomp-supplier.rakutest | Fail execute: raku -I/private/var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-29699-App--RaCoCo/dist/t-resources/exam/lib --target=mbc --output=/private/var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-29699-App--RaCoCo/dist/t-resou …
+SBOM::CycloneDX	0.0.16	2026-06-09	dep-fail	Email::Valid	1	1	FAILED: 02-simple_valid.t | No such method 'flat' for invocant of type 'Match'
+SQL::Builder::ExecuteWithDBIish	0.0.1	2023-05-27	dep-fail	SQL::Builder	1.9	1	FAILED: 01-basic.rakutest | # Failed test at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-29811-SQL--Builder/SQL-Builder-0.2.0/t/01-basic.rakutest line 8
+Seq::Bounded	1.0.1	2019-05-22	self-fail		1.5	1	FAILED: bounds.t | # Failed test 'Test sequence created' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-29964-Seq--Bounded/Seq-Bounded-1.0.1/t/bounds.t line 7
+Slang::Roman	0.6.3	2026-06-22	dep-fail	Slangify	0.5	1	FAILED: 01-basic.rakutest | Useless use of constant string ?"Successfully slanged" in sink context (line 11)
+Sparrowdo::VSTS::YAML::Build::Assembly::Patch	1.0.0	2018-10-03	self-fail		3.3	1	FAILED: 00-load.t | Could not find Sparrowdo::Core::DSL::Template in:
+Staticish	0.0.9	2022-08-07	self-fail		1	1	FAILED: 020-test.t | # Failed test 'another class doesn't wind up the wrong class' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-30056-Staticish/Staticish-0.0.9/t/020-test.t line 39
+String::Utils	0.0.40	2026-03-02	pass		1.3	0	
+Sum	v0.1.0	2017-04-25	self-fail		1	1	FAILED: adler.t | No such method 'contents' for invocant of type 'Any'
+Sway::Config	0.2.2	2022-07-23	dep-fail	Pod::Contents	1.1	1	FAILED: 00-load.rakutest | # Failed test 'The module can be use-d ok: Pod::Contents:auth<zef:CIAvash>' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-30239-Pod--Contents/dist/t/00-load.rakutest line 7
+Syntax::Highlighters	0.1.5	2023-12-08	self-fail		1.2	1	FAILED: 000-syntax-highlighters.rakutest | ===SORRY!=== Parse error at line 324: Error while compiling module Syntax::Highlighters (line 324): expected { (got '«')
+System::Passwd	0.1	2022-05-28	self-fail		0.8	1	FAILED: Passwd.rakutest | This module is not compatible with the operating system macos
+Template::HAML	0.9.6	2026-08-02	self-fail		4.5	1	FAILED: 0200-multiline-attrs.rakutest | # Failed test 'child after multi-line hash records the actual source line' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-30299-Template--HAML/dist/t/0200-multiline-attrs.rakutest line 157
+Terminal::Table	0.1.1	2022-11-29	self-fail		3	1	FAILED: 04-style.rakutest | # Failed test 'style combination 1 ok' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-30363-Terminal--Table/Terminal-Table-0.1.1/t/04-style.rakutest line 29
+Test::ContainerizedService	0.2	2022-08-02	timeout		120	142	
+Test::Fuzz	0.2.1	2018-10-08	self-fail		1.1	1	FAILED: 01-generator.t | # Failed test 'An object of type 'Parameter' can do the method 'generate'' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-33234-Test--Fuzz/Test-Fuzz-master/t/01-generator.t line 23
+Test::Run	0.2.3	2022-07-23	self-fail		0.7	1	FAILED: 00-load.rakutest | # Failed test 'The module can be use-d ok: Test::Run:auth<zef:CIAvash>' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-33260-Test--Run/dist/t/00-load.rakutest line 8
+Text::Diff	1.0.5	2021-11-23	dep-fail	Algorithm::Diff	0.8	1	FAILED: base.rakutest | Undefined routine 'Algorithm::Diff::_longestCommonSubsequence'
+Text::Indented	0.1	2019-02-09	other	trace: /Users/ash/.raku/rakupp-install/trace.log — attach this file when reporting the problem	0.7	1	
+Time::Repeat	0.0101	2018-05-20	self-fail		1	1	FAILED: 03-hhmm.t | Died
+Trait::Enum	0.1	2020-05-11	self-fail		1.1	1	FAILED: 01-basic.t | No such method 'foo-type' for invocant of type 'Foo'
+Tree::Binary	0.0.7	2022-07-07	self-fail		0.8	1	FAILED: 01-basic.rakutest | # Failed test 'The module can be use-d ok: Tree::Binary' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-33420-Tree--Binary/Tree-Binary-0.0.7/t/01-basic.rakutest line 2
+ULID	0.1.0	2019-02-12	self-fail		1	1	FAILED: basic.t | # Failed test 'non-random ULID looks okay' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-33432-ULID/ULID-0.1.0/t/basic.t line 54
+Updown	0.0.8	2024-09-25	timeout		120	142	FAILED: client-server.t | The socket was closed during negotiation
+Version::Repology	0.0.5	2025-08-24	self-fail		3.9	1	FAILED: 01-basic.rakutest | Too many levels of recursion
+Whateverable	1.0.11	2021-12-14	dep-fail	HTTP::Roles	3.5	1	FAILED: 00-use.rakutest | # Failed test 'Class must implement methods from role' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-37527-HTTP--Roles/HTTP-Roles-0.2.3/t/00-use.rakutest line 6
+X11::Xdo	0.0.1	2018-12-18	self-fail		0.7	1	FAILED: 00-basic.t | # Failed test 'is usable' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-37565-X11--Xdo/X11-libxdo-9c25ae0a693c653866e26ee8cca73ad6f024d1fd/t/00-basic.t line 5
+XXX	*	2014-05-14	dep-fail	TestML	0.6	1	FAILED: arguments.t | ===SORRY!=== Parse error at line 108: Error while compiling module TestML::Runner (line 108): Confused (got ')')
+Zeco	0.0.3	2025-06-18	dep-fail	ULID	2.2	1	FAILED: basic.t | # Failed test 'non-random ULID looks okay' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-37730-ULID/ULID-0.1.0/t/basic.t line 54
+actions	0.0.2	2024-09-23	pass		0.7	0	
+are	0.0.1	2022-11-02	self-fail		0.8	1	FAILED: 01-basic.rakutest | Undefined routine 'nqp::repeat_until'
+caelum	0.1.1	2021-04-29	dep-fail	Terminal::Table	1.2	1	FAILED: 04-style.rakutest | # Failed test 'style combination 1 ok' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-37798-Terminal--Table/raku-terminal-table-master/t/04-style.rakutest line 29
+flow	0.0.6	2021-01-19	self-fail		0.7	1	FAILED: 00-Test.t |
+has-word	0.0.7	2025-09-06	pass		0.7	0	
+hyperize	0.0.4	2025-02-12	pass		0.7	0	
+paths	10.2	2026-02-10	pass		0.8	0	
+shorten-sub-commands	0.0.8	2026-04-17	self-fail		0.3	1	FAILED: 01-basic.rakutest | # Failed test 'does foo give foozle?' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-37891-shorten-sub-commands/shorten-sub-commands-0.0.8/t/01-basic.rakutest line 11
+API::Discord	0.6	2021-06-29	dep-fail	InterceptAllMethods	2.6	1	FAILED: 01-basic.rakutest | No such method 'foo' for invocant of type 'Foo'
+ASTQuery	0.0.7	2026-06-15	self-fail		2	1	FAILED: 01-basic.rakutest | Undeclared name 'RakuAST::CurryThunk'
+Acme::Overreact	0.0.1	2024-11-16	dep-fail	ASTQuery	0.5	1	FAILED: 01-basic.rakutest | Undeclared name 'RakuAST::CurryThunk'
+Algorithm::LibSVM	0.0.20	2026-08-30	timeout		120	142	
+App::Ariza	0.2.4	2026-08-21	dep-fail	Crane	2	1	FAILED: add.rakutest | # Failed test 'Is expected value' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-22886-Crane/Crane-0.1.2/t/add.rakutest line 63
+App::IRC::Log	0.0.54	2026-06-10	dep-fail	Array::Sorted::Util	5.5	1	FAILED: 01-basic.rakutest | # Undefined routine 'nqp::div_i'
+App::Rak::Complete	0.0.13	2026-05-28	dep-fail	Needle::Compile	5.8	1	FAILED: 02-single.rakutest | # Too many levels of recursion
+App::Raku::Log	0.0.37	2026-03-02	dep-fail	Array::Sorted::Util	5.4	1	FAILED: 01-basic.rakutest | # Undefined routine 'nqp::div_i'
+App::samaki	0.0.34	2026-08-07	dep-fail	LLM::Functions	42	1	FAILED: 04-LLM-chats.rakutest | # Failed test at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-23194-LLM--Functions/dist/t/04-LLM-chats.rakutest line 60
+Ask	0.0.3	2023-03-10	self-fail		3.9	1	FAILED: digest.t | ===SORRY!=== Parse error at line 71: Error while compiling module Digest (line 71): expected ) (got '<<')
+Auth::PAM::Simple	1.0.1	2018-09-09	self-fail		2.6	1	FAILED: 01-basic.t | Cannot locate symbol 'auth' in native library ''
+BTree	0.0.2	2021-08-10	self-fail		1.4	1	FAILED: 01-basic.rakutest | # Failed test 'The module can be use-d ok: BTree' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-23767-BTree/t/01-basic.rakutest line 2
+Badger	1.2.0	2024-11-07	self-fail		1.2	1	FAILED: 01-sigils.rakutest | ===WARNING=== Module Badger EXPORT failed: Type check failed on attribute '$!return'; expected AST::Return:D but got AST::Return
+BinaryHeap	0.0.7	2022-07-11	self-fail		41.6	1	FAILED: 01-binaryheap.rakutest | # Too many levels of recursion
+Blin	1.0.1	2021-03-31	dep-fail	HTTP::Roles	4	1	FAILED: 00-use.rakutest | # Failed test 'Class must implement methods from role' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-24846-HTTP--Roles/HTTP-Roles-0.2.3/t/00-use.rakutest line 6
+C::Parser	0.3.3	2024-12-12	self-fail		0.9	1	FAILED: 01_null_main.rakutest | Undefined routine 'is_typedef'
+CLI::Version	0.0.10	2026-05-28	pass		0.7	0	
+CSS::Stylesheet	0.1.5	2026-03-30	dep-fail	CSS::Grammar	2.1	1	FAILED: compat.t | usage: $.token($ast, :$type)
+Chemistry::Elements	0.2.2	2025-02-15	self-fail		1.1	1	FAILED: 005.ZInt-subtype.rakutest | # Failed test 'Can't assign negative number to ZInt' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-24924-Chemistry--Elements/Chemistry-Elements-0.2.2/t/005.ZInt-subtype.rakutest line 11
+Cmark	0.1	2020-06-12	self-fail		0.7	1	FAILED: 02-basic.t | Cannot locate native library 'cmark': dlopen(cmark, 0x0009): tried: 'cmark' (no such file), '/System/Volumes/Preboot/Cryptexes/OScmark' (no such file), '/usr/lib/cmark' (no such file, not in dyld cache), 'cmark' (no such file)
+Collection-Plugin-Development	0.4.6	2023-01-20	dep-fail	Template::Mustache	3.4	1	FAILED: 01-basic.rakutest | # Failed test 'Standalone interpolation should not alter surrounding whitesp' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-24957-Template--Mustache/Template-Mustache-1.2.6/t/01-basic.rakutest line 6
+Commands	0.0.9	2026-06-24	self-fail		0.8	1	FAILED: 01-basic.rakutest | # Failed test 'check primaries' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-25103-Commands/Commands-0.0.9/t/01-basic.rakutest line 65
+Config::Parser::yaml	1.0.1	2017-10-14	self-fail		2.1	1	FAILED: 01-read.t | # Failed test 'Get simple key' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-25115-Config--Parser--yaml/Config-Parser-yaml-1.0.1/t/01-read.t line 15
+Cro::APIToken::Store::Pg	0.1	2021-05-13	dep-fail	String::CRC32	1.8	1	FAILED: crc.t | Undefined routine 'String::CRC32::crc32'
+Crypt::CAST5	0.1.1	2020-03-26	self-fail		1.3	1	FAILED: 01-basic.t | Failed to get the directory contents of '/private/var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-25156-Crypt--CAST5/Crypt-CAST5-0.1.1/#O儾D²': No such file or directory
+Curlie	0.0.7	2021-10-06	self-fail		9.2	1	FAILED: 04-mock.rakutest | No such method 'find_private_method' for invocant of type 'Curlie'
+Data::Section::Simple	*	2016-03-27	self-fail		0.8	1	FAILED: 01-function.t | No such private method '!parse' for invocant of type 'Any'
+Definitely	2.1.4	2025-10-10	self-fail		0.7	1	FAILED: 01-Definitely.rakutest | The attribute '$!s' is required, but you did not provide a value for it.
+Digest::MurmurHash3	0.1.5	2018-08-05	self-fail		1.6	1	FAILED: 02-murmurhash.t | # Failed test at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-25481-Digest--MurmurHash3/p6-Digest-MurmurHash3-master/t/02-murmurhash.t line 30
+Discogs::API	0.0.5	2024-09-25	timeout		120	142	
+Distribution::Extension::Updater	0.0.3	2023-01-26	dep-fail	Proc::Easier	1.2	1	FAILED: 01-basic.rakutest | # Failed test 'creates object using simplified interface' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-28747-Proc--Easier/Proc-Easier-0.0.5/t/01-basic.rakutest line 8
+Doc::Executable	0.0.3	2022-07-02	dep-fail	Menu::Simple	0.9	1	FAILED: 00-sanity.rakutest | # Failed test 'has display method' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-28775-Menu--Simple/Menu-Simple-0.17/t/00-sanity.rakutest line 11
+Ecosystem::Archive::Update	0.0.29	2026-06-13	dep-fail	Rakudo::CORE::META	1.2	1	FAILED: 01-basic.rakutest | Undefined routine 'nqp::gethllsym'
+Env	0.99	2026-08-22	self-fail		1	1	FAILED: 01-all.rakutest | # Failed test 'did we change inside %*ENV also' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-28808-Env/Env-0.99/t/01-all.rakutest line 14
+EyeoftheBeholder3	0.1.5	2025-03-14	self-fail		1.6	1	FAILED: routes.t | Could not find Cro::HTTP::Test in:
+Farabi6	0.01	2012-10-19	other	trace: /Users/ash/.raku/rakupp-install/trace.log — attach this file when reporting the problem	3.4	1	
+File::Metadata::Libextractor	0.0.3	2022-11-24	self-fail		0.8	1	FAILED: 01-raw.rakutest | Cannot locate native library 'libextractor.3.dylib': dlopen(libextractor.3.dylib, 0x0009): tried: 'libextractor.3.dylib' (no such file), '/System/Volumes/Preboot/Cryptexes/OSlibextractor.3.dylib' (no such file), '/usr/lib/libextractor.3.dylib' (no such file, not in dyld cac …
+File::Utils	0.1.2	2024-01-01	dep-fail	Terminal::Width	2.1	1	FAILED: 00-use.t | tput: No value for $TERM and no -T specified
+Functional::LinkedList	0.0.4	2024-07-07	dep-fail	ValueList	0.9	1	FAILED: 01-basic.rakutest | No such method 'new' for invocant of type 'X::Assignment::RO'
+Functional::Stack	0.0.3	2024-07-07	dep-fail	ValueList	0.5	1	FAILED: 01-basic.rakutest | No such method 'new' for invocant of type 'X::Assignment::RO'
+GUI::Editors	0.1.18	2026-08-04	dep-fail	Terminal::Width	2.1	1	FAILED: 00-use.t | tput: No value for $TERM and no -T specified
+Git::Files	0.0.9	2025-02-10	pass		0.9	0	
+Gnome::Graphene	0.1.11	2025-02-11	dep-fail	Gnome::N	1.1	1	FAILED: NativeLib.rakutest | # Undefined routine 'gdk-lib'
+Gnome::Gtk4	0.2.10	2026-08-19	dep-fail	Cairo	1.9	1	FAILED: matrix.t | Cannot locate native library 'libcairo.2.dylib': dlopen(/usr/local/lib/libcairo.2.dylib, 0x0009): tried: '/usr/local/lib/libcairo.2.dylib' (mach-o file, but is an incompatible architecture (have 'x86_64', need 'arm64e' or 'arm64')), '/System/Volumes/Preboot/Cryptexes/OS/usr/local/ …
+Grammar::BNF	1.2	2026-08-27	self-fail		0.9	1	FAILED: 01-parse.rakutest | No such method 'set_name' for invocant of type 'Regex'
+HTTP::Server::Async	0.2	2022-05-29	dep-fail	HTTP::Roles	1	1	FAILED: 00-use.rakutest | # Failed test 'Class must implement methods from role' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-29373-HTTP--Roles/HTTP-Roles-0.2.3/t/00-use.rakutest line 6
+HarfBuzz::Subset	0.0.5	2023-08-03	dep-fail	HarfBuzz	1	1	FAILED: 10_basic.t | Variable '$HB' is not declared
+Hematite	0.10.0	2021-08-05	timeout		120	142	
+I18N::LangTags	0.1.0	2018-04-24	self-fail		0.8	1	FAILED: 03-list.t | No such method 'contents' for invocant of type 'Any'
+IO-Compress-Lzf	2.094	2020-07-13	other	trace: /Users/ash/.raku/rakupp-install/trace.log — attach this file when reporting the problem	1	1	
+IO::Dir	1.001004	2022-03-11	self-fail		1.5	1	FAILED: 01-is.t | No such method 'cache' for invocant of type 'Regex'
+IO::Path::AutoDecompress	0.0.4	2026-04-23	pass		0.7	0	
+IRC::Client	4.0.15	2026-02-02	pass		0.9	0	
+Implementation::Loader	0.0.10	2026-07-28	pass		0.8	0	
+InterceptAllMethods	0.0.4	2025-06-04	self-fail		0.7	1	FAILED: 01-basic.rakutest | No such method 'foo' for invocant of type 'Foo'
+Intl::Format::Number	0.4.0	2023-03-26	dep-fail	Intl::LanguageTag	1.2	1	FAILED: 00-sanity.rakutest | # Failed test at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-32238-Intl--LanguageTag/dist/t/00-sanity.rakutest line 21
+JSON::Fast	0.20.1	2026-06-08	pass		4.1	0	
+JSON::RepositoryEvent	0.0.9	2026-07-26	self-fail		0.9	1	FAILED: 01-basic.rakutest | Cannot look up empty name
+JSON::WebToken	0.0.1	2018-11-14	self-fail		1.4	1	FAILED: digest.t | ===SORRY!=== Parse error at line 71: Error while compiling module Digest (line 71): expected ) (got '<<')
+L10N::CY	0.0.7	2025-06-30	pass		0.8	0	
+L10N::DE	0.0.4	2025-06-28	pass		0.8	0	
+L10N::EO	0.0.3	2025-07-28	pass		0.8	0	
+L10N::HU	0.0.3	2025-06-27	pass		0.9	0	
+L10N::JA	0.0.3	2025-06-27	pass		0.8	0	
+L10N::PT	0.0.3	2025-06-27	pass		0.7	0	
+L10N::ZH	0.0.3	2025-09-23	self-fail		0.9	1	FAILED: 13-package.rakutest | `.AST` does not yet build a view for a grammar rule (the regex tree)
+LLM::Resources	0.0.2	2026-04-08	dep-fail	Data::Importers	3.7	1	FAILED: 03-harwell-boeing-roundtrip.rakutest | # Failed test 'g05.rua round-trip is byte-identical' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-32730-Data--Importers/dist/t/03-harwell-boeing-roundtrip.rakutest line 16
+Lingua::EN::Numbers	2.8.3	2022-12-23	self-fail		0.8	1	FAILED: 05-comma.t | # Failed test at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-32820-Lingua--EN--Numbers/Lingua-EN-Numbers-2.8.3/t/05-comma.t line 35
+Lingua::Stem::Bulgarian	0.1.2	2022-04-11	self-fail		1.4	1	FAILED: 01-basic-use.rakutest | Undefined routine 'algorithm'
+Log::ZMQ	0.0.5	2020-05-17	dep-fail	Net::ZMQ	0.8	1	FAILED: 00.t | # Failed test 'The module can be use-d ok: Net::ZMQ::Version' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-32862-Net--ZMQ/perl6-zmq-master/t/00.t line 15
+Lumberjack::Dispatcher::EventSource	0.0.4	2022-08-07	dep-fail	Lumberjack	1.8	1	FAILED: 07-errors.t | No such method 'new' for invocant of type 'IO::Handle'
+Lumberjack::Message::JSON	0.1.11	2026-01-06	dep-fail	Lumberjack	0.8	1	FAILED: 07-errors.t | No such method 'new' for invocant of type 'IO::Handle'
+ML::FindTextualAnswer	0.2.8	2026-01-05	dep-fail	LLM::Functions	3.2	1	FAILED: 04-LLM-chats.rakutest | # Failed test at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-33022-LLM--Functions/dist/t/04-LLM-chats.rakutest line 67
+Manifest::StopWar	0.0.9	2022-03-07	self-fail		0.8	1	FAILED: 01.t | # No such method 'private_methods' for invocant of type 'Manifest::StopWar'
+Math::Libgsl::Elementary	0.0.4	2022-11-28	self-fail		0.8	1	FAILED: 01-elementary.rakutest | # Cannot resolve caller comb(Any:U); the invocant is a type object, not an instance
+Math::Vector	0.6.0	2024-07-04	self-fail		18.8	1	FAILED: 01-basics.rakutest | # Failed test 'Math::Vector by Scalar divide gets proper direction' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-33279-Math--Vector/dist/t/01-basics.rakutest line 7
+Matrix::Bot::Plugin::AutoAcceptInvites	0.1.0	2019-07-16	dep-fail	LogP6	1.8	1	FAILED: 00-bad-config-file.t | Undeclared name 'Level::trace'
+Menu::Simple	0.17	2022-07-01	self-fail		0.7	1	FAILED: 00-sanity.rakutest | # Failed test 'has display method' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-33885-Menu--Simple/Menu-Simple-0.17/t/00-sanity.rakutest line 11
+Module::Pod	0.9.2	2019-08-11	self-fail		1.2	1	FAILED: export.t | # Failed test 'With import, function is available' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-33906-Module--Pod/Module-Pod-master/t/export.t line 17
+Native::Packing	0.0.6	2023-01-12	self-fail		0.7	1	FAILED: 00-readme.t | # Failed test 'code sample' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-33924-Native--Packing/Native-Packing-0.0.6/t/00-readme.t line 14
+Net::Ftp	0.1.0	2015-11-08	other	trace: /Users/ash/.raku/rakupp-install/trace.log — attach this file when reporting the problem	0.7	1	
+Net::Packet	v0.0.1	2015-10-03	other	trace: /Users/ash/.raku/rakupp-install/trace.log — attach this file when reporting the problem	0.8	1	
+Net::Postgres::Abstract	0.0.2	2023-10-29	dep-fail	Protocol::Postgres	1.7	1	FAILED: 02-roundtrip.rakutest | ===SORRY!=== Parse error at line 733: Error while compiling module Protocol::Postgres (line 733): expected ) (got '}')
+Object::Delayed	0.0.13	2023-12-17	dep-fail	InterceptAllMethods	0.7	1	FAILED: 01-basic.rakutest | No such method 'foo' for invocant of type 'Foo'
+P5-X	0.0.11	2026-08-24	self-fail		0.8	1	FAILED: 01-basic.rakutest | ===SORRY!=== Parse error at line 22: expected ) (got '$file')
+P5built-ins	0.0.31	2026-08-24	dep-fail	P5-X	0.7	1	FAILED: 01-basic.rakutest | ===SORRY!=== Parse error at line 22: expected ) (got '$file')
+POSIX	0.1.1	2015-11-10	other	trace: /Users/ash/.raku/rakupp-install/trace.log — attach this file when reporting the problem	0.9	1	
+Pakku	celastrina.6	2025-06-30	self-fail		0.9	1	FAILED: cmd.rakutest | # Failed test 'add Spec' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-34197-Pakku/dist/t/cmd.rakutest line 238
+Pakku::RecMan	0.1.0	2021-04-03	dep-fail	BitEnum	2	1	FAILED: 01-simple.t | Variable '$prefix' is not declared
+ParaSeq	0.2.7	2024-08-21	self-fail		0.9	1	FAILED: 01-basic.rakutest | No such method 'cpu-cores-but-one' for invocant of type 'Kernel'
+Perl6::Parser	0.3.0	2021-04-08	self-fail		1	1	FAILED: 00-classes.t | ===SORRY!=== Parse error at line 1771: Error while compiling module Perl6::Parser::Factory (line 1771): Confused (got '}')
+Physics::Vector	0.0.2	2024-07-06	dep-fail	FatRatStr	1	1	FAILED: 01-fatratstr.rakutest | # Failed test '1.66e-10' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-34281-FatRatStr/FatRatStr-0.0.14/t/01-fatratstr.rakutest line 8
+Pod::Test::Code	0.0.5	2021-06-28	dep-fail	Module::Pod	1	1	FAILED: export.t | # Failed test 'With import, function is available' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-34295-Module--Pod/Module-Pod-master/t/export.t line 17
+Pod::Weave	0.0.2	2020-09-06	dep-fail	Template::Mustache	2.3	1	FAILED: 01-basic.t | # Testing strings
+Pop	0.0.3	2023-02-14	dep-fail	TOML::Thumb	1.1	1	FAILED: invalid.t | ===SORRY!=== Parse error at line 204: Error while compiling module TOML::Thumb (line 204): expected } (got '')
+ProblemSolver	0.0.1	2018-08-10	self-fail		1.2	1	FAILED: 01-domain.t | Variable '@set' is not declared
+Qwiratry	0.10.0	2026-08-08	dep-fail	Slangify	0.7	1	FAILED: 01-basic.rakutest | Useless use of constant string ?"Successfully slanged" in sink context (line 11)
+Qwiratry::Format::JSON	0.0.1	2026-07-20	dep-fail	Slangify	0.3	1	FAILED: 01-basic.rakutest | Useless use of constant string ?"Successfully slanged" in sink context (line 11)
+Qwiratry::Format::YAML	0.0.1	2026-07-20	dep-fail	Slangify	0.3	1	FAILED: 01-basic.rakutest | Useless use of constant string ?"Successfully slanged" in sink context (line 11)
+Qwiratry::Test	0.0.1	2026-07-21	dep-fail	Slangify	0.3	1	FAILED: 01-basic.rakutest | Useless use of constant string ?"Successfully slanged" in sink context (line 11)
+Radamsa	0.0.1	2020-05-27	build-fail		6.4	1	
+RakuConfig	0.8.2	2025-05-05	pass		0.8	0	
+RakupodObject	0.0.7	2024-07-27	self-fail		0.8	1	FAILED: 1-critical.t | # Failed test 'good pod string' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-34838-RakupodObject/RakupodObject-0.0.7/t/1-critical.t line 22
+Raygui::Bindings	0.0.7	2025-12-23	dep-fail	Raylib::Bindings	4.8	1	FAILED: 00-use.rakutest | # Failed test 'Parsing define macro rule' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-34865-Raylib--Bindings/raylib-raku-0.0.20/t/00-use.rakutest line 160
+Router::Boost	0.0.1	2017-07-01	self-fail		0.7	1	FAILED: 01-basic.t | # Failed test at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-34943-Router--Boost/Router-Boost-0.0.1/t/01-basic.t line 13
+SBOM::Raku	0.0.13	2026-06-09	dep-fail	Identity::Utils	1	1	FAILED: 01-basic.rakutest | ===WARNING=== Module Identity::Utils EXPORT failed: No such method 'file' for invocant of type 'Sub'
+Script::Hash	0.0.3	2021-07-06	self-fail		0.7	1	FAILED: 01-basic.t | Could not find Digest in:
+Slang::Kazu	1.1	2021-04-01	self-fail		1.2	1	FAILED: 01-basic.t | ===SORRY!=== Parse error at line 25: Malformed numeric literal
+Sort-Fast	0.0.1	2023-03-23	dep-fail	Distribution::Builder::Cmake	7.9	1	FAILED: 01-basic.rakutest | CMake Deprecation Warning at CMakeLists.txt:1 (cmake_minimum_required):
+Spreadsheet::ODS	0.1	2022-01-21	dep-fail	Archive::Libarchive::Raw	1.7	1	FAILED: 02-list.rakutest | Cannot locate native library 'libarchive.13.dylib': dlopen(libarchive.13.dylib, 0x0009): tried: 'libarchive.13.dylib' (no such file), '/System/Volumes/Preboot/Cryptexes/OSlibarchive.13.dylib' (no such file), '/usr/lib/libarchive.13.dylib' (no such file, not in dyld cache), …
+String::Splice	0.0.4	2022-12-28	self-fail		0.7	1	FAILED: 01-basic.rakutest | # Failed test '3 param non-string insert fails ok' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-35684-String--Splice/String-Splice-0.0.4/t/01-basic.rakutest line 31
+Subsets::Common	0.0.6	2023-10-07	self-fail		0.8	1	FAILED: basic.rakutest | # Failed test 'PosInt caught out of range' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-35835-Subsets--Common/dist/t/basic.rakutest line 28
+Supply::Timeout	0.0.2	2019-08-09	self-fail		3.8	1	FAILED: 02-supply.t | # Failed test 'Timeout not happened' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-35863-Supply--Timeout/Supply-Timeout-0.0.2/t/02-supply.t line 13
+Sway::PreviewKeys	0.2.4	2024-12-21	dep-fail	Pod::Contents	1.5	1	FAILED: 00-load.rakutest | # Failed test 'The module can be use-d ok: Pod::Contents:auth<zef:CIAvash>' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-35904-Pod--Contents/dist/t/00-load.rakutest line 7
+Sys::Lastlog	0.1.4	2022-08-08	dep-fail	System::Passwd	1	1	FAILED: Passwd.rakutest | This module is not compatible with the operating system macos
+TagLibC	1.0	2017-04-23	dep-fail	LibraryCheck	1.4	1	FAILED: 010-basic.t | # Failed test 'not ok for a bogus one' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-35948-LibraryCheck/LibraryCheck-0.0.12/t/010-basic.t line 11
+Template::Mustache	1.2.6	2026-01-12	self-fail		0.7	1	FAILED: 01-basic.rakutest | # Failed test 'Standalone interpolation should not alter surrounding whitesp' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-35966-Template--Mustache/Template-Mustache-1.2.6/t/01-basic.rakutest line 6
+Test::Async	0.1.17	2023-12-10	self-fail		1.2	1	FAILED: 003-declaration.rakutest | ===WARNING=== Module Test::Async::Decl EXPORT failed: Could not find NQPHLL in:
+Test::Deeply::Relaxed	0.1.3	2020-01-22	self-fail		1.3	1	FAILED: 05-cache.rakutest | # Failed test 'non-cached - did not preserve the sequence' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-36119-Test--Deeply--Relaxed/Test-Deeply-Relaxed-0.1.3/t/05-cache.rakutest line 17
+Test::Harness	0.0.1	2018-02-04	pass		0.8	0	
+TestML	0.1	2021-01-28	self-fail		2	1	FAILED: arguments.t | ===SORRY!=== Parse error at line 108: Error while compiling module TestML::Runner (line 108): Confused (got ')')
+Text::Flags	0.0.6	2024-09-24	self-fail		0.9	1	FAILED: 01-basic.rakutest | Unrecognized character name [
+Text::Sorensen	0.0.2	2022-12-29	self-fail		0.9	1	FAILED: 01-basic.t | # Failed test 'basic sorenson ok' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-36258-Text--Sorensen/Text-Sorensen-0.0.2/t/01-basic.t line 32
+Toaster	1.001002	2020-11-20	dep-fail	Temp::Path	2.4	1	FAILED: 01-is.t | No such method 'cache' for invocant of type 'Regex'
+Trap	0.0.5	2025-08-16	pass		0.8	0	
+Tuple	0.0.12	2025-01-14	dep-fail	ValueList	0.8	1	FAILED: 01-basic.rakutest | No such method 'new' for invocant of type 'X::Assignment::RO'
+Uni63	0.2.0	2017-04-27	self-fail		1.1	1	FAILED: 01-sanity.t | ===SORRY!=== Parse error at line 31: Error while compiling module Uni63 (line 31): unexpected operator in term position (got '/')
+VERS	0.0.3	2025-08-22	dep-fail	Version::Raku	1	1	FAILED: 01-basic.rakutest | No such method 'ACCEPTS' for invocant of type 'Any'
+WebService::TMDB	0.1.2	2023-08-02	dep-fail	HTTP::UserAgent	2.8	1	FAILED: capture.t | # Failed test 'OH HAI! in captured string' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-36643-IO--Capture--Simple/raku-io-capture-simple/t/capture.t line 10
+Win32::DrivesAndTypes	1.0.0	2020-10-01	self-fail		0.7	1	FAILED: 01-load.t | # Failed test 'Kernel is win32' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-36762-Win32--DrivesAndTypes/Win32-DrivesAndTypes-master/t/01-load.t line 11
+XML::Actions	0.5.1	2023-02-18	dep-fail	HTML::Parser::XML	1	1	FAILED: 01_basic.t | Undefined routine 'enum'
+YAML	0.1	2021-01-28	dep-fail	TestML	0.8	1	FAILED: arguments.t | ===SORRY!=== Parse error at line 108: Error while compiling module TestML::Runner (line 108): Confused (got ')')
+Zef::Configuration	0.0.13	2026-06-09	dep-fail	shorten-sub-commands	0.9	1	FAILED: 01-basic.rakutest | # Failed test 'does foo give foozle?' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-36817-shorten-sub-commands/shorten-sub-commands-0.0.8/t/01-basic.rakutest line 11
+antlia	0.1.2	2021-05-25	dep-fail	Terminal::Table	2.6	1	FAILED: 04-style.rakutest | # Failed test 'style combination 1 ok' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-36853-Terminal--Table/raku-terminal-table-master/t/04-style.rakutest line 29
+as-cli-arguments	0.0.10	2026-05-28	pass		0.9	0	
+deredere	0.1.0	2021-04-01	dep-fail	HTTP::UserAgent	1.3	1	FAILED: capture.t | # Failed test 'OH HAI! in captured string' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-37048-IO--Capture--Simple/raku-io-capture-simple/t/capture.t line 10
+fornax	0.2.0	2021-11-25	dep-fail	Cairo	1.2	1	FAILED: matrix.t | Cannot locate native library 'libcairo.2.dylib': dlopen(/usr/local/lib/libcairo.2.dylib, 0x0009): tried: '/usr/local/lib/libcairo.2.dylib' (mach-o file, but is an incompatible architecture (have 'x86_64', need 'arm64e' or 'arm64')), '/System/Volumes/Preboot/Cryptexes/OS/usr/local/ …
+highlighter	0.0.23	2026-05-28	pass		0.8	0	
+path-utils	0.0.25	2026-06-03	pass		0.8	0	
+rak	0.0.67	2026-05-28	pass		1	0	
+span	0.0.2	2025-01-08	dep-fail	snip	0.8	1	FAILED: 01-basic.rakutest | Undefined routine 'nqp::isfalse'

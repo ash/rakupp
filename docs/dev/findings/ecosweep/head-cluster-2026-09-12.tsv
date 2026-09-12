@@ -1,0 +1,15 @@
+name	version	released	verdict	detail	seconds	exit	first-error
+IO::Socket::Async::SSL	0.8.2	2025-06-03	self-fail		7.8	1	FAILED: client-server.rakutest | The socket was closed during negotiation
+JSON::JWT	1.1.2	2024-12-11	pass		0.9	0	
+IO::Path::ChildSecure	1.2	2022-04-22	self-fail		0.7	1	FAILED: 01-operation.rakutest | # Failed test 'code returned a Failure' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-39291-IO--Path--ChildSecure/IO-Path-ChildSecure-1.2/t/01-operation.rakutest line 49
+IO::Capture::Simple	v0.0.2	2022-12-14	self-fail		0.2	1	FAILED: capture.t | # Failed test 'OH HAI! in captured string' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-39310-IO--Capture--Simple/raku-io-capture-simple/t/capture.t line 10
+HTTP::UserAgent	1.2.0	2025-05-03	self-fail		1.4	1	FAILED: capture.t | # Failed test 'OH HAI! in captured string' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-39322-IO--Capture--Simple/raku-io-capture-simple/t/capture.t line 10
+Testo	1.9	2026-08-09	self-fail		0.7	1	FAILED: 01-is.t | No such method 'cache' for invocant of type 'Regex'
+Test::Async	0.1.17	2023-12-10	self-fail		0.8	1	FAILED: 003-declaration.rakutest | ===WARNING=== Module Test::Async::Decl EXPORT failed: Could not find NQPHLL in:
+Test::Mock	1.8	2025-03-27	self-fail		0.7	1	FAILED: computing.rakutest | # Failed test 'never called shave with arguments matching :($ where { ... })' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-39389-Test--Mock/Test-Mock-1.8/t/computing.rakutest line 39
+Hash::int	0.0.7	2025-01-10	pass		0.7	0	
+NativeHelpers::Blob	0.1.13	2026-07-16	self-fail		0.8	1	FAILED: 02-cstruct.rakutest | No such method 'shape' for invocant of type 'LinearArraypun1'
+LibraryCheck	0.0.12	2023-07-03	self-fail		0.9	1	FAILED: 010-basic.t | # Failed test 'not ok for a bogus one' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-39448-LibraryCheck/LibraryCheck-0.0.12/t/010-basic.t line 11
+Method::Protected	0.0.4	2025-03-27	self-fail		29	1	FAILED: 01-basic.rakutest | No such method 'add_attribute' for invocant of type 'GLOBAL'
+Cro::HTTP	0.8.13	2026-06-02	timeout		150	142	
+Log::Timeline	0.5.2	2024-11-30	timeout		150	142	
