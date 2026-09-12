@@ -103,27 +103,24 @@ after `done` no longer re-fires the handler (the tap is torn down when the
 
 ## HTTPS / TLS
 
-With the `IO::Socket::Async::SSL` module installed (and its OpenSSL bindings
-resolvable — see the note below), Raku++ performs a real TLS handshake through
-the system OpenSSL and streams the decrypted response like any other socket.
+With the `IO::Socket::Async::SSL` module installed, Raku++ performs a real TLS
+handshake through the system OpenSSL and streams the decrypted response like any
+other socket. It loads the library itself: on macOS `libssl`/`libcrypto` resolve
+to the **versioned** file (`libssl.3.dylib`, then `libssl.1.1.dylib`) under
+`/opt/homebrew/lib`, `/usr/local/lib` and `/opt/local/lib`, for both the bare
+`is native('ssl')` spelling and the `libssl.dylib` that
+`$*VM.platform-library-name` answers — the unversioned name on macOS is the
+`/usr/lib` compat stub, which aborts the process rather than failing.
 
-> **Before this runs, your `rakupp` and your OpenSSL must be the same
-> architecture.** `IO::Socket::Async::SSL` `dlopen`s the system `libssl`, and a
-> binary can only load a library of its own arch. On macOS the common setup is an
-> **arm64** `rakupp` (Apple Silicon default) but an **x86_64** OpenSSL (Intel
-> Homebrew, at `/usr/local/opt/openssl@3`, which is what a stock Rakudo/zef
-> installs). That mismatch fails at load with *"Cannot locate native library
-> '…/libssl.dylib' (… incompatible architecture …)"*, and then `.connect` reports
-> *"No such method"* because the module never loaded. Fix it by matching the two:
-> run an x86_64 `rakupp` against the x86_64 OpenSSL —
-> `cmake -S . -B build-x64 -DCMAKE_OSX_ARCHITECTURES=x86_64 && cmake --build build-x64`,
-> then `./build-x64/rakupp your-program.raku`. Installing an arm64 OpenSSL is
-> **not** enough on its own: the failing path is an absolute one recorded in the
-> installed `OpenSSL` distribution's own `libraries.json` when zef built it, so
-> the distribution has to be reinstalled against the arm64 library
-> (`PKG_CONFIG_PATH=/opt/homebrew/opt/openssl@3/lib/pkgconfig zef install
-> --force-install OpenSSL`) before the arm64 build can find it. See
-> [COMPILERS.md](COMPILERS.md).
+> **If it cannot find OpenSSL, the path is probably one zef baked in.** The
+> `OpenSSL` distribution records an absolute library path in its own
+> `resources/libraries.json` at install time, so a `~/.raku` store shared between
+> toolchains hands out the other one's prefix — an x86_64 toolchain writes
+> `/usr/local/opt/openssl@3`, which an arm64 build cannot load. Raku++ retries
+> such a path by basename under the prefixes dyld does not search, which covers
+> the usual case; where it does not, reinstall the distribution against the
+> library you want it to name:
+> `PKG_CONFIG_PATH=/opt/homebrew/opt/openssl@3/lib/pkgconfig zef install --force-install OpenSSL`.
 
 ```raku
 use IO::Socket::Async::SSL;
@@ -143,8 +140,10 @@ say $response.decode('latin-1').lines[0];    # HTTP/1.1 200 OK
 
 Notes and current limits:
 
-- **Architecture must match the OpenSSL library** — see the callout above; this is
-  the most common reason the example fails on a fresh macOS checkout.
+- **A native build finds the native OpenSSL.** An arm64 `rakupp` loads the arm64
+  `libssl` on its own; the two do not have to be built the same way. When the
+  example does fail on a fresh macOS checkout, it is the baked-in path in the
+  callout above.
 - **Certificates are verified by default.** The connection above checks the
   chain against the system trust store and matches the hostname against the
   certificate's subject alt names, so a self-signed, expired, untrusted-root or
@@ -175,5 +174,5 @@ Notes and current limits:
 | `signal(SIGINT, …)` for shutdown | works |
 | `IO::Socket::INET` (synchronous client and server) | works; the constructor **throws** `X::AdHoc` on a refused connect or a failed bind, where it used to answer `Nil` |
 | IPv6 | **not supported** — every socket path is IPv4-only |
-| `IO::Socket::Async::SSL` (TLS, `:insecure`) | works on an arch-matched build |
+| `IO::Socket::Async::SSL` (TLS) | works — the engine resolves `libssl` itself |
 | TLS certificate verification (chain + hostname) | works, and is on by default; `:insecure` skips it |

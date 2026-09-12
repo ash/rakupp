@@ -26,6 +26,10 @@ trips over.
   fire-and-forget processes that outlive the program (and where Raku's own
   documentation stands on that), when `.start` spawns, taps, `bind-stdin`
   pipelines, `.kill`, and reading the exit status.
+- **[http.md](http.md)** — is HTTP built into the engine? Sockets are and HTTP
+  is not: what `IO::Socket::Async` gives you with no `use`, writing a request
+  and a response by hand, which HTTP modules work on each engine today, TLS,
+  and why even the installer shells out to `curl`.
 - **[containers.md](containers.md)** — "why does my list have one element?":
   itemisation, `$(…)` vs `[…]`, when you need `@(…)`, and passing a list to a
   routine.
