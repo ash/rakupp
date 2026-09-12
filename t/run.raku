@@ -1039,27 +1039,69 @@ section('the CLI surface (goldens for the v3 parser refactor)');
     my ($ho, $hx) = run-rakupp('--help');
     ok($hx == 0 && $ho.contains('Usage:') && $ho.contains('--exe'), '--help prints usage, exit 0');
     ok(run-rakupp('-h')[0] eq $ho, '-h is --help');
+    # -v / --version: ONE line, because it is quoted into issues, CI logs and
+    # tables. Release, the build it came from, the date, the platform. The
+    # build id says "unknown" rather than guessing outside a git checkout, so
+    # assert its SHAPE and let a stamped build assert the content.
     my ($vo, $vx) = run-rakupp('--version');
-    ok($vx == 0 && $vo.starts-with('Raku++ (rakupp)'), '--version identifies itself');
-    # The build stamp is the point of the extra lines: a version that cannot
-    # say which commit it came from is a version a bug report cannot use. It
-    # says "unknown" rather than guessing outside a git checkout, so assert
-    # the LINE is there and let a stamped build assert the content.
-    ok($vo.contains('Build ') && $vo.contains('Home ') && $vo.contains('raku.online'),
-       '--version carries the build stamp and the project link');
-    ok($vo ~~ /^^ 'Build ' \s+ \S+ ', ' \d**4 '-' \d\d '-' \d\d $$/,
-       '--version build line has commit and date');
-    ok($vo ~~ /^^ 'Target ' \s+ \S+ ', ' \S/,
-       '--version target line has platform and compiler');
-    ok(run-rakupp('-V')[0] eq $vo, '-V is --version');
+    ok($vx == 0 && $vo.starts-with('Raku++ '), '--version identifies itself');
+    is($vo.lines.elems, 1, '--version is one line');
+    # `Raku++ 3.28.0-6-gcb851ea-modified (2026-09-12) arm64-darwin`, or on a
+    # release build `Raku++ 3.28.0 (2026-09-12) arm64-darwin`. A build id that
+    # is NOT this release's tag cannot fold, and says so: `(build unknown, …)`.
+    my $vm = $vo.trim ~~ /^ 'Raku++ ' $<rel>=[\d+ ['.' \d+]+] \S*
+                           ' (' ['build ' <-[)]>+ ', ']? \d**4 '-' \d\d '-' \d\d ') ' \S+ $/;
+    ok(?$vm, '--version: release, build, date, platform');
+    # The release number is printed ONCE: `git describe` says "v3.28.0" where
+    # project(VERSION) says "3.28.0", and the line folds the two together.
+    ok($vm && !$vo.contains("(v{$vm<rel>}"),
+       '--version does not repeat the release inside the build id');
     ok(run-rakupp('-v')[0] eq $vo, '-v is --version');
+    # -V: the same identity, plus what only the binary itself can answer.
+    my ($Vo, $Vx) = run-rakupp('-V');
+    ok($Vx == 0 && $Vo.starts-with('Raku++ '), '-V identifies itself');
+    ok($Vo.lines.elems > 1 && $Vo ne $vo, '-V is not -v');
+    ok($Vo.contains('Home ') && $Vo.contains('raku.online'),
+       '-V carries the project link');
+    ok($Vo ~~ /^^ 'Build ' \s+ \S+ ', ' \d**4 '-' \d\d '-' \d\d $$/,
+       '-V build line has commit and date');
+    ok($Vo ~~ /^^ 'Target ' \s+ \S+ ', ' \S/,
+       '-V target line has platform and compiler');
+    ok($Vo ~~ /^^ 'FFI ' \s+ \S/, '-V names the FFI backend');
+    # Which binary answered — the question a machine with two builds asks.
+    ok($Vo ~~ /^^ 'Exe ' \s+ \S/, '-V names the binary that answered');
+    ok(run-rakupp('--version-full')[0] eq $Vo, '--version-full is -V');
+    ok(run-rakupp('--info')[0] eq $Vo, '--info is -V');
+    # Camelia is ASCII whenever the output is captured — a pipe, a file, a CI
+    # log, this harness — so every machine records the same bytes. The env knob
+    # is the only way to see her through a pipe, which is what makes this
+    # testable without a pty.
+    ok($Vo.contains(Q[}i{]) && !$Vo.contains("\x[1F98B]"),
+       '-V through a pipe draws Camelia in ASCII');
+    {
+        # The merged hash is deliberate: `:env(%*ENV, K => V)` drops the pair
+        # here while Rakudo applies it — see TRIAGE.md (2026-09-12).
+        my %env = %*ENV; %env<RAKUPP_UNICODE> = '1';
+        my $p = run($*EXECUTABLE, '-V', :out, :!err, :env(%env));
+        my $forced = $p.out.slurp(:close);
+        ok($forced.contains("\x[1F98B]") && !$forced.contains(Q[}i{]),
+           'RAKUPP_UNICODE=1 draws the butterfly even through a pipe');
+        # …and the rest of the row is untouched: same label column, same version.
+        ok($forced.lines[0].starts-with('Raku++  ') && $forced.lines[1..*] eqv $Vo.lines[1..*],
+           'the butterfly changes that one glyph and nothing else');
+    }
+    # Every row's value in the same column, the name included: the first row is
+    # a label and a value like the six below it, not a banner above them. It
+    # was a banner once, one space wide, and nothing here noticed.
+    ok($Vo.lines.grep({ .substr(8, 1) eq ' ' || .substr(0, 8) !~~ /^ \S+ \s* $/ }).elems == 0,
+       '-V: one label column, every value at column 9');
     my ($fo, $fx) = run-rakupp('--ffi-info');
     ok($fx == 0 && $fo.chars > 0, '--ffi-info answers');
 
     # the single-dash long-option courtesy
     {
         my ($o, $e, $x) = run-rakupp-err('-version');
-        ok($x == 0 && $o.starts-with('Raku++ (rakupp)')
+        ok($x == 0 && $o.starts-with('Raku++ ')
                    && $e.contains("treating '-version' as '--version'"),
            '-version is accepted as --version, with a note');
     }

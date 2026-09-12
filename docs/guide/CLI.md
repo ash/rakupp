@@ -73,11 +73,51 @@ compatibility.
 - `--doc` — after the run, render the program's POD to stdout.
 - `-q` / `--quiet` — drop what a mode says about itself; see
   [Quiet](#quiet-mode) below.
-- `-v` / `-V` / `--version`, `-h` / `--help` — from any position.
-  `--version` reports the release, the Raku version implemented, and the
-  build's own identity: the `git describe` commit it came from, the build
-  date, the platform it targets and the compiler that made it. Quote it
-  whole in a bug report.
+- `-v` / `--version`, `-V` / `--info` / `--version-full`, `-h` / `--help` —
+  from any position.
+  `-v` (and its long spelling `--version`) is one line — the release, the
+  `git describe` commit the binary came from, the build date, and the
+  platform it targets:
+
+  ```
+  Raku++ 3.28.0 (2026-09-12) arm64-darwin
+  ```
+
+  A build that is not a release says so in the same field, because that is
+  what `git describe` already calls it — `Raku++ 3.28.0-6-gcb851ea-modified
+  (2026-09-12) arm64-darwin`. The release number is never printed twice; if
+  the tag and the built-in version ever disagree, both appear and the odd one
+  is labelled `build`.
+
+  `-V` is the full report: the same identity as an aligned block, plus the
+  Raku version implemented, the compiler that made the binary, the FFI
+  backend NativeCall found, and the path of the binary that answered — the
+  last one matters on a machine with more than one build. Quote `-V` whole
+  in a bug report.
+
+  ```
+  Raku++  3.28.0 }i{ a Raku interpreter and compiler in C++
+  Raku    6.d (6.e with `use v6.e.PREVIEW`)
+  Build   v3.28.0, 2026-09-12
+  Target  arm64-darwin, clang 17.0.0
+  FFI     libffi: libffi.dylib (abi 1)
+  Exe     /home/me/.rakupp/bin/rakupp
+  Home    https://raku.online
+  ```
+
+  The split is Rakudo's: `-v` answers briefly, `-V` answers fully. Both long
+  spellings are ours — Rakudo has only `-V` — for the scripts where one shift
+  key is the whole difference. `--info` is the general case of `--ffi-info`,
+  `--precomp-info` and `--exe-info`: the same question asked of the binary
+  itself rather than one of its parts. `--version-full` is the same report
+  under the name someone who knows `--version` would guess.
+
+  Camelia is drawn as 🦋 at a terminal in a UTF-8 locale, and as `}i{` — the
+  three ASCII characters every terminal draws alike — anywhere else. A pipe,
+  a file and a CI log always get the ASCII form, so captured output is the
+  same bytes on every machine; `RAKUPP_UNICODE=0` or `=1` forces either.
+  A UTF-8 locale is not a promise that the font holds an astral glyph, which
+  is why the default is the cautious one.
 
 ### Quiet mode
 
@@ -487,6 +527,7 @@ line of the frame the error came from.
 | `--color=auto\|always\|never` | ANSI colour: `auto` (the default) means a terminal, unless `NO_COLOR` is set; `always` colours even into a pipe; `never` never. The same switch governs the REPL's prompt, echo and error colour. `--colour` is accepted too |
 | `NO_COLOR` | no ANSI colour, by the no-color.org convention (present and non-empty) |
 | `RAKUPP_COLOR=0` / `=1` | what `--color=never` / `always` set; the environment form |
+| `RAKUPP_UNICODE=0` / `=1` | the non-ASCII glyphs in rakupp's own output — `-V`'s Camelia — off or on. The default is on at a terminal in a UTF-8 locale and off into a pipe, so captured output is the same bytes everywhere |
 
 On Windows `auto` asks one more question: a console only *renders* an escape
 sequence once virtual-terminal processing is on, and rakupp turns it on at

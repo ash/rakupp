@@ -36,7 +36,10 @@ reference for the internals; the user-facing command line is documented in
 | `--precomp-info` | what the parse cache holds |
 | `--precomp-clean` | empty it |
 | `--precomp-modules=on\|off`, `--precomp-files=on\|off` | the two cache switches |
-| `--version`, `-V`, `-v`, `--help`, `-h`, `--quiet`, `-q` | as expected |
+| `--version`, `-v` | the release, build and platform, on one line |
+| `-V` | the full report — the split is Rakudo's, but the report is a readable block, not Rakudo's `key=value` config dump |
+| `--info`, `--version-full` | ours; Rakudo spells this `-V` and nothing else |
+| `--help`, `-h`, `--quiet`, `-q` | as expected |
 | `-x` | skip everything before the `#!` line |
 | `--json` | machine-readable `-c` and `--lint` findings |
 | `--ll-exception` | every frame of an uncaught error |

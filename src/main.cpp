@@ -1620,9 +1620,11 @@ static const FlagDoc kFlagDocs[] = {
     {"-O", 0, nullptr, "optimize (compile modes)"},
     {"-h", 0, nullptr, "help"},
     {"--help", 0, nullptr, "help"},
-    {"-v", 0, nullptr, "version"},
-    {"-V", 0, nullptr, "version"},
-    {"--version", 0, nullptr, "version"},
+    {"-v", 0, nullptr, "version, build and platform, on one line"},
+    {"-V", 0, nullptr, "the full build report"},
+    {"--version", 0, nullptr, "version, build and platform, on one line"},
+    {"--version-full", 0, nullptr, "the full build report"},
+    {"--info", 0, nullptr, "the full build report"},
     {"--doc", 0, nullptr, "render the Pod of the program after the run"},
     {"--lint", 0, nullptr, "static analysis, no run"},
     {"--json", 0, nullptr, "machine-readable -c and --lint findings"},
@@ -2026,7 +2028,7 @@ int main(int argc, char** argv) {
     // Flags that only exist in one mode (-q, -o, -O, --html) are collected
     // wherever they appear and validated once the mode is known, so
     // `-o out --exe src` is as good as `--exe src -o out`.
-    enum class Mode { Run, Help, Version, FfiInfo, Highlight, Ast, RakuAst, AstRoundtrip,
+    enum class Mode { Run, Help, Version, VersionFull, FfiInfo, Highlight, Ast, RakuAst, AstRoundtrip,
                       PrecompSetting, PrecompInfo, PrecompClean, Check, Lint,
                       Cpp, Bundle, Aot, Exe, Mcp, Lsp, Jupyter, JupyterInstall, Js, Fmt };
     Mode mode = Mode::Run;
@@ -2098,7 +2100,8 @@ int main(int argc, char** argv) {
         if (isOpt) {
             // the information modes win outright, from any position
             if (a == "--help" || a == "-h")  { mode = Mode::Help; break; }
-            if (a == "--version" || a == "-V" || a == "-v") { mode = Mode::Version; break; }
+            if (a == "--version" || a == "-v") { mode = Mode::Version; break; }
+            if (a == "-V" || a == "--info" || a == "--version-full") { mode = Mode::VersionFull; break; }
             if (a == "--ffi-info")           { mode = Mode::FfiInfo; break; }
             if (a == "--doc") { rakupp::rakuppSetDocMode(true); continue; }
             // Rakudo's flag: every frame of an uncaught error, uncollapsed and
@@ -2421,7 +2424,8 @@ int main(int argc, char** argv) {
     }
     // flags collected above that the final mode has no use for are illegal —
     // same banner the flag would have earned in run mode all along
-    if (mode != Mode::Help && mode != Mode::Version && mode != Mode::FfiInfo) {
+    if (mode != Mode::Help && mode != Mode::Version && mode != Mode::VersionFull
+        && mode != Mode::FfiInfo) {
         if (sawHtml && mode != Mode::Highlight) return illegalOpt("--html");
         // (-q is deliberately absent here: every mode takes it — see g_quiet)
         if (mcpTimeout >= 0 && mode != Mode::Mcp) return illegalOpt("--timeout");
@@ -2711,7 +2715,11 @@ int main(int argc, char** argv) {
 "  rakupp --lsp                 Run the Language Server (JSON-RPC on stdin/stdout)\n"
 "                               for editor integration: live parse/lint diagnostics\n"
 "  rakupp --help, -h            Show this help\n"
-"  rakupp --version, -V, -v     Show the version\n"
+"  rakupp --version, -v         The version, the build it came from and the\n"
+"                               platform it targets, on one line\n"
+"  rakupp -V, --info            The full report: the above plus the Raku version\n"
+"                               implemented, the compiler, the FFI backend, and\n"
+"                               which binary answered (--version-full too)\n"
 "  rakupp --ffi-info            Show which FFI backend NativeCall will use\n"
 "\n"
 "Environment:\n"
@@ -2731,6 +2739,9 @@ int main(int argc, char** argv) {
 "  RAKUPP_OPT='-I lib -M Foo'   Options prepended to every command line (options\n"
 "                               only, never a program — PERL5OPT's rule)\n"
 "  NO_COLOR=1, RAKUPP_COLOR=0|1 Colour off by convention; forced off or on\n"
+"  RAKUPP_UNICODE=0|1           Force the non-ASCII glyphs in rakupp's own output\n"
+"                               off or on (-V's Camelia). Default: on at a\n"
+"                               terminal in a UTF-8 locale, off into a pipe\n"
 "  RAKUPP_BACKTRACE=0|short|full  How much of an uncaught error's backtrace prints\n"
 "\n"
 "Run the spec-test harness (self-hosted, in Raku):\n"
@@ -2740,15 +2751,55 @@ int main(int argc, char** argv) {
             return 0;
         }
     }
-    // The first line keeps its shape: it is what a human greps for and what
-    // t/run.raku asserts. The }i{ between the version and the tagline is
-    // Camelia, in the three ASCII characters every terminal draws alike.
-    // Everything a bug report needs follows as an aligned label/value block —
-    // which commit this binary came from, when, for what, and with which
-    // compiler.
+    // Two questions, two answers — Rakudo's split, and perl's before it.
+    //
+    // `-v` / `--version` answers the one every script and every bug report
+    // asks: which release, built from which commit and when, for which
+    // platform. One line, so it quotes into an issue, a CI log or a table
+    // without reformatting, and so `head -1` is not needed to get it.
+    //
+    // The release version and `git describe` say the same thing on a release
+    // build — "3.28.0" and "v3.28.0" — so it is said once. What describe adds
+    // when the build is NOT a release (the commits since the tag, and the
+    // -modified marker RELEASING.md forbids shipping and perf-guard refuses to
+    // record a baseline from) folds onto the version as the suffix it already
+    // is: "3.28.0-6-gcb851ea-modified".
+    //
+    // The two come from different places, though — cmake's project(VERSION)
+    // and the git tag — and a tag HAS been cut against an unbumped tree
+    // (v3.20.0). When they disagree, or when there is no describe to fold
+    // (a build outside a git checkout), both are printed: that disagreement
+    // is exactly what this line exists to expose, and folding it away would
+    // hide it.
     if (mode == Mode::Version) {
-        std::cout << "Raku++ (rakupp) " RAKUPP_VERSION
-                     " }i{ a Raku interpreter and compiler in C++\n"
+        const std::string ver = RAKUPP_VERSION, build = rakupp::buildId();
+        const std::string tag = "v" + ver;
+        std::string tail, note;
+        if (build.rfind(tag, 0) == 0 && (build.size() == tag.size() || build[tag.size()] == '-'))
+            tail = build.substr(tag.size());
+        else
+            note = "build " + build + ", ";
+        std::cout << "Raku++ " << ver << tail << " (" << note << rakupp::buildDate()
+                  << ") " << rakupp::platform() << "\n";
+        return 0;
+    }
+    // `-V` is the same identity with everything a bug report needs around it,
+    // as an aligned label/value block. The }i{ between the version and the
+    // tagline is Camelia, in the three ASCII characters every terminal draws
+    // alike.
+    //
+    // FFI and Exe are here rather than in `-v` because neither is derivable
+    // from the outside: which libffi was found is the first question to ask of
+    // a NativeCall bug, and on a machine with several builds (build/ beside
+    // build-arm64/) the path is the only way to know which one just answered.
+    if (mode == Mode::VersionFull) {
+        // Camelia herself where a terminal can draw her, and the three ASCII
+        // characters every terminal draws alike where it cannot. She is two
+        // columns wide against the ASCII form's three, which moves the tagline
+        // by one — the label column, and so the block, is untouched.
+        const char* camelia = rakupp::consoleUnicode(1) ? "\xF0\x9F\xA6\x8B" : "}i{";
+        std::cout << "Raku++  " RAKUPP_VERSION " " << camelia
+                  << " a Raku interpreter and compiler in C++\n"
                      // 6.e is implemented and gated, so a program gets 6.d
                      // unless it asks for 6.e. The exceptions are named on the
                      // support page rather than in a banner line nobody can fit
@@ -2756,6 +2807,8 @@ int main(int argc, char** argv) {
                      "Raku    6.d (6.e with `use v6.e.PREVIEW`)\n"
                   << "Build   " << rakupp::buildId() << ", " << rakupp::buildDate() << "\n"
                   << "Target  " << rakupp::platform() << ", " << rakupp::compilerId() << "\n"
+                  << "FFI     " << ffi::describe() << "\n"
+                  << "Exe     " << exePath << "\n"
                   << "Home    https://raku.online\n";
         return 0;
     }

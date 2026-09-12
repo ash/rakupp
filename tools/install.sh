@@ -553,8 +553,10 @@ do_install() {
     [ -n "$VER" ] || fail "$EXE does not run"
     _check=$("$EXE" -e 'print 6 * 7' 2>&1 || true)
     [ "$_check" = 42 ] || fail "$EXE ran but answered [$_check] where 42 was due"
-    # The number alone, for the receipt: "Raku++ (rakupp) 3.27.0 }i{ ..."
-    VERNUM=$(printf '%s' "$VER" | sed -n 's/.*(rakupp)[[:space:]]*\([0-9][0-9.]*\).*/\1/p')
+    # The number alone, for the receipt: "Raku++ 3.27.0 (v3.27.0, ...) arm64-darwin".
+    # The optional "(rakupp)" is the banner releases before the -v/-V split
+    # printed, and `--version vX.Y.Z` can still install one of those.
+    VERNUM=$(printf '%s' "$VER" | sed -n 's/^Raku++ *\((rakupp) *\)\{0,1\}\([0-9][0-9.]*\).*/\2/p')
     [ -n "$VERNUM" ] || VERNUM=$VER
 
     # Leave a copy of this script in the prefix, when there is one to copy:

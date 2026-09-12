@@ -4,6 +4,8 @@
 #include "Lexer.h"
 #include "Parser.h"
 #include "Pod.h"
+#include <cctype>
+#include <cstdio>      // _fileno (Windows console check)
 #include <cstdlib>
 #include <csignal>
 #include <chrono>
@@ -13,6 +15,7 @@
 #include "Platform.h"   // pulls <windows.h>
 #include <process.h>    // _beginthreadex
 #include <direct.h>     // _getcwd
+#include <io.h>         // _isatty
 #else
 #include <pthread.h>
 #include <unistd.h>     // getcwd
@@ -70,6 +73,45 @@ void setupConsole() {
     // the prompt reading `ESC[1;32m>ESC[0m`.
     g_vtOut = enableVt(STD_OUTPUT_HANDLE);
     g_vtErr = enableVt(STD_ERROR_HANDLE);
+#endif
+}
+
+// Whether a glyph outside the BMP — Camelia, in `-V`'s first row — can be
+// expected to DRAW here, not merely arrive intact. Two different questions, and
+// only the first is answerable: the locale says which encoding the terminal
+// reads, and nothing at all says which glyphs its font holds. A Linux virtual
+// console, a stripped container image and a strict monospace font with no emoji
+// fallback are all UTF-8 and all draw a box.
+//
+// So the answer is deliberately narrow — a UTF-8 locale AND an interactive
+// terminal — and RAKUPP_UNICODE=0|1 overrides it in both directions, the way
+// RAKUPP_COLOR overrides the colour heuristic. Not a terminal means a pipe, a
+// file, a CI log or the test harness: those take the ASCII form, so captured
+// output is identical on every machine.
+//
+// This is stricter than the em-dash in --help, which is printed unconditionally
+// and always has been: BMP punctuation is in every font shipped this century,
+// and an astral emoji is not the same bet.
+bool consoleUnicode(int fd) {
+    if (const char* f = std::getenv("RAKUPP_UNICODE"))
+        if (*f) return !(f[0] == '0' && f[1] == '\0');
+#if defined(_WIN32)
+    if (!::_isatty(::_fileno(fd == 2 ? stderr : stdout))) return false;
+    // setupConsole() asked for UTF-8; a console that refused it cannot render
+    // the bytes at all, never mind the glyph.
+    return ::GetConsoleOutputCP() == CP_UTF8;
+#else
+    if (!::isatty(fd)) return false;
+    // POSIX precedence: the first of these that is SET decides, even if what it
+    // names is not UTF-8 (LC_ALL=C with LANG=en_US.UTF-8 is a C locale).
+    for (const char* var : {"LC_ALL", "LC_CTYPE", "LANG"}) {
+        const char* s = std::getenv(var);
+        if (!s || !*s) continue;
+        std::string v(s);
+        for (char& c : v) c = (char)std::tolower((unsigned char)c);
+        return v.find("utf-8") != std::string::npos || v.find("utf8") != std::string::npos;
+    }
+    return false;
 #endif
 }
 

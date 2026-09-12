@@ -179,7 +179,8 @@ build/rakupp -I lib program.raku      # add lib dirs to the module search path
 | `--precomp-clean` | Empty that cache (entries are derived data — always safe) |
 | `--highlight [SRC]` | Syntax-highlight Raku — `--html` (default) or `--ansi`; a `pygmentize` drop-in |
 | `--help`, `-h` | Show help |
-| `--version`, `-V` | Show the version |
+| `--version`, `-v` | The release, the build it came from, and the platform — one line |
+| `-V`, `--info`, `--version-full` | The full report: also the Raku version, compiler, FFI backend and binary path |
 
 The compile modes (`--bundle` / `--aot` / `--exe`) each accept `FILE` or `-e CODE`
 plus `-o OUT` — see [Four ways to run a program](#four-ways-to-run-a-program) below.

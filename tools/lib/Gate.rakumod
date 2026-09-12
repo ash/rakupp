@@ -53,7 +53,11 @@ sub binary-arch(Str $path --> Str) is export {
 sub binary-version(Str $path --> Str) is export {
     my $p = run($path, '--version', :out, :err);
     my $t = $p.out.slurp(:close); $p.err.slurp(:close);
-    $t ~~ / '(rakupp)' \s+ $<v>=[\d+ ['.' \d+]+] / ?? ~$<v> !! 'unknown'
+    # Both banner spellings. Since the -v/-V split the version follows the
+    # name directly ("Raku++ 3.29.0 (v3.29.0, …) arm64-darwin"); before it a
+    # "(rakupp)" sat between them. An A/B run measures an OLD release beside
+    # the new one — label neither 'unknown'.
+    $t ~~ / ^ 'Raku++' \s+ ['(rakupp)' \s+]? $<v>=[\d+ ['.' \d+]+] / ?? ~$<v> !! 'unknown'
 }
 
 #| Choose the rakupp to measure, and say how the choice was made.

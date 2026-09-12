@@ -330,7 +330,8 @@ sub trace-start() {
         with try run $*EXECUTABLE.absolute, '--version', :out, :err {
             my @l = .out.slurp(:close).lines;
             .err.slurp(:close);
-            $stamp = (@l[0], @l[2]).grep({ .defined && .chars }).join(' | ') if .exitcode == 0;
+            # `--version` is one line: release, build id, build date, platform
+            $stamp = @l[0].trim if .exitcode == 0 && (@l[0] // '').chars;
         }
         trace("engine: $stamp");
         trace("os: {$*KERNEL.name} / {(try $*DISTRO.Str) // '?'}");

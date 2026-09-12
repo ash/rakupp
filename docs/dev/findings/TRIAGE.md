@@ -302,3 +302,27 @@ Not a regression: identical on the v3.25.0 release build. Traced to e1679c3.
 Surfaced when the END-exception report (issue #70) began printing exceptions
 that had previously been swallowed, which made a hand-constructed X::IO::Mkdir
 visible for the first time.
+
+## `run(:env(%hash, k => v))` silently drops the pairs (2026-09-12)
+
+`:env` takes one Associative. Written with a hash *and* trailing pairs, the
+named argument is a `List` of `(Hash, Pair …)`, and Rakudo still applies every
+pair; rakupp keeps the hash and drops them, with no warning and no error. The
+child runs with the variable unset, which is indistinguishable from a child that
+ignored it.
+
+```raku
+# both engines, marker per engine so neither can pass by printing the other's
+my $code = 'print (%*ENV<PROBE_KEY> // "<unset>")';
+run($*EXECUTABLE, '-e', $code, :out, :env(%*ENV, PROBE_KEY => 'M')).out.slurp(:close);
+```
+
+    :env(%*ENV, PROBE_KEY => 'M')   Rakudo "M"   rakupp "<unset>"   diverge
+    :env(%merged-hash)              Rakudo "M"   rakupp "M"         agree
+
+The merged-hash spelling is the one to write either way, and is what
+`t/run.raku` uses for the `RAKUPP_UNICODE` check — but a program that uses the
+first spelling to add one variable to the environment loses it here in silence.
+Found while testing that `-V`'s Camelia falls back to ASCII through a pipe: the
+first version of that test set the variable this way and the forced butterfly
+never appeared.

@@ -75,6 +75,13 @@ std::vector<std::string> effectiveSearchPath(const std::vector<std::string>& das
 // <windows.h> calls are kept in Runtime.cpp.
 void setupConsole();
 
+// Whether a glyph outside the BMP will DRAW on this fd (1 or 2), rather than
+// merely arrive: a UTF-8 locale and an interactive terminal, overridden either
+// way by RAKUPP_UNICODE=0|1. False for a pipe, a file and a CI log, so captured
+// output is byte-identical everywhere. See the comment on the definition for
+// what this cannot know (which glyphs the font actually holds).
+bool consoleUnicode(int fd);
+
 // Whether an escape sequence written to this fd (1 or 2) will be acted on
 // rather than printed. Always true off Windows, where whether the fd is a
 // terminal at all is the caller's business. On Windows it is false until
