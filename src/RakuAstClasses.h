@@ -102,7 +102,7 @@ Value rakuAstNameFrom(Interpreter& I, const ValueList& parts);
 // `--ast`. With `compUnit` the `:compunit` shape; with `withAttrs` each node's
 // scalar attributes follow its class name.
 void dumpRakuAst(Interpreter& I, const std::string& source, std::ostream& out,
-                 bool compUnit, bool withAttrs);
+                 bool compUnit, bool withAttrs, bool withSource);
 
 // Run a tree: render it and hand the text to the ordinary parser, in the
 // CALLER's lexical scope. Live values the text cannot carry ride a side table

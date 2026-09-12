@@ -18,6 +18,12 @@
 // With `--rakuast=attrs`, each node's scalar attributes follow as ` key=value`,
 // in the same order.
 //
+// Each line also carries the RAKU that node renders back to, in a second
+// column, and `-q` drops it. That reading of `-q` is narrower than the flag's
+// general contract (which drops a mode's progress and success lines, never its
+// PRODUCT): here the TREE is the product and the source column is a reading
+// aid, so a quiet run still prints everything the mode is for.
+//
 // Shape by default, attributes on request, and that is a deliberate narrowing of
 // what the plan specified — see the note in RAKUAST-PLAN Part IV: the
 // two-position test the plan gives for deciding which attributes are
@@ -29,7 +35,10 @@
 #include "Interpreter.h"
 #include "Value.h"
 
+#include <algorithm>
 #include <ostream>
+#include <sstream>
+#include <vector>
 
 namespace rakupp {
 
@@ -54,9 +63,40 @@ std::string scalarOf(const Value& v) {
     }
 }
 
-void dumpNode(const Value& node, int depth, bool withAttrs, std::ostream& out) {
+// One line's worth: the indented class name, and the Raku that node renders
+// back to. Collected before anything is printed so the source column can be
+// aligned — the tree's width is not known until the walk is over.
+struct DumpLine { std::string tree, src; };
+
+// A node's own source, on ONE line. A block renders over several and its
+// braces would swamp the column, so the text is flattened and cut; a node the
+// renderer has no arm for simply contributes nothing rather than an error.
+std::string oneLineSource(Interpreter& I, const Value& node) {
+    std::string s;
+    try { s = rakuAstDeparse(I, node); } catch (...) { return std::string(); }
+    std::string flat;
+    bool sp = false;
+    for (char c : s) {
+        if (c == '\n' || c == '\t' || c == ' ') { sp = true; continue; }
+        if (sp && !flat.empty()) flat += ' ';
+        sp = false;
+        flat += c;
+    }
+    const size_t cap = 64;
+    if (flat.size() > cap) {
+        // Cut on a UTF-8 boundary, or the ellipsis lands mid-character.
+        size_t k = cap;
+        while (k > 0 && ((unsigned char)flat[k] & 0xC0) == 0x80) k--;
+        flat = flat.substr(0, k) + "\xE2\x80\xA6";
+    }
+    return flat;
+}
+
+void dumpNode(Interpreter& I, const Value& node, int depth, bool withAttrs,
+              bool withSource, std::vector<DumpLine>& lines) {
     if (!isRakuAstNode(node) || depth > 60) return;
     const std::string& full = node.obj()->cls->name;
+    std::ostringstream out;
     out << std::string(depth * 2, ' ') << full.substr(9);
 
     // Attributes and children both come out of the node's own map, in
@@ -67,22 +107,32 @@ void dumpNode(const Value& node, int depth, bool withAttrs, std::ostream& out) {
             std::string s = scalarOf(kv.second);
             if (!s.empty()) out << " " << kv.first << "=" << s;
         }
-    out << "\n";
+
+    lines.push_back({out.str(), withSource ? oneLineSource(I, node) : std::string()});
 
     for (auto& kv : node.obj()->attrs) {
         const Value& v = kv.second;
-        if (isRakuAstNode(v)) { dumpNode(v, depth + 1, withAttrs, out); continue; }
+        if (isRakuAstNode(v)) { dumpNode(I, v, depth + 1, withAttrs, withSource, lines); continue; }
         if (v.t == VT::Array && v.arr())
             for (auto& e : *v.arr())
-                if (isRakuAstNode(e)) dumpNode(e, depth + 1, withAttrs, out);
+                if (isRakuAstNode(e)) dumpNode(I, e, depth + 1, withAttrs, withSource, lines);
     }
 }
 
 } // namespace
 
 void dumpRakuAst(Interpreter& I, const std::string& source, std::ostream& out,
-                 bool compUnit, bool withAttrs) {
-    dumpNode(rakuAstView(I, source, compUnit), 0, withAttrs, out);
+                 bool compUnit, bool withAttrs, bool withSource) {
+    std::vector<DumpLine> lines;
+    dumpNode(I, rakuAstView(I, source, compUnit), 0, withAttrs, withSource, lines);
+    size_t w = 0;
+    if (withSource)
+        for (auto& l : lines) if (!l.src.empty()) w = std::max(w, l.tree.size());
+    for (auto& l : lines) {
+        out << l.tree;
+        if (withSource && !l.src.empty()) out << std::string(w - l.tree.size() + 2, ' ') << "\xE2\x94\x82 " << l.src;
+        out << "\n";
+    }
 }
 
 } // namespace rakupp

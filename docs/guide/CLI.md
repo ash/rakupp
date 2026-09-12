@@ -377,7 +377,7 @@ disabled hooks cost nothing measurable, so there is no separate
 | `-c` | compile-check only, print `Syntax OK` (parse + the undeclared-variable check — BEGIN does not run, unlike Rakudo); `-q` drops the `Syntax OK` |
 | `--lint` | static analysis; `-q` drops the summary (see [LINT.md](LINT.md)) |
 | `--ast` | print the parsed AST (`--dump-ast`, `--target=ast` are aliases) |
-| `--rakuast` | print the **RakuAST view** of the program — the same tree `.AST` builds, as an indented class-name tree. `--rakuast=attrs` adds each node's scalar attributes, `--rakuast=compunit` wraps it the way `.AST(:compunit)` does. `tools/rakuast-oracle-dump.raku` prints the same serialization from Rakudo, so comparing the two engines is a `diff` |
+| `--rakuast` | print the **RakuAST view** of the program — the same tree `.AST` builds, as an indented class-name tree, with the Raku each node renders back to in a second column (`-q` prints the tree alone). `--rakuast=attrs` adds each node's scalar attributes, `--rakuast=compunit` wraps it the way `.AST(:compunit)` does. `tools/rakuast-oracle-dump.raku` prints the bare tree from Rakudo, so comparing the two engines is a `diff` |
 | `--target=parse` | Rakudo-compatible alias of `-c` |
 | `--ast-roundtrip` | prove the AST survives the precomp cache format |
 | `--highlight` | syntax-highlight to HTML (`--ansi` for terminals) |

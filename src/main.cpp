@@ -2755,7 +2755,9 @@ int main(int argc, char** argv) {
         if (!haveSrc) { std::cerr << "Usage: rakupp --rakuast FILE | --rakuast -e CODE\n"; return 4; }
         Interpreter interp;
         try {
-            dumpRakuAst(interp, src, std::cout, rakuAstCompUnit, rakuAstAttrs);
+            // …and the SOURCE column unless `-q`: the tree is the product,
+            // the Raku each node renders back to is the reading aid.
+            dumpRakuAst(interp, src, std::cout, rakuAstCompUnit, rakuAstAttrs, !g_quiet);
         } catch (RakuError& e) {
             std::cerr << "===SORRY!=== " << e.message << "\n";
             return 2;
