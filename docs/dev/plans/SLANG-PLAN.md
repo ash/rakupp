@@ -36,6 +36,16 @@ would cost the compile speed the C++ parser exists for. Recorded as a judgement,
 not a measurement; if it is ever revisited, measure it against
 `GRAMMAR-SPEED-PLAN.md`'s JSON workload first.
 
+**One family of slangs needs none of this, and already ships.** `use L10N::XX;`
+— a program written in German, Japanese or Afrikaans — arrives through
+`define_slang` exactly like the others, but what its role carries is a table of
+KEYWORD SPELLINGS, not new syntax. Our lexer hands every keyword to the parser
+as a plain `Tok::Ident`, so the whole slang is a rewrite over the token stream
+between the Lexer and the Parser (`Interpreter::applyL10NSlang`, landed
+2026-09-12 — see RAKUAST-PLAN.md). Eleven languages run. It is worth checking
+any future slang against that test first: a slang that only RENAMES things needs
+no grammar at all, and the seams below are for the ones that add syntax.
+
 ## Measurement — how much of the ecosystem this is worth
 
 From the cached zef index, 2026-09-09:

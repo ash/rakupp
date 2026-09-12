@@ -2682,3 +2682,75 @@ is recorded here rather than half-done.
 working. Gates: `t/run.raku` 866/866, `t/slim/run.raku`, the seven RakuAST
 regression cases, round-trip 44 of 59 with nothing unparseable, and
 `--ast-roundtrip` for the serializer bump.
+
+## `use L10N::XX;` — the program itself, written in the language (2026-09-12)
+
+P1-L10N delivered `.AST($lang)`, which is what the dists' own suites exercise.
+It is not what a person does with them. The headline use is
+
+```raku
+use L10N::AF;
+sê 'Hallo, Wêreld!'
+```
+
+and that failed: `===WARNING=== Module L10N::AF EXPORT failed: No such method
+'slang_grammar' for invocant of type 'Any'`, then `Undefined routine 'sê'`.
+
+Upstream this is a **slang**: the dist's `sub EXPORT` mixes its role of `token`s
+into `$*LANG` while the importing file is still being parsed. rakupp has no
+grammar object to mix into, and `SLANG-PLAN.md` says why that is not a thing to
+fix in passing. But **an L10N slang is not a grammar change** — it is a table of
+keyword spellings, and our lexer hands every keyword to the parser as a plain
+`Tok::Ident`. So the rewrite `.AST($lang)` already builds is the whole
+implementation; it only had to be applied to a token stream instead of to one
+string.
+
+`Interpreter::applyL10NSlang(src, toks)` scans a freshly lexed unit for
+`use L10N::<lang>;` and rewrites everything after that statement. It is called
+from the three places a unit is lexed: the program (`Runtime.cpp`), a module
+load, and `EVAL`. All eleven installed languages run:
+
+| | AF | CY | DE | EO | FR | HU | IT | JA | NL | PT | ZH |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| `my` | my | fy | mein | mia | ma | enyém | il-mio | 私の | mijn | meu | 局部 |
+| `say` | sê | dywedyd | sag | diru | dis | mond | dillo | 言う | zeg | diga | 述 |
+
+Three differences from Rakudo, named rather than hidden:
+
+* **whole-unit, not lexical.** The rewrite starts after the `use` statement and
+  runs to the end of the token vector. A keyword ABOVE the pragma is not
+  rewritten — the test asserts that, because it is what makes this a pragma
+  rather than a file mode.
+* **the dist's `EXPORT` still runs and still fails.** Its warning is suppressed
+  for a language the rewrite has handled, and only for that one; swallowing it
+  unconditionally would hide a module that really did fail to load.
+* **`L10N::Complete` is skipped** — it is a bundle, not a language.
+
+### Two bugs this found, one of them mine and one older
+
+**The search path was set too late.** `rakuppRun` put `-I` on the Interpreter
+*after* the parse, which was fine when nothing loaded a module before then.
+Reading an L10N table means loading `L10N::<lang>` like any other module, so a
+`-I` pointing at the language module silently found nothing and the pragma did
+nothing at all. `interp.libPaths_` and `srcFile_` now precede the rewrite.
+
+**`loadModule` marks a module loaded BEFORE it goes looking for it.** That is
+deliberate — it is the guard that stops two modules which `use` each other from
+recursing — but it means any speculative load poisons the real one: the
+speculative read of `L10N::XX` inserted the name, failed to find the file,
+returned quietly because it was asked to be quiet, and the program's own
+`use L10N::XX` then took the already-loaded path and printed **nothing**. A
+missing language silently became a no-op. The rewrite now puts the bookkeeping
+back when its load fails. Worth knowing before writing the next speculative
+load; the guard itself should not move.
+
+### Gates
+
+`t/regression/rakuast-l10n.raku` grew the whole second half: the fixture
+`L10N::ZZ` now also ships the `sub EXPORT` every real dist has (so the
+suppressed warning is actually tested), and the cases are — the program runs in
+the language; stderr is clean; without the pragma the same source does not run;
+a keyword above the pragma is left alone; a MODULE written in the language
+loads and exports; and a language that is not installed still says so.
+
+`t/run.raku` 868/868, `t/slim/run.raku`.

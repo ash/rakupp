@@ -965,13 +965,32 @@ static std::string injectModuleTable(const std::string& cpp, const std::string& 
 // `use of undeclared identifier 'v_sy'` against generated code the author never
 // wrote (issue #32). Answers -1 when the program may proceed; a parse error is
 // left for the caller, which reports it in its own shape.
+// A program may be written in a LOCALIZED Raku (`use L10N::DE;` and the rest of
+// the file is German). The run path rewrites those keywords between the Lexer
+// and the Parser; every mode that parses a program as a program has to see the
+// same thing, or `-c` says "Syntax OK" about a file it has misread.
+//
+// It builds an Interpreter because reading a language's table means loading
+// `L10N::<lang>` like any other module — which is why it first asks whether the
+// source mentions L10N at all. A token's text comes from the source bytes, so
+// that one `find` keeps all of this off the path of every ordinary program.
+static void applyL10N(const std::string& src, std::vector<Token>& toks,
+                      const std::vector<std::string>& searchPath) {
+    if (src.find("L10N::") == std::string::npos) return;
+    Interpreter I;
+    I.libPaths_.insert(I.libPaths_.begin(), searchPath.begin(), searchPath.end());
+    I.applyL10NSlang(src, toks);
+}
+
 static int declCheckGate(const std::string& src, const std::string& fileName,
                          const std::vector<std::string>& searchPath) {
     if (!declCheckEnabled()) return -1;
     Program prog;
     try {
         Lexer lexer(src);
-        Parser parser(lexer.tokenize());
+        auto toks = lexer.tokenize();
+        applyL10N(src, toks, searchPath);
+        Parser parser(std::move(toks));
         parser.libPaths_ = searchPath;
         parser.srcFile_ = fileName;
         prog = parser.parseProgram();
@@ -2881,7 +2900,9 @@ int main(int argc, char** argv) {
         if (!haveSrc) { std::cerr << "Usage: rakupp --ast FILE | --ast -e CODE\n"; return 4; }
         try {
             Lexer lexer(src);
-            Parser parser(lexer.tokenize());
+            auto toks = lexer.tokenize();
+            applyL10N(src, toks, effectiveSearchPath(libPaths));
+            Parser parser(std::move(toks));
             Program prog = parser.parseProgram();
             dumpAst(prog, std::cout);
         } catch (const ParseError& e) {
@@ -3015,7 +3036,9 @@ int main(int argc, char** argv) {
         Program prog;
         try {
             Lexer lexer(src);
-            Parser parser(lexer.tokenize());
+            auto toks = lexer.tokenize();
+            applyL10N(src, toks, effectiveSearchPath(libPaths));
+            Parser parser(std::move(toks));
             parser.libPaths_ = effectiveSearchPath(libPaths);
             parser.srcFile_ = fileName;
             prog = parser.parseProgram();
@@ -3053,7 +3076,9 @@ int main(int argc, char** argv) {
         Program prog;
         try {
             Lexer lexer(src);
-            Parser parser(lexer.tokenize());
+            auto toks = lexer.tokenize();
+            applyL10N(src, toks, effectiveSearchPath(libPaths));
+            Parser parser(std::move(toks));
             parser.libPaths_ = effectiveSearchPath(libPaths);
             parser.srcFile_ = fileName;
             prog = parser.parseProgram();

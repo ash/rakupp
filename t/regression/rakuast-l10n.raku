@@ -48,6 +48,16 @@ $dir.add("L10N/ZZ.rakumod").spurt: q:to/MOD/;
             }
         }
     }
+    # Every real L10N dist ships this, and it is why `use L10N::XX` needs the
+    # token rewrite at all: upstream it mixes the role into `$*LANG` while the
+    # importing file is still parsing. There is no `$*LANG` here, so it dies —
+    # exactly as the installed dists do, with X::Method::NotFound on Any, which
+    # is a WARNING and not a failed load. `use L10N::ZZ` below asserts that the
+    # warning is suppressed once the rewrite has done the job itself.
+    sub EXPORT(|) {
+        $*LANG.define_slang('MAIN', $*LANG.slang_grammar('MAIN'));
+        {}
+    }
     MOD
 
 # The program under test, in the fixture language. `zeige` and `Punkt` are the
@@ -116,6 +126,60 @@ check rakupp($prog.Str, $dir.add("bad.zz").Str).contains('wenxn'), True,
 # every L10N dist's own test opens with `.AST("DE")` and no `use experimental`.
 $prog.spurt: 'print Q[say 1].AST.DEPARSE';
 check rakupp($prog.Str), 'say 1', '`.AST` needs no pragma, as upstream';
+
+# ---- `use L10N::ZZ;` — the PROGRAM is written in the language -------------
+#
+# The headline use of these dists, and a different seam from `.AST($lang)`:
+# upstream it is a SLANG, mixed into `$*LANG` from `sub EXPORT` while the
+# importing file is still being parsed. We have no grammar to mix into
+# (SLANG-PLAN), but an L10N slang is only a table of keyword spellings, so the
+# same rewrite is applied to the token stream between the Lexer and the Parser.
+# Whole-unit here, lexical upstream — the recorded difference.
+sub rakuppBoth(*@args) {           # stdout and stderr, because the warning matters
+    my $p = run($*EXECUTABLE.Str, "-I{$dir}", |@args, :out, :err);
+    my $o = $p.out.slurp(:close);
+    my $e = $p.err.slurp(:close);
+    ($o.trim, $e.trim)
+}
+$dir.add("zzprog.raku").spurt("use L10N::ZZ;\n" ~ $src);
+my ($zout, $zerr) = rakuppBoth($dir.add("zzprog.raku").Str);
+check $zout, "summe=6 n=3\nx=7\nende", '`use L10N::ZZ;` runs the program in that language';
+check $zerr, '', '…and the dist EXPORT failing to find $*LANG is not news';
+
+# The pragma is what does it — without it the same source is not a program.
+# (This is the half that would pass on its own if the rewrite ran always.)
+$dir.add("noprag.raku").spurt($src);
+my ($nout, $nerr) = rakuppBoth($dir.add("noprag.raku").Str);
+check $nout, '', 'without the pragma the same source does not run';
+check $nerr.contains('il-mio') || $nerr.contains('Undefined'), True,
+      '…and says so';
+
+# …and it starts WHERE the pragma is. A localized keyword above the `use` line
+# is not rewritten, which is what makes this a pragma rather than a file mode.
+$dir.add("before.raku").spurt("il-mio \$early = 1;\nuse L10N::ZZ;\nsag \"late\";\n");
+my ($bout, $berr) = rakuppBoth($dir.add("before.raku").Str);
+check $bout, '', 'a keyword ABOVE the pragma is left in the fixture language';
+check $berr eq '', False, '…and the program fails rather than quietly working';
+
+# A MODULE may be written in the language too — the rewrite is on the module
+# load path as well as the program one.
+$dir.add("L10N/../Gruss.rakumod").spurt: qq:to/M/;
+    use L10N::ZZ;
+    sub gruss(\$n) is export \{ sag "hallo " ~ \$n \}
+    M
+$dir.add("usemod.raku").spurt("use Gruss;\ngruss('welt');\n");
+check rakupp($dir.add("usemod.raku").Str), 'hallo welt',
+      'a MODULE written in the language loads and exports';
+
+# A language that is NOT installed still says so. Reading the table means
+# LOADING `L10N::<lang>`, and `loadModule` marks a module loaded before it goes
+# looking for it (the guard against two modules that `use` each other), so a
+# failed speculative load left the name behind and the program's own `use`
+# took the already-loaded path and printed nothing at all.
+$dir.add("nolang.raku").spurt("use L10N::QQ;\nsay 1;\n");
+my ($qout, $qerr) = rakuppBoth($dir.add("nolang.raku").Str);
+check $qout, '', 'a language that is not installed does not quietly succeed';
+check $qerr.contains('L10N::QQ'), True, '…and the `use` reports it by name';
 
 for $dir.dir -> $e {
     if $e.d { .unlink for $e.dir; $e.rmdir }

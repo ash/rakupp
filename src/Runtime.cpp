@@ -236,6 +236,17 @@ int rakuppRunOn(Interpreter& interp, const std::string& src, std::vector<std::st
         Lexer lexer(src);
         auto tokens = lexer.tokenize();
         stage.lap("lex");
+        // `use L10N::XX;` — a whole program written in that language. The
+        // localized keywords are rewritten here, between the Lexer and the
+        // Parser, because that is where a slang would have acted upstream.
+        //
+        // The search path has to be on the Interpreter FIRST: the rewrite has
+        // to load `L10N::XX` to read its table, and that is a module like any
+        // other. It used to be set after the parse, so a `-I` next to the
+        // language module silently found nothing and the pragma did nothing.
+        interp.libPaths_.insert(interp.libPaths_.begin(), libPaths.begin(), libPaths.end());
+        interp.srcFile_ = fileName;
+        interp.applyL10NSlang(src, tokens);
         if (std::getenv("RAKUPP_DUMPTOKENS")) {
             for (auto& t : tokens) {
                 std::string txt = t.text;
@@ -268,11 +279,9 @@ int rakuppRunOn(Interpreter& interp, const std::string& src, std::vector<std::st
         interp.podDom_ = parsePod(src);   // $=pod structured DOM
         interp.docMode_ = g_docMode;
         interp.llException_ = g_llException;
-        interp.srcFile_ = fileName;
         interp.srcFileAbs_ = absSrcPath(fileName);
         interp.execPath_ = exePath;
-        // -I <path> lib dirs take priority over the built-in / env-derived ones.
-        interp.libPaths_.insert(interp.libPaths_.begin(), libPaths.begin(), libPaths.end());
+        // srcFile_ and the -I lib dirs are set above, before the L10N rewrite
         interp.seedSrcLines(fileName, src);   // --trace and the parse-error excerpt for -e code
         if (int rc = declCheckRc(prog); rc >= 0) return rc;
         stage.lap("check");

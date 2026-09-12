@@ -1489,6 +1489,14 @@ public:
     // `L10N::<lang>` and turns the role it ships into a rewrite over the token
     // stream. Defined beside the `.AST` arm in MethodCallPart3.cpp.
     TokenXform l10nTokenXform(const std::string& lang);
+    // `use L10N::XX;` — the program itself is written in that language. Scans a
+    // freshly lexed token stream for the pragma and rewrites everything after
+    // it, which is the same table `.AST("XX")` uses. Call it between the Lexer
+    // and the Parser; it never throws.
+    void applyL10NSlang(const std::string& src, std::vector<Token>& toks);
+    // the L10N modules whose slang the rewrite above has already applied, so
+    // their `sub EXPORT` failing to find `$*LANG` is expected, not news
+    std::set<std::string> l10nApplied_;
     std::vector<std::string> libPaths_{"lib", ".", "rakulib"}; // + env-derived paths, filled in the ctor
     std::set<std::string> loadedModules_;
     // each loaded module's `sub EXPORT(*@_)`, kept so a REPEAT `use` can run the

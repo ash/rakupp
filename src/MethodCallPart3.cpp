@@ -6,6 +6,7 @@
 #include "MethodCallSegment.h"
 #include "RakuAstClasses.h"
 #include "BuiltinsShared.h"
+#include "Parser.h"   // rakuppFindModuleSource: is `L10N::<lang>` installed at all?
 
 // Segment 3 of the method-dispatch chain, split out of methodCallInner.
 //
@@ -4024,17 +4025,82 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
 //     and cached. The invocant is a Match, which is what the method is written
 //     for (`self.ast` is Nil, `self.Str` is the word) and how the slang calls
 //     it, so this cannot drift from what the dist ships.
+// `use L10N::AF;` and the rest of the file is Afrikaans.
+//
+// Rakudo does this with a SLANG: the dist's `sub EXPORT` mixes a role of
+// `token`s into `$*LANG` while the importing file is still being parsed. We
+// have no grammar object to mix into — that is the whole of SLANG-PLAN.md and
+// no RakuAST work changes it. But an L10N slang is not a grammar change: it is
+// a table of KEYWORD SPELLINGS, and our lexer hands every keyword to the parser
+// as a plain `Tok::Ident`. So the rewrite `.AST("AF")` already builds is the
+// whole implementation, applied to the token stream instead of to one string.
+//
+// Two honest differences from Rakudo, both documented:
+//   * the slang is LEXICAL there and whole-unit here — the rewrite starts after
+//     the `use` statement and runs to the end of the token vector;
+//   * the dist's own `EXPORT` still runs and still fails to find `$*LANG`. Its
+//     warning is suppressed for a language we have handled, and only for that
+//     one: swallowing it unconditionally would hide a module that really did
+//     fail to load.
+void Interpreter::applyL10NSlang(const std::string& src, std::vector<Token>& toks) {
+    // This is on the parse path of every program ever run, so it opens with the
+    // one check that costs nothing: a token's text comes from the source bytes,
+    // so no `L10N::` in the source means no pragma to find.
+    if (src.find("L10N::") == std::string::npos) return;
+    for (size_t i = 0; i + 1 < toks.size(); i++) {
+        if (toks[i].kind != Tok::Ident || toks[i].text != "use") continue;
+        const Token& mod = toks[i + 1];
+        if (mod.kind != Tok::Ident || mod.text.rfind("L10N::", 0) != 0) continue;
+        const std::string lang = mod.text.substr(6);
+        if (lang.empty() || lang == "Complete") continue;   // the bundle is not a language
+        // `L10N::EN` is the identity — nothing to rewrite. Recording it as
+        // handled anyway is what keeps its EXPORT warning as quiet as every
+        // other language's; it is not a module we failed on.
+        if (lang == "EN") { l10nApplied_.insert(mod.text); continue; }
+        // everything after this statement, so the pragma's own words are safe
+        size_t from = i + 2;
+        while (from < toks.size() && toks[from].kind != Tok::Semicolon) from++;
+        if (from < toks.size()) from++;
+        if (from >= toks.size()) continue;
+        // Not installed, or shipping no `role L10N::<lang>`: say nothing and
+        // leave it. The `use` itself is about to report that properly, and a
+        // pre-pass is not the place to raise a module-resolution error.
+        TokenXform x;
+        try { x = l10nTokenXform(lang); } catch (...) { continue; }
+        if (!x) continue;
+        std::vector<Token> rest(toks.begin() + from, toks.end());
+        x(rest);
+        std::copy(rest.begin(), rest.end(), toks.begin() + from);
+        l10nApplied_.insert(mod.text);
+    }
+}
+
 TokenXform Interpreter::l10nTokenXform(const std::string& lang) {
     const std::string mod = "L10N::" + lang;
     // NO import: the dist's `sub EXPORT` installs the slang into `$*LANG`,
     // which is Rakudo's frontend and not ours — it fails with a warning, and
     // what it would have done is the thing we are replacing. The role is what
     // we came for, and loading the module is enough to have it.
+    //
+    // Is it there at all? Asking BEFORE the load does two things. It keeps the
+    // two failures apart — "install it" and "that module is not a language" —
+    // and it keeps a language that is not installed away from `loadModule`,
+    // which marks a module loaded before it goes looking for it (the guard
+    // against two modules that `use` each other). A speculative load that
+    // failed used to leave the name behind, and the program's own
+    // `use L10N::XX` then took the already-loaded path and said NOTHING: a
+    // missing language became a silent no-op instead of an error.
+    if (!loadedModules_.count(mod)) {
+        std::string mpath, msrc;
+        if (!rakuppFindModuleSource(mod, libPaths_, mpath, msrc, false))
+            throw RakuError{Value::typeObj("X::NYI"),
+                "`.AST(\"" + lang + "\")`: " + mod + " is not installed"};
+    }
     loadModule(mod, {}, /*doImport=*/false, /*quiet=*/true);
     auto it = classes_.find(mod);
     if (it == classes_.end() || !it->second)
         throw RakuError{Value::typeObj("X::NYI"),
-            "`.AST(\"" + lang + "\")`: " + mod + " loaded but declares no `role " + mod + "`"};
+            "`.AST(\"" + lang + "\")`: " + mod + " declares no `role " + mod + "`"};
     ClassInfo* role = it->second.get();
 
     // The token body, as the keyword it stands for. The generator quotes

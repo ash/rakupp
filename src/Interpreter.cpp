@@ -6446,7 +6446,11 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
                         ? e.payload.obj()->cls->name : std::string();
                 const bool moduleRaised = exType == "X::AdHoc";
                 if (name != "if" && !quiet && !requireForm && moduleRaised) throw;
-                if (name != "if")
+                // An L10N dist's EXPORT does one thing: install a slang into
+                // `$*LANG`. When the token rewrite has already done that job
+                // (`applyL10NSlang`), its failure here is expected and silent —
+                // but only for a language we really did handle.
+                if (name != "if" && !l10nApplied_.count(name))
                     std::cerr << "===WARNING=== Module " << name
                               << " EXPORT failed: " << e.message << "\n";
             }
@@ -6788,7 +6792,7 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
                       : (e.payload.t == VT::Object && e.payload.obj() && e.payload.obj()->cls)
                             ? e.payload.obj()->cls->name : std::string();
                     if (name != "if" && !quiet && !requireForm && exType == "X::AdHoc") throw;
-                    if (name != "if")
+                    if (name != "if" && !l10nApplied_.count(name))   // see the site above
                         std::cerr << "===WARNING=== Module " << name
                                   << " EXPORT failed: " << e.message << "\n";
                 }
@@ -6813,7 +6817,9 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
         }
         if (!cached) try {
             Lexer lx(src);
-            Parser parser(lx.tokenize());
+            auto mtoks = lx.tokenize();
+            applyL10NSlang(src, mtoks);   // a MODULE may be written in a localized Raku too
+            Parser parser(std::move(mtoks));
             // The module's own `use`s resolve on the SAME search path, so its
             // imported operators and sigilless constants are known while its body
             // parses (Text::Utils reads SPACE from Text::Utils::Vars).
@@ -7043,7 +7049,9 @@ Value Interpreter::evalString(const std::string& src, bool mainlinePH, bool* inc
     Lexer lexer(src);
     auto prog = std::make_shared<Program>();
     try {
-        Parser parser(lexer.tokenize());
+        auto etoks = lexer.tokenize();
+        applyL10NSlang(src, etoks);   // `EVAL 'use L10N::AF; …'` reads Afrikaans too
+        Parser parser(std::move(etoks));
         parser.strictSep_ = true; // EVAL snippets get "two terms in a row" strictness
         // seed user-defined operators (sub infix:<…>) so EVAL'd custom operators parse
         for (Env* e = tctx_.cur.get(); e; e = e->parent.get())

@@ -67,6 +67,12 @@ trips over.
   `use v6.e.PREVIEW` actually turns on: new syntax, subs and methods, the
   behaviour changes that bite, the new compile-time errors — each with both
   outputs, plus where Raku++ matches and where it does not.
+- **[l10n.md](l10n.md)** — writing Raku in your own language: the `L10N::*`
+  modules, why Rakudo needs `RAKUDO_RAKUAST=1` for them and Raku++ does not, how
+  a slang with no grammar to mix into is done as a token rewrite instead, the
+  two places that differ from Rakudo (whole-file rather than lexical scope), the
+  one declarator that cannot be translated and why, and `.AST($lang)` for
+  turning a localized program back into ordinary Raku.
 - **[hand-written.md](hand-written.md)** — "hand-written lexer and parser"
   vs. written by a human: what the compiler term of art claims (no parser
   generator — the sense GCC, Clang and Go use of themselves, with receipts),
