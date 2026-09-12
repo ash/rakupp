@@ -2559,3 +2559,79 @@ oracle on this box** and the honest gate is the tree comparison above.
 `t/run.raku`, `t/slim/run.raku`, the seven RakuAST regression cases, the
 round-trip harness back at **44 of 59** with nothing unparseable, and the new
 `Doc::` spec run on BOTH engines.
+
+## Closing the LaTeX::Grammar and L10N gaps (2026-09-12)
+
+**LaTeX::Grammar 0.0.5 is green and demonstrably working**; the L10N family is
+**12 of 14**, and what holds the last two is no longer anything to do with
+RakuAST or with localization.
+
+### LaTeX::Grammar: one view gap, five of six files already passing
+
+Run rather than grepped, it turned out to be in far better shape than the board
+suggested: five of its six test files passed already (136 checks), and the sixth
+died on one missing view — `::(…)`, the symbolic reference, which its RakuAST
+actions build every symbol with (`'::("' ~ $name ~ '")'`) and then `.AST`.
+
+Measured: upstream that is `Term::Name` over a `Name` whose parts are
+`Name::Part::Empty` then `Name::Part::Expression` — the empty part standing for
+the nothing before the leading `::`. Worth noting for the renderer: **Rakudo's
+own DEPARSE drops the `::` here**, rendering `::($x)` as `($x)`, which is a
+different program. Ours does not.
+
+With that in, the suite is green and the dist does its job:
+
+```
+MathJSON : [Divide [Sin x] x]
+AsciiMath: sin(x)/x
+WL       : (Times[ Sin[x] , Power[x, -1]])
+RakuAST  : RakuAST::StatementList  ->  ::("x") ** 2 + 1
+```
+
+### L10N: three gaps closed, one metamodel item left
+
+1. **`import Foo;` was unimplemented.** It is not decoration — Rakudo refuses
+   the bare name without it even when `Foo::f` resolves. Parsed as its own
+   `UseStmt` shape and executed by binding the package's routines into the
+   current scope. rakupp imports the `our` routines rather than only the
+   `is export` ones, which is the same latitude this engine already takes (an
+   `our sub … is export` in a module body is globally reachable here with no
+   import at all); nothing in the corpus can tell the two apart.
+2. **`import` is its own STATEMENT upstream**, and this is what actually made
+   the test fail. The view rendered it as `Statement::Use`, so the round trip
+   through `.AST.EVAL` — which is how every L10N test runs — turned `import
+   TestModule` into `use TestModule` and tried to LOAD a package declared in the
+   same file. `Statement::Import` and `Statement::Need` are their own classes.
+3. **`enum` and `subset` had no view.** `enum C <a b c>` is a `Type::Enum` whose
+   term is a `QuotedString` carrying the `words`/`val` processors; our parser
+   normalises the angle form to an array of string literals and loses the
+   spelling, so the words are put back. That is a reconstruction and it is the
+   only faithful option — Rakudo REFUSES `enum C ["a", "b"]`, so rendering what
+   our tree literally holds would produce text upstream cannot parse. An enum
+   whose values are not a plain word list still refuses by name.
+4. **`.^name` could not be deparsed** (`Call::MetaMethod`), and **`:all` came
+   back as `:all(True)`** — our parser fills the flag form's value in with a
+   Bool rather than leaving it empty, so a flag round-tripped as an explicit
+   pair. Same program, different spelling, and the spelling is what a renderer
+   is for.
+
+What is left on L10N::ZH is that `module M { }` and `package P { }` declare a
+**ClassHOW** here where Rakudo gives `ModuleHOW` and `PackageHOW`, and the
+dist's `13-package` test asserts the name. That is a metamodel question — our
+modules behave like classes, which predates all of this — and it is
+deliberately not opened here.
+
+### A correction worth recording
+
+Twice in this round a per-file tally script reported a suite as passing when it
+was not: `awk` counted `ok`/`not ok` lines and a DIE prints neither, so a file
+that aborted after one passing test read as "1 ok, 0 bad". Both times the real
+state came from `rakupp test`, which reads the plan. **Count the plan, not the
+`ok` lines** — a truncated file is the failure mode a naive tally cannot see.
+
+### Gates
+
+`t/run.raku` 866/866, `t/slim/run.raku`, the seven RakuAST regression cases
+(the view case's frontier assertion moved again — `class`, then a phaser, then
+an `enum`, now a substitution), and the round-trip harness at 44 of 59 with
+nothing unparseable.

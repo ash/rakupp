@@ -873,6 +873,8 @@ struct UseStmt : Stmt {
     // UseStmt for. It differs from `use` in one way that matters downstream:
     // Rakudo does not run a module's `sub EXPORT` for `require` at all, so a
     // failing EXPORT must not fail the load the way it does for `use`.
+    bool isImport = false; // `import Foo` — bring an ALREADY-DECLARED package's
+                           // exported routines into this scope (no load)
     bool isRequire = false;
     UseStmt(): Stmt(NK::UseStmt) {}
 };

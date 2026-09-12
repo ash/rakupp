@@ -8768,6 +8768,23 @@ StmtPtr Parser::parseStatementImpl() {
             matchKind(Tok::Semicolon);
             return es;
         }
+        // `import Foo;` — the package is already declared (or already loaded);
+        // this only brings its exported routines into THIS scope. Rakudo
+        // refuses the bare name without it, so it is not decoration:
+        // L10N::ZH's `11-use-import` is the one test in the corpus that writes
+        // it, and Rakudo runs it.
+        if (kw == "import" && peek().kind == Tok::Ident) {
+            advance();
+            auto u = std::make_unique<UseStmt>();
+            u->isImport = true;
+            u->module = advance().text;
+            while (isKind(Tok::Op) && cur().text == "::") { advance(); u->module += "::" + advance().text; }
+            // …and the optional import list, accepted and ignored the way the
+            // `require` forms accept theirs.
+            while (!isKind(Tok::End) && !isKind(Tok::Semicolon) && !isKind(Tok::RBrace)) advance();
+            matchKind(Tok::Semicolon);
+            return u;
+        }
         if (kw == "use" || kw == "no" || kw == "need") {
             advance();
             auto u = std::make_unique<UseStmt>();

@@ -307,6 +307,15 @@ struct Builder {
                 if (p->keyExpr) unmapped("a pair with a computed key");
                 if (!p->value)  // `:x` — the flag form, a distinct class upstream
                     return node("ColonPair::True", {{"key", Value::str(p->key)}});
+                // `:all` and `:!all` are their own classes upstream, and our
+                // parser fills the flag form's value in with a Bool rather than
+                // leaving it empty — so a flag came back out as `:all(True)`.
+                // Same program, different spelling, and the spelling is what a
+                // renderer is for.
+                if (p->colonForm && p->value->kind == NK::BoolLit)
+                    return node(static_cast<BoolLit*>(p->value.get())->v
+                                    ? "ColonPair::True" : "ColonPair::False",
+                                {{"key", Value::str(p->key)}});
                 if (p->colonForm)
                     return node("ColonPair::Value", {{"key", Value::str(p->key)},
                                                      {"value", buildExpr(p->value.get())}});
@@ -348,7 +357,23 @@ struct Builder {
                 auto* a = static_cast<AllomorphLit*>(e);
                 return node("Literal", {{"value", Value::str(a->str)}});
             }
-            case NK::SymbolicRef: unmapped("a symbolic reference (::(…))");
+            case NK::SymbolicRef: {
+                // `::($name)` — a Name whose part is an EXPRESSION rather than
+                // a word. Measured: upstream it is `Term::Name` over a `Name`
+                // whose parts are `Name::Part::Empty` then
+                // `Name::Part::Expression`, the empty one standing for the
+                // nothing before the leading `::`.
+                // LaTeX::Grammar's RakuAST actions build every symbol that way
+                // (`'::("' ~ $name ~ '")'`) and then `.AST` the result.
+                auto* r = static_cast<SymbolicRef*>(e);
+                if (!r->nameExpr || !r->segs.empty() || !r->pkg.empty() || !r->sigil.empty())
+                    unmapped("a qualified or sigilled symbolic reference");
+                ValueList parts;
+                parts.push_back(node("Name::Part::Empty"));
+                parts.push_back(node("Name::Part::Expression",
+                                     {{"expr", buildExpr(r->nameExpr.get())}}));
+                return node("Term::Name", {{"name", node("Name", {{"parts", list(parts)}})}});
+            }
             case NK::SubstLit:    unmapped("a substitution (s///)");
             case NK::NqpOp:       unmapped("an nqp:: op");
             default: break;
@@ -729,6 +754,15 @@ struct Builder {
                             {{"expression", routine(static_cast<SubDecl*>(s))}});
             case NK::UseStmt: {
                 auto* u = static_cast<UseStmt*>(s);
+                // `import`, `need` and `no` are their OWN statements upstream,
+                // not a `use` with a flag — and the difference is not academic:
+                // rendering `import Foo` as `use Foo` makes the round trip try
+                // to LOAD a package that is declared in the same file, which is
+                // what L10N::ZH's import test does and how this was found.
+                if (u->isImport)
+                    return node("Statement::Import", {{"module-name", name(u->module)}});
+                if (u->isNeed)
+                    return node("Statement::Need", {{"module-name", name(u->module)}});
                 return node("Statement::Use", {{"module-name", name(u->module)}});
             }
             case NK::ClassDecl: {
@@ -762,8 +796,56 @@ struct Builder {
                                                node("StatementList", {{"statements", list(body)}})}})}})}});
                 return node("Statement::Expression", {{"expression", pkg}});
             }
-            case NK::EnumDecl:       unmapped("an enum declaration");
-            case NK::SubsetDecl:     unmapped("a subset declaration");
+            case NK::EnumDecl: {
+                auto* d = static_cast<EnumDecl*>(s);
+                if (d->name.empty()) unmapped("an anonymous enum");
+                // The VALUE LIST. `enum C <a b c>` is a `QuotedString` with the
+                // `words`/`val` processors upstream — our parser normalises the
+                // angle form to an array of string literals and loses the
+                // spelling, so the words are put back. That is a
+                // reconstruction, and it is the only faithful option: Rakudo
+                // REFUSES `enum C ["a", "b"]`, so rendering what our tree
+                // literally holds would produce text upstream cannot parse.
+                Value term;
+                if (d->values && d->values->kind == NK::ArrayLit) {
+                    auto* al = static_cast<ArrayLit*>(d->values.get());
+                    std::string words;
+                    bool allPlain = !al->items.empty();
+                    for (auto& it : al->items) {
+                        if (!it || it->kind != NK::StrLit) { allPlain = false; break; }
+                        const std::string& w = static_cast<StrLit*>(it.get())->v;
+                        if (w.find_first_of(" \t\n") != std::string::npos) { allPlain = false; break; }
+                        if (!words.empty()) words += " ";
+                        words += w;
+                    }
+                    if (!allPlain) unmapped("an enum whose values are not a word list");
+                    ValueList procs;
+                    procs.push_back(Value::str("words"));
+                    procs.push_back(Value::str("val"));
+                    term = node("QuotedString",
+                        {{"segments",   list({node("StrLiteral", {{"value", Value::str(words)}})})},
+                         {"processors", list(procs)}});
+                }
+                else if (d->values) {
+                    term = node("Circumfix::Parentheses",
+                                {{"semilist", semiList({buildExpr(d->values.get())})}});
+                }
+                else unmapped("an enum with no values");
+                return node("Statement::Expression", {{"expression",
+                    node("Type::Enum", {{"name",  name(d->name)},
+                                        {"scope", Value::str("our")},
+                                        {"term",  term}})}});
+            }
+            case NK::SubsetDecl: {
+                auto* d = static_cast<SubsetDecl*>(s);
+                if (d->name.empty()) unmapped("an anonymous subset");
+                Value n = node("Type::Subset", {{"name",  name(d->name)},
+                                                {"scope", Value::str("our")}});
+                if (!d->baseType.empty())
+                    n.obj()->attrs["base-type"] = node("Type::Simple", {{"name", name(d->baseType)}});
+                if (d->where) n.obj()->attrs["where"] = buildExpr(d->where.get());
+                return node("Statement::Expression", {{"expression", n}});
+            }
             case NK::NamedRegexDecl: unmapped("a named regex declaration");
             case NK::GivenStmt: {
                 auto* g = static_cast<GivenStmt*>(s);

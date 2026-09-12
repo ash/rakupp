@@ -287,9 +287,31 @@ struct Deparser {
             return v ? v->toStr() : "";
         }
         if (c == "Name") {
+            // A name is its parts joined by `::` — but a SYMBOLIC part carries
+            // its own `::(…)` and the empty part before it stands for the
+            // nothing at the front, so those two cannot go through the plain
+            // join. (Rakudo's own deparse drops the `::` here and renders
+            // `::($x)` as `($x)`, which is a different program; ours does not.)
             const Value* p = attr(node, "parts");
-            return joinList(p, "::", indent);
+            bool symbolic = false;
+            if (p && p->t == VT::Array && p->arr())
+                for (auto& e : *p->arr())
+                    if (isNode(e) && shortName(e) == "Name::Part::Expression") symbolic = true;
+            if (!symbolic) return joinList(p, "::", indent);
+            std::string out;
+            for (auto& e : *p->arr()) {
+                if (!isNode(e)) { if (!out.empty()) out += "::"; out += e.toStr(); continue; }
+                const std::string pc = shortName(e);
+                if (pc == "Name::Part::Empty") continue;
+                if (pc == "Name::Part::Expression")
+                    { out += "::(" + opt(attr(e, "expr"), indent) + ")"; continue; }
+                if (!out.empty()) out += "::";
+                out += render(e, indent);
+            }
+            return out;
         }
+        if (c == "Name::Part::Empty") return "";
+        if (c == "Name::Part::Expression") return "::(" + opt(attr(node, "expr"), indent) + ")";
         if (c == "Name::Part::Simple") {
             const Value* v = attr(node, "name");
             return v ? v->toStr() : "";
@@ -297,6 +319,37 @@ struct Deparser {
         if (c == "Term::Name" || c == "Term::Enum") return opt(attr(node, "name"), indent);
         if (c == "Term::Self")     return "self";
         if (c == "Term::Whatever") return "*";
+        if (c == "Type::Enum") {
+            return "enum " + opt(attr(node, "name"), indent) + " " +
+                   opt(attr(node, "term"), indent) + "\n";
+        }
+        if (c == "Type::Subset") {
+            std::string out = "subset " + opt(attr(node, "name"), indent);
+            if (const Value* b = attr(node, "base-type"))
+                if (isNode(*b)) out += " of " + render(*b, indent);
+            if (const Value* w = attr(node, "where"))
+                if (isNode(*w)) out += " where " + render(*w, indent);
+            return out + "\n";
+        }
+        if (c == "QuotedString") {
+            // A `words` processor means the angle form: `<a b c>`, not a string.
+            // `enum C <a b c>` is the one place it turns up, and the quoted
+            // spelling is a different program there — Rakudo refuses a list.
+            if (const Value* pr = attr(node, "processors"))
+                if (pr->t == VT::Array && pr->arr())
+                    for (auto& e : *pr->arr())
+                        if (e.toStr() == "words") {
+                            std::string inner;
+                            if (const Value* segs = attr(node, "segments"))
+                                if (segs->t == VT::Array && segs->arr())
+                                    for (auto& sg : *segs->arr())
+                                        if (isNode(sg) && shortName(sg) == "StrLiteral") {
+                                            const Value* v = attr(sg, "value");
+                                            inner += v ? v->toStr() : "";
+                                        }
+                            return "<" + inner + ">";
+                        }
+        }
         if (c == "QuotedString") {
             // A parsed interpolating string: literal segments go in as they
             // were, and every other segment is a `{…}` block, which is the one
@@ -392,6 +445,18 @@ struct Deparser {
             std::string a = opt(attr(node, "args"), indent);
             return opt(attr(node, "name"), indent) + (a.empty() ? "" : " " + a);
         }
+        // `.^name` — the META-method call. Upstream the name is a plain Str
+        // and the `dispatcher` (`^`, `?`, `!`) is its own attribute; ours keeps
+        // a Name node, so this reads whichever is there.
+        if (c == "Call::MetaMethod") {
+            const Value* a = attr(node, "args");
+            std::string args = opt(a, indent);
+            bool hasArgs = a && isNode(*a) && !args.empty();
+            const Value* d = attr(node, "dispatcher");
+            std::string disp = d && !d->toStr().empty() ? d->toStr() : "^";
+            return "." + disp + opt(attr(node, "name"), indent) +
+                   (hasArgs ? "(" + args + ")" : "");
+        }
         if (c == "Call::Method" || c == "Call::MaybeMethod" || c == "Call::PrivateMethod") {
             const Value* a = attr(node, "args");
             std::string dot = c == "Call::MaybeMethod" ? ".?" : c == "Call::PrivateMethod" ? "!" : ".";
@@ -444,7 +509,9 @@ struct Deparser {
         }
         if (c == "StatementList") return statements(node, indent);
         if (c == "Statement::Empty") return "";
-        if (c == "Statement::Use")   return "use " + opt(attr(node, "module-name"), indent);
+        if (c == "Statement::Use")    return "use "    + opt(attr(node, "module-name"), indent);
+        if (c == "Statement::Import") return "import " + opt(attr(node, "module-name"), indent);
+        if (c == "Statement::Need")   return "need "   + opt(attr(node, "module-name"), indent);
         if (c == "Statement::Expression") {
             std::string out = opt(attr(node, "expression"), indent);
             // A statement whose expression IS a block — a routine declaration,

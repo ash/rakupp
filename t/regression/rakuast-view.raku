@@ -66,11 +66,12 @@ check ($p.out.slurp(:close) ~ $p.err.slurp(:close)).contains(
 # A Buf is not Cool and never reaches the arm.
 check (try Buf.new(1,2).AST).defined, False, 'a Buf invocant refuses';
 # A construct the builder has no faithful mapping for SAYS so — it never
-# answers a wrong tree. (`class` was the example here first and is mapped now,
-# then a phaser block, which is mapped now too. An `enum` is the current
-# frontier — our parse drops the `<a b c>` spelling, and Rakudo refuses the
-# array form we would have to render instead — and this line moves with it.)
-check (try q[enum Colour <red green blue>].AST).defined, False,
+# answers a wrong tree. The example here has been `class`, then a phaser block,
+# then an `enum`, and every one of them is mapped now; this line is the
+# FRONTIER, not any particular construct, and it moves each time the frontier
+# does. Today it is a substitution — and behind it, the whole `Regex::*`
+# subtree, which is what holds the grammar-heavy programs out of the corpus.
+check (try q[my $x = "a"; $x ~~ s/a/b/].AST).defined, False,
       'an unmapped construct throws';
 check ($! ~~ X::NYI).so, True, '…as X::NYI';
 # And a parse error is a Raku exception, not a `===SORRY!===` that takes the

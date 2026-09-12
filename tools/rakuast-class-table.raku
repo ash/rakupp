@@ -76,7 +76,8 @@ my @demand = <
     Assignment MetaInfix::Assign Term::Enum
     StatementModifier::For StatementModifier::While StatementModifier::Until
     StatementModifier::Given StatementModifier::With StatementModifier::Without
-    Method Submethod Var::Attribute
+    Method Submethod Var::Attribute Type::Enum Type::Subset
+    Name::Part::Empty Name::Part::Expression Statement::Import Statement::Need
     Statement::With Statement::Without
     Statement::Loop::RepeatWhile Statement::Loop::RepeatUntil Statement::Whenever
     StatementPrefix::Phaser::Check StatementPrefix::Phaser::Init

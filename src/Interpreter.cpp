@@ -8702,6 +8702,32 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                         for (auto& e : *av.arr()) useExprArgs_.push_back(e);
                     else useExprArgs_.push_back(av);
                 }
+                // `import Foo;` — the package is ALREADY there; nothing is
+                // loaded. What it does is bring Foo's routines into this scope
+                // under their bare names, which is the whole difference Rakudo
+                // enforces: without it `f()` is an undeclared routine even
+                // though `Foo::f` resolves.
+                //
+                // rakupp imports the package's `our` routines rather than only
+                // the `is export` ones, which is the same latitude this engine
+                // already takes with a module's exports (an `our sub … is
+                // export` inside a module body is globally reachable here
+                // without any import at all). Nothing in the corpus can tell
+                // the two apart; a program that could would see a name in scope
+                // that Rakudo would not give it.
+                if (u->isImport) {
+                    const std::string pfx = u->module + "::";
+                    for (Env* e = tctx_.cur.get(); e; e = e->parent.get())
+                        for (auto& kv : e->vars) {
+                            if (kv.first.size() <= pfx.size() + 1) continue;
+                            // routines are stored sigilled: `&Foo::f`
+                            if (kv.first[0] != '&' || kv.first.compare(1, pfx.size(), pfx) != 0) continue;
+                            std::string bare = "&" + kv.first.substr(1 + pfx.size());
+                            if (bare.find("::") != std::string::npos) continue;   // deeper package
+                            if (!tctx_.cur->find(bare)) tctx_.cur->define(bare, kv.second);
+                        }
+                    break;
+                }
                 loadModule(u->module, u->importArgs, !u->isNeed, /*quiet=*/false, u->verReq,
                            /*requireForm=*/u->isRequire);
                 // `use Mod <name:alias>` — import that routine under a second name.
