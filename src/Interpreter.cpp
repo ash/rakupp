@@ -9167,6 +9167,11 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 return Value::typeObj(cd->name);
             }
             if (cd->isPackage) {
+                if (!cd->name.empty()) {
+                    signed char k = cd->isModuleDecl ? 1 : 2;
+                    pkgKind_[tctx_.pkgPrefix + cd->name] = k;
+                    if (!tctx_.pkgPrefix.empty()) pkgKind_[cd->name] = k;
+                }
                 // name adverbs, literal or computed: `module Zef:ver($?DISTRIBUTION…)`
                 if (!cd->name.empty() &&
                     (!cd->ver.empty() || !cd->auth.empty() || !cd->api.empty() ||

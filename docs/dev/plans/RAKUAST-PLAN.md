@@ -2635,3 +2635,50 @@ state came from `rakupp test`, which reads the plan. **Count the plan, not the
 (the view case's frontier assertion moved again — `class`, then a phaser, then
 an `enum`, now a substitution), and the round-trip harness at 44 of 59 with
 nothing unparseable.
+
+### The last two L10N rows, and the boundary they found (2026-09-12)
+
+Three more gaps closed and one **design boundary** found, which is the more
+important result: ZH and the `L10N::Complete` bundle behind it cannot go green
+without moving the L10N rewrite earlier, and that is now precisely diagnosed
+rather than guessed at.
+
+**Closed:**
+
+* **`module` and `package` answer their own metaobjects.** Rakudo gives
+  `Perl6::Metamodel::ModuleHOW` and `…::PackageHOW`; both were `ClassHOW` here.
+  They are namespaces rather than types in this engine, so they are not in
+  `classes_` at all and `.HOW` had nowhere to learn the difference — hence a
+  `pkgKind_` map, and `ClassDecl::isModuleDecl` through the serializer
+  (**19 → 20**, because a unit restored from the precomp cache would otherwise
+  have lost the distinction: the same staleness hole `usesRakuAst` had at P0).
+  Found alongside it: `class C { }.HOW.^name` answered the bare
+  `Metamodel::ClassHOW` where Rakudo prefixes `Perl6::`, for every class.
+* **The view rendered `package P` as `module P`** — both collapsed to `Module`.
+  The same failure shape as `import`→`use`: harmless-looking in the tree,
+  wrong the moment `.AST.EVAL` runs it, which is how every L10N test runs.
+* **One safe slice of the regex view.** A rule whose body is a single quoted
+  literal is `Regex::WithWhitespace` over a `Regex::Quote`, and that much can be
+  built from the raw pattern text our parser keeps. `rule TOP { 'hello' }`
+  deparses to `rule TOP { hello }` — byte-identical to Rakudo, which also drops
+  the quotes, a bare word in a regex matching the same text — and the grammar
+  still parses after the round trip. Everything else refuses by name, because a
+  partial regex view would be a wrong tree.
+
+**The boundary.** L10N is a rewrite of the TOKEN STREAM, which works for every
+keyword the PARSER decides — and twelve dists prove it — but cannot reach a
+keyword that changes how the LEXER SCANS. `Lexer.cpp:1883` keys on
+`token`/`rule`/`regex` to capture a rule body as raw text; a localized `规则`
+never triggers it, so by the time the rewrite turns `规则` into `rule` the body
+has already been lexed as an ordinary block. ZH's grammar test is the one place
+in the whole family that crosses that line (its `quote-lang-*` entries — `q`,
+`qq`, `rx` — are all identity, so they never do).
+
+Closing it means handing the translation table to the **Lexer** rather than to
+the token stream, which is a different design from the one P1-L10N landed and
+is recorded here rather than half-done.
+
+**State**: 12 of 14 L10N rows green; LaTeX::Grammar green and demonstrably
+working. Gates: `t/run.raku` 866/866, `t/slim/run.raku`, the seven RakuAST
+regression cases, round-trip 44 of 59 with nothing unparseable, and
+`--ast-roundtrip` for the serializer bump.

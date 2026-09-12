@@ -5052,8 +5052,14 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             }
         }
         if (mm == "name") {
-            if (inv.t == VT::Type && inv.s == "Metamodel::ClassHOW")
-                return Value::str("Perl6::Metamodel::ClassHOW"); // Rakudo's full metaclass name
+            if (inv.t == VT::Type && inv.s.rfind("Metamodel::", 0) == 0)
+                return Value::str("Perl6::" + inv.s.str()); // Rakudo's full metaclass name
+            // …and the same for a metaobject that is a real OBJECT rather than a
+            // type: a user class's `.HOW` is one, and `class C { }.HOW.^name`
+            // answered the bare `Metamodel::ClassHOW` where Rakudo prefixes it.
+            if (inv.t == VT::Object && inv.obj() && inv.obj()->cls &&
+                inv.obj()->cls->name.rfind("Metamodel::", 0) == 0)
+                return Value::str("Perl6::" + inv.obj()->cls->name);
             // An OBJECT hash is a PARAMETERIZED Hash: `my Int %h{Str}` is a
             // Hash[Int,Str]. Only the name carries the parameters — typeName()
             // stays "Hash", because dispatch and error messages key on it.

@@ -771,9 +771,15 @@ struct Builder {
                 // Twelve of the corpus's fifty-nine programs stop here, which is
                 // why it is the first widening and not the tidiest.
                 auto* cd = static_cast<ClassDecl*>(s);
+                // `module` and `package` are DIFFERENT classes upstream and
+                // answer different metaobjects, so collapsing both to `Module`
+                // rendered `package P` as `module P` — and the round trip
+                // through `.AST.EVAL`, which is how every L10N test runs, then
+                // declared the wrong kind of thing.
                 const char* cls = cd->isRole    ? "Role"
                                 : cd->isGrammar ? "Grammar"
-                                : cd->isPackage ? "Module" : "Class";
+                                : cd->isPackage ? (cd->isModuleDecl ? "Module" : "Package")
+                                                : "Class";
                 // The body is NOT `cd->body`: our parser lifts attributes,
                 // methods and grammar rules into their own vectors and leaves
                 // only the loose statements there. Rendering just those said a
@@ -782,13 +788,44 @@ struct Builder {
                 // is not allowed to produce, and the tree oracle is what found
                 // it. Rules have no view at all yet (the whole `Regex::*`
                 // subtree), so a grammar with any is refused by name.
-                if (!cd->rules.empty()) unmapped("a grammar rule (the regex tree)");
+                // GRAMMAR RULES. The whole `Regex::*` subtree has no view, and
+                // our parser keeps a rule's pattern as raw TEXT rather than a
+                // tree, so there is nothing to walk. One shape is safe to build
+                // anyway: a rule whose body is a single quoted literal, which
+                // is `Regex::WithWhitespace` over a `Regex::Quote` upstream.
+                // Everything else still refuses by name — a partial regex view
+                // would be a wrong tree, which is the one thing this builder
+                // must not produce.
+                ValueList ruleNodes;
+                for (auto& r : cd->rules) {
+                    std::string pat = r.pattern;
+                    size_t b = pat.find_first_not_of(" \t\n");
+                    size_t e = pat.find_last_not_of(" \t\n");
+                    pat = b == std::string::npos ? std::string() : pat.substr(b, e - b + 1);
+                    bool literal = pat.size() >= 2 &&
+                                   (pat.front() == '\'' || pat.front() == '"') &&
+                                   pat.back() == pat.front() &&
+                                   pat.find(pat.front(), 1) == pat.size() - 1;
+                    if (!literal || !r.params.empty())
+                        unmapped("a grammar rule (the regex tree)");
+                    const std::string text = pat.substr(1, pat.size() - 2);
+                    const char* rcls = r.kind == "token" ? "TokenDeclaration"
+                                     : r.kind == "regex" ? "RegexDeclaration"
+                                                         : "RuleDeclaration";
+                    Value body = node("Regex::WithWhitespace", {{"regex",
+                        node("Regex::Quote", {{"quoted",
+                            node("QuotedString", {{"segments", list({
+                                node("StrLiteral", {{"value", Value::str(text)}})})}})}})}});
+                    ruleNodes.push_back(node("Statement::Expression", {{"expression",
+                        node(rcls, {{"name", name(r.name)}, {"body", body}})}}));
+                }
                 ValueList body;
                 for (auto& a : cd->attrs)
                     body.push_back(node("Statement::Expression", {{"expression", attribute(a)}}));
                 for (auto& m : cd->methods)
                     body.push_back(node("Statement::Expression", {{"expression", routine(m.get())}}));
                 for (auto& st : cd->body) body.push_back(buildStmt(st.get()));
+                for (auto& rn : ruleNodes) body.push_back(rn);
                 Value pkg = node(cls, {{"name", name(cd->name)},
                                        {"scope", Value::str(cd->isMy ? "my" : "our")},
                                        {"body", node("Block", {{"body",

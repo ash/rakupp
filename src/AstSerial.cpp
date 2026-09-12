@@ -334,6 +334,7 @@ template <class IO> void visit(IO& io, ClassDecl& n) {
     }
     F(io, n.isPackage); ioStmtVec(io, n.body);
     F(io, n.isMonitor);
+    F(io, n.isModuleDecl);
     F(io, n.classRw);
     F(io, n.howName);
     if constexpr (IO::reading) {

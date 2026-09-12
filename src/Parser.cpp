@@ -7528,6 +7528,7 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
     cd->isRole = isRole;
     cd->isGrammar = isGrammar;
     cd->isMonitor = kindKw == "monitor";
+    cd->isModuleDecl = kindKw == "module";
     cd->isPackage = isPackage;
     if (isKind(Tok::Ident)) cd->name = advance().text;
     else if (isOp("::")) {

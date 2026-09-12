@@ -5342,6 +5342,25 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // mixins stick (Method::Also's AliasableClassHOW). Its class is named
         // Metamodel::ClassHOW, keeping `~~ Metamodel::ClassHOW` True. Built-ins
         // keep the plain type object.
+        // A MODULE or PACKAGE answers its own metaobject, not a ClassHOW. They
+        // are namespaces here rather than types, so they are not in `classes_`
+        // at all and this is the only place that knows — measured: Rakudo gives
+        // `Perl6::Metamodel::ModuleHOW` and `…::PackageHOW`, and L10N::ZH's
+        // package test asserts both names.
+        if (inv.t == VT::Type) {
+            auto pk = pkgKind_.find(inv.s);
+            if (pk != pkgKind_.end()) {
+                auto& slot = pk->second == 1 ? howModuleClsInfo_ : howPackageClsInfo_;
+                if (!slot) {
+                    slot = std::make_shared<ClassInfo>();
+                    slot->name = pk->second == 1 ? "Metamodel::ModuleHOW" : "Metamodel::PackageHOW";
+                }
+                Value h; h.t = VT::Object; h.setObj(std::make_shared<ObjectData>());
+                h.obj()->cls = slot;
+                h.obj()->attrs["__type"] = Value::typeObj(inv.s);
+                return h;
+            }
+        }
         ClassInfo* hci = nullptr;
         if (inv.t == VT::Type) { auto it = classes_.find(inv.s); if (it != classes_.end()) hci = it->second.get(); }
         else if (inv.t == VT::Object && inv.obj() && inv.obj()->cls) hci = inv.obj()->cls.get();

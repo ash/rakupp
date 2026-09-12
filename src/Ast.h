@@ -721,6 +721,8 @@ struct ClassDecl : Stmt {
     bool isRole = false;
     bool parentIsDoes = false; // the first inheritance target came from `does` (composition), not `is`
     bool isGrammar = false;
+    bool isModuleDecl = false;     // `module Foo` as against `package Foo` — the two
+                                   // answer different metaobjects (ModuleHOW / PackageHOW)
     bool isMonitor = false;        // `monitor Foo {…}` — a class whose methods lock per instance
     bool isAugment = false;        // augment class Foo { … } — merge methods into an existing type
     bool isMy = false;             // `my class`/`my grammar` — lexically scoped, redeclarable across EVALs

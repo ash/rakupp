@@ -645,6 +645,29 @@ struct Deparser {
                 return "=" + (type == "para" ? std::string("para") : type + level) + " " + body + "\n";
             return "=begin " + type + "\n\n" + body + "\n=end " + type + "\n";
         }
+        // The one regex shape the view builds — see RakuAstView.cpp. Rakudo
+        // renders the literal BARE (`rule TOP { hello }`), which matches the
+        // same text, so the quotes do not come back.
+        if (c == "RuleDeclaration" || c == "TokenDeclaration" || c == "RegexDeclaration") {
+            const std::string kw = c == "TokenDeclaration" ? "token"
+                                 : c == "RegexDeclaration" ? "regex" : "rule";
+            return kw + " " + opt(attr(node, "name"), indent) + " { " +
+                   opt(attr(node, "body"), indent) + " }\n";
+        }
+        if (c == "Regex::WithWhitespace") return opt(attr(node, "regex"), indent);
+        if (c == "Regex::Quote") {
+            const Value* q = attr(node, "quoted");
+            std::string out;
+            if (q && isNode(*q))
+                if (const Value* segs = attr(*q, "segments"))
+                    if (segs->t == VT::Array && segs->arr())
+                        for (auto& sg : *segs->arr())
+                            if (isNode(sg) && shortName(sg) == "StrLiteral") {
+                                const Value* v = attr(sg, "value");
+                                out += v ? v->toStr() : "";
+                            }
+            return out;
+        }
         if (c == "Statement::Whenever")
             return "whenever " + opt(attr(node, "trigger"), indent) + " " +
                    opt(attr(node, "body"), indent) + "\n";

@@ -1921,6 +1921,12 @@ public:
     // moved fields live in ExecContext. NB one Interpreter is live per thread, so a
     // static thread_local is safe. Access via the tctx_.<field> members below.
     static thread_local ExecContext tctx_;
+    // Which packages were declared with `module` / `package` rather than
+    // `class` — 1 = module, 2 = package. They are NOT in `classes_` (a module
+    // is a namespace here, not a type), so `.HOW` has nowhere else to learn it,
+    // and Rakudo answers a different metaobject for each.
+    std::unordered_map<std::string, signed char> pkgKind_;
+    std::shared_ptr<ClassInfo> howModuleClsInfo_, howPackageClsInfo_;   // their metaobjects
     std::shared_ptr<Env> global_;
     // `R[42]` written twice is ONE type: role puns memoised by argument identity.
     std::map<std::string, std::string> rolePunCache_;
