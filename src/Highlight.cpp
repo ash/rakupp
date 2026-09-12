@@ -94,6 +94,13 @@ struct Scanner {
     // The previous significant span ended a method-call dot (`.`/`.^`/`!`), so the
     // next identifier is a method name — never a keyword.
     bool methodNext = false;
+    // HEREDOCS opened on the current line, in order. `q:to/END/` puts only its
+    // OPENER on this line — the body starts after the newline — so the body
+    // cannot be consumed where the opener is scanned: the `;` in
+    // `my $t = q:to/END/;` still belongs to the opener's line. Each entry is
+    // the terminator word and the class its body should carry; the queue is
+    // drained at the next newline. A line may open more than one.
+    std::vector<std::pair<std::string, const char*>> pendingHeredocs;
     // The previous keyword introduces a routine/package/constant name (`method`, `sub`,
     // `class`, `role`, …), so the next identifier is that NAME even if spelled like a
     // keyword — e.g. `method role { … }` declares a method called `role`.
@@ -188,7 +195,48 @@ struct Scanner {
 
     bool atLineStart() const { return i == 0 || s[i - 1] == '\n'; }
 
+    // Everything from here to the line whose trimmed text is `term`, that line
+    // included, is the heredoc's body — one string span. Raku reads the body
+    // as text whatever it looks like, so a `#` in it is not a comment and an
+    // `if` in it is not a keyword; scanning it as code is what made
+    // `--highlight` colour a heredoc as a program, and would have let a
+    // formatter reindent string contents.
+    void drainHeredocs() {
+        while (!pendingHeredocs.empty()) {
+            const std::string term = pendingHeredocs.front().first;
+            const char* cls = pendingHeredocs.front().second;
+            pendingHeredocs.erase(pendingHeredocs.begin());
+            size_t k = i;
+            while (k < s.size()) {
+                size_t eol = s.find('\n', k);
+                size_t lineEnd = eol == std::string::npos ? s.size() : eol + 1;
+                std::string ln = s.substr(k, lineEnd - k);
+                size_t a = ln.find_first_not_of(" \t");
+                size_t b = ln.find_last_not_of(" \t\r\n");
+                bool isTerm = a != std::string::npos && b != std::string::npos &&
+                              ln.substr(a, b - a + 1) == term;
+                k = lineEnd;
+                if (isTerm || eol == std::string::npos) break;
+            }
+            if (k > i) { emit(s.substr(i, k - i), cls, true); i = k; }
+        }
+    }
+
     void scanSpace() {
+        // A newline with a heredoc open ends the whitespace run: what follows
+        // is the body, not code.
+        if (!pendingHeredocs.empty()) {
+            size_t nl = i;
+            while (nl < s.size() && (s[nl] == ' ' || s[nl] == '\t' || s[nl] == '\r')) nl++;
+            if (nl < s.size() && s[nl] == '\n') {
+                bool m = methodNext, v = lastWasValue, d = declNext;
+                emitText(s.substr(i, nl + 1 - i));
+                methodNext = m; lastWasValue = v; declNext = d;
+                i = nl + 1;
+                drainHeredocs();
+                return;
+            }
+        }
         size_t j = i;
         while (j < s.size() && (s[j] == ' ' || s[j] == '\t' || s[j] == '\r' || s[j] == '\n')) j++;
         // whitespace doesn't reset the method-call dot or a pending declaration name
@@ -286,8 +334,16 @@ struct Scanner {
     void scanQuoteForm(size_t startBol, size_t bodyStart, const char* cls, bool twoParts) {
         size_t j = bodyStart;
         while (j < s.size() && (s[j] == ' ' || s[j] == '\t')) j++;
-        // adverbs like :i :g :s:m
-        while (j < s.size() && s[j] == ':') { j++; while (j < s.size() && (identCont(s[j]) || s[j] == '(')) { if (s[j]=='('){int d=1;j++;while(j<s.size()&&d){if(s[j]=='(')d++;else if(s[j]==')')d--;j++;}break;} j++; } while (j<s.size()&&(s[j]==' '||s[j]=='\t'))j++; }
+        // adverbs like :i :g :s:m — and `:to`/`:heredoc`, which makes the
+        // delimited text a TERMINATOR rather than the string's content.
+        bool heredoc = false;
+        while (j < s.size() && s[j] == ':') {
+            size_t advStart = ++j;
+            while (j < s.size() && (identCont(s[j]) || s[j] == '(')) { if (s[j]=='('){int d=1;j++;while(j<s.size()&&d){if(s[j]=='(')d++;else if(s[j]==')')d--;j++;}break;} j++; }
+            std::string adv = s.substr(advStart, j - advStart);
+            if (adv == "to" || adv == "heredoc") heredoc = true;
+            while (j<s.size()&&(s[j]==' '||s[j]=='\t'))j++;
+        }
         if (j >= s.size()) { emit(s.substr(startBol, j - startBol), cls, true); i = j; return; }
         std::string open, close;
         delimPair(j, open, close);
@@ -306,6 +362,14 @@ struct Scanner {
         if (twoParts) {
             if (open == close) { k = scanBody(k - close.size()); }  // s/a/b/ shares middle delim
             else { while (k < s.size() && (s[k]==' '||s[k]=='\t')) k++; if (k < s.size()) k = scanBody(k); } // s[a][b]
+        }
+        if (heredoc) {
+            // the delimited text is the terminator word, not the body
+            size_t tb = j + open.size(), te = k >= close.size() ? k - close.size() : k;
+            std::string term = te > tb ? s.substr(tb, te - tb) : std::string();
+            size_t a = term.find_first_not_of(" \t");
+            size_t b = term.find_last_not_of(" \t\r");
+            if (a != std::string::npos) pendingHeredocs.emplace_back(term.substr(a, b - a + 1), cls);
         }
         emit(s.substr(startBol, k - startBol), cls, true);
         i = k;

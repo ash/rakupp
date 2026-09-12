@@ -1,6 +1,8 @@
 # Plan: `--fmt` — a source formatter
 
-**Status: DESIGN APPROVED 2026-08-26 — code not started.** Design probes run 2026-08-26
+**Status: DESIGN APPROVED 2026-08-26 — step 1 of the order of work is in
+(2026-09-12): the heredoc classification gap is closed and the lossless sweep
+is a permanent test. Steps 2-6 remain.** Design probes run 2026-08-26
 against `build-arm64/rakupp` (see "What the probes said" below).
 
 Goal: `rakupp --fmt prog.raku` prints the program back in the house style,
@@ -170,3 +172,38 @@ shared code), full local suite, `perf-guard --check`.
   single and double blanks untouched.
 - **D3 — `--diff`:** ship in v1 — `--check`'s companion, printing a
   unified diff from a built-in line diff (no git dependency).
+
+## Step 1, landed 2026-09-12 — and one thing re-checked before standing on it
+
+**The architecture decision was re-tested, not assumed.** The plan rules out
+reprinting the AST because comments and POD are not in it, and notes that
+"making the AST lossless is the RakuAST project… deliberately postponed". That
+project has since landed in full — so the obvious question is whether the
+ruling still holds, and it does: `Q[# a comment\nmy $x = 1;  # trailing\nsay
+$x].AST.DEPARSE` answers `"my $x = 1;\nsay $x\n"`. **Both comments are gone.**
+A RakuAST reprint would be a formatter that deletes every comment in the file,
+so the span architecture stands for exactly the reason first given.
+
+**The scanner is still byte-lossless**, re-measured on today's code over the
+repo's corpora: **672 files, zero differences** (the 2026-08-26 probe was 341).
+That sweep is now `t/regression/highlight-lossless.raku` rather than a
+one-off — the property is what `--fmt` stands on, so it is checked on every
+run, and the case refuses to pass vacuously if it finds fewer than 50 files.
+
+**The heredoc gap is closed.** A `q:to/END/` body was scanned as CODE — its `#`
+came out as a comment and its `if` as a keyword — which is lossless but would
+have let the formatter reindent string contents. The fix is a pending-terminator
+queue rather than an inline scan, because the opener does not own the body: the
+`;` in `my $t = q:to/END/;` still belongs to the opener's line, so the body is
+drained at the next newline. That handles the cases an inline scan would have
+got wrong, all verified: two heredocs opened on one line take their bodies in
+order, `qq:to` as well as `q:to`, and an unterminated body runs to EOF without
+hanging or losing a byte. `--highlight` renders heredocs correctly now as a
+side effect, which is the improvement the plan predicted.
+
+**Deliberately not done yet**: factoring the scanner out of `Highlight.cpp` into
+`SourceScan.{h,cpp}`. It is a pure refactor with no user-visible change, and it
+wants a second consumer to shape its interface — so it lands with `Fmt.cpp`
+(step 3) rather than before it. The heredoc fix moves with it when it does.
+
+Gates: `t/run.raku` 867/867, `t/slim/run.raku`.
