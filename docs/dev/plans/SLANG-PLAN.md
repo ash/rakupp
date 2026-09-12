@@ -1,12 +1,17 @@
 # Plan: slangs — running the ecosystem's grammar mixins, not emulating them
 
-**Status: plan only, no code. User-set direction, 2026-09-09:** "we do not need
-to apply slangs natively. Lets instead prepare a plan to implement slangs."
-This replaces a Slang::Tuxic emulation written earlier that day (the parser
-recognised the name and flipped its two rules); it was reverted the same
-session. The twenty engine bugs that emulation uncovered while getting
-Text::CSV's suite to pass are general and stayed — see
-`t/regression/ecosweep-900-batch.raku`.
+**Status: plan only, no code. Revised 2026-09-12; the first draft was
+2026-09-09.** User-set direction, 2026-09-09: "we do not need to apply slangs
+natively. Lets instead prepare a plan to implement slangs." That replaced a
+Slang::Tuxic emulation (the parser recognised the module's NAME and flipped
+two rules), reverted the same day. The twenty engine bugs that emulation
+uncovered while getting Text::CSV's suite to pass are general and stayed —
+see `t/regression/ecosweep-900-batch.raku`.
+
+The revision rests on reading all sixteen published slangs' sources, mutsu's
+implementation of the same problem, and what the engine has gained since the
+draft. Three of the draft's assumptions did not survive that reading; they are
+marked below.
 
 ## What a slang is, and what actually blocks one here
 
@@ -26,7 +31,7 @@ still being parsed**, and the mixin governs the rest of that lexical scope.
 RakuAST is not what makes this work — a grammar-based front end is. RakuAST
 changed the *name* of the grammar (`Raku::Grammar`, which is why slangs ship
 both a modern and a `::Legacy` role) and nothing about the mechanism. rakupp's
-front end is a hand-written recursive-descent lexer + parser in C++
+front end is a hand-written lexer + recursive-descent parser in C++
 (`src/Lexer.cpp`, `src/Parser.cpp`), so there is no grammar object to mix into.
 That is the whole of the problem, and it is unchanged by any RakuAST work.
 
@@ -42,155 +47,298 @@ not a measurement; if it is ever revisited, measure it against
 KEYWORD SPELLINGS, not new syntax. Our lexer hands every keyword to the parser
 as a plain `Tok::Ident`, so the whole slang is a rewrite over the token stream
 between the Lexer and the Parser (`Interpreter::applyL10NSlang`, landed
-2026-09-12 — see RAKUAST-PLAN.md). Eleven languages run. It is worth checking
-any future slang against that test first: a slang that only RENAMES things needs
-no grammar at all, and the seams below are for the ones that add syntax.
+2026-09-12). Eleven languages run. Two of its mechanics are reused below: the
+module is loaded in a **scratch `Interpreter`** before the program is parsed
+(`main.cpp`, `applyL10N`), and the effect is **unit-scoped** — from the `use`
+to the end of the file — rather than lexical.
+
+## What is already in place (measured 2026-09-12)
+
+| piece | state |
+|---|---|
+| byte offset on every `Token` | **done** — `Token::off`, added for `--fmt` |
+| module load without import, at parse time | **done** — `loadModule(mod, {}, /*doImport=*/false)` from `l10nTokenXform` |
+| Slangify's inner-`&EXPORT` protocol | **works** — `use Piersing` runs the inner EXPORT as far as `$*LANG.slang_grammar` (that is the error it dies with) |
+| a role's tokens, enumerable by name and text | **done** — `ClassInfo::rules` / `ruleKind` / `ruleOrder` (src/Value.h) |
+| a compiled regex matched at an arbitrary offset of a string the caller owns | **done** — `Regex::matchAt(subject, pos, …)` (src/Regex.h) |
+| `<name>` inside a token resolving to a C++ callback | **done** — `GrammarHooks::namedRule` / `hasMethod` / `callMethod` (src/Regex.h), the issue-#64 machinery |
+| RakuAST nodes with `.DEPARSE` and `.EVAL` | **done** — `RakuAST::Literal.from-value`, `IntLiteral`, `StrLiteral`, `ApplyPostfix`, `Call::Method` (src/RakuAstClasses.cpp) |
+| `$*LANG` | **missing** — answers `Any` |
+| `$~MAIN` and friends | inert `Grammar` type objects (src/Interpreter.cpp, `registerBuiltins`) |
+| `use NQPHLL:from<NQP>` | **fatal** — `:from` is dropped and `NQPHLL` is searched for as a module; Tuxic's `::Legacy` role body does this at load |
+| `Raku.legacy` | answers `True` (for the `if` dist); Slang::NumberBase picks its action branch on it |
+| a slang module that fails to parse | silently exempted (`Interpreter.cpp`, "Grammar slangs stay exempt") — which is why every slang failure today surfaces as an unrelated parse error in the DIST that used it |
 
 ## Measurement — how much of the ecosystem this is worth
 
-From the cached zef index, 2026-09-09:
+From the cached zef index, re-counted 2026-09-12:
 
 | | count |
 |---|---|
 | slang distributions published | 16 (+ Slangify) |
+| dists depending on one DIRECTLY | 5 — App::Crag (Roman, NumberBase), Dawa, Qwiratry, TOP (Otherwise), Text::CSV (Tuxic) |
 | dists transitively behind one | **28** |
 | total dists in scope | **45** of 2,530 |
 
-The 28: App::Crag, App::Rak::Complete, Chemistry::Stoichiometry,
-DSL::English::DataAcquisitionWorkflows, DSL::FiniteStateMachines,
-DSL::Translators, Data::Cryptocurrencies, Data::ExampleDatasets,
-Data::Reshapers, Data::Summarizers, Dawa, Grammar::TokenProcessing, JSON-CSV,
-LLM::Resources, ML::AssociationRuleLearning, ML::Clustering,
-ML::NLPTemplateEngine, Qwiratry (+5 of its own), SSH::LibSSH::Tunnel,
-Services::PortMapping, TOP, Text::CSV.
+Text::CSV is the load-bearing one: eight of the 28 sit behind it, Data::Reshapers
+among them. (A 2026-09-12 session recorded that chain as running through
+Hash::Merge; it does not — Hash::Merge 2.0.0 has no dependencies and passes.
+Data::Reshapers' recorded failure is `Error while compiling module Text::CSV
+(line 223)`, i.e. Tuxic.) Text::CSV's 2,053-line module has ~300 spaced call
+sites and ~130 spaced method calls; its tests use the same style on every line.
 
-Text::CSV is the load-bearing one: eight of those sit behind it alone.
+Today all sixteen slang dists fail their own suites (`docs/dev/findings/ecosweep/
+sweep-2530.tsv`), except Slang::Comments, whose test only loads it.
 
-## The seams — what the published slangs actually mix into
+## What the token bodies actually contain — the finding that reshapes the plan
 
-Every one of the sixteen touches a **closed set of nine productions**. This is
-the finding that makes a bounded implementation possible: rakupp does not need
-an extensible grammar, it needs nine documented decision points.
+The draft said "run the slang's token against the source at the seam". Reading
+the sixteen, the bodies are of two kinds, and the kind decides everything:
 
-| production | what it means | slangs using it |
-|---|---|---|
-| `statement-control:sym<X>` | a new statement keyword | Comments, Forgiven, Otherwise, SQL |
-| `number:sym<X>` | a new numeric literal form | Kazu, NumberBase, Roman |
-| `value:sym<X>` | a new literal form | Date |
-| `term:sym<identifier>` | a term in expression position | Tuxic |
-| `methodop` | the postfix `.name(args)` production | Tuxic |
-| `routine-declarator:sym<sub>` / `<method>` | how a routine declaration opens | Mosdef, Tuxic |
-| `sigilless-variable` | bare-identifier variables | Emoji, Nogil |
-| `identifier` / `name` | what may spell a name | Piersing, Subscripts, Slangify |
-| `lambda` / `pointy-block-starter` | the arrow that opens a block | Lambda |
+**Self-contained** — a regex over source characters, nothing else:
 
-Note the shape of the list: four of the nine are *additive* — a new alternative
-under an existing proto (`statement-control:sym<sql>`, `number:sym<roman>`) —
-and those are strictly easier than the five that *replace* a rule.
+```raku
+token number:sym<roman>  { '0r' <( <[ I V X L C D M Ⅰ .. Ⅿ ↀ ↁ ↂ ↇ ↈ \w ]>+ }   # Slang::Roman
+token number:sym<base>   { $<prebase>=<[₀₁₂₃₄₅₆₇₈₉]>+ $<value>=[ \d+ [ '.' \d+ ]? ] | … }  # Slang::NumberBase
+token value:sym<date>    { [ \d ** 4 ] '-' [ \d ** 2 ] '-' [ \d ** 2 ] }       # Slang::Date
+token sigilless-variable { <.:So> }                                               # Slang::Emoji
+token pointy-block-starter { '->' | '→' | '<->' | '↔' | 'λ' }                    # Slang::Lambda
+token identifier { <.ident> [ <.apostrophe> <.ident> ]* <[?!]>? }                # Slang::Piersing
+```
 
-## Design
+**Host-referencing** — calls into Rakudo's OWN grammar productions and reads
+the compiler's dynamic variables:
 
-Keep the C++ parser. Give it **slang seams**: at each of the nine productions,
-if the current lexical scope has a user rule registered for that seam, run the
-rule against the source at the current position before (or instead of) the
-built-in production; on a match, consume the span it matched and continue.
+```raku
+token term:sym<identifier> {                                                     # Slang::Tuxic
+    <identifier> <!{ $ident eq 'sub'|'if'|… || $*R.is-identifier-type([$ident]) }>
+    <?before <.unspace>|\s*'('> \s* <![:]> <args>
+}
+token methodop(Mu $*DOTTY) { [ <longname> | <variable> | <quote> … ] \s* <.unspace>? [ <args> | ':' <args=.arglist> … ] }
+rule statement-control:sym<for> { <.block-for><.kok> … <EXPR> <pointy-block> [ otherwise $<otherwise>=<.pointy-block> ]? }  # Slang::Otherwise
+```
 
-Five pieces, in dependency order.
+A self-contained token can be RUN by rakupp's regex engine as it stands. A
+host-referencing one cannot be run without supplying `<args>`, `<EXPR>`,
+`<pointy-block>`, `<longname>`, `<variable>`, `<quote>`, `<identifier>`,
+`<.unspace>` and the dynamics `$*R`, `$*W`, `$*QSIGIL`, `$*DOTTY`, `$*IN-DECL`
+— that is, a Raku-grammar surface over the C++ parser. The draft's "nine seams"
+table hid this split; it also mis-filed Slang::Otherwise as additive (it
+*replaces* `for`).
 
-### P0 — a source offset on every token
+The complete survey, by what each slang's role declares:
 
-`Token` (src/Token.h) carries `line` and `col` and no byte offset, and
-`Lexer::tokenize()` lexes the whole file up front. A seam needs (a) the byte
-offset of the current token so a Cursor can start there, and (b) the ability to
-**re-lex from an arbitrary offset** once a user rule has consumed a span the
-built-in lexer never saw. This is the load-bearing prerequisite and the one
-piece with no workaround. Cost is a `size_t` per token plus a `tokenizeFrom`
-entry point; watch the parse benchmark, since Token is copied a great deal.
+| slang | production(s) | body | action produces | registers via | tier |
+|---|---|---|---|---|---|
+| Roman | `number:sym<roman>` | self-contained | `RakuAST::Literal.from-value` (modern) / `QAST::IVal` (legacy) | Slangify | 1 |
+| NumberBase | `number:sym<base>` | self-contained | `RakuAST::Literal.from-value`, branch chosen by `Raku.legacy` | Slangify | 1 |
+| Kazu | `number:sym<kazu>` | self-contained (CJK numerals, own grammar for the value) | `RakuAST::IntLiteral.new` | Slangify | 1 |
+| Date | `value:sym<date>` | self-contained | `RakuAST::ApplyPostfix(StrLiteral, Call::Method "Date")` | Slangify | 1 |
+| Piersing | `identifier`, `name` | `<.ident>`, `<.apostrophe>`, `<morename>` — three trivial host rules | none | Slangify | 1 |
+| Subscripts | `identifier` | `<.ident>`, `<.apostrophe>` | none | Slangify | 1 |
+| Emoji | `sigilless-variable` | self-contained | none | Slangify | 1 |
+| Lambda | `pointy-block-starter` / `lambda` | self-contained | none | Slangify | 1 |
+| Nogil | `sigilless-variable` | `<.ident>+ \| <.:So>` plus a code assertion using `nqp::` ops and `$*IN-DECL` | none | Slangify | 2 |
+| Tuxic | `term:sym<identifier>`, `methodop`, `routine-declarator:sym<sub>` | host-referencing, about a dozen productions + 3 dynamics | none (`Mu`) | Slangify | 3 |
+| Mosdef | `routine-declarator:sym<sub>` / `<method>` | `[ <.routine-sub> \| lambda \| 'λ' ] <.end-keyword> <routine-def=.key-origin(…)>` | none | Slangify | 4 |
+| Otherwise | `statement-control:sym<for>` (replace) | host-referencing | `callsame.replace-otherwise(…)` on the For node | Slangify | 4 |
+| Qwiratry (Mold, Topic) | `routine-declarator:sym<mold>`, `<wrapper>`, `statement-control:sym<givenroot>` | host-referencing | RakuAST actions | Slangify | 4 |
+| Comments, Dawa | none — actions only (`use Slangify Mu, Actions`) | — | rewrites the host's For node body | Slangify | out |
+| Forgiven, SQL, AltTernary | legacy `statement_control:sym<…>` / `infix:sym<…>` | NQP, `QAST::`, `%*LANG<MAIN>` | QAST | `$*LANG` directly | out |
+| Predicate | (2018, cpan; source not located) | — | — | — | out |
 
-### P1 — the registration interface
+Thirteen of the sixteen register through Slangify, so one `$*LANG` surface
+covers them; the three that call `define_slang` themselves need the same
+object under the same name and are out of scope anyway.
 
-Thirteen of the sixteen slangs register through **Slangify**, which is a thin
-`sub EXPORT` over `$*LANG.define_slang(...)`. Supporting Slangify's interface
-therefore covers most of the ecosystem at once:
+## The precedent: mutsu's ADR-0026
 
-* `$*LANG` — an object answering `.slang_grammar($name)`, `.slang_actions($name)`,
-  `.define_slang($name, $grammar, $actions)`, and `.^name`.
-* `.^name` decides which role the slang hands over: Slangify passes the
-  `legacy-grammar` when the name does not start with `Raku::`. **rakupp should
-  answer the name whose role is easier to interpret, and that choice should be
-  made by reading both roles of Tuxic and Mosdef, not guessed.**
-* `.^mixin(role)` need not produce a real grammar — it can produce a marker that
-  records "these tokens, for this seam", since the tokens are what the seams
-  consume.
+mutsu (the other from-scratch Raku, a Rust recursive-descent parser) shipped
+this in August 2026 and Text::CSV's suite passes there (32 files, 22,696
+assertions). Its design, verified in `src/runtime/slang_activation.rs` and
+`src/parser/stmt/simple/slang_modes.rs`:
 
-The remaining three use `$~MAIN` directly and need the same object under that
-name.
+1. `use X` where X's source `use`s Slangify runs X's whole load — mainline plus
+   the Slangify-generated inner `&EXPORT` — in a **fresh interpreter on a fresh
+   thread**, with a compile-time `$*LANG` bound.
+2. `$*LANG` is a minimal object: `slang_grammar`/`slang_actions` answer opaque
+   handles whose `.^mixin` only RECORDS the role; `.^name` deliberately does not
+   start with `Raku::`, so Slangify hands over the `::Legacy` role.
+3. `define_slang` reads the recorded roles' declared rule NAMES and maps each
+   onto a hand-written parser mode: `term:sym<identifier>` → spaced call,
+   `methodop` → spaced method call (`.m (args)` and `!m (args)`),
+   `routine-declarator:sym<sub>` → no-op, `identifier`/`name` → a trailing
+   `?`/`!` on a routine name. **An unknown rule name is a hard compile-time
+   error naming the rule** — never a silent ignore.
+4. The mode is unit-scoped: importers of a unit that used the slang are
+   unaffected, and EVAL strings parse in the stock grammar.
 
-### P2 — `use` of a slang runs at PARSE time
+Its ADR rejects executing the token bodies ("a different project, out of all
+proportion to any current need") and rejects keying on the module's name
+("name-keyed native provision in disguise — the bundled module would be dead
+code"). What it does is key on what the module DOES: the module is loaded,
+Slangify's registration runs for real, and only the interpretation of "this
+rule was overridden" is native.
 
-A slang's EXPORT must run while the importer is still being parsed. rakupp
-executes `use` at runtime, but the parser already peeks into a module at parse
-time for a related reason: `Parser::scanModuleOps` (src/Parser.cpp:517) resolves
-a module through the same search the loader uses and scans it for the operators
-it exports, so `SPACE ~ $word` parses correctly against an installed
-Text::Utils. **That is the hook location and the precedent.** A slang module is
-recognised the same way, its role bodies extracted, and its tokens registered
-against the seams for the rest of the enclosing scope — the lexical stack shape
-`monkeyScopes_` already uses.
+That is honest about its limit: the mode for `term:sym<identifier>` re-states
+Tuxic's exclusion list (`sub if elsif while until for` + type names) in Rust,
+because it does not read the body. It is one step past the emulation the user
+rejected, not the whole distance — the plan below says which slangs it is the
+right answer for and which can do better.
 
-### P3 — running a user token against the source
+## Design — one activation path, two kinds of seam
 
-rakupp has a complete Raku grammar/regex engine already (it is how user
-grammars work). A seam builds a Cursor over the compilation unit's source at
-the current offset and calls the registered token, exactly as
-`RxCursorCall` does for `<.method>` subrules (see the issue #64 work). Two
-things must be true and should be proved on a spike before anything else is
-built:
+### A. Activation (shared by everything)
 
-1. a Cursor can be created over text the parser owns, at an arbitrary offset;
-2. a token body that is *itself* Raku code — including `{ … }` blocks and
-   `<?before …>` assertions, both of which Tuxic uses — runs correctly there.
+A pre-pass over the token stream, exactly where `applyL10NSlang` runs today
+(`main.cpp`, `Interpreter.cpp` for modules and EVAL):
 
-### P4 — what a match produces
+1. For each `use <Module>` statement, decide whether the module is a slang.
+   `scanModuleOps` already reads every used module's source at parse time; a
+   slang is one whose source contains `Slangify` or `define_slang` (a text test
+   on a string already in hand — no extra I/O; a module can have any name:
+   `Qwiratry::Mold::Slang`, `Dawa`).
+2. Load it in a **scratch `Interpreter`** (as `applyL10N` does) with `$*LANG`
+   defined in that interpreter's globals. The inner EXPORT runs for real.
+3. `$*LANG` is an object with `.slang_grammar($name)`, `.slang_actions($name)`,
+   `.define_slang($name, $g, $a)`, `.slangs` (Forgiven's spelling), and a
+   `.^name`. The handles' `.^mixin(role)` records the role. `define_slang`
+   collects, from each recorded grammar role, `ClassInfo::rules` — (rule name,
+   token text, params) — and from each actions role the method of the same
+   name.
+4. **Answer `.^name` as `Raku::Grammar` / `Raku::Actions`**, the modern branch
+   (the draft left this open). Every modern action produces a RakuAST node,
+   which rakupp models and can `.DEPARSE`; every legacy action produces QAST
+   and touches `$*W`, which rakupp has no reason to grow. `Raku.legacy` must
+   answer `False` while a slang's action runs (NumberBase branches on it);
+   it stays `True` elsewhere for the `if` dist's sake.
+5. Every collected rule name is looked up in a fixed table of seams. **Unknown
+   → compile-time error naming the slang and the rule** ("Slang::Otherwise
+   overrides `statement-control:sym<for>`, which rakupp cannot apply"). This
+   replaces the silent `Slang::*` exemption, whose effect today is that the
+   failure lands as a baffling parse error in Text::CSV, not in Slang::Tuxic.
+6. Re-lex the unit from the byte offset just past the `use` statement
+   (`Token::off`) with the lexer seams armed, and parse with the parser modes
+   armed. Unit-scoped, from the `use` to the end of the file, as L10N is and
+   as mutsu is; Rakudo's lexical scoping differs only for a `use` inside a
+   block. A module parsed under a slang records the slang's source in
+   `opScanned_`, so its precomp entry is invalidated when the slang changes —
+   the mechanism operator-scanned modules already use.
 
-Two options, and the cheap one is worth trying first.
+The scratch interpreter stays alive for the parse: tier-1 actions are called
+on it, and their RakuAST results deparsed there.
 
-* **Desugar (start here).** The seam hands back the matched span and a
-  replacement *source string*, which the parser re-lexes and parses normally.
-  Covers every additive seam and most replacing ones. No actions API, no AST
-  builder, no new node kinds.
-* **Actions.** The slang's actions class builds a node through a small builder
-  API. Faithful, and needed only by a slang that must produce a shape the
-  desugar cannot express. Defer until a real dist demands it.
+Prerequisite, before anything else: `use X:from<NQP>` becomes a no-op. Rakudo
+has NQPHLL and QAST; nothing here needs them, and Tuxic's `::Legacy` role
+body executes its `use NQPHLL:from<NQP>` at module load regardless of which
+role Slangify later picks.
+
+### B. Tier 1 — literal seams, executed for real
+
+For `number:sym<X>`, `value:sym<X>`, `identifier`, `name`,
+`sigilless-variable`, `pointy-block-starter`: the slang's own token is run by
+the regex engine, at the lexer's or parser's current position, on the source
+the parser owns (`Regex::matchAt`, or `grammarParse` with `subparse` when the
+action needs a Match with named captures — NumberBase reads `$<prebase>`,
+`$<value>`, `$<postbase>`).
+
+* `number` / `value` (Roman, NumberBase, Kazu, Date): in `Lexer::lexNumber`'s
+  position and at a plain term start, try each armed token first. On a match,
+  call the action with the Match; it makes a RakuAST node; `.DEPARSE` it and
+  lex the resulting text in place of the span (`0rXIV` → `14`, `2024-01-01` →
+  `"2024-01-01".Date`). The slang defines both the syntax and the value;
+  rakupp hard-codes nothing about roman numerals. This is the draft's P4
+  "desugar", and it turns out to be free.
+* `identifier` / `name` (Piersing, Subscripts, Slangify's own test fixture):
+  where `Lexer::consumeIdentChars` builds a bareword, and where the parser
+  reads a routine name, try the armed token first and take its span as the
+  identifier. The three host rules the bodies call — `ident`, `apostrophe`,
+  `morename` — are supplied through `GrammarHooks::namedRule`.
+* `sigilless-variable` (Emoji): at the declarator site ("expected variable after
+  declarator" in `Parser.cpp`) and at term start, try the token.
+* `pointy-block-starter` (Lambda): at operator-lexing position, try the token;
+  a match that is `<->`/`↔` lexes as `<->`, anything else as `->`.
+
+Each armed seam costs a first-character test at token starts; the LTM prefix
+set the NFA already computes gates the regex call. Unarmed: one bool.
+
+### C. Tier 2 — the same, with a code assertion
+
+Slang::Nogil's `sigilless-variable` is `<.ident>+ | <.:So>` behind
+`<?{ check-keywords($/) if $*IN-DECL }>`, and `check-keywords` reads
+`$/.orig`, `$/.from`, `nqp::findnotcclass`, `nqp::const::CCLASS_WORD` and
+`::{$identifier}:exists`. Tier 1's machinery plus: a Match whose `.orig` is the
+unit's source, `$*IN-DECL` set by the declarator site, and those nqp ops (the
+parser already lowers `nqp::` calls, `makeNqpOp`). Tried after tier 1; if the
+assertion is the wall, Nogil waits.
+
+### D. Tier 3 — parser modes keyed on the rule name (Tuxic)
+
+Tuxic's three bodies call about a dozen host productions and three compiler dynamics.
+Running them means a Raku-grammar surface over the C++ parser AND a default
+action for each production (Tuxic passes `Mu` for actions; Rakudo's stock
+action builds the call from `$<identifier>` and `$<args>`). That is mutsu's
+"different project". For Tuxic — and only for it, in this plan — take
+mutsu's road:
+
+| rule declared | parser mode |
+|---|---|
+| `term:sym<identifier>` | `name (args)` is a call with those args (`Parser.cpp`, the `!cur().spaceBefore` test before `parseCallArgs` in the bare-identifier term), except `sub if elsif while until for` and type names — Tuxic's own list |
+| `methodop` | `.name (args)` and `!name (args)` are method calls with those args (`Parser.cpp`, the `.method(args) — tight only` site) |
+| `routine-declarator:sym<sub>` | no-op — `sub foo (…)` already parses |
+
+The seam table records that these three are name-keyed, and why. The module
+is loaded, Slangify's registration runs, and the modes exist only because
+`define_slang` saw those three names. If a second slang ever declares the
+same names with different bodies, this tier is wrong for it and says so.
+
+### E. Tier 4 — a host-production shim, if a dist earns it
+
+Mosdef (`def` for `method`, `lambda`/`λ` for `sub`) needs four productions:
+`routine-sub` ('sub'), `routine-method` ('method'), `end-keyword` (a word
+boundary), and `routine-def`/`method-def` via `key-origin` — "stop here; the
+parser's routine parse continues from this offset". With that shim the token
+body itself says that `def` means `method`; no mode re-states it. The same
+shim, grown to `identifier`, `unspace`, `args`, `longname`, `variable`,
+`quote`, `arglist` and a `$*R` with `.is-identifier-type`, is the road to
+running Tuxic's bodies instead of tier 3, and to Otherwise (`EXPR`,
+`pointy-block`, `block-for`, `kok` + `.replace-otherwise` on the For node) and
+Qwiratry. Each is sized when a dist behind it is worth it — tier 4 is
+measured need, not a promise.
+
+Out of scope, stated: Forgiven, SQL, AltTernary (legacy NQP/QAST throughout);
+Comments and Dawa (actions over the host's own AST nodes, no grammar change);
+Predicate (source not located).
 
 ## Phasing
 
 | phase | deliverable | gate |
 |---|---|---|
-| 0 | spike: Cursor over parser-owned source at an offset, running one hand-written token | the spike itself |
-| 1 | P0 token offsets + `tokenizeFrom` | full Roast, parse benchmark unchanged |
-| 2 | `$*LANG` object + Slangify's EXPORT contract, no seams wired | `use Slang::X` loads and registers without error |
-| 3 | the four ADDITIVE seams (`statement-control:sym<X>`, `number:sym<X>`, `value:sym<X>`, plus `lambda`) | Slang::Roman, ::NumberBase, ::Kazu, ::Date, ::SQL, ::Otherwise, ::Forgiven, ::Comments, ::Lambda run their own suites |
-| 4 | the five REPLACING seams (`term:sym<identifier>`, `methodop`, `routine-declarator`, `sigilless-variable`, `identifier`/`name`) | Slang::Tuxic, ::Mosdef, ::Nogil, ::Emoji, ::Piersing, ::Subscripts; then Text::CSV and the 28 behind it |
-| 5 | actions (P4b), only if a dist needs it | — |
+| 0 | spike: `use Slang::Roman; say 0rXIV` prints 14 through the real token, the real action and `.DEPARSE`, in a scratch interpreter | the one-liner, then Roman's `t/01-basic.rakutest` (7 subtests) |
+| 1 | activation (§A) + `$*LANG` + `:from<NQP>` no-op + the unknown-rule error; no seams beyond the spike's | all 16 dists either activate or name the unsupported rule; `rakupp -e 'use Slang::Tuxic'` says which rule; Roast unchanged; `perf-guard --check` |
+| 2 | tier 1: Roman, NumberBase, Kazu, Date, Piersing, Subscripts, Emoji, Lambda; tier 2 if Nogil's assertion runs | each dist's own suite; Slangify's own test (Piersing fixture); App::Crag re-measured |
+| 3 | tier 3: Tuxic's three modes | Slang::Tuxic 8/8; Text::CSV's suite (32 files); then Data::Reshapers and the seven others behind Text::CSV, re-measured the ECOSWEEP way |
+| 4 | tier 4 shim, Mosdef first | Mosdef's suite; then a decision per remaining dist |
 
-Phases 3 and 4 each end with a re-measured ecosystem count, the standard way
-(`ECOSWEEP` runbook), not with a claim.
+Phases 2 and 3 each end with a re-measured ecosystem count, not a claim.
 
 ## Risks, honestly
 
-* **P0 is a hot-path change.** A byte offset per token is cheap in isolation and
-  Token is copied constantly; if the parse benchmark moves, the offset goes in a
-  side table keyed by token index instead.
-* **Re-lexing mid-file is where the bugs will be.** Heredocs, `q:to`, POD blocks
-  and the quote sublanguages all carry lexer state that an arbitrary restart
-  point does not have. Expect the seams to be restricted to positions where the
-  lexer is in its default state, and expect that restriction to be discovered
-  rather than designed.
-* **A slang's token body is arbitrary Raku running at parse time.** Whatever
-  the compile-time execution story ends up being, it wants the same guard rails
-  `BEGIN` has here.
-* **45 dists is the ceiling**, and only if every one of them passes its own
-  suite afterwards — unblocking is not converting, which the 2026-09 batches
-  have shown repeatedly. Ten to fifteen converted dists is the honest
-  expectation for phases 3–4 together.
+* **Unit-scoped, not lexical.** A `use Slang::X` inside a block governs the
+  rest of the file here. L10N and mutsu accept the same; noted, not hidden.
+* **The re-lex.** Re-lexing from the `use` statement's offset restarts the
+  lexer in its default state; a `use` inside a heredoc, `q:to` or POD is not a
+  position the lexer can restart from, and the pre-pass skips those (they are
+  not statements). Mid-file restart for any other reason is not needed.
+* **Arbitrary Raku at parse time.** A tier-1 action runs user code inside the
+  parse, in the scratch interpreter. It wants the guard rails `BEGIN` has here
+  (no `--exe` surprises, errors reported with the slang's name).
+* **Tier 3 is name-keyed.** Said above; the seam table says it too. The user
+  rejected emulation by module name on 2026-09-09; this keys on the rule
+  names a real registration produced, which is what mutsu chose and calls
+  load-bearing. If that is still emulation, tier 4's shim for Tuxic is the
+  alternative, at roughly a week against a day, and Text::CSV waits for it.
+* **Ceiling.** 45 dists, only if each passes its own suite afterwards.
+  Unblocking is not converting. Tiers 1–3 put 11 slang dists, Text::CSV, the
+  eight behind it and App::Crag within reach — about 20 — and the 2026-09
+  batches say to expect fewer.
