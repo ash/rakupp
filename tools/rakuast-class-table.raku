@@ -73,6 +73,10 @@ my @demand = <
     FatArrow NumLiteral Postcircumfix::HashIndex Postcircumfix::LiteralHashIndex
     QuotedString RatLiteral Statement::Empty Statement::Unless Statement::Until
     Statement::Use Statement::While Term::Self Term::Whatever Type::Setting
+    Assignment MetaInfix::Assign Term::Enum
+    StatementModifier::For StatementModifier::While StatementModifier::Until
+    StatementModifier::Given StatementModifier::With StatementModifier::Without
+    Method Submethod Var::Attribute
 >;
 
 # `::("RakuAST::A::B")` answers a Failure for a NESTED name (measured on

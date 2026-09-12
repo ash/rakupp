@@ -87,6 +87,28 @@ struct Builder {
         return node("Blockoid", {{"statement-list", statementList(stmts)}});
     }
 
+    // `$a + $b`. The operands live in an ARGLIST beside the infix, not in
+    // `left`/`right` slots — measured: 2026.08's `ApplyInfix` carries exactly
+    // `$!infix` and `$!args`, and `.left`/`.right` read through the list. The
+    // first version of the view invented the two slots, which put two nodes in
+    // the tree that Rakudo's has not and dropped one that it has.
+    Value applyInfix(Value infix, Value lhs, Value rhs) {
+        return node("ApplyInfix", {{"infix", infix},
+                                   {"args",  node("ArgList", {{"args", list({lhs, rhs})}})}});
+    }
+    Value applyInfix(const std::string& op, Value lhs, Value rhs) {
+        return applyInfix(node("Infix", {{"operator", Value::str(op)}}), lhs, rhs);
+    }
+    // …and the two assignment spellings, which are not plain infixes upstream:
+    // `=` has its own class, and `+=` is the metaop applied to `+` rather than
+    // an operator named `+=`. (`:=` IS a plain infix — measured, not assumed.)
+    Value assignInfix(const std::string& op) {
+        if (op == "=")  return node("Assignment", {{"operator", Value::str("=")}});
+        if (op == ":=") return node("Infix", {{"operator", Value::str(":=")}});
+        return node("MetaInfix::Assign", {{"infix",
+            node("Infix", {{"operator", Value::str(op.substr(0, op.size() - 1))}})}});
+    }
+
     // ---- expressions ----------------------------------------------------
     Value buildExpr(Expr* e) {
         if (!e) return Value::any();
@@ -107,13 +129,25 @@ struct Builder {
             case NK::StrLit:
                 return node("StrLiteral", {{"value", Value::str(static_cast<StrLit*>(e)->v)}});
             case NK::BoolLit:
-                // `True`/`False` are terms naming a Bool enum value, not literals.
-                return node("Term::Name", {{"name", name(static_cast<BoolLit*>(e)->v ? "True" : "False")}});
+                // `True`/`False` are terms naming a Bool enum VALUE, not
+                // literals and not plain names: Rakudo spells a resolved enum
+                // value `Term::Enum`, and these two are the one case a view can
+                // spell it too without a setting to resolve against — the lexer
+                // already knows it read a Bool. A capitalized name we do not
+                // know (`Less`, `SeekFromBeginning`) stays a `Term::Name`,
+                // because knowing it is an enum value is exactly the resolution
+                // a view does not do.
+                return node("Term::Enum", {{"name", name(static_cast<BoolLit*>(e)->v ? "True" : "False")}});
             case NK::VarExpr: {
                 auto* v = static_cast<VarExpr*>(e);
                 if (v->declare) return declaration(v);
                 if (v->name.size() > 1 && v->name[1] == '*')
                     return node("Var::Dynamic", {{"name", Value::str(v->name)}});
+                // `$!x` is an ATTRIBUTE, not a lexical — a different class
+                // upstream, and the one a walker looks for when it asks which
+                // attributes a method touches.
+                if (v->name.size() > 1 && v->name[1] == '!')
+                    return node("Var::Attribute", {{"name", Value::str(v->name)}});
                 return node("Var::Lexical", {{"name", Value::str(v->name)}});
             }
             case NK::NameTerm: {
@@ -126,15 +160,28 @@ struct Builder {
             case NK::Whatever:   return node("Term::Whatever");
             case NK::Binary: {
                 auto* b = static_cast<Binary*>(e);
-                return node("ApplyInfix", {{"left",  buildExpr(b->lhs.get())},
-                                           {"infix", node("Infix", {{"operator", Value::str(b->op)}})},
-                                           {"right", buildExpr(b->rhs.get())}});
+                return applyInfix(b->op, buildExpr(b->lhs.get()), buildExpr(b->rhs.get()));
             }
             case NK::Assign: {
                 auto* a = static_cast<Assign*>(e);
-                return node("ApplyInfix", {{"left",  buildExpr(a->target.get())},
-                                           {"infix", node("Infix", {{"operator", Value::str(a->op)}})},
-                                           {"right", buildExpr(a->value.get())}});
+                // `my $x = 1` reaches here as an assignment whose TARGET is a
+                // declaration — our parser's usual shape. Rakudo has no such
+                // shape at all: a declaration owns its initializer and the `=`
+                // never becomes an operator, so building one put an ApplyInfix
+                // and an Infix in the tree that Rakudo's has not and left out
+                // the `Initializer::Assign` that it has. The statement-level
+                // `VarDecl` path below already did this; only this one did not.
+                if (a->target && a->target->kind == NK::VarExpr &&
+                    static_cast<VarExpr*>(a->target.get())->declare &&
+                    (a->op == "=" || a->op == ":=")) {
+                    Value decl = declaration(static_cast<VarExpr*>(a->target.get()));
+                    decl.obj()->attrs["initializer"] =
+                        node(a->op == ":=" ? "Initializer::Bind" : "Initializer::Assign",
+                             {{"expression", buildExpr(a->value.get())}});
+                    return decl;
+                }
+                return applyInfix(assignInfix(a->op),
+                                  buildExpr(a->target.get()), buildExpr(a->value.get()));
             }
             case NK::Unary: {
                 auto* u = static_cast<Unary*>(e);
@@ -255,9 +302,7 @@ struct Builder {
             case NK::Range: {
                 auto* r = static_cast<RangeExpr*>(e);
                 std::string op = r->exFrom ? (r->exTo ? "^..^" : "^..") : (r->exTo ? "..^" : "..");
-                return node("ApplyInfix", {{"left",  buildExpr(r->from.get())},
-                                           {"infix", node("Infix", {{"operator", Value::str(op)}})},
-                                           {"right", buildExpr(r->to.get())}});
+                return applyInfix(op, buildExpr(r->from.get()), buildExpr(r->to.get()));
             }
             case NK::Pair: {
                 auto* p = static_cast<PairExpr*>(e);
@@ -324,6 +369,26 @@ struct Builder {
         return n;
     }
 
+    // `EXPR if COND` — a MODIFIER upstream, not the block form. Rakudo keeps
+    // `Statement::Expression` and hangs a `condition-modifier` (if / unless /
+    // with / without) or a `loop-modifier` (for / while / until / given) off
+    // it; our parser desugars every one of them into the block form and sets
+    // `modifier`, so the view can put the shape back. It matters beyond the
+    // tally: `$total += $_ for 1..10` and `for 1..10 { $total += $_ }` are the
+    // same program but not the same syntax, and a walker asking "does this
+    // statement have a modifier" got No from a tree that had one.
+    Expr* soleExpr(const std::vector<StmtPtr>& stmts) {
+        if (stmts.size() == 1 && stmts[0] && stmts[0]->kind == NK::ExprStmt)
+            return static_cast<ExprStmt*>(stmts[0].get())->e.get();
+        return nullptr;
+    }
+    Value modifierStmt(const char* cls, bool loopSlot, Expr* cond, Expr* body) {
+        Value st = node("Statement::Expression", {{"expression", buildExpr(body)}});
+        st.obj()->attrs[loopSlot ? "loop-modifier" : "condition-modifier"] =
+            node(cls, {{"expression", buildExpr(cond)}});
+        return st;
+    }
+
     // A block or a pointy block, with its signature when it has one.
     Value blockLike(bool isSub, const std::vector<Param>& params, const std::vector<StmtPtr>& body) {
         Value bd = blockoid(body);
@@ -333,6 +398,36 @@ struct Builder {
         for (auto& p : params) ps.push_back(parameter(p));
         Value sig = node("Signature", {{"parameters", list(ps)}});
         return node(isSub ? "Sub" : "PointyBlock", {{"signature", sig}, {"body", bd}});
+    }
+
+    // `sub` / `method` / `submethod` — one shape, three class names, told
+    // apart by the declarator the parser saw. A private method keeps its `!`
+    // in the name, which is where Rakudo carries it too.
+    Value routine(SubDecl* d) {
+        ValueList ps;
+        for (auto& p : d->params) ps.push_back(parameter(p));
+        const char* cls = d->isSubmethod ? "Submethod" : d->isMethod ? "Method" : "Sub";
+        return node(cls, {{"name", name((d->isPrivate ? "!" : "") + d->name)},
+                          {"multiness", Value::str(d->isMulti ? "multi" : "")},
+                          {"signature", node("Signature", {{"parameters", list(ps)}})},
+                          {"body", blockoid(d->body)}});
+    }
+
+    // `has $.x` — an attribute is a `VarDeclaration::Simple` with scope `has`
+    // upstream, the public/private distinction carried in the TWIGIL rather
+    // than in a flag.
+    Value attribute(const AttrDecl& a) {
+        Value n = node("VarDeclaration::Simple",
+            {{"scope", Value::str("has")},
+             {"sigil", Value::str(std::string(1, a.sigil))},
+             {"twigil", Value::str(a.pub ? "." : "!")},
+             {"desigilname", name(a.name)}});
+        if (!a.type.empty())
+            n.obj()->attrs["type"] = node("Type::Simple", {{"name", name(a.type)}});
+        if (a.def)
+            n.obj()->attrs["initializer"] =
+                node("Initializer::Assign", {{"expression", buildExpr(a.def.get())}});
+        return n;
     }
 
     // `last` / `next` / `redo`, with an optional label.
@@ -406,6 +501,11 @@ struct Builder {
             case NK::IfStmt: {
                 auto* i = static_cast<IfStmt*>(s);
                 if (i->branches.empty()) unmapped("an `if` with no branches");
+                if (i->modifier && i->branches.size() == 1 && !i->elseBlock)
+                    if (Expr* b = soleExpr(i->branches[0].second->stmts))
+                        return modifierStmt(i->isUnless ? "StatementModifier::Unless"
+                                                        : "StatementModifier::If",
+                                            false, i->branches[0].first.get(), b);
                 Value n = node(i->isUnless ? "Statement::Unless" : "Statement::If",
                     {{"condition", buildExpr(i->branches[0].first.get())},
                      {"then", node("Block", {{"body", blockoid(i->branches[0].second->stmts)}})}});
@@ -423,12 +523,20 @@ struct Builder {
             }
             case NK::WhileStmt: {
                 auto* w = static_cast<WhileStmt*>(s);
+                if (w->modifier && w->body)
+                    if (Expr* b = soleExpr(w->body->stmts))
+                        return modifierStmt(w->isUntil ? "StatementModifier::Until"
+                                                       : "StatementModifier::While",
+                                            true, w->cond.get(), b);
                 return node(w->isUntil ? "Statement::Until" : "Statement::While",
                     {{"condition", buildExpr(w->cond.get())},
                      {"body", node("Block", {{"body", w->body ? blockoid(w->body->stmts) : blockoid({})}})}});
             }
             case NK::ForStmt: {
                 auto* f = static_cast<ForStmt*>(s);
+                if (f->modifier && f->body)
+                    if (Expr* b = soleExpr(f->body->stmts))
+                        return modifierStmt("StatementModifier::For", true, f->list.get(), b);
                 ValueList ps;
                 for (auto& v : f->vars)
                     ps.push_back(node("Parameter",
@@ -448,17 +556,9 @@ struct Builder {
                            {{"name", name("return")}, {"args", node("ArgList", {{"args", list({})}})}});
                 return node("Statement::Expression", {{"expression", call}});
             }
-            case NK::SubDecl: {
-                auto* d = static_cast<SubDecl*>(s);
-                if (d->isMethod) unmapped("a method declaration");
-                ValueList ps;
-                for (auto& p : d->params) ps.push_back(parameter(p));
-                Value sub = node("Sub", {{"name", name(d->name)},
-                                         {"multiness", Value::str(d->isMulti ? "multi" : "")},
-                                         {"signature", node("Signature", {{"parameters", list(ps)}})},
-                                         {"body", blockoid(d->body)}});
-                return node("Statement::Expression", {{"expression", sub}});
-            }
+            case NK::SubDecl:
+                return node("Statement::Expression",
+                            {{"expression", routine(static_cast<SubDecl*>(s))}});
             case NK::UseStmt: {
                 auto* u = static_cast<UseStmt*>(s);
                 return node("Statement::Use", {{"module-name", name(u->module)}});
@@ -472,9 +572,26 @@ struct Builder {
                 const char* cls = cd->isRole    ? "Role"
                                 : cd->isGrammar ? "Grammar"
                                 : cd->isPackage ? "Module" : "Class";
+                // The body is NOT `cd->body`: our parser lifts attributes,
+                // methods and grammar rules into their own vectors and leaves
+                // only the loose statements there. Rendering just those said a
+                // class with twenty methods had an EMPTY body — a wrong tree
+                // rather than a named refusal, which is the one thing the view
+                // is not allowed to produce, and the tree oracle is what found
+                // it. Rules have no view at all yet (the whole `Regex::*`
+                // subtree), so a grammar with any is refused by name.
+                if (!cd->rules.empty()) unmapped("a grammar rule (the regex tree)");
+                ValueList body;
+                for (auto& a : cd->attrs)
+                    body.push_back(node("Statement::Expression", {{"expression", attribute(a)}}));
+                for (auto& m : cd->methods)
+                    body.push_back(node("Statement::Expression", {{"expression", routine(m.get())}}));
+                for (auto& st : cd->body) body.push_back(buildStmt(st.get()));
                 Value pkg = node(cls, {{"name", name(cd->name)},
                                        {"scope", Value::str(cd->isMy ? "my" : "our")},
-                                       {"body", node("Block", {{"body", blockoid(cd->body)}})}});
+                                       {"body", node("Block", {{"body",
+                                           node("Blockoid", {{"statement-list",
+                                               node("StatementList", {{"statements", list(body)}})}})}})}});
                 return node("Statement::Expression", {{"expression", pkg}});
             }
             case NK::EnumDecl:       unmapped("an enum declaration");
@@ -482,6 +599,15 @@ struct Builder {
             case NK::NamedRegexDecl: unmapped("a named regex declaration");
             case NK::GivenStmt: {
                 auto* g = static_cast<GivenStmt*>(s);
+                // `given` is a LOOP modifier upstream and `with`/`without` are
+                // CONDITION modifiers — measured, and not what the names
+                // suggest: `given` runs its body once, `with` tests a value.
+                if (g->modifier && g->body && !g->hasElse)
+                    if (Expr* b = soleExpr(g->body->stmts))
+                        return modifierStmt(g->defGuard == 1 ? "StatementModifier::With"
+                                          : g->defGuard == 2 ? "StatementModifier::Without"
+                                                             : "StatementModifier::Given",
+                                            g->defGuard == 0, g->topic.get(), b);
                 Value n = node("Statement::Given",
                     {{"source", buildExpr(g->topic.get())},
                      {"body", node("Block", {{"body", g->body ? blockoid(g->body->stmts) : blockoid({})}})}});

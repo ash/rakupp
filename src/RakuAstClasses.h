@@ -28,6 +28,7 @@
 // that file for what the class set is and why.
 #pragma once
 
+#include <iosfwd>
 #include <memory>
 #include <string>
 #include <vector>
@@ -77,13 +78,6 @@ Value rakuAstNew(Interpreter& I, const std::string& qualifiedName, ValueList& ar
 std::string rakuAstDeparse(Interpreter& I, const Value& node);
 
 // `'source'.AST` — build the VIEW over our own parse of `source`. With
-// `compUnit` it is wrapped in a RakuAST::CompUnit, which is what `.AST(:compunit)`
-// answers and what Needle::Compile unshifts a statement into. Lexer and Parser
-// only: no BEGIN runs and no undeclared-name check fires, both recorded
-// divergences from Rakudo.
-Value rakuAstView(Interpreter& I, const std::string& source, bool compUnit);
-
-// `'source'.AST` — build the VIEW over our own parse of `source`. With
 // `compUnit` it is wrapped in a `RakuAST::CompUnit`, which is what
 // `.AST(:compunit)` answers and what Needle::Compile unshifts a statement into.
 // Lexer and Parser only: no BEGIN runs and no undeclared-name check fires, both
@@ -93,6 +87,12 @@ Value rakuAstView(Interpreter& I, const std::string& source, bool compUnit);
 // `RakuAST::Name.from-identifier(…)` and `.from-identifier-parts(…)`, the
 // spelling every dist uses to make a name.
 Value rakuAstNameFrom(Interpreter& I, const ValueList& parts);
+
+// `rakupp --rakuast SRC` — print the VIEW as an indented tree, the sibling of
+// `--ast`. With `compUnit` the `:compunit` shape; with `withAttrs` each node's
+// scalar attributes follow its class name.
+void dumpRakuAst(Interpreter& I, const std::string& source, std::ostream& out,
+                 bool compUnit, bool withAttrs);
 
 // Run a tree: render it and hand the text to the ordinary parser, in the
 // CALLER's lexical scope. Live values the text cannot carry ride a side table

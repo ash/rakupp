@@ -48,12 +48,13 @@ const std::map<std::string, const char*>& positionalSlot() {
     static const std::map<std::string, const char*> t = {
         {"IntLiteral", "value"}, {"StrLiteral", "value"}, {"Literal", "value"},
         {"NumLiteral", "value"}, {"RatLiteral", "value"}, {"VersionLiteral", "value"},
-        {"Var::Lexical", "name"}, {"Var::Dynamic", "name"},
+        {"Var::Lexical", "name"}, {"Var::Dynamic", "name"}, {"Var::Attribute", "name"},
         {"Var::Lexical::Constant", "name"},
         {"Infix", "operator"}, {"Prefix", "operator"}, {"Postfix", "operator"},
+        {"Assignment", "operator"}, {"MetaInfix::Assign", "infix"},
         {"ColonPair::True", "key"}, {"ColonPair::False", "key"},
         {"Blockoid", "statement-list"},
-        {"Term::TopicCall", "call"}, {"Term::Name", "name"},
+        {"Term::TopicCall", "call"}, {"Term::Name", "name"}, {"Term::Enum", "name"},
         {"Type::Simple", "name"}, {"Type::Capture", "name"},
         {"ParameterTarget::Term", "name"},
         {"Initializer::Assign", "expression"}, {"Initializer::Bind", "expression"},
@@ -62,6 +63,9 @@ const std::map<std::string, const char*>& positionalSlot() {
         {"StatementModifier::While", "expression"},
         {"StatementModifier::Until", "expression"},
         {"StatementModifier::For", "expression"},
+        {"StatementModifier::Given", "expression"},
+        {"StatementModifier::With", "expression"},
+        {"StatementModifier::Without", "expression"},
     };
     return t;
 }
@@ -241,7 +245,7 @@ struct Deparser {
             const Value* v = attr(node, "name");
             return v ? v->toStr() : "";
         }
-        if (c == "Term::Name") return opt(attr(node, "name"), indent);
+        if (c == "Term::Name" || c == "Term::Enum") return opt(attr(node, "name"), indent);
         if (c == "Term::Self")     return "self";
         if (c == "Term::Whatever") return "*";
         if (c == "QuotedString") {
@@ -278,7 +282,7 @@ struct Deparser {
         }
 
         // ---- operators ---------------------------------------------------
-        if (c == "Infix" || c == "Prefix" || c == "Postfix") {
+        if (c == "Infix" || c == "Prefix" || c == "Postfix" || c == "Assignment") {
             const Value* o = attr(node, "operator");
             std::string op = o ? o->toStr() : "";
             // A word prefix carries its own separating space; an infix gets
@@ -286,8 +290,20 @@ struct Deparser {
             if (c == "Prefix" && prefixNeedsSpace(op)) op += " ";
             return op;
         }
+        // `+=` is the ASSIGN METAOP over `+`, not an operator spelled `+=`.
+        if (c == "MetaInfix::Assign") return opt(attr(node, "infix"), indent) + "=";
         if (c == "ApplyInfix") {
             std::string op = opt(attr(node, "infix"), indent);
+            // The operands live in the node's ArgList. `.new(:left, :right)` is
+            // still the constructor every dist writes, so a node that carries
+            // the two slots instead renders from them.
+            const Value* args = attr(node, "args");
+            if (args) {
+                const Value* inner = args->t == VT::Object ? attr(*args, "args") : args;
+                if (inner && inner->t == VT::Array && inner->arr() && inner->arr()->size() >= 2)
+                    return render((*inner->arr())[0], indent) + " " + op + " " +
+                           render((*inner->arr())[1], indent);
+            }
             return opt(attr(node, "left"), indent) + " " + op + " " +
                    opt(attr(node, "right"), indent);
         }
@@ -402,6 +418,9 @@ struct Deparser {
         if (c == "StatementModifier::While")  return "while "  + opt(attr(node, "expression"), indent);
         if (c == "StatementModifier::Until")  return "until "  + opt(attr(node, "expression"), indent);
         if (c == "StatementModifier::For")    return "for "    + opt(attr(node, "expression"), indent);
+        if (c == "StatementModifier::Given")  return "given "  + opt(attr(node, "expression"), indent);
+        if (c == "StatementModifier::With")   return "with "   + opt(attr(node, "expression"), indent);
+        if (c == "StatementModifier::Without") return "without " + opt(attr(node, "expression"), indent);
         if (c == "Blockoid") {
             const Value* sl = attr(node, "statement-list");
             std::string inner = (sl && isNode(*sl)) ? statements(*sl, indent + 1) : std::string();
@@ -486,7 +505,13 @@ struct Deparser {
             const Value* sig = attr(node, "sigil");
             std::string out = scope + " " + opt(attr(node, "type"), indent);
             if (out.size() > scope.size() + 1) out += " ";
-            out += (sig ? sig->toStr() : "") + opt(attr(node, "desigilname"), indent);
+            // The TWIGIL is not decoration: `has $.x` declares a public
+            // attribute with an accessor and `has $x` a private one with none.
+            // Dropping it rendered valid Raku meaning a different program, and
+            // the round trip could not see it for exactly that reason.
+            const Value* tw = attr(node, "twigil");
+            out += (sig ? sig->toStr() : "") + (tw ? tw->toStr() : "")
+                 + opt(attr(node, "desigilname"), indent);
             if (const Value* i = attr(node, "initializer"))
                 if (isNode(*i)) out += render(*i, indent);
             return out;
@@ -594,6 +619,24 @@ Value rakuAstNew(Interpreter& I, const std::string& qualifiedName, ValueList& ar
                 throw RakuError{Value::typeObj("X::Constructor::Positional"),
                     "Default constructor for '" + qualifiedName + "' only takes named arguments"};
             od->attrs[ps->second] = positionals[0];
+        }
+    }
+    // `ApplyInfix.new(:left, :infix, :right)` is what every dist writes, and
+    // what Rakudo's own constructor takes — but it does not KEEP the two slots:
+    // it folds them into an ArgList, and `.left`/`.right` read back through it.
+    // Folding here means the tree has one shape whoever built it.
+    if (cls == "ApplyInfix" && od->attrs.find("args") == od->attrs.end()) {
+        auto l = od->attrs.find("left"), r = od->attrs.find("right");
+        if (l != od->attrs.end() && r != od->attrs.end()) {
+            Value inner = Value::array();
+            inner.arr()->push_back(l->second);
+            inner.arr()->push_back(r->second);
+            auto ad = std::make_shared<ObjectData>();
+            if (const std::shared_ptr<ClassInfo>* ac = rakuAstClass("RakuAST::ArgList")) ad->cls = *ac;
+            ad->attrs["args"] = std::move(inner);
+            od->attrs.erase("left");
+            od->attrs.erase("right");
+            od->attrs["args"] = Value::object(ad);
         }
     }
     (void)I;

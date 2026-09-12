@@ -19,6 +19,7 @@
 #include "Parser.h"
 #include "AstSerial.h"
 #include "SlimScan.h"
+#include "RakuAstClasses.h"
 #include "Interpreter.h"
 #include "DeclCheck.h"
 #include "Lint.h"
@@ -1606,6 +1607,7 @@ static const FlagDoc kFlagDocs[] = {
     {"--lint", 0, nullptr, "static analysis, no run"},
     {"--json", 0, nullptr, "machine-readable -c and --lint findings"},
     {"--ast", 0, nullptr, "print the parsed AST"},
+    {"--rakuast", 0, nullptr, "print the RakuAST VIEW of the program (--rakuast=attrs adds attributes)"},
     {"--dump-ast", 0, nullptr, "print the parsed AST"},
     {"--ast-roundtrip", 0, nullptr, "check the AST survives the precomp cache"},
     {"--cpp", 0, nullptr, "print the C++ --exe would compile"},
@@ -2003,10 +2005,11 @@ int main(int argc, char** argv) {
     // Flags that only exist in one mode (-q, -o, -O, --html) are collected
     // wherever they appear and validated once the mode is known, so
     // `-o out --exe src` is as good as `--exe src -o out`.
-    enum class Mode { Run, Help, Version, FfiInfo, Highlight, Ast, AstRoundtrip,
+    enum class Mode { Run, Help, Version, FfiInfo, Highlight, Ast, RakuAst, AstRoundtrip,
                       PrecompSetting, PrecompInfo, PrecompClean, Check, Lint,
                       Cpp, Bundle, Aot, Exe, Mcp, Lsp, Jupyter, JupyterInstall, Js };
     Mode mode = Mode::Run;
+    bool rakuAstAttrs = false, rakuAstCompUnit = false;   // --rakuast=attrs / =compunit
     std::string modeTok;                  // the spelling that selected the mode (for messages)
     std::vector<std::string> libPaths;    // -I, both spellings, any position
     std::vector<std::string> preloadModules; // -M/-m modules, in order
@@ -2190,6 +2193,12 @@ int main(int argc, char** argv) {
             }
             if (a == "--html") { sawHtml = true; hlFmt = "html"; continue; }
             if (a == "--ast" || a == "--dump-ast") { if (!setMode(Mode::Ast, "--ast")) return 4; continue; }
+            if (a == "--rakuast" || a.rfind("--rakuast=", 0) == 0) {
+                if (!setMode(Mode::RakuAst, "--rakuast")) return 4;
+                rakuAstAttrs = (a == "--rakuast=attrs");
+                rakuAstCompUnit = (a == "--rakuast=compunit");
+                continue;
+            }
             if (a == "--ast-roundtrip") { if (!setMode(Mode::AstRoundtrip, a)) return 4; continue; }
             if (a.rfind("--precomp-modules=", 0) == 0 || a.rfind("--precomp-files=", 0) == 0) {
                 if (!setMode(Mode::PrecompSetting, a.substr(0, a.find('=')))) return 4;
@@ -2402,7 +2411,7 @@ int main(int argc, char** argv) {
         // -M applies where the program is checked, compiled or run; the pure
         // source tools see the file exactly as written
         if (!preloadModules.empty() &&
-            (mode == Mode::Highlight || mode == Mode::Ast || mode == Mode::AstRoundtrip ||
+            (mode == Mode::Highlight || mode == Mode::Ast || mode == Mode::RakuAst || mode == Mode::AstRoundtrip ||
              mode == Mode::PrecompSetting || mode == Mode::PrecompInfo || mode == Mode::PrecompClean))
             return illegalOpt("-M");
         if (haveF && mode != Mode::Run) return illegalOpt("-F");
@@ -2738,6 +2747,24 @@ int main(int argc, char** argv) {
         return 0;
     }
 
+    // --rakuast FILE | --rakuast -e CODE : print the RakuAST VIEW and exit.
+    // Not our tree — the sibling of `--ast`, and the half of the tree oracle
+    // that runs here. tools/rakuast-oracle-dump.raku prints the same
+    // serialization from Rakudo, so the comparison is a `diff`.
+    if (mode == Mode::RakuAst) {
+        if (!haveSrc) { std::cerr << "Usage: rakupp --rakuast FILE | --rakuast -e CODE\n"; return 4; }
+        Interpreter interp;
+        try {
+            dumpRakuAst(interp, src, std::cout, rakuAstCompUnit, rakuAstAttrs);
+        } catch (RakuError& e) {
+            std::cerr << "===SORRY!=== " << e.message << "\n";
+            return 2;
+        } catch (const ParseError& e) {
+            std::cerr << "===SORRY!=== Parse error at line " << e.line << ": " << e.what() << "\n";
+            return 2;
+        }
+        return 0;
+    }
     // --ast FILE | --ast -e CODE : print the parsed AST and exit
     // (--dump-ast and --target=ast are kept as compatible aliases)
     if (mode == Mode::Ast) {

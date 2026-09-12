@@ -1,7 +1,9 @@
 # RakuAST in rakupp — design note and implementation plan
 
-**Status: under implementation — P0 is in the tree (2026-09-11); Part IV is the
-log, Part III has the decision, the refreshed evidence, and the order.** Part I (below) is the design note settled 2026-07-31 and
+**Status: under implementation — P0, P2c, P3 and P1 are in the tree, with
+`--rakuast` and the tree oracle as of 2026-09-12; P1-L10N and P4 are open. Part
+IV is the log, Part III has the decision, the refreshed evidence, and the
+order.** Part I (below) is the design note settled 2026-07-31 and
 re-verified 2026-08-18 — nothing in it is reopened. Part II (second half of this
 document, added 2026-09-01) phases the implementation; the trigger is the
 mainstreaming announcement
@@ -1848,7 +1850,7 @@ step is one guarded branch in the `EVAL` builtin, inert unless its argument is a
 RakuAST node, and no Roast file at the pin constructs one. The three-run gate
 runs with the phase that ships this.
 
-## P1 — the `.AST` view (landed 2026-09-11, `--rakuast` still open)
+## P1 — the `.AST` view (landed 2026-09-11)
 
 `'source'.AST` builds the RakuAST view over our own parse, and `parse → view →
 DEPARSE` returns byte-identical text to Rakudo on the shapes both cover.
@@ -1959,3 +1961,167 @@ One test moved with the code: `t/regression/rakuast-view.raku` asserted that
 `class C { }` throws X::NYI, which was true when it was written and is not now.
 The assertion is the FRONTIER, not that particular construct, so it points at a
 phaser block instead — and it will move again.
+
+## `--rakuast` and the tree oracle (landed 2026-09-12)
+
+**`rakupp --rakuast FILE` prints the view as an indented class-name tree**, the
+sibling of `--ast`. `tools/rakuast-oracle-dump.raku` prints the same
+serialization from Rakudo, so comparing the two engines is a `diff`, and
+`tools/rakuast-diff.raku` sweeps a corpus and scores it.
+
+**The published number: 72.0% — 11,097 of Rakudo's 15,409 nodes, over the 36 of
+59 corpus programs both engines can tree** (8 Rakudo itself refuses, 15 the view
+refuses by name). The view also builds 3,507 nodes Rakudo's tree has not; that
+count is published beside the percentage because the plan's formula is recall
+and recall alone can be gamed by adding nodes.
+
+**Files**: `src/RakuAstDump.cpp` (new), `--rakuast` in main.cpp + CLI.md,
+`tools/rakuast-oracle-dump.raku` and `tools/rakuast-diff.raku` (new), the
+measured per-file table in `docs/dev/findings/rakuast/oracle-shape-2026.08.tsv`,
+and the view/deparse/registry work the oracle drove.
+
+### The plan's two-position test does not separate syntax from compiler state
+
+The plan's rule for deciding which scalar attributes are syntax-bearing is the
+TWO-POSITION TEST: parse the same statement from a different line and column,
+and keep only the attributes that agree. It excludes `origin` mechanically,
+which is what it was designed for, and it does not do the wider job. Measured on
+2026.08, a single `my $x = True`:
+
+```
+VarDeclaration::Simple begin-performed=1 bind-targeted=0 forced-dynamic=False
+  hoisted-to-outer=0 initialized=True is-bindable=True is-parameter=False
+  lowered-array-init=0 lowered-to-local=0 meta-object-produced=True okifnil=0
+  parse-performed=1 scope="my" sigil="$" sunk=1 twigil="" unused-slurpy=0
+```
+
+`scope`, `sigil` and `twigil` are syntax; the other fourteen are compiler state,
+and every one of them is POSITION-INVARIANT, so the test keeps them. An
+attribute-level percentage would have been dominated by state a view is not
+supposed to have.
+
+So both dumps are **shape only** — class name and nesting — and attributes are
+behind `--rakuast=attrs` / `--attrs` for anyone who wants to look. That is a
+narrowing of what the plan specified, recorded here rather than quietly done.
+
+### A RakuAST node is not a tree node, and the first dump walked the graph
+
+The plan said `visit-children`. The first version of both dumps walked the
+attributes instead, sorted by name, on the reasoning that name-anchored order is
+deterministic on both engines without either side reproducing the other's
+traversal. That reasoning was wrong in a way only measurement showed: a RakuAST
+node links UPWARD and sideways — a declaration knows its containing block, a
+statement list knows its comp unit, a resolver hangs off the unit — so an
+attribute walk is a graph walk. A twelve-line program dumped 45 nodes, 19 of
+them the same handful of blocks reached from underneath, and one 40-line program
+ran for twenty minutes before a `.WHICH` visited set bounded it.
+
+`visit-children` is the syntactic children in source order. Switching to it cut
+that 45 to 26 and made the two dumps comparable at all. The visited set went
+away with the graph walk; the per-file `alarm 120` cap stayed.
+
+### The first score was not a diff
+
+`1 − changed ÷ oracle-lines` was implemented as line N against line N. That is
+not a diff: one extra node near the top shifts every line under it, so a tree
+that was right everywhere but one statement scored 1%. The number measured the
+alignment. It is `diff(1)` now — normal format, counting the oracle lines
+reported as deleted — and the same corpus that read 1.2% read **41.6%** with no
+change to either engine.
+
+### What the oracle found, in the order it found it
+
+Each of these was a real divergence, and each was invisible to the round-trip
+harness because the wrong shape rendered to text that parses:
+
+1. **`ApplyInfix` keeps its operands in an `ArgList`**, not in `left`/`right`
+   slots. Measured: 2026.08's node carries exactly `$!infix` and `$!args`, and
+   `.left`/`.right` read through the list. The view invented two slots — two
+   nodes Rakudo's tree has not, one it does. `.new(:left, :infix, :right)` is
+   still the constructor every dist writes, so `rakuAstNew` folds it the way
+   Rakudo's own constructor does.
+2. **`=` is not an `Infix`.** It is `RakuAST::Assignment`; `+=` and friends are
+   `MetaInfix::Assign` wrapping the plain infix, not an operator spelled `+=`;
+   and `:=` *is* a plain infix. Three spellings, all measured.
+3. **A declaration owns its initializer.** `my $x = 1` reaching the view through
+   the expression path built `ApplyInfix` over a declaration; Rakudo has no such
+   shape — `VarDeclaration::Simple` with an `Initializer::Assign` child, and the
+   `=` never becomes an operator at all. The statement-level path already did
+   this; only the expression path did not.
+4. **Statement modifiers are modifiers.** Our parser desugars all eight into the
+   block form and sets `modifier`; the view rebuilt none of them, so
+   `$total += $_ for 1..10` presented as `for 1..10 { $total += $_ }`. Same
+   program, different syntax, and a walker asking whether a statement has a
+   modifier got No from a tree that had one. `given` turns out to be a LOOP
+   modifier and `with`/`without` CONDITION modifiers — measured, and not what
+   the names suggest.
+5. **A class body was empty.** This is the find that justifies the tool. Our
+   parser lifts attributes, methods and grammar rules out of a `ClassDecl`'s
+   statement list into their own vectors, and the view rendered only what was
+   left — so a class with twenty methods produced a tree saying it had none.
+   Not a gap: a WRONG tree, the one thing the view is not allowed to produce,
+   and it round-tripped green because an empty class body is valid Raku.
+6. `$!x` is a `Var::Attribute`, not a `Var::Lexical`.
+7. **`has $.x` deparsed as `has $x`** — the twigil dropped. A public attribute
+   with an accessor became a private one without, and because `has $x` is
+   perfectly good Raku the round trip reparsed it and called it stable. The
+   class-body work is what put a `has` in front of the renderer at all.
+8. `True`/`False` are `Term::Enum`. A view cannot resolve a name against the
+   setting, but the lexer already knows it read a Bool, so these two are the one
+   case it can spell without resolution. `Less`, `SeekFromBeginning` and the
+   rest stay `Term::Name`, because knowing THOSE are enum values is exactly the
+   resolution a view does not do.
+
+The corpus went **41.6% → 69.1% → 72.0%** across those, and the extra-node count
+**6,384 → 3,507**.
+
+### The oracle refused eighteen programs, and the oracle was the bug
+
+Eighteen of the fifty-nine died with `Redeclaration of symbol 'JSON'`, which
+read exactly like Rakudo refusing the program. It was the tool refusing itself:
+`.AST` compiles in the caller's scope the way EVAL does, so a program that
+declares a package declares it in the dumper — and the two-position test parses
+the source twice in one process. The second parse now only happens under
+`--attrs`, and ten of the eighteen came back.
+
+### The round-trip count went DOWN, on purpose
+
+**45 → 41 of 59 round-trip, and that is the fix working.** Eight programs whose
+grammars had been rendering as empty bodies now refuse by name — `a grammar rule
+(the regex tree)` — because the whole `Regex::*` subtree has no view yet. A
+named refusal replacing a silently wrong answer costs four from a count that was
+measuring the wrong thing.
+
+### What is left, measured rather than guessed
+
+From `--tally` over the corpus, the largest remaining blocks:
+
+* **the regex tree** — `RuleDeclaration`, `TokenDeclaration`, `Regex::Sequence`,
+  `Regex::WithWhitespace`, `Regex::Assertion::*` and the rest. This is the one
+  big piece, and it is what holds the grammar-heavy programs out of the corpus;
+* **derived nodes a view does not build**: `ParameterTarget::Var` carries the
+  lexical declaration the parameter implies, a method's `Signature` carries an
+  explicit invocant and the implicit `*%_`, and an attribute default is lowered
+  into a `Method::Initializer` with a `Trait::WillBuild`. Adding these would
+  raise the number without the view knowing anything more, which is what the
+  `extra` column exists to make visible;
+* **two spelling differences that are not errors**: Rakudo deparses a routine
+  as `sub f ($x!)` — a space before the signature, and every non-optional
+  positional marked required — where we render `sub f($x)`. Same program, and
+  `RakuAST::Parameter` has no `required` slot upstream at all (it carries
+  `$!optional` as a three-state `Bool`, and the `!` comes from that being
+  explicitly `False`), so matching it means reproducing that three-state rather
+  than adding a flag. Recorded, not done;
+* **one traversal artifact, not a divergence**: `VarDeclaration::Simple` stores
+  its `desigilname` as a `RakuAST::Name` on both engines, and Rakudo's
+  `visit-children` does not visit it while our mechanical walk does — roughly
+  one `extra` line per declaration. Not fixed, because the fix is a per-class
+  exception table in the dump, and a dump tuned until the number improves is
+  worth less than the number.
+
+### Gates
+
+`t/run.raku` 862/862, `t/slim/run.raku` all checks, the four RakuAST regression
+cases (which run the deparse and eval spec files under both engines and diff),
+and the round-trip harness: **0 files rendered unparseable text** — every gap is
+a named `view` or `deparse` miss.

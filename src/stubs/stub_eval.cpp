@@ -13,6 +13,7 @@
 #include "../Lexer.h"
 #include "../Parser.h"
 #include "../RakuAstClasses.h"
+#include <ostream>
 
 namespace rakupp {
 
@@ -44,6 +45,9 @@ const std::vector<std::string>& rakuAstAncestry(const std::string&) {
 // build on this thread rather than in a worker). A cut binary simply skips it
 // and lets the refusal land on the name itself, where the message belongs.
 void rakuAstMaterialize() {}
+void dumpRakuAst(Interpreter&, const std::string&, std::ostream&, bool, bool) {
+    featureMissing("eval", "`--rakuast`");
+}
 Value rakuAstView(Interpreter&, const std::string&, bool) {
     featureMissing("eval", "`.AST` (it IS the parser)");
 }
