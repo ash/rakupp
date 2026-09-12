@@ -79,10 +79,16 @@ attribute order is deterministic on both engines. What that cost, measured:
 | walking attributes | **45** — of which **19** were the same handful of blocks, reached again from underneath |
 | walking `visit-children` | **26** |
 
-Nearly half of that first figure was the walk meeting itself. And it is not only
-duplication: one **40-line** program ran for **twenty minutes** before a
-`.WHICH`-keyed visited set bounded it, because on a graph there is no reason for
-a descent to terminate.
+Nearly half of that first figure was the walk meeting itself.
+
+And duplication is the mild failure. Those links are **cyclic** — a declaration
+knows its containing block, the block knows its statements, and one of those
+statements *is* the declaration — so an unbounded descent does not terminate:
+what grows is not the node count but the number of distinct paths to the same
+nodes. One 40-line program was left running for **twenty minutes** and had not
+finished; it was not going to. That is the number's only claim — how long it was
+allowed to run before a `.WHICH`-keyed visited set was added to bound it, not
+how long the walk takes. There is no "how long it takes".
 
 `visit-children` is the syntactic children in source order, and it is the only
 walk that means the same thing on both engines — it is also what made the two
