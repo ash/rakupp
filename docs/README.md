@@ -44,6 +44,7 @@ point; everything else lives here, in six places:
 - **[guide/MCP.md](guide/MCP.md)** — `rakupp --mcp`: the interpreter served to AI agent clients over the Model Context Protocol, as two tools — `raku` (one persistent session per conversation) and `raku-parse` (a grammar compiled from source, parsing into a JSON tree, with line/column/rule diagnosis when it fails).
 - **[guide/JUPYTER.md](guide/JUPYTER.md)** — `rakupp --jupyter`: the interpreter as a Jupyter kernel, so a notebook cell runs Raku. One session for the whole notebook, output streamed as it is produced, `jupyter-display` for HTML/SVG/Markdown output — and no ZeroMQ to install, because the binary speaks the wire protocol itself. What it deliberately does not do (stdin, interrupt) is listed too.
 - **[guide/LINT.md](guide/LINT.md)** — `rakupp --lint`: the static-analysis rules that run over the AST without executing the program. Its harder sibling, the undeclared-variable check that *refuses* a program rather than warning about it, is in [guide/CLI.md](guide/CLI.md#undeclared-variables-are-refused-before-the-program-runs).
+- **[guide/FMT.md](guide/FMT.md)** — `rakupp --fmt`: the source formatter. Zero configuration, whitespace only, and three gates on every run — the input must parse, the result must be the same program, and formatting it again must change nothing. The six rules, the long list of what it deliberately will not touch (Raku's whitespace is semantically significant), and the one known gap.
 
 ### Running and shipping programs
 

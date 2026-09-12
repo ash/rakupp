@@ -1,11 +1,12 @@
 # Plan: `--fmt` — a source formatter
 
-**Status: `--fmt` SHIPS, with R2/R3/R6 of the ruleset (2026-09-12). Steps 1-4
-of the order of work are in: the scanner gap is closed, `stripLines` is on the
-serializer, `Fmt.cpp` carries all three gates, and the CLI mode is wired with
-`--check` and `--diff`. R1 (indentation), R4 (else-motion) and R5 (minimum
-spacing) are the remaining rules; steps 5-6 (the wide sweep, the docs) remain.** Design probes run 2026-08-26
-against `build-arm64/rakupp` (see "What the probes said" below).
+**Status: DONE (2026-09-12). `--fmt` ships with the whole v1 ruleset — R1-R6 —
+plus `-i`/`-i.bak`, `--check` and `--diff`; the guide is written
+([FMT.md](../../guide/FMT.md)) and the wide sweep is run: 2,434 files over three
+corpora, 11 gate refusals, all one recorded family. R5's "infix `=`" was dropped
+from the rule (see below). The one thing left is that family — R1 reaching
+inside a multi-line `/.../` — written up at the end as its own round.** Design
+probes run 2026-08-26 against `build-arm64/rakupp` (see "What the probes said").
 
 Goal: `rakupp --fmt prog.raku` prints the program back in the house style,
 provably without changing what it means. The bar is the gofmt one — a tool
@@ -252,3 +253,132 @@ comes from a module cannot be formatted, which the plan's "`-I` is illegal for
 project hits it.
 
 Gates: `t/run.raku` 868/868, `t/slim/run.raku`.
+
+## Steps 5-6 — R1, R4, R5, `-i`, and the wide sweep, landed 2026-09-12
+
+The remaining v1 rules, the flag that makes the tool usable in anger, and the
+sweep that judged them. The sweep is written up with the rules because it is
+what shaped them: four separate bugs, and every one of them was found by
+running the formatter over other people's code, not by reading it.
+
+**R1 (indentation)** is `4 × bracket depth`, and the depth is counted from the
+line's CODE SKELETON — the bytes that came from plain spans — never from its
+text. A `{` inside a string or a comment is not a block, and counting one
+indents the rest of the file by a level. A *continuation* line is **shifted by
+however far its statement's first line moved, never set to a computed column**.
+That is deliberate: a chained-method ladder, an aligned argument list and a
+column of grammar rules were written that way on purpose, and a formatter that
+recomputes those columns destroys the only thing they had.
+
+What counts as a continuation took two corrections, both from the sweep:
+
+* an **opening** bracket ends the statement, the way `{` does. What follows a
+  trailing `(` or `[` is a new level to indent, not a continuation to shift.
+  Without that, an `if` written inside a parenthesised expression kept the
+  author's column while its body was re-indented under it;
+* a line with **no code characters at all** — one that is entirely a string, a
+  regex or a comment — says nothing either way, so the answer carries over.
+  Reading it as "a statement ended here" made the `}` after a block's final
+  string expression a continuation of that string, and shifted the brace by the
+  string's own indent.
+
+**R4 (else-motion)** splits `} else {` into `}` and `else {`, and runs **before
+R1** so that R1 indents both lines it makes. The other way round they kept
+whatever column the joined line had and the next run of the formatter moved the
+`else` — an oscillation the idempotence gate caught on real modules.
+
+**R2 (trailing whitespace)** now trims only the whitespace that is CODE.
+`editable` is a per-line answer and this is the one place that is not enough: a
+line can begin in code and end inside a literal. `token TOP { ` has a trailing
+space that belongs to the rule body, and trimming it changed the pattern.
+
+**R5 (minimum spacing)** cost this step its worst bug, and the fix changed what
+the rule *is*. It reads at least one space after a `,` and around a `=>` — and
+the first version found them by reading characters. `<=>` CONTAINS the bytes
+`=>`. So `1 <=> 2` was spaced into `1 < => 2`, a different program; the semantic
+gate caught every one and the repo sweep went from 1 gate refusal to 23, on
+files like `examples/wordcount.raku` that have no grammar in them at all.
+
+R5 now asks the LEXER which bytes are a `,` or `=>` **token**, and moves nothing
+else. Three things that took measuring:
+
+* **`Token::col` is not a byte position.** It runs several columns ahead of the
+  token it belongs to — +3 on the very first token of a file, and the drift is
+  not constant. Good enough for a diagnostic that names a line, useless for
+  arithmetic. `Token::off` was added for this: the byte just past the token,
+  stamped in `Lexer::make`, so the start is `off - text.size()`. The mark is
+  laid only when those bytes really do spell the token, so a wrong offset makes
+  R5 go quiet rather than wrong.
+* **The lexer alone is not enough.** It tokenizes the inside of a word quote, so
+  `<vp 1,2,3 hi>` came back with a comma token in it and R5 rewrote a string
+  literal. Both witnesses have to agree: the lexer says a token starts here, the
+  span scanner says this byte is code.
+* **A fat arrow glued to a zip/cross metaoperator is left alone.** `1,2 X=> 3,4`
+  is a metaop; `1,2 X => 3,4` is a parse error.
+
+The ruleset above also promised R5 would space **infix `=`**. It is NOT in, and
+on the evidence of `<=>` it should not go in as written: `=` is the one byte
+that begins two dozen operators (`==`, `=>`, `=:=`, `+=`, `//=`, `~~=`, `=~=`),
+and `:=`/`::=` end with it. The token-anchored form makes it tractable — ask the
+lexer for a bare `Tok::Op` whose text is exactly `=` — but it is a new rule with
+its own sweep to earn, not a line to slip into this one.
+
+R5 also has to run **early**, before R1 and R4. It is the one rule that
+addresses bytes by position, and both of those rewrite a line's leading bytes —
+the per-byte mask stopped lining up with the text the moment either had run.
+The final order is **R2, R5, R4, R1, R6**: R2 first because taking characters
+off the END leaves every earlier index alone, so R5's marks still line up.
+
+**`-i` / `-i.bak`** rewrite in place, over a list of files. It needed its own
+argument arm: the perl-style `-i` cluster is gated `mode == Mode::Run` because
+it belongs to `-n`/`-p`, and so is the "`-i` is only meaningful with `-n` or
+`-p`" diagnostic. A file that is already formatted is not rewritten, so mtimes
+survive a whole-tree run.
+
+### The wide sweep
+
+| corpus | files | already formatted | would change | won't parse | **gate refusals** |
+|---|---|---|---|---|---|
+| this repo | 757 | 589 | 167 | 2 | **1** |
+| raku-corpus | 954 | 805 | 116 | 33 | **0** |
+| installed ecosystem dists | 723 | 220 | 490 | 3 | **10** |
+
+The ecosystem column is the interesting one: 723 modules nobody here wrote,
+picked by nothing but "it is installed". It started at 18 refusals and the four
+fixes above took it to 10.
+
+**Live fire**: 703 files formatted IN PLACE across `t/regression examples tools
+showcase` (158 rewritten), then `t/run.raku` run against the formatted tree —
+**868/868**, and the tree restored with `git checkout --`. That is the evidence
+the rules do not change programs; the gates are what made it cheap to get there.
+
+### The one family that is left — R1 reaches inside a multi-line regex
+
+All 10 remaining ecosystem refusals, and the repo's one
+(`showcase/raku/raku-grammar.raku`), are the same shape:
+
+```raku
+our subset Scheme of Str
+    where /^ [
+           ''
+        || <IETF::RFC_Grammar::URI::scheme>
+    ] $/;
+```
+
+**A multi-line `/.../` is not one span.** The scanner colours its *parts* — the
+`''`, the `<assertion>` — and leaves the rest plain, which is the right answer
+for highlighting and the wrong one for the line model. So the interior lines
+look like code, R1 re-indents them, and the regex literal changes. The gate
+refuses every one; no file is ever written wrong.
+
+Fixing it properly means telling the formatter the EXTENT of a multi-line
+literal, which the scanner does not currently report and the classification
+cannot be changed to report without changing how every regex is highlighted.
+The cheap route is the lexer again — `Token::off` has a natural twin in the
+token's start offset, and a token whose range spans a newline is exactly the
+thing whose interior must not be touched. Not built: it is a second change to
+the shared `Token`/`Lexer` surface for a 1.4%-of-third-party-files case that
+already fails safe, and it should be its own round.
+
+Gates: `t/run.raku` 868/868, `t/slim/run.raku`, `t/regression/fmt-basics.raku`,
+`t/regression/highlight-lossless.raku`.

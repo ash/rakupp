@@ -418,6 +418,7 @@ Token Lexer::make(Tok k, const std::string& t) {
     tk.text = t;
     tk.line = line_;
     tk.col = col_;
+    tk.off = pos_;
     return tk;
 }
 

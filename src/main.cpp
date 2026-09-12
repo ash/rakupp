@@ -2071,7 +2071,9 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
         // phase 2: a running program's arguments are never ours to interpret
-        if (haveSrc && mode == Mode::Run) { progArgs.push_back(a); continue; }
+        // …and `--fmt` takes a LIST of files for `-i` / `--check` / `--diff`,
+        // which is the only way a formatter is used in anger.
+        if (haveSrc && (mode == Mode::Run || mode == Mode::Fmt)) { progArgs.push_back(a); continue; }
         if (!optionsDone && a == "--") { optionsDone = true; continue; }
         bool isOpt = !optionsDone && a.size() > 1 && a[0] == '-';
         if (isOpt) {
@@ -2165,6 +2167,14 @@ int main(int argc, char** argv) {
             // mode selectors
             if (a == "--highlight") { if (!setMode(Mode::Highlight, a)) return 4; continue; }
             if (a == "--fmt") { if (!setMode(Mode::Fmt, a)) return 4; continue; }
+            // `-i` / `-i.bak` under --fmt. The perl-style cluster that owns
+            // this spelling elsewhere is Run-only (it belongs to -n/-p), so the
+            // formatter needs its own arm — same spelling, same glued
+            // backup-extension semantics.
+            if (mode == Mode::Fmt && (a == "-i" || a.rfind("-i", 0) == 0) && a.size() >= 2 &&
+                a.compare(0, 2, "-i") == 0 && (a.size() == 2 || a[2] == '.')) {
+                optI = true; backupExt = a.substr(2); continue;
+            }
             if (a == "--check") { fmtCheck = true; continue; }
             if (a == "--diff")  { fmtDiff = true; continue; }
             if (a == "--mcp") { if (!setMode(Mode::Mcp, a)) return 4; continue; }
@@ -2504,7 +2514,7 @@ int main(int argc, char** argv) {
     }
     // -i refusals — each a DELIBERATE divergence from perl, which silently
     // no-ops -i without -n/-p and falls back to editing stdin(!) with no files
-    if (optI && !(optN || optP)) {
+    if (optI && !(optN || optP) && mode != Mode::Fmt) {
         std::cerr << "-i is only meaningful together with -n or -p\n";
         return 4;
     }
@@ -2780,6 +2790,46 @@ int main(int argc, char** argv) {
     // so every caller gets them; this is only the surface.
     if (mode == Mode::Fmt) {
         if (!haveSrc) { std::cerr << "Usage: rakupp --fmt FILE | --fmt -e CODE [--check|--diff]\n"; return 4; }
+        // Every file named on the command line. Without -i/--check/--diff there
+        // must be exactly one, or stdout would interleave two programs.
+        std::vector<std::string> files;
+        if (fileName != "-e") files.push_back(fileName);
+        for (auto& extra : progArgs) files.push_back(extra);
+        if (!optI && !fmtCheck && !fmtDiff && files.size() > 1) {
+            std::cerr << "--fmt writes to stdout, so it takes one file; use -i, --check or --diff for several\n";
+            return 4;
+        }
+        if (files.size() > 1 || optI) {
+            int worst = 0;
+            for (const std::string& f : files) {
+                std::ifstream in(f, std::ios::binary);
+                if (!in) { std::cerr << "--fmt: cannot read " << f << "\n"; worst = std::max(worst, 4); continue; }
+                std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+                in.close();
+                FmtResult fr = formatSource(text);
+                if (fr.status == FmtStatus::ParseError) {
+                    std::cerr << "--fmt: " << f << " does not parse; skipped\n";
+                    worst = std::max(worst, 3); continue;
+                }
+                if (fr.status != FmtStatus::Ok) {
+                    std::cerr << "===INTERNAL=== --fmt: " << f << " — a gate refused this file, so it was not\n"
+                                 "written. This is a bug in rakupp; please report it with the file\n";
+                    worst = std::max(worst, 5); continue;
+                }
+                if (!fr.changed) continue;         // already formatted: not rewritten, mtime intact
+                if (fmtCheck) { std::cout << f << "\n"; worst = std::max(worst, 1); continue; }
+                if (fmtDiff)  { std::cout << fmtUnifiedDiff(f, text, fr.text); worst = std::max(worst, 1); continue; }
+                if (!backupExt.empty()) {
+                    std::ofstream bk(f + backupExt, std::ios::binary);
+                    bk << text;
+                }
+                std::ofstream out(f, std::ios::binary);
+                if (!out) { std::cerr << "--fmt: cannot write " << f << "\n"; worst = std::max(worst, 4); continue; }
+                out << fr.text;
+            }
+            return worst;
+        }
+
         FmtResult r = formatSource(src);
         switch (r.status) {
             case FmtStatus::ParseError:

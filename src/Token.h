@@ -40,6 +40,10 @@ struct Token {
     double nval = 0;
     int line = 0;
     int col = 0;
+    // Byte offset in the source just PAST this token. Stamped where the token
+    // is built, so it is exact — `line`/`col` are for diagnostics and `col`
+    // runs ahead of the token it belongs to. `--fmt` needs the byte.
+    size_t off = 0;
     bool spaceBefore = false; // whitespace/comment preceded this token
     bool flag = false;        // SubstLit: non-mutating S/// (returns new string, leaves $_ intact)
 };

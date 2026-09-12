@@ -370,9 +370,41 @@ struct Scanner {
     }
 
     void scanRegex() {
-        // bare /.../ in term position
+        // bare /.../ in term position. A `#` inside a regex starts a COMMENT
+        // that runs to the end of the line, and a `/` in that comment does not
+        // close the regex — `/ a  # mentions / and }` … `b /` is one regex over
+        // two lines. Reading the comment's slash as the closer left the rest of
+        // the pattern classified as code, which is how `--fmt` came to reindent
+        // the inside of a regex; the semantic gate refused the file rather than
+        // corrupt it, and this is the fix behind that refusal.
         size_t j = i + 1;
-        while (j < s.size()) { if (s[j] == '\\') { j += 2; continue; } if (s[j] == '/') { j++; break; } j++; }
+        while (j < s.size()) {
+            if (s[j] == '\\') { j += 2; continue; }
+            if (s[j] == '#') {
+                // `#\`( … )` is an EMBEDDED comment, delimited and nestable,
+                // not a run to the end of the line — and its content may hold
+                // the regex's own closer. Treating it as a line comment
+                // swallowed the rest of the line instead, which the semantic
+                // gate then caught as a changed program.
+                if (j + 2 < s.size() && s[j + 1] == '`' &&
+                    (s[j + 2] == '(' || s[j + 2] == '[' || s[j + 2] == '{' || s[j + 2] == '<')) {
+                    char open = s[j + 2], close = closeDelim(open);
+                    size_t m = j + 3;
+                    int d = 1;
+                    while (m < s.size() && d > 0) {
+                        if (s[m] == open) d++;
+                        else if (s[m] == close) d--;
+                        m++;
+                    }
+                    j = m;
+                    continue;
+                }
+                while (j < s.size() && s[j] != '\n') j++;
+                continue;
+            }
+            if (s[j] == '/') { j++; break; }
+            j++;
+        }
         emit(s.substr(i, j - i), "sr", true);
         i = j;
     }
@@ -473,6 +505,74 @@ struct Scanner {
         } else if (isKeyword(w)) {
             cls = "k";
             introduces = isNameIntroducer(w); // arms declNext for the name that follows
+            // A NAMED REGEX body is not code. `token body { … }` holds a
+            // pattern, and in a `rule` the whitespace in it is significant
+            // (:sigspace) — so it is a regex span, the way a heredoc body is a
+            // string span, and for the same reason: a tool that rewrites
+            // whitespace between spans must not reach inside it. `--fmt`
+            // re-indenting a grammar's rule bodies is what surfaced this; the
+            // semantic gate refused five corpus files until it was fixed.
+            if (w == "token" || w == "rule" || w == "regex") {
+                size_t p = j;                     // `j` is just past the keyword
+                while (p < s.size() && (s[p] == ' ' || s[p] == '\t')) p++;
+                size_t nameStart = p;
+                while (p < s.size() && (identCont(s[p]) || s[p] == '-' || s[p] == ':')) p++;
+                size_t nameEnd = p;
+                while (p < s.size() && (s[p] == ' ' || s[p] == '\t')) p++;
+                if (p < s.size() && s[p] == '(') { int d = 1; p++; while (p < s.size() && d) { if (s[p]=='(') d++; else if (s[p]==')') d--; p++; } while (p < s.size() && (s[p]==' '||s[p]=='\t')) p++; }
+                if (nameEnd > nameStart && p < s.size() && s[p] == '{') {
+                    emit(std::move(w), cls, true);                 // the declarator
+                    emit(s.substr(j, p - j), "", false);           // name and signature
+                    // Find the body's end by braces — but a pattern QUOTES its
+                    // braces (`token block { '{' <statementlist> '}' }`) and
+                    // puts them in character classes, and counting those ends
+                    // the body in the wrong place. Skip a quoted run, a `<[…]>`
+                    // class, and an embedded comment before counting.
+                    size_t k = p + 1;
+                    int d = 1;
+                    while (k < s.size() && d) {
+                        const char c = s[k];
+                        if (c == '\\') { k += 2; continue; }
+                        if (c == '\'' || c == '"') {
+                            const char q = c;
+                            k++;
+                            while (k < s.size() && s[k] != q) { if (s[k] == '\\') k++; k++; }
+                            k++;
+                            continue;
+                        }
+                        if (c == '<' && k + 1 < s.size() && (s[k + 1] == '[' || s[k + 1] == '-')) {
+                            while (k < s.size() && s[k] != '>') { if (s[k] == '\\') k++; k++; }
+                            k++;
+                            continue;
+                        }
+                        if (c == '#') {
+                            if (k + 2 < s.size() && s[k + 1] == '`' &&
+                                (s[k + 2] == '(' || s[k + 2] == '[' || s[k + 2] == '{' || s[k + 2] == '<')) {
+                                char o = s[k + 2], cl = closeDelim(o);
+                                size_t m = k + 3; int dd = 1;
+                                while (m < s.size() && dd) { if (s[m] == o) dd++; else if (s[m] == cl) dd--; m++; }
+                                k = m; continue;
+                            }
+                            while (k < s.size() && s[k] != '\n') k++;
+                            continue;
+                        }
+                        if (c == '{') d++;
+                        else if (c == '}') d--;
+                        k++;
+                    }
+                    // The braces stay CODE and only the interior is the
+                    // pattern. A consumer counting brackets has to see them —
+                    // `--fmt` indented a grammar's closing `}` by one level
+                    // because the `}` was inside the span and its line looked
+                    // like a statement that had not ended.
+                    emit(s.substr(p, 1), "", false);               // `{`
+                    if (k > p + 2) emit(s.substr(p + 1, k - p - 2), "sr", true);
+                    if (k > p + 1) emit(s.substr(k - 1, 1), "", false);   // `}`
+                    declNext = false;
+                    i = k;
+                    return;
+                }
+            }
         } else if (isBuiltin(w)) {
             cls = "nb";
         } else {

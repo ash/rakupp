@@ -66,6 +66,57 @@ my ($d, $drc) = fmt("say 1;   \nsay 2;\n", '--diff');
 check $drc, 1, "--diff exits 1 when there is work";
 check $d.contains("-say 1;   ") && $d.contains("+say 1;"), True, "…and shows the line";
 
+# A tiny helper, because these cases are multi-line source and escaping them
+# inline is how the first version of this file went wrong.
+sub src(*@lines) { @lines.join("\n") ~ "\n" }
+
+# R1 — indentation, and R4 — else on its own line. Together, because R4's new
+# line takes the `}`'s indent and getting that wrong is the obvious way to
+# break it.
+check fmt(src 'sub f {', 'if 1 {', 'say 1;', '} else {', 'say 2;', '}', '}')[0],
+      src('sub f {', '    if 1 {', '        say 1;', '    }', '    else {',
+          '        say 2;', '    }', '}'),
+      "indentation and else-motion";
+# A CONTINUATION line is shifted with its statement, not re-columned — which is
+# what keeps a hand-aligned ladder aligned.
+check fmt(src 'sub f {', 'my $x = 1', '        + 2;', '}')[0],
+      src('sub f {', '    my $x = 1', '            + 2;', '}'),
+      "a continuation line is shifted, not re-columned";
+
+# R5 — minimum spacing, and MINIMUM is the point: a run of spaces in a
+# hand-aligned table is never shrunk.
+check fmt(src 'my %h = a=>1,b=>2;')[0], src('my %h = a => 1, b => 2;'),
+      "spacing after , and around =>";
+check fmt(src 'say "x,y";')[0], src('say "x,y";'), "…but not inside a string";
+check fmt(src 'my %t = alpha   => 1,', '        b       => 2;')[0],
+      src('my %t = alpha   => 1,', '        b       => 2;'),
+      "…and an aligned table keeps its columns";
+
+# R5 asks the LEXER which bytes are a `,` or a `=>`, and these are why. Every
+# one of them was a whole-file refusal when R5 read characters instead: `<=>`
+# and `==>` CONTAIN the bytes `=>`, so `1 <=> 2` came out as `1 < => 2` — a
+# different program, caught by the semantic gate, 22 files refused.
+check fmt(src 'say 1 <=> 2;')[0], src('say 1 <=> 2;'), "<=> is one operator, not a fat arrow";
+check fmt(src 'my @s = (3,1,2).sort({ $^a<=>$^b });')[0],
+      src('my @s = (3, 1, 2).sort({ $^a<=>$^b });'),
+      "…even glued, and the real commas beside it still get their space";
+check fmt(src 'say [1,2] ==> sum();')[0], src('say [1, 2] ==> sum();'), "the feed operator is left alone";
+# A fat arrow GLUED to a zip/cross metaoperator is the one `=>` R5 will not
+# touch: there the space is the difference between a metaop and a parse error.
+check fmt(src 'my @z = (1,2) Z=> (3,4);')[0], src('my @z = (1, 2) Z=> (3, 4);'),
+      "a metaoperator's fat arrow keeps its spelling";
+# The lexer alone is not enough: it tokenizes the inside of a word quote, so
+# the scanner has to agree that the byte is code.
+check fmt(src 'my @w = <vp 1,2,3 hi>;')[0], src('my @w = <vp 1,2,3 hi>;'),
+      "a comma inside a word quote is the author's";
+
+# A grammar RULE BODY is a pattern, not code: reindenting it changes the
+# pattern, and in a `rule` whitespace is significant (:sigspace). This is the
+# case the semantic gate caught during development.
+check fmt(src 'grammar G {', Q[token body { '{' <stuff> '}' }], '}')[0],
+      src('grammar G {', Q[    token body { '{' <stuff> '}' }], '}'),
+      "a rule body is indented as a unit, never inside";
+
 .unlink for $dir.dir;
 $dir.rmdir;
 if @fail { .say for @fail; say "FAIL ({+@fail})"; exit 1 }

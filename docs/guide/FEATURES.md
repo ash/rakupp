@@ -42,6 +42,9 @@ The full list — every change, run on both engines under both revisions — is
 [raku.online/spec/6e](https://raku.online/spec/6e/): **50 of 51 tracked changes
 match Rakudo's 6.e**, 46 of them gated on the pragma.
 
+`--fmt` formats Raku source in the house style — whitespace only, with a parse,
+a same-program and an idempotence gate on every run ([FMT.md](FMT.md)).
+
 **Deliberately not done:** `RakuAST` (its own campaign); multi-character `.succ`
 string ranges, which are 6.e's behaviour under both revisions because 6.d's
 cross-product algorithm is not implemented; and the 6.d silent replacement of a

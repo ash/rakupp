@@ -376,6 +376,7 @@ disabled hooks cost nothing measurable, so there is no separate
 |---|---|
 | `-c` | compile-check only, print `Syntax OK` (parse + the undeclared-variable check — BEGIN does not run, unlike Rakudo); `-q` drops the `Syntax OK` |
 | `--lint` | static analysis; `-q` drops the summary (see [LINT.md](LINT.md)) |
+| `--fmt` | format source in the house style — whitespace only, gated on parse, same-program and idempotence. `-i` rewrites in place (`-i.bak` keeps backups), `--check` names files that would change (exit 1), `--diff` shows what (see [FMT.md](FMT.md)) |
 | `--ast` | print the parsed AST (`--dump-ast`, `--target=ast` are aliases) |
 | `--rakuast` | print the **RakuAST view** of the program — the same tree `.AST` builds, as an indented class-name tree, with the Raku each node renders back to in a second column. The value is a comma list, like `--slim`'s: `tree` drops the source column, `attrs` adds each node's scalar attributes, `compunit` wraps it the way `.AST(:compunit)` does, and they combine (`--rakuast=tree,compunit`). `tools/rakuast-oracle-dump.raku` prints the bare tree from Rakudo, so comparing the two engines is a `diff` |
 | `--target=parse` | Rakudo-compatible alias of `-c` |
