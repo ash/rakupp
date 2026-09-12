@@ -17214,7 +17214,30 @@ void Interpreter::setupRwLinks(const std::vector<Param>* params, std::shared_ptr
             if (!p.isRw && argIsNeverContainer(ae)) {
                 if (Value* vp = env->local(p.name)) vp->readonly = true;
             }
-            env->x().rwLinks[p.name] = { ae, tctx_.cur };
+            // A CHAIN of `is rw` parameters must alias the ORIGINAL container,
+            // not the intermediate frame's copy. `outer($x is rw)` handing $x on
+            // to `inner($y is rw)` linked $y to `$x` in OUTER's scope — fine
+            // while outer is running, useless afterwards: outer's own copy-back
+            // had already gone to the caller, so a closure returned from inner
+            // wrote into a frame nobody reads. IO::Capture::Simple is exactly
+            // that shape (capture_on($out is rw) passes $out to
+            // capture_stdout_on, which installs a $*OUT closing over it), and
+            // 70 dists sit behind it. Collapse the hop at BIND time, while the
+            // link is still there to read.
+            Expr* linkExpr = ae;
+            std::shared_ptr<Env> linkScope = tctx_.cur;
+            if (ae && ae->kind == NK::VarExpr) {
+                const std::string& an = static_cast<VarExpr*>(ae)->name;
+                for (Env* e = tctx_.cur.get(); e; e = e->parent.get()) {
+                    if (!e->local(an)) continue;          // not this frame's variable
+                    auto li = e->xr().rwLinks.find(an);
+                    if (li != e->xr().rwLinks.end() && li->second.first) {
+                        linkExpr = li->second.first; linkScope = li->second.second;
+                    }
+                    break;                                 // the owning frame decides
+                }
+            }
+            env->x().rwLinks[p.name] = { linkExpr, linkScope };
             Value* ip = env->local(p.name);
             env->x().rwSynced[p.name] = ip ? *ip : Value::any();
             anyRwLinks_ = true;
@@ -26678,6 +26701,18 @@ Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value
     // path: `sub f($x where /^\d+$/)` reaches it on every call.
     // (the type test first: this runs on EVERY applied operator, and two string
     // compares ahead of it cost ~4% on the string kernels)
+    // `$obj ~~ "text"` is Str.ACCEPTS, which asks what the object SAYS it is:
+    // `$*DISTRO ~~ 'macos'` is True upstream and was False here, because an
+    // Object compared by its repr rather than its `.Str`. Clipboard picks its
+    // backend with exactly that test (`when $_ ~~ 'macos'`), so every macOS run
+    // fell through to the Linux branch and shelled out to xclip; 7 dists sit
+    // behind it. A plain-Str left side keeps the ordinary path, and a
+    // non-matching string still answers False.
+    if ((op == "~~" || op == "!~~") && r.t == VT::Str && r.hashKind.empty() &&
+        !r.itemized && l.t == VT::Object && l.obj()) {
+        const bool eq = strInStrContext(l) == r.s;
+        return Value::boolean(op == "~~" ? eq : !eq);
+    }
     if (r.t == VT::Regex && (op == "~~" || op == "!~~")) {
         // pass the VALUE: an interpolating regex (`rx/ <$_> /`) resolves its
         // vars from the env it closed over — junction autothreading re-enters
@@ -27628,6 +27663,20 @@ Value Interpreter::evalBinary(Binary* b) {
         // because a Proxy is a Hash and the hook wants an Object.
         if (r.hashKind == "Proxy") r = deproxy(r);
         if (lTopic.hashKind == "Proxy") lTopic = deproxy(lTopic);
+        // `$x ~~ "text"` is Str.ACCEPTS — it asks what the topic SAYS it is, not
+        // what its repr looks like. An Object with a `method Str`, and the tagged
+        // hashes $*DISTRO / $*KERNEL / $*VM whose `.Str` is a method, all
+        // answered False. Clipboard chooses its backend with exactly that test
+        // (`when $_ ~~ 'macos'`), so every macOS run fell through to the Linux
+        // branch and shelled out to xclip; 7 dists sit behind it.
+        if (r.t == VT::Str && r.hashKind.empty() && !r.itemized &&
+            ((lTopic.t == VT::Object && lTopic.obj()) ||
+             (lTopic.t == VT::Hash && lTopic.hash() &&
+              (lTopic.hashKind == "Distro" || lTopic.hashKind == "Kernel" ||
+               lTopic.hashKind == "VM")))) {
+            const bool ok = strInStrContext(lTopic) == r.s;
+            return Value::boolean(op == "~~" ? ok : !ok);
+        }
         // `$path.IO ~~ :e` (and :d/:f/:r/:w/:x/:s/:z/:l) — a filetest adverb: call
         // the matching method on the path and compare to the adverb's boolean.
         auto fileTest = [&](const Value& pair) {
@@ -29532,6 +29581,14 @@ std::string Interpreter::strOf(const Value& v) {
     // a DateTime/Date carrying a :formatter stringifies through .Str (which runs it)
     if (v.t == VT::Hash && (v.hashKind == "DateTime" || v.hashKind == "Date") &&
         v.hash() && v.hash()->count("formatter"))
+        return methodCall(v, "Str", {}).toStr();
+    // $*DISTRO / $*KERNEL / $*VM are tagged HASHES whose `.Str` is a method, so
+    // nothing that stringified them generically ever asked it: `$*DISTRO eq
+    // 'macos'` and `$*DISTRO ~~ 'macos'` were both False while `.Str` said
+    // "macos". Clipboard picks its backend with that exact test, so every macOS
+    // run took the Linux branch and shelled out to xclip — 7 dists behind it.
+    if (v.t == VT::Hash && v.hash() &&
+        (v.hashKind == "Distro" || v.hashKind == "Kernel" || v.hashKind == "VM"))
         return methodCall(v, "Str", {}).toStr();
     // A LIST stringifies its elements space-separated, and each element through
     // ITS OWN .Str — a list of objects with a user `method Str` must not come out
