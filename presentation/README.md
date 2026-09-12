@@ -5,7 +5,7 @@ A self-contained slide deck introducing Raku++ and its ecosystem —
 in a browser, or serve the directory statically.
 
 **Just want to look?** [`rakupp-presentation.pdf`](rakupp-presentation.pdf) is a
-13-page PDF export — download it and flip through in any PDF viewer (the text
+15-page PDF export — download it and flip through in any PDF viewer (the text
 stays selectable). GitHub's inline blob viewer is unreliable with PDFs, so
 download it rather than expecting a preview. The interactive `index.html` is the
 real thing: keyboard navigation, a light/dark toggle, hover states. Regenerate
@@ -35,12 +35,18 @@ pdftoppm -f 7 -l 7 -r 60 -png rakupp-presentation.pdf /tmp/deck-p7   # then look
   rail, or the on-screen arrows.
 - **Theme:** light/dark toggle, top-right (follows the OS setting by default).
 
-Thirteen slides: what it is → Roast conformance → language breadth → the five
-ways to run → interpreter speed → native (`--exe`) speed → the ecosystem →
-showcase programs → ecosystem modules → dogfooding → roadmap → install. Every
-figure is drawn from the docs in [`../docs`](../docs) (ROAST, BENCHMARKS,
-ECOSYSTEM, MODULES, MILESTONES) and from [`../CHANGELOG.md`](../CHANGELOG.md) —
-when a release moves a number there, move it here too.
+Fifteen slides: title → what it is → Roast conformance → language breadth →
+the five ways to run → interpreter speed → native (`--exe`) speed → the
+ecosystem sweep → the projects around it → showcase programs → ecosystem
+modules → dogfooding → the toolbox (RakuAST, `--fmt`, `L10N`, `--target=js`,
+MCP/Jupyter/LSP, the bindings) → roadmap → install. Every figure is drawn from
+the docs in [`../docs`](../docs) (ROAST, BENCHMARKS, ECOSYSTEM, MODULES,
+MILESTONES) and from [`../CHANGELOG.md`](../CHANGELOG.md) — when a release moves
+a number there, move it here too.
+
+The gutter number on each slide is **derived at load time** from the slide's
+index, so inserting a slide cannot leave a stale `07/13` behind. It used to be
+hand-written, and it drifted.
 
 ## Talking points
 
@@ -48,11 +54,11 @@ when a release moves a number there, move it here too.
 from: every feature the documentation currently claims, grouped the way a talk
 uses them, with the figure the repository records beside each one and the source
 file named per section — so a claim on a slide can be traced back to the page it
-came from. It is much longer than thirteen slides on purpose. No build step;
+came from. It is much longer than fifteen slides on purpose. No build step;
 open it in a browser, same light/dark handling as `index.html`.
 
-It carries the limitations too — no RakuAST, the `objects` kernel, the bindings
-and MCP server that are committed but not announced — because those are the
+It carries the limitations too — slangs, the `objects` kernel, the bindings and
+MCP server that are committed but not announced — because those are the
 questions a room asks. Same rule as the deck: when a release moves a number in
 [`../docs`](../docs), move it here too.
 

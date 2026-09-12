@@ -375,8 +375,8 @@ ul.plain li:last-child { margin-bottom: 0; }
     the way a talk would use it. Every figure below is the one the repository records — no rounding up,
     and the losses are here too, because a room of Raku people will ask about them.</p>
     <div class="masthead-meta">
-      <span>release <b>v3.26.0</b></span>
-      <span>2026-09-08</span>
+      <span>release <b>v3.28.0</b></span>
+      <span>2026-09-12</span>
       <span>C++17, zero dependencies</span>
       <span>Artistic License 2.0</span>
     </div>
@@ -385,10 +385,10 @@ ul.plain li:last-child { margin-bottom: 0; }
   <div class="figures">
     <div class="figure">
       <div class="val">91<small>%</small></div>
-      <div class="lab">of all declared Roast tests — 200,220 of ~219,429</div>
+      <div class="lab">of all declared Roast tests — 200,504 of ~219,555</div>
     </div>
     <div class="figure">
-      <div class="val">661<small> / 1,464</small></div>
+      <div class="val">670<small> / 1,464</small></div>
       <div class="lab">Roast files where <em>every</em> assertion passes</div>
     </div>
     <div class="figure">
@@ -1013,6 +1013,59 @@ rakupp test Foo          <span class="cmt"># build + run Foo's own suite, never 
     </div>
   </section>
 
+  <!-- ============ RAKUAST / FMT / L10N ============ -->
+  <section>
+    <div class="sec-head">
+      <h2>RakuAST, a formatter, and Raku in your own language</h2>
+      <span class="source">CHANGELOG.md (v3.28.0) · FEATURES.md · faq/l10n.md</span>
+    </div>
+    <div class="entries">
+      <div class="entry">
+        <div class="term">RakuAST is in, end to end</div>
+        <div class="body">The 489-class hierarchy plus every operation over it: <code>.AST</code> builds the
+        tree, <code>.DEPARSE</code> renders it back to Raku, <code>.EVAL</code> runs it,
+        <code>visit-children</code> walks it, <code>.rakudoc</code> answers a unit's documentation blocks, and
+        <code>rakupp --rakuast</code> prints the whole thing with each node's Raku beside it.</div>
+      </div>
+      <div class="entry">
+        <div class="term">It is a view, not a second front end</div>
+        <div class="body">Nothing is built until <code>.AST</code> is called, so the ordinary path pays
+        nothing for it — <span class="num">worst +2.7%, mean −1.3%</span> over sixteen kernels against
+        v3.27.0 built from source and interleaved A/B/A/B. The measurement is why: as the <em>internal</em>
+        tree, RakuAST is ~2.3× the nodes and ~2.1× the visits in the <code>fib</code> inner loop, and this
+        engine walks its tree forever.</div>
+      </div>
+      <div class="entry">
+        <div class="term">How complete is the view</div>
+        <div class="body">Over the raku-corpus programs both engines can tree, it carries
+        <span class="num">72.9%</span> of the nodes Rakudo's own trees carry. <code>rakupp --rakuast</code>
+        prints ours, <code>tools/rakuast-oracle-dump.raku</code> prints Rakudo's, and the comparison is a
+        <code>diff</code>. The largest gap left is the <code>Regex::*</code> subtree.</div>
+      </div>
+      <div class="entry">
+        <div class="term"><code>use L10N::DE;</code> — and the rest of the file is German</div>
+        <div class="body">Eleven installed languages run: German, Japanese, Afrikaans, Welsh, Esperanto,
+        French, Hungarian, Italian, Dutch, Portuguese, Chinese. Upstream this is a <em>slang</em> mixed into
+        <code>$*LANG</code> during the parse; this engine has no grammar object to mix into — but an L10N
+        slang is a table of keyword spellings, and our lexer hands every keyword to the parser as a plain
+        identifier, so it is a rewrite of the token stream off the same table <code>.AST($lang)</code> reads.
+        Rakudo 2026.08 needs <code>RAKUDO_RAKUAST=1</code> for these modules; this engine needs no flag.
+        Two differences are documented rather than hidden: the rewrite is whole-unit where upstream is
+        lexical, and a declarator that changes how the lexer <em>scans</em> what follows it
+        (<code>token</code>, <code>rule</code>) cannot be reached by a token rewrite.</div>
+      </div>
+      <div class="entry">
+        <div class="term"><code>rakupp --fmt</code></div>
+        <div class="body">A source formatter with gofmt's promise: zero configuration, run it on every save
+        without reading its output. Whitespace only — Raku's whitespace is semantically significant, so it
+        rewrites the space <em>between</em> classified spans and never the bytes inside one — and three gates
+        run before a byte is written: the input must parse, the result must be the same program, and
+        formatting it again must change nothing. <code>-i</code> / <code>-i.bak</code> rewrite in place,
+        <code>--check</code> names files that would change, <code>--diff</code> shows what.</div>
+      </div>
+    </div>
+  </section>
+
   <!-- ============ TOOLING ============ -->
   <section>
     <div class="sec-head">
@@ -1141,9 +1194,11 @@ rakupp test Foo          <span class="cmt"># build + run Foo's own suite, never 
     <p class="lede">The project's own documentation states its limits plainly. Saying them first is stronger
     than being asked.</p>
     <ul>
-      <li><b>No RakuAST, no macros, no slangs.</b> Grammar mutation at that level is deliberately not
-      implemented — it is its own campaign, not an oversight.</li>
-      <li><b>45% of Roast files, not 91% of them.</b> The 91% figure is per individual test. Both are quoted
+      <li><b>No slangs.</b> Pluggable syntax needs a grammar object to mix a role into, and nine seams
+      would have to grow one; the plan is written and the emulation route was rejected. <b>RakuAST landed
+      in v3.28.0</b> and was not the blocker — and the <code>L10N::*</code> family works here anyway,
+      because a keyword table is not a grammar change.</li>
+      <li><b>46% of Roast files, not 91% of them.</b> The 91% figure is per individual test. Both are quoted
       because the file bar is the stricter, more honest one, and the methodology is written down.</li>
       <li><b><code>objects</code> is Rakudo's kernel.</b> Method dispatch and attribute access — the shape most
       real Raku is written in — is where <code>spesh</code> still wins, by 1.6× compiled.</li>
@@ -1159,7 +1214,7 @@ rakupp test Foo          <span class="cmt"># build + run Foo's own suite, never 
   </section>
 
   <footer>
-    Compiled from the Raku++ documentation at v3.26.0 (2026-09-08) — README, HIGHLIGHTS, FEATURES, OVERVIEW,
+    Compiled from the Raku++ documentation at v3.28.0 (2026-09-12) — README, HIGHLIGHTS, FEATURES, OVERVIEW, CHANGELOG,
     BENCHMARKS, MEMORY, CACHING, CLI, LINT, TRACER, JS, FFI, HTTPS, NETWORKING, EXTENSIONS, EMBEDDING, MCP,
     JUPYTER, MODULES, DATA-NATIVE, PARALLEL-SPEEDUP, DOGFOODING, ECOSYSTEM, ROADMAP, bindings/ and showcase/.<br>
     Timings are one machine's: Apple M3, Darwin 24.6, <code>build-arm64</code>.
