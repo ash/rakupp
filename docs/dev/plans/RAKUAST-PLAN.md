@@ -1,9 +1,13 @@
 # RakuAST in rakupp — design note and implementation plan
 
-**Status: under implementation — P0, P2c, P3 and P1 are in the tree, with
-`--rakuast`, the tree oracle, P1-L10N, P4 and P5 as of 2026-09-12 — every
-phase of Part III has landed. Part IV is the log, Part III has the decision, the
-refreshed evidence, and the order.** Part I (below) is the design note settled 2026-07-31 and
+**Status: DONE (2026-09-12). Every phase of Part III has landed — P0, P2c, P3,
+P1, P1-L10N, P4, P5 — plus `--rakuast`, the tree oracle at 72.9%, and
+`use L10N::XX;` for a program written in the language. The gates the round owed
+are in and green: Roast three times (union identical to v3.27.0's, and a
+per-file denominator join against a control built from the tag) and an
+interleaved perf A/B (worst +2.7%, mean −1.3% over sixteen kernels). Part IV is
+the log and ends with those gates; Part III has the decision, the refreshed
+evidence, and the order.** Part I (below) is the design note settled 2026-07-31 and
 re-verified 2026-08-18 — nothing in it is reopened. Part II (second half of this
 document, added 2026-09-01) phases the implementation; the trigger is the
 mainstreaming announcement
@@ -2754,3 +2758,82 @@ a keyword above the pragma is left alone; a MODULE written in the language
 loads and exports; and a language that is not installed still says so.
 
 `t/run.raku` 868/868, `t/slim/run.raku`.
+
+## The gates the round owed (2026-09-12)
+
+Roast three times and a perf A/B, which Part IV has been promising since P4.
+Both were run on the benchmark box (Darwin 24.6, `build-arm64`), one at a time,
+and both needed a control built from source here — the release kept neither the
+per-file Roast output nor a binary anyone could re-measure.
+
+### Gate 1 — Roast: no regression
+
+Roast `b2cbe8a42`, `--workers=2`, the same revision and worker count the
+v3.27.0 baseline was measured at, so the diff is a pure engine comparison.
+
+| | fully-pass | partial | no-TAP | timeout |
+|---|---|---|---|---|
+| run 1 | 670 | 669 | 110 | 15 |
+| run 2 | 670 | 670 | 111 | 13 |
+| run 3 | 669 | 671 | 110 | 14 |
+| v3.27.0 control, built here | 669 | 667 | 113 | 15 |
+
+Repeating profile **670**, union **670**, assertions **91.3%** of all declared
+in every run. Against `v3.27.0-union.list`:
+
+```
+comm -23 (regressed) : empty
+comm -13 (gained)    : empty
+```
+
+The union is the same 670-file set. `--list=` wrote to disposable paths, not to
+`docs/status/roast-lists/` — pointing it at a committed baseline overwrites the
+thing being gated against and makes the comparison come back empty for the wrong
+reason.
+
+**The denominator join, which is the half the file list cannot see.** A file that
+dies early leaves BOTH lists; a file that merely loses assertions enters neither.
+That check needs the previous release's per-file output and RELEASING.md's "keep
+`roast.txt` too" did not happen for v3.27.0 — so the control binary was built
+from the tag and Roast run under it, giving a per-file baseline measured on this
+box, this session, against this Roast revision. Joined against all three runs and
+keeping only what is worse in all three (the rule that separates findings from
+flap): **nothing.** What did appear, each in a single run: `S32-list/pick.t`
+317/320 → 316/320 (the kernel is `pick`) and `S17-supply/syntax.t` 65/74 → 64/74
+(concurrency), both with the denominator intact. Four files flapped in and out of
+TAP, none consistently; `APPENDICES/A01-limits/overflow.t` is the one that
+appeared twice, and when it completes it reads **13/18 on both engines**, so it
+is wall clock and not the engine.
+
+### Gate 2 — perf: no regression, and the gate's own red is not ours
+
+`perf-guard --check` interleaved **A B A B** against v3.27.0 built from source
+with the same cmake configuration (`Release`, explicit `-DCMAKE_OSX_ARCHITECTURES=arm64`
+— it is not inherited, and a worktree that defaults to x86_64 has poisoned this
+measurement before). Best-of-two each side, all sixteen kernels:
+
+**worst +2.7% (`loopsum`), best −4.5% (`hash`), mean −1.3%.**
+
+Everything inside the ~3.5% layout floor. That is the answer the design predicts:
+`.AST` builds nothing until it is called, so the ordinary path never pays for
+the view existing. Part I's whole argument for a view rather than an internal
+tree is what this number is checking, and it holds.
+
+**`--check` against the recorded baseline was INCONCLUSIVE — on BOTH binaries**,
+and the tool said so itself ("the measurement is noisier than the thing it
+measures"). Round 1 worst spread was **24.2%** on HEAD and **28.2%** on v3.27.0,
+against a gate that fires at 5%. The control went over on
+`asg`/`loopsum`/`hash`/`strpass` where HEAD went over on
+`asg`/`loopsum`/`hash`/`rats`: **a red that names different kernels on each
+binary is ambient interference, not code.** The baseline is still v3.24.0's
+(2026-09-01), un-re-recorded for three releases for the reasons in
+`docs/dev/RELEASING.md` and the perf memory; nothing here changes that, and
+nothing here was recorded. Even with the box at its quietest — the desktop apps
+closed, only `WindowServer` and `XprotectService` left — the cleanest sweep still
+spread 3.8% against the ~1.7% a record needs.
+
+### Gate 3 — the rest
+
+`t/run.raku` 868/868 and `t/install/run.raku` 137 ok / 0 failed, the latter
+because `docs/guide/FEATURES.md` is compiled into the binary and this round
+edited it; `rakupp doc RakuAST` answers from the rebuilt blob.

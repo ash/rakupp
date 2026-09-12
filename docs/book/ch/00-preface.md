@@ -117,7 +117,7 @@ ninety per cent of the declared Roast suite passes. The method resolution order
 is a depth-first walk rather than C3 linearisation. Multiple dispatch resolves
 ties by declaration order instead of raising an ambiguity error. Modules publish
 their whole environment to the global scope rather than only their exports.
-Macros, `RakuAST`, and slangs are not implemented at all.
+Macros and slangs are not implemented at all.
 
 Every one of those is stated in the chapter where it belongs, under a heading
 that says so. A book about compiler internals that only described the parts

@@ -176,9 +176,10 @@ code), so the reference implementation is VM-based and Raku++ started the same
 way: get the language correct under Roast first. User-defined operators (`sub
 infix:<…>` and friends, with precedence traits) *are* supported — they're
 resolved during the single parse pass — but the deeper grammar-mutating layer
-(macros, full slangs, and the four RakuAST operations — the `RakuAST::` classes
-themselves are in) is not (see
-[METAPROGRAMMING.md](METAPROGRAMMING.md)). That keeps the language rakupp handles
+(macros and full slangs) is not (see
+[METAPROGRAMMING.md](METAPROGRAMMING.md)). RakuAST is no longer part of that
+list: `.AST` builds a **view** over the parse this pass already produced, so the
+tree is answerable without a second front end. That keeps the language rakupp handles
 static enough to compile ahead of time — which is what mode 3 exploits. The
 remaining dynamic/heavy constructs (grammars) are exactly the ones that stay
 bundled.

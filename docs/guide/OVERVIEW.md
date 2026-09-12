@@ -84,10 +84,14 @@ runnable snippets in [RECIPES.md](RECIPES.md), complete programs in
   BY VALUE are still out.
 - **Tooling** — a parse-aware syntax highlighter (`--highlight`, HTML + ANSI) and
   a self-hosted Roast harness written in Raku and run *by* Raku++.
+- **RakuAST** — the class hierarchy plus `.AST`, `.DEPARSE`, `.EVAL`,
+  `visit-children` and `.rakudoc`, built as a *view* over the parse rather than
+  as a second front end, and `rakupp --rakuast` to print it.
 
-**Not there yet:** macros / `RakuAST` / slangs, C structs passed or returned
+**Not there yet:** macros and slangs, C structs passed or returned
 by value, callbacks fired from a thread the C library owns, and some `IO`/`POD`
-corners.
+corners. (One family of slangs does work: `use L10N::DE;` and the rest of the
+file is German — see [the FAQ](faq/l10n.md).)
 
 ## Four ways to run a program
 
@@ -148,13 +152,13 @@ same language.
 
 The same progress measured at three granularities:
 
-- **All declared tests: ~91%** (200,432 / ~219,558) — the headline per-test figure.
+- **All declared tests: ~91%** (200,504 / ~219,555) — the headline per-test figure.
   It counts every test the suite declares, including those in files that abort
   before running (their `plan N` is read from source, all failing), so parse-error
   files can't hide.
-- **Files fully passing: ~46%** (669 / 1,464) — the stricter bar; a file counts
+- **Files fully passing: ~46%** (670 / 1,464) — the stricter bar; a file counts
   only if *every* assertion in it passes.
-- **Tests that ran: ~97%** (200,432 / 206,564) — of just the assertions files
+- **Tests that ran: ~97%** (200,504 / 206,637) — of just the assertions files
   actually emitted; useful for tracking regressions, but it ignores the ~25k tests
   in aborting files, so it flatters.
 

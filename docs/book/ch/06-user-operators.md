@@ -242,10 +242,18 @@ Everything above is table manipulation: cheap, local, and reversible. That is
 why all six operator categories work, with precedence and associativity, in a
 parser that runs no user code.
 
-The features on the other side of the line — `macro`, `quasi`, `RakuAST`,
-slangs — need the parser to *execute user code mid-parse and then rewrite its
-own grammar with the result*. None of them are implemented, and the reason is
-structural rather than a matter of effort.
+The features on the other side of the line — `macro`, `quasi`, slangs — need the
+parser to *execute user code mid-parse and then rewrite its own grammar with the
+result*. None of them are implemented, and the reason is structural rather than
+a matter of effort.
+
+`RakuAST` was on that list until the line was drawn properly. Asking for a
+program's syntax tree does not require running user code mid-parse; it requires
+being able to *describe* the parse that already happened. So it is a view over
+the existing tree, and it is implemented. The exception that proves the rule is
+`use L10N::DE;`, which is a slang upstream and works here — because what that
+particular slang carries is a table of keyword spellings, and renaming a token
+is not rewriting a grammar.
 
 There is a compensation. Because the language Raku++ accepts stays static
 enough to know in full at build time, the whole program can be compiled ahead

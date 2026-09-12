@@ -17,7 +17,7 @@
   or compiles it to a standalone native executable.
 - Measured against **[Roast](https://github.com/Raku/roast)**, the official
   Raku specification suite: **~91% of all declared tests pass**
-  (200,432 / 219,558); **~46% of files fully pass** (669 / 1,464).
+  (200,504 / 219,555); **~46% of files fully pass** (670 / 1,464).
   Definitions and caveats: [ROAST.md](../status/ROAST.md), [COUNTING.md](../status/COUNTING.md).
 
 ## Language
@@ -126,7 +126,13 @@ no server, with an embeddable in-page playground.
 
 ## Not there yet
 
-- Macros / `RakuAST` / slangs; C structs passed or returned by value;
+- Macros and slangs; C structs passed or returned by value;
   callbacks a C library fires from its own thread;
   some `IO` / POD corners. The plan:
   [ROADMAP.md](../status/ROADMAP.md).
+
+  `RakuAST` left this list: the classes, `.AST` / `.DEPARSE` / `.EVAL` /
+  `visit-children` / `.rakudoc`, and `rakupp --rakuast` are all in. So did one
+  family of slangs — `use L10N::DE;` writes the whole program in German
+  ([FAQ](faq/l10n.md)) — because that kind renames keywords instead of changing
+  the grammar.

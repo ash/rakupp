@@ -3,6 +3,109 @@
 Release notes for tagged releases. Numbers are measured, not projected;
 methodology for all Roast figures is in [docs/status/COUNTING.md](docs/status/COUNTING.md).
 
+## v3.28.0 (2026-09-12) — RakuAST, a formatter, and Raku in your own language
+
+Thirty-three commits. The headline is that **RakuAST is in, end to end** — and
+that it cost the ordinary path nothing, which was the whole design argument.
+
+**RakuAST.** The 489-class hierarchy, plus all four operations over it and one
+more: `.AST` builds the tree, `.DEPARSE` renders it back to Raku, `.EVAL` runs
+it, `visit-children` walks it, `.rakudoc` answers a unit's documentation blocks,
+and `rakupp --rakuast` prints the whole thing (with the Raku each node renders
+back to in a second column).
+
+It is a **view on demand** over rakupp's own parse rather than a second front
+end. Part I of the plan measured why: RakuAST as the internal tree is ~2.3× the
+nodes and ~2.1× the visits in the `fib` inner loop, and this engine walks its
+tree forever. Building nothing until `.AST` is called is what keeps that cost at
+zero, and the gate confirms it — **worst +2.7%, mean −1.3%** over sixteen
+kernels against v3.27.0 built from source and interleaved A/B/A/B.
+
+Against Rakudo's own trees, over the raku-corpus programs both engines can tree,
+the view carries **72.9%** of the nodes. `rakupp --rakuast` prints ours,
+`tools/rakuast-oracle-dump.raku` prints Rakudo's, and the comparison is a
+`diff` — the largest gap left is the `Regex::*` subtree.
+
+Four things measurement said **not** to build are recorded in the plan rather
+than left as open work: `@*LINEAGE` is maintained by the walker and not by the
+engine (Rakudo does not set it inside `visit-children` either); `.parent` is
+public API upstream that answers `Nil` for every tree a program can actually
+obtain, and a stored parent link on refcounted nodes would be a cycle and a
+leak; a RakuAST node is a **graph**, not a tree, so walking node-valued
+attributes drags the whole graph in; and the plan's own two-position test does
+not separate syntax from compiler state.
+
+**`use L10N::XX;` — the program itself, written in the language.** Eleven
+installed languages run: German, Japanese, Afrikaans, Welsh, Esperanto, French,
+Hungarian, Italian, Dutch, Portuguese, Chinese. Upstream this is a *slang*,
+mixed into `$*LANG` from `sub EXPORT` while the importing file is still being
+parsed; this engine has no grammar object to mix into. But an L10N slang is not
+a grammar change — it is a table of keyword spellings, and our lexer hands every
+keyword to the parser as a plain identifier, so the whole thing is a rewrite of
+the token stream between the Lexer and the Parser, off the same table `.AST($lang)`
+already read. Rakudo 2026.08 needs `RAKUDO_RAKUAST=1` for these modules and this
+engine needs no flag. Two differences are documented rather than hidden: the
+rewrite is whole-unit where upstream is lexical, and a declarator that changes
+how the LEXER SCANS what follows it (`token`, `rule`) cannot be reached by a
+rewrite of the tokens. There is a FAQ article, with every snippet run on both
+engines.
+
+**`rakupp --fmt`.** A source formatter with gofmt's promise: zero configuration,
+run it on every save without reading its output. Whitespace only — Raku's
+whitespace is semantically significant, so it rewrites the space *between*
+classified spans and never the bytes inside one — and three gates run before a
+byte is written: the input must parse, the result must be the same program, and
+formatting it again must change nothing. `-i` / `-i.bak` rewrite in place,
+`--check` names files that would change, `--diff` shows what.
+
+The wide sweep is what shaped the rules: **1 gate refusal in 757 repo files, 0
+in 954 raku-corpus programs, 10 in 723 installed ecosystem modules** — all one
+recorded family (a multi-line `/.../` is not one span, so indentation reaches
+inside it and the gate refuses, correctly). Live fire: 703 files formatted in
+place, 158 rewritten, the suite still 868/868, tree restored.
+
+### The two regressions this release inherits, both re-measured and both unmoved
+
+Neither is fixed, and both are named here rather than discovered later:
+
+* **`OO::Monitors` no longer excludes** ([#78](https://github.com/ash/rakupp/issues/78)).
+  The battery reproduces v3.27.0 exactly — 3/5 where Rakudo gives 5/5.
+* **The call path is still v3.27.0's** ([#79](https://github.com/ash/rakupp/issues/79)).
+  Head to head against v3.27.0: `fib` −0.4%, `subcall` −0.7%, `strpass` −1.4%.
+  This release neither fixed the ~10% v3.27.0 lost against v3.26.0 nor added to it.
+
+### Gates
+
+Roast revision `b2cbe8a42` — the same one v3.27.0 was measured at, so the list
+diff is a pure engine comparison. The three runs were made at
+`v3.27.0-33-g8f86880`, before the version bump.
+
+| gate | |
+|---|---|
+| 1 Roast ×3 | 670 / 670 / 669 fully passing; union **identical** to v3.27.0's — 0 regressed, 0 gained |
+| 1b denominator join | nothing worse in all three runs, against v3.27.0 built from the tag |
+| 2 local suite | 868 / 868 |
+| 3 perf | worst +2.7%, mean −1.3% vs v3.27.0, interleaved |
+| 4 optbench | interpreter, `--exe`, `--exe -O` and Rakudo agree |
+| 4b slim-diff | 532 identical of 563 |
+| 5 GCC 16 | clean |
+| 6 battery | **48 / 59**, the same four DIFFs already recorded |
+| 7 conformance | documentation examples 955 → **957** byte-identical on both engines; operator divergences **21**, unchanged |
+
+**The denominator join needed a control built from the tag**, because v3.27.0
+kept no per-file `roast.txt` — and that join is the only check that sees a file
+quietly losing assertions without leaving the pass list. Two files lost a single
+assertion, each in one run of three: `S32-list/pick.t` (the kernel is `pick`)
+and `S17-supply/syntax.t` (concurrency), both with the denominator intact.
+
+**The perf baseline refused re-recording for a fourth release**, and this time
+the control proves the red is not ours: `--check` came back INCONCLUSIVE on
+*both* binaries, with a worst spread of 24.2% on HEAD and **28.2% on v3.27.0**
+against a gate that fires at 5%, going over on different kernels for each. A red
+that names different kernels on each binary is ambient interference. Even with
+the desktop quiet the cleanest sweep spread 3.8%, against the ~1.7% a record
+needs.
+
 ## v3.27.0 (2026-09-11) — Windows becomes a platform, and the code other people wrote
 
 Seventy-four commits over two days, and they divide cleanly. Thirteen are
@@ -800,7 +903,6 @@ measured, so the file-list diff is an engine comparison and nothing else. **No
 file regressed**: the union of the three, diffed against v3.23.0's union, is
 empty in that direction and gains three.
 
-
 ### The ecosystem measured again: 637 -> 746 of 2,526
 
 v3.23.0 carried its 637 forward rather than measuring it, and said so. This
@@ -878,7 +980,6 @@ program built a lookup key in a thread_local string and walked the scope chain.
 A plain arithmetic loop went 0.32s to 0.77s for having such a binding somewhere.
 It is a 64-bit Bloom filter over the operator spelling now, and the armed and
 unarmed loops time the same.
-
 
 ### Three regressions this release introduced, and the gate that caught each
 

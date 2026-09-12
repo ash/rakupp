@@ -103,9 +103,13 @@ counting, which means a reference cycle leaks; the interpreter breaks the
 specific cycle that a self-closured nested sub would create, and otherwise the
 process is short-lived enough for this to be a real but tolerable limitation.
 
-It does not implement compile-time metaprogramming. `macro`, `quasi`,
-`RakuAST`, and swapping the grammar for a lexical scope are all absent, for the
-structural reason given above. What *is* supported is everything that can be
+It does not implement compile-time metaprogramming. `macro`, `quasi` and
+swapping the grammar for a lexical scope are absent, for the structural reason
+given above. `RakuAST` turned out not to belong in that group: the tree a
+program asks for is a **view** built over the parse that has already happened,
+so nothing has to run mid-parse and nothing has to rewrite a grammar. It is
+implemented — the classes, `.AST`, `.DEPARSE`, `.EVAL`, `visit-children` and
+`.rakudoc`. What *is* supported is everything that can be
 done by adding an entry to a table during a single forward pass: all six
 custom-operator categories with precedence and associativity traits, plus the
 whole runtime meta-object surface (`augment`, `.^add_method`, `does`/`but`

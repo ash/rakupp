@@ -72,21 +72,33 @@ Built-in operators that *transform* another operator.
 | `.^methods` / `.^roles` / `.does` | ✓ | introspection (see [FEATURES.md](../guide/FEATURES.md)) | |
 | `&sub.wrap({…})` / `.unwrap` | ✓ | soft-routine wrapping | wrapper runs in front of the routine; `callsame`/`callwith`/`nextsame` reach the original; wraps nest and `.unwrap` (LIFO or by handle) restores |
 
-## Grammar & AST — the not-yet frontier
+## Grammar & AST — the frontier, and what has crossed it
 
 The deep end, where a program rewrites its own parser or manipulates the syntax
 tree. This is genuine compiler-internals work, and the Roast suite barely
 exercises it (no real `macro` declarations, one incidental `RakuAST::`
-reference) — so the reason to build it is ecosystem reach, not test counts: a
-module that uses RakuAST does not degrade here, it hard-fails. The `RakuAST::`
-class hierarchy is in (the names, the ancestry, construction); the four
-operations over it — `.AST`, `.DEPARSE`, `.EVAL`, `visit-children` — are not.
+reference) — so the reason to build it was ecosystem reach, not test counts: a
+module that uses RakuAST does not degrade, it hard-fails, and Rakudo is making
+RakuAST its default front end.
+
+**RakuAST is in.** The 489-class hierarchy, and all four operations over it:
+`.AST` builds the tree, `.DEPARSE` renders it back to Raku, `.EVAL` runs it,
+`visit-children` walks it, and `.rakudoc` answers a unit's documentation blocks.
+It is a **view on demand** over rakupp's own parse rather than a second front
+end — the measured reason is in [RAKUAST-PLAN](../dev/plans/RAKUAST-PLAN.md)
+Part I, and it is why none of this costs the ordinary path anything. Against
+Rakudo's own trees over the raku-corpus programs both engines can tree, the view
+carries **72.9%** of the nodes (`rakupp --rakuast` prints ours,
+`tools/rakuast-oracle-dump.raku` prints Rakudo's, and the comparison is a
+`diff`); the largest gap left is the `Regex::*` subtree.
+
+Macros and general slangs are still out.
 
 | Feature | Status | Notes |
 |---|:---:|---|
 | `macro` / `quasi { … }` | ✗ | AST macros (`use experimental :macros`) |
-| `RakuAST::…`            | ◑ | the classes exist behind `use experimental :rakuast` (or 6.e) — constructible, with Rakudo's own `.^mro`/`.^parents`/`~~`/`.does`; `.AST`, `.DEPARSE` and `.EVAL` do not yet answer ([RAKUAST-PLAN](../dev/plans/RAKUAST-PLAN.md)) |
-| slangs — `$~MAIN`, grammar derivation | ◑ | the slang language-objects (`$~MAIN`/`$~Quote`/`$~Regex`/`$~P5Regex`) exist as defined `Grammar` objects; the grammar can't actually be swapped mid-parse |
+| `RakuAST::…`            | ✓ | the classes behind `use experimental :rakuast` (or 6.e) — constructible, with Rakudo's own `.^mro`/`.^parents`/`~~`/`.does` — plus `.AST`, `.DEPARSE`, `.EVAL`, `visit-children` and `.rakudoc`, and `rakupp --rakuast` to print the tree ([RAKUAST-PLAN](../dev/plans/RAKUAST-PLAN.md)) |
+| slangs — `$~MAIN`, grammar derivation | ◑ | the slang language-objects (`$~MAIN`/`$~Quote`/`$~Regex`/`$~P5Regex`) exist as defined `Grammar` objects; the grammar can't actually be swapped mid-parse. One family works anyway: `use L10N::DE;` writes a whole program in German, because that slang renames keywords rather than changing the grammar ([SLANG-PLAN](../dev/plans/SLANG-PLAN.md), [FAQ](../guide/faq/l10n.md)) |
 | `no strict` / relaxing pragmas | ◑ | `strict` is lexical and both directions work (`no strict` auto-vivifies undeclared variables, `use strict` turns the check back on); the other relaxing pragmas are accepted and ignored |
 | `use experimental :…`  | ◑ | accepted syntactically; the feature itself is usually a no-op |
 
@@ -111,9 +123,12 @@ The remaining gaps:
 
 - **Small, self-contained**: the word-form of a user op inside a meta-operator
   (`Zpl`, which lexes as one identifier).
-- **Large frontier** (compiler internals): `macro`/`quasi`, the four RakuAST
-  operations, and slangs — the mechanisms by which a Raku program rewrites its
-  own grammar. The RakuAST *classes* are the part that exists.
+- **Large frontier** (compiler internals): `macro`/`quasi` and slangs — the
+  mechanisms by which a Raku program rewrites its own grammar. RakuAST used to
+  sit here and no longer does. One family of slangs works anyway: `use
+  L10N::XX;` writes a whole program in German or Japanese, because an L10N slang
+  renames keywords rather than changing the grammar, and a rename is a rewrite
+  of the token stream ([the FAQ article](../guide/faq/l10n.md)).
 
-_Snapshot taken against the current build on Darwin 25.5; statuses verified by
-one-liner._
+_Snapshot taken against the current build (2026-09-12) on Darwin 24.6; statuses verified by_
+_one-liner._

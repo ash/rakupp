@@ -84,16 +84,18 @@ Earlier plans:
   behind PARALLEL-PLAN.md: the three options for removing the GIL, why
   Option 2 (harden the runtime, not every user structure) won, and the
   related code.
-- **[plans/RAKUAST-PLAN.md](plans/RAKUAST-PLAN.md)** — how RakuAST would be added
-  **without touching the hot path**: why it must be a view built on demand rather
-  than our internal tree (measured: 2.3× the nodes, ~2.1× the visits in the fib
-  inner loop), why `.DEPARSE` + the existing parser replaces a RakuAST→AST
-  compiler, and the one case where that text bridge is lossy — plus what a
-  node-for-node 1:1 match with Rakudo's own `.AST` would cost, and why that diff
-  has to run on the tree (Rakudo's `.DEPARSE` and `.raku` both die on
-  `RakuAST::Regex::Nested`). Approved 2026-09-11 and under construction: P0 (the
-  pragma gate and the class registry) is in; the order after it is P2c → P3 → P1
-  → P1-L10N → P4, and Part III says which dist each step unblocks.
+- **[plans/RAKUAST-PLAN.md](plans/RAKUAST-PLAN.md)** — how RakuAST was added
+  **without touching the hot path**: why it had to be a view built on demand
+  rather than our internal tree (measured: 2.3× the nodes, ~2.1× the visits in
+  the fib inner loop), why `.DEPARSE` + the existing parser replaces a
+  RakuAST→AST compiler, and the one case where that text bridge is lossy — plus
+  what a node-for-node 1:1 match with Rakudo's own `.AST` costs, and why that
+  diff has to run on the tree (Rakudo's `.DEPARSE` and `.raku` both die on
+  `RakuAST::Regex::Nested`). **Every phase has landed** (P0, P2c, P3, P1,
+  P1-L10N, P4, P5), plus `rakupp --rakuast`, the tree oracle at 72.9% of
+  Rakudo's nodes, and `use L10N::XX;` for a program written in the language.
+  Part III is the entry point, Part IV the log — including the four things
+  measurement said NOT to build.
 - **[plans/LIBFFI-PLAN.md](plans/LIBFFI-PLAN.md)** — moving NativeCall onto
   `libffi`: where NativeCall was, what libffi bought, and the measurements behind
   each decision (why `dlopen` rather than link or vendor, why one marshaller

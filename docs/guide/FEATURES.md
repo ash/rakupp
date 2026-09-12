@@ -6,7 +6,7 @@ works today, grouped by theme. **~** marks partial support; gaps are noted per s
 
 See [REFERENCE.md](REFERENCE.md) for an exhaustive lookup sheet (every operator, subroutine, and method with a verified example), [RECIPES.md](RECIPES.md) for recipes of runnable snippets (each verified against `rakupp`), [examples/](../../examples) for complete example programs, and [showcase/](../../showcase) for mid-size showcase programs.
 
-Roast standing: measured per individual test, **~91% of all declared tests pass** (200,432 / ~219,558, counting tests in files that abort before running); on the stricter file bar, **669 / 1,464 fully pass (~46%)** (668 partial, 114 no-TAP, 13 timeout). See [COUNTING.md](../status/COUNTING.md) for how these are defined. (The declared denominator grows as parse fixes land: files that previously died before announcing a plan now declare their real, often larger, dynamic plans.)
+Roast standing: measured per individual test, **~91% of all declared tests pass** (200,504 / ~219,555, counting tests in files that abort before running); on the stricter file bar, **670 / 1,464 fully pass (~46%)** (670 partial, 111 no-TAP, 13 timeout). See [COUNTING.md](../status/COUNTING.md) for how these are defined. (The declared denominator grows as parse fixes land: files that previously died before announcing a plan now declare their real, often larger, dynamic plans.)
 
 ## Language versions (6.c / 6.d / 6.e)
 
@@ -45,7 +45,13 @@ match Rakudo's 6.e**, 46 of them gated on the pragma.
 `--fmt` formats Raku source in the house style — whitespace only, with a parse,
 a same-program and an idempotence gate on every run ([FMT.md](FMT.md)).
 
-**Deliberately not done:** `RakuAST` (its own campaign); multi-character `.succ`
+`RakuAST` is in: the class hierarchy, `.AST` / `.DEPARSE` / `.EVAL` /
+`visit-children` / `.rakudoc`, and `rakupp --rakuast` to print the tree. It is a
+*view* over rakupp's own parse rather than a second front end. `use L10N::DE;`
+rides on the same table and writes a whole program in German
+([FAQ](faq/l10n.md)).
+
+**Deliberately not done:** multi-character `.succ`
 string ranges, which are 6.e's behaviour under both revisions because 6.d's
 cross-product algorithm is not implemented; and the 6.d silent replacement of a
 same-named enclosing package, which Rakudo's own warning calls legacy.

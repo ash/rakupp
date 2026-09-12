@@ -270,7 +270,7 @@ deliberate convention rather than a stylistic tic.
 The list for the project as a whole: about ninety per cent of Roast; depth-first
 method resolution rather than C3; no ambiguity error in multiple dispatch;
 role composition that is last-writer-wins; modules that publish their whole
-environment; a flat class registry; no macros, no `RakuAST`, no slangs; laziness
+environment; a flat class registry; no macros, no slangs; laziness
 capped at a million elements; a `gather` block that can run more than once; a
 reference cycle that leaks.
 
