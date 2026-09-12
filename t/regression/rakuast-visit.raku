@@ -41,5 +41,24 @@ for ^max(+@want, +@got) -> $i {
     last if @fail >= 6;
 }
 
+# `.parent` answers Nil, as it does upstream for every tree a program can
+# obtain. It has no method of its own to build — a stored parent link on
+# refcounted nodes is a cycle — but it DOES need one to declare, because the
+# generic `.parent` reads any invocant as a path: without this the node
+# answered `IO::Path.new(".")` where Rakudo answers `Nil`.
+{
+    my $t = Q[say 1 + 2].AST;
+    @fail.push(".parent should be Nil, got {$t.parent.raku}")
+        unless $t.parent === Nil;
+    # A pointy with a NAMED parameter, deliberately: `{ $x = $_ without $x }`
+    # looks like "take the first child" and is not — `without` re-topicalises
+    # `$_` to its own argument, so the block assigns $x to itself and the row
+    # silently tests `Any.parent`.
+    my @kids;
+    $t.visit-children(-> $k { @kids.push: $k });
+    @fail.push("a CHILD's .parent should be Nil, got {@kids[0].parent.raku}")
+        unless @kids && @kids[0].parent === Nil;
+}
+
 if @fail { .say for @fail; say "FAIL ({+@fail})"; exit 1 }
 say "PASS";

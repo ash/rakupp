@@ -6,6 +6,16 @@ not maintained — each such entry says so.
 
 The user-facing documentation is one level up, in [../](../README.md).
 
+## Comparisons
+
+- **[RAKUAST-VS-RAKUDO.md](RAKUAST-VS-RAKUDO.md)** — the same RakuAST API over a
+  different thing: upstream it *is* the compiler front end, here it is a view
+  built on demand over a parse that already happened. What follows from that —
+  no RakuAST→AST compiler (`.DEPARSE` plus the parser is the bridge), a tree
+  here where upstream has a graph, `.parent` and `@*LINEAGE`, why macros and
+  general slangs are out but `use L10N::XX;` is in — plus the coverage number
+  and how it is measured. Read it before porting a module that uses RakuAST.
+
 ## Process
 
 - **[RELEASING.md](RELEASING.md)** — the release checklist: the Roast,

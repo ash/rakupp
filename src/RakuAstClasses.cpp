@@ -169,9 +169,18 @@ const Registry* build() {
     // This is the whole of what a query engine needs. ASTQuery's walker is this
     // method plus `@*LINEAGE`, and the lineage is the WALKER's: Rakudo does not
     // populate it during `visit-children` either (measured), it is an ordinary
-    // dynamic the visitor re-declares as it descends. `.parent` exists upstream
-    // and answers Nil for every tree a program can get hold of, so there is
-    // nothing to reproduce there.
+    // dynamic the visitor re-declares as it descends.
+    //
+    // `.parent` answers Nil upstream for every tree a program can get hold of,
+    // and storing a real parent link on our refcounted nodes would be a cycle
+    // and a leak — so there is nothing to BUILD there. There is still something
+    // to DECLARE: without a method of its own the call fell through to the
+    // generic `.parent`, which reads any invocant as a path, so a RakuAST node
+    // answered `IO::Path.new(".")` where Rakudo answers `Nil`. "Not implemented"
+    // has to be said out loud, or the fallback answers for it.
+    node->methods["parent"] = method([](Interpreter&, ValueList&) -> Value {
+        return Value::nil();
+    });
     node->methods["visit-children"] = method([](Interpreter& I, ValueList& a) -> Value {
         if (a.size() < 2 || a[0].t != VT::Object || !a[0].obj()) return Value::any();
         // The children are COLLECTED before any of them is visited. The

@@ -90,7 +90,9 @@ Part I, and it is why none of this costs the ordinary path anything. Against
 Rakudo's own trees over the raku-corpus programs both engines can tree, the view
 carries **72.9%** of the nodes (`rakupp --rakuast` prints ours,
 `tools/rakuast-oracle-dump.raku` prints Rakudo's, and the comparison is a
-`diff`); the largest gap left is the `Regex::*` subtree.
+`diff`); the largest gap left is the `Regex::*` subtree. What that difference
+means for a module written against Rakudo's RakuAST is set out in
+[RAKUAST-VS-RAKUDO](../dev/RAKUAST-VS-RAKUDO.md).
 
 Macros and general slangs are still out.
 
