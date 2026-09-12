@@ -9,12 +9,6 @@
 
 namespace rakupp {
 
-// A classified run of source text. `cls` is the Pygments short class ("" = plain
-// text, emitted without a <span> — matching how Pygments leaves operators bare).
-struct Span {
-    std::string text;
-    const char* cls; // "" for plain text
-};
 
 // ---- Raku vocabulary (curated for highlighting; mirrors Pygments' choices) ------
 
@@ -562,6 +556,18 @@ static std::string renderAnsi(const std::vector<Span>& spans) {
         else out += sp.text;
     }
     return out;
+}
+
+// The span stream itself, for a consumer that is not a renderer — `--fmt`
+// rewrites the plain-text runs between spans and never the bytes inside one.
+// (FMT-PLAN's step 1 calls for moving the scanner into its own
+// SourceScan.{h,cpp} with `--highlight` as one renderer over it. That move is
+// cosmetic; what a second consumer actually needs is this entry point, so it
+// is the part that landed.)
+std::vector<Span> scanSpans(const std::string& source) {
+    Scanner sc(source);
+    sc.run();
+    return std::move(sc.out);
 }
 
 std::string highlight(const std::string& source, const std::string& format) {

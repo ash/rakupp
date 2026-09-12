@@ -12,6 +12,7 @@
 #include "../ucd_seam.h"
 #include "../Lexer.h"
 #include "../Parser.h"
+#include "../Fmt.h"
 #include "../RakuAstClasses.h"
 #include <ostream>
 
@@ -47,6 +48,11 @@ const std::vector<std::string>& rakuAstAncestry(const std::string&) {
 void rakuAstMaterialize() {}
 void dumpRakuAst(Interpreter&, const std::string&, std::ostream&, bool, bool, bool) {
     featureMissing("eval", "`--rakuast`");
+}
+// `--fmt` parses its input and re-parses its own output for the semantic gate,
+// so a binary with the parser cut cannot format.
+FmtResult formatSource(const std::string&) {
+    featureMissing("eval", "`--fmt` (it parses, twice)");
 }
 Value rakuAstView(Interpreter&, const std::string&, bool, const TokenXform*) {
     featureMissing("eval", "`.AST` (it IS the parser)");

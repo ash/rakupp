@@ -203,7 +203,11 @@ set(RAKUPP_PARSE_SOURCES     "${CMAKE_CURRENT_SOURCE_DIR}/src/Lexer.cpp"
                              "${CMAKE_CURRENT_SOURCE_DIR}/src/RakuAstClasses.cpp"
                              "${CMAKE_CURRENT_SOURCE_DIR}/src/RakuAstDeparse.cpp"
                              "${CMAKE_CURRENT_SOURCE_DIR}/src/RakuAstView.cpp"
-                             "${CMAKE_CURRENT_SOURCE_DIR}/src/RakuAstDump.cpp")
+                             "${CMAKE_CURRENT_SOURCE_DIR}/src/RakuAstDump.cpp"
+                             # --fmt parses (twice: the input, and its own
+                             # output for the semantic gate), so it rides the
+                             # parse archive and the same stub seam.
+                             "${CMAKE_CURRENT_SOURCE_DIR}/src/Fmt.cpp")
 # The stubs (P3) are the OTHER half of the seam — throwing doubles linked in
 # place of a feature's real archive when --slim cuts it. They must never sit
 # in the same link as the real thing (an ODR violation waiting for a

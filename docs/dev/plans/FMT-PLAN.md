@@ -1,8 +1,10 @@
 # Plan: `--fmt` — a source formatter
 
-**Status: DESIGN APPROVED 2026-08-26 — step 1 of the order of work is in
-(2026-09-12): the heredoc classification gap is closed and the lossless sweep
-is a permanent test. Steps 2-6 remain.** Design probes run 2026-08-26
+**Status: `--fmt` SHIPS, with R2/R3/R6 of the ruleset (2026-09-12). Steps 1-4
+of the order of work are in: the scanner gap is closed, `stripLines` is on the
+serializer, `Fmt.cpp` carries all three gates, and the CLI mode is wired with
+`--check` and `--diff`. R1 (indentation), R4 (else-motion) and R5 (minimum
+spacing) are the remaining rules; steps 5-6 (the wide sweep, the docs) remain.** Design probes run 2026-08-26
 against `build-arm64/rakupp` (see "What the probes said" below).
 
 Goal: `rakupp --fmt prog.raku` prints the program back in the house style,
@@ -207,3 +209,46 @@ wants a second consumer to shape its interface — so it lands with `Fmt.cpp`
 (step 3) rather than before it. The heredoc fix moves with it when it does.
 
 Gates: `t/run.raku` 867/867, `t/slim/run.raku`.
+
+## Steps 2-4, landed 2026-09-12
+
+**`stripLines`** is on the serializer — four write sites, not the one the plan
+estimated, all the same shape — and the version did not move: it changes what
+the WRITER may emit, never how the reader reads, so the precomp cache is
+untouched.
+
+**`Fmt.cpp`** carries the three gates inside `formatSource()`, not in the CLI,
+so every caller gets them. **The semantic gate earned its keep immediately**:
+it caught my own line model reaching into a heredoc body, twice, before a byte
+reached a file. Both bugs were the same misjudgement about what "untouchable"
+means, and the ruleset only became right at the third try:
+
+* *"a line containing a classified span"* — makes every line of code
+  untouchable, because every one contains a keyword. The formatter became a
+  no-op and R2 silently did nothing;
+* *"a line whose first span is classified"* — same, for every line that opens
+  with a keyword. This is the one the gate caught: a heredoc's FIRST body line
+  looked editable (the newline before it came from the plain run after the
+  opener), R2 stripped its trailing spaces, and the program changed;
+* **a line whose first byte comes from a span that is classified AND
+  MULTI-LINE** — a heredoc body, a multi-line string, a POD block. Both halves
+  are load-bearing.
+
+**The CLI**: `--fmt FILE` to stdout, `--check` (names files that would change,
+exit 1), `--diff` (the built-in unified diff, no git). Refusals exit 3 (parse)
+and 5 (gate), and a gate refusal prints an internal-error banner asking for a
+report, because it should never fire.
+
+**The sweep, at this ruleset**: 672 files of the repo's corpora — **670
+formatted with zero gate refusals**, 3 legitimately changed (two missing a
+final newline, one with trailing whitespace).
+
+**Two refused to parse, and correctly**: `t/fixtures/uses-modules.raku` uses an
+exported operator `⊕` whose module is not on the path, so the parser cannot
+read it — `-c` refuses the same file identically. `-I` does not help, because
+`formatSource` parses standalone and loads nothing. So a file whose SYNTAX
+comes from a module cannot be formatted, which the plan's "`-I` is illegal for
+`--fmt`" implies without saying: worth stating, and worth revisiting if a real
+project hits it.
+
+Gates: `t/run.raku` 868/868, `t/slim/run.raku`.

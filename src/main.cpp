@@ -24,6 +24,7 @@
 #include "DeclCheck.h"
 #include "Lint.h"
 #include "Ffi.h"
+#include "Fmt.h"
 #include "Highlight.h"
 #include "Lsp.h"
 #include "JupyterKernel.h"
@@ -1607,6 +1608,7 @@ static const FlagDoc kFlagDocs[] = {
     {"--lint", 0, nullptr, "static analysis, no run"},
     {"--json", 0, nullptr, "machine-readable -c and --lint findings"},
     {"--ast", 0, nullptr, "print the parsed AST"},
+    {"--fmt", 0, nullptr, "format Raku source to stdout (--check lists files that would change, --diff shows what)"},
     {"--rakuast", 0, nullptr, "print the RakuAST VIEW of the program, with the Raku each node renders back to (--rakuast=tree drops that column, =attrs adds attributes, =compunit wraps it)"},
     {"--dump-ast", 0, nullptr, "print the parsed AST"},
     {"--ast-roundtrip", 0, nullptr, "check the AST survives the precomp cache"},
@@ -2007,11 +2009,12 @@ int main(int argc, char** argv) {
     // `-o out --exe src` is as good as `--exe src -o out`.
     enum class Mode { Run, Help, Version, FfiInfo, Highlight, Ast, RakuAst, AstRoundtrip,
                       PrecompSetting, PrecompInfo, PrecompClean, Check, Lint,
-                      Cpp, Bundle, Aot, Exe, Mcp, Lsp, Jupyter, JupyterInstall, Js };
+                      Cpp, Bundle, Aot, Exe, Mcp, Lsp, Jupyter, JupyterInstall, Js, Fmt };
     Mode mode = Mode::Run;
     // --rakuast=tree drops the source column; =attrs adds the scalar
     // attributes; =compunit wraps the tree the way `.AST(:compunit)` does.
     bool rakuAstAttrs = false, rakuAstCompUnit = false, rakuAstSource = true;
+    bool fmtCheck = false, fmtDiff = false;   // --fmt --check / --diff
     std::string modeTok;                  // the spelling that selected the mode (for messages)
     std::vector<std::string> libPaths;    // -I, both spellings, any position
     std::vector<std::string> preloadModules; // -M/-m modules, in order
@@ -2161,6 +2164,9 @@ int main(int argc, char** argv) {
             }
             // mode selectors
             if (a == "--highlight") { if (!setMode(Mode::Highlight, a)) return 4; continue; }
+            if (a == "--fmt") { if (!setMode(Mode::Fmt, a)) return 4; continue; }
+            if (a == "--check") { fmtCheck = true; continue; }
+            if (a == "--diff")  { fmtDiff = true; continue; }
             if (a == "--mcp") { if (!setMode(Mode::Mcp, a)) return 4; continue; }
             if (a == "--lsp") { if (!setMode(Mode::Lsp, a)) return 4; continue; }
             // --jupyter FILE: Jupyter launches the kernel with the connection
@@ -2767,6 +2773,37 @@ int main(int argc, char** argv) {
     if (mode == Mode::Highlight) {
         if (!haveSrc) { std::ostringstream ss; ss << std::cin.rdbuf(); src = ss.str(); }
         std::cout << highlight(src, hlFmt);
+        return 0;
+    }
+
+    // --fmt FILE : the formatter (FMT-PLAN). Its gates live in formatSource(),
+    // so every caller gets them; this is only the surface.
+    if (mode == Mode::Fmt) {
+        if (!haveSrc) { std::cerr << "Usage: rakupp --fmt FILE | --fmt -e CODE [--check|--diff]\n"; return 4; }
+        FmtResult r = formatSource(src);
+        switch (r.status) {
+            case FmtStatus::ParseError:
+                std::cerr << "===SORRY!=== --fmt: the input does not parse; nothing was formatted\n";
+                return 3;
+            case FmtStatus::SemanticRefusal:
+                std::cerr << "===INTERNAL=== --fmt: formatting would have changed the program, so nothing\n"
+                             "was written. This is a bug in rakupp, not in your code — please report it\n"
+                             "with the file at https://github.com/ash/rakupp/issues\n";
+                return 5;
+            case FmtStatus::NotIdempotent:
+                std::cerr << "===INTERNAL=== --fmt: formatting is not stable on this file (formatting the\n"
+                             "result would change it again), so nothing was written. This is a bug in\n"
+                             "rakupp — please report it with the file\n";
+                return 5;
+            case FmtStatus::Ok: break;
+        }
+        if (fmtCheck || fmtDiff) {
+            if (!r.changed) return 0;
+            if (fmtCheck) std::cout << (fileName.empty() ? "-" : fileName) << "\n";
+            else std::cout << fmtUnifiedDiff(fileName.empty() ? "-" : fileName, src, r.text);
+            return 1;   // the CI form: work remains
+        }
+        std::cout << r.text;
         return 0;
     }
 

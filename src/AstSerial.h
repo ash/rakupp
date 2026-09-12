@@ -25,7 +25,11 @@ inline constexpr uint32_t kAstSerialVersion = 20; // v20: ClassDecl.isModuleDecl
 struct AstSerialError { std::string msg; };
 
 // Serialize `prog` into a self-describing byte string (header included).
-std::string serializeAst(const Program& prog);
+// `stripLines` writes 0 wherever a node's line would go, so two programs that
+// differ ONLY in layout serialize identically. That is FMT-PLAN's semantic
+// gate: format, re-parse, compare blobs. The precomp cache leaves it off — it
+// wants the real lines, which backtraces read.
+std::string serializeAst(const Program& prog, bool stripLines = false);
 
 // Rebuild a Program. Throws AstSerialError if the header does not match this
 // build, or the payload is truncated/corrupt — callers treat that as a cache

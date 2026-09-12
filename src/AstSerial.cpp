@@ -24,6 +24,13 @@ constexpr char kMagic[4] = {'R', 'K', 'A', 'S'};
 struct Writer {
     std::string buf;
     static constexpr bool reading = false;
+    // FMT-PLAN's semantic gate compares the blob of the input against the blob
+    // of the formatted output, and formatting legitimately MOVES lines — that
+    // is most of what it does. With this set the writer emits 0 wherever it
+    // would emit a node's line, so the blob describes the program and nothing
+    // about its layout. Off for the precomp cache, which wants the real lines
+    // for backtraces.
+    bool stripLines = false;
 
     void raw(const void* p, size_t n) { buf.append(static_cast<const char*>(p), n); }
     void u8(uint8_t v) { buf.push_back((char)v); }
@@ -444,7 +451,7 @@ template <class IO> void ioExpr(IO& io, ExprPtr& e) {
     } else {
         if (!e) { io.u8(kNull); return; }
         io.u8((uint8_t)e->kind);
-        io.uvar((uint64_t)(e->line < 0 ? 0 : e->line));
+        io.uvar(io.stripLines ? 0 : (uint64_t)(e->line < 0 ? 0 : e->line));
         switch (e->kind) {
 #define X(K, T) case NK::K: visit(io, static_cast<T&>(*e)); break;
             EXPR_KINDS(X)
@@ -469,7 +476,7 @@ template <class IO> void ioStmt(IO& io, StmtPtr& s) {
     } else {
         if (!s) { io.u8(kNull); return; }
         io.u8((uint8_t)s->kind);
-        io.uvar((uint64_t)(s->line < 0 ? 0 : s->line));
+        io.uvar(io.stripLines ? 0 : (uint64_t)(s->line < 0 ? 0 : s->line));
         io_(io, s->label);
         switch (s->kind) {
 #define X(K, T) case NK::K: visit(io, static_cast<T&>(*s)); break;
@@ -491,7 +498,7 @@ template <class IO> void ioBlock(IO& io, std::unique_ptr<Block>& b) {
     } else {
         if (!b) { io.u8(kNull); return; }
         io.u8(0);
-        io.uvar((uint64_t)(b->line < 0 ? 0 : b->line));
+        io.uvar(io.stripLines ? 0 : (uint64_t)(b->line < 0 ? 0 : b->line));
         io_(io, b->label);
         visit(io, *b);
     }
@@ -506,7 +513,7 @@ template <class IO> void ioSubDecl(IO& io, std::unique_ptr<SubDecl>& d) {
     } else {
         if (!d) { io.u8(kNull); return; }
         io.u8(0);
-        io.uvar((uint64_t)(d->line < 0 ? 0 : d->line));
+        io.uvar(io.stripLines ? 0 : (uint64_t)(d->line < 0 ? 0 : d->line));
         io_(io, d->label);
         visit(io, *d);
     }
@@ -516,8 +523,9 @@ template <class IO> void ioSubDecl(IO& io, std::unique_ptr<SubDecl>& d) {
 
 // ---- the public entry points -------------------------------------------
 
-std::string serializeAst(const Program& prog) {
+std::string serializeAst(const Program& prog, bool stripLines) {
     Writer w;
+    w.stripLines = stripLines;
     w.raw(kMagic, 4);
     w.uvar(kAstSerialVersion);
     // const_cast: the visitors are one code path for both directions, and the
