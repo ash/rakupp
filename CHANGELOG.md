@@ -64,6 +64,19 @@ recorded family (a multi-line `/.../` is not one span, so indentation reaches
 inside it and the gate refuses, correctly). Live fire: 703 files formatted in
 place, 158 rewritten, the suite still 868/868, tree restored.
 
+**`rakupp upgrade` was broken for everyone who did not happen to have
+`Digest::SHA256::Native` installed**, and this release fixes it. The tool's own
+comment says the checksum is "the ENGINE's own SHA-256, so nothing beyond curl
+and tar has to exist on the box" — and then `use`d an **ecosystem
+distribution** by that name rather than `Digest::Native`, which is one of the
+names the engine answers itself. On a machine that has the distribution it
+works; everywhere else `rakupp upgrade` died with `Could not find
+Digest::SHA256::Native` before doing anything, `--check` included. A
+self-contained updater that requires a module to be installed first is not
+self-contained. CI had been red on this since the installer batch landed, on all
+three platforms, and it never reproduced locally because this machine has the
+distribution.
+
 ### The two regressions this release inherits, both re-measured and both unmoved
 
 Neither is fixed, and both are named here rather than discovered later:

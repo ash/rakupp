@@ -20,7 +20,18 @@
 # — which matters on Windows, where install.raku's SHA-1 step has to go
 # looking for shasum, sha1sum or openssl and finds none of them.
 
-use Digest::SHA256::Native;
+# `Digest::Native` is one of the names the ENGINE answers itself (DATA-PLAN P3:
+# see kDataNativeModules in src/Interpreter.cpp) — so this `use` loads nothing
+# and needs nothing installed, which is what the paragraph above promises.
+#
+# It said `Digest::SHA256::Native` until 2026-09-12, which is an ECOSYSTEM
+# distribution and not a name the engine claims. That works on a box that
+# happens to have it installed — this one does, which is why the regression case
+# passed here — and dies with "Could not find Digest::SHA256::Native" everywhere
+# else, including on all three CI platforms, for `--check` as much as for a real
+# upgrade. A self-contained updater that requires a module to be installed first
+# is not self-contained.
+use Digest::Native;
 
 my constant REPO    = 'ash/rakupp';
 my constant RECEIPT = 'rakupp-install.json';
