@@ -23,7 +23,7 @@ are where a fix session gets its worklist:
 - **Rakugrid** — a generated behavioural grid asking what Roast does not: not
   whether this is Raku, but whether it survives contact with real programs.
   Fired by hand, at release time (**[E](#e-fire-rakugrid-and-record-the-point)**).
-- **RakuMap** — a bounded differential explorer that generates valid programs,
+- **Rakumap** — a bounded differential explorer that generates valid programs,
   compares Rakudo with Raku++, checks stability, and preserves replayable
   findings. Run deliberately when searching beyond the known grid
   (**[F](#f-explore-with-rakumap)**).
@@ -44,7 +44,7 @@ are where a fix session gets its worklist:
 | **showcase + live + in-use** | The [`showcase/`](../../showcase) projects and [`live/`](../../live) entries as browsable pages, one per README, the index driven by the table in `showcase/README.md` (so a directory the table does not name never reaches the site). The same generator builds the **/in-use/ hub** they hang off, and the adoptions page behind it — both from [`live/ADOPTIONS.md`](../../live/ADOPTIONS.md), so a row added there reaches the site through the ordinary sync rather than by hand-editing HTML. | [ash/raku.online `sites/showcase`](https://github.com/ash/raku.online/tree/main/sites/showcase) | [raku.online/showcase](https://raku.online/showcase/) + [/live](https://raku.online/live/) + [/in-use](https://raku.online/in-use/) |
 | **raku-corpus** | Real-world Raku programs used as a beyond-Roast differential test target. | [ash/raku-corpus](https://github.com/ash/raku-corpus) | — (test input) |
 | **Rakugrid** | An engine-neutral behavioural suite for the *language*, organised as a grid: atoms (one construct, one behaviour) and molecules (constructs in combination) over eight orthogonal facet axes, mostly machine-generated. Rakudo is the **oracle, not the arbiter** — every test stores what Rakudo did next to what we assert, and a divergence without a signed ruling fails the build. Runs under any implementation and tests any implementation; its generators run on rakupp. The whole grid — every recorded test, matrix by matrix, plus the divergence clusters and the signed rulings — is browsable at raku.online/grid, rendered by `sites/grid` in the raku.online repo. | [ash/rakugrid](https://github.com/ash/rakugrid) | [raku.online/grid](https://raku.online/grid/) |
-| **RakuMap** | An autonomous differential explorer for behaviour not yet represented in the known grid. Its deterministic, domain-specific generators run under rakupp; Rakudo and Raku++ are bounded child engines. Stable differences become replayable evidence dossiers, not automatic language rulings, and may later graduate into Rakugrid or an implementation regression suite. | [ash/rakumap](https://github.com/ash/rakumap) | — (development tool) |
+| **Rakumap** | An autonomous differential explorer for behaviour not yet represented in the known grid. Its deterministic, domain-specific generators run under rakupp; Rakudo and Raku++ are bounded child engines. Stable differences become replayable evidence dossiers, not automatic language rulings, and may later graduate into Rakugrid or an implementation regression suite. | [ash/rakumap](https://github.com/ash/rakumap) | — (development tool) |
 | **raku-eye** | The standing watch: a weekly, unattended GitHub Actions run that measures `main` against fresh Weekly Challenge solutions, new ecosystem releases and the corpus, benchmarks it against the latest Rakudo release, and publishes the result. Measures only — it never edits the compiler, and there is no AI in it. | [ash/raku-eye](https://github.com/ash/raku-eye) | [eye.raku.online](https://eye.raku.online/) |
 | **Homebrew tap** | The `ash/rakupp` tap — `brew install rakupp`. Apple Silicon gets the prebuilt release binary; Linux/Intel build from the source tarball; `--HEAD` builds from `main`. | [ash/homebrew-rakupp](https://github.com/ash/homebrew-rakupp) | `brew install rakupp` |
 
@@ -63,7 +63,7 @@ graph TD
     SHOWCASE["raku.online/showcase + /live + /in-use<br/>the projects, page per README;<br/>the hub, from live/ADOPTIONS.md"]
     CORPUS["raku-corpus<br/>real-world programs"]
     GRID["Rakugrid<br/>atoms + molecules<br/>oracle vs expect"]
-    MAP["RakuMap<br/>generated programs<br/>stable differential findings"]
+    MAP["Rakumap<br/>generated programs<br/>stable differential findings"]
     EYE["raku-eye<br/>weekly measurement<br/>eye.raku.online"]
     PWC(["Weekly Challenge<br/>+ REA releases"])
     BREW["Homebrew tap<br/>ash/rakupp"]
@@ -399,9 +399,9 @@ wired: `sites/grid/src/site.raku` reads this very path at build time and the
 reaches the site at the next build. Keep appending: the series is the point, and
 a gap in the rows is a gap in the chart.
 
-### F. Explore with RakuMap
+### F. Explore with Rakumap
 
-[RakuMap](https://github.com/ash/rakumap) searches for behaviour that is not yet
+[Rakumap](https://github.com/ash/rakumap) searches for behaviour that is not yet
 represented by a known Rakugrid cell. It produces deterministic programs from
 domain-specific generators, runs both implementations as bounded child
 processes, repeats differences to reject noise, and stores each stable result
@@ -409,7 +409,7 @@ as a replayable dossier. A dossier is evidence, not a ruling: confirm the
 language requirement before turning it into a Raku++ regression or Rakugrid
 atom.
 
-RakuMap itself must run under Raku++. From its checkout,
+Rakumap itself must run under Raku++. From its checkout,
 use the new binary as both host and candidate while
 Rakudo remains only the observed oracle child:
 
@@ -423,8 +423,8 @@ Rakudo remains only the observed oracle child:
 ```
 
 Bulk output stays in the ignored `out/` directory. Preserve only useful,
-stable findings in RakuMap's `fixtures/findings/`; confirmed cases then move to
-the permanent suite that owns the result. RakuMap currently implements the
+stable findings in Rakumap's `fixtures/findings/`; confirmed cases then move to
+the permanent suite that owns the result. Rakumap currently implements the
 `numeric`, `containers`, `signatures`, `unicode`, `regex`, `control`,
 `operators`, `types`, `variables`, `subs`, `methods`, `builtins`, `literals`,
 `phasers`, bounded `concurrency`, and intentional `invalid` diagnostic domains.
@@ -451,8 +451,8 @@ Raku language domain promised by its roadmap.
 | a sweep tool (`tools/pwc-sweep.raku`, `tools/run-bench.raku`, `tools/eco-fresh/`) | push it to `main` before the next Monday — raku-eye runs the tools from `main`, so an unpushed change is a failed run (**D**) |
 | the interpreter, and you want the behavioural delta rather than a pass count | fire Rakugrid against the new binary, `rakugrid check` for unsigned divergences, append one row to [dev/rakugrid-history.tsv](../dev/rakugrid-history.tsv) (**E**) |
 | a Rakugrid atom, generator or ruling | regenerate with rakupp in the rakugrid checkout, commit there; the next `ran` step makes the history rows either side non-comparable (**E**) |
-| the interpreter, and you want to search beyond known tests | run a bounded RakuMap `--generator=all` campaign with the new binary as host and candidate; inspect stable dossiers before promoting any result (**F**) |
-| a RakuMap generator or comparator | run its fixed-seed tests under rakupp, then regenerate only its committed fixture corpus in the RakuMap checkout (**F**) |
+| the interpreter, and you want to search beyond known tests | run a bounded Rakumap `--generator=all` campaign with the new binary as host and candidate; inspect stable dossiers before promoting any result (**F**) |
+| a Rakumap generator or comparator | run its fixed-seed tests under rakupp, then regenerate only its committed fixture corpus in the Rakumap checkout (**F**) |
 | anything, and you want to know what it broke in the wild | read [eye.raku.online](https://eye.raku.online/) — the week's regressions and the ranked mismatch clusters are the fix-session worklist (**D**) |
 | the interpreter, at release time | re-run both benchmark harnesses and update BENCHMARKS.md — every release, not just when a kernel looks moved (**A.5**) |
 | cut a new version tag | bump the three pins in the Homebrew formula once CI has published the assets (**A.7**); rebuild the tour so its lessons re-verify on the new binary (**C**); republish the site data (**[RELEASING.md](../dev/RELEASING.md) step 6**) |
